@@ -29,8 +29,9 @@ mod utils;
 use crate::server::{config::AppConfig, session::Session};
 use anyhow::Result;
 use client_manager::ClientManager;
+use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::transport::data_stream_handler::{FetchRequest, SubscribeRequest};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info};
@@ -42,7 +43,8 @@ use wtransport::Endpoint;
 #[derive(Clone)]
 pub(crate) struct Server {
   pub client_manager: Arc<RwLock<ClientManager>>,
-  pub tracks: Arc<RwLock<BTreeMap<u64, Track>>>, // the tracks the relay is subscribed to, key is the track alias
+  pub tracks: Arc<RwLock<HashMap<FullTrackName, Track>>>, // the tracks the relay is subscribed to, key is the track alias
+  pub track_aliases: Arc<RwLock<BTreeMap<u64, FullTrackName>>>,
   pub relay_fetch_requests: Arc<RwLock<BTreeMap<u64, FetchRequest>>>,
   pub relay_subscribe_requests: Arc<RwLock<BTreeMap<u64, SubscribeRequest>>>,
   pub app_config: &'static AppConfig,
@@ -59,7 +61,8 @@ impl Server {
 
     Server {
       client_manager: Arc::new(RwLock::new(ClientManager::new())),
-      tracks: Arc::new(RwLock::new(BTreeMap::new())),
+      tracks: Arc::new(RwLock::new(HashMap::new())),
+      track_aliases: Arc::new(RwLock::new(BTreeMap::new())),
       relay_fetch_requests: Arc::new(RwLock::new(BTreeMap::new())),
       relay_subscribe_requests: Arc::new(RwLock::new(BTreeMap::new())),
       app_config: config,

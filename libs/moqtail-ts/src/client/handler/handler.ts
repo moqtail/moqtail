@@ -15,25 +15,26 @@
  */
 
 import {
-  handlerAnnounce,
-  handlerAnnounceCancel,
+  handlerPublishNamespace,
+  handlerPublishNamespaceCancel,
+  handlerPublishNamespaceDone,
+  handlerPublishNamespaceError,
+  handlerPublishNamespaceOk,
   handlerMaxRequestId,
   handlerRequestsBlocked,
   handlerSubscribe,
-  handlerSubscribeAnnounces,
-  handlerSubscribeAnnouncesError,
-  handlerSubscribeAnnouncesOk,
+  handlerSubscribeNamespace,
+  handlerSubscribeNamespaceError,
+  handlerSubscribeNamespaceOk,
   handlerSubscribeDone,
   handlerSubscribeError,
   handlerSubscribeOk,
   handlerSubscribeUpdate,
   handlerTrackStatus,
-  handlerTrackStatusRequest,
-  handlerUnannounce,
+  handlerTrackStatusError,
+  handlerTrackStatusOk,
   handlerUnsubscribe,
-  handlerUnsubscribeAnnounces,
-  handlerAnnounceError,
-  handlerAnnounceOk,
+  handlerUnsubscribeNamespace,
   handlerFetch,
   handlerFetchCancel,
   handlerFetchError,
@@ -41,10 +42,11 @@ import {
   handlerGoAway,
 } from '.'
 import {
-  Announce,
-  AnnounceCancel,
-  AnnounceError,
-  AnnounceOk,
+  PublishNamespace,
+  PublishNamespaceCancel,
+  PublishNamespaceDone,
+  PublishNamespaceError,
+  PublishNamespaceOk,
   Fetch,
   FetchCancel,
   FetchError,
@@ -53,18 +55,18 @@ import {
   MaxRequestId,
   RequestsBlocked,
   Subscribe,
-  SubscribeAnnounces,
-  SubscribeAnnouncesError,
-  SubscribeAnnouncesOk,
+  SubscribeNamespace,
+  SubscribeNamespaceError,
+  SubscribeNamespaceOk,
   SubscribeDone,
   SubscribeError,
   SubscribeOk,
   SubscribeUpdate,
   TrackStatus,
-  TrackStatusRequestMessage,
-  Unannounce,
+  TrackStatusError,
+  TrackStatusOk,
   Unsubscribe,
-  UnsubscribeAnnounces,
+  UnsubscribeNamespace,
 } from '../../model/control'
 import { MOQtailClient } from '../client'
 import { ControlMessage } from '../../model/control'
@@ -72,10 +74,11 @@ import { ControlMessage } from '../../model/control'
 export type ControlMessageHandler<T> = (client: MOQtailClient, msg: T) => Promise<void>
 
 export function getHandlerForControlMessage(msg: ControlMessage): ControlMessageHandler<any> | undefined {
-  if (msg instanceof Announce) return handlerAnnounce
-  if (msg instanceof AnnounceCancel) return handlerAnnounceCancel
-  if (msg instanceof AnnounceError) return handlerAnnounceError
-  if (msg instanceof AnnounceOk) return handlerAnnounceOk
+  if (msg instanceof PublishNamespace) return handlerPublishNamespace
+  if (msg instanceof PublishNamespaceCancel) return handlerPublishNamespaceCancel
+  if (msg instanceof PublishNamespaceDone) return handlerPublishNamespaceDone
+  if (msg instanceof PublishNamespaceError) return handlerPublishNamespaceError
+  if (msg instanceof PublishNamespaceOk) return handlerPublishNamespaceOk
   if (msg instanceof Fetch) return handlerFetch
   if (msg instanceof FetchCancel) return handlerFetchCancel
   if (msg instanceof FetchError) return handlerFetchError
@@ -83,18 +86,18 @@ export function getHandlerForControlMessage(msg: ControlMessage): ControlMessage
   if (msg instanceof GoAway) return handlerGoAway
   if (msg instanceof MaxRequestId) return handlerMaxRequestId
   if (msg instanceof Subscribe) return handlerSubscribe
-  if (msg instanceof SubscribeAnnounces) return handlerSubscribeAnnounces
-  if (msg instanceof SubscribeAnnouncesError) return handlerSubscribeAnnouncesError
-  if (msg instanceof SubscribeAnnouncesOk) return handlerSubscribeAnnouncesOk
+  if (msg instanceof SubscribeNamespace) return handlerSubscribeNamespace
+  if (msg instanceof SubscribeNamespaceError) return handlerSubscribeNamespaceError
+  if (msg instanceof SubscribeNamespaceOk) return handlerSubscribeNamespaceOk
   if (msg instanceof SubscribeDone) return handlerSubscribeDone
   if (msg instanceof SubscribeError) return handlerSubscribeError
   if (msg instanceof SubscribeOk) return handlerSubscribeOk
   if (msg instanceof SubscribeUpdate) return handlerSubscribeUpdate
   if (msg instanceof RequestsBlocked) return handlerRequestsBlocked
   if (msg instanceof TrackStatus) return handlerTrackStatus
-  if (msg instanceof TrackStatusRequestMessage) return handlerTrackStatusRequest
-  if (msg instanceof Unannounce) return handlerUnannounce
+  if (msg instanceof TrackStatusError) return handlerTrackStatusError
+  if (msg instanceof TrackStatusOk) return handlerTrackStatusOk
   if (msg instanceof Unsubscribe) return handlerUnsubscribe
-  if (msg instanceof UnsubscribeAnnounces) return handlerUnsubscribeAnnounces
+  if (msg instanceof UnsubscribeNamespace) return handlerUnsubscribeNamespace
   return undefined
 }

@@ -24,6 +24,7 @@ use std::convert::TryInto;
 #[derive(Debug, PartialEq, Clone)]
 pub struct SubscribeOk {
   pub request_id: u64,
+  pub track_alias: u64,
   pub expires: u64,
   pub group_order: GroupOrder, // Must be Ascending or Descending
   pub content_exists: bool,
@@ -34,11 +35,13 @@ pub struct SubscribeOk {
 impl SubscribeOk {
   pub fn new_ascending_no_content(
     request_id: u64,
+    track_alias: u64,
     expires: u64,
     subscribe_parameters: Option<Vec<KeyValuePair>>,
   ) -> Self {
     Self {
       request_id,
+      track_alias,
       expires,
       group_order: GroupOrder::Ascending,
       content_exists: false,
@@ -49,11 +52,13 @@ impl SubscribeOk {
 
   pub fn new_descending_no_content(
     request_id: u64,
+    track_alias: u64,
     expires: u64,
     subscribe_parameters: Option<Vec<KeyValuePair>>,
   ) -> Self {
     Self {
       request_id,
+      track_alias,
       expires,
       group_order: GroupOrder::Descending,
       content_exists: false,
@@ -64,12 +69,14 @@ impl SubscribeOk {
 
   pub fn new_ascending_with_content(
     request_id: u64,
+    track_alias: u64,
     expires: u64,
     largest_location: Option<Location>,
     subscribe_parameters: Option<Vec<KeyValuePair>>,
   ) -> Self {
     Self {
       request_id,
+      track_alias,
       expires,
       group_order: GroupOrder::Ascending,
       content_exists: true,
@@ -80,12 +87,14 @@ impl SubscribeOk {
 
   pub fn new_descending_with_content(
     request_id: u64,
+    track_alias: u64,
     expires: u64,
     largest_location: Option<Location>,
     subscribe_parameters: Option<Vec<KeyValuePair>>,
   ) -> Self {
     Self {
       request_id,
+      track_alias,
       expires,
       group_order: GroupOrder::Descending,
       content_exists: true,
@@ -101,6 +110,7 @@ impl ControlMessageTrait for SubscribeOk {
 
     let mut payload = BytesMut::new();
     payload.put_vi(self.request_id)?;
+    payload.put_vi(self.track_alias)?;
     payload.put_vi(self.expires)?;
 
     if self.group_order == GroupOrder::Original {
@@ -148,6 +158,7 @@ impl ControlMessageTrait for SubscribeOk {
 
   fn parse_payload(payload: &mut Bytes) -> Result<Box<Self>, ParseError> {
     let request_id = payload.get_vi()?;
+    let track_alias = payload.get_vi()?;
     let expires = payload.get_vi()?;
 
     if payload.remaining() < 1 {
@@ -213,6 +224,7 @@ impl ControlMessageTrait for SubscribeOk {
 
     Ok(Box::new(SubscribeOk {
       request_id,
+      track_alias,
       expires,
       group_order,
       content_exists,
@@ -234,6 +246,7 @@ mod tests {
   #[test]
   fn test_roundtrip() {
     let request_id = 145136;
+    let track_alias = 0;
     let expires = 16;
     let group_order = GroupOrder::Ascending;
     let content_exists = true;
@@ -248,6 +261,7 @@ mod tests {
     ];
     let subscribe_ok = SubscribeOk {
       request_id,
+      track_alias,
       expires,
       group_order,
       content_exists,
@@ -268,6 +282,7 @@ mod tests {
   #[test]
   fn test_excess_roundtrip() {
     let request_id = 145136;
+    let track_alias = 89123u64;
     let expires = 16;
     let group_order = GroupOrder::Ascending;
     let content_exists = true;
@@ -282,6 +297,7 @@ mod tests {
     ];
     let subscribe_ok = SubscribeOk {
       request_id,
+      track_alias,
       expires,
       group_order,
       content_exists,
@@ -308,6 +324,7 @@ mod tests {
   #[test]
   fn test_partial_message() {
     let request_id = 145136;
+    let track_alias = 1223u64;
     let expires = 16;
     let group_order = GroupOrder::Ascending;
     let content_exists = true;
@@ -322,6 +339,7 @@ mod tests {
     ];
     let subscribe_ok = SubscribeOk {
       request_id,
+      track_alias,
       expires,
       group_order,
       content_exists,

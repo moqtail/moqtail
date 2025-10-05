@@ -30,9 +30,14 @@ pub enum TerminationCode {
   GoawayTimeout = 0x10,
   ControlMessageTimeout = 0x11,
   DataStreamTimeout = 0x12,
-  AuthTokenNotFound = 0x13,
+  AuthTokenCacheOverflow = 0x13,
   DuplicateAuthTokenAlias = 0x14,
   VersionNegotiationFailed = 0x15,
+  MalformedAuthToken = 0x16,
+  UnknownAuthTokenAlias = 0x17,
+  ExpiredAuthToken = 0x18,
+  InvalidAuthority = 0x19,
+  MalformedAuthority = 0x1A,
 }
 
 impl TerminationCode {

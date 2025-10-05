@@ -145,7 +145,11 @@ impl SendDataStream {
     })
   }
 
-  pub async fn send_object(&mut self, object: &Object) -> Result<(), ParseError> {
+  pub async fn send_object(
+    &mut self,
+    object: &Object,
+    previous_object_id: Option<u64>,
+  ) -> Result<(), ParseError> {
     let mut buf = BytesMut::new();
     let object = object.clone();
 
@@ -157,7 +161,7 @@ impl SendDataStream {
       HeaderInfo::Subgroup { header, .. } => {
         let has_extensions = header.header_type.has_extensions();
         let subgroup_obj = object.try_into_subgroup()?;
-        buf.extend_from_slice(&subgroup_obj.serialize(has_extensions)?);
+        buf.extend_from_slice(&subgroup_obj.serialize(previous_object_id, has_extensions)?);
       }
     }
 
@@ -265,6 +269,8 @@ impl RecvDataStream {
     let mut recv_bytes = BytesMut::new();
     let mut timeout_at = Instant::now() + DATA_STREAM_TIMEOUT;
 
+    let mut previous_object_id: Option<u64> = None;
+
     loop {
       let bytes_cursor = recv_bytes.clone().freeze();
       if !recv_bytes.is_empty() && header_info.is_none() {
@@ -294,17 +300,26 @@ impl RecvDataStream {
         let mut consumed = 0;
         if !recv_bytes.is_empty() {
           let header_info = header_info.clone().unwrap().1;
-          consumed = Self::read_object(
+          let (c, object_id) = Self::read_object(
             bytes_cursor,
             &header_info,
             is_closed.clone(),
             objects.clone(),
+            previous_object_id,
           )
           .await
           .map_err(|e| {
             error!("Failed to parse object: {:?}", e);
             RecvDataStreamReadError::ParseError(e)
           })?;
+          previous_object_id = object_id;
+          consumed = c;
+
+          debug!(
+            "previous_object_id: {:?} consumed: {}",
+            previous_object_id, consumed
+          );
+
           notify.notify_waiters();
           recv_bytes.advance(consumed);
         }
@@ -445,7 +460,8 @@ impl RecvDataStream {
     header_info: &HeaderInfo,
     is_closed: Arc<RwLock<bool>>,
     objects: Arc<RwLock<VecDeque<Object>>>,
-  ) -> Result<usize, ParseError> {
+    previous_object_id: Option<u64>,
+  ) -> Result<(usize, Option<u64>), ParseError> {
     // debug!("RecvDataStream::parse_object() called");
 
     if !bytes_cursor.is_empty() {
@@ -453,27 +469,33 @@ impl RecvDataStream {
 
       // debug!("bytes_cursor remaining: {}", original_remaining);
 
+      // get the last object_id and object
+      // for fetch objects, the previous object id is not required
       let parse_result = match header_info {
         HeaderInfo::Fetch { .. } => {
           FetchObject::deserialize(&mut bytes_cursor).and_then(|fetch_obj| {
             // TODO: Validation checks fetch objects arriving correctly
             // TODO: Get track alias from fetch_request
-            Object::try_from_fetch(fetch_obj, 0)
+            Object::try_from_fetch(fetch_obj, 0).map(|object| (0u64, object))
           })
         }
         HeaderInfo::Subgroup { header, .. } => {
           let has_extensions = header.header_type.has_extensions();
-          SubgroupObject::deserialize(&mut bytes_cursor, has_extensions).and_then(|subgroup_obj| {
-            // TODO: Validation checks
+          SubgroupObject::deserialize(&mut bytes_cursor, previous_object_id, has_extensions)
+            .and_then(|subgroup_obj| {
+              // TODO: Validation checks
 
-            Object::try_from_subgroup(
-              subgroup_obj,
-              header.track_alias,
-              header.group_id,
-              header.subgroup_id,
-              header.publisher_priority,
-            )
-          })
+              let object_id = subgroup_obj.object_id;
+
+              Object::try_from_subgroup(
+                subgroup_obj,
+                header.track_alias,
+                header.group_id,
+                header.subgroup_id,
+                header.publisher_priority,
+              )
+              .map(|object| (object_id, object))
+            })
         }
       };
 
@@ -489,13 +511,13 @@ impl RecvDataStream {
           );
           */
           let mut objects = objects.write().await;
-          objects.push_back(object);
-          Ok(consumed)
+          objects.push_back(object.1);
+          Ok((consumed, Some(object.0)))
         }
         Err(ParseError::NotEnoughBytes { .. }) => {
           // Not enough bytes to parse the object, continue reading
           // debug!("Not enough bytes to parse the object, continuing to read...");
-          Ok(0) // Indicate that we need more data
+          Ok((0, None)) // Indicate that we need more data
         }
         Err(e) => {
           *is_closed.write().await = true;
@@ -507,7 +529,7 @@ impl RecvDataStream {
       }
     } else {
       debug!("No bytes available to parse an object, returning false");
-      Ok(0) // No bytes to parse, wait for more data
+      Ok((0, None)) // No bytes to parse, wait for more data
     }
   }
 
@@ -649,7 +671,6 @@ mod tests {
   #[allow(dead_code)]
   fn make_subgroup_header_and_request() -> (SubgroupHeader, Subscribe) {
     let request_id = 128242;
-    let track_alias = 999;
     let track_namespace = Tuple::from_utf8_path("nein/nein/nein");
     let track_name = "${Name}".to_string();
     let subscriber_priority = 31;
@@ -667,7 +688,6 @@ mod tests {
     ];
     let subscribe = Subscribe {
       request_id,
-      track_alias,
       track_namespace,
       track_name,
       subscriber_priority,
@@ -678,7 +698,7 @@ mod tests {
       end_group: Some(end_group),
       subscribe_parameters,
     };
-    let header_type = SubgroupHeaderType::Type0x0D;
+    let header_type = SubgroupHeaderType::Type0x15;
     let track_alias = 999;
     let group_id = 9;
     let subgroup_id = Some(11);

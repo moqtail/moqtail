@@ -37,6 +37,14 @@ pub fn print_bytes(buffer: &Bytes) {
   println!();
 }
 
+pub fn bytes_to_hex(buffer: &Bytes) -> String {
+  let mut hex = String::new();
+  for byte in buffer.iter() {
+    hex.push_str(&format!("{byte:02X} "));
+  }
+  hex
+}
+
 pub fn build_stream_id(track_alias: u64, header: &HeaderInfo) -> StreamId {
   match header {
     HeaderInfo::Fetch {

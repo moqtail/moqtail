@@ -29,7 +29,7 @@ pub enum KeyValuePair {
 impl KeyValuePair {
   /// Fallible constructor for a varint‐typed pair.
   pub fn try_new_varint(type_value: u64, value: u64) -> Result<Self, ParseError> {
-    if type_value % 2 != 0 {
+    if !type_value.is_multiple_of(2) {
       return Err(ParseError::KeyValueFormattingError {
         context: "KeyValuePair::try_new_varint",
       });
@@ -39,7 +39,7 @@ impl KeyValuePair {
 
   /// Fallible constructor for a bytes‐typed pair.
   pub fn try_new_bytes(type_value: u64, value: Bytes) -> Result<Self, ParseError> {
-    if type_value % 2 == 0 {
+    if type_value.is_multiple_of(2) {
       return Err(ParseError::KeyValueFormattingError {
         context: "KeyValuePair::try_new_bytes",
       });

@@ -114,14 +114,14 @@ impl ControlMessageTrait for ClientSetup {
 
 #[cfg(test)]
 mod tests {
-  use crate::model::control::constant::DRAFT_11;
+  use crate::model::control::constant::DRAFT_14;
 
   use super::*;
   use bytes::Buf;
 
   #[test]
   fn test_roundtrip() {
-    let supported_versions = vec![12345, DRAFT_11];
+    let supported_versions = vec![12345, DRAFT_14];
     let setup_parameters = vec![
       KeyValuePair::try_new_varint(0, 10).unwrap(),
       KeyValuePair::try_new_bytes(1, Bytes::from_static(b"Set me up!")).unwrap(),
@@ -143,7 +143,7 @@ mod tests {
 
   #[test]
   fn test_excess_roundtrip() {
-    let supported_versions = vec![12345, DRAFT_11];
+    let supported_versions = vec![12345, DRAFT_14];
     let setup_parameters = vec![
       KeyValuePair::try_new_varint(0, 10).unwrap(),
       KeyValuePair::try_new_bytes(1, Bytes::from_static(b"Set me up!")).unwrap(),
@@ -171,7 +171,7 @@ mod tests {
 
   #[test]
   fn test_partial_message() {
-    let supported_versions = vec![12345, DRAFT_11];
+    let supported_versions = vec![12345, DRAFT_14];
     let setup_parameters: Vec<KeyValuePair> = vec![
       KeyValuePair::try_new_varint(0, 10).unwrap(),
       KeyValuePair::try_new_bytes(1, Bytes::from_static(b"Set me up!")).unwrap(),

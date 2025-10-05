@@ -74,7 +74,7 @@ if (import.meta.vitest) {
   describe('SubscribeError', () => {
     test('roundtrip', () => {
       const requestId = 12345n
-      const errorCode = SubscribeErrorCode.RetryTrackAlias
+      const errorCode = SubscribeErrorCode.InvalidRange
       const errorReason = new ReasonPhrase('Lorem ipsum dolor sit amet')
       const trackAlias = 123n
       const subscribeError = SubscribeError.new(requestId, errorCode, errorReason, trackAlias)
@@ -93,7 +93,7 @@ if (import.meta.vitest) {
 
     test('excess roundtrip', () => {
       const requestId = 12345n
-      const errorCode = SubscribeErrorCode.RetryTrackAlias
+      const errorCode = SubscribeErrorCode.InvalidRange
       const errorReason = new ReasonPhrase('Lorem ipsum dolor sit amet')
       const trackAlias = 123n
       const subscribeError = SubscribeError.new(requestId, errorCode, errorReason, trackAlias)
@@ -119,7 +119,7 @@ if (import.meta.vitest) {
 
     test('partial message', () => {
       const requestId = 12345n
-      const errorCode = SubscribeErrorCode.RetryTrackAlias
+      const errorCode = SubscribeErrorCode.InvalidRange
       const errorReason = new ReasonPhrase('Lorem ipsum dolor sit amet')
       const trackAlias = 123n
       const subscribeError = SubscribeError.new(requestId, errorCode, errorReason, trackAlias)

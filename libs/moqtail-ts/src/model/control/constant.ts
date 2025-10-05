@@ -45,17 +45,18 @@ export enum ControlMessageType {
   FetchOk = 0x18,
   FetchError = 0x19,
   FetchCancel = 0x17,
-  TrackStatusRequest = 0x0d,
-  TrackStatus = 0x0e,
-  Announce = 0x06,
-  AnnounceOk = 0x07,
-  AnnounceError = 0x08,
-  Unannounce = 0x09,
-  AnnounceCancel = 0x0c,
-  SubscribeAnnounces = 0x11,
-  SubscribeAnnouncesOk = 0x12,
-  SubscribeAnnouncesError = 0x13,
-  UnsubscribeAnnounces = 0x14,
+  TrackStatus = 0x0d,
+  TrackStatusOk = 0x0e,
+  TrackStatusError = 0x0f,
+  PublishNamespace = 0x06,
+  PublishNamespaceOk = 0x07,
+  PublishNamespaceError = 0x08,
+  PublishNamespaceDone = 0x09,
+  PublishNamespaceCancel = 0x0c,
+  SubscribeNamespace = 0x11,
+  SubscribeNamespaceOk = 0x12,
+  SubscribeNamespaceError = 0x13,
+  UnsubscribeNamespace = 0x14,
 }
 
 /**
@@ -103,27 +104,27 @@ export function controlMessageTypeFromBigInt(v: bigint): ControlMessageType {
     case 0x17n:
       return ControlMessageType.FetchCancel
     case 0x0dn:
-      return ControlMessageType.TrackStatusRequest
+      return ControlMessageType.TrackStatus
     case 0x0en:
       return ControlMessageType.TrackStatus
     case 0x06n:
-      return ControlMessageType.Announce
+      return ControlMessageType.PublishNamespace
     case 0x07n:
-      return ControlMessageType.AnnounceOk
+      return ControlMessageType.PublishNamespaceOk
     case 0x08n:
-      return ControlMessageType.AnnounceError
+      return ControlMessageType.PublishNamespaceError
     case 0x09n:
-      return ControlMessageType.Unannounce
+      return ControlMessageType.PublishNamespaceDone
     case 0x0cn:
-      return ControlMessageType.AnnounceCancel
+      return ControlMessageType.PublishNamespaceCancel
     case 0x11n:
-      return ControlMessageType.SubscribeAnnounces
+      return ControlMessageType.SubscribeNamespace
     case 0x12n:
-      return ControlMessageType.SubscribeAnnouncesOk
+      return ControlMessageType.SubscribeNamespaceOk
     case 0x13n:
-      return ControlMessageType.SubscribeAnnouncesError
+      return ControlMessageType.SubscribeNamespaceError
     case 0x14n:
-      return ControlMessageType.UnsubscribeAnnounces
+      return ControlMessageType.UnsubscribeNamespace
     default:
       throw new Error(`Invalid ControlMessageType: ${v}`)
   }
@@ -131,9 +132,9 @@ export function controlMessageTypeFromBigInt(v: bigint): ControlMessageType {
 
 /**
  * @public
- * Error codes for Announce control messages.
+ * Error codes for PublishNamespace control messages.
  */
-export enum AnnounceErrorCode {
+export enum PublishNamespaceErrorCode {
   InternalError = 0x0,
   Unauthorized = 0x1,
   Timeout = 0x2,
@@ -145,31 +146,31 @@ export enum AnnounceErrorCode {
 }
 
 /**
- * Converts a bigint value to an AnnounceErrorCode enum.
+ * Converts a bigint value to an  enum.
  * @param v - The bigint value.
- * @returns The corresponding AnnounceErrorCode.
+ * @returns The corresponding PublishNamespaceErrorCode.
  * @throws Error if the value is not a valid announce error code.
  */
-export function announceErrorCodeFromBigInt(v: bigint): AnnounceErrorCode {
+export function publishNamespaceErrorCodeFromBigInt(v: bigint): PublishNamespaceErrorCode {
   switch (v) {
     case 0x0n:
-      return AnnounceErrorCode.InternalError
+      return PublishNamespaceErrorCode.InternalError
     case 0x1n:
-      return AnnounceErrorCode.Unauthorized
+      return PublishNamespaceErrorCode.Unauthorized
     case 0x2n:
-      return AnnounceErrorCode.Timeout
+      return PublishNamespaceErrorCode.Timeout
     case 0x3n:
-      return AnnounceErrorCode.NotSupported
+      return PublishNamespaceErrorCode.NotSupported
     case 0x4n:
-      return AnnounceErrorCode.Uninterested
+      return PublishNamespaceErrorCode.Uninterested
     case 0x10n:
-      return AnnounceErrorCode.MalformedAuthToken
+      return PublishNamespaceErrorCode.MalformedAuthToken
     case 0x11n:
-      return AnnounceErrorCode.UnknownAuthTokenAlias
+      return PublishNamespaceErrorCode.UnknownAuthTokenAlias
     case 0x12n:
-      return AnnounceErrorCode.ExpiredAuthToken
+      return PublishNamespaceErrorCode.ExpiredAuthToken
     default:
-      throw new Error(`Invalid AnnounceErrorCode: ${v}`)
+      throw new Error(`Invalid PublishNamespaceErrorCode: ${v}`)
   }
 }
 
@@ -274,9 +275,7 @@ export enum SubscribeErrorCode {
   NotSupported = 0x3,
   TrackDoesNotExist = 0x4,
   InvalidRange = 0x5,
-  RetryTrackAlias = 0x6,
   MalformedAuthToken = 0x10,
-  UnknownAuthTokenAlias = 0x11,
   ExpiredAuthToken = 0x12,
 }
 
@@ -300,12 +299,8 @@ export function subscribeErrorCodeFromBigInt(v: bigint): SubscribeErrorCode {
       return SubscribeErrorCode.TrackDoesNotExist
     case 0x5n:
       return SubscribeErrorCode.InvalidRange
-    case 0x6n:
-      return SubscribeErrorCode.RetryTrackAlias
     case 0x10n:
       return SubscribeErrorCode.MalformedAuthToken
-    case 0x11n:
-      return SubscribeErrorCode.UnknownAuthTokenAlias
     case 0x12n:
       return SubscribeErrorCode.ExpiredAuthToken
     default:
@@ -406,9 +401,9 @@ export function trackStatusCodeFromBigInt(v: bigint): TrackStatusCode {
 
 /**
  * @public
- * Error codes for SubscribeAnnounces control messages.
+ * Error codes for SubscribeNamespace control messages.
  */
-export enum SubscribeAnnouncesErrorCode {
+export enum SubscribeNamespaceErrorCode {
   InternalError = 0x0,
   Unauthorized = 0x1,
   Timeout = 0x2,
@@ -416,38 +411,35 @@ export enum SubscribeAnnouncesErrorCode {
   NamespacePrefixUnknown = 0x4,
   NamespacePrefixOverlap = 0x5,
   MalformedAuthToken = 0x10,
-  UnknownAuthTokenAlias = 0x11,
   ExpiredAuthToken = 0x12,
 }
 
 /**
- * Converts a bigint value to a SubscribeAnnouncesErrorCode enum.
+ * Converts a bigint value to a SubscribeNamespaceErrorCode enum.
  * @param v - The bigint value.
- * @returns The corresponding SubscribeAnnouncesErrorCode.
+ * @returns The corresponding SubscribeNamespaceErrorCode.
  * @throws Error if the value is not a valid subscribe announces error code.
  */
-export function subscribeAnnouncesErrorCodeFromBigInt(v: bigint): SubscribeAnnouncesErrorCode {
+export function subscribeNamespaceErrorCodeFromBigInt(v: bigint): SubscribeNamespaceErrorCode {
   switch (v) {
     case 0x0n:
-      return SubscribeAnnouncesErrorCode.InternalError
+      return SubscribeNamespaceErrorCode.InternalError
     case 0x1n:
-      return SubscribeAnnouncesErrorCode.Unauthorized
+      return SubscribeNamespaceErrorCode.Unauthorized
     case 0x2n:
-      return SubscribeAnnouncesErrorCode.Timeout
+      return SubscribeNamespaceErrorCode.Timeout
     case 0x3n:
-      return SubscribeAnnouncesErrorCode.NotSupported
+      return SubscribeNamespaceErrorCode.NotSupported
     case 0x4n:
-      return SubscribeAnnouncesErrorCode.NamespacePrefixUnknown
+      return SubscribeNamespaceErrorCode.NamespacePrefixUnknown
     case 0x5n:
-      return SubscribeAnnouncesErrorCode.NamespacePrefixOverlap
+      return SubscribeNamespaceErrorCode.NamespacePrefixOverlap
     case 0x10n:
-      return SubscribeAnnouncesErrorCode.MalformedAuthToken
-    case 0x11n:
-      return SubscribeAnnouncesErrorCode.UnknownAuthTokenAlias
+      return SubscribeNamespaceErrorCode.MalformedAuthToken
     case 0x12n:
-      return SubscribeAnnouncesErrorCode.ExpiredAuthToken
+      return SubscribeNamespaceErrorCode.ExpiredAuthToken
     default:
-      throw new Error(`Invalid SubscribeAnnouncesErrorCode: ${v}`)
+      throw new Error(`Invalid SubscribeNamespaceErrorCode: ${v}`)
   }
 }
 

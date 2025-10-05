@@ -50,6 +50,7 @@ impl Session {
 
     let client_manager = server.client_manager.clone();
     let tracks = server.tracks.clone();
+    let track_aliases = server.track_aliases.clone();
     let server_config = server.app_config;
     let relay_fetch_requests = server.relay_fetch_requests.clone();
     let client_fetch_requests = Arc::new(RwLock::new(BTreeMap::new()));
@@ -69,6 +70,7 @@ impl Session {
       server_config,
       client_manager,
       tracks,
+      track_aliases,
       request_maps,
       connection,
       relay_next_request_id,
@@ -208,7 +210,7 @@ impl Session {
         Self::close_session(
           context.clone(),
           termination_code,
-          "Error handling Announce message",
+          "Error handling PublishNamespace message",
         );
         return Err(termination_code);
       }
@@ -302,39 +304,39 @@ impl Session {
       let client = context.get_client().await;
       if let Some(client) = client {
         let published_tracks = client.get_published_tracks().await;
-        for track_alias in published_tracks {
+        for full_track_name in published_tracks {
           info!(
-            "Track {} belongs to disconnected publisher {}, notifying subscribers",
-            track_alias, context.connection_id
+            "Track {:?} belongs to disconnected publisher {}, notifying subscribers",
+            &full_track_name, context.connection_id
           );
 
-          match tracks.get(&track_alias) {
+          match tracks.get(&full_track_name) {
             Some(track) => {
               if track.publisher_connection_id == context.connection_id {
                 // check if the track belongs to the disconnected publisher
                 // even though, this comes from the client's published tracks
                 if track.publisher_connection_id == context.connection_id {
                   info!(
-                    "Track {} belongs to disconnected publisher {}, notifying subscribers",
-                    track_alias, context.connection_id
+                    "Track {:?} belongs to disconnected publisher {}, notifying subscribers",
+                    &full_track_name, context.connection_id
                   );
                 }
 
                 // Notify all subscribers that the publisher disconnected
                 if let Err(e) = track.notify_publisher_disconnected().await {
                   error!(
-                    "Failed to notify subscribers for track {}: {:?}",
-                    track_alias, e
+                    "Failed to notify subscribers for track {:?}: {:?}",
+                    &full_track_name, e
                   );
                 }
 
-                tracks_to_remove.push(track_alias);
+                tracks_to_remove.push((track.track_alias, full_track_name));
               }
             }
             None => {
               warn!(
-                "Track {} not found in removing tracks as the client {} disconnected",
-                track_alias, context.connection_id
+                "Track {:?} not found in removing tracks as the client {} disconnected",
+                &full_track_name, context.connection_id
               );
             }
           }
@@ -345,11 +347,13 @@ impl Session {
     // Remove tracks that belonged to the disconnected publisher
     if !tracks_to_remove.is_empty() {
       let mut tracks = tracks_cleanup.write().await;
-      for track_alias in tracks_to_remove {
-        tracks.remove(&track_alias);
+      let mut track_aliases = context.track_aliases.write().await;
+      for track_ninfo in tracks_to_remove {
+        tracks.remove(&track_ninfo.1);
+        track_aliases.remove(&track_ninfo.0);
         info!(
-          "Removed track {} after publisher {} disconnect",
-          track_alias, context.connection_id
+          "Removed track {:?} after publisher {} disconnect",
+          &track_ninfo.1, context.connection_id
         );
       }
     }
@@ -428,17 +432,26 @@ impl Session {
               }
             }
 
-            current_track = if let Some(track) = context.tracks.read().await.get(&track_alias) {
-              debug!("track found: {:?}", track_alias);
-              Some(track.clone())
-            } else {
-              // this means, there is no subscription message came for this track yet
-              error!("track not found: {:?}", track_alias);
+            current_track =
+              if let Some(full_track_name) = context.track_aliases.read().await.get(&track_alias) {
+                if let Some(track) = context.tracks.read().await.get(full_track_name) {
+                  debug!("track found: {:?}", track_alias);
+                  Some(track.clone())
+                } else {
+                  error!(
+                    "track not found: {:?} full track name: {:?} 1",
+                    track_alias, &full_track_name
+                  );
+                  return Err(anyhow::Error::msg(TerminationCode::InternalError.to_json()));
+                }
+              } else {
+                // this means, there is no subscription message came for this track yet
+                error!("track not found: {:?}", track_alias);
 
-              // TODO: what is the right way to handle this?
-              // TODO: get track for fetch requests as well
-              return Err(anyhow::Error::msg(TerminationCode::InternalError.to_json()));
-            };
+                // TODO: what is the right way to handle this?
+                // TODO: get track for fetch requests as well
+                return Err(anyhow::Error::msg(TerminationCode::InternalError.to_json()));
+              };
             stream_id = Some(utils::build_stream_id(track_alias, &header_info));
             Some(header_info)
           } else {
@@ -525,14 +538,14 @@ impl Session {
       .unwrap()
     };
 
-    let server_setup = ServerSetup::new(constant::DRAFT_11, vec![max_request_id_param]);
+    let server_setup = ServerSetup::new(constant::DRAFT_14, vec![max_request_id_param]);
 
     debug!("client setup: {:?}", client_setup.supported_versions);
     debug!("server setup: {:?}", server_setup);
 
     let client = if client_setup
       .supported_versions
-      .contains(&constant::DRAFT_11)
+      .contains(&constant::DRAFT_14)
     {
       let mut m = context.client_manager.write().await;
 

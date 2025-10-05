@@ -12,10 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub mod announce;
-pub mod announce_cancel;
-pub mod announce_error;
-pub mod announce_ok;
 pub mod client_setup;
 pub mod constant;
 pub mod control_message;
@@ -25,18 +21,26 @@ pub mod fetch_error;
 pub mod fetch_ok;
 pub mod goaway;
 pub mod max_request_id;
+pub mod publish;
+pub mod publish_done;
+pub mod publish_error;
+pub mod publish_namespace;
+pub mod publish_namespace_cancel;
+pub mod publish_namespace_done;
+pub mod publish_namespace_error;
+pub mod publish_namespace_ok;
+pub mod publish_ok;
 pub mod requests_blocked;
 pub mod server_setup;
 pub mod subscribe;
-pub mod subscribe_announces;
-pub mod subscribe_announces_error;
-pub mod subscribe_announces_ok;
-pub mod subscribe_done;
 pub mod subscribe_error;
+pub mod subscribe_namespace;
+pub mod subscribe_namespace_error;
+pub mod subscribe_namespace_ok;
 pub mod subscribe_ok;
 pub mod subscribe_update;
 pub mod track_status;
-pub mod track_status_request;
-pub mod unannounce;
+pub mod track_status_error;
+pub mod track_status_ok;
 pub mod unsubscribe;
-pub mod unsubscribe_announces;
+pub mod unsubscribe_namespace;

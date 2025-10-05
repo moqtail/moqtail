@@ -39,6 +39,7 @@ pub async fn handle(
       let track_namespace = sub.track_namespace.clone();
       let client = context.get_client().await;
       let request_id = sub.request_id;
+      let full_track_name = sub.get_full_track_name();
 
       // check request id
       {
@@ -53,6 +54,10 @@ pub async fn handle(
       }
 
       // find who is the publisher
+      // first we try with the full track name
+      // if not found, we try with the announced track namespace
+      // in both cases, the first publisher that satisfies the condition is returned
+      // TODO: support multiple publishers
       let publisher = {
         debug!("trying to get the publisher");
         let m = context.client_manager.read().await;
@@ -60,8 +65,22 @@ pub async fn handle(
           "client manager obtained, current client id: {}",
           context.connection_id
         );
-        m.get_publisher_by_announced_track_namespace(&track_namespace)
-          .await
+        match m.get_publisher_by_full_track_name(&full_track_name).await {
+          Some(p) => Some(p),
+          None => {
+            error!(
+              "no publisher found for full track name: {:?}",
+              &full_track_name
+            );
+            let m = context.client_manager.read().await;
+            debug!(
+              "client manager obtained, current client id: {}",
+              context.connection_id
+            );
+            m.get_publisher_by_announced_track_namespace(&track_namespace)
+              .await
+          }
+        }
       };
 
       let publisher = if let Some(publisher) = publisher {
@@ -76,7 +95,6 @@ pub async fn handle(
           sub.request_id,
           moqtail::model::control::constant::SubscribeErrorCode::TrackDoesNotExist,
           ReasonPhrase::try_new("Unknown track namespace".to_string()).unwrap(),
-          sub.track_alias,
         );
         control_stream_handler
           .send_impl(&subscribe_error)
@@ -85,9 +103,8 @@ pub async fn handle(
         return Ok(());
       };
 
-      {
-        publisher.add_subscriber(context.connection_id).await;
-      }
+      publisher.add_subscriber(context.connection_id).await;
+
       info!(
         "Subscriber ({}) added to the publisher ({})",
         context.connection_id, publisher.connection_id
@@ -100,25 +117,11 @@ pub async fn handle(
       };
 
       let res: Result<(), TerminationCode> =
-        if !context.tracks.read().await.contains_key(&sub.track_alias) {
-          info!("Track not found, creating new track: {:?}", sub.track_alias);
-          // subscribed_tracks.insert(sub.track_alias, Track::new(sub.track_alias, track_namespace.clone(), sub.track_name.clone()));
-          let mut track = Track::new(
-            sub.track_alias,
-            sub.track_namespace.clone(),
-            sub.track_name.clone(),
-            publisher.connection_id,
-            context.server_config,
+        if !context.tracks.read().await.contains_key(&full_track_name) {
+          info!(
+            "Track not found, creating new track: {:?}",
+            &full_track_name
           );
-          {
-            context
-              .tracks
-              .write()
-              .await
-              .insert(sub.track_alias, track.clone());
-          }
-
-          let _ = track.add_subscription(client.clone(), sub.clone()).await;
 
           // send the subscribe message to the publisher
           let mut new_sub = sub.clone();
@@ -128,9 +131,6 @@ pub async fn handle(
           publisher
             .queue_message(ControlMessage::Subscribe(Box::new(new_sub.clone())))
             .await;
-
-          // add the track to the publisher's published tracks
-          publisher.add_published_track(track.track_alias).await;
 
           // insert this request id into the relay's subscribe requests
           // TODO: we need to add a timeout here or another loop to control expired requests
@@ -146,19 +146,20 @@ pub async fn handle(
         } else {
           info!("track already exists, sending SubscribeOk");
           let mut tracks = context.tracks.write().await;
-          let track = tracks.get_mut(&sub.track_alias).unwrap();
+          let track = tracks.get_mut(&full_track_name).unwrap();
           let _ = track.add_subscription(client.clone(), sub.clone()).await;
-          drop(tracks);
 
           // TODO: Send the first sub_ok message to the subscriber
           // for now, just sending some default values
           let subscribe_ok =
             moqtail::model::control::subscribe_ok::SubscribeOk::new_ascending_with_content(
               sub.request_id,
+              track.track_alias,
               0,
               None,
               None,
             );
+          drop(tracks);
 
           control_stream_handler.send_impl(&subscribe_ok).await
         };
@@ -222,6 +223,7 @@ pub async fn handle(
       let subscribe_ok =
         moqtail::model::control::subscribe_ok::SubscribeOk::new_ascending_with_content(
           sub_request.original_request_id,
+          msg.track_alias,
           msg.expires,
           msg.largest_location,
           None,
@@ -248,20 +250,53 @@ pub async fn handle(
       subscriber
         .queue_message(ControlMessage::SubscribeOk(Box::new(subscribe_ok)))
         .await;
-      drop(subscriber);
 
-      /*
-      TODO: do we need to update the subscription with the incoming subscribe_ok message?
-      */
+      // create the track here if it doesn't exist
+      let full_track_name = sub_request.subscribe_request.get_full_track_name();
 
-      // remove the request from the publisher
-      debug!("removing request from publisher: {:?}", request_id);
+      if !context.tracks.read().await.contains_key(&full_track_name) {
+        info!("Track not found, creating new track: {:?}", msg.track_alias);
+        // subscribed_tracks.insert(sub.track_alias, Track::new(sub.track_alias, track_namespace.clone(), sub.track_name.clone()));
+        let mut track = Track::new(
+          msg.track_alias,
+          sub_request.subscribe_request.track_namespace.clone(),
+          sub_request.subscribe_request.track_name.clone(),
+          context.connection_id,
+          context.server_config,
+        );
+        {
+          context
+            .tracks
+            .write()
+            .await
+            .insert(full_track_name.clone(), track.clone());
 
-      // add the track to the subscribed tracks
-      info!(
-        "adding track to subscribed tracks: {:?}",
-        sub_request.subscribe_request.track_alias
-      );
+          // insert the track alias into the track aliases
+          context
+            .track_aliases
+            .write()
+            .await
+            .insert(msg.track_alias, full_track_name.clone());
+        }
+
+        let res = track
+          .add_subscription(subscriber.clone(), sub_request.subscribe_request.clone())
+          .await;
+        match res {
+          Ok(_) => {
+            info!(
+              "subscription added successfully subscriber: {} track: {:?}",
+              &subscriber.connection_id, &track.track_alias
+            );
+          }
+          Err(e) => {
+            error!(
+              "error adding subscription: subscriber: {} track: {:?} error: {:?}",
+              &subscriber.connection_id, &track.track_alias, e
+            );
+          }
+        }
+      }
       Ok(())
     }
     ControlMessage::Unsubscribe(m) => {
@@ -291,11 +326,11 @@ pub async fn handle(
         return Ok(());
       }
       let request = request.unwrap();
-      let track_alias = request.subscribe_request.track_alias;
+      let full_track_name = request.subscribe_request.get_full_track_name();
 
       // remove the subscription from the track
       let mut tracks = context.tracks.write().await;
-      let track = tracks.get_mut(&track_alias).unwrap();
+      let track = tracks.get_mut(&full_track_name).unwrap();
       track.remove_subscription(context.connection_id).await;
       drop(tracks);
       Ok(())

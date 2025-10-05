@@ -12,11 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+  collections::{BTreeMap, HashMap},
+  sync::Arc,
+};
 use tokio::sync::RwLock;
 use wtransport::Connection;
 
-use moqtail::transport::data_stream_handler::{FetchRequest, SubscribeRequest};
+use moqtail::{
+  model::data::full_track_name::FullTrackName,
+  transport::data_stream_handler::{FetchRequest, SubscribeRequest},
+};
 
 use super::{client::MOQTClient, client_manager::ClientManager, config::AppConfig, track::Track};
 
@@ -29,7 +35,8 @@ pub struct RequestMaps {
 
 pub struct SessionContext {
   pub(crate) client_manager: Arc<RwLock<ClientManager>>,
-  pub(crate) tracks: Arc<RwLock<BTreeMap<u64, Track>>>, // the tracks the relay is subscribed to, key is the track alias
+  pub(crate) tracks: Arc<RwLock<HashMap<FullTrackName, Track>>>, // the tracks the relay is subscribed to, key is the track alias
+  pub(crate) track_aliases: Arc<RwLock<BTreeMap<u64, FullTrackName>>>, // the track alias and full track names
   pub(crate) relay_fetch_requests: Arc<RwLock<BTreeMap<u64, FetchRequest>>>,
   pub(crate) _client_fetch_requests: Arc<RwLock<BTreeMap<u64, FetchRequest>>>,
   pub(crate) relay_subscribe_requests: Arc<RwLock<BTreeMap<u64, SubscribeRequest>>>,
@@ -47,7 +54,8 @@ impl SessionContext {
   pub fn new(
     server_config: &'static AppConfig,
     client_manager: Arc<RwLock<ClientManager>>,
-    tracks: Arc<RwLock<BTreeMap<u64, Track>>>,
+    tracks: Arc<RwLock<HashMap<FullTrackName, Track>>>,
+    track_aliases: Arc<RwLock<BTreeMap<u64, FullTrackName>>>,
     request_maps: RequestMaps,
     connection: Connection,
     relay_next_request_id: Arc<RwLock<u64>>,
@@ -55,6 +63,7 @@ impl SessionContext {
     Self {
       client_manager,
       tracks,
+      track_aliases,
       relay_fetch_requests: request_maps.relay_fetch_requests,
       _client_fetch_requests: request_maps.client_fetch_requests,
       relay_subscribe_requests: request_maps.relay_subscribe_requests,

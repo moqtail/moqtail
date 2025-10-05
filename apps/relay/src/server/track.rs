@@ -104,6 +104,7 @@ impl Track {
     let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<TrackEvent>();
 
     let subscription = Subscription::new(
+      self.track_alias,
       subscribe_message,
       subscriber.clone(),
       event_rx,

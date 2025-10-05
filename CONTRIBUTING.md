@@ -42,7 +42,7 @@ MOQtail is a monorepo with Rust and TypeScript libraries and applications:
 This project uses [Conventional Commits](https://www.conventionalcommits.org/). Example:
 
 ```
-feat(control): add SubscribeAnnounces and SubscribeDone message support
+feat(control): add SubscribeNamespace and SubscribeDone message support
 fix(subscribe): correct endGroup validation for AbsoluteRange
 ```
 

@@ -24,11 +24,10 @@ import {
   SetupParameters,
   ControlMessage,
 } from '@/model'
-import { AnnounceRequest } from './request/announce'
+import { PublishNamespaceRequest } from './request/publish_namespace'
 import { FetchRequest } from './request/fetch'
 import { SubscribeRequest } from './request/subscribe'
-import { SubscribeAnnouncesRequest } from './request/subscribe_announces'
-import { TrackStatusRequest } from './request'
+import { SubscribeNamespaceRequest } from './request/subscribe_namespace'
 import { MOQtailClient } from './client'
 /**
  * Discriminated union of every in‑flight MOQ‑tail control request tracked by the {@link MOQtailClient}.
@@ -41,12 +40,12 @@ import { MOQtailClient } from './client'
  * multiple heterogeneous collections.
  *
  * Variants:
- * - {@link AnnounceRequest} – pending ANNOUNCE / ANNOUNCE_OK / ANNOUNCE_ERROR.
- * - {@link SubscribeAnnouncesRequest} – pending SUBSCRIBE_ANNOUNCES sequence.
+ * - {@link PublishNamespaceRequest} – pending PUBLISH_NAMESPACE / PUBLISH_NAMESPACE_OK / PUBLISH_NAMESPACE_ERROR.
+ * - {@link SubscribeNamespaceRequest} – pending SUBSCRIBE_NAMESPACE sequence.
  * - {@link FetchRequest} – pending FETCH handshake producing a data stream.
  * - {@link SubscribeRequest} – pending SUBSCRIBE producing subgroup object streams.
- * - {@link TrackStatusRequest} – pending TRACK_STATUS request.
- *
+ 
+*
  * @example Looking up a request by id
  * ```ts
  * function isActive(requests: Map<bigint, MOQtailRequest>, id: bigint) {
@@ -60,12 +59,7 @@ import { MOQtailClient } from './client'
  * }
  * ```
  */
-export type MOQtailRequest =
-  | AnnounceRequest
-  | SubscribeAnnouncesRequest
-  | FetchRequest
-  | SubscribeRequest
-  | TrackStatusRequest
+export type MOQtailRequest = PublishNamespaceRequest | SubscribeNamespaceRequest | FetchRequest | SubscribeRequest
 
 /**
  * Options for {@link MOQtailClient.new} controlling connection target, protocol negotiation, timeouts,

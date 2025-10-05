@@ -12,39 +12,131 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::constant::{ControlMessageType, TrackStatusCode};
+use super::constant::{ControlMessageType, FilterType, GroupOrder};
 use super::control_message::ControlMessageTrait;
 use crate::model::common::location::Location;
 use crate::model::common::pair::KeyValuePair;
+use crate::model::common::tuple::Tuple;
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
 use crate::model::error::ParseError;
-use bytes::{BufMut, Bytes, BytesMut};
+use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 #[derive(Debug, PartialEq, Clone)]
-// TODO: TRACKS STATUS FORMAT IS POORLY DESIGNED
 pub struct TrackStatus {
   pub request_id: u64,
-  pub status_code: TrackStatusCode,
-  pub largest_location: Location,
-  pub parameters: Vec<KeyValuePair>,
+  pub track_namespace: Tuple,
+  pub track_name: String,
+  pub subscriber_priority: u8,
+  pub group_order: GroupOrder,
+  pub forward: bool,
+  pub filter_type: FilterType,
+  pub start_location: Option<Location>,
+  pub end_group: Option<u64>,
+  // TODO: make the following optional
+  pub subscribe_parameters: Vec<KeyValuePair>,
 }
 
+#[allow(clippy::too_many_arguments)]
 impl TrackStatus {
-  pub fn new(
+  pub fn new_next_group_start(
     request_id: u64,
-    status_code: TrackStatusCode,
-    largest_location: Location,
-    parameters: Vec<KeyValuePair>,
+    track_namespace: Tuple,
+    track_name: String,
+    subscriber_priority: u8,
+    group_order: GroupOrder,
+    forward: bool,
+    subscribe_parameters: Vec<KeyValuePair>,
   ) -> Self {
-    TrackStatus {
+    Self {
       request_id,
-      status_code,
-      largest_location,
-      parameters,
+      track_namespace,
+      track_name,
+      subscriber_priority,
+      group_order,
+      forward,
+      filter_type: FilterType::NextGroupStart,
+      start_location: None,
+      end_group: None,
+      subscribe_parameters,
+    }
+  }
+
+  pub fn new_latest_object(
+    request_id: u64,
+    track_namespace: Tuple,
+    track_name: String,
+    subscriber_priority: u8,
+    group_order: GroupOrder,
+    forward: bool,
+    subscribe_parameters: Vec<KeyValuePair>,
+  ) -> Self {
+    Self {
+      request_id,
+      track_namespace,
+      track_name,
+      subscriber_priority,
+      group_order,
+      forward,
+      filter_type: FilterType::LatestObject,
+      start_location: None,
+      end_group: None,
+      subscribe_parameters,
+    }
+  }
+
+  pub fn new_absolute_start(
+    request_id: u64,
+    track_namespace: Tuple,
+    track_name: String,
+    subscriber_priority: u8,
+    group_order: GroupOrder,
+    forward: bool,
+    start_location: Location,
+    subscribe_parameters: Vec<KeyValuePair>,
+  ) -> Self {
+    Self {
+      request_id,
+      track_namespace,
+      track_name,
+      subscriber_priority,
+      group_order,
+      forward,
+      filter_type: FilterType::AbsoluteStart,
+      start_location: Some(start_location),
+      end_group: None,
+      subscribe_parameters,
+    }
+  }
+
+  pub fn new_absolute_range(
+    request_id: u64,
+    track_namespace: Tuple,
+    track_name: String,
+    subscriber_priority: u8,
+    group_order: GroupOrder,
+    forward: bool,
+    start_location: Location,
+    end_group: u64,
+    subscribe_parameters: Vec<KeyValuePair>,
+  ) -> Self {
+    assert!(
+      end_group >= start_location.group,
+      "End Group must be >= Start Group"
+    );
+    Self {
+      request_id,
+      track_namespace,
+      track_name,
+      subscriber_priority,
+      group_order,
+      forward,
+      filter_type: FilterType::AbsoluteRange,
+      start_location: Some(start_location),
+      end_group: Some(end_group),
+      subscribe_parameters,
     }
   }
 }
-
 impl ControlMessageTrait for TrackStatus {
   fn serialize(&self) -> Result<Bytes, ParseError> {
     let mut buf = BytesMut::new();
@@ -52,26 +144,36 @@ impl ControlMessageTrait for TrackStatus {
 
     let mut payload = BytesMut::new();
     payload.put_vi(self.request_id)?;
-    payload.put_vi(self.status_code)?;
-    match &self.status_code {
-      TrackStatusCode::InProgress
-      | TrackStatusCode::Finished
-      | TrackStatusCode::RelayUnavailable => {
-        payload.extend_from_slice(&self.largest_location.serialize()?);
+
+    payload.extend_from_slice(&self.track_namespace.serialize()?);
+    payload.put_vi(self.track_name.len())?;
+    payload.extend_from_slice(self.track_name.as_bytes());
+    payload.put_u8(self.subscriber_priority);
+    payload.put_u8(self.group_order as u8);
+    payload.put_u8(if self.forward { 1 } else { 0 });
+    payload.put_vi(self.filter_type)?;
+
+    match self.filter_type {
+      FilterType::AbsoluteStart => {
+        if let Some(ref loc) = self.start_location {
+          payload.extend_from_slice(&loc.serialize()?);
+        } else {
+          unreachable!()
+        }
       }
-      TrackStatusCode::DoesNotExist | TrackStatusCode::NotYetBegun => {
-        payload.extend_from_slice(
-          &Location {
-            group: 0,
-            object: 0,
-          }
-          .serialize()?,
-        );
+      FilterType::AbsoluteRange => {
+        if let Some(ref loc) = self.start_location {
+          payload.extend_from_slice(&loc.serialize()?);
+        }
+        if let Some(eg) = self.end_group {
+          payload.put_vi(eg)?;
+        }
       }
+      _ => {}
     }
 
-    payload.put_vi(self.parameters.len())?;
-    for param in &self.parameters {
+    payload.put_vi(self.subscribe_parameters.len())?;
+    for param in &self.subscribe_parameters {
       payload.extend_from_slice(&param.serialize()?);
     }
 
@@ -79,7 +181,7 @@ impl ControlMessageTrait for TrackStatus {
       .len()
       .try_into()
       .map_err(|e: std::num::TryFromIntError| ParseError::CastingError {
-        context: "TrackStatus::serialize(payload_length)",
+        context: "TrackStatus::serialize",
         from_type: "usize",
         to_type: "u16",
         details: e.to_string(),
@@ -87,55 +189,120 @@ impl ControlMessageTrait for TrackStatus {
 
     buf.put_u16(payload_len);
     buf.extend_from_slice(&payload);
-
     Ok(buf.freeze())
   }
 
   fn parse_payload(payload: &mut Bytes) -> Result<Box<Self>, ParseError> {
     let request_id = payload.get_vi()?;
-    let status_code_raw = payload.get_vi()?;
-    let status_code = TrackStatusCode::try_from(status_code_raw)?;
+    let track_namespace = Tuple::deserialize(payload)?;
 
-    let largest_location = match status_code {
-      TrackStatusCode::InProgress
-      | TrackStatusCode::Finished
-      | TrackStatusCode::RelayUnavailable => Location::deserialize(payload)?,
-      TrackStatusCode::DoesNotExist | TrackStatusCode::NotYetBegun => Location {
-        group: 0,
-        object: 0,
-      },
+    let name_len_u64 = payload.get_vi()?;
+    let name_len: usize = name_len_u64
+      .try_into()
+      .map_err(|e: std::num::TryFromIntError| ParseError::CastingError {
+        context: "TrackStatus::parse_payload(track_name_len)",
+        from_type: "u64",
+        to_type: "usize",
+        details: e.to_string(),
+      })?;
+
+    if payload.remaining() < name_len {
+      return Err(ParseError::NotEnoughBytes {
+        context: "TrackStatus::parse_payload(track_name)",
+        needed: name_len,
+        available: payload.remaining(),
+      });
+    }
+    let track_name_bytes = payload.copy_to_bytes(name_len);
+    let track_name =
+      String::from_utf8(track_name_bytes.to_vec()).map_err(|e| ParseError::InvalidUTF8 {
+        context: "TrackStatus::parse_payload(track_name)",
+        details: e.to_string(),
+      })?;
+
+    if payload.remaining() < 1 {
+      return Err(ParseError::NotEnoughBytes {
+        context: "TrackStatus::parse_payload(subscriber_priority)",
+        needed: 1,
+        available: 0,
+      });
+    }
+    let subscriber_priority = payload.get_u8();
+
+    if payload.remaining() < 1 {
+      return Err(ParseError::NotEnoughBytes {
+        context: "TrackStatus::parse_payload(group_order)",
+        needed: 1,
+        available: 0,
+      });
+    }
+    let group_order_raw = payload.get_u8();
+    let group_order = GroupOrder::try_from(group_order_raw)?;
+
+    let forward_raw = payload.get_u8();
+    let forward = match forward_raw {
+      0 => false,
+      1 => true,
+      _ => {
+        return Err(ParseError::ProtocolViolation {
+          context: "TrackStatus::parse_payload(forward)",
+          details: format!("Invalid value: {forward_raw}"),
+        });
+      }
     };
+
+    let filter_type_raw = payload.get_vi()?;
+    let filter_type = FilterType::try_from(filter_type_raw)?;
+
+    let mut start_location: Option<Location> = None;
+    let mut end_group: Option<u64> = None;
+
+    match filter_type {
+      FilterType::AbsoluteRange => {
+        start_location = Some(Location::deserialize(payload)?);
+        end_group = Some(payload.get_vi()?);
+      }
+      FilterType::AbsoluteStart => {
+        start_location = Some(Location::deserialize(payload)?);
+      }
+      FilterType::LatestObject => {}
+      FilterType::NextGroupStart => {}
+    }
 
     let param_count_u64 = payload.get_vi()?;
     let param_count: usize =
       param_count_u64
         .try_into()
         .map_err(|e: std::num::TryFromIntError| ParseError::CastingError {
-          context: "TrackStatus::parse_payload(param_count)",
+          context: "TrackStatus::deserialize(param_count)",
           from_type: "u64",
           to_type: "usize",
           details: e.to_string(),
         })?;
 
-    let mut parameters = Vec::with_capacity(param_count);
+    let mut subscribe_parameters = Vec::with_capacity(param_count);
     for _ in 0..param_count {
       let param = KeyValuePair::deserialize(payload)?;
-      parameters.push(param);
+      subscribe_parameters.push(param);
     }
 
     Ok(Box::new(TrackStatus {
       request_id,
-      status_code,
-      largest_location,
-      parameters,
+      track_namespace,
+      track_name,
+      subscriber_priority,
+      group_order,
+      forward,
+      filter_type,
+      start_location,
+      end_group,
+      subscribe_parameters,
     }))
   }
-
   fn get_type(&self) -> ControlMessageType {
     ControlMessageType::TrackStatus
   }
 }
-
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -143,21 +310,33 @@ mod tests {
 
   #[test]
   fn test_roundtrip() {
-    let request_id = 241421;
-    let status_code = TrackStatusCode::Finished;
-    let largest_location = Location {
-      group: 1,
-      object: 1,
+    let request_id = 128242;
+    let track_namespace = Tuple::from_utf8_path("nein/nein/nein");
+    let track_name = "${Name}".to_string();
+    let subscriber_priority = 31;
+    let group_order = GroupOrder::Original;
+    let forward = true;
+    let filter_type = FilterType::AbsoluteRange;
+    let start_location = Location {
+      group: 81,
+      object: 81,
     };
-    let parameters = vec![
+    let end_group = 25;
+    let subscribe_parameters = vec![
       KeyValuePair::try_new_varint(0, 10).unwrap(),
-      KeyValuePair::try_new_bytes(1, Bytes::from_static(b"Finito?!")).unwrap(),
+      KeyValuePair::try_new_bytes(1, Bytes::from_static(b"I'll sync you up")).unwrap(),
     ];
     let track_status = TrackStatus {
       request_id,
-      status_code,
-      largest_location,
-      parameters,
+      track_namespace,
+      track_name,
+      subscriber_priority,
+      group_order,
+      forward,
+      filter_type,
+      start_location: Some(start_location),
+      end_group: Some(end_group),
+      subscribe_parameters,
     };
 
     let mut buf = track_status.serialize().unwrap();
@@ -172,21 +351,33 @@ mod tests {
 
   #[test]
   fn test_excess_roundtrip() {
-    let request_id = 241421;
-    let status_code = TrackStatusCode::Finished;
-    let largest_location = Location {
-      group: 1,
-      object: 1,
+    let request_id = 128242;
+    let track_namespace = Tuple::from_utf8_path("nein/nein/nein");
+    let track_name = "${Name}".to_string();
+    let subscriber_priority = 31;
+    let group_order = GroupOrder::Original;
+    let forward = true;
+    let filter_type = FilterType::AbsoluteRange;
+    let start_location = Location {
+      group: 81,
+      object: 81,
     };
-    let parameters = vec![
+    let end_group = 25;
+    let subscribe_parameters = vec![
       KeyValuePair::try_new_varint(0, 10).unwrap(),
-      KeyValuePair::try_new_bytes(1, Bytes::from_static(b"Finito?!")).unwrap(),
+      KeyValuePair::try_new_bytes(1, Bytes::from_static(b"I'll sync you up")).unwrap(),
     ];
     let track_status = TrackStatus {
       request_id,
-      status_code,
-      largest_location,
-      parameters,
+      track_namespace,
+      track_name,
+      subscriber_priority,
+      group_order,
+      forward,
+      filter_type,
+      start_location: Some(start_location),
+      end_group: Some(end_group),
+      subscribe_parameters,
     };
 
     let serialized = track_status.serialize().unwrap();
@@ -207,21 +398,33 @@ mod tests {
 
   #[test]
   fn test_partial_message() {
-    let request_id = 241421;
-    let status_code = TrackStatusCode::Finished;
-    let largest_location = Location {
-      group: 1,
-      object: 1,
+    let request_id = 128242;
+    let track_namespace = Tuple::from_utf8_path("nein/nein/nein");
+    let track_name = "${Name}".to_string();
+    let subscriber_priority = 31;
+    let group_order = GroupOrder::Original;
+    let forward = true;
+    let filter_type = FilterType::AbsoluteRange;
+    let start_location = Location {
+      group: 81,
+      object: 81,
     };
-    let parameters = vec![
+    let end_group = 25;
+    let subscribe_parameters = vec![
       KeyValuePair::try_new_varint(0, 10).unwrap(),
-      KeyValuePair::try_new_bytes(1, Bytes::from_static(b"Finito?!")).unwrap(),
+      KeyValuePair::try_new_bytes(1, Bytes::from_static(b"I'll sync you up")).unwrap(),
     ];
     let track_status = TrackStatus {
       request_id,
-      status_code,
-      largest_location,
-      parameters,
+      track_namespace,
+      track_name,
+      subscriber_priority,
+      group_order,
+      forward,
+      filter_type,
+      start_location: Some(start_location),
+      end_group: Some(end_group),
+      subscribe_parameters,
     };
 
     let mut buf = track_status.serialize().unwrap();

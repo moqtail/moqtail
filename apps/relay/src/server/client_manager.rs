@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use super::client::MOQTClient;
-use moqtail::model::common::tuple::Tuple;
+use moqtail::model::{common::tuple::Tuple, data::full_track_name::FullTrackName};
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::RwLock;
 use tracing::{debug, info};
@@ -44,6 +44,28 @@ impl ClientManager {
   pub(crate) async fn get(&self, connection_id: usize) -> Option<Arc<MOQTClient>> {
     let clients = self.clients.read().await;
     clients.get(&connection_id).cloned()
+  }
+
+  // returns the first publisher that matches the full_track_name
+  // TODO: we need to handle the case where multiple publishers are publishing the same track
+  pub(crate) async fn get_publisher_by_full_track_name(
+    &self,
+    full_track_name: &FullTrackName,
+  ) -> Option<Arc<MOQTClient>> {
+    let clients = self.clients.read().await;
+
+    for client_ref in clients.iter() {
+      let client = client_ref.1;
+      if client
+        .published_tracks
+        .read()
+        .await
+        .contains(full_track_name)
+      {
+        return Some(client.clone());
+      }
+    }
+    None
   }
 
   // TODO: same namespace can be used by different publishers

@@ -23,6 +23,7 @@ use moqtail::{
   model::{
     common::tuple::Tuple,
     control::{client_setup::ClientSetup, control_message::ControlMessage},
+    data::full_track_name::FullTrackName,
   },
   transport::data_stream_handler::{FetchRequest, SubscribeRequest},
 };
@@ -53,7 +54,7 @@ pub(crate) struct MOQTClient {
   #[allow(dead_code)]
   pub client_setup: Arc<ClientSetup>,
   pub announced_track_namespaces: Arc<RwLock<Vec<Tuple>>>, // the track namespaces the publisher announced
-  pub published_tracks: Arc<RwLock<Vec<u64>>>,             // the tracks the client is publishing
+  pub published_tracks: Arc<RwLock<Vec<FullTrackName>>>,   // the tracks the client is publishing
   pub subscribers: Arc<RwLock<Vec<usize>>>, // the subscribers the client is subscribed to
 
   pub message_queue: Arc<RwLock<VecDeque<ControlMessage>>>, // the control messages the client has sent
@@ -104,12 +105,12 @@ impl MOQTClient {
     subscribers.push(subscriber_id);
   }
 
-  pub(crate) async fn add_published_track(&self, track_alias: u64) {
+  pub(crate) async fn add_published_track(&self, full_track_name: FullTrackName) {
     let mut published_tracks = self.published_tracks.write().await;
-    published_tracks.push(track_alias);
+    published_tracks.push(full_track_name);
   }
 
-  pub(crate) async fn get_published_tracks(&self) -> Vec<u64> {
+  pub(crate) async fn get_published_tracks(&self) -> Vec<FullTrackName> {
     let published_tracks = self.published_tracks.read().await;
     published_tracks.clone()
   }

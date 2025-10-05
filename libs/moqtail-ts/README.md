@@ -88,7 +88,7 @@ The `ObjectCache` interface provides two simple implementations for static conte
 3. **Choose Content Source**: Select `LiveContentSource`, `StaticContentSource`, or `HybridContentSource`
 4. **Define Track**: Create a `Track` with your content source and metadata
 5. **Add to Client**: Register the track with `addOrUpdateTrack()`
-6. **Announce**: Use `announce()` to make the track discoverable by subscribers
+6. **Publish Namespace**: Use `publishNamespace()` to make the track discoverable by subscribers
 7. **Manage Lifecycle**: The library handles incoming subscribe/fetch requests and data delivery
 
 ### Example
@@ -116,7 +116,7 @@ const fileTrack: Track = {
 client.addOrUpdateTrack(videoTrack)
 client.addOrUpdateTrack(fileTrack)
 
-await client.announce(new Announce(client.nextClientRequestId, Tuple.tryNew(['live', 'conference'])))
+await client.publishNamespace(new PublishNamespace(client.nextClientRequestId, Tuple.tryNew(['live', 'conference'])))
 ```
 
 The library automatically manages active requests, handles protocol negotiation, and ensures efficient data delivery based on subscriber demands and network conditions.
@@ -162,9 +162,6 @@ if (result instanceof SubscribeError) {
   switch (result.errorCode) {
     case SubscribeErrorCode.InvalidRange:
       // Adjust range and retry
-      break
-    case SubscribeErrorCode.RetryTrackAlias:
-      // Use different track alias
       break
     default:
       console.error(`Unknown error: ${result.reasonPhrase}`)
@@ -368,27 +365,27 @@ async function createSubscriber() {
 
 The MOQtail client supports additional operations for track discovery and status management:
 
-#### Announce Operations
+#### PublishNamespace Operations
 
 Publishers use announce operations to make their tracks discoverable:
 
 ```typescript
-// Announce a namespace
-const announce = new Announce(
+// PublishNamespace a namespace
+const announce = new PublishNamespace(
   client.nextClientRequestId,
   Tuple.tryNew(['live', 'conference']), // Track namespace
 )
 
-const result = await client.announce(announce)
-if (result instanceof AnnounceError) {
-  console.error(`Announce failed: ${result.reasonPhrase}`)
+const result = await client.publishNamespace(announce)
+if (result instanceof PublishNamespaceError) {
+  console.error(`Publishing the namespace failed: ${result.reasonPhrase}`)
 } else {
-  console.log('Namespace announced successfully')
+  console.log('Namespace published successfully')
 }
 
 // Stop announcing a namespace
-const unannounce = new Unannounce(Tuple.tryNew(['live', 'conference']))
-await client.unannounce(unannounce)
+const publish_namespace_done = new publishNamespaceDone(Tuple.tryNew(['live', 'conference']))
+await client.publishNamespaceDone(publish_namespace_done)
 ```
 
 #### Subscribe to Announcements
@@ -397,17 +394,17 @@ Subscribers can discover available tracks by subscribing to announcements:
 
 ```typescript
 // Subscribe to announcements for a namespace prefix
-const subscribeAnnounces = new SubscribeAnnounces(
+const subscribeNamespace = new SubscribeNamespace(
   Tuple.tryNew(['live']), // Namespace prefix
 )
-await client.subscribeAnnounces(subscribeAnnounces)
+await client.subscribeNamespace(subscribeNamespace)
 
 // The client will now receive announce messages for tracks
 // matching the 'live' prefix through its announcement handling
 
 // Stop subscribing to announcements
-const unsubscribeAnnounces = new UnsubscribeAnnounces(Tuple.tryNew(['live']))
-await client.unsubscribeAnnounces(unsubscribeAnnounces)
+const unsubscribeNamespace = new UnsubscribeNamespace(Tuple.tryNew(['live']))
+await client.unsubscribeNamespace(unsubscribeNamespace)
 ```
 
 #### Track Status Requests
@@ -415,12 +412,9 @@ await client.unsubscribeAnnounces(unsubscribeAnnounces)
 Query the status of specific tracks:
 
 ```typescript
-const trackStatusRequest = new TrackStatusRequestMessage(
-  client.nextClientRequestId,
-  FullTrackName.tryNew('live/conference', 'video'),
-)
+const trackStatus = new TrackStatusMessage(client.nextClientRequestId, FullTrackName.tryNew('live/conference', 'video'))
 
-const result = await client.trackStatusRequest(trackStatusRequest)
+const result = await client.trackStatus(trackStatus)
 if (result instanceof TrackStatusError) {
   console.error(`Track status request failed: ${result.reasonPhrase}`)
 } else {

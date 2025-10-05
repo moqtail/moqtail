@@ -30,7 +30,7 @@ async fn main() -> Result<(), anyhow::Error> {
 
   let endpoint = env::args()
     .nth(2)
-    .unwrap_or_else(|| "https://[::1]:4433".to_string());
+    .unwrap_or_else(|| "https://127.0.0.1:4433".to_string());
 
   let validate_cert = env::args().nth(3).unwrap_or_else(|| "false".to_string()) == "true";
 

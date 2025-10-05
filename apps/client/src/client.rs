@@ -16,11 +16,11 @@ use bytes::Bytes;
 use moqtail::model::common::location::Location;
 use moqtail::model::common::pair::KeyValuePair;
 use moqtail::model::common::tuple::{Tuple, TupleField};
-use moqtail::model::control::announce::Announce;
 use moqtail::model::control::client_setup::ClientSetup;
 use moqtail::model::control::constant::{self, GroupOrder};
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::fetch::{Fetch, StandAloneFetchProps};
+use moqtail::model::control::publish_namespace::PublishNamespace;
 use moqtail::model::control::subscribe::Subscribe;
 use moqtail::model::control::subscribe_ok::SubscribeOk;
 use moqtail::model::control::unsubscribe::Unsubscribe;
@@ -87,7 +87,7 @@ impl Client {
 
     let mut control_stream_handler = ControlStreamHandler::new(send_stream, recv_stream);
 
-    let client_setup = ClientSetup::new([constant::DRAFT_11].to_vec(), [].to_vec());
+    let client_setup = ClientSetup::new([constant::DRAFT_14].to_vec(), [].to_vec());
 
     match control_stream_handler.send_impl(&client_setup).await {
       Ok(_) => info!("Client setup sent successfully"),
@@ -109,15 +109,15 @@ impl Client {
     info!("Received server setup: {:?}", server_setup);
 
     // compare the server setup with the client setup
-    if server_setup.selected_version != constant::DRAFT_11 {
+    if server_setup.selected_version != constant::DRAFT_14 {
       error!(
         "Server setup version mismatch: expected {:0X}, got {}",
-        constant::DRAFT_11,
+        constant::DRAFT_14,
         server_setup.selected_version
       );
       return Err(anyhow::anyhow!(
         "Server setup version mismatch: expected {:0X}, got {}",
-        constant::DRAFT_11,
+        constant::DRAFT_14,
         server_setup.selected_version
       ));
     }
@@ -146,11 +146,11 @@ impl Client {
 
     // start by sending an announce message
     self
-      .send_announce_and_wait(request_id, my_namespace.clone())
+      .publish_namespace_and_wait(request_id, my_namespace.clone())
       .await
       .unwrap();
 
-    info!("Announce sent successfully");
+    info!("PublishNamespace sent successfully");
 
     // wait for subscribe or fetch, enter loop
     loop {
@@ -166,7 +166,7 @@ impl Client {
           info!("Received subscribe message: {:?}", m);
           // Handle the subscribe message
           // send Subscribe_ok
-          self.send_subscribe_ok(m.request_id).await;
+          let track_alias = self.send_subscribe_ok(m.request_id).await;
 
           // open a unidirectional stream
           let connection = connection.clone();
@@ -182,7 +182,7 @@ impl Client {
               info!("Opening unidirectional stream for group_id: {}", group_id);
               let stream = connection.open_uni().await.unwrap().await.unwrap();
               let sub_header =
-                SubgroupHeader::new_with_explicit_id(m.track_alias, group_id, 1, 1, false);
+                SubgroupHeader::new_with_explicit_id(track_alias, group_id, 1u64, 1u8, true, true);
 
               let header_info = HeaderInfo::Subgroup {
                 header: sub_header,
@@ -193,8 +193,9 @@ impl Client {
 
               match stream_handler {
                 Ok(mut handler) => {
-                  for object_id in 1..10 {
-                    info!("Sending object with id: {}", object_id);
+                  let mut prev_object_id = None;
+                  for object_id in 0..10 {
+                    info!("Sending object: object_id: {}", &object_id);
                     let payload = format!(
                       "payload {}",
                       "x"
@@ -203,19 +204,21 @@ impl Client {
                         .chars()
                         .collect::<String>()
                     );
+                    // object id starts with zero and other object ids are deltas
                     let object = SubgroupObject {
                       object_id,
-                      extension_headers: None,
+                      extension_headers: Some(vec![]),
                       object_status: None,
                       payload: Some(Bytes::from(payload)),
                     };
                     let object =
-                      Object::try_from_subgroup(object, m.track_alias, group_id, Some(group_id), 1)
+                      Object::try_from_subgroup(object, track_alias, group_id, Some(group_id), 1)
                         .unwrap();
-                    match handler.send_object(&object).await {
-                      Ok(_) => info!("Object sent successfully - object_id: {}", object_id),
+                    match handler.send_object(&object, prev_object_id).await {
+                      Ok(_) => info!("Object sent successfully - i: {}", &object_id),
                       Err(e) => error!("Failed to send object: {:?}", e),
                     }
+                    prev_object_id = Some(object_id);
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                   }
                   // TODO: normally, we need to finish the stream but the peer does not
@@ -380,7 +383,6 @@ impl Client {
     let subscribe_parameters = vec![];
     let sub = Subscribe::new_latest_object(
       request_id,
-      1,
       track_namespace,
       track_name,
       subscriber_priority,
@@ -438,14 +440,16 @@ impl Client {
     info!("Fetch message sent successfully");
   }
 
-  async fn send_subscribe_ok(&self, request_id: u64) {
+  async fn send_subscribe_ok(&self, request_id: u64) -> u64 {
     info!("Sending SubscribeOk message");
+    let track_alias = 1u64;
     let control_stream_handler = self.control_stream_handler.clone().unwrap();
     let mut control_stream_handler = control_stream_handler.lock().await;
     info!("Control stream handler locked");
-    let msg = SubscribeOk::new_ascending_with_content(request_id, 0, None, None);
+    let msg = SubscribeOk::new_ascending_with_content(request_id, track_alias, 0, None, None);
     control_stream_handler.send_impl(&msg).await.unwrap();
     info!("SubscribeOk message sent successfully");
+    track_alias
   }
 
   async fn send_unsubscribe(&self, request_id: u64) {
@@ -459,7 +463,7 @@ impl Client {
     self.message_notify.notify_waiters();
   }
 
-  async fn send_announce_and_wait(
+  async fn publish_namespace_and_wait(
     &self,
     request_id: u64,
     my_namespace: Tuple,
@@ -467,12 +471,12 @@ impl Client {
     let control_stream_handler = self.control_stream_handler.clone().unwrap();
     let mut control_stream_handler = control_stream_handler.lock().await;
     // send announce, request id 0
-    let announce = Announce::new(request_id, my_namespace, &[]);
+    let announce = PublishNamespace::new(request_id, my_namespace, &[]);
     control_stream_handler.send_impl(&announce).await.unwrap();
 
     let announce_ok = control_stream_handler.next_message().await;
     match announce_ok {
-      Ok(ControlMessage::AnnounceOk(m)) => {
+      Ok(ControlMessage::PublishNamespaceOk(m)) => {
         info!("Received announce ok message: {:?}", m);
         Ok(())
       }

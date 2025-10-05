@@ -42,17 +42,6 @@ export const handlerSubscribe: ControlMessageHandler<Subscribe> = async (client,
     await client.controlStream.send(response)
     return
   }
-  if (client.trackAliasMap.containsAlias(msg.trackAlias)) {
-    const response = new SubscribeError(
-      msg.requestId,
-      SubscribeErrorCode.RetryTrackAlias,
-      new ReasonPhrase('Track alias already in use'),
-      random60bitId(), // TODO: This should with client.trackAliasMap.containsAlias(msg.trackAlias) and retried until it passes
-      // 60 bit duplication is highly unlikely but nevertheless this track alias must be guaranteed
-    )
-    await client.controlStream.send(response)
-    return
-  }
   let subscribeOk: SubscribeOk
   if (track.trackSource.live.largestLocation) {
     subscribeOk = SubscribeOk.newAscendingWithContent(

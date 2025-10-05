@@ -14,13 +14,13 @@
 
 use std::fmt;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum StreamType {
   Fetch,
   Subgroup, // stream number is passed inside
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct StreamId {
   pub stream_type: StreamType,
   pub track_alias: u64,

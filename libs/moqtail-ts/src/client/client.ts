@@ -16,9 +16,10 @@
 
 import { ControlStream } from './control_stream'
 import {
-  Announce,
-  AnnounceError,
-  AnnounceOk,
+  PublishNamespace,
+  PublishNamespaceDone,
+  PublishNamespaceError,
+  PublishNamespaceOk,
   ClientSetup,
   ControlMessage,
   Fetch,
@@ -30,13 +31,11 @@ import {
   GroupOrder,
   ServerSetup,
   Subscribe,
-  SubscribeAnnounces,
+  SubscribeNamespace,
   SubscribeError,
   SubscribeUpdate,
-  TrackStatusRequestMessage,
-  Unannounce,
   Unsubscribe,
-  UnsubscribeAnnounces,
+  UnsubscribeNamespace,
 } from '../model/control'
 import {
   FetchHeader,
@@ -57,12 +56,11 @@ import {
   Tuple,
   VersionSpecificParameters,
 } from '../model'
-import { AnnounceCancel } from '../model/control/announce_cancel'
+import { PublishNamespaceCancel } from '../model/control/publish_namespace_cancel'
 import { Track } from './track/track'
-import { AnnounceRequest } from './request/announce'
+import { PublishNamespaceRequest } from './request/publish_namespace'
 import { FetchRequest } from './request/fetch'
 import { SubscribeRequest } from './request/subscribe'
-import { TrackStatusRequest } from './request/track_status_request'
 import { getHandlerForControlMessage } from './handler/handler'
 import { SubscribePublication } from './publication/subscribe'
 import { FetchPublication } from './publication/fetch'
@@ -98,11 +96,11 @@ import { MOQtailRequest, SubscribeOptions, SubscribeUpdateOptions, FetchOptions,
  * }
  * ```
  *
- * ### Announce a Track for Publishing
+ * ### Publish a namespace for Publishing
  * ```ts
  * const client = await MOQtailClient.new({ url, supportedVersions: [0xff00000b] });
- * const announceResult = await client.announce(["camera", "main"]);
- * if (!(announceResult instanceof AnnounceError)) {
+ * const publishNamespaceResult = await client.publishNamespace(["camera", "main"]);
+ * if (!(publishNamespaceResult instanceof PublishNamespaceError)) {
  *   // Ready to publish objects under this namespace
  * }
  * ```
@@ -114,18 +112,18 @@ import { MOQtailRequest, SubscribeOptions, SubscribeUpdateOptions, FetchOptions,
  */
 export class MOQtailClient {
   /**
-   * Namespace prefixes (tuples) the peer has requested announce notifications for via SUBSCRIBE_ANNOUNCES.
+   * Namespace prefixes (tuples) the peer has requested announce notifications for via SUBSCRIBE_NAMESPACE.
    * Used to decide which locally issued ANNOUNCE messages should be forwarded (future optimization: prefix trie).
    */
-  readonly peerSubscribeAnnounces = new Set<Tuple>()
+  readonly peerSubscribeNamespace = new Set<Tuple>()
   /**
-   * Namespace prefixes this client has subscribed to (issued SUBSCRIBE_ANNOUNCES). Enables automatic filtering
-   * of incoming ANNOUNCE / UNANNOUNCE. Maintained locally; no dedupe of overlapping / shadowing prefixes yet.
+   * Namespace prefixes this client has subscribed to (issued SUBSCRIBE_NAMESPACE). Enables automatic filtering
+   * of incoming PUBLISH_NAMESPACE / PUBLISH_NAMESPACE_DONE. Maintained locally; no dedupe of overlapping / shadowing prefixes yet.
    */
   readonly subscribedAnnounces = new Set<Tuple>()
   /**
    * Track namespaces this client has successfully announced (received ANNOUNCE_OK). Source of truth for
-   * deciding what to UNANNOUNCE on teardown or targeted withdrawal.(future optimization: prefix trie).
+   * deciding what to PUBLISH_NAMESPACE_DONE on teardown or targeted withdrawal.(future optimization: prefix trie).
    */
   readonly announcedNamespaces = new Set<Tuple>()
   /**
@@ -171,18 +169,19 @@ export class MOQtailClient {
   #dontUseRequestId: bigint = 0n
 
   /**
-   * Fired when an ANNOUNCE control message is processed for a track namespace.
+   * TODO: onNamespaceAnnounced may be a better name
+   * Fired when an PUBLISH_NAMESPACE control message is processed for a track namespace.
    * Use to update UI or trigger discovery logic.
    * Discovery event.
    */
-  onTrackAnnounced?: (msg: Announce) => void
+  onNamespacePublished?: (msg: PublishNamespace) => void
 
   /**
-   * Fired when an UNANNOUNCE control message is processed for a namespace.
+   * Fired when an PUBLISH_NAMESPACE_DONE control message is processed for a namespace.
    * Use to remove tracks from UI or stop discovery.
    * Discovery event.
    */
-  onTrackUnannounced?: (msg: Unannounce) => void
+  onNamespaceDone?: (msg: PublishNamespaceDone) => void
 
   /**
    * Fired on GOAWAY reception signaling graceful session wind-down.
@@ -447,7 +446,7 @@ export class MOQtailClient {
    *
    * This deletes the in-memory entry inserted via {@link MOQtailClient.addOrUpdateTrack}, so future lookups by its {@link Track.fullTrackName} will fail.
    * Does **not** automatically:
-   * - Send an {@link Unannounce} (call {@link MOQtailClient.unannounce} separately if you want to inform peers)
+   * - Send an {@link PublishNamespaceDone} (call {@link MOQtailClient.publishNamespaceDone} separately if you want to inform peers)
    * - Cancel active subscriptions or fetches (they continue until normal completion)
    * - Affect already-sent objects.
    *
@@ -465,7 +464,7 @@ export class MOQtailClient {
    * client.removeTrack(track);
    *
    * // Optionally, inform peers that the namespace is no longer available:
-   * await client.unannounce(track.fullTrackName.namespace);
+   * await client.publishNamespaceDone(track.fullTrackName.namespace);
    * ```
    */
   removeTrack(track: Track) {
@@ -986,38 +985,22 @@ export class MOQtailClient {
     }
   }
 
-  async trackStatusRequest(fullTrackName: FullTrackName, parameters?: VersionSpecificParameters) {
-    this.#ensureActive()
-    try {
-      const params = parameters ? parameters.build() : new VersionSpecificParameters().build()
-      const msg = new TrackStatusRequestMessage(this.#nextClientRequestId, fullTrackName, params)
-      const request = new TrackStatusRequest(msg.requestId, msg)
-      this.controlStream.send(msg)
-      return await request
-    } catch (error) {
-      await this.disconnect(
-        new InternalError('MOQtailClient.trackStatusRequest', error instanceof Error ? error.message : String(error)),
-      )
-      throw error
-    }
-  }
-
-  // TODO: Each announced track should checked against ongoing subscribe_announces
+  // TODO: Each announced track should checked against ongoing subscribe_namespace
   // If matches it should send an announce to that peer automatically
   /**
-   * Declare (publish) a track namespace to the peer so subscribers using matching prefixes (via {@link MOQtailClient.subscribeAnnounces})
+   * Declare (publish) a track namespace to the peer so subscribers using matching prefixes (via {@link MOQtailClient.subscribeNamespace})
    * can discover and begin subscribing/fetching its tracks.
    *
    * Typical flow (publisher side):
    * 1. Prepare / register one or more {@link Track} objects locally (see {@link MOQtailClient.addOrUpdateTrack}).
-   * 2. Call `announce(namespace)` once per namespace prefix to expose those tracks.
-   * 3. Later, call {@link MOQtailClient.unannounce} when no longer publishing under that namespace.
+   * 2. Call `publishNamespace(namespace)` once per namespace prefix to expose those tracks.
+   * 3. Later, call {@link MOQtailClient.publishNamespaceDone} when no longer publishing under that namespace.
    *
    * Parameter semantics:
    * - trackNamespace: Tuple representing the namespace prefix (e.g. ["camera","main"]). All tracks whose full names start with this tuple are considered within the announce scope.
    * - parameters: Optional {@link VersionSpecificParameters}; omitted =\> default instance.
    *
-   * Returns: {@link AnnounceOk} on success (namespace added to `announcedNamespaces`) or {@link AnnounceError} explaining refusal.
+   * Returns: {@link PublishNamespaceOk} on success (namespace added to `announcedNamespaces`) or {@link PublishNamespaceError} explaining refusal.
    *
    * Use cases:
    * - Make a camera or sensor namespace available before any objects are pushed.
@@ -1028,40 +1011,40 @@ export class MOQtailClient {
    * @throws InternalError Transport/control failure while sending or awaiting response (client disconnects first).
    *
    * @remarks
-   * - Duplicate announce detection is TODO (currently a second call will still send another ANNOUNCE; receiver behavior may vary).
-   * - Successful announces are tracked in `announcedNamespaces`; manual removal occurs via {@link MOQtailClient.unannounce}.
-   * - Discovery subscribers (those who issued {@link MOQtailClient.subscribeAnnounces}) will receive the resulting {@link Announce} message.
+   * - Duplicate announce detection is TODO (currently a second call will still send another PUBLISH_NAMESPACE; receiver behavior may vary).
+   * - Successful announces are tracked in `announcedNamespaces`; manual removal occurs via {@link MOQtailClient.publishNamespaceDone}.
+   * - Discovery subscribers (those who issued {@link MOQtailClient.subscribeNamespace}) will receive the resulting {@link PublishNamespace} message.
    *
    * @example Minimal announce
    * ```ts
-   * const res = await client.announce(["camera","main"])
-   * if (res instanceof AnnounceOk) {
+   * const res = await client.publishNamespace(["camera","main"])
+   * if (res instanceof PublishNamespaceOk) {
    *   // ready to publish objects under tracks with this namespace prefix
    * }
    * ```
    *
-   * @example Announce with parameters block
+   * @example PublishNamespace with parameters block
    * ```ts
    * const params = new VersionSpecificParameters().setSomeExtensionFlag(true)
-   * const resp = await client.announce(["room","1234"], params)
+   * const resp = await client.publishNamespace(["room","1234"], params)
    * ```
    */
-  async announce(trackNamespace: Tuple, parameters?: VersionSpecificParameters) {
+  async publishNamespace(trackNamespace: Tuple, parameters?: VersionSpecificParameters) {
     this.#ensureActive()
     try {
       // TODO: Check for duplicate announces
       const params = parameters ? parameters.build() : new VersionSpecificParameters().build()
-      const msg = new Announce(this.#nextClientRequestId, trackNamespace, params)
-      const request = new AnnounceRequest(msg.requestId, msg)
+      const msg = new PublishNamespace(this.#nextClientRequestId, trackNamespace, params)
+      const request = new PublishNamespaceRequest(msg.requestId, msg)
       this.requests.set(msg.requestId, request)
       this.controlStream.send(msg)
       const response = await request
-      if (response instanceof AnnounceOk) this.announcedNamespaces.add(msg.trackNamespace)
+      if (response instanceof PublishNamespaceOk) this.announcedNamespaces.add(msg.trackNamespace)
       this.requests.delete(msg.requestId)
       return response
     } catch (error) {
       await this.disconnect(
-        new InternalError('MOQtailClient.announce', error instanceof Error ? error.message : String(error)),
+        new InternalError('MOQtailClient.publishNamespace', error instanceof Error ? error.message : String(error)),
       )
       throw error
     }
@@ -1071,10 +1054,10 @@ export class MOQtailClient {
    * Withdraw a previously announced namespace so new subscribers no longer discover its tracks.
    *
    * Use when shutting down publishing for a logical scope (camera offline, room closed, session ended).
-   * Removes the namespace from `announcedNamespaces` locally and sends an {@link Unannounce} control frame.
+   * Removes the namespace from `announcedNamespaces` locally and sends an {@link PublishNamespaceDone} control frame.
    *
    * Parameter semantics:
-   * - trackNamespace: Exact tuple used during {@link MOQtailClient.announce}. Must match to be removed from internal set.
+   * - trackNamespace: Exact tuple used during {@link MOQtailClient.publishNamespace}. Must match to be removed from internal set.
    *
    * Behavior:
    * - Does not delete locally registered {@link Track} objects (they remain in `trackSources`).
@@ -1085,24 +1068,24 @@ export class MOQtailClient {
    * @throws (rethrows original error) Any lower-level failure while sending results in a disconnect (unwrapped TODO: future wrap with InternalError for consistency).
    *
    * @remarks
-   * Peers that issued {@link MOQtailClient.subscribeAnnounces} for a matching prefix should receive the resulting {@link Unannounce}.
+   * Peers that issued {@link MOQtailClient.subscribeNamespace} for a matching prefix should receive the resulting {@link PublishNamespaceDone}.
    * Consider calling this before {@link MOQtailClient.disconnect} to give consumers prompt notice.
    *
    * @example Basic usage
    * ```ts
-   * await client.unannounce(["camera","main"])
+   * await client.publishNamespaceDone(["camera","main"])
    * ```
    *
    * @example Idempotent
    * ```ts
-   * await client.unannounce(["camera","main"]) // first time
-   * await client.unannounce(["camera","main"]) // no error, already removed
+   * await client.publishNamespaceDone(["camera","main"]) // first time
+   * await client.publishNamespaceDone(["camera","main"]) // no error, already removed
    * ```
    */
-  async unannounce(trackNamespace: Tuple) {
+  async publishNamespaceDone(trackNamespace: Tuple) {
     this.#ensureActive()
     try {
-      const msg = new Unannounce(trackNamespace)
+      const msg = new PublishNamespaceDone(trackNamespace)
       this.announcedNamespaces.delete(msg.trackNamespace)
       await this.controlStream.send(msg)
     } catch (err) {
@@ -1113,16 +1096,16 @@ export class MOQtailClient {
   }
 
   /**
-   * Send an {@link AnnounceCancel} to abort a previously issued ANNOUNCE before (or after) the peer fully processes it.
+   * Send an {@link PublishNamespaceCancel} to abort a previously issued ANNOUNCE before (or after) the peer fully processes it.
    *
    * Use when an announce was sent prematurely (e.g. validation failed locally, namespace no longer needed) and you want
    * to retract it without waiting for normal announce lifecycle or before publishing any objects.
    *
    * Parameter semantics:
-   * - msg: Pre-constructed {@link AnnounceCancel} referencing the original announce request id / namespace (builder provided elsewhere).
+   * - msg: Pre-constructed {@link PublishNamespaceCancel} referencing the original announce request id / namespace (builder provided elsewhere).
    *
    * Behavior:
-   * - Simply forwards the control frame; does not modify `announcedNamespaces` (call {@link MOQtailClient.unannounce} for local bookkeeping removal).
+   * - Simply forwards the control frame; does not modify `announcedNamespaces` (call {@link MOQtailClient.publishNamespaceDone} for local bookkeeping removal).
    * - Safe to send even if the announce already succeeded; peer may ignore duplicates per spec guidance.
    *
    * @throws MOQtailError If client is destroyed.
@@ -1133,44 +1116,47 @@ export class MOQtailClient {
    *
    * @example Cancel immediately after a mistaken announce
    * ```ts
-   * const announceResp = await client.announce(["camera","temp"]) // wrong namespace
-   * // Assume you kept the original announce requestId (e.g. from AnnounceRequest)
-   * const cancelMsg = new AnnounceCancel(announceResp.requestId as bigint)
-   * await client.announceCancel(cancelMsg)
+   * const publishNamespaceResp = await client.publishNamespace(["camera","temp"]) // wrong namespace
+   * // Assume you kept the original announce requestId (e.g. from PublishNamespaceRequest)
+   * const cancelMsg = new PublishNamespaceCancel(publishNamespaceResp.requestId as bigint)
+   * await client.publishNamespaceCancel(cancelMsg)
    * ```
    */
-  async announceCancel(msg: AnnounceCancel) {
+  async publishNamespaceCancel(msg: PublishNamespaceCancel) {
     this.#ensureActive()
     try {
       await this.controlStream.send(msg)
     } catch (error) {
       await this.disconnect(
-        new InternalError('MOQtailClient.announceCancel', error instanceof Error ? error.message : String(error)),
+        new InternalError(
+          'MOQtailClient.publishNamespaceCancel',
+          error instanceof Error ? error.message : String(error),
+        ),
       )
       throw error
     }
   }
 
   // INFO: Subscriber calls this the get matching announce messages with this prefix
-  async subscribeAnnounces(msg: SubscribeAnnounces) {
+  async subscribeNamespace(msg: SubscribeNamespace) {
     this.#ensureActive()
     try {
       await this.controlStream.send(msg)
     } catch (error) {
       await this.disconnect(
-        new InternalError('MOQtailClient.subscribeAnnounces', error instanceof Error ? error.message : String(error)),
+        new InternalError('MOQtailClient.subscribeNamespace', error instanceof Error ? error.message : String(error)),
       )
       throw error
     }
   }
 
-  async unsubscribeAnnounces(msg: UnsubscribeAnnounces) {
+  async unsubscribeNamespace(msg: UnsubscribeNamespace) {
     this.#ensureActive()
     try {
       await this.controlStream.send(msg)
     } catch (error) {
       await this.disconnect(
-        new InternalError('MOQtailClient.unsubscribeAnnounces', error instanceof Error ? error.message : String(error)),
+        new InternalError('MOQtailClient.unsubscribeNamespace', error instanceof Error ? error.message : String(error)),
       )
       throw error
     }

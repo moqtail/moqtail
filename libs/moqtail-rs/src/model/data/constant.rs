@@ -22,27 +22,76 @@ pub enum FetchHeaderType {
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum SubgroupHeaderType {
-  /// No Subgroup ID field (Subgroup ID = 0), No Extensions
-  Type0x08 = 0x08,
-  /// No Subgroup ID field (Subgroup ID = 0), Extensions Present
-  Type0x09 = 0x09,
-  /// No Subgroup ID field (Subgroup ID = First Object ID), No Extensions
-  Type0x0A = 0x0A,
-  /// No Subgroup ID field (Subgroup ID = First Object ID), Extensions Present
-  Type0x0B = 0x0B,
-  /// Explicit Subgroup ID field, No Extensions
-  Type0x0C = 0x0C,
-  /// Explicit Subgroup ID field, Extensions Present
-  Type0x0D = 0x0D,
+  /// No Subgroup ID field (Subgroup ID = 0), No Extensions, No End of Group
+  Type0x10 = 0x10,
+  /// No Subgroup ID field (Subgroup ID = 0), Extensions Present, No End of Group
+  Type0x11 = 0x11,
+  /// No Subgroup ID field (Subgroup ID = First Object ID), No Extensions, No End of Group
+  Type0x12 = 0x12,
+  /// No Subgroup ID field (Subgroup ID = First Object ID), Extensions Present, No End of Group
+  Type0x13 = 0x13,
+  /// Explicit Subgroup ID field, No Extensions, No End of Group
+  Type0x14 = 0x14,
+  /// Explicit Subgroup ID field, Extensions Present, No End of Group
+  Type0x15 = 0x15,
+  /// No Subgroup ID field (Subgroup ID = 0), No Extensions, Contains End of Group
+  Type0x18 = 0x18,
+  /// No Subgroup ID field (Subgroup ID = 0), Extensions Present, Contains End of Group
+  Type0x19 = 0x19,
+  /// No Subgroup ID field (Subgroup ID = First Object ID), No Extensions, Contains End of Group
+  Type0x1A = 0x1A,
+  /// No Subgroup ID field (Subgroup ID = First Object ID), Extensions Present, Contains End of Group
+  Type0x1B = 0x1B,
+  /// Explicit Subgroup ID field, No Extensions, Contains End of Group
+  Type0x1C = 0x1C,
+  /// Explicit Subgroup ID field, Extensions Present, Contains End of Group
+  Type0x1D = 0x1D,
 }
 
 impl SubgroupHeaderType {
   pub fn has_explicit_subgroup_id(&self) -> bool {
-    matches!(self, Self::Type0x0C | Self::Type0x0D)
+    matches!(
+      self,
+      Self::Type0x14 | Self::Type0x15 | Self::Type0x1C | Self::Type0x1D
+    )
   }
 
   pub fn has_extensions(&self) -> bool {
-    matches!(self, Self::Type0x09 | Self::Type0x0B | Self::Type0x0D)
+    matches!(
+      self,
+      Self::Type0x11
+        | Self::Type0x13
+        | Self::Type0x15
+        | Self::Type0x19
+        | Self::Type0x1B
+        | Self::Type0x1D
+    )
+  }
+
+  pub fn contains_end_of_group(&self) -> bool {
+    matches!(
+      self,
+      Self::Type0x18
+        | Self::Type0x19
+        | Self::Type0x1A
+        | Self::Type0x1B
+        | Self::Type0x1C
+        | Self::Type0x1D
+    )
+  }
+
+  pub fn subgroup_id_is_zero(&self) -> bool {
+    matches!(
+      self,
+      Self::Type0x10 | Self::Type0x11 | Self::Type0x18 | Self::Type0x19
+    )
+  }
+
+  pub fn subgroup_id_is_first_object_id(&self) -> bool {
+    matches!(
+      self,
+      Self::Type0x12 | Self::Type0x13 | Self::Type0x1A | Self::Type0x1B
+    )
   }
 }
 
@@ -51,12 +100,18 @@ impl TryFrom<u64> for SubgroupHeaderType {
 
   fn try_from(value: u64) -> Result<Self, Self::Error> {
     match value {
-      0x08 => Ok(SubgroupHeaderType::Type0x08),
-      0x09 => Ok(SubgroupHeaderType::Type0x09),
-      0x0A => Ok(SubgroupHeaderType::Type0x0A),
-      0x0B => Ok(SubgroupHeaderType::Type0x0B),
-      0x0C => Ok(SubgroupHeaderType::Type0x0C),
-      0x0D => Ok(SubgroupHeaderType::Type0x0D),
+      0x10 => Ok(SubgroupHeaderType::Type0x10),
+      0x11 => Ok(SubgroupHeaderType::Type0x11),
+      0x12 => Ok(SubgroupHeaderType::Type0x12),
+      0x13 => Ok(SubgroupHeaderType::Type0x13),
+      0x14 => Ok(SubgroupHeaderType::Type0x14),
+      0x15 => Ok(SubgroupHeaderType::Type0x15),
+      0x18 => Ok(SubgroupHeaderType::Type0x18),
+      0x19 => Ok(SubgroupHeaderType::Type0x19),
+      0x1A => Ok(SubgroupHeaderType::Type0x1A),
+      0x1B => Ok(SubgroupHeaderType::Type0x1B),
+      0x1C => Ok(SubgroupHeaderType::Type0x1C),
+      0x1D => Ok(SubgroupHeaderType::Type0x1D),
       _ => Err(ParseError::InvalidType {
         context: "SubgroupHeaderType::try_from(u64)",
         details: format!("Invalid type, got {value}"),

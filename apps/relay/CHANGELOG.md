@@ -1,5 +1,11 @@
 # relay
 
+## 0.5.0
+
+### Minor Changes
+
+- [`3b5accf`](https://github.com/moqtail/moqtail/commit/3b5accf65d01bf264db64aaecd7a6215adc5ab4a) Thanks [@zafergurel](https://github.com/zafergurel)! - Updates for Draft-14 compatibility
+
 ## 0.4.0
 
 ### Minor Changes

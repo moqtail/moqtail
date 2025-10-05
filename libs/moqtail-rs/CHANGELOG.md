@@ -1,5 +1,11 @@
 # moqtail-rs
 
+## 0.6.0
+
+### Minor Changes
+
+- [`e5121f2`](https://github.com/moqtail/moqtail/commit/e5121f26308b9d4219ee8e8b163742a8a32986da) Thanks [@acbegen](https://github.com/acbegen)! - Updates for Draft-14 compatibility
+
 ## 0.4.0
 
 ### Minor Changes

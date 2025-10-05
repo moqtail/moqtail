@@ -15,7 +15,7 @@ env:
 jobs:
   release:
     name: Changelog PR or Release
-    if: ${{ github.repository_owner == 'streaming-university' }}
+    if: ${{ github.repository_owner == 'moqtail' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write

@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   docs:
-    if: ${{ github.repository_owner == 'streaming-university' }}
+    if: ${{ github.repository_owner == 'moqtail' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code

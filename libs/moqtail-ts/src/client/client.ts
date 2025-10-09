@@ -1179,21 +1179,22 @@ export class MOQtailClient {
     }
   }
 
-  async #acceptIncomingUniStreams(): Promise<void> {
+  async #acceptIncomingUniStreams() {
     this.#ensureActive()
-    try {
-      const uds = this.webTransport.incomingUnidirectionalStreams
-      const reader = uds.getReader()
-      while (true) {
-        const { value, done } = await reader.read()
-        if (done) throw new MOQtailError('WebTransport session is terminated')
-        let uniStream = value as ReadableStream
-        this.#handleRecvStreams(uniStream)
+    const uds = this.webTransport.incomingUnidirectionalStreams
+    const reader = uds.getReader()
+    let isDone = false
+    while (!isDone) {
+      try {
+        const { done, value: stream } = await reader.read()
+        if (done) {
+          isDone = true
+          throw new MOQtailError('WebTransport session is terminated')
+        }
+        this.#handleRecvStreams(stream)
+      } catch (error) {
+        console.log('acceptIncomingUniStreams error', error)
       }
-    } catch (error) {
-      //this.disconnect()
-      // throw error
-      console.log('acceptIncomingUniStreams error', error)
     }
   }
   // TODO: Handle request cancellation. Cancel streams are expected to receive some on-fly objects.

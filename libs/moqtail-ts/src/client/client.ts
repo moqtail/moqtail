@@ -1194,6 +1194,7 @@ export class MOQtailClient {
         this.#handleRecvStreams(stream)
       } catch (error) {
         console.log('acceptIncomingUniStreams error', error)
+        if (this.#isDestroyed) break
       }
     }
   }

@@ -1,5 +1,11 @@
 # moqtail-ts
 
+## 0.4.0
+
+### Minor Changes
+
+- [`6bfeaff`](https://github.com/moqtail/moqtail/commit/6bfeaff649ba665a85d2d61ef00289512eaf4f39) Thanks [@acbegen](https://github.com/acbegen)! - Handle errors in accepting unidirectional streams more gracefully
+
 ## 0.3.2
 
 ### Patch Changes

@@ -15,11 +15,11 @@
   "homepage": "https://moqtail.dev",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/streaming-university/moqtail.git",
+    "url": "git+https://github.com/moqtail/moqtail.git",
     "directory": "libs/moqtail-ts"
   },
   "bugs": {
-    "url": "https://github.com/streaming-university/moqtail/issues"
+    "url": "https://github.com/moqtail/moqtail/issues"
   },
   "author": {
     "name": "Streaming University",

@@ -25,7 +25,7 @@ README available at: [moqtail-ts/README.md](libs/moqtail-ts/README.md)
 
 ```bash
 # Clone the repository (if not already)
-git clone https://github.com/streaming-university/moqtail.git
+git clone https://github.com/moqtail/moqtail.git
 cd moqtail
 
 # Install dependencies

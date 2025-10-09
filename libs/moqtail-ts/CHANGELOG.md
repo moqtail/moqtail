@@ -1,5 +1,11 @@
 # moqtail-ts
 
+## 0.4.1
+
+### Patch Changes
+
+- [`92b8280`](https://github.com/moqtail/moqtail/commit/92b82804ed8dd981ceb138c6fedad7a6a69dc092) Thanks [@acbegen](https://github.com/acbegen)! - fix infinite loop case when client is destroyed
+
 ## 0.4.0
 
 ### Minor Changes

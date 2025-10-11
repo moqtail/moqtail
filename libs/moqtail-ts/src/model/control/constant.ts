@@ -57,6 +57,9 @@ export enum ControlMessageType {
   SubscribeNamespaceOk = 0x12,
   SubscribeNamespaceError = 0x13,
   UnsubscribeNamespace = 0x14,
+  Publish = 0x1d,
+  PublishOk = 0x1e,
+  PublishError = 0x1f,
 }
 
 /**
@@ -125,6 +128,12 @@ export function controlMessageTypeFromBigInt(v: bigint): ControlMessageType {
       return ControlMessageType.SubscribeNamespaceError
     case 0x14n:
       return ControlMessageType.UnsubscribeNamespace
+    case 0x1dn:
+      return ControlMessageType.Publish
+    case 0x1en:
+      return ControlMessageType.PublishOk
+    case 0x1fn:
+      return ControlMessageType.PublishError
     default:
       throw new Error(`Invalid ControlMessageType: ${v}`)
   }
@@ -481,5 +490,52 @@ export function publishDoneStatusCodeFromBigInt(v: bigint): PublishDoneStatusCod
       return PublishDoneStatusCode.TooFarBehind
     default:
       throw new Error(`Invalid PublishDoneStatusCode: ${v}`)
+  }
+}
+
+/**
+ * @public
+ * Error codes for Publish control messages.
+ */
+export enum PublishErrorCode {
+  InternalError = 0x0,
+  Unauthorized = 0x1,
+  Timeout = 0x2,
+  NotSupported = 0x3,
+  InvalidNamespace = 0x4,
+  InvalidTrackName = 0x5,
+  MalformedAuthToken = 0x10,
+  UnknownAuthTokenAlias = 0x11,
+  ExpiredAuthToken = 0x12,
+}
+
+/**
+ * Converts a bigint value to a PublishErrorCode enum.
+ * @param v - The bigint value.
+ * @returns The corresponding PublishErrorCode.
+ * @throws Error if the value is not a valid publish error code.
+ */
+export function publishErrorCodeFromBigInt(v: bigint): PublishErrorCode {
+  switch (v) {
+    case 0x0n:
+      return PublishErrorCode.InternalError
+    case 0x1n:
+      return PublishErrorCode.Unauthorized
+    case 0x2n:
+      return PublishErrorCode.Timeout
+    case 0x3n:
+      return PublishErrorCode.NotSupported
+    case 0x4n:
+      return PublishErrorCode.InvalidNamespace
+    case 0x5n:
+      return PublishErrorCode.InvalidTrackName
+    case 0x10n:
+      return PublishErrorCode.MalformedAuthToken
+    case 0x11n:
+      return PublishErrorCode.UnknownAuthTokenAlias
+    case 0x12n:
+      return PublishErrorCode.ExpiredAuthToken
+    default:
+      throw new Error(`Invalid PublishErrorCode: ${v}`)
   }
 }

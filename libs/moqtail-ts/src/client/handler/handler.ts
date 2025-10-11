@@ -15,6 +15,7 @@
  */
 
 import {
+  handlerPublishDone,
   handlerPublishNamespace,
   handlerPublishNamespaceCancel,
   handlerPublishNamespaceDone,
@@ -26,7 +27,6 @@ import {
   handlerSubscribeNamespace,
   handlerSubscribeNamespaceError,
   handlerSubscribeNamespaceOk,
-  handlerSubscribeDone,
   handlerSubscribeError,
   handlerSubscribeOk,
   handlerSubscribeUpdate,
@@ -58,7 +58,7 @@ import {
   SubscribeNamespace,
   SubscribeNamespaceError,
   SubscribeNamespaceOk,
-  SubscribeDone,
+  PublishDone,
   SubscribeError,
   SubscribeOk,
   SubscribeUpdate,
@@ -74,6 +74,7 @@ import { ControlMessage } from '../../model/control'
 export type ControlMessageHandler<T> = (client: MOQtailClient, msg: T) => Promise<void>
 
 export function getHandlerForControlMessage(msg: ControlMessage): ControlMessageHandler<any> | undefined {
+  if (msg instanceof PublishDone) return handlerPublishDone
   if (msg instanceof PublishNamespace) return handlerPublishNamespace
   if (msg instanceof PublishNamespaceCancel) return handlerPublishNamespaceCancel
   if (msg instanceof PublishNamespaceDone) return handlerPublishNamespaceDone
@@ -89,7 +90,6 @@ export function getHandlerForControlMessage(msg: ControlMessage): ControlMessage
   if (msg instanceof SubscribeNamespace) return handlerSubscribeNamespace
   if (msg instanceof SubscribeNamespaceError) return handlerSubscribeNamespaceError
   if (msg instanceof SubscribeNamespaceOk) return handlerSubscribeNamespaceOk
-  if (msg instanceof SubscribeDone) return handlerSubscribeDone
   if (msg instanceof SubscribeError) return handlerSubscribeError
   if (msg instanceof SubscribeOk) return handlerSubscribeOk
   if (msg instanceof SubscribeUpdate) return handlerSubscribeUpdate

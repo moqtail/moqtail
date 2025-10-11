@@ -40,7 +40,7 @@ export enum ControlMessageType {
   SubscribeError = 0x05,
   Unsubscribe = 0x0a,
   SubscribeUpdate = 0x02,
-  SubscribeDone = 0x0b,
+  PublishDone = 0x0b,
   Fetch = 0x16,
   FetchOk = 0x18,
   FetchError = 0x19,
@@ -94,7 +94,7 @@ export function controlMessageTypeFromBigInt(v: bigint): ControlMessageType {
     case 0x02n:
       return ControlMessageType.SubscribeUpdate
     case 0x0bn:
-      return ControlMessageType.SubscribeDone
+      return ControlMessageType.PublishDone
     case 0x16n:
       return ControlMessageType.Fetch
     case 0x18n:
@@ -445,9 +445,9 @@ export function subscribeNamespaceErrorCodeFromBigInt(v: bigint): SubscribeNames
 
 /**
  * @public
- * Status codes for SubscribeDone control messages.
+ * Status codes for PublishDone control messages.
  */
-export enum SubscribeDoneStatusCode {
+export enum PublishDoneStatusCode {
   InternalError = 0x0,
   Unauthorized = 0x1,
   TrackEnded = 0x2,
@@ -458,28 +458,28 @@ export enum SubscribeDoneStatusCode {
 }
 
 /**
- * Converts a bigint value to a SubscribeDoneStatusCode enum.
+ * Converts a bigint value to a PublishDoneStatusCode enum.
  * @param v - The bigint value.
- * @returns The corresponding SubscribeDoneStatusCode.
+ * @returns The corresponding PublishDoneStatusCode.
  * @throws Error if the value is not a valid subscribe done status code.
  */
-export function subscribeDoneStatusCodeFromBigInt(v: bigint): SubscribeDoneStatusCode {
+export function publishDoneStatusCodeFromBigInt(v: bigint): PublishDoneStatusCode {
   switch (v) {
     case 0x0n:
-      return SubscribeDoneStatusCode.InternalError
+      return PublishDoneStatusCode.InternalError
     case 0x1n:
-      return SubscribeDoneStatusCode.Unauthorized
+      return PublishDoneStatusCode.Unauthorized
     case 0x2n:
-      return SubscribeDoneStatusCode.TrackEnded
+      return PublishDoneStatusCode.TrackEnded
     case 0x3n:
-      return SubscribeDoneStatusCode.SubscriptionEnded
+      return PublishDoneStatusCode.SubscriptionEnded
     case 0x4n:
-      return SubscribeDoneStatusCode.GoingAway
+      return PublishDoneStatusCode.GoingAway
     case 0x5n:
-      return SubscribeDoneStatusCode.Expired
+      return PublishDoneStatusCode.Expired
     case 0x6n:
-      return SubscribeDoneStatusCode.TooFarBehind
+      return PublishDoneStatusCode.TooFarBehind
     default:
-      throw new Error(`Invalid SubscribeDoneStatusCode: ${v}`)
+      throw new Error(`Invalid PublishDoneStatusCode: ${v}`)
   }
 }

@@ -151,8 +151,6 @@ export type SubscribeOptions = {
   filterType: FilterType
   /** Optional extension {@link VersionSpecificParameters} appended to the SUBSCRIBE control message. */
   parameters?: VersionSpecificParameters
-  /** Caller supplied alias for the track (else auto-generated); may be number or bigint. */
-  trackAlias?: bigint | number
   /** Required for {@link FilterType.AbsoluteStart} / {@link FilterType.AbsoluteRange}; earliest {@link Location} to include. */
   startLocation?: Location
   /** Required for {@link FilterType.AbsoluteRange}; exclusive upper group boundary (coerced to bigint if number provided). */
@@ -176,8 +174,10 @@ export type SubscribeOptions = {
  * ```
  */
 export type SubscribeUpdateOptions = {
-  /** The original SUBSCRIBE request id (bigint) being updated. */
+  /** Request id for this update operation (bigint or number). */
   requestId: bigint
+  /** The original SUBSCRIBE request id (bigint) being updated. */
+  subscriptionRequestId: bigint
   /** New narrowed {@link Location} start. */
   startLocation: Location
   /** New narrowed end group (inclusive / protocol defined) must be \> start group. */

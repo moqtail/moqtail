@@ -45,7 +45,7 @@ import {
   SubgroupHeader,
   SubgroupHeaderType,
   SubgroupObject,
-  TrackAliasMap,
+  RequestIdMap,
 } from '../model/data'
 import { RecvStream } from './data_stream'
 import {
@@ -147,9 +147,17 @@ export class MOQtailClient {
    */
   readonly subscriptions: Map<bigint, SubscribeRequest> = new Map()
   /**
-   * Bidirectional alias \<-\> full track name mapping to reconstruct metadata for incoming objects that reference aliases only.
+   * Bidirectional track alias \<-\> subscription requestId mapping
    */
-  readonly trackAliasMap: TrackAliasMap = new TrackAliasMap()
+  readonly subscriptionAliasMap: Map<bigint, bigint> = new Map()
+  /**
+   * Bidirectional subscription requestId \<-\> track alias mapping
+   */
+  readonly subscriptionRequestIdMap: Map<bigint, bigint> = new Map()
+  /**
+   * Bidirectional requestId \<-\> full track name mapping to reconstruct metadata for incoming objects.
+   */
+  readonly requestIdMap: RequestIdMap = new RequestIdMap()
   /** Underlying WebTransport session (set after successful construction in MOQtailClient.new). */
   webTransport!: WebTransport
   /** Validated ServerSetup message captured during handshake (protocol parameters negotiated). */
@@ -525,28 +533,15 @@ export class MOQtailClient {
   ): Promise<SubscribeError | { requestId: bigint; stream: ReadableStream<MoqtObject> }> {
     this.#ensureActive()
     try {
-      let {
-        fullTrackName,
-        priority,
-        groupOrder,
-        forward,
-        filterType,
-        parameters,
-        trackAlias,
-        startLocation,
-        endGroup,
-      } = args
+      let { fullTrackName, priority, groupOrder, forward, filterType, parameters, startLocation, endGroup } = args
 
       let msg: Subscribe
       if (typeof endGroup === 'number') endGroup = BigInt(endGroup)
-      if (typeof trackAlias === 'number') trackAlias = BigInt(trackAlias)
-      if (!trackAlias) trackAlias = random60bitId()
       if (!parameters) parameters = new VersionSpecificParameters()
       switch (filterType) {
         case FilterType.LatestObject:
           msg = Subscribe.newLatestObject(
             this.#nextClientRequestId,
-            trackAlias,
             fullTrackName,
             priority,
             groupOrder,
@@ -557,7 +552,6 @@ export class MOQtailClient {
         case FilterType.NextGroupStart:
           msg = Subscribe.newNextGroupStart(
             this.#nextClientRequestId,
-            trackAlias,
             fullTrackName,
             priority,
             groupOrder,
@@ -573,7 +567,6 @@ export class MOQtailClient {
             )
           msg = Subscribe.newAbsoluteStart(
             this.#nextClientRequestId,
-            trackAlias,
             fullTrackName,
             priority,
             groupOrder,
@@ -593,7 +586,6 @@ export class MOQtailClient {
 
           msg = Subscribe.newAbsoluteRange(
             this.#nextClientRequestId,
-            trackAlias,
             fullTrackName,
             priority,
             groupOrder,
@@ -606,16 +598,17 @@ export class MOQtailClient {
       }
       const request = new SubscribeRequest(msg)
       this.requests.set(request.requestId, request)
-      this.subscriptions.set(msg.trackAlias, request)
-      this.trackAliasMap.addMapping(request.trackAlias, request.fullTrackName)
+      this.requestIdMap.addMapping(request.requestId, request.fullTrackName)
       await this.controlStream.send(msg)
       const response = await request
       if (response instanceof SubscribeError) {
         this.requests.delete(request.requestId)
-        this.subscriptions.delete(msg.trackAlias)
-        this.trackAliasMap.removeMappingByAlias(request.trackAlias)
+        this.requestIdMap.removeMappingByRequestId(request.requestId)
         return response
       } else {
+        this.subscriptions.set(response.trackAlias, request)
+        this.subscriptionAliasMap.set(request.requestId, response.trackAlias)
+        this.subscriptionRequestIdMap.set(response.trackAlias, request.requestId)
         return { requestId: msg.requestId, stream: request.stream }
       }
     } catch (error) {
@@ -666,13 +659,10 @@ export class MOQtailClient {
 
     try {
       if (this.requests.has(requestId)) {
-        const request = this.requests.get(requestId)!
-        if (request instanceof SubscribeRequest) {
-          const subscription = this.subscriptions.get(request.trackAlias)
-          if (!subscription)
-            throw new InternalError('MOQtailClient.unsubscribe', 'Request exists but subscription does not')
-
-          cleanupData = { requestId, trackAlias: request.trackAlias, subscription }
+        const subscription = this.requests.get(requestId)!
+        if (subscription instanceof SubscribeRequest) {
+          const trackAlias = this.subscriptionAliasMap.get(requestId)!
+          cleanupData = { requestId, trackAlias, subscription }
 
           await this.controlStream.send(new Unsubscribe(requestId))
           subscription.unsubscribe()
@@ -688,7 +678,7 @@ export class MOQtailClient {
       if (cleanupData) {
         this.requests.delete(cleanupData.requestId)
         this.subscriptions.delete(cleanupData.trackAlias)
-        this.trackAliasMap.removeMappingByAlias(cleanupData.trackAlias)
+        this.requestIdMap.removeMappingByRequestId(cleanupData.requestId)
       }
     }
   }
@@ -734,12 +724,12 @@ export class MOQtailClient {
    */
   async subscribeUpdate(args: SubscribeUpdateOptions): Promise<void> {
     this.#ensureActive()
-    let { requestId, priority, forward, parameters, startLocation, endGroup } = args
+    let { subscriptionRequestId, priority, forward, parameters, startLocation, endGroup } = args
     if (startLocation.group >= endGroup)
       throw new ProtocolViolationError('MOQtailClient.subscribeUpdate', 'End group must be greater than start group')
     try {
-      if (this.requests.has(requestId)) {
-        const request = this.requests.get(requestId)!
+      if (this.requests.has(subscriptionRequestId)) {
+        const request = this.requests.get(subscriptionRequestId)!
         if (request instanceof SubscribeRequest) {
           if (request.startLocation && request.startLocation.compare(startLocation) != 1)
             throw new ProtocolViolationError(
@@ -751,13 +741,25 @@ export class MOQtailClient {
               'MOQtailClient.subscribeUpdate',
               'Subscriptions can only become more narrow, not wider. The end group must not increase',
             )
-          const subscription = this.subscriptions.get(requestId)
+          const trackAlias = this.subscriptionAliasMap.get(subscriptionRequestId)
+          if (!trackAlias)
+            throw new InternalError('MOQtailClient.subscribeUpdate', 'Request exists but track alias mapping does not')
+          const subscription = this.subscriptions.get(trackAlias)
           if (!subscription)
             throw new InternalError('MOQtailClient.subscribeUpdate', 'Request exists but subscription does not')
           // TODO: If a parameter included in SUBSCRIBE is not present in SUBSCRIBE_UPDATE, its value remains unchanged.
           // There is no mechanism to remove a parameter from a subscription. We can add parameters but check for duplicate params
           if (!parameters) parameters = new VersionSpecificParameters()
-          const msg = new SubscribeUpdate(requestId, startLocation, endGroup, priority, forward, parameters.build())
+          const requestId = this.#nextClientRequestId
+          const msg = new SubscribeUpdate(
+            requestId,
+            subscriptionRequestId,
+            startLocation,
+            endGroup,
+            priority,
+            forward,
+            parameters.build(),
+          )
           subscription.update(msg) // This also updates the request since both maps store the same object
           await this.controlStream.send(msg)
         }
@@ -1261,6 +1263,14 @@ export class MOQtailClient {
           subscription.streamsAccepted++
           let firstObjectId: bigint | null = null
 
+          // Find the requestId from the trackAlias
+          const requestId = this.subscriptionRequestIdMap.get(header.trackAlias)
+          if (!requestId)
+            throw new ProtocolViolationError(
+              'MOQtailClient',
+              'No requestId mapping for the given track alias in the subscription',
+            )
+
           while (true) {
             const { done, value: nextObject } = await reader.read()
             if (done) {
@@ -1292,7 +1302,7 @@ export class MOQtailClient {
                   header.groupId,
                   header.publisherPriority,
                   subgroupId,
-                  this.trackAliasMap.getNameByAlias(header.trackAlias),
+                  this.requestIdMap.getNameByRequestId(requestId),
                 )
                 if (!subscription.largestLocation) subscription.largestLocation = moqtObject.location
                 if (subscription.largestLocation.compare(moqtObject.location) == -1)
@@ -1308,7 +1318,7 @@ export class MOQtailClient {
           // Subscribe Cleanup
           if (subscription.expectedStreams && subscription.expectedStreams === subscription.streamsAccepted) {
             subscription.controller?.close()
-            this.subscriptions.delete(subscription.trackAlias)
+            this.subscriptions.delete(header.trackAlias)
             this.requests.delete(subscription.requestId)
           }
           return

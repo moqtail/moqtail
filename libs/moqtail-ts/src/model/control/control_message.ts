@@ -29,7 +29,7 @@ import { GoAway } from './goaway'
 import { MaxRequestId } from './max_request_id'
 import { ServerSetup } from './server_setup'
 import { Subscribe } from './subscribe'
-import { SubscribeDone } from './subscribe_done'
+import { PublishDone } from './publish_done'
 import { SubscribeError } from './subscribe_error'
 import { SubscribeOk } from './subscribe_ok'
 import { SubscribeUpdate } from './subscribe_update'
@@ -47,6 +47,7 @@ import { TrackStatusOk } from './track_status_ok'
 import { TrackStatusError } from './track_status_error'
 
 export type ControlMessage =
+  | PublishDone
   | PublishNamespace
   | PublishNamespaceCancel
   | PublishNamespaceError
@@ -60,7 +61,6 @@ export type ControlMessage =
   | MaxRequestId
   | ServerSetup
   | Subscribe
-  | SubscribeDone
   | SubscribeError
   | SubscribeOk
   | SubscribeUpdate
@@ -85,6 +85,8 @@ export namespace ControlMessage {
     const payloadBytes = buf.getBytes(payloadLength)
     const payload = new FrozenByteBuffer(payloadBytes)
     switch (messageType) {
+      case ControlMessageType.PublishDone:
+        return PublishDone.parsePayload(payload)
       case ControlMessageType.PublishNamespace:
         return PublishNamespace.parsePayload(payload)
       case ControlMessageType.PublishNamespaceCancel:
@@ -111,8 +113,6 @@ export namespace ControlMessage {
         return ServerSetup.parsePayload(payload)
       case ControlMessageType.Subscribe:
         return Subscribe.parsePayload(payload)
-      case ControlMessageType.SubscribeDone:
-        return SubscribeDone.parsePayload(payload)
       case ControlMessageType.SubscribeError:
         return SubscribeError.parsePayload(payload)
       case ControlMessageType.SubscribeOk:

@@ -23,11 +23,12 @@ import { CastingError } from '../error/error'
 export class SubscribeUpdate {
   constructor(
     public requestId: bigint,
+    public subscriptionRequestId: bigint,
     public startLocation: Location,
     public endGroup: bigint,
     public subscriberPriority: number,
     public forward: boolean,
-    public subscribeParameters: KeyValuePair[],
+    public parameters: KeyValuePair[],
   ) {}
 
   serialize(): FrozenByteBuffer {
@@ -36,13 +37,14 @@ export class SubscribeUpdate {
 
     const payload = new ByteBuffer()
     payload.putVI(this.requestId)
+    payload.putVI(this.subscriptionRequestId)
     payload.putLocation(this.startLocation)
     payload.putVI(this.endGroup)
     payload.putU8(this.subscriberPriority)
     payload.putU8(this.forward ? 1 : 0)
-    payload.putVI(this.subscribeParameters.length)
+    payload.putVI(this.parameters.length)
 
-    for (const param of this.subscribeParameters) {
+    for (const param of this.parameters) {
       payload.putBytes(param.serialize().toUint8Array())
     }
 
@@ -55,6 +57,7 @@ export class SubscribeUpdate {
 
   static parsePayload(buf: BaseByteBuffer): SubscribeUpdate {
     const requestId = buf.getVI()
+    const subscriptionRequestId = buf.getVI()
     const startLocation = buf.getLocation()
     const endGroup = buf.getVI()
     const subscriberPriority = buf.getU8()
@@ -72,30 +75,39 @@ export class SubscribeUpdate {
       throw new CastingError('SubscribeUpdate.deserialize paramCount', 'bigint', 'number', `${paramCountBig}`)
     }
 
-    const subscribeParameters: KeyValuePair[] = []
+    const parameters: KeyValuePair[] = []
     for (let i = 0; i < paramCount; i++) {
-      subscribeParameters.push(KeyValuePair.deserialize(buf))
+      parameters.push(KeyValuePair.deserialize(buf))
     }
 
-    return new SubscribeUpdate(requestId, startLocation, endGroup, subscriberPriority, forward, subscribeParameters)
+    return new SubscribeUpdate(
+      requestId,
+      subscriptionRequestId,
+      startLocation,
+      endGroup,
+      subscriberPriority,
+      forward,
+      parameters,
+    )
   }
 
   equals(other: SubscribeUpdate): boolean {
     if (
       this.requestId !== other.requestId ||
+      this.subscriptionRequestId !== other.subscriptionRequestId ||
       this.endGroup !== other.endGroup ||
       this.subscriberPriority !== other.subscriberPriority ||
       this.forward !== other.forward ||
       (this.startLocation === undefined) !== (other.startLocation === undefined) ||
       (this.startLocation && other.startLocation && !this.startLocation.equals(other.startLocation)) ||
-      this.subscribeParameters.length !== other.subscribeParameters.length
+      this.parameters.length !== other.parameters.length
     ) {
       return false
     }
 
-    for (let i = 0; i < this.subscribeParameters.length; i++) {
-      const a = this.subscribeParameters[i]
-      const b = other.subscribeParameters[i]
+    for (let i = 0; i < this.parameters.length; i++) {
+      const a = this.parameters[i]
+      const b = other.parameters[i]
 
       if (!a || !b || !a.equals(b)) {
         return false
@@ -111,7 +123,7 @@ if (import.meta.vitest) {
 
   describe('SubscribeUpdate', () => {
     function buildTestUpdate(): SubscribeUpdate {
-      return new SubscribeUpdate(120205n, new Location(81n, 81n), 25n, 31, true, [
+      return new SubscribeUpdate(120205n, 120204n, new Location(81n, 81n), 25n, 31, true, [
         KeyValuePair.tryNewVarInt(0n, 10n),
         KeyValuePair.tryNewBytes(1n, new TextEncoder().encode("I'll sync you up")),
       ])
@@ -173,8 +185,8 @@ if (import.meta.vitest) {
         expect(err).toBeInstanceOf(Error)
       }
     })
-    it('should handle empty subscribeParameters', () => {
-      const update = new SubscribeUpdate(120206n, new Location(82n, 82n), 26n, 15, false, [])
+    it('should handle empty parameters', () => {
+      const update = new SubscribeUpdate(120206n, 120205n, new Location(82n, 82n), 26n, 15, false, [])
       const serialized = update.serialize()
       const buf = new ByteBuffer()
       buf.putBytes(serialized.toUint8Array())
@@ -191,6 +203,7 @@ if (import.meta.vitest) {
       buf.putBytes(serialized.toUint8Array())
 
       buf.getVI() // Skip message type
+      buf.getVI() // Skip subscriptionRequestId
       buf.getU16() // Skip payload length
       buf.getVI() // Skip requestId
       buf.getLocation() // Skip startLocation

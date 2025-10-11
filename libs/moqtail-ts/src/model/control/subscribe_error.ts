@@ -24,16 +24,10 @@ export class SubscribeError {
     public readonly requestId: bigint,
     public readonly errorCode: SubscribeErrorCode,
     public readonly errorReason: ReasonPhrase,
-    public readonly trackAlias: bigint,
   ) {}
 
-  static new(
-    requestId: bigint | number,
-    errorCode: SubscribeErrorCode,
-    errorReason: ReasonPhrase,
-    trackAlias: bigint,
-  ): SubscribeError {
-    return new SubscribeError(BigInt(requestId), errorCode, errorReason, trackAlias)
+  static new(requestId: bigint | number, errorCode: SubscribeErrorCode, errorReason: ReasonPhrase): SubscribeError {
+    return new SubscribeError(BigInt(requestId), errorCode, errorReason)
   }
 
   getType(): ControlMessageType {
@@ -47,7 +41,6 @@ export class SubscribeError {
     payload.putVI(this.requestId)
     payload.putVI(this.errorCode)
     payload.putReasonPhrase(this.errorReason)
-    payload.putVI(this.trackAlias)
     const payloadBytes = payload.toUint8Array()
 
     if (payloadBytes.length > 0xffff) {
@@ -63,8 +56,7 @@ export class SubscribeError {
     const errorCodeRaw = buf.getVI()
     const errorCode = subscribeErrorCodeFromBigInt(errorCodeRaw)
     const errorReason = buf.getReasonPhrase()
-    const trackAlias = buf.getVI()
-    return new SubscribeError(requestId, errorCode, errorReason, trackAlias)
+    return new SubscribeError(requestId, errorCode, errorReason)
   }
 }
 
@@ -76,8 +68,7 @@ if (import.meta.vitest) {
       const requestId = 12345n
       const errorCode = SubscribeErrorCode.InvalidRange
       const errorReason = new ReasonPhrase('Lorem ipsum dolor sit amet')
-      const trackAlias = 123n
-      const subscribeError = SubscribeError.new(requestId, errorCode, errorReason, trackAlias)
+      const subscribeError = SubscribeError.new(requestId, errorCode, errorReason)
       const frozen = subscribeError.serialize()
       const msgType = frozen.getVI()
       expect(msgType).toBe(BigInt(ControlMessageType.SubscribeError))
@@ -87,7 +78,6 @@ if (import.meta.vitest) {
       expect(deserialized.requestId).toBe(subscribeError.requestId)
       expect(deserialized.errorCode).toBe(subscribeError.errorCode)
       expect(deserialized.errorReason.phrase).toBe(subscribeError.errorReason.phrase)
-      expect(deserialized.trackAlias).toBe(subscribeError.trackAlias)
       expect(frozen.remaining).toBe(0)
     })
 
@@ -95,8 +85,7 @@ if (import.meta.vitest) {
       const requestId = 12345n
       const errorCode = SubscribeErrorCode.InvalidRange
       const errorReason = new ReasonPhrase('Lorem ipsum dolor sit amet')
-      const trackAlias = 123n
-      const subscribeError = SubscribeError.new(requestId, errorCode, errorReason, trackAlias)
+      const subscribeError = SubscribeError.new(requestId, errorCode, errorReason)
 
       const serialized = subscribeError.serialize().toUint8Array()
       const excess = new Uint8Array([9, 1, 1])
@@ -112,7 +101,6 @@ if (import.meta.vitest) {
       expect(deserialized.requestId).toBe(subscribeError.requestId)
       expect(deserialized.errorCode).toBe(subscribeError.errorCode)
       expect(deserialized.errorReason.phrase).toBe(subscribeError.errorReason.phrase)
-      expect(deserialized.trackAlias).toBe(subscribeError.trackAlias)
       expect(frozen.remaining).toBe(3)
       expect(Array.from(frozen.getBytes(3))).toEqual([9, 1, 1])
     })
@@ -121,8 +109,7 @@ if (import.meta.vitest) {
       const requestId = 12345n
       const errorCode = SubscribeErrorCode.InvalidRange
       const errorReason = new ReasonPhrase('Lorem ipsum dolor sit amet')
-      const trackAlias = 123n
-      const subscribeError = SubscribeError.new(requestId, errorCode, errorReason, trackAlias)
+      const subscribeError = SubscribeError.new(requestId, errorCode, errorReason)
       const serialized = subscribeError.serialize().toUint8Array()
       const upper = Math.floor(serialized.length / 2)
       const partial = serialized.slice(0, upper)

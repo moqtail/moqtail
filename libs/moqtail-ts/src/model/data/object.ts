@@ -50,26 +50,26 @@ export class MoqtObject {
     return this.location.object
   }
 
-  get subgroupHeaderType(): SubgroupHeaderType {
-    if (this.extensionHeaders) {
-      if (this.subgroupId) {
-        return SubgroupHeaderType.Type0x0D
+  getSubgroupHeaderType(containsEnd: boolean): SubgroupHeaderType {
+    const hasExtensions = !!this.extensionHeaders && this.extensionHeaders.length > 0
+    const hasSubgroupId = this.subgroupId !== null
+    const isSubgroupIdZero = this.subgroupId === 0n
+
+    if (containsEnd) {
+      if (hasSubgroupId) {
+        return hasExtensions ? SubgroupHeaderType.Type0x1D : SubgroupHeaderType.Type0x1C
+      } else if (isSubgroupIdZero) {
+        return hasExtensions ? SubgroupHeaderType.Type0x19 : SubgroupHeaderType.Type0x18
       } else {
-        if (this.subgroupId === 0n) {
-          return SubgroupHeaderType.Type0x09
-        } else {
-          return SubgroupHeaderType.Type0x0B
-        }
+        return hasExtensions ? SubgroupHeaderType.Type0x1B : SubgroupHeaderType.Type0x1A
       }
     } else {
-      if (this.subgroupId) {
-        return SubgroupHeaderType.Type0x0C
+      if (hasSubgroupId) {
+        return hasExtensions ? SubgroupHeaderType.Type0x15 : SubgroupHeaderType.Type0x14
+      } else if (isSubgroupIdZero) {
+        return hasExtensions ? SubgroupHeaderType.Type0x11 : SubgroupHeaderType.Type0x10
       } else {
-        if (this.subgroupId === 0n) {
-          return SubgroupHeaderType.Type0x08
-        } else {
-          return SubgroupHeaderType.Type0x0A
-        }
+        return hasExtensions ? SubgroupHeaderType.Type0x13 : SubgroupHeaderType.Type0x12
       }
     }
   }

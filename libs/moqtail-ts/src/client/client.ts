@@ -1284,16 +1284,22 @@ export class MOQtailClient {
                 }
                 let subgroupId = header.subgroupId
                 switch (header.type) {
-                  case SubgroupHeaderType.Type0x08:
-                  case SubgroupHeaderType.Type0x09:
+                  case SubgroupHeaderType.Type0x10:
+                  case SubgroupHeaderType.Type0x11:
+                  case SubgroupHeaderType.Type0x18:
+                  case SubgroupHeaderType.Type0x19:
                     subgroupId = 0n
                     break
-                  case SubgroupHeaderType.Type0x0A:
-                  case SubgroupHeaderType.Type0x0B:
+                  case SubgroupHeaderType.Type0x12:
+                  case SubgroupHeaderType.Type0x13:
+                  case SubgroupHeaderType.Type0x1A:
+                  case SubgroupHeaderType.Type0x1B:
                     subgroupId = firstObjectId
                     break
-                  case SubgroupHeaderType.Type0x0C:
-                  case SubgroupHeaderType.Type0x0D:
+                  case SubgroupHeaderType.Type0x14:
+                  case SubgroupHeaderType.Type0x15:
+                  case SubgroupHeaderType.Type0x1C:
+                  case SubgroupHeaderType.Type0x1D:
                     subgroupId = header.subgroupId!
                 }
 

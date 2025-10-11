@@ -65,7 +65,7 @@ export class SubgroupHeader {
     let subgroupId: bigint | undefined
     if (SubgroupHeaderType.hasExplicitSubgroupId(headerType)) {
       subgroupId = buf.getVI()
-    } else if (headerType === SubgroupHeaderType.Type0x08 || headerType === SubgroupHeaderType.Type0x09) {
+    } else if (SubgroupHeaderType.isSubgroupIdZero(headerType)) {
       subgroupId = 0n
     }
     const publisherPriority = buf.getU8()
@@ -77,7 +77,7 @@ if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
   describe('SubgroupHeader', () => {
     test('roundtrip serialization/deserialization', () => {
-      const headerType = SubgroupHeaderType.Type0x0C
+      const headerType = SubgroupHeaderType.Type0x14
       const trackAlias = 87n
       const groupId = 9n
       const subgroupId = 11n
@@ -93,7 +93,7 @@ if (import.meta.vitest) {
       expect(frozen.remaining).toBe(0)
     })
     test('excess roundtrip', () => {
-      const headerType = SubgroupHeaderType.Type0x0C
+      const headerType = SubgroupHeaderType.Type0x14
       const trackAlias = 87n
       const groupId = 9n
       const subgroupId = 11n
@@ -115,7 +115,7 @@ if (import.meta.vitest) {
       expect(Array.from(frozen.getBytes(3))).toEqual([9, 1, 1])
     })
     test('partial message fails', () => {
-      const headerType = SubgroupHeaderType.Type0x0C
+      const headerType = SubgroupHeaderType.Type0x14
       const trackAlias = 87n
       const groupId = 9n
       const subgroupId = 11n

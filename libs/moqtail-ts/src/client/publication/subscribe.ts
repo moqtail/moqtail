@@ -235,9 +235,10 @@ export class SubscribePublication {
                 sendOrder: this.#streamPriority,
               })
               let subgroupId: bigint | undefined
-              if (SubgroupHeaderType.hasExplicitSubgroupId(obj.subgroupHeaderType)) subgroupId = obj.subgroupId!
+              if (SubgroupHeaderType.hasExplicitSubgroupId(obj.getSubgroupHeaderType(true)))
+                subgroupId = obj.subgroupId!
               const header = new SubgroupHeader(
-                obj.subgroupHeaderType,
+                obj.getSubgroupHeaderType(true),
                 this.#trackAlias,
                 obj.location.group,
                 subgroupId,

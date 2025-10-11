@@ -44,12 +44,18 @@ export namespace Header {
     switch (type) {
       case 0x05:
         return FetchHeader.deserialize(buf)
-      case 0x08:
-      case 0x09:
-      case 0x0a:
-      case 0x0b:
-      case 0x0c:
-      case 0x0d:
+      case 0x10:
+      case 0x11:
+      case 0x12:
+      case 0x13:
+      case 0x14:
+      case 0x15:
+      case 0x18:
+      case 0x19:
+      case 0x1a:
+      case 0x1b:
+      case 0x1c:
+      case 0x1d:
         return SubgroupHeader.deserialize(buf)
       default:
         throw new InvalidTypeError('Header::deserialize(type)', `Unknown header type: ${type}`)

@@ -17,9 +17,9 @@
 import { CastingError } from '../error'
 import { ClientSetup, ServerSetup } from '../control'
 /**
- * 32 bit MOQT Draft-11 version number exchanged in {@link ClientSetup} and {@link ServerSetup}
+ * 32 bit MOQT Draft-14 version number exchanged in {@link ClientSetup} and {@link ServerSetup}
  */
-export const DRAFT_11 = 0xff00000b
+export const DRAFT_14 = 0xff00000e
 
 /**
  * @public

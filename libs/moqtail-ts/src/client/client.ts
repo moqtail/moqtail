@@ -151,10 +151,6 @@ export class MOQtailClient {
    */
   readonly subscriptionAliasMap: Map<bigint, bigint> = new Map()
   /**
-   * Bidirectional subscription requestId \<-\> track alias mapping
-   */
-  readonly subscriptionRequestIdMap: Map<bigint, bigint> = new Map()
-  /**
    * Bidirectional requestId \<-\> full track name mapping to reconstruct metadata for incoming objects.
    */
   readonly requestIdMap: RequestIdMap = new RequestIdMap()
@@ -608,7 +604,6 @@ export class MOQtailClient {
       } else {
         this.subscriptions.set(response.trackAlias, request)
         this.subscriptionAliasMap.set(request.requestId, response.trackAlias)
-        this.subscriptionRequestIdMap.set(response.trackAlias, request.requestId)
         return { requestId: msg.requestId, stream: request.stream }
       }
     } catch (error) {
@@ -1263,14 +1258,6 @@ export class MOQtailClient {
           subscription.streamsAccepted++
           let firstObjectId: bigint | null = null
 
-          // Find the requestId from the trackAlias
-          const requestId = this.subscriptionRequestIdMap.get(header.trackAlias)
-          if (!requestId)
-            throw new ProtocolViolationError(
-              'MOQtailClient',
-              'No requestId mapping for the given track alias in the subscription',
-            )
-
           while (true) {
             const { done, value: nextObject } = await reader.read()
             if (done) {
@@ -1308,7 +1295,7 @@ export class MOQtailClient {
                   header.groupId,
                   header.publisherPriority,
                   subgroupId,
-                  this.requestIdMap.getNameByRequestId(requestId),
+                  this.requestIdMap.getNameByRequestId(subscription.requestId),
                 )
                 if (!subscription.largestLocation) subscription.largestLocation = moqtObject.location
                 if (subscription.largestLocation.compare(moqtObject.location) == -1)

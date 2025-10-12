@@ -1,5 +1,11 @@
 # moqtail-ts
 
+## 0.5.0
+
+### Minor Changes
+
+- [#69](https://github.com/moqtail/moqtail/pull/69) [`a22396a`](https://github.com/moqtail/moqtail/commit/a22396a9e891b2424a14b2ad18682473f890093d) Thanks [@acbegen](https://github.com/acbegen)! - integrated draft 14 changes
+
 ## 0.4.1
 
 ### Patch Changes

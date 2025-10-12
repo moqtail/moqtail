@@ -1,5 +1,12 @@
 # relay
 
+## 0.7.0
+
+### Minor Changes
+
+- [#69](https://github.com/moqtail/moqtail/pull/69) [`a22396a`](https://github.com/moqtail/moqtail/commit/a22396a9e891b2424a14b2ad18682473f890093d) Thanks [@acbegen](https://github.com/acbegen)! - The object id parsing in moqtail-rs is fixed.
+  The relay code is refactored.
+
 ## 0.5.0
 
 ### Minor Changes

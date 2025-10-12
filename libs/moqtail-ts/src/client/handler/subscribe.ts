@@ -27,7 +27,6 @@ export const handlerSubscribe: ControlMessageHandler<Subscribe> = async (client,
       msg.requestId,
       SubscribeErrorCode.TrackDoesNotExist,
       new ReasonPhrase('Track does not exist'),
-      0n, // TODO: Since track does not exist alias is set to zero. This argument is removed in the upcoming version
     )
     await client.controlStream.send(subscribeError)
     return
@@ -37,22 +36,23 @@ export const handlerSubscribe: ControlMessageHandler<Subscribe> = async (client,
       msg.requestId,
       SubscribeErrorCode.NotSupported,
       new ReasonPhrase('Requested track does not support subscribe'),
-      0n,
     )
     await client.controlStream.send(response)
     return
   }
   let subscribeOk: SubscribeOk
+  if (!track.trackAlias) throw new Error('Expected track alias to be set')
   if (track.trackSource.live.largestLocation) {
     subscribeOk = SubscribeOk.newAscendingWithContent(
       msg.requestId,
+      track.trackAlias,
       0n,
       track.trackSource.live.largestLocation,
-      msg.subscribeParameters,
+      msg.parameters,
     )
   } else {
     // TODO: Add support for descending group order
-    subscribeOk = SubscribeOk.newAscendingNoContent(msg.requestId, 0n, msg.subscribeParameters)
+    subscribeOk = SubscribeOk.newAscendingNoContent(msg.requestId, track.trackAlias, 0n, msg.parameters)
   }
   const publication = new SubscribePublication(client, track, msg, subscribeOk.largestLocation)
   client.publications.set(msg.requestId, publication)

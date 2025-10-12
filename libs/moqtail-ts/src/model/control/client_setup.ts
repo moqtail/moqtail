@@ -15,7 +15,7 @@
  */
 
 import { ByteBuffer, FrozenByteBuffer, BaseByteBuffer } from '../common/byte_buffer'
-import { ControlMessageType, DRAFT_11 } from './constant'
+import { ControlMessageType, DRAFT_14 } from './constant'
 import { KeyValuePair } from '../common/pair'
 import { LengthExceedsMaxError } from '../error/error'
 
@@ -69,7 +69,7 @@ if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
   describe('ClientSetup', () => {
     test('roundtrip', () => {
-      const supportedVersions = [12345, DRAFT_11]
+      const supportedVersions = [12345, DRAFT_14]
       const setupParameters = [
         KeyValuePair.tryNewVarInt(0, 10),
         KeyValuePair.tryNewBytes(1, new TextEncoder().encode('Set me up!')),
@@ -87,7 +87,7 @@ if (import.meta.vitest) {
     })
 
     test('excess roundtrip', () => {
-      const supportedVersions = [12345, DRAFT_11]
+      const supportedVersions = [12345, DRAFT_14]
       const setupParameters = [
         KeyValuePair.tryNewVarInt(0, 10),
         KeyValuePair.tryNewBytes(1, new TextEncoder().encode('Set me up!')),
@@ -111,7 +111,7 @@ if (import.meta.vitest) {
     })
 
     test('partial message', () => {
-      const supportedVersions = [12345, DRAFT_11]
+      const supportedVersions = [12345, DRAFT_14]
       const setupParameters = [
         KeyValuePair.tryNewVarInt(0, 10),
         KeyValuePair.tryNewBytes(1, new TextEncoder().encode('Set me up!')),

@@ -278,7 +278,7 @@ if (import.meta.vitest) {
 
     describe('Subgroup', () => {
       beforeEach(async () => {
-        testSubgroupHeader = Header.newSubgroup(SubgroupHeaderType.Type0x0C, 0n, 0n, 0, 0)
+        testSubgroupHeader = Header.newSubgroup(SubgroupHeaderType.Type0x10, 0n, 0n, 0, 0)
         const transport = new TransformStream<Uint8Array, Uint8Array>()
         const sendStreamPromise = SendStream.new(transport.writable, testSubgroupHeader)
         const recvStreamPromise = RecvStream.new(transport.readable)

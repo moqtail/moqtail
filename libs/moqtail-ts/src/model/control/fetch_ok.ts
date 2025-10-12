@@ -26,25 +26,25 @@ export class FetchOk {
     public readonly groupOrder: GroupOrder,
     public readonly endOfTrack: boolean,
     public readonly endLocation: Location,
-    public readonly subscribeParameters: KeyValuePair[],
+    public readonly parameters: KeyValuePair[],
   ) {}
 
   static newAscending(
     requestId: bigint | number,
     endOfTrack: boolean,
     endLocation: Location,
-    subscribeParameters: KeyValuePair[],
+    parameters: KeyValuePair[],
   ): FetchOk {
-    return new FetchOk(BigInt(requestId), GroupOrder.Ascending, endOfTrack, endLocation, subscribeParameters)
+    return new FetchOk(BigInt(requestId), GroupOrder.Ascending, endOfTrack, endLocation, parameters)
   }
 
   static newDescending(
     requestId: bigint | number,
     endOfTrack: boolean,
     endLocation: Location,
-    subscribeParameters: KeyValuePair[],
+    parameters: KeyValuePair[],
   ): FetchOk {
-    return new FetchOk(BigInt(requestId), GroupOrder.Descending, endOfTrack, endLocation, subscribeParameters)
+    return new FetchOk(BigInt(requestId), GroupOrder.Descending, endOfTrack, endLocation, parameters)
   }
 
   serialize(): FrozenByteBuffer {
@@ -55,8 +55,8 @@ export class FetchOk {
     payload.putU8(this.groupOrder)
     payload.putU8(this.endOfTrack ? 1 : 0)
     payload.putLocation(this.endLocation)
-    payload.putVI(this.subscribeParameters.length)
-    for (const param of this.subscribeParameters) {
+    payload.putVI(this.parameters.length)
+    for (const param of this.parameters) {
       payload.putKeyValuePair(param)
     }
     const payloadBytes = payload.toUint8Array()
@@ -98,11 +98,11 @@ export class FetchOk {
     }
     const endLocation = buf.getLocation()
     const paramCount = buf.getNumberVI()
-    const subscribeParameters: KeyValuePair[] = new Array(paramCount)
+    const parameters: KeyValuePair[] = new Array(paramCount)
     for (let i = 0; i < paramCount; i++) {
-      subscribeParameters[i] = buf.getKeyValuePair()
+      parameters[i] = buf.getKeyValuePair()
     }
-    return new FetchOk(requestId, groupOrder, endOfTrack, endLocation, subscribeParameters)
+    return new FetchOk(requestId, groupOrder, endOfTrack, endLocation, parameters)
   }
 }
 
@@ -113,11 +113,11 @@ if (import.meta.vitest) {
       const requestId = 271828n
       const endOfTrack = true
       const endLocation = new Location(17n, 57n)
-      const subscribeParameters = [
+      const parameters = [
         KeyValuePair.tryNewVarInt(4444, 12321),
         KeyValuePair.tryNewBytes(1, new TextEncoder().encode('fetch me ok')),
       ]
-      const msg = FetchOk.newAscending(requestId, endOfTrack, endLocation, subscribeParameters)
+      const msg = FetchOk.newAscending(requestId, endOfTrack, endLocation, parameters)
       const frozen = msg.serialize()
       const msgType = frozen.getVI()
       expect(msgType).toBe(BigInt(ControlMessageType.FetchOk))
@@ -128,7 +128,7 @@ if (import.meta.vitest) {
       expect(parsed.groupOrder).toBe(GroupOrder.Ascending)
       expect(parsed.endOfTrack).toBe(endOfTrack)
       expect(parsed.endLocation.equals(endLocation)).toBe(true)
-      expect(parsed.subscribeParameters).toEqual(subscribeParameters)
+      expect(parsed.parameters).toEqual(parameters)
       expect(frozen.remaining).toBe(0)
     })
 
@@ -136,11 +136,11 @@ if (import.meta.vitest) {
       const requestId = 271828n
       const endOfTrack = true
       const endLocation = new Location(17n, 57n)
-      const subscribeParameters = [
+      const parameters = [
         KeyValuePair.tryNewVarInt(4444, 12321),
         KeyValuePair.tryNewBytes(1, new TextEncoder().encode('fetch me ok')),
       ]
-      const msg = FetchOk.newAscending(requestId, endOfTrack, endLocation, subscribeParameters)
+      const msg = FetchOk.newAscending(requestId, endOfTrack, endLocation, parameters)
       const serialized = msg.serialize().toUint8Array()
       const excess = new Uint8Array([9, 1, 1])
       const buf = new ByteBuffer()
@@ -155,7 +155,7 @@ if (import.meta.vitest) {
       expect(parsed.groupOrder).toBe(GroupOrder.Ascending)
       expect(parsed.endOfTrack).toBe(endOfTrack)
       expect(parsed.endLocation.equals(endLocation)).toBe(true)
-      expect(parsed.subscribeParameters).toEqual(subscribeParameters)
+      expect(parsed.parameters).toEqual(parameters)
       expect(buf.remaining).toBe(3)
     })
 
@@ -163,11 +163,11 @@ if (import.meta.vitest) {
       const requestId = 271828n
       const endOfTrack = true
       const endLocation = new Location(17n, 57n)
-      const subscribeParameters = [
+      const parameters = [
         KeyValuePair.tryNewVarInt(4444, 12321),
         KeyValuePair.tryNewBytes(1, new TextEncoder().encode('fetch me ok')),
       ]
-      const msg = FetchOk.newAscending(requestId, endOfTrack, endLocation, subscribeParameters)
+      const msg = FetchOk.newAscending(requestId, endOfTrack, endLocation, parameters)
       const serialized = msg.serialize().toUint8Array()
       const upper = Math.floor(serialized.length / 2)
       const partial = serialized.slice(0, upper)

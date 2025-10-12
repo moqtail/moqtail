@@ -118,12 +118,18 @@ export namespace FetchHeaderType {
  * Subgroup header types for MOQT subgroups.
  */
 export enum SubgroupHeaderType {
-  Type0x08 = 0x08,
-  Type0x09 = 0x09,
-  Type0x0A = 0x0a,
-  Type0x0B = 0x0b,
-  Type0x0C = 0x0c,
-  Type0x0D = 0x0d,
+  Type0x10 = 0x10,
+  Type0x11 = 0x11,
+  Type0x12 = 0x12,
+  Type0x13 = 0x13,
+  Type0x14 = 0x14,
+  Type0x15 = 0x15,
+  Type0x18 = 0x18,
+  Type0x19 = 0x19,
+  Type0x1A = 0x1a,
+  Type0x1B = 0x1b,
+  Type0x1C = 0x1c,
+  Type0x1D = 0x1d,
 }
 
 /**
@@ -135,14 +141,47 @@ export namespace SubgroupHeaderType {
    * @param t - The SubgroupHeaderType.
    */
   export function hasExplicitSubgroupId(t: SubgroupHeaderType): boolean {
-    return t === SubgroupHeaderType.Type0x0C || t === SubgroupHeaderType.Type0x0D
+    switch (t) {
+      case SubgroupHeaderType.Type0x14:
+      case SubgroupHeaderType.Type0x15:
+      case SubgroupHeaderType.Type0x1C:
+      case SubgroupHeaderType.Type0x1D:
+        return true
+      default:
+        return false
+    }
+  }
+  /**
+   * Returns true if the header type implies a subgroup ID of zero.
+   * @param t - The SubgroupHeaderType.
+   */
+  export function isSubgroupIdZero(t: SubgroupHeaderType): boolean {
+    switch (t) {
+      case SubgroupHeaderType.Type0x10:
+      case SubgroupHeaderType.Type0x11:
+      case SubgroupHeaderType.Type0x18:
+      case SubgroupHeaderType.Type0x19:
+        return true
+      default:
+        return false
+    }
   }
   /**
    * Returns true if the header type has extensions.
    * @param t - The SubgroupHeaderType.
    */
   export function hasExtensions(t: SubgroupHeaderType): boolean {
-    return t === SubgroupHeaderType.Type0x09 || t === SubgroupHeaderType.Type0x0B || t === SubgroupHeaderType.Type0x0D
+    switch (t) {
+      case SubgroupHeaderType.Type0x11:
+      case SubgroupHeaderType.Type0x13:
+      case SubgroupHeaderType.Type0x15:
+      case SubgroupHeaderType.Type0x19:
+      case SubgroupHeaderType.Type0x1B:
+      case SubgroupHeaderType.Type0x1D:
+        return true
+      default:
+        return false
+    }
   }
   /**
    * Converts a number or bigint to SubgroupHeaderType.
@@ -153,18 +192,30 @@ export namespace SubgroupHeaderType {
   export function tryFrom(value: number | bigint): SubgroupHeaderType {
     const v = typeof value === 'bigint' ? Number(value) : value
     switch (v) {
-      case 0x08:
-        return SubgroupHeaderType.Type0x08
-      case 0x09:
-        return SubgroupHeaderType.Type0x09
-      case 0x0a:
-        return SubgroupHeaderType.Type0x0A
-      case 0x0b:
-        return SubgroupHeaderType.Type0x0B
-      case 0x0c:
-        return SubgroupHeaderType.Type0x0C
-      case 0x0d:
-        return SubgroupHeaderType.Type0x0D
+      case 0x10:
+        return SubgroupHeaderType.Type0x10
+      case 0x11:
+        return SubgroupHeaderType.Type0x11
+      case 0x12:
+        return SubgroupHeaderType.Type0x12
+      case 0x13:
+        return SubgroupHeaderType.Type0x13
+      case 0x14:
+        return SubgroupHeaderType.Type0x14
+      case 0x15:
+        return SubgroupHeaderType.Type0x15
+      case 0x18:
+        return SubgroupHeaderType.Type0x18
+      case 0x19:
+        return SubgroupHeaderType.Type0x19
+      case 0x1a:
+        return SubgroupHeaderType.Type0x1A
+      case 0x1b:
+        return SubgroupHeaderType.Type0x1B
+      case 0x1c:
+        return SubgroupHeaderType.Type0x1C
+      case 0x1d:
+        return SubgroupHeaderType.Type0x1D
       default:
         throw new Error(`Invalid SubgroupHeaderType: ${value}`)
     }

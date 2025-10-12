@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { FilterType, Subscribe, SubscribeDone, SubscribeDoneStatusCode, SubscribeUpdate } from '@/model/control'
+import { FilterType, Subscribe, PublishDone, PublishDoneStatusCode, SubscribeUpdate } from '@/model/control'
 import { MOQtailClient } from '../client'
 import { Track } from '../track/track'
 import {
@@ -125,7 +125,7 @@ export class SubscribePublication {
     private readonly subscribeMsg: Subscribe,
     largestLocation?: Location,
   ) {
-    this.#trackAlias = subscribeMsg.trackAlias
+    this.#trackAlias = track.trackAlias!
     this.#publisherPriority = track.publisherPriority
     this.#subscriberPriority = subscribeMsg.subscriberPriority
     switch (subscribeMsg.filterType) {
@@ -152,7 +152,7 @@ export class SubscribePublication {
         break
     }
     this.#forward = subscribeMsg.forward
-    this.#subscribeParameters = VersionSpecificParameters.fromKeyValuePairs(subscribeMsg.subscribeParameters)
+    this.#subscribeParameters = VersionSpecificParameters.fromKeyValuePairs(subscribeMsg.parameters)
     this.publish()
   }
 
@@ -176,20 +176,20 @@ export class SubscribePublication {
   }
 
   /**
-   * Marks the publication as done and sends a SubscribeDone message to the client.
-   * @param statusCode - The status code indicating why the subscription ended.
+   * Marks the publication as done and sends a PublishDone message to the client.
+   * @param statusCode - The status code indicating why the publication ended.
    * @throws :{@link InternalError} If sending the message fails.
    */
-  async done(statusCode: SubscribeDoneStatusCode): Promise<void> {
+  async done(statusCode: PublishDoneStatusCode): Promise<void> {
     this.#isCompleted = true
-    const subscribeDone = new SubscribeDone(
+    const publishDone = new PublishDone(
       this.subscribeMsg.requestId,
       statusCode,
       BigInt(this.#streamsOpened),
       new ReasonPhrase('Subscription ended'),
     )
     // TODO: Handle track completion, there might be ongoing streams. Wait for all to finish before cleaning the state
-    await this.client.controlStream.send(subscribeDone)
+    await this.client.controlStream.send(publishDone)
   }
 
   /**
@@ -202,7 +202,7 @@ export class SubscribePublication {
     this.#endGroup = msg.endGroup
     this.#subscriberPriority = msg.subscriberPriority
     this.#forward = msg.forward
-    this.#subscribeParameters = VersionSpecificParameters.fromKeyValuePairs(msg.subscribeParameters)
+    this.#subscribeParameters = VersionSpecificParameters.fromKeyValuePairs(msg.parameters)
   }
 
   /**
@@ -216,7 +216,7 @@ export class SubscribePublication {
 
     // TODO: HybridContent is also allowed
     this.track.trackSource.live.onDone(() => {
-      this.done(SubscribeDoneStatusCode.TrackEnded)
+      this.done(PublishDoneStatusCode.TrackEnded)
     })
 
     this.#cancelPublishing = this.track.trackSource.live.onNewObject(async (obj: MoqtObject) => {
@@ -235,9 +235,10 @@ export class SubscribePublication {
                 sendOrder: this.#streamPriority,
               })
               let subgroupId: bigint | undefined
-              if (SubgroupHeaderType.hasExplicitSubgroupId(obj.subgroupHeaderType)) subgroupId = obj.subgroupId!
+              if (SubgroupHeaderType.hasExplicitSubgroupId(obj.getSubgroupHeaderType(true)))
+                subgroupId = obj.subgroupId!
               const header = new SubgroupHeader(
-                obj.subgroupHeaderType,
+                obj.getSubgroupHeaderType(true),
                 this.#trackAlias,
                 obj.location.group,
                 subgroupId,
@@ -267,7 +268,7 @@ export class SubscribePublication {
             } catch (err) {
               console.warn('error in closing stream: id, endGroup, err', this.#id, this.#endGroup, err)
             }
-            await this.done(SubscribeDoneStatusCode.SubscriptionEnded)
+            await this.done(PublishDoneStatusCode.SubscriptionEnded)
             this.cancel()
           } else if (this.latestLocation && this.latestLocation.group !== obj.location.group) {
             // TODO: Maybe don't close the previous stream, discuss

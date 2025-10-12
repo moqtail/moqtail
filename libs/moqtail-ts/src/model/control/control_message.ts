@@ -29,7 +29,10 @@ import { GoAway } from './goaway'
 import { MaxRequestId } from './max_request_id'
 import { ServerSetup } from './server_setup'
 import { Subscribe } from './subscribe'
-import { SubscribeDone } from './subscribe_done'
+import { PublishDone } from './publish_done'
+import { Publish } from './publish'
+import { PublishOk } from './publish_ok'
+import { PublishError } from './publish_error'
 import { SubscribeError } from './subscribe_error'
 import { SubscribeOk } from './subscribe_ok'
 import { SubscribeUpdate } from './subscribe_update'
@@ -47,6 +50,10 @@ import { TrackStatusOk } from './track_status_ok'
 import { TrackStatusError } from './track_status_error'
 
 export type ControlMessage =
+  | Publish
+  | PublishError
+  | PublishOk
+  | PublishDone
   | PublishNamespace
   | PublishNamespaceCancel
   | PublishNamespaceError
@@ -60,7 +67,6 @@ export type ControlMessage =
   | MaxRequestId
   | ServerSetup
   | Subscribe
-  | SubscribeDone
   | SubscribeError
   | SubscribeOk
   | SubscribeUpdate
@@ -85,6 +91,14 @@ export namespace ControlMessage {
     const payloadBytes = buf.getBytes(payloadLength)
     const payload = new FrozenByteBuffer(payloadBytes)
     switch (messageType) {
+      case ControlMessageType.Publish:
+        return Publish.parsePayload(payload)
+      case ControlMessageType.PublishOk:
+        return PublishOk.parsePayload(payload)
+      case ControlMessageType.PublishError:
+        return PublishError.parsePayload(payload)
+      case ControlMessageType.PublishDone:
+        return PublishDone.parsePayload(payload)
       case ControlMessageType.PublishNamespace:
         return PublishNamespace.parsePayload(payload)
       case ControlMessageType.PublishNamespaceCancel:
@@ -111,8 +125,6 @@ export namespace ControlMessage {
         return ServerSetup.parsePayload(payload)
       case ControlMessageType.Subscribe:
         return Subscribe.parsePayload(payload)
-      case ControlMessageType.SubscribeDone:
-        return SubscribeDone.parsePayload(payload)
       case ControlMessageType.SubscribeError:
         return SubscribeError.parsePayload(payload)
       case ControlMessageType.SubscribeOk:

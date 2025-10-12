@@ -15,7 +15,7 @@
  */
 
 import { ByteBuffer, FrozenByteBuffer, BaseByteBuffer } from '../common/byte_buffer'
-import { ControlMessageType, DRAFT_11 } from './constant'
+import { ControlMessageType, DRAFT_14 } from './constant'
 import { KeyValuePair } from '../common/pair'
 import { LengthExceedsMaxError } from '../error/error'
 
@@ -63,7 +63,7 @@ if (import.meta.vitest) {
 
   describe('ServerSetup', () => {
     test('roundtrip serialization/deserialization', () => {
-      const selectedVersion = DRAFT_11
+      const selectedVersion = DRAFT_14
       const setupParameters = [
         KeyValuePair.tryNewVarInt(0, 10),
         KeyValuePair.tryNewBytes(1, new TextEncoder().encode('Set me up!')),
@@ -81,7 +81,7 @@ if (import.meta.vitest) {
     })
 
     test('excess roundtrip', () => {
-      const selectedVersion = DRAFT_11
+      const selectedVersion = DRAFT_14
       const setupParameters = [
         KeyValuePair.tryNewVarInt(0, 10),
         KeyValuePair.tryNewBytes(1, new TextEncoder().encode('Set me up!')),
@@ -104,7 +104,7 @@ if (import.meta.vitest) {
     })
 
     test('partial message fails', () => {
-      const selectedVersion = DRAFT_11
+      const selectedVersion = DRAFT_14
       const setupParameters = [
         KeyValuePair.tryNewVarInt(0, 10),
         KeyValuePair.tryNewBytes(1, new TextEncoder().encode('Set me up!')),

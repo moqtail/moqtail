@@ -134,14 +134,14 @@ export class TrackNameError extends MOQtailError {
 }
 
 /**
- * Track alias error.
+ * Request ID error.
  */
-export class TrackAliasError extends MOQtailError {
+export class RequestIdError extends MOQtailError {
   constructor(
     public context: string,
     public details: string,
   ) {
-    super(`Track alias error: [${context}], [${details}]`)
+    super(`Request ID error: [${context}], [${details}]`)
   }
 }
 

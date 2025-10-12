@@ -22,52 +22,67 @@ import { LengthExceedsMaxError, NotEnoughBytesError, ProtocolViolationError } fr
 
 export class SubscribeOk {
   requestId: bigint
+  trackAlias: bigint
   expires: bigint
   groupOrder: GroupOrder
   contentExists: boolean
   largestLocation?: Location | undefined
-  subscribeParameters: KeyValuePair[]
+  parameters: KeyValuePair[]
 
   private constructor(
     requestId: bigint,
+    trackAlias: bigint,
     expires: bigint,
     groupOrder: GroupOrder,
     contentExists: boolean,
     largestLocation: Location | undefined,
-    subscribeParameters: KeyValuePair[],
+    parameters: KeyValuePair[],
   ) {
     this.requestId = requestId
+    this.trackAlias = trackAlias
     this.expires = expires
     this.groupOrder = groupOrder
     this.contentExists = contentExists
     this.largestLocation = largestLocation
-    this.subscribeParameters = subscribeParameters
+    this.parameters = parameters
   }
 
-  static newAscendingNoContent(requestId: bigint, expires: bigint, subscribeParameters: KeyValuePair[]): SubscribeOk {
-    return new SubscribeOk(requestId, expires, GroupOrder.Ascending, false, undefined, subscribeParameters)
+  static newAscendingNoContent(
+    requestId: bigint,
+    trackAlias: bigint,
+    expires: bigint,
+    parameters: KeyValuePair[],
+  ): SubscribeOk {
+    return new SubscribeOk(requestId, trackAlias, expires, GroupOrder.Ascending, false, undefined, parameters)
   }
 
-  static newDescendingNoContent(requestId: bigint, expires: bigint, subscribeParameters: KeyValuePair[]): SubscribeOk {
-    return new SubscribeOk(requestId, expires, GroupOrder.Descending, false, undefined, subscribeParameters)
+  static newDescendingNoContent(
+    requestId: bigint,
+    trackAlias: bigint,
+    expires: bigint,
+    parameters: KeyValuePair[],
+  ): SubscribeOk {
+    return new SubscribeOk(requestId, trackAlias, expires, GroupOrder.Descending, false, undefined, parameters)
   }
 
   static newAscendingWithContent(
     requestId: bigint,
+    trackAlias: bigint,
     expires: bigint,
     largestLocation: Location,
-    subscribeParameters: KeyValuePair[],
+    parameters: KeyValuePair[],
   ): SubscribeOk {
-    return new SubscribeOk(requestId, expires, GroupOrder.Ascending, true, largestLocation, subscribeParameters)
+    return new SubscribeOk(requestId, trackAlias, expires, GroupOrder.Ascending, true, largestLocation, parameters)
   }
 
   static newDescendingWithContent(
     requestId: bigint,
+    trackAlias: bigint,
     expires: bigint,
     largestLocation: Location,
-    subscribeParameters: KeyValuePair[],
+    parameters: KeyValuePair[],
   ): SubscribeOk {
-    return new SubscribeOk(requestId, expires, GroupOrder.Descending, true, largestLocation, subscribeParameters)
+    return new SubscribeOk(requestId, trackAlias, expires, GroupOrder.Descending, true, largestLocation, parameters)
   }
 
   serialize(): FrozenByteBuffer {
@@ -76,6 +91,7 @@ export class SubscribeOk {
 
     const payload = new ByteBuffer()
     payload.putVI(this.requestId)
+    payload.putVI(this.trackAlias)
     payload.putVI(this.expires)
     payload.putU8(this.groupOrder)
     if (this.contentExists) {
@@ -84,8 +100,8 @@ export class SubscribeOk {
     } else {
       payload.putU8(0)
     }
-    payload.putVI(this.subscribeParameters.length)
-    for (const param of this.subscribeParameters) {
+    payload.putVI(this.parameters.length)
+    for (const param of this.parameters) {
       payload.putKeyValuePair(param)
     }
     const payloadBytes = payload.toUint8Array()
@@ -99,6 +115,7 @@ export class SubscribeOk {
 
   static parsePayload(buf: BaseByteBuffer): SubscribeOk {
     const requestId = buf.getVI()
+    const trackAlias = buf.getVI()
     const expires = buf.getVI()
     if (buf.remaining < 1) throw new NotEnoughBytesError('SubscribeOk::parsePayload(groupOrder)', 1, buf.remaining)
     const groupOrderRaw = buf.getU8()
@@ -124,11 +141,11 @@ export class SubscribeOk {
       largestLocation = buf.getLocation()
     }
     const paramCount = buf.getNumberVI()
-    const subscribeParameters: KeyValuePair[] = new Array(paramCount)
+    const parameters: KeyValuePair[] = new Array(paramCount)
     for (let i = 0; i < paramCount; i++) {
-      subscribeParameters[i] = buf.getKeyValuePair()
+      parameters[i] = buf.getKeyValuePair()
     }
-    return new SubscribeOk(requestId, expires, groupOrder, contentExists, largestLocation, subscribeParameters)
+    return new SubscribeOk(requestId, trackAlias, expires, groupOrder, contentExists, largestLocation, parameters)
   }
 }
 
@@ -137,13 +154,20 @@ if (import.meta.vitest) {
   describe('SubscribeOk', () => {
     test('roundtrip', () => {
       const requestId = 145136n
+      const trackAlias = 999n
       const expires = 16n
       const largestLocation = new Location(34n, 0n)
-      const subscribeParameters = [
+      const parameters = [
         KeyValuePair.tryNewVarInt(0, 10),
         KeyValuePair.tryNewBytes(1, new TextEncoder().encode('9 gifted subs from Dr.Doofishtein')),
       ]
-      const subscribeOk = SubscribeOk.newAscendingWithContent(requestId, expires, largestLocation, subscribeParameters)
+      const subscribeOk = SubscribeOk.newAscendingWithContent(
+        requestId,
+        trackAlias,
+        expires,
+        largestLocation,
+        parameters,
+      )
       const frozen = subscribeOk.serialize()
       const msgType = frozen.getVI()
       expect(msgType).toBe(BigInt(ControlMessageType.SubscribeOk))
@@ -151,23 +175,31 @@ if (import.meta.vitest) {
       expect(msgLength).toBe(frozen.remaining)
       const deserialized = SubscribeOk.parsePayload(frozen)
       expect(deserialized.requestId).toBe(subscribeOk.requestId)
+      expect(deserialized.trackAlias).toBe(subscribeOk.trackAlias)
       expect(deserialized.expires).toBe(subscribeOk.expires)
       expect(deserialized.groupOrder).toBe(subscribeOk.groupOrder)
       expect(deserialized.contentExists).toBe(subscribeOk.contentExists)
       expect(deserialized.largestLocation?.equals(largestLocation)).toBe(true)
-      expect(deserialized.subscribeParameters).toEqual(subscribeOk.subscribeParameters)
+      expect(deserialized.parameters).toEqual(subscribeOk.parameters)
       expect(frozen.remaining).toBe(0)
     })
 
     test('excess roundtrip', () => {
       const requestId = 145136n
+      const trackAlias = 999n
       const expires = 16n
       const largestLocation = new Location(34n, 0n)
-      const subscribeParameters = [
+      const parameters = [
         KeyValuePair.tryNewVarInt(0, 10),
         KeyValuePair.tryNewBytes(1, new TextEncoder().encode('9 gifted subs from Dr.Doofishtein')),
       ]
-      const subscribeOk = SubscribeOk.newAscendingWithContent(requestId, expires, largestLocation, subscribeParameters)
+      const subscribeOk = SubscribeOk.newAscendingWithContent(
+        requestId,
+        trackAlias,
+        expires,
+        largestLocation,
+        parameters,
+      )
       const serialized = subscribeOk.serialize().toUint8Array()
       const excess = new Uint8Array([9, 1, 1])
       const buf = new ByteBuffer()
@@ -180,24 +212,32 @@ if (import.meta.vitest) {
       expect(msgLength).toBe(frozen.remaining - 3)
       const deserialized = SubscribeOk.parsePayload(frozen)
       expect(deserialized.requestId).toBe(subscribeOk.requestId)
+      expect(deserialized.trackAlias).toBe(subscribeOk.trackAlias)
       expect(deserialized.expires).toBe(subscribeOk.expires)
       expect(deserialized.groupOrder).toBe(subscribeOk.groupOrder)
       expect(deserialized.contentExists).toBe(subscribeOk.contentExists)
       expect(deserialized.largestLocation?.equals(largestLocation)).toBe(true)
-      expect(deserialized.subscribeParameters).toEqual(subscribeOk.subscribeParameters)
+      expect(deserialized.parameters).toEqual(subscribeOk.parameters)
       expect(Array.from(frozen.getBytes(3))).toEqual([9, 1, 1])
     })
 
     test('partial message', () => {
       const requestId = 145136n
+      const trackAlias = 999n
       const expires = 16n
 
       const largestLocation = new Location(34n, 0n)
-      const subscribeParameters = [
+      const parameters = [
         KeyValuePair.tryNewVarInt(0, 10),
         KeyValuePair.tryNewBytes(1, new TextEncoder().encode('9 gifted subs from Dr.Doofishtein')),
       ]
-      const subscribeOk = SubscribeOk.newAscendingWithContent(requestId, expires, largestLocation, subscribeParameters)
+      const subscribeOk = SubscribeOk.newAscendingWithContent(
+        requestId,
+        trackAlias,
+        expires,
+        largestLocation,
+        parameters,
+      )
       const serialized = subscribeOk.serialize().toUint8Array()
       const upper = Math.floor(serialized.length / 2)
       const partial = serialized.slice(0, upper)

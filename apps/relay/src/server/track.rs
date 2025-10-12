@@ -159,14 +159,6 @@ impl Track {
     &self,
     stream_id: &StreamId,
     object: &Object,
-  ) -> Result<(), anyhow::Error> {
-    self.new_object_with_header(stream_id, object, None).await
-  }
-
-  pub async fn new_object_with_header(
-    &self,
-    stream_id: &StreamId,
-    object: &Object,
     header_info: Option<&HeaderInfo>,
   ) -> Result<(), anyhow::Error> {
     debug!(

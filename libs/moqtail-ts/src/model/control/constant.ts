@@ -17,9 +17,9 @@
 import { CastingError } from '../error'
 import { ClientSetup, ServerSetup } from '../control'
 /**
- * 32 bit MOQT Draft-11 version number exchanged in {@link ClientSetup} and {@link ServerSetup}
+ * 32 bit MOQT Draft-14 version number exchanged in {@link ClientSetup} and {@link ServerSetup}
  */
-export const DRAFT_11 = 0xff00000b
+export const DRAFT_14 = 0xff00000e
 
 /**
  * @public
@@ -40,7 +40,7 @@ export enum ControlMessageType {
   SubscribeError = 0x05,
   Unsubscribe = 0x0a,
   SubscribeUpdate = 0x02,
-  SubscribeDone = 0x0b,
+  PublishDone = 0x0b,
   Fetch = 0x16,
   FetchOk = 0x18,
   FetchError = 0x19,
@@ -57,6 +57,9 @@ export enum ControlMessageType {
   SubscribeNamespaceOk = 0x12,
   SubscribeNamespaceError = 0x13,
   UnsubscribeNamespace = 0x14,
+  Publish = 0x1d,
+  PublishOk = 0x1e,
+  PublishError = 0x1f,
 }
 
 /**
@@ -94,7 +97,7 @@ export function controlMessageTypeFromBigInt(v: bigint): ControlMessageType {
     case 0x02n:
       return ControlMessageType.SubscribeUpdate
     case 0x0bn:
-      return ControlMessageType.SubscribeDone
+      return ControlMessageType.PublishDone
     case 0x16n:
       return ControlMessageType.Fetch
     case 0x18n:
@@ -125,6 +128,12 @@ export function controlMessageTypeFromBigInt(v: bigint): ControlMessageType {
       return ControlMessageType.SubscribeNamespaceError
     case 0x14n:
       return ControlMessageType.UnsubscribeNamespace
+    case 0x1dn:
+      return ControlMessageType.Publish
+    case 0x1en:
+      return ControlMessageType.PublishOk
+    case 0x1fn:
+      return ControlMessageType.PublishError
     default:
       throw new Error(`Invalid ControlMessageType: ${v}`)
   }
@@ -445,9 +454,9 @@ export function subscribeNamespaceErrorCodeFromBigInt(v: bigint): SubscribeNames
 
 /**
  * @public
- * Status codes for SubscribeDone control messages.
+ * Status codes for PublishDone control messages.
  */
-export enum SubscribeDoneStatusCode {
+export enum PublishDoneStatusCode {
   InternalError = 0x0,
   Unauthorized = 0x1,
   TrackEnded = 0x2,
@@ -458,28 +467,75 @@ export enum SubscribeDoneStatusCode {
 }
 
 /**
- * Converts a bigint value to a SubscribeDoneStatusCode enum.
+ * Converts a bigint value to a PublishDoneStatusCode enum.
  * @param v - The bigint value.
- * @returns The corresponding SubscribeDoneStatusCode.
+ * @returns The corresponding PublishDoneStatusCode.
  * @throws Error if the value is not a valid subscribe done status code.
  */
-export function subscribeDoneStatusCodeFromBigInt(v: bigint): SubscribeDoneStatusCode {
+export function publishDoneStatusCodeFromBigInt(v: bigint): PublishDoneStatusCode {
   switch (v) {
     case 0x0n:
-      return SubscribeDoneStatusCode.InternalError
+      return PublishDoneStatusCode.InternalError
     case 0x1n:
-      return SubscribeDoneStatusCode.Unauthorized
+      return PublishDoneStatusCode.Unauthorized
     case 0x2n:
-      return SubscribeDoneStatusCode.TrackEnded
+      return PublishDoneStatusCode.TrackEnded
     case 0x3n:
-      return SubscribeDoneStatusCode.SubscriptionEnded
+      return PublishDoneStatusCode.SubscriptionEnded
     case 0x4n:
-      return SubscribeDoneStatusCode.GoingAway
+      return PublishDoneStatusCode.GoingAway
     case 0x5n:
-      return SubscribeDoneStatusCode.Expired
+      return PublishDoneStatusCode.Expired
     case 0x6n:
-      return SubscribeDoneStatusCode.TooFarBehind
+      return PublishDoneStatusCode.TooFarBehind
     default:
-      throw new Error(`Invalid SubscribeDoneStatusCode: ${v}`)
+      throw new Error(`Invalid PublishDoneStatusCode: ${v}`)
+  }
+}
+
+/**
+ * @public
+ * Error codes for Publish control messages.
+ */
+export enum PublishErrorCode {
+  InternalError = 0x0,
+  Unauthorized = 0x1,
+  Timeout = 0x2,
+  NotSupported = 0x3,
+  InvalidNamespace = 0x4,
+  InvalidTrackName = 0x5,
+  MalformedAuthToken = 0x10,
+  UnknownAuthTokenAlias = 0x11,
+  ExpiredAuthToken = 0x12,
+}
+
+/**
+ * Converts a bigint value to a PublishErrorCode enum.
+ * @param v - The bigint value.
+ * @returns The corresponding PublishErrorCode.
+ * @throws Error if the value is not a valid publish error code.
+ */
+export function publishErrorCodeFromBigInt(v: bigint): PublishErrorCode {
+  switch (v) {
+    case 0x0n:
+      return PublishErrorCode.InternalError
+    case 0x1n:
+      return PublishErrorCode.Unauthorized
+    case 0x2n:
+      return PublishErrorCode.Timeout
+    case 0x3n:
+      return PublishErrorCode.NotSupported
+    case 0x4n:
+      return PublishErrorCode.InvalidNamespace
+    case 0x5n:
+      return PublishErrorCode.InvalidTrackName
+    case 0x10n:
+      return PublishErrorCode.MalformedAuthToken
+    case 0x11n:
+      return PublishErrorCode.UnknownAuthTokenAlias
+    case 0x12n:
+      return PublishErrorCode.ExpiredAuthToken
+    default:
+      throw new Error(`Invalid PublishErrorCode: ${v}`)
   }
 }

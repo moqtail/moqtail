@@ -305,23 +305,27 @@ impl RecvDataStream {
             &header_info,
             is_closed.clone(),
             objects.clone(),
-            previous_object_id,
+            &previous_object_id,
           )
           .await
           .map_err(|e| {
             error!("Failed to parse object: {:?}", e);
             RecvDataStreamReadError::ParseError(e)
           })?;
-          previous_object_id = object_id;
+
+          // if consumed bytes is more than 0, it means we have a valid object
+          if c > 0 {
+            previous_object_id = object_id;
+            notify.notify_waiters();
+            recv_bytes.advance(c);
+          }
+
           consumed = c;
 
           debug!(
-            "previous_object_id: {:?} consumed: {}",
-            previous_object_id, consumed
+            "previous_object_id: {:?} object_id: {:?} consumed: {}",
+            previous_object_id, &object_id, consumed
           );
-
-          notify.notify_waiters();
-          recv_bytes.advance(consumed);
         }
         if consumed > 0 {
           // We may have more data to parse, so continue reading objects
@@ -460,7 +464,7 @@ impl RecvDataStream {
     header_info: &HeaderInfo,
     is_closed: Arc<RwLock<bool>>,
     objects: Arc<RwLock<VecDeque<Object>>>,
-    previous_object_id: Option<u64>,
+    previous_object_id: &Option<u64>,
   ) -> Result<(usize, Option<u64>), ParseError> {
     // debug!("RecvDataStream::parse_object() called");
 
@@ -504,19 +508,17 @@ impl RecvDataStream {
       match parse_result {
         Ok(object) => {
           let consumed = original_remaining - bytes_cursor.remaining();
-          /*
           debug!(
             "consumed: {} Parsed  payload object: {:?}",
             consumed, object
           );
-          */
           let mut objects = objects.write().await;
           objects.push_back(object.1);
           Ok((consumed, Some(object.0)))
         }
         Err(ParseError::NotEnoughBytes { .. }) => {
           // Not enough bytes to parse the object, continue reading
-          // debug!("Not enough bytes to parse the object, continuing to read...");
+          debug!("Not enough bytes to parse the object, continuing to read...");
           Ok((0, None)) // Indicate that we need more data
         }
         Err(e) => {
@@ -528,7 +530,7 @@ impl RecvDataStream {
         }
       }
     } else {
-      debug!("No bytes available to parse an object, returning false");
+      debug!("No bytes available to parse an object");
       Ok((0, None)) // No bytes to parse, wait for more data
     }
   }

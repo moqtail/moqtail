@@ -461,7 +461,7 @@ impl Session {
           let track = current_track.as_ref().unwrap();
           let _ = if first_object {
             track
-              .new_object_with_header(
+              .new_object(
                 &stream_id.clone().unwrap().clone(),
                 &object,
                 header_info.as_ref(),
@@ -469,7 +469,7 @@ impl Session {
               .await
           } else {
             track
-              .new_object(&stream_id.clone().unwrap().clone(), &object)
+              .new_object(&stream_id.clone().unwrap().clone(), &object, None)
               .await
           };
 

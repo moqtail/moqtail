@@ -25,7 +25,6 @@ import { FullTrackName } from '../data'
 export class Subscribe {
   private constructor(
     public requestId: bigint,
-    public trackAlias: bigint,
     public fullTrackName: FullTrackName,
     public subscriberPriority: number,
     public groupOrder: GroupOrder,
@@ -33,21 +32,19 @@ export class Subscribe {
     public filterType: FilterType,
     public startLocation: Location | undefined,
     public endGroup: bigint | undefined,
-    public subscribeParameters: KeyValuePair[],
+    public parameters: KeyValuePair[],
   ) {}
 
   static newNextGroupStart(
     requestId: bigint,
-    trackAlias: bigint,
     fullTrackName: FullTrackName,
     subscriberPriority: number,
     groupOrder: GroupOrder,
     forward: boolean,
-    subscribeParameters: KeyValuePair[],
+    parameters: KeyValuePair[],
   ): Subscribe {
     return new Subscribe(
       requestId,
-      trackAlias,
       fullTrackName,
       subscriberPriority,
       groupOrder,
@@ -55,22 +52,20 @@ export class Subscribe {
       FilterType.NextGroupStart,
       undefined,
       undefined,
-      subscribeParameters,
+      parameters,
     )
   }
 
   static newLatestObject(
     requestId: bigint,
-    trackAlias: bigint,
     fullTrackName: FullTrackName,
     subscriberPriority: number,
     groupOrder: GroupOrder,
     forward: boolean,
-    subscribeParameters: KeyValuePair[],
+    parameters: KeyValuePair[],
   ): Subscribe {
     return new Subscribe(
       requestId,
-      trackAlias,
       fullTrackName,
       subscriberPriority,
       groupOrder,
@@ -78,23 +73,21 @@ export class Subscribe {
       FilterType.LatestObject,
       undefined,
       undefined,
-      subscribeParameters,
+      parameters,
     )
   }
 
   static newAbsoluteStart(
     requestId: bigint,
-    trackAlias: bigint,
     fullTrackName: FullTrackName,
     subscriberPriority: number,
     groupOrder: GroupOrder,
     forward: boolean,
     startLocation: Location,
-    subscribeParameters: KeyValuePair[],
+    parameters: KeyValuePair[],
   ): Subscribe {
     return new Subscribe(
       requestId,
-      trackAlias,
       fullTrackName,
       subscriberPriority,
       groupOrder,
@@ -102,27 +95,25 @@ export class Subscribe {
       FilterType.AbsoluteStart,
       startLocation,
       undefined,
-      subscribeParameters,
+      parameters,
     )
   }
 
   static newAbsoluteRange(
     requestId: bigint,
-    trackAlias: bigint,
     fullTrackName: FullTrackName,
     subscriberPriority: number,
     groupOrder: GroupOrder,
     forward: boolean,
     startLocation: Location,
     endGroup: bigint,
-    subscribeParameters: KeyValuePair[],
+    parameters: KeyValuePair[],
   ): Subscribe {
     if (endGroup < startLocation.group) {
       throw new Error('End Group must be >= Start Group')
     }
     return new Subscribe(
       requestId,
-      trackAlias,
       fullTrackName,
       subscriberPriority,
       groupOrder,
@@ -130,7 +121,7 @@ export class Subscribe {
       FilterType.AbsoluteRange,
       startLocation,
       endGroup,
-      subscribeParameters,
+      parameters,
     )
   }
 
@@ -140,7 +131,6 @@ export class Subscribe {
 
     const payload = new ByteBuffer()
     payload.putVI(this.requestId)
-    payload.putVI(this.trackAlias)
     payload.putBytes(this.fullTrackName.serialize().toUint8Array())
     payload.putU8(this.subscriberPriority)
     payload.putU8(this.groupOrder)
@@ -161,8 +151,8 @@ export class Subscribe {
       payload.putVI(this.endGroup)
     }
 
-    payload.putVI(this.subscribeParameters.length)
-    for (const param of this.subscribeParameters) {
+    payload.putVI(this.parameters.length)
+    for (const param of this.parameters) {
       payload.putBytes(param.serialize().toUint8Array())
     }
 
@@ -175,7 +165,6 @@ export class Subscribe {
 
   static parsePayload(buf: BaseByteBuffer): Subscribe {
     const requestId = buf.getVI()
-    const trackAlias = buf.getVI()
     const fullTrackName = buf.getFullTrackName()
     const subscriberPriority = buf.getU8()
     const groupOrder = buf.getU8()
@@ -193,14 +182,13 @@ export class Subscribe {
     }
 
     const paramCount = Number(buf.getVI())
-    const subscribeParameters: KeyValuePair[] = []
+    const parameters: KeyValuePair[] = []
     for (let i = 0; i < paramCount; i++) {
-      subscribeParameters.push(KeyValuePair.deserialize(buf))
+      parameters.push(KeyValuePair.deserialize(buf))
     }
 
     return new Subscribe(
       requestId,
-      trackAlias,
       fullTrackName,
       subscriberPriority,
       groupOrder,
@@ -208,7 +196,7 @@ export class Subscribe {
       filterType,
       startLocation,
       endGroup,
-      subscribeParameters,
+      parameters,
     )
   }
 }
@@ -219,7 +207,6 @@ if (import.meta.vitest) {
   function buildTestSubscribe(): Subscribe {
     return Subscribe.newAbsoluteRange(
       128242n,
-      999n,
       FullTrackName.tryNew('track/namespace', 'trackName'),
       31,
       GroupOrder.Original,
@@ -273,7 +260,6 @@ if (import.meta.vitest) {
       it('should create a Subscribe with AbsoluteRange filter', () => {
         const subscribe = Subscribe.newAbsoluteRange(
           128242n,
-          999n,
           FullTrackName.tryNew('track/namespace', 'trackName'),
           31,
           GroupOrder.Original,
@@ -292,7 +278,6 @@ if (import.meta.vitest) {
         expect(() =>
           Subscribe.newAbsoluteRange(
             128242n,
-            999n,
             FullTrackName.tryNew('track/namespace', 'trackName'),
             31,
             GroupOrder.Original,
@@ -309,7 +294,6 @@ if (import.meta.vitest) {
       const buf = new ByteBuffer()
       buf.putVI(ControlMessageType.Subscribe)
       buf.putVI(128242n)
-      buf.putVI(999n)
       buf.putTuple(Tuple.fromUtf8Path('invalid/filter'))
       buf.putVI(10)
       buf.putBytes(new TextEncoder().encode('InvalidTest'))
@@ -320,10 +304,9 @@ if (import.meta.vitest) {
 
       expect(() => Subscribe.parsePayload(buf)).toThrow()
     })
-    it('should handle empty subscribeParameters', () => {
+    it('should handle empty parameters', () => {
       const subscribe = Subscribe.newLatestObject(
         128242n,
-        999n,
         FullTrackName.tryNew('track/namespace', 'trackName'),
         31,
         GroupOrder.Original,

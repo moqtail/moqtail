@@ -28,7 +28,6 @@ import {
 // TODO: Add timeout mechanism for unsubscribing
 export class SubscribeRequest implements PromiseLike<SubscribeOk | SubscribeError> {
   readonly requestId: bigint
-  readonly trackAlias: bigint
   readonly fullTrackName: FullTrackName
   isCanceled: boolean = false
   startLocation: Location | undefined
@@ -47,14 +46,12 @@ export class SubscribeRequest implements PromiseLike<SubscribeOk | SubscribeErro
 
   constructor(msg: Subscribe) {
     this.requestId = msg.requestId
-    this.requestId = msg.requestId
-    this.trackAlias = msg.trackAlias
     this.fullTrackName = msg.fullTrackName
     this.startLocation = msg.startLocation
     this.endGroup = msg.endGroup
     this.priority = msg.subscriberPriority
     this.forward = msg.forward
-    this.subscribeParameters = msg.subscribeParameters
+    this.subscribeParameters = msg.parameters
     this.stream = new ReadableStream<MoqtObject>({
       start: (controller) => {
         ;(this.controller as any) = controller
@@ -70,7 +67,7 @@ export class SubscribeRequest implements PromiseLike<SubscribeOk | SubscribeErro
     this.endGroup = msg.endGroup
     this.forward = msg.forward
     this.priority = msg.subscriberPriority
-    this.subscribeParameters = msg.subscribeParameters
+    this.subscribeParameters = msg.parameters
   }
   unsubscribe(): void {
     this.isCanceled = true

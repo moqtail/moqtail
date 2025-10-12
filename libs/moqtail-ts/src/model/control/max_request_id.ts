@@ -32,7 +32,7 @@ export class MaxRequestId {
   serialize(): FrozenByteBuffer {
     const buf = new ByteBuffer()
     const payload = new ByteBuffer()
-    payload.putVI(this.requestId)
+    payload.putVI(this.requestId + 1n)
     buf.putVI(ControlMessageType.MaxRequestId)
     const payloadBytes = payload.toUint8Array()
     if (payloadBytes.length > 0xffff) {
@@ -61,7 +61,7 @@ if (import.meta.vitest) {
       const msgLength = frozen.getU16()
       expect(msgLength).toBe(frozen.remaining)
       const deserialized = MaxRequestId.parsePayload(frozen)
-      expect(deserialized.requestId).toBe(maxRequestId.requestId)
+      expect(deserialized.requestId).toBe(maxRequestId.requestId + 1n)
       expect(frozen.remaining).toBe(0)
     })
     test('excess roundtrip', () => {
@@ -78,7 +78,7 @@ if (import.meta.vitest) {
       const msgLength = frozen.getU16()
       expect(msgLength).toBe(frozen.remaining - 3)
       const deserialized = MaxRequestId.parsePayload(frozen)
-      expect(deserialized.requestId).toBe(maxRequestId.requestId)
+      expect(deserialized.requestId).toBe(maxRequestId.requestId + 1n)
       expect(frozen.remaining).toBe(3)
       expect(Array.from(frozen.getBytes(3))).toEqual([9, 1, 1])
     })

@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use bytes::{Buf, Bytes, BytesMut};
-use tracing::{debug, info};
+use tracing::debug;
 
 use crate::model::common::pair::KeyValuePair;
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
@@ -44,16 +44,11 @@ impl SubgroupObject {
     };
 
     debug!(
-      "SubgroupObject::serialize || object_id_delta: {} prev: {:?} object_id: {}",
-      object_id_delta, previous_object_id, self.object_id
+      "SubgroupObject::serialize || object_id_delta: {} prev: {:?} object_id: {} ext_headers: {:?}",
+      object_id_delta, previous_object_id, self.object_id, &self.extension_headers
     );
 
     buf.put_vi(object_id_delta)?;
-
-    info!(
-      "SubgroupObject::serialize || ext_headers: {:?}",
-      &self.extension_headers
-    );
 
     if let Some(ext_headers) = &self.extension_headers {
       if ext_headers.is_empty() {
@@ -86,7 +81,7 @@ impl SubgroupObject {
 
   pub fn deserialize(
     bytes: &mut Bytes,
-    previous_object_id: Option<u64>,
+    previous_object_id: &Option<u64>,
     has_extensions: bool,
   ) -> Result<Self, ParseError> {
     let object_id_delta = bytes.get_vi()?;
@@ -212,7 +207,7 @@ mod tests {
     let mut buf = subgroup_object
       .serialize(Some(prev_object_id), true)
       .unwrap();
-    let deserialized = SubgroupObject::deserialize(&mut buf, Some(prev_object_id), true).unwrap();
+    let deserialized = SubgroupObject::deserialize(&mut buf, &Some(prev_object_id), true).unwrap();
     assert_eq!(deserialized, subgroup_object);
     assert!(!buf.has_remaining());
   }
@@ -243,7 +238,7 @@ mod tests {
     excess.extend_from_slice(&[9u8, 1u8, 1u8]);
     let mut buf = excess.freeze();
 
-    let deserialized = SubgroupObject::deserialize(&mut buf, Some(prev_object_id), true).unwrap();
+    let deserialized = SubgroupObject::deserialize(&mut buf, &Some(prev_object_id), true).unwrap();
     assert_eq!(deserialized, subgroup_object);
     assert_eq!(buf.chunk(), &[9u8, 1u8, 1u8]);
   }
@@ -271,7 +266,7 @@ mod tests {
       .unwrap();
     let upper = buf.remaining() / 2;
     let mut partial = buf.slice(..upper);
-    let deserialized = SubgroupObject::deserialize(&mut partial, Some(prev_object_id), true);
+    let deserialized = SubgroupObject::deserialize(&mut partial, &Some(prev_object_id), true);
     assert!(deserialized.is_err());
   }
 }

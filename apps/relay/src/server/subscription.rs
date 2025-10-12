@@ -438,11 +438,13 @@ impl Subscription {
         }
       };
 
-      // print hex dump of object bytes
+      // uncomment to print hex dump of object bytes
+      /*
       debug!(
         "subscription::handle_object | object bytes: {}",
         utils::bytes_to_hex(&object_bytes)
       );
+      */
 
       self
         .subscriber

@@ -109,6 +109,17 @@ impl KeyValuePair {
       Ok(KeyValuePair::Bytes { type_value, value })
     }
   }
+
+  pub fn is_same_type(&self, other: &KeyValuePair) -> bool {
+    self.get_type() == other.get_type()
+  }
+
+  pub fn get_type(&self) -> u64 {
+    match self {
+      KeyValuePair::VarInt { type_value, .. } => *type_value,
+      KeyValuePair::Bytes { type_value, .. } => *type_value,
+    }
+  }
 }
 
 #[cfg(test)]
@@ -161,5 +172,22 @@ mod tests {
     let mut bytes = buf.freeze();
     let err = KeyValuePair::deserialize(&mut bytes).unwrap_err();
     assert!(matches!(err, ParseError::NotEnoughBytes { .. }));
+  }
+
+  #[test]
+  fn is_same_type_test() {
+    let kv1 = KeyValuePair::try_new_varint(2, 100).unwrap();
+    let kv2 = KeyValuePair::try_new_varint(2, 200).unwrap();
+    let kv3 = KeyValuePair::try_new_bytes(1, Bytes::from("test")).unwrap();
+    assert!(kv1.is_same_type(&kv2));
+    assert!(!kv1.is_same_type(&kv3));
+  }
+
+  #[test]
+  fn get_type_test() {
+    let kv1 = KeyValuePair::try_new_varint(2, 100).unwrap();
+    let kv2 = KeyValuePair::try_new_bytes(1, Bytes::from("test")).unwrap();
+    assert_eq!(kv1.get_type(), 2);
+    assert_eq!(kv2.get_type(), 1);
   }
 }

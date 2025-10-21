@@ -335,6 +335,50 @@ pub async fn handle(
       drop(tracks);
       Ok(())
     }
+    ControlMessage::SubscribeUpdate(m) => {
+      info!("received SubscribeUpdate message: {:?}", m);
+
+      // a subscribe update message contains subscription_request_id
+      // which is the request id of the subscription we want to update
+      let sub_request_id = m.subscription_request_id;
+      let requests = context.client_subscribe_requests.read().await;
+      let request = requests.get(&sub_request_id);
+      if request.is_none() {
+        warn!(
+          "request not found for subscriber request id: {:?}",
+          sub_request_id
+        );
+        return Err(TerminationCode::ProtocolViolation);
+      }
+      let request = request.unwrap();
+
+      // we can not get the full track name and hence, the track instance
+      let full_track_name = request.subscribe_request.get_full_track_name();
+      let tracks = context.tracks.read().await;
+      let track = tracks.get(&full_track_name);
+
+      if track.is_none() {
+        warn!("track not found for track name: {:?}", full_track_name);
+        return Err(TerminationCode::ProtocolViolation);
+      }
+
+      let track = track.unwrap();
+
+      if let Some(subscription) = track.get_subscription(context.connection_id).await {
+        let sub = subscription.read().await;
+        match sub.update_subscribe_message(*m).await {
+          Ok(_) => info!(
+            "subscription updated, track: {:?} subscriber: {}",
+            full_track_name, context.connection_id
+          ),
+          Err(e) => error!(
+            "subscription could not be updated, track: {:?} subscriber: {} error: {:?}",
+            full_track_name, context.connection_id, e
+          ),
+        }
+      }
+      Ok(())
+    }
     _ => {
       // no-op
       Ok(())

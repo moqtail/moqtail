@@ -23,6 +23,7 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 #[derive(Debug, PartialEq, Clone)]
 pub struct SubscribeUpdate {
   pub request_id: u64,
+  pub subscription_request_id: u64,
   pub start_location: Location,
   pub end_group: u64,
   pub subscriber_priority: u8,
@@ -33,6 +34,7 @@ pub struct SubscribeUpdate {
 impl SubscribeUpdate {
   pub fn new(
     request_id: u64,
+    subscription_request_id: u64,
     start_location: Location,
     end_group: u64,
     subscriber_priority: u8,
@@ -41,6 +43,7 @@ impl SubscribeUpdate {
   ) -> Self {
     Self {
       request_id,
+      subscription_request_id,
       start_location,
       end_group,
       subscriber_priority,
@@ -57,6 +60,7 @@ impl ControlMessageTrait for SubscribeUpdate {
 
     let mut payload = BytesMut::new();
     payload.put_vi(self.request_id)?;
+    payload.put_vi(self.subscription_request_id)?;
     payload.extend_from_slice(&self.start_location.serialize()?);
     payload.put_vi(self.end_group)?;
     payload.put_u8(self.subscriber_priority);
@@ -84,6 +88,7 @@ impl ControlMessageTrait for SubscribeUpdate {
 
   fn parse_payload(payload: &mut Bytes) -> Result<Box<Self>, ParseError> {
     let request_id = payload.get_vi()?;
+    let subscription_request_id = payload.get_vi()?;
     let start_location = Location::deserialize(payload)?;
     let end_group = payload.get_vi()?;
 
@@ -135,6 +140,7 @@ impl ControlMessageTrait for SubscribeUpdate {
 
     Ok(Box::new(SubscribeUpdate {
       request_id,
+      subscription_request_id,
       start_location,
       end_group,
       subscriber_priority,
@@ -156,6 +162,7 @@ mod tests {
   #[test]
   fn test_roundtrip() {
     let request_id = 120205;
+    let subscription_request_id = 54321;
     let start_location = Location {
       group: 81,
       object: 81,
@@ -169,6 +176,7 @@ mod tests {
     ];
     let subscribe_update = SubscribeUpdate {
       request_id,
+      subscription_request_id,
       start_location,
       end_group,
       subscriber_priority,
@@ -189,6 +197,7 @@ mod tests {
   #[test]
   fn test_excess_roundtrip() {
     let request_id = 120205;
+    let subscription_request_id = 54321;
     let start_location = Location {
       group: 81,
       object: 81,
@@ -202,6 +211,7 @@ mod tests {
     ];
     let subscribe_update = SubscribeUpdate {
       request_id,
+      subscription_request_id,
       start_location,
       end_group,
       subscriber_priority,
@@ -228,6 +238,7 @@ mod tests {
   #[test]
   fn test_partial_message() {
     let request_id = 120205;
+    let subscription_request_id = 54321;
     let start_location = Location {
       group: 81,
       object: 81,
@@ -241,6 +252,7 @@ mod tests {
     ];
     let subscribe_update = SubscribeUpdate {
       request_id,
+      subscription_request_id,
       start_location,
       end_group,
       subscriber_priority,

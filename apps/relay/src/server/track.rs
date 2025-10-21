@@ -131,6 +131,18 @@ impl Track {
     Ok(())
   }
 
+  // return the subscription for the client
+  // subscriber_id is the connection id of the client
+  pub async fn get_subscription(&self, subscriber_id: usize) -> Option<Arc<RwLock<Subscription>>> {
+    debug!(
+      "Getting subscription for subscriber_id: {} from track: {}",
+      subscriber_id, self.track_alias
+    );
+    let subscriptions = self.subscriptions.read().await;
+    // find the subscription by subscriber_id and finish it
+    subscriptions.get(&subscriber_id).cloned()
+  }
+
   pub async fn remove_subscription(&mut self, subscriber_id: usize) {
     info!(
       "Removing subscription for subscriber_id: {} from track: {}",

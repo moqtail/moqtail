@@ -26,6 +26,7 @@ use moqtail::model::control::constant::PublishDoneStatusCode;
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::publish_done::PublishDone;
 use moqtail::model::control::subscribe::Subscribe;
+use moqtail::model::control::subscribe_update::SubscribeUpdate;
 use moqtail::model::data::object::Object;
 use moqtail::transport::data_stream_handler::HeaderInfo;
 use std::collections::HashMap;
@@ -40,7 +41,7 @@ use wtransport::SendStream;
 #[derive(Debug, Clone)]
 pub struct Subscription {
   pub track_alias: u64,
-  pub subscribe_message: Subscribe,
+  pub subscribe_message: Arc<RwLock<Subscribe>>,
   subscriber: Arc<MOQTClient>,
   event_rx: Arc<Mutex<Option<UnboundedReceiver<TrackEvent>>>>,
   send_stream_last_object_ids: Arc<RwLock<HashMap<StreamId, Option<u64>>>>,
@@ -66,7 +67,7 @@ impl Subscription {
   ) -> Self {
     Self {
       track_alias,
-      subscribe_message,
+      subscribe_message: Arc::new(RwLock::new(subscribe_message)),
       subscriber,
       event_rx,
       send_stream_last_object_ids: Arc::new(RwLock::new(HashMap::new())),
@@ -123,6 +124,47 @@ impl Subscription {
     });
 
     sub
+  }
+
+  // This method updates the subscribe message with the new subscribe update
+  // It ensures that the Start Location does not decrease and the End Group does not increase
+  // Returns Ok if the update is successful
+  // Returns error if the update is invalid
+  pub async fn update_subscribe_message(&self, subscribe_update: SubscribeUpdate) -> Result<()> {
+    let mut subscribe_message = self.subscribe_message.write().await;
+    // map subscribe_update fields to subscribe_message
+    // The Start Location	MUST NOT decrease and the End Group MUST NOT increase.
+
+    if subscribe_update.start_location
+      > subscribe_message.start_location.clone().unwrap_or_default()
+      || subscribe_update.end_group < subscribe_message.end_group.unwrap_or(0)
+    {
+      // invalid update
+      return Err(anyhow::anyhow!(
+        "Invalid SubscribeUpdate: Start Location cannot decrease and End Group cannot increase"
+      ));
+    }
+
+    subscribe_message.start_location = Some(subscribe_update.start_location);
+    subscribe_message.end_group = Some(subscribe_update.end_group);
+    subscribe_message.subscriber_priority = subscribe_update.subscriber_priority;
+    subscribe_message.forward = subscribe_update.forward;
+
+    // update parameters. If a parameter included in SUBSCRIBE is not present in
+    // SUBSCRIBE_UPDATE, its value remains unchanged.  There is no mechanism
+    // to remove a parameter from a subscription.
+    for param in subscribe_update.subscribe_parameters {
+      if let Some(existing_param) = subscribe_message
+        .subscribe_parameters
+        .iter_mut()
+        .find(|p| p.is_same_type(&param))
+      {
+        *existing_param = param;
+      } else {
+        subscribe_message.subscribe_parameters.push(param);
+      }
+    }
+    Ok(())
   }
 
   pub async fn finish(&mut self) {
@@ -550,11 +592,16 @@ impl Subscription {
     status_code: PublishDoneStatusCode,
     reason: &str,
   ) -> Result<(), anyhow::Error> {
+    let request_id = {
+      let subscribe_message = self.subscribe_message.read().await;
+      subscribe_message.request_id
+    };
+
     let reason_phrase = ReasonPhrase::try_new(reason.to_string())
       .map_err(|e| anyhow::anyhow!("Failed to create reason phrase: {:?}", e))?;
 
     let publish_done = PublishDone::new(
-      self.subscribe_message.request_id,
+      request_id,
       status_code,
       0, // stream_count - set to 0 as track is ending
       reason_phrase,
@@ -567,7 +614,7 @@ impl Subscription {
 
     info!(
       "Sent PublishDone to subscriber {} track: {} for request_id {}",
-      self.client_connection_id, self.track_alias, self.subscribe_message.request_id
+      self.client_connection_id, self.track_alias, request_id
     );
 
     Ok(())

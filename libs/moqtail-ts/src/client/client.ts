@@ -726,7 +726,7 @@ export class MOQtailClient {
       if (this.requests.has(subscriptionRequestId)) {
         const request = this.requests.get(subscriptionRequestId)!
         if (request instanceof SubscribeRequest) {
-          if (request.startLocation && request.startLocation.compare(startLocation) != 1)
+          if (request.startLocation && request.startLocation.compare(startLocation) == 1)
             throw new ProtocolViolationError(
               'MOQtailClient.subscribeUpdate',
               'Subscriptions can only become more narrow, not wider.  The start location must not decrease',

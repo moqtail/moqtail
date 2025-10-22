@@ -174,8 +174,6 @@ export type SubscribeOptions = {
  * ```
  */
 export type SubscribeUpdateOptions = {
-  /** Request id for this update operation (bigint or number). */
-  requestId: bigint
   /** The original SUBSCRIBE request id (bigint) being updated. */
   subscriptionRequestId: bigint
   /** New narrowed {@link Location} start. */

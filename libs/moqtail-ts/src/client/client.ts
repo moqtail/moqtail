@@ -720,7 +720,7 @@ export class MOQtailClient {
   async subscribeUpdate(args: SubscribeUpdateOptions): Promise<void> {
     this.#ensureActive()
     let { subscriptionRequestId, priority, forward, parameters, startLocation, endGroup } = args
-    if (startLocation.group >= endGroup)
+    if (endGroup && startLocation.group >= endGroup)
       throw new ProtocolViolationError('MOQtailClient.subscribeUpdate', 'End group must be greater than start group')
     try {
       if (this.requests.has(subscriptionRequestId)) {

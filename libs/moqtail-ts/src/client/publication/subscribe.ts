@@ -201,7 +201,7 @@ export class SubscribePublication {
     this.#startLocation = msg.startLocation
     this.#endGroup = msg.endGroup
     this.#subscriberPriority = msg.subscriberPriority
-    this.#forward = msg.forward
+    this.#forward = msg.forward === 1
     this.#subscribeParameters = VersionSpecificParameters.fromKeyValuePairs(msg.parameters)
   }
 

@@ -27,7 +27,7 @@ export class SubscribeUpdate {
     public startLocation: Location,
     public endGroup: bigint,
     public subscriberPriority: number,
-    public forward: boolean,
+    public forward: number,
     public parameters: KeyValuePair[],
   ) {}
 
@@ -41,7 +41,7 @@ export class SubscribeUpdate {
     payload.putLocation(this.startLocation)
     payload.putVI(this.endGroup)
     payload.putU8(this.subscriberPriority)
-    payload.putU8(this.forward ? 1 : 0)
+    payload.putU8(this.forward)
     payload.putVI(this.parameters.length)
 
     for (const param of this.parameters) {
@@ -61,13 +61,7 @@ export class SubscribeUpdate {
     const startLocation = buf.getLocation()
     const endGroup = buf.getVI()
     const subscriberPriority = buf.getU8()
-    const forwardRaw = buf.getU8()
-    let forward: boolean
-    if (forwardRaw === 0) forward = false
-    else if (forwardRaw === 1) forward = true
-    else {
-      throw new Error(`SubscribeUpdate.deserialize forward: Invalid value ${forwardRaw}`)
-    }
+    const forward = buf.getU8()
 
     const paramCountBig = buf.getVI()
     const paramCount = Number(paramCountBig)
@@ -123,7 +117,7 @@ if (import.meta.vitest) {
 
   describe('SubscribeUpdate', () => {
     function buildTestUpdate(): SubscribeUpdate {
-      return new SubscribeUpdate(120205n, 120204n, new Location(81n, 81n), 25n, 31, true, [
+      return new SubscribeUpdate(120205n, 120204n, new Location(81n, 81n), 25n, 31, 1, [
         KeyValuePair.tryNewVarInt(0n, 10n),
         KeyValuePair.tryNewBytes(1n, new TextEncoder().encode("I'll sync you up")),
       ])
@@ -186,7 +180,7 @@ if (import.meta.vitest) {
       }
     })
     it('should handle empty parameters', () => {
-      const update = new SubscribeUpdate(120206n, 120205n, new Location(82n, 82n), 26n, 15, false, [])
+      const update = new SubscribeUpdate(120206n, 120205n, new Location(82n, 82n), 26n, 15, 0, [])
       const serialized = update.serialize()
       const buf = new ByteBuffer()
       buf.putBytes(serialized.toUint8Array())
@@ -194,25 +188,6 @@ if (import.meta.vitest) {
       buf.getU16()
       const deserialized = SubscribeUpdate.parsePayload(buf)
       expect(deserialized.equals(update)).toBe(true)
-    })
-
-    it('should throw on invalid forward value', () => {
-      const update = buildTestUpdate()
-      const serialized = update.serialize()
-      const buf = new ByteBuffer()
-      buf.putBytes(serialized.toUint8Array())
-
-      buf.getVI() // Skip message type
-      buf.getVI() // Skip subscriptionRequestId
-      buf.getU16() // Skip payload length
-      buf.getVI() // Skip requestId
-      buf.getLocation() // Skip startLocation
-      buf.getVI() // Skip endGroup
-      buf.getU8() // Skip subscriberPriority
-
-      // Overwrite forward byte
-      buf.toUint8Array()[buf.offset] = 99 // Invalid value
-      expect(() => SubscribeUpdate.parsePayload(buf)).toThrow('Invalid value')
     })
   })
 }

@@ -65,7 +65,7 @@ export class SubscribeRequest implements PromiseLike<SubscribeOk | SubscribeErro
   update(msg: SubscribeUpdate): void {
     this.startLocation = msg.startLocation
     this.endGroup = msg.endGroup
-    this.forward = msg.forward
+    this.forward = msg.forward === 1
     this.priority = msg.subscriberPriority
     this.subscribeParameters = msg.parameters
   }

@@ -174,7 +174,6 @@ export class RecvStream {
               previousObjectId = object.objectId
             }
             this.#internalBuffer.commit()
-            console.log('new object', object)
             controller.enqueue(object)
             if (this.onDataReceived) this.onDataReceived(object)
             continue

@@ -256,7 +256,9 @@ impl Subscription {
     let discard_end_group = discard_end_group;
 
     if subscribe_update.start_location > state.start_location.clone().unwrap_or_default()
-      || (!discard_end_group && subscribe_update.end_group - 1 < state.end_group)
+      || (!discard_end_group
+        && subscribe_update.end_group > 0
+        && subscribe_update.end_group - 1 < state.end_group)
     {
       // invalid update
       return Err(anyhow::anyhow!(
@@ -265,7 +267,7 @@ impl Subscription {
     }
 
     state.start_location = Some(subscribe_update.start_location);
-    if !discard_end_group {
+    if !discard_end_group && subscribe_update.end_group > 0 {
       state.end_group = subscribe_update.end_group - 1; // end group + 1 is sent in sub. update
     }
     // update parameters. If a parameter included in SUBSCRIBE is not present in

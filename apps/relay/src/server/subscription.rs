@@ -228,6 +228,8 @@ impl Subscription {
     // map subscribe_update fields to subscribe_message
     // The Start Location	MUST NOT decrease and the End Group MUST NOT increase.
 
+    info!("Updating subscription {:?}", subscribe_update);
+
     let mut discard_end_group = false;
     if matches!(
       subscribe_update.forward,
@@ -266,7 +268,10 @@ impl Subscription {
       ));
     }
 
+    // update subscription state
     state.start_location = Some(subscribe_update.start_location);
+    state.subscriber_priority = subscribe_update.subscriber_priority;
+    state.last_forward_action = Some(subscribe_update.forward);
     if !discard_end_group && subscribe_update.end_group > 0 {
       state.end_group = subscribe_update.end_group - 1; // end group + 1 is sent in sub. update
     }
@@ -284,6 +289,8 @@ impl Subscription {
         state.subscribe_parameters.push(param);
       }
     }
+
+    info!("updated state for {} state: {:?}", self.track_alias, state);
     Ok(())
   }
 
@@ -412,7 +419,15 @@ impl Subscription {
                     SubscriptionForwardAction::DontForwardInFuture
                       | SubscriptionForwardAction::ForwardInFuture
                   ))
+                  && state.forward_action_group <= object.location.group
                 {
+                  info!(
+                    "Forward action triggered {:?} track {} object location {:?} forward_action_group {}",
+                    &last_forward_action,
+                    self.track_alias,
+                    &object.location,
+                    state.forward_action_group
+                  );
                   drop(state);
                   let mut state = self.subscription_state.write().await;
                   state.forward = matches!(
@@ -421,6 +436,7 @@ impl Subscription {
                   );
                   forward = state.forward;
                   state.last_forward_action = None;
+                  state.forward_action_group = 0;
                 }
               }
 

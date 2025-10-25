@@ -511,10 +511,10 @@ impl From<PublishErrorCode> for u64 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum SubscriptionForwardAction {
-  DontForwardNow = 0b00000000,
-  ForwardNow = 0b00000001,
-  DontForwardInFuture = 0b00100000,
-  ForwardInFuture = 0b00100001,
+  DontForwardNow = 0,
+  ForwardNow = 1,
+  DontForwardInFuture = 0x40,
+  ForwardInFuture = 0x41,
 }
 
 impl TryFrom<u8> for SubscriptionForwardAction {

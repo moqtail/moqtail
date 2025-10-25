@@ -63,17 +63,14 @@ impl SubgroupObject {
       }
     }
 
-    if let Some(status) = self.object_status {
-      buf.put_vi(0u64)?;
-      buf.put_vi(status)?;
-    } else if let Some(payload) = &self.payload {
+    if let Some(payload) = &self.payload
+      && !payload.is_empty()
+    {
       buf.put_vi(payload.len())?;
       buf.extend_from_slice(payload);
     } else {
-      return Err(ParseError::ProtocolViolation {
-        context: "SubgroupObject::serialize",
-        details: "No object status, no payload".to_string(),
-      });
+      buf.put_vi(0u64)?;
+      buf.put_vi(self.object_status.unwrap_or(ObjectStatus::Normal))?;
     }
 
     Ok(buf.freeze())

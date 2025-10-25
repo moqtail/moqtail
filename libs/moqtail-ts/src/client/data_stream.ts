@@ -156,6 +156,7 @@ export class RecvStream {
 
   async #ingestLoop(controller: ReadableStreamDefaultController<FetchObject | SubgroupObject>) {
     try {
+      let previousObjectId: bigint | undefined = undefined
       while (true) {
         // Try to parse an object from buffer
         if (this.#internalBuffer.remaining > 0) {
@@ -168,9 +169,12 @@ export class RecvStream {
               object = SubgroupObject.deserialize(
                 this.#internalBuffer,
                 SubgroupHeaderType.hasExtensions(this.header.type),
+                previousObjectId,
               )
+              previousObjectId = object.objectId
             }
             this.#internalBuffer.commit()
+            console.log('new object', object)
             controller.enqueue(object)
             if (this.onDataReceived) this.onDataReceived(object)
             continue

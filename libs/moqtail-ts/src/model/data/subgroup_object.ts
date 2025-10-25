@@ -46,6 +46,7 @@ export class SubgroupObject {
     return new SubgroupObject(objectId, extensionHeaders, null, payload)
   }
 
+  // TODO: object delta encoding is missing here...
   serialize(): FrozenByteBuffer {
     const buf = new ByteBuffer()
     buf.putVI(this.objectId)
@@ -66,8 +67,13 @@ export class SubgroupObject {
     return buf.freeze()
   }
 
-  static deserialize(buf: BaseByteBuffer, hasExtensions: boolean): SubgroupObject {
-    const objectId = buf.getVI()
+  static deserialize(
+    buf: BaseByteBuffer,
+    hasExtensions: boolean,
+    previousObjectId: bigint | undefined,
+  ): SubgroupObject {
+    const objectDelta = buf.getVI()
+    let objectId = previousObjectId !== undefined ? previousObjectId + objectDelta + BigInt(1) : objectDelta
     let extensionHeaders: KeyValuePair[] | null = null
     if (hasExtensions) {
       extensionHeaders = []
@@ -100,7 +106,7 @@ if (import.meta.vitest) {
       ]
       const payload = new TextEncoder().encode('01239gjawkk92837aldmi')
       const frozen = SubgroupObject.newWithPayload(objectId, extensionHeaders, payload).serialize()
-      const parsed = SubgroupObject.deserialize(frozen, true)
+      const parsed = SubgroupObject.deserialize(frozen, true, undefined)
       expect(parsed.objectId).toBe(objectId)
       expect(parsed.extensionHeaders).toEqual(extensionHeaders)
       expect(parsed.payload).toEqual(payload)
@@ -119,7 +125,7 @@ if (import.meta.vitest) {
       const excess = new Uint8Array([9, 1, 1])
       buf.putBytes(excess)
       const frozen = buf.freeze()
-      const parsed = SubgroupObject.deserialize(frozen, true)
+      const parsed = SubgroupObject.deserialize(frozen, true, undefined)
       expect(parsed.objectId).toBe(objectId)
       expect(parsed.extensionHeaders).toEqual(extensionHeaders)
       expect(parsed.payload).toEqual(payload)
@@ -138,7 +144,7 @@ if (import.meta.vitest) {
       const partial = serialized.slice(0, upper)
       const frozen = new FrozenByteBuffer(partial)
       expect(() => {
-        SubgroupObject.deserialize(frozen, true)
+        SubgroupObject.deserialize(frozen, true, undefined)
       }).toThrow()
     })
   })

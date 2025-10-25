@@ -358,11 +358,19 @@ impl Subscription {
   }
 
   async fn receive(&mut self) {
+    debug!(
+      "Receiving for subscriber: {} track: {}",
+      self.client_connection_id, self.track_alias
+    );
     let mut event_rx_guard = self.event_rx.lock().await;
 
     if let Some(ref mut event_rx) = *event_rx_guard {
       match event_rx.recv().await {
         Some(event) => {
+          debug!(
+            "Event received for subscriber: {} track: {} event: {:?}",
+            self.client_connection_id, self.track_alias, event
+          );
           if *self.finished.read().await {
             return;
           }
@@ -385,7 +393,11 @@ impl Subscription {
                 }
 
                 // if the object is after the end group, finish the subscription
-                if object.location.group > state.end_group {
+                if state.end_group > 0 && object.location.group > state.end_group {
+                  info!(
+                    "Finishing subscription for subscriber: {} track: {}",
+                    self.client_connection_id, self.track_alias
+                  );
                   self.finish().await;
                   return;
                 }

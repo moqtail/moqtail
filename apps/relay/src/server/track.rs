@@ -151,7 +151,7 @@ impl Track {
     let mut subscriptions = self.subscriptions.write().await;
     // find the subscription by subscriber_id and finish it
     if let Some(subscription) = subscriptions.get(&subscriber_id) {
-      let mut sub = subscription.write().await;
+      let sub = subscription.write().await;
       sub.finish().await;
     }
     subscriptions.remove(&subscriber_id);

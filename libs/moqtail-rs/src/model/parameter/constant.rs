@@ -50,6 +50,7 @@ pub enum VersionSpecificParameterType {
   AuthorizationToken = 0x01,
   DeliveryTimeout = 0x02,
   MaxCacheDuration = 0x04,
+  ForwardActionGroup = 0x40,
 }
 
 impl TryFrom<u64> for VersionSpecificParameterType {
@@ -60,6 +61,7 @@ impl TryFrom<u64> for VersionSpecificParameterType {
       0x01 => Ok(VersionSpecificParameterType::AuthorizationToken),
       0x02 => Ok(VersionSpecificParameterType::DeliveryTimeout),
       0x04 => Ok(VersionSpecificParameterType::MaxCacheDuration),
+      0x40 => Ok(VersionSpecificParameterType::ForwardActionGroup),
       _ => Err(ParseError::InvalidType {
         context: "VersionSpecificParameterType::try_from(u64)",
         details: format!("Invalid type, got {value}"),

@@ -366,7 +366,7 @@ pub async fn handle(
 
       if let Some(subscription) = track.get_subscription(context.connection_id).await {
         let sub = subscription.read().await;
-        match sub.update_subscribe_message(*m).await {
+        match sub.update_subscription(*m).await {
           Ok(_) => info!(
             "subscription updated, track: {:?} subscriber: {}",
             full_track_name, context.connection_id

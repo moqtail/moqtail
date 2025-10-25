@@ -17,6 +17,7 @@ use super::control_message::ControlMessageTrait;
 use crate::model::common::location::Location;
 use crate::model::common::pair::KeyValuePair;
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
+use crate::model::control::constant::SubscriptionForwardAction;
 use crate::model::error::ParseError;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
@@ -27,7 +28,7 @@ pub struct SubscribeUpdate {
   pub start_location: Location,
   pub end_group: u64,
   pub subscriber_priority: u8,
-  pub forward: bool,
+  pub forward: SubscriptionForwardAction,
   pub subscribe_parameters: Vec<KeyValuePair>,
 }
 
@@ -38,7 +39,7 @@ impl SubscribeUpdate {
     start_location: Location,
     end_group: u64,
     subscriber_priority: u8,
-    forward: bool,
+    forward: SubscriptionForwardAction,
     subscribe_parameters: Vec<KeyValuePair>,
   ) -> Self {
     Self {
@@ -64,7 +65,7 @@ impl ControlMessageTrait for SubscribeUpdate {
     payload.extend_from_slice(&self.start_location.serialize()?);
     payload.put_vi(self.end_group)?;
     payload.put_u8(self.subscriber_priority);
-    payload.put_u8(if self.forward { 1u8 } else { 0u8 });
+    payload.put_u8(self.forward.into());
     payload.put_vi(self.subscribe_parameters.len())?;
     for param in &self.subscribe_parameters {
       payload.extend_from_slice(&param.serialize()?);
@@ -110,16 +111,14 @@ impl ControlMessageTrait for SubscribeUpdate {
     }
 
     let forward_raw = payload.get_u8();
-    let forward = match forward_raw {
-      0 => false,
-      1 => true,
-      _ => {
-        return Err(ParseError::ProtocolViolation {
-          context: "Subscribe::parse_payload(forward)",
-          details: format!("Invalid value: {forward_raw}"),
-        });
-      }
-    };
+    let forward = forward_raw
+      .try_into()
+      .map_err(|_| ParseError::CastingError {
+        context: "SubscribeUpdate::parse_payload(forward)",
+        from_type: "u8",
+        to_type: "SubscriptionForwardAction",
+        details: format!("invalid SubscriptionForwardAction value: {}", forward_raw),
+      })?;
 
     let param_count_u64 = payload.get_vi()?;
     let param_count: usize =
@@ -169,7 +168,7 @@ mod tests {
     };
     let end_group = 25;
     let subscriber_priority = 31;
-    let forward = true;
+    let forward = SubscriptionForwardAction::ForwardNow;
     let subscribe_parameters = vec![
       KeyValuePair::try_new_varint(0, 10).unwrap(),
       KeyValuePair::try_new_bytes(1, Bytes::from_static(b"I'll sync you up")).unwrap(),
@@ -204,7 +203,7 @@ mod tests {
     };
     let end_group = 25;
     let subscriber_priority = 31;
-    let forward = true;
+    let forward = SubscriptionForwardAction::ForwardNow;
     let subscribe_parameters = vec![
       KeyValuePair::try_new_varint(0, 10).unwrap(),
       KeyValuePair::try_new_bytes(1, Bytes::from_static(b"I'll sync you up")).unwrap(),
@@ -245,7 +244,7 @@ mod tests {
     };
     let end_group = 25;
     let subscriber_priority = 31;
-    let forward = true;
+    let forward = SubscriptionForwardAction::ForwardNow;
     let subscribe_parameters = vec![
       KeyValuePair::try_new_varint(0, 10).unwrap(),
       KeyValuePair::try_new_bytes(1, Bytes::from_static(b"I'll sync you up")).unwrap(),

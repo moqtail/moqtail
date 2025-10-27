@@ -27,6 +27,7 @@ import { Header } from '../model/data/header'
 import { NotEnoughBytesError, ProtocolViolationError, TimeoutError } from '../model/error/error'
 
 export class SendStream {
+  #lastObjectId?: bigint
   readonly #writer: WritableStreamDefaultWriter<Uint8Array>
   readonly onDataSent?: (data: SubgroupObject | SubgroupHeader | FetchObject | FetchHeader) => void
   private constructor(
@@ -51,7 +52,8 @@ export class SendStream {
   }
 
   async write(object: FetchObject | SubgroupObject): Promise<void> {
-    const serializedObject = object.serialize().toUint8Array()
+    const serializedObject = object.serialize(this.#lastObjectId).toUint8Array()
+    this.#lastObjectId = object.objectId
     await this.#writer.write(serializedObject)
     if (this.onDataSent) this.onDataSent(object)
   }

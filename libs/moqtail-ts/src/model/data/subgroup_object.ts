@@ -47,9 +47,14 @@ export class SubgroupObject {
   }
 
   // TODO: object delta encoding is missing here...
-  serialize(): FrozenByteBuffer {
+  serialize(previousObjectId: bigint | undefined): FrozenByteBuffer {
+    // the first object's object id is encoded as is
+    // for the subsequent objects, the object id is encoded
+    // as the delta to the previous object id
+    let objectIdDelta = previousObjectId ? this.objectId - previousObjectId - BigInt(1) : this.objectId
+
     const buf = new ByteBuffer()
-    buf.putVI(this.objectId)
+    buf.putVI(objectIdDelta)
     const extensionHeaders = new ByteBuffer()
     if (this.extensionHeaders) {
       for (const header of this.extensionHeaders) {
@@ -105,7 +110,7 @@ if (import.meta.vitest) {
         KeyValuePair.tryNewBytes(1, new TextEncoder().encode('wololoo')),
       ]
       const payload = new TextEncoder().encode('01239gjawkk92837aldmi')
-      const frozen = SubgroupObject.newWithPayload(objectId, extensionHeaders, payload).serialize()
+      const frozen = SubgroupObject.newWithPayload(objectId, extensionHeaders, payload).serialize(undefined)
       const parsed = SubgroupObject.deserialize(frozen, true, undefined)
       expect(parsed.objectId).toBe(objectId)
       expect(parsed.extensionHeaders).toEqual(extensionHeaders)
@@ -119,7 +124,9 @@ if (import.meta.vitest) {
         KeyValuePair.tryNewBytes(1, new TextEncoder().encode('wololoo')),
       ]
       const payload = new TextEncoder().encode('01239gjawkk92837aldmi')
-      const serialized = SubgroupObject.newWithPayload(objectId, extensionHeaders, payload).serialize().toUint8Array()
+      const serialized = SubgroupObject.newWithPayload(objectId, extensionHeaders, payload)
+        .serialize(undefined)
+        .toUint8Array()
       const buf = new ByteBuffer()
       buf.putBytes(serialized)
       const excess = new Uint8Array([9, 1, 1])
@@ -139,7 +146,9 @@ if (import.meta.vitest) {
         KeyValuePair.tryNewBytes(1, new TextEncoder().encode('wololoo')),
       ]
       const payload = new TextEncoder().encode('01239gjawkk92837aldmi')
-      const serialized = SubgroupObject.newWithPayload(objectId, extensionHeaders, payload).serialize().toUint8Array()
+      const serialized = SubgroupObject.newWithPayload(objectId, extensionHeaders, payload)
+        .serialize(undefined)
+        .toUint8Array()
       const upper = Math.floor(serialized.length / 2)
       const partial = serialized.slice(0, upper)
       const frozen = new FrozenByteBuffer(partial)

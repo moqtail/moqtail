@@ -369,7 +369,7 @@ mod tests {
     let mut buf = BytesMut::from(&orig.serialize().unwrap()[..]);
     buf.extend_from_slice(b"EXTRA");
     let mut bytes = buf.freeze();
-    let got = VersionParameter::deserialize(&mut bytes).unwrap();
+    let _ = VersionParameter::deserialize(&mut bytes).unwrap();
     assert_eq!(bytes.remaining(), 5);
     assert_eq!(&bytes[..], b"EXTRA");
   }
@@ -380,7 +380,7 @@ mod tests {
     let mut buf = BytesMut::from(&orig.serialize().unwrap()[..]);
     buf.extend_from_slice(b"++");
     let mut bytes = buf.freeze();
-    let got = VersionParameter::deserialize(&mut bytes).unwrap();
+    let _ = VersionParameter::deserialize(&mut bytes).unwrap();
     assert_eq!(bytes.remaining(), 2);
     assert_eq!(&bytes[..], b"++");
   }

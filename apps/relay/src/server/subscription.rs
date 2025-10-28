@@ -48,9 +48,9 @@ use wtransport::SendStream;
 #[derive(Debug, Clone)]
 pub struct SubscriptionState {
   pub subscriber_priority: u8,
-  pub group_order: GroupOrder,
+  pub _group_order: GroupOrder,
   pub forward: bool,
-  pub filter_type: FilterType,
+  pub _filter_type: FilterType,
   pub start_location: Option<Location>,
   pub end_group: u64,
   pub subscribe_parameters: Vec<KeyValuePair>,
@@ -59,30 +59,6 @@ pub struct SubscriptionState {
 }
 
 impl SubscriptionState {
-  pub fn new(
-    subscriber_priority: u8,
-    group_order: GroupOrder,
-    forward: bool,
-    filter_type: FilterType,
-    start_location: Option<Location>,
-    end_group: u64,
-    subscribe_parameters: Vec<KeyValuePair>,
-    last_forward_action: Option<SubscriptionForwardAction>,
-    forward_action_group: u64,
-  ) -> Self {
-    Self {
-      subscriber_priority,
-      group_order,
-      forward,
-      filter_type,
-      start_location,
-      end_group,
-      subscribe_parameters,
-      last_forward_action,
-      forward_action_group,
-    }
-  }
-
   pub fn get_forward_action_group(subscribe_parameters: &[KeyValuePair]) -> Option<u64> {
     // look up in the subscribe parameter
     for param in subscribe_parameters {
@@ -112,17 +88,17 @@ impl From<Subscribe> for SubscriptionState {
     let forward_action_group =
       SubscriptionState::get_forward_action_group(&subscribe.subscribe_parameters).unwrap_or(0);
 
-    Self::new(
-      subscribe.subscriber_priority,
-      subscribe.group_order,
+    Self {
+      subscriber_priority: subscribe.subscriber_priority,
+      _group_order: subscribe.group_order,
       forward,
-      subscribe.filter_type,
-      subscribe.start_location,
-      subscribe.end_group.unwrap_or(0),
-      subscribe.subscribe_parameters,
-      Some(subscribe.forward),
+      _filter_type: subscribe.filter_type,
+      start_location: subscribe.start_location,
+      end_group: subscribe.end_group.unwrap_or(0),
+      subscribe_parameters: subscribe.subscribe_parameters,
+      last_forward_action: Some(subscribe.forward),
       forward_action_group,
-    )
+    }
   }
 }
 
@@ -392,7 +368,7 @@ impl Subscription {
             } => {
               let object_received_time = utils::passed_time_since_start();
 
-              let mut forward = true;
+              let mut forward;
               {
                 let state = self.subscription_state.read().await;
                 if let Some(start) = &state.start_location

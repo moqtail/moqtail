@@ -507,3 +507,35 @@ impl From<PublishErrorCode> for u64 {
     value as u64
   }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum SubscriptionForwardAction {
+  DontForwardNow = 0,
+  ForwardNow = 1,
+  DontForwardInFuture = 0x40,
+  ForwardInFuture = 0x41,
+}
+
+impl TryFrom<u8> for SubscriptionForwardAction {
+  type Error = ParseError;
+
+  fn try_from(value: u8) -> Result<Self, Self::Error> {
+    match value {
+      0x0 => Ok(SubscriptionForwardAction::DontForwardNow),
+      0x1 => Ok(SubscriptionForwardAction::ForwardNow),
+      0x40 => Ok(SubscriptionForwardAction::DontForwardInFuture),
+      0x41 => Ok(SubscriptionForwardAction::ForwardInFuture),
+      _ => Err(ParseError::InvalidType {
+        context: "SubscriptionForwardAction::try_from(u8)",
+        details: format!("Invalid type, got {value}"),
+      }),
+    }
+  }
+}
+
+impl From<SubscriptionForwardAction> for u8 {
+  fn from(value: SubscriptionForwardAction) -> Self {
+    value as u8
+  }
+}

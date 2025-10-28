@@ -174,8 +174,6 @@ export type SubscribeOptions = {
  * ```
  */
 export type SubscribeUpdateOptions = {
-  /** Request id for this update operation (bigint or number). */
-  requestId: bigint
   /** The original SUBSCRIBE request id (bigint) being updated. */
   subscriptionRequestId: bigint
   /** New narrowed {@link Location} start. */
@@ -185,7 +183,7 @@ export type SubscribeUpdateOptions = {
   /** Updated subscriber priority (same constraints as initial subscribe). 0 is highest, 255 is lowest. */
   priority: number
   /** Updated direction flag. */
-  forward: boolean
+  forward: number
   /** Optional additional {@link VersionSpecificParameters}; existing parameters persist if omitted. */
   parameters?: VersionSpecificParameters
 }

@@ -27,6 +27,7 @@ import { Header } from '../model/data/header'
 import { NotEnoughBytesError, ProtocolViolationError, TimeoutError } from '../model/error/error'
 
 export class SendStream {
+  #lastObjectId?: bigint
   readonly #writer: WritableStreamDefaultWriter<Uint8Array>
   readonly onDataSent?: (data: SubgroupObject | SubgroupHeader | FetchObject | FetchHeader) => void
   private constructor(
@@ -51,7 +52,8 @@ export class SendStream {
   }
 
   async write(object: FetchObject | SubgroupObject): Promise<void> {
-    const serializedObject = object.serialize().toUint8Array()
+    const serializedObject = object.serialize(this.#lastObjectId).toUint8Array()
+    this.#lastObjectId = object.objectId
     await this.#writer.write(serializedObject)
     if (this.onDataSent) this.onDataSent(object)
   }
@@ -156,6 +158,7 @@ export class RecvStream {
 
   async #ingestLoop(controller: ReadableStreamDefaultController<FetchObject | SubgroupObject>) {
     try {
+      let previousObjectId: bigint | undefined = undefined
       while (true) {
         // Try to parse an object from buffer
         if (this.#internalBuffer.remaining > 0) {
@@ -168,7 +171,9 @@ export class RecvStream {
               object = SubgroupObject.deserialize(
                 this.#internalBuffer,
                 SubgroupHeaderType.hasExtensions(this.header.type),
+                previousObjectId,
               )
+              previousObjectId = object.objectId
             }
             this.#internalBuffer.commit()
             controller.enqueue(object)

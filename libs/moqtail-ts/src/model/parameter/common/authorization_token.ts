@@ -15,7 +15,7 @@
  */
 
 import { KeyValuePair } from '../../common/pair'
-import { VersionSpecificParameterType, TokenAliasType, tokenAliasTypeFromNumber } from '../constant'
+import { TokenAliasType, tokenAliasTypeFromNumber, CommonType } from '../constant'
 import { Parameter } from '../parameter'
 import { ByteBuffer, FrozenByteBuffer } from '../../common/byte_buffer'
 
@@ -26,7 +26,7 @@ export type AuthTokenVariant =
   | { aliasType: TokenAliasType.UseValue; tokenType: bigint; tokenValue: Uint8Array }
 
 export class AuthorizationToken implements Parameter {
-  static readonly TYPE = VersionSpecificParameterType.AuthorizationToken
+  static readonly TYPE = CommonType.AuthorizationToken
   private constructor(public readonly variant: AuthTokenVariant) {}
 
   static newDelete(tokenAlias: bigint | number): AuthorizationToken {

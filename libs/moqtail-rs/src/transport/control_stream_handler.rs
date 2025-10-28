@@ -191,7 +191,9 @@ mod tests {
   use crate::model::common::tuple::Tuple;
   use crate::model::common::varint::BufMutVarIntExt;
   use crate::model::control::client_setup::ClientSetup;
-  use crate::model::control::constant::{ControlMessageType, FilterType, GroupOrder};
+  use crate::model::control::constant::{
+    ControlMessageType, FilterType, GroupOrder, SubscriptionForwardAction,
+  };
   use crate::model::control::constant::{DRAFT_14, PublishNamespaceErrorCode};
   use crate::model::control::publish_namespace::PublishNamespace;
   use crate::model::control::publish_namespace_cancel::PublishNamespaceCancel;
@@ -350,7 +352,7 @@ mod tests {
     let track_name = "${Name}".to_string();
     let subscriber_priority = 31;
     let group_order = GroupOrder::Original;
-    let forward = true;
+    let forward = SubscriptionForwardAction::ForwardNow;
     let filter_type = FilterType::AbsoluteRange;
     let start_location = Location {
       group: 81,

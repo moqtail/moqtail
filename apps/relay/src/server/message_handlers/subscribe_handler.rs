@@ -17,6 +17,7 @@ use crate::server::session::Session;
 use crate::server::session_context::SessionContext;
 use crate::server::track::Track;
 use core::result::Result;
+use moqtail::model::control::constant::SubscriptionForwardAction;
 use moqtail::model::error::TerminationCode;
 use moqtail::model::{
   common::reason_phrase::ReasonPhrase, control::control_message::ControlMessage,
@@ -68,7 +69,7 @@ pub async fn handle(
         match m.get_publisher_by_full_track_name(&full_track_name).await {
           Some(p) => Some(p),
           None => {
-            error!(
+            info!(
               "no publisher found for full track name: {:?}",
               &full_track_name
             );
@@ -86,7 +87,7 @@ pub async fn handle(
       let publisher = if let Some(publisher) = publisher {
         publisher.clone()
       } else {
-        error!(
+        info!(
           "no publisher found for track namespace: {:?}",
           track_namespace
         );
@@ -125,6 +126,8 @@ pub async fn handle(
 
           // send the subscribe message to the publisher
           let mut new_sub = sub.clone();
+          // relay wants to get data but it does not forward data to subscribers that has forward = false
+          new_sub.forward = SubscriptionForwardAction::ForwardNow;
           new_sub.request_id =
             Session::get_next_relay_request_id(context.relay_next_request_id.clone()).await;
 
@@ -333,6 +336,50 @@ pub async fn handle(
       let track = tracks.get_mut(&full_track_name).unwrap();
       track.remove_subscription(context.connection_id).await;
       drop(tracks);
+      Ok(())
+    }
+    ControlMessage::SubscribeUpdate(m) => {
+      info!("received SubscribeUpdate message: {:?}", m);
+
+      // a subscribe update message contains subscription_request_id
+      // which is the request id of the subscription we want to update
+      let sub_request_id = m.subscription_request_id;
+      let requests = context.client_subscribe_requests.read().await;
+      let request = requests.get(&sub_request_id);
+      if request.is_none() {
+        warn!(
+          "request not found for subscriber request id: {:?}",
+          sub_request_id
+        );
+        return Err(TerminationCode::ProtocolViolation);
+      }
+      let request = request.unwrap();
+
+      // we can not get the full track name and hence, the track instance
+      let full_track_name = request.subscribe_request.get_full_track_name();
+      let tracks = context.tracks.read().await;
+      let track = tracks.get(&full_track_name);
+
+      if track.is_none() {
+        warn!("track not found for track name: {:?}", full_track_name);
+        return Err(TerminationCode::ProtocolViolation);
+      }
+
+      let track = track.unwrap();
+
+      if let Some(subscription) = track.get_subscription(context.connection_id).await {
+        let sub = subscription.read().await;
+        match sub.update_subscription(*m).await {
+          Ok(_) => info!(
+            "subscription updated, track: {:?} subscriber: {}",
+            full_track_name, context.connection_id
+          ),
+          Err(e) => error!(
+            "subscription could not be updated, track: {:?} subscriber: {} error: {:?}",
+            full_track_name, context.connection_id, e
+          ),
+        }
+      }
       Ok(())
     }
     _ => {

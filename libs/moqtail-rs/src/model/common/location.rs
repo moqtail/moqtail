@@ -17,7 +17,7 @@ use bytes::{Bytes, BytesMut};
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
 use crate::model::error::ParseError;
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub struct Location {
   pub group: u64,
   pub object: u64,

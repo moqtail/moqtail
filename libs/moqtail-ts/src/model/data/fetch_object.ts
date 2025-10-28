@@ -77,8 +77,8 @@ export class FetchObject {
       payload,
     )
   }
-
-  serialize(): FrozenByteBuffer {
+  // to be compatible with subgroup_object serialize method
+  serialize(_previousObjectId?: BigInt): FrozenByteBuffer {
     const buf = new ByteBuffer()
     buf.putVI(this.location.group)
     buf.putVI(this.subgroupId)

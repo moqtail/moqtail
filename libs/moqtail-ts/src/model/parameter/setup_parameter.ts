@@ -15,15 +15,19 @@
  */
 
 import { KeyValuePair } from '../common/pair'
-import { Path } from './setup/path'
 import { MaxRequestId } from './setup/max_request_id'
-import { MaxAuthTokenCacheSize } from './setup/max_auth_token_cache_size'
+import { Path, MaxAuthTokenCacheSize } from './setup'
+import { AuthorizationToken } from './common'
+import { TokenAliasType } from './constant'
 
-export type SetupParameter = Path | MaxRequestId | MaxAuthTokenCacheSize
+export type SetupParameter = Path | MaxRequestId | MaxAuthTokenCacheSize | AuthorizationToken
 export namespace SetupParameter {
   export function fromKeyValuePair(pair: KeyValuePair): SetupParameter | undefined {
     return (
-      Path.fromKeyValuePair(pair) || MaxRequestId.fromKeyValuePair(pair) || MaxAuthTokenCacheSize.fromKeyValuePair(pair)
+      Path.fromKeyValuePair(pair) ||
+      MaxRequestId.fromKeyValuePair(pair) ||
+      MaxAuthTokenCacheSize.fromKeyValuePair(pair) ||
+      AuthorizationToken.fromKeyValuePair(pair)
     )
   }
   export function toKeyValuePair(param: SetupParameter): KeyValuePair {
@@ -37,6 +41,9 @@ export namespace SetupParameter {
   }
   export function isMaxAuthTokenCacheSize(param: SetupParameter): param is MaxAuthTokenCacheSize {
     return param instanceof MaxAuthTokenCacheSize
+  }
+  export function isAuthorizationToken(param: SetupParameter): param is AuthorizationToken {
+    return param instanceof AuthorizationToken
   }
 }
 
@@ -58,6 +65,11 @@ export class SetupParameters {
     return this
   }
 
+  addAuthorizationToken(auth: AuthorizationToken): this {
+    this.kvps.push(auth.toKeyValuePair())
+    return this
+  }
+
   addRaw(pair: KeyValuePair): this {
     this.kvps.push(pair)
     return this
@@ -71,7 +83,10 @@ export class SetupParameters {
     const result: SetupParameter[] = []
     for (const kvp of kvps) {
       const parsed =
-        Path.fromKeyValuePair(kvp) || MaxRequestId.fromKeyValuePair(kvp) || MaxAuthTokenCacheSize.fromKeyValuePair(kvp)
+        Path.fromKeyValuePair(kvp) ||
+        MaxRequestId.fromKeyValuePair(kvp) ||
+        MaxAuthTokenCacheSize.fromKeyValuePair(kvp) ||
+        AuthorizationToken.fromKeyValuePair(kvp)
       if (parsed) result.push(parsed)
     }
     return result
@@ -83,12 +98,22 @@ if (import.meta.vitest) {
 
   describe('SetupParameters', () => {
     test('build and fromKeyValuePairs returns correct parameters', () => {
-      const kvps = new SetupParameters().addPath('abc').addMaxRequestId(42n).addMaxAuthTokenCacheSize(123n).build()
+      const kvps = new SetupParameters()
+        .addPath('abc')
+        .addMaxRequestId(42n)
+        .addMaxAuthTokenCacheSize(123n)
+        .addAuthorizationToken(AuthorizationToken.newUseAlias(1n))
+        .build()
       const parsed = SetupParameters.fromKeyValuePairs(kvps)
-      expect(parsed.length).toBe(3)
+      expect(parsed.length).toBe(4)
       expect(parsed[0] && SetupParameter.isPath(parsed[0]) && parsed[0].moqtPath === 'abc').toBe(true)
       expect(parsed[1] && SetupParameter.isMaxRequestId(parsed[1]) && parsed[1].maxId === 42n).toBe(true)
       expect(parsed[2] && SetupParameter.isMaxAuthTokenCacheSize(parsed[2]) && parsed[2].maxSize === 123n).toBe(true)
+      expect(
+        parsed[3] &&
+          SetupParameter.isAuthorizationToken(parsed[3]) &&
+          parsed[3].variant.aliasType === TokenAliasType.UseAlias,
+      ).toBe(true)
     })
     test('fromKeyValuePairs skips unknown parameter', () => {
       const unknown = KeyValuePair.tryNewVarInt(998, 1n)

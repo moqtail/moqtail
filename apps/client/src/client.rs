@@ -379,7 +379,6 @@ impl Client {
     let track_name = "demo".to_string();
     let subscriber_priority = 1;
     let group_order = GroupOrder::Ascending;
-    let forward = true;
     let subscribe_parameters = vec![];
     let sub = Subscribe::new_latest_object(
       request_id,
@@ -387,7 +386,7 @@ impl Client {
       track_name,
       subscriber_priority,
       group_order,
-      forward,
+      constant::SubscriptionForwardAction::ForwardNow,
       subscribe_parameters,
     );
     self

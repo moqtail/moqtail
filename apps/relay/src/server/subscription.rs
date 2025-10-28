@@ -21,12 +21,20 @@ use crate::server::track_cache::TrackCache;
 use crate::server::utils;
 use anyhow::Result;
 use bytes::Bytes;
+use moqtail::model::common::location::Location;
+use moqtail::model::common::pair::KeyValuePair;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
+use moqtail::model::control::constant::FilterType;
+use moqtail::model::control::constant::GroupOrder;
 use moqtail::model::control::constant::PublishDoneStatusCode;
+use moqtail::model::control::constant::SubscriptionForwardAction;
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::publish_done::PublishDone;
 use moqtail::model::control::subscribe::Subscribe;
+use moqtail::model::control::subscribe_update::SubscribeUpdate;
 use moqtail::model::data::object::Object;
+use moqtail::model::parameter::constant::VersionSpecificParameterType;
+use moqtail::model::parameter::version_parameter::VersionParameter;
 use moqtail::transport::data_stream_handler::HeaderInfo;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -38,9 +46,67 @@ use tracing::{debug, error, info};
 use wtransport::SendStream;
 
 #[derive(Debug, Clone)]
+pub struct SubscriptionState {
+  pub subscriber_priority: u8,
+  pub _group_order: GroupOrder,
+  pub forward: bool,
+  pub _filter_type: FilterType,
+  pub start_location: Option<Location>,
+  pub end_group: u64,
+  pub subscribe_parameters: Vec<KeyValuePair>,
+  pub last_forward_action: Option<SubscriptionForwardAction>,
+  pub forward_action_group: u64,
+}
+
+impl SubscriptionState {
+  pub fn get_forward_action_group(subscribe_parameters: &[KeyValuePair]) -> Option<u64> {
+    // look up in the subscribe parameter
+    for param in subscribe_parameters {
+      // Try to convert the parameter to a VersionParameter
+      if let Ok(version_param) = VersionParameter::try_from(param.clone()) {
+        // Check if this is a ForwardActionGroup parameter
+        if param.get_type() == VersionSpecificParameterType::ForwardActionGroup as u64
+          && let VersionParameter::ForwardActionGroup { group_id } = version_param
+        {
+          return Some(group_id);
+        }
+      }
+    }
+    None
+  }
+}
+
+impl From<Subscribe> for SubscriptionState {
+  fn from(subscribe: Subscribe) -> Self {
+    let forward = match subscribe.forward {
+      SubscriptionForwardAction::DontForwardNow => false,
+      SubscriptionForwardAction::ForwardNow => true,
+      SubscriptionForwardAction::ForwardInFuture => false,
+      SubscriptionForwardAction::DontForwardInFuture => true,
+    };
+
+    let forward_action_group =
+      SubscriptionState::get_forward_action_group(&subscribe.subscribe_parameters).unwrap_or(0);
+
+    Self {
+      subscriber_priority: subscribe.subscriber_priority,
+      _group_order: subscribe.group_order,
+      forward,
+      _filter_type: subscribe.filter_type,
+      start_location: subscribe.start_location,
+      end_group: subscribe.end_group.unwrap_or(0),
+      subscribe_parameters: subscribe.subscribe_parameters,
+      last_forward_action: Some(subscribe.forward),
+      forward_action_group,
+    }
+  }
+}
+
+#[derive(Debug, Clone)]
 pub struct Subscription {
+  pub request_id: u64,
   pub track_alias: u64,
-  pub subscribe_message: Subscribe,
+  pub subscription_state: Arc<RwLock<SubscriptionState>>,
   subscriber: Arc<MOQTClient>,
   event_rx: Arc<Mutex<Option<UnboundedReceiver<TrackEvent>>>>,
   send_stream_last_object_ids: Arc<RwLock<HashMap<StreamId, Option<u64>>>>,
@@ -56,6 +122,7 @@ pub struct Subscription {
 impl Subscription {
   fn create_instance(
     track_alias: u64,
+    request_id: u64,
     subscribe_message: Subscribe,
     subscriber: Arc<MOQTClient>,
     event_rx: Arc<Mutex<Option<UnboundedReceiver<TrackEvent>>>>,
@@ -66,7 +133,8 @@ impl Subscription {
   ) -> Self {
     Self {
       track_alias,
-      subscribe_message,
+      request_id,
+      subscription_state: Arc::new(RwLock::new(subscribe_message.into())),
       subscriber,
       event_rx,
       send_stream_last_object_ids: Arc::new(RwLock::new(HashMap::new())),
@@ -90,6 +158,7 @@ impl Subscription {
     let event_rx = Arc::new(Mutex::new(Some(event_rx)));
     let sub = Self::create_instance(
       track_alias,
+      subscribe_message.request_id,
       subscribe_message,
       subscriber,
       event_rx,
@@ -108,6 +177,7 @@ impl Subscription {
             break;
           }
         }
+
         tokio::select! {
           biased;
           _ = instance.receive() => {
@@ -125,10 +195,94 @@ impl Subscription {
     sub
   }
 
-  pub async fn finish(&mut self) {
-    let mut is_finished = self.finished.write().await;
-    *is_finished = true;
-    drop(is_finished); // Explicitly drop the lock to allow other tasks to proceed
+  // This method updates the subscribe message with the new subscribe update
+  // It ensures that the Start Location does not decrease and the End Group does not increase
+  // Returns Ok if the update is successful
+  // Returns error if the update is invalid
+  pub async fn update_subscription(&self, subscribe_update: SubscribeUpdate) -> Result<()> {
+    let mut state = self.subscription_state.write().await;
+    // map subscribe_update fields to subscribe_message
+    // The Start Location	MUST NOT decrease and the End Group MUST NOT increase.
+
+    info!("Updating subscription {:?}", subscribe_update);
+
+    let mut discard_end_group = false;
+    if matches!(
+      subscribe_update.forward,
+      SubscriptionForwardAction::DontForwardInFuture
+    ) || matches!(
+      subscribe_update.forward,
+      SubscriptionForwardAction::ForwardInFuture
+    ) {
+      // if forward action is in the future we expect to get a sub parameter that contains the group id
+      let forward_action_group =
+        SubscriptionState::get_forward_action_group(&subscribe_update.subscribe_parameters);
+      if forward_action_group.is_some() {
+        state.forward_action_group = forward_action_group.unwrap_or(0);
+      } else {
+        // if the group id is not sent as a parameter we accept end_group
+        state.forward_action_group = subscribe_update.end_group;
+        // reset end group
+        discard_end_group = true;
+      }
+    } else {
+      state.forward = matches!(
+        subscribe_update.forward,
+        SubscriptionForwardAction::ForwardNow
+      );
+    }
+    let discard_end_group = discard_end_group;
+
+    if subscribe_update.start_location > state.start_location.clone().unwrap_or_default()
+      || (!discard_end_group
+        && subscribe_update.end_group > 0
+        && subscribe_update.end_group - 1 < state.end_group)
+    {
+      // invalid update
+      return Err(anyhow::anyhow!(
+        "Invalid SubscribeUpdate: Start Location cannot decrease and End Group cannot increase"
+      ));
+    }
+
+    // update subscription state
+    state.start_location = Some(subscribe_update.start_location);
+    state.subscriber_priority = subscribe_update.subscriber_priority;
+    state.last_forward_action = Some(subscribe_update.forward);
+    if !discard_end_group && subscribe_update.end_group > 0 {
+      state.end_group = subscribe_update.end_group - 1; // end group + 1 is sent in sub. update
+    }
+    // update parameters. If a parameter included in SUBSCRIBE is not present in
+    // SUBSCRIBE_UPDATE, its value remains unchanged.  There is no mechanism
+    // to remove a parameter from a subscription.
+    for param in subscribe_update.subscribe_parameters {
+      if let Some(existing_param) = state
+        .subscribe_parameters
+        .iter_mut()
+        .find(|p| p.is_same_type(&param))
+      {
+        *existing_param = param;
+      } else {
+        state.subscribe_parameters.push(param);
+      }
+    }
+
+    info!("updated state for {} state: {:?}", self.track_alias, state);
+    Ok(())
+  }
+
+  pub async fn finish(&self) {
+    if *self.finished.read().await {
+      // already finished
+      return;
+    }
+
+    info!(
+      "Finishing subscription for subscriber: {} and track: {}",
+      self.client_connection_id, self.track_alias
+    );
+
+    let mut finished = self.finished.write().await;
+    *finished = true;
 
     let mut receiver_guard = self.event_rx.lock().await;
     let _ = receiver_guard.take(); // This replaces the Some(receiver) with None
@@ -189,11 +343,19 @@ impl Subscription {
   }
 
   async fn receive(&mut self) {
+    debug!(
+      "Receiving for subscriber: {} track: {}",
+      self.client_connection_id, self.track_alias
+    );
     let mut event_rx_guard = self.event_rx.lock().await;
 
     if let Some(ref mut event_rx) = *event_rx_guard {
       match event_rx.recv().await {
         Some(event) => {
+          debug!(
+            "Event received for subscriber: {} track: {} event: {:?}",
+            self.client_connection_id, self.track_alias, event
+          );
           if *self.finished.read().await {
             return;
           }
@@ -205,6 +367,58 @@ impl Subscription {
               header_info,
             } => {
               let object_received_time = utils::passed_time_since_start();
+
+              let mut forward;
+              {
+                let state = self.subscription_state.read().await;
+                if let Some(start) = &state.start_location
+                  && object.location < *start
+                {
+                  return;
+                }
+
+                // if the object is after the end group, finish the subscription
+                if state.end_group > 0 && object.location.group > state.end_group {
+                  info!(
+                    "Finishing subscription for subscriber: {} track: {}",
+                    self.client_connection_id, self.track_alias
+                  );
+                  self.finish().await;
+                  return;
+                }
+
+                forward = state.forward;
+
+                if let Some(last_forward_action) = &state.last_forward_action.clone()
+                  && (matches!(
+                    &last_forward_action,
+                    SubscriptionForwardAction::DontForwardInFuture
+                      | SubscriptionForwardAction::ForwardInFuture
+                  ))
+                  && state.forward_action_group <= object.location.group
+                {
+                  info!(
+                    "Forward action triggered {:?} track {} object location {:?} forward_action_group {}",
+                    &last_forward_action,
+                    self.track_alias,
+                    &object.location,
+                    state.forward_action_group
+                  );
+                  drop(state);
+                  let mut state = self.subscription_state.write().await;
+                  state.forward = matches!(
+                    &last_forward_action,
+                    SubscriptionForwardAction::ForwardInFuture
+                  );
+                  forward = state.forward;
+                  state.last_forward_action = None;
+                  state.forward_action_group = 0;
+                }
+              }
+
+              if !forward {
+                return;
+              }
 
               // Handle header info if this is the first object
               let send_stream = if let Some(header) = header_info {
@@ -334,8 +548,7 @@ impl Subscription {
               }
 
               // Finish the subscription since the publisher is gone
-              let mut is_finished = self.finished.write().await;
-              *is_finished = true;
+              self.finish().await;
             }
           }
         }
@@ -346,14 +559,12 @@ impl Subscription {
             "Event receiver closed for subscriber: {} track: {}, finishing subscription",
             self.client_connection_id, self.track_alias
           );
-          let mut is_finished = self.finished.write().await;
-          *is_finished = true;
+          self.finish().await;
         }
       }
     } else {
       // No receiver available, subscription has been finished
-      let mut is_finished = self.finished.write().await;
-      *is_finished = true;
+      self.finish().await;
     }
   }
 
@@ -554,7 +765,7 @@ impl Subscription {
       .map_err(|e| anyhow::anyhow!("Failed to create reason phrase: {:?}", e))?;
 
     let publish_done = PublishDone::new(
-      self.subscribe_message.request_id,
+      self.request_id,
       status_code,
       0, // stream_count - set to 0 as track is ending
       reason_phrase,
@@ -567,7 +778,7 @@ impl Subscription {
 
     info!(
       "Sent PublishDone to subscriber {} track: {} for request_id {}",
-      self.client_connection_id, self.track_alias, self.subscribe_message.request_id
+      self.client_connection_id, self.track_alias, self.request_id
     );
 
     Ok(())

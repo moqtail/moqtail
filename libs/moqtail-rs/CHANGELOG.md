@@ -1,5 +1,11 @@
 # moqtail-rs
 
+## 0.7.1
+
+### Patch Changes
+
+- [#72](https://github.com/moqtail/moqtail/pull/72) [`af87c49`](https://github.com/moqtail/moqtail/commit/af87c49ee21cf255a0d47e218e793f58aa5ecadb) Thanks [@zafergurel](https://github.com/zafergurel)! - improved subscribe update handling
+
 ## 0.7.0
 
 ### Minor Changes

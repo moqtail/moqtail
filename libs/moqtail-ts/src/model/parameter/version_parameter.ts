@@ -15,9 +15,8 @@
  */
 
 import { KeyValuePair } from '../common/pair'
-import { MaxCacheDuration } from './version/max_cache_duration'
-import { DeliveryTimeout } from './version/delivery_timeout'
-import { AuthorizationToken } from './version/authorization_token'
+import { MaxCacheDuration, DeliveryTimeout } from './version'
+import { AuthorizationToken } from './common'
 
 export type VersionSpecificParameter = MaxCacheDuration | DeliveryTimeout | AuthorizationToken
 export namespace VersionSpecificParameter {

@@ -16,6 +16,19 @@
 
 import { InvalidTypeError } from '../error'
 
+export enum CommonType {
+  AuthorizationToken = 0x03,
+}
+
+export function commonTypeFromNumber(value: number): CommonType {
+  switch (value) {
+    case 0x03:
+      return CommonType.AuthorizationToken
+    default:
+      throw new InvalidTypeError('commonTypeFromNumber', `Invalid common type: ${value}`)
+  }
+}
+
 export enum SetupParameterType {
   Path = 0x01,
   MaxRequestId = 0x02,

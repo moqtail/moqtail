@@ -179,7 +179,7 @@ impl Track {
     subscriptions.get(&subscriber_id).cloned()
   }
 
-  pub async fn remove_subscription(&mut self, subscriber_id: usize) {
+  pub async fn remove_subscription(&self, subscriber_id: usize) {
     info!(
       "Removing subscription for subscriber_id: {} from track: {}",
       subscriber_id, self.track_alias

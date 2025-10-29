@@ -359,15 +359,25 @@ impl Session {
     }
 
     // Remove client from client_manager
-    let mut cm = client_manager_cleanup.write().await;
-    cm.remove(context.connection_id).await;
+    {
+      let cm = client_manager_cleanup.read().await;
+      cm.remove(context.connection_id).await;
+    }
+    debug!(
+      "handle_connection_close | removed client {} from client manager",
+      context.connection_id
+    );
 
     // Remove client from all remaining tracks (as a subscriber)
-    for (_, track) in tracks_cleanup.write().await.iter_mut() {
+    for (_, track) in tracks_cleanup.read().await.iter() {
       track.remove_subscription(context.connection_id).await;
     }
-
     debug!(
+      "handle_connection_close | removed client {} from all tracks",
+      context.connection_id
+    );
+
+    info!(
       "handle_connection_close | cleanup done ({})",
       context.connection_id
     );
@@ -439,7 +449,7 @@ impl Session {
                   Some(track.clone())
                 } else {
                   error!(
-                    "track not found: {:?} full track name: {:?} 1",
+                    "track not found: {:?} full track name: {:?}",
                     track_alias, &full_track_name
                   );
                   return Err(anyhow::Error::msg(TerminationCode::InternalError.to_json()));
@@ -459,19 +469,20 @@ impl Session {
           };
 
           let track = current_track.as_ref().unwrap();
-          let _ = if first_object {
-            track
-              .new_object(
-                &stream_id.clone().unwrap().clone(),
-                &object,
-                header_info.as_ref(),
-              )
-              .await
-          } else {
-            track
-              .new_object(&stream_id.clone().unwrap().clone(), &object, None)
-              .await
-          };
+
+          if let Err(e) = track
+            .new_object(
+              &stream_id.clone().unwrap().clone(),
+              &object,
+              header_info.as_ref(),
+            )
+            .await
+          {
+            warn!(
+              "Failed to process object track: alias: {:?} track name: {:?} error: {:?}",
+              track_alias, &track.track_name, e
+            );
+          }
 
           object_count += 1;
           first_object = false; // reset the first object flag after processing the header

@@ -13,13 +13,16 @@
 // limitations under the License.
 
 use crate::model::{
-  common::pair::KeyValuePair, error::ParseError, parameter::constant::SetupParameterType,
+  common::pair::KeyValuePair,
+  error::ParseError,
+  parameter::{authorization_token::AuthorizationToken, constant::SetupParameterType},
 };
 use bytes::{Bytes, BytesMut};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SetupParameter {
   Path { moqt_path: String },
   MaxRequestId { request_id: u64 },
+  AuthorizationToken { token: AuthorizationToken },
   MaxAuthTokenCacheSize { max_size: u64 },
 }
 impl SetupParameter {
@@ -29,6 +32,10 @@ impl SetupParameter {
 
   pub fn new_max_request_id(request_id: u64) -> Self {
     SetupParameter::MaxRequestId { request_id }
+  }
+
+  pub fn new_auth_token(token: AuthorizationToken) -> Self {
+    SetupParameter::AuthorizationToken { token }
   }
 
   pub fn new_max_auth_token_cache_size(max_size: u64) -> Self {
@@ -53,6 +60,22 @@ impl SetupParameter {
         let slice = kvp.serialize()?;
         bytes.extend_from_slice(&slice);
       }
+      Self::AuthorizationToken { token } => match token.serialize() {
+        Ok(payload_bytes) => {
+          let kvp = KeyValuePair::try_new_bytes(
+            SetupParameterType::AuthorizationToken as u64,
+            payload_bytes,
+          )?;
+          let slice = kvp.serialize()?;
+          bytes.extend_from_slice(&slice);
+        }
+        Err(e) => {
+          return Err(ParseError::Other {
+            context: "SetupParameter::serialize",
+            msg: e.to_string(),
+          });
+        }
+      },
       Self::MaxAuthTokenCacheSize { max_size } => {
         let kvp = KeyValuePair::try_new_varint(
           SetupParameterType::MaxAuthTokenCacheSize as u64,
@@ -82,6 +105,7 @@ impl SetupParameter {
       }
       KeyValuePair::Bytes { type_value, value } => {
         let type_value = SetupParameterType::try_from(*type_value)?;
+        let mut payload_bytes = value.clone();
         match type_value {
           SetupParameterType::Path => {
             let moqt_path =
@@ -91,6 +115,9 @@ impl SetupParameter {
               })?;
             Ok(SetupParameter::Path { moqt_path })
           }
+          SetupParameterType::AuthorizationToken => Ok(SetupParameter::new_auth_token(
+            AuthorizationToken::deserialize(&mut payload_bytes)?,
+          )),
           _ => Err(ParseError::KeyValueFormattingError {
             context: "SetupParameter::deserialize",
           }),
@@ -114,6 +141,10 @@ impl TryInto<KeyValuePair> for SetupParameter {
       SetupParameter::MaxRequestId { request_id } => {
         KeyValuePair::try_new_varint(SetupParameterType::MaxRequestId as u64, request_id)
       }
+      SetupParameter::AuthorizationToken { token } => KeyValuePair::try_new_bytes(
+        SetupParameterType::AuthorizationToken as u64,
+        token.serialize()?,
+      ),
       SetupParameter::MaxAuthTokenCacheSize { max_size } => {
         KeyValuePair::try_new_varint(SetupParameterType::MaxAuthTokenCacheSize as u64, max_size)
       }

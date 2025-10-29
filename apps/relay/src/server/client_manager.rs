@@ -36,9 +36,9 @@ impl ClientManager {
     info!("Added client connection_id: {}", connection_id);
   }
 
-  pub(crate) async fn remove(&mut self, connection_id: usize) {
+  pub(crate) async fn remove(&self, connection_id: usize) -> Option<Arc<MOQTClient>> {
     let mut clients = self.clients.write().await;
-    clients.remove(&connection_id);
+    clients.remove(&connection_id)
   }
 
   pub(crate) async fn get(&self, connection_id: usize) -> Option<Arc<MOQTClient>> {

@@ -105,7 +105,9 @@ impl KeyValuePair {
           available: bytes.remaining(),
         });
       }
+
       let value = bytes.copy_to_bytes(len);
+
       Ok(KeyValuePair::Bytes { type_value, value })
     }
   }

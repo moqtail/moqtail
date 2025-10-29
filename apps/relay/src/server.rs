@@ -22,6 +22,7 @@ mod session;
 mod session_context;
 mod stream_id;
 mod subscription;
+mod token_logger;
 mod track;
 mod track_cache;
 mod utils;

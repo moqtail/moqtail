@@ -13,32 +13,19 @@
 // limitations under the License.
 
 use crate::model::{
-  common::{pair::KeyValuePair, varint::BufMutVarIntExt},
+  common::pair::KeyValuePair,
   error::ParseError,
-  parameter::constant::{TokenAliasType, VersionSpecificParameterType},
+  parameter::{authorization_token::AuthorizationToken, constant::VersionSpecificParameterType},
 };
 
 use bytes::{Bytes, BytesMut};
 
-use crate::model::common::varint::BufVarIntExt;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VersionParameter {
-  MaxCacheDuration {
-    duration: u64,
-  },
-  DeliveryTimeout {
-    object_timeout: u64,
-  },
-  AuthorizationToken {
-    alias_type: u64,
-    token_alias: Option<u64>,
-    token_type: Option<u64>,
-    token_value: Option<Bytes>,
-  },
-  ForwardActionGroup {
-    group_id: u64,
-  },
+  MaxCacheDuration { duration: u64 },
+  DeliveryTimeout { object_timeout: u64 },
+  AuthorizationToken { token: AuthorizationToken },
+  ForwardActionGroup { group_id: u64 },
 }
 
 impl VersionParameter {
@@ -50,44 +37,12 @@ impl VersionParameter {
     VersionParameter::DeliveryTimeout { object_timeout }
   }
 
-  pub fn new_auth_token_delete(token_alias: u64) -> Self {
-    VersionParameter::AuthorizationToken {
-      alias_type: TokenAliasType::Delete as u64,
-      token_alias: Some(token_alias),
-      token_type: None,
-      token_value: None,
-    }
-  }
-
   pub fn new_forward_action_group(group_id: u64) -> Self {
     VersionParameter::ForwardActionGroup { group_id }
   }
 
-  pub fn new_auth_token_register(token_alias: u64, token_type: u64, token_value: Bytes) -> Self {
-    VersionParameter::AuthorizationToken {
-      alias_type: TokenAliasType::Register as u64,
-      token_alias: Some(token_alias),
-      token_type: Some(token_type),
-      token_value: Some(token_value),
-    }
-  }
-
-  pub fn new_auth_token_use_alias(token_alias: u64) -> Self {
-    VersionParameter::AuthorizationToken {
-      alias_type: TokenAliasType::UseAlias as u64,
-      token_alias: Some(token_alias),
-      token_type: None,
-      token_value: None,
-    }
-  }
-
-  pub fn new_auth_token_use_value(token_type: u64, token_value: Bytes) -> Self {
-    VersionParameter::AuthorizationToken {
-      alias_type: TokenAliasType::UseValue as u64,
-      token_alias: None,
-      token_type: Some(token_type),
-      token_value: Some(token_value),
-    }
+  pub fn new_auth_token(token: AuthorizationToken) -> Self {
+    VersionParameter::AuthorizationToken { token }
   }
 
   pub fn serialize(&self) -> Result<Bytes, ParseError> {
@@ -109,53 +64,22 @@ impl VersionParameter {
         let slice = kvp.serialize()?;
         bytes.extend_from_slice(&slice);
       }
-      VersionParameter::AuthorizationToken {
-        alias_type,
-        token_alias,
-        token_type,
-        token_value,
-      } => {
-        let mut payload_bytes = BytesMut::new();
-        payload_bytes.put_vi(*alias_type)?;
-        match *alias_type {
-          x if x == TokenAliasType::Delete as u64 => {
-            if let Some(token_alias) = token_alias {
-              payload_bytes.put_vi(*token_alias)?;
-            }
-          }
-          x if x == TokenAliasType::Register as u64 => {
-            if let (Some(token_alias), Some(token_type), Some(token_value)) =
-              (token_alias, token_type, token_value)
-            {
-              payload_bytes.put_vi(*token_alias)?;
-              payload_bytes.put_vi(*token_type)?;
-              payload_bytes.extend_from_slice(token_value);
-            }
-          }
-          x if x == TokenAliasType::UseAlias as u64 => {
-            if let Some(token_alias) = token_alias {
-              payload_bytes.put_vi(*token_alias)?;
-            }
-          }
-          x if x == TokenAliasType::UseValue as u64 => {
-            if let (Some(token_type), Some(token_value)) = (token_type, token_value) {
-              payload_bytes.put_vi(*token_type)?;
-              payload_bytes.extend_from_slice(token_value);
-            }
-          }
-          _ => {
-            return Err(ParseError::KeyValueFormattingError {
-              context: "VersionParameter::serialize: unknown alias_type",
-            });
-          }
+      VersionParameter::AuthorizationToken { token } => match token.serialize() {
+        Ok(payload_bytes) => {
+          let kvp = KeyValuePair::try_new_bytes(
+            VersionSpecificParameterType::AuthorizationToken as u64,
+            payload_bytes,
+          )?;
+          let slice = kvp.serialize()?;
+          bytes.extend_from_slice(&slice);
         }
-        let kvp = KeyValuePair::try_new_bytes(
-          VersionSpecificParameterType::AuthorizationToken as u64,
-          payload_bytes.freeze(),
-        )?;
-        let slice = kvp.serialize()?;
-        bytes.extend_from_slice(&slice);
-      }
+        Err(e) => {
+          return Err(ParseError::Other {
+            context: "VersionParameter::serialize",
+            msg: e.to_string(),
+          });
+        }
+      },
       VersionParameter::ForwardActionGroup { group_id } => {
         let kvp = KeyValuePair::try_new_varint(
           VersionSpecificParameterType::ForwardActionGroup as u64,
@@ -199,35 +123,9 @@ impl TryFrom<KeyValuePair> for VersionParameter {
         let type_value = VersionSpecificParameterType::try_from(type_value)?;
         let mut payload_bytes = value.clone();
         match type_value {
-          VersionSpecificParameterType::AuthorizationToken => {
-            let alias_type = payload_bytes.get_vi()?;
-            let alias_type = TokenAliasType::try_from(alias_type)?;
-            match alias_type {
-              TokenAliasType::Delete => {
-                let token_alias = payload_bytes.get_vi()?;
-                Ok(Self::new_auth_token_delete(token_alias))
-              }
-              TokenAliasType::Register => {
-                let token_alias = payload_bytes.get_vi()?;
-                let token_type = payload_bytes.get_vi()?;
-                let token_value = payload_bytes.clone();
-                Ok(Self::new_auth_token_register(
-                  token_alias,
-                  token_type,
-                  token_value,
-                ))
-              }
-              TokenAliasType::UseAlias => {
-                let token_alias = payload_bytes.get_vi()?;
-                Ok(Self::new_auth_token_use_alias(token_alias))
-              }
-              TokenAliasType::UseValue => {
-                let token_type = payload_bytes.get_vi()?;
-                let token_value = payload_bytes.clone();
-                Ok(Self::new_auth_token_use_value(token_type, token_value))
-              }
-            }
-          }
+          VersionSpecificParameterType::AuthorizationToken => Ok(VersionParameter::new_auth_token(
+            AuthorizationToken::deserialize(&mut payload_bytes)?,
+          )),
           _ => Err(ParseError::KeyValueFormattingError {
             context: "VersionParameter::deserialize",
           }),
@@ -240,9 +138,11 @@ impl TryFrom<KeyValuePair> for VersionParameter {
 #[cfg(test)]
 mod tests {
   use super::VersionParameter;
-  use crate::model::common::pair::KeyValuePair;
   use crate::model::common::varint::BufMutVarIntExt;
   use crate::model::parameter::constant::VersionSpecificParameterType;
+  use crate::model::{
+    common::pair::KeyValuePair, parameter::authorization_token::AuthorizationToken,
+  };
   use bytes::{Buf, Bytes, BytesMut};
 
   #[test]
@@ -267,7 +167,7 @@ mod tests {
 
   #[test]
   fn test_roundtrip_auth_token_delete() {
-    let orig = VersionParameter::new_auth_token_delete(42);
+    let orig = VersionParameter::new_auth_token(AuthorizationToken::new_delete(42));
     let serialized = orig.serialize().unwrap();
     let mut buf = serialized.clone();
     let got = VersionParameter::deserialize(&mut buf).unwrap();
@@ -277,7 +177,11 @@ mod tests {
 
   #[test]
   fn test_roundtrip_auth_token_register() {
-    let orig = VersionParameter::new_auth_token_register(5, 1, Bytes::from_static(b"bytes"));
+    let orig = VersionParameter::new_auth_token(AuthorizationToken::new_register(
+      5,
+      1,
+      Bytes::from_static(b"bytes"),
+    ));
     let serialized = orig.serialize().unwrap();
     let mut buf = serialized.clone();
     let got = VersionParameter::deserialize(&mut buf).unwrap();
@@ -287,7 +191,7 @@ mod tests {
 
   #[test]
   fn test_roundtrip_auth_token_use_alias() {
-    let orig = VersionParameter::new_auth_token_use_alias(100);
+    let orig = VersionParameter::new_auth_token(AuthorizationToken::new_use_alias(100));
     let serialized = orig.serialize().unwrap();
     let mut buf = serialized.clone();
     let got = VersionParameter::deserialize(&mut buf).unwrap();
@@ -297,7 +201,10 @@ mod tests {
 
   #[test]
   fn test_roundtrip_auth_token_use_value() {
-    let orig = VersionParameter::new_auth_token_use_value(16, Bytes::from_static(b"bytes"));
+    let orig = VersionParameter::new_auth_token(AuthorizationToken::new_use_value(
+      16,
+      Bytes::from_static(b"bytes"),
+    ));
     let serialized = orig.serialize().unwrap();
     let mut buf = serialized.clone();
     let got = VersionParameter::deserialize(&mut buf).unwrap();
@@ -365,7 +272,7 @@ mod tests {
 
   #[test]
   fn test_excess_bytes_after_auth_token_delete() {
-    let orig = VersionParameter::new_auth_token_delete(9);
+    let orig = VersionParameter::new_auth_token(AuthorizationToken::new_delete(9));
     let mut buf = BytesMut::from(&orig.serialize().unwrap()[..]);
     buf.extend_from_slice(b"EXTRA");
     let mut bytes = buf.freeze();
@@ -376,7 +283,11 @@ mod tests {
 
   #[test]
   fn test_excess_bytes_after_auth_token_register() {
-    let orig = VersionParameter::new_auth_token_register(1, 2, b"x".to_vec().into());
+    let orig = VersionParameter::new_auth_token(AuthorizationToken::new_register(
+      1,
+      2,
+      b"x".to_vec().into(),
+    ));
     let mut buf = BytesMut::from(&orig.serialize().unwrap()[..]);
     buf.extend_from_slice(b"++");
     let mut bytes = buf.freeze();
@@ -387,7 +298,7 @@ mod tests {
 
   #[test]
   fn test_excess_bytes_after_auth_token_use_alias() {
-    let orig = VersionParameter::new_auth_token_use_alias(3);
+    let orig = VersionParameter::new_auth_token(AuthorizationToken::new_use_alias(3));
     let mut buf = BytesMut::from(&orig.serialize().unwrap()[..]);
     buf.extend_from_slice(&[9]);
     let mut bytes = buf.freeze();
@@ -399,7 +310,8 @@ mod tests {
 
   #[test]
   fn test_excess_bytes_after_auth_token_use_value() {
-    let orig = VersionParameter::new_auth_token_use_value(7, b"v".to_vec().into());
+    let orig =
+      VersionParameter::new_auth_token(AuthorizationToken::new_use_value(7, b"v".to_vec().into()));
     let mut buf = BytesMut::from(&orig.serialize().unwrap()[..]);
     buf.extend_from_slice(&[0xAB, 0xCD]);
     let mut bytes = buf.freeze();

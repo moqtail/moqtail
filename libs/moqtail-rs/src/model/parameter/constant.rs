@@ -19,6 +19,7 @@ use crate::model::error::ParseError;
 pub enum SetupParameterType {
   Path = 0x01,
   MaxRequestId = 0x02,
+  AuthorizationToken = 0x03,
   MaxAuthTokenCacheSize = 0x04,
 }
 
@@ -29,6 +30,7 @@ impl TryFrom<u64> for SetupParameterType {
     match value {
       0x01 => Ok(SetupParameterType::Path),
       0x02 => Ok(SetupParameterType::MaxRequestId),
+      0x03 => Ok(SetupParameterType::AuthorizationToken),
       0x04 => Ok(SetupParameterType::MaxAuthTokenCacheSize),
       _ => Err(ParseError::InvalidType {
         context: "SetupParameterType::try_from(u64)",
@@ -47,8 +49,8 @@ impl From<SetupParameterType> for u64 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u64)]
 pub enum VersionSpecificParameterType {
-  AuthorizationToken = 0x01,
   DeliveryTimeout = 0x02,
+  AuthorizationToken = 0x03,
   MaxCacheDuration = 0x04,
   ForwardActionGroup = 0x40,
 }
@@ -58,8 +60,8 @@ impl TryFrom<u64> for VersionSpecificParameterType {
 
   fn try_from(value: u64) -> Result<Self, Self::Error> {
     match value {
-      0x01 => Ok(VersionSpecificParameterType::AuthorizationToken),
       0x02 => Ok(VersionSpecificParameterType::DeliveryTimeout),
+      0x03 => Ok(VersionSpecificParameterType::AuthorizationToken),
       0x04 => Ok(VersionSpecificParameterType::MaxCacheDuration),
       0x40 => Ok(VersionSpecificParameterType::ForwardActionGroup),
       _ => Err(ParseError::InvalidType {

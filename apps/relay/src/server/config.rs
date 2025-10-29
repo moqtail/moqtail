@@ -62,6 +62,12 @@ pub struct Cli {
   /// Enable object logging
   #[arg(long, default_value_t = false)]
   pub enable_object_logging: bool,
+  /// Enable token logging
+  #[arg(long, default_value_t = false)]
+  pub enable_token_logging: bool,
+  /// Token log file path
+  #[arg(long, default_value = "/tmp/tokens.csv")]
+  pub token_log_path: String,
   /// Initial maximum request ID
   #[arg(long, default_value_t = u64::MAX / 8)]
   pub initial_max_request_id: u64,
@@ -79,6 +85,8 @@ pub struct AppConfig {
   pub cache_expiration_type: CacheExpirationType,
   pub cache_expiration_minutes: u64,
   pub enable_object_logging: bool,
+  pub enable_token_logging: bool,
+  pub token_log_path: String,
   pub initial_max_request_id: u64,
 }
 
@@ -99,6 +107,8 @@ impl AppConfig {
         cache_expiration_type: cli.cache_expiration_type,
         cache_expiration_minutes: cli.cache_expiration_minutes,
         enable_object_logging: cli.enable_object_logging,
+        enable_token_logging: cli.enable_token_logging,
+        token_log_path: cli.token_log_path,
         initial_max_request_id: cli.initial_max_request_id,
       }
     })
@@ -161,6 +171,8 @@ mod tests {
       cache_expiration_type: CacheExpirationType::Ttl,
       cache_expiration_minutes: 30,
       enable_object_logging: false,
+      enable_token_logging: false,
+      token_log_path: "/tmp/moqtail_relay_tokens.csv".to_string(),
       initial_max_request_id: u64::MAX / 8,
     };
 
@@ -176,6 +188,8 @@ mod tests {
       cache_expiration_type: cli.cache_expiration_type,
       cache_expiration_minutes: cli.cache_expiration_minutes,
       enable_object_logging: cli.enable_object_logging,
+      enable_token_logging: cli.enable_token_logging,
+      token_log_path: cli.token_log_path,
       initial_max_request_id: cli.initial_max_request_id,
     };
 

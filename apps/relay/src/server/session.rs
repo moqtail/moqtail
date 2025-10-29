@@ -547,6 +547,42 @@ impl Session {
       .supported_versions
       .contains(&constant::DRAFT_14)
     {
+      // Check for authorization tokens and log them if token logging is enabled
+      if context.server_config.enable_token_logging {
+        // Import the necessary types
+        use moqtail::model::parameter::constant::TokenAliasType;
+        use moqtail::model::parameter::setup_parameter::SetupParameter;
+
+        // Iterate through setup parameters to find authorization tokens
+        for param in &client_setup.setup_parameters {
+          // Try to deserialize as a SetupParameter
+          if let Ok(setup_param) = SetupParameter::deserialize(param) {
+            // Check if it's an AuthorizationToken
+            if let SetupParameter::AuthorizationToken { token } = setup_param
+              && token.alias_type == TokenAliasType::Register as u64
+            {
+              // Get client port number from the connection
+              let client_port = context.connection.remote_address().port();
+
+              info!(
+                "Authorization token registered: {:?}, port: {:?}",
+                token, client_port
+              );
+
+              // Log the token information
+              if let Some(token_value) = token.token_value {
+                super::token_logger::log_token_registration(
+                  &token_value,
+                  context.connection_id,
+                  client_port,
+                  &context.server_config.token_log_path,
+                );
+              }
+            }
+          }
+        }
+      }
+
       let mut m = context.client_manager.write().await;
 
       let client = MOQTClient::new(

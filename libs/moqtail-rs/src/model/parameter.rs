@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+pub mod authorization_token;
 pub mod constant;
 pub mod setup_parameter;
 pub mod version_parameter;

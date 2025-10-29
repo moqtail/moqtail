@@ -283,6 +283,7 @@ impl Subscription {
 
     let mut finished = self.finished.write().await;
     *finished = true;
+    drop(finished);
 
     let mut receiver_guard = self.event_rx.lock().await;
     let _ = receiver_guard.take(); // This replaces the Some(receiver) with None

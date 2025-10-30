@@ -207,6 +207,7 @@ impl Subscription {
     info!("Updating subscription {:?}", subscribe_update);
 
     let mut discard_end_group = false;
+    let mut discard_start_location = false;
     if matches!(
       subscribe_update.forward,
       SubscriptionForwardAction::DontForwardInFuture
@@ -220,10 +221,17 @@ impl Subscription {
       if forward_action_group.is_some() {
         state.forward_action_group = forward_action_group.unwrap_or(0);
       } else {
-        // if the group id is not sent as a parameter we accept end_group
-        state.forward_action_group = subscribe_update.end_group;
-        // reset end group
-        discard_end_group = true;
+        // if the group id is not sent as a parameter we accept start or end
+        if matches!(
+          subscribe_update.forward,
+          SubscriptionForwardAction::DontForwardNow
+        ) {
+          state.forward_action_group = subscribe_update.end_group;
+          discard_end_group = true;
+        } else {
+          state.forward_action_group = subscribe_update.start_location.group;
+          discard_start_location = true;
+        }
       }
     } else {
       state.forward = matches!(
@@ -233,10 +241,13 @@ impl Subscription {
     }
     let discard_end_group = discard_end_group;
 
-    if subscribe_update.start_location > state.start_location.clone().unwrap_or_default()
+    // The Start Location MUST NOT decrease
+    // and the End Group MUST NOT increase.
+    if (!discard_start_location
+      && subscribe_update.start_location < state.start_location.clone().unwrap_or_default())
       || (!discard_end_group
         && subscribe_update.end_group > 0
-        && subscribe_update.end_group - 1 < state.end_group)
+        && subscribe_update.end_group - 1 > state.end_group)
     {
       // invalid update
       return Err(anyhow::anyhow!(
@@ -245,7 +256,9 @@ impl Subscription {
     }
 
     // update subscription state
-    state.start_location = Some(subscribe_update.start_location);
+    if !discard_start_location {
+      state.start_location = Some(subscribe_update.start_location);
+    }
     state.subscriber_priority = subscribe_update.subscriber_priority;
     state.last_forward_action = Some(subscribe_update.forward);
     if !discard_end_group && subscribe_update.end_group > 0 {

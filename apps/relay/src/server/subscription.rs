@@ -204,8 +204,6 @@ impl Subscription {
     // map subscribe_update fields to subscribe_message
     // The Start Location	MUST NOT decrease and the End Group MUST NOT increase.
 
-    info!("Updating subscription {:?}", subscribe_update);
-
     let mut discard_end_group = false;
     let mut discard_start_location = false;
     if matches!(
@@ -224,7 +222,7 @@ impl Subscription {
         // if the group id is not sent as a parameter we accept start or end
         if matches!(
           subscribe_update.forward,
-          SubscriptionForwardAction::DontForwardNow
+          SubscriptionForwardAction::DontForwardInFuture
         ) {
           state.forward_action_group = subscribe_update.end_group;
           discard_end_group = true;
@@ -239,19 +237,30 @@ impl Subscription {
         SubscriptionForwardAction::ForwardNow
       );
     }
-    let discard_end_group = discard_end_group;
 
     // The Start Location MUST NOT decrease
     // and the End Group MUST NOT increase.
-    if (!discard_start_location
-      && subscribe_update.start_location < state.start_location.clone().unwrap_or_default())
-      || (!discard_end_group
-        && subscribe_update.end_group > 0
-        && subscribe_update.end_group - 1 > state.end_group)
+    if !discard_start_location
+      && subscribe_update.start_location < state.start_location.clone().unwrap_or_default()
     {
       // invalid update
       return Err(anyhow::anyhow!(
-        "Invalid SubscribeUpdate: Start Location cannot decrease and End Group cannot increase"
+        "Invalid SubscribeUpdate: Start Location cannot decrease. Current start location: {:?} Subscribe Update Start Location: {:?}",
+        state.start_location,
+        subscribe_update.start_location
+      ));
+    }
+
+    if !discard_end_group
+      && subscribe_update.end_group > 0
+      && state.end_group > 0 // 0 means open-ended
+      && subscribe_update.end_group - 1 > state.end_group
+    {
+      // invalid update
+      return Err(anyhow::anyhow!(
+        "Invalid SubscribeUpdate: End Group cannot increase. Current end group: {} Subscribe Update End Group: {}",
+        state.end_group,
+        subscribe_update.end_group
       ));
     }
 
@@ -279,7 +288,10 @@ impl Subscription {
       }
     }
 
-    info!("updated state for {} state: {:?}", self.track_alias, state);
+    info!(
+      "update_subscription | new subscription state for {}: {:?}",
+      self.track_alias, state
+    );
     Ok(())
   }
 

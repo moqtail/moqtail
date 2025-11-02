@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::server::{Server, stream_id::StreamId};
 use anyhow::Result;
 use moqtail::model::{
   control::{constant, control_message::ControlMessage, server_setup::ServerSetup},
@@ -24,9 +25,8 @@ use moqtail::transport::{
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::RwLock;
 use tracing::{Instrument, debug, error, info, info_span, warn};
-use wtransport::{RecvStream, SendStream, endpoint::IncomingSession};
-
-use crate::server::{Server, stream_id::StreamId};
+use wtransport::endpoint::IncomingSession;
+use wtransport::stream::{RecvStream, SendStream};
 
 use super::{
   client::MOQTClient,
@@ -75,6 +75,18 @@ impl Session {
       connection,
       relay_next_request_id,
     ));
+
+    let cn = context.connection.clone();
+    tokio::spawn(async move {
+      loop {
+        info!(
+          "Bandwidth: {:?} connection id: {}",
+          cn.bandwidth(),
+          cn.stable_id()
+        );
+        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+      }
+    });
 
     tokio::spawn(Self::handle_connection_close(context.clone()));
     tokio::spawn(Self::accept_control_stream(context.clone()));

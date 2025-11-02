@@ -16,7 +16,7 @@ use bytes::{Buf, BufMut, BytesMut};
 use tokio::time::{Duration, Instant, sleep_until};
 use tracing::{error, info, warn};
 use wtransport::error::StreamReadError;
-use wtransport::{RecvStream, SendStream};
+use wtransport::stream::{RecvStream, SendStream};
 
 use crate::model::control::control_message::{ControlMessage, ControlMessageTrait};
 use crate::model::error::{ParseError, TerminationCode};

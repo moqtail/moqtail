@@ -22,7 +22,7 @@ use tokio::sync::{Mutex, Notify, RwLock};
 use tokio::task::yield_now;
 use tokio::time::{Instant, sleep_until};
 use wtransport::error::StreamReadError;
-use wtransport::{RecvStream, SendStream};
+use wtransport::stream::{RecvStream, SendStream};
 
 use crate::model::control::fetch::Fetch;
 use crate::model::control::subscribe::Subscribe;

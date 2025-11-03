@@ -17,7 +17,6 @@ use crate::server::session::Session;
 use crate::server::session_context::SessionContext;
 use crate::server::track::Track;
 use core::result::Result;
-use moqtail::model::control::constant::SubscriptionForwardAction;
 use moqtail::model::error::TerminationCode;
 use moqtail::model::{
   common::reason_phrase::ReasonPhrase, control::control_message::ControlMessage,
@@ -127,7 +126,7 @@ pub async fn handle(
           // send the subscribe message to the publisher
           let mut new_sub = sub.clone();
           // relay wants to get data but it does not forward data to subscribers that has forward = false
-          new_sub.forward = SubscriptionForwardAction::ForwardNow;
+          new_sub.forward = true;
           new_sub.request_id =
             Session::get_next_relay_request_id(context.relay_next_request_id.clone()).await;
 

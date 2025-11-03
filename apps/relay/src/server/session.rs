@@ -80,9 +80,11 @@ impl Session {
     tokio::spawn(async move {
       loop {
         info!(
-          "Bandwidth: {:?} connection id: {}",
-          cn.bandwidth(),
-          cn.stable_id()
+          "connection id: {} bandwidth: {:?} rtt: {:?} max_datagram_size: {:?}",
+          cn.stable_id(),
+          cn.bandwidth().unwrap_or_default(),
+          cn.rtt(),
+          cn.max_datagram_size(),
         );
         tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
       }

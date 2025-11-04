@@ -572,12 +572,12 @@ export class MOQtailClient {
           )
           break
         case FilterType.AbsoluteRange:
-          if (!startLocation || !endGroup)
+          if (startLocation === undefined || endGroup === undefined)
             throw new ProtocolViolationError(
               'MOQtailClient.subscribe',
               'FilterType.AbsoluteRange must have a start location and an end group',
             )
-          if (startLocation.group >= endGroup)
+          if (endGroup > 0 && startLocation.group >= endGroup)
             throw new ProtocolViolationError('MOQtailClient.subscribe', 'End group must be greater than start group')
 
           msg = Subscribe.newAbsoluteRange(
@@ -726,16 +726,6 @@ export class MOQtailClient {
       if (this.requests.has(subscriptionRequestId)) {
         const request = this.requests.get(subscriptionRequestId)!
         if (request instanceof SubscribeRequest) {
-          if (request.startLocation && request.startLocation.compare(startLocation) == 1)
-            throw new ProtocolViolationError(
-              'MOQtailClient.subscribeUpdate',
-              'Subscriptions can only become more narrow, not wider.  The start location must not decrease',
-            )
-          if (request.endGroup && request.endGroup < endGroup)
-            throw new ProtocolViolationError(
-              'MOQtailClient.subscribeUpdate',
-              'Subscriptions can only become more narrow, not wider. The end group must not increase',
-            )
           const trackAlias = this.subscriptionAliasMap.get(subscriptionRequestId)
           if (!trackAlias)
             throw new InternalError('MOQtailClient.subscribeUpdate', 'Request exists but track alias mapping does not')

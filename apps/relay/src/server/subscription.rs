@@ -57,8 +57,6 @@ impl SubscriptionState {}
 
 impl From<Subscribe> for SubscriptionState {
   fn from(subscribe: Subscribe) -> Self {
-    let forward = subscribe.forward;
-
     Self {
       subscriber_priority: subscribe.subscriber_priority,
       _group_order: subscribe.group_order,

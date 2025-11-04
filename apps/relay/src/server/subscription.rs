@@ -188,7 +188,7 @@ impl Subscription {
     state.start_location = Some(subscribe_update.start_location);
     state.subscriber_priority = subscribe_update.subscriber_priority;
     state.forward = subscribe_update.forward;
-    state.end_group = subscribe_update.end_group - 1; // end group + 1 is sent in sub. update
+    state.end_group = subscribe_update.end_group;
 
     // update parameters. If a parameter included in SUBSCRIBE is not present in
     // SUBSCRIBE_UPDATE, its value remains unchanged.  There is no mechanism

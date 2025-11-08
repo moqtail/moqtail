@@ -27,7 +27,7 @@ export class SubscribeUpdate {
     public startLocation: Location,
     public endGroup: bigint,
     public subscriberPriority: number,
-    public forward: number,
+    public forward: boolean,
     public parameters: KeyValuePair[],
   ) {}
 
@@ -41,7 +41,7 @@ export class SubscribeUpdate {
     payload.putLocation(this.startLocation)
     payload.putVI(this.endGroup)
     payload.putU8(this.subscriberPriority)
-    payload.putU8(this.forward)
+    payload.putU8(this.forward ? 1 : 0)
     payload.putVI(this.parameters.length)
 
     for (const param of this.parameters) {
@@ -80,7 +80,7 @@ export class SubscribeUpdate {
       startLocation,
       endGroup,
       subscriberPriority,
-      forward,
+      forward === 1,
       parameters,
     )
   }
@@ -117,7 +117,7 @@ if (import.meta.vitest) {
 
   describe('SubscribeUpdate', () => {
     function buildTestUpdate(): SubscribeUpdate {
-      return new SubscribeUpdate(120205n, 120204n, new Location(81n, 81n), 25n, 31, 1, [
+      return new SubscribeUpdate(120205n, 120204n, new Location(81n, 81n), 25n, 31, true, [
         KeyValuePair.tryNewVarInt(0n, 10n),
         KeyValuePair.tryNewBytes(1n, new TextEncoder().encode("I'll sync you up")),
       ])
@@ -180,7 +180,7 @@ if (import.meta.vitest) {
       }
     })
     it('should handle empty parameters', () => {
-      const update = new SubscribeUpdate(120206n, 120205n, new Location(82n, 82n), 26n, 15, 0, [])
+      const update = new SubscribeUpdate(120206n, 120205n, new Location(82n, 82n), 26n, 15, false, [])
       const serialized = update.serialize()
       const buf = new ByteBuffer()
       buf.putBytes(serialized.toUint8Array())

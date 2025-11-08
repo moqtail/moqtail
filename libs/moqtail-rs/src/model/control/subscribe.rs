@@ -18,7 +18,6 @@ use crate::model::common::location::Location;
 use crate::model::common::pair::KeyValuePair;
 use crate::model::common::tuple::Tuple;
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
-use crate::model::control::constant::SubscriptionForwardAction;
 use crate::model::data::full_track_name::FullTrackName;
 use crate::model::error::ParseError;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
@@ -30,7 +29,7 @@ pub struct Subscribe {
   pub track_name: String,
   pub subscriber_priority: u8,
   pub group_order: GroupOrder,
-  pub forward: SubscriptionForwardAction,
+  pub forward: bool,
   pub filter_type: FilterType,
   pub start_location: Option<Location>,
   pub end_group: Option<u64>,
@@ -46,7 +45,7 @@ impl Subscribe {
     track_name: String,
     subscriber_priority: u8,
     group_order: GroupOrder,
-    forward: SubscriptionForwardAction,
+    forward: bool,
     subscribe_parameters: Vec<KeyValuePair>,
   ) -> Self {
     Self {
@@ -69,7 +68,7 @@ impl Subscribe {
     track_name: String,
     subscriber_priority: u8,
     group_order: GroupOrder,
-    forward: SubscriptionForwardAction,
+    forward: bool,
     subscribe_parameters: Vec<KeyValuePair>,
   ) -> Self {
     Self {
@@ -92,7 +91,7 @@ impl Subscribe {
     track_name: String,
     subscriber_priority: u8,
     group_order: GroupOrder,
-    forward: SubscriptionForwardAction,
+    forward: bool,
     start_location: Location,
     subscribe_parameters: Vec<KeyValuePair>,
   ) -> Self {
@@ -116,7 +115,7 @@ impl Subscribe {
     track_name: String,
     subscriber_priority: u8,
     group_order: GroupOrder,
-    forward: SubscriptionForwardAction,
+    forward: bool,
     start_location: Location,
     end_group: u64,
     subscribe_parameters: Vec<KeyValuePair>,
@@ -249,14 +248,15 @@ impl ControlMessageTrait for Subscribe {
     let group_order = GroupOrder::try_from(group_order_raw)?;
 
     let forward_raw = payload.get_u8();
-    let forward = forward_raw
-      .try_into()
-      .map_err(|_| ParseError::CastingError {
+    if forward_raw > 1 {
+      return Err(ParseError::CastingError {
         context: "Subscribe::parse_payload(forward)",
         from_type: "u8",
         to_type: "SubscribeForwardType",
-        details: format!("invalid SubscribeForwardType value: {}", forward_raw),
-      })?;
+        details: format!("invalid Forward value: {}", forward_raw),
+      });
+    }
+    let forward = forward_raw == 1;
 
     let filter_type_raw = payload.get_vi()?;
     let filter_type = FilterType::try_from(filter_type_raw)?;
@@ -322,7 +322,7 @@ mod tests {
     let track_name = "${Name}".to_string();
     let subscriber_priority = 31;
     let group_order = GroupOrder::Original;
-    let forward = SubscriptionForwardAction::DontForwardNow;
+    let forward = false;
     let filter_type = FilterType::AbsoluteRange;
     let start_location = Location {
       group: 81,
@@ -363,7 +363,7 @@ mod tests {
     let track_name = "${Name}".to_string();
     let subscriber_priority = 31;
     let group_order = GroupOrder::Original;
-    let forward = SubscriptionForwardAction::ForwardNow;
+    let forward = true;
     let filter_type = FilterType::AbsoluteRange;
     let start_location = Location {
       group: 81,
@@ -410,7 +410,7 @@ mod tests {
     let track_name = "${Name}".to_string();
     let subscriber_priority = 31;
     let group_order = GroupOrder::Original;
-    let forward = SubscriptionForwardAction::ForwardNow;
+    let forward = true;
     let filter_type = FilterType::AbsoluteRange;
     let start_location = Location {
       group: 81,

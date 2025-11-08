@@ -27,14 +27,11 @@ use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::control::constant::FilterType;
 use moqtail::model::control::constant::GroupOrder;
 use moqtail::model::control::constant::PublishDoneStatusCode;
-use moqtail::model::control::constant::SubscriptionForwardAction;
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::publish_done::PublishDone;
 use moqtail::model::control::subscribe::Subscribe;
 use moqtail::model::control::subscribe_update::SubscribeUpdate;
 use moqtail::model::data::object::Object;
-use moqtail::model::parameter::constant::VersionSpecificParameterType;
-use moqtail::model::parameter::version_parameter::VersionParameter;
 use moqtail::transport::data_stream_handler::HeaderInfo;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -54,50 +51,20 @@ pub struct SubscriptionState {
   pub start_location: Option<Location>,
   pub end_group: u64,
   pub subscribe_parameters: Vec<KeyValuePair>,
-  pub last_forward_action: Option<SubscriptionForwardAction>,
-  pub forward_action_group: u64,
 }
 
-impl SubscriptionState {
-  pub fn get_forward_action_group(subscribe_parameters: &[KeyValuePair]) -> Option<u64> {
-    // look up in the subscribe parameter
-    for param in subscribe_parameters {
-      // Try to convert the parameter to a VersionParameter
-      if let Ok(version_param) = VersionParameter::try_from(param.clone()) {
-        // Check if this is a ForwardActionGroup parameter
-        if param.get_type() == VersionSpecificParameterType::ForwardActionGroup as u64
-          && let VersionParameter::ForwardActionGroup { group_id } = version_param
-        {
-          return Some(group_id);
-        }
-      }
-    }
-    None
-  }
-}
+impl SubscriptionState {}
 
 impl From<Subscribe> for SubscriptionState {
   fn from(subscribe: Subscribe) -> Self {
-    let forward = match subscribe.forward {
-      SubscriptionForwardAction::DontForwardNow => false,
-      SubscriptionForwardAction::ForwardNow => true,
-      SubscriptionForwardAction::ForwardInFuture => false,
-      SubscriptionForwardAction::DontForwardInFuture => true,
-    };
-
-    let forward_action_group =
-      SubscriptionState::get_forward_action_group(&subscribe.subscribe_parameters).unwrap_or(0);
-
     Self {
       subscriber_priority: subscribe.subscriber_priority,
       _group_order: subscribe.group_order,
-      forward,
+      forward: subscribe.forward,
       _filter_type: subscribe.filter_type,
       start_location: subscribe.start_location,
       end_group: subscribe.end_group.unwrap_or(0),
       subscribe_parameters: subscribe.subscribe_parameters,
-      last_forward_action: Some(subscribe.forward),
-      forward_action_group,
     }
   }
 }
@@ -202,47 +169,11 @@ impl Subscription {
   pub async fn update_subscription(&self, subscribe_update: SubscribeUpdate) -> Result<()> {
     let mut state = self.subscription_state.write().await;
     // map subscribe_update fields to subscribe_message
-    // The Start Location	MUST NOT decrease and the End Group MUST NOT increase.
-
-    let mut discard_end_group = false;
-    let mut discard_start_location = false;
-    if matches!(
-      subscribe_update.forward,
-      SubscriptionForwardAction::DontForwardInFuture
-    ) || matches!(
-      subscribe_update.forward,
-      SubscriptionForwardAction::ForwardInFuture
-    ) {
-      // if forward action is in the future we expect to get a sub parameter that contains the group id
-      let forward_action_group =
-        SubscriptionState::get_forward_action_group(&subscribe_update.subscribe_parameters);
-      if forward_action_group.is_some() {
-        state.forward_action_group = forward_action_group.unwrap_or(0);
-      } else {
-        // if the group id is not sent as a parameter we accept start or end
-        if matches!(
-          subscribe_update.forward,
-          SubscriptionForwardAction::DontForwardInFuture
-        ) {
-          state.forward_action_group = subscribe_update.end_group;
-          discard_end_group = true;
-        } else {
-          state.forward_action_group = subscribe_update.start_location.group;
-          discard_start_location = true;
-        }
-      }
-    } else {
-      state.forward = matches!(
-        subscribe_update.forward,
-        SubscriptionForwardAction::ForwardNow
-      );
-    }
 
     // The Start Location MUST NOT decrease
     // and the End Group MUST NOT increase.
-    if !discard_start_location
-      && subscribe_update.start_location < state.start_location.clone().unwrap_or_default()
-    {
+    // In Draft-15 end group can be increased or decreased.
+    if subscribe_update.start_location < state.start_location.clone().unwrap_or_default() {
       // invalid update
       return Err(anyhow::anyhow!(
         "Invalid SubscribeUpdate: Start Location cannot decrease. Current start location: {:?} Subscribe Update Start Location: {:?}",
@@ -251,28 +182,12 @@ impl Subscription {
       ));
     }
 
-    if !discard_end_group
-      && subscribe_update.end_group > 0
-      && state.end_group > 0 // 0 means open-ended
-      && subscribe_update.end_group - 1 > state.end_group
-    {
-      // invalid update
-      return Err(anyhow::anyhow!(
-        "Invalid SubscribeUpdate: End Group cannot increase. Current end group: {} Subscribe Update End Group: {}",
-        state.end_group,
-        subscribe_update.end_group
-      ));
-    }
-
     // update subscription state
-    if !discard_start_location {
-      state.start_location = Some(subscribe_update.start_location);
-    }
+    state.start_location = Some(subscribe_update.start_location);
     state.subscriber_priority = subscribe_update.subscriber_priority;
-    state.last_forward_action = Some(subscribe_update.forward);
-    if !discard_end_group && subscribe_update.end_group > 0 {
-      state.end_group = subscribe_update.end_group - 1; // end group + 1 is sent in sub. update
-    }
+    state.forward = subscribe_update.forward;
+    state.end_group = subscribe_update.end_group;
+
     // update parameters. If a parameter included in SUBSCRIBE is not present in
     // SUBSCRIBE_UPDATE, its value remains unchanged.  There is no mechanism
     // to remove a parameter from a subscription.
@@ -394,7 +309,6 @@ impl Subscription {
             } => {
               let object_received_time = utils::passed_time_since_start();
 
-              let mut forward;
               {
                 let state = self.subscription_state.read().await;
                 if let Some(start) = &state.start_location
@@ -404,46 +318,22 @@ impl Subscription {
                 }
 
                 // if the object is after the end group, finish the subscription
+
                 if state.end_group > 0 && object.location.group > state.end_group {
+                  /* With Draft-15, the end group can be increased or decreased.
+                  TODO: Remove the following code after draft-15 support.
                   info!(
                     "Finishing subscription for subscriber: {} track: {}",
                     self.client_connection_id, self.track_alias
                   );
                   self.finish().await;
+                  */
                   return;
                 }
 
-                forward = state.forward;
-
-                if let Some(last_forward_action) = &state.last_forward_action.clone()
-                  && (matches!(
-                    &last_forward_action,
-                    SubscriptionForwardAction::DontForwardInFuture
-                      | SubscriptionForwardAction::ForwardInFuture
-                  ))
-                  && state.forward_action_group <= object.location.group
-                {
-                  info!(
-                    "Forward action triggered {:?} track {} object location {:?} forward_action_group {}",
-                    &last_forward_action,
-                    self.track_alias,
-                    &object.location,
-                    state.forward_action_group
-                  );
-                  drop(state);
-                  let mut state = self.subscription_state.write().await;
-                  state.forward = matches!(
-                    &last_forward_action,
-                    SubscriptionForwardAction::ForwardInFuture
-                  );
-                  forward = state.forward;
-                  state.last_forward_action = None;
-                  state.forward_action_group = 0;
+                if !state.forward {
+                  return;
                 }
-              }
-
-              if !forward {
-                return;
               }
 
               // Handle header info if this is the first object

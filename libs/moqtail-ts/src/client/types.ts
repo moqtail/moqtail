@@ -183,7 +183,7 @@ export type SubscribeUpdateOptions = {
   /** Updated subscriber priority (same constraints as initial subscribe). 0 is highest, 255 is lowest. */
   priority: number
   /** Updated direction flag. */
-  forward: number
+  forward: boolean
   /** Optional additional {@link VersionSpecificParameters}; existing parameters persist if omitted. */
   parameters?: VersionSpecificParameters
 }

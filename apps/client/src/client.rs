@@ -386,7 +386,7 @@ impl Client {
       track_name,
       subscriber_priority,
       group_order,
-      constant::SubscriptionForwardAction::ForwardNow,
+      true,
       subscribe_parameters,
     );
     self

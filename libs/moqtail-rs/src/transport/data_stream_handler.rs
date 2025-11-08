@@ -604,9 +604,7 @@ mod tests {
   use crate::model::common::location::Location;
   use crate::model::common::pair::KeyValuePair;
   use crate::model::common::tuple::Tuple;
-  use crate::model::control::constant::{
-    FetchType, FilterType, GroupOrder, SubscriptionForwardAction,
-  };
+  use crate::model::control::constant::{FetchType, FilterType, GroupOrder};
   use crate::model::control::fetch::JoiningFetchProps;
   use crate::model::control::{fetch::Fetch, subscribe::Subscribe};
   use crate::model::data::constant::SubgroupHeaderType;
@@ -679,7 +677,7 @@ mod tests {
     let track_name = "${Name}".to_string();
     let subscriber_priority = 31;
     let group_order = GroupOrder::Original;
-    let forward = SubscriptionForwardAction::ForwardNow;
+    let forward = true;
     let filter_type = FilterType::AbsoluteRange;
     let start_location = Location {
       group: 81,

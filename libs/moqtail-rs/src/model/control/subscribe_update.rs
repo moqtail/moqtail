@@ -17,7 +17,6 @@ use super::control_message::ControlMessageTrait;
 use crate::model::common::location::Location;
 use crate::model::common::pair::KeyValuePair;
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
-use crate::model::control::constant::SubscriptionForwardAction;
 use crate::model::error::ParseError;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
@@ -28,7 +27,7 @@ pub struct SubscribeUpdate {
   pub start_location: Location,
   pub end_group: u64,
   pub subscriber_priority: u8,
-  pub forward: SubscriptionForwardAction,
+  pub forward: bool,
   pub subscribe_parameters: Vec<KeyValuePair>,
 }
 
@@ -39,7 +38,7 @@ impl SubscribeUpdate {
     start_location: Location,
     end_group: u64,
     subscriber_priority: u8,
-    forward: SubscriptionForwardAction,
+    forward: bool,
     subscribe_parameters: Vec<KeyValuePair>,
   ) -> Self {
     Self {
@@ -111,14 +110,15 @@ impl ControlMessageTrait for SubscribeUpdate {
     }
 
     let forward_raw = payload.get_u8();
-    let forward = forward_raw
-      .try_into()
-      .map_err(|_| ParseError::CastingError {
+    if forward_raw > 1 {
+      return Err(ParseError::CastingError {
         context: "SubscribeUpdate::parse_payload(forward)",
         from_type: "u8",
-        to_type: "SubscriptionForwardAction",
-        details: format!("invalid SubscriptionForwardAction value: {}", forward_raw),
-      })?;
+        to_type: "bool",
+        details: format!("invalid bool value: {}", forward_raw),
+      });
+    }
+    let forward = forward_raw == 1;
 
     let param_count_u64 = payload.get_vi()?;
     let param_count: usize =
@@ -168,7 +168,7 @@ mod tests {
     };
     let end_group = 25;
     let subscriber_priority = 31;
-    let forward = SubscriptionForwardAction::ForwardNow;
+    let forward = true;
     let subscribe_parameters = vec![
       KeyValuePair::try_new_varint(0, 10).unwrap(),
       KeyValuePair::try_new_bytes(1, Bytes::from_static(b"I'll sync you up")).unwrap(),
@@ -203,7 +203,7 @@ mod tests {
     };
     let end_group = 25;
     let subscriber_priority = 31;
-    let forward = SubscriptionForwardAction::ForwardNow;
+    let forward = true;
     let subscribe_parameters = vec![
       KeyValuePair::try_new_varint(0, 10).unwrap(),
       KeyValuePair::try_new_bytes(1, Bytes::from_static(b"I'll sync you up")).unwrap(),
@@ -244,7 +244,7 @@ mod tests {
     };
     let end_group = 25;
     let subscriber_priority = 31;
-    let forward = SubscriptionForwardAction::ForwardNow;
+    let forward = true;
     let subscribe_parameters = vec![
       KeyValuePair::try_new_varint(0, 10).unwrap(),
       KeyValuePair::try_new_bytes(1, Bytes::from_static(b"I'll sync you up")).unwrap(),

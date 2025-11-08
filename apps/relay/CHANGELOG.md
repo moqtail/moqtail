@@ -1,5 +1,11 @@
 # relay
 
+## 0.9.0
+
+### Minor Changes
+
+- [#76](https://github.com/moqtail/moqtail/pull/76) [`9580a11`](https://github.com/moqtail/moqtail/commit/9580a117eecae92cf2b75dcba10b08b6f8674f90) Thanks [@zafergurel](https://github.com/zafergurel)! - fixes forward location handling
+
 ## 0.8.0
 
 ### Minor Changes

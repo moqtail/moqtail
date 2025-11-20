@@ -36,6 +36,7 @@ import {
   SubscribeUpdate,
   Unsubscribe,
   UnsubscribeNamespace,
+  Switch,
 } from '../model/control'
 import {
   FetchHeader,
@@ -65,7 +66,14 @@ import { getHandlerForControlMessage } from './handler/handler'
 import { SubscribePublication } from './publication/subscribe'
 import { FetchPublication } from './publication/fetch'
 import { random60bitId } from './util/random_id'
-import { MOQtailRequest, SubscribeOptions, SubscribeUpdateOptions, FetchOptions, MOQtailClientOptions } from './types'
+import {
+  MOQtailRequest,
+  SubscribeOptions,
+  SubscribeUpdateOptions,
+  FetchOptions,
+  MOQtailClientOptions,
+  SwitchOptions,
+} from './types'
 
 /**
  * @public
@@ -753,6 +761,54 @@ export class MOQtailClient {
     } catch (error) {
       await this.disconnect(
         new InternalError('MOQtailClient.subscribeUpdate', error instanceof Error ? error.message : String(error)),
+      )
+      throw error
+    }
+  }
+
+  /**
+   * Switches an active subscription to a different track while retaining the same subscription parameters.
+   *
+   * Use this to change the subscribed track without tearing down and re-establishing a new subscription.
+   *
+   * @param args - {@link SwitchOptions} referencing the original subscription `requestId` and new track name.
+   * @returns Promise that resolves when the switch control frame is sent.
+   * @throws :{@link MOQtailError} If the client is destroyed.
+   * @throws :{@link InternalError} On transport/control failure (disconnect is triggered before rethrow).
+   *
+   * @remarks
+   * - Only applies to active SUBSCRIBE requests; ignored if the request is not a subscription.
+   * - All other subscription parameters (window, forwarding, priority) remain unchanged.
+   *
+   * @example Switch to a different track
+   * ```ts
+   * await client.switch({ subscriptionRequestId, fullTrackName: newTrackName });
+   * ```
+   */
+  async switch(args: SwitchOptions): Promise<void> {
+    this.#ensureActive()
+    let { fullTrackName, subscriptionRequestId, parameters } = args
+    try {
+      if (this.requests.has(subscriptionRequestId)) {
+        const request = this.requests.get(subscriptionRequestId)!
+        if (request instanceof SubscribeRequest) {
+          const trackAlias = this.subscriptionAliasMap.get(subscriptionRequestId)
+          if (!trackAlias)
+            throw new InternalError('MOQtailClient.switch', 'Request exists but track alias mapping does not')
+          const subscription = this.subscriptions.get(trackAlias)
+          if (!subscription) throw new InternalError('MOQtailClient.switch', 'Request exists but subscription does not')
+
+          if (!parameters) parameters = new VersionSpecificParameters()
+          const requestId = this.#nextClientRequestId
+          const msg = new Switch(requestId, fullTrackName, subscriptionRequestId, parameters.build())
+          subscription.switch(fullTrackName, parameters.build()) // This also updates the request since both maps store the same object
+          await this.controlStream.send(msg)
+        }
+      }
+      // Q: Throw? Idempotent?
+    } catch (error) {
+      await this.disconnect(
+        new InternalError('MOQtailClient.switch', error instanceof Error ? error.message : String(error)),
       )
       throw error
     }

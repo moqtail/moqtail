@@ -28,7 +28,7 @@ import {
 // TODO: Add timeout mechanism for unsubscribing
 export class SubscribeRequest implements PromiseLike<SubscribeOk | SubscribeError> {
   readonly requestId: bigint
-  readonly fullTrackName: FullTrackName
+  fullTrackName: FullTrackName
   isCanceled: boolean = false
   startLocation: Location | undefined
   endGroup: bigint | undefined
@@ -68,6 +68,10 @@ export class SubscribeRequest implements PromiseLike<SubscribeOk | SubscribeErro
     this.forward = msg.forward
     this.priority = msg.subscriberPriority
     this.subscribeParameters = msg.parameters
+  }
+  switch(newTrackName: FullTrackName, newParameters: KeyValuePair[]): void {
+    this.fullTrackName = newTrackName
+    this.subscribeParameters = newParameters
   }
   unsubscribe(): void {
     this.isCanceled = true

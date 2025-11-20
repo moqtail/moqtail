@@ -189,6 +189,26 @@ export type SubscribeUpdateOptions = {
 }
 
 /**
+ * Parameters for {@link MOQtailClient.switch | switching} an existing SUBSCRIBE to a new track.
+ *
+ * @example Switching subscription to a new track
+ * ```ts
+ * await client.switch({
+ *   fullTrackName: newFullTrackName,
+ *   subscriptionRequestId
+ * })
+ * ```
+ */
+export type SwitchOptions = {
+  /** Fully qualified track identifier to switch to ({@link FullTrackName}). */
+  fullTrackName: FullTrackName
+  /** The original SUBSCRIBE request id (bigint) being updated. */
+  subscriptionRequestId: bigint
+  /** Optional additional {@link VersionSpecificParameters}; existing parameters persist if omitted. */
+  parameters?: VersionSpecificParameters
+}
+
+/**
  * Options for {@link MOQtailClient.fetch | performing a FETCH} operation for historical or relative object ranges.
  *
  * @example Standalone fetch

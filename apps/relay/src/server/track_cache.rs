@@ -195,12 +195,6 @@ impl TrackCache {
         track_alias, start, end
       );
 
-      let normalized_end_group = if end.object == 1 {
-        end.group - 1
-      } else {
-        end.group
-      };
-
       // TODO: compare objects as well
       if start.group > end.group {
         warn!("start group cannot be greater than end group");
@@ -210,10 +204,7 @@ impl TrackCache {
       // Collect all groups in the range that exist in cache
       let mut groups_in_range = Vec::new();
 
-      // zero means the entire group
-      let normalized_end_object = if end.object > 0 { end.object - 1 } else { 0 };
-
-      for group_id in start.group..=normalized_end_group {
+      for group_id in start.group..=end.group {
         let cache_key = CacheKey::new(track_alias, group_id);
         if let Some(objects) = cache.get(&cache_key).await {
           groups_in_range.push((group_id, objects));
@@ -232,7 +223,11 @@ impl TrackCache {
       if let Some((last_group_id, last_objects)) = groups_in_range.last() {
         let objects_guard = last_objects.read().await;
         let end_object_id = if let Some(last_object) = objects_guard.last() {
-          last_object.object_id
+          if end.object > 0 {
+            std::cmp::min(last_object.object_id, end.object)
+          } else {
+            last_object.object_id
+          }
         } else {
           0
         };
@@ -260,9 +255,8 @@ impl TrackCache {
           }
 
           // stop when we reach end
-          if group_id == end.group
-            && normalized_end_object > 0
-            && object.object_id > normalized_end_object
+          if group_id > end.group
+            || (group_id == end.group && end.object > 0 && object.object_id > end.object)
           {
             break; // Stop at end boundary
           }

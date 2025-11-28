@@ -21,7 +21,7 @@ use moqtail::transport::{
   control_stream_handler::ControlStreamHandler,
   data_stream_handler::{HeaderInfo, RecvDataStream},
 };
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{Instrument, debug, error, info, info_span, warn};
 use wtransport::{RecvStream, SendStream, endpoint::IncomingSession};
@@ -53,17 +53,13 @@ impl Session {
     let track_aliases = server.track_aliases.clone();
     let server_config = server.app_config;
     let relay_fetch_requests = server.relay_fetch_requests.clone();
-    let client_fetch_requests = Arc::new(RwLock::new(BTreeMap::new()));
     let relay_subscribe_requests = server.relay_subscribe_requests.clone();
-    let client_subscribe_requests = Arc::new(RwLock::new(BTreeMap::new()));
     let relay_next_request_id = server.relay_next_request_id.clone();
     let connection = session_request.accept().await?;
 
     let request_maps = RequestMaps {
       relay_fetch_requests,
-      client_fetch_requests,
       relay_subscribe_requests,
-      client_subscribe_requests,
     };
 
     let context = Arc::new(SessionContext::new(

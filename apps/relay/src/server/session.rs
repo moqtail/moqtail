@@ -442,11 +442,32 @@ impl Session {
               }
             }
 
-            current_track =
-              if let Some(full_track_name) = context.track_aliases.read().await.get(&track_alias) {
-                if let Some(track) = context.tracks.read().await.get(full_track_name) {
+            // The track might have not been added yet, wait for it for a few attempts
+            let mut attempt_count = 5;
+            let attempt_interval_ms = 100;
+            debug!("looking for track with alias: {:?}", track_alias);
+            loop {
+              if attempt_count == 0 {
+                error!("track not found after multiple attempts: {:?}", track_alias);
+                return Err(anyhow::Error::msg(TerminationCode::InternalError.to_json()));
+              }
+              let full_track_name_opt = context
+                .track_aliases
+                .read()
+                .await
+                .get(&track_alias)
+                .cloned();
+
+              if full_track_name_opt.is_none() {
+                attempt_count -= 1;
+                tokio::time::sleep(std::time::Duration::from_millis(attempt_interval_ms)).await;
+                continue;
+              }
+
+              current_track = if let Some(full_track_name) = full_track_name_opt {
+                if let Some(t) = context.tracks.read().await.get(&full_track_name) {
                   debug!("track found: {:?}", track_alias);
-                  Some(track.clone())
+                  Some(t.clone())
                 } else {
                   error!(
                     "track not found: {:?} full track name: {:?}",
@@ -455,13 +476,11 @@ impl Session {
                   return Err(anyhow::Error::msg(TerminationCode::InternalError.to_json()));
                 }
               } else {
-                // this means, there is no subscription message came for this track yet
-                error!("track not found: {:?}", track_alias);
-
-                // TODO: what is the right way to handle this?
-                // TODO: get track for fetch requests as well
-                return Err(anyhow::Error::msg(TerminationCode::InternalError.to_json()));
+                None
               };
+              break;
+            }
+
             stream_id = Some(utils::build_stream_id(track_alias, &header_info));
             Some(header_info)
           } else {

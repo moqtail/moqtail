@@ -135,6 +135,11 @@ impl Subscription {
       config,
     );
 
+    info!(
+      "Created new Subscription instance for subscriber: {} track: {} subscription state: {:?}",
+      client_connection_id, track_alias, sub.subscription_state
+    );
+
     let mut instance = sub.clone();
     tokio::spawn(async move {
       loop {

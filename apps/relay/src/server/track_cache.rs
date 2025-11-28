@@ -224,9 +224,14 @@ impl TrackCache {
         let objects_guard = last_objects.read().await;
         let end_object_id = if let Some(last_object) = objects_guard.last() {
           if end.object > 0 {
-            std::cmp::min(last_object.object_id, end.object)
+            std::cmp::min(last_object.object_id + 1, end.object)
           } else {
-            last_object.object_id
+            // TODO: Implement the logic to find the last object in the group
+            // If End Location.Object in the FETCH request was 0 and the
+            // response covers the last Object in the Group, End Location is
+            // {Fetch.End Location.Group, 0}
+
+            last_object.object_id + 1
           }
         } else {
           0
@@ -256,7 +261,7 @@ impl TrackCache {
 
           // stop when we reach end
           if group_id > end.group
-            || (group_id == end.group && end.object > 0 && object.object_id > end.object)
+            || (group_id == end.group && end.object > 0 && object.object_id >= end.object)
           {
             break; // Stop at end boundary
           }

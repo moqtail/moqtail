@@ -24,7 +24,6 @@ use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::fetch_error::FetchError;
 use moqtail::model::control::fetch_ok::FetchOk;
 use moqtail::model::data::fetch_header::FetchHeader;
-use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::model::error::TerminationCode;
 use moqtail::model::{common::reason_phrase::ReasonPhrase, control::constant::FetchType};
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
@@ -60,7 +59,7 @@ pub async fn handle(
       let fn_ = async {
         if let Some(joining_fetch_props) = fetch.clone().joining_fetch_props {
           let sub_request_id = joining_fetch_props.joining_request_id;
-          let sub_requests = context.client_subscribe_requests.read().await;
+          let sub_requests = client.subscribe_requests.read().await;
           // the original request id is the request id of the subscribe request that created the subscription
           let existing_sub = sub_requests
             .iter()
@@ -76,10 +75,9 @@ pub async fn handle(
           let existing_sub = existing_sub.unwrap().1;
 
           let tracks = context.tracks.read().await;
-          let full_track_name = FullTrackName {
-            namespace: existing_sub.subscribe_request.track_namespace.clone(),
-            name: existing_sub.subscribe_request.track_name.clone().into(),
-          };
+          let full_track_name = existing_sub
+            .original_subscribe_request
+            .get_full_track_name();
           let track = tracks.get(&full_track_name);
 
           if let Some(track) = track {

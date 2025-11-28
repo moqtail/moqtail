@@ -53,6 +53,7 @@ pub enum HeaderInfo {
   },
 }
 
+// TODO: Consider merging FetchRequest and SubscribeRequest into a single enum if needed
 #[derive(Debug, Clone)]
 pub struct FetchRequest {
   pub original_request_id: u64,
@@ -64,8 +65,9 @@ pub struct FetchRequest {
 #[derive(Debug, Clone)]
 pub struct SubscribeRequest {
   pub original_request_id: u64,
-  pub requested_by: usize, // connection id
-  pub subscribe_request: Subscribe,
+  pub requested_by: usize,                               // connection id
+  pub original_subscribe_request: Subscribe, // the subscribe request sent by the subscriber
+  pub subscribe_request_to_publisher: Option<Subscribe>, // the subscribe request sent to the publisher (if applicable)
 }
 
 impl FetchRequest {
@@ -85,11 +87,17 @@ impl FetchRequest {
 }
 
 impl SubscribeRequest {
-  pub fn new(original_request_id: u64, requested_by: usize, subscribe_request: Subscribe) -> Self {
+  pub fn new(
+    original_request_id: u64,
+    requested_by: usize,
+    original_subscribe_request: Subscribe,
+    subscribe_request_to_publisher: Option<Subscribe>,
+  ) -> Self {
     Self {
       original_request_id,
       requested_by,
-      subscribe_request,
+      original_subscribe_request,
+      subscribe_request_to_publisher,
     }
   }
 }

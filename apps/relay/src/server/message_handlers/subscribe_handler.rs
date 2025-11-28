@@ -27,7 +27,7 @@ use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
 pub async fn handle(
-  _client: Arc<MOQTClient>,
+  client: Arc<MOQTClient>,
   control_stream_handler: &mut ControlStreamHandler,
   msg: ControlMessage,
   context: Arc<SessionContext>,
@@ -37,7 +37,6 @@ pub async fn handle(
       info!("received Subscribe message: {:?}", m);
       let sub = *m;
       let track_namespace = sub.track_namespace.clone();
-      let client = context.get_client().await;
       let request_id = sub.request_id;
       let full_track_name = sub.get_full_track_name();
 
@@ -111,10 +110,6 @@ pub async fn handle(
       );
 
       let original_request_id = sub.request_id;
-      let client = match client {
-        Some(c) => c,
-        None => return Err(TerminationCode::InternalError),
-      };
 
       let res: Result<(), TerminationCode> =
         if !context.tracks.read().await.contains_key(&full_track_name) {
@@ -136,8 +131,12 @@ pub async fn handle(
 
           // insert this request id into the relay's subscribe requests
           // TODO: we need to add a timeout here or another loop to control expired requests
-          let req =
-            SubscribeRequest::new(original_request_id, context.connection_id, new_sub.clone());
+          let req = SubscribeRequest::new(
+            original_request_id,
+            context.connection_id,
+            sub.clone(),
+            Some(new_sub.clone()),
+          );
           let mut requests = context.relay_subscribe_requests.write().await;
           requests.insert(new_sub.request_id, req.clone());
           info!(
@@ -169,18 +168,8 @@ pub async fn handle(
       // return if there's an error
       if res.is_ok() {
         // insert this request id into the clients subscribe requests
-        let req = SubscribeRequest::new(original_request_id, context.connection_id, sub.clone());
-        let mut requests = context.client_subscribe_requests.write().await;
-        requests.insert(sub.request_id, req.clone());
-        info!(
-          "inserted request into client's subscribe requests: {:?} with subscriber's request id: {:?}",
-          req, sub.request_id
-        );
-
-        // also insert the request to the client's subscribe requests
         let mut requests = client.subscribe_requests.write().await;
-        let orig_req =
-          SubscribeRequest::new(original_request_id, context.connection_id, sub.clone());
+        let orig_req = SubscribeRequest::new(original_request_id, context.connection_id, sub, None);
         requests.insert(original_request_id, orig_req.clone());
         debug!(
           "inserted request into client's subscribe requests: {:?}",
@@ -199,7 +188,7 @@ pub async fn handle(
       // it should be sent to the subscriber
       let request_id = msg.request_id;
 
-      let mut sub_request = {
+      let sub_request = {
         let requests = context.relay_subscribe_requests.read().await;
         // print out every request
         debug!("current requests: {:?}", requests);
@@ -214,9 +203,6 @@ pub async fn handle(
           }
         }
       };
-
-      // replace the request id with the original request id
-      sub_request.subscribe_request.request_id = sub_request.original_request_id;
 
       // TODO: honor the values in the subscribe_ok message like
       // expires, group_order, content_exists, largest_location
@@ -254,15 +240,18 @@ pub async fn handle(
         .await;
 
       // create the track here if it doesn't exist
-      let full_track_name = sub_request.subscribe_request.get_full_track_name();
+      let full_track_name = sub_request.original_subscribe_request.get_full_track_name();
 
       if !context.tracks.read().await.contains_key(&full_track_name) {
         info!("Track not found, creating new track: {:?}", msg.track_alias);
         // subscribed_tracks.insert(sub.track_alias, Track::new(sub.track_alias, track_namespace.clone(), sub.track_name.clone()));
         let mut track = Track::new(
           msg.track_alias,
-          sub_request.subscribe_request.track_namespace.clone(),
-          sub_request.subscribe_request.track_name.clone(),
+          sub_request
+            .original_subscribe_request
+            .track_namespace
+            .clone(),
+          sub_request.original_subscribe_request.track_name.clone(),
           context.connection_id,
           context.server_config,
         );
@@ -282,7 +271,10 @@ pub async fn handle(
         }
 
         let res = track
-          .add_subscription(subscriber.clone(), sub_request.subscribe_request.clone())
+          .add_subscription(
+            subscriber.clone(),
+            sub_request.original_subscribe_request.clone(),
+          )
           .await;
         match res {
           Ok(_) => {
@@ -305,20 +297,6 @@ pub async fn handle(
       info!("received Unsubscribe message: {:?}", m);
       // stop sending objects for the track for the subscriber
       // by removing the subscription
-
-      // get the client
-      let client = context.get_client().await;
-      let client = match client {
-        Some(c) => c,
-        None => {
-          warn!(
-            "client not found for connection id: {:?}",
-            context.connection_id
-          );
-          return Err(TerminationCode::InternalError);
-        }
-      };
-
       // find the track alias by using the request id
       let requests = client.subscribe_requests.read().await;
       let request = requests.get(&m.request_id);
@@ -328,7 +306,7 @@ pub async fn handle(
         return Ok(());
       }
       let request = request.unwrap();
-      let full_track_name = request.subscribe_request.get_full_track_name();
+      let full_track_name = request.original_subscribe_request.get_full_track_name();
 
       // remove the subscription from the track
       let mut tracks = context.tracks.write().await;
@@ -343,7 +321,8 @@ pub async fn handle(
       // a subscribe update message contains subscription_request_id
       // which is the request id of the subscription we want to update
       let sub_request_id = m.subscription_request_id;
-      let requests = context.client_subscribe_requests.read().await;
+
+      let requests = client.subscribe_requests.read().await;
       let request = requests.get(&sub_request_id);
       if request.is_none() {
         warn!(
@@ -355,7 +334,7 @@ pub async fn handle(
       let request = request.unwrap();
 
       // we can not get the full track name and hence, the track instance
-      let full_track_name = request.subscribe_request.get_full_track_name();
+      let full_track_name = request.original_subscribe_request.get_full_track_name();
       let tracks = context.tracks.read().await;
       let track = tracks.get(&full_track_name);
 

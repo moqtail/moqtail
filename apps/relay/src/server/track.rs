@@ -131,8 +131,8 @@ impl Track {
     let connection_id = { subscriber.connection_id };
 
     info!(
-      "Adding subscription for subscriber_id: {} to track: {}",
-      connection_id, self.track_alias
+      "Adding subscription for subscriber_id: {} to track: {} subscription message: {:?}",
+      connection_id, self.track_alias, subscribe_message
     );
 
     // Create a separate unbounded channel for this subscriber

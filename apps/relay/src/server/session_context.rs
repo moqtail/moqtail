@@ -28,9 +28,7 @@ use super::{client::MOQTClient, client_manager::ClientManager, config::AppConfig
 
 pub struct RequestMaps {
   pub relay_fetch_requests: Arc<RwLock<BTreeMap<u64, FetchRequest>>>,
-  pub client_fetch_requests: Arc<RwLock<BTreeMap<u64, FetchRequest>>>,
   pub relay_subscribe_requests: Arc<RwLock<BTreeMap<u64, SubscribeRequest>>>,
-  pub client_subscribe_requests: Arc<RwLock<BTreeMap<u64, SubscribeRequest>>>,
 }
 
 pub struct SessionContext {
@@ -38,9 +36,7 @@ pub struct SessionContext {
   pub(crate) tracks: Arc<RwLock<HashMap<FullTrackName, Track>>>, // the tracks the relay is subscribed to, key is the track alias
   pub(crate) track_aliases: Arc<RwLock<BTreeMap<u64, FullTrackName>>>, // the track alias and full track names
   pub(crate) relay_fetch_requests: Arc<RwLock<BTreeMap<u64, FetchRequest>>>,
-  pub(crate) _client_fetch_requests: Arc<RwLock<BTreeMap<u64, FetchRequest>>>,
   pub(crate) relay_subscribe_requests: Arc<RwLock<BTreeMap<u64, SubscribeRequest>>>,
-  pub(crate) client_subscribe_requests: Arc<RwLock<BTreeMap<u64, SubscribeRequest>>>,
   pub(crate) connection_id: usize,
   pub(crate) client: Arc<RwLock<Option<Arc<MOQTClient>>>>, // the client that is connected to this session
   pub(crate) connection: Connection,
@@ -65,9 +61,7 @@ impl SessionContext {
       tracks,
       track_aliases,
       relay_fetch_requests: request_maps.relay_fetch_requests,
-      _client_fetch_requests: request_maps.client_fetch_requests,
       relay_subscribe_requests: request_maps.relay_subscribe_requests,
-      client_subscribe_requests: request_maps.client_subscribe_requests,
       connection_id: connection.stable_id(),
       client: Arc::new(RwLock::new(None)), // initially no client is set
       connection,

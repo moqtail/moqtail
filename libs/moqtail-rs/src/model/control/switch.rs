@@ -12,66 +12,75 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+/*
+SWITCH Message {
+  Type (i) = 0x1F,
+  Length (16),
+  Request ID (i),
+  Track Namespace (..),
+  Track Name Length (i),
+  Track Name (..),
+  Subscription Request ID (i),
+  Number of Parameters (i),
+  Parameters (..) ...
+}
+*/
 use super::constant::ControlMessageType;
 use super::control_message::ControlMessageTrait;
-use super::control_message::RequestTrait;
-use crate::model::common::location::Location;
 use crate::model::common::pair::KeyValuePair;
+use crate::model::common::tuple::Tuple;
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
+use crate::model::data::full_track_name::FullTrackName;
 use crate::model::error::ParseError;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct SubscribeUpdate {
+pub struct Switch {
   pub request_id: u64,
+  pub track_namespace: Tuple,
+  pub track_name: String,
   pub subscription_request_id: u64,
-  pub start_location: Location,
-  pub end_group: u64,
-  pub subscriber_priority: u8,
-  pub forward: bool,
   pub subscribe_parameters: Vec<KeyValuePair>,
 }
 
-impl RequestTrait for SubscribeUpdate {
-  fn get_request_id(&self) -> u64 {
-    self.request_id
-  }
-}
-
-impl SubscribeUpdate {
+#[allow(clippy::too_many_arguments)]
+impl Switch {
   pub fn new(
     request_id: u64,
+    track_namespace: Tuple,
+    track_name: String,
     subscription_request_id: u64,
-    start_location: Location,
-    end_group: u64,
-    subscriber_priority: u8,
-    forward: bool,
     subscribe_parameters: Vec<KeyValuePair>,
   ) -> Self {
     Self {
       request_id,
+      track_namespace,
+      track_name,
       subscription_request_id,
-      start_location,
-      end_group,
-      subscriber_priority,
-      forward,
       subscribe_parameters,
     }
   }
-}
 
-impl ControlMessageTrait for SubscribeUpdate {
+  pub fn get_full_track_name(&self) -> FullTrackName {
+    FullTrackName {
+      namespace: self.track_namespace.clone(),
+      name: self.track_name.clone().into(),
+    }
+  }
+}
+impl ControlMessageTrait for Switch {
   fn serialize(&self) -> Result<Bytes, ParseError> {
     let mut buf = BytesMut::new();
-    buf.put_vi(ControlMessageType::SubscribeUpdate)?;
+    buf.put_vi(ControlMessageType::Switch)?;
 
     let mut payload = BytesMut::new();
     payload.put_vi(self.request_id)?;
+
+    payload.extend_from_slice(&self.track_namespace.serialize()?);
+    payload.put_vi(self.track_name.len())?;
+    payload.extend_from_slice(self.track_name.as_bytes());
     payload.put_vi(self.subscription_request_id)?;
-    payload.extend_from_slice(&self.start_location.serialize()?);
-    payload.put_vi(self.end_group)?;
-    payload.put_u8(self.subscriber_priority);
-    payload.put_u8(self.forward.into());
+
     payload.put_vi(self.subscribe_parameters.len())?;
     for param in &self.subscribe_parameters {
       payload.extend_from_slice(&param.serialize()?);
@@ -81,7 +90,7 @@ impl ControlMessageTrait for SubscribeUpdate {
       .len()
       .try_into()
       .map_err(|e: std::num::TryFromIntError| ParseError::CastingError {
-        context: "SubscribeUpdate::serialize(payload_length)",
+        context: "Switch::serialize",
         from_type: "usize",
         to_type: "u16",
         details: e.to_string(),
@@ -89,50 +98,53 @@ impl ControlMessageTrait for SubscribeUpdate {
 
     buf.put_u16(payload_len);
     buf.extend_from_slice(&payload);
-
     Ok(buf.freeze())
   }
 
   fn parse_payload(payload: &mut Bytes) -> Result<Box<Self>, ParseError> {
     let request_id = payload.get_vi()?;
+    let track_namespace = Tuple::deserialize(payload)?;
+
+    let name_len_u64 = payload.get_vi()?;
+    let name_len: usize = name_len_u64
+      .try_into()
+      .map_err(|e: std::num::TryFromIntError| ParseError::CastingError {
+        context: "Subscribe::parse_payload(track_name_len)",
+        from_type: "u64",
+        to_type: "usize",
+        details: e.to_string(),
+      })?;
+
+    if payload.remaining() < name_len {
+      return Err(ParseError::NotEnoughBytes {
+        context: "Subscribe::parse_payload(track_name)",
+        needed: name_len,
+        available: payload.remaining(),
+      });
+    }
+    let track_name_bytes = payload.copy_to_bytes(name_len);
+    let track_name =
+      String::from_utf8(track_name_bytes.to_vec()).map_err(|e| ParseError::InvalidUTF8 {
+        context: "Subscribe::parse_payload(track_name)",
+        details: e.to_string(),
+      })?;
+
+    if payload.remaining() < 1 {
+      return Err(ParseError::NotEnoughBytes {
+        context: "Subscribe::parse_payload(subscriber_priority)",
+        needed: 1,
+        available: 0,
+      });
+    }
+
     let subscription_request_id = payload.get_vi()?;
-    let start_location = Location::deserialize(payload)?;
-    let end_group = payload.get_vi()?;
-
-    if payload.remaining() < 1 {
-      return Err(ParseError::NotEnoughBytes {
-        context: "SubscribeUpdate::parse_payload(subscriber_priority)",
-        needed: 1,
-        available: 0,
-      });
-    }
-    let subscriber_priority = payload.get_u8();
-
-    if payload.remaining() < 1 {
-      return Err(ParseError::NotEnoughBytes {
-        context: "SubscribeUpdate::parse_payload(forward)",
-        needed: 1,
-        available: 0,
-      });
-    }
-
-    let forward_raw = payload.get_u8();
-    if forward_raw > 1 {
-      return Err(ParseError::CastingError {
-        context: "SubscribeUpdate::parse_payload(forward)",
-        from_type: "u8",
-        to_type: "bool",
-        details: format!("invalid bool value: {}", forward_raw),
-      });
-    }
-    let forward = forward_raw == 1;
 
     let param_count_u64 = payload.get_vi()?;
     let param_count: usize =
       param_count_u64
         .try_into()
         .map_err(|e: std::num::TryFromIntError| ParseError::CastingError {
-          context: "SubscribeUpdate::parse_payload(param_count)",
+          context: "Subscribe::deserialize(param_count)",
           from_type: "u64",
           to_type: "usize",
           details: e.to_string(),
@@ -144,22 +156,18 @@ impl ControlMessageTrait for SubscribeUpdate {
       subscribe_parameters.push(param);
     }
 
-    Ok(Box::new(SubscribeUpdate {
+    Ok(Box::new(Switch {
       request_id,
+      track_namespace,
+      track_name,
       subscription_request_id,
-      start_location,
-      end_group,
-      subscriber_priority,
-      forward,
       subscribe_parameters,
     }))
   }
-
   fn get_type(&self) -> ControlMessageType {
-    ControlMessageType::SubscribeUpdate
+    ControlMessageType::Switch
   }
 }
-
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -167,114 +175,93 @@ mod tests {
 
   #[test]
   fn test_roundtrip() {
-    let request_id = 120205;
-    let subscription_request_id = 54321;
-    let start_location = Location {
-      group: 81,
-      object: 81,
-    };
-    let end_group = 25;
-    let subscriber_priority = 31;
-    let forward = true;
+    let request_id = 128242;
+    let track_namespace = Tuple::from_utf8_path("nein/nein/nein");
+    let track_name = "${Name}".to_string();
+    let subscription_request_id = 31;
     let subscribe_parameters = vec![
       KeyValuePair::try_new_varint(0, 10).unwrap(),
       KeyValuePair::try_new_bytes(1, Bytes::from_static(b"I'll sync you up")).unwrap(),
     ];
-    let subscribe_update = SubscribeUpdate {
+    let switch = Switch {
       request_id,
+      track_namespace,
+      track_name,
       subscription_request_id,
-      start_location,
-      end_group,
-      subscriber_priority,
-      forward,
       subscribe_parameters,
     };
 
-    let mut buf = subscribe_update.serialize().unwrap();
+    let mut buf = switch.serialize().unwrap();
     let msg_type = buf.get_vi().unwrap();
-    assert_eq!(msg_type, ControlMessageType::SubscribeUpdate as u64);
+    assert_eq!(msg_type, ControlMessageType::Switch as u64);
     let msg_length = buf.get_u16();
     assert_eq!(msg_length as usize, buf.remaining());
-    let deserialized = SubscribeUpdate::parse_payload(&mut buf).unwrap();
-    assert_eq!(*deserialized, subscribe_update);
+    let deserialized = Switch::parse_payload(&mut buf).unwrap();
+    assert_eq!(*deserialized, switch);
     assert!(!buf.has_remaining());
   }
 
   #[test]
   fn test_excess_roundtrip() {
-    let request_id = 120205;
-    let subscription_request_id = 54321;
-    let start_location = Location {
-      group: 81,
-      object: 81,
-    };
-    let end_group = 25;
-    let subscriber_priority = 31;
-    let forward = true;
+    let request_id = 128242;
+    let track_namespace = Tuple::from_utf8_path("nein/nein/nein");
+    let track_name = "${Name}".to_string();
+    let subscription_request_id = 31;
     let subscribe_parameters = vec![
       KeyValuePair::try_new_varint(0, 10).unwrap(),
       KeyValuePair::try_new_bytes(1, Bytes::from_static(b"I'll sync you up")).unwrap(),
     ];
-    let subscribe_update = SubscribeUpdate {
+    let switch = Switch {
       request_id,
+      track_namespace,
+      track_name,
       subscription_request_id,
-      start_location,
-      end_group,
-      subscriber_priority,
-      forward,
       subscribe_parameters,
     };
 
-    let serialized = subscribe_update.serialize().unwrap();
+    let serialized = switch.serialize().unwrap();
     let mut excess = BytesMut::new();
     excess.extend_from_slice(&serialized);
     excess.extend_from_slice(&[9u8, 1u8, 1u8]);
     let mut buf = excess.freeze();
 
     let msg_type = buf.get_vi().unwrap();
-    assert_eq!(msg_type, ControlMessageType::SubscribeUpdate as u64);
+    assert_eq!(msg_type, ControlMessageType::Switch as u64);
     let msg_length = buf.get_u16();
 
     assert_eq!(msg_length as usize, buf.remaining() - 3);
-    let deserialized = SubscribeUpdate::parse_payload(&mut buf).unwrap();
-    assert_eq!(*deserialized, subscribe_update);
+    let deserialized = Switch::parse_payload(&mut buf).unwrap();
+    assert_eq!(*deserialized, switch);
     assert_eq!(buf.chunk(), &[9u8, 1u8, 1u8]);
   }
 
   #[test]
   fn test_partial_message() {
-    let request_id = 120205;
-    let subscription_request_id = 54321;
-    let start_location = Location {
-      group: 81,
-      object: 81,
-    };
-    let end_group = 25;
-    let subscriber_priority = 31;
-    let forward = true;
+    let request_id = 128242;
+    let track_namespace = Tuple::from_utf8_path("nein/nein/nein");
+    let track_name = "${Name}".to_string();
+    let subscription_request_id = 31;
     let subscribe_parameters = vec![
       KeyValuePair::try_new_varint(0, 10).unwrap(),
       KeyValuePair::try_new_bytes(1, Bytes::from_static(b"I'll sync you up")).unwrap(),
     ];
-    let subscribe_update = SubscribeUpdate {
+    let switch = Switch {
       request_id,
+      track_namespace,
+      track_name,
       subscription_request_id,
-      start_location,
-      end_group,
-      subscriber_priority,
-      forward,
       subscribe_parameters,
     };
 
-    let mut buf = subscribe_update.serialize().unwrap();
+    let mut buf = switch.serialize().unwrap();
     let msg_type = buf.get_vi().unwrap();
-    assert_eq!(msg_type, ControlMessageType::SubscribeUpdate as u64);
+    assert_eq!(msg_type, ControlMessageType::Switch as u64);
     let msg_length = buf.get_u16();
     assert_eq!(msg_length as usize, buf.remaining());
 
     let upper = buf.remaining() / 2;
     let mut partial = buf.slice(..upper);
-    let deserialized = SubscribeUpdate::parse_payload(&mut partial);
+    let deserialized = Switch::parse_payload(&mut partial);
     assert!(deserialized.is_err());
   }
 }

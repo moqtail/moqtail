@@ -212,8 +212,7 @@ impl Client {
                       payload: Some(Bytes::from(payload)),
                     };
                     let object =
-                      Object::try_from_subgroup(object, track_alias, group_id, Some(group_id), 1)
-                        .unwrap();
+                      Object::try_from_subgroup(object, track_alias, group_id, Some(1), 1).unwrap();
                     match handler.send_object(&object, prev_object_id).await {
                       Ok(_) => info!("Object sent successfully - i: {}", &object_id),
                       Err(e) => error!("Failed to send object: {:?}", e),

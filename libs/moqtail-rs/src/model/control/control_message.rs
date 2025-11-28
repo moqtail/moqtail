@@ -26,9 +26,9 @@ use super::{
   requests_blocked::RequestsBlocked, server_setup::ServerSetup, subscribe::Subscribe,
   subscribe_error::SubscribeError, subscribe_namespace::SubscribeNamespace,
   subscribe_namespace_error::SubscribeNamespaceError, subscribe_namespace_ok::SubscribeNamespaceOk,
-  subscribe_ok::SubscribeOk, subscribe_update::SubscribeUpdate, track_status::TrackStatus,
-  track_status_error::TrackStatusError, track_status_ok::TrackStatusOk, unsubscribe::Unsubscribe,
-  unsubscribe_namespace::UnsubscribeNamespace,
+  subscribe_ok::SubscribeOk, subscribe_update::SubscribeUpdate, switch::Switch,
+  track_status::TrackStatus, track_status_error::TrackStatusError, track_status_ok::TrackStatusOk,
+  unsubscribe::Unsubscribe, unsubscribe_namespace::UnsubscribeNamespace,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -63,6 +63,11 @@ pub enum ControlMessage {
   SubscribeNamespaceOk(Box<SubscribeNamespaceOk>),
   SubscribeNamespaceError(Box<SubscribeNamespaceError>),
   UnsubscribeNamespace(Box<UnsubscribeNamespace>),
+  Switch(Box<Switch>),
+}
+
+pub trait RequestTrait {
+  fn get_request_id(&self) -> u64;
 }
 
 pub trait ControlMessageTrait: std::fmt::Debug {
@@ -186,6 +191,7 @@ impl ControlMessage {
       ControlMessageType::UnsubscribeNamespace => {
         UnsubscribeNamespace::parse_payload(&mut payload).map(ControlMessage::UnsubscribeNamespace)
       }
+      ControlMessageType::Switch => Switch::parse_payload(&mut payload).map(ControlMessage::Switch),
     }
     .map_err(|err| ParseError::ProtocolViolation {
       context: "ControlMessage::deserialize(payload)",
@@ -236,6 +242,7 @@ impl ControlMessage {
       ControlMessage::SubscribeNamespaceOk(msg) => msg.serialize(),
       ControlMessage::SubscribeNamespaceError(msg) => msg.serialize(),
       ControlMessage::UnsubscribeNamespace(msg) => msg.serialize(),
+      ControlMessage::Switch(msg) => msg.serialize(),
     }
   }
 
@@ -272,6 +279,7 @@ impl ControlMessage {
       ControlMessage::SubscribeNamespaceOk(_) => ControlMessageType::SubscribeNamespaceOk,
       ControlMessage::SubscribeNamespaceError(_) => ControlMessageType::SubscribeNamespaceError,
       ControlMessage::UnsubscribeNamespace(_) => ControlMessageType::UnsubscribeNamespace,
+      ControlMessage::Switch(_) => ControlMessageType::Switch,
     }
   }
 }

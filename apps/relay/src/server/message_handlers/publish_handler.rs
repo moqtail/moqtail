@@ -26,7 +26,7 @@ use moqtail::model::control::{
 use moqtail::model::error::TerminationCode;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
-use tracing::{info, warn};
+use tracing::info;
 
 pub async fn handle(
   client: Arc<MOQTClient>,
@@ -38,18 +38,6 @@ pub async fn handle(
     ControlMessage::Publish(m) => {
       info!("Received Publish message for track: {}", m.track_name);
       let request_id = m.request_id;
-
-      // Check request ID
-      {
-        let max_request_id = context.max_request_id.read().await;
-        if request_id >= *max_request_id {
-          warn!(
-            "Request ID ({}) is greater than max request ID ({})",
-            request_id, max_request_id
-          );
-          return Err(TerminationCode::TooManyRequests);
-        }
-      }
 
       // Validate track namespace authorization
       // TODO: Implement actual authorization logic based on your requirements

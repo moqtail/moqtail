@@ -17,6 +17,7 @@ use crate::model::common::pair::KeyValuePair;
 use crate::model::common::tuple::Tuple;
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
 use crate::model::control::constant::ControlMessageType;
+use crate::model::control::control_message::RequestTrait;
 use crate::model::error::ParseError;
 use bytes::{BufMut, Bytes, BytesMut};
 
@@ -25,6 +26,12 @@ pub struct PublishNamespace {
   pub request_id: u64,
   pub track_namespace: Tuple,
   pub parameters: Vec<KeyValuePair>,
+}
+
+impl RequestTrait for PublishNamespace {
+  fn get_request_id(&self) -> u64 {
+    self.request_id
+  }
 }
 
 impl PublishNamespace {

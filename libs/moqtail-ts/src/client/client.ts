@@ -785,25 +785,37 @@ export class MOQtailClient {
    * await client.switch({ subscriptionRequestId, fullTrackName: newTrackName });
    * ```
    */
-  async switch(args: SwitchOptions): Promise<void> {
+  async switch(
+    args: SwitchOptions,
+  ): Promise<SubscribeError | { requestId: bigint; stream: ReadableStream<MoqtObject> }> {
     this.#ensureActive()
     let { fullTrackName, subscriptionRequestId, parameters } = args
     try {
-      if (this.requests.has(subscriptionRequestId)) {
-        const request = this.requests.get(subscriptionRequestId)!
-        if (request instanceof SubscribeRequest) {
-          const trackAlias = this.subscriptionAliasMap.get(subscriptionRequestId)
-          if (!trackAlias)
-            throw new InternalError('MOQtailClient.switch', 'Request exists but track alias mapping does not')
-          const subscription = this.subscriptions.get(trackAlias)
-          if (!subscription) throw new InternalError('MOQtailClient.switch', 'Request exists but subscription does not')
+      if (!this.requests.has(subscriptionRequestId))
+        throw new ProtocolViolationError('MOQtailClient.switch', 'Unknown subscription request id')
 
-          if (!parameters) parameters = new VersionSpecificParameters()
-          const requestId = this.#nextClientRequestId
-          const msg = new Switch(requestId, fullTrackName, subscriptionRequestId, parameters.build())
-          subscription.switch(fullTrackName, parameters.build()) // This also updates the request since both maps store the same object
-          await this.controlStream.send(msg)
-        }
+      const request = this.requests.get(subscriptionRequestId)!
+      if (request instanceof SubscribeRequest)
+        throw new ProtocolViolationError('MOQtailClient.switch', 'Request id is not a subscription')
+
+      const trackAlias = this.subscriptionAliasMap.get(subscriptionRequestId)
+      if (!trackAlias)
+        throw new InternalError('MOQtailClient.switch', 'Request exists but track alias mapping does not')
+      const subscription = this.subscriptions.get(trackAlias)
+      if (!subscription) throw new InternalError('MOQtailClient.switch', 'Request exists but subscription does not')
+
+      if (!parameters) parameters = new VersionSpecificParameters()
+      const requestId = this.#nextClientRequestId
+      const msg = new Switch(requestId, fullTrackName, subscriptionRequestId, parameters.build())
+      subscription.switch(fullTrackName, parameters.build())
+      await this.controlStream.send(msg)
+      const response = await subscription
+      if (response instanceof SubscribeError) {
+        return response
+      } else {
+        // Update requestIdMap
+        this.subscriptionAliasMap.set(subscriptionRequestId, response.trackAlias)
+        return { requestId: subscriptionRequestId, stream: subscription.stream }
       }
       // Q: Throw? Idempotent?
     } catch (error) {

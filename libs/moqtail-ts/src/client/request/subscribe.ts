@@ -72,6 +72,10 @@ export class SubscribeRequest implements PromiseLike<SubscribeOk | SubscribeErro
   switch(newTrackName: FullTrackName, newParameters: KeyValuePair[]): void {
     this.fullTrackName = newTrackName
     this.subscribeParameters = newParameters
+    this.#promise = new Promise<SubscribeOk | SubscribeError>((resolve, reject) => {
+      this.#resolve = resolve
+      this.#reject = reject
+    })
   }
   unsubscribe(): void {
     this.isCanceled = true

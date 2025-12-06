@@ -18,6 +18,7 @@ use crate::model::common::location::Location;
 use crate::model::common::pair::KeyValuePair;
 use crate::model::common::tuple::Tuple;
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
+use crate::model::control::control_message::RequestTrait;
 use crate::model::error::ParseError;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
@@ -34,6 +35,12 @@ pub struct TrackStatus {
   pub end_group: Option<u64>,
   // TODO: make the following optional
   pub subscribe_parameters: Vec<KeyValuePair>,
+}
+
+impl RequestTrait for TrackStatus {
+  fn get_request_id(&self) -> u64 {
+    self.request_id
+  }
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -12,7 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+mod switch_set;
+mod track_subscription_map;
+
 use crate::server::{
+  client::track_subscription_map::TrackSubscriptionMap,
   stream_id::{StreamId, StreamType},
   utils,
 };
@@ -27,6 +31,7 @@ use moqtail::{
   },
   transport::data_stream_handler::{FetchRequest, SubscribeRequest},
 };
+use switch_set::SwitchSet;
 
 use std::{
   collections::{BTreeMap, HashMap, VecDeque},
@@ -55,7 +60,7 @@ pub(crate) struct MOQTClient {
   pub client_setup: Arc<ClientSetup>,
   pub announced_track_namespaces: Arc<RwLock<Vec<Tuple>>>, // the track namespaces the publisher announced
   pub published_tracks: Arc<RwLock<Vec<FullTrackName>>>,   // the tracks the client is publishing
-  pub subscribers: Arc<RwLock<Vec<usize>>>, // the subscribers the client is subscribed to
+  pub subscribers: Arc<RwLock<Vec<usize>>>, // the subscribers that subscribed to the client (as publisher)
 
   pub message_queue: Arc<RwLock<VecDeque<ControlMessage>>>, // the control messages the client has sent
   pub message_notify: Arc<Notify>, // notify when a new message is available
@@ -67,6 +72,11 @@ pub(crate) struct MOQTClient {
   // this contains the requests made by the client and the corresponding request.
   // The key value is the original request id.
   pub subscribe_requests: Arc<RwLock<BTreeMap<u64, SubscribeRequest>>>,
+
+  // this contains the subscriptions made by the client
+  pub subscriptions: TrackSubscriptionMap,
+
+  pub switch_set: SwitchSet,
 }
 
 impl MOQTClient {
@@ -92,6 +102,8 @@ impl MOQTClient {
       send_streams: Arc::new(send_streams),
       fetch_requests: Arc::new(RwLock::new(BTreeMap::new())),
       subscribe_requests: Arc::new(RwLock::new(BTreeMap::new())),
+      subscriptions: TrackSubscriptionMap::new(),
+      switch_set: SwitchSet::new(),
     }
   }
 

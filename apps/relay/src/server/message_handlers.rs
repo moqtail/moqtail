@@ -17,7 +17,7 @@ use moqtail::{
   model::{control::control_message::ControlMessage, error::TerminationCode},
   transport::control_stream_handler::ControlStreamHandler,
 };
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::server::{client::MOQTClient, session_context::SessionContext};
 use std::sync::Arc;
@@ -37,6 +37,31 @@ impl MessageHandler {
     msg: ControlMessage,
     context: Arc<SessionContext>,
   ) -> Result<(), TerminationCode> {
+    // Check request ID if the message is a request
+    let request_id = match &msg {
+      ControlMessage::PublishNamespace(msg) => Some(msg.request_id),
+      ControlMessage::Publish(msg) => Some(msg.request_id),
+      ControlMessage::Fetch(msg) => Some(msg.request_id),
+      ControlMessage::Subscribe(msg) => Some(msg.request_id),
+      ControlMessage::SubscribeUpdate(msg) => Some(msg.request_id),
+      ControlMessage::TrackStatus(msg) => Some(msg.request_id),
+      ControlMessage::SubscribeNamespace(msg) => Some(msg.request_id),
+      ControlMessage::Switch(msg) => Some(msg.request_id),
+      _ => None,
+    };
+
+    if request_id.is_some() {
+      let request_id = request_id.unwrap();
+      let max_request_id = context.max_request_id.read().await;
+      if request_id >= *max_request_id {
+        warn!(
+          "request id ({}) is greater than max request id ({})",
+          request_id, max_request_id
+        );
+        return Err(TerminationCode::TooManyRequests);
+      }
+    }
+
     let handling_result = match &msg {
       ControlMessage::PublishNamespace(_) => {
         publish_namespace_handler::handle(
@@ -55,7 +80,8 @@ impl MessageHandler {
       | ControlMessage::SubscribeOk(_)
       | ControlMessage::SubscribeUpdate(_)
       | ControlMessage::SubscribeError(_)
-      | ControlMessage::Unsubscribe(_) => {
+      | ControlMessage::Unsubscribe(_)
+      | ControlMessage::Switch(_) => {
         subscribe_handler::handle(client.clone(), control_stream_handler, msg, context.clone())
           .await
       }

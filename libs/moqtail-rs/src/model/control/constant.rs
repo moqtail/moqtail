@@ -52,6 +52,7 @@ pub enum ControlMessageType {
   PublishDone = 0x0B,
   PublishOk = 0x1E,
   PublishError = 0x1F,
+  Switch = 0x22,
 }
 
 impl TryFrom<u64> for ControlMessageType {
@@ -75,7 +76,7 @@ impl TryFrom<u64> for ControlMessageType {
       0x19 => Ok(ControlMessageType::FetchError),
       0x17 => Ok(ControlMessageType::FetchCancel),
       0x0D => Ok(ControlMessageType::TrackStatus),
-      0x0E => Ok(ControlMessageType::TrackStatus),
+      0x0E => Ok(ControlMessageType::TrackStatusOk),
       0x06 => Ok(ControlMessageType::PublishNamespace),
       0x07 => Ok(ControlMessageType::PublishNamespaceOk),
       0x08 => Ok(ControlMessageType::PublishNamespaceError),
@@ -88,6 +89,7 @@ impl TryFrom<u64> for ControlMessageType {
       0x1D => Ok(ControlMessageType::Publish),
       0x1E => Ok(ControlMessageType::PublishOk),
       0x1F => Ok(ControlMessageType::PublishError),
+      0x22 => Ok(ControlMessageType::Switch),
       _ => Err(ParseError::InvalidType {
         context: " ControlMessageType::try_from(u64)",
         details: format!("Invalid type, got {value}"),

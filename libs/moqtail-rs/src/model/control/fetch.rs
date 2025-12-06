@@ -18,6 +18,7 @@ use crate::model::common::location::Location;
 use crate::model::common::pair::KeyValuePair;
 use crate::model::common::tuple::Tuple;
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
+use crate::model::control::control_message::RequestTrait;
 use crate::model::error::ParseError;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
@@ -44,6 +45,12 @@ pub struct Fetch {
   pub standalone_fetch_props: Option<StandAloneFetchProps>,
   pub joining_fetch_props: Option<JoiningFetchProps>,
   pub parameters: Vec<KeyValuePair>,
+}
+
+impl RequestTrait for Fetch {
+  fn get_request_id(&self) -> u64 {
+    self.request_id
+  }
 }
 
 impl Fetch {

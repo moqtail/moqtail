@@ -22,6 +22,7 @@ use crate::server::utils;
 use anyhow::Result;
 use moqtail::model::common::location::Location;
 use moqtail::model::control::subscribe::Subscribe;
+use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::model::data::object::Object;
 use moqtail::{model::common::tuple::Tuple, transport::data_stream_handler::HeaderInfo};
 use std::{collections::BTreeMap, collections::HashMap, sync::Arc};
@@ -62,7 +63,7 @@ pub struct Track {
   pub track_namespace: Tuple,
   #[allow(dead_code)]
   pub track_name: String,
-  subscriptions: Arc<RwLock<BTreeMap<usize, Arc<RwLock<Subscription>>>>>,
+  subscriptions: Arc<RwLock<BTreeMap<usize, Arc<Subscription>>>>,
   pub publisher_connection_id: usize,
   #[allow(dead_code)]
   pub(crate) cache: TrackCache,
@@ -124,10 +125,10 @@ impl Track {
   }
 
   pub async fn add_subscription(
-    &mut self,
+    &self,
     subscriber: Arc<MOQTClient>,
     subscribe_message: Subscribe,
-  ) -> Result<(), anyhow::Error> {
+  ) -> Result<Arc<Subscription>, anyhow::Error> {
     let connection_id = { subscriber.connection_id };
 
     info!(
@@ -141,7 +142,7 @@ impl Track {
     let subscription = Subscription::new(
       self.track_alias,
       subscribe_message,
-      subscriber.clone(),
+      subscriber,
       event_rx,
       self.cache.clone(),
       connection_id,
@@ -157,19 +158,20 @@ impl Track {
       );
       return Err(anyhow::anyhow!("Subscriber already exists"));
     }
-    subscriptions.insert(connection_id, Arc::new(RwLock::new(subscription)));
+    let subscription = Arc::new(subscription);
+    subscriptions.insert(connection_id, subscription.clone());
 
     // Store the sender for this subscriber in the appropriate partition
     let partition_index = self.get_subscriber_partition_index(connection_id);
     let mut senders = self.subscriber_senders[partition_index].write().await;
     senders.insert(connection_id, event_tx);
 
-    Ok(())
+    Ok(subscription)
   }
 
   // return the subscription for the client
   // subscriber_id is the connection id of the client
-  pub async fn get_subscription(&self, subscriber_id: usize) -> Option<Arc<RwLock<Subscription>>> {
+  pub async fn get_subscription(&self, subscriber_id: usize) -> Option<Arc<Subscription>> {
     debug!(
       "Getting subscription for subscriber_id: {} from track: {}",
       subscriber_id, self.track_alias
@@ -190,8 +192,7 @@ impl Track {
 
     // find the subscription by subscriber_id and finish it
     if let Some(subscription) = sub {
-      let sub = subscription.write().await;
-      sub.finish().await;
+      subscription.finish().await;
     }
 
     // Remove and dispose the sender for this subscriber from the appropriate partition
@@ -204,7 +205,6 @@ impl Track {
         subscriber_id, self.track_alias
       );
     }
-    drop(senders);
   }
 
   pub async fn new_object(
@@ -231,49 +231,54 @@ impl Track {
       );
     }
 
-    if let Ok(fetch_object) = object.clone().try_into_fetch() {
-      self.cache.add_object(fetch_object).await;
+    match object.clone().try_into_fetch() {
+      Ok(fetch_object) => {
+        self.cache.add_object(fetch_object).await;
 
-      // Track-level logging - log every object arrival if enabled
-      if self.config.enable_object_logging {
-        let object_received_time = utils::passed_time_since_start();
-        self
-          .object_logger
-          .log_track_object(self.track_alias, object, object_received_time)
-          .await;
-      }
-
-      // update the largest location
-      {
-        let mut largest_location = self.largest_location.write().await;
-        if object.location.group > largest_location.group
-          || (object.location.group == largest_location.group
-            && object.location.object > largest_location.object)
-        {
-          largest_location.group = object.location.group;
-          largest_location.object = object.location.object;
+        // Track-level logging - log every object arrival if enabled
+        if self.config.enable_object_logging {
+          let object_received_time = utils::passed_time_since_start();
+          self
+            .object_logger
+            .log_track_object(self.track_alias, object, object_received_time)
+            .await;
         }
+
+        // update the largest location
+        {
+          let mut largest_location = self.largest_location.write().await;
+          if object.location.group > largest_location.group
+            || (object.location.group == largest_location.group
+              && object.location.object > largest_location.object)
+          {
+            largest_location.group = object.location.group;
+            largest_location.object = object.location.object;
+          }
+        }
+
+        // Send single Object event with optional header info
+        let event = TrackEvent::Object {
+          stream_id: stream_id.clone(),
+          object: object.clone(),
+          header_info: header_info.cloned(),
+        };
+
+        self.send_event_to_subscribers(event).await?;
+        Ok(())
       }
-
-      // Send single Object event with optional header info
-      let event = TrackEvent::Object {
-        stream_id: stream_id.clone(),
-        object: object.clone(),
-        header_info: header_info.cloned(),
-      };
-
-      self.send_event_to_subscribers(event).await?;
-      Ok(())
-    } else {
-      error!(
-        "new_object: track: {:?} location: {:?} stream_id: {} diff_ms: {} object: {:?}",
-        object.track_alias,
-        object.location,
-        stream_id,
-        utils::passed_time_since_start(),
-        object
-      );
-      Err(anyhow::anyhow!("Object is not a fetch object"))
+      Err(e) => {
+        error!("Failed to convert object to fetch object: {:?}", e);
+        error!(
+          "Failed to convert object to fetch object, track: {:?} location: {:?} stream_id: {} diff_ms: {} object: {:?} error: {:?}",
+          object.track_alias,
+          object.location,
+          stream_id,
+          utils::passed_time_since_start(),
+          object,
+          e
+        );
+        Err(e.into())
+      }
     }
   }
 
@@ -346,6 +351,13 @@ impl Track {
     }
 
     Ok(failed_subscribers)
+  }
+
+  pub fn get_full_track_name(&self) -> FullTrackName {
+    FullTrackName {
+      namespace: self.track_namespace.clone(),
+      name: self.track_name.clone().into(),
+    }
   }
 }
 

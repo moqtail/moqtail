@@ -27,8 +27,7 @@
     "url": "https://moqtail.dev"
   },
   "files": [
-    "dist",
-    "src"
+    "dist"
   ],
   "main": "dist/index.cjs",
   "module": "dist/index.js",
@@ -43,9 +42,6 @@
         "types": "./dist/index.d.cts",
         "default": "./dist/index.cjs"
       }
-    },
-    "./src": {
-      "import": "./src/index.ts"
     },
     "./client": {
       "import": {

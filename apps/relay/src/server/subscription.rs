@@ -307,7 +307,7 @@ impl Subscription {
           }
 
           match event {
-            TrackEvent::Object {
+            TrackEvent::SubgroupObject {
               object,
               stream_id,
               header_info,
@@ -442,6 +442,17 @@ impl Subscription {
                   utils::passed_time_since_start(),
                   object_received_time
                 );
+              }
+            }
+            TrackEvent::DatagramObject { object } => {
+              // Handle datagram object - write directly to connection
+              // For datagrams, we write the payload directly as a datagram
+              if let Some(payload) = &object.payload {
+                if let Err(e) = self.subscriber.write_datagram_object(payload.clone()).await {
+                  error!("Failed to write datagram object: {:?}", e);
+                }
+              } else {
+                debug!("Datagram object has no payload");
               }
             }
             TrackEvent::StreamClosed { stream_id } => {
@@ -580,7 +591,7 @@ impl Subscription {
 
       self
         .subscriber
-        .write_object_to_stream(
+        .write_stream_object(
           stream_id,
           sub_object.object_id,
           object_bytes,

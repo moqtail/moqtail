@@ -22,6 +22,7 @@ use crate::server::utils;
 use anyhow::Result;
 use moqtail::model::common::location::Location;
 use moqtail::model::control::subscribe::Subscribe;
+use moqtail::model::data::constant::ObjectForwardingPreference;
 use moqtail::model::data::object::Object;
 use moqtail::{model::common::tuple::Tuple, transport::data_stream_handler::HeaderInfo};
 use std::{collections::BTreeMap, collections::HashMap, sync::Arc};
@@ -42,10 +43,13 @@ pub type SubscriberSenderList = Vec<SubscriberSenderLock>;
 #[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
 pub enum TrackEvent {
-  Object {
+  SubgroupObject {
     stream_id: StreamId,
     object: Object,
     header_info: Option<HeaderInfo>,
+  },
+  DatagramObject {
+    object: Object,
   },
   StreamClosed {
     stream_id: StreamId,
@@ -71,6 +75,7 @@ pub struct Track {
   pub object_logger: ObjectLogger,
   log_folder: String,
   config: &'static AppConfig,
+  pub forwarding_preference: Arc<RwLock<ObjectForwardingPreference>>,
 }
 
 // TODO: this track implementation should be static? At least
@@ -101,7 +106,12 @@ impl Track {
       object_logger: ObjectLogger::new(config.log_folder.clone()),
       log_folder: config.log_folder.clone(),
       config,
+      forwarding_preference: Arc::new(RwLock::new(ObjectForwardingPreference::Subgroup)),
     }
+  }
+
+  pub async fn set_forwarding_preference(&self, preference: ObjectForwardingPreference) {
+    *self.forwarding_preference.write().await = preference;
   }
 
   /// Calculate the partition index for subscriber distribution across buckets.
@@ -207,14 +217,14 @@ impl Track {
     drop(senders);
   }
 
-  pub async fn new_object(
+  pub async fn new_subgroup_object(
     &self,
     stream_id: &StreamId,
     object: &Object,
     header_info: Option<&HeaderInfo>,
   ) -> Result<(), anyhow::Error> {
     debug!(
-      "new_object: track: {:?} location: {:?} stream_id: {} diff_ms: {}",
+      "new_subgroup_object: track: {:?} location: {:?} stream_id: {} diff_ms: {}",
       object.track_alias,
       object.location,
       stream_id,
@@ -256,7 +266,7 @@ impl Track {
       }
 
       // Send single Object event with optional header info
-      let event = TrackEvent::Object {
+      let event = TrackEvent::SubgroupObject {
         stream_id: stream_id.clone(),
         object: object.clone(),
         header_info: header_info.cloned(),
@@ -266,7 +276,7 @@ impl Track {
       Ok(())
     } else {
       error!(
-        "new_object: track: {:?} location: {:?} stream_id: {} diff_ms: {} object: {:?}",
+        "new_subgroup_object: track: {:?} location: {:?} stream_id: {} diff_ms: {} object: {:?}",
         object.track_alias,
         object.location,
         stream_id,
@@ -275,6 +285,24 @@ impl Track {
       );
       Err(anyhow::anyhow!("Object is not a fetch object"))
     }
+  }
+
+  pub async fn new_datagram_object(&self, object: &Object) -> Result<(), anyhow::Error> {
+    debug!(
+      "new_datagram_object: track: {:?} location: {:?} diff_ms: {}",
+      object.track_alias,
+      object.location,
+      utils::passed_time_since_start()
+    );
+
+    // For now, just send the datagram object event
+    // TODO: Implement actual datagram handling logic
+    let event = TrackEvent::DatagramObject {
+      object: object.clone(),
+    };
+
+    self.send_event_to_subscribers(event).await?;
+    Ok(())
   }
 
   pub async fn stream_closed(&self, stream_id: &StreamId) -> Result<(), anyhow::Error> {

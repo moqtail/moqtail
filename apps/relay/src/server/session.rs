@@ -13,8 +13,10 @@
 // limitations under the License.
 
 use anyhow::Result;
+use bytes::Bytes;
 use moqtail::model::{
   control::{constant, control_message::ControlMessage, server_setup::ServerSetup},
+  data::{datagram_object::DatagramObject, object::Object},
   error::TerminationCode,
 };
 use moqtail::transport::{
@@ -265,8 +267,57 @@ impl Session {
 
         _ = context.connection.receive_datagram() => {
           let connection_id = context.connection_id;
+          let context_clone = Arc::clone(&context);
+          let datagram_bytes = match context.connection.receive_datagram().await {
+            Ok(bytes) => bytes,
+            Err(e) => {
+              error!("Failed to receive datagram from client {}: {:?}", connection_id, e);
+              continue;
+            }
+          };
+
           tokio::spawn(async move {
-            debug!("Received (dgram) from client {}", connection_id);
+            debug!("Received datagram from client {}", connection_id);
+
+            // Parse the datagram
+            let bytes = Bytes::from(datagram_bytes.payload().to_vec());
+            let mut bytes = bytes;
+            match DatagramObject::deserialize(&mut bytes) {
+              Ok(datagram_obj) => {
+                debug!("Parsed datagram object: track_alias={}, group_id={}, object_id={}",
+                       datagram_obj.track_alias, datagram_obj.group_id, datagram_obj.object_id);
+
+                // Convert to Object
+                match Object::try_from_datagram(datagram_obj) {
+                  Ok(object) => {
+                    // Find the track by track_alias and set forwarding preference to Datagram
+                    let track_aliases = context_clone.track_aliases.read().await;
+                    if let Some(full_track_name) = track_aliases.get(&object.track_alias) {
+                      let tracks = context_clone.tracks.read().await;
+                      if let Some(track) = tracks.get(full_track_name) {
+                        // Set forwarding preference to Datagram
+                        track.set_forwarding_preference(moqtail::model::data::constant::ObjectForwardingPreference::Datagram).await;
+
+                        // Call new_datagram_object
+                        if let Err(e) = track.new_datagram_object(&object).await {
+                          error!("Failed to process datagram object: {:?}", e);
+                        }
+                      } else {
+                        debug!("Track not found for track_alias {}", object.track_alias);
+                      }
+                    } else {
+                      debug!("Full track name not found for track_alias {}", object.track_alias);
+                    }
+                  }
+                  Err(e) => {
+                    error!("Failed to convert datagram to object: {:?}", e);
+                  }
+                }
+              }
+              Err(e) => {
+                error!("Failed to parse datagram: {:?}", e);
+              }
+            }
           });
         }
       }
@@ -486,7 +537,7 @@ impl Session {
           let track = current_track.as_ref().unwrap();
 
           if let Err(e) = track
-            .new_object(
+            .new_subgroup_object(
               &stream_id.clone().unwrap().clone(),
               &object,
               header_info.as_ref(),

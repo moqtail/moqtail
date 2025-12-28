@@ -24,3 +24,10 @@ serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# MMTP-MFU support (for design comparison with moq-lib)
+[dependencies.mmt-core]
+path = "../../../libmmt/mmt-core"
+
+[dependencies.raptorq-c]
+path = "../../../fec-raptorq/c-bindings"

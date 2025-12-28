@@ -5,7 +5,10 @@
 //! Complete FFI implementation for MOQtail C/FFmpeg integration
 //!
 //! This provides a fully functional C API for publishing MOQ tracks
-//! with LOC container format from FFmpeg via WebTransport.
+//! with both LOC and MMTP-MFU container formats from FFmpeg via WebTransport.
+//!
+//! This dual-format implementation enables direct comparison of moqtail vs moq-lib
+//! for MMTP-MFU integration - evaluating which framework is more concise and better designed.
 
 use std::ffi::{CStr, c_void};
 use std::os::raw::c_char;
@@ -13,8 +16,19 @@ use std::ptr;
 use std::sync::Arc;
 use std::collections::VecDeque;
 use tokio::sync::{Mutex, RwLock, mpsc, Notify};
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut, BufMut};
 use tracing::{info, error};
+
+// MMTP-MFU support for design comparison with moq-lib
+use mmt_core::{
+    MmtpHeader,
+    MpuHeader,
+    PacketType,
+    FragmentType,
+    FecType,
+    MMTP_HEADER_SIZE,
+    MPU_HEADER_SIZE,
+};
 
 use crate::model::common::tuple::Tuple;
 use crate::model::common::pair::KeyValuePair;
@@ -44,7 +58,7 @@ pub struct MoqtailTrackHandle {
     _private: [u8; 0],
 }
 
-/// MOQtail object for FFI
+/// MOQtail object for FFI (LOC format with varint extensions)
 #[repr(C)]
 pub struct MoqtailObject {
     pub group_id: u64,
@@ -56,6 +70,20 @@ pub struct MoqtailObject {
     pub payload_len: usize,
     pub config_data: *const u8,
     pub config_len: usize,
+}
+
+/// MMTP-MFU object for FFI (MMTP format with fixed 12-byte header)
+/// Design comparison: This structure shows how moqtail would handle MMTP-MFU
+#[repr(C)]
+pub struct MmtpMfuObject {
+    pub packet_id: u16,
+    pub packet_sequence: u32,
+    pub timestamp: u64,
+    pub packet_type: u8,        // PacketType enum value
+    pub mpu_sequence: u32,
+    pub mpu_fragment_type: u8,  // FragmentType enum value
+    pub payload: *const u8,
+    pub payload_len: usize,
 }
 
 /// Internal client context with WebTransport connection
@@ -76,14 +104,27 @@ struct TrackContext {
 }
 
 /// Object message for async transmission
-struct ObjectMessage {
-    group_id: u64,
-    object_id: u64,
-    publisher_priority: u8,
-    is_keyframe: bool,
-    timestamp_us: u64,
-    payload: Bytes,
-    config_data: Option<Bytes>,
+enum ObjectMessage {
+    /// LOC format (varint extensions)
+    Loc {
+        group_id: u64,
+        object_id: u64,
+        publisher_priority: u8,
+        is_keyframe: bool,
+        timestamp_us: u64,
+        payload: Bytes,
+        config_data: Option<Bytes>,
+    },
+    /// MMTP-MFU format (fixed 12-byte header + MPU header)
+    Mmtp {
+        packet_id: u16,
+        packet_sequence: u32,
+        timestamp: u64,
+        packet_type: PacketType,
+        mpu_sequence: u32,
+        mpu_fragment_type: FragmentType,
+        payload: Bytes,
+    },
 }
 
 /// Helper to convert raw pointer to Arc<Mutex<ClientContext>>
@@ -421,8 +462,16 @@ async fn handle_subscribe_and_publish(
     let mut rx = object_rx.lock().await;
 
     while let Some(obj_msg) = rx.recv().await {
+        // Extract group ID depending on message type
+        // LOC: group_id field
+        // MMTP: mpu_sequence field (equivalent grouping)
+        let msg_group_id = match &obj_msg {
+            ObjectMessage::Loc { group_id, .. } => *group_id,
+            ObjectMessage::Mmtp { mpu_sequence, .. } => *mpu_sequence as u64,
+        };
+
         // Check if we're starting a new group
-        if current_group != Some(obj_msg.group_id) {
+        if current_group != Some(msg_group_id) {
             // Send previous group's objects if any
             if !group_objects.is_empty() && current_group.is_some() {
                 send_group_objects(
@@ -433,7 +482,7 @@ async fn handle_subscribe_and_publish(
                 ).await;
                 group_objects.clear();
             }
-            current_group = Some(obj_msg.group_id);
+            current_group = Some(msg_group_id);
         }
 
         group_objects.push(obj_msg);
@@ -503,36 +552,90 @@ async fn send_group_objects(
     let mut prev_object_id = None;
 
     for obj_msg in objects {
-        // Build extension headers
-        let mut extensions = Vec::new();
+        // ========================================================================
+        // DESIGN COMPARISON: LOC vs MMTP Object Construction
+        // ========================================================================
+        //
+        // LOC (moqtail native):
+        // - Metadata in varint extension headers (flexible, no fixed size)
+        // - Payload is clean codec data
+        // - Extensions added during serialization (minimal allocation)
+        //
+        // MMTP (added for comparison):
+        // - Metadata in fixed MMTP+MPU headers (already prepended to payload)
+        // - Payload contains MMTP header + MPU header + codec data
+        // - No extension headers needed (but can add for MOQ-specific metadata)
+        //
+        // ========================================================================
 
-        // CaptureTimestamp
-        extensions.push(KeyValuePair::VarInt {
-            type_value: 1,
-            value: obj_msg.timestamp_us,
-        });
+        let (object_id, subgroup_obj) = match obj_msg {
+            ObjectMessage::Loc {
+                group_id: _,
+                object_id,
+                publisher_priority: _,
+                is_keyframe,
+                timestamp_us,
+                payload,
+                config_data,
+            } => {
+                // LOC Path: Build MOQ extension headers from metadata
+                let mut extensions = Vec::new();
 
-        // VideoFrameMarking
-        extensions.push(KeyValuePair::VarInt {
-            type_value: 2,
-            value: if obj_msg.is_keyframe { 1 } else { 0 },
-        });
+                // CaptureTimestamp extension
+                extensions.push(KeyValuePair::VarInt {
+                    type_value: 1,
+                    value: *timestamp_us,
+                });
 
-        // VideoConfig (if present)
-        if let Some(ref config) = obj_msg.config_data {
-            extensions.push(KeyValuePair::Bytes {
-                type_value: 4,
-                value: config.clone(),
-            });
-        }
+                // VideoFrameMarking extension
+                extensions.push(KeyValuePair::VarInt {
+                    type_value: 2,
+                    value: if *is_keyframe { 1 } else { 0 },
+                });
 
-        // Create subgroup object
-        let subgroup_obj = SubgroupObject {
-            object_id: obj_msg.object_id,
-            extension_headers: Some(extensions),
-            object_status: None,
-            payload: Some(obj_msg.payload.clone()),
+                // VideoConfig extension (if present)
+                if let Some(ref config) = config_data {
+                    extensions.push(KeyValuePair::Bytes {
+                        type_value: 4,
+                        value: config.clone(),
+                    });
+                }
+
+                // Create LOC subgroup object
+                let obj = SubgroupObject {
+                    object_id: *object_id,
+                    extension_headers: Some(extensions),
+                    object_status: None,
+                    payload: Some(payload.clone()),
+                };
+
+                (*object_id, obj)
+            }
+
+            ObjectMessage::Mmtp {
+                packet_id: _,
+                packet_sequence,
+                timestamp: _,
+                packet_type: _,
+                mpu_sequence: _,
+                mpu_fragment_type: _,
+                payload,
+            } => {
+                // MMTP Path: Payload already contains MMTP+MPU headers
+                // Use packet_sequence as object_id
+                // No extension headers needed - metadata is in MMTP headers
+                let obj = SubgroupObject {
+                    object_id: *packet_sequence as u64,
+                    extension_headers: None, // MMTP headers embedded in payload
+                    object_status: None,
+                    payload: Some(payload.clone()),
+                };
+
+                (*packet_sequence as u64, obj)
+            }
         };
+
+        let subgroup_obj = subgroup_obj;
 
         // Convert to Object
         let object = match Object::try_from_subgroup(
@@ -605,7 +708,7 @@ pub unsafe extern "C" fn moqtail_send_object(
         None
     };
 
-    let obj_msg = ObjectMessage {
+    let obj_msg = ObjectMessage::Loc {
         group_id: obj_ref.group_id,
         object_id: obj_ref.object_id,
         publisher_priority: obj_ref.publisher_priority,
@@ -626,6 +729,123 @@ pub unsafe extern "C" fn moqtail_send_object(
     let track_ctx = track_arc.blocking_lock();
     if let Err(e) = track_ctx.object_tx.send(obj_msg) {
         eprintln!("[moqtail_ffi] Failed to queue object: {}", e);
+        return -1;
+    }
+
+    0 // Success
+}
+
+/// Send MMTP-MFU object via MOQtail (design comparison with moq-lib)
+///
+/// **Key Design Difference**: MMTP requires prepending fixed headers (12B MMTP + variable MPU),
+/// while LOC uses varint extensions. This function demonstrates how moqtail handles MMTP-MFU
+/// compared to moq-lib's approach.
+///
+/// **Memory Efficiency**: One allocation to prepend headers to payload (unavoidable with C FFI),
+/// then zero-copy transmission via Bytes.
+///
+/// # Safety
+/// `track` and `obj` must be valid pointers
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn moqtail_send_object_mmtp(
+    track: *mut MoqtailTrackHandle,
+    obj: *const MmtpMfuObject,
+) -> i32 {
+    if track.is_null() || obj.is_null() {
+        eprintln!("[moqtail_ffi] Error: null pointer in send_object_mmtp");
+        return -1;
+    }
+
+    let obj_ref = unsafe { &*obj };
+
+    // Validate payload
+    if obj_ref.payload_len == 0 || obj_ref.payload.is_null() {
+        eprintln!("[moqtail_ffi] Error: invalid MMTP payload");
+        return -1;
+    }
+
+    // Parse packet type and fragment type from u8
+    let packet_type = match obj_ref.packet_type {
+        0 => PacketType::MpuMetadata,
+        1 => PacketType::MpuMedia,
+        2 => PacketType::MpuRepair,
+        _ => {
+            eprintln!("[moqtail_ffi] Error: invalid packet_type {}", obj_ref.packet_type);
+            return -1;
+        }
+    };
+
+    let mpu_fragment_type = match obj_ref.mpu_fragment_type {
+        0 => FragmentType::Complete,
+        1 => FragmentType::FirstFragment,
+        2 => FragmentType::MiddleFragment,
+        3 => FragmentType::LastFragment,
+        _ => {
+            eprintln!("[moqtail_ffi] Error: invalid mpu_fragment_type {}", obj_ref.mpu_fragment_type);
+            return -1;
+        }
+    };
+
+    // Design Comparison Point 1: Header Construction
+    // - moq-lib: Fixed 12-byte MMTP header is natural fit (existing packet structure)
+    // - moqtail: Must create MMTP header from scratch, then wrap in MOQ object
+    let mmtp_header = MmtpHeader {
+        packet_id: obj_ref.packet_id,
+        packet_sequence: obj_ref.packet_sequence,
+        timestamp: obj_ref.timestamp,
+        packet_type,
+    };
+
+    let mpu_header = MpuHeader {
+        mpu_sequence: obj_ref.mpu_sequence,
+        fragment_type: mpu_fragment_type,
+        fec_type: FecType::None, // Can be extended for RaptorQ
+    };
+
+    // Design Comparison Point 2: Header Serialization + Payload Combination
+    // - moq-lib: Headers naturally prepend to multicast packets
+    // - moqtail: Must serialize headers and prepend to payload (one allocation)
+    let mut packet_buf = BytesMut::with_capacity(
+        MMTP_HEADER_SIZE + MPU_HEADER_SIZE + obj_ref.payload_len
+    );
+
+    // Serialize MMTP header (12 bytes fixed)
+    mmtp_header.serialize(&mut packet_buf);
+
+    // Serialize MPU header (variable size)
+    mpu_header.serialize(&mut packet_buf);
+
+    // Append payload (zero-copy from FFI slice)
+    unsafe {
+        packet_buf.put_slice(std::slice::from_raw_parts(obj_ref.payload, obj_ref.payload_len));
+    }
+
+    let payload = packet_buf.freeze();
+
+    // Design Comparison Point 3: MOQ Object Wrapping
+    // - moq-lib: MMTP packet IS the MOQ object (minimal wrapping)
+    // - moqtail: MMTP packet becomes payload of MOQ object (extra layer)
+    let obj_msg = ObjectMessage::Mmtp {
+        packet_id: obj_ref.packet_id,
+        packet_sequence: obj_ref.packet_sequence,
+        timestamp: obj_ref.timestamp,
+        packet_type,
+        mpu_sequence: obj_ref.mpu_sequence,
+        mpu_fragment_type,
+        payload,
+    };
+
+    // Send via channel (same as LOC path)
+    let track_arc = unsafe {
+        let arc = ptr_to_track(track);
+        let cloned = arc.clone();
+        std::mem::forget(arc);
+        cloned
+    };
+
+    let track_ctx = track_arc.blocking_lock();
+    if let Err(e) = track_ctx.object_tx.send(obj_msg) {
+        eprintln!("[moqtail_ffi] Failed to queue MMTP object: {}", e);
         return -1;
     }
 

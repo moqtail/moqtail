@@ -1036,6 +1036,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mmt-core"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "moka"
 version = "0.12.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1062,6 +1070,8 @@ name = "moqtail"
 version = "0.8.0"
 dependencies = [
  "bytes",
+ "mmt-core",
+ "raptorq-c",
  "serde",
  "serde_json",
  "thiserror 2.0.12",
@@ -1357,6 +1367,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "99d9a13982dcf210057a8a78572b2217b667c3beacbf3a0d8b454f6f82837d38"
 dependencies = [
  "getrandom 0.3.2",
+]
+
+[[package]]
+name = "raptorq"
+version = "2.0.0"
+
+[[package]]
+name = "raptorq-c"
+version = "0.1.0"
+dependencies = [
+ "raptorq",
 ]
 
 [[package]]

@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SMPTE Bars Viewer - MOQtail</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #0d1117;
+            color: #c9d1d9;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        h1 {
+            color: #58a6ff;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        .controls {
+            background: #161b22;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            border: 1px solid #30363d;
+        }
+        button {
+            background: #238636;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            margin-right: 10px;
+            transition: background 0.2s;
+        }
+        button:hover {
+            background: #2ea043;
+        }
+        button:disabled {
+            background: #30363d;
+            cursor: not-allowed;
+        }
+        .video-container {
+            background: #0d1117;
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+            border: 1px solid #30363d;
+            margin-bottom: 20px;
+        }
+        canvas {
+            border: 2px solid #58a6ff;
+            background: black;
+            max-width: 100%;
+            height: auto;
+        }
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        .stat-card {
+            background: #161b22;
+            padding: 15px;
+            border-radius: 6px;
+            border: 1px solid #30363d;
+        }
+        .stat-label {
+            color: #8b949e;
+            font-size: 12px;
+            margin-bottom: 5px;
+        }
+        .stat-value {
+            color: #58a6ff;
+            font-size: 24px;
+            font-weight: bold;
+        }
+        .screenshots {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 15px;
+            margin-top: 20px;
+        }
+        .screenshot-item {
+            background: #161b22;
+            padding: 10px;
+            border-radius: 6px;
+            border: 1px solid #30363d;
+        }
+        .screenshot-item img {
+            width: 100%;
+            border: 1px solid #30363d;
+            border-radius: 4px;
+        }
+        .screenshot-time {
+            color: #8b949e;
+            font-size: 12px;
+            margin-top: 8px;
+            text-align: center;
+        }
+        .log {
+            background: #0d1117;
+            padding: 15px;
+            border-radius: 6px;
+            border: 1px solid #30363d;
+            height: 200px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+        }
+        .log-entry {
+            margin: 3px 0;
+            padding: 2px 0;
+        }
+        .log-info { color: #58a6ff; }
+        .log-success { color: #3fb950; }
+        .log-error { color: #f85149; }
+        .log-warning { color: #d29922; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎬 MOQtail SMPTE Bars Viewer</h1>
+
+        <div class="controls">
+            <button id="connectBtn" onclick="connectAndSubscribe()">🔌 Connect & Subscribe</button>
+            <button id="screenshotBtn" onclick="captureScreenshot()" disabled>📸 Capture Screenshot</button>
+            <button id="autoBtn" onclick="startAutoCapture()" disabled>⏱️ Auto-Capture (3 shots, 10s apart)</button>
+        </div>
+
+        <div class="stats">
+            <div class="stat-card">
+                <div class="stat-label">Status</div>
+                <div class="stat-value" id="statusValue">Disconnected</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Frames Decoded</div>
+                <div class="stat-value" id="framesValue">0</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Keyframes</div>
+                <div class="stat-value" id="keyframesValue">0</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Bitrate</div>
+                <div class="stat-value" id="bitrateValue">0 kbps</div>
+            </div>
+        </div>
+
+        <div class="video-container">
+            <canvas id="canvas" width="640" height="480"></canvas>
+        </div>
+
+        <h3>📷 Screenshots</h3>
+        <div class="screenshots" id="screenshots"></div>
+
+        <h3>📋 Log</h3>
+        <div class="log" id="log"></div>
+    </div>
+
+    <script type="module">
+        import { MOQtailClient } from './libs/moqtail-ts/dist/index.js';
+
+        let client = null;
+        let decoder = null;
+        let frameCount = 0;
+        let keyframeCount = 0;
+        let bytesReceived = 0;
+        let lastBitrateUpdate = Date.now();
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+
+        function log(message, type = 'info') {
+            const logDiv = document.getElementById('log');
+            const entry = document.createElement('div');
+            entry.className = `log-entry log-${type}`;
+            const time = new Date().toLocaleTimeString();
+            entry.textContent = `[${time}] ${message}`;
+            logDiv.appendChild(entry);
+            logDiv.scrollTop = logDiv.scrollHeight;
+            console.log(`[${type.toUpperCase()}]`, message);
+        }
+
+        function updateStats() {
+            document.getElementById('framesValue').textContent = frameCount;
+            document.getElementById('keyframesValue').textContent = keyframeCount;
+
+            const now = Date.now();
+            const elapsed = (now - lastBitrateUpdate) / 1000;
+            if (elapsed > 1) {
+                const bitrate = Math.round((bytesReceived * 8) / elapsed / 1000);
+                document.getElementById('bitrateValue').textContent = `${bitrate} kbps`;
+                bytesReceived = 0;
+                lastBitrateUpdate = now;
+            }
+        }
+
+        function initDecoder(config) {
+            if (decoder) {
+                decoder.close();
+            }
+
+            log('🎥 Initializing VideoDecoder', 'info');
+
+            decoder = new VideoDecoder({
+                output: (frame) => {
+                    frameCount++;
+                    if (frameCount % 30 === 0) {
+                        log(`✅ Decoded ${frameCount} frames`, 'success');
+                    }
+                    ctx.drawImage(frame, 0, 0);
+                    frame.close();
+                    updateStats();
+                },
+                error: (e) => {
+                    log(`❌ Decoder error: ${e.message}`, 'error');
+                }
+            });
+
+            decoder.configure({
+                codec: 'avc1.42001E', // H.264 Baseline Level 3.0
+                codedWidth: 640,
+                codedHeight: 480,
+                description: config
+            });
+
+            log('✅ VideoDecoder configured', 'success');
+        }
+
+        window.connectAndSubscribe = async function() {
+            try {
+                document.getElementById('connectBtn').disabled = true;
+                document.getElementById('statusValue').textContent = 'Connecting...';
+                log('🔌 Connecting to relay at https://localhost:4433...', 'info');
+
+                client = new MOQtailClient({
+                    url: 'https://localhost:4433',
+                    role: 'subscriber'
+                });
+
+                await client.connect();
+                log('✅ Connected to relay!', 'success');
+                document.getElementById('statusValue').textContent = 'Connected';
+
+                // Subscribe to smpte/video track
+                log('📡 Subscribing to smpte/video track...', 'info');
+
+                const subscription = await client.subscribe({
+                    namespace: 'smpte',
+                    name: 'video'
+                });
+
+                log('✅ Subscribed! Waiting for video data...', 'success');
+                document.getElementById('statusValue').textContent = 'Receiving';
+                document.getElementById('screenshotBtn').disabled = false;
+                document.getElementById('autoBtn').disabled = false;
+
+                // Handle incoming objects
+                subscription.on('object', (object) => {
+                    bytesReceived += object.payload.byteLength;
+
+                    // Parse LOC extensions
+                    const extensions = object.extensions || [];
+                    let isKeyframe = false;
+                    let videoConfig = null;
+
+                    for (const ext of extensions) {
+                        if (ext.type === 2) { // VideoFrameMarking
+                            isKeyframe = ext.value === 1;
+                        } else if (ext.type === 4) { // VideoConfig
+                            videoConfig = ext.value;
+                        }
+                    }
+
+                    if (isKeyframe) {
+                        keyframeCount++;
+                    }
+
+                    // Initialize decoder on first keyframe with config
+                    if (videoConfig && !decoder) {
+                        initDecoder(videoConfig);
+                    }
+
+                    // Decode frame
+                    if (decoder && decoder.state === 'configured') {
+                        const chunk = new EncodedVideoChunk({
+                            type: isKeyframe ? 'key' : 'delta',
+                            timestamp: object.timestamp || 0,
+                            data: object.payload
+                        });
+
+                        try {
+                            decoder.decode(chunk);
+                        } catch (e) {
+                            log(`⚠️ Decode error: ${e.message}`, 'warning');
+                        }
+                    }
+                });
+
+                subscription.on('error', (error) => {
+                    log(`❌ Subscription error: ${error.message}`, 'error');
+                });
+
+            } catch (e) {
+                log(`❌ Connection error: ${e.message}`, 'error');
+                document.getElementById('statusValue').textContent = 'Error';
+                document.getElementById('connectBtn').disabled = false;
+            }
+        };
+
+        window.captureScreenshot = function() {
+            try {
+                const dataURL = canvas.toDataURL('image/png');
+                const time = new Date().toLocaleTimeString();
+
+                const screenshotsDiv = document.getElementById('screenshots');
+                const item = document.createElement('div');
+                item.className = 'screenshot-item';
+
+                const img = document.createElement('img');
+                img.src = dataURL;
+
+                const timeDiv = document.createElement('div');
+                timeDiv.className = 'screenshot-time';
+                timeDiv.textContent = `${time} | Frame ${frameCount}`;
+
+                item.appendChild(img);
+                item.appendChild(timeDiv);
+                screenshotsDiv.appendChild(item);
+
+                log(`📸 Screenshot captured at frame ${frameCount}`, 'success');
+            } catch (e) {
+                log(`❌ Screenshot error: ${e.message}`, 'error');
+            }
+        };
+
+        window.startAutoCapture = async function() {
+            try {
+                document.getElementById('autoBtn').disabled = true;
+                log('⏱️ Starting auto-capture: 3 screenshots, 10 seconds apart', 'success');
+
+                for (let i = 0; i < 3; i++) {
+                    if (i > 0) {
+                        log(`⏳ Waiting 10 seconds for screenshot ${i + 1}/3...`, 'info');
+                        await new Promise(resolve => setTimeout(resolve, 10000));
+                    }
+                    captureScreenshot();
+                }
+
+                log('🎉 Auto-capture complete! 3 screenshots captured.', 'success');
+                document.getElementById('autoBtn').disabled = false;
+            } catch (e) {
+                log(`❌ Auto-capture error: ${e.message}`, 'error');
+                document.getElementById('autoBtn').disabled = false;
+            }
+        };
+
+        // Initial log message
+        log('🚀 MOQtail SMPTE Viewer initialized', 'info');
+        log('Click "Connect & Subscribe" to start receiving video', 'info');
+    </script>
+</body>
+</html>

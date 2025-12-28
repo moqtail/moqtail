@@ -11,6 +11,7 @@
     "version": "changeset version && node scripts/postversion.mjs",
     "build": "npm --prefix libs/moqtail-ts run build",
     "test": "npm --prefix libs/moqtail-ts run test -- run",
+    "test:e2e": "node simple-automated-test.mjs",
     "format": "npm --prefix libs/moqtail-ts run format"
   },
   "devDependencies": {
@@ -24,7 +25,8 @@
     "husky": "^9.1.7",
     "lint-staged": "^16.1.2",
     "prettier": "^3.5.3",
-    "prompts": "^2.4.2"
+    "prompts": "^2.4.2",
+    "puppeteer": "^22.15.0"
   },
   "config": {
     "commitizen": {

@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Simple MOQ Test</title>
+    <style>
+        body {
+            font-family: monospace;
+            padding: 20px;
+            background: #1e1e1e;
+            color: #d4d4d9;
+        }
+        canvas { border: 2px solid #00ff00; background: black; }
+        #log { background: #000; padding: 10px; height: 200px; overflow-y: scroll; }
+    </style>
+</head>
+<body>
+    <h1>Simple MOQ SMPTE Test</h1>
+    <button onclick="testConnection()">Test Connection</button>
+    <button onclick="manualCapture()">Manual Screenshot</button>
+    <br><br>
+    <canvas id="canvas" width="640" height="480"></canvas>
+    <div id="screenshots"></div>
+    <h3>Log:</h3>
+    <div id="log"></div>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        let decoder = null;
+        let frameCount = 0;
+
+        function log(msg) {
+            const logDiv = document.getElementById('log');
+            logDiv.innerHTML += `[${new Date().toLocaleTimeString()}] ${msg}<br>`;
+            logDiv.scrollTop = logDiv.scrollHeight;
+            console.log(msg);
+        }
+
+        function initDecoder(config) {
+            log('Initializing decoder...');
+            decoder = new VideoDecoder({
+                output: (frame) => {
+                    frameCount++;
+                    if (frameCount % 30 === 0) log(`Decoded ${frameCount} frames`);
+                    ctx.drawImage(frame, 0, 0);
+                    frame.close();
+                },
+                error: (e) => log(`Decoder error: ${e.message}`)
+            });
+
+            decoder.configure({
+                codec: 'avc1.42001E',
+                codedWidth: 640,
+                codedHeight: 480,
+                description: config
+            });
+            log('Decoder configured!');
+        }
+
+        async function testConnection() {
+            try {
+                log('Testing WebTransport...');
+                const transport = new WebTransport('https://localhost:4433');
+                await transport.ready;
+                log('✅ Connected to relay!');
+
+                // Just draw test pattern for now
+                log('Drawing test pattern...');
+                drawSMPTEBars();
+                log('✅ Ready for manual screenshot capture');
+
+                setTimeout(() => transport.close(), 5000);
+            } catch (e) {
+                log(`❌ Error: ${e.message}`);
+            }
+        }
+
+        function drawSMPTEBars() {
+            const colors = [
+                '#c0c0c0', '#c0c000', '#00c0c0', '#00c000',
+                '#c000c0', '#c00000', '#0000c0'
+            ];
+            const width = canvas.width / colors.length;
+            colors.forEach((color, i) => {
+                ctx.fillStyle = color;
+                ctx.fillRect(i * width, 0, width, canvas.height * 0.67);
+            });
+            // Bottom bars
+            ctx.fillStyle = '#0000c0';
+            ctx.fillRect(0, canvas.height * 0.67, canvas.width, canvas.height * 0.33);
+        }
+
+        function manualCapture() {
+            const dataURL = canvas.toDataURL('image/png');
+            const img = document.createElement('img');
+            img.src = dataURL;
+            img.style.width = '320px';
+            img.style.border = '2px solid #00ff00';
+            img.style.margin = '5px';
+
+            const container = document.getElementById('screenshots');
+            const wrapper = document.createElement('div');
+            wrapper.style.display = 'inline-block';
+            wrapper.innerHTML = `<div style="color: #4ec9b0;">Screenshot ${container.children.length + 1} at ${new Date().toLocaleTimeString()}</div>`;
+            wrapper.appendChild(img);
+            container.appendChild(wrapper);
+
+            log(`📸 Screenshot ${container.children.length} captured!`);
+        }
+
+        // Auto-capture for demo
+        async function autoCapture() {
+            log('Starting auto-capture: 3 screenshots, 10s apart');
+            drawSMPTEBars();
+            for (let i = 0; i < 3; i++) {
+                if (i > 0) {
+                    log(`Waiting 10 seconds for screenshot ${i + 1}/3...`);
+                    await new Promise(r => setTimeout(r, 10000));
+                }
+                manualCapture();
+            }
+            log('✅ Auto-capture complete!');
+        }
+
+        log('Page loaded. Click "Test Connection" or run autoCapture() in console');
+    </script>
+</body>
+</html>

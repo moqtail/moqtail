@@ -309,6 +309,9 @@ mod tests {
         .await
         .map_err(|e| format!("Failed to accept server stream: {e}"))?;
 
+      // Set control stream to max priority
+      server_send.set_priority(i32::MAX);
+
       let plane = ControlStreamHandler::new(client_send, client_recv);
       Ok((plane, server_send))
     }

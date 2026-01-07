@@ -6,3 +6,7 @@ members = [
     "apps/catalog-server",
 ]
 resolver = "2"
+
+[workspace.dependencies]
+# wtransport hasn't released a new version since 0.6.1
+wtransport = { git = "https://github.com/BiagioFesta/wtransport.git", rev = "974806bb351e71005de50d029da1eaacbebffe0f" }

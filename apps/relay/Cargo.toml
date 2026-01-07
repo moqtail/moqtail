@@ -7,7 +7,7 @@ edition = "2024"
 anyhow = "1.0.97"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-wtransport = "0.6.0"
+wtransport = { workspace = true }
 tokio = { version = "1.0", features = ["full"] }
 serde_json = "1.0.140"
 bytes = "1.10.1"

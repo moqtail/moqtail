@@ -12,9 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::client::MOQTClient;
 use super::track::Track;
-use moqtail::model::control::subscribe::Subscribe;
 use moqtail::model::data::full_track_name::FullTrackName;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -68,25 +66,6 @@ impl TrackManager {
     }
   }
 
-  pub async fn remove_track_by_name(&self, full_track_name: &FullTrackName) {
-    let mut tracks = self.tracks.write().await;
-    if tracks.remove(full_track_name).is_some() {
-      let mut track_aliases = self.track_aliases.write().await;
-      // Find and remove the alias
-      let alias_to_remove = track_aliases.iter().find_map(|(alias, name)| {
-        if name == full_track_name {
-          Some(*alias)
-        } else {
-          None
-        }
-      });
-      if let Some(alias) = alias_to_remove {
-        track_aliases.remove(&alias);
-      }
-      info!("Removed track: {:?}", full_track_name);
-    }
-  }
-
   pub async fn get_track(&self, full_track_name: &FullTrackName) -> Option<Arc<RwLock<Track>>> {
     let tracks = self.tracks.read().await;
     tracks.get(full_track_name).cloned()
@@ -100,29 +79,5 @@ impl TrackManager {
   pub async fn has_track_alias(&self, track_alias: &u64) -> bool {
     let track_aliases = self.track_aliases.read().await;
     track_aliases.contains_key(track_alias)
-  }
-
-  pub async fn get_full_track_name(&self, track_alias: u64) -> Option<FullTrackName> {
-    let track_aliases = self.track_aliases.read().await;
-    track_aliases.get(&track_alias).cloned()
-  }
-
-  pub async fn get_all_tracks(&self) -> HashMap<FullTrackName, Arc<RwLock<Track>>> {
-    let tracks = self.tracks.read().await;
-    tracks.clone()
-  }
-
-  pub async fn add_subscription(
-    &self,
-    full_track_name: &FullTrackName,
-    subscriber: Arc<MOQTClient>,
-    subscribe_message: Subscribe,
-  ) -> Result<(), anyhow::Error> {
-    if let Some(track_lock) = self.get_track(full_track_name).await {
-      let track = track_lock.write().await;
-      track.add_subscription(subscriber, subscribe_message).await
-    } else {
-      Err(anyhow::anyhow!("Track not found: {:?}", full_track_name))
-    }
   }
 }

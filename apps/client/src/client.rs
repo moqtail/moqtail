@@ -244,8 +244,12 @@ impl Client {
           *continue_publishing = false;
           info!("Stopped publishing");
         }
-        Ok(_) => {
-          error!("Unexpected message type");
+        Ok(ControlMessage::SubscribeError(m)) => {
+          info!("Received subscribe error message: {:?}", m);
+          // Handle the subscribe error message
+        }
+        Ok(m) => {
+          error!("Unexpected message type : {:?}", m);
         }
         Err(e) => {
           error!("Failed to receive message: {:?}", e);
@@ -362,8 +366,12 @@ impl Client {
             info!("Received fetch error message: {:?}", m);
             // Handle the fetch error message
           }
-          Ok(_) => {
-            error!("Unexpected message type");
+          Ok(ControlMessage::SubscribeError(m)) => {
+            info!("Received subscribe error message: {:?}", m);
+            // Handle the subscribe error message
+          }
+          Ok(m) => {
+            error!("Unexpected message type : {:?}", m);
           }
           Err(e) => {
             error!("Failed to receive message: {:?}", e);

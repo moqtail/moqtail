@@ -80,7 +80,7 @@ impl SubscriptionManager {
   }
 
   pub async fn add_subscription(
-    &mut self,
+    &self,
     subscriber: Arc<MOQTClient>,
     subscribe_message: Subscribe,
     cache: super::track_cache::TrackCache,

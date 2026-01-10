@@ -49,8 +49,7 @@ impl Session {
     );
 
     let client_manager = server.client_manager.clone();
-    let tracks = server.tracks.clone();
-    let track_aliases = server.track_aliases.clone();
+    let track_manager = server.track_manager.clone();
     let server_config = server.app_config;
     let relay_fetch_requests = server.relay_fetch_requests.clone();
     let relay_subscribe_requests = server.relay_subscribe_requests.clone();
@@ -65,8 +64,7 @@ impl Session {
     let context = Arc::new(SessionContext::new(
       server_config,
       client_manager,
-      tracks,
-      track_aliases,
+      track_manager,
       request_maps,
       connection,
       relay_next_request_id,
@@ -275,7 +273,7 @@ impl Session {
 
   async fn handle_connection_close(context: Arc<SessionContext>) -> Result<()> {
     let client_manager_cleanup = context.client_manager.clone();
-    let tracks_cleanup = context.tracks.clone();
+    let track_manager_cleanup = context.track_manager.clone();
 
     debug!(
       "handle_connection_close | waiting ({})",
@@ -296,7 +294,7 @@ impl Session {
     // Check if the disconnecting client is a publisher and handle track cleanup
     let mut tracks_to_remove = Vec::new();
     {
-      let tracks = tracks_cleanup.read().await;
+      let tracks = track_manager_cleanup.tracks.read().await;
       let client = context.get_client().await;
       if let Some(client) = client {
         let published_tracks = client.get_published_tracks().await;
@@ -307,7 +305,8 @@ impl Session {
           );
 
           match tracks.get(&full_track_name) {
-            Some(track) => {
+            Some(track_lock) => {
+              let track = track_lock.read().await;
               if track.publisher_connection_id == context.connection_id {
                 // check if the track belongs to the disconnected publisher
                 // even though, this comes from the client's published tracks
@@ -342,11 +341,10 @@ impl Session {
 
     // Remove tracks that belonged to the disconnected publisher
     if !tracks_to_remove.is_empty() {
-      let mut tracks = tracks_cleanup.write().await;
-      let mut track_aliases = context.track_aliases.write().await;
       for track_ninfo in tracks_to_remove {
-        tracks.remove(&track_ninfo.1);
-        track_aliases.remove(&track_ninfo.0);
+        track_manager_cleanup
+          .remove_track_by_alias(track_ninfo.0)
+          .await;
         info!(
           "Removed track {:?} after publisher {} disconnect",
           &track_ninfo.1, context.connection_id
@@ -365,7 +363,8 @@ impl Session {
     );
 
     // Remove client from all remaining tracks (as a subscriber)
-    for (_, track) in tracks_cleanup.read().await.iter() {
+    for (_, track_lock) in track_manager_cleanup.tracks.read().await.iter() {
+      let track = track_lock.read().await;
       track.remove_subscription(context.connection_id).await;
     }
     debug!(
@@ -395,7 +394,7 @@ impl Session {
     let mut first_object = true;
     let mut track_alias = 0u64;
     let mut stream_id: Option<StreamId> = None;
-    let mut current_track: Option<Track> = None;
+    let mut current_track: Option<Arc<RwLock<Track>>> = None;
 
     let mut object_count = 0;
 
@@ -448,6 +447,7 @@ impl Session {
                 return Err(anyhow::Error::msg(TerminationCode::InternalError.to_json()));
               }
               let full_track_name_opt = context
+                .track_manager
                 .track_aliases
                 .read()
                 .await
@@ -461,9 +461,9 @@ impl Session {
               }
 
               current_track = if let Some(full_track_name) = full_track_name_opt {
-                if let Some(t) = context.tracks.read().await.get(&full_track_name) {
+                if let Some(t) = context.track_manager.get_track(&full_track_name).await {
                   debug!("track found: {:?}", track_alias);
-                  Some(t.clone())
+                  Some(t)
                 } else {
                   error!(
                     "track not found: {:?} full track name: {:?}",
@@ -483,7 +483,7 @@ impl Session {
             None
           };
 
-          let track = current_track.as_ref().unwrap();
+          let track = current_track.as_ref().unwrap().read().await;
 
           if let Err(e) = track
             .new_object(
@@ -512,8 +512,12 @@ impl Session {
             object_count
           );
           // Close the stream for all subscribers
-          if let Some(track) = &current_track {
-            return track.stream_closed(&stream_id.unwrap()).await;
+          if let Some(track_lock) = &current_track {
+            return track_lock
+              .read()
+              .await
+              .stream_closed(&stream_id.unwrap())
+              .await;
           }
           break;
         }

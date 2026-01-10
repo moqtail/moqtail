@@ -89,7 +89,7 @@ impl Track {
   }
 
   pub async fn add_subscription(
-    &mut self,
+    &self,
     subscriber: Arc<MOQTClient>,
     subscribe_message: Subscribe,
   ) -> Result<(), anyhow::Error> {

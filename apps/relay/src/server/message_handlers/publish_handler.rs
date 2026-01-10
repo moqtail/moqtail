@@ -76,12 +76,7 @@ pub async fn handle(
       // but cannot use the same track alias
 
       {
-        if context
-          .track_aliases
-          .read()
-          .await
-          .contains_key(&m.track_alias)
-        {
+        if context.track_manager.has_track_alias(&m.track_alias).await {
           return Err(TerminationCode::DuplicateTrackAlias);
         }
       }
@@ -93,7 +88,7 @@ pub async fn handle(
       };
 
       // TODO: what happens multiple publishers publish the same track?
-      if !context.tracks.read().await.contains_key(&full_track_name) {
+      if !context.track_manager.has_track(&full_track_name).await {
         info!("Track not found, creating new track: {:?}", m.track_alias);
         // subscribed_tracks.insert(sub.track_alias, Track::new(sub.track_alias, track_namespace.clone(), sub.track_name.clone()));
         let track = Track::new(
@@ -103,20 +98,10 @@ pub async fn handle(
           context.connection_id, // TODO: what happens there are multiple publishers?
           context.server_config,
         );
-        {
-          context
-            .tracks
-            .write()
-            .await
-            .insert(full_track_name.clone(), track.clone());
-
-          // insert the track alias into the track aliases
-          context
-            .track_aliases
-            .write()
-            .await
-            .insert(m.track_alias, full_track_name.clone());
-        }
+        context
+          .track_manager
+          .add_track(m.track_alias, full_track_name.clone(), track)
+          .await;
 
         client.add_published_track(full_track_name).await;
       } else {

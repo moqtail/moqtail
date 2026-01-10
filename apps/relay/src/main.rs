@@ -21,7 +21,7 @@ async fn main() -> Result<(), anyhow::Error> {
   let mut server = Server::new();
   let _ = server
     .start()
-    .instrument(tracing::info_span!("server"))
+    .instrument(tracing::trace_span!("server"))
     .await;
   Ok(())
 }

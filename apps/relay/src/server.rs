@@ -22,6 +22,7 @@ mod session;
 mod session_context;
 mod stream_id;
 mod subscription;
+mod subscription_manager;
 mod token_logger;
 mod track;
 mod track_cache;
@@ -34,6 +35,8 @@ use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::transport::data_stream_handler::{FetchRequest, SubscribeRequest};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
+use tokio::signal;
+use tokio::sync::Notify;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info};
 use tracing_subscriber::fmt::writer::MakeWriterExt;
@@ -73,27 +76,55 @@ impl Server {
 
   pub async fn start(&mut self) -> Result<()> {
     let server_config = self.app_config.build_server_config().await?;
-    let server = Endpoint::server(server_config)?;
+    let server = match Endpoint::server(server_config) {
+      Ok(server) => server,
+      Err(e) => {
+        error!("Failed to create server endpoint. Error: {:?}", e);
+        return Err(anyhow::Error::from(e));
+      }
+    };
 
-    info!("MOQtail Relay is running!");
     info!(
-      "URL: https://{}:{}",
+      "MOQtail Relay is running at https://{}:{}",
       self.app_config.host, self.app_config.port
     );
 
-    for id in 0.. {
-      let incoming_session = server.accept().await;
-      let server = self.clone();
-      tokio::spawn(async move {
-        match Session::new(incoming_session, server).await {
-          Ok(_) => {
-            info!("new session: {}", id);
-          }
-          Err(e) => {
-            error!("Error occurred in session {}: {:?}", id, e);
-          }
+    let shutdown_notify = Arc::new(Notify::new());
+    let notify_clone = shutdown_notify.clone();
+    // catch ctrl-c signal to shutdown the server gracefully
+    let _ctrl_c_handler = tokio::spawn(async move {
+      signal::ctrl_c()
+        .await
+        .expect("Failed to listen for ctrl-c signal");
+      notify_clone.notify_waiters();
+    });
+
+    let notify_clone = shutdown_notify.clone();
+
+    let mut session_id_counter: u64 = 0;
+
+    loop {
+      let id = session_id_counter;
+      tokio::select! {
+        _ = notify_clone.notified() => {
+          info!("Ctrl-C received, exiting...");
+          break;
+        },
+        incoming_session = server.accept() => {
+          let server = self.clone();
+          tokio::spawn(async move {
+            match Session::new(incoming_session, server).await {
+              Ok(_) => {
+                info!("New session: {}", id);
+              }
+              Err(e) => {
+                error!("Error occurred in session {}: {:?}", id, e);
+              }
+            }
+          });
+          session_id_counter += 1;
         }
-      });
+      }
     }
     Ok(())
   }

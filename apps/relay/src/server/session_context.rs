@@ -25,6 +25,7 @@ use super::{
 pub struct RequestMaps {
   pub relay_fetch_requests: Arc<RwLock<BTreeMap<u64, FetchRequest>>>,
   pub relay_subscribe_requests: Arc<RwLock<BTreeMap<u64, SubscribeRequest>>>,
+  pub relay_track_status_requests: Arc<RwLock<BTreeMap<u64, SubscribeRequest>>>,
 }
 
 pub struct SessionContext {
@@ -32,6 +33,7 @@ pub struct SessionContext {
   pub(crate) track_manager: TrackManager,
   pub(crate) relay_fetch_requests: Arc<RwLock<BTreeMap<u64, FetchRequest>>>,
   pub(crate) relay_subscribe_requests: Arc<RwLock<BTreeMap<u64, SubscribeRequest>>>,
+  pub(crate) relay_track_status_requests: Arc<RwLock<BTreeMap<u64, SubscribeRequest>>>,
   pub(crate) connection_id: usize,
   pub(crate) client: Arc<RwLock<Option<Arc<MOQTClient>>>>, // the client that is connected to this session
   pub(crate) connection: Connection,
@@ -55,6 +57,7 @@ impl SessionContext {
       track_manager,
       relay_fetch_requests: request_maps.relay_fetch_requests,
       relay_subscribe_requests: request_maps.relay_subscribe_requests,
+      relay_track_status_requests: request_maps.relay_track_status_requests,
       connection_id: connection.stable_id(),
       client: Arc::new(RwLock::new(None)), // initially no client is set
       connection,

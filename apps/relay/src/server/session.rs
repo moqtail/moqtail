@@ -53,12 +53,14 @@ impl Session {
     let server_config = server.app_config;
     let relay_fetch_requests = server.relay_fetch_requests.clone();
     let relay_subscribe_requests = server.relay_subscribe_requests.clone();
+    let relay_track_status_requests = server.relay_track_status_requests.clone();
     let relay_next_request_id = server.relay_next_request_id.clone();
     let connection = session_request.accept().await?;
 
     let request_maps = RequestMaps {
       relay_fetch_requests,
       relay_subscribe_requests,
+      relay_track_status_requests,
     };
 
     let context = Arc::new(SessionContext::new(

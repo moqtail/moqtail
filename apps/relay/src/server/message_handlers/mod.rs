@@ -26,6 +26,7 @@ mod max_request_id_handler;
 mod publish_handler;
 mod publish_namespace_handler;
 mod subscribe_handler;
+mod track_status_handler;
 use super::utils;
 
 pub struct MessageHandler {}
@@ -58,6 +59,11 @@ impl MessageHandler {
       | ControlMessage::Unsubscribe(_) => {
         subscribe_handler::handle(client.clone(), control_stream_handler, msg, context.clone())
           .await
+      }
+      ControlMessage::TrackStatus(_)
+      | ControlMessage::TrackStatusOk(_)
+      | ControlMessage::TrackStatusError(_) => {
+        track_status_handler::handle(control_stream_handler, msg, context.clone()).await
       }
       ControlMessage::Fetch(_) | ControlMessage::FetchOk(_) => {
         fetch_handler::handle(client.clone(), control_stream_handler, msg, context.clone()).await

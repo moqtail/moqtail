@@ -147,7 +147,7 @@ pub async fn handle(
           }
         } else {
           info!(
-            "Track not found, creating new track: {:?}",
+            "Track not found {:?}, sending subscribe to publisher",
             &full_track_name
           );
 
@@ -247,7 +247,7 @@ pub async fn handle(
 
       info!(
         "sending SubscribeOk to subscriber: {:?}, msg: {:?}",
-        sub_request.requested_by, &subscribe_ok
+        subscriber.connection_id, &subscribe_ok
       );
 
       subscriber
@@ -279,7 +279,7 @@ pub async fn handle(
           .read()
           .await
           .add_subscription(
-            client.clone(),
+            subscriber.clone(),
             sub_request.original_subscribe_request.clone(),
           )
           .await;

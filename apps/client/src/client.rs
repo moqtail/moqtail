@@ -15,14 +15,18 @@
 use bytes::Bytes;
 use moqtail::model::common::location::Location;
 use moqtail::model::common::pair::KeyValuePair;
+use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::common::tuple::{Tuple, TupleField};
 use moqtail::model::control::client_setup::ClientSetup;
-use moqtail::model::control::constant::{self, GroupOrder};
+use moqtail::model::control::constant::{self, GroupOrder, SubscribeErrorCode};
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::fetch::{Fetch, StandAloneFetchProps};
 use moqtail::model::control::publish_namespace::PublishNamespace;
 use moqtail::model::control::subscribe::Subscribe;
 use moqtail::model::control::subscribe_ok::SubscribeOk;
+use moqtail::model::control::track_status::TrackStatus;
+use moqtail::model::control::track_status_error::TrackStatusError;
+use moqtail::model::control::track_status_ok::TrackStatusOk;
 use moqtail::model::control::unsubscribe::Unsubscribe;
 use moqtail::model::data::object::Object;
 use moqtail::model::data::subgroup_header::SubgroupHeader;
@@ -248,6 +252,24 @@ impl Client {
           info!("Received subscribe error message: {:?}", m);
           // Handle the subscribe error message
         }
+        Ok(ControlMessage::TrackStatus(m)) => {
+          info!("Received TrackStatus message: {:?}", m);
+
+          if m.track_namespace == my_namespace {
+            self.send_track_status_ok(m.request_id).await;
+          } else {
+            info!("Track namespace not found. Sending Error.");
+
+            self
+              .send_track_status_error(
+                m.request_id,
+                SubscribeErrorCode::TrackDoesNotExist,
+                format!("Track namespace '{:?}' not found", m.track_namespace),
+              )
+              .await;
+          }
+        }
+
         Ok(m) => {
           error!("Unexpected message type : {:?}", m);
         }
@@ -300,6 +322,13 @@ impl Client {
       tokio::spawn(async move {
         let mut request_id = 0;
         loop {
+          let status_req = this.send_track_status(request_id).await;
+          info!("TrackStatus sent: ID={}", status_req.request_id);
+
+          let status_req = this.send_track_status_wrong(request_id).await;
+          info!("TrackStatus sent: ID={}", status_req.request_id);
+          tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
           let sub = this.send_subscribe(request_id).await;
           request_id += 1;
           info!("Subscribe sent successfully: {:?}", sub);
@@ -348,6 +377,18 @@ impl Client {
 
       if let Some(msg_result) = msg_result {
         match msg_result {
+          Ok(ControlMessage::TrackStatusOk(m)) => {
+            info!(
+              "Received TrackStatusOk: ID={} Exists={} Order={:?}",
+              m.request_id, m.content_exists, m.group_order
+            );
+          }
+          Ok(ControlMessage::TrackStatusError(m)) => {
+            error!(
+              "Received TrackStatusError: ID={} Code={:?} Reason={:?}",
+              m.request_id, m.error_code, m.reason_phrase
+            );
+          }
           Ok(ControlMessage::SubscribeOk(m)) => {
             info!("Received SubscribeOk message: {:?}", m);
             // Handle the subscribe message
@@ -457,6 +498,105 @@ impl Client {
     control_stream_handler.send_impl(&msg).await.unwrap();
     info!("SubscribeOk message sent successfully");
     track_alias
+  }
+
+  async fn send_track_status(&self, request_id: u64) -> TrackStatus {
+    let track_namespace = Tuple::from_utf8_path("/moqtail");
+    let track_name = "demo".to_string();
+    let subscriber_priority = 1;
+    let group_order = GroupOrder::Ascending;
+    let subscribe_parameters = vec![];
+
+    let msg = TrackStatus::new_latest_object(
+      request_id,
+      track_namespace,
+      track_name,
+      subscriber_priority,
+      group_order,
+      true,
+      subscribe_parameters,
+    );
+
+    self
+      .message_queue
+      .write()
+      .await
+      .push_back(ControlMessage::TrackStatus(Box::new(msg.clone())));
+    self.message_notify.notify_waiters();
+    msg
+  }
+
+  async fn send_track_status_wrong(&self, request_id: u64) -> TrackStatus {
+    let track_namespace = Tuple::from_utf8_path("/wrong");
+    let track_name = "demo".to_string();
+    let subscriber_priority = 1;
+    let group_order = GroupOrder::Ascending;
+    let subscribe_parameters = vec![];
+
+    let msg = TrackStatus::new_latest_object(
+      request_id,
+      track_namespace,
+      track_name,
+      subscriber_priority,
+      group_order,
+      true,
+      subscribe_parameters,
+    );
+
+    self
+      .message_queue
+      .write()
+      .await
+      .push_back(ControlMessage::TrackStatus(Box::new(msg.clone())));
+    self.message_notify.notify_waiters();
+    msg
+  }
+
+  async fn send_track_status_ok(&self, request_id: u64) {
+    info!("Sending TrackStatusOk message");
+
+    let msg = TrackStatusOk::new_ascending_with_content(request_id, 0, 0, None, None);
+
+    let control_stream_handler = self.control_stream_handler.clone().unwrap();
+    let mut handler = control_stream_handler.lock().await;
+
+    if let Err(e) = handler.send_impl(&msg).await {
+      error!("Failed to send TrackStatusOk: {:?}", e);
+    } else {
+      info!("TrackStatusOk sent successfully");
+    }
+  }
+
+  async fn send_track_status_error(
+    &self,
+    request_id: u64,
+    error_code: SubscribeErrorCode,
+    reason: String,
+  ) {
+    info!("Sending TrackStatusError message");
+
+    let reason_phrase = match ReasonPhrase::try_new(reason.clone()) {
+      Ok(rp) => rp,
+      Err(e) => {
+        error!("Invalid reason phrase: {:?}. Using default.", e);
+        ReasonPhrase::try_new("Internal Error".to_string()).unwrap()
+      }
+    };
+
+    let msg = TrackStatusError {
+      request_id,
+      error_code,
+      reason_phrase,
+    };
+
+    let control_stream_handler = self.control_stream_handler.clone().unwrap();
+    let mut handler = control_stream_handler.lock().await;
+
+    if let Err(e) = handler.send_impl(&msg).await {
+      error!("Failed to send TrackStatusError: {:?}", e);
+    } else {
+      info!("TrackStatusError sent successfully");
+    }
   }
 
   async fn send_unsubscribe(&self, request_id: u64) {

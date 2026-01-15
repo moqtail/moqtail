@@ -50,6 +50,7 @@ pub(crate) struct Server {
   pub track_manager: TrackManager,
   pub relay_fetch_requests: Arc<RwLock<BTreeMap<u64, FetchRequest>>>,
   pub relay_subscribe_requests: Arc<RwLock<BTreeMap<u64, SubscribeRequest>>>,
+  pub relay_track_status_requests: Arc<RwLock<BTreeMap<u64, SubscribeRequest>>>,
   pub app_config: &'static AppConfig,
   pub relay_next_request_id: Arc<RwLock<u64>>,
 }
@@ -67,6 +68,7 @@ impl Server {
       track_manager: TrackManager::new(),
       relay_fetch_requests: Arc::new(RwLock::new(BTreeMap::new())),
       relay_subscribe_requests: Arc::new(RwLock::new(BTreeMap::new())),
+      relay_track_status_requests: Arc::new(RwLock::new(BTreeMap::new())),
       app_config: config,
       relay_next_request_id: Arc::new(RwLock::new(1u64)), // relay's request id starts at 1 and are odd
     }

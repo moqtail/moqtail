@@ -102,21 +102,37 @@ class MoqClient:
             return {"error": "Timeout"}
 
     def wait_for_event(self, method_name, timeout=5):
-        """Waits for a specific notification method."""
+        """
+        Waits for a specific notification method.
+        Consumes from the queue until the event is found or timeout occurs.
+        """
         start = time.time()
+        
         while time.time() - start < timeout:
+            # 1. Check history (in case we missed it while processing something else)
+            # We iterate a copy to be safe
+            for n in list(self.notifications):
+                if n.get("method") == method_name:
+                    return n
+            
+            # 2. Wait for new events
             try:
-                # Check backlog first
-                for n in self.notifications:
-                    if n.get("method") == method_name:
-                        return n
+                remaining = timeout - (time.time() - start)
+                if remaining <= 0: break
                 
-                # Wait for new
-                msg = self.events_queue.get(timeout=0.5)
+                # Block here until SOMETHING arrives
+                msg = self.events_queue.get(timeout=remaining)
+                
+                # Check if it's what we want
                 if msg.get("method") == method_name:
                     return msg
+                
+                # If not, loop again (we just consumed a log or other event)
+                # Optional: print(f"   [Debug] Skipping {msg.get('method')}")
+                
             except queue.Empty:
                 continue
+                
         return None
 
     # --- API Wrappers (Updated for Draft-16) ---
@@ -128,8 +144,16 @@ class MoqClient:
         # Renamed from announce
         return self.send_command("publish_namespace", {"namespace": namespace})
 
-    def subscribe(self, namespace, track):
-        return self.send_command("subscribe", {"namespace": namespace, "track": track})
-
+    def subscribe(self, namespace, track, **kwargs):
+        """
+        Subscribes to a track.
+        Accepts optional Draft-16 params: 
+        priority, group_order, filter_type, start_group, start_object, end_group, authorization_token
+        """
+        params = {"namespace": namespace, "track": track}
+        # Merge any extra arguments into the params dictionary
+        params.update(kwargs)
+        return self.send_command("subscribe", params)
+        
     def unsubscribe(self, sub_id):
         return self.send_command("unsubscribe", {"subscription_id": sub_id})

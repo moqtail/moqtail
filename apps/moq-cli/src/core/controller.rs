@@ -14,10 +14,11 @@
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
+use moqtail::model::common::location::Location;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::common::tuple::Tuple;
 use moqtail::model::control::client_setup::ClientSetup;
-use moqtail::model::control::constant::{self, GroupOrder};
+use moqtail::model::control::constant::{self, FilterType, GroupOrder};
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::publish_namespace::PublishNamespace;
 use moqtail::model::control::subscribe::Subscribe;
@@ -155,7 +156,7 @@ impl ClientController {
   ) {
     let mut active_tasks: HashMap<u64, JoinHandle<()>> = HashMap::new();
     // NEW: Keep track of group IDs per track/subscription to avoid collisions
-    let group_counters: HashMap<u64, u64> = HashMap::new();
+    let mut group_counters: HashMap<u64, u64> = HashMap::new();
     loop {
       tokio::select! {
           // Outgoing: Commands from IPC
@@ -196,6 +197,24 @@ impl ClientController {
                                 let _ = handler.send_impl(&err_msg).await;
                                 continue; // Skip the rest
                             }
+                              let requested_start_group = match sub.filter_type {
+                                      FilterType::AbsoluteStart => {
+                                          // "The filter Start Location is specified explicitly" [cite: 596]
+                                          sub.start_location.map(|loc| loc.group).unwrap_or(0)
+                                      },
+                                      FilterType::AbsoluteRange => {
+                                          // "The filter Start Location and End Group are specified explicitly" [cite: 600]
+                                          sub.start_location.map(|loc| loc.group).unwrap_or(0)
+                                      },
+                                      // LatestObject (0x2) or NextGroup (0x1) implies starting from "Now"
+                                      _ => *group_counters.get(&sub.request_id).unwrap_or(&1),
+                                  };
+                                  let start_group = if requested_start_group > 0 {
+                                    requested_start_group
+                                  } else {
+                                      *group_counters.get(&sub.request_id).unwrap_or(&1)
+                                  };
+                                  let requested_end_group = sub.end_group;
 
                               // PUBLISHER LOGIC: Handle incoming subscribe
                               let _ = event_tx.send(serde_json::json!({"method": "on_peer_subscribe",
@@ -216,9 +235,9 @@ impl ClientController {
 
                               // 2. Start Blasting Data (Mock Source)
                               let conn = connection.clone();
-                              let start_group = *group_counters.get(&sub.request_id).unwrap_or(&1); // Default to 1
+                              group_counters.insert(sub.request_id, start_group + 100);
                               let task_handle = tokio::spawn(async move {
-                                  let _ = Self::run_mock_blaster(conn, track_alias, start_group).await;
+                                  let _ = Self::run_mock_blaster(conn, track_alias, start_group, requested_end_group).await;
                               });
 
                               if let Some(old) = active_tasks.insert(sub.request_id, task_handle) {
@@ -302,12 +321,19 @@ impl ClientController {
     connection: Arc<wtransport::Connection>,
     track_alias: u64,
     start_group_id: u64,
+    end_group: Option<u64>,
   ) -> Result<()> {
     let mut group_id = start_group_id;
 
     // OUTER LOOP: The "Time" loop. Each iteration is a new GOP/Group.
     // We run until the task is cancelled (abort() called by actor).
     loop {
+      if let Some(limit) = end_group
+        && group_id > limit
+      {
+        //info!("Reached End Group {}, stopping blaster.", limit);
+        break;
+      }
       // 1. Open a NEW Unidirectional Stream for this Group
       // This maps 1:1 to a QUIC stream as you correctly noted.
       let stream = match connection.open_uni().await {
@@ -365,6 +391,7 @@ impl ClientController {
       // Move to next group
       group_id += 1;
     }
+    Ok(())
   }
   // This runs in a separate task, accepting unidirectional streams (Data)
   async fn background_data_listener(
@@ -388,7 +415,7 @@ impl ClientController {
               let stat = RpcNotification::OnStatUpdate {
                 params: StatParams {
                   object_size: len,
-                  group_id: object.subgroup_id.expect(""),
+                  group_id: object.location.group,
                   object_id: object.location.object,
                 },
               };
@@ -417,21 +444,55 @@ impl ClientController {
     let sub_id = self.next_subscribe_id;
     self.next_subscribe_id += 1;
 
-    // Parse optional fields or use defaults
     let priority = params.priority.unwrap_or(128);
 
-    // TODO: Map group_order string to Enum if library supports it
-    // let order = ...
+    // Default to "ascending" (Original in some older versions, Ascending in newer)
+    let order = GroupOrder::Ascending;
+    let forward = true;
+    let ns = Tuple::from_utf8_path(&params.namespace);
+    let track = params.track;
+    let empty_params = vec![];
 
-    let sub = Subscribe::new_latest_object(
-      sub_id,
-      Tuple::from_utf8_path(&params.namespace),
-      params.track,
-      priority,
-      GroupOrder::Ascending, // Hardcoded for now until mapped
-      true,
-      vec![],
-    );
+    // Use the Library Constructors to guarantee internal consistency
+    let sub = match params.filter_type.as_deref() {
+      Some("absolute_start") => {
+        let group = params.start_group.unwrap_or(0);
+        let object = params.start_object.unwrap_or(0);
+
+        Subscribe::new_absolute_start(
+          sub_id,
+          ns,
+          track,
+          priority,
+          order,
+          forward,
+          Location { group, object },
+          empty_params,
+        )
+      }
+      Some("absolute_range") => {
+        let s_group = params.start_group.unwrap_or(0);
+        let s_obj = params.start_object.unwrap_or(0);
+        let e_group = params.end_group.unwrap_or(0); // This might fail assertion if < s_group
+
+        Subscribe::new_absolute_range(
+          sub_id,
+          ns,
+          track,
+          priority,
+          order,
+          forward,
+          Location {
+            group: s_group,
+            object: s_obj,
+          },
+          e_group,
+          empty_params,
+        )
+      }
+      // Default: Latest Object
+      _ => Subscribe::new_latest_object(sub_id, ns, track, priority, order, forward, empty_params),
+    };
 
     tx.send(ControlAction::SendSubscribe(sub))
       .await
@@ -440,8 +501,7 @@ impl ClientController {
       .log("info", format!("Sent Subscribe ID {}", sub_id))
       .await;
     Ok(sub_id)
-  }
-  // Inside ClientController implementation
+  } // Inside ClientController implementation
   async fn do_unsubscribe(&mut self, sub_id: u64) -> Result<()> {
     let tx = self.action_tx.as_ref().context("Not connected")?;
     let msg = Unsubscribe::new(sub_id);

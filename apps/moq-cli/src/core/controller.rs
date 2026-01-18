@@ -20,6 +20,8 @@ use moqtail::model::common::tuple::Tuple;
 use moqtail::model::control::client_setup::ClientSetup;
 use moqtail::model::control::constant::{self, FilterType, GroupOrder};
 use moqtail::model::control::control_message::ControlMessage;
+use moqtail::model::control::fetch::{Fetch, StandAloneFetchProps};
+
 use moqtail::model::control::publish_namespace::PublishNamespace;
 use moqtail::model::control::subscribe::Subscribe;
 use moqtail::model::control::subscribe_error::SubscribeError;
@@ -45,6 +47,7 @@ enum ControlAction {
   SendSubscribe(Subscribe),
   SendUnsubscribe(Unsubscribe),
   SendAnnounce(PublishNamespace),
+  SendFetch(Fetch),
 }
 
 pub struct ClientController {
@@ -113,13 +116,16 @@ impl ClientController {
           Err(e) => RpcResponse::success(id, serde_json::json!({"error": e.to_string()})),
         }
       }
-      RpcRequest::Fetch { params, id } => {
-        //TODO
-        match self.do_fetch(params).await {
-          Ok(_) => RpcResponse::success(id, serde_json::json!({"status": "fetching"})),
-          Err(e) => RpcResponse::success(id, serde_json::json!({"error": e.to_string()})),
-        }
-      }
+      RpcRequest::Fetch { params, id } => match self.do_fetch(params).await {
+        Ok(fetch_id) => RpcResponse::success(
+          id,
+          serde_json::json!({
+              "status": "fetching",
+              "fetch_id": fetch_id
+          }),
+        ),
+        Err(e) => RpcResponse::success(id, serde_json::json!({"error": e.to_string()})),
+      },
       RpcRequest::FetchCancel { params: _, id } => {
         // TODO: Implement FetchCancel
         RpcResponse::success(id, serde_json::json!({"status": "cancelled"}))
@@ -165,6 +171,7 @@ impl ClientController {
                   ControlAction::SendSubscribe(msg) => handler.send_impl(&msg).await,
                   ControlAction::SendUnsubscribe(msg) => handler.send_impl(&msg).await,
                   ControlAction::SendAnnounce(msg) => handler.send_impl(&msg).await,
+                  ControlAction::SendFetch(msg) => handler.send_impl(&msg).await,
               };
               if let Err(e) = res {
                   let _ = event_tx.send(serde_json::json!({"method": "log", "params": {"level": "error", "message": format!("Send failed: {}", e)}})).await;
@@ -247,14 +254,59 @@ impl ClientController {
                           ControlMessage::PublishNamespaceOk(_) => {
                                let _ = event_tx.send(serde_json::json!({"method": "log", "params": {"level": "info", "message": "Namespace Announced Successfully"}})).await;
                           }
+                          ControlMessage::Fetch(fetch) => {
+                              // We only support StandAlone fetches for now
+                              if let Some(props) = fetch.standalone_fetch_props {
+                                  // 1. Log via internal system (replacing info!)
+                                  let _ = event_tx.send(serde_json::json!({
+                                      "method": "log",
+                                      "params": {
+                                          "level": "info",
+                                          "message": format!(
+                                              "Received Fetch ID {} for range {}..{}",
+                                              fetch.request_id,
+                                              props.start_location.group,
+                                              props.end_location.group
+                                          )
+                                      }
+                                  })).await;
+
+                                  let conn_clone = connection.clone();
+                                  // Unique track alias to avoid collision with live subscriptions
+                                  let track_alias = 1000 + fetch.request_id;
+
+                                  let start = props.start_location.group;
+
+                                  // Logic: Draft-16 Fetch End is "Exclusive" (Stop BEFORE this location).
+                                  // Our Blaster loop is "Inclusive" (Process this group, then check if > limit).
+                                  // So if End is Group 22, we want to process 20, 21. Limit = 21.
+                                  let limit = props.end_location.group.saturating_sub(1);
+                                  let end = Some(limit);
+
+                                  // 2. Spawn the Blaster
+                                  tokio::spawn(async move {
+                                      let _ = Self::run_mock_blaster(conn_clone, track_alias, start, end).await;
+                                  });
+
+                              } else {
+                                  // 1. Log Warning via internal system (replacing warn!)
+                                  let _ = event_tx.send(serde_json::json!({
+                                      "method": "log",
+                                      "params": {
+                                          "level": "warn",
+                                          "message": "Received unsupported Joining Fetch"
+                                      }
+                                  })).await;
+                              }
+                          }
                           _ => {} // Ignore others for now
+                              }
+                          }
+                          Err(e) => {
+                              let _ = event_tx.send(serde_json::json!({"method": "log", "params": {"level": "error", "message": format!("Control stream died: {}", e)}})).await;
+                              break;
+                          }
                       }
-                  }
-                  Err(e) => {
-                       let _ = event_tx.send(serde_json::json!({"method": "log", "params": {"level": "error", "message": format!("Control stream died: {}", e)}})).await;
-                       break;
-                  }
-              }
           }
       }
     }
@@ -501,7 +553,8 @@ impl ClientController {
       .log("info", format!("Sent Subscribe ID {}", sub_id))
       .await;
     Ok(sub_id)
-  } // Inside ClientController implementation
+  }
+
   async fn do_unsubscribe(&mut self, sub_id: u64) -> Result<()> {
     let tx = self.action_tx.as_ref().context("Not connected")?;
     let msg = Unsubscribe::new(sub_id);
@@ -511,12 +564,52 @@ impl ClientController {
     Ok(())
   }
 
-  async fn do_fetch(&mut self, _params: FetchParams) -> Result<()> {
-    // We will implement this in Phase 3
+  async fn do_fetch(&mut self, params: FetchParams) -> Result<u64> {
+    let tx = self.action_tx.as_ref().context("Not connected")?;
+
+    let fetch_id = self.next_subscribe_id;
+    self.next_subscribe_id += 1;
+
+    // 1. Prepare Properties
+    let ns = Tuple::from_utf8_path(&params.namespace);
+    let track = params.track;
+
+    // Map RPC params to Location structs
+    let start_loc = Location {
+      group: params.start_group,
+      object: params.start_object,
+    };
+
+    let end_loc = Location {
+      group: params.end_group,
+      object: params.end_object,
+    };
+
+    let props = StandAloneFetchProps {
+      track_namespace: ns,
+      track_name: track,
+      start_location: start_loc,
+      end_location: end_loc,
+    };
+
+    // 2. Construct Fetch Message using Library Helper
+    let fetch_msg = Fetch::new_standalone(
+      fetch_id,
+      params.priority.unwrap_or(100), // Default priority
+      GroupOrder::Ascending,
+      props,
+      vec![], // No extra parameters
+    );
+
+    // 3. Send to Relay
+    tx.send(ControlAction::SendFetch(fetch_msg))
+      .await
+      .context("Actor died")?;
+
     self
-      .log("warn", "Fetch not fully implemented yet".to_string())
+      .log("info", format!("Sent Fetch Request ID {}", fetch_id))
       .await;
-    Ok(())
+    Ok(fetch_id)
   }
 
   async fn do_publish_namespace(&mut self, ns: &str) -> Result<()> {

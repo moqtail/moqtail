@@ -157,3 +157,15 @@ class MoqClient:
         
     def unsubscribe(self, sub_id):
         return self.send_command("unsubscribe", {"subscription_id": sub_id})
+
+    def fetch(self, namespace, track, start_group, end_group, **kwargs):
+        params = {
+            "namespace": namespace,
+            "track": track,
+            "start_group": start_group,
+            "start_object": 0,
+            "end_group": end_group,
+            "end_object": 0
+        }
+        params.update(kwargs)
+        return self.send_command("fetch", params)

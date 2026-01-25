@@ -455,7 +455,6 @@ impl Subscription {
                   object.location.group,
                   object.location.object,
                   object.publisher_priority,
-                  object.extension_headers.clone(),
                   payload.clone(),
                 );
                 match datagram_obj.serialize() {

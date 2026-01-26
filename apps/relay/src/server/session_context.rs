@@ -12,31 +12,28 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{
-  collections::{BTreeMap, HashMap},
-  sync::Arc,
-};
+use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::RwLock;
 use wtransport::Connection;
 
-use moqtail::{
-  model::data::full_track_name::FullTrackName,
-  transport::data_stream_handler::{FetchRequest, SubscribeRequest},
-};
+use moqtail::transport::data_stream_handler::{FetchRequest, SubscribeRequest};
 
-use super::{client::MOQTClient, client_manager::ClientManager, config::AppConfig, track::Track};
+use super::{
+  client::MOQTClient, client_manager::ClientManager, config::AppConfig, track_manager::TrackManager,
+};
 
 pub struct RequestMaps {
   pub relay_fetch_requests: Arc<RwLock<BTreeMap<u64, FetchRequest>>>,
   pub relay_subscribe_requests: Arc<RwLock<BTreeMap<u64, SubscribeRequest>>>,
+  pub relay_track_status_requests: Arc<RwLock<BTreeMap<u64, SubscribeRequest>>>,
 }
 
 pub struct SessionContext {
   pub(crate) client_manager: Arc<RwLock<ClientManager>>,
-  pub(crate) tracks: Arc<RwLock<HashMap<FullTrackName, Track>>>, // the tracks the relay is subscribed to, key is the track alias
-  pub(crate) track_aliases: Arc<RwLock<BTreeMap<u64, FullTrackName>>>, // the track alias and full track names
+  pub(crate) track_manager: TrackManager,
   pub(crate) relay_fetch_requests: Arc<RwLock<BTreeMap<u64, FetchRequest>>>,
   pub(crate) relay_subscribe_requests: Arc<RwLock<BTreeMap<u64, SubscribeRequest>>>,
+  pub(crate) relay_track_status_requests: Arc<RwLock<BTreeMap<u64, SubscribeRequest>>>,
   pub(crate) connection_id: usize,
   pub(crate) client: Arc<RwLock<Option<Arc<MOQTClient>>>>, // the client that is connected to this session
   pub(crate) connection: Connection,
@@ -50,18 +47,17 @@ impl SessionContext {
   pub fn new(
     server_config: &'static AppConfig,
     client_manager: Arc<RwLock<ClientManager>>,
-    tracks: Arc<RwLock<HashMap<FullTrackName, Track>>>,
-    track_aliases: Arc<RwLock<BTreeMap<u64, FullTrackName>>>,
+    track_manager: TrackManager,
     request_maps: RequestMaps,
     connection: Connection,
     relay_next_request_id: Arc<RwLock<u64>>,
   ) -> Self {
     Self {
       client_manager,
-      tracks,
-      track_aliases,
+      track_manager,
       relay_fetch_requests: request_maps.relay_fetch_requests,
       relay_subscribe_requests: request_maps.relay_subscribe_requests,
+      relay_track_status_requests: request_maps.relay_track_status_requests,
       connection_id: connection.stable_id(),
       client: Arc::new(RwLock::new(None)), // initially no client is set
       connection,

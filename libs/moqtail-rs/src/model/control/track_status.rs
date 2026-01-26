@@ -18,6 +18,7 @@ use crate::model::common::location::Location;
 use crate::model::common::pair::KeyValuePair;
 use crate::model::common::tuple::Tuple;
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
+use crate::model::data::full_track_name::FullTrackName;
 use crate::model::error::ParseError;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
@@ -134,6 +135,13 @@ impl TrackStatus {
       start_location: Some(start_location),
       end_group: Some(end_group),
       subscribe_parameters,
+    }
+  }
+
+  pub fn get_full_track_name(&self) -> FullTrackName {
+    FullTrackName {
+      namespace: self.track_namespace.clone(),
+      name: self.track_name.clone().into(),
     }
   }
 }

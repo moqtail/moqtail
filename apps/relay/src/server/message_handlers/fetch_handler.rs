@@ -74,13 +74,13 @@ pub async fn handle(
           }
           let existing_sub = existing_sub.unwrap().1;
 
-          let tracks = context.tracks.read().await;
           let full_track_name = existing_sub
             .original_subscribe_request
             .get_full_track_name();
-          let track = tracks.get(&full_track_name);
+          let track_lock = context.track_manager.get_track(&full_track_name).await;
 
-          if let Some(track) = track {
+          if let Some(track_lock) = track_lock {
+            let track = track_lock.read().await;
             let largest_location = track.largest_location.read().await;
 
             // TODO: validate the range
@@ -108,7 +108,7 @@ pub async fn handle(
             let start_location = Location::new(start_group, 0);
             let end_location = Location::new(largest_location.group, 0);
             (
-              Some(track.clone()),
+              Some(track_lock.clone()),
               Some(start_location),
               Some(end_location),
             )
@@ -120,15 +120,11 @@ pub async fn handle(
           let props = fetch.standalone_fetch_props.clone().unwrap();
 
           // let's see whether the track is in the cache
-          let track = {
-            let tracks = context.tracks.read().await;
-            tracks
-              .iter()
-              .find(|e| {
-                e.1.track_namespace == props.track_namespace && e.1.track_name == props.track_name
-              })
-              .map(|track| track.1.clone())
+          let full_track_name = moqtail::model::data::full_track_name::FullTrackName {
+            namespace: props.track_namespace.clone(),
+            name: props.track_name.clone().into(),
           };
+          let track = context.track_manager.get_track(&full_track_name).await;
 
           if let Some(track) = track {
             (
@@ -168,7 +164,8 @@ pub async fn handle(
 
       tokio::spawn(async move {
         // TODO: verify the range exist. Currently we just return what we have...
-        let mut object_rx = track
+        let track_read = track.read().await;
+        let mut object_rx = track_read
           .cache
           .read_objects(start_location.unwrap(), end_location.clone().unwrap())
           .await;
@@ -179,7 +176,7 @@ pub async fn handle(
           fetch_request: fetch,
         };
 
-        let stream_id = build_stream_id(track.track_alias, &header_info);
+        let stream_id = build_stream_id(track_read.track_alias, &header_info);
 
         let stream_fn = async move |client: Arc<MOQTClient>, stream_id: &StreamId| {
           let stream_result = client
@@ -211,7 +208,7 @@ pub async fn handle(
                 );
                 // TODO: implement descending fetch
                 // TODO: end of track is correct?
-                let largest_location = track.largest_location.read().await;
+                let largest_location = track_read.largest_location.read().await;
                 let end_of_track = largest_location.group == end_location.group;
                 let fetch_ok =
                   FetchOk::new_ascending(request_id, end_of_track, end_location, vec![]);
@@ -255,7 +252,7 @@ pub async fn handle(
                 if context.server_config.enable_object_logging {
                   let sending_time = crate::server::utils::passed_time_since_start();
                   let fetch_object = moqtail::model::data::object::Object {
-                    track_alias: track.track_alias,
+                    track_alias: track_read.track_alias,
                     location: moqtail::model::common::location::Location::new(
                       object.group_id,
                       object.object_id,
@@ -270,10 +267,10 @@ pub async fn handle(
                     extensions: object.extension_headers.clone(),
                     payload: object.payload.clone(),
                   };
-                  track
+                  track_read
                     .object_logger
                     .log_fetch_object(
-                      track.track_alias,
+                      track_read.track_alias,
                       context.connection_id,
                       request_id,
                       &fetch_object,

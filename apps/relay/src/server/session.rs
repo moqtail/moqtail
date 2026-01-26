@@ -51,24 +51,24 @@ impl Session {
     );
 
     let client_manager = server.client_manager.clone();
-    let tracks = server.tracks.clone();
-    let track_aliases = server.track_aliases.clone();
+    let track_manager = server.track_manager.clone();
     let server_config = server.app_config;
     let relay_fetch_requests = server.relay_fetch_requests.clone();
     let relay_subscribe_requests = server.relay_subscribe_requests.clone();
+    let relay_track_status_requests = server.relay_track_status_requests.clone();
     let relay_next_request_id = server.relay_next_request_id.clone();
     let connection = session_request.accept().await?;
 
     let request_maps = RequestMaps {
       relay_fetch_requests,
       relay_subscribe_requests,
+      relay_track_status_requests,
     };
 
     let context = Arc::new(SessionContext::new(
       server_config,
       client_manager,
-      tracks,
-      track_aliases,
+      track_manager,
       request_maps,
       connection,
       relay_next_request_id,
@@ -291,22 +291,18 @@ impl Session {
                 match Object::try_from_datagram(datagram_obj) {
                   Ok(object) => {
                     // Find the track by track_alias and set forwarding preference to Datagram
-                    let track_aliases = context_clone.track_aliases.read().await;
-                    if let Some(full_track_name) = track_aliases.get(&object.track_alias) {
-                      let tracks = context_clone.tracks.read().await;
-                      if let Some(track) = tracks.get(full_track_name) {
-                        // Set forwarding preference to Datagram
-                        track.set_forwarding_preference(moqtail::model::data::constant::ObjectForwardingPreference::Datagram).await;
+                    let track_manager = context_clone.track_manager.clone();
+                    if let Some(track) = track_manager.get_track_by_alias(object.track_alias).await {
+                      let track = track.read().await;
+                      // Set forwarding preference to Datagram
+                      track.set_forwarding_preference(moqtail::model::data::constant::ObjectForwardingPreference::Datagram).await;
 
-                        // Call new_datagram_object
-                        if let Err(e) = track.new_datagram_object(&object).await {
-                          error!("Failed to process datagram object: {:?}", e);
-                        }
-                      } else {
-                        debug!("Track not found for track_alias {}", object.track_alias);
+                      // Call new_datagram_object
+                      if let Err(e) = track.new_datagram_object(&object).await {
+                        error!("Failed to process datagram object: {:?}", e);
                       }
                     } else {
-                      debug!("Full track name not found for track_alias {}", object.track_alias);
+                      debug!("Track not found for track_alias {}", object.track_alias);
                     }
                   }
                   Err(e) => {
@@ -326,7 +322,7 @@ impl Session {
 
   async fn handle_connection_close(context: Arc<SessionContext>) -> Result<()> {
     let client_manager_cleanup = context.client_manager.clone();
-    let tracks_cleanup = context.tracks.clone();
+    let track_manager_cleanup = context.track_manager.clone();
 
     debug!(
       "handle_connection_close | waiting ({})",
@@ -347,7 +343,7 @@ impl Session {
     // Check if the disconnecting client is a publisher and handle track cleanup
     let mut tracks_to_remove = Vec::new();
     {
-      let tracks = tracks_cleanup.read().await;
+      let tracks = track_manager_cleanup.tracks.read().await;
       let client = context.get_client().await;
       if let Some(client) = client {
         let published_tracks = client.get_published_tracks().await;
@@ -358,7 +354,8 @@ impl Session {
           );
 
           match tracks.get(&full_track_name) {
-            Some(track) => {
+            Some(track_lock) => {
+              let track = track_lock.read().await;
               if track.publisher_connection_id == context.connection_id {
                 // check if the track belongs to the disconnected publisher
                 // even though, this comes from the client's published tracks
@@ -393,11 +390,10 @@ impl Session {
 
     // Remove tracks that belonged to the disconnected publisher
     if !tracks_to_remove.is_empty() {
-      let mut tracks = tracks_cleanup.write().await;
-      let mut track_aliases = context.track_aliases.write().await;
       for track_ninfo in tracks_to_remove {
-        tracks.remove(&track_ninfo.1);
-        track_aliases.remove(&track_ninfo.0);
+        track_manager_cleanup
+          .remove_track_by_alias(track_ninfo.0)
+          .await;
         info!(
           "Removed track {:?} after publisher {} disconnect",
           &track_ninfo.1, context.connection_id
@@ -416,7 +412,8 @@ impl Session {
     );
 
     // Remove client from all remaining tracks (as a subscriber)
-    for (_, track) in tracks_cleanup.read().await.iter() {
+    for (_, track_lock) in track_manager_cleanup.tracks.read().await.iter() {
+      let track = track_lock.read().await;
       track.remove_subscription(context.connection_id).await;
     }
     debug!(
@@ -446,7 +443,7 @@ impl Session {
     let mut first_object = true;
     let mut track_alias = 0u64;
     let mut stream_id: Option<StreamId> = None;
-    let mut current_track: Option<Track> = None;
+    let mut current_track: Option<Arc<RwLock<Track>>> = None;
 
     let mut object_count = 0;
 
@@ -499,6 +496,7 @@ impl Session {
                 return Err(anyhow::Error::msg(TerminationCode::InternalError.to_json()));
               }
               let full_track_name_opt = context
+                .track_manager
                 .track_aliases
                 .read()
                 .await
@@ -512,9 +510,9 @@ impl Session {
               }
 
               current_track = if let Some(full_track_name) = full_track_name_opt {
-                if let Some(t) = context.tracks.read().await.get(&full_track_name) {
+                if let Some(t) = context.track_manager.get_track(&full_track_name).await {
                   debug!("track found: {:?}", track_alias);
-                  Some(t.clone())
+                  Some(t)
                 } else {
                   error!(
                     "track not found: {:?} full track name: {:?}",
@@ -534,7 +532,7 @@ impl Session {
             None
           };
 
-          let track = current_track.as_ref().unwrap();
+          let track = current_track.as_ref().unwrap().read().await;
 
           if let Err(e) = track
             .new_subgroup_object(
@@ -563,8 +561,12 @@ impl Session {
             object_count
           );
           // Close the stream for all subscribers
-          if let Some(track) = &current_track {
-            return track.stream_closed(&stream_id.unwrap()).await;
+          if let Some(track_lock) = &current_track {
+            return track_lock
+              .read()
+              .await
+              .stream_closed(&stream_id.unwrap())
+              .await;
           }
           break;
         }

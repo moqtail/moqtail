@@ -265,10 +265,10 @@ impl Session {
           });
         }
 
-        _ = context.connection.receive_datagram() => {
+        datagram_result = context.connection.receive_datagram() => {
           let connection_id = context.connection_id;
           let context_clone = Arc::clone(&context);
-          let datagram_bytes = match context.connection.receive_datagram().await {
+          let datagram_bytes = match datagram_result {
             Ok(bytes) => bytes,
             Err(e) => {
               error!("Failed to receive datagram from client {}: {:?}", connection_id, e);

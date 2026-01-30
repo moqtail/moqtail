@@ -257,9 +257,12 @@ pub async fn handle(
       // create the track here if it doesn't exist
       let full_track_name = sub_request.original_subscribe_request.get_full_track_name();
 
-      if !context.track_manager.has_track(&full_track_name).await {
+      let track = if let Some(track_lock) = context.track_manager.get_track(&full_track_name).await
+      {
+        track_lock
+      } else {
         info!("Track not found, creating new track: {:?}", msg.track_alias);
-        // subscribed_tracks.insert(sub.track_alias, Track::new(sub.track_alias, track_namespace.clone(), sub.track_name.clone()));
+
         let track = Track::new(
           msg.track_alias,
           sub_request
@@ -270,32 +273,32 @@ pub async fn handle(
           context.connection_id,
           context.server_config,
         );
-        let track = context
+        context
           .track_manager
           .add_track(msg.track_alias, full_track_name.clone(), track)
-          .await;
-
-        let res = track
-          .read()
           .await
-          .add_subscription(
-            subscriber.clone(),
-            sub_request.original_subscribe_request.clone(),
-          )
-          .await;
-        match res {
-          Ok(_) => {
-            info!(
-              "subscription added successfully subscriber: {} track: {:?}",
-              &subscriber.connection_id, &msg.track_alias
-            );
-          }
-          Err(e) => {
-            error!(
-              "error adding subscription: subscriber: {} track: {:?} error: {:?}",
-              &subscriber.connection_id, &msg.track_alias, e
-            );
-          }
+      };
+
+      let res = track
+        .read()
+        .await
+        .add_subscription(
+          subscriber.clone(),
+          sub_request.original_subscribe_request.clone(),
+        )
+        .await;
+      match res {
+        Ok(_) => {
+          info!(
+            "subscription added successfully subscriber: {} track: {:?}",
+            &subscriber.connection_id, &msg.track_alias
+          );
+        }
+        Err(e) => {
+          error!(
+            "error adding subscription: subscriber: {} track: {:?} error: {:?}",
+            &subscriber.connection_id, &msg.track_alias, e
+          );
         }
       }
       Ok(())

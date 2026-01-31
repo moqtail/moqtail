@@ -311,7 +311,7 @@ impl MOQTClient {
     Ok(())
   }
 
-  pub async fn write_object_to_stream(
+  pub async fn write_stream_object(
     &self,
     stream_id: &StreamId,
     object_id: u64,
@@ -319,7 +319,7 @@ impl MOQTClient {
     the_stream: Option<Arc<Mutex<SendStream>>>,
   ) -> Result<(), anyhow::Error> {
     debug!(
-      "write_object_to_stream | Writing object to stream ({} - {}) connection_id: {}",
+      "write_stream_object | Writing object to stream ({} - {}) connection_id: {}",
       object_id, stream_id, self.connection_id
     );
 
@@ -345,7 +345,7 @@ impl MOQTClient {
           match &e {
             StreamWriteError::Closed | StreamWriteError::Stopped(_) => {
               warn!(
-                "write_object_to_stream | Send stream is closed or stopped ({})",
+                "write_stream_object | Send stream is closed or stopped ({})",
                 stream_id.get_stream_id()
               );
               drop(stream);
@@ -361,13 +361,24 @@ impl MOQTClient {
       Ok(())
     } else {
       warn!(
-        "write_object_to_stream | Send stream not found for {} connection_id: {}",
+        "write_stream_object | Send stream not found for {} connection_id: {}",
         stream_id, self.connection_id
       );
       // This is not an error. The stream already started, wait for the next group...
       // Err(anyhow::anyhow!("Send stream not found ({})", stream_id))
       Ok(())
     }
+  }
+
+  pub async fn write_datagram_object(&self, object: Bytes) -> Result<(), anyhow::Error> {
+    debug!(
+      "write_datagram_object | Writing datagram object connection_id: {}",
+      self.connection_id
+    );
+
+    // Write the object payload directly to the connection as a datagram
+    self.connection.send_datagram(object)?;
+    Ok(())
   }
 }
 

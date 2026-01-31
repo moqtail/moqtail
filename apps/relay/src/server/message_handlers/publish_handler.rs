@@ -14,7 +14,7 @@
 
 use crate::server::client::MOQTClient;
 use crate::server::session_context::SessionContext;
-use crate::server::track::Track;
+use crate::server::track::{Track, TrackStatus};
 use core::result::Result;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::control::{
@@ -97,6 +97,11 @@ pub async fn handle(
           m.track_name.clone(),
           context.connection_id, // TODO: what happens there are multiple publishers?
           context.server_config,
+          TrackStatus::Confirmed {
+            publisher_track_alias: m.track_alias,
+            expires: 0,
+            largest_location: None,
+          },
         );
         context
           .track_manager

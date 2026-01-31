@@ -15,7 +15,7 @@
 use crate::server::client::MOQTClient;
 use crate::server::session::Session;
 use crate::server::session_context::SessionContext;
-use crate::server::track::Track;
+use crate::server::track::{Track, TrackStatus};
 use core::result::Result;
 use moqtail::model::error::TerminationCode;
 use moqtail::model::{
@@ -111,78 +111,120 @@ pub async fn handle(
 
       let original_request_id = sub.request_id;
 
-      let res: Result<(), TerminationCode> = {
-        let track_opt = context.track_manager.get_track(&full_track_name).await;
-        if let Some(track) = track_opt {
-          info!("track already exists, sending SubscribeOk");
-          let track = track.write().await;
-          let res = track.add_subscription(client.clone(), sub.clone()).await;
-          match res {
-            Ok(_) => {
-              info!(
-                "subscription added successfully subscriber: {} track: {:?}",
-                &client.connection_id, &track.track_alias
-              );
+      // Atomic get-or-create: first subscriber creates, subsequent ones find existing
+      let (track_arc, is_creator) = context
+        .track_manager
+        .get_or_create_track(&full_track_name, || {
+          Track::new(
+            0, // provisional alias, updated on SubscribeOk from publisher
+            sub.track_namespace.clone(),
+            sub.track_name.clone(),
+            publisher.connection_id,
+            context.server_config,
+            TrackStatus::Pending,
+          )
+        })
+        .await;
 
-              // TODO: Send the first sub_ok message to the subscriber
-              // for now, just sending some default values
-              let subscribe_ok =
-                moqtail::model::control::subscribe_ok::SubscribeOk::new_ascending_with_content(
-                  sub.request_id,
-                  track.track_alias,
-                  0,
-                  None,
-                  None,
-                );
+      // Add subscription to the track regardless of creator or not
+      {
+        let track = track_arc.read().await;
+        let res = track.add_subscription(client.clone(), sub.clone()).await;
+        if let Err(e) = res {
+          error!(
+            "error adding subscription: subscriber: {} error: {:?}",
+            &client.connection_id, e
+          );
+          return Err(TerminationCode::InternalError);
+        }
+      }
 
-              control_stream_handler.send_impl(&subscribe_ok).await
-            }
-            Err(e) => {
-              error!(
-                "error adding subscription: subscriber: {} track: {:?} error: {:?}",
-                &client.connection_id, &track.track_alias, e
+      let res: Result<(), TerminationCode> = if is_creator {
+        // First subscriber for this track: forward Subscribe to publisher
+        info!(
+          "First subscriber for track {:?}, forwarding to publisher",
+          &full_track_name
+        );
+
+        let mut new_sub = sub.clone();
+        new_sub.forward = true;
+        new_sub.request_id =
+          Session::get_next_relay_request_id(context.relay_next_request_id.clone()).await;
+
+        publisher
+          .queue_message(ControlMessage::Subscribe(Box::new(new_sub.clone())))
+          .await;
+
+        // Store relay subscribe request mapping
+        // TODO: we need to add a timeout here or another loop to control expired requests
+        let req = SubscribeRequest::new(
+          original_request_id,
+          context.connection_id,
+          sub.clone(),
+          Some(new_sub.clone()),
+        );
+        let mut requests = context.relay_subscribe_requests.write().await;
+        requests.insert(new_sub.request_id, req.clone());
+        info!(
+          "inserted request into relay's subscribe requests: {:?} with relay's request id: {:?}",
+          req, new_sub.request_id
+        );
+        // Do NOT send SubscribeOk yet -- wait for publisher confirmation
+        Ok(())
+      } else {
+        // Subsequent subscriber: track already exists
+        let track = track_arc.read().await;
+        let status = track.get_status().await;
+
+        match status {
+          TrackStatus::Confirmed {
+            publisher_track_alias,
+            expires,
+            largest_location,
+          } => {
+            info!(
+              "Track confirmed, sending SubscribeOk to subscriber {}",
+              client.connection_id
+            );
+            let subscribe_ok =
+              moqtail::model::control::subscribe_ok::SubscribeOk::new_ascending_with_content(
+                sub.request_id,
+                publisher_track_alias,
+                expires,
+                largest_location,
+                None,
               );
-              Err(TerminationCode::InternalError)
-            }
+            control_stream_handler.send_impl(&subscribe_ok).await
           }
-        } else {
-          info!(
-            "Track not found {:?}, sending subscribe to publisher",
-            &full_track_name
-          );
-
-          // send the subscribe message to the publisher
-          let mut new_sub = sub.clone();
-          // relay wants to get data but it does not forward data to subscribers that has forward = false
-          new_sub.forward = true;
-          new_sub.request_id =
-            Session::get_next_relay_request_id(context.relay_next_request_id.clone()).await;
-
-          publisher
-            .queue_message(ControlMessage::Subscribe(Box::new(new_sub.clone())))
-            .await;
-
-          // insert this request id into the relay's subscribe requests
-          // TODO: we need to add a timeout here or another loop to control expired requests
-          let req = SubscribeRequest::new(
-            original_request_id,
-            context.connection_id,
-            sub.clone(),
-            Some(new_sub.clone()),
-          );
-          let mut requests = context.relay_subscribe_requests.write().await;
-          requests.insert(new_sub.request_id, req.clone());
-          info!(
-            "inserted request into relay's subscribe requests: {:?} with relay's request id: {:?}",
-            req, new_sub.request_id
-          );
-          Ok(())
+          TrackStatus::Pending => {
+            info!(
+              "Track pending, subscriber {} will wait for confirmation",
+              client.connection_id
+            );
+            let mut pending = track.pending_subscribers.write().await;
+            pending.push((sub.request_id, context.connection_id));
+            Ok(())
+          }
+          TrackStatus::Rejected {
+            error_code,
+            reason_phrase,
+          } => {
+            info!(
+              "Track rejected, sending SubscribeError to subscriber {}",
+              client.connection_id
+            );
+            let subscribe_error = moqtail::model::control::subscribe_error::SubscribeError::new(
+              sub.request_id,
+              error_code,
+              reason_phrase,
+            );
+            control_stream_handler.send_impl(&subscribe_error).await
+          }
         }
       };
 
-      // return if there's an error
+      // Store in client's subscribe requests on success
       if res.is_ok() {
-        // insert this request id into the clients subscribe requests
         let mut requests = client.subscribe_requests.write().await;
         let orig_req = SubscribeRequest::new(original_request_id, context.connection_id, sub, None);
         requests.insert(original_request_id, orig_req.clone());
@@ -198,14 +240,11 @@ pub async fn handle(
     ControlMessage::SubscribeOk(m) => {
       info!("received SubscribeOk message: {:?}", m);
       let msg = *m;
-
-      // this comes from the publisher
-      // it should be sent to the subscriber
       let request_id = msg.request_id;
 
+      // Look up the relay subscribe request
       let sub_request = {
         let requests = context.relay_subscribe_requests.read().await;
-        // print out every request
         debug!("current requests: {:?}", requests);
         match requests.get(&request_id) {
           Some(m) => {
@@ -219,88 +258,99 @@ pub async fn handle(
         }
       };
 
-      // TODO: honor the values in the subscribe_ok message like
-      // expires, group_order, content_exists, largest_location
-
-      // now we're ready to send the subscribe_ok message to the subscriber
-      let subscribe_ok =
-        moqtail::model::control::subscribe_ok::SubscribeOk::new_ascending_with_content(
-          sub_request.original_request_id,
-          msg.track_alias,
-          msg.expires,
-          msg.largest_location,
-          None,
-        );
-      // send the subscribe_ok message to the subscriber
-      let subscriber = {
-        let mngr = context.client_manager.read().await;
-        mngr.get(sub_request.requested_by).await
-      };
-
-      if subscriber.is_none() {
-        warn!("subscriber not found");
-        return Ok(());
-      }
-
-      debug!("subscriber found: {:?}", sub_request.requested_by);
-      let subscriber = subscriber.unwrap();
-
-      info!(
-        "sending SubscribeOk to subscriber: {:?}, msg: {:?}",
-        subscriber.connection_id, &subscribe_ok
-      );
-
-      subscriber
-        .queue_message(ControlMessage::SubscribeOk(Box::new(subscribe_ok)))
-        .await;
-
-      // create the track here if it doesn't exist
       let full_track_name = sub_request.original_subscribe_request.get_full_track_name();
 
-      let track = if let Some(track_lock) = context.track_manager.get_track(&full_track_name).await
-      {
-        track_lock
-      } else {
-        info!("Track not found, creating new track: {:?}", msg.track_alias);
-
-        let track = Track::new(
-          msg.track_alias,
-          sub_request
-            .original_subscribe_request
-            .track_namespace
-            .clone(),
-          sub_request.original_subscribe_request.track_name.clone(),
-          context.connection_id,
-          context.server_config,
-        );
-        context
-          .track_manager
-          .add_track(msg.track_alias, full_track_name.clone(), track)
-          .await
+      // The track must already exist (pre-created in Subscribe handler)
+      let track_arc = match context.track_manager.get_track(&full_track_name).await {
+        Some(t) => t,
+        None => {
+          error!(
+            "Track not found for SubscribeOk, this should not happen: {:?}",
+            &full_track_name
+          );
+          return Ok(());
+        }
       };
 
-      let res = track
-        .read()
-        .await
-        .add_subscription(
-          subscriber.clone(),
-          sub_request.original_subscribe_request.clone(),
-        )
+      // Confirm the track with publisher's metadata
+      {
+        let mut track = track_arc.write().await;
+        track
+          .confirm(msg.track_alias, msg.expires, msg.largest_location.clone())
+          .await;
+      }
+
+      // Register the track alias for data stream routing
+      context
+        .track_manager
+        .add_track_alias(msg.track_alias, full_track_name.clone())
         .await;
-      match res {
-        Ok(_) => {
+
+      // Send SubscribeOk to the FIRST subscriber (the creator)
+      {
+        let subscriber = {
+          let mngr = context.client_manager.read().await;
+          mngr.get(sub_request.requested_by).await
+        };
+        if let Some(subscriber) = subscriber {
+          let subscribe_ok =
+            moqtail::model::control::subscribe_ok::SubscribeOk::new_ascending_with_content(
+              sub_request.original_request_id,
+              msg.track_alias,
+              msg.expires,
+              msg.largest_location.clone(),
+              None,
+            );
           info!(
-            "subscription added successfully subscriber: {} track: {:?}",
-            &subscriber.connection_id, &msg.track_alias
+            "sending SubscribeOk to creator subscriber: {:?}",
+            subscriber.connection_id
           );
-        }
-        Err(e) => {
-          error!(
-            "error adding subscription: subscriber: {} track: {:?} error: {:?}",
-            &subscriber.connection_id, &msg.track_alias, e
+          subscriber
+            .queue_message(ControlMessage::SubscribeOk(Box::new(subscribe_ok)))
+            .await;
+        } else {
+          warn!(
+            "creator subscriber not found: {:?}",
+            sub_request.requested_by
           );
         }
       }
+
+      // Send SubscribeOk to ALL pending subscribers
+      {
+        let track = track_arc.read().await;
+        let pending = {
+          let mut pending = track.pending_subscribers.write().await;
+          std::mem::take(&mut *pending)
+        };
+
+        for (subscriber_request_id, subscriber_connection_id) in pending {
+          let subscriber = {
+            let mngr = context.client_manager.read().await;
+            mngr.get(subscriber_connection_id).await
+          };
+          if let Some(subscriber) = subscriber {
+            let subscribe_ok =
+              moqtail::model::control::subscribe_ok::SubscribeOk::new_ascending_with_content(
+                subscriber_request_id,
+                msg.track_alias,
+                msg.expires,
+                msg.largest_location.clone(),
+                None,
+              );
+            info!(
+              "sending SubscribeOk to pending subscriber: {:?}",
+              subscriber.connection_id
+            );
+            subscriber
+              .queue_message(ControlMessage::SubscribeOk(Box::new(subscribe_ok)))
+              .await;
+          }
+        }
+      }
+
+      // Subscription was already added in the Subscribe handler,
+      // so we do NOT call add_subscription again here.
       Ok(())
     }
     ControlMessage::Unsubscribe(m) => {
@@ -371,6 +421,86 @@ pub async fn handle(
           ),
         }
       }
+      Ok(())
+    }
+    ControlMessage::SubscribeError(m) => {
+      info!("received SubscribeError message: {:?}", m);
+      let msg = *m;
+      let request_id = msg.request_id;
+
+      // Look up and remove the relay subscribe request
+      let sub_request = {
+        let mut requests = context.relay_subscribe_requests.write().await;
+        match requests.remove(&request_id) {
+          Some(m) => m,
+          None => {
+            warn!("SubscribeError for unknown request id: {:?}", request_id);
+            return Ok(());
+          }
+        }
+      };
+
+      let full_track_name = sub_request.original_subscribe_request.get_full_track_name();
+
+      // Mark track as Rejected (if it exists)
+      let track_arc = context.track_manager.get_track(&full_track_name).await;
+      if let Some(track_arc) = &track_arc {
+        let track = track_arc.read().await;
+        track
+          .reject(msg.error_code, msg.reason_phrase.clone())
+          .await;
+      }
+
+      // Send SubscribeError to the FIRST subscriber (the creator)
+      {
+        let subscriber = {
+          let mngr = context.client_manager.read().await;
+          mngr.get(sub_request.requested_by).await
+        };
+        if let Some(subscriber) = subscriber {
+          let subscribe_error = moqtail::model::control::subscribe_error::SubscribeError::new(
+            sub_request.original_request_id,
+            msg.error_code,
+            msg.reason_phrase.clone(),
+          );
+          subscriber
+            .queue_message(ControlMessage::SubscribeError(Box::new(subscribe_error)))
+            .await;
+        }
+      }
+
+      // Send SubscribeError to ALL pending subscribers
+      if let Some(track_arc) = &track_arc {
+        let track = track_arc.read().await;
+        let pending = {
+          let mut pending = track.pending_subscribers.write().await;
+          std::mem::take(&mut *pending)
+        };
+
+        for (subscriber_request_id, subscriber_connection_id) in pending {
+          let subscriber = {
+            let mngr = context.client_manager.read().await;
+            mngr.get(subscriber_connection_id).await
+          };
+          if let Some(subscriber) = subscriber {
+            let subscribe_error = moqtail::model::control::subscribe_error::SubscribeError::new(
+              subscriber_request_id,
+              msg.error_code,
+              msg.reason_phrase.clone(),
+            );
+            subscriber
+              .queue_message(ControlMessage::SubscribeError(Box::new(subscribe_error)))
+              .await;
+          }
+        }
+      }
+
+      // Remove the pre-created track from TrackManager
+      if track_arc.is_some() {
+        let mut tracks = context.track_manager.tracks.write().await;
+        tracks.remove(&full_track_name);
+      }
+
       Ok(())
     }
     _ => {

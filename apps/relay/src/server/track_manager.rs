@@ -89,4 +89,44 @@ impl TrackManager {
     let track_aliases = self.track_aliases.read().await;
     track_aliases.contains_key(track_alias)
   }
+
+  /// Atomically gets an existing track or creates a new one.
+  /// Returns the track Arc and a boolean indicating whether this call created the track.
+  pub async fn get_or_create_track(
+    &self,
+    full_track_name: &FullTrackName,
+    track_factory: impl FnOnce() -> Track,
+  ) -> (Arc<RwLock<Track>>, bool) {
+    // Fast path: read lock
+    {
+      let tracks = self.tracks.read().await;
+      if let Some(track) = tracks.get(full_track_name) {
+        return (track.clone(), false);
+      }
+    }
+    // Slow path: write lock with double-check
+    {
+      let mut tracks = self.tracks.write().await;
+      if let Some(track) = tracks.get(full_track_name) {
+        return (track.clone(), false);
+      }
+      let track = track_factory();
+      let track_arc = Arc::new(RwLock::new(track));
+      tracks.insert(full_track_name.clone(), track_arc.clone());
+      // Do NOT insert into track_aliases -- the publisher alias is
+      // unknown until SubscribeOk arrives. Use add_track_alias() later.
+      (track_arc, true)
+    }
+  }
+
+  /// Register a track alias mapping. Called when the publisher's SubscribeOk
+  /// reveals the actual track_alias.
+  pub async fn add_track_alias(&self, track_alias: u64, full_track_name: FullTrackName) {
+    let mut track_aliases = self.track_aliases.write().await;
+    track_aliases.insert(track_alias, full_track_name.clone());
+    info!(
+      "Registered track alias {} -> {:?}",
+      track_alias, full_track_name
+    );
+  }
 }

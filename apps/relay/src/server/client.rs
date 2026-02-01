@@ -259,7 +259,8 @@ impl MOQTClient {
   }
 
   // Remove the stream from the map and finish it
-  pub async fn close_stream(&self, stream_id: &StreamId) -> Result<()> {
+  // if the stream is found, return true, else false
+  pub async fn close_stream(&self, stream_id: &StreamId) -> Result<bool> {
     let stream = self.remove_stream_by_stream_id(stream_id).await;
 
     if let Some(send_stream) = stream {
@@ -269,23 +270,25 @@ impl MOQTClient {
       // gracefully close the stream
       // No new data may be written after calling this method.
       // Completes when the peer has acknowledged all sent data, retransmitting data as needed.
-      stream.finish().await.map_err(|e| {
-        error!(
-          "close_stream | Failed to finish send stream ({}): {:?} connection_id: {}",
-          stream_id, e, self.connection_id
-        );
-        anyhow::anyhow!("Failed to finish send stream ({}): {:?}", stream_id, e)
-      })
+      stream
+        .finish()
+        .await
+        .map_err(|e| {
+          error!(
+            "close_stream | Failed to finish send stream ({}): {:?} connection_id: {}",
+            stream_id, e, self.connection_id
+          );
+          anyhow::anyhow!("Failed to finish send stream ({}): {:?}", stream_id, e)
+        })
+        .map(|_| true)
     } else {
-      warn!(
+      // it is possible that no stream was created for this stream id
+      // because the subscription can be in no forwarding state
+      debug!(
         "close_stream | Send stream not found for {} connection_id: {}",
         stream_id, self.connection_id
       );
-      Err(anyhow::anyhow!(
-        "Send stream not found ({}) connection_id: {}",
-        stream_id,
-        self.connection_id
-      ))
+      Ok(false)
     }
   }
 

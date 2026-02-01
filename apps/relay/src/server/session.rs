@@ -23,10 +23,10 @@ use moqtail::transport::{
   control_stream_handler::ControlStreamHandler,
   data_stream_handler::{HeaderInfo, RecvDataStream},
 };
-use std::sync::Arc;
+use std::sync::{Arc, atomic::AtomicU64};
 use tokio::sync::RwLock;
 use tracing::{Instrument, debug, error, info, info_span, warn};
-use wtransport::{RecvStream, SendStream, endpoint::IncomingSession};
+use wtransport::{RecvStream, SendStream, endpoint::IncomingSession, error::ConnectionError};
 
 use crate::server::{Server, stream_id::StreamId};
 
@@ -98,7 +98,9 @@ impl Session {
                   connection_id
                 );
                 // Client has already disconnected, no need to close connection
-                *session_context.is_connection_closed.write().await = true;
+                session_context
+                  .is_connection_closed
+                  .store(true, std::sync::atomic::Ordering::Relaxed);
               }
               _ => {
                 error!("Error processing control messages: {:?}", e);
@@ -229,7 +231,10 @@ impl Session {
     );
     loop {
       let session_context = context.clone();
-      if *session_context.is_connection_closed.read().await {
+      if session_context
+        .is_connection_closed
+        .load(std::sync::atomic::Ordering::Relaxed)
+      {
         info!(
           "Connection closed, stopping stream acceptance for connection {}",
           session_context.connection_id
@@ -271,6 +276,9 @@ impl Session {
           let datagram_bytes = match datagram_result {
             Ok(bytes) => bytes,
             Err(e) => {
+              if matches!(e, ConnectionError::ApplicationClosed(_)) {
+                continue; // Connection closed, exit the loop
+              }
               error!("Failed to receive datagram from client {}: {:?}", connection_id, e);
               continue;
             }
@@ -332,7 +340,9 @@ impl Session {
 
     // set the connection closed flag
     {
-      *context.is_connection_closed.write().await = true;
+      context
+        .is_connection_closed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     info!(
@@ -576,11 +586,8 @@ impl Session {
     Ok(())
   }
 
-  pub(crate) async fn get_next_relay_request_id(relay_next_request_id: Arc<RwLock<u64>>) -> u64 {
-    let current_request_id = *relay_next_request_id.read().await;
-    // increment by 2 for the next request
-    *relay_next_request_id.write().await = current_request_id + 2;
-    current_request_id
+  pub(crate) async fn get_next_relay_request_id(relay_next_request_id: Arc<AtomicU64>) -> u64 {
+    relay_next_request_id.fetch_add(2, std::sync::atomic::Ordering::Relaxed)
   }
 
   async fn negotiate(
@@ -609,9 +616,11 @@ impl Session {
     utils::print_msg_bytes(&client_setup);
 
     let max_request_id_param = {
-      let max_request_id = context.max_request_id.read().await;
+      let max_request_id = context
+        .max_request_id
+        .load(std::sync::atomic::Ordering::Relaxed);
       moqtail::model::parameter::setup_parameter::SetupParameter::new_max_request_id(
-        *max_request_id + 1,
+        max_request_id + 1,
       )
       .try_into()
       .unwrap()

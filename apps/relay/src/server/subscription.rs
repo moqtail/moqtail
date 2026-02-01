@@ -36,7 +36,7 @@ use moqtail::model::data::object::Object;
 use moqtail::transport::data_stream_handler::HeaderInfo;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -79,7 +79,7 @@ pub struct Subscription {
   subscriber: Arc<MOQTClient>,
   event_rx: Arc<Mutex<Option<UnboundedReceiver<TrackEvent>>>>,
   send_stream_last_object_ids: Arc<RwLock<HashMap<StreamId, Option<u64>>>>,
-  finished: Arc<RwLock<bool>>, // Indicates if the subscription is finished
+  finished: Arc<AtomicBool>,
   #[allow(dead_code)]
   cache: TrackCache,
   client_connection_id: usize,
@@ -112,7 +112,7 @@ impl Subscription {
       subscriber,
       event_rx,
       send_stream_last_object_ids: Arc::new(RwLock::new(HashMap::new())),
-      finished: Arc::new(RwLock::new(false)),
+      finished: Arc::new(AtomicBool::new(false)),
       cache,
       client_connection_id,
       object_logger: ObjectLogger::new(log_folder),
@@ -151,11 +151,8 @@ impl Subscription {
     let mut instance = sub.clone();
     tokio::spawn(async move {
       loop {
-        {
-          let is_finished = instance.finished.read().await;
-          if *is_finished {
-            break;
-          }
+        if instance.finished.load(Ordering::Relaxed) {
+          break;
         }
 
         tokio::select! {
@@ -225,8 +222,11 @@ impl Subscription {
   }
 
   pub async fn finish(&self) {
-    if *self.finished.read().await {
-      // already finished
+    if self
+      .finished
+      .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+      .is_err()
+    {
       return;
     }
 
@@ -235,10 +235,6 @@ impl Subscription {
       self.client_connection_id,
       self.track_alias()
     );
-
-    let mut finished = self.finished.write().await;
-    *finished = true;
-    drop(finished);
 
     let mut receiver_guard = self.event_rx.lock().await;
     let _ = receiver_guard.take(); // This replaces the Some(receiver) with None
@@ -276,16 +272,24 @@ impl Subscription {
         );
 
         for stream_id in stream_ids.iter() {
-          if let Err(e) = subscriber.close_stream(stream_id).await {
+          let res = subscriber.close_stream(stream_id).await;
+          if let Err(e) = res {
             warn!(
               "Background stream cleanup error for subscriber: {} stream_id: {} track: {} error: {:?}",
               connection_id, stream_id, track_alias, e
             );
-          } else {
-            debug!(
-              "Background stream cleanup successful for subscriber: {} stream_id: {} track: {}",
-              connection_id, stream_id, track_alias
-            );
+          } else if let Ok(closed) = res {
+            if closed {
+              debug!(
+                "Background stream cleanup successful for subscriber: {} stream_id: {} track: {}",
+                connection_id, stream_id, track_alias
+              );
+            } else {
+              debug!(
+                "Background stream cleanup: stream not found for subscriber: {} stream_id: {} track: {}",
+                connection_id, stream_id, track_alias
+              );
+            }
           }
         }
 
@@ -316,7 +320,7 @@ impl Subscription {
             self.track_alias(),
             event
           );
-          if *self.finished.read().await {
+          if self.finished.load(Ordering::Relaxed) {
             return;
           }
 
@@ -539,6 +543,11 @@ impl Subscription {
       }
     } else {
       // No receiver available, subscription has been finished
+      info!(
+        "No event receiver for subscriber: {} track: {}, finishing subscription",
+        self.client_connection_id,
+        self.track_alias()
+      );
       self.finish().await;
     }
   }
@@ -686,27 +695,34 @@ impl Subscription {
     // the main subscription event loop. This is critical for real-time media streaming
     // where blocking operations can disrupt video flow timing (25fps = ~40ms intervals)
     let subscriber = self.subscriber.clone();
-    let stream_id_clone = stream_id.clone();
+    let stream_id = stream_id.clone();
     let connection_id = self.client_connection_id;
     let track_alias = self.track_alias();
 
     tokio::spawn(async move {
       debug!(
         "Starting graceful stream closure in background: subscriber: {} stream_id: {} track: {}",
-        connection_id, stream_id_clone, track_alias
+        connection_id, stream_id, track_alias
       );
 
-      if let Err(e) = subscriber.close_stream(&stream_id_clone).await {
-        // Log the error but don't propagate it since this is background cleanup
-        debug!(
-          "Background stream closure completed with error: subscriber: {} stream_id: {} track: {} error: {:?}",
-          connection_id, stream_id_clone, track_alias, e
+      let res = subscriber.close_stream(&stream_id).await;
+      if let Err(e) = res {
+        warn!(
+          "handle_stream_closed | error for subscriber: {} stream_id: {} track: {} error: {:?}",
+          connection_id, stream_id, track_alias, e
         );
-      } else {
-        debug!(
-          "Background stream closure completed successfully: subscriber: {} stream_id: {} track: {}",
-          connection_id, stream_id_clone, track_alias
-        );
+      } else if let Ok(closed) = res {
+        if closed {
+          debug!(
+            "handle_stream_closed | successful for subscriber: {} stream_id: {} track: {}",
+            connection_id, stream_id, track_alias
+          );
+        } else {
+          debug!(
+            "handle_stream_closed | stream not found for subscriber: {} stream_id: {} track: {}",
+            connection_id, stream_id, track_alias
+          );
+        }
       }
     });
 

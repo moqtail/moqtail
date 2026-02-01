@@ -34,16 +34,28 @@ pub async fn handle(
 
       let new_max_request_id = m.request_id;
 
-      {
-        let current_max_request_id = context.max_request_id.read().await;
-        if *current_max_request_id >= new_max_request_id {
+      loop {
+        let current = context
+          .max_request_id
+          .load(std::sync::atomic::Ordering::Relaxed);
+        if current >= new_max_request_id {
           warn!("received MaxRequestId message with lower request id than previously announced");
           return Err(TerminationCode::ProtocolViolation);
         }
+        if context
+          .max_request_id
+          .compare_exchange(
+            current,
+            new_max_request_id,
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+          )
+          .is_ok()
+        {
+          break;
+        }
       }
-
       info!("setting new maxrequest id to {}", new_max_request_id);
-      *context.max_request_id.write().await = new_max_request_id;
       Ok(())
     }
     _ => {

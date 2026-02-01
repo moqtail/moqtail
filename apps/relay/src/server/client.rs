@@ -264,7 +264,18 @@ impl MOQTClient {
 
     if let Some(send_stream) = stream {
       // gracefully close the stream
-      self.finish_stream(stream_id, send_stream).await
+      let mut stream = send_stream.lock().await;
+
+      // gracefully close the stream
+      // No new data may be written after calling this method.
+      // Completes when the peer has acknowledged all sent data, retransmitting data as needed.
+      stream.finish().await.map_err(|e| {
+        error!(
+          "close_stream | Failed to finish send stream ({}): {:?} connection_id: {}",
+          stream_id, e, self.connection_id
+        );
+        anyhow::anyhow!("Failed to finish send stream ({}): {:?}", stream_id, e)
+      })
     } else {
       warn!(
         "close_stream | Send stream not found for {} connection_id: {}",
@@ -287,28 +298,6 @@ impl MOQTClient {
     let send_stream_map = self.get_stream_map(stream_id);
     let mut send_streams = send_stream_map.write().await;
     send_streams.remove(stream_id.get_stream_id().as_str())
-  }
-
-  async fn finish_stream(
-    &self,
-    stream_id: &StreamId,
-    send_stream: Arc<Mutex<SendStream>>,
-  ) -> Result<()> {
-    let mut stream = send_stream.lock().await;
-
-    // gracefully close the stream
-    stream.finish().await.map_err(|e| {
-      error!(
-        "close_stream | Failed to finish send stream ({}): {:?} connection_id: {}",
-        stream_id, e, self.connection_id
-      );
-      anyhow::anyhow!("Failed to finish send stream ({}): {:?}", stream_id, e)
-    })?;
-    info!(
-      "close_stream | Closed send stream ({}) connection_id: {}",
-      stream_id, self.connection_id
-    );
-    Ok(())
   }
 
   pub async fn write_stream_object(

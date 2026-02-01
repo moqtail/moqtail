@@ -623,6 +623,8 @@ impl Subscription {
       utils::passed_time_since_start()
     );
 
+    let object_location = object.location.clone();
+
     // This loop will keep the stream open and process incoming objects
     // TODO: revisit this logic to handle also fetch requests
     if let Ok(sub_object) = object.try_into_subgroup() {
@@ -631,9 +633,11 @@ impl Subscription {
         Ok(data) => data,
         Err(e) => {
           error!(
-            "Error in serializing object before writing to stream for subscriber {} track: {}, error: {:?}",
+            "Error in serializing object before writing to stream for subscriber {} track: {}, location: {:?}, previous_object_id: {:?}, error: {:?}",
             self.client_connection_id,
             self.track_alias(),
+            object_location,
+            previous_object_id,
             e
           );
           return Err(e.into());

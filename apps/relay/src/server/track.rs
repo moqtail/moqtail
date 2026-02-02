@@ -26,11 +26,12 @@ use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::control::constant::SubscribeErrorCode;
 use moqtail::model::control::subscribe::Subscribe;
 use moqtail::model::data::constant::ObjectForwardingPreference;
+use moqtail::model::data::datagram_object::DatagramObject;
 use moqtail::model::data::object::Object;
 use moqtail::{model::common::tuple::Tuple, transport::data_stream_handler::HeaderInfo};
 use std::sync::Arc;
 use tokio::sync::{Notify, RwLock};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 /// Lifecycle status of a track on the relay.
 #[derive(Debug, Clone)]
@@ -59,7 +60,7 @@ pub enum TrackEvent {
     header_info: Option<HeaderInfo>,
   },
   DatagramObject {
-    object: Object,
+    object: DatagramObject,
   },
   StreamClosed {
     stream_id: StreamId,
@@ -215,71 +216,118 @@ impl Track {
 
     if let Ok(fetch_object) = object.clone().try_into_fetch() {
       self.cache.add_object(fetch_object).await;
-
-      // Track-level logging - log every object arrival if enabled
-      if self.config.enable_object_logging {
-        let object_received_time = utils::passed_time_since_start();
-        self
-          .object_logger
-          .log_track_object(self.track_alias, object, object_received_time)
-          .await;
-      }
-
-      // update the largest location
-      {
-        let mut largest_location = self.largest_location.write().await;
-        if object.location.group > largest_location.group
-          || (object.location.group == largest_location.group
-            && object.location.object > largest_location.object)
-        {
-          largest_location.group = object.location.group;
-          largest_location.object = object.location.object;
-        }
-      }
-
-      // Send single Object event with optional header info
-      let event = TrackEvent::SubgroupObject {
-        stream_id: stream_id.clone(),
-        object: object.clone(),
-        header_info: header_info.cloned(),
-      };
-
-      self
-        .subscription_manager
-        .send_event_to_subscribers(event)
-        .await?;
-      Ok(())
     } else {
-      error!(
-        "new_subgroup_object: track: {:?} location: {:?} stream_id: {} diff_ms: {} object: {:?}",
+      warn!(
+        "new_subgroup_object: object cannot be cached | track: {:?} location: {:?} stream_id: {} diff_ms: {} object: {:?}",
         object.track_alias,
         object.location,
         stream_id,
         utils::passed_time_since_start(),
         object
       );
-      Err(anyhow::anyhow!("Object is not a fetch object"))
     }
-  }
 
-  pub async fn new_datagram_object(&self, object: &Object) -> Result<(), anyhow::Error> {
-    debug!(
-      "new_datagram_object: track: {:?} location: {:?} diff_ms: {}",
-      object.track_alias,
-      object.location,
-      utils::passed_time_since_start()
-    );
+    // Track-level logging - log every object arrival if enabled
+    if self.config.enable_object_logging {
+      let object_received_time = utils::passed_time_since_start();
+      self
+        .object_logger
+        .log_track_object(self.track_alias, object, object_received_time)
+        .await;
+    }
 
-    // For now, just send the datagram object event
-    // TODO: Implement actual datagram handling logic
-    let event = TrackEvent::DatagramObject {
+    // update the largest location
+    {
+      let mut largest_location = self.largest_location.write().await;
+      if object.location.group > largest_location.group
+        || (object.location.group == largest_location.group
+          && object.location.object > largest_location.object)
+      {
+        largest_location.group = object.location.group;
+        largest_location.object = object.location.object;
+      }
+    }
+
+    // Send single Object event with optional header info
+    let event = TrackEvent::SubgroupObject {
+      stream_id: stream_id.clone(),
       object: object.clone(),
+      header_info: header_info.cloned(),
     };
 
     self
       .subscription_manager
       .send_event_to_subscribers(event)
       .await?;
+    Ok(())
+  }
+
+  pub async fn new_datagram_object(
+    &self,
+    datagram_object: &DatagramObject,
+  ) -> Result<(), anyhow::Error> {
+    debug!(
+      "new_datagram_object: track: {:?} group: {:?} object_id: {} diff_ms: {}",
+      datagram_object.track_alias,
+      datagram_object.group_id,
+      datagram_object.object_id,
+      utils::passed_time_since_start()
+    );
+
+    match Object::try_from_datagram(datagram_object.clone()) {
+      Ok(object) => {
+        if let Ok(fetch_object) = object.clone().try_into_fetch() {
+          self.cache.add_object(fetch_object).await;
+        } else {
+          warn!(
+            "new_datagram_object: object cannot be cached | track: {:?} group: {:?} object_id: {} diff_ms: {} object: {:?}",
+            datagram_object.track_alias,
+            datagram_object.group_id,
+            datagram_object.object_id,
+            utils::passed_time_since_start(),
+            object
+          );
+        }
+
+        // Track-level logging - log every object arrival if enabled
+        if self.config.enable_object_logging {
+          let object_received_time = utils::passed_time_since_start();
+
+          self
+            .object_logger
+            .log_track_object(self.track_alias, &object, object_received_time)
+            .await;
+        }
+      }
+      Err(e) => {
+        error!(
+          "Failed to convert datagram object to object for logging: group: {:?} object_id: {} error: {}",
+          datagram_object.group_id, datagram_object.object_id, e
+        );
+      }
+    }
+
+    // update the largest location
+    {
+      let mut largest_location = self.largest_location.write().await;
+      if datagram_object.group_id > largest_location.group
+        || (datagram_object.group_id == largest_location.group
+          && datagram_object.object_id > largest_location.object)
+      {
+        largest_location.group = datagram_object.group_id;
+        largest_location.object = datagram_object.object_id;
+      }
+    }
+
+    let event = TrackEvent::DatagramObject {
+      object: datagram_object.clone(),
+    };
+
+    self
+      .subscription_manager
+      .send_event_to_subscribers(event)
+      .await?;
+
     Ok(())
   }
 

@@ -31,7 +31,6 @@ use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::publish_done::PublishDone;
 use moqtail::model::control::subscribe::Subscribe;
 use moqtail::model::control::subscribe_update::SubscribeUpdate;
-use moqtail::model::data::datagram_object::DatagramObject;
 use moqtail::model::data::object::Object;
 use moqtail::transport::data_stream_handler::HeaderInfo;
 use std::collections::HashMap;
@@ -468,31 +467,19 @@ impl Subscription {
             TrackEvent::DatagramObject { object } => {
               // Handle datagram object - serialize full MOQT datagram format
               // Must include type, track_alias, group_id, object_id, publisher_priority, and payload
-              if let Some(payload) = &object.payload {
-                // Create a DatagramObject from the Object and serialize it
-                let datagram_obj = DatagramObject::new(
-                  self.track_alias(),
-                  object.location.group,
-                  object.location.object,
-                  object.publisher_priority,
-                  payload.clone(),
-                );
-                match datagram_obj.serialize() {
-                  Ok(serialized_bytes) => {
-                    if let Err(e) = self
-                      .subscriber
-                      .write_datagram_object(serialized_bytes)
-                      .await
-                    {
-                      error!("Failed to write datagram object: {:?}", e);
-                    }
-                  }
-                  Err(e) => {
-                    error!("Failed to serialize datagram object: {:?}", e);
+              match object.serialize() {
+                Ok(serialized_bytes) => {
+                  if let Err(e) = self
+                    .subscriber
+                    .write_datagram_object(serialized_bytes)
+                    .await
+                  {
+                    error!("Failed to write datagram object: {:?}", e);
                   }
                 }
-              } else {
-                debug!("Datagram object has no payload");
+                Err(e) => {
+                  error!("Failed to serialize datagram object: {:?}", e);
+                }
               }
             }
             TrackEvent::StreamClosed { stream_id } => {

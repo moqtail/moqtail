@@ -16,7 +16,7 @@ use anyhow::Result;
 use bytes::Bytes;
 use moqtail::model::{
   control::{constant, control_message::ControlMessage, server_setup::ServerSetup},
-  data::{datagram_object::DatagramObject, object::Object},
+  data::{constant::ObjectForwardingPreference, datagram_object::DatagramObject},
   error::TerminationCode,
 };
 use moqtail::transport::{
@@ -295,27 +295,17 @@ impl Session {
                 debug!("Parsed datagram object: track_alias={}, group_id={}, object_id={}",
                        datagram_obj.track_alias, datagram_obj.group_id, datagram_obj.object_id);
 
-                // Convert to Object
-                match Object::try_from_datagram(datagram_obj) {
-                  Ok(object) => {
-                    // Find the track by track_alias and set forwarding preference to Datagram
-                    let track_manager = context_clone.track_manager.clone();
-                    if let Some(track) = track_manager.get_track_by_alias(object.track_alias).await {
-                      let track = track.read().await;
-                      // Set forwarding preference to Datagram
-                      track.set_forwarding_preference(moqtail::model::data::constant::ObjectForwardingPreference::Datagram).await;
+                if let Some(track) = context_clone.track_manager.get_track_by_alias(datagram_obj.track_alias).await {
+                  let track = track.read().await;
+                  // Set forwarding preference to Datagram
+                  track.set_forwarding_preference(ObjectForwardingPreference::Datagram).await;
 
-                      // Call new_datagram_object
-                      if let Err(e) = track.new_datagram_object(&object).await {
-                        error!("Failed to process datagram object: {:?}", e);
-                      }
-                    } else {
-                      debug!("Track not found for track_alias {}", object.track_alias);
-                    }
+                  // Call new_datagram_object
+                  if let Err(e) = track.new_datagram_object(&datagram_obj).await {
+                    error!("Failed to process datagram object: {:?}", e);
                   }
-                  Err(e) => {
-                    error!("Failed to convert datagram to object: {:?}", e);
-                  }
+                } else {
+                  debug!("Track not found for track_alias {}", datagram_obj.track_alias);
                 }
               }
               Err(e) => {

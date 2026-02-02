@@ -1,6 +1,6 @@
 # MOQtail
 
-Draft 14-compliant MOQ protocol library with publisher, subscriber and relay components, featuring various live and on-demand demo applications using the LOC and CMAF formats.
+Draft 14-compliant MOQT protocol libraries for publisher, subscriber and relay components, featuring various live and on-demand demo applications using the LOC and CMSF formats.
 
 ## moqtail-ts (MOQtail TypeScript Library)
 

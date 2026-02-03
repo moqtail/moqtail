@@ -15,7 +15,7 @@
 use clap::{Parser, ValueEnum};
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
-pub enum TrackPreference {
+pub enum ForwardingPreference {
   /// Send objects via unidirectional streams with subgroup headers
   Subgroup,
   /// Send objects via QUIC datagrams
@@ -68,9 +68,9 @@ pub struct Cli {
   #[arg(long, default_value_t = false)]
   pub no_cert_validation: bool,
 
-  /// Track forwarding preference (publish, subscribe)
+  /// Forwarding preference (subgroup, datagram)
   #[arg(long, value_enum, default_value = "subgroup")]
-  pub track_preference: TrackPreference,
+  pub forwarding_preference: ForwardingPreference,
 
   /// Publishing mode (publish only)
   #[arg(long, value_enum, default_value = "proactive")]

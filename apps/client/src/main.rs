@@ -45,7 +45,7 @@ async fn main() -> Result<(), anyhow::Error> {
       let config = publisher::PublishConfig {
         namespace: cli.namespace,
         track_name: cli.track_name,
-        track_preference: cli.track_preference,
+        forwarding_preference: cli.forwarding_preference,
         publish_mode: cli.publish_mode,
         group_count: cli.group_count,
         interval: cli.interval,
@@ -62,7 +62,7 @@ async fn main() -> Result<(), anyhow::Error> {
         moq_conn,
         &cli.namespace,
         &cli.track_name,
-        cli.track_preference,
+        cli.forwarding_preference,
         cli.duration,
       )
       .await

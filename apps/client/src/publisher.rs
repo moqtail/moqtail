@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cli::{PublishMode, TrackPreference};
+use crate::cli::{ForwardingPreference, PublishMode};
 use crate::connection::MoqConnection;
 use crate::utils::should_log;
 use anyhow::Result;
@@ -38,7 +38,7 @@ use tracing::{debug, error, info};
 pub struct PublishConfig {
   pub namespace: String,
   pub track_name: String,
-  pub track_preference: TrackPreference,
+  pub forwarding_preference: ForwardingPreference,
   pub publish_mode: PublishMode,
   pub group_count: u64,
   pub interval: u64,
@@ -64,7 +64,7 @@ pub async fn run(moq: MoqConnection, config: PublishConfig) -> Result<()> {
   }
 
   let data_config = DataConfig {
-    track_preference: config.track_preference,
+    forwarding_preference: config.forwarding_preference,
     group_count: config.group_count,
     interval: config.interval,
     objects_per_group: config.objects_per_group,
@@ -128,7 +128,7 @@ async fn publish_namespace(
 }
 
 struct DataConfig {
-  track_preference: TrackPreference,
+  forwarding_preference: ForwardingPreference,
   group_count: u64,
   interval: u64,
   objects_per_group: u64,
@@ -217,8 +217,8 @@ async fn send_data(
   track_alias: u64,
   config: &DataConfig,
 ) -> Result<()> {
-  match config.track_preference {
-    TrackPreference::Datagram => {
+  match config.forwarding_preference {
+    ForwardingPreference::Datagram => {
       send_datagrams(
         connection,
         track_alias,
@@ -229,7 +229,7 @@ async fn send_data(
       )
       .await
     }
-    TrackPreference::Subgroup => {
+    ForwardingPreference::Subgroup => {
       send_via_streams(
         connection,
         track_alias,

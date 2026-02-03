@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cli::TrackPreference;
+use crate::cli::ForwardingPreference;
 use crate::connection::MoqConnection;
 use crate::stats::ReceptionStats;
 use crate::utils::should_log;
@@ -32,7 +32,7 @@ pub async fn run(
   moq: MoqConnection,
   namespace: &str,
   track_name: &str,
-  track_preference: TrackPreference,
+  forwarding_preference: ForwardingPreference,
   duration: u64,
 ) -> Result<()> {
   let MoqConnection {
@@ -70,9 +70,9 @@ pub async fn run(
     Err(e) => anyhow::bail!("Failed waiting for SubscribeOk: {:?}", e),
   };
 
-  match track_preference {
-    TrackPreference::Datagram => receive_datagrams(&connection, track_alias, duration).await,
-    TrackPreference::Subgroup => receive_streams(&connection, track_alias, duration).await,
+  match forwarding_preference {
+    ForwardingPreference::Datagram => receive_datagrams(&connection, track_alias, duration).await,
+    ForwardingPreference::Subgroup => receive_streams(&connection, track_alias, duration).await,
   }
 }
 

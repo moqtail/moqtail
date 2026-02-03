@@ -1,6 +1,6 @@
 # MOQtail Test Client
 
-A unified test client for the MOQtail relay, supporting publish, subscribe, and fetch operations over MoQ Transport (draft-14). Supports both subgroup (unidirectional streams) and datagram track forwarding preferences.
+A unified test client for the MOQtail relay, supporting publish, subscribe, and fetch operations over MoQ Transport (draft-14). Supports both subgroup (unidirectional streams) and datagram object forwarding preferences.
 
 ## Usage
 
@@ -18,14 +18,14 @@ cargo run --bin client -- --command <COMMAND> [OPTIONS]
 
 ## Global Options
 
-| Option                 | Short | Default                  | Description                                            |
-| ---------------------- | ----- | ------------------------ | ------------------------------------------------------ |
-| `--command`            | `-c`  | _(required)_             | Command to run                                         |
-| `--server`             | `-s`  | `https://127.0.0.1:4433` | Server address                                         |
-| `--namespace`          | `-n`  | `moqtail`                | Track namespace                                        |
-| `--track-name`         | `-T`  | `demo`                   | Track name                                             |
-| `--no-cert-validation` |       | `false`                  | Skip certificate validation                            |
-| `--track-preference`   |       | `subgroup`               | Track forwarding preference (`subgroup` or `datagram`) |
+| Option                    | Short | Default                  | Description                                             |
+| ------------------------- | ----- | ------------------------ | ------------------------------------------------------- |
+| `--command`               | `-c`  | _(required)_             | Command to run                                          |
+| `--server`                | `-s`  | `https://127.0.0.1:4433` | Server address                                          |
+| `--namespace`             | `-n`  | `moqtail`                | Track namespace                                         |
+| `--track-name`            | `-T`  | `demo`                   | Track name                                              |
+| `--no-cert-validation`    |       | `false`                  | Skip certificate validation                             |
+| `--forwarding-preference` |       | `subgroup`               | Object forwarding preference (`subgroup` or `datagram`) |
 
 ## Publish Options
 
@@ -63,19 +63,19 @@ cargo run --bin client -- --command <COMMAND> [OPTIONS]
 Publish 50 groups of datagrams at 500ms intervals:
 
 ```
-cargo run --bin client -- -c publish --track-preference datagram --group-count 50 --interval 500
+cargo run --bin client -- -c publish --forwarding-preference datagram --group-count 50 --interval 500
 ```
 
 Publish via subgroup streams in reactive mode:
 
 ```
-cargo run --bin client -- -c publish --track-preference subgroup --publish-mode reactive
+cargo run --bin client -- -c publish --forwarding-preference subgroup --publish-mode reactive
 ```
 
 Subscribe to datagrams for 30 seconds:
 
 ```
-cargo run --bin client -- -c subscribe --track-preference datagram --duration 30
+cargo run --bin client -- -c subscribe --forwarding-preference datagram --duration 30
 ```
 
 Subscribe to subgroup streams indefinitely:

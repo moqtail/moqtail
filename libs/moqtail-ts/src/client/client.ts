@@ -69,31 +69,30 @@ import { getHandlerForControlMessage } from './handler/handler'
 import { SubscribePublication } from './publication/subscribe'
 import { FetchPublication } from './publication/fetch'
 
-
 /**
- * Discriminated union of every in‑flight MOQ‑tail control request tracked by the client.
+ * Union type of all possible MOQtail requests
  */
 export type MOQtailRequest = PublishNamespaceRequest | FetchRequest | SubscribeRequest
 
 /**
- * Datagram-specific callbacks for monitoring datagram send/receive operations.
+ * Callbacks related to datagram events
  */
 export type DatagramCallbacks = {
   /**
-   * Invoked for each decoded datagram object/status arriving.
-   * Use to process or display incoming datagram-based media/data.
+   * Invoked for each decoded datagram object/status arriving
+   * Use to process or display incoming datagram-based media/data
    */
   onDatagramReceived?: (data: DatagramObject | DatagramStatus) => void
 
   /**
-   * Invoked after enqueuing each outbound datagram object/status.
-   * Use for monitoring or analytics.
+   * Invoked after enqueuing each outbound datagram object/status
+   * Use for monitoring or analytics
    */
   onDatagramSent?: (data: DatagramObject | DatagramStatus) => void
 }
 
 /**
- * Extended options for the unified MOQtail client, including datagram support.
+ * Extended options for the MOQtail client
  *
  * @example Minimal
  * ```ts
@@ -150,7 +149,7 @@ export type MOQtailClientOptions = {
 }
 
 /**
- * Parameters for subscribing to a track's live objects.
+ * Parameters for subscribing to a track's live objects
  */
 export type SubscribeOptions = {
   fullTrackName: FullTrackName
@@ -164,7 +163,7 @@ export type SubscribeOptions = {
 }
 
 /**
- * Narrowing update constraints applied to an existing SUBSCRIBE.
+ * Narrowing update constraints applied to an existing SUBSCRIBE
  */
 export type SubscribeUpdateOptions = {
   subscriptionRequestId: bigint
@@ -176,7 +175,7 @@ export type SubscribeUpdateOptions = {
 }
 
 /**
- * Options for performing a FETCH operation for historical or relative object ranges.
+ * Options for performing a FETCH operation for historical or relative object ranges
  */
 export type FetchOptions = {
   priority: number
@@ -184,7 +183,11 @@ export type FetchOptions = {
   typeAndProps:
     | {
         type: FetchType.StandAlone
-        props: { fullTrackName: FullTrackName; startLocation: import('../model').Location; endLocation: import('../model').Location }
+        props: {
+          fullTrackName: FullTrackName
+          startLocation: import('../model').Location
+          endLocation: import('../model').Location
+        }
       }
     | {
         type: FetchType.Relative
@@ -196,105 +199,75 @@ export type FetchOptions = {
       }
   parameters?: VersionSpecificParameters
 }
-
-// ============================================================================
-// Unified MOQtailClient - Merges MOQtailClient + DatagramClient
-// ============================================================================
-
 /**
  * @public
- * Unified Media Over QUIC Transport (MOQT) client session with integrated datagram support.
+ * MOQtailClient is the main entry point for interacting with a MOQT server over WebTransport.
  *
- * This client merges the functionality of the original MOQtailClient and DatagramClient into
- * a single, cohesive class. It supports:
- * - Control stream operations (subscribe, fetch, announce, etc.)
- * - Unidirectional data streams (subgroups, fetch responses)
- * - **Datagram-based delivery** (low-latency, unreliable)
+ * It manages the underlying WebTransport session, control stream, data streams,
+ * track subscriptions, publications, and datagram support.
  *
- * Use {@link MOQtailClient.new} to establish a connection and perform MOQT operations.
+ * Clients can register tracks for publishing, subscribe to tracks for receiving data,
+ * perform fetch operations, and send/receive datagrams.
  *
- * ## Usage
+ * Extensive callback hooks are provided for observability and custom handling of events.
  *
- * ### Basic Connection with Datagram Support
+ * Example usage:
  * ```ts
  * const client = await MOQtailClient.new({
  *   url: 'https://relay.example.com/moq',
- *   supportedVersions: [0xff00000b],
- *   enableDatagrams: true,
- *   callbacks: {
- *     onDatagramReceived: (data) => console.log('Received:', data)
- *   }
- * });
- *
- * // Subscribe to datagram track
- * client.subscribeToTrackDatagrams(trackAlias, (obj) => {
- *   console.log('Datagram object:', obj);
- * });
- *
- * // Send datagrams
- * await client.sendDatagram(trackAlias, moqtObject);
- * ```
- *
- * ### Subscribe to a Track (Stream-based)
- * ```ts
- * const result = await client.subscribe({
- *   fullTrackName,
- *   filterType: FilterType.LatestObject,
- *   forward: true,
- *   groupOrder: GroupOrder.Original,
- *   priority: 0
- * });
- * if (!(result instanceof SubscribeError)) {
- *   for await (const object of result.stream) {
- *     // Consume MOQT objects
- *   }
+ *  supportedVersions: [0xff00000b],
+ *  enableDatagrams: true,
+ *  callbacks: {
+ *    onDatagramReceived: (data) => console.log('Datagram received:', data),
+ *   onDatagramSent: (data) => console.log('Datagram sent:', data),
  * }
+ * })
  * ```
+ *
  */
 export class MOQtailClient {
-
   /**
-   * Namespace prefixes (tuples) the peer has requested announce notifications for via SUBSCRIBE_NAMESPACE.
+   * Namespace prefixes (tuples) the peer has requested announce notifications for via SUBSCRIBE_NAMESPACE
    */
   readonly peerSubscribeNamespace = new Set<Tuple>()
 
   /**
-   * Namespace prefixes this client has subscribed to (issued SUBSCRIBE_NAMESPACE).
+   * Namespace prefixes this client has subscribed to (issued SUBSCRIBE_NAMESPACE)
    */
   readonly subscribedAnnounces = new Set<Tuple>()
 
   /**
-   * Track namespaces this client has successfully announced (received ANNOUNCE_OK).
+   * Track namespaces this client has successfully announced (received ANNOUNCE_OK)
    */
   readonly announcedNamespaces = new Set<Tuple>()
 
   /**
-   * Locally registered track definitions keyed by full track name string.
+   * Locally registered track definitions keyed by full track name string
    */
   readonly trackSources: Map<string, Track> = new Map()
 
   /**
-   * All in‑flight request objects keyed by requestId.
+   * All in‑flight request objects keyed by requestId
    */
   readonly requests: Map<bigint, MOQtailRequest> = new Map()
 
   /**
-   * Active publications keyed by requestId.
+   * Active publications keyed by requestId
    */
   readonly publications: Map<bigint, SubscribePublication | FetchPublication> = new Map()
 
   /**
-   * Active SUBSCRIBE request wrappers keyed by track alias.
+   * Active SUBSCRIBE request wrappers keyed by track alias
    */
   readonly subscriptions: Map<bigint, SubscribeRequest> = new Map()
 
   /**
-   * Bidirectional track alias <-> subscription requestId mapping.
+   * Bidirectional track alias-subscription requestId mapping
    */
   readonly subscriptionAliasMap: Map<bigint, bigint> = new Map()
 
   /**
-   * Bidirectional requestId <-> full track name mapping.
+   * Bidirectional requestId-full track name mapping
    */
   readonly requestIdMap: RequestIdMap = new RequestIdMap()
 
@@ -322,9 +295,7 @@ export class MOQtailClient {
   /** Internal monotonically increasing client-assigned request id counter. */
   #dontUseRequestId: bigint = 0n
 
-
   // Original MOQtailClient Event Handlers
-
 
   /** Fired when a PUBLISH_NAMESPACE control message is processed. */
   onNamespacePublished?: (msg: PublishNamespace) => void
@@ -356,9 +327,7 @@ export class MOQtailClient {
   /** General-purpose error callback. */
   onError?: (er: unknown) => void
 
-
   // Datagram-specific Properties
-  
 
   /** Invoked for each decoded datagram object/status arriving. */
   onDatagramReceived?: (data: DatagramObject | DatagramStatus) => void
@@ -382,20 +351,18 @@ export class MOQtailClient {
   #datagramTrackHandlers: Map<string, (obj: MoqtObject) => void> = new Map()
 
   /**
-   * Stream of all received MoqtObjects from datagrams across all tracks.
-   * Consumer should filter by fullTrackName as needed.
+   * Stream of all received MoqtObjects from datagrams across all tracks
+   * Consumer should filter by fullTrackName as needed
    *
    * WARNING: Only one reader should be active. For multiple subscribers,
-   * use subscribeToTrackDatagrams() instead.
+   * use subscribeToTrackDatagrams() instead
    */
   readonly receivedDatagramObjects: ReadableStream<MoqtObject>
 
-
   // Constructor & Factory
- 
 
   /**
-   * Allocate the next client-originated request id using the even/odd stride pattern.
+   * Allocate the next client-originated request id using the even/odd stride pattern
    */
   get #nextClientRequestId(): bigint {
     const id = this.#dontUseRequestId
@@ -404,21 +371,21 @@ export class MOQtailClient {
   }
 
   /**
-   * Gets the current server setup configuration.
+   * Gets the current server setup configuration
    */
   get serverSetup(): ServerSetup {
     return this.#serverSetup
   }
 
   /**
-   * Returns true if datagram support is currently active.
+   * Returns true if datagram support is currently active
    */
   get isDatagramsEnabled(): boolean {
     return this.#isReceivingDatagrams
   }
 
   /**
-   * Guard that throws if the client has been destroyed.
+   * Guard that throws if the client has been destroyed
    */
   #ensureActive() {
     if (this.#isDestroyed) throw new MOQtailError('MOQtailClient is destroyed and cannot be used.')
@@ -531,10 +498,6 @@ export class MOQtailClient {
     }
   }
 
-
-  // Datagram Methods 
-
-
   /**
    * Start receiving datagrams from the WebTransport connection.
    * Must be called before datagrams can be received (unless enableDatagrams: true was set in options).
@@ -644,7 +607,9 @@ export class MOQtailClient {
     this.#ensureActive()
 
     if (!this.#datagramWriter) {
-      throw new MOQtailError('Datagrams not started. Call startDatagrams() first or set enableDatagrams: true in options.')
+      throw new MOQtailError(
+        'Datagrams not started. Call startDatagrams() first or set enableDatagrams: true in options.',
+      )
     }
 
     console.log(`[MOQtailClient] Creating datagram sender for trackAlias=${trackAlias}`)
@@ -668,7 +633,9 @@ export class MOQtailClient {
     this.#ensureActive()
 
     if (!this.#datagramWriter) {
-      throw new MOQtailError('Datagrams not started. Call startDatagrams() first or set enableDatagrams: true in options.')
+      throw new MOQtailError(
+        'Datagrams not started. Call startDatagrams() first or set enableDatagrams: true in options.',
+      )
     }
 
     let serialized: Uint8Array
@@ -692,7 +659,7 @@ export class MOQtailClient {
    * Background loop that receives and parses incoming datagrams.
    */
   async #acceptIncomingDatagrams(): Promise<void> {
-    console.log('[MOQtailClient] Starting datagram reception loop')
+    console.log('[MOQtailClient] Starting datagram reception loop...')
 
     try {
       while (this.#isReceivingDatagrams && this.#datagramReader) {
@@ -801,10 +768,6 @@ export class MOQtailClient {
       return FullTrackName.tryNew('unknown', `track-${trackAlias}`)
     }
   }
-
-  // ============================================================================
-  // Original MOQtailClient Methods (unchanged API)
-  // ============================================================================
 
   /**
    * Gracefully terminates this session and releases underlying WebTransport resources.
@@ -1017,7 +980,7 @@ export class MOQtailClient {
   }
 
   /**
-   * One-shot retrieval of a bounded object span.
+   * Performs a FETCH operation and returns a stream of MoqtObjects.
    */
   async fetch(args: FetchOptions): Promise<FetchError | { requestId: bigint; stream: ReadableStream<MoqtObject> }> {
     this.#ensureActive()
@@ -1099,7 +1062,7 @@ export class MOQtailClient {
   }
 
   /**
-   * Request early termination of an in‑flight FETCH.
+   * Sends a FETCH_CANCEL for an active fetch request.
    */
   async fetchCancel(requestId: bigint | number) {
     this.#ensureActive()
@@ -1120,7 +1083,7 @@ export class MOQtailClient {
   }
 
   /**
-   * Declare (publish) a track namespace to the peer.
+   * Publish a namespace to the relay
    */
   async publishNamespace(trackNamespace: Tuple, parameters?: VersionSpecificParameters) {
     this.#ensureActive()
@@ -1143,7 +1106,7 @@ export class MOQtailClient {
   }
 
   /**
-   * Withdraw a previously announced namespace.
+   * Send a PublishNamespaceDone to signal the end of publishing for a namespace.
    */
   async publishNamespaceDone(trackNamespace: Tuple) {
     this.#ensureActive()
@@ -1158,7 +1121,7 @@ export class MOQtailClient {
   }
 
   /**
-   * Send a PublishNamespaceCancel to abort a previously issued ANNOUNCE.
+   * Cancel a previously sent PUBLISH_NAMESPACE request.
    */
   async publishNamespaceCancel(msg: PublishNamespaceCancel) {
     this.#ensureActive()
@@ -1176,7 +1139,7 @@ export class MOQtailClient {
   }
 
   /**
-   * Subscribe to namespace announcements.
+   * Subscribe to a namespace
    */
   async subscribeNamespace(msg: SubscribeNamespace) {
     this.#ensureActive()
@@ -1191,7 +1154,7 @@ export class MOQtailClient {
   }
 
   /**
-   * Unsubscribe from namespace announcements.
+   * Unsubscribe from a namespace
    */
   async unsubscribeNamespace(msg: UnsubscribeNamespace) {
     this.#ensureActive()
@@ -1205,10 +1168,11 @@ export class MOQtailClient {
     }
   }
 
- 
-  // Private Background Loops
- 
+  /* Background Handlers & Loops */
 
+  /**
+   * Background loop that processes incoming control messages
+   */
   async #handleIncomingControlMessages(): Promise<void> {
     this.#ensureActive()
     try {
@@ -1228,6 +1192,9 @@ export class MOQtailClient {
     }
   }
 
+  /**
+   * Background loop that accepts incoming unidirectional data streams.
+   */
   async #acceptIncomingUniStreams() {
     this.#ensureActive()
     const uds = this.webTransport.incomingUnidirectionalStreams
@@ -1249,6 +1216,9 @@ export class MOQtailClient {
     }
   }
 
+  /*
+   * Handler for incoming unidirectional data streams.
+   */
   async #handleRecvStreams(incomingUniStream: ReadableStream): Promise<void> {
     this.#ensureActive()
     try {

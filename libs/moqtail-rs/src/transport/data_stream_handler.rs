@@ -545,8 +545,6 @@ impl RecvDataStream {
   }
 
   pub async fn next_object(&self) -> (&Self, Option<Object>) {
-    // debug!("RecvDataStream::next_object() called");
-
     // Start the read task only once
     if self
       .started_read_task
@@ -559,6 +557,9 @@ impl RecvDataStream {
       let objects = self.objects.clone();
       let header_info = self.header_info.clone();
       let notify = self.notify.clone();
+
+      // Spawn the read task that will continuously read from the stream
+      // and insert parsed objects into the objects vector
       tokio::spawn(async move {
         match Self::read(
           recv_stream,
@@ -585,12 +586,13 @@ impl RecvDataStream {
     }
 
     loop {
-      let mut objects = self.objects.write().await;
-
-      if let Some(object) = objects.pop_front() {
-        return (self, Some(object));
+      // First, check if there are any objects available
+      {
+        let mut objects = self.objects.write().await;
+        if let Some(object) = objects.pop_front() {
+          return (self, Some(object));
+        }
       }
-      drop(objects);
 
       if self.is_closed.load(Ordering::Relaxed) {
         if self.objects.read().await.is_empty() {

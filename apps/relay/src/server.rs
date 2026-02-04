@@ -35,6 +35,7 @@ use client_manager::ClientManager;
 use moqtail::transport::data_stream_handler::{FetchRequest, SubscribeRequest};
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use tokio::signal;
 use tokio::sync::Notify;
 use tokio::sync::RwLock;
@@ -52,7 +53,7 @@ pub(crate) struct Server {
   pub relay_subscribe_requests: Arc<RwLock<BTreeMap<u64, SubscribeRequest>>>,
   pub relay_track_status_requests: Arc<RwLock<BTreeMap<u64, SubscribeRequest>>>,
   pub app_config: &'static AppConfig,
-  pub relay_next_request_id: Arc<RwLock<u64>>,
+  pub relay_next_request_id: Arc<AtomicU64>,
 }
 
 impl Server {
@@ -70,7 +71,7 @@ impl Server {
       relay_subscribe_requests: Arc::new(RwLock::new(BTreeMap::new())),
       relay_track_status_requests: Arc::new(RwLock::new(BTreeMap::new())),
       app_config: config,
-      relay_next_request_id: Arc::new(RwLock::new(1u64)), // relay's request id starts at 1 and are odd
+      relay_next_request_id: Arc::new(AtomicU64::new(1u64)), // relay's request id starts at 1 and are odd
     }
   }
 

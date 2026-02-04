@@ -12,7 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+  collections::BTreeMap,
+  sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicU64},
+  },
+};
 use tokio::sync::RwLock;
 use wtransport::Connection;
 
@@ -38,9 +44,9 @@ pub struct SessionContext {
   pub(crate) client: Arc<RwLock<Option<Arc<MOQTClient>>>>, // the client that is connected to this session
   pub(crate) connection: Connection,
   pub(crate) server_config: &'static AppConfig,
-  pub(crate) is_connection_closed: Arc<RwLock<bool>>,
-  pub(crate) relay_next_request_id: Arc<RwLock<u64>>,
-  pub(crate) max_request_id: Arc<RwLock<u64>>,
+  pub(crate) is_connection_closed: Arc<AtomicBool>,
+  pub(crate) relay_next_request_id: Arc<AtomicU64>,
+  pub(crate) max_request_id: Arc<AtomicU64>,
 }
 
 impl SessionContext {
@@ -50,7 +56,7 @@ impl SessionContext {
     track_manager: TrackManager,
     request_maps: RequestMaps,
     connection: Connection,
-    relay_next_request_id: Arc<RwLock<u64>>,
+    relay_next_request_id: Arc<AtomicU64>,
   ) -> Self {
     Self {
       client_manager,
@@ -62,9 +68,9 @@ impl SessionContext {
       client: Arc::new(RwLock::new(None)), // initially no client is set
       connection,
       server_config,
-      is_connection_closed: Arc::new(RwLock::new(false)),
+      is_connection_closed: Arc::new(AtomicBool::new(false)),
       relay_next_request_id,
-      max_request_id: Arc::new(RwLock::new(server_config.initial_max_request_id)),
+      max_request_id: Arc::new(AtomicU64::new(server_config.initial_max_request_id)),
     }
   }
 

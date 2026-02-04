@@ -340,8 +340,9 @@ version = "0.8.0"
 dependencies = [
  "anyhow",
  "bytes",
+ "clap",
  "moqtail",
- "serde_json",
+ "rand",
  "tokio",
  "tracing",
  "tracing-subscriber",

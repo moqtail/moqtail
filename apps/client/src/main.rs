@@ -12,10 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod client;
+mod cli;
+mod connection;
+mod fetcher;
+mod publisher;
+mod stats;
+mod subscriber;
+mod utils;
 
-use client::Client;
-use std::env;
+use clap::Parser;
+use cli::{Cli, Command};
+use connection::MoqConnection;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::filter::LevelFilter;
@@ -24,23 +31,55 @@ use tracing_subscriber::filter::LevelFilter;
 async fn main() -> Result<(), anyhow::Error> {
   init_logging();
 
-  let client_mode = env::args()
-    .nth(1)
-    .unwrap_or_else(|| "subscriber".to_string());
+  let cli = Cli::parse();
 
-  let endpoint = env::args()
-    .nth(2)
-    .unwrap_or_else(|| "https://127.0.0.1:4433".to_string());
+  info!(
+    "Starting moqtail client: server={}, namespace={}, track={}",
+    cli.server, cli.namespace, cli.track_name
+  );
 
-  let validate_cert = env::args().nth(3).unwrap_or_else(|| "false".to_string()) == "true";
+  let moq_conn = MoqConnection::establish(&cli.server, cli.no_cert_validation).await?;
 
-  info!("Starting client...");
-  info!("Client mode: {}", client_mode);
-  info!("Endpoint: {}", endpoint);
-  info!("Validate cert: {}", validate_cert);
-
-  let mut client = Client::new(endpoint, client_mode, validate_cert);
-  client.run().await
+  match cli.command {
+    Command::Publish => {
+      let config = publisher::PublishConfig {
+        namespace: cli.namespace,
+        track_name: cli.track_name,
+        forwarding_preference: cli.forwarding_preference,
+        publish_mode: cli.publish_mode,
+        group_count: cli.group_count,
+        interval: cli.interval,
+        objects_per_group: cli.objects_per_group,
+        payload_size: cli.payload_size,
+        track_alias: cli
+          .track_alias
+          .unwrap_or_else(|| rand::random::<u64>() & ((1u64 << 62) - 1)),
+      };
+      publisher::run(moq_conn, config).await
+    }
+    Command::Subscribe => {
+      subscriber::run(
+        moq_conn,
+        &cli.namespace,
+        &cli.track_name,
+        cli.forwarding_preference,
+        cli.duration,
+      )
+      .await
+    }
+    Command::Fetch => {
+      fetcher::run(
+        moq_conn,
+        &cli.namespace,
+        &cli.track_name,
+        cli.start_group,
+        cli.start_object,
+        cli.end_group,
+        cli.end_object,
+      )
+      .await
+    }
+  }
 }
 
 fn init_logging() {

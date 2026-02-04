@@ -46,8 +46,10 @@ pub async fn handle(
 
       // check request id
       {
-        let max_request_id = context.max_request_id.read().await;
-        if request_id >= *max_request_id {
+        let max_request_id = context
+          .max_request_id
+          .load(std::sync::atomic::Ordering::Relaxed);
+        if request_id >= max_request_id {
           warn!(
             "request id ({}) is greater than max request id ({})",
             request_id, max_request_id
@@ -227,7 +229,7 @@ pub async fn handle(
                 }
                 let object_id = object.object_id;
                 let is_sent = if let Err(e) = client
-                  .write_object_to_stream(
+                  .write_stream_object(
                     &stream_id,
                     object_id,
                     object.serialize().unwrap(),

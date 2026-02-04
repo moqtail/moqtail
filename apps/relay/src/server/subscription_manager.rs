@@ -19,6 +19,7 @@ use super::track::TrackEvent;
 use super::utils;
 use anyhow::Result;
 use moqtail::model::control::subscribe::Subscribe;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::{collections::BTreeMap, collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
 use tokio::sync::mpsc::UnboundedSender;
@@ -36,7 +37,7 @@ pub type SubscriberSenderList = Vec<SubscriberSenderLock>;
 
 #[derive(Debug, Clone)]
 pub(crate) struct SubscriptionManager {
-  track_alias: u64,
+  track_alias: Arc<AtomicU64>,
   subscriptions: Arc<RwLock<BTreeMap<usize, Arc<RwLock<Subscription>>>>>,
   subscriber_senders: Arc<SubscriberSenderList>,
   log_folder: String,
@@ -52,7 +53,7 @@ impl SubscriptionManager {
     }
 
     SubscriptionManager {
-      track_alias,
+      track_alias: Arc::new(AtomicU64::new(track_alias)),
       subscriptions: Arc::new(RwLock::new(BTreeMap::new())),
       subscriber_senders: Arc::from(subscriber_senders),
       log_folder,
@@ -86,17 +87,18 @@ impl SubscriptionManager {
     cache: super::track_cache::TrackCache,
   ) -> Result<(), anyhow::Error> {
     let connection_id = { subscriber.connection_id };
+    let alias = self.track_alias.load(Ordering::Relaxed);
 
     info!(
       "Adding subscription for subscriber_id: {} to track: {} subscription message: {:?}",
-      connection_id, self.track_alias, subscribe_message
+      connection_id, alias, subscribe_message
     );
 
     // Create a separate unbounded channel for this subscriber
     let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<TrackEvent>();
 
     let subscription = Subscription::new(
-      self.track_alias,
+      self.track_alias.clone(),
       subscribe_message,
       subscriber.clone(),
       event_rx,
@@ -110,7 +112,7 @@ impl SubscriptionManager {
     if subscriptions.contains_key(&connection_id) {
       error!(
         "Subscriber with connection_id: {} already exists in track: {}",
-        connection_id, self.track_alias
+        connection_id, alias
       );
       return Err(anyhow::anyhow!("Subscriber already exists"));
     }
@@ -129,7 +131,8 @@ impl SubscriptionManager {
   pub async fn get_subscription(&self, subscriber_id: usize) -> Option<Arc<RwLock<Subscription>>> {
     debug!(
       "Getting subscription for subscriber_id: {} from track: {}",
-      subscriber_id, self.track_alias
+      subscriber_id,
+      self.track_alias.load(Ordering::Relaxed)
     );
     let subscriptions = self.subscriptions.read().await;
     // find the subscription by subscriber_id and finish it
@@ -137,9 +140,10 @@ impl SubscriptionManager {
   }
 
   pub async fn remove_subscription(&self, subscriber_id: usize) {
+    let alias = self.track_alias.load(Ordering::Relaxed);
     info!(
       "Removing subscription for subscriber_id: {} from track: {}",
-      subscriber_id, self.track_alias
+      subscriber_id, alias
     );
     let mut subscriptions = self.subscriptions.write().await;
     let sub = subscriptions.remove(&subscriber_id);
@@ -158,10 +162,14 @@ impl SubscriptionManager {
       // The sender is automatically dropped here, which closes the channel
       info!(
         "Disposed sender for subscriber_id: {} from track: {}",
-        subscriber_id, self.track_alias
+        subscriber_id, alias
       );
     }
     drop(senders);
+  }
+
+  pub fn update_track_alias(&self, new_track_alias: u64) {
+    self.track_alias.store(new_track_alias, Ordering::Relaxed);
   }
 
   // Send event to all subscribers
@@ -191,18 +199,19 @@ impl SubscriptionManager {
       }
     }
 
+    let alias = self.track_alias.load(Ordering::Relaxed);
     if !failed_subscribers.is_empty() {
       error!(
         "{:?} event sent to {} subscribers, {} failed for track: {}",
         event,
         total_subscribers - failed_subscribers.len(),
         failed_subscribers.len(),
-        self.track_alias
+        alias
       );
     } else if total_subscribers > 0 {
       debug!(
         "{:?} event sent successfully to {} subscribers for track: {}",
-        event, total_subscribers, self.track_alias
+        event, total_subscribers, alias
       );
     }
 

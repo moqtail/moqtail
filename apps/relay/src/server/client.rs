@@ -259,22 +259,36 @@ impl MOQTClient {
   }
 
   // Remove the stream from the map and finish it
-  pub async fn close_stream(&self, stream_id: &StreamId) -> Result<()> {
+  // if the stream is found, return true, else false
+  pub async fn close_stream(&self, stream_id: &StreamId) -> Result<bool> {
     let stream = self.remove_stream_by_stream_id(stream_id).await;
 
     if let Some(send_stream) = stream {
       // gracefully close the stream
-      self.finish_stream(stream_id, send_stream).await
+      let mut stream = send_stream.lock().await;
+
+      // gracefully close the stream
+      // No new data may be written after calling this method.
+      // Completes when the peer has acknowledged all sent data, retransmitting data as needed.
+      stream
+        .finish()
+        .await
+        .map_err(|e| {
+          error!(
+            "close_stream | Failed to finish send stream ({}): {:?} connection_id: {}",
+            stream_id, e, self.connection_id
+          );
+          anyhow::anyhow!("Failed to finish send stream ({}): {:?}", stream_id, e)
+        })
+        .map(|_| true)
     } else {
-      warn!(
+      // it is possible that no stream was created for this stream id
+      // because the subscription can be in no forwarding state
+      debug!(
         "close_stream | Send stream not found for {} connection_id: {}",
         stream_id, self.connection_id
       );
-      Err(anyhow::anyhow!(
-        "Send stream not found ({}) connection_id: {}",
-        stream_id,
-        self.connection_id
-      ))
+      Ok(false)
     }
   }
 
@@ -289,29 +303,7 @@ impl MOQTClient {
     send_streams.remove(stream_id.get_stream_id().as_str())
   }
 
-  async fn finish_stream(
-    &self,
-    stream_id: &StreamId,
-    send_stream: Arc<Mutex<SendStream>>,
-  ) -> Result<()> {
-    let mut stream = send_stream.lock().await;
-
-    // gracefully close the stream
-    stream.finish().await.map_err(|e| {
-      error!(
-        "close_stream | Failed to finish send stream ({}): {:?} connection_id: {}",
-        stream_id, e, self.connection_id
-      );
-      anyhow::anyhow!("Failed to finish send stream ({}): {:?}", stream_id, e)
-    })?;
-    info!(
-      "close_stream | Closed send stream ({}) connection_id: {}",
-      stream_id, self.connection_id
-    );
-    Ok(())
-  }
-
-  pub async fn write_object_to_stream(
+  pub async fn write_stream_object(
     &self,
     stream_id: &StreamId,
     object_id: u64,
@@ -319,7 +311,7 @@ impl MOQTClient {
     the_stream: Option<Arc<Mutex<SendStream>>>,
   ) -> Result<(), anyhow::Error> {
     debug!(
-      "write_object_to_stream | Writing object to stream ({} - {}) connection_id: {}",
+      "write_stream_object | Writing object to stream ({} - {}) connection_id: {}",
       object_id, stream_id, self.connection_id
     );
 
@@ -345,7 +337,7 @@ impl MOQTClient {
           match &e {
             StreamWriteError::Closed | StreamWriteError::Stopped(_) => {
               warn!(
-                "write_object_to_stream | Send stream is closed or stopped ({})",
+                "write_stream_object | Send stream is closed or stopped ({})",
                 stream_id.get_stream_id()
               );
               drop(stream);
@@ -361,13 +353,24 @@ impl MOQTClient {
       Ok(())
     } else {
       warn!(
-        "write_object_to_stream | Send stream not found for {} connection_id: {}",
+        "write_stream_object | Send stream not found for {} connection_id: {}",
         stream_id, self.connection_id
       );
       // This is not an error. The stream already started, wait for the next group...
       // Err(anyhow::anyhow!("Send stream not found ({})", stream_id))
       Ok(())
     }
+  }
+
+  pub async fn write_datagram_object(&self, object: Bytes) -> Result<(), anyhow::Error> {
+    debug!(
+      "write_datagram_object | Writing datagram object connection_id: {}",
+      self.connection_id
+    );
+
+    // Write the object payload directly to the connection as a datagram
+    self.connection.send_datagram(object)?;
+    Ok(())
   }
 }
 

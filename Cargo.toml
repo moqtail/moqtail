@@ -1,10 +1,5 @@
 [workspace]
-members = [
-    "apps/relay",
-    "apps/client",
-    "libs/moqtail-rs",
-    "apps/catalog-server",
-]
+members = ["apps/relay", "apps/client", "libs/moqtail-rs"]
 resolver = "2"
 
 [workspace.dependencies]

@@ -30,6 +30,7 @@ use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use moqtail::transport::data_stream_handler::HeaderInfo;
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
+use tokio::sync::watch;
 use tracing::{error, info, warn};
 
 pub async fn handle(
@@ -164,6 +165,13 @@ pub async fn handle(
 
       let track = track.unwrap();
 
+      // Register a cancel channel for this fetch request
+      let (cancel_tx, mut cancel_rx) = watch::channel(false);
+      {
+        let mut senders = client.fetch_cancel_senders.write().await;
+        senders.insert(request_id, cancel_tx);
+      }
+
       tokio::spawn(async move {
         // TODO: verify the range exist. Currently we just return what we have...
         let track_read = track.read().await;
@@ -196,106 +204,138 @@ pub async fn handle(
 
         let mut object_count = 0;
         let mut send_stream = None;
+        let mut cancelled = false;
         loop {
-          match object_rx.recv().await {
-            Some(event) => match event {
-              CacheConsumeEvent::NoObject => {
-                // there is no object found
-                break;
-              }
-              CacheConsumeEvent::EndLocation(end_location) => {
-                info!(
-                  "handle_fetch_messages | sending fetch_ok | actual end_location: {:?}",
-                  &end_location
-                );
-                // TODO: implement descending fetch
-                // TODO: end of track is correct?
-                let largest_location = track_read.largest_location.read().await;
-                let end_of_track = largest_location.group == end_location.group;
-                let fetch_ok =
-                  FetchOk::new_ascending(request_id, end_of_track, end_location, vec![]);
+          tokio::select! {
+            event = object_rx.recv() => {
+              match event {
+                Some(event) => match event {
+                  CacheConsumeEvent::NoObject => {
+                    // there is no object found
+                    break;
+                  }
+                  CacheConsumeEvent::EndLocation(end_location) => {
+                    info!(
+                      "handle_fetch_messages | sending fetch_ok | actual end_location: {:?}",
+                      &end_location
+                    );
+                    // TODO: implement descending fetch
+                    // TODO: end of track is correct?
+                    let largest_location = track_read.largest_location.read().await;
+                    let end_of_track = largest_location.group == end_location.group;
+                    let fetch_ok =
+                      FetchOk::new_ascending(request_id, end_of_track, end_location, vec![]);
 
-                client
-                  .queue_message(ControlMessage::FetchOk(Box::new(fetch_ok)))
-                  .await;
-              }
-              CacheConsumeEvent::Object(object) => {
-                if object_count == 0 {
-                  info!("handle_fetch_messages | starting stream {:?}", &stream_id);
-                  send_stream = match stream_fn(client.clone(), &stream_id).await {
-                    Some(ss) => Some(ss),
-                    None => return Err(TerminationCode::InternalError),
-                  };
-                }
-                let object_id = object.object_id;
-                let is_sent = if let Err(e) = client
-                  .write_stream_object(
-                    &stream_id,
-                    object_id,
-                    object.serialize().unwrap(),
-                    send_stream.as_ref().cloned(),
-                  )
-                  .await
-                {
-                  error!(
-                    "handle_fetch_messages | Error writing object to stream: {:?}",
-                    e
-                  );
-                  false
-                } else {
-                  true
-                };
+                    client
+                      .queue_message(ControlMessage::FetchOk(Box::new(fetch_ok)))
+                      .await;
+                  }
+                  CacheConsumeEvent::Object(object) => {
+                    if object_count == 0 {
+                      info!("handle_fetch_messages | starting stream {:?}", &stream_id);
+                      send_stream = match stream_fn(client.clone(), &stream_id).await {
+                        Some(ss) => Some(ss),
+                        None => {
+                          // Clean up cancel sender before returning
+                          client.fetch_cancel_senders.write().await.remove(&request_id);
+                          return Err(TerminationCode::InternalError);
+                        }
+                      };
+                    }
+                    let object_id = object.object_id;
+                    let is_sent = if let Err(e) = client
+                      .write_stream_object(
+                        &stream_id,
+                        object_id,
+                        object.serialize().unwrap(),
+                        send_stream.as_ref().cloned(),
+                      )
+                      .await
+                    {
+                      error!(
+                        "handle_fetch_messages | Error writing object to stream: {:?}",
+                        e
+                      );
+                      false
+                    } else {
+                      true
+                    };
 
-                if !is_sent {
-                  return Err(TerminationCode::InternalError);
-                }
+                    if !is_sent {
+                      // Clean up cancel sender before returning
+                      client.fetch_cancel_senders.write().await.remove(&request_id);
+                      return Err(TerminationCode::InternalError);
+                    }
 
-                // Log fetch stream object if enabled
-                if context.server_config.enable_object_logging {
-                  let sending_time = crate::server::utils::passed_time_since_start();
-                  let fetch_object = moqtail::model::data::object::Object {
-                    track_alias: track_read.track_alias,
-                    location: moqtail::model::common::location::Location::new(
-                      object.group_id,
-                      object.object_id,
-                    ),
-                    publisher_priority: object.publisher_priority,
-                    forwarding_preference:
-                      moqtail::model::data::constant::ObjectForwardingPreference::Subgroup,
-                    subgroup_id: Some(object.subgroup_id),
-                    status: object
-                      .object_status
-                      .unwrap_or(moqtail::model::data::constant::ObjectStatus::Normal),
-                    extensions: object.extension_headers.clone(),
-                    payload: object.payload.clone(),
-                  };
-                  track_read
-                    .object_logger
-                    .log_fetch_object(
-                      track_read.track_alias,
-                      context.connection_id,
-                      request_id,
-                      &fetch_object,
-                      is_sent,
-                      sending_time,
-                    )
-                    .await;
+                    // Log fetch stream object if enabled
+                    if context.server_config.enable_object_logging {
+                      let sending_time = crate::server::utils::passed_time_since_start();
+                      let fetch_object = moqtail::model::data::object::Object {
+                        track_alias: track_read.track_alias,
+                        location: moqtail::model::common::location::Location::new(
+                          object.group_id,
+                          object.object_id,
+                        ),
+                        publisher_priority: object.publisher_priority,
+                        forwarding_preference:
+                          moqtail::model::data::constant::ObjectForwardingPreference::Subgroup,
+                        subgroup_id: Some(object.subgroup_id),
+                        status: object
+                          .object_status
+                          .unwrap_or(moqtail::model::data::constant::ObjectStatus::Normal),
+                        extensions: object.extension_headers.clone(),
+                        payload: object.payload.clone(),
+                      };
+                      track_read
+                        .object_logger
+                        .log_fetch_object(
+                          track_read.track_alias,
+                          context.connection_id,
+                          request_id,
+                          &fetch_object,
+                          is_sent,
+                          sending_time,
+                        )
+                        .await;
+                    }
+                    info!(
+                      "handle_fetch_messages | Wrote object to stream: {} object_id: {}",
+                      &stream_id, object_id
+                    );
+                    object_count += 1;
+                  }
+                },
+                None => {
+                  warn!("handle_fetch_messages | No object.");
+                  break;
                 }
-                info!(
-                  "handle_fetch_messages | Wrote object to stream: {} object_id: {}",
-                  &stream_id, object_id
-                );
-                object_count += 1;
               }
-            },
-            None => {
-              warn!("handle_fetch_messages | No object.");
+            }
+            _ = cancel_rx.changed() => {
+              info!("handle_fetch_messages | Fetch cancelled for request_id: {}", request_id);
+              cancelled = true;
               break;
             }
           }
         }
 
-        if object_count == 0 {
+        if cancelled {
+          // Close the stream promptly as per the spec
+          if let Some(the_stream) = send_stream {
+            if let Err(e) = the_stream.lock().await.shutdown().await {
+              error!(
+                "handle_fetch_messages | Error closing stream on cancel: {:?}",
+                e
+              );
+            } else {
+              info!(
+                "handle_fetch_messages | closed fetch stream on cancel: {:?}",
+                &stream_id
+              );
+            }
+            client.remove_stream_by_stream_id(&stream_id).await;
+          }
+        } else if object_count == 0 {
           send_fetch_error(
             client.clone(),
             request_id,
@@ -317,8 +357,40 @@ pub async fn handle(
             info!("removed stream from the map {}", stream_id);
           }
         }
+
+        // Clean up cancel sender
+        client
+          .fetch_cancel_senders
+          .write()
+          .await
+          .remove(&request_id);
         Ok(())
       });
+
+      Ok(())
+    }
+    ControlMessage::FetchCancel(m) => {
+      info!("received FetchCancel message: {:?}", m);
+      let request_id = m.request_id;
+
+      // Look up the cancel sender for this request and signal cancellation
+      let cancel_tx = {
+        let mut senders = client.fetch_cancel_senders.write().await;
+        senders.remove(&request_id)
+      };
+
+      if let Some(tx) = cancel_tx {
+        let _ = tx.send(true);
+        info!(
+          "handle_fetch_messages | Sent cancel signal for request_id: {}",
+          request_id
+        );
+      } else {
+        warn!(
+          "handle_fetch_messages | FetchCancel received but no active fetch for request_id: {}",
+          request_id
+        );
+      }
 
       Ok(())
     }

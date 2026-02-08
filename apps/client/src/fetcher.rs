@@ -20,21 +20,24 @@ use moqtail::model::common::tuple::Tuple;
 use moqtail::model::control::constant::GroupOrder;
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::fetch::{Fetch, StandAloneFetchProps};
+use moqtail::model::control::fetch_cancel::FetchCancel;
 use moqtail::transport::data_stream_handler::{FetchRequest, RecvDataStream};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{error, info};
 
-pub async fn run(
-  moq: MoqConnection,
-  namespace: &str,
-  track_name: &str,
-  start_group: u64,
-  start_object: u64,
-  end_group: u64,
-  end_object: u64,
-) -> Result<()> {
+pub struct FetchConfig {
+  pub namespace: String,
+  pub track_name: String,
+  pub start_group: u64,
+  pub start_object: u64,
+  pub end_group: u64,
+  pub end_object: u64,
+  pub cancel_after: u64,
+}
+
+pub async fn run(moq: MoqConnection, config: FetchConfig) -> Result<()> {
   let MoqConnection {
     connection,
     mut control_stream,
@@ -44,12 +47,12 @@ pub async fn run(
 
   // Send Fetch request
   let request_id = 0u64;
-  let ns = Tuple::from_utf8_path(namespace);
+  let ns = Tuple::from_utf8_path(&config.namespace);
   let standalone_fetch_props = StandAloneFetchProps {
     track_namespace: ns,
-    track_name: track_name.to_string(),
-    start_location: Location::new(start_group, start_object),
-    end_location: Location::new(end_group, end_object),
+    track_name: config.track_name.clone(),
+    start_location: Location::new(config.start_group, config.start_object),
+    end_location: Location::new(config.end_group, config.end_object),
   };
 
   let parameters = vec![KeyValuePair::try_new_varint(100, 200)?];
@@ -64,7 +67,7 @@ pub async fn run(
 
   info!(
     "Sending Fetch: groups {}:{} to {}:{}",
-    start_group, start_object, end_group, end_object
+    config.start_group, config.start_object, config.end_group, config.end_object
   );
 
   control_stream
@@ -80,7 +83,22 @@ pub async fn run(
   let conn = connection.clone();
   let pending_fetches_clone = pending_fetches.clone();
 
+  // If cancel_after is set, create a oneshot channel to signal the main task
+  // cancel_after is the number of objects to receive before sending FETCH_CANCEL
+  // make sure that there is a publisher sending enough objects to trigger the cancellation
+  // in a reasonable time frame otherwise you may get Track Does Not Exist error or
+  // not enough objects received before the test ends
+  let (cancel_tx, cancel_rx) = if config.cancel_after > 0 {
+    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+    (Some(tx), Some(rx))
+  } else {
+    (None, None)
+  };
+
+  let cancel_after = config.cancel_after;
   let receive_task = tokio::spawn(async move {
+    let mut total_objects = 0u64;
+    let mut cancel_tx = cancel_tx;
     loop {
       match conn.accept_uni().await {
         Ok(stream) => {
@@ -96,7 +114,17 @@ pub async fn run(
                   "Fetched object: group={}, object={}",
                   obj.location.group, obj.location.object
                 );
+                total_objects += 1;
                 handler = next_handler;
+
+                // Signal cancellation if threshold reached
+                if cancel_after > 0 && total_objects >= cancel_after {
+                  info!("Received {} objects, signaling FETCH_CANCEL", total_objects);
+                  if let Some(tx) = cancel_tx.take() {
+                    let _ = tx.send(());
+                  }
+                  break;
+                }
               }
               None => {
                 info!("Fetch stream closed");
@@ -126,6 +154,27 @@ pub async fn run(
     }
     Err(e) => {
       error!("Error receiving control message: {:?}", e);
+    }
+  }
+
+  // If cancel_after is set, wait for the receive task to signal, then send FETCH_CANCEL
+  if let Some(cancel_rx) = cancel_rx {
+    match cancel_rx.await {
+      Ok(()) => {
+        info!("Sending FETCH_CANCEL for request_id: {}", request_id);
+        let fetch_cancel = FetchCancel::new(request_id);
+        if let Err(e) = control_stream
+          .send(&ControlMessage::FetchCancel(Box::new(fetch_cancel)))
+          .await
+        {
+          error!("Error sending FETCH_CANCEL: {:?}", e);
+        } else {
+          info!("FETCH_CANCEL sent successfully");
+        }
+      }
+      Err(_) => {
+        error!("Cancel signal channel closed unexpectedly");
+      }
     }
   }
 

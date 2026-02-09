@@ -1,5 +1,11 @@
 # relay
 
+## 0.10.0
+
+### Minor Changes
+
+- [#101](https://github.com/moqtail/moqtail/pull/101) [`9e7e57e`](https://github.com/moqtail/moqtail/commit/9e7e57e8ce0a82c374608f1d388eed138143e9b3) Thanks [@zafergurel](https://github.com/zafergurel)! - Support for fetch_cancel message
+
 ## 0.9.0
 
 ### Minor Changes

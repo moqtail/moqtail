@@ -73,34 +73,6 @@
       },
       "args": [],
       "cwd": "${workspaceFolder}"
-    },
-    {
-      "type": "lldb",
-      "request": "launch",
-      "name": "Debug executable 'catalog-server'",
-      "cargo": {
-        "args": ["build", "--bin=catalog-server", "--package=catalog-server"],
-        "filter": {
-          "name": "catalog-server",
-          "kind": "bin"
-        }
-      },
-      "args": [],
-      "cwd": "${workspaceFolder}"
-    },
-    {
-      "type": "lldb",
-      "request": "launch",
-      "name": "Debug unit tests in executable 'catalog-server'",
-      "cargo": {
-        "args": ["test", "--no-run", "--bin=catalog-server", "--package=catalog-server"],
-        "filter": {
-          "name": "catalog-server",
-          "kind": "bin"
-        }
-      },
-      "args": [],
-      "cwd": "${workspaceFolder}"
     }
   ]
 }

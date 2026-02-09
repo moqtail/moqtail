@@ -35,6 +35,7 @@ use moqtail::model::data::object::Object;
 use moqtail::transport::data_stream_handler::HeaderInfo;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -72,12 +73,12 @@ impl From<Subscribe> for SubscriptionState {
 #[derive(Debug, Clone)]
 pub struct Subscription {
   pub request_id: u64,
-  pub track_alias: u64,
+  track_alias_ref: Arc<AtomicU64>,
   pub subscription_state: Arc<RwLock<SubscriptionState>>,
   subscriber: Arc<MOQTClient>,
   event_rx: Arc<Mutex<Option<UnboundedReceiver<TrackEvent>>>>,
   send_stream_last_object_ids: Arc<RwLock<HashMap<StreamId, Option<u64>>>>,
-  finished: Arc<RwLock<bool>>, // Indicates if the subscription is finished
+  finished: Arc<AtomicBool>,
   #[allow(dead_code)]
   cache: TrackCache,
   client_connection_id: usize,
@@ -87,8 +88,13 @@ pub struct Subscription {
 
 #[allow(clippy::too_many_arguments)]
 impl Subscription {
+  /// Get the current track alias value (shared with SubscriptionManager).
+  fn track_alias(&self) -> u64 {
+    self.track_alias_ref.load(Ordering::Relaxed)
+  }
+
   fn create_instance(
-    track_alias: u64,
+    track_alias_ref: Arc<AtomicU64>,
     request_id: u64,
     subscribe_message: Subscribe,
     subscriber: Arc<MOQTClient>,
@@ -99,13 +105,13 @@ impl Subscription {
     config: &'static AppConfig,
   ) -> Self {
     Self {
-      track_alias,
+      track_alias_ref,
       request_id,
       subscription_state: Arc::new(RwLock::new(subscribe_message.into())),
       subscriber,
       event_rx,
       send_stream_last_object_ids: Arc::new(RwLock::new(HashMap::new())),
-      finished: Arc::new(RwLock::new(false)),
+      finished: Arc::new(AtomicBool::new(false)),
       cache,
       client_connection_id,
       object_logger: ObjectLogger::new(log_folder),
@@ -113,7 +119,7 @@ impl Subscription {
     }
   }
   pub fn new(
-    track_alias: u64,
+    track_alias: Arc<AtomicU64>,
     subscribe_message: Subscribe,
     subscriber: Arc<MOQTClient>,
     event_rx: UnboundedReceiver<TrackEvent>,
@@ -124,7 +130,7 @@ impl Subscription {
   ) -> Self {
     let event_rx = Arc::new(Mutex::new(Some(event_rx)));
     let sub = Self::create_instance(
-      track_alias,
+      track_alias.clone(),
       subscribe_message.request_id,
       subscribe_message,
       subscriber,
@@ -135,19 +141,17 @@ impl Subscription {
       config,
     );
 
+    let alias = track_alias.load(Ordering::Relaxed);
     info!(
       "Created new Subscription instance for subscriber: {} track: {} subscription state: {:?}",
-      client_connection_id, track_alias, sub.subscription_state
+      client_connection_id, alias, sub.subscription_state
     );
 
     let mut instance = sub.clone();
     tokio::spawn(async move {
       loop {
-        {
-          let is_finished = instance.finished.read().await;
-          if *is_finished {
-            break;
-          }
+        if instance.finished.load(Ordering::Relaxed) {
+          break;
         }
 
         tokio::select! {
@@ -210,25 +214,26 @@ impl Subscription {
 
     info!(
       "update_subscription | new subscription state for {}: {:?}",
-      self.track_alias, state
+      self.track_alias(),
+      state
     );
     Ok(())
   }
 
   pub async fn finish(&self) {
-    if *self.finished.read().await {
-      // already finished
+    if self
+      .finished
+      .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+      .is_err()
+    {
       return;
     }
 
     info!(
       "Finishing subscription for subscriber: {} and track: {}",
-      self.client_connection_id, self.track_alias
+      self.client_connection_id,
+      self.track_alias()
     );
-
-    let mut finished = self.finished.write().await;
-    *finished = true;
-    drop(finished);
 
     let mut receiver_guard = self.event_rx.lock().await;
     let _ = receiver_guard.take(); // This replaces the Some(receiver) with None
@@ -236,7 +241,8 @@ impl Subscription {
 
     info!(
       "Subscription finished for subscriber: {} and track: {}",
-      self.client_connection_id, self.track_alias
+      self.client_connection_id,
+      self.track_alias()
     );
 
     // Close all send streams asynchronously to avoid blocking subscription cleanup
@@ -253,7 +259,7 @@ impl Subscription {
     if !stream_ids.is_empty() {
       let subscriber = self.subscriber.clone();
       let connection_id = self.client_connection_id;
-      let track_alias = self.track_alias;
+      let track_alias = self.track_alias();
 
       // Spawn background task for graceful stream cleanup
       tokio::spawn(async move {
@@ -265,16 +271,24 @@ impl Subscription {
         );
 
         for stream_id in stream_ids.iter() {
-          if let Err(e) = subscriber.close_stream(stream_id).await {
+          let res = subscriber.close_stream(stream_id).await;
+          if let Err(e) = res {
             warn!(
               "Background stream cleanup error for subscriber: {} stream_id: {} track: {} error: {:?}",
               connection_id, stream_id, track_alias, e
             );
-          } else {
-            debug!(
-              "Background stream cleanup successful for subscriber: {} stream_id: {} track: {}",
-              connection_id, stream_id, track_alias
-            );
+          } else if let Ok(closed) = res {
+            if closed {
+              debug!(
+                "Background stream cleanup successful for subscriber: {} stream_id: {} track: {}",
+                connection_id, stream_id, track_alias
+              );
+            } else {
+              debug!(
+                "Background stream cleanup: stream not found for subscriber: {} stream_id: {} track: {}",
+                connection_id, stream_id, track_alias
+              );
+            }
           }
         }
 
@@ -291,7 +305,8 @@ impl Subscription {
   async fn receive(&mut self) {
     debug!(
       "Receiving for subscriber: {} track: {}",
-      self.client_connection_id, self.track_alias
+      self.client_connection_id,
+      self.track_alias()
     );
     let mut event_rx_guard = self.event_rx.lock().await;
 
@@ -300,14 +315,16 @@ impl Subscription {
         Some(event) => {
           debug!(
             "Event received for subscriber: {} track: {} event: {:?}",
-            self.client_connection_id, self.track_alias, event
+            self.client_connection_id,
+            self.track_alias(),
+            event
           );
-          if *self.finished.read().await {
+          if self.finished.load(Ordering::Relaxed) {
             return;
           }
 
           match event {
-            TrackEvent::Object {
+            TrackEvent::SubgroupObject {
               object,
               stream_id,
               header_info,
@@ -329,7 +346,7 @@ impl Subscription {
                   TODO: Remove the following code after draft-15 support.
                   info!(
                     "Finishing subscription for subscriber: {} track: {}",
-                    self.client_connection_id, self.track_alias
+                    self.client_connection_id, self.track_alias()
                   );
                   self.finish().await;
                   */
@@ -350,7 +367,7 @@ impl Subscription {
                   info!(
                     "Creating stream - subscriber: {} track: {} now: {} received time: {} object: {:?}",
                     self.client_connection_id,
-                    self.track_alias,
+                    self.track_alias(),
                     utils::passed_time_since_start(),
                     object_received_time,
                     object.location
@@ -365,7 +382,7 @@ impl Subscription {
                       "Stream created - subscriber: {} stream_id: {} track: {} now: {} received time: {} object: {:?}",
                       self.client_connection_id,
                       stream_id,
-                      self.track_alias,
+                      self.track_alias(),
                       utils::passed_time_since_start(),
                       object_received_time,
                       object.location
@@ -398,7 +415,10 @@ impl Subscription {
 
                 debug!(
                   "Received Object event: subscriber: {} stream_id: {} track: {} previous_object_id: {:?}",
-                  self.client_connection_id, stream_id, self.track_alias, previous_object_id
+                  self.client_connection_id,
+                  stream_id,
+                  self.track_alias(),
+                  previous_object_id
                 );
 
                 // Log object properties with send status if enabled
@@ -424,7 +444,7 @@ impl Subscription {
                   self
                     .object_logger
                     .log_subscription_object(
-                      self.track_alias,
+                      self.track_alias(),
                       self.client_connection_id,
                       &object,
                       send_status,
@@ -437,24 +457,46 @@ impl Subscription {
                   "Received Object event without a valid send stream for subscriber: {} stream_id: {} track: {} object: {:?} now: {} received time: {}",
                   self.client_connection_id,
                   stream_id,
-                  self.track_alias,
+                  self.track_alias(),
                   object.location,
                   utils::passed_time_since_start(),
                   object_received_time
                 );
               }
             }
+            TrackEvent::DatagramObject { object } => {
+              // Handle datagram object - serialize full MOQT datagram format
+              // Must include type, track_alias, group_id, object_id, publisher_priority, and payload
+              match object.serialize() {
+                Ok(serialized_bytes) => {
+                  if let Err(e) = self
+                    .subscriber
+                    .write_datagram_object(serialized_bytes)
+                    .await
+                  {
+                    error!("Failed to write datagram object: {:?}", e);
+                  }
+                }
+                Err(e) => {
+                  error!("Failed to serialize datagram object: {:?}", e);
+                }
+              }
+            }
             TrackEvent::StreamClosed { stream_id } => {
               info!(
                 "Received StreamClosed event: subscriber: {} stream_id: {} track: {}",
-                self.client_connection_id, stream_id, self.track_alias
+                self.client_connection_id,
+                stream_id,
+                self.track_alias()
               );
               let _ = self.handle_stream_closed(&stream_id).await;
             }
             TrackEvent::PublisherDisconnected { reason } => {
               info!(
                 "Received PublisherDisconnected event: subscriber: {}, reason: {} track: {}",
-                self.client_connection_id, reason, self.track_alias
+                self.client_connection_id,
+                reason,
+                self.track_alias()
               );
 
               // Send PublishDone message and finish the subscription
@@ -464,7 +506,9 @@ impl Subscription {
               {
                 error!(
                   "Failed to send PublishDone for publisher disconnect: subscriber: {} track: {} error: {:?}",
-                  self.client_connection_id, self.track_alias, e
+                  self.client_connection_id,
+                  self.track_alias(),
+                  e
                 );
               }
 
@@ -478,13 +522,19 @@ impl Subscription {
           // The channel is closed, we should finish the subscription
           info!(
             "Event receiver closed for subscriber: {} track: {}, finishing subscription",
-            self.client_connection_id, self.track_alias
+            self.client_connection_id,
+            self.track_alias()
           );
           self.finish().await;
         }
       }
     } else {
       // No receiver available, subscription has been finished
+      info!(
+        "No event receiver for subscriber: {} track: {}, finishing subscription",
+        self.client_connection_id,
+        self.track_alias()
+      );
       self.finish().await;
     }
   }
@@ -517,7 +567,10 @@ impl Subscription {
         Err(e) => {
           error!(
             "Failed to open stream {}: {:?} subscriber: {} track: {}",
-            stream_id, e, self.client_connection_id, self.track_alias
+            stream_id,
+            e,
+            self.client_connection_id,
+            self.track_alias()
           );
           return Err(e);
         }
@@ -529,13 +582,15 @@ impl Subscription {
     } else {
       error!(
         "Failed to serialize header payload for stream {} subscriber: {} track: {}",
-        stream_id, self.client_connection_id, self.track_alias
+        stream_id,
+        self.client_connection_id,
+        self.track_alias()
       );
       Err(anyhow::anyhow!(
         "Failed to serialize header payload for stream {} subscriber: {} track: {}",
         stream_id,
         self.client_connection_id,
-        self.track_alias
+        self.track_alias()
       ))
     }
   }
@@ -555,6 +610,8 @@ impl Subscription {
       utils::passed_time_since_start()
     );
 
+    let object_location = object.location.clone();
+
     // This loop will keep the stream open and process incoming objects
     // TODO: revisit this logic to handle also fetch requests
     if let Ok(sub_object) = object.try_into_subgroup() {
@@ -563,8 +620,12 @@ impl Subscription {
         Ok(data) => data,
         Err(e) => {
           error!(
-            "Error in serializing object before writing to stream for subscriber {} track: {}, error: {:?}",
-            self.client_connection_id, self.track_alias, e
+            "Error in serializing object before writing to stream for subscriber {} track: {}, location: {:?}, previous_object_id: {:?}, error: {:?}",
+            self.client_connection_id,
+            self.track_alias(),
+            object_location,
+            previous_object_id,
+            e
           );
           return Err(e.into());
         }
@@ -580,7 +641,7 @@ impl Subscription {
 
       self
         .subscriber
-        .write_object_to_stream(
+        .write_stream_object(
           stream_id,
           sub_object.object_id,
           object_bytes,
@@ -590,20 +651,24 @@ impl Subscription {
         .map_err(|open_stream_err| {
           error!(
             "Error writing object to stream for subscriber {} track: {}, error: {:?}",
-            self.client_connection_id, self.track_alias, open_stream_err
+            self.client_connection_id,
+            self.track_alias(),
+            open_stream_err
           );
           open_stream_err
         })
     } else {
       debug!(
         "Could not convert object to subgroup. stream_id: {:?} subscriber: {} track: {}",
-        stream_id, self.client_connection_id, self.track_alias
+        stream_id,
+        self.client_connection_id,
+        self.track_alias()
       );
       Err(anyhow::anyhow!(
         "Could not convert object to subgroup. stream_id: {:?} subscriber: {} track: {}",
         stream_id,
         self.client_connection_id,
-        self.track_alias
+        self.track_alias()
       ))
     }
   }
@@ -621,27 +686,34 @@ impl Subscription {
     // the main subscription event loop. This is critical for real-time media streaming
     // where blocking operations can disrupt video flow timing (25fps = ~40ms intervals)
     let subscriber = self.subscriber.clone();
-    let stream_id_clone = stream_id.clone();
+    let stream_id = stream_id.clone();
     let connection_id = self.client_connection_id;
-    let track_alias = self.track_alias;
+    let track_alias = self.track_alias();
 
     tokio::spawn(async move {
       debug!(
         "Starting graceful stream closure in background: subscriber: {} stream_id: {} track: {}",
-        connection_id, stream_id_clone, track_alias
+        connection_id, stream_id, track_alias
       );
 
-      if let Err(e) = subscriber.close_stream(&stream_id_clone).await {
-        // Log the error but don't propagate it since this is background cleanup
-        debug!(
-          "Background stream closure completed with error: subscriber: {} stream_id: {} track: {} error: {:?}",
-          connection_id, stream_id_clone, track_alias, e
+      let res = subscriber.close_stream(&stream_id).await;
+      if let Err(e) = res {
+        warn!(
+          "handle_stream_closed | error for subscriber: {} stream_id: {} track: {} error: {:?}",
+          connection_id, stream_id, track_alias, e
         );
-      } else {
-        debug!(
-          "Background stream closure completed successfully: subscriber: {} stream_id: {} track: {}",
-          connection_id, stream_id_clone, track_alias
-        );
+      } else if let Ok(closed) = res {
+        if closed {
+          debug!(
+            "handle_stream_closed | successful for subscriber: {} stream_id: {} track: {}",
+            connection_id, stream_id, track_alias
+          );
+        } else {
+          debug!(
+            "handle_stream_closed | stream not found for subscriber: {} stream_id: {} track: {}",
+            connection_id, stream_id, track_alias
+          );
+        }
       }
     });
 
@@ -655,7 +727,9 @@ impl Subscription {
       HeaderInfo::Subgroup { header } => header.serialize().map_err(|e| {
         error!(
           "Error serializing subgroup header: {:?} subscriber: {} track: {}",
-          e, connection_id, self.track_alias
+          e,
+          connection_id,
+          self.track_alias()
         );
         e.into()
       }),
@@ -665,7 +739,9 @@ impl Subscription {
       } => header.serialize().map_err(|e| {
         error!(
           "Error serializing fetch header: {:?} subscriber: {} track: {}",
-          e, connection_id, self.track_alias
+          e,
+          connection_id,
+          self.track_alias()
         );
         e.into()
       }),
@@ -673,7 +749,7 @@ impl Subscription {
   }
 
   fn get_stream_id(&self, header_info: &HeaderInfo) -> StreamId {
-    utils::build_stream_id(self.track_alias, header_info)
+    utils::build_stream_id(self.track_alias(), header_info)
   }
 
   /// Send PublishDone message to this subscriber
@@ -699,7 +775,9 @@ impl Subscription {
 
     info!(
       "Sent PublishDone to subscriber {} track: {} for request_id {}",
-      self.client_connection_id, self.track_alias, self.request_id
+      self.client_connection_id,
+      self.track_alias(),
+      self.request_id
     );
 
     Ok(())

@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use bytes::{Buf, BufMut, BytesMut};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex, Notify, RwLock};
 use tokio::task::yield_now;
@@ -237,8 +238,8 @@ pub struct RecvDataStream {
   header_info: Arc<Mutex<Option<HeaderInfo>>>,
   pending_fetches: Arc<RwLock<BTreeMap<u64, FetchRequest>>>, // Mutable borrow to potentially remove entry
   objects: Arc<RwLock<VecDeque<Object>>>,                    // Buffer for parsed objects
-  is_closed: Arc<RwLock<bool>>,                              // Track if the stream is closed
-  started_read_task: Arc<Mutex<bool>>,                       // Track if read task has started
+  is_closed: Arc<AtomicBool>,
+  started_read_task: Arc<AtomicBool>,
   notify: Arc<Notify>,
 }
 
@@ -252,8 +253,8 @@ impl RecvDataStream {
       header_info: Arc::new(Mutex::new(None)), // Initially no header info
       pending_fetches,
       objects: Arc::new(RwLock::new(VecDeque::new())), // Initialize the object buffer
-      is_closed: Arc::new(RwLock::new(false)),         // Track if the stream is closed
-      started_read_task: Arc::new(Mutex::new(false)),
+      is_closed: Arc::new(AtomicBool::new(false)),
+      started_read_task: Arc::new(AtomicBool::new(false)),
       notify: Arc::new(Notify::new()),
     }
   }
@@ -266,7 +267,7 @@ impl RecvDataStream {
 
   async fn read(
     recv_stream: Arc<Mutex<RecvStream>>,
-    is_closed: Arc<RwLock<bool>>,
+    is_closed: Arc<AtomicBool>,
     the_header_info: Arc<Mutex<Option<HeaderInfo>>>,
     pending_fetches: Arc<RwLock<BTreeMap<u64, FetchRequest>>>,
     objects: Arc<RwLock<VecDeque<Object>>>,
@@ -345,7 +346,7 @@ impl RecvDataStream {
 
       // Check if the stream is closed
       // If it is closed, notify waiters and return
-      if *is_closed.read().await {
+      if is_closed.load(Ordering::Relaxed) {
         notify.notify_waiters();
         return Ok(());
       }
@@ -358,7 +359,7 @@ impl RecvDataStream {
 
           _ = sleep_until(timeout_at) => {
             info!("Timeout while waiting for data");
-            *is_closed.write().await = true;
+            is_closed.store(true, Ordering::Relaxed);
             return Err(RecvDataStreamReadError::ParseError(ParseError::Timeout { context: "RecvDataStream::new(header_read)" }));
           }
 
@@ -378,11 +379,11 @@ impl RecvDataStream {
                 // If the stream is closed and no more data is available, break or return error
                 // otherwise, handle the remaining bytes in the next iteration
                 // debug!("RecvDataStream::read Read None (EOF or stream closed)");
-                *is_closed.write().await = true;
+                is_closed.store(true, Ordering::Relaxed);
               }
               Err(e) => {
                 debug!("RecvDataStream::read() Read error: {:?}", e);
-                *is_closed.write().await = true;
+                is_closed.store(true, Ordering::Relaxed);
                 if e == StreamReadError::NotConnected {
                   return Err(RecvDataStreamReadError::StreamClosed);
                 }
@@ -397,7 +398,7 @@ impl RecvDataStream {
   async fn read_header(
     mut bytes_cursor: bytes::Bytes,
     is_fetch: bool,
-    is_closed: Arc<RwLock<bool>>,
+    is_closed: Arc<AtomicBool>,
     pending_fetches: Arc<RwLock<BTreeMap<u64, FetchRequest>>>,
   ) -> Result<Option<(usize, HeaderInfo)>, ParseError> {
     debug!("RecvDataStream::read_header() called");
@@ -422,7 +423,7 @@ impl RecvDataStream {
             // Drop the immutable borrow before calling the async method
             drop(pending_fetches);
             // self.close_stream().await;
-            *is_closed.write().await = true;
+            is_closed.store(true, Ordering::Relaxed);
             Err(ParseError::ProtocolViolation {
               context: "RecvDataStream::new(FetchHeader validation)",
               details: format!(
@@ -436,7 +437,7 @@ impl RecvDataStream {
           Ok(None) // Not enough bytes to parse the header, wait for more data
         }
         Err(e) => {
-          *is_closed.write().await = true;
+          is_closed.store(true, Ordering::Relaxed);
           Err(ParseError::ProtocolViolation {
             context: "RecvDataStream::new(FetchHeader validation)",
             details: e.to_string(),
@@ -457,7 +458,7 @@ impl RecvDataStream {
           Ok(None) // Not enough bytes to parse the header, wait for more data
         }
         Err(e) => {
-          *is_closed.write().await = true;
+          is_closed.store(true, Ordering::Relaxed);
           Err(ParseError::ProtocolViolation {
             context: "RecvDataStream::new(SubgroupHeader validation)",
             details: e.to_string(),
@@ -470,7 +471,7 @@ impl RecvDataStream {
   async fn read_object(
     mut bytes_cursor: bytes::Bytes,
     header_info: &HeaderInfo,
-    is_closed: Arc<RwLock<bool>>,
+    is_closed: Arc<AtomicBool>,
     objects: Arc<RwLock<VecDeque<Object>>>,
     previous_object_id: &Option<u64>,
   ) -> Result<(usize, Option<u64>), ParseError> {
@@ -530,7 +531,7 @@ impl RecvDataStream {
           Ok((0, None)) // Indicate that we need more data
         }
         Err(e) => {
-          *is_closed.write().await = true;
+          is_closed.store(true, Ordering::Relaxed);
           Err(ParseError::ProtocolViolation {
             context: "RecvDataStream::next_object(parse_result)",
             details: e.to_string(),
@@ -544,18 +545,21 @@ impl RecvDataStream {
   }
 
   pub async fn next_object(&self) -> (&Self, Option<Object>) {
-    // debug!("RecvDataStream::next_object() called");
-
     // Start the read task only once
-    let mut started = self.started_read_task.lock().await;
-    if !*started {
-      *started = true;
+    if self
+      .started_read_task
+      .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+      .is_ok()
+    {
       let recv_stream = self.recv_stream.clone();
       let is_closed = self.is_closed.clone();
       let pending_fetches = self.pending_fetches.clone();
       let objects = self.objects.clone();
       let header_info = self.header_info.clone();
       let notify = self.notify.clone();
+
+      // Spawn the read task that will continuously read from the stream
+      // and insert parsed objects into the objects vector
       tokio::spawn(async move {
         match Self::read(
           recv_stream,
@@ -580,17 +584,17 @@ impl RecvDataStream {
         }
       });
     }
-    drop(started);
 
     loop {
-      let mut objects = self.objects.write().await;
-
-      if let Some(object) = objects.pop_front() {
-        return (self, Some(object));
+      // First, check if there are any objects available
+      {
+        let mut objects = self.objects.write().await;
+        if let Some(object) = objects.pop_front() {
+          return (self, Some(object));
+        }
       }
-      drop(objects);
 
-      if *self.is_closed.read().await {
+      if self.is_closed.load(Ordering::Relaxed) {
         if self.objects.read().await.is_empty() {
           debug!("Stream is closed, returning EOF");
           return (self, None);

@@ -14,7 +14,7 @@
 
 use crate::server::client::MOQTClient;
 use crate::server::session_context::SessionContext;
-use crate::server::track::Track;
+use crate::server::track::{Track, TrackStatus};
 use core::result::Result;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::control::{
@@ -41,8 +41,10 @@ pub async fn handle(
 
       // Check request ID
       {
-        let max_request_id = context.max_request_id.read().await;
-        if request_id >= *max_request_id {
+        let max_request_id = context
+          .max_request_id
+          .load(std::sync::atomic::Ordering::Relaxed);
+        if request_id >= max_request_id {
           warn!(
             "Request ID ({}) is greater than max request ID ({})",
             request_id, max_request_id
@@ -97,6 +99,11 @@ pub async fn handle(
           m.track_name.clone(),
           context.connection_id, // TODO: what happens there are multiple publishers?
           context.server_config,
+          TrackStatus::Confirmed {
+            publisher_track_alias: m.track_alias,
+            expires: 0,
+            largest_location: None,
+          },
         );
         context
           .track_manager

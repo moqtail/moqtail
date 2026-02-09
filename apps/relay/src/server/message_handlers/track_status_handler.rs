@@ -44,8 +44,10 @@ pub async fn handle(
 
       // A. Check Max Request ID
       {
-        let max_request_id = context.max_request_id.read().await;
-        if request_id >= *max_request_id {
+        let max_request_id = context
+          .max_request_id
+          .load(std::sync::atomic::Ordering::Relaxed);
+        if request_id >= max_request_id {
           warn!("request id ({}) > max ({})", request_id, max_request_id);
           return Err(TerminationCode::TooManyRequests);
         }

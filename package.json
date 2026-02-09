@@ -14,16 +14,16 @@
     "format": "npm --prefix libs/moqtail-ts run format"
   },
   "devDependencies": {
-    "@changesets/changelog-github": "^0.5.1",
-    "@changesets/cli": "^2.29.5",
-    "@commitlint/cli": "^19.8.1",
-    "@commitlint/config-conventional": "^19.8.1",
+    "@changesets/changelog-github": "^0.5.2",
+    "@changesets/cli": "^2.29.8",
+    "@commitlint/cli": "^20.4.1",
+    "@commitlint/config-conventional": "^20.4.1",
     "commitizen": "^4.3.1",
     "cz-conventional-changelog": "^3.3.0",
-    "glob": "^11.0.3",
+    "glob": "^13.0.1",
     "husky": "^9.1.7",
-    "lint-staged": "^16.1.2",
-    "prettier": "^3.5.3",
+    "lint-staged": "^16.2.7",
+    "prettier": "^3.8.1",
     "prompts": "^2.4.2"
   },
   "config": {
@@ -31,5 +31,5 @@
       "path": "./node_modules/cz-conventional-changelog"
     }
   },
-  "packageManager": "npm@11.5.2+sha512.aac1241cfc3f41dc38780d64295c6c6b917a41e24288b33519a7b11adfc5a54a5f881c642d7557215b6c70e01e55655ed7ba666300fd0238bc75fb17478afaf3"
+  "packageManager": "npm@11.9.0"
 }

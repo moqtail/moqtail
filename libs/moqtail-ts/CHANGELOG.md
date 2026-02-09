@@ -1,5 +1,15 @@
 # moqtail-ts
 
+## 0.6.0
+
+### Minor Changes
+
+- [#95](https://github.com/moqtail/moqtail/pull/95) [`5cd1a9e`](https://github.com/moqtail/moqtail/commit/5cd1a9ee3a04cb0a086c0873772d1ed8f85136d1) Thanks [@zafergurel](https://github.com/zafergurel)! - Add datagram support for publishing and subscribing to objects via QUIC datagrams
+
+### Patch Changes
+
+- [#78](https://github.com/moqtail/moqtail/pull/78) [`a32a2fc`](https://github.com/moqtail/moqtail/commit/a32a2fc2b59d2175e458d3cfbbe2cbd04e6579aa) Thanks [@zafergurel](https://github.com/zafergurel)! - revert the change for forward (number) change
+
 ## 0.5.1
 
 ### Patch Changes

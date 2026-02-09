@@ -79,16 +79,16 @@ impl DatagramObject {
     buf.put_vi(self.object_id)?;
     buf.put_u8(self.publisher_priority);
 
-    let mut payload_buf = BytesMut::new();
-
+    // Only write extension headers length if type is 0x01
     if let Some(ext_headers) = &self.extension_headers {
+      let mut payload_buf = BytesMut::new();
       for header in ext_headers {
         payload_buf.extend_from_slice(&header.serialize()?);
       }
+      buf.put_vi(payload_buf.len())?;
+      buf.extend_from_slice(&payload_buf);
     }
 
-    buf.put_vi(payload_buf.len())?;
-    buf.extend_from_slice(&payload_buf);
     buf.extend_from_slice(&self.payload);
     Ok(buf.freeze())
   }

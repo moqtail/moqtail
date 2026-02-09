@@ -3,7 +3,7 @@
   "changelog": ["@changesets/changelog-github", { "repo": "moqtail/moqtail" }],
   "commit": false,
   "fixed": [],
-  "linked": [["moqtail-rs", "relay", "client", "catalog-server"]],
+  "linked": [["moqtail-rs", "relay", "client"]],
   "access": "public",
   "baseBranch": "main",
   "updateInternalDependencies": "patch",

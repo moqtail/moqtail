@@ -65,7 +65,7 @@ impl MessageHandler {
       | ControlMessage::TrackStatusError(_) => {
         track_status_handler::handle(control_stream_handler, msg, context.clone()).await
       }
-      ControlMessage::Fetch(_) | ControlMessage::FetchOk(_) => {
+      ControlMessage::Fetch(_) | ControlMessage::FetchCancel(_) | ControlMessage::FetchOk(_) => {
         fetch_handler::handle(client.clone(), control_stream_handler, msg, context.clone()).await
       }
       ControlMessage::Publish(_) | ControlMessage::PublishDone(_) => {

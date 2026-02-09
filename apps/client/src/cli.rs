@@ -115,4 +115,8 @@ pub struct Cli {
   /// End object ID (fetch only)
   #[arg(long, default_value_t = 3)]
   pub end_object: u64,
+
+  /// Cancel the fetch after receiving N objects (fetch only, 0 = no cancel)
+  #[arg(long, default_value_t = 0)]
+  pub cancel_after: u64,
 }

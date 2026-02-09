@@ -68,16 +68,16 @@ async fn main() -> Result<(), anyhow::Error> {
       .await
     }
     Command::Fetch => {
-      fetcher::run(
-        moq_conn,
-        &cli.namespace,
-        &cli.track_name,
-        cli.start_group,
-        cli.start_object,
-        cli.end_group,
-        cli.end_object,
-      )
-      .await
+      let config = fetcher::FetchConfig {
+        namespace: cli.namespace,
+        track_name: cli.track_name,
+        start_group: cli.start_group,
+        start_object: cli.start_object,
+        end_group: cli.end_group,
+        end_object: cli.end_object,
+        cancel_after: cli.cancel_after,
+      };
+      fetcher::run(moq_conn, config).await
     }
   }
 }

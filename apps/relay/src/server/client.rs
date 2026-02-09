@@ -33,7 +33,7 @@ use std::{
   sync::Arc,
 };
 use tokio::sync::Notify;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, watch};
 use tracing::{debug, error, info, warn};
 use wtransport::{Connection, SendStream, error::StreamWriteError};
 
@@ -67,6 +67,9 @@ pub(crate) struct MOQTClient {
   // this contains the requests made by the client and the corresponding request.
   // The key value is the original request id.
   pub subscribe_requests: Arc<RwLock<BTreeMap<u64, SubscribeRequest>>>,
+
+  // Senders for cancelling active fetch tasks, keyed by request_id.
+  pub fetch_cancel_senders: Arc<RwLock<HashMap<u64, watch::Sender<bool>>>>,
 }
 
 impl MOQTClient {
@@ -92,6 +95,7 @@ impl MOQTClient {
       send_streams: Arc::new(send_streams),
       fetch_requests: Arc::new(RwLock::new(BTreeMap::new())),
       subscribe_requests: Arc::new(RwLock::new(BTreeMap::new())),
+      fetch_cancel_senders: Arc::new(RwLock::new(HashMap::new())),
     }
   }
 

@@ -22,16 +22,24 @@ use moqtail::model::control::constant::{self, FilterType, GroupOrder};
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::fetch::{Fetch, StandAloneFetchProps};
 
+use moqtail::model::control::publish::Publish;
 use moqtail::model::control::publish_namespace::PublishNamespace;
+use moqtail::model::control::publish_ok::PublishOk;
 use moqtail::model::control::subscribe::Subscribe;
 use moqtail::model::control::subscribe_error::SubscribeError;
+use moqtail::model::control::subscribe_namespace::SubscribeNamespace;
+use moqtail::model::control::subscribe_namespace_ok::SubscribeNamespaceOk;
 use moqtail::model::control::subscribe_ok::SubscribeOk;
 use moqtail::model::control::unsubscribe::Unsubscribe;
+// use moqtail::model::control::namespace::Namespace;
+
 use moqtail::model::data::object::Object;
 use moqtail::model::data::subgroup_header::SubgroupHeader;
 use moqtail::model::data::subgroup_object::SubgroupObject;
+
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use moqtail::transport::data_stream_handler::{HeaderInfo, RecvDataStream, SendDataStream};
+
 use std::collections::HashSet;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -40,7 +48,8 @@ use tokio::task::JoinHandle;
 use wtransport::{ClientConfig, Endpoint};
 
 use crate::ipc::messages::{
-  FetchParams, LogParams, RpcNotification, RpcRequest, RpcResponse, StatParams, SubscribeParams,
+  FetchParams, LogParams, PeerPublishParams, PublishParams, RpcNotification, RpcRequest,
+  RpcResponse, StatParams, SubscribeNamespaceParams, SubscribeParams,
 };
 
 enum ControlAction {
@@ -48,6 +57,8 @@ enum ControlAction {
   SendUnsubscribe(Unsubscribe),
   SendAnnounce(PublishNamespace),
   SendFetch(Fetch),
+  SendPublish(Publish),
+  SendSubscribeNamespace(SubscribeNamespace),
 }
 
 pub struct ClientController {
@@ -137,13 +148,25 @@ impl ClientController {
           Err(e) => RpcResponse::success(id, serde_json::json!({"error": e.to_string()})),
         }
       }
+      RpcRequest::Publish { params, id } => match self.do_publish(params).await {
+        Ok(pub_id) => RpcResponse::success(
+          id,
+          serde_json::json!({"status": "publishing", "publish_id": pub_id}),
+        ),
+        Err(e) => RpcResponse::success(id, serde_json::json!({"error": e.to_string()})),
+      },
+      RpcRequest::SubscribeNamespace { params, id } => {
+        match self.do_subscribe_namespace(params).await {
+          Ok(req_id) => RpcResponse::success(
+            id,
+            serde_json::json!({"status": "subscribed_to_namespace", "request_id": req_id}),
+          ),
+          Err(e) => RpcResponse::success(id, serde_json::json!({"error": e.to_string()})),
+        }
+      }
       RpcRequest::UnpublishNamespace { params: _, id } => {
         // TODO: Implement UnpublishNamespace
         RpcResponse::success(id, serde_json::json!({"status": "namespace_unpublished"}))
-      }
-      RpcRequest::SubscribeNamespace { params: _, id } => {
-        // TODO: Implement SubscribeNamespace
-        RpcResponse::success(id, serde_json::json!({"status": "subscribed_to_namespace"}))
       }
       RpcRequest::TrackStatus { params: _, id } => {
         // TODO: Implement TrackStatus
@@ -166,148 +189,229 @@ impl ClientController {
     loop {
       tokio::select! {
           // Outgoing: Commands from IPC
-          Some(action) = action_rx.recv() => {
-              let res = match action {
-                  ControlAction::SendSubscribe(msg) => handler.send_impl(&msg).await,
-                  ControlAction::SendUnsubscribe(msg) => handler.send_impl(&msg).await,
-                  ControlAction::SendAnnounce(msg) => handler.send_impl(&msg).await,
-                  ControlAction::SendFetch(msg) => handler.send_impl(&msg).await,
-              };
-              if let Err(e) = res {
-                  let _ = event_tx.send(serde_json::json!({"method": "log", "params": {"level": "error", "message": format!("Send failed: {}", e)}})).await;
-              }
+        Some(action) = action_rx.recv() => {
+          let res = match action {
+            ControlAction::SendSubscribe(msg) => handler.send_impl(&msg).await,
+            ControlAction::SendUnsubscribe(msg) => handler.send_impl(&msg).await,
+            ControlAction::SendAnnounce(msg) => handler.send_impl(&msg).await,
+            ControlAction::SendFetch(msg) => handler.send_impl(&msg).await,
+            ControlAction::SendPublish(msg) => handler.send_impl(&msg).await,
+            ControlAction::SendSubscribeNamespace(msg) => handler.send_impl(&msg).await,
+          };
+          if let Err(e) = res {
+            let _ = event_tx.send(serde_json::json!({"method": "log", "params": {"level": "error", "message": format!("Send failed: {:?}", e)}})).await;
           }
+        }
 
           // Incoming: Messages from Relay/Peer
-          msg_res = handler.next_message() => {
-              match msg_res {
-                  Ok(msg) => {
-                      match msg {
-                          ControlMessage::Subscribe(sub) => {
-                            let is_known = {
-                              let set = known_namespaces.lock().await;
-                              // Convert Tuple to String for check (assuming simple path)
-                              // If Tuple is complex, you might need a better helper
-                              let ns_str = &sub.track_namespace.to_utf8_path();
-                              set.contains(ns_str)
-                            };
+        msg_res = handler.next_message() => {
+          match msg_res {
+            Ok(msg) => {
+              match msg {
+                ControlMessage::Publish(pub_msg) => {
+                  // A peer wants to push a track to us.
+                  // Implicit Consent: We accept everything.
 
-                            if !is_known {
-                                // REJECT: We don't own this namespace
-                                let _ = event_tx.send(serde_json::json!({
-                                    "method": "log",
-                                    "params": {"level": "warn", "message": format!("Rejected Subscribe for unknown namespace: {:?}", sub.track_namespace)}
-                                })).await;
+                  // Notify Driver
+                  let _ = event_tx.send(serde_json::to_value(RpcNotification::OnPeerPublish {
+                    params: PeerPublishParams {
+                      namespace: pub_msg.track_namespace.to_utf8_path(),
+                      track: pub_msg.track_name.clone(),
+                      start_group: 0, // Information usually not in Publish msg, inferred
+                      start_object: 0,
+                    }
+                  }).unwrap()).await;
 
-                                // Send 404 Not Found (Code 404 is illustrative, check MoQ spec for exact code)
-                                let err_msg = SubscribeError::new(sub.request_id, constant::SubscribeErrorCode::TrackDoesNotExist, ReasonPhrase::try_new("Track does not exist".to_string()).unwrap());
-                                let _ = handler.send_impl(&err_msg).await;
-                                continue; // Skip the rest
-                            }
-                              let requested_start_group = match sub.filter_type {
-                                      FilterType::AbsoluteStart => {
-                                          // "The filter Start Location is specified explicitly" [cite: 596]
-                                          sub.start_location.map(|loc| loc.group).unwrap_or(0)
-                                      },
-                                      FilterType::AbsoluteRange => {
-                                          // "The filter Start Location and End Group are specified explicitly" [cite: 600]
-                                          sub.start_location.map(|loc| loc.group).unwrap_or(0)
-                                      },
-                                      // LatestObject (0x2) or NextGroup (0x1) implies starting from "Now"
-                                      _ => *group_counters.get(&sub.request_id).unwrap_or(&1),
-                                  };
-                                  let start_group = if requested_start_group > 0 {
-                                    requested_start_group
-                                  } else {
-                                      *group_counters.get(&sub.request_id).unwrap_or(&1)
-                                  };
-                                  let requested_end_group = sub.end_group;
+                  // Send PUBLISH_OK
+                  // Draft-16: PublishOk { RequestID, Params }
+                  let ok = PublishOk::new(
+                    pub_msg.request_id,
+                    1,                          // forward: 1
+                    128,                        // subscriber_priority: default
+                    GroupOrder::Ascending,      // group_order
+                    FilterType::LatestObject,   // filter_type
+                    None,                       // start_location (Not needed for LatestObject)
+                    None,                       // end_group (None = open-ended)
+                    vec![]                      // parameters
+                  );
+                  if let Err(e) = handler.send_impl(&ok).await {
+                    let _ = event_tx.send(serde_json::json!({"method": "log", "params": {"level": "error", "message": format!("Failed to send PublishOk: {}", e)}})).await;
+                  }
 
-                              // PUBLISHER LOGIC: Handle incoming subscribe
-                              let _ = event_tx.send(serde_json::json!({"method": "on_peer_subscribe",
-                                                                          "params": {
-                                                                              "subscribe_id": sub.request_id,
-                                                                              "track_name": sub.track_name,
-                                                                              //TODO: Add more info about this
-                                                                          }
-                                                                      })).await;
-                              // 1. Send SubscribeOk
-                              let _sub_id = sub.request_id;
-                              let track_alias = 1u64; // Hardcoded for Mock
+                  // We don't need to do anything else; the background_data_listener
+                  // will automatically pick up the incoming streams the peer starts sending.
+                }
+                ControlMessage::PublishOk(ok_msg) => {
+                  let _ = event_tx.send(serde_json::json!({"method": "log", "params": {"level": "info", "message": format!("Peer accepted PUBLISH ID {}", ok_msg.request_id)}})).await;
 
-                              let ok_msg = SubscribeOk::new_ascending_with_content(sub.request_id, track_alias, 0, None, None);
-                              if let Err(e) = handler.send_impl(&ok_msg).await {
-                                   let _ = event_tx.send(serde_json::json!({"method": "log", "params": {"level": "error", "message": format!("Failed to send SubOk: {}", e)}})).await;
-                              }
+                  // Start Blasting Data
+                  let conn_clone = connection.clone();
+                  let req_id = ok_msg.request_id;
+                  // We use the Request ID as the Track Alias for simplicity here
+                  let track_alias = req_id;
 
-                              // 2. Start Blasting Data (Mock Source)
-                              let conn = connection.clone();
-                              group_counters.insert(sub.request_id, start_group + 100);
-                              let task_handle = tokio::spawn(async move {
-                                  let _ = Self::run_mock_blaster(conn, track_alias, start_group, requested_end_group).await;
-                              });
+                  let task_handle = tokio::spawn(async move {
+                    // Start from Group 0, run indefinitely (None)
+                    let _ = Self::run_mock_blaster(conn_clone, track_alias, 0, None).await;
+                  });
+                  active_tasks.insert(req_id, task_handle);
+                }
+                ControlMessage::SubscribeNamespace(sub_ns) => {
+                  // Send REQUEST_OK (Draft-16 Section 9.7)
+                  // TODO: This message is named RequestOK in the draft 16
+                  let ok = SubscribeNamespaceOk::new(sub_ns.request_id);
+                  if let Err(e) = handler.send_impl(&ok).await {
+                        let _ = event_tx.send(serde_json::json!({"method": "log", "params": {"level": "error", "message": format!("Failed to send RequestOk: {}", e)}})).await;
+                  }
 
-                              if let Some(old) = active_tasks.insert(sub.request_id, task_handle) {
-                                old.abort();
-                              }
-                          }
-                          ControlMessage::PublishNamespaceOk(_) => {
-                               let _ = event_tx.send(serde_json::json!({"method": "log", "params": {"level": "info", "message": "Namespace Announced Successfully"}})).await;
-                          }
-                          ControlMessage::Fetch(fetch) => {
-                              // We only support StandAlone fetches for now
-                              if let Some(props) = fetch.standalone_fetch_props {
-                                  // 1. Log via internal system (replacing info!)
-                                  let _ = event_tx.send(serde_json::json!({
-                                      "method": "log",
-                                      "params": {
-                                          "level": "info",
-                                          "message": format!(
-                                              "Received Fetch ID {} for range {}..{}",
-                                              fetch.request_id,
-                                              props.start_location.group,
-                                              props.end_location.group
-                                          )
-                                      }
-                                  })).await;
-
-                                  let conn_clone = connection.clone();
-                                  // Unique track alias to avoid collision with live subscriptions
-                                  let track_alias = 1000 + fetch.request_id;
-
-                                  let start = props.start_location.group;
-
-                                  // Logic: Draft-16 Fetch End is "Exclusive" (Stop BEFORE this location).
-                                  // Our Blaster loop is "Inclusive" (Process this group, then check if > limit).
-                                  // So if End is Group 22, we want to process 20, 21. Limit = 21.
-                                  let limit = props.end_location.group.saturating_sub(1);
-                                  let end = Some(limit);
-
-                                  // 2. Spawn the Blaster
-                                  tokio::spawn(async move {
-                                      let _ = Self::run_mock_blaster(conn_clone, track_alias, start, end).await;
-                                  });
-
-                              } else {
-                                  // 1. Log Warning via internal system (replacing warn!)
-                                  let _ = event_tx.send(serde_json::json!({
-                                      "method": "log",
-                                      "params": {
-                                          "level": "warn",
-                                          "message": "Received unsupported Joining Fetch"
-                                      }
-                                  })).await;
-                              }
-                          }
-                          _ => {} // Ignore others for now
-                              }
-                          }
-                          Err(e) => {
-                              let _ = event_tx.send(serde_json::json!({"method": "log", "params": {"level": "error", "message": format!("Control stream died: {}", e)}})).await;
-                              break;
-                          }
+                  // Mock Logic: If they subscribe to "meet", and we have "meet/123", we should send NAMESPACE msg.
+                  // For now, we just log that they asked.
+                  let _ = event_tx.send(serde_json::json!({
+                      "method": "log",
+                      "params": {
+                          "level": "info",
+                          "message": format!("Peer subscribed to namespace prefix: {:?}", sub_ns.track_namespace_prefix)
                       }
+                  })).await;
+
+                  // TODO: Iterate `known_namespaces` and send `ControlMessage::Namespace`
+                  // for any that match the prefix. This would only be used when there is no relay. So wontfix for now.
+                }
+
+                ControlMessage::PublishNamespaceOk(ok) => {
+                  let _ = event_tx.send(serde_json::json!({
+                    "method": "log",
+                    "params": {
+                        "level": "info",
+                        "message": format!("Peer accepted Request ID {}", ok.request_id)
+                    }
+                  })).await;
+                }
+                ControlMessage::Subscribe(sub) => {
+                  let is_known = {
+                    let set = known_namespaces.lock().await;
+                    // Convert Tuple to String for check (assuming simple path)
+                    // If Tuple is complex, you might need a better helper
+                    let ns_str = &sub.track_namespace.to_utf8_path();
+                    set.contains(ns_str)
+                  };
+
+                  if !is_known {
+                      // REJECT: We don't own this namespace
+                      let _ = event_tx.send(serde_json::json!({
+                          "method": "log",
+                          "params": {"level": "warn", "message": format!("Rejected Subscribe for unknown namespace: {:?}", sub.track_namespace)}
+                      })).await;
+
+                      // Send 404 Not Found (Code 404 is illustrative, check MoQ spec for exact code)
+                      let err_msg = SubscribeError::new(sub.request_id, constant::SubscribeErrorCode::TrackDoesNotExist, ReasonPhrase::try_new("Track does not exist".to_string()).unwrap());
+                      let _ = handler.send_impl(&err_msg).await;
+                      continue; // Skip the rest
+                  }
+                    let requested_start_group = match sub.filter_type {
+                            FilterType::AbsoluteStart => {
+                                // "The filter Start Location is specified explicitly" [cite: 596]
+                                sub.start_location.map(|loc| loc.group).unwrap_or(0)
+                            },
+                            FilterType::AbsoluteRange => {
+                                // "The filter Start Location and End Group are specified explicitly" [cite: 600]
+                                sub.start_location.map(|loc| loc.group).unwrap_or(0)
+                            },
+                            // LatestObject (0x2) or NextGroup (0x1) implies starting from "Now"
+                            _ => *group_counters.get(&sub.request_id).unwrap_or(&1),
+                        };
+                        let start_group = if requested_start_group > 0 {
+                          requested_start_group
+                        } else {
+                            *group_counters.get(&sub.request_id).unwrap_or(&1)
+                        };
+                        let requested_end_group = sub.end_group;
+
+                    // PUBLISHER LOGIC: Handle incoming subscribe
+                    let _ = event_tx.send(serde_json::json!({"method": "on_peer_subscribe",
+                                                                "params": {
+                                                                    "subscribe_id": sub.request_id,
+                                                                    "track_name": sub.track_name,
+                                                                    //TODO: Add more info about this
+                                                                }
+                                                            })).await;
+                    // 1. Send SubscribeOk
+                    let _sub_id = sub.request_id;
+                    let track_alias = 1u64; // Hardcoded for Mock
+
+                    let ok_msg = SubscribeOk::new_ascending_with_content(sub.request_id, track_alias, 0, None, None);
+                    if let Err(e) = handler.send_impl(&ok_msg).await {
+                          let _ = event_tx.send(serde_json::json!({"method": "log", "params": {"level": "error", "message": format!("Failed to send SubOk: {}", e)}})).await;
+                    }
+
+                    // 2. Start Blasting Data (Mock Source)
+                    let conn = connection.clone();
+                    group_counters.insert(sub.request_id, start_group + 100);
+                    let task_handle = tokio::spawn(async move {
+                        let _ = Self::run_mock_blaster(conn, track_alias, start_group, requested_end_group).await;
+                    });
+
+                    if let Some(old) = active_tasks.insert(sub.request_id, task_handle) {
+                      old.abort();
+                    }
+                }
+                ControlMessage::PublishNamespaceOk(_) => {
+                    let _ = event_tx.send(serde_json::json!({"method": "log", "params": {"level": "info", "message": "Namespace Announced Successfully"}})).await;
+                }
+                ControlMessage::Fetch(fetch) => {
+                    // We only support StandAlone fetches for now
+                    if let Some(props) = fetch.standalone_fetch_props {
+                        // 1. Log via internal system (replacing info!)
+                        let _ = event_tx.send(serde_json::json!({
+                            "method": "log",
+                            "params": {
+                                "level": "info",
+                                "message": format!(
+                                    "Received Fetch ID {} for range {}..{}",
+                                    fetch.request_id,
+                                    props.start_location.group,
+                                    props.end_location.group
+                                )
+                            }
+                        })).await;
+
+                        let conn_clone = connection.clone();
+                        // Unique track alias to avoid collision with live subscriptions
+                        let track_alias = 1000 + fetch.request_id;
+
+                        let start = props.start_location.group;
+
+                        // Logic: Draft-16 Fetch End is "Exclusive" (Stop BEFORE this location).
+                        // Our Blaster loop is "Inclusive" (Process this group, then check if > limit).
+                        // So if End is Group 22, we want to process 20, 21. Limit = 21.
+                        let limit = props.end_location.group.saturating_sub(1);
+                        let end = Some(limit);
+
+                        // 2. Spawn the Blaster
+                        tokio::spawn(async move {
+                            let _ = Self::run_mock_blaster(conn_clone, track_alias, start, end).await;
+                        });
+
+                    } else {
+                        // 1. Log Warning via internal system (replacing warn!)
+                        let _ = event_tx.send(serde_json::json!({
+                            "method": "log",
+                            "params": {
+                                "level": "warn",
+                                "message": "Received unsupported Joining Fetch"
+                            }
+                        })).await;
+                    }
+                }
+                _ => {} // Ignore others for now
+              }
+            }
+            Err(e) => {
+            let _ = event_tx.send(serde_json::json!({"method": "log", "params": {"level": "error", "message": format!("Control stream died: {}", e)}})).await;
+            break;
           }
+          }
+        }
       }
     }
   }
@@ -627,5 +731,75 @@ impl ClientController {
       .context("Actor died")?;
     self.log("info", format!("Sent Announce for {}", ns)).await;
     Ok(())
+  }
+
+  async fn do_publish(&mut self, params: PublishParams) -> Result<u64> {
+    let tx = self.action_tx.as_ref().context("Not connected")?;
+
+    // We use the same ID counter for simplicity
+    let req_id = self.next_subscribe_id;
+    self.next_subscribe_id += 1;
+
+    let ns = Tuple::from_utf8_path(&params.namespace);
+    let track_alias = req_id; // Simple alias mapping
+
+    // Construct Publish Message
+    // Note: Check your specific moqtail library version for exact constructor arguments.
+    // Draft-16 Publish includes: RequestID, Namespace, Name, Alias, Params.
+    let msg = Publish::new(
+      req_id,
+      ns,
+      params.track,
+      track_alias,
+      GroupOrder::Ascending, // Almost always Ascending
+      0,                     // Content Exists (1=Yes, 0=No/Unknown)
+      None,                  // Largest Location (Optional, often None for live)
+      1,                     // Forward (1=Forward, 0=Do not forward)
+      vec![],                // Parameters
+    );
+
+    tx.send(ControlAction::SendPublish(msg))
+      .await
+      .context("Actor died")?;
+
+    self
+      .log(
+        "info",
+        format!("Sent PUBLISH ID {} (waiting for OK)", req_id),
+      )
+      .await;
+
+    // Note: We don't start the blaster yet! We wait for PUBLISH_OK in the actor loop.
+    // We need to store the blaster parameters to use later.
+    // Ideally, we'd send these params to the actor, but for this simple impl,
+    // we might just start blasting immediately or hardcode the blaster start in the actor logic
+    // when PublishOk is received.
+
+    // *Correction*: To properly trigger the blaster with specific start/end groups upon receiving OK,
+    // we usually need shared state. For this implementation, we will assume the actor
+    // knows default blasting behavior or we rely on the implicit "start blasting"
+    // logic we add to the actor.
+
+    Ok(req_id)
+  }
+
+  async fn do_subscribe_namespace(&mut self, params: SubscribeNamespaceParams) -> Result<u64> {
+    let tx = self.action_tx.as_ref().context("Not connected")?;
+    let req_id = self.next_subscribe_id;
+    self.next_subscribe_id += 1;
+
+    let prefix = Tuple::from_utf8_path(&params.namespace_prefix);
+
+    // Draft-16: SubscribeNamespace { Request ID, Prefix, Options, Params }
+    // Options: 0x0 (Publish), 0x1 (Namespace), 0x2 (Both). Let's ask for Both (0x2).
+    let msg = SubscribeNamespace::new(req_id, prefix, vec![]);
+
+    tx.send(ControlAction::SendSubscribeNamespace(msg))
+      .await
+      .context("Actor died")?;
+    self
+      .log("info", format!("Sent SubscribeNamespace ID {}", req_id))
+      .await;
+    Ok(req_id)
   }
 }

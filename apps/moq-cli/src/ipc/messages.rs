@@ -23,6 +23,8 @@ pub enum RpcRequest {
   Disconnect { id: u64 },
   /// Request to receive a track (Draft-16 Section 9.9)
   Subscribe { params: SubscribeParams, id: u64 },
+  /// This acts as a Publisher-initiated subscription.
+  Publish { params: PublishParams, id: u64 },
   /// Update parameters of an existing subscription (Draft-16 Section 9.11)
   UpdateSubscription {
     params: UpdateSubscriptionParams,
@@ -86,6 +88,17 @@ pub struct SubscribeParams {
 
   /// Auth token string (Section 9.2.2.1)
   pub authorization_token: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PublishParams {
+  pub namespace: String,
+  pub track: String,
+  pub start_group: u64,
+  pub start_object: u64,
+  pub end_group: Option<u64>, // Optional limit for the blaster
+  pub priority: Option<u8>,
+  pub authorizaton_token: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -174,6 +187,8 @@ pub enum RpcNotification {
   OnPeerUnsubscribe { params: PeerUnsubscribeParams },
   OnPeerPublishNamespace { params: PeerPublishNamespaceParams },
   OnGoAway { params: GoAwayParams },
+  OnPeerPublish { params: PeerPublishParams },
+  OnPeerNamespace { params: PeerNamespaceParams },
 }
 
 #[derive(Debug, Serialize)]
@@ -209,4 +224,18 @@ pub struct PeerPublishNamespaceParams {
 #[derive(Debug, Serialize)]
 pub struct GoAwayParams {
   pub new_session_uri: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PeerPublishParams {
+  pub namespace: String,
+  pub track: String,
+  pub start_group: u64,
+  pub start_object: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PeerNamespaceParams {
+  pub prefix: String,
+  pub matched_namespace: String,
 }

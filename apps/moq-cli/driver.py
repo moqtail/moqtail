@@ -80,6 +80,13 @@ class MoqClient:
         
         # 2. Notification / Event
         elif "method" in msg:
+            if msg["method"] == "log":
+                # Print "Rust Log" messages nicely
+                params = msg.get("params", {})
+                print(f"[CLIENT LOG] {params.get('level', 'INFO').upper()}: {params.get('message')}")
+            else:
+                # Print other events (like OnPeerPublish)
+                print(f"[CLIENT EVENT] {msg['method']} {msg.get('params', '')}")
             self.notifications.append(msg)
             self.events_queue.put(msg)
 
@@ -169,3 +176,24 @@ class MoqClient:
         }
         params.update(kwargs)
         return self.send_command("fetch", params)
+    
+    def publish(self, namespace, track, start_group=0, start_object=0, **kwargs):
+        """
+        Push a track to a peer (Publisher-initiated).
+        """
+        params = {
+            "namespace": namespace,
+            "track": track,
+            "start_group": start_group,
+            "start_object": start_object
+        }
+        params.update(kwargs)
+        return self.send_command("publish", params)
+
+    def subscribe_namespace(self, namespace_prefix, **kwargs):
+        """
+        Subscribe to a namespace prefix to receive updates (NAMESPACE messages).
+        """
+        params = {"namespace_prefix": namespace_prefix}
+        params.update(kwargs)
+        return self.send_command("subscribe_namespace", params)

@@ -26,6 +26,7 @@ mod max_request_id_handler;
 mod publish_handler;
 mod publish_namespace_handler;
 mod subscribe_handler;
+mod subscribe_namespace_handler;
 mod track_status_handler;
 use super::utils;
 
@@ -65,6 +66,15 @@ impl MessageHandler {
     let handling_result = match &msg {
       ControlMessage::PublishNamespace(_) => {
         publish_namespace_handler::handle(
+          client.clone(),
+          control_stream_handler,
+          msg,
+          context.clone(),
+        )
+        .await
+      }
+      ControlMessage::SubscribeNamespace(_) => {
+        subscribe_namespace_handler::handle(
           client.clone(),
           control_stream_handler,
           msg,

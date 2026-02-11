@@ -52,6 +52,7 @@ use crate::ipc::messages::{
   RpcResponse, StatParams, SubscribeNamespaceParams, SubscribeParams,
 };
 
+#[allow(clippy::enum_variant_names)]
 enum ControlAction {
   SendSubscribe(Subscribe),
   SendUnsubscribe(Unsubscribe),
@@ -355,9 +356,6 @@ impl ClientController {
                       old.abort();
                     }
                 }
-                ControlMessage::PublishNamespaceOk(_) => {
-                    let _ = event_tx.send(serde_json::json!({"method": "log", "params": {"level": "info", "message": "Namespace Announced Successfully"}})).await;
-                }
                 ControlMessage::Fetch(fetch) => {
                     // We only support StandAlone fetches for now
                     if let Some(props) = fetch.standalone_fetch_props {
@@ -530,7 +528,7 @@ impl ClientController {
         let object = Object::try_from_subgroup(sub_obj, track_alias, group_id, Some(group_id), 1)?;
 
         // Send and handle failure (e.g. if subscriber disconnected mid-stream)
-        if let Err(_) = stream_handler.send_object(&object, prev_id).await {
+        if stream_handler.send_object(&object, prev_id).await.is_err() {
           return Ok(()); // Stop entirely if send fails
         }
 

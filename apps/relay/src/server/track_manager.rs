@@ -172,11 +172,6 @@ impl TrackManager {
     interested_clients
   }
 
-  pub async fn get_all_active_namespaces(&self) -> Vec<FullTrackName> {
-    let tracks = self.tracks.read().await;
-    tracks.keys().cloned().collect()
-  }
-
   pub async fn add_announcement(&self, namespace: Tuple, publisher: Arc<MOQTClient>) {
     let mut announcements = self.announcements.write().await;
     announcements.insert(namespace.clone(), publisher);

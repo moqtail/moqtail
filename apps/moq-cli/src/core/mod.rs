@@ -13,4 +13,3 @@
 // limitations under the License.
 
 pub mod controller;
-pub mod media; // We will need this later for the Data Plane

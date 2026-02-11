@@ -18,6 +18,7 @@ use crate::server::config::AppConfig;
 use crate::server::object_logger::ObjectLogger;
 use crate::server::stream_id::StreamId;
 use crate::server::track::TrackEvent;
+use crate::server::track_cache::CacheConsumeEvent;
 use crate::server::track_cache::TrackCache;
 use crate::server::utils;
 use anyhow::Result;
@@ -34,6 +35,7 @@ use moqtail::model::control::subscribe::Subscribe;
 use moqtail::model::control::subscribe_update::SubscribeUpdate;
 use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::model::data::object::Object;
+use moqtail::model::data::subgroup_header::SubgroupHeader;
 use moqtail::transport::data_stream_handler::HeaderInfo;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -176,23 +178,125 @@ impl Subscription {
       subscribe_message,
       subscriber,
       event_rx,
-      cache,
+      cache.clone(),
       client_connection_id,
       log_folder,
       config,
     );
 
-    let alias = track_alias.load(Ordering::Relaxed);
+    let track_alias = track_alias.load(Ordering::Relaxed);
+
     info!(
       "Created new Subscription instance for subscriber: {} track: {} subscription state: {:?}",
-      client_connection_id, alias, sub.subscription_state
+      client_connection_id, track_alias, sub.subscription_state
     );
 
     let mut instance = sub.clone();
+
     tokio::spawn(async move {
       loop {
-        if instance.finished.load(Ordering::Relaxed) {
+        if instance.is_finished().await {
           break;
+        }
+
+        // Handle joining state
+        {
+          let state = instance.subscription_state.read().await;
+          let start_location = state.start_location.clone();
+          let last_received_object_location_opt = state.last_received_object_location.clone();
+          let is_joining = state.is_joining;
+          drop(state);
+          if is_joining && start_location.is_some() {
+            let start_location = start_location.unwrap_or_default();
+            if let Some(last_received_object_location) = last_received_object_location_opt {
+              info!(
+                "Joining state - subscriber: {} track: {} from location: {:?} to last received location: {:?}",
+                instance.client_connection_id,
+                track_alias,
+                start_location,
+                last_received_object_location
+              );
+              if last_received_object_location > start_location {
+                let mut object_receiver = cache
+                  .read_objects(start_location, last_received_object_location, false)
+                  .await;
+
+                let mut last_group: u64 = u64::MAX;
+                let mut last_stream_id: Option<StreamId> = None;
+
+                loop {
+                  match object_receiver.recv().await {
+                    Some(event) => match event {
+                      CacheConsumeEvent::NoObject => {
+                        // there is no object found
+                        break;
+                      }
+                      CacheConsumeEvent::Object(object) => {
+                        let (header_info, stream_id) = if last_group == u64::MAX
+                          || object.group_id > last_group
+                        {
+                          // create a subgroup header and send a track event
+
+                          // TODO: check this. If is_some returns true, we may not need
+                          // to check the length.
+                          let has_extensions = object.extension_headers.as_ref().is_some();
+
+                          // create a fake subgroup header using the object attributes
+                          // TODO: It think contains_end_of_group should be checked by looking at
+                          // the last object. Need to look into the draft.
+                          let subgroup_header = HeaderInfo::Subgroup {
+                            header: SubgroupHeader::new_with_explicit_id(
+                              track_alias,
+                              object.group_id,
+                              object.subgroup_id,
+                              object.publisher_priority,
+                              has_extensions,
+                              false,
+                            ),
+                          };
+                          info!(
+                            "FROM CACHE: Joining state - subscriber: {} track: {} sending subgroup header: {:?}",
+                            instance.client_connection_id, track_alias, subgroup_header
+                          );
+                          last_group = object.group_id;
+                          let stream_id = instance.get_stream_id(&subgroup_header);
+                          last_stream_id = Some(stream_id);
+
+                          (Some(subgroup_header), last_stream_id.clone())
+                        } else {
+                          (None, last_stream_id.clone())
+                        };
+
+                        let the_object = Object::try_from_fetch(object, track_alias).unwrap();
+
+                        let track_event = TrackEvent::SubgroupObject {
+                          stream_id: stream_id.unwrap(),
+                          object: the_object,
+                          header_info,
+                        };
+                        info!(
+                          "Joining state - subscriber: {} track: {} sending object location: {:?}",
+                          instance.client_connection_id, track_alias, track_event
+                        );
+                        instance.handle_track_event(track_event).await;
+                      }
+                      CacheConsumeEvent::EndLocation(_) => {}
+                    },
+                    None => {
+                      warn!("handle_fetch_messages | No object.");
+                      break;
+                    }
+                  }
+                }
+              }
+            }
+            let mut state = instance.subscription_state.write().await;
+            state.is_joining = false;
+            info!(
+              "Finished joining state for subscriber: {} track: {}",
+              instance.client_connection_id, track_alias
+            );
+          }
         }
 
         tokio::select! {
@@ -403,6 +507,7 @@ impl Subscription {
           if let Some(current_subscription) = current_subscription_opt
             && let Some(current_subscription) = current_subscription.upgrade()
           {
+            let current_subscription = current_subscription.read().await;
             let current_state = current_subscription.subscription_state.read().await;
             let last_sent_max_location = current_state.last_sent_max_location.clone();
 
@@ -428,6 +533,12 @@ impl Subscription {
           let full_track_name = self.full_track_name.clone();
 
           // the following method also sets the current active track's status to None if any
+          info!(
+            "check_switch_context: Setting track to Current for subscriber: {} track: {} object location group: {}",
+            self.client_connection_id,
+            self.track_alias(),
+            object_location.group
+          );
           subscriber
             .switch_context
             .add_or_update_switch_item(full_track_name.clone(), SwitchStatus::Current)

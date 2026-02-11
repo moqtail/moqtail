@@ -163,7 +163,7 @@ impl Track {
     subscriber: Arc<MOQTClient>,
     subscribe_message: Subscribe,
     is_switch: bool,
-  ) -> Result<(), anyhow::Error> {
+  ) -> Result<Arc<RwLock<Subscription>>, anyhow::Error> {
     // Check if subscription already exists
 
     if let Some(sub_guard) = self
@@ -190,10 +190,16 @@ impl Track {
       ));
     }
 
-    self
+    let subscription = self
       .subscription_manager
       .add_subscription(subscriber, subscribe_message, self.cache.clone())
-      .await
+      .await?;
+
+    if is_switch {
+      subscription.read().await.notify_switch().await;
+    }
+
+    Ok(subscription)
   }
 
   // return the subscription for the client

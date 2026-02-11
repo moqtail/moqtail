@@ -93,7 +93,7 @@ impl SubscriptionManager {
     subscriber: Arc<MOQTClient>,
     subscribe_message: Subscribe,
     cache: super::track_cache::TrackCache,
-  ) -> Result<(), anyhow::Error> {
+  ) -> Result<Arc<RwLock<Subscription>>, anyhow::Error> {
     let connection_id = { subscriber.connection_id };
     let alias = self.track_alias.load(Ordering::Relaxed);
 
@@ -125,14 +125,16 @@ impl SubscriptionManager {
       );
       return Err(anyhow::anyhow!("Subscriber already exists"));
     }
-    subscriptions.insert(connection_id, Arc::new(RwLock::new(subscription)));
+
+    let subscription = Arc::new(RwLock::new(subscription));
+    subscriptions.insert(connection_id, subscription.clone());
 
     // Store the sender for this subscriber in the appropriate partition
     let partition_index = self.get_subscriber_partition_index(connection_id);
     let mut senders = self.subscriber_senders[partition_index].write().await;
     senders.insert(connection_id, event_tx);
 
-    Ok(())
+    Ok(subscription)
   }
 
   // return the subscription for the client

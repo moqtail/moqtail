@@ -29,6 +29,27 @@ use moqtail::transport::data_stream_handler::SubscribeRequest;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
+async fn add_subscription(
+  subscribe: Subscribe,
+  track: &Track,
+  subscriber: Arc<MOQTClient>,
+  is_switch: bool,
+) -> bool {
+  match track
+    .add_subscription(subscriber.clone(), subscribe, is_switch)
+    .await
+  {
+    Ok(subscription) => {
+      subscriber
+        .subscriptions
+        .add_subscription(track.full_track_name.clone(), Arc::downgrade(&subscription))
+        .await;
+      true
+    }
+    Err(_) => false, // error already logged in add_subscription and it means that subscription already exists
+  }
+}
+
 async fn handle_subscribe_message(
   client: Arc<MOQTClient>,
   control_stream_handler: &mut ControlStreamHandler,
@@ -128,20 +149,9 @@ async fn handle_subscribe_message(
     })
     .await;
 
-  // Add subscription to the track regardless of creator or not
-  {
-    let track = track_arc.read().await;
-    let res = track
-      .add_subscription(client.clone(), sub.clone(), is_switch)
-      .await;
-    if let Err(e) = res {
-      error!(
-        "error adding subscription: subscriber: {} error: {:?}",
-        &client.connection_id, e
-      );
-      return Err(TerminationCode::InternalError);
-    }
-  }
+  let track = track_arc.read().await;
+
+  add_subscription(sub.clone(), &track, client.clone(), is_switch).await;
 
   let res: Result<(), TerminationCode> = if is_creator {
     // First subscriber for this track: forward Subscribe to publisher
@@ -596,11 +606,16 @@ async fn handle_switch_message(
       );
       return Err(TerminationCode::ProtocolViolation);
     }
-    let sub = sub.upgrade().unwrap();
 
-    if !sub.is_active().await {
+    let mut is_active = false;
+    if let Some(sub) = sub.upgrade() {
+      let sub = sub.read().await;
+      is_active = sub.is_active().await;
+    }
+
+    if !is_active {
       warn!(
-        "subscription is not active for track: {:?} subscriber: {}, not switching",
+        "subscription is not active for track: {:?} subscriber: {}",
         switch_from_track.full_track_name, context.connection_id
       );
       return Err(TerminationCode::ProtocolViolation);
@@ -638,17 +653,18 @@ async fn handle_switch_message(
     Err(e)
   } else {
     info!("switch subscribe message handled successfully");
+
     // update the switch context
     client
       .switch_context
       .add_or_update_switch_item(new_full_track_name, SwitchStatus::Next)
       .await;
+
+    let switch_from_track_name = switch_from_track.full_track_name.clone();
+
     client
       .switch_context
-      .add_or_update_switch_item(
-        switch_from_track.full_track_name.clone(),
-        SwitchStatus::Current,
-      )
+      .add_or_update_switch_item(switch_from_track_name, SwitchStatus::Current)
       .await;
 
     Ok(())

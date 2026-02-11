@@ -177,7 +177,11 @@ pub async fn handle(
         let track_read = track.read().await;
         let mut object_rx = track_read
           .cache
-          .read_objects(start_location.unwrap(), end_location.clone().unwrap())
+          .read_objects(
+            start_location.unwrap(),
+            end_location.clone().unwrap(),
+            true, /* report_end_location */
+          )
           .await;
 
         let fetch_header = FetchHeader::new(request_id);

@@ -21,7 +21,7 @@ use tokio::sync::RwLock;
 
 #[derive(Clone, Debug)]
 pub struct TrackSubscriptionMap {
-  pub map: Arc<RwLock<HashMap<FullTrackName, Weak<Subscription>>>>,
+  pub map: Arc<RwLock<HashMap<FullTrackName, Weak<RwLock<Subscription>>>>>,
 }
 
 impl TrackSubscriptionMap {
@@ -34,13 +34,16 @@ impl TrackSubscriptionMap {
   pub async fn add_subscription(
     &self,
     track_name: FullTrackName,
-    subscription: Weak<Subscription>,
+    subscription: Weak<RwLock<Subscription>>,
   ) {
     let mut map = self.map.write().await;
     map.insert(track_name, subscription);
   }
 
-  pub async fn get_subscription(&self, track_name: &FullTrackName) -> Option<Weak<Subscription>> {
+  pub async fn get_subscription(
+    &self,
+    track_name: &FullTrackName,
+  ) -> Option<Weak<RwLock<Subscription>>> {
     let map = self.map.read().await;
     map.get(track_name).cloned()
   }
@@ -65,7 +68,7 @@ mod tests {
     assert!(m.get_subscription(&tn).await.is_none());
 
     // insert a Weak pointer (no real Subscription needed for map semantics)
-    let w: Weak<Subscription> = Weak::new();
+    let w: Weak<RwLock<Subscription>> = Weak::new();
     m.add_subscription(tn.clone(), w.clone()).await;
 
     let got = m.get_subscription(&tn).await;

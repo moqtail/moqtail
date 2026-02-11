@@ -404,6 +404,13 @@ async fn handle_unsubscribe_message(
     .unwrap();
   let track = track_lock.write().await;
   track.remove_subscription(context.connection_id).await;
+
+  // remove the subscription from the client
+  client
+    .subscriptions
+    .remove_subscription(&full_track_name)
+    .await;
+
   Ok(())
 }
 

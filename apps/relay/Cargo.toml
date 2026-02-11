@@ -2,6 +2,7 @@
 name = "relay"
 version = "0.10.0"
 edition = "2024"
+build="build.rs"
 
 [dependencies]
 anyhow = "1.0.97"

@@ -21,6 +21,7 @@ pub enum SetupParameterType {
   MaxRequestId = 0x02,
   AuthorizationToken = 0x03,
   MaxAuthTokenCacheSize = 0x04,
+  MoqtImplementation = 0x05,
 }
 
 impl TryFrom<u64> for SetupParameterType {
@@ -32,6 +33,7 @@ impl TryFrom<u64> for SetupParameterType {
       0x02 => Ok(SetupParameterType::MaxRequestId),
       0x03 => Ok(SetupParameterType::AuthorizationToken),
       0x04 => Ok(SetupParameterType::MaxAuthTokenCacheSize),
+      0x05 => Ok(SetupParameterType::MoqtImplementation),
       _ => Err(ParseError::InvalidType {
         context: "SetupParameterType::try_from(u64)",
         details: format!("Invalid type, got {value}"),

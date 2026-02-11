@@ -616,7 +616,17 @@ impl Session {
       .unwrap()
     };
 
-    let server_setup = ServerSetup::new(constant::DRAFT_14, vec![max_request_id_param]);
+    let moqt_implementation_param =
+      moqtail::model::parameter::setup_parameter::SetupParameter::new_moqt_implementation(
+        env!("MOQTAIL_VERSION").to_string(),
+      )
+      .try_into()
+      .unwrap();
+
+    let server_setup = ServerSetup::new(
+      constant::DRAFT_14,
+      vec![max_request_id_param, moqt_implementation_param],
+    );
 
     debug!("client setup: {:?}", client_setup.supported_versions);
     debug!("server setup: {:?}", server_setup);

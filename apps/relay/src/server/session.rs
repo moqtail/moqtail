@@ -544,7 +544,7 @@ impl Session {
           {
             warn!(
               "Failed to process object track: alias: {:?} track name: {:?} error: {:?}",
-              track_alias, &track.track_name, e
+              track_alias, &track.full_track_name, e
             );
           }
 

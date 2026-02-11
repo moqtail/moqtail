@@ -16,7 +16,7 @@ use crate::connection::MoqConnection;
 use anyhow::Result;
 use moqtail::model::common::location::Location;
 use moqtail::model::common::pair::KeyValuePair;
-use moqtail::model::common::tuple::Tuple;
+use moqtail::model::common::tuple::{Tuple, TupleField};
 use moqtail::model::control::constant::GroupOrder;
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::fetch::{Fetch, StandAloneFetchProps};
@@ -50,7 +50,7 @@ pub async fn run(moq: MoqConnection, config: FetchConfig) -> Result<()> {
   let ns = Tuple::from_utf8_path(&config.namespace);
   let standalone_fetch_props = StandAloneFetchProps {
     track_namespace: ns,
-    track_name: config.track_name.clone(),
+    track_name: TupleField::from_utf8(&config.track_name),
     start_location: Location::new(config.start_group, config.start_object),
     end_location: Location::new(config.end_group, config.end_object),
   };

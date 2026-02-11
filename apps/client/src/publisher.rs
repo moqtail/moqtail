@@ -18,7 +18,7 @@ use crate::utils::should_log;
 use anyhow::Result;
 use bytes::Bytes;
 use moqtail::model::common::location::Location;
-use moqtail::model::common::tuple::Tuple;
+use moqtail::model::common::tuple::{Tuple, TupleField};
 use moqtail::model::control::constant::GroupOrder;
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::publish::Publish;
@@ -151,7 +151,7 @@ async fn publish_track_proactive(
   let publish = Publish::new(
     1, // request_id
     namespace.clone(),
-    track_name.to_string(),
+    TupleField::from_utf8(track_name),
     track_alias,
     GroupOrder::Ascending,
     1, // content_exists

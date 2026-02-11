@@ -15,7 +15,7 @@
  */
 
 export * from './client'
-// types.ts contains duplicates of exports from client.ts, so we skip it
+export * from './types'
 export * from './track'
 export * from './publication'
 export * from './request'

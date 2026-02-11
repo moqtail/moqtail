@@ -125,7 +125,7 @@ pub async fn handle(
           // let's see whether the track is in the cache
           let full_track_name = moqtail::model::data::full_track_name::FullTrackName {
             namespace: props.track_namespace.clone(),
-            name: props.track_name.clone().into(),
+            name: props.track_name.clone(),
           };
           let track = context.track_manager.get_track(&full_track_name).await;
 

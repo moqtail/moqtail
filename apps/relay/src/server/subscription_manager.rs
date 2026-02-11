@@ -19,6 +19,7 @@ use super::track::TrackEvent;
 use super::utils;
 use anyhow::Result;
 use moqtail::model::control::subscribe::Subscribe;
+use moqtail::model::data::full_track_name::FullTrackName;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::{collections::BTreeMap, collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
@@ -38,6 +39,7 @@ pub type SubscriberSenderList = Vec<SubscriberSenderLock>;
 #[derive(Debug, Clone)]
 pub(crate) struct SubscriptionManager {
   track_alias: Arc<AtomicU64>,
+  full_track_name: FullTrackName,
   subscriptions: Arc<RwLock<BTreeMap<usize, Arc<RwLock<Subscription>>>>>,
   subscriber_senders: Arc<SubscriberSenderList>,
   log_folder: String,
@@ -45,7 +47,12 @@ pub(crate) struct SubscriptionManager {
 }
 
 impl SubscriptionManager {
-  pub fn new(track_alias: u64, log_folder: String, config: &'static AppConfig) -> Self {
+  pub fn new(
+    track_alias: u64,
+    full_track_name: FullTrackName,
+    log_folder: String,
+    config: &'static AppConfig,
+  ) -> Self {
     // Initialize partitioned subscriber senders
     let mut subscriber_senders = Vec::with_capacity(SUBSCRIBER_PARTITION_COUNT);
     for _ in 0..SUBSCRIBER_PARTITION_COUNT {
@@ -54,6 +61,7 @@ impl SubscriptionManager {
 
     SubscriptionManager {
       track_alias: Arc::new(AtomicU64::new(track_alias)),
+      full_track_name,
       subscriptions: Arc::new(RwLock::new(BTreeMap::new())),
       subscriber_senders: Arc::from(subscriber_senders),
       log_folder,
@@ -99,6 +107,7 @@ impl SubscriptionManager {
 
     let subscription = Subscription::new(
       self.track_alias.clone(),
+      self.full_track_name.clone(),
       subscribe_message,
       subscriber.clone(),
       event_rx,

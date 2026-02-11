@@ -36,7 +36,7 @@ pub async fn handle(
 ) -> Result<(), TerminationCode> {
   match msg {
     ControlMessage::Publish(m) => {
-      info!("Received Publish message for track: {}", m.track_name);
+      info!("Received Publish message for track: {:?}", m.track_name);
       let request_id = m.request_id;
 
       // Check request ID
@@ -86,7 +86,7 @@ pub async fn handle(
       // Add the track to the client's published tracks
       let full_track_name = moqtail::model::data::full_track_name::FullTrackName {
         namespace: m.track_namespace.clone(),
-        name: m.track_name.clone().into(),
+        name: m.track_name.clone(),
       };
 
       // TODO: what happens multiple publishers publish the same track?
@@ -95,8 +95,7 @@ pub async fn handle(
         // subscribed_tracks.insert(sub.track_alias, Track::new(sub.track_alias, track_namespace.clone(), sub.track_name.clone()));
         let track = Track::new(
           m.track_alias,
-          m.track_namespace.clone(),
-          m.track_name.clone(),
+          full_track_name.clone(),
           context.connection_id, // TODO: what happens there are multiple publishers?
           context.server_config,
           TrackStatus::Confirmed {
@@ -130,7 +129,7 @@ pub async fn handle(
       ));
 
       info!(
-        "Accepted publish request for track: {} with alias: {}",
+        "Accepted publish request for track: {:?} with alias: {}",
         m.track_name, m.track_alias
       );
 

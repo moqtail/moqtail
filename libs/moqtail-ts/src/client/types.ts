@@ -23,6 +23,8 @@ import {
   Location,
   SetupParameters,
   ControlMessage,
+  DatagramObject,
+  DatagramStatus,
 } from '@/model'
 import { PublishNamespaceRequest } from './request/publish_namespace'
 import { FetchRequest } from './request/fetch'
@@ -101,6 +103,8 @@ export type MOQtailClientOptions = {
   dataStreamTimeoutMs?: number
   /** Control stream read timeout in milliseconds. */
   controlStreamTimeoutMs?: number
+  /** If true, enables datagram support for the session. */
+  enableDatagrams: boolean
   /** callbacks for observability and logging purposes: */
   callbacks?: {
     /** Called after a control message is successfully written to the {@link ControlStream}. */
@@ -109,6 +113,10 @@ export type MOQtailClientOptions = {
     onMessageReceived?: (msg: ControlMessage) => void
     /** Fired once when the session ends (normal or error). Receives the reason passed to {@link MOQtailClient.disconnect | disconnect}. */
     onSessionTerminated?: (reason?: unknown) => void
+    /** Invoked for each decoded datagram object/status arriving. */
+    onDatagramReceived?: (data: DatagramObject | DatagramStatus) => void
+    /** Invoked after enqueuing each outbound datagram object/status. */
+    onDatagramSent?: (data: DatagramObject | DatagramStatus) => void
   }
 }
 
@@ -184,6 +192,26 @@ export type SubscribeUpdateOptions = {
   priority: number
   /** Updated direction flag. */
   forward: boolean
+  /** Optional additional {@link VersionSpecificParameters}; existing parameters persist if omitted. */
+  parameters?: VersionSpecificParameters
+}
+
+/**
+ * Parameters for {@link MOQtailClient.switch | switching} an existing SUBSCRIBE to a new track.
+ *
+ * @example Switching subscription to a new track
+ * ```ts
+ * await client.switch({
+ *   fullTrackName: newFullTrackName,
+ *   subscriptionRequestId
+ * })
+ * ```
+ */
+export type SwitchOptions = {
+  /** Fully qualified track identifier to switch to ({@link FullTrackName}). */
+  fullTrackName: FullTrackName
+  /** The original SUBSCRIBE request id (bigint) being updated. */
+  subscriptionRequestId: bigint
   /** Optional additional {@link VersionSpecificParameters}; existing parameters persist if omitted. */
   parameters?: VersionSpecificParameters
 }

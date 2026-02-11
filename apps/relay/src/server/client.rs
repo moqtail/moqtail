@@ -12,7 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+pub(crate) mod switch_context;
+pub(crate) mod track_subscription_map;
+
 use crate::server::{
+  client::track_subscription_map::TrackSubscriptionMap,
   stream_id::{StreamId, StreamType},
   utils,
 };
@@ -27,6 +31,7 @@ use moqtail::{
   },
   transport::data_stream_handler::{FetchRequest, SubscribeRequest},
 };
+use switch_context::SwitchContext;
 
 use std::{
   collections::{BTreeMap, HashMap, VecDeque},
@@ -70,6 +75,11 @@ pub(crate) struct MOQTClient {
 
   // Senders for cancelling active fetch tasks, keyed by request_id.
   pub fetch_cancel_senders: Arc<RwLock<HashMap<u64, watch::Sender<bool>>>>,
+
+  // this contains the subscriptions made by the client
+  pub subscriptions: TrackSubscriptionMap,
+
+  pub switch_context: SwitchContext,
 }
 
 impl MOQTClient {
@@ -96,6 +106,8 @@ impl MOQTClient {
       fetch_requests: Arc::new(RwLock::new(BTreeMap::new())),
       subscribe_requests: Arc::new(RwLock::new(BTreeMap::new())),
       fetch_cancel_senders: Arc::new(RwLock::new(HashMap::new())),
+      subscriptions: TrackSubscriptionMap::new(),
+      switch_context: SwitchContext::new(),
     }
   }
 

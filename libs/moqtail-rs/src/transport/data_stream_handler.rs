@@ -615,7 +615,7 @@ mod tests {
   use super::*;
   use crate::model::common::location::Location;
   use crate::model::common::pair::KeyValuePair;
-  use crate::model::common::tuple::Tuple;
+  use crate::model::common::tuple::{Tuple, TupleField};
   use crate::model::control::constant::{FetchType, FilterType, GroupOrder};
   use crate::model::control::fetch::JoiningFetchProps;
   use crate::model::control::{fetch::Fetch, subscribe::Subscribe};
@@ -686,7 +686,7 @@ mod tests {
   fn make_subgroup_header_and_request() -> (SubgroupHeader, Subscribe) {
     let request_id = 128242;
     let track_namespace = Tuple::from_utf8_path("nein/nein/nein");
-    let track_name = "${Name}".to_string();
+    let track_name = TupleField::from_utf8("track_42");
     let subscriber_priority = 31;
     let group_order = GroupOrder::Original;
     let forward = true;

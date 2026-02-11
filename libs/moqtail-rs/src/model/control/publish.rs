@@ -16,7 +16,7 @@ use super::constant::{ControlMessageType, GroupOrder};
 use super::control_message::ControlMessageTrait;
 use crate::model::common::location::Location;
 use crate::model::common::pair::KeyValuePair;
-use crate::model::common::tuple::Tuple;
+use crate::model::common::tuple::{Tuple, TupleField};
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
 use crate::model::error::ParseError;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
@@ -25,7 +25,7 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 pub struct Publish {
   pub request_id: u64,
   pub track_namespace: Tuple,
-  pub track_name: String,
+  pub track_name: TupleField,
   pub track_alias: u64,
   pub group_order: GroupOrder,
   pub content_exists: u8,
@@ -39,7 +39,7 @@ impl Publish {
   pub fn new(
     request_id: u64,
     track_namespace: Tuple,
-    track_name: String,
+    track_name: TupleField,
     track_alias: u64,
     group_order: GroupOrder,
     content_exists: u8,
@@ -126,13 +126,7 @@ impl ControlMessageTrait for Publish {
         available: payload.remaining(),
       });
     }
-    let track_name =
-      String::from_utf8(payload.copy_to_bytes(track_name_length).to_vec()).map_err(|e| {
-        ParseError::ProtocolViolation {
-          context: "Publish::parse_payload(track_name_utf8)",
-          details: e.to_string(),
-        }
-      })?;
+    let track_name = TupleField::new(payload.copy_to_bytes(track_name_length));
 
     let track_alias = payload.get_vi()?;
     let group_order = GroupOrder::try_from(payload.get_u8())?;
@@ -193,7 +187,7 @@ mod tests {
   fn test_roundtrip_with_content() {
     let request_id = 123;
     let track_namespace = Tuple::from_utf8_path("example/track");
-    let track_name = "video".to_string();
+    let track_name = TupleField::from_utf8("video");
     let track_alias = 456;
     let group_order = GroupOrder::Ascending;
     let content_exists = 1;
@@ -230,7 +224,7 @@ mod tests {
   fn test_roundtrip_without_content() {
     let request_id = 123;
     let track_namespace = Tuple::from_utf8_path("example/track");
-    let track_name = "video".to_string();
+    let track_name = TupleField::from_utf8("video");
     let track_alias = 456;
     let group_order = GroupOrder::Ascending;
     let content_exists = 0;
@@ -264,7 +258,7 @@ mod tests {
   fn test_invalid_content_exists() {
     let request_id = 123;
     let track_namespace = Tuple::from_utf8_path("example/track");
-    let track_name = "video".to_string();
+    let track_name = TupleField::from_utf8("video");
     let track_alias = 456;
     let group_order = GroupOrder::Ascending;
     let content_exists = 1;

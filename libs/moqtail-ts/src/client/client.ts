@@ -15,7 +15,6 @@
  */
 
 import { ControlStream } from './control_stream'
-import { SendDatagramStream } from './datagram_stream'
 import {
   PublishNamespace,
   PublishNamespaceDone,
@@ -37,6 +36,8 @@ import {
   SubscribeUpdate,
   Unsubscribe,
   UnsubscribeNamespace,
+  Switch,
+  SubscribeOk,
 } from '../model/control'
 import {
   DatagramObject,
@@ -68,266 +69,201 @@ import { SubscribeRequest } from './request/subscribe'
 import { getHandlerForControlMessage } from './handler/handler'
 import { SubscribePublication } from './publication/subscribe'
 import { FetchPublication } from './publication/fetch'
+import { random60bitId } from './util/random_id'
+import {
+  MOQtailRequest,
+  SubscribeOptions,
+  SubscribeUpdateOptions,
+  FetchOptions,
+  MOQtailClientOptions,
+  SwitchOptions,
+} from './types'
+import { SendDatagramStream } from './datagram_stream'
 
-/**
- * Union type of all possible MOQtail requests
- */
-export type MOQtailRequest = PublishNamespaceRequest | FetchRequest | SubscribeRequest
-
-/**
- * Callbacks related to datagram events
- */
-export type DatagramCallbacks = {
-  /**
-   * Invoked for each decoded datagram object/status arriving
-   * Use to process or display incoming datagram-based media/data
-   */
-  onDatagramReceived?: (data: DatagramObject | DatagramStatus) => void
-
-  /**
-   * Invoked after enqueuing each outbound datagram object/status
-   * Use for monitoring or analytics
-   */
-  onDatagramSent?: (data: DatagramObject | DatagramStatus) => void
-}
-
-/**
- * Extended options for the MOQtail client
- *
- * @example Minimal
- * ```ts
- * const client = await MOQtailClient.new({
- *   url: 'https://relay.example.com/moq',
- *   supportedVersions: [0xff00000b]
- * })
- * ```
- *
- * @example With datagram support
- * ```ts
- * const client = await MOQtailClient.new({
- *   url: relayUrl,
- *   supportedVersions: [0xff00000b],
- *   enableDatagrams: true,
- *   callbacks: {
- *     onDatagramReceived: (data) => console.log('Datagram received:', data),
- *     onDatagramSent: (data) => console.log('Datagram sent:', data),
- *   }
- * })
- * ```
- */
-export type MOQtailClientOptions = {
-  /** Relay / server endpoint for the underlying WebTransport session. */
-  url: string | URL
-  /** Ordered preference list of MOQT protocol version numbers (e.g. `0xff00000b`). */
-  supportedVersions: number[]
-  /** SetupParameters customizations; if omitted a default instance is built. */
-  setupParameters?: SetupParameters
-  /** Passed directly to the browser's WebTransport constructor. */
-  transportOptions?: WebTransportOptions
-  /** Per *data* uni-stream idle timeout in milliseconds. */
-  dataStreamTimeoutMs?: number
-  /** Control stream read timeout in milliseconds. */
-  controlStreamTimeoutMs?: number
-  /**
-   * Enable datagram support. When true, datagrams will be automatically started
-   * after connection is established. Default: false
-   */
-  enableDatagrams?: boolean
-  /** Callbacks for observability and logging purposes. */
-  callbacks?: {
-    /** Called after a control message is successfully written to the ControlStream. */
-    onMessageSent?: (msg: ControlMessage) => void
-    /** Called for each incoming control message before protocol handling. */
-    onMessageReceived?: (msg: ControlMessage) => void
-    /** Fired once when the session ends (normal or error). */
-    onSessionTerminated?: (reason?: unknown) => void
-    /** Invoked for each decoded datagram object/status arriving. */
-    onDatagramReceived?: (data: DatagramObject | DatagramStatus) => void
-    /** Invoked after enqueuing each outbound datagram object/status. */
-    onDatagramSent?: (data: DatagramObject | DatagramStatus) => void
-  }
-}
-
-/**
- * Parameters for subscribing to a track's live objects
- */
-export type SubscribeOptions = {
-  fullTrackName: FullTrackName
-  priority: number
-  groupOrder: GroupOrder
-  forward: boolean
-  filterType: FilterType
-  parameters?: VersionSpecificParameters
-  startLocation?: import('../model').Location
-  endGroup?: bigint | number
-}
-
-/**
- * Narrowing update constraints applied to an existing SUBSCRIBE
- */
-export type SubscribeUpdateOptions = {
-  subscriptionRequestId: bigint
-  startLocation: import('../model').Location
-  endGroup: bigint
-  priority: number
-  forward: boolean
-  parameters?: VersionSpecificParameters
-}
-
-/**
- * Options for performing a FETCH operation for historical or relative object ranges
- */
-export type FetchOptions = {
-  priority: number
-  groupOrder: GroupOrder
-  typeAndProps:
-    | {
-        type: FetchType.StandAlone
-        props: {
-          fullTrackName: FullTrackName
-          startLocation: import('../model').Location
-          endLocation: import('../model').Location
-        }
-      }
-    | {
-        type: FetchType.Relative
-        props: { joiningRequestId: bigint; joiningStart: bigint }
-      }
-    | {
-        type: FetchType.Absolute
-        props: { joiningRequestId: bigint; joiningStart: bigint }
-      }
-  parameters?: VersionSpecificParameters
-}
 /**
  * @public
- * MOQtailClient is the main entry point for interacting with a MOQT server over WebTransport.
+ * Represents a Media Over QUIC Transport (MOQT) client session.
  *
- * It manages the underlying WebTransport session, control stream, data streams,
- * track subscriptions, publications, and datagram support.
+ * Use {@link MOQtailClient.new} to establish a connection and perform MOQT operations such as subscribing to tracks,
+ * fetching historical data, announcing tracks for publication, and managing session lifecycle.
  *
- * Clients can register tracks for publishing, subscribe to tracks for receiving data,
- * perform fetch operations, and send/receive datagrams.
+ * Once initialized, the client provides high-level methods for MOQT requests and publishing. If a protocol violation
+ * occurs, the client will terminate and must be re-initialized.
  *
- * Extensive callback hooks are provided for observability and custom handling of events.
+ * ## Usage
  *
- * Example usage:
+ * ### Connect and Subscribe to a Track
  * ```ts
- * const client = await MOQtailClient.new({
- *   url: 'https://relay.example.com/moq',
- *  supportedVersions: [0xff00000b],
- *  enableDatagrams: true,
- *  callbacks: {
- *    onDatagramReceived: (data) => console.log('Datagram received:', data),
- *   onDatagramSent: (data) => console.log('Datagram sent:', data),
+ * const client = await MOQtailClient.new({ url, supportedVersions: [0xff00000b] });
+ * const result = await client.subscribe({
+ *   fullTrackName,
+ *   filterType: FilterType.LatestObject,
+ *   forward: true,
+ *   groupOrder: GroupOrder.Original,
+ *   priority: 0
+ * });
+ * if (!(result instanceof SubscribeError)) {
+ *   for await (const object of result.stream) {
+ *     // Consume MOQT objects
+ *   }
  * }
- * })
  * ```
  *
+ * ### Publish a namespace for Publishing
+ * ```ts
+ * const client = await MOQtailClient.new({ url, supportedVersions: [0xff00000b] });
+ * const publishNamespaceResult = await client.publishNamespace(["camera", "main"]);
+ * if (!(publishNamespaceResult instanceof PublishNamespaceError)) {
+ *   // Ready to publish objects under this namespace
+ * }
+ * ```
+ *
+ * ### Graceful Shutdown
+ * ```ts
+ * await client.disconnect();
+ * ```
  */
 export class MOQtailClient {
   /**
-   * Namespace prefixes (tuples) the peer has requested announce notifications for via SUBSCRIBE_NAMESPACE
+   * Namespace prefixes (tuples) the peer has requested announce notifications for via SUBSCRIBE_NAMESPACE.
+   * Used to decide which locally issued ANNOUNCE messages should be forwarded (future optimization: prefix trie).
    */
   readonly peerSubscribeNamespace = new Set<Tuple>()
-
   /**
-   * Namespace prefixes this client has subscribed to (issued SUBSCRIBE_NAMESPACE)
+   * Namespace prefixes this client has subscribed to (issued SUBSCRIBE_NAMESPACE). Enables automatic filtering
+   * of incoming PUBLISH_NAMESPACE / PUBLISH_NAMESPACE_DONE. Maintained locally; no dedupe of overlapping / shadowing prefixes yet.
    */
   readonly subscribedAnnounces = new Set<Tuple>()
-
   /**
-   * Track namespaces this client has successfully announced (received ANNOUNCE_OK)
+   * Track namespaces this client has successfully announced (received ANNOUNCE_OK). Source of truth for
+   * deciding what to PUBLISH_NAMESPACE_DONE on teardown or targeted withdrawal.(future optimization: prefix trie).
    */
   readonly announcedNamespaces = new Set<Tuple>()
-
   /**
-   * Locally registered track definitions keyed by full track name string
+   * Locally registered track definitions keyed by full track name string. Populated via addOrUpdateTrack.
+   * Does not imply the track has been announced or has active publications.
    */
   readonly trackSources: Map<string, Track> = new Map()
-
   /**
-   * All in‑flight request objects keyed by requestId
+   * All in‑flight request objects keyed by requestId (SUBSCRIBE, FETCH, ANNOUNCE, etc). Facilitates lookup
+   * when responses / data arrive. Entries are removed on completion or error.
    */
   readonly requests: Map<bigint, MOQtailRequest> = new Map()
-
   /**
-   * Active publications keyed by requestId
+   * Active publications (SUBSCRIBE or FETCH) keyed by requestId to manage object stream controllers and lifecycle.
+   * Subset / specialization view of `requests`.
    */
   readonly publications: Map<bigint, SubscribePublication | FetchPublication> = new Map()
-
   /**
-   * Active SUBSCRIBE request wrappers keyed by track alias
+   * Active SUBSCRIBE request wrappers keyed by track alias for rapid alias -\> subscription resolution during
+   * incoming unidirectional data handling.
    */
   readonly subscriptions: Map<bigint, SubscribeRequest> = new Map()
-
   /**
-   * Bidirectional track alias-subscription requestId mapping
+   * Bidirectional track alias \<-\> subscription requestId mapping
    */
   readonly subscriptionAliasMap: Map<bigint, bigint> = new Map()
-
   /**
-   * Bidirectional requestId-full track name mapping
+   * Bidirectional requestId \<-\> full track name mapping to reconstruct metadata for incoming objects.
    */
   readonly requestIdMap: RequestIdMap = new RequestIdMap()
-
-  /** Underlying WebTransport session. */
+  /**
+   * Maps track aliases to full track names for quick resolution during data handling.
+   */
+  readonly aliasFullTrackNameMap: Map<bigint, FullTrackName> = new Map()
+  /**
+   * Pending state updates keyed by requestId and applied once a new track alias is seen.
+   * Used to avoid premature state updates.
+   */
+  readonly pendingStateUpdates: Map<bigint, (newTrackAlias: bigint) => boolean> = new Map()
+  /** Underlying WebTransport session (set after successful construction in MOQtailClient.new). */
   webTransport!: WebTransport
-
-  /** Validated ServerSetup message captured during handshake. */
+  /** Validated ServerSetup message captured during handshake (protocol parameters negotiated). */
   #serverSetup!: ServerSetup
-
   /** Outgoing / incoming control message bidirectional stream wrapper. */
   controlStream!: ControlStream
-
-  /** Timeout (ms) applied to reading incoming data streams. */
+  /** Timeout (ms) applied to reading incoming data streams; undefined =\> no explicit timeout. */
   dataStreamTimeoutMs?: number
-
-  /** Timeout (ms) for control stream read operations. */
+  /** Timeout (ms) for control stream read operations; undefined =\> no explicit timeout. */
   controlStreamTimeoutMs?: number
-
-  /** Optional highest request id allowed. */
+  /** Optional highest request id allowed (enforced externally / via configuration). */
   maxRequestId?: bigint
 
-  /** Flag indicating the client has been disconnected/destroyed. */
+  /** Flag indicating the client has been disconnected/destroyed and cannot accept further API calls. */
   #isDestroyed = false
-
-  /** Internal monotonically increasing client-assigned request id counter. */
+  /** Internal monotonically increasing client-assigned request id counter (even/odd parity scheme advances by 2). */
   #dontUseRequestId: bigint = 0n
 
-  // Original MOQtailClient Event Handlers
-
-  /** Fired when a PUBLISH_NAMESPACE control message is processed. */
+  /**
+   * TODO: onNamespaceAnnounced may be a better name
+   * Fired when an PUBLISH_NAMESPACE control message is processed for a track namespace.
+   * Use to update UI or trigger discovery logic.
+   * Discovery event.
+   */
   onNamespacePublished?: (msg: PublishNamespace) => void
 
-  /** Fired when a PUBLISH_NAMESPACE_DONE control message is processed. */
+  /**
+   * Fired when an PUBLISH_NAMESPACE_DONE control message is processed for a namespace.
+   * Use to remove tracks from UI or stop discovery.
+   * Discovery event.
+   */
   onNamespaceDone?: (msg: PublishNamespaceDone) => void
 
-  /** Fired on GOAWAY reception signaling graceful session wind-down. */
+  /**
+   * Fired on GOAWAY reception signaling graceful session wind-down.
+   * Use to prepare for disconnect or cleanup.
+   * Lifecycle handler.
+   */
   onGoaway?: (msg: GoAway) => void
 
-  /** Fired if the underlying WebTransport session fails. */
+  /**
+   * Fired if the underlying WebTransport session fails (ready → closed prematurely).
+   * Use to log or alert on transport errors.
+   * Lifecycle/error handler.
+   */
   onWebTransportFail?: () => void
 
-  /** Fired exactly once when the client transitions to terminated. */
+  /**
+   * Fired exactly once when the client transitions to terminated (disconnect).
+   * Use to clean up resources or notify user.
+   * Lifecycle handler.
+   */
   onSessionTerminated?: (reason?: unknown) => void
 
-  /** Invoked after each outbound control message is sent. */
+  /**
+   * Invoked after each outbound control message is sent.
+   * Use for logging or analytics.
+   * Informational event.
+   */
   onMessageSent?: (msg: ControlMessage) => void
 
-  /** Invoked upon receiving each inbound control message. */
+  /**
+   * Invoked upon receiving each inbound control message before handling.
+   * Use for logging or debugging.
+   * Informational event.
+   */
   onMessageReceived?: (msg: ControlMessage) => void
 
-  /** Invoked for each decoded data object/header arriving on a uni stream. */
+  /**
+   * Invoked for each decoded data object/header arriving on a uni stream (fetch or subgroup).
+   * Use to process or display incoming media/data.
+   * Informational event.
+   */
   onDataReceived?: (data: SubgroupObject | SubgroupHeader | FetchObject | FetchHeader) => void
 
-  /** Invoked after enqueuing each outbound data object/header. */
+  /**
+   * Invoked after enqueuing each outbound data object/header.
+   * Reserved for future use.
+   * Informational event.
+   */
   onDataSent?: (data: SubgroupObject | SubgroupHeader | FetchObject | FetchHeader) => void
 
-  /** General-purpose error callback. */
+  /**
+   * General-purpose error callback for surfaced exceptions not thrown to caller synchronously.
+   * Use to log or display errors.
+   * Error handler.
+   */
   onError?: (er: unknown) => void
-
-  // Datagram-specific Properties
 
   /** Invoked for each decoded datagram object/status arriving. */
   onDatagramReceived?: (data: DatagramObject | DatagramStatus) => void
@@ -359,10 +295,9 @@ export class MOQtailClient {
    */
   readonly receivedDatagramObjects: ReadableStream<MoqtObject>
 
-  // Constructor & Factory
-
   /**
-   * Allocate the next client-originated request id using the even/odd stride pattern
+   * Allocate the next client-originated request id using the even/odd stride pattern (increments by 2).
+   * Ensures uniqueness within the session and leaves space for peer-assigned ids if parity strategy is employed.
    */
   get #nextClientRequestId(): bigint {
     const id = this.#dontUseRequestId
@@ -371,7 +306,9 @@ export class MOQtailClient {
   }
 
   /**
-   * Gets the current server setup configuration
+   * Gets the current server setup configuration.
+   *
+   * @returns The {@link ServerSetup} instance associated with this client.
    */
   get serverSetup(): ServerSetup {
     return this.#serverSetup
@@ -385,7 +322,9 @@ export class MOQtailClient {
   }
 
   /**
-   * Guard that throws if the client has been destroyed
+   * Guard that throws if the client has been destroyed (disconnect already called). Used at start of public APIs
+   * to fail fast rather than perform partial operations on a torn-down session.
+   * @throws MOQtailError when #isDestroyed is true.
    */
   #ensureActive() {
     if (this.#isDestroyed) throw new MOQtailError('MOQtailClient is destroyed and cannot be used.')
@@ -402,11 +341,13 @@ export class MOQtailClient {
   }
 
   /**
-   * Establishes a new MOQtailClient session over WebTransport and performs the MOQT setup handshake.
+   * Establishes a new {@link MOQtailClient} session over WebTransport and performs the MOQT setup handshake.
    *
    * @param args - {@link MOQtailClientOptions}
-   * @returns Promise resolving to a ready MOQtailClient instance.
-   * @throws ProtocolViolationError If the server sends an unexpected or invalid message during setup.
+   *
+   * @returns Promise resolving to a ready {@link MOQtailClient} instance.
+   *
+   * @throws :{@link ProtocolViolationError} If the server sends an unexpected or invalid message during setup.
    *
    * @example Minimal connection
    * ```ts
@@ -416,16 +357,21 @@ export class MOQtailClient {
    * });
    * ```
    *
-   * @example With datagram support and callbacks
+   * @example With callbacks and options
    * ```ts
    * const client = await MOQtailClient.new({
    *   url,
    *   supportedVersions: [0xff00000b],
+   *   setupParameters: new SetupParameters().addMaxRequestId(1000),
+   *   transportOptions: { congestionControl: 'default' },
+   *   dataStreamTimeoutMs: 5000,
+   *   controlStreamTimeoutMs: 2000,
    *   enableDatagrams: true,
    *   callbacks: {
    *     onMessageSent: msg => console.log('Sent:', msg),
+   *     onMessageReceived: msg => console.log('Received:', msg),
+   *     onSessionTerminated: reason => console.warn('Session ended:', reason),
    *     onDatagramReceived: data => console.log('Datagram:', data),
-   *     onSessionTerminated: reason => console.warn('Session ended:', reason)
    *   }
    * });
    * ```
@@ -441,14 +387,11 @@ export class MOQtailClient {
       enableDatagrams,
       callbacks,
     } = args
-
     const client = new MOQtailClient()
 
     client.webTransport = new WebTransport(url, transportOptions)
     await client.webTransport.ready
-
     try {
-      // Set up callbacks
       if (callbacks?.onMessageSent) client.onMessageSent = callbacks.onMessageSent
       if (callbacks?.onMessageReceived) client.onMessageReceived = callbacks.onMessageReceived
       if (callbacks?.onSessionTerminated) client.onSessionTerminated = callbacks.onSessionTerminated
@@ -466,11 +409,9 @@ export class MOQtailClient {
         client.onMessageSent,
         client.onMessageReceived,
       )
-
       const params = setupParameters ? setupParameters.build() : new SetupParameters().build()
       const clientSetup = new ClientSetup(supportedVersions, params)
       client.controlStream.send(clientSetup)
-
       const reader = client.controlStream.stream.getReader()
       const { value: response, done } = await reader.read()
       if (done) throw new ProtocolViolationError('MOQtailClient.new', 'Stream closed after client setup')
@@ -480,7 +421,6 @@ export class MOQtailClient {
       client.#serverSetup = response
       reader.releaseLock()
 
-      // Start background loops
       client.#handleIncomingControlMessages()
       client.#acceptIncomingUniStreams()
 
@@ -770,10 +710,35 @@ export class MOQtailClient {
   }
 
   /**
-   * Gracefully terminates this session and releases underlying WebTransport resources.
+   * Gracefully terminates this {@link MOQtailClient} session and releases underlying {@link https://developer.mozilla.org/docs/Web/API/WebTransport | WebTransport} resources.
    *
-   * @param reason - Optional application-level reason
+   * @param reason - Optional application-level reason (string or error) recorded and wrapped in an {@link InternalError}
+   * passed to the {@link MOQtailClient.onSessionTerminated | onSessionTerminated} callback.
+   *
    * @returns Promise that resolves once shutdown logic completes. Subsequent calls are safe no-ops.
+   *
+   * @example Basic usage
+   * ```ts
+   * await client.disconnect();
+   * ```
+   *
+   * @example With reason
+   * ```ts
+   * await client.disconnect('user logout');
+   * ```
+   *
+   * @example Idempotent double call
+   * ```ts
+   * await client.disconnect();
+   * await client.disconnect(); // no error
+   * ```
+   *
+   * @example Page unload safety
+   * ```ts
+   * window.addEventListener('beforeunload', () => {
+   *   client.disconnect('page unload');
+   * });
+   * ```
    */
   async disconnect(reason?: unknown) {
     console.log('disconnect', reason)
@@ -791,7 +756,44 @@ export class MOQtailClient {
   }
 
   /**
-   * Registers or updates a Track definition for local publishing or serving.
+   * Registers or updates a {@link Track} definition for local publishing or serving.
+   *
+   * A {@link Track} describes a logical media/data stream, identified by a unique name and namespace.
+   * - If `trackSource.live` is present, the track can be served to subscribers in real-time.
+   * - If `trackSource.past` is present, the track can be fetched for historical data.
+   * - If both are present, the track supports both live and historical access.
+   *
+   * @param track - The {@link Track} instance to add or update. See {@link TrackSource} for live/past source options.
+   * @returns void
+   * @throws : {@link MOQtailError} If the client has been destroyed.
+   *
+   * @example Create a live video track from getUserMedia
+   * ```ts
+   * const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+   * const videoTrack = stream.getVideoTracks()[0];
+   *
+   * // Convert video frames to MoqtObject instances using your chosen scheme (e.g. WARP, CMAF, etc.)
+   * // This part is application-specific and not provided by MOQtail:
+   * const liveReadableStream: ReadableStream<MoqtObject> = ...
+   *
+   * // Register the track for live subscription
+   * client.addOrUpdateTrack({
+   *   fullTrackName: { namespace: ["camera"], name: "main" },
+   *   forwardingPreference: ObjectForwardingPreference.Latest,
+   *   trackSource: { live: liveReadableStream },
+   *   publisherPriority: 0 // highest priority
+   * });
+   *
+   * // For a hybrid track (live + past):
+   * import { MemoryObjectCache } from './track/object_cache';
+   * const cache = new MemoryObjectCache(); // Caches are not yet fully supported
+   * client.addOrUpdateTrack({
+   *   fullTrackName: { namespace: ["camera"], name: "main" },
+   *   forwardingPreference: ObjectForwardingPreference.Latest,
+   *   trackSource: { live: liveReadableStream, past: cache },
+   *   publisherPriority: 8
+   * });
+   * ```
    */
   addOrUpdateTrack(track: Track) {
     this.#ensureActive()
@@ -799,7 +801,30 @@ export class MOQtailClient {
   }
 
   /**
-   * Removes a previously registered Track from this client's local catalog.
+   * Removes a previously registered {@link Track} from this client's local catalog.
+   *
+   * This deletes the in-memory entry inserted via {@link MOQtailClient.addOrUpdateTrack}, so future lookups by its {@link Track.fullTrackName} will fail.
+   * Does **not** automatically:
+   * - Send an {@link PublishNamespaceDone} (call {@link MOQtailClient.publishNamespaceDone} separately if you want to inform peers)
+   * - Cancel active subscriptions or fetches (they continue until normal completion)
+   * - Affect already-sent objects.
+   *
+   * If the track was not present, the call is a silent no-op (idempotent removal).
+   *
+   * @param track - The exact {@link Track} instance (its canonical name is used as the key).
+   * @throws : {@link MOQtailError} If the client has been destroyed.
+   *
+   * @example
+   * ```ts
+   * // Register a track
+   * client.addOrUpdateTrack(track);
+   *
+   * // Later, when no longer publishing:
+   * client.removeTrack(track);
+   *
+   * // Optionally, inform peers that the namespace is no longer available:
+   * await client.publishNamespaceDone(track.fullTrackName.namespace);
+   * ```
    */
   removeTrack(track: Track) {
     this.#ensureActive()
@@ -807,7 +832,52 @@ export class MOQtailClient {
   }
 
   /**
-   * Subscribes to a track and returns a stream of MoqtObjects.
+   * Subscribes to a track and returns a stream of {@link MoqtObject}s matching the requested window and relay forwarding mode.
+   *
+   * - `forward: true` tells the relay to forward objects to this subscriber as they arrive.
+   * - `forward: false` means the relay subscribes upstream but buffers objects locally, not forwarding them to you.
+   * - `filterType: AbsoluteStart` lets you specify a start position in the future; the stream waits for that object. If the start location is \< the latest object
+   * observed at the publisher then it behaves as `filterType: LatestObject`
+   * - `filterType: AbsoluteRange` lets you specify a start and end group, both of should be in the future; the stream waits for those objects. If the start location is \< the latest object
+   * observed at the publisher then it behaves as `filterType: LatestObject`.
+   *
+   * The method returns either a {@link SubscribeError} (on refusal) or an object with the subscription `requestId` and a `ReadableStream` of {@link MoqtObject}s.
+   * Use the `requestId` for {@link MOQtailClient.unsubscribe} or {@link MOQtailClient.subscribeUpdate}. Use the `stream` to decode and display objects.
+   *
+   * @param args - {@link SubscribeOptions} describing the subscription window and relay forwarding behavior.
+   * @returns Either a {@link SubscribeError} or `{ requestId, stream }` for consuming objects.
+   * @throws : {@link MOQtailError} If the client is destroyed.
+   * @throws : {@link ProtocolViolationError} If required fields are missing or inconsistent.
+   * @throws : {@link InternalError} On transport/protocol failure (disconnect is triggered before rethrow).
+   *
+   * @example Subscribe to the latest object and receive future objects as they arrive
+   * ```ts
+   * const result = await client.subscribe({
+   *   fullTrackName,
+   *   filterType: FilterType.LatestObject,
+   *   forward: true,
+   *   groupOrder: GroupOrder.Original,
+   *   priority: 32
+   * });
+   * if (!(result instanceof SubscribeError)) {
+   *   for await (const obj of result.stream) {
+   *     // decode and display obj
+   *   }
+   * }
+   * ```
+   *
+   * @example Subscribe to a future range (waits for those objects to arrive)
+   * ```ts
+   * const result = await client.subscribe({
+   *   fullTrackName,
+   *   filterType: FilterType.AbsoluteRange,
+   *   startLocation: futureStart,
+   *   endGroup: futureEnd,
+   *   forward: true,
+   *   groupOrder: GroupOrder.Original,
+   *   priority: 128
+   * });
+   * ```
    */
   async subscribe(
     args: SubscribeOptions,
@@ -819,7 +889,6 @@ export class MOQtailClient {
       let msg: Subscribe
       if (typeof endGroup === 'number') endGroup = BigInt(endGroup)
       if (!parameters) parameters = new VersionSpecificParameters()
-
       switch (filterType) {
         case FilterType.LatestObject:
           msg = Subscribe.newLatestObject(
@@ -878,13 +947,11 @@ export class MOQtailClient {
           )
           break
       }
-
       const request = new SubscribeRequest(msg)
       this.requests.set(request.requestId, request)
       this.requestIdMap.addMapping(request.requestId, request.fullTrackName)
       await this.controlStream.send(msg)
       const response = await request
-
       if (response instanceof SubscribeError) {
         this.requests.delete(request.requestId)
         this.requestIdMap.removeMappingByRequestId(request.requestId)
@@ -892,6 +959,7 @@ export class MOQtailClient {
       } else {
         this.subscriptions.set(response.trackAlias, request)
         this.subscriptionAliasMap.set(request.requestId, response.trackAlias)
+        this.aliasFullTrackNameMap.set(response.trackAlias, fullTrackName)
         return { requestId: msg.requestId, stream: request.stream }
       }
     } catch (error) {
@@ -903,7 +971,37 @@ export class MOQtailClient {
   }
 
   /**
-   * Stops an active subscription identified by its original SUBSCRIBE requestId.
+   * Stops an active subscription identified by its original SUBSCRIBE `requestId`.
+   *
+   * Sends an {@link Unsubscribe} control frame if the subscription is still active. If the id is unknown or already
+   * cleaned up, the call is a silent no-op (hence multiple calls are idempotent).
+   *
+   * Use this when you no longer want incoming objects for a track (e.g. user navigated away, switching quality).
+   * Canceling the consumer stream reader does **not** auto-unsubscribe; call this explicitly for prompt cleanup.
+   *
+   * @param requestId - The id returned from {@link MOQtailClient.subscribe}.
+   * @returns Promise that resolves when the unsubscribe control frame is sent.
+   * @throws :{@link MOQtailError} If the client is destroyed.
+   * @throws :{@link InternalError} Wrapped lower-level failure while attempting to send (session will be disconnected first).
+   *
+   * @remarks
+   * - Only targets SUBSCRIBE requests, not fetches. Passing a fetch request id is ignored (no-op).
+   * - Safe to call multiple times; extra calls have no effect.
+   *
+   * @example Subscribe and later unsubscribe
+   * ```ts
+   * const sub = await client.subscribe({ fullTrackName, filterType: FilterType.LatestObject, forward: true, groupOrder: GroupOrder.Original, priority: 0 });
+   * if (!(sub instanceof SubscribeError)) {
+   *   // ...consume objects...
+   *   await client.unsubscribe(sub.requestId);
+   * }
+   * ```
+   *
+   * @example Idempotent usage
+   * ```ts
+   * await client.unsubscribe(123n);
+   * await client.unsubscribe(123n); // no error
+   * ```
    */
   async unsubscribe(requestId: bigint | number): Promise<void> {
     this.#ensureActive()
@@ -921,6 +1019,7 @@ export class MOQtailClient {
           subscription.unsubscribe()
         }
       }
+      // Q: Throw? Idempotent?
     } catch (error) {
       await this.disconnect(
         new InternalError('MOQtailClient.unsubscribe', error instanceof Error ? error.message : String(error)),
@@ -930,6 +1029,7 @@ export class MOQtailClient {
       if (cleanupData) {
         this.requests.delete(cleanupData.requestId)
         this.subscriptions.delete(cleanupData.trackAlias)
+        this.aliasFullTrackNameMap.delete(cleanupData.trackAlias)
         this.requestIdMap.removeMappingByRequestId(cleanupData.requestId)
       }
     }
@@ -937,14 +1037,48 @@ export class MOQtailClient {
 
   /**
    * Narrows or updates an active subscription window and/or relay forwarding behavior.
+   *
+   * Use this to:
+   * - Move the start of the subscription forward (trim history or future window).
+   * - Move the end group earlier (shorten the window).
+   * - Change relay forwarding (`forward: false` stops forwarding new objects, `true` resumes).
+   * - Adjust subscriber priority.
+   *
+   * Only narrowing is allowed: you cannot move the start earlier or the end group later than the original subscription.
+   * Forwarding and priority can be changed at any time.
+   *
+   * @param args - {@link SubscribeUpdateOptions} referencing the original subscription `requestId` and new bounds.
+   * @returns Promise that resolves when the update control frame is sent.
+   * @throws :{@link MOQtailError} If the client is destroyed.
+   * @throws :{@link ProtocolViolationError} If the update would widen the window (earlier start, later end group, or invalid ordering).
+   * @throws :{@link InternalError} On transport/control failure (disconnect is triggered before rethrow).
+   *
+   * @remarks
+   * - Only applies to active SUBSCRIBE requests; ignored if the request is not a subscription.
+   * - Omitting a parameter (e.g. `priority`) leaves the previous value unchanged.
+   * - Setting `forward: false` stops relay forwarding new objects after the current window drains.
+   * - Safe to call multiple times; extra calls with unchanged bounds have no effect.
+   *
+   * @example Trim start forward
+   * ```ts
+   * await client.subscribeUpdate({ requestId, startLocation: laterLoc, endGroup, forward: true, priority });
+   * ```
+   *
+   * @example Convert tailing subscription into bounded slice
+   * ```ts
+   * await client.subscribeUpdate({ requestId, startLocation: origStart, endGroup: cutoffGroup, forward: false, priority });
+   * ```
+   *
+   * @example Lower priority only
+   * ```ts
+   * await client.subscribeUpdate({ requestId, startLocation: currentStart, endGroup: currentEnd, forward: true, priority: 200 });
+   * ```
    */
   async subscribeUpdate(args: SubscribeUpdateOptions): Promise<void> {
     this.#ensureActive()
     let { subscriptionRequestId, priority, forward, parameters, startLocation, endGroup } = args
-
     if (endGroup && startLocation.group >= endGroup)
       throw new ProtocolViolationError('MOQtailClient.subscribeUpdate', 'End group must be greater than start group')
-
     try {
       if (this.requests.has(subscriptionRequestId)) {
         const request = this.requests.get(subscriptionRequestId)!
@@ -955,7 +1089,8 @@ export class MOQtailClient {
           const subscription = this.subscriptions.get(trackAlias)
           if (!subscription)
             throw new InternalError('MOQtailClient.subscribeUpdate', 'Request exists but subscription does not')
-
+          // TODO: If a parameter included in SUBSCRIBE is not present in SUBSCRIBE_UPDATE, its value remains unchanged.
+          // There is no mechanism to remove a parameter from a subscription. We can add parameters but check for duplicate params
           if (!parameters) parameters = new VersionSpecificParameters()
           const requestId = this.#nextClientRequestId
           const msg = new SubscribeUpdate(
@@ -967,10 +1102,11 @@ export class MOQtailClient {
             forward,
             parameters.build(),
           )
-          subscription.update(msg)
+          subscription.update(msg) // This also updates the request since both maps store the same object
           await this.controlStream.send(msg)
         }
       }
+      // Q: Throw? Idempotent?
     } catch (error) {
       await this.disconnect(
         new InternalError('MOQtailClient.subscribeUpdate', error instanceof Error ? error.message : String(error)),
@@ -980,8 +1116,148 @@ export class MOQtailClient {
   }
 
   /**
-   * Performs a FETCH operation and returns a stream of MoqtObjects.
+   * Switches an active subscription to a different track while retaining the same subscription parameters.
+   *
+   * Use this to change the subscribed track without tearing down and re-establishing a new subscription.
+   *
+   * @param args - {@link SwitchOptions} referencing the original subscription `requestId` and new track name.
+   * @returns Promise that resolves when the switch control frame is sent.
+   * @throws :{@link MOQtailError} If the client is destroyed.
+   * @throws :{@link InternalError} On transport/control failure (disconnect is triggered before rethrow).
+   *
+   * @remarks
+   * - Only applies to active SUBSCRIBE requests; ignored if the request is not a subscription.
+   * - All other subscription parameters (window, forwarding, priority) remain unchanged.
+   *
+   * @example Switch to a different track
+   * ```ts
+   * await client.switch({ subscriptionRequestId, fullTrackName: newTrackName });
+   * ```
    */
+  async switch(
+    args: SwitchOptions,
+  ): Promise<SubscribeError | { requestId: bigint; stream: ReadableStream<MoqtObject> }> {
+    this.#ensureActive()
+    let { fullTrackName, subscriptionRequestId, parameters } = args
+    try {
+      if (!this.requests.has(subscriptionRequestId))
+        throw new ProtocolViolationError('MOQtailClient.switch', 'Unknown subscription request id')
+
+      const request = this.requests.get(subscriptionRequestId)!
+      if (!(request instanceof SubscribeRequest))
+        throw new ProtocolViolationError('MOQtailClient.switch', 'Request id is not a subscription')
+
+      const trackAlias = this.subscriptionAliasMap.get(subscriptionRequestId)
+      if (!trackAlias)
+        throw new InternalError('MOQtailClient.switch', 'Request exists but track alias mapping does not')
+      const subscription = this.subscriptions.get(trackAlias)
+      if (!subscription) throw new InternalError('MOQtailClient.switch', 'Request exists but subscription does not')
+
+      if (!parameters) parameters = new VersionSpecificParameters()
+      const requestId = this.#nextClientRequestId
+      this.requests.set(requestId, subscription)
+
+      const msg = new Switch(requestId, fullTrackName, subscriptionRequestId, parameters.build())
+      subscription.switch(fullTrackName, parameters.build())
+      await this.controlStream.send(msg)
+
+      const response = await subscription
+      if (response instanceof SubscribeOk) {
+        // Generate a new update callback mapping for the new track alias
+        this.aliasFullTrackNameMap.set(response.trackAlias, fullTrackName)
+        this.pendingStateUpdates.set(subscriptionRequestId, (newTrackAlias: bigint) => {
+          if (newTrackAlias !== response.trackAlias) return false
+          // Update internal state to expect the new subscription
+          this.subscriptions.set(response.trackAlias, subscription)
+          this.subscriptionAliasMap.set(requestId, response.trackAlias)
+          subscription.requestId = requestId
+
+          // Old subscription id is no longer valid
+          this.requestIdMap.removeMappingByRequestId(subscriptionRequestId)
+          this.requestIdMap.addMapping(subscriptionRequestId, fullTrackName)
+
+          // remove the old subscription
+          this.subscriptions.delete(trackAlias)
+          return true
+        })
+
+        return { requestId, stream: subscription.stream }
+      } else {
+        this.requestIdMap.removeMappingByRequestId(requestId)
+        this.requests.delete(requestId)
+        return response
+      }
+    } catch (error) {
+      await this.disconnect(
+        new InternalError('MOQtailClient.switch', error instanceof Error ? error.message : String(error)),
+      )
+      throw error
+    }
+  }
+
+  /**
+   * One-shot retrieval of a bounded object span, optionally anchored to an existing subscription, returning a stream of {@link MoqtObject}s.
+   *
+   * Choose a fetch type via `typeAndProps.type`:
+   * - StandAlone: Historical slice of a specific {@link FullTrackName} independent of active subscriptions.
+   * - Relative: Range relative to the JOINING subscription's current (largest) location; use when you want "N groups back" from live.
+   * - Absolute: Absolute group/object offsets tied to an existing subscription (stable anchor) even if that subscription keeps forwarding.
+   *
+   * Field highlights (in {@link FetchOptions}):
+   * - priority: 0 (highest) .. 255 (lowest); out-of-range rejected; non-integers rounded by caller expectation.
+   * - groupOrder: {@link GroupOrder.Original} to preserve publisher order; or reorder ascending/descending if supported by server.
+   * - typeAndProps: Discriminated union carrying parameters specific to each fetch mode (see examples).
+   * - parameters: Optional version-specific extension block.
+   *
+   * Returns either a {@link FetchError} (refusal / invalid request at protocol level) or `{ requestId, stream }` whose `stream`
+   * ends naturally after the bounded range completes (no explicit cancel needed for normal completion).
+   *
+   * Use cases:
+   * - Grab a historical window for scrubbing UI while a separate live subscription tails.
+   * - Late joiner fetching a short back-buffer then discarding the stream.
+   * - Analytics batch job pulling a fixed slice without subscribing long-term.
+   *
+   * @throws MOQtailError If client is destroyed.
+   * @throws ProtocolViolationError Priority out of [0-255] or missing/invalid joining subscription id for Relative/Absolute.
+   * @throws InternalError Transport/control failure (the client disconnects first) then rethrows original error.
+   *
+   * @remarks
+   * - Relative / Absolute require an existing active SUBSCRIBE `joiningRequestId`; if not found a {@link ProtocolViolationError} is thrown.
+   * - Result stream is finite; reader close occurs automatically when last object delivered.
+   * - Use {@link MOQtailClient.fetchCancel} only for early termination (not yet fully implemented: see TODO in code).
+   *
+   * @example Standalone window
+   * ```ts
+   * const r = await client.fetch({
+   *   priority: 64,
+   *   groupOrder: GroupOrder.Original,
+   *   typeAndProps: {
+   *     type: FetchType.StandAlone,
+   *     props: { fullTrackName, startLocation, endLocation }
+   *   }
+   * })
+   * if (!(r instanceof FetchError)) {
+   *   for await (const obj of r.stream as any) {
+   *     // consume objects then stream ends automatically
+   *   }
+   * }
+   * ```
+   *
+   * @example Relative to live subscription (e.g. last 5 groups)
+   * ```ts
+   * const sub = await client.subscribe({ fullTrackName, filterType: FilterType.LatestObject, forward: true, groupOrder: GroupOrder.Original, priority: 0 })
+   * if (!(sub instanceof SubscribeError)) {
+   *   const slice = await client.fetch({
+   *     priority: 32,
+   *     groupOrder: GroupOrder.Original,
+   *     typeAndProps: { type: FetchType.Relative, props: { joiningRequestId: sub.requestId, joiningStart: 0n } }
+   *   })
+   * }
+   * ```
+   */
+  // TODO: figure out how to handle joining fetch types
+  // Do we need an existing subscription? What happens if that subscription forwards objects?
+  // Will the subscribe objects be pushed through this FetchRequest.controller?
   async fetch(args: FetchOptions): Promise<FetchError | { requestId: bigint; stream: ReadableStream<MoqtObject> }> {
     this.#ensureActive()
     try {
@@ -991,12 +1267,19 @@ export class MOQtailClient {
           'MOQtailClient.fetch',
           `subscriberPriority: ${priority} must be in range of [0-255]`,
         )
-
       const params = parameters ? parameters.build() : new VersionSpecificParameters().build()
       let msg: Fetch
       let joiningRequest: MOQtailRequest | undefined
+      // Generate unique requestId at the beginning to ensure uniqueness
       const requestId = this.#nextClientRequestId
-
+      console.log(
+        'MOQtailClient.fetch: generated requestId:',
+        requestId,
+        'for fetch type:',
+        typeAndProps.type,
+        'current #dontUseRequestId:',
+        this.#dontUseRequestId,
+      )
       switch (typeAndProps.type) {
         case FetchType.StandAlone:
           msg = new Fetch(
@@ -1023,7 +1306,6 @@ export class MOQtailClient {
             params,
           )
           break
-
         case FetchType.Absolute:
           joiningRequest = this.requests.get(typeAndProps.props.joiningRequestId)
           if (!(joiningRequest instanceof SubscribeRequest))
@@ -1040,12 +1322,23 @@ export class MOQtailClient {
           )
           break
       }
-
       const request = new FetchRequest(msg)
+      console.log(
+        'MOQtailClient.fetch: storing FetchRequest with requestId:',
+        msg.requestId,
+        'for fetch type:',
+        typeAndProps.type,
+      )
+      console.log('MOQtailClient.fetch: full fetch message:', {
+        requestId: msg.requestId,
+        fetchType: typeAndProps.type,
+        joiningRequestId: typeAndProps.type !== FetchType.StandAlone ? typeAndProps.props.joiningRequestId : 'N/A',
+      })
       this.requests.set(msg.requestId, request)
+      console.log('MOQtailClient.fetch: about to send fetch message to server')
       await this.controlStream.send(msg)
+      console.log('MOQtailClient.fetch: fetch message sent successfully, waiting for response')
       const response = await request
-
       if (response instanceof FetchError) {
         this.requests.delete(msg.requestId)
         return response
@@ -1062,7 +1355,39 @@ export class MOQtailClient {
   }
 
   /**
-   * Sends a FETCH_CANCEL for an active fetch request.
+   * Request early termination of an in‑flight FETCH identified by its `requestId`.
+   *
+   * Use when the consumer no longer needs the remaining objects (user scrubbed away, UI panel closed, replaced by a new fetch).
+   * Sends a {@link FetchCancel} control frame if the id currently maps to an active fetch; otherwise silent no-op (idempotent).
+   *
+   * Parameter semantics:
+   * - requestId: bigint returned from {@link MOQtailClient.fetch}. Numbers auto-converted to bigint.
+   *
+   * Current behavior / limitations:
+   * - Data stream closure after cancel is TODO (objects may still arrive briefly).
+   * - Unknown / already finished request: ignored without error.
+   * - Only targets FETCH requests (not subscriptions).
+   *
+   * @throws MOQtailError If client is destroyed.
+   * @throws InternalError Failure while sending the cancel (client disconnects first).
+   *
+   * @remarks
+   * Follow-up improvement planned: actively close associated readable stream controller immediately upon acknowledgment.
+   *
+   * @example Cancel shortly after starting
+   * ```ts
+   * const r = await client.fetch({ priority: 32, groupOrder: GroupOrder.Original, typeAndProps: { type: FetchType.StandAlone, props: { fullTrackName, startLocation, endLocation } } })
+   * if (!(r instanceof FetchError)) {
+   *   // user navigated away
+   *   await client.fetchCancel(r.requestId)
+   * }
+   * ```
+   *
+   * @example Idempotent double cancel
+   * ```ts
+   * await client.fetchCancel(456n)
+   * await client.fetchCancel(456n) // no error
+   * ```
    */
   async fetchCancel(requestId: bigint | number) {
     this.#ensureActive()
@@ -1070,10 +1395,12 @@ export class MOQtailClient {
       if (typeof requestId === 'number') requestId = BigInt(requestId)
       const request = this.requests.get(requestId)
       if (request) {
-        if (request instanceof FetchRequest) {
+        if (request instanceof Fetch) {
+          // TODO: Fetch cancel, mark data streams for closure
           this.controlStream.send(new FetchCancel(requestId))
         }
       }
+      // No matching fetch request, idempotent
     } catch (error) {
       await this.disconnect(
         new InternalError('MOQtailClient.fetchCancel', error instanceof Error ? error.message : String(error)),
@@ -1082,12 +1409,54 @@ export class MOQtailClient {
     }
   }
 
+  // TODO: Each announced track should checked against ongoing subscribe_namespace
+  // If matches it should send an announce to that peer automatically
   /**
-   * Publish a namespace to the relay
+   * Declare (publish) a track namespace to the peer so subscribers using matching prefixes (via {@link MOQtailClient.subscribeNamespace})
+   * can discover and begin subscribing/fetching its tracks.
+   *
+   * Typical flow (publisher side):
+   * 1. Prepare / register one or more {@link Track} objects locally (see {@link MOQtailClient.addOrUpdateTrack}).
+   * 2. Call `publishNamespace(namespace)` once per namespace prefix to expose those tracks.
+   * 3. Later, call {@link MOQtailClient.publishNamespaceDone} when no longer publishing under that namespace.
+   *
+   * Parameter semantics:
+   * - trackNamespace: Tuple representing the namespace prefix (e.g. ["camera","main"]). All tracks whose full names start with this tuple are considered within the announce scope.
+   * - parameters: Optional {@link VersionSpecificParameters}; omitted =\> default instance.
+   *
+   * Returns: {@link PublishNamespaceOk} on success (namespace added to `announcedNamespaces`) or {@link PublishNamespaceError} explaining refusal.
+   *
+   * Use cases:
+   * - Make a camera or sensor namespace available before any objects are pushed.
+   * - Dynamically expose a newly created room / session namespace.
+   * - Re-announce after reconnect to repopulate discovery state.
+   *
+   * @throws MOQtailError If client is destroyed.
+   * @throws InternalError Transport/control failure while sending or awaiting response (client disconnects first).
+   *
+   * @remarks
+   * - Duplicate announce detection is TODO (currently a second call will still send another PUBLISH_NAMESPACE; receiver behavior may vary).
+   * - Successful announces are tracked in `announcedNamespaces`; manual removal occurs via {@link MOQtailClient.publishNamespaceDone}.
+   * - Discovery subscribers (those who issued {@link MOQtailClient.subscribeNamespace}) will receive the resulting {@link PublishNamespace} message.
+   *
+   * @example Minimal announce
+   * ```ts
+   * const res = await client.publishNamespace(["camera","main"])
+   * if (res instanceof PublishNamespaceOk) {
+   *   // ready to publish objects under tracks with this namespace prefix
+   * }
+   * ```
+   *
+   * @example PublishNamespace with parameters block
+   * ```ts
+   * const params = new VersionSpecificParameters().setSomeExtensionFlag(true)
+   * const resp = await client.publishNamespace(["room","1234"], params)
+   * ```
    */
   async publishNamespace(trackNamespace: Tuple, parameters?: VersionSpecificParameters) {
     this.#ensureActive()
     try {
+      // TODO: Check for duplicate announces
       const params = parameters ? parameters.build() : new VersionSpecificParameters().build()
       const msg = new PublishNamespace(this.#nextClientRequestId, trackNamespace, params)
       const request = new PublishNamespaceRequest(msg.requestId, msg)
@@ -1106,7 +1475,36 @@ export class MOQtailClient {
   }
 
   /**
-   * Send a PublishNamespaceDone to signal the end of publishing for a namespace.
+   * Withdraw a previously announced namespace so new subscribers no longer discover its tracks.
+   *
+   * Use when shutting down publishing for a logical scope (camera offline, room closed, session ended).
+   * Removes the namespace from `announcedNamespaces` locally and sends an {@link PublishNamespaceDone} control frame.
+   *
+   * Parameter semantics:
+   * - trackNamespace: Exact tuple used during {@link MOQtailClient.publishNamespace}. Must match to be removed from internal set.
+   *
+   * Behavior:
+   * - Does not delete locally registered {@link Track} objects (they remain in `trackSources`).
+   * - Does not forcibly end active subscriptions that were already established; peers simply stop discovering it for new ones.
+   * - Silent if the namespace was not currently recorded (idempotent style).
+   *
+   * @throws MOQtailError If client is destroyed before sending.
+   * @throws (rethrows original error) Any lower-level failure while sending results in a disconnect (unwrapped TODO: future wrap with InternalError for consistency).
+   *
+   * @remarks
+   * Peers that issued {@link MOQtailClient.subscribeNamespace} for a matching prefix should receive the resulting {@link PublishNamespaceDone}.
+   * Consider calling this before {@link MOQtailClient.disconnect} to give consumers prompt notice.
+   *
+   * @example Basic usage
+   * ```ts
+   * await client.publishNamespaceDone(["camera","main"])
+   * ```
+   *
+   * @example Idempotent
+   * ```ts
+   * await client.publishNamespaceDone(["camera","main"]) // first time
+   * await client.publishNamespaceDone(["camera","main"]) // no error, already removed
+   * ```
    */
   async publishNamespaceDone(trackNamespace: Tuple) {
     this.#ensureActive()
@@ -1115,13 +1513,38 @@ export class MOQtailClient {
       this.announcedNamespaces.delete(msg.trackNamespace)
       await this.controlStream.send(msg)
     } catch (err) {
+      // TODO: Match against error cases
       await this.disconnect()
       throw err
     }
   }
 
   /**
-   * Cancel a previously sent PUBLISH_NAMESPACE request.
+   * Send an {@link PublishNamespaceCancel} to abort a previously issued ANNOUNCE before (or after) the peer fully processes it.
+   *
+   * Use when an announce was sent prematurely (e.g. validation failed locally, namespace no longer needed) and you want
+   * to retract it without waiting for normal announce lifecycle or before publishing any objects.
+   *
+   * Parameter semantics:
+   * - msg: Pre-constructed {@link PublishNamespaceCancel} referencing the original announce request id / namespace (builder provided elsewhere).
+   *
+   * Behavior:
+   * - Simply forwards the control frame; does not modify `announcedNamespaces` (call {@link MOQtailClient.publishNamespaceDone} for local bookkeeping removal).
+   * - Safe to send even if the announce already succeeded; peer may ignore duplicates per spec guidance.
+   *
+   * @throws MOQtailError If client is destroyed.
+   * @throws InternalError Wrapped transport/control send failure (client disconnects first) then rethrows.
+   *
+   * @remarks
+   * Use in tandem with internal tracking if you want to prevent subsequent object publication until a new announce is issued.
+   *
+   * @example Cancel immediately after a mistaken announce
+   * ```ts
+   * const publishNamespaceResp = await client.publishNamespace(["camera","temp"]) // wrong namespace
+   * // Assume you kept the original announce requestId (e.g. from PublishNamespaceRequest)
+   * const cancelMsg = new PublishNamespaceCancel(publishNamespaceResp.requestId as bigint)
+   * await client.publishNamespaceCancel(cancelMsg)
+   * ```
    */
   async publishNamespaceCancel(msg: PublishNamespaceCancel) {
     this.#ensureActive()
@@ -1138,9 +1561,7 @@ export class MOQtailClient {
     }
   }
 
-  /**
-   * Subscribe to a namespace
-   */
+  // INFO: Subscriber calls this the get matching announce messages with this prefix
   async subscribeNamespace(msg: SubscribeNamespace) {
     this.#ensureActive()
     try {
@@ -1153,9 +1574,6 @@ export class MOQtailClient {
     }
   }
 
-  /**
-   * Unsubscribe from a namespace
-   */
   async unsubscribeNamespace(msg: UnsubscribeNamespace) {
     this.#ensureActive()
     try {
@@ -1168,11 +1586,6 @@ export class MOQtailClient {
     }
   }
 
-  /* Background Handlers & Loops */
-
-  /**
-   * Background loop that processes incoming control messages
-   */
   async #handleIncomingControlMessages(): Promise<void> {
     this.#ensureActive()
     try {
@@ -1182,9 +1595,7 @@ export class MOQtailClient {
         if (done) throw new MOQtailError('WebTransport session is terminated')
         const handler = getHandlerForControlMessage(msg)
         if (!handler) throw new ProtocolViolationError('MOQtailClient', 'No handler for the received message')
-        // Note: Handler expects MOQtailClient but we're MOQtailClient
-        // This works because we have the same public interface
-        await handler(this as unknown as import('./client').MOQtailClient, msg)
+        await handler(this, msg)
       }
     } catch (error) {
       this.disconnect()
@@ -1192,15 +1603,11 @@ export class MOQtailClient {
     }
   }
 
-  /**
-   * Background loop that accepts incoming unidirectional data streams.
-   */
   async #acceptIncomingUniStreams() {
     this.#ensureActive()
     const uds = this.webTransport.incomingUnidirectionalStreams
     const reader = uds.getReader()
     let isDone = false
-
     while (!isDone) {
       try {
         const { done, value: stream } = await reader.read()
@@ -1215,10 +1622,8 @@ export class MOQtailClient {
       }
     }
   }
-
-  /*
-   * Handler for incoming unidirectional data streams.
-   */
+  // TODO: Handle request cancellation. Cancel streams are expected to receive some on-fly objects.
+  // Do a timeout? Wait for certain amount of objects?
   async #handleRecvStreams(incomingUniStream: ReadableStream): Promise<void> {
     this.#ensureActive()
     try {
@@ -1254,11 +1659,13 @@ export class MOQtailClient {
             while (true) {
               const { done, value: nextObject } = await reader.read()
               if (done) {
+                // Fetch data stream complete - don't delete request here, FetchOk handler will do it
                 request.controller?.close()
                 break
               }
               if (nextObject) {
                 if (nextObject instanceof FetchObject) {
+                  // TODO: validate if it's a valid fetch object, asc or desc?
                   const moqtObject = MoqtObject.fromFetchObject(nextObject, fullTrackName)
                   request.controller?.enqueue(moqtObject)
                   continue
@@ -1273,7 +1680,20 @@ export class MOQtailClient {
         }
         throw new ProtocolViolationError('MOQtailClient', 'No request for received request id')
       } else {
-        const subscription = this.subscriptions.get(header.trackAlias)
+        let subscription = this.subscriptions.get(header.trackAlias)
+
+        // Check pending state updates for switch operations
+        if (!subscription) {
+          for (const [subscriptionId, callback] of this.pendingStateUpdates) {
+            const matched = callback(header.trackAlias)
+            if (matched) {
+              subscription = this.subscriptions.get(header.trackAlias)
+              this.pendingStateUpdates.delete(subscriptionId)
+              break
+            }
+          }
+        }
+
         if (subscription) {
           subscription.streamsAccepted++
           let firstObjectId: bigint | null = null
@@ -1285,6 +1705,7 @@ export class MOQtailClient {
             }
             if (nextObject) {
               if (nextObject instanceof SubgroupObject) {
+                // TODO: validate if it's a valid subgroup object
                 if (!firstObjectId) {
                   firstObjectId = nextObject.objectId
                 }
@@ -1309,12 +1730,16 @@ export class MOQtailClient {
                     subgroupId = header.subgroupId!
                 }
 
+                const fullTrackName = this.aliasFullTrackNameMap.get(header.trackAlias)
+                if (!fullTrackName)
+                  throw new ProtocolViolationError('MOQtailClient', 'No full track name for received track alias')
+
                 const moqtObject = MoqtObject.fromSubgroupObject(
                   nextObject,
                   header.groupId,
                   header.publisherPriority,
                   subgroupId,
-                  this.requestIdMap.getNameByRequestId(subscription.requestId),
+                  fullTrackName,
                 )
                 if (!subscription.largestLocation) subscription.largestLocation = moqtObject.location
                 if (subscription.largestLocation.compare(moqtObject.location) == -1)
@@ -1335,9 +1760,11 @@ export class MOQtailClient {
           }
           return
         }
+
         throw new ProtocolViolationError('MOQtailClient', 'No subscription for received track alias')
       }
     } catch (error) {
+      //this.disconnect()
       throw error
     }
   }

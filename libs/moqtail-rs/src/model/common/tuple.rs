@@ -16,8 +16,9 @@ use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
 use crate::model::error::ParseError;
 use bytes::{Buf, Bytes, BytesMut};
 use core::hash::{Hash, Hasher};
+use std::fmt::{Debug, Display};
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct TupleField {
   value: Bytes,
 }
@@ -28,14 +29,54 @@ impl Hash for TupleField {
   }
 }
 
+impl Debug for TupleField {
+  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    write!(f, "{}", self.as_str())
+  }
+}
+
+impl Display for TupleField {
+  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    write!(f, "{}", self.as_str())
+  }
+}
+
 impl TupleField {
   pub fn new(value: Bytes) -> Self {
     Self { value }
   }
+
+  pub fn len(&self) -> usize {
+    self.value.len()
+  }
+
+  pub fn is_empty(&self) -> bool {
+    self.value.is_empty()
+  }
+
   pub fn from_utf8(path: &str) -> Self {
     Self {
       value: Bytes::copy_from_slice(path.as_bytes()),
     }
+  }
+
+  pub fn as_str(&self) -> String {
+    let mut res = String::new();
+    for &b in self.value.as_ref() {
+      match b {
+        b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' => {
+          res.push(b as char);
+        }
+        _ => {
+          res.push_str(&format!(".{:02x}", b));
+        }
+      }
+    }
+    res
+  }
+
+  pub fn as_bytes(&self) -> &[u8] {
+    &self.value
   }
 
   pub fn serialize(&self) -> Result<Bytes, ParseError> {

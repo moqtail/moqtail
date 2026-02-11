@@ -15,6 +15,7 @@
 use crate::server::client::MOQTClient;
 use crate::server::session_context::SessionContext;
 use core::result::Result;
+use moqtail::model::control::publish_namespace::PublishNamespace;
 use moqtail::model::control::{
   control_message::ControlMessage, publish_namespace_ok::PublishNamespaceOk,
 };
@@ -54,6 +55,46 @@ pub async fn handle(
       client
         .add_announced_track_namespace(m.track_namespace.clone())
         .await;
+
+      // save the namespace among announcements
+      // so we can forward it to clients who later come in with subscribe_namespace
+      context
+        .track_manager
+        .add_announcement(m.track_namespace.clone(), client.clone())
+        .await;
+
+      // and forward the message to people who are subscribed to the namespace
+      {
+        let subs_map = context.track_manager.namespace_subscribers.read().await;
+        for (prefix, subscribers) in subs_map.iter() {
+          if m.track_namespace.starts_with(prefix) {
+            for sub in subscribers {
+              // Don't echo back to announcer
+              if sub.connection_id == client.connection_id {
+                continue;
+              }
+
+              info!(
+                "Forwarding announcement {:?} to subscriber {}",
+                m.track_namespace, sub.connection_id
+              );
+
+              let notify = PublishNamespace::new(
+                0, // Notification ID
+                m.track_namespace.clone(),
+                &[],
+              );
+
+              let sub_clone = sub.clone();
+              tokio::spawn(async move {
+                let _ = sub_clone
+                  .queue_message(ControlMessage::PublishNamespace(Box::new(notify)))
+                  .await;
+              });
+            }
+          }
+        }
+      }
 
       let announce_ok = Box::new(PublishNamespaceOk {
         request_id: m.request_id,

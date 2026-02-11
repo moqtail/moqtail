@@ -17,6 +17,7 @@ use crate::server::session_context::SessionContext;
 use crate::server::track::{Track, TrackStatus};
 use core::result::Result;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
+use moqtail::model::control::subscribe::Subscribe;
 use moqtail::model::control::{
   constant::{FilterType, GroupOrder, PublishErrorCode},
   control_message::ControlMessage,
@@ -89,6 +90,8 @@ pub async fn handle(
         name: m.track_name.clone(),
       };
 
+      let m_clone = m.clone();
+
       // TODO: what happens multiple publishers publish the same track?
       if !context.track_manager.has_track(&full_track_name).await {
         info!("Track not found, creating new track: {:?}", m.track_alias);
@@ -104,12 +107,63 @@ pub async fn handle(
             largest_location: None,
           },
         );
-        context
+        let track_arc = context
           .track_manager
           .add_track(m.track_alias, full_track_name.clone(), track)
           .await;
 
         client.add_published_track(full_track_name).await;
+
+        // find subscribers interested in this track and forward the publish message to them
+        let subscribers = context
+          .track_manager
+          .get_namespace_subscribers(&m.track_namespace)
+          .await;
+
+        if !subscribers.is_empty() {
+          info!(
+            "Found {} subscribers for namespace {:?}, forwarding PUBLISH",
+            subscribers.len(),
+            m.track_namespace
+          );
+        }
+
+        for subscriber in subscribers {
+          info!(
+            "Forwarding Publish to interested client: {}",
+            subscriber.connection_id
+          );
+
+          let sub_clone = subscriber.clone();
+
+          let m_clone2 = m.clone();
+          tokio::spawn(async move {
+            sub_clone
+              .queue_message(ControlMessage::Publish(m_clone2))
+              .await;
+          });
+
+          let synthetic_sub = Subscribe::new_next_group_start(
+            0,
+            m_clone.track_namespace.clone(),
+            m_clone.track_name.clone(),
+            128,
+            m_clone.group_order,
+            m_clone.forward != 0,
+            vec![],
+          );
+
+          let track_write = track_arc.read().await;
+          if let Err(e) = track_write
+            .add_subscription(subscriber.clone(), synthetic_sub, false)
+            .await
+          {
+            warn!(
+              "Failed to auto-subscribe client {} to pushed track: {:?}",
+              subscriber.connection_id, e
+            );
+          }
+        }
       } else {
         // a different track alias but same full track name
         // maybe we can associate the track alias with the existing published track
@@ -119,7 +173,7 @@ pub async fn handle(
       // For simplicity, using default values that can be configured based on requirements
       let publish_ok = Box::new(PublishOk::new(
         request_id,
-        m.forward,                // Use the same forward preference as requested
+        m_clone.forward,          // Use the same forward preference as requested
         5,                        // Default subscriber priority
         GroupOrder::Ascending,    // Default group order, could be configurable
         FilterType::LatestObject, // Default filter type
@@ -130,7 +184,7 @@ pub async fn handle(
 
       info!(
         "Accepted publish request for track: {:?} with alias: {}",
-        m.track_name, m.track_alias
+        m_clone.track_name, m_clone.track_alias
       );
 
       control_stream_handler

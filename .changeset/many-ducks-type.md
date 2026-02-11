@@ -1,0 +1,5 @@
+---
+'relay': patch
+---
+
+Added license

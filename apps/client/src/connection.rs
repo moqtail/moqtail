@@ -13,10 +13,12 @@
 // limitations under the License.
 
 use anyhow::Result;
-use moqtail::model::control::client_setup::ClientSetup;
 use moqtail::model::control::constant;
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::error::TerminationCode;
+use moqtail::model::{
+  control::client_setup::ClientSetup, parameter::setup_parameter::SetupParameter,
+};
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
 use std::time::Duration;
@@ -60,7 +62,11 @@ impl MoqConnection {
 
     // Send ClientSetup
     info!("Sending ClientSetup...");
-    let client_setup = ClientSetup::new(vec![SUPPORTED_VERSION], vec![]);
+    let max_request_id_param = SetupParameter::new_max_request_id(1000000)
+      .try_into()
+      .unwrap();
+
+    let client_setup = ClientSetup::new(vec![SUPPORTED_VERSION], vec![max_request_id_param]);
     control_stream.send_impl(&client_setup).await?;
 
     // Receive ServerSetup

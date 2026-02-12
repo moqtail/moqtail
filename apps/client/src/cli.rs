@@ -22,18 +22,12 @@ pub enum ForwardingPreference {
   Datagram,
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum, PartialEq)]
-pub enum PublishMode {
-  /// Send Publish message, get PublishOk, then send data immediately
-  Proactive,
-  /// Wait for Subscribe from relay, send SubscribeOk, then publish
-  Reactive,
-}
-
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum Command {
   /// Publish objects to a track
   Publish,
+  /// Publish a namespace and auto-respond to subscribes with test data
+  PublishNamespace,
   /// Subscribe to a track and receive objects
   Subscribe,
   /// Fetch specific object ranges from a track
@@ -48,7 +42,7 @@ pub enum Command {
   about = "MOQtail test client"
 )]
 pub struct Cli {
-  /// Command to run (publish, subscribe, or fetch)
+  /// Command to run (publish, publish-namespace, subscribe, or fetch)
   #[arg(long, short, value_enum)]
   pub command: Command,
 
@@ -71,10 +65,6 @@ pub struct Cli {
   /// Forwarding preference (subgroup, datagram)
   #[arg(long, value_enum, default_value = "subgroup")]
   pub forwarding_preference: ForwardingPreference,
-
-  /// Publishing mode (publish only)
-  #[arg(long, value_enum, default_value = "proactive")]
-  pub publish_mode: PublishMode,
 
   /// Number of groups to send (publish only)
   #[arg(long, default_value_t = 100)]

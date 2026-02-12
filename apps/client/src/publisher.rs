@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cli::{ForwardingPreference, PublishMode};
+use crate::cli::ForwardingPreference;
 use crate::connection::MoqConnection;
 use crate::utils::should_log;
 use anyhow::Result;
@@ -39,12 +39,102 @@ pub struct PublishConfig {
   pub namespace: String,
   pub track_name: String,
   pub forwarding_preference: ForwardingPreference,
-  pub publish_mode: PublishMode,
   pub group_count: u64,
   pub interval: u64,
   pub objects_per_group: u64,
   pub payload_size: usize,
   pub track_alias: u64,
+}
+
+pub struct PublishNamespaceConfig {
+  pub namespace: String,
+  pub forwarding_preference: ForwardingPreference,
+  pub group_count: u64,
+  pub interval: u64,
+  pub objects_per_group: u64,
+  pub payload_size: usize,
+}
+
+pub async fn run_namespace(moq: MoqConnection, config: PublishNamespaceConfig) -> Result<()> {
+  let MoqConnection {
+    connection,
+    mut control_stream,
+  } = moq;
+
+  let ns = Tuple::from_utf8_path(&config.namespace);
+
+  // Step 1: Announce namespace
+  publish_namespace(&mut control_stream, &ns).await?;
+
+  let data_config = DataConfig {
+    forwarding_preference: config.forwarding_preference,
+    group_count: config.group_count,
+    interval: config.interval,
+    objects_per_group: config.objects_per_group,
+    payload_size: config.payload_size,
+  };
+
+  // Step 2: Listen for Subscribe messages and serve data
+  let mut track_alias_counter: u64 = 1;
+  let mut tasks: Vec<tokio::task::JoinHandle<Result<()>>> = Vec::new();
+
+  info!(
+    "Waiting for Subscribe messages on namespace '{}'...",
+    config.namespace
+  );
+
+  loop {
+    match control_stream.next_message().await {
+      Ok(ControlMessage::Subscribe(m)) => {
+        let track_alias = track_alias_counter;
+        track_alias_counter += 1;
+
+        info!(
+          "Received Subscribe: request_id={}, track={:?}, assigning track_alias={}",
+          m.request_id, m.track_name, track_alias
+        );
+
+        let msg = SubscribeOk::new_ascending_with_content(m.request_id, track_alias, 0, None, None);
+        control_stream.send_impl(&msg).await?;
+        info!(
+          "SubscribeOk sent for request_id={}, track_alias={}",
+          m.request_id, track_alias
+        );
+
+        // Spawn a task to send data for this subscription
+        let conn = connection.clone();
+        let dc = data_config.clone();
+        let task = tokio::spawn(async move { send_data(&conn, track_alias, &dc).await });
+        tasks.push(task);
+      }
+      Ok(ControlMessage::Unsubscribe(m)) => {
+        info!("Received Unsubscribe: {:?}", m);
+      }
+      Ok(m) => {
+        info!("Received control message: {:?}", m);
+      }
+      Err(e) => {
+        info!("Control stream ended: {:?}", e);
+        break;
+      }
+    }
+  }
+
+  // Wait for all spawned data-sending tasks to complete
+  for task in tasks {
+    if let Err(e) = task.await {
+      error!("Data sending task failed: {:?}", e);
+    }
+  }
+
+  // Keep connection alive briefly to ensure delivery
+  info!("Waiting before closing connection...");
+  tokio::time::sleep(Duration::from_secs(2)).await;
+
+  info!("Closing connection...");
+  connection.close(0u32.into(), b"Done");
+
+  Ok(())
 }
 
 pub async fn run(moq: MoqConnection, config: PublishConfig) -> Result<()> {
@@ -55,14 +145,6 @@ pub async fn run(moq: MoqConnection, config: PublishConfig) -> Result<()> {
 
   let ns = Tuple::from_utf8_path(&config.namespace);
 
-  // Step 1: PublishNamespace
-  if config.publish_mode == PublishMode::Proactive {
-    info!("Publishing namespace proactively...");
-  } else {
-    info!("Publishing namespace reactively...");
-    publish_namespace(&mut control_stream, &ns).await?;
-  }
-
   let data_config = DataConfig {
     forwarding_preference: config.forwarding_preference,
     group_count: config.group_count,
@@ -71,29 +153,15 @@ pub async fn run(moq: MoqConnection, config: PublishConfig) -> Result<()> {
     payload_size: config.payload_size,
   };
 
-  // Step 2: Dispatch based on publish mode
-  match config.publish_mode {
-    PublishMode::Proactive => {
-      publish_track_proactive(
-        &connection,
-        &mut control_stream,
-        &ns,
-        &config.track_name,
-        config.track_alias,
-        &data_config,
-      )
-      .await?;
-    }
-    PublishMode::Reactive => {
-      publish_track_reactive(
-        &connection,
-        &mut control_stream,
-        config.track_alias,
-        &data_config,
-      )
-      .await?;
-    }
-  }
+  publish_track(
+    &connection,
+    &mut control_stream,
+    &ns,
+    &config.track_name,
+    config.track_alias,
+    &data_config,
+  )
+  .await?;
 
   // Keep connection alive briefly to ensure delivery
   info!("Waiting before closing connection...");
@@ -127,6 +195,7 @@ async fn publish_namespace(
   }
 }
 
+#[derive(Clone)]
 struct DataConfig {
   forwarding_preference: ForwardingPreference,
   group_count: u64,
@@ -135,8 +204,7 @@ struct DataConfig {
   payload_size: usize,
 }
 
-/// Proactive mode: send Publish message, get PublishOk, then send data immediately.
-async fn publish_track_proactive(
+async fn publish_track(
   connection: &Arc<wtransport::Connection>,
   control_stream: &mut ControlStreamHandler,
   namespace: &Tuple,
@@ -144,12 +212,9 @@ async fn publish_track_proactive(
   track_alias: u64,
   data_config: &DataConfig,
 ) -> Result<()> {
-  info!(
-    "Publishing track (proactive mode): track_alias={}",
-    track_alias
-  );
+  info!("Publishing track: track_alias={}", track_alias);
   let publish = Publish::new(
-    1, // request_id
+    0, // request_id
     namespace.clone(),
     TupleField::from_utf8(track_name),
     track_alias,
@@ -172,44 +237,6 @@ async fn publish_track_proactive(
   }
 
   send_data(connection, track_alias, data_config).await
-}
-
-/// Reactive mode: wait for Subscribe from relay, send SubscribeOk, then publish.
-async fn publish_track_reactive(
-  connection: &Arc<wtransport::Connection>,
-  control_stream: &mut ControlStreamHandler,
-  track_alias: u64,
-  data_config: &DataConfig,
-) -> Result<()> {
-  info!("Waiting for Subscribe from relay (reactive mode)...");
-
-  loop {
-    match control_stream.next_message().await {
-      Ok(ControlMessage::Subscribe(m)) => {
-        info!("Received Subscribe: {:?}", m);
-        let msg = SubscribeOk::new_ascending_with_content(m.request_id, track_alias, 0, None, None);
-        control_stream.send_impl(&msg).await?;
-        info!("SubscribeOk sent, track_alias={}", track_alias);
-
-        send_data(connection, track_alias, data_config).await?;
-        return Ok(());
-      }
-      Ok(ControlMessage::Unsubscribe(m)) => {
-        info!("Received Unsubscribe: {:?}", m);
-        return Ok(());
-      }
-      Ok(m) => {
-        info!(
-          "Received control message while waiting for Subscribe: {:?}",
-          m
-        );
-      }
-      Err(e) => {
-        error!("Error receiving control message: {:?}", e);
-        anyhow::bail!("Error waiting for Subscribe: {:?}", e);
-      }
-    }
-  }
 }
 
 async fn send_data(

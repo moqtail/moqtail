@@ -44,7 +44,7 @@ pub async fn run(
   let ns = Tuple::from_utf8_path(namespace);
   info!("Subscribing to track: {}/{}", namespace, track_name);
   let subscribe = Subscribe::new_latest_object(
-    1, // request_id
+    0, // request_id
     ns,
     TupleField::from_utf8(track_name), // track_name
     0,                                 // subscriber_priority

@@ -19,6 +19,7 @@ use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::error::TerminationCode;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
+use std::time::Duration;
 use tracing::{error, info};
 use wtransport::{ClientConfig, Endpoint};
 
@@ -34,9 +35,17 @@ impl MoqConnection {
   pub async fn establish(server: &str, no_cert_validation: bool) -> Result<Self> {
     let c = ClientConfig::builder().with_bind_default();
     let config = if no_cert_validation {
-      c.with_no_cert_validation().build()
+      c.with_no_cert_validation()
+        .keep_alive_interval(Some(Duration::from_secs(3)))
+        .max_idle_timeout(Some(Duration::from_secs(7)))
+        .unwrap()
+        .build()
     } else {
-      c.with_native_certs().build()
+      c.with_native_certs()
+        .keep_alive_interval(Some(Duration::from_secs(3)))
+        .max_idle_timeout(Some(Duration::from_secs(7)))
+        .unwrap()
+        .build()
     };
 
     info!("Connecting to relay server at {}", server);

@@ -25,7 +25,6 @@ pub enum VersionParameter {
   MaxCacheDuration { duration: u64 },
   DeliveryTimeout { object_timeout: u64 },
   AuthorizationToken { token: AuthorizationToken },
-  ForwardActionGroup { group_id: u64 },
 }
 
 impl VersionParameter {
@@ -35,10 +34,6 @@ impl VersionParameter {
 
   pub fn new_delivery_timeout(object_timeout: u64) -> Self {
     VersionParameter::DeliveryTimeout { object_timeout }
-  }
-
-  pub fn new_forward_action_group(group_id: u64) -> Self {
-    VersionParameter::ForwardActionGroup { group_id }
   }
 
   pub fn new_auth_token(token: AuthorizationToken) -> Self {
@@ -80,14 +75,6 @@ impl VersionParameter {
           });
         }
       },
-      VersionParameter::ForwardActionGroup { group_id } => {
-        let kvp = KeyValuePair::try_new_varint(
-          VersionSpecificParameterType::ForwardActionGroup as u64,
-          *group_id,
-        )?;
-        let slice = kvp.serialize()?;
-        bytes.extend_from_slice(&slice);
-      }
     }
     Ok(bytes.freeze())
   }
@@ -110,9 +97,6 @@ impl TryFrom<KeyValuePair> for VersionParameter {
           }),
           VersionSpecificParameterType::MaxCacheDuration => {
             Ok(VersionParameter::MaxCacheDuration { duration: value })
-          }
-          VersionSpecificParameterType::ForwardActionGroup => {
-            Ok(VersionParameter::ForwardActionGroup { group_id: value })
           }
           _ => Err(ParseError::KeyValueFormattingError {
             context: "VersionParameter::deserialize",

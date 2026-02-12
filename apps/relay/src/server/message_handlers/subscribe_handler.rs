@@ -261,14 +261,14 @@ async fn handle_subscribe_ok_message(
   info!("received SubscribeOk message: {:?}", msg);
   let request_id = msg.request_id;
 
-  // Look up the relay subscribe request
+  // Look up and remove the relay subscribe request (no longer needed after processing)
   let sub_request = {
-    let requests = context.relay_subscribe_requests.read().await;
+    let mut requests = context.relay_subscribe_requests.write().await;
     debug!("current requests: {:?}", requests);
-    match requests.get(&request_id) {
+    match requests.remove(&request_id) {
       Some(m) => {
         info!("request id is verified: {:?}", request_id);
-        m.clone()
+        m
       }
       None => {
         warn!("request id is not verified: {:?}", request_id);

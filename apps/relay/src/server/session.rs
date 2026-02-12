@@ -340,66 +340,59 @@ impl Session {
       context.connection_id
     );
 
-    // Check if the disconnecting client is a publisher and handle track cleanup
-    let mut tracks_to_remove = Vec::new();
+    // Find ALL tracks owned by the disconnecting publisher and notify subscribers.
+    // This covers both tracks from the PUBLISH flow (in client.published_tracks)
+    // and tracks created via the SUBSCRIBE flow (get_or_create_track in subscribe_handler).
+    let mut tracks_to_remove: Vec<(u64, moqtail::model::data::full_track_name::FullTrackName)> =
+      Vec::new();
     {
       let tracks = track_manager_cleanup.tracks.read().await;
-      let client = context.get_client().await;
-      if let Some(client) = client {
-        let published_tracks = client.get_published_tracks().await;
-        for full_track_name in published_tracks {
+      for (full_track_name, track_lock) in tracks.iter() {
+        let track = track_lock.read().await;
+        if track.publisher_connection_id == context.connection_id {
           info!(
             "Track {:?} belongs to disconnected publisher {}, notifying subscribers",
-            &full_track_name, context.connection_id
+            full_track_name, context.connection_id
           );
 
-          match tracks.get(&full_track_name) {
-            Some(track_lock) => {
-              let track = track_lock.read().await;
-              if track.publisher_connection_id == context.connection_id {
-                // check if the track belongs to the disconnected publisher
-                // even though, this comes from the client's published tracks
-                if track.publisher_connection_id == context.connection_id {
-                  info!(
-                    "Track {:?} belongs to disconnected publisher {}, notifying subscribers",
-                    &full_track_name, context.connection_id
-                  );
-                }
-
-                // Notify all subscribers that the publisher disconnected
-                if let Err(e) = track.notify_publisher_disconnected().await {
-                  error!(
-                    "Failed to notify subscribers for track {:?}: {:?}",
-                    &full_track_name, e
-                  );
-                }
-
-                tracks_to_remove.push((track.track_alias, full_track_name));
-              }
-            }
-            None => {
-              warn!(
-                "Track {:?} not found in removing tracks as the client {} disconnected",
-                &full_track_name, context.connection_id
-              );
-            }
+          if let Err(e) = track.notify_publisher_disconnected().await {
+            error!(
+              "Failed to notify subscribers for track {:?}: {:?}",
+              full_track_name, e
+            );
           }
+
+          tracks_to_remove.push((track.track_alias, full_track_name.clone()));
         }
       }
     }
 
     // Remove tracks that belonged to the disconnected publisher
-    if !tracks_to_remove.is_empty() {
-      for track_ninfo in tracks_to_remove {
+    for (track_alias, full_track_name) in &tracks_to_remove {
+      if *track_alias != 0 {
+        // Track has a registered alias (Confirmed state)
         track_manager_cleanup
-          .remove_track_by_alias(track_ninfo.0)
+          .remove_track_by_alias(*track_alias)
           .await;
-        info!(
-          "Removed track {:?} after publisher {} disconnect",
-          &track_ninfo.1, context.connection_id
-        );
+      } else {
+        // Pending track without alias - remove by name
+        track_manager_cleanup.remove_track(full_track_name).await;
       }
+      info!(
+        "Removed track {:?} after publisher {} disconnect",
+        full_track_name, context.connection_id
+      );
     }
+
+    // Remove announcements for the disconnecting publisher
+    track_manager_cleanup
+      .remove_announcements_by_connection(context.connection_id)
+      .await;
+
+    // Remove the disconnecting client from namespace_subscribers
+    track_manager_cleanup
+      .remove_namespace_subscriber(context.connection_id)
+      .await;
 
     // Remove client from client_manager
     {

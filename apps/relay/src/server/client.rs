@@ -126,11 +126,6 @@ impl MOQTClient {
     published_tracks.push(full_track_name);
   }
 
-  pub(crate) async fn get_published_tracks(&self) -> Vec<FullTrackName> {
-    let published_tracks = self.published_tracks.read().await;
-    published_tracks.clone()
-  }
-
   /// Get the next control message from the queue.
   /// This function will block until a message is available and will return the message.
   pub(crate) async fn wait_for_next_message(&self) -> ControlMessage {

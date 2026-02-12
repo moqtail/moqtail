@@ -46,7 +46,6 @@ async fn main() -> Result<(), anyhow::Error> {
         namespace: cli.namespace,
         track_name: cli.track_name,
         forwarding_preference: cli.forwarding_preference,
-        publish_mode: cli.publish_mode,
         group_count: cli.group_count,
         interval: cli.interval,
         objects_per_group: cli.objects_per_group,
@@ -56,6 +55,17 @@ async fn main() -> Result<(), anyhow::Error> {
           .unwrap_or_else(|| rand::random::<u64>() & ((1u64 << 62) - 1)),
       };
       publisher::run(moq_conn, config).await
+    }
+    Command::PublishNamespace => {
+      let config = publisher::PublishNamespaceConfig {
+        namespace: cli.namespace,
+        forwarding_preference: cli.forwarding_preference,
+        group_count: cli.group_count,
+        interval: cli.interval,
+        objects_per_group: cli.objects_per_group,
+        payload_size: cli.payload_size,
+      };
+      publisher::run_namespace(moq_conn, config).await
     }
     Command::Subscribe => {
       subscriber::run(

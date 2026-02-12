@@ -81,6 +81,13 @@ impl TrackManager {
     }
   }
 
+  pub async fn remove_track(&self, full_track_name: &FullTrackName) {
+    let mut tracks = self.tracks.write().await;
+    if tracks.remove(full_track_name).is_some() {
+      info!("Removed track by name: {:?}", full_track_name);
+    }
+  }
+
   pub async fn get_track(&self, full_track_name: &FullTrackName) -> Option<Arc<RwLock<Track>>> {
     let tracks = self.tracks.read().await;
     tracks.get(full_track_name).cloned()
@@ -172,6 +179,36 @@ impl TrackManager {
     let mut announcements = self.announcements.write().await;
     announcements.insert(namespace.clone(), publisher);
     info!("Stored announcement for namespace: {:?}", namespace);
+  }
+
+  pub async fn remove_announcements_by_connection(&self, connection_id: usize) {
+    let mut announcements = self.announcements.write().await;
+    announcements.retain(|ns, client| {
+      if client.connection_id == connection_id {
+        info!(
+          "Removed announcement for namespace {:?} (publisher {} disconnected)",
+          ns, connection_id
+        );
+        false
+      } else {
+        true
+      }
+    });
+  }
+
+  pub async fn remove_namespace_subscriber(&self, connection_id: usize) {
+    let mut subs = self.namespace_subscribers.write().await;
+    for (prefix, clients) in subs.iter_mut() {
+      let before = clients.len();
+      clients.retain(|c| c.connection_id != connection_id);
+      if clients.len() < before {
+        info!(
+          "Removed namespace subscriber {} from prefix {:?}",
+          connection_id, prefix
+        );
+      }
+    }
+    subs.retain(|_, clients| !clients.is_empty());
   }
 
   pub async fn get_announcements_by_prefix(&self, prefix: &Tuple) -> Vec<Tuple> {

@@ -15,6 +15,9 @@ TRACK="demo"
 # Parse global --server / -s flag before the subcommand
 ARGS=("$@")
 SUBCMD=""
+
+
+
 for i in "${!ARGS[@]}"; do
   case "${ARGS[$i]}" in
     --server|-s)
@@ -23,9 +26,13 @@ for i in "${!ARGS[@]}"; do
       ;;
   esac
 done
+
 # Re-index after deletions
-ARGS=("${ARGS[@]}")
-SUBCMD="${ARGS[0]:-help}"
+if [ ${#ARGS[@]} -eq 0 ]; then
+  SUBCMD="help"
+else
+  SUBCMD="${ARGS[0]:-help}"
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"

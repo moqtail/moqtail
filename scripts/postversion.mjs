@@ -43,6 +43,14 @@ async function updateCargoTomlVersions() {
       process.exit(1)
     }
   })
+
+  // Update package-lock.json
+  exec('npm install --package-lock-only', (error, stdout, stderr) => {
+    if (error) {
+      console.error(`Error running npm install --package-lock-only: ${error.message}`)
+      process.exit(1)
+    }
+  })
 }
 
 await updateCargoTomlVersions()

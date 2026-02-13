@@ -1,5 +1,5 @@
 {
-  "name": "moqtail-ts",
+  "name": "moqtail",
   "version": "0.6.0",
   "description": "Media Over QUIC Transport client implementation",
   "type": "module",

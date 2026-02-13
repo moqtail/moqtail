@@ -1,6 +1,6 @@
 ---
 'moqtail-rs': minor
-'moqtail-ts': minor
+'moqtail': minor
 'client': minor
 'relay': minor
 ---

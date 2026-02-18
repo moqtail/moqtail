@@ -14,29 +14,25 @@
  * limitations under the License.
  */
 
-import { SubscribeNamespace, SubscribeNamespaceError, SubscribeNamespaceOk } from '@/model'
+import { Publish, PublishError, PublishOk } from '@/model'
 
-export class SubscribeNamespaceRequest implements PromiseLike<SubscribeNamespaceOk | SubscribeNamespaceError> {
+export class PublishRequest implements PromiseLike<PublishOk | PublishError> {
   public readonly requestId: bigint
-  public readonly message: SubscribeNamespace
-  private _resolve!: (
-    value: SubscribeNamespaceOk | SubscribeNamespaceError | PromiseLike<SubscribeNamespaceOk | SubscribeNamespaceError>,
-  ) => void
+  public readonly message: Publish
+  private _resolve!: (value: PublishOk | PublishError | PromiseLike<PublishOk | PublishError>) => void
   private _reject!: (reason?: any) => void
-  private promise: Promise<SubscribeNamespaceOk | SubscribeNamespaceError>
+  private promise: Promise<PublishOk | PublishError>
 
-  constructor(msg: SubscribeNamespace) {
+  constructor(msg: Publish) {
     this.requestId = msg.requestId
     this.message = msg
-    this.promise = new Promise<SubscribeNamespaceOk | SubscribeNamespaceError>((resolve, reject) => {
+    this.promise = new Promise<PublishOk | PublishError>((resolve, reject) => {
       this._resolve = resolve
       this._reject = reject
     })
   }
 
-  public resolve(
-    value: SubscribeNamespaceOk | SubscribeNamespaceError | PromiseLike<SubscribeNamespaceOk | SubscribeNamespaceError>,
-  ): void {
+  public resolve(value: PublishOk | PublishError | PromiseLike<PublishOk | PublishError>): void {
     this._resolve(value)
   }
 
@@ -44,11 +40,8 @@ export class SubscribeNamespaceRequest implements PromiseLike<SubscribeNamespace
     this._reject(reason)
   }
 
-  public then<TResult1 = SubscribeNamespaceOk | SubscribeNamespaceError, TResult2 = never>(
-    onfulfilled?:
-      | ((value: SubscribeNamespaceOk | SubscribeNamespaceError) => TResult1 | PromiseLike<TResult1>)
-      | undefined
-      | null,
+  public then<TResult1 = PublishOk | PublishError, TResult2 = never>(
+    onfulfilled?: ((value: PublishOk | PublishError) => TResult1 | PromiseLike<TResult1>) | undefined | null,
     onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | undefined | null,
   ): PromiseLike<TResult1 | TResult2> {
     return this.promise.then(onfulfilled, onrejected)
@@ -56,11 +49,11 @@ export class SubscribeNamespaceRequest implements PromiseLike<SubscribeNamespace
 
   public catch<TResult = never>(
     onrejected?: ((reason: any) => TResult | PromiseLike<TResult>) | undefined | null,
-  ): Promise<SubscribeNamespaceOk | SubscribeNamespaceError | TResult> {
+  ): Promise<PublishOk | PublishError | TResult> {
     return this.promise.catch(onrejected)
   }
 
-  public finally(onfinally?: (() => void) | undefined | null): Promise<SubscribeNamespaceOk | SubscribeNamespaceError> {
+  public finally(onfinally?: (() => void) | undefined | null): Promise<PublishOk | PublishError> {
     return this.promise.finally(onfinally)
   }
 }

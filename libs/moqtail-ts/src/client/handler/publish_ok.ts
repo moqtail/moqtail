@@ -14,16 +14,16 @@
  * limitations under the License.
  */
 
-import { SubscribeNamespace, SubscribeNamespaceOk } from '../../model/control'
+import { ProtocolViolationError } from '@/model'
+import { PublishOk } from '../../model/control'
+import { PublishRequest } from '../request/publish'
 import { ControlMessageHandler } from './handler'
 
-export const handlerSubscribeNamespace: ControlMessageHandler<SubscribeNamespace> = async (client, msg) => {
-  // Bubble the event up to the application layer
-  if (client.onPeerSubscribeNamespace) {
-    client.onPeerSubscribeNamespace(msg)
+export const handlerPublishOk: ControlMessageHandler<PublishOk> = async (client, msg) => {
+  const request = client.requests.get(msg.requestId)
+  if (request instanceof PublishRequest) {
+    request.resolve(msg)
+  } else {
+    throw new ProtocolViolationError('handlerPublishOk', 'No publish request was found with the given request id')
   }
-
-  // Implicit Consent: Automatically acknowledge the namespace subscription.
-  const okMsg = new SubscribeNamespaceOk(msg.requestId)
-  await client.controlStream.send(okMsg)
 }

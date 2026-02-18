@@ -14,16 +14,27 @@
  * limitations under the License.
  */
 
-import { SubscribeNamespace, SubscribeNamespaceOk } from '../../model/control'
+import { FilterType, GroupOrder, Publish, PublishOk } from '../../model/control'
 import { ControlMessageHandler } from './handler'
 
-export const handlerSubscribeNamespace: ControlMessageHandler<SubscribeNamespace> = async (client, msg) => {
+export const handlerPublish: ControlMessageHandler<Publish> = async (client, msg) => {
   // Bubble the event up to the application layer
-  if (client.onPeerSubscribeNamespace) {
-    client.onPeerSubscribeNamespace(msg)
+  if (client.onPeerPublish) {
+    client.onPeerPublish(msg)
   }
 
-  // Implicit Consent: Automatically acknowledge the namespace subscription.
-  const okMsg = new SubscribeNamespaceOk(msg.requestId)
-  await client.controlStream.send(okMsg)
+  // Implicit Consent: Automatically accept the publish request.
+  // Note: Adjust the PublishOk constructor parameters to match your specific
+  // Draft version implementation in ../../model/control.
+  const publishOk = new PublishOk(
+    msg.requestId,
+    1,
+    255,
+    GroupOrder.Ascending,
+    FilterType.LatestObject,
+    undefined,
+    undefined,
+    [],
+  )
+  await client.controlStream.send(publishOk)
 }

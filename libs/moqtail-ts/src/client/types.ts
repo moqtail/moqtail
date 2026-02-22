@@ -104,7 +104,7 @@ export type MOQtailClientOptions = {
   /** Control stream read timeout in milliseconds. */
   controlStreamTimeoutMs?: number
   /** If true, enables datagram support for the session. */
-  enableDatagrams: boolean
+  enableDatagrams?: boolean
   /** callbacks for observability and logging purposes: */
   callbacks?: {
     /** Called after a control message is successfully written to the {@link ControlStream}. */

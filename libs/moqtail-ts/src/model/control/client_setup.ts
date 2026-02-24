@@ -15,15 +15,12 @@
  */
 
 import { ByteBuffer, FrozenByteBuffer, BaseByteBuffer } from '../common/byte_buffer'
-import { ControlMessageType, DRAFT_14 } from './constant'
+import { ControlMessageType } from './constant'
 import { KeyValuePair } from '../common/pair'
 import { LengthExceedsMaxError } from '../error/error'
 
 export class ClientSetup {
-  constructor(
-    public readonly supportedVersions: number[],
-    public readonly setupParameters: KeyValuePair[],
-  ) {}
+  constructor(public readonly setupParameters: KeyValuePair[]) {}
 
   getType(): ControlMessageType {
     return ControlMessageType.ClientSetup
@@ -33,10 +30,6 @@ export class ClientSetup {
     const buf = new ByteBuffer()
     buf.putVI(ControlMessageType.ClientSetup)
     const payload = new ByteBuffer()
-    payload.putVI(this.supportedVersions.length)
-    for (const version of this.supportedVersions) {
-      payload.putVI(version)
-    }
     payload.putVI(this.setupParameters.length)
     for (const param of this.setupParameters) {
       payload.putKeyValuePair(param)
@@ -51,17 +44,12 @@ export class ClientSetup {
   }
 
   static parsePayload(buf: BaseByteBuffer): ClientSetup {
-    const numberOfSupportedVersions = buf.getNumberVI()
-    const supportedVersions: number[] = new Array(numberOfSupportedVersions)
-    for (let i = 0; i < numberOfSupportedVersions; i++) {
-      supportedVersions[i] = buf.getNumberVI()
-    }
     const paramCount = buf.getNumberVI()
     const setupParameters: KeyValuePair[] = new Array(paramCount)
     for (let i = 0; i < paramCount; i++) {
       setupParameters[i] = buf.getKeyValuePair()
     }
-    return new ClientSetup(supportedVersions, setupParameters)
+    return new ClientSetup(setupParameters)
   }
 }
 
@@ -69,30 +57,27 @@ if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
   describe('ClientSetup', () => {
     test('roundtrip', () => {
-      const supportedVersions = [12345, DRAFT_14]
       const setupParameters = [
         KeyValuePair.tryNewVarInt(0, 10),
         KeyValuePair.tryNewBytes(1, new TextEncoder().encode('Set me up!')),
       ]
-      const clientSetup = new ClientSetup(supportedVersions, setupParameters)
+      const clientSetup = new ClientSetup(setupParameters)
       const frozen = clientSetup.serialize()
       const msgType = frozen.getVI()
       expect(msgType).toBe(BigInt(ControlMessageType.ClientSetup))
       const msgLength = frozen.getU16()
       expect(msgLength).toBe(frozen.remaining)
       const deserialized = ClientSetup.parsePayload(frozen)
-      expect(deserialized.supportedVersions).toEqual(supportedVersions)
       expect(deserialized.setupParameters).toEqual(setupParameters)
       expect(frozen.remaining).toBe(0)
     })
 
     test('excess roundtrip', () => {
-      const supportedVersions = [12345, DRAFT_14]
       const setupParameters = [
         KeyValuePair.tryNewVarInt(0, 10),
         KeyValuePair.tryNewBytes(1, new TextEncoder().encode('Set me up!')),
       ]
-      const clientSetup = new ClientSetup(supportedVersions, setupParameters)
+      const clientSetup = new ClientSetup(setupParameters)
       const serialized = clientSetup.serialize().toUint8Array()
       const excess = new Uint8Array([9, 1, 1])
       const buf = new ByteBuffer()
@@ -104,19 +89,17 @@ if (import.meta.vitest) {
       const msgLength = frozen.getU16()
       expect(msgLength).toBe(frozen.remaining - 3)
       const deserialized = ClientSetup.parsePayload(frozen)
-      expect(deserialized.supportedVersions).toEqual(supportedVersions)
       expect(deserialized.setupParameters).toEqual(setupParameters)
       expect(frozen.remaining).toBe(3)
       expect(Array.from(frozen.getBytes(3))).toEqual([9, 1, 1])
     })
 
     test('partial message', () => {
-      const supportedVersions = [12345, DRAFT_14]
       const setupParameters = [
         KeyValuePair.tryNewVarInt(0, 10),
         KeyValuePair.tryNewBytes(1, new TextEncoder().encode('Set me up!')),
       ]
-      const clientSetup = new ClientSetup(supportedVersions, setupParameters)
+      const clientSetup = new ClientSetup(setupParameters)
       const serialized = clientSetup.serialize().toUint8Array()
       const upper = Math.floor(serialized.length / 2)
       const partial = serialized.slice(0, upper)

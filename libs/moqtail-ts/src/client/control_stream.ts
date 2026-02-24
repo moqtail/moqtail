@@ -302,7 +302,7 @@ if (import.meta.vitest) {
           .addMaxAuthTokenCacheSize(500n)
           .build()
 
-        const originalMessage = new ClientSetup([0xff000001], setupParams)
+        const originalMessage = new ClientSetup(setupParams)
         const messageBytes = originalMessage.serialize().toUint8Array()
         mockBidirectionalStream = createMockBidirectionalStream([messageBytes])
         controlStream = ControlStream.new(mockBidirectionalStream)
@@ -317,7 +317,7 @@ if (import.meta.vitest) {
       it('should handle excess bytes successful roundtrip then timeout', async () => {
         const setupParams = new SetupParameters().addPath('/excess/test').build()
 
-        const originalMessage = new ClientSetup([0xff000001, 0xff000002], setupParams)
+        const originalMessage = new ClientSetup(setupParams)
         const messageBytes = originalMessage.serialize().toUint8Array()
         const excessBytes = new Uint8Array([0xff, 0x13, 0x25])
 
@@ -335,7 +335,7 @@ if (import.meta.vitest) {
       })
       it('should timeout on partial message', async () => {
         const setupParams = new SetupParameters().addPath('/partial/test').addMaxRequestId(42n).build()
-        const originalMessage = new ClientSetup([0xff000001], setupParams)
+        const originalMessage = new ClientSetup(setupParams)
         const completeMessageBytes = originalMessage.serialize().toUint8Array()
 
         // Send only partial message (first 10 bytes)

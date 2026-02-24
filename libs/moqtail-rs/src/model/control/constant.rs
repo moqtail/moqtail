@@ -16,8 +16,7 @@ use core::convert::From;
 
 use crate::model::error::ParseError;
 
-pub const DRAFT_11: u32 = 0xFF00000B;
-pub const DRAFT_14: u32 = 0xFF00000E;
+pub const SUPPORTED_VERSIONS: &str = "moqt-16";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u64)]

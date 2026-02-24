@@ -14,10 +14,11 @@
 
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
-use tracing::error;
-use wtransport::{Identity, ServerConfig};
+use tracing::{error, info};
+use wtransport::quinn::congestion::BbrConfig;
+use wtransport::{Identity, ServerConfig, quinn::TransportConfig};
 
 /// Cache expiration strategy
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -123,9 +124,21 @@ impl AppConfig {
       }
     };
 
+    let mut tls_config = wtransport::tls::server::build_default_tls_config(identity);
+    // clear default ALPN protocols and set to "moqt-16" only, since that's the only version we support for now
+    tls_config.alpn_protocols.clear();
+    tls_config
+      .alpn_protocols
+      .push("moqt-16".as_bytes().to_vec());
+    info!("TLS ALPN Protocols: {:?}", tls_config.alpn_protocols);
+
+    // set up BBR congestion control
+    let mut quic_transport_config = TransportConfig::default();
+    quic_transport_config.congestion_controller_factory(Arc::new(BbrConfig::default()));
+
     let config = ServerConfig::builder()
       .with_bind_default(self.port)
-      .with_identity(identity)
+      .with_custom_tls_and_transport(tls_config, quic_transport_config)
       .keep_alive_interval(Some(Duration::from_secs(self.keep_alive_interval)))
       .max_idle_timeout(Some(Duration::from_secs(self.max_idle_timeout)))
       .unwrap()

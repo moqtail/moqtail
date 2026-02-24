@@ -38,6 +38,7 @@ import {
   UnsubscribeNamespace,
   Switch,
   SubscribeOk,
+  SUPPORTED_VERSIONS,
 } from '../model/control'
 import {
   DatagramObject,
@@ -69,7 +70,6 @@ import { SubscribeRequest } from './request/subscribe'
 import { getHandlerForControlMessage } from './handler/handler'
 import { SubscribePublication } from './publication/subscribe'
 import { FetchPublication } from './publication/fetch'
-import { random60bitId } from './util/random_id'
 import {
   MOQtailRequest,
   SubscribeOptions,
@@ -94,7 +94,7 @@ import { SendDatagramStream } from './datagram_stream'
  *
  * ### Connect and Subscribe to a Track
  * ```ts
- * const client = await MOQtailClient.new({ url, supportedVersions: [0xff00000b] });
+ * const client = await MOQtailClient.new({ url });
  * const result = await client.subscribe({
  *   fullTrackName,
  *   filterType: FilterType.LatestObject,
@@ -111,7 +111,7 @@ import { SendDatagramStream } from './datagram_stream'
  *
  * ### Publish a namespace for Publishing
  * ```ts
- * const client = await MOQtailClient.new({ url, supportedVersions: [0xff00000b] });
+ * const client = await MOQtailClient.new({ url });
  * const publishNamespaceResult = await client.publishNamespace(["camera", "main"]);
  * if (!(publishNamespaceResult instanceof PublishNamespaceError)) {
  *   // Ready to publish objects under this namespace
@@ -176,6 +176,7 @@ export class MOQtailClient {
    * Used to avoid premature state updates.
    */
   readonly pendingStateUpdates: Map<bigint, (newTrackAlias: bigint) => boolean> = new Map()
+
   /** Underlying WebTransport session (set after successful construction in MOQtailClient.new). */
   webTransport!: WebTransport
   /** Validated ServerSetup message captured during handshake (protocol parameters negotiated). */
@@ -352,8 +353,7 @@ export class MOQtailClient {
    * @example Minimal connection
    * ```ts
    * const client = await MOQtailClient.new({
-   *   url: 'https://relay.example.com/transport',
-   *   supportedVersions: [0xff00000b]
+   *   url: 'https://relay.example.com/transport'
    * });
    * ```
    *
@@ -361,7 +361,6 @@ export class MOQtailClient {
    * ```ts
    * const client = await MOQtailClient.new({
    *   url,
-   *   supportedVersions: [0xff00000b],
    *   setupParameters: new SetupParameters().addMaxRequestId(1000),
    *   transportOptions: { congestionControl: 'default' },
    *   dataStreamTimeoutMs: 5000,
@@ -379,7 +378,6 @@ export class MOQtailClient {
   static async new(args: MOQtailClientOptions): Promise<MOQtailClient> {
     const {
       url,
-      supportedVersions,
       setupParameters,
       transportOptions,
       dataStreamTimeoutMs,
@@ -389,7 +387,14 @@ export class MOQtailClient {
     } = args
     const client = new MOQtailClient()
 
+    // send supported versions
+    // The protocols are sent in wt-available-protocols header
+    if (transportOptions && transportOptions.protocols) {
+      transportOptions.protocols.push(...SUPPORTED_VERSIONS)
+    }
+
     client.webTransport = new WebTransport(url, transportOptions)
+
     await client.webTransport.ready
     try {
       if (callbacks?.onMessageSent) client.onMessageSent = callbacks.onMessageSent
@@ -410,7 +415,7 @@ export class MOQtailClient {
         client.onMessageReceived,
       )
       const params = setupParameters ? setupParameters.build() : new SetupParameters().build()
-      const clientSetup = new ClientSetup(supportedVersions, params)
+      const clientSetup = new ClientSetup(params)
       client.controlStream.send(clientSetup)
       const reader = client.controlStream.stream.getReader()
       const { value: response, done } = await reader.read()

@@ -17,9 +17,9 @@
 import { CastingError } from '../error'
 import { ClientSetup, ServerSetup } from '../control'
 /**
- * 32 bit MOQT Draft-14 version number exchanged in {@link ClientSetup} and {@link ServerSetup}
+ * Protocol string array exchanged in wt-available-protocols header
  */
-export const DRAFT_14 = 0xff00000e
+export const SUPPORTED_VERSIONS = ['moqt-16']
 
 /**
  * @public

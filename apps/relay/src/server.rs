@@ -125,7 +125,11 @@ impl Server {
               }
             }
           });
-          session_id_counter += 1;
+          if session_id_counter == u64::MAX {
+            session_id_counter = 0;
+          } else {
+            session_id_counter += 1;
+          }
         }
       }
     }

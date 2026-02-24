@@ -15,7 +15,9 @@
 use anyhow::Result;
 use bytes::Bytes;
 use moqtail::model::{
-  control::{constant, control_message::ControlMessage, server_setup::ServerSetup},
+  control::{
+    constant::SUPPORTED_VERSIONS, control_message::ControlMessage, server_setup::ServerSetup,
+  },
   data::{constant::ObjectForwardingPreference, datagram_object::DatagramObject},
   error::TerminationCode,
 };
@@ -23,7 +25,10 @@ use moqtail::transport::{
   control_stream_handler::ControlStreamHandler,
   data_stream_handler::{HeaderInfo, RecvDataStream},
 };
-use std::sync::{Arc, atomic::AtomicU64};
+use std::{
+  collections::HashMap,
+  sync::{Arc, atomic::AtomicU64},
+};
 use tokio::sync::RwLock;
 use tracing::{Instrument, debug, error, info, info_span, warn};
 use wtransport::{RecvStream, SendStream, endpoint::IncomingSession, error::ConnectionError};
@@ -44,11 +49,54 @@ impl Session {
   pub async fn new(incoming_session: IncomingSession, server: Server) -> Result<Session> {
     let session_request = incoming_session.await?;
 
+    let remote_addr = session_request.remote_address();
+    let origin = session_request.origin();
+    let authority = session_request.authority();
+    let path = session_request.path();
+    let user_agent = session_request.user_agent();
+    let headers = session_request.headers();
+
     info!(
-      "New session: Authority: '{}', Path: '{}', ",
-      session_request.authority(),
-      session_request.path(),
+      "New session:
+      Remote Address: '{:?}'
+      Origin: '{:?}'
+      Authority: '{}', 
+      Path: '{}'
+      User-Agent: '{:?}' 
+      Headers: '{:?}'
+      ",
+      remote_addr,
+      origin,
+      authority,
+      path,
+      user_agent,
+      headers /*,
+              connection.handshake_data().alpn() */
     );
+
+    let client_protocols = Self::parse_available_protocols(headers);
+    info!(
+      "Relay supported protocols: {} - Client supported protocols: {:?}",
+      SUPPORTED_VERSIONS, client_protocols
+    );
+
+    let selected_version = match Self::select_protocol(&client_protocols) {
+      Some(v) => {
+        info!("Selected protocol version: {}", v);
+        v.to_string()
+      }
+      None => {
+        session_request.forbidden().await;
+        return Err(anyhow::anyhow!(
+          "No mutually supported protocol version found"
+        ));
+      }
+    };
+
+    let mut response_headers: HashMap<String, String> = HashMap::new();
+    response_headers.insert("wt-protocol".to_string(), selected_version);
+
+    // in the headers, we expect wt-available-protocols
 
     let client_manager = server.client_manager.clone();
     let track_manager = server.track_manager.clone();
@@ -57,7 +105,9 @@ impl Session {
     let relay_subscribe_requests = server.relay_subscribe_requests.clone();
     let relay_track_status_requests = server.relay_track_status_requests.clone();
     let relay_next_request_id = server.relay_next_request_id.clone();
-    let connection = session_request.accept().await?;
+    let connection = session_request
+      .accept_with_headers(response_headers)
+      .await?;
 
     let request_maps = RequestMaps {
       relay_fetch_requests,
@@ -137,9 +187,9 @@ impl Session {
       .await
     {
       Ok(client) => client,
-      Err(_) => {
-        context.connection.close(0u32.into(), b"Negotiation failed");
-        return Err(TerminationCode::VersionNegotiationFailed);
+      Err(e) => {
+        context.connection.close(0u32.into(), b"Setup failed");
+        return Err(e);
       }
     };
 
@@ -573,26 +623,37 @@ impl Session {
     relay_next_request_id.fetch_add(2, std::sync::atomic::Ordering::Relaxed)
   }
 
+  fn parse_available_protocols(headers: &HashMap<String, String>) -> Vec<String> {
+    headers
+      .get("wt-available-protocols")
+      .map(|s| s.split(',').map(|p| p.trim().to_string()).collect())
+      .unwrap_or_default()
+  }
+
+  fn select_protocol(client_protocols: &[String]) -> Option<&'static str> {
+    SUPPORTED_VERSIONS
+      .split(',')
+      .find(|v| client_protocols.iter().any(|p| p.as_str() == *v))
+  }
+
   async fn negotiate(
     context: Arc<SessionContext>,
     control_stream_handler: &mut ControlStreamHandler,
-  ) -> Result<Arc<MOQTClient>> {
+  ) -> Result<Arc<MOQTClient>, TerminationCode> {
     debug!("Negotiating with client...");
     let client_setup = match control_stream_handler.next_message().await {
       Ok(ControlMessage::ClientSetup(m)) => *m,
       Ok(_) => {
         error!("Unexpected message received");
-        return Err(anyhow::Error::msg(
-          TerminationCode::ProtocolViolation.to_json(),
-        ));
+        return Err(TerminationCode::ProtocolViolation);
       }
       Err(TerminationCode::NoError) => {
         info!("Client disconnected during negotiation");
-        return Err(anyhow::Error::msg("Client disconnected during negotiation"));
+        return Err(TerminationCode::NoError);
       }
       Err(e) => {
         error!("Failed to deserialize message: {:?}", e);
-        return Err(anyhow::Error::msg(e.to_json()));
+        return Err(e);
       }
     };
 
@@ -616,70 +677,56 @@ impl Session {
       .try_into()
       .unwrap();
 
-    let server_setup = ServerSetup::new(
-      constant::DRAFT_14,
-      vec![max_request_id_param, moqt_implementation_param],
-    );
+    let server_setup = ServerSetup::new(vec![max_request_id_param, moqt_implementation_param]);
 
-    debug!("client setup: {:?}", client_setup.supported_versions);
+    debug!("client setup: {:?}", client_setup);
     debug!("server setup: {:?}", server_setup);
 
-    let client = if client_setup
-      .supported_versions
-      .contains(&constant::DRAFT_14)
-    {
-      // Check for authorization tokens and log them if token logging is enabled
-      if context.server_config.enable_token_logging {
-        // Import the necessary types
-        use moqtail::model::parameter::constant::TokenAliasType;
-        use moqtail::model::parameter::setup_parameter::SetupParameter;
+    // Check for authorization tokens and log them if token logging is enabled
+    if context.server_config.enable_token_logging {
+      // Import the necessary types
+      use moqtail::model::parameter::constant::TokenAliasType;
+      use moqtail::model::parameter::setup_parameter::SetupParameter;
 
-        // Iterate through setup parameters to find authorization tokens
-        for param in &client_setup.setup_parameters {
-          // Try to deserialize as a SetupParameter
-          if let Ok(setup_param) = SetupParameter::deserialize(param) {
-            // Check if it's an AuthorizationToken
-            if let SetupParameter::AuthorizationToken { token } = setup_param
-              && token.alias_type == TokenAliasType::Register as u64
-            {
-              // Get client port number from the connection
-              let client_port = context.connection.remote_address().port();
+      // Iterate through setup parameters to find authorization tokens
+      for param in &client_setup.setup_parameters {
+        // Try to deserialize as a SetupParameter
+        if let Ok(setup_param) = SetupParameter::deserialize(param) {
+          // Check if it's an AuthorizationToken
+          if let SetupParameter::AuthorizationToken { token } = setup_param
+            && token.alias_type == TokenAliasType::Register as u64
+          {
+            // Get client port number from the connection
+            let client_port = context.connection.remote_address().port();
 
-              info!(
-                "Authorization token registered: {:?}, port: {:?}",
-                token, client_port
+            info!(
+              "Authorization token registered: {:?}, port: {:?}",
+              token, client_port
+            );
+
+            // Log the token information
+            if let Some(token_value) = token.token_value {
+              super::token_logger::log_token_registration(
+                &token_value,
+                context.connection_id,
+                client_port,
+                &context.server_config.token_log_path,
               );
-
-              // Log the token information
-              if let Some(token_value) = token.token_value {
-                super::token_logger::log_token_registration(
-                  &token_value,
-                  context.connection_id,
-                  client_port,
-                  &context.server_config.token_log_path,
-                );
-              }
             }
           }
         }
       }
+    }
 
-      let mut m = context.client_manager.write().await;
+    let mut m = context.client_manager.write().await;
 
-      let client = MOQTClient::new(
-        context.connection_id,
-        Arc::new(context.connection.clone()),
-        Arc::new(client_setup),
-      );
-      let client = Arc::new(client);
-      m.add(client.clone()).await;
-      client
-    } else {
-      warn!("unsupported version");
-      return Err(anyhow::Error::msg(
-        TerminationCode::VersionNegotiationFailed.to_json(),
-      ));
-    };
+    let client = MOQTClient::new(
+      context.connection_id,
+      Arc::new(context.connection.clone()),
+      Arc::new(client_setup),
+    );
+    let client = Arc::new(client);
+    m.add(client.clone()).await;
 
     match control_stream_handler.send_impl(&server_setup).await {
       Ok(_) => {
@@ -688,7 +735,7 @@ impl Session {
       }
       Err(e) => {
         error!("Failed to send server setup: {:?}", e);
-        Err(anyhow::Error::msg(TerminationCode::InternalError.to_json()))
+        Err(TerminationCode::InternalError)
       }
     }
   }

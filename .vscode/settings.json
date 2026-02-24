@@ -1,5 +1,7 @@
 {
-  "rust-analyzer.check.command": "clippy",
-  "rust-analyzer.check.allTargets": true,
-  "rust-analyzer.check.features": "all",
+  "editor.fontFamily": "'Hack Nerd Font Mono', monospace",
+  "editor.fontLigatures": true,
+  "editor.fontSize": 14,
+  "editor.lineHeight": 22,
+  "terminal.integrated.fontFamily": "'Hack Nerd Font Mono'"
 }

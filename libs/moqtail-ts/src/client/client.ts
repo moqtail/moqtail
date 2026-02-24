@@ -73,6 +73,7 @@ import { PublishRequest } from './request/publish'
 import { getHandlerForControlMessage } from './handler/handler'
 import { SubscribePublication } from './publication/subscribe'
 import { FetchPublication } from './publication/fetch'
+import { PublishPublication } from './publication/publish'
 
 /**
  * Union type of all possible MOQtail requests
@@ -264,12 +265,12 @@ export class MOQtailClient {
   /**
    * Active publications keyed by requestId
    */
-  readonly publications: Map<bigint, SubscribePublication | FetchPublication> = new Map()
+  readonly publications: Map<bigint, SubscribePublication | PublishPublication | FetchPublication> = new Map()
 
   /**
    * Active SUBSCRIBE request wrappers keyed by track alias
    */
-  readonly subscriptions: Map<bigint, SubscribeRequest> = new Map()
+  readonly subscriptions: Map<bigint, any> = new Map()
 
   /**
    * Bidirectional track alias-subscription requestId mapping
@@ -346,7 +347,7 @@ export class MOQtailClient {
   onDatagramSent?: (data: DatagramObject | DatagramStatus) => void
 
   /** Fired when an inbound PUBLISH control message is received. */
-  onPeerPublish?: (msg: Publish) => void
+  onPeerPublish?: (msg: Publish, stream: ReadableStream<MoqtObject>) => void
 
   /** Fired when an inbound SUBSCRIBE_NAMESPACE control message is received. */
   onPeerSubscribeNamespace?: (msg: SubscribeNamespace) => void
@@ -384,6 +385,13 @@ export class MOQtailClient {
     const id = this.#dontUseRequestId
     this.#dontUseRequestId += 2n
     return id
+  }
+
+  /**
+   * Generates a safe, sequential local request ID for tracking pushed/incoming tracks.
+   */
+  allocatePseudoRequestId(): bigint {
+    return this.#nextClientRequestId
   }
 
   /**
@@ -1101,19 +1109,20 @@ export class MOQtailClient {
   /**
    * Proactively push a track to the relay/peer.
    */
-  async publish(fullTrackName: FullTrackName, forward: boolean, parameters?: VersionSpecificParameters) {
+  async publish(
+    fullTrackName: FullTrackName,
+    forward: boolean,
+    trackAlias: bigint,
+    parameters?: VersionSpecificParameters,
+  ) {
     this.#ensureActive()
     try {
       const params = parameters ? parameters.build() : new VersionSpecificParameters().build()
       const requestId = this.#nextClientRequestId
 
-      // In Draft-16, the publisher dictates the Track Alias. We use the requestId for simplicity.
-      const trackAlias = requestId
-
       const msg = new Publish(
         requestId,
-        fullTrackName.namespace,
-        fullTrackName.name.toString(),
+        fullTrackName,
         trackAlias,
         GroupOrder.Ascending,
         0, // ContentExists (0 = Unknown/No)
@@ -1296,6 +1305,43 @@ export class MOQtailClient {
         if (this.#isDestroyed) break
       }
     }
+  }
+
+  /**
+   * Registers an incoming PUBLISH announcement as a valid data receiver.
+   * This prepares the client to ingest pushed data streams matching the published alias.
+   * * @param msg - The incoming Publish control message
+   * @returns - A stream of MoqtObjects being pushed by the publisher
+   */
+  acceptPushedTrack(msg: Publish): ReadableStream<MoqtObject> {
+    this.#ensureActive()
+
+    let streamController!: ReadableStreamDefaultController<MoqtObject>
+    const stream = new ReadableStream<MoqtObject>({
+      start(c) {
+        streamController = c
+      },
+    })
+
+    // 1. Map the request ID to the full track name so the parser knows what track this is
+    this.requestIdMap.addMapping(msg.requestId, msg.fullTrackName)
+
+    // 2. Map the request ID to the alias
+    this.subscriptionAliasMap.set(msg.requestId, msg.trackAlias)
+
+    // 3. Create a pseudo-subscription object that mimics a SubscribeRequest
+    // This perfectly matches the shape #handleRecvStreams expects
+    const receiver = {
+      requestId: msg.requestId,
+      streamsAccepted: 0,
+      largestLocation: undefined,
+      controller: streamController,
+    }
+
+    // 4. Register the receiver in the main routing table using the publisher's alias
+    this.subscriptions.set(msg.trackAlias, receiver)
+
+    return stream
   }
 
   /*

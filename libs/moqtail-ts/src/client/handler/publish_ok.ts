@@ -18,11 +18,27 @@ import { ProtocolViolationError } from '@/model'
 import { PublishOk } from '../../model/control'
 import { PublishRequest } from '../request/publish'
 import { ControlMessageHandler } from './handler'
+import { PublishPublication } from '../publication/publish'
 
 export const handlerPublishOk: ControlMessageHandler<PublishOk> = async (client, msg) => {
   const request = client.requests.get(msg.requestId)
   if (request instanceof PublishRequest) {
     request.resolve(msg)
+    const fullTrackName = client.requestIdMap.getNameByRequestId(msg.requestId)
+    if (!fullTrackName) {
+      console.warn(`[MOQtail] No track mapped for PublishOk requestId: ${msg.requestId}`)
+      return
+    }
+
+    const track = client.trackSources.get(fullTrackName.toString())
+    if (!track || !track.trackSource.live) {
+      console.warn(`[MOQtail] Live track source not found for ${fullTrackName.toString()}`)
+      return
+    }
+
+    const publication = new PublishPublication(client, track, request.message)
+
+    client.publications.set(msg.requestId, publication)
   } else {
     throw new ProtocolViolationError('handlerPublishOk', 'No publish request was found with the given request id')
   }

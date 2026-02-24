@@ -27,6 +27,7 @@ import {
 import { MOQtailClient } from '../client'
 import { Track } from '../track/track'
 import { SubscribePublication } from './subscribe'
+import { PublishPublication } from './publish'
 
 // TODO: Use group order
 // TODO: Use fetch parameters
@@ -47,7 +48,7 @@ export class FetchPublication {
     this.#requestId = fetchRequest.requestId
     this.#track = track
     this.#msg = fetchRequest
-    let joiningRequest: SubscribePublication | FetchPublication | undefined
+    let joiningRequest: SubscribePublication | PublishPublication | FetchPublication | undefined
     switch (this.#msg.typeAndProps.type) {
       case FetchType.StandAlone:
         // TODO: Tie up fetch type and relevant props as {type: 1, props: standAlone} | {type: 2, props: joining} | {type: 3, props: joining}

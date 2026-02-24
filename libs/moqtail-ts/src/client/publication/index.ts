@@ -16,3 +16,4 @@
 
 export * from './fetch'
 export * from './subscribe'
+export * from './publish'

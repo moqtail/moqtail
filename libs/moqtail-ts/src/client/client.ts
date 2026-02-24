@@ -36,6 +36,9 @@ import {
   SubscribeUpdate,
   Unsubscribe,
   UnsubscribeNamespace,
+  Publish,
+  PublishError,
+  SubscribeNamespaceOk,
   Switch,
   SubscribeOk,
 } from '../model/control'
@@ -66,9 +69,12 @@ import { Track } from './track/track'
 import { PublishNamespaceRequest } from './request/publish_namespace'
 import { FetchRequest } from './request/fetch'
 import { SubscribeRequest } from './request/subscribe'
+import { SubscribeNamespaceRequest } from './request/subscribe_namespace'
+import { PublishRequest } from './request/publish'
 import { getHandlerForControlMessage } from './handler/handler'
 import { SubscribePublication } from './publication/subscribe'
 import { FetchPublication } from './publication/fetch'
+import { PublishPublication } from './publication/publish'
 import { random60bitId } from './util/random_id'
 import {
   MOQtailRequest,
@@ -153,12 +159,12 @@ export class MOQtailClient {
    * Active publications (SUBSCRIBE or FETCH) keyed by requestId to manage object stream controllers and lifecycle.
    * Subset / specialization view of `requests`.
    */
-  readonly publications: Map<bigint, SubscribePublication | FetchPublication> = new Map()
+  readonly publications: Map<bigint, SubscribePublication | FetchPublication | PublishPublication> = new Map()
   /**
    * Active SUBSCRIBE request wrappers keyed by track alias for rapid alias -\> subscription resolution during
    * incoming unidirectional data handling.
    */
-  readonly subscriptions: Map<bigint, SubscribeRequest> = new Map()
+  readonly subscriptions: Map<bigint, any> = new Map()
   /**
    * Bidirectional track alias \<-\> subscription requestId mapping
    */
@@ -271,6 +277,12 @@ export class MOQtailClient {
   /** Invoked after enqueuing each outbound datagram object/status. */
   onDatagramSent?: (data: DatagramObject | DatagramStatus) => void
 
+  /** Fired when an inbound PUBLISH control message is received. */
+  onPeerPublish?: (msg: Publish, stream: ReadableStream<MoqtObject>) => void
+
+  /** Fired when an inbound SUBSCRIBE_NAMESPACE control message is received. */
+  onPeerSubscribeNamespace?: (msg: SubscribeNamespace) => void
+
   /** Datagram writer for sending datagrams. */
   #datagramWriter: WritableStreamDefaultWriter<Uint8Array> | undefined
 
@@ -303,6 +315,13 @@ export class MOQtailClient {
     const id = this.#dontUseRequestId
     this.#dontUseRequestId += 2n
     return id
+  }
+
+  /**
+   * Generates a safe, sequential local request ID for tracking pushed/incoming tracks.
+   */
+  allocatePseudoRequestId(): bigint {
+    return this.#nextClientRequestId
   }
 
   /**
@@ -1409,6 +1428,98 @@ export class MOQtailClient {
     }
   }
 
+  /**
+   * Proactively push a track to the relay/peer.
+   */
+  async publish(
+    fullTrackName: FullTrackName,
+    forward: boolean,
+    trackAlias: bigint,
+    parameters?: VersionSpecificParameters,
+  ) {
+    this.#ensureActive()
+    try {
+      const params = parameters ? parameters.build() : new VersionSpecificParameters().build()
+      const requestId = this.#nextClientRequestId
+
+      const msg = new Publish(
+        requestId,
+        fullTrackName,
+        trackAlias,
+        GroupOrder.Ascending,
+        0, // ContentExists (0 = Unknown/No)
+        undefined, // Largest Location
+        forward ? 1 : 0,
+        params,
+      )
+
+      const request = new PublishRequest(msg)
+
+      // Map the alias and request ID for outgoing data multiplexing
+      this.requests.set(msg.requestId, request)
+      this.requestIdMap.addMapping(msg.requestId, fullTrackName)
+      this.subscriptionAliasMap.set(msg.requestId, trackAlias)
+
+      await this.controlStream.send(msg)
+      const response = await request
+
+      if (response instanceof PublishError) {
+        this.requests.delete(msg.requestId)
+        this.requestIdMap.removeMappingByRequestId(msg.requestId)
+        this.subscriptionAliasMap.delete(msg.requestId)
+        return response
+      } else {
+        // Return the trackAlias so the application can use client.createDatagramSender(trackAlias)
+        // or open uni-streams.
+        return { requestId: msg.requestId, trackAlias: trackAlias }
+      }
+    } catch (error) {
+      await this.disconnect(
+        new InternalError('MOQtailClient.publish', error instanceof Error ? error.message : String(error)),
+      )
+      throw error
+    }
+  }
+
+  /**
+   * Registers an incoming PUBLISH announcement as a valid data receiver.
+   * This prepares the client to ingest pushed data streams matching the published alias.
+   * * @param msg - The incoming Publish control message
+   * @returns - A stream of MoqtObjects being pushed by the publisher
+   */
+  acceptPushedTrack(msg: Publish): ReadableStream<MoqtObject> {
+    this.#ensureActive()
+
+    let streamController!: ReadableStreamDefaultController<MoqtObject>
+    const stream = new ReadableStream<MoqtObject>({
+      start(c) {
+        streamController = c
+      },
+    })
+
+    // 1. Map the request ID to the full track name so the parser knows what track this is
+    this.requestIdMap.addMapping(msg.requestId, msg.fullTrackName)
+
+    // 2. Map the request ID to the alias
+    this.subscriptionAliasMap.set(msg.requestId, msg.trackAlias)
+
+    this.aliasFullTrackNameMap.set(msg.trackAlias, msg.fullTrackName)
+
+    // 3. Create a pseudo-subscription object that mimics a SubscribeRequest
+    // This perfectly matches the shape #handleRecvStreams expects
+    const receiver = {
+      requestId: msg.requestId,
+      streamsAccepted: 0,
+      largestLocation: undefined,
+      controller: streamController,
+    }
+
+    // 4. Register the receiver in the main routing table using the publisher's alias
+    this.subscriptions.set(msg.trackAlias, receiver)
+
+    return stream
+  }
+
   // TODO: Each announced track should checked against ongoing subscribe_namespace
   // If matches it should send an announce to that peer automatically
   /**
@@ -1562,10 +1673,24 @@ export class MOQtailClient {
   }
 
   // INFO: Subscriber calls this the get matching announce messages with this prefix
-  async subscribeNamespace(msg: SubscribeNamespace) {
+  async subscribeNamespace(trackNamespacePrefix: Tuple, parameters?: VersionSpecificParameters) {
     this.#ensureActive()
     try {
-      await this.controlStream.send(msg)
+      const params = parameters ? parameters.build() : new VersionSpecificParameters().build()
+      const msg = new SubscribeNamespace(this.#nextClientRequestId, trackNamespacePrefix, params)
+      const request = new SubscribeNamespaceRequest(msg)
+
+      this.requests.set(msg.requestId, request)
+      this.controlStream.send(msg)
+
+      const response = await request
+
+      if (response instanceof SubscribeNamespaceOk) {
+        this.subscribedAnnounces.add(msg.trackNamespacePrefix)
+      }
+
+      this.requests.delete(msg.requestId)
+      return response
     } catch (error) {
       await this.disconnect(
         new InternalError('MOQtailClient.subscribeNamespace', error instanceof Error ? error.message : String(error)),
@@ -1731,8 +1856,9 @@ export class MOQtailClient {
                 }
 
                 const fullTrackName = this.aliasFullTrackNameMap.get(header.trackAlias)
-                if (!fullTrackName)
+                if (!fullTrackName) {
                   throw new ProtocolViolationError('MOQtailClient', 'No full track name for received track alias')
+                }
 
                 const moqtObject = MoqtObject.fromSubgroupObject(
                   nextObject,

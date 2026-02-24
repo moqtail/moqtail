@@ -14,6 +14,16 @@
  * limitations under the License.
  */
 
-export * from './fetch'
-export * from './subscribe'
-export * from './publish'
+import { ProtocolViolationError } from '@/model'
+import { PublishError } from '../../model/control'
+import { PublishRequest } from '../request/publish'
+import { ControlMessageHandler } from './handler'
+
+export const handlerPublishError: ControlMessageHandler<PublishError> = async (client, msg) => {
+  const request = client.requests.get(msg.requestId)
+  if (request instanceof PublishRequest) {
+    request.resolve(msg)
+  } else {
+    throw new ProtocolViolationError('handlerPublishError', 'No publish request was found with the given request id')
+  }
+}

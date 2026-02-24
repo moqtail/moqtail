@@ -31,6 +31,7 @@ import { FetchRequest } from './request/fetch'
 import { SubscribeRequest } from './request/subscribe'
 import { SubscribeNamespaceRequest } from './request/subscribe_namespace'
 import { MOQtailClient } from './client'
+import { PublishRequest } from './request/publish'
 /**
  * Discriminated union of every in‑flight MOQ‑tail control request tracked by the {@link MOQtailClient}.
  *
@@ -61,7 +62,12 @@ import { MOQtailClient } from './client'
  * }
  * ```
  */
-export type MOQtailRequest = PublishNamespaceRequest | SubscribeNamespaceRequest | FetchRequest | SubscribeRequest
+export type MOQtailRequest =
+  | PublishRequest
+  | PublishNamespaceRequest
+  | SubscribeNamespaceRequest
+  | FetchRequest
+  | SubscribeRequest
 
 /**
  * Options for {@link MOQtailClient.new} controlling connection target, protocol negotiation, timeouts,

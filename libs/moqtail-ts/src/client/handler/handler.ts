@@ -15,6 +15,9 @@
  */
 
 import {
+  handlerPublish,
+  handlerPublishOk,
+  handlerPublishError,
   handlerPublishDone,
   handlerPublishNamespace,
   handlerPublishNamespaceCancel,
@@ -42,6 +45,9 @@ import {
   handlerGoAway,
 } from '.'
 import {
+  Publish,
+  PublishOk,
+  PublishError,
   PublishNamespace,
   PublishNamespaceCancel,
   PublishNamespaceDone,
@@ -74,6 +80,9 @@ import { ControlMessage } from '../../model/control'
 export type ControlMessageHandler<T> = (client: MOQtailClient, msg: T) => Promise<void>
 
 export function getHandlerForControlMessage(msg: ControlMessage): ControlMessageHandler<any> | undefined {
+  if (msg instanceof Publish) return handlerPublish
+  if (msg instanceof PublishOk) return handlerPublishOk
+  if (msg instanceof PublishError) return handlerPublishError
   if (msg instanceof PublishDone) return handlerPublishDone
   if (msg instanceof PublishNamespace) return handlerPublishNamespace
   if (msg instanceof PublishNamespaceCancel) return handlerPublishNamespaceCancel

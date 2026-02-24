@@ -18,7 +18,6 @@ import { ReasonPhrase } from '@/model'
 import { Subscribe, SubscribeError, SubscribeErrorCode, SubscribeOk } from '../../model/control'
 import { ControlMessageHandler } from './handler'
 import { SubscribePublication } from '../publication/subscribe'
-import { random60bitId } from '../util/random_id'
 
 export const handlerSubscribe: ControlMessageHandler<Subscribe> = async (client, msg) => {
   const track = client.trackSources.get(msg.fullTrackName.toString())

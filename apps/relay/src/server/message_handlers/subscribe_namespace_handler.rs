@@ -15,8 +15,11 @@
 use crate::server::client::MOQTClient;
 use crate::server::session_context::SessionContext;
 use core::result::Result;
+use moqtail::model::common::reason_phrase::ReasonPhrase;
+use moqtail::model::control::constant::SubscribeNamespaceErrorCode;
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::publish_namespace::PublishNamespace;
+use moqtail::model::control::subscribe_namespace_error::SubscribeNamespaceError;
 use moqtail::model::control::subscribe_namespace_ok::SubscribeNamespaceOk;
 use moqtail::model::error::TerminationCode;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
@@ -35,6 +38,31 @@ pub async fn handle(
         "Received SubscribeNamespace message: {:?}",
         sub_ns.track_namespace_prefix
       );
+
+      // 0. Check for prefix overlap per draft spec (NAMESPACE_PREFIX_OVERLAP)
+      if let Some(existing_prefix) = context
+        .track_manager
+        .find_overlapping_namespace_subscription(
+          client.connection_id,
+          &sub_ns.track_namespace_prefix,
+        )
+        .await
+      {
+        warn!(
+          "SUBSCRIBE_NAMESPACE overlap: new={:?} conflicts with existing={:?}",
+          sub_ns.track_namespace_prefix, existing_prefix
+        );
+        let err = SubscribeNamespaceError::new(
+          sub_ns.request_id,
+          SubscribeNamespaceErrorCode::NamespacePrefixOverlap,
+          ReasonPhrase::try_new("Namespace prefix overlaps with existing subscription".to_string())
+            .unwrap(),
+        );
+        handler
+          .send(&ControlMessage::SubscribeNamespaceError(Box::new(err)))
+          .await?;
+        return Ok(());
+      }
 
       // 1. Store the Subscription in TrackManager
       // Registers the client's interest with the global router

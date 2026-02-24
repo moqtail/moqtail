@@ -16,6 +16,9 @@
 
 import { ControlStream } from './control_stream'
 import {
+  Publish,
+  PublishOk,
+  PublishError,
   PublishNamespace,
   PublishNamespaceDone,
   PublishNamespaceError,
@@ -32,6 +35,7 @@ import {
   ServerSetup,
   Subscribe,
   SubscribeNamespace,
+  SubscribeNamespaceOk,
   SubscribeError,
   SubscribeUpdate,
   Unsubscribe,
@@ -65,8 +69,10 @@ import {
 import { PublishNamespaceCancel } from '../model/control/publish_namespace_cancel'
 import { Track } from './track/track'
 import { PublishNamespaceRequest } from './request/publish_namespace'
+import { PublishRequest } from './request/publish'
 import { FetchRequest } from './request/fetch'
 import { SubscribeRequest } from './request/subscribe'
+import { SubscribeNamespaceRequest } from './request/subscribe_namespace'
 import { getHandlerForControlMessage } from './handler/handler'
 import { SubscribePublication } from './publication/subscribe'
 import { FetchPublication } from './publication/fetch'
@@ -79,6 +85,7 @@ import {
   SwitchOptions,
 } from './types'
 import { SendDatagramStream } from './datagram_stream'
+import { random60bitId } from './util/random_id'
 
 /**
  * @public
@@ -272,6 +279,13 @@ export class MOQtailClient {
   /** Invoked after enqueuing each outbound datagram object/status. */
   onDatagramSent?: (data: DatagramObject | DatagramStatus) => void
 
+  /**
+   * Fired when a PUBLISH control message is received from the relay, indicating a track is
+   * now being published under a namespace this client subscribed to.
+   * The `stream` is a ReadableStream of MoqtObject for that track.
+   */
+  onTrackPublished?: (msg: Publish, stream: ReadableStream<MoqtObject>) => void
+
   /** Datagram writer for sending datagrams. */
   #datagramWriter: WritableStreamDefaultWriter<Uint8Array> | undefined
 
@@ -376,7 +390,7 @@ export class MOQtailClient {
    * ```
    */
   static async new(args: MOQtailClientOptions): Promise<MOQtailClient> {
-    const {
+    let {
       url,
       setupParameters,
       transportOptions,
@@ -389,9 +403,16 @@ export class MOQtailClient {
 
     // send supported versions
     // The protocols are sent in wt-available-protocols header
-    if (transportOptions && transportOptions.protocols) {
+    if (!transportOptions) {
+      transportOptions = { protocols: [] }
+    }
+    if (!transportOptions.protocols) {
+      transportOptions = { ...transportOptions, protocols: [...SUPPORTED_VERSIONS] }
+    } else {
       transportOptions.protocols.push(...SUPPORTED_VERSIONS)
     }
+
+    console.log('transportOptions', transportOptions)
 
     client.webTransport = new WebTransport(url, transportOptions)
 
@@ -802,6 +823,9 @@ export class MOQtailClient {
    */
   addOrUpdateTrack(track: Track) {
     this.#ensureActive()
+    if (!track.trackAlias) {
+      track.trackAlias = random60bitId()
+    }
     this.trackSources.set(track.fullTrackName.toString(), track)
   }
 
@@ -1566,14 +1590,37 @@ export class MOQtailClient {
     }
   }
 
-  // INFO: Subscriber calls this the get matching announce messages with this prefix
+  // INFO: Subscriber calls this to get matching announce messages with this prefix
   async subscribeNamespace(msg: SubscribeNamespace) {
     this.#ensureActive()
     try {
-      await this.controlStream.send(msg)
+      const request = new SubscribeNamespaceRequest(msg.requestId, msg)
+      this.requests.set(msg.requestId, request)
+      this.controlStream.send(msg)
+      const response = await request
+      if (response instanceof SubscribeNamespaceOk) this.subscribedAnnounces.add(msg.trackNamespacePrefix)
+      this.requests.delete(msg.requestId)
+      return response
     } catch (error) {
       await this.disconnect(
         new InternalError('MOQtailClient.subscribeNamespace', error instanceof Error ? error.message : String(error)),
+      )
+      throw error
+    }
+  }
+
+  async publish(msg: Publish): Promise<PublishOk | PublishError> {
+    this.#ensureActive()
+    try {
+      const request = new PublishRequest(msg.requestId, msg)
+      this.requests.set(msg.requestId, request)
+      this.controlStream.send(msg)
+      const response = await request
+      this.requests.delete(msg.requestId)
+      return response
+    } catch (error) {
+      await this.disconnect(
+        new InternalError('MOQtailClient.publish', error instanceof Error ? error.message : String(error)),
       )
       throw error
     }

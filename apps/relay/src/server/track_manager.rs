@@ -223,4 +223,78 @@ impl TrackManager {
 
     matches
   }
+
+  /// Returns the first existing namespace subscription prefix for `connection_id`
+  /// that overlaps with `new_prefix` (equal, or one is a prefix of the other).
+  /// Returns `None` if no overlap is found.
+  pub async fn find_overlapping_namespace_subscription(
+    &self,
+    connection_id: usize,
+    new_prefix: &Tuple,
+  ) -> Option<Tuple> {
+    let subs = self.namespace_subscribers.read().await;
+    for (existing_prefix, clients) in subs.iter() {
+      if clients.iter().any(|c| c.connection_id == connection_id)
+        && namespace_prefixes_overlap(new_prefix, existing_prefix)
+      {
+        return Some(existing_prefix.clone());
+      }
+    }
+    None
+  }
+}
+
+/// Returns `true` when `a` and `b` overlap — i.e. they are equal, or one is a
+/// prefix of the other. Both directions are checked so the caller doesn't need
+/// to worry about argument ordering.
+pub(crate) fn namespace_prefixes_overlap(a: &Tuple, b: &Tuple) -> bool {
+  a == b || a.starts_with(b) || b.starts_with(a)
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn t(path: &str) -> Tuple {
+    Tuple::from_utf8_path(path)
+  }
+
+  #[test]
+  fn identical_prefixes_overlap() {
+    assert!(namespace_prefixes_overlap(
+      &t("meet/room1"),
+      &t("meet/room1")
+    ));
+  }
+
+  #[test]
+  fn new_is_extension_of_existing() {
+    // "meet/room1" starts with "meet" → overlap
+    assert!(namespace_prefixes_overlap(&t("meet/room1"), &t("meet")));
+  }
+
+  #[test]
+  fn existing_is_extension_of_new() {
+    // "meet" starts with "meet" but existing is longer: "meet/room1"
+    assert!(namespace_prefixes_overlap(&t("meet"), &t("meet/room1")));
+  }
+
+  #[test]
+  fn disjoint_prefixes_do_not_overlap() {
+    assert!(!namespace_prefixes_overlap(&t("meet"), &t("live")));
+  }
+
+  #[test]
+  fn partial_component_match_does_not_overlap() {
+    // "meetup" should NOT be considered a prefix of "meet" — tuple components
+    // are compared element-wise, not as substring matches.
+    assert!(!namespace_prefixes_overlap(&t("meetup"), &t("meet")));
+  }
+
+  #[test]
+  fn empty_prefix_overlaps_everything() {
+    // An empty tuple is a prefix of any tuple, so it overlaps with all.
+    assert!(namespace_prefixes_overlap(&t(""), &t("meet/room1")));
+    assert!(namespace_prefixes_overlap(&t("meet/room1"), &t("")));
+  }
 }

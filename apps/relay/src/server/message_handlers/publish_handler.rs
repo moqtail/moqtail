@@ -74,21 +74,31 @@ pub async fn handle(
           .await;
       }
 
-      // Check if the track already exists and is being published
-      // TODO: Actually this should be allowed, multiple publishers can publish the same track
-      // but cannot use the same track alias
-
-      {
-        if context.track_manager.has_track_alias(&m.track_alias).await {
-          return Err(TerminationCode::DuplicateTrackAlias);
-        }
-      }
-
-      // Add the track to the client's published tracks
+      // Build the full track name early so we can check it against any existing alias mapping.
       let full_track_name = moqtail::model::data::full_track_name::FullTrackName {
         namespace: m.track_namespace.clone(),
         name: m.track_name.clone(),
       };
+
+      // Multiple publishers may share the same alias for the same track (fan-out).
+      // Only reject if the alias already maps to a *different* full track name.
+      {
+        if context.track_manager.has_track_alias(&m.track_alias).await {
+          let is_same_track = if let Some(existing) = context
+            .track_manager
+            .get_track_by_alias(m.track_alias)
+            .await
+          {
+            existing.read().await.full_track_name == full_track_name
+          } else {
+            false
+          };
+          if !is_same_track {
+            return Err(TerminationCode::DuplicateTrackAlias);
+          }
+          // Same track, same alias — fall through to the has_track branch below.
+        }
+      }
 
       let m_clone = m.clone();
 
@@ -165,8 +175,17 @@ pub async fn handle(
           }
         }
       } else {
-        // a different track alias but same full track name
-        // maybe we can associate the track alias with the existing published track
+        // Another publisher for the same track with a different alias.
+        // Register their alias so their data stream can be routed to the existing track.
+        context
+          .track_manager
+          .add_track_alias(m.track_alias, full_track_name.clone())
+          .await;
+        client.add_published_track(full_track_name).await;
+        info!(
+          "Additional publisher for existing track {:?}/{}: registered alias {}",
+          m.track_namespace, m.track_name, m.track_alias
+        );
       }
 
       // Create PublishOk response

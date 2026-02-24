@@ -625,9 +625,12 @@ impl Session {
   }
 
   fn select_protocol(client_protocols: &[String]) -> Option<&'static str> {
-    SUPPORTED_VERSIONS
-      .split(',')
-      .find(|v| client_protocols.iter().any(|p| p.as_str() == *v))
+    // wt available protocols are surrounded by quotes
+    SUPPORTED_VERSIONS.split(',').find(|v| {
+      client_protocols
+        .iter()
+        .any(|p| p.as_str() == format!("\"{}\"", v))
+    })
   }
 
   async fn negotiate(

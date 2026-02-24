@@ -14,8 +14,15 @@
  * limitations under the License.
  */
 
-export * from './publish_namespace'
-export * from './publish'
-export * from './fetch'
-export * from './subscribe'
-export * from './subscribe_namespace'
+export interface AppSettings {
+  relayUrl: string
+  audioEncoderConfig: AudioEncoderConfig
+  audioDecoderConfig: AudioDecoderConfig
+  videoEncoderConfig: VideoEncoderConfig
+  videoDecoderConfig: VideoDecoderConfig
+  keyFrameInterval: 'auto' | number
+  playoutBufferConfig: {
+    targetLatencyMs: number
+    maxLatencyMs: number
+  }
+}

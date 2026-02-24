@@ -14,8 +14,10 @@
  * limitations under the License.
  */
 
-export * from './publish_namespace'
-export * from './publish'
-export * from './fetch'
-export * from './subscribe'
-export * from './subscribe_namespace'
+import { AppSettings } from './types/AppSettings'
+
+declare global {
+  interface Window {
+    appSettings: AppSettings
+  }
+}

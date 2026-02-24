@@ -70,8 +70,14 @@ impl MoqConnection {
 
     info!("Connecting to relay server at {}", server);
     let endpoint = Endpoint::client(config)?;
+    // strings should be surrounded by quotes
+    let wt_available_protocols: Vec<String> = CLIENT_SUPPORTED_VERSIONS
+      .split(",")
+      .map(|s| format!("\"{}\"", s))
+      .collect();
+    let wt_available_protocols_str = wt_available_protocols.join(", ");
     let options = ConnectOptions::builder(server)
-      .add_header("wt-available-protocols", CLIENT_SUPPORTED_VERSIONS)
+      .add_header("wt-available-protocols", wt_available_protocols_str)
       .build();
 
     let connection = Arc::new(endpoint.connect(options).await?);

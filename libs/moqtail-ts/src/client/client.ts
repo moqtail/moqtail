@@ -1857,10 +1857,6 @@ export class MOQtailClient {
 
                 const fullTrackName = this.aliasFullTrackNameMap.get(header.trackAlias)
                 if (!fullTrackName) {
-                  console.log('Stuff i have')
-                  console.log(this.aliasFullTrackNameMap)
-                  console.log('stuff i get')
-                  console.log(header.trackAlias)
                   throw new ProtocolViolationError('MOQtailClient', 'No full track name for received track alias')
                 }
 

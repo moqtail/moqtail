@@ -17,7 +17,7 @@ use crate::connection::MoqConnection;
 use crate::stats::ReceptionStats;
 use crate::utils::should_log;
 use anyhow::Result;
-use moqtail::model::common::tuple::Tuple;
+use moqtail::model::common::tuple::{Tuple, TupleField};
 use moqtail::model::control::constant::GroupOrder;
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::subscribe::Subscribe;
@@ -44,10 +44,10 @@ pub async fn run(
   let ns = Tuple::from_utf8_path(namespace);
   info!("Subscribing to track: {}/{}", namespace, track_name);
   let subscribe = Subscribe::new_latest_object(
-    1, // request_id
+    0, // request_id
     ns,
-    track_name.to_string(),
-    0, // subscriber_priority
+    TupleField::from_utf8(track_name), // track_name
+    0,                                 // subscriber_priority
     GroupOrder::Ascending,
     true, // forward
     vec![],

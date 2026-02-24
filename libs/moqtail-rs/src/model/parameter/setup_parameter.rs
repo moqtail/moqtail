@@ -24,6 +24,7 @@ pub enum SetupParameter {
   MaxRequestId { request_id: u64 },
   AuthorizationToken { token: AuthorizationToken },
   MaxAuthTokenCacheSize { max_size: u64 },
+  MoqtImplementation { info: String },
 }
 impl SetupParameter {
   pub fn new_path(moqt_path: String) -> Self {
@@ -40,6 +41,10 @@ impl SetupParameter {
 
   pub fn new_max_auth_token_cache_size(max_size: u64) -> Self {
     SetupParameter::MaxAuthTokenCacheSize { max_size }
+  }
+
+  pub fn new_moqt_implementation(info: String) -> Self {
+    SetupParameter::MoqtImplementation { info }
   }
 
   pub fn serialize(&self) -> Result<Bytes, ParseError> {
@@ -84,6 +89,15 @@ impl SetupParameter {
         let slice = kvp.serialize()?;
         bytes.extend_from_slice(&slice);
       }
+      Self::MoqtImplementation { info } => {
+        let data = info.as_bytes();
+        let kvp = KeyValuePair::try_new_bytes(
+          SetupParameterType::MoqtImplementation as u64,
+          Bytes::copy_from_slice(data),
+        )?;
+        let slice = kvp.serialize()?;
+        bytes.extend_from_slice(&slice);
+      }
     }
     Ok(bytes.freeze())
   }
@@ -118,6 +132,13 @@ impl SetupParameter {
           SetupParameterType::AuthorizationToken => Ok(SetupParameter::new_auth_token(
             AuthorizationToken::deserialize(&mut payload_bytes)?,
           )),
+          SetupParameterType::MoqtImplementation => {
+            let info = String::from_utf8(value.to_vec()).map_err(|e| ParseError::InvalidUTF8 {
+              context: "SetupParameter::deserialize",
+              details: e.to_string(),
+            })?;
+            Ok(SetupParameter::MoqtImplementation { info })
+          }
           _ => Err(ParseError::KeyValueFormattingError {
             context: "SetupParameter::deserialize",
           }),
@@ -148,6 +169,10 @@ impl TryInto<KeyValuePair> for SetupParameter {
       SetupParameter::MaxAuthTokenCacheSize { max_size } => {
         KeyValuePair::try_new_varint(SetupParameterType::MaxAuthTokenCacheSize as u64, max_size)
       }
+      SetupParameter::MoqtImplementation { info } => KeyValuePair::try_new_bytes(
+        SetupParameterType::MoqtImplementation as u64,
+        Bytes::copy_from_slice(info.as_bytes()),
+      ),
     }
   }
 }
@@ -196,6 +221,17 @@ mod tests {
   #[test]
   fn test_roundtrip_max_auth_cache_size() {
     let orig = SetupParameter::new_max_auth_token_cache_size(123456);
+    let serialized = orig.serialize().unwrap();
+    let mut buf = serialized.clone();
+    let kvp = KeyValuePair::deserialize(&mut buf).unwrap();
+    let got = SetupParameter::deserialize(&kvp).unwrap();
+    assert_eq!(orig, got);
+    assert_eq!(buf.remaining(), 0);
+  }
+
+  #[test]
+  fn test_roundtrip_moqt_implementation() {
+    let orig = SetupParameter::new_moqt_implementation("moqtail".to_string());
     let serialized = orig.serialize().unwrap();
     let mut buf = serialized.clone();
     let kvp = KeyValuePair::deserialize(&mut buf).unwrap();

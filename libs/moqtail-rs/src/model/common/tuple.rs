@@ -16,8 +16,9 @@ use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
 use crate::model::error::ParseError;
 use bytes::{Buf, Bytes, BytesMut};
 use core::hash::{Hash, Hasher};
+use std::fmt::{Debug, Display};
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct TupleField {
   value: Bytes,
 }
@@ -28,14 +29,54 @@ impl Hash for TupleField {
   }
 }
 
+impl Debug for TupleField {
+  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    write!(f, "{}", self.as_str())
+  }
+}
+
+impl Display for TupleField {
+  fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    write!(f, "{}", self.as_str())
+  }
+}
+
 impl TupleField {
   pub fn new(value: Bytes) -> Self {
     Self { value }
   }
+
+  pub fn len(&self) -> usize {
+    self.value.len()
+  }
+
+  pub fn is_empty(&self) -> bool {
+    self.value.is_empty()
+  }
+
   pub fn from_utf8(path: &str) -> Self {
     Self {
       value: Bytes::copy_from_slice(path.as_bytes()),
     }
+  }
+
+  pub fn as_str(&self) -> String {
+    let mut res = String::new();
+    for &b in self.value.as_ref() {
+      match b {
+        b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' => {
+          res.push(b as char);
+        }
+        _ => {
+          res.push_str(&format!(".{:02x}", b));
+        }
+      }
+    }
+    res
+  }
+
+  pub fn as_bytes(&self) -> &[u8] {
+    &self.value
   }
 
   pub fn serialize(&self) -> Result<Bytes, ParseError> {
@@ -126,21 +167,17 @@ impl Tuple {
     self.fields.clear();
   }
 
-  pub fn starts_with(&self, parent: &Tuple) -> bool {
-    // parent cannot have more fields
-    if parent.fields.len() > self.fields.len() {
+  pub fn starts_with(&self, prefix: &Tuple) -> bool {
+    if prefix.fields.len() > self.fields.len() {
       return false;
     }
 
-    // if any of my fields is not equal
-    // I'm not a child
-    for i in 0..parent.fields.len() {
-      if self.fields[i].ne(&parent.fields[i]) {
+    for i in 0..prefix.fields.len() {
+      if self.fields[i].ne(&prefix.fields[i]) {
         return false;
       }
     }
 
-    // it seems I'm a  child :)
     true
   }
 
@@ -257,5 +294,62 @@ mod tests {
     let tuple = Tuple::from_utf8_path("/this/is/a/very/long/path");
     assert_eq!(tuple.fields.len(), 6);
     assert_eq!(tuple.to_utf8_path(), "/this/is/a/very/long/path");
+  }
+
+  #[test]
+  fn test_starts_with_exact_match() {
+    let tuple = Tuple::from_utf8_path("meet/room1");
+    let prefix = Tuple::from_utf8_path("meet/room1");
+    assert!(tuple.starts_with(&prefix));
+  }
+
+  #[test]
+  fn test_starts_with_prefix_match() {
+    let tuple = Tuple::from_utf8_path("meet/room1/track1");
+    let prefix = Tuple::from_utf8_path("meet");
+    assert!(tuple.starts_with(&prefix));
+  }
+
+  #[test]
+  fn test_starts_with_multi_field_prefix() {
+    let tuple = Tuple::from_utf8_path("meet/room1/track1");
+    let prefix = Tuple::from_utf8_path("meet/room1");
+    assert!(tuple.starts_with(&prefix));
+  }
+
+  #[test]
+  fn test_starts_with_empty_prefix() {
+    let tuple = Tuple::from_utf8_path("meet/room1");
+    let prefix = Tuple::new();
+    assert!(tuple.starts_with(&prefix));
+  }
+
+  #[test]
+  fn test_starts_with_no_match() {
+    let tuple = Tuple::from_utf8_path("meet/room1");
+    let prefix = Tuple::from_utf8_path("chat/room1");
+    assert!(!tuple.starts_with(&prefix));
+  }
+
+  #[test]
+  fn test_starts_with_prefix_longer_than_tuple() {
+    let tuple = Tuple::from_utf8_path("meet");
+    let prefix = Tuple::from_utf8_path("meet/room1");
+    assert!(!tuple.starts_with(&prefix));
+  }
+
+  #[test]
+  fn test_starts_with_partial_field_no_match() {
+    // "meet" != "meeting" even though "meeting" starts with "meet" as a string
+    let tuple = Tuple::from_utf8_path("meeting/room1");
+    let prefix = Tuple::from_utf8_path("meet");
+    assert!(!tuple.starts_with(&prefix));
+  }
+
+  #[test]
+  fn test_starts_with_both_empty() {
+    let tuple = Tuple::new();
+    let prefix = Tuple::new();
+    assert!(tuple.starts_with(&prefix));
   }
 }

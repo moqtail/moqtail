@@ -2,7 +2,7 @@
 name = "moqtail"
 description = "Draft 11-compliant Media-over-QUIC (MoQ) protocol library."
 keywords = ["moq", "quic", "media", "protocol"]
-version = "0.9.0"
+version = "0.11.0"
 edition = "2024"
 license = "Apache-2.0"
 

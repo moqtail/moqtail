@@ -66,10 +66,8 @@ pub async fn handle(
       // and forward the message to people who are subscribed to the namespace
       {
         let subs_map = context.track_manager.namespace_subscribers.read().await;
-        let ns_str = m.track_namespace.to_utf8_path();
-
         for (prefix, subscribers) in subs_map.iter() {
-          if ns_str.starts_with(&prefix.to_utf8_path()) {
+          if m.track_namespace.starts_with(prefix) {
             for sub in subscribers {
               // Don't echo back to announcer
               if sub.connection_id == client.connection_id {

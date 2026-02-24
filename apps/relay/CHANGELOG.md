@@ -1,5 +1,13 @@
 # relay
 
+## 0.11.0
+
+### Minor Changes
+
+- [#104](https://github.com/moqtail/moqtail/pull/104) [`a08c438`](https://github.com/moqtail/moqtail/commit/a08c4380f7a0abd25fcfa424ce3fbb5d90b4a977) Thanks [@zafergurel](https://github.com/zafergurel)! - Implements SWITCH message
+
+- [#106](https://github.com/moqtail/moqtail/pull/106) [`3763a1a`](https://github.com/moqtail/moqtail/commit/3763a1a21214d5b262e39abb45c29dc0c6484c4a) Thanks [@zafergurel](https://github.com/zafergurel)! - SUBSCRIBE_NAMESPACE implementation
+
 ## 0.10.0
 
 ### Minor Changes

@@ -39,6 +39,7 @@ pub mod subscribe_namespace_error;
 pub mod subscribe_namespace_ok;
 pub mod subscribe_ok;
 pub mod subscribe_update;
+pub mod switch;
 pub mod track_status;
 pub mod track_status_error;
 pub mod track_status_ok;

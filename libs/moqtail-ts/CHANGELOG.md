@@ -1,5 +1,11 @@
 # moqtail-ts
 
+## 0.7.0
+
+### Minor Changes
+
+- [#104](https://github.com/moqtail/moqtail/pull/104) [`a08c438`](https://github.com/moqtail/moqtail/commit/a08c4380f7a0abd25fcfa424ce3fbb5d90b4a977) Thanks [@zafergurel](https://github.com/zafergurel)! - Implements SWITCH message
+
 ## 0.6.0
 
 ### Minor Changes

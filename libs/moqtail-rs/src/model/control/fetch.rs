@@ -16,7 +16,7 @@ use super::constant::{ControlMessageType, FetchType, GroupOrder};
 use super::control_message::ControlMessageTrait;
 use crate::model::common::location::Location;
 use crate::model::common::pair::KeyValuePair;
-use crate::model::common::tuple::Tuple;
+use crate::model::common::tuple::{Tuple, TupleField};
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
 use crate::model::error::ParseError;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
@@ -24,7 +24,7 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 #[derive(Debug, PartialEq, Clone)]
 pub struct StandAloneFetchProps {
   pub track_namespace: Tuple,
-  pub track_name: String,
+  pub track_name: TupleField,
   pub start_location: Location,
   pub end_location: Location,
 }
@@ -215,14 +215,15 @@ impl ControlMessageTrait for Fetch {
       }
       FetchType::StandAlone => {
         let track_namespace = Tuple::deserialize(payload)?;
-        let track_name_len = payload.get_vi()?;
-        let mut track_name_bytes = vec![0u8; track_name_len as usize];
-        payload.copy_to_slice(&mut track_name_bytes);
-        let track_name =
-          String::from_utf8(track_name_bytes).map_err(|e| ParseError::InvalidUTF8 {
+        let track_name_len = payload.get_vi()? as usize;
+        if payload.remaining() < track_name_len {
+          return Err(ParseError::NotEnoughBytes {
             context: "Fetch::parse_payload(track_name)",
-            details: e.to_string(),
-          })?;
+            needed: track_name_len,
+            available: payload.remaining(),
+          });
+        }
+        let track_name = TupleField::new(payload.copy_to_bytes(track_name_len));
         let start_location = Location::deserialize(payload)?;
         let end_location = Location::deserialize(payload)?;
 
@@ -390,7 +391,7 @@ mod tests {
     let mut track_namespace = Tuple::new();
     track_namespace.add(TupleField::from_utf8("test"));
     track_namespace.add(TupleField::from_utf8("namespace"));
-    let track_name = "video_track".to_string();
+    let track_name = TupleField::from_utf8("video_track");
     let start_location = Location::new(5, 10);
     let end_location = Location::new(15, 20);
     let parameters = vec![KeyValuePair::try_new_varint(100, 200).unwrap()];

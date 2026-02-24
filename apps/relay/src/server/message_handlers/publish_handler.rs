@@ -37,7 +37,7 @@ pub async fn handle(
 ) -> Result<(), TerminationCode> {
   match msg {
     ControlMessage::Publish(m) => {
-      info!("Received Publish message for track: {}", m.track_name);
+      info!("Received Publish message for track: {:?}", m.track_name);
       let request_id = m.request_id;
 
       // Check request ID
@@ -87,18 +87,18 @@ pub async fn handle(
       // Add the track to the client's published tracks
       let full_track_name = moqtail::model::data::full_track_name::FullTrackName {
         namespace: m.track_namespace.clone(),
-        name: m.track_name.clone().into(),
+        name: m.track_name.clone(),
       };
 
       let m_clone = m.clone();
+
       // TODO: what happens multiple publishers publish the same track?
       if !context.track_manager.has_track(&full_track_name).await {
         info!("Track not found, creating new track: {:?}", m.track_alias);
         // subscribed_tracks.insert(sub.track_alias, Track::new(sub.track_alias, track_namespace.clone(), sub.track_name.clone()));
         let track = Track::new(
           m.track_alias,
-          m.track_namespace.clone(),
-          m.track_name.clone(),
+          full_track_name.clone(),
           context.connection_id, // TODO: what happens there are multiple publishers?
           context.server_config,
           TrackStatus::Confirmed {
@@ -114,11 +114,12 @@ pub async fn handle(
 
         client.add_published_track(full_track_name).await;
 
-        //--- Now we make all namespace subscribers subscribe---
+        // find subscribers interested in this track and forward the publish message to them
         let subscribers = context
           .track_manager
           .get_namespace_subscribers(&m.track_namespace)
           .await;
+
         if !subscribers.is_empty() {
           info!(
             "Found {} subscribers for namespace {:?}, forwarding PUBLISH",
@@ -154,7 +155,7 @@ pub async fn handle(
 
           let track_write = track_arc.read().await;
           if let Err(e) = track_write
-            .add_subscription(subscriber.clone(), synthetic_sub)
+            .add_subscription(subscriber.clone(), synthetic_sub, false)
             .await
           {
             warn!(
@@ -182,7 +183,7 @@ pub async fn handle(
       ));
 
       info!(
-        "Accepted publish request for track: {} with alias: {}",
+        "Accepted publish request for track: {:?} with alias: {}",
         m_clone.track_name, m_clone.track_alias
       );
 

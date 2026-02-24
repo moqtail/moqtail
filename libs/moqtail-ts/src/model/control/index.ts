@@ -16,6 +16,7 @@
 
 export * from './publish_namespace'
 export * from './subscribe'
+export * from './switch'
 export * from './publish_namespace_error'
 export * from './publish_namespace_ok'
 export * from './publish_namespace_cancel'

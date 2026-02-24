@@ -86,8 +86,10 @@ impl Server {
     };
 
     info!(
-      "MOQtail Relay is running at https://{}:{}",
-      self.app_config.host, self.app_config.port
+      "{} is running at https://{}:{}",
+      env!("MOQTAIL_VERSION"),
+      self.app_config.host,
+      self.app_config.port
     );
 
     let shutdown_notify = Arc::new(Notify::new());

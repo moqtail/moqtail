@@ -35,7 +35,7 @@ jobs:
       - run: npm install --global corepack@latest
       - run: corepack npm audit signatures
 
-      - name: Build moqtail-ts
+      - name: Build moqtail
         working-directory: libs/moqtail-ts
         run: npm run build
 

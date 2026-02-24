@@ -13,12 +13,15 @@
 // limitations under the License.
 
 use anyhow::Result;
-use moqtail::model::control::client_setup::ClientSetup;
 use moqtail::model::control::constant;
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::error::TerminationCode;
+use moqtail::model::{
+  control::client_setup::ClientSetup, parameter::setup_parameter::SetupParameter,
+};
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
+use std::time::Duration;
 use tracing::{error, info};
 use wtransport::{ClientConfig, Endpoint};
 
@@ -34,9 +37,17 @@ impl MoqConnection {
   pub async fn establish(server: &str, no_cert_validation: bool) -> Result<Self> {
     let c = ClientConfig::builder().with_bind_default();
     let config = if no_cert_validation {
-      c.with_no_cert_validation().build()
+      c.with_no_cert_validation()
+        .keep_alive_interval(Some(Duration::from_secs(3)))
+        .max_idle_timeout(Some(Duration::from_secs(7)))
+        .unwrap()
+        .build()
     } else {
-      c.with_native_certs().build()
+      c.with_native_certs()
+        .keep_alive_interval(Some(Duration::from_secs(3)))
+        .max_idle_timeout(Some(Duration::from_secs(7)))
+        .unwrap()
+        .build()
     };
 
     info!("Connecting to relay server at {}", server);
@@ -51,7 +62,11 @@ impl MoqConnection {
 
     // Send ClientSetup
     info!("Sending ClientSetup...");
-    let client_setup = ClientSetup::new(vec![SUPPORTED_VERSION], vec![]);
+    let max_request_id_param = SetupParameter::new_max_request_id(1000000)
+      .try_into()
+      .unwrap();
+
+    let client_setup = ClientSetup::new(vec![SUPPORTED_VERSION], vec![max_request_id_param]);
     control_stream.send_impl(&client_setup).await?;
 
     // Receive ServerSetup

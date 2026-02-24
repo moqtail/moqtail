@@ -195,7 +195,12 @@ impl TrackCache {
     }
   }
 
-  pub async fn read_objects(&self, start: Location, end: Location) -> Receiver<CacheConsumeEvent> {
+  pub async fn read_objects(
+    &self,
+    start: Location,
+    end: Location,
+    report_end_location: bool,
+  ) -> Receiver<CacheConsumeEvent> {
     let (tx, rx) = channel(32); // Smaller buffer for memory efficiency
     let cache = self.cache.clone();
     let track_alias = self.track_alias;
@@ -234,7 +239,7 @@ impl TrackCache {
       }
 
       // Send end location based on last group found
-      if let Some((last_group_id, last_objects)) = groups_in_range.last() {
+      if report_end_location && let Some((last_group_id, last_objects)) = groups_in_range.last() {
         let objects_guard = last_objects.read().await;
         let end_object_id = if let Some(last_object) = objects_guard.last() {
           if end.object > 0 {
@@ -272,10 +277,14 @@ impl TrackCache {
           if group_id == start.group && start.object > 0 && object.object_id < start.object {
             continue; // Skip objects before start
           }
-
+          info!(
+            "read_objects | track: {} processing group_id: {} object_id: {}",
+            track_alias, group_id, object.object_id
+          );
           // stop when we reach end
+          // TODO: is object.object_id > end.object correct? should it be >= ?
           if group_id > end.group
-            || (group_id == end.group && end.object > 0 && object.object_id >= end.object)
+            || (group_id == end.group && end.object > 0 && object.object_id > end.object)
           {
             break; // Stop at end boundary
           }

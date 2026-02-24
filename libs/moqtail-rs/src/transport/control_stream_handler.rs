@@ -188,7 +188,7 @@ mod tests {
   use crate::model::common::location::Location;
   use crate::model::common::pair::KeyValuePair;
   use crate::model::common::reason_phrase::ReasonPhrase;
-  use crate::model::common::tuple::Tuple;
+  use crate::model::common::tuple::{Tuple, TupleField};
   use crate::model::common::varint::BufMutVarIntExt;
   use crate::model::control::client_setup::ClientSetup;
   use crate::model::control::constant::{ControlMessageType, FilterType, GroupOrder};
@@ -350,7 +350,7 @@ mod tests {
   fn create_test_subscribe() -> Subscribe {
     let request_id = 128242;
     let track_namespace = Tuple::from_utf8_path("nein/nein/nein");
-    let track_name = "${Name}".to_string();
+    let track_name = TupleField::from_utf8("track_42");
     let subscriber_priority = 31;
     let group_order = GroupOrder::Original;
     let forward = true;

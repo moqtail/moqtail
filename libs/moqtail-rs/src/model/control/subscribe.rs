@@ -16,7 +16,7 @@ use super::constant::{ControlMessageType, FilterType, GroupOrder};
 use super::control_message::ControlMessageTrait;
 use crate::model::common::location::Location;
 use crate::model::common::pair::KeyValuePair;
-use crate::model::common::tuple::Tuple;
+use crate::model::common::tuple::{Tuple, TupleField};
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
 use crate::model::data::full_track_name::FullTrackName;
 use crate::model::error::ParseError;
@@ -26,7 +26,7 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 pub struct Subscribe {
   pub request_id: u64,
   pub track_namespace: Tuple,
-  pub track_name: String,
+  pub track_name: TupleField,
   pub subscriber_priority: u8,
   pub group_order: GroupOrder,
   pub forward: bool,
@@ -42,7 +42,7 @@ impl Subscribe {
   pub fn new_next_group_start(
     request_id: u64,
     track_namespace: Tuple,
-    track_name: String,
+    track_name: TupleField,
     subscriber_priority: u8,
     group_order: GroupOrder,
     forward: bool,
@@ -65,7 +65,7 @@ impl Subscribe {
   pub fn new_latest_object(
     request_id: u64,
     track_namespace: Tuple,
-    track_name: String,
+    track_name: TupleField,
     subscriber_priority: u8,
     group_order: GroupOrder,
     forward: bool,
@@ -88,7 +88,7 @@ impl Subscribe {
   pub fn new_absolute_start(
     request_id: u64,
     track_namespace: Tuple,
-    track_name: String,
+    track_name: TupleField,
     subscriber_priority: u8,
     group_order: GroupOrder,
     forward: bool,
@@ -112,7 +112,7 @@ impl Subscribe {
   pub fn new_absolute_range(
     request_id: u64,
     track_namespace: Tuple,
-    track_name: String,
+    track_name: TupleField,
     subscriber_priority: u8,
     group_order: GroupOrder,
     forward: bool,
@@ -141,7 +141,7 @@ impl Subscribe {
   pub fn get_full_track_name(&self) -> FullTrackName {
     FullTrackName {
       namespace: self.track_namespace.clone(),
-      name: self.track_name.clone().into(),
+      name: self.track_name.clone(),
     }
   }
 }
@@ -221,12 +221,7 @@ impl ControlMessageTrait for Subscribe {
         available: payload.remaining(),
       });
     }
-    let track_name_bytes = payload.copy_to_bytes(name_len);
-    let track_name =
-      String::from_utf8(track_name_bytes.to_vec()).map_err(|e| ParseError::InvalidUTF8 {
-        context: "Subscribe::parse_payload(track_name)",
-        details: e.to_string(),
-      })?;
+    let track_name = TupleField::new(payload.copy_to_bytes(name_len));
 
     if payload.remaining() < 1 {
       return Err(ParseError::NotEnoughBytes {
@@ -319,7 +314,7 @@ mod tests {
   fn test_roundtrip() {
     let request_id = 128242;
     let track_namespace = Tuple::from_utf8_path("nein/nein/nein");
-    let track_name = "${Name}".to_string();
+    let track_name = TupleField::from_utf8("${Name}");
     let subscriber_priority = 31;
     let group_order = GroupOrder::Original;
     let forward = false;
@@ -360,7 +355,7 @@ mod tests {
   fn test_excess_roundtrip() {
     let request_id = 128242;
     let track_namespace = Tuple::from_utf8_path("nein/nein/nein");
-    let track_name = "${Name}".to_string();
+    let track_name = TupleField::from_utf8("${Name}");
     let subscriber_priority = 31;
     let group_order = GroupOrder::Original;
     let forward = true;
@@ -407,7 +402,7 @@ mod tests {
   fn test_partial_message() {
     let request_id = 128242;
     let track_namespace = Tuple::from_utf8_path("nein/nein/nein");
-    let track_name = "${Name}".to_string();
+    let track_name = TupleField::from_utf8("${Name}");
     let subscriber_priority = 31;
     let group_order = GroupOrder::Original;
     let forward = true;

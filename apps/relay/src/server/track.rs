@@ -27,8 +27,9 @@ use moqtail::model::control::constant::SubscribeErrorCode;
 use moqtail::model::control::subscribe::Subscribe;
 use moqtail::model::data::constant::ObjectForwardingPreference;
 use moqtail::model::data::datagram_object::DatagramObject;
+use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::model::data::object::Object;
-use moqtail::{model::common::tuple::Tuple, transport::data_stream_handler::HeaderInfo};
+use moqtail::transport::data_stream_handler::HeaderInfo;
 use std::sync::Arc;
 use tokio::sync::{Notify, RwLock};
 use tracing::{debug, error, info, warn};
@@ -71,15 +72,10 @@ pub enum TrackEvent {
 }
 #[derive(Debug, Clone)]
 pub struct Track {
-  #[allow(dead_code)]
   pub track_alias: u64,
-  #[allow(dead_code)]
-  pub track_namespace: Tuple,
-  #[allow(dead_code)]
-  pub track_name: String,
+  pub full_track_name: FullTrackName,
   pub subscription_manager: SubscriptionManager,
   pub publisher_connection_id: usize,
-  #[allow(dead_code)]
   pub(crate) cache: TrackCache,
   pub largest_location: Arc<RwLock<Location>>,
   pub object_logger: ObjectLogger,
@@ -96,18 +92,17 @@ pub struct Track {
 impl Track {
   pub fn new(
     track_alias: u64,
-    track_namespace: Tuple,
-    track_name: String,
+    full_track_name: FullTrackName,
     publisher_connection_id: usize,
     config: &'static AppConfig,
     initial_status: TrackStatus,
   ) -> Self {
     Track {
       track_alias,
-      track_namespace,
-      track_name,
+      full_track_name: full_track_name.clone(),
       subscription_manager: SubscriptionManager::new(
         track_alias,
+        full_track_name,
         config.log_folder.clone(),
         config,
       ),
@@ -167,11 +162,44 @@ impl Track {
     &self,
     subscriber: Arc<MOQTClient>,
     subscribe_message: Subscribe,
-  ) -> Result<(), anyhow::Error> {
-    self
+    is_switch: bool,
+  ) -> Result<Arc<RwLock<Subscription>>, anyhow::Error> {
+    // Check if subscription already exists
+
+    if let Some(sub_guard) = self
+      .subscription_manager
+      .get_subscription(subscriber.connection_id)
+      .await
+    {
+      if !is_switch {
+        error!(
+          "Subscriber with connection_id: {} already exists in track: {}",
+          subscriber.connection_id, self.track_alias
+        );
+      } else {
+        info!(
+          "Subscriber with connection_id: {} already exists in track: {} (switch subscription)",
+          subscriber.connection_id, self.track_alias
+        );
+        // inform the existing subscription about the switch
+        let sub = sub_guard.read().await;
+        sub.notify_switch().await;
+      }
+      return Err(anyhow::anyhow!(
+        "A subscription already exists for this subscriber"
+      ));
+    }
+
+    let subscription = self
       .subscription_manager
       .add_subscription(subscriber, subscribe_message, self.cache.clone())
-      .await
+      .await?;
+
+    if is_switch {
+      subscription.read().await.notify_switch().await;
+    }
+
+    Ok(subscription)
   }
 
   // return the subscription for the client

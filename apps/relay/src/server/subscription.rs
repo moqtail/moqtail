@@ -13,10 +13,12 @@
 // limitations under the License.
 
 use crate::server::client::MOQTClient;
+use crate::server::client::switch_context::SwitchStatus;
 use crate::server::config::AppConfig;
 use crate::server::object_logger::ObjectLogger;
 use crate::server::stream_id::StreamId;
 use crate::server::track::TrackEvent;
+use crate::server::track_cache::CacheConsumeEvent;
 use crate::server::track_cache::TrackCache;
 use crate::server::utils;
 use anyhow::Result;
@@ -31,7 +33,9 @@ use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::publish_done::PublishDone;
 use moqtail::model::control::subscribe::Subscribe;
 use moqtail::model::control::subscribe_update::SubscribeUpdate;
+use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::model::data::object::Object;
+use moqtail::model::data::subgroup_header::SubgroupHeader;
 use moqtail::transport::data_stream_handler::HeaderInfo;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -52,9 +56,38 @@ pub struct SubscriptionState {
   pub start_location: Option<Location>,
   pub end_group: u64,
   pub subscribe_parameters: Vec<KeyValuePair>,
+  pub last_sent_max_location: Option<Location>,
+  pub last_received_object_location: Option<Location>,
+  pub is_joining: bool,
 }
 
-impl SubscriptionState {}
+impl SubscriptionState {
+  pub fn update_last_sent_max_location(&mut self, location: Location) {
+    match &self.last_sent_max_location {
+      Some(current_max) => {
+        if location > *current_max {
+          self.last_sent_max_location = Some(location);
+        }
+      }
+      None => {
+        self.last_sent_max_location = Some(location);
+      }
+    }
+  }
+
+  pub fn update_last_received_object_location(&mut self, location: Location) {
+    match &self.last_received_object_location {
+      Some(current_max) => {
+        if location > *current_max {
+          self.last_received_object_location = Some(location);
+        }
+      }
+      None => {
+        self.last_received_object_location = Some(location);
+      }
+    }
+  }
+}
 
 impl From<Subscribe> for SubscriptionState {
   fn from(subscribe: Subscribe) -> Self {
@@ -66,6 +99,9 @@ impl From<Subscribe> for SubscriptionState {
       start_location: subscribe.start_location,
       end_group: subscribe.end_group.unwrap_or(0),
       subscribe_parameters: subscribe.subscribe_parameters,
+      last_sent_max_location: None,
+      last_received_object_location: None,
+      is_joining: false,
     }
   }
 }
@@ -74,6 +110,7 @@ impl From<Subscribe> for SubscriptionState {
 pub struct Subscription {
   pub request_id: u64,
   track_alias_ref: Arc<AtomicU64>,
+  pub full_track_name: FullTrackName,
   pub subscription_state: Arc<RwLock<SubscriptionState>>,
   subscriber: Arc<MOQTClient>,
   event_rx: Arc<Mutex<Option<UnboundedReceiver<TrackEvent>>>>,
@@ -84,6 +121,7 @@ pub struct Subscription {
   client_connection_id: usize,
   object_logger: ObjectLogger,
   config: &'static AppConfig,
+  check_switch_context_on_next_object: Arc<AtomicBool>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -95,6 +133,7 @@ impl Subscription {
 
   fn create_instance(
     track_alias_ref: Arc<AtomicU64>,
+    full_track_name: FullTrackName,
     request_id: u64,
     subscribe_message: Subscribe,
     subscriber: Arc<MOQTClient>,
@@ -106,6 +145,7 @@ impl Subscription {
   ) -> Self {
     Self {
       track_alias_ref,
+      full_track_name,
       request_id,
       subscription_state: Arc::new(RwLock::new(subscribe_message.into())),
       subscriber,
@@ -116,10 +156,12 @@ impl Subscription {
       client_connection_id,
       object_logger: ObjectLogger::new(log_folder),
       config,
+      check_switch_context_on_next_object: Arc::new(AtomicBool::new(false)),
     }
   }
   pub fn new(
     track_alias: Arc<AtomicU64>,
+    full_track_name: FullTrackName,
     subscribe_message: Subscribe,
     subscriber: Arc<MOQTClient>,
     event_rx: UnboundedReceiver<TrackEvent>,
@@ -131,27 +173,130 @@ impl Subscription {
     let event_rx = Arc::new(Mutex::new(Some(event_rx)));
     let sub = Self::create_instance(
       track_alias.clone(),
+      full_track_name,
       subscribe_message.request_id,
       subscribe_message,
       subscriber,
       event_rx,
-      cache,
+      cache.clone(),
       client_connection_id,
       log_folder,
       config,
     );
 
-    let alias = track_alias.load(Ordering::Relaxed);
+    let track_alias = track_alias.load(Ordering::Relaxed);
+
     info!(
       "Created new Subscription instance for subscriber: {} track: {} subscription state: {:?}",
-      client_connection_id, alias, sub.subscription_state
+      client_connection_id, track_alias, sub.subscription_state
     );
 
     let mut instance = sub.clone();
+
     tokio::spawn(async move {
       loop {
-        if instance.finished.load(Ordering::Relaxed) {
+        if instance.is_finished().await {
           break;
+        }
+
+        // Handle joining state
+        {
+          let state = instance.subscription_state.read().await;
+          let start_location = state.start_location.clone();
+          let last_received_object_location_opt = state.last_received_object_location.clone();
+          let is_joining = state.is_joining;
+          drop(state);
+          if is_joining && start_location.is_some() {
+            let start_location = start_location.unwrap_or_default();
+            if let Some(last_received_object_location) = last_received_object_location_opt {
+              info!(
+                "Joining state - subscriber: {} track: {} from location: {:?} to last received location: {:?}",
+                instance.client_connection_id,
+                track_alias,
+                start_location,
+                last_received_object_location
+              );
+              if last_received_object_location > start_location {
+                let mut object_receiver = cache
+                  .read_objects(start_location, last_received_object_location, false)
+                  .await;
+
+                let mut last_group: u64 = u64::MAX;
+                let mut last_stream_id: Option<StreamId> = None;
+
+                loop {
+                  match object_receiver.recv().await {
+                    Some(event) => match event {
+                      CacheConsumeEvent::NoObject => {
+                        // there is no object found
+                        break;
+                      }
+                      CacheConsumeEvent::Object(object) => {
+                        let (header_info, stream_id) = if last_group == u64::MAX
+                          || object.group_id > last_group
+                        {
+                          // create a subgroup header and send a track event
+
+                          // TODO: check this. If is_some returns true, we may not need
+                          // to check the length.
+                          let has_extensions = object.extension_headers.as_ref().is_some();
+
+                          // create a fake subgroup header using the object attributes
+                          // TODO: It think contains_end_of_group should be checked by looking at
+                          // the last object. Need to look into the draft.
+                          let subgroup_header = HeaderInfo::Subgroup {
+                            header: SubgroupHeader::new_with_explicit_id(
+                              track_alias,
+                              object.group_id,
+                              object.subgroup_id,
+                              object.publisher_priority,
+                              has_extensions,
+                              false,
+                            ),
+                          };
+                          info!(
+                            "FROM CACHE: Joining state - subscriber: {} track: {} sending subgroup header: {:?}",
+                            instance.client_connection_id, track_alias, subgroup_header
+                          );
+                          last_group = object.group_id;
+                          let stream_id = instance.get_stream_id(&subgroup_header);
+                          last_stream_id = Some(stream_id);
+
+                          (Some(subgroup_header), last_stream_id.clone())
+                        } else {
+                          (None, last_stream_id.clone())
+                        };
+
+                        let the_object = Object::try_from_fetch(object, track_alias).unwrap();
+
+                        let track_event = TrackEvent::SubgroupObject {
+                          stream_id: stream_id.unwrap(),
+                          object: the_object,
+                          header_info,
+                        };
+                        info!(
+                          "Joining state - subscriber: {} track: {} sending object location: {:?}",
+                          instance.client_connection_id, track_alias, track_event
+                        );
+                        instance.handle_track_event(track_event).await;
+                      }
+                      CacheConsumeEvent::EndLocation(_) => {}
+                    },
+                    None => {
+                      warn!("handle_fetch_messages | No object.");
+                      break;
+                    }
+                  }
+                }
+              }
+            }
+            let mut state = instance.subscription_state.write().await;
+            state.is_joining = false;
+            info!(
+              "Finished joining state for subscriber: {} track: {}",
+              instance.client_connection_id, track_alias
+            );
+          }
         }
 
         tokio::select! {
@@ -169,6 +314,20 @@ impl Subscription {
     });
 
     sub
+  }
+
+  pub async fn is_finished(&self) -> bool {
+    self.finished.load(Ordering::Relaxed)
+  }
+
+  pub async fn is_forwarding(&self) -> bool {
+    let state = self.subscription_state.read().await;
+    state.forward
+  }
+
+  // Returns true if the subscription is active (not finished and forwarding objects)
+  pub async fn is_active(&self) -> bool {
+    !self.is_finished().await && self.is_forwarding().await
   }
 
   // This method updates the subscribe message with the new subscribe update
@@ -302,6 +461,149 @@ impl Subscription {
     }
   }
 
+  // Notify the subscription to check the switch context on the next object
+  pub async fn notify_switch(&self) {
+    info!(
+      "Notifying subscription to check switch context on next object for subscriber: {} track: {}",
+      self.client_connection_id,
+      self.track_alias()
+    );
+    self
+      .check_switch_context_on_next_object
+      .store(true, std::sync::atomic::Ordering::Relaxed);
+  }
+
+  async fn check_switch_context(&self, object_location: &Location) -> bool {
+    // if the object is after the end group, finish the subscription
+    let status = self
+      .subscriber
+      .switch_context
+      .get_switch_status(&self.full_track_name)
+      .await;
+
+    if status.is_none() {
+      // not in a switch context, always forward
+      return true;
+    }
+
+    let status = status.unwrap();
+
+    match status {
+      SwitchStatus::Next => {
+        // check whether the group id of this track
+        // is equal to or greater than the one of
+        // the switch context's current track
+        // if so, set this track as current
+        let mut switch_at_next_group = false;
+        let mut new_start_location = None;
+
+        if let Some(current_track_name) = self.subscriber.switch_context.get_current().await {
+          let current_subscription_opt = self
+            .subscriber
+            .subscriptions
+            .get_subscription(&current_track_name)
+            .await;
+
+          if let Some(current_subscription) = current_subscription_opt
+            && let Some(current_subscription) = current_subscription.upgrade()
+          {
+            let current_subscription = current_subscription.read().await;
+            let current_state = current_subscription.subscription_state.read().await;
+            let last_sent_max_location = current_state.last_sent_max_location.clone();
+
+            if let Some(loc) = last_sent_max_location {
+              switch_at_next_group = object_location.group >= loc.group;
+              let mut loc_clone = loc.clone();
+              loc_clone.group += 1; // switch at the next group after the last sent max location of the current track
+              loc_clone.object = 0; // reset object id to 0 to read from the start of the group
+              new_start_location = Some(loc_clone);
+            } else {
+              // if there is no last sent location, we can switch
+              switch_at_next_group = true;
+            }
+          }
+        } else {
+          // no current track, we can switch
+          switch_at_next_group = true;
+        }
+
+        if switch_at_next_group {
+          // set this track as current
+          let subscriber = self.subscriber.clone();
+          let full_track_name = self.full_track_name.clone();
+
+          // the following method also sets the current active track's status to None if any
+          info!(
+            "check_switch_context: Setting track to Current for subscriber: {} track: {} object location group: {}",
+            self.client_connection_id,
+            self.track_alias(),
+            object_location.group
+          );
+          subscriber
+            .switch_context
+            .add_or_update_switch_item(full_track_name.clone(), SwitchStatus::Current)
+            .await;
+
+          // set forward to true and set start group the next group
+          let mut state = self.subscription_state.write().await;
+          state.forward = true;
+
+          state.is_joining = true;
+
+          if new_start_location.is_some() {
+            state.start_location = new_start_location;
+          } else {
+            state.start_location = Some(Location {
+              object: 0,
+              group: object_location.group + 1,
+            });
+          }
+
+          state.end_group = 0; // remove end group limit
+
+          info!(
+            "check_switch_context: Will forward objects for subscriber: {} track: {} starting from group: {}",
+            self.client_connection_id,
+            self.track_alias(),
+            state.start_location.as_ref().unwrap().group
+          );
+        } else {
+          // Do not forward objects for Next status until switch condition is met
+          // set forward to false if it is true
+          if self.is_forwarding().await {
+            info!(
+              "check_switch_context: Setting forward to false for Next track for subscriber: {} track: {} obkject location group: {}",
+              self.client_connection_id,
+              self.track_alias(),
+              object_location.group
+            );
+            self.subscription_state.write().await.forward = false;
+          }
+        }
+        // even if the switch_at_next_group is true,
+        // we return false here to wait for the next group to switch
+        false
+      }
+      SwitchStatus::Current => true,
+      SwitchStatus::None => {
+        // set forward to false if it is true
+        if self.is_forwarding().await {
+          info!(
+            "check_switch_context: Setting end group to {} for None track for subscriber: {} track: {}",
+            object_location.group,
+            self.client_connection_id,
+            self.track_alias()
+          );
+          let mut state = self.subscription_state.write().await;
+          state.forward = false;
+          state.end_group = object_location.group;
+        }
+
+        false
+      }
+    }
+  }
+
   async fn receive(&mut self) {
     debug!(
       "Receiving for subscriber: {} track: {}",
@@ -313,209 +615,10 @@ impl Subscription {
     if let Some(ref mut event_rx) = *event_rx_guard {
       match event_rx.recv().await {
         Some(event) => {
-          debug!(
-            "Event received for subscriber: {} track: {} event: {:?}",
-            self.client_connection_id,
-            self.track_alias(),
-            event
-          );
           if self.finished.load(Ordering::Relaxed) {
             return;
           }
-
-          match event {
-            TrackEvent::SubgroupObject {
-              object,
-              stream_id,
-              header_info,
-            } => {
-              let object_received_time = utils::passed_time_since_start();
-
-              {
-                let state = self.subscription_state.read().await;
-                if let Some(start) = &state.start_location
-                  && object.location < *start
-                {
-                  return;
-                }
-
-                // if the object is after the end group, finish the subscription
-
-                if state.end_group > 0 && object.location.group > state.end_group {
-                  /* With Draft-15, the end group can be increased or decreased.
-                  TODO: Remove the following code after draft-15 support.
-                  info!(
-                    "Finishing subscription for subscriber: {} track: {}",
-                    self.client_connection_id, self.track_alias()
-                  );
-                  self.finish().await;
-                  */
-                  return;
-                }
-
-                if !state.forward {
-                  return;
-                }
-              }
-
-              // Handle header info if this is the first object
-              let send_stream = if let Some(header) = header_info {
-                if let HeaderInfo::Subgroup {
-                  header: _subgroup_header,
-                } = header
-                {
-                  info!(
-                    "Creating stream - subscriber: {} track: {} now: {} received time: {} object: {:?}",
-                    self.client_connection_id,
-                    self.track_alias(),
-                    utils::passed_time_since_start(),
-                    object_received_time,
-                    object.location
-                  );
-                  if let Ok((stream_id, send_stream)) = self.handle_header(header.clone()).await {
-                    {
-                      let mut send_stream_last_object_ids =
-                        self.send_stream_last_object_ids.write().await;
-                      send_stream_last_object_ids.insert(stream_id.clone(), None);
-                    }
-                    info!(
-                      "Stream created - subscriber: {} stream_id: {} track: {} now: {} received time: {} object: {:?}",
-                      self.client_connection_id,
-                      stream_id,
-                      self.track_alias(),
-                      utils::passed_time_since_start(),
-                      object_received_time,
-                      object.location
-                    );
-                    Some(send_stream)
-                  } else {
-                    // TODO: maybe log error here?
-                    None
-                  }
-                } else {
-                  error!(
-                    "Received Object event with non-subgroup header: {:?}",
-                    header
-                  );
-                  None
-                }
-              } else {
-                self.subscriber.get_stream(&stream_id).await
-              };
-
-              if let Some(send_stream) = send_stream {
-                // Get the previous object ID for this stream
-                let previous_object_id = {
-                  let send_stream_last_object_ids = self.send_stream_last_object_ids.read().await;
-                  send_stream_last_object_ids
-                    .get(&stream_id)
-                    .cloned()
-                    .flatten()
-                };
-
-                debug!(
-                  "Received Object event: subscriber: {} stream_id: {} track: {} previous_object_id: {:?}",
-                  self.client_connection_id,
-                  stream_id,
-                  self.track_alias(),
-                  previous_object_id
-                );
-
-                // Log object properties with send status if enabled
-                let write_result = self
-                  .handle_object(
-                    object.clone(),
-                    previous_object_id,
-                    &stream_id,
-                    send_stream.clone(),
-                  )
-                  .await;
-                let send_status = write_result.is_ok();
-
-                // Update the last object ID for this stream if successful
-                if send_status {
-                  let mut send_stream_last_object_ids =
-                    self.send_stream_last_object_ids.write().await;
-                  send_stream_last_object_ids
-                    .insert(stream_id.clone(), Some(object.location.object));
-                }
-
-                if self.config.enable_object_logging {
-                  self
-                    .object_logger
-                    .log_subscription_object(
-                      self.track_alias(),
-                      self.client_connection_id,
-                      &object,
-                      send_status,
-                      object_received_time,
-                    )
-                    .await;
-                }
-              } else {
-                error!(
-                  "Received Object event without a valid send stream for subscriber: {} stream_id: {} track: {} object: {:?} now: {} received time: {}",
-                  self.client_connection_id,
-                  stream_id,
-                  self.track_alias(),
-                  object.location,
-                  utils::passed_time_since_start(),
-                  object_received_time
-                );
-              }
-            }
-            TrackEvent::DatagramObject { object } => {
-              // Handle datagram object - serialize full MOQT datagram format
-              // Must include type, track_alias, group_id, object_id, publisher_priority, and payload
-              match object.serialize() {
-                Ok(serialized_bytes) => {
-                  if let Err(e) = self
-                    .subscriber
-                    .write_datagram_object(serialized_bytes)
-                    .await
-                  {
-                    error!("Failed to write datagram object: {:?}", e);
-                  }
-                }
-                Err(e) => {
-                  error!("Failed to serialize datagram object: {:?}", e);
-                }
-              }
-            }
-            TrackEvent::StreamClosed { stream_id } => {
-              info!(
-                "Received StreamClosed event: subscriber: {} stream_id: {} track: {}",
-                self.client_connection_id,
-                stream_id,
-                self.track_alias()
-              );
-              let _ = self.handle_stream_closed(&stream_id).await;
-            }
-            TrackEvent::PublisherDisconnected { reason } => {
-              info!(
-                "Received PublisherDisconnected event: subscriber: {}, reason: {} track: {}",
-                self.client_connection_id,
-                reason,
-                self.track_alias()
-              );
-
-              // Send PublishDone message and finish the subscription
-              if let Err(e) = self
-                .send_publish_done(PublishDoneStatusCode::TrackEnded, &reason)
-                .await
-              {
-                error!(
-                  "Failed to send PublishDone for publisher disconnect: subscriber: {} track: {} error: {:?}",
-                  self.client_connection_id,
-                  self.track_alias(),
-                  e
-                );
-              }
-
-              // Finish the subscription since the publisher is gone
-              self.finish().await;
-            }
-          }
+          self.handle_track_event(event).await;
         }
         None => {
           // For unbounded receivers, recv() returns None when the channel is closed
@@ -530,12 +633,271 @@ impl Subscription {
       }
     } else {
       // No receiver available, subscription has been finished
-      info!(
-        "No event receiver for subscriber: {} track: {}, finishing subscription",
-        self.client_connection_id,
-        self.track_alias()
-      );
       self.finish().await;
+    }
+  }
+
+  async fn handle_track_event(&self, event: TrackEvent) {
+    debug!(
+      "Event received for subscriber: {} track: {} event: {:?}",
+      self.client_connection_id,
+      self.track_alias(),
+      event
+    );
+    match event {
+      TrackEvent::SubgroupObject {
+        object,
+        stream_id,
+        header_info,
+      } => {
+        // update last received object location
+        {
+          let mut state = self.subscription_state.write().await;
+          state.update_last_received_object_location(object.location.clone());
+        }
+
+        // Check switch context state if needed
+        // Whether when a new header is received or when notified about a switch context change
+        let check_switch = self
+          .check_switch_context_on_next_object
+          .load(std::sync::atomic::Ordering::Relaxed);
+        if header_info.is_some() || check_switch {
+          if check_switch {
+            self
+              .check_switch_context_on_next_object
+              .store(false, std::sync::atomic::Ordering::Relaxed);
+          }
+          // Check wheter this track is in a switch context and update forward state
+          if !self.check_switch_context(&object.location).await {
+            // if this returns false, do not start the stream
+            info!(
+              "Not forwarding object for subscriber: {} track: {} due to switch context state",
+              self.client_connection_id,
+              self.track_alias()
+            );
+            return;
+          }
+        }
+
+        let object_received_time = utils::passed_time_since_start();
+
+        {
+          let state = self.subscription_state.read().await;
+          if let Some(start) = &state.start_location
+            && object.location < *start
+          {
+            debug!(
+              "Object before start location for subscriber: {} track: {} object location: {:?} start location: {:?}",
+              self.client_connection_id,
+              self.track_alias(),
+              object.location,
+              start
+            );
+            return;
+          }
+
+          if state.end_group > 0 && object.location.group > state.end_group {
+            /* With Draft-15, the end group can be increased or decreased.
+            TODO: Remove the following code after draft-15 support.
+            info!(
+              "Finishing subscription for subscriber: {} track: {}",
+              self.client_connection_id, self.track_alias
+            );
+            self.finish().await;
+            */
+            debug!(
+              "Object beyond end group for subscriber: {} track: {} object location: {:?} end group: {}",
+              self.client_connection_id,
+              self.track_alias(),
+              object.location,
+              state.end_group
+            );
+            return;
+          }
+
+          if !state.forward {
+            return;
+          }
+        }
+
+        // Handle header info if this is the first object
+        let mut send_stream = if let Some(header) = header_info {
+          if let HeaderInfo::Subgroup { header: _ } = header {
+            info!(
+              "Creating stream - subscriber: {} track: {} now: {} received time: {} object: {:?} header: {:?}",
+              self.client_connection_id,
+              self.track_alias(),
+              utils::passed_time_since_start(),
+              object_received_time,
+              object.location,
+              header
+            );
+            if let Ok((stream_id, send_stream)) = self.handle_header(header.clone()).await {
+              {
+                let mut send_stream_last_object_ids =
+                  self.send_stream_last_object_ids.write().await;
+                send_stream_last_object_ids.insert(stream_id.clone(), None);
+              }
+              info!(
+                "Stream created - subscriber: {} stream_id: {} track: {} now: {} received time: {} object: {:?}",
+                self.client_connection_id,
+                stream_id,
+                self.track_alias(),
+                utils::passed_time_since_start(),
+                object_received_time,
+                object.location
+              );
+              Some(send_stream)
+            } else {
+              // TODO: maybe log error here?
+              None
+            }
+          } else {
+            error!(
+              "Received Object event with non-subgroup header: {:?}",
+              header
+            );
+            None
+          }
+        } else {
+          self.subscriber.get_stream(&stream_id).await
+        };
+
+        if send_stream.is_none() {
+          // wait a little bit and try again
+          warn!(
+            "Send stream not found, retrying - subscriber: {} stream_id: {} track: {} now: {} received time: {} object: {:?}",
+            self.client_connection_id,
+            stream_id,
+            self.track_alias(),
+            utils::passed_time_since_start(),
+            object_received_time,
+            object.location
+          );
+          tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+          send_stream = self.subscriber.get_stream(&stream_id).await;
+        }
+
+        if let Some(send_stream) = send_stream {
+          // Get the previous object ID for this stream
+          let previous_object_id = {
+            let send_stream_last_object_ids = self.send_stream_last_object_ids.read().await;
+            send_stream_last_object_ids
+              .get(&stream_id)
+              .cloned()
+              .flatten()
+          };
+
+          debug!(
+            "Received Object event: subscriber: {} stream_id: {} track: {} previous_object_id: {:?} object: {:?} now: {} received time: {}",
+            self.client_connection_id,
+            stream_id,
+            self.track_alias(),
+            previous_object_id,
+            object,
+            utils::passed_time_since_start(),
+            object_received_time
+          );
+
+          // Log object properties with send status if enabled
+          let write_result = self
+            .handle_object(
+              object.clone(),
+              previous_object_id,
+              &stream_id,
+              send_stream.clone(),
+            )
+            .await;
+          let send_status = write_result.is_ok();
+
+          // Update the last object ID for this stream if successful
+          if send_status {
+            let mut send_stream_last_object_ids = self.send_stream_last_object_ids.write().await;
+            send_stream_last_object_ids.insert(stream_id.clone(), Some(object.location.object));
+
+            // Update last sent max location
+            self
+              .subscription_state
+              .write()
+              .await
+              .update_last_sent_max_location(object.location.clone());
+          }
+
+          if self.config.enable_object_logging {
+            self
+              .object_logger
+              .log_subscription_object(
+                self.track_alias(),
+                self.client_connection_id,
+                &object,
+                send_status,
+                object_received_time,
+              )
+              .await;
+          }
+        } else {
+          error!(
+            "Received Object event without a valid send stream for subscriber: {} stream_id: {} track: {} object: {:?} now: {} received time: {}",
+            self.client_connection_id,
+            stream_id,
+            self.track_alias(),
+            object.location,
+            utils::passed_time_since_start(),
+            object_received_time
+          );
+        }
+      }
+      TrackEvent::DatagramObject { object } => {
+        // Handle datagram object - serialize full MOQT datagram format
+        // Must include type, track_alias, group_id, object_id, publisher_priority, and payload
+        match object.serialize() {
+          Ok(serialized_bytes) => {
+            if let Err(e) = self
+              .subscriber
+              .write_datagram_object(serialized_bytes)
+              .await
+            {
+              error!("Failed to write datagram object: {:?}", e);
+            }
+          }
+          Err(e) => {
+            error!("Failed to serialize datagram object: {:?}", e);
+          }
+        }
+      }
+      TrackEvent::StreamClosed { stream_id } => {
+        info!(
+          "Received StreamClosed event: subscriber: {} stream_id: {} track: {}",
+          self.client_connection_id,
+          stream_id,
+          self.track_alias()
+        );
+        let _ = self.handle_stream_closed(&stream_id).await;
+      }
+      TrackEvent::PublisherDisconnected { reason } => {
+        info!(
+          "Received PublisherDisconnected event: subscriber: {}, reason: {} track: {}",
+          self.client_connection_id,
+          reason,
+          self.track_alias()
+        );
+
+        // Send PublishDone message and finish the subscription
+        if let Err(e) = self
+          .send_publish_done(PublishDoneStatusCode::TrackEnded, &reason)
+          .await
+        {
+          error!(
+            "Failed to send PublishDone for publisher disconnect: subscriber: {} track: {} error: {:?}",
+            self.client_connection_id,
+            self.track_alias(),
+            e
+          );
+        }
+
+        // Finish the subscription since the publisher is gone
+        self.finish().await;
+      }
     }
   }
 

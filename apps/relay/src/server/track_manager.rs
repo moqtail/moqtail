@@ -81,6 +81,13 @@ impl TrackManager {
     }
   }
 
+  pub async fn remove_track(&self, full_track_name: &FullTrackName) {
+    let mut tracks = self.tracks.write().await;
+    if tracks.remove(full_track_name).is_some() {
+      info!("Removed track by name: {:?}", full_track_name);
+    }
+  }
+
   pub async fn get_track(&self, full_track_name: &FullTrackName) -> Option<Arc<RwLock<Track>>> {
     let tracks = self.tracks.read().await;
     tracks.get(full_track_name).cloned()
@@ -159,11 +166,7 @@ impl TrackManager {
     // Check every prefix. If target starts with prefix, they are interested.
     // Example: Target "meet.room1", Prefix "meet" -> Match.
     for (prefix, clients) in subs.iter() {
-      // Convert to path for comparison.
-      let prefix_str = prefix.to_utf8_path();
-      let target_str = target_namespace.to_utf8_path();
-
-      if target_str.starts_with(&prefix_str) {
+      if target_namespace.starts_with(prefix) {
         for client in clients {
           interested_clients.push(client.clone());
         }
@@ -178,51 +181,45 @@ impl TrackManager {
     info!("Stored announcement for namespace: {:?}", namespace);
   }
 
-  // ... inside impl TrackManager ...
+  pub async fn remove_announcements_by_connection(&self, connection_id: usize) {
+    let mut announcements = self.announcements.write().await;
+    announcements.retain(|ns, client| {
+      if client.connection_id == connection_id {
+        info!(
+          "Removed announcement for namespace {:?} (publisher {} disconnected)",
+          ns, connection_id
+        );
+        false
+      } else {
+        true
+      }
+    });
+  }
+
+  pub async fn remove_namespace_subscriber(&self, connection_id: usize) {
+    let mut subs = self.namespace_subscribers.write().await;
+    for (prefix, clients) in subs.iter_mut() {
+      let before = clients.len();
+      clients.retain(|c| c.connection_id != connection_id);
+      if clients.len() < before {
+        info!(
+          "Removed namespace subscriber {} from prefix {:?}",
+          connection_id, prefix
+        );
+      }
+    }
+    subs.retain(|_, clients| !clients.is_empty());
+  }
 
   pub async fn get_announcements_by_prefix(&self, prefix: &Tuple) -> Vec<Tuple> {
     let announcements = self.announcements.read().await;
     let mut matches = Vec::new();
 
-    // LOGGING START
-    info!("--- MATCH DEBUG START ---");
-    info!("Requested Prefix Tuple: {:?}", prefix);
-    info!("Requested Prefix Path: '{}'", prefix.to_utf8_path());
-    info!("Total Announcements Stored: {}", announcements.len());
-
-    // Normalize the prefix once
-    let raw_prefix_path = prefix.to_utf8_path();
-    // Remove leading slash if present to standardise comparison
-    let clean_prefix = raw_prefix_path.trim_start_matches('/');
-
     for (ns, _) in announcements.iter() {
-      info!("Checking Candidate Tuple: {:?}", ns);
-      let raw_ns_path = ns.to_utf8_path();
-      let clean_ns = raw_ns_path.trim_start_matches('/');
-
-      info!("   Candidate Path: '{}'", raw_ns_path);
-      info!("   Comparison: '{}' vs '{}'", clean_ns, clean_prefix);
-
-      // 1. Exact Match Check
-      let is_exact = clean_ns == clean_prefix;
-
-      // 2. Directory Prefix Check (e.g. "meet/room1" starts with "meet/")
-      let dir_check = format!("{}/", clean_prefix);
-      let is_child = clean_ns.starts_with(&dir_check);
-
-      info!(
-        "   Is Exact? {} | Is Child? {} (checked against '{}')",
-        is_exact, is_child, dir_check
-      );
-
-      if is_exact || is_child {
-        info!("   >>> MATCH FOUND! Adding to results.");
+      if ns.starts_with(prefix) {
         matches.push(ns.clone());
-      } else {
-        info!("   >>> No match.");
       }
     }
-    info!("--- MATCH DEBUG END ---");
 
     matches
   }

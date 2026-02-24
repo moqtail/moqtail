@@ -60,6 +60,7 @@ export enum ControlMessageType {
   Publish = 0x1d,
   PublishOk = 0x1e,
   PublishError = 0x1f,
+  Switch = 0x22,
 }
 
 /**

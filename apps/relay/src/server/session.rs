@@ -65,13 +65,7 @@ impl Session {
       User-Agent: '{:?}' 
       Headers: '{:?}'
       ",
-      remote_addr,
-      origin,
-      authority,
-      path,
-      user_agent,
-      headers /*,
-              connection.handshake_data().alpn() */
+      remote_addr, origin, authority, path, user_agent, headers
     );
 
     let client_protocols = Self::parse_available_protocols(headers);

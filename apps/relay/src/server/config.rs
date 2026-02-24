@@ -14,6 +14,7 @@
 
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
+use moqtail::model::control::constant::SUPPORTED_VERSIONS;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tracing::{error, info};
@@ -124,13 +125,19 @@ impl AppConfig {
       }
     };
 
+    /* TODO: When raw-quic is aneb */
     let mut tls_config = wtransport::tls::server::build_default_tls_config(identity);
-    // clear default ALPN protocols and set to "moqt-16" only, since that's the only version we support for now
-    tls_config.alpn_protocols.clear();
-    tls_config
-      .alpn_protocols
-      .push("moqt-16".as_bytes().to_vec());
-    info!("TLS ALPN Protocols: {:?}", tls_config.alpn_protocols);
+
+    /*
+      This is for future raw-QUIC implementation.
+      A raw-QUIC client will use ALPN at the QUIC level.
+      A WebTransport client will send h3 at the QUIC level ALPN
+      and send moq version in wt-available-protocols header.
+    */
+    for version in SUPPORTED_VERSIONS.replace(" ", "").split(",") {
+      tls_config.alpn_protocols.push(version.as_bytes().to_vec());
+    }
+    info!("QUIC ALPN Protocols: {:?}", tls_config.alpn_protocols);
 
     // set up BBR congestion control
     let mut quic_transport_config = TransportConfig::default();

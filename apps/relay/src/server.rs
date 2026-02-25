@@ -29,7 +29,7 @@ mod track_cache;
 mod track_manager;
 mod utils;
 
-use crate::server::{config::AppConfig, session::Session};
+use crate::server::{config::AppConfig, session::Session, session_context::UpstreamFetchEvent};
 use anyhow::Result;
 use client_manager::ClientManager;
 use moqtail::transport::data_stream_handler::{FetchRequest, SubscribeRequest};

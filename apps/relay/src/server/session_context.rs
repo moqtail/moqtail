@@ -28,10 +28,22 @@ use super::{
   client::MOQTClient, client_manager::ClientManager, config::AppConfig, track_manager::TrackManager,
 };
 
+/// Events received from an upstream fetch response stream.
+#[derive(Debug, Clone)]
+pub(crate) enum UpstreamFetchEvent {
+  /// An object received from the upstream publisher
+  Object(FetchObject),
+  /// The upstream stream has closed normally
+  StreamClosed,
+  /// An error occurred on the upstream fetch
+  Error(String),
+}
+
 pub struct RequestMaps {
   pub relay_fetch_requests: Arc<RwLock<BTreeMap<u64, FetchRequest>>>,
   pub relay_subscribe_requests: Arc<RwLock<BTreeMap<u64, SubscribeRequest>>>,
   pub relay_track_status_requests: Arc<RwLock<BTreeMap<u64, SubscribeRequest>>>,
+  pub upstream_fetch_senders: Arc<RwLock<BTreeMap<u64, mpsc::Sender<UpstreamFetchEvent>>>>,
 }
 
 pub struct SessionContext {
@@ -47,6 +59,7 @@ pub struct SessionContext {
   pub(crate) is_connection_closed: Arc<AtomicBool>,
   pub(crate) relay_next_request_id: Arc<AtomicU64>,
   pub(crate) max_request_id: Arc<AtomicU64>,
+  pub(crate) upstream_fetch_senders: Arc<RwLock<BTreeMap<u64, mpsc::Sender<UpstreamFetchEvent>>>>,
 }
 
 impl SessionContext {
@@ -71,6 +84,7 @@ impl SessionContext {
       is_connection_closed: Arc::new(AtomicBool::new(false)),
       relay_next_request_id,
       max_request_id: Arc::new(AtomicU64::new(server_config.initial_max_request_id)),
+      upstream_fetch_senders: request_maps.upstream_fetch_senders,
     }
   }
 

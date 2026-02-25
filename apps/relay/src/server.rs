@@ -39,6 +39,7 @@ use std::sync::atomic::AtomicU64;
 use tokio::signal;
 use tokio::sync::Notify;
 use tokio::sync::RwLock;
+use tokio::sync::mpsc;
 use tracing::{debug, error, info};
 use tracing_subscriber::fmt::writer::MakeWriterExt;
 use tracing_subscriber::{EnvFilter, filter::LevelFilter};
@@ -52,6 +53,7 @@ pub(crate) struct Server {
   pub relay_fetch_requests: Arc<RwLock<BTreeMap<u64, FetchRequest>>>,
   pub relay_subscribe_requests: Arc<RwLock<BTreeMap<u64, SubscribeRequest>>>,
   pub relay_track_status_requests: Arc<RwLock<BTreeMap<u64, SubscribeRequest>>>,
+  pub upstream_fetch_senders: Arc<RwLock<BTreeMap<u64, mpsc::Sender<UpstreamFetchEvent>>>>,
   pub app_config: &'static AppConfig,
   pub relay_next_request_id: Arc<AtomicU64>,
 }
@@ -70,6 +72,7 @@ impl Server {
       relay_fetch_requests: Arc::new(RwLock::new(BTreeMap::new())),
       relay_subscribe_requests: Arc::new(RwLock::new(BTreeMap::new())),
       relay_track_status_requests: Arc::new(RwLock::new(BTreeMap::new())),
+      upstream_fetch_senders: Arc::new(RwLock::new(BTreeMap::new())),
       app_config: config,
       relay_next_request_id: Arc::new(AtomicU64::new(1u64)), // relay's request id starts at 1 and are odd
     }

@@ -112,6 +112,10 @@ pub async fn handle(
           .add_track(m.track_alias, full_track_name.clone(), track)
           .await;
 
+        context
+          .track_manager
+          .add_publish_message(full_track_name.clone(), *m.clone())
+          .await;
         client.add_published_track(full_track_name).await;
 
         // find subscribers interested in this track and forward the publish message to them

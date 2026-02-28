@@ -15,6 +15,7 @@
 use super::track::Track;
 use crate::server::client::MOQTClient;
 use moqtail::model::common::tuple::Tuple;
+use moqtail::model::control::publish::Publish;
 use moqtail::model::data::full_track_name::FullTrackName;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -27,6 +28,7 @@ pub struct TrackManager {
   pub track_aliases: Arc<RwLock<BTreeMap<u64, FullTrackName>>>,
   pub namespace_subscribers: Arc<RwLock<HashMap<Tuple, Vec<Arc<MOQTClient>>>>>,
   pub announcements: Arc<RwLock<HashMap<Tuple, Arc<MOQTClient>>>>,
+  pub publishes: Arc<RwLock<HashMap<FullTrackName, Publish>>>,
 }
 
 impl TrackManager {
@@ -36,6 +38,7 @@ impl TrackManager {
       track_aliases: Arc::new(RwLock::new(BTreeMap::new())),
       namespace_subscribers: Arc::new(RwLock::new(HashMap::new())),
       announcements: Arc::new(RwLock::new(HashMap::new())),
+      publishes: Arc::new(RwLock::new(HashMap::new())),
     }
   }
 
@@ -74,6 +77,11 @@ impl TrackManager {
     if let Some(full_track_name) = track_aliases.remove(&track_alias) {
       let mut tracks = self.tracks.write().await;
       tracks.remove(&full_track_name);
+
+      // Cleanup the publish message
+      let mut publishes = self.publishes.write().await;
+      publishes.remove(&full_track_name);
+
       info!(
         "Removed track with alias {}: {:?}",
         track_alias, full_track_name
@@ -221,6 +229,29 @@ impl TrackManager {
       }
     }
 
+    matches
+  }
+
+  pub async fn add_publish_message(&self, full_track_name: FullTrackName, publish_msg: Publish) {
+    let mut publishes = self.publishes.write().await;
+    publishes.insert(full_track_name, publish_msg);
+  }
+
+  pub async fn get_tracks_and_publishes_by_namespace_prefix(
+    &self,
+    prefix: &Tuple,
+  ) -> Vec<(FullTrackName, Arc<RwLock<Track>>, Publish)> {
+    let tracks = self.tracks.read().await;
+    let publishes = self.publishes.read().await;
+    let mut matches = Vec::new();
+
+    for (full_track_name, track_arc) in tracks.iter() {
+      if full_track_name.namespace.fields.starts_with(&prefix.fields)
+        && let Some(pub_msg) = publishes.get(full_track_name)
+      {
+        matches.push((full_track_name.clone(), track_arc.clone(), pub_msg.clone()));
+      }
+    }
     matches
   }
 }

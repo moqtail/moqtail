@@ -64,9 +64,7 @@ export class DatagramStatus {
     objectStatus: ObjectStatus,
   ): DatagramStatus {
     const hasExtensions = extensionHeaders !== null && extensionHeaders.length > 0
-    const type = hasExtensions
-      ? ObjectDatagramStatusType.WithExtensions
-      : ObjectDatagramStatusType.WithoutExtensions
+    const type = hasExtensions ? ObjectDatagramStatusType.WithExtensions : ObjectDatagramStatusType.WithoutExtensions
 
     return new DatagramStatus(
       type,
@@ -170,13 +168,7 @@ if (import.meta.vitest) {
         KeyValuePair.tryNewBytes(1, new TextEncoder().encode('wololoo')),
       ]
       const objectStatus = ObjectStatus.Normal
-      const datagramStatus = DatagramStatus.new(
-        trackAlias,
-        location,
-        publisherPriority,
-        extensionHeaders,
-        objectStatus,
-      )
+      const datagramStatus = DatagramStatus.new(trackAlias, location, publisherPriority, extensionHeaders, objectStatus)
       expect(datagramStatus.type).toBe(ObjectDatagramStatusType.WithExtensions)
       expect(datagramStatus.type).toBe(0x21)
       const frozen = datagramStatus.serialize()

@@ -222,15 +222,7 @@ if (import.meta.vitest) {
       const objectId = 0n
       const publisherPriority = 128
       const payload = new TextEncoder().encode('hello')
-      const datagramObject = DatagramObject.new(
-        trackAlias,
-        groupId,
-        objectId,
-        publisherPriority,
-        null,
-        payload,
-        false,
-      )
+      const datagramObject = DatagramObject.new(trackAlias, groupId, objectId, publisherPriority, null, payload, false)
       expect(datagramObject.type).toBe(ObjectDatagramType.Type0x04) // No extensions, not EOG, objectId = 0
       const frozen = datagramObject.serialize()
       const parsed = DatagramObject.deserialize(frozen)

@@ -18,10 +18,10 @@
  * @public
  * Object datagram status types for MOQT objects (Draft-14).
  * Status datagrams use types 0x20-0x21.
- * 
+ *
  * Type bit layout:
  * - Bit 0: Extensions Present (0 = no, 1 = yes)
- * 
+ *
  * | Type | Extensions Present | Object ID Present |
  * |------|-------------------|------------------|
  * | 0x20 | No                | Yes              |
@@ -69,16 +69,16 @@ export namespace ObjectDatagramStatusType {
 /**
  * @public
  * Object datagram types for MOQT objects (Draft-14).
- * 
+ *
  * Type bit layout for 0x00-0x07:
  * - Bit 0: Extensions Present (0 = no, 1 = yes)
  * - Bit 1: End of Group (0 = no, 1 = yes)
  * - Bit 2: Object ID Present (0 = Object ID omitted & is 0, 1 = Object ID present)
- * 
+ *
  * Note: Bit 2 is inverted - when set, Object ID is ABSENT (and assumed 0)
- * 
+ *
  * | Type | End of Group | Extensions | Object ID Present | Content |
- * |------|-------------|------------|------------------|--------| 
+ * |------|-------------|------------|------------------|--------|
  * | 0x00 | No          | No         | Yes              | Payload |
  * | 0x01 | No          | Yes        | Yes              | Payload |
  * | 0x02 | Yes         | No         | Yes              | Payload |

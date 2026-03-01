@@ -53,20 +53,26 @@ impl fmt::Debug for Object {
 }
 
 impl Object {
-  pub fn try_from_datagram(datagram: DatagramObject) -> Result<Self, ParseError> {
-    Ok(Object {
-      track_alias: datagram.track_alias,
-      location: Location {
-        group: datagram.group_id,
-        object: datagram.object_id,
+  /// Convert from DatagramObject.
+  /// Returns (Object, end_of_group) since end_of_group is datagram-specific.
+  pub fn try_from_datagram(datagram: DatagramObject) -> Result<(Self, bool), ParseError> {
+    let end_of_group = datagram.end_of_group;
+    Ok((
+      Object {
+        track_alias: datagram.track_alias,
+        location: Location {
+          group: datagram.group_id,
+          object: datagram.object_id,
+        },
+        publisher_priority: datagram.publisher_priority,
+        forwarding_preference: ObjectForwardingPreference::Datagram,
+        subgroup_id: None, // Datagrams don't have subgroup ID in canonical form
+        status: ObjectStatus::Normal, // Datagrams always imply Normal status
+        extensions: datagram.extension_headers, // Directly use the parsed extensions
+        payload: Some(datagram.payload),
       },
-      publisher_priority: datagram.publisher_priority,
-      forwarding_preference: ObjectForwardingPreference::Datagram,
-      subgroup_id: None, // Datagrams don't have subgroup ID in canonical form
-      status: ObjectStatus::Normal, // Datagrams always imply Normal status
-      extensions: datagram.extension_headers, // Directly use the parsed extensions
-      payload: Some(datagram.payload),
-    })
+      end_of_group,
+    ))
   }
 
   pub fn try_from_datagram_status(status_msg: DatagramStatus) -> Result<Self, ParseError> {
@@ -125,7 +131,16 @@ impl Object {
 }
 
 impl Object {
-  pub fn try_into_datagram(self, track_alias: u64) -> Result<DatagramObject, ParseError> {
+  /// Convert to DatagramObject for wire transmission.
+  ///
+  /// # Arguments
+  /// * `track_alias` - Track alias to use
+  /// * `end_of_group` - Draft-14: Whether this is the last object in the group
+  pub fn try_into_datagram(
+    self,
+    track_alias: u64,
+    end_of_group: bool,
+  ) -> Result<DatagramObject, ParseError> {
     if self.forwarding_preference != ObjectForwardingPreference::Datagram {
       return Err(ParseError::CastingError {
         context: "Object::try_into_datagram(forwarding_preference)",
@@ -156,6 +171,7 @@ impl Object {
       publisher_priority: self.publisher_priority,
       extension_headers: self.extensions,
       payload,
+      end_of_group,
     })
   }
 

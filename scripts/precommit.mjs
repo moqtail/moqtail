@@ -29,6 +29,7 @@ async function main() {
 
       if (response.addChangeset) {
         execSync('npm run changeset', { stdio: 'inherit' })
+        execSync('git add .changeset', { stdio: 'inherit' })
       }
     }
   } catch (error) {

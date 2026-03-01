@@ -106,7 +106,8 @@ impl DatagramObject {
     // Draft-14: Determine type from properties
     let has_extensions = self.extension_headers.is_some();
     let object_id_is_zero = self.object_id == 0;
-    let dtype = ObjectDatagramType::from_properties(has_extensions, self.end_of_group, object_id_is_zero);
+    let dtype =
+      ObjectDatagramType::from_properties(has_extensions, self.end_of_group, object_id_is_zero);
 
     buf.put_vi(u64::from(dtype))?;
     buf.put_vi(self.track_alias)?;

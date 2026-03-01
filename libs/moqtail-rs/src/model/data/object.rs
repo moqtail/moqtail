@@ -136,7 +136,11 @@ impl Object {
   /// # Arguments
   /// * `track_alias` - Track alias to use
   /// * `end_of_group` - Draft-14: Whether this is the last object in the group
-  pub fn try_into_datagram(self, track_alias: u64, end_of_group: bool) -> Result<DatagramObject, ParseError> {
+  pub fn try_into_datagram(
+    self,
+    track_alias: u64,
+    end_of_group: bool,
+  ) -> Result<DatagramObject, ParseError> {
     if self.forwarding_preference != ObjectForwardingPreference::Datagram {
       return Err(ParseError::CastingError {
         context: "Object::try_into_datagram(forwarding_preference)",

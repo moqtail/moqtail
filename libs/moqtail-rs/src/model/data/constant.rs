@@ -214,7 +214,11 @@ impl ObjectDatagramType {
   }
 
   /// Create type from properties
-  pub fn from_properties(has_extensions: bool, end_of_group: bool, object_id_is_zero: bool) -> Self {
+  pub fn from_properties(
+    has_extensions: bool,
+    end_of_group: bool,
+    object_id_is_zero: bool,
+  ) -> Self {
     let mut type_val: u64 = 0;
     if has_extensions {
       type_val |= 0x01;
@@ -298,4 +302,3 @@ impl From<ObjectDatagramStatusType> for u64 {
     dtype as u64
   }
 }
-

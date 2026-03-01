@@ -713,14 +713,15 @@ export class MOQtailClient {
   }
 
   /**
-   * Resolve track alias to full track name using client's request ID map.
+   * Resolve track alias to full track name using client's alias map.
    * Falls back to a placeholder if not found.
    */
   #resolveTrackAlias(trackAlias: bigint): FullTrackName {
     try {
-      const requestId = this.subscriptionAliasMap.get(trackAlias)
-      if (requestId !== undefined) {
-        return this.requestIdMap.getNameByRequestId(requestId)
+      // Use aliasFullTrackNameMap directly (trackAlias -> FullTrackName)
+      const fullTrackName = this.aliasFullTrackNameMap.get(trackAlias)
+      if (fullTrackName !== undefined) {
+        return fullTrackName
       }
       return FullTrackName.tryNew('unknown', `track-${trackAlias}`)
     } catch {
@@ -1805,10 +1806,13 @@ export class MOQtailClient {
         }
         throw new ProtocolViolationError('MOQtailClient', 'No request for received request id')
       } else {
+        console.log('[#handleRecvStreams] Received subgroup stream with trackAlias:', header.trackAlias, 'groupId:', header.groupId);
+        console.log('[#handleRecvStreams] Current subscriptions map keys:', [...this.subscriptions.keys()]);
         let subscription = this.subscriptions.get(header.trackAlias)
 
         // Check pending state updates for switch operations
         if (!subscription) {
+          console.log('[#handleRecvStreams] ⚠️ No subscription found for trackAlias:', header.trackAlias);
           for (const [subscriptionId, callback] of this.pendingStateUpdates) {
             const matched = callback(header.trackAlias)
             if (matched) {
@@ -1820,6 +1824,7 @@ export class MOQtailClient {
         }
 
         if (subscription) {
+          console.log('[#handleRecvStreams] ✅ Found subscription for trackAlias:', header.trackAlias);
           subscription.streamsAccepted++
           let firstObjectId: bigint | null = null
 
@@ -1871,6 +1876,7 @@ export class MOQtailClient {
                 if (subscription.largestLocation.compare(moqtObject.location) == -1)
                   subscription.largestLocation = moqtObject.location
 
+                console.log('[#handleRecvStreams] ✅ Enqueueing object for trackAlias:', header.trackAlias, 'location:', moqtObject.location.toString());
                 subscription.controller?.enqueue(moqtObject)
                 continue
               }

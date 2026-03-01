@@ -64,6 +64,16 @@ export class FullTrackName {
   }
 
   /**
+   * Human-readable representation with UTF-8 decoded name: `\<namespace path\>/\<name as UTF-8\>`.
+   * Useful for matching against plain string track paths like "watchparty/room-1/user-x/audio".
+   */
+  toUtf8String(): string {
+    const nsStr = this.namespace.toUtf8Path ? this.namespace.toUtf8Path() : Array.from(this.namespace.fields).join('/')
+    const nameStr = new TextDecoder().decode(this.name)
+    return `${nsStr}/${nameStr}`
+  }
+
+  /**
    * Construct a validated full track name.
    *
    * Validation steps:

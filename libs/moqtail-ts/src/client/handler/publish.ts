@@ -18,6 +18,8 @@ import { ControlMessageHandler } from './handler'
 import { MoqtObject } from '../../model/data' // Make sure to import MoqtObject
 
 export const handlerPublish: ControlMessageHandler<Publish> = async (client, msg) => {
+  console.log('[handlerPublish] Received PUBLISH message:', msg.fullTrackName?.toString(), 'trackAlias:', msg.trackAlias);
+  
   // 1. Create a stream to receive the pushed objects natively
   let streamController!: ReadableStreamDefaultController<MoqtObject>
   const stream = new ReadableStream<MoqtObject>({
@@ -45,8 +47,12 @@ export const handlerPublish: ControlMessageHandler<Publish> = async (client, msg
   client.subscriptions.set(msg.trackAlias, receiver)
 
   // 4. Bubble the event up to the application layer, passing the data stream!
+  console.log('[handlerPublish] Checking onPeerPublish callback:', !!client.onPeerPublish);
   if (client.onPeerPublish) {
+    console.log('[handlerPublish] Calling onPeerPublish...');
     client.onPeerPublish(msg, stream)
+  } else {
+    console.warn('[handlerPublish] ⚠️ onPeerPublish callback is NOT set!');
   }
 
   // 5. Send PublishOk so the publisher knows it can start sending media

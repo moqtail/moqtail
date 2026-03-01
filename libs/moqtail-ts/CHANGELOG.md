@@ -1,5 +1,11 @@
 # moqtail-ts
 
+## 0.8.1
+
+### Patch Changes
+
+- [#141](https://github.com/moqtail/moqtail/pull/141) [`fc0c32f`](https://github.com/moqtail/moqtail/commit/fc0c32f280fa55c998da4b612438b9f276fc03b0) Thanks [@zafergurel](https://github.com/zafergurel)! - fixes the type of a variable in fetch.ts
+
 ## 0.8.0
 
 ### Minor Changes

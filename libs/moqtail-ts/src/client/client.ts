@@ -645,13 +645,16 @@ export class MOQtailClient {
 
         try {
           // Parse datagram (peek at first byte to determine type)
-          const isStatus = firstByte === 0x02 || firstByte === 0x03
+          // Draft-14 type values:
+          // - 0x00-0x07: OBJECT_DATAGRAM (payload datagrams)
+          // - 0x20-0x21: OBJECT_DATAGRAM_STATUS (status datagrams)
+          const isStatus = firstByte === 0x20 || firstByte === 0x21
 
           let moqtObject: MoqtObject
           let trackAlias: bigint
 
           if (isStatus) {
-            // DatagramStatus (0x02 or 0x03)
+            // DatagramStatus (0x20 or 0x21)
             const datagramStatus = DatagramStatus.deserialize(new FrozenByteBuffer(datagramBytes))
             trackAlias = datagramStatus.trackAlias
 
@@ -662,7 +665,7 @@ export class MOQtailClient {
             const fullTrackName = this.#resolveTrackAlias(trackAlias)
             moqtObject = MoqtObject.fromDatagramStatus(datagramStatus, fullTrackName)
           } else {
-            // DatagramObject (0x00 or 0x01)
+            // DatagramObject (0x00-0x07)
             const datagramObject = DatagramObject.deserialize(new FrozenByteBuffer(datagramBytes))
             trackAlias = datagramObject.trackAlias
 

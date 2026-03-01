@@ -75,7 +75,7 @@
     }
   },
   "scripts": {
-    "build": "tsup && api-extractor run",
+    "build": "tsc --noEmit && tsup && api-extractor run",
     "test": "vitest",
     "format": "prettier --check .",
     "test:run": "vitest run",

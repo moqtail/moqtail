@@ -27,11 +27,11 @@ import {
   DatagramStatus,
 } from '@/model'
 import { PublishNamespaceRequest } from './request/publish_namespace'
-import { PublishRequest } from './request/publish'
 import { FetchRequest } from './request/fetch'
 import { SubscribeRequest } from './request/subscribe'
 import { SubscribeNamespaceRequest } from './request/subscribe_namespace'
 import { MOQtailClient } from './client'
+import { PublishRequest } from './request/publish'
 /**
  * Discriminated union of every in‑flight MOQ‑tail control request tracked by the {@link MOQtailClient}.
  *
@@ -63,8 +63,8 @@ import { MOQtailClient } from './client'
  * ```
  */
 export type MOQtailRequest =
-  | PublishNamespaceRequest
   | PublishRequest
+  | PublishNamespaceRequest
   | SubscribeNamespaceRequest
   | FetchRequest
   | SubscribeRequest
@@ -108,7 +108,7 @@ export type MOQtailClientOptions = {
   /** Control stream read timeout in milliseconds. */
   controlStreamTimeoutMs?: number
   /** If true, enables datagram support for the session. */
-  enableDatagrams: boolean
+  enableDatagrams?: boolean
   /** callbacks for observability and logging purposes: */
   callbacks?: {
     /** Called after a control message is successfully written to the {@link ControlStream}. */

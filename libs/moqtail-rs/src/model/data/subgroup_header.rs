@@ -101,14 +101,18 @@ impl SubgroupHeader {
     }
   }
 
-  pub fn serialize(&self) -> Result<Bytes, ParseError> {
+  pub fn serialize(&self, track_alias: Option<u64>) -> Result<Bytes, ParseError> {
     let mut buf = BytesMut::new();
 
     // Type field
     buf.put_vi(self.header_type as u64)?;
 
-    // Track Alias
-    buf.put_vi(self.track_alias)?;
+    // Track Alias may be set by the subscription for multi-publisher cases
+    if track_alias.is_none() {
+      buf.put_vi(self.track_alias)?;
+    } else {
+      buf.put_vi(track_alias.unwrap())?;
+    }
 
     // Group ID
     buf.put_vi(self.group_id)?;
@@ -192,7 +196,7 @@ mod tests {
       publisher_priority,
     };
 
-    let mut buf = subgroup_header.serialize().unwrap();
+    let mut buf = subgroup_header.serialize(None).unwrap();
     let deserialized = SubgroupHeader::deserialize(&mut buf).unwrap();
     assert_eq!(deserialized, subgroup_header);
     assert!(!buf.has_remaining());
@@ -213,7 +217,7 @@ mod tests {
       publisher_priority,
     };
 
-    let serialized = subgroup_header.serialize().unwrap();
+    let serialized = subgroup_header.serialize(None).unwrap();
     let mut excess = BytesMut::new();
     excess.extend_from_slice(&serialized);
     excess.extend_from_slice(&[9u8, 1u8, 1u8]);
@@ -238,7 +242,7 @@ mod tests {
       subgroup_id,
       publisher_priority,
     };
-    let buf = subgroup_header.serialize().unwrap();
+    let buf = subgroup_header.serialize(None).unwrap();
     let upper = buf.remaining() / 2;
     let mut partial = buf.slice(..upper);
     let deserialized = SubgroupHeader::deserialize(&mut partial);
@@ -281,7 +285,7 @@ mod tests {
         publisher_priority,
       };
 
-      let mut buf = subgroup_header.serialize().unwrap();
+      let mut buf = subgroup_header.serialize(Some(track_alias)).unwrap();
       let deserialized = SubgroupHeader::deserialize(&mut buf).unwrap();
 
       assert_eq!(deserialized.header_type, header_type);

@@ -16,14 +16,7 @@
 
 import { useRef, useState } from 'react'
 import { MOQtailClient } from 'moqtail-ts/client'
-import {
-  FullTrackName,
-  Tuple,
-  ObjectForwardingPreference,
-  Publish,
-  GroupOrder,
-  SubscribeNamespace,
-} from 'moqtail-ts/model'
+import { FullTrackName, Tuple, ObjectForwardingPreference } from 'moqtail-ts/model'
 import { createMoqtailClient } from './moq/client'
 import { setupSignalling } from './moq/signalling'
 import {
@@ -37,15 +30,6 @@ import {
 import './startup'
 
 type Screen = 'select' | 'connecting' | 'main'
-
-function randomRequestId(): bigint {
-  const buf = new Uint8Array(8)
-  crypto.getRandomValues(buf)
-  buf[0] = buf[0]! & 0x0f
-  let id = 0n
-  for (const b of buf) id = (id << 8n) | BigInt(b)
-  return id
-}
 
 export default function App() {
   const [screen, setScreen] = useState<Screen>('select')
@@ -72,7 +56,7 @@ export default function App() {
     const key = ns.toString()
     if (subscribedNsRef.current.has(key)) return
     subscribedNsRef.current.add(key)
-    await client.subscribeNamespace(new SubscribeNamespace(randomRequestId(), ns, []))
+    await client.subscribeNamespace(ns)
   }
 
   async function handleUserSelect(id: 1 | 2) {
@@ -88,16 +72,19 @@ export default function App() {
       moqClientRef.current = client
 
       // Wire up PUBLISH handler before signalling starts
-      client.onTrackPublished = (msg, stream) => {
+      client.onPeerPublish = (msg, stream) => {
         const worker = workerRef.current
+        let trackName = new TextDecoder().decode(msg.fullTrackName.name)
+
         if (!worker) {
-          console.warn('[onTrackPublished] no decode worker ready yet for track:', msg.trackName)
+          console.warn('[onTrackPublished] no decode worker ready yet for track:', trackName)
           return
         }
-        if (msg.trackName === 'video') {
+
+        if (trackName === 'video') {
           pipeStreamToCanvas(stream, 'moq', worker)
           setIsReceiving(true)
-        } else if (msg.trackName === 'audio') {
+        } else if (trackName === 'audio') {
           pipeStreamToCanvas(stream, 'moq-audio', worker)
         }
       }
@@ -163,12 +150,8 @@ export default function App() {
 
     // PUBLISH messages inform namespace subscribers (who subscribed via subscribeNamespace)
     // of the new tracks; onTrackPublished fires on the subscriber with the data stream.
-    await client.publish(
-      Publish.new(randomRequestId(), userNs, 'video', videoTrack.trackAlias!, GroupOrder.Original, 0, undefined, 1, []),
-    )
-    await client.publish(
-      Publish.new(randomRequestId(), userNs, 'audio', audioTrack.trackAlias!, GroupOrder.Original, 0, undefined, 1, []),
-    )
+    await client.publish(videoFTN, true, videoTrack.trackAlias!)
+    await client.publish(audioFTN, true, audioTrack.trackAlias!)
 
     const videoResult = await startVideoEncoder({
       stream,

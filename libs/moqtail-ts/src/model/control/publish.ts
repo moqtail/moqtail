@@ -20,12 +20,12 @@ import { Location } from '../common/location'
 import { KeyValuePair } from '../common/pair'
 import { LengthExceedsMaxError } from '../error/error'
 import { ControlMessageType } from './constant'
+import { FullTrackName } from '../data'
 
 export class Publish {
   constructor(
     public readonly requestId: bigint,
-    public readonly trackNamespace: Tuple,
-    public readonly trackName: string,
+    public readonly fullTrackName: FullTrackName,
     public readonly trackAlias: bigint,
     public readonly groupOrder: number,
     public readonly contentExists: number,
@@ -36,8 +36,7 @@ export class Publish {
 
   static new(
     requestId: bigint | number,
-    trackNamespace: Tuple,
-    trackName: string,
+    fullTrackName: FullTrackName,
     trackAlias: bigint | number,
     groupOrder: number,
     contentExists: number,
@@ -47,8 +46,7 @@ export class Publish {
   ): Publish {
     return new Publish(
       BigInt(requestId),
-      trackNamespace,
-      trackName,
+      fullTrackName,
       BigInt(trackAlias),
       groupOrder,
       contentExists,
@@ -67,9 +65,7 @@ export class Publish {
     buf.putVI(ControlMessageType.Publish)
     const payload = new ByteBuffer()
     payload.putVI(this.requestId)
-    payload.putTuple(this.trackNamespace)
-    payload.putVI(this.trackName.length)
-    payload.putBytes(new TextEncoder().encode(this.trackName))
+    payload.putBytes(this.fullTrackName.serialize().toUint8Array())
     payload.putVI(this.trackAlias)
     payload.putU8(this.groupOrder)
     payload.putU8(this.contentExists)
@@ -92,10 +88,7 @@ export class Publish {
 
   static parsePayload(buf: BaseByteBuffer): Publish {
     const requestId = buf.getVI()
-    const trackNamespace = buf.getTuple()
-    const trackNameLength = buf.getVI()
-    const trackNameBytes = buf.getBytes(Number(trackNameLength))
-    const trackName = new TextDecoder().decode(trackNameBytes)
+    const fullTrackName = buf.getFullTrackName()
     const trackAlias = buf.getVI()
     const groupOrder = buf.getU8()
     const contentExists = buf.getU8()
@@ -111,8 +104,7 @@ export class Publish {
     }
     return new Publish(
       requestId,
-      trackNamespace,
-      trackName,
+      fullTrackName,
       trackAlias,
       groupOrder,
       contentExists,
@@ -129,8 +121,7 @@ if (import.meta.vitest) {
   describe('Publish', () => {
     test('roundtrip without largest location', () => {
       const requestId = 12345n
-      const trackNamespace = Tuple.fromUtf8Path('video/stream')
-      const trackName = 'camera1'
+      const fullTrackName = FullTrackName.tryNew('video/stream', 'camera1')
       const trackAlias = 123n
       const groupOrder = 1
       const contentExists = 0
@@ -142,8 +133,7 @@ if (import.meta.vitest) {
       ]
       const publish = Publish.new(
         requestId,
-        trackNamespace,
-        trackName,
+        fullTrackName,
         trackAlias,
         groupOrder,
         contentExists,
@@ -159,8 +149,8 @@ if (import.meta.vitest) {
       expect(msgLength).toBe(frozen.remaining)
       const deserialized = Publish.parsePayload(frozen)
       expect(deserialized.requestId).toBe(publish.requestId)
-      expect(deserialized.trackNamespace.equals(publish.trackNamespace)).toBe(true)
-      expect(deserialized.trackName).toBe(publish.trackName)
+      expect(deserialized.fullTrackName.namespace.equals(publish.fullTrackName.namespace)).toBe(true)
+      expect(deserialized.fullTrackName.name).toEqual(publish.fullTrackName.name)
       expect(deserialized.trackAlias).toBe(publish.trackAlias)
       expect(deserialized.groupOrder).toBe(publish.groupOrder)
       expect(deserialized.contentExists).toBe(publish.contentExists)
@@ -172,8 +162,7 @@ if (import.meta.vitest) {
 
     test('roundtrip with largest location', () => {
       const requestId = 12345n
-      const trackNamespace = Tuple.fromUtf8Path('video/stream')
-      const trackName = 'camera1'
+      const fullTrackName = FullTrackName.tryNew('video/stream', 'camera1')
       const trackAlias = 123n
       const groupOrder = 1
       const contentExists = 1
@@ -185,8 +174,7 @@ if (import.meta.vitest) {
       ]
       const publish = Publish.new(
         requestId,
-        trackNamespace,
-        trackName,
+        fullTrackName,
         trackAlias,
         groupOrder,
         contentExists,
@@ -202,8 +190,8 @@ if (import.meta.vitest) {
       expect(msgLength).toBe(frozen.remaining)
       const deserialized = Publish.parsePayload(frozen)
       expect(deserialized.requestId).toBe(publish.requestId)
-      expect(deserialized.trackNamespace.equals(publish.trackNamespace)).toBe(true)
-      expect(deserialized.trackName).toBe(publish.trackName)
+      expect(deserialized.fullTrackName.namespace.equals(publish.fullTrackName.namespace)).toBe(true)
+      expect(deserialized.fullTrackName.name).toEqual(publish.fullTrackName.name)
       expect(deserialized.trackAlias).toBe(publish.trackAlias)
       expect(deserialized.groupOrder).toBe(publish.groupOrder)
       expect(deserialized.contentExists).toBe(publish.contentExists)
@@ -216,8 +204,7 @@ if (import.meta.vitest) {
 
     test('excess roundtrip', () => {
       const requestId = 12345n
-      const trackNamespace = Tuple.fromUtf8Path('video/stream')
-      const trackName = 'camera1'
+      const fullTrackName = FullTrackName.tryNew('video/stream', 'camera1')
       const trackAlias = 123n
       const groupOrder = 1
       const contentExists = 0
@@ -226,8 +213,7 @@ if (import.meta.vitest) {
       const parameters = [KeyValuePair.tryNewVarInt(0, 100n)]
       const publish = Publish.new(
         requestId,
-        trackNamespace,
-        trackName,
+        fullTrackName,
         trackAlias,
         groupOrder,
         contentExists,
@@ -247,16 +233,15 @@ if (import.meta.vitest) {
       expect(msgLength).toBe(frozen.remaining - 3)
       const deserialized = Publish.parsePayload(frozen)
       expect(deserialized.requestId).toBe(publish.requestId)
-      expect(deserialized.trackNamespace.equals(publish.trackNamespace)).toBe(true)
-      expect(deserialized.trackName).toBe(publish.trackName)
+      expect(deserialized.fullTrackName.namespace.equals(publish.fullTrackName.namespace)).toBe(true)
+      expect(deserialized.fullTrackName.name).toEqual(publish.fullTrackName.name)
       expect(frozen.remaining).toBe(3)
       expect(Array.from(frozen.getBytes(3))).toEqual([9, 1, 1])
     })
 
     test('partial message', () => {
       const requestId = 12345n
-      const trackNamespace = Tuple.fromUtf8Path('video/stream')
-      const trackName = 'camera1'
+      const fullTrackName = FullTrackName.tryNew('video/stream', 'camera1')
       const trackAlias = 123n
       const groupOrder = 1
       const contentExists = 0
@@ -265,8 +250,7 @@ if (import.meta.vitest) {
       const parameters = [KeyValuePair.tryNewVarInt(0, 100n)]
       const publish = Publish.new(
         requestId,
-        trackNamespace,
-        trackName,
+        fullTrackName,
         trackAlias,
         groupOrder,
         contentExists,

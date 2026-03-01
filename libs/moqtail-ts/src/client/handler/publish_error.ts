@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { ProtocolViolationError } from '@/model/error'
+import { ProtocolViolationError } from '@/model'
 import { PublishError } from '../../model/control'
 import { PublishRequest } from '../request/publish'
 import { ControlMessageHandler } from './handler'
@@ -24,6 +24,6 @@ export const handlerPublishError: ControlMessageHandler<PublishError> = async (c
   if (request instanceof PublishRequest) {
     request.resolve(msg)
   } else {
-    throw new ProtocolViolationError('handlerPublishError', 'No publish request found for the given request id')
+    throw new ProtocolViolationError('handlerPublishError', 'No publish request was found with the given request id')
   }
 }

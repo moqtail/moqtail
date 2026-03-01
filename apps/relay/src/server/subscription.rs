@@ -1086,7 +1086,7 @@ impl Subscription {
   async fn get_header_payload(&self, header_info: &HeaderInfo) -> Result<Bytes> {
     let connection_id = self.client_connection_id;
     match header_info {
-      HeaderInfo::Subgroup { header } => header.serialize().map_err(|e| {
+      HeaderInfo::Subgroup { header } => header.serialize(Some(self.track_alias())).map_err(|e| {
         error!(
           "Error serializing subgroup header: {:?} subscriber: {} track: {}",
           e,

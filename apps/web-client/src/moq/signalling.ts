@@ -24,7 +24,6 @@ import {
   FilterType,
   GroupOrder,
   SubscribeError,
-  Publish,
 } from 'moqtail-ts/model'
 
 const MOQTAIL_DEMO_NS = 'moqtail/demo'
@@ -35,15 +34,6 @@ const SUBSCRIBE_TO_JOIN_DELAY_MS = 500
 export type SignalCallbacks = {
   onPeerJoin: (peerId: 1 | 2) => void
   onOwnJoinWelcomed: () => void
-}
-
-function randomRequestId(): bigint {
-  const buf = new Uint8Array(8)
-  crypto.getRandomValues(buf)
-  buf[0] = buf[0]! & 0x0f
-  let id = 0n
-  for (const b of buf) id = (id << 8n) | BigInt(b)
-  return id
 }
 
 export async function setupSignalling(
@@ -82,7 +72,7 @@ export async function setupSignalling(
         new Location(0n, BigInt(objectId++)),
         1,
         ObjectForwardingPreference.Subgroup,
-        null,
+        1,
         null,
         payload,
       ),
@@ -92,28 +82,22 @@ export async function setupSignalling(
   // 2. PUBLISH — tell the relay about this track so it registers the alias
   //    and can route our outgoing data stream to subscribers.
   const sigTrack = moqClient.trackSources.get(signalFTN.toString())
+  console.log('signalling: sigTrack', sigTrack, 'trackAlias', sigTrack?.trackAlias)
   if (sigTrack?.trackAlias != null) {
-    await moqClient.publish(
-      Publish.new(
-        randomRequestId(),
-        demoNs,
-        SIGNALLING_TRACK_NAME,
-        sigTrack.trackAlias,
-        GroupOrder.Original,
-        0,
-        undefined,
-        1,
-        [],
-      ),
-    )
+    console.log('signalling: calling publish with trackAlias', sigTrack.trackAlias)
+    const publishResult = await moqClient.publish(signalFTN, true, sigTrack.trackAlias)
+    console.log('signalling: publish result', publishResult)
   } else {
     console.warn('signalling: track alias not yet assigned, skipping PUBLISH')
   }
 
   // 3. Wait for the relay to process the PUBLISH and for the peer to connect
+  console.log('signalling: waiting for relay to process PUBLISH...')
   await new Promise<void>((r) => setTimeout(r, PUBLISH_TO_SUBSCRIBE_DELAY_MS))
+  console.log('signalling: done waiting, now subscribing')
 
   // 4. SUBSCRIBE — start receiving messages from all publishers on this track
+  console.log('signalling: calling subscribe for', signalFTN.toString())
   const subResponse = await moqClient.subscribe({
     fullTrackName: signalFTN,
     groupOrder: GroupOrder.Original,
@@ -122,6 +106,7 @@ export async function setupSignalling(
     priority: 1,
   })
 
+  console.log('signalling: subscribe response', subResponse)
   if (subResponse instanceof SubscribeError) {
     console.warn('signalling: subscribe failed', subResponse)
   } else {
@@ -139,12 +124,15 @@ export async function setupSignalling(
           const msgUserId = parseInt(match[1]) as 1 | 2
           const signal = match[2]
           if (signal === 'join') {
+            console.log('Join message was received for user %d.', userId)
             if (msgUserId !== userId) {
               callbacks.onPeerJoin(msgUserId)
             }
-          } else if (signal === 'welcome' && msgUserId === userId) {
+          } else if (signal === 'welcome') {
             console.log('Welcome message was received for user %d.', userId)
-            callbacks.onOwnJoinWelcomed()
+            if (msgUserId === userId) {
+              callbacks.onOwnJoinWelcomed()
+            }
           }
         }
       } catch (err) {
@@ -154,7 +142,9 @@ export async function setupSignalling(
   }
 
   // 5. Wait for the subscription to establish, then send our join signal
+  console.log('signalling: waiting for subscription to establish...')
   await new Promise<void>((r) => setTimeout(r, SUBSCRIBE_TO_JOIN_DELAY_MS))
+  console.log('signalling: sending join signal for user', userId)
   sendSignal(`user_${userId}:join`)
   console.log('Join message was sent.')
 

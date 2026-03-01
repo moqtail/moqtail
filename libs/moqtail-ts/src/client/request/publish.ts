@@ -14,9 +14,7 @@
  * limitations under the License.
  */
 
-import { Publish } from '../../model/control/publish'
-import { PublishOk } from '../../model/control/publish_ok'
-import { PublishError } from '../../model/control/publish_error'
+import { Publish, PublishError, PublishOk } from '@/model'
 
 export class PublishRequest implements PromiseLike<PublishOk | PublishError> {
   public readonly requestId: bigint
@@ -25,9 +23,9 @@ export class PublishRequest implements PromiseLike<PublishOk | PublishError> {
   private _reject!: (reason?: any) => void
   private promise: Promise<PublishOk | PublishError>
 
-  constructor(requestId: bigint, message: Publish) {
-    this.requestId = requestId
-    this.message = message
+  constructor(msg: Publish) {
+    this.requestId = msg.requestId
+    this.message = msg
     this.promise = new Promise<PublishOk | PublishError>((resolve, reject) => {
       this._resolve = resolve
       this._reject = reject

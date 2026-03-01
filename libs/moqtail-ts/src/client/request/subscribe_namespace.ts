@@ -25,9 +25,9 @@ export class SubscribeNamespaceRequest implements PromiseLike<SubscribeNamespace
   private _reject!: (reason?: any) => void
   private promise: Promise<SubscribeNamespaceOk | SubscribeNamespaceError>
 
-  constructor(requestId: bigint, message: SubscribeNamespace) {
-    this.requestId = requestId
-    this.message = message
+  constructor(msg: SubscribeNamespace) {
+    this.requestId = msg.requestId
+    this.message = msg
     this.promise = new Promise<SubscribeNamespaceOk | SubscribeNamespaceError>((resolve, reject) => {
       this._resolve = resolve
       this._reject = reject

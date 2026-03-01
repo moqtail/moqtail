@@ -15,9 +15,6 @@
  */
 
 import {
-  handlerPublish,
-  handlerPublishOk,
-  handlerPublishError,
   handlerPublishDone,
   handlerPublishNamespace,
   handlerPublishNamespaceCancel,
@@ -43,11 +40,12 @@ import {
   handlerFetchError,
   handlerFetchOk,
   handlerGoAway,
+  handlerPublish,
+  handlerPublishOk,
+  handlerPublishError,
 } from '.'
 import {
   Publish,
-  PublishOk,
-  PublishError,
   PublishNamespace,
   PublishNamespaceCancel,
   PublishNamespaceDone,
@@ -73,6 +71,8 @@ import {
   TrackStatusOk,
   Unsubscribe,
   UnsubscribeNamespace,
+  PublishOk,
+  PublishError,
 } from '../../model/control'
 import { MOQtailClient } from '../client'
 import { ControlMessage } from '../../model/control'

@@ -242,17 +242,21 @@ impl Track {
       );
     }
 
-    if let Ok(fetch_object) = object.clone().try_into_fetch() {
-      self.cache.add_object(fetch_object).await;
-    } else {
-      warn!(
-        "new_subgroup_object: object cannot be cached | track: {:?} location: {:?} stream_id: {} diff_ms: {} object: {:?}",
-        object.track_alias,
-        object.location,
-        stream_id,
-        utils::passed_time_since_start(),
-        object
-      );
+    match object.clone().try_into_fetch() {
+      Ok(fetch_object) => {
+        self.cache.add_object(fetch_object).await;
+      }
+      Err(e) => {
+        warn!(
+          "new_subgroup_object: object cannot be cached | track: {:?} location: {:?} stream_id: {} diff_ms: {} object: {:?}\nerr: {:?}",
+          object.track_alias,
+          object.location,
+          stream_id,
+          utils::passed_time_since_start(),
+          object,
+          e
+        );
+      }
     }
 
     // Track-level logging - log every object arrival if enabled

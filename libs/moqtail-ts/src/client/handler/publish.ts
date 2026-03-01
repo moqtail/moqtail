@@ -13,30 +13,53 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
-import { Publish } from '../../model/control/publish'
-import { Subscribe } from '../../model/control/subscribe'
-import { GroupOrder } from '../../model/control/constant'
-import { FullTrackName } from '../../model/data/full_track_name'
-import { SubscribeRequest } from '../request/subscribe'
+import { FilterType, GroupOrder, Publish, PublishOk } from '../../model/control'
 import { ControlMessageHandler } from './handler'
+import { MoqtObject } from '../../model/data' // Make sure to import MoqtObject
 
-/**
- * Handles an incoming PUBLISH message on the subscriber side.
- * The relay forwards PUBLISH to all matching namespace subscribers so they
- * can begin receiving the auto-subscribed track's data streams.
- */
 export const handlerPublish: ControlMessageHandler<Publish> = async (client, msg) => {
-  const fullTrackName = FullTrackName.tryNew(msg.trackNamespace, msg.trackName)
+  // 1. Create a stream to receive the pushed objects natively
+  let streamController!: ReadableStreamDefaultController<MoqtObject>
+  const stream = new ReadableStream<MoqtObject>({
+    start(c) {
+      streamController = c
+    },
+  })
 
-  // Register alias → full track name so incoming subgroup streams can be attributed
-  client.aliasFullTrackNameMap.set(msg.trackAlias, fullTrackName)
+  const localPseudoRequestId = client.allocatePseudoRequestId()
 
-  // Create a synthetic SubscribeRequest so #handleRecvStreams can enqueue objects
-  const syntheticSub = Subscribe.newLatestObject(msg.requestId, fullTrackName, 0, GroupOrder.Original, true, [])
-  const request = new SubscribeRequest(syntheticSub)
-  client.subscriptions.set(msg.trackAlias, request)
+  // 2. Set up the expectation in the client BEFORE sending PublishOk
+  client.requestIdMap.addMapping(localPseudoRequestId, msg.fullTrackName)
+  client.subscriptionAliasMap.set(localPseudoRequestId, msg.trackAlias)
+  client.aliasFullTrackNameMap.set(msg.trackAlias, msg.fullTrackName)
 
-  // Notify application so it can consume the object stream
-  client.onTrackPublished?.(msg, request.stream)
+  // This object mimics a SubscribeRequest so #handleRecvStreams can use it identically
+  const receiver = {
+    requestId: localPseudoRequestId,
+    streamsAccepted: 0,
+    largestLocation: undefined,
+    controller: streamController,
+  }
+
+  // 3. Register the receiver map so data streams don't trigger ProtocolViolationError
+  client.subscriptions.set(msg.trackAlias, receiver)
+
+  // 4. Bubble the event up to the application layer, passing the data stream!
+  if (client.onPeerPublish) {
+    client.onPeerPublish(msg, stream)
+  }
+
+  // 5. Send PublishOk so the publisher knows it can start sending media
+  // TODO: Instead of setting constant values for parameters, we may let the client to decide
+  const publishOk = new PublishOk(
+    msg.requestId,
+    1,
+    127,
+    GroupOrder.Ascending,
+    FilterType.LatestObject,
+    undefined,
+    undefined,
+    [],
+  )
+  await client.controlStream.send(publishOk)
 }

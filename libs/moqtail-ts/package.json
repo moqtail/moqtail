@@ -1,6 +1,6 @@
 {
   "name": "moqtail",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "description": "Media Over QUIC Transport client implementation",
   "type": "module",
   "license": "Apache-2.0",

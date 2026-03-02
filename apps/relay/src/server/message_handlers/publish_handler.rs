@@ -334,18 +334,3 @@ async fn _check_track_exists(
   // For now, assume no conflicts (this should be replaced with actual logic)
   false
 }
-
-/// Cleans up resources associated with a published track
-async fn cleanup_published_track(_client: &Arc<MOQTClient>, _request_id: u64) {
-  // TODO: Implement track cleanup logic
-  // This could include:
-  // - Removing track from active tracks registry
-  // - Notifying subscribers about track ending
-  // - Cleaning up stream state
-  // - Releasing resources
-
-  info!(
-    "Cleaning up published track for request ID: {}",
-    _request_id
-  );
-}

@@ -22,6 +22,8 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::info;
 
+type ActivePushMap = HashMap<FullTrackName, Vec<(Arc<MOQTClient>, u64)>>;
+
 #[derive(Clone)]
 pub struct TrackManager {
   pub tracks: Arc<RwLock<HashMap<FullTrackName, Arc<RwLock<Track>>>>>,
@@ -29,8 +31,8 @@ pub struct TrackManager {
   pub namespace_subscribers: Arc<RwLock<HashMap<Tuple, Vec<Arc<MOQTClient>>>>>,
   pub announcements: Arc<RwLock<HashMap<Tuple, Arc<MOQTClient>>>>,
   pub publishes: Arc<RwLock<HashMap<FullTrackName, Publish>>>,
-  pub active_pushes: Arc<RwLock<HashMap<FullTrackName, Vec<(Arc<MOQTClient>, u64)>>>>,
-}
+  pub active_pushes: Arc<RwLock<ActivePushMap>>, 
+  }
 
 impl TrackManager {
   pub fn new() -> Self {
@@ -43,7 +45,8 @@ impl TrackManager {
       active_pushes: Arc::new(RwLock::new(HashMap::new())),
     }
   }
-
+  
+  #[allow(dead_code)]
   pub async fn add_track(
     &self,
     track_alias: u64,

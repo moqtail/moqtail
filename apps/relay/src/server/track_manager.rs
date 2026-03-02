@@ -29,6 +29,7 @@ pub struct TrackManager {
   pub namespace_subscribers: Arc<RwLock<HashMap<Tuple, Vec<Arc<MOQTClient>>>>>,
   pub announcements: Arc<RwLock<HashMap<Tuple, Arc<MOQTClient>>>>,
   pub publishes: Arc<RwLock<HashMap<FullTrackName, Publish>>>,
+  pub active_pushes: Arc<RwLock<HashMap<FullTrackName, Vec<(Arc<MOQTClient>, u64)>>>>,
 }
 
 impl TrackManager {
@@ -39,6 +40,7 @@ impl TrackManager {
       namespace_subscribers: Arc::new(RwLock::new(HashMap::new())),
       announcements: Arc::new(RwLock::new(HashMap::new())),
       publishes: Arc::new(RwLock::new(HashMap::new())),
+      active_pushes: Arc::new(RwLock::new(HashMap::new())),
     }
   }
 
@@ -63,6 +65,18 @@ impl TrackManager {
     track
   }
 
+  // Store active pushes for targeted PublishDone forwarding
+  pub async fn add_active_push(
+    &self,
+    full_track_name: FullTrackName,
+    client: Arc<MOQTClient>,
+    request_id: u64,
+  ) {
+    let mut pushes = self.active_pushes.write().await;
+    let subs = pushes.entry(full_track_name).or_insert_with(Vec::new);
+    subs.push((client, request_id));
+  }
+
   pub async fn get_track_by_alias(&self, track_alias: u64) -> Option<Arc<RwLock<Track>>> {
     let track_aliases = self.track_aliases.read().await;
     if let Some(full_track_name) = track_aliases.get(&track_alias) {
@@ -82,6 +96,10 @@ impl TrackManager {
       let mut publishes = self.publishes.write().await;
       publishes.remove(&full_track_name);
 
+      // Cleanup active pushes
+      let mut pushes = self.active_pushes.write().await;
+      pushes.remove(&full_track_name);
+
       info!(
         "Removed track with alias {}: {:?}",
         track_alias, full_track_name
@@ -92,6 +110,12 @@ impl TrackManager {
   pub async fn remove_track(&self, full_track_name: &FullTrackName) {
     let mut tracks = self.tracks.write().await;
     if tracks.remove(full_track_name).is_some() {
+      let mut publishes = self.publishes.write().await;
+      publishes.remove(full_track_name);
+
+      let mut pushes = self.active_pushes.write().await;
+      pushes.remove(full_track_name);
+
       info!("Removed track by name: {:?}", full_track_name);
     }
   }
@@ -222,13 +246,11 @@ impl TrackManager {
   pub async fn get_announcements_by_prefix(&self, prefix: &Tuple) -> Vec<Tuple> {
     let announcements = self.announcements.read().await;
     let mut matches = Vec::new();
-
     for (ns, _) in announcements.iter() {
       if ns.starts_with(prefix) {
         matches.push(ns.clone());
       }
     }
-
     matches
   }
 
@@ -253,5 +275,52 @@ impl TrackManager {
       }
     }
     matches
+  }
+
+  // Look up a track name by matching the subscriber's connection ID and the push Request ID
+  pub async fn get_track_name_by_push_id(
+    &self,
+    connection_id: usize,
+    request_id: u64,
+  ) -> Option<FullTrackName> {
+    let pushes = self.active_pushes.read().await;
+    for (track_name, clients) in pushes.iter() {
+      if clients
+        .iter()
+        .any(|(c, id)| c.connection_id == connection_id && *id == request_id)
+      {
+        return Some(track_name.clone());
+      }
+    }
+    None
+  }
+
+  // Retrieve the original Publish message used to create the track
+  pub async fn get_publish_message(&self, full_track_name: &FullTrackName) -> Option<Publish> {
+    let publishes = self.publishes.read().await;
+    publishes.get(full_track_name).cloned()
+  }
+
+  pub async fn get_track_name_by_publisher(
+    &self,
+    connection_id: usize,
+    request_id: u64,
+  ) -> Option<FullTrackName> {
+    let publishes = self.publishes.read().await;
+    let tracks = self.tracks.read().await;
+
+    for (track_name, publish_msg) in publishes.iter() {
+      // 1. Find the track that was published with this specific Request ID
+      if publish_msg.request_id == request_id {
+        // 2. Verify that the client sending PublishDone is actually the owner!
+        if let Some(track_arc) = tracks.get(track_name) {
+          let track = track_arc.read().await;
+          if track.publisher_connection_id == connection_id {
+            return Some(track_name.clone());
+          }
+        }
+      }
+    }
+    None
   }
 }

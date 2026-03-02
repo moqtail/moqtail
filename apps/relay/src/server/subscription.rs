@@ -646,10 +646,12 @@ impl Subscription {
     );
     match event {
       TrackEvent::SubgroupObject {
-        object,
-        stream_id,
+        mut object,
+        mut stream_id,
         header_info,
       } => {
+        object.track_alias = self.track_alias();
+        stream_id.track_alias = self.track_alias();
         // update last received object location
         {
           let mut state = self.subscription_state.write().await;
@@ -850,7 +852,11 @@ impl Subscription {
       TrackEvent::DatagramObject { object } => {
         // Handle datagram object - serialize full MOQT datagram format
         // Must include type, track_alias, group_id, object_id, publisher_priority, and payload
-        match object.serialize() {
+
+        let mut norm_object = object.clone();
+        norm_object.track_alias = self.track_alias();
+
+        match norm_object.serialize() {
           Ok(serialized_bytes) => {
             if let Err(e) = self
               .subscriber
@@ -865,7 +871,8 @@ impl Subscription {
           }
         }
       }
-      TrackEvent::StreamClosed { stream_id } => {
+      TrackEvent::StreamClosed { mut stream_id } => {
+        stream_id.track_alias = self.track_alias();
         info!(
           "Received StreamClosed event: subscriber: {} stream_id: {} track: {}",
           self.client_connection_id,
@@ -1085,16 +1092,23 @@ impl Subscription {
 
   async fn get_header_payload(&self, header_info: &HeaderInfo) -> Result<Bytes> {
     let connection_id = self.client_connection_id;
-    match header_info {
-      HeaderInfo::Subgroup { header } => header.serialize().map_err(|e| {
-        error!(
-          "Error serializing subgroup header: {:?} subscriber: {} track: {}",
-          e,
-          connection_id,
-          self.track_alias()
-        );
-        e.into()
-      }),
+
+    let mut rewritten_header = header_info.clone();
+
+    match &mut rewritten_header {
+      HeaderInfo::Subgroup { header } => {
+        header.track_alias = self.track_alias();
+
+        header.serialize().map_err(|e| {
+          error!(
+            "Error serializing subgroup header: {:?} subscriber: {} track: {}",
+            e,
+            connection_id,
+            self.track_alias()
+          );
+          e.into()
+        })
+      }
       HeaderInfo::Fetch {
         header,
         fetch_request: _,

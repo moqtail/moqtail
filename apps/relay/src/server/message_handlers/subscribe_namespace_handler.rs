@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::server::client::MOQTClient;
 use crate::server::session_context::SessionContext;
+use crate::server::{client::MOQTClient, session::Session};
 use core::result::Result;
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::publish_namespace::PublishNamespace;
@@ -22,7 +22,7 @@ use moqtail::model::control::subscribe_namespace_ok::SubscribeNamespaceOk;
 use moqtail::model::error::TerminationCode;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 pub async fn handle(
   client: Arc<MOQTClient>,
@@ -60,13 +60,12 @@ pub async fn handle(
         .await;
 
       for ns in matched_announcements {
-        let notify = PublishNamespace::new(0, ns.clone(), &[]);
-        if let Err(e) = handler
-          .send(&ControlMessage::PublishNamespace(Box::new(notify)))
-          .await
-        {
-          error!("Failed to send catch-up PublishNamespace: {:?}", e);
-        }
+        let relay_announce_id =
+          Session::get_next_relay_request_id(context.relay_next_request_id.clone()).await;
+        let notify = PublishNamespace::new(relay_announce_id, ns.clone(), &[]);
+        client
+          .queue_message(ControlMessage::PublishNamespace(Box::new(notify)))
+          .await;
       }
 
       // 4. Catch up on active published Tracks
@@ -75,19 +74,31 @@ pub async fn handle(
         .get_tracks_and_publishes_by_namespace_prefix(&sub_ns.track_namespace_prefix)
         .await;
 
-      for (_full_track_name, track_arc, original_publish_message) in matched_tracks {
-        let notify = original_publish_message.clone();
+      for (full_track_name, track_arc, mut original_publish_message) in matched_tracks {
+        info!(
+          "Forwarding existing track for new subscriber: {:?}",
+          full_track_name
+        );
 
-        if let Err(e) = handler
-          .send(&ControlMessage::Publish(Box::new(notify)))
-          .await
-        {
-          error!("Failed to send catch-up Publish msg: {:?}", e);
-        }
+        let relay_publish_id =
+          Session::get_next_relay_request_id(context.relay_next_request_id.clone()).await;
+        original_publish_message.request_id = relay_publish_id;
+
+        // Record the PUSH so PublishDone can reach this subscriber even though they joined after the track started.
+        context
+          .track_manager
+          .add_active_push(full_track_name.clone(), client.clone(), relay_publish_id)
+          .await;
+
+        client
+          .queue_message(ControlMessage::Publish(Box::new(
+            original_publish_message.clone(),
+          )))
+          .await;
 
         // Auto-subscribe the client to the underlying data stream
         let synthetic_sub = Subscribe::new_next_group_start(
-          0,
+          relay_publish_id,
           original_publish_message.track_namespace.clone(),
           original_publish_message.track_name.clone(),
           128,
@@ -101,9 +112,9 @@ pub async fn handle(
           .add_subscription(client.clone(), synthetic_sub, false)
           .await
         {
-          warn!("Failed to auto-subscribe late-joining client: {:?}", e);
+          warn!("Failed retroactive auto-subscribe for track: {:?}", e);
         } else {
-          info!("Successfully wired data stream for late-joining client.");
+          info!("Successfully initialized retroactive subscription.");
         }
       }
     }

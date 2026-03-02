@@ -45,32 +45,32 @@
     },
     "./client": {
       "import": {
-        "types": "./dist/client/index.d.ts",
-        "default": "./dist/client/index.js"
+        "types": "./dist/client.d.ts",
+        "default": "./dist/client.js"
       },
       "require": {
-        "types": "./dist/client/index.d.cts",
-        "default": "./dist/client/index.cjs"
+        "types": "./dist/client.d.cts",
+        "default": "./dist/client.cjs"
       }
     },
     "./model": {
       "import": {
-        "types": "./dist/model/index.d.ts",
-        "default": "./dist/model/index.js"
+        "types": "./dist/model.d.ts",
+        "default": "./dist/model.js"
       },
       "require": {
-        "types": "./dist/model/index.d.cts",
-        "default": "./dist/model/index.cjs"
+        "types": "./dist/model.d.cts",
+        "default": "./dist/model.cjs"
       }
     },
     "./util": {
       "import": {
-        "types": "./dist/util/index.d.ts",
-        "default": "./dist/util/index.js"
+        "types": "./dist/util.d.ts",
+        "default": "./dist/util.js"
       },
       "require": {
-        "types": "./dist/util/index.d.cts",
-        "default": "./dist/util/index.cjs"
+        "types": "./dist/util.d.cts",
+        "default": "./dist/util.cjs"
       }
     }
   },
@@ -83,15 +83,12 @@
     "docs": "typedoc"
   },
   "devDependencies": {
-    "@microsoft/api-extractor": "^7.52.11",
-    "@tsconfig/strictest": "^2.0.5",
+    "@microsoft/api-extractor": "^7.57.6",
+    "@tsconfig/strictest": "^2.0.8",
     "tslib": "^2.8.1",
-    "tsup": "^8.5.0",
-    "typedoc": "^0.28.10",
-    "typescript": "^5.1.0",
-    "vitest": "^3.1.4"
-  },
-  "dependencies": {
-    "heap-js": "^2.6.0"
+    "tsup": "^8.5.1",
+    "typedoc": "^0.28.17",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
   }
 }

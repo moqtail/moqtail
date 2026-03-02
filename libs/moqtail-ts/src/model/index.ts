@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+export * from './catalog'
 export * from './common'
 export * from './control'
 export * from './data'

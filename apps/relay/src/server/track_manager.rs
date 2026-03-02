@@ -31,8 +31,8 @@ pub struct TrackManager {
   pub namespace_subscribers: Arc<RwLock<HashMap<Tuple, Vec<Arc<MOQTClient>>>>>,
   pub announcements: Arc<RwLock<HashMap<Tuple, Arc<MOQTClient>>>>,
   pub publishes: Arc<RwLock<HashMap<FullTrackName, Publish>>>,
-  pub active_pushes: Arc<RwLock<ActivePushMap>>, 
-  }
+  pub active_pushes: Arc<RwLock<ActivePushMap>>,
+}
 
 impl TrackManager {
   pub fn new() -> Self {
@@ -45,7 +45,7 @@ impl TrackManager {
       active_pushes: Arc::new(RwLock::new(HashMap::new())),
     }
   }
-  
+
   #[allow(dead_code)]
   pub async fn add_track(
     &self,

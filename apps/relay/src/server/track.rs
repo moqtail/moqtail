@@ -303,7 +303,15 @@ impl Track {
     );
 
     match Object::try_from_datagram(datagram_object.clone()) {
-      Ok(object) => {
+      Ok((object, end_of_group)) => {
+        // Draft-14: end_of_group indicates this is the last object in the group
+        if end_of_group {
+          debug!(
+            "new_datagram_object: end_of_group received for track: {:?} group: {:?} object_id: {}",
+            datagram_object.track_alias, datagram_object.group_id, datagram_object.object_id
+          );
+        }
+
         if let Ok(fetch_object) = object.clone().try_into_fetch() {
           self.cache.add_object(fetch_object).await;
         } else {

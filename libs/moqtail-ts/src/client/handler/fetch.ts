@@ -19,11 +19,12 @@ import { Fetch, FetchError, FetchErrorCode, FetchOk, FetchType } from '../../mod
 import { ControlMessageHandler } from './handler'
 import { SubscribePublication } from '../publication/subscribe'
 import { FetchPublication } from '../publication/fetch'
+import { PublishPublication } from '../publication'
 
 export const handlerFetch: ControlMessageHandler<Fetch> = async (client, msg) => {
   // TODO: Use fetch parameters and handle authorization
   let fullTrackName: FullTrackName | undefined
-  let joiningRequest: SubscribePublication | FetchPublication | undefined
+  let joiningRequest: SubscribePublication | FetchPublication | PublishPublication | undefined
   switch (msg.typeAndProps.type) {
     case FetchType.StandAlone:
       fullTrackName = msg.typeAndProps.props.fullTrackName

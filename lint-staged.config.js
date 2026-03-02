@@ -31,7 +31,7 @@ export default {
   },
 
   // Run build/test for all changed projects (at once)
-  '(apps|libs)/**/*.ts': () => [
+  '(apps|libs)/**/*.ts*': () => [
     'npm run build', // The order of builds matter
     'npm run test',
   ],

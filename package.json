@@ -9,9 +9,9 @@
     "changeset": "changeset",
     "changeset:release": "npm run build && changeset publish",
     "version": "changeset version && node scripts/postversion.mjs",
-    "build": "npm --prefix libs/moqtail-ts run build",
+    "build": "npm --prefix libs/moqtail-ts run build && npm --prefix apps/client-js run build",
     "test": "npm --prefix libs/moqtail-ts run test -- run",
-    "format": "npm --prefix libs/moqtail-ts run format"
+    "format": "npm --prefix libs/moqtail-ts run format && npm --prefix apps/client-js run format"
   },
   "devDependencies": {
     "@changesets/changelog-github": "^0.5.2",

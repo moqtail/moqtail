@@ -48,17 +48,4 @@ export const handlerPublish: ControlMessageHandler<Publish> = async (client, msg
   if (client.onPeerPublish) {
     client.onPeerPublish(msg, stream)
   }
-
-  // 5. Send PublishOk so the publisher knows it can start sending media
-  const publishOk = new PublishOk(
-    msg.requestId,
-    1,
-    255,
-    GroupOrder.Ascending,
-    FilterType.LatestObject,
-    undefined,
-    undefined,
-    [],
-  )
-  await client.controlStream.send(publishOk)
 }

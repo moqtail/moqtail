@@ -15,11 +15,14 @@
 use super::track::Track;
 use crate::server::client::MOQTClient;
 use moqtail::model::common::tuple::Tuple;
+use moqtail::model::control::publish::Publish;
 use moqtail::model::data::full_track_name::FullTrackName;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::info;
+
+type ActivePushMap = HashMap<FullTrackName, Vec<(Arc<MOQTClient>, u64)>>;
 
 #[derive(Clone)]
 pub struct TrackManager {
@@ -27,6 +30,8 @@ pub struct TrackManager {
   pub track_aliases: Arc<RwLock<BTreeMap<u64, FullTrackName>>>,
   pub namespace_subscribers: Arc<RwLock<HashMap<Tuple, Vec<Arc<MOQTClient>>>>>,
   pub announcements: Arc<RwLock<HashMap<Tuple, Arc<MOQTClient>>>>,
+  pub publishes: Arc<RwLock<HashMap<FullTrackName, Publish>>>,
+  pub active_pushes: Arc<RwLock<ActivePushMap>>,
 }
 
 impl TrackManager {
@@ -36,9 +41,12 @@ impl TrackManager {
       track_aliases: Arc::new(RwLock::new(BTreeMap::new())),
       namespace_subscribers: Arc::new(RwLock::new(HashMap::new())),
       announcements: Arc::new(RwLock::new(HashMap::new())),
+      publishes: Arc::new(RwLock::new(HashMap::new())),
+      active_pushes: Arc::new(RwLock::new(HashMap::new())),
     }
   }
 
+  #[allow(dead_code)]
   pub async fn add_track(
     &self,
     track_alias: u64,
@@ -60,6 +68,18 @@ impl TrackManager {
     track
   }
 
+  // Store active pushes for targeted PublishDone forwarding
+  pub async fn add_active_push(
+    &self,
+    full_track_name: FullTrackName,
+    client: Arc<MOQTClient>,
+    request_id: u64,
+  ) {
+    let mut pushes = self.active_pushes.write().await;
+    let subs = pushes.entry(full_track_name).or_insert_with(Vec::new);
+    subs.push((client, request_id));
+  }
+
   pub async fn get_track_by_alias(&self, track_alias: u64) -> Option<Arc<RwLock<Track>>> {
     let track_aliases = self.track_aliases.read().await;
     if let Some(full_track_name) = track_aliases.get(&track_alias) {
@@ -74,6 +94,15 @@ impl TrackManager {
     if let Some(full_track_name) = track_aliases.remove(&track_alias) {
       let mut tracks = self.tracks.write().await;
       tracks.remove(&full_track_name);
+
+      // Cleanup the publish message
+      let mut publishes = self.publishes.write().await;
+      publishes.remove(&full_track_name);
+
+      // Cleanup active pushes
+      let mut pushes = self.active_pushes.write().await;
+      pushes.remove(&full_track_name);
+
       info!(
         "Removed track with alias {}: {:?}",
         track_alias, full_track_name
@@ -84,6 +113,12 @@ impl TrackManager {
   pub async fn remove_track(&self, full_track_name: &FullTrackName) {
     let mut tracks = self.tracks.write().await;
     if tracks.remove(full_track_name).is_some() {
+      let mut publishes = self.publishes.write().await;
+      publishes.remove(full_track_name);
+
+      let mut pushes = self.active_pushes.write().await;
+      pushes.remove(full_track_name);
+
       info!("Removed track by name: {:?}", full_track_name);
     }
   }
@@ -214,13 +249,81 @@ impl TrackManager {
   pub async fn get_announcements_by_prefix(&self, prefix: &Tuple) -> Vec<Tuple> {
     let announcements = self.announcements.read().await;
     let mut matches = Vec::new();
-
     for (ns, _) in announcements.iter() {
       if ns.starts_with(prefix) {
         matches.push(ns.clone());
       }
     }
-
     matches
+  }
+
+  pub async fn add_publish_message(&self, full_track_name: FullTrackName, publish_msg: Publish) {
+    let mut publishes = self.publishes.write().await;
+    publishes.insert(full_track_name, publish_msg);
+  }
+
+  pub async fn get_tracks_and_publishes_by_namespace_prefix(
+    &self,
+    prefix: &Tuple,
+  ) -> Vec<(FullTrackName, Arc<RwLock<Track>>, Publish)> {
+    let tracks = self.tracks.read().await;
+    let publishes = self.publishes.read().await;
+    let mut matches = Vec::new();
+
+    for (full_track_name, track_arc) in tracks.iter() {
+      if full_track_name.namespace.fields.starts_with(&prefix.fields)
+        && let Some(pub_msg) = publishes.get(full_track_name)
+      {
+        matches.push((full_track_name.clone(), track_arc.clone(), pub_msg.clone()));
+      }
+    }
+    matches
+  }
+
+  // Look up a track name by matching the subscriber's connection ID and the push Request ID
+  pub async fn get_track_name_by_push_id(
+    &self,
+    connection_id: usize,
+    request_id: u64,
+  ) -> Option<FullTrackName> {
+    let pushes = self.active_pushes.read().await;
+    for (track_name, clients) in pushes.iter() {
+      if clients
+        .iter()
+        .any(|(c, id)| c.connection_id == connection_id && *id == request_id)
+      {
+        return Some(track_name.clone());
+      }
+    }
+    None
+  }
+
+  // Retrieve the original Publish message used to create the track
+  pub async fn get_publish_message(&self, full_track_name: &FullTrackName) -> Option<Publish> {
+    let publishes = self.publishes.read().await;
+    publishes.get(full_track_name).cloned()
+  }
+
+  pub async fn get_track_name_by_publisher(
+    &self,
+    connection_id: usize,
+    request_id: u64,
+  ) -> Option<FullTrackName> {
+    let publishes = self.publishes.read().await;
+    let tracks = self.tracks.read().await;
+
+    for (track_name, publish_msg) in publishes.iter() {
+      // 1. Find the track that was published with this specific Request ID
+      if publish_msg.request_id == request_id {
+        // 2. Verify that the client sending PublishDone is actually the owner!
+        if let Some(track_arc) = tracks.get(track_name) {
+          let track = track_arc.read().await;
+          if track.publisher_connection_id == connection_id {
+            return Some(track_name.clone());
+          }
+        }
+      }
+    }
+    None
   }
 }

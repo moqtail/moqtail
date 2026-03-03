@@ -12,16 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::server::client::MOQTClient;
 use crate::server::session_context::SessionContext;
+use crate::server::{client::MOQTClient, session::Session};
 use core::result::Result;
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::publish_namespace::PublishNamespace;
+use moqtail::model::control::subscribe::Subscribe;
 use moqtail::model::control::subscribe_namespace_ok::SubscribeNamespaceOk;
 use moqtail::model::error::TerminationCode;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 pub async fn handle(
   client: Arc<MOQTClient>,
@@ -37,45 +38,83 @@ pub async fn handle(
       );
 
       // 1. Store the Subscription in TrackManager
-      // Registers the client's interest with the global router
       context
         .track_manager
         .add_namespace_subscriber(sub_ns.track_namespace_prefix.clone(), client.clone())
         .await;
 
-      // 2. Send OK
-      // Note: Assuming SubscribeNamespaceOk::new takes request_id and parameters (or just request_id depending on version)
-      // If your library version of SubscribeNamespaceOk::new takes params, use: new(sub_ns.request_id, vec![])
+      // 2. Send OK back to the subscriber
       let ok = SubscribeNamespaceOk::new(sub_ns.request_id);
       handler
         .send(&ControlMessage::SubscribeNamespaceOk(Box::new(ok)))
         .await?;
-
       info!(
         "Sent SubscribeNamespaceOk for request_id: {}",
         sub_ns.request_id
       );
 
-      // 3. Bootstrap Discovery (Stateful update)
-      // Check for EXISTING tracks that match this prefix and notify immediately.
-      {
+      // 3. Bootstrap Discovery (Catch-up phase for Announcements)
+      let matched_announcements = context
+        .track_manager
+        .get_announcements_by_prefix(&sub_ns.track_namespace_prefix)
+        .await;
+
+      for ns in matched_announcements {
+        let relay_announce_id =
+          Session::get_next_relay_request_id(context.relay_next_request_id.clone()).await;
+        let notify = PublishNamespace::new(relay_announce_id, ns.clone(), &[]);
+        client
+          .queue_message(ControlMessage::PublishNamespace(Box::new(notify)))
+          .await;
+      }
+
+      // 4. Catch up on active published Tracks
+      let matched_tracks = context
+        .track_manager
+        .get_tracks_and_publishes_by_namespace_prefix(&sub_ns.track_namespace_prefix)
+        .await;
+
+      for (full_track_name, track_arc, mut original_publish_message) in matched_tracks {
+        info!(
+          "Forwarding existing track for new subscriber: {:?}",
+          full_track_name
+        );
+
+        let relay_publish_id =
+          Session::get_next_relay_request_id(context.relay_next_request_id.clone()).await;
+        original_publish_message.request_id = relay_publish_id;
+
+        // Record the PUSH so PublishDone can reach this subscriber even though they joined after the track started.
+        context
+          .track_manager
+          .add_active_push(full_track_name.clone(), client.clone(), relay_publish_id)
+          .await;
+
+        client
+          .queue_message(ControlMessage::Publish(Box::new(
+            original_publish_message.clone(),
+          )))
+          .await;
+
+        // Auto-subscribe the client to the underlying data stream
+        let synthetic_sub = Subscribe::new_next_group_start(
+          relay_publish_id,
+          original_publish_message.track_namespace.clone(),
+          original_publish_message.track_name.clone(),
+          128,
+          original_publish_message.group_order,
+          original_publish_message.forward != 0,
+          vec![],
+        );
+
+        let track_read = track_arc.read().await;
+        if let Err(e) = track_read
+          .add_subscription(client.clone(), synthetic_sub, false)
+          .await
         {
-          // OLD: let tracks = context.track_manager.tracks.read().await;
-          // NEW: Check Announcements instead of just active tracks
-          let matched_announcements = context
-            .track_manager
-            .get_announcements_by_prefix(&sub_ns.track_namespace_prefix)
-            .await;
-
-          for ns in matched_announcements {
-            debug!("Found existing announcement for new subscription: {:?}", ns);
-
-            let notify = PublishNamespace::new(sub_ns.request_id, ns, &[]);
-
-            handler
-              .send(&ControlMessage::PublishNamespace(Box::new(notify)))
-              .await?;
-          }
+          warn!("Failed retroactive auto-subscribe for track: {:?}", e);
+        } else {
+          info!("Successfully initialized retroactive subscription.");
         }
       }
     }

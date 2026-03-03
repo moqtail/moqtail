@@ -41,6 +41,7 @@ import {
   SubscribeNamespaceOk,
   Switch,
   SubscribeOk,
+  PublishDone,
 } from '../model/control'
 import {
   DatagramObject,
@@ -60,6 +61,7 @@ import {
   InternalError,
   MOQtailError,
   ProtocolViolationError,
+  ReasonPhrase,
   SetupParameters,
   Tuple,
   VersionSpecificParameters,
@@ -279,6 +281,9 @@ export class MOQtailClient {
 
   /** Fired when an inbound PUBLISH control message is received. */
   onPeerPublish?: (msg: Publish, stream: ReadableStream<MoqtObject>) => void
+
+  /** Fired when an inbound PUBLISH_DONE control message is received. */
+  onPeerPublishDone?: (msg: PublishDone) => void
 
   /** Fired when an inbound SUBSCRIBE_NAMESPACE control message is received. */
   onPeerSubscribeNamespace?: (msg: SubscribeNamespace) => void
@@ -1479,6 +1484,32 @@ export class MOQtailClient {
     } catch (error) {
       await this.disconnect(
         new InternalError('MOQtailClient.publish', error instanceof Error ? error.message : String(error)),
+      )
+      throw error
+    }
+  }
+
+  /**
+   * Signals the end of a published track to the peer/relay.
+   * * @param publishRequestId - The original requestId used when `publish()` was called.
+   */
+  async publishDone(publishRequestId: bigint | number, statusCode: number = 0, reasonPhrase: string = 'Track Ended') {
+    this.#ensureActive()
+    try {
+      if (typeof publishRequestId === 'number') publishRequestId = BigInt(publishRequestId)
+
+      // Create the PublishDone message. (StreamCount is set to 0n as a default)
+      const msg = new PublishDone(publishRequestId, statusCode, 0n, new ReasonPhrase(reasonPhrase))
+
+      await this.controlStream.send(msg)
+
+      // Clean up local publisher-side state
+      this.requests.delete(publishRequestId)
+      this.requestIdMap.removeMappingByRequestId(publishRequestId)
+      this.subscriptionAliasMap.delete(publishRequestId)
+    } catch (error) {
+      await this.disconnect(
+        new InternalError('MOQtailClient.publishDone', error instanceof Error ? error.message : String(error)),
       )
       throw error
     }

@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::server::client::MOQTClient;
+use crate::server::session::Session;
 use crate::server::session_context::SessionContext;
 use crate::server::track::{Track, TrackStatus};
 use core::result::Result;
@@ -55,7 +56,7 @@ pub async fn handle(
       }
 
       // Validate track namespace authorization
-      // TODO: Implement actual authorization logic based on your requirements
+      // TODO: Implement actual authorization logic
       let is_authorized = validate_publish_authorization(&m.track_namespace, &client).await;
 
       if !is_authorized {
@@ -74,14 +75,8 @@ pub async fn handle(
           .await;
       }
 
-      // Check if the track already exists and is being published
-      // TODO: Actually this should be allowed, multiple publishers can publish the same track
-      // but cannot use the same track alias
-
-      {
-        if context.track_manager.has_track_alias(&m.track_alias).await {
-          return Err(TerminationCode::DuplicateTrackAlias);
-        }
+      if context.track_manager.has_track_alias(&m.track_alias).await {
+        return Err(TerminationCode::DuplicateTrackAlias);
       }
 
       // Add the track to the client's published tracks
@@ -92,85 +87,89 @@ pub async fn handle(
 
       let m_clone = m.clone();
 
-      // TODO: what happens multiple publishers publish the same track?
-      if !context.track_manager.has_track(&full_track_name).await {
-        info!("Track not found, creating new track: {:?}", m.track_alias);
-        // subscribed_tracks.insert(sub.track_alias, Track::new(sub.track_alias, track_namespace.clone(), sub.track_name.clone()));
-        let track = Track::new(
-          m.track_alias,
-          full_track_name.clone(),
-          context.connection_id, // TODO: what happens there are multiple publishers?
-          context.server_config,
-          TrackStatus::Confirmed {
-            publisher_track_alias: m.track_alias,
-            expires: 0,
-            largest_location: None,
-          },
-        );
-        let track_arc = context
-          .track_manager
-          .add_track(m.track_alias, full_track_name.clone(), track)
-          .await;
+      // 1. Get or create the track unconditionally.
+      let (track_arc, _is_creator) = context
+        .track_manager
+        .get_or_create_track(&full_track_name, || {
+          Track::new(
+            m.track_alias,
+            full_track_name.clone(),
+            context.connection_id,
+            context.server_config,
+            TrackStatus::Confirmed {
+              publisher_track_alias: m.track_alias,
+              expires: 0,
+              largest_location: None,
+            },
+          )
+        })
+        .await;
 
-        client.add_published_track(full_track_name).await;
+      // 2. Unconditionally update the track's alias to the active PUBLISH alias.
+      // This heals the state if a SUBSCRIBE previously created a shell track.
+      {
+        let mut track = track_arc.write().await;
+        let status = track.get_status().await;
 
-        // find subscribers interested in this track and forward the publish message to them
-        let subscribers = context
-          .track_manager
-          .get_namespace_subscribers(&m.track_namespace)
-          .await;
-
-        if !subscribers.is_empty() {
-          info!(
-            "Found {} subscribers for namespace {:?}, forwarding PUBLISH",
-            subscribers.len(),
-            m.track_namespace
-          );
+        // Only update if it's a Pending shell track that never got a SubscribeOk
+        if matches!(status, TrackStatus::Pending) {
+          track.track_alias = m.track_alias;
+          track.confirm(m.track_alias, 0, None).await;
         }
-
-        for subscriber in subscribers {
-          info!(
-            "Forwarding Publish to interested client: {}",
-            subscriber.connection_id
-          );
-
-          let sub_clone = subscriber.clone();
-
-          let m_clone2 = m.clone();
-          tokio::spawn(async move {
-            sub_clone
-              .queue_message(ControlMessage::Publish(m_clone2))
-              .await;
-          });
-
-          let synthetic_sub = Subscribe::new_next_group_start(
-            0,
-            m_clone.track_namespace.clone(),
-            m_clone.track_name.clone(),
-            128,
-            m_clone.group_order,
-            m_clone.forward != 0,
-            vec![],
-          );
-
-          let track_write = track_arc.read().await;
-          if let Err(e) = track_write
-            .add_subscription(subscriber.clone(), synthetic_sub, false)
-            .await
-          {
-            warn!(
-              "Failed to auto-subscribe client {} to pushed track: {:?}",
-              subscriber.connection_id, e
-            );
-          }
-        }
-      } else {
-        // a different track alias but same full track name
-        // maybe we can associate the track alias with the existing published track
       }
 
-      // Create PublishOk response
-      // For simplicity, using default values that can be configured based on requirements
+      // 3. Register the new alias so incoming data streams are routed correctly
+      context
+        .track_manager
+        .add_track_alias(m.track_alias, full_track_name.clone())
+        .await;
+
+      // 4. Record the publish message so it can be cleanly purged on PublishDone.
+      context
+        .track_manager
+        .add_publish_message(full_track_name.clone(), *m.clone())
+        .await;
+      client.add_published_track(full_track_name.clone()).await;
+
+      // 5. Forward the new PUBLISH state to all namespace subscribers.
+      let subscribers = context
+        .track_manager
+        .get_namespace_subscribers(&m.track_namespace)
+        .await;
+
+      if !subscribers.is_empty() {
+        info!(
+          "Found {} subscribers for namespace {:?}, forwarding PUBLISH",
+          subscribers.len(),
+          m.track_namespace
+        );
+      }
+
+      for subscriber in subscribers {
+        info!(
+          "Forwarding Publish to interested client: {}",
+          subscriber.connection_id
+        );
+
+        let relay_req_id =
+          Session::get_next_relay_request_id(context.relay_next_request_id.clone()).await;
+
+        let sub_clone = subscriber.clone();
+
+        context
+          .track_manager
+          .add_active_push(full_track_name.clone(), subscriber.clone(), relay_req_id)
+          .await;
+
+        let mut m_clone2 = m_clone.clone();
+        m_clone2.request_id = relay_req_id;
+
+        tokio::spawn(async move {
+          sub_clone
+            .queue_message(ControlMessage::Publish(m_clone2))
+            .await;
+        });
+      }
       let publish_ok = Box::new(PublishOk::new(
         request_id,
         m_clone.forward,          // Use the same forward preference as requested
@@ -197,16 +196,111 @@ pub async fn handle(
         m.request_id, m.status_code
       );
 
-      // Clean up the published track
-      // TODO: Implement track cleanup logic based on request_id
-      cleanup_published_track(&client, m.request_id).await;
+      let track_name_opt = context
+        .track_manager
+        .get_track_name_by_publisher(client.connection_id, m.request_id)
+        .await;
+
+      if let Some(track_name) = track_name_opt {
+        info!(
+          "DEBUG [PublishDone]: Mapped incoming Request ID {} on Conn {} to Track Name: {:?}",
+          m.request_id, client.connection_id, track_name
+        );
+
+        // Forward PublishDone to all subscribers who accepted the push
+        let pushes = context.track_manager.active_pushes.read().await;
+        if let Some(subscribers) = pushes.get(&track_name) {
+          for (sub_client, sub_req_id) in subscribers {
+            info!(
+              "DEBUG [PublishDone]: --> Forwarding PublishDone to client {} with mapped Request ID {}",
+              sub_client.connection_id, sub_req_id
+            );
+            let mut done_msg = (*m).clone();
+            done_msg.request_id = *sub_req_id; // Remap it to the ID the peer expects
+
+            let sub_clone = sub_client.clone();
+            tokio::spawn(async move {
+              sub_clone
+                .queue_message(ControlMessage::PublishDone(Box::new(done_msg)))
+                .await;
+            });
+          }
+        }
+        drop(pushes);
+
+        // Purge the track completely
+        let track_alias = {
+          let publishes = context.track_manager.publishes.read().await;
+          publishes.get(&track_name).map(|p| p.track_alias)
+        };
+
+        if let Some(alias) = track_alias {
+          context.track_manager.remove_track_by_alias(alias).await;
+        } else {
+          context.track_manager.remove_track(&track_name).await;
+        }
+      } else {
+        warn!(
+          "DEBUG [PublishDone]: FAILED to find a track matching Request ID {} for Connection {}!",
+          m.request_id, client.connection_id
+        );
+      }
 
       Ok(())
     }
-    _ => {
-      // This handler only processes Publish and PublishDone messages
+
+    ControlMessage::PublishOk(m) => {
+      info!("Received PublishOk for request_id: {}", m.request_id);
+
+      // 1. Look up which track this PublishOk corresponds to using the connection_id and request_id
+      if let Some(full_track_name) = context
+        .track_manager
+        .get_track_name_by_push_id(client.connection_id, m.request_id)
+        .await
+      {
+        // 2. Fetch the track and the original publish message details
+        if let Some(track_arc) = context.track_manager.get_track(&full_track_name).await
+          && let Some(orig_publish) = context
+            .track_manager
+            .get_publish_message(&full_track_name)
+            .await
+        {
+          info!(
+            "Publish accepted! Wiring up data stream for: {:?}",
+            full_track_name
+          );
+
+          // 3. Create the subscription now that the client has consented
+          let synthetic_sub = Subscribe::new_next_group_start(
+            0,
+            orig_publish.track_namespace.clone(),
+            orig_publish.track_name.clone(),
+            128,
+            orig_publish.group_order,
+            orig_publish.forward != 0,
+            vec![],
+          );
+
+          let track_read = track_arc.read().await;
+          if let Err(e) = track_read
+            .add_subscription(client.clone(), synthetic_sub, false)
+            .await
+          {
+            warn!("Failed to auto-subscribe client after PublishOk: {:?}", e);
+          } else {
+            info!("Successfully wired data stream!");
+          }
+        }
+      } else {
+        warn!(
+          "Received PublishOk for an unknown push request_id: {}",
+          m.request_id
+        );
+      }
+
       Ok(())
     }
+    _ => Ok(()),
   }
 }
 
@@ -239,19 +333,4 @@ async fn _check_track_exists(
 
   // For now, assume no conflicts (this should be replaced with actual logic)
   false
-}
-
-/// Cleans up resources associated with a published track
-async fn cleanup_published_track(_client: &Arc<MOQTClient>, _request_id: u64) {
-  // TODO: Implement track cleanup logic
-  // This could include:
-  // - Removing track from active tracks registry
-  // - Notifying subscribers about track ending
-  // - Cleaning up stream state
-  // - Releasing resources
-
-  info!(
-    "Cleaning up published track for request ID: {}",
-    _request_id
-  );
 }

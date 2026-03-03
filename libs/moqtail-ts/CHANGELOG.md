@@ -1,5 +1,11 @@
 # moqtail-ts
 
+## 0.8.2
+
+### Patch Changes
+
+- [`9f8dc10`](https://github.com/moqtail/moqtail/commit/9f8dc107cd815067ffc6f571db5b562834b2deaf) Thanks [@acbegen](https://github.com/acbegen)! - add cmsf catalog format and some cleanup
+
 ## 0.8.1
 
 ### Patch Changes

@@ -168,7 +168,7 @@ mod tests {
   #[test]
   fn deserialize_not_enough_bytes() {
     let mut buf = BytesMut::new();
-    buf.put_vi(1).unwrap(); // odd → bytes variant
+    buf.put_vi(1).unwrap(); // odd -> bytes variant
     buf.put_vi(5).unwrap(); // length = 5
     buf.extend_from_slice(b"abc"); // only 3 bytes
     let mut bytes = buf.freeze();

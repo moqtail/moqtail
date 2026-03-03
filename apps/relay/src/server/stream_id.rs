@@ -23,7 +23,7 @@ pub enum StreamType {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct StreamId {
   pub stream_type: StreamType,
-  pub track_alias: u64,
+  pub relay_track_id: u64,
   pub group_id: Option<u64>,
   pub subgroup_id: Option<u64>,
   pub fetch_request_id: Option<u64>,
@@ -32,34 +32,34 @@ pub struct StreamId {
 impl StreamId {
   fn new(
     stream_type: StreamType,
-    track_alias: u64,
+    relay_track_id: u64,
     group_id: Option<u64>,
     subgroup_id: Option<u64>,
     fetch_request_id: Option<u64>,
   ) -> Self {
     Self {
       stream_type,
-      track_alias,
+      relay_track_id,
       group_id,
       subgroup_id,
       fetch_request_id,
     }
   }
 
-  pub fn new_fetch(track_alias: u64, fetch_request_id: u64) -> Self {
+  pub fn new_fetch(relay_track_id: u64, fetch_request_id: u64) -> Self {
     Self::new(
       StreamType::Fetch,
-      track_alias,
+      relay_track_id,
       None,
       None,
       Some(fetch_request_id),
     )
   }
 
-  pub fn new_subgroup(track_alias: u64, group_id: u64, subgroup_id: Option<u64>) -> Self {
+  pub fn new_subgroup(relay_track_id: u64, group_id: u64, subgroup_id: Option<u64>) -> Self {
     Self::new(
       StreamType::Subgroup,
-      track_alias,
+      relay_track_id,
       Some(group_id),
       subgroup_id,
       None,
@@ -77,14 +77,14 @@ impl fmt::Display for StreamId {
       StreamType::Fetch => write!(
         f,
         "fetch_{}_{}",
-        self.track_alias,
+        self.relay_track_id,
         self.fetch_request_id.unwrap_or(0),
       ),
 
       StreamType::Subgroup => write!(
         f,
         "subgroup_{}_{}_{}",
-        self.track_alias,
+        self.relay_track_id,
         self.group_id.unwrap(),
         self.subgroup_id.unwrap_or(0),
       ),

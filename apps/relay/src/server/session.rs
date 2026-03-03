@@ -339,7 +339,7 @@ impl Session {
                 debug!("Parsed datagram object: track_alias={}, group_id={}, object_id={}",
                        datagram_obj.track_alias, datagram_obj.group_id, datagram_obj.object_id);
 
-                if let Some(track) = context_clone.track_manager.get_track_by_alias(datagram_obj.track_alias).await {
+                if let Some(track) = context_clone.track_manager.get_track_by_alias(context_clone.connection_id, datagram_obj.track_alias).await {
                   let track = track.read().await;
                   // Set forwarding preference to Datagram
                   track.set_forwarding_preference(ObjectForwardingPreference::Datagram).await;
@@ -384,44 +384,29 @@ impl Session {
       context.connection_id
     );
 
-    // Find ALL tracks owned by the disconnecting publisher and notify subscribers.
-    // This covers both tracks from the PUBLISH flow (in client.published_tracks)
-    // and tracks created via the SUBSCRIBE flow (get_or_create_track in subscribe_handler).
-    let mut tracks_to_remove: Vec<(u64, moqtail::model::data::full_track_name::FullTrackName)> =
+    // Remove the disconnecting publisher from all tracks they were publishing.
+    // remove_publisher() internally notifies subscribers when the last publisher leaves.
+    // Collect full track names for tracks that have no publishers left.
+    let mut tracks_with_no_publishers: Vec<moqtail::model::data::full_track_name::FullTrackName> =
       Vec::new();
     {
       let tracks = track_manager_cleanup.tracks.read().await;
       for (full_track_name, track_lock) in tracks.iter() {
         let track = track_lock.read().await;
-        if track.publisher_connection_id == context.connection_id {
-          info!(
-            "Track {:?} belongs to disconnected publisher {}, notifying subscribers",
-            full_track_name, context.connection_id
-          );
-
-          if let Err(e) = track.notify_publisher_disconnected().await {
-            error!(
-              "Failed to notify subscribers for track {:?}: {:?}",
-              full_track_name, e
-            );
+        if let Some(alias) = track.remove_publisher(context.connection_id).await {
+          track_manager_cleanup
+            .remove_publisher_alias(context.connection_id, alias)
+            .await;
+          if !track.has_publishers().await {
+            tracks_with_no_publishers.push(full_track_name.clone());
           }
-
-          tracks_to_remove.push((track.track_alias, full_track_name.clone()));
         }
       }
     }
 
-    // Remove tracks that belonged to the disconnected publisher
-    for (track_alias, full_track_name) in &tracks_to_remove {
-      if *track_alias != 0 {
-        // Track has a registered alias (Confirmed state)
-        track_manager_cleanup
-          .remove_track_by_alias(*track_alias)
-          .await;
-      } else {
-        // Pending track without alias - remove by name
-        track_manager_cleanup.remove_track(full_track_name).await;
-      }
+    // Remove tracks that have no publishers left
+    for full_track_name in &tracks_with_no_publishers {
+      track_manager_cleanup.remove_track(full_track_name).await;
       info!(
         "Removed track {:?} after publisher {} disconnect",
         full_track_name, context.connection_id
@@ -537,7 +522,7 @@ impl Session {
                 .track_aliases
                 .read()
                 .await
-                .get(&track_alias)
+                .get(&(client.connection_id, track_alias))
                 .cloned();
 
               if full_track_name_opt.is_none() {
@@ -563,7 +548,14 @@ impl Session {
               break;
             }
 
-            stream_id = Some(utils::build_stream_id(track_alias, &header_info));
+            let relay_track_id = match current_track.as_ref() {
+              Some(t) => t.read().await.relay_track_id,
+              None => {
+                error!("track not found when building stream_id: {:?}", track_alias);
+                return Err(anyhow::Error::msg(TerminationCode::InternalError.to_json()));
+              }
+            };
+            stream_id = Some(utils::build_stream_id(relay_track_id, &header_info));
             Some(header_info)
           } else {
             None

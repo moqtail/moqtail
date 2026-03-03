@@ -225,7 +225,7 @@ export class MOQtailClient {
   onGoaway?: (msg: GoAway) => void
 
   /**
-   * Fired if the underlying WebTransport session fails (ready → closed prematurely).
+   * Fired if the underlying WebTransport session fails (ready -\> closed prematurely).
    * Use to log or alert on transport errors.
    * Lifecycle/error handler.
    */

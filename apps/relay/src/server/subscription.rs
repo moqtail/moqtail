@@ -39,7 +39,7 @@ use moqtail::model::data::subgroup_header::SubgroupHeader;
 use moqtail::transport::data_stream_handler::HeaderInfo;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -109,7 +109,7 @@ impl From<Subscribe> for SubscriptionState {
 #[derive(Debug, Clone)]
 pub struct Subscription {
   pub request_id: u64,
-  track_alias_ref: Arc<AtomicU64>,
+  relay_track_id: u64,
   pub full_track_name: FullTrackName,
   pub subscription_state: Arc<RwLock<SubscriptionState>>,
   subscriber: Arc<MOQTClient>,
@@ -126,13 +126,8 @@ pub struct Subscription {
 
 #[allow(clippy::too_many_arguments)]
 impl Subscription {
-  /// Get the current track alias value (shared with SubscriptionManager).
-  fn track_alias(&self) -> u64 {
-    self.track_alias_ref.load(Ordering::Relaxed)
-  }
-
   fn create_instance(
-    track_alias_ref: Arc<AtomicU64>,
+    relay_track_id: u64,
     full_track_name: FullTrackName,
     request_id: u64,
     subscribe_message: Subscribe,
@@ -144,7 +139,7 @@ impl Subscription {
     config: &'static AppConfig,
   ) -> Self {
     Self {
-      track_alias_ref,
+      relay_track_id,
       full_track_name,
       request_id,
       subscription_state: Arc::new(RwLock::new(subscribe_message.into())),
@@ -159,8 +154,9 @@ impl Subscription {
       check_switch_context_on_next_object: Arc::new(AtomicBool::new(false)),
     }
   }
+
   pub fn new(
-    track_alias: Arc<AtomicU64>,
+    relay_track_id: u64,
     full_track_name: FullTrackName,
     subscribe_message: Subscribe,
     subscriber: Arc<MOQTClient>,
@@ -172,7 +168,7 @@ impl Subscription {
   ) -> Self {
     let event_rx = Arc::new(Mutex::new(Some(event_rx)));
     let sub = Self::create_instance(
-      track_alias.clone(),
+      relay_track_id,
       full_track_name,
       subscribe_message.request_id,
       subscribe_message,
@@ -184,11 +180,9 @@ impl Subscription {
       config,
     );
 
-    let track_alias = track_alias.load(Ordering::Relaxed);
-
     info!(
-      "Created new Subscription instance for subscriber: {} track: {} subscription state: {:?}",
-      client_connection_id, track_alias, sub.subscription_state
+      "Created new Subscription instance for subscriber={} relay_track_id={} subscription state: {:?}",
+      client_connection_id, relay_track_id, sub.subscription_state
     );
 
     let mut instance = sub.clone();
@@ -210,9 +204,9 @@ impl Subscription {
             let start_location = start_location.unwrap_or_default();
             if let Some(last_received_object_location) = last_received_object_location_opt {
               info!(
-                "Joining state - subscriber: {} track: {} from location: {:?} to last received location: {:?}",
+                "Joining state - subscriber={} relay_track_id={} from location: {:?} to last received location: {:?}",
                 instance.client_connection_id,
-                track_alias,
+                relay_track_id,
                 start_location,
                 last_received_object_location
               );
@@ -246,7 +240,7 @@ impl Subscription {
                           // the last object. Need to look into the draft.
                           let subgroup_header = HeaderInfo::Subgroup {
                             header: SubgroupHeader::new_with_explicit_id(
-                              track_alias,
+                              relay_track_id,
                               object.group_id,
                               object.subgroup_id,
                               object.publisher_priority,
@@ -255,8 +249,8 @@ impl Subscription {
                             ),
                           };
                           info!(
-                            "FROM CACHE: Joining state - subscriber: {} track: {} sending subgroup header: {:?}",
-                            instance.client_connection_id, track_alias, subgroup_header
+                            "FROM CACHE: Joining state - subscriber={} relay_track_id={} sending subgroup header: {:?}",
+                            instance.client_connection_id, relay_track_id, subgroup_header
                           );
                           last_group = object.group_id;
                           let stream_id = instance.get_stream_id(&subgroup_header);
@@ -267,7 +261,7 @@ impl Subscription {
                           (None, last_stream_id.clone())
                         };
 
-                        let the_object = Object::try_from_fetch(object, track_alias).unwrap();
+                        let the_object = Object::try_from_fetch(object, relay_track_id).unwrap();
 
                         let track_event = TrackEvent::SubgroupObject {
                           stream_id: stream_id.unwrap(),
@@ -275,8 +269,8 @@ impl Subscription {
                           header_info,
                         };
                         info!(
-                          "Joining state - subscriber: {} track: {} sending object location: {:?}",
-                          instance.client_connection_id, track_alias, track_event
+                          "Joining state - subscriber={} relay_track_id={} sending object location: {:?}",
+                          instance.client_connection_id, relay_track_id, track_event
                         );
                         instance.handle_track_event(track_event).await;
                       }
@@ -293,8 +287,8 @@ impl Subscription {
             let mut state = instance.subscription_state.write().await;
             state.is_joining = false;
             info!(
-              "Finished joining state for subscriber: {} track: {}",
-              instance.client_connection_id, track_alias
+              "Finished joining state for subscriber={} relay_track_id={}",
+              instance.client_connection_id, relay_track_id
             );
           }
         }
@@ -372,9 +366,8 @@ impl Subscription {
     }
 
     info!(
-      "update_subscription | new subscription state for {}: {:?}",
-      self.track_alias(),
-      state
+      "update_subscription | new subscription state for relay_track_id={}: {:?}",
+      self.relay_track_id, state
     );
     Ok(())
   }
@@ -389,9 +382,8 @@ impl Subscription {
     }
 
     info!(
-      "Finishing subscription for subscriber: {} and track: {}",
-      self.client_connection_id,
-      self.track_alias()
+      "Finishing subscription for subscriber={} relay_track_id={}",
+      self.client_connection_id, self.relay_track_id
     );
 
     let mut receiver_guard = self.event_rx.lock().await;
@@ -399,9 +391,8 @@ impl Subscription {
     drop(receiver_guard); // Release the lock
 
     info!(
-      "Subscription finished for subscriber: {} and track: {}",
-      self.client_connection_id,
-      self.track_alias()
+      "Subscription finished for subscriber={} relay_track_id={}",
+      self.client_connection_id, self.relay_track_id
     );
 
     // Close all send streams asynchronously to avoid blocking subscription cleanup
@@ -418,43 +409,43 @@ impl Subscription {
     if !stream_ids.is_empty() {
       let subscriber = self.subscriber.clone();
       let connection_id = self.client_connection_id;
-      let track_alias = self.track_alias();
+      let relay_track_id = self.relay_track_id;
 
       // Spawn background task for graceful stream cleanup
       tokio::spawn(async move {
         info!(
-          "Starting background cleanup of {} streams for subscriber: {} track: {}",
+          "Starting background cleanup of {} streams for subscriber={} relay_track_id={}",
           stream_ids.len(),
           connection_id,
-          track_alias
+          relay_track_id
         );
 
         for stream_id in stream_ids.iter() {
           let res = subscriber.close_stream(stream_id).await;
           if let Err(e) = res {
             warn!(
-              "Background stream cleanup error for subscriber: {} stream_id: {} track: {} error: {:?}",
-              connection_id, stream_id, track_alias, e
+              "Background stream cleanup error for subscriber={} stream_id={} relay_track_id={} error: {:?}",
+              connection_id, stream_id, relay_track_id, e
             );
           } else if let Ok(closed) = res {
             if closed {
               debug!(
-                "Background stream cleanup successful for subscriber: {} stream_id: {} track: {}",
-                connection_id, stream_id, track_alias
+                "Background stream cleanup successful for subscriber={} stream_id={} relay_track_id={}",
+                connection_id, stream_id, relay_track_id
               );
             } else {
               debug!(
-                "Background stream cleanup: stream not found for subscriber: {} stream_id: {} track: {}",
-                connection_id, stream_id, track_alias
+                "Background stream cleanup: stream not found for subscriber={} stream_id={} relay_track_id={}",
+                connection_id, stream_id, relay_track_id
               );
             }
           }
         }
 
         info!(
-          "Background cleanup completed for subscriber: {} track: {} ({} streams)",
+          "Background cleanup completed for subscriber={} relay_track_id={} ({} streams)",
           connection_id,
-          track_alias,
+          relay_track_id,
           stream_ids.len()
         );
       });
@@ -464,9 +455,8 @@ impl Subscription {
   // Notify the subscription to check the switch context on the next object
   pub async fn notify_switch(&self) {
     info!(
-      "Notifying subscription to check switch context on next object for subscriber: {} track: {}",
-      self.client_connection_id,
-      self.track_alias()
+      "Notifying subscription to check switch context on next object for subscriber={} relay_track_id={}",
+      self.client_connection_id, self.relay_track_id
     );
     self
       .check_switch_context_on_next_object
@@ -534,10 +524,8 @@ impl Subscription {
 
           // the following method also sets the current active track's status to None if any
           info!(
-            "check_switch_context: Setting track to Current for subscriber: {} track: {} object location group: {}",
-            self.client_connection_id,
-            self.track_alias(),
-            object_location.group
+            "check_switch_context: Setting track to Current for subscriber={} relay_track_id={} object location group: {}",
+            self.client_connection_id, self.relay_track_id, object_location.group
           );
           subscriber
             .switch_context
@@ -562,9 +550,9 @@ impl Subscription {
           state.end_group = 0; // remove end group limit
 
           info!(
-            "check_switch_context: Will forward objects for subscriber: {} track: {} starting from group: {}",
+            "check_switch_context: Will forward objects for subscriber={} relay_track_id={} starting from group: {}",
             self.client_connection_id,
-            self.track_alias(),
+            self.relay_track_id,
             state.start_location.as_ref().unwrap().group
           );
         } else {
@@ -572,10 +560,8 @@ impl Subscription {
           // set forward to false if it is true
           if self.is_forwarding().await {
             info!(
-              "check_switch_context: Setting forward to false for Next track for subscriber: {} track: {} obkject location group: {}",
-              self.client_connection_id,
-              self.track_alias(),
-              object_location.group
+              "check_switch_context: Setting forward to false for Next track for subscriber={} relay_track_id={} object location group: {}",
+              self.client_connection_id, self.relay_track_id, object_location.group
             );
             self.subscription_state.write().await.forward = false;
           }
@@ -589,10 +575,8 @@ impl Subscription {
         // set forward to false if it is true
         if self.is_forwarding().await {
           info!(
-            "check_switch_context: Setting end group to {} for None track for subscriber: {} track: {}",
-            object_location.group,
-            self.client_connection_id,
-            self.track_alias()
+            "check_switch_context: Setting end group to {} for None track for subscriber={} relay_track_id={}",
+            object_location.group, self.client_connection_id, self.relay_track_id
           );
           let mut state = self.subscription_state.write().await;
           state.forward = false;
@@ -605,11 +589,6 @@ impl Subscription {
   }
 
   async fn receive(&mut self) {
-    debug!(
-      "Receiving for subscriber: {} track: {}",
-      self.client_connection_id,
-      self.track_alias()
-    );
     let mut event_rx_guard = self.event_rx.lock().await;
 
     if let Some(ref mut event_rx) = *event_rx_guard {
@@ -624,9 +603,8 @@ impl Subscription {
           // For unbounded receivers, recv() returns None when the channel is closed
           // The channel is closed, we should finish the subscription
           info!(
-            "Event receiver closed for subscriber: {} track: {}, finishing subscription",
-            self.client_connection_id,
-            self.track_alias()
+            "Event receiver closed for subscriber={} relay_track_id={}, finishing subscription",
+            self.client_connection_id, self.relay_track_id
           );
           self.finish().await;
         }
@@ -639,10 +617,8 @@ impl Subscription {
 
   async fn handle_track_event(&self, event: TrackEvent) {
     debug!(
-      "Event received for subscriber: {} track: {} event: {:?}",
-      self.client_connection_id,
-      self.track_alias(),
-      event
+      "Event received for subscriber={} relay_track_id={} event: {:?}",
+      self.client_connection_id, self.relay_track_id, event
     );
     match event {
       TrackEvent::SubgroupObject {
@@ -667,13 +643,12 @@ impl Subscription {
               .check_switch_context_on_next_object
               .store(false, std::sync::atomic::Ordering::Relaxed);
           }
-          // Check wheter this track is in a switch context and update forward state
+          // Check whether this track is in a switch context and update forward state
           if !self.check_switch_context(&object.location).await {
             // if this returns false, do not start the stream
             info!(
-              "Not forwarding object for subscriber: {} track: {} due to switch context state",
-              self.client_connection_id,
-              self.track_alias()
+              "Not forwarding object for subscriber={} relay_track_id={} due to switch context state",
+              self.client_connection_id, self.relay_track_id
             );
             return;
           }
@@ -687,11 +662,8 @@ impl Subscription {
             && object.location < *start
           {
             debug!(
-              "Object before start location for subscriber: {} track: {} object location: {:?} start location: {:?}",
-              self.client_connection_id,
-              self.track_alias(),
-              object.location,
-              start
+              "Object before start location for subscriber={} relay_track_id={} object location: {:?} start location: {:?}",
+              self.client_connection_id, self.relay_track_id, object.location, start
             );
             return;
           }
@@ -700,17 +672,14 @@ impl Subscription {
             /* With Draft-15, the end group can be increased or decreased.
             TODO: Remove the following code after draft-15 support.
             info!(
-              "Finishing subscription for subscriber: {} track: {}",
-              self.client_connection_id, self.track_alias
+              "Finishing subscription for subscriber={} relay_track_id={}",
+              self.client_connection_id, self.relay_track_id
             );
             self.finish().await;
             */
             debug!(
-              "Object beyond end group for subscriber: {} track: {} object location: {:?} end group: {}",
-              self.client_connection_id,
-              self.track_alias(),
-              object.location,
-              state.end_group
+              "Object beyond end group for subscriber={} relay_track_id={} object location: {:?} end group: {}",
+              self.client_connection_id, self.relay_track_id, object.location, state.end_group
             );
             return;
           }
@@ -724,9 +693,9 @@ impl Subscription {
         let mut send_stream = if let Some(header) = header_info {
           if let HeaderInfo::Subgroup { header: _ } = header {
             info!(
-              "Creating stream - subscriber: {} track: {} now: {} received time: {} object: {:?} header: {:?}",
+              "Creating stream - subscriber={} relay_track_id={} now={} received time={} object: {:?} header: {:?}",
               self.client_connection_id,
-              self.track_alias(),
+              self.relay_track_id,
               utils::passed_time_since_start(),
               object_received_time,
               object.location,
@@ -739,10 +708,10 @@ impl Subscription {
                 send_stream_last_object_ids.insert(stream_id.clone(), None);
               }
               info!(
-                "Stream created - subscriber: {} stream_id: {} track: {} now: {} received time: {} object: {:?}",
+                "Stream created - subscriber={} stream_id={} relay_track_id={} now={} received time={} object: {:?}",
                 self.client_connection_id,
                 stream_id,
-                self.track_alias(),
+                self.relay_track_id,
                 utils::passed_time_since_start(),
                 object_received_time,
                 object.location
@@ -766,10 +735,10 @@ impl Subscription {
         if send_stream.is_none() {
           // wait a little bit and try again
           warn!(
-            "Send stream not found, retrying - subscriber: {} stream_id: {} track: {} now: {} received time: {} object: {:?}",
+            "Send stream not found, retrying - subscriber={} stream_id={} relay_track_id={} now={} received time={} object: {:?}",
             self.client_connection_id,
             stream_id,
-            self.track_alias(),
+            self.relay_track_id,
             utils::passed_time_since_start(),
             object_received_time,
             object.location
@@ -789,10 +758,10 @@ impl Subscription {
           };
 
           debug!(
-            "Received Object event: subscriber: {} stream_id: {} track: {} previous_object_id: {:?} object: {:?} now: {} received time: {}",
+            "Received Object event: subscriber={} stream_id={} relay_track_id={} previous_object_id: {:?} object: {:?} now={} received time={}",
             self.client_connection_id,
             stream_id,
-            self.track_alias(),
+            self.relay_track_id,
             previous_object_id,
             object,
             utils::passed_time_since_start(),
@@ -827,7 +796,7 @@ impl Subscription {
             self
               .object_logger
               .log_subscription_object(
-                self.track_alias(),
+                self.relay_track_id,
                 self.client_connection_id,
                 &object,
                 send_status,
@@ -837,10 +806,10 @@ impl Subscription {
           }
         } else {
           error!(
-            "Received Object event without a valid send stream for subscriber: {} stream_id: {} track: {} object: {:?} now: {} received time: {}",
+            "Received Object event without a valid send stream for subscriber={} stream_id={} relay_track_id={} object: {:?} now={} received time={}",
             self.client_connection_id,
             stream_id,
-            self.track_alias(),
+            self.relay_track_id,
             object.location,
             utils::passed_time_since_start(),
             object_received_time
@@ -867,19 +836,15 @@ impl Subscription {
       }
       TrackEvent::StreamClosed { stream_id } => {
         info!(
-          "Received StreamClosed event: subscriber: {} stream_id: {} track: {}",
-          self.client_connection_id,
-          stream_id,
-          self.track_alias()
+          "Received StreamClosed event: subscriber={} stream_id={} relay_track_id={}",
+          self.client_connection_id, stream_id, self.relay_track_id
         );
         let _ = self.handle_stream_closed(&stream_id).await;
       }
       TrackEvent::PublisherDisconnected { reason } => {
         info!(
-          "Received PublisherDisconnected event: subscriber: {}, reason: {} track: {}",
-          self.client_connection_id,
-          reason,
-          self.track_alias()
+          "Received PublisherDisconnected event: subscriber={}, reason={} relay_track_id={}",
+          self.client_connection_id, reason, self.relay_track_id
         );
 
         // Send PublishDone message and finish the subscription
@@ -888,10 +853,8 @@ impl Subscription {
           .await
         {
           error!(
-            "Failed to send PublishDone for publisher disconnect: subscriber: {} track: {} error: {:?}",
-            self.client_connection_id,
-            self.track_alias(),
-            e
+            "Failed to send PublishDone for publisher disconnect: subscriber={} relay_track_id={} error: {:?}",
+            self.client_connection_id, self.relay_track_id, e
           );
         }
 
@@ -928,11 +891,8 @@ impl Subscription {
         Ok(send_stream) => send_stream,
         Err(e) => {
           error!(
-            "Failed to open stream {}: {:?} subscriber: {} track: {}",
-            stream_id,
-            e,
-            self.client_connection_id,
-            self.track_alias()
+            "Failed to open stream {}: {:?} subscriber={} relay_track_id={}",
+            stream_id, e, self.client_connection_id, self.relay_track_id
           );
           return Err(e);
         }
@@ -943,16 +903,14 @@ impl Subscription {
       Ok((stream_id, send_stream.clone()))
     } else {
       error!(
-        "Failed to serialize header payload for stream {} subscriber: {} track: {}",
-        stream_id,
-        self.client_connection_id,
-        self.track_alias()
+        "Failed to serialize header payload for stream {} subscriber={} relay_track_id={}",
+        stream_id, self.client_connection_id, self.relay_track_id
       );
       Err(anyhow::anyhow!(
-        "Failed to serialize header payload for stream {} subscriber: {} track: {}",
+        "Failed to serialize header payload for stream {} subscriber={} relay_track_id={}",
         stream_id,
         self.client_connection_id,
-        self.track_alias()
+        self.relay_track_id
       ))
     }
   }
@@ -965,8 +923,8 @@ impl Subscription {
     send_stream: Arc<Mutex<SendStream>>,
   ) -> Result<()> {
     debug!(
-      "Handling object track: {} location: {:?} stream_id: {} diff_ms: {}",
-      object.track_alias,
+      "Handling object relay_track_id={} location: {:?} stream_id={} diff_ms={}",
+      self.relay_track_id,
       object.location,
       stream_id,
       utils::passed_time_since_start()
@@ -982,12 +940,8 @@ impl Subscription {
         Ok(data) => data,
         Err(e) => {
           error!(
-            "Error in serializing object before writing to stream for subscriber {} track: {}, location: {:?}, previous_object_id: {:?}, error: {:?}",
-            self.client_connection_id,
-            self.track_alias(),
-            object_location,
-            previous_object_id,
-            e
+            "Error in serializing object before writing to stream for subscriber={} relay_track_id={}, location: {:?}, previous_object_id: {:?}, error: {:?}",
+            self.client_connection_id, self.relay_track_id, object_location, previous_object_id, e
           );
           return Err(e.into());
         }
@@ -1012,25 +966,21 @@ impl Subscription {
         .await
         .map_err(|open_stream_err| {
           error!(
-            "Error writing object to stream for subscriber {} track: {}, error: {:?}",
-            self.client_connection_id,
-            self.track_alias(),
-            open_stream_err
+            "Error writing object to stream for subscriber={} relay_track_id={}, error: {:?}",
+            self.client_connection_id, self.relay_track_id, open_stream_err
           );
           open_stream_err
         })
     } else {
       debug!(
-        "Could not convert object to subgroup. stream_id: {:?} subscriber: {} track: {}",
-        stream_id,
-        self.client_connection_id,
-        self.track_alias()
+        "Could not convert object to subgroup. stream_id: {:?} subscriber={} relay_track_id={}",
+        stream_id, self.client_connection_id, self.relay_track_id
       );
       Err(anyhow::anyhow!(
-        "Could not convert object to subgroup. stream_id: {:?} subscriber: {} track: {}",
+        "Could not convert object to subgroup. stream_id: {:?} subscriber={} relay_track_id={}",
         stream_id,
         self.client_connection_id,
-        self.track_alias()
+        self.relay_track_id
       ))
     }
   }
@@ -1050,30 +1000,30 @@ impl Subscription {
     let subscriber = self.subscriber.clone();
     let stream_id = stream_id.clone();
     let connection_id = self.client_connection_id;
-    let track_alias = self.track_alias();
+    let relay_track_id = self.relay_track_id;
 
     tokio::spawn(async move {
       debug!(
-        "Starting graceful stream closure in background: subscriber: {} stream_id: {} track: {}",
-        connection_id, stream_id, track_alias
+        "Starting graceful stream closure in background: subscriber={} stream_id={} relay_track_id={}",
+        connection_id, stream_id, relay_track_id
       );
 
       let res = subscriber.close_stream(&stream_id).await;
       if let Err(e) = res {
         warn!(
-          "handle_stream_closed | error for subscriber: {} stream_id: {} track: {} error: {:?}",
-          connection_id, stream_id, track_alias, e
+          "handle_stream_closed | error for subscriber={} stream_id={} relay_track_id={} error: {:?}",
+          connection_id, stream_id, relay_track_id, e
         );
       } else if let Ok(closed) = res {
         if closed {
           debug!(
-            "handle_stream_closed | successful for subscriber: {} stream_id: {} track: {}",
-            connection_id, stream_id, track_alias
+            "handle_stream_closed | successful for subscriber={} stream_id={} relay_track_id={}",
+            connection_id, stream_id, relay_track_id
           );
         } else {
           debug!(
-            "handle_stream_closed | stream not found for subscriber: {} stream_id: {} track: {}",
-            connection_id, stream_id, track_alias
+            "handle_stream_closed | stream not found for subscriber={} stream_id={} relay_track_id={}",
+            connection_id, stream_id, relay_track_id
           );
         }
       }
@@ -1086,12 +1036,10 @@ impl Subscription {
   async fn get_header_payload(&self, header_info: &HeaderInfo) -> Result<Bytes> {
     let connection_id = self.client_connection_id;
     match header_info {
-      HeaderInfo::Subgroup { header } => header.serialize(Some(self.track_alias())).map_err(|e| {
+      HeaderInfo::Subgroup { header } => header.serialize(Some(self.relay_track_id)).map_err(|e| {
         error!(
-          "Error serializing subgroup header: {:?} subscriber: {} track: {}",
-          e,
-          connection_id,
-          self.track_alias()
+          "Error serializing subgroup header: {:?} subscriber={} relay_track_id={}",
+          e, connection_id, self.relay_track_id
         );
         e.into()
       }),
@@ -1100,10 +1048,8 @@ impl Subscription {
         fetch_request: _,
       } => header.serialize().map_err(|e| {
         error!(
-          "Error serializing fetch header: {:?} subscriber: {} track: {}",
-          e,
-          connection_id,
-          self.track_alias()
+          "Error serializing fetch header: {:?} subscriber={} relay_track_id={}",
+          e, connection_id, self.relay_track_id
         );
         e.into()
       }),
@@ -1111,7 +1057,7 @@ impl Subscription {
   }
 
   fn get_stream_id(&self, header_info: &HeaderInfo) -> StreamId {
-    utils::build_stream_id(self.track_alias(), header_info)
+    utils::build_stream_id(self.relay_track_id, header_info)
   }
 
   /// Send PublishDone message to this subscriber
@@ -1136,10 +1082,8 @@ impl Subscription {
       .await;
 
     info!(
-      "Sent PublishDone to subscriber {} track: {} for request_id {}",
-      self.client_connection_id,
-      self.track_alias(),
-      self.request_id
+      "Sent PublishDone to subscriber={} relay_track_id={} for request_id={}",
+      self.client_connection_id, self.relay_track_id, self.request_id
     );
 
     Ok(())

@@ -81,12 +81,16 @@ pub async fn handle(
       };
 
       // Multiple publishers may share the same alias for the same track (fan-out).
-      // Only reject if the alias already maps to a *different* full track name.
+      // Only reject if the alias already maps to a different full track name for this connection.
       {
-        if context.track_manager.has_track_alias(&m.track_alias).await {
+        if context
+          .track_manager
+          .has_track_alias(context.connection_id, &m.track_alias)
+          .await
+        {
           let is_same_track = if let Some(existing) = context
             .track_manager
-            .get_track_by_alias(m.track_alias)
+            .get_track_by_alias(context.connection_id, m.track_alias)
             .await
           {
             existing.read().await.full_track_name == full_track_name
@@ -102,27 +106,39 @@ pub async fn handle(
 
       let m_clone = m.clone();
 
-      // TODO: what happens multiple publishers publish the same track?
       if !context.track_manager.has_track(&full_track_name).await {
-        info!("Track not found, creating new track: {:?}", m.track_alias);
-        // subscribed_tracks.insert(sub.track_alias, Track::new(sub.track_alias, track_namespace.clone(), sub.track_name.clone()));
+        info!(
+          "Track not found, creating new track for publisher alias={}",
+          m.track_alias
+        );
+        let relay_track_id = context.track_manager.generate_relay_track_id();
         let track = Track::new(
-          m.track_alias,
+          relay_track_id,
           full_track_name.clone(),
-          context.connection_id, // TODO: what happens there are multiple publishers?
           context.server_config,
           TrackStatus::Confirmed {
-            publisher_track_alias: m.track_alias,
             expires: 0,
             largest_location: None,
           },
         );
         let track_arc = context
           .track_manager
-          .add_track(m.track_alias, full_track_name.clone(), track)
+          .add_track(
+            context.connection_id,
+            m.track_alias,
+            full_track_name.clone(),
+            track,
+          )
+          .await;
+        track_arc
+          .write()
+          .await
+          .add_publisher(context.connection_id, m.track_alias)
           .await;
 
-        client.add_published_track(full_track_name).await;
+        client
+          .add_published_track(request_id, full_track_name.clone())
+          .await;
 
         // find subscribers interested in this track and forward the publish message to them
         let subscribers = context
@@ -179,9 +195,22 @@ pub async fn handle(
         // Register their alias so their data stream can be routed to the existing track.
         context
           .track_manager
-          .add_track_alias(m.track_alias, full_track_name.clone())
+          .add_track_alias(
+            context.connection_id,
+            m.track_alias,
+            full_track_name.clone(),
+          )
           .await;
-        client.add_published_track(full_track_name).await;
+        if let Some(track_arc) = context.track_manager.get_track(&full_track_name).await {
+          track_arc
+            .write()
+            .await
+            .add_publisher(context.connection_id, m.track_alias)
+            .await;
+        }
+        client
+          .add_published_track(request_id, full_track_name.clone())
+          .await;
         info!(
           "Additional publisher for existing track {:?}/{}: registered alias {}",
           m.track_namespace, m.track_name, m.track_alias
@@ -217,8 +246,7 @@ pub async fn handle(
       );
 
       // Clean up the published track
-      // TODO: Implement track cleanup logic based on request_id
-      cleanup_published_track(&client, m.request_id).await;
+      cleanup_published_track(&client, m.request_id, &context).await;
 
       Ok(())
     }
@@ -245,32 +273,54 @@ async fn validate_publish_authorization(
   true
 }
 
-/// Checks if a track with the given namespace and name already exists
-async fn _check_track_exists(
-  _track_namespace: &moqtail::model::common::tuple::Tuple,
-  _track_name: &str,
-) -> bool {
-  // TODO: Implement actual track existence checking
-  // This could check:
-  // - Active tracks registry
-  // - Database of existing tracks
-  // - Track metadata storage
+/// Cleans up resources associated with a published track.
+/// Removes the publisher from its track; if it was the last publisher,
+/// remove_publisher() internally notifies subscribers.
+async fn cleanup_published_track(
+  client: &Arc<MOQTClient>,
+  request_id: u64,
+  context: &Arc<SessionContext>,
+) {
+  let full_track_name = {
+    let published_tracks = client.published_tracks.read().await;
+    published_tracks.get(&request_id).cloned()
+  };
 
-  // For now, assume no conflicts (this should be replaced with actual logic)
-  false
-}
+  let full_track_name = match full_track_name {
+    Some(n) => n,
+    None => {
+      info!(
+        "cleanup_published_track: no track found for request_id={}",
+        request_id
+      );
+      return;
+    }
+  };
 
-/// Cleans up resources associated with a published track
-async fn cleanup_published_track(_client: &Arc<MOQTClient>, _request_id: u64) {
-  // TODO: Implement track cleanup logic
-  // This could include:
-  // - Removing track from active tracks registry
-  // - Notifying subscribers about track ending
-  // - Cleaning up stream state
-  // - Releasing resources
+  let track_arc = match context.track_manager.get_track(&full_track_name).await {
+    Some(t) => t,
+    None => {
+      info!(
+        "cleanup_published_track: track not in manager for request_id={}",
+        request_id
+      );
+      return;
+    }
+  };
 
-  info!(
-    "Cleaning up published track for request ID: {}",
-    _request_id
-  );
+  let track = track_arc.read().await;
+  if let Some(alias) = track.remove_publisher(client.connection_id).await {
+    context
+      .track_manager
+      .remove_publisher_alias(client.connection_id, alias)
+      .await;
+    if !track.has_publishers().await {
+      drop(track);
+      context.track_manager.remove_track(&full_track_name).await;
+      info!(
+        "cleanup_published_track: removed track {:?} (no publishers left) request_id={}",
+        full_track_name, request_id
+      );
+    }
+  }
 }

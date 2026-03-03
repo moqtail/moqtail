@@ -53,6 +53,7 @@ export default function App() {
   const workerRef = useRef<Worker | null>(null)
 
   async function subscribeNamespaceOnce(client: MOQtailClient, ns: Tuple) {
+    console.log('subscribeNamespaceOnce: ns: %s', ns.toUtf8Path())
     const key = ns.toString()
     if (subscribedNsRef.current.has(key)) return
     subscribedNsRef.current.add(key)
@@ -95,16 +96,16 @@ export default function App() {
 
       const { sendSignal } = await setupSignalling(client, id, {
         onPeerJoin: (peerId) => {
+          console.log('onPeerJoin peerId: %d', peerId)
+          initializeCanvas()
           const peerNs = Tuple.fromUtf8Path(`moqtail/demo/user_${peerId}`)
           subscribeNamespaceOnce(client, peerNs)
           sendSignalRef.current?.(`user_${peerId}:welcome`)
-          // Pre-create decode worker + audio pipeline for the remote canvas
-          prepareReceiverForCanvas(remoteCanvasRef).then((w) => {
-            workerRef.current = w
-          })
         },
         onOwnJoinWelcomed: () => {
           const otherId = (id === 1 ? 2 : 1) as 1 | 2
+          console.log('onOwnJoinWelcomed: otherId: %d', otherId)
+          initializeCanvas()
           subscribeNamespaceOnce(client, Tuple.fromUtf8Path(`moqtail/demo/user_${otherId}`))
         },
       })
@@ -115,6 +116,15 @@ export default function App() {
       setError(msg)
       setScreen('select')
     }
+  }
+
+  function initializeCanvas() {
+    // Pre-create decode worker + audio pipeline for the remote canvas
+    if (workerRef.current) return
+    prepareReceiverForCanvas(remoteCanvasRef).then((w) => {
+      console.log('remoteCanvasRef ready', w)
+      workerRef.current = w
+    })
   }
 
   async function startPublishing() {

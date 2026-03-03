@@ -16,31 +16,43 @@ use super::track::Track;
 use crate::server::client::MOQTClient;
 use moqtail::model::common::tuple::Tuple;
 use moqtail::model::data::full_track_name::FullTrackName;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::RwLock;
-use tracing::info;
+use tracing::{debug, info};
 
 #[derive(Clone)]
 pub struct TrackManager {
   pub tracks: Arc<RwLock<HashMap<FullTrackName, Arc<RwLock<Track>>>>>,
-  pub track_aliases: Arc<RwLock<BTreeMap<u64, FullTrackName>>>,
+  /// Maps (publisher_connection_id, publisher_track_alias) -> FullTrackName.
+  /// Connection-scoped to avoid alias collisions across different publishers.
+  pub track_aliases: Arc<RwLock<HashMap<(usize, u64), FullTrackName>>>,
   pub namespace_subscribers: Arc<RwLock<HashMap<Tuple, Vec<Arc<MOQTClient>>>>>,
   pub announcements: Arc<RwLock<HashMap<Tuple, Arc<MOQTClient>>>>,
+  /// Counter for generating stable relay_track_id values.
+  next_relay_track_id: Arc<AtomicU64>,
 }
 
 impl TrackManager {
   pub fn new() -> Self {
     TrackManager {
       tracks: Arc::new(RwLock::new(HashMap::new())),
-      track_aliases: Arc::new(RwLock::new(BTreeMap::new())),
+      track_aliases: Arc::new(RwLock::new(HashMap::new())),
       namespace_subscribers: Arc::new(RwLock::new(HashMap::new())),
       announcements: Arc::new(RwLock::new(HashMap::new())),
+      next_relay_track_id: Arc::new(AtomicU64::new(0)),
     }
+  }
+
+  /// Generate the next unique relay_track_id. Called once per new track.
+  pub fn generate_relay_track_id(&self) -> u64 {
+    self.next_relay_track_id.fetch_add(1, Ordering::Relaxed)
   }
 
   pub async fn add_track(
     &self,
+    connection_id: usize,
     track_alias: u64,
     full_track_name: FullTrackName,
     track: Track,
@@ -48,35 +60,41 @@ impl TrackManager {
     let mut tracks = self.tracks.write().await;
     let mut track_aliases = self.track_aliases.write().await;
 
+    let relay_track_id = track.relay_track_id;
     let track = Arc::new(RwLock::new(track));
     tracks.insert(full_track_name.clone(), track.clone());
-    track_aliases.insert(track_alias, full_track_name.clone());
+    track_aliases.insert((connection_id, track_alias), full_track_name.clone());
 
     info!(
-      "Added track with alias {}: {:?}",
-      track_alias, full_track_name
+      "Added track relay_track_id={} publisher_alias={}@{}: {:?}",
+      relay_track_id, track_alias, connection_id, full_track_name
     );
 
     track
   }
 
-  pub async fn get_track_by_alias(&self, track_alias: u64) -> Option<Arc<RwLock<Track>>> {
+  pub async fn get_track_by_alias(
+    &self,
+    connection_id: usize,
+    track_alias: u64,
+  ) -> Option<Arc<RwLock<Track>>> {
     let track_aliases = self.track_aliases.read().await;
-    if let Some(full_track_name) = track_aliases.get(&track_alias) {
+    if let Some(full_track_name) = track_aliases.get(&(connection_id, track_alias)) {
       let tracks = self.tracks.read().await;
       return tracks.get(full_track_name).cloned();
     }
     None
   }
 
-  pub async fn remove_track_by_alias(&self, track_alias: u64) {
+  #[allow(dead_code)]
+  pub async fn remove_track_by_alias(&self, connection_id: usize, track_alias: u64) {
     let mut track_aliases = self.track_aliases.write().await;
-    if let Some(full_track_name) = track_aliases.remove(&track_alias) {
+    if let Some(full_track_name) = track_aliases.remove(&(connection_id, track_alias)) {
       let mut tracks = self.tracks.write().await;
       tracks.remove(&full_track_name);
       info!(
-        "Removed track with alias {}: {:?}",
-        track_alias, full_track_name
+        "Removed track with alias {}@{}: {:?}",
+        track_alias, connection_id, full_track_name
       );
     }
   }
@@ -98,17 +116,33 @@ impl TrackManager {
     tracks.contains_key(full_track_name)
   }
 
-  pub async fn has_track_alias(&self, track_alias: &u64) -> bool {
+  pub async fn has_track_alias(&self, connection_id: usize, track_alias: &u64) -> bool {
     let track_aliases = self.track_aliases.read().await;
-    track_aliases.contains_key(track_alias)
+    track_aliases.contains_key(&(connection_id, *track_alias))
+  }
+
+  /// Remove a single publisher alias without removing the full track entry.
+  /// Used when a publisher sends PublishDone or when only one of several publishers disconnects.
+  pub async fn remove_publisher_alias(&self, connection_id: usize, track_alias: u64) {
+    let mut track_aliases = self.track_aliases.write().await;
+    if track_aliases
+      .remove(&(connection_id, track_alias))
+      .is_some()
+    {
+      info!(
+        "Removed publisher alias {}@{} from track_aliases",
+        track_alias, connection_id
+      );
+    }
   }
 
   /// Atomically gets an existing track or creates a new one.
+  /// The factory receives the generated relay_track_id and must use it when constructing Track.
   /// Returns the track Arc and a boolean indicating whether this call created the track.
   pub async fn get_or_create_track(
     &self,
     full_track_name: &FullTrackName,
-    track_factory: impl FnOnce() -> Track,
+    track_factory: impl FnOnce(u64) -> Track,
   ) -> (Arc<RwLock<Track>>, bool) {
     // Fast path: read lock
     {
@@ -123,7 +157,8 @@ impl TrackManager {
       if let Some(track) = tracks.get(full_track_name) {
         return (track.clone(), false);
       }
-      let track = track_factory();
+      let relay_track_id = self.generate_relay_track_id();
+      let track = track_factory(relay_track_id);
       let track_arc = Arc::new(RwLock::new(track));
       tracks.insert(full_track_name.clone(), track_arc.clone());
       // Do NOT insert into track_aliases -- the publisher alias is
@@ -133,13 +168,18 @@ impl TrackManager {
   }
 
   /// Register a track alias mapping. Called when the publisher's SubscribeOk
-  /// reveals the actual track_alias.
-  pub async fn add_track_alias(&self, track_alias: u64, full_track_name: FullTrackName) {
+  /// reveals the actual track_alias, or when a publisher registers via Publish.
+  pub async fn add_track_alias(
+    &self,
+    connection_id: usize,
+    track_alias: u64,
+    full_track_name: FullTrackName,
+  ) {
     let mut track_aliases = self.track_aliases.write().await;
-    track_aliases.insert(track_alias, full_track_name.clone());
+    track_aliases.insert((connection_id, track_alias), full_track_name.clone());
     info!(
-      "Registered track alias {} -> {:?}",
-      track_alias, full_track_name
+      "Registered track alias {}@{} -> {:?}",
+      track_alias, connection_id, full_track_name
     );
   }
 
@@ -160,6 +200,10 @@ impl TrackManager {
   }
 
   pub async fn get_namespace_subscribers(&self, target_namespace: &Tuple) -> Vec<Arc<MOQTClient>> {
+    debug!(
+      "get_namespace_subscribers | target_namespace: {:?}",
+      target_namespace
+    );
     let subs = self.namespace_subscribers.read().await;
     let mut interested_clients = Vec::new();
 
@@ -269,7 +313,7 @@ mod tests {
 
   #[test]
   fn new_is_extension_of_existing() {
-    // "meet/room1" starts with "meet" → overlap
+    // "meet/room1" starts with "meet" -> overlap
     assert!(namespace_prefixes_overlap(&t("meet/room1"), &t("meet")));
   }
 

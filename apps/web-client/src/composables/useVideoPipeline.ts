@@ -540,6 +540,10 @@ const canvasAudioNodeMap = new WeakMap<HTMLCanvasElement, AudioWorkletNode>()
 function getOrCreateWorkerAndCanvas(canvas: HTMLCanvasElement) {
   const existingWorker = canvasWorkerMap.get(canvas)
   if (existingWorker) {
+    console.log(
+      'getOrCreateWorkerAndCanvas | sending updateDecoderConfig to existingWorker',
+      window.appSettings.videoDecoderConfig,
+    )
     existingWorker.postMessage({
       type: 'updateDecoderConfig',
       decoderConfig: window.appSettings.videoDecoderConfig,
@@ -572,7 +576,10 @@ function getOrCreateWorkerAndCanvas(canvas: HTMLCanvasElement) {
   } catch (error) {
     if (error instanceof DOMException && error.name === 'InvalidStateError') {
       console.error('Canvas control already transferred. This should not happen with proper cleanup.')
+    } else {
+      console.error('getOrCreateWorkerAndCanvas | error', error)
     }
+
     throw error
   }
 }
@@ -593,7 +600,10 @@ export function cleanupCanvasWorker(canvas: HTMLCanvasElement): boolean {
  */
 export async function prepareReceiverForCanvas(canvasRef: RefObject<HTMLCanvasElement | null>): Promise<Worker | null> {
   const canvas = canvasRef.current
-  if (!canvas) return null
+  if (!canvas) {
+    console.error('prepareReceiverForCanvas | canvas is null')
+    return null
+  }
   const worker = getOrCreateWorkerAndCanvas(canvas)
   if (!canvasAudioNodeMap.has(canvas)) {
     const audioNode = await setupAudioPlayback(new AudioContext({ sampleRate: 48000 }))

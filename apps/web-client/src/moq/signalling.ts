@@ -45,7 +45,8 @@ export async function setupSignalling(
   const signalFTN = FullTrackName.tryNew(demoNs, SIGNALLING_TRACK_NAME)
 
   // 1. Register the shared signalling track locally
-  let objectId = 0
+  let lastGroupId = 0n
+  let objectId = 0n
   let signalController: ReadableStreamDefaultController<MoqtObject> | null = null
   const signalStream = new ReadableStream<MoqtObject>({
     start(controller) {
@@ -61,18 +62,27 @@ export async function setupSignalling(
     forwardingPreference: ObjectForwardingPreference.Subgroup,
     trackSource: { live: textSource },
     publisherPriority: 1,
+    trackAlias: 1000n, // need to use the same track alias
   })
 
   function sendSignal(text: string) {
     if (!signalController) return
+    console.log('sendSignal', text)
+    let groupId = BigInt(Date.now())
+    if (lastGroupId === groupId) {
+      objectId++
+    } else {
+      objectId = 0n
+      lastGroupId = groupId
+    }
     const payload = new TextEncoder().encode(text)
     signalController.enqueue(
       MoqtObject.newWithPayload(
         signalFTN,
-        new Location(0n, BigInt(objectId++)),
+        new Location(groupId, objectId),
         1,
         ObjectForwardingPreference.Subgroup,
-        1,
+        0,
         null,
         payload,
       ),
@@ -117,19 +127,22 @@ export async function setupSignalling(
         for (;;) {
           const { done, value } = await reader.read()
           if (done || !value) break
+          console.log('new stream', userId)
           if (!value.payload) continue
           const text = new TextDecoder().decode(value.payload)
           const match = text.match(/^user_([12]):(.+)$/)
           if (!match) continue
           const msgUserId = parseInt(match[1]) as 1 | 2
           const signal = match[2]
+
+          console.log('signal received: %s from user: %d', signal, msgUserId)
           if (signal === 'join') {
-            console.log('Join message was received for user %d.', userId)
+            console.log('Join message was received for user %d.', msgUserId)
             if (msgUserId !== userId) {
               callbacks.onPeerJoin(msgUserId)
             }
           } else if (signal === 'welcome') {
-            console.log('Welcome message was received for user %d.', userId)
+            console.log('Welcome message was received for user %d.', msgUserId)
             if (msgUserId === userId) {
               callbacks.onOwnJoinWelcomed()
             }

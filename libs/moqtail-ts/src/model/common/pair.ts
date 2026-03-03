@@ -203,7 +203,7 @@ if (import.meta.vitest) {
 
     it('deserialize not enough bytes', () => {
       const buf = new ByteBuffer()
-      buf.putVI(1) // odd → bytes variant
+      buf.putVI(1) // odd -> bytes variant
       buf.putVI(5) // length = 5
       buf.putBytes(new Uint8Array([0x61, 0x62, 0x63])) // only 3 bytes
       const frozen = buf.freeze()

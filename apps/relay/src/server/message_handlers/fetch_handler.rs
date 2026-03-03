@@ -190,7 +190,7 @@ pub async fn handle(
           fetch_request: fetch,
         };
 
-        let stream_id = build_stream_id(track_read.track_alias, &header_info);
+        let stream_id = build_stream_id(track_read.relay_track_id, &header_info);
 
         let stream_fn = async move |client: Arc<MOQTClient>, stream_id: &StreamId| {
           let stream_result = client
@@ -275,7 +275,7 @@ pub async fn handle(
                     if context.server_config.enable_object_logging {
                       let sending_time = crate::server::utils::passed_time_since_start();
                       let fetch_object = moqtail::model::data::object::Object {
-                        track_alias: track_read.track_alias,
+                        track_alias: track_read.relay_track_id,
                         location: moqtail::model::common::location::Location::new(
                           object.group_id,
                           object.object_id,
@@ -293,7 +293,7 @@ pub async fn handle(
                       track_read
                         .object_logger
                         .log_fetch_object(
-                          track_read.track_alias,
+                          track_read.relay_track_id,
                           context.connection_id,
                           request_id,
                           &fetch_object,

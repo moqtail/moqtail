@@ -18,8 +18,15 @@ use crate::model::common::pair::KeyValuePair;
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
 use crate::model::error::ParseError;
 
-use super::constant::ObjectStatus;
+use super::constant::{ObjectDatagramStatusType, ObjectStatus};
 
+/// Draft-14 Object Datagram Status (no payload, only status).
+///
+/// Type values:
+/// - 0x20: Without Extensions
+/// - 0x21: With Extensions
+///
+/// Object ID is always present in status datagrams.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DatagramStatus {
   pub track_alias: u64,
@@ -65,47 +72,44 @@ impl DatagramStatus {
       object_status,
     }
   }
+
   pub fn serialize(&self) -> Result<Bytes, ParseError> {
     let mut buf = BytesMut::new();
 
-    // Type: 0x02 if no extensions, 0x03 if extensions present
-    buf.put_vi(if self.extension_headers.is_some() {
-      0x03
+    // Draft-14: Type 0x20 if no extensions, 0x21 if extensions present
+    let dtype = if self.extension_headers.is_some() {
+      ObjectDatagramStatusType::WithExtensions
     } else {
-      0x02
-    })?;
+      ObjectDatagramStatusType::WithoutExtensions
+    };
 
+    buf.put_vi(u64::from(dtype))?;
     buf.put_vi(self.track_alias)?;
     buf.put_vi(self.group_id)?;
-    buf.put_vi(self.object_id)?;
+    buf.put_vi(self.object_id)?; // Object ID always present in status datagrams
     buf.put_u8(self.publisher_priority);
 
-    let mut payload = BytesMut::new();
-
+    // Write extension headers if present
     if let Some(ext_headers) = &self.extension_headers {
+      let mut payload = BytesMut::new();
       for header in ext_headers {
         payload.extend_from_slice(&header.serialize()?);
       }
+      buf.put_vi(payload.len())?;
+      buf.extend_from_slice(&payload);
     }
 
-    buf.put_vi(payload.len())?;
-    buf.extend_from_slice(&payload);
     buf.put_vi(self.object_status)?;
     Ok(buf.freeze())
   }
 
   pub fn deserialize(bytes: &mut Bytes) -> Result<Self, ParseError> {
-    let msg_type = bytes.get_vi()?;
+    let msg_type_raw = bytes.get_vi()?;
+    let msg_type = ObjectDatagramStatusType::try_from(msg_type_raw)?;
 
-    if msg_type != 0x02 && msg_type != 0x03 {
-      return Err(ParseError::InvalidType {
-        context: "ObjectDatagramStatus::deserialize(msg_type)",
-        details: format!("Accepted types: 0x02, 0x03; got {msg_type}"),
-      });
-    }
     let track_alias = bytes.get_vi()?;
     let group_id = bytes.get_vi()?;
-    let object_id = bytes.get_vi()?;
+    let object_id = bytes.get_vi()?; // Object ID always present in status datagrams
 
     if bytes.remaining() < 1 {
       return Err(ParseError::NotEnoughBytes {
@@ -117,13 +121,13 @@ impl DatagramStatus {
 
     let publisher_priority = bytes.get_u8();
 
-    let extension_headers = if msg_type == 0x03 {
+    let extension_headers = if msg_type.has_extensions() {
       let ext_len = bytes.get_vi()?;
 
       if ext_len == 0 {
         return Err(ParseError::ProtocolViolation {
           context: "ObjectDatagramStatus::deserialize(ext_len)",
-          details: "Extension headers present (Type=0x03) but length is 0".to_string(),
+          details: "Extension headers present (Type=0x21) but length is 0".to_string(),
         });
       }
       let ext_len: usize =
@@ -172,36 +176,45 @@ impl DatagramStatus {
     })
   }
 }
+
 #[cfg(test)]
 mod tests {
-
   use super::*;
   use bytes::Buf;
 
   #[test]
-  fn test_roundtrip() {
-    let track_alias = 144;
-    let group_id: u64 = 9;
-    let object_id: u64 = 10;
-    let publisher_priority: u8 = 255;
-    let extension_headers = Some(vec![
-      KeyValuePair::try_new_varint(0, 10).unwrap(),
-      KeyValuePair::try_new_bytes(1, Bytes::from_static(b"wololoo")).unwrap(),
-    ]);
-    let object_status = ObjectStatus::Normal;
+  fn test_roundtrip_with_extensions() {
+    let datagram_status = DatagramStatus::with_extensions(
+      144,
+      9,
+      10,
+      255,
+      vec![
+        KeyValuePair::try_new_varint(0, 10).unwrap(),
+        KeyValuePair::try_new_bytes(1, Bytes::from_static(b"wololoo")).unwrap(),
+      ],
+      ObjectStatus::Normal,
+    );
 
-    let datagram_object = DatagramStatus {
-      track_alias,
-      group_id,
-      object_id,
-      publisher_priority,
-      extension_headers,
-      object_status,
-    };
+    let mut buf = datagram_status.serialize().unwrap();
+    // Type should be 0x21 (with extensions)
+    assert_eq!(buf[0], 0x21);
 
-    let mut buf = datagram_object.serialize().unwrap();
     let deserialized = DatagramStatus::deserialize(&mut buf).unwrap();
-    assert_eq!(deserialized, datagram_object);
+    assert_eq!(deserialized, datagram_status);
+    assert!(!buf.has_remaining());
+  }
+
+  #[test]
+  fn test_roundtrip_without_extensions() {
+    let datagram_status = DatagramStatus::new(144, 9, 10, 128, ObjectStatus::EndOfGroup);
+
+    let mut buf = datagram_status.serialize().unwrap();
+    // Type should be 0x20 (without extensions)
+    assert_eq!(buf[0], 0x20);
+
+    let deserialized = DatagramStatus::deserialize(&mut buf).unwrap();
+    assert_eq!(deserialized, datagram_status);
     assert!(!buf.has_remaining());
   }
 }

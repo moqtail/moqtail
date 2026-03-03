@@ -1,6 +1,6 @@
 {
   "name": "moqtail",
-  "version": "0.7.0",
+  "version": "0.8.1",
   "description": "Media Over QUIC Transport client implementation",
   "type": "module",
   "license": "Apache-2.0",
@@ -75,7 +75,7 @@
     }
   },
   "scripts": {
-    "build": "tsup && api-extractor run",
+    "build": "tsc --noEmit && tsup && api-extractor run",
     "test": "vitest",
     "format": "prettier --check .",
     "test:run": "vitest run",

@@ -206,13 +206,16 @@ export class RecvDatagramStream {
 
         try {
           // Try to parse as datagram (peek at first byte to determine type)
+          // Draft-14 type values:
+          // - 0x00-0x07: OBJECT_DATAGRAM (payload datagrams)
+          // - 0x20-0x21: OBJECT_DATAGRAM_STATUS (status datagrams)
           const firstByte = datagramBytes[0]
-          const isStatus = firstByte === 0x02 || firstByte === 0x03
+          const isStatus = firstByte === 0x20 || firstByte === 0x21
 
           let moqtObject: MoqtObject
 
           if (isStatus) {
-            // DatagramStatus (0x02 or 0x03)
+            // DatagramStatus (0x20 or 0x21)
             const datagramStatus = DatagramStatus.deserialize(
               new (await import('../model/common/byte_buffer')).FrozenByteBuffer(datagramBytes),
             )
@@ -221,7 +224,7 @@ export class RecvDatagramStream {
             const fullTrackName = this.#trackAliasResolver(datagramStatus.trackAlias)
             moqtObject = MoqtObject.fromDatagramStatus(datagramStatus, fullTrackName)
           } else {
-            // DatagramObject (0x00 or 0x01)
+            // DatagramObject (0x00-0x07)
             const datagramObject = DatagramObject.deserialize(
               new (await import('../model/common/byte_buffer')).FrozenByteBuffer(datagramBytes),
             )

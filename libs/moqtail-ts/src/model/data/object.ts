@@ -139,6 +139,8 @@ export class MoqtObject {
   }
 
   static fromDatagramObject(datagramObject: DatagramObject, fullTrackName: FullTrackName): MoqtObject {
+    // Draft-14: endOfGroup flag from datagram could indicate EndOfGroup status
+    // when combined with Normal status (payload present)
     return new MoqtObject(
       fullTrackName,
       new Location(datagramObject.groupId, datagramObject.objectId),
@@ -149,6 +151,15 @@ export class MoqtObject {
       datagramObject.extensionHeaders,
       datagramObject.payload,
     )
+  }
+
+  /**
+   * Returns the endOfGroup flag from the source DatagramObject.
+   * This is separate from ObjectStatus.EndOfGroup - the flag indicates
+   * this is the last object in the group even with Normal status.
+   */
+  static isDatagramEndOfGroup(datagramObject: DatagramObject): boolean {
+    return datagramObject.endOfGroup
   }
 
   static fromDatagramStatus(datagramStatus: DatagramStatus, fullTrackName: FullTrackName): MoqtObject {
@@ -195,7 +206,12 @@ export class MoqtObject {
       subgroupObject.payload,
     )
   }
-  tryIntoDatagramObject(trackAlias: bigint | number): DatagramObject {
+  /**
+   * Convert to DatagramObject for wire transmission.
+   * @param trackAlias - The track alias to use
+   * @param endOfGroup - Draft-14: Whether this is the last object in the group
+   */
+  tryIntoDatagramObject(trackAlias: bigint | number, endOfGroup: boolean = false): DatagramObject {
     if (this.objectForwardingPreference !== ObjectForwardingPreference.Datagram) {
       throw new CastingError(
         'MoqtObject.tryIntoDatagramObject',
@@ -212,24 +228,15 @@ export class MoqtObject {
     }
 
     const alias = BigInt(trackAlias)
-    if (this.extensionHeaders && this.extensionHeaders.length > 0) {
-      return DatagramObject.newWithExtensions(
-        alias,
-        this.groupId,
-        this.objectId,
-        this.publisherPriority,
-        this.extensionHeaders,
-        this.payload!,
-      )
-    } else {
-      return DatagramObject.newWithoutExtensions(
-        alias,
-        this.groupId,
-        this.objectId,
-        this.publisherPriority,
-        this.payload!,
-      )
-    }
+    return DatagramObject.new(
+      alias,
+      this.groupId,
+      this.objectId,
+      this.publisherPriority,
+      this.extensionHeaders,
+      this.payload,
+      endOfGroup,
+    )
   }
   tryIntoDatagramStatus(trackAlias: bigint | number): DatagramStatus {
     if (this.objectForwardingPreference !== ObjectForwardingPreference.Datagram) {
@@ -371,20 +378,34 @@ if (import.meta.vitest) {
       expect(obj.hasStatus()).toBe(true)
     })
 
-    test('convert from/to DatagramObject', () => {
+    test('convert from/to DatagramObject (Draft-14)', () => {
       const payload = new TextEncoder().encode('datagram payload')
       const fullTrackName = FullTrackName.tryNew('test/demo', 'track3')
-      const datagramObj = DatagramObject.newWithoutExtensions(42n, 100n, 10n, 128, payload)
+      const datagramObj = DatagramObject.new(42n, 100n, 10n, 128, null, payload, false)
 
       const moqtObj = MoqtObject.fromDatagramObject(datagramObj, fullTrackName)
       expect(moqtObj.objectForwardingPreference).toBe(ObjectForwardingPreference.Datagram)
       expect(moqtObj.subgroupId).toBe(null)
+      expect(MoqtObject.isDatagramEndOfGroup(datagramObj)).toBe(false)
 
-      const backToDatagram = moqtObj.tryIntoDatagramObject(42n)
+      const backToDatagram = moqtObj.tryIntoDatagramObject(42n, false)
       expect(backToDatagram.trackAlias).toBe(42n)
       expect(backToDatagram.groupId).toBe(100n)
       expect(backToDatagram.objectId).toBe(10n)
+      expect(backToDatagram.endOfGroup).toBe(false)
       expect(backToDatagram.payload).toEqual(payload)
+    })
+
+    test('convert from/to DatagramObject with endOfGroup (Draft-14)', () => {
+      const payload = new TextEncoder().encode('last in group')
+      const fullTrackName = FullTrackName.tryNew('test/demo', 'track3')
+      const datagramObj = DatagramObject.new(42n, 100n, 10n, 128, null, payload, true)
+
+      expect(MoqtObject.isDatagramEndOfGroup(datagramObj)).toBe(true)
+
+      const moqtObj = MoqtObject.fromDatagramObject(datagramObj, fullTrackName)
+      const backToDatagram = moqtObj.tryIntoDatagramObject(42n, true)
+      expect(backToDatagram.endOfGroup).toBe(true)
     })
 
     test('convert from/to FetchObject', () => {

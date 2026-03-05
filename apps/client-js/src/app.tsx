@@ -513,6 +513,18 @@ export function App() {
                   <span className="font-medium text-neutral-300">Namespace</span> in the sidebar to
                   point to your own stream.
                 </p>
+                <p className="text-xs leading-relaxed text-neutral-400">
+                  Players with more advanced features are available in{' '}
+                  <a
+                    href={`https://moqtail.dev/demo`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-blue-400 underline decoration-blue-400/30 underline-offset-2 transition-colors hover:text-blue-300"
+                  >
+                    MOQtail demos
+                  </a>
+                  .
+                </p>
                 <div className="border-t border-white/6 pt-3">
                   <a
                     href={`https://github.com/${GITHUB_REPO}/issues`}

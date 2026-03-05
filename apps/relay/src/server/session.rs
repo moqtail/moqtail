@@ -25,6 +25,7 @@ use moqtail::transport::{
 };
 use std::sync::{Arc, atomic::AtomicU64};
 use tokio::sync::RwLock;
+use tokio::sync::mpsc;
 use tracing::{Instrument, debug, error, info, info_span, warn};
 use wtransport::{RecvStream, SendStream, endpoint::IncomingSession, error::ConnectionError};
 
@@ -33,7 +34,7 @@ use crate::server::{Server, stream_id::StreamId};
 use super::{
   client::MOQTClient,
   message_handlers,
-  session_context::{RequestMaps, SessionContext},
+  session_context::{RequestMaps, SessionContext, UpstreamFetchEvent},
   track::Track,
   utils,
 };
@@ -56,6 +57,7 @@ impl Session {
     let relay_fetch_requests = server.relay_fetch_requests.clone();
     let relay_subscribe_requests = server.relay_subscribe_requests.clone();
     let relay_track_status_requests = server.relay_track_status_requests.clone();
+    let upstream_fetch_senders = server.upstream_fetch_senders.clone();
     let relay_next_request_id = server.relay_next_request_id.clone();
     let connection = session_request.accept().await?;
 
@@ -63,6 +65,7 @@ impl Session {
       relay_fetch_requests,
       relay_subscribe_requests,
       relay_track_status_requests,
+      upstream_fetch_senders,
     };
 
     let context = Arc::new(SessionContext::new(

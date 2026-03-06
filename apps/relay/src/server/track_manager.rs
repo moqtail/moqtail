@@ -15,12 +15,13 @@
 use super::track::Track;
 use crate::server::client::MOQTClient;
 use moqtail::model::common::tuple::Tuple;
+use moqtail::model::control::publish::Publish;
 use moqtail::model::data::full_track_name::FullTrackName;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::RwLock;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 #[derive(Clone)]
 pub struct TrackManager {
@@ -30,6 +31,7 @@ pub struct TrackManager {
   pub track_aliases: Arc<RwLock<HashMap<(usize, u64), FullTrackName>>>,
   pub namespace_subscribers: Arc<RwLock<HashMap<Tuple, Vec<Arc<MOQTClient>>>>>,
   pub announcements: Arc<RwLock<HashMap<Tuple, Arc<MOQTClient>>>>,
+  pub publishes: Arc<RwLock<HashMap<FullTrackName, HashMap<usize, Publish>>>>,
   /// Counter for generating stable relay_track_id values.
   next_relay_track_id: Arc<AtomicU64>,
 }
@@ -41,6 +43,7 @@ impl TrackManager {
       track_aliases: Arc::new(RwLock::new(HashMap::new())),
       namespace_subscribers: Arc::new(RwLock::new(HashMap::new())),
       announcements: Arc::new(RwLock::new(HashMap::new())),
+      publishes: Arc::new(RwLock::new(HashMap::new())),
       next_relay_track_id: Arc::new(AtomicU64::new(0)),
     }
   }
@@ -86,23 +89,40 @@ impl TrackManager {
     None
   }
 
-  #[allow(dead_code)]
-  pub async fn remove_track_by_alias(&self, connection_id: usize, track_alias: u64) {
-    let mut track_aliases = self.track_aliases.write().await;
-    if let Some(full_track_name) = track_aliases.remove(&(connection_id, track_alias)) {
-      let mut tracks = self.tracks.write().await;
-      tracks.remove(&full_track_name);
-      info!(
-        "Removed track with alias {}@{}: {:?}",
-        track_alias, connection_id, full_track_name
-      );
-    }
-  }
-
   pub async fn remove_track(&self, full_track_name: &FullTrackName) {
     let mut tracks = self.tracks.write().await;
-    if tracks.remove(full_track_name).is_some() {
-      info!("Removed track by name: {:?}", full_track_name);
+    if let Some(track_guard) = tracks.remove(full_track_name) {
+      info!(
+        "remove_track | removed track by name: {:?}",
+        full_track_name
+      );
+      let track = track_guard.read().await;
+      for (connection_id, track_alias) in track.publisher_aliases.read().await.iter() {
+        // remove the alias mapping
+        let mut track_aliases = self.track_aliases.write().await;
+        if track_aliases
+          .remove(&(*connection_id, *track_alias))
+          .is_none()
+        {
+          warn!(
+            "remove_track | track alias could not removed for connection id: {} and track_alias: {}",
+            connection_id, track_alias
+          );
+        }
+      }
+    } else {
+      warn!(
+        "remove_track | track not found to remove: {:?}",
+        full_track_name
+      );
+    }
+
+    let mut publishes = self.publishes.write().await;
+    if publishes.remove(full_track_name).is_none() {
+      warn!(
+        "remove_track | publish could not removed for {:?}",
+        full_track_name
+      );
     }
   }
 
@@ -125,14 +145,24 @@ impl TrackManager {
   /// Used when a publisher sends PublishDone or when only one of several publishers disconnects.
   pub async fn remove_publisher_alias(&self, connection_id: usize, track_alias: u64) {
     let mut track_aliases = self.track_aliases.write().await;
-    if track_aliases
-      .remove(&(connection_id, track_alias))
-      .is_some()
-    {
+    let track_name_opt = track_aliases.remove(&(connection_id, track_alias));
+    if let Some(track_name) = track_name_opt {
       info!(
-        "Removed publisher alias {}@{} from track_aliases",
-        track_alias, connection_id
+        "Removed publisher alias {}@{} from track_aliases, track: {}",
+        track_alias, connection_id, track_name
       );
+
+      // remove the track alias from the publishes
+      let mut publishes = self.publishes.write().await;
+      if let Some(map) = publishes.get_mut(&track_name) {
+        map.remove(&connection_id);
+      }
+
+      // remove the track alias from the track as well
+      if let Some(track_guard) = self.get_track(&track_name).await {
+        let track = track_guard.read().await;
+        track.remove_publisher(connection_id).await;
+      }
     }
   }
 
@@ -258,13 +288,56 @@ impl TrackManager {
   pub async fn get_announcements_by_prefix(&self, prefix: &Tuple) -> Vec<Tuple> {
     let announcements = self.announcements.read().await;
     let mut matches = Vec::new();
-
     for (ns, _) in announcements.iter() {
       if ns.starts_with(prefix) {
         matches.push(ns.clone());
       }
     }
+    matches
+  }
 
+  pub async fn add_publish_message(
+    &self,
+    full_track_name: FullTrackName,
+    connection_id: usize,
+    publish_msg: Publish,
+  ) {
+    let mut publishes = self.publishes.write().await;
+    if let Some(map) = publishes.get_mut(&full_track_name) {
+      map.insert(connection_id, publish_msg);
+    } else {
+      let mut map: HashMap<usize, Publish> = HashMap::new();
+      map.insert(connection_id, publish_msg);
+      publishes.insert(full_track_name, map);
+    }
+  }
+
+  pub async fn get_tracks_and_publishes_by_namespace_prefix(
+    &self,
+    prefix: &Tuple,
+  ) -> Vec<(FullTrackName, Arc<RwLock<Track>>, Option<Publish>)> {
+    let tracks = self.tracks.read().await;
+    let publishes = self.publishes.read().await;
+    let mut matches = Vec::new();
+
+    for (full_track_name, track_arc) in tracks.iter() {
+      let is_match = full_track_name.namespace.fields.starts_with(&prefix.fields);
+      debug!(
+        "checking track: {} against prefix.fields: {:?} is_match: {}",
+        full_track_name, prefix.fields, is_match
+      );
+
+      if is_match && let Some(pub_msg_map) = publishes.get(full_track_name) {
+        // return the first publish message
+        matches.push((
+          full_track_name.clone(),
+          track_arc.clone(),
+          pub_msg_map.values().nth(0).cloned(),
+        ));
+      } else if is_match {
+        warn!("No publish for track {}", full_track_name);
+      }
+    }
     matches
   }
 
@@ -282,6 +355,51 @@ impl TrackManager {
         && namespace_prefixes_overlap(new_prefix, existing_prefix)
       {
         return Some(existing_prefix.clone());
+      }
+    }
+    None
+  }
+
+  // Retrieve the original Publish message used to create the track
+  pub async fn get_publish_message(
+    &self,
+    full_track_name: &FullTrackName,
+    connection_id: usize,
+  ) -> Option<Publish> {
+    let publishes = self.publishes.read().await;
+    if let Some(map) = publishes.get(full_track_name) {
+      let publish_opt = map.get(&connection_id);
+      return publish_opt.cloned();
+    }
+    None
+  }
+
+  pub async fn get_track_name_by_publisher(
+    &self,
+    connection_id: usize,
+    request_id: u64,
+  ) -> Option<FullTrackName> {
+    let publishes = self.publishes.read().await;
+    let tracks = self.tracks.read().await;
+
+    for (track_name, publishes) in publishes.iter() {
+      // 1. Find the track that was published with this specific Request ID
+      if let Some(publish_msg) = publishes.get(&connection_id)
+        && publish_msg.request_id == request_id
+      {
+        // 2. Verify that the client sending PublishDone is actually the owner!
+        // TODO: do we really need this check? Look at this later.
+        if let Some(track_arc) = tracks.get(track_name) {
+          let track = track_arc.read().await;
+          if track
+            .publisher_aliases
+            .read()
+            .await
+            .contains_key(&connection_id)
+          {
+            return Some(track_name.clone());
+          }
+        }
       }
     }
     None

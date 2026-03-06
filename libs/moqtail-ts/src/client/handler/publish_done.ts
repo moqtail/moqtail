@@ -18,12 +18,21 @@ import { ProtocolViolationError } from '@/model/error'
 import { PublishDone } from '../../model/control'
 import { ControlMessageHandler } from './handler'
 import { SubscribeRequest } from '../request/subscribe'
+import { createLogger } from '../../util/logger'
+
+const logger = createLogger('handler/publish_done')
 
 export const handlerPublishDone: ControlMessageHandler<PublishDone> = async (client, msg) => {
+  logger.log('requestId', msg.requestId)
+  if (client.onPeerPublishDone) {
+    client.onPeerPublishDone(msg)
+  }
+  //TODO: Check for all kinds of subscriptions, not jus tthe ones initiated with subscribe messages
   const request = client.requests.get(msg.requestId)
   if (request instanceof SubscribeRequest) {
     request.expectedStreams = msg.streamCount
   } else {
-    throw new ProtocolViolationError('handlerPublishDone', 'No publish request was found with the given request id')
+    // TODO: Throw this error when the check is fixed. For now it crashes valid cases
+    // throw new ProtocolViolationError('handlerPublishDone', 'No publish request was found with the given request id')
   }
 }

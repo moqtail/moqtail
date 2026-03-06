@@ -20,8 +20,12 @@ import { ControlMessageHandler } from './handler'
 import { SubscribePublication } from '../publication/subscribe'
 import { FetchPublication } from '../publication/fetch'
 import { PublishPublication } from '../publication'
+import { createLogger } from '../../util/logger'
+
+const logger = createLogger('handler/fetch')
 
 export const handlerFetch: ControlMessageHandler<Fetch> = async (client, msg) => {
+  logger.log('requestId, type', msg.requestId, msg.typeAndProps.type)
   // TODO: Use fetch parameters and handle authorization
   let fullTrackName: FullTrackName | undefined
   let joiningRequest: SubscribePublication | FetchPublication | PublishPublication | undefined

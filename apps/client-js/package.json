@@ -1,0 +1,26 @@
+{
+  "name": "client-js",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "format": "prettier --check ."
+  },
+  "dependencies": {
+    "@tailwindcss/vite": "^4.2.1",
+    "clsx": "^2.1.1",
+    "preact": "^10.27.2",
+    "tailwind-merge": "^3.5.0",
+    "tailwindcss": "^4.2.1"
+  },
+  "devDependencies": {
+    "@preact/preset-vite": "^2.10.2",
+    "@types/node": "^24.10.1",
+    "prettier-plugin-tailwindcss": "^0.7.2",
+    "typescript": "~5.9.3",
+    "vite": "^7.3.1"
+  }
+}

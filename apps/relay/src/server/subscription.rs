@@ -622,10 +622,11 @@ impl Subscription {
     );
     match event {
       TrackEvent::SubgroupObject {
-        object,
+        mut object,
         stream_id,
         header_info,
       } => {
+        object.track_alias = self.relay_track_id;
         // update last received object location
         {
           let mut state = self.subscription_state.write().await;
@@ -819,7 +820,11 @@ impl Subscription {
       TrackEvent::DatagramObject { object } => {
         // Handle datagram object - serialize full MOQT datagram format
         // Must include type, track_alias, group_id, object_id, publisher_priority, and payload
-        match object.serialize() {
+
+        let mut norm_object = object.clone();
+        norm_object.track_alias = self.relay_track_id;
+
+        match norm_object.serialize() {
           Ok(serialized_bytes) => {
             if let Err(e) = self
               .subscriber

@@ -16,7 +16,11 @@
 
 import { RequestsBlocked } from '../../model/control'
 import { ControlMessageHandler } from './handler'
+import { createLogger } from '../../util/logger'
 
-export const handlerRequestsBlocked: ControlMessageHandler<RequestsBlocked> = async (_client, _msg) => {
+const logger = createLogger('handler/requests_blocked')
+
+export const handlerRequestsBlocked: ControlMessageHandler<RequestsBlocked> = async (_client, msg) => {
+  logger.debug('not implemented', msg)
   // TODO: Implement RequestsBlocked handler logic
 }

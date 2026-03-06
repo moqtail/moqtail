@@ -42,6 +42,7 @@ import {
   Switch,
   SubscribeOk,
   SUPPORTED_VERSIONS,
+  PublishDone,
 } from '../model/control'
 import {
   DatagramObject,
@@ -61,6 +62,7 @@ import {
   InternalError,
   MOQtailError,
   ProtocolViolationError,
+  ReasonPhrase,
   SetupParameters,
   Tuple,
   VersionSpecificParameters,
@@ -86,6 +88,9 @@ import {
   SwitchOptions,
 } from './types'
 import { SendDatagramStream } from './datagram_stream'
+import { createLogger, LogLevel, setLogLevel, setLogEnabledModules } from '../util/logger'
+
+const logger = createLogger('MOQtailClient')
 
 /**
  * @public
@@ -282,6 +287,9 @@ export class MOQtailClient {
   /** Fired when an inbound PUBLISH control message is received. */
   onPeerPublish?: (msg: Publish, stream: ReadableStream<MoqtObject>) => void
 
+  /** Fired when an inbound PUBLISH_DONE control message is received. */
+  onPeerPublishDone?: (msg: PublishDone) => void
+
   /** Fired when an inbound SUBSCRIBE_NAMESPACE control message is received. */
   onPeerSubscribeNamespace?: (msg: SubscribeNamespace) => void
 
@@ -340,6 +348,22 @@ export class MOQtailClient {
    */
   get isDatagramsEnabled(): boolean {
     return this.#isReceivingDatagrams
+  }
+
+  /**
+   * Sets the global log level for all moqtail-ts loggers.
+   * @param level - The minimum {@link LogLevel} to output. Use `LogLevel.NONE` to silence all logs.
+   */
+  static setLogLevel(level: LogLevel): void {
+    setLogLevel(level)
+  }
+
+  /**
+   * Restricts log output to the specified module names. Pass `null` to allow all modules.
+   * @param modules - Array of module name strings, or `null` to enable all modules.
+   */
+  static setLogEnabledModules(modules: string[] | null): void {
+    setLogEnabledModules(modules)
   }
 
   /**
@@ -418,7 +442,7 @@ export class MOQtailClient {
       transportOptions.protocols.push(...SUPPORTED_VERSIONS)
     }
 
-    console.log('transportOptions', transportOptions)
+    logger.log('transportOptions', transportOptions)
 
     client.webTransport = new WebTransport(url, transportOptions)
 
@@ -480,18 +504,18 @@ export class MOQtailClient {
     this.#ensureActive()
 
     if (this.#isReceivingDatagrams) {
-      console.warn('[MOQtailClient] Datagrams already started')
+      logger.warn('Datagrams already started')
       return
     }
 
-    console.log('[MOQtailClient] Starting datagram support...')
+    logger.log('Starting datagram support...')
     this.#datagramReader = this.webTransport.datagrams.readable.getReader()
     this.#datagramWriter = this.webTransport.datagrams.writable.getWriter()
     this.#isReceivingDatagrams = true
 
     // Start background datagram reception
     this.#acceptIncomingDatagrams()
-    console.log('[MOQtailClient] Datagram support started')
+    logger.log('Datagram support started')
   }
 
   /**
@@ -501,7 +525,7 @@ export class MOQtailClient {
   async stopDatagrams(): Promise<void> {
     if (!this.#isReceivingDatagrams) return
 
-    console.log('[MOQtailClient] Stopping datagram support...')
+    logger.log('Stopping datagram support...')
     this.#isReceivingDatagrams = false
     this.#datagramTrackHandlers.clear()
 
@@ -543,11 +567,11 @@ export class MOQtailClient {
    */
   subscribeToTrackDatagrams(trackAlias: bigint, handler: (obj: MoqtObject) => void): () => void {
     const key = trackAlias.toString()
-    console.log(`[MOQtailClient] Registering datagram handler for trackAlias=${trackAlias}`)
+    logger.log(`Registering datagram handler for trackAlias=${trackAlias}`)
     this.#datagramTrackHandlers.set(key, handler)
 
     return () => {
-      console.log(`[MOQtailClient] Unregistering datagram handler for trackAlias=${trackAlias}`)
+      logger.log(`Unregistering datagram handler for trackAlias=${trackAlias}`)
       this.#datagramTrackHandlers.delete(key)
     }
   }
@@ -584,7 +608,7 @@ export class MOQtailClient {
       )
     }
 
-    console.log(`[MOQtailClient] Creating datagram sender for trackAlias=${trackAlias}`)
+    logger.log(`Creating datagram sender for trackAlias=${trackAlias}`)
     return SendDatagramStream.fromWriter(this.#datagramWriter, trackAlias, this.onDatagramSent)
   }
 
@@ -631,14 +655,14 @@ export class MOQtailClient {
    * Background loop that receives and parses incoming datagrams.
    */
   async #acceptIncomingDatagrams(): Promise<void> {
-    console.log('[MOQtailClient] Starting datagram reception loop...')
+    logger.log('Starting datagram reception loop...')
 
     try {
       while (this.#isReceivingDatagrams && this.#datagramReader) {
         const { done, value: datagramBytes } = await this.#datagramReader.read()
 
         if (done) {
-          console.log('[MOQtailClient] Datagram reader done, stopping reception')
+          logger.log('Datagram reader done, stopping reception')
           this.#isReceivingDatagrams = false
           if (this.#receivedDatagramObjectController) {
             try {
@@ -697,7 +721,7 @@ export class MOQtailClient {
             try {
               handler(moqtObject)
             } catch (handlerError) {
-              console.warn('[MOQtailClient] Datagram track handler error:', handlerError)
+              logger.warn('Datagram track handler error:', handlerError)
             }
           }
 
@@ -711,12 +735,12 @@ export class MOQtailClient {
           }
         } catch (error) {
           // Log but don't break - individual datagrams may be corrupt/unknown
-          console.warn('[MOQtailClient] Failed to parse datagram:', error)
+          logger.warn('Failed to parse datagram:', error)
           continue
         }
       }
     } catch (error) {
-      console.error('[MOQtailClient] Datagram reception error:', error)
+      logger.error('Datagram reception error:', error)
       if (this.#receivedDatagramObjectController) {
         try {
           this.#receivedDatagramObjectController.error(error)
@@ -776,7 +800,7 @@ export class MOQtailClient {
    * ```
    */
   async disconnect(reason?: unknown) {
-    console.log('disconnect', reason)
+    logger.log('disconnect', reason)
     if (this.#isDestroyed) return
     this.#isDestroyed = true
 
@@ -1310,8 +1334,8 @@ export class MOQtailClient {
       let joiningRequest: MOQtailRequest | undefined
       // Generate unique requestId at the beginning to ensure uniqueness
       const requestId = this.#nextClientRequestId
-      console.log(
-        'MOQtailClient.fetch: generated requestId:',
+      logger.log(
+        'fetch: generated requestId:',
         requestId,
         'for fetch type:',
         typeAndProps.type,
@@ -1361,21 +1385,16 @@ export class MOQtailClient {
           break
       }
       const request = new FetchRequest(msg)
-      console.log(
-        'MOQtailClient.fetch: storing FetchRequest with requestId:',
-        msg.requestId,
-        'for fetch type:',
-        typeAndProps.type,
-      )
-      console.log('MOQtailClient.fetch: full fetch message:', {
+      logger.log('fetch: storing FetchRequest with requestId:', msg.requestId, 'for fetch type:', typeAndProps.type)
+      logger.log('fetch: full fetch message:', {
         requestId: msg.requestId,
         fetchType: typeAndProps.type,
         joiningRequestId: typeAndProps.type !== FetchType.StandAlone ? typeAndProps.props.joiningRequestId : 'N/A',
       })
       this.requests.set(msg.requestId, request)
-      console.log('MOQtailClient.fetch: about to send fetch message to server')
+      logger.log('fetch: about to send fetch message to server')
       await this.controlStream.send(msg)
-      console.log('MOQtailClient.fetch: fetch message sent successfully, waiting for response')
+      logger.log('fetch: fetch message sent successfully, waiting for response')
       const response = await request
       if (response instanceof FetchError) {
         this.requests.delete(msg.requestId)
@@ -1495,6 +1514,32 @@ export class MOQtailClient {
     } catch (error) {
       await this.disconnect(
         new InternalError('MOQtailClient.publish', error instanceof Error ? error.message : String(error)),
+      )
+      throw error
+    }
+  }
+
+  /**
+   * Signals the end of a published track to the peer/relay.
+   * * @param publishRequestId - The original requestId used when `publish()` was called.
+   */
+  async publishDone(publishRequestId: bigint | number, statusCode: number = 0, reasonPhrase: string = 'Track Ended') {
+    this.#ensureActive()
+    try {
+      if (typeof publishRequestId === 'number') publishRequestId = BigInt(publishRequestId)
+
+      // Create the PublishDone message. (StreamCount is set to 0n as a default)
+      const msg = new PublishDone(publishRequestId, statusCode, 0n, new ReasonPhrase(reasonPhrase))
+
+      await this.controlStream.send(msg)
+
+      // Clean up local publisher-side state
+      this.requests.delete(publishRequestId)
+      this.requestIdMap.removeMappingByRequestId(publishRequestId)
+      this.subscriptionAliasMap.delete(publishRequestId)
+    } catch (error) {
+      await this.disconnect(
+        new InternalError('MOQtailClient.publishDone', error instanceof Error ? error.message : String(error)),
       )
       throw error
     }
@@ -1702,7 +1747,11 @@ export class MOQtailClient {
       this.requests.set(msg.requestId, request)
       this.controlStream.send(msg)
 
+      logger.log('subscribeNamespace | sent msg', msg, msg.trackNamespacePrefix.toUtf8Path(), msg.requestId)
+
       const response = await request
+
+      logger.log('subscribeNamespace | got response', response)
 
       if (response instanceof SubscribeNamespaceOk) {
         this.subscribedAnnounces.add(msg.trackNamespacePrefix)
@@ -1761,7 +1810,7 @@ export class MOQtailClient {
         }
         this.#handleRecvStreams(stream)
       } catch (error) {
-        console.log('acceptIncomingUniStreams error', error)
+        logger.error('acceptIncomingUniStreams error', error)
         if (this.#isDestroyed) break
       }
     }

@@ -17,6 +17,9 @@
 import { DatagramObject, DatagramStatus } from '../model/data'
 import { MoqtObject, FullTrackName } from '../model/data'
 import { ProtocolViolationError } from '../model/error/error'
+import { createLogger } from '../util/logger'
+
+const logger = createLogger('datagram_stream')
 
 /**
  * Sends MoqtObjects as WebTransport datagrams.
@@ -90,15 +93,13 @@ export class SendDatagramStream {
     if (object.hasStatus()) {
       const datagramStatus = object.tryIntoDatagramStatus(this.#trackAlias)
       serialized = datagramStatus.serialize().toUint8Array()
-      console.log(
-        `[SendDatagramStream] Writing status datagram: trackAlias=${this.#trackAlias}, size=${serialized.byteLength}`,
-      )
+      logger.log(`Writing status datagram: trackAlias=${this.#trackAlias}, size=${serialized.byteLength}`)
       if (this.onDataSent) this.onDataSent(datagramStatus)
     } else if (object.hasPayload()) {
       const datagramObject = object.tryIntoDatagramObject(this.#trackAlias)
       serialized = datagramObject.serialize().toUint8Array()
-      console.log(
-        `[SendDatagramStream] Writing object datagram: trackAlias=${this.#trackAlias}, group=${object.location?.group}, obj=${object.location?.object}, payloadSize=${object.payload?.byteLength}, serializedSize=${serialized.byteLength}`,
+      logger.log(
+        `Writing object datagram: trackAlias=${this.#trackAlias}, group=${object.location?.group}, obj=${object.location?.object}, payloadSize=${object.payload?.byteLength}, serializedSize=${serialized.byteLength}`,
       )
       if (this.onDataSent) this.onDataSent(datagramObject)
     } else {
@@ -107,9 +108,9 @@ export class SendDatagramStream {
 
     try {
       await this.#writer.write(serialized)
-      console.log(`[SendDatagramStream] Successfully wrote ${serialized.byteLength} bytes to WebTransport datagram`)
+      logger.log(`Successfully wrote ${serialized.byteLength} bytes to WebTransport datagram`)
     } catch (err) {
-      console.error(`[SendDatagramStream] ERROR writing datagram:`, err)
+      logger.error(`ERROR writing datagram:`, err)
       throw err
     }
   }
@@ -237,7 +238,7 @@ export class RecvDatagramStream {
           controller.enqueue(moqtObject)
         } catch (error) {
           // Log but don't break the stream - individual datagrams may be corrupt
-          console.warn('Failed to parse datagram:', error)
+          logger.warn('Failed to parse datagram:', error)
           continue
         }
       }

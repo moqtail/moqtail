@@ -15,6 +15,5 @@
  */
 
 export * from './telemetry'
-export * from './playout_buffer'
-export * from './pull_playout_buffer'
 export * from './clock_normalizer'
+export * from './logger'

@@ -16,8 +16,12 @@
 
 import { PublishNamespaceDone } from '../../model/control'
 import { ControlMessageHandler } from './handler'
+import { createLogger } from '../../util/logger'
+
+const logger = createLogger('handler/publish_namespace_done')
 
 export const handlerPublishNamespaceDone: ControlMessageHandler<PublishNamespaceDone> = async (client, msg) => {
+  logger.log('namespace', msg.trackNamespace.toUtf8Path())
   if (client.onNamespaceDone) {
     client.onNamespaceDone(msg)
   }

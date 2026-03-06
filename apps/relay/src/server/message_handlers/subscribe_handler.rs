@@ -405,13 +405,17 @@ async fn handle_unsubscribe_message(
   let full_track_name = request.original_subscribe_request.get_full_track_name();
 
   // remove the subscription from the track
-  let track_lock = context
-    .track_manager
-    .get_track(&full_track_name)
-    .await
-    .unwrap();
-  let track = track_lock.write().await;
-  track.remove_subscription(context.connection_id).await;
+  let track_option = context.track_manager.get_track(&full_track_name).await;
+
+  if let Some(track_lock) = track_option {
+    let track = track_lock.write().await;
+    track.remove_subscription(context.connection_id).await;
+  } else {
+    tracing::warn!(
+      "Ignored Unsubscribe: Track {:?} already removed.",
+      full_track_name
+    );
+  }
 
   // remove the subscription from the client
   client

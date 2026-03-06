@@ -18,8 +18,12 @@ import { ProtocolViolationError } from '@/model/error'
 import { SubscribeNamespaceError } from '../../model/control'
 import { SubscribeNamespaceRequest } from '../request/subscribe_namespace'
 import { ControlMessageHandler } from './handler'
+import { createLogger } from '../../util/logger'
+
+const logger = createLogger('handler/subscribe_namespace_error')
 
 export const handlerSubscribeNamespaceError: ControlMessageHandler<SubscribeNamespaceError> = async (client, msg) => {
+  logger.warn('requestId, code, reason', msg.requestId, msg.errorCode, msg.reasonPhrase)
   const request = client.requests.get(msg.requestId)
   if (request instanceof SubscribeNamespaceRequest) {
     request.resolve(msg)

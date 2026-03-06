@@ -18,8 +18,12 @@ import { ProtocolViolationError } from '@/model/error'
 import { PublishNamespaceOk } from '../../model/control'
 import { PublishNamespaceRequest } from '../request/publish_namespace'
 import { ControlMessageHandler } from './handler'
+import { createLogger } from '../../util/logger'
+
+const logger = createLogger('handler/publish_namespace_ok')
 
 export const handlerPublishNamespaceOk: ControlMessageHandler<PublishNamespaceOk> = async (client, msg) => {
+  logger.log('requestId', msg.requestId)
   const request = client.requests.get(msg.requestId)
   if (request instanceof PublishNamespaceRequest) {
     request.resolve(msg)

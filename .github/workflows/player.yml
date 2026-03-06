@@ -1,0 +1,57 @@
+name: Player
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - apps/client-js/**
+      - libs/moqtail-ts/**
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: 'pages'
+  cancel-in-progress: true
+
+jobs:
+  player:
+    if: ${{ github.repository_owner == 'moqtail' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          cache: npm
+          node-version: lts/*
+
+      - run: npm clean-install
+      - run: npm install --global corepack@latest
+      - run: corepack npm audit signatures
+
+      - name: Get build information
+        run: |
+          commit=$(git rev-parse --short HEAD)
+          date=$(date +'%Y-%m-%d')
+          echo "VITE_BUILD_COMMIT=$commit" >> $GITHUB_ENV
+          echo "VITE_BUILD_DATE=$date" >> $GITHUB_ENV
+
+      - name: Build MOQtail Library and Player
+        run: npm run build
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: apps/client-js/dist
+
+      - name: Deploy to GitHub Pages
+        uses: actions/deploy-pages@v4

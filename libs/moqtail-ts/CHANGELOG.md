@@ -1,5 +1,17 @@
 # moqtail-ts
 
+## 0.9.0
+
+### Minor Changes
+
+- [#137](https://github.com/moqtail/moqtail/pull/137) [`19f19e7`](https://github.com/moqtail/moqtail/commit/19f19e71a1117d90be5d68c839adeb2b02cbc518) Thanks [@fatih-alperen](https://github.com/fatih-alperen)! - Added publish_done message and corrected publish handler
+
+## 0.8.2
+
+### Patch Changes
+
+- [`9f8dc10`](https://github.com/moqtail/moqtail/commit/9f8dc107cd815067ffc6f571db5b562834b2deaf) Thanks [@acbegen](https://github.com/acbegen)! - add cmsf catalog format and some cleanup
+
 ## 0.8.1
 
 ### Patch Changes

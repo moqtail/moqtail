@@ -438,10 +438,6 @@ impl Session {
       let track = track_lock.read().await;
       track.remove_subscription(context.connection_id).await;
     }
-    debug!(
-      "handle_connection_close | removed client {} from all tracks",
-      context.connection_id
-    );
 
     info!(
       "handle_connection_close | cleanup done ({})",

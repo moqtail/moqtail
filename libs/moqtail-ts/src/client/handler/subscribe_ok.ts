@@ -18,10 +18,14 @@ import { ProtocolViolationError } from '@/model'
 import { SubscribeOk } from '../../model/control'
 import { SubscribeRequest } from '../request/subscribe'
 import { ControlMessageHandler } from './handler'
+import { createLogger } from '../../util/logger'
+
+const logger = createLogger('handler/subscribe_ok')
 
 export const handlerSubscribeOk: ControlMessageHandler<SubscribeOk> = async (client, msg) => {
   const request = client.requests.get(msg.requestId)
-  console.warn('handlerSubscribeOk', 'Received subscribe ok', msg, request)
+  logger.log('Received subscribe ok', msg, request)
+
   if (request instanceof SubscribeRequest) {
     // TODO: use subscribe ok properties e.g expires, group order, largest location)
     request.resolve(msg)

@@ -18,8 +18,12 @@ import { ProtocolViolationError } from '@/model/error'
 import { PublishNamespaceError } from '../../model/control'
 import { ControlMessageHandler } from './handler'
 import { PublishNamespaceRequest } from '../request/publish_namespace'
+import { createLogger } from '../../util/logger'
+
+const logger = createLogger('handler/publish_namespace_error')
 
 export const handlerPublishNamespaceError: ControlMessageHandler<PublishNamespaceError> = async (client, msg) => {
+  logger.warn('requestId, code, reason', msg.requestId, msg.errorCode, msg.reasonPhrase)
   const request = client.requests.get(msg.requestId)
   if (request instanceof PublishNamespaceRequest) {
     request.resolve(msg)

@@ -17,8 +17,12 @@
 import { ProtocolViolationError, Unsubscribe } from '@/model'
 import { ControlMessageHandler } from './handler'
 import { SubscribePublication } from '../publication/subscribe'
+import { createLogger } from '../../util/logger'
+
+const logger = createLogger('handler/unsubscribe')
 
 export const handlerUnsubscribe: ControlMessageHandler<Unsubscribe> = async (client, msg) => {
+  logger.log('requestId', msg.requestId)
   const publication = client.publications.get(msg.requestId)
   if (publication instanceof SubscribePublication) {
     publication.cancel()

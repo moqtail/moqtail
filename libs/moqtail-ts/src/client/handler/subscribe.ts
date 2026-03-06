@@ -18,8 +18,12 @@ import { ReasonPhrase } from '@/model'
 import { Subscribe, SubscribeError, SubscribeErrorCode, SubscribeOk } from '../../model/control'
 import { ControlMessageHandler } from './handler'
 import { SubscribePublication } from '../publication/subscribe'
+import { createLogger } from '../../util/logger'
+
+const logger = createLogger('handler/subscribe')
 
 export const handlerSubscribe: ControlMessageHandler<Subscribe> = async (client, msg) => {
+  logger.log('requestId, trackName', msg.requestId, msg.fullTrackName.toString())
   const track = client.trackSources.get(msg.fullTrackName.toString())
   if (!track) {
     const subscribeError = new SubscribeError(

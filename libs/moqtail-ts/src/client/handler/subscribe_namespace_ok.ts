@@ -14,9 +14,23 @@
  * limitations under the License.
  */
 
+import { ProtocolViolationError } from '@/model/error'
 import { SubscribeNamespaceOk } from '../../model/control'
+import { SubscribeNamespaceRequest } from '../request/subscribe_namespace'
 import { ControlMessageHandler } from './handler'
+import { createLogger } from '../../util/logger'
 
-export const handlerSubscribeNamespaceOk: ControlMessageHandler<SubscribeNamespaceOk> = async (_client, _msg) => {
-  // TODO: Implement SubscribeNamespaceOk handler logic
+const logger = createLogger('handler/subscribe_namespace_ok')
+
+export const handlerSubscribeNamespaceOk: ControlMessageHandler<SubscribeNamespaceOk> = async (client, msg) => {
+  logger.log('requestId', msg.requestId)
+  const request = client.requests.get(msg.requestId)
+  if (request instanceof SubscribeNamespaceRequest) {
+    request.resolve(msg)
+  } else {
+    throw new ProtocolViolationError(
+      'handlerSubscribeNamespaceOk',
+      'No subscribe namespace request found for the given request id',
+    )
+  }
 }

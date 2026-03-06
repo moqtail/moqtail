@@ -491,17 +491,20 @@ console.log(`Average latency: ${telemetry.latency} ms`)
 
 ### Clock Synchronization
 
-The `AkamaiOffset` utility provides clock synchronization with Akamai's time service:
+The `ClockNormalizer` utility provides clock synchronization with a given time service:
 
 ```typescript
-import { AkamaiOffset } from './util/get_akamai_offset'
+import { ClockNormalizer } from './util/clock_normalizer'
 
-// Get clock skew relative to Akamai time servers
-const clockSkew = await AkamaiOffset.getClockSkew()
-console.log(`Local clock is ${clockSkew}ms ahead of network time`)
+// Get clock skew relative to a given time server
+const numSamples = 5 // default is 5
+const timeServerUrl = 'https://time.akamai.com/?ms'
+const offset = await ClockNormalizer.calculateSkew(timeServerUrl, numSamples)
+const clockNormalizer = new ClockNormalizer(timeServerUrl, offset, numSamples)
+console.log(`Local clock is ${offset}ms ahead of network time`)
 
 // Adjust local timestamps for network synchronization
-const networkTime = Date.now() - clockSkew
+const networkTime = Date.now() - offset
 ```
 
 **Features:**

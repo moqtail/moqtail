@@ -18,8 +18,12 @@ import { ProtocolViolationError } from '@/model/error'
 import { FetchCancel } from '../../model/control'
 import { FetchPublication } from '../publication/fetch'
 import { ControlMessageHandler } from './handler'
+import { createLogger } from '../../util/logger'
+
+const logger = createLogger('handler/fetch_cancel')
 
 export const handlerFetchCancel: ControlMessageHandler<FetchCancel> = async (client, msg) => {
+  logger.log('requestId', msg.requestId)
   const publication = client.publications.get(msg.requestId)
   if (publication instanceof FetchPublication) {
     publication.cancel()

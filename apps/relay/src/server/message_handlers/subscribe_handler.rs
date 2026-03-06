@@ -138,11 +138,10 @@ async fn handle_subscribe_message(
   // Atomic get-or-create: first subscriber creates, subsequent ones find existing
   let (track_arc, is_creator) = context
     .track_manager
-    .get_or_create_track(&full_track_name, || {
+    .get_or_create_track(&full_track_name, |relay_track_id| {
       Track::new(
-        0, // provisional alias, updated on SubscribeOk from publisher
+        relay_track_id,
         full_track_name.clone(),
-        publisher.connection_id,
         context.server_config,
         TrackStatus::Pending,
       )
@@ -192,7 +191,6 @@ async fn handle_subscribe_message(
 
     match status {
       TrackStatus::Confirmed {
-        publisher_track_alias,
         expires,
         largest_location,
       } => {
@@ -203,7 +201,7 @@ async fn handle_subscribe_message(
         let subscribe_ok =
           moqtail::model::control::subscribe_ok::SubscribeOk::new_ascending_with_content(
             sub.request_id,
-            publisher_track_alias,
+            track.relay_track_id,
             expires,
             largest_location,
             None,
@@ -291,18 +289,28 @@ async fn handle_subscribe_ok_message(
     }
   };
 
-  // Confirm the track with publisher's metadata
-  {
+  // Confirm the track with publisher's metadata; capture relay_track_id for SubscribeOk messages
+  let relay_track_id = {
     let mut track = track_arc.write().await;
     track
-      .confirm(msg.track_alias, msg.expires, msg.largest_location.clone())
+      .confirm(
+        context.connection_id,
+        msg.track_alias,
+        msg.expires,
+        msg.largest_location.clone(),
+      )
       .await;
-  }
+    track.relay_track_id
+  };
 
-  // Register the track alias for data stream routing
+  // Register the publisher's alias for data stream routing
   context
     .track_manager
-    .add_track_alias(msg.track_alias, full_track_name.clone())
+    .add_track_alias(
+      context.connection_id,
+      msg.track_alias,
+      full_track_name.clone(),
+    )
     .await;
 
   // Send SubscribeOk to the FIRST subscriber (the creator)
@@ -315,7 +323,7 @@ async fn handle_subscribe_ok_message(
       let subscribe_ok =
         moqtail::model::control::subscribe_ok::SubscribeOk::new_ascending_with_content(
           sub_request.original_request_id,
-          msg.track_alias,
+          relay_track_id,
           msg.expires,
           msg.largest_location.clone(),
           None,
@@ -352,7 +360,7 @@ async fn handle_subscribe_ok_message(
         let subscribe_ok =
           moqtail::model::control::subscribe_ok::SubscribeOk::new_ascending_with_content(
             subscriber_request_id,
-            msg.track_alias,
+            relay_track_id,
             msg.expires,
             msg.largest_location.clone(),
             None,
@@ -397,13 +405,17 @@ async fn handle_unsubscribe_message(
   let full_track_name = request.original_subscribe_request.get_full_track_name();
 
   // remove the subscription from the track
-  let track_lock = context
-    .track_manager
-    .get_track(&full_track_name)
-    .await
-    .unwrap();
-  let track = track_lock.write().await;
-  track.remove_subscription(context.connection_id).await;
+  let track_option = context.track_manager.get_track(&full_track_name).await;
+
+  if let Some(track_lock) = track_option {
+    let track = track_lock.write().await;
+    track.remove_subscription(context.connection_id).await;
+  } else {
+    tracing::warn!(
+      "Ignored Unsubscribe: Track {:?} already removed.",
+      full_track_name
+    );
+  }
 
   // remove the subscription from the client
   client

@@ -12,16 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::server::client::MOQTClient;
 use crate::server::session_context::SessionContext;
+use crate::server::{client::MOQTClient, session::Session};
 use core::result::Result;
+use moqtail::model::common::reason_phrase::ReasonPhrase;
+use moqtail::model::control::constant::SubscribeNamespaceErrorCode;
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::publish_namespace::PublishNamespace;
+use moqtail::model::control::subscribe::Subscribe;
+use moqtail::model::control::subscribe_namespace_error::SubscribeNamespaceError;
 use moqtail::model::control::subscribe_namespace_ok::SubscribeNamespaceOk;
 use moqtail::model::error::TerminationCode;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 pub async fn handle(
   client: Arc<MOQTClient>,
@@ -36,46 +40,116 @@ pub async fn handle(
         sub_ns.track_namespace_prefix
       );
 
+      // 0. Check for prefix overlap per draft spec (NAMESPACE_PREFIX_OVERLAP)
+      if let Some(existing_prefix) = context
+        .track_manager
+        .find_overlapping_namespace_subscription(
+          client.connection_id,
+          &sub_ns.track_namespace_prefix,
+        )
+        .await
+      {
+        warn!(
+          "SUBSCRIBE_NAMESPACE overlap: new={:?} conflicts with existing={:?}",
+          sub_ns.track_namespace_prefix, existing_prefix
+        );
+        let err = SubscribeNamespaceError::new(
+          sub_ns.request_id,
+          SubscribeNamespaceErrorCode::NamespacePrefixOverlap,
+          ReasonPhrase::try_new("Namespace prefix overlaps with existing subscription".to_string())
+            .unwrap(),
+        );
+        handler
+          .send(&ControlMessage::SubscribeNamespaceError(Box::new(err)))
+          .await?;
+        return Ok(());
+      }
+
       // 1. Store the Subscription in TrackManager
-      // Registers the client's interest with the global router
       context
         .track_manager
         .add_namespace_subscriber(sub_ns.track_namespace_prefix.clone(), client.clone())
         .await;
 
-      // 2. Send OK
-      // Note: Assuming SubscribeNamespaceOk::new takes request_id and parameters (or just request_id depending on version)
-      // If your library version of SubscribeNamespaceOk::new takes params, use: new(sub_ns.request_id, vec![])
+      // 2. Send OK back to the subscriber
       let ok = SubscribeNamespaceOk::new(sub_ns.request_id);
       handler
         .send(&ControlMessage::SubscribeNamespaceOk(Box::new(ok)))
         .await?;
-
       info!(
         "Sent SubscribeNamespaceOk for request_id: {}",
         sub_ns.request_id
       );
 
-      // 3. Bootstrap Discovery (Stateful update)
-      // Check for EXISTING tracks that match this prefix and notify immediately.
-      {
-        {
-          // OLD: let tracks = context.track_manager.tracks.read().await;
-          // NEW: Check Announcements instead of just active tracks
-          let matched_announcements = context
-            .track_manager
-            .get_announcements_by_prefix(&sub_ns.track_namespace_prefix)
+      // 3. Bootstrap Discovery (Catch-up phase for Announcements)
+      let matched_announcements = context
+        .track_manager
+        .get_announcements_by_prefix(&sub_ns.track_namespace_prefix)
+        .await;
+
+      for ns in matched_announcements {
+        let relay_announce_id =
+          Session::get_next_relay_request_id(context.relay_next_request_id.clone()).await;
+        let notify = PublishNamespace::new(relay_announce_id, ns.clone(), &[]);
+        client
+          .queue_message(ControlMessage::PublishNamespace(Box::new(notify)))
+          .await;
+      }
+
+      // 4. Catch up on active published Tracks
+      let matched_tracks = context
+        .track_manager
+        .get_tracks_and_publishes_by_namespace_prefix(&sub_ns.track_namespace_prefix)
+        .await;
+
+      for (full_track_name, track_arc, original_publish_message_opt) in matched_tracks {
+        if let Some(mut original_publish_message) = original_publish_message_opt {
+          info!(
+            "Forwarding existing track for new subscriber: {:?}",
+            full_track_name
+          );
+
+          let relay_track_id = {
+            let track = track_arc.read().await;
+            track.relay_track_id
+          };
+
+          let relay_publish_id =
+            Session::get_next_relay_request_id(context.relay_next_request_id.clone()).await;
+          original_publish_message.request_id = relay_publish_id;
+          original_publish_message.track_alias = relay_track_id;
+
+          client
+            .queue_message(ControlMessage::Publish(Box::new(
+              original_publish_message.clone(),
+            )))
             .await;
 
-          for ns in matched_announcements {
-            debug!("Found existing announcement for new subscription: {:?}", ns);
+          // Auto-subscribe the client to the underlying data stream
+          let synthetic_sub = Subscribe::new_next_group_start(
+            relay_publish_id,
+            original_publish_message.track_namespace.clone(),
+            original_publish_message.track_name.clone(),
+            128,
+            original_publish_message.group_order,
+            original_publish_message.forward != 0,
+            vec![],
+          );
 
-            let notify = PublishNamespace::new(sub_ns.request_id, ns, &[]);
-
-            handler
-              .send(&ControlMessage::PublishNamespace(Box::new(notify)))
-              .await?;
+          let track_read = track_arc.read().await;
+          if let Err(e) = track_read
+            .add_subscription(client.clone(), synthetic_sub, false)
+            .await
+          {
+            warn!("Failed retroactive auto-subscribe for track: {:?}", e);
+          } else {
+            info!("Successfully initialized retroactive subscription.");
           }
+        } else {
+          warn!(
+            "The track has no associated publish message, track: {:?}",
+            full_track_name
+          );
         }
       }
     }

@@ -1,5 +1,19 @@
 # moqtail-rs
 
+## 0.11.1
+
+### Patch Changes
+
+- [`c16fab7`](https://github.com/moqtail/moqtail/commit/c16fab77395de3ccd99c25b43ed6fd2754129d70) Thanks [@zafergurel](https://github.com/zafergurel)! - feat: add datagram draft-14 support, remove deprecated AkamaiOffset, update package description
+  - feat(moqtail-rs, moqtail-ts): Add datagram draft-14 compatibility across both
+    the Rust and TypeScript libraries. Updates datagram object parsing, datagram
+    status handling, object model, and constants in both libs; also adjusts the
+    relay's track handling and the TypeScript client/datagram stream accordingly.
+  - refactor(moqtail-ts): Remove the deprecated AkamaiOffset utility class from
+    the TypeScript library. ClockNormalizer is its replacement. Cleans up the
+    export index and updates the README to reflect the removal.
+  - chore(moqtail-rs): Update the moqtail-rs crate description in Cargo.toml.
+
 ## 0.11.0
 
 ### Minor Changes

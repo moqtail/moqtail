@@ -99,12 +99,10 @@ export type MOQtailRequest =
 export type MOQtailClientOptions = {
   /** Relay / server endpoint for the underlying {@link https://developer.mozilla.org/docs/Web/API/WebTransport | WebTransport} session (can be absolute {@link https://developer.mozilla.org/en-US/docs/Web/API/URL | URL} or string).*/
   url: string | URL
-  /** Ordered preference list of MOQT protocol version numbers (e.g. `0xff00000b`).   */
-  supportedVersions: number[]
   /**  {@link SetupParameters} customizations; if omitted a default instance is built.*/
   setupParameters?: SetupParameters
   /**  Passed directly to the browser's {@link https://developer.mozilla.org/docs/Web/API/WebTransport | WebTransport} constructor for {@link https://developer.mozilla.org/docs/Web/API/WebTransportOptions | WebTransportOptions}. */
-  transportOptions?: WebTransportOptions
+  transportOptions?: WebTransportOptions & { protocols?: string[] }
   /** Per *data* uni-stream idle timeout in milliseconds. */
   dataStreamTimeoutMs?: number
   /** Control stream read timeout in milliseconds. */

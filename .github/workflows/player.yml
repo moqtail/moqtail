@@ -1,9 +1,12 @@
-name: Documentation
+name: Player
 
 on:
   push:
     branches:
       - main
+    paths:
+      - apps/client-js/**
+      - libs/moqtail-ts/**
 
 permissions:
   contents: read
@@ -15,7 +18,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  docs:
+  player:
     if: ${{ github.repository_owner == 'moqtail' }}
     runs-on: ubuntu-latest
     steps:
@@ -35,21 +38,20 @@ jobs:
       - run: npm install --global corepack@latest
       - run: corepack npm audit signatures
 
-      - name: Build moqtail
-        working-directory: libs/moqtail-ts
-        run: npm run build
-
-      - name: Create documentation
-        working-directory: libs/moqtail-ts
+      - name: Get build information
         run: |
           commit=$(git rev-parse --short HEAD)
           date=$(date +'%Y-%m-%d')
-          npm run docs -- --customFooterHtml "Last updated: ${date} (commit <code>${commit}</code>)"
+          echo "VITE_BUILD_COMMIT=$commit" >> $GITHUB_ENV
+          echo "VITE_BUILD_DATE=$date" >> $GITHUB_ENV
+
+      - name: Build MOQtail Library and Player
+        run: npm run build
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: libs/moqtail-ts/docs
+          path: apps/client-js/dist
 
       - name: Deploy to GitHub Pages
         uses: actions/deploy-pages@v4

@@ -134,7 +134,7 @@ impl SendDataStream {
         buf.extend_from_slice(&header.serialize()?);
       }
       HeaderInfo::Subgroup { header, .. } => {
-        buf.extend_from_slice(&header.serialize()?);
+        buf.extend_from_slice(&header.serialize(None)?);
       }
     }
 

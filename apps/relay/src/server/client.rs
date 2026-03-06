@@ -59,7 +59,7 @@ pub(crate) struct MOQTClient {
   #[allow(dead_code)]
   pub client_setup: Arc<ClientSetup>,
   pub announced_track_namespaces: Arc<RwLock<Vec<Tuple>>>, // the track namespaces the publisher announced
-  pub published_tracks: Arc<RwLock<Vec<FullTrackName>>>,   // the tracks the client is publishing
+  pub published_tracks: Arc<RwLock<HashMap<u64, FullTrackName>>>, // request_id -> track the client is publishing
   pub subscribers: Arc<RwLock<Vec<usize>>>, // the subscribers the client is subscribed to
 
   pub message_queue: Arc<RwLock<VecDeque<ControlMessage>>>, // the control messages the client has sent
@@ -98,7 +98,7 @@ impl MOQTClient {
       connection,
       client_setup,
       announced_track_namespaces: Arc::new(RwLock::new(Vec::new())),
-      published_tracks: Arc::new(RwLock::new(Vec::new())),
+      published_tracks: Arc::new(RwLock::new(HashMap::new())),
       subscribers: Arc::new(RwLock::new(Vec::new())),
       message_queue: Arc::new(RwLock::new(VecDeque::new())),
       message_notify: Arc::new(Notify::default()),
@@ -121,9 +121,9 @@ impl MOQTClient {
     subscribers.push(subscriber_id);
   }
 
-  pub(crate) async fn add_published_track(&self, full_track_name: FullTrackName) {
+  pub(crate) async fn add_published_track(&self, request_id: u64, full_track_name: FullTrackName) {
     let mut published_tracks = self.published_tracks.write().await;
-    published_tracks.push(full_track_name);
+    published_tracks.insert(request_id, full_track_name);
   }
 
   /// Get the next control message from the queue.
@@ -155,15 +155,15 @@ impl MOQTClient {
   fn get_partition_index(&self, stream_id: &StreamId) -> usize {
     let value = match stream_id.stream_type {
       StreamType::Fetch => {
-        // Use a simple hash combining track_alias and fetch_request_id
+        // Use a simple hash combining relay_track_id and fetch_request_id
         stream_id
-          .track_alias
+          .relay_track_id
           .wrapping_add(stream_id.fetch_request_id.unwrap_or(0).wrapping_mul(13))
       }
       StreamType::Subgroup => {
         // Better distribution using prime number multipliers
         stream_id
-          .track_alias
+          .relay_track_id
           .wrapping_add(stream_id.group_id.unwrap_or(0).wrapping_mul(17))
           .wrapping_add(stream_id.subgroup_id.unwrap_or(0).wrapping_mul(31))
       }
@@ -399,15 +399,15 @@ mod tests {
     fn get_partition_index(stream_id: &StreamId) -> usize {
       let value = match stream_id.stream_type {
         StreamType::Fetch => {
-          // Use a simple hash combining track_alias and fetch_request_id
+          // Use a simple hash combining relay_track_id and fetch_request_id
           stream_id
-            .track_alias
+            .relay_track_id
             .wrapping_add(stream_id.fetch_request_id.unwrap_or(0).wrapping_mul(13))
         }
         StreamType::Subgroup => {
           // Better distribution using prime number multipliers
           stream_id
-            .track_alias
+            .relay_track_id
             .wrapping_add(stream_id.group_id.unwrap_or(0).wrapping_mul(17))
             .wrapping_add(stream_id.subgroup_id.unwrap_or(0).wrapping_mul(31))
         }
@@ -420,10 +420,10 @@ mod tests {
   }
 
   /// Helper function to create a Fetch stream ID
-  fn create_fetch_stream_id(track_alias: u64, fetch_request_id: u64) -> StreamId {
+  fn create_fetch_stream_id(relay_track_id: u64, fetch_request_id: u64) -> StreamId {
     StreamId {
       stream_type: StreamType::Fetch,
-      track_alias,
+      relay_track_id,
       group_id: None,
       subgroup_id: None,
       fetch_request_id: Some(fetch_request_id),
@@ -432,13 +432,13 @@ mod tests {
 
   /// Helper function to create a Subgroup stream ID
   fn create_subgroup_stream_id(
-    track_alias: u64,
+    relay_track_id: u64,
     group_id: Option<u64>,
     subgroup_id: Option<u64>,
   ) -> StreamId {
     StreamId {
       stream_type: StreamType::Subgroup,
-      track_alias,
+      relay_track_id,
       group_id,
       subgroup_id,
       fetch_request_id: None,

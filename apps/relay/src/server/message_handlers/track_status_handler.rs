@@ -53,18 +53,26 @@ pub async fn handle(
         }
       }
 
-      // B. Check Local Track Existence (Short Circuit)
-      // If Relay already has this track, we can answer "OK" immediately.
-      if context.track_manager.has_track(&full_track_name).await {
-        info!("Track found locally on Relay. Sending TrackStatusOk directly.");
-
-        let ok_msg = TrackStatusOk::new_ascending_with_content(request_id, 0, 0, None, None);
-
+      // B. Check Local Track Existence
+      if let Some(track_arc) = context.track_manager.get_track(&full_track_name).await {
+        info!("track found: {:?}", full_track_name);
+        let relay_track_id = track_arc.read().await.relay_track_id;
+        let track = track_arc.read().await;
+        let largest_location = track.largest_location.read().await;
+        // TODO: what should be expires and subscribe parameters?
+        let ok_msg = TrackStatusOk::new_ascending_with_content(
+          request_id,
+          relay_track_id,
+          0,
+          Some(largest_location.clone()),
+          None,
+        );
         control_stream_handler.send_impl(&ok_msg).await.unwrap();
         return Ok(());
       }
 
       // C. Find Upstream Publisher
+      // TODO: send to every interested publisher
       let publisher = {
         debug!("Finding publisher for TrackStatus...");
         let m = context.client_manager.read().await;
@@ -105,7 +113,7 @@ pub async fn handle(
         .queue_message(ControlMessage::TrackStatus(Box::new(new_req.clone())))
         .await;
 
-      // E. Store Mapping (The Storage Hack)
+      // E. Store Mapping
       // We convert TrackStatus -> Subscribe to fit it into 'SubscribeRequest' container
       // This is safe because fields are identical.
       let fake_sub = Subscribe {
@@ -137,10 +145,6 @@ pub async fn handle(
 
       Ok(())
     }
-
-    // =======================================================================
-    // 2. HANDLE OK RESPONSE (Publisher -> Relay -> Client)
-    // =======================================================================
     ControlMessage::TrackStatusOk(m) => {
       info!("received TrackStatusOk from Publisher: {:?}", m);
       let msg = *m;
@@ -152,23 +156,48 @@ pub async fn handle(
       };
 
       if let Some(req) = mapping {
-        // B. Find the Client
+        // B. Look up relay_track_id for this track to use instead of publisher's track_alias
+        let full_track_name = req.original_subscribe_request.get_full_track_name();
+        let relay_track_id_opt =
+          if let Some(track_arc) = context.track_manager.get_track(&full_track_name).await {
+            Some(track_arc.read().await.relay_track_id)
+          } else {
+            warn!(
+              "Track not found locally, sending TrackStatusError to Client {}",
+              req.requested_by
+            );
+            None
+          };
+
+        // C. Find the Client
         let manager = context.client_manager.read().await;
         if let Some(downstream_client) = manager.get(req.requested_by).await {
-          // C. Construct Forwarded Message
-          // We must restore the ORIGINAL request ID that the client sent us
-          let forwarded_msg = TrackStatusOk::new_ascending_with_content(
-            req.original_request_id,
-            msg.track_alias,
-            msg.expires,
-            msg.largest_location,
-            msg.subscribe_parameters,
-          );
+          if let Some(relay_track_id) = relay_track_id_opt {
+            // D. Construct Forwarded Message
+            // We must restore the ORIGINAL request ID that the client sent us
+            let forwarded_msg = TrackStatusOk::new_ascending_with_content(
+              req.original_request_id,
+              relay_track_id,
+              msg.expires,
+              msg.largest_location,
+              msg.subscribe_parameters,
+            );
 
-          info!("Forwarding TrackStatusOk to Client {}", req.requested_by);
-          downstream_client
-            .queue_message(ControlMessage::TrackStatusOk(Box::new(forwarded_msg)))
-            .await;
+            info!("Forwarding TrackStatusOk to Client {}", req.requested_by);
+            downstream_client
+              .queue_message(ControlMessage::TrackStatusOk(Box::new(forwarded_msg)))
+              .await;
+          } else {
+            let err = TrackStatusError::new(
+              req.original_request_id,
+              SubscribeErrorCode::TrackDoesNotExist,
+              ReasonPhrase::try_new("Track not found".to_string()).unwrap(),
+            );
+
+            downstream_client
+              .queue_message(ControlMessage::TrackStatusError(Box::new(err)))
+              .await;
+          }
         } else {
           warn!("Downstream client {} disconnected", req.requested_by);
         }
@@ -180,10 +209,6 @@ pub async fn handle(
       }
       Ok(())
     }
-
-    // =======================================================================
-    // 3. HANDLE ERROR RESPONSE (Publisher -> Relay -> Client)
-    // =======================================================================
     ControlMessage::TrackStatusError(m) => {
       info!("received TrackStatusError from Publisher: {:?}", m);
       let msg = *m;

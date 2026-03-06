@@ -22,16 +22,12 @@ use super::constant::ControlMessageType;
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct ServerSetup {
-  pub selected_version: u32,
   pub setup_parameters: Vec<KeyValuePair>,
 }
 
 impl ServerSetup {
-  pub fn new(selected_version: u32, setup_parameters: Vec<KeyValuePair>) -> Self {
-    Self {
-      selected_version,
-      setup_parameters,
-    }
+  pub fn new(setup_parameters: Vec<KeyValuePair>) -> Self {
+    Self { setup_parameters }
   }
 }
 
@@ -41,7 +37,6 @@ impl ControlMessageTrait for ServerSetup {
     buf.put_vi(ControlMessageType::ServerSetup)?;
 
     let mut payload = BytesMut::new();
-    payload.put_vi(self.selected_version)?;
     payload.put_vi(self.setup_parameters.len())?;
 
     for param in &self.setup_parameters {
@@ -64,8 +59,6 @@ impl ControlMessageTrait for ServerSetup {
   }
 
   fn parse_payload(payload: &mut Bytes) -> Result<Box<Self>, ParseError> {
-    let selected_version = payload.get_vi()? as u32;
-
     let number_of_parameters = payload.get_vi()?;
     let mut setup_parameters = Vec::new();
 
@@ -74,10 +67,7 @@ impl ControlMessageTrait for ServerSetup {
       setup_parameters.push(param);
     }
 
-    Ok(Box::new(ServerSetup {
-      selected_version,
-      setup_parameters,
-    }))
+    Ok(Box::new(ServerSetup { setup_parameters }))
   }
   fn get_type(&self) -> ControlMessageType {
     ControlMessageType::ServerSetup
@@ -86,22 +76,16 @@ impl ControlMessageTrait for ServerSetup {
 
 #[cfg(test)]
 mod tests {
-  use crate::model::control::constant::DRAFT_14;
-
   use super::*;
   use bytes::Buf;
 
   #[test]
   fn test_roundtrip() {
-    let selected_version = DRAFT_14;
     let setup_parameters = vec![
       KeyValuePair::try_new_varint(0, 10).unwrap(),
       KeyValuePair::try_new_bytes(1, Bytes::from_static(b"Set me up!")).unwrap(),
     ];
-    let server_setup = ServerSetup {
-      selected_version,
-      setup_parameters,
-    };
+    let server_setup = ServerSetup { setup_parameters };
 
     let mut buf = server_setup.serialize().unwrap();
     let msg_type = buf.get_vi().unwrap();
@@ -115,15 +99,11 @@ mod tests {
 
   #[test]
   fn test_excess_roundtrip() {
-    let selected_version = DRAFT_14;
     let setup_parameters = vec![
       KeyValuePair::try_new_varint(0, 10).unwrap(),
       KeyValuePair::try_new_bytes(1, Bytes::from_static(b"Set me up!")).unwrap(),
     ];
-    let server_setup = ServerSetup {
-      selected_version,
-      setup_parameters,
-    };
+    let server_setup = ServerSetup { setup_parameters };
 
     let serialized = server_setup.serialize().unwrap();
     let mut excess = BytesMut::new();
@@ -143,15 +123,11 @@ mod tests {
 
   #[test]
   fn test_partial_message() {
-    let selected_version = DRAFT_14;
     let setup_parameters = vec![
       KeyValuePair::try_new_varint(0, 10).unwrap(),
       KeyValuePair::try_new_bytes(1, Bytes::from_static(b"Set me up!")).unwrap(),
     ];
-    let server_setup = ServerSetup {
-      selected_version,
-      setup_parameters,
-    };
+    let server_setup = ServerSetup { setup_parameters };
 
     let mut buf = server_setup.serialize().unwrap();
     let msg_type = buf.get_vi().unwrap();

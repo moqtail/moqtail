@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::server::client::MOQTClient;
+use crate::server::session::Session;
 use crate::server::session_context::SessionContext;
 use crate::server::track::{Track, TrackStatus};
 use core::result::Result;
@@ -39,6 +40,7 @@ pub async fn handle(
     ControlMessage::Publish(m) => {
       info!("Received Publish message for track: {:?}", m.track_name);
       let request_id = m.request_id;
+      let track_alias = m.track_alias;
 
       // Check request ID
       {
@@ -55,7 +57,7 @@ pub async fn handle(
       }
 
       // Validate track namespace authorization
-      // TODO: Implement actual authorization logic based on your requirements
+      // TODO: Implement actual authorization logic
       let is_authorized = validate_publish_authorization(&m.track_namespace, &client).await;
 
       if !is_authorized {
@@ -74,47 +76,76 @@ pub async fn handle(
           .await;
       }
 
-      // Check if the track already exists and is being published
-      // TODO: Actually this should be allowed, multiple publishers can publish the same track
-      // but cannot use the same track alias
-
-      {
-        if context.track_manager.has_track_alias(&m.track_alias).await {
-          return Err(TerminationCode::DuplicateTrackAlias);
-        }
-      }
-
-      // Add the track to the client's published tracks
+      // Build the full track name early so we can check it against any existing alias mapping.
       let full_track_name = moqtail::model::data::full_track_name::FullTrackName {
         namespace: m.track_namespace.clone(),
         name: m.track_name.clone(),
       };
 
-      let m_clone = m.clone();
+      // Multiple publishers may share the same alias for the same track (fan-out).
+      // Only reject if the alias already maps to a different full track name for this connection.
+      {
+        if context
+          .track_manager
+          .has_track_alias(context.connection_id, &m.track_alias)
+          .await
+        {
+          let is_same_track = if let Some(existing) = context
+            .track_manager
+            .get_track_by_alias(context.connection_id, m.track_alias)
+            .await
+          {
+            existing.read().await.full_track_name == full_track_name
+          } else {
+            false
+          };
+          if !is_same_track {
+            return Err(TerminationCode::DuplicateTrackAlias);
+          }
+          // Same track, same alias — fall through to the has_track branch below.
+        }
+      }
 
-      // TODO: what happens multiple publishers publish the same track?
       if !context.track_manager.has_track(&full_track_name).await {
-        info!("Track not found, creating new track: {:?}", m.track_alias);
-        // subscribed_tracks.insert(sub.track_alias, Track::new(sub.track_alias, track_namespace.clone(), sub.track_name.clone()));
+        info!(
+          "Track not found, creating new track for publisher alias={}",
+          m.track_alias
+        );
+        let relay_track_id = context.track_manager.generate_relay_track_id();
         let track = Track::new(
-          m.track_alias,
+          relay_track_id,
           full_track_name.clone(),
-          context.connection_id, // TODO: what happens there are multiple publishers?
           context.server_config,
           TrackStatus::Confirmed {
-            publisher_track_alias: m.track_alias,
             expires: 0,
             largest_location: None,
           },
         );
         let track_arc = context
           .track_manager
-          .add_track(m.track_alias, full_track_name.clone(), track)
+          .add_track(
+            context.connection_id,
+            m.track_alias,
+            full_track_name.clone(),
+            track,
+          )
+          .await;
+        track_arc
+          .write()
+          .await
+          .add_publisher(context.connection_id, track_alias)
           .await;
 
-        client.add_published_track(full_track_name).await;
+        client
+          .add_published_track(request_id, full_track_name.clone())
+          .await;
 
-        // find subscribers interested in this track and forward the publish message to them
+        // register this publish message
+        context
+          .track_manager
+          .add_publish_message(full_track_name.clone(), context.connection_id, (*m).clone())
+          .await;
+
         let subscribers = context
           .track_manager
           .get_namespace_subscribers(&m.track_namespace)
@@ -136,7 +167,15 @@ pub async fn handle(
 
           let sub_clone = subscriber.clone();
 
-          let m_clone2 = m.clone();
+          let mut m_clone = m.clone();
+
+          let relay_req_id =
+            Session::get_next_relay_request_id(context.relay_next_request_id.clone()).await;
+
+          m_clone.request_id = relay_req_id;
+          m_clone.track_alias = relay_track_id;
+
+          let m_clone2 = m_clone.clone();
           tokio::spawn(async move {
             sub_clone
               .queue_message(ControlMessage::Publish(m_clone2))
@@ -165,12 +204,33 @@ pub async fn handle(
           }
         }
       } else {
-        // a different track alias but same full track name
-        // maybe we can associate the track alias with the existing published track
+        // Another publisher for the same track with a different alias.
+        // Register their alias so their data stream can be routed to the existing track.
+        context
+          .track_manager
+          .add_track_alias(
+            context.connection_id,
+            m.track_alias,
+            full_track_name.clone(),
+          )
+          .await;
+        if let Some(track_arc) = context.track_manager.get_track(&full_track_name).await {
+          track_arc
+            .write()
+            .await
+            .add_publisher(context.connection_id, m.track_alias)
+            .await;
+        }
+        client
+          .add_published_track(request_id, full_track_name.clone())
+          .await;
+        info!(
+          "Additional publisher for existing track {:?}/{}: registered alias {}",
+          m.track_namespace, m.track_name, m.track_alias
+        );
       }
 
-      // Create PublishOk response
-      // For simplicity, using default values that can be configured based on requirements
+      let m_clone = m.clone();
       let publish_ok = Box::new(PublishOk::new(
         request_id,
         m_clone.forward,          // Use the same forward preference as requested
@@ -198,15 +258,63 @@ pub async fn handle(
       );
 
       // Clean up the published track
-      // TODO: Implement track cleanup logic based on request_id
-      cleanup_published_track(&client, m.request_id).await;
+      cleanup_published_track(&client, m.request_id, &context).await;
 
       Ok(())
     }
-    _ => {
-      // This handler only processes Publish and PublishDone messages
+
+    ControlMessage::PublishOk(m) => {
+      info!("Received PublishOk for request_id: {}", m.request_id);
+
+      // 1. Look up which track this PublishOk corresponds to using the connection_id and request_id
+      if let Some(full_track_name) = context
+        .track_manager
+        .get_track_name_by_publisher(client.connection_id, m.request_id)
+        .await
+      {
+        // 2. Fetch the track and the original publish message details
+        if let Some(track_arc) = context.track_manager.get_track(&full_track_name).await
+          && let Some(orig_publish) = context
+            .track_manager
+            .get_publish_message(&full_track_name, client.connection_id)
+            .await
+        {
+          info!(
+            "Publish accepted! Wiring up data stream for: {:?}",
+            full_track_name
+          );
+
+          // 3. Create the subscription now that the client has consented
+          let synthetic_sub = Subscribe::new_next_group_start(
+            0,
+            orig_publish.track_namespace.clone(),
+            orig_publish.track_name.clone(),
+            128,
+            orig_publish.group_order,
+            orig_publish.forward != 0,
+            vec![],
+          );
+
+          let track_read = track_arc.read().await;
+          if let Err(e) = track_read
+            .add_subscription(client.clone(), synthetic_sub, false)
+            .await
+          {
+            warn!("Failed to auto-subscribe client after PublishOk: {:?}", e);
+          } else {
+            info!("Successfully wired data stream!");
+          }
+        }
+      } else {
+        warn!(
+          "Received PublishOk for an unknown push request_id: {}",
+          m.request_id
+        );
+      }
+
       Ok(())
     }
+    _ => Ok(()),
   }
 }
 
@@ -226,32 +334,54 @@ async fn validate_publish_authorization(
   true
 }
 
-/// Checks if a track with the given namespace and name already exists
-async fn _check_track_exists(
-  _track_namespace: &moqtail::model::common::tuple::Tuple,
-  _track_name: &str,
-) -> bool {
-  // TODO: Implement actual track existence checking
-  // This could check:
-  // - Active tracks registry
-  // - Database of existing tracks
-  // - Track metadata storage
+/// Cleans up resources associated with a published track.
+/// Removes the publisher from its track; if it was the last publisher,
+/// remove_publisher() internally notifies subscribers.
+async fn cleanup_published_track(
+  client: &Arc<MOQTClient>,
+  request_id: u64,
+  context: &Arc<SessionContext>,
+) {
+  let full_track_name = {
+    let published_tracks = client.published_tracks.read().await;
+    published_tracks.get(&request_id).cloned()
+  };
 
-  // For now, assume no conflicts (this should be replaced with actual logic)
-  false
-}
+  let full_track_name = match full_track_name {
+    Some(n) => n,
+    None => {
+      info!(
+        "cleanup_published_track: no track found for request_id={}",
+        request_id
+      );
+      return;
+    }
+  };
 
-/// Cleans up resources associated with a published track
-async fn cleanup_published_track(_client: &Arc<MOQTClient>, _request_id: u64) {
-  // TODO: Implement track cleanup logic
-  // This could include:
-  // - Removing track from active tracks registry
-  // - Notifying subscribers about track ending
-  // - Cleaning up stream state
-  // - Releasing resources
+  let track_arc = match context.track_manager.get_track(&full_track_name).await {
+    Some(t) => t,
+    None => {
+      info!(
+        "cleanup_published_track: track not in manager for request_id={}",
+        request_id
+      );
+      return;
+    }
+  };
 
-  info!(
-    "Cleaning up published track for request ID: {}",
-    _request_id
-  );
+  let track = track_arc.read().await;
+  if let Some(alias) = track.remove_publisher(client.connection_id).await {
+    context
+      .track_manager
+      .remove_publisher_alias(client.connection_id, alias)
+      .await;
+    if !track.has_publishers().await {
+      drop(track);
+      context.track_manager.remove_track(&full_track_name).await;
+      info!(
+        "cleanup_published_track: removed track {:?} (no publishers left) request_id={}",
+        full_track_name, request_id
+      );
+    }
+  }
 }

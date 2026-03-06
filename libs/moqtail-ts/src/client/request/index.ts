@@ -15,6 +15,7 @@
  */
 
 export * from './publish_namespace'
+export * from './publish'
 export * from './fetch'
 export * from './subscribe'
 export * from './subscribe_namespace'

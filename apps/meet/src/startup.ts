@@ -14,4 +14,10 @@
  * limitations under the License.
  */
 
-export class WarpCatalog {}
+import { AppSettings } from './types/AppSettings';
+
+declare global {
+  interface Window {
+    appSettings: AppSettings;
+  }
+}

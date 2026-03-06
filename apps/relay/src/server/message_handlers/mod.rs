@@ -103,7 +103,10 @@ impl MessageHandler {
       ControlMessage::Fetch(_) | ControlMessage::FetchCancel(_) | ControlMessage::FetchOk(_) => {
         fetch_handler::handle(client.clone(), control_stream_handler, msg, context.clone()).await
       }
-      ControlMessage::Publish(_) | ControlMessage::PublishDone(_) => {
+      ControlMessage::Publish(_)
+      | ControlMessage::PublishDone(_)
+      | ControlMessage::PublishOk(_)
+      | ControlMessage::PublishError(_) => {
         publish_handler::handle(client.clone(), control_stream_handler, msg, context.clone()).await
       }
 

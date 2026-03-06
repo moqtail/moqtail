@@ -724,7 +724,7 @@ dependencies = [
 
 [[package]]
 name = "moqtail"
-version = "0.11.0"
+version = "0.11.1"
 dependencies = [
  "bytes",
  "serde",
@@ -1058,7 +1058,7 @@ checksum = "7a2d987857b319362043e95f5353c0535c1f58eec5336fdfcf626430af7def58"
 
 [[package]]
 name = "relay"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1851,8 +1851,6 @@ checksum = "9edde0db4769d2dc68579893f2306b26c6ecfbe0ef499b013d731b7b9247e0b9"
 [[package]]
 name = "wtransport"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e56b611f195638f3790e4e5a41e9d777643a6c324ae4ffd1f0f53f2738e7678c"
 dependencies = [
  "bytes",
  "pem",
@@ -1875,8 +1873,6 @@ dependencies = [
 [[package]]
 name = "wtransport-proto"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1627c5b59450278e9771aab35275d72bfa2788128c197c5af1e4a820c8737ef4"
 dependencies = [
  "httlib-huffman",
  "octets",

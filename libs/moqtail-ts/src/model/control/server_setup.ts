@@ -15,15 +15,12 @@
  */
 
 import { ByteBuffer, FrozenByteBuffer, BaseByteBuffer } from '../common/byte_buffer'
-import { ControlMessageType, DRAFT_14 } from './constant'
+import { ControlMessageType } from './constant'
 import { KeyValuePair } from '../common/pair'
 import { LengthExceedsMaxError } from '../error/error'
 
 export class ServerSetup {
-  constructor(
-    public readonly selectedVersion: number,
-    public readonly setupParameters: KeyValuePair[],
-  ) {}
+  constructor(public readonly setupParameters: KeyValuePair[]) {}
 
   getType(): ControlMessageType {
     return ControlMessageType.ServerSetup
@@ -33,7 +30,6 @@ export class ServerSetup {
     const buf = new ByteBuffer()
     buf.putVI(ControlMessageType.ServerSetup)
     const payload = new ByteBuffer()
-    payload.putVI(this.selectedVersion)
     payload.putVI(this.setupParameters.length)
     for (const param of this.setupParameters) {
       payload.putKeyValuePair(param)
@@ -48,13 +44,12 @@ export class ServerSetup {
   }
 
   static parsePayload(buf: BaseByteBuffer): ServerSetup {
-    const selectedVersion = buf.getNumberVI()
     const paramCount = buf.getNumberVI()
     const setupParameters: KeyValuePair[] = new Array(paramCount)
     for (let i = 0; i < paramCount; i++) {
       setupParameters[i] = buf.getKeyValuePair()
     }
-    return new ServerSetup(selectedVersion, setupParameters)
+    return new ServerSetup(setupParameters)
   }
 }
 
@@ -63,30 +58,27 @@ if (import.meta.vitest) {
 
   describe('ServerSetup', () => {
     test('roundtrip serialization/deserialization', () => {
-      const selectedVersion = DRAFT_14
       const setupParameters = [
         KeyValuePair.tryNewVarInt(0, 10),
         KeyValuePair.tryNewBytes(1, new TextEncoder().encode('Set me up!')),
       ]
-      const msg = new ServerSetup(selectedVersion, setupParameters)
+      const msg = new ServerSetup(setupParameters)
       const frozen = msg.serialize()
       const msgType = frozen.getVI()
       expect(msgType).toBe(BigInt(ControlMessageType.ServerSetup))
       const msgLength = frozen.getU16()
       expect(msgLength).toBe(frozen.remaining)
       const parsed = ServerSetup.parsePayload(frozen)
-      expect(parsed.selectedVersion).toBe(selectedVersion)
       expect(parsed.setupParameters).toEqual(setupParameters)
       expect(frozen.remaining).toBe(0)
     })
 
     test('excess roundtrip', () => {
-      const selectedVersion = DRAFT_14
       const setupParameters = [
         KeyValuePair.tryNewVarInt(0, 10),
         KeyValuePair.tryNewBytes(1, new TextEncoder().encode('Set me up!')),
       ]
-      const msg = new ServerSetup(selectedVersion, setupParameters)
+      const msg = new ServerSetup(setupParameters)
       const serialized = msg.serialize().toUint8Array()
       const excess = new Uint8Array([9, 1, 1])
       const buf = new ByteBuffer()
@@ -98,18 +90,16 @@ if (import.meta.vitest) {
       const msgLength = frozen.getU16()
       expect(msgLength).toBe(frozen.remaining - 3)
       const parsed = ServerSetup.parsePayload(frozen)
-      expect(parsed.selectedVersion).toBe(selectedVersion)
       expect(parsed.setupParameters).toEqual(setupParameters)
       expect(frozen.remaining).toBe(3)
     })
 
     test('partial message fails', () => {
-      const selectedVersion = DRAFT_14
       const setupParameters = [
         KeyValuePair.tryNewVarInt(0, 10),
         KeyValuePair.tryNewBytes(1, new TextEncoder().encode('Set me up!')),
       ]
-      const msg = new ServerSetup(selectedVersion, setupParameters)
+      const msg = new ServerSetup(setupParameters)
       const serialized = msg.serialize().toUint8Array()
       const upper = Math.floor(serialized.length / 2)
       const partial = serialized.slice(0, upper)

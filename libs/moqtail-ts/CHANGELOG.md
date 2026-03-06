@@ -1,5 +1,41 @@
 # moqtail-ts
 
+## 0.9.0
+
+### Minor Changes
+
+- [#137](https://github.com/moqtail/moqtail/pull/137) [`19f19e7`](https://github.com/moqtail/moqtail/commit/19f19e71a1117d90be5d68c839adeb2b02cbc518) Thanks [@fatih-alperen](https://github.com/fatih-alperen)! - Added publish_done message and corrected publish handler
+
+## 0.8.2
+
+### Patch Changes
+
+- [`9f8dc10`](https://github.com/moqtail/moqtail/commit/9f8dc107cd815067ffc6f571db5b562834b2deaf) Thanks [@acbegen](https://github.com/acbegen)! - add cmsf catalog format and some cleanup
+
+## 0.8.1
+
+### Patch Changes
+
+- [#141](https://github.com/moqtail/moqtail/pull/141) [`fc0c32f`](https://github.com/moqtail/moqtail/commit/fc0c32f280fa55c998da4b612438b9f276fc03b0) Thanks [@zafergurel](https://github.com/zafergurel)! - fixes the type of a variable in fetch.ts
+
+## 0.8.0
+
+### Minor Changes
+
+- [#134](https://github.com/moqtail/moqtail/pull/134) [`03e3a62`](https://github.com/moqtail/moqtail/commit/03e3a629ed109010b27c15b0ad8d15a2bf3393cc) Thanks [@fatih-alperen](https://github.com/fatih-alperen)! - Added the subscribenamespace-publish workflow
+
+### Patch Changes
+
+- [`c16fab7`](https://github.com/moqtail/moqtail/commit/c16fab77395de3ccd99c25b43ed6fd2754129d70) Thanks [@zafergurel](https://github.com/zafergurel)! - feat: add datagram draft-14 support, remove deprecated AkamaiOffset, update package description
+  - feat(moqtail-rs, moqtail-ts): Add datagram draft-14 compatibility across both
+    the Rust and TypeScript libraries. Updates datagram object parsing, datagram
+    status handling, object model, and constants in both libs; also adjusts the
+    relay's track handling and the TypeScript client/datagram stream accordingly.
+  - refactor(moqtail-ts): Remove the deprecated AkamaiOffset utility class from
+    the TypeScript library. ClockNormalizer is its replacement. Cleans up the
+    export index and updates the README to reflect the removal.
+  - chore(moqtail-rs): Update the moqtail-rs crate description in Cargo.toml.
+
 ## 0.7.0
 
 ### Minor Changes
@@ -71,8 +107,8 @@
   - **NEW**: Implemented both publisher and subscriber functionality for fetch operations
   - **TODO**: Joining fetches require additional handling (partial implementation)
   - **PERFORMANCE**: Reduced test timeouts to improve CI pipeline speed
-    - Telemetry tests: 5s → 1s timeouts
-    - ControlStream tests: 3s → 1s timeouts
+    - Telemetry tests: 5s -> 1s timeouts
+    - ControlStream tests: 3s -> 1s timeouts
     - AkamaiOffset tests: mocked network calls instead of real ones
   - **CI**: Update husky hooks
     - Remove exec < /dev/tty from pre-commit and prepare-commit-msg for windows compatibility

@@ -32,7 +32,7 @@ pub async fn handle(
       // TODO: the namespace is already announced, return error
       info!("received MaxRequestId message");
 
-      let new_max_request_id = m.request_id;
+      let new_max_request_id = m.max_request_id;
 
       loop {
         let current = context

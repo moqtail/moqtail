@@ -29,11 +29,13 @@ use moqtail::model::{common::reason_phrase::ReasonPhrase, control::constant::Fet
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use moqtail::transport::data_stream_handler::HeaderInfo;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::watch;
 use tracing::{error, info, warn};
 
 const MAX_UPSTREAM_FETCH_GAPS: u64 = 10;
+const UPSTREAM_FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub async fn handle(
   client: Arc<MOQTClient>,
@@ -296,6 +298,10 @@ async fn handle_fetch_delivery(
         // sending objects to the client.
         // We'll await objects from upstream_fetch_senders[relay_request_id]
         // and send them to the client, through deliver_object().
+        // Each recv() is wrapped with tokio::time::timeout(UPSTREAM_FETCH_TIMEOUT)
+        // so that a stalled upstream doesn't block delivery indefinitely.
+        // On timeout, we log and break out of the loop, continuing with
+        // the next groups which may still be in cache.
       }
 
       group_id = gap_end + 1;

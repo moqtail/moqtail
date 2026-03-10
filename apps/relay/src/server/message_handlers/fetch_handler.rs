@@ -33,6 +33,8 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::watch;
 use tracing::{error, info, warn};
 
+const MAX_UPSTREAM_FETCH_GAPS: u64 = 10;
+
 pub async fn handle(
   client: Arc<MOQTClient>,
   _control_stream_handler: &mut ControlStreamHandler,
@@ -252,6 +254,7 @@ async fn handle_fetch_delivery(
   let stream_id = build_stream_id(track_read.track_alias, &header_info);
   let mut object_count: u64 = 0;
   let mut send_stream = None;
+  let mut upstream_gap_count: u64 = 0;
 
   // Send FetchOk early on the control stream
   // ... build FetchOk with end_location, queue on client ...
@@ -272,6 +275,16 @@ async fn handle_fetch_delivery(
       let gap_start: u64 = group_id;
       let mut gap_end = group_id;
       // ... while next groups also missing, extend gap_end ...
+
+      if upstream_gap_count >= MAX_UPSTREAM_FETCH_GAPS {
+        warn!(
+          "handle_fetch_delivery | Reached max upstream fetch gap limit ({}), skipping gap at group {}",
+          MAX_UPSTREAM_FETCH_GAPS, gap_start
+        );
+        group_id = gap_end + 1;
+        continue;
+      }
+      upstream_gap_count += 1;
 
       // Issue upstream fetch for the gap
       let upstream_rx = send_upstream_fetch_for_range(

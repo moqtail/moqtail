@@ -437,6 +437,10 @@ impl Session {
     let mut track_alias = 0u64;
     let mut stream_id: Option<StreamId> = None;
     let mut current_track: Option<Arc<RwLock<Track>>> = None;
+    // If this stream is a response to an upstream fetch the relay issued,
+    // we forward objects through this channel back to handle_fetch_delivery.
+    let mut upstream_sender: Option<tokio::sync::mpsc::Sender<super::session_context::UpstreamFetchEvent>> = None;
+    let mut fetch_request_id_for_cleanup: Option<u64> = None;
 
     let mut object_count = 0;
 
@@ -476,6 +480,19 @@ impl Session {
                   .await
                   .get(&fetch_request_id)
                   .map_or(0, |r| r.track_alias);
+
+                // Check if this stream is a response to a relay-initiated
+                // upstream fetch. If so, grab the sender to forward objects.
+                if let Some(sender) = context
+                  .upstream_fetch_senders
+                  .read()
+                  .await
+                  .get(&fetch_request_id)
+                  .cloned()
+                {
+                  upstream_sender = Some(sender);
+                  fetch_request_id_for_cleanup = Some(fetch_request_id);
+                }
               }
             }
 
@@ -541,6 +558,13 @@ impl Session {
             );
           }
 
+          // NEW: forward object to upstream fetch channel if this is a relay-initiated fetch
+          if let Some(ref sender) = upstream_sender {
+            if let Ok(fetch_object) = object.clone().try_into_fetch() {
+              let _ = sender.send(super::session_context::UpstreamFetchEvent::Object(fetch_object)).await;
+            }
+          }
+
           object_count += 1;
           first_object = false; // reset the first object flag after processing the header
         }
@@ -553,6 +577,15 @@ impl Session {
             stream_id.clone(),
             object_count
           );
+
+          // NEW: notify upstream fetch channel that this stream is done
+          if let Some(sender) = upstream_sender.take() {
+            let _ = sender.send(super::session_context::UpstreamFetchEvent::StreamClosed).await;
+            if let Some(req_id) = fetch_request_id_for_cleanup {
+              context.upstream_fetch_senders.write().await.remove(&req_id);
+            }
+          }
+
           // Close the stream for all subscribers
           if let Some(track_lock) = &current_track {
             return track_lock

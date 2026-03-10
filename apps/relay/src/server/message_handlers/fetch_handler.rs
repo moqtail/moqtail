@@ -300,8 +300,14 @@ async fn handle_fetch_delivery(
         // and send them to the client, through deliver_object().
         // Each recv() is wrapped with tokio::time::timeout(UPSTREAM_FETCH_TIMEOUT)
         // so that a stalled upstream doesn't block delivery indefinitely.
-        // On timeout, we log and break out of the loop, continuing with
-        // the next groups which may still be in cache.
+        // On timeout, log, clean up the stale entry in upstream_fetch_senders,
+        // and break out of the loop. Continue with remaining groups, which
+        // may still be served from cache.
+        //
+        // Note: if the upstream publisher disconnects, the receiver will NOT
+        // get None — the Sender in the upstream_fetch_senders map keeps the
+        // channel alive. The timeout is what handles this case. The timeout
+        // path must remove the stale entry from upstream_fetch_senders.
       }
 
       group_id = gap_end + 1;

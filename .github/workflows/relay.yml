@@ -38,71 +38,31 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Compute image tags
-        id: tags
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          sanitize_ref() {
-            printf '%s' "$1" \
-              | tr '[:upper:]' '[:lower:]' \
-              | sed -E 's|[^a-z0-9._-]+|-|g; s|^[.-]+||; s|[.-]+$||; s|-+|-|g'
-          }
-
-          tags=()
-
-          if [[ "${GITHUB_REF}" == refs/heads/* ]]; then
-            branch_tag="$(sanitize_ref "${GITHUB_REF_NAME}")"
-            tags+=("${IMAGE_NAME}:${branch_tag}")
-            tags+=("${IMAGE_NAME}:${GITHUB_SHA}")
-          elif [[ "${GITHUB_REF}" == refs/tags/relay@* ]]; then
-            version_tag="${GITHUB_REF_NAME#relay@}"
-            tags+=("${IMAGE_NAME}:${version_tag}")
-            tags+=("${IMAGE_NAME}:latest")
-          else
-            echo "Unsupported ref: ${GITHUB_REF}" >&2
-            exit 1
-          fi
-
-          {
-            echo 'tags<<EOF'
-            printf '%s\n' "${tags[@]}"
-            echo EOF
-          } >> "${GITHUB_OUTPUT}"
-
-      - name: Compute image labels
-        id: labels
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          created="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          version="${GITHUB_SHA}"
-
-          if [[ "${GITHUB_REF}" == refs/tags/relay@* ]]; then
-            version="${GITHUB_REF_NAME#relay@}"
-          fi
-
-          {
-            echo 'labels<<EOF'
-            echo 'org.opencontainers.image.title=relay'
-            echo 'org.opencontainers.image.description=Draft 14-compliant MOQtail relay container image'
-            echo 'org.opencontainers.image.url=https://github.com/moqtail/moqtail'
-            echo 'org.opencontainers.image.source=https://github.com/moqtail/moqtail'
-            echo "org.opencontainers.image.created=${created}"
-            echo "org.opencontainers.image.revision=${GITHUB_SHA}"
-            echo "org.opencontainers.image.version=${version}"
-            echo EOF
-          } >> "${GITHUB_OUTPUT}"
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=sha,enable=${{ startsWith(github.ref, 'refs/heads/') }}
+            type=match,pattern=^relay@(.*)$,group=1,enable=${{ startsWith(github.ref, 'refs/tags/relay@') }}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/relay@') }}
+          labels: |
+            org.opencontainers.image.title=relay
+            org.opencontainers.image.description=Draft 14-compliant MOQtail relay container image
+            org.opencontainers.image.url=https://github.com/moqtail/moqtail
+            org.opencontainers.image.source=https://github.com/moqtail/moqtail
 
       - name: Build and push relay image
         uses: docker/build-push-action@v7
         with:
           context: .
           file: apps/relay/Dockerfile
+          target: runtime
+          platforms: linux/amd64
           push: true
-          tags: ${{ steps.tags.outputs.tags }}
-          labels: ${{ steps.labels.outputs.labels }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

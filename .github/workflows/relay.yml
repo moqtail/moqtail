@@ -1,0 +1,108 @@
+name: Relay Image
+
+on:
+  push:
+    branches:
+      - '**'
+    tags:
+      - 'relay@*'
+
+concurrency:
+  group: relay-image-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE_NAME: ghcr.io/moqtail/relay
+
+jobs:
+  publish:
+    name: Build and Publish Relay Image
+    if: ${{ github.repository == 'moqtail/moqtail' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tags
+        id: tags
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sanitize_ref() {
+            printf '%s' "$1" \
+              | tr '[:upper:]' '[:lower:]' \
+              | sed -E 's|[^a-z0-9._-]+|-|g; s|^[.-]+||; s|[.-]+$||; s|-+|-|g'
+          }
+
+          tags=()
+
+          if [[ "${GITHUB_REF}" == refs/heads/* ]]; then
+            branch_tag="$(sanitize_ref "${GITHUB_REF_NAME}")"
+            tags+=("${IMAGE_NAME}:${branch_tag}")
+            tags+=("${IMAGE_NAME}:${GITHUB_SHA}")
+          elif [[ "${GITHUB_REF}" == refs/tags/relay@* ]]; then
+            version_tag="${GITHUB_REF_NAME#relay@}"
+            tags+=("${IMAGE_NAME}:${version_tag}")
+            tags+=("${IMAGE_NAME}:latest")
+          else
+            echo "Unsupported ref: ${GITHUB_REF}" >&2
+            exit 1
+          fi
+
+          {
+            echo 'tags<<EOF'
+            printf '%s\n' "${tags[@]}"
+            echo EOF
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Compute image labels
+        id: labels
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          created="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          version="${GITHUB_SHA}"
+
+          if [[ "${GITHUB_REF}" == refs/tags/relay@* ]]; then
+            version="${GITHUB_REF_NAME#relay@}"
+          fi
+
+          {
+            echo 'labels<<EOF'
+            echo 'org.opencontainers.image.title=relay'
+            echo 'org.opencontainers.image.description=Draft 14-compliant MOQtail relay container image'
+            echo 'org.opencontainers.image.url=https://github.com/moqtail/moqtail'
+            echo 'org.opencontainers.image.source=https://github.com/moqtail/moqtail'
+            echo "org.opencontainers.image.created=${created}"
+            echo "org.opencontainers.image.revision=${GITHUB_SHA}"
+            echo "org.opencontainers.image.version=${version}"
+            echo EOF
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Build and push relay image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: apps/relay/Dockerfile
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          labels: ${{ steps.labels.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

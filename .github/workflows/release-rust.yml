@@ -17,7 +17,9 @@ jobs:
     name: Release Rust
     if: ${{ github.repository_owner == 'moqtail' }}
     runs-on: ubuntu-latest
-    environment: crates
+    environment:
+      name: crates
+      url: https://crates.io/crates/moqtail
     steps:
       - name: Checkout code
         uses: actions/checkout@v5

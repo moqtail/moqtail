@@ -1,53 +1,94 @@
 # MOQtail
 
-Draft 14-compliant MOQT protocol libraries for publisher, subscriber and relay components, featuring various live and on-demand demo applications using the LOC and CMSF formats.
+<p align="center">
+	<strong>Draft 14 Media over QUIC libraries and relay components.</strong><br />
+	Rust and TypeScript tooling for publishers, subscribers, demos, and relay deployments.
+</p>
 
-## moqtail-ts (MOQtail TypeScript Library)
+<p align="center">
+	<a href="https://github.com/moqtail/moqtail/actions/workflows/rust.yml">
+		<img src="https://github.com/moqtail/moqtail/actions/workflows/rust.yml/badge.svg" alt="Rust Checks" />
+	</a>
+	<a href="https://github.com/moqtail/moqtail/actions/workflows/js.yml">
+		<img src="https://github.com/moqtail/moqtail/actions/workflows/js.yml/badge.svg" alt="JavaScript Checks" />
+	</a>
+	<a href="https://github.com/moqtail/moqtail/blob/main/LICENSE">
+		<img src="https://img.shields.io/badge/license-Apache--2.0-0f172a" alt="License: Apache-2.0" />
+	</a>
+	<a href="https://github.com/orgs/moqtail/packages/container/package/relay">
+		<img src="https://img.shields.io/badge/ghcr-ghcr.io%2Fmoqtail%2Frelay-2496ed?logo=docker&logoColor=white" alt="GHCR Relay Image" />
+	</a>
+</p>
 
-The TypeScript client library for Media-over-QUIC (MoQ) applications, designed for seamless integration with WebTransport and MoQ relay servers.
+MOQtail is a Draft 14-compliant MOQT toolkit for building publisher, subscriber, and relay applications. The repository includes Rust and TypeScript libraries, reference clients, and a relay that can be run locally or pulled as a container image from GHCR.
 
-### ✨ Features
+## Components
 
-- 🛡️ **TypeScript**: Type-safe development
-- 🔗 **WebTransport**: Next-gen transport protocol support
-- 🔥 **Hot Module Reloading**: Instant feedback during development
+### moqtail-ts
 
-README available at: [moqtail-ts/README.md](libs/moqtail-ts/README.md)
+The TypeScript library targets browser and WebTransport-based MoQ applications.
 
-## 🚀 Getting Started
+Highlights:
+
+- Type-safe application APIs
+- WebTransport integration
+- Client-side development workflow with the demo app
+
+Library documentation: [libs/moqtail-ts/README.md](libs/moqtail-ts/README.md)
+
+### moqtail-rs
+
+The Rust library provides the core protocol implementation and utilities used by the relay and other Rust applications in this workspace.
+
+Library documentation: [libs/moqtail-rs/README.md](libs/moqtail-rs/README.md)
+
+### Relay
+
+The relay is the deployable Rust service that forwards MoQ messages between publishers and subscribers.
+
+Local run:
+
+```bash
+cargo run -p relay -- --port 4433 --cert-file apps/relay/cert/cert.pem --key-file apps/relay/cert/key.pem
+```
+
+Container image:
+
+```bash
+docker run --rm \
+	-p 4433:4433/udp \
+	-v "$PWD/apps/relay/cert/cert.pem:/certs/cert.pem:ro" \
+	-v "$PWD/apps/relay/cert/key.pem:/certs/key.pem:ro" \
+	ghcr.io/moqtail/relay:latest
+```
+
+Release images are published to `ghcr.io/moqtail/relay` with `latest` and version tags from `relay@*` releases. Branch and commit SHA tags are also published for CI builds.
+
+To build the image locally from the workspace root:
+
+```bash
+docker build -f apps/relay/Dockerfile -t moqtail-relay .
+```
+
+For local certificate generation and browser trust setup, see [apps/relay/cert/README.md](apps/relay/cert/README.md).
+
+## Getting Started
 
 ### Prerequisites
 
-- [Node.js](https://nodejs.org/) (v18+ recommended)
+- [Rust](https://www.rust-lang.org/tools/install)
+- [Node.js](https://nodejs.org/) 18 or newer
 - [npm](https://www.npmjs.com/)
+- [Docker](https://www.docker.com/) for containerized relay builds and runs
 
 ### Installation
 
 ```bash
-# Clone the repository (if not already)
 git clone https://github.com/moqtail/moqtail.git
 cd moqtail
-
-# Install dependencies
 npm install
 ```
 
-## moqtail-rs (MOQtail Rust Library)
+## Contributing
 
-The Rust library for Media-over-QUIC (MoQ) applications, providing core protocol functionalities and utilities.
-
-## Relay
-
-The relay is a Rust application that forwards MoQ messages between publishers and subscribers.
-
-```bash
-cargo run --bin relay -- --port 4433 --cert-file cert/cert.pem --key-file cert/key.pem
-```
-
-### ⚙️ Configuration
-
-- **WebTransport**: Ensure your browser supports WebTransport and that you have trusted the local CA, see the [README.md](apps/relay/cert/README.md) of the relay for instructions.
-
-## 🤝 Contributing
-
-Contributions are welcome! Please open issues or submit pull requests for improvements, bug fixes, or documentation updates.
+Contributions are welcome. Open an issue or submit a pull request for improvements, bug fixes, documentation, or interoperability work.

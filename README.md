@@ -1,11 +1,6 @@
-# MOQtail
-
 <p align="center">
-	<strong>Draft 14 Media over QUIC libraries and relay components.</strong><br />
-	Rust and TypeScript tooling for publishers, subscribers, demos, and relay deployments.
-</p>
-
-<p align="center">
+	<img src="https://moqtail.dev/moqtail.png" alt="MOQtail" width="320" /><br>
+	<br>
 	<a href="https://github.com/moqtail/moqtail/actions/workflows/rust.yml">
 		<img src="https://github.com/moqtail/moqtail/actions/workflows/rust.yml/badge.svg" alt="Rust Checks" />
 	</a>
@@ -18,7 +13,13 @@
 	<a href="https://github.com/orgs/moqtail/packages/container/package/relay">
 		<img src="https://img.shields.io/badge/ghcr-ghcr.io%2Fmoqtail%2Frelay-2496ed?logo=docker&logoColor=white" alt="GHCR Relay Image" />
 	</a>
+	<br>
+	<br>
+	Draft 14 Media-over-QUIC libraries and relay components.<br>
+	Rust and TypeScript tooling for publishers, subscribers, demos, and relay deployments.
 </p>
+
+# MOQtail
 
 MOQtail is a Draft 14-compliant MOQT toolkit for building publisher, subscriber, and relay applications. The repository includes Rust and TypeScript libraries, reference clients, and a relay that can be run locally or pulled as a container image from GHCR.
 

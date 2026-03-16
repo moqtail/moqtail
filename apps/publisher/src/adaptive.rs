@@ -19,10 +19,10 @@ pub struct QualityVariant {
 /// CBR bitrate ladder for HEVC encoding with 1-second GOPs.
 /// Bitrates optimized for HEVC compression efficiency.
 const VARIANTS: &[(Quality, u16, u16, u32)] = &[
-  (Quality::Q1080p, 1920, 1080, 4000),  // 4 Mbps
-  (Quality::Q720p, 1280, 720, 2000),    // 2 Mbps
-  (Quality::Q480p, 854, 480, 1000),     // 1 Mbps
-  (Quality::Q360p, 640, 360, 500),      // 0.5 Mbps
+  (Quality::Q1080p, 1920, 1080, 4000), // 4 Mbps
+  (Quality::Q720p, 1280, 720, 2000),   // 2 Mbps
+  (Quality::Q480p, 854, 480, 1000),    // 1 Mbps
+  (Quality::Q360p, 640, 360, 500),     // 0.5 Mbps
 ];
 
 /// Returns the quality variants available for the given source video.
@@ -31,7 +31,7 @@ const VARIANTS: &[(Quality, u16, u16, u32)] = &[
 pub fn quality_variants(info: &VideoInfo) -> anyhow::Result<Vec<QualityVariant>> {
   let variants: Vec<QualityVariant> = VARIANTS
     .iter()
-    .filter(|(_, _, h, _)| *h <= info.height)
+    .filter(|(_, w, h, _)| *w <= info.width && *h <= info.height)
     .map(|&(quality, width, height, bitrate_kbps)| QualityVariant {
       quality,
       width,
@@ -117,10 +117,10 @@ mod tests {
   #[test]
   fn test_bitrate_ladder_values() {
     let variants = quality_variants(&video(1920, 1080)).unwrap();
-    assert_eq!(variants[0].bitrate_kbps, 4000);  // 4 Mbps
-    assert_eq!(variants[1].bitrate_kbps, 2000);  // 2 Mbps
-    assert_eq!(variants[2].bitrate_kbps, 1000);  // 1 Mbps
-    assert_eq!(variants[3].bitrate_kbps, 500);   // 0.5 Mbps
+    assert_eq!(variants[0].bitrate_kbps, 4000); // 4 Mbps
+    assert_eq!(variants[1].bitrate_kbps, 2000); // 2 Mbps
+    assert_eq!(variants[2].bitrate_kbps, 1000); // 1 Mbps
+    assert_eq!(variants[3].bitrate_kbps, 500); // 0.5 Mbps
   }
 
   #[test]
@@ -141,6 +141,16 @@ mod tests {
   }
 
   #[test]
+  fn test_narrow_width_excludes_wider_variants() {
+    // 4:3 source at 1440x1080 should exclude 1920x1080 (would upscale width)
+    let variants = quality_variants(&video(1440, 1080)).unwrap();
+    assert_eq!(variants.len(), 3);
+    assert_eq!(variants[0].quality, Quality::Q720p);
+    assert_eq!(variants[1].quality, Quality::Q480p);
+    assert_eq!(variants[2].quality, Quality::Q360p);
+  }
+
+  #[test]
   fn test_quality_display() {
     assert_eq!(format!("{}", Quality::Q1080p), "1080p");
     assert_eq!(format!("{}", Quality::Q720p), "720p");
@@ -153,16 +163,16 @@ mod tests {
     // HEVC should deliver same quality as H.264 at ~30-40% lower bitrate
     // Compare to typical H.264 ladder (1080p/6Mbps, 720p/3Mbps, 480p/1.5Mbps, 360p/750kbps)
     let variants = quality_variants(&video(1920, 1080)).unwrap();
-    
+
     // 1080p: 4000kbps (HEVC) vs 6000kbps (H.264) = 33% reduction
     assert_eq!(variants[0].bitrate_kbps, 4000);
-    
-    // 720p: 2000kbps (HEVC) vs 3000kbps (H.264) = 33% reduction  
+
+    // 720p: 2000kbps (HEVC) vs 3000kbps (H.264) = 33% reduction
     assert_eq!(variants[1].bitrate_kbps, 2000);
-    
+
     // 480p: 1000kbps (HEVC) vs 1500kbps (H.264) = 33% reduction
     assert_eq!(variants[2].bitrate_kbps, 1000);
-    
+
     // 360p: 500kbps (HEVC) vs 750kbps (H.264) = 33% reduction
     assert_eq!(variants[3].bitrate_kbps, 500);
   }

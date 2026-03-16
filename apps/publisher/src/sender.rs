@@ -89,7 +89,7 @@ async fn send_group(
     gop.group_id,
     SINGLE_SUBGROUP_ID as u64, // SubgroupHeader takes u64; try_from_subgroup takes u8
     publisher_priority,
-    true,
+    false,
     true,
   );
   let header_info = HeaderInfo::Subgroup {

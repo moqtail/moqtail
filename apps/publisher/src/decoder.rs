@@ -28,40 +28,68 @@ fn decode_blocking(
   framerate: f64,
   gop_tx: &broadcast::Sender<RawGop>,
 ) -> Result<()> {
-  let mut input = ffmpeg_next::format::input(video_path)
-    .with_context(|| format!("failed to open {video_path}"))?;
-
-  let video_stream = input
-    .streams()
-    .best(ffmpeg_next::media::Type::Video)
-    .context("no video stream found")?;
-
-  let stream_index = video_stream.index();
-  let decoder_params = video_stream.parameters();
-
-  let codec_context =
-    ffmpeg_next::codec::Context::from_parameters(decoder_params).context("codec context")?;
-  let mut decoder = codec_context.decoder().video().context("video decoder")?;
-
   let gop_size = crate::encoder::gop_size(framerate) as usize;
   let mut gop_id: u64 = 0;
   let mut frame_buf: Vec<Bytes> = Vec::with_capacity(gop_size);
   let mut decoded_frame = ffmpeg_next::frame::Video::empty();
+  let mut loop_count: u64 = 0;
 
-  info!(
-    "Decoding: {}x{}, gop_size={}",
-    decoder.width(),
-    decoder.height(),
-    gop_size
-  );
+  loop {
+    let mut input = ffmpeg_next::format::input(video_path)
+      .with_context(|| format!("failed to open {video_path}"))?;
 
-  for (stream, packet) in input.packets() {
-    if stream.index() != stream_index {
-      continue;
+    let video_stream = input
+      .streams()
+      .best(ffmpeg_next::media::Type::Video)
+      .context("no video stream found")?;
+
+    let stream_index = video_stream.index();
+    let decoder_params = video_stream.parameters();
+
+    let codec_context =
+      ffmpeg_next::codec::Context::from_parameters(decoder_params).context("codec context")?;
+    let mut decoder = codec_context.decoder().video().context("video decoder")?;
+
+    if loop_count == 0 {
+      info!(
+        "Decoding: {}x{}, gop_size={} (looping)",
+        decoder.width(),
+        decoder.height(),
+        gop_size
+      );
+    } else {
+      info!("Looping video (pass {}), gop_id={}", loop_count + 1, gop_id);
     }
 
-    decoder.send_packet(&packet)?;
+    for (stream, packet) in input.packets() {
+      if stream.index() != stream_index {
+        continue;
+      }
 
+      decoder.send_packet(&packet)?;
+
+      while decoder.receive_frame(&mut decoded_frame).is_ok() {
+        let yuv_bytes = extract_yuv420p(&decoded_frame);
+        frame_buf.push(yuv_bytes);
+
+        if frame_buf.len() >= gop_size {
+          let gop = RawGop {
+            gop_id,
+            frames: std::mem::replace(&mut frame_buf, Vec::with_capacity(gop_size)),
+          };
+
+          if gop_tx.send(gop).is_err() {
+            warn!("All receivers dropped, stopping decoder");
+            return Ok(());
+          }
+
+          gop_id += 1;
+        }
+      }
+    }
+
+    // Flush remaining frames from this pass's decoder
+    decoder.send_eof()?;
     while decoder.receive_frame(&mut decoded_frame).is_ok() {
       let yuv_bytes = extract_yuv420p(&decoded_frame);
       frame_buf.push(yuv_bytes);
@@ -73,45 +101,28 @@ fn decode_blocking(
         };
 
         if gop_tx.send(gop).is_err() {
-          warn!("All receivers dropped, stopping decoder");
           return Ok(());
         }
 
         gop_id += 1;
       }
     }
-  }
 
-  decoder.send_eof()?;
-  while decoder.receive_frame(&mut decoded_frame).is_ok() {
-    let yuv_bytes = extract_yuv420p(&decoded_frame);
-    frame_buf.push(yuv_bytes);
-
-    if frame_buf.len() >= gop_size {
+    // Send any remaining partial GOP at the loop boundary so frames
+    // aren't silently dropped between passes.
+    if !frame_buf.is_empty() {
       let gop = RawGop {
         gop_id,
         frames: std::mem::replace(&mut frame_buf, Vec::with_capacity(gop_size)),
       };
-
       if gop_tx.send(gop).is_err() {
         return Ok(());
       }
-
       gop_id += 1;
     }
-  }
 
-  if !frame_buf.is_empty() {
-    let gop = RawGop {
-      gop_id,
-      frames: frame_buf,
-    };
-    let _ = gop_tx.send(gop);
-    gop_id += 1;
+    loop_count += 1;
   }
-
-  info!("Decoding complete: {} GOPs produced", gop_id);
-  Ok(())
 }
 
 /// Extracts YUV420P plane data from a decoded frame into a single contiguous buffer.

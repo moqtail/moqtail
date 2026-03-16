@@ -242,3 +242,7 @@ Cargo.lock
 
 ### Relay Logs ###
 relay.log.*
+
+
+### Superpowers ###
+docs/*

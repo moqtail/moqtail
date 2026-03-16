@@ -4,6 +4,7 @@ use ffmpeg_next::codec::encoder;
 use ffmpeg_next::format::Pixel;
 use tracing::{info, warn};
 
+use crate::cmaf;
 use crate::scaler::ScaledGop;
 use crate::video::yuv420p_to_video_frame;
 
@@ -30,7 +31,7 @@ pub enum HardwareEncoder {
   VideoToolbox, // Apple VideoToolbox
 }
 
-/// Detects available hardware encoders, preferring NVIDIA > Intel > VA-API > Apple.
+/// Detects available HEVC hardware encoders, preferring NVIDIA > Intel > VA-API > Apple.
 /// Call this ONCE at startup and share the result across all encoder pipelines.
 pub fn detect_hardware_encoder() -> Option<HardwareEncoder> {
   if ffmpeg_next::encoder::find_by_name("hevc_nvenc").is_some() {
@@ -46,6 +47,164 @@ pub fn detect_hardware_encoder() -> Option<HardwareEncoder> {
     return Some(HardwareEncoder::VideoToolbox);
   }
   None
+}
+
+/// Opens an encoder with the given parameters, reads `extradata` (HVCC record),
+/// then immediately closes it.  Returns the raw HVCC bytes needed to build an
+/// MP4 init segment.  Falls back to a zero-length slice if the encoder provides
+/// no extradata (should not happen for any HEVC encoder).
+pub async fn get_extradata(
+  framerate: f64,
+  width: u32,
+  height: u32,
+  bitrate_kbps: u32,
+  hw_encoder: Option<HardwareEncoder>,
+) -> Result<bytes::Bytes> {
+  tokio::task::spawn_blocking(move || {
+    get_extradata_blocking(framerate, width, height, bitrate_kbps, hw_encoder)
+  })
+  .await
+  .context("get_extradata task panicked")?
+}
+
+fn get_extradata_blocking(
+  framerate: f64,
+  width: u32,
+  height: u32,
+  bitrate_kbps: u32,
+  hw_encoder: Option<HardwareEncoder>,
+) -> Result<bytes::Bytes> {
+  // Use the SAME encoder that the real pipeline will use, so the SPS/PPS
+  // in the init segment's avcC box match the actual encoded bitstream.
+  // The Annex B → avcC conversion in catalog.rs handles the format.
+  let encoder_name = encoder_name_for(hw_encoder);
+  let codec = ffmpeg_next::encoder::find_by_name(encoder_name)
+    .with_context(|| format!("encoder '{}' not found", encoder_name))?;
+
+  let mut enc = ffmpeg_next::codec::Context::new_with_codec(codec)
+    .encoder()
+    .video()?;
+
+  enc.set_width(width);
+  enc.set_height(height);
+  enc.set_format(Pixel::YUV420P);
+  enc.set_time_base((1, framerate.ceil() as i32));
+
+  let bitrate_bps = (bitrate_kbps as i64) * 1000;
+  enc.set_bit_rate(bitrate_bps as usize);
+  enc.set_max_bit_rate(bitrate_bps as usize);
+  enc.set_gop(gop_size(framerate));
+
+  // GLOBAL_HEADER: put SPS/PPS in extradata (avcC record) instead of in-band.
+  // Set via raw FFI to ensure the flag is actually applied.
+  unsafe {
+    // AV_CODEC_FLAG_GLOBAL_HEADER = 1 << 22 = 0x00400000
+    (*enc.as_mut_ptr()).flags |= 0x00400000;
+  }
+
+  info!(
+    "get_extradata: opening encoder '{}' for {}x{} (flags={:#010X})",
+    encoder_name,
+    width,
+    height,
+    unsafe { (*enc.as_ptr()).flags }
+  );
+
+  let opts = build_encoder_opts(encoder_name, bitrate_kbps);
+  let opened = enc.open_with(opts)?;
+
+  // Read extradata (AVCDecoderConfigurationRecord with SPS/PPS)
+  // libx264 with GLOBAL_HEADER populates extradata immediately after open.
+  let extra: bytes::Bytes = unsafe {
+    let ctx = opened.as_ptr();
+    let ptr = (*ctx).extradata;
+    let size = (*ctx).extradata_size as usize;
+    if ptr.is_null() || size == 0 {
+      bytes::Bytes::new()
+    } else {
+      bytes::Bytes::copy_from_slice(std::slice::from_raw_parts(ptr, size))
+    }
+  };
+
+  if extra.len() >= 4 {
+    let hex_preview: String = extra
+      .iter()
+      .take(16)
+      .map(|b| format!("{:02X}", b))
+      .collect::<Vec<_>>()
+      .join(" ");
+    info!(
+      "Extradata: {} bytes, first bytes=[{}], profile={:#04X} compat={:#04X} level={:#04X} (encoder={})",
+      extra.len(),
+      hex_preview,
+      extra[1],
+      extra[2],
+      extra[3],
+      encoder_name
+    );
+  } else {
+    warn!(
+      "Extradata is only {} bytes (expected ≥4) from encoder {}",
+      extra.len(),
+      encoder_name
+    );
+  }
+
+  Ok(extra)
+}
+
+/// Returns the encoder codec name for the detected hardware (or software fallback).
+fn encoder_name_for(hw_encoder: Option<HardwareEncoder>) -> &'static str {
+  match hw_encoder {
+    Some(HardwareEncoder::Nvenc) => "hevc_nvenc",
+    Some(HardwareEncoder::Qsv) => "hevc_qsv",
+    Some(HardwareEncoder::Vaapi) => "hevc_vaapi",
+    Some(HardwareEncoder::VideoToolbox) => "hevc_videotoolbox",
+    None => "libx265",
+  }
+}
+
+/// Builds the encoder option dictionary for the given encoder and bitrate.
+fn build_encoder_opts(encoder_name: &str, bitrate_kbps: u32) -> ffmpeg_next::Dictionary<'_> {
+  let mut opts = ffmpeg_next::Dictionary::new();
+  let vbv_bufsize = bitrate_kbps * 2;
+  let vbv_maxrate = bitrate_kbps;
+
+  if encoder_name == "libx265" {
+    opts.set("preset", "medium");
+    opts.set("tune", "zerolatency");
+    opts.set("profile", "main");
+    opts.set(
+      "x265-params",
+      &format!(
+        "scenecut=0:open-gop=0:bframes=0:rc-lookahead=0:vbv-bufsize={vbv_bufsize}:vbv-maxrate={vbv_maxrate}"
+      ),
+    );
+  } else if encoder_name == "hevc_nvenc" {
+    opts.set("preset", "p4");
+    opts.set("tune", "ll");
+    opts.set("rc", "cbr");
+    opts.set("cbr", "1");
+    opts.set("bf", "0");
+    opts.set("forced-idr", "1");
+    opts.set("strict_gop", "1");
+  } else if encoder_name == "hevc_qsv" {
+    opts.set("preset", "medium");
+    opts.set("look_ahead", "0");
+    opts.set("async_depth", "1");
+    opts.set("rc_mode", "cbr");
+    opts.set("bf", "0");
+  } else if encoder_name == "hevc_vaapi" {
+    opts.set("rc_mode", "CBR");
+    opts.set("qp", "23");
+    opts.set("bf", "0");
+  } else if encoder_name == "hevc_videotoolbox" {
+    opts.set("realtime", "1");
+    opts.set("profile", "main");
+    opts.set("allow_sw", "0");
+  }
+
+  opts
 }
 
 /// Encodes pre-scaled GOPs at a fixed resolution using HEVC (CBR).
@@ -92,28 +251,15 @@ fn encode_blocking(
   scaled_rx: &mut tokio::sync::mpsc::Receiver<ScaledGop>,
   on_gop: &tokio::sync::mpsc::Sender<EncodedGop>,
 ) -> Result<()> {
-  let encoder_name = match hw_encoder {
-    Some(HardwareEncoder::Nvenc) => {
-      info!("Using NVIDIA NVENC hardware encoder");
-      "hevc_nvenc"
-    }
-    Some(HardwareEncoder::Qsv) => {
-      info!("Using Intel QSV hardware encoder");
-      "hevc_qsv"
-    }
-    Some(HardwareEncoder::Vaapi) => {
-      info!("Using VA-API hardware encoder");
-      "hevc_vaapi"
-    }
-    Some(HardwareEncoder::VideoToolbox) => {
-      info!("Using Apple VideoToolbox hardware encoder");
-      "hevc_videotoolbox"
-    }
-    None => {
-      info!("No hardware encoder detected, using software libx265");
-      "libx265"
-    }
-  };
+  let encoder_name = encoder_name_for(hw_encoder);
+
+  match hw_encoder {
+    Some(HardwareEncoder::Nvenc) => info!("Using NVIDIA NVENC HEVC hardware encoder"),
+    Some(HardwareEncoder::Qsv) => info!("Using Intel QSV HEVC hardware encoder"),
+    Some(HardwareEncoder::Vaapi) => info!("Using VA-API HEVC hardware encoder"),
+    Some(HardwareEncoder::VideoToolbox) => info!("Using Apple VideoToolbox HEVC hardware encoder"),
+    None => info!("No hardware encoder detected, using software libx265"),
+  }
 
   info!(
     "Encoder: {}x{} @ {:.2} fps, {} kbps CBR (HEVC/{})",
@@ -130,70 +276,34 @@ fn encode_blocking(
   encoder.set_width(width);
   encoder.set_height(height);
   encoder.set_format(Pixel::YUV420P);
-  // Time base in frame units: 1/fps.
-  // PTS values written per frame are absolute frame indices, making DTS/PTS
-  // unambiguous for constant-framerate content.
   encoder.set_time_base((1, framerate.ceil() as i32));
 
   let bitrate_bps = (bitrate_kbps as i64) * 1000;
   encoder.set_bit_rate(bitrate_bps as usize);
   encoder.set_max_bit_rate(bitrate_bps as usize);
-
-  // 1-second closed GOPs, frame count derived from actual framerate.
-  let gop_frames = gop_size(framerate);
-  encoder.set_gop(gop_frames);
-
-  // VBV buffer = 2× target bitrate (2-second buffer). This gives the encoder
-  // enough slack to handle I-frame spikes while maintaining CBR compliance.
-  let vbv_bufsize = bitrate_kbps * 2;
-  let vbv_maxrate = bitrate_kbps;
-
-  let mut opts = ffmpeg_next::Dictionary::new();
-
-  if encoder_name == "libx265" {
-    opts.set("preset", "medium");
-    opts.set("tune", "zerolatency");
-    opts.set("profile", "main");
-    opts.set(
-      "x265-params",
-      &format!(
-        "scenecut=0:open-gop=0:bframes=0:rc-lookahead=0:vbv-bufsize={vbv_bufsize}:vbv-maxrate={vbv_maxrate}"
-      ),
-    );
-  } else if encoder_name == "hevc_nvenc" {
-    opts.set("preset", "p4");
-    opts.set("tune", "ll");
-    opts.set("rc", "cbr");
-    opts.set("cbr", "1");
-    opts.set("bf", "0");
-    opts.set("forced-idr", "1");
-    opts.set("strict_gop", "1");
-  } else if encoder_name == "hevc_qsv" {
-    opts.set("preset", "medium");
-    opts.set("look_ahead", "0");
-    opts.set("async_depth", "1");
-    opts.set("rc_mode", "cbr");
-    opts.set("bf", "0");
-  } else if encoder_name == "hevc_vaapi" {
-    opts.set("rc_mode", "CBR");
-    opts.set("qp", "23");
-    opts.set("bf", "0");
-  } else if encoder_name == "hevc_videotoolbox" {
-    opts.set("realtime", "1");
-    opts.set("profile", "main");
-    opts.set("allow_sw", "0");
-    // VideoToolbox HEVC does not expose a "bf" option via libavcodec;
-    // it does not support B-frames by default so no explicit setting is needed.
+  encoder.set_gop(gop_size(framerate));
+  // GLOBAL_HEADER via raw FFI — keeps SPS/PPS out of the bitstream
+  unsafe {
+    (*encoder.as_mut_ptr()).flags |= 0x00400000;
   }
 
+  let opts = build_encoder_opts(encoder_name, bitrate_kbps);
   let mut encoder = encoder.open_with(opts)?;
 
   // Hold one GOP back so end-of-stream flush packets can be attached
   // to the final GOP instead of being discarded.
   let mut pending_last_gop: Option<EncodedGop> = None;
+  let mut sequence_number: u32 = 0;
 
   while let Some(gop) = scaled_rx.blocking_recv() {
-    let encoded = encode_gop(&mut encoder, &gop, width, height, framerate)?;
+    let encoded = encode_gop(
+      &mut encoder,
+      &gop,
+      width,
+      height,
+      framerate,
+      &mut sequence_number,
+    )?;
 
     if let Some(previous) = pending_last_gop.replace(encoded)
       && on_gop.blocking_send(previous).is_err()
@@ -206,10 +316,23 @@ fn encode_blocking(
   // Flush frames buffered inside the encoder (e.g. reorder buffer) and append
   // trailing packets to the final GOP before sending it downstream.
   encoder.send_eof()?;
+  let sample_duration = (TIMESCALE as f64 / framerate).round() as u32;
   let mut flushed_packets = Vec::new();
   let mut packet = ffmpeg_next::Packet::empty();
   while encoder.receive_packet(&mut packet).is_ok() {
-    flushed_packets.push(Bytes::copy_from_slice(packet.data().unwrap_or(&[])));
+    let raw = packet.data().unwrap_or(&[]);
+    let hvcc_data = cmaf::annex_b_to_hvcc(raw);
+    let pts = packet.pts().unwrap_or(0) as u64;
+    let decode_time = pts * sample_duration as u64;
+    let chunk = cmaf::wrap_cmaf_chunk(
+      sequence_number,
+      decode_time,
+      sample_duration,
+      false,
+      &hvcc_data,
+    );
+    sequence_number += 1;
+    flushed_packets.push(chunk);
   }
 
   if let Some(mut final_gop) = pending_last_gop {
@@ -237,25 +360,34 @@ fn encode_blocking(
   Ok(())
 }
 
+/// CMAF timescale matching the catalog's `timescale: 90000`.
+const TIMESCALE: u32 = 90000;
+
 /// Encodes a single GOP using the provided encoder context.
+/// Each encoded packet is wrapped in a CMAF chunk (moof+mdat) so it can be
+/// appended directly to the browser's MSE SourceBuffer.
 fn encode_gop(
   encoder: &mut encoder::Video,
   gop: &ScaledGop,
   width: u32,
   height: u32,
   framerate: f64,
+  sequence_number: &mut u32,
 ) -> Result<EncodedGop> {
   let gop_frames = gop_size(framerate) as u64;
+  let sample_duration = (TIMESCALE as f64 / framerate).round() as u32;
   let mut encoded_packets = Vec::with_capacity(gop.frames.len());
 
   for (frame_idx, frame_data) in gop.frames.iter().enumerate() {
     let mut video_frame = yuv420p_to_video_frame(frame_data, width, height);
 
     // Global frame index as PTS, consistent with the 1/fps time base.
-    video_frame.set_pts(Some((gop.gop_id * gop_frames + frame_idx as u64) as i64));
+    let global_frame = gop.gop_id * gop_frames + frame_idx as u64;
+    video_frame.set_pts(Some(global_frame as i64));
 
     // Mark the first frame of every GOP as an IDR keyframe.
-    if frame_idx == 0 {
+    let is_keyframe = frame_idx == 0;
+    if is_keyframe {
       video_frame.set_kind(ffmpeg_next::util::picture::Type::I);
     }
 
@@ -263,7 +395,21 @@ fn encode_gop(
 
     let mut packet = ffmpeg_next::Packet::empty();
     while encoder.receive_packet(&mut packet).is_ok() {
-      encoded_packets.push(Bytes::copy_from_slice(packet.data().unwrap_or(&[])));
+      let raw = packet.data().unwrap_or(&[]);
+      // Convert Annex B → HVCC length-prefixed if needed
+      let hvcc_data = cmaf::annex_b_to_hvcc(raw);
+
+      let decode_time = global_frame * sample_duration as u64;
+      let chunk = cmaf::wrap_cmaf_chunk(
+        *sequence_number,
+        decode_time,
+        sample_duration,
+        is_keyframe,
+        &hvcc_data,
+      );
+      *sequence_number += 1;
+
+      encoded_packets.push(chunk);
     }
   }
 

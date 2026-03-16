@@ -188,28 +188,48 @@ fn encode_blocking(
 
   let mut encoder = encoder.open_with(opts)?;
 
+  // Hold one GOP back so end-of-stream flush packets can be attached
+  // to the final GOP instead of being discarded.
+  let mut pending_last_gop: Option<EncodedGop> = None;
+
   while let Some(gop) = scaled_rx.blocking_recv() {
     let encoded = encode_gop(&mut encoder, &gop, width, height, framerate)?;
-    if on_gop.blocking_send(encoded).is_err() {
+
+    if let Some(previous) = pending_last_gop.replace(encoded)
+      && on_gop.blocking_send(previous).is_err()
+    {
       warn!("Encoder: receiver dropped, stopping");
       return Ok(());
     }
   }
 
-  // Flush frames buffered inside the encoder (e.g. reorder buffer).
-  // This ensures no packets are silently discarded at end-of-stream.
+  // Flush frames buffered inside the encoder (e.g. reorder buffer) and append
+  // trailing packets to the final GOP before sending it downstream.
   encoder.send_eof()?;
-  let mut flushed = 0usize;
+  let mut flushed_packets = Vec::new();
   let mut packet = ffmpeg_next::Packet::empty();
   while encoder.receive_packet(&mut packet).is_ok() {
-    flushed += 1;
-    // Trailing packets belong to the last GOP which has already been sent.
-    // A production implementation should append these to the last EncodedGop.
+    flushed_packets.push(Bytes::copy_from_slice(packet.data().unwrap_or(&[])));
   }
-  if flushed > 0 {
-    info!(
-      "Encoder: flushed {} trailing packet(s) at end-of-stream",
-      flushed
+
+  if let Some(mut final_gop) = pending_last_gop {
+    let flushed_count = flushed_packets.len();
+    if flushed_count > 0 {
+      final_gop.packets.extend(flushed_packets);
+      info!(
+        "Encoder: appended {} trailing packet(s) to final GOP {}",
+        flushed_count, final_gop.group_id
+      );
+    }
+
+    if on_gop.blocking_send(final_gop).is_err() {
+      warn!("Encoder: receiver dropped, stopping");
+      return Ok(());
+    }
+  } else if !flushed_packets.is_empty() {
+    warn!(
+      "Encoder: received {} trailing packet(s) at flush with no GOP to attach",
+      flushed_packets.len()
     );
   }
 

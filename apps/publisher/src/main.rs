@@ -1,5 +1,7 @@
 mod adaptive;
+mod catalog;
 mod cli;
+mod cmaf;
 mod connection;
 mod decoder;
 mod encoder;
@@ -42,9 +44,49 @@ async fn main() -> Result<()> {
     );
   }
 
+  // Gather HVCC extradata for each variant (opens + closes one encoder per variant).
+  info!(
+    "Probing encoder extradata for {} variants...",
+    variants.len()
+  );
+  let mut catalog_tracks: Vec<catalog::CatalogTrack> = Vec::with_capacity(variants.len());
+  for v in &variants {
+    let extra = encoder::get_extradata(
+      video_info.framerate,
+      v.width as u32,
+      v.height as u32,
+      v.bitrate_kbps,
+      hw_encoder,
+    )
+    .await?;
+    let init_seg = catalog::build_init_segment(&extra, v.width, v.height);
+    let codec = catalog::codec_string_from_extradata(&extra);
+    catalog_tracks.push(catalog::CatalogTrack {
+      name: format!("video-{}", v.quality),
+      codec,
+      width: v.width,
+      height: v.height,
+      bitrate_bps: v.bitrate_kbps * 1000,
+      init_segment: init_seg,
+    });
+  }
+  let catalog_json = catalog::build_catalog_json(&catalog_tracks)?;
+  info!("Catalog JSON built ({} bytes)", catalog_json.len());
+
   let mut moq = MoqConnection::establish(&cli.endpoint, cli.validate_cert).await?;
 
   let namespace = &cli.namespace;
+
+  // Publish the catalog track first (alias 0).
+  const CATALOG_ALIAS: u64 = 0;
+  moq
+    .publish_track(namespace, "catalog", CATALOG_ALIAS)
+    .await?;
+  moq
+    .send_catalog_object(CATALOG_ALIAS, 0, catalog_json.clone())
+    .await?;
+  info!("Catalog track published and object sent");
+
   let mut track_aliases = Vec::with_capacity(variants.len());
   for (i, v) in variants.iter().enumerate() {
     let track_name = format!("video-{}", v.quality);
@@ -65,8 +107,36 @@ async fn main() -> Result<()> {
   // Bytes inside RawGop is Arc-based, so broadcast clones are cheap (no frame data copied).
   let (raw_tx, _) = tokio::sync::broadcast::channel(2);
 
-  // Spawn one scale → encode → send pipeline per variant.
-  let mut tasks = Vec::with_capacity(variants.len() + 1);
+  // +2: one per video pipeline, one decoder, one catalog refresh
+  let mut tasks = Vec::with_capacity(variants.len() + 2);
+
+  // Periodically resend the catalog so late-joining subscribers receive it.
+  // The relay does not replay cached objects to new subscribers; instead we
+  // push a new catalog group every 2 seconds. A subscriber who arrives will
+  // receive it within ~2 seconds.
+  let catalog_conn = moq.connection.clone();
+  let catalog_json_refresh = catalog_json.clone();
+  let cancel_catalog = cancel.clone();
+  tasks.push(tokio::spawn(async move {
+    let mut group_id: u64 = 1; // group 0 already sent above
+    loop {
+      tokio::select! {
+        _ = tokio::time::sleep(tokio::time::Duration::from_secs(2)) => {
+          if let Err(e) = connection::MoqConnection::send_catalog_object_static(
+            &catalog_conn, CATALOG_ALIAS, group_id, catalog_json_refresh.clone()
+          ).await {
+            tracing::warn!("Catalog refresh (group {}): {:#}", group_id, e);
+          }
+          group_id += 1;
+        }
+        _ = cancel_catalog.cancelled() => {
+          info!("Catalog refresh task cancelled");
+          break;
+        }
+      }
+    }
+    Ok::<(), anyhow::Error>(())
+  }));
   let source_width = video_info.width as u32;
   let source_height = video_info.height as u32;
   let framerate = video_info.framerate;

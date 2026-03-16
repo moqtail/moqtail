@@ -15,3 +15,5 @@ wtransport = { workspace = true, features = ["dangerous-configuration"] }
 moqtail = { version = "*", path = "../../libs/moqtail-rs" }
 ffmpeg-next = "8.0.0"
 tokio-util = "0.7"
+serde_json = "1"
+base64 = "0.22"

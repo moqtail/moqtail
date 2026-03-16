@@ -24,6 +24,9 @@ async fn main() -> Result<()> {
 
   ffmpeg_next::init().expect("failed to initialize ffmpeg");
 
+  // Detect hardware encoder once rather than once per pipeline variant.
+  let hw_encoder = encoder::detect_hardware_encoder();
+
   let video_info = video::get_video_info(&cli.video_path).await?;
   info!(
     "Source: {}x{} @ {:.2} fps",
@@ -66,6 +69,11 @@ async fn main() -> Result<()> {
   let mut tasks = Vec::with_capacity(variants.len() + 1);
   let source_width = video_info.width as u32;
   let source_height = video_info.height as u32;
+  let framerate = video_info.framerate;
+  // variant_count is used to assign descending priorities: the highest-quality
+  // variant (index 0) gets the highest priority number (dropped first under
+  // congestion) so that lower-quality tracks survive network stress.
+  let variant_count = variants.len();
 
   for (i, variant) in variants.into_iter().enumerate() {
     let track_alias = track_aliases[i];
@@ -73,13 +81,16 @@ async fn main() -> Result<()> {
     let raw_rx = raw_tx.subscribe();
     let cancel = cancel.clone();
 
+    // Priority: lower-quality variants get a lower number (higher delivery priority).
+    let publisher_priority = (variant_count as u8).saturating_sub(i as u8);
+
     let task = tokio::spawn(async move {
       let (scaled_tx, scaled_rx) = tokio::sync::mpsc::channel(2);
       let (gop_tx, gop_rx) = tokio::sync::mpsc::channel(2);
 
       info!(
-        "Starting pipeline: {} (alias={})",
-        variant.quality, track_alias
+        "Starting pipeline: {} (alias={}, priority={})",
+        variant.quality, track_alias, publisher_priority
       );
 
       let scale_handle = tokio::spawn(scaler::scale(
@@ -90,8 +101,21 @@ async fn main() -> Result<()> {
         raw_rx,
         scaled_tx,
       ));
-      let encode_handle = tokio::spawn(encoder::encode(variant.bitrate_kbps, scaled_rx, gop_tx));
-      let send_handle = tokio::spawn(sender::send_track(conn, track_alias, gop_rx));
+      let encode_handle = tokio::spawn(encoder::encode(
+        framerate,
+        variant.width as u32,
+        variant.height as u32,
+        variant.bitrate_kbps,
+        hw_encoder,
+        scaled_rx,
+        gop_tx,
+      ));
+      let send_handle = tokio::spawn(sender::send_track(
+        conn,
+        track_alias,
+        publisher_priority,
+        gop_rx,
+      ));
 
       let (scale_result, encode_result, send_result) =
         tokio::join!(scale_handle, encode_handle, send_handle);
@@ -116,7 +140,7 @@ async fn main() -> Result<()> {
 
   // Spawn the single decoder that feeds all encoders.
   let video_path = cli.video_path.clone();
-  let framerate = video_info.framerate;
+  // `framerate` was already captured above for the encoder pipelines.
   let cancel_for_decoder = cancel.clone();
   let decode_task = tokio::spawn(async move {
     tokio::select! {

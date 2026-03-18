@@ -18,7 +18,7 @@ import {
   FullTrackName,
   GroupOrder,
   FilterType,
-  VersionSpecificParameters,
+  MessageParameters,
   FetchType,
   Location,
   SetupParameters,
@@ -161,8 +161,8 @@ export type SubscribeOptions = {
   forward: boolean
   /** {@link FilterType} variant controlling starting subset (e.g. {@link FilterType.LatestObject}). */
   filterType: FilterType
-  /** Optional extension {@link VersionSpecificParameters} appended to the SUBSCRIBE control message. */
-  parameters?: VersionSpecificParameters
+  /** Optional extension {@link MessageParameters} appended to the SUBSCRIBE control message. */
+  parameters?: MessageParameters
   /** Required for {@link FilterType.AbsoluteStart} / {@link FilterType.AbsoluteRange}; earliest {@link Location} to include. */
   startLocation?: Location
   /** Required for {@link FilterType.AbsoluteRange}; exclusive upper group boundary (coerced to bigint if number provided). */
@@ -196,8 +196,8 @@ export type SubscribeUpdateOptions = {
   priority: number
   /** Updated direction flag. */
   forward: boolean
-  /** Optional additional {@link VersionSpecificParameters}; existing parameters persist if omitted. */
-  parameters?: VersionSpecificParameters
+  /** Optional additional {@link MessageParameters}; existing parameters persist if omitted. */
+  parameters?: MessageParameters
 }
 
 /**
@@ -216,8 +216,8 @@ export type SwitchOptions = {
   fullTrackName: FullTrackName
   /** The original SUBSCRIBE request id (bigint) being updated. */
   subscriptionRequestId: bigint
-  /** Optional additional {@link VersionSpecificParameters}; existing parameters persist if omitted. */
-  parameters?: VersionSpecificParameters
+  /** Optional additional {@link MessageParameters}; existing parameters persist if omitted. */
+  parameters?: MessageParameters
 }
 
 /**
@@ -284,6 +284,6 @@ export type FetchOptions = {
         /** Properties for absolute fetch: subscription id and starting position. */
         props: { joiningRequestId: bigint; joiningStart: bigint }
       }
-  /** Optional {@link VersionSpecificParameters} block. */
-  parameters?: VersionSpecificParameters
+  /** Optional {@link MessageParameters} block. */
+  parameters?: MessageParameters
 }

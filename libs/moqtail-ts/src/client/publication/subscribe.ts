@@ -17,14 +17,7 @@
 import { FilterType, Subscribe, PublishDone, PublishDoneStatusCode, SubscribeUpdate } from '@/model/control'
 import { MOQtailClient } from '../client'
 import { Track } from '../track/track'
-import {
-  InternalError,
-  Location,
-  ReasonPhrase,
-  SubgroupHeaderType,
-  VersionSpecificParameter,
-  VersionSpecificParameters,
-} from '@/model'
+import { InternalError, Location, ReasonPhrase, SubgroupHeaderType, MessageParameters } from '@/model'
 import { SendStream } from '../data_stream'
 import { SubgroupHeader } from '@/model/data/subgroup_header'
 import { MoqtObject } from '@/model/data/object'
@@ -78,7 +71,7 @@ export class SubscribePublication {
   /**
    * The subscription parameters for this publication.
    */
-  #subscribeParameters: VersionSpecificParameter[]
+  #parameters: MessageParameters
 
   /**
    * The number of streams opened for this subscription.
@@ -131,6 +124,11 @@ export class SubscribePublication {
     this.#trackAlias = track.trackAlias!
     this.#publisherPriority = track.publisherPriority
     this.#subscriberPriority = subscribeMsg.subscriberPriority
+    this.#subscriberPriority = subscribeMsg.subscriberPriority
+    this.#parameters = MessageParameters.fromKeyValuePairs(subscribeMsg.parameters)
+    this.#subscriberPriority = this.#parameters.subscriberPriority
+    this.#forward = this.#parameters.forward
+
     switch (subscribeMsg.filterType) {
       case FilterType.LatestObject:
         if (largestLocation) {
@@ -154,8 +152,6 @@ export class SubscribePublication {
         this.#endGroup = subscribeMsg.endGroup
         break
     }
-    this.#forward = subscribeMsg.forward
-    this.#subscribeParameters = VersionSpecificParameters.fromKeyValuePairs(subscribeMsg.parameters)
     this.publish()
   }
 
@@ -205,7 +201,7 @@ export class SubscribePublication {
     this.#endGroup = msg.endGroup
     this.#subscriberPriority = msg.subscriberPriority
     this.#forward = msg.forward
-    this.#subscribeParameters = VersionSpecificParameters.fromKeyValuePairs(msg.parameters)
+    this.#parameters.applyUpdate(msg.parameters)
   }
 
   /**

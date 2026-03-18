@@ -1,5 +1,5 @@
 /**
- * Copyright 2025 The MOQtail Authors
+ * Copyright 2026 The MOQtail Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,22 +16,10 @@
 
 import { InvalidTypeError } from '../error'
 
-export enum CommonType {
-  AuthorizationToken = 0x03,
-}
-
-export function commonTypeFromNumber(value: number): CommonType {
-  switch (value) {
-    case 0x03:
-      return CommonType.AuthorizationToken
-    default:
-      throw new InvalidTypeError('commonTypeFromNumber', `Invalid common type: ${value}`)
-  }
-}
-
 export enum SetupParameterType {
   Path = 0x01,
   MaxRequestId = 0x02,
+  AuthorizationToken = 0x03,
   MaxAuthTokenCacheSize = 0x04,
 }
 
@@ -41,6 +29,8 @@ export function setupParameterTypeFromNumber(value: number): SetupParameterType 
       return SetupParameterType.Path
     case 0x02:
       return SetupParameterType.MaxRequestId
+    case 0x03:
+      return SetupParameterType.AuthorizationToken
     case 0x04:
       return SetupParameterType.MaxAuthTokenCacheSize
     default:
@@ -48,22 +38,41 @@ export function setupParameterTypeFromNumber(value: number): SetupParameterType 
   }
 }
 
-export enum VersionSpecificParameterType {
-  AuthorizationToken = 0x01,
+export enum MessageParameterType {
   DeliveryTimeout = 0x02,
-  MaxCacheDuration = 0x04,
+  AuthorizationToken = 0x03,
+  Expires = 0x08,
+  LargestObject = 0x09,
+  Forward = 0x10,
+  SubscriberPriority = 0x20,
+  SubscriptionFilter = 0x21,
+  GroupOrder = 0x22,
+  NewGroupRequest = 0x32,
 }
 
-export function versionSpecificParameterTypeFromNumber(value: number): VersionSpecificParameterType {
-  switch (value) {
-    case 0x01:
-      return VersionSpecificParameterType.AuthorizationToken
+export function messageParameterTypeFromNumber(value: bigint | number): MessageParameterType {
+  const numValue = Number(value)
+  switch (numValue) {
     case 0x02:
-      return VersionSpecificParameterType.DeliveryTimeout
-    case 0x04:
-      return VersionSpecificParameterType.MaxCacheDuration
+      return MessageParameterType.DeliveryTimeout
+    case 0x03:
+      return MessageParameterType.AuthorizationToken
+    case 0x08:
+      return MessageParameterType.Expires
+    case 0x09:
+      return MessageParameterType.LargestObject
+    case 0x10:
+      return MessageParameterType.Forward
+    case 0x20:
+      return MessageParameterType.SubscriberPriority
+    case 0x21:
+      return MessageParameterType.SubscriptionFilter
+    case 0x22:
+      return MessageParameterType.GroupOrder
+    case 0x32:
+      return MessageParameterType.NewGroupRequest
     default:
-      throw new InvalidTypeError('versionSpecificParameterTypeFromNumber', `Invalid version parameter type: ${value}`)
+      throw new InvalidTypeError('messageParameterTypeFromNumber', `Unknown message parameter type: ${value}`)
   }
 }
 

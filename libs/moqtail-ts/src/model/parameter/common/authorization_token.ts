@@ -1,5 +1,5 @@
 /**
- * Copyright 2025 The MOQtail Authors
+ * Copyright 2026 The MOQtail Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@
  */
 
 import { KeyValuePair } from '../../common/pair'
-import { TokenAliasType, tokenAliasTypeFromNumber, CommonType } from '../constant'
+import { TokenAliasType, tokenAliasTypeFromNumber, MessageParameterType } from '../constant'
 import { Parameter } from '../parameter'
 import { ByteBuffer, FrozenByteBuffer } from '../../common/byte_buffer'
 
@@ -26,7 +26,7 @@ export type AuthTokenVariant =
   | { aliasType: TokenAliasType.UseValue; tokenType: bigint; tokenValue: Uint8Array }
 
 export class AuthorizationToken implements Parameter {
-  static readonly TYPE = CommonType.AuthorizationToken
+  static readonly TYPE = MessageParameterType.AuthorizationToken
   private constructor(public readonly variant: AuthTokenVariant) {}
 
   static newDelete(tokenAlias: bigint | number): AuthorizationToken {

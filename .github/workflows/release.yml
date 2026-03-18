@@ -21,7 +21,9 @@ jobs:
       contents: write
       pull-requests: write
       id-token: write
-    environment: npm
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/moqtail
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

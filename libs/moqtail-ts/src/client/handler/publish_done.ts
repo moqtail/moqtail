@@ -23,7 +23,6 @@ import { createLogger } from '../../util/logger'
 const logger = createLogger('handler/publish_done')
 
 export const handlerPublishDone: ControlMessageHandler<PublishDone> = async (client, msg) => {
-  logger.log('requestId', msg.requestId)
   if (client.onPeerPublishDone) {
     client.onPeerPublishDone(msg)
   }

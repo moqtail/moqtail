@@ -21,6 +21,9 @@ jobs:
   player:
     if: ${{ github.repository_owner == 'moqtail' }}
     runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy-pages.outputs.page_url }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -54,4 +57,5 @@ jobs:
           path: apps/client-js/dist
 
       - name: Deploy to GitHub Pages
+        id: deploy-pages
         uses: actions/deploy-pages@v4

@@ -65,7 +65,7 @@ import {
   ReasonPhrase,
   SetupParameters,
   Tuple,
-  MessageParameters,
+  MessageParameter,
 } from '../model'
 import { PublishNamespaceCancel } from '../model/control/publish_namespace_cancel'
 import { Track } from './track/track'
@@ -950,8 +950,7 @@ export class MOQtailClient {
 
       let msg: Subscribe
       if (typeof endGroup === 'number') endGroup = BigInt(endGroup)
-      if (!parameters) parameters = new MessageParameters()
-      const params = parameters ? parameters.intoKeyValuePairs() : new MessageParameters().intoKeyValuePairs()
+      const params = parameters?.map((p) => p.toKeyValuePair()) ?? []
       switch (filterType) {
         case FilterType.LatestObject:
           msg = Subscribe.newLatestObject(
@@ -1154,9 +1153,8 @@ export class MOQtailClient {
             throw new InternalError('MOQtailClient.subscribeUpdate', 'Request exists but subscription does not')
           // TODO: If a parameter included in SUBSCRIBE is not present in SUBSCRIBE_UPDATE, its value remains unchanged.
           // There is no mechanism to remove a parameter from a subscription. We can add parameters but check for duplicate params
-          if (!parameters) parameters = new MessageParameters()
           const requestId = this.#nextClientRequestId
-          const params = parameters ? parameters.intoKeyValuePairs() : new MessageParameters().intoKeyValuePairs()
+          const params = parameters?.map((p) => p.toKeyValuePair()) ?? []
           const msg = new SubscribeUpdate(
             requestId,
             subscriptionRequestId,
@@ -1217,11 +1215,10 @@ export class MOQtailClient {
       const subscription = this.subscriptions.get(trackAlias)
       if (!subscription) throw new InternalError('MOQtailClient.switch', 'Request exists but subscription does not')
 
-      if (!parameters) parameters = new MessageParameters()
       const requestId = this.#nextClientRequestId
       this.requests.set(requestId, subscription)
 
-      const params = parameters ? parameters.intoKeyValuePairs() : new MessageParameters().intoKeyValuePairs()
+      const params = parameters?.map((p) => p.toKeyValuePair()) ?? []
       const msg = new Switch(requestId, fullTrackName, subscriptionRequestId, params)
       subscription.switch(fullTrackName, params)
       await this.controlStream.send(msg)
@@ -1332,7 +1329,7 @@ export class MOQtailClient {
           'MOQtailClient.fetch',
           `subscriberPriority: ${priority} must be in range of [0-255]`,
         )
-      const params = parameters ? parameters.intoKeyValuePairs() : new MessageParameters().intoKeyValuePairs()
+      const params = parameters?.map((p) => p.toKeyValuePair()) ?? []
       let msg: Fetch
       let joiningRequest: MOQtailRequest | undefined
       // Generate unique requestId at the beginning to ensure uniqueness
@@ -1472,10 +1469,10 @@ export class MOQtailClient {
   /**
    * Proactively push a track to the relay/peer.
    */
-  async publish(fullTrackName: FullTrackName, forward: boolean, trackAlias: bigint, parameters?: MessageParameters) {
+  async publish(fullTrackName: FullTrackName, forward: boolean, trackAlias: bigint, parameters?: MessageParameter[]) {
     this.#ensureActive()
     try {
-      const params = parameters ? parameters.intoKeyValuePairs() : new MessageParameters().intoKeyValuePairs()
+      const params = parameters?.map((p) => p.toKeyValuePair()) ?? []
       const requestId = this.#nextClientRequestId
 
       const msg = new Publish(
@@ -1626,11 +1623,11 @@ export class MOQtailClient {
    * const resp = await client.publishNamespace(["room","1234"], params)
    * ```
    */
-  async publishNamespace(trackNamespace: Tuple, parameters?: MessageParameters) {
+  async publishNamespace(trackNamespace: Tuple, parameters?: MessageParameter[]) {
     this.#ensureActive()
     try {
       // TODO: Check for duplicate announces
-      const params = parameters ? parameters.intoKeyValuePairs() : new MessageParameters().intoKeyValuePairs()
+      const params = parameters?.map((p) => p.toKeyValuePair()) ?? []
       const msg = new PublishNamespace(this.#nextClientRequestId, trackNamespace, params)
       const request = new PublishNamespaceRequest(msg.requestId, msg)
       this.requests.set(msg.requestId, request)
@@ -1735,10 +1732,10 @@ export class MOQtailClient {
   }
 
   // INFO: Subscriber calls this the get matching announce messages with this prefix
-  async subscribeNamespace(trackNamespacePrefix: Tuple, parameters?: MessageParameters) {
+  async subscribeNamespace(trackNamespacePrefix: Tuple, parameters?: MessageParameter[]) {
     this.#ensureActive()
     try {
-      const params = parameters ? parameters.intoKeyValuePairs() : new MessageParameters().intoKeyValuePairs()
+      const params = parameters?.map((p) => p.toKeyValuePair()) ?? []
       const msg = new SubscribeNamespace(this.#nextClientRequestId, trackNamespacePrefix, params)
       const request = new SubscribeNamespaceRequest(msg)
 

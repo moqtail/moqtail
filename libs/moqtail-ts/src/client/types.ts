@@ -18,7 +18,7 @@ import {
   FullTrackName,
   GroupOrder,
   FilterType,
-  MessageParameters,
+  MessageParameter,
   FetchType,
   Location,
   SetupParameters,
@@ -161,8 +161,8 @@ export type SubscribeOptions = {
   forward: boolean
   /** {@link FilterType} variant controlling starting subset (e.g. {@link FilterType.LatestObject}). */
   filterType: FilterType
-  /** Optional extension {@link MessageParameters} appended to the SUBSCRIBE control message. */
-  parameters?: MessageParameters
+  /** Optional extension parameters appended to the SUBSCRIBE control message. */
+  parameters?: MessageParameter[]
   /** Required for {@link FilterType.AbsoluteStart} / {@link FilterType.AbsoluteRange}; earliest {@link Location} to include. */
   startLocation?: Location
   /** Required for {@link FilterType.AbsoluteRange}; exclusive upper group boundary (coerced to bigint if number provided). */
@@ -196,8 +196,8 @@ export type SubscribeUpdateOptions = {
   priority: number
   /** Updated direction flag. */
   forward: boolean
-  /** Optional additional {@link MessageParameters}; existing parameters persist if omitted. */
-  parameters?: MessageParameters
+  /** Optional additional parameters; existing parameters persist if omitted. */
+  parameters?: MessageParameter[]
 }
 
 /**
@@ -216,8 +216,8 @@ export type SwitchOptions = {
   fullTrackName: FullTrackName
   /** The original SUBSCRIBE request id (bigint) being updated. */
   subscriptionRequestId: bigint
-  /** Optional additional {@link MessageParameters}; existing parameters persist if omitted. */
-  parameters?: MessageParameters
+  /** Optional additional parameters; existing parameters persist if omitted. */
+  parameters?: MessageParameter[]
 }
 
 /**
@@ -284,6 +284,6 @@ export type FetchOptions = {
         /** Properties for absolute fetch: subscription id and starting position. */
         props: { joiningRequestId: bigint; joiningStart: bigint }
       }
-  /** Optional {@link MessageParameters} block. */
-  parameters?: MessageParameters
+  /** Optional parameters block. */
+  parameters?: MessageParameter[]
 }

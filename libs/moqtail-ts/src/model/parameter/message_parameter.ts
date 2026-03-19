@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,300 +14,221 @@
  * limitations under the License.
  */
 
-import { ByteBuffer, isBytes, isVarInt, KeyValuePair } from '../common'
-import { FilterType, GroupOrder } from '../control/constant'
-import { Location } from '../common'
+import { KeyValuePair } from '../common/pair'
+import { AuthorizationToken } from './common'
+import { DeliveryTimeout } from './message/delivery_timeout'
+import { Expires } from './message/expires'
+import { Forward } from './message/forward'
+import { GroupOrderParam } from './message/group_order_param'
+import { LargestObject } from './message/largest_object'
+import { NewGroupRequest } from './message/new_group_request'
+import { SubscriberPriority } from './message/subscriber_priority'
+import { SubscriptionFilter } from './message/subscription_filter'
 
-// --- Draft-16 Magic Numbers ---
-// Even = VarInt, Odd = Bytes
-export const PARAM_DELIVERY_TIMEOUT = 0x02n
-export const PARAM_AUTHORIZATION_TOKEN = 0x03n
-export const PARAM_EXPIRES = 0x08n
-export const PARAM_LARGEST_OBJECT = 0x09n
-export const PARAM_FORWARD = 0x10n
-export const PARAM_SUBSCRIBER_PRIORITY = 0x20n
-export const PARAM_SUBSCRIPTION_FILTER = 0x21n
-export const PARAM_GROUP_ORDER = 0x22n
-export const PARAM_NEW_GROUP_REQUEST = 0x32n
+export type MessageParameter =
+  | DeliveryTimeout
+  | AuthorizationToken
+  | Expires
+  | LargestObject
+  | Forward
+  | SubscriberPriority
+  | GroupOrderParam
+  | SubscriptionFilter
+  | NewGroupRequest
+
+export namespace MessageParameter {
+  /**
+   * Parses a single KeyValuePair into a MessageParameter.
+   * Returns undefined for unrecognized parameter types (be forgiving).
+   * Still throws ProtocolViolationError for known types with invalid values.
+   */
+  export function fromKeyValuePair(pair: KeyValuePair): MessageParameter | undefined {
+    return (
+      DeliveryTimeout.fromKeyValuePair(pair) ??
+      AuthorizationToken.fromKeyValuePair(pair) ??
+      Expires.fromKeyValuePair(pair) ??
+      LargestObject.fromKeyValuePair(pair) ??
+      Forward.fromKeyValuePair(pair) ??
+      SubscriberPriority.fromKeyValuePair(pair) ??
+      GroupOrderParam.fromKeyValuePair(pair) ??
+      SubscriptionFilter.fromKeyValuePair(pair) ??
+      NewGroupRequest.fromKeyValuePair(pair)
+    )
+  }
+
+  export function toKeyValuePair(param: MessageParameter): KeyValuePair {
+    return param.toKeyValuePair()
+  }
+
+  export function isDeliveryTimeout(param: MessageParameter): param is DeliveryTimeout {
+    return param instanceof DeliveryTimeout
+  }
+
+  export function isAuthorizationToken(param: MessageParameter): param is AuthorizationToken {
+    return param instanceof AuthorizationToken
+  }
+
+  export function isExpires(param: MessageParameter): param is Expires {
+    return param instanceof Expires
+  }
+
+  export function isLargestObject(param: MessageParameter): param is LargestObject {
+    return param instanceof LargestObject
+  }
+
+  export function isForward(param: MessageParameter): param is Forward {
+    return param instanceof Forward
+  }
+
+  export function isSubscriberPriority(param: MessageParameter): param is SubscriberPriority {
+    return param instanceof SubscriberPriority
+  }
+
+  export function isGroupOrderParam(param: MessageParameter): param is GroupOrderParam {
+    return param instanceof GroupOrderParam
+  }
+
+  export function isSubscriptionFilter(param: MessageParameter): param is SubscriptionFilter {
+    return param instanceof SubscriptionFilter
+  }
+
+  export function isNewGroupRequest(param: MessageParameter): param is NewGroupRequest {
+    return param instanceof NewGroupRequest
+  }
+}
 
 /**
- * @public
- * Strongly typed representation of Draft-16 Message Parameters.
+ * Builder for constructing a list of MessageParameters.
+ * Mirrors the SetupParameters builder pattern.
  */
 export class MessageParameters {
-  public deliveryTimeout?: bigint | undefined
-  public authorizationToken?: Uint8Array | undefined
-  public expires?: bigint | undefined
-  public largestObject?: Location | undefined
+  private params: MessageParameter[] = []
 
-  // Protocol Defaults
-  public forward: boolean = true
-  public subscriberPriority: number = 128
-  public groupOrder: GroupOrder = GroupOrder.Original
+  add(param: MessageParameter): this {
+    this.params.push(param)
+    return this
+  }
 
-  // Filter components
-  public filterType: FilterType = FilterType.LatestObject
-  public startLocation?: Location | undefined
-  public endGroup?: bigint | undefined
+  addDeliveryTimeout(timeout: bigint | number): this {
+    return this.add(new DeliveryTimeout(BigInt(timeout)))
+  }
 
-  public newGroupRequest?: bigint | undefined
-  // Catch-all for unknown/custom extensions
-  public unknownParameters: KeyValuePair[] = []
+  addAuthorizationToken(token: AuthorizationToken): this {
+    return this.add(token)
+  }
 
-  constructor(init?: Partial<MessageParameters>) {
-    if (init) {
-      Object.assign(this, init)
-    }
+  addExpires(expires: bigint | number): this {
+    return this.add(new Expires(BigInt(expires)))
+  }
+
+  addForward(forward: boolean): this {
+    return this.add(new Forward(forward))
+  }
+
+  addSubscriberPriority(priority: number): this {
+    return this.add(new SubscriberPriority(priority))
+  }
+
+  addGroupOrder(order: GroupOrderParam['order']): this {
+    return this.add(new GroupOrderParam(order))
+  }
+
+  addSubscriptionFilter(filter: SubscriptionFilter): this {
+    return this.add(filter)
+  }
+
+  addNewGroupRequest(group: bigint | number): this {
+    return this.add(new NewGroupRequest(BigInt(group)))
+  }
+
+  build(): MessageParameter[] {
+    return [...this.params]
   }
 
   /**
-   * Parses an array of KeyValuePairs into a strongly-typed MessageParameters struct.
+   * Parses an array of KeyValuePairs into a list of MessageParameters.
+   * Unrecognized parameter types are silently skipped.
+   * Known parameter types with invalid values still throw ProtocolViolationError.
    */
-  static fromKeyValuePairs(pairs: KeyValuePair[]): MessageParameters {
-    const params = new MessageParameters()
-
+  static fromKeyValuePairs(pairs: KeyValuePair[]): MessageParameter[] {
+    const result: MessageParameter[] = []
     for (const pair of pairs) {
-      const type = pair.typeValue
-
-      if (isVarInt(pair)) {
-        const val = pair.value
-        switch (type) {
-          case PARAM_FORWARD:
-            params.forward = val === 1n
-            break
-          case PARAM_SUBSCRIBER_PRIORITY:
-            params.subscriberPriority = Number(val)
-            break
-          case PARAM_GROUP_ORDER:
-            params.groupOrder = Number(val) as GroupOrder
-            break
-          case PARAM_DELIVERY_TIMEOUT:
-            params.deliveryTimeout = val
-            break
-          case PARAM_EXPIRES:
-            params.expires = val
-            break
-          case PARAM_NEW_GROUP_REQUEST:
-            params.newGroupRequest = val
-            break
-          default:
-            params.unknownParameters.push(pair)
-        }
-      } else if (isBytes(pair)) {
-        const buf = new ByteBuffer()
-        buf.putBytes(pair.value)
-
-        switch (type) {
-          case PARAM_AUTHORIZATION_TOKEN:
-            params.authorizationToken = pair.value
-            break
-          case PARAM_LARGEST_OBJECT:
-            try {
-              params.largestObject = buf.getLocation()
-            } catch (e) {
-              // Ignore malformed location
-            }
-            break
-          case PARAM_SUBSCRIPTION_FILTER:
-            try {
-              const filterTypeRaw = Number(buf.getVI()) as FilterType
-              params.filterType = filterTypeRaw
-
-              if (filterTypeRaw === FilterType.AbsoluteStart || filterTypeRaw === FilterType.AbsoluteRange) {
-                params.startLocation = buf.getLocation()
-              }
-              if (filterTypeRaw === FilterType.AbsoluteRange) {
-                params.endGroup = buf.getVI()
-              }
-            } catch (e) {
-              // Ignore malformed filter
-            }
-            break
-          default:
-            params.unknownParameters.push(pair)
-        }
-      }
+      const parsed = MessageParameter.fromKeyValuePair(pair)
+      if (parsed !== undefined) result.push(parsed)
     }
-
-    return params
+    return result
   }
+}
 
-  /**
-   * Serializes the explicit fields back into the Draft-16 KeyValuePair array.
-   */
-  intoKeyValuePairs(): KeyValuePair[] {
-    const pairs: KeyValuePair[] = [...this.unknownParameters]
-
-    // Only serialize non-default values to save wire space
-    if (!this.forward) {
-      pairs.push(KeyValuePair.tryNewVarInt(PARAM_FORWARD, 0n))
-    }
-    if (this.subscriberPriority !== 128) {
-      pairs.push(KeyValuePair.tryNewVarInt(PARAM_SUBSCRIBER_PRIORITY, BigInt(this.subscriberPriority)))
-    }
-    if (this.groupOrder !== GroupOrder.Original) {
-      pairs.push(KeyValuePair.tryNewVarInt(PARAM_GROUP_ORDER, BigInt(this.groupOrder)))
-    }
-
-    // Serialize Options
-    if (this.deliveryTimeout != null) {
-      pairs.push(KeyValuePair.tryNewVarInt(PARAM_DELIVERY_TIMEOUT, this.deliveryTimeout))
-    }
-    if (this.expires != null) {
-      pairs.push(KeyValuePair.tryNewVarInt(PARAM_EXPIRES, this.expires))
-    }
-    if (this.newGroupRequest != null) {
-      pairs.push(KeyValuePair.tryNewVarInt(PARAM_NEW_GROUP_REQUEST, this.newGroupRequest))
-    }
-    if (this.authorizationToken != null) {
-      pairs.push(KeyValuePair.tryNewBytes(PARAM_AUTHORIZATION_TOKEN, this.authorizationToken))
-    }
-
-    // Serialize Largest Object
-    if (this.largestObject) {
-      const locBuf = new ByteBuffer()
-      locBuf.putVI(this.largestObject.group)
-      locBuf.putVI(this.largestObject.object)
-      pairs.push(KeyValuePair.tryNewBytes(PARAM_LARGEST_OBJECT, locBuf.toUint8Array()))
-    }
-
-    // Serialize Subscription Filter
-    if (this.filterType !== FilterType.LatestObject) {
-      const filterBuf = new ByteBuffer()
-      filterBuf.putVI(this.filterType)
-
-      if (this.filterType === FilterType.AbsoluteStart || this.filterType === FilterType.AbsoluteRange) {
-        if (this.startLocation) {
-          filterBuf.putLocation(this.startLocation)
-        }
-      }
-      if (this.filterType === FilterType.AbsoluteRange) {
-        if (this.endGroup != null) {
-          filterBuf.putVI(this.endGroup)
-        }
-      }
-      pairs.push(KeyValuePair.tryNewBytes(PARAM_SUBSCRIPTION_FILTER, filterBuf.toUint8Array()))
-    }
-
-    return pairs
-  }
-
-  /**
-   * Strategically applies updates based on an update message.
-   * Per Draft-16: "If omitted from REQUEST_UPDATE/SUBSCRIBE_UPDATE, the value is unchanged."
-   */
-  applyUpdate(updates: KeyValuePair[]): void {
-    for (const pair of updates) {
-      const type = pair.typeValue
-
-      if (isVarInt(pair)) {
-        const val = pair.value
-        switch (type) {
-          case PARAM_FORWARD:
-            this.forward = val === 1n
-            break
-          case PARAM_SUBSCRIBER_PRIORITY:
-            this.subscriberPriority = Number(val)
-            break
-          case PARAM_GROUP_ORDER:
-            this.groupOrder = Number(val) as GroupOrder
-            break
-          case PARAM_DELIVERY_TIMEOUT:
-            this.deliveryTimeout = val
-            break
-          case PARAM_EXPIRES:
-            this.expires = val
-            break
-          case PARAM_NEW_GROUP_REQUEST:
-            this.newGroupRequest = val
-            break
-          default:
-            this.updateUnknown(pair)
-        }
-      } else if (isBytes(pair)) {
-        const buf = new ByteBuffer()
-        buf.putBytes(pair.value)
-
-        switch (type) {
-          case PARAM_AUTHORIZATION_TOKEN:
-            this.authorizationToken = pair.value
-            break
-          case PARAM_LARGEST_OBJECT:
-            try {
-              this.largestObject = buf.getLocation()
-            } catch (e) {
-              // Ignore
-            }
-            break
-          case PARAM_SUBSCRIPTION_FILTER:
-            try {
-              const filterTypeRaw = Number(buf.getVI()) as FilterType
-              this.filterType = filterTypeRaw
-              // Reset
-              this.startLocation = undefined
-              this.endGroup = undefined
-
-              if (filterTypeRaw === FilterType.AbsoluteStart || filterTypeRaw === FilterType.AbsoluteRange) {
-                this.startLocation = buf.getLocation()
-              }
-              if (filterTypeRaw === FilterType.AbsoluteRange) {
-                this.endGroup = buf.getVI()
-              }
-            } catch (e) {
-              // Ignore
-            }
-            break
-          default:
-            this.updateUnknown(pair)
-        }
-      }
-    }
-  }
-
-  private updateUnknown(pair: KeyValuePair): void {
-    const existingIdx = this.unknownParameters.findIndex((p) => p.typeValue === pair.typeValue)
-    if (existingIdx >= 0) {
-      this.unknownParameters[existingIdx] = pair
+/**
+ * Applies a set of parameter updates to an existing parameter list.
+ * For each update, replaces the matching parameter (by wire type value) or appends it.
+ * Per spec: "If omitted from REQUEST_UPDATE/SUBSCRIBE_UPDATE, the value is unchanged."
+ */
+export function applyMessageParameterUpdate(
+  current: MessageParameter[],
+  updates: MessageParameter[],
+): void {
+  for (const update of updates) {
+    const updateType = update.toKeyValuePair().typeValue
+    const idx = current.findIndex((p) => p.toKeyValuePair().typeValue === updateType)
+    if (idx >= 0) {
+      current[idx] = update
     } else {
-      this.unknownParameters.push(pair)
+      current.push(update)
     }
   }
 }
 
 if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
+  const { FilterType } = await import('../control/constant')
+  const { Location } = await import('../common')
 
-  describe('MessageParameters', () => {
-    test('roundtrips known and unknown parameters correctly', () => {
-      const params = new MessageParameters({
-        deliveryTimeout: 150n,
-        subscriberPriority: 42,
-        forward: false,
-        filterType: FilterType.AbsoluteRange,
-        startLocation: new Location(10n, 0n),
-        endGroup: 20n,
-        unknownParameters: [KeyValuePair.tryNewVarInt(998n, 1n)],
-      })
+  describe('MessageParameter', () => {
+    test('fromKeyValuePair returns undefined for unknown type', () => {
+      const pair = KeyValuePair.tryNewVarInt(998n, 1n)
+      expect(MessageParameter.fromKeyValuePair(pair)).toBeUndefined()
+    })
+  })
 
-      const kvps = params.intoKeyValuePairs()
+  describe('MessageParameters builder', () => {
+    test('builds and roundtrips parameters', () => {
+      const kvps = new MessageParameters()
+        .addDeliveryTimeout(150n)
+        .addForward(false)
+        .addSubscriberPriority(42)
+        .addSubscriptionFilter(new SubscriptionFilter(FilterType.AbsoluteRange, new Location(10n, 0n), 20n))
+        .build()
+        .map((p) => p.toKeyValuePair())
+
       const parsed = MessageParameters.fromKeyValuePairs(kvps)
-
-      expect(parsed.deliveryTimeout).toBe(150n)
-      expect(parsed.subscriberPriority).toBe(42)
-      expect(parsed.forward).toBe(false)
-      expect(parsed.filterType).toBe(FilterType.AbsoluteRange)
-      expect(parsed.startLocation?.group).toBe(10n)
-      expect(parsed.endGroup).toBe(20n)
-      expect(parsed.unknownParameters.length).toBe(1)
-      expect(parsed.unknownParameters[0]!.typeValue).toBe(998n)
+      expect(parsed.length).toBe(4)
+      expect(MessageParameter.isDeliveryTimeout(parsed[0]!) && parsed[0].timeout).toBe(150n)
+      expect(MessageParameter.isForward(parsed[1]!) && parsed[1].forward).toBe(false)
+      expect(MessageParameter.isSubscriberPriority(parsed[2]!) && parsed[2].priority).toBe(42)
+      expect(
+        MessageParameter.isSubscriptionFilter(parsed[3]!) && parsed[3].filterType,
+      ).toBe(FilterType.AbsoluteRange)
     })
 
-    test('omits default values during serialization', () => {
-      const params = new MessageParameters() // Completely default
-      const kvps = params.intoKeyValuePairs()
+    test('fromKeyValuePairs skips unknown types', () => {
+      const unknown = KeyValuePair.tryNewVarInt(998n, 1n)
+      const valid = new DeliveryTimeout(100n).toKeyValuePair()
+      const parsed = MessageParameters.fromKeyValuePairs([unknown, valid])
+      expect(parsed.length).toBe(1)
+      expect(MessageParameter.isDeliveryTimeout(parsed[0]!)).toBe(true)
+    })
+  })
 
-      // Should serialize nothing since everything is default
-      expect(kvps.length).toBe(0)
+  describe('applyMessageParameterUpdate', () => {
+    test('replaces existing parameter and appends new ones', () => {
+      const current: MessageParameter[] = [new SubscriberPriority(100), new Forward(true)]
+      applyMessageParameterUpdate(current, [new SubscriberPriority(50), new DeliveryTimeout(500n)])
+      expect(current.length).toBe(3)
+      expect(current.some((p) => MessageParameter.isSubscriberPriority(p) && p.priority === 50)).toBe(true)
+      expect(current.some((p) => MessageParameter.isForward(p) && p.forward === true)).toBe(true)
+      expect(current.some((p) => MessageParameter.isDeliveryTimeout(p) && p.timeout === 500n)).toBe(true)
     })
   })
 }

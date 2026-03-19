@@ -66,6 +66,10 @@ import {
   SetupParameters,
   Tuple,
   MessageParameter,
+  Forward,
+  SubscriberPriority,
+  GroupOrderParam,
+  SubscriptionFilter,
 } from '../model'
 import { PublishNamespaceCancel } from '../model/control/publish_namespace_cancel'
 import { Track } from './track/track'
@@ -950,27 +954,18 @@ export class MOQtailClient {
 
       let msg: Subscribe
       if (typeof endGroup === 'number') endGroup = BigInt(endGroup)
-      const params = parameters?.map((p) => p.toKeyValuePair()) ?? []
+      const baseParams: MessageParameter[] = [
+        new SubscriberPriority(priority),
+        new Forward(forward),
+        ...(groupOrder !== GroupOrder.Original ? [new GroupOrderParam(groupOrder)] : []),
+        ...(parameters ?? []),
+      ]
       switch (filterType) {
         case FilterType.LatestObject:
-          msg = Subscribe.newLatestObject(
-            this.#nextClientRequestId,
-            fullTrackName,
-            priority,
-            groupOrder,
-            forward,
-            params,
-          )
+          msg = Subscribe.newLatestObject(this.#nextClientRequestId, fullTrackName, baseParams)
           break
         case FilterType.NextGroupStart:
-          msg = Subscribe.newNextGroupStart(
-            this.#nextClientRequestId,
-            fullTrackName,
-            priority,
-            groupOrder,
-            forward,
-            params,
-          )
+          msg = Subscribe.newNextGroupStart(this.#nextClientRequestId, fullTrackName, baseParams)
           break
         case FilterType.AbsoluteStart:
           if (!startLocation)
@@ -978,15 +973,7 @@ export class MOQtailClient {
               'MOQtailClient.subscribe',
               'FilterType.AbsoluteStart must have a start location',
             )
-          msg = Subscribe.newAbsoluteStart(
-            this.#nextClientRequestId,
-            fullTrackName,
-            priority,
-            groupOrder,
-            forward,
-            startLocation,
-            params,
-          )
+          msg = Subscribe.newAbsoluteStart(this.#nextClientRequestId, fullTrackName, startLocation, baseParams)
           break
         case FilterType.AbsoluteRange:
           if (startLocation === undefined || endGroup === undefined)
@@ -1000,12 +987,9 @@ export class MOQtailClient {
           msg = Subscribe.newAbsoluteRange(
             this.#nextClientRequestId,
             fullTrackName,
-            priority,
-            groupOrder,
-            forward,
             startLocation,
             endGroup,
-            params,
+            baseParams,
           )
           break
       }
@@ -1154,16 +1138,13 @@ export class MOQtailClient {
           // TODO: If a parameter included in SUBSCRIBE is not present in SUBSCRIBE_UPDATE, its value remains unchanged.
           // There is no mechanism to remove a parameter from a subscription. We can add parameters but check for duplicate params
           const requestId = this.#nextClientRequestId
-          const params = parameters?.map((p) => p.toKeyValuePair()) ?? []
-          const msg = new SubscribeUpdate(
-            requestId,
-            subscriptionRequestId,
-            startLocation,
-            endGroup,
-            priority,
-            forward,
-            params,
-          )
+          const updateParams: MessageParameter[] = [
+            new SubscriberPriority(priority),
+            new Forward(forward),
+            new SubscriptionFilter(FilterType.AbsoluteRange, startLocation, endGroup),
+            ...(parameters ?? []),
+          ]
+          const msg = new SubscribeUpdate(requestId, subscriptionRequestId, priority, forward, updateParams)
           subscription.update(msg) // This also updates the request since both maps store the same object
           await this.controlStream.send(msg)
         }
@@ -1218,9 +1199,10 @@ export class MOQtailClient {
       const requestId = this.#nextClientRequestId
       this.requests.set(requestId, subscription)
 
-      const params = parameters?.map((p) => p.toKeyValuePair()) ?? []
-      const msg = new Switch(requestId, fullTrackName, subscriptionRequestId, params)
-      subscription.switch(fullTrackName, params)
+      const switchParams: MessageParameter[] = parameters ?? []
+      const kvpParams = switchParams.map((p) => p.toKeyValuePair())
+      const msg = new Switch(requestId, fullTrackName, subscriptionRequestId, kvpParams)
+      subscription.switch(fullTrackName, switchParams)
       await this.controlStream.send(msg)
 
       const response = await subscription

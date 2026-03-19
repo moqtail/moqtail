@@ -23,6 +23,7 @@ use moqtail::model::{
   control::subscribe::Subscribe, // Needed for the storage hack
   control::track_status_error::TrackStatusError,
   control::track_status_ok::TrackStatusOk,
+  parameter::message_parameter::MessageParameter,
 };
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use moqtail::transport::data_stream_handler::SubscribeRequest;
@@ -115,18 +116,25 @@ pub async fn handle(
 
       // E. Store Mapping
       // We convert TrackStatus -> Subscribe to fit it into 'SubscribeRequest' container
-      // This is safe because fields are identical.
+      let mut fake_params = vec![
+        MessageParameter::new_forward(status_req.forward),
+        MessageParameter::new_subscriber_priority(status_req.subscriber_priority),
+        MessageParameter::new_subscription_filter(
+          status_req.filter_type,
+          status_req.start_location,
+          status_req.end_group,
+        ),
+      ];
+      for kvp in status_req.subscribe_parameters.iter() {
+        if let Ok(p) = MessageParameter::deserialize(kvp) {
+          fake_params.push(p);
+        }
+      }
       let fake_sub = Subscribe {
         request_id: status_req.request_id,
         track_namespace: status_req.track_namespace,
         track_name: status_req.track_name,
-        subscriber_priority: status_req.subscriber_priority,
-        group_order: status_req.group_order,
-        forward: status_req.forward,
-        filter_type: status_req.filter_type,
-        start_location: status_req.start_location,
-        end_group: status_req.end_group,
-        subscribe_parameters: status_req.subscribe_parameters,
+        subscribe_parameters: fake_params,
       };
 
       // We also need a fake "new_sub" for the relay-side mapping

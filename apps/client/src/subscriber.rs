@@ -48,8 +48,8 @@ pub async fn run(
     ns,
     TupleField::from_utf8(track_name), // track_name
     0,                                 // subscriber_priority
-    GroupOrder::Ascending,
-    true, // forward
+    GroupOrder::Ascending,             // group_order
+    true,                              // forward
     vec![],
   );
   control_stream

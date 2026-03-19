@@ -45,17 +45,18 @@ export const handlerSubscribe: ControlMessageHandler<Subscribe> = async (client,
   }
   let subscribeOk: SubscribeOk
   if (!track.trackAlias) throw new Error('Expected track alias to be set')
+  const kvpParameters = msg.parameters.map((p) => p.toKeyValuePair())
   if (track.trackSource.live.largestLocation) {
     subscribeOk = SubscribeOk.newAscendingWithContent(
       msg.requestId,
       track.trackAlias,
       0n,
       track.trackSource.live.largestLocation,
-      msg.parameters,
+      kvpParameters,
     )
   } else {
     // TODO: Add support for descending group order
-    subscribeOk = SubscribeOk.newAscendingNoContent(msg.requestId, track.trackAlias, 0n, msg.parameters)
+    subscribeOk = SubscribeOk.newAscendingNoContent(msg.requestId, track.trackAlias, 0n, kvpParameters)
   }
   const publication = new SubscribePublication(client, track, msg, subscribeOk.largestLocation)
   client.publications.set(msg.requestId, publication)

@@ -15,6 +15,8 @@
  */
 
 import { KeyValuePair } from '../common/pair'
+import { FilterType } from '../control/constant'
+import { Location } from '../common'
 import { AuthorizationToken } from './common'
 import { DeliveryTimeout } from './message/delivery_timeout'
 import { Expires } from './message/expires'
@@ -165,10 +167,7 @@ export class MessageParameters {
  * For each update, replaces the matching parameter (by wire type value) or appends it.
  * Per spec: "If omitted from REQUEST_UPDATE/SUBSCRIBE_UPDATE, the value is unchanged."
  */
-export function applyMessageParameterUpdate(
-  current: MessageParameter[],
-  updates: MessageParameter[],
-): void {
+export function applyMessageParameterUpdate(current: MessageParameter[], updates: MessageParameter[]): void {
   for (const update of updates) {
     const updateType = update.toKeyValuePair().typeValue
     const idx = current.findIndex((p) => p.toKeyValuePair().typeValue === updateType)
@@ -182,8 +181,6 @@ export function applyMessageParameterUpdate(
 
 if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
-  const { FilterType } = await import('../control/constant')
-  const { Location } = await import('../common')
 
   describe('MessageParameter', () => {
     test('fromKeyValuePair returns undefined for unknown type', () => {
@@ -207,9 +204,7 @@ if (import.meta.vitest) {
       expect(MessageParameter.isDeliveryTimeout(parsed[0]!) && parsed[0].timeout).toBe(150n)
       expect(MessageParameter.isForward(parsed[1]!) && parsed[1].forward).toBe(false)
       expect(MessageParameter.isSubscriberPriority(parsed[2]!) && parsed[2].priority).toBe(42)
-      expect(
-        MessageParameter.isSubscriptionFilter(parsed[3]!) && parsed[3].filterType,
-      ).toBe(FilterType.AbsoluteRange)
+      expect(MessageParameter.isSubscriptionFilter(parsed[3]!) && parsed[3].filterType).toBe(FilterType.AbsoluteRange)
     })
 
     test('fromKeyValuePairs skips unknown types', () => {

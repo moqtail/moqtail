@@ -17,18 +17,19 @@
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
 import { Location } from '../common/location'
 import { KeyValuePair } from '../common/pair'
-import { ControlMessageType } from '../control/constant'
+import { ControlMessageType, FilterType } from '../control/constant'
 import { CastingError } from '../error/error'
+import { MessageParameter } from '../parameter/message_parameter'
+import { SubscriptionFilter } from '../parameter/message/subscription_filter'
+import { Forward } from '../parameter/message/forward'
 
 export class SubscribeUpdate {
   constructor(
     public requestId: bigint,
     public subscriptionRequestId: bigint,
-    public startLocation: Location,
-    public endGroup: bigint,
     public subscriberPriority: number,
     public forward: boolean,
-    public parameters: KeyValuePair[],
+    public parameters: MessageParameter[],
   ) {}
 
   serialize(): FrozenByteBuffer {
@@ -38,14 +39,12 @@ export class SubscribeUpdate {
     const payload = new ByteBuffer()
     payload.putVI(this.requestId)
     payload.putVI(this.subscriptionRequestId)
-    payload.putLocation(this.startLocation)
-    payload.putVI(this.endGroup)
     payload.putU8(this.subscriberPriority)
     payload.putU8(this.forward ? 1 : 0)
     payload.putVI(this.parameters.length)
 
     for (const param of this.parameters) {
-      payload.putBytes(param.serialize().toUint8Array())
+      payload.putBytes(param.toKeyValuePair().serialize().toUint8Array())
     }
 
     const payloadBytes = payload.toUint8Array()
@@ -58,8 +57,6 @@ export class SubscribeUpdate {
   static parsePayload(buf: BaseByteBuffer): SubscribeUpdate {
     const requestId = buf.getVI()
     const subscriptionRequestId = buf.getVI()
-    const startLocation = buf.getLocation()
-    const endGroup = buf.getVI()
     const subscriberPriority = buf.getU8()
     const forward = buf.getU8()
 
@@ -69,31 +66,22 @@ export class SubscribeUpdate {
       throw new CastingError('SubscribeUpdate.deserialize paramCount', 'bigint', 'number', `${paramCountBig}`)
     }
 
-    const parameters: KeyValuePair[] = []
+    const parameters: MessageParameter[] = []
     for (let i = 0; i < paramCount; i++) {
-      parameters.push(KeyValuePair.deserialize(buf))
+      const kvp = KeyValuePair.deserialize(buf)
+      const param = MessageParameter.fromKeyValuePair(kvp)
+      if (param !== undefined) parameters.push(param)
     }
 
-    return new SubscribeUpdate(
-      requestId,
-      subscriptionRequestId,
-      startLocation,
-      endGroup,
-      subscriberPriority,
-      forward === 1,
-      parameters,
-    )
+    return new SubscribeUpdate(requestId, subscriptionRequestId, subscriberPriority, forward === 1, parameters)
   }
 
   equals(other: SubscribeUpdate): boolean {
     if (
       this.requestId !== other.requestId ||
       this.subscriptionRequestId !== other.subscriptionRequestId ||
-      this.endGroup !== other.endGroup ||
       this.subscriberPriority !== other.subscriberPriority ||
       this.forward !== other.forward ||
-      (this.startLocation === undefined) !== (other.startLocation === undefined) ||
-      (this.startLocation && other.startLocation && !this.startLocation.equals(other.startLocation)) ||
       this.parameters.length !== other.parameters.length
     ) {
       return false
@@ -102,10 +90,10 @@ export class SubscribeUpdate {
     for (let i = 0; i < this.parameters.length; i++) {
       const a = this.parameters[i]
       const b = other.parameters[i]
-
-      if (!a || !b || !a.equals(b)) {
-        return false
-      }
+      if (!a || !b) return false
+      const aKvp = a.toKeyValuePair()
+      const bKvp = b.toKeyValuePair()
+      if (!aKvp.equals(bKvp)) return false
     }
 
     return true
@@ -117,9 +105,9 @@ if (import.meta.vitest) {
 
   describe('SubscribeUpdate', () => {
     function buildTestUpdate(): SubscribeUpdate {
-      return new SubscribeUpdate(120205n, 120204n, new Location(81n, 81n), 25n, 31, true, [
-        KeyValuePair.tryNewVarInt(0n, 10n),
-        KeyValuePair.tryNewBytes(1n, new TextEncoder().encode("I'll sync you up")),
+      return new SubscribeUpdate(120205n, 120204n, 31, true, [
+        new SubscriptionFilter(FilterType.AbsoluteRange, new Location(81n, 81n), 25n),
+        new Forward(true),
       ])
     }
 
@@ -180,7 +168,7 @@ if (import.meta.vitest) {
       }
     })
     it('should handle empty parameters', () => {
-      const update = new SubscribeUpdate(120206n, 120205n, new Location(82n, 82n), 26n, 15, false, [])
+      const update = new SubscribeUpdate(120206n, 120205n, 15, false, [])
       const serialized = update.serialize()
       const buf = new ByteBuffer()
       buf.putBytes(serialized.toUint8Array())

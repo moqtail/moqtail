@@ -186,9 +186,9 @@ pub async fn handle(
             0,
             m_clone.track_namespace.clone(),
             m_clone.track_name.clone(),
-            128,
-            m_clone.group_order,
-            m_clone.forward != 0,
+            128,                   // subscriber_priority
+            GroupOrder::Ascending, // group_order
+            m_clone.forward != 0,  // forward
             vec![],
           );
 
@@ -289,9 +289,9 @@ pub async fn handle(
             0,
             orig_publish.track_namespace.clone(),
             orig_publish.track_name.clone(),
-            128,
-            orig_publish.group_order,
-            orig_publish.forward != 0,
+            128,                       // subscriber_priority
+            GroupOrder::Ascending,     // group_order
+            orig_publish.forward != 0, // forward
             vec![],
           );
 

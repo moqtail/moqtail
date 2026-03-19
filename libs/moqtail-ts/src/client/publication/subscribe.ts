@@ -22,8 +22,8 @@ import {
   Location,
   ReasonPhrase,
   SubgroupHeaderType,
-  VersionSpecificParameter,
-  VersionSpecificParameters,
+  MessageParameter,
+  applyMessageParameterUpdate,
 } from '@/model'
 import { SendStream } from '../data_stream'
 import { SubgroupHeader } from '@/model/data/subgroup_header'
@@ -78,7 +78,7 @@ export class SubscribePublication {
   /**
    * The subscription parameters for this publication.
    */
-  #subscribeParameters: VersionSpecificParameter[]
+  #parameters: MessageParameter[]
 
   /**
    * The number of streams opened for this subscription.
@@ -130,8 +130,16 @@ export class SubscribePublication {
   ) {
     this.#trackAlias = track.trackAlias!
     this.#publisherPriority = track.publisherPriority
-    this.#subscriberPriority = subscribeMsg.subscriberPriority
-    switch (subscribeMsg.filterType) {
+    const subPriority = subscribeMsg.parameters.find(MessageParameter.isSubscriberPriority)
+    const fwd = subscribeMsg.parameters.find(MessageParameter.isForward)
+    const filter = subscribeMsg.parameters.find(MessageParameter.isSubscriptionFilter)
+    this.#subscriberPriority = subPriority?.priority ?? 128
+    this.#forward = fwd?.forward ?? true
+    this.#parameters = [...subscribeMsg.parameters]
+    this.#startLocation = new Location(0n, 0n)
+
+    const filterType = filter?.filterType ?? FilterType.LatestObject
+    switch (filterType) {
       case FilterType.LatestObject:
         if (largestLocation) {
           this.#startLocation = new Location(largestLocation.group, largestLocation.object + 1n)
@@ -147,15 +155,13 @@ export class SubscribePublication {
         }
         break
       case FilterType.AbsoluteStart:
-        this.#startLocation = subscribeMsg.startLocation!
+        this.#startLocation = filter?.startLocation ?? new Location(0n, 0n)
         break
       case FilterType.AbsoluteRange:
-        this.#startLocation = subscribeMsg.startLocation!
-        this.#endGroup = subscribeMsg.endGroup
+        this.#startLocation = filter?.startLocation ?? new Location(0n, 0n)
+        this.#endGroup = filter?.endGroup
         break
     }
-    this.#forward = subscribeMsg.forward
-    this.#subscribeParameters = VersionSpecificParameters.fromKeyValuePairs(subscribeMsg.parameters)
     this.publish()
   }
 
@@ -201,11 +207,12 @@ export class SubscribePublication {
    */
   update(msg: SubscribeUpdate): void {
     // TODO: Control checks on update rules e.g only narrowing, end>start either here or in update handler
-    this.#startLocation = msg.startLocation
-    this.#endGroup = msg.endGroup
+    const filter = msg.parameters.find(MessageParameter.isSubscriptionFilter)
+    if (filter?.startLocation !== undefined) this.#startLocation = filter.startLocation
+    if (filter?.endGroup !== undefined) this.#endGroup = filter.endGroup
     this.#subscriberPriority = msg.subscriberPriority
     this.#forward = msg.forward
-    this.#subscribeParameters = VersionSpecificParameters.fromKeyValuePairs(msg.parameters)
+    applyMessageParameterUpdate(this.#parameters, msg.parameters)
   }
 
   /**

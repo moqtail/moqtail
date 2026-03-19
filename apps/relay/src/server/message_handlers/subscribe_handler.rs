@@ -21,6 +21,7 @@ use core::result::Result;
 use moqtail::model::control::constant::GroupOrder;
 use moqtail::model::control::subscribe::Subscribe;
 use moqtail::model::error::TerminationCode;
+use moqtail::model::parameter::message_parameter::MessageParameter;
 use moqtail::model::{
   common::reason_phrase::ReasonPhrase, control::control_message::ControlMessage,
 };
@@ -160,7 +161,13 @@ async fn handle_subscribe_message(
     );
 
     let mut new_sub = sub.clone();
-    new_sub.forward = true;
+    // Ensure forward=true in parameters
+    new_sub
+      .subscribe_parameters
+      .retain(|p| !matches!(p, MessageParameter::Forward { .. }));
+    new_sub
+      .subscribe_parameters
+      .push(MessageParameter::new_forward(true));
     new_sub.request_id =
       Session::get_next_relay_request_id(context.relay_next_request_id.clone()).await;
 
@@ -647,14 +654,53 @@ async fn handle_switch_message(
     return Err(TerminationCode::ProtocolViolation);
   }
 
+  let switch_params: Vec<MessageParameter> = switch_message
+    .subscribe_parameters
+    .iter()
+    .filter_map(|kvp| MessageParameter::deserialize(kvp).ok())
+    .collect();
+
+  let subscriber_priority = switch_params
+    .iter()
+    .find_map(|p| {
+      if let MessageParameter::SubscriberPriority { priority } = p {
+        Some(*priority)
+      } else {
+        None
+      }
+    })
+    .unwrap_or(0);
+  let group_order = switch_params
+    .iter()
+    .find_map(|p| {
+      if let MessageParameter::GroupOrder { order } = p {
+        Some(*order)
+      } else {
+        None
+      }
+    })
+    .unwrap_or(GroupOrder::Ascending);
+  let extra_params: Vec<MessageParameter> = switch_params
+    .into_iter()
+    .filter(|p| {
+      !matches!(
+        p,
+        MessageParameter::SubscriberPriority { .. }
+          | MessageParameter::GroupOrder { .. }
+          | MessageParameter::Forward { .. }
+          | MessageParameter::SubscriptionFilter { .. }
+      )
+    })
+    .collect();
+
   let subscribe = Subscribe::new_latest_object(
     switch_message.request_id,
     switch_message.track_namespace.clone(),
     switch_message.track_name.clone(),
-    0,
-    GroupOrder::Original,
-    true,
-    switch_message.subscribe_parameters.clone(),
+    subscriber_priority,
+    group_order,
+    true, // forward always true for switch
+    extra_params,
   );
 
   let new_full_track_name = subscribe.get_full_track_name();

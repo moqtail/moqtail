@@ -65,7 +65,11 @@ import {
   ReasonPhrase,
   SetupParameters,
   Tuple,
-  VersionSpecificParameters,
+  MessageParameter,
+  Forward,
+  SubscriberPriority,
+  GroupOrderParam,
+  SubscriptionFilter,
 } from '../model'
 import { PublishNamespaceCancel } from '../model/control/publish_namespace_cancel'
 import { Track } from './track/track'
@@ -950,27 +954,18 @@ export class MOQtailClient {
 
       let msg: Subscribe
       if (typeof endGroup === 'number') endGroup = BigInt(endGroup)
-      if (!parameters) parameters = new VersionSpecificParameters()
+      const baseParams: MessageParameter[] = [
+        new SubscriberPriority(priority),
+        new Forward(forward),
+        ...(groupOrder !== GroupOrder.Original ? [new GroupOrderParam(groupOrder)] : []),
+        ...(parameters ?? []),
+      ]
       switch (filterType) {
         case FilterType.LatestObject:
-          msg = Subscribe.newLatestObject(
-            this.#nextClientRequestId,
-            fullTrackName,
-            priority,
-            groupOrder,
-            forward,
-            parameters.build(),
-          )
+          msg = Subscribe.newLatestObject(this.#nextClientRequestId, fullTrackName, baseParams)
           break
         case FilterType.NextGroupStart:
-          msg = Subscribe.newNextGroupStart(
-            this.#nextClientRequestId,
-            fullTrackName,
-            priority,
-            groupOrder,
-            forward,
-            parameters.build(),
-          )
+          msg = Subscribe.newNextGroupStart(this.#nextClientRequestId, fullTrackName, baseParams)
           break
         case FilterType.AbsoluteStart:
           if (!startLocation)
@@ -978,15 +973,7 @@ export class MOQtailClient {
               'MOQtailClient.subscribe',
               'FilterType.AbsoluteStart must have a start location',
             )
-          msg = Subscribe.newAbsoluteStart(
-            this.#nextClientRequestId,
-            fullTrackName,
-            priority,
-            groupOrder,
-            forward,
-            startLocation,
-            parameters.build(),
-          )
+          msg = Subscribe.newAbsoluteStart(this.#nextClientRequestId, fullTrackName, startLocation, baseParams)
           break
         case FilterType.AbsoluteRange:
           if (startLocation === undefined || endGroup === undefined)
@@ -1000,12 +987,9 @@ export class MOQtailClient {
           msg = Subscribe.newAbsoluteRange(
             this.#nextClientRequestId,
             fullTrackName,
-            priority,
-            groupOrder,
-            forward,
             startLocation,
             endGroup,
-            parameters.build(),
+            baseParams,
           )
           break
       }
@@ -1153,17 +1137,14 @@ export class MOQtailClient {
             throw new InternalError('MOQtailClient.subscribeUpdate', 'Request exists but subscription does not')
           // TODO: If a parameter included in SUBSCRIBE is not present in SUBSCRIBE_UPDATE, its value remains unchanged.
           // There is no mechanism to remove a parameter from a subscription. We can add parameters but check for duplicate params
-          if (!parameters) parameters = new VersionSpecificParameters()
           const requestId = this.#nextClientRequestId
-          const msg = new SubscribeUpdate(
-            requestId,
-            subscriptionRequestId,
-            startLocation,
-            endGroup,
-            priority,
-            forward,
-            parameters.build(),
-          )
+          const updateParams: MessageParameter[] = [
+            new SubscriberPriority(priority),
+            new Forward(forward),
+            new SubscriptionFilter(FilterType.AbsoluteRange, startLocation, endGroup),
+            ...(parameters ?? []),
+          ]
+          const msg = new SubscribeUpdate(requestId, subscriptionRequestId, priority, forward, updateParams)
           subscription.update(msg) // This also updates the request since both maps store the same object
           await this.controlStream.send(msg)
         }
@@ -1215,12 +1196,13 @@ export class MOQtailClient {
       const subscription = this.subscriptions.get(trackAlias)
       if (!subscription) throw new InternalError('MOQtailClient.switch', 'Request exists but subscription does not')
 
-      if (!parameters) parameters = new VersionSpecificParameters()
       const requestId = this.#nextClientRequestId
       this.requests.set(requestId, subscription)
 
-      const msg = new Switch(requestId, fullTrackName, subscriptionRequestId, parameters.build())
-      subscription.switch(fullTrackName, parameters.build())
+      const switchParams: MessageParameter[] = parameters ?? []
+      const kvpParams = switchParams.map((p) => p.toKeyValuePair())
+      const msg = new Switch(requestId, fullTrackName, subscriptionRequestId, kvpParams)
+      subscription.switch(fullTrackName, switchParams)
       await this.controlStream.send(msg)
 
       const response = await subscription
@@ -1329,7 +1311,7 @@ export class MOQtailClient {
           'MOQtailClient.fetch',
           `subscriberPriority: ${priority} must be in range of [0-255]`,
         )
-      const params = parameters ? parameters.build() : new VersionSpecificParameters().build()
+      const params = parameters?.map((p) => p.toKeyValuePair()) ?? []
       let msg: Fetch
       let joiningRequest: MOQtailRequest | undefined
       // Generate unique requestId at the beginning to ensure uniqueness
@@ -1469,15 +1451,10 @@ export class MOQtailClient {
   /**
    * Proactively push a track to the relay/peer.
    */
-  async publish(
-    fullTrackName: FullTrackName,
-    forward: boolean,
-    trackAlias: bigint,
-    parameters?: VersionSpecificParameters,
-  ) {
+  async publish(fullTrackName: FullTrackName, forward: boolean, trackAlias: bigint, parameters?: MessageParameter[]) {
     this.#ensureActive()
     try {
-      const params = parameters ? parameters.build() : new VersionSpecificParameters().build()
+      const params = parameters?.map((p) => p.toKeyValuePair()) ?? []
       const requestId = this.#nextClientRequestId
 
       const msg = new Publish(
@@ -1597,7 +1574,7 @@ export class MOQtailClient {
    *
    * Parameter semantics:
    * - trackNamespace: Tuple representing the namespace prefix (e.g. ["camera","main"]). All tracks whose full names start with this tuple are considered within the announce scope.
-   * - parameters: Optional {@link VersionSpecificParameters}; omitted =\> default instance.
+   * - parameters: Optional {@link MessageParameters}; omitted =\> default instance.
    *
    * Returns: {@link PublishNamespaceOk} on success (namespace added to `announcedNamespaces`) or {@link PublishNamespaceError} explaining refusal.
    *
@@ -1624,15 +1601,15 @@ export class MOQtailClient {
    *
    * @example PublishNamespace with parameters block
    * ```ts
-   * const params = new VersionSpecificParameters().setSomeExtensionFlag(true)
+   * const params = new MessageParameters().setSomeExtensionFlag(true)
    * const resp = await client.publishNamespace(["room","1234"], params)
    * ```
    */
-  async publishNamespace(trackNamespace: Tuple, parameters?: VersionSpecificParameters) {
+  async publishNamespace(trackNamespace: Tuple, parameters?: MessageParameter[]) {
     this.#ensureActive()
     try {
       // TODO: Check for duplicate announces
-      const params = parameters ? parameters.build() : new VersionSpecificParameters().build()
+      const params = parameters?.map((p) => p.toKeyValuePair()) ?? []
       const msg = new PublishNamespace(this.#nextClientRequestId, trackNamespace, params)
       const request = new PublishNamespaceRequest(msg.requestId, msg)
       this.requests.set(msg.requestId, request)
@@ -1737,10 +1714,10 @@ export class MOQtailClient {
   }
 
   // INFO: Subscriber calls this the get matching announce messages with this prefix
-  async subscribeNamespace(trackNamespacePrefix: Tuple, parameters?: VersionSpecificParameters) {
+  async subscribeNamespace(trackNamespacePrefix: Tuple, parameters?: MessageParameter[]) {
     this.#ensureActive()
     try {
-      const params = parameters ? parameters.build() : new VersionSpecificParameters().build()
+      const params = parameters?.map((p) => p.toKeyValuePair()) ?? []
       const msg = new SubscribeNamespace(this.#nextClientRequestId, trackNamespacePrefix, params)
       const request = new SubscribeNamespaceRequest(msg)
 

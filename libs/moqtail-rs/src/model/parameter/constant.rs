@@ -52,30 +52,42 @@ impl From<SetupParameterType> for u64 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u64)]
-pub enum VersionSpecificParameterType {
+pub enum MessageParameterType {
   DeliveryTimeout = 0x02,
   AuthorizationToken = 0x03,
-  MaxCacheDuration = 0x04,
+  Expires = 0x08,
+  LargestObject = 0x09,
+  Forward = 0x10,
+  SubscriberPriority = 0x20,
+  SubscriptionFilter = 0x21,
+  GroupOrder = 0x22,
+  NewGroupRequest = 0x32,
 }
 
-impl TryFrom<u64> for VersionSpecificParameterType {
+impl TryFrom<u64> for MessageParameterType {
   type Error = ParseError;
 
   fn try_from(value: u64) -> Result<Self, Self::Error> {
     match value {
-      0x02 => Ok(VersionSpecificParameterType::DeliveryTimeout),
-      0x03 => Ok(VersionSpecificParameterType::AuthorizationToken),
-      0x04 => Ok(VersionSpecificParameterType::MaxCacheDuration),
+      0x02 => Ok(MessageParameterType::DeliveryTimeout),
+      0x03 => Ok(MessageParameterType::AuthorizationToken),
+      0x08 => Ok(MessageParameterType::Expires),
+      0x09 => Ok(MessageParameterType::LargestObject),
+      0x10 => Ok(MessageParameterType::Forward),
+      0x20 => Ok(MessageParameterType::SubscriberPriority),
+      0x21 => Ok(MessageParameterType::SubscriptionFilter),
+      0x22 => Ok(MessageParameterType::GroupOrder),
+      0x32 => Ok(MessageParameterType::NewGroupRequest),
       _ => Err(ParseError::InvalidType {
-        context: "VersionSpecificParameterType::try_from(u64)",
-        details: format!("Invalid type, got {value}"),
+        context: "MessageParameterType::try_from(u64)",
+        details: format!("Unknown parameter type, got {value}"),
       }),
     }
   }
 }
 
-impl From<VersionSpecificParameterType> for u64 {
-  fn from(value: VersionSpecificParameterType) -> Self {
+impl From<MessageParameterType> for u64 {
+  fn from(value: MessageParameterType) -> Self {
     value as u64
   }
 }

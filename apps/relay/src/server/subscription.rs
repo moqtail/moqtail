@@ -24,7 +24,6 @@ use crate::server::utils;
 use anyhow::Result;
 use bytes::Bytes;
 use moqtail::model::common::location::Location;
-use moqtail::model::common::pair::KeyValuePair;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::control::constant::FilterType;
 use moqtail::model::control::constant::GroupOrder;
@@ -36,6 +35,9 @@ use moqtail::model::control::subscribe_update::SubscribeUpdate;
 use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::model::data::object::Object;
 use moqtail::model::data::subgroup_header::SubgroupHeader;
+use moqtail::model::parameter::message_parameter::{
+  MessageParameter, apply_message_parameter_update,
+};
 use moqtail::transport::data_stream_handler::HeaderInfo;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -52,10 +54,10 @@ pub struct SubscriptionState {
   pub subscriber_priority: u8,
   pub _group_order: GroupOrder,
   pub forward: bool,
-  pub _filter_type: FilterType,
+  pub filter_type: FilterType,
   pub start_location: Option<Location>,
   pub end_group: u64,
-  pub subscribe_parameters: Vec<KeyValuePair>,
+  pub subscribe_parameters: Vec<MessageParameter>,
   pub last_sent_max_location: Option<Location>,
   pub last_received_object_location: Option<Location>,
   pub is_joining: bool,
@@ -91,13 +93,66 @@ impl SubscriptionState {
 
 impl From<Subscribe> for SubscriptionState {
   fn from(subscribe: Subscribe) -> Self {
+    let subscriber_priority = subscribe
+      .subscribe_parameters
+      .iter()
+      .find_map(|p| {
+        if let MessageParameter::SubscriberPriority { priority } = p {
+          Some(*priority)
+        } else {
+          None
+        }
+      })
+      .unwrap_or(0);
+
+    let group_order = subscribe
+      .subscribe_parameters
+      .iter()
+      .find_map(|p| {
+        if let MessageParameter::GroupOrder { order } = p {
+          Some(*order)
+        } else {
+          None
+        }
+      })
+      .unwrap_or(GroupOrder::Ascending);
+
+    let forward = subscribe
+      .subscribe_parameters
+      .iter()
+      .find_map(|p| {
+        if let MessageParameter::Forward { forward } = p {
+          Some(*forward)
+        } else {
+          None
+        }
+      })
+      .unwrap_or(true);
+
+    let (filter_type, start_location, end_group) = subscribe
+      .subscribe_parameters
+      .iter()
+      .find_map(|p| {
+        if let MessageParameter::SubscriptionFilter {
+          filter_type,
+          start_location,
+          end_group,
+        } = p
+        {
+          Some((*filter_type, start_location.clone(), end_group.unwrap_or(0)))
+        } else {
+          None
+        }
+      })
+      .unwrap_or((FilterType::LatestObject, None, 0));
+
     Self {
-      subscriber_priority: subscribe.subscriber_priority,
-      _group_order: subscribe.group_order,
-      forward: subscribe.forward,
-      _filter_type: subscribe.filter_type,
-      start_location: subscribe.start_location,
-      end_group: subscribe.end_group.unwrap_or(0),
+      subscriber_priority,
+      _group_order: group_order,
+      forward,
+      filter_type,
+      start_location,
+      end_group,
       subscribe_parameters: subscribe.subscribe_parameters,
       last_sent_max_location: None,
       last_received_object_location: None,
@@ -332,38 +387,58 @@ impl Subscription {
     let mut state = self.subscription_state.write().await;
     // map subscribe_update fields to subscribe_message
 
+    // Extract filter_type, start_location and end_group from SubscriptionFilter parameter
+    let (new_filter_type, new_start_location, new_end_group) = subscribe_update
+      .subscribe_parameters
+      .iter()
+      .find_map(|p| {
+        if let MessageParameter::SubscriptionFilter {
+          filter_type,
+          start_location,
+          end_group,
+        } = p
+        {
+          Some((Some(*filter_type), start_location.clone(), *end_group))
+        } else {
+          None
+        }
+      })
+      .unwrap_or((None, None, None));
+
     // The Start Location MUST NOT decrease
     // and the End Group MUST NOT increase.
     // In Draft-15 end group can be increased or decreased.
-    if subscribe_update.start_location < state.start_location.clone().unwrap_or_default() {
-      // invalid update
-      return Err(anyhow::anyhow!(
-        "Invalid SubscribeUpdate: Start Location cannot decrease. Current start location: {:?} Subscribe Update Start Location: {:?}",
-        state.start_location,
-        subscribe_update.start_location
-      ));
+    if let Some(ref new_loc) = new_start_location {
+      if *new_loc < state.start_location.clone().unwrap_or_default() {
+        return Err(anyhow::anyhow!(
+          "Invalid SubscribeUpdate: Start Location cannot decrease. Current start location: {:?} Subscribe Update Start Location: {:?}",
+          state.start_location,
+          new_loc
+        ));
+      }
+      state.start_location = Some(new_loc.clone());
     }
 
     // update subscription state
-    state.start_location = Some(subscribe_update.start_location);
     state.subscriber_priority = subscribe_update.subscriber_priority;
     state.forward = subscribe_update.forward;
-    state.end_group = subscribe_update.end_group;
+    if let Some(ft) = new_filter_type {
+      state.filter_type = ft;
+    }
+    if let Some(eg) = new_end_group {
+      state.end_group = eg;
+    }
 
     // update parameters. If a parameter included in SUBSCRIBE is not present in
     // SUBSCRIBE_UPDATE, its value remains unchanged.  There is no mechanism
     // to remove a parameter from a subscription.
-    for param in subscribe_update.subscribe_parameters {
-      if let Some(existing_param) = state
-        .subscribe_parameters
-        .iter_mut()
-        .find(|p| p.is_same_type(&param))
-      {
-        *existing_param = param;
-      } else {
-        state.subscribe_parameters.push(param);
-      }
-    }
+    // Also sync the explicit forward/subscriber_priority fields into parameters
+    let mut explicit_updates = vec![
+      MessageParameter::new_forward(subscribe_update.forward),
+      MessageParameter::new_subscriber_priority(subscribe_update.subscriber_priority),
+    ];
+    explicit_updates.extend(subscribe_update.subscribe_parameters);
+    apply_message_parameter_update(&mut state.subscribe_parameters, explicit_updates);
 
     info!(
       "update_subscription | new subscription state for relay_track_id={}: {:?}",

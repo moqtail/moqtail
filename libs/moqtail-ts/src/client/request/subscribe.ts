@@ -18,6 +18,7 @@ import {
   FullTrackName,
   KeyValuePair,
   Location,
+  MessageParameter,
   MoqtObject,
   Subscribe,
   SubscribeError,
@@ -34,7 +35,7 @@ export class SubscribeRequest implements PromiseLike<SubscribeOk | SubscribeErro
   endGroup: bigint | undefined
   priority: number
   forward: boolean
-  subscribeParameters: KeyValuePair[]
+  subscribeParameters: MessageParameter[]
   largestLocation: Location | undefined // Updated on each received object
   streamsAccepted: bigint = 0n
   expectedStreams: bigint | undefined // Defined upon SUBSCRIBE_DONE
@@ -47,10 +48,13 @@ export class SubscribeRequest implements PromiseLike<SubscribeOk | SubscribeErro
   constructor(msg: Subscribe) {
     this.requestId = msg.requestId
     this.fullTrackName = msg.fullTrackName
-    this.startLocation = msg.startLocation
-    this.endGroup = msg.endGroup
-    this.priority = msg.subscriberPriority
-    this.forward = msg.forward
+    const filter = msg.parameters.find(MessageParameter.isSubscriptionFilter)
+    this.startLocation = filter?.startLocation
+    this.endGroup = filter?.endGroup
+    const subPriority = msg.parameters.find(MessageParameter.isSubscriberPriority)
+    this.priority = subPriority?.priority ?? 128
+    const fwd = msg.parameters.find(MessageParameter.isForward)
+    this.forward = fwd?.forward ?? true
     this.subscribeParameters = msg.parameters
     this.stream = new ReadableStream<MoqtObject>({
       start: (controller) => {
@@ -63,13 +67,14 @@ export class SubscribeRequest implements PromiseLike<SubscribeOk | SubscribeErro
     })
   }
   update(msg: SubscribeUpdate): void {
-    this.startLocation = msg.startLocation
-    this.endGroup = msg.endGroup
+    const filter = msg.parameters.find(MessageParameter.isSubscriptionFilter)
+    if (filter?.startLocation !== undefined) this.startLocation = filter.startLocation
+    if (filter?.endGroup !== undefined) this.endGroup = filter.endGroup
     this.forward = msg.forward
     this.priority = msg.subscriberPriority
     this.subscribeParameters = msg.parameters
   }
-  switch(newTrackName: FullTrackName, newParameters: KeyValuePair[]): void {
+  switch(newTrackName: FullTrackName, newParameters: MessageParameter[]): void {
     this.fullTrackName = newTrackName
     this.subscribeParameters = newParameters
     this.#promise = new Promise<SubscribeOk | SubscribeError>((resolve, reject) => {

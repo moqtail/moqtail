@@ -616,7 +616,7 @@ mod tests {
   use crate::model::common::location::Location;
   use crate::model::common::pair::KeyValuePair;
   use crate::model::common::tuple::{Tuple, TupleField};
-  use crate::model::control::constant::{FetchType, FilterType, GroupOrder};
+  use crate::model::control::constant::{FetchType, GroupOrder};
   use crate::model::control::fetch::JoiningFetchProps;
   use crate::model::control::{fetch::Fetch, subscribe::Subscribe};
   use crate::model::data::constant::SubgroupHeaderType;
@@ -687,31 +687,21 @@ mod tests {
     let request_id = 128242;
     let track_namespace = Tuple::from_utf8_path("nein/nein/nein");
     let track_name = TupleField::from_utf8("track_42");
-    let subscriber_priority = 31;
-    let group_order = GroupOrder::Original;
-    let forward = true;
-    let filter_type = FilterType::AbsoluteRange;
     let start_location = Location {
       group: 81,
       object: 81,
     };
-    let end_group = 25;
-    let subscribe_parameters = vec![
-      KeyValuePair::try_new_varint(0, 10).unwrap(),
-      KeyValuePair::try_new_bytes(1, Bytes::from_static(b"I'll sync you up")).unwrap(),
-    ];
-    let subscribe = Subscribe {
+    let subscribe = Subscribe::new_absolute_range(
       request_id,
       track_namespace,
       track_name,
-      subscriber_priority,
-      group_order,
-      forward,
-      filter_type,
-      start_location: Some(start_location),
-      end_group: Some(end_group),
-      subscribe_parameters,
-    };
+      31,
+      GroupOrder::Original,
+      true,
+      start_location,
+      25,
+      vec![],
+    );
     let header_type = SubgroupHeaderType::Type0x15;
     let track_alias = 999;
     let group_id = 9;

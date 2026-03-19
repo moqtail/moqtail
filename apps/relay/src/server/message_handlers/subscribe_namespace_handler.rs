@@ -16,6 +16,7 @@ use crate::server::session_context::SessionContext;
 use crate::server::{client::MOQTClient, session::Session};
 use core::result::Result;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
+use moqtail::model::control::constant::GroupOrder;
 use moqtail::model::control::constant::SubscribeNamespaceErrorCode;
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::publish_namespace::PublishNamespace;
@@ -130,9 +131,9 @@ pub async fn handle(
             relay_publish_id,
             original_publish_message.track_namespace.clone(),
             original_publish_message.track_name.clone(),
-            128,
-            original_publish_message.group_order,
-            original_publish_message.forward != 0,
+            128,                                   // subscriber_priority
+            GroupOrder::Ascending,                 // group_order
+            original_publish_message.forward != 0, // forward
             vec![],
           );
 

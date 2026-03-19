@@ -330,7 +330,7 @@ export class Player {
         groupOrder: GroupOrder.Original,
         priority: 0,
         typeAndProps: {
-          type: FetchType.StandAlone,
+          type: FetchType.Standalone,
           props: {
             fullTrackName: getFullTrackName(this.#options.namespace, 'catalog'),
             startLocation: this.#options.catalogLocation[0],

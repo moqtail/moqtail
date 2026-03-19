@@ -139,7 +139,7 @@ impl From<FilterType> for u64 {
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(u64)]
 pub enum FetchType {
-  StandAlone = 0x1,
+  Standalone = 0x1,
   RelativeFetch = 0x2,
   AbsoluteFetch = 0x3,
 }
@@ -149,7 +149,7 @@ impl TryFrom<u64> for FetchType {
 
   fn try_from(value: u64) -> Result<Self, Self::Error> {
     match value {
-      0x1 => Ok(FetchType::StandAlone),
+      0x1 => Ok(FetchType::Standalone),
       0x2 => Ok(FetchType::RelativeFetch),
       0x3 => Ok(FetchType::AbsoluteFetch),
       _ => Err(ParseError::InvalidType {

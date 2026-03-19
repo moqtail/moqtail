@@ -28,7 +28,7 @@ export class Fetch {
     public readonly groupOrder: GroupOrder,
     public readonly typeAndProps:
       | {
-          readonly type: FetchType.StandAlone
+          readonly type: FetchType.Standalone
           readonly props: { fullTrackName: FullTrackName; startLocation: Location; endLocation: Location }
         }
       | {
@@ -61,7 +61,7 @@ export class Fetch {
         payload.putVI(this.typeAndProps.props.joiningStart)
         break
       }
-      case FetchType.StandAlone: {
+      case FetchType.Standalone: {
         payload.putFullTrackName(this.typeAndProps.props.fullTrackName)
         payload.putLocation(this.typeAndProps.props.startLocation)
         payload.putLocation(this.typeAndProps.props.endLocation)
@@ -104,12 +104,12 @@ export class Fetch {
         }
         break
       }
-      case FetchType.StandAlone: {
+      case FetchType.Standalone: {
         const fullTrackName = buf.getFullTrackName()
         const startLocation = buf.getLocation()
         const endLocation = buf.getLocation()
         props = {
-          type: FetchType.StandAlone,
+          type: FetchType.Standalone,
           props: { fullTrackName, startLocation, endLocation },
         }
         break

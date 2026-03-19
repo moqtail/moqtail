@@ -1243,7 +1243,7 @@ export class MOQtailClient {
    * One-shot retrieval of a bounded object span, optionally anchored to an existing subscription, returning a stream of {@link MoqtObject}s.
    *
    * Choose a fetch type via `typeAndProps.type`:
-   * - StandAlone: Historical slice of a specific {@link FullTrackName} independent of active subscriptions.
+   * - Standalone: Historical slice of a specific {@link FullTrackName} independent of active subscriptions.
    * - Relative: Range relative to the JOINING subscription's current (largest) location; use when you want "N groups back" from live.
    * - Absolute: Absolute group/object offsets tied to an existing subscription (stable anchor) even if that subscription keeps forwarding.
    *
@@ -1276,7 +1276,7 @@ export class MOQtailClient {
    *   priority: 64,
    *   groupOrder: GroupOrder.Original,
    *   typeAndProps: {
-   *     type: FetchType.StandAlone,
+   *     type: FetchType.Standalone,
    *     props: { fullTrackName, startLocation, endLocation }
    *   }
    * })
@@ -1325,7 +1325,7 @@ export class MOQtailClient {
         this.#dontUseRequestId,
       )
       switch (typeAndProps.type) {
-        case FetchType.StandAlone:
+        case FetchType.Standalone:
           msg = new Fetch(
             requestId,
             priority,
@@ -1371,7 +1371,7 @@ export class MOQtailClient {
       logger.log('fetch: full fetch message:', {
         requestId: msg.requestId,
         fetchType: typeAndProps.type,
-        joiningRequestId: typeAndProps.type !== FetchType.StandAlone ? typeAndProps.props.joiningRequestId : 'N/A',
+        joiningRequestId: typeAndProps.type !== FetchType.Standalone ? typeAndProps.props.joiningRequestId : 'N/A',
       })
       this.requests.set(msg.requestId, request)
       logger.log('fetch: about to send fetch message to server')
@@ -1415,7 +1415,7 @@ export class MOQtailClient {
    *
    * @example Cancel shortly after starting
    * ```ts
-   * const r = await client.fetch({ priority: 32, groupOrder: GroupOrder.Original, typeAndProps: { type: FetchType.StandAlone, props: { fullTrackName, startLocation, endLocation } } })
+   * const r = await client.fetch({ priority: 32, groupOrder: GroupOrder.Original, typeAndProps: { type: FetchType.Standalone, props: { fullTrackName, startLocation, endLocation } } })
    * if (!(r instanceof FetchError)) {
    *   // user navigated away
    *   await client.fetchCancel(r.requestId)
@@ -1806,7 +1806,7 @@ export class MOQtailClient {
         if (request && request instanceof FetchRequest) {
           let fullTrackName: FullTrackName
           switch (request.message.typeAndProps.type) {
-            case FetchType.StandAlone:
+            case FetchType.Standalone:
               fullTrackName = request.message.typeAndProps.props.fullTrackName
               break
             case FetchType.Relative:

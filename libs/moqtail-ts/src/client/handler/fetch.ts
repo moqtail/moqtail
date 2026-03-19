@@ -30,7 +30,7 @@ export const handlerFetch: ControlMessageHandler<Fetch> = async (client, msg) =>
   let fullTrackName: FullTrackName | undefined
   let joiningRequest: SubscribePublication | FetchPublication | PublishPublication | undefined
   switch (msg.typeAndProps.type) {
-    case FetchType.StandAlone:
+    case FetchType.Standalone:
       fullTrackName = msg.typeAndProps.props.fullTrackName
       break
 

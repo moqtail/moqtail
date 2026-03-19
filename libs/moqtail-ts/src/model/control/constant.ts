@@ -221,7 +221,7 @@ export function filterTypeFromBigInt(v: bigint): FilterType {
  * Fetch request types for MOQT protocol.
  */
 export enum FetchType {
-  StandAlone = 0x1,
+  Standalone = 0x1,
   Relative = 0x2,
   Absolute = 0x3,
 }
@@ -235,7 +235,7 @@ export enum FetchType {
 export function fetchTypeFromBigInt(v: bigint): FetchType {
   switch (v) {
     case 0x1n:
-      return FetchType.StandAlone
+      return FetchType.Standalone
     case 0x2n:
       return FetchType.Relative
     case 0x3n:

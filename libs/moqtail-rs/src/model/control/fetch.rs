@@ -22,7 +22,7 @@ use crate::model::error::ParseError;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct StandAloneFetchProps {
+pub struct StandaloneFetchProps {
   pub track_namespace: Tuple,
   pub track_name: TupleField,
   pub start_location: Location,
@@ -41,7 +41,7 @@ pub struct Fetch {
   pub subscriber_priority: u8,
   pub group_order: GroupOrder,
   pub fetch_type: FetchType,
-  pub standalone_fetch_props: Option<StandAloneFetchProps>,
+  pub standalone_fetch_props: Option<StandaloneFetchProps>,
   pub joining_fetch_props: Option<JoiningFetchProps>,
   pub parameters: Vec<KeyValuePair>,
 }
@@ -52,14 +52,14 @@ impl Fetch {
     request_id: u64,
     subscriber_priority: u8,
     group_order: GroupOrder,
-    standalone_fetch_props: StandAloneFetchProps,
+    standalone_fetch_props: StandaloneFetchProps,
     parameters: Vec<KeyValuePair>,
   ) -> Self {
     Self {
       request_id,
       subscriber_priority,
       group_order,
-      fetch_type: FetchType::StandAlone,
+      fetch_type: FetchType::Standalone,
       standalone_fetch_props: Some(standalone_fetch_props),
       joining_fetch_props: None,
       parameters,
@@ -89,7 +89,7 @@ impl Fetch {
         }),
         parameters,
       }),
-      FetchType::StandAlone => Err("Use new_standalone for standalone fetch requests"),
+      FetchType::Standalone => Err("Use new_standalone for standalone fetch requests"),
     }
   }
 
@@ -100,7 +100,7 @@ impl Fetch {
     subscriber_priority: u8,
     group_order: GroupOrder,
     fetch_type: FetchType,
-    standalone_fetch_props: Option<StandAloneFetchProps>,
+    standalone_fetch_props: Option<StandaloneFetchProps>,
     joining_fetch_props: Option<JoiningFetchProps>,
     parameters: Vec<KeyValuePair>,
   ) -> Self {
@@ -137,7 +137,7 @@ impl ControlMessageTrait for Fetch {
         payload.put_vi(props.joining_request_id)?;
         payload.put_vi(props.joining_start)?;
       }
-      FetchType::StandAlone => {
+      FetchType::Standalone => {
         let props = self.standalone_fetch_props.as_ref().unwrap();
         payload.extend_from_slice(&props.track_namespace.serialize()?);
         payload.put_vi(props.track_name.len())?;
@@ -193,7 +193,7 @@ impl ControlMessageTrait for Fetch {
     let fetch_type_raw = payload.get_vi()?;
     let fetch_type = FetchType::try_from(fetch_type_raw)?;
 
-    let mut standalone_fetch_props: Option<StandAloneFetchProps> = None;
+    let mut standalone_fetch_props: Option<StandaloneFetchProps> = None;
     let mut joining_fetch_props: Option<JoiningFetchProps> = None;
 
     match fetch_type {
@@ -213,7 +213,7 @@ impl ControlMessageTrait for Fetch {
           joining_start,
         });
       }
-      FetchType::StandAlone => {
+      FetchType::Standalone => {
         let track_namespace = Tuple::deserialize(payload)?;
         let track_name_len = payload.get_vi()? as usize;
         if payload.remaining() < track_name_len {
@@ -227,7 +227,7 @@ impl ControlMessageTrait for Fetch {
         let start_location = Location::deserialize(payload)?;
         let end_location = Location::deserialize(payload)?;
 
-        standalone_fetch_props = Some(StandAloneFetchProps {
+        standalone_fetch_props = Some(StandaloneFetchProps {
           track_namespace,
           track_name,
           start_location,
@@ -395,7 +395,7 @@ mod tests {
     let start_location = Location::new(5, 10);
     let end_location = Location::new(15, 20);
     let parameters = vec![KeyValuePair::try_new_varint(100, 200).unwrap()];
-    let standalone_fetch_props = StandAloneFetchProps {
+    let standalone_fetch_props = StandaloneFetchProps {
       track_namespace,
       track_name,
       start_location,
@@ -413,7 +413,7 @@ mod tests {
     assert_eq!(fetch.request_id, 42);
     assert_eq!(fetch.subscriber_priority, 1);
     assert_eq!(fetch.group_order, GroupOrder::Ascending);
-    assert_eq!(fetch.fetch_type, FetchType::StandAlone);
+    assert_eq!(fetch.fetch_type, FetchType::Standalone);
     assert!(fetch.standalone_fetch_props.is_some());
     assert!(fetch.joining_fetch_props.is_none());
 
@@ -485,7 +485,7 @@ mod tests {
       111,
       2,
       GroupOrder::Ascending,
-      FetchType::StandAlone,
+      FetchType::Standalone,
       222,
       333,
       parameters,

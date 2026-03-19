@@ -130,11 +130,13 @@ pub async fn handle(
             track,
           )
           .await;
-        track_arc
-          .write()
-          .await
-          .add_publisher(context.connection_id, track_alias)
-          .await;
+        {
+          let track = track_arc.write().await;
+          track
+            .add_publisher(context.connection_id, track_alias)
+            .await;
+          track.set_track_extensions(m.track_extensions.clone()).await;
+        }
 
         client
           .add_published_track(request_id, full_track_name.clone())

@@ -94,7 +94,14 @@ pub async fn run_namespace(moq: MoqConnection, config: PublishNamespaceConfig) -
           m.request_id, m.track_name, track_alias
         );
 
-        let msg = SubscribeOk::new_ascending_with_content(m.request_id, track_alias, 0, None, None);
+        let msg = SubscribeOk::new_ascending_with_content(
+          m.request_id,
+          track_alias,
+          0,
+          None,
+          vec![],
+          vec![],
+        );
         control_stream.send_impl(&msg).await?;
         info!(
           "SubscribeOk sent for request_id={}, track_alias={}",
@@ -222,6 +229,7 @@ async fn publish_track(
     1, // content_exists
     Some(Location::new(0, 0)),
     1, // forward
+    vec![],
     vec![],
   );
   control_stream

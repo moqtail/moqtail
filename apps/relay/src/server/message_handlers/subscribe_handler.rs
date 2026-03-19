@@ -205,13 +205,15 @@ async fn handle_subscribe_message(
           "Track confirmed, sending SubscribeOk to subscriber {}",
           client.connection_id
         );
+        let cached_extensions = { track.track_extensions.read().await.clone() };
         let subscribe_ok =
           moqtail::model::control::subscribe_ok::SubscribeOk::new_ascending_with_content(
             sub.request_id,
             track.relay_track_id,
             expires,
             largest_location,
-            None,
+            vec![],
+            cached_extensions,
           );
         control_stream_handler.send_impl(&subscribe_ok).await
       }
@@ -305,6 +307,7 @@ async fn handle_subscribe_ok_message(
         msg.track_alias,
         msg.expires,
         msg.largest_location.clone(),
+        msg.track_extensions.clone(),
       )
       .await;
     track.relay_track_id
@@ -327,13 +330,18 @@ async fn handle_subscribe_ok_message(
       mngr.get(sub_request.requested_by).await
     };
     if let Some(subscriber) = subscriber {
+      let cached_extensions = {
+        let track = track_arc.read().await;
+        track.track_extensions.read().await.clone()
+      };
       let subscribe_ok =
         moqtail::model::control::subscribe_ok::SubscribeOk::new_ascending_with_content(
           sub_request.original_request_id,
           relay_track_id,
           msg.expires,
           msg.largest_location.clone(),
-          None,
+          vec![],
+          cached_extensions,
         );
       info!(
         "sending SubscribeOk to creator subscriber: {:?}",
@@ -364,13 +372,18 @@ async fn handle_subscribe_ok_message(
         mngr.get(subscriber_connection_id).await
       };
       if let Some(subscriber) = subscriber {
+        let cached_extensions = {
+          let track = track_arc.read().await;
+          track.track_extensions.read().await.clone()
+        };
         let subscribe_ok =
           moqtail::model::control::subscribe_ok::SubscribeOk::new_ascending_with_content(
             subscriber_request_id,
             relay_track_id,
             msg.expires,
             msg.largest_location.clone(),
-            None,
+            vec![],
+            cached_extensions,
           );
         info!(
           "sending SubscribeOk to pending subscriber: {:?}",

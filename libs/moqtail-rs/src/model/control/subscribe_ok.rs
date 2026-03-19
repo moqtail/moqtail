@@ -15,11 +15,15 @@
 use super::constant::{ControlMessageType, GroupOrder};
 use super::control_message::ControlMessageTrait;
 use crate::model::common::location::Location;
-use crate::model::common::pair::KeyValuePair;
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
 use crate::model::error::ParseError;
+use crate::model::extension_header::track_extension::{
+  TrackExtension, deserialize_track_extensions, serialize_track_extensions,
+};
+use crate::model::parameter::message_parameter::{
+  MessageParameter, deserialize_message_parameters,
+};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
-use std::convert::TryInto;
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct SubscribeOk {
@@ -29,7 +33,8 @@ pub struct SubscribeOk {
   pub group_order: GroupOrder, // Must be Ascending or Descending
   pub content_exists: bool,
   pub largest_location: Option<Location>, // Present only if content_exists is true
-  pub subscribe_parameters: Option<Vec<KeyValuePair>>,
+  pub subscribe_parameters: Vec<MessageParameter>,
+  pub track_extensions: Vec<TrackExtension>,
 }
 
 impl SubscribeOk {
@@ -37,7 +42,8 @@ impl SubscribeOk {
     request_id: u64,
     track_alias: u64,
     expires: u64,
-    subscribe_parameters: Option<Vec<KeyValuePair>>,
+    subscribe_parameters: Vec<MessageParameter>,
+    track_extensions: Vec<TrackExtension>,
   ) -> Self {
     Self {
       request_id,
@@ -47,6 +53,7 @@ impl SubscribeOk {
       content_exists: false,
       largest_location: None,
       subscribe_parameters,
+      track_extensions,
     }
   }
 
@@ -54,7 +61,8 @@ impl SubscribeOk {
     request_id: u64,
     track_alias: u64,
     expires: u64,
-    subscribe_parameters: Option<Vec<KeyValuePair>>,
+    subscribe_parameters: Vec<MessageParameter>,
+    track_extensions: Vec<TrackExtension>,
   ) -> Self {
     Self {
       request_id,
@@ -64,6 +72,7 @@ impl SubscribeOk {
       content_exists: false,
       largest_location: None,
       subscribe_parameters,
+      track_extensions,
     }
   }
 
@@ -72,7 +81,8 @@ impl SubscribeOk {
     track_alias: u64,
     expires: u64,
     largest_location: Option<Location>,
-    subscribe_parameters: Option<Vec<KeyValuePair>>,
+    subscribe_parameters: Vec<MessageParameter>,
+    track_extensions: Vec<TrackExtension>,
   ) -> Self {
     Self {
       request_id,
@@ -82,6 +92,7 @@ impl SubscribeOk {
       content_exists: true,
       largest_location,
       subscribe_parameters,
+      track_extensions,
     }
   }
 
@@ -90,7 +101,8 @@ impl SubscribeOk {
     track_alias: u64,
     expires: u64,
     largest_location: Option<Location>,
-    subscribe_parameters: Option<Vec<KeyValuePair>>,
+    subscribe_parameters: Vec<MessageParameter>,
+    track_extensions: Vec<TrackExtension>,
   ) -> Self {
     Self {
       request_id,
@@ -100,9 +112,11 @@ impl SubscribeOk {
       content_exists: true,
       largest_location,
       subscribe_parameters,
+      track_extensions,
     }
   }
 }
+
 impl ControlMessageTrait for SubscribeOk {
   fn serialize(&self) -> Result<Bytes, ParseError> {
     let mut buf = BytesMut::new();
@@ -131,14 +145,13 @@ impl ControlMessageTrait for SubscribeOk {
       payload.put_u8(0u8);
     }
 
-    if let Some(ref params) = self.subscribe_parameters {
-      payload.put_vi(params.len() as u64)?;
-      for param in params {
-        payload.extend_from_slice(&param.serialize()?);
-      }
-    } else {
-      payload.put_vi(0u64)?;
+    payload.put_vi(self.subscribe_parameters.len() as u64)?;
+    for param in &self.subscribe_parameters {
+      payload.extend_from_slice(&param.serialize()?);
     }
+
+    // Track Extensions (no length prefix; bounded by outer message Length field)
+    payload.extend_from_slice(&serialize_track_extensions(&self.track_extensions)?);
 
     let payload_len: u16 = payload
       .len()
@@ -200,27 +213,12 @@ impl ControlMessageTrait for SubscribeOk {
       largest_location = Some(Location::deserialize(payload)?);
     }
 
-    let param_count_u64 = payload.get_vi()?;
-    let param_count: usize =
-      param_count_u64
-        .try_into()
-        .map_err(|e: std::num::TryFromIntError| ParseError::CastingError {
-          context: "SubscribeOk::parse_payload(param_count)",
-          from_type: "u64",
-          to_type: "usize",
-          details: e.to_string(),
-        })?;
+    let param_count = payload.get_vi()?;
+    let subscribe_parameters =
+      deserialize_message_parameters(payload, param_count, ControlMessageType::SubscribeOk)?;
 
-    let subscribe_parameters = if param_count > 0 {
-      let mut params = Vec::with_capacity(param_count);
-      for _ in 0..param_count {
-        let param = KeyValuePair::deserialize(payload)?;
-        params.push(param);
-      }
-      Some(params)
-    } else {
-      None
-    };
+    // Track Extensions: consume whatever remains in the payload
+    let track_extensions = deserialize_track_extensions(payload)?;
 
     Ok(Box::new(SubscribeOk {
       request_id,
@@ -230,6 +228,7 @@ impl ControlMessageTrait for SubscribeOk {
       content_exists,
       largest_location,
       subscribe_parameters,
+      track_extensions,
     }))
   }
 
@@ -245,28 +244,44 @@ mod tests {
 
   #[test]
   fn test_roundtrip() {
-    let request_id = 145136;
-    let track_alias = 0;
-    let expires = 16;
-    let group_order = GroupOrder::Ascending;
-    let content_exists = true;
-    let largest_location = Location {
-      group: 34,
-      object: 0,
-    };
-    let subscribe_parameters = vec![
-      KeyValuePair::try_new_varint(0, 10).unwrap(),
-      KeyValuePair::try_new_bytes(1, Bytes::from_static(b"9 gifted subs from Dr.Doofishtein"))
-        .unwrap(),
-    ];
     let subscribe_ok = SubscribeOk {
-      request_id,
-      track_alias,
-      expires,
-      group_order,
-      content_exists,
-      largest_location: Some(largest_location),
-      subscribe_parameters: Some(subscribe_parameters),
+      request_id: 145136,
+      track_alias: 0,
+      expires: 16,
+      group_order: GroupOrder::Ascending,
+      content_exists: true,
+      largest_location: Some(Location {
+        group: 34,
+        object: 0,
+      }),
+      subscribe_parameters: vec![MessageParameter::new_expires(100)],
+      track_extensions: vec![],
+    };
+
+    let mut buf = subscribe_ok.serialize().unwrap();
+    let msg_type = buf.get_vi().unwrap();
+    assert_eq!(msg_type, ControlMessageType::SubscribeOk as u64);
+    let msg_length = buf.get_u16();
+    assert_eq!(msg_length as usize, buf.remaining());
+    let deserialized = SubscribeOk::parse_payload(&mut buf).unwrap();
+    assert_eq!(*deserialized, subscribe_ok);
+    assert!(!buf.has_remaining());
+  }
+
+  #[test]
+  fn test_roundtrip_with_track_extensions() {
+    let subscribe_ok = SubscribeOk {
+      request_id: 999,
+      track_alias: 42,
+      expires: 0,
+      group_order: GroupOrder::Descending,
+      content_exists: false,
+      largest_location: None,
+      subscribe_parameters: vec![],
+      track_extensions: vec![
+        TrackExtension::DeliveryTimeout { timeout_ms: 500 },
+        TrackExtension::DynamicGroups { enabled: true },
+      ],
     };
 
     let mut buf = subscribe_ok.serialize().unwrap();
@@ -281,28 +296,18 @@ mod tests {
 
   #[test]
   fn test_excess_roundtrip() {
-    let request_id = 145136;
-    let track_alias = 89123u64;
-    let expires = 16;
-    let group_order = GroupOrder::Ascending;
-    let content_exists = true;
-    let largest_location = Location {
-      group: 34,
-      object: 0,
-    };
-    let subscribe_parameters = vec![
-      KeyValuePair::try_new_varint(0, 10).unwrap(),
-      KeyValuePair::try_new_bytes(1, Bytes::from_static(b"9 gifted subs from Dr.Doofishtein"))
-        .unwrap(),
-    ];
     let subscribe_ok = SubscribeOk {
-      request_id,
-      track_alias,
-      expires,
-      group_order,
-      content_exists,
-      largest_location: Some(largest_location),
-      subscribe_parameters: Some(subscribe_parameters),
+      request_id: 145136,
+      track_alias: 89123u64,
+      expires: 16,
+      group_order: GroupOrder::Ascending,
+      content_exists: true,
+      largest_location: Some(Location {
+        group: 34,
+        object: 0,
+      }),
+      subscribe_parameters: vec![MessageParameter::new_expires(16)],
+      track_extensions: vec![],
     };
 
     let serialized = subscribe_ok.serialize().unwrap();
@@ -316,35 +321,28 @@ mod tests {
     let msg_length = buf.get_u16();
 
     assert_eq!(msg_length as usize, buf.remaining() - 3);
-    let deserialized = SubscribeOk::parse_payload(&mut buf).unwrap();
+    // Slice to exactly msg_length bytes (as ControlMessage::deserialize does in production).
+    let mut payload = buf.copy_to_bytes(msg_length as usize);
+    let deserialized = SubscribeOk::parse_payload(&mut payload).unwrap();
     assert_eq!(*deserialized, subscribe_ok);
+    assert!(!payload.has_remaining());
     assert_eq!(buf.chunk(), &[9u8, 1u8, 1u8]);
   }
 
   #[test]
   fn test_partial_message() {
-    let request_id = 145136;
-    let track_alias = 1223u64;
-    let expires = 16;
-    let group_order = GroupOrder::Ascending;
-    let content_exists = true;
-    let largest_location = Location {
-      group: 34,
-      object: 0,
-    };
-    let subscribe_parameters = vec![
-      KeyValuePair::try_new_varint(0, 10).unwrap(),
-      KeyValuePair::try_new_bytes(1, Bytes::from_static(b"9 gifted subs from Dr.Doofishtein"))
-        .unwrap(),
-    ];
     let subscribe_ok = SubscribeOk {
-      request_id,
-      track_alias,
-      expires,
-      group_order,
-      content_exists,
-      largest_location: Some(largest_location),
-      subscribe_parameters: Some(subscribe_parameters),
+      request_id: 145136,
+      track_alias: 1223u64,
+      expires: 16,
+      group_order: GroupOrder::Ascending,
+      content_exists: true,
+      largest_location: Some(Location {
+        group: 34,
+        object: 0,
+      }),
+      subscribe_parameters: vec![MessageParameter::new_expires(16)],
+      track_extensions: vec![],
     };
     let mut buf = subscribe_ok.serialize().unwrap();
     let msg_type = buf.get_vi().unwrap();

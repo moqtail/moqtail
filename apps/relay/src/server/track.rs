@@ -29,6 +29,7 @@ use moqtail::model::data::constant::ObjectForwardingPreference;
 use moqtail::model::data::datagram_object::DatagramObject;
 use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::model::data::object::Object;
+use moqtail::model::extension_header::track_extension::TrackExtension;
 use moqtail::transport::data_stream_handler::HeaderInfo;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -88,6 +89,8 @@ pub struct Track {
   pub status_notify: Arc<Notify>,
   /// Subscribers waiting for track confirmation: (request_id, connection_id).
   pub pending_subscribers: Arc<RwLock<Vec<(u64, usize)>>>,
+  /// Cached track extensions from PUBLISH or SUBSCRIBE_OK (relays MUST cache).
+  pub track_extensions: Arc<RwLock<Vec<TrackExtension>>>,
 }
 
 // TODO: this track implementation should be static? At least
@@ -117,6 +120,7 @@ impl Track {
       status: Arc::new(RwLock::new(initial_status)),
       status_notify: Arc::new(Notify::new()),
       pending_subscribers: Arc::new(RwLock::new(Vec::new())),
+      track_extensions: Arc::new(RwLock::new(Vec::new())),
     }
   }
 
@@ -168,6 +172,7 @@ impl Track {
     publisher_track_alias: u64,
     expires: u64,
     largest_location: Option<Location>,
+    extensions: Vec<TrackExtension>,
   ) {
     {
       let mut aliases = self.publisher_aliases.write().await;
@@ -179,12 +184,18 @@ impl Track {
       largest_location,
     };
     drop(status);
+    *self.track_extensions.write().await = extensions;
     self.status_notify.notify_waiters();
 
     info!(
       "Track confirmed: relay_track_id={} publisher_connection_id={} publisher_alias={}",
       self.relay_track_id, publisher_connection_id, publisher_track_alias
     );
+  }
+
+  /// Updates the cached track extensions (per spec: most recent set replaces any previous).
+  pub async fn set_track_extensions(&self, extensions: Vec<TrackExtension>) {
+    *self.track_extensions.write().await = extensions;
   }
 
   /// Transition from Pending to Rejected. Notifies waiters.

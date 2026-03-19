@@ -57,6 +57,7 @@ import {
   RequestIdMap,
 } from '../model/data'
 import { FrozenByteBuffer } from '../model/common/byte_buffer'
+import { TrackExtension } from '../model/extension_header/track_extension'
 import { RecvStream } from './data_stream'
 import {
   InternalError,
@@ -1451,10 +1452,15 @@ export class MOQtailClient {
   /**
    * Proactively push a track to the relay/peer.
    */
-  async publish(fullTrackName: FullTrackName, forward: boolean, trackAlias: bigint, parameters?: MessageParameter[]) {
+  async publish(
+    fullTrackName: FullTrackName,
+    forward: boolean,
+    trackAlias: bigint,
+    parameters?: MessageParameter[],
+    trackExtensions?: TrackExtension[],
+  ) {
     this.#ensureActive()
     try {
-      const params = parameters?.map((p) => p.toKeyValuePair()) ?? []
       const requestId = this.#nextClientRequestId
 
       const msg = new Publish(
@@ -1465,7 +1471,8 @@ export class MOQtailClient {
         0, // ContentExists (0 = Unknown/No)
         undefined, // Largest Location
         forward ? 1 : 0,
-        params,
+        parameters ?? [],
+        trackExtensions ?? [],
       )
 
       const request = new PublishRequest(msg)

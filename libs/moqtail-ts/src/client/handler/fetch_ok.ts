@@ -15,8 +15,9 @@
  */
 
 import { ProtocolViolationError } from '@/model/error'
-import { FetchOk } from '../../model/control'
+import { FetchOk, FetchType } from '../../model/control'
 import { FetchRequest } from '../request/fetch'
+import { SubscribeRequest } from '../request/subscribe'
 import { ControlMessageHandler } from './handler'
 import { createLogger } from '../../util/logger'
 
@@ -26,6 +27,22 @@ export const handlerFetchOk: ControlMessageHandler<FetchOk> = async (client, msg
   logger.log('requestId', msg.requestId)
   const request = client.requests.get(msg.requestId)
   if (request instanceof FetchRequest) {
+    if (msg.trackExtensions.length > 0) {
+      const fetchMsg = request.message
+      let fullTrackName =
+        fetchMsg.typeAndProps.type === FetchType.Standalone
+          ? fetchMsg.typeAndProps.props.fullTrackName
+          : (() => {
+              const joiningReq = client.requests.get(fetchMsg.typeAndProps.props.joiningRequestId)
+              return joiningReq instanceof SubscribeRequest ? joiningReq.fullTrackName : undefined
+            })()
+      if (fullTrackName !== undefined) {
+        const track = client.trackSources.get(fullTrackName.toString())
+        if (track !== undefined) {
+          track.trackExtensions = msg.trackExtensions
+        }
+      }
+    }
     request.resolve(msg)
   } else {
     throw new ProtocolViolationError(

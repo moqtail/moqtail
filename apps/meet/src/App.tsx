@@ -16,7 +16,12 @@
 
 import { useRef, useState } from 'react';
 import { MOQtailClient } from 'moqtail/client';
-import { FullTrackName, Tuple, ObjectForwardingPreference } from 'moqtail/model';
+import {
+  FullTrackName,
+  Tuple,
+  ObjectForwardingPreference,
+  DefaultPublisherPriorityExtension,
+} from 'moqtail/model';
 import { createMoqtailClient } from './moq/client';
 import { setupSignalling } from './moq/signalling';
 import {
@@ -244,8 +249,12 @@ export default function App() {
     const videoTrack = client.trackSources.get(videoFTN.toString())!;
     const audioTrack = client.trackSources.get(audioFTN.toString())!;
 
-    await client.publish(videoFTN, true, videoTrack.trackAlias!);
-    await client.publish(audioFTN, true, audioTrack.trackAlias!);
+    await client.publish(videoFTN, true, videoTrack.trackAlias!, undefined, [
+      new DefaultPublisherPriorityExtension(128),
+    ]);
+    await client.publish(audioFTN, true, audioTrack.trackAlias!, undefined, [
+      new DefaultPublisherPriorityExtension(0),
+    ]);
 
     const videoResult = await startVideoEncoder({
       stream,

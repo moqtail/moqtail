@@ -17,8 +17,10 @@
 import { ByteBuffer, FrozenByteBuffer, BaseByteBuffer } from '../common/byte_buffer'
 import { ControlMessageType, GroupOrder, groupOrderFromNumber } from './constant'
 import { Location } from '../common/location'
-import { KeyValuePair } from '../common/pair'
 import { LengthExceedsMaxError, NotEnoughBytesError, ProtocolViolationError } from '../error/error'
+import { MessageParameter, MessageParameters } from '../parameter/message_parameter'
+import { TrackExtension, DeliveryTimeoutExtension } from '../extension_header/track_extension'
+import { DeliveryTimeout } from '../parameter/message/delivery_timeout'
 
 export class FetchOk {
   private constructor(
@@ -26,25 +28,28 @@ export class FetchOk {
     public readonly groupOrder: GroupOrder,
     public readonly endOfTrack: boolean,
     public readonly endLocation: Location,
-    public readonly parameters: KeyValuePair[],
+    public readonly parameters: MessageParameter[],
+    public readonly trackExtensions: TrackExtension[],
   ) {}
 
   static newAscending(
     requestId: bigint | number,
     endOfTrack: boolean,
     endLocation: Location,
-    parameters: KeyValuePair[],
+    parameters: MessageParameter[],
+    trackExtensions: TrackExtension[] = [],
   ): FetchOk {
-    return new FetchOk(BigInt(requestId), GroupOrder.Ascending, endOfTrack, endLocation, parameters)
+    return new FetchOk(BigInt(requestId), GroupOrder.Ascending, endOfTrack, endLocation, parameters, trackExtensions)
   }
 
   static newDescending(
     requestId: bigint | number,
     endOfTrack: boolean,
     endLocation: Location,
-    parameters: KeyValuePair[],
+    parameters: MessageParameter[],
+    trackExtensions: TrackExtension[] = [],
   ): FetchOk {
-    return new FetchOk(BigInt(requestId), GroupOrder.Descending, endOfTrack, endLocation, parameters)
+    return new FetchOk(BigInt(requestId), GroupOrder.Descending, endOfTrack, endLocation, parameters, trackExtensions)
   }
 
   serialize(): FrozenByteBuffer {
@@ -57,8 +62,9 @@ export class FetchOk {
     payload.putLocation(this.endLocation)
     payload.putVI(this.parameters.length)
     for (const param of this.parameters) {
-      payload.putKeyValuePair(param)
+      payload.putKeyValuePair(param.toKeyValuePair())
     }
+    TrackExtension.serializeInto(this.trackExtensions, payload)
     const payloadBytes = payload.toUint8Array()
     if (payloadBytes.length > 0xffff) {
       throw new LengthExceedsMaxError('FetchOk::serialize(payloadBytes.length)', 0xffff, payloadBytes.length)
@@ -98,25 +104,25 @@ export class FetchOk {
     }
     const endLocation = buf.getLocation()
     const paramCount = buf.getNumberVI()
-    const parameters: KeyValuePair[] = new Array(paramCount)
+    const rawParams = new Array(paramCount)
     for (let i = 0; i < paramCount; i++) {
-      parameters[i] = buf.getKeyValuePair()
+      rawParams[i] = buf.getKeyValuePair()
     }
-    return new FetchOk(requestId, groupOrder, endOfTrack, endLocation, parameters)
+    const parameters = MessageParameters.fromKeyValuePairs(rawParams)
+    const trackExtensions = TrackExtension.deserializeAll(buf)
+    return new FetchOk(requestId, groupOrder, endOfTrack, endLocation, parameters, trackExtensions)
   }
 }
 
 if (import.meta.vitest) {
   const { describe, expect, test } = import.meta.vitest
+
   describe('FetchOk', () => {
     test('roundtrip', () => {
       const requestId = 271828n
       const endOfTrack = true
       const endLocation = new Location(17n, 57n)
-      const parameters = [
-        KeyValuePair.tryNewVarInt(4444, 12321),
-        KeyValuePair.tryNewBytes(1, new TextEncoder().encode('fetch me ok')),
-      ]
+      const parameters = [new DeliveryTimeout(200n)]
       const msg = FetchOk.newAscending(requestId, endOfTrack, endLocation, parameters)
       const frozen = msg.serialize()
       const msgType = frozen.getVI()
@@ -128,45 +134,61 @@ if (import.meta.vitest) {
       expect(parsed.groupOrder).toBe(GroupOrder.Ascending)
       expect(parsed.endOfTrack).toBe(endOfTrack)
       expect(parsed.endLocation.equals(endLocation)).toBe(true)
-      expect(parsed.parameters).toEqual(parameters)
+      expect(parsed.parameters.length).toBe(1)
+      expect(parsed.trackExtensions.length).toBe(0)
       expect(frozen.remaining).toBe(0)
+    })
+
+    test('roundtrip with track extensions', () => {
+      const msg = FetchOk.newAscending(
+        271828n,
+        true,
+        new Location(17n, 57n),
+        [new DeliveryTimeout(200n)],
+        [new DeliveryTimeoutExtension(8000n)],
+      )
+      const frozen = msg.serialize()
+      frozen.getVI() // message type
+      const msgLength = frozen.getU16()
+      const payload = new FrozenByteBuffer(frozen.getBytes(msgLength))
+      const parsed = FetchOk.parsePayload(payload)
+      expect(parsed.trackExtensions.length).toBe(1)
+      expect(parsed.trackExtensions[0]).toBeInstanceOf(DeliveryTimeoutExtension)
+      expect(payload.remaining).toBe(0)
     })
 
     test('excess roundtrip', () => {
       const requestId = 271828n
       const endOfTrack = true
       const endLocation = new Location(17n, 57n)
-      const parameters = [
-        KeyValuePair.tryNewVarInt(4444, 12321),
-        KeyValuePair.tryNewBytes(1, new TextEncoder().encode('fetch me ok')),
-      ]
+      const parameters = [new DeliveryTimeout(200n)]
       const msg = FetchOk.newAscending(requestId, endOfTrack, endLocation, parameters)
       const serialized = msg.serialize().toUint8Array()
       const excess = new Uint8Array([9, 1, 1])
       const buf = new ByteBuffer()
       buf.putBytes(serialized)
       buf.putBytes(excess)
-      const msgType = buf.getVI()
+      const frozen = buf.freeze()
+      const msgType = frozen.getVI()
       expect(msgType).toBe(BigInt(ControlMessageType.FetchOk))
-      const msgLength = buf.getU16()
-      expect(msgLength).toBe(buf.remaining - 3)
-      const parsed = FetchOk.parsePayload(buf)
+      const msgLength = frozen.getU16()
+      expect(msgLength).toBe(frozen.remaining - 3)
+      const payload = new FrozenByteBuffer(frozen.getBytes(msgLength))
+      const parsed = FetchOk.parsePayload(payload)
       expect(parsed.requestId).toBe(requestId)
       expect(parsed.groupOrder).toBe(GroupOrder.Ascending)
       expect(parsed.endOfTrack).toBe(endOfTrack)
       expect(parsed.endLocation.equals(endLocation)).toBe(true)
-      expect(parsed.parameters).toEqual(parameters)
-      expect(buf.remaining).toBe(3)
+      expect(parsed.parameters.length).toBe(1)
+      expect(payload.remaining).toBe(0)
+      expect(frozen.remaining).toBe(3)
     })
 
     test('partial message', () => {
       const requestId = 271828n
       const endOfTrack = true
       const endLocation = new Location(17n, 57n)
-      const parameters = [
-        KeyValuePair.tryNewVarInt(4444, 12321),
-        KeyValuePair.tryNewBytes(1, new TextEncoder().encode('fetch me ok')),
-      ]
+      const parameters = [new DeliveryTimeout(200n)]
       const msg = FetchOk.newAscending(requestId, endOfTrack, endLocation, parameters)
       const serialized = msg.serialize().toUint8Array()
       const upper = Math.floor(serialized.length / 2)

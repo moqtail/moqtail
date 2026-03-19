@@ -23,19 +23,35 @@ use bytes::{Bytes, BytesMut};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum MessageParameter {
-  DeliveryTimeout { timeout: u64 },
-  AuthorizationToken { token: AuthorizationToken },
-  Expires { expires: u64 },
-  LargestObject { location: Location },
-  Forward { forward: bool },
-  SubscriberPriority { priority: u8 },
-  GroupOrder { order: GroupOrder },
+  DeliveryTimeout {
+    timeout: u64,
+  },
+  AuthorizationToken {
+    token: AuthorizationToken,
+  },
+  Expires {
+    expires: u64,
+  },
+  LargestObject {
+    location: Location,
+  },
+  Forward {
+    forward: bool,
+  },
+  SubscriberPriority {
+    priority: u8,
+  },
+  GroupOrder {
+    order: GroupOrder,
+  },
   SubscriptionFilter {
     filter_type: FilterType,
     start_location: Option<Location>,
     end_group: Option<u64>,
   },
-  NewGroupRequest { group: u64 },
+  NewGroupRequest {
+    group: u64,
+  },
 }
 
 impl MessageParameter {
@@ -138,7 +154,9 @@ impl MessageParameter {
       ),
       Self::Expires { .. } => matches!(
         msg_type,
-        ControlMessageType::SubscribeOk | ControlMessageType::Publish | ControlMessageType::PublishOk
+        ControlMessageType::SubscribeOk
+          | ControlMessageType::Publish
+          | ControlMessageType::PublishOk
       ),
       Self::LargestObject { .. } => matches!(
         msg_type,
@@ -203,11 +221,17 @@ impl MessageParameter {
                 details: format!("SUBSCRIBER_PRIORITY must be 0-255, got {value}"),
               });
             }
-            Ok(Self::SubscriberPriority { priority: *value as u8 })
+            Ok(Self::SubscriberPriority {
+              priority: *value as u8,
+            })
           }
           MessageParameterType::GroupOrder => match *value {
-            1 => Ok(Self::GroupOrder { order: GroupOrder::Ascending }),
-            2 => Ok(Self::GroupOrder { order: GroupOrder::Descending }),
+            1 => Ok(Self::GroupOrder {
+              order: GroupOrder::Ascending,
+            }),
+            2 => Ok(Self::GroupOrder {
+              order: GroupOrder::Descending,
+            }),
             _ => Err(ParseError::ProtocolViolation {
               context: "MessageParameter::deserialize",
               details: format!("GROUP_ORDER must be 1 (Ascending) or 2 (Descending), got {value}"),
@@ -315,16 +339,15 @@ impl TryInto<KeyValuePair> for MessageParameter {
         if matches!(
           filter_type,
           FilterType::AbsoluteStart | FilterType::AbsoluteRange
-        ) {
-          if let Some(loc) = start_location {
-            buf.put_vi(loc.group)?;
-            buf.put_vi(loc.object)?;
-          }
+        ) && let Some(loc) = start_location
+        {
+          buf.put_vi(loc.group)?;
+          buf.put_vi(loc.object)?;
         }
-        if filter_type == FilterType::AbsoluteRange {
-          if let Some(eg) = end_group {
-            buf.put_vi(eg)?;
-          }
+        if filter_type == FilterType::AbsoluteRange
+          && let Some(eg) = end_group
+        {
+          buf.put_vi(eg)?;
         }
         KeyValuePair::try_new_bytes(
           MessageParameterType::SubscriptionFilter as u64,
@@ -371,10 +394,7 @@ pub fn apply_message_parameter_update(
 ) {
   for update in updates {
     let update_type = update.type_value();
-    if let Some(existing) = current
-      .iter_mut()
-      .find(|p| p.type_value() == update_type)
-    {
+    if let Some(existing) = current.iter_mut().find(|p| p.type_value() == update_type) {
       *existing = update;
     } else {
       current.push(update);
@@ -443,7 +463,10 @@ mod tests {
 
   #[test]
   fn test_roundtrip_largest_object() {
-    let orig = MessageParameter::new_largest_object(Location { group: 10, object: 5 });
+    let orig = MessageParameter::new_largest_object(Location {
+      group: 10,
+      object: 5,
+    });
     assert_eq!(roundtrip(orig.clone()), orig);
   }
 
@@ -457,7 +480,10 @@ mod tests {
   fn test_roundtrip_subscription_filter_absolute_start() {
     let orig = MessageParameter::new_subscription_filter(
       FilterType::AbsoluteStart,
-      Some(Location { group: 3, object: 1 }),
+      Some(Location {
+        group: 3,
+        object: 1,
+      }),
       None,
     );
     assert_eq!(roundtrip(orig.clone()), orig);
@@ -467,7 +493,10 @@ mod tests {
   fn test_roundtrip_subscription_filter_absolute_range() {
     let orig = MessageParameter::new_subscription_filter(
       FilterType::AbsoluteRange,
-      Some(Location { group: 5, object: 0 }),
+      Some(Location {
+        group: 5,
+        object: 0,
+      }),
       Some(20),
     );
     assert_eq!(roundtrip(orig.clone()), orig);

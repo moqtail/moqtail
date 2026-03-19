@@ -23,8 +23,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
-type ActivePushMap = HashMap<FullTrackName, Vec<(Arc<MOQTClient>, u64)>>;
-
 #[derive(Clone)]
 pub struct TrackManager {
   pub tracks: Arc<RwLock<HashMap<FullTrackName, Arc<RwLock<Track>>>>>,

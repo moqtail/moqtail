@@ -29,13 +29,10 @@ use moqtail::model::{common::reason_phrase::ReasonPhrase, control::constant::Fet
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use moqtail::transport::data_stream_handler::HeaderInfo;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::watch;
 use tracing::{error, info, warn};
 
-const MAX_UPSTREAM_FETCH_GAPS: u64 = 10;
-const UPSTREAM_FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub async fn handle(
   client: Arc<MOQTClient>,
@@ -278,10 +275,11 @@ async fn handle_fetch_delivery(
       let mut gap_end = group_id;
       // ... while next groups also missing, extend gap_end ...
 
-      if upstream_gap_count >= MAX_UPSTREAM_FETCH_GAPS {
+      let max_upstream_fetch_gaps = context.server_config.max_upstream_fetch_gaps;
+      if upstream_gap_count >= max_upstream_fetch_gaps {
         warn!(
           "handle_fetch_delivery | Reached max upstream fetch gap limit ({}), skipping gap at group {}",
-          MAX_UPSTREAM_FETCH_GAPS, gap_start
+          max_upstream_fetch_gaps, gap_start
         );
         group_id = gap_end + 1;
         continue;
@@ -298,7 +296,7 @@ async fn handle_fetch_delivery(
         // sending objects to the client.
         // We'll await objects from upstream_fetch_senders[relay_request_id]
         // and send them to the client, through deliver_object().
-        // Each recv() is wrapped with tokio::time::timeout(UPSTREAM_FETCH_TIMEOUT)
+        // Each recv() is wrapped with tokio::time::timeout(context.server_config.upstream_fetch_timeout)
         // so that a stalled upstream doesn't block delivery indefinitely.
         // On timeout, log, clean up the stale entry in upstream_fetch_senders,
         // and break out of the loop. Continue with remaining groups, which

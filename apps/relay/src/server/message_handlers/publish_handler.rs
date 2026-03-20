@@ -239,24 +239,18 @@ pub async fn handle(
       }
 
       let m_clone = m.clone();
-      let publish_forward = if let MessageParameter::Forward { forward } =
-        m_clone.parameters.get_param_or(
-          MessageParameterType::Forward,
-          MessageParameter::new_forward(true),
-        ) {
-        forward as u8
-      } else {
-        1u8
-      };
+      let publish_forward_param = m_clone.parameters.get_param_or(
+        MessageParameterType::Forward,
+        MessageParameter::new_forward(true),
+      );
       let publish_ok = Box::new(PublishOk::new(
         request_id,
-        publish_forward,          // Use the same forward preference as requested
-        5,                        // Default subscriber priority
-        GroupOrder::Ascending,    // Default group order, could be configurable
-        FilterType::LatestObject, // Default filter type
-        None,                     // No start location for LatestObject
-        None,                     // No end group for LatestObject
-        vec![],                   // No additional parameters
+        vec![
+          publish_forward_param,
+          MessageParameter::new_subscriber_priority(5),
+          MessageParameter::new_group_order(GroupOrder::Ascending),
+          MessageParameter::new_subscription_filter(FilterType::LatestObject, None, None),
+        ],
       ));
 
       info!(

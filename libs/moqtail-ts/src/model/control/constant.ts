@@ -465,6 +465,8 @@ export enum PublishDoneStatusCode {
   GoingAway = 0x4,
   Expired = 0x5,
   TooFarBehind = 0x6,
+  UpdateFailed = 0x8,
+  MalformedTrack = 0x12,
 }
 
 /**
@@ -489,6 +491,10 @@ export function publishDoneStatusCodeFromBigInt(v: bigint): PublishDoneStatusCod
       return PublishDoneStatusCode.Expired
     case 0x6n:
       return PublishDoneStatusCode.TooFarBehind
+    case 0x8n:
+      return PublishDoneStatusCode.UpdateFailed
+    case 0x12n:
+      return PublishDoneStatusCode.MalformedTrack
     default:
       throw new Error(`Invalid PublishDoneStatusCode: ${v}`)
   }

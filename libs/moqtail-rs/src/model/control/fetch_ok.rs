@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::constant::{ControlMessageType, GroupOrder};
+use super::constant::ControlMessageType;
 use super::control_message::ControlMessageTrait;
 use crate::model::common::location::Location;
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
@@ -28,7 +28,6 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 #[derive(Debug, PartialEq, Clone)]
 pub struct FetchOk {
   pub request_id: u64,
-  pub group_order: GroupOrder,
   pub end_of_track: bool,
   pub end_location: Location,
   pub subscribe_parameters: Vec<MessageParameter>,
@@ -36,7 +35,7 @@ pub struct FetchOk {
 }
 
 impl FetchOk {
-  pub fn new_ascending(
+  pub fn new(
     request_id: u64,
     end_of_track: bool,
     end_location: Location,
@@ -45,24 +44,6 @@ impl FetchOk {
   ) -> Self {
     Self {
       request_id,
-      group_order: GroupOrder::Ascending,
-      end_of_track,
-      end_location,
-      subscribe_parameters,
-      track_extensions,
-    }
-  }
-
-  pub fn new_descending(
-    request_id: u64,
-    end_of_track: bool,
-    end_location: Location,
-    subscribe_parameters: Vec<MessageParameter>,
-    track_extensions: Vec<TrackExtension>,
-  ) -> Self {
-    Self {
-      request_id,
-      group_order: GroupOrder::Descending,
       end_of_track,
       end_location,
       subscribe_parameters,
@@ -78,7 +59,6 @@ impl ControlMessageTrait for FetchOk {
 
     let mut payload = BytesMut::new();
     payload.put_vi(self.request_id)?;
-    payload.put_u8(self.group_order as u8);
     payload.put_u8(if self.end_of_track { 1u8 } else { 0u8 });
     payload.extend_from_slice(&self.end_location.serialize()?);
     payload.put_vi(self.subscribe_parameters.len())?;
@@ -108,41 +88,22 @@ impl ControlMessageTrait for FetchOk {
 
     if payload.remaining() < 1 {
       return Err(ParseError::NotEnoughBytes {
-        context: "FetchOk::parse_payload(group_order)",
-        needed: 1,
-        available: 0,
-      });
-    }
-    let group_order_raw = payload.get_u8();
-    let group_order = GroupOrder::try_from(group_order_raw)?;
-    if let GroupOrder::Original = group_order {
-      return Err(ParseError::ProtocolViolation {
-        context: "FetchOk::parse_payload(group_order)",
-        details: "Group order must be Ascending(0x01) or Descending(0x02)".to_string(),
-      });
-    }
-
-    if payload.remaining() < 1 {
-      return Err(ParseError::NotEnoughBytes {
         context: "FetchOk::parse_payload(end_of_track)",
         needed: 1,
         available: 0,
       });
     }
     let end_of_track_raw = payload.get_u8();
-    let mut end_of_track = false;
-    match end_of_track_raw {
-      0 => {}
-      1 => {
-        end_of_track = true;
-      }
+    let end_of_track = match end_of_track_raw {
+      0 => false,
+      1 => true,
       _ => {
         return Err(ParseError::ProtocolViolation {
           context: "FetchOk::parse_payload(end_of_track)",
           details: format!("Invalid value for end of track {end_of_track_raw}"),
         });
       }
-    }
+    };
 
     let end_location = Location::deserialize(payload)?;
 
@@ -155,7 +116,6 @@ impl ControlMessageTrait for FetchOk {
 
     Ok(Box::new(FetchOk {
       request_id,
-      group_order,
       end_of_track,
       end_location,
       subscribe_parameters,
@@ -172,13 +132,13 @@ impl ControlMessageTrait for FetchOk {
 mod tests {
 
   use super::*;
+  use crate::model::control::constant::GroupOrder;
   use bytes::Buf;
 
   #[test]
   fn test_roundtrip() {
     let fetch_ok = FetchOk {
       request_id: 271828,
-      group_order: GroupOrder::Ascending,
       end_of_track: true,
       end_location: Location {
         group: 17,
@@ -198,10 +158,31 @@ mod tests {
   }
 
   #[test]
+  fn test_roundtrip_with_group_order_param() {
+    let fetch_ok = FetchOk {
+      request_id: 271828,
+      end_of_track: true,
+      end_location: Location {
+        group: 17,
+        object: 57,
+      },
+      subscribe_parameters: vec![MessageParameter::new_group_order(GroupOrder::Ascending)],
+      track_extensions: vec![],
+    };
+    let mut buf = fetch_ok.serialize().unwrap();
+    let msg_type = buf.get_vi().unwrap();
+    assert_eq!(msg_type, ControlMessageType::FetchOk as u64);
+    let msg_length = buf.get_u16();
+    assert_eq!(msg_length as usize, buf.remaining());
+    let deserialized = FetchOk::parse_payload(&mut buf).unwrap();
+    assert_eq!(*deserialized, fetch_ok);
+    assert!(!buf.has_remaining());
+  }
+
+  #[test]
   fn test_roundtrip_with_track_extensions() {
     let fetch_ok = FetchOk {
       request_id: 12345,
-      group_order: GroupOrder::Ascending,
       end_of_track: false,
       end_location: Location {
         group: 5,
@@ -229,7 +210,6 @@ mod tests {
   fn test_excess_roundtrip() {
     let fetch_ok = FetchOk {
       request_id: 271828,
-      group_order: GroupOrder::Ascending,
       end_of_track: true,
       end_location: Location {
         group: 17,
@@ -262,7 +242,6 @@ mod tests {
   fn test_partial_message() {
     let fetch_ok = FetchOk {
       request_id: 271828,
-      group_order: GroupOrder::Ascending,
       end_of_track: true,
       end_location: Location {
         group: 17,

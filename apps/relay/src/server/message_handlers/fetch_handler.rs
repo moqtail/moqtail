@@ -229,7 +229,7 @@ pub async fn handle(
                     let end_of_track = largest_location.group == end_location.group;
                     drop(largest_location);
                     let cached_extensions = { track_read.track_extensions.read().await.clone() };
-                    let fetch_ok = FetchOk::new_ascending(
+                    let fetch_ok = FetchOk::new(
                       request_id,
                       end_of_track,
                       end_location,

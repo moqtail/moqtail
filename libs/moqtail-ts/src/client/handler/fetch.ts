@@ -68,7 +68,7 @@ export const handlerFetch: ControlMessageHandler<Fetch> = async (client, msg) =>
   // TODO: Figure out what to do with endOfTrack and end location
   const publication = new FetchPublication(client, track, msg)
   client.publications.set(msg.requestId, publication)
-  const response = FetchOk.newAscending(
+  const response = new FetchOk(
     msg.requestId,
     false,
     new Location(0n, 0n),

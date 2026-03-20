@@ -148,6 +148,7 @@ impl MessageParameter {
           | ControlMessageType::PublishOk
           | ControlMessageType::Fetch
           | ControlMessageType::SubscribeOk
+          | ControlMessageType::FetchOk
       ),
       Self::SubscriptionFilter { .. } => matches!(
         msg_type,

@@ -17,15 +17,13 @@
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
 import { Location } from '../common/location'
 import { KeyValuePair } from '../common/pair'
-import { ControlMessageType, FetchType, fetchTypeFromBigInt, GroupOrder, groupOrderFromNumber } from './constant'
-import { LengthExceedsMaxError, NotEnoughBytesError } from '../error/error'
+import { ControlMessageType, FetchType, fetchTypeFromBigInt } from './constant'
+import { LengthExceedsMaxError } from '../error/error'
 import { FullTrackName } from '../data'
 
 export class Fetch {
   constructor(
     public readonly requestId: bigint,
-    public readonly subscriberPriority: number,
-    public readonly groupOrder: GroupOrder,
     public readonly typeAndProps:
       | {
           readonly type: FetchType.Standalone
@@ -51,8 +49,6 @@ export class Fetch {
     buf.putVI(ControlMessageType.Fetch)
     const payload = new ByteBuffer()
     payload.putVI(this.requestId)
-    payload.putU8(this.subscriberPriority)
-    payload.putU8(this.groupOrder)
     payload.putVI(this.typeAndProps.type)
     switch (this.typeAndProps.type) {
       case FetchType.Absolute:
@@ -83,11 +79,6 @@ export class Fetch {
 
   static parsePayload(buf: BaseByteBuffer): Fetch {
     const requestId = buf.getVI()
-    if (buf.remaining < 1) throw new NotEnoughBytesError('Fetch::parse_payload(subscriber_priority)', 1, buf.remaining)
-    const subscriberPriority = buf.getU8()
-    if (buf.remaining < 1) throw new NotEnoughBytesError('Fetch::parse_payload(group_order)', 1, buf.remaining)
-    const groupOrderRaw = buf.getU8()
-    const groupOrder = groupOrderFromNumber(groupOrderRaw)
     const fetchTypeRaw = buf.getVI()
     const fetchType = fetchTypeFromBigInt(fetchTypeRaw)
 
@@ -124,7 +115,7 @@ export class Fetch {
       parameters[i] = buf.getKeyValuePair()
     }
 
-    return new Fetch(requestId, subscriberPriority, groupOrder, props, parameters)
+    return new Fetch(requestId, props, parameters)
   }
 }
 
@@ -133,16 +124,12 @@ if (import.meta.vitest) {
   describe('Fetch', () => {
     test('roundtrip', () => {
       const requestId = 161803n
-      const subscriberPriority = 15
-      const groupOrder = GroupOrder.Descending
       const parameters = [
         KeyValuePair.tryNewVarInt(4444, 12321n),
         KeyValuePair.tryNewBytes(1, new TextEncoder().encode('fetch me ok')),
       ]
       const fetch = new Fetch(
         requestId,
-        subscriberPriority,
-        groupOrder,
         {
           type: FetchType.Absolute,
           props: { joiningRequestId: 119n, joiningStart: 73n },
@@ -164,16 +151,12 @@ if (import.meta.vitest) {
 
     test('excess roundtrip', () => {
       const requestId = 161803n
-      const subscriberPriority = 15
-      const groupOrder = GroupOrder.Descending
       const parameters = [
         KeyValuePair.tryNewVarInt(4444, 12321n),
         KeyValuePair.tryNewBytes(1, new TextEncoder().encode('fetch me ok')),
       ]
       const fetch = new Fetch(
         requestId,
-        subscriberPriority,
-        groupOrder,
         {
           type: FetchType.Absolute,
           props: { joiningRequestId: 119n, joiningStart: 73n },
@@ -197,16 +180,12 @@ if (import.meta.vitest) {
 
     test('partial message', () => {
       const requestId = 161803n
-      const subscriberPriority = 15
-      const groupOrder = GroupOrder.Descending
       const parameters = [
         KeyValuePair.tryNewVarInt(4444, 12321n),
         KeyValuePair.tryNewBytes(1, new TextEncoder().encode('fetch me ok')),
       ]
       const fetch = new Fetch(
         requestId,
-        subscriberPriority,
-        groupOrder,
         {
           type: FetchType.Absolute,
           props: { joiningRequestId: 119n, joiningStart: 73n },

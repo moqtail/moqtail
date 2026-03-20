@@ -1312,7 +1312,11 @@ export class MOQtailClient {
           'MOQtailClient.fetch',
           `subscriberPriority: ${priority} must be in range of [0-255]`,
         )
-      const params = parameters?.map((p) => p.toKeyValuePair()) ?? []
+      const params = [
+        new SubscriberPriority(priority).toKeyValuePair(),
+        ...(groupOrder !== GroupOrder.Original ? [new GroupOrderParam(groupOrder).toKeyValuePair()] : []),
+        ...(parameters?.map((p) => p.toKeyValuePair()) ?? []),
+      ]
       let msg: Fetch
       let joiningRequest: MOQtailRequest | undefined
       // Generate unique requestId at the beginning to ensure uniqueness
@@ -1327,13 +1331,7 @@ export class MOQtailClient {
       )
       switch (typeAndProps.type) {
         case FetchType.Standalone:
-          msg = new Fetch(
-            requestId,
-            priority,
-            groupOrder,
-            { type: typeAndProps.type, props: typeAndProps.props },
-            params,
-          )
+          msg = new Fetch(requestId, { type: typeAndProps.type, props: typeAndProps.props }, params)
           break
 
         case FetchType.Relative:
@@ -1343,13 +1341,7 @@ export class MOQtailClient {
               'MOQtailClient.fetch',
               `No subscribe request for the given joiningRequestId: ${typeAndProps.props.joiningRequestId}`,
             )
-          msg = new Fetch(
-            requestId,
-            priority,
-            groupOrder,
-            { type: typeAndProps.type, props: typeAndProps.props },
-            params,
-          )
+          msg = new Fetch(requestId, { type: typeAndProps.type, props: typeAndProps.props }, params)
           break
         case FetchType.Absolute:
           joiningRequest = this.requests.get(typeAndProps.props.joiningRequestId)
@@ -1358,13 +1350,7 @@ export class MOQtailClient {
               'MOQtailClient.fetch',
               `No subscribe request for the given joiningRequestId: ${typeAndProps.props.joiningRequestId}`,
             )
-          msg = new Fetch(
-            requestId,
-            priority,
-            groupOrder,
-            { type: typeAndProps.type, props: typeAndProps.props },
-            params,
-          )
+          msg = new Fetch(requestId, { type: typeAndProps.type, props: typeAndProps.props }, params)
           break
       }
       const request = new FetchRequest(msg)

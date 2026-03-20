@@ -629,26 +629,18 @@ mod tests {
   use wtransport::{ClientConfig, Connection, Endpoint, Identity, RecvStream, SendStream};
 
   fn make_fetch_header_and_request() -> (FetchHeader, Fetch) {
-    let request_id = 161803;
-    let subscriber_priority = 15u8;
-    let group_order = GroupOrder::Descending;
-    let fetch_type = FetchType::AbsoluteFetch;
-    let joining_fetch_props = JoiningFetchProps {
-      joining_request_id: 119,
-      joining_start: 73,
-    };
-    let parameters = vec![
-      KeyValuePair::try_new_varint(4444, 12321).unwrap(),
-      KeyValuePair::try_new_bytes(1, Bytes::from_static(b"fetch me ok")).unwrap(),
-    ];
     let fetch = Fetch {
-      request_id,
-      subscriber_priority,
-      group_order,
-      fetch_type,
+      request_id: 161803,
+      fetch_type: FetchType::AbsoluteFetch,
       standalone_fetch_props: None,
-      joining_fetch_props: Some(joining_fetch_props),
-      parameters,
+      joining_fetch_props: Some(JoiningFetchProps {
+        joining_request_id: 119,
+        joining_start: 73,
+      }),
+      parameters: vec![
+        KeyValuePair::try_new_varint(4444, 12321).unwrap(),
+        KeyValuePair::try_new_bytes(1, Bytes::from_static(b"fetch me ok")).unwrap(),
+      ],
     };
     (FetchHeader { request_id: 161803 }, fetch)
   }

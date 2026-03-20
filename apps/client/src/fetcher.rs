@@ -17,7 +17,6 @@ use anyhow::Result;
 use moqtail::model::common::location::Location;
 use moqtail::model::common::pair::KeyValuePair;
 use moqtail::model::common::tuple::{Tuple, TupleField};
-use moqtail::model::control::constant::GroupOrder;
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::fetch::{Fetch, StandaloneFetchProps};
 use moqtail::model::control::fetch_cancel::FetchCancel;
@@ -57,13 +56,7 @@ pub async fn run(moq: MoqConnection, config: FetchConfig) -> Result<()> {
 
   let parameters = vec![KeyValuePair::try_new_varint(100, 200)?];
 
-  let fetch = Fetch::new_standalone(
-    request_id,
-    1, // subscriber_priority
-    GroupOrder::Ascending,
-    standalone_fetch_props,
-    parameters,
-  );
+  let fetch = Fetch::new_standalone(request_id, standalone_fetch_props, parameters);
 
   info!(
     "Sending Fetch: groups {}:{} to {}:{}",

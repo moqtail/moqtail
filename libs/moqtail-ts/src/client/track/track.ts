@@ -16,6 +16,7 @@
 
 import { FullTrackName, ObjectForwardingPreference } from '@/model'
 import { TrackSource } from './content_source'
+import { TrackExtension } from '../../model/extension_header/track_extension'
 
 /**
  * Describes a media/data track known to the client (either published locally or subscribed to).
@@ -85,4 +86,11 @@ export type Track = {
    * Optional compact numeric alias assigned during protocol negotiation.
    */
   trackAlias?: bigint
+
+  /**
+   * Track extensions advertised by the publisher.
+   * Set before calling `publish()` to include extensions in the PUBLISH message.
+   * Populated automatically on the subscriber side when SUBSCRIBE_OK or FETCH_OK is received.
+   */
+  trackExtensions?: TrackExtension[]
 }

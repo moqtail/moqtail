@@ -18,10 +18,9 @@ use crate::server::session::Session;
 use crate::server::session_context::SessionContext;
 use crate::server::track::{Track, TrackStatus};
 use core::result::Result;
-use moqtail::model::control::constant::GroupOrder;
 use moqtail::model::control::subscribe::Subscribe;
 use moqtail::model::error::TerminationCode;
-use moqtail::model::parameter::message_parameter::MessageParameter;
+use moqtail::model::parameter::message_parameter::{MessageParameter, MessageParameterVecExt};
 use moqtail::model::{
   common::reason_phrase::ReasonPhrase, control::control_message::ControlMessage,
 };
@@ -198,21 +197,19 @@ async fn handle_subscribe_message(
 
     match status {
       TrackStatus::Confirmed {
-        expires,
-        largest_location,
+        subscribe_parameters,
       } => {
         info!(
           "Track confirmed, sending SubscribeOk to subscriber {}",
           client.connection_id
         );
-        let subscribe_ok =
-          moqtail::model::control::subscribe_ok::SubscribeOk::new_ascending_with_content(
-            sub.request_id,
-            track.relay_track_id,
-            expires,
-            largest_location,
-            None,
-          );
+        let cached_extensions = { track.track_extensions.read().await.clone() };
+        let subscribe_ok = moqtail::model::control::subscribe_ok::SubscribeOk::new(
+          sub.request_id,
+          track.relay_track_id,
+          subscribe_parameters,
+          cached_extensions,
+        );
         control_stream_handler.send_impl(&subscribe_ok).await
       }
       TrackStatus::Pending => {
@@ -303,8 +300,8 @@ async fn handle_subscribe_ok_message(
       .confirm(
         context.connection_id,
         msg.track_alias,
-        msg.expires,
-        msg.largest_location.clone(),
+        msg.subscribe_parameters.clone(),
+        msg.track_extensions.clone(),
       )
       .await;
     track.relay_track_id
@@ -327,14 +324,16 @@ async fn handle_subscribe_ok_message(
       mngr.get(sub_request.requested_by).await
     };
     if let Some(subscriber) = subscriber {
-      let subscribe_ok =
-        moqtail::model::control::subscribe_ok::SubscribeOk::new_ascending_with_content(
-          sub_request.original_request_id,
-          relay_track_id,
-          msg.expires,
-          msg.largest_location.clone(),
-          None,
-        );
+      let cached_extensions = {
+        let track = track_arc.read().await;
+        track.track_extensions.read().await.clone()
+      };
+      let subscribe_ok = moqtail::model::control::subscribe_ok::SubscribeOk::new(
+        sub_request.original_request_id,
+        relay_track_id,
+        msg.subscribe_parameters.clone(),
+        cached_extensions,
+      );
       info!(
         "sending SubscribeOk to creator subscriber: {:?}",
         subscriber.connection_id
@@ -364,14 +363,16 @@ async fn handle_subscribe_ok_message(
         mngr.get(subscriber_connection_id).await
       };
       if let Some(subscriber) = subscriber {
-        let subscribe_ok =
-          moqtail::model::control::subscribe_ok::SubscribeOk::new_ascending_with_content(
-            subscriber_request_id,
-            relay_track_id,
-            msg.expires,
-            msg.largest_location.clone(),
-            None,
-          );
+        let cached_extensions = {
+          let track = track_arc.read().await;
+          track.track_extensions.read().await.clone()
+        };
+        let subscribe_ok = moqtail::model::control::subscribe_ok::SubscribeOk::new(
+          subscriber_request_id,
+          relay_track_id,
+          msg.subscribe_parameters.clone(),
+          cached_extensions,
+        );
         info!(
           "sending SubscribeOk to pending subscriber: {:?}",
           subscriber.connection_id
@@ -654,53 +655,19 @@ async fn handle_switch_message(
     return Err(TerminationCode::ProtocolViolation);
   }
 
-  let switch_params: Vec<MessageParameter> = switch_message
+  let mut switch_params: Vec<MessageParameter> = switch_message
     .subscribe_parameters
     .iter()
     .filter_map(|kvp| MessageParameter::deserialize(kvp).ok())
     .collect();
 
-  let subscriber_priority = switch_params
-    .iter()
-    .find_map(|p| {
-      if let MessageParameter::SubscriberPriority { priority } = p {
-        Some(*priority)
-      } else {
-        None
-      }
-    })
-    .unwrap_or(0);
-  let group_order = switch_params
-    .iter()
-    .find_map(|p| {
-      if let MessageParameter::GroupOrder { order } = p {
-        Some(*order)
-      } else {
-        None
-      }
-    })
-    .unwrap_or(GroupOrder::Ascending);
-  let extra_params: Vec<MessageParameter> = switch_params
-    .into_iter()
-    .filter(|p| {
-      !matches!(
-        p,
-        MessageParameter::SubscriberPriority { .. }
-          | MessageParameter::GroupOrder { .. }
-          | MessageParameter::Forward { .. }
-          | MessageParameter::SubscriptionFilter { .. }
-      )
-    })
-    .collect();
+  switch_params.set_param(MessageParameter::new_forward(true)); // forward always true for switch
 
   let subscribe = Subscribe::new_latest_object(
     switch_message.request_id,
     switch_message.track_namespace.clone(),
     switch_message.track_name.clone(),
-    subscriber_priority,
-    group_order,
-    true, // forward always true for switch
-    extra_params,
+    switch_params,
   );
 
   let new_full_track_name = subscribe.get_full_track_name();

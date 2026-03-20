@@ -227,8 +227,15 @@ pub async fn handle(
                     // TODO: end of track is correct?
                     let largest_location = track_read.largest_location.read().await;
                     let end_of_track = largest_location.group == end_location.group;
-                    let fetch_ok =
-                      FetchOk::new_ascending(request_id, end_of_track, end_location, vec![]);
+                    drop(largest_location);
+                    let cached_extensions = { track_read.track_extensions.read().await.clone() };
+                    let fetch_ok = FetchOk::new(
+                      request_id,
+                      end_of_track,
+                      end_location,
+                      vec![],
+                      cached_extensions,
+                    );
 
                     client
                       .queue_message(ControlMessage::FetchOk(Box::new(fetch_ok)))

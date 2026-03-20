@@ -144,7 +144,12 @@ impl MessageParameter {
       ),
       Self::GroupOrder { .. } => matches!(
         msg_type,
-        ControlMessageType::Subscribe | ControlMessageType::PublishOk | ControlMessageType::Fetch
+        ControlMessageType::Subscribe
+          | ControlMessageType::PublishOk
+          | ControlMessageType::Fetch
+          | ControlMessageType::SubscribeOk
+          | ControlMessageType::FetchOk
+          | ControlMessageType::Publish
       ),
       Self::SubscriptionFilter { .. } => matches!(
         msg_type,
@@ -226,6 +231,9 @@ impl MessageParameter {
             })
           }
           MessageParameterType::GroupOrder => match *value {
+            0 => Ok(Self::GroupOrder {
+              order: GroupOrder::Original,
+            }),
             1 => Ok(Self::GroupOrder {
               order: GroupOrder::Ascending,
             }),
@@ -234,7 +242,9 @@ impl MessageParameter {
             }),
             _ => Err(ParseError::ProtocolViolation {
               context: "MessageParameter::deserialize",
-              details: format!("GROUP_ORDER must be 1 (Ascending) or 2 (Descending), got {value}"),
+              details: format!(
+                "GROUP_ORDER must be 0 (Original), 1 (Ascending), or 2 (Descending), got {value}"
+              ),
             }),
           },
           MessageParameterType::NewGroupRequest => Ok(Self::NewGroupRequest { group: *value }),
@@ -290,6 +300,43 @@ impl MessageParameter {
           }),
         }
       }
+    }
+  }
+}
+
+/// Extension trait for `Vec<MessageParameter>` providing ergonomic get/set by type.
+pub trait MessageParameterVecExt {
+  /// Returns a reference to the first parameter matching the given type, if any.
+  fn get_param(&self, param_type: MessageParameterType) -> Option<&MessageParameter>;
+  /// Returns a clone of the first parameter matching the given type, or `default` if not found.
+  fn get_param_or(
+    &self,
+    param_type: MessageParameterType,
+    default: MessageParameter,
+  ) -> MessageParameter;
+  /// Inserts `param`, replacing any existing parameter of the same type.
+  fn set_param(&mut self, param: MessageParameter);
+}
+
+impl MessageParameterVecExt for Vec<MessageParameter> {
+  fn get_param(&self, param_type: MessageParameterType) -> Option<&MessageParameter> {
+    self.iter().find(|p| p.type_value() == param_type as u64)
+  }
+
+  fn get_param_or(
+    &self,
+    param_type: MessageParameterType,
+    default: MessageParameter,
+  ) -> MessageParameter {
+    self.get_param(param_type).cloned().unwrap_or(default)
+  }
+
+  fn set_param(&mut self, param: MessageParameter) {
+    let type_value = param.type_value();
+    if let Some(existing) = self.iter_mut().find(|p| p.type_value() == type_value) {
+      *existing = param;
+    } else {
+      self.push(param);
     }
   }
 }

@@ -28,6 +28,7 @@ use moqtail::model::data::datagram_object::DatagramObject;
 use moqtail::model::data::object::Object;
 use moqtail::model::data::subgroup_header::SubgroupHeader;
 use moqtail::model::data::subgroup_object::SubgroupObject;
+use moqtail::model::parameter::message_parameter::MessageParameter;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use moqtail::transport::data_stream_handler::{HeaderInfo, SendDataStream};
 use std::sync::Arc;
@@ -94,7 +95,7 @@ pub async fn run_namespace(moq: MoqConnection, config: PublishNamespaceConfig) -
           m.request_id, m.track_name, track_alias
         );
 
-        let msg = SubscribeOk::new_ascending_with_content(m.request_id, track_alias, 0, None, None);
+        let msg = SubscribeOk::new(m.request_id, track_alias, vec![], vec![]);
         control_stream.send_impl(&msg).await?;
         info!(
           "SubscribeOk sent for request_id={}, track_alias={}",
@@ -218,10 +219,11 @@ async fn publish_track(
     namespace.clone(),
     TupleField::from_utf8(track_name),
     track_alias,
-    GroupOrder::Ascending,
-    1, // content_exists
-    Some(Location::new(0, 0)),
-    1, // forward
+    vec![
+      MessageParameter::new_group_order(GroupOrder::Ascending),
+      MessageParameter::new_largest_object(Location::new(0, 0)),
+      MessageParameter::Forward { forward: true },
+    ],
     vec![],
   );
   control_stream

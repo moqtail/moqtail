@@ -16,14 +16,15 @@ use crate::server::session_context::SessionContext;
 use crate::server::{client::MOQTClient, session::Session};
 use core::result::Result;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
-use moqtail::model::control::constant::GroupOrder;
-use moqtail::model::control::constant::SubscribeNamespaceErrorCode;
+use moqtail::model::control::constant::{GroupOrder, SubscribeNamespaceErrorCode};
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::publish_namespace::PublishNamespace;
 use moqtail::model::control::subscribe::Subscribe;
 use moqtail::model::control::subscribe_namespace_error::SubscribeNamespaceError;
 use moqtail::model::control::subscribe_namespace_ok::SubscribeNamespaceOk;
 use moqtail::model::error::TerminationCode;
+use moqtail::model::parameter::constant::MessageParameterType;
+use moqtail::model::parameter::message_parameter::{MessageParameter, MessageParameterVecExt};
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
 use tracing::{info, warn};
@@ -127,14 +128,20 @@ pub async fn handle(
             .await;
 
           // Auto-subscribe the client to the underlying data stream
+          let pub_forward = original_publish_message.parameters.get_param_or(
+            MessageParameterType::Forward,
+            MessageParameter::new_forward(true),
+          );
+          let sub_params = vec![
+            MessageParameter::new_subscriber_priority(128),
+            MessageParameter::new_group_order(GroupOrder::Ascending),
+            pub_forward,
+          ];
           let synthetic_sub = Subscribe::new_next_group_start(
             relay_publish_id,
             original_publish_message.track_namespace.clone(),
             original_publish_message.track_name.clone(),
-            128,                                   // subscriber_priority
-            GroupOrder::Ascending,                 // group_order
-            original_publish_message.forward != 0, // forward
-            vec![],
+            sub_params,
           );
 
           let track_read = track_arc.read().await;

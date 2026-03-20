@@ -229,7 +229,7 @@ export type SwitchOptions = {
  *   priority: 64,
  *   groupOrder: GroupOrder.Original,
  *   typeAndProps: {
- *     type: FetchType.StandAlone,
+ *     type: FetchType.Standalone,
  *     props: { fullTrackName, startLocation, endLocation }
  *   }
  * })
@@ -253,7 +253,7 @@ export type SwitchOptions = {
  * })
  * ```
  */
-// TODO: Define BaseOptions and extend it with StandAloneOptions, RelativeOptions etc.
+// TODO: Define BaseOptions and extend it with StandaloneOptions, RelativeOptions etc.
 // Move the type to top level
 export type FetchOptions = {
   /** Request priority (0 = highest, 255 = lowest). Rounded & clamped. */
@@ -262,13 +262,13 @@ export type FetchOptions = {
   groupOrder: GroupOrder
   /**
    * Discriminated union selecting the {@link FetchType} mode and its specific properties:
-   * - StandAlone: full explicit range on a {@link FullTrackName} with start/end {@link Location}s.
+   * - Standalone: full explicit range on a {@link FullTrackName} with start/end {@link Location}s.
    * - Relative / Absolute: join an existing {@link SubscribeRequest} (identified by `joiningRequestId`) with starting position `joiningStart`.
    */
   typeAndProps:
     | {
         /** Standalone historical/segment fetch for a specific {@link FullTrackName}. */
-        type: FetchType.StandAlone
+        type: FetchType.Standalone
         /** Properties for standalone fetch: explicit track and range. */
         props: { fullTrackName: FullTrackName; startLocation: Location; endLocation: Location }
       }

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::constant::{ControlMessageType, FilterType, GroupOrder};
+use super::constant::{ControlMessageType, FilterType};
 use super::control_message::ControlMessageTrait;
 use crate::model::common::location::Location;
 use crate::model::common::tuple::{Tuple, TupleField};
@@ -33,101 +33,70 @@ pub struct Subscribe {
 }
 
 impl Subscribe {
-  fn build_base_params(
-    subscriber_priority: u8,
-    group_order: GroupOrder,
-    forward: bool,
-  ) -> Vec<MessageParameter> {
-    let mut params = vec![
-      MessageParameter::new_subscriber_priority(subscriber_priority),
-      MessageParameter::new_forward(forward),
-    ];
-    if !matches!(group_order, GroupOrder::Original) {
-      params.push(MessageParameter::new_group_order(group_order));
+  pub fn new(
+    request_id: u64,
+    track_namespace: Tuple,
+    track_name: TupleField,
+    subscribe_parameters: Vec<MessageParameter>,
+  ) -> Self {
+    Self {
+      request_id,
+      track_namespace,
+      track_name,
+      subscribe_parameters,
     }
-    params
   }
 
   pub fn new_next_group_start(
     request_id: u64,
     track_namespace: Tuple,
     track_name: TupleField,
-    subscriber_priority: u8,
-    group_order: GroupOrder,
-    forward: bool,
     subscribe_parameters: Vec<MessageParameter>,
   ) -> Self {
-    let mut params = Self::build_base_params(subscriber_priority, group_order, forward);
+    let mut params = subscribe_parameters;
     params.push(MessageParameter::new_subscription_filter(
       FilterType::NextGroupStart,
       None,
       None,
     ));
-    params.extend(subscribe_parameters);
-    Self {
-      request_id,
-      track_namespace,
-      track_name,
-      subscribe_parameters: params,
-    }
+    Self::new(request_id, track_namespace, track_name, params)
   }
 
   pub fn new_latest_object(
     request_id: u64,
     track_namespace: Tuple,
     track_name: TupleField,
-    subscriber_priority: u8,
-    group_order: GroupOrder,
-    forward: bool,
     subscribe_parameters: Vec<MessageParameter>,
   ) -> Self {
-    let mut params = Self::build_base_params(subscriber_priority, group_order, forward);
+    let mut params = subscribe_parameters;
     params.push(MessageParameter::new_subscription_filter(
       FilterType::LatestObject,
       None,
       None,
     ));
-    params.extend(subscribe_parameters);
-    Self {
-      request_id,
-      track_namespace,
-      track_name,
-      subscribe_parameters: params,
-    }
+    Self::new(request_id, track_namespace, track_name, params)
   }
 
   pub fn new_absolute_start(
     request_id: u64,
     track_namespace: Tuple,
     track_name: TupleField,
-    subscriber_priority: u8,
-    group_order: GroupOrder,
-    forward: bool,
     start_location: Location,
     subscribe_parameters: Vec<MessageParameter>,
   ) -> Self {
-    let mut params = Self::build_base_params(subscriber_priority, group_order, forward);
+    let mut params = subscribe_parameters;
     params.push(MessageParameter::new_subscription_filter(
       FilterType::AbsoluteStart,
       Some(start_location),
       None,
     ));
-    params.extend(subscribe_parameters);
-    Self {
-      request_id,
-      track_namespace,
-      track_name,
-      subscribe_parameters: params,
-    }
+    Self::new(request_id, track_namespace, track_name, params)
   }
 
   pub fn new_absolute_range(
     request_id: u64,
     track_namespace: Tuple,
     track_name: TupleField,
-    subscriber_priority: u8,
-    group_order: GroupOrder,
-    forward: bool,
     start_location: Location,
     end_group: u64,
     subscribe_parameters: Vec<MessageParameter>,
@@ -136,19 +105,13 @@ impl Subscribe {
       end_group >= start_location.group,
       "End Group must be >= Start Group"
     );
-    let mut params = Self::build_base_params(subscriber_priority, group_order, forward);
+    let mut params = subscribe_parameters;
     params.push(MessageParameter::new_subscription_filter(
       FilterType::AbsoluteRange,
       Some(start_location),
       Some(end_group),
     ));
-    params.extend(subscribe_parameters);
-    Self {
-      request_id,
-      track_namespace,
-      track_name,
-      subscribe_parameters: params,
-    }
+    Self::new(request_id, track_namespace, track_name, params)
   }
 
   pub fn get_full_track_name(&self) -> FullTrackName {
@@ -174,6 +137,7 @@ impl Subscribe {
     })
   }
 }
+
 impl ControlMessageTrait for Subscribe {
   fn serialize(&self) -> Result<Bytes, ParseError> {
     let mut buf = BytesMut::new();
@@ -240,10 +204,12 @@ impl ControlMessageTrait for Subscribe {
       subscribe_parameters,
     }))
   }
+
   fn get_type(&self) -> ControlMessageType {
     ControlMessageType::Subscribe
   }
 }
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -252,23 +218,19 @@ mod tests {
 
   #[test]
   fn test_roundtrip() {
-    let request_id = 128242;
-    let track_namespace = Tuple::from_utf8_path("nein/nein/nein");
-    let track_name = TupleField::from_utf8("${Name}");
-    let start_location = Location {
-      group: 81,
-      object: 81,
-    };
     let subscribe = Subscribe::new_absolute_range(
-      request_id,
-      track_namespace,
-      track_name,
-      31,
-      GroupOrder::Original,
-      false,
-      start_location,
+      128242,
+      Tuple::from_utf8_path("nein/nein/nein"),
+      TupleField::from_utf8("${Name}"),
+      Location {
+        group: 81,
+        object: 81,
+      },
       100,
-      vec![],
+      vec![
+        MessageParameter::new_subscriber_priority(31),
+        MessageParameter::new_forward(false),
+      ],
     );
 
     let mut buf = subscribe.serialize().unwrap();
@@ -283,23 +245,20 @@ mod tests {
 
   #[test]
   fn test_excess_roundtrip() {
-    let request_id = 128242;
-    let track_namespace = Tuple::from_utf8_path("nein/nein/nein");
-    let track_name = TupleField::from_utf8("${Name}");
-    let start_location = Location {
-      group: 81,
-      object: 81,
-    };
     let subscribe = Subscribe::new_absolute_range(
-      request_id,
-      track_namespace,
-      track_name,
-      31,
-      GroupOrder::Ascending,
-      true,
-      start_location,
+      128242,
+      Tuple::from_utf8_path("nein/nein/nein"),
+      TupleField::from_utf8("${Name}"),
+      Location {
+        group: 81,
+        object: 81,
+      },
       100,
-      vec![],
+      vec![
+        MessageParameter::new_subscriber_priority(31),
+        MessageParameter::new_group_order(GroupOrder::Ascending),
+        MessageParameter::new_forward(true),
+      ],
     );
 
     let serialized = subscribe.serialize().unwrap();
@@ -320,23 +279,20 @@ mod tests {
 
   #[test]
   fn test_partial_message() {
-    let request_id = 128242;
-    let track_namespace = Tuple::from_utf8_path("nein/nein/nein");
-    let track_name = TupleField::from_utf8("${Name}");
-    let start_location = Location {
-      group: 81,
-      object: 81,
-    };
     let subscribe = Subscribe::new_absolute_range(
-      request_id,
-      track_namespace,
-      track_name,
-      31,
-      GroupOrder::Ascending,
-      true,
-      start_location,
+      128242,
+      Tuple::from_utf8_path("nein/nein/nein"),
+      TupleField::from_utf8("${Name}"),
+      Location {
+        group: 81,
+        object: 81,
+      },
       100,
-      vec![],
+      vec![
+        MessageParameter::new_subscriber_priority(31),
+        MessageParameter::new_group_order(GroupOrder::Ascending),
+        MessageParameter::new_forward(true),
+      ],
     );
 
     let mut buf = subscribe.serialize().unwrap();

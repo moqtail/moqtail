@@ -199,6 +199,7 @@ mod tests {
   use crate::model::control::server_setup::ServerSetup;
   use crate::model::control::subscribe::Subscribe;
   use crate::model::control::subscribe_ok::SubscribeOk;
+  use crate::model::parameter::message_parameter::MessageParameter;
   use bytes::Bytes;
   use std::error::Error;
   use std::sync::Arc;
@@ -359,39 +360,34 @@ mod tests {
       request_id,
       track_namespace,
       track_name,
-      31,
-      GroupOrder::Original,
-      true,
       start_location,
       100,
-      vec![],
+      vec![
+        MessageParameter::new_subscriber_priority(31),
+        MessageParameter::new_group_order(GroupOrder::Original),
+        MessageParameter::new_forward(true),
+      ],
     )
   }
 
   fn create_test_subscribe_ok() -> SubscribeOk {
-    let request_id = 145136;
-    let track_alias = 999;
-    let expires = 16;
-    let group_order = GroupOrder::Ascending;
-    let content_exists = true;
-    let largest_location = Location {
-      group: 34,
-      object: 0,
-    };
-    let subscribe_parameters = vec![
-      KeyValuePair::try_new_varint(0, 10).unwrap(),
-      KeyValuePair::try_new_bytes(1, Bytes::from_static(b"9 gifted subs from Dr.Doofishtein"))
-        .unwrap(),
-    ];
-    SubscribeOk {
-      request_id,
-      track_alias,
-      expires,
-      group_order,
-      content_exists,
-      largest_location: Some(largest_location),
-      subscribe_parameters: Some(subscribe_parameters),
-    }
+    use crate::model::control::constant::GroupOrder;
+    use crate::model::extension_header::track_extension::TrackExtension;
+    use crate::model::parameter::message_parameter::MessageParameter;
+    SubscribeOk::new(
+      145136,
+      999,
+      vec![
+        MessageParameter::new_expires(16),
+        MessageParameter::new_group_order(GroupOrder::Ascending),
+        MessageParameter::new_largest_object(Location {
+          group: 34,
+          object: 0,
+        }),
+        MessageParameter::new_expires(100),
+      ],
+      vec![TrackExtension::DeliveryTimeout { timeout_ms: 5000 }],
+    )
   }
 
   fn create_test_client_setup() -> ClientSetup {

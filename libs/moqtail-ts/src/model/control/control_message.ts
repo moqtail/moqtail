@@ -15,7 +15,7 @@
  */
 
 import { FrozenByteBuffer } from '../common/byte_buffer'
-import { ControlMessageType, controlMessageTypeFromBigInt, FetchType, GroupOrder } from './constant'
+import { ControlMessageType, controlMessageTypeFromBigInt, FetchType } from './constant'
 import { PublishNamespace } from './publish_namespace'
 import { PublishNamespaceCancel } from './publish_namespace_cancel'
 import { PublishNamespaceError } from './publish_namespace_error'
@@ -207,8 +207,6 @@ if (import.meta.vitest) {
     describe('Fetch', () => {
       function buildTestFetch(): Fetch {
         const requestId = 161803n
-        const subscriberPriority = 15
-        const groupOrder = GroupOrder.Descending
         const joiningRequestId = 119n
         const joiningStart = 73n
         const type = FetchType.Relative
@@ -216,13 +214,7 @@ if (import.meta.vitest) {
           KeyValuePair.tryNewVarInt(4444, 12321n),
           KeyValuePair.tryNewBytes(1, new TextEncoder().encode('fetch me ok')),
         ]
-        return new Fetch(
-          requestId,
-          subscriberPriority,
-          groupOrder,
-          { type, props: { joiningRequestId, joiningStart } },
-          parameters,
-        )
+        return new Fetch(requestId, { type, props: { joiningRequestId, joiningStart } }, parameters)
       }
 
       test('should roundtrip Fetch correctly', () => {

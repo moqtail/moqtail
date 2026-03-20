@@ -139,7 +139,7 @@ impl From<FilterType> for u64 {
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(u64)]
 pub enum FetchType {
-  StandAlone = 0x1,
+  Standalone = 0x1,
   RelativeFetch = 0x2,
   AbsoluteFetch = 0x3,
 }
@@ -149,7 +149,7 @@ impl TryFrom<u64> for FetchType {
 
   fn try_from(value: u64) -> Result<Self, Self::Error> {
     match value {
-      0x1 => Ok(FetchType::StandAlone),
+      0x1 => Ok(FetchType::Standalone),
       0x2 => Ok(FetchType::RelativeFetch),
       0x3 => Ok(FetchType::AbsoluteFetch),
       _ => Err(ParseError::InvalidType {
@@ -446,7 +446,8 @@ pub enum PublishDoneStatusCode {
   GoingAway = 0x4,
   Expired = 0x5,
   TooFarBehind = 0x6,
-  MalformedTrack = 0x7,
+  UpdateFailed = 0x8,
+  MalformedTrack = 0x12,
 }
 
 impl TryFrom<u64> for PublishDoneStatusCode {
@@ -461,7 +462,8 @@ impl TryFrom<u64> for PublishDoneStatusCode {
       0x4 => Ok(PublishDoneStatusCode::GoingAway),
       0x5 => Ok(PublishDoneStatusCode::Expired),
       0x6 => Ok(PublishDoneStatusCode::TooFarBehind),
-      0x7 => Ok(PublishDoneStatusCode::MalformedTrack),
+      0x8 => Ok(PublishDoneStatusCode::UpdateFailed),
+      0x12 => Ok(PublishDoneStatusCode::MalformedTrack),
       _ => Err(ParseError::InvalidType {
         context: "PublishDoneStatusCode::try_from(u64)",
         details: format!("Invalid type, got {value}"),

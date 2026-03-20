@@ -18,7 +18,7 @@ import { DatagramObject, DatagramStatus } from '../model/data'
 import { MoqtObject, FullTrackName } from '../model/data'
 import { ProtocolViolationError } from '../model/error/error'
 import { createLogger } from '../util/logger'
-
+import { FrozenByteBuffer } from '@/model'
 const logger = createLogger('datagram_stream')
 
 /**
@@ -217,18 +217,14 @@ export class RecvDatagramStream {
 
           if (isStatus) {
             // DatagramStatus (0x20 or 0x21)
-            const datagramStatus = DatagramStatus.deserialize(
-              new (await import('../model/common/byte_buffer')).FrozenByteBuffer(datagramBytes),
-            )
+            const datagramStatus = DatagramStatus.deserialize(new FrozenByteBuffer(datagramBytes))
             if (this.onDataReceived) this.onDataReceived(datagramStatus)
 
             const fullTrackName = this.#trackAliasResolver(datagramStatus.trackAlias)
             moqtObject = MoqtObject.fromDatagramStatus(datagramStatus, fullTrackName)
           } else {
             // DatagramObject (0x00-0x07)
-            const datagramObject = DatagramObject.deserialize(
-              new (await import('../model/common/byte_buffer')).FrozenByteBuffer(datagramBytes),
-            )
+            const datagramObject = DatagramObject.deserialize(new FrozenByteBuffer(datagramBytes))
             if (this.onDataReceived) this.onDataReceived(datagramObject)
 
             const fullTrackName = this.#trackAliasResolver(datagramObject.trackAlias)

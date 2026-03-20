@@ -57,6 +57,7 @@ import {
   RequestIdMap,
 } from '../model/data'
 import { FrozenByteBuffer } from '../model/common/byte_buffer'
+import { TrackExtension } from '../model/extension_header/track_extension'
 import { RecvStream } from './data_stream'
 import {
   InternalError,
@@ -1243,7 +1244,7 @@ export class MOQtailClient {
    * One-shot retrieval of a bounded object span, optionally anchored to an existing subscription, returning a stream of {@link MoqtObject}s.
    *
    * Choose a fetch type via `typeAndProps.type`:
-   * - StandAlone: Historical slice of a specific {@link FullTrackName} independent of active subscriptions.
+   * - Standalone: Historical slice of a specific {@link FullTrackName} independent of active subscriptions.
    * - Relative: Range relative to the JOINING subscription's current (largest) location; use when you want "N groups back" from live.
    * - Absolute: Absolute group/object offsets tied to an existing subscription (stable anchor) even if that subscription keeps forwarding.
    *
@@ -1276,7 +1277,7 @@ export class MOQtailClient {
    *   priority: 64,
    *   groupOrder: GroupOrder.Original,
    *   typeAndProps: {
-   *     type: FetchType.StandAlone,
+   *     type: FetchType.Standalone,
    *     props: { fullTrackName, startLocation, endLocation }
    *   }
    * })
@@ -1311,7 +1312,11 @@ export class MOQtailClient {
           'MOQtailClient.fetch',
           `subscriberPriority: ${priority} must be in range of [0-255]`,
         )
-      const params = parameters?.map((p) => p.toKeyValuePair()) ?? []
+      const params = [
+        new SubscriberPriority(priority).toKeyValuePair(),
+        ...(groupOrder !== GroupOrder.Original ? [new GroupOrderParam(groupOrder).toKeyValuePair()] : []),
+        ...(parameters?.map((p) => p.toKeyValuePair()) ?? []),
+      ]
       let msg: Fetch
       let joiningRequest: MOQtailRequest | undefined
       // Generate unique requestId at the beginning to ensure uniqueness
@@ -1325,14 +1330,8 @@ export class MOQtailClient {
         this.#dontUseRequestId,
       )
       switch (typeAndProps.type) {
-        case FetchType.StandAlone:
-          msg = new Fetch(
-            requestId,
-            priority,
-            groupOrder,
-            { type: typeAndProps.type, props: typeAndProps.props },
-            params,
-          )
+        case FetchType.Standalone:
+          msg = new Fetch(requestId, { type: typeAndProps.type, props: typeAndProps.props }, params)
           break
 
         case FetchType.Relative:
@@ -1342,13 +1341,7 @@ export class MOQtailClient {
               'MOQtailClient.fetch',
               `No subscribe request for the given joiningRequestId: ${typeAndProps.props.joiningRequestId}`,
             )
-          msg = new Fetch(
-            requestId,
-            priority,
-            groupOrder,
-            { type: typeAndProps.type, props: typeAndProps.props },
-            params,
-          )
+          msg = new Fetch(requestId, { type: typeAndProps.type, props: typeAndProps.props }, params)
           break
         case FetchType.Absolute:
           joiningRequest = this.requests.get(typeAndProps.props.joiningRequestId)
@@ -1357,13 +1350,7 @@ export class MOQtailClient {
               'MOQtailClient.fetch',
               `No subscribe request for the given joiningRequestId: ${typeAndProps.props.joiningRequestId}`,
             )
-          msg = new Fetch(
-            requestId,
-            priority,
-            groupOrder,
-            { type: typeAndProps.type, props: typeAndProps.props },
-            params,
-          )
+          msg = new Fetch(requestId, { type: typeAndProps.type, props: typeAndProps.props }, params)
           break
       }
       const request = new FetchRequest(msg)
@@ -1371,7 +1358,7 @@ export class MOQtailClient {
       logger.log('fetch: full fetch message:', {
         requestId: msg.requestId,
         fetchType: typeAndProps.type,
-        joiningRequestId: typeAndProps.type !== FetchType.StandAlone ? typeAndProps.props.joiningRequestId : 'N/A',
+        joiningRequestId: typeAndProps.type !== FetchType.Standalone ? typeAndProps.props.joiningRequestId : 'N/A',
       })
       this.requests.set(msg.requestId, request)
       logger.log('fetch: about to send fetch message to server')
@@ -1415,7 +1402,7 @@ export class MOQtailClient {
    *
    * @example Cancel shortly after starting
    * ```ts
-   * const r = await client.fetch({ priority: 32, groupOrder: GroupOrder.Original, typeAndProps: { type: FetchType.StandAlone, props: { fullTrackName, startLocation, endLocation } } })
+   * const r = await client.fetch({ priority: 32, groupOrder: GroupOrder.Original, typeAndProps: { type: FetchType.Standalone, props: { fullTrackName, startLocation, endLocation } } })
    * if (!(r instanceof FetchError)) {
    *   // user navigated away
    *   await client.fetchCancel(r.requestId)
@@ -1451,21 +1438,23 @@ export class MOQtailClient {
   /**
    * Proactively push a track to the relay/peer.
    */
-  async publish(fullTrackName: FullTrackName, forward: boolean, trackAlias: bigint, parameters?: MessageParameter[]) {
+  async publish(
+    fullTrackName: FullTrackName,
+    forward: boolean,
+    trackAlias: bigint,
+    parameters?: MessageParameter[],
+    trackExtensions?: TrackExtension[],
+  ) {
     this.#ensureActive()
     try {
-      const params = parameters?.map((p) => p.toKeyValuePair()) ?? []
       const requestId = this.#nextClientRequestId
 
       const msg = new Publish(
         requestId,
         fullTrackName,
         trackAlias,
-        GroupOrder.Ascending,
-        0, // ContentExists (0 = Unknown/No)
-        undefined, // Largest Location
-        forward ? 1 : 0,
-        params,
+        [new Forward(forward), ...(parameters ?? [])],
+        trackExtensions ?? [],
       )
 
       const request = new PublishRequest(msg)
@@ -1806,7 +1795,7 @@ export class MOQtailClient {
         if (request && request instanceof FetchRequest) {
           let fullTrackName: FullTrackName
           switch (request.message.typeAndProps.type) {
-            case FetchType.StandAlone:
+            case FetchType.Standalone:
               fullTrackName = request.message.typeAndProps.props.fullTrackName
               break
             case FetchType.Relative:

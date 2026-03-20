@@ -22,6 +22,7 @@ use moqtail::model::control::constant::GroupOrder;
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::subscribe::Subscribe;
 use moqtail::model::data::datagram_object::DatagramObject;
+use moqtail::model::parameter::message_parameter::MessageParameter;
 use moqtail::transport::data_stream_handler::RecvDataStream;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -46,11 +47,12 @@ pub async fn run(
   let subscribe = Subscribe::new_latest_object(
     0, // request_id
     ns,
-    TupleField::from_utf8(track_name), // track_name
-    0,                                 // subscriber_priority
-    GroupOrder::Ascending,             // group_order
-    true,                              // forward
-    vec![],
+    TupleField::from_utf8(track_name),
+    vec![
+      MessageParameter::new_subscriber_priority(0),
+      MessageParameter::new_group_order(GroupOrder::Ascending),
+      MessageParameter::new_forward(true),
+    ],
   );
   control_stream
     .send(&ControlMessage::Subscribe(Box::new(subscribe)))
@@ -60,10 +62,7 @@ pub async fn run(
   info!("Waiting for SubscribeOk...");
   let track_alias = match control_stream.next_message().await {
     Ok(ControlMessage::SubscribeOk(m)) => {
-      info!(
-        "Subscribed: track_alias={}, content_exists={}",
-        m.track_alias, m.content_exists
-      );
+      info!("Subscribed: track_alias={}", m.track_alias);
       m.track_alias
     }
     Ok(m) => anyhow::bail!("Expected SubscribeOk, got {:?}", m),

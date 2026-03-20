@@ -41,7 +41,7 @@ export const handlerSubscribe: ControlMessageHandler<Subscribe> = async (client,
     return
   }
   let subscribeOk: SubscribeOk
-  if (!track.trackAlias) throw new Error('Expected track alias to be set')
+  if (track.trackAlias === undefined) throw new Error('Expected track alias to be set')
   if (track.trackSource.live.largestLocation) {
     subscribeOk = SubscribeOk.newAscendingWithContent(
       msg.requestId,

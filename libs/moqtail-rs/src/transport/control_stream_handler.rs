@@ -369,17 +369,21 @@ mod tests {
   }
 
   fn create_test_subscribe_ok() -> SubscribeOk {
+    use crate::model::control::constant::GroupOrder;
     use crate::model::extension_header::track_extension::TrackExtension;
     use crate::model::parameter::message_parameter::MessageParameter;
-    SubscribeOk::new_ascending_with_content(
+    SubscribeOk::new(
       145136,
       999,
-      16,
-      Some(Location {
-        group: 34,
-        object: 0,
-      }),
-      vec![MessageParameter::new_expires(100)],
+      vec![
+        MessageParameter::new_expires(16),
+        MessageParameter::new_group_order(GroupOrder::Ascending),
+        MessageParameter::new_largest_object(Location {
+          group: 34,
+          object: 0,
+        }),
+        MessageParameter::new_expires(100),
+      ],
       vec![TrackExtension::DeliveryTimeout { timeout_ms: 5000 }],
     )
   }

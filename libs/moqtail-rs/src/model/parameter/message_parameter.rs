@@ -144,7 +144,10 @@ impl MessageParameter {
       ),
       Self::GroupOrder { .. } => matches!(
         msg_type,
-        ControlMessageType::Subscribe | ControlMessageType::PublishOk | ControlMessageType::Fetch
+        ControlMessageType::Subscribe
+          | ControlMessageType::PublishOk
+          | ControlMessageType::Fetch
+          | ControlMessageType::SubscribeOk
       ),
       Self::SubscriptionFilter { .. } => matches!(
         msg_type,

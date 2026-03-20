@@ -12,9 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::constant::{ControlMessageType, GroupOrder};
+use super::constant::ControlMessageType;
 use super::control_message::ControlMessageTrait;
-use crate::model::common::location::Location;
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
 use crate::model::error::ParseError;
 use crate::model::extension_header::track_extension::{
@@ -23,94 +22,26 @@ use crate::model::extension_header::track_extension::{
 use crate::model::parameter::message_parameter::{
   MessageParameter, deserialize_message_parameters,
 };
-use bytes::{Buf, BufMut, Bytes, BytesMut};
+use bytes::{BufMut, Bytes, BytesMut};
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct SubscribeOk {
   pub request_id: u64,
   pub track_alias: u64,
-  pub expires: u64,
-  pub group_order: GroupOrder, // Must be Ascending or Descending
-  pub content_exists: bool,
-  pub largest_location: Option<Location>, // Present only if content_exists is true
   pub subscribe_parameters: Vec<MessageParameter>,
   pub track_extensions: Vec<TrackExtension>,
 }
 
 impl SubscribeOk {
-  pub fn new_ascending_no_content(
+  pub fn new(
     request_id: u64,
     track_alias: u64,
-    expires: u64,
     subscribe_parameters: Vec<MessageParameter>,
     track_extensions: Vec<TrackExtension>,
   ) -> Self {
     Self {
       request_id,
       track_alias,
-      expires,
-      group_order: GroupOrder::Ascending,
-      content_exists: false,
-      largest_location: None,
-      subscribe_parameters,
-      track_extensions,
-    }
-  }
-
-  pub fn new_descending_no_content(
-    request_id: u64,
-    track_alias: u64,
-    expires: u64,
-    subscribe_parameters: Vec<MessageParameter>,
-    track_extensions: Vec<TrackExtension>,
-  ) -> Self {
-    Self {
-      request_id,
-      track_alias,
-      expires,
-      group_order: GroupOrder::Descending,
-      content_exists: false,
-      largest_location: None,
-      subscribe_parameters,
-      track_extensions,
-    }
-  }
-
-  pub fn new_ascending_with_content(
-    request_id: u64,
-    track_alias: u64,
-    expires: u64,
-    largest_location: Option<Location>,
-    subscribe_parameters: Vec<MessageParameter>,
-    track_extensions: Vec<TrackExtension>,
-  ) -> Self {
-    Self {
-      request_id,
-      track_alias,
-      expires,
-      group_order: GroupOrder::Ascending,
-      content_exists: true,
-      largest_location,
-      subscribe_parameters,
-      track_extensions,
-    }
-  }
-
-  pub fn new_descending_with_content(
-    request_id: u64,
-    track_alias: u64,
-    expires: u64,
-    largest_location: Option<Location>,
-    subscribe_parameters: Vec<MessageParameter>,
-    track_extensions: Vec<TrackExtension>,
-  ) -> Self {
-    Self {
-      request_id,
-      track_alias,
-      expires,
-      group_order: GroupOrder::Descending,
-      content_exists: true,
-      largest_location,
       subscribe_parameters,
       track_extensions,
     }
@@ -125,25 +56,6 @@ impl ControlMessageTrait for SubscribeOk {
     let mut payload = BytesMut::new();
     payload.put_vi(self.request_id)?;
     payload.put_vi(self.track_alias)?;
-    payload.put_vi(self.expires)?;
-
-    if self.group_order == GroupOrder::Original {
-      unreachable!()
-    }
-
-    payload.put_u8(self.group_order as u8);
-
-    if self.content_exists {
-      payload.put_u8(1u8);
-      if let Some(ref loc) = self.largest_location {
-        payload.extend_from_slice(&loc.serialize()?);
-      } else {
-        // default
-        payload.extend_from_slice(&Location::new(0, 0).serialize()?);
-      }
-    } else {
-      payload.put_u8(0u8);
-    }
 
     payload.put_vi(self.subscribe_parameters.len() as u64)?;
     for param in &self.subscribe_parameters {
@@ -172,46 +84,6 @@ impl ControlMessageTrait for SubscribeOk {
   fn parse_payload(payload: &mut Bytes) -> Result<Box<Self>, ParseError> {
     let request_id = payload.get_vi()?;
     let track_alias = payload.get_vi()?;
-    let expires = payload.get_vi()?;
-
-    if payload.remaining() < 1 {
-      return Err(ParseError::NotEnoughBytes {
-        context: "SubscribeOk::parse_payload(group_order)",
-        needed: 1,
-        available: payload.remaining(),
-      });
-    }
-    let group_order_raw = payload.get_u8();
-    let group_order = GroupOrder::try_from(group_order_raw)?;
-    if let GroupOrder::Original = group_order {
-      return Err(ParseError::ProtocolViolation {
-        context: "SubscribeOk::parse_payload(group_order_validation)",
-        details: "Group order must be Ascending(0x01) or Descending(0x02)".to_string(),
-      });
-    }
-    if payload.remaining() < 1 {
-      return Err(ParseError::NotEnoughBytes {
-        context: "SubscribeOk::parse_payload(content_exists)",
-        needed: 1,
-        available: payload.remaining(),
-      });
-    }
-    let content_exists_raw = payload.get_u8();
-    let content_exists = match content_exists_raw {
-      0 => false,
-      1 => true,
-      _ => {
-        return Err(ParseError::ProtocolViolation {
-          context: "SubscribeOk::parse_payload(content_exists)",
-          details: format!("Invalid Content Exists value: {content_exists_raw}"),
-        });
-      }
-    };
-
-    let mut largest_location = None;
-    if content_exists {
-      largest_location = Some(Location::deserialize(payload)?);
-    }
 
     let param_count = payload.get_vi()?;
     let subscribe_parameters =
@@ -223,10 +95,6 @@ impl ControlMessageTrait for SubscribeOk {
     Ok(Box::new(SubscribeOk {
       request_id,
       track_alias,
-      expires,
-      group_order,
-      content_exists,
-      largest_location,
       subscribe_parameters,
       track_extensions,
     }))
@@ -240,6 +108,9 @@ impl ControlMessageTrait for SubscribeOk {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::model::common::location::Location;
+  use crate::model::control::constant::GroupOrder;
+  use crate::model::extension_header::track_extension::TrackExtension;
   use bytes::Buf;
 
   #[test]
@@ -247,14 +118,15 @@ mod tests {
     let subscribe_ok = SubscribeOk {
       request_id: 145136,
       track_alias: 0,
-      expires: 16,
-      group_order: GroupOrder::Ascending,
-      content_exists: true,
-      largest_location: Some(Location {
-        group: 34,
-        object: 0,
-      }),
-      subscribe_parameters: vec![MessageParameter::new_expires(100)],
+      subscribe_parameters: vec![
+        MessageParameter::new_expires(16),
+        MessageParameter::new_group_order(GroupOrder::Ascending),
+        MessageParameter::new_largest_object(Location {
+          group: 34,
+          object: 0,
+        }),
+        MessageParameter::new_expires(100),
+      ],
       track_extensions: vec![],
     };
 
@@ -273,11 +145,10 @@ mod tests {
     let subscribe_ok = SubscribeOk {
       request_id: 999,
       track_alias: 42,
-      expires: 0,
-      group_order: GroupOrder::Descending,
-      content_exists: false,
-      largest_location: None,
-      subscribe_parameters: vec![],
+      subscribe_parameters: vec![
+        MessageParameter::new_expires(0),
+        MessageParameter::new_group_order(GroupOrder::Descending),
+      ],
       track_extensions: vec![
         TrackExtension::DeliveryTimeout { timeout_ms: 500 },
         TrackExtension::DynamicGroups { enabled: true },
@@ -299,14 +170,13 @@ mod tests {
     let subscribe_ok = SubscribeOk {
       request_id: 145136,
       track_alias: 89123u64,
-      expires: 16,
-      group_order: GroupOrder::Ascending,
-      content_exists: true,
-      largest_location: Some(Location {
-        group: 34,
-        object: 0,
-      }),
-      subscribe_parameters: vec![MessageParameter::new_expires(16)],
+      subscribe_parameters: vec![
+        MessageParameter::new_expires(16),
+        MessageParameter::new_largest_object(Location {
+          group: 34,
+          object: 0,
+        }),
+      ],
       track_extensions: vec![],
     };
 
@@ -334,14 +204,13 @@ mod tests {
     let subscribe_ok = SubscribeOk {
       request_id: 145136,
       track_alias: 1223u64,
-      expires: 16,
-      group_order: GroupOrder::Ascending,
-      content_exists: true,
-      largest_location: Some(Location {
-        group: 34,
-        object: 0,
-      }),
-      subscribe_parameters: vec![MessageParameter::new_expires(16)],
+      subscribe_parameters: vec![
+        MessageParameter::new_expires(16),
+        MessageParameter::new_largest_object(Location {
+          group: 34,
+          object: 0,
+        }),
+      ],
       track_extensions: vec![],
     };
     let mut buf = subscribe_ok.serialize().unwrap();

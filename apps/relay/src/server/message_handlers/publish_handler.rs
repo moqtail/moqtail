@@ -117,8 +117,7 @@ pub async fn handle(
           full_track_name.clone(),
           context.server_config,
           TrackStatus::Confirmed {
-            expires: 0,
-            largest_location: None,
+            subscribe_parameters: vec![],
           },
         );
         let track_arc = context

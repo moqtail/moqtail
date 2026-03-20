@@ -30,6 +30,7 @@ use moqtail::model::data::datagram_object::DatagramObject;
 use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::model::data::object::Object;
 use moqtail::model::extension_header::track_extension::TrackExtension;
+use moqtail::model::parameter::message_parameter::MessageParameter;
 use moqtail::transport::data_stream_handler::HeaderInfo;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -43,8 +44,7 @@ pub enum TrackStatus {
   Pending,
   /// Publisher confirmed with SubscribeOk.
   Confirmed {
-    expires: u64,
-    largest_location: Option<Location>,
+    subscribe_parameters: Vec<MessageParameter>,
   },
   /// Publisher rejected with SubscribeError.
   Rejected {
@@ -170,8 +170,7 @@ impl Track {
     &mut self,
     publisher_connection_id: usize,
     publisher_track_alias: u64,
-    expires: u64,
-    largest_location: Option<Location>,
+    subscribe_parameters: Vec<MessageParameter>,
     extensions: Vec<TrackExtension>,
   ) {
     {
@@ -180,8 +179,7 @@ impl Track {
     }
     let mut status = self.status.write().await;
     *status = TrackStatus::Confirmed {
-      expires,
-      largest_location,
+      subscribe_parameters,
     };
     drop(status);
     *self.track_extensions.write().await = extensions;

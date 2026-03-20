@@ -60,10 +60,7 @@ pub async fn run(
   info!("Waiting for SubscribeOk...");
   let track_alias = match control_stream.next_message().await {
     Ok(ControlMessage::SubscribeOk(m)) => {
-      info!(
-        "Subscribed: track_alias={}, content_exists={}",
-        m.track_alias, m.content_exists
-      );
+      info!("Subscribed: track_alias={}", m.track_alias);
       m.track_alias
     }
     Ok(m) => anyhow::bail!("Expected SubscribeOk, got {:?}", m),

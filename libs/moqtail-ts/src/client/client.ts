@@ -1453,11 +1453,7 @@ export class MOQtailClient {
         requestId,
         fullTrackName,
         trackAlias,
-        GroupOrder.Ascending,
-        0, // ContentExists (0 = Unknown/No)
-        undefined, // Largest Location
-        forward ? 1 : 0,
-        parameters ?? [],
+        [new Forward(forward), ...(parameters ?? [])],
         trackExtensions ?? [],
       )
 

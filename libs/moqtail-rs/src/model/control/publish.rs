@@ -12,9 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::constant::{ControlMessageType, GroupOrder};
+use super::constant::ControlMessageType;
 use super::control_message::ControlMessageTrait;
-use crate::model::common::location::Location;
 use crate::model::common::tuple::{Tuple, TupleField};
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
 use crate::model::error::ParseError;
@@ -32,25 +31,16 @@ pub struct Publish {
   pub track_namespace: Tuple,
   pub track_name: TupleField,
   pub track_alias: u64,
-  pub group_order: GroupOrder,
-  pub content_exists: u8,
-  pub largest_location: Option<Location>,
-  pub forward: u8,
   pub parameters: Vec<MessageParameter>,
   pub track_extensions: Vec<TrackExtension>,
 }
 
-#[allow(clippy::too_many_arguments)]
 impl Publish {
   pub fn new(
     request_id: u64,
     track_namespace: Tuple,
     track_name: TupleField,
     track_alias: u64,
-    group_order: GroupOrder,
-    content_exists: u8,
-    largest_location: Option<Location>,
-    forward: u8,
     parameters: Vec<MessageParameter>,
     track_extensions: Vec<TrackExtension>,
   ) -> Self {
@@ -59,10 +49,6 @@ impl Publish {
       track_namespace,
       track_name,
       track_alias,
-      group_order,
-      content_exists,
-      largest_location,
-      forward,
       parameters,
       track_extensions,
     }
@@ -83,22 +69,6 @@ impl ControlMessageTrait for Publish {
     payload.extend_from_slice(self.track_name.as_bytes());
 
     payload.put_vi(self.track_alias)?;
-    payload.put_u8(self.group_order.into());
-    payload.put_u8(self.content_exists);
-
-    // Largest Location is conditional
-    if self.content_exists == 1 {
-      if let Some(ref location) = self.largest_location {
-        payload.extend_from_slice(&location.serialize()?);
-      } else {
-        return Err(ParseError::ProtocolViolation {
-          context: "Publish::serialize",
-          details: "content_exists is 1 but largest_location is None".to_string(),
-        });
-      }
-    }
-
-    payload.put_u8(self.forward);
 
     // Parameters
     payload.put_vi(self.parameters.len() as u64)?;
@@ -140,29 +110,6 @@ impl ControlMessageTrait for Publish {
     let track_name = TupleField::new(payload.copy_to_bytes(track_name_length));
 
     let track_alias = payload.get_vi()?;
-    let group_order = GroupOrder::try_from(payload.get_u8())?;
-    let content_exists = payload.get_u8();
-
-    if content_exists != 0 && content_exists != 1 {
-      return Err(ParseError::ProtocolViolation {
-        context: "Publish::parse_payload(content_exists)",
-        details: format!("content_exists must be 0 or 1, got {}", content_exists),
-      });
-    }
-
-    let largest_location = if content_exists == 1 {
-      Some(Location::deserialize(payload)?)
-    } else {
-      None
-    };
-
-    let forward = payload.get_u8();
-    if forward != 0 && forward != 1 {
-      return Err(ParseError::ProtocolViolation {
-        context: "Publish::parse_payload(forward)",
-        details: format!("forward must be 0 or 1, got {}", forward),
-      });
-    }
 
     let param_count = payload.get_vi()?;
     let parameters =
@@ -176,10 +123,6 @@ impl ControlMessageTrait for Publish {
       track_namespace,
       track_name,
       track_alias,
-      group_order,
-      content_exists,
-      largest_location,
-      forward,
       parameters,
       track_extensions,
     }))
@@ -194,33 +137,25 @@ impl ControlMessageTrait for Publish {
 mod tests {
   use super::*;
   use crate::model::common::location::Location;
+  use crate::model::control::constant::GroupOrder;
+  use crate::model::extension_header::track_extension::TrackExtension;
   use crate::model::parameter::message_parameter::MessageParameter;
   use bytes::Buf;
 
   #[test]
-  fn test_roundtrip_with_content() {
-    let request_id = 123;
-    let track_namespace = Tuple::from_utf8_path("example/track");
-    let track_name = TupleField::from_utf8("video");
-    let track_alias = 456;
-    let group_order = GroupOrder::Ascending;
-    let content_exists = 1;
-    let largest_location = Some(Location::new(10, 20));
-    let forward = 1;
-    let parameters = vec![MessageParameter::new_expires(1000)];
-    let track_extensions = vec![];
-
+  fn test_roundtrip() {
     let publish = Publish::new(
-      request_id,
-      track_namespace,
-      track_name,
-      track_alias,
-      group_order,
-      content_exists,
-      largest_location,
-      forward,
-      parameters,
-      track_extensions,
+      123,
+      Tuple::from_utf8_path("example/track"),
+      TupleField::from_utf8("video"),
+      456,
+      vec![
+        MessageParameter::new_group_order(GroupOrder::Ascending),
+        MessageParameter::new_largest_object(Location::new(10, 20)),
+        MessageParameter::Forward { forward: true },
+        MessageParameter::new_expires(1000),
+      ],
+      vec![],
     );
 
     let mut buf = publish.serialize().unwrap();
@@ -234,29 +169,14 @@ mod tests {
   }
 
   #[test]
-  fn test_roundtrip_without_content() {
-    let request_id = 123;
-    let track_namespace = Tuple::from_utf8_path("example/track");
-    let track_name = TupleField::from_utf8("video");
-    let track_alias = 456;
-    let group_order = GroupOrder::Ascending;
-    let content_exists = 0;
-    let largest_location = None;
-    let forward = 0;
-    let parameters = vec![];
-    let track_extensions = vec![];
-
+  fn test_roundtrip_no_parameters() {
     let publish = Publish::new(
-      request_id,
-      track_namespace,
-      track_name,
-      track_alias,
-      group_order,
-      content_exists,
-      largest_location,
-      forward,
-      parameters,
-      track_extensions,
+      123,
+      Tuple::from_utf8_path("example/track"),
+      TupleField::from_utf8("video"),
+      456,
+      vec![],
+      vec![],
     );
 
     let mut buf = publish.serialize().unwrap();
@@ -276,10 +196,6 @@ mod tests {
       Tuple::from_utf8_path("ns/track"),
       TupleField::from_utf8("audio"),
       7,
-      GroupOrder::Ascending,
-      0,
-      None,
-      0,
       vec![],
       vec![
         TrackExtension::DeliveryTimeout { timeout_ms: 3000 },
@@ -294,24 +210,5 @@ mod tests {
     let deserialized = Publish::parse_payload(&mut buf).unwrap();
     assert_eq!(*deserialized, publish);
     assert!(!buf.has_remaining());
-  }
-
-  #[test]
-  fn test_invalid_content_exists() {
-    let publish = Publish::new(
-      123,
-      Tuple::from_utf8_path("example/track"),
-      TupleField::from_utf8("video"),
-      456,
-      GroupOrder::Ascending,
-      1,
-      None, // Should have location when content_exists = 1
-      0,
-      vec![],
-      vec![],
-    );
-
-    let result = publish.serialize();
-    assert!(result.is_err());
   }
 }

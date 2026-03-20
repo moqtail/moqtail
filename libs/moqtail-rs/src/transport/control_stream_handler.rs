@@ -199,6 +199,7 @@ mod tests {
   use crate::model::control::server_setup::ServerSetup;
   use crate::model::control::subscribe::Subscribe;
   use crate::model::control::subscribe_ok::SubscribeOk;
+  use crate::model::parameter::message_parameter::MessageParameter;
   use bytes::Bytes;
   use std::error::Error;
   use std::sync::Arc;
@@ -359,12 +360,13 @@ mod tests {
       request_id,
       track_namespace,
       track_name,
-      31,
-      GroupOrder::Original,
-      true,
       start_location,
       100,
-      vec![],
+      vec![
+        MessageParameter::new_subscriber_priority(31),
+        MessageParameter::new_group_order(GroupOrder::Original),
+        MessageParameter::new_forward(true),
+      ],
     )
   }
 

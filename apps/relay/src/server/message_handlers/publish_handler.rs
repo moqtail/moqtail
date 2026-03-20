@@ -26,6 +26,8 @@ use moqtail::model::control::{
   publish_ok::PublishOk,
 };
 use moqtail::model::error::TerminationCode;
+use moqtail::model::parameter::constant::MessageParameterType;
+use moqtail::model::parameter::message_parameter::{MessageParameter, MessageParameterVecExt};
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
 use tracing::{info, warn};
@@ -183,14 +185,19 @@ pub async fn handle(
               .await;
           });
 
+          let m_forward = m_clone.parameters.get_param_or(
+            MessageParameterType::Forward,
+            MessageParameter::new_forward(true),
+          );
           let synthetic_sub = Subscribe::new_next_group_start(
             0,
             m_clone.track_namespace.clone(),
             m_clone.track_name.clone(),
-            128,                   // subscriber_priority
-            GroupOrder::Ascending, // group_order
-            m_clone.forward != 0,  // forward
-            vec![],
+            vec![
+              MessageParameter::new_subscriber_priority(128),
+              MessageParameter::new_group_order(GroupOrder::Ascending),
+              m_forward,
+            ],
           );
 
           let track_write = track_arc.read().await;
@@ -232,9 +239,18 @@ pub async fn handle(
       }
 
       let m_clone = m.clone();
+      let publish_forward = if let MessageParameter::Forward { forward } =
+        m_clone.parameters.get_param_or(
+          MessageParameterType::Forward,
+          MessageParameter::new_forward(true),
+        ) {
+        forward as u8
+      } else {
+        1u8
+      };
       let publish_ok = Box::new(PublishOk::new(
         request_id,
-        m_clone.forward,          // Use the same forward preference as requested
+        publish_forward,          // Use the same forward preference as requested
         5,                        // Default subscriber priority
         GroupOrder::Ascending,    // Default group order, could be configurable
         FilterType::LatestObject, // Default filter type
@@ -286,14 +302,19 @@ pub async fn handle(
           );
 
           // 3. Create the subscription now that the client has consented
+          let orig_forward = orig_publish.parameters.get_param_or(
+            MessageParameterType::Forward,
+            MessageParameter::new_forward(true),
+          );
           let synthetic_sub = Subscribe::new_next_group_start(
             0,
             orig_publish.track_namespace.clone(),
             orig_publish.track_name.clone(),
-            128,                       // subscriber_priority
-            GroupOrder::Ascending,     // group_order
-            orig_publish.forward != 0, // forward
-            vec![],
+            vec![
+              MessageParameter::new_subscriber_priority(128),
+              MessageParameter::new_group_order(GroupOrder::Ascending),
+              orig_forward,
+            ],
           );
 
           let track_read = track_arc.read().await;

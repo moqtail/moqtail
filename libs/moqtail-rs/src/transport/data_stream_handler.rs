@@ -620,6 +620,7 @@ mod tests {
   use crate::model::control::fetch::JoiningFetchProps;
   use crate::model::control::{fetch::Fetch, subscribe::Subscribe};
   use crate::model::data::constant::SubgroupHeaderType;
+  use crate::model::parameter::message_parameter::MessageParameter;
   use bytes::Bytes;
   use std::error::Error;
   use std::sync::Arc;
@@ -687,12 +688,13 @@ mod tests {
       request_id,
       track_namespace,
       track_name,
-      31,
-      GroupOrder::Original,
-      true,
       start_location,
       25,
-      vec![],
+      vec![
+        MessageParameter::new_subscriber_priority(31),
+        MessageParameter::new_group_order(GroupOrder::Original),
+        MessageParameter::new_forward(true),
+      ],
     );
     let header_type = SubgroupHeaderType::Type0x15;
     let track_alias = 999;

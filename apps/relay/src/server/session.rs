@@ -100,8 +100,8 @@ impl Session {
     let relay_track_status_requests = server.relay_track_status_requests.clone();
     let relay_next_request_id = server.relay_next_request_id.clone();
     let connection = session_request
-      .accept_with_headers(response_headers)
-      .await?;
+    .accept()
+    .await?;
 
     let request_maps = RequestMaps {
       relay_fetch_requests,

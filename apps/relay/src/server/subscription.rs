@@ -31,7 +31,7 @@ use moqtail::model::control::constant::PublishDoneStatusCode;
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::publish_done::PublishDone;
 use moqtail::model::control::subscribe::Subscribe;
-use moqtail::model::control::subscribe_update::SubscribeUpdate;
+use moqtail::model::control::request_update::RequestUpdate;
 use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::model::data::object::Object;
 use moqtail::model::data::subgroup_header::SubgroupHeader;
@@ -379,17 +379,15 @@ impl Subscription {
     !self.is_finished().await && self.is_forwarding().await
   }
 
-  // This method updates the subscribe message with the new subscribe update
-  // It ensures that the Start Location does not decrease and the End Group does not increase
+// This method updates the subscribe message with the new request update
   // Returns Ok if the update is successful
   // Returns error if the update is invalid
-  pub async fn update_subscription(&self, subscribe_update: SubscribeUpdate) -> Result<()> {
+  pub async fn update_subscription(&self, request_update: RequestUpdate) -> Result<()> {
     let mut state = self.subscription_state.write().await;
-    // map subscribe_update fields to subscribe_message
 
     // Extract filter_type, start_location and end_group from SubscriptionFilter parameter
-    let (new_filter_type, new_start_location, new_end_group) = subscribe_update
-      .subscribe_parameters
+    let (new_filter_type, new_start_location, new_end_group) = request_update
+      .parameters
       .iter()
       .find_map(|p| {
         if let MessageParameter::SubscriptionFilter {
@@ -405,23 +403,23 @@ impl Subscription {
       })
       .unwrap_or((None, None, None));
 
-    // The Start Location MUST NOT decrease
-    // and the End Group MUST NOT increase.
-    // In Draft-15 end group can be increased or decreased.
     if let Some(ref new_loc) = new_start_location {
-      if *new_loc < state.start_location.clone().unwrap_or_default() {
-        return Err(anyhow::anyhow!(
-          "Invalid SubscribeUpdate: Start Location cannot decrease. Current start location: {:?} Subscribe Update Start Location: {:?}",
-          state.start_location,
-          new_loc
-        ));
-      }
       state.start_location = Some(new_loc.clone());
     }
 
-    // update subscription state
-    state.subscriber_priority = subscribe_update.subscriber_priority;
-    state.forward = subscribe_update.forward;
+    // Update explicit subscription state fields if they are present in the parameters
+    for param in &request_update.parameters {
+      match param {
+        MessageParameter::SubscriberPriority { priority } => {
+          state.subscriber_priority = *priority;
+        }
+        MessageParameter::Forward { forward } => {
+          state.forward = *forward;
+        }
+        _ => {}
+      }
+    }
+
     if let Some(ft) = new_filter_type {
       state.filter_type = ft;
     }
@@ -429,16 +427,10 @@ impl Subscription {
       state.end_group = eg;
     }
 
-    // update parameters. If a parameter included in SUBSCRIBE is not present in
-    // SUBSCRIBE_UPDATE, its value remains unchanged.  There is no mechanism
-    // to remove a parameter from a subscription.
-    // Also sync the explicit forward/subscriber_priority fields into parameters
-    let mut explicit_updates = vec![
-      MessageParameter::new_forward(subscribe_update.forward),
-      MessageParameter::new_subscriber_priority(subscribe_update.subscriber_priority),
-    ];
-    explicit_updates.extend(subscribe_update.subscribe_parameters);
-    apply_message_parameter_update(&mut state.subscribe_parameters, explicit_updates);
+    // Update parameters. If a parameter included in SUBSCRIBE is not present in
+    // REQUEST_UPDATE, its value remains unchanged. There is no mechanism
+    // to remove a parameter from a request.
+    apply_message_parameter_update(&mut state.subscribe_parameters, request_update.parameters);
 
     info!(
       "update_subscription | new subscription state for relay_track_id={}: {:?}",

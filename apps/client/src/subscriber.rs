@@ -21,7 +21,7 @@ use moqtail::model::common::tuple::{Tuple, TupleField};
 use moqtail::model::control::constant::GroupOrder;
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::subscribe::Subscribe;
-use moqtail::model::data::datagram_object::DatagramObject;
+use moqtail::model::data::datagram::Datagram;
 use moqtail::model::parameter::message_parameter::MessageParameter;
 use moqtail::transport::data_stream_handler::RecvDataStream;
 use std::collections::BTreeMap;
@@ -92,7 +92,7 @@ async fn receive_datagrams(
           let bytes = bytes::Bytes::from(datagram.payload().to_vec());
           let mut bytes_mut = bytes.clone();
 
-          match DatagramObject::deserialize(&mut bytes_mut) {
+          match Datagram::deserialize(&mut bytes_mut) {
             Ok(obj) => {
               if obj.track_alias != track_alias {
                 debug!(
@@ -120,7 +120,7 @@ async fn receive_datagrams(
                   stats.total_received,
                   obj.group_id,
                   obj.object_id,
-                  obj.payload.len(),
+                  obj.payload.as_ref().map_or(0, |p| p.len()),
                   stats.elapsed_ms(),
                   if sequence_ok { "OK" } else { "GAP" }
                 );

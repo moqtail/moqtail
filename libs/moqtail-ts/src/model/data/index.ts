@@ -15,8 +15,7 @@
  */
 
 export * from './constant'
-export * from './datagram_object'
-export * from './datagram_status'
+export * from './datagram'
 export * from './fetch_header'
 export * from './fetch_object'
 export * from './full_track_name'

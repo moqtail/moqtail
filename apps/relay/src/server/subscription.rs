@@ -892,8 +892,8 @@ impl Subscription {
           );
         }
       }
-      TrackEvent::DatagramObject { object } => {
-        // Handle datagram object - serialize full MOQT datagram format
+      TrackEvent::Datagram { object } => {
+        // Handle datagram - serialize full MOQT datagram format
         // Must include type, track_alias, group_id, object_id, publisher_priority, and payload
 
         let mut norm_object = object.clone();
@@ -906,11 +906,11 @@ impl Subscription {
               .write_datagram_object(serialized_bytes)
               .await
             {
-              error!("Failed to write datagram object: {:?}", e);
+              error!("Failed to write datagram: {:?}", e);
             }
           }
           Err(e) => {
-            error!("Failed to serialize datagram object: {:?}", e);
+            error!("Failed to serialize datagram: {:?}", e);
           }
         }
       }

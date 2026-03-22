@@ -16,95 +16,44 @@
 
 /**
  * @public
- * Object datagram status types for MOQT objects (Draft-14).
- * Status datagrams use types 0x20-0x21.
+ * Object datagram types for MOQT objects (Draft-16).
  *
- * Type bit layout:
- * - Bit 0: Extensions Present (0 = no, 1 = yes)
+ * Type bit layout (form 0b00X0XXXX):
+ * - Bit 0 (0x01): EXTENSIONS - Extensions field present
+ * - Bit 1 (0x02): END_OF_GROUP - Last object in group
+ * - Bit 2 (0x04): ZERO_OBJECT_ID - Object ID omitted (assumed 0)
+ * - Bit 3 (0x08): DEFAULT_PRIORITY - Publisher Priority omitted (inherited)
+ * - Bit 5 (0x20): STATUS - Object Status replaces Object Payload
  *
- * | Type | Extensions Present | Object ID Present |
- * |------|-------------------|------------------|
- * | 0x20 | No                | Yes              |
- * | 0x21 | Yes               | Yes              |
- */
-export enum ObjectDatagramStatusType {
-  /** Status without extensions (0x20) */
-  WithoutExtensions = 0x20,
-  /** Status with extensions (0x21) */
-  WithExtensions = 0x21,
-}
-
-/**
- * @public
- * Namespace for ObjectDatagramStatusType utilities.
- */
-export namespace ObjectDatagramStatusType {
-  /**
-   * Converts a number or bigint to ObjectDatagramStatusType.
-   * @param value - The value to convert.
-   * @returns The corresponding ObjectDatagramStatusType.
-   * @throws Error if the value is not valid.
-   */
-  export function tryFrom(value: number | bigint): ObjectDatagramStatusType {
-    const v = typeof value === 'bigint' ? Number(value) : value
-    switch (v) {
-      case 0x20:
-        return ObjectDatagramStatusType.WithoutExtensions
-      case 0x21:
-        return ObjectDatagramStatusType.WithExtensions
-      default:
-        throw new Error(`Invalid ObjectDatagramStatusType: ${value}`)
-    }
-  }
-
-  /**
-   * Returns true if the type has extensions.
-   * @param t - The ObjectDatagramStatusType.
-   */
-  export function hasExtensions(t: ObjectDatagramStatusType): boolean {
-    return t === ObjectDatagramStatusType.WithExtensions
-  }
-}
-
-/**
- * @public
- * Object datagram types for MOQT objects (Draft-14).
- *
- * Type bit layout for 0x00-0x07:
- * - Bit 0: Extensions Present (0 = no, 1 = yes)
- * - Bit 1: End of Group (0 = no, 1 = yes)
- * - Bit 2: Object ID Present (0 = Object ID omitted & is 0, 1 = Object ID present)
- *
- * Note: Bit 2 is inverted - when set, Object ID is ABSENT (and assumed 0)
- *
- * | Type | End of Group | Extensions | Object ID Present | Content |
- * |------|-------------|------------|------------------|--------|
- * | 0x00 | No          | No         | Yes              | Payload |
- * | 0x01 | No          | Yes        | Yes              | Payload |
- * | 0x02 | Yes         | No         | Yes              | Payload |
- * | 0x03 | Yes         | Yes        | Yes              | Payload |
- * | 0x04 | No          | No         | No (ID=0)        | Payload |
- * | 0x05 | No          | Yes        | No (ID=0)        | Payload |
- * | 0x06 | Yes         | No         | No (ID=0)        | Payload |
- * | 0x07 | Yes         | Yes        | No (ID=0)        | Payload |
+ * Invalid combinations:
+ * - STATUS (0x20) + END_OF_GROUP (0x02) together is a PROTOCOL_VIOLATION
+ * - Types outside the form 0b00X0XXXX are invalid
  */
 export enum ObjectDatagramType {
-  /** No End of Group, No Extensions, Object ID Present (0x00) */
   Type0x00 = 0x00,
-  /** No End of Group, With Extensions, Object ID Present (0x01) */
   Type0x01 = 0x01,
-  /** End of Group, No Extensions, Object ID Present (0x02) */
   Type0x02 = 0x02,
-  /** End of Group, With Extensions, Object ID Present (0x03) */
   Type0x03 = 0x03,
-  /** No End of Group, No Extensions, Object ID = 0 (0x04) */
   Type0x04 = 0x04,
-  /** No End of Group, With Extensions, Object ID = 0 (0x05) */
   Type0x05 = 0x05,
-  /** End of Group, No Extensions, Object ID = 0 (0x06) */
   Type0x06 = 0x06,
-  /** End of Group, With Extensions, Object ID = 0 (0x07) */
   Type0x07 = 0x07,
+  Type0x08 = 0x08,
+  Type0x09 = 0x09,
+  Type0x0A = 0x0a,
+  Type0x0B = 0x0b,
+  Type0x0C = 0x0c,
+  Type0x0D = 0x0d,
+  Type0x0E = 0x0e,
+  Type0x0F = 0x0f,
+  Type0x20 = 0x20,
+  Type0x21 = 0x21,
+  Type0x24 = 0x24,
+  Type0x25 = 0x25,
+  Type0x28 = 0x28,
+  Type0x29 = 0x29,
+  Type0x2C = 0x2c,
+  Type0x2D = 0x2d,
 }
 
 /**
@@ -112,6 +61,12 @@ export enum ObjectDatagramType {
  * Namespace for ObjectDatagramType utilities.
  */
 export namespace ObjectDatagramType {
+  const VALID_TYPES = new Set<number>([
+    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+    0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+    0x20, 0x21, 0x24, 0x25, 0x28, 0x29, 0x2c, 0x2d,
+  ])
+
   /**
    * Converts a number or bigint to ObjectDatagramType.
    * @param value - The value to convert.
@@ -120,26 +75,10 @@ export namespace ObjectDatagramType {
    */
   export function tryFrom(value: number | bigint): ObjectDatagramType {
     const v = typeof value === 'bigint' ? Number(value) : value
-    switch (v) {
-      case 0x00:
-        return ObjectDatagramType.Type0x00
-      case 0x01:
-        return ObjectDatagramType.Type0x01
-      case 0x02:
-        return ObjectDatagramType.Type0x02
-      case 0x03:
-        return ObjectDatagramType.Type0x03
-      case 0x04:
-        return ObjectDatagramType.Type0x04
-      case 0x05:
-        return ObjectDatagramType.Type0x05
-      case 0x06:
-        return ObjectDatagramType.Type0x06
-      case 0x07:
-        return ObjectDatagramType.Type0x07
-      default:
-        throw new Error(`Invalid ObjectDatagramType: ${value}`)
+    if (!VALID_TYPES.has(v)) {
+      throw new Error(`Invalid ObjectDatagramType: ${value}`)
     }
+    return v as ObjectDatagramType
   }
 
   /**
@@ -159,12 +98,29 @@ export namespace ObjectDatagramType {
   }
 
   /**
-   * Returns true if Object ID is present in the wire format.
-   * When bit 2 is set (0x04-0x07), Object ID is ABSENT and assumed to be 0.
+   * Returns true if Object ID is absent (bit 2 set).
+   * When true, Object ID is omitted and assumed to be 0.
    * @param t - The ObjectDatagramType.
    */
-  export function hasObjectId(t: ObjectDatagramType): boolean {
-    return (t & 0x04) === 0
+  export function isZeroObjectId(t: ObjectDatagramType): boolean {
+    return (t & 0x04) !== 0
+  }
+
+  /**
+   * Returns true if Publisher Priority is omitted (bit 3 set).
+   * When true, the priority is inherited from the control message.
+   * @param t - The ObjectDatagramType.
+   */
+  export function hasDefaultPriority(t: ObjectDatagramType): boolean {
+    return (t & 0x08) !== 0
+  }
+
+  /**
+   * Returns true if the datagram carries Object Status instead of payload (bit 5 set).
+   * @param t - The ObjectDatagramType.
+   */
+  export function isStatus(t: ObjectDatagramType): boolean {
+    return (t & 0x20) !== 0
   }
 
   /**
@@ -172,16 +128,26 @@ export namespace ObjectDatagramType {
    * @param hasExtensions - Whether extensions are present.
    * @param endOfGroup - Whether this is the last object in the group.
    * @param objectIdIsZero - Whether the objectId is 0.
+   * @param defaultPriority - Whether publisher priority is inherited (omitted).
+   * @param isStatus - Whether the datagram carries status instead of payload.
+   * @throws Error if STATUS and END_OF_GROUP are both true (PROTOCOL_VIOLATION).
    */
   export function fromProperties(
     hasExtensions: boolean,
     endOfGroup: boolean,
     objectIdIsZero: boolean,
+    defaultPriority: boolean,
+    isStatus: boolean,
   ): ObjectDatagramType {
+    if (isStatus && endOfGroup) {
+      throw new Error('PROTOCOL_VIOLATION: STATUS and END_OF_GROUP cannot both be set')
+    }
     let type = 0
     if (hasExtensions) type |= 0x01
     if (endOfGroup) type |= 0x02
     if (objectIdIsZero) type |= 0x04
+    if (defaultPriority) type |= 0x08
+    if (isStatus) type |= 0x20
     return type as ObjectDatagramType
   }
 }

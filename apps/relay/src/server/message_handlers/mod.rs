@@ -45,7 +45,7 @@ impl MessageHandler {
       ControlMessage::Publish(msg) => Some(msg.request_id),
       ControlMessage::Fetch(msg) => Some(msg.request_id),
       ControlMessage::Subscribe(msg) => Some(msg.request_id),
-      ControlMessage::SubscribeUpdate(msg) => Some(msg.request_id),
+      ControlMessage::RequestUpdate(msg) => Some(msg.request_id),
       ControlMessage::TrackStatus(msg) => Some(msg.request_id),
       ControlMessage::SubscribeNamespace(msg) => Some(msg.request_id),
       ControlMessage::Switch(msg) => Some(msg.request_id),
@@ -88,7 +88,7 @@ impl MessageHandler {
       }
       ControlMessage::Subscribe(_)
       | ControlMessage::SubscribeOk(_)
-      | ControlMessage::SubscribeUpdate(_)
+      | ControlMessage::RequestUpdate(_)
       | ControlMessage::SubscribeError(_)
       | ControlMessage::Unsubscribe(_)
       | ControlMessage::Switch(_) => {

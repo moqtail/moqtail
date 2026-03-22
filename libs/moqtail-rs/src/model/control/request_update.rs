@@ -19,47 +19,39 @@ use crate::model::error::ParseError;
 use crate::model::parameter::message_parameter::{
   MessageParameter, deserialize_message_parameters,
 };
-use bytes::{Buf, BufMut, Bytes, BytesMut};
+use bytes::{BufMut, Bytes, BytesMut};
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct SubscribeUpdate {
+pub struct RequestUpdate {
   pub request_id: u64,
-  pub subscription_request_id: u64,
-  pub subscriber_priority: u8,
-  pub forward: bool,
-  pub subscribe_parameters: Vec<MessageParameter>,
+  pub existing_request_id: u64,
+  pub parameters: Vec<MessageParameter>,
 }
 
-impl SubscribeUpdate {
+impl RequestUpdate {
   pub fn new(
     request_id: u64,
-    subscription_request_id: u64,
-    subscriber_priority: u8,
-    forward: bool,
-    subscribe_parameters: Vec<MessageParameter>,
+    existing_request_id: u64,
+    parameters: Vec<MessageParameter>,
   ) -> Self {
     Self {
       request_id,
-      subscription_request_id,
-      subscriber_priority,
-      forward,
-      subscribe_parameters,
+      existing_request_id,
+      parameters,
     }
   }
 }
 
-impl ControlMessageTrait for SubscribeUpdate {
+impl ControlMessageTrait for RequestUpdate {
   fn serialize(&self) -> Result<Bytes, ParseError> {
     let mut buf = BytesMut::new();
-    buf.put_vi(ControlMessageType::SubscribeUpdate)?;
+    buf.put_vi(ControlMessageType::RequestUpdate)?;
 
     let mut payload = BytesMut::new();
     payload.put_vi(self.request_id)?;
-    payload.put_vi(self.subscription_request_id)?;
-    payload.put_u8(self.subscriber_priority);
-    payload.put_u8(self.forward.into());
-    payload.put_vi(self.subscribe_parameters.len())?;
-    for param in &self.subscribe_parameters {
+    payload.put_vi(self.existing_request_id)?;
+    payload.put_vi(self.parameters.len())?;
+    for param in &self.parameters {
       payload.extend_from_slice(&param.serialize()?);
     }
 
@@ -67,7 +59,7 @@ impl ControlMessageTrait for SubscribeUpdate {
       .len()
       .try_into()
       .map_err(|e: std::num::TryFromIntError| ParseError::CastingError {
-        context: "SubscribeUpdate::serialize(payload_length)",
+        context: "RequestUpdate::serialize(payload_length)",
         from_type: "usize",
         to_type: "u16",
         details: e.to_string(),
@@ -81,51 +73,21 @@ impl ControlMessageTrait for SubscribeUpdate {
 
   fn parse_payload(payload: &mut Bytes) -> Result<Box<Self>, ParseError> {
     let request_id = payload.get_vi()?;
-    let subscription_request_id = payload.get_vi()?;
-
-    if payload.remaining() < 1 {
-      return Err(ParseError::NotEnoughBytes {
-        context: "SubscribeUpdate::parse_payload(subscriber_priority)",
-        needed: 1,
-        available: 0,
-      });
-    }
-    let subscriber_priority = payload.get_u8();
-
-    if payload.remaining() < 1 {
-      return Err(ParseError::NotEnoughBytes {
-        context: "SubscribeUpdate::parse_payload(forward)",
-        needed: 1,
-        available: 0,
-      });
-    }
-
-    let forward_raw = payload.get_u8();
-    if forward_raw > 1 {
-      return Err(ParseError::CastingError {
-        context: "SubscribeUpdate::parse_payload(forward)",
-        from_type: "u8",
-        to_type: "bool",
-        details: format!("invalid bool value: {}", forward_raw),
-      });
-    }
-    let forward = forward_raw == 1;
+    let existing_request_id = payload.get_vi()?;
 
     let param_count = payload.get_vi()?;
-    let subscribe_parameters =
-      deserialize_message_parameters(payload, param_count, ControlMessageType::SubscribeUpdate)?;
+    let parameters =
+      deserialize_message_parameters(payload, param_count, ControlMessageType::RequestUpdate)?;
 
-    Ok(Box::new(SubscribeUpdate {
+    Ok(Box::new(RequestUpdate {
       request_id,
-      subscription_request_id,
-      subscriber_priority,
-      forward,
-      subscribe_parameters,
+      existing_request_id,
+      parameters,
     }))
   }
 
   fn get_type(&self) -> ControlMessageType {
-    ControlMessageType::SubscribeUpdate
+    ControlMessageType::RequestUpdate
   }
 }
 
@@ -138,11 +100,9 @@ mod tests {
 
   #[test]
   fn test_roundtrip() {
-    let subscribe_update = SubscribeUpdate::new(
+    let request_update = RequestUpdate::new(
       120205,
       54321,
-      31,
-      true,
       vec![MessageParameter::new_subscription_filter(
         FilterType::AbsoluteRange,
         Some(Location {
@@ -153,23 +113,21 @@ mod tests {
       )],
     );
 
-    let mut buf = subscribe_update.serialize().unwrap();
+    let mut buf = request_update.serialize().unwrap();
     let msg_type = buf.get_vi().unwrap();
-    assert_eq!(msg_type, ControlMessageType::SubscribeUpdate as u64);
+    assert_eq!(msg_type, ControlMessageType::RequestUpdate as u64);
     let msg_length = buf.get_u16();
     assert_eq!(msg_length as usize, buf.remaining());
-    let deserialized = SubscribeUpdate::parse_payload(&mut buf).unwrap();
-    assert_eq!(*deserialized, subscribe_update);
+    let deserialized = RequestUpdate::parse_payload(&mut buf).unwrap();
+    assert_eq!(*deserialized, request_update);
     assert!(!buf.has_remaining());
   }
 
   #[test]
   fn test_excess_roundtrip() {
-    let subscribe_update = SubscribeUpdate::new(
+    let request_update = RequestUpdate::new(
       120205,
       54321,
-      31,
-      true,
       vec![MessageParameter::new_subscription_filter(
         FilterType::AbsoluteRange,
         Some(Location {
@@ -180,29 +138,27 @@ mod tests {
       )],
     );
 
-    let serialized = subscribe_update.serialize().unwrap();
+    let serialized = request_update.serialize().unwrap();
     let mut excess = BytesMut::new();
     excess.extend_from_slice(&serialized);
     excess.extend_from_slice(&[9u8, 1u8, 1u8]);
     let mut buf = excess.freeze();
 
     let msg_type = buf.get_vi().unwrap();
-    assert_eq!(msg_type, ControlMessageType::SubscribeUpdate as u64);
+    assert_eq!(msg_type, ControlMessageType::RequestUpdate as u64);
     let msg_length = buf.get_u16();
 
     assert_eq!(msg_length as usize, buf.remaining() - 3);
-    let deserialized = SubscribeUpdate::parse_payload(&mut buf).unwrap();
-    assert_eq!(*deserialized, subscribe_update);
+    let deserialized = RequestUpdate::parse_payload(&mut buf).unwrap();
+    assert_eq!(*deserialized, request_update);
     assert_eq!(buf.chunk(), &[9u8, 1u8, 1u8]);
   }
 
   #[test]
   fn test_partial_message() {
-    let subscribe_update = SubscribeUpdate::new(
+    let request_update = RequestUpdate::new(
       120205,
       54321,
-      31,
-      true,
       vec![MessageParameter::new_subscription_filter(
         FilterType::AbsoluteRange,
         Some(Location {
@@ -213,15 +169,15 @@ mod tests {
       )],
     );
 
-    let mut buf = subscribe_update.serialize().unwrap();
+    let mut buf = request_update.serialize().unwrap();
     let msg_type = buf.get_vi().unwrap();
-    assert_eq!(msg_type, ControlMessageType::SubscribeUpdate as u64);
+    assert_eq!(msg_type, ControlMessageType::RequestUpdate as u64);
     let msg_length = buf.get_u16();
     assert_eq!(msg_length as usize, buf.remaining());
 
     let upper = buf.remaining() / 2;
     let mut partial = buf.slice(..upper);
-    let deserialized = SubscribeUpdate::parse_payload(&mut partial);
+    let deserialized = RequestUpdate::parse_payload(&mut partial);
     assert!(deserialized.is_err());
   }
 }

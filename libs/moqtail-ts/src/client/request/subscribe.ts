@@ -23,7 +23,8 @@ import {
   Subscribe,
   SubscribeError,
   SubscribeOk,
-  SubscribeUpdate,
+  RequestUpdate,
+  applyMessageParameterUpdate,
 } from '@/model'
 
 // TODO: Add timeout mechanism for unsubscribing
@@ -66,13 +67,22 @@ export class SubscribeRequest implements PromiseLike<SubscribeOk | SubscribeErro
       this.#reject = reject
     })
   }
-  update(msg: SubscribeUpdate): void {
+  update(msg: RequestUpdate): void {
     const filter = msg.parameters.find(MessageParameter.isSubscriptionFilter)
     if (filter?.startLocation !== undefined) this.startLocation = filter.startLocation
     if (filter?.endGroup !== undefined) this.endGroup = filter.endGroup
-    this.forward = msg.forward
-    this.priority = msg.subscriberPriority
-    this.subscribeParameters = msg.parameters
+
+    for (const param of msg.parameters) {
+      if (MessageParameter.isSubscriberPriority?.(param)) {
+        this.priority = (param as any).priority
+      } else if (MessageParameter.isForward?.(param)) {
+        this.forward = (param as any).forward
+      }
+    }
+
+    if (typeof applyMessageParameterUpdate === 'function') {
+      applyMessageParameterUpdate(this.subscribeParameters, msg.parameters)
+    }
   }
   switch(newTrackName: FullTrackName, newParameters: MessageParameter[]): void {
     this.fullTrackName = newTrackName

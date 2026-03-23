@@ -35,7 +35,7 @@ import { PublishOk } from './publish_ok'
 import { PublishError } from './publish_error'
 import { SubscribeError } from './subscribe_error'
 import { SubscribeOk } from './subscribe_ok'
-import { SubscribeUpdate } from './subscribe_update'
+import { RequestUpdate } from './request_update'
 import { RequestsBlocked } from './requests_blocked'
 import { TrackStatus } from './track_status'
 import { PublishNamespaceDone } from './publish_namespace_done'
@@ -70,7 +70,7 @@ export type ControlMessage =
   | Subscribe
   | SubscribeError
   | SubscribeOk
-  | SubscribeUpdate
+  | RequestUpdate
   | RequestsBlocked
   | TrackStatus
   | TrackStatusOk
@@ -130,8 +130,8 @@ export namespace ControlMessage {
         return SubscribeError.parsePayload(payload)
       case ControlMessageType.SubscribeOk:
         return SubscribeOk.parsePayload(payload)
-      case ControlMessageType.SubscribeUpdate:
-        return SubscribeUpdate.parsePayload(payload)
+      case ControlMessageType.RequestUpdate:
+        return RequestUpdate.parsePayload(payload)
       case ControlMessageType.RequestsBlocked:
         return RequestsBlocked.parsePayload(payload)
       case ControlMessageType.TrackStatus:

@@ -17,30 +17,26 @@
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
 import { Location } from '../common/location'
 import { KeyValuePair } from '../common/pair'
-import { ControlMessageType, FilterType } from '../control/constant'
+import { ControlMessageType, FilterType } from './constant'
 import { CastingError } from '../error/error'
 import { MessageParameter } from '../parameter/message_parameter'
 import { SubscriptionFilter } from '../parameter/message/subscription_filter'
 import { Forward } from '../parameter/message/forward'
 
-export class SubscribeUpdate {
+export class RequestUpdate {
   constructor(
     public requestId: bigint,
-    public subscriptionRequestId: bigint,
-    public subscriberPriority: number,
-    public forward: boolean,
+    public existingRequestId: bigint,
     public parameters: MessageParameter[],
   ) {}
 
   serialize(): FrozenByteBuffer {
     const buf = new ByteBuffer()
-    buf.putVI(ControlMessageType.SubscribeUpdate)
+    buf.putVI(ControlMessageType.RequestUpdate)
 
     const payload = new ByteBuffer()
     payload.putVI(this.requestId)
-    payload.putVI(this.subscriptionRequestId)
-    payload.putU8(this.subscriberPriority)
-    payload.putU8(this.forward ? 1 : 0)
+    payload.putVI(this.existingRequestId)
     payload.putVI(this.parameters.length)
 
     for (const param of this.parameters) {
@@ -54,16 +50,14 @@ export class SubscribeUpdate {
     return buf.freeze()
   }
 
-  static parsePayload(buf: BaseByteBuffer): SubscribeUpdate {
+  static parsePayload(buf: BaseByteBuffer): RequestUpdate {
     const requestId = buf.getVI()
-    const subscriptionRequestId = buf.getVI()
-    const subscriberPriority = buf.getU8()
-    const forward = buf.getU8()
+    const existingRequestId = buf.getVI()
 
     const paramCountBig = buf.getVI()
     const paramCount = Number(paramCountBig)
     if (BigInt(paramCount) !== paramCountBig) {
-      throw new CastingError('SubscribeUpdate.deserialize paramCount', 'bigint', 'number', `${paramCountBig}`)
+      throw new CastingError('RequestUpdate.deserialize paramCount', 'bigint', 'number', `${paramCountBig}`)
     }
 
     const parameters: MessageParameter[] = []
@@ -73,15 +67,13 @@ export class SubscribeUpdate {
       if (param !== undefined) parameters.push(param)
     }
 
-    return new SubscribeUpdate(requestId, subscriptionRequestId, subscriberPriority, forward === 1, parameters)
+    return new RequestUpdate(requestId, existingRequestId, parameters)
   }
 
-  equals(other: SubscribeUpdate): boolean {
+  equals(other: RequestUpdate): boolean {
     if (
       this.requestId !== other.requestId ||
-      this.subscriptionRequestId !== other.subscriptionRequestId ||
-      this.subscriberPriority !== other.subscriberPriority ||
-      this.forward !== other.forward ||
+      this.existingRequestId !== other.existingRequestId ||
       this.parameters.length !== other.parameters.length
     ) {
       return false
@@ -103,9 +95,9 @@ export class SubscribeUpdate {
 if (import.meta.vitest) {
   const { describe, it, expect } = import.meta.vitest
 
-  describe('SubscribeUpdate', () => {
-    function buildTestUpdate(): SubscribeUpdate {
-      return new SubscribeUpdate(120205n, 120204n, 31, true, [
+  describe('RequestUpdate', () => {
+    function buildTestUpdate(): RequestUpdate {
+      return new RequestUpdate(120205n, 120204n, [
         new SubscriptionFilter(FilterType.AbsoluteRange, new Location(81n, 81n), 25n),
         new Forward(true),
       ])
@@ -119,12 +111,12 @@ if (import.meta.vitest) {
       buf.putBytes(serialized.toUint8Array())
 
       const msgType = buf.getVI()
-      expect(msgType).toBe(BigInt(ControlMessageType.SubscribeUpdate))
+      expect(msgType).toBe(BigInt(ControlMessageType.RequestUpdate))
 
       const msgLength = buf.getU16()
       expect(msgLength).toBe(buf.remaining)
 
-      const deserialized = SubscribeUpdate.parsePayload(buf)
+      const deserialized = RequestUpdate.parsePayload(buf)
       expect(deserialized.equals(update)).toBe(true)
       expect(buf.remaining).toBe(0)
     })
@@ -138,12 +130,12 @@ if (import.meta.vitest) {
       buf.putBytes(extra)
 
       const msgType = buf.getVI()
-      expect(msgType).toBe(BigInt(ControlMessageType.SubscribeUpdate))
+      expect(msgType).toBe(BigInt(ControlMessageType.RequestUpdate))
 
       const msgLength = buf.getU16()
       expect(msgLength).toBe(buf.remaining - 3)
 
-      const deserialized = SubscribeUpdate.parsePayload(buf)
+      const deserialized = RequestUpdate.parsePayload(buf)
       expect(deserialized.equals(update)).toBe(true)
 
       const trailing = buf.toUint8Array().slice(buf.offset)
@@ -162,19 +154,20 @@ if (import.meta.vitest) {
       try {
         buf.getVI()
         buf.getU16()
-        expect(() => SubscribeUpdate.parsePayload(buf)).toThrow()
+        expect(() => RequestUpdate.parsePayload(buf)).toThrow()
       } catch (err) {
         expect(err).toBeInstanceOf(Error)
       }
     })
+
     it('should handle empty parameters', () => {
-      const update = new SubscribeUpdate(120206n, 120205n, 15, false, [])
+      const update = new RequestUpdate(120206n, 120205n, [])
       const serialized = update.serialize()
       const buf = new ByteBuffer()
       buf.putBytes(serialized.toUint8Array())
       buf.getVI()
       buf.getU16()
-      const deserialized = SubscribeUpdate.parsePayload(buf)
+      const deserialized = RequestUpdate.parsePayload(buf)
       expect(deserialized.equals(update)).toBe(true)
     })
   })

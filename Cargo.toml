@@ -3,4 +3,4 @@ members = ["apps/relay", "apps/client", "libs/moqtail-rs"]
 resolver = "2"
 
 [workspace.dependencies]
-wtransport = { path = "../wtransport/wtransport", features = ["quinn"] }
+wtransport = { git = "https://github.com/moqtail/wtransport.git", branch="add-header-in-accept", features = ["quinn"] }

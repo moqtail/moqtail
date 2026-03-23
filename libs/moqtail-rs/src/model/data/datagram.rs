@@ -37,7 +37,7 @@ pub struct Datagram {
   pub group_id: u64,
   pub object_id: u64,
   pub publisher_priority: Option<u8>,
-  pub extension_headers: Option<Vec>,
+  pub extension_headers: Option<Vec<ObjectExtension>>,
   pub payload: Option<Bytes>,
   pub object_status: Option<ObjectStatus>,
   pub end_of_group: bool,
@@ -50,7 +50,7 @@ impl Datagram {
     group_id: u64,
     object_id: u64,
     publisher_priority: Option<u8>,
-    extension_headers: Option<Vec>,
+    extension_headers: Option<Vec<ObjectExtension>>,
     payload: Bytes,
     end_of_group: bool,
   ) -> Self {
@@ -73,7 +73,7 @@ impl Datagram {
     group_id: u64,
     object_id: u64,
     publisher_priority: Option<u8>,
-    extension_headers: Option<Vec>,
+    extension_headers: Option<Vec<ObjectExtension>>,
     object_status: ObjectStatus,
   ) -> Self {
     Datagram {

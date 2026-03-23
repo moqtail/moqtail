@@ -1,4 +1,4 @@
-// Copyright 2025 The MOQtail Authors
+// Copyright 2026 The MOQtail Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -37,7 +37,7 @@ pub struct Datagram {
   pub group_id: u64,
   pub object_id: u64,
   pub publisher_priority: Option<u8>,
-  pub extension_headers: Option<Vec<KeyValuePair>>,
+  pub extension_headers: Option<Vec>,
   pub payload: Option<Bytes>,
   pub object_status: Option<ObjectStatus>,
   pub end_of_group: bool,
@@ -50,7 +50,7 @@ impl Datagram {
     group_id: u64,
     object_id: u64,
     publisher_priority: Option<u8>,
-    extension_headers: Option<Vec<KeyValuePair>>,
+    extension_headers: Option<Vec>,
     payload: Bytes,
     end_of_group: bool,
   ) -> Self {

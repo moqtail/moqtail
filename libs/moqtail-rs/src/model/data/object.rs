@@ -52,7 +52,7 @@ impl fmt::Debug for Object {
 }
 
 impl Object {
-  /// Convert from a unified Datagram.
+  /// Convert from a Datagram object.
   /// Returns (Object, end_of_group) since end_of_group is datagram-specific.
   /// When `publisher_priority` is None (DEFAULT_PRIORITY), `default_priority` is used.
   pub fn try_from_datagram(
@@ -126,7 +126,7 @@ impl Object {
 }
 
 impl Object {
-  /// Convert to a unified Datagram for wire transmission.
+  /// Convert to a Datagram object for wire transmission.
   ///
   /// # Arguments
   /// * `track_alias` - Track alias to use

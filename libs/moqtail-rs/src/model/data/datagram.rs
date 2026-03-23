@@ -73,7 +73,7 @@ impl Datagram {
     group_id: u64,
     object_id: u64,
     publisher_priority: Option<u8>,
-    extension_headers: Option<Vec<KeyValuePair>>,
+    extension_headers: Option<Vec>,
     object_status: ObjectStatus,
   ) -> Self {
     Datagram {

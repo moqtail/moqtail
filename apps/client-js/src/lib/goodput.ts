@@ -15,69 +15,69 @@
  */
 
 /**
- * Dual Exponential Weighted Moving Average (DEWMA) goodput tracker.
+ * Dual Exponential Moving Average (DEWMA) goodput tracker.
  *
- * Maintains two simultaneous EMAs of per-object download bandwidth:
- *   - fast (default α=0.5): reacts quickly to sudden drops
- *   - slow (default α=0.1): stable historical baseline
+ * Maintains two simultaneous EMAs — fast (reactive) and slow (stable).
+ * getBandwidthBps() returns min(fast, slow): the estimate drops immediately
+ * when the fast EMA detects congestion, but only rises when both agree
+ * bandwidth has recovered.
  *
- * getBandwidthBps() returns min(fast, slow) — conservative, safe estimate.
- * The estimate only rises when BOTH EMAs agree bandwidth has recovered.
+ * Internal to Player — not re-exported from src/lib/index.ts.
  */
 export class GoodputTracker {
-  private emaFast = 0
-  private emaSlow = 0
-  private hasData = false
+  #emaFast: number = 0;
+  #emaSlow: number = 0;
+  #alphaFast: number;
+  #alphaSlow: number;
+  #hasData: boolean = false;
 
-  constructor(
-    private alphaFast = 0.5,
-    private alphaSlow = 0.1,
-  ) {}
+  constructor(alphaFast: number = 0.5, alphaSlow: number = 0.1) {
+    this.#alphaFast = alphaFast;
+    this.#alphaSlow = alphaSlow;
+  }
 
   /**
-   * Record one object delivery. Call from inside the WritableStream write handler
-   * with the number of bytes in the payload and the milliseconds elapsed
-   * from when the write began to when appendBuffer completed.
+   * Record one object delivery measurement.
+   * @param bytes - payload size in bytes
+   * @param durationMs - wall-clock time elapsed from send to SourceBuffer append completion, in ms
    */
   recordObject(bytes: number, durationMs: number): void {
-    if (bytes <= 0) return   // ignore invalid samples
-    const instantaneous = (bytes * 8 * 1000) / Math.max(durationMs, 0.001)
-    if (!this.hasData) {
-      this.emaFast = instantaneous
-      this.emaSlow = instantaneous
-      this.hasData = true
+    if (durationMs <= 0) return;
+    const instantBps = (bytes * 8 * 1000) / durationMs;
+    if (!this.#hasData) {
+      // Cold start: seed both EMAs to the first sample so there is no ramp-up lag
+      this.#emaFast = instantBps;
+      this.#emaSlow = instantBps;
+      this.#hasData = true;
     } else {
-      this.emaFast = this.alphaFast * instantaneous + (1 - this.alphaFast) * this.emaFast
-      this.emaSlow = this.alphaSlow * instantaneous + (1 - this.alphaSlow) * this.emaSlow
+      this.#emaFast = this.#alphaFast * instantBps + (1 - this.#alphaFast) * this.#emaFast;
+      this.#emaSlow = this.#alphaSlow * instantBps + (1 - this.#alphaSlow) * this.#emaSlow;
     }
   }
 
-  /** Returns min(emaFast, emaSlow) in bps. Returns 0 until first sample recorded. */
+  /** Conservative bandwidth estimate: min(fast EMA, slow EMA). Returns 0 until first sample. */
   getBandwidthBps(): number {
-    if (!this.hasData) return 0
-    return Math.min(this.emaFast, this.emaSlow)
+    if (!this.#hasData) return 0;
+    return Math.min(this.#emaFast, this.#emaSlow);
   }
 
-  /** Returns the fast EMA value in bps (for dashboard display). */
   getFastEmaBps(): number {
-    return this.emaFast
+    return this.#emaFast;
   }
-
-  /** Returns the slow EMA value in bps (for dashboard display). */
   getSlowEmaBps(): number {
-    return this.emaSlow
+    return this.#emaSlow;
   }
 
-  /** Resets both EMAs to 0. Call after a track switch. */
+  /** Reset both EMAs to 0. Call on track switch to avoid stale measurements. */
   reset(): void {
-    this.emaFast = 0
-    this.emaSlow = 0
-    this.hasData = false
+    this.#emaFast = 0;
+    this.#emaSlow = 0;
+    this.#hasData = false;
   }
 
-  /** Updates alpha values without recreating the tracker. */
+  /** Update smoothing factors without recreating the tracker. */
   setAlphas(alphaFast: number, alphaSlow: number): void {
-    this.alphaFast = Math.min(1, Math.max(0.001, alphaFast))
-    this.alphaSlow = Math.min(1, Math.max(0.001, alphaSlow))
+    this.#alphaFast = alphaFast;
+    this.#alphaSlow = alphaSlow;
   }
 }

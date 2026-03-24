@@ -29,12 +29,12 @@ import {
 import { MOQtailClient } from 'moqtail/client';
 import { CMSFCatalog } from 'moqtail/model';
 import { logger } from '@/lib/logger';
-import { GoodputTracker } from '@/lib/goodput'
+import { GoodputTracker } from '@/lib/goodput';
 
 interface PendingSwitch {
-  trackName: string
-  initData: ArrayBuffer
-  mimeType: string
+  trackName: string;
+  initData: ArrayBuffer;
+  mimeType: string;
 }
 
 interface MOQStreamStruct {
@@ -74,7 +74,8 @@ const DefaultOptions = {
   receiveCatalogViaSubscribe: false,
   catalogLocation: [new Location(0n, 0n), new Location(0n, 1n)],
   onTrackSwitched: undefined as ((trackName: string) => void) | undefined,
-} satisfies Required<Omit<PlayerOptions, 'onTrackSwitched'>> & Pick<PlayerOptions, 'onTrackSwitched'>;
+} satisfies Required<Omit<PlayerOptions, 'onTrackSwitched'>> &
+  Pick<PlayerOptions, 'onTrackSwitched'>;
 
 export class Player {
   catalog: CMSFCatalog | null = null;
@@ -83,7 +84,8 @@ export class Player {
   #element: HTMLVideoElement | null = null;
   #mse?: MediaSource;
   #streams: MOQStreamStruct[] = [];
-  #options: Required<Omit<PlayerOptions, 'onTrackSwitched'>> & Pick<PlayerOptions, 'onTrackSwitched'>;
+  #options: Required<Omit<PlayerOptions, 'onTrackSwitched'>> &
+    Pick<PlayerOptions, 'onTrackSwitched'>;
 
   constructor(options: Partial<PlayerOptions> = {}) {
     this.#options = { ...DefaultOptions, ...options };
@@ -248,19 +250,19 @@ export class Player {
             // The relay guarantees clean group boundaries, so when group advances
             // while pendingSwitch is set, we inject the new track's init segment first.
             if (struct.pendingSwitch && object.location.group > struct.lastGroupId) {
-              const { initData, mimeType } = struct.pendingSwitch
-              struct.trackName = struct.pendingSwitch.trackName  // read BEFORE nulling
-              struct.pendingSwitch = null
+              const { initData, mimeType } = struct.pendingSwitch;
+              struct.trackName = struct.pendingSwitch.trackName; // read BEFORE nulling
+              struct.pendingSwitch = null;
 
               // changeType() must not be called while the SourceBuffer is updating
-              if (sourceBuffer.updating) await waitForBufferUpdate(sourceBuffer)
-              sourceBuffer.changeType(mimeType)
-              sourceBuffer.appendBuffer(initData)
-              await waitForBufferUpdate(sourceBuffer)
+              if (sourceBuffer.updating) await waitForBufferUpdate(sourceBuffer);
+              sourceBuffer.changeType(mimeType);
+              sourceBuffer.appendBuffer(initData);
+              await waitForBufferUpdate(sourceBuffer);
             }
 
             // Append the data
-            const t0 = performance.now()
+            const t0 = performance.now();
             let maxRetries = 5;
             while (maxRetries--) {
               try {
@@ -292,9 +294,9 @@ export class Player {
             }
 
             // Record goodput sample for DEWMA
-            struct.tracker.recordObject(object.payload.byteLength, performance.now() - t0)
+            struct.tracker.recordObject(object.payload.byteLength, performance.now() - t0);
             // Track last seen group for switch boundary detection
-            struct.lastGroupId = object.location.group
+            struct.lastGroupId = object.location.group;
           } catch (error) {
             logger.error('media', 'Error processing media object:', error);
             controller.error(error);
@@ -317,34 +319,30 @@ export class Player {
   }
 
   getMetrics(): {
-    bandwidthBps: number
-    fastEmaBps: number
-    slowEmaBps: number
-    bufferSeconds: number
-    activeTrack: string | null
+    bandwidthBps: number;
+    fastEmaBps: number;
+    slowEmaBps: number;
+    bufferSeconds: number;
+    activeTrack: string | null;
   } {
-    const videoStruct = this.#streams.find(
-      s => this.catalog?.getRole(s.trackName) === 'video',
-    )
-    const buffered = this.#element?.buffered
+    const videoStruct = this.#streams.find(s => this.catalog?.getRole(s.trackName) === 'video');
+    const buffered = this.#element?.buffered;
     const bufferSeconds =
       buffered && buffered.length > 0 && this.#element
         ? Math.max(0, buffered.end(buffered.length - 1) - this.#element.currentTime)
-        : 0
+        : 0;
     return {
       bandwidthBps: videoStruct?.tracker.getBandwidthBps() ?? 0,
       fastEmaBps: videoStruct?.tracker.getFastEmaBps() ?? 0,
       slowEmaBps: videoStruct?.tracker.getSlowEmaBps() ?? 0,
       bufferSeconds,
       activeTrack: videoStruct?.trackName ?? null,
-    }
+    };
   }
 
   setEmaAlphas(alphaFast: number, alphaSlow: number): void {
-    const videoStruct = this.#streams.find(
-      s => this.catalog?.getRole(s.trackName) === 'video',
-    )
-    videoStruct?.tracker.setAlphas(alphaFast, alphaSlow)
+    const videoStruct = this.#streams.find(s => this.catalog?.getRole(s.trackName) === 'video');
+    videoStruct?.tracker.setAlphas(alphaFast, alphaSlow);
   }
 
   /**
@@ -353,7 +351,7 @@ export class Player {
    * to wire the ABR switching guard release without a circular dependency.
    */
   setOnTrackSwitched(cb: (trackName: string) => void): void {
-    this.#options.onTrackSwitched = cb
+    this.#options.onTrackSwitched = cb;
   }
 
   /**
@@ -366,47 +364,49 @@ export class Player {
    * The #switching guard in AbrController is released via onTrackSwitched callback.
    */
   async switchTrack(trackName: string): Promise<void> {
-    if (!this.client) return
-    if (!this.catalog) return
+    if (!this.client) return;
+    if (!this.catalog) return;
 
-    const videoStruct = this.#streams.find(
-      s => this.catalog?.getRole(s.trackName) === 'video',
-    )
-    if (!videoStruct) return
+    const videoStruct = this.#streams.find(s => this.catalog?.getRole(s.trackName) === 'video');
+    if (!videoStruct) return;
 
-    const fullTrackName = getFullTrackName(this.#options.namespace, trackName)
-    const initData = this.catalog.getInitData(trackName)
-    const role = this.catalog.getRole(trackName)
-    const codec = this.catalog.getCodecString(trackName)
+    const fullTrackName = getFullTrackName(this.#options.namespace, trackName);
+    const initData = this.catalog.getInitData(trackName);
+    const role = this.catalog.getRole(trackName);
+    const codec = this.catalog.getCodecString(trackName);
 
     if (!initData || !role || !codec) {
-      logger.error('media', `switchTrack: missing catalog data for track ${trackName}`)
-      this.#options.onTrackSwitched?.(videoStruct.trackName)
-      return
+      logger.error('media', `switchTrack: missing catalog data for track ${trackName}`);
+      this.#options.onTrackSwitched?.(videoStruct.trackName);
+      return;
     }
 
-    const mimeType = `${role}/mp4; codecs="${codec}"`
+    const mimeType = `${role}/mp4; codecs="${codec}"`;
 
     try {
       const result = await this.client.switch({
         fullTrackName,
         subscriptionRequestId: videoStruct.requestId,
-      })
+      });
 
       if (result instanceof SubscribeError) {
-        logger.error('media', `switchTrack: SWITCH rejected for ${trackName}:`, result.errorReason.phrase)
-        this.#options.onTrackSwitched?.(videoStruct.trackName)
-        return
+        logger.error(
+          'media',
+          `switchTrack: SWITCH rejected for ${trackName}:`,
+          result.errorReason.phrase,
+        );
+        this.#options.onTrackSwitched?.(videoStruct.trackName);
+        return;
       }
 
       // Success: update requestId, arm the write handler, reset DEWMA
-      videoStruct.requestId = result.requestId
-      videoStruct.pendingSwitch = { trackName, initData, mimeType }
-      videoStruct.tracker.reset()
-      this.#options.onTrackSwitched?.(trackName)
+      videoStruct.requestId = result.requestId;
+      videoStruct.pendingSwitch = { trackName, initData: initData.buffer as ArrayBuffer, mimeType };
+      videoStruct.tracker.reset();
+      this.#options.onTrackSwitched?.(trackName);
     } catch (error) {
-      logger.error('media', 'switchTrack: unexpected error', error)
-      this.#options.onTrackSwitched?.(videoStruct.trackName)
+      logger.error('media', 'switchTrack: unexpected error', error);
+      this.#options.onTrackSwitched?.(videoStruct.trackName);
     }
   }
 

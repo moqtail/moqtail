@@ -29,11 +29,21 @@ import {
 import { MOQtailClient } from 'moqtail/client';
 import { CMSFCatalog } from 'moqtail/model';
 import { logger } from '@/lib/logger';
+import { GoodputTracker } from '@/lib/goodput'
+
+interface PendingSwitch {
+  trackName: string
+  initData: ArrayBuffer
+  mimeType: string
+}
 
 interface MOQStreamStruct {
   trackName: string;
   source: ReadableStream<MoqtObject>;
   requestId: bigint;
+  tracker: GoodputTracker;
+  lastGroupId: bigint;
+  pendingSwitch: PendingSwitch | null;
   buffer?: {
     sourceBuffer: SourceBuffer;
     ac: AbortController;
@@ -232,6 +242,7 @@ export class Player {
             }
 
             // Append the data
+            const t0 = performance.now()
             let maxRetries = 5;
             while (maxRetries--) {
               try {
@@ -261,6 +272,11 @@ export class Player {
               const bufferDuration = maxEnd - minStart;
               if (bufferDuration > 1.0) bufferNotification(maxEnd);
             }
+
+            // Record goodput sample for DEWMA
+            struct.tracker.recordObject(object.payload.byteLength, performance.now() - t0)
+            // Track last seen group for switch boundary detection
+            struct.lastGroupId = object.location.group
           } catch (error) {
             logger.error('media', 'Error processing media object:', error);
             controller.error(error);
@@ -346,6 +362,9 @@ export class Player {
         trackName: 'catalog',
         requestId: result.requestId,
         source: result.stream,
+        tracker: new GoodputTracker(),
+        lastGroupId: -1n,
+        pendingSwitch: null,
       };
     }
 
@@ -393,6 +412,9 @@ export class Player {
       trackName: params.trackName,
       requestId: result.requestId,
       source: result.stream,
+      tracker: new GoodputTracker(),
+      lastGroupId: -1n,
+      pendingSwitch: null,
     };
 
     // Add the stream to the pool

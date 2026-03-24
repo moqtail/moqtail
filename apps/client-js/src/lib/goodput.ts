@@ -40,6 +40,7 @@ export class GoodputTracker {
    * from when the write began to when appendBuffer completed.
    */
   recordObject(bytes: number, durationMs: number): void {
+    if (bytes <= 0) return   // ignore invalid samples
     const instantaneous = (bytes * 8 * 1000) / Math.max(durationMs, 0.001)
     if (!this.hasData) {
       this.emaFast = instantaneous
@@ -76,7 +77,7 @@ export class GoodputTracker {
 
   /** Updates alpha values without recreating the tracker. */
   setAlphas(alphaFast: number, alphaSlow: number): void {
-    this.alphaFast = alphaFast
-    this.alphaSlow = alphaSlow
+    this.alphaFast = Math.min(1, Math.max(0.001, alphaFast))
+    this.alphaSlow = Math.min(1, Math.max(0.001, alphaSlow))
   }
 }

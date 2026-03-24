@@ -55,7 +55,7 @@ describe('GoodputTracker', () => {
   })
 
   it('handles very short durations without division by zero', () => {
-    expect(() => tracker.recordObject(1000, 0.001)).not.toThrow()
+    expect(() => tracker.recordObject(1000, 0)).not.toThrow()
     expect(tracker.getBandwidthBps()).toBeGreaterThan(0)
   })
 })

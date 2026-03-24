@@ -14,12 +14,14 @@
  * limitations under the License.
  */
 
-import { useState, useRef, useCallback } from 'preact/hooks';
+import { useState, useRef, useCallback, useEffect } from 'preact/hooks';
 import type { ComponentChildren } from 'preact';
 import { Player } from '@/lib/player';
 import { cn } from '@/lib/utils';
 import { Tuple, type CMSF } from 'moqtail';
 import MSEBuffer from '@/lib/buffer';
+import { AbrController } from '@/lib';
+import type { AbrMetrics, AbrThresholds } from '@/lib';
 
 type Track = CMSF['tracks'][number];
 type Status = 'idle' | 'connecting' | 'ready' | 'restarting' | 'playing' | 'error';
@@ -217,7 +219,18 @@ export function App() {
   const bufferRef = useRef<MSEBuffer | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
+  const [abrMode, setAbrMode] = useState<'auto' | 'manual'>('manual')
+  const [abrMetrics, setAbrMetrics] = useState<AbrMetrics | null>(null)
+  const [abrThresholds, setAbrThresholds] = useState<AbrThresholds | null>(null)
+  const abrRef = useRef<AbrController | null>(null)
+
   const disposePlayer = useCallback(async () => {
+    if (abrRef.current) {
+      abrRef.current.stop()
+      abrRef.current = null
+    }
+    setAbrMetrics(null)
+    setAbrThresholds(null)
     if (playerRef.current) {
       try {
         await playerRef.current.dispose();
@@ -262,6 +275,12 @@ export function App() {
         await player.addMediaTrack(firstVideo.name);
         await player.startMedia();
         setStatus('playing');
+        const videoTracks = allTracks.filter(t => t.role === 'video')
+        const abr = new AbrController(player, videoTracks, setAbrMetrics)
+        abrRef.current = abr
+        setAbrThresholds(abr.getThresholds())
+        player.setOnTrackSwitched(() => abrRef.current?.releaseSwitchingGuard())
+        abr.start()
       } else {
         setStatus('ready');
       }
@@ -303,6 +322,12 @@ export function App() {
 
         await player.startMedia();
         setStatus('playing');
+        const videoTracksForAbr = catalog.getTracks().filter(t => t.role === 'video')
+        const abr = new AbrController(player, videoTracksForAbr, setAbrMetrics)
+        abrRef.current = abr
+        setAbrThresholds(abr.getThresholds())
+        player.setOnTrackSwitched(() => abrRef.current?.releaseSwitchingGuard())
+        abr.start()
       } catch (err) {
         setError((err as Error).message);
         setStatus('error');
@@ -316,21 +341,21 @@ export function App() {
     (track: Track, checked: boolean) => {
       if (track.role !== 'video' && track.role !== 'audio') return;
 
-      let newVideo = selectedVideo;
-      let newAudio = selectedAudio;
-
       if (track.role === 'video') {
-        // clicking the active track unchecks it; clicking any other switches to it
-        newVideo = track.name === selectedVideo && !checked ? null : track.name;
+        if (abrMode !== 'manual') return   // auto mode: track rows are read-only
+        const newTrackName = track.name === selectedVideo && !checked ? null : track.name
+        if (!newTrackName) return
+        setSelectedVideo(newTrackName)
+        abrRef.current?.manualSwitch(newTrackName)
       } else {
-        newAudio = track.name === selectedAudio && !checked ? null : track.name;
+        // Audio tracks still do full restarts (no seamless switch for audio)
+        let newAudio = selectedAudio
+        newAudio = track.name === selectedAudio && !checked ? null : track.name
+        setSelectedAudio(newAudio)
+        startPlayback(selectedVideo, newAudio)
       }
-
-      setSelectedVideo(newVideo);
-      setSelectedAudio(newAudio);
-      startPlayback(newVideo, newAudio);
     },
-    [selectedVideo, selectedAudio, startPlayback],
+    [selectedVideo, selectedAudio, abrMode, startPlayback],
   );
 
   const isBusy = status === 'connecting' || status === 'restarting';
@@ -425,7 +450,7 @@ export function App() {
                 tracks={videoTracks}
                 selectedVideo={selectedVideo}
                 selectedAudio={selectedAudio}
-                disabled={isBusy}
+                disabled={isBusy || abrMode === 'auto'}
                 onChange={handleTrackChange}
               />
               <TrackGroup

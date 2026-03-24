@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { useState, useRef, useCallback, useEffect } from 'preact/hooks';
+import { useState, useRef, useCallback } from 'preact/hooks';
 import type { ComponentChildren } from 'preact';
 import { Player } from '@/lib/player';
 import { cn } from '@/lib/utils';

@@ -210,12 +210,14 @@ function AbrToggle({
   mode,
   onChange,
 }: {
-  mode: 'auto' | 'manual'
-  onChange: (m: 'auto' | 'manual') => void
+  mode: 'auto' | 'manual';
+  onChange: (m: 'auto' | 'manual') => void;
 }) {
   return (
     <div className="flex items-center justify-between">
-      <span className="text-[11px] font-semibold uppercase tracking-widest text-neutral-500">ABR</span>
+      <span className="text-[11px] font-semibold tracking-widest text-neutral-500 uppercase">
+        ABR
+      </span>
       <div className="flex rounded-md border border-neutral-700 text-xs">
         {(['manual', 'auto'] as const).map(m => (
           <button
@@ -223,9 +225,7 @@ function AbrToggle({
             onClick={() => onChange(m)}
             className={cn(
               'px-3 py-1 capitalize transition-colors',
-              mode === m
-                ? 'bg-blue-600 text-white'
-                : 'text-neutral-400 hover:text-neutral-200',
+              mode === m ? 'bg-blue-600 text-white' : 'text-neutral-400 hover:text-neutral-200',
             )}
           >
             {m}
@@ -233,16 +233,26 @@ function AbrToggle({
         ))}
       </div>
     </div>
-  )
+  );
 }
 
-function StatBar({ label, value, max, unit }: { label: string; value: number; max: number; unit: string }) {
-  const pct = Math.min(100, (value / max) * 100)
+function StatBar({
+  label,
+  value,
+  max,
+  unit,
+}: {
+  label: string;
+  value: number;
+  max: number;
+  unit: string;
+}) {
+  const pct = Math.min(100, (value / max) * 100);
   return (
     <div className="space-y-0.5">
       <div className="flex justify-between text-[11px]">
         <span className="text-neutral-500">{label}</span>
-        <span className="tabular-nums text-neutral-300">
+        <span className="text-neutral-300 tabular-nums">
           {value >= 1_000_000
             ? `${(value / 1_000_000).toFixed(1)} M${unit}`
             : value >= 1_000
@@ -251,10 +261,13 @@ function StatBar({ label, value, max, unit }: { label: string; value: number; ma
         </span>
       </div>
       <div className="h-1 w-full overflow-hidden rounded-full bg-neutral-800">
-        <div className="h-full rounded-full bg-blue-500 transition-all" style={{ width: `${pct}%` }} />
+        <div
+          className="h-full rounded-full bg-blue-500 transition-all"
+          style={{ width: `${pct}%` }}
+        />
       </div>
     </div>
-  )
+  );
 }
 
 function ThresholdSlider({
@@ -265,12 +278,12 @@ function ThresholdSlider({
   step,
   onChange,
 }: {
-  label: string
-  value: number
-  min: number
-  max: number
-  step: number
-  onChange: (v: number) => void
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  onChange: (v: number) => void;
 }) {
   return (
     <div className="flex items-center gap-2">
@@ -284,63 +297,59 @@ function ThresholdSlider({
         onInput={e => onChange(parseFloat((e.target as HTMLInputElement).value))}
         className="flex-1 accent-blue-500"
       />
-      <span className="w-8 text-right font-mono text-[11px] tabular-nums text-neutral-400">
+      <span className="w-8 text-right font-mono text-[11px] text-neutral-400 tabular-nums">
         {value}
       </span>
     </div>
-  )
+  );
 }
 
 function BolaScoreGrid({ scores }: { scores: Record<string, number> }) {
-  const entries = Object.entries(scores)
-  if (entries.length === 0) return null
+  const entries = Object.entries(scores);
+  if (entries.length === 0) return null;
   return (
     <div>
-      <p className="mb-1 text-[11px] font-semibold uppercase tracking-widest text-neutral-500">
+      <p className="mb-1 text-[11px] font-semibold tracking-widest text-neutral-500 uppercase">
         BOLA Scores
       </p>
       <div className="grid grid-cols-2 gap-x-4 gap-y-0.5">
         {entries.map(([name, score]) => (
           <div key={name} className="flex justify-between text-[11px]">
             <span className="text-neutral-500">{name}</span>
-            <span
-              className={cn(
-                'tabular-nums',
-                score > 0 ? 'text-emerald-400' : 'text-red-400',
-              )}
-            >
-              {score > 0 ? '+' : ''}{score.toFixed(2)}
+            <span className={cn('tabular-nums', score > 0 ? 'text-emerald-400' : 'text-red-400')}>
+              {score > 0 ? '+' : ''}
+              {score.toFixed(2)}
             </span>
           </div>
         ))}
       </div>
     </div>
-  )
+  );
 }
 
 function QualitySparkline({
   history,
   tracks,
 }: {
-  history: SwitchEvent[]
-  tracks: string[]   // track names sorted by quality ascending
+  history: SwitchEvent[];
+  tracks: string[]; // track names sorted by quality ascending
 }) {
-  if (history.length < 2) return null
-  const W = 200
-  const H = 40
-  const n = history.length
-  const tierOf = (name: string) => tracks.indexOf(name)
-  const maxTier = tracks.length - 1
+  if (history.length < 2) return null;
+  const W = 200;
+  const H = 40;
+  const n = history.length;
+  const tierOf = (name: string) => tracks.indexOf(name);
+  const maxTier = tracks.length - 1;
 
   const points = history.map((e, i) => {
-    const x = (i / (n - 1)) * W
-    const y = H - (tierOf(e.toTrack) / Math.max(maxTier, 1)) * H
-    return `${x},${y}`
-  })
+    const x = (i / (n - 1)) * W;
+    const y = H - (tierOf(e.toTrack) / Math.max(maxTier, 1)) * H;
+    return `${x},${y}`;
+  });
 
   return (
     <div>
-      <p className="mb-1 text-[11px] font-semibold uppercase tracking-widest text-neutral-500">
+      <p className="mb-1 text-[11px] font-semibold tracking-widest text-neutral-500 uppercase">
         History
       </p>
       <svg width={W} height={H} className="w-full overflow-visible">
@@ -353,7 +362,7 @@ function QualitySparkline({
         />
       </svg>
     </div>
-  )
+  );
 }
 
 function AbrDashboard({
@@ -364,18 +373,18 @@ function AbrDashboard({
   onModeChange,
   onThresholdChange,
 }: {
-  metrics: AbrMetrics
-  mode: 'auto' | 'manual'
-  thresholds: AbrThresholds
-  videoTracks: Track[]
-  onModeChange: (m: 'auto' | 'manual') => void
-  onThresholdChange: (partial: Partial<AbrThresholds>) => void
+  metrics: AbrMetrics;
+  mode: 'auto' | 'manual';
+  thresholds: AbrThresholds;
+  videoTracks: Track[];
+  onModeChange: (m: 'auto' | 'manual') => void;
+  onThresholdChange: (partial: Partial<AbrThresholds>) => void;
 }) {
-  const [thresholdsOpen, setThresholdsOpen] = useState(false)
+  const [thresholdsOpen, setThresholdsOpen] = useState(false);
   const trackNamesAsc = videoTracks
     .slice()
     .sort((a, b) => (a.bitrate ?? 0) - (b.bitrate ?? 0))
-    .map(t => t.name)
+    .map(t => t.name);
 
   return (
     <div className="space-y-3 border-t border-white/6 p-3 text-xs">
@@ -397,18 +406,60 @@ function AbrDashboard({
       <div>
         <button
           onClick={() => setThresholdsOpen(o => !o)}
-          className="flex w-full items-center justify-between text-[11px] font-semibold uppercase tracking-widest text-neutral-500"
+          className="flex w-full items-center justify-between text-[11px] font-semibold tracking-widest text-neutral-500 uppercase"
         >
           Thresholds <span>{thresholdsOpen ? '▴' : '▾'}</span>
         </button>
         {thresholdsOpen && (
           <div className="mt-2 space-y-2">
-            <ThresholdSlider label="BOLA V"   value={thresholds.bolaV}         min={0.5}  max={5}   step={0.1}  onChange={v => onThresholdChange({ bolaV: v })} />
-            <ThresholdSlider label="BOLA gp"  value={thresholds.bolaGp}        min={0.5}  max={5}   step={0.1}  onChange={v => onThresholdChange({ bolaGp: v })} />
-            <ThresholdSlider label="Buf Max"  value={thresholds.bufferMax}     min={2}    max={10}  step={0.5}  onChange={v => onThresholdChange({ bufferMax: v })} />
-            <ThresholdSlider label="BW Cap"   value={thresholds.emaFactor}     min={0.5}  max={1}   step={0.05} onChange={v => onThresholdChange({ emaFactor: v })} />
-            <ThresholdSlider label="α fast"   value={thresholds.emaAlphaFast}  min={0.1}  max={0.9} step={0.05} onChange={v => onThresholdChange({ emaAlphaFast: v })} />
-            <ThresholdSlider label="α slow"   value={thresholds.emaAlphaSlow}  min={0.01} max={0.3} step={0.01} onChange={v => onThresholdChange({ emaAlphaSlow: v })} />
+            <ThresholdSlider
+              label="BOLA V"
+              value={thresholds.bolaV}
+              min={0.5}
+              max={5}
+              step={0.1}
+              onChange={v => onThresholdChange({ bolaV: v })}
+            />
+            <ThresholdSlider
+              label="BOLA gp"
+              value={thresholds.bolaGp}
+              min={0.5}
+              max={5}
+              step={0.1}
+              onChange={v => onThresholdChange({ bolaGp: v })}
+            />
+            <ThresholdSlider
+              label="Buf Max"
+              value={thresholds.bufferMax}
+              min={2}
+              max={10}
+              step={0.5}
+              onChange={v => onThresholdChange({ bufferMax: v })}
+            />
+            <ThresholdSlider
+              label="BW Cap"
+              value={thresholds.emaFactor}
+              min={0.5}
+              max={1}
+              step={0.05}
+              onChange={v => onThresholdChange({ emaFactor: v })}
+            />
+            <ThresholdSlider
+              label="α fast"
+              value={thresholds.emaAlphaFast}
+              min={0.1}
+              max={0.9}
+              step={0.05}
+              onChange={v => onThresholdChange({ emaAlphaFast: v })}
+            />
+            <ThresholdSlider
+              label="α slow"
+              value={thresholds.emaAlphaSlow}
+              min={0.01}
+              max={0.3}
+              step={0.01}
+              onChange={v => onThresholdChange({ emaAlphaSlow: v })}
+            />
           </div>
         )}
       </div>
@@ -416,11 +467,11 @@ function AbrDashboard({
       <BolaScoreGrid scores={metrics.bolaScores} />
       <QualitySparkline history={metrics.history} tracks={trackNamesAsc} />
     </div>
-  )
+  );
 }
 
 export function App() {
-  const [relayUrl, setRelayUrl] = useState('https://ord.abr.moqtail.dev');
+  const [relayUrl, setRelayUrl] = useState('https://localhost:4433');
   const [namespace, setNamespace] = useState('moqtail');
   const [status, setStatus] = useState<Status>('idle');
   const [tracks, setTracks] = useState<Track[]>([]);
@@ -432,18 +483,18 @@ export function App() {
   const bufferRef = useRef<MSEBuffer | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
-  const [abrMode, setAbrMode] = useState<'auto' | 'manual'>('manual')
-  const [abrMetrics, setAbrMetrics] = useState<AbrMetrics | null>(null)
-  const [abrThresholds, setAbrThresholds] = useState<AbrThresholds | null>(null)
-  const abrRef = useRef<AbrController | null>(null)
+  const [abrMode, setAbrMode] = useState<'auto' | 'manual'>('manual');
+  const [abrMetrics, setAbrMetrics] = useState<AbrMetrics | null>(null);
+  const [abrThresholds, setAbrThresholds] = useState<AbrThresholds | null>(null);
+  const abrRef = useRef<AbrController | null>(null);
 
   const disposePlayer = useCallback(async () => {
     if (abrRef.current) {
-      abrRef.current.stop()
-      abrRef.current = null
+      abrRef.current.stop();
+      abrRef.current = null;
     }
-    setAbrMetrics(null)
-    setAbrThresholds(null)
+    setAbrMetrics(null);
+    setAbrThresholds(null);
     if (playerRef.current) {
       try {
         await playerRef.current.dispose();
@@ -488,12 +539,12 @@ export function App() {
         await player.addMediaTrack(firstVideo.name);
         await player.startMedia();
         setStatus('playing');
-        const videoTracks = allTracks.filter(t => t.role === 'video')
-        const abr = new AbrController(player, videoTracks, setAbrMetrics)
-        abrRef.current = abr
-        setAbrThresholds(abr.getThresholds())
-        player.setOnTrackSwitched(() => abrRef.current?.releaseSwitchingGuard())
-        abr.start()
+        const videoTracks = allTracks.filter(t => t.role === 'video');
+        const abr = new AbrController(player, videoTracks, setAbrMetrics);
+        abrRef.current = abr;
+        setAbrThresholds(abr.getThresholds());
+        player.setOnTrackSwitched(() => abrRef.current?.releaseSwitchingGuard());
+        abr.start();
       } else {
         setStatus('ready');
       }
@@ -535,12 +586,12 @@ export function App() {
 
         await player.startMedia();
         setStatus('playing');
-        const videoTracksForAbr = catalog.getTracks().filter(t => t.role === 'video')
-        const abr = new AbrController(player, videoTracksForAbr, setAbrMetrics)
-        abrRef.current = abr
-        setAbrThresholds(abr.getThresholds())
-        player.setOnTrackSwitched(() => abrRef.current?.releaseSwitchingGuard())
-        abr.start()
+        const videoTracksForAbr = catalog.getTracks().filter(t => t.role === 'video');
+        const abr = new AbrController(player, videoTracksForAbr, setAbrMetrics);
+        abrRef.current = abr;
+        setAbrThresholds(abr.getThresholds());
+        player.setOnTrackSwitched(() => abrRef.current?.releaseSwitchingGuard());
+        abr.start();
       } catch (err) {
         setError((err as Error).message);
         setStatus('error');
@@ -555,17 +606,17 @@ export function App() {
       if (track.role !== 'video' && track.role !== 'audio') return;
 
       if (track.role === 'video') {
-        if (abrMode !== 'manual') return   // auto mode: track rows are read-only
-        const newTrackName = track.name === selectedVideo && !checked ? null : track.name
-        if (!newTrackName) return
-        setSelectedVideo(newTrackName)
-        abrRef.current?.manualSwitch(newTrackName)
+        if (abrMode !== 'manual') return; // auto mode: track rows are read-only
+        const newTrackName = track.name === selectedVideo && !checked ? null : track.name;
+        if (!newTrackName) return;
+        setSelectedVideo(newTrackName);
+        abrRef.current?.manualSwitch(newTrackName);
       } else {
         // Audio tracks still do full restarts (no seamless switch for audio)
-        let newAudio = selectedAudio
-        newAudio = track.name === selectedAudio && !checked ? null : track.name
-        setSelectedAudio(newAudio)
-        startPlayback(selectedVideo, newAudio)
+        let newAudio = selectedAudio;
+        newAudio = track.name === selectedAudio && !checked ? null : track.name;
+        setSelectedAudio(newAudio);
+        startPlayback(selectedVideo, newAudio);
       }
     },
     [selectedVideo, selectedAudio, abrMode, startPlayback],
@@ -684,13 +735,13 @@ export function App() {
               thresholds={abrThresholds}
               videoTracks={videoTracks}
               onModeChange={m => {
-                setAbrMode(m)
-                abrRef.current?.setMode(m)
+                setAbrMode(m);
+                abrRef.current?.setMode(m);
               }}
               onThresholdChange={partial => {
-                abrRef.current?.setThresholds(partial)
-                const updated = abrRef.current?.getThresholds()
-                if (updated) setAbrThresholds(updated)
+                abrRef.current?.setThresholds(partial);
+                const updated = abrRef.current?.getThresholds();
+                if (updated) setAbrThresholds(updated);
               }}
             />
           )}

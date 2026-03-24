@@ -46,14 +46,15 @@ describe('BOLA score computation', () => {
     expect(scores['1080p']).toBeLessThan(0)
   })
 
-  it('higher buffer increases all scores', () => {
+  it('higher buffer level produces lower BOLA scores', () => {
     const player = makeMockPlayer()
     const onUpdate = vi.fn()
     const ctrl = new AbrController(player as any, tracks, onUpdate)
-    const low = ctrl.computeBolaScores(1.0)
-    const high = ctrl.computeBolaScores(4.0)
+    const atLowBuffer = ctrl.computeBolaScores(1.0)
+    const atHighBuffer = ctrl.computeBolaScores(4.0)
     for (const name of tracks.map(t => t.name)) {
-      expect(high[name]).toBeGreaterThan(low[name])
+      // BOLA formula subtracts bufferLevel, so higher buffer → lower score
+      expect(atLowBuffer[name]).toBeGreaterThan(atHighBuffer[name])
     }
   })
 })

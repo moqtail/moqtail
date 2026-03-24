@@ -244,6 +244,21 @@ export class Player {
               return;
             }
 
+            // Init segment re-injection after a seamless track switch.
+            // The relay guarantees clean group boundaries, so when group advances
+            // while pendingSwitch is set, we inject the new track's init segment first.
+            if (struct.pendingSwitch && object.location.group > struct.lastGroupId) {
+              const { initData, mimeType } = struct.pendingSwitch
+              struct.trackName = struct.pendingSwitch.trackName  // read BEFORE nulling
+              struct.pendingSwitch = null
+
+              // changeType() must not be called while the SourceBuffer is updating
+              if (sourceBuffer.updating) await waitForBufferUpdate(sourceBuffer)
+              sourceBuffer.changeType(mimeType)
+              sourceBuffer.appendBuffer(initData)
+              await waitForBufferUpdate(sourceBuffer)
+            }
+
             // Append the data
             const t0 = performance.now()
             let maxRetries = 5;
@@ -339,6 +354,60 @@ export class Player {
    */
   setOnTrackSwitched(cb: (trackName: string) => void): void {
     this.#options.onTrackSwitched = cb
+  }
+
+  /**
+   * Seamlessly switches the active video track using the MoQ SWITCH message.
+   * The relay will complete delivery of the current group then begin sending
+   * the new track. The WritableStream.write handler detects the group boundary
+   * and re-injects the new init segment before appending the first new payload.
+   *
+   * Fire-and-forget from AbrController: do NOT await this externally.
+   * The #switching guard in AbrController is released via onTrackSwitched callback.
+   */
+  async switchTrack(trackName: string): Promise<void> {
+    if (!this.client) return
+    if (!this.catalog) return
+
+    const videoStruct = this.#streams.find(
+      s => this.catalog?.getRole(s.trackName) === 'video',
+    )
+    if (!videoStruct) return
+
+    const fullTrackName = getFullTrackName(this.#options.namespace, trackName)
+    const initData = this.catalog.getInitData(trackName)
+    const role = this.catalog.getRole(trackName)
+    const codec = this.catalog.getCodecString(trackName)
+
+    if (!initData || !role || !codec) {
+      logger.error('media', `switchTrack: missing catalog data for track ${trackName}`)
+      this.#options.onTrackSwitched?.(videoStruct.trackName)
+      return
+    }
+
+    const mimeType = `${role}/mp4; codecs="${codec}"`
+
+    try {
+      const result = await this.client.switch({
+        fullTrackName,
+        subscriptionRequestId: videoStruct.requestId,
+      })
+
+      if (result instanceof SubscribeError) {
+        logger.error('media', `switchTrack: SWITCH rejected for ${trackName}:`, result.errorReason.phrase)
+        this.#options.onTrackSwitched?.(videoStruct.trackName)
+        return
+      }
+
+      // Success: update requestId, arm the write handler, reset DEWMA
+      videoStruct.requestId = result.requestId
+      videoStruct.pendingSwitch = { trackName, initData, mimeType }
+      videoStruct.tracker.reset()
+      this.#options.onTrackSwitched?.(trackName)
+    } catch (error) {
+      logger.error('media', 'switchTrack: unexpected error', error)
+      this.#options.onTrackSwitched?.(videoStruct.trackName)
+    }
   }
 
   async #newSourceBufferMSE(struct: MOQStreamStruct, trackName: string) {

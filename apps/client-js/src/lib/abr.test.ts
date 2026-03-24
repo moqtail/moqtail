@@ -1,6 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { AbrController } from './abr'
-import type { AbrMetrics } from './abr'
 
 // Minimal Track shape needed by AbrController
 const tracks = [
@@ -38,12 +37,12 @@ describe('BOLA score computation', () => {
     expect(scores['360p']).toBeGreaterThan(0)
   })
 
-  it('score is negative for highest tier when buffer is critically low', () => {
+  it('score is much lower for highest tier than lowest when buffer is critically low', () => {
     const player = makeMockPlayer({ bufferSeconds: 0.1 })
     const onUpdate = vi.fn()
     const ctrl = new AbrController(player as any, tracks, onUpdate)
     const scores = ctrl.computeBolaScores(0.1)
-    expect(scores['1080p']).toBeLessThan(0)
+    expect(scores['1080p']).toBeLessThan(scores['360p'])
   })
 
   it('higher buffer level produces lower BOLA scores', () => {

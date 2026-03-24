@@ -96,7 +96,7 @@ impl MessageHandler {
           .await
       }
       ControlMessage::TrackStatus(_)
-      | ControlMessage::TrackStatusOk(_)
+      | ControlMessage::RequestOk(_)
       | ControlMessage::TrackStatusError(_) => {
         track_status_handler::handle(control_stream_handler, msg, context.clone()).await
       }

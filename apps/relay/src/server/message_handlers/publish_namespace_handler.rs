@@ -17,9 +17,7 @@ use crate::server::session::Session;
 use crate::server::session_context::{PendingRequest, SessionContext};
 use core::result::Result;
 use moqtail::model::control::publish_namespace::PublishNamespace;
-use moqtail::model::control::{
-  control_message::ControlMessage, publish_namespace_ok::PublishNamespaceOk,
-};
+use moqtail::model::control::{control_message::ControlMessage, request_ok::RequestOk};
 use moqtail::model::error::TerminationCode;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
@@ -120,11 +118,13 @@ pub async fn handle(
         }
       }
 
-      let announce_ok = Box::new(PublishNamespaceOk {
-        request_id: m.request_id,
-      });
+      let request_ok = Box::new(RequestOk::new(
+        m.request_id,
+        vec![], // No parameters needed for a basic namespace OK
+      ));
+
       control_stream_handler
-        .send(&ControlMessage::PublishNamespaceOk(announce_ok))
+        .send(&ControlMessage::RequestOk(request_ok))
         .await
     }
     _ => {

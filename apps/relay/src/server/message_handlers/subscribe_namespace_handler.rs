@@ -19,9 +19,9 @@ use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::control::constant::{GroupOrder, SubscribeNamespaceErrorCode};
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::publish_namespace::PublishNamespace;
+use moqtail::model::control::request_ok::RequestOk;
 use moqtail::model::control::subscribe::Subscribe;
 use moqtail::model::control::subscribe_namespace_error::SubscribeNamespaceError;
-use moqtail::model::control::subscribe_namespace_ok::SubscribeNamespaceOk;
 use moqtail::model::error::TerminationCode;
 use moqtail::model::parameter::constant::MessageParameterType;
 use moqtail::model::parameter::message_parameter::{MessageParameter, MessageParameterVecExt};
@@ -89,12 +89,12 @@ pub async fn handle(
       // -----------------------------------------------------------
 
       // 2. Send OK back to the subscriber
-      let ok = SubscribeNamespaceOk::new(sub_ns.request_id);
+      let ok = RequestOk::new(sub_ns.request_id, vec![]);
       handler
-        .send(&ControlMessage::SubscribeNamespaceOk(Box::new(ok)))
+        .send(&ControlMessage::RequestOk(Box::new(ok)))
         .await?;
       info!(
-        "Sent SubscribeNamespaceOk for request_id: {}",
+        "Sent RequestOk for SubscribeNamespace request_id: {}",
         sub_ns.request_id
       );
 

@@ -64,14 +64,17 @@ export interface PlayerOptions {
   receiveCatalogViaSubscribe?: boolean;
   /** Catalog location (default: group 0, object 1) */
   catalogLocation?: [Location, Location];
+  /** Called when a switchTrack() completes (success or failure). Releases the ABR switching guard. */
+  onTrackSwitched?: (trackName: string) => void;
 }
 
-const DefaultOptions: Required<PlayerOptions> = {
+const DefaultOptions = {
   relayUrl: 'https://relay.moqtail.dev',
   namespace: Tuple.fromUtf8Path('/moqtail'),
   receiveCatalogViaSubscribe: false,
   catalogLocation: [new Location(0n, 0n), new Location(0n, 1n)],
-};
+  onTrackSwitched: undefined as ((trackName: string) => void) | undefined,
+} satisfies Required<Omit<PlayerOptions, 'onTrackSwitched'>> & Pick<PlayerOptions, 'onTrackSwitched'>;
 
 export class Player {
   catalog: CMSFCatalog | null = null;
@@ -80,7 +83,7 @@ export class Player {
   #element: HTMLVideoElement | null = null;
   #mse?: MediaSource;
   #streams: MOQStreamStruct[] = [];
-  #options: Required<PlayerOptions>;
+  #options: Required<Omit<PlayerOptions, 'onTrackSwitched'>> & Pick<PlayerOptions, 'onTrackSwitched'>;
 
   constructor(options: Partial<PlayerOptions> = {}) {
     this.#options = { ...DefaultOptions, ...options };
@@ -296,6 +299,46 @@ export class Player {
           if (this.#mse!.readyState === 'open') this.#mse!.endOfStream();
         });
     }
+  }
+
+  getMetrics(): {
+    bandwidthBps: number
+    fastEmaBps: number
+    slowEmaBps: number
+    bufferSeconds: number
+    activeTrack: string | null
+  } {
+    const videoStruct = this.#streams.find(
+      s => this.catalog?.getRole(s.trackName) === 'video',
+    )
+    const buffered = this.#element?.buffered
+    const bufferSeconds =
+      buffered && buffered.length > 0 && this.#element
+        ? Math.max(0, buffered.end(buffered.length - 1) - this.#element.currentTime)
+        : 0
+    return {
+      bandwidthBps: videoStruct?.tracker.getBandwidthBps() ?? 0,
+      fastEmaBps: videoStruct?.tracker.getFastEmaBps() ?? 0,
+      slowEmaBps: videoStruct?.tracker.getSlowEmaBps() ?? 0,
+      bufferSeconds,
+      activeTrack: videoStruct?.trackName ?? null,
+    }
+  }
+
+  setEmaAlphas(alphaFast: number, alphaSlow: number): void {
+    const videoStruct = this.#streams.find(
+      s => this.catalog?.getRole(s.trackName) === 'video',
+    )
+    videoStruct?.tracker.setAlphas(alphaFast, alphaSlow)
+  }
+
+  /**
+   * Updates the onTrackSwitched callback post-construction.
+   * Called by app.tsx after creating the Player and AbrController,
+   * to wire the ABR switching guard release without a circular dependency.
+   */
+  setOnTrackSwitched(cb: (trackName: string) => void): void {
+    this.#options.onTrackSwitched = cb
   }
 
   async #newSourceBufferMSE(struct: MOQStreamStruct, trackName: string) {

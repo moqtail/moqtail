@@ -23,7 +23,7 @@ use crate::server::utils;
 use anyhow::Result;
 use moqtail::model::common::location::Location;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
-use moqtail::model::control::constant::SubscribeErrorCode;
+use moqtail::model::control::constant::RequestErrorCode;
 use moqtail::model::control::subscribe::Subscribe;
 use moqtail::model::data::constant::ObjectForwardingPreference;
 use moqtail::model::data::datagram::Datagram;
@@ -46,9 +46,9 @@ pub enum TrackStatus {
   Confirmed {
     subscribe_parameters: Vec<MessageParameter>,
   },
-  /// Publisher rejected with SubscribeError.
+  /// Publisher rejected with RequestError.
   Rejected {
-    error_code: SubscribeErrorCode,
+    error_code: RequestErrorCode,
     reason_phrase: ReasonPhrase,
   },
 }
@@ -197,7 +197,7 @@ impl Track {
   }
 
   /// Transition from Pending to Rejected. Notifies waiters.
-  pub async fn reject(&self, error_code: SubscribeErrorCode, reason_phrase: ReasonPhrase) {
+  pub async fn reject(&self, error_code: RequestErrorCode, reason_phrase: ReasonPhrase) {
     let mut status = self.status.write().await;
     *status = TrackStatus::Rejected {
       error_code,

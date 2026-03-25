@@ -89,7 +89,7 @@ impl MessageHandler {
       ControlMessage::Subscribe(_)
       | ControlMessage::SubscribeOk(_)
       | ControlMessage::SubscribeUpdate(_)
-      | ControlMessage::SubscribeError(_)
+      | ControlMessage::RequestError(_)
       | ControlMessage::Unsubscribe(_)
       | ControlMessage::Switch(_) => {
         subscribe_handler::handle(client.clone(), control_stream_handler, msg, context.clone())
@@ -97,7 +97,7 @@ impl MessageHandler {
       }
       ControlMessage::TrackStatus(_)
       | ControlMessage::TrackStatusOk(_)
-      | ControlMessage::TrackStatusError(_) => {
+      | ControlMessage::RequestError(_) => {
         track_status_handler::handle(control_stream_handler, msg, context.clone()).await
       }
       ControlMessage::Fetch(_) | ControlMessage::FetchCancel(_) | ControlMessage::FetchOk(_) => {
@@ -106,7 +106,7 @@ impl MessageHandler {
       ControlMessage::Publish(_)
       | ControlMessage::PublishDone(_)
       | ControlMessage::PublishOk(_)
-      | ControlMessage::PublishError(_) => {
+      | ControlMessage::RequestError(_) => {
         publish_handler::handle(client.clone(), control_stream_handler, msg, context.clone()).await
       }
 

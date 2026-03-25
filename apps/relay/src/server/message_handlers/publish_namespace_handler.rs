@@ -13,7 +13,8 @@
 // limitations under the License.
 
 use crate::server::client::MOQTClient;
-use crate::server::session_context::SessionContext;
+use crate::server::session::Session;
+use crate::server::session_context::{PendingRequest, SessionContext};
 use core::result::Result;
 use moqtail::model::control::publish_namespace::PublishNamespace;
 use moqtail::model::control::{
@@ -78,12 +79,22 @@ pub async fn handle(
                 "Forwarding announcement {:?} to subscriber {}",
                 m.track_namespace, sub.connection_id
               );
+              let relay_announce_id =
+                Session::get_next_relay_request_id(context.relay_next_request_id.clone()).await;
 
-              let notify = PublishNamespace::new(
-                0, // Notification ID
-                m.track_namespace.clone(),
-                &[],
-              );
+              let notify = PublishNamespace::new(relay_announce_id, m.track_namespace.clone(), &[]);
+
+              // Register the message in unified map for draft-16 response tracking
+              {
+                let mut map = context.relay_pending_requests.write().await;
+                map.insert(
+                  relay_announce_id,
+                  PendingRequest::PublishNamespace {
+                    client_connection_id: sub.connection_id,
+                    original_request_id: relay_announce_id, // We are the origin here
+                  },
+                );
+              }
 
               let sub_clone = sub.clone();
               tokio::spawn(async move {

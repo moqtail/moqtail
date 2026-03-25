@@ -412,9 +412,13 @@ pub async fn handle(
       // TODO: When the relay sends a fetch request to the publisher,
       // it will wait for Fetch OK. However this is not implemented yet.
       // Here is just a preliminary attempt for this, validating request id
-      let requests = context.relay_fetch_requests.read().await;
-      if !requests.contains_key(&msg.request_id) {
-        error!("handle_fetch_messages | FetchOk | request_id does not exist");
+      let pending_request = {
+        let mut map = context.relay_pending_requests.write().await;
+        map.remove(&msg.request_id)
+      };
+
+      if pending_request.is_none() {
+        error!("handle_fetch_messages | FetchOk | request_id does not exist in pending registry");
         return Err(TerminationCode::InternalError);
       }
 

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::server::session_context::SessionContext;
+use crate::server::session_context::{PendingRequest, SessionContext};
 use crate::server::{client::MOQTClient, session::Session};
 use core::result::Result;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
@@ -93,6 +93,19 @@ pub async fn handle(
         let relay_announce_id =
           Session::get_next_relay_request_id(context.relay_next_request_id.clone()).await;
         let notify = PublishNamespace::new(relay_announce_id, ns.clone(), &[]);
+
+        // Register the message in unified map for draft-16 response tracking
+        {
+          let mut map = context.relay_pending_requests.write().await;
+          map.insert(
+            relay_announce_id,
+            PendingRequest::PublishNamespace {
+              client_connection_id: client.connection_id,
+              original_request_id: relay_announce_id,
+            },
+          );
+        }
+
         client
           .queue_message(ControlMessage::PublishNamespace(Box::new(notify)))
           .await;
@@ -120,6 +133,18 @@ pub async fn handle(
             Session::get_next_relay_request_id(context.relay_next_request_id.clone()).await;
           original_publish_message.request_id = relay_publish_id;
           original_publish_message.track_alias = relay_track_id;
+
+          // Register the message in unified map for draft-16 response tracking
+          {
+            let mut map = context.relay_pending_requests.write().await;
+            map.insert(
+              relay_publish_id,
+              PendingRequest::Publish {
+                publisher_connection_id: client.connection_id,
+                original_request_id: relay_publish_id,
+              },
+            );
+          }
 
           client
             .queue_message(ControlMessage::Publish(Box::new(

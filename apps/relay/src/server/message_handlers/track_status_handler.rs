@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::server::session::Session;
-use crate::server::session_context::SessionContext;
+use crate::server::session_context::{PendingRequest, SessionContext};
 use core::result::Result;
 use moqtail::model::error::TerminationCode;
 use moqtail::model::{
@@ -148,8 +148,8 @@ pub async fn handle(
         Some(fake_new_sub),
       );
 
-      let mut map = context.relay_track_status_requests.write().await;
-      map.insert(relay_request_id, req_mapping);
+      let mut map = context.relay_pending_requests.write().await;
+      map.insert(relay_request_id, PendingRequest::TrackStatus(req_mapping));
 
       Ok(())
     }
@@ -159,8 +159,18 @@ pub async fn handle(
 
       // A. Look up who asked for this
       let mapping = {
-        let map = context.relay_track_status_requests.read().await;
-        map.get(&msg.request_id).cloned()
+        let mut map = context.relay_pending_requests.write().await;
+        match map.remove(&msg.request_id) {
+          Some(PendingRequest::TrackStatus(req)) => Some(req),
+          Some(_) => {
+            warn!(
+              "Mismatched request type for TrackStatusOk: {}",
+              msg.request_id
+            );
+            None
+          }
+          None => None,
+        }
       };
 
       if let Some(req) = mapping {
@@ -222,8 +232,18 @@ pub async fn handle(
       let msg = *m;
 
       let mapping = {
-        let map = context.relay_track_status_requests.read().await;
-        map.get(&msg.request_id).cloned()
+        let mut map = context.relay_pending_requests.write().await;
+        match map.remove(&msg.request_id) {
+          Some(PendingRequest::TrackStatus(req)) => Some(req),
+          Some(_) => {
+            warn!(
+              "Mismatched request type for TrackStatusError: {}",
+              msg.request_id
+            );
+            None
+          }
+          None => None,
+        }
       };
 
       if let Some(req) = mapping {

@@ -131,11 +131,23 @@ pub async fn handle(
       let msg = *m;
 
       let mapping = {
-        let mut map = context.relay_publish_namespace_requests.write().await;
-        map.remove(&msg.request_id)
+        let mut map = context.relay_pending_requests.write().await;
+        match map.remove(&msg.request_id) {
+          Some(PendingRequest::PublishNamespace { client_connection_id, original_request_id: _ }) => {
+            Some(client_connection_id)
+          }
+          Some(_) => {
+            warn!(
+              "Mismatched request type for RequestOk (PublishNamespace): {}",
+              msg.request_id
+            );
+            None
+          }
+          None => None,
+        }
       };
 
-      if let Some((client_connection_id, _)) = mapping {
+      if let Some(client_connection_id) = mapping {
         debug!(
           "Received acknowledgment (RequestOk) from subscriber {} for PublishNamespace broadcast",
           client_connection_id

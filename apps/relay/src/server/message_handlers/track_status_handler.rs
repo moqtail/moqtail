@@ -29,6 +29,7 @@ use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use moqtail::transport::data_stream_handler::SubscribeRequest;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
+
 pub async fn handle(
   control_stream_handler: &mut ControlStreamHandler,
   msg: ControlMessage,

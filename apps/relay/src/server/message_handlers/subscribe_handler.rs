@@ -450,71 +450,96 @@ async fn handle_unsubscribe_message(
   Ok(())
 }
 
-async fn handle_request_update_message(
+// In your subscribe_handler.rs
+
+pub async fn handle_request_update(
   client: Arc<MOQTClient>,
   _control_stream_handler: &mut ControlStreamHandler,
-  request_update_message: moqtail::model::control::request_update::RequestUpdate,
+  msg: ControlMessage,
   context: Arc<SessionContext>,
 ) -> Result<(), TerminationCode> {
-  info!(
-    "received RequestUpdate message: {:?}",
-    request_update_message
-  );
+  // 1. Extract the inner RequestUpdate message
+  let request_update_message = match msg {
+    ControlMessage::RequestUpdate(m) => *m,
+    _ => {
+      error!("subscribe_handler::handle_request_update called with wrong message type");
+      return Err(TerminationCode::InternalError);
+    }
+  };
 
-  // A RequestUpdate message contains existing_request_id
-  // which is the request ID of the request (e.g., subscription) we want to update
   let existing_req_id = request_update_message.existing_request_id;
+  // let update_req_id = request_update_message.request_id; // TODO: Uncomment after merging RequestOk/Error support
 
-  // TODO: In the future, we may need to check other request maps (like PUBLISH or FETCH) 
-  // since REQUEST_UPDATE can modify more than just subscriptions now.
-  let requests = client.subscribe_requests.read().await;
-  let request = requests.get(&existing_req_id);
-  
-  if request.is_none() {
-    warn!(
-      "request not found for existing request id: {:?}",
-      existing_req_id
-    );
-    // Draft 16 enforces PROTOCOL_VIOLATION for invalid Existing Request IDs
-    return Err(TerminationCode::ProtocolViolation);
-  }
-  let request = request.unwrap();
+  // 2. Fetch the original SubscribeRequest from the unified map
+  let subscribe_req = {
+    let pending_requests = context.relay_pending_requests.read().await;
+    match pending_requests.get(&existing_req_id) {
+      Some(PendingRequest::Subscribe(req)) => req.clone(),
+      _ => {
+        warn!(
+          "Request {} is not a valid Subscribe request",
+          existing_req_id
+        );
+        return Err(TerminationCode::ProtocolViolation);
+      }
+    }
+  };
 
-  // Get the full track name and track instance
-  let full_track_name = request.original_subscribe_request.get_full_track_name();
+  // 3. Get the full track name and track instance
+  let full_track_name = subscribe_req
+    .original_subscribe_request
+    .get_full_track_name();
   let track_lock = context.track_manager.get_track(&full_track_name).await;
 
   if track_lock.is_none() {
-    warn!("track not found for track name: {:?}", full_track_name);
+    warn!("Track not found for track name: {:?}", full_track_name);
     return Err(TerminationCode::ProtocolViolation);
   }
 
   let track_arc = track_lock.unwrap();
   let track_guard = track_arc.read().await;
 
-  if let Some(subscription) = track_guard.get_subscription(context.connection_id).await {
+  // 4. Update the actual subscription
+  if let Some(subscription) = track_guard.get_subscription(client.connection_id).await {
     let sub = subscription.read().await;
+
     match sub.update_subscription(request_update_message).await {
       Ok(_) => {
         info!(
-          "subscription updated, track: {:?} subscriber: {}",
-          full_track_name, context.connection_id
+          "Subscription updated successfully for track: {:?}",
+          full_track_name
         );
-        // TODO: Draft 16 mandates sending a REQUEST_OK here
-        // _control_stream_handler.send_request_ok(...).await?;
-      },
+
+        // TODO: Uncomment after merging RequestOk/Error support
+        /*
+        let ok_msg = RequestOk::new(update_req_id);
+        _control_stream_handler.send_message(Box::new(ControlMessage::RequestOk(Box::new(ok_msg)))).await?;
+        */
+      }
       Err(e) => {
         error!(
-          "subscription could not be updated, track: {:?} subscriber: {} error: {:?}",
-          full_track_name, context.connection_id, e
+          "Subscription update failed for track: {:?}, error: {:?}",
+          full_track_name, e
         );
-        // TODO: Draft 16 mandates sending a REQUEST_ERROR here
-        // _control_stream_handler.send_request_error(...).await?;
-      },
+
+        // TODO: Uncomment after merging RequestOk/Error support
+        /*
+        let err_msg = RequestError::new(update_req_id, 400, format!("Update failed: {}", e));
+        _control_stream_handler.send_message(Box::new(ControlMessage::RequestError(Box::new(err_msg)))).await?;
+        */
+      }
     }
+  } else {
+    warn!(
+      "No active subscription found for client {} on track {:?}",
+      client.connection_id, full_track_name
+    );
+    // TODO: Send RequestError 404 once merged
   }
+
   Ok(())
 }
+
 async fn handle_subscribe_error_message(
   _client: Arc<MOQTClient>,
   _control_stream_handler: &mut ControlStreamHandler,
@@ -752,9 +777,6 @@ pub async fn handle(
     }
     ControlMessage::Unsubscribe(m) => {
       handle_unsubscribe_message(client, control_stream_handler, *m, context).await
-    }
-    ControlMessage::RequestUpdate(m) => {
-      handle_request_update_message(client, control_stream_handler, *m, context).await
     }
     ControlMessage::SubscribeError(m) => {
       handle_subscribe_error_message(client, control_stream_handler, *m, context).await

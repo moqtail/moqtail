@@ -19,7 +19,10 @@ use moqtail::{
 };
 use tracing::{info, warn};
 
-use crate::server::{client::MOQTClient, session_context::SessionContext};
+use crate::server::{
+  client::MOQTClient,
+  session_context::{PendingRequest, SessionContext},
+};
 use std::sync::{Arc, atomic::Ordering};
 mod fetch_handler;
 mod max_request_id_handler;
@@ -88,7 +91,6 @@ impl MessageHandler {
       }
       ControlMessage::Subscribe(_)
       | ControlMessage::SubscribeOk(_)
-      | ControlMessage::RequestUpdate(_)
       | ControlMessage::SubscribeError(_)
       | ControlMessage::Unsubscribe(_)
       | ControlMessage::Switch(_) => {
@@ -108,6 +110,56 @@ impl MessageHandler {
       | ControlMessage::PublishOk(_)
       | ControlMessage::PublishError(_) => {
         publish_handler::handle(client.clone(), control_stream_handler, msg, context.clone()).await
+      }
+
+      ControlMessage::RequestUpdate(update_msg) => {
+        let existing_req_id = update_msg.existing_request_id;
+
+        enum Route {
+          Subscribe,
+          Unhandled,
+          NotFound,
+        }
+
+        // 1. Peek at the unified map to determine the routing destination
+        let route = {
+          let map = context.relay_pending_requests.read().await;
+          match map.get(&existing_req_id) {
+            Some(PendingRequest::Subscribe(_)) => Route::Subscribe,
+            Some(_) => Route::Unhandled,
+            None => Route::NotFound, // Untracked request
+          }
+        };
+
+        // 2. Dispatch to the correct handler
+        match route {
+          Route::Subscribe => {
+            // Assuming your subscribe handler has a dedicated method for updates
+            subscribe_handler::handle_request_update(
+              client.clone(),
+              control_stream_handler,
+              msg, // Pass the original ControlMessage::RequestUpdate
+              context.clone(),
+            )
+            .await
+          }
+          Route::Unhandled => {
+            warn!(
+              "Router received RequestUpdate for request_id: {}, but updating this request type is not implemented.",
+              existing_req_id
+            );
+            // Draft 16: Invalid parameters for the type of request being modified = Protocol Violation
+            Err(TerminationCode::ProtocolViolation)
+          }
+          Route::NotFound => {
+            warn!(
+              "Router received RequestUpdate for untracked existing_request_id: {}. Triggering ProtocolViolation.",
+              existing_req_id
+            );
+            // Draft 16: Invalid Existing Request ID = Protocol Violation
+            Err(TerminationCode::ProtocolViolation)
+          }
+        }
       }
 
       m => {

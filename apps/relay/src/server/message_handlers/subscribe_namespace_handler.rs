@@ -27,7 +27,7 @@ use moqtail::model::parameter::constant::MessageParameterType;
 use moqtail::model::parameter::message_parameter::{MessageParameter, MessageParameterVecExt};
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 pub async fn handle(
   client: Arc<MOQTClient>,
@@ -201,6 +201,51 @@ pub async fn handle(
         }
       }
     }
+    ControlMessage::RequestOk(m) => {
+      let msg = *m;
+
+      let mapping = {
+        let mut map = context.relay_pending_requests.write().await;
+        match map.remove(&msg.request_id) {
+          Some(PendingRequest::SubscribeNamespace {
+            client_connection_id,
+            original_request_id,
+          }) => Some((client_connection_id, original_request_id)),
+          Some(_) => {
+            warn!(
+              "Mismatched request type for RequestOk (SubscribeNamespace): {}",
+              msg.request_id
+            );
+            None
+          }
+          None => None,
+        }
+      };
+
+      if let Some((client_connection_id, original_request_id)) = mapping {
+        let manager = context.client_manager.read().await;
+        if let Some(downstream_client) = manager.get(client_connection_id).await {
+          let forwarded_msg = RequestOk::new(original_request_id, msg.parameters);
+
+          info!(
+            "Forwarding RequestOk (for SubscribeNamespace) to Client {}",
+            client_connection_id
+          );
+
+          downstream_client
+            .queue_message(ControlMessage::RequestOk(Box::new(forwarded_msg)))
+            .await;
+        } else {
+          warn!("Downstream client {} disconnected", client_connection_id);
+        }
+      } else {
+        debug!(
+          "SubscribeNamespace handler received RequestOk for untracked ID: {}",
+          msg.request_id
+        );
+      }
+    }
+
     _ => {
       warn!(
         "Unexpected message in subscribe_namespace_handler: {:?}",

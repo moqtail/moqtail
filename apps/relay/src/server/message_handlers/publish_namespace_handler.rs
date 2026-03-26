@@ -21,7 +21,7 @@ use moqtail::model::control::{control_message::ControlMessage, request_ok::Reque
 use moqtail::model::error::TerminationCode;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 pub async fn handle(
   client: Arc<MOQTClient>,
@@ -50,7 +50,6 @@ pub async fn handle(
       }
 
       // this is a publisher, add it to the client manager
-      // send announce_ok
       client
         .add_announced_track_namespace(m.track_namespace.clone())
         .await;
@@ -127,6 +126,29 @@ pub async fn handle(
         .send(&ControlMessage::RequestOk(request_ok))
         .await
     }
+
+    ControlMessage::RequestOk(m) => {
+      let msg = *m;
+
+      let mapping = {
+        let mut map = context.relay_publish_namespace_requests.write().await;
+        map.remove(&msg.request_id)
+      };
+
+      if let Some((client_connection_id, _)) = mapping {
+        debug!(
+          "Received acknowledgment (RequestOk) from subscriber {} for PublishNamespace broadcast",
+          client_connection_id
+        );
+      } else {
+        debug!(
+          "PublishNamespace handler received RequestOk for untracked ID: {}",
+          msg.request_id
+        );
+      }
+      Ok(())
+    }
+
     _ => {
       // no-op
       Ok(())

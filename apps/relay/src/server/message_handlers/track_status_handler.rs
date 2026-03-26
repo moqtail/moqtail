@@ -29,7 +29,6 @@ use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use moqtail::transport::data_stream_handler::SubscribeRequest;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
-
 pub async fn handle(
   control_stream_handler: &mut ControlStreamHandler,
   msg: ControlMessage,
@@ -157,8 +156,7 @@ pub async fn handle(
       info!("received RequestOk from Publisher: {:?}", m);
       let msg = *m;
 
-      // A. Look up who asked for this
-      // Since RequestOk is generic, we check if it belongs to a TrackStatus request
+      // A. Look up who asked for this and remove it from the map to prevent memory leaks
       let mapping = {
         let mut map = context.relay_pending_requests.write().await;
         match map.remove(&msg.request_id) {
@@ -179,8 +177,6 @@ pub async fn handle(
         let manager = context.client_manager.read().await;
         if let Some(downstream_client) = manager.get(req.requested_by).await {
           // D. Construct Forwarded Message
-          // We restore the ORIGINAL request ID that the client sent us,
-          // and simply forward the parameters (Expires, LargestObject, etc.) unchanged!
           let forwarded_msg = RequestOk::new(req.original_request_id, msg.parameters);
 
           info!(
@@ -194,7 +190,8 @@ pub async fn handle(
           warn!("Downstream client {} disconnected", req.requested_by);
         }
       } else {
-        // If it's not in our track_status map, it might be a response to a Namespace request, etc.
+        // If the global router is doing its job, we shouldn't hit this,
+        // but it's good defensive programming!
         debug!(
           "Received RequestOk for request ID {} (Not a TrackStatus relay)",
           msg.request_id
@@ -225,11 +222,8 @@ pub async fn handle(
       if let Some(req) = mapping {
         let manager = context.client_manager.read().await;
         if let Some(downstream_client) = manager.get(req.requested_by).await {
-          let forwarded_msg = TrackStatusError::new(
-            req.original_request_id, // <--- Restore ID
-            msg.error_code,
-            msg.reason_phrase,
-          );
+          let forwarded_msg =
+            TrackStatusError::new(req.original_request_id, msg.error_code, msg.reason_phrase);
 
           info!("Forwarding TrackStatusError to Client {}", req.requested_by);
           downstream_client

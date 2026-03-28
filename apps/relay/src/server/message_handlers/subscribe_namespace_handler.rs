@@ -73,6 +73,21 @@ pub async fn handle(
         .add_namespace_subscriber(sub_ns.track_namespace_prefix.clone(), client.clone())
         .await;
 
+      {
+        let mut map = context.relay_pending_requests.write().await;
+        map.insert(
+          sub_ns.request_id,
+          PendingRequest::SubscribeNamespace {
+            client_connection_id: client.connection_id,
+            original_request_id: sub_ns.request_id,
+          },
+        );
+      }
+      // TODO(Draft-16 Stream Split): When SUBSCRIBE_NAMESPACE is moved to its own dedicated
+      // bidirectional QUIC stream, we MUST remove this request_id from relay_pending_requests
+      // when that underlying QUIC stream receives a FIN or RESET_STREAM.
+      // -----------------------------------------------------------
+
       // 2. Send OK back to the subscriber
       let ok = SubscribeNamespaceOk::new(sub_ns.request_id);
       handler

@@ -64,6 +64,19 @@ pub async fn handle(
         .add_announcement(m.track_namespace.clone(), client.clone())
         .await;
 
+      {
+        let mut map = context.relay_pending_requests.write().await;
+        map.insert(
+          m.request_id,
+          PendingRequest::PublishNamespace {
+            client_connection_id: client.connection_id,
+            original_request_id: m.request_id,
+          },
+        );
+      }
+      // TODO: Remove this request_id from relay_pending_requests when a PUBLISH_NAMESPACE_DONE
+      // is received for this namespace, or if the client disconnects. Until then this is a memory leak.
+
       // and forward the message to people who are subscribed to the namespace
       {
         let subs_map = context.track_manager.namespace_subscribers.read().await;

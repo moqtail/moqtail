@@ -18,4 +18,8 @@ pub struct Cli {
   /// Path to video file
   #[arg(long, default_value = "data/video/Smoking Test.mp4")]
   pub video_path: String,
+
+  /// Target playback latency for catalog tracks, in milliseconds
+  #[arg(long, default_value_t = 1500)]
+  pub target_latency_ms: u32,
 }

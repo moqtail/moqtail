@@ -1,6 +1,6 @@
 use anyhow::Result;
-use base64::Engine;
 use bytes::Bytes;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct CatalogTrack {
   pub name: String,
@@ -8,31 +8,41 @@ pub struct CatalogTrack {
   pub width: u16,
   pub height: u16,
   pub bitrate_bps: u32,
-  pub init_segment: Vec<u8>,
+  pub framerate: f64,
+  pub role: String,
+  pub target_latency_ms: u32,
 }
 
-/// Builds a CMSF catalog JSON payload from the given tracks.
+/// Builds an MSF draft-00 catalog JSON payload.
 pub fn build_catalog_json(tracks: &[CatalogTrack]) -> Result<Bytes> {
+  let generated_at = SystemTime::now()
+    .duration_since(UNIX_EPOCH)
+    .map(|d| d.as_millis() as u64)
+    .unwrap_or(0);
+
   let track_entries: Vec<serde_json::Value> = tracks
     .iter()
     .map(|t| {
-      let init_b64 = base64::engine::general_purpose::STANDARD.encode(&t.init_segment);
       serde_json::json!({
         "name": t.name,
-        "packaging": "chunk-per-object",
-        "role": "video",
+        "packaging": "loc",
+        "role": t.role,
+        "isLive": true,
+        "targetLatency": t.target_latency_ms,
+        "renderGroup": 1,
+        "altGroup": 1,
         "codec": t.codec,
         "width": t.width,
         "height": t.height,
         "bitrate": t.bitrate_bps,
-        "timescale": 90000,
-        "initData": init_b64
+        "framerate": t.framerate
       })
     })
     .collect();
 
   let catalog = serde_json::json!({
     "version": 1,
+    "generatedAt": generated_at,
     "tracks": track_entries
   });
 
@@ -225,259 +235,256 @@ pub fn codec_string_from_extradata(extradata: &[u8]) -> String {
 
 /// Builds a minimal CMAF init segment (ftyp + moov) for HEVC video.
 /// Handles both HVCC and Annex B extradata formats.
+// Retained for future `initData` support in the MSF catalog.
+#[allow(dead_code)]
 pub fn build_init_segment(extradata: &[u8], width: u16, height: u16) -> Vec<u8> {
   let hvcc = ensure_hvcc(extradata);
   let mut buf = Vec::with_capacity(512);
-  write_ftyp(&mut buf);
-  write_moov(&mut buf, &hvcc, width, height);
+  mp4::write_ftyp(&mut buf);
+  mp4::write_moov(&mut buf, &hvcc, width, height);
   buf
 }
 
 // ---------------------------------------------------------------------------
-// MP4 box helpers
+// MP4 box helpers (retained for future `initData` support)
 // ---------------------------------------------------------------------------
+mod mp4 {
+  #![allow(dead_code)]
 
-#[allow(dead_code)]
-fn write_u8(buf: &mut Vec<u8>, v: u8) {
-  buf.push(v);
-}
-fn write_u16(buf: &mut Vec<u8>, v: u16) {
-  buf.extend_from_slice(&v.to_be_bytes());
-}
-fn write_u32(buf: &mut Vec<u8>, v: u32) {
-  buf.extend_from_slice(&v.to_be_bytes());
-}
-#[allow(dead_code)]
-fn write_u64(buf: &mut Vec<u8>, v: u64) {
-  buf.extend_from_slice(&v.to_be_bytes());
-}
+  fn write_u8(buf: &mut Vec<u8>, v: u8) {
+    buf.push(v);
+  }
+  fn write_u16(buf: &mut Vec<u8>, v: u16) {
+    buf.extend_from_slice(&v.to_be_bytes());
+  }
+  fn write_u32(buf: &mut Vec<u8>, v: u32) {
+    buf.extend_from_slice(&v.to_be_bytes());
+  }
+  fn write_u64(buf: &mut Vec<u8>, v: u64) {
+    buf.extend_from_slice(&v.to_be_bytes());
+  }
 
-/// Writes a size-prefixed box: reserves space for the 4-byte size, writes the
-/// 4-byte type, calls `body`, then back-patches the size.
-fn write_box<F: FnOnce(&mut Vec<u8>)>(buf: &mut Vec<u8>, box_type: &[u8; 4], body: F) {
-  let start = buf.len();
-  write_u32(buf, 0); // placeholder size
-  buf.extend_from_slice(box_type);
-  body(buf);
-  let end = buf.len();
-  let size = (end - start) as u32;
-  buf[start..start + 4].copy_from_slice(&size.to_be_bytes());
-}
+  /// Writes a size-prefixed box: reserves space for the 4-byte size, writes the
+  /// 4-byte type, calls `body`, then back-patches the size.
+  fn write_box<F: FnOnce(&mut Vec<u8>)>(buf: &mut Vec<u8>, box_type: &[u8; 4], body: F) {
+    let start = buf.len();
+    write_u32(buf, 0); // placeholder size
+    buf.extend_from_slice(box_type);
+    body(buf);
+    let end = buf.len();
+    let size = (end - start) as u32;
+    buf[start..start + 4].copy_from_slice(&size.to_be_bytes());
+  }
 
-/// Full-box: version (1 byte) + flags (3 bytes) prepended before `body`.
-fn write_fullbox<F: FnOnce(&mut Vec<u8>)>(
-  buf: &mut Vec<u8>,
-  box_type: &[u8; 4],
-  version: u8,
-  flags: u32,
-  body: F,
-) {
-  write_box(buf, box_type, |b| {
-    b.push(version);
-    b.extend_from_slice(&flags.to_be_bytes()[1..]); // 3 bytes
-    body(b);
-  });
-}
-
-// ---------------------------------------------------------------------------
-// ftyp
-// ---------------------------------------------------------------------------
-
-fn write_ftyp(buf: &mut Vec<u8>) {
-  write_box(buf, b"ftyp", |b| {
-    b.extend_from_slice(b"iso5"); // major_brand
-    write_u32(b, 1); // minor_version
-    b.extend_from_slice(b"cmf2"); // compatible_brands[0]
-    b.extend_from_slice(b"iso5"); // compatible_brands[1]
-  });
-}
-
-// ---------------------------------------------------------------------------
-// moov
-// ---------------------------------------------------------------------------
-
-fn write_moov(buf: &mut Vec<u8>, extradata: &[u8], width: u16, height: u16) {
-  write_box(buf, b"moov", |b| {
-    write_mvhd(b);
-    write_trak(b, extradata, width, height);
-    write_mvex(b);
-  });
-}
-
-fn write_mvhd(buf: &mut Vec<u8>) {
-  write_fullbox(buf, b"mvhd", 0, 0, |b| {
-    write_u32(b, 0); // creation_time
-    write_u32(b, 0); // modification_time
-    write_u32(b, 90000); // timescale
-    write_u32(b, 0); // duration
-    write_u32(b, 0x00010000); // rate (1.0)
-    write_u16(b, 0x0100); // volume (1.0)
-    b.extend_from_slice(&[0u8; 10]); // reserved
-    // unity matrix
-    write_u32(b, 0x00010000);
-    write_u32(b, 0);
-    write_u32(b, 0);
-    write_u32(b, 0);
-    write_u32(b, 0x00010000);
-    write_u32(b, 0);
-    write_u32(b, 0);
-    write_u32(b, 0);
-    write_u32(b, 0x40000000);
-    b.extend_from_slice(&[0u8; 24]); // pre_defined
-    write_u32(b, 2); // next_track_ID
-  });
-}
-
-fn write_trak(buf: &mut Vec<u8>, extradata: &[u8], width: u16, height: u16) {
-  write_box(buf, b"trak", |b| {
-    write_tkhd(b, width, height);
-    write_mdia(b, extradata, width, height);
-  });
-}
-
-fn write_tkhd(buf: &mut Vec<u8>, width: u16, height: u16) {
-  // flags: track_enabled(1) | track_in_movie(2) | track_in_preview(4)
-  write_fullbox(buf, b"tkhd", 0, 0x00000003, |b| {
-    write_u32(b, 0); // creation_time
-    write_u32(b, 0); // modification_time
-    write_u32(b, 1); // track_ID
-    write_u32(b, 0); // reserved
-    write_u32(b, 0); // duration
-    b.extend_from_slice(&[0u8; 8]); // reserved
-    write_u16(b, 0); // layer
-    write_u16(b, 0); // alternate_group
-    write_u16(b, 0); // volume
-    write_u16(b, 0); // reserved
-    // unity matrix
-    write_u32(b, 0x00010000);
-    write_u32(b, 0);
-    write_u32(b, 0);
-    write_u32(b, 0);
-    write_u32(b, 0x00010000);
-    write_u32(b, 0);
-    write_u32(b, 0);
-    write_u32(b, 0);
-    write_u32(b, 0x40000000);
-    // width/height as 16.16 fixed point
-    write_u32(b, (width as u32) << 16);
-    write_u32(b, (height as u32) << 16);
-  });
-}
-
-fn write_mdia(buf: &mut Vec<u8>, extradata: &[u8], width: u16, height: u16) {
-  write_box(buf, b"mdia", |b| {
-    write_mdhd(b);
-    write_hdlr(b);
-    write_minf(b, extradata, width, height);
-  });
-}
-
-fn write_mdhd(buf: &mut Vec<u8>) {
-  write_fullbox(buf, b"mdhd", 0, 0, |b| {
-    write_u32(b, 0); // creation_time
-    write_u32(b, 0); // modification_time
-    write_u32(b, 90000); // timescale
-    write_u32(b, 0); // duration
-    write_u16(b, 0x55C4); // language: 'und'
-    write_u16(b, 0); // pre_defined
-  });
-}
-
-fn write_hdlr(buf: &mut Vec<u8>) {
-  write_fullbox(buf, b"hdlr", 0, 0, |b| {
-    write_u32(b, 0); // pre_defined
-    b.extend_from_slice(b"vide"); // handler_type
-    b.extend_from_slice(&[0u8; 12]); // reserved
-    b.extend_from_slice(b"VideoHandler\0"); // name
-  });
-}
-
-fn write_minf(buf: &mut Vec<u8>, extradata: &[u8], width: u16, height: u16) {
-  write_box(buf, b"minf", |b| {
-    write_vmhd(b);
-    write_dinf(b);
-    write_stbl(b, extradata, width, height);
-  });
-}
-
-fn write_vmhd(buf: &mut Vec<u8>) {
-  write_fullbox(buf, b"vmhd", 0, 1, |b| {
-    write_u16(b, 0); // graphicsMode
-    write_u16(b, 0); // opcolor[0]
-    write_u16(b, 0); // opcolor[1]
-    write_u16(b, 0); // opcolor[2]
-  });
-}
-
-fn write_dinf(buf: &mut Vec<u8>) {
-  write_box(buf, b"dinf", |b| {
-    write_fullbox(b, b"dref", 0, 0, |b2| {
-      write_u32(b2, 1); // entry_count
-      // url entry with self-contained flag
-      write_fullbox(b2, b"url ", 0, 1, |_| {});
+  /// Full-box: version (1 byte) + flags (3 bytes) prepended before `body`.
+  fn write_fullbox<F: FnOnce(&mut Vec<u8>)>(
+    buf: &mut Vec<u8>,
+    box_type: &[u8; 4],
+    version: u8,
+    flags: u32,
+    body: F,
+  ) {
+    write_box(buf, box_type, |b| {
+      b.push(version);
+      b.extend_from_slice(&flags.to_be_bytes()[1..]); // 3 bytes
+      body(b);
     });
-  });
-}
+  }
 
-fn write_stbl(buf: &mut Vec<u8>, extradata: &[u8], width: u16, height: u16) {
-  write_box(buf, b"stbl", |b| {
-    write_stsd(b, extradata, width, height);
-    // Empty stts, stsc, stsz, stco — required by ISO but empty for fragmented MP4
-    write_fullbox(b, b"stts", 0, 0, |b2| write_u32(b2, 0));
-    write_fullbox(b, b"stsc", 0, 0, |b2| write_u32(b2, 0));
-    write_fullbox(b, b"stsz", 0, 0, |b2| {
-      write_u32(b2, 0); // sample_size
-      write_u32(b2, 0); // sample_count
+  // ftyp
+
+  pub(super) fn write_ftyp(buf: &mut Vec<u8>) {
+    write_box(buf, b"ftyp", |b| {
+      b.extend_from_slice(b"iso5"); // major_brand
+      write_u32(b, 1); // minor_version
+      b.extend_from_slice(b"cmf2"); // compatible_brands[0]
+      b.extend_from_slice(b"iso5"); // compatible_brands[1]
     });
-    write_fullbox(b, b"stco", 0, 0, |b2| write_u32(b2, 0));
-  });
-}
+  }
 
-fn write_stsd(buf: &mut Vec<u8>, extradata: &[u8], width: u16, height: u16) {
-  write_fullbox(buf, b"stsd", 0, 0, |b| {
-    write_u32(b, 1); // entry_count
-    write_hvc1(b, extradata, width, height);
-  });
-}
+  // moov
 
-fn write_hvc1(buf: &mut Vec<u8>, extradata: &[u8], width: u16, height: u16) {
-  write_box(buf, b"hvc1", |b| {
-    b.extend_from_slice(&[0u8; 6]); // reserved
-    write_u16(b, 1); // data_reference_index
-    b.extend_from_slice(&[0u8; 16]); // pre_defined + reserved
-    write_u16(b, width);
-    write_u16(b, height);
-    write_u32(b, 0x00480000); // horizresolution (72 dpi)
-    write_u32(b, 0x00480000); // vertresolution (72 dpi)
-    write_u32(b, 0); // reserved
-    write_u16(b, 1); // frame_count
-    b.extend_from_slice(&[0u8; 32]); // compressorname
-    write_u16(b, 0x0018); // depth (24-bit color)
-    write_u16(b, 0xFFFF); // pre_defined (-1)
-    write_hvcc(b, extradata);
-  });
-}
-
-fn write_hvcc(buf: &mut Vec<u8>, extradata: &[u8]) {
-  write_box(buf, b"hvcC", |b| {
-    b.extend_from_slice(extradata);
-  });
-}
-
-// ---------------------------------------------------------------------------
-// mvex / trex
-// ---------------------------------------------------------------------------
-
-fn write_mvex(buf: &mut Vec<u8>) {
-  write_box(buf, b"mvex", |b| {
-    write_fullbox(b, b"trex", 0, 0, |b2| {
-      write_u32(b2, 1); // track_ID
-      write_u32(b2, 1); // default_sample_description_index
-      write_u32(b2, 0); // default_sample_duration
-      write_u32(b2, 0); // default_sample_size
-      write_u32(b2, 0); // default_sample_flags
+  pub(super) fn write_moov(buf: &mut Vec<u8>, extradata: &[u8], width: u16, height: u16) {
+    write_box(buf, b"moov", |b| {
+      write_mvhd(b);
+      write_trak(b, extradata, width, height);
+      write_mvex(b);
     });
-  });
+  }
+
+  fn write_mvhd(buf: &mut Vec<u8>) {
+    write_fullbox(buf, b"mvhd", 0, 0, |b| {
+      write_u32(b, 0); // creation_time
+      write_u32(b, 0); // modification_time
+      write_u32(b, 90000); // timescale
+      write_u32(b, 0); // duration
+      write_u32(b, 0x00010000); // rate (1.0)
+      write_u16(b, 0x0100); // volume (1.0)
+      b.extend_from_slice(&[0u8; 10]); // reserved
+      // unity matrix
+      write_u32(b, 0x00010000);
+      write_u32(b, 0);
+      write_u32(b, 0);
+      write_u32(b, 0);
+      write_u32(b, 0x00010000);
+      write_u32(b, 0);
+      write_u32(b, 0);
+      write_u32(b, 0);
+      write_u32(b, 0x40000000);
+      b.extend_from_slice(&[0u8; 24]); // pre_defined
+      write_u32(b, 2); // next_track_ID
+    });
+  }
+
+  fn write_trak(buf: &mut Vec<u8>, extradata: &[u8], width: u16, height: u16) {
+    write_box(buf, b"trak", |b| {
+      write_tkhd(b, width, height);
+      write_mdia(b, extradata, width, height);
+    });
+  }
+
+  fn write_tkhd(buf: &mut Vec<u8>, width: u16, height: u16) {
+    // flags: track_enabled(1) | track_in_movie(2) | track_in_preview(4)
+    write_fullbox(buf, b"tkhd", 0, 0x00000003, |b| {
+      write_u32(b, 0); // creation_time
+      write_u32(b, 0); // modification_time
+      write_u32(b, 1); // track_ID
+      write_u32(b, 0); // reserved
+      write_u32(b, 0); // duration
+      b.extend_from_slice(&[0u8; 8]); // reserved
+      write_u16(b, 0); // layer
+      write_u16(b, 0); // alternate_group
+      write_u16(b, 0); // volume
+      write_u16(b, 0); // reserved
+      // unity matrix
+      write_u32(b, 0x00010000);
+      write_u32(b, 0);
+      write_u32(b, 0);
+      write_u32(b, 0);
+      write_u32(b, 0x00010000);
+      write_u32(b, 0);
+      write_u32(b, 0);
+      write_u32(b, 0);
+      write_u32(b, 0x40000000);
+      // width/height as 16.16 fixed point
+      write_u32(b, (width as u32) << 16);
+      write_u32(b, (height as u32) << 16);
+    });
+  }
+
+  fn write_mdia(buf: &mut Vec<u8>, extradata: &[u8], width: u16, height: u16) {
+    write_box(buf, b"mdia", |b| {
+      write_mdhd(b);
+      write_hdlr(b);
+      write_minf(b, extradata, width, height);
+    });
+  }
+
+  fn write_mdhd(buf: &mut Vec<u8>) {
+    write_fullbox(buf, b"mdhd", 0, 0, |b| {
+      write_u32(b, 0); // creation_time
+      write_u32(b, 0); // modification_time
+      write_u32(b, 90000); // timescale
+      write_u32(b, 0); // duration
+      write_u16(b, 0x55C4); // language: 'und'
+      write_u16(b, 0); // pre_defined
+    });
+  }
+
+  fn write_hdlr(buf: &mut Vec<u8>) {
+    write_fullbox(buf, b"hdlr", 0, 0, |b| {
+      write_u32(b, 0); // pre_defined
+      b.extend_from_slice(b"vide"); // handler_type
+      b.extend_from_slice(&[0u8; 12]); // reserved
+      b.extend_from_slice(b"VideoHandler\0"); // name
+    });
+  }
+
+  fn write_minf(buf: &mut Vec<u8>, extradata: &[u8], width: u16, height: u16) {
+    write_box(buf, b"minf", |b| {
+      write_vmhd(b);
+      write_dinf(b);
+      write_stbl(b, extradata, width, height);
+    });
+  }
+
+  fn write_vmhd(buf: &mut Vec<u8>) {
+    write_fullbox(buf, b"vmhd", 0, 1, |b| {
+      write_u16(b, 0); // graphicsMode
+      write_u16(b, 0); // opcolor[0]
+      write_u16(b, 0); // opcolor[1]
+      write_u16(b, 0); // opcolor[2]
+    });
+  }
+
+  fn write_dinf(buf: &mut Vec<u8>) {
+    write_box(buf, b"dinf", |b| {
+      write_fullbox(b, b"dref", 0, 0, |b2| {
+        write_u32(b2, 1); // entry_count
+        // url entry with self-contained flag
+        write_fullbox(b2, b"url ", 0, 1, |_| {});
+      });
+    });
+  }
+
+  fn write_stbl(buf: &mut Vec<u8>, extradata: &[u8], width: u16, height: u16) {
+    write_box(buf, b"stbl", |b| {
+      write_stsd(b, extradata, width, height);
+      // Empty stts, stsc, stsz, stco — required by ISO but empty for fragmented MP4
+      write_fullbox(b, b"stts", 0, 0, |b2| write_u32(b2, 0));
+      write_fullbox(b, b"stsc", 0, 0, |b2| write_u32(b2, 0));
+      write_fullbox(b, b"stsz", 0, 0, |b2| {
+        write_u32(b2, 0); // sample_size
+        write_u32(b2, 0); // sample_count
+      });
+      write_fullbox(b, b"stco", 0, 0, |b2| write_u32(b2, 0));
+    });
+  }
+
+  fn write_stsd(buf: &mut Vec<u8>, extradata: &[u8], width: u16, height: u16) {
+    write_fullbox(buf, b"stsd", 0, 0, |b| {
+      write_u32(b, 1); // entry_count
+      write_hvc1(b, extradata, width, height);
+    });
+  }
+
+  fn write_hvc1(buf: &mut Vec<u8>, extradata: &[u8], width: u16, height: u16) {
+    write_box(buf, b"hvc1", |b| {
+      b.extend_from_slice(&[0u8; 6]); // reserved
+      write_u16(b, 1); // data_reference_index
+      b.extend_from_slice(&[0u8; 16]); // pre_defined + reserved
+      write_u16(b, width);
+      write_u16(b, height);
+      write_u32(b, 0x00480000); // horizresolution (72 dpi)
+      write_u32(b, 0x00480000); // vertresolution (72 dpi)
+      write_u32(b, 0); // reserved
+      write_u16(b, 1); // frame_count
+      b.extend_from_slice(&[0u8; 32]); // compressorname
+      write_u16(b, 0x0018); // depth (24-bit color)
+      write_u16(b, 0xFFFF); // pre_defined (-1)
+      write_hvcc(b, extradata);
+    });
+  }
+
+  fn write_hvcc(buf: &mut Vec<u8>, extradata: &[u8]) {
+    write_box(buf, b"hvcC", |b| {
+      b.extend_from_slice(extradata);
+    });
+  }
+
+  // mvex / trex
+
+  fn write_mvex(buf: &mut Vec<u8>) {
+    write_box(buf, b"mvex", |b| {
+      write_fullbox(b, b"trex", 0, 0, |b2| {
+        write_u32(b2, 1); // track_ID
+        write_u32(b2, 1); // default_sample_description_index
+        write_u32(b2, 0); // default_sample_duration
+        write_u32(b2, 0); // default_sample_size
+        write_u32(b2, 0); // default_sample_flags
+      });
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -553,13 +560,22 @@ mod tests {
       width: 1280,
       height: 720,
       bitrate_bps: 2_000_000,
-      init_segment: vec![0u8; 8],
+      framerate: 30.0,
+      role: "video".to_owned(),
+      target_latency_ms: 1500,
     }];
     let json_bytes = build_catalog_json(&tracks).unwrap();
     let v: serde_json::Value = serde_json::from_slice(&json_bytes).unwrap();
     assert_eq!(v["version"], 1);
+    assert!(v["generatedAt"].is_u64());
     assert_eq!(v["tracks"][0]["name"], "video-720p");
-    assert_eq!(v["tracks"][0]["packaging"], "chunk-per-object");
-    assert!(v["tracks"][0]["initData"].as_str().is_some());
+    assert_eq!(v["tracks"][0]["packaging"], "loc");
+    assert_eq!(v["tracks"][0]["role"], "video");
+    assert_eq!(v["tracks"][0]["targetLatency"], 1500);
+    assert_eq!(v["tracks"][0]["renderGroup"], 1);
+    assert_eq!(v["tracks"][0]["altGroup"], 1);
+    assert_eq!(v["tracks"][0]["isLive"], true);
+    assert_eq!(v["tracks"][0]["framerate"], 30.0);
+    assert!(v["tracks"][0].get("initData").is_none());
   }
 }

@@ -13,3 +13,4 @@
 // limitations under the License.
 
 pub mod warp_catalog;
+pub use warp_catalog::{MsfCatalog, Track};

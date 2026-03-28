@@ -36,6 +36,7 @@ async fn main() -> Result<()> {
   );
 
   let variants = adaptive::quality_variants(&video_info)?;
+  info!("Catalog target latency: {} ms", cli.target_latency_ms);
   info!("{} adaptive variants", variants.len());
   for v in &variants {
     info!(
@@ -59,7 +60,6 @@ async fn main() -> Result<()> {
       hw_encoder,
     )
     .await?;
-    let init_seg = catalog::build_init_segment(&extra, v.width, v.height);
     let codec = catalog::codec_string_from_extradata(&extra);
     catalog_tracks.push(catalog::CatalogTrack {
       name: format!("video-{}", v.quality),
@@ -67,7 +67,9 @@ async fn main() -> Result<()> {
       width: v.width,
       height: v.height,
       bitrate_bps: v.bitrate_kbps * 1000,
-      init_segment: init_seg,
+      framerate: video_info.framerate,
+      role: "video".to_owned(),
+      target_latency_ms: cli.target_latency_ms,
     });
   }
   let catalog_json = catalog::build_catalog_json(&catalog_tracks)?;

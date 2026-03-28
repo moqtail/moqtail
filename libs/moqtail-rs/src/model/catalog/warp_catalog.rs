@@ -13,23 +13,23 @@
 // limitations under the License.
 
 /*
-WARP Streaming Format Draft, Section 4
-https://datatracker.ietf.org/doc/draft-ietf-moq-warp/00/
-
-This now only supports: 4.4.2. Simulcast video tracks - 3 alternate qualities along with audio
+MOQT Streaming Format (MSF) Catalog (draft-ietf-moq-msf-00)
+https://www.ietf.org/archive/id/draft-ietf-moq-msf-00.html
 */
 
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct Catalog {
+#[serde(rename_all = "camelCase")]
+pub struct MsfCatalog {
   pub version: u8,
-  #[serde(default)]
-  pub supports_delta_updates: bool,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub delta_update: Option<bool>,
   pub tracks: Vec<Track>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct Track {
   pub name: String,
   pub render_group: u8,
@@ -46,13 +46,19 @@ pub struct Track {
   pub bitrate: Option<u32>,
 
   #[serde(skip_serializing_if = "Option::is_none")]
-  pub framerate: Option<u32>,
+  pub framerate: Option<f64>,
 
   #[serde(skip_serializing_if = "Option::is_none")]
   pub alt_group: Option<u8>,
 
   #[serde(skip_serializing_if = "Option::is_none")]
-  pub samplerate: Option<u32>,
+  pub is_live: Option<bool>,
+
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub init_data: Option<String>,
+
+  #[serde(rename = "samplerate", skip_serializing_if = "Option::is_none")]
+  pub sample_rate: Option<u32>,
 
   #[serde(skip_serializing_if = "Option::is_none")]
   pub channel_config: Option<String>,
@@ -61,19 +67,20 @@ pub struct Track {
 #[cfg(test)]
 mod tests {
   use super::*;
+
   #[test]
   fn test_empty_catalog_serialization() {
-    let catalog = Catalog {
+    let catalog = MsfCatalog {
       version: 1,
-      supports_delta_updates: false,
+      delta_update: None,
       tracks: vec![],
     };
 
     let serialized = serde_json::to_string(&catalog).unwrap();
 
     assert!(serialized.contains("\"version\":1"));
-    assert!(serialized.contains("\"supports_delta_updates\":false"));
     assert!(serialized.contains("\"tracks\":[]"));
+    assert!(!serialized.contains("\"deltaUpdate\""));
   }
 
   #[test]
@@ -81,94 +88,101 @@ mod tests {
     let track = Track {
       name: "Minimal Track".to_string(),
       render_group: 1,
-      packaging: "mp4".to_string(),
-      codec: "h264".to_string(),
+      packaging: "loc".to_string(),
+      codec: "hvc1".to_string(),
       width: None,
       height: None,
       bitrate: None,
       framerate: None,
       alt_group: None,
-      samplerate: None,
+      is_live: None,
+      init_data: None,
+      sample_rate: None,
       channel_config: None,
     };
 
     let serialized = serde_json::to_string(&track).unwrap();
 
     assert!(serialized.contains("\"name\":\"Minimal Track\""));
-    assert!(serialized.contains("\"render_group\":1"));
-    assert!(serialized.contains("\"packaging\":\"mp4\""));
-    assert!(serialized.contains("\"codec\":\"h264\""));
+    assert!(serialized.contains("\"renderGroup\":1"));
+    assert!(serialized.contains("\"packaging\":\"loc\""));
+    assert!(serialized.contains("\"codec\":\"hvc1\""));
     assert!(!serialized.contains("\"width\""));
     assert!(!serialized.contains("\"height\""));
     assert!(!serialized.contains("\"bitrate\""));
     assert!(!serialized.contains("\"framerate\""));
-    assert!(!serialized.contains("\"alt_group\""));
+    assert!(!serialized.contains("\"altGroup\""));
+    assert!(!serialized.contains("\"isLive\""));
+    assert!(!serialized.contains("\"initData\""));
     assert!(!serialized.contains("\"samplerate\""));
-    assert!(!serialized.contains("\"channel_config\""));
+    assert!(!serialized.contains("\"channelConfig\""));
   }
 
   #[test]
   fn test_catalog_with_mixed_tracks() {
-    let catalog = Catalog {
-      version: 2,
-      supports_delta_updates: true,
+    let catalog = MsfCatalog {
+      version: 1,
+      delta_update: Some(true),
       tracks: vec![
         Track {
           name: "Video Track".to_string(),
           render_group: 1,
-          packaging: "mp4".to_string(),
-          codec: "h265".to_string(),
+          packaging: "loc".to_string(),
+          codec: "hvc1.1.6.L93.B0".to_string(),
           width: Some(1280),
           height: Some(720),
-          bitrate: Some(3000),
-          framerate: Some(60),
-          alt_group: None,
-          samplerate: None,
+          bitrate: Some(3_000_000),
+          framerate: Some(60.0),
+          alt_group: Some(1),
+          is_live: Some(true),
+          init_data: None,
+          sample_rate: None,
           channel_config: None,
         },
         Track {
           name: "Audio Track".to_string(),
-          render_group: 2,
-          packaging: "aac".to_string(),
-          codec: "aac".to_string(),
+          render_group: 1,
+          packaging: "loc".to_string(),
+          codec: "opus".to_string(),
           width: None,
           height: None,
-          bitrate: Some(128),
+          bitrate: Some(128_000),
           framerate: None,
           alt_group: None,
-          samplerate: Some(48000),
-          channel_config: Some("5.1".to_string()),
+          is_live: Some(true),
+          init_data: None,
+          sample_rate: Some(48_000),
+          channel_config: Some("2".to_string()),
         },
       ],
     };
 
     let serialized = serde_json::to_string(&catalog).unwrap();
 
-    assert!(serialized.contains("\"version\":2"));
-    assert!(serialized.contains("\"supports_delta_updates\":true"));
+    assert!(serialized.contains("\"version\":1"));
+    assert!(serialized.contains("\"deltaUpdate\":true"));
     assert!(serialized.contains("\"name\":\"Video Track\""));
-    assert!(serialized.contains("\"codec\":\"h265\""));
+    assert!(serialized.contains("\"codec\":\"hvc1.1.6.L93.B0\""));
     assert!(serialized.contains("\"width\":1280"));
     assert!(serialized.contains("\"height\":720"));
-    assert!(serialized.contains("\"bitrate\":3000"));
-    assert!(serialized.contains("\"framerate\":60"));
+    assert!(serialized.contains("\"bitrate\":3000000"));
+    assert!(serialized.contains("\"framerate\":60.0"));
     assert!(serialized.contains("\"name\":\"Audio Track\""));
-    assert!(serialized.contains("\"codec\":\"aac\""));
+    assert!(serialized.contains("\"codec\":\"opus\""));
     assert!(serialized.contains("\"samplerate\":48000"));
-    assert!(serialized.contains("\"channel_config\":\"5.1\""));
+    assert!(serialized.contains("\"channelConfig\":\"2\""));
   }
 
   #[test]
   fn test_invalid_catalog_deserialization() {
     let invalid_json_data = r#"
       {
-        "version": "invalid_version",
-        "supports_delta_updates": true,
+        "version": "invalid",
         "tracks": []
       }
     "#;
 
-    let result: Result<Catalog, _> = serde_json::from_str(invalid_json_data);
+    let result: Result<MsfCatalog, _> = serde_json::from_str(invalid_json_data);
     assert!(result.is_err());
   }
 
@@ -177,8 +191,8 @@ mod tests {
     let json_data = r#"
       {
         "name": "Partial Track",
-        "render_group": 1,
-        "packaging": "mp4",
+        "renderGroup": 1,
+        "packaging": "loc",
         "codec": "vp9",
         "width": 640,
         "height": 360
@@ -189,46 +203,51 @@ mod tests {
 
     assert_eq!(track.name, "Partial Track");
     assert_eq!(track.render_group, 1);
-    assert_eq!(track.packaging, "mp4");
+    assert_eq!(track.packaging, "loc");
     assert_eq!(track.codec, "vp9");
     assert_eq!(track.width, Some(640));
     assert_eq!(track.height, Some(360));
     assert_eq!(track.bitrate, None);
     assert_eq!(track.framerate, None);
     assert_eq!(track.alt_group, None);
-    assert_eq!(track.samplerate, None);
+    assert_eq!(track.sample_rate, None);
     assert_eq!(track.channel_config, None);
   }
+
   #[test]
   fn test_catalog_serialization() {
-    let catalog = Catalog {
+    let catalog = MsfCatalog {
       version: 1,
-      supports_delta_updates: true,
+      delta_update: Some(true),
       tracks: vec![
         Track {
           name: "Track 1".to_string(),
           render_group: 1,
-          packaging: "mp4".to_string(),
+          packaging: "loc".to_string(),
           codec: "h264".to_string(),
           width: Some(1920),
           height: Some(1080),
-          bitrate: Some(5000),
-          framerate: Some(30),
+          bitrate: Some(5_000_000),
+          framerate: Some(30.0),
           alt_group: Some(1),
-          samplerate: None,
+          is_live: Some(true),
+          init_data: None,
+          sample_rate: None,
           channel_config: None,
         },
         Track {
           name: "Audio Track".to_string(),
-          render_group: 2,
-          packaging: "aac".to_string(),
+          render_group: 1,
+          packaging: "loc".to_string(),
           codec: "aac".to_string(),
           width: None,
           height: None,
-          bitrate: Some(128),
+          bitrate: Some(128_000),
           framerate: None,
           alt_group: None,
-          samplerate: Some(44100),
+          is_live: Some(true),
+          init_data: Some("AQID".to_string()),
+          sample_rate: Some(44_100),
           channel_config: Some("stereo".to_string()),
         },
       ],
@@ -237,7 +256,8 @@ mod tests {
     let serialized = serde_json::to_string(&catalog).unwrap();
 
     assert!(serialized.contains("\"version\":1"));
-    assert!(serialized.contains("\"supports_delta_updates\":true"));
+    assert!(serialized.contains("\"deltaUpdate\":true"));
+    assert!(serialized.contains("\"initData\":\"AQID\""));
     assert!(serialized.contains("\"name\":\"Track 1\""));
     assert!(serialized.contains("\"codec\":\"h264\""));
   }
@@ -247,36 +267,38 @@ mod tests {
     let json_data = r#"
       {
         "version": 1,
-        "supports_delta_updates": true,
+        "deltaUpdate": true,
         "tracks": [
           {
             "name": "Track 1",
-            "render_group": 1,
-            "packaging": "mp4",
+            "renderGroup": 1,
+            "packaging": "loc",
             "codec": "h264",
             "width": 1920,
             "height": 1080,
-            "bitrate": 5000,
-            "framerate": 30,
-            "alt_group": 1
+            "bitrate": 5000000,
+            "framerate": 30.0,
+            "altGroup": 1,
+            "isLive": true
           },
           {
             "name": "Audio Track",
-            "render_group": 2,
-            "packaging": "aac",
+            "renderGroup": 1,
+            "packaging": "loc",
             "codec": "aac",
-            "bitrate": 128,
+            "bitrate": 128000,
             "samplerate": 44100,
-            "channel_config": "stereo"
+            "channelConfig": "stereo",
+            "initData": "AQID"
           }
         ]
       }
-      "#;
+    "#;
 
-    let catalog: Catalog = serde_json::from_str(json_data).unwrap();
+    let catalog: MsfCatalog = serde_json::from_str(json_data).unwrap();
 
     assert_eq!(catalog.version, 1);
-    assert!(catalog.supports_delta_updates);
+    assert_eq!(catalog.delta_update, Some(true));
     assert_eq!(catalog.tracks.len(), 2);
 
     let track1 = &catalog.tracks[0];
@@ -288,7 +310,8 @@ mod tests {
     let track2 = &catalog.tracks[1];
     assert_eq!(track2.name, "Audio Track");
     assert_eq!(track2.codec, "aac");
-    assert_eq!(track2.samplerate, Some(44100));
+    assert_eq!(track2.sample_rate, Some(44_100));
     assert_eq!(track2.channel_config.as_deref(), Some("stereo"));
+    assert_eq!(track2.init_data.as_deref(), Some("AQID"));
   }
 }

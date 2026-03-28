@@ -19,7 +19,6 @@ use crate::server::session_context::SessionContext;
 use crate::server::track::{Track, TrackStatus};
 use core::result::Result;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
-use moqtail::model::control::subscribe::Subscribe;
 use moqtail::model::control::{
   constant::{FilterType, GroupOrder, PublishErrorCode},
   control_message::ControlMessage,
@@ -198,24 +197,9 @@ pub async fn handle(
               .await;
           });
 
-          let m_forward = m_clone.parameters.get_param_or(
-            MessageParameterType::Forward,
-            MessageParameter::new_forward(true),
-          );
-          let synthetic_sub = Subscribe::new_next_group_start(
-            0,
-            m_clone.track_namespace.clone(),
-            m_clone.track_name.clone(),
-            vec![
-              MessageParameter::new_subscriber_priority(128),
-              MessageParameter::new_group_order(GroupOrder::Ascending),
-              m_forward,
-            ],
-          );
-
           let track_write = track_arc.read().await;
           if let Err(e) = track_write
-            .add_subscription(subscriber.clone(), synthetic_sub, false)
+            .add_subscription(subscriber.clone(), (*m_clone).clone(), false)
             .await
           {
             warn!(
@@ -325,25 +309,9 @@ pub async fn handle(
                 full_track_name
               );
 
-              // 3. Create the subscription now that the client has consented
-              let orig_forward = orig_publish.parameters.get_param_or(
-                MessageParameterType::Forward,
-                MessageParameter::new_forward(true),
-              );
-              let synthetic_sub = Subscribe::new_next_group_start(
-                0,
-                orig_publish.track_namespace.clone(),
-                orig_publish.track_name.clone(),
-                vec![
-                  MessageParameter::new_subscriber_priority(128),
-                  MessageParameter::new_group_order(GroupOrder::Ascending),
-                  orig_forward,
-                ],
-              );
-
               let track_read = track_arc.read().await;
               if let Err(e) = track_read
-                .add_subscription(client.clone(), synthetic_sub, false)
+                .add_subscription(client.clone(), orig_publish.clone(), false)
                 .await
               {
                 warn!("Failed to auto-subscribe client after PublishOk: {:?}", e);

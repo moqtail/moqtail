@@ -12,13 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::server::subscription::SubscriptionOrigin;
+
 use super::client::MOQTClient;
 use super::config::AppConfig;
 use super::subscription::Subscription;
 use super::track::TrackEvent;
 use super::utils;
 use anyhow::Result;
-use moqtail::model::control::subscribe::Subscribe;
 use moqtail::model::data::full_track_name::FullTrackName;
 use std::{collections::BTreeMap, collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
@@ -90,14 +91,14 @@ impl SubscriptionManager {
   pub async fn add_subscription(
     &self,
     subscriber: Arc<MOQTClient>,
-    subscribe_message: Subscribe,
+    origin_message: SubscriptionOrigin,
     cache: super::track_cache::TrackCache,
   ) -> Result<Arc<RwLock<Subscription>>, anyhow::Error> {
     let connection_id = { subscriber.connection_id };
 
     info!(
       "Adding subscription for subscriber_id={} to relay_track_id={} subscription message: {:?}",
-      connection_id, self.relay_track_id, subscribe_message
+      connection_id, self.relay_track_id, origin_message
     );
 
     // Create a separate unbounded channel for this subscriber
@@ -106,7 +107,7 @@ impl SubscriptionManager {
     let subscription = Subscription::new(
       self.relay_track_id,
       self.full_track_name.clone(),
-      subscribe_message,
+      origin_message,
       subscriber.clone(),
       event_rx,
       cache,

@@ -450,8 +450,6 @@ async fn handle_unsubscribe_message(
   Ok(())
 }
 
-// In your subscribe_handler.rs
-
 pub async fn handle_request_update(
   client: Arc<MOQTClient>,
   _control_stream_handler: &mut ControlStreamHandler,

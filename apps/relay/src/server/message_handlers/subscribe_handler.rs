@@ -263,10 +263,10 @@ async fn handle_subscribe_ok_message(
   info!("received SubscribeOk message: {:?}", msg);
   let request_id = msg.request_id;
 
-  // Look up and remove the relay subscribe request from the unified map
+  // Look up the relay subscribe request from the unified map
   let sub_request = {
-    let mut requests = context.relay_pending_requests.write().await;
-    match requests.remove(&request_id) {
+    let requests = context.relay_pending_requests.read().await;
+    match requests.get(&request_id).cloned() {
       Some(PendingRequest::Subscribe(m)) => {
         info!("request id is verified: {:?}", request_id);
         m
@@ -436,6 +436,16 @@ async fn handle_unsubscribe_message(
     .subscriptions
     .remove_subscription(&full_track_name)
     .await;
+
+  // Remove the request from the client's request map so it doesn't leak
+  {
+    let mut requests = client.subscribe_requests.write().await;
+    requests.remove(&unsubscribe_message.request_id);
+    debug!(
+      "Cleaned up client subscribe request {} after Unsubscribe",
+      unsubscribe_message.request_id
+    );
+  }
 
   Ok(())
 }

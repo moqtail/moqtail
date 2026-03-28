@@ -31,7 +31,7 @@ use moqtail::transport::data_stream_handler::HeaderInfo;
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::watch;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 pub async fn handle(
   client: Arc<MOQTClient>,
@@ -97,6 +97,7 @@ pub async fn handle(
                 request_id,
                 FetchErrorCode::InvalidRange,
                 ReasonPhrase::try_new(String::from("Invalid range")).unwrap(),
+                &context,
               )
               .await;
               return (None, None, None);
@@ -152,6 +153,7 @@ pub async fn handle(
           request_id,
           FetchErrorCode::TrackDoesNotExist,
           ReasonPhrase::try_new(String::from("Track does not exist")).unwrap(),
+          &context,
         )
         .await;
         return Ok(());
@@ -352,6 +354,7 @@ pub async fn handle(
             request_id,
             FetchErrorCode::NoObjects,
             ReasonPhrase::try_new(String::from("No objects available")).unwrap(),
+            &context,
           )
           .await;
         } else {
@@ -368,6 +371,13 @@ pub async fn handle(
             info!("removed stream from the map {}", stream_id);
           }
         }
+
+        // Clean up the unified map since the fetch is done
+        context
+          .relay_pending_requests
+          .write()
+          .await
+          .remove(&request_id);
 
         // Clean up cancel sender
         client
@@ -389,6 +399,16 @@ pub async fn handle(
         let mut senders = client.fetch_cancel_senders.write().await;
         senders.remove(&request_id)
       };
+
+      // Remove the fetch request from the unified map
+      {
+        let mut map = context.relay_pending_requests.write().await;
+        map.remove(&request_id);
+        debug!(
+          "Removed FETCH request {} from pending requests map after Cancel",
+          request_id
+        );
+      }
 
       if let Some(tx) = cancel_tx {
         let _ = tx.send(true);
@@ -413,8 +433,8 @@ pub async fn handle(
       // it will wait for Fetch OK. However this is not implemented yet.
       // Here is just a preliminary attempt for this, validating request id
       let pending_request = {
-        let mut map = context.relay_pending_requests.write().await;
-        map.remove(&msg.request_id)
+        let map = context.relay_pending_requests.read().await;
+        map.get(&msg.request_id).cloned()
       };
 
       if pending_request.is_none() {
@@ -436,9 +456,16 @@ async fn send_fetch_error(
   request_id: u64,
   error_code: FetchErrorCode,
   reason_phrase: ReasonPhrase,
+  context: &Arc<SessionContext>,
 ) {
   let fetch_error = FetchError::new(request_id, error_code, reason_phrase);
   client
     .queue_message(ControlMessage::FetchError(Box::new(fetch_error)))
     .await;
+  // Remove from map on error
+  context
+    .relay_pending_requests
+    .write()
+    .await
+    .remove(&request_id);
 }

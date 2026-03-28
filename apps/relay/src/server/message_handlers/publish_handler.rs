@@ -31,7 +31,7 @@ use moqtail::model::parameter::constant::MessageParameterType;
 use moqtail::model::parameter::message_parameter::{MessageParameter, MessageParameterVecExt};
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 pub async fn handle(
   client: Arc<MOQTClient>,
@@ -284,16 +284,25 @@ pub async fn handle(
       // Clean up the published track
       cleanup_published_track(&client, m.request_id, &context).await;
 
+      // Remove the request from the unified map to avoid memory leak
+      {
+        let mut map = context.relay_pending_requests.write().await;
+        map.remove(&m.request_id);
+        debug!(
+          "Removed terminated PUBLISH request {} from pending requests map",
+          m.request_id
+        );
+      }
+
       Ok(())
     }
 
     ControlMessage::PublishOk(m) => {
       info!("Received PublishOk for request_id: {}", m.request_id);
 
-      // Remove from map to clear memory
       let pending_request = {
-        let mut map = context.relay_pending_requests.write().await;
-        map.remove(&m.request_id)
+        let map = context.relay_pending_requests.read().await;
+        map.get(&m.request_id).cloned()
       };
 
       match pending_request {

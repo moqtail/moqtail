@@ -133,9 +133,9 @@ class MSEBuffer {
   }
 
   private periodicBufferCheck() {
-    // Only check for live streams
-    if (!this.video.duration || isFinite(this.video.duration)) {
-      return; // Not a live stream
+    // Check for live streams: either Infinity duration or MediaSource-backed (no finite duration set)
+    if (this.video.duration && isFinite(this.video.duration) && this.video.duration > 0) {
+      return; // VOD stream with known duration — skip live edge management
     }
 
     this.checkBufferedRegions(false);

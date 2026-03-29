@@ -20,6 +20,12 @@ import { Player } from '@/lib/player';
 import { cn } from '@/lib/utils';
 import { Tuple, type CMSF } from 'moqtail';
 import MSEBuffer from '@/lib/buffer';
+import { AbrController, AbrRulesCollection, DEFAULT_ABR_SETTINGS } from '@/lib/abr';
+import type { AbrMetrics, AbrSettings } from '@/lib/abr';
+import { MetricsCollector } from '@/lib/metrics/MetricsCollector';
+import type { MetricsSnapshot } from '@/lib/metrics/types';
+import { SettingsPanel } from '@/components/SettingsPanel';
+import { MetricsPanel } from '@/components/MetricsPanel';
 
 type Track = CMSF['tracks'][number];
 type Status = 'idle' | 'connecting' | 'ready' | 'restarting' | 'playing' | 'error';
@@ -205,19 +211,38 @@ function TrackGroup({
 }
 
 export function App() {
-  const [relayUrl, setRelayUrl] = useState('https://ord.abr.moqtail.dev');
+  const [relayUrl, setRelayUrl] = useState('https://localhost:4433');
   const [namespace, setNamespace] = useState('moqtail');
   const [status, setStatus] = useState<Status>('idle');
   const [tracks, setTracks] = useState<Track[]>([]);
   const [selectedVideo, setSelectedVideo] = useState<string | null>(null);
   const [selectedAudio, setSelectedAudio] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [optionsPanelOpen, setOptionsPanelOpen] = useState(false);
 
   const playerRef = useRef<Player | null>(null);
   const bufferRef = useRef<MSEBuffer | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
+  const [abrSettings, setAbrSettings] = useState<AbrSettings>(DEFAULT_ABR_SETTINGS);
+  const [abrMetrics, setAbrMetrics] = useState<AbrMetrics | null>(null);
+  const [metricsSnapshot, setMetricsSnapshot] = useState<MetricsSnapshot | null>(null);
+  const abrRef = useRef<AbrController | null>(null);
+  const rulesRef = useRef<AbrRulesCollection | null>(null);
+  const metricsRef = useRef<MetricsCollector | null>(null);
+
   const disposePlayer = useCallback(async () => {
+    if (abrRef.current) {
+      abrRef.current.stop();
+      abrRef.current = null;
+    }
+    if (metricsRef.current) {
+      metricsRef.current.stop();
+      metricsRef.current = null;
+    }
+    rulesRef.current = null;
+    setAbrMetrics(null);
+    setMetricsSnapshot(null);
     if (playerRef.current) {
       try {
         await playerRef.current.dispose();
@@ -254,14 +279,43 @@ export function App() {
       const allTracks = catalog.getTracks();
       setTracks(allTracks);
 
-      const firstVideo = allTracks.find(t => t.role === 'video');
+      // Start on lowest-bitrate video track (safe startup, like dash.js)
+      const videoTracksAll = allTracks.filter(t => t.role === 'video');
+      const firstVideo =
+        videoTracksAll.length > 0
+          ? videoTracksAll.reduce((low, t) =>
+              (t.bitrate ?? Infinity) < (low.bitrate ?? Infinity) ? t : low,
+            )
+          : undefined;
       if (firstVideo) {
         setSelectedVideo(firstVideo.name);
         setStatus('restarting');
         await player.attachMedia(videoRef.current);
+        bufferRef.current = new MSEBuffer(videoRef.current);
         await player.addMediaTrack(firstVideo.name);
         await player.startMedia();
         setStatus('playing');
+        const videoTracks = allTracks.filter(t => t.role === 'video');
+        const rulesCollection = new AbrRulesCollection(abrSettings);
+        rulesRef.current = rulesCollection;
+        const abr = new AbrController(
+          player,
+          rulesCollection,
+          videoTracks,
+          abrSettings,
+          setAbrMetrics,
+        );
+        abrRef.current = abr;
+        player.setOnTrackSwitched(() => abrRef.current?.releaseSwitchingGuard());
+        abr.start();
+
+        const bitrateMap: Record<string, number> = {};
+        for (const t of videoTracks) {
+          if (t.bitrate) bitrateMap[t.name] = Math.round(t.bitrate / 1000);
+        }
+        const mc = new MetricsCollector(player, bitrateMap, setMetricsSnapshot);
+        metricsRef.current = mc;
+        mc.start();
       } else {
         setStatus('ready');
       }
@@ -303,6 +357,27 @@ export function App() {
 
         await player.startMedia();
         setStatus('playing');
+        const videoTracksForAbr = catalog.getTracks().filter(t => t.role === 'video');
+        const rulesCollection = new AbrRulesCollection(abrSettings);
+        rulesRef.current = rulesCollection;
+        const abr = new AbrController(
+          player,
+          rulesCollection,
+          videoTracksForAbr,
+          abrSettings,
+          setAbrMetrics,
+        );
+        abrRef.current = abr;
+        player.setOnTrackSwitched(() => abrRef.current?.releaseSwitchingGuard());
+        abr.start();
+
+        const bitrateMap: Record<string, number> = {};
+        for (const t of videoTracksForAbr) {
+          if (t.bitrate) bitrateMap[t.name] = Math.round(t.bitrate / 1000);
+        }
+        const mc = new MetricsCollector(player, bitrateMap, setMetricsSnapshot);
+        metricsRef.current = mc;
+        mc.start();
       } catch (err) {
         setError((err as Error).message);
         setStatus('error');
@@ -316,22 +391,32 @@ export function App() {
     (track: Track, checked: boolean) => {
       if (track.role !== 'video' && track.role !== 'audio') return;
 
-      let newVideo = selectedVideo;
-      let newAudio = selectedAudio;
-
       if (track.role === 'video') {
-        // clicking the active track unchecks it; clicking any other switches to it
-        newVideo = track.name === selectedVideo && !checked ? null : track.name;
+        if (abrSettings.videoAutoSwitch) return; // auto mode: track rows are read-only
+        const newTrackName = track.name === selectedVideo && !checked ? null : track.name;
+        if (!newTrackName) return;
+        setSelectedVideo(newTrackName);
+        abrRef.current?.manualSwitch(newTrackName);
       } else {
+        // Audio tracks still do full restarts (no seamless switch for audio)
+        let newAudio = selectedAudio;
         newAudio = track.name === selectedAudio && !checked ? null : track.name;
+        setSelectedAudio(newAudio);
+        startPlayback(selectedVideo, newAudio);
       }
-
-      setSelectedVideo(newVideo);
-      setSelectedAudio(newAudio);
-      startPlayback(newVideo, newAudio);
     },
-    [selectedVideo, selectedAudio, startPlayback],
+    [selectedVideo, selectedAudio, abrSettings, startPlayback],
   );
+
+  const handleSettingsChange = useCallback((newSettings: AbrSettings) => {
+    setAbrSettings(newSettings);
+    abrRef.current?.updateSettings(newSettings);
+    if (rulesRef.current) {
+      for (const [name, config] of Object.entries(newSettings.rules)) {
+        rulesRef.current.setRuleActive(name, config.active);
+      }
+    }
+  }, []);
 
   const isBusy = status === 'connecting' || status === 'restarting';
 
@@ -353,6 +438,24 @@ export function App() {
           >
             MOQtail Player
           </a>
+          <button
+            onClick={() => setOptionsPanelOpen(o => !o)}
+            className={cn(
+              'flex items-center gap-1 rounded-md px-1.5 py-1 text-xs transition-colors',
+              optionsPanelOpen
+                ? 'text-blue-400 hover:text-blue-300'
+                : 'text-neutral-500 hover:text-neutral-300',
+            )}
+            title="Options"
+          >
+            <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
+              <path
+                fillRule="evenodd"
+                d="M7.84 1.804A1 1 0 018.82 1h2.36a1 1 0 01.98.804l.331 1.652a6.993 6.993 0 011.929 1.115l1.598-.54a1 1 0 011.186.447l1.18 2.044a1 1 0 01-.205 1.251l-1.267 1.113a7.047 7.047 0 010 2.228l1.267 1.113a1 1 0 01.206 1.25l-1.18 2.045a1 1 0 01-1.187.447l-1.598-.54a6.993 6.993 0 01-1.929 1.115l-.33 1.652a1 1 0 01-.98.804H8.82a1 1 0 01-.98-.804l-.331-1.652a6.993 6.993 0 01-1.929-1.115l-1.598.54a1 1 0 01-1.186-.447l-1.18-2.044a1 1 0 01.205-1.251l1.267-1.114a7.05 7.05 0 010-2.227L1.821 7.773a1 1 0 01-.206-1.25l1.18-2.045a1 1 0 011.187-.447l1.598.54A6.993 6.993 0 017.51 3.456l.33-1.652zM10 13a3 3 0 100-6 3 3 0 000 6z"
+                clipRule="evenodd"
+              />
+            </svg>
+          </button>
           <span className="text-neutral-700 select-none">·</span>
           <StatusDot status={status} />
         </div>
@@ -375,6 +478,13 @@ export function App() {
           </a>
         </div>
       </header>
+
+      {/* Options panel — horizontal cards (dash.js style) */}
+      <SettingsPanel
+        open={optionsPanelOpen}
+        settings={abrSettings}
+        onSettingsChange={handleSettingsChange}
+      />
 
       {/* Body */}
       <div className="flex h-full min-h-0 w-full flex-1 grow flex-col md:flex-row">
@@ -425,7 +535,7 @@ export function App() {
                 tracks={videoTracks}
                 selectedVideo={selectedVideo}
                 selectedAudio={selectedAudio}
-                disabled={isBusy}
+                disabled={isBusy || abrSettings.videoAutoSwitch}
                 onChange={handleTrackChange}
               />
               <TrackGroup
@@ -545,6 +655,11 @@ export function App() {
                   </a>
                 </div>
               </div>
+            </div>
+          )}
+          {abrMetrics && (
+            <div className="mt-4 w-full max-w-3xl overflow-auto rounded-xl border border-white/6 bg-neutral-900/60 p-4">
+              <MetricsPanel metrics={abrMetrics} snapshot={metricsSnapshot} tracks={videoTracks} />
             </div>
           )}
         </main>

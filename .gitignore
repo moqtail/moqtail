@@ -242,7 +242,8 @@ Cargo.lock
 
 ### Relay Logs ###
 relay.log.*
-
+logs/*
 
 ### Superpowers ###
 docs/*
+apps/client-js/specs/

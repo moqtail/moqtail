@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use bytes::Bytes;
-use tokio::sync::broadcast;
+use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 /// A batch of raw decoded frames representing one GOP (1 second of video).
@@ -11,14 +11,18 @@ pub struct RawGop {
   pub frames: Vec<Bytes>,
 }
 
-/// Decodes the source video one GOP at a time and broadcasts each GOP
-/// to all encoder variants via a broadcast channel.
+/// Decodes the source video one GOP at a time and fans out each GOP
+/// to all encoder variant pipelines via bounded mpsc channels.
+///
+/// Backpressure: when the slowest pipeline's channel is full the decoder
+/// blocks, preventing unbounded memory growth. This is the dash.js-style
+/// "no unbounded queues" pattern applied to the publisher side.
 pub async fn decode(
   video_path: String,
   framerate: f64,
-  gop_tx: broadcast::Sender<RawGop>,
+  gop_txs: Vec<mpsc::Sender<RawGop>>,
 ) -> Result<()> {
-  tokio::task::spawn_blocking(move || decode_blocking(&video_path, framerate, &gop_tx))
+  tokio::task::spawn_blocking(move || decode_blocking(&video_path, framerate, &gop_txs))
     .await
     .context("decoder task panicked")?
 }
@@ -26,7 +30,7 @@ pub async fn decode(
 fn decode_blocking(
   video_path: &str,
   framerate: f64,
-  gop_tx: &broadcast::Sender<RawGop>,
+  gop_txs: &[mpsc::Sender<RawGop>],
 ) -> Result<()> {
   let gop_size = crate::encoder::gop_size(framerate) as usize;
   let mut gop_id: u64 = 0;
@@ -78,7 +82,7 @@ fn decode_blocking(
             frames: std::mem::replace(&mut frame_buf, Vec::with_capacity(gop_size)),
           };
 
-          if gop_tx.send(gop).is_err() {
+          if !fanout_blocking(gop_txs, gop) {
             warn!("All receivers dropped, stopping decoder");
             return Ok(());
           }
@@ -100,7 +104,7 @@ fn decode_blocking(
           frames: std::mem::replace(&mut frame_buf, Vec::with_capacity(gop_size)),
         };
 
-        if gop_tx.send(gop).is_err() {
+        if !fanout_blocking(gop_txs, gop) {
           return Ok(());
         }
 
@@ -115,7 +119,7 @@ fn decode_blocking(
         gop_id,
         frames: std::mem::replace(&mut frame_buf, Vec::with_capacity(gop_size)),
       };
-      if gop_tx.send(gop).is_err() {
+      if !fanout_blocking(gop_txs, gop) {
         return Ok(());
       }
       gop_id += 1;
@@ -123,6 +127,27 @@ fn decode_blocking(
 
     loop_count += 1;
   }
+}
+
+/// Sends a GOP to every pipeline channel using blocking_send (backpressure).
+/// Returns false if ALL receivers have been dropped.
+/// Bytes::clone inside RawGop::clone is O(1) — Arc ref bump, no data copy.
+fn fanout_blocking(txs: &[mpsc::Sender<RawGop>], gop: RawGop) -> bool {
+  let mut any_alive = false;
+  for (i, tx) in txs.iter().enumerate() {
+    // Clone for all but the last sender; move the original into the last one.
+    let g = if i < txs.len() - 1 {
+      gop.clone()
+    } else {
+      // Can't move out of gop here since we borrowed it above; clone is still O(1).
+      gop.clone()
+    };
+    match tx.blocking_send(g) {
+      Ok(()) => any_alive = true,
+      Err(_) => {} // this pipeline dropped, skip it
+    }
+  }
+  any_alive
 }
 
 /// Extracts YUV420P plane data from a decoded frame into a single contiguous buffer.

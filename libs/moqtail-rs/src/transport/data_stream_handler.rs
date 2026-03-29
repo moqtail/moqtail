@@ -700,7 +700,7 @@ mod tests {
     let track_alias = 999;
     let group_id = 9;
     let subgroup_id = Some(11);
-    let publisher_priority = 255;
+    let publisher_priority = Some(255);
     let subgroup_header = SubgroupHeader {
       header_type,
       track_alias,

@@ -1874,18 +1874,30 @@ export class MOQtailClient {
                   case SubgroupHeaderType.Type0x11:
                   case SubgroupHeaderType.Type0x18:
                   case SubgroupHeaderType.Type0x19:
+                  case SubgroupHeaderType.Type0x30:
+                  case SubgroupHeaderType.Type0x31:
+                  case SubgroupHeaderType.Type0x38:
+                  case SubgroupHeaderType.Type0x39:
                     subgroupId = 0n
                     break
                   case SubgroupHeaderType.Type0x12:
                   case SubgroupHeaderType.Type0x13:
                   case SubgroupHeaderType.Type0x1A:
                   case SubgroupHeaderType.Type0x1B:
+                  case SubgroupHeaderType.Type0x32:
+                  case SubgroupHeaderType.Type0x33:
+                  case SubgroupHeaderType.Type0x3A:
+                  case SubgroupHeaderType.Type0x3B:
                     subgroupId = firstObjectId
                     break
                   case SubgroupHeaderType.Type0x14:
                   case SubgroupHeaderType.Type0x15:
                   case SubgroupHeaderType.Type0x1C:
                   case SubgroupHeaderType.Type0x1D:
+                  case SubgroupHeaderType.Type0x34:
+                  case SubgroupHeaderType.Type0x35:
+                  case SubgroupHeaderType.Type0x3C:
+                  case SubgroupHeaderType.Type0x3D:
                     subgroupId = header.subgroupId!
                 }
 

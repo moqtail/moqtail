@@ -298,7 +298,7 @@ impl Subscription {
                               relay_track_id,
                               object.group_id,
                               object.subgroup_id,
-                              object.publisher_priority,
+                              Some(object.publisher_priority),
                               has_extensions,
                               false,
                             ),

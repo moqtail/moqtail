@@ -347,7 +347,7 @@ async fn send_via_streams(
     let stream = connection.open_uni().await?.await?;
 
     let sub_header =
-      SubgroupHeader::new_with_explicit_id(track_alias, group_id, 1u64, 1u8, true, true);
+      SubgroupHeader::new_with_explicit_id(track_alias, group_id, 1u64, Some(1u8), true, true);
     let header_info = HeaderInfo::Subgroup { header: sub_header };
     let stream = Arc::new(Mutex::new(stream));
     let mut handler = SendDataStream::new(stream, header_info).await?;
@@ -363,7 +363,7 @@ async fn send_via_streams(
         payload: Some(Bytes::from(payload)),
       };
       let object =
-        Object::try_from_subgroup(subgroup_obj, track_alias, group_id, Some(group_id), 1)?;
+        Object::try_from_subgroup(subgroup_obj, track_alias, group_id, Some(group_id), Some(1))?;
 
       match handler.send_object(&object, prev_object_id).await {
         Ok(_) => {

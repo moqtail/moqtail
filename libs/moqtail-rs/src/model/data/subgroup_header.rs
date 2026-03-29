@@ -24,7 +24,8 @@ pub struct SubgroupHeader {
   pub track_alias: u64,
   pub group_id: u64,
   pub subgroup_id: Option<u64>,
-  pub publisher_priority: u8,
+  /// Publisher priority. None when header_type has DEFAULT_PRIORITY bit set.
+  pub publisher_priority: Option<u8>,
 }
 
 impl SubgroupHeader {
@@ -32,15 +33,20 @@ impl SubgroupHeader {
   pub fn new_fixed_zero_id(
     track_alias: u64,
     group_id: u64,
-    publisher_priority: u8,
+    publisher_priority: Option<u8>,
     has_extensions: bool,
     contains_end_of_group: bool,
   ) -> Self {
-    let header_type = match (has_extensions, contains_end_of_group) {
-      (false, false) => SubgroupHeaderType::Type0x10,
-      (true, false) => SubgroupHeaderType::Type0x11,
-      (false, true) => SubgroupHeaderType::Type0x18,
-      (true, true) => SubgroupHeaderType::Type0x19,
+    let has_default_priority = publisher_priority.is_none();
+    let header_type = match (has_extensions, contains_end_of_group, has_default_priority) {
+      (false, false, false) => SubgroupHeaderType::Type0x10,
+      (true, false, false) => SubgroupHeaderType::Type0x11,
+      (false, true, false) => SubgroupHeaderType::Type0x18,
+      (true, true, false) => SubgroupHeaderType::Type0x19,
+      (false, false, true) => SubgroupHeaderType::Type0x30,
+      (true, false, true) => SubgroupHeaderType::Type0x31,
+      (false, true, true) => SubgroupHeaderType::Type0x38,
+      (true, true, true) => SubgroupHeaderType::Type0x39,
     };
 
     Self {
@@ -56,15 +62,20 @@ impl SubgroupHeader {
   pub fn new_first_object_id(
     track_alias: u64,
     group_id: u64,
-    publisher_priority: u8,
+    publisher_priority: Option<u8>,
     has_extensions: bool,
     contains_end_of_group: bool,
   ) -> Self {
-    let header_type = match (has_extensions, contains_end_of_group) {
-      (false, false) => SubgroupHeaderType::Type0x12,
-      (true, false) => SubgroupHeaderType::Type0x13,
-      (false, true) => SubgroupHeaderType::Type0x1A,
-      (true, true) => SubgroupHeaderType::Type0x1B,
+    let has_default_priority = publisher_priority.is_none();
+    let header_type = match (has_extensions, contains_end_of_group, has_default_priority) {
+      (false, false, false) => SubgroupHeaderType::Type0x12,
+      (true, false, false) => SubgroupHeaderType::Type0x13,
+      (false, true, false) => SubgroupHeaderType::Type0x1A,
+      (true, true, false) => SubgroupHeaderType::Type0x1B,
+      (false, false, true) => SubgroupHeaderType::Type0x32,
+      (true, false, true) => SubgroupHeaderType::Type0x33,
+      (false, true, true) => SubgroupHeaderType::Type0x3A,
+      (true, true, true) => SubgroupHeaderType::Type0x3B,
     };
 
     Self {
@@ -81,15 +92,20 @@ impl SubgroupHeader {
     track_alias: u64,
     group_id: u64,
     subgroup_id: u64,
-    publisher_priority: u8,
+    publisher_priority: Option<u8>,
     has_extensions: bool,
     contains_end_of_group: bool,
   ) -> Self {
-    let header_type = match (has_extensions, contains_end_of_group) {
-      (false, false) => SubgroupHeaderType::Type0x14,
-      (true, false) => SubgroupHeaderType::Type0x15,
-      (false, true) => SubgroupHeaderType::Type0x1C,
-      (true, true) => SubgroupHeaderType::Type0x1D,
+    let has_default_priority = publisher_priority.is_none();
+    let header_type = match (has_extensions, contains_end_of_group, has_default_priority) {
+      (false, false, false) => SubgroupHeaderType::Type0x14,
+      (true, false, false) => SubgroupHeaderType::Type0x15,
+      (false, true, false) => SubgroupHeaderType::Type0x1C,
+      (true, true, false) => SubgroupHeaderType::Type0x1D,
+      (false, false, true) => SubgroupHeaderType::Type0x34,
+      (true, false, true) => SubgroupHeaderType::Type0x35,
+      (false, true, true) => SubgroupHeaderType::Type0x3C,
+      (true, true, true) => SubgroupHeaderType::Type0x3D,
     };
 
     Self {
@@ -129,8 +145,18 @@ impl SubgroupHeader {
       }
     }
 
-    // Publisher Priority
-    buf.put_u8(self.publisher_priority);
+    // Publisher Priority (omitted when DEFAULT_PRIORITY bit is set)
+    if !self.header_type.has_default_priority() {
+      if let Some(priority) = self.publisher_priority {
+        buf.put_u8(priority);
+      } else {
+        return Err(ParseError::ProtocolViolation {
+          context: "SubgroupHeader::serialize(publisher_priority)",
+          details: "Publisher_priority field is required when DEFAULT_PRIORITY bit is not set"
+            .to_string(),
+        });
+      }
+    }
 
     Ok(buf.freeze())
   }
@@ -156,14 +182,19 @@ impl SubgroupHeader {
       None // For types where Subgroup ID = first object ID
     };
 
-    if bytes.remaining() < 1 {
-      return Err(ParseError::NotEnoughBytes {
-        context: "SubgroupHeader::deserialize(publisher_priority)",
-        needed: 1,
-        available: bytes.remaining(),
-      });
-    }
-    let publisher_priority = bytes.get_u8();
+    // Parse Publisher Priority (omitted when DEFAULT_PRIORITY bit is set)
+    let publisher_priority = if !header_type.has_default_priority() {
+      if bytes.remaining() < 1 {
+        return Err(ParseError::NotEnoughBytes {
+          context: "SubgroupHeader::deserialize(publisher_priority)",
+          needed: 1,
+          available: bytes.remaining(),
+        });
+      }
+      Some(bytes.get_u8())
+    } else {
+      None
+    };
 
     Ok(Self {
       header_type,
@@ -187,7 +218,28 @@ mod tests {
     let track_alias = 87;
     let group_id = 9;
     let subgroup_id = Some(11);
-    let publisher_priority = 255;
+    let publisher_priority = Some(255);
+    let subgroup_header = SubgroupHeader {
+      header_type,
+      track_alias,
+      group_id,
+      subgroup_id,
+      publisher_priority,
+    };
+
+    let mut buf = subgroup_header.serialize(None).unwrap();
+    let deserialized = SubgroupHeader::deserialize(&mut buf).unwrap();
+    assert_eq!(deserialized, subgroup_header);
+    assert!(!buf.has_remaining());
+  }
+
+  #[test]
+  fn test_roundtrip_default_priority() {
+    let header_type = SubgroupHeaderType::Type0x30; // DEFAULT_PRIORITY bit set
+    let track_alias = 87;
+    let group_id = 9;
+    let subgroup_id = Some(0);
+    let publisher_priority = None; // Not included in wire format
     let subgroup_header = SubgroupHeader {
       header_type,
       track_alias,
@@ -208,7 +260,7 @@ mod tests {
     let track_alias = 87;
     let group_id = 9;
     let subgroup_id = Some(11);
-    let publisher_priority = 255;
+    let publisher_priority = Some(255);
     let subgroup_header = SubgroupHeader {
       header_type,
       track_alias,
@@ -234,7 +286,7 @@ mod tests {
     let track_alias = 87;
     let group_id = 9;
     let subgroup_id = Some(11);
-    let publisher_priority = 255;
+    let publisher_priority = Some(255);
     let subgroup_header = SubgroupHeader {
       header_type,
       track_alias,
@@ -271,7 +323,7 @@ mod tests {
     for (header_type, has_explicit_id, expected_subgroup_id) in test_cases {
       let track_alias = 87;
       let group_id = 9;
-      let publisher_priority = 255;
+      let publisher_priority = Some(255);
 
       let subgroup_header = SubgroupHeader {
         header_type,
@@ -338,11 +390,16 @@ mod tests {
   fn test_constructor_methods() {
     let track_alias = 87;
     let group_id = 9;
-    let publisher_priority = 255;
+    let publisher_priority = Some(255);
 
     // Test new_fixed_zero_id
-    let header =
-      SubgroupHeader::new_fixed_zero_id(track_alias, group_id, publisher_priority, false, false);
+    let header = SubgroupHeader::new_fixed_zero_id(
+      track_alias,
+      group_id,
+      publisher_priority,
+      false,
+      false,
+    );
     assert_eq!(header.header_type, SubgroupHeaderType::Type0x10);
     assert_eq!(header.subgroup_id, Some(0));
 
@@ -362,13 +419,23 @@ mod tests {
     assert_eq!(header.subgroup_id, Some(0));
 
     // Test new_first_object_id
-    let header =
-      SubgroupHeader::new_first_object_id(track_alias, group_id, publisher_priority, false, false);
+    let header = SubgroupHeader::new_first_object_id(
+      track_alias,
+      group_id,
+      publisher_priority,
+      false,
+      false,
+    );
     assert_eq!(header.header_type, SubgroupHeaderType::Type0x12);
     assert_eq!(header.subgroup_id, None);
 
-    let header =
-      SubgroupHeader::new_first_object_id(track_alias, group_id, publisher_priority, true, false);
+    let header = SubgroupHeader::new_first_object_id(
+      track_alias,
+      group_id,
+      publisher_priority,
+      true,
+      false,
+    );
     assert_eq!(header.header_type, SubgroupHeaderType::Type0x13);
     assert_eq!(header.subgroup_id, None);
 
@@ -438,7 +505,7 @@ mod tests {
 
     let track_alias = 87;
     let group_id = 9;
-    let publisher_priority = 255;
+    let publisher_priority = Some(255);
 
     // Test a header type with fixed subgroup ID = 0
     let header =

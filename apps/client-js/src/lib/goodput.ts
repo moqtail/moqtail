@@ -30,6 +30,9 @@ export class GoodputTracker {
   #alphaFast: number;
   #alphaSlow: number;
   #hasData: boolean = false;
+  #lastDeliveryTimeMs = 0;
+  #lastObjectBytes = 0;
+  #sampleCount = 0;
 
   constructor(alphaFast: number = 0.5, alphaSlow: number = 0.1) {
     this.#alphaFast = alphaFast;
@@ -43,6 +46,9 @@ export class GoodputTracker {
    */
   recordObject(bytes: number, durationMs: number): void {
     if (durationMs <= 0) return;
+    this.#lastDeliveryTimeMs = durationMs;
+    this.#lastObjectBytes = bytes;
+    this.#sampleCount++;
     const instantBps = (bytes * 8 * 1000) / durationMs;
     if (!this.#hasData) {
       // Cold start: seed both EMAs to the first sample so there is no ramp-up lag
@@ -73,11 +79,26 @@ export class GoodputTracker {
     this.#emaFast = 0;
     this.#emaSlow = 0;
     this.#hasData = false;
+    this.#lastDeliveryTimeMs = 0;
+    this.#lastObjectBytes = 0;
+    this.#sampleCount = 0;
   }
 
   /** Update smoothing factors without recreating the tracker. */
   setAlphas(alphaFast: number, alphaSlow: number): void {
     this.#alphaFast = alphaFast;
     this.#alphaSlow = alphaSlow;
+  }
+
+  getLastDeliveryTimeMs(): number {
+    return this.#lastDeliveryTimeMs;
+  }
+
+  getLastObjectBytes(): number {
+    return this.#lastObjectBytes;
+  }
+
+  getSampleCount(): number {
+    return this.#sampleCount;
   }
 }

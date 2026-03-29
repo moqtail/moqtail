@@ -324,6 +324,11 @@ export class Player {
     slowEmaBps: number;
     bufferSeconds: number;
     activeTrack: string | null;
+    droppedFrames: number;
+    totalFrames: number;
+    playbackRate: number;
+    deliveryTimeMs: number;
+    lastObjectBytes: number;
   } {
     const videoStruct = this.#streams.find(s => this.catalog?.getRole(s.trackName) === 'video');
     const buffered = this.#element?.buffered;
@@ -331,12 +336,18 @@ export class Player {
       buffered && buffered.length > 0 && this.#element
         ? Math.max(0, buffered.end(buffered.length - 1) - this.#element.currentTime)
         : 0;
+    const quality = this.#element?.getVideoPlaybackQuality?.();
     return {
       bandwidthBps: videoStruct?.tracker.getBandwidthBps() ?? 0,
       fastEmaBps: videoStruct?.tracker.getFastEmaBps() ?? 0,
       slowEmaBps: videoStruct?.tracker.getSlowEmaBps() ?? 0,
       bufferSeconds,
       activeTrack: videoStruct?.trackName ?? null,
+      droppedFrames: quality?.droppedVideoFrames ?? 0,
+      totalFrames: quality?.totalVideoFrames ?? 0,
+      playbackRate: this.#element?.playbackRate ?? 1,
+      deliveryTimeMs: videoStruct?.tracker.getLastDeliveryTimeMs() ?? 0,
+      lastObjectBytes: videoStruct?.tracker.getLastObjectBytes() ?? 0,
     };
   }
 

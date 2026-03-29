@@ -26,27 +26,70 @@ pub struct EncodedGop {
 #[derive(Debug, Clone, Copy)]
 pub enum HardwareEncoder {
   Nvenc,        // NVIDIA NVENC
+  Amf,          // AMD AMF (Windows)
   Qsv,          // Intel Quick Sync Video
   Vaapi,        // VA-API (AMD/Intel on Linux)
   VideoToolbox, // Apple VideoToolbox
 }
 
-/// Detects available HEVC hardware encoders, preferring NVIDIA > Intel > VA-API > Apple.
+/// Detects available HEVC hardware encoders, preferring NVIDIA > AMD > Intel > VA-API > Apple.
+/// Actually attempts to open each encoder with a minimal config to confirm the hardware
+/// is usable at runtime, not just registered in FFmpeg.
 /// Call this ONCE at startup and share the result across all encoder pipelines.
 pub fn detect_hardware_encoder() -> Option<HardwareEncoder> {
-  if ffmpeg_next::encoder::find_by_name("hevc_nvenc").is_some() {
-    return Some(HardwareEncoder::Nvenc);
-  }
-  if ffmpeg_next::encoder::find_by_name("hevc_qsv").is_some() {
-    return Some(HardwareEncoder::Qsv);
-  }
-  if ffmpeg_next::encoder::find_by_name("hevc_vaapi").is_some() {
-    return Some(HardwareEncoder::Vaapi);
-  }
-  if ffmpeg_next::encoder::find_by_name("hevc_videotoolbox").is_some() {
-    return Some(HardwareEncoder::VideoToolbox);
+  let candidates = [
+    ("hevc_nvenc", HardwareEncoder::Nvenc),
+    ("hevc_amf", HardwareEncoder::Amf),
+    ("hevc_qsv", HardwareEncoder::Qsv),
+    ("hevc_vaapi", HardwareEncoder::Vaapi),
+    ("hevc_videotoolbox", HardwareEncoder::VideoToolbox),
+  ];
+
+  for (name, variant) in candidates {
+    if probe_encoder(name) {
+      return Some(variant);
+    }
   }
   None
+}
+
+/// Attempts to open a named encoder with a minimal config to verify the hardware is
+/// actually usable (not just registered). Returns false if the codec is missing or
+/// if the open fails (e.g. no GPU, missing driver, no hardware device).
+fn probe_encoder(encoder_name: &str) -> bool {
+  let codec = match ffmpeg_next::encoder::find_by_name(encoder_name) {
+    Some(c) => c,
+    None => return false,
+  };
+
+  let Ok(mut enc) = ffmpeg_next::codec::Context::new_with_codec(codec)
+    .encoder()
+    .video()
+  else {
+    return false;
+  };
+
+  // Minimal parameters — just enough to attempt an open.
+  enc.set_width(320);
+  enc.set_height(240);
+  enc.set_format(Pixel::YUV420P);
+  enc.set_time_base((1, 30));
+  enc.set_bit_rate(500_000);
+
+  let opts = build_encoder_opts(encoder_name, 500);
+  match enc.open_with(opts) {
+    Ok(_) => {
+      info!("Hardware encoder probe succeeded: {}", encoder_name);
+      true
+    }
+    Err(e) => {
+      warn!(
+        "Hardware encoder '{}' registered but failed to open (hardware unavailable?): {}",
+        encoder_name, e
+      );
+      false
+    }
+  }
 }
 
 /// Opens an encoder with the given parameters, reads `extradata` (HVCC record),
@@ -157,6 +200,7 @@ fn get_extradata_blocking(
 fn encoder_name_for(hw_encoder: Option<HardwareEncoder>) -> &'static str {
   match hw_encoder {
     Some(HardwareEncoder::Nvenc) => "hevc_nvenc",
+    Some(HardwareEncoder::Amf) => "hevc_amf",
     Some(HardwareEncoder::Qsv) => "hevc_qsv",
     Some(HardwareEncoder::Vaapi) => "hevc_vaapi",
     Some(HardwareEncoder::VideoToolbox) => "hevc_videotoolbox",
@@ -188,6 +232,12 @@ fn build_encoder_opts(encoder_name: &str, bitrate_kbps: u32) -> ffmpeg_next::Dic
     opts.set("bf", "0");
     opts.set("forced-idr", "1");
     opts.set("strict_gop", "1");
+  } else if encoder_name == "hevc_amf" {
+    opts.set("usage", "ultralowlatency");
+    opts.set("quality", "speed");
+    opts.set("rc", "cbr");
+    opts.set("bf", "0");
+    opts.set("enforce_hrd", "1");
   } else if encoder_name == "hevc_qsv" {
     opts.set("preset", "medium");
     opts.set("look_ahead", "0");
@@ -255,6 +305,7 @@ fn encode_blocking(
 
   match hw_encoder {
     Some(HardwareEncoder::Nvenc) => info!("Using NVIDIA NVENC HEVC hardware encoder"),
+    Some(HardwareEncoder::Amf) => info!("Using AMD AMF HEVC hardware encoder"),
     Some(HardwareEncoder::Qsv) => info!("Using Intel QSV HEVC hardware encoder"),
     Some(HardwareEncoder::Vaapi) => info!("Using VA-API HEVC hardware encoder"),
     Some(HardwareEncoder::VideoToolbox) => info!("Using Apple VideoToolbox HEVC hardware encoder"),

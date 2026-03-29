@@ -32,7 +32,7 @@ type AxisSide = 'left' | 'right';
 export function MetricsChart({ lines, width = 300, height = 140 }: MetricsChartProps) {
   if (lines.length === 0) return null;
 
-  // ── Assign units to axes (DASH.js algorithm) ──
+  // ── Assign units to axes ──
   // 1st unique unit → left, 2nd → right, 3rd+ → fall back to left
   const unitOrder: string[] = [];
   for (const line of lines) {

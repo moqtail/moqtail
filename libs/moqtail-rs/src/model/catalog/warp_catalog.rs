@@ -97,7 +97,7 @@ mod tests {
     let track = Track {
       name: "Minimal Track".to_string(),
       render_group: 1,
-      packaging: "loc".to_string(),
+      packaging: "cmaf".to_string(),
       is_live: true,
       codec: "hvc1".to_string(),
       role: Some("video".to_string()),
@@ -116,7 +116,7 @@ mod tests {
     let serialized = serde_json::to_string(&track).unwrap();
     assert!(serialized.contains("\"name\":\"Minimal Track\""));
     assert!(serialized.contains("\"renderGroup\":1"));
-    assert!(serialized.contains("\"packaging\":\"loc\""));
+    assert!(serialized.contains("\"packaging\":\"cmaf\""));
     assert!(serialized.contains("\"isLive\":true"));
     assert!(serialized.contains("\"role\":\"video\""));
   }
@@ -131,7 +131,7 @@ mod tests {
         Track {
           name: "video".to_string(),
           render_group: 1,
-          packaging: "loc".to_string(),
+          packaging: "cmaf".to_string(),
           is_live: true,
           codec: "hvc1.1.6.L93.B0".to_string(),
           role: Some("video".to_string()),
@@ -149,7 +149,7 @@ mod tests {
         Track {
           name: "audio".to_string(),
           render_group: 1,
-          packaging: "loc".to_string(),
+          packaging: "cmaf".to_string(),
           is_live: true,
           codec: "opus".to_string(),
           role: Some("audio".to_string()),
@@ -193,7 +193,7 @@ mod tests {
       {
         "name": "video",
         "renderGroup": 1,
-        "packaging": "loc",
+        "packaging": "cmaf",
         "codec": "hvc1"
       }
     "#;
@@ -208,7 +208,7 @@ mod tests {
       {
         "name": "video",
         "renderGroup": 1,
-        "packaging": "loc",
+        "packaging": "cmaf",
         "isLive": true,
         "codec": "hvc1",
         "role": "video",

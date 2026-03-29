@@ -28,7 +28,7 @@ pub fn build_catalog_json(tracks: &[CatalogTrack]) -> Result<Bytes> {
       let init_b64 = base64::engine::general_purpose::STANDARD.encode(&t.init_segment);
       serde_json::json!({
         "name": t.name,
-        "packaging": "loc",
+        "packaging": "cmaf",
         "role": t.role,
         "isLive": true,
         "targetLatency": t.target_latency_ms,
@@ -575,7 +575,7 @@ mod tests {
     assert_eq!(v["version"], 1);
     assert!(v["generatedAt"].is_u64());
     assert_eq!(v["tracks"][0]["name"], "video-720p");
-    assert_eq!(v["tracks"][0]["packaging"], "loc");
+    assert_eq!(v["tracks"][0]["packaging"], "cmaf");
     assert_eq!(v["tracks"][0]["role"], "video");
     assert_eq!(v["tracks"][0]["targetLatency"], 1500);
     assert_eq!(v["tracks"][0]["renderGroup"], 1);

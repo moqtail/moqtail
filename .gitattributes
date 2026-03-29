@@ -1,3 +1,2 @@
 # Normalize all text files to use LF line endings in repo
 * text=auto eol=lf
-*.mp4 filter=lfs diff=lfs merge=lfs -text

@@ -14,11 +14,11 @@
  * limitations under the License.
  */
 
-import { useState } from 'preact/hooks';
 import { cn } from '@/lib/utils';
 import { type AbrSettings } from '@/lib/abr/types';
 
-interface SettingsPanelProps {
+export interface SettingsPanelProps {
+  open: boolean;
   settings: AbrSettings;
   onSettingsChange: (settings: AbrSettings) => void;
 }
@@ -58,7 +58,7 @@ function NumberInput({
 }) {
   return (
     <div className="flex items-center justify-between gap-2 py-0.5">
-      <span className="text-xs text-neutral-500">{label}</span>
+      <span className="text-xs text-neutral-400">{label}</span>
       <input
         type="number"
         value={value === -1 ? '' : value}
@@ -67,20 +67,47 @@ function NumberInput({
           const v = (e.target as HTMLInputElement).value;
           onChange(v === '' ? -1 : parseFloat(v));
         }}
-        className="w-24 rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-right font-mono text-xs text-neutral-200 focus:border-blue-500 focus:outline-none"
+        className="w-20 rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-right font-mono text-xs text-neutral-200 focus:border-blue-500 focus:outline-none"
       />
     </div>
   );
 }
 
-const RULE_GROUPS = {
-  'ABR Rules': ['ThroughputRule', 'BolaRule', 'InsufficientBufferRule', 'SwitchHistoryRule', 'DroppedFramesRule', 'AbandonRequestsRule'],
-  'Low Latency': ['L2ARule', 'LoLPRule'],
-} as const;
+function OptionCard({ title, children }: { title: string; children: preact.ComponentChildren }) {
+  return (
+    <div
+      className="flex-none snap-start overflow-hidden rounded-md border border-neutral-700/60 bg-neutral-900/80"
+      style={{ width: '220px' }}
+    >
+      <div className="border-b border-neutral-700/60 bg-neutral-800/60 px-3 py-1.5">
+        <span className="text-[11px] font-semibold tracking-widest text-blue-400 uppercase">
+          {title}
+        </span>
+      </div>
+      <div className="scrollbar-thin max-h-[320px] overflow-y-auto px-3 py-2">{children}</div>
+    </div>
+  );
+}
 
-export function SettingsPanel({ settings, onSettingsChange }: SettingsPanelProps) {
-  const [open, setOpen] = useState(false);
+function SectionLabel({ children }: { children: preact.ComponentChildren }) {
+  return (
+    <p className="mt-2 mb-1 border-b border-neutral-700/50 pb-0.5 text-[10px] font-semibold tracking-widest text-blue-400/80 uppercase first:mt-0">
+      {children}
+    </p>
+  );
+}
 
+const ABR_RULES = [
+  'ThroughputRule',
+  'BolaRule',
+  'InsufficientBufferRule',
+  'SwitchHistoryRule',
+  'DroppedFramesRule',
+  'AbandonRequestsRule',
+] as const;
+const LOW_LATENCY_RULES = ['L2ARule', 'LoLPRule'] as const;
+
+export function SettingsPanel({ open, settings, onSettingsChange }: SettingsPanelProps) {
   const updateRule = (ruleName: string, active: boolean) => {
     const updated = { ...settings };
     updated.rules = { ...updated.rules };
@@ -96,18 +123,17 @@ export function SettingsPanel({ settings, onSettingsChange }: SettingsPanelProps
   };
 
   return (
-    <div className={cn('border-t border-white/6')}>
-      <button
-        onClick={() => setOpen(o => !o)}
-        className="flex w-full items-center justify-between px-3 py-2 text-[11px] font-semibold tracking-widest text-neutral-500 uppercase hover:text-neutral-300"
-      >
-        Options <span>{open ? '▴' : '▾'}</span>
-      </button>
-
-      {open && (
-        <div className="space-y-3 px-3 pb-3">
-          <div>
-            <p className="mb-1 text-[11px] font-semibold tracking-widest text-neutral-400 uppercase">ABR</p>
+    <div
+      className={cn(
+        'overflow-hidden border-b border-white/6 bg-neutral-950/80 transition-all duration-300',
+        open ? 'max-h-[420px] px-4 py-3 opacity-100' : 'max-h-0 px-4 py-0 opacity-0',
+      )}
+    >
+      {/* Horizontal scroll wrapper */}
+      <div className="relative">
+        <div className="scrollbar-thin scrollbar-track-transparent scrollbar-thumb-neutral-700 flex snap-x snap-proximity gap-3 overflow-x-auto pb-2">
+          {/* ABR Card */}
+          <OptionCard title="ABR">
             <SettingCheckbox
               label="Fast Switching"
               checked={settings.fastSwitching}
@@ -118,49 +144,103 @@ export function SettingsPanel({ settings, onSettingsChange }: SettingsPanelProps
               checked={settings.videoAutoSwitch}
               onChange={v => onSettingsChange({ ...settings, videoAutoSwitch: v })}
             />
-          </div>
+          </OptionCard>
 
-          {Object.entries(RULE_GROUPS).map(([groupName, ruleNames]) => (
-            <div key={groupName}>
-              <p className="mb-1 text-[10px] font-semibold tracking-widest text-neutral-500 uppercase">
-                {groupName}
-              </p>
-              {ruleNames.map(ruleName => (
-                <SettingCheckbox
-                  key={ruleName}
-                  label={ruleName}
-                  checked={settings.rules[ruleName]?.active ?? false}
-                  onChange={v => updateRule(ruleName, v)}
-                />
-              ))}
-            </div>
-          ))}
+          {/* ABR Rules Card */}
+          <OptionCard title="ABR Rules">
+            {ABR_RULES.map(ruleName => (
+              <SettingCheckbox
+                key={ruleName}
+                label={ruleName}
+                checked={settings.rules[ruleName]?.active ?? false}
+                onChange={v => updateRule(ruleName, v)}
+              />
+            ))}
+            <SectionLabel>Low Latency</SectionLabel>
+            {LOW_LATENCY_RULES.map(ruleName => (
+              <SettingCheckbox
+                key={ruleName}
+                label={ruleName}
+                checked={settings.rules[ruleName]?.active ?? false}
+                onChange={v => updateRule(ruleName, v)}
+              />
+            ))}
+          </OptionCard>
 
-          <div>
-            <p className="mb-1 text-[10px] font-semibold tracking-widest text-neutral-500 uppercase">
-              Initial Settings (Video)
-            </p>
+          {/* Buffer Card */}
+          <OptionCard title="Buffer">
+            <NumberInput
+              label="Buffer Time (s)"
+              value={settings.bufferTimeDefault}
+              placeholder="18"
+              onChange={v => onSettingsChange({ ...settings, bufferTimeDefault: v })}
+            />
+            <NumberInput
+              label="Stable Buffer (s)"
+              value={settings.stableBufferTime}
+              placeholder="18"
+              onChange={v => onSettingsChange({ ...settings, stableBufferTime: v })}
+            />
+            <NumberInput
+              label="BW Safety Factor"
+              value={settings.bandwidthSafetyFactor}
+              placeholder="0.9"
+              onChange={v => onSettingsChange({ ...settings, bandwidthSafetyFactor: v })}
+            />
+          </OptionCard>
+
+          {/* Initial Settings Card */}
+          <OptionCard title="Initial Settings">
             <NumberInput
               label="Initial Bitrate (kbps)"
               value={settings.initialBitrate}
-              placeholder=""
+              placeholder="auto"
               onChange={v => onSettingsChange({ ...settings, initialBitrate: v })}
             />
             <NumberInput
               label="Min Bitrate (kbps)"
               value={settings.minBitrate}
-              placeholder=""
+              placeholder="none"
               onChange={v => onSettingsChange({ ...settings, minBitrate: v })}
             />
             <NumberInput
               label="Max Bitrate (kbps)"
               value={settings.maxBitrate}
-              placeholder=""
+              placeholder="none"
               onChange={v => onSettingsChange({ ...settings, maxBitrate: v })}
             />
-          </div>
+          </OptionCard>
+
+          {/* EWMA Card */}
+          <OptionCard title="EWMA">
+            <NumberInput
+              label="Fast Half-life (s)"
+              value={settings.ewma.throughputFastHalfLifeSeconds}
+              placeholder="3"
+              onChange={v =>
+                onSettingsChange({
+                  ...settings,
+                  ewma: { ...settings.ewma, throughputFastHalfLifeSeconds: v },
+                })
+              }
+            />
+            <NumberInput
+              label="Slow Half-life (s)"
+              value={settings.ewma.throughputSlowHalfLifeSeconds}
+              placeholder="8"
+              onChange={v =>
+                onSettingsChange({
+                  ...settings,
+                  ewma: { ...settings.ewma, throughputSlowHalfLifeSeconds: v },
+                })
+              }
+            />
+          </OptionCard>
         </div>
-      )}
+
+        {/* Right-edge fade indicator */}
+        <div className="pointer-events-none absolute top-0 right-0 bottom-2 w-10 bg-gradient-to-r from-transparent to-neutral-950/80" />
+      </div>
     </div>
   );
 }

@@ -16,5 +16,5 @@
 
 export * from './player';
 export { Logger } from './logger';
-export { AbrController } from './abr'
-export type { AbrMetrics, AbrThresholds, SwitchEvent, SwitchReason } from './abr'
+export { AbrController, AbrRulesCollection, DEFAULT_ABR_SETTINGS, SwitchRequestPriority } from './abr';
+export type { AbrMetrics, AbrSettings, SwitchEvent, SwitchReason, RuleConfig, Track } from './abr';

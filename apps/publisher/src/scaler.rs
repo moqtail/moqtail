@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use bytes::Bytes;
-use tokio::sync::broadcast;
+use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 use crate::decoder::RawGop;
@@ -26,8 +26,8 @@ pub async fn scale(
   source_height: u32,
   target_width: u16,
   target_height: u16,
-  mut raw_rx: broadcast::Receiver<RawGop>,
-  scaled_tx: tokio::sync::mpsc::Sender<ScaledGop>,
+  mut raw_rx: mpsc::Receiver<RawGop>,
+  scaled_tx: mpsc::Sender<ScaledGop>,
 ) -> Result<()> {
   let dst_w = target_width as u32;
   let dst_h = target_height as u32;
@@ -39,27 +39,18 @@ pub async fn scale(
       dst_w, dst_h
     );
 
-    loop {
-      match raw_rx.recv().await {
-        Ok(raw_gop) => {
-          let scaled = ScaledGop {
-            gop_id: raw_gop.gop_id,
-            frames: raw_gop.frames,
-          };
-          if scaled_tx.send(scaled).await.is_err() {
-            warn!("Encoder dropped, stopping scaler");
-            return Ok(());
-          }
-        }
-        Err(broadcast::error::RecvError::Lagged(n)) => {
-          warn!("Scaler {}x{}: lagged, skipped {} GOPs", dst_w, dst_h, n);
-        }
-        Err(broadcast::error::RecvError::Closed) => {
-          info!("Scaler {}x{}: decoder finished", dst_w, dst_h);
-          return Ok(());
-        }
+    while let Some(raw_gop) = raw_rx.recv().await {
+      let scaled = ScaledGop {
+        gop_id: raw_gop.gop_id,
+        frames: raw_gop.frames,
+      };
+      if scaled_tx.send(scaled).await.is_err() {
+        warn!("Encoder dropped, stopping scaler");
+        return Ok(());
       }
     }
+    info!("Scaler {}x{}: decoder finished", dst_w, dst_h);
+    Ok(())
   } else {
     info!(
       "Scaler {}x{} → {}x{}",
@@ -92,19 +83,9 @@ pub async fn scale(
       }
     });
 
-    loop {
-      match raw_rx.recv().await {
-        Ok(raw_gop) => {
-          if block_tx.send(raw_gop).is_err() {
-            break;
-          }
-        }
-        Err(broadcast::error::RecvError::Lagged(n)) => {
-          warn!("Scaler {}x{}: lagged, skipped {} GOPs", dst_w, dst_h, n);
-        }
-        Err(broadcast::error::RecvError::Closed) => {
-          break;
-        }
+    while let Some(raw_gop) = raw_rx.recv().await {
+      if block_tx.send(raw_gop).is_err() {
+        break;
       }
     }
 

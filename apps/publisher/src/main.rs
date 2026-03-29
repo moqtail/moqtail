@@ -35,8 +35,8 @@ async fn main() -> Result<()> {
     video_info.width, video_info.height, video_info.framerate
   );
 
-  let variants = adaptive::quality_variants(&video_info)?;
   info!("Catalog target latency: {} ms", cli.target_latency_ms);
+  let variants = adaptive::quality_variants(&video_info, cli.max_variants as usize)?;
   info!("{} adaptive variants", variants.len());
   for v in &variants {
     info!(
@@ -106,10 +106,21 @@ async fn main() -> Result<()> {
   // Cancellation token for graceful shutdown — if any stage fails, all stop.
   let cancel = CancellationToken::new();
 
-  // One decoder broadcasts raw GOPs to all encoder variants.
-  // Buffer size = 2 GOPs so the decoder can stay slightly ahead.
-  // Bytes inside RawGop is Arc-based, so broadcast clones are cheap (no frame data copied).
-  let (raw_tx, _) = tokio::sync::broadcast::channel(2);
+  // Per-pipeline bounded mpsc channels for decoder → scaler fan-out.
+  // Buffer size = 2 GOPs so the decoder can stay slightly ahead of each
+  // pipeline. Unlike broadcast, mpsc provides backpressure: when the
+  // slowest pipeline's buffer is full the decoder blocks, preventing
+  // unbounded memory growth (the dash.js "no unbounded queues" pattern).
+  // Bytes inside RawGop::clone is O(1) — Arc ref bump, no data copy.
+  let mut raw_txs: Vec<tokio::sync::mpsc::Sender<decoder::RawGop>> =
+    Vec::with_capacity(variants.len());
+  let mut raw_rxs: Vec<tokio::sync::mpsc::Receiver<decoder::RawGop>> =
+    Vec::with_capacity(variants.len());
+  for _ in 0..variants.len() {
+    let (tx, rx) = tokio::sync::mpsc::channel(2);
+    raw_txs.push(tx);
+    raw_rxs.push(rx);
+  }
 
   // +2: one per video pipeline, one decoder, one catalog refresh
   let mut tasks = Vec::with_capacity(variants.len() + 2);
@@ -152,7 +163,7 @@ async fn main() -> Result<()> {
   for (i, variant) in variants.into_iter().enumerate() {
     let track_alias = track_aliases[i];
     let conn = moq.connection.clone();
-    let raw_rx = raw_tx.subscribe();
+    let raw_rx = raw_rxs.remove(0);
     let cancel = cancel.clone();
 
     // Priority: lower-quality variants get a lower number (higher delivery priority).
@@ -218,7 +229,7 @@ async fn main() -> Result<()> {
   let cancel_for_decoder = cancel.clone();
   let decode_task = tokio::spawn(async move {
     tokio::select! {
-      result = decoder::decode(video_path, framerate, raw_tx) => {
+      result = decoder::decode(video_path, framerate, raw_txs) => {
         if let Err(ref e) = result {
           error!("Decoder failed: {:?}", e);
           cancel_for_decoder.cancel();

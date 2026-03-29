@@ -35,6 +35,7 @@ async fn main() -> Result<()> {
     video_info.width, video_info.height, video_info.framerate
   );
 
+  info!("Catalog target latency: {} ms", cli.target_latency_ms);
   let variants = adaptive::quality_variants(&video_info, cli.max_variants as usize)?;
   info!("{} adaptive variants", variants.len());
   for v in &variants {
@@ -67,6 +68,9 @@ async fn main() -> Result<()> {
       width: v.width,
       height: v.height,
       bitrate_bps: v.bitrate_kbps * 1000,
+      framerate: video_info.framerate,
+      role: "video".to_owned(),
+      target_latency_ms: cli.target_latency_ms,
       init_segment: init_seg,
     });
   }

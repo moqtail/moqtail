@@ -19,6 +19,9 @@ pub struct Cli {
   #[arg(long, default_value = "data/video/Smoking Test.mp4")]
   pub video_path: String,
 
+  /// Target playback latency for catalog tracks, in milliseconds
+  #[arg(long, default_value_t = 1500)]
+  pub target_latency_ms: u32,
   /// Maximum number of quality variants to encode (min 2, max 4).
   /// Fewer variants = less memory. The highest and lowest tiers are
   /// always included; middle tiers are dropped first.

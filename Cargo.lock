@@ -1077,6 +1077,7 @@ name = "publisher"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "bytes",
  "clap",
  "ffmpeg-next",

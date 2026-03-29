@@ -60,6 +60,7 @@ async fn main() -> Result<()> {
       hw_encoder,
     )
     .await?;
+    let init_seg = catalog::build_init_segment(&extra, v.width, v.height);
     let codec = catalog::codec_string_from_extradata(&extra);
     catalog_tracks.push(catalog::CatalogTrack {
       name: format!("video-{}", v.quality),
@@ -70,6 +71,7 @@ async fn main() -> Result<()> {
       framerate: video_info.framerate,
       role: "video".to_owned(),
       target_latency_ms: cli.target_latency_ms,
+      init_segment: init_seg,
     });
   }
   let catalog_json = catalog::build_catalog_json(&catalog_tracks)?;

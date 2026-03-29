@@ -134,10 +134,10 @@ export class Player {
     if (!this.catalog?.getByTrackName(trackName))
       throw new Error(`Track not found in catalog: ${trackName}`);
 
-    // Verify packaging is 'cmaf' or 'chunk-per-object'
+    // Verify packaging is playable by this player ('loc', 'cmaf', or 'chunk-per-object').
     if (!this.catalog.isCMAF(trackName))
       throw new Error(
-        `Unsupported packaging type for track ${trackName}, only 'cmaf' and 'chunk-per-object' are supported`,
+        `Unsupported packaging type for track ${trackName}, only 'loc', 'cmaf', and 'chunk-per-object' are supported`,
       );
 
     // Get the stream struct

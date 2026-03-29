@@ -1,4 +1,5 @@
 use anyhow::Result;
+use base64::Engine;
 use bytes::Bytes;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -11,6 +12,7 @@ pub struct CatalogTrack {
   pub framerate: f64,
   pub role: String,
   pub target_latency_ms: u32,
+  pub init_segment: Vec<u8>,
 }
 
 /// Builds an MSF draft-00 catalog JSON payload.
@@ -23,6 +25,7 @@ pub fn build_catalog_json(tracks: &[CatalogTrack]) -> Result<Bytes> {
   let track_entries: Vec<serde_json::Value> = tracks
     .iter()
     .map(|t| {
+      let init_b64 = base64::engine::general_purpose::STANDARD.encode(&t.init_segment);
       serde_json::json!({
         "name": t.name,
         "packaging": "loc",
@@ -35,7 +38,9 @@ pub fn build_catalog_json(tracks: &[CatalogTrack]) -> Result<Bytes> {
         "width": t.width,
         "height": t.height,
         "bitrate": t.bitrate_bps,
-        "framerate": t.framerate
+        "framerate": t.framerate,
+        "timescale": 90000,
+        "initData": init_b64
       })
     })
     .collect();
@@ -563,6 +568,7 @@ mod tests {
       framerate: 30.0,
       role: "video".to_owned(),
       target_latency_ms: 1500,
+      init_segment: vec![0, 1, 2, 3],
     }];
     let json_bytes = build_catalog_json(&tracks).unwrap();
     let v: serde_json::Value = serde_json::from_slice(&json_bytes).unwrap();
@@ -576,6 +582,7 @@ mod tests {
     assert_eq!(v["tracks"][0]["altGroup"], 1);
     assert_eq!(v["tracks"][0]["isLive"], true);
     assert_eq!(v["tracks"][0]["framerate"], 30.0);
-    assert!(v["tracks"][0].get("initData").is_none());
+    assert_eq!(v["tracks"][0]["timescale"], 90000);
+    assert_eq!(v["tracks"][0]["initData"], "AAECAw==");
   }
 }

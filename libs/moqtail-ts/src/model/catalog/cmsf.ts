@@ -17,7 +17,13 @@
 // Type definitions
 export interface CMSFTrack {
   name: string
-  packaging: 'cmaf' | 'chunk-per-object' | 'timeline'
+  packaging:
+    | 'loc'
+    | 'mediatimeline'
+    | 'eventtimeline'
+    | 'cmaf'
+    | 'chunk-per-object'
+    | 'timeline'
   codec?: string
   role: 'video' | 'audio' | 'timeline'
   depends?: string[]
@@ -47,8 +53,17 @@ function isStringArray(v: unknown): v is string[] {
   return Array.isArray(v) && v.every((item) => isString(item))
 }
 
-function isValidPackaging(v: unknown): v is 'cmaf' | 'chunk-per-object' | 'timeline' {
-  return v === 'cmaf' || v === 'chunk-per-object' || v === 'timeline'
+function isValidPackaging(
+  v: unknown,
+): v is 'loc' | 'mediatimeline' | 'eventtimeline' | 'cmaf' | 'chunk-per-object' | 'timeline' {
+  return (
+    v === 'loc' ||
+    v === 'mediatimeline' ||
+    v === 'eventtimeline' ||
+    v === 'cmaf' ||
+    v === 'chunk-per-object' ||
+    v === 'timeline'
+  )
 }
 
 function isValidRole(v: unknown): v is 'video' | 'audio' | 'timeline' {
@@ -75,14 +90,22 @@ function validateTrack(track: unknown): CMSFTrack {
     throw new Error('Track.name must be a string')
   }
   if (!isValidPackaging(t['packaging'])) {
-    throw new Error("Track.packaging must be 'cmaf', 'chunk-per-object', or 'timeline'")
+    throw new Error(
+      "Track.packaging must be one of: 'loc', 'mediatimeline', 'eventtimeline', 'cmaf', 'chunk-per-object', or 'timeline'",
+    )
   }
   if (!isValidRole(t['role'])) {
     throw new Error("Track.role must be 'video', 'audio', or 'timeline'")
   }
 
   const name = t['name'] as string
-  const packaging = t['packaging'] as 'cmaf' | 'chunk-per-object' | 'timeline'
+  const packaging = t['packaging'] as
+    | 'loc'
+    | 'mediatimeline'
+    | 'eventtimeline'
+    | 'cmaf'
+    | 'chunk-per-object'
+    | 'timeline'
   const role = t['role'] as 'video' | 'audio' | 'timeline'
 
   // Validate optional fields
@@ -154,16 +177,16 @@ function validateTrack(track: unknown): CMSFTrack {
   }
 
   // Custom validation rules
-  if (packaging === 'cmaf' && (!codec || codec.length === 0)) {
-    throw new Error("codec is required when packaging is 'cmaf'")
+  if ((packaging === 'loc' || packaging === 'cmaf') && (!codec || codec.length === 0)) {
+    throw new Error("codec is required when packaging is 'loc' or 'cmaf'")
   }
 
-  if (packaging === 'timeline' && mimeType !== 'text/csv') {
-    throw new Error("mimeType must be 'text/csv' when packaging is 'timeline'")
+  if ((packaging === 'mediatimeline' || packaging === 'eventtimeline') && mimeType !== 'application/json') {
+    throw new Error("mimeType must be 'application/json' when packaging is 'mediatimeline' or 'eventtimeline'")
   }
 
-  if (packaging === 'timeline' && (!depends || depends.length === 0)) {
-    throw new Error("At least one dependee must be present when packaging is 'timeline'")
+  if ((packaging === 'mediatimeline' || packaging === 'eventtimeline') && (!depends || depends.length === 0)) {
+    throw new Error("At least one dependee must be present when packaging is 'mediatimeline' or 'eventtimeline'")
   }
 
   const result: CMSFTrack = {
@@ -271,7 +294,7 @@ class CMSFCatalog {
 
   isCMAF(trackName: string) {
     const packaging = this.getPackaging(trackName)
-    return packaging === 'cmaf' || packaging === 'chunk-per-object'
+    return packaging === 'loc' || packaging === 'cmaf' || packaging === 'chunk-per-object'
   }
 
   getTimescale(trackName: string) {

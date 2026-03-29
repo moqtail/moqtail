@@ -21,7 +21,7 @@ import { cn } from '@/lib/utils';
 import { Tuple, type CMSF } from 'moqtail';
 import MSEBuffer from '@/lib/buffer';
 import { AbrController, AbrRulesCollection, DEFAULT_ABR_SETTINGS } from '@/lib/abr';
-import type { AbrMetrics, AbrSettings, Track as AbrTrack } from '@/lib/abr';
+import type { AbrMetrics, AbrSettings } from '@/lib/abr';
 import { MetricsCollector } from '@/lib/metrics/MetricsCollector';
 import type { MetricsSnapshot } from '@/lib/metrics/types';
 import { SettingsPanel } from '@/components/SettingsPanel';
@@ -243,11 +243,15 @@ export function App() {
     setAbrMetrics(null);
     setMetricsSnapshot(null);
     if (playerRef.current) {
-      try { await playerRef.current.dispose(); } catch {}
+      try {
+        await playerRef.current.dispose();
+      } catch {}
       playerRef.current = null;
     }
     if (bufferRef.current) {
-      try { bufferRef.current.dispose(); } catch {}
+      try {
+        bufferRef.current.dispose();
+      } catch {}
       bufferRef.current = null;
     }
   }, []);
@@ -274,18 +278,32 @@ export function App() {
       const allTracks = catalog.getTracks();
       setTracks(allTracks);
 
-      const firstVideo = allTracks.find(t => t.role === 'video');
+      // Start on lowest-bitrate video track (safe startup, like dash.js)
+      const videoTracksAll = allTracks.filter(t => t.role === 'video');
+      const firstVideo =
+        videoTracksAll.length > 0
+          ? videoTracksAll.reduce((low, t) =>
+              (t.bitrate ?? Infinity) < (low.bitrate ?? Infinity) ? t : low,
+            )
+          : undefined;
       if (firstVideo) {
         setSelectedVideo(firstVideo.name);
         setStatus('restarting');
         await player.attachMedia(videoRef.current);
+        bufferRef.current = new MSEBuffer(videoRef.current);
         await player.addMediaTrack(firstVideo.name);
         await player.startMedia();
         setStatus('playing');
         const videoTracks = allTracks.filter(t => t.role === 'video');
         const rulesCollection = new AbrRulesCollection(abrSettings);
         rulesRef.current = rulesCollection;
-        const abr = new AbrController(player, rulesCollection, videoTracks, abrSettings, setAbrMetrics);
+        const abr = new AbrController(
+          player,
+          rulesCollection,
+          videoTracks,
+          abrSettings,
+          setAbrMetrics,
+        );
         abrRef.current = abr;
         player.setOnTrackSwitched(() => abrRef.current?.releaseSwitchingGuard());
         abr.start();
@@ -341,7 +359,13 @@ export function App() {
         const videoTracksForAbr = catalog.getTracks().filter(t => t.role === 'video');
         const rulesCollection = new AbrRulesCollection(abrSettings);
         rulesRef.current = rulesCollection;
-        const abr = new AbrController(player, rulesCollection, videoTracksForAbr, abrSettings, setAbrMetrics);
+        const abr = new AbrController(
+          player,
+          rulesCollection,
+          videoTracksForAbr,
+          abrSettings,
+          setAbrMetrics,
+        );
         abrRef.current = abr;
         player.setOnTrackSwitched(() => abrRef.current?.releaseSwitchingGuard());
         abr.start();

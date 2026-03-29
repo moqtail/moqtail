@@ -1,10 +1,7 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { AbrRulesCollection } from '../AbrRulesCollection';
-import {
-  DEFAULT_ABR_SETTINGS,
-  SwitchRequestPriority,
-} from '../types';
-import type { AbrSettings, RulesContext, SwitchRequest } from '../types';
+import { DEFAULT_ABR_SETTINGS, SwitchRequestPriority } from '../types';
+import type { AbrSettings, RulesContext } from '../types';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -69,9 +66,7 @@ describe('AbrRulesCollection', () => {
       ];
       for (const name of ruleNames) {
         // isRuleActive reflects the settings.rules[name].active flag
-        expect(collection.isRuleActive(name)).toBe(
-          DEFAULT_ABR_SETTINGS.rules[name]!.active,
-        );
+        expect(collection.isRuleActive(name)).toBe(DEFAULT_ABR_SETTINGS.rules[name]!.active);
       }
     });
   });
@@ -176,7 +171,11 @@ describe('AbrRulesCollection', () => {
       const collection = new AbrRulesCollection(settings);
 
       // Give enough buffer to avoid LoLp's emergency path (bufferSeconds >= 0.5)
-      const ctx = makeContext({ abrSettings: settings, bandwidthBps: 10_000_000, bufferSeconds: 20 });
+      const ctx = makeContext({
+        abrSettings: settings,
+        bandwidthBps: 10_000_000,
+        bufferSeconds: 20,
+      });
       const result = collection.getBestPossibleSwitchRequest(ctx);
       expect(result).not.toBeNull();
       // LoLPRule has reason 'lolp'
@@ -196,12 +195,20 @@ describe('AbrRulesCollection', () => {
       const collection = new AbrRulesCollection(settings);
 
       // Warm up InsufficientBufferRule (needs >2 calls before it fires)
-      const warmupCtx = makeContext({ abrSettings: settings, bufferSeconds: 0, bandwidthBps: 10_000_000 });
+      const warmupCtx = makeContext({
+        abrSettings: settings,
+        bufferSeconds: 0,
+        bandwidthBps: 10_000_000,
+      });
       collection.getBestPossibleSwitchRequest(warmupCtx);
       collection.getBestPossibleSwitchRequest(warmupCtx);
 
       // Now on the 3rd call, InsufficientBufferRule fires with STRONG (bufferSeconds=0)
-      const ctx = makeContext({ abrSettings: settings, bufferSeconds: 0, bandwidthBps: 10_000_000 });
+      const ctx = makeContext({
+        abrSettings: settings,
+        bufferSeconds: 0,
+        bandwidthBps: 10_000_000,
+      });
       const result = collection.getBestPossibleSwitchRequest(ctx);
       expect(result).not.toBeNull();
       expect(result!.priority).toBe(SwitchRequestPriority.STRONG);

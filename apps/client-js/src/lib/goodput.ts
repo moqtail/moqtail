@@ -34,30 +34,57 @@ export class GoodputTracker {
   #lastObjectBytes = 0;
   #sampleCount = 0;
 
+  // Windowed throughput: bytes received in a sliding window
+  #windowBytes = 0;
+  #windowStartMs = 0;
+  #windowDurationMs = 3000; // 3-second sliding window
+
   constructor(alphaFast: number = 0.5, alphaSlow: number = 0.1) {
     this.#alphaFast = alphaFast;
     this.#alphaSlow = alphaSlow;
   }
 
   /**
-   * Record one object delivery measurement.
+   * Record one object delivery.
+   * Uses a windowed byte counter for throughput — immune to MOQT's
+   * bursty delivery pattern (unlike per-object or inter-arrival measurements).
    * @param bytes - payload size in bytes
-   * @param durationMs - wall-clock time elapsed from send to SourceBuffer append completion, in ms
+   * @param _durationMs - ignored (kept for API compat), throughput is windowed
    */
-  recordObject(bytes: number, durationMs: number): void {
-    if (durationMs <= 0) return;
-    this.#lastDeliveryTimeMs = durationMs;
+  recordObject(bytes: number, _durationMs: number): void {
+    const now = Date.now();
     this.#lastObjectBytes = bytes;
     this.#sampleCount++;
-    const instantBps = (bytes * 8 * 1000) / durationMs;
+
+    // Initialize window on first sample
+    if (this.#windowStartMs === 0) {
+      this.#windowStartMs = now;
+      this.#windowBytes = bytes;
+      return;
+    }
+
+    this.#windowBytes += bytes;
+    const elapsed = now - this.#windowStartMs;
+    this.#lastDeliveryTimeMs = elapsed;
+
+    // Only update EMA once we have enough window data (at least 100ms)
+    if (elapsed < 100) return;
+
+    const instantBps = (this.#windowBytes * 8 * 1000) / elapsed;
+
     if (!this.#hasData) {
-      // Cold start: seed both EMAs to the first sample so there is no ramp-up lag
       this.#emaFast = instantBps;
       this.#emaSlow = instantBps;
       this.#hasData = true;
     } else {
       this.#emaFast = this.#alphaFast * instantBps + (1 - this.#alphaFast) * this.#emaFast;
       this.#emaSlow = this.#alphaSlow * instantBps + (1 - this.#alphaSlow) * this.#emaSlow;
+    }
+
+    // Slide the window: reset every windowDuration
+    if (elapsed >= this.#windowDurationMs) {
+      this.#windowBytes = 0;
+      this.#windowStartMs = now;
     }
   }
 
@@ -82,6 +109,8 @@ export class GoodputTracker {
     this.#lastDeliveryTimeMs = 0;
     this.#lastObjectBytes = 0;
     this.#sampleCount = 0;
+    this.#windowBytes = 0;
+    this.#windowStartMs = 0;
   }
 
   /** Update smoothing factors without recreating the tracker. */

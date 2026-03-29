@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { AbrController } from '../AbrController';
 import type { AbrMetrics } from '../AbrController';
 import { AbrRulesCollection } from '../AbrRulesCollection';
@@ -49,7 +49,12 @@ function makePlayerMetrics(overrides: Partial<ReturnType<MockPlayer['getMetrics'
 function makeController(
   playerOverrides: Partial<ReturnType<typeof makePlayerMetrics>> = {},
   settingsOverrides: Partial<AbrSettings> = {},
-): { controller: AbrController; player: MockPlayer; collection: AbrRulesCollection; metrics: AbrMetrics[] } {
+): {
+  controller: AbrController;
+  player: MockPlayer;
+  collection: AbrRulesCollection;
+  metrics: AbrMetrics[];
+} {
   const tracks = makeTracks();
   const settings = makeSettings(settingsOverrides);
   const collection = new AbrRulesCollection(settings);
@@ -58,12 +63,8 @@ function makeController(
     switchTrack: vi.fn().mockResolvedValue(undefined),
   };
   const capturedMetrics: AbrMetrics[] = [];
-  const controller = new AbrController(
-    player,
-    collection,
-    tracks,
-    settings,
-    (m) => capturedMetrics.push(m),
+  const controller = new AbrController(player, collection, tracks, settings, m =>
+    capturedMetrics.push(m),
   );
   return { controller, player, collection, metrics: capturedMetrics };
 }
@@ -100,8 +101,8 @@ describe('AbrController', () => {
       expect(metrics[0]!.mode).toBe('auto');
     });
 
-    it('activeTrackIndex is -1 when activeTrack is null', () => {
-      const { controller, metrics } = makeController({ activeTrack: null });
+    it('activeTrackIndex is -1 when activeTrack is undefined', () => {
+      const { controller, metrics } = makeController({ activeTrack: undefined });
       controller._tick();
       expect(metrics[0]!.activeTrackIndex).toBe(-1);
     });
@@ -243,10 +244,7 @@ describe('AbrController', () => {
     });
 
     it('records a manual switch event in history', () => {
-      const { controller } = makeController(
-        { activeTrack: '360p' },
-        { videoAutoSwitch: false },
-      );
+      const { controller } = makeController({ activeTrack: '360p' }, { videoAutoSwitch: false });
 
       controller.manualSwitch('720p');
 

@@ -176,18 +176,28 @@ export class Player {
         sourceBuffer.addEventListener('updateend', () => resolve(), { once: true }),
       );
 
-    // Seek to buffer end
+    // Seek behind the live edge so the player starts with buffer runway.
+    // Without this offset the player lands on the live edge (0 s buffer),
+    // immediately stalls, recovers for a moment, then stalls again —
+    // creating the "video gets stuck" symptom.
+    const LIVE_EDGE_STARTUP_OFFSET = 1.0; // seconds behind the live edge
+
     let gotNotification = 0;
     let target = 0;
     const bufferNotification = (end: number) => {
       if (gotNotification >= this.#streams.length) return false;
 
-      // For live, seek to the max end, for VOD seek to the min start
-      target = Math.max(target, end);
+      // Start behind the live edge so there is buffer to consume while
+      // new data continues arriving. The MSEBuffer module then fine-tunes
+      // the distance via playback-rate adjustments (catchup / catchdown).
+      target = Math.max(target, end - LIVE_EDGE_STARTUP_OFFSET);
 
       gotNotification++;
       if (gotNotification === this.#streams.length) {
-        console.log('All buffers ready, seeking to', target);
+        logger.info(
+          'media',
+          `All buffers ready, seeking to ${target.toFixed(2)}s (live edge ${end.toFixed(2)}s)`,
+        );
         this.#element!.currentTime = target;
         this.#element!.play();
       }
@@ -247,11 +257,18 @@ export class Player {
             }
 
             // Init segment re-injection after a seamless track switch.
-            // The relay guarantees clean group boundaries, so when group advances
-            // while pendingSwitch is set, we inject the new track's init segment first.
-            if (struct.pendingSwitch && object.location.group > struct.lastGroupId) {
-              const { initData, mimeType } = struct.pendingSwitch;
-              struct.trackName = struct.pendingSwitch.trackName; // read BEFORE nulling
+            // Detect the transition by comparing the object's fullTrackName
+            // (resolved from the wire's track_alias) against the target track.
+            // The previous approach (group !== lastGroupId) fired too early —
+            // the relay may continue sending old-track groups after the SWITCH
+            // is acknowledged, so a group boundary change does NOT imply a track
+            // transition. Checking the actual track name is authoritative.
+            const objectTrackName = struct.pendingSwitch
+              ? new TextDecoder().decode(object.fullTrackName.name)
+              : null;
+            if (struct.pendingSwitch && objectTrackName === struct.pendingSwitch.trackName) {
+              const { initData, mimeType, trackName: newTrackName } = struct.pendingSwitch;
+              struct.trackName = newTrackName;
               struct.pendingSwitch = null;
 
               // changeType() must not be called while the SourceBuffer is updating
@@ -259,10 +276,13 @@ export class Player {
               sourceBuffer.changeType(mimeType);
               sourceBuffer.appendBuffer(initData);
               await waitForBufferUpdate(sourceBuffer);
+
+              // NOW release the ABR switching guard — the relay has completed the
+              // transition and delivered data on the new track. Safe to switch again.
+              this.#options.onTrackSwitched?.(newTrackName);
             }
 
             // Append the data
-            const t0 = performance.now();
             let maxRetries = 5;
             while (maxRetries--) {
               try {
@@ -293,8 +313,8 @@ export class Player {
               if (bufferDuration > 1.0) bufferNotification(maxEnd);
             }
 
-            // Record goodput sample for DEWMA
-            struct.tracker.recordObject(object.payload.byteLength, performance.now() - t0);
+            // Record goodput sample — tracker uses internal windowed byte counter
+            struct.tracker.recordObject(object.payload.byteLength, 0);
             // Track last seen group for switch boundary detection
             struct.lastGroupId = object.location.group;
           } catch (error) {
@@ -307,14 +327,16 @@ export class Player {
       // Pipe to the writable stream
       const promise = struct.source.pipeTo(writable, { signal: ac.signal });
 
-      // Cleanup stream
-      promise
-        .catch(error => {
-          if (!['AbortError', 'InternalError'].includes(error.name)) throw error;
-        })
-        .finally(async () => {
-          if (this.#mse!.readyState === 'open') this.#mse!.endOfStream();
-        });
+      // Cleanup stream — for live streams, do NOT call endOfStream() when the
+      // pipe ends. The readable stream can close transiently (e.g., during a
+      // SWITCH, relay reconnection, or subscription update). Calling endOfStream()
+      // permanently seals the MediaSource, preventing any further data from being
+      // appended. Only call endOfStream() when the player is being disposed.
+      promise.catch(error => {
+        if (!['AbortError', 'InternalError'].includes(error.name)) {
+          logger.error('media', 'Stream pipe error:', error);
+        }
+      });
     }
   }
 
@@ -410,11 +432,37 @@ export class Player {
         return;
       }
 
-      // Success: update requestId, arm the write handler, reset DEWMA
+      // Success: update requestId, arm the write handler.
+      // Do NOT reset the tracker — the bandwidth estimate from the previous
+      // track is still a valid indicator of network capacity. Resetting it
+      // creates a blind spot where ABR rules see 0 bandwidth and can't
+      // downgrade if the new track is too aggressive. (dash.js doesn't reset
+      // throughput on quality switches either.)
       videoStruct.requestId = result.requestId;
+      // Arm the write handler for init segment re-injection at the next group
+      // boundary. The onTrackSwitched callback (which releases the ABR switching
+      // guard) is NOT called here — it fires in the write handler AFTER the relay
+      // has actually delivered data on the new track. This prevents rapid
+      // consecutive SWITCH messages that corrupt the relay's switch context.
       videoStruct.pendingSwitch = { trackName, initData: initData.buffer as ArrayBuffer, mimeType };
-      videoStruct.tracker.reset();
-      this.#options.onTrackSwitched?.(trackName);
+
+      // Safety timeout: if the relay never delivers data on the new track
+      // (e.g. relay switch-context race condition where the send stream is
+      // not found), release the switching guard so the system isn't locked
+      // forever. The pendingSwitch is cleared so stale init data isn't
+      // injected if the new track eventually arrives much later.
+      const SWITCH_TIMEOUT_MS = 5000;
+      const pendingRef = videoStruct.pendingSwitch;
+      setTimeout(() => {
+        if (videoStruct.pendingSwitch === pendingRef) {
+          logger.warn(
+            'media',
+            `switchTrack: timeout waiting for ${trackName} data — releasing switching guard`,
+          );
+          videoStruct.pendingSwitch = null;
+          this.#options.onTrackSwitched?.(videoStruct.trackName);
+        }
+      }, SWITCH_TIMEOUT_MS);
     } catch (error) {
       logger.error('media', 'switchTrack: unexpected error', error);
       this.#options.onTrackSwitched?.(videoStruct.trackName);
@@ -492,6 +540,11 @@ export class Player {
     }
 
     // Pull the latest catalog object
+    if (!struct.source) {
+      throw new Error(
+        'Catalog stream unavailable — the publisher may have disconnected. Restart the relay and publisher, then reconnect.',
+      );
+    }
     const reader = struct.source.getReader();
     let buffer: ArrayBufferLike | undefined;
     while (!buffer) {

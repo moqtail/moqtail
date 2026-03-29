@@ -26,9 +26,14 @@ const VARIANTS: &[(Quality, u16, u16, u32)] = &[
 
 /// Returns the quality variants available for the given source video.
 /// Only includes tiers at or below the source resolution.
+/// When `max_variants` would trim the list, the highest and lowest tiers
+/// are always kept and middle tiers are dropped first.
 /// Returns an error if no variants match (source below 360p).
-pub fn quality_variants(info: &VideoInfo) -> anyhow::Result<Vec<QualityVariant>> {
-  let variants: Vec<QualityVariant> = VARIANTS
+pub fn quality_variants(
+  info: &VideoInfo,
+  max_variants: usize,
+) -> anyhow::Result<Vec<QualityVariant>> {
+  let mut variants: Vec<QualityVariant> = VARIANTS
     .iter()
     .filter(|(_, _w, h, _)| *h <= info.height)
     .map(|&(quality, width, height, bitrate_kbps)| QualityVariant {
@@ -45,6 +50,13 @@ pub fn quality_variants(info: &VideoInfo) -> anyhow::Result<Vec<QualityVariant>>
       info.width,
       info.height
     );
+  }
+
+  // Trim to max_variants, keeping the highest (first) and lowest (last)
+  // tiers and dropping middle ones.
+  while variants.len() > max_variants && variants.len() > 2 {
+    // Remove the second-to-last element (lowest middle tier)
+    variants.remove(variants.len() - 2);
   }
 
   Ok(variants)
@@ -75,7 +87,7 @@ mod tests {
 
   #[test]
   fn test_1080p_source_returns_all_variants() {
-    let variants = quality_variants(&video(1920, 1080)).unwrap();
+    let variants = quality_variants(&video(1920, 1080), 4).unwrap();
     assert_eq!(variants.len(), 4);
     assert_eq!(variants[0].quality, Quality::Q1080p);
     assert_eq!(variants[1].quality, Quality::Q720p);
@@ -85,7 +97,7 @@ mod tests {
 
   #[test]
   fn test_720p_source_excludes_1080p() {
-    let variants = quality_variants(&video(1280, 720)).unwrap();
+    let variants = quality_variants(&video(1280, 720), 4).unwrap();
     assert_eq!(variants.len(), 3);
     assert_eq!(variants[0].quality, Quality::Q720p);
     assert_eq!(variants[1].quality, Quality::Q480p);
@@ -94,7 +106,7 @@ mod tests {
 
   #[test]
   fn test_480p_source_excludes_720p_and_above() {
-    let variants = quality_variants(&video(854, 480)).unwrap();
+    let variants = quality_variants(&video(854, 480), 4).unwrap();
     assert_eq!(variants.len(), 2);
     assert_eq!(variants[0].quality, Quality::Q480p);
     assert_eq!(variants[1].quality, Quality::Q360p);
@@ -102,20 +114,20 @@ mod tests {
 
   #[test]
   fn test_360p_source_returns_only_360p() {
-    let variants = quality_variants(&video(640, 360)).unwrap();
+    let variants = quality_variants(&video(640, 360), 4).unwrap();
     assert_eq!(variants.len(), 1);
     assert_eq!(variants[0].quality, Quality::Q360p);
   }
 
   #[test]
   fn test_below_360p_returns_error() {
-    let result = quality_variants(&video(320, 240));
+    let result = quality_variants(&video(320, 240), 4);
     assert!(result.is_err());
   }
 
   #[test]
   fn test_bitrate_ladder_values() {
-    let variants = quality_variants(&video(1920, 1080)).unwrap();
+    let variants = quality_variants(&video(1920, 1080), 4).unwrap();
     assert_eq!(variants[0].bitrate_kbps, 4000); // 4 Mbps
     assert_eq!(variants[1].bitrate_kbps, 2000); // 2 Mbps
     assert_eq!(variants[2].bitrate_kbps, 1000); // 1 Mbps
@@ -124,7 +136,7 @@ mod tests {
 
   #[test]
   fn test_resolution_values() {
-    let variants = quality_variants(&video(1920, 1080)).unwrap();
+    let variants = quality_variants(&video(1920, 1080), 4).unwrap();
     assert_eq!((variants[0].width, variants[0].height), (1920, 1080));
     assert_eq!((variants[1].width, variants[1].height), (1280, 720));
     assert_eq!((variants[2].width, variants[2].height), (854, 480));
@@ -133,14 +145,14 @@ mod tests {
 
   #[test]
   fn test_non_standard_source_includes_lower_tiers() {
-    let variants = quality_variants(&video(1600, 900)).unwrap();
+    let variants = quality_variants(&video(1600, 900), 4).unwrap();
     assert_eq!(variants.len(), 3);
     assert_eq!(variants[0].quality, Quality::Q720p);
   }
 
   #[test]
   fn test_narrow_width_still_includes_matching_height() {
-    let variants = quality_variants(&video(1440, 1080)).unwrap();
+    let variants = quality_variants(&video(1440, 1080), 4).unwrap();
     assert_eq!(variants.len(), 4);
     assert_eq!(variants[0].quality, Quality::Q1080p);
   }
@@ -155,10 +167,27 @@ mod tests {
 
   #[test]
   fn test_hevc_bitrate_ladder() {
-    let variants = quality_variants(&video(1920, 1080)).unwrap();
+    let variants = quality_variants(&video(1920, 1080), 4).unwrap();
     assert_eq!(variants[0].bitrate_kbps, 4000); // 1080p
     assert_eq!(variants[1].bitrate_kbps, 2000); // 720p
     assert_eq!(variants[2].bitrate_kbps, 1000); // 480p
     assert_eq!(variants[3].bitrate_kbps, 500); // 360p
+  }
+
+  #[test]
+  fn test_max_variants_2_keeps_highest_and_lowest() {
+    let variants = quality_variants(&video(1920, 1080), 2).unwrap();
+    assert_eq!(variants.len(), 2);
+    assert_eq!(variants[0].quality, Quality::Q1080p);
+    assert_eq!(variants[1].quality, Quality::Q360p);
+  }
+
+  #[test]
+  fn test_max_variants_3_drops_one_middle() {
+    let variants = quality_variants(&video(1920, 1080), 3).unwrap();
+    assert_eq!(variants.len(), 3);
+    assert_eq!(variants[0].quality, Quality::Q1080p);
+    assert_eq!(variants[1].quality, Quality::Q720p);
+    assert_eq!(variants[2].quality, Quality::Q360p);
   }
 }

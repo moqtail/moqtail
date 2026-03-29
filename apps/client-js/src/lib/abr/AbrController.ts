@@ -1,6 +1,12 @@
 import type { Player } from '@/lib/player';
 import type { AbrRulesCollection } from './AbrRulesCollection';
-import { type AbrSettings, type RulesContext, type SwitchEvent, type SwitchReason, type Track } from './types';
+import {
+  type AbrSettings,
+  type RulesContext,
+  type SwitchEvent,
+  type SwitchReason,
+  type Track,
+} from './types';
 
 export interface AbrMetrics {
   bandwidthBps: number;
@@ -41,7 +47,8 @@ export class AbrController {
   ) {
     this.#player = player;
     this.#rulesCollection = rulesCollection;
-    this.#tracks = tracks;
+    // Sort ascending by bitrate — index 0 = lowest quality, last = highest
+    this.#tracks = [...tracks].sort((a, b) => (a.bitrate ?? 0) - (b.bitrate ?? 0));
     this.#settings = settings;
     this.#onMetricsUpdate = onMetricsUpdate;
   }
@@ -92,9 +99,7 @@ export class AbrController {
     } = raw;
 
     // Find the active track index in the sorted tracks array
-    const activeTrackIndex = activeTrack
-      ? this.#tracks.findIndex(t => t.name === activeTrack)
-      : -1;
+    const activeTrackIndex = activeTrack ? this.#tracks.findIndex(t => t.name === activeTrack) : -1;
 
     const mode: 'auto' | 'manual' = this.#settings.videoAutoSwitch ? 'auto' : 'manual';
 
@@ -135,7 +140,7 @@ export class AbrController {
       slowEmaBps,
       droppedFrames,
       totalFrames,
-      segmentDurationS: 4,
+      segmentDurationS: 1,
       isLowLatency: false,
       switchHistory: [...this.#switchHistory],
       abrSettings: this.#settings,
@@ -154,7 +159,8 @@ export class AbrController {
     if (!targetTrack) return;
 
     // Determine switch reason
-    const currentBitrate = activeTrackIndex >= 0 ? (this.#tracks[activeTrackIndex]?.bitrate ?? 0) : 0;
+    const currentBitrate =
+      activeTrackIndex >= 0 ? (this.#tracks[activeTrackIndex]?.bitrate ?? 0) : 0;
     const targetBitrate = targetTrack.bitrate ?? 0;
     let reason: SwitchReason;
     if (targetBitrate < currentBitrate) {
@@ -184,7 +190,8 @@ export class AbrController {
     const switchOffThreshold = 0.5 * this.#settings.bufferTimeDefault; // 9s by default
 
     // Hysteresis: use the current state to pick which threshold to compare against
-    this.#usingBolaRule = bufferLevel >= (this.#usingBolaRule ? switchOffThreshold : switchOnThreshold);
+    this.#usingBolaRule =
+      bufferLevel >= (this.#usingBolaRule ? switchOffThreshold : switchOnThreshold);
 
     this.#rulesCollection.setShouldUseBolaRule(this.#usingBolaRule);
   }

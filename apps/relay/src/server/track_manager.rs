@@ -17,6 +17,7 @@ use crate::server::client::MOQTClient;
 use moqtail::model::common::tuple::Tuple;
 use moqtail::model::control::publish::Publish;
 use moqtail::model::data::full_track_name::FullTrackName;
+use moqtail::model::parameter::message_parameter::apply_message_parameter_update;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -74,6 +75,26 @@ impl TrackManager {
     );
 
     track
+  }
+
+  /// Updates the stored Publish message with new parameters from a RequestUpdate.
+  /// This ensures that any late-joining subscribers get the correct, updated parameters.
+  pub async fn update_publish_message_parameters(
+    &self,
+    full_track_name: &FullTrackName,
+    connection_id: usize,
+    new_parameters: &[moqtail::model::parameter::message_parameter::MessageParameter],
+  ) {
+    let mut publishes = self.publishes.write().await;
+    if let Some(map) = publishes.get_mut(full_track_name)
+      && let Some(publish_msg) = map.get_mut(&connection_id)
+    {
+      info!(
+        "Updating stored Publish message parameters for {:?}",
+        full_track_name
+      );
+      apply_message_parameter_update(&mut publish_msg.parameters, new_parameters.to_vec());
+    }
   }
 
   pub async fn get_track_by_alias(

@@ -88,6 +88,11 @@ impl SubscriptionManager {
     senders.get(&subscriber_id).cloned()
   }
 
+  pub async fn get_all_subscriptions(&self) -> Vec<Arc<RwLock<Subscription>>> {
+    let subs = self.subscriptions.read().await;
+    subs.values().cloned().collect()
+  }
+
   pub async fn add_subscription(
     &self,
     subscriber: Arc<MOQTClient>,

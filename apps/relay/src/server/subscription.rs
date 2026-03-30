@@ -31,8 +31,8 @@ use moqtail::model::control::constant::PublishDoneStatusCode;
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::publish::Publish;
 use moqtail::model::control::publish_done::PublishDone;
-use moqtail::model::control::subscribe::Subscribe;
 use moqtail::model::control::request_update::RequestUpdate;
+use moqtail::model::control::subscribe::Subscribe;
 use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::model::data::object::Object;
 use moqtail::model::data::subgroup_header::SubgroupHeader;
@@ -477,7 +477,11 @@ impl Subscription {
     !self.is_finished().await && self.is_forwarding().await
   }
 
-// This method updates the subscribe message with the new request update
+  pub fn subscriber(&self) -> Arc<MOQTClient> {
+    self.subscriber.clone()
+  }
+
+  // This method updates the subscribe message with the new request update
   // Returns Ok if the update is successful
   // Returns error if the update is invalid
   pub async fn update_subscription(&self, request_update: RequestUpdate) -> Result<()> {

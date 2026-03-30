@@ -117,6 +117,7 @@ impl MessageHandler {
 
         enum Route {
           Subscribe,
+          Publish,
           Unhandled,
           NotFound,
         }
@@ -126,6 +127,7 @@ impl MessageHandler {
           let map = context.relay_pending_requests.read().await;
           match map.get(&existing_req_id) {
             Some(PendingRequest::Subscribe(_)) => Route::Subscribe,
+            Some(PendingRequest::Publish { .. }) => Route::Publish,
             Some(_) => Route::Unhandled,
             None => Route::NotFound, // Untracked request
           }
@@ -139,6 +141,15 @@ impl MessageHandler {
               client.clone(),
               control_stream_handler,
               msg, // Pass the original ControlMessage::RequestUpdate
+              context.clone(),
+            )
+            .await
+          }
+          Route::Publish => {
+            publish_handler::handle_request_update(
+              client.clone(),
+              control_stream_handler,
+              msg,
               context.clone(),
             )
             .await

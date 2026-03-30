@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::server::client::MOQTClient;
-use crate::server::session_context::SessionContext;
+use crate::server::session_context::{PendingRequest, SessionContext};
 use crate::server::stream_id::StreamId;
 use crate::server::track_cache::CacheConsumeEvent;
 use crate::server::utils::build_stream_id;
@@ -468,4 +468,65 @@ async fn send_fetch_error(
     .write()
     .await
     .remove(&request_id);
+}
+
+pub async fn handle_request_update(
+  _client: Arc<MOQTClient>,
+  _handler: &mut ControlStreamHandler,
+  msg: ControlMessage,
+  context: Arc<SessionContext>,
+) -> Result<(), TerminationCode> {
+  let update_msg = match msg {
+    ControlMessage::RequestUpdate(m) => *m,
+    _ => {
+      error!("fetch_handler::handle_request_update called with wrong message type");
+      return Err(TerminationCode::InternalError);
+    }
+  };
+
+  let existing_req_id = update_msg.existing_request_id;
+  // let new_req_id = update_msg.request_id; // TODO: Uncomment when sending RequestOk
+
+  // 1. Verify this is a Fetch request and extract it
+  let _fetch_request = {
+    let map = context.relay_pending_requests.read().await;
+    match map.get(&existing_req_id) {
+      Some(PendingRequest::Fetch(fetch_req)) => fetch_req.clone(),
+      _ => {
+        warn!(
+          "Request {} is not a valid Fetch request, cannot update.",
+          existing_req_id
+        );
+        return Err(TerminationCode::ProtocolViolation);
+      }
+    }
+  };
+
+  info!(
+    "Processing FETCH update for existing request_id: {}",
+    existing_req_id
+  );
+
+  // 2. Extract and apply the new parameters (e.g., Priority)
+  // In Draft 16, this is usually used to change the Subscriber Priority on the fly
+  // without tearing down the underlying QUIC stream.
+
+  // TODO: Parse `update_msg.parameters` to find the new Priority or Delivery Timeout.
+  // Example future logic:
+  /*
+  if let Some(new_priority) = extract_priority(&update_msg.parameters) {
+    // 3. Update the active QUIC stream's priority
+    // We would need a way to look up the active `send_stream` by `existing_req_id`
+    // and call a hypothetical `client.update_stream_priority(stream_id, new_priority).await;`
+  }
+  */
+
+  // 4. Send RequestOk back to the Client acknowledging the update
+  // TODO: Uncomment after merging RequestOk/Error support
+  /*
+  let ok_msg = RequestOk::new(new_req_id, vec![]);
+  _handler.send(&ControlMessage::RequestOk(Box::new(ok_msg))).await?;
+  */
+
+  Ok(())
 }

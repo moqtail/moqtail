@@ -61,22 +61,28 @@ export enum ObjectDatagramType {
  * Namespace for ObjectDatagramType utilities.
  */
 export namespace ObjectDatagramType {
-  const VALID_TYPES = new Set<number>([
-    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
-    0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
-    0x20, 0x21, 0x24, 0x25, 0x28, 0x29, 0x2c, 0x2d,
-  ])
+  /** Mask for bits that must be zero: bits 4, 6, 7 (form `0b00X0XXXX`). */
+  const INVALID_BITS_MASK = 0xd0
 
   /**
    * Converts a number or bigint to ObjectDatagramType.
+   * Validates using bitmask: must match form 0b00X0XXXX,
+   * and STATUS + END_OF_GROUP cannot both be set.
    * @param value - The value to convert.
    * @returns The corresponding ObjectDatagramType.
    * @throws Error if the value is not valid.
    */
   export function tryFrom(value: number | bigint): ObjectDatagramType {
     const v = typeof value === 'bigint' ? Number(value) : value
-    if (!VALID_TYPES.has(v)) {
-      throw new Error(`Invalid ObjectDatagramType: ${value}`)
+    if ((v & INVALID_BITS_MASK) !== 0) {
+      throw new Error(
+        `Invalid ObjectDatagramType: ${value}, must match form 0b00X0XXXX`,
+      )
+    }
+    if ((v & 0x22) === 0x22) {
+      throw new Error(
+        `Invalid ObjectDatagramType: ${value}, STATUS and END_OF_GROUP cannot both be set`,
+      )
     }
     return v as ObjectDatagramType
   }

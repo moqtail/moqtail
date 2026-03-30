@@ -37,7 +37,7 @@ pub struct Datagram {
   pub group_id: u64,
   pub object_id: u64,
   pub publisher_priority: Option<u8>,
-  pub extension_headers: Option<Vec<ObjectExtension>>,
+  pub extension_headers: Option<Vec<KeyValuePair>>,
   pub payload: Option<Bytes>,
   pub object_status: Option<ObjectStatus>,
   pub end_of_group: bool,
@@ -50,7 +50,7 @@ impl Datagram {
     group_id: u64,
     object_id: u64,
     publisher_priority: Option<u8>,
-    extension_headers: Option<Vec<ObjectExtension>>,
+    extension_headers: Option<Vec<KeyValuePair>>,
     payload: Bytes,
     end_of_group: bool,
   ) -> Self {
@@ -73,7 +73,7 @@ impl Datagram {
     group_id: u64,
     object_id: u64,
     publisher_priority: Option<u8>,
-    extension_headers: Option<Vec<ObjectExtension>>,
+    extension_headers: Option<Vec<KeyValuePair>>,
     object_status: ObjectStatus,
   ) -> Self {
     Datagram {
@@ -84,6 +84,26 @@ impl Datagram {
       extension_headers,
       payload: None,
       object_status: Some(object_status),
+      end_of_group: false,
+    }
+  }
+
+  /// Create a simple payload datagram without extensions.
+  pub fn new(
+    track_alias: u64,
+    group_id: u64,
+    object_id: u64,
+    publisher_priority: u8,
+    payload: Bytes,
+  ) -> Self {
+    Datagram {
+      track_alias,
+      group_id,
+      object_id,
+      publisher_priority: Some(publisher_priority),
+      extension_headers: None,
+      payload: Some(payload),
+      object_status: None,
       end_of_group: false,
     }
   }

@@ -24,7 +24,7 @@ use moqtail::model::control::subscribe_namespace_ok::SubscribeNamespaceOk;
 use moqtail::model::error::TerminationCode;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 pub async fn handle(
   client: Arc<MOQTClient>,
@@ -77,6 +77,7 @@ pub async fn handle(
           PendingRequest::SubscribeNamespace {
             client_connection_id: client.connection_id,
             original_request_id: sub_ns.request_id,
+            prefix: sub_ns.track_namespace_prefix.clone(),
           },
         );
       }
@@ -189,6 +190,71 @@ pub async fn handle(
       );
     }
   }
+
+  Ok(())
+}
+
+pub async fn handle_request_update(
+  _client: Arc<MOQTClient>,
+  _handler: &mut ControlStreamHandler,
+  msg: ControlMessage,
+  context: Arc<SessionContext>,
+) -> Result<(), TerminationCode> {
+  let update_msg = match msg {
+    ControlMessage::RequestUpdate(m) => *m,
+    _ => {
+      error!("subscribe_namespace_handler::handle_request_update called with wrong message type");
+      return Err(TerminationCode::InternalError);
+    }
+  };
+
+  let existing_req_id = update_msg.existing_request_id;
+  // let new_req_id = update_msg.request_id; // TODO: Uncomment when sending RequestOk
+
+  // 1. Verify this is a SubscribeNamespace request and extract the prefix
+  let target_prefix = {
+    let map = context.relay_pending_requests.read().await;
+    match map.get(&existing_req_id) {
+      Some(PendingRequest::SubscribeNamespace { prefix, .. }) => prefix.clone(),
+      _ => {
+        warn!(
+          "Request {} is not a valid SubscribeNamespace request",
+          existing_req_id
+        );
+        return Err(TerminationCode::ProtocolViolation);
+      }
+    }
+  };
+
+  info!(
+    "Processing SUBSCRIBE_NAMESPACE update for prefix: {:?}",
+    target_prefix
+  );
+
+  // 2. Update the stored Namespace Subscription parameters in TrackManager
+  // Right now, TrackManager::namespace_subscribers only stores Vec<Arc<MOQTClient>>.
+  // We need it to store the parameters too, so future tracks get the updated priority/forwarding rules.
+  //
+  // TODO: Update TrackManager to store namespace parameters, then call:
+  /*
+  context
+    .track_manager
+    .update_namespace_subscription_parameters(&target_prefix, client.connection_id, &update_msg.parameters)
+    .await;
+  */
+
+  // 3. The Ripple Effect (Cascading the update)
+  // If the client updated their Priority, we theoretically need to find all active Tracks
+  // under this namespace that they are currently subscribed to, and update those individual Subscriptions.
+  //
+  // TODO: Fetch active tracks for this client/prefix and call `sub.update_subscription(&update_msg.parameters)`
+
+  // 4. Send RequestOk back to the Client acknowledging the update
+  // TODO: Uncomment after merging RequestOk/Error support
+  /*
+  let ok_msg = RequestOk::new(new_req_id);
+  _handler.send(&ControlMessage::RequestOk(Box::new(ok_msg))).await?;
+  */
 
   Ok(())
 }

@@ -42,6 +42,7 @@ pub enum PendingRequest {
   SubscribeNamespace {
     client_connection_id: usize,
     original_request_id: u64,
+    prefix: moqtail::model::common::tuple::Tuple,
   },
   Publish {
     publisher_connection_id: usize,

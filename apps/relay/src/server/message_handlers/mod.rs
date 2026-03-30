@@ -118,6 +118,7 @@ impl MessageHandler {
         enum Route {
           Subscribe,
           Publish,
+          SubscribeNamespace,
           Unhandled,
           NotFound,
         }
@@ -128,6 +129,7 @@ impl MessageHandler {
           match map.get(&existing_req_id) {
             Some(PendingRequest::Subscribe(_)) => Route::Subscribe,
             Some(PendingRequest::Publish { .. }) => Route::Publish,
+            Some(PendingRequest::SubscribeNamespace { .. }) => Route::SubscribeNamespace,
             Some(_) => Route::Unhandled,
             None => Route::NotFound, // Untracked request
           }
@@ -147,6 +149,15 @@ impl MessageHandler {
           }
           Route::Publish => {
             publish_handler::handle_request_update(
+              client.clone(),
+              control_stream_handler,
+              msg,
+              context.clone(),
+            )
+            .await
+          }
+          Route::SubscribeNamespace => {
+            subscribe_namespace_handler::handle_request_update(
               client.clone(),
               control_stream_handler,
               msg,

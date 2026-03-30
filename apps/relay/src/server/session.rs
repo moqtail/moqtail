@@ -97,9 +97,7 @@ impl Session {
     let server_config = server.app_config;
     let relay_pending_requests = server.relay_pending_requests.clone();
     let relay_next_request_id = server.relay_next_request_id.clone();
-    let connection = session_request
-    .accept()
-    .await?;
+    let connection = session_request.accept().await?;
 
     let request_maps = RequestMaps {
       relay_pending_requests,

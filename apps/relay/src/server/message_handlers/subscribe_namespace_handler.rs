@@ -77,7 +77,7 @@ pub async fn handle(
           PendingRequest::SubscribeNamespace {
             client_connection_id: client.connection_id,
             original_request_id: sub_ns.request_id,
-            prefix: sub_ns.track_namespace_prefix.clone(),
+            track_namespace_prefix: sub_ns.track_namespace_prefix.clone(),
           },
         );
       }
@@ -115,6 +115,7 @@ pub async fn handle(
             PendingRequest::PublishNamespace {
               client_connection_id: client.connection_id,
               original_request_id: relay_announce_id,
+              track_namespace: ns.clone(),
             },
           );
         }
@@ -215,7 +216,10 @@ pub async fn handle_request_update(
   let target_prefix = {
     let map = context.relay_pending_requests.read().await;
     match map.get(&existing_req_id) {
-      Some(PendingRequest::SubscribeNamespace { prefix, .. }) => prefix.clone(),
+      Some(PendingRequest::SubscribeNamespace {
+        track_namespace_prefix,
+        ..
+      }) => track_namespace_prefix.clone(),
       _ => {
         warn!(
           "Request {} is not a valid SubscribeNamespace request",

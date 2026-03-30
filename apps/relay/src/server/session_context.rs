@@ -38,11 +38,12 @@ pub enum PendingRequest {
   PublishNamespace {
     client_connection_id: usize,
     original_request_id: u64,
+    track_namespace: moqtail::model::common::tuple::Tuple,
   },
   SubscribeNamespace {
     client_connection_id: usize,
     original_request_id: u64,
-    prefix: moqtail::model::common::tuple::Tuple,
+    track_namespace_prefix: moqtail::model::common::tuple::Tuple,
   },
   Publish {
     publisher_connection_id: usize,

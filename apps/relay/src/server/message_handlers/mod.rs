@@ -119,6 +119,7 @@ impl MessageHandler {
           Subscribe,
           Publish,
           SubscribeNamespace,
+          PublishNamespace,
           Unhandled,
           NotFound,
         }
@@ -130,6 +131,7 @@ impl MessageHandler {
             Some(PendingRequest::Subscribe(_)) => Route::Subscribe,
             Some(PendingRequest::Publish { .. }) => Route::Publish,
             Some(PendingRequest::SubscribeNamespace { .. }) => Route::SubscribeNamespace,
+            Some(PendingRequest::PublishNamespace { .. }) => Route::PublishNamespace,
             Some(_) => Route::Unhandled,
             None => Route::NotFound, // Untracked request
           }
@@ -158,6 +160,15 @@ impl MessageHandler {
           }
           Route::SubscribeNamespace => {
             subscribe_namespace_handler::handle_request_update(
+              client.clone(),
+              control_stream_handler,
+              msg,
+              context.clone(),
+            )
+            .await
+          }
+          Route::PublishNamespace => {
+            publish_namespace_handler::handle_request_update(
               client.clone(),
               control_stream_handler,
               msg,

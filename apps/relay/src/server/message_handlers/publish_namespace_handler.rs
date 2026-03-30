@@ -23,7 +23,7 @@ use moqtail::model::control::{
 use moqtail::model::error::TerminationCode;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 pub async fn handle(
   client: Arc<MOQTClient>,
@@ -71,6 +71,7 @@ pub async fn handle(
           PendingRequest::PublishNamespace {
             client_connection_id: client.connection_id,
             original_request_id: m.request_id,
+            track_namespace: m.track_namespace.clone(), // FIX 1: Added the namespace here
           },
         );
       }
@@ -105,6 +106,7 @@ pub async fn handle(
                   PendingRequest::PublishNamespace {
                     client_connection_id: sub.connection_id,
                     original_request_id: relay_announce_id, // We are the origin here
+                    track_namespace: m.track_namespace.clone(), // FIX 2: Added the namespace here too!
                   },
                 );
               }
@@ -132,4 +134,71 @@ pub async fn handle(
       Ok(())
     }
   }
+}
+pub async fn handle_request_update(
+  _client: Arc<MOQTClient>,
+  _handler: &mut ControlStreamHandler,
+  msg: ControlMessage,
+  context: Arc<SessionContext>,
+) -> Result<(), TerminationCode> {
+  let update_msg = match msg {
+    ControlMessage::RequestUpdate(m) => *m,
+    _ => {
+      error!("publish_namespace_handler::handle_request_update called with wrong message type");
+      return Err(TerminationCode::InternalError);
+    }
+  };
+
+  let existing_req_id = update_msg.existing_request_id;
+  // let new_req_id = update_msg.request_id; // TODO: Uncomment when sending RequestOk
+
+  // 1. Verify this is a PublishNamespace request and extract the namespace
+  let target_namespace = {
+    let map = context.relay_pending_requests.read().await;
+    match map.get(&existing_req_id) {
+      Some(PendingRequest::PublishNamespace {
+        track_namespace, ..
+      }) => track_namespace.clone(),
+      _ => {
+        warn!(
+          "Request {} is not a valid PublishNamespace request",
+          existing_req_id
+        );
+        return Err(TerminationCode::ProtocolViolation);
+      }
+    }
+  };
+
+  info!(
+    "Processing PUBLISH_NAMESPACE update for namespace: {:?}",
+    target_namespace
+  );
+
+  // 2. Update local state (e.g., Auth tokens, extension metadata)
+  // We need to store these parameters so new subscribers get the latest metadata.
+  //
+  // TODO: Update TrackManager to store and modify announcement parameters:
+  /*
+  context
+    .track_manager
+    .update_announcement_parameters(&target_namespace, _client.connection_id, &update_msg.parameters)
+    .await;
+  */
+
+  // 3. The Ripple Effect Fan-Out
+  // Because we broadcasted the original PublishNamespace to multiple subscribers,
+  // we must forward this RequestUpdate to all of them.
+  //
+  // TODO: Iterate through active subscribers for this namespace. For each subscriber,
+  // find the specific relay_announce_id we used when we sent them the original PublishNamespace,
+  // and send them a RequestUpdate with their new parameters.
+
+  // 4. Acknowledge the update to the Publisher
+  // TODO: Uncomment after merging RequestOk/Error support
+  /*
+  let ok_msg = RequestOk::new(new_req_id);
+  _handler.send(&ControlMessage::RequestOk(Box::new(ok_msg))).await?;
+  */
+
+  Ok(())
 }

@@ -433,3 +433,146 @@ export namespace ObjectStatus {
     }
   }
 }
+
+/**
+ * @public
+ * Fetch Object Serialization Flags (Draft-16 §10.4.4.1)
+ *
+ * Bitmask field controlling the wire format of Fetch Objects.
+ * Valid values: 0x00-0x7F, 0x8C (End of Non-Existent Range), 0x10C (End of Unknown Range).
+ *
+ * Bit layout (values < 128):
+ * - bits 1-0 (0x03): SubgroupIdMode (0=zero, 1=prior, 2=prior+1, 3=explicit)
+ * - bit 2   (0x04): Object ID explicit (0 = prior+1)
+ * - bit 3   (0x08): Group ID explicit (0 = same as prior)
+ * - bit 4   (0x10): Publisher Priority explicit (0 = same as prior)
+ * - bit 5   (0x20): Extensions present
+ * - bit 6   (0x40): Datagram mode (bits 0-1 ignored, no Subgroup ID)
+ */
+export namespace FetchObjectSerializationFlags {
+  export const END_OF_NON_EXISTENT_RANGE = 0x8c as const
+  export const END_OF_UNKNOWN_RANGE = 0x10c as const
+
+  /**
+   * Validates and converts a value to FetchObjectSerializationFlags.
+   * Throws ProtocolViolationError for invalid values.
+   */
+  export function tryFrom(value: number | bigint): number {
+    const v = typeof value === 'bigint' ? Number(value) : value
+    // Valid: 0x00-0x7F, 0x8C, 0x10C
+    if ((v >= 0 && v <= 0x7f) || v === 0x8c || v === 0x10c) {
+      return v
+    }
+    throw new Error(`Invalid FetchObjectSerializationFlags: 0x${v.toString(16)}`)
+  }
+
+  /**
+   * Returns true if the flags represent an end-of-range marker.
+   */
+  export function isEndOfRange(flags: number): boolean {
+    return flags === END_OF_NON_EXISTENT_RANGE || flags === END_OF_UNKNOWN_RANGE
+  }
+
+  /**
+   * Extracts the SubgroupIdMode from flags (bits 0-1).
+   * @returns 0=zero, 1=prior, 2=prior+1, 3=explicit
+   */
+  export function subgroupMode(flags: number): number {
+    return flags & 0x03
+  }
+
+  /**
+   * Returns true if Object ID field is explicit (bit 2 set).
+   */
+  export function hasExplicitObjectId(flags: number): boolean {
+    return (flags & 0x04) !== 0
+  }
+
+  /**
+   * Returns true if Group ID field is explicit (bit 3 set).
+   */
+  export function hasExplicitGroupId(flags: number): boolean {
+    return (flags & 0x08) !== 0
+  }
+
+  /**
+   * Returns true if Publisher Priority field is explicit (bit 4 set).
+   */
+  export function hasExplicitPriority(flags: number): boolean {
+    return (flags & 0x10) !== 0
+  }
+
+  /**
+   * Returns true if Extensions field is present (bit 5 set).
+   */
+  export function hasExtensions(flags: number): boolean {
+    return (flags & 0x20) !== 0
+  }
+
+  /**
+   * Returns true if this is a datagram-forwarded object (bit 6 set).
+   * When set, bits 0-1 are ignored and no Subgroup ID is present.
+   */
+  export function isDatagram(flags: number): boolean {
+    return (flags & 0x40) !== 0
+  }
+
+  /**
+   * Computes optimal serialization flags for a FetchObject given prior state.
+   * Performs delta encoding: omits fields when they can be inferred from prior.
+   */
+  export function fromProperties(
+    prior: { groupId: bigint; subgroupId: bigint | null; objectId: bigint; publisherPriority: number } | undefined,
+    obj: {
+      subgroupId: bigint | null
+      objectId: bigint
+      publisherPriority: number
+      extensionHeaders: unknown[] | null
+      groupId: bigint
+    },
+  ): number {
+    let flags = 0
+
+    // Group ID: explicit if no prior or different
+    if (!prior || prior.groupId !== obj.groupId) {
+      flags |= 0x08
+    }
+
+    // Object ID: explicit if no prior or not sequential
+    if (!prior || prior.objectId + 1n !== obj.objectId) {
+      flags |= 0x04
+    }
+
+    // Publisher Priority: explicit if no prior or different
+    if (!prior || prior.publisherPriority !== obj.publisherPriority) {
+      flags |= 0x10
+    }
+
+    // Extensions: present if non-empty
+    if (obj.extensionHeaders && obj.extensionHeaders.length > 0) {
+      flags |= 0x20
+    }
+
+    // Subgroup ID mode: choose most compact representation
+    if (obj.subgroupId === null) {
+      // Datagram-forwarded object
+      flags |= 0x40
+      // bits 0-1 should be 0 for datagram
+    } else {
+      const mode = (() => {
+        if (obj.subgroupId === 0n) {
+          return 0x00 // zero
+        } else if (prior && prior.subgroupId === obj.subgroupId) {
+          return 0x01 // same as prior
+        } else if (prior && prior.subgroupId !== null && prior.subgroupId + 1n === obj.subgroupId) {
+          return 0x02 // prior + 1
+        } else {
+          return 0x03 // explicit
+        }
+      })()
+      flags |= mode
+    }
+
+    return flags
+  }
+}

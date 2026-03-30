@@ -209,6 +209,7 @@ pub async fn handle(
         let mut object_count = 0;
         let mut send_stream = None;
         let mut cancelled = false;
+        let mut prior_fetch_state: Option<moqtail::model::data::constant::FetchObjectPriorState> = None;
         loop {
           tokio::select! {
             event = object_rx.recv() => {
@@ -258,7 +259,7 @@ pub async fn handle(
                       .write_stream_object(
                         &stream_id,
                         object_id,
-                        object.serialize().unwrap(),
+                        object.serialize(prior_fetch_state.as_ref()).unwrap(),
                         send_stream.as_ref().cloned(),
                       )
                       .await
@@ -278,6 +279,9 @@ pub async fn handle(
                       return Err(TerminationCode::InternalError);
                     }
 
+                    // Update prior state for delta encoding
+                    prior_fetch_state = Some(object.to_prior_state());
+
                     // Log fetch stream object if enabled
                     if context.server_config.enable_object_logging {
                       let sending_time = crate::server::utils::passed_time_since_start();
@@ -290,7 +294,7 @@ pub async fn handle(
                         publisher_priority: object.publisher_priority,
                         forwarding_preference:
                           moqtail::model::data::constant::ObjectForwardingPreference::Subgroup,
-                        subgroup_id: Some(object.subgroup_id),
+                        subgroup_id: object.subgroup_id,
                         status: object
                           .object_status
                           .unwrap_or(moqtail::model::data::constant::ObjectStatus::Normal),

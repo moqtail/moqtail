@@ -16,23 +16,54 @@
 
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
 import { KeyValuePair } from '../common/pair'
-import { ObjectStatus } from './constant'
+import { ObjectStatus, FetchObjectSerializationFlags } from './constant'
 import { Location } from '../common/location'
+import { ProtocolViolationError } from '../error/error'
+
+/**
+ * Prior object state on a fetch stream, used for delta encoding.
+ */
+export interface FetchObjectPriorState {
+  groupId: bigint
+  subgroupId: bigint | null
+  objectId: bigint
+  publisherPriority: number
+}
+
+/**
+ * End-of-range marker on a fetch stream.
+ */
+export class FetchEndOfRange {
+  public readonly groupId: bigint
+  public readonly objectId: bigint
+  public readonly isNonExistent: boolean
+
+  constructor(groupId: bigint | number, objectId: bigint | number, isNonExistent: boolean) {
+    this.groupId = BigInt(groupId)
+    this.objectId = BigInt(objectId)
+    this.isNonExistent = isNonExistent
+  }
+}
+
+/**
+ * Item on a fetch stream: either a normal object or an end-of-range marker.
+ */
+export type FetchStreamItem = FetchObject | FetchEndOfRange
 
 export class FetchObject {
   public readonly location: Location
-  public readonly subgroupId: bigint
+  public readonly subgroupId: bigint | null
 
   private constructor(
     location: Location,
-    subgroupId: bigint | number,
+    subgroupId: bigint | number | null,
     public readonly publisherPriority: number,
     public readonly extensionHeaders: KeyValuePair[] | null,
     public readonly objectStatus: ObjectStatus | null,
     public readonly payload: Uint8Array | null,
   ) {
     this.location = location
-    this.subgroupId = BigInt(subgroupId)
+    this.subgroupId = subgroupId === null ? null : BigInt(subgroupId)
   }
 
   get groupId(): bigint {
@@ -44,7 +75,7 @@ export class FetchObject {
 
   static newWithStatus(
     groupId: bigint | number,
-    subgroupId: bigint | number,
+    subgroupId: bigint | number | null,
     objectId: bigint | number,
     publisherPriority: number,
     extensionHeaders: KeyValuePair[] | null,
@@ -62,7 +93,7 @@ export class FetchObject {
 
   static newWithPayload(
     groupId: bigint | number,
-    subgroupId: bigint | number,
+    subgroupId: bigint | number | null,
     objectId: bigint | number,
     publisherPriority: number,
     extensionHeaders: KeyValuePair[] | null,
@@ -77,44 +108,164 @@ export class FetchObject {
       payload,
     )
   }
-  // to be compatible with subgroup_object serialize method
-  serialize(_previousObjectId?: BigInt): FrozenByteBuffer {
+  /**
+   * Serialize this object with optional delta encoding based on prior object state.
+   * @param prior - Prior object state for delta encoding (undefined for first object)
+   */
+  serialize(prior?: FetchObjectPriorState): FrozenByteBuffer {
     const buf = new ByteBuffer()
-    buf.putVI(this.location.group)
-    buf.putVI(this.subgroupId)
-    buf.putVI(this.location.object)
-    buf.putU8(this.publisherPriority)
-    const extensionHeaders = new ByteBuffer()
-    if (this.extensionHeaders) {
-      for (const header of this.extensionHeaders) {
-        extensionHeaders.putKeyValuePair(header)
-      }
+
+    // Compute serialization flags
+    const flags = FetchObjectSerializationFlags.fromProperties(prior, {
+      groupId: this.location.group,
+      subgroupId: this.subgroupId,
+      objectId: this.location.object,
+      publisherPriority: this.publisherPriority,
+      extensionHeaders: this.extensionHeaders,
+    })
+
+    // Write serialization flags
+    buf.putVI(flags)
+
+    // Write Group ID if explicit
+    if (FetchObjectSerializationFlags.hasExplicitGroupId(flags)) {
+      buf.putVI(this.location.group)
     }
-    const extBytes = extensionHeaders.toUint8Array()
-    buf.putLengthPrefixedBytes(extBytes)
+
+    // Write Subgroup ID if not datagram
+    if (!FetchObjectSerializationFlags.isDatagram(flags)) {
+      const mode = FetchObjectSerializationFlags.subgroupMode(flags)
+      if (mode === 0x03) {
+        // Explicit subgroup ID
+        buf.putVI(this.subgroupId ?? 0n)
+      }
+      // modes 0x00, 0x01, 0x02 don't write the field
+    }
+
+    // Write Object ID if explicit
+    if (FetchObjectSerializationFlags.hasExplicitObjectId(flags)) {
+      buf.putVI(this.location.object)
+    }
+
+    // Write Publisher Priority if explicit
+    if (FetchObjectSerializationFlags.hasExplicitPriority(flags)) {
+      buf.putU8(this.publisherPriority)
+    }
+
+    // Write Extensions if present
+    if (FetchObjectSerializationFlags.hasExtensions(flags)) {
+      const extensionHeaders = new ByteBuffer()
+      if (this.extensionHeaders) {
+        for (const header of this.extensionHeaders) {
+          extensionHeaders.putKeyValuePair(header)
+        }
+      }
+      const extBytes = extensionHeaders.toUint8Array()
+      buf.putLengthPrefixedBytes(extBytes)
+    }
+
+    // Write payload or status
     if (this.payload) {
       buf.putLengthPrefixedBytes(this.payload)
     } else {
       buf.putVI(0)
       buf.putVI(this.objectStatus!)
     }
+
     return buf.freeze()
   }
 
-  static deserialize(buf: BaseByteBuffer): FetchObject {
-    const groupId = buf.getVI()
-    const subgroupId = buf.getVI()
-    const objectId = buf.getVI()
-    const publisherPriority = buf.getU8()
-    const extLen = buf.getNumberVI()
-    let extensionHeaders: KeyValuePair[] | null = null
-    if (extLen > 0) {
-      const headerBytes = new FrozenByteBuffer(buf.getBytes(extLen))
-      extensionHeaders = []
-      while (headerBytes.remaining > 0) {
-        extensionHeaders.push(headerBytes.getKeyValuePair())
+  /**
+   * Deserialize a fetch stream item (object or end-of-range marker).
+   * Updates the prior state with the deserialized values.
+   * @param buf - Buffer to deserialize from
+   * @param prior - Prior object state (updated in-place after deserialization)
+   */
+  static deserializeItem(buf: BaseByteBuffer, prior?: FetchObjectPriorState): FetchStreamItem {
+    const flags = buf.getNumberVI()
+
+    // Validate flags
+    FetchObjectSerializationFlags.tryFrom(flags)
+
+    // Handle end-of-range markers
+    if (FetchObjectSerializationFlags.isEndOfRange(flags)) {
+      const groupId = buf.getVI()
+      const objectId = buf.getVI()
+      return new FetchEndOfRange(groupId, objectId, flags === FetchObjectSerializationFlags.END_OF_NON_EXISTENT_RANGE)
+    }
+
+    // Validate first-object constraints
+    if (!prior) {
+      if (!FetchObjectSerializationFlags.hasExplicitGroupId(flags)) {
+        throw new ProtocolViolationError(
+          'FetchObject.deserializeItem',
+          'First object must have explicit Group ID (bit 0x08 set)',
+        )
+      }
+      if (!FetchObjectSerializationFlags.isDatagram(flags)) {
+        const mode = FetchObjectSerializationFlags.subgroupMode(flags)
+        if (mode === 0x01 || mode === 0x02) {
+          throw new ProtocolViolationError(
+            'FetchObject.deserializeItem',
+            `First object cannot use subgroup mode ${mode} (references prior)`,
+          )
+        }
+      }
+      if (!FetchObjectSerializationFlags.hasExplicitObjectId(flags)) {
+        throw new ProtocolViolationError(
+          'FetchObject.deserializeItem',
+          'First object must have explicit Object ID (bit 0x04 set)',
+        )
+      }
+      if (!FetchObjectSerializationFlags.hasExplicitPriority(flags)) {
+        throw new ProtocolViolationError(
+          'FetchObject.deserializeItem',
+          'First object must have explicit Priority (bit 0x10 set)',
+        )
       }
     }
+
+    // Read Group ID
+    const groupId = FetchObjectSerializationFlags.hasExplicitGroupId(flags) ? buf.getVI() : prior!.groupId
+
+    // Read Subgroup ID
+    let subgroupId: bigint | null
+    if (FetchObjectSerializationFlags.isDatagram(flags)) {
+      subgroupId = null
+    } else {
+      const mode = FetchObjectSerializationFlags.subgroupMode(flags)
+      if (mode === 0x00) {
+        subgroupId = 0n
+      } else if (mode === 0x01) {
+        subgroupId = prior!.subgroupId
+      } else if (mode === 0x02) {
+        subgroupId = prior!.subgroupId! + 1n
+      } else {
+        // mode === 0x03: explicit
+        subgroupId = buf.getVI()
+      }
+    }
+
+    // Read Object ID
+    const objectId = FetchObjectSerializationFlags.hasExplicitObjectId(flags) ? buf.getVI() : prior!.objectId + 1n
+
+    // Read Publisher Priority
+    const publisherPriority = FetchObjectSerializationFlags.hasExplicitPriority(flags) ? buf.getU8() : prior!.publisherPriority
+
+    // Read Extensions
+    let extensionHeaders: KeyValuePair[] | null = null
+    if (FetchObjectSerializationFlags.hasExtensions(flags)) {
+      const extLen = buf.getNumberVI()
+      if (extLen > 0) {
+        const headerBytes = new FrozenByteBuffer(buf.getBytes(extLen))
+        extensionHeaders = []
+        while (headerBytes.remaining > 0) {
+          extensionHeaders.push(headerBytes.getKeyValuePair())
+        }
+      }
+    }
+
+    // Read payload or status
     const payloadLen = buf.getNumberVI()
     let objectStatus: ObjectStatus | null = null
     let payload: Uint8Array | null = null
@@ -123,14 +274,33 @@ export class FetchObject {
     } else {
       payload = buf.getBytes(payloadLen)
     }
-    return new FetchObject(
-      new Location(groupId, objectId),
-      subgroupId,
-      publisherPriority,
-      extensionHeaders,
-      objectStatus,
-      payload,
-    )
+
+    const obj = new FetchObject(new Location(groupId, objectId), subgroupId, publisherPriority, extensionHeaders, objectStatus, payload)
+    return obj
+  }
+
+  /**
+   * Deserialize a single fetch object (convenience method for tests).
+   * Note: This cannot be used for multiple objects on the same stream, as it doesn't track prior state.
+   */
+  static deserialize(buf: BaseByteBuffer): FetchObject {
+    const item = FetchObject.deserializeItem(buf, undefined)
+    if (item instanceof FetchEndOfRange) {
+      throw new ProtocolViolationError('FetchObject.deserialize', 'Cannot deserialize end-of-range marker as object')
+    }
+    return item
+  }
+
+  /**
+   * Convert this object to prior state for use in delta encoding the next object.
+   */
+  toPriorState(): FetchObjectPriorState {
+    return {
+      groupId: this.location.group,
+      subgroupId: this.subgroupId,
+      objectId: this.location.object,
+      publisherPriority: this.publisherPriority,
+    }
   }
 }
 

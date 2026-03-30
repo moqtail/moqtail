@@ -297,7 +297,7 @@ impl Subscription {
                             header: SubgroupHeader::new_with_explicit_id(
                               relay_track_id,
                               object.group_id,
-                              object.subgroup_id,
+                              object.subgroup_id.unwrap_or(0),
                               Some(object.publisher_priority),
                               has_extensions,
                               false,

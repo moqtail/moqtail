@@ -391,3 +391,145 @@ impl From<ObjectDatagramStatusType> for u64 {
     dtype as u64
   }
 }
+
+/// Fetch Object Serialization Flags (Draft-16 §10.4.4.1)
+///
+/// Bitmask field controlling the wire format of Fetch Objects.
+/// Valid values: 0x00–0x7F, 0x8C (End of Non-Existent Range), 0x10C (End of Unknown Range).
+/// Any other value >= 128 is a PROTOCOL_VIOLATION.
+///
+/// Bit layout (values < 128):
+/// - bits 1-0 (0x03): SubgroupIdMode
+///   - 0x00: Subgroup ID is zero
+///   - 0x01: Subgroup ID is prior object's Subgroup ID
+///   - 0x02: Subgroup ID is prior object's Subgroup ID + 1
+///   - 0x03: Subgroup ID field is explicit (present in wire format)
+/// - bit 2 (0x04): Object ID field explicit  (0 = prior object's ID + 1)
+/// - bit 3 (0x08): Group ID field explicit   (0 = same as prior object)
+/// - bit 4 (0x10): Publisher Priority explicit (0 = same as prior object)
+/// - bit 5 (0x20): Extensions field present
+/// - bit 6 (0x40): Datagram mode (bits 0-1 ignored, no Subgroup ID field)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FetchObjectSerializationFlags(pub u64);
+
+impl FetchObjectSerializationFlags {
+  /// End of Non-Existent Range marker
+  pub const END_OF_NON_EXISTENT_RANGE: u64 = 0x8C;
+  /// End of Unknown Range marker
+  pub const END_OF_UNKNOWN_RANGE: u64 = 0x10C;
+
+  /// Check if this represents an end-of-range marker
+  pub fn is_end_of_range(&self) -> bool {
+    self.0 == Self::END_OF_NON_EXISTENT_RANGE || self.0 == Self::END_OF_UNKNOWN_RANGE
+  }
+
+  /// Extract SubgroupIdMode from bits 0-1
+  pub fn subgroup_mode(&self) -> u8 {
+    (self.0 & 0x03) as u8
+  }
+
+  /// Check if Object ID field is explicit (bit 2 set)
+  pub fn has_explicit_object_id(&self) -> bool {
+    self.0 & 0x04 != 0
+  }
+
+  /// Check if Group ID field is explicit (bit 3 set)
+  pub fn has_explicit_group_id(&self) -> bool {
+    self.0 & 0x08 != 0
+  }
+
+  /// Check if Publisher Priority field is explicit (bit 4 set)
+  pub fn has_explicit_priority(&self) -> bool {
+    self.0 & 0x10 != 0
+  }
+
+  /// Check if Extensions field is present (bit 5 set)
+  pub fn has_extensions(&self) -> bool {
+    self.0 & 0x20 != 0
+  }
+
+  /// Check if this is a datagram-forwarded object (bit 6 set).
+  /// When set, bits 0-1 are ignored and no Subgroup ID is present.
+  pub fn is_datagram(&self) -> bool {
+    self.0 & 0x40 != 0
+  }
+
+  /// Compute optimal serialization flags for given object properties and prior state.
+  /// Performs delta encoding to omit fields when they can be inferred.
+  pub fn from_properties(
+    prior: Option<&FetchObjectPriorState>,
+    group_id: u64,
+    subgroup_id: Option<u64>,
+    object_id: u64,
+    publisher_priority: u8,
+    has_extensions: bool,
+  ) -> Self {
+    let mut flags = 0u64;
+
+    // Group ID: explicit if no prior or different
+    if prior.map_or(true, |p| p.group_id != group_id) {
+      flags |= 0x08;
+    }
+
+    // Object ID: explicit if no prior or not sequential
+    if prior.map_or(true, |p| p.object_id + 1 != object_id) {
+      flags |= 0x04;
+    }
+
+    // Publisher Priority: explicit if no prior or different
+    if prior.map_or(true, |p| p.publisher_priority != publisher_priority) {
+      flags |= 0x10;
+    }
+
+    // Extensions: present if non-empty
+    if has_extensions {
+      flags |= 0x20;
+    }
+
+    // Subgroup ID mode
+    if subgroup_id.is_none() {
+      // Datagram-forwarded object
+      flags |= 0x40;
+      // bits 0-1 should be 0 for datagram
+    } else {
+      let obj_subgroup = subgroup_id.unwrap();
+      let mode = if obj_subgroup == 0 {
+        0x00 // zero
+      } else if prior.map_or(false, |p| p.subgroup_id == subgroup_id) {
+        0x01 // same as prior
+      } else if prior.map_or(false, |p| p.subgroup_id.map_or(false, |s| s + 1 == obj_subgroup)) {
+        0x02 // prior + 1
+      } else {
+        0x03 // explicit
+      };
+      flags |= mode as u64;
+    }
+
+    FetchObjectSerializationFlags(flags)
+  }
+}
+
+/// Prior object state on a fetch stream, used for delta encoding.
+#[derive(Debug, Clone)]
+pub struct FetchObjectPriorState {
+  pub group_id: u64,
+  pub subgroup_id: Option<u64>,
+  pub object_id: u64,
+  pub publisher_priority: u8,
+}
+
+impl TryFrom<u64> for FetchObjectSerializationFlags {
+  type Error = ParseError;
+
+  fn try_from(value: u64) -> Result<Self, Self::Error> {
+    // Valid: 0x00-0x7F, 0x8C, 0x10C
+    if (value <= 0x7F) || value == 0x8C || value == 0x10C {
+      Ok(FetchObjectSerializationFlags(value))
+    } else {
+      Err(ParseError::InvalidType {
+        context: "FetchObjectSerializationFlags::try_from(u64)",
+        details: format!("Invalid serialization flags value: {value:#x}"),
+      })
+    }
+  }
+}

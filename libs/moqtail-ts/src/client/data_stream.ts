@@ -19,6 +19,7 @@ import {
   FetchHeader,
   FetchHeaderType,
   FetchObject,
+  FetchObjectPriorState,
   SubgroupHeader,
   SubgroupHeaderType,
   SubgroupObject,
@@ -27,7 +28,8 @@ import { Header } from '../model/data/header'
 import { NotEnoughBytesError, ProtocolViolationError, TimeoutError } from '../model/error/error'
 
 export class SendStream {
-  #lastObjectId?: bigint
+  #priorFetchState?: FetchObjectPriorState
+  #lastSubgroupObjectId?: bigint
   readonly #writer: WritableStreamDefaultWriter<Uint8Array>
   readonly onDataSent?: (data: SubgroupObject | SubgroupHeader | FetchObject | FetchHeader) => void
   private constructor(
@@ -52,8 +54,16 @@ export class SendStream {
   }
 
   async write(object: FetchObject | SubgroupObject): Promise<void> {
-    const serializedObject = object.serialize(this.#lastObjectId).toUint8Array()
-    this.#lastObjectId = object.objectId
+    let serializedObject: Uint8Array
+    if (object instanceof FetchObject) {
+      // FetchObject uses prior state for delta encoding
+      serializedObject = object.serialize(this.#priorFetchState).toUint8Array()
+      this.#priorFetchState = object.toPriorState()
+    } else {
+      // SubgroupObject uses last object ID for delta encoding
+      serializedObject = object.serialize(this.#lastSubgroupObjectId).toUint8Array()
+      this.#lastSubgroupObjectId = object.objectId
+    }
     await this.#writer.write(serializedObject)
     if (this.onDataSent) this.onDataSent(object)
   }
@@ -158,7 +168,8 @@ export class RecvStream {
 
   async #ingestLoop(controller: ReadableStreamDefaultController<FetchObject | SubgroupObject>) {
     try {
-      let previousObjectId: bigint | undefined = undefined
+      let priorFetchState: FetchObjectPriorState | undefined = undefined
+      let previousSubgroupObjectId: bigint | undefined = undefined
       while (true) {
         // Try to parse an object from buffer
         if (this.#internalBuffer.remaining > 0) {
@@ -166,14 +177,23 @@ export class RecvStream {
             this.#internalBuffer.checkpoint()
             let object: FetchObject | SubgroupObject
             if (Header.isFetch(this.header)) {
-              object = FetchObject.deserialize(this.#internalBuffer)
+              const item = FetchObject.deserializeItem(this.#internalBuffer, priorFetchState)
+              // Skip end-of-range markers (not enqueued to stream)
+              if (item instanceof FetchObject) {
+                object = item
+                priorFetchState = object.toPriorState()
+              } else {
+                // FetchEndOfRange - skip it
+                this.#internalBuffer.commit()
+                continue
+              }
             } else {
               object = SubgroupObject.deserialize(
                 this.#internalBuffer,
                 SubgroupHeaderType.hasExtensions(this.header.type),
-                previousObjectId,
+                previousSubgroupObjectId,
               )
-              previousObjectId = object.objectId
+              previousSubgroupObjectId = object.objectId
             }
             this.#internalBuffer.commit()
             controller.enqueue(object)

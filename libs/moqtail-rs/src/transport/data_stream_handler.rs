@@ -27,9 +27,9 @@ use wtransport::{RecvStream, SendStream};
 
 use crate::model::control::fetch::Fetch;
 use crate::model::control::subscribe::Subscribe;
-use crate::model::data::constant::FetchHeaderType;
+use crate::model::data::constant::{FetchHeaderType, FetchObjectPriorState};
 use crate::model::data::fetch_header::FetchHeader;
-use crate::model::data::fetch_object::FetchObject;
+use crate::model::data::fetch_object::{FetchObject, FetchStreamItem};
 use crate::model::data::object::Object;
 use crate::model::data::subgroup_header::SubgroupHeader;
 use crate::model::data::subgroup_object::SubgroupObject;
@@ -118,6 +118,7 @@ impl SubscribeRequest {
 pub struct SendDataStream {
   send_stream: Arc<Mutex<SendStream>>,
   header_info: HeaderInfo,
+  prior_fetch_state: Option<FetchObjectPriorState>,
 }
 
 // TODO: Major issue, can't distinguish from FetchHeader + FetchObject from SubgroupHeader
@@ -151,6 +152,7 @@ impl SendDataStream {
     Ok(Self {
       send_stream,
       header_info,
+      prior_fetch_state: None,
     })
   }
 
@@ -165,7 +167,8 @@ impl SendDataStream {
     match &self.header_info {
       HeaderInfo::Fetch { .. } => {
         let fetch_obj = object.try_into_fetch()?;
-        buf.extend_from_slice(&fetch_obj.serialize()?);
+        buf.extend_from_slice(&fetch_obj.serialize(self.prior_fetch_state.as_ref())?);
+        self.prior_fetch_state = Some(fetch_obj.to_prior_state());
       }
       HeaderInfo::Subgroup { header, .. } => {
         let has_extensions = header.header_type.has_extensions();
@@ -279,6 +282,7 @@ impl RecvDataStream {
     let mut timeout_at = Instant::now() + DATA_STREAM_TIMEOUT;
 
     let mut previous_object_id: Option<u64> = None;
+    let mut prior_fetch_state: Option<FetchObjectPriorState> = None;
 
     loop {
       let bytes_cursor = recv_bytes.clone().freeze();
@@ -315,6 +319,7 @@ impl RecvDataStream {
             is_closed.clone(),
             objects.clone(),
             &previous_object_id,
+            &mut prior_fetch_state,
           )
           .await
           .map_err(|e| {
@@ -474,6 +479,7 @@ impl RecvDataStream {
     is_closed: Arc<AtomicBool>,
     objects: Arc<RwLock<VecDeque<Object>>>,
     previous_object_id: &Option<u64>,
+    prior_fetch_state: &mut Option<FetchObjectPriorState>,
   ) -> Result<(usize, Option<u64>), ParseError> {
     // debug!("RecvDataStream::parse_object() called");
 
@@ -483,14 +489,23 @@ impl RecvDataStream {
       // debug!("bytes_cursor remaining: {}", original_remaining);
 
       // get the last object_id and object
-      // for fetch objects, the previous object id is not required
+      // for fetch objects, use deserialize_item with prior state for delta decoding
       let parse_result = match header_info {
         HeaderInfo::Fetch { .. } => {
-          FetchObject::deserialize(&mut bytes_cursor).and_then(|fetch_obj| {
-            // TODO: Validation checks fetch objects arriving correctly
-            // TODO: Get track alias from fetch_request
-            Object::try_from_fetch(fetch_obj, 0).map(|object| (0u64, object))
-          })
+          match FetchObject::deserialize_item(&mut bytes_cursor, prior_fetch_state) {
+            Ok(FetchStreamItem::Object(fetch_obj)) => {
+              // TODO: Validation checks fetch objects arriving correctly
+              // TODO: Get track alias from fetch_request
+              Object::try_from_fetch(fetch_obj, 0).map(|object| (0u64, object))
+            }
+            Ok(FetchStreamItem::EndOfNonExistentRange { .. } | FetchStreamItem::EndOfUnknownRange { .. }) => {
+              // End-of-range markers: consume bytes but don't enqueue an object
+              let consumed = original_remaining - bytes_cursor.remaining();
+              debug!("Skipping end-of-range marker, consumed {} bytes", consumed);
+              return Ok((consumed, None));
+            }
+            Err(e) => Err(e),
+          }
         }
         HeaderInfo::Subgroup { header, .. } => {
           let has_extensions = header.header_type.has_extensions();
@@ -648,7 +663,7 @@ mod tests {
 
   fn make_fetch_object() -> FetchObject {
     let group_id: u64 = 9;
-    let subgroup_id = 144;
+    let subgroup_id = Some(144);
     let object_id: u64 = 10;
     let publisher_priority: u8 = 255;
     let extension_headers = Some(vec![
@@ -1019,7 +1034,7 @@ mod tests {
     let receiver = RecvDataStream::new(recv, pending_fetches);
 
     // Serialize object and send in two parts
-    let bytes = fetch_obj.serialize().unwrap();
+    let bytes = fetch_obj.serialize(None).unwrap();
     let half = bytes.len() / 2;
     let first_half = &bytes[..half];
     let second_half = &bytes[half..];

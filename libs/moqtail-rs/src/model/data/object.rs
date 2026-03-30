@@ -122,7 +122,7 @@ impl Object {
       },
       publisher_priority: fetch_obj.publisher_priority,
       forwarding_preference: ObjectForwardingPreference::Subgroup,
-      subgroup_id: Some(fetch_obj.subgroup_id),
+      subgroup_id: fetch_obj.subgroup_id,
       status: fetch_obj.object_status.unwrap_or(ObjectStatus::Normal),
       extensions: fetch_obj.extension_headers,
       payload: fetch_obj.payload,
@@ -282,13 +282,15 @@ impl Object {
       }
     };
 
-    let subgroup_id = match self.forwarding_preference {
-      ObjectForwardingPreference::Subgroup => self.subgroup_id.ok_or(ParseError::CastingError {
-        context: "Object::try_into_fetch(subgroup_id)",
-        from_type: "Object",
-        to_type: "FetchObject",
-        details: "Subgroup ID must be present for Subgroup forwarding".to_string(),
-      })?,
+    let subgroup_id: Option<u64> = match self.forwarding_preference {
+      ObjectForwardingPreference::Subgroup => {
+        Some(self.subgroup_id.ok_or(ParseError::CastingError {
+          context: "Object::try_into_fetch(subgroup_id)",
+          from_type: "Object",
+          to_type: "FetchObject",
+          details: "Subgroup ID must be present for Subgroup forwarding".to_string(),
+        })?)
+      }
       ObjectForwardingPreference::Datagram => {
         if self.subgroup_id.is_some() {
           return Err(ParseError::CastingError {
@@ -298,7 +300,7 @@ impl Object {
             details: "Subgroup ID must not be present for Datagram forwarding".to_string(),
           });
         }
-        self.location.object
+        None
       }
     };
 

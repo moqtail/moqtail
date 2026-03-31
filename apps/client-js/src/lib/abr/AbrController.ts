@@ -27,7 +27,7 @@ export interface AbrMetrics {
 const MAX_HISTORY = 60;
 
 export class AbrController {
-  #player: Pick<Player, 'getMetrics' | 'switchTrack'>;
+  #player: Pick<Player, 'getMetrics' | 'switchTrack' | 'pollGoodput'>;
   #rulesCollection: AbrRulesCollection;
   #tracks: Track[];
   #settings: AbrSettings;
@@ -39,7 +39,7 @@ export class AbrController {
   #switchHistory: SwitchEvent[] = [];
 
   constructor(
-    player: Pick<Player, 'getMetrics' | 'switchTrack'>,
+    player: Pick<Player, 'getMetrics' | 'switchTrack' | 'pollGoodput'>,
     rulesCollection: AbrRulesCollection,
     tracks: Track[],
     settings: AbrSettings,
@@ -55,7 +55,7 @@ export class AbrController {
 
   start(): void {
     if (this.#intervalId !== null) return;
-    this.#intervalId = setInterval(() => this._tick(), 250);
+    this.#intervalId = setInterval(() => void this._tick(), 250);
   }
 
   stop(): void {
@@ -83,7 +83,9 @@ export class AbrController {
     return [...this.#switchHistory];
   }
 
-  _tick(): void {
+  async _tick(): Promise<void> {
+    // Poll WebTransport stats before reading metrics
+    await this.#player.pollGoodput();
     const raw = this.#player.getMetrics();
     const {
       bandwidthBps,

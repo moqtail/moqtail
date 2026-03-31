@@ -12,6 +12,7 @@ import type { AbrSettings, Track } from '../types';
 type MockPlayer = {
   getMetrics: ReturnType<typeof vi.fn>;
   switchTrack: ReturnType<typeof vi.fn>;
+  pollGoodput: ReturnType<typeof vi.fn>;
 };
 
 function makeTracks(): Track[] {
@@ -61,6 +62,7 @@ function makeController(
   const player: MockPlayer = {
     getMetrics: vi.fn().mockReturnValue(makePlayerMetrics(playerOverrides)),
     switchTrack: vi.fn().mockResolvedValue(undefined),
+    pollGoodput: vi.fn().mockResolvedValue(undefined),
   };
   const capturedMetrics: AbrMetrics[] = [];
   const controller = new AbrController(player, collection, tracks, settings, m =>
@@ -75,75 +77,75 @@ function makeController(
 
 describe('AbrController', () => {
   describe('metrics emission', () => {
-    it('emits metrics on every tick regardless of mode', () => {
+    it('emits metrics on every tick regardless of mode', async () => {
       const { controller, metrics } = makeController(
         { bufferSeconds: 5, activeTrack: '360p' },
         { videoAutoSwitch: false },
       );
 
-      controller._tick();
+      await controller._tick();
       expect(metrics).toHaveLength(1);
       expect(metrics[0]!.bandwidthBps).toBe(10_000_000);
       expect(metrics[0]!.activeTrack).toBe('360p');
       expect(metrics[0]!.activeTrackIndex).toBe(0);
       expect(metrics[0]!.mode).toBe('manual');
 
-      controller._tick();
+      await controller._tick();
       expect(metrics).toHaveLength(2);
     });
 
-    it('emits mode=auto when videoAutoSwitch is true', () => {
+    it('emits mode=auto when videoAutoSwitch is true', async () => {
       const { controller, metrics } = makeController(
         { bufferSeconds: 5 },
         { videoAutoSwitch: true },
       );
-      controller._tick();
+      await controller._tick();
       expect(metrics[0]!.mode).toBe('auto');
     });
 
-    it('activeTrackIndex is -1 when activeTrack is undefined', () => {
+    it('activeTrackIndex is -1 when activeTrack is undefined', async () => {
       const { controller, metrics } = makeController({ activeTrack: undefined });
-      controller._tick();
+      await controller._tick();
       expect(metrics[0]!.activeTrackIndex).toBe(-1);
     });
 
-    it('includes a copy of switch history in emitted metrics', () => {
+    it('includes a copy of switch history in emitted metrics', async () => {
       const { controller, metrics } = makeController(
         { bufferSeconds: 5, activeTrack: '360p' },
         { videoAutoSwitch: false },
       );
       controller.manualSwitch('720p');
-      controller._tick();
+      await controller._tick();
       expect(metrics[0]!.switchHistory).toHaveLength(1);
       expect(metrics[0]!.switchHistory[0]!.reason).toBe('manual');
     });
   });
 
   describe('manual mode (videoAutoSwitch=false)', () => {
-    it('does not switch when videoAutoSwitch is false', () => {
+    it('does not switch when videoAutoSwitch is false', async () => {
       const { controller, player } = makeController(
         { bufferSeconds: 5, activeTrack: '360p', bandwidthBps: 10_000_000 },
         { videoAutoSwitch: false },
       );
 
-      controller._tick();
+      await controller._tick();
 
       // switchTrack should NOT have been called by the tick
       expect(player.switchTrack).not.toHaveBeenCalled();
     });
 
-    it('still emits metrics in manual mode', () => {
+    it('still emits metrics in manual mode', async () => {
       const { controller, metrics } = makeController(
         { bufferSeconds: 5 },
         { videoAutoSwitch: false },
       );
-      controller._tick();
+      await controller._tick();
       expect(metrics).toHaveLength(1);
     });
   });
 
   describe('switching guard', () => {
-    it('does not switch when switching guard is active', () => {
+    it('does not switch when switching guard is active', async () => {
       // High bandwidth, buffer=5s → ThroughputRule would want to upgrade
       const { controller, player } = makeController(
         { bufferSeconds: 5, activeTrack: '360p', bandwidthBps: 10_000_000 },
@@ -151,47 +153,47 @@ describe('AbrController', () => {
       );
 
       // First tick — should switch (guard not set yet)
-      controller._tick();
+      await controller._tick();
       expect(player.switchTrack).toHaveBeenCalledTimes(1);
       player.switchTrack.mockClear();
 
       // Guard is now active; second tick should not switch
-      controller._tick();
+      await controller._tick();
       expect(player.switchTrack).not.toHaveBeenCalled();
     });
 
-    it('releaseSwitchingGuard allows the next switch', () => {
+    it('releaseSwitchingGuard allows the next switch', async () => {
       const { controller, player } = makeController(
         { bufferSeconds: 5, activeTrack: '360p', bandwidthBps: 10_000_000 },
         { videoAutoSwitch: true },
       );
 
-      controller._tick(); // first switch fires
+      await controller._tick(); // first switch fires
       expect(player.switchTrack).toHaveBeenCalledTimes(1);
       player.switchTrack.mockClear();
 
       // Guard still active
-      controller._tick();
+      await controller._tick();
       expect(player.switchTrack).not.toHaveBeenCalled();
 
       // Release guard
       controller.releaseSwitchingGuard();
 
       // Next tick should be able to switch again
-      controller._tick();
+      await controller._tick();
       expect(player.switchTrack).toHaveBeenCalledTimes(1);
     });
   });
 
   describe('DYNAMIC strategy — ThroughputRule at low buffer', () => {
-    it('uses ThroughputRule when buffer is below switchOnThreshold', () => {
+    it('uses ThroughputRule when buffer is below switchOnThreshold', async () => {
       // buffer=5s < switchOnThreshold=18s → shouldUseBolaRule=false → ThroughputRule active
       const { controller, player } = makeController(
         { bufferSeconds: 5, activeTrack: '360p', bandwidthBps: 10_000_000 },
         { videoAutoSwitch: true },
       );
 
-      controller._tick();
+      await controller._tick();
 
       // ThroughputRule at 10Mbps with safety factor 0.9 → effectiveBw=9Mbps
       // All tracks fit (max 4Mbps), so it would want index=2 (1080p), which differs from 360p (index=0)
@@ -200,14 +202,14 @@ describe('AbrController', () => {
   });
 
   describe('DYNAMIC strategy — BolaRule at high buffer', () => {
-    it('switches to BolaRule when buffer exceeds switchOnThreshold', () => {
+    it('switches to BolaRule when buffer exceeds switchOnThreshold', async () => {
       // buffer=20s >= switchOnThreshold=18s → shouldUseBolaRule=true → BolaRule active
       const { controller, player } = makeController(
         { bufferSeconds: 20, activeTrack: '360p', bandwidthBps: 10_000_000 },
         { videoAutoSwitch: true },
       );
 
-      controller._tick();
+      await controller._tick();
 
       // With BolaRule active and high bandwidth/buffer, it should upgrade
       expect(player.switchTrack).toHaveBeenCalled();
@@ -218,14 +220,14 @@ describe('AbrController', () => {
   });
 
   describe('no switch when already on best track', () => {
-    it('does not switch when already on the best track', () => {
+    it('does not switch when already on the best track', async () => {
       // Active track is 1080p (index=2) with high bandwidth — ThroughputRule also wants index=2
       const { controller, player } = makeController(
         { bufferSeconds: 5, activeTrack: '1080p', bandwidthBps: 10_000_000 },
         { videoAutoSwitch: true },
       );
 
-      controller._tick();
+      await controller._tick();
 
       expect(player.switchTrack).not.toHaveBeenCalled();
     });
@@ -291,7 +293,7 @@ describe('AbrController', () => {
   });
 
   describe('start/stop', () => {
-    it('start begins a 250ms tick interval', () => {
+    it('start begins a 250ms tick interval', async () => {
       vi.useFakeTimers();
       const { controller, metrics } = makeController(
         { bufferSeconds: 5 },
@@ -299,7 +301,7 @@ describe('AbrController', () => {
       );
 
       controller.start();
-      vi.advanceTimersByTime(500);
+      await vi.advanceTimersByTimeAsync(500);
       controller.stop();
 
       // Should have ticked roughly twice (at 250ms and 500ms)
@@ -307,7 +309,7 @@ describe('AbrController', () => {
       vi.useRealTimers();
     });
 
-    it('stop clears the interval', () => {
+    it('stop clears the interval', async () => {
       vi.useFakeTimers();
       const { controller, metrics } = makeController(
         { bufferSeconds: 5 },
@@ -315,11 +317,11 @@ describe('AbrController', () => {
       );
 
       controller.start();
-      vi.advanceTimersByTime(250);
+      await vi.advanceTimersByTimeAsync(250);
       const countAfterFirst = metrics.length;
       controller.stop();
 
-      vi.advanceTimersByTime(500);
+      await vi.advanceTimersByTimeAsync(500);
       expect(metrics.length).toBe(countAfterFirst); // no more ticks after stop
 
       vi.useRealTimers();
@@ -327,14 +329,14 @@ describe('AbrController', () => {
   });
 
   describe('updateSettings', () => {
-    it('updates the settings reference used by subsequent ticks', () => {
+    it('updates the settings reference used by subsequent ticks', async () => {
       const { controller, player, metrics } = makeController(
         { bufferSeconds: 5, activeTrack: '360p', bandwidthBps: 10_000_000 },
         { videoAutoSwitch: true },
       );
 
       // First tick should switch (auto mode)
-      controller._tick();
+      await controller._tick();
       expect(player.switchTrack).toHaveBeenCalledTimes(1);
       player.switchTrack.mockClear();
       controller.releaseSwitchingGuard();
@@ -343,7 +345,7 @@ describe('AbrController', () => {
       controller.updateSettings(makeSettings({ videoAutoSwitch: false }));
 
       // Now tick should not switch
-      controller._tick();
+      await controller._tick();
       expect(player.switchTrack).not.toHaveBeenCalled();
 
       // Mode should be reflected in emitted metrics

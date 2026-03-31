@@ -117,6 +117,37 @@ export class Player {
     return this.catalog;
   }
 
+  /**
+   * Estimate initial bandwidth from WebTransport.getStats().
+   *
+   * By the time initialize() returns, the QUIC handshake + catalog fetch have
+   * already transferred data. We take two getStats() snapshots 200ms apart
+   * and derive throughput from the bytesReceived delta. Returns 0 if the
+   * browser doesn't support getStats() or the measurement is too noisy.
+   */
+  async estimateInitialBandwidth(): Promise<number> {
+    const transport = this.client?.webTransport;
+    if (!transport || typeof (transport as { getStats?: unknown }).getStats !== 'function')
+      return 0;
+
+    type StatsResult = { bytesReceived?: number };
+    const getStats = (
+      transport as unknown as { getStats: () => Promise<StatsResult> }
+    ).getStats.bind(transport);
+
+    const s1 = await getStats();
+    const t1 = Date.now();
+    await new Promise(r => setTimeout(r, 200));
+    const s2 = await getStats();
+    const t2 = Date.now();
+
+    const deltaBytes = (s2.bytesReceived ?? 0) - (s1.bytesReceived ?? 0);
+    const deltaMs = t2 - t1;
+    if (deltaMs < 50 || deltaBytes <= 0) return 0;
+
+    return (deltaBytes * 8 * 1000) / deltaMs;
+  }
+
   async dispose() {
     // Unsubscribe from all active streams
     await Promise.all(this.#streams.map(s => this.unsubscribe(s.requestId)));
@@ -378,6 +409,12 @@ export class Player {
     videoStruct?.tracker.setAlphas(alphaFast, alphaSlow);
   }
 
+  /** Poll WebTransport stats for the active video track's goodput tracker. */
+  async pollGoodput(): Promise<void> {
+    const videoStruct = this.#streams.find(s => this.catalog?.getRole(s.trackName) === 'video');
+    await videoStruct?.tracker.poll();
+  }
+
   /**
    * Updates the onTrackSwitched callback post-construction.
    * Called by app.tsx after creating the Player and AbrController,
@@ -529,11 +566,13 @@ export class Player {
       });
       if (result instanceof FetchError)
         throw new Error(`Error occured during catalog fetch: ${result.reasonPhrase.phrase}`);
+      const tracker = new GoodputTracker();
+      if (this.client) tracker.setTransport(this.client.webTransport);
       struct = {
         trackName: 'catalog',
         requestId: result.requestId,
         source: result.stream,
-        tracker: new GoodputTracker(),
+        tracker,
         lastGroupId: -1n,
         pendingSwitch: null,
       };
@@ -584,11 +623,13 @@ export class Player {
     });
     if (result instanceof SubscribeError)
       throw new Error(`Error occured during subscription: ${result.errorReason.phrase}`);
+    const tracker = new GoodputTracker();
+    if (this.client.webTransport) tracker.setTransport(this.client.webTransport);
     struct = {
       trackName: params.trackName,
       requestId: result.requestId,
       source: result.stream,
-      tracker: new GoodputTracker(),
+      tracker,
       lastGroupId: -1n,
       pendingSwitch: null,
     };

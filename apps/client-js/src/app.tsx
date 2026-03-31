@@ -279,14 +279,24 @@ export function App() {
       const allTracks = catalog.getTracks();
       setTracks(allTracks);
 
-      // Start on lowest-bitrate video track (safe startup, like dash.js)
+      // Pick startup video track: use WebTransport bandwidth estimate if available,
+      // fall back to lowest-bitrate track when no estimate is possible.
       const videoTracksAll = allTracks.filter(t => t.role === 'video');
-      const firstVideo =
-        videoTracksAll.length > 0
-          ? videoTracksAll.reduce((low, t) =>
-              (t.bitrate ?? Infinity) < (low.bitrate ?? Infinity) ? t : low,
-            )
-          : undefined;
+      const sortedVideoTracks = [...videoTracksAll].sort(
+        (a, b) => (a.bitrate ?? 0) - (b.bitrate ?? 0),
+      );
+      let firstVideo = sortedVideoTracks[0]; // default: lowest bitrate
+      const initialBw = await player.estimateInitialBandwidth();
+      if (initialBw > 0 && sortedVideoTracks.length > 0) {
+        const safetyFactor = abrSettings.bandwidthSafetyFactor;
+        const effectiveBw = initialBw * safetyFactor;
+        // Pick highest track that fits within the estimated bandwidth
+        for (const track of sortedVideoTracks) {
+          if ((track.bitrate ?? 0) <= effectiveBw) {
+            firstVideo = track;
+          }
+        }
+      }
       if (firstVideo) {
         setSelectedVideo(firstVideo.name);
         setStatus('restarting');

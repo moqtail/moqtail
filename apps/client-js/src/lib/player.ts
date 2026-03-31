@@ -482,24 +482,6 @@ export class Player {
       // has actually delivered data on the new track. This prevents rapid
       // consecutive SWITCH messages that corrupt the relay's switch context.
       videoStruct.pendingSwitch = { trackName, initData: initData.buffer as ArrayBuffer, mimeType };
-
-      // Safety timeout: if the relay never delivers data on the new track
-      // (e.g. relay switch-context race condition where the send stream is
-      // not found), release the switching guard so the system isn't locked
-      // forever. The pendingSwitch is cleared so stale init data isn't
-      // injected if the new track eventually arrives much later.
-      const SWITCH_TIMEOUT_MS = 5000;
-      const pendingRef = videoStruct.pendingSwitch;
-      setTimeout(() => {
-        if (videoStruct.pendingSwitch === pendingRef) {
-          logger.warn(
-            'media',
-            `switchTrack: timeout waiting for ${trackName} data — releasing switching guard`,
-          );
-          videoStruct.pendingSwitch = null;
-          this.#options.onTrackSwitched?.(videoStruct.trackName);
-        }
-      }, SWITCH_TIMEOUT_MS);
     } catch (error) {
       logger.error('media', 'switchTrack: unexpected error', error);
       this.#options.onTrackSwitched?.(videoStruct.trackName);

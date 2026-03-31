@@ -86,6 +86,11 @@ impl Session {
         ));
       }
     };
+    
+    let mut response_headers: HashMap<String, String> = HashMap::new();
+    response_headers.insert("wt-protocol".to_string(), selected_version);
+
+    // in the headers, we expect wt-available-protocols
 
     let client_manager = server.client_manager.clone();
     let track_manager = server.track_manager.clone();
@@ -95,7 +100,7 @@ impl Session {
     let relay_track_status_requests = server.relay_track_status_requests.clone();
     let relay_next_request_id = server.relay_next_request_id.clone();
     let connection = session_request
-      .accept()
+      .accept_with_headers(response_headers)
       .await?;
 
     let request_maps = RequestMaps {

@@ -53,7 +53,7 @@ export class MoqtObject {
   getSubgroupHeaderType(containsEnd: boolean, useDefaultPriority: boolean = false): SubgroupHeaderType {
     const hasExtensions = !!this.extensionHeaders && this.extensionHeaders.length > 0
 
-    // Determine SUBGROUP_ID_MODE (bits 1-2, as defined in draft-16):
+    // Determine SUBGROUP_ID_MODE (bits 1-2):
     // 0b00 (0): Subgroup ID = 0 (absent from header)
     // 0b01 (1): Subgroup ID = first Object ID (absent from header)
     // 0b10 (2): Subgroup ID = explicit (present in header)

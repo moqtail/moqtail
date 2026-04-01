@@ -20,7 +20,7 @@ pub enum FetchHeaderType {
   Type0x05 = 0x05,
 }
 
-/// Subgroup Header Type (Draft-16)
+/// Subgroup Header Type
 ///
 /// Type bit layout (0b00X1XXXX):
 /// - Bit 0 (0x01): EXTENSIONS - Extensions present in all objects
@@ -35,113 +35,105 @@ pub enum FetchHeaderType {
 ///
 /// Valid ranges: 0x10-0x15, 0x18-0x1D (bit 5=0), 0x30-0x35, 0x38-0x3D (bit 5=1)
 /// Invalid: 0x16, 0x17, 0x1E, 0x1F, 0x36, 0x37, 0x3E, 0x3F (SUBGROUP_ID_MODE=0b11)
-#[derive(Debug, PartialEq, Clone, Copy)]
-pub enum SubgroupHeaderType {
-  // Bit 5 = 0 (priority present)
-  /// Subgroup ID = 0, No Extensions, No End of Group (0x10)
-  Type0x10 = 0x10,
-  /// Subgroup ID = 0, Extensions Present, No End of Group (0x11)
-  Type0x11 = 0x11,
-  /// Subgroup ID = First Object ID, No Extensions, No End of Group (0x12)
-  Type0x12 = 0x12,
-  /// Subgroup ID = First Object ID, Extensions Present, No End of Group (0x13)
-  Type0x13 = 0x13,
-  /// Explicit Subgroup ID, No Extensions, No End of Group (0x14)
-  Type0x14 = 0x14,
-  /// Explicit Subgroup ID, Extensions Present, No End of Group (0x15)
-  Type0x15 = 0x15,
-  /// Subgroup ID = 0, No Extensions, Contains End of Group (0x18)
-  Type0x18 = 0x18,
-  /// Subgroup ID = 0, Extensions Present, Contains End of Group (0x19)
-  Type0x19 = 0x19,
-  /// Subgroup ID = First Object ID, No Extensions, Contains End of Group (0x1A)
-  Type0x1A = 0x1A,
-  /// Subgroup ID = First Object ID, Extensions Present, Contains End of Group (0x1B)
-  Type0x1B = 0x1B,
-  /// Explicit Subgroup ID, No Extensions, Contains End of Group (0x1C)
-  Type0x1C = 0x1C,
-  /// Explicit Subgroup ID, Extensions Present, Contains End of Group (0x1D)
-  Type0x1D = 0x1D,
-  // Bit 5 = 1 (default priority)
-  /// Subgroup ID = 0, No Extensions, No End of Group, Default Priority (0x30)
-  Type0x30 = 0x30,
-  /// Subgroup ID = 0, Extensions Present, No End of Group, Default Priority (0x31)
-  Type0x31 = 0x31,
-  /// Subgroup ID = First Object ID, No Extensions, No End of Group, Default Priority (0x32)
-  Type0x32 = 0x32,
-  /// Subgroup ID = First Object ID, Extensions Present, No End of Group, Default Priority (0x33)
-  Type0x33 = 0x33,
-  /// Explicit Subgroup ID, No Extensions, No End of Group, Default Priority (0x34)
-  Type0x34 = 0x34,
-  /// Explicit Subgroup ID, Extensions Present, No End of Group, Default Priority (0x35)
-  Type0x35 = 0x35,
-  /// Subgroup ID = 0, No Extensions, Contains End of Group, Default Priority (0x38)
-  Type0x38 = 0x38,
-  /// Subgroup ID = 0, Extensions Present, Contains End of Group, Default Priority (0x39)
-  Type0x39 = 0x39,
-  /// Subgroup ID = First Object ID, No Extensions, Contains End of Group, Default Priority (0x3A)
-  Type0x3A = 0x3A,
-  /// Subgroup ID = First Object ID, Extensions Present, Contains End of Group, Default Priority (0x3B)
-  Type0x3B = 0x3B,
-  /// Explicit Subgroup ID, No Extensions, Contains End of Group, Default Priority (0x3C)
-  Type0x3C = 0x3C,
-  /// Explicit Subgroup ID, Extensions Present, Contains End of Group, Default Priority (0x3D)
-  Type0x3D = 0x3D,
-}
+#[derive(Debug, PartialEq, Clone, Copy, Eq)]
+pub struct SubgroupHeaderType(u8);
 
 impl SubgroupHeaderType {
+  /// Extensions present in all objects (bit 0)
+  pub const EXTENSIONS: u8 = 0x01;
+  /// Mask for SUBGROUP_ID_MODE (bits 1-2)
+  pub const SUBGROUP_ID_MODE_MASK: u8 = 0x06;
+  /// This subgroup contains the final object in the group (bit 3)
+  pub const END_OF_GROUP: u8 = 0x08;
+  /// Required bit that must always be set (bit 4)
+  pub const REQUIRED_BIT: u8 = 0x10;
+  /// Publisher priority field omitted, inherited from subscription (bit 5)
+  pub const DEFAULT_PRIORITY: u8 = 0x20;
+  /// Mask for bits that must be zero: bits 6-7
+  const INVALID_BITS_MASK: u8 = 0xC0;
+  /// Reserved SUBGROUP_ID_MODE value (0b11)
+  const RESERVED_SUBGROUP_MODE: u8 = 0x06;
+
+  /// Validate and create from a raw value.
+  pub fn try_new(value: u64) -> Result<Self, ParseError> {
+    if value > u8::MAX as u64 || (value as u8) & Self::INVALID_BITS_MASK != 0 {
+      return Err(ParseError::InvalidType {
+        context: "SubgroupHeaderType::try_new",
+        details: format!("invalid bits set, got {value:#x}"),
+      });
+    }
+    let v = value as u8;
+    if v & Self::REQUIRED_BIT == 0 {
+      return Err(ParseError::InvalidType {
+        context: "SubgroupHeaderType::try_new",
+        details: format!("bit 4 not set, got {value:#x}"),
+      });
+    }
+    if v & Self::SUBGROUP_ID_MODE_MASK == Self::RESERVED_SUBGROUP_MODE {
+      return Err(ParseError::InvalidType {
+        context: "SubgroupHeaderType::try_new",
+        details: format!("reserved SUBGROUP_ID_MODE 0b11, got {value:#x}"),
+      });
+    }
+    Ok(Self(v))
+  }
+
+  /// Get the raw u8 value.
+  pub fn value(&self) -> u8 {
+    self.0
+  }
+
   /// Check if extensions are present (bit 0 set)
   pub fn has_extensions(&self) -> bool {
-    (*self as u64) & 0x01 != 0
+    self.0 & Self::EXTENSIONS != 0
   }
 
-  /// Check if subgroup ID is explicit in header (bits 1-2 = 0b10)
+  /// Check if subgroup ID is explicit in header (SUBGROUP_ID_MODE = 0b10)
   pub fn has_explicit_subgroup_id(&self) -> bool {
-    (*self as u64) & 0x06 == 0x04
+    self.0 & Self::SUBGROUP_ID_MODE_MASK == 0x04
   }
 
-  /// Check if subgroup ID = 0 (bits 1-2 = 0b00)
+  /// Check if subgroup ID = 0 (SUBGROUP_ID_MODE = 0b00)
   pub fn subgroup_id_is_zero(&self) -> bool {
-    (*self as u64) & 0x06 == 0x00
+    self.0 & Self::SUBGROUP_ID_MODE_MASK == 0x00
   }
 
-  /// Check if subgroup ID = first Object ID (bits 1-2 = 0b01)
+  /// Check if subgroup ID = first Object ID (SUBGROUP_ID_MODE = 0b01)
   pub fn subgroup_id_is_first_object_id(&self) -> bool {
-    (*self as u64) & 0x06 == 0x02
+    self.0 & Self::SUBGROUP_ID_MODE_MASK == 0x02
   }
 
   /// Check if this subgroup contains end of group (bit 3 set)
   pub fn contains_end_of_group(&self) -> bool {
-    (*self as u64) & 0x08 != 0
+    self.0 & Self::END_OF_GROUP != 0
   }
 
   /// Check if using default publisher priority (bit 5 set).
   /// When true, publisher_priority field is omitted from header.
   pub fn has_default_priority(&self) -> bool {
-    (*self as u64) & 0x20 != 0
+    self.0 & Self::DEFAULT_PRIORITY != 0
   }
 
-  /// Create type from properties.
+  /// Create type from property flags.
   /// subgroup_id_mode: 0=zero, 1=firstObjId, 2=explicit
   pub fn from_properties(
     has_extensions: bool,
-    subgroup_id_mode: u64,
+    subgroup_id_mode: u8,
     contains_end_of_group: bool,
     has_default_priority: bool,
   ) -> Self {
-    let mut type_val: u64 = 0x10; // bit 4 always set
+    let mut v: u8 = Self::REQUIRED_BIT;
     if has_extensions {
-      type_val |= 0x01;
+      v |= Self::EXTENSIONS;
     }
-    type_val |= (subgroup_id_mode & 0x03) << 1; // bits 1-2
+    v |= (subgroup_id_mode & 0x03) << 1; // bits 1-2
     if contains_end_of_group {
-      type_val |= 0x08;
+      v |= Self::END_OF_GROUP;
     }
     if has_default_priority {
-      type_val |= 0x20;
+      v |= Self::DEFAULT_PRIORITY;
     }
-    // Safe because we construct valid patterns
-    Self::try_from(type_val).unwrap()
+    Self(v)
   }
 }
 
@@ -149,69 +141,13 @@ impl TryFrom<u64> for SubgroupHeaderType {
   type Error = ParseError;
 
   fn try_from(value: u64) -> Result<Self, Self::Error> {
-    // Validate bit layout before matching
-    // Bit 4 (0x10) must be set to distinguish from other header types
-    if (value & 0x10) == 0 {
-      return Err(ParseError::InvalidType {
-        context: "SubgroupHeaderType::try_from(u64)",
-        details: format!("bit 4 not set, got {value:#x}"),
-      });
-    }
-
-    // SUBGROUP_ID_MODE (bits 1-2) must not be 0b11 (reserved for future use)
-    if (value & 0x06) == 0x06 {
-      return Err(ParseError::InvalidType {
-        context: "SubgroupHeaderType::try_from(u64)",
-        details: format!("reserved SUBGROUP_ID_MODE 0b11, got {value:#x}"),
-      });
-    }
-
-    // Must be in valid range [0x10, 0x3F]
-    if value < 0x10 || value > 0x3F {
-      return Err(ParseError::InvalidType {
-        context: "SubgroupHeaderType::try_from(u64)",
-        details: format!("out of valid range, got {value:#x}"),
-      });
-    }
-
-    match value {
-      // Bit 5 = 0 (priority present)
-      0x10 => Ok(SubgroupHeaderType::Type0x10),
-      0x11 => Ok(SubgroupHeaderType::Type0x11),
-      0x12 => Ok(SubgroupHeaderType::Type0x12),
-      0x13 => Ok(SubgroupHeaderType::Type0x13),
-      0x14 => Ok(SubgroupHeaderType::Type0x14),
-      0x15 => Ok(SubgroupHeaderType::Type0x15),
-      0x18 => Ok(SubgroupHeaderType::Type0x18),
-      0x19 => Ok(SubgroupHeaderType::Type0x19),
-      0x1A => Ok(SubgroupHeaderType::Type0x1A),
-      0x1B => Ok(SubgroupHeaderType::Type0x1B),
-      0x1C => Ok(SubgroupHeaderType::Type0x1C),
-      0x1D => Ok(SubgroupHeaderType::Type0x1D),
-      // Bit 5 = 1 (default priority)
-      0x30 => Ok(SubgroupHeaderType::Type0x30),
-      0x31 => Ok(SubgroupHeaderType::Type0x31),
-      0x32 => Ok(SubgroupHeaderType::Type0x32),
-      0x33 => Ok(SubgroupHeaderType::Type0x33),
-      0x34 => Ok(SubgroupHeaderType::Type0x34),
-      0x35 => Ok(SubgroupHeaderType::Type0x35),
-      0x38 => Ok(SubgroupHeaderType::Type0x38),
-      0x39 => Ok(SubgroupHeaderType::Type0x39),
-      0x3A => Ok(SubgroupHeaderType::Type0x3A),
-      0x3B => Ok(SubgroupHeaderType::Type0x3B),
-      0x3C => Ok(SubgroupHeaderType::Type0x3C),
-      0x3D => Ok(SubgroupHeaderType::Type0x3D),
-      _ => Err(ParseError::InvalidType {
-        context: "SubgroupHeaderType::try_from(u64)",
-        details: format!("Invalid type value, got {value:#x}"),
-      }),
-    }
+    Self::try_new(value)
   }
 }
 
 impl From<SubgroupHeaderType> for u64 {
-  fn from(header_type: SubgroupHeaderType) -> Self {
-    header_type as u64
+  fn from(t: SubgroupHeaderType) -> Self {
+    t.0 as u64
   }
 }
 

@@ -125,11 +125,9 @@ pub async fn handle(
           status_req.end_group,
         ),
       ];
-      for kvp in status_req.subscribe_parameters.iter() {
-        if let Ok(p) = MessageParameter::deserialize(kvp) {
-          fake_params.push(p);
-        }
-      }
+
+      fake_params.extend(status_req.subscribe_parameters.clone());
+
       let fake_sub = Subscribe {
         request_id: status_req.request_id,
         track_namespace: status_req.track_namespace,

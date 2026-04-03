@@ -15,11 +15,13 @@
 use super::constant::{ControlMessageType, FilterType, GroupOrder};
 use super::control_message::ControlMessageTrait;
 use crate::model::common::location::Location;
-use crate::model::common::pair::KeyValuePair;
 use crate::model::common::tuple::{Tuple, TupleField};
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
 use crate::model::data::full_track_name::FullTrackName;
 use crate::model::error::ParseError;
+use crate::model::parameter::message_parameter::{
+  MessageParameter, deserialize_message_parameters,
+};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 #[derive(Debug, PartialEq, Clone)]
@@ -33,8 +35,7 @@ pub struct TrackStatus {
   pub filter_type: FilterType,
   pub start_location: Option<Location>,
   pub end_group: Option<u64>,
-  // TODO: make the following optional
-  pub subscribe_parameters: Vec<KeyValuePair>,
+  pub subscribe_parameters: Vec<MessageParameter>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -46,7 +47,7 @@ impl TrackStatus {
     subscriber_priority: u8,
     group_order: GroupOrder,
     forward: bool,
-    subscribe_parameters: Vec<KeyValuePair>,
+    subscribe_parameters: Vec<MessageParameter>,
   ) -> Self {
     Self {
       request_id,
@@ -69,7 +70,7 @@ impl TrackStatus {
     subscriber_priority: u8,
     group_order: GroupOrder,
     forward: bool,
-    subscribe_parameters: Vec<KeyValuePair>,
+    subscribe_parameters: Vec<MessageParameter>,
   ) -> Self {
     Self {
       request_id,
@@ -93,7 +94,7 @@ impl TrackStatus {
     group_order: GroupOrder,
     forward: bool,
     start_location: Location,
-    subscribe_parameters: Vec<KeyValuePair>,
+    subscribe_parameters: Vec<MessageParameter>,
   ) -> Self {
     Self {
       request_id,
@@ -118,7 +119,7 @@ impl TrackStatus {
     forward: bool,
     start_location: Location,
     end_group: u64,
-    subscribe_parameters: Vec<KeyValuePair>,
+    subscribe_parameters: Vec<MessageParameter>,
   ) -> Self {
     assert!(
       end_group >= start_location.group,
@@ -272,22 +273,9 @@ impl ControlMessageTrait for TrackStatus {
       FilterType::NextGroupStart => {}
     }
 
-    let param_count_u64 = payload.get_vi()?;
-    let param_count: usize =
-      param_count_u64
-        .try_into()
-        .map_err(|e: std::num::TryFromIntError| ParseError::CastingError {
-          context: "TrackStatus::deserialize(param_count)",
-          from_type: "u64",
-          to_type: "usize",
-          details: e.to_string(),
-        })?;
-
-    let mut subscribe_parameters = Vec::with_capacity(param_count);
-    for _ in 0..param_count {
-      let param = KeyValuePair::deserialize(payload)?;
-      subscribe_parameters.push(param);
-    }
+    let param_count = payload.get_vi()?;
+    let subscribe_parameters =
+      deserialize_message_parameters(payload, param_count, ControlMessageType::TrackStatus)?;
 
     Ok(Box::new(TrackStatus {
       request_id,
@@ -308,6 +296,8 @@ impl ControlMessageTrait for TrackStatus {
 }
 #[cfg(test)]
 mod tests {
+  use crate::model::parameter::authorization_token::AuthorizationToken;
+
   use super::*;
   use bytes::Buf;
 
@@ -325,10 +315,9 @@ mod tests {
       object: 81,
     };
     let end_group = 25;
-    let subscribe_parameters = vec![
-      KeyValuePair::try_new_varint(0, 10).unwrap(),
-      KeyValuePair::try_new_bytes(1, Bytes::from_static(b"I'll sync you up")).unwrap(),
-    ];
+    let subscribe_parameters = vec![MessageParameter::new_authorization_token(
+      AuthorizationToken::new_use_value(0, Bytes::from_static(b"test-token")),
+    )];
     let track_status = TrackStatus {
       request_id,
       track_namespace,
@@ -366,10 +355,9 @@ mod tests {
       object: 81,
     };
     let end_group = 25;
-    let subscribe_parameters = vec![
-      KeyValuePair::try_new_varint(0, 10).unwrap(),
-      KeyValuePair::try_new_bytes(1, Bytes::from_static(b"I'll sync you up")).unwrap(),
-    ];
+    let subscribe_parameters = vec![MessageParameter::new_authorization_token(
+      AuthorizationToken::new_use_value(0, Bytes::from_static(b"test-token")),
+    )];
     let track_status = TrackStatus {
       request_id,
       track_namespace,
@@ -413,10 +401,9 @@ mod tests {
       object: 81,
     };
     let end_group = 25;
-    let subscribe_parameters = vec![
-      KeyValuePair::try_new_varint(0, 10).unwrap(),
-      KeyValuePair::try_new_bytes(1, Bytes::from_static(b"I'll sync you up")).unwrap(),
-    ];
+    let subscribe_parameters = vec![MessageParameter::new_authorization_token(
+      AuthorizationToken::new_use_value(0, Bytes::from_static(b"test-token")),
+    )];
     let track_status = TrackStatus {
       request_id,
       track_namespace,

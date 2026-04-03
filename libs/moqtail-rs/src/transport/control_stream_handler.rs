@@ -199,6 +199,7 @@ mod tests {
   use crate::model::control::server_setup::ServerSetup;
   use crate::model::control::subscribe::Subscribe;
   use crate::model::control::subscribe_ok::SubscribeOk;
+  use crate::model::parameter::authorization_token::AuthorizationToken;
   use crate::model::parameter::message_parameter::MessageParameter;
   use bytes::Bytes;
   use std::error::Error;
@@ -321,10 +322,9 @@ mod tests {
   fn create_test_publish_namespace() -> PublishNamespace {
     let request_id = 12345;
     let track_namespace = Tuple::from_utf8_path("god/dayyum");
-    let parameters = vec![
-      KeyValuePair::try_new_varint(0, 10).unwrap(),
-      KeyValuePair::try_new_bytes(1, Bytes::from_static(b"wololoo")).unwrap(),
-    ];
+    let parameters = vec![MessageParameter::new_authorization_token(
+      AuthorizationToken::new_use_value(0, Bytes::from_static(b"test-token")),
+    )];
     PublishNamespace {
       request_id,
       track_namespace,

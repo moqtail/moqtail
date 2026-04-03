@@ -620,6 +620,7 @@ mod tests {
   use crate::model::control::fetch::JoiningFetchProps;
   use crate::model::control::{fetch::Fetch, subscribe::Subscribe};
   use crate::model::data::constant::SubgroupHeaderType;
+  use crate::model::parameter::authorization_token::AuthorizationToken;
   use crate::model::parameter::message_parameter::MessageParameter;
   use bytes::Bytes;
   use std::error::Error;
@@ -639,8 +640,12 @@ mod tests {
         joining_start: 73,
       }),
       parameters: vec![
-        KeyValuePair::try_new_varint(4444, 12321).unwrap(),
-        KeyValuePair::try_new_bytes(1, Bytes::from_static(b"fetch me ok")).unwrap(),
+        MessageParameter::new_authorization_token(AuthorizationToken::new_use_value(
+          0,
+          Bytes::from_static(b"test-token"),
+        )),
+        MessageParameter::new_subscriber_priority(42),
+        MessageParameter::new_group_order(GroupOrder::Ascending),
       ],
     };
     (FetchHeader { request_id: 161803 }, fetch)

@@ -282,7 +282,10 @@ impl ControlMessage {
 
 #[cfg(test)]
 mod tests {
-  use crate::model::common::{pair::KeyValuePair, tuple::Tuple};
+  use crate::model::{
+    common::tuple::Tuple,
+    parameter::{authorization_token::AuthorizationToken, message_parameter::MessageParameter},
+  };
 
   use super::*;
 
@@ -290,10 +293,9 @@ mod tests {
   fn test_announce_roundtrip() {
     let request_id = 12345;
     let track_namespace = Tuple::from_utf8_path("god/dayyum");
-    let parameters = vec![
-      KeyValuePair::try_new_varint(0, 10).unwrap(),
-      KeyValuePair::try_new_bytes(1, Bytes::from_static(b"wololoo")).unwrap(),
-    ];
+    let parameters = vec![MessageParameter::new_authorization_token(
+      AuthorizationToken::new_use_value(0, Bytes::from_static(b"test-token")),
+    )];
     let announce = PublishNamespace {
       request_id,
       track_namespace,

@@ -13,12 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
 import { Tuple } from '../common/tuple'
-import { KeyValuePair } from '../common/pair'
 import { ControlMessageType } from './constant'
 import { NotEnoughBytesError, LengthExceedsMaxError } from '../error/error'
+import { MessageParameter, MessageParameters } from '../parameter/message_parameter'
+import { AuthorizationToken } from '../parameter/common/authorization_token'
 
 /**
  * Represents a protocol PublishNamespace message, used to announce a track and its parameters.
@@ -32,19 +32,19 @@ export class PublishNamespace {
    *
    * @param requestId - The request ID for this publish namespace message.
    * @param trackNamespace - The track namespace as a Tuple.
-   * @param parameters - The list of key-value parameters for the track.
+   * @param parameters - The list of strongly-typed message parameters for the track.
    */
   constructor(
     public readonly requestId: bigint,
     public readonly trackNamespace: Tuple,
-    public readonly parameters: KeyValuePair[],
+    public readonly parameters: MessageParameter[],
   ) {}
 
   /**
    * @public
    * Gets the message type for this PublishNamespace message.
    *
-   * @returns The ControlMessageType.Announce value.
+   * @returns The ControlMessageType.PublishNamespace value.
    */
   getType(): ControlMessageType {
     return ControlMessageType.PublishNamespace
@@ -66,7 +66,7 @@ export class PublishNamespace {
     payload.putTuple(this.trackNamespace)
     payload.putVI(this.parameters.length)
     for (const param of this.parameters) {
-      payload.putKeyValuePair(param)
+      payload.putKeyValuePair(param.toKeyValuePair())
     }
     const payloadBytes = payload.toUint8Array()
     if (payloadBytes.length > 0xffff) {
@@ -89,10 +89,11 @@ export class PublishNamespace {
     const requestId = buf.getVI()
     const trackNamespace = buf.getTuple()
     const paramCount = buf.getNumberVI()
-    const parameters: KeyValuePair[] = new Array(paramCount)
+    const rawParams = new Array(paramCount)
     for (let i = 0; i < paramCount; i++) {
-      parameters[i] = buf.getKeyValuePair()
+      rawParams[i] = buf.getKeyValuePair()
     }
+    const parameters = MessageParameters.fromKeyValuePairs(rawParams)
     return new PublishNamespace(requestId, trackNamespace, parameters)
   }
 }
@@ -100,13 +101,11 @@ export class PublishNamespace {
 if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
   describe('PublishNamespace', () => {
+    const getTestParameters = () => [AuthorizationToken.newUseValue(0n, new TextEncoder().encode('test-token'))]
     test('roundtrip', () => {
       const requestId = 12345n
       const trackNamespace = Tuple.fromUtf8Path('god/dayyum')
-      const parameters = [
-        KeyValuePair.tryNewVarInt(0, 10),
-        KeyValuePair.tryNewBytes(1, new TextEncoder().encode('wololoo')),
-      ]
+      const parameters = getTestParameters()
       const announce = new PublishNamespace(requestId, trackNamespace, parameters)
       const serialized = announce.serialize()
       const buf = new ByteBuffer()
@@ -128,10 +127,7 @@ if (import.meta.vitest) {
     test('excess roundtrip', () => {
       const requestId = 12345n
       const trackNamespace = Tuple.fromUtf8Path('god/dayyum')
-      const parameters = [
-        KeyValuePair.tryNewVarInt(0, 10),
-        KeyValuePair.tryNewBytes(1, new TextEncoder().encode('wololoo')),
-      ]
+      const parameters = getTestParameters()
       const announce = new PublishNamespace(requestId, trackNamespace, parameters)
       const serialized = announce.serialize().toUint8Array()
       const excess = new Uint8Array(serialized.length + 3)
@@ -157,10 +153,7 @@ if (import.meta.vitest) {
     test('partial message', () => {
       const requestId = 12345n
       const trackNamespace = Tuple.fromUtf8Path('god/dayyum')
-      const parameters = [
-        KeyValuePair.tryNewVarInt(0, 10),
-        KeyValuePair.tryNewBytes(1, new TextEncoder().encode('wololoo')),
-      ]
+      const parameters = getTestParameters()
       const announce = new PublishNamespace(requestId, trackNamespace, parameters)
       const serialized = announce.serialize().toUint8Array()
       const upper = Math.floor(serialized.length / 2)

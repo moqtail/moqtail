@@ -286,6 +286,7 @@ describe('AbrController', () => {
 
       for (let i = 0; i < 65; i++) {
         controller.manualSwitch('720p');
+        controller.releaseSwitchingGuard();
       }
 
       expect(controller.getHistory()).toHaveLength(60);

@@ -316,7 +316,10 @@ export function App() {
           setAbrMetrics,
         );
         abrRef.current = abr;
-        player.setOnTrackSwitched(() => abrRef.current?.releaseSwitchingGuard());
+        player.setOnTrackSwitched(trackName => {
+          abrRef.current?.releaseSwitchingGuard();
+          setSelectedVideo(trackName);
+        });
         abr.start();
 
         const bitrateMap: Record<string, number> = {};
@@ -334,7 +337,7 @@ export function App() {
       setStatus('error');
       await disposePlayer();
     }
-  }, [relayUrl, namespace, disposePlayer]);
+  }, [relayUrl, namespace, disposePlayer, abrSettings]);
 
   const startPlayback = useCallback(
     async (videoTrack: string | null, audioTrack: string | null) => {
@@ -378,7 +381,10 @@ export function App() {
           setAbrMetrics,
         );
         abrRef.current = abr;
-        player.setOnTrackSwitched(() => abrRef.current?.releaseSwitchingGuard());
+        player.setOnTrackSwitched(trackName => {
+          abrRef.current?.releaseSwitchingGuard();
+          setSelectedVideo(trackName);
+        });
         abr.start();
 
         const bitrateMap: Record<string, number> = {};
@@ -394,7 +400,7 @@ export function App() {
         await disposePlayer();
       }
     },
-    [relayUrl, namespace, disposePlayer],
+    [relayUrl, namespace, disposePlayer, abrSettings],
   );
 
   const handleTrackChange = useCallback(
@@ -403,6 +409,7 @@ export function App() {
 
       if (track.role === 'video') {
         if (abrSettings.videoAutoSwitch) return; // auto mode: track rows are read-only
+        if (abrRef.current?.isSwitching()) return; // switch in-flight: wait for it
         const newTrackName = track.name === selectedVideo && !checked ? null : track.name;
         if (!newTrackName) return;
         setSelectedVideo(newTrackName);
@@ -545,7 +552,7 @@ export function App() {
                 tracks={videoTracks}
                 selectedVideo={selectedVideo}
                 selectedAudio={selectedAudio}
-                disabled={isBusy || abrSettings.videoAutoSwitch}
+                disabled={isBusy || abrSettings.videoAutoSwitch || (abrMetrics?.switching ?? false)}
                 onChange={handleTrackChange}
               />
               <TrackGroup

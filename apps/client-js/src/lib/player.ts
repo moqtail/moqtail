@@ -297,6 +297,24 @@ export class Player {
             const objectTrackName = struct.pendingSwitch
               ? new TextDecoder().decode(object.fullTrackName.name)
               : null;
+
+            // During rapid ABR switching (A→B→C) the relay may deliver data
+            // for intermediate tracks whose pendingSwitch was overwritten.
+            // Appending that data without a changeType/init-segment would
+            // corrupt the SourceBuffer. Drop anything that doesn't belong
+            // to either the current track or the pending switch target.
+            if (
+              objectTrackName !== null &&
+              objectTrackName !== struct.trackName &&
+              objectTrackName !== struct.pendingSwitch?.trackName
+            ) {
+              logger.info(
+                'media',
+                `Dropping intermediate track data (${objectTrackName}) while switching to ${struct.pendingSwitch?.trackName}`,
+              );
+              return;
+            }
+
             if (struct.pendingSwitch && objectTrackName === struct.pendingSwitch.trackName) {
               const { initData, mimeType, trackName: newTrackName } = struct.pendingSwitch;
               struct.trackName = newTrackName;
@@ -304,9 +322,22 @@ export class Player {
 
               // changeType() must not be called while the SourceBuffer is updating
               if (sourceBuffer.updating) await waitForBufferUpdate(sourceBuffer);
-              sourceBuffer.changeType(mimeType);
-              sourceBuffer.appendBuffer(initData);
-              await waitForBufferUpdate(sourceBuffer);
+              try {
+                sourceBuffer.changeType(mimeType);
+                sourceBuffer.appendBuffer(initData);
+                await waitForBufferUpdate(sourceBuffer);
+              } catch (switchError) {
+                logger.error(
+                  'media',
+                  `switchTrack: failed to apply init segment for ${newTrackName}:`,
+                  switchError,
+                );
+                // Release the guard and abort the write stream — the source buffer
+                // may be in an inconsistent state after a partial changeType/append.
+                this.#options.onTrackSwitched?.(newTrackName);
+                controller.error(switchError);
+                return;
+              }
 
               // NOW release the ABR switching guard — the relay has completed the
               // transition and delivered data on the new track. Safe to switch again.

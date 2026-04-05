@@ -22,6 +22,7 @@ export interface AbrMetrics {
   lastObjectBytes: number;
   switchHistory: SwitchEvent[];
   mode: 'auto' | 'manual';
+  switching: boolean;
 }
 
 const MAX_HISTORY = 60;
@@ -73,7 +74,13 @@ export class AbrController {
     this.#switching = false;
   }
 
+  isSwitching(): boolean {
+    return this.#switching;
+  }
+
   manualSwitch(trackName: string): void {
+    if (this.#switching) return; // switch already in-flight
+    this.#switching = true;
     const fromTrack = this.#player.getMetrics().activeTrack ?? '';
     this.#recordHistory(fromTrack, trackName, 'manual', 0, 0);
     void this.#player.switchTrack(trackName);
@@ -119,6 +126,7 @@ export class AbrController {
       lastObjectBytes,
       switchHistory: [...this.#switchHistory],
       mode,
+      switching: this.#switching,
     };
 
     this.#onMetricsUpdate(metrics);

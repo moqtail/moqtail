@@ -1,2 +1,2 @@
-exec </dev/tty && node scripts/precommit.mjs
+node scripts/precommit.mjs
 npx --no -- lint-staged --concurrent false --relative

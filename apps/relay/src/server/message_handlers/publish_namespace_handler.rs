@@ -62,7 +62,7 @@ pub async fn handle(
       // so we can forward it to clients who later come in with subscribe_namespace
       context
         .track_manager
-        .add_announcement(m.track_namespace.clone(), client.clone())
+        .add_announcement(m.track_namespace.clone(), client.clone(), (*m).clone())
         .await;
 
       {
@@ -96,6 +96,9 @@ pub async fn handle(
               );
               let relay_announce_id =
                 Session::get_next_relay_request_id(context.relay_next_request_id.clone()).await;
+              sub
+                .register_outbound_announce_id(m.track_namespace.clone(), relay_announce_id)
+                .await;
 
               let notify = PublishNamespace::new(relay_announce_id, m.track_namespace.clone(), &[]);
 
@@ -176,34 +179,57 @@ pub async fn handle_request_update(
     target_namespace
   );
 
-  // TODO: Requires bi-directional Request ID mapping to fan-out
   // 2. Update Global Track Manager State
-  /*
+  // Make sure to implement this in TrackManager so new clients get the updated parameters!
+
   context
     .track_manager
-    .update_namespace_parameters(&target_namespace, _client.connection_id, update_msg.parameters.clone())
+    .update_namespace_parameters(&target_namespace, update_msg.parameters.clone())
     .await;
-  */
 
   // 3. The Ripple Effect Fan-Out
-  /*
   let downstream_sessions = context
     .track_manager
     .get_namespace_subscribers(&target_namespace)
     .await;
 
   for session in downstream_sessions {
-      if let Some(downstream_req_id) = session.get_outbound_announce_id(&target_namespace) {
-          let fanout_msg = crate::model::control::request_update::RequestUpdate::new(
-              session.generate_request_id(),
-              downstream_req_id,
-              update_msg.parameters.clone(),
-          );
+    // We look up the exact ID we used to announce this namespace to this specific session!
+    if let Some(downstream_req_id) = session.get_outbound_announce_id(&target_namespace).await {
+      let relay_update_id = crate::server::session::Session::get_next_relay_request_id(
+        context.relay_next_request_id.clone(),
+      )
+      .await;
 
-          session.send_control_message(ControlMessage::RequestUpdate(Box::new(fanout_msg))).await?;
+      let fanout_msg = moqtail::model::control::request_update::RequestUpdate::new(
+        relay_update_id,
+        downstream_req_id,
+        update_msg.parameters.clone(),
+      );
+
+      // Track the outbound REQUEST_UPDATE so we can receive RequestOk later
+      {
+        let mut map = context.relay_pending_requests.write().await;
+        map.insert(
+          relay_update_id,
+          PendingRequest::RequestUpdate {
+            client_connection_id: session.connection_id,
+            original_request_id: relay_update_id,
+            message: fanout_msg.clone(),
+          },
+        );
       }
+
+      session
+        .queue_message(ControlMessage::RequestUpdate(Box::new(fanout_msg)))
+        .await;
+    } else {
+      warn!(
+        "Found downstream session {} for namespace {:?} but no outbound announce ID was tracked.",
+        session.connection_id, target_namespace
+      );
+    }
   }
-  */
 
   // 4. Acknowledge the update to the Publisher
   /*

@@ -16,6 +16,7 @@ use super::track::Track;
 use crate::server::client::MOQTClient;
 use moqtail::model::common::tuple::Tuple;
 use moqtail::model::control::publish::Publish;
+use moqtail::model::control::publish_namespace::PublishNamespace;
 use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::model::parameter::message_parameter::apply_message_parameter_update;
 use std::collections::HashMap;
@@ -31,7 +32,7 @@ pub struct TrackManager {
   /// Connection-scoped to avoid alias collisions across different publishers.
   pub track_aliases: Arc<RwLock<HashMap<(usize, u64), FullTrackName>>>,
   pub namespace_subscribers: Arc<RwLock<HashMap<Tuple, Vec<Arc<MOQTClient>>>>>,
-  pub announcements: Arc<RwLock<HashMap<Tuple, Arc<MOQTClient>>>>,
+  pub announcements: Arc<RwLock<HashMap<Tuple, (Arc<MOQTClient>, PublishNamespace)>>>,
   pub publishes: Arc<RwLock<HashMap<FullTrackName, HashMap<usize, Publish>>>>,
   /// Counter for generating stable relay_track_id values.
   next_relay_track_id: Arc<AtomicU64>,
@@ -270,15 +271,37 @@ impl TrackManager {
     interested_clients
   }
 
-  pub async fn add_announcement(&self, namespace: Tuple, publisher: Arc<MOQTClient>) {
+  /// Updates the stored PublishNamespace message with new parameters.
+  /// Ensures new subscribers to this namespace get updated Auth/Metadata.
+  pub async fn update_namespace_parameters(
+    &self,
+    namespace: &Tuple,
+    new_parameters: Vec<moqtail::model::parameter::message_parameter::MessageParameter>,
+  ) {
     let mut announcements = self.announcements.write().await;
-    announcements.insert(namespace.clone(), publisher);
+    if let Some((_client, message)) = announcements.get_mut(namespace) {
+      info!(
+        "Updating stored Announcement parameters for {:?}",
+        namespace
+      );
+      apply_message_parameter_update(&mut message.parameters, new_parameters);
+    }
+  }
+
+  pub async fn add_announcement(
+    &self,
+    namespace: Tuple,
+    publisher: Arc<MOQTClient>,
+    message: PublishNamespace,
+  ) {
+    let mut announcements = self.announcements.write().await;
+    announcements.insert(namespace.clone(), (publisher, message));
     info!("Stored announcement for namespace: {:?}", namespace);
   }
 
   pub async fn remove_announcements_by_connection(&self, connection_id: usize) {
     let mut announcements = self.announcements.write().await;
-    announcements.retain(|ns, client| {
+    announcements.retain(|ns, (client, _message)| {
       if client.connection_id == connection_id {
         info!(
           "Removed announcement for namespace {:?} (publisher {} disconnected)",

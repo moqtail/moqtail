@@ -84,7 +84,7 @@ pub async fn handle(
         let subs_map = context.track_manager.namespace_subscribers.read().await;
         for (prefix, subscribers) in subs_map.iter() {
           if m.track_namespace.starts_with(prefix) {
-            for sub in subscribers {
+            for (sub, _subscribe_ns_message) in subscribers {
               // Don't echo back to announcer
               if sub.connection_id == client.connection_id {
                 continue;

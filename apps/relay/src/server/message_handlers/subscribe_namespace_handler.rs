@@ -68,7 +68,11 @@ pub async fn handle(
       // 1. Store the Subscription in TrackManager
       context
         .track_manager
-        .add_namespace_subscriber(sub_ns.track_namespace_prefix.clone(), client.clone())
+        .add_namespace_subscriber(
+          sub_ns.track_namespace_prefix.clone(),
+          client.clone(),
+          (*sub_ns).clone(),
+        )
         .await;
 
       {
@@ -198,7 +202,7 @@ pub async fn handle(
 }
 
 pub async fn handle_request_update(
-  _client: Arc<MOQTClient>,
+  client: Arc<MOQTClient>,
   _handler: &mut ControlStreamHandler,
   msg: ControlMessage,
   context: Arc<SessionContext>,
@@ -238,47 +242,14 @@ pub async fn handle_request_update(
   );
 
   // 2. Update the stored Namespace Subscription parameters in TrackManager
-  /*
   context
     .track_manager
-    .update_namespace_subscription_parameters(&target_prefix, client.connection_id, &update_msg.parameters)
+    .update_namespace_subscription_parameters(
+      &target_prefix,
+      client.connection_id,
+      update_msg.parameters.clone(),
+    )
     .await;
-  */
-
-  // 3. The Ripple Effect (Upstream Proxying)
-  // If the relay forwarded the original SubscribeNamespace to an upstream Publisher,
-  // we must forward this RequestUpdate to that exact same upstream connection,
-  // and track it using our new RequestUpdate enum variant.
-  /*
-  if let Some(upstream_session) = context.track_manager.get_publisher_for_namespace(&target_prefix).await {
-      if let Some(upstream_req_id) = upstream_session.get_outbound_subscribe_namespace_id(&target_prefix) {
-
-          let relay_update_id = Session::get_next_relay_request_id(context.relay_next_request_id.clone()).await;
-
-          let proxy_msg = moqtail::model::control::request_update::RequestUpdate::new(
-              relay_update_id,
-              upstream_req_id,
-              update_msg.parameters.clone(),
-          );
-
-          // Track the outbound REQUEST_UPDATE
-          {
-            let mut map = context.relay_pending_requests.write().await;
-            map.insert(
-              relay_update_id,
-              PendingRequest::RequestUpdate {
-                client_connection_id: upstream_session.connection_id,
-                original_request_id: relay_update_id,
-                message: proxy_msg.clone(),
-              },
-            );
-          }
-
-          upstream_session.queue_message(ControlMessage::RequestUpdate(Box::new(proxy_msg))).await;
-      }
-  }
-  */
-
   // 4. Send RequestOk back to the Client acknowledging the update
   // TODO: Uncomment after merging RequestOk/Error support
   /*

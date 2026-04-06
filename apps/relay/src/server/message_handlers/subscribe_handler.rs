@@ -516,11 +516,6 @@ pub async fn handle_request_update(
           full_track_name
         );
 
-        // 5. The Ripple Effect (Upstream Proxying)
-        // TODO: If this relay is forwarding the subscription to an upstream publisher,
-        // we must forward this RequestUpdate to that upstream connection and track it
-        // in relay_pending_requests using the RequestUpdate enum variant.
-
         // 6. Send RequestOk back to the subscriber
         // TODO: Uncomment after merging RequestOk/Error support
         /*

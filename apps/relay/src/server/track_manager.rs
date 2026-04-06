@@ -17,6 +17,7 @@ use crate::server::client::MOQTClient;
 use moqtail::model::common::tuple::Tuple;
 use moqtail::model::control::publish::Publish;
 use moqtail::model::control::publish_namespace::PublishNamespace;
+use moqtail::model::control::subscribe_namespace::SubscribeNamespace;
 use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::model::parameter::message_parameter::apply_message_parameter_update;
 use std::collections::HashMap;
@@ -31,7 +32,8 @@ pub struct TrackManager {
   /// Maps (publisher_connection_id, publisher_track_alias) -> FullTrackName.
   /// Connection-scoped to avoid alias collisions across different publishers.
   pub track_aliases: Arc<RwLock<HashMap<(usize, u64), FullTrackName>>>,
-  pub namespace_subscribers: Arc<RwLock<HashMap<Tuple, Vec<Arc<MOQTClient>>>>>,
+  pub namespace_subscribers:
+    Arc<RwLock<HashMap<Tuple, Vec<(Arc<MOQTClient>, SubscribeNamespace)>>>>,
   pub announcements: Arc<RwLock<HashMap<Tuple, (Arc<MOQTClient>, PublishNamespace)>>>,
   pub publishes: Arc<RwLock<HashMap<FullTrackName, HashMap<usize, Publish>>>>,
   /// Counter for generating stable relay_track_id values.
@@ -235,7 +237,12 @@ impl TrackManager {
     );
   }
 
-  pub async fn add_namespace_subscriber(&self, prefix: Tuple, client: Arc<MOQTClient>) {
+  pub async fn add_namespace_subscriber(
+    &self,
+    prefix: Tuple,
+    client: Arc<MOQTClient>,
+    message: SubscribeNamespace,
+  ) {
     let mut subs = self.namespace_subscribers.write().await;
 
     // Get or create the list for this prefix
@@ -244,18 +251,14 @@ impl TrackManager {
     // Avoid duplicates
     if !clients
       .iter()
-      .any(|c| c.connection_id == client.connection_id)
+      .any(|(c, _)| c.connection_id == client.connection_id)
     {
-      clients.push(client);
+      clients.push((client, message));
     }
     info!("Added namespace subscriber for prefix {:?}", prefix);
   }
 
   pub async fn get_namespace_subscribers(&self, target_namespace: &Tuple) -> Vec<Arc<MOQTClient>> {
-    debug!(
-      "get_namespace_subscribers | target_namespace: {:?}",
-      target_namespace
-    );
     let subs = self.namespace_subscribers.read().await;
     let mut interested_clients = Vec::new();
 
@@ -263,7 +266,7 @@ impl TrackManager {
     // Example: Target "meet.room1", Prefix "meet" -> Match.
     for (prefix, clients) in subs.iter() {
       if target_namespace.starts_with(prefix) {
-        for client in clients {
+        for (client, _message) in clients {
           interested_clients.push(client.clone());
         }
       }
@@ -316,15 +319,8 @@ impl TrackManager {
 
   pub async fn remove_namespace_subscriber(&self, connection_id: usize) {
     let mut subs = self.namespace_subscribers.write().await;
-    for (prefix, clients) in subs.iter_mut() {
-      let before = clients.len();
-      clients.retain(|c| c.connection_id != connection_id);
-      if clients.len() < before {
-        info!(
-          "Removed namespace subscriber {} from prefix {:?}",
-          connection_id, prefix
-        );
-      }
+    for (_, clients) in subs.iter_mut() {
+      clients.retain(|(c, _)| c.connection_id != connection_id);
     }
     subs.retain(|_, clients| !clients.is_empty());
   }
@@ -338,6 +334,22 @@ impl TrackManager {
       }
     }
     matches
+  }
+
+  pub async fn update_namespace_subscription_parameters(
+    &self,
+    prefix: &Tuple,
+    connection_id: usize,
+    new_parameters: Vec<moqtail::model::parameter::message_parameter::MessageParameter>,
+  ) {
+    let mut subs = self.namespace_subscribers.write().await;
+    if let Some(clients) = subs.get_mut(prefix)
+      && let Some((_client, message)) = clients
+        .iter_mut()
+        .find(|(c, _)| c.connection_id == connection_id)
+    {
+      apply_message_parameter_update(&mut message.parameters, new_parameters);
+    }
   }
 
   pub async fn add_publish_message(
@@ -395,7 +407,9 @@ impl TrackManager {
   ) -> Option<Tuple> {
     let subs = self.namespace_subscribers.read().await;
     for (existing_prefix, clients) in subs.iter() {
-      if clients.iter().any(|c| c.connection_id == connection_id)
+      if clients
+        .iter()
+        .any(|(c, _)| c.connection_id == connection_id)
         && namespace_prefixes_overlap(new_prefix, existing_prefix)
       {
         return Some(existing_prefix.clone());

@@ -21,6 +21,7 @@ use moqtail::model::control::{
   control_message::ControlMessage, publish_namespace_ok::PublishNamespaceOk,
 };
 use moqtail::model::error::TerminationCode;
+use moqtail::model::parameter::message_parameter::apply_message_parameter_update;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
 use tracing::{error, info, warn};
@@ -71,7 +72,7 @@ pub async fn handle(
           PendingRequest::PublishNamespace {
             client_connection_id: client.connection_id,
             original_request_id: m.request_id,
-            track_namespace: m.track_namespace.clone(), // FIX 1: Added the namespace here
+            message: (*m).clone(),
           },
         );
       }
@@ -106,7 +107,7 @@ pub async fn handle(
                   PendingRequest::PublishNamespace {
                     client_connection_id: sub.connection_id,
                     original_request_id: relay_announce_id, // We are the origin here
-                    track_namespace: m.track_namespace.clone(), // FIX 2: Added the namespace here too!
+                    message: notify.clone(),
                   },
                 );
               }
@@ -152,13 +153,14 @@ pub async fn handle_request_update(
   let existing_req_id = update_msg.existing_request_id;
   // let new_req_id = update_msg.request_id; // TODO: Uncomment when sending RequestOk
 
-  // 1. Verify this is a PublishNamespace request and extract the namespace
+  // 1. Verify this is a PublishNamespace request and apply parameter updates
   let target_namespace = {
-    let map = context.relay_pending_requests.read().await;
-    match map.get(&existing_req_id) {
-      Some(PendingRequest::PublishNamespace {
-        track_namespace, ..
-      }) => track_namespace.clone(),
+    let mut map = context.relay_pending_requests.write().await;
+    match map.get_mut(&existing_req_id) {
+      Some(PendingRequest::PublishNamespace { message, .. }) => {
+        apply_message_parameter_update(&mut message.parameters, update_msg.parameters.clone());
+        message.track_namespace.clone()
+      }
       _ => {
         warn!(
           "Request {} is not a valid PublishNamespace request",
@@ -174,27 +176,36 @@ pub async fn handle_request_update(
     target_namespace
   );
 
-  // 2. Update local state (e.g., Auth tokens, extension metadata)
-  // We need to store these parameters so new subscribers get the latest metadata.
-  //
-  // TODO: Update TrackManager to store and modify announcement parameters:
+  // TODO: Requires bi-directional Request ID mapping to fan-out
+  // 2. Update Global Track Manager State
   /*
   context
     .track_manager
-    .update_announcement_parameters(&target_namespace, _client.connection_id, &update_msg.parameters)
+    .update_namespace_parameters(&target_namespace, _client.connection_id, update_msg.parameters.clone())
     .await;
   */
 
   // 3. The Ripple Effect Fan-Out
-  // Because we broadcasted the original PublishNamespace to multiple subscribers,
-  // we must forward this RequestUpdate to all of them.
-  //
-  // TODO: Iterate through active subscribers for this namespace. For each subscriber,
-  // find the specific relay_announce_id we used when we sent them the original PublishNamespace,
-  // and send them a RequestUpdate with their new parameters.
+  /*
+  let downstream_sessions = context
+    .track_manager
+    .get_namespace_subscribers(&target_namespace)
+    .await;
+
+  for session in downstream_sessions {
+      if let Some(downstream_req_id) = session.get_outbound_announce_id(&target_namespace) {
+          let fanout_msg = crate::model::control::request_update::RequestUpdate::new(
+              session.generate_request_id(),
+              downstream_req_id,
+              update_msg.parameters.clone(),
+          );
+
+          session.send_control_message(ControlMessage::RequestUpdate(Box::new(fanout_msg))).await?;
+      }
+  }
+  */
 
   // 4. Acknowledge the update to the Publisher
-  // TODO: Uncomment after merging RequestOk/Error support
   /*
   let ok_msg = RequestOk::new(new_req_id);
   _handler.send(&ControlMessage::RequestOk(Box::new(ok_msg))).await?;

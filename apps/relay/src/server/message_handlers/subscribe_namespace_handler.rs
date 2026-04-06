@@ -22,6 +22,7 @@ use moqtail::model::control::publish_namespace::PublishNamespace;
 use moqtail::model::control::subscribe_namespace_error::SubscribeNamespaceError;
 use moqtail::model::control::subscribe_namespace_ok::SubscribeNamespaceOk;
 use moqtail::model::error::TerminationCode;
+use moqtail::model::parameter::message_parameter::apply_message_parameter_update;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
 use tracing::{error, info, warn};
@@ -77,7 +78,7 @@ pub async fn handle(
           PendingRequest::SubscribeNamespace {
             client_connection_id: client.connection_id,
             original_request_id: sub_ns.request_id,
-            track_namespace_prefix: sub_ns.track_namespace_prefix.clone(),
+            message: (*sub_ns).clone(),
           },
         );
       }
@@ -115,7 +116,7 @@ pub async fn handle(
             PendingRequest::PublishNamespace {
               client_connection_id: client.connection_id,
               original_request_id: relay_announce_id,
-              track_namespace: ns.clone(),
+              message: notify.clone(),
             },
           );
         }
@@ -156,6 +157,7 @@ pub async fn handle(
               PendingRequest::Publish {
                 publisher_connection_id: client.connection_id,
                 original_request_id: relay_publish_id,
+                message: original_publish_message.clone(),
               },
             );
           }
@@ -212,14 +214,14 @@ pub async fn handle_request_update(
   let existing_req_id = update_msg.existing_request_id;
   // let new_req_id = update_msg.request_id; // TODO: Uncomment when sending RequestOk
 
-  // 1. Verify this is a SubscribeNamespace request and extract the prefix
+  // 1. Verify this is a SubscribeNamespace request and apply parameter updates
   let target_prefix = {
-    let map = context.relay_pending_requests.read().await;
-    match map.get(&existing_req_id) {
-      Some(PendingRequest::SubscribeNamespace {
-        track_namespace_prefix,
-        ..
-      }) => track_namespace_prefix.clone(),
+    let mut map = context.relay_pending_requests.write().await;
+    match map.get_mut(&existing_req_id) {
+      Some(PendingRequest::SubscribeNamespace { message, .. }) => {
+        apply_message_parameter_update(&mut message.parameters, update_msg.parameters.clone());
+        message.track_namespace_prefix.clone()
+      }
       _ => {
         warn!(
           "Request {} is not a valid SubscribeNamespace request",
@@ -236,10 +238,6 @@ pub async fn handle_request_update(
   );
 
   // 2. Update the stored Namespace Subscription parameters in TrackManager
-  // Right now, TrackManager::namespace_subscribers only stores Vec<Arc<MOQTClient>>.
-  // We need it to store the parameters too, so future tracks get the updated priority/forwarding rules.
-  //
-  // TODO: Update TrackManager to store namespace parameters, then call:
   /*
   context
     .track_manager
@@ -247,11 +245,39 @@ pub async fn handle_request_update(
     .await;
   */
 
-  // 3. The Ripple Effect (Cascading the update)
-  // If the client updated their Priority, we theoretically need to find all active Tracks
-  // under this namespace that they are currently subscribed to, and update those individual Subscriptions.
-  //
-  // TODO: Fetch active tracks for this client/prefix and call `sub.update_subscription(&update_msg.parameters)`
+  // 3. The Ripple Effect (Upstream Proxying)
+  // If the relay forwarded the original SubscribeNamespace to an upstream Publisher,
+  // we must forward this RequestUpdate to that exact same upstream connection,
+  // and track it using our new RequestUpdate enum variant.
+  /*
+  if let Some(upstream_session) = context.track_manager.get_publisher_for_namespace(&target_prefix).await {
+      if let Some(upstream_req_id) = upstream_session.get_outbound_subscribe_namespace_id(&target_prefix) {
+
+          let relay_update_id = Session::get_next_relay_request_id(context.relay_next_request_id.clone()).await;
+
+          let proxy_msg = moqtail::model::control::request_update::RequestUpdate::new(
+              relay_update_id,
+              upstream_req_id,
+              update_msg.parameters.clone(),
+          );
+
+          // Track the outbound REQUEST_UPDATE
+          {
+            let mut map = context.relay_pending_requests.write().await;
+            map.insert(
+              relay_update_id,
+              PendingRequest::RequestUpdate {
+                client_connection_id: upstream_session.connection_id,
+                original_request_id: relay_update_id,
+                message: proxy_msg.clone(),
+              },
+            );
+          }
+
+          upstream_session.queue_message(ControlMessage::RequestUpdate(Box::new(proxy_msg))).await;
+      }
+  }
+  */
 
   // 4. Send RequestOk back to the Client acknowledging the update
   // TODO: Uncomment after merging RequestOk/Error support

@@ -20,7 +20,9 @@ use crate::server::track::{Track, TrackStatus};
 use core::result::Result;
 use moqtail::model::control::subscribe::Subscribe;
 use moqtail::model::error::TerminationCode;
-use moqtail::model::parameter::message_parameter::{MessageParameter, MessageParameterVecExt};
+use moqtail::model::parameter::message_parameter::{
+  MessageParameter, MessageParameterVecExt, apply_message_parameter_update,
+};
 use moqtail::model::{
   common::reason_phrase::ReasonPhrase, control::control_message::ControlMessage,
 };
@@ -468,11 +470,17 @@ pub async fn handle_request_update(
   let existing_req_id = request_update_message.existing_request_id;
   // let update_req_id = request_update_message.request_id; // TODO: Uncomment after merging RequestOk/Error support
 
-  // 2. Fetch the original SubscribeRequest from the unified map
-  let subscribe_req = {
-    let pending_requests = context.relay_pending_requests.read().await;
-    match pending_requests.get(&existing_req_id) {
-      Some(PendingRequest::Subscribe(req)) => req.clone(),
+  let full_track_name = {
+    let mut pending_requests = context.relay_pending_requests.write().await;
+    match pending_requests.get_mut(&existing_req_id) {
+      Some(PendingRequest::Subscribe(req)) => {
+        // Apply the Draft 16 parameter patch directly to the nested message state
+        apply_message_parameter_update(
+          &mut req.original_subscribe_request.subscribe_parameters,
+          request_update_message.parameters.clone(),
+        );
+        req.original_subscribe_request.get_full_track_name()
+      }
       _ => {
         warn!(
           "Request {} is not a valid Subscribe request",
@@ -483,10 +491,7 @@ pub async fn handle_request_update(
     }
   };
 
-  // 3. Get the full track name and track instance
-  let full_track_name = subscribe_req
-    .original_subscribe_request
-    .get_full_track_name();
+  // 3. Get the track instance
   let track_lock = context.track_manager.get_track(&full_track_name).await;
 
   if track_lock.is_none() {
@@ -497,17 +502,26 @@ pub async fn handle_request_update(
   let track_arc = track_lock.unwrap();
   let track_guard = track_arc.read().await;
 
-  // 4. Update the actual subscription
+  // 4. Update the actual active subscription
   if let Some(subscription) = track_guard.get_subscription(client.connection_id).await {
     let sub = subscription.read().await;
 
-    match sub.update_subscription(request_update_message).await {
+    match sub
+      .update_subscription(request_update_message.clone())
+      .await
+    {
       Ok(_) => {
         info!(
           "Subscription updated successfully for track: {:?}",
           full_track_name
         );
 
+        // 5. The Ripple Effect (Upstream Proxying)
+        // TODO: If this relay is forwarding the subscription to an upstream publisher,
+        // we must forward this RequestUpdate to that upstream connection and track it
+        // in relay_pending_requests using the RequestUpdate enum variant.
+
+        // 6. Send RequestOk back to the subscriber
         // TODO: Uncomment after merging RequestOk/Error support
         /*
         let ok_msg = RequestOk::new(update_req_id);

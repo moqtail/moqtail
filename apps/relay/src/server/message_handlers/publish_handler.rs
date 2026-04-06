@@ -27,6 +27,7 @@ use moqtail::model::control::{
 };
 use moqtail::model::error::TerminationCode;
 use moqtail::model::parameter::constant::MessageParameterType;
+use moqtail::model::parameter::message_parameter::apply_message_parameter_update;
 use moqtail::model::parameter::message_parameter::{MessageParameter, MessageParameterVecExt};
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
@@ -186,6 +187,7 @@ pub async fn handle(
               PendingRequest::Publish {
                 publisher_connection_id: context.connection_id,
                 original_request_id: request_id,
+                message: (*m_clone).clone(),
               },
             );
           }
@@ -360,11 +362,12 @@ pub async fn handle_request_update(
   let publisher_req_id = update_msg.existing_request_id;
   // let new_req_id = update_msg.request_id; // TODO: Uncomment when sending RequestOk
 
-  // 1. Verify this is a Publish request from our unified map
   {
-    let map = context.relay_pending_requests.read().await;
-    match map.get(&publisher_req_id) {
-      Some(PendingRequest::Publish { .. }) => {}
+    let mut map = context.relay_pending_requests.write().await;
+    match map.get_mut(&publisher_req_id) {
+      Some(PendingRequest::Publish { message, .. }) => {
+        apply_message_parameter_update(&mut message.parameters, update_msg.parameters.clone());
+      }
       _ => {
         warn!(
           "Request {} is not a valid Publish request",
@@ -447,17 +450,6 @@ pub async fn handle_request_update(
     let mut forwarded_update = update_msg.clone();
     forwarded_update.request_id = relay_update_id;
     forwarded_update.existing_request_id = subscriber_existing_id;
-
-    {
-      let mut map = context.relay_pending_requests.write().await;
-      map.insert(
-        relay_update_id,
-        PendingRequest::Publish {
-          publisher_connection_id: subscriber_client.connection_id,
-          original_request_id: relay_update_id,
-        },
-      );
-    }
 
     subscriber_client
       .queue_message(ControlMessage::RequestUpdate(Box::new(forwarded_update)))

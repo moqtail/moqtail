@@ -117,7 +117,7 @@ export class LiveTrackSource implements LiveObjectSource {
         this.#largestLocation = value.location
 
         for (const listener of this.#listeners) {
-          Promise.resolve().then(() => listener(value))
+          listener(value)
         }
       }
     } catch (error) {
@@ -132,9 +132,20 @@ export class LiveTrackSource implements LiveObjectSource {
     }
   }
 
-  onNewObject(listener: (obj: MoqtObject) => void): () => void {
-    this.#listeners.add(listener)
-    return () => this.#listeners.delete(listener)
+  onNewObject(listener: (obj: MoqtObject) => Promise<void> | void): () => void {
+    let queue = Promise.resolve()
+
+    const queuedListener = (obj: MoqtObject) => {
+      queue = queue
+        .then(() => listener(obj))
+        .catch((err) => {
+          console.error('LiveTrackSource: Error in subscriber listener:', err)
+        })
+    }
+
+    this.#listeners.add(queuedListener)
+
+    return () => this.#listeners.delete(queuedListener)
   }
 
   onDone(listener: () => void): () => void {
@@ -156,4 +167,88 @@ export class HybridTrackSource implements TrackSource {
     this.past = new StaticTrackSource(cache)
     this.live = new LiveTrackSource(stream)
   }
+}
+
+if (import.meta.vitest) {
+  const { describe, test, expect } = import.meta.vitest
+
+  describe('LiveTrackSource', () => {
+    test('queue preserves strict FIFO order despite async delays', async () => {
+      const writtenObjects: bigint[] = []
+      let streamCount = 0
+
+      const mockSendStream = {
+        write: async (obj: any) => {
+          writtenObjects.push(obj.objectId)
+        },
+      }
+
+      const mockWebTransport = {
+        createUnidirectionalStream: async () => {
+          streamCount++
+          if (streamCount === 1) {
+            await new Promise((resolve) => setTimeout(resolve, 50))
+          } else {
+            await Promise.resolve()
+          }
+          return {}
+        },
+      }
+
+      let streamController!: ReadableStreamDefaultController<any>
+      const stream = new ReadableStream({
+        start(controller) {
+          streamController = controller
+        },
+      })
+
+      const trackSource = new LiveTrackSource(stream)
+
+      trackSource.onNewObject(async (obj) => {
+        await mockWebTransport.createUnidirectionalStream()
+        await mockSendStream.write(obj)
+      })
+
+      await new Promise((resolve) => setTimeout(resolve, 0))
+
+      streamController.enqueue({ objectId: 0n, location: { group: 5n, object: 0n } } as any)
+      streamController.enqueue({ objectId: 1n, location: { group: 5n, object: 1n } } as any)
+
+      await new Promise((resolve) => setTimeout(resolve, 100))
+
+      expect(writtenObjects).toEqual([0n, 1n])
+
+      trackSource.stop()
+    })
+
+    test('queue recovers gracefully if a listener throws an error', async () => {
+      const writtenObjects: bigint[] = []
+
+      let streamController!: ReadableStreamDefaultController<any>
+      const stream = new ReadableStream({
+        start(controller) {
+          streamController = controller
+        },
+      })
+
+      const trackSource = new LiveTrackSource(stream)
+
+      trackSource.onNewObject(async (obj) => {
+        if (obj.objectId === 0n) {
+          throw new Error('Simulated WebTransport connection blip!')
+        }
+        writtenObjects.push(obj.objectId)
+      })
+
+      await new Promise((resolve) => setTimeout(resolve, 0))
+
+      streamController.enqueue({ objectId: 0n, location: { group: 5n, object: 0n } } as any)
+      streamController.enqueue({ objectId: 1n, location: { group: 5n, object: 1n } } as any)
+
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      expect(writtenObjects).toEqual([1n])
+
+      trackSource.stop()
+    })
+  })
 }

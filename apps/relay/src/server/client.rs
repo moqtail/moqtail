@@ -15,11 +15,11 @@
 pub(crate) mod switch_context;
 pub(crate) mod track_subscription_map;
 
-use crate::server::{
-  client::track_subscription_map::TrackSubscriptionMap,
+use crate::{server::{
+  client::{switch_context::SwitchStatus, track_subscription_map::TrackSubscriptionMap},
   stream_id::{StreamId, StreamType},
   utils,
-};
+}, telemetry::log_abr_decision};
 use anyhow::Result;
 #[allow(dead_code)]
 use bytes::Bytes;
@@ -147,6 +147,104 @@ impl MOQTClient {
     let mut message_queue = self.message_queue.write().await;
     message_queue.push_back(control_message);
     self.message_notify.notify_one();
+  }
+/// The Central ABR Control Plane
+  pub fn start_abr_controller(self: Arc<Self>, track_manager: Arc<crate::server::track_manager::TrackManager>) {
+    tokio::spawn(async move {
+      let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(500));
+      let mut last_known_bw = 5_000_000;
+      
+      // NEW: State flag to ensure we only register the tracks once
+      let mut is_initialized = false; 
+
+      info!("ABR Controller started for Client ID: {}", self.connection_id);
+
+      loop {
+        interval.tick().await;
+
+        let mut available_tracks: Vec<moqtail::model::data::full_track_name::FullTrackName> = track_manager
+            .track_aliases
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect();
+        
+        available_tracks.sort_by(|a, b| format!("{}", a).cmp(&format!("{}", b)));
+
+        if available_tracks.len() < 2 {
+            continue; 
+        }
+
+        let raw_bandwidth = self.connection.bandwidth().unwrap_or(0);
+        if raw_bandwidth > 0 {
+            last_known_bw = raw_bandwidth; 
+        }
+        
+        let est_bandwidth = if raw_bandwidth == 0 { last_known_bw } else { raw_bandwidth };
+        let rtt_ms = self.connection.stats_rtt().as_millis();
+
+        let target_720p_bps = 2_500_000;
+        let max_acceptable_rtt = 150;
+
+        let target_track = if est_bandwidth >= target_720p_bps && rtt_ms < max_acceptable_rtt {
+            &available_tracks[1]
+        } else {
+            &available_tracks[0]
+        };
+
+        // ==========================================
+        // ONE-TIME REGISTRATION: Use the SwitchContext as intended!
+        // ==========================================
+        if !is_initialized {
+            info!("Registering ABR tracks into the SwitchContext...");
+            for track in &available_tracks {
+                // The winner gets Current, everyone else officially gets registered as None
+                let initial_status = if track == target_track {
+                    crate::server::client::switch_context::SwitchStatus::Current
+                } else {
+                    crate::server::client::switch_context::SwitchStatus::None
+                };
+                
+                self.switch_context.add_or_update_switch_item(
+                    track.clone(), 
+                    initial_status
+                ).await;
+            }
+            is_initialized = true;
+            continue; // Registration complete, move to the next tick
+        }
+        // ==========================================
+
+        let current_opt = self.switch_context.get_current().await;
+        let next_status = self.switch_context.get_switch_status(target_track).await;
+
+        let is_currently_playing = current_opt.as_ref() == Some(target_track);
+        let is_already_queued = next_status == Some(crate::server::client::switch_context::SwitchStatus::Next);
+
+        if !is_currently_playing && !is_already_queued {
+            info!(
+                "ABR SWITCH QUEUED | BW: {} bps | RTT: {} ms | Target: {}", 
+                est_bandwidth, rtt_ms, target_track
+            );
+
+            // Because we registered ALL tracks above, queuing this as Next 
+            // will organically demote the old track to None! No manual kills needed.
+            self.switch_context.add_or_update_switch_item(
+                target_track.clone(), 
+                crate::server::client::switch_context::SwitchStatus::Next
+            ).await;
+
+            if let Some(current_track) = current_opt {
+                if let Some(sub_weak) = self.subscriptions.get_subscription(&current_track).await {
+                    if let Some(sub_arc) = sub_weak.upgrade() {
+                        sub_arc.read().await.notify_switch().await;
+                    }
+                }
+            }
+        }
+      }
+    });
   }
 
   /// Calculate the partition index for stream distribution across buckets.

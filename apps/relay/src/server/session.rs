@@ -672,6 +672,7 @@ impl Session {
         Arc::new(client_setup),
       );
       let client = Arc::new(client);
+      client.clone().start_abr_controller(context.track_manager.clone().into());
       m.add(client.clone()).await;
       client
     } else {

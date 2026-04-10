@@ -14,6 +14,7 @@
 
 use tracing::Instrument;
 mod server;
+pub mod telemetry;
 use server::Server;
 
 #[tokio::main]

@@ -18,7 +18,7 @@ import { useState, useRef, useCallback } from 'preact/hooks';
 import type { ComponentChildren } from 'preact';
 import { Player } from '@/lib/player';
 import { cn } from '@/lib/utils';
-import { Tuple, type CMSF } from 'moqtail';
+import { Tuple, type CMSF, type CMSFTrack } from 'moqtail';
 import MSEBuffer from '@/lib/buffer';
 
 type Track = CMSF['tracks'][number];
@@ -42,6 +42,21 @@ const STATUS_CONFIG: Record<Status, { dot: string; label: string }> = {
   playing: { dot: 'bg-blue-400', label: 'Playing' },
   error: { dot: 'bg-red-400', label: 'Error' },
 };
+
+function sortTracks(tracks: CMSFTrack[]) {
+  return tracks.sort((a, b) => {
+    // sort by bitrate (desc), then resolution (desc), then name (asc)
+    const bitrateA = a.bitrate || 0;
+    const bitrateB = b.bitrate || 0;
+    if (bitrateA !== bitrateB) return bitrateB - bitrateA;
+
+    const resA = (a.width || 0) * (a.height || 0);
+    const resB = (b.width || 0) * (b.height || 0);
+    if (resA !== resB) return resB - resA;
+
+    return a.name.localeCompare(b.name);
+  });
+}
 
 function StatusDot({ status }: { status: Status }) {
   const { dot, label } = STATUS_CONFIG[status];
@@ -205,8 +220,8 @@ function TrackGroup({
 }
 
 export function App() {
-  const [relayUrl, setRelayUrl] = useState('https://ord.abr.moqtail.dev');
-  const [namespace, setNamespace] = useState('moqtail');
+  const [relayUrl, setRelayUrl] = useState('https://relay.moqtail.dev');
+  const [namespace, setNamespace] = useState('moqtail/testsrc');
   const [status, setStatus] = useState<Status>('idle');
   const [tracks, setTracks] = useState<Track[]>([]);
   const [selectedVideo, setSelectedVideo] = useState<string | null>(null);
@@ -251,7 +266,7 @@ export function App() {
       playerRef.current = player;
 
       const catalog = await player.initialize();
-      const allTracks = catalog.getTracks();
+      const allTracks = sortTracks(catalog.getTracks());
       setTracks(allTracks);
 
       const firstVideo = allTracks.find(t => t.role === 'video');
@@ -396,6 +411,7 @@ export function App() {
                 <input
                   type="text"
                   value={namespace}
+                  onKeyDown={e => e.key === 'Enter' && handleConnect()}
                   onInput={e => setNamespace((e.target as HTMLInputElement).value)}
                   placeholder="org/channel"
                   class={inputCls}
@@ -405,7 +421,7 @@ export function App() {
             <button
               onClick={handleConnect}
               disabled={isBusy || !relayUrl || !namespace}
-              className="w-full rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium transition-colors hover:bg-blue-500 active:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40"
+              className="w-full cursor-pointer rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium transition-colors hover:bg-blue-500 active:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40"
             >
               {status === 'connecting' ? 'Connecting…' : 'Connect'}
             </button>

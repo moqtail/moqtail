@@ -16,10 +16,10 @@ pub(crate) mod switch_context;
 pub(crate) mod track_subscription_map;
 
 use crate::{server::{
-  client::{switch_context::SwitchStatus, track_subscription_map::TrackSubscriptionMap},
+  client::{ track_subscription_map::TrackSubscriptionMap},
   stream_id::{StreamId, StreamType},
   utils,
-}, telemetry::log_abr_decision};
+}};
 use anyhow::Result;
 #[allow(dead_code)]
 use bytes::Bytes;

@@ -23,7 +23,7 @@ pub fn log_abr_decision(group_id: u64, est_bw: u64, rtt_ms: u128, selected_track
     });
 
     // Attempt to open and append to the file
-    match OpenOptions::new().create(true).append(true).open("relay_telemetry.jsonl") {
+    match OpenOptions::new().create(true).append(true).open("logs/relay_telemetry.jsonl") {
         Ok(mut file) => {
             if let Err(e) = writeln!(file, "{}", log_entry) {
                 error!("Failed to write to telemetry log: {}", e);

@@ -6,6 +6,11 @@ on:
       - '**'
     tags:
       - 'relay@*'
+    paths:
+      - 'apps/relay/**'
+      - 'libs/moqtail-rs/**'
+      - 'Cargo.toml'
+      - '.github/workflows/relay.yml'
 
 concurrency:
   group: relay-image-${{ github.ref }}

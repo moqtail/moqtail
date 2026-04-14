@@ -21,7 +21,6 @@ use crate::server::track::TrackEvent;
 use crate::server::track_cache::CacheConsumeEvent;
 use crate::server::track_cache::TrackCache;
 use crate::server::utils;
-use crate::telemetry::log_abr_decision;
 use anyhow::Result;
 use bytes::Bytes;
 use moqtail::model::common::location::Location;
@@ -721,19 +720,6 @@ impl Subscription {
           if !state.forward {
             return;
           }
-        }
-
-        if object.location.object == 0 {
-            // Read the live stats at the exact microsecond the group starts
-            let raw_bandwidth = self.subscriber.connection.bandwidth().unwrap_or(0);
-            let rtt_ms = self.subscriber.connection.stats_rtt().as_millis();
-            let current_track_name = format!("{}", self.full_track_name);
-            log_abr_decision(
-                object.location.group, 
-                raw_bandwidth, 
-                rtt_ms, 
-                &current_track_name
-            );
         }
 
         // Handle header info if this is the first object

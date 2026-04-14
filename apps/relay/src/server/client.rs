@@ -15,11 +15,11 @@
 pub(crate) mod switch_context;
 pub(crate) mod track_subscription_map;
 
-use crate::{server::{
-  client::{ track_subscription_map::TrackSubscriptionMap},
+use crate::server::{
+  client::track_subscription_map::TrackSubscriptionMap,
   stream_id::{StreamId, StreamType},
   utils,
-}};
+};
 use anyhow::Result;
 #[allow(dead_code)]
 use bytes::Bytes;
@@ -80,6 +80,13 @@ pub(crate) struct MOQTClient {
   pub subscriptions: TrackSubscriptionMap,
 
   pub switch_context: SwitchContext,
+  pub abr_tx: tokio::sync::mpsc::Sender<u64>,
+  pub abr_rx: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<u64>>>>,
+
+  // 👉 THE GATEKEEPERS
+  pub group_decisions: Arc<RwLock<HashMap<u64, u64>>>,
+  pub decision_tx: tokio::sync::watch::Sender<u64>,
+  pub decision_rx: tokio::sync::watch::Receiver<u64>,
 }
 
 impl MOQTClient {
@@ -92,7 +99,8 @@ impl MOQTClient {
     for _ in 0..SEND_STREAM_PARTITION_COUNT {
       send_streams.push(Arc::new(RwLock::new(HashMap::new())));
     }
-
+    let (abr_tx, abr_rx) = tokio::sync::mpsc::channel(100); 
+    let (decision_tx, decision_rx) = tokio::sync::watch::channel(0);
     MOQTClient {
       connection_id,
       connection,
@@ -108,6 +116,13 @@ impl MOQTClient {
       fetch_cancel_senders: Arc::new(RwLock::new(HashMap::new())),
       subscriptions: TrackSubscriptionMap::new(),
       switch_context: SwitchContext::new(),
+      abr_tx,
+      abr_rx: Arc::new(Mutex::new(Some(abr_rx))),
+      
+      // 👉 Initialize the Gatekeepers
+      group_decisions: Arc::new(RwLock::new(HashMap::new())),
+      decision_tx,
+      decision_rx,
     }
   }
 
@@ -148,105 +163,75 @@ impl MOQTClient {
     message_queue.push_back(control_message);
     self.message_notify.notify_one();
   }
-/// The Central ABR Control Plane
-  pub fn start_abr_controller(self: Arc<Self>, track_manager: Arc<crate::server::track_manager::TrackManager>) {
+
+  pub fn start_abr_controller(
+    self: Arc<Self>,
+    track_manager: Arc<crate::server::track_manager::TrackManager>,
+  ) {
     tokio::spawn(async move {
-      let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(500));
-      let mut last_known_bw = 5_000_000;
-      
-      // NEW: State flag to ensure we only register the tracks once
-      let mut is_initialized = false; 
+      let mut abr_rx = self.abr_rx.lock().await.take().expect("ABR started");
 
-      info!("ABR Controller started for Client ID: {}", self.connection_id);
+      let mut min_rtt: u128 = u128::MAX;
+      let mut hold_timer_groups: u8 = 0;
+      let mut group_arrival_counts: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
 
-      loop {
-        interval.tick().await;
+      let panic_threshold_ms: u128 = 50;
+      let hold_duration_groups: u8 = 6; 
 
-        let mut available_tracks: Vec<moqtail::model::data::full_track_name::FullTrackName> = track_manager
-            .track_aliases
-            .read()
-            .await
-            .values()
-            .cloned()
-            .collect();
-        
+      info!("Deterministic ABR Controller started for Client ID: {}", self.connection_id);
+
+      while let Some(group_id) = abr_rx.recv().await {
+        let mut available_tracks: Vec<moqtail::model::data::full_track_name::FullTrackName> =
+          track_manager.track_aliases.read().await.values().cloned().collect();
         available_tracks.sort_by(|a, b| format!("{}", a).cmp(&format!("{}", b)));
 
-        if available_tracks.len() < 2 {
-            continue; 
-        }
+        if available_tracks.len() < 2 { continue; }
 
-        let raw_bandwidth = self.connection.bandwidth().unwrap_or(0);
-        if raw_bandwidth > 0 {
-            last_known_bw = raw_bandwidth; 
-        }
+        // 1. Wait for both tracks of THIS group to pause at the gate
+        let count = group_arrival_counts.entry(group_id).or_insert(0);
+        *count += 1;
+        if *count < 2 { continue; }
+
+        group_arrival_counts.retain(|&k, _| k >= group_id);
+
+        // 2. THE MATH
+        let current_rtt = self.connection.stats_rtt().as_millis();
+        if current_rtt > 0 && current_rtt < min_rtt { min_rtt = current_rtt; }
         
-        let est_bandwidth = if raw_bandwidth == 0 { last_known_bw } else { raw_bandwidth };
-        let rtt_ms = self.connection.stats_rtt().as_millis();
+        let queueing_delay = if current_rtt > min_rtt { current_rtt - min_rtt } else { 0 };
+        if hold_timer_groups > 0 { hold_timer_groups -= 1; }
 
-        let target_720p_bps = 2_500_000;
-        let max_acceptable_rtt = 150;
-
-        let target_track = if est_bandwidth >= target_720p_bps && rtt_ms < max_acceptable_rtt {
-            &available_tracks[1]
+        let target_track = if queueing_delay > panic_threshold_ms {
+          if hold_timer_groups == 0 { warn!("⚠️ ABR PANIC: Queue Debt {} ms", queueing_delay); }
+          hold_timer_groups = hold_duration_groups;
+          &available_tracks[0]
+        } else if hold_timer_groups > 0 {
+          &available_tracks[0]
         } else {
-            &available_tracks[0]
+          &available_tracks[1]
         };
 
-        // ==========================================
-        // ONE-TIME REGISTRATION: Use the SwitchContext as intended!
-        // ==========================================
-        if !is_initialized {
-            info!("Registering ABR tracks into the SwitchContext...");
-            for track in &available_tracks {
-                // The winner gets Current, everyone else officially gets registered as None
-                let initial_status = if track == target_track {
-                    crate::server::client::switch_context::SwitchStatus::Current
-                } else {
-                    crate::server::client::switch_context::SwitchStatus::None
-                };
-                
-                self.switch_context.add_or_update_switch_item(
-                    track.clone(), 
-                    initial_status
-                ).await;
-            }
-            is_initialized = true;
-            continue; // Registration complete, move to the next tick
+        let raw_bandwidth = self.connection.bandwidth().unwrap_or(0);
+        crate::telemetry::log_abr_decision(group_id, raw_bandwidth, current_rtt, &target_track.to_string());
+
+        // 3. UNLOCK THE GATE
+        let target_alias = {
+            let aliases = track_manager.track_aliases.read().await;
+            aliases.iter().find(|(_, name)| *name == target_track).map(|(alias, _)| *alias)
+        };
+
+        if let Some(alias) = target_alias {
+            let mut decisions = self.group_decisions.write().await;
+            decisions.insert(group_id, alias);
+            decisions.retain(|&k, _| k >= group_id.saturating_sub(5)); // Keep RAM clean
         }
-        // ==========================================
 
-        let current_opt = self.switch_context.get_current().await;
-        let next_status = self.switch_context.get_switch_status(target_track).await;
-
-        let is_currently_playing = current_opt.as_ref() == Some(target_track);
-        let is_already_queued = next_status == Some(crate::server::client::switch_context::SwitchStatus::Next);
-
-        if !is_currently_playing && !is_already_queued {
-            info!(
-                "ABR SWITCH QUEUED | BW: {} bps | RTT: {} ms | Target: {}", 
-                est_bandwidth, rtt_ms, target_track
-            );
-
-            // Because we registered ALL tracks above, queuing this as Next 
-            // will organically demote the old track to None! No manual kills needed.
-            self.switch_context.add_or_update_switch_item(
-                target_track.clone(), 
-                crate::server::client::switch_context::SwitchStatus::Next
-            ).await;
-
-            if let Some(current_track) = current_opt {
-                if let Some(sub_weak) = self.subscriptions.get_subscription(&current_track).await {
-                    if let Some(sub_arc) = sub_weak.upgrade() {
-                        sub_arc.read().await.notify_switch().await;
-                    }
-                }
-            }
-        }
+        // Broadcast to the waiting Data Plane threads that they can check the gate!
+        let _ = self.decision_tx.send(group_id);
       }
     });
   }
-
+  
   /// Calculate the partition index for stream distribution across buckets.
   /// This method implements a load balancing strategy to distribute streams
   /// across multiple stream buckets to improve performance and reduce contention.
@@ -419,6 +404,35 @@ impl MOQTClient {
     object: Bytes,
     the_stream: Option<Arc<Mutex<SendStream>>>,
   ) -> Result<(), anyhow::Error> {
+    
+    let group_id = stream_id.group_id.unwrap_or(0);
+
+    // 1. Wake up the ABR controller if this is the start of a group
+    if object_id == 0 {
+        let _ = self.abr_tx.try_send(group_id); 
+    }
+
+    // 2. PAUSE TIME: Wait for the ABR controller to decide this group's fate
+    let mut rx = self.decision_rx.clone();
+    loop {
+        {
+            let decisions = self.group_decisions.read().await;
+            if let Some(&chosen_alias) = decisions.get(&group_id) {
+                if stream_id.track_alias != chosen_alias {
+                    // This track lost. Vaporize the data!
+                    return Ok(()); 
+                }
+                // This track won! Break the loop and forward it.
+                break; 
+            }
+        }
+        
+        // Sleep until the ABR controller broadcasts a new decision
+        if rx.changed().await.is_err() {
+            break; // Client disconnected
+        }
+    }
+
     debug!(
       "write_stream_object | Writing object to stream ({} - {}) connection_id: {}",
       object_id, stream_id, self.connection_id

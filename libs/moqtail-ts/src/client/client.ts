@@ -45,8 +45,7 @@ import {
   PublishDone,
 } from '../model/control'
 import {
-  DatagramObject,
-  DatagramStatus,
+  Datagram,
   FetchHeader,
   FetchObject,
   FullTrackName,
@@ -284,10 +283,10 @@ export class MOQtailClient {
   onError?: (er: unknown) => void
 
   /** Invoked for each decoded datagram object/status arriving. */
-  onDatagramReceived?: (data: DatagramObject | DatagramStatus) => void
+  onDatagramReceived?: (data: Datagram) => void
 
   /** Invoked after enqueuing each outbound datagram object/status. */
-  onDatagramSent?: (data: DatagramObject | DatagramStatus) => void
+  onDatagramSent?: (data: Datagram) => void
 
   /** Fired when an inbound PUBLISH control message is received. */
   onPeerPublish?: (msg: Publish, stream: ReadableStream<MoqtObject>) => void
@@ -639,19 +638,9 @@ export class MOQtailClient {
       )
     }
 
-    let serialized: Uint8Array
-
-    if (object.hasStatus()) {
-      const datagramStatus = object.tryIntoDatagramStatus(trackAlias)
-      serialized = datagramStatus.serialize().toUint8Array()
-      if (this.onDatagramSent) this.onDatagramSent(datagramStatus)
-    } else if (object.hasPayload()) {
-      const datagramObject = object.tryIntoDatagramObject(trackAlias)
-      serialized = datagramObject.serialize().toUint8Array()
-      if (this.onDatagramSent) this.onDatagramSent(datagramObject)
-    } else {
-      throw new InternalError('sendDatagram', 'MoqtObject must have payload or status')
-    }
+    const datagram = object.tryIntoDatagram(trackAlias)
+    const serialized = datagram.serialize().toUint8Array()
+    if (this.onDatagramSent) this.onDatagramSent(datagram)
 
     await this.#datagramWriter.write(serialized)
   }
@@ -683,41 +672,16 @@ export class MOQtailClient {
           continue
         }
 
-        const firstByte = datagramBytes[0]!
-
         try {
-          // Parse datagram (peek at first byte to determine type)
-          // Draft-14 type values:
-          // - 0x00-0x07: OBJECT_DATAGRAM (payload datagrams)
-          // - 0x20-0x21: OBJECT_DATAGRAM_STATUS (status datagrams)
-          const isStatus = firstByte === 0x20 || firstByte === 0x21
+          const datagram = Datagram.deserialize(new FrozenByteBuffer(datagramBytes))
+          const trackAlias = datagram.trackAlias
 
-          let moqtObject: MoqtObject
-          let trackAlias: bigint
-
-          if (isStatus) {
-            // DatagramStatus (0x20 or 0x21)
-            const datagramStatus = DatagramStatus.deserialize(new FrozenByteBuffer(datagramBytes))
-            trackAlias = datagramStatus.trackAlias
-
-            if (this.onDatagramReceived) {
-              this.onDatagramReceived(datagramStatus)
-            }
-
-            const fullTrackName = this.#resolveTrackAlias(trackAlias)
-            moqtObject = MoqtObject.fromDatagramStatus(datagramStatus, fullTrackName)
-          } else {
-            // DatagramObject (0x00-0x07)
-            const datagramObject = DatagramObject.deserialize(new FrozenByteBuffer(datagramBytes))
-            trackAlias = datagramObject.trackAlias
-
-            if (this.onDatagramReceived) {
-              this.onDatagramReceived(datagramObject)
-            }
-
-            const fullTrackName = this.#resolveTrackAlias(trackAlias)
-            moqtObject = MoqtObject.fromDatagramObject(datagramObject, fullTrackName)
+          if (this.onDatagramReceived) {
+            this.onDatagramReceived(datagram)
           }
+
+          const fullTrackName = this.#resolveTrackAlias(trackAlias)
+          const moqtObject = MoqtObject.fromDatagram(datagram, fullTrackName)
 
           // Dispatch to track-specific handler if registered
           const trackKey = trackAlias.toString()

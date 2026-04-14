@@ -18,7 +18,7 @@ use moqtail::model::{
   control::{
     constant::SUPPORTED_VERSIONS, control_message::ControlMessage, server_setup::ServerSetup,
   },
-  data::{constant::ObjectForwardingPreference, datagram_object::DatagramObject},
+  data::{constant::ObjectForwardingPreference, datagram::Datagram},
   error::TerminationCode,
 };
 use moqtail::transport::{
@@ -86,7 +86,7 @@ impl Session {
         ));
       }
     };
-
+    
     let mut response_headers: HashMap<String, String> = HashMap::new();
     response_headers.insert("wt-protocol".to_string(), selected_version);
 
@@ -334,9 +334,9 @@ impl Session {
             // Parse the datagram
             let bytes = Bytes::from(datagram_bytes.payload().to_vec());
             let mut bytes = bytes;
-            match DatagramObject::deserialize(&mut bytes) {
+            match Datagram::deserialize(&mut bytes) {
               Ok(datagram_obj) => {
-                debug!("Parsed datagram object: track_alias={}, group_id={}, object_id={}",
+                debug!("Parsed datagram: track_alias={}, group_id={}, object_id={}",
                        datagram_obj.track_alias, datagram_obj.group_id, datagram_obj.object_id);
 
                 if let Some(track) = context_clone.track_manager.get_track_by_alias(context_clone.connection_id, datagram_obj.track_alias).await {
@@ -344,9 +344,9 @@ impl Session {
                   // Set forwarding preference to Datagram
                   track.set_forwarding_preference(ObjectForwardingPreference::Datagram).await;
 
-                  // Call new_datagram_object
-                  if let Err(e) = track.new_datagram_object(&datagram_obj).await {
-                    error!("Failed to process datagram object: {:?}", e);
+                  // Call new_datagram
+                  if let Err(e) = track.new_datagram(&datagram_obj).await {
+                    error!("Failed to process datagram: {:?}", e);
                   }
                 } else {
                   debug!("Track not found for track_alias {}", datagram_obj.track_alias);

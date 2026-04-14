@@ -17,9 +17,8 @@
 import { KeyValuePair } from '../common/pair'
 import { CastingError, ProtocolViolationError } from '../error/error'
 import { ExtensionHeaders } from '../extension_header'
-import { ObjectForwardingPreference, ObjectStatus, SubgroupHeaderType } from './constant'
-import { DatagramObject } from './datagram_object'
-import { DatagramStatus } from './datagram_status'
+import { ObjectDatagramType, ObjectForwardingPreference, ObjectStatus, SubgroupHeaderType } from './constant'
+import { Datagram } from './datagram'
 import { FetchObject } from './fetch_object'
 import { FullTrackName } from './full_track_name'
 import { SubgroupObject } from './subgroup_object'
@@ -138,41 +137,46 @@ export class MoqtObject {
     )
   }
 
-  static fromDatagramObject(datagramObject: DatagramObject, fullTrackName: FullTrackName): MoqtObject {
-    // Draft-14: endOfGroup flag from datagram could indicate EndOfGroup status
-    // when combined with Normal status (payload present)
-    return new MoqtObject(
-      fullTrackName,
-      new Location(datagramObject.groupId, datagramObject.objectId),
-      datagramObject.publisherPriority,
-      ObjectForwardingPreference.Datagram,
-      null,
-      ObjectStatus.Normal,
-      datagramObject.extensionHeaders,
-      datagramObject.payload,
-    )
+  /**
+   * Create a MoqtObject from a Datagram (Draft-16).
+   * @param datagram - The received Datagram.
+   * @param fullTrackName - The resolved full track name.
+   * @param defaultPriority - The default publisher priority from the control message (used when DEFAULT_PRIORITY bit is set).
+   */
+  static fromDatagram(datagram: Datagram, fullTrackName: FullTrackName, defaultPriority: number = 0): MoqtObject {
+    const priority = datagram.publisherPriority ?? defaultPriority
+    if (ObjectDatagramType.isStatus(datagram.type)) {
+      return new MoqtObject(
+        fullTrackName,
+        datagram.location,
+        priority,
+        ObjectForwardingPreference.Datagram,
+        null,
+        datagram.objectStatus!,
+        datagram.extensionHeaders,
+        null,
+      )
+    } else {
+      return new MoqtObject(
+        fullTrackName,
+        datagram.location,
+        priority,
+        ObjectForwardingPreference.Datagram,
+        null,
+        ObjectStatus.Normal,
+        datagram.extensionHeaders,
+        datagram.payload,
+      )
+    }
   }
 
   /**
-   * Returns the endOfGroup flag from the source DatagramObject.
+   * Returns the endOfGroup flag from the source Datagram.
    * This is separate from ObjectStatus.EndOfGroup - the flag indicates
    * this is the last object in the group even with Normal status.
    */
-  static isDatagramEndOfGroup(datagramObject: DatagramObject): boolean {
-    return datagramObject.endOfGroup
-  }
-
-  static fromDatagramStatus(datagramStatus: DatagramStatus, fullTrackName: FullTrackName): MoqtObject {
-    return new MoqtObject(
-      fullTrackName,
-      datagramStatus.location,
-      datagramStatus.publisherPriority,
-      ObjectForwardingPreference.Datagram,
-      null,
-      datagramStatus.objectStatus,
-      datagramStatus.extensionHeaders,
-      null,
-    )
+  static isDatagramEndOfGroup(datagram: Datagram): boolean {
+    return datagram.endOfGroup
   }
 
   static fromFetchObject(fetchObject: FetchObject, fullTrackName: FullTrackName): MoqtObject {
@@ -207,64 +211,52 @@ export class MoqtObject {
     )
   }
   /**
-   * Convert to DatagramObject for wire transmission.
-   * @param trackAlias - The track alias to use
-   * @param endOfGroup - Draft-14: Whether this is the last object in the group
+   * Convert to Datagram for wire transmission (Draft-16).
+   * Automatically creates a payload or status Datagram based on the object's state.
+   * @param trackAlias - The track alias to use.
+   * @param endOfGroup - Whether this is the last object in the group (only for payload datagrams).
+   * @param defaultPriority - If provided and matches this object's priority, the DEFAULT_PRIORITY bit is set.
    */
-  tryIntoDatagramObject(trackAlias: bigint | number, endOfGroup: boolean = false): DatagramObject {
+  tryIntoDatagram(trackAlias: bigint | number, endOfGroup: boolean = false, defaultPriority?: number): Datagram {
     if (this.objectForwardingPreference !== ObjectForwardingPreference.Datagram) {
       throw new CastingError(
-        'MoqtObject.tryIntoDatagramObject',
+        'MoqtObject.tryIntoDatagram',
         'MoqtObject',
-        'DatagramObject',
+        'Datagram',
         'Object Forwarding Preference must be Datagram',
-      )
-    }
-    if (this.objectStatus !== ObjectStatus.Normal || !this.payload) {
-      throw new ProtocolViolationError(
-        'MoqtObject.tryIntoDatagramObject',
-        'Object must have Normal status and payload for DatagramObject conversion',
       )
     }
 
     const alias = BigInt(trackAlias)
-    return DatagramObject.new(
-      alias,
-      this.groupId,
-      this.objectId,
-      this.publisherPriority,
-      this.extensionHeaders,
-      this.payload,
-      endOfGroup,
-    )
-  }
-  tryIntoDatagramStatus(trackAlias: bigint | number): DatagramStatus {
-    if (this.objectForwardingPreference !== ObjectForwardingPreference.Datagram) {
-      throw new CastingError(
-        'MoqtObject.tryIntoDatagramStatus',
-        'MoqtObject',
-        'DatagramStatus',
-        'Object Forwarding Preference must be Datagram',
-      )
-    }
-    if (this.objectStatus === ObjectStatus.Normal) {
-      throw new ProtocolViolationError(
-        'MoqtObject.tryIntoDatagramStatus',
-        'Object Status must not be Normal for DatagramStatus conversion',
-      )
-    }
+    const priority = defaultPriority !== undefined && defaultPriority === this.publisherPriority
+      ? null
+      : this.publisherPriority
 
-    const alias = BigInt(trackAlias)
-    if (this.extensionHeaders && this.extensionHeaders.length > 0) {
-      return DatagramStatus.withExtensions(
+    if (this.hasStatus()) {
+      return Datagram.newStatus(
         alias,
-        this.location,
-        this.publisherPriority,
+        this.groupId,
+        this.objectId,
+        priority,
         this.extensionHeaders,
         this.objectStatus,
       )
     } else {
-      return DatagramStatus.newWithoutExtensions(alias, this.location, this.publisherPriority, this.objectStatus)
+      if (!this.payload) {
+        throw new ProtocolViolationError(
+          'MoqtObject.tryIntoDatagram',
+          'Object must have payload for payload Datagram conversion',
+        )
+      }
+      return Datagram.newPayload(
+        alias,
+        this.groupId,
+        this.objectId,
+        priority,
+        this.extensionHeaders,
+        this.payload,
+        endOfGroup,
+      )
     }
   }
   tryIntoFetchObject(): FetchObject {
@@ -378,17 +370,17 @@ if (import.meta.vitest) {
       expect(obj.hasStatus()).toBe(true)
     })
 
-    test('convert from/to DatagramObject (Draft-14)', () => {
+    test('convert from/to Datagram payload (Draft-16)', () => {
       const payload = new TextEncoder().encode('datagram payload')
       const fullTrackName = FullTrackName.tryNew('test/demo', 'track3')
-      const datagramObj = DatagramObject.new(42n, 100n, 10n, 128, null, payload, false)
+      const datagram = Datagram.newPayload(42n, 100n, 10n, 128, null, payload, false)
 
-      const moqtObj = MoqtObject.fromDatagramObject(datagramObj, fullTrackName)
+      const moqtObj = MoqtObject.fromDatagram(datagram, fullTrackName)
       expect(moqtObj.objectForwardingPreference).toBe(ObjectForwardingPreference.Datagram)
       expect(moqtObj.subgroupId).toBe(null)
-      expect(MoqtObject.isDatagramEndOfGroup(datagramObj)).toBe(false)
+      expect(MoqtObject.isDatagramEndOfGroup(datagram)).toBe(false)
 
-      const backToDatagram = moqtObj.tryIntoDatagramObject(42n, false)
+      const backToDatagram = moqtObj.tryIntoDatagram(42n, false)
       expect(backToDatagram.trackAlias).toBe(42n)
       expect(backToDatagram.groupId).toBe(100n)
       expect(backToDatagram.objectId).toBe(10n)
@@ -396,16 +388,41 @@ if (import.meta.vitest) {
       expect(backToDatagram.payload).toEqual(payload)
     })
 
-    test('convert from/to DatagramObject with endOfGroup (Draft-14)', () => {
+    test('convert from/to Datagram with endOfGroup (Draft-16)', () => {
       const payload = new TextEncoder().encode('last in group')
       const fullTrackName = FullTrackName.tryNew('test/demo', 'track3')
-      const datagramObj = DatagramObject.new(42n, 100n, 10n, 128, null, payload, true)
+      const datagram = Datagram.newPayload(42n, 100n, 10n, 128, null, payload, true)
 
-      expect(MoqtObject.isDatagramEndOfGroup(datagramObj)).toBe(true)
+      expect(MoqtObject.isDatagramEndOfGroup(datagram)).toBe(true)
 
-      const moqtObj = MoqtObject.fromDatagramObject(datagramObj, fullTrackName)
-      const backToDatagram = moqtObj.tryIntoDatagramObject(42n, true)
+      const moqtObj = MoqtObject.fromDatagram(datagram, fullTrackName)
+      const backToDatagram = moqtObj.tryIntoDatagram(42n, true)
       expect(backToDatagram.endOfGroup).toBe(true)
+    })
+
+    test('convert from/to Datagram status (Draft-16)', () => {
+      const fullTrackName = FullTrackName.tryNew('test/demo', 'track3')
+      const datagram = Datagram.newStatus(42n, 100n, 10n, 128, null, ObjectStatus.EndOfGroup)
+
+      const moqtObj = MoqtObject.fromDatagram(datagram, fullTrackName)
+      expect(moqtObj.objectStatus).toBe(ObjectStatus.EndOfGroup)
+      expect(moqtObj.payload).toBeNull()
+
+      const backToDatagram = moqtObj.tryIntoDatagram(42n)
+      expect(backToDatagram.objectStatus).toBe(ObjectStatus.EndOfGroup)
+      expect(backToDatagram.payload).toBeNull()
+    })
+
+    test('convert Datagram with DEFAULT_PRIORITY (Draft-16)', () => {
+      const payload = new TextEncoder().encode('default prio')
+      const fullTrackName = FullTrackName.tryNew('test/demo', 'track3')
+      const datagram = Datagram.newPayload(42n, 100n, 10n, null, null, payload, false)
+
+      const moqtObj = MoqtObject.fromDatagram(datagram, fullTrackName, 64)
+      expect(moqtObj.publisherPriority).toBe(64) // resolved from default
+
+      const backToDatagram = moqtObj.tryIntoDatagram(42n, false, 64)
+      expect(backToDatagram.publisherPriority).toBeNull() // matches default, so null
     })
 
     test('convert from/to FetchObject', () => {

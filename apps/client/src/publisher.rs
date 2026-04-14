@@ -24,7 +24,7 @@ use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::publish::Publish;
 use moqtail::model::control::publish_namespace::PublishNamespace;
 use moqtail::model::control::subscribe_ok::SubscribeOk;
-use moqtail::model::data::datagram_object::DatagramObject;
+use moqtail::model::data::datagram::Datagram;
 use moqtail::model::data::object::Object;
 use moqtail::model::data::subgroup_header::SubgroupHeader;
 use moqtail::model::data::subgroup_object::SubgroupObject;
@@ -290,12 +290,14 @@ async fn send_datagrams(
     for object_id in 0..objects_per_group {
       let payload = generate_payload(payload_size);
 
-      let datagram_obj = DatagramObject::new(
+      let datagram_obj = Datagram::new_payload(
         track_alias,
         group_id,
         object_id,
-        0, // publisher_priority
+        Some(0), // publisher_priority
+        None,    // extension_headers
         Bytes::from(payload),
+        false,   // end_of_group
       );
 
       let serialized = datagram_obj.serialize()?;

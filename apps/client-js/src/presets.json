@@ -1,0 +1,17 @@
+{
+  "relays": [
+    {
+      "url": "https://relay.moqtail.dev",
+      "namespaces": [
+        { "name": "moqtail/testsrc", "label": "Test Source", "videoTracks": 1, "audioTracks": 1 },
+        { "name": "moqtail/ch00", "label": "Channel 00", "videoTracks": 4, "audioTracks": 0 },
+        { "name": "moqtail/ch01", "label": "Channel 01", "videoTracks": 4, "audioTracks": 0 },
+        { "name": "moqtail/ch02", "label": "Channel 02", "videoTracks": 4, "audioTracks": 0 },
+        { "name": "moqtail/ch03", "label": "Channel 03", "videoTracks": 4, "audioTracks": 0 },
+        { "name": "moqtail/ch04", "label": "Channel 04", "videoTracks": 4, "audioTracks": 0 },
+        { "name": "moqtail/ch05", "label": "Channel 05", "videoTracks": 4, "audioTracks": 0 },
+        { "name": "moqtail/ch06", "label": "Channel 06", "videoTracks": 4, "audioTracks": 0 }
+      ]
+    }
+  ]
+}

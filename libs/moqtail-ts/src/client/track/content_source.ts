@@ -132,6 +132,8 @@ export class LiveTrackSource implements LiveObjectSource {
   onNewObject(listener: (obj: MoqtObject) => Promise<void> | void): () => void {
     let queue = Promise.resolve()
 
+    // Per-listener promise queue: dispatch stays fire-and-forget but each listener's callbacks
+    // are chained so obj2 only starts after obj1 resolves.
     const queuedListener = (obj: MoqtObject) => {
       queue = queue
         .then(() => listener(obj))

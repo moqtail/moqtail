@@ -26,7 +26,7 @@ use super::{
   requests_blocked::RequestsBlocked, server_setup::ServerSetup, subscribe::Subscribe,
   subscribe_error::SubscribeError, subscribe_namespace::SubscribeNamespace,
   subscribe_namespace_error::SubscribeNamespaceError, subscribe_namespace_ok::SubscribeNamespaceOk,
-  subscribe_ok::SubscribeOk, subscribe_update::SubscribeUpdate, switch::Switch,
+  subscribe_ok::SubscribeOk, request_update::RequestUpdate, switch::Switch,
   track_status::TrackStatus, track_status_error::TrackStatusError, track_status_ok::TrackStatusOk,
   unsubscribe::Unsubscribe, unsubscribe_namespace::UnsubscribeNamespace,
 };
@@ -52,7 +52,7 @@ pub enum ControlMessage {
   Subscribe(Box<Subscribe>),
   SubscribeError(Box<SubscribeError>),
   SubscribeOk(Box<SubscribeOk>),
-  SubscribeUpdate(Box<SubscribeUpdate>),
+  RequestUpdate(Box<RequestUpdate>),
   RequestsBlocked(Box<RequestsBlocked>),
   TrackStatus(Box<TrackStatus>),
   TrackStatusOk(Box<TrackStatusOk>),
@@ -156,8 +156,8 @@ impl ControlMessage {
       ControlMessageType::SubscribeOk => {
         SubscribeOk::parse_payload(&mut payload).map(ControlMessage::SubscribeOk)
       }
-      ControlMessageType::SubscribeUpdate => {
-        SubscribeUpdate::parse_payload(&mut payload).map(ControlMessage::SubscribeUpdate)
+      ControlMessageType::RequestUpdate => {
+        RequestUpdate::parse_payload(&mut payload).map(ControlMessage::RequestUpdate)
       }
       ControlMessageType::RequestsBlocked => {
         RequestsBlocked::parse_payload(&mut payload).map(ControlMessage::RequestsBlocked)
@@ -228,7 +228,7 @@ impl ControlMessage {
       ControlMessage::Subscribe(msg) => msg.serialize(),
       ControlMessage::SubscribeError(msg) => msg.serialize(),
       ControlMessage::SubscribeOk(msg) => msg.serialize(),
-      ControlMessage::SubscribeUpdate(msg) => msg.serialize(),
+      ControlMessage::RequestUpdate(msg) => msg.serialize(),
       ControlMessage::RequestsBlocked(msg) => msg.serialize(),
       ControlMessage::TrackStatus(msg) => msg.serialize(),
       ControlMessage::TrackStatusOk(msg) => msg.serialize(),
@@ -265,7 +265,7 @@ impl ControlMessage {
       ControlMessage::Subscribe(_) => ControlMessageType::Subscribe,
       ControlMessage::SubscribeError(_) => ControlMessageType::SubscribeError,
       ControlMessage::SubscribeOk(_) => ControlMessageType::SubscribeOk,
-      ControlMessage::SubscribeUpdate(_) => ControlMessageType::SubscribeUpdate,
+      ControlMessage::RequestUpdate(_) => ControlMessageType::RequestUpdate,
       ControlMessage::RequestsBlocked(_) => ControlMessageType::RequestsBlocked,
       ControlMessage::TrackStatus(_) => ControlMessageType::TrackStatus,
       ControlMessage::TrackStatusOk(_) => ControlMessageType::TrackStatusOk,

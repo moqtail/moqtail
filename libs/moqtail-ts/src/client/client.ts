@@ -33,7 +33,7 @@ import {
   Subscribe,
   SubscribeNamespace,
   SubscribeError,
-  SubscribeUpdate,
+  RequestUpdate,
   Unsubscribe,
   UnsubscribeNamespace,
   Publish,
@@ -1145,7 +1145,7 @@ export class MOQtailClient {
             new SubscriptionFilter(FilterType.AbsoluteRange, startLocation, endGroup),
             ...(parameters ?? []),
           ]
-          const msg = new SubscribeUpdate(requestId, subscriptionRequestId, priority, forward, updateParams)
+          const msg = new RequestUpdate(requestId, subscriptionRequestId, updateParams)
           subscription.update(msg) // This also updates the request since both maps store the same object
           await this.controlStream.send(msg)
         }

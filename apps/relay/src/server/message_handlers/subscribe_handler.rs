@@ -20,7 +20,9 @@ use crate::server::track::{Track, TrackStatus};
 use core::result::Result;
 use moqtail::model::control::subscribe::Subscribe;
 use moqtail::model::error::TerminationCode;
-use moqtail::model::parameter::message_parameter::{MessageParameter, MessageParameterVecExt};
+use moqtail::model::parameter::message_parameter::{
+  MessageParameter, MessageParameterVecExt, apply_message_parameter_update,
+};
 use moqtail::model::{
   common::reason_phrase::ReasonPhrase, control::control_message::ControlMessage,
 };
@@ -450,57 +452,98 @@ async fn handle_unsubscribe_message(
   Ok(())
 }
 
-async fn handle_subscribe_update_message(
+pub async fn handle_request_update(
   client: Arc<MOQTClient>,
   _control_stream_handler: &mut ControlStreamHandler,
-  subscribe_update_message: moqtail::model::control::subscribe_update::SubscribeUpdate,
+  msg: ControlMessage,
   context: Arc<SessionContext>,
 ) -> Result<(), TerminationCode> {
-  info!(
-    "received SubscribeUpdate message: {:?}",
-    subscribe_update_message
-  );
+  // 1. Extract the inner RequestUpdate message
+  let request_update_message = match msg {
+    ControlMessage::RequestUpdate(m) => *m,
+    _ => {
+      error!("subscribe_handler::handle_request_update called with wrong message type");
+      return Err(TerminationCode::InternalError);
+    }
+  };
 
-  // a subscribe update message contains subscription_request_id
-  // which is the request id of the subscription we want to update
-  let sub_request_id = subscribe_update_message.subscription_request_id;
+  let existing_req_id = request_update_message.existing_request_id;
+  // let update_req_id = request_update_message.request_id; // TODO: Uncomment after merging RequestOk/Error support
 
-  let requests = client.subscribe_requests.read().await;
-  let request = requests.get(&sub_request_id);
-  if request.is_none() {
-    warn!(
-      "request not found for subscriber request id: {:?}",
-      sub_request_id
-    );
-    return Err(TerminationCode::ProtocolViolation);
-  }
-  let request = request.unwrap();
+  let full_track_name = {
+    let mut pending_requests = context.relay_pending_requests.write().await;
+    match pending_requests.get_mut(&existing_req_id) {
+      Some(PendingRequest::Subscribe(req)) => {
+        // Apply the Draft 16 parameter patch directly to the nested message state
+        apply_message_parameter_update(
+          &mut req.original_subscribe_request.subscribe_parameters,
+          request_update_message.parameters.clone(),
+        );
+        req.original_subscribe_request.get_full_track_name()
+      }
+      _ => {
+        warn!(
+          "Request {} is not a valid Subscribe request",
+          existing_req_id
+        );
+        return Err(TerminationCode::ProtocolViolation);
+      }
+    }
+  };
 
-  // we can not get the full track name and hence, the track instance
-  let full_track_name = request.original_subscribe_request.get_full_track_name();
+  // 3. Get the track instance
   let track_lock = context.track_manager.get_track(&full_track_name).await;
 
   if track_lock.is_none() {
-    warn!("track not found for track name: {:?}", full_track_name);
+    warn!("Track not found for track name: {:?}", full_track_name);
     return Err(TerminationCode::ProtocolViolation);
   }
 
   let track_arc = track_lock.unwrap();
   let track_guard = track_arc.read().await;
 
-  if let Some(subscription) = track_guard.get_subscription(context.connection_id).await {
+  // 4. Update the actual active subscription
+  if let Some(subscription) = track_guard.get_subscription(client.connection_id).await {
     let sub = subscription.read().await;
-    match sub.update_subscription(subscribe_update_message).await {
-      Ok(_) => info!(
-        "subscription updated, track: {:?} subscriber: {}",
-        full_track_name, context.connection_id
-      ),
-      Err(e) => error!(
-        "subscription could not be updated, track: {:?} subscriber: {} error: {:?}",
-        full_track_name, context.connection_id, e
-      ),
+
+    match sub
+      .update_subscription(request_update_message.clone())
+      .await
+    {
+      Ok(_) => {
+        info!(
+          "Subscription updated successfully for track: {:?}",
+          full_track_name
+        );
+
+        // 6. Send RequestOk back to the subscriber
+        // TODO: Uncomment after merging RequestOk/Error support
+        /*
+        let ok_msg = RequestOk::new(update_req_id);
+        _control_stream_handler.send_message(Box::new(ControlMessage::RequestOk(Box::new(ok_msg)))).await?;
+        */
+      }
+      Err(e) => {
+        error!(
+          "Subscription update failed for track: {:?}, error: {:?}",
+          full_track_name, e
+        );
+
+        // TODO: Uncomment after merging RequestOk/Error support
+        /*
+        let err_msg = RequestError::new(update_req_id, 400, format!("Update failed: {}", e));
+        _control_stream_handler.send_message(Box::new(ControlMessage::RequestError(Box::new(err_msg)))).await?;
+        */
+      }
     }
+  } else {
+    warn!(
+      "No active subscription found for client {} on track {:?}",
+      client.connection_id, full_track_name
+    );
+    // TODO: Send RequestError 404 once merged
   }
+
   Ok(())
 }
 
@@ -741,9 +784,6 @@ pub async fn handle(
     }
     ControlMessage::Unsubscribe(m) => {
       handle_unsubscribe_message(client, control_stream_handler, *m, context).await
-    }
-    ControlMessage::SubscribeUpdate(m) => {
-      handle_subscribe_update_message(client, control_stream_handler, *m, context).await
     }
     ControlMessage::SubscribeError(m) => {
       handle_subscribe_error_message(client, control_stream_handler, *m, context).await

@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { FilterType, Subscribe, PublishDone, PublishDoneStatusCode, SubscribeUpdate } from '@/model/control'
+import { FilterType, Subscribe, PublishDone, PublishDoneStatusCode, RequestUpdate } from '@/model/control'
 import { MOQtailClient } from '../client'
 import { Track } from '../track/track'
 import {
@@ -202,19 +202,24 @@ export class SubscribePublication {
   }
 
   /**
-   * Updates the subscription parameters and locations based on a SubscribeUpdate message.
-   * @param msg - The update message containing new subscription details.
+   * Updates the subscription parameters and locations based on a RequestUpdate message.
+   * @param msg - The update message containing new request details.
    */
-  update(msg: SubscribeUpdate): void {
-    // TODO: Control checks on update rules e.g only narrowing, end>start either here or in update handler
-    const filter = msg.parameters.find(MessageParameter.isSubscriptionFilter)
+  update(msg: RequestUpdate): void {
+    const filter = msg.parameters.find(MessageParameter.isSubscriptionFilter) as any
     if (filter?.startLocation !== undefined) this.#startLocation = filter.startLocation
     if (filter?.endGroup !== undefined) this.#endGroup = filter.endGroup
-    this.#subscriberPriority = msg.subscriberPriority
-    this.#forward = msg.forward
+
+    for (const param of msg.parameters) {
+      if (MessageParameter.isSubscriberPriority?.(param)) {
+        this.#subscriberPriority = (param as any).priority
+      } else if (MessageParameter.isForward?.(param)) {
+        this.#forward = (param as any).forward
+      }
+    }
+
     applyMessageParameterUpdate(this.#parameters, msg.parameters)
   }
-
   /**
    * Publishes MOQT objects to the subscriber as they become available.
    * Handles stream creation, object writing, and stream closure based on subscription parameters.

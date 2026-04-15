@@ -22,9 +22,10 @@ use moqtail::model::control::publish_namespace::PublishNamespace;
 use moqtail::model::control::subscribe_namespace_error::SubscribeNamespaceError;
 use moqtail::model::control::subscribe_namespace_ok::SubscribeNamespaceOk;
 use moqtail::model::error::TerminationCode;
+use moqtail::model::parameter::message_parameter::apply_message_parameter_update;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 pub async fn handle(
   client: Arc<MOQTClient>,
@@ -67,7 +68,11 @@ pub async fn handle(
       // 1. Store the Subscription in TrackManager
       context
         .track_manager
-        .add_namespace_subscriber(sub_ns.track_namespace_prefix.clone(), client.clone())
+        .add_namespace_subscriber(
+          sub_ns.track_namespace_prefix.clone(),
+          client.clone(),
+          (*sub_ns).clone(),
+        )
         .await;
 
       {
@@ -77,6 +82,7 @@ pub async fn handle(
           PendingRequest::SubscribeNamespace {
             client_connection_id: client.connection_id,
             original_request_id: sub_ns.request_id,
+            message: (*sub_ns).clone(),
           },
         );
       }
@@ -114,6 +120,7 @@ pub async fn handle(
             PendingRequest::PublishNamespace {
               client_connection_id: client.connection_id,
               original_request_id: relay_announce_id,
+              message: notify.clone(),
             },
           );
         }
@@ -154,6 +161,7 @@ pub async fn handle(
               PendingRequest::Publish {
                 publisher_connection_id: client.connection_id,
                 original_request_id: relay_publish_id,
+                message: original_publish_message.clone(),
               },
             );
           }
@@ -189,6 +197,65 @@ pub async fn handle(
       );
     }
   }
+
+  Ok(())
+}
+
+pub async fn handle_request_update(
+  client: Arc<MOQTClient>,
+  _handler: &mut ControlStreamHandler,
+  msg: ControlMessage,
+  context: Arc<SessionContext>,
+) -> Result<(), TerminationCode> {
+  let update_msg = match msg {
+    ControlMessage::RequestUpdate(m) => *m,
+    _ => {
+      error!("subscribe_namespace_handler::handle_request_update called with wrong message type");
+      return Err(TerminationCode::InternalError);
+    }
+  };
+
+  let existing_req_id = update_msg.existing_request_id;
+  // let new_req_id = update_msg.request_id; // TODO: Uncomment when sending RequestOk
+
+  // 1. Verify this is a SubscribeNamespace request and apply parameter updates
+  let target_prefix = {
+    let mut map = context.relay_pending_requests.write().await;
+    match map.get_mut(&existing_req_id) {
+      Some(PendingRequest::SubscribeNamespace { message, .. }) => {
+        apply_message_parameter_update(&mut message.parameters, update_msg.parameters.clone());
+        message.track_namespace_prefix.clone()
+      }
+      _ => {
+        warn!(
+          "Request {} is not a valid SubscribeNamespace request",
+          existing_req_id
+        );
+        return Err(TerminationCode::ProtocolViolation);
+      }
+    }
+  };
+
+  info!(
+    "Processing SUBSCRIBE_NAMESPACE update for prefix: {:?}",
+    target_prefix
+  );
+
+  // 2. Update the stored Namespace Subscription parameters in TrackManager
+  context
+    .track_manager
+    .update_namespace_subscription_parameters(
+      &target_prefix,
+      client.connection_id,
+      update_msg.parameters.clone(),
+    )
+    .await;
+  // 4. Send RequestOk back to the Client acknowledging the update
+  // TODO: Uncomment after merging RequestOk/Error support
+  /*
+  let ok_msg = RequestOk::new(new_req_id);
+  _handler.send(&ControlMessage::RequestOk(Box::new(ok_msg))).await?;
+  */
 
   Ok(())
 }

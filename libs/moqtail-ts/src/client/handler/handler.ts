@@ -65,7 +65,7 @@ import {
   PublishDone,
   SubscribeError,
   SubscribeOk,
-  SubscribeUpdate,
+  RequestUpdate,
   TrackStatus,
   TrackStatusError,
   TrackStatusOk,
@@ -101,7 +101,7 @@ export function getHandlerForControlMessage(msg: ControlMessage): ControlMessage
   if (msg instanceof SubscribeNamespaceOk) return handlerSubscribeNamespaceOk
   if (msg instanceof SubscribeError) return handlerSubscribeError
   if (msg instanceof SubscribeOk) return handlerSubscribeOk
-  if (msg instanceof SubscribeUpdate) return handlerSubscribeUpdate
+  if (msg instanceof RequestUpdate) return handlerSubscribeUpdate
   if (msg instanceof RequestsBlocked) return handlerRequestsBlocked
   if (msg instanceof TrackStatus) return handlerTrackStatus
   if (msg instanceof TrackStatusError) return handlerTrackStatusError

@@ -45,7 +45,7 @@ export const handlerRequestOk: ControlMessageHandler<RequestOk> = async (client,
     // Resolve the promise so the awaiting client code can continue
     request.resolve(msg)
 
-    // ⚡ PREVENT MEMORY LEAKS: Clean up the map!
+    // remove the request from the map
     client.requests.delete(msg.requestId)
   } else {
     // If the ID matches a request like 'FetchRequest' which expects a 'FetchOk',

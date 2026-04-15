@@ -19,7 +19,10 @@ use moqtail::{
 };
 use tracing::{info, warn};
 
-use crate::server::{client::MOQTClient, session_context::{PendingRequest, SessionContext}};
+use crate::server::{
+  client::MOQTClient,
+  session_context::{PendingRequest, SessionContext},
+};
 use std::sync::{Arc, atomic::Ordering};
 mod fetch_handler;
 mod max_request_id_handler;

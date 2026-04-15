@@ -157,7 +157,7 @@ pub async fn handle(
       info!("received RequestOk from Publisher: {:?}", m);
       let msg = *m;
 
-      // A. Look up who asked for this and remove it from the map to prevent memory leaks
+      // A. Look up who asked for this and remove it from the map
       let mapping = {
         let mut map = context.relay_pending_requests.write().await;
         match map.remove(&msg.request_id) {

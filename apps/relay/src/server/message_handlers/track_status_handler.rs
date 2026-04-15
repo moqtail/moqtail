@@ -191,8 +191,7 @@ pub async fn handle(
           warn!("Downstream client {} disconnected", req.requested_by);
         }
       } else {
-        // If the global router is doing its job, we shouldn't hit this,
-        // but it's good defensive programming!
+        // we shouldn't hit this normally
         debug!(
           "Received RequestOk for request ID {} (Not a TrackStatus relay)",
           msg.request_id

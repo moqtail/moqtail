@@ -19,7 +19,6 @@ import {
   PublishNamespace,
   PublishNamespaceDone,
   PublishNamespaceError,
-  PublishNamespaceOk,
   ClientSetup,
   ControlMessage,
   Fetch,
@@ -38,7 +37,7 @@ import {
   UnsubscribeNamespace,
   Publish,
   PublishError,
-  SubscribeNamespaceOk,
+  RequestOk,
   Switch,
   SubscribeOk,
   SUPPORTED_VERSIONS,
@@ -1565,7 +1564,7 @@ export class MOQtailClient {
    * - trackNamespace: Tuple representing the namespace prefix (e.g. ["camera","main"]). All tracks whose full names start with this tuple are considered within the announce scope.
    * - parameters: Optional {@link MessageParameters}; omitted =\> default instance.
    *
-   * Returns: {@link PublishNamespaceOk} on success (namespace added to `announcedNamespaces`) or {@link PublishNamespaceError} explaining refusal.
+   * Returns: {@link RequestOk} on success (namespace added to `announcedNamespaces`) or {@link PublishNamespaceError} explaining refusal.
    *
    * Use cases:
    * - Make a camera or sensor namespace available before any objects are pushed.
@@ -1583,7 +1582,7 @@ export class MOQtailClient {
    * @example Minimal announce
    * ```ts
    * const res = await client.publishNamespace(["camera","main"])
-   * if (res instanceof PublishNamespaceOk) {
+   * if (res instanceof RequestOk) {
    *   // ready to publish objects under tracks with this namespace prefix
    * }
    * ```
@@ -1604,7 +1603,11 @@ export class MOQtailClient {
       this.requests.set(msg.requestId, request)
       this.controlStream.send(msg)
       const response = await request
-      if (response instanceof PublishNamespaceOk) this.announcedNamespaces.add(msg.trackNamespace)
+
+      if (response instanceof RequestOk) {
+        this.announcedNamespaces.add(msg.trackNamespace)
+      }
+
       this.requests.delete(msg.requestId)
       return response
     } catch (error) {
@@ -1719,7 +1722,7 @@ export class MOQtailClient {
 
       logger.log('subscribeNamespace | got response', response)
 
-      if (response instanceof SubscribeNamespaceOk) {
+      if (response instanceof RequestOk) {
         this.subscribedAnnounces.add(msg.trackNamespacePrefix)
       }
 

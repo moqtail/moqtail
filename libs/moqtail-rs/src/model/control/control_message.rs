@@ -22,13 +22,12 @@ use super::{
   publish::Publish, publish_done::PublishDone, publish_error::PublishError,
   publish_namespace::PublishNamespace, publish_namespace_cancel::PublishNamespaceCancel,
   publish_namespace_done::PublishNamespaceDone, publish_namespace_error::PublishNamespaceError,
-  publish_namespace_ok::PublishNamespaceOk, publish_ok::PublishOk,
-  requests_blocked::RequestsBlocked, server_setup::ServerSetup, subscribe::Subscribe,
-  subscribe_error::SubscribeError, subscribe_namespace::SubscribeNamespace,
-  subscribe_namespace_error::SubscribeNamespaceError, subscribe_namespace_ok::SubscribeNamespaceOk,
+  publish_ok::PublishOk, request_ok::RequestOk, requests_blocked::RequestsBlocked,
+  server_setup::ServerSetup, subscribe::Subscribe, subscribe_error::SubscribeError,
+  subscribe_namespace::SubscribeNamespace, subscribe_namespace_error::SubscribeNamespaceError,
   subscribe_ok::SubscribeOk, subscribe_update::SubscribeUpdate, switch::Switch,
-  track_status::TrackStatus, track_status_error::TrackStatusError, track_status_ok::TrackStatusOk,
-  unsubscribe::Unsubscribe, unsubscribe_namespace::UnsubscribeNamespace,
+  track_status::TrackStatus, track_status_error::TrackStatusError, unsubscribe::Unsubscribe,
+  unsubscribe_namespace::UnsubscribeNamespace,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -36,7 +35,7 @@ pub enum ControlMessage {
   PublishNamespace(Box<PublishNamespace>),
   PublishNamespaceCancel(Box<PublishNamespaceCancel>),
   PublishNamespaceError(Box<PublishNamespaceError>),
-  PublishNamespaceOk(Box<PublishNamespaceOk>),
+  RequestOk(Box<RequestOk>),
   Publish(Box<Publish>),
   PublishOk(Box<PublishOk>),
   PublishError(Box<PublishError>),
@@ -55,12 +54,10 @@ pub enum ControlMessage {
   SubscribeUpdate(Box<SubscribeUpdate>),
   RequestsBlocked(Box<RequestsBlocked>),
   TrackStatus(Box<TrackStatus>),
-  TrackStatusOk(Box<TrackStatusOk>),
   TrackStatusError(Box<TrackStatusError>),
   PublishNamespaceDone(Box<PublishNamespaceDone>),
   Unsubscribe(Box<Unsubscribe>),
   SubscribeNamespace(Box<SubscribeNamespace>),
-  SubscribeNamespaceOk(Box<SubscribeNamespaceOk>),
   SubscribeNamespaceError(Box<SubscribeNamespaceError>),
   UnsubscribeNamespace(Box<UnsubscribeNamespace>),
   Switch(Box<Switch>),
@@ -112,8 +109,8 @@ impl ControlMessage {
         PublishNamespaceError::parse_payload(&mut payload)
           .map(ControlMessage::PublishNamespaceError)
       }
-      ControlMessageType::PublishNamespaceOk => {
-        PublishNamespaceOk::parse_payload(&mut payload).map(ControlMessage::PublishNamespaceOk)
+      ControlMessageType::RequestOk => {
+        RequestOk::parse_payload(&mut payload).map(ControlMessage::RequestOk)
       }
       ControlMessageType::Publish => {
         Publish::parse_payload(&mut payload).map(ControlMessage::Publish)
@@ -165,9 +162,6 @@ impl ControlMessage {
       ControlMessageType::TrackStatus => {
         TrackStatus::parse_payload(&mut payload).map(ControlMessage::TrackStatus)
       }
-      ControlMessageType::TrackStatusOk => {
-        TrackStatusOk::parse_payload(&mut payload).map(ControlMessage::TrackStatusOk)
-      }
       ControlMessageType::TrackStatusError => {
         TrackStatusError::parse_payload(&mut payload).map(ControlMessage::TrackStatusError)
       }
@@ -176,9 +170,6 @@ impl ControlMessage {
       }
       ControlMessageType::SubscribeNamespace => {
         SubscribeNamespace::parse_payload(&mut payload).map(ControlMessage::SubscribeNamespace)
-      }
-      ControlMessageType::SubscribeNamespaceOk => {
-        SubscribeNamespaceOk::parse_payload(&mut payload).map(ControlMessage::SubscribeNamespaceOk)
       }
       ControlMessageType::SubscribeNamespaceError => {
         SubscribeNamespaceError::parse_payload(&mut payload)
@@ -212,7 +203,7 @@ impl ControlMessage {
       ControlMessage::PublishNamespaceCancel(msg) => msg.serialize(),
       ControlMessage::PublishNamespaceDone(msg) => msg.serialize(),
       ControlMessage::PublishNamespaceError(msg) => msg.serialize(),
-      ControlMessage::PublishNamespaceOk(msg) => msg.serialize(),
+      ControlMessage::RequestOk(msg) => msg.serialize(),
       ControlMessage::Publish(msg) => msg.serialize(),
       ControlMessage::PublishOk(msg) => msg.serialize(),
       ControlMessage::PublishError(msg) => msg.serialize(),
@@ -231,11 +222,9 @@ impl ControlMessage {
       ControlMessage::SubscribeUpdate(msg) => msg.serialize(),
       ControlMessage::RequestsBlocked(msg) => msg.serialize(),
       ControlMessage::TrackStatus(msg) => msg.serialize(),
-      ControlMessage::TrackStatusOk(msg) => msg.serialize(),
       ControlMessage::TrackStatusError(msg) => msg.serialize(),
       ControlMessage::Unsubscribe(msg) => msg.serialize(),
       ControlMessage::SubscribeNamespace(msg) => msg.serialize(),
-      ControlMessage::SubscribeNamespaceOk(msg) => msg.serialize(),
       ControlMessage::SubscribeNamespaceError(msg) => msg.serialize(),
       ControlMessage::UnsubscribeNamespace(msg) => msg.serialize(),
       ControlMessage::Switch(msg) => msg.serialize(),
@@ -249,7 +238,7 @@ impl ControlMessage {
       ControlMessage::PublishNamespaceCancel(_) => ControlMessageType::PublishNamespaceCancel,
       ControlMessage::PublishNamespaceDone(_) => ControlMessageType::PublishNamespaceDone,
       ControlMessage::PublishNamespaceError(_) => ControlMessageType::PublishNamespaceError,
-      ControlMessage::PublishNamespaceOk(_) => ControlMessageType::PublishNamespaceOk,
+      ControlMessage::RequestOk(_) => ControlMessageType::RequestOk,
       ControlMessage::Publish(_) => ControlMessageType::Publish,
       ControlMessage::PublishOk(_) => ControlMessageType::PublishOk,
       ControlMessage::PublishError(_) => ControlMessageType::PublishError,
@@ -268,11 +257,9 @@ impl ControlMessage {
       ControlMessage::SubscribeUpdate(_) => ControlMessageType::SubscribeUpdate,
       ControlMessage::RequestsBlocked(_) => ControlMessageType::RequestsBlocked,
       ControlMessage::TrackStatus(_) => ControlMessageType::TrackStatus,
-      ControlMessage::TrackStatusOk(_) => ControlMessageType::TrackStatusOk,
       ControlMessage::TrackStatusError(_) => ControlMessageType::TrackStatusError,
       ControlMessage::Unsubscribe(_) => ControlMessageType::Unsubscribe,
       ControlMessage::SubscribeNamespace(_) => ControlMessageType::SubscribeNamespace,
-      ControlMessage::SubscribeNamespaceOk(_) => ControlMessageType::SubscribeNamespaceOk,
       ControlMessage::SubscribeNamespaceError(_) => ControlMessageType::SubscribeNamespaceError,
       ControlMessage::UnsubscribeNamespace(_) => ControlMessageType::UnsubscribeNamespace,
       ControlMessage::Switch(_) => ControlMessageType::Switch,

@@ -17,13 +17,11 @@ use crate::server::session::Session;
 use crate::server::session_context::{PendingRequest, SessionContext};
 use core::result::Result;
 use moqtail::model::control::publish_namespace::PublishNamespace;
-use moqtail::model::control::{
-  control_message::ControlMessage, publish_namespace_ok::PublishNamespaceOk,
-};
+use moqtail::model::control::{control_message::ControlMessage, request_ok::RequestOk};
 use moqtail::model::error::TerminationCode;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 pub async fn handle(
   client: Arc<MOQTClient>,
@@ -52,7 +50,6 @@ pub async fn handle(
       }
 
       // this is a publisher, add it to the client manager
-      // send announce_ok
       client
         .add_announced_track_namespace(m.track_namespace.clone())
         .await;
@@ -120,13 +117,50 @@ pub async fn handle(
         }
       }
 
-      let announce_ok = Box::new(PublishNamespaceOk {
-        request_id: m.request_id,
-      });
+      let request_ok = Box::new(RequestOk::new(
+        m.request_id,
+        vec![], // No parameters needed for a basic namespace OK
+      ));
+
       control_stream_handler
-        .send(&ControlMessage::PublishNamespaceOk(announce_ok))
+        .send(&ControlMessage::RequestOk(request_ok))
         .await
     }
+
+    ControlMessage::RequestOk(m) => {
+      let msg = *m;
+
+      let mapping = {
+        let mut map = context.relay_pending_requests.write().await;
+        match map.remove(&msg.request_id) {
+          Some(PendingRequest::PublishNamespace { client_connection_id, original_request_id: _ }) => {
+            Some(client_connection_id)
+          }
+          Some(_) => {
+            warn!(
+              "Mismatched request type for RequestOk (PublishNamespace): {}",
+              msg.request_id
+            );
+            None
+          }
+          None => None,
+        }
+      };
+
+      if let Some(client_connection_id) = mapping {
+        debug!(
+          "Received acknowledgment (RequestOk) from subscriber {} for PublishNamespace broadcast",
+          client_connection_id
+        );
+      } else {
+        debug!(
+          "PublishNamespace handler received RequestOk for untracked ID: {}",
+          msg.request_id
+        );
+      }
+      Ok(())
+    }
+
     _ => {
       // no-op
       Ok(())

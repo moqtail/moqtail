@@ -87,7 +87,6 @@ pub async fn handle(
       // TODO(Draft-16 Stream Split): When SUBSCRIBE_NAMESPACE is moved to its own dedicated
       // bidirectional QUIC stream, we MUST remove this request_id from relay_pending_requests
       // when that underlying QUIC stream receives a FIN or RESET_STREAM.
-      // -----------------------------------------------------------
 
       // 2. Send OK back to the subscriber
       let ok = SubscribeNamespaceOk::new(sub_ns.request_id);

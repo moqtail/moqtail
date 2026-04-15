@@ -14,9 +14,11 @@
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
-use crate::model::common::pair::KeyValuePair;
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
 use crate::model::error::ParseError;
+use crate::model::extension_header::object_extension::{
+  ObjectExtension, deserialize_object_extensions,
+};
 
 use super::constant::{ObjectDatagramType, ObjectStatus};
 
@@ -218,16 +220,12 @@ impl Datagram {
       }
 
       let mut header_bytes = bytes.copy_to_bytes(ext_len);
-      let mut headers: Vec<KeyValuePair> = Vec::new();
-      while header_bytes.has_remaining() {
-        let h = KeyValuePair::deserialize(&mut header_bytes).map_err(|e| {
-          ParseError::ProtocolViolation {
-            context: "Datagram::deserialize, can't parse headers",
-            details: e.to_string(),
-          }
-        })?;
-        headers.push(h);
-      }
+      let headers = deserialize_object_extensions(&mut header_bytes).map_err(|e| {
+        ParseError::ProtocolViolation {
+          context: "Datagram::deserialize, can't parse headers",
+          details: e.to_string(),
+        }
+      })?;
       Some(headers)
     } else {
       None
@@ -261,11 +259,20 @@ impl Datagram {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::model::common::pair::KeyValuePair;
   use bytes::Buf;
 
   #[test]
   fn test_roundtrip_payload_no_flags() {
-    let datagram = Datagram::new_payload(144, 9, 10, Some(128), None, Bytes::from_static(b"payload"), false);
+    let datagram = Datagram::new_payload(
+      144,
+      9,
+      10,
+      Some(128),
+      None,
+      Bytes::from_static(b"payload"),
+      false,
+    );
 
     let mut buf = datagram.serialize().unwrap();
     // Type 0x00: no extensions, no end_of_group, object_id present, priority present, not status
@@ -284,8 +291,12 @@ mod tests {
       10,
       Some(255),
       Some(vec![
-        KeyValuePair::try_new_varint(0, 10).unwrap(),
-        KeyValuePair::try_new_bytes(1, Bytes::from_static(b"wololoo")).unwrap(),
+        ObjectExtension::Unknown {
+          kvp: KeyValuePair::try_new_varint(0, 10).unwrap(),
+        },
+        ObjectExtension::Unknown {
+          kvp: KeyValuePair::try_new_bytes(1, Bytes::from_static(b"wololoo")).unwrap(),
+        },
       ]),
       Bytes::from_static(b"01239gjawkk92837aldmi"),
       false,
@@ -374,7 +385,9 @@ mod tests {
       5,
       0,
       None,
-      Some(vec![KeyValuePair::try_new_varint(0, 42).unwrap()]),
+      Some(vec![ObjectExtension::Unknown {
+        kvp: KeyValuePair::try_new_varint(0, 42).unwrap(),
+      }]),
       Bytes::from_static(b"payload"),
       true,
     );
@@ -412,8 +425,12 @@ mod tests {
       10,
       Some(255),
       Some(vec![
-        KeyValuePair::try_new_varint(0, 10).unwrap(),
-        KeyValuePair::try_new_bytes(1, Bytes::from_static(b"wololoo")).unwrap(),
+        ObjectExtension::Unknown {
+          kvp: KeyValuePair::try_new_varint(0, 10).unwrap(),
+        },
+        ObjectExtension::Unknown {
+          kvp: KeyValuePair::try_new_bytes(1, Bytes::from_static(b"wololoo")).unwrap(),
+        },
       ]),
       ObjectStatus::Normal,
     );

@@ -487,6 +487,7 @@ async fn send_request_error(
   reason_phrase: ReasonPhrase,
   context: &Arc<SessionContext>,
 ) {
+  // TODO: Implement this later.
   // Draft 16 requires a retry interval. Setting to 0 (no retries) for now.
   let retry_interval = 0;
   let request_error = RequestError::new(request_id, error_code, retry_interval, reason_phrase);
@@ -494,7 +495,7 @@ async fn send_request_error(
   client
     .queue_message(ControlMessage::RequestError(Box::new(request_error)))
     .await;
-  // Remove from map on error
+  // Remove the request from the map on error
   context
     .relay_pending_requests
     .write()

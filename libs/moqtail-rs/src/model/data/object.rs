@@ -17,8 +17,8 @@ use std::fmt;
 use bytes::Bytes;
 
 use crate::model::common::location::Location;
-use crate::model::common::pair::KeyValuePair;
 use crate::model::error::ParseError;
+use crate::model::extension_header::object_extension::ObjectExtension;
 
 use super::constant::{ObjectForwardingPreference, ObjectStatus};
 use super::datagram::Datagram;
@@ -33,7 +33,7 @@ pub struct Object {
   pub forwarding_preference: ObjectForwardingPreference,
   pub subgroup_id: Option<u64>,
   pub status: ObjectStatus,
-  pub extensions: Option<Vec<KeyValuePair>>,
+  pub extensions: Option<Vec<ObjectExtension>>,
   pub payload: Option<Bytes>,
 }
 impl fmt::Debug for Object {

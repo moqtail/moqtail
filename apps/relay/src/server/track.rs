@@ -350,10 +350,7 @@ impl Track {
     Ok(())
   }
 
-  pub async fn new_datagram(
-    &self,
-    datagram: &Datagram,
-  ) -> Result<(), anyhow::Error> {
+  pub async fn new_datagram(&self, datagram: &Datagram) -> Result<(), anyhow::Error> {
     debug!(
       "new_datagram: relay_track_id={} group: {:?} object_id={} diff_ms={}",
       self.relay_track_id,

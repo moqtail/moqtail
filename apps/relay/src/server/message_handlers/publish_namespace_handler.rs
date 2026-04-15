@@ -75,7 +75,7 @@ pub async fn handle(
         );
       }
       // TODO: Remove this request_id from relay_pending_requests when a PUBLISH_NAMESPACE_DONE
-      // is received for this namespace, or if the client disconnects. Until then this is a memory leak.
+      // is received for this namespace, or if the client disconnects.
 
       // and forward the message to people who are subscribed to the namespace
       {

@@ -1832,25 +1832,13 @@ export class MOQtailClient {
                 if (!firstObjectId) {
                   firstObjectId = nextObject.objectId
                 }
-                let subgroupId = header.subgroupId
-                switch (header.type) {
-                  case SubgroupHeaderType.Type0x10:
-                  case SubgroupHeaderType.Type0x11:
-                  case SubgroupHeaderType.Type0x18:
-                  case SubgroupHeaderType.Type0x19:
-                    subgroupId = 0n
-                    break
-                  case SubgroupHeaderType.Type0x12:
-                  case SubgroupHeaderType.Type0x13:
-                  case SubgroupHeaderType.Type0x1A:
-                  case SubgroupHeaderType.Type0x1B:
-                    subgroupId = firstObjectId
-                    break
-                  case SubgroupHeaderType.Type0x14:
-                  case SubgroupHeaderType.Type0x15:
-                  case SubgroupHeaderType.Type0x1C:
-                  case SubgroupHeaderType.Type0x1D:
-                    subgroupId = header.subgroupId!
+                let subgroupId: bigint | null = null
+                if (SubgroupHeaderType.isSubgroupIdZero(header.type)) {
+                  subgroupId = 0n
+                } else if (SubgroupHeaderType.isSubgroupIdFirstObjectId(header.type)) {
+                  subgroupId = firstObjectId ?? null
+                } else if (SubgroupHeaderType.hasExplicitSubgroupId(header.type)) {
+                  subgroupId = header.subgroupId ?? null
                 }
 
                 const fullTrackName = this.aliasFullTrackNameMap.get(header.trackAlias)

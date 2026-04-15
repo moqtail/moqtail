@@ -49,28 +49,28 @@ export class MoqtObject {
     return this.location.object
   }
 
-  getSubgroupHeaderType(containsEnd: boolean): SubgroupHeaderType {
+  getSubgroupHeaderType(containsEnd: boolean, useDefaultPriority: boolean = false): SubgroupHeaderType {
     const hasExtensions = !!this.extensionHeaders && this.extensionHeaders.length > 0
-    const hasSubgroupId = this.subgroupId !== null
-    const isSubgroupIdZero = this.subgroupId === 0n
 
-    if (containsEnd) {
-      if (hasSubgroupId) {
-        return hasExtensions ? SubgroupHeaderType.Type0x1D : SubgroupHeaderType.Type0x1C
-      } else if (isSubgroupIdZero) {
-        return hasExtensions ? SubgroupHeaderType.Type0x19 : SubgroupHeaderType.Type0x18
-      } else {
-        return hasExtensions ? SubgroupHeaderType.Type0x1B : SubgroupHeaderType.Type0x1A
-      }
+    // Determine SUBGROUP_ID_MODE (bits 1-2):
+    // 0b00 (0): Subgroup ID = 0 (absent from header)
+    // 0b01 (1): Subgroup ID = first Object ID (absent from header)
+    // 0b10 (2): Subgroup ID = explicit (present in header)
+    let subgroupIdMode: 0 | 1 | 2
+    if (this.subgroupId === null) {
+      subgroupIdMode = 1 // first-object-ID mode
+    } else if (this.subgroupId === 0n) {
+      subgroupIdMode = 0 // zero mode
     } else {
-      if (hasSubgroupId) {
-        return hasExtensions ? SubgroupHeaderType.Type0x15 : SubgroupHeaderType.Type0x14
-      } else if (isSubgroupIdZero) {
-        return hasExtensions ? SubgroupHeaderType.Type0x11 : SubgroupHeaderType.Type0x10
-      } else {
-        return hasExtensions ? SubgroupHeaderType.Type0x13 : SubgroupHeaderType.Type0x12
-      }
+      subgroupIdMode = 2 // explicit mode
     }
+
+    return SubgroupHeaderType.fromProperties(
+      hasExtensions,
+      subgroupIdMode,
+      containsEnd,
+      useDefaultPriority,
+    )
   }
 
   isDatagram(): boolean {
@@ -195,14 +195,14 @@ export class MoqtObject {
   static fromSubgroupObject(
     subgroupObject: SubgroupObject,
     groupId: bigint | number,
-    publisherPriority: number,
-    subgroupId: bigint | number,
+    publisherPriority: number | undefined,
+    subgroupId: bigint | number | null,
     fullTrackName: FullTrackName,
   ): MoqtObject {
     return new MoqtObject(
       fullTrackName,
       new Location(groupId, subgroupObject.objectId),
-      publisherPriority,
+      publisherPriority ?? 0,
       ObjectForwardingPreference.Subgroup,
       subgroupId,
       subgroupObject.objectStatus || ObjectStatus.Normal,

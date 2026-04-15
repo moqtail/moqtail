@@ -12,22 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::server::session_context::SessionContext;
+use crate::server::session_context::{PendingRequest, SessionContext};
 use crate::server::{client::MOQTClient, session::Session};
 use core::result::Result;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::control::constant::{GroupOrder, SubscribeNamespaceErrorCode};
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::publish_namespace::PublishNamespace;
+use moqtail::model::control::request_ok::RequestOk;
 use moqtail::model::control::subscribe::Subscribe;
 use moqtail::model::control::subscribe_namespace_error::SubscribeNamespaceError;
-use moqtail::model::control::subscribe_namespace_ok::SubscribeNamespaceOk;
 use moqtail::model::error::TerminationCode;
 use moqtail::model::parameter::constant::MessageParameterType;
 use moqtail::model::parameter::message_parameter::{MessageParameter, MessageParameterVecExt};
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 pub async fn handle(
   client: Arc<MOQTClient>,
@@ -73,13 +73,28 @@ pub async fn handle(
         .add_namespace_subscriber(sub_ns.track_namespace_prefix.clone(), client.clone())
         .await;
 
+      {
+        let mut map = context.relay_pending_requests.write().await;
+        map.insert(
+          sub_ns.request_id,
+          PendingRequest::SubscribeNamespace {
+            client_connection_id: client.connection_id,
+            original_request_id: sub_ns.request_id,
+          },
+        );
+      }
+
+      // TODO(Draft-16 Stream Split): When SUBSCRIBE_NAMESPACE is moved to its own dedicated
+      // bidirectional QUIC stream, we MUST remove this request_id from relay_pending_requests
+      // when that underlying QUIC stream receives a FIN or RESET_STREAM.
+
       // 2. Send OK back to the subscriber
-      let ok = SubscribeNamespaceOk::new(sub_ns.request_id);
+      let ok = RequestOk::new(sub_ns.request_id, vec![]);
       handler
-        .send(&ControlMessage::SubscribeNamespaceOk(Box::new(ok)))
+        .send(&ControlMessage::RequestOk(Box::new(ok)))
         .await?;
       info!(
-        "Sent SubscribeNamespaceOk for request_id: {}",
+        "Sent RequestOk for SubscribeNamespace request_id: {}",
         sub_ns.request_id
       );
 
@@ -93,6 +108,19 @@ pub async fn handle(
         let relay_announce_id =
           Session::get_next_relay_request_id(context.relay_next_request_id.clone()).await;
         let notify = PublishNamespace::new(relay_announce_id, ns.clone(), &[]);
+
+        // Register the message in unified map for draft-16 response tracking
+        {
+          let mut map = context.relay_pending_requests.write().await;
+          map.insert(
+            relay_announce_id,
+            PendingRequest::PublishNamespace {
+              client_connection_id: client.connection_id,
+              original_request_id: relay_announce_id,
+            },
+          );
+        }
+
         client
           .queue_message(ControlMessage::PublishNamespace(Box::new(notify)))
           .await;
@@ -120,6 +148,18 @@ pub async fn handle(
             Session::get_next_relay_request_id(context.relay_next_request_id.clone()).await;
           original_publish_message.request_id = relay_publish_id;
           original_publish_message.track_alias = relay_track_id;
+
+          // Register the message in unified map for draft-16 response tracking
+          {
+            let mut map = context.relay_pending_requests.write().await;
+            map.insert(
+              relay_publish_id,
+              PendingRequest::Publish {
+                publisher_connection_id: client.connection_id,
+                original_request_id: relay_publish_id,
+              },
+            );
+          }
 
           client
             .queue_message(ControlMessage::Publish(Box::new(
@@ -161,6 +201,51 @@ pub async fn handle(
         }
       }
     }
+    ControlMessage::RequestOk(m) => {
+      let msg = *m;
+
+      let mapping = {
+        let mut map = context.relay_pending_requests.write().await;
+        match map.remove(&msg.request_id) {
+          Some(PendingRequest::SubscribeNamespace {
+            client_connection_id,
+            original_request_id,
+          }) => Some((client_connection_id, original_request_id)),
+          Some(_) => {
+            warn!(
+              "Mismatched request type for RequestOk (SubscribeNamespace): {}",
+              msg.request_id
+            );
+            None
+          }
+          None => None,
+        }
+      };
+
+      if let Some((client_connection_id, original_request_id)) = mapping {
+        let manager = context.client_manager.read().await;
+        if let Some(downstream_client) = manager.get(client_connection_id).await {
+          let forwarded_msg = RequestOk::new(original_request_id, msg.parameters);
+
+          info!(
+            "Forwarding RequestOk (for SubscribeNamespace) to Client {}",
+            client_connection_id
+          );
+
+          downstream_client
+            .queue_message(ControlMessage::RequestOk(Box::new(forwarded_msg)))
+            .await;
+        } else {
+          warn!("Downstream client {} disconnected", client_connection_id);
+        }
+      } else {
+        debug!(
+          "SubscribeNamespace handler received RequestOk for untracked ID: {}",
+          msg.request_id
+        );
+      }
+    }
+
     _ => {
       warn!(
         "Unexpected message in subscribe_namespace_handler: {:?}",

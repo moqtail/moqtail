@@ -19,7 +19,10 @@ use moqtail::{
 };
 use tracing::{info, warn};
 
-use crate::server::{client::MOQTClient, session_context::SessionContext};
+use crate::server::{
+  client::MOQTClient,
+  session_context::{PendingRequest, SessionContext},
+};
 use std::sync::{Arc, atomic::Ordering};
 mod fetch_handler;
 mod max_request_id_handler;
@@ -95,10 +98,70 @@ impl MessageHandler {
         subscribe_handler::handle(client.clone(), control_stream_handler, msg, context.clone())
           .await
       }
-      ControlMessage::TrackStatus(_)
-      | ControlMessage::TrackStatusOk(_)
-      | ControlMessage::TrackStatusError(_) => {
+      ControlMessage::TrackStatus(_) | ControlMessage::TrackStatusError(_) => {
         track_status_handler::handle(control_stream_handler, msg, context.clone()).await
+      }
+      ControlMessage::RequestOk(ok_msg) => {
+        let req_id = ok_msg.request_id;
+
+        enum Route {
+          TrackStatus,
+          SubscribeNamespace,
+          PublishNamespace,
+          Unhandled,
+          NotFound,
+        }
+
+        // 1. Peek at the unified map to determine the routing destination
+        let route = {
+          let map = context.relay_pending_requests.read().await;
+          match map.get(&req_id) {
+            Some(PendingRequest::TrackStatus(_)) => Route::TrackStatus,
+            Some(PendingRequest::SubscribeNamespace { .. }) => Route::SubscribeNamespace,
+            Some(PendingRequest::PublishNamespace { .. }) => Route::PublishNamespace,
+            Some(_) => Route::Unhandled, // Unroutable RequestOk
+            None => Route::NotFound,     // Untracked request
+          }
+        };
+
+        // 2. Dispatch to the correct handler
+        match route {
+          Route::TrackStatus => {
+            track_status_handler::handle(control_stream_handler, msg, context.clone()).await
+          }
+          Route::SubscribeNamespace => {
+            subscribe_namespace_handler::handle(
+              client.clone(),
+              control_stream_handler,
+              msg,
+              context.clone(),
+            )
+            .await
+          }
+          Route::PublishNamespace => {
+            publish_namespace_handler::handle(
+              client.clone(),
+              control_stream_handler,
+              msg,
+              context.clone(),
+            )
+            .await
+          }
+          Route::Unhandled => {
+            warn!(
+              "Router received RequestOk for request_id: {}, but no route is configured for this request type.",
+              req_id
+            );
+            Ok(())
+          }
+          Route::NotFound => {
+            warn!(
+              "Router received RequestOk for untracked request_id: {}",
+              req_id
+            );
+            Ok(())
+          }
+        }
       }
       ControlMessage::Fetch(_) | ControlMessage::FetchCancel(_) | ControlMessage::FetchOk(_) => {
         fetch_handler::handle(client.clone(), control_stream_handler, msg, context.clone()).await

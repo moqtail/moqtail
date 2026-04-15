@@ -28,18 +28,36 @@ use super::{
   client::MOQTClient, client_manager::ClientManager, config::AppConfig, track_manager::TrackManager,
 };
 
+#[allow(dead_code)]
+// TODO: Remove the dead_code attribute after merging all the draft-16 changes.
+// These changes are required for message unification and will be useful in other branches.
+#[derive(Debug, Clone)]
+pub enum PendingRequest {
+  Fetch(FetchRequest),
+  Subscribe(SubscribeRequest),
+  TrackStatus(SubscribeRequest),
+  PublishNamespace {
+    client_connection_id: usize,
+    original_request_id: u64,
+  },
+  SubscribeNamespace {
+    client_connection_id: usize,
+    original_request_id: u64,
+  },
+  Publish {
+    publisher_connection_id: usize,
+    original_request_id: u64,
+  },
+}
+
 pub struct RequestMaps {
-  pub relay_fetch_requests: Arc<RwLock<BTreeMap<u64, FetchRequest>>>,
-  pub relay_subscribe_requests: Arc<RwLock<BTreeMap<u64, SubscribeRequest>>>,
-  pub relay_track_status_requests: Arc<RwLock<BTreeMap<u64, SubscribeRequest>>>,
+  pub relay_pending_requests: Arc<RwLock<BTreeMap<u64, PendingRequest>>>,
 }
 
 pub struct SessionContext {
   pub(crate) client_manager: Arc<RwLock<ClientManager>>,
   pub(crate) track_manager: TrackManager,
-  pub(crate) relay_fetch_requests: Arc<RwLock<BTreeMap<u64, FetchRequest>>>,
-  pub(crate) relay_subscribe_requests: Arc<RwLock<BTreeMap<u64, SubscribeRequest>>>,
-  pub(crate) relay_track_status_requests: Arc<RwLock<BTreeMap<u64, SubscribeRequest>>>,
+  pub(crate) relay_pending_requests: Arc<RwLock<BTreeMap<u64, PendingRequest>>>,
   pub(crate) connection_id: usize,
   pub(crate) client: Arc<RwLock<Option<Arc<MOQTClient>>>>, // the client that is connected to this session
   pub(crate) connection: Connection,
@@ -61,9 +79,7 @@ impl SessionContext {
     Self {
       client_manager,
       track_manager,
-      relay_fetch_requests: request_maps.relay_fetch_requests,
-      relay_subscribe_requests: request_maps.relay_subscribe_requests,
-      relay_track_status_requests: request_maps.relay_track_status_requests,
+      relay_pending_requests: request_maps.relay_pending_requests,
       connection_id: connection.stable_id(),
       client: Arc::new(RwLock::new(None)), // initially no client is set
       connection,

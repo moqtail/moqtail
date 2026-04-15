@@ -5,7 +5,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
+ * http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,27 +14,26 @@
  * limitations under the License.
  */
 
-import { SubscribeNamespace, SubscribeNamespaceError, RequestOk } from '@/model'
+import { TrackStatus, TrackStatusError, RequestOk } from '@/model'
 
-export class SubscribeNamespaceRequest implements PromiseLike<RequestOk | SubscribeNamespaceError> {
+export class TrackStatusRequest implements PromiseLike<RequestOk | TrackStatusError> {
   public readonly requestId: bigint
-  public readonly message: SubscribeNamespace
-  private _resolve!: (
-    value: RequestOk | SubscribeNamespaceError | PromiseLike<RequestOk | SubscribeNamespaceError>,
-  ) => void
-  private _reject!: (reason?: any) => void
-  private promise: Promise<RequestOk | SubscribeNamespaceError>
+  public readonly message: TrackStatus
 
-  constructor(msg: SubscribeNamespace) {
+  private _resolve!: (value: RequestOk | TrackStatusError | PromiseLike<RequestOk | TrackStatusError>) => void
+  private _reject!: (reason?: any) => void
+  private promise: Promise<RequestOk | TrackStatusError>
+
+  constructor(msg: TrackStatus) {
     this.requestId = msg.requestId
     this.message = msg
-    this.promise = new Promise<RequestOk | SubscribeNamespaceError>((resolve, reject) => {
+    this.promise = new Promise<RequestOk | TrackStatusError>((resolve, reject) => {
       this._resolve = resolve
       this._reject = reject
     })
   }
 
-  public resolve(value: RequestOk | SubscribeNamespaceError | PromiseLike<RequestOk | SubscribeNamespaceError>): void {
+  public resolve(value: RequestOk | TrackStatusError | PromiseLike<RequestOk | TrackStatusError>): void {
     this._resolve(value)
   }
 
@@ -42,8 +41,8 @@ export class SubscribeNamespaceRequest implements PromiseLike<RequestOk | Subscr
     this._reject(reason)
   }
 
-  public then<TResult1 = RequestOk | SubscribeNamespaceError, TResult2 = never>(
-    onfulfilled?: ((value: RequestOk | SubscribeNamespaceError) => TResult1 | PromiseLike<TResult1>) | undefined | null,
+  public then<TResult1 = RequestOk | TrackStatusError, TResult2 = never>(
+    onfulfilled?: ((value: RequestOk | TrackStatusError) => TResult1 | PromiseLike<TResult1>) | undefined | null,
     onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | undefined | null,
   ): PromiseLike<TResult1 | TResult2> {
     return this.promise.then(onfulfilled, onrejected)
@@ -51,11 +50,11 @@ export class SubscribeNamespaceRequest implements PromiseLike<RequestOk | Subscr
 
   public catch<TResult = never>(
     onrejected?: ((reason: any) => TResult | PromiseLike<TResult>) | undefined | null,
-  ): Promise<RequestOk | SubscribeNamespaceError | TResult> {
+  ): Promise<RequestOk | TrackStatusError | TResult> {
     return this.promise.catch(onrejected)
   }
 
-  public finally(onfinally?: (() => void) | undefined | null): Promise<RequestOk | SubscribeNamespaceError> {
+  public finally(onfinally?: (() => void) | undefined | null): Promise<RequestOk | TrackStatusError> {
     return this.promise.finally(onfinally)
   }
 }

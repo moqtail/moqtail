@@ -15,7 +15,7 @@
 use crate::server::client::MOQTClient;
 use crate::server::client::switch_context::SwitchStatus;
 use crate::server::session::Session;
-use crate::server::session_context::SessionContext;
+use crate::server::session_context::{PendingRequest, SessionContext};
 use crate::server::track::{Track, TrackStatus};
 use core::result::Result;
 use moqtail::model::control::subscribe::Subscribe;
@@ -174,7 +174,7 @@ async fn handle_subscribe_message(
       .queue_message(ControlMessage::Subscribe(Box::new(new_sub.clone())))
       .await;
 
-    // Store relay subscribe request mapping
+    // Store relay subscribe request mapping in the unified pending requests map
     // TODO: we need to add a timeout here or another loop to control expired requests
     let req = SubscribeRequest::new(
       original_request_id,
@@ -182,10 +182,10 @@ async fn handle_subscribe_message(
       sub.clone(),
       Some(new_sub.clone()),
     );
-    let mut requests = context.relay_subscribe_requests.write().await;
-    requests.insert(new_sub.request_id, req.clone());
+    let mut requests = context.relay_pending_requests.write().await;
+    requests.insert(new_sub.request_id, PendingRequest::Subscribe(req.clone()));
     info!(
-      "inserted request into relay's subscribe requests: {:?} with relay's request id: {:?}",
+      "inserted request into relay's pending requests: {:?} with relay's request id: {:?}",
       req, new_sub.request_id
     );
     // Do NOT send SubscribeOk yet -- wait for publisher confirmation
@@ -263,14 +263,20 @@ async fn handle_subscribe_ok_message(
   info!("received SubscribeOk message: {:?}", msg);
   let request_id = msg.request_id;
 
-  // Look up and remove the relay subscribe request (no longer needed after processing)
+  // Look up the relay subscribe request from the unified map
   let sub_request = {
-    let mut requests = context.relay_subscribe_requests.write().await;
-    debug!("current requests: {:?}", requests);
-    match requests.remove(&request_id) {
-      Some(m) => {
+    let requests = context.relay_pending_requests.read().await;
+    match requests.get(&request_id).cloned() {
+      Some(PendingRequest::Subscribe(m)) => {
         info!("request id is verified: {:?}", request_id);
         m
+      }
+      Some(_) => {
+        warn!(
+          "request id matched but wrong type for SubscribeOk: {:?}",
+          request_id
+        );
+        return Ok(());
       }
       None => {
         warn!("request id is not verified: {:?}", request_id);
@@ -431,6 +437,16 @@ async fn handle_unsubscribe_message(
     .remove_subscription(&full_track_name)
     .await;
 
+  // Remove the request from the client's request map so it doesn't leak
+  {
+    let mut requests = client.subscribe_requests.write().await;
+    requests.remove(&unsubscribe_message.request_id);
+    debug!(
+      "Cleaned up client subscribe request {} after Unsubscribe",
+      unsubscribe_message.request_id
+    );
+  }
+
   Ok(())
 }
 
@@ -501,11 +517,18 @@ async fn handle_subscribe_error_message(
   let msg = subscribe_error_message;
   let request_id = msg.request_id;
 
-  // Look up and remove the relay subscribe request
+  // Look up and remove the relay subscribe request from the unified map
   let sub_request = {
-    let mut requests = context.relay_subscribe_requests.write().await;
+    let mut requests = context.relay_pending_requests.write().await;
     match requests.remove(&request_id) {
-      Some(m) => m,
+      Some(PendingRequest::Subscribe(m)) => m,
+      Some(_) => {
+        warn!(
+          "SubscribeError for mismatched request type: {:?}",
+          request_id
+        );
+        return Ok(());
+      }
       None => {
         warn!("SubscribeError for unknown request id: {:?}", request_id);
         return Ok(());

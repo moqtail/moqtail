@@ -21,13 +21,13 @@ use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::publish_namespace::PublishNamespace;
 use moqtail::model::control::request_error::RequestError;
 use moqtail::model::control::subscribe::Subscribe;
-use moqtail::model::control::subscribe_namespace_ok::SubscribeNamespaceOk;
+use moqtail::model::control::request_ok::RequestOk;
 use moqtail::model::error::TerminationCode;
 use moqtail::model::parameter::constant::MessageParameterType;
 use moqtail::model::parameter::message_parameter::{MessageParameter, MessageParameterVecExt};
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 pub async fn handle(
   client: Arc<MOQTClient>,
@@ -89,12 +89,12 @@ pub async fn handle(
       // when that underlying QUIC stream receives a FIN or RESET_STREAM.
 
       // 2. Send OK back to the subscriber
-      let ok = SubscribeNamespaceOk::new(sub_ns.request_id);
+      let ok = RequestOk::new(sub_ns.request_id, vec![]);
       handler
-        .send(&ControlMessage::SubscribeNamespaceOk(Box::new(ok)))
+        .send(&ControlMessage::RequestOk(Box::new(ok)))
         .await?;
       info!(
-        "Sent SubscribeNamespaceOk for request_id: {}",
+        "Sent RequestOk for SubscribeNamespace request_id: {}",
         sub_ns.request_id
       );
 
@@ -201,6 +201,51 @@ pub async fn handle(
         }
       }
     }
+    ControlMessage::RequestOk(m) => {
+      let msg = *m;
+
+      let mapping = {
+        let mut map = context.relay_pending_requests.write().await;
+        match map.remove(&msg.request_id) {
+          Some(PendingRequest::SubscribeNamespace {
+            client_connection_id,
+            original_request_id,
+          }) => Some((client_connection_id, original_request_id)),
+          Some(_) => {
+            warn!(
+              "Mismatched request type for RequestOk (SubscribeNamespace): {}",
+              msg.request_id
+            );
+            None
+          }
+          None => None,
+        }
+      };
+
+      if let Some((client_connection_id, original_request_id)) = mapping {
+        let manager = context.client_manager.read().await;
+        if let Some(downstream_client) = manager.get(client_connection_id).await {
+          let forwarded_msg = RequestOk::new(original_request_id, msg.parameters);
+
+          info!(
+            "Forwarding RequestOk (for SubscribeNamespace) to Client {}",
+            client_connection_id
+          );
+
+          downstream_client
+            .queue_message(ControlMessage::RequestOk(Box::new(forwarded_msg)))
+            .await;
+        } else {
+          warn!("Downstream client {} disconnected", client_connection_id);
+        }
+      } else {
+        debug!(
+          "SubscribeNamespace handler received RequestOk for untracked ID: {}",
+          msg.request_id
+        );
+      }
+    }
+
     _ => {
       warn!(
         "Unexpected message in subscribe_namespace_handler: {:?}",

@@ -374,18 +374,6 @@ pub async fn handle(
             }
             client.remove_stream_by_stream_id(&stream_id).await;
           }
-
-          // 3. Clean up the unified map since the fetch stream is closed
-          context
-            .relay_pending_requests
-            .write()
-            .await
-            .remove(&request_id);
-          client
-            .fetch_cancel_senders
-            .write()
-            .await
-            .remove(&request_id);
         } else {
           // close the stream instantly
           if let Some(the_stream) = send_stream {

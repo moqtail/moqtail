@@ -190,8 +190,19 @@ export namespace FetchHeaderType {
 /**
  * @public
  * Subgroup header types for MOQT subgroups.
+ *
+ * Type bit layout (0b00X1XXXX):
+ * - Bit 0 (0x01): EXTENSIONS - Extensions present in all objects
+ * - Bits 1-2 (0x06): SUBGROUP_ID_MODE - How subgroup ID is encoded (0b00=zero, 0b01=firstObjId, 0b10=explicit, 0b11=invalid)
+ * - Bit 3 (0x08): END_OF_GROUP - This subgroup contains the final object in the group
+ * - Bit 4 (0x10): Always set (distinguishes subgroup from other header types)
+ * - Bit 5 (0x20): DEFAULT_PRIORITY - Publisher priority field omitted, inherited from subscription
+ *
+ * Valid ranges: 0x10-0x15, 0x18-0x1D (bit 5=0), 0x30-0x35, 0x38-0x3D (bit 5=1)
+ * Invalid: 0x16, 0x17, 0x1E, 0x1F, 0x36, 0x37, 0x3E, 0x3F (SUBGROUP_ID_MODE=0b11)
  */
 export enum SubgroupHeaderType {
+  // Bit 5 = 0 (priority present)
   Type0x10 = 0x10,
   Type0x11 = 0x11,
   Type0x12 = 0x12,
@@ -204,95 +215,102 @@ export enum SubgroupHeaderType {
   Type0x1B = 0x1b,
   Type0x1C = 0x1c,
   Type0x1D = 0x1d,
+  // Bit 5 = 1 (default priority)
+  Type0x30 = 0x30,
+  Type0x31 = 0x31,
+  Type0x32 = 0x32,
+  Type0x33 = 0x33,
+  Type0x34 = 0x34,
+  Type0x35 = 0x35,
+  Type0x38 = 0x38,
+  Type0x39 = 0x39,
+  Type0x3A = 0x3a,
+  Type0x3B = 0x3b,
+  Type0x3C = 0x3c,
+  Type0x3D = 0x3d,
 }
 
 /**
- * Namespace for SubgroupHeaderType utilities.
+ * Namespace for SubgroupHeaderType utilities and bit constants.
  */
 export namespace SubgroupHeaderType {
-  /**
-   * Returns true if the header type has an explicit subgroup ID.
-   * @param t - The SubgroupHeaderType.
-   */
-  export function hasExplicitSubgroupId(t: SubgroupHeaderType): boolean {
-    switch (t) {
-      case SubgroupHeaderType.Type0x14:
-      case SubgroupHeaderType.Type0x15:
-      case SubgroupHeaderType.Type0x1C:
-      case SubgroupHeaderType.Type0x1D:
-        return true
-      default:
-        return false
-    }
-  }
-  /**
-   * Returns true if the header type implies a subgroup ID of zero.
-   * @param t - The SubgroupHeaderType.
-   */
-  export function isSubgroupIdZero(t: SubgroupHeaderType): boolean {
-    switch (t) {
-      case SubgroupHeaderType.Type0x10:
-      case SubgroupHeaderType.Type0x11:
-      case SubgroupHeaderType.Type0x18:
-      case SubgroupHeaderType.Type0x19:
-        return true
-      default:
-        return false
-    }
-  }
-  /**
-   * Returns true if the header type has extensions.
-   * @param t - The SubgroupHeaderType.
-   */
+  /** Extensions present in all objects (bit 0) */
+  export const EXTENSIONS = 0x01
+  /** Mask for SUBGROUP_ID_MODE (bits 1-2) */
+  export const SUBGROUP_ID_MODE_MASK = 0x06
+  /** This subgroup contains the final object in the group (bit 3) */
+  export const END_OF_GROUP = 0x08
+  /** Required bit that must always be set (bit 4) */
+  export const REQUIRED_BIT = 0x10
+  /** Publisher priority field omitted, inherited from subscription (bit 5) */
+  export const DEFAULT_PRIORITY = 0x20
+  /** Mask for bits that must be zero: bits 6-7 */
+  const INVALID_BITS_MASK = 0xc0
+  /** Reserved SUBGROUP_ID_MODE value (0b11) */
+  const RESERVED_SUBGROUP_MODE = 0x06
+
   export function hasExtensions(t: SubgroupHeaderType): boolean {
-    switch (t) {
-      case SubgroupHeaderType.Type0x11:
-      case SubgroupHeaderType.Type0x13:
-      case SubgroupHeaderType.Type0x15:
-      case SubgroupHeaderType.Type0x19:
-      case SubgroupHeaderType.Type0x1B:
-      case SubgroupHeaderType.Type0x1D:
-        return true
-      default:
-        return false
-    }
+    return (t & EXTENSIONS) !== 0
   }
+
+  export function hasExplicitSubgroupId(t: SubgroupHeaderType): boolean {
+    return (t & SUBGROUP_ID_MODE_MASK) === 0x04
+  }
+
+  export function isSubgroupIdZero(t: SubgroupHeaderType): boolean {
+    return (t & SUBGROUP_ID_MODE_MASK) === 0x00
+  }
+
+  export function isSubgroupIdFirstObjectId(t: SubgroupHeaderType): boolean {
+    return (t & SUBGROUP_ID_MODE_MASK) === 0x02
+  }
+
+  export function containsEndOfGroup(t: SubgroupHeaderType): boolean {
+    return (t & END_OF_GROUP) !== 0
+  }
+
+  export function hasDefaultPriority(t: SubgroupHeaderType): boolean {
+    return (t & DEFAULT_PRIORITY) !== 0
+  }
+
   /**
    * Converts a number or bigint to SubgroupHeaderType.
-   * @param value - The value to convert.
-   * @returns The corresponding SubgroupHeaderType.
-   * @throws Error if the value is not valid.
+   * Validates bit 4 must be set, SUBGROUP_ID_MODE must not be 0b11.
    */
   export function tryFrom(value: number | bigint): SubgroupHeaderType {
     const v = typeof value === 'bigint' ? Number(value) : value
-    switch (v) {
-      case 0x10:
-        return SubgroupHeaderType.Type0x10
-      case 0x11:
-        return SubgroupHeaderType.Type0x11
-      case 0x12:
-        return SubgroupHeaderType.Type0x12
-      case 0x13:
-        return SubgroupHeaderType.Type0x13
-      case 0x14:
-        return SubgroupHeaderType.Type0x14
-      case 0x15:
-        return SubgroupHeaderType.Type0x15
-      case 0x18:
-        return SubgroupHeaderType.Type0x18
-      case 0x19:
-        return SubgroupHeaderType.Type0x19
-      case 0x1a:
-        return SubgroupHeaderType.Type0x1A
-      case 0x1b:
-        return SubgroupHeaderType.Type0x1B
-      case 0x1c:
-        return SubgroupHeaderType.Type0x1C
-      case 0x1d:
-        return SubgroupHeaderType.Type0x1D
-      default:
-        throw new Error(`Invalid SubgroupHeaderType: ${value}`)
+
+    if ((v & INVALID_BITS_MASK) !== 0) {
+      throw new Error(`Invalid SubgroupHeaderType: 0x${v.toString(16)} (invalid bits set)`)
     }
+
+    if ((v & REQUIRED_BIT) === 0) {
+      throw new Error(`Invalid SubgroupHeaderType: 0x${v.toString(16)} (bit 4 not set)`)
+    }
+
+    if ((v & SUBGROUP_ID_MODE_MASK) === RESERVED_SUBGROUP_MODE) {
+      throw new Error(`Invalid SubgroupHeaderType: 0x${v.toString(16)} (reserved SUBGROUP_ID_MODE)`)
+    }
+
+    return v as SubgroupHeaderType
+  }
+
+  /**
+   * Determines the appropriate type for given properties.
+   * @param subgroupIdMode - SUBGROUP_ID_MODE (0=zero, 1=firstObjId, 2=explicit).
+   */
+  export function fromProperties(
+    hasExtensions: boolean,
+    subgroupIdMode: 0 | 1 | 2,
+    containsEndOfGroup: boolean,
+    hasDefaultPriority: boolean = false,
+  ): SubgroupHeaderType {
+    let t = REQUIRED_BIT
+    if (hasExtensions) t |= EXTENSIONS
+    t |= (subgroupIdMode & 0x03) << 1
+    if (containsEndOfGroup) t |= END_OF_GROUP
+    if (hasDefaultPriority) t |= DEFAULT_PRIORITY
+    return t as SubgroupHeaderType
   }
 }
 

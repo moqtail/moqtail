@@ -1,5 +1,5 @@
 /**
- * Copyright 2025 The MOQtail Authors
+ * Copyright 2026 The MOQtail Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,33 +14,29 @@
  * limitations under the License.
  */
 
-import { PublishNamespaceOk } from '../../model/control/publish_namespace_ok'
+import { RequestOk } from '../../model/control'
 import { PublishNamespaceError } from '../../model/control/publish_namespace_error'
 import { PublishNamespace } from '../../model/control/publish_namespace'
 import { PublishNamespaceErrorCode, ReasonPhrase } from '@/model'
 
 // TODO: add publish namespace done
-export class PublishNamespaceRequest implements PromiseLike<PublishNamespaceOk | PublishNamespaceError> {
+export class PublishNamespaceRequest implements PromiseLike<RequestOk | PublishNamespaceError> {
   public readonly requestId: bigint
   public readonly message: PublishNamespace
-  private _resolve!: (
-    value: PublishNamespaceOk | PublishNamespaceError | PromiseLike<PublishNamespaceOk | PublishNamespaceError>,
-  ) => void
+  private _resolve!: (value: RequestOk | PublishNamespaceError | PromiseLike<RequestOk | PublishNamespaceError>) => void
   private _reject!: (reason?: any) => void
-  private promise: Promise<PublishNamespaceOk | PublishNamespaceError>
+  private promise: Promise<RequestOk | PublishNamespaceError>
 
   constructor(requestId: bigint, message: PublishNamespace) {
     this.requestId = requestId
     this.message = message
-    this.promise = new Promise<PublishNamespaceOk | PublishNamespaceError>((resolve, reject) => {
+    this.promise = new Promise<RequestOk | PublishNamespaceError>((resolve, reject) => {
       this._resolve = resolve
       this._reject = reject
     })
   }
 
-  public resolve(
-    value: PublishNamespaceOk | PublishNamespaceError | PromiseLike<PublishNamespaceOk | PublishNamespaceError>,
-  ): void {
+  public resolve(value: RequestOk | PublishNamespaceError | PromiseLike<RequestOk | PublishNamespaceError>): void {
     this._resolve(value)
   }
 
@@ -48,11 +44,8 @@ export class PublishNamespaceRequest implements PromiseLike<PublishNamespaceOk |
     this._reject(reason)
   }
 
-  public then<TResult1 = PublishNamespaceOk | PublishNamespaceError, TResult2 = never>(
-    onfulfilled?:
-      | ((value: PublishNamespaceOk | PublishNamespaceError) => TResult1 | PromiseLike<TResult1>)
-      | undefined
-      | null,
+  public then<TResult1 = RequestOk | PublishNamespaceError, TResult2 = never>(
+    onfulfilled?: ((value: RequestOk | PublishNamespaceError) => TResult1 | PromiseLike<TResult1>) | undefined | null,
     onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | undefined | null,
   ): PromiseLike<TResult1 | TResult2> {
     return this.promise.then(onfulfilled, onrejected)
@@ -60,11 +53,11 @@ export class PublishNamespaceRequest implements PromiseLike<PublishNamespaceOk |
 
   public catch<TResult = never>(
     onrejected?: ((reason: any) => TResult | PromiseLike<TResult>) | undefined | null,
-  ): Promise<PublishNamespaceOk | PublishNamespaceError | TResult> {
+  ): Promise<RequestOk | PublishNamespaceError | TResult> {
     return this.promise.catch(onrejected)
   }
 
-  public finally(onfinally?: (() => void) | undefined | null): Promise<PublishNamespaceOk | PublishNamespaceError> {
+  public finally(onfinally?: (() => void) | undefined | null): Promise<RequestOk | PublishNamespaceError> {
     return this.promise.finally(onfinally)
   }
 }
@@ -73,13 +66,13 @@ if (import.meta.vitest) {
   const { describe, test, expect, vi } = import.meta.vitest
 
   describe('PublishNamespaceRequest', () => {
-    test('should resolve with PublishNamespaceOk on success', async () => {
+    test('should resolve with RequestOk on success', async () => {
       const announceMessage = {} as PublishNamespace
       const request = new PublishNamespaceRequest(123n, announceMessage)
-      const announceOkResponse = new PublishNamespaceOk(123n)
+      const announceOkResponse = new RequestOk(123n)
       setTimeout(() => request.resolve(announceOkResponse), 0)
       const result = await request
-      expect(result).toBeInstanceOf(PublishNamespaceOk)
+      expect(result).toBeInstanceOf(RequestOk)
       expect(result.requestId).toBe(123n)
     })
 
@@ -113,10 +106,10 @@ if (import.meta.vitest) {
     test('can be used with async/await for success', async () => {
       const announceMessage = {} as PublishNamespace
       const request = new PublishNamespaceRequest(456n, announceMessage)
-      const announceOkResponse = new PublishNamespaceOk(456n)
+      const announceOkResponse = new RequestOk(456n)
       setTimeout(() => request.resolve(announceOkResponse), 10)
       const result = await request
-      expect(result).toBeInstanceOf(PublishNamespaceOk)
+      expect(result).toBeInstanceOf(RequestOk)
       expect(result.requestId).toBe(456n)
     })
 
@@ -142,7 +135,7 @@ if (import.meta.vitest) {
     test('finally block is executed on resolve', async () => {
       const announceMessage = {} as PublishNamespace
       const request = new PublishNamespaceRequest(111n, announceMessage)
-      const announceOkResponse = new PublishNamespaceOk(111n)
+      const announceOkResponse = new RequestOk(111n)
       const finallyCallback = vi.fn()
       setTimeout(() => request.resolve(announceOkResponse), 0)
       await request.finally(finallyCallback)

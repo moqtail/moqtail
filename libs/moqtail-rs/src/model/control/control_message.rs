@@ -18,14 +18,15 @@ use bytes::{Buf, Bytes};
 
 use super::{
   client_setup::ClientSetup, constant::ControlMessageType, fetch::Fetch, fetch_cancel::FetchCancel,
-  fetch_ok::FetchOk, goaway::GoAway, max_request_id::MaxRequestId, publish::Publish,
-  publish_done::PublishDone, publish_namespace::PublishNamespace,
-  publish_namespace_cancel::PublishNamespaceCancel, publish_namespace_done::PublishNamespaceDone,
-  publish_namespace_ok::PublishNamespaceOk, publish_ok::PublishOk, request_error::RequestError,
-  requests_blocked::RequestsBlocked, server_setup::ServerSetup, subscribe::Subscribe,
-  subscribe_namespace::SubscribeNamespace, subscribe_namespace_ok::SubscribeNamespaceOk,
+  fetch_ok::FetchOk, goaway::GoAway, max_request_id::MaxRequestId,
+  publish::Publish, publish_done::PublishDone, request_error::RequestError,
+  publish_namespace::PublishNamespace, publish_namespace_cancel::PublishNamespaceCancel,
+  publish_namespace_done::PublishNamespaceDone,
+  publish_ok::PublishOk, request_ok::RequestOk, requests_blocked::RequestsBlocked,
+  server_setup::ServerSetup, subscribe::Subscribe,
+  subscribe_namespace::SubscribeNamespace,
   subscribe_ok::SubscribeOk, subscribe_update::SubscribeUpdate, switch::Switch,
-  track_status::TrackStatus, track_status_ok::TrackStatusOk, unsubscribe::Unsubscribe,
+  track_status::TrackStatus, unsubscribe::Unsubscribe,
   unsubscribe_namespace::UnsubscribeNamespace,
 };
 
@@ -33,7 +34,7 @@ use super::{
 pub enum ControlMessage {
   PublishNamespace(Box<PublishNamespace>),
   PublishNamespaceCancel(Box<PublishNamespaceCancel>),
-  PublishNamespaceOk(Box<PublishNamespaceOk>),
+  RequestOk(Box<RequestOk>),
   Publish(Box<Publish>),
   PublishOk(Box<PublishOk>),
   PublishDone(Box<PublishDone>),
@@ -49,11 +50,9 @@ pub enum ControlMessage {
   SubscribeUpdate(Box<SubscribeUpdate>),
   RequestsBlocked(Box<RequestsBlocked>),
   TrackStatus(Box<TrackStatus>),
-  TrackStatusOk(Box<TrackStatusOk>),
   PublishNamespaceDone(Box<PublishNamespaceDone>),
   Unsubscribe(Box<Unsubscribe>),
   SubscribeNamespace(Box<SubscribeNamespace>),
-  SubscribeNamespaceOk(Box<SubscribeNamespaceOk>),
   RequestError(Box<RequestError>),
   UnsubscribeNamespace(Box<UnsubscribeNamespace>),
   Switch(Box<Switch>),
@@ -104,8 +103,8 @@ impl ControlMessage {
       ControlMessageType::RequestError => {
         RequestError::parse_payload(&mut payload).map(ControlMessage::RequestError)
       }
-      ControlMessageType::PublishNamespaceOk => {
-        PublishNamespaceOk::parse_payload(&mut payload).map(ControlMessage::PublishNamespaceOk)
+      ControlMessageType::RequestOk => {
+        RequestOk::parse_payload(&mut payload).map(ControlMessage::RequestOk)
       }
       ControlMessageType::Publish => {
         Publish::parse_payload(&mut payload).map(ControlMessage::Publish)
@@ -148,17 +147,11 @@ impl ControlMessage {
       ControlMessageType::TrackStatus => {
         TrackStatus::parse_payload(&mut payload).map(ControlMessage::TrackStatus)
       }
-      ControlMessageType::TrackStatusOk => {
-        TrackStatusOk::parse_payload(&mut payload).map(ControlMessage::TrackStatusOk)
-      }
       ControlMessageType::Unsubscribe => {
         Unsubscribe::parse_payload(&mut payload).map(ControlMessage::Unsubscribe)
       }
       ControlMessageType::SubscribeNamespace => {
         SubscribeNamespace::parse_payload(&mut payload).map(ControlMessage::SubscribeNamespace)
-      }
-      ControlMessageType::SubscribeNamespaceOk => {
-        SubscribeNamespaceOk::parse_payload(&mut payload).map(ControlMessage::SubscribeNamespaceOk)
       }
       ControlMessageType::UnsubscribeNamespace => {
         UnsubscribeNamespace::parse_payload(&mut payload).map(ControlMessage::UnsubscribeNamespace)
@@ -188,7 +181,7 @@ impl ControlMessage {
       ControlMessage::PublishNamespaceCancel(msg) => msg.serialize(),
       ControlMessage::PublishNamespaceDone(msg) => msg.serialize(),
       ControlMessage::RequestError(msg) => msg.serialize(),
-      ControlMessage::PublishNamespaceOk(msg) => msg.serialize(),
+      ControlMessage::RequestOk(msg) => msg.serialize(),
       ControlMessage::Publish(msg) => msg.serialize(),
       ControlMessage::PublishOk(msg) => msg.serialize(),
       ControlMessage::PublishDone(msg) => msg.serialize(),
@@ -204,10 +197,8 @@ impl ControlMessage {
       ControlMessage::SubscribeUpdate(msg) => msg.serialize(),
       ControlMessage::RequestsBlocked(msg) => msg.serialize(),
       ControlMessage::TrackStatus(msg) => msg.serialize(),
-      ControlMessage::TrackStatusOk(msg) => msg.serialize(),
       ControlMessage::Unsubscribe(msg) => msg.serialize(),
       ControlMessage::SubscribeNamespace(msg) => msg.serialize(),
-      ControlMessage::SubscribeNamespaceOk(msg) => msg.serialize(),
       ControlMessage::UnsubscribeNamespace(msg) => msg.serialize(),
       ControlMessage::Switch(msg) => msg.serialize(),
     }
@@ -220,7 +211,7 @@ impl ControlMessage {
       ControlMessage::PublishNamespaceCancel(_) => ControlMessageType::PublishNamespaceCancel,
       ControlMessage::PublishNamespaceDone(_) => ControlMessageType::PublishNamespaceDone,
       ControlMessage::RequestError(_) => ControlMessageType::RequestError,
-      ControlMessage::PublishNamespaceOk(_) => ControlMessageType::PublishNamespaceOk,
+      ControlMessage::RequestOk(_) => ControlMessageType::RequestOk,
       ControlMessage::Publish(_) => ControlMessageType::Publish,
       ControlMessage::PublishOk(_) => ControlMessageType::PublishOk,
       ControlMessage::PublishDone(_) => ControlMessageType::PublishDone,
@@ -236,10 +227,8 @@ impl ControlMessage {
       ControlMessage::SubscribeUpdate(_) => ControlMessageType::SubscribeUpdate,
       ControlMessage::RequestsBlocked(_) => ControlMessageType::RequestsBlocked,
       ControlMessage::TrackStatus(_) => ControlMessageType::TrackStatus,
-      ControlMessage::TrackStatusOk(_) => ControlMessageType::TrackStatusOk,
       ControlMessage::Unsubscribe(_) => ControlMessageType::Unsubscribe,
       ControlMessage::SubscribeNamespace(_) => ControlMessageType::SubscribeNamespace,
-      ControlMessage::SubscribeNamespaceOk(_) => ControlMessageType::SubscribeNamespaceOk,
       ControlMessage::UnsubscribeNamespace(_) => ControlMessageType::UnsubscribeNamespace,
       ControlMessage::Switch(_) => ControlMessageType::Switch,
     }

@@ -191,7 +191,6 @@ mod tests {
     let msg_length = buf.get_u16();
 
     assert_eq!(msg_length as usize, buf.remaining() - 3);
-    // Slice to exactly msg_length bytes (as ControlMessage::deserialize does in production).
     let mut payload = buf.copy_to_bytes(msg_length as usize);
     let deserialized = SubscribeOk::parse_payload(&mut payload).unwrap();
     assert_eq!(*deserialized, subscribe_ok);

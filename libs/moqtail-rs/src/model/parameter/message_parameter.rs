@@ -150,6 +150,7 @@ impl MessageParameter {
           | ControlMessageType::SubscribeOk
           | ControlMessageType::FetchOk
           | ControlMessageType::Publish
+          | ControlMessageType::RequestOk
       ),
       Self::SubscriptionFilter { .. } => matches!(
         msg_type,
@@ -162,10 +163,14 @@ impl MessageParameter {
         ControlMessageType::SubscribeOk
           | ControlMessageType::Publish
           | ControlMessageType::PublishOk
+          | ControlMessageType::RequestOk
       ),
       Self::LargestObject { .. } => matches!(
         msg_type,
-        ControlMessageType::SubscribeOk | ControlMessageType::Publish | ControlMessageType::FetchOk
+        ControlMessageType::SubscribeOk
+          | ControlMessageType::Publish
+          | ControlMessageType::FetchOk
+          | ControlMessageType::RequestOk
       ),
       Self::Forward { .. } => matches!(
         msg_type,

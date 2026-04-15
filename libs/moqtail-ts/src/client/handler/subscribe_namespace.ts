@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { SubscribeNamespace, SubscribeNamespaceOk } from '../../model/control'
+import { SubscribeNamespace, RequestOk } from '../../model/control'
 import { ControlMessageHandler } from './handler'
 import { createLogger } from '../../util/logger'
 
@@ -27,7 +27,6 @@ export const handlerSubscribeNamespace: ControlMessageHandler<SubscribeNamespace
     client.onPeerSubscribeNamespace(msg)
   }
 
-  // Implicit Consent: Automatically acknowledge the namespace subscription.
-  const okMsg = new SubscribeNamespaceOk(msg.requestId)
+  const okMsg = new RequestOk(msg.requestId)
   await client.controlStream.send(okMsg)
 }

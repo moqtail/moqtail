@@ -285,7 +285,7 @@ pub async fn handle(
       // Clean up the published track
       cleanup_published_track(&client, m.request_id, &context).await;
 
-      // Remove the request from the unified map
+      // Remove the request from the unified map to avoid memory leak
       {
         let mut map = context.relay_pending_requests.write().await;
         map.remove(&m.request_id);
@@ -308,7 +308,7 @@ pub async fn handle(
 
       match pending_request {
         Some(PendingRequest::Publish { .. }) => {
-          // 1. Look up which track this PublishOk corresponds to
+          // 1. Look up which track this PublishOk corresponds to using the connection_id and request_id
           if let Some(full_track_name) = context
             .track_manager
             .get_track_name_by_publisher(client.connection_id, m.request_id)

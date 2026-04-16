@@ -20,10 +20,10 @@ use crate::server::track::{Track, TrackStatus};
 use core::result::Result;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::control::{
-  constant::{FilterType, GroupOrder, PublishErrorCode},
+  constant::{FilterType, GroupOrder, RequestErrorCode},
   control_message::ControlMessage,
-  publish_error::PublishError,
   publish_ok::PublishOk,
+  request_error::RequestError,
 };
 use moqtail::model::error::TerminationCode;
 use moqtail::model::parameter::constant::MessageParameterType;
@@ -67,14 +67,15 @@ pub async fn handle(
           ReasonPhrase::try_new("Not authorized to publish this track".to_string())
             .map_err(|_| TerminationCode::InternalError)?;
 
-        let publish_error = Box::new(PublishError::new(
+        let publish_error = Box::new(RequestError::new(
           request_id,
-          PublishErrorCode::Unauthorized,
+          RequestErrorCode::Unauthorized,
+          0, //TODO: Maybe decide on another retry interval?
           reason_phrase,
         ));
 
         return control_stream_handler
-          .send(&ControlMessage::PublishError(publish_error))
+          .send(&ControlMessage::RequestError(publish_error))
           .await;
       }
 

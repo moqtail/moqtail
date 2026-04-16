@@ -20,78 +20,120 @@ pub enum FetchHeaderType {
   Type0x05 = 0x05,
 }
 
-#[derive(Debug, PartialEq, Clone, Copy)]
-pub enum SubgroupHeaderType {
-  /// No Subgroup ID field (Subgroup ID = 0), No Extensions, No End of Group
-  Type0x10 = 0x10,
-  /// No Subgroup ID field (Subgroup ID = 0), Extensions Present, No End of Group
-  Type0x11 = 0x11,
-  /// No Subgroup ID field (Subgroup ID = First Object ID), No Extensions, No End of Group
-  Type0x12 = 0x12,
-  /// No Subgroup ID field (Subgroup ID = First Object ID), Extensions Present, No End of Group
-  Type0x13 = 0x13,
-  /// Explicit Subgroup ID field, No Extensions, No End of Group
-  Type0x14 = 0x14,
-  /// Explicit Subgroup ID field, Extensions Present, No End of Group
-  Type0x15 = 0x15,
-  /// No Subgroup ID field (Subgroup ID = 0), No Extensions, Contains End of Group
-  Type0x18 = 0x18,
-  /// No Subgroup ID field (Subgroup ID = 0), Extensions Present, Contains End of Group
-  Type0x19 = 0x19,
-  /// No Subgroup ID field (Subgroup ID = First Object ID), No Extensions, Contains End of Group
-  Type0x1A = 0x1A,
-  /// No Subgroup ID field (Subgroup ID = First Object ID), Extensions Present, Contains End of Group
-  Type0x1B = 0x1B,
-  /// Explicit Subgroup ID field, No Extensions, Contains End of Group
-  Type0x1C = 0x1C,
-  /// Explicit Subgroup ID field, Extensions Present, Contains End of Group
-  Type0x1D = 0x1D,
-}
+/// Subgroup Header Type
+///
+/// Type bit layout (0b00X1XXXX):
+/// - Bit 0 (0x01): EXTENSIONS - Extensions present in all objects
+/// - Bits 1-2 (0x06): SUBGROUP_ID_MODE - How subgroup ID is encoded
+///   - 0b00 (0x00): Subgroup ID = 0 (absent from header)
+///   - 0b01 (0x02): Subgroup ID = First Object ID (absent from header)
+///   - 0b10 (0x04): Subgroup ID = explicit (present in header)
+///   - 0b11 (0x06): Reserved for future use (invalid, triggers PROTOCOL_VIOLATION)
+/// - Bit 3 (0x08): END_OF_GROUP - This subgroup contains the final object in the group
+/// - Bit 4 (0x10): Always set (distinguishes subgroup from other header types)
+/// - Bit 5 (0x20): DEFAULT_PRIORITY - Publisher priority field omitted, inherited from subscription
+///
+/// Valid ranges: 0x10-0x15, 0x18-0x1D (bit 5=0), 0x30-0x35, 0x38-0x3D (bit 5=1)
+/// Invalid: 0x16, 0x17, 0x1E, 0x1F, 0x36, 0x37, 0x3E, 0x3F (SUBGROUP_ID_MODE=0b11)
+#[derive(Debug, PartialEq, Clone, Copy, Eq)]
+pub struct SubgroupHeaderType(u8);
 
 impl SubgroupHeaderType {
-  pub fn has_explicit_subgroup_id(&self) -> bool {
-    matches!(
-      self,
-      Self::Type0x14 | Self::Type0x15 | Self::Type0x1C | Self::Type0x1D
-    )
+  /// Extensions present in all objects (bit 0)
+  pub const EXTENSIONS: u8 = 0x01;
+  /// Mask for SUBGROUP_ID_MODE (bits 1-2)
+  pub const SUBGROUP_ID_MODE_MASK: u8 = 0x06;
+  /// This subgroup contains the final object in the group (bit 3)
+  pub const END_OF_GROUP: u8 = 0x08;
+  /// Required bit that must always be set (bit 4)
+  pub const REQUIRED_BIT: u8 = 0x10;
+  /// Publisher priority field omitted, inherited from subscription (bit 5)
+  pub const DEFAULT_PRIORITY: u8 = 0x20;
+  /// Mask for bits that must be zero: bits 6-7
+  const INVALID_BITS_MASK: u8 = 0xC0;
+  /// Reserved SUBGROUP_ID_MODE value (0b11)
+  const RESERVED_SUBGROUP_MODE: u8 = 0x06;
+
+  /// Validate and create from a raw value.
+  pub fn try_new(value: u64) -> Result<Self, ParseError> {
+    if value > u8::MAX as u64 || (value as u8) & Self::INVALID_BITS_MASK != 0 {
+      return Err(ParseError::InvalidType {
+        context: "SubgroupHeaderType::try_new",
+        details: format!("invalid bits set, got {value:#x}"),
+      });
+    }
+    let v = value as u8;
+    if v & Self::REQUIRED_BIT == 0 {
+      return Err(ParseError::InvalidType {
+        context: "SubgroupHeaderType::try_new",
+        details: format!("bit 4 not set, got {value:#x}"),
+      });
+    }
+    if v & Self::SUBGROUP_ID_MODE_MASK == Self::RESERVED_SUBGROUP_MODE {
+      return Err(ParseError::InvalidType {
+        context: "SubgroupHeaderType::try_new",
+        details: format!("reserved SUBGROUP_ID_MODE 0b11, got {value:#x}"),
+      });
+    }
+    Ok(Self(v))
   }
 
+  /// Get the raw u8 value.
+  pub fn value(&self) -> u8 {
+    self.0
+  }
+
+  /// Check if extensions are present (bit 0 set)
   pub fn has_extensions(&self) -> bool {
-    matches!(
-      self,
-      Self::Type0x11
-        | Self::Type0x13
-        | Self::Type0x15
-        | Self::Type0x19
-        | Self::Type0x1B
-        | Self::Type0x1D
-    )
+    self.0 & Self::EXTENSIONS != 0
   }
 
-  pub fn contains_end_of_group(&self) -> bool {
-    matches!(
-      self,
-      Self::Type0x18
-        | Self::Type0x19
-        | Self::Type0x1A
-        | Self::Type0x1B
-        | Self::Type0x1C
-        | Self::Type0x1D
-    )
+  /// Check if subgroup ID is explicit in header (SUBGROUP_ID_MODE = 0b10)
+  pub fn has_explicit_subgroup_id(&self) -> bool {
+    self.0 & Self::SUBGROUP_ID_MODE_MASK == 0x04
   }
 
+  /// Check if subgroup ID = 0 (SUBGROUP_ID_MODE = 0b00)
   pub fn subgroup_id_is_zero(&self) -> bool {
-    matches!(
-      self,
-      Self::Type0x10 | Self::Type0x11 | Self::Type0x18 | Self::Type0x19
-    )
+    self.0 & Self::SUBGROUP_ID_MODE_MASK == 0x00
   }
 
+  /// Check if subgroup ID = first Object ID (SUBGROUP_ID_MODE = 0b01)
   pub fn subgroup_id_is_first_object_id(&self) -> bool {
-    matches!(
-      self,
-      Self::Type0x12 | Self::Type0x13 | Self::Type0x1A | Self::Type0x1B
-    )
+    self.0 & Self::SUBGROUP_ID_MODE_MASK == 0x02
+  }
+
+  /// Check if this subgroup contains end of group (bit 3 set)
+  pub fn contains_end_of_group(&self) -> bool {
+    self.0 & Self::END_OF_GROUP != 0
+  }
+
+  /// Check if using default publisher priority (bit 5 set).
+  /// When true, publisher_priority field is omitted from header.
+  pub fn has_default_priority(&self) -> bool {
+    self.0 & Self::DEFAULT_PRIORITY != 0
+  }
+
+  /// Create type from property flags.
+  /// subgroup_id_mode: 0=zero, 1=firstObjId, 2=explicit
+  pub fn from_properties(
+    has_extensions: bool,
+    subgroup_id_mode: u8,
+    contains_end_of_group: bool,
+    has_default_priority: bool,
+  ) -> Self {
+    let mut v: u8 = Self::REQUIRED_BIT;
+    if has_extensions {
+      v |= Self::EXTENSIONS;
+    }
+    v |= (subgroup_id_mode & 0x03) << 1; // bits 1-2
+    if contains_end_of_group {
+      v |= Self::END_OF_GROUP;
+    }
+    if has_default_priority {
+      v |= Self::DEFAULT_PRIORITY;
+    }
+    Self(v)
   }
 }
 
@@ -99,30 +141,13 @@ impl TryFrom<u64> for SubgroupHeaderType {
   type Error = ParseError;
 
   fn try_from(value: u64) -> Result<Self, Self::Error> {
-    match value {
-      0x10 => Ok(SubgroupHeaderType::Type0x10),
-      0x11 => Ok(SubgroupHeaderType::Type0x11),
-      0x12 => Ok(SubgroupHeaderType::Type0x12),
-      0x13 => Ok(SubgroupHeaderType::Type0x13),
-      0x14 => Ok(SubgroupHeaderType::Type0x14),
-      0x15 => Ok(SubgroupHeaderType::Type0x15),
-      0x18 => Ok(SubgroupHeaderType::Type0x18),
-      0x19 => Ok(SubgroupHeaderType::Type0x19),
-      0x1A => Ok(SubgroupHeaderType::Type0x1A),
-      0x1B => Ok(SubgroupHeaderType::Type0x1B),
-      0x1C => Ok(SubgroupHeaderType::Type0x1C),
-      0x1D => Ok(SubgroupHeaderType::Type0x1D),
-      _ => Err(ParseError::InvalidType {
-        context: "SubgroupHeaderType::try_from(u64)",
-        details: format!("Invalid type, got {value}"),
-      }),
-    }
+    Self::try_new(value)
   }
 }
 
 impl From<SubgroupHeaderType> for u64 {
-  fn from(header_type: SubgroupHeaderType) -> Self {
-    header_type as u64
+  fn from(t: SubgroupHeaderType) -> Self {
+    t.0 as u64
   }
 }
 
@@ -170,67 +195,107 @@ impl From<ObjectStatus> for u64 {
   }
 }
 
-/// Draft-14 Object Datagram Type (0x00-0x07)
+/// Draft-16 Object Datagram Type (bitmask newtype).
 ///
-/// Type encoding uses bit flags:
-/// - Bit 0: Extensions Present (0 = no, 1 = yes)
-/// - Bit 1: End of Group (0 = no, 1 = yes)
-/// - Bit 2: Object ID Absent (0 = present, 1 = absent when Object ID = 0)
+/// Type bit layout (form `0b00X0XXXX`):
+/// - Bit 0 (0x01): EXTENSIONS — Extensions field present
+/// - Bit 1 (0x02): END_OF_GROUP — Last object in group
+/// - Bit 2 (0x04): ZERO_OBJECT_ID — Object ID omitted (assumed 0)
+/// - Bit 3 (0x08): DEFAULT_PRIORITY — Publisher Priority omitted (inherited)
+/// - Bit 5 (0x20): STATUS — Object Status replaces Object Payload
+///
+/// Invalid combinations:
+/// - STATUS (0x20) + END_OF_GROUP (0x02) together → PROTOCOL_VIOLATION
+/// - Types outside the form `0b00X0XXXX` (bit 4, 6, 7 must be 0) → PROTOCOL_VIOLATION
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u64)]
-pub enum ObjectDatagramType {
-  /// 0x00: No Extensions, Not End of Group, Object ID Present
-  Type0x00 = 0x00,
-  /// 0x01: With Extensions, Not End of Group, Object ID Present
-  Type0x01 = 0x01,
-  /// 0x02: No Extensions, End of Group, Object ID Present
-  Type0x02 = 0x02,
-  /// 0x03: With Extensions, End of Group, Object ID Present
-  Type0x03 = 0x03,
-  /// 0x04: No Extensions, Not End of Group, Object ID Absent (Object ID = 0)
-  Type0x04 = 0x04,
-  /// 0x05: With Extensions, Not End of Group, Object ID Absent (Object ID = 0)
-  Type0x05 = 0x05,
-  /// 0x06: No Extensions, End of Group, Object ID Absent (Object ID = 0)
-  Type0x06 = 0x06,
-  /// 0x07: With Extensions, End of Group, Object ID Absent (Object ID = 0)
-  Type0x07 = 0x07,
-}
+pub struct ObjectDatagramType(u8);
 
 impl ObjectDatagramType {
-  /// Check if extensions are present (bit 0)
+  pub const EXTENSIONS: u8 = 0x01;
+  pub const END_OF_GROUP: u8 = 0x02;
+  pub const ZERO_OBJECT_ID: u8 = 0x04;
+  pub const DEFAULT_PRIORITY: u8 = 0x08;
+  pub const STATUS: u8 = 0x20;
+
+  /// Mask for bits that must be zero: bits 4, 6, 7 (form `0b00X0XXXX`).
+  const INVALID_BITS_MASK: u8 = 0xD0;
+
+  /// Validate and create from a raw value.
+  pub fn try_new(value: u64) -> Result<Self, ParseError> {
+    if value > u8::MAX as u64 || (value as u8) & Self::INVALID_BITS_MASK != 0 {
+      return Err(ParseError::InvalidType {
+        context: "ObjectDatagramType::try_new",
+        details: format!("Invalid datagram type {value:#x}, must match form 0b00X0XXXX"),
+      });
+    }
+    let v = value as u8;
+    if v & Self::STATUS != 0 && v & Self::END_OF_GROUP != 0 {
+      return Err(ParseError::ProtocolViolation {
+        context: "ObjectDatagramType::try_new",
+        details: "STATUS and END_OF_GROUP cannot both be set".to_string(),
+      });
+    }
+    Ok(Self(v))
+  }
+
+  /// Get the raw u8 value.
+  pub fn value(&self) -> u8 {
+    self.0
+  }
+
+  /// Check if extensions are present (bit 0).
   pub fn has_extensions(&self) -> bool {
-    (*self as u64) & 0x01 != 0
+    self.0 & Self::EXTENSIONS != 0
   }
 
-  /// Check if this is end of group (bit 1)
+  /// Check if this is end of group (bit 1).
   pub fn is_end_of_group(&self) -> bool {
-    (*self as u64) & 0x02 != 0
+    self.0 & Self::END_OF_GROUP != 0
   }
 
-  /// Check if Object ID field is present (inverted bit 2)
-  pub fn has_object_id(&self) -> bool {
-    (*self as u64) & 0x04 == 0
+  /// Check if Object ID is absent (bit 2 set).
+  /// When true, Object ID is omitted and assumed to be 0.
+  pub fn is_zero_object_id(&self) -> bool {
+    self.0 & Self::ZERO_OBJECT_ID != 0
   }
 
-  /// Create type from properties
+  /// Check if Publisher Priority is omitted (bit 3 set).
+  /// When true, the priority is inherited from the control message.
+  pub fn has_default_priority(&self) -> bool {
+    self.0 & Self::DEFAULT_PRIORITY != 0
+  }
+
+  /// Check if the datagram carries Object Status instead of payload (bit 5 set).
+  pub fn is_status(&self) -> bool {
+    self.0 & Self::STATUS != 0
+  }
+
+  /// Create type from property flags.
+  /// Returns error if STATUS and END_OF_GROUP are both true.
   pub fn from_properties(
     has_extensions: bool,
     end_of_group: bool,
     object_id_is_zero: bool,
-  ) -> Self {
-    let mut type_val: u64 = 0;
+    default_priority: bool,
+    is_status: bool,
+  ) -> Result<Self, ParseError> {
+    let mut v: u8 = 0;
     if has_extensions {
-      type_val |= 0x01;
+      v |= Self::EXTENSIONS;
     }
     if end_of_group {
-      type_val |= 0x02;
+      v |= Self::END_OF_GROUP;
     }
     if object_id_is_zero {
-      type_val |= 0x04;
+      v |= Self::ZERO_OBJECT_ID;
     }
-    // Safe because we only set bits 0-2, resulting in 0x00-0x07
-    Self::try_from(type_val).unwrap()
+    if default_priority {
+      v |= Self::DEFAULT_PRIORITY;
+    }
+    if is_status {
+      v |= Self::STATUS;
+    }
+    Self::try_new(v as u64)
   }
 }
 
@@ -238,67 +303,12 @@ impl TryFrom<u64> for ObjectDatagramType {
   type Error = ParseError;
 
   fn try_from(value: u64) -> Result<Self, Self::Error> {
-    match value {
-      0x00 => Ok(ObjectDatagramType::Type0x00),
-      0x01 => Ok(ObjectDatagramType::Type0x01),
-      0x02 => Ok(ObjectDatagramType::Type0x02),
-      0x03 => Ok(ObjectDatagramType::Type0x03),
-      0x04 => Ok(ObjectDatagramType::Type0x04),
-      0x05 => Ok(ObjectDatagramType::Type0x05),
-      0x06 => Ok(ObjectDatagramType::Type0x06),
-      0x07 => Ok(ObjectDatagramType::Type0x07),
-      _ => Err(ParseError::InvalidType {
-        context: "ObjectDatagramType::try_from(u64)",
-        details: format!("Invalid type, expected 0x00-0x07, got {value:#x}"),
-      }),
-    }
+    Self::try_new(value)
   }
 }
 
 impl From<ObjectDatagramType> for u64 {
   fn from(dtype: ObjectDatagramType) -> Self {
-    dtype as u64
-  }
-}
-
-/// Draft-14 Object Datagram Status Type (0x20-0x21)
-///
-/// Status datagrams always have Object ID present.
-/// - 0x20: Without Extensions
-/// - 0x21: With Extensions
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u64)]
-pub enum ObjectDatagramStatusType {
-  /// 0x20: Without Extensions, Object ID Present
-  WithoutExtensions = 0x20,
-  /// 0x21: With Extensions, Object ID Present
-  WithExtensions = 0x21,
-}
-
-impl ObjectDatagramStatusType {
-  /// Check if extensions are present
-  pub fn has_extensions(&self) -> bool {
-    *self == ObjectDatagramStatusType::WithExtensions
-  }
-}
-
-impl TryFrom<u64> for ObjectDatagramStatusType {
-  type Error = ParseError;
-
-  fn try_from(value: u64) -> Result<Self, Self::Error> {
-    match value {
-      0x20 => Ok(ObjectDatagramStatusType::WithoutExtensions),
-      0x21 => Ok(ObjectDatagramStatusType::WithExtensions),
-      _ => Err(ParseError::InvalidType {
-        context: "ObjectDatagramStatusType::try_from(u64)",
-        details: format!("Invalid type, expected 0x20 or 0x21, got {value:#x}"),
-      }),
-    }
-  }
-}
-
-impl From<ObjectDatagramStatusType> for u64 {
-  fn from(dtype: ObjectDatagramStatusType) -> Self {
-    dtype as u64
+    dtype.0 as u64
   }
 }

@@ -29,7 +29,7 @@ export class SubgroupHeader {
     trackAlias: bigint | number,
     groupId: bigint | number,
     subgroupId: bigint | number | undefined,
-    readonly publisherPriority: number,
+    readonly publisherPriority: number | undefined,
   ) {
     this.trackAlias = BigInt(trackAlias)
     this.groupId = BigInt(groupId)
@@ -54,7 +54,16 @@ export class SubgroupHeader {
       }
       buf.putVI(this.subgroupId)
     }
-    buf.putU8(this.publisherPriority)
+    // Publisher priority is omitted when hasDefaultPriority bit is set
+    if (!SubgroupHeaderType.hasDefaultPriority(this.type)) {
+      if (this.publisherPriority === undefined) {
+        throw new ProtocolViolationError(
+          'SubgroupHeader.serialize',
+          'Publisher_priority field is required when DEFAULT_PRIORITY bit is not set',
+        )
+      }
+      buf.putU8(this.publisherPriority)
+    }
     return buf.freeze()
   }
 
@@ -68,7 +77,11 @@ export class SubgroupHeader {
     } else if (SubgroupHeaderType.isSubgroupIdZero(headerType)) {
       subgroupId = 0n
     }
-    const publisherPriority = buf.getU8()
+    // Publisher priority is omitted when hasDefaultPriority bit is set
+    let publisherPriority: number | undefined
+    if (!SubgroupHeaderType.hasDefaultPriority(headerType)) {
+      publisherPriority = buf.getU8()
+    }
     return new SubgroupHeader(headerType, trackAlias, groupId, subgroupId, publisherPriority)
   }
 }
@@ -77,7 +90,8 @@ if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
   describe('SubgroupHeader', () => {
     test('roundtrip serialization/deserialization', () => {
-      const headerType = SubgroupHeaderType.Type0x14
+      // explicit subgroup ID, no extensions, no end-of-group, priority present
+      const headerType = SubgroupHeaderType.fromProperties(false, 2, false)
       const trackAlias = 87n
       const groupId = 9n
       const subgroupId = 11n
@@ -92,8 +106,26 @@ if (import.meta.vitest) {
       expect(parsed.publisherPriority).toBe(header.publisherPriority)
       expect(frozen.remaining).toBe(0)
     })
+    test('roundtrip with default priority', () => {
+      // subgroupId = 0, default priority (bit 5 set)
+      const headerType = SubgroupHeaderType.fromProperties(false, 0, false, true)
+      const trackAlias = 87n
+      const groupId = 9n
+      const subgroupId = 0n
+      const publisherPriority = undefined // Not included in wire format
+      const header = new SubgroupHeader(headerType, trackAlias, groupId, subgroupId, publisherPriority)
+      const frozen = header.serialize()
+      const parsed = SubgroupHeader.deserialize(frozen)
+      expect(parsed.type).toBe(header.type)
+      expect(parsed.trackAlias).toBe(header.trackAlias)
+      expect(parsed.groupId).toBe(header.groupId)
+      expect(parsed.subgroupId).toBe(header.subgroupId)
+      expect(parsed.publisherPriority).toBe(undefined)
+      expect(frozen.remaining).toBe(0)
+    })
     test('excess roundtrip', () => {
-      const headerType = SubgroupHeaderType.Type0x14
+      // explicit subgroup ID, no extensions, no end-of-group, priority present
+      const headerType = SubgroupHeaderType.fromProperties(false, 2, false)
       const trackAlias = 87n
       const groupId = 9n
       const subgroupId = 11n
@@ -115,7 +147,8 @@ if (import.meta.vitest) {
       expect(Array.from(frozen.getBytes(3))).toEqual([9, 1, 1])
     })
     test('partial message fails', () => {
-      const headerType = SubgroupHeaderType.Type0x14
+      // explicit subgroup ID, no extensions, no end-of-group, priority present
+      const headerType = SubgroupHeaderType.fromProperties(false, 2, false)
       const trackAlias = 87n
       const groupId = 9n
       const subgroupId = 11n

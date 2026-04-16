@@ -16,15 +16,15 @@ use crate::server::session_context::{PendingRequest, SessionContext};
 use crate::server::{client::MOQTClient, session::Session};
 use core::result::Result;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
-use moqtail::model::control::constant::SubscribeNamespaceErrorCode;
+use moqtail::model::control::constant::RequestErrorCode;
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::publish_namespace::PublishNamespace;
-use moqtail::model::control::subscribe_namespace_error::SubscribeNamespaceError;
-use moqtail::model::control::subscribe_namespace_ok::SubscribeNamespaceOk;
+use moqtail::model::control::request_error::RequestError;
+use moqtail::model::control::request_ok::RequestOk;
 use moqtail::model::error::TerminationCode;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 pub async fn handle(
   client: Arc<MOQTClient>,
@@ -39,7 +39,7 @@ pub async fn handle(
         sub_ns.track_namespace_prefix
       );
 
-      // 0. Check for prefix overlap per draft spec (NAMESPACE_PREFIX_OVERLAP)
+      // 0. Check for prefix overlap per draft spec (PREFIX_OVERLAP)
       if let Some(existing_prefix) = context
         .track_manager
         .find_overlapping_namespace_subscription(
@@ -52,14 +52,15 @@ pub async fn handle(
           "SUBSCRIBE_NAMESPACE overlap: new={:?} conflicts with existing={:?}",
           sub_ns.track_namespace_prefix, existing_prefix
         );
-        let err = SubscribeNamespaceError::new(
+        let err = RequestError::new(
           sub_ns.request_id,
-          SubscribeNamespaceErrorCode::NamespacePrefixOverlap,
+          RequestErrorCode::PrefixOverlap,
+          0, //TODO: Maybe decide on another retry interval?
           ReasonPhrase::try_new("Namespace prefix overlaps with existing subscription".to_string())
             .unwrap(),
         );
         handler
-          .send(&ControlMessage::SubscribeNamespaceError(Box::new(err)))
+          .send(&ControlMessage::RequestError(Box::new(err)))
           .await?;
         return Ok(());
       }
@@ -83,15 +84,14 @@ pub async fn handle(
       // TODO(Draft-16 Stream Split): When SUBSCRIBE_NAMESPACE is moved to its own dedicated
       // bidirectional QUIC stream, we MUST remove this request_id from relay_pending_requests
       // when that underlying QUIC stream receives a FIN or RESET_STREAM.
-      // -----------------------------------------------------------
 
       // 2. Send OK back to the subscriber
-      let ok = SubscribeNamespaceOk::new(sub_ns.request_id);
+      let ok = RequestOk::new(sub_ns.request_id, vec![]);
       handler
-        .send(&ControlMessage::SubscribeNamespaceOk(Box::new(ok)))
+        .send(&ControlMessage::RequestOk(Box::new(ok)))
         .await?;
       info!(
-        "Sent SubscribeNamespaceOk for request_id: {}",
+        "Sent RequestOk for SubscribeNamespace request_id: {}",
         sub_ns.request_id
       );
 
@@ -182,6 +182,51 @@ pub async fn handle(
         }
       }
     }
+    ControlMessage::RequestOk(m) => {
+      let msg = *m;
+
+      let mapping = {
+        let mut map = context.relay_pending_requests.write().await;
+        match map.remove(&msg.request_id) {
+          Some(PendingRequest::SubscribeNamespace {
+            client_connection_id,
+            original_request_id,
+          }) => Some((client_connection_id, original_request_id)),
+          Some(_) => {
+            warn!(
+              "Mismatched request type for RequestOk (SubscribeNamespace): {}",
+              msg.request_id
+            );
+            None
+          }
+          None => None,
+        }
+      };
+
+      if let Some((client_connection_id, original_request_id)) = mapping {
+        let manager = context.client_manager.read().await;
+        if let Some(downstream_client) = manager.get(client_connection_id).await {
+          let forwarded_msg = RequestOk::new(original_request_id, msg.parameters);
+
+          info!(
+            "Forwarding RequestOk (for SubscribeNamespace) to Client {}",
+            client_connection_id
+          );
+
+          downstream_client
+            .queue_message(ControlMessage::RequestOk(Box::new(forwarded_msg)))
+            .await;
+        } else {
+          warn!("Downstream client {} disconnected", client_connection_id);
+        }
+      } else {
+        debug!(
+          "SubscribeNamespace handler received RequestOk for untracked ID: {}",
+          msg.request_id
+        );
+      }
+    }
+
     _ => {
       warn!(
         "Unexpected message in subscribe_namespace_handler: {:?}",

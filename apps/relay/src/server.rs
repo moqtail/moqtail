@@ -28,6 +28,7 @@ mod track;
 mod track_cache;
 mod track_manager;
 mod utils;
+mod abr;
 
 use crate::server::session_context::{PendingRequest, UpstreamFetchEvent};
 use crate::server::{config::AppConfig, session::Session};

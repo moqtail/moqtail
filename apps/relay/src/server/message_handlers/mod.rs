@@ -92,13 +92,13 @@ impl MessageHandler {
       ControlMessage::Subscribe(_)
       | ControlMessage::SubscribeOk(_)
       | ControlMessage::SubscribeUpdate(_)
-      | ControlMessage::SubscribeError(_)
       | ControlMessage::Unsubscribe(_)
       | ControlMessage::Switch(_) => {
         subscribe_handler::handle(client.clone(), control_stream_handler, msg, context.clone())
           .await
       }
-      ControlMessage::TrackStatus(_) | ControlMessage::TrackStatusError(_) => {
+      
+      ControlMessage::TrackStatus(_) => {
         track_status_handler::handle(control_stream_handler, msg, context.clone()).await
       }
       ControlMessage::RequestOk(ok_msg) => {
@@ -168,19 +168,92 @@ impl MessageHandler {
       }
       ControlMessage::Publish(_)
       | ControlMessage::PublishDone(_)
-      | ControlMessage::PublishOk(_)
-      | ControlMessage::PublishError(_) => {
+      | ControlMessage::PublishOk(_) => {
         publish_handler::handle(client.clone(), control_stream_handler, msg, context.clone()).await
       }
 
+      ControlMessage::RequestError(err_msg) => {
+        let req_id = err_msg.request_id;
+
+        enum Route {
+          Fetch,
+          Subscribe,
+          TrackStatus,
+          PublishNamespace,
+          SubscribeNamespace,
+          Publish,
+          NotFound,
+        }
+
+        // 1. Peek at the unified map to determine the routing destination
+        let route = {
+          let map = context.relay_pending_requests.read().await;
+          match map.get(&req_id) {
+            Some(PendingRequest::Fetch(_)) => Route::Fetch,
+            Some(PendingRequest::Subscribe(_)) => Route::Subscribe,
+            Some(PendingRequest::TrackStatus(_)) => Route::TrackStatus,
+            Some(PendingRequest::PublishNamespace { .. }) => Route::PublishNamespace,
+            Some(PendingRequest::SubscribeNamespace { .. }) => Route::SubscribeNamespace,
+            Some(PendingRequest::Publish { .. }) => Route::Publish,
+            None => Route::NotFound,
+          }
+        };
+
+        // 2. Dispatch the original message to the correct handler
+        match route {
+          Route::Fetch => {
+            fetch_handler::handle(client.clone(), control_stream_handler, msg, context.clone())
+              .await
+          }
+          Route::Subscribe => {
+            subscribe_handler::handle(client.clone(), control_stream_handler, msg, context.clone())
+              .await
+          }
+          Route::TrackStatus => {
+            track_status_handler::handle(control_stream_handler, msg, context.clone()).await
+          }
+          Route::PublishNamespace => {
+            publish_namespace_handler::handle(
+              client.clone(),
+              control_stream_handler,
+              msg,
+              context.clone(),
+            )
+            .await
+          }
+          Route::SubscribeNamespace => {
+            subscribe_namespace_handler::handle(
+              client.clone(),
+              control_stream_handler,
+              msg,
+              context.clone(),
+            )
+            .await
+          }
+          Route::Publish => {
+            publish_handler::handle(client.clone(), control_stream_handler, msg, context.clone())
+              .await
+          }
+          Route::NotFound => {
+            warn!(
+              "Router received RequestError for untracked request_id: {}",
+              req_id
+            );
+            Ok(())
+          }
+        }
+      }
+
+      // Catch-all for any unhandled control messages
       m => {
-        info!("some message received");
-        let a = m.serialize().unwrap();
-        let buf = Bytes::from_iter(a);
-        utils::print_bytes(&buf);
+        info!("unhandled message received");
+        if let Ok(a) = m.serialize() {
+          let buf = Bytes::from_iter(a);
+          utils::print_bytes(&buf);
+        }
         Ok(())
       }
-    }; // end of if
+    };
 
     if let Err(termination_code) = handling_result {
       Err(termination_code)

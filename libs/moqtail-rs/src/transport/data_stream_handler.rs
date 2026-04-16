@@ -620,6 +620,7 @@ mod tests {
   use crate::model::control::fetch::JoiningFetchProps;
   use crate::model::control::{fetch::Fetch, subscribe::Subscribe};
   use crate::model::data::constant::SubgroupHeaderType;
+  use crate::model::extension_header::object_extension::ObjectExtension;
   use crate::model::parameter::message_parameter::MessageParameter;
   use bytes::Bytes;
   use std::error::Error;
@@ -652,8 +653,12 @@ mod tests {
     let object_id: u64 = 10;
     let publisher_priority: u8 = 255;
     let extension_headers = Some(vec![
-      KeyValuePair::try_new_varint(0, 10).unwrap(),
-      KeyValuePair::try_new_bytes(1, Bytes::from_static(b"wololoo")).unwrap(),
+      ObjectExtension::Unknown {
+        kvp: KeyValuePair::try_new_varint(0, 10).unwrap(),
+      },
+      ObjectExtension::Unknown {
+        kvp: KeyValuePair::try_new_bytes(1, Bytes::from_static(b"wololoo")).unwrap(),
+      },
     ]);
     let object_status = None;
     let payload = Some(Bytes::from_static(
@@ -715,8 +720,12 @@ mod tests {
   fn make_subgroup_object() -> SubgroupObject {
     let object_id: u64 = 10;
     let extension_headers = Some(vec![
-      KeyValuePair::try_new_varint(0, 10).unwrap(),
-      KeyValuePair::try_new_bytes(1, Bytes::from_static(b"wololoo")).unwrap(),
+      ObjectExtension::Unknown {
+        kvp: KeyValuePair::try_new_varint(0, 10).unwrap(),
+      },
+      ObjectExtension::Unknown {
+        kvp: KeyValuePair::try_new_bytes(1, Bytes::from_static(b"wololoo")).unwrap(),
+      },
     ]);
     let object_status = None;
     let payload = Some(Bytes::from_static(b"01239gjawkk92837aldmi"));

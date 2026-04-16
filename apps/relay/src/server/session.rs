@@ -86,7 +86,7 @@ impl Session {
         ));
       }
     };
-    
+
     let mut response_headers: HashMap<String, String> = HashMap::new();
     response_headers.insert("wt-protocol".to_string(), selected_version);
 

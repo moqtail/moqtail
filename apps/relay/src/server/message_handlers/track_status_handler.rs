@@ -18,11 +18,11 @@ use core::result::Result;
 use moqtail::model::error::TerminationCode;
 use moqtail::model::{
   common::reason_phrase::ReasonPhrase,
-  control::constant::SubscribeErrorCode,
+  control::constant::RequestErrorCode,
   control::control_message::ControlMessage,
+  control::request_error::RequestError,
   control::request_ok::RequestOk,
-  control::subscribe::Subscribe, // Needed for the storage hack
-  control::track_status_error::TrackStatusError,
+  control::subscribe::Subscribe,
   parameter::message_parameter::MessageParameter,
 };
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
@@ -90,9 +90,10 @@ pub async fn handle(
         p.clone()
       } else {
         info!("No publisher found for {:?}", track_namespace);
-        let err = TrackStatusError::new(
+        let err = RequestError::new(
           request_id,
-          SubscribeErrorCode::TrackDoesNotExist,
+          RequestErrorCode::DoesNotExist,
+          0, //TODO: Maybe decide on another retry interval?
           ReasonPhrase::try_new("No publisher found".to_string()).unwrap(),
         );
         control_stream_handler.send_impl(&err).await.unwrap();
@@ -199,8 +200,7 @@ pub async fn handle(
       }
       Ok(())
     }
-
-    ControlMessage::TrackStatusError(m) => {
+    ControlMessage::RequestError(m) => {
       info!("received TrackStatusError from Publisher: {:?}", m);
       let msg = *m;
 
@@ -222,12 +222,16 @@ pub async fn handle(
       if let Some(req) = mapping {
         let manager = context.client_manager.read().await;
         if let Some(downstream_client) = manager.get(req.requested_by).await {
-          let forwarded_msg =
-            TrackStatusError::new(req.original_request_id, msg.error_code, msg.reason_phrase);
+          let forwarded_msg = RequestError::new(
+            req.original_request_id, // <--- Restore ID
+            msg.error_code,
+            0, //TODO: Maybe decide on another retry interval?
+            msg.reason_phrase,
+          );
 
           info!("Forwarding TrackStatusError to Client {}", req.requested_by);
           downstream_client
-            .queue_message(ControlMessage::TrackStatusError(Box::new(forwarded_msg)))
+            .queue_message(ControlMessage::RequestError(Box::new(forwarded_msg)))
             .await;
         }
       }

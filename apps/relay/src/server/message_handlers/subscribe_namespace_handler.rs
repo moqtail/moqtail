@@ -16,12 +16,12 @@ use crate::server::session_context::{PendingRequest, SessionContext};
 use crate::server::{client::MOQTClient, session::Session};
 use core::result::Result;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
-use moqtail::model::control::constant::{GroupOrder, SubscribeNamespaceErrorCode};
+use moqtail::model::control::constant::{GroupOrder, RequestErrorCode};
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::publish_namespace::PublishNamespace;
-use moqtail::model::control::request_ok::RequestOk;
+use moqtail::model::control::request_error::RequestError;
 use moqtail::model::control::subscribe::Subscribe;
-use moqtail::model::control::subscribe_namespace_error::SubscribeNamespaceError;
+use moqtail::model::control::request_ok::RequestOk;
 use moqtail::model::error::TerminationCode;
 use moqtail::model::parameter::constant::MessageParameterType;
 use moqtail::model::parameter::message_parameter::{MessageParameter, MessageParameterVecExt};
@@ -42,7 +42,7 @@ pub async fn handle(
         sub_ns.track_namespace_prefix
       );
 
-      // 0. Check for prefix overlap per draft spec (NAMESPACE_PREFIX_OVERLAP)
+      // 0. Check for prefix overlap per draft spec (PREFIX_OVERLAP)
       if let Some(existing_prefix) = context
         .track_manager
         .find_overlapping_namespace_subscription(
@@ -55,14 +55,15 @@ pub async fn handle(
           "SUBSCRIBE_NAMESPACE overlap: new={:?} conflicts with existing={:?}",
           sub_ns.track_namespace_prefix, existing_prefix
         );
-        let err = SubscribeNamespaceError::new(
+        let err = RequestError::new(
           sub_ns.request_id,
-          SubscribeNamespaceErrorCode::NamespacePrefixOverlap,
+          RequestErrorCode::PrefixOverlap,
+          0, //TODO: Maybe decide on another retry interval?
           ReasonPhrase::try_new("Namespace prefix overlaps with existing subscription".to_string())
             .unwrap(),
         );
         handler
-          .send(&ControlMessage::SubscribeNamespaceError(Box::new(err)))
+          .send(&ControlMessage::RequestError(Box::new(err)))
           .await?;
         return Ok(());
       }
@@ -83,7 +84,6 @@ pub async fn handle(
           },
         );
       }
-
       // TODO(Draft-16 Stream Split): When SUBSCRIBE_NAMESPACE is moved to its own dedicated
       // bidirectional QUIC stream, we MUST remove this request_id from relay_pending_requests
       // when that underlying QUIC stream receives a FIN or RESET_STREAM.

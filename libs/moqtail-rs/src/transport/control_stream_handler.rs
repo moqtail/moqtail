@@ -191,7 +191,7 @@ mod tests {
   use crate::model::common::tuple::{Tuple, TupleField};
   use crate::model::common::varint::BufMutVarIntExt;
   use crate::model::control::client_setup::ClientSetup;
-  use crate::model::control::constant::PublishNamespaceErrorCode;
+  use crate::model::control::constant::RequestErrorCode;
   use crate::model::control::constant::{ControlMessageType, GroupOrder};
   use crate::model::control::publish_namespace::PublishNamespace;
   use crate::model::control::publish_namespace_cancel::PublishNamespaceCancel;
@@ -338,13 +338,14 @@ mod tests {
   }
 
   fn create_test_announce_cancel() -> PublishNamespaceCancel {
-    let error_code = PublishNamespaceErrorCode::InternalError;
+    let request_id = 1337;
+    let error_code = RequestErrorCode::InternalError;
     let reason_phrase = ReasonPhrase::try_new("bomboclad".to_string()).unwrap();
-    let track_namespace = Tuple::from_utf8_path("another/valid/track/namespace");
+
     PublishNamespaceCancel {
+      request_id,
       error_code,
       reason_phrase,
-      track_namespace,
     }
   }
 

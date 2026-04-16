@@ -225,9 +225,7 @@ impl ObjectDatagramType {
     if value > u8::MAX as u64 || (value as u8) & Self::INVALID_BITS_MASK != 0 {
       return Err(ParseError::InvalidType {
         context: "ObjectDatagramType::try_new",
-        details: format!(
-          "Invalid datagram type {value:#x}, must match form 0b00X0XXXX"
-        ),
+        details: format!("Invalid datagram type {value:#x}, must match form 0b00X0XXXX"),
       });
     }
     let v = value as u8;

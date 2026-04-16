@@ -18,6 +18,8 @@ use crate::server::session::Session;
 use crate::server::session_context::{PendingRequest, SessionContext};
 use crate::server::track::{Track, TrackStatus};
 use core::result::Result;
+use moqtail::model::control::constant::RequestErrorCode;
+use moqtail::model::control::request_error::RequestError;
 use moqtail::model::control::subscribe::Subscribe;
 use moqtail::model::error::TerminationCode;
 use moqtail::model::parameter::message_parameter::{MessageParameter, MessageParameterVecExt};
@@ -113,10 +115,11 @@ async fn handle_subscribe_message(
       "no publisher found for track namespace: {:?}",
       track_namespace
     );
-    // send SubscribeError
-    let subscribe_error = moqtail::model::control::subscribe_error::SubscribeError::new(
+    // send RequestError
+    let subscribe_error = RequestError::new(
       sub.request_id,
-      moqtail::model::control::constant::SubscribeErrorCode::TrackDoesNotExist,
+      RequestErrorCode::DoesNotExist,
+      0, //TODO: Maybe decide on another retry interval?
       ReasonPhrase::try_new("Unknown track namespace".to_string()).unwrap(),
     );
     control_stream_handler
@@ -226,12 +229,13 @@ async fn handle_subscribe_message(
         reason_phrase,
       } => {
         info!(
-          "Track rejected, sending SubscribeError to subscriber {}",
+          "Track rejected, sending RequestError to subscriber {}",
           client.connection_id
         );
-        let subscribe_error = moqtail::model::control::subscribe_error::SubscribeError::new(
+        let subscribe_error = RequestError::new(
           sub.request_id,
           error_code,
+          0, //TODO: Maybe decide on another retry interval?
           reason_phrase,
         );
         control_stream_handler.send_impl(&subscribe_error).await
@@ -507,11 +511,11 @@ async fn handle_subscribe_update_message(
 async fn handle_subscribe_error_message(
   _client: Arc<MOQTClient>,
   _control_stream_handler: &mut ControlStreamHandler,
-  subscribe_error_message: moqtail::model::control::subscribe_error::SubscribeError,
+  subscribe_error_message: RequestError,
   context: Arc<SessionContext>,
 ) -> Result<(), TerminationCode> {
   info!(
-    "received SubscribeError message: {:?}",
+    "received RequestError message: {:?}",
     subscribe_error_message
   );
   let msg = subscribe_error_message;
@@ -530,7 +534,7 @@ async fn handle_subscribe_error_message(
         return Ok(());
       }
       None => {
-        warn!("SubscribeError for unknown request id: {:?}", request_id);
+        warn!("RequestError for unknown request id: {:?}", request_id);
         return Ok(());
       }
     }
@@ -547,25 +551,26 @@ async fn handle_subscribe_error_message(
       .await;
   }
 
-  // Send SubscribeError to the FIRST subscriber (the creator)
+  // Send RequestError to the FIRST subscriber (the creator)
   {
     let subscriber = {
       let mngr = context.client_manager.read().await;
       mngr.get(sub_request.requested_by).await
     };
     if let Some(subscriber) = subscriber {
-      let subscribe_error = moqtail::model::control::subscribe_error::SubscribeError::new(
+      let subscribe_error = RequestError::new(
         sub_request.original_request_id,
         msg.error_code,
+        0, //TODO: Maybe decide on another retry interval?
         msg.reason_phrase.clone(),
       );
       subscriber
-        .queue_message(ControlMessage::SubscribeError(Box::new(subscribe_error)))
+        .queue_message(ControlMessage::RequestError(Box::new(subscribe_error)))
         .await;
     }
   }
 
-  // Send SubscribeError to ALL pending subscribers
+  // Send RequestError to ALL pending subscribers
   if let Some(track_arc) = &track_arc {
     let track = track_arc.read().await;
     let pending = {
@@ -579,13 +584,14 @@ async fn handle_subscribe_error_message(
         mngr.get(subscriber_connection_id).await
       };
       if let Some(subscriber) = subscriber {
-        let subscribe_error = moqtail::model::control::subscribe_error::SubscribeError::new(
+        let subscribe_error = RequestError::new(
           subscriber_request_id,
           msg.error_code,
+          0, //TODO: Maybe decide on another retry interval?
           msg.reason_phrase.clone(),
         );
         subscriber
-          .queue_message(ControlMessage::SubscribeError(Box::new(subscribe_error)))
+          .queue_message(ControlMessage::RequestError(Box::new(subscribe_error)))
           .await;
       }
     }
@@ -745,7 +751,7 @@ pub async fn handle(
     ControlMessage::SubscribeUpdate(m) => {
       handle_subscribe_update_message(client, control_stream_handler, *m, context).await
     }
-    ControlMessage::SubscribeError(m) => {
+    ControlMessage::RequestError(m) => {
       handle_subscribe_error_message(client, control_stream_handler, *m, context).await
     }
     ControlMessage::Switch(m) => {

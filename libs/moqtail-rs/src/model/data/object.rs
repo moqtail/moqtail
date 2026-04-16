@@ -88,9 +88,9 @@ impl Object {
 
   pub fn try_from_subgroup(
     subgroup_obj: SubgroupObject,
-    track_alias: u64,            // Context from SubgroupHeader
-    group_id: u64,               // Context from SubgroupHeader
-    subgroup_id: Option<u64>,    // Context from SubgroupHeader
+    track_alias: u64,               // Context from SubgroupHeader
+    group_id: u64,                  // Context from SubgroupHeader
+    subgroup_id: Option<u64>,       // Context from SubgroupHeader
     publisher_priority: Option<u8>, // Context from SubgroupHeader; None when using DEFAULT_PRIORITY
   ) -> Result<Self, ParseError> {
     Ok(Object {

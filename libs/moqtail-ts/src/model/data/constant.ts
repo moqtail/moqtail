@@ -75,14 +75,10 @@ export namespace ObjectDatagramType {
   export function tryFrom(value: number | bigint): ObjectDatagramType {
     const v = typeof value === 'bigint' ? Number(value) : value
     if ((v & INVALID_BITS_MASK) !== 0) {
-      throw new Error(
-        `Invalid ObjectDatagramType: ${value}, must match form 0b00X0XXXX`,
-      )
+      throw new Error(`Invalid ObjectDatagramType: ${value}, must match form 0b00X0XXXX`)
     }
     if ((v & 0x22) === 0x22) {
-      throw new Error(
-        `Invalid ObjectDatagramType: ${value}, STATUS and END_OF_GROUP cannot both be set`,
-      )
+      throw new Error(`Invalid ObjectDatagramType: ${value}, STATUS and END_OF_GROUP cannot both be set`)
     }
     return v as ObjectDatagramType
   }

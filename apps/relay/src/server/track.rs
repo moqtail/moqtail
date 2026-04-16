@@ -13,18 +13,17 @@
 // limitations under the License.
 
 use super::track_cache::TrackCache;
-use crate::server::client::MOQTClient;
 use crate::server::config::AppConfig;
 use crate::server::object_logger::ObjectLogger;
 use crate::server::stream_id::StreamId;
 use crate::server::subscription::Subscription;
 use crate::server::subscription_manager::SubscriptionManager;
 use crate::server::utils;
+use crate::server::{client::MOQTClient, subscription::SubscriptionOrigin};
 use anyhow::Result;
 use moqtail::model::common::location::Location;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::control::constant::RequestErrorCode;
-use moqtail::model::control::subscribe::Subscribe;
 use moqtail::model::data::constant::ObjectForwardingPreference;
 use moqtail::model::data::datagram::Datagram;
 use moqtail::model::data::full_track_name::FullTrackName;
@@ -218,9 +217,10 @@ impl Track {
   pub async fn add_subscription(
     &self,
     subscriber: Arc<MOQTClient>,
-    subscribe_message: Subscribe,
+    origin_message: impl Into<SubscriptionOrigin>,
     is_switch: bool,
   ) -> Result<Arc<RwLock<Subscription>>, anyhow::Error> {
+    let origin_enum = origin_message.into();
     // Check if subscription already exists
     if let Some(sub_guard) = self
       .subscription_manager
@@ -248,7 +248,7 @@ impl Track {
 
     let subscription = self
       .subscription_manager
-      .add_subscription(subscriber, subscribe_message, self.cache.clone())
+      .add_subscription(subscriber, origin_enum, self.cache.clone())
       .await?;
 
     if is_switch {

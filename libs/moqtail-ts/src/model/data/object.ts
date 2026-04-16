@@ -65,12 +65,7 @@ export class MoqtObject {
       subgroupIdMode = 2 // explicit mode
     }
 
-    return SubgroupHeaderType.fromProperties(
-      hasExtensions,
-      subgroupIdMode,
-      containsEnd,
-      useDefaultPriority,
-    )
+    return SubgroupHeaderType.fromProperties(hasExtensions, subgroupIdMode, containsEnd, useDefaultPriority)
   }
 
   isDatagram(): boolean {
@@ -228,19 +223,11 @@ export class MoqtObject {
     }
 
     const alias = BigInt(trackAlias)
-    const priority = defaultPriority !== undefined && defaultPriority === this.publisherPriority
-      ? null
-      : this.publisherPriority
+    const priority =
+      defaultPriority !== undefined && defaultPriority === this.publisherPriority ? null : this.publisherPriority
 
     if (this.hasStatus()) {
-      return Datagram.newStatus(
-        alias,
-        this.groupId,
-        this.objectId,
-        priority,
-        this.extensionHeaders,
-        this.objectStatus,
-      )
+      return Datagram.newStatus(alias, this.groupId, this.objectId, priority, this.extensionHeaders, this.objectStatus)
     } else {
       if (!this.payload) {
         throw new ProtocolViolationError(

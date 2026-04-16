@@ -97,7 +97,7 @@ impl MessageHandler {
         subscribe_handler::handle(client.clone(), control_stream_handler, msg, context.clone())
           .await
       }
-      
+
       ControlMessage::TrackStatus(_) => {
         track_status_handler::handle(control_stream_handler, msg, context.clone()).await
       }

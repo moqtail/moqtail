@@ -346,14 +346,7 @@ if (import.meta.vitest) {
         KeyValuePair.tryNewVarInt(0, 10),
         KeyValuePair.tryNewBytes(1, new TextEncoder().encode('wololoo')),
       ]
-      const datagram = Datagram.newStatus(
-        trackAlias,
-        9n,
-        10n,
-        255,
-        extensionHeaders,
-        ObjectStatus.EndOfTrack,
-      )
+      const datagram = Datagram.newStatus(trackAlias, 9n, 10n, 255, extensionHeaders, ObjectStatus.EndOfTrack)
       expect(datagram.type).toBe(ObjectDatagramType.Type0x21) // Status, with extensions, has objectId, no default priority
       const frozen = datagram.serialize()
       const parsed = Datagram.deserialize(frozen)

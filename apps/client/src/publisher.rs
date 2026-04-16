@@ -306,7 +306,7 @@ async fn send_datagrams(
         Some(0), // publisher_priority
         None,    // extension_headers
         Bytes::from(payload),
-        false,   // end_of_group
+        false, // end_of_group
       );
 
       let serialized = datagram_obj.serialize()?;

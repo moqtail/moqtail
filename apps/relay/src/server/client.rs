@@ -99,7 +99,7 @@ impl MOQTClient {
     for _ in 0..SEND_STREAM_PARTITION_COUNT {
       send_streams.push(Arc::new(RwLock::new(HashMap::new())));
     }
-    let (abr_tx, abr_rx) = tokio::sync::mpsc::channel(100); 
+    let (abr_tx, abr_rx) = tokio::sync::mpsc::channel(100);
     let (decision_tx, decision_rx) = tokio::sync::watch::channel(0);
     MOQTClient {
       connection_id,
@@ -118,7 +118,7 @@ impl MOQTClient {
       switch_context: SwitchContext::new(),
       abr_tx,
       abr_rx: Arc::new(Mutex::new(Some(abr_rx))),
-      
+
       // 👉 Initialize the Gatekeepers
       group_decisions: Arc::new(RwLock::new(HashMap::new())),
       decision_tx,
@@ -173,65 +173,117 @@ impl MOQTClient {
 
       let mut min_rtt: u128 = u128::MAX;
       let mut hold_timer_groups: u8 = 0;
-      let mut group_arrival_counts: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
+      let mut group_arrival_counts: std::collections::HashMap<u64, usize> =
+        std::collections::HashMap::new();
 
+      // --- 4-TIER ABR CONSTANTS ---
       let panic_threshold_ms: u128 = 50;
-      let hold_duration_groups: u8 = 6; 
+      let hold_duration_groups: u8 = 6;
 
-      info!("Deterministic ABR Controller started for Client ID: {}", self.connection_id);
+      info!(
+        "4-Track Deterministic ABR Controller started for Client ID: {}",
+        self.connection_id
+      );
 
       while let Some(group_id) = abr_rx.recv().await {
         let mut available_tracks: Vec<moqtail::model::data::full_track_name::FullTrackName> =
-          track_manager.track_aliases.read().await.values().cloned().collect();
-        available_tracks.sort_by(|a, b| format!("{}", a).cmp(&format!("{}", b)));
+          track_manager
+            .track_aliases
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect();
 
-        if available_tracks.len() < 2 { continue; }
+        if available_tracks.len() < 4 {
+          continue;
+        }
 
-        // 1. Wait for both tracks of THIS group to pause at the gate
+        // 👉 THE FIX: Sort by actual quality, NOT alphabetically!
+        available_tracks.sort_by_key(|t| {
+          let name = format!("{}", t);
+          if name.contains("360p") {
+            0
+          } else if name.contains("480p") {
+            1
+          } else if name.contains("720p") {
+            2
+          } else if name.contains("1080p") {
+            3
+          } else {
+            4
+          }
+        });
+
+        // 1. Wait for ALL 4 tracks of THIS group to pause at the gate
         let count = group_arrival_counts.entry(group_id).or_insert(0);
         *count += 1;
-        if *count < 2 { continue; }
+        if *count < 4 {
+          continue;
+        }
 
         group_arrival_counts.retain(|&k, _| k >= group_id);
 
         // 2. THE MATH
         let current_rtt = self.connection.stats_rtt().as_millis();
-        if current_rtt > 0 && current_rtt < min_rtt { min_rtt = current_rtt; }
-        
-        let queueing_delay = if current_rtt > min_rtt { current_rtt - min_rtt } else { 0 };
-        if hold_timer_groups > 0 { hold_timer_groups -= 1; }
+        if current_rtt > 0 && current_rtt < min_rtt {
+          min_rtt = current_rtt;
+        }
 
-        let target_track = if queueing_delay > panic_threshold_ms {
-          if hold_timer_groups == 0 { warn!("⚠️ ABR PANIC: Queue Debt {} ms", queueing_delay); }
-          hold_timer_groups = hold_duration_groups;
-          &available_tracks[0]
-        } else if hold_timer_groups > 0 {
-          &available_tracks[0]
+        let queueing_delay = if current_rtt > min_rtt {
+          current_rtt - min_rtt
         } else {
-          &available_tracks[1]
+          0
+        };
+        if hold_timer_groups > 0 {
+          hold_timer_groups -= 1;
+        }
+
+        // 👉 4-TIER DECISION LOGIC
+        let target_track = if queueing_delay > panic_threshold_ms {
+          if hold_timer_groups == 0 {
+            warn!("⚠️ ABR PANIC: Queue Debt {} ms", queueing_delay);
+          }
+          hold_timer_groups = hold_duration_groups;
+          &available_tracks[0] // 360p
+        } else if hold_timer_groups > 0 {
+          &available_tracks[0] // Hold at 360p
+        } else if queueing_delay > 35 {
+          &available_tracks[1] // 480p (Minor congestion)
+        } else if queueing_delay > 15 {
+          &available_tracks[2] // 720p (Slight jitter)
+        } else {
+          &available_tracks[3] // 1080p (Pristine network)
         };
 
         let raw_bandwidth = self.connection.bandwidth().unwrap_or(0);
-        crate::telemetry::log_abr_decision(group_id, raw_bandwidth, current_rtt, &target_track.to_string());
+        crate::telemetry::log_abr_decision(
+          group_id,
+          raw_bandwidth,
+          current_rtt,
+          &target_track.to_string(),
+        );
 
         // 3. UNLOCK THE GATE
         let target_alias = {
-            let aliases = track_manager.track_aliases.read().await;
-            aliases.iter().find(|(_, name)| *name == target_track).map(|(alias, _)| *alias)
+          let aliases = track_manager.track_aliases.read().await;
+          aliases
+            .iter()
+            .find(|(_, name)| *name == target_track)
+            .map(|(alias, _)| *alias)
         };
 
         if let Some(alias) = target_alias {
-            let mut decisions = self.group_decisions.write().await;
-            decisions.insert(group_id, alias);
-            decisions.retain(|&k, _| k >= group_id.saturating_sub(5)); // Keep RAM clean
+          let mut decisions = self.group_decisions.write().await;
+          decisions.insert(group_id, alias);
+          decisions.retain(|&k, _| k >= group_id.saturating_sub(5));
         }
 
-        // Broadcast to the waiting Data Plane threads that they can check the gate!
         let _ = self.decision_tx.send(group_id);
       }
     });
   }
-  
+
   /// Calculate the partition index for stream distribution across buckets.
   /// This method implements a load balancing strategy to distribute streams
   /// across multiple stream buckets to improve performance and reduce contention.
@@ -404,33 +456,32 @@ impl MOQTClient {
     object: Bytes,
     the_stream: Option<Arc<Mutex<SendStream>>>,
   ) -> Result<(), anyhow::Error> {
-    
     let group_id = stream_id.group_id.unwrap_or(0);
 
     // 1. Wake up the ABR controller if this is the start of a group
     if object_id == 0 {
-        let _ = self.abr_tx.try_send(group_id); 
+      let _ = self.abr_tx.try_send(group_id);
     }
 
     // 2. PAUSE TIME: Wait for the ABR controller to decide this group's fate
     let mut rx = self.decision_rx.clone();
     loop {
-        {
-            let decisions = self.group_decisions.read().await;
-            if let Some(&chosen_alias) = decisions.get(&group_id) {
-                if stream_id.track_alias != chosen_alias {
-                    // This track lost. Vaporize the data!
-                    return Ok(()); 
-                }
-                // This track won! Break the loop and forward it.
-                break; 
-            }
+      {
+        let decisions = self.group_decisions.read().await;
+        if let Some(&chosen_alias) = decisions.get(&group_id) {
+          if stream_id.track_alias != chosen_alias {
+            // This track lost. Vaporize the data!
+            return Ok(());
+          }
+          // This track won! Break the loop and forward it.
+          break;
         }
-        
-        // Sleep until the ABR controller broadcasts a new decision
-        if rx.changed().await.is_err() {
-            break; // Client disconnected
-        }
+      }
+
+      // Sleep until the ABR controller broadcasts a new decision
+      if rx.changed().await.is_err() {
+        break; // Client disconnected
+      }
     }
 
     debug!(

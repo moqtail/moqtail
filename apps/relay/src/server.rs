@@ -28,7 +28,7 @@ mod track;
 mod track_cache;
 mod track_manager;
 mod utils;
-
+mod abr;
 use crate::server::{config::AppConfig, session::Session};
 use anyhow::Result;
 use client_manager::ClientManager;

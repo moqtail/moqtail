@@ -16,9 +16,7 @@ pub(crate) mod switch_context;
 pub(crate) mod track_subscription_map;
 
 use crate::server::{
-  client::track_subscription_map::TrackSubscriptionMap,
-  stream_id::{StreamId, StreamType},
-  utils,
+  abr, client::track_subscription_map::TrackSubscriptionMap, stream_id::{StreamId, StreamType}, utils
 };
 use anyhow::Result;
 #[allow(dead_code)]
@@ -168,120 +166,7 @@ impl MOQTClient {
     self: Arc<Self>,
     track_manager: Arc<crate::server::track_manager::TrackManager>,
   ) {
-    tokio::spawn(async move {
-      let mut abr_rx = self.abr_rx.lock().await.take().expect("ABR started");
-
-      let mut min_rtt: u128 = u128::MAX;
-      let mut hold_timer_groups: u8 = 0;
-      let mut group_arrival_counts: std::collections::HashMap<u64, usize> =
-        std::collections::HashMap::new();
-
-      // --- 4-TIER ABR CONSTANTS ---
-      let panic_threshold_ms: u128 = 50;
-      let hold_duration_groups: u8 = 6;
-
-      info!(
-        "4-Track Deterministic ABR Controller started for Client ID: {}",
-        self.connection_id
-      );
-
-      while let Some(group_id) = abr_rx.recv().await {
-        let mut available_tracks: Vec<moqtail::model::data::full_track_name::FullTrackName> =
-          track_manager
-            .track_aliases
-            .read()
-            .await
-            .values()
-            .cloned()
-            .collect();
-
-        if available_tracks.len() < 4 {
-          continue;
-        }
-
-        // 👉 THE FIX: Sort by actual quality, NOT alphabetically!
-        available_tracks.sort_by_key(|t| {
-          let name = format!("{}", t);
-          if name.contains("360p") {
-            0
-          } else if name.contains("480p") {
-            1
-          } else if name.contains("720p") {
-            2
-          } else if name.contains("1080p") {
-            3
-          } else {
-            4
-          }
-        });
-
-        // 1. Wait for ALL 4 tracks of THIS group to pause at the gate
-        let count = group_arrival_counts.entry(group_id).or_insert(0);
-        *count += 1;
-        if *count < 4 {
-          continue;
-        }
-
-        group_arrival_counts.retain(|&k, _| k >= group_id);
-
-        // 2. THE MATH
-        let current_rtt = self.connection.stats_rtt().as_millis();
-        if current_rtt > 0 && current_rtt < min_rtt {
-          min_rtt = current_rtt;
-        }
-
-        let queueing_delay = if current_rtt > min_rtt {
-          current_rtt - min_rtt
-        } else {
-          0
-        };
-        if hold_timer_groups > 0 {
-          hold_timer_groups -= 1;
-        }
-
-        // 👉 4-TIER DECISION LOGIC
-        let target_track = if queueing_delay > panic_threshold_ms {
-          if hold_timer_groups == 0 {
-            warn!("⚠️ ABR PANIC: Queue Debt {} ms", queueing_delay);
-          }
-          hold_timer_groups = hold_duration_groups;
-          &available_tracks[0] // 360p
-        } else if hold_timer_groups > 0 {
-          &available_tracks[0] // Hold at 360p
-        } else if queueing_delay > 35 {
-          &available_tracks[1] // 480p (Minor congestion)
-        } else if queueing_delay > 15 {
-          &available_tracks[2] // 720p (Slight jitter)
-        } else {
-          &available_tracks[3] // 1080p (Pristine network)
-        };
-
-        let raw_bandwidth = self.connection.bandwidth().unwrap_or(0);
-        crate::telemetry::log_abr_decision(
-          group_id,
-          raw_bandwidth,
-          current_rtt,
-          &target_track.to_string(),
-        );
-
-        // 3. UNLOCK THE GATE
-        let target_alias = {
-          let aliases = track_manager.track_aliases.read().await;
-          aliases
-            .iter()
-            .find(|(_, name)| *name == target_track)
-            .map(|(alias, _)| *alias)
-        };
-
-        if let Some(alias) = target_alias {
-          let mut decisions = self.group_decisions.write().await;
-          decisions.insert(group_id, alias);
-          decisions.retain(|&k, _| k >= group_id.saturating_sub(5));
-        }
-
-        let _ = self.decision_tx.send(group_id);
-      }
-    });
+    abr::start_abr_controller(self, track_manager);
   }
 
   /// Calculate the partition index for stream distribution across buckets.

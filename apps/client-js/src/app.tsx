@@ -66,6 +66,26 @@ export function App() {
     }
   }, []);
 
+  const initializePlaybackSession = useCallback(async () => {
+    if (!videoRef.current) return null;
+
+    const player = new Player({
+      relayUrl,
+      namespace: Tuple.fromUtf8Path(namespace),
+      receiveCatalogViaSubscribe: true,
+    });
+    playerRef.current = player;
+
+    const catalog = await player.initialize();
+    const allTracks = sortTracks(catalog.getTracks());
+    setTracks(allTracks);
+
+    await player.attachMedia(videoRef.current);
+    bufferRef.current = new MSEBuffer(videoRef.current);
+
+    return { player, allTracks };
+  }, [relayUrl, namespace]);
+
   const handleConnect = useCallback(async () => {
     if (!videoRef.current) return;
     setStatus('connecting');
@@ -77,22 +97,15 @@ export function App() {
     await disposePlayer();
 
     try {
-      const player = new Player({
-        relayUrl,
-        namespace: Tuple.fromUtf8Path(namespace),
-        receiveCatalogViaSubscribe: true,
-      });
-      playerRef.current = player;
+      const session = await initializePlaybackSession();
+      if (!session) return;
 
-      const catalog = await player.initialize();
-      const allTracks = sortTracks(catalog.getTracks());
-      setTracks(allTracks);
+      const { player, allTracks } = session;
 
       const firstVideo = allTracks.find(t => t.role === 'video');
       if (firstVideo) {
         setSelectedVideo(firstVideo.name);
         setStatus('restarting');
-        await player.attachMedia(videoRef.current);
         await player.addMediaTrack(firstVideo.name);
         await player.startMedia();
         setStatus('playing');
@@ -104,7 +117,7 @@ export function App() {
       setStatus('error');
       await disposePlayer();
     }
-  }, [relayUrl, namespace, disposePlayer]);
+  }, [disposePlayer, initializePlaybackSession]);
 
   const startPlayback = useCallback(
     async (videoTrack: string | null, audioTrack: string | null) => {
@@ -119,18 +132,10 @@ export function App() {
       await disposePlayer();
 
       try {
-        const player = new Player({
-          relayUrl,
-          namespace: Tuple.fromUtf8Path(namespace),
-          receiveCatalogViaSubscribe: true,
-        });
-        playerRef.current = player;
+        const session = await initializePlaybackSession();
+        if (!session) return;
 
-        const catalog = await player.initialize();
-        setTracks(catalog.getTracks());
-
-        await player.attachMedia(videoRef.current);
-        bufferRef.current = new MSEBuffer(videoRef.current);
+        const { player } = session;
 
         if (videoTrack) await player.addMediaTrack(videoTrack);
         if (audioTrack) await player.addMediaTrack(audioTrack);
@@ -143,7 +148,7 @@ export function App() {
         await disposePlayer();
       }
     },
-    [relayUrl, namespace, disposePlayer],
+    [disposePlayer, initializePlaybackSession],
   );
 
   const handleTrackChange = useCallback(

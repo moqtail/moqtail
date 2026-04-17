@@ -17,9 +17,8 @@ use anyhow::Result;
 use moqtail::model::common::location::Location;
 use moqtail::model::common::pair::KeyValuePair;
 use moqtail::model::common::tuple::{Tuple, TupleField};
-use moqtail::model::control::constant::GroupOrder;
 use moqtail::model::control::control_message::ControlMessage;
-use moqtail::model::control::fetch::{Fetch, StandAloneFetchProps};
+use moqtail::model::control::fetch::{Fetch, StandaloneFetchProps};
 use moqtail::model::control::fetch_cancel::FetchCancel;
 use moqtail::transport::data_stream_handler::{FetchRequest, RecvDataStream};
 use std::collections::BTreeMap;
@@ -48,7 +47,7 @@ pub async fn run(moq: MoqConnection, config: FetchConfig) -> Result<()> {
   // Send Fetch request
   let request_id = 0u64;
   let ns = Tuple::from_utf8_path(&config.namespace);
-  let standalone_fetch_props = StandAloneFetchProps {
+  let standalone_fetch_props = StandaloneFetchProps {
     track_namespace: ns,
     track_name: TupleField::from_utf8(&config.track_name),
     start_location: Location::new(config.start_group, config.start_object),
@@ -57,13 +56,7 @@ pub async fn run(moq: MoqConnection, config: FetchConfig) -> Result<()> {
 
   let parameters = vec![KeyValuePair::try_new_varint(100, 200)?];
 
-  let fetch = Fetch::new_standalone(
-    request_id,
-    1, // subscriber_priority
-    GroupOrder::Ascending,
-    standalone_fetch_props,
-    parameters,
-  );
+  let fetch = Fetch::new_standalone(request_id, standalone_fetch_props, parameters);
 
   info!(
     "Sending Fetch: groups {}:{} to {}:{}",
@@ -146,7 +139,7 @@ pub async fn run(moq: MoqConnection, config: FetchConfig) -> Result<()> {
     Ok(ControlMessage::FetchOk(m)) => {
       info!("Received FetchOk: {:?}", m);
     }
-    Ok(ControlMessage::FetchError(m)) => {
+    Ok(ControlMessage::RequestError(m)) => {
       error!("Received FetchError: {:?}", m);
     }
     Ok(m) => {

@@ -1,5 +1,5 @@
 /**
- * Copyright 2025 The MOQtail Authors
+ * Copyright 2026 The MOQtail Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,29 +14,27 @@
  * limitations under the License.
  */
 
-import { SubscribeNamespace, SubscribeNamespaceError, SubscribeNamespaceOk } from '@/model'
+import { SubscribeNamespace, SubscribeNamespaceError, RequestOk } from '@/model'
 
-export class SubscribeNamespaceRequest implements PromiseLike<SubscribeNamespaceOk | SubscribeNamespaceError> {
+export class SubscribeNamespaceRequest implements PromiseLike<RequestOk | SubscribeNamespaceError> {
   public readonly requestId: bigint
   public readonly message: SubscribeNamespace
   private _resolve!: (
-    value: SubscribeNamespaceOk | SubscribeNamespaceError | PromiseLike<SubscribeNamespaceOk | SubscribeNamespaceError>,
+    value: RequestOk | SubscribeNamespaceError | PromiseLike<RequestOk | SubscribeNamespaceError>,
   ) => void
   private _reject!: (reason?: any) => void
-  private promise: Promise<SubscribeNamespaceOk | SubscribeNamespaceError>
+  private promise: Promise<RequestOk | SubscribeNamespaceError>
 
   constructor(msg: SubscribeNamespace) {
     this.requestId = msg.requestId
     this.message = msg
-    this.promise = new Promise<SubscribeNamespaceOk | SubscribeNamespaceError>((resolve, reject) => {
+    this.promise = new Promise<RequestOk | SubscribeNamespaceError>((resolve, reject) => {
       this._resolve = resolve
       this._reject = reject
     })
   }
 
-  public resolve(
-    value: SubscribeNamespaceOk | SubscribeNamespaceError | PromiseLike<SubscribeNamespaceOk | SubscribeNamespaceError>,
-  ): void {
+  public resolve(value: RequestOk | SubscribeNamespaceError | PromiseLike<RequestOk | SubscribeNamespaceError>): void {
     this._resolve(value)
   }
 
@@ -44,11 +42,8 @@ export class SubscribeNamespaceRequest implements PromiseLike<SubscribeNamespace
     this._reject(reason)
   }
 
-  public then<TResult1 = SubscribeNamespaceOk | SubscribeNamespaceError, TResult2 = never>(
-    onfulfilled?:
-      | ((value: SubscribeNamespaceOk | SubscribeNamespaceError) => TResult1 | PromiseLike<TResult1>)
-      | undefined
-      | null,
+  public then<TResult1 = RequestOk | SubscribeNamespaceError, TResult2 = never>(
+    onfulfilled?: ((value: RequestOk | SubscribeNamespaceError) => TResult1 | PromiseLike<TResult1>) | undefined | null,
     onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | undefined | null,
   ): PromiseLike<TResult1 | TResult2> {
     return this.promise.then(onfulfilled, onrejected)
@@ -56,11 +51,11 @@ export class SubscribeNamespaceRequest implements PromiseLike<SubscribeNamespace
 
   public catch<TResult = never>(
     onrejected?: ((reason: any) => TResult | PromiseLike<TResult>) | undefined | null,
-  ): Promise<SubscribeNamespaceOk | SubscribeNamespaceError | TResult> {
+  ): Promise<RequestOk | SubscribeNamespaceError | TResult> {
     return this.promise.catch(onrejected)
   }
 
-  public finally(onfinally?: (() => void) | undefined | null): Promise<SubscribeNamespaceOk | SubscribeNamespaceError> {
+  public finally(onfinally?: (() => void) | undefined | null): Promise<RequestOk | SubscribeNamespaceError> {
     return this.promise.finally(onfinally)
   }
 }

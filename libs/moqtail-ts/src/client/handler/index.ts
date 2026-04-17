@@ -14,10 +14,12 @@
  * limitations under the License.
  */
 
+export * from './publish'
+export * from './publish_ok'
+export * from './publish_error'
 export * from './publish_namespace'
 export * from './publish_namespace_cancel'
 export * from './publish_namespace_error'
-export * from './publish_namespace_ok'
 export * from './fetch'
 export * from './fetch_cancel'
 export * from './fetch_error'
@@ -28,7 +30,7 @@ export * from './requests_blocked'
 export * from './subscribe'
 export * from './subscribe_namespace'
 export * from './subscribe_namespace_error'
-export * from './subscribe_namespace_ok'
+export * from './request_ok'
 export * from './publish_done'
 export * from './subscribe_error'
 export * from './subscribe_ok'

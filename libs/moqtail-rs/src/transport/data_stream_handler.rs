@@ -134,7 +134,7 @@ impl SendDataStream {
         buf.extend_from_slice(&header.serialize()?);
       }
       HeaderInfo::Subgroup { header, .. } => {
-        buf.extend_from_slice(&header.serialize()?);
+        buf.extend_from_slice(&header.serialize(None)?);
       }
     }
 
@@ -616,10 +616,12 @@ mod tests {
   use crate::model::common::location::Location;
   use crate::model::common::pair::KeyValuePair;
   use crate::model::common::tuple::{Tuple, TupleField};
-  use crate::model::control::constant::{FetchType, FilterType, GroupOrder};
+  use crate::model::control::constant::{FetchType, GroupOrder};
   use crate::model::control::fetch::JoiningFetchProps;
   use crate::model::control::{fetch::Fetch, subscribe::Subscribe};
   use crate::model::data::constant::SubgroupHeaderType;
+  use crate::model::extension_header::object_extension::ObjectExtension;
+  use crate::model::parameter::message_parameter::MessageParameter;
   use bytes::Bytes;
   use std::error::Error;
   use std::sync::Arc;
@@ -629,26 +631,18 @@ mod tests {
   use wtransport::{ClientConfig, Connection, Endpoint, Identity, RecvStream, SendStream};
 
   fn make_fetch_header_and_request() -> (FetchHeader, Fetch) {
-    let request_id = 161803;
-    let subscriber_priority = 15u8;
-    let group_order = GroupOrder::Descending;
-    let fetch_type = FetchType::AbsoluteFetch;
-    let joining_fetch_props = JoiningFetchProps {
-      joining_request_id: 119,
-      joining_start: 73,
-    };
-    let parameters = vec![
-      KeyValuePair::try_new_varint(4444, 12321).unwrap(),
-      KeyValuePair::try_new_bytes(1, Bytes::from_static(b"fetch me ok")).unwrap(),
-    ];
     let fetch = Fetch {
-      request_id,
-      subscriber_priority,
-      group_order,
-      fetch_type,
+      request_id: 161803,
+      fetch_type: FetchType::AbsoluteFetch,
       standalone_fetch_props: None,
-      joining_fetch_props: Some(joining_fetch_props),
-      parameters,
+      joining_fetch_props: Some(JoiningFetchProps {
+        joining_request_id: 119,
+        joining_start: 73,
+      }),
+      parameters: vec![
+        KeyValuePair::try_new_varint(4444, 12321).unwrap(),
+        KeyValuePair::try_new_bytes(1, Bytes::from_static(b"fetch me ok")).unwrap(),
+      ],
     };
     (FetchHeader { request_id: 161803 }, fetch)
   }
@@ -659,8 +653,12 @@ mod tests {
     let object_id: u64 = 10;
     let publisher_priority: u8 = 255;
     let extension_headers = Some(vec![
-      KeyValuePair::try_new_varint(0, 10).unwrap(),
-      KeyValuePair::try_new_bytes(1, Bytes::from_static(b"wololoo")).unwrap(),
+      ObjectExtension::Unknown {
+        kvp: KeyValuePair::try_new_varint(0, 10).unwrap(),
+      },
+      ObjectExtension::Unknown {
+        kvp: KeyValuePair::try_new_bytes(1, Bytes::from_static(b"wololoo")).unwrap(),
+      },
     ]);
     let object_status = None;
     let payload = Some(Bytes::from_static(
@@ -687,36 +685,27 @@ mod tests {
     let request_id = 128242;
     let track_namespace = Tuple::from_utf8_path("nein/nein/nein");
     let track_name = TupleField::from_utf8("track_42");
-    let subscriber_priority = 31;
-    let group_order = GroupOrder::Original;
-    let forward = true;
-    let filter_type = FilterType::AbsoluteRange;
     let start_location = Location {
       group: 81,
       object: 81,
     };
-    let end_group = 25;
-    let subscribe_parameters = vec![
-      KeyValuePair::try_new_varint(0, 10).unwrap(),
-      KeyValuePair::try_new_bytes(1, Bytes::from_static(b"I'll sync you up")).unwrap(),
-    ];
-    let subscribe = Subscribe {
+    let subscribe = Subscribe::new_absolute_range(
       request_id,
       track_namespace,
       track_name,
-      subscriber_priority,
-      group_order,
-      forward,
-      filter_type,
-      start_location: Some(start_location),
-      end_group: Some(end_group),
-      subscribe_parameters,
-    };
-    let header_type = SubgroupHeaderType::Type0x15;
+      start_location,
+      25,
+      vec![
+        MessageParameter::new_subscriber_priority(31),
+        MessageParameter::new_group_order(GroupOrder::Original),
+        MessageParameter::new_forward(true),
+      ],
+    );
+    let header_type = SubgroupHeaderType::try_new(0x15).unwrap();
     let track_alias = 999;
     let group_id = 9;
     let subgroup_id = Some(11);
-    let publisher_priority = 255;
+    let publisher_priority = Some(255);
     let subgroup_header = SubgroupHeader {
       header_type,
       track_alias,
@@ -731,8 +720,12 @@ mod tests {
   fn make_subgroup_object() -> SubgroupObject {
     let object_id: u64 = 10;
     let extension_headers = Some(vec![
-      KeyValuePair::try_new_varint(0, 10).unwrap(),
-      KeyValuePair::try_new_bytes(1, Bytes::from_static(b"wololoo")).unwrap(),
+      ObjectExtension::Unknown {
+        kvp: KeyValuePair::try_new_varint(0, 10).unwrap(),
+      },
+      ObjectExtension::Unknown {
+        kvp: KeyValuePair::try_new_bytes(1, Bytes::from_static(b"wololoo")).unwrap(),
+      },
     ]);
     let object_status = None;
     let payload = Some(Bytes::from_static(b"01239gjawkk92837aldmi"));

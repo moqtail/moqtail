@@ -18,8 +18,12 @@ import { ProtocolViolationError } from '@/model/error'
 import { FetchError } from '../../model/control'
 import { FetchRequest } from '../request/fetch'
 import { ControlMessageHandler } from './handler'
+import { createLogger } from '../../util/logger'
+
+const logger = createLogger('handler/fetch_error')
 
 export const handlerFetchError: ControlMessageHandler<FetchError> = async (client, msg) => {
+  logger.warn('requestId, code, reason', msg.requestId, msg.errorCode, msg.reasonPhrase)
   const request = client.requests.get(msg.requestId)
   if (request instanceof FetchRequest) {
     request.resolve(msg)

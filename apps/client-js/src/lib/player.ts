@@ -15,7 +15,6 @@
  */
 
 import {
-  DRAFT_14,
   FetchError,
   FetchType,
   FilterType,
@@ -84,7 +83,6 @@ export class Player {
       // Initialize the client and fetch the catalog
       this.client = await MOQtailClient.new({
         url: this.#options.relayUrl,
-        supportedVersions: [DRAFT_14],
       });
     } catch (error) {
       logger.error('media', 'Failed to connect to relay', (error as Error).message);
@@ -332,7 +330,7 @@ export class Player {
         groupOrder: GroupOrder.Original,
         priority: 0,
         typeAndProps: {
-          type: FetchType.StandAlone,
+          type: FetchType.Standalone,
           props: {
             fullTrackName: getFullTrackName(this.#options.namespace, 'catalog'),
             startLocation: this.#options.catalogLocation[0],

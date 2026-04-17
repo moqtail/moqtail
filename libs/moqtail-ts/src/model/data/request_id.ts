@@ -44,14 +44,6 @@ export class RequestIdMap {
         `Full track name already exists for requestId: ${requestId}`,
       )
     }
-    if (this.nameToRequestId.has(name)) {
-      const existingRequestId = this.nameToRequestId.get(name)
-      if (existingRequestId === requestId) return
-      throw new RequestIdError(
-        'RequestIdMap::addMapping(existingRequestId)',
-        `A requestId already exists for full track name: ${name}`,
-      )
-    }
     this.requestIdToName.set(requestId, name)
     this.nameToRequestId.set(name, requestId)
   }

@@ -46,7 +46,6 @@ export class SubgroupObject {
     return new SubgroupObject(objectId, extensionHeaders, null, payload)
   }
 
-  // TODO: object delta encoding is missing here...
   serialize(previousObjectId: bigint | undefined): FrozenByteBuffer {
     // the first object's object id is encoded as is
     // for the subsequent objects, the object id is encoded

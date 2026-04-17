@@ -15,9 +15,9 @@
  */
 
 export * from './setup_parameter'
-export * from './version_parameter'
+export * from './message_parameter'
 export * from './parameter'
 export * from './constant'
 export * from './common'
 export * from './setup'
-export * from './version'
+export * from './message'

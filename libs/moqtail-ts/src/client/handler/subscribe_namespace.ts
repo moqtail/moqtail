@@ -14,16 +14,19 @@
  * limitations under the License.
  */
 
-import { SubscribeNamespace, SubscribeNamespaceOk } from '../../model/control'
+import { SubscribeNamespace, RequestOk } from '../../model/control'
 import { ControlMessageHandler } from './handler'
+import { createLogger } from '../../util/logger'
+
+const logger = createLogger('handler/subscribe_namespace')
 
 export const handlerSubscribeNamespace: ControlMessageHandler<SubscribeNamespace> = async (client, msg) => {
+  logger.log('namespace', msg.trackNamespacePrefix.toUtf8Path())
   // Bubble the event up to the application layer
   if (client.onPeerSubscribeNamespace) {
     client.onPeerSubscribeNamespace(msg)
   }
 
-  // Implicit Consent: Automatically acknowledge the namespace subscription.
-  const okMsg = new SubscribeNamespaceOk(msg.requestId)
+  const okMsg = new RequestOk(msg.requestId)
   await client.controlStream.send(okMsg)
 }

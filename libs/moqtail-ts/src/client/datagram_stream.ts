@@ -14,9 +14,11 @@
  * limitations under the License.
  */
 
-import { DatagramObject, DatagramStatus } from '../model/data'
+import { Datagram } from '../model/data'
 import { MoqtObject, FullTrackName } from '../model/data'
-import { ProtocolViolationError } from '../model/error/error'
+import { createLogger } from '../util/logger'
+import { FrozenByteBuffer } from '@/model'
+const logger = createLogger('datagram_stream')
 
 /**
  * Sends MoqtObjects as WebTransport datagrams.
@@ -31,12 +33,12 @@ import { ProtocolViolationError } from '../model/error/error'
 export class SendDatagramStream {
   readonly #writer: WritableStreamDefaultWriter<Uint8Array>
   readonly #trackAlias: bigint
-  readonly onDataSent?: (data: DatagramObject | DatagramStatus) => void
+  readonly onDataSent?: (data: Datagram) => void
 
   constructor(
     writer: WritableStreamDefaultWriter<Uint8Array>,
     trackAlias: bigint,
-    onDataSent?: (data: DatagramObject | DatagramStatus) => void,
+    onDataSent?: (data: Datagram) => void,
   ) {
     this.#writer = writer
     this.#trackAlias = trackAlias
@@ -54,7 +56,7 @@ export class SendDatagramStream {
   static async new(
     writeStream: WritableStream<Uint8Array>,
     trackAlias: bigint,
-    onDataSent?: (data: DatagramObject | DatagramStatus) => void,
+    onDataSent?: (data: Datagram) => void,
   ): Promise<SendDatagramStream> {
     const writer = writeStream.getWriter()
     return new SendDatagramStream(writer, trackAlias, onDataSent)
@@ -72,44 +74,30 @@ export class SendDatagramStream {
   static fromWriter(
     writer: WritableStreamDefaultWriter<Uint8Array>,
     trackAlias: bigint,
-    onDataSent?: (data: DatagramObject | DatagramStatus) => void,
+    onDataSent?: (data: Datagram) => void,
   ): SendDatagramStream {
     return new SendDatagramStream(writer, trackAlias, onDataSent)
   }
 
   /**
    * Write a MoqtObject as a datagram.
-   * Converts to DatagramObject or DatagramStatus automatically.
+   * Converts to Datagram automatically based on object state.
    *
    * @param object - MoqtObject to send (must have Datagram forwarding preference)
-   * @throws ProtocolViolationError if object is not datagram-compatible
    */
   async write(object: MoqtObject): Promise<void> {
-    let serialized: Uint8Array
-
-    if (object.hasStatus()) {
-      const datagramStatus = object.tryIntoDatagramStatus(this.#trackAlias)
-      serialized = datagramStatus.serialize().toUint8Array()
-      console.log(
-        `[SendDatagramStream] Writing status datagram: trackAlias=${this.#trackAlias}, size=${serialized.byteLength}`,
-      )
-      if (this.onDataSent) this.onDataSent(datagramStatus)
-    } else if (object.hasPayload()) {
-      const datagramObject = object.tryIntoDatagramObject(this.#trackAlias)
-      serialized = datagramObject.serialize().toUint8Array()
-      console.log(
-        `[SendDatagramStream] Writing object datagram: trackAlias=${this.#trackAlias}, group=${object.location?.group}, obj=${object.location?.object}, payloadSize=${object.payload?.byteLength}, serializedSize=${serialized.byteLength}`,
-      )
-      if (this.onDataSent) this.onDataSent(datagramObject)
-    } else {
-      throw new ProtocolViolationError('SendDatagramStream.write', 'MoqtObject must have either payload or status')
-    }
+    const datagram = object.tryIntoDatagram(this.#trackAlias)
+    const serialized = datagram.serialize().toUint8Array()
+    logger.log(
+      `Writing datagram: trackAlias=${this.#trackAlias}, group=${object.location?.group}, obj=${object.location?.object}, size=${serialized.byteLength}`,
+    )
+    if (this.onDataSent) this.onDataSent(datagram)
 
     try {
       await this.#writer.write(serialized)
-      console.log(`[SendDatagramStream] Successfully wrote ${serialized.byteLength} bytes to WebTransport datagram`)
+      logger.log(`Successfully wrote ${serialized.byteLength} bytes to WebTransport datagram`)
     } catch (err) {
-      console.error(`[SendDatagramStream] ERROR writing datagram:`, err)
+      logger.error(`ERROR writing datagram:`, err)
       throw err
     }
   }
@@ -136,8 +124,7 @@ export class SendDatagramStream {
  * Parallel to RecvStream but for datagram-based delivery.
  *
  * Automatically handles:
- * - DatagramObject parsing (objects with payloads)
- * - DatagramStatus parsing (status-only objects)
+ * - Datagram parsing (both payload and status datagrams)
  * - Track alias to full track name resolution
  *
  * @example
@@ -156,12 +143,12 @@ export class RecvDatagramStream {
   readonly stream: ReadableStream<MoqtObject>
   readonly #reader: ReadableStreamDefaultReader<Uint8Array>
   readonly #trackAliasResolver: (trackAlias: bigint) => FullTrackName
-  readonly onDataReceived?: (data: DatagramObject | DatagramStatus) => void
+  readonly onDataReceived?: (data: Datagram) => void
 
   private constructor(
     reader: ReadableStreamDefaultReader<Uint8Array>,
     trackAliasResolver: (trackAlias: bigint) => FullTrackName,
-    onDataReceived?: (data: DatagramObject | DatagramStatus) => void,
+    onDataReceived?: (data: Datagram) => void,
   ) {
     this.#reader = reader
     this.#trackAliasResolver = trackAliasResolver
@@ -184,7 +171,7 @@ export class RecvDatagramStream {
   static async new(
     readStream: ReadableStream<Uint8Array>,
     trackAliasResolver: (trackAlias: bigint) => FullTrackName,
-    onDataReceived?: (data: DatagramObject | DatagramStatus) => void,
+    onDataReceived?: (data: Datagram) => void,
   ): Promise<RecvDatagramStream> {
     const reader = readStream.getReader()
     return new RecvDatagramStream(reader, trackAliasResolver, onDataReceived)
@@ -205,39 +192,15 @@ export class RecvDatagramStream {
         }
 
         try {
-          // Try to parse as datagram (peek at first byte to determine type)
-          // Draft-14 type values:
-          // - 0x00-0x07: OBJECT_DATAGRAM (payload datagrams)
-          // - 0x20-0x21: OBJECT_DATAGRAM_STATUS (status datagrams)
-          const firstByte = datagramBytes[0]
-          const isStatus = firstByte === 0x20 || firstByte === 0x21
+          const datagram = Datagram.deserialize(new FrozenByteBuffer(datagramBytes))
+          if (this.onDataReceived) this.onDataReceived(datagram)
 
-          let moqtObject: MoqtObject
-
-          if (isStatus) {
-            // DatagramStatus (0x20 or 0x21)
-            const datagramStatus = DatagramStatus.deserialize(
-              new (await import('../model/common/byte_buffer')).FrozenByteBuffer(datagramBytes),
-            )
-            if (this.onDataReceived) this.onDataReceived(datagramStatus)
-
-            const fullTrackName = this.#trackAliasResolver(datagramStatus.trackAlias)
-            moqtObject = MoqtObject.fromDatagramStatus(datagramStatus, fullTrackName)
-          } else {
-            // DatagramObject (0x00-0x07)
-            const datagramObject = DatagramObject.deserialize(
-              new (await import('../model/common/byte_buffer')).FrozenByteBuffer(datagramBytes),
-            )
-            if (this.onDataReceived) this.onDataReceived(datagramObject)
-
-            const fullTrackName = this.#trackAliasResolver(datagramObject.trackAlias)
-            moqtObject = MoqtObject.fromDatagramObject(datagramObject, fullTrackName)
-          }
-
+          const fullTrackName = this.#trackAliasResolver(datagram.trackAlias)
+          const moqtObject = MoqtObject.fromDatagram(datagram, fullTrackName)
           controller.enqueue(moqtObject)
         } catch (error) {
           // Log but don't break the stream - individual datagrams may be corrupt
-          console.warn('Failed to parse datagram:', error)
+          logger.warn('Failed to parse datagram:', error)
           continue
         }
       }

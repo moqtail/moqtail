@@ -17,12 +17,11 @@ use std::fmt;
 use bytes::Bytes;
 
 use crate::model::common::location::Location;
-use crate::model::common::pair::KeyValuePair;
 use crate::model::error::ParseError;
+use crate::model::extension_header::object_extension::ObjectExtension;
 
 use super::constant::{ObjectForwardingPreference, ObjectStatus};
-use super::datagram_object::DatagramObject;
-use super::datagram_status::DatagramStatus;
+use super::datagram::Datagram;
 use super::fetch_object::FetchObject;
 use super::subgroup_object::SubgroupObject;
 
@@ -34,7 +33,7 @@ pub struct Object {
   pub forwarding_preference: ObjectForwardingPreference,
   pub subgroup_id: Option<u64>,
   pub status: ObjectStatus,
-  pub extensions: Option<Vec<KeyValuePair>>,
+  pub extensions: Option<Vec<ObjectExtension>>,
   pub payload: Option<Bytes>,
 }
 impl fmt::Debug for Object {
@@ -53,10 +52,22 @@ impl fmt::Debug for Object {
 }
 
 impl Object {
-  /// Convert from DatagramObject.
+  /// Convert from a Datagram object.
   /// Returns (Object, end_of_group) since end_of_group is datagram-specific.
-  pub fn try_from_datagram(datagram: DatagramObject) -> Result<(Self, bool), ParseError> {
+  /// When `publisher_priority` is None (DEFAULT_PRIORITY), `default_priority` is used.
+  pub fn try_from_datagram(
+    datagram: Datagram,
+    default_priority: u8,
+  ) -> Result<(Self, bool), ParseError> {
     let end_of_group = datagram.end_of_group;
+    let priority = datagram.publisher_priority.unwrap_or(default_priority);
+
+    let (status, payload) = if let Some(object_status) = datagram.object_status {
+      (object_status, None)
+    } else {
+      (ObjectStatus::Normal, datagram.payload)
+    };
+
     Ok((
       Object {
         track_alias: datagram.track_alias,
@@ -64,39 +75,23 @@ impl Object {
           group: datagram.group_id,
           object: datagram.object_id,
         },
-        publisher_priority: datagram.publisher_priority,
+        publisher_priority: priority,
         forwarding_preference: ObjectForwardingPreference::Datagram,
-        subgroup_id: None, // Datagrams don't have subgroup ID in canonical form
-        status: ObjectStatus::Normal, // Datagrams always imply Normal status
-        extensions: datagram.extension_headers, // Directly use the parsed extensions
-        payload: Some(datagram.payload),
+        subgroup_id: None,
+        status,
+        extensions: datagram.extension_headers,
+        payload,
       },
       end_of_group,
     ))
   }
 
-  pub fn try_from_datagram_status(status_msg: DatagramStatus) -> Result<Self, ParseError> {
-    Ok(Object {
-      track_alias: status_msg.track_alias,
-      location: Location {
-        group: status_msg.group_id,
-        object: status_msg.object_id,
-      },
-      publisher_priority: status_msg.publisher_priority,
-      forwarding_preference: ObjectForwardingPreference::Datagram,
-      subgroup_id: None,
-      status: status_msg.object_status,
-      extensions: status_msg.extension_headers,
-      payload: None,
-    })
-  }
-
   pub fn try_from_subgroup(
     subgroup_obj: SubgroupObject,
-    track_alias: u64,         // Context from SubgroupHeader
-    group_id: u64,            // Context from SubgroupHeader
-    subgroup_id: Option<u64>, // Context from SubgroupHeader
-    publisher_priority: u8,   // Context from SubgroupHeader
+    track_alias: u64,               // Context from SubgroupHeader
+    group_id: u64,                  // Context from SubgroupHeader
+    subgroup_id: Option<u64>,       // Context from SubgroupHeader
+    publisher_priority: Option<u8>, // Context from SubgroupHeader; None when using DEFAULT_PRIORITY
   ) -> Result<Self, ParseError> {
     Ok(Object {
       track_alias,
@@ -104,7 +99,7 @@ impl Object {
         group: group_id,
         object: subgroup_obj.object_id,
       },
-      publisher_priority,
+      publisher_priority: publisher_priority.unwrap_or(0), // Default to 0 if not specified
       forwarding_preference: ObjectForwardingPreference::Subgroup,
       subgroup_id,
       status: subgroup_obj.object_status.unwrap_or(ObjectStatus::Normal),
@@ -131,84 +126,71 @@ impl Object {
 }
 
 impl Object {
-  /// Convert to DatagramObject for wire transmission.
+  /// Convert to a Datagram object for wire transmission.
   ///
   /// # Arguments
   /// * `track_alias` - Track alias to use
-  /// * `end_of_group` - Draft-14: Whether this is the last object in the group
+  /// * `end_of_group` - Whether this is the last object in the group
+  /// * `default_priority` - If provided and matches self.publisher_priority, omit priority on wire (DEFAULT_PRIORITY bit)
   pub fn try_into_datagram(
     self,
     track_alias: u64,
     end_of_group: bool,
-  ) -> Result<DatagramObject, ParseError> {
+    default_priority: Option<u8>,
+  ) -> Result<Datagram, ParseError> {
     if self.forwarding_preference != ObjectForwardingPreference::Datagram {
       return Err(ParseError::CastingError {
         context: "Object::try_into_datagram(forwarding_preference)",
         from_type: "Object",
-        to_type: "ObjectDatagram",
+        to_type: "Datagram",
         details: "Forwarding preference must be Datagram".to_string(),
       });
     }
+
+    // Determine whether to omit priority on wire
+    let publisher_priority =
+      if default_priority.is_some() && default_priority == Some(self.publisher_priority) {
+        None
+      } else {
+        Some(self.publisher_priority)
+      };
+
     if self.status != ObjectStatus::Normal {
-      return Err(ParseError::CastingError {
-        context: "Object::try_into_datagram(status)",
+      // Status datagram
+      if self.payload.is_some() {
+        return Err(ParseError::CastingError {
+          context: "Object::try_into_datagram(payload)",
+          from_type: "Object",
+          to_type: "Datagram",
+          details: "Payload must be None for non-Normal status".to_string(),
+        });
+      }
+      Ok(Datagram::new_status(
+        track_alias,
+        self.location.group,
+        self.location.object,
+        publisher_priority,
+        self.extensions,
+        self.status,
+      ))
+    } else {
+      // Payload datagram
+      let payload = self.payload.ok_or(ParseError::CastingError {
+        context: "Object::try_into_datagram(payload)",
         from_type: "Object",
-        to_type: "ObjectDatagram",
-        details: "Object status must be Normal".to_string(),
-      });
+        to_type: "Datagram",
+        details: "Payload cannot be empty".to_string(),
+      })?;
+      Ok(Datagram::new_payload(
+        track_alias,
+        self.location.group,
+        self.location.object,
+        publisher_priority,
+        self.extensions,
+        payload,
+        end_of_group,
+      ))
     }
-    let payload = self.payload.ok_or(ParseError::CastingError {
-      context: "Object::try_into_datagram(payload)",
-      from_type: "Object",
-      to_type: "ObjectDatagram",
-      details: "Payload cannot be empty".to_string(),
-    })?;
-
-    Ok(DatagramObject {
-      track_alias,
-      group_id: self.location.group,
-      object_id: self.location.object,
-      publisher_priority: self.publisher_priority,
-      extension_headers: self.extensions,
-      payload,
-      end_of_group,
-    })
-  }
-
-  pub fn try_into_datagram_status(self, track_alias: u64) -> Result<DatagramStatus, ParseError> {
-    if self.forwarding_preference != ObjectForwardingPreference::Datagram {
-      return Err(ParseError::CastingError {
-        context: "Object::try_into_datagram_status(forwarding_preference)",
-        from_type: "Object",
-        to_type: "DatagramStatus",
-        details: "Forwarding preference must be Datagram".to_string(),
-      });
-    }
-    if self.status == ObjectStatus::Normal {
-      return Err(ParseError::CastingError {
-        context: "Object::try_into_datagram_status(status)",
-        from_type: "Object",
-        to_type: "DatagramStatus",
-        details: "Object status must not be Normal".to_string(),
-      });
-    }
-    if self.payload.is_some() {
-      return Err(ParseError::CastingError {
-        context: "Object::try_into_datagram_status(payload)",
-        from_type: "Object",
-        to_type: "DatagramStatus",
-        details: "Payload must be None for non-Normal status".to_string(),
-      });
-    }
-
-    Ok(DatagramStatus {
-      track_alias,
-      group_id: self.location.group,
-      object_id: self.location.object,
-      publisher_priority: self.publisher_priority,
-      extension_headers: self.extensions,
-      object_status: self.status,
-    })
   }
 
   pub fn try_into_subgroup(self) -> Result<SubgroupObject, ParseError> {

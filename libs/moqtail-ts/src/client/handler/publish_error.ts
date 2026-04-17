@@ -18,8 +18,12 @@ import { ProtocolViolationError } from '@/model'
 import { PublishError } from '../../model/control'
 import { PublishRequest } from '../request/publish'
 import { ControlMessageHandler } from './handler'
+import { createLogger } from '../../util/logger'
+
+const logger = createLogger('handler/publish_error')
 
 export const handlerPublishError: ControlMessageHandler<PublishError> = async (client, msg) => {
+  logger.warn('requestId, code, reason', msg.requestId, msg.errorCode, msg.errorReason)
   const request = client.requests.get(msg.requestId)
   if (request instanceof PublishRequest) {
     request.resolve(msg)

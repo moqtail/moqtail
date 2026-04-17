@@ -17,9 +17,9 @@
 import { CastingError } from '../error'
 import { ClientSetup, ServerSetup } from '../control'
 /**
- * 32 bit MOQT Draft-14 version number exchanged in {@link ClientSetup} and {@link ServerSetup}
+ * Protocol string array exchanged in wt-available-protocols header
  */
-export const DRAFT_14 = 0xff00000e
+export const SUPPORTED_VERSIONS = ['moqt-16']
 
 /**
  * @public
@@ -46,15 +46,13 @@ export enum ControlMessageType {
   FetchError = 0x19,
   FetchCancel = 0x17,
   TrackStatus = 0x0d,
-  TrackStatusOk = 0x0e,
   TrackStatusError = 0x0f,
   PublishNamespace = 0x06,
-  PublishNamespaceOk = 0x07,
+  RequestOk = 0x07,
   PublishNamespaceError = 0x08,
   PublishNamespaceDone = 0x09,
   PublishNamespaceCancel = 0x0c,
   SubscribeNamespace = 0x11,
-  SubscribeNamespaceOk = 0x12,
   SubscribeNamespaceError = 0x13,
   UnsubscribeNamespace = 0x14,
   Publish = 0x1d,
@@ -109,12 +107,10 @@ export function controlMessageTypeFromBigInt(v: bigint): ControlMessageType {
       return ControlMessageType.FetchCancel
     case 0x0dn:
       return ControlMessageType.TrackStatus
-    case 0x0en:
-      return ControlMessageType.TrackStatus
     case 0x06n:
       return ControlMessageType.PublishNamespace
     case 0x07n:
-      return ControlMessageType.PublishNamespaceOk
+      return ControlMessageType.RequestOk
     case 0x08n:
       return ControlMessageType.PublishNamespaceError
     case 0x09n:
@@ -123,8 +119,6 @@ export function controlMessageTypeFromBigInt(v: bigint): ControlMessageType {
       return ControlMessageType.PublishNamespaceCancel
     case 0x11n:
       return ControlMessageType.SubscribeNamespace
-    case 0x12n:
-      return ControlMessageType.SubscribeNamespaceOk
     case 0x13n:
       return ControlMessageType.SubscribeNamespaceError
     case 0x14n:
@@ -221,7 +215,7 @@ export function filterTypeFromBigInt(v: bigint): FilterType {
  * Fetch request types for MOQT protocol.
  */
 export enum FetchType {
-  StandAlone = 0x1,
+  Standalone = 0x1,
   Relative = 0x2,
   Absolute = 0x3,
 }
@@ -235,7 +229,7 @@ export enum FetchType {
 export function fetchTypeFromBigInt(v: bigint): FetchType {
   switch (v) {
     case 0x1n:
-      return FetchType.StandAlone
+      return FetchType.Standalone
     case 0x2n:
       return FetchType.Relative
     case 0x3n:
@@ -465,6 +459,8 @@ export enum PublishDoneStatusCode {
   GoingAway = 0x4,
   Expired = 0x5,
   TooFarBehind = 0x6,
+  UpdateFailed = 0x8,
+  MalformedTrack = 0x12,
 }
 
 /**
@@ -489,6 +485,10 @@ export function publishDoneStatusCodeFromBigInt(v: bigint): PublishDoneStatusCod
       return PublishDoneStatusCode.Expired
     case 0x6n:
       return PublishDoneStatusCode.TooFarBehind
+    case 0x8n:
+      return PublishDoneStatusCode.UpdateFailed
+    case 0x12n:
+      return PublishDoneStatusCode.MalformedTrack
     default:
       throw new Error(`Invalid PublishDoneStatusCode: ${v}`)
   }

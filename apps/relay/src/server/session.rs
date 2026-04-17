@@ -15,15 +15,20 @@
 use anyhow::Result;
 use bytes::Bytes;
 use moqtail::model::{
-  control::{constant, control_message::ControlMessage, server_setup::ServerSetup},
-  data::{constant::ObjectForwardingPreference, datagram_object::DatagramObject},
+  control::{
+    constant::SUPPORTED_VERSIONS, control_message::ControlMessage, server_setup::ServerSetup,
+  },
+  data::{constant::ObjectForwardingPreference, datagram::Datagram},
   error::TerminationCode,
 };
 use moqtail::transport::{
   control_stream_handler::ControlStreamHandler,
   data_stream_handler::{HeaderInfo, RecvDataStream},
 };
-use std::sync::{Arc, atomic::AtomicU64};
+use std::{
+  collections::HashMap,
+  sync::{Arc, atomic::AtomicU64},
+};
 use tokio::sync::RwLock;
 use tracing::{Instrument, debug, error, info, info_span, warn};
 use wtransport::{RecvStream, SendStream, endpoint::IncomingSession, error::ConnectionError};
@@ -44,25 +49,60 @@ impl Session {
   pub async fn new(incoming_session: IncomingSession, server: Server) -> Result<Session> {
     let session_request = incoming_session.await?;
 
+    let remote_addr = session_request.remote_address();
+    let origin = session_request.origin();
+    let authority = session_request.authority();
+    let path = session_request.path();
+    let user_agent = session_request.user_agent();
+    let headers = session_request.headers();
+
     info!(
-      "New session: Authority: '{}', Path: '{}', ",
-      session_request.authority(),
-      session_request.path(),
+      "New session:
+      Remote Address: '{:?}'
+      Origin: '{:?}'
+      Authority: '{}', 
+      Path: '{}'
+      User-Agent: '{:?}' 
+      Headers: '{:?}'
+      ",
+      remote_addr, origin, authority, path, user_agent, headers
     );
+
+    let client_protocols = Self::parse_available_protocols(headers);
+    info!(
+      "Relay supported protocols: {} - Client supported protocols: {:?}",
+      SUPPORTED_VERSIONS, client_protocols
+    );
+
+    let selected_version = match Self::select_protocol(&client_protocols) {
+      Some(v) => {
+        info!("Selected protocol version: {}", v);
+        v.to_string()
+      }
+      None => {
+        session_request.forbidden().await;
+        return Err(anyhow::anyhow!(
+          "No mutually supported protocol version found"
+        ));
+      }
+    };
+
+    let mut response_headers: HashMap<String, String> = HashMap::new();
+    response_headers.insert("wt-protocol".to_string(), selected_version);
+
+    // in the headers, we expect wt-available-protocols
 
     let client_manager = server.client_manager.clone();
     let track_manager = server.track_manager.clone();
     let server_config = server.app_config;
-    let relay_fetch_requests = server.relay_fetch_requests.clone();
-    let relay_subscribe_requests = server.relay_subscribe_requests.clone();
-    let relay_track_status_requests = server.relay_track_status_requests.clone();
+    let relay_pending_requests = server.relay_pending_requests.clone();
     let relay_next_request_id = server.relay_next_request_id.clone();
-    let connection = session_request.accept().await?;
+    let connection = session_request
+      .accept_with_headers(response_headers)
+      .await?;
 
     let request_maps = RequestMaps {
-      relay_fetch_requests,
-      relay_subscribe_requests,
-      relay_track_status_requests,
+      relay_pending_requests,
     };
 
     let context = Arc::new(SessionContext::new(
@@ -137,9 +177,9 @@ impl Session {
       .await
     {
       Ok(client) => client,
-      Err(_) => {
-        context.connection.close(0u32.into(), b"Negotiation failed");
-        return Err(TerminationCode::VersionNegotiationFailed);
+      Err(e) => {
+        context.connection.close(0u32.into(), b"Setup failed");
+        return Err(e);
       }
     };
 
@@ -290,19 +330,19 @@ impl Session {
             // Parse the datagram
             let bytes = Bytes::from(datagram_bytes.payload().to_vec());
             let mut bytes = bytes;
-            match DatagramObject::deserialize(&mut bytes) {
+            match Datagram::deserialize(&mut bytes) {
               Ok(datagram_obj) => {
-                debug!("Parsed datagram object: track_alias={}, group_id={}, object_id={}",
+                debug!("Parsed datagram: track_alias={}, group_id={}, object_id={}",
                        datagram_obj.track_alias, datagram_obj.group_id, datagram_obj.object_id);
 
-                if let Some(track) = context_clone.track_manager.get_track_by_alias(datagram_obj.track_alias).await {
+                if let Some(track) = context_clone.track_manager.get_track_by_alias(context_clone.connection_id, datagram_obj.track_alias).await {
                   let track = track.read().await;
                   // Set forwarding preference to Datagram
                   track.set_forwarding_preference(ObjectForwardingPreference::Datagram).await;
 
-                  // Call new_datagram_object
-                  if let Err(e) = track.new_datagram_object(&datagram_obj).await {
-                    error!("Failed to process datagram object: {:?}", e);
+                  // Call new_datagram
+                  if let Err(e) = track.new_datagram(&datagram_obj).await {
+                    error!("Failed to process datagram: {:?}", e);
                   }
                 } else {
                   debug!("Track not found for track_alias {}", datagram_obj.track_alias);
@@ -340,44 +380,29 @@ impl Session {
       context.connection_id
     );
 
-    // Find ALL tracks owned by the disconnecting publisher and notify subscribers.
-    // This covers both tracks from the PUBLISH flow (in client.published_tracks)
-    // and tracks created via the SUBSCRIBE flow (get_or_create_track in subscribe_handler).
-    let mut tracks_to_remove: Vec<(u64, moqtail::model::data::full_track_name::FullTrackName)> =
+    // Remove the disconnecting publisher from all tracks they were publishing.
+    // remove_publisher() internally notifies subscribers when the last publisher leaves.
+    // Collect full track names for tracks that have no publishers left.
+    let mut tracks_with_no_publishers: Vec<moqtail::model::data::full_track_name::FullTrackName> =
       Vec::new();
     {
       let tracks = track_manager_cleanup.tracks.read().await;
       for (full_track_name, track_lock) in tracks.iter() {
         let track = track_lock.read().await;
-        if track.publisher_connection_id == context.connection_id {
-          info!(
-            "Track {:?} belongs to disconnected publisher {}, notifying subscribers",
-            full_track_name, context.connection_id
-          );
-
-          if let Err(e) = track.notify_publisher_disconnected().await {
-            error!(
-              "Failed to notify subscribers for track {:?}: {:?}",
-              full_track_name, e
-            );
+        if let Some(alias) = track.remove_publisher(context.connection_id).await {
+          track_manager_cleanup
+            .remove_publisher_alias(context.connection_id, alias)
+            .await;
+          if !track.has_publishers().await {
+            tracks_with_no_publishers.push(full_track_name.clone());
           }
-
-          tracks_to_remove.push((track.track_alias, full_track_name.clone()));
         }
       }
     }
 
-    // Remove tracks that belonged to the disconnected publisher
-    for (track_alias, full_track_name) in &tracks_to_remove {
-      if *track_alias != 0 {
-        // Track has a registered alias (Confirmed state)
-        track_manager_cleanup
-          .remove_track_by_alias(*track_alias)
-          .await;
-      } else {
-        // Pending track without alias - remove by name
-        track_manager_cleanup.remove_track(full_track_name).await;
-      }
+    // Remove tracks that have no publishers left
+    for full_track_name in &tracks_with_no_publishers {
+      track_manager_cleanup.remove_track(full_track_name).await;
       info!(
         "Removed track {:?} after publisher {} disconnect",
         full_track_name, context.connection_id
@@ -409,10 +434,6 @@ impl Session {
       let track = track_lock.read().await;
       track.remove_subscription(context.connection_id).await;
     }
-    debug!(
-      "handle_connection_close | removed client {} from all tracks",
-      context.connection_id
-    );
 
     info!(
       "handle_connection_close | cleanup done ({})",
@@ -493,7 +514,7 @@ impl Session {
                 .track_aliases
                 .read()
                 .await
-                .get(&track_alias)
+                .get(&(client.connection_id, track_alias))
                 .cloned();
 
               if full_track_name_opt.is_none() {
@@ -519,7 +540,14 @@ impl Session {
               break;
             }
 
-            stream_id = Some(utils::build_stream_id(track_alias, &header_info));
+            let relay_track_id = match current_track.as_ref() {
+              Some(t) => t.read().await.relay_track_id,
+              None => {
+                error!("track not found when building stream_id: {:?}", track_alias);
+                return Err(anyhow::Error::msg(TerminationCode::InternalError.to_json()));
+              }
+            };
+            stream_id = Some(utils::build_stream_id(relay_track_id, &header_info));
             Some(header_info)
           } else {
             None
@@ -573,26 +601,40 @@ impl Session {
     relay_next_request_id.fetch_add(2, std::sync::atomic::Ordering::Relaxed)
   }
 
+  fn parse_available_protocols(headers: &HashMap<String, String>) -> Vec<String> {
+    headers
+      .get("wt-available-protocols")
+      .map(|s| s.split(',').map(|p| p.trim().to_string()).collect())
+      .unwrap_or_default()
+  }
+
+  fn select_protocol(client_protocols: &[String]) -> Option<&'static str> {
+    // wt available protocols are surrounded by quotes
+    SUPPORTED_VERSIONS.split(',').find(|v| {
+      client_protocols
+        .iter()
+        .any(|p| p.as_str() == format!("\"{}\"", v))
+    })
+  }
+
   async fn negotiate(
     context: Arc<SessionContext>,
     control_stream_handler: &mut ControlStreamHandler,
-  ) -> Result<Arc<MOQTClient>> {
+  ) -> Result<Arc<MOQTClient>, TerminationCode> {
     debug!("Negotiating with client...");
     let client_setup = match control_stream_handler.next_message().await {
       Ok(ControlMessage::ClientSetup(m)) => *m,
       Ok(_) => {
         error!("Unexpected message received");
-        return Err(anyhow::Error::msg(
-          TerminationCode::ProtocolViolation.to_json(),
-        ));
+        return Err(TerminationCode::ProtocolViolation);
       }
       Err(TerminationCode::NoError) => {
         info!("Client disconnected during negotiation");
-        return Err(anyhow::Error::msg("Client disconnected during negotiation"));
+        return Err(TerminationCode::NoError);
       }
       Err(e) => {
         error!("Failed to deserialize message: {:?}", e);
-        return Err(anyhow::Error::msg(e.to_json()));
+        return Err(e);
       }
     };
 
@@ -616,70 +658,56 @@ impl Session {
       .try_into()
       .unwrap();
 
-    let server_setup = ServerSetup::new(
-      constant::DRAFT_14,
-      vec![max_request_id_param, moqt_implementation_param],
-    );
+    let server_setup = ServerSetup::new(vec![max_request_id_param, moqt_implementation_param]);
 
-    debug!("client setup: {:?}", client_setup.supported_versions);
+    debug!("client setup: {:?}", client_setup);
     debug!("server setup: {:?}", server_setup);
 
-    let client = if client_setup
-      .supported_versions
-      .contains(&constant::DRAFT_14)
-    {
-      // Check for authorization tokens and log them if token logging is enabled
-      if context.server_config.enable_token_logging {
-        // Import the necessary types
-        use moqtail::model::parameter::constant::TokenAliasType;
-        use moqtail::model::parameter::setup_parameter::SetupParameter;
+    // Check for authorization tokens and log them if token logging is enabled
+    if context.server_config.enable_token_logging {
+      // Import the necessary types
+      use moqtail::model::parameter::constant::TokenAliasType;
+      use moqtail::model::parameter::setup_parameter::SetupParameter;
 
-        // Iterate through setup parameters to find authorization tokens
-        for param in &client_setup.setup_parameters {
-          // Try to deserialize as a SetupParameter
-          if let Ok(setup_param) = SetupParameter::deserialize(param) {
-            // Check if it's an AuthorizationToken
-            if let SetupParameter::AuthorizationToken { token } = setup_param
-              && token.alias_type == TokenAliasType::Register as u64
-            {
-              // Get client port number from the connection
-              let client_port = context.connection.remote_address().port();
+      // Iterate through setup parameters to find authorization tokens
+      for param in &client_setup.setup_parameters {
+        // Try to deserialize as a SetupParameter
+        if let Ok(setup_param) = SetupParameter::deserialize(param) {
+          // Check if it's an AuthorizationToken
+          if let SetupParameter::AuthorizationToken { token } = setup_param
+            && token.alias_type == TokenAliasType::Register as u64
+          {
+            // Get client port number from the connection
+            let client_port = context.connection.remote_address().port();
 
-              info!(
-                "Authorization token registered: {:?}, port: {:?}",
-                token, client_port
+            info!(
+              "Authorization token registered: {:?}, port: {:?}",
+              token, client_port
+            );
+
+            // Log the token information
+            if let Some(token_value) = token.token_value {
+              super::token_logger::log_token_registration(
+                &token_value,
+                context.connection_id,
+                client_port,
+                &context.server_config.token_log_path,
               );
-
-              // Log the token information
-              if let Some(token_value) = token.token_value {
-                super::token_logger::log_token_registration(
-                  &token_value,
-                  context.connection_id,
-                  client_port,
-                  &context.server_config.token_log_path,
-                );
-              }
             }
           }
         }
       }
+    }
 
-      let mut m = context.client_manager.write().await;
+    let mut m = context.client_manager.write().await;
 
-      let client = MOQTClient::new(
-        context.connection_id,
-        Arc::new(context.connection.clone()),
-        Arc::new(client_setup),
-      );
-      let client = Arc::new(client);
-      m.add(client.clone()).await;
-      client
-    } else {
-      warn!("unsupported version");
-      return Err(anyhow::Error::msg(
-        TerminationCode::VersionNegotiationFailed.to_json(),
-      ));
-    };
+    let client = MOQTClient::new(
+      context.connection_id,
+      Arc::new(context.connection.clone()),
+      Arc::new(client_setup),
+    );
+    let client = Arc::new(client);
+    m.add(client.clone()).await;
 
     match control_stream_handler.send_impl(&server_setup).await {
       Ok(_) => {
@@ -688,7 +716,7 @@ impl Session {
       }
       Err(e) => {
         error!("Failed to send server setup: {:?}", e);
-        Err(anyhow::Error::msg(TerminationCode::InternalError.to_json()))
+        Err(TerminationCode::InternalError)
       }
     }
   }

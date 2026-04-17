@@ -191,14 +191,15 @@ mod tests {
   use crate::model::common::tuple::{Tuple, TupleField};
   use crate::model::common::varint::BufMutVarIntExt;
   use crate::model::control::client_setup::ClientSetup;
-  use crate::model::control::constant::{ControlMessageType, FilterType, GroupOrder};
-  use crate::model::control::constant::{DRAFT_14, PublishNamespaceErrorCode};
+  use crate::model::control::constant::RequestErrorCode;
+  use crate::model::control::constant::{ControlMessageType, GroupOrder};
   use crate::model::control::publish_namespace::PublishNamespace;
   use crate::model::control::publish_namespace_cancel::PublishNamespaceCancel;
-  use crate::model::control::publish_namespace_ok::PublishNamespaceOk;
+  use crate::model::control::request_ok::RequestOk;
   use crate::model::control::server_setup::ServerSetup;
   use crate::model::control::subscribe::Subscribe;
   use crate::model::control::subscribe_ok::SubscribeOk;
+  use crate::model::parameter::message_parameter::MessageParameter;
   use bytes::Bytes;
   use std::error::Error;
   use std::sync::Arc;
@@ -331,19 +332,20 @@ mod tests {
     }
   }
 
-  fn create_test_announce_ok() -> PublishNamespaceOk {
+  fn create_test_announce_ok() -> RequestOk {
     let request_id = 12345;
-    PublishNamespaceOk { request_id }
+    RequestOk::new(request_id, vec![])
   }
 
   fn create_test_announce_cancel() -> PublishNamespaceCancel {
-    let error_code = PublishNamespaceErrorCode::InternalError;
+    let request_id = 1337;
+    let error_code = RequestErrorCode::InternalError;
     let reason_phrase = ReasonPhrase::try_new("bomboclad".to_string()).unwrap();
-    let track_namespace = Tuple::from_utf8_path("another/valid/track/namespace");
+
     PublishNamespaceCancel {
+      request_id,
       error_code,
       reason_phrase,
-      track_namespace,
     }
   }
 
@@ -351,81 +353,58 @@ mod tests {
     let request_id = 128242;
     let track_namespace = Tuple::from_utf8_path("nein/nein/nein");
     let track_name = TupleField::from_utf8("track_42");
-    let subscriber_priority = 31;
-    let group_order = GroupOrder::Original;
-    let forward = true;
-    let filter_type = FilterType::AbsoluteRange;
     let start_location = Location {
       group: 81,
       object: 81,
     };
-    let end_group = 25;
-    let subscribe_parameters = vec![
-      KeyValuePair::try_new_varint(0, 10).unwrap(),
-      KeyValuePair::try_new_bytes(1, Bytes::from_static(b"I'll sync you up")).unwrap(),
-    ];
-    Subscribe {
+    Subscribe::new_absolute_range(
       request_id,
       track_namespace,
       track_name,
-      subscriber_priority,
-      group_order,
-      forward,
-      filter_type,
-      start_location: Some(start_location),
-      end_group: Some(end_group),
-      subscribe_parameters,
-    }
+      start_location,
+      100,
+      vec![
+        MessageParameter::new_subscriber_priority(31),
+        MessageParameter::new_group_order(GroupOrder::Original),
+        MessageParameter::new_forward(true),
+      ],
+    )
   }
 
   fn create_test_subscribe_ok() -> SubscribeOk {
-    let request_id = 145136;
-    let track_alias = 999;
-    let expires = 16;
-    let group_order = GroupOrder::Ascending;
-    let content_exists = true;
-    let largest_location = Location {
-      group: 34,
-      object: 0,
-    };
-    let subscribe_parameters = vec![
-      KeyValuePair::try_new_varint(0, 10).unwrap(),
-      KeyValuePair::try_new_bytes(1, Bytes::from_static(b"9 gifted subs from Dr.Doofishtein"))
-        .unwrap(),
-    ];
-    SubscribeOk {
-      request_id,
-      track_alias,
-      expires,
-      group_order,
-      content_exists,
-      largest_location: Some(largest_location),
-      subscribe_parameters: Some(subscribe_parameters),
-    }
+    use crate::model::control::constant::GroupOrder;
+    use crate::model::extension_header::track_extension::TrackExtension;
+    use crate::model::parameter::message_parameter::MessageParameter;
+    SubscribeOk::new(
+      145136,
+      999,
+      vec![
+        MessageParameter::new_expires(16),
+        MessageParameter::new_group_order(GroupOrder::Ascending),
+        MessageParameter::new_largest_object(Location {
+          group: 34,
+          object: 0,
+        }),
+        MessageParameter::new_expires(100),
+      ],
+      vec![TrackExtension::DeliveryTimeout { timeout_ms: 5000 }],
+    )
   }
 
   fn create_test_client_setup() -> ClientSetup {
-    let supported_versions = vec![12345, DRAFT_14];
     let setup_parameters = vec![
       KeyValuePair::try_new_varint(0, 10).unwrap(),
       KeyValuePair::try_new_bytes(1, Bytes::from_static(b"Set me up!")).unwrap(),
     ];
-    ClientSetup {
-      supported_versions,
-      setup_parameters,
-    }
+    ClientSetup { setup_parameters }
   }
 
   fn create_test_server_setup() -> ServerSetup {
-    let selected_version = DRAFT_14;
     let setup_parameters = vec![
       KeyValuePair::try_new_varint(0, 10).unwrap(),
       KeyValuePair::try_new_bytes(1, Bytes::from_static(b"Set me up!")).unwrap(),
     ];
-    ServerSetup {
-      selected_version,
-      setup_parameters,
-    }
+    ServerSetup { setup_parameters }
   }
 
   #[tokio::test]
@@ -548,7 +527,7 @@ mod tests {
       ControlMessage::ClientSetup(client_setup),
       ControlMessage::ServerSetup(server_setup),
       ControlMessage::PublishNamespace(announce1),
-      ControlMessage::PublishNamespaceOk(announce_ok1),
+      ControlMessage::RequestOk(announce_ok1),
       ControlMessage::Subscribe(subscribe1),
       ControlMessage::SubscribeOk(subscribe_ok1),
       ControlMessage::PublishNamespaceCancel(announce_cancel1),

@@ -19,10 +19,10 @@ use crate::server::track_cache::CacheConsumeEvent;
 use crate::server::utils::build_stream_id;
 use core::result::Result::{Err, Ok};
 use moqtail::model::common::location::Location;
-use moqtail::model::control::constant::FetchErrorCode;
+use moqtail::model::control::constant::RequestErrorCode;
 use moqtail::model::control::control_message::ControlMessage;
-use moqtail::model::control::fetch_error::FetchError;
 use moqtail::model::control::fetch_ok::FetchOk;
+use moqtail::model::control::request_error::RequestError;
 use moqtail::model::data::fetch_header::FetchHeader;
 use moqtail::model::error::TerminationCode;
 use moqtail::model::{common::reason_phrase::ReasonPhrase, control::constant::FetchType};
@@ -31,7 +31,7 @@ use moqtail::transport::data_stream_handler::HeaderInfo;
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::watch;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 pub async fn handle(
   client: Arc<MOQTClient>,
@@ -92,11 +92,12 @@ pub async fn handle(
                 "handle_fetch_messages | Joining fetch start location is larger than the track's largest location: {:?} {:?}",
                 largest_location, joining_fetch_props.joining_start
               );
-              send_fetch_error(
+              send_request_error(
                 client.clone(),
                 request_id,
-                FetchErrorCode::InvalidRange,
+                RequestErrorCode::InvalidRange,
                 ReasonPhrase::try_new(String::from("Invalid range")).unwrap(),
+                &context,
               )
               .await;
               return (None, None, None);
@@ -146,12 +147,13 @@ pub async fn handle(
       // TODO: send fetch message to the publisher
       if track.is_none() {
         // TODO: send fetch message to the possible publishers
-        // for now just return FETCH_ERROR
-        send_fetch_error(
+        // for now just return REQUEST_ERROR
+        send_request_error(
           client.clone(),
           request_id,
-          FetchErrorCode::TrackDoesNotExist,
+          RequestErrorCode::DoesNotExist,
           ReasonPhrase::try_new(String::from("Track does not exist")).unwrap(),
+          &context,
         )
         .await;
         return Ok(());
@@ -178,7 +180,7 @@ pub async fn handle(
         let mut object_rx = track_read
           .cache
           .read_objects(
-            start_location.unwrap(),
+            start_location.clone().unwrap(),
             end_location.clone().unwrap(),
             true, /* report_end_location */
           )
@@ -190,7 +192,7 @@ pub async fn handle(
           fetch_request: fetch,
         };
 
-        let stream_id = build_stream_id(track_read.track_alias, &header_info);
+        let stream_id = build_stream_id(track_read.relay_track_id, &header_info);
 
         let stream_fn = async move |client: Arc<MOQTClient>, stream_id: &StreamId| {
           let stream_result = client
@@ -227,8 +229,15 @@ pub async fn handle(
                     // TODO: end of track is correct?
                     let largest_location = track_read.largest_location.read().await;
                     let end_of_track = largest_location.group == end_location.group;
-                    let fetch_ok =
-                      FetchOk::new_ascending(request_id, end_of_track, end_location, vec![]);
+                    drop(largest_location);
+                    let cached_extensions = { track_read.track_extensions.read().await.clone() };
+                    let fetch_ok = FetchOk::new(
+                      request_id,
+                      end_of_track,
+                      end_location,
+                      vec![],
+                      cached_extensions,
+                    );
 
                     client
                       .queue_message(ControlMessage::FetchOk(Box::new(fetch_ok)))
@@ -275,7 +284,7 @@ pub async fn handle(
                     if context.server_config.enable_object_logging {
                       let sending_time = crate::server::utils::passed_time_since_start();
                       let fetch_object = moqtail::model::data::object::Object {
-                        track_alias: track_read.track_alias,
+                        track_alias: track_read.relay_track_id,
                         location: moqtail::model::common::location::Location::new(
                           object.group_id,
                           object.object_id,
@@ -293,7 +302,7 @@ pub async fn handle(
                       track_read
                         .object_logger
                         .log_fetch_object(
-                          track_read.track_alias,
+                          track_read.relay_track_id,
                           context.connection_id,
                           request_id,
                           &fetch_object,
@@ -340,13 +349,31 @@ pub async fn handle(
             client.remove_stream_by_stream_id(&stream_id).await;
           }
         } else if object_count == 0 {
-          send_fetch_error(
-            client.clone(),
-            request_id,
-            FetchErrorCode::NoObjects,
-            ReasonPhrase::try_new(String::from("No objects available")).unwrap(),
-          )
-          .await;
+          // Draft 16: If range is valid but empty, send FETCH_OK + Empty Stream with FIN.
+          info!(
+            "handle_fetch_messages | Empty range for request_id: {}. Sending FETCH_OK and empty stream.",
+            request_id
+          );
+
+          // 1. Send FETCH_OK
+          let end_loc = start_location.clone().unwrap_or(Location::new(0, 0));
+          let fetch_ok = FetchOk::new(request_id, false, end_loc, vec![], vec![]);
+
+          client
+            .queue_message(ControlMessage::FetchOk(Box::new(fetch_ok)))
+            .await;
+
+          // 2. Open Stream, Write Header, and Close (FIN)
+          if let Some(the_stream) = stream_fn(client.clone(), &stream_id).await {
+            let mut stream_lock = the_stream.lock().await;
+            if let Err(e) = stream_lock.shutdown().await {
+              error!(
+                "handle_fetch_messages | Error closing empty fetch stream: {:?}",
+                e
+              );
+            }
+            client.remove_stream_by_stream_id(&stream_id).await;
+          }
         } else {
           // close the stream instantly
           if let Some(the_stream) = send_stream {
@@ -361,6 +388,13 @@ pub async fn handle(
             info!("removed stream from the map {}", stream_id);
           }
         }
+
+        // Clean up the unified map since the fetch is done
+        context
+          .relay_pending_requests
+          .write()
+          .await
+          .remove(&request_id);
 
         // Clean up cancel sender
         client
@@ -382,6 +416,16 @@ pub async fn handle(
         let mut senders = client.fetch_cancel_senders.write().await;
         senders.remove(&request_id)
       };
+
+      // Remove the fetch request from the unified map
+      {
+        let mut map = context.relay_pending_requests.write().await;
+        map.remove(&request_id);
+        debug!(
+          "Removed FETCH request {} from pending requests map after Cancel",
+          request_id
+        );
+      }
 
       if let Some(tx) = cancel_tx {
         let _ = tx.send(true);
@@ -405,9 +449,13 @@ pub async fn handle(
       // TODO: When the relay sends a fetch request to the publisher,
       // it will wait for Fetch OK. However this is not implemented yet.
       // Here is just a preliminary attempt for this, validating request id
-      let requests = context.relay_fetch_requests.read().await;
-      if !requests.contains_key(&msg.request_id) {
-        error!("handle_fetch_messages | FetchOk | request_id does not exist");
+      let pending_request = {
+        let map = context.relay_pending_requests.read().await;
+        map.get(&msg.request_id).cloned()
+      };
+
+      if pending_request.is_none() {
+        error!("handle_fetch_messages | FetchOk | request_id does not exist in pending registry");
         return Err(TerminationCode::InternalError);
       }
 
@@ -420,14 +468,25 @@ pub async fn handle(
   }
 }
 
-async fn send_fetch_error(
+async fn send_request_error(
   client: Arc<MOQTClient>,
   request_id: u64,
-  error_code: FetchErrorCode,
+  error_code: RequestErrorCode,
   reason_phrase: ReasonPhrase,
+  context: &Arc<SessionContext>,
 ) {
-  let fetch_error = FetchError::new(request_id, error_code, reason_phrase);
+  // TODO: Implement this later.
+  // Draft 16 requires a retry interval. Setting to 0 (no retries) for now.
+  let retry_interval = 0;
+  let request_error = RequestError::new(request_id, error_code, retry_interval, reason_phrase);
+
   client
-    .queue_message(ControlMessage::FetchError(Box::new(fetch_error)))
+    .queue_message(ControlMessage::RequestError(Box::new(request_error)))
     .await;
+  // Remove the request from the map on error
+  context
+    .relay_pending_requests
+    .write()
+    .await
+    .remove(&request_id);
 }

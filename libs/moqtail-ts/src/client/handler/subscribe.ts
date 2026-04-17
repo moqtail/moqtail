@@ -18,9 +18,13 @@ import { ReasonPhrase } from '@/model'
 import { Subscribe, SubscribeError, SubscribeErrorCode, SubscribeOk } from '../../model/control'
 import { ControlMessageHandler } from './handler'
 import { SubscribePublication } from '../publication/subscribe'
-import { random60bitId } from '../util/random_id'
+import { createLogger } from '../../util/logger'
+import { LargestObject } from '../../model/parameter/message/largest_object'
+
+const logger = createLogger('handler/subscribe')
 
 export const handlerSubscribe: ControlMessageHandler<Subscribe> = async (client, msg) => {
+  logger.log('requestId, trackName', msg.requestId, msg.fullTrackName.toString())
   const track = client.trackSources.get(msg.fullTrackName.toString())
   if (!track) {
     const subscribeError = new SubscribeError(
@@ -40,21 +44,16 @@ export const handlerSubscribe: ControlMessageHandler<Subscribe> = async (client,
     await client.controlStream.send(response)
     return
   }
-  let subscribeOk: SubscribeOk
   if (!track.trackAlias) throw new Error('Expected track alias to be set')
-  if (track.trackSource.live.largestLocation) {
-    subscribeOk = SubscribeOk.newAscendingWithContent(
-      msg.requestId,
-      track.trackAlias,
-      0n,
-      track.trackSource.live.largestLocation,
-      msg.parameters,
-    )
-  } else {
-    // TODO: Add support for descending group order
-    subscribeOk = SubscribeOk.newAscendingNoContent(msg.requestId, track.trackAlias, 0n, msg.parameters)
+
+  const largestLocation = track.trackSource.live.largestLocation
+  const parameters = [...msg.parameters]
+  if (largestLocation) {
+    parameters.push(new LargestObject(largestLocation))
   }
-  const publication = new SubscribePublication(client, track, msg, subscribeOk.largestLocation)
+
+  const subscribeOk = SubscribeOk.create(msg.requestId, track.trackAlias, parameters, track.trackExtensions ?? [])
+  const publication = new SubscribePublication(client, track, msg, largestLocation)
   client.publications.set(msg.requestId, publication)
   await client.controlStream.send(subscribeOk)
 }

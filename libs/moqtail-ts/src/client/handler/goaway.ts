@@ -16,8 +16,12 @@
 
 import { GoAway } from '../../model/control'
 import { ControlMessageHandler } from './handler'
+import { createLogger } from '../../util/logger'
+
+const logger = createLogger('handler/goaway')
 
 export const handlerGoAway: ControlMessageHandler<GoAway> = async (client, msg) => {
+  logger.log('newSessionUri', msg.newSessionUri)
   if (client.onGoaway) {
     client.onGoaway(msg)
   }

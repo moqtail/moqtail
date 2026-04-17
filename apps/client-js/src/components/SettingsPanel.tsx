@@ -16,11 +16,14 @@
 
 import { cn } from '@/lib/utils';
 import { type AbrSettings } from '@/lib/abr/types';
+import { type BlurSettings, type BlurMode } from '@/app';
 
 export interface SettingsPanelProps {
   open: boolean;
   settings: AbrSettings;
   onSettingsChange: (settings: AbrSettings) => void;
+  blurSettings: BlurSettings;
+  onBlurSettingsChange: (settings: BlurSettings) => void;
 }
 
 function SettingCheckbox({
@@ -107,7 +110,18 @@ const ABR_RULES = [
 ] as const;
 const LOW_LATENCY_RULES = ['L2ARule', 'LoLPRule'] as const;
 
-export function SettingsPanel({ open, settings, onSettingsChange }: SettingsPanelProps) {
+export function SettingsPanel({
+  open,
+  settings,
+  onSettingsChange,
+  blurSettings,
+  onBlurSettingsChange,
+}: SettingsPanelProps) {
+  const setBlurMode = (mode: BlurMode) => onBlurSettingsChange({ ...blurSettings, mode });
+  const setBlurStrength = (strength: number) => onBlurSettingsChange({ ...blurSettings, strength });
+  const setBlurRect = (patch: Partial<BlurSettings['rect']>) =>
+    onBlurSettingsChange({ ...blurSettings, rect: { ...blurSettings.rect, ...patch } });
+
   const updateRule = (ruleName: string, active: boolean) => {
     const updated = { ...settings };
     updated.rules = { ...updated.rules };
@@ -132,6 +146,58 @@ export function SettingsPanel({ open, settings, onSettingsChange }: SettingsPane
       {/* Horizontal scroll wrapper */}
       <div className="relative">
         <div className="scrollbar-thin scrollbar-track-transparent scrollbar-thumb-neutral-700 flex snap-x snap-proximity gap-3 overflow-x-auto pb-2">
+          {/* Blur Card */}
+          <OptionCard title="Blur">
+            <SectionLabel>Mode</SectionLabel>
+            <div className="mb-1 flex gap-1">
+              {(['none', 'global', 'localized'] as const).map(m => (
+                <button
+                  key={m}
+                  onClick={() => setBlurMode(m)}
+                  className={cn(
+                    'flex-1 rounded border px-2 py-1 text-[10px] capitalize transition-colors',
+                    blurSettings.mode === m
+                      ? 'border-blue-500 bg-blue-500/20 text-blue-200'
+                      : 'border-neutral-700 bg-neutral-900 text-neutral-400 hover:border-neutral-600 hover:text-neutral-200',
+                  )}
+                >
+                  {m}
+                </button>
+              ))}
+            </div>
+            <NumberInput
+              label="Strength (px)"
+              value={blurSettings.strength}
+              placeholder="25"
+              onChange={v => setBlurStrength(v === -1 ? 0 : v)}
+            />
+            <SectionLabel>Localized Rect (video px)</SectionLabel>
+            <NumberInput
+              label="X"
+              value={blurSettings.rect.x}
+              placeholder="0"
+              onChange={v => setBlurRect({ x: v === -1 ? 0 : v })}
+            />
+            <NumberInput
+              label="Y"
+              value={blurSettings.rect.y}
+              placeholder="0"
+              onChange={v => setBlurRect({ y: v === -1 ? 0 : v })}
+            />
+            <NumberInput
+              label="Width"
+              value={blurSettings.rect.w}
+              placeholder="300"
+              onChange={v => setBlurRect({ w: v === -1 ? 0 : v })}
+            />
+            <NumberInput
+              label="Height"
+              value={blurSettings.rect.h}
+              placeholder="200"
+              onChange={v => setBlurRect({ h: v === -1 ? 0 : v })}
+            />
+          </OptionCard>
+
           {/* ABR Card */}
           <OptionCard title="ABR">
             <SettingCheckbox

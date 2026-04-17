@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { useState, useRef, useCallback } from 'preact/hooks';
+import { useState, useRef, useCallback, useEffect } from 'preact/hooks';
 import type { ComponentChildren } from 'preact';
 import { Player } from '@/lib/player';
 import { cn } from '@/lib/utils';
@@ -29,6 +29,24 @@ import { MetricsPanel } from '@/components/MetricsPanel';
 
 type Track = CMSF['tracks'][number];
 type Status = 'idle' | 'connecting' | 'ready' | 'restarting' | 'playing' | 'error';
+
+export type BlurMode = 'none' | 'global' | 'localized';
+export interface BlurRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+export interface BlurSettings {
+  mode: BlurMode;
+  strength: number;
+  rect: BlurRect;
+}
+export const DEFAULT_BLUR_SETTINGS: BlurSettings = {
+  mode: 'none',
+  strength: 25,
+  rect: { x: 100, y: 100, w: 300, h: 200 },
+};
 
 const GITHUB_REPO = 'moqtail/moqtail';
 
@@ -220,9 +238,13 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [optionsPanelOpen, setOptionsPanelOpen] = useState(false);
 
+  const [blurSettings, setBlurSettings] = useState<BlurSettings>(DEFAULT_BLUR_SETTINGS);
+
   const playerRef = useRef<Player | null>(null);
   const bufferRef = useRef<MSEBuffer | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const blurRafRef = useRef<number | null>(null);
 
   const [abrSettings, setAbrSettings] = useState<AbrSettings>(DEFAULT_ABR_SETTINGS);
   const [abrMetrics, setAbrMetrics] = useState<AbrMetrics | null>(null);
@@ -230,6 +252,58 @@ export function App() {
   const abrRef = useRef<AbrController | null>(null);
   const rulesRef = useRef<AbrRulesCollection | null>(null);
   const metricsRef = useRef<MetricsCollector | null>(null);
+
+  useEffect(() => {
+    if (blurSettings.mode !== 'localized') {
+      if (blurRafRef.current !== null) {
+        cancelAnimationFrame(blurRafRef.current);
+        blurRafRef.current = null;
+      }
+      const canvas = canvasRef.current;
+      if (canvas) {
+        const ctx = canvas.getContext('2d');
+        ctx?.clearRect(0, 0, canvas.width, canvas.height);
+      }
+      return;
+    }
+    const tick = () => {
+      const video = videoRef.current;
+      const canvas = canvasRef.current;
+      if (!video || !canvas) {
+        blurRafRef.current = requestAnimationFrame(tick);
+        return;
+      }
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      if (video.videoWidth && video.videoHeight) {
+        if (canvas.width !== video.videoWidth) canvas.width = video.videoWidth;
+        if (canvas.height !== video.videoHeight) canvas.height = video.videoHeight;
+      }
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      const { rect, strength } = blurSettings;
+      const rx = Math.max(0, Math.min(canvas.width, rect.x));
+      const ry = Math.max(0, Math.min(canvas.height, rect.y));
+      const rw = Math.max(0, Math.min(canvas.width - rx, rect.w));
+      const rh = Math.max(0, Math.min(canvas.height - ry, rect.h));
+      if (rw > 0 && rh > 0) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(rx, ry, rw, rh);
+        ctx.clip();
+        ctx.filter = `blur(${Math.max(0, strength)}px)`;
+        ctx.drawImage(video, rx, ry, rw, rh, rx, ry, rw, rh);
+        ctx.restore();
+      }
+      blurRafRef.current = requestAnimationFrame(tick);
+    };
+    blurRafRef.current = requestAnimationFrame(tick);
+    return () => {
+      if (blurRafRef.current !== null) {
+        cancelAnimationFrame(blurRafRef.current);
+        blurRafRef.current = null;
+      }
+    };
+  }, [blurSettings]);
 
   const disposePlayer = useCallback(async () => {
     if (abrRef.current) {
@@ -501,6 +575,8 @@ export function App() {
         open={optionsPanelOpen}
         settings={abrSettings}
         onSettingsChange={handleSettingsChange}
+        blurSettings={blurSettings}
+        onBlurSettingsChange={setBlurSettings}
       />
 
       {/* Body */}
@@ -543,6 +619,72 @@ export function App() {
             )}
           </div>
 
+          {/* Blur Effects — quick toggle (detailed controls in options panel) */}
+          <div className="border-b border-white/6 p-4">
+            <Field label="Blur Effects">
+              <div className="mt-2 flex flex-col gap-2">
+                <button
+                  onClick={() =>
+                    setBlurSettings(s => ({
+                      ...s,
+                      mode: s.mode === 'global' ? 'none' : 'global',
+                    }))
+                  }
+                  disabled={!hasTracks}
+                  className={cn(
+                    'flex items-center gap-3 rounded-lg px-3 py-2 text-xs transition-all disabled:cursor-not-allowed disabled:opacity-40',
+                    blurSettings.mode === 'global'
+                      ? 'bg-blue-600/20 ring-1 ring-blue-500/50'
+                      : 'bg-neutral-900/50 hover:bg-neutral-800',
+                  )}
+                >
+                  <span
+                    className={cn(
+                      'h-2 w-2 rounded-full',
+                      blurSettings.mode === 'global' ? 'bg-blue-400' : 'bg-neutral-600',
+                    )}
+                  />
+                  <span
+                    className={
+                      blurSettings.mode === 'global' ? 'text-blue-100' : 'text-neutral-400'
+                    }
+                  >
+                    Full Video Blur
+                  </span>
+                </button>
+                <button
+                  onClick={() =>
+                    setBlurSettings(s => ({
+                      ...s,
+                      mode: s.mode === 'localized' ? 'none' : 'localized',
+                    }))
+                  }
+                  disabled={!hasTracks}
+                  className={cn(
+                    'flex items-center gap-3 rounded-lg px-3 py-2 text-xs transition-all disabled:cursor-not-allowed disabled:opacity-40',
+                    blurSettings.mode === 'localized'
+                      ? 'bg-violet-600/20 ring-1 ring-violet-500/50'
+                      : 'bg-neutral-900/50 hover:bg-neutral-800',
+                  )}
+                >
+                  <span
+                    className={cn(
+                      'h-2 w-2 rounded-full',
+                      blurSettings.mode === 'localized' ? 'bg-violet-400' : 'bg-neutral-600',
+                    )}
+                  />
+                  <span
+                    className={
+                      blurSettings.mode === 'localized' ? 'text-violet-100' : 'text-neutral-400'
+                    }
+                  >
+                    Area Redaction
+                  </span>
+                </button>
+              </div>
+            </Field>
+          </div>
+
           {/* Tracks */}
           {hasTracks && (
             <div className="space-y-4 p-3">
@@ -570,15 +712,29 @@ export function App() {
 
         {/* Main — video */}
         <main className="relative flex flex-1 flex-col items-center justify-center overflow-hidden bg-neutral-950 p-4 md:p-6">
-          <video
-            ref={videoRef}
-            controls
+          <div
             className={cn(
-              'w-full overflow-hidden rounded-xl bg-black shadow-2xl shadow-black/60 transition-opacity duration-300',
+              'relative w-full overflow-hidden rounded-xl bg-black shadow-2xl shadow-black/60 transition-opacity duration-300',
               hasTracks ? 'opacity-100' : 'pointer-events-none opacity-0',
             )}
             style={{ aspectRatio: '16/9' }}
-          />
+          >
+            <video
+              ref={videoRef}
+              controls
+              className={cn(
+                'h-full w-full object-contain transition-[filter,transform] duration-300',
+                blurSettings.mode === 'global' ? 'scale-110 blur-3xl' : 'blur-0 scale-100',
+              )}
+            />
+            <canvas
+              ref={canvasRef}
+              className={cn(
+                'pointer-events-none absolute inset-0 h-full w-full transition-opacity duration-300',
+                blurSettings.mode === 'localized' ? 'opacity-100' : 'opacity-0',
+              )}
+            />
+          </div>
           {!hasTracks && (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-6 px-6 text-center select-none">
               {/* Icon */}

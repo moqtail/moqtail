@@ -5,151 +5,167 @@ use moqtail::model::data::full_track_name::FullTrackName;
 use crate::server::client::MOQTClient;
 use crate::server::track_manager::TrackManager;
 
+// 👉 1. THE DATA OBJECT
+#[derive(Debug, Clone, Copy)]
+pub struct NetworkStats {
+    pub current_rtt_ms: u128,
+    pub bbr_est_bw_bps: u64,
+    pub actual_send_rate_bps: u64, // The MTU-hacked absolute truth
+}
+
+// 👉 2. THE MEMORY
+pub struct AbrState {
+    pub current_index: usize,
+    pub last_rtt_ms: u128,        // Brought back for growth tracking
+    pub just_stepped_up: bool,    // Brought back for probe failure tracking
+    pub wait_timer: u32,
+    pub current_backoff: u32,
+}
+
+// 👉 3. YOUR SANDBOX: Send-Rate Trigger + Send-Rate Landing
+pub fn decide_quality(
+    stats: &NetworkStats, 
+    bitrates_bps: &[u128; 4], 
+    state: &mut AbrState
+) -> usize {
+    
+    let target_bitrate = bitrates_bps[state.current_index] as u64;
+    let rtt_growth = stats.current_rtt_ms.saturating_sub(state.last_rtt_ms);
+
+    // LOGIC LINE 1: The BW Drop / Buffer Bloat Trigger
+    // If the physical wire is draining 20% slower than our current video track,
+    // OR if the RTT has breached our absolute safety limit (250ms), we are congested.
+    if (stats.actual_send_rate_bps > 0 && stats.actual_send_rate_bps < (target_bitrate * 8 / 10)) 
+        || stats.current_rtt_ms > 250 
+    {
+        let mut safe_index = 0; 
+        
+        // Find the Landing Zone using the REAL send rate
+        for i in (0..=state.current_index).rev() {
+            if bitrates_bps[i] < stats.actual_send_rate_bps as u128 {
+                safe_index = i;
+                break;
+            }
+        }
+        
+        state.current_index = safe_index;
+        state.wait_timer = state.current_backoff + 2; // Heavy penalty for causing congestion
+        state.just_stepped_up = false;
+    }
+    // LOGIC LINE 2: The Failed Probe (Micro-Congestion)
+    // If we just pushed the throttle and RTT instantly bumped, pull back safely.
+    else if state.just_stepped_up && rtt_growth > 15 {
+        if state.current_index > 0 {
+            state.current_index -= 1;
+        }
+        state.current_backoff *= 2;               
+        state.wait_timer = state.current_backoff; 
+        state.just_stepped_up = false;
+    }
+    // LOGIC LINE 3: Safe to Probe
+    else {
+        if state.wait_timer > 0 {
+            state.wait_timer -= 1;
+            state.just_stepped_up = false; 
+        } else {
+            // Timer expired! Probe up.
+            if state.current_index < 3 {
+                state.current_index += 1;
+                state.just_stepped_up = true;             
+                state.wait_timer = state.current_backoff; 
+            }
+        }
+    }
+    
+    // Save state for next tick
+    state.last_rtt_ms = stats.current_rtt_ms;
+    
+    state.current_index
+}
+
+// 👉 4. THE BOILERPLATE
 pub(crate) fn start_abr_controller(
     client: Arc<MOQTClient>,
     track_manager: Arc<TrackManager>,
 ) {
     tokio::spawn(async move {
         let mut abr_rx = client.abr_rx.lock().await.take().expect("ABR started");
+        let mut group_arrival_counts: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
 
-        let mut min_rtt: u128 = u128::MAX;
-        let mut group_arrival_counts: std::collections::HashMap<u64, usize> =
-            std::collections::HashMap::new();
-
-        let mut current_track_index: usize = 3;
-        let mut hold_timer_groups: u8 = 0;
-        let step_up_delay: u8 = 4; // Wait 4 groups (2 seconds) before probing higher
-
-        info!(
-            "Queue-Based AIMD ABR Controller started for Client ID: {}",
-            client.connection_id
-        );
-
-        let step_up_delay: u8 = 4; // Wait 4 groups (2 seconds) before probing higher
-
-        // 👉 THE MISSING ARRAY
+        let mut state = AbrState {
+            current_index: 3,     
+            last_rtt_ms: 0,
+            just_stepped_up: false,
+            wait_timer: 0,
+            current_backoff: 4,   
+        };
         let bitrates_bps: [u128; 4] = [
-            500_000,   // Index 0: 360p (0.5 Mbps)
-            1_000_000, // Index 1: 480p (1.0 Mbps)
-            2_500_000, // Index 2: 720p (2.5 Mbps)
-            5_000_000  // Index 3: 1080p (5.0 Mbps)
+            500_000, 1_000_000, 2_500_000, 5_000_000 
         ];
 
-        info!(
-            "Queue-Based AIMD ABR Controller started for Client ID: {}",
-            client.connection_id
-        );
+        // --- NEW: Trackers for the True Send Rate ---
+        let mut last_check_time = std::time::Instant::now();
+        let mut last_sent_bytes = 0;
 
         while let Some(group_id) = abr_rx.recv().await {
-            let mut available_tracks: Vec<FullTrackName> =
-                track_manager
-                    .track_aliases
-                    .read()
-                    .await
-                    .values()
-                    .cloned()
-                    .collect();
-
-            if available_tracks.len() < 4 {
-                continue;
-            }
+            let mut available_tracks: Vec<FullTrackName> = track_manager.track_aliases.read().await.values().cloned().collect();
+            if available_tracks.len() < 4 { continue; }
             available_tracks.sort_by_key(|t| {
                 let name = format!("{}", t);
-                if name.contains("360p") { 0 } 
-                else if name.contains("480p") { 1 } 
-                else if name.contains("720p") { 2 } 
-                else if name.contains("1080p") { 3 } 
-                else { 4 }
+                if name.contains("360p") { 0 } else if name.contains("480p") { 1 } 
+                else if name.contains("720p") { 2 } else if name.contains("1080p") { 3 } else { 4 }
             });
 
-            // Barrier Gate
             let count = group_arrival_counts.entry(group_id).or_insert(0);
             *count += 1;
-            if *count < 4 {
-                continue;
-            }
-            group_arrival_counts.retain(|&k, _| k >= group_id);
+            if *count < 4 { continue; }
+            group_arrival_counts.retain(|&k, _| k >= group_id); 
 
-            // 1. Calculate Queue Debt
-            let current_rtt = client.connection.stats_rtt().as_millis();
-            if current_rtt > 0 && current_rtt < min_rtt {
-                min_rtt = current_rtt;
-            }
-            let queueing_delay = if current_rtt > min_rtt { current_rtt - min_rtt } else { 0 };
+            // --- CALCULATE TRUE SEND RATE ---
+            let conn_stats = client.connection.stats();
+            let current_sent_packets = conn_stats.path.sent_packets;
+            let now = std::time::Instant::now();
+            let duration_sec = now.duration_since(last_check_time).as_secs_f64();
 
-            // 2. Fetch BBR Estimate
-            let est_bw_bps = client.connection.bandwidth().unwrap_or(0) as u128;
-            let current_track_bitrate = bitrates_bps[current_track_index];
-
-            // 👉 THE HARD CEILING CHECK
-            // If BBR is estimating less bandwidth than we are currently sending, 
-            // the pipe is definitively choked, even if RTT is lying to us due to packet drops.
-            let is_bw_choked = est_bw_bps > 0 && est_bw_bps < current_track_bitrate;
-
-           // 👉 ULL-OPTIMIZED AIMD ENGINE (1.5s Budget)
-            // If normal latency is ~200ms, we must give the algorithm room to breathe.
-            let safe_zone_ms: u128 = 400;   // Green: Safe to probe upward
-            let danger_zone_ms: u128 = 800; // Yellow: Hold line / Red: Step down
-            let panic_zone_ms: u128 = 1200; // Black: Imminent 1.5s budget violation
-
-            if queueing_delay > panic_zone_ms {
-                // 🚨 PANIC DROP: We are about to blow the 1.5s limit. Floor it.
-                if hold_timer_groups == 0 {
-                    warn!("⚠️ ABR PANIC: Queue Debt {} ms. Dropping to 360p.", queueing_delay);
-                }
-                current_track_index = 0; 
-                // Massive penalty: wait 6 groups (3 seconds) before trying to step up again
-                hold_timer_groups = step_up_delay + 2; 
-
-            } else if is_bw_choked || queueing_delay > danger_zone_ms {
-                // 📉 DANGER ZONE: Ratchet down. 
-                // Either the queue crossed 800ms, OR BBR detected a massive capacity drop.
-                if current_track_index > 0 {
-                    current_track_index -= 1;
-                    warn!("📉 DANGER: Choked. BBR: {} bps, Queue: {} ms. Stepping to index {}.", 
-                          est_bw_bps, queueing_delay, current_track_index);
-                }
-                // Only give it 1 group of breathing room before it evaluates dropping again
-                hold_timer_groups = 1; 
-
-            } else if queueing_delay > safe_zone_ms {
-                // ⚠️ YELLOW ZONE (400ms - 800ms): The pipe is working hard. 
-                // Do not step up, do not step down. Let BBR stabilize and let the queue drain.
-                hold_timer_groups = step_up_delay; 
-
+            let current_sent_bytes = 1500 * current_sent_packets; //fuck it, most packets are mtu
+            let actual_send_rate_bps = if duration_sec > 0.0 {
+                // (Bytes sent since last check * 8 bits) / time elapsed
+                ((current_sent_bytes.saturating_sub(last_sent_bytes)) as f64 * 8.0 / duration_sec) as u64
             } else {
-                // 📈 GREEN ZONE (0ms - 400ms): Pipe is clean. Go for maximum quality.
-                if hold_timer_groups > 0 {
-                    hold_timer_groups -= 1;
-                } else {
-                    if current_track_index < 3 {
-                        current_track_index += 1;
-                        hold_timer_groups = step_up_delay; // Reset timer for the next probe
-                    }
-                }
-            }
+                0
+            };
 
-            let target_track = &available_tracks[current_track_index];
+            last_check_time = now;
+            last_sent_bytes = current_sent_bytes;
+            // --------------------------------
+
+            let stats = NetworkStats {
+                current_rtt_ms: client.connection.stats_rtt().as_millis(),
+                bbr_est_bw_bps: client.connection.bandwidth().unwrap_or(0),
+                actual_send_rate_bps,
+            };
+
+            let chosen_index = decide_quality(&stats, &bitrates_bps, &mut state);
+            let target_track = &available_tracks[chosen_index];
+
+            // (Optional) You can log actual_send_rate_bps here to your visualizer instead of BBR!
             crate::telemetry::log_abr_decision(
                 group_id,
-                est_bw_bps as u64,
-                current_rtt,
+                stats.actual_send_rate_bps, // Passing our new truth metric instead of BBR!
+                stats.current_rtt_ms,
+                conn_stats.path.cwnd, 
                 &target_track.to_string(),
             );
 
-            // Unlock the gate
             let target_alias = {
                 let aliases = track_manager.track_aliases.read().await;
-                aliases
-                    .iter()
-                    .find(|(_, name)| *name == target_track)
-                    .map(|(alias, _)| *alias)
+                aliases.iter().find(|(_, name)| *name == target_track).map(|(alias, _)| *alias)
             };
 
             if let Some(alias) = target_alias {
                 let mut decisions = client.group_decisions.write().await;
                 decisions.insert(group_id, alias);
-                decisions.retain(|&k, _| k >= group_id.saturating_sub(5));
+                decisions.retain(|&k, _| k >= group_id.saturating_sub(5)); 
             }
 
             let _ = client.decision_tx.send(group_id);

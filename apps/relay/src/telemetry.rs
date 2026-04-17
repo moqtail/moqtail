@@ -6,7 +6,7 @@ use serde_json::json;
 use tracing::error;
 
 /// Appends a telemetry event to a local file in JSONL format.
-pub fn log_abr_decision(group_id: u64, est_bw: u64, rtt_ms: u128, selected_track: &str) {
+pub fn log_abr_decision(group_id: u64, est_bw: u64, rtt_ms: u128, cwnd_bytes: u64, selected_track: &str) {
     // Get the shared kernel time in microseconds
     let now_us = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -19,6 +19,7 @@ pub fn log_abr_decision(group_id: u64, est_bw: u64, rtt_ms: u128, selected_track
         "group_id": group_id,
         "bbr_est_bw_bps": est_bw,
         "bbr_rtt_ms": rtt_ms,
+        "cwnd_bytes": cwnd_bytes,
         "selected_track": selected_track
     });
 

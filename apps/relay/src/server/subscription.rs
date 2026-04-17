@@ -816,6 +816,7 @@ impl Subscription {
           if send_status {
             let mut send_stream_last_object_ids = self.send_stream_last_object_ids.write().await;
             send_stream_last_object_ids.insert(stream_id.clone(), Some(object.location.object));
+            drop(send_stream_last_object_ids); // Release the lock immediately
 
             // Update last sent max location
             self

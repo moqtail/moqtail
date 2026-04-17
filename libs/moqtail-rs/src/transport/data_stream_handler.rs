@@ -34,7 +34,7 @@ use crate::model::data::object::Object;
 use crate::model::data::subgroup_header::SubgroupHeader;
 use crate::model::data::subgroup_object::SubgroupObject;
 use crate::model::error::ParseError;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, trace};
 
 // Timeout for header and subsequent objects
 const DATA_STREAM_TIMEOUT: Duration = Duration::from_secs(15);
@@ -331,7 +331,7 @@ impl RecvDataStream {
 
           consumed = c;
 
-          debug!(
+          trace!(
             "previous_object_id: {:?} object_id: {:?} consumed: {}",
             previous_object_id, &object_id, consumed
           );
@@ -527,7 +527,7 @@ impl RecvDataStream {
         }
         Err(ParseError::NotEnoughBytes { .. }) => {
           // Not enough bytes to parse the object, continue reading
-          debug!("Not enough bytes to parse the object, continuing to read...");
+          trace!("Not enough bytes to parse the object, continuing to read...");
           Ok((0, None)) // Indicate that we need more data
         }
         Err(e) => {

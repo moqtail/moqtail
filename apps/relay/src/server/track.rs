@@ -242,6 +242,18 @@ impl Track {
       );
     }
 
+    // Send single Object event with optional header info
+    let event = TrackEvent::SubgroupObject {
+      stream_id: stream_id.clone(),
+      object: object.clone(),
+      header_info: header_info.cloned(),
+    };
+
+    self
+      .subscription_manager
+      .send_event_to_subscribers(event)
+      .await?;
+
     if let Ok(fetch_object) = object.clone().try_into_fetch() {
       self.cache.add_object(fetch_object).await;
     } else {
@@ -263,18 +275,6 @@ impl Track {
         .log_track_object(self.track_alias, object, object_received_time)
         .await;
     }
-
-    // Send single Object event with optional header info
-    let event = TrackEvent::SubgroupObject {
-      stream_id: stream_id.clone(),
-      object: object.clone(),
-      header_info: header_info.cloned(),
-    };
-
-    self
-      .subscription_manager
-      .send_event_to_subscribers(event)
-      .await?;
 
     // update the largest location
     {

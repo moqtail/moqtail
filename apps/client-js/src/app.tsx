@@ -281,13 +281,19 @@ export function App() {
       }
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       const { rect, strength } = blurSettings;
-      ctx.save();
-      ctx.beginPath();
-      ctx.rect(rect.x, rect.y, rect.w, rect.h);
-      ctx.clip();
-      ctx.filter = `blur(${Math.max(0, strength)}px)`;
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      ctx.restore();
+      const rx = Math.max(0, Math.min(canvas.width, rect.x));
+      const ry = Math.max(0, Math.min(canvas.height, rect.y));
+      const rw = Math.max(0, Math.min(canvas.width - rx, rect.w));
+      const rh = Math.max(0, Math.min(canvas.height - ry, rect.h));
+      if (rw > 0 && rh > 0) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(rx, ry, rw, rh);
+        ctx.clip();
+        ctx.filter = `blur(${Math.max(0, strength)}px)`;
+        ctx.drawImage(video, rx, ry, rw, rh, rx, ry, rw, rh);
+        ctx.restore();
+      }
       blurRafRef.current = requestAnimationFrame(tick);
     };
     blurRafRef.current = requestAnimationFrame(tick);

@@ -264,18 +264,6 @@ impl Track {
         .await;
     }
 
-    // update the largest location
-    {
-      let mut largest_location = self.largest_location.write().await;
-      if object.location.group > largest_location.group
-        || (object.location.group == largest_location.group
-          && object.location.object > largest_location.object)
-      {
-        largest_location.group = object.location.group;
-        largest_location.object = object.location.object;
-      }
-    }
-
     // Send single Object event with optional header info
     let event = TrackEvent::SubgroupObject {
       stream_id: stream_id.clone(),
@@ -287,6 +275,18 @@ impl Track {
       .subscription_manager
       .send_event_to_subscribers(event)
       .await?;
+
+    // update the largest location
+    {
+      let mut largest_location = self.largest_location.write().await;
+      if object.location.group > largest_location.group
+        || (object.location.group == largest_location.group
+          && object.location.object > largest_location.object)
+      {
+        largest_location.group = object.location.group;
+        largest_location.object = object.location.object;
+      }
+    }
     Ok(())
   }
 

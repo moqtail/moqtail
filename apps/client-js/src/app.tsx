@@ -714,16 +714,15 @@ export function App() {
         <main className="relative flex flex-1 flex-col items-center justify-center overflow-hidden bg-neutral-950 p-4 md:p-6">
           <div
             className={cn(
-              'relative w-full overflow-hidden rounded-xl bg-black shadow-2xl shadow-black/60 transition-opacity duration-300',
-              hasTracks ? 'opacity-100' : 'pointer-events-none opacity-0',
+              'relative overflow-hidden rounded-xl bg-black shadow-2xl shadow-black/60',
+              hasTracks ? 'inline-flex' : 'hidden',
             )}
-            style={{ aspectRatio: '16/9' }}
           >
             <video
               ref={videoRef}
               controls
               className={cn(
-                'h-full w-full object-contain transition-[filter,transform] duration-300',
+                'block max-h-[calc(100dvh-9rem)] max-w-full transition-[filter,transform] duration-300',
                 blurSettings.mode === 'global' ? 'scale-110 blur-3xl' : 'blur-0 scale-100',
               )}
             />

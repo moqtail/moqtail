@@ -167,7 +167,7 @@ impl TryFrom<u64> for SubgroupHeaderType {
     }
 
     // Must be in valid range [0x10, 0x3F]
-    if value < 0x10 || value > 0x3F {
+    if !(0x10..=0x3F).contains(&value) {
       return Err(ParseError::InvalidType {
         context: "SubgroupHeaderType::try_from(u64)",
         details: format!("out of valid range, got {value:#x}"),
@@ -467,17 +467,17 @@ impl FetchObjectSerializationFlags {
     let mut flags = 0u64;
 
     // Group ID: explicit if no prior or different
-    if prior.map_or(true, |p| p.group_id != group_id) {
+    if prior.is_none_or(|p| p.group_id != group_id) {
       flags |= 0x08;
     }
 
     // Object ID: explicit if no prior or not sequential
-    if prior.map_or(true, |p| p.object_id + 1 != object_id) {
+    if prior.is_none_or(|p| p.object_id + 1 != object_id) {
       flags |= 0x04;
     }
 
     // Publisher Priority: explicit if no prior or different
-    if prior.map_or(true, |p| p.publisher_priority != publisher_priority) {
+    if prior.is_none_or(|p| p.publisher_priority != publisher_priority) {
       flags |= 0x10;
     }
 
@@ -487,22 +487,24 @@ impl FetchObjectSerializationFlags {
     }
 
     // Subgroup ID mode
-    if subgroup_id.is_none() {
-      // Datagram-forwarded object
-      flags |= 0x40;
-      // bits 0-1 should be 0 for datagram
-    } else {
-      let obj_subgroup = subgroup_id.unwrap();
-      let mode = if obj_subgroup == 0 {
+    if let Some(obj_subgroup) = subgroup_id {
+      let mode: i32 = if obj_subgroup == 0 {
         0x00 // zero
-      } else if prior.map_or(false, |p| p.subgroup_id == subgroup_id) {
+      } else if prior.is_some_and(|p| p.subgroup_id == subgroup_id) {
+        // Mode 0x01 means "same subgroup ID as prior". This comparison works correctly:
+        // if prior had subgroup_id=None (datagram), "None != Some(obj_subgroup)" falls through.
+        // Mode 0x01 is therefore never selected when the prior was a datagram object.
         0x01 // same as prior
-      } else if prior.map_or(false, |p| p.subgroup_id.map_or(false, |s| s + 1 == obj_subgroup)) {
+      } else if prior.is_some_and(|p| p.subgroup_id.is_some_and(|s| s + 1 == obj_subgroup)) {
         0x02 // prior + 1
       } else {
         0x03 // explicit
       };
       flags |= mode as u64;
+    } else {
+      // Datagram-forwarded object
+      flags |= 0x40;
+      // bits 0-1 should be 0 for datagram
     }
 
     FetchObjectSerializationFlags(flags)

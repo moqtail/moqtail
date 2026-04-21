@@ -297,6 +297,9 @@ impl Subscription {
                             header: SubgroupHeader::new_with_explicit_id(
                               relay_track_id,
                               object.group_id,
+                              // Datagram-forwarded objects have subgroup_id=None; fall back to 0
+                              // because SubgroupHeader requires an explicit ID. Such objects are
+                              // re-forwarded as subgroup streams, so 0 is the conventional default.
                               object.subgroup_id.unwrap_or(0),
                               Some(object.publisher_priority),
                               has_extensions,

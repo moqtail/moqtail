@@ -17,7 +17,7 @@ use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
 use crate::model::error::ParseError;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
-use super::constant::{ObjectStatus, FetchObjectSerializationFlags, FetchObjectPriorState};
+use super::constant::{FetchObjectPriorState, FetchObjectSerializationFlags, ObjectStatus};
 
 /// End-of-range marker on a fetch stream.
 #[derive(Debug, Clone, PartialEq)]
@@ -25,6 +25,36 @@ pub enum FetchStreamItem {
   Object(FetchObject),
   EndOfNonExistentRange { group_id: u64, object_id: u64 },
   EndOfUnknownRange { group_id: u64, object_id: u64 },
+}
+
+impl FetchStreamItem {
+  /// Serialize this item. For end-of-range markers, only flags + Group ID + Object ID
+  /// are written (spec §10.4.4.2: Subgroup ID, Priority and Extensions are not present).
+  pub fn serialize(&self, prior: Option<&FetchObjectPriorState>) -> Result<Bytes, ParseError> {
+    match self {
+      FetchStreamItem::Object(obj) => obj.serialize(prior),
+      FetchStreamItem::EndOfNonExistentRange {
+        group_id,
+        object_id,
+      } => {
+        let mut buf = BytesMut::new();
+        buf.put_vi(FetchObjectSerializationFlags::END_OF_NON_EXISTENT_RANGE)?;
+        buf.put_vi(*group_id)?;
+        buf.put_vi(*object_id)?;
+        Ok(buf.freeze())
+      }
+      FetchStreamItem::EndOfUnknownRange {
+        group_id,
+        object_id,
+      } => {
+        let mut buf = BytesMut::new();
+        buf.put_vi(FetchObjectSerializationFlags::END_OF_UNKNOWN_RANGE)?;
+        buf.put_vi(*group_id)?;
+        buf.put_vi(*object_id)?;
+        Ok(buf.freeze())
+      }
+    }
+  }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -44,7 +74,10 @@ impl FetchObject {
     let mut buf = BytesMut::new();
 
     // Compute serialization flags
-    let has_extensions = self.extension_headers.as_ref().map_or(false, |v| !v.is_empty());
+    let has_extensions = self
+      .extension_headers
+      .as_ref()
+      .is_some_and(|v| !v.is_empty());
     let flags = FetchObjectSerializationFlags::from_properties(
       prior,
       self.group_id,
@@ -115,7 +148,10 @@ impl FetchObject {
 
   /// Deserialize a fetch stream item (object or end-of-range marker).
   /// Updates the prior state with the deserialized values.
-  pub fn deserialize_item(bytes: &mut Bytes, prior: &mut Option<FetchObjectPriorState>) -> Result<FetchStreamItem, ParseError> {
+  pub fn deserialize_item(
+    bytes: &mut Bytes,
+    prior: &mut Option<FetchObjectPriorState>,
+  ) -> Result<FetchStreamItem, ParseError> {
     let flags_raw = bytes.get_vi()?;
     let flags = FetchObjectSerializationFlags::try_from(flags_raw)?;
 
@@ -124,9 +160,15 @@ impl FetchObject {
       let group_id = bytes.get_vi()?;
       let object_id = bytes.get_vi()?;
       let item = if flags.0 == FetchObjectSerializationFlags::END_OF_NON_EXISTENT_RANGE {
-        FetchStreamItem::EndOfNonExistentRange { group_id, object_id }
+        FetchStreamItem::EndOfNonExistentRange {
+          group_id,
+          object_id,
+        }
       } else {
-        FetchStreamItem::EndOfUnknownRange { group_id, object_id }
+        FetchStreamItem::EndOfUnknownRange {
+          group_id,
+          object_id,
+        }
       };
       return Ok(item);
     }
@@ -174,14 +216,14 @@ impl FetchObject {
       None
     } else {
       let mode = flags.subgroup_mode();
-      let id = match mode {
+
+      match mode {
         0x00 => Some(0),
         0x01 => prior.as_ref().unwrap().subgroup_id,
         0x02 => prior.as_ref().unwrap().subgroup_id.map(|s| s + 1),
         0x03 => Some(bytes.get_vi()?),
         _ => unreachable!(), // only 4 modes
-      };
-      id
+      }
     };
 
     // Read Object ID
@@ -201,14 +243,15 @@ impl FetchObject {
     // Read Extensions
     let extension_headers = if flags.has_extensions() {
       let ext_len = bytes.get_vi()?;
-      let ext_len: usize = ext_len.try_into().map_err(|e: std::num::TryFromIntError| {
-        ParseError::CastingError {
-          context: "FetchObject::deserialize_item",
-          from_type: "u64",
-          to_type: "usize",
-          details: e.to_string(),
-        }
-      })?;
+      let ext_len: usize =
+        ext_len
+          .try_into()
+          .map_err(|e: std::num::TryFromIntError| ParseError::CastingError {
+            context: "FetchObject::deserialize_item",
+            from_type: "u64",
+            to_type: "usize",
+            details: e.to_string(),
+          })?;
       if ext_len > 0 {
         if bytes.remaining() < ext_len {
           return Err(ParseError::NotEnoughBytes {
@@ -243,14 +286,14 @@ impl FetchObject {
       let status = ObjectStatus::try_from(status_raw)?;
       (None, Some(status))
     } else {
-      let payload_len: usize = payload_len.try_into().map_err(|e: std::num::TryFromIntError| {
-        ParseError::CastingError {
+      let payload_len: usize = payload_len
+        .try_into()
+        .map_err(|e: std::num::TryFromIntError| ParseError::CastingError {
           context: "FetchObject::deserialize_item",
           from_type: "u64",
           to_type: "usize",
           details: e.to_string(),
-        }
-      })?;
+        })?;
       if bytes.remaining() < payload_len {
         return Err(ParseError::NotEnoughBytes {
           context: "FetchObject::deserialize_item",
@@ -305,6 +348,7 @@ impl FetchObject {
 mod tests {
 
   use super::*;
+  use crate::model::common::varint::BufMutVarIntExt;
   use bytes::Buf;
 
   #[test]
@@ -368,6 +412,111 @@ mod tests {
     let deserialized = FetchObject::deserialize(&mut buf).unwrap();
     assert_eq!(deserialized, fetch_object);
     assert_eq!(buf.chunk(), &[9u8, 1u8, 1u8]);
+  }
+
+  #[test]
+  fn test_datagram_roundtrip() {
+    let obj = FetchObject {
+      group_id: 5,
+      subgroup_id: None, // datagram-forwarded object
+      object_id: 3,
+      publisher_priority: 128,
+      extension_headers: None,
+      object_status: None,
+      payload: Some(Bytes::from_static(b"datagram")),
+    };
+    let mut buf = obj.serialize(None).unwrap();
+    // Flags must have bit 0x40 set (datagram) and no subgroup ID on wire
+    let flags = FetchObjectSerializationFlags(buf.clone().get_vi().unwrap());
+    assert!(flags.is_datagram());
+    let deserialized = FetchObject::deserialize(&mut buf).unwrap();
+    assert_eq!(deserialized, obj);
+    assert!(!buf.has_remaining());
+  }
+
+  #[test]
+  fn test_end_of_non_existent_range_roundtrip() {
+    let item = FetchStreamItem::EndOfNonExistentRange {
+      group_id: 42,
+      object_id: 7,
+    };
+    let mut buf = item.serialize(None).unwrap();
+    let mut prior = None;
+    let deserialized = FetchObject::deserialize_item(&mut buf, &mut prior).unwrap();
+    assert_eq!(deserialized, item);
+    assert!(!buf.has_remaining());
+  }
+
+  #[test]
+  fn test_end_of_unknown_range_roundtrip() {
+    let item = FetchStreamItem::EndOfUnknownRange {
+      group_id: 99,
+      object_id: 0,
+    };
+    let mut buf = item.serialize(None).unwrap();
+    let mut prior = None;
+    let deserialized = FetchObject::deserialize_item(&mut buf, &mut prior).unwrap();
+    assert_eq!(deserialized, item);
+    assert!(!buf.has_remaining());
+  }
+
+  #[test]
+  fn test_invalid_flags_rejected() {
+    // 0x80 is invalid (>= 128, not 0x8C or 0x10C)
+    let mut buf = BytesMut::new();
+    buf.put_vi(0x80u64).unwrap();
+    let mut bytes = buf.freeze();
+    let mut prior = None;
+    let result = FetchObject::deserialize_item(&mut bytes, &mut prior);
+    assert!(result.is_err());
+
+    // 0x10D is also invalid
+    let mut buf = BytesMut::new();
+    buf.put_vi(0x10Du64).unwrap();
+    let mut bytes = buf.freeze();
+    let mut prior = None;
+    let result = FetchObject::deserialize_item(&mut bytes, &mut prior);
+    assert!(result.is_err());
+  }
+
+  #[test]
+  fn test_first_object_must_have_explicit_fields() {
+    // Build a valid first object, then tamper with flags to remove explicit Group ID
+    let obj = FetchObject {
+      group_id: 1,
+      subgroup_id: Some(0),
+      object_id: 0,
+      publisher_priority: 10,
+      extension_headers: None,
+      object_status: None,
+      payload: Some(Bytes::from_static(b"hello")),
+    };
+    let serialized = obj.serialize(None).unwrap();
+
+    // Deserializing with no prior should succeed (all explicit flags set for first object)
+    let mut buf = serialized.clone();
+    let mut prior = None;
+    assert!(FetchObject::deserialize_item(&mut buf, &mut prior).is_ok());
+
+    // Manually craft flags with no explicit Group ID (bit 0x08 unset) for first object
+    let mut tampered = BytesMut::new();
+    tampered.put_vi(0x17u64).unwrap(); // has explicit obj id (0x04) + priority (0x10) + extensions (0x20) but NOT group id
+    let mut bytes = tampered.freeze();
+    let mut prior = None;
+    let result = FetchObject::deserialize_item(&mut bytes, &mut prior);
+    assert!(matches!(result, Err(ParseError::ProtocolViolation { .. })));
+  }
+
+  #[test]
+  fn test_first_object_bad_subgroup_mode_rejected() {
+    // Mode 0x01 ("same as prior") on first object must be rejected
+    let mut buf = BytesMut::new();
+    // flags: explicit group (0x08) + explicit obj (0x04) + explicit priority (0x10) + subgroup mode=0x01
+    buf.put_vi(0x1Du64).unwrap(); // 0x08|0x04|0x10|0x01 = 0x1D
+    let mut bytes = buf.freeze();
+    let mut prior = None;
+    let result = FetchObject::deserialize_item(&mut bytes, &mut prior);
+    assert!(matches!(result, Err(ParseError::ProtocolViolation { .. })));
   }
 
   #[test]

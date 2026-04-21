@@ -1070,7 +1070,6 @@ impl Subscription {
         connection_id, stream_id, track_alias
       );
 
-      tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
       let res = subscriber.close_stream(&stream_id).await;
       if let Err(e) = res {
         warn!(

@@ -304,9 +304,9 @@ impl Subscription {
           _ = instance.receive() => {
             continue;
           }
-          // 1 second timeout to check if the subscription is still valid
+          // TODO: implement max timeout here
+          // 5 second timeout to check if the subscription is still valid
           _ = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {
-            // TODO: implement max timeout here
             continue;
           }
         }

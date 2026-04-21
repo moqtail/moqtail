@@ -1,5 +1,11 @@
 # moqtail-ts
 
+## 0.9.1
+
+### Patch Changes
+
+- [#171](https://github.com/moqtail/moqtail/pull/171) [`c19a1f0`](https://github.com/moqtail/moqtail/commit/c19a1f0d9c81185d5b84569a5ec3ef3bf9e7b90e) Thanks [@fatih-alperen](https://github.com/fatih-alperen)! - Fixed a race condition that caused negative object deltas
+
 ## 0.9.0
 
 ### Minor Changes

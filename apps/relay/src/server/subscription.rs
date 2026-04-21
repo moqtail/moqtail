@@ -304,9 +304,9 @@ impl Subscription {
           _ = instance.receive() => {
             continue;
           }
-          // 1 second timeout to check if the subscription is still valid
-          _ = tokio::time::sleep(tokio::time::Duration::from_secs(1)) => {
-            // TODO: implement max timeout here
+          // TODO: implement max timeout here
+          // 5 second timeout to check if the subscription is still valid
+          _ = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {
             continue;
           }
         }
@@ -610,30 +610,34 @@ impl Subscription {
       self.client_connection_id,
       self.track_alias()
     );
-    let mut event_rx_guard = self.event_rx.lock().await;
 
-    if let Some(ref mut event_rx) = *event_rx_guard {
-      match event_rx.recv().await {
-        Some(event) => {
-          if self.finished.load(Ordering::Relaxed) {
-            return;
-          }
-          self.handle_track_event(event).await;
-        }
-        None => {
-          // For unbounded receivers, recv() returns None when the channel is closed
-          // The channel is closed, we should finish the subscription
-          info!(
-            "Event receiver closed for subscriber: {} track: {}, finishing subscription",
-            self.client_connection_id,
-            self.track_alias()
-          );
-          self.finish().await;
-        }
+    // Dequeue while holding the lock, then release before processing.
+    let recv_result = {
+      let mut guard = self.event_rx.lock().await;
+      if let Some(ref mut rx) = *guard {
+        rx.recv().await
+      } else {
+        // Receiver was already taken by finish(); loop will break on is_finished().
+        return;
       }
-    } else {
-      // No receiver available, subscription has been finished
-      self.finish().await;
+    };
+
+    match recv_result {
+      Some(event) => {
+        if self.finished.load(Ordering::Relaxed) {
+          return;
+        }
+        self.handle_track_event(event).await;
+      }
+      None => {
+        // Channel closed (all senders dropped).
+        info!(
+          "Event receiver closed for subscriber: {} track: {}, finishing subscription",
+          self.client_connection_id,
+          self.track_alias()
+        );
+        self.finish().await;
+      }
     }
   }
 
@@ -816,6 +820,7 @@ impl Subscription {
           if send_status {
             let mut send_stream_last_object_ids = self.send_stream_last_object_ids.write().await;
             send_stream_last_object_ids.insert(stream_id.clone(), Some(object.location.object));
+            drop(send_stream_last_object_ids); // Release the lock immediately
 
             // Update last sent max location
             self

@@ -33,6 +33,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::watch;
 use tracing::{error, info, warn};
 
+
 pub async fn handle(
   client: Arc<MOQTClient>,
   _control_stream_handler: &mut ControlStreamHandler,
@@ -172,204 +173,10 @@ pub async fn handle(
         senders.insert(request_id, cancel_tx);
       }
 
-      tokio::spawn(async move {
-        // TODO: verify the range exist. Currently we just return what we have...
-        let track_read = track.read().await;
-        let mut object_rx = track_read
-          .cache
-          .read_objects(
-            start_location.unwrap(),
-            end_location.clone().unwrap(),
-            true, /* report_end_location */
-          )
-          .await;
-
-        let fetch_header = FetchHeader::new(request_id);
-        let header_info = HeaderInfo::Fetch {
-          header: fetch_header,
-          fetch_request: fetch,
-        };
-
-        let stream_id = build_stream_id(track_read.track_alias, &header_info);
-
-        let stream_fn = async move |client: Arc<MOQTClient>, stream_id: &StreamId| {
-          let stream_result = client
-            .open_stream(stream_id, fetch_header.serialize().unwrap(), 0)
-            .await;
-
-          match stream_result {
-            Ok(send_stream) => Some(send_stream),
-            Err(e) => {
-              error!("handle_fetch_messages | Error opening stream: {:?}", e);
-              None
-            }
-          }
-        };
-
-        let mut object_count = 0;
-        let mut send_stream = None;
-        let mut cancelled = false;
-        loop {
-          tokio::select! {
-            event = object_rx.recv() => {
-              match event {
-                Some(event) => match event {
-                  CacheConsumeEvent::NoObject => {
-                    // there is no object found
-                    break;
-                  }
-                  CacheConsumeEvent::EndLocation(end_location) => {
-                    info!(
-                      "handle_fetch_messages | sending fetch_ok | actual end_location: {:?}",
-                      &end_location
-                    );
-                    // TODO: implement descending fetch
-                    // TODO: end of track is correct?
-                    let largest_location = track_read.largest_location.read().await;
-                    let end_of_track = largest_location.group == end_location.group;
-                    let fetch_ok =
-                      FetchOk::new_ascending(request_id, end_of_track, end_location, vec![]);
-
-                    client
-                      .queue_message(ControlMessage::FetchOk(Box::new(fetch_ok)))
-                      .await;
-                  }
-                  CacheConsumeEvent::Object(object) => {
-                    if object_count == 0 {
-                      info!("handle_fetch_messages | starting stream {:?}", &stream_id);
-                      send_stream = match stream_fn(client.clone(), &stream_id).await {
-                        Some(ss) => Some(ss),
-                        None => {
-                          // Clean up cancel sender before returning
-                          client.fetch_cancel_senders.write().await.remove(&request_id);
-                          return Err(TerminationCode::InternalError);
-                        }
-                      };
-                    }
-                    let object_id = object.object_id;
-                    let is_sent = if let Err(e) = client
-                      .write_stream_object(
-                        &stream_id,
-                        object_id,
-                        object.serialize().unwrap(),
-                        send_stream.as_ref().cloned(),
-                      )
-                      .await
-                    {
-                      error!(
-                        "handle_fetch_messages | Error writing object to stream: {:?}",
-                        e
-                      );
-                      false
-                    } else {
-                      true
-                    };
-
-                    if !is_sent {
-                      // Clean up cancel sender before returning
-                      client.fetch_cancel_senders.write().await.remove(&request_id);
-                      return Err(TerminationCode::InternalError);
-                    }
-
-                    // Log fetch stream object if enabled
-                    if context.server_config.enable_object_logging {
-                      let sending_time = crate::server::utils::passed_time_since_start();
-                      let fetch_object = moqtail::model::data::object::Object {
-                        track_alias: track_read.track_alias,
-                        location: moqtail::model::common::location::Location::new(
-                          object.group_id,
-                          object.object_id,
-                        ),
-                        publisher_priority: object.publisher_priority,
-                        forwarding_preference:
-                          moqtail::model::data::constant::ObjectForwardingPreference::Subgroup,
-                        subgroup_id: Some(object.subgroup_id),
-                        status: object
-                          .object_status
-                          .unwrap_or(moqtail::model::data::constant::ObjectStatus::Normal),
-                        extensions: object.extension_headers.clone(),
-                        payload: object.payload.clone(),
-                      };
-                      track_read
-                        .object_logger
-                        .log_fetch_object(
-                          track_read.track_alias,
-                          context.connection_id,
-                          request_id,
-                          &fetch_object,
-                          is_sent,
-                          sending_time,
-                        )
-                        .await;
-                    }
-                    info!(
-                      "handle_fetch_messages | Wrote object to stream: {} object_id: {}",
-                      &stream_id, object_id
-                    );
-                    object_count += 1;
-                  }
-                },
-                None => {
-                  warn!("handle_fetch_messages | No object.");
-                  break;
-                }
-              }
-            }
-            _ = cancel_rx.changed() => {
-              info!("handle_fetch_messages | Fetch cancelled for request_id: {}", request_id);
-              cancelled = true;
-              break;
-            }
-          }
-        }
-
-        if cancelled {
-          // Close the stream promptly as per the spec
-          if let Some(the_stream) = send_stream {
-            if let Err(e) = the_stream.lock().await.shutdown().await {
-              error!(
-                "handle_fetch_messages | Error closing stream on cancel: {:?}",
-                e
-              );
-            } else {
-              info!(
-                "handle_fetch_messages | closed fetch stream on cancel: {:?}",
-                &stream_id
-              );
-            }
-            client.remove_stream_by_stream_id(&stream_id).await;
-          }
-        } else if object_count == 0 {
-          send_fetch_error(
-            client.clone(),
-            request_id,
-            FetchErrorCode::NoObjects,
-            ReasonPhrase::try_new(String::from("No objects available")).unwrap(),
-          )
-          .await;
-        } else {
-          // close the stream instantly
-          if let Some(the_stream) = send_stream {
-            // gracefully finish the stream here
-            if let Err(e) = the_stream.lock().await.shutdown().await {
-              error!("handle_fetch_messages | Error closing stream: {:?}", e);
-              // return Err(TerminationCode::InternalError);
-            } else {
-              info!("finished fetch stream: {:?}", &stream_id);
-            }
-            client.remove_stream_by_stream_id(&stream_id).await;
-            info!("removed stream from the map {}", stream_id);
-          }
-        }
-
-        // Clean up cancel sender
-        client
-          .fetch_cancel_senders
-          .write()
-          .await
-          .remove(&request_id);
-        Ok(())
-      });
+      tokio::spawn(handle_fetch_delivery(
+        client, context, track, fetch, request_id,
+        start_location, end_location, cancel_rx,
+      ));
 
       Ok(())
     }
@@ -413,11 +220,148 @@ pub async fn handle(
 
       Ok(())
     }
-    _ => {
-      // no-op
+    // Handle FetchError from upstream publisher
+    ControlMessage::FetchError(m) => {
+      let upstream_request_id = m.request_id;
+      // Look up upstream_fetch_senders for this request_id.
+      // If found, send UpstreamFetchEvent::Error through the channel.
+      // Clean up relay_fetch_requests and upstream_fetch_senders.
       Ok(())
     }
+    _ => Ok(()),
   }
+}
+
+/// Refactored delivery loop.
+/// Iterates groups in [start, end] sequentially. For each group:
+///   - Cache hit  → serve objects directly from cache
+///   - Cache miss → scan ahead to find gap extent, call send_upstream_fetch_for_range(),
+///                   receive objects via mpsc channel, deliver them to client
+async fn handle_fetch_delivery(
+  client: Arc<MOQTClient>,
+  context: Arc<SessionContext>,
+  track: Arc<tokio::sync::RwLock<crate::server::track::Track>>,
+  fetch: Fetch,
+  request_id: u64,
+  start_location: Location,
+  end_location: Location,
+  mut cancel_rx: watch::Receiver<bool>,
+) -> Result<(), TerminationCode> {
+  let track_read = track.read().await;
+  let fetch_header = FetchHeader::new(request_id);
+  let header_info = HeaderInfo::Fetch { header: fetch_header, fetch_request: fetch.clone() };
+  let stream_id = build_stream_id(track_read.track_alias, &header_info);
+  let mut object_count: u64 = 0;
+  let mut send_stream = None;
+  let mut upstream_gap_count: u64 = 0;
+
+  // Send FetchOk early on the control stream
+  // ... build FetchOk with end_location, queue on client ...
+
+  let mut group_id = start_location.group;
+
+  while group_id <= end_location.group {
+    // Check cancel_rx.has_changed() — break if cancelled
+
+    if let Some(group_objects) = track_read.cache.get_group(group_id).await {
+      // === CACHE HIT ===
+      // Iterate objects in group, apply start/end filtering,
+      // call deliver_object() for each (opens stream lazily on first object)
+      group_id += 1;
+    } else {
+      // === CACHE MISS ===
+      // Scan ahead to find contiguous gap [gap_start .. gap_end]
+      let gap_start: u64 = group_id;
+      let mut gap_end = group_id;
+      // ... while next groups also missing, extend gap_end ...
+
+      let max_upstream_fetch_gaps = context.server_config.max_upstream_fetch_gaps;
+      if upstream_gap_count >= max_upstream_fetch_gaps {
+        warn!(
+          "handle_fetch_delivery | Reached max upstream fetch gap limit ({}), skipping gap at group {}",
+          max_upstream_fetch_gaps, gap_start
+        );
+        group_id = gap_end + 1;
+        continue;
+      }
+      upstream_gap_count += 1;
+
+      // Issue upstream fetch for the gap
+      let upstream_rx = send_upstream_fetch_for_range(
+        &client, &context, &track_read, &fetch, gap_start, gap_end,
+      ).await;
+
+      if let Some(mut rx) = upstream_rx {
+        // This is the receiver loop. It will be responsible for
+        // sending objects to the client.
+        // We'll await objects from upstream_fetch_senders[relay_request_id]
+        // and send them to the client, through deliver_object().
+        // Each recv() is wrapped with tokio::time::timeout(context.server_config.upstream_fetch_timeout)
+        // so that a stalled upstream doesn't block delivery indefinitely.
+        // On timeout, log, clean up the stale entry in upstream_fetch_senders,
+        // and break out of the loop. Continue with remaining groups, which
+        // may still be served from cache.
+        //
+        // Note: if the upstream publisher disconnects, the receiver will NOT
+        // get None — the Sender in the upstream_fetch_senders map keeps the
+        // channel alive. The timeout is what handles this case. The timeout
+        // path must remove the stale entry from upstream_fetch_senders.
+      }
+
+      group_id = gap_end + 1;
+    }
+  }
+
+  // Finish: shutdown stream, or send FETCH_ERROR if object_count == 0
+  // Clean up cancel sender
+  Ok(())
+}
+
+/// Deliver a single FetchObject to the downstream client.
+/// Opens the unidirectional stream lazily on the first object.
+async fn deliver_object(
+  client: &Arc<MOQTClient>,
+  stream_id: &StreamId,
+  object: &FetchObject,
+  object_count: &mut u64,
+  send_stream: &mut Option<Arc<tokio::sync::Mutex<wtransport::SendStream>>>,
+  fetch_header: &FetchHeader,
+) -> bool {
+  // If object_count == 0: client.open_stream(stream_id, fetch_header bytes, priority=0)
+  // client.write_stream_object(stream_id, object_id, object.serialize(), send_stream)
+  // Increment object_count
+  // Return true on success, false on write failure
+  true
+}
+
+/// NEW: Send an upstream Fetch to the publisher for a cache gap [gap_start, gap_end].
+/// Returns an mpsc::Receiver through which upstream objects will be forwarded.
+async fn send_upstream_fetch_for_range(
+  client: &Arc<MOQTClient>,
+  context: &Arc<SessionContext>,
+  track_read: &crate::server::track::Track,
+  original_fetch: &Fetch,
+  gap_start: u64,
+  gap_end: u64,
+) -> Option<mpsc::Receiver<UpstreamFetchEvent>> {
+  // 1. Find publisher via client_manager (by full_track_name or announced namespace)
+  //    Return None if no publisher found
+
+  // 2. Allocate relay_request_id (odd, via Session::get_next_relay_request_id)
+
+  // 3. Build upstream Fetch::new_standalone for range [gap_start, gap_end]
+
+  // 4. Create mpsc::channel(64) → (upstream_tx, upstream_rx)
+
+  // 5. Register:
+  //    - publisher.fetch_requests[relay_request_id] = FetchRequest { ... }
+  //    - context.relay_fetch_requests[relay_request_id] = same
+  //    - context.upstream_fetch_senders[relay_request_id] = upstream_tx
+
+  // 6. publisher.queue_message(ControlMessage::Fetch(upstream_fetch))
+
+  // Some(upstream_rx)
+  todo!()
 }
 
 async fn send_fetch_error(

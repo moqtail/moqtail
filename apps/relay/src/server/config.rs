@@ -71,6 +71,12 @@ pub struct Cli {
   /// Initial maximum request ID
   #[arg(long, default_value_t = u64::MAX / 8)]
   pub initial_max_request_id: u64,
+  /// Maximum number of upstream fetch gaps before skipping
+  #[arg(long, default_value_t = 10)]
+  pub max_upstream_fetch_gaps: u64,
+  /// Timeout in seconds for upstream fetch responses
+  #[arg(long, default_value_t = 10)]
+  pub upstream_fetch_timeout_secs: u64,
 }
 #[derive(Debug, Clone)]
 pub struct AppConfig {
@@ -88,6 +94,8 @@ pub struct AppConfig {
   pub enable_token_logging: bool,
   pub token_log_path: String,
   pub initial_max_request_id: u64,
+  pub max_upstream_fetch_gaps: u64,
+  pub upstream_fetch_timeout: Duration,
 }
 
 impl AppConfig {
@@ -110,6 +118,8 @@ impl AppConfig {
         enable_token_logging: cli.enable_token_logging,
         token_log_path: cli.token_log_path,
         initial_max_request_id: cli.initial_max_request_id,
+        max_upstream_fetch_gaps: cli.max_upstream_fetch_gaps,
+        upstream_fetch_timeout: Duration::from_secs(cli.upstream_fetch_timeout_secs),
       }
     })
   }
@@ -174,6 +184,8 @@ mod tests {
       enable_token_logging: false,
       token_log_path: "/tmp/moqtail_relay_tokens.csv".to_string(),
       initial_max_request_id: u64::MAX / 8,
+      max_upstream_fetch_gaps: 10,
+      upstream_fetch_timeout_secs: 10,
     };
 
     let config = AppConfig {
@@ -191,6 +203,8 @@ mod tests {
       enable_token_logging: cli.enable_token_logging,
       token_log_path: cli.token_log_path,
       initial_max_request_id: cli.initial_max_request_id,
+      max_upstream_fetch_gaps: cli.max_upstream_fetch_gaps,
+      upstream_fetch_timeout: Duration::from_secs(cli.upstream_fetch_timeout_secs),
     };
 
     assert_eq!(config.initial_max_request_id, u64::MAX / 8);

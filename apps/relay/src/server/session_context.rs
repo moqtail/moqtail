@@ -29,7 +29,8 @@ use super::{
 };
 
 #[allow(dead_code)]
-//These changes are required for message unification and will be useful in other branches, hence we allow the dead code here
+// TODO: Remove the dead_code attribute after merging all the draft-16 changes.
+// These changes are required for message unification and will be useful in other branches.
 #[derive(Debug, Clone)]
 pub enum PendingRequest {
   Fetch(FetchRequest),

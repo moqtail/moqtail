@@ -91,15 +91,13 @@ impl MessageHandler {
       }
       ControlMessage::Subscribe(_)
       | ControlMessage::SubscribeOk(_)
-      | ControlMessage::SubscribeError(_)
       | ControlMessage::Unsubscribe(_)
       | ControlMessage::Switch(_) => {
         subscribe_handler::handle(client.clone(), control_stream_handler, msg, context.clone())
           .await
       }
-      ControlMessage::TrackStatus(_)
-      | ControlMessage::TrackStatusOk(_)
-      | ControlMessage::TrackStatusError(_) => {
+
+      ControlMessage::TrackStatus(_) => {
         track_status_handler::handle(control_stream_handler, msg, context.clone()).await
       }
       ControlMessage::Fetch(_) | ControlMessage::FetchCancel(_) | ControlMessage::FetchOk(_) => {
@@ -107,79 +105,57 @@ impl MessageHandler {
       }
       ControlMessage::Publish(_)
       | ControlMessage::PublishDone(_)
-      | ControlMessage::PublishOk(_)
-      | ControlMessage::PublishError(_) => {
+      | ControlMessage::PublishOk(_) => {
         publish_handler::handle(client.clone(), control_stream_handler, msg, context.clone()).await
       }
 
-      ControlMessage::RequestUpdate(update_msg) => {
-        let existing_req_id = update_msg.existing_request_id;
+      ControlMessage::RequestOk(_)
+      | ControlMessage::RequestError(_)
+      | ControlMessage::RequestUpdate(_) => {
+        // 1. Extract the correct ID to look up, since Update uses a different field name
+        let target_req_id = match &msg {
+          ControlMessage::RequestOk(m) => m.request_id,
+          ControlMessage::RequestError(m) => m.request_id,
+          ControlMessage::RequestUpdate(m) => m.existing_request_id,
+          _ => unreachable!(),
+        };
 
         enum Route {
-          Subscribe,
-          Publish,
           Fetch,
-          SubscribeNamespace,
+          Publish,
           PublishNamespace,
-          Unhandled,
+          Subscribe,
+          SubscribeNamespace,
+          TrackStatus,
           NotFound,
         }
 
-        // 1. Peek at the unified map to determine the routing destination
+        // 2. Peek at the unified map to determine the routing destination once
         let route = {
           let map = context.relay_pending_requests.read().await;
-          match map.get(&existing_req_id) {
-            Some(PendingRequest::Subscribe(_)) => Route::Subscribe,
-            Some(PendingRequest::Publish { .. }) => Route::Publish,
+          match map.get(&target_req_id) {
             Some(PendingRequest::Fetch(_)) => Route::Fetch,
-            Some(PendingRequest::SubscribeNamespace { .. }) => Route::SubscribeNamespace,
+            Some(PendingRequest::Publish { .. }) => Route::Publish,
             Some(PendingRequest::PublishNamespace { .. }) => Route::PublishNamespace,
-            Some(_) => Route::Unhandled,
-            None => Route::NotFound, // Untracked request
+            Some(PendingRequest::Subscribe(_)) => Route::Subscribe,
+            Some(PendingRequest::SubscribeNamespace { .. }) => Route::SubscribeNamespace,
+            Some(PendingRequest::TrackStatus(_)) => Route::TrackStatus,
+            Some(PendingRequest::RequestUpdate { .. }) => Route::NotFound,
+            None => Route::NotFound,
           }
         };
 
-        // 2. Dispatch to the correct handler
         match route {
-          Route::Subscribe => {
-            // Assuming your subscribe handler has a dedicated method for updates
-            subscribe_handler::handle_request_update(
-              client.clone(),
-              control_stream_handler,
-              msg, // Pass the original ControlMessage::RequestUpdate
-              context.clone(),
-            )
-            .await
+          Route::Fetch => {
+            fetch_handler::handle(client.clone(), control_stream_handler, msg, context.clone())
+              .await
           }
           Route::Publish => {
-            publish_handler::handle_request_update(
-              client.clone(),
-              control_stream_handler,
-              msg,
-              context.clone(),
-            )
-            .await
-          }
-          Route::Fetch => {
-            fetch_handler::handle_request_update(
-              client.clone(),
-              control_stream_handler,
-              msg,
-              context.clone(),
-            )
-            .await
-          }
-          Route::SubscribeNamespace => {
-            subscribe_namespace_handler::handle_request_update(
-              client.clone(),
-              control_stream_handler,
-              msg,
-              context.clone(),
-            )
-            .await
+            publish_handler::handle(client.clone(), control_stream_handler, msg, context.clone())
+              .await
           }
           Route::PublishNamespace => {
-            publish_namespace_handler::handle_request_update(
+            publish_namespace_handler::handle(
               client.clone(),
               control_stream_handler,
               msg,
@@ -187,33 +163,49 @@ impl MessageHandler {
             )
             .await
           }
-          Route::Unhandled => {
-            warn!(
-              "Router received RequestUpdate for request_id: {}, but updating this request type is not implemented.",
-              existing_req_id
-            );
-            // Draft 16: Invalid parameters for the type of request being modified = Protocol Violation
-            Err(TerminationCode::ProtocolViolation)
+          Route::Subscribe => {
+            subscribe_handler::handle(client.clone(), control_stream_handler, msg, context.clone())
+              .await
+          }
+          Route::SubscribeNamespace => {
+            subscribe_namespace_handler::handle(
+              client.clone(),
+              control_stream_handler,
+              msg,
+              context.clone(),
+            )
+            .await
+          }
+          Route::TrackStatus => {
+            track_status_handler::handle(control_stream_handler, msg, context.clone()).await
           }
           Route::NotFound => {
             warn!(
-              "Router received RequestUpdate for untracked existing_request_id: {}. Triggering ProtocolViolation.",
-              existing_req_id
+              "Router received generic message ({:?}) for untracked ID: {}",
+              msg.get_type(),
+              target_req_id
             );
-            // Draft 16: Invalid Existing Request ID = Protocol Violation
-            Err(TerminationCode::ProtocolViolation)
+
+            // Draft-16: If someone tries to update a request we don't track, it's a protocol violation
+            if let ControlMessage::RequestUpdate(_) = msg {
+              Err(TerminationCode::ProtocolViolation)
+            } else {
+              Ok(())
+            }
           }
         }
       }
 
+      // Catch-all for any unhandled control messages
       m => {
-        info!("some message received");
-        let a = m.serialize().unwrap();
-        let buf = Bytes::from_iter(a);
-        utils::print_bytes(&buf);
+        info!("unhandled message received");
+        if let Ok(a) = m.serialize() {
+          let buf = Bytes::from_iter(a);
+          utils::print_bytes(&buf);
+        }
         Ok(())
       }
-    }; // end of if
+    };
 
     if let Err(termination_code) = handling_result {
       Err(termination_code)

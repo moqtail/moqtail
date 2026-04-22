@@ -24,7 +24,7 @@ use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::publish::Publish;
 use moqtail::model::control::publish_namespace::PublishNamespace;
 use moqtail::model::control::subscribe_ok::SubscribeOk;
-use moqtail::model::data::datagram_object::DatagramObject;
+use moqtail::model::data::datagram::Datagram;
 use moqtail::model::data::object::Object;
 use moqtail::model::data::subgroup_header::SubgroupHeader;
 use moqtail::model::data::subgroup_object::SubgroupObject;
@@ -180,6 +180,8 @@ async fn publish_namespace(
 ) -> Result<()> {
   info!("Publishing namespace...");
   let publish_namespace = PublishNamespace::new(0, namespace.clone(), &[]);
+  let expected_request_id = publish_namespace.request_id;
+
   control_stream
     .send(&ControlMessage::PublishNamespace(Box::new(
       publish_namespace,
@@ -187,12 +189,19 @@ async fn publish_namespace(
     .await?;
 
   match control_stream.next_message().await {
-    Ok(ControlMessage::PublishNamespaceOk(_)) => {
+    Ok(ControlMessage::RequestOk(ok)) if ok.request_id == expected_request_id => {
       info!("Namespace published successfully");
       Ok(())
     }
-    Ok(m) => anyhow::bail!("Expected PublishNamespaceOk, got {:?}", m),
-    Err(e) => anyhow::bail!("Failed waiting for PublishNamespaceOk: {:?}", e),
+    Ok(ControlMessage::RequestOk(ok)) => {
+      anyhow::bail!(
+        "PublishNamespace got RequestOk for another request ID: expected {}, got {}",
+        expected_request_id,
+        ok.request_id
+      )
+    }
+    Ok(m) => anyhow::bail!("Expected RequestOk, got {:?}", m),
+    Err(e) => anyhow::bail!("Failed waiting for RequestOk: {:?}", e),
   }
 }
 
@@ -290,12 +299,14 @@ async fn send_datagrams(
     for object_id in 0..objects_per_group {
       let payload = generate_payload(payload_size);
 
-      let datagram_obj = DatagramObject::new(
+      let datagram_obj = Datagram::new_payload(
         track_alias,
         group_id,
         object_id,
-        0, // publisher_priority
+        Some(0), // publisher_priority
+        None,    // extension_headers
         Bytes::from(payload),
+        false, // end_of_group
       );
 
       let serialized = datagram_obj.serialize()?;
@@ -347,7 +358,7 @@ async fn send_via_streams(
     let stream = connection.open_uni().await?.await?;
 
     let sub_header =
-      SubgroupHeader::new_with_explicit_id(track_alias, group_id, 1u64, 1u8, true, true);
+      SubgroupHeader::new_with_explicit_id(track_alias, group_id, 1u64, Some(1u8), true, true);
     let header_info = HeaderInfo::Subgroup { header: sub_header };
     let stream = Arc::new(Mutex::new(stream));
     let mut handler = SendDataStream::new(stream, header_info).await?;
@@ -363,7 +374,7 @@ async fn send_via_streams(
         payload: Some(Bytes::from(payload)),
       };
       let object =
-        Object::try_from_subgroup(subgroup_obj, track_alias, group_id, Some(group_id), 1)?;
+        Object::try_from_subgroup(subgroup_obj, track_alias, group_id, Some(group_id), Some(1))?;
 
       match handler.send_object(&object, prev_object_id).await {
         Ok(_) => {

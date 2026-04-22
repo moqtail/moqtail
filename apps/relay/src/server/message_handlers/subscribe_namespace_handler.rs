@@ -16,16 +16,16 @@ use crate::server::session_context::{PendingRequest, SessionContext};
 use crate::server::{client::MOQTClient, session::Session};
 use core::result::Result;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
-use moqtail::model::control::constant::SubscribeNamespaceErrorCode;
+use moqtail::model::control::constant::RequestErrorCode;
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::publish_namespace::PublishNamespace;
-use moqtail::model::control::subscribe_namespace_error::SubscribeNamespaceError;
-use moqtail::model::control::subscribe_namespace_ok::SubscribeNamespaceOk;
+use moqtail::model::control::request_error::RequestError;
+use moqtail::model::control::request_ok::RequestOk;
 use moqtail::model::error::TerminationCode;
 use moqtail::model::parameter::message_parameter::apply_message_parameter_update;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
-use tracing::{error, info, warn};
+use tracing::{debug, info, warn};
 
 pub async fn handle(
   client: Arc<MOQTClient>,
@@ -40,7 +40,7 @@ pub async fn handle(
         sub_ns.track_namespace_prefix
       );
 
-      // 0. Check for prefix overlap per draft spec (NAMESPACE_PREFIX_OVERLAP)
+      // 0. Check for prefix overlap per draft spec (PREFIX_OVERLAP)
       if let Some(existing_prefix) = context
         .track_manager
         .find_overlapping_namespace_subscription(
@@ -53,14 +53,15 @@ pub async fn handle(
           "SUBSCRIBE_NAMESPACE overlap: new={:?} conflicts with existing={:?}",
           sub_ns.track_namespace_prefix, existing_prefix
         );
-        let err = SubscribeNamespaceError::new(
+        let err = RequestError::new(
           sub_ns.request_id,
-          SubscribeNamespaceErrorCode::NamespacePrefixOverlap,
+          RequestErrorCode::PrefixOverlap,
+          0, //TODO: Maybe decide on another retry interval?
           ReasonPhrase::try_new("Namespace prefix overlaps with existing subscription".to_string())
             .unwrap(),
         );
         handler
-          .send(&ControlMessage::SubscribeNamespaceError(Box::new(err)))
+          .send(&ControlMessage::RequestError(Box::new(err)))
           .await?;
         return Ok(());
       }
@@ -89,15 +90,14 @@ pub async fn handle(
       // TODO(Draft-16 Stream Split): When SUBSCRIBE_NAMESPACE is moved to its own dedicated
       // bidirectional QUIC stream, we MUST remove this request_id from relay_pending_requests
       // when that underlying QUIC stream receives a FIN or RESET_STREAM.
-      // -----------------------------------------------------------
 
       // 2. Send OK back to the subscriber
-      let ok = SubscribeNamespaceOk::new(sub_ns.request_id);
+      let ok = RequestOk::new(sub_ns.request_id, vec![]);
       handler
-        .send(&ControlMessage::SubscribeNamespaceOk(Box::new(ok)))
+        .send(&ControlMessage::RequestOk(Box::new(ok)))
         .await?;
       info!(
-        "Sent SubscribeNamespaceOk for request_id: {}",
+        "Sent RequestOk for SubscribeNamespace request_id: {}",
         sub_ns.request_id
       );
 
@@ -190,6 +190,95 @@ pub async fn handle(
         }
       }
     }
+
+    ControlMessage::RequestOk(m) => {
+      let msg = *m;
+
+      let mapping = {
+        let mut map = context.relay_pending_requests.write().await;
+        match map.remove(&msg.request_id) {
+          Some(PendingRequest::SubscribeNamespace {
+            client_connection_id,
+            original_request_id,
+            ..
+          }) => Some((client_connection_id, original_request_id)),
+          Some(_) => {
+            warn!(
+              "Mismatched request type for RequestOk (SubscribeNamespace): {}",
+              msg.request_id
+            );
+            None
+          }
+          None => None,
+        }
+      };
+
+      if let Some((client_connection_id, original_request_id)) = mapping {
+        let manager = context.client_manager.read().await;
+        if let Some(downstream_client) = manager.get(client_connection_id).await {
+          let forwarded_msg = RequestOk::new(original_request_id, msg.parameters);
+
+          info!(
+            "Forwarding RequestOk (for SubscribeNamespace) to Client {}",
+            client_connection_id
+          );
+
+          downstream_client
+            .queue_message(ControlMessage::RequestOk(Box::new(forwarded_msg)))
+            .await;
+        } else {
+          warn!("Downstream client {} disconnected", client_connection_id);
+        }
+      } else {
+        debug!(
+          "SubscribeNamespace handler received RequestOk for untracked ID: {}",
+          msg.request_id
+        );
+      }
+    }
+
+    ControlMessage::RequestUpdate(m) => {
+      let update_msg = *m;
+      let existing_req_id = update_msg.existing_request_id;
+      let update_req_id = update_msg.request_id;
+
+      let target_prefix = {
+        let mut map = context.relay_pending_requests.write().await;
+        match map.get_mut(&existing_req_id) {
+          Some(PendingRequest::SubscribeNamespace { message, .. }) => {
+            apply_message_parameter_update(&mut message.parameters, update_msg.parameters.clone());
+            message.track_namespace_prefix.clone()
+          }
+          _ => {
+            warn!(
+              "Request {} is not a valid SubscribeNamespace request",
+              existing_req_id
+            );
+            return Err(TerminationCode::ProtocolViolation);
+          }
+        }
+      };
+
+      info!(
+        "Processing SUBSCRIBE_NAMESPACE update for prefix: {:?}",
+        target_prefix
+      );
+
+      context
+        .track_manager
+        .update_namespace_subscription_parameters(
+          &target_prefix,
+          client.connection_id,
+          update_msg.parameters.clone(),
+        )
+        .await;
+
+      let ok_msg = RequestOk::new(update_req_id, vec![]);
+      handler
+        .send(&ControlMessage::RequestOk(Box::new(ok_msg)))
+        .await?;
+    }
+
     _ => {
       warn!(
         "Unexpected message in subscribe_namespace_handler: {:?}",
@@ -197,65 +286,6 @@ pub async fn handle(
       );
     }
   }
-
-  Ok(())
-}
-
-pub async fn handle_request_update(
-  client: Arc<MOQTClient>,
-  _handler: &mut ControlStreamHandler,
-  msg: ControlMessage,
-  context: Arc<SessionContext>,
-) -> Result<(), TerminationCode> {
-  let update_msg = match msg {
-    ControlMessage::RequestUpdate(m) => *m,
-    _ => {
-      error!("subscribe_namespace_handler::handle_request_update called with wrong message type");
-      return Err(TerminationCode::InternalError);
-    }
-  };
-
-  let existing_req_id = update_msg.existing_request_id;
-  // let new_req_id = update_msg.request_id; // TODO: Uncomment when sending RequestOk
-
-  // 1. Verify this is a SubscribeNamespace request and apply parameter updates
-  let target_prefix = {
-    let mut map = context.relay_pending_requests.write().await;
-    match map.get_mut(&existing_req_id) {
-      Some(PendingRequest::SubscribeNamespace { message, .. }) => {
-        apply_message_parameter_update(&mut message.parameters, update_msg.parameters.clone());
-        message.track_namespace_prefix.clone()
-      }
-      _ => {
-        warn!(
-          "Request {} is not a valid SubscribeNamespace request",
-          existing_req_id
-        );
-        return Err(TerminationCode::ProtocolViolation);
-      }
-    }
-  };
-
-  info!(
-    "Processing SUBSCRIBE_NAMESPACE update for prefix: {:?}",
-    target_prefix
-  );
-
-  // 2. Update the stored Namespace Subscription parameters in TrackManager
-  context
-    .track_manager
-    .update_namespace_subscription_parameters(
-      &target_prefix,
-      client.connection_id,
-      update_msg.parameters.clone(),
-    )
-    .await;
-  // 4. Send RequestOk back to the Client acknowledging the update
-  // TODO: Uncomment after merging RequestOk/Error support
-  /*
-  let ok_msg = RequestOk::new(new_req_id);
-  _handler.send(&ControlMessage::RequestOk(Box::new(ok_msg))).await?;
-  */
 
   Ok(())
 }

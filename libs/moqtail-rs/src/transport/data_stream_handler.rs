@@ -620,6 +620,7 @@ mod tests {
   use crate::model::control::fetch::JoiningFetchProps;
   use crate::model::control::{fetch::Fetch, subscribe::Subscribe};
   use crate::model::data::constant::SubgroupHeaderType;
+  use crate::model::extension_header::object_extension::ObjectExtension;
   use crate::model::parameter::authorization_token::AuthorizationToken;
   use crate::model::parameter::message_parameter::MessageParameter;
   use bytes::Bytes;
@@ -657,8 +658,12 @@ mod tests {
     let object_id: u64 = 10;
     let publisher_priority: u8 = 255;
     let extension_headers = Some(vec![
-      KeyValuePair::try_new_varint(0, 10).unwrap(),
-      KeyValuePair::try_new_bytes(1, Bytes::from_static(b"wololoo")).unwrap(),
+      ObjectExtension::Unknown {
+        kvp: KeyValuePair::try_new_varint(0, 10).unwrap(),
+      },
+      ObjectExtension::Unknown {
+        kvp: KeyValuePair::try_new_bytes(1, Bytes::from_static(b"wololoo")).unwrap(),
+      },
     ]);
     let object_status = None;
     let payload = Some(Bytes::from_static(
@@ -701,11 +706,11 @@ mod tests {
         MessageParameter::new_forward(true),
       ],
     );
-    let header_type = SubgroupHeaderType::Type0x15;
+    let header_type = SubgroupHeaderType::try_new(0x15).unwrap();
     let track_alias = 999;
     let group_id = 9;
     let subgroup_id = Some(11);
-    let publisher_priority = 255;
+    let publisher_priority = Some(255);
     let subgroup_header = SubgroupHeader {
       header_type,
       track_alias,
@@ -720,8 +725,12 @@ mod tests {
   fn make_subgroup_object() -> SubgroupObject {
     let object_id: u64 = 10;
     let extension_headers = Some(vec![
-      KeyValuePair::try_new_varint(0, 10).unwrap(),
-      KeyValuePair::try_new_bytes(1, Bytes::from_static(b"wololoo")).unwrap(),
+      ObjectExtension::Unknown {
+        kvp: KeyValuePair::try_new_varint(0, 10).unwrap(),
+      },
+      ObjectExtension::Unknown {
+        kvp: KeyValuePair::try_new_bytes(1, Bytes::from_static(b"wololoo")).unwrap(),
+      },
     ]);
     let object_status = None;
     let payload = Some(Bytes::from_static(b"01239gjawkk92837aldmi"));

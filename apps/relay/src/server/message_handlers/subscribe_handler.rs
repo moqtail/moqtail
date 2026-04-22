@@ -18,6 +18,8 @@ use crate::server::session::Session;
 use crate::server::session_context::{PendingRequest, SessionContext};
 use crate::server::track::{Track, TrackStatus};
 use core::result::Result;
+use moqtail::model::control::constant::RequestErrorCode;
+use moqtail::model::control::request_error::RequestError;
 use moqtail::model::control::subscribe::Subscribe;
 use moqtail::model::error::TerminationCode;
 use moqtail::model::parameter::message_parameter::{
@@ -115,10 +117,11 @@ async fn handle_subscribe_message(
       "no publisher found for track namespace: {:?}",
       track_namespace
     );
-    // send SubscribeError
-    let subscribe_error = moqtail::model::control::subscribe_error::SubscribeError::new(
+    // send RequestError
+    let subscribe_error = RequestError::new(
       sub.request_id,
-      moqtail::model::control::constant::SubscribeErrorCode::TrackDoesNotExist,
+      RequestErrorCode::DoesNotExist,
+      0, //TODO: Maybe decide on another retry interval?
       ReasonPhrase::try_new("Unknown track namespace".to_string()).unwrap(),
     );
     control_stream_handler
@@ -228,12 +231,13 @@ async fn handle_subscribe_message(
         reason_phrase,
       } => {
         info!(
-          "Track rejected, sending SubscribeError to subscriber {}",
+          "Track rejected, sending RequestError to subscriber {}",
           client.connection_id
         );
-        let subscribe_error = moqtail::model::control::subscribe_error::SubscribeError::new(
+        let subscribe_error = RequestError::new(
           sub.request_id,
           error_code,
+          0, //TODO: Maybe decide on another retry interval?
           reason_phrase,
         );
         control_stream_handler.send_impl(&subscribe_error).await
@@ -454,36 +458,26 @@ async fn handle_unsubscribe_message(
 
 pub async fn handle_request_update(
   client: Arc<MOQTClient>,
-  _control_stream_handler: &mut ControlStreamHandler,
-  msg: ControlMessage,
+  control_stream_handler: &mut ControlStreamHandler,
+  update_msg: moqtail::model::control::request_update::RequestUpdate,
   context: Arc<SessionContext>,
 ) -> Result<(), TerminationCode> {
-  // 1. Extract the inner RequestUpdate message
-  let request_update_message = match msg {
-    ControlMessage::RequestUpdate(m) => *m,
-    _ => {
-      error!("subscribe_handler::handle_request_update called with wrong message type");
-      return Err(TerminationCode::InternalError);
-    }
-  };
-
-  let existing_req_id = request_update_message.existing_request_id;
-  // let update_req_id = request_update_message.request_id; // TODO: Uncomment after merging RequestOk/Error support
+  let existing_req_id = update_msg.existing_request_id;
+  let update_req_id = update_msg.request_id;
 
   let full_track_name = {
-    let mut pending_requests = context.relay_pending_requests.write().await;
-    match pending_requests.get_mut(&existing_req_id) {
-      Some(PendingRequest::Subscribe(req)) => {
-        // Apply the Draft 16 parameter patch directly to the nested message state
+    let mut client_requests = client.subscribe_requests.write().await;
+    match client_requests.get_mut(&existing_req_id) {
+      Some(req) => {
         apply_message_parameter_update(
           &mut req.original_subscribe_request.subscribe_parameters,
-          request_update_message.parameters.clone(),
+          update_msg.parameters.clone(),
         );
         req.original_subscribe_request.get_full_track_name()
       }
-      _ => {
+      None => {
         warn!(
-          "Request {} is not a valid Subscribe request",
+          "RequestUpdate existing_request_id {} is not a valid Subscribe request for this client",
           existing_req_id
         );
         return Err(TerminationCode::ProtocolViolation);
@@ -491,7 +485,7 @@ pub async fn handle_request_update(
     }
   };
 
-  // 3. Get the track instance
+  // 2. Get the track instance
   let track_lock = context.track_manager.get_track(&full_track_name).await;
 
   if track_lock.is_none() {
@@ -502,26 +496,20 @@ pub async fn handle_request_update(
   let track_arc = track_lock.unwrap();
   let track_guard = track_arc.read().await;
 
-  // 4. Update the actual active subscription
+  // 3. Update the actual active edge subscription
   if let Some(subscription) = track_guard.get_subscription(client.connection_id).await {
     let sub = subscription.read().await;
 
-    match sub
-      .update_subscription(request_update_message.clone())
-      .await
-    {
+    match sub.update_subscription(update_msg.clone()).await {
       Ok(_) => {
         info!(
           "Subscription updated successfully for track: {:?}",
           full_track_name
         );
 
-        // 6. Send RequestOk back to the subscriber
-        // TODO: Uncomment after merging RequestOk/Error support
-        /*
-        let ok_msg = RequestOk::new(update_req_id);
-        _control_stream_handler.send_message(Box::new(ControlMessage::RequestOk(Box::new(ok_msg)))).await?;
-        */
+        use moqtail::model::control::request_ok::RequestOk;
+        let ok_msg = RequestOk::new(update_req_id, vec![]);
+        let _ = control_stream_handler.send_impl(&ok_msg).await;
       }
       Err(e) => {
         error!(
@@ -529,11 +517,14 @@ pub async fn handle_request_update(
           full_track_name, e
         );
 
-        // TODO: Uncomment after merging RequestOk/Error support
-        /*
-        let err_msg = RequestError::new(update_req_id, 400, format!("Update failed: {}", e));
-        _control_stream_handler.send_message(Box::new(ControlMessage::RequestError(Box::new(err_msg)))).await?;
-        */
+        let err_msg = RequestError::new(
+          update_req_id,
+          RequestErrorCode::InternalError,
+          0,
+          ReasonPhrase::try_new(format!("Update failed: {:?}", e))
+            .unwrap_or_else(|_| ReasonPhrase::try_new("Update failed".to_string()).unwrap()),
+        );
+        let _ = control_stream_handler.send_impl(&err_msg).await;
       }
     }
   } else {
@@ -541,20 +532,26 @@ pub async fn handle_request_update(
       "No active subscription found for client {} on track {:?}",
       client.connection_id, full_track_name
     );
-    // TODO: Send RequestError 404 once merged
+
+    let err_msg = RequestError::new(
+      update_req_id,
+      RequestErrorCode::DoesNotExist,
+      0,
+      ReasonPhrase::try_new("Subscription not found".to_string()).unwrap(),
+    );
+    let _ = control_stream_handler.send_impl(&err_msg).await;
   }
 
   Ok(())
 }
-
 async fn handle_subscribe_error_message(
   _client: Arc<MOQTClient>,
   _control_stream_handler: &mut ControlStreamHandler,
-  subscribe_error_message: moqtail::model::control::subscribe_error::SubscribeError,
+  subscribe_error_message: RequestError,
   context: Arc<SessionContext>,
 ) -> Result<(), TerminationCode> {
   info!(
-    "received SubscribeError message: {:?}",
+    "received RequestError message: {:?}",
     subscribe_error_message
   );
   let msg = subscribe_error_message;
@@ -573,7 +570,7 @@ async fn handle_subscribe_error_message(
         return Ok(());
       }
       None => {
-        warn!("SubscribeError for unknown request id: {:?}", request_id);
+        warn!("RequestError for unknown request id: {:?}", request_id);
         return Ok(());
       }
     }
@@ -590,25 +587,26 @@ async fn handle_subscribe_error_message(
       .await;
   }
 
-  // Send SubscribeError to the FIRST subscriber (the creator)
+  // Send RequestError to the FIRST subscriber (the creator)
   {
     let subscriber = {
       let mngr = context.client_manager.read().await;
       mngr.get(sub_request.requested_by).await
     };
     if let Some(subscriber) = subscriber {
-      let subscribe_error = moqtail::model::control::subscribe_error::SubscribeError::new(
+      let subscribe_error = RequestError::new(
         sub_request.original_request_id,
         msg.error_code,
+        0, //TODO: Maybe decide on another retry interval?
         msg.reason_phrase.clone(),
       );
       subscriber
-        .queue_message(ControlMessage::SubscribeError(Box::new(subscribe_error)))
+        .queue_message(ControlMessage::RequestError(Box::new(subscribe_error)))
         .await;
     }
   }
 
-  // Send SubscribeError to ALL pending subscribers
+  // Send RequestError to ALL pending subscribers
   if let Some(track_arc) = &track_arc {
     let track = track_arc.read().await;
     let pending = {
@@ -622,13 +620,14 @@ async fn handle_subscribe_error_message(
         mngr.get(subscriber_connection_id).await
       };
       if let Some(subscriber) = subscriber {
-        let subscribe_error = moqtail::model::control::subscribe_error::SubscribeError::new(
+        let subscribe_error = RequestError::new(
           subscriber_request_id,
           msg.error_code,
+          0, //TODO: Maybe decide on another retry interval?
           msg.reason_phrase.clone(),
         );
         subscriber
-          .queue_message(ControlMessage::SubscribeError(Box::new(subscribe_error)))
+          .queue_message(ControlMessage::RequestError(Box::new(subscribe_error)))
           .await;
       }
     }
@@ -785,7 +784,10 @@ pub async fn handle(
     ControlMessage::Unsubscribe(m) => {
       handle_unsubscribe_message(client, control_stream_handler, *m, context).await
     }
-    ControlMessage::SubscribeError(m) => {
+    ControlMessage::RequestUpdate(m) => {
+      handle_request_update(client, control_stream_handler, *m, context).await
+    }
+    ControlMessage::RequestError(m) => {
       handle_subscribe_error_message(client, control_stream_handler, *m, context).await
     }
     ControlMessage::Switch(m) => {

@@ -46,15 +46,13 @@ export enum ControlMessageType {
   FetchError = 0x19,
   FetchCancel = 0x17,
   TrackStatus = 0x0d,
-  TrackStatusOk = 0x0e,
   TrackStatusError = 0x0f,
   PublishNamespace = 0x06,
-  PublishNamespaceOk = 0x07,
+  RequestOk = 0x07,
   PublishNamespaceError = 0x08,
   PublishNamespaceDone = 0x09,
   PublishNamespaceCancel = 0x0c,
   SubscribeNamespace = 0x11,
-  SubscribeNamespaceOk = 0x12,
   SubscribeNamespaceError = 0x13,
   UnsubscribeNamespace = 0x14,
   Publish = 0x1d,
@@ -109,12 +107,10 @@ export function controlMessageTypeFromBigInt(v: bigint): ControlMessageType {
       return ControlMessageType.FetchCancel
     case 0x0dn:
       return ControlMessageType.TrackStatus
-    case 0x0en:
-      return ControlMessageType.TrackStatus
     case 0x06n:
       return ControlMessageType.PublishNamespace
     case 0x07n:
-      return ControlMessageType.PublishNamespaceOk
+      return ControlMessageType.RequestOk
     case 0x08n:
       return ControlMessageType.PublishNamespaceError
     case 0x09n:
@@ -123,8 +119,6 @@ export function controlMessageTypeFromBigInt(v: bigint): ControlMessageType {
       return ControlMessageType.PublishNamespaceCancel
     case 0x11n:
       return ControlMessageType.SubscribeNamespace
-    case 0x12n:
-      return ControlMessageType.SubscribeNamespaceOk
     case 0x13n:
       return ControlMessageType.SubscribeNamespaceError
     case 0x14n:

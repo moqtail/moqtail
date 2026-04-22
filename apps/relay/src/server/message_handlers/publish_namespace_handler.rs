@@ -17,14 +17,12 @@ use crate::server::session::Session;
 use crate::server::session_context::{PendingRequest, SessionContext};
 use core::result::Result;
 use moqtail::model::control::publish_namespace::PublishNamespace;
-use moqtail::model::control::{
-  control_message::ControlMessage, publish_namespace_ok::PublishNamespaceOk,
-};
+use moqtail::model::control::{control_message::ControlMessage, request_ok::RequestOk};
 use moqtail::model::error::TerminationCode;
 use moqtail::model::parameter::message_parameter::apply_message_parameter_update;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
-use tracing::{error, info, warn};
+use tracing::{debug, info, warn};
 
 pub async fn handle(
   client: Arc<MOQTClient>,
@@ -53,7 +51,6 @@ pub async fn handle(
       }
 
       // this is a publisher, add it to the client manager
-      // send announce_ok
       client
         .add_announced_track_namespace(m.track_namespace.clone())
         .await;
@@ -126,116 +123,134 @@ pub async fn handle(
         }
       }
 
-      let announce_ok = Box::new(PublishNamespaceOk {
-        request_id: m.request_id,
-      });
+      let request_ok = Box::new(RequestOk::new(
+        m.request_id,
+        vec![], // No parameters needed for a basic namespace OK
+      ));
+
       control_stream_handler
-        .send(&ControlMessage::PublishNamespaceOk(announce_ok))
+        .send(&ControlMessage::RequestOk(request_ok))
         .await
+    }
+
+    ControlMessage::RequestOk(m) => {
+      let msg = *m;
+
+      let mapping = {
+        let mut map = context.relay_pending_requests.write().await;
+        match map.remove(&msg.request_id) {
+          Some(PendingRequest::PublishNamespace {
+            client_connection_id,
+            ..
+          }) => Some(client_connection_id),
+          Some(_) => {
+            warn!(
+              "Mismatched request type for RequestOk (PublishNamespace): {}",
+              msg.request_id
+            );
+            None
+          }
+          None => None,
+        }
+      };
+
+      if let Some(client_connection_id) = mapping {
+        debug!(
+          "Received acknowledgment (RequestOk) from subscriber {} for PublishNamespace broadcast",
+          client_connection_id
+        );
+      } else {
+        debug!(
+          "PublishNamespace handler received RequestOk for untracked ID: {}",
+          msg.request_id
+        );
+      }
+      Ok(())
+    }
+
+    ControlMessage::RequestUpdate(m) => {
+      let update_msg = *m;
+      let existing_req_id = update_msg.existing_request_id;
+      let update_req_id = update_msg.request_id;
+
+      let target_namespace = {
+        let mut map = context.relay_pending_requests.write().await;
+        match map.get_mut(&existing_req_id) {
+          Some(PendingRequest::PublishNamespace { message, .. }) => {
+            apply_message_parameter_update(&mut message.parameters, update_msg.parameters.clone());
+            message.track_namespace.clone()
+          }
+          _ => {
+            warn!(
+              "Request {} is not a valid PublishNamespace request",
+              existing_req_id
+            );
+            return Err(TerminationCode::ProtocolViolation);
+          }
+        }
+      };
+
+      info!(
+        "Processing PUBLISH_NAMESPACE update for namespace: {:?}",
+        target_namespace
+      );
+
+      context
+        .track_manager
+        .update_namespace_parameters(&target_namespace, update_msg.parameters.clone())
+        .await;
+
+      let downstream_sessions = context
+        .track_manager
+        .get_namespace_subscribers(&target_namespace)
+        .await;
+
+      for session in downstream_sessions {
+        if let Some(downstream_req_id) = session.get_outbound_announce_id(&target_namespace).await {
+          let relay_update_id = crate::server::session::Session::get_next_relay_request_id(
+            context.relay_next_request_id.clone(),
+          )
+          .await;
+
+          let fanout_msg = moqtail::model::control::request_update::RequestUpdate::new(
+            relay_update_id,
+            downstream_req_id,
+            update_msg.parameters.clone(),
+          );
+
+          {
+            let mut map = context.relay_pending_requests.write().await;
+            map.insert(
+              relay_update_id,
+              PendingRequest::RequestUpdate {
+                client_connection_id: session.connection_id,
+                original_request_id: relay_update_id,
+                message: fanout_msg.clone(),
+              },
+            );
+          }
+
+          session
+            .queue_message(ControlMessage::RequestUpdate(Box::new(fanout_msg)))
+            .await;
+        } else {
+          warn!(
+            "Found downstream session {} for namespace {:?} but no outbound announce ID was tracked.",
+            session.connection_id, target_namespace
+          );
+        }
+      }
+
+      let ok_msg = RequestOk::new(update_req_id, vec![]);
+      control_stream_handler
+        .send(&ControlMessage::RequestOk(Box::new(ok_msg)))
+        .await?;
+
+      Ok(())
     }
     _ => {
       // no-op
       Ok(())
     }
   }
-}
-pub async fn handle_request_update(
-  _client: Arc<MOQTClient>,
-  _handler: &mut ControlStreamHandler,
-  msg: ControlMessage,
-  context: Arc<SessionContext>,
-) -> Result<(), TerminationCode> {
-  let update_msg = match msg {
-    ControlMessage::RequestUpdate(m) => *m,
-    _ => {
-      error!("publish_namespace_handler::handle_request_update called with wrong message type");
-      return Err(TerminationCode::InternalError);
-    }
-  };
-
-  let existing_req_id = update_msg.existing_request_id;
-  // let new_req_id = update_msg.request_id; // TODO: Uncomment when sending RequestOk
-
-  // 1. Verify this is a PublishNamespace request and apply parameter updates
-  let target_namespace = {
-    let mut map = context.relay_pending_requests.write().await;
-    match map.get_mut(&existing_req_id) {
-      Some(PendingRequest::PublishNamespace { message, .. }) => {
-        apply_message_parameter_update(&mut message.parameters, update_msg.parameters.clone());
-        message.track_namespace.clone()
-      }
-      _ => {
-        warn!(
-          "Request {} is not a valid PublishNamespace request",
-          existing_req_id
-        );
-        return Err(TerminationCode::ProtocolViolation);
-      }
-    }
-  };
-
-  info!(
-    "Processing PUBLISH_NAMESPACE update for namespace: {:?}",
-    target_namespace
-  );
-
-  // 2. Update Global Track Manager State
-  // Make sure to implement this in TrackManager so new clients get the updated parameters!
-
-  context
-    .track_manager
-    .update_namespace_parameters(&target_namespace, update_msg.parameters.clone())
-    .await;
-
-  // 3. The Ripple Effect Fan-Out
-  let downstream_sessions = context
-    .track_manager
-    .get_namespace_subscribers(&target_namespace)
-    .await;
-
-  for session in downstream_sessions {
-    // We look up the exact ID we used to announce this namespace to this specific session!
-    if let Some(downstream_req_id) = session.get_outbound_announce_id(&target_namespace).await {
-      let relay_update_id = crate::server::session::Session::get_next_relay_request_id(
-        context.relay_next_request_id.clone(),
-      )
-      .await;
-
-      let fanout_msg = moqtail::model::control::request_update::RequestUpdate::new(
-        relay_update_id,
-        downstream_req_id,
-        update_msg.parameters.clone(),
-      );
-
-      // Track the outbound REQUEST_UPDATE so we can receive RequestOk later
-      {
-        let mut map = context.relay_pending_requests.write().await;
-        map.insert(
-          relay_update_id,
-          PendingRequest::RequestUpdate {
-            client_connection_id: session.connection_id,
-            original_request_id: relay_update_id,
-            message: fanout_msg.clone(),
-          },
-        );
-      }
-
-      session
-        .queue_message(ControlMessage::RequestUpdate(Box::new(fanout_msg)))
-        .await;
-    } else {
-      warn!(
-        "Found downstream session {} for namespace {:?} but no outbound announce ID was tracked.",
-        session.connection_id, target_namespace
-      );
-    }
-  }
-
-  // 4. Acknowledge the update to the Publisher
-  /*
-  let ok_msg = RequestOk::new(new_req_id);
-  _handler.send(&ControlMessage::RequestOk(Box::new(ok_msg))).await?;
-  */
-
-  Ok(())
 }

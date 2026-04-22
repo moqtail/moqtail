@@ -13,8 +13,7 @@
 // limitations under the License.
 
 pub mod constant;
-pub mod datagram_object;
-pub mod datagram_status;
+pub mod datagram;
 pub mod fetch_header;
 pub mod fetch_object;
 pub mod full_track_name;

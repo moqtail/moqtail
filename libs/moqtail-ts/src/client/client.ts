@@ -19,7 +19,6 @@ import {
   PublishNamespace,
   PublishNamespaceDone,
   PublishNamespaceError,
-  PublishNamespaceOk,
   ClientSetup,
   ControlMessage,
   Fetch,
@@ -38,15 +37,14 @@ import {
   UnsubscribeNamespace,
   Publish,
   PublishError,
-  SubscribeNamespaceOk,
+  RequestOk,
   Switch,
   SubscribeOk,
   SUPPORTED_VERSIONS,
   PublishDone,
 } from '../model/control'
 import {
-  DatagramObject,
-  DatagramStatus,
+  Datagram,
   FetchHeader,
   FetchObject,
   FullTrackName,
@@ -284,10 +282,10 @@ export class MOQtailClient {
   onError?: (er: unknown) => void
 
   /** Invoked for each decoded datagram object/status arriving. */
-  onDatagramReceived?: (data: DatagramObject | DatagramStatus) => void
+  onDatagramReceived?: (data: Datagram) => void
 
   /** Invoked after enqueuing each outbound datagram object/status. */
-  onDatagramSent?: (data: DatagramObject | DatagramStatus) => void
+  onDatagramSent?: (data: Datagram) => void
 
   /** Fired when an inbound PUBLISH control message is received. */
   onPeerPublish?: (msg: Publish, stream: ReadableStream<MoqtObject>) => void
@@ -639,19 +637,9 @@ export class MOQtailClient {
       )
     }
 
-    let serialized: Uint8Array
-
-    if (object.hasStatus()) {
-      const datagramStatus = object.tryIntoDatagramStatus(trackAlias)
-      serialized = datagramStatus.serialize().toUint8Array()
-      if (this.onDatagramSent) this.onDatagramSent(datagramStatus)
-    } else if (object.hasPayload()) {
-      const datagramObject = object.tryIntoDatagramObject(trackAlias)
-      serialized = datagramObject.serialize().toUint8Array()
-      if (this.onDatagramSent) this.onDatagramSent(datagramObject)
-    } else {
-      throw new InternalError('sendDatagram', 'MoqtObject must have payload or status')
-    }
+    const datagram = object.tryIntoDatagram(trackAlias)
+    const serialized = datagram.serialize().toUint8Array()
+    if (this.onDatagramSent) this.onDatagramSent(datagram)
 
     await this.#datagramWriter.write(serialized)
   }
@@ -683,41 +671,16 @@ export class MOQtailClient {
           continue
         }
 
-        const firstByte = datagramBytes[0]!
-
         try {
-          // Parse datagram (peek at first byte to determine type)
-          // Draft-14 type values:
-          // - 0x00-0x07: OBJECT_DATAGRAM (payload datagrams)
-          // - 0x20-0x21: OBJECT_DATAGRAM_STATUS (status datagrams)
-          const isStatus = firstByte === 0x20 || firstByte === 0x21
+          const datagram = Datagram.deserialize(new FrozenByteBuffer(datagramBytes))
+          const trackAlias = datagram.trackAlias
 
-          let moqtObject: MoqtObject
-          let trackAlias: bigint
-
-          if (isStatus) {
-            // DatagramStatus (0x20 or 0x21)
-            const datagramStatus = DatagramStatus.deserialize(new FrozenByteBuffer(datagramBytes))
-            trackAlias = datagramStatus.trackAlias
-
-            if (this.onDatagramReceived) {
-              this.onDatagramReceived(datagramStatus)
-            }
-
-            const fullTrackName = this.#resolveTrackAlias(trackAlias)
-            moqtObject = MoqtObject.fromDatagramStatus(datagramStatus, fullTrackName)
-          } else {
-            // DatagramObject (0x00-0x07)
-            const datagramObject = DatagramObject.deserialize(new FrozenByteBuffer(datagramBytes))
-            trackAlias = datagramObject.trackAlias
-
-            if (this.onDatagramReceived) {
-              this.onDatagramReceived(datagramObject)
-            }
-
-            const fullTrackName = this.#resolveTrackAlias(trackAlias)
-            moqtObject = MoqtObject.fromDatagramObject(datagramObject, fullTrackName)
+          if (this.onDatagramReceived) {
+            this.onDatagramReceived(datagram)
           }
+
+          const fullTrackName = this.#resolveTrackAlias(trackAlias)
+          const moqtObject = MoqtObject.fromDatagram(datagram, fullTrackName)
 
           // Dispatch to track-specific handler if registered
           const trackKey = trackAlias.toString()
@@ -1565,7 +1528,7 @@ export class MOQtailClient {
    * - trackNamespace: Tuple representing the namespace prefix (e.g. ["camera","main"]). All tracks whose full names start with this tuple are considered within the announce scope.
    * - parameters: Optional {@link MessageParameters}; omitted =\> default instance.
    *
-   * Returns: {@link PublishNamespaceOk} on success (namespace added to `announcedNamespaces`) or {@link PublishNamespaceError} explaining refusal.
+   * Returns: {@link RequestOk} on success (namespace added to `announcedNamespaces`) or {@link PublishNamespaceError} explaining refusal.
    *
    * Use cases:
    * - Make a camera or sensor namespace available before any objects are pushed.
@@ -1583,7 +1546,7 @@ export class MOQtailClient {
    * @example Minimal announce
    * ```ts
    * const res = await client.publishNamespace(["camera","main"])
-   * if (res instanceof PublishNamespaceOk) {
+   * if (res instanceof RequestOk) {
    *   // ready to publish objects under tracks with this namespace prefix
    * }
    * ```
@@ -1604,7 +1567,11 @@ export class MOQtailClient {
       this.requests.set(msg.requestId, request)
       this.controlStream.send(msg)
       const response = await request
-      if (response instanceof PublishNamespaceOk) this.announcedNamespaces.add(msg.trackNamespace)
+
+      if (response instanceof RequestOk) {
+        this.announcedNamespaces.add(msg.trackNamespace)
+      }
+
       this.requests.delete(msg.requestId)
       return response
     } catch (error) {
@@ -1719,7 +1686,7 @@ export class MOQtailClient {
 
       logger.log('subscribeNamespace | got response', response)
 
-      if (response instanceof SubscribeNamespaceOk) {
+      if (response instanceof RequestOk) {
         this.subscribedAnnounces.add(msg.trackNamespacePrefix)
       }
 
@@ -1868,25 +1835,13 @@ export class MOQtailClient {
                 if (!firstObjectId) {
                   firstObjectId = nextObject.objectId
                 }
-                let subgroupId = header.subgroupId
-                switch (header.type) {
-                  case SubgroupHeaderType.Type0x10:
-                  case SubgroupHeaderType.Type0x11:
-                  case SubgroupHeaderType.Type0x18:
-                  case SubgroupHeaderType.Type0x19:
-                    subgroupId = 0n
-                    break
-                  case SubgroupHeaderType.Type0x12:
-                  case SubgroupHeaderType.Type0x13:
-                  case SubgroupHeaderType.Type0x1A:
-                  case SubgroupHeaderType.Type0x1B:
-                    subgroupId = firstObjectId
-                    break
-                  case SubgroupHeaderType.Type0x14:
-                  case SubgroupHeaderType.Type0x15:
-                  case SubgroupHeaderType.Type0x1C:
-                  case SubgroupHeaderType.Type0x1D:
-                    subgroupId = header.subgroupId!
+                let subgroupId: bigint | null = null
+                if (SubgroupHeaderType.isSubgroupIdZero(header.type)) {
+                  subgroupId = 0n
+                } else if (SubgroupHeaderType.isSubgroupIdFirstObjectId(header.type)) {
+                  subgroupId = firstObjectId ?? null
+                } else if (SubgroupHeaderType.hasExplicitSubgroupId(header.type)) {
+                  subgroupId = header.subgroupId ?? null
                 }
 
                 const fullTrackName = this.aliasFullTrackNameMap.get(header.trackAlias)

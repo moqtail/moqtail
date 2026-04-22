@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { TrackStatus, TrackStatusError, TrackStatusOk } from '../../model/control'
+import { TrackStatus, TrackStatusError } from '../../model/control'
 import { ControlMessageHandler } from './handler'
 import { createLogger } from '../../util/logger'
 
@@ -26,11 +26,6 @@ export const handlerTrackStatus: ControlMessageHandler<TrackStatus> = async (_cl
 }
 
 export const handlerTrackStatusError: ControlMessageHandler<TrackStatusError> = async (_client, msg) => {
-  logger.debug('not implemented', msg)
-  // TODO: Implement TrackStatus handler logic
-}
-
-export const handlerTrackStatusOk: ControlMessageHandler<TrackStatusOk> = async (_client, msg) => {
   logger.debug('not implemented', msg)
   // TODO: Implement TrackStatus handler logic
 }

@@ -19,7 +19,6 @@ import { ControlMessageType, controlMessageTypeFromBigInt, FetchType } from './c
 import { PublishNamespace } from './publish_namespace'
 import { PublishNamespaceCancel } from './publish_namespace_cancel'
 import { PublishNamespaceError } from './publish_namespace_error'
-import { PublishNamespaceOk } from './publish_namespace_ok'
 import { ClientSetup } from './client_setup'
 import { Fetch } from './fetch'
 import { FetchCancel } from './fetch_cancel'
@@ -41,14 +40,13 @@ import { TrackStatus } from './track_status'
 import { PublishNamespaceDone } from './publish_namespace_done'
 import { Unsubscribe } from './unsubscribe'
 import { SubscribeNamespace } from './subscribe_namespace'
-import { SubscribeNamespaceOk } from './subscribe_namespace_ok'
 import { SubscribeNamespaceError } from './subscribe_namespace_error'
 import { UnsubscribeNamespace } from './unsubscribe_namespace'
 import { NotEnoughBytesError } from '../error/error'
 import { Tuple, KeyValuePair } from '../common'
-import { TrackStatusOk } from './track_status_ok'
 import { TrackStatusError } from './track_status_error'
 import { AuthorizationToken } from '../parameter/common/authorization_token'
+import { RequestOk } from './request_ok'
 
 export type ControlMessage =
   | Publish
@@ -58,7 +56,6 @@ export type ControlMessage =
   | PublishNamespace
   | PublishNamespaceCancel
   | PublishNamespaceError
-  | PublishNamespaceOk
   | ClientSetup
   | Fetch
   | FetchCancel
@@ -73,12 +70,10 @@ export type ControlMessage =
   | RequestUpdate
   | RequestsBlocked
   | TrackStatus
-  | TrackStatusOk
   | TrackStatusError
   | PublishNamespaceDone
   | Unsubscribe
   | SubscribeNamespace
-  | SubscribeNamespaceOk
   | SubscribeNamespaceError
   | UnsubscribeNamespace
 
@@ -106,8 +101,8 @@ export namespace ControlMessage {
         return PublishNamespaceCancel.parsePayload(payload)
       case ControlMessageType.PublishNamespaceError:
         return PublishNamespaceError.parsePayload(payload)
-      case ControlMessageType.PublishNamespaceOk:
-        return PublishNamespaceOk.parsePayload(payload)
+      case ControlMessageType.RequestOk:
+        return RequestOk.parsePayload(payload)
       case ControlMessageType.ClientSetup:
         return ClientSetup.parsePayload(payload)
       case ControlMessageType.Fetch:
@@ -144,8 +139,6 @@ export namespace ControlMessage {
         return Unsubscribe.parsePayload(payload)
       case ControlMessageType.SubscribeNamespace:
         return SubscribeNamespace.parsePayload(payload)
-      case ControlMessageType.SubscribeNamespaceOk:
-        return SubscribeNamespaceOk.parsePayload(payload)
       case ControlMessageType.SubscribeNamespaceError:
         return SubscribeNamespaceError.parsePayload(payload)
       case ControlMessageType.UnsubscribeNamespace:

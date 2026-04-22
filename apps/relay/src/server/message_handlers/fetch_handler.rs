@@ -19,13 +19,12 @@ use crate::server::track_cache::CacheConsumeEvent;
 use crate::server::utils::build_stream_id;
 use core::result::Result::{Err, Ok};
 use moqtail::model::common::location::Location;
-use moqtail::model::control::constant::FetchErrorCode;
+use moqtail::model::control::constant::RequestErrorCode;
 use moqtail::model::control::control_message::ControlMessage;
-use moqtail::model::control::fetch_error::FetchError;
 use moqtail::model::control::fetch_ok::FetchOk;
+use moqtail::model::control::request_error::RequestError;
 use moqtail::model::data::fetch_header::FetchHeader;
 use moqtail::model::error::TerminationCode;
-use moqtail::model::parameter::message_parameter::apply_message_parameter_update;
 use moqtail::model::{common::reason_phrase::ReasonPhrase, control::constant::FetchType};
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use moqtail::transport::data_stream_handler::{FetchRequest, HeaderInfo};
@@ -105,10 +104,10 @@ pub async fn handle(
                 "handle_fetch_messages | Joining fetch start location is larger than the track's largest location: {:?} {:?}",
                 largest_location, joining_fetch_props.joining_start
               );
-              send_fetch_error(
+              send_request_error(
                 client.clone(),
                 request_id,
-                FetchErrorCode::InvalidRange,
+                RequestErrorCode::InvalidRange,
                 ReasonPhrase::try_new(String::from("Invalid range")).unwrap(),
                 &context,
               )
@@ -160,11 +159,11 @@ pub async fn handle(
       // TODO: send fetch message to the publisher
       if track.is_none() {
         // TODO: send fetch message to the possible publishers
-        // for now just return FETCH_ERROR
-        send_fetch_error(
+        // for now just return REQUEST_ERROR
+        send_request_error(
           client.clone(),
           request_id,
-          FetchErrorCode::TrackDoesNotExist,
+          RequestErrorCode::DoesNotExist,
           ReasonPhrase::try_new(String::from("Track does not exist")).unwrap(),
           &context,
         )
@@ -200,7 +199,7 @@ pub async fn handle(
         let mut object_rx = track_read
           .cache
           .read_objects(
-            start_location.unwrap(),
+            start_location.clone().unwrap(),
             end_location.clone().unwrap(),
             true, /* report_end_location */
           )
@@ -369,14 +368,31 @@ pub async fn handle(
             client.remove_stream_by_stream_id(&stream_id).await;
           }
         } else if object_count == 0 {
-          send_fetch_error(
-            client.clone(),
-            request_id,
-            FetchErrorCode::NoObjects,
-            ReasonPhrase::try_new(String::from("No objects available")).unwrap(),
-            &context,
-          )
-          .await;
+          // Draft 16: If range is valid but empty, send FETCH_OK + Empty Stream with FIN.
+          info!(
+            "handle_fetch_messages | Empty range for request_id: {}. Sending FETCH_OK and empty stream.",
+            request_id
+          );
+
+          // 1. Send FETCH_OK
+          let end_loc = start_location.clone().unwrap_or(Location::new(0, 0));
+          let fetch_ok = FetchOk::new(request_id, false, end_loc, vec![], vec![]);
+
+          client
+            .queue_message(ControlMessage::FetchOk(Box::new(fetch_ok)))
+            .await;
+
+          // 2. Open Stream, Write Header, and Close (FIN)
+          if let Some(the_stream) = stream_fn(client.clone(), &stream_id).await {
+            let mut stream_lock = the_stream.lock().await;
+            if let Err(e) = stream_lock.shutdown().await {
+              error!(
+                "handle_fetch_messages | Error closing empty fetch stream: {:?}",
+                e
+              );
+            }
+            client.remove_stream_by_stream_id(&stream_id).await;
+          }
         } else {
           // close the stream instantly
           if let Some(the_stream) = send_stream {
@@ -471,87 +487,25 @@ pub async fn handle(
   }
 }
 
-async fn send_fetch_error(
+async fn send_request_error(
   client: Arc<MOQTClient>,
   request_id: u64,
-  error_code: FetchErrorCode,
+  error_code: RequestErrorCode,
   reason_phrase: ReasonPhrase,
   context: &Arc<SessionContext>,
 ) {
-  let fetch_error = FetchError::new(request_id, error_code, reason_phrase);
+  // TODO: Implement this later.
+  // Draft 16 requires a retry interval. Setting to 0 (no retries) for now.
+  let retry_interval = 0;
+  let request_error = RequestError::new(request_id, error_code, retry_interval, reason_phrase);
+
   client
-    .queue_message(ControlMessage::FetchError(Box::new(fetch_error)))
+    .queue_message(ControlMessage::RequestError(Box::new(request_error)))
     .await;
-  // Remove from map on error
+  // Remove the request from the map on error
   context
     .relay_pending_requests
     .write()
     .await
     .remove(&request_id);
-}
-
-pub async fn handle_request_update(
-  _client: Arc<MOQTClient>,
-  _handler: &mut ControlStreamHandler,
-  msg: ControlMessage,
-  context: Arc<SessionContext>,
-) -> Result<(), TerminationCode> {
-  let update_msg = match msg {
-    ControlMessage::RequestUpdate(m) => *m,
-    _ => {
-      error!("fetch_handler::handle_request_update called with wrong message type");
-      return Err(TerminationCode::InternalError);
-    }
-  };
-
-  let existing_req_id = update_msg.existing_request_id;
-  // let new_req_id = update_msg.request_id; // TODO: Uncomment when sending RequestOk
-
-  // 1. Verify this is a Fetch request and apply parameter updates
-  {
-    let mut map = context.relay_pending_requests.write().await;
-    match map.get_mut(&existing_req_id) {
-      Some(PendingRequest::Fetch(fetch_req)) => {
-        apply_message_parameter_update(
-          &mut fetch_req.fetch_request.parameters,
-          update_msg.parameters.clone(),
-        );
-      }
-      _ => {
-        warn!(
-          "Request {} is not a valid Fetch request, cannot update.",
-          existing_req_id
-        );
-        return Err(TerminationCode::ProtocolViolation);
-      }
-    }
-  };
-
-  info!(
-    "Processing FETCH update for existing request_id: {}",
-    existing_req_id
-  );
-
-  // 2. Extract and apply the new parameters (e.g., Priority)
-  // In Draft 16, this is usually used to change the Subscriber Priority on the fly
-  // without tearing down the underlying QUIC stream.
-
-  // TODO: Parse `update_msg.parameters` to find the new Priority or Delivery Timeout.
-  // Example future logic:
-  /*
-  if let Some(new_priority) = extract_priority(&update_msg.parameters) {
-    // 3. Update the active QUIC stream's priority
-    // We would need a way to look up the active `send_stream` by `existing_req_id`
-    // and call a hypothetical `client.update_stream_priority(stream_id, new_priority).await;`
-  }
-  */
-
-  // 4. Send RequestOk back to the Client acknowledging the update
-  // TODO: Uncomment after merging RequestOk/Error support
-  /*
-  let ok_msg = RequestOk::new(new_req_id, vec![]);
-  _handler.send(&ControlMessage::RequestOk(Box::new(ok_msg))).await?;
-  */
-
-  Ok(())
 }

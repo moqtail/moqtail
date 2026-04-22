@@ -139,7 +139,7 @@ pub async fn run(moq: MoqConnection, config: FetchConfig) -> Result<()> {
     Ok(ControlMessage::FetchOk(m)) => {
       info!("Received FetchOk: {:?}", m);
     }
-    Ok(ControlMessage::FetchError(m)) => {
+    Ok(ControlMessage::RequestError(m)) => {
       error!("Received FetchError: {:?}", m);
     }
     Ok(m) => {

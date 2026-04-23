@@ -90,7 +90,8 @@ if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
   describe('SubgroupHeader', () => {
     test('roundtrip serialization/deserialization', () => {
-      const headerType = SubgroupHeaderType.Type0x14
+      // explicit subgroup ID, no extensions, no end-of-group, priority present
+      const headerType = SubgroupHeaderType.fromProperties(false, 2, false)
       const trackAlias = 87n
       const groupId = 9n
       const subgroupId = 11n
@@ -106,10 +107,11 @@ if (import.meta.vitest) {
       expect(frozen.remaining).toBe(0)
     })
     test('roundtrip with default priority', () => {
-      const headerType = SubgroupHeaderType.Type0x30 // DEFAULT_PRIORITY bit set, subgroupId = 0
+      // subgroupId = 0, default priority (bit 5 set)
+      const headerType = SubgroupHeaderType.fromProperties(false, 0, false, true)
       const trackAlias = 87n
       const groupId = 9n
-      const subgroupId = 0n // Type0x30 has subgroupId = 0
+      const subgroupId = 0n
       const publisherPriority = undefined // Not included in wire format
       const header = new SubgroupHeader(headerType, trackAlias, groupId, subgroupId, publisherPriority)
       const frozen = header.serialize()
@@ -122,7 +124,8 @@ if (import.meta.vitest) {
       expect(frozen.remaining).toBe(0)
     })
     test('excess roundtrip', () => {
-      const headerType = SubgroupHeaderType.Type0x14
+      // explicit subgroup ID, no extensions, no end-of-group, priority present
+      const headerType = SubgroupHeaderType.fromProperties(false, 2, false)
       const trackAlias = 87n
       const groupId = 9n
       const subgroupId = 11n
@@ -144,7 +147,8 @@ if (import.meta.vitest) {
       expect(Array.from(frozen.getBytes(3))).toEqual([9, 1, 1])
     })
     test('partial message fails', () => {
-      const headerType = SubgroupHeaderType.Type0x14
+      // explicit subgroup ID, no extensions, no end-of-group, priority present
+      const headerType = SubgroupHeaderType.fromProperties(false, 2, false)
       const trackAlias = 87n
       const groupId = 9n
       const subgroupId = 11n

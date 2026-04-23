@@ -19,17 +19,18 @@ import {
   FetchHeader,
   FetchHeaderType,
   FetchObject,
-  FetchObjectPriorState,
   SubgroupHeader,
   SubgroupHeaderType,
   SubgroupObject,
 } from '../model/data'
+import { FetchObjectContext } from '../model/data/fetch_object'
+import { ObjectForwardingPreference } from '../model/data/constant'
 import { Header } from '../model/data/header'
 import { NotEnoughBytesError, ProtocolViolationError, TimeoutError } from '../model/error/error'
 
 export class SendStream {
-  #priorFetchState?: FetchObjectPriorState
-  #lastSubgroupObjectId?: bigint
+  #lastObjectId?: bigint
+  #fetchPrevCtx?: FetchObjectContext
   readonly #writer: WritableStreamDefaultWriter<Uint8Array>
   readonly onDataSent?: (data: SubgroupObject | SubgroupHeader | FetchObject | FetchHeader) => void
   private constructor(
@@ -56,13 +57,12 @@ export class SendStream {
   async write(object: FetchObject | SubgroupObject): Promise<void> {
     let serializedObject: Uint8Array
     if (object instanceof FetchObject) {
-      // FetchObject uses prior state for delta encoding
-      serializedObject = object.serialize(this.#priorFetchState).toUint8Array()
-      this.#priorFetchState = object.toPriorState()
+      serializedObject = object.serialize(this.#fetchPrevCtx).toUint8Array()
+      const newCtx = object.toContext()
+      if (newCtx) this.#fetchPrevCtx = newCtx
     } else {
-      // SubgroupObject uses last object ID for delta encoding
-      serializedObject = object.serialize(this.#lastSubgroupObjectId).toUint8Array()
-      this.#lastSubgroupObjectId = object.objectId
+      serializedObject = object.serialize(this.#lastObjectId).toUint8Array()
+      this.#lastObjectId = object.objectId
     }
     await this.#writer.write(serializedObject)
     if (this.onDataSent) this.onDataSent(object)
@@ -168,8 +168,8 @@ export class RecvStream {
 
   async #ingestLoop(controller: ReadableStreamDefaultController<FetchObject | SubgroupObject>) {
     try {
-      let priorFetchState: FetchObjectPriorState | undefined = undefined
-      let previousSubgroupObjectId: bigint | undefined = undefined
+      let previousObjectId: bigint | undefined = undefined
+      let fetchPrevCtx: FetchObjectContext | undefined = undefined
       while (true) {
         // Try to parse an object from buffer
         if (this.#internalBuffer.remaining > 0) {
@@ -177,23 +177,16 @@ export class RecvStream {
             this.#internalBuffer.checkpoint()
             let object: FetchObject | SubgroupObject
             if (Header.isFetch(this.header)) {
-              const item = FetchObject.deserializeItem(this.#internalBuffer, priorFetchState)
-              // Skip end-of-range markers (not enqueued to stream)
-              if (item instanceof FetchObject) {
-                object = item
-                priorFetchState = object.toPriorState()
-              } else {
-                // FetchEndOfRange - skip it
-                this.#internalBuffer.commit()
-                continue
-              }
+              object = FetchObject.deserialize(this.#internalBuffer, fetchPrevCtx)
+              const newCtx = object.toContext()
+              if (newCtx) fetchPrevCtx = newCtx
             } else {
               object = SubgroupObject.deserialize(
                 this.#internalBuffer,
                 SubgroupHeaderType.hasExtensions(this.header.type),
-                previousSubgroupObjectId,
+                previousObjectId,
               )
-              previousSubgroupObjectId = object.objectId
+              previousObjectId = object.objectId
             }
             this.#internalBuffer.commit()
             controller.enqueue(object)
@@ -274,12 +267,25 @@ if (import.meta.vitest) {
 
       test('Full object roundtrip', async () => {
         const payload = new Uint8Array([1, 2, 3, 4, 5])
-        const fetchObject = FetchObject.newWithPayload(1, 1, 1, 1, null, payload)
+        const fetchObject = FetchObject.newObject(
+          1,
+          1,
+          1,
+          1,
+          ObjectForwardingPreference.Subgroup,
+          null,
+          payload,
+        )
         const reader = recvStream.stream.getReader()
         const receivePromise = reader.read()
         await sendStream.write(fetchObject)
         const { value: receivedObject } = await receivePromise
-        expect(receivedObject).toEqual(fetchObject)
+        expect(receivedObject).toBeInstanceOf(FetchObject)
+        const received = receivedObject as FetchObject
+        expect(received.groupId).toEqual(fetchObject.groupId)
+        expect(received.subgroupId).toEqual(fetchObject.subgroupId)
+        expect(received.objectId).toEqual(fetchObject.objectId)
+        expect(received.payload).toEqual(fetchObject.payload)
         reader.releaseLock()
       })
 
@@ -303,7 +309,7 @@ if (import.meta.vitest) {
 
     describe('Subgroup', () => {
       beforeEach(async () => {
-        testSubgroupHeader = Header.newSubgroup(SubgroupHeaderType.Type0x10, 0n, 0n, 0, 0)
+        testSubgroupHeader = Header.newSubgroup(SubgroupHeaderType.fromProperties(false, 0, false), 0n, 0n, 0, 0)
         const transport = new TransformStream<Uint8Array, Uint8Array>()
         const sendStreamPromise = SendStream.new(transport.writable, testSubgroupHeader)
         const recvStreamPromise = RecvStream.new(transport.readable)

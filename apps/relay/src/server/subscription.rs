@@ -29,6 +29,7 @@ use moqtail::model::control::constant::FilterType;
 use moqtail::model::control::constant::GroupOrder;
 use moqtail::model::control::constant::PublishDoneStatusCode;
 use moqtail::model::control::control_message::ControlMessage;
+use moqtail::model::control::publish::Publish;
 use moqtail::model::control::publish_done::PublishDone;
 use moqtail::model::control::subscribe::Subscribe;
 use moqtail::model::control::subscribe_update::SubscribeUpdate;
@@ -48,6 +49,32 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use tracing::warn;
 use tracing::{debug, error, info};
 use wtransport::SendStream;
+
+#[derive(Debug, Clone)]
+pub enum SubscriptionOrigin {
+  Subscribe(Subscribe),
+  Publish(Publish),
+}
+
+impl SubscriptionOrigin {
+  pub fn request_id(&self) -> u64 {
+    match self {
+      SubscriptionOrigin::Subscribe(s) => s.request_id,
+      SubscriptionOrigin::Publish(p) => p.request_id,
+    }
+  }
+}
+impl From<Subscribe> for SubscriptionOrigin {
+  fn from(msg: Subscribe) -> Self {
+    SubscriptionOrigin::Subscribe(msg)
+  }
+}
+
+impl From<Publish> for SubscriptionOrigin {
+  fn from(msg: Publish) -> Self {
+    SubscriptionOrigin::Publish(msg)
+  }
+}
 
 #[derive(Debug, Clone)]
 pub struct SubscriptionState {
@@ -91,72 +118,143 @@ impl SubscriptionState {
   }
 }
 
-impl From<Subscribe> for SubscriptionState {
-  fn from(subscribe: Subscribe) -> Self {
-    let subscriber_priority = subscribe
-      .subscribe_parameters
-      .iter()
-      .find_map(|p| {
-        if let MessageParameter::SubscriberPriority { priority } = p {
-          Some(*priority)
-        } else {
-          None
-        }
-      })
-      .unwrap_or(0);
+impl From<SubscriptionOrigin> for SubscriptionState {
+  fn from(origin: SubscriptionOrigin) -> Self {
+    match origin {
+      SubscriptionOrigin::Subscribe(subscribe) => {
+        let subscriber_priority = subscribe
+          .subscribe_parameters
+          .iter()
+          .find_map(|p| {
+            if let MessageParameter::SubscriberPriority { priority } = p {
+              Some(*priority)
+            } else {
+              None
+            }
+          })
+          .unwrap_or(128);
 
-    let group_order = subscribe
-      .subscribe_parameters
-      .iter()
-      .find_map(|p| {
-        if let MessageParameter::GroupOrder { order } = p {
-          Some(*order)
-        } else {
-          None
-        }
-      })
-      .unwrap_or(GroupOrder::Ascending);
+        let group_order = subscribe
+          .subscribe_parameters
+          .iter()
+          .find_map(|p| {
+            if let MessageParameter::GroupOrder { order } = p {
+              Some(*order)
+            } else {
+              None
+            }
+          })
+          .unwrap_or(GroupOrder::Ascending);
 
-    let forward = subscribe
-      .subscribe_parameters
-      .iter()
-      .find_map(|p| {
-        if let MessageParameter::Forward { forward } = p {
-          Some(*forward)
-        } else {
-          None
-        }
-      })
-      .unwrap_or(true);
+        let forward = subscribe
+          .subscribe_parameters
+          .iter()
+          .find_map(|p| {
+            if let MessageParameter::Forward { forward } = p {
+              Some(*forward)
+            } else {
+              None
+            }
+          })
+          .unwrap_or(true);
 
-    let (filter_type, start_location, end_group) = subscribe
-      .subscribe_parameters
-      .iter()
-      .find_map(|p| {
-        if let MessageParameter::SubscriptionFilter {
+        let (filter_type, start_location, end_group) = subscribe
+          .subscribe_parameters
+          .iter()
+          .find_map(|p| {
+            if let MessageParameter::SubscriptionFilter {
+              filter_type,
+              start_location,
+              end_group,
+            } = p
+            {
+              Some((*filter_type, start_location.clone(), end_group.unwrap_or(0)))
+            } else {
+              None
+            }
+          })
+          .unwrap_or((FilterType::LatestObject, None, 0));
+
+        Self {
+          subscriber_priority,
+          _group_order: group_order,
+          forward,
           filter_type,
           start_location,
           end_group,
-        } = p
-        {
-          Some((*filter_type, start_location.clone(), end_group.unwrap_or(0)))
-        } else {
-          None
+          subscribe_parameters: subscribe.subscribe_parameters,
+          last_sent_max_location: None,
+          last_received_object_location: None,
+          is_joining: false,
         }
-      })
-      .unwrap_or((FilterType::LatestObject, None, 0));
+      }
+      SubscriptionOrigin::Publish(publish) => {
+        let subscriber_priority = publish
+          .parameters
+          .iter()
+          .find_map(|p| {
+            if let MessageParameter::SubscriberPriority { priority } = p {
+              Some(*priority)
+            } else {
+              None
+            }
+          })
+          .unwrap_or(128);
 
-    Self {
-      subscriber_priority,
-      _group_order: group_order,
-      forward,
-      filter_type,
-      start_location,
-      end_group,
-      subscribe_parameters: subscribe.subscribe_parameters,
-      last_sent_max_location: None,
-      last_received_object_location: None,
-      is_joining: false,
+        let group_order = publish
+          .parameters
+          .iter()
+          .find_map(|p| {
+            if let MessageParameter::GroupOrder { order } = p {
+              Some(*order)
+            } else {
+              None
+            }
+          })
+          .unwrap_or(GroupOrder::Ascending);
+
+        let forward = publish
+          .parameters
+          .iter()
+          .find_map(|p| {
+            if let MessageParameter::Forward { forward } = p {
+              Some(*forward)
+            } else {
+              None
+            }
+          })
+          .unwrap_or(true);
+
+        let (filter_type, start_location, end_group) = publish
+          .parameters
+          .iter()
+          .find_map(|p| {
+            if let MessageParameter::SubscriptionFilter {
+              filter_type,
+              start_location,
+              end_group,
+            } = p
+            {
+              Some((*filter_type, start_location.clone(), end_group.unwrap_or(0)))
+            } else {
+              None
+            }
+          })
+          .unwrap_or((FilterType::LatestObject, None, 0));
+
+        Self {
+          subscriber_priority,
+          _group_order: group_order,
+          forward,
+          filter_type,
+          start_location,
+          end_group,
+          subscribe_parameters: publish.parameters,
+          last_sent_max_location: None,
+          last_received_object_location: None,
+          is_joining: false,
+        }
+      }
     }
   }
 }
@@ -185,7 +283,7 @@ impl Subscription {
     relay_track_id: u64,
     full_track_name: FullTrackName,
     request_id: u64,
-    subscribe_message: Subscribe,
+    origin_message: SubscriptionOrigin,
     subscriber: Arc<MOQTClient>,
     event_rx: Arc<Mutex<Option<UnboundedReceiver<TrackEvent>>>>,
     cache: TrackCache,
@@ -197,7 +295,7 @@ impl Subscription {
       relay_track_id,
       full_track_name,
       request_id,
-      subscription_state: Arc::new(RwLock::new(subscribe_message.into())),
+      subscription_state: Arc::new(RwLock::new(origin_message.into())),
       subscriber,
       event_rx,
       send_stream_last_object_ids: Arc::new(RwLock::new(HashMap::new())),
@@ -213,7 +311,7 @@ impl Subscription {
   pub fn new(
     relay_track_id: u64,
     full_track_name: FullTrackName,
-    subscribe_message: Subscribe,
+    origin_message: SubscriptionOrigin,
     subscriber: Arc<MOQTClient>,
     event_rx: UnboundedReceiver<TrackEvent>,
     cache: TrackCache,
@@ -225,8 +323,8 @@ impl Subscription {
     let sub = Self::create_instance(
       relay_track_id,
       full_track_name,
-      subscribe_message.request_id,
-      subscribe_message,
+      origin_message.request_id(),
+      origin_message,
       subscriber,
       event_rx,
       cache.clone(),
@@ -297,10 +395,7 @@ impl Subscription {
                             header: SubgroupHeader::new_with_explicit_id(
                               relay_track_id,
                               object.group_id,
-                              // Datagram-forwarded objects have subgroup_id=None; fall back to 0
-                              // because SubgroupHeader requires an explicit ID. Such objects are
-                              // re-forwarded as subgroup streams, so 0 is the conventional default.
-                              object.subgroup_id.unwrap_or(0),
+                              object.subgroup_id,
                               Some(object.publisher_priority),
                               has_extensions,
                               false,
@@ -895,8 +990,8 @@ impl Subscription {
           );
         }
       }
-      TrackEvent::DatagramObject { object } => {
-        // Handle datagram object - serialize full MOQT datagram format
+      TrackEvent::Datagram { object } => {
+        // Handle datagram - serialize full MOQT datagram format
         // Must include type, track_alias, group_id, object_id, publisher_priority, and payload
 
         let mut norm_object = object.clone();
@@ -909,11 +1004,11 @@ impl Subscription {
               .write_datagram_object(serialized_bytes)
               .await
             {
-              error!("Failed to write datagram object: {:?}", e);
+              error!("Failed to write datagram: {:?}", e);
             }
           }
           Err(e) => {
-            error!("Failed to serialize datagram object: {:?}", e);
+            error!("Failed to serialize datagram: {:?}", e);
           }
         }
       }

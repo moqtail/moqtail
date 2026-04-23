@@ -15,7 +15,7 @@
 use moka::future::Cache;
 use moka::notification::RemovalCause;
 use moqtail::model::common::location::Location;
-use moqtail::model::data::fetch_object::FetchObject;
+use moqtail::model::data::fetch_object::FetchObjectPayload;
 use std::sync::Arc;
 use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
@@ -51,7 +51,7 @@ impl std::fmt::Display for CacheKey {
 }
 
 // Type alias for the cached value (group objects)
-type GroupObjects = Arc<RwLock<Vec<FetchObject>>>;
+type GroupObjects = Arc<RwLock<Vec<FetchObjectPayload>>>;
 
 #[derive(Debug, Clone)]
 pub struct TrackCache {
@@ -64,7 +64,7 @@ pub struct TrackCache {
 
 #[derive(Debug, Clone)]
 pub enum CacheConsumeEvent {
-  Object(FetchObject),
+  Object(FetchObjectPayload),
   EndLocation(Location),
   NoObject,
 }
@@ -169,7 +169,7 @@ impl TrackCache {
     }
   }
 
-  pub async fn add_object(&self, object: FetchObject) {
+  pub async fn add_object(&self, object: FetchObjectPayload) {
     let cache_key = CacheKey::new(self.relay_track_id, object.group_id);
 
     // Check if group already exists in cache

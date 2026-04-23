@@ -24,6 +24,7 @@ import {
   MOQtailError,
   MoqtObject,
 } from '@/model'
+import { FetchObjectContext } from '@/model/data/fetch_object'
 import { MOQtailClient } from '../client'
 import { Track } from '../track/track'
 import { SubscribePublication } from './subscribe'
@@ -96,13 +97,17 @@ export class FetchPublication {
       this.#writer = this.#stream.getWriter()
       const header = new FetchHeader(FetchHeaderType.Type0x05, this.#requestId)
       await this.#writer.write(header)
+      let fetchPrevCtx: FetchObjectContext | undefined = undefined
       for (const obj of this.#objects) {
         if (this.#isCanceled) {
           await this.#writer.abort('Fetch cancelled during publish')
           this.#client.publications.delete(this.#requestId)
           return
         }
-        await this.#writer.write(obj.tryIntoFetchObject().serialize().toUint8Array())
+        const fetchObj = obj.tryIntoFetchObject()
+        await this.#writer.write(fetchObj.serialize(fetchPrevCtx).toUint8Array())
+        const newCtx = fetchObj.toContext()
+        if (newCtx) fetchPrevCtx = newCtx
       }
       await this.#writer.close()
       this.#client.publications.delete(this.#requestId)

@@ -16,54 +16,67 @@
 
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
 import { KeyValuePair } from '../common/pair'
-import { ObjectStatus, FetchObjectSerializationFlags } from './constant'
 import { Location } from '../common/location'
+import { ObjectForwardingPreference } from './constant'
 import { ProtocolViolationError } from '../error/error'
 
+// Draft-16 §10.4.4 Serialization Flags bit layout.
+const FLAG_SUBGROUP_MODE_MASK = 0x03
+const FLAG_OBJECT_ID_PRESENT = 0x04
+const FLAG_GROUP_ID_PRESENT = 0x08
+const FLAG_PRIORITY_PRESENT = 0x10
+const FLAG_EXTENSIONS_PRESENT = 0x20
+const FLAG_DATAGRAM = 0x40
+
+const SUBGROUP_MODE_ZERO = 0b00
+const SUBGROUP_MODE_PRIOR = 0b01
+const SUBGROUP_MODE_PRIOR_PLUS_ONE = 0b10
+const SUBGROUP_MODE_PRESENT = 0b11
+
+// Special Serialization Flag varint values for End-of-Range markers.
+const END_OF_NON_EXISTENT_RANGE = 0x8cn
+const END_OF_UNKNOWN_RANGE = 0x10cn
+
 /**
- * Prior object state on a fetch stream, used for delta encoding.
+ * Prior-object state threaded across successive Fetch Objects on the same stream.
  */
-export interface FetchObjectPriorState {
+export type FetchObjectContext = {
   groupId: bigint
-  subgroupId: bigint | null
+  subgroupId: bigint
   objectId: bigint
   publisherPriority: number
 }
 
 /**
- * End-of-range marker on a fetch stream.
+ * Kind discriminator for End-of-Range markers (§10.4.4.2).
  */
-export class FetchEndOfRange {
-  public readonly groupId: bigint
-  public readonly objectId: bigint
-  public readonly isNonExistent: boolean
-
-  constructor(groupId: bigint | number, objectId: bigint | number, isNonExistent: boolean) {
-    this.groupId = BigInt(groupId)
-    this.objectId = BigInt(objectId)
-    this.isNonExistent = isNonExistent
-  }
+export enum EndOfRangeKind {
+  NonExistent = 0x8c,
+  Unknown = 0x10c,
 }
 
 /**
- * Item on a fetch stream: either a normal object or an end-of-range marker.
+ * Payload-bearing fetch object (§10.4.4, non-End-of-Range form).
+ *
+ * Draft-16 FETCH objects carry no Object Status field; a zero-length payload
+ * signals a zero-length Normal object.
  */
-export type FetchStreamItem = FetchObject | FetchEndOfRange
-
 export class FetchObject {
   public readonly location: Location
-  public readonly subgroupId: bigint | null
+  public readonly subgroupId: bigint
 
   private constructor(
+    public readonly kind: 'object' | 'end_of_range',
     location: Location,
-    subgroupId: bigint | number | null,
+    subgroupId: bigint | number,
     public readonly publisherPriority: number,
+    public readonly forwardingPreference: ObjectForwardingPreference,
     public readonly extensionHeaders: KeyValuePair[] | null,
-    public readonly objectStatus: ObjectStatus | null,
     public readonly payload: Uint8Array | null,
+    public readonly endOfRange: EndOfRangeKind | null,
   ) {
     this.location = location
-    this.subgroupId = subgroupId === null ? null : BigInt(subgroupId)
+    this.subgroupId = BigInt(subgroupId)
   }
 
   get groupId(): bigint {
@@ -73,327 +86,401 @@ export class FetchObject {
     return this.location.object
   }
 
-  static newWithStatus(
-    groupId: bigint | number,
-    subgroupId: bigint | number | null,
-    objectId: bigint | number,
-    publisherPriority: number,
-    extensionHeaders: KeyValuePair[] | null,
-    objectStatus: ObjectStatus,
-  ): FetchObject {
-    return new FetchObject(
-      new Location(groupId, objectId),
-      subgroupId,
-      publisherPriority,
-      extensionHeaders,
-      objectStatus,
-      null,
-    )
+  /**
+   * Context to thread into the next call on this stream.
+   * Returns null for EndOfRange markers — they MUST NOT update prior state.
+   */
+  toContext(): FetchObjectContext | null {
+    if (this.kind === 'end_of_range') return null
+    return {
+      groupId: this.groupId,
+      subgroupId: this.subgroupId,
+      objectId: this.objectId,
+      publisherPriority: this.publisherPriority,
+    }
   }
 
-  static newWithPayload(
+  static newObject(
     groupId: bigint | number,
-    subgroupId: bigint | number | null,
+    subgroupId: bigint | number,
     objectId: bigint | number,
     publisherPriority: number,
+    forwardingPreference: ObjectForwardingPreference,
     extensionHeaders: KeyValuePair[] | null,
     payload: Uint8Array,
   ): FetchObject {
     return new FetchObject(
+      'object',
       new Location(groupId, objectId),
       subgroupId,
       publisherPriority,
+      forwardingPreference,
       extensionHeaders,
-      null,
       payload,
+      null,
     )
   }
-  /**
-   * Serialize this object with optional delta encoding based on prior object state.
-   * @param prior - Prior object state for delta encoding (undefined for first object)
-   */
-  serialize(prior?: FetchObjectPriorState): FrozenByteBuffer {
+
+  static newEndOfRange(
+    kind: EndOfRangeKind,
+    groupId: bigint | number,
+    objectId: bigint | number,
+  ): FetchObject {
+    return new FetchObject(
+      'end_of_range',
+      new Location(groupId, objectId),
+      0,
+      0,
+      ObjectForwardingPreference.Subgroup,
+      null,
+      null,
+      kind,
+    )
+  }
+
+  serialize(prev?: FetchObjectContext): FrozenByteBuffer {
     const buf = new ByteBuffer()
-
-    // Compute serialization flags
-    const flags = FetchObjectSerializationFlags.fromProperties(prior, {
-      groupId: this.location.group,
-      subgroupId: this.subgroupId,
-      objectId: this.location.object,
-      publisherPriority: this.publisherPriority,
-      extensionHeaders: this.extensionHeaders,
-    })
-
-    // Write serialization flags
-    buf.putVI(flags)
-
-    // Write Group ID if explicit
-    if (FetchObjectSerializationFlags.hasExplicitGroupId(flags)) {
-      buf.putVI(this.location.group)
+    if (this.kind === 'end_of_range') {
+      buf.putVI(this.endOfRange === EndOfRangeKind.NonExistent ? END_OF_NON_EXISTENT_RANGE : END_OF_UNKNOWN_RANGE)
+      buf.putVI(this.groupId)
+      buf.putVI(this.objectId)
+      return buf.freeze()
     }
 
-    // Write Subgroup ID if not datagram
-    if (!FetchObjectSerializationFlags.isDatagram(flags)) {
-      const mode = FetchObjectSerializationFlags.subgroupMode(flags)
-      if (mode === 0x03) {
-        // Explicit subgroup ID
-        buf.putVI(this.subgroupId ?? 0n)
-      }
-      // modes 0x00, 0x01, 0x02 don't write the field
-    }
+    const isDatagram = this.forwardingPreference === ObjectForwardingPreference.Datagram
+    const hasExtensions = !!(this.extensionHeaders && this.extensionHeaders.length > 0)
 
-    // Write Object ID if explicit
-    if (FetchObjectSerializationFlags.hasExplicitObjectId(flags)) {
-      buf.putVI(this.location.object)
-    }
+    let hasGroupId: boolean
+    let hasObjectId: boolean
+    let hasPriority: boolean
+    let subgroupMode: number
 
-    // Write Publisher Priority if explicit
-    if (FetchObjectSerializationFlags.hasExplicitPriority(flags)) {
-      buf.putU8(this.publisherPriority)
-    }
-
-    // Write Extensions if present
-    if (FetchObjectSerializationFlags.hasExtensions(flags)) {
-      const extensionHeaders = new ByteBuffer()
-      if (this.extensionHeaders) {
-        for (const header of this.extensionHeaders) {
-          extensionHeaders.putKeyValuePair(header)
-        }
-      }
-      const extBytes = extensionHeaders.toUint8Array()
-      buf.putLengthPrefixedBytes(extBytes)
-    }
-
-    // Write payload or status
-    if (this.payload) {
-      buf.putLengthPrefixedBytes(this.payload)
+    if (!prev) {
+      hasGroupId = true
+      hasObjectId = true
+      hasPriority = true
+      subgroupMode = isDatagram || this.subgroupId === 0n ? SUBGROUP_MODE_ZERO : SUBGROUP_MODE_PRESENT
     } else {
-      buf.putVI(0)
-      buf.putVI(this.objectStatus!)
+      hasGroupId = prev.groupId !== this.groupId
+      hasObjectId = prev.objectId + 1n !== this.objectId
+      hasPriority = prev.publisherPriority !== this.publisherPriority
+      if (isDatagram) {
+        subgroupMode = SUBGROUP_MODE_ZERO
+      } else if (this.subgroupId === 0n) {
+        subgroupMode = SUBGROUP_MODE_ZERO
+      } else if (prev.subgroupId === this.subgroupId) {
+        subgroupMode = SUBGROUP_MODE_PRIOR
+      } else if (prev.subgroupId + 1n === this.subgroupId) {
+        subgroupMode = SUBGROUP_MODE_PRIOR_PLUS_ONE
+      } else {
+        subgroupMode = SUBGROUP_MODE_PRESENT
+      }
     }
 
+    let flags = subgroupMode & FLAG_SUBGROUP_MODE_MASK
+    if (hasObjectId) flags |= FLAG_OBJECT_ID_PRESENT
+    if (hasGroupId) flags |= FLAG_GROUP_ID_PRESENT
+    if (hasPriority) flags |= FLAG_PRIORITY_PRESENT
+    if (hasExtensions) flags |= FLAG_EXTENSIONS_PRESENT
+    if (isDatagram) flags |= FLAG_DATAGRAM
+
+    buf.putVI(flags)
+    if (hasGroupId) buf.putVI(this.groupId)
+    if (!isDatagram && subgroupMode === SUBGROUP_MODE_PRESENT) buf.putVI(this.subgroupId)
+    if (hasObjectId) buf.putVI(this.objectId)
+    if (hasPriority) buf.putU8(this.publisherPriority)
+    if (hasExtensions) {
+      const extBuf = new ByteBuffer()
+      for (const h of this.extensionHeaders!) extBuf.putKeyValuePair(h)
+      buf.putLengthPrefixedBytes(extBuf.toUint8Array())
+    }
+    const payloadBytes = this.payload ?? new Uint8Array(0)
+    buf.putLengthPrefixedBytes(payloadBytes)
     return buf.freeze()
   }
 
-  /**
-   * Deserialize a fetch stream item (object or end-of-range marker).
-   * Updates the prior state with the deserialized values.
-   * @param buf - Buffer to deserialize from
-   * @param prior - Prior object state (updated in-place after deserialization)
-   */
-  static deserializeItem(buf: BaseByteBuffer, prior?: FetchObjectPriorState): FetchStreamItem {
-    const flags = buf.getNumberVI()
+  static deserialize(buf: BaseByteBuffer, prev?: FetchObjectContext): FetchObject {
+    const flagsRaw = buf.getVI()
 
-    // Validate flags
-    FetchObjectSerializationFlags.tryFrom(flags)
-
-    // Handle end-of-range markers
-    if (FetchObjectSerializationFlags.isEndOfRange(flags)) {
+    if (flagsRaw >= 128n) {
+      let kind: EndOfRangeKind
+      if (flagsRaw === END_OF_NON_EXISTENT_RANGE) {
+        kind = EndOfRangeKind.NonExistent
+      } else if (flagsRaw === END_OF_UNKNOWN_RANGE) {
+        kind = EndOfRangeKind.Unknown
+      } else {
+        throw new ProtocolViolationError(
+          'FetchObject.deserialize',
+          `invalid Serialization Flags value 0x${flagsRaw.toString(16)}`,
+        )
+      }
       const groupId = buf.getVI()
       const objectId = buf.getVI()
-      return new FetchEndOfRange(groupId, objectId, flags === FetchObjectSerializationFlags.END_OF_NON_EXISTENT_RANGE)
+      return FetchObject.newEndOfRange(kind, groupId, objectId)
     }
 
-    // Validate first-object constraints
-    if (!prior) {
-      if (!FetchObjectSerializationFlags.hasExplicitGroupId(flags)) {
+    const flags = Number(flagsRaw)
+    const subgroupMode = flags & FLAG_SUBGROUP_MODE_MASK
+    const hasObjectId = (flags & FLAG_OBJECT_ID_PRESENT) !== 0
+    const hasGroupId = (flags & FLAG_GROUP_ID_PRESENT) !== 0
+    const hasPriority = (flags & FLAG_PRIORITY_PRESENT) !== 0
+    const hasExtensions = (flags & FLAG_EXTENSIONS_PRESENT) !== 0
+    const isDatagram = (flags & FLAG_DATAGRAM) !== 0
+
+    if (!prev) {
+      if (!hasObjectId || !hasGroupId || !hasPriority) {
         throw new ProtocolViolationError(
-          'FetchObject.deserializeItem',
-          'First object must have explicit Group ID (bit 0x08 set)',
+          'FetchObject.deserialize',
+          'first object must carry explicit group/object/priority',
         )
       }
-      if (!FetchObjectSerializationFlags.isDatagram(flags)) {
-        const mode = FetchObjectSerializationFlags.subgroupMode(flags)
-        if (mode === 0x01 || mode === 0x02) {
+      if (!isDatagram && (subgroupMode === SUBGROUP_MODE_PRIOR || subgroupMode === SUBGROUP_MODE_PRIOR_PLUS_ONE)) {
+        throw new ProtocolViolationError(
+          'FetchObject.deserialize',
+          'first object cannot reference prior subgroup',
+        )
+      }
+    }
+
+    const groupId = hasGroupId
+      ? buf.getVI()
+      : (() => {
+          if (!prev)
+            throw new ProtocolViolationError(
+              'FetchObject.deserialize',
+              'group_id inherited but no prior object',
+            )
+          return prev.groupId
+        })()
+
+    let subgroupId: bigint
+    if (isDatagram) {
+      subgroupId = 0n
+    } else {
+      switch (subgroupMode) {
+        case SUBGROUP_MODE_ZERO:
+          subgroupId = 0n
+          break
+        case SUBGROUP_MODE_PRIOR:
+          if (!prev)
+            throw new ProtocolViolationError(
+              'FetchObject.deserialize',
+              'subgroup_id inherited but no prior object',
+            )
+          subgroupId = prev.subgroupId
+          break
+        case SUBGROUP_MODE_PRIOR_PLUS_ONE:
+          if (!prev)
+            throw new ProtocolViolationError(
+              'FetchObject.deserialize',
+              'subgroup_id inherited but no prior object',
+            )
+          subgroupId = prev.subgroupId + 1n
+          break
+        case SUBGROUP_MODE_PRESENT:
+          subgroupId = buf.getVI()
+          break
+        default:
           throw new ProtocolViolationError(
-            'FetchObject.deserializeItem',
-            `First object cannot use subgroup mode ${mode} (references prior)`,
+            'FetchObject.deserialize',
+            `invalid subgroup mode ${subgroupMode}`,
           )
-        }
-      }
-      if (!FetchObjectSerializationFlags.hasExplicitObjectId(flags)) {
-        throw new ProtocolViolationError(
-          'FetchObject.deserializeItem',
-          'First object must have explicit Object ID (bit 0x04 set)',
-        )
-      }
-      if (!FetchObjectSerializationFlags.hasExplicitPriority(flags)) {
-        throw new ProtocolViolationError(
-          'FetchObject.deserializeItem',
-          'First object must have explicit Priority (bit 0x10 set)',
-        )
       }
     }
 
-    // Read Group ID
-    const groupId = FetchObjectSerializationFlags.hasExplicitGroupId(flags) ? buf.getVI() : prior!.groupId
+    const objectId = hasObjectId
+      ? buf.getVI()
+      : (() => {
+          if (!prev)
+            throw new ProtocolViolationError(
+              'FetchObject.deserialize',
+              'object_id inherited but no prior object',
+            )
+          return prev.objectId + 1n
+        })()
 
-    // Read Subgroup ID
-    let subgroupId: bigint | null
-    if (FetchObjectSerializationFlags.isDatagram(flags)) {
-      subgroupId = null
-    } else {
-      const mode = FetchObjectSerializationFlags.subgroupMode(flags)
-      if (mode === 0x00) {
-        subgroupId = 0n
-      } else if (mode === 0x01) {
-        subgroupId = prior!.subgroupId
-      } else if (mode === 0x02) {
-        subgroupId = prior!.subgroupId! + 1n
-      } else {
-        // mode === 0x03: explicit
-        subgroupId = buf.getVI()
-      }
-    }
+    const publisherPriority = hasPriority
+      ? buf.getU8()
+      : (() => {
+          if (!prev)
+            throw new ProtocolViolationError(
+              'FetchObject.deserialize',
+              'priority inherited but no prior object',
+            )
+          return prev.publisherPriority
+        })()
 
-    // Read Object ID
-    const objectId = FetchObjectSerializationFlags.hasExplicitObjectId(flags) ? buf.getVI() : prior!.objectId + 1n
-
-    // Read Publisher Priority
-    const publisherPriority = FetchObjectSerializationFlags.hasExplicitPriority(flags) ? buf.getU8() : prior!.publisherPriority
-
-    // Read Extensions
     let extensionHeaders: KeyValuePair[] | null = null
-    if (FetchObjectSerializationFlags.hasExtensions(flags)) {
+    if (hasExtensions) {
       const extLen = buf.getNumberVI()
-      if (extLen > 0) {
-        const headerBytes = new FrozenByteBuffer(buf.getBytes(extLen))
-        extensionHeaders = []
-        while (headerBytes.remaining > 0) {
-          extensionHeaders.push(headerBytes.getKeyValuePair())
-        }
+      const headerBytes = new FrozenByteBuffer(buf.getBytes(extLen))
+      extensionHeaders = []
+      while (headerBytes.remaining > 0) {
+        extensionHeaders.push(headerBytes.getKeyValuePair())
       }
     }
 
-    // Read payload or status
     const payloadLen = buf.getNumberVI()
-    let objectStatus: ObjectStatus | null = null
-    let payload: Uint8Array | null = null
-    if (payloadLen === 0) {
-      objectStatus = ObjectStatus.tryFrom(buf.getVI())
-    } else {
-      payload = buf.getBytes(payloadLen)
-    }
+    const payload = buf.getBytes(payloadLen)
 
-    const obj = new FetchObject(new Location(groupId, objectId), subgroupId, publisherPriority, extensionHeaders, objectStatus, payload)
-    return obj
-  }
+    const forwardingPreference = isDatagram
+      ? ObjectForwardingPreference.Datagram
+      : ObjectForwardingPreference.Subgroup
 
-  /**
-   * Deserialize a single fetch object (convenience method for tests).
-   * Note: This cannot be used for multiple objects on the same stream, as it doesn't track prior state.
-   */
-  static deserialize(buf: BaseByteBuffer): FetchObject {
-    const item = FetchObject.deserializeItem(buf, undefined)
-    if (item instanceof FetchEndOfRange) {
-      throw new ProtocolViolationError('FetchObject.deserialize', 'Cannot deserialize end-of-range marker as object')
-    }
-    return item
-  }
+    // For Datagram forwarding, synthesize subgroup_id from object_id so the
+    // unified Object view matches other ingress paths.
+    const resolvedSubgroupId = isDatagram ? objectId : subgroupId
 
-  /**
-   * Convert this object to prior state for use in delta encoding the next object.
-   */
-  toPriorState(): FetchObjectPriorState {
-    return {
-      groupId: this.location.group,
-      subgroupId: this.subgroupId,
-      objectId: this.location.object,
-      publisherPriority: this.publisherPriority,
-    }
+    return FetchObject.newObject(
+      groupId,
+      resolvedSubgroupId,
+      objectId,
+      publisherPriority,
+      forwardingPreference,
+      extensionHeaders,
+      payload,
+    )
   }
 }
 
 if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
   describe('FetchObject', () => {
-    test('roundtrip', () => {
-      const groupId = 9n
-      const subgroupId = 144n
-      const objectId = 10n
-      const publisherPriority = 255
-      const extensionHeaders = [
-        KeyValuePair.tryNewVarInt(0, 1000),
-        KeyValuePair.tryNewBytes(9, new TextEncoder().encode('wololoo')),
-      ]
-      const payload = new TextEncoder().encode('01239gjawkk92837aldmi')
-      const fetchObject = FetchObject.newWithPayload(
-        groupId,
-        subgroupId,
-        objectId,
-        publisherPriority,
-        extensionHeaders,
-        payload,
+    const samplePayload = () =>
+      FetchObject.newObject(
+        9n,
+        144n,
+        10n,
+        255,
+        ObjectForwardingPreference.Subgroup,
+        [
+          KeyValuePair.tryNewVarInt(0, 10),
+          KeyValuePair.tryNewBytes(1, new TextEncoder().encode('wololoo')),
+        ],
+        new TextEncoder().encode('01239gjawkk92837aldmi'),
       )
-      const frozen = fetchObject.serialize()
+
+    test('roundtrip first object', () => {
+      const obj = samplePayload()
+      const frozen = obj.serialize()
       const parsed = FetchObject.deserialize(frozen)
-      expect(parsed.groupId).toBe(groupId)
-      expect(parsed.subgroupId).toBe(subgroupId)
-      expect(parsed.objectId).toBe(objectId)
-      expect(parsed.publisherPriority).toBe(publisherPriority)
-      expect(parsed.extensionHeaders).toEqual(extensionHeaders)
-      expect(parsed.payload).toEqual(payload)
+      expect(parsed.kind).toBe('object')
+      expect(parsed.groupId).toBe(obj.groupId)
+      expect(parsed.subgroupId).toBe(obj.subgroupId)
+      expect(parsed.objectId).toBe(obj.objectId)
+      expect(parsed.publisherPriority).toBe(obj.publisherPriority)
+      expect(parsed.extensionHeaders).toEqual(obj.extensionHeaders)
+      expect(parsed.payload).toEqual(obj.payload)
       expect(frozen.remaining).toBe(0)
     })
-    test('excess roundtrip', () => {
-      const groupId = 9n
-      const subgroupId = 144n
-      const objectId = 10n
-      const publisherPriority = 255
-      const extensionHeaders = [
-        KeyValuePair.tryNewVarInt(0, 10),
-        KeyValuePair.tryNewBytes(1, new TextEncoder().encode('wololoo')),
-      ]
-      const payload = new TextEncoder().encode('01239gjawkk92837aldmi')
-      const fetchObject = FetchObject.newWithPayload(
-        groupId,
-        subgroupId,
-        objectId,
-        publisherPriority,
-        extensionHeaders,
-        payload,
+
+    test('roundtrip inherited fields', () => {
+      const first = samplePayload()
+      const second = FetchObject.newObject(
+        first.groupId,
+        first.subgroupId,
+        first.objectId + 1n,
+        first.publisherPriority,
+        ObjectForwardingPreference.Subgroup,
+        null,
+        new TextEncoder().encode('second'),
       )
-      const serialized = fetchObject.serialize().toUint8Array()
+
+      const wire = new ByteBuffer()
+      wire.putBytes(first.serialize().toUint8Array())
+      wire.putBytes(second.serialize(first.toContext()!).toUint8Array())
+      const frozen = wire.freeze()
+
+      const parsed1 = FetchObject.deserialize(frozen)
+      expect(parsed1.groupId).toBe(first.groupId)
+      expect(parsed1.objectId).toBe(first.objectId)
+      const ctx1 = parsed1.toContext()!
+      const parsed2 = FetchObject.deserialize(frozen, ctx1)
+      expect(parsed2.groupId).toBe(second.groupId)
+      expect(parsed2.subgroupId).toBe(second.subgroupId)
+      expect(parsed2.objectId).toBe(second.objectId)
+      expect(parsed2.publisherPriority).toBe(second.publisherPriority)
+      expect(parsed2.payload).toEqual(second.payload)
+      expect(frozen.remaining).toBe(0)
+    })
+
+    test('roundtrip datagram preference', () => {
+      const obj = FetchObject.newObject(
+        9n,
+        10n, // subgroup_id = object_id for datagram round-trip
+        10n,
+        128,
+        ObjectForwardingPreference.Datagram,
+        null,
+        new TextEncoder().encode('dgram'),
+      )
+      const frozen = obj.serialize()
+      const parsed = FetchObject.deserialize(frozen)
+      expect(parsed.forwardingPreference).toBe(ObjectForwardingPreference.Datagram)
+      expect(parsed.groupId).toBe(obj.groupId)
+      expect(parsed.objectId).toBe(obj.objectId)
+    })
+
+    test('roundtrip end of non-existent range', () => {
+      const obj = FetchObject.newEndOfRange(EndOfRangeKind.NonExistent, 7n, 42n)
+      const frozen = obj.serialize()
+      const parsed = FetchObject.deserialize(frozen)
+      expect(parsed.kind).toBe('end_of_range')
+      expect(parsed.endOfRange).toBe(EndOfRangeKind.NonExistent)
+      expect(parsed.groupId).toBe(7n)
+      expect(parsed.objectId).toBe(42n)
+    })
+
+    test('roundtrip end of unknown range', () => {
+      const obj = FetchObject.newEndOfRange(EndOfRangeKind.Unknown, 100n, 0n)
+      const frozen = obj.serialize()
+      const parsed = FetchObject.deserialize(frozen)
+      expect(parsed.kind).toBe('end_of_range')
+      expect(parsed.endOfRange).toBe(EndOfRangeKind.Unknown)
+    })
+
+    test('reject reserved high flag value', () => {
+      const buf = new ByteBuffer()
+      buf.putVI(0x80)
+      buf.putVI(1)
+      buf.putVI(1)
+      const frozen = buf.freeze()
+      expect(() => FetchObject.deserialize(frozen)).toThrow(ProtocolViolationError)
+    })
+
+    test('reject first object inheriting priority', () => {
+      // flags = subgroup_mode present | object_id present | group_id present, priority absent
+      const flags = SUBGROUP_MODE_PRESENT | FLAG_OBJECT_ID_PRESENT | FLAG_GROUP_ID_PRESENT
+      const buf = new ByteBuffer()
+      buf.putVI(flags)
+      buf.putVI(1)
+      buf.putVI(1)
+      buf.putVI(1)
+      buf.putVI(0)
+      const frozen = buf.freeze()
+      expect(() => FetchObject.deserialize(frozen)).toThrow(ProtocolViolationError)
+    })
+
+    test('excess bytes preserved', () => {
+      const obj = samplePayload()
+      const serialized = obj.serialize().toUint8Array()
       const buf = new ByteBuffer()
       buf.putBytes(serialized)
-      const excess = new Uint8Array([9, 1, 1])
-      buf.putBytes(excess)
+      buf.putBytes(new Uint8Array([9, 1, 1]))
       const frozen = buf.freeze()
       const parsed = FetchObject.deserialize(frozen)
-      expect(parsed.groupId).toBe(groupId)
-      expect(parsed.subgroupId).toBe(subgroupId)
-      expect(parsed.objectId).toBe(objectId)
-      expect(parsed.publisherPriority).toBe(publisherPriority)
-      expect(parsed.extensionHeaders).toEqual(extensionHeaders)
-      expect(parsed.payload).toEqual(payload)
+      expect(parsed.groupId).toBe(obj.groupId)
       expect(frozen.remaining).toBe(3)
       expect(Array.from(frozen.getBytes(3))).toEqual([9, 1, 1])
     })
+
     test('partial message fails', () => {
-      const groupId = 9n
-      const subgroupId = 144n
-      const objectId = 10n
-      const publisherPriority = 255
-      const extensionHeaders = [
-        KeyValuePair.tryNewVarInt(0, 10),
-        KeyValuePair.tryNewBytes(1, new TextEncoder().encode('wololoo')),
-      ]
-      const payload = new TextEncoder().encode('01239gjawkk92837aldmi')
-      const fetchObject = FetchObject.newWithPayload(
-        groupId,
-        subgroupId,
-        objectId,
-        publisherPriority,
-        extensionHeaders,
-        payload,
-      )
-      const serialized = fetchObject.serialize().toUint8Array()
+      const obj = samplePayload()
+      const serialized = obj.serialize().toUint8Array()
       const upper = Math.floor(serialized.length / 2)
       const partial = serialized.slice(0, upper)
       const frozen = new FrozenByteBuffer(partial)
-      expect(() => {
-        FetchObject.deserialize(frozen)
-      }).toThrow()
+      expect(() => FetchObject.deserialize(frozen)).toThrow()
     })
   })
 }

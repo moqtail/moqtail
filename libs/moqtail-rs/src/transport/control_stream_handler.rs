@@ -191,11 +191,11 @@ mod tests {
   use crate::model::common::tuple::{Tuple, TupleField};
   use crate::model::common::varint::BufMutVarIntExt;
   use crate::model::control::client_setup::ClientSetup;
-  use crate::model::control::constant::PublishNamespaceErrorCode;
+  use crate::model::control::constant::RequestErrorCode;
   use crate::model::control::constant::{ControlMessageType, GroupOrder};
   use crate::model::control::publish_namespace::PublishNamespace;
   use crate::model::control::publish_namespace_cancel::PublishNamespaceCancel;
-  use crate::model::control::publish_namespace_ok::PublishNamespaceOk;
+  use crate::model::control::request_ok::RequestOk;
   use crate::model::control::server_setup::ServerSetup;
   use crate::model::control::subscribe::Subscribe;
   use crate::model::control::subscribe_ok::SubscribeOk;
@@ -332,19 +332,20 @@ mod tests {
     }
   }
 
-  fn create_test_announce_ok() -> PublishNamespaceOk {
+  fn create_test_announce_ok() -> RequestOk {
     let request_id = 12345;
-    PublishNamespaceOk { request_id }
+    RequestOk::new(request_id, vec![])
   }
 
   fn create_test_announce_cancel() -> PublishNamespaceCancel {
-    let error_code = PublishNamespaceErrorCode::InternalError;
+    let request_id = 1337;
+    let error_code = RequestErrorCode::InternalError;
     let reason_phrase = ReasonPhrase::try_new("bomboclad".to_string()).unwrap();
-    let track_namespace = Tuple::from_utf8_path("another/valid/track/namespace");
+
     PublishNamespaceCancel {
+      request_id,
       error_code,
       reason_phrase,
-      track_namespace,
     }
   }
 
@@ -526,7 +527,7 @@ mod tests {
       ControlMessage::ClientSetup(client_setup),
       ControlMessage::ServerSetup(server_setup),
       ControlMessage::PublishNamespace(announce1),
-      ControlMessage::PublishNamespaceOk(announce_ok1),
+      ControlMessage::RequestOk(announce_ok1),
       ControlMessage::Subscribe(subscribe1),
       ControlMessage::SubscribeOk(subscribe_ok1),
       ControlMessage::PublishNamespaceCancel(announce_cancel1),

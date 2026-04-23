@@ -29,10 +29,10 @@ mod track_cache;
 mod track_manager;
 mod utils;
 
+use crate::server::session_context::PendingRequest;
 use crate::server::{config::AppConfig, session::Session};
 use anyhow::Result;
 use client_manager::ClientManager;
-use moqtail::transport::data_stream_handler::{FetchRequest, SubscribeRequest};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
@@ -49,9 +49,7 @@ use wtransport::Endpoint;
 pub(crate) struct Server {
   pub client_manager: Arc<RwLock<ClientManager>>,
   pub track_manager: TrackManager,
-  pub relay_fetch_requests: Arc<RwLock<BTreeMap<u64, FetchRequest>>>,
-  pub relay_subscribe_requests: Arc<RwLock<BTreeMap<u64, SubscribeRequest>>>,
-  pub relay_track_status_requests: Arc<RwLock<BTreeMap<u64, SubscribeRequest>>>,
+  pub relay_pending_requests: Arc<RwLock<BTreeMap<u64, PendingRequest>>>,
   pub app_config: &'static AppConfig,
   pub relay_next_request_id: Arc<AtomicU64>,
 }
@@ -67,9 +65,7 @@ impl Server {
     Server {
       client_manager: Arc::new(RwLock::new(ClientManager::new())),
       track_manager: TrackManager::new(),
-      relay_fetch_requests: Arc::new(RwLock::new(BTreeMap::new())),
-      relay_subscribe_requests: Arc::new(RwLock::new(BTreeMap::new())),
-      relay_track_status_requests: Arc::new(RwLock::new(BTreeMap::new())),
+      relay_pending_requests: Arc::new(RwLock::new(BTreeMap::new())),
       app_config: config,
       relay_next_request_id: Arc::new(AtomicU64::new(1u64)), // relay's request id starts at 1 and are odd
     }

@@ -23,8 +23,7 @@ import {
   Location,
   SetupParameters,
   ControlMessage,
-  DatagramObject,
-  DatagramStatus,
+  Datagram,
 } from '@/model'
 import { PublishNamespaceRequest } from './request/publish_namespace'
 import { FetchRequest } from './request/fetch'
@@ -118,9 +117,9 @@ export type MOQtailClientOptions = {
     /** Fired once when the session ends (normal or error). Receives the reason passed to {@link MOQtailClient.disconnect | disconnect}. */
     onSessionTerminated?: (reason?: unknown) => void
     /** Invoked for each decoded datagram object/status arriving. */
-    onDatagramReceived?: (data: DatagramObject | DatagramStatus) => void
+    onDatagramReceived?: (data: Datagram) => void
     /** Invoked after enqueuing each outbound datagram object/status. */
-    onDatagramSent?: (data: DatagramObject | DatagramStatus) => void
+    onDatagramSent?: (data: Datagram) => void
   }
 }
 

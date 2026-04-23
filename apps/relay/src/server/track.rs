@@ -13,20 +13,19 @@
 // limitations under the License.
 
 use super::track_cache::TrackCache;
-use crate::server::client::MOQTClient;
 use crate::server::config::AppConfig;
 use crate::server::object_logger::ObjectLogger;
 use crate::server::stream_id::StreamId;
 use crate::server::subscription::Subscription;
 use crate::server::subscription_manager::SubscriptionManager;
 use crate::server::utils;
+use crate::server::{client::MOQTClient, subscription::SubscriptionOrigin};
 use anyhow::Result;
 use moqtail::model::common::location::Location;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
-use moqtail::model::control::constant::SubscribeErrorCode;
-use moqtail::model::control::subscribe::Subscribe;
+use moqtail::model::control::constant::RequestErrorCode;
 use moqtail::model::data::constant::ObjectForwardingPreference;
-use moqtail::model::data::datagram_object::DatagramObject;
+use moqtail::model::data::datagram::Datagram;
 use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::model::data::object::Object;
 use moqtail::model::extension_header::track_extension::TrackExtension;
@@ -46,9 +45,9 @@ pub enum TrackStatus {
   Confirmed {
     subscribe_parameters: Vec<MessageParameter>,
   },
-  /// Publisher rejected with SubscribeError.
+  /// Publisher rejected with RequestError.
   Rejected {
-    error_code: SubscribeErrorCode,
+    error_code: RequestErrorCode,
     reason_phrase: ReasonPhrase,
   },
 }
@@ -61,8 +60,8 @@ pub enum TrackEvent {
     object: Object,
     header_info: Option<HeaderInfo>,
   },
-  DatagramObject {
-    object: DatagramObject,
+  Datagram {
+    object: Datagram,
   },
   StreamClosed {
     stream_id: StreamId,
@@ -197,7 +196,7 @@ impl Track {
   }
 
   /// Transition from Pending to Rejected. Notifies waiters.
-  pub async fn reject(&self, error_code: SubscribeErrorCode, reason_phrase: ReasonPhrase) {
+  pub async fn reject(&self, error_code: RequestErrorCode, reason_phrase: ReasonPhrase) {
     let mut status = self.status.write().await;
     *status = TrackStatus::Rejected {
       error_code,
@@ -218,9 +217,10 @@ impl Track {
   pub async fn add_subscription(
     &self,
     subscriber: Arc<MOQTClient>,
-    subscribe_message: Subscribe,
+    origin_message: impl Into<SubscriptionOrigin>,
     is_switch: bool,
   ) -> Result<Arc<RwLock<Subscription>>, anyhow::Error> {
+    let origin_enum = origin_message.into();
     // Check if subscription already exists
     if let Some(sub_guard) = self
       .subscription_manager
@@ -248,7 +248,7 @@ impl Track {
 
     let subscription = self
       .subscription_manager
-      .add_subscription(subscriber, subscribe_message, self.cache.clone())
+      .add_subscription(subscriber, origin_enum, self.cache.clone())
       .await?;
 
     if is_switch {
@@ -350,25 +350,21 @@ impl Track {
     Ok(())
   }
 
-  pub async fn new_datagram_object(
-    &self,
-    datagram_object: &DatagramObject,
-  ) -> Result<(), anyhow::Error> {
+  pub async fn new_datagram(&self, datagram: &Datagram) -> Result<(), anyhow::Error> {
     debug!(
-      "new_datagram_object: relay_track_id={} group: {:?} object_id={} diff_ms={}",
+      "new_datagram: relay_track_id={} group: {:?} object_id={} diff_ms={}",
       self.relay_track_id,
-      datagram_object.group_id,
-      datagram_object.object_id,
+      datagram.group_id,
+      datagram.object_id,
       utils::passed_time_since_start()
     );
 
-    match Object::try_from_datagram(datagram_object.clone()) {
+    match Object::try_from_datagram(datagram.clone(), 0) {
       Ok((object, end_of_group)) => {
-        // Draft-14: end_of_group indicates this is the last object in the group
         if end_of_group {
           debug!(
-            "new_datagram_object: end_of_group received for track: {:?} group: {:?} object_id: {}",
-            datagram_object.track_alias, datagram_object.group_id, datagram_object.object_id
+            "new_datagram: end_of_group received for track: {:?} group: {:?} object_id: {}",
+            datagram.track_alias, datagram.group_id, datagram.object_id
           );
         }
 
@@ -376,10 +372,10 @@ impl Track {
           self.cache.add_object(fetch_object).await;
         } else {
           warn!(
-            "new_datagram_object: object cannot be cached | relay_track_id={} group: {:?} object_id={} diff_ms={} object: {:?}",
+            "new_datagram: object cannot be cached | relay_track_id={} group: {:?} object_id={} diff_ms={} object: {:?}",
             self.relay_track_id,
-            datagram_object.group_id,
-            datagram_object.object_id,
+            datagram.group_id,
+            datagram.object_id,
             utils::passed_time_since_start(),
             object
           );
@@ -396,8 +392,8 @@ impl Track {
       }
       Err(e) => {
         error!(
-          "Failed to convert datagram object to object for logging: group: {:?} object_id={} error={}",
-          datagram_object.group_id, datagram_object.object_id, e
+          "Failed to convert datagram to object for logging: group: {:?} object_id={} error={}",
+          datagram.group_id, datagram.object_id, e
         );
       }
     }
@@ -405,17 +401,17 @@ impl Track {
     // update the largest location
     {
       let mut largest_location = self.largest_location.write().await;
-      if datagram_object.group_id > largest_location.group
-        || (datagram_object.group_id == largest_location.group
-          && datagram_object.object_id > largest_location.object)
+      if datagram.group_id > largest_location.group
+        || (datagram.group_id == largest_location.group
+          && datagram.object_id > largest_location.object)
       {
-        largest_location.group = datagram_object.group_id;
-        largest_location.object = datagram_object.object_id;
+        largest_location.group = datagram.group_id;
+        largest_location.object = datagram.object_id;
       }
     }
 
-    let event = TrackEvent::DatagramObject {
-      object: datagram_object.clone(),
+    let event = TrackEvent::Datagram {
+      object: datagram.clone(),
     };
 
     self

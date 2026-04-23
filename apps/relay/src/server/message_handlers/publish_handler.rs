@@ -14,23 +14,23 @@
 
 use crate::server::client::MOQTClient;
 use crate::server::session::Session;
+use crate::server::session_context::PendingRequest;
 use crate::server::session_context::SessionContext;
 use crate::server::track::{Track, TrackStatus};
 use core::result::Result;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
-use moqtail::model::control::subscribe::Subscribe;
 use moqtail::model::control::{
-  constant::{FilterType, GroupOrder, PublishErrorCode},
+  constant::{FilterType, GroupOrder, RequestErrorCode},
   control_message::ControlMessage,
-  publish_error::PublishError,
   publish_ok::PublishOk,
+  request_error::RequestError,
 };
 use moqtail::model::error::TerminationCode;
 use moqtail::model::parameter::constant::MessageParameterType;
 use moqtail::model::parameter::message_parameter::{MessageParameter, MessageParameterVecExt};
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 pub async fn handle(
   client: Arc<MOQTClient>,
@@ -67,14 +67,15 @@ pub async fn handle(
           ReasonPhrase::try_new("Not authorized to publish this track".to_string())
             .map_err(|_| TerminationCode::InternalError)?;
 
-        let publish_error = Box::new(PublishError::new(
+        let publish_error = Box::new(RequestError::new(
           request_id,
-          PublishErrorCode::Unauthorized,
+          RequestErrorCode::Unauthorized,
+          0, //TODO: Maybe decide on another retry interval?
           reason_phrase,
         ));
 
         return control_stream_handler
-          .send(&ControlMessage::PublishError(publish_error))
+          .send(&ControlMessage::RequestError(publish_error))
           .await;
       }
 
@@ -178,6 +179,18 @@ pub async fn handle(
           m_clone.request_id = relay_req_id;
           m_clone.track_alias = relay_track_id;
 
+          // Register the message in unified map for draft-16 response tracking
+          {
+            let mut map = context.relay_pending_requests.write().await;
+            map.insert(
+              relay_req_id,
+              PendingRequest::Publish {
+                publisher_connection_id: context.connection_id,
+                original_request_id: request_id,
+              },
+            );
+          }
+
           let m_clone2 = m_clone.clone();
           tokio::spawn(async move {
             sub_clone
@@ -185,24 +198,9 @@ pub async fn handle(
               .await;
           });
 
-          let m_forward = m_clone.parameters.get_param_or(
-            MessageParameterType::Forward,
-            MessageParameter::new_forward(true),
-          );
-          let synthetic_sub = Subscribe::new_next_group_start(
-            0,
-            m_clone.track_namespace.clone(),
-            m_clone.track_name.clone(),
-            vec![
-              MessageParameter::new_subscriber_priority(128),
-              MessageParameter::new_group_order(GroupOrder::Ascending),
-              m_forward,
-            ],
-          );
-
           let track_write = track_arc.read().await;
           if let Err(e) = track_write
-            .add_subscription(subscriber.clone(), synthetic_sub, false)
+            .add_subscription(subscriber.clone(), (*m_clone).clone(), false)
             .await
           {
             warn!(
@@ -271,61 +269,73 @@ pub async fn handle(
       // Clean up the published track
       cleanup_published_track(&client, m.request_id, &context).await;
 
+      // Remove the request from the unified map to avoid memory leak
+      {
+        let mut map = context.relay_pending_requests.write().await;
+        map.remove(&m.request_id);
+        debug!(
+          "Removed terminated PUBLISH request {} from pending requests map",
+          m.request_id
+        );
+      }
+
       Ok(())
     }
 
     ControlMessage::PublishOk(m) => {
       info!("Received PublishOk for request_id: {}", m.request_id);
 
-      // 1. Look up which track this PublishOk corresponds to using the connection_id and request_id
-      if let Some(full_track_name) = context
-        .track_manager
-        .get_track_name_by_publisher(client.connection_id, m.request_id)
-        .await
-      {
-        // 2. Fetch the track and the original publish message details
-        if let Some(track_arc) = context.track_manager.get_track(&full_track_name).await
-          && let Some(orig_publish) = context
+      let pending_request = {
+        let map = context.relay_pending_requests.read().await;
+        map.get(&m.request_id).cloned()
+      };
+
+      match pending_request {
+        Some(PendingRequest::Publish { .. }) => {
+          // 1. Look up which track this PublishOk corresponds to using the connection_id and request_id
+          if let Some(full_track_name) = context
             .track_manager
-            .get_publish_message(&full_track_name, client.connection_id)
-            .await
-        {
-          info!(
-            "Publish accepted! Wiring up data stream for: {:?}",
-            full_track_name
-          );
-
-          // 3. Create the subscription now that the client has consented
-          let orig_forward = orig_publish.parameters.get_param_or(
-            MessageParameterType::Forward,
-            MessageParameter::new_forward(true),
-          );
-          let synthetic_sub = Subscribe::new_next_group_start(
-            0,
-            orig_publish.track_namespace.clone(),
-            orig_publish.track_name.clone(),
-            vec![
-              MessageParameter::new_subscriber_priority(128),
-              MessageParameter::new_group_order(GroupOrder::Ascending),
-              orig_forward,
-            ],
-          );
-
-          let track_read = track_arc.read().await;
-          if let Err(e) = track_read
-            .add_subscription(client.clone(), synthetic_sub, false)
+            .get_track_name_by_publisher(client.connection_id, m.request_id)
             .await
           {
-            warn!("Failed to auto-subscribe client after PublishOk: {:?}", e);
+            // 2. Fetch the track and the original publish message details
+            if let Some(track_arc) = context.track_manager.get_track(&full_track_name).await
+              && let Some(orig_publish) = context
+                .track_manager
+                .get_publish_message(&full_track_name, client.connection_id)
+                .await
+            {
+              info!(
+                "Publish accepted! Wiring up data stream for: {:?}",
+                full_track_name
+              );
+
+              let track_read = track_arc.read().await;
+              if let Err(e) = track_read
+                .add_subscription(client.clone(), orig_publish.clone(), false)
+                .await
+              {
+                warn!("Failed to auto-subscribe client after PublishOk: {:?}", e);
+              } else {
+                info!("Successfully wired data stream!");
+              }
+            }
           } else {
-            info!("Successfully wired data stream!");
+            warn!(
+              "Received PublishOk for an unknown push request_id: {}",
+              m.request_id
+            );
           }
         }
-      } else {
-        warn!(
-          "Received PublishOk for an unknown push request_id: {}",
-          m.request_id
-        );
+        Some(_) => {
+          warn!("Mismatched request type for PublishOk: {}", m.request_id);
+        }
+        None => {
+          warn!(
+            "Received PublishOk for untracked request_id: {}",
+            m.request_id
+          );
+        }
       }
 
       Ok(())

@@ -18,7 +18,7 @@ use moqtail::model::{
   control::{
     constant::SUPPORTED_VERSIONS, control_message::ControlMessage, server_setup::ServerSetup,
   },
-  data::{constant::ObjectForwardingPreference, datagram_object::DatagramObject},
+  data::{constant::ObjectForwardingPreference, datagram::Datagram},
   error::TerminationCode,
 };
 use moqtail::transport::{
@@ -95,18 +95,14 @@ impl Session {
     let client_manager = server.client_manager.clone();
     let track_manager = server.track_manager.clone();
     let server_config = server.app_config;
-    let relay_fetch_requests = server.relay_fetch_requests.clone();
-    let relay_subscribe_requests = server.relay_subscribe_requests.clone();
-    let relay_track_status_requests = server.relay_track_status_requests.clone();
+    let relay_pending_requests = server.relay_pending_requests.clone();
     let relay_next_request_id = server.relay_next_request_id.clone();
     let connection = session_request
       .accept_with_headers(response_headers)
       .await?;
 
     let request_maps = RequestMaps {
-      relay_fetch_requests,
-      relay_subscribe_requests,
-      relay_track_status_requests,
+      relay_pending_requests,
     };
 
     let context = Arc::new(SessionContext::new(
@@ -334,9 +330,9 @@ impl Session {
             // Parse the datagram
             let bytes = Bytes::from(datagram_bytes.payload().to_vec());
             let mut bytes = bytes;
-            match DatagramObject::deserialize(&mut bytes) {
+            match Datagram::deserialize(&mut bytes) {
               Ok(datagram_obj) => {
-                debug!("Parsed datagram object: track_alias={}, group_id={}, object_id={}",
+                debug!("Parsed datagram: track_alias={}, group_id={}, object_id={}",
                        datagram_obj.track_alias, datagram_obj.group_id, datagram_obj.object_id);
 
                 if let Some(track) = context_clone.track_manager.get_track_by_alias(context_clone.connection_id, datagram_obj.track_alias).await {
@@ -344,9 +340,9 @@ impl Session {
                   // Set forwarding preference to Datagram
                   track.set_forwarding_preference(ObjectForwardingPreference::Datagram).await;
 
-                  // Call new_datagram_object
-                  if let Err(e) = track.new_datagram_object(&datagram_obj).await {
-                    error!("Failed to process datagram object: {:?}", e);
+                  // Call new_datagram
+                  if let Err(e) = track.new_datagram(&datagram_obj).await {
+                    error!("Failed to process datagram: {:?}", e);
                   }
                 } else {
                   debug!("Track not found for track_alias {}", datagram_obj.track_alias);

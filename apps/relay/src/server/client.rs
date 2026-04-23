@@ -17,6 +17,7 @@ pub(crate) mod track_subscription_map;
 
 use crate::server::{
   client::track_subscription_map::TrackSubscriptionMap,
+  session_context::PendingRequest,
   stream_id::{StreamId, StreamType},
   utils,
 };
@@ -74,6 +75,8 @@ pub(crate) struct MOQTClient {
   // The key value is the original request id.
   pub subscribe_requests: Arc<RwLock<BTreeMap<u64, SubscribeRequest>>>,
 
+  pub inbound_requests: Arc<RwLock<BTreeMap<u64, PendingRequest>>>,
+
   // Senders for cancelling active fetch tasks, keyed by request_id.
   pub fetch_cancel_senders: Arc<RwLock<HashMap<u64, watch::Sender<bool>>>>,
 
@@ -107,6 +110,7 @@ impl MOQTClient {
       send_streams: Arc::new(send_streams),
       fetch_requests: Arc::new(RwLock::new(BTreeMap::new())),
       subscribe_requests: Arc::new(RwLock::new(BTreeMap::new())),
+      inbound_requests: Arc::new(RwLock::new(BTreeMap::new())),
       fetch_cancel_senders: Arc::new(RwLock::new(HashMap::new())),
       subscriptions: TrackSubscriptionMap::new(),
       switch_context: SwitchContext::new(),

@@ -60,16 +60,23 @@ pub async fn handle(
       }
 
       {
-        let mut map = context.relay_pending_requests.write().await;
-        map.insert(
-          request_id,
-          PendingRequest::Fetch(FetchRequest {
-            original_request_id: request_id,
-            requested_by: client.connection_id,
-            fetch_request: fetch.clone(),
-            track_alias: 0,
-          }),
-        );
+        let req = FetchRequest {
+          original_request_id: request_id,
+          requested_by: client.connection_id,
+          fetch_request: fetch.clone(),
+          track_alias: 0,
+        };
+
+        client
+          .fetch_requests
+          .write()
+          .await
+          .insert(request_id, req.clone());
+        client
+          .inbound_requests
+          .write()
+          .await
+          .insert(request_id, PendingRequest::Fetch(req));
       }
 
       let fn_ = async {
@@ -109,7 +116,6 @@ pub async fn handle(
                 request_id,
                 RequestErrorCode::InvalidRange,
                 ReasonPhrase::try_new(String::from("Invalid range")).unwrap(),
-                &context,
               )
               .await;
               return (None, None, None);
@@ -165,7 +171,6 @@ pub async fn handle(
           request_id,
           RequestErrorCode::DoesNotExist,
           ReasonPhrase::try_new(String::from("Track does not exist")).unwrap(),
-          &context,
         )
         .await;
         return Ok(());
@@ -180,8 +185,13 @@ pub async fn handle(
       let track = track.unwrap();
       {
         let track_read = track.read().await;
-        let mut map = context.relay_pending_requests.write().await;
-        if let Some(PendingRequest::Fetch(req)) = map.get_mut(&request_id) {
+
+        let mut inbound = client.inbound_requests.write().await;
+        if let Some(PendingRequest::Fetch(req)) = inbound.get_mut(&request_id) {
+          req.track_alias = track_read.relay_track_id;
+        }
+        let mut fetches = client.fetch_requests.write().await;
+        if let Some(req) = fetches.get_mut(&request_id) {
           req.track_alias = track_read.relay_track_id;
         }
       }
@@ -409,11 +419,8 @@ pub async fn handle(
         }
 
         // Clean up the unified map since the fetch is done
-        context
-          .relay_pending_requests
-          .write()
-          .await
-          .remove(&request_id);
+        client.inbound_requests.write().await.remove(&request_id);
+        client.fetch_requests.write().await.remove(&request_id);
 
         // Clean up cancel sender
         client
@@ -436,12 +443,12 @@ pub async fn handle(
         senders.remove(&request_id)
       };
 
-      // Remove the fetch request from the unified map
+      // Remove the fetch request from the client maps
       {
-        let mut map = context.relay_pending_requests.write().await;
-        map.remove(&request_id);
+        client.inbound_requests.write().await.remove(&request_id);
+        client.fetch_requests.write().await.remove(&request_id);
         debug!(
-          "Removed FETCH request {} from pending requests map after Cancel",
+          "Removed FETCH request {} from client maps after Cancel",
           request_id
         );
       }
@@ -492,7 +499,6 @@ async fn send_request_error(
   request_id: u64,
   error_code: RequestErrorCode,
   reason_phrase: ReasonPhrase,
-  context: &Arc<SessionContext>,
 ) {
   // TODO: Implement this later.
   // Draft 16 requires a retry interval. Setting to 0 (no retries) for now.
@@ -502,10 +508,7 @@ async fn send_request_error(
   client
     .queue_message(ControlMessage::RequestError(Box::new(request_error)))
     .await;
-  // Remove the request from the map on error
-  context
-    .relay_pending_requests
-    .write()
-    .await
-    .remove(&request_id);
+  // Remove the request from the client maps on error
+  client.inbound_requests.write().await.remove(&request_id);
+  client.fetch_requests.write().await.remove(&request_id);
 }

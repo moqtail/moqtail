@@ -101,13 +101,13 @@ pub async fn handle(
 
               // Register the message in unified map for draft-16 response tracking
               {
-                let mut map = context.relay_pending_requests.write().await;
+                let mut map = client.inbound_requests.write().await;
                 map.insert(
-                  relay_announce_id,
+                  m.request_id,
                   PendingRequest::PublishNamespace {
-                    client_connection_id: sub.connection_id,
-                    original_request_id: relay_announce_id, // We are the origin here
-                    message: notify.clone(),
+                    client_connection_id: client.connection_id,
+                    original_request_id: m.request_id,
+                    message: (*m).clone(),
                   },
                 );
               }
@@ -174,7 +174,7 @@ pub async fn handle(
       let update_req_id = update_msg.request_id;
 
       let target_namespace = {
-        let mut map = context.relay_pending_requests.write().await;
+        let mut map = client.inbound_requests.write().await;
         match map.get_mut(&existing_req_id) {
           Some(PendingRequest::PublishNamespace { message, .. }) => {
             apply_message_parameter_update(&mut message.parameters, update_msg.parameters.clone());

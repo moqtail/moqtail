@@ -77,7 +77,7 @@ pub async fn handle(
         .await;
 
       {
-        let mut map = context.relay_pending_requests.write().await;
+        let mut map = client.inbound_requests.write().await;
         map.insert(
           sub_ns.request_id,
           PendingRequest::SubscribeNamespace {
@@ -243,7 +243,7 @@ pub async fn handle(
       let update_req_id = update_msg.request_id;
 
       let target_prefix = {
-        let mut map = context.relay_pending_requests.write().await;
+        let mut map = client.inbound_requests.write().await;
         match map.get_mut(&existing_req_id) {
           Some(PendingRequest::SubscribeNamespace { message, .. }) => {
             apply_message_parameter_update(&mut message.parameters, update_msg.parameters.clone());

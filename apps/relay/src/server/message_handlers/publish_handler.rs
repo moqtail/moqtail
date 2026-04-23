@@ -151,6 +151,18 @@ pub async fn handle(
           .add_publish_message(full_track_name.clone(), context.connection_id, (*m).clone())
           .await;
 
+        {
+          let mut map = client.inbound_requests.write().await;
+          map.insert(
+            request_id,
+            PendingRequest::Publish {
+              publisher_connection_id: context.connection_id,
+              original_request_id: request_id,
+              message: (*m).clone(),
+            },
+          );
+        }
+
         let subscribers = context
           .track_manager
           .get_namespace_subscribers(&m.track_namespace)
@@ -274,7 +286,7 @@ pub async fn handle(
 
       // Remove the request from the unified map to avoid memory leak
       {
-        let mut map = context.relay_pending_requests.write().await;
+        let mut map = client.inbound_requests.write().await;
         map.remove(&m.request_id);
         debug!(
           "Removed terminated PUBLISH request {} from pending requests map",
@@ -350,7 +362,7 @@ pub async fn handle(
       let update_req_id = update_msg.request_id;
 
       {
-        let mut map = context.relay_pending_requests.write().await;
+        let mut map = client.inbound_requests.write().await;
         match map.get_mut(&publisher_req_id) {
           Some(PendingRequest::Publish { message, .. }) => {
             apply_message_parameter_update(&mut message.parameters, update_msg.parameters.clone());

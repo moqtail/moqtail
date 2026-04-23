@@ -112,11 +112,11 @@ impl MessageHandler {
       ControlMessage::RequestOk(_)
       | ControlMessage::RequestError(_)
       | ControlMessage::RequestUpdate(_) => {
-        // 1. Extract the correct ID to look up, since Update uses a different field name
-        let target_req_id = match &msg {
-          ControlMessage::RequestOk(m) => m.request_id,
-          ControlMessage::RequestError(m) => m.request_id,
-          ControlMessage::RequestUpdate(m) => m.existing_request_id,
+        // 1. Extract the target ID and the directionality (response vs update)
+        let (target_req_id, is_response_to_relay) = match &msg {
+          ControlMessage::RequestOk(m) => (m.request_id, true),
+          ControlMessage::RequestError(m) => (m.request_id, true),
+          ControlMessage::RequestUpdate(m) => (m.existing_request_id, false),
           _ => unreachable!(),
         };
 
@@ -130,21 +130,28 @@ impl MessageHandler {
           NotFound,
         }
 
-        // 2. Peek at the unified map to determine the routing destination once
-        let route = {
-          let map = context.relay_pending_requests.read().await;
-          match map.get(&target_req_id) {
-            Some(PendingRequest::Fetch(_)) => Route::Fetch,
-            Some(PendingRequest::Publish { .. }) => Route::Publish,
-            Some(PendingRequest::PublishNamespace { .. }) => Route::PublishNamespace,
-            Some(PendingRequest::Subscribe(_)) => Route::Subscribe,
-            Some(PendingRequest::SubscribeNamespace { .. }) => Route::SubscribeNamespace,
-            Some(PendingRequest::TrackStatus(_)) => Route::TrackStatus,
-            Some(PendingRequest::RequestUpdate { .. }) => Route::NotFound,
-            None => Route::NotFound,
-          }
+        // 2. Helper closure to map a PendingRequest to a Route
+        let determine_route = |req: Option<&PendingRequest>| match req {
+          Some(PendingRequest::Fetch(_)) => Route::Fetch,
+          Some(PendingRequest::Publish { .. }) => Route::Publish,
+          Some(PendingRequest::PublishNamespace { .. }) => Route::PublishNamespace,
+          Some(PendingRequest::Subscribe(_)) => Route::Subscribe,
+          Some(PendingRequest::SubscribeNamespace { .. }) => Route::SubscribeNamespace,
+          Some(PendingRequest::TrackStatus(_)) => Route::TrackStatus,
+          Some(PendingRequest::RequestUpdate { .. }) => Route::NotFound,
+          None => Route::NotFound,
         };
 
+        // 3. Lock the appropriate map, determine the route, and immediately drop the lock
+        let route = if is_response_to_relay {
+          let map = context.relay_pending_requests.read().await;
+          determine_route(map.get(&target_req_id))
+        } else {
+          let map = client.inbound_requests.read().await;
+          determine_route(map.get(&target_req_id))
+        };
+
+        // 4. Route to the appropriate handler (defined only once!)
         match route {
           Route::Fetch => {
             fetch_handler::handle(client.clone(), control_stream_handler, msg, context.clone())
@@ -186,8 +193,8 @@ impl MessageHandler {
               target_req_id
             );
 
-            // Draft-16: If someone tries to update a request we don't track, it's a protocol violation
-            if let ControlMessage::RequestUpdate(_) = msg {
+            // Draft-16: Unknown Update = ProtocolViolation. Unknown Response = Ignore.
+            if !is_response_to_relay {
               Err(TerminationCode::ProtocolViolation)
             } else {
               Ok(())

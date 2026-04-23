@@ -250,6 +250,14 @@ async fn handle_subscribe_message(
     let mut requests = client.subscribe_requests.write().await;
     let orig_req = SubscribeRequest::new(original_request_id, context.connection_id, sub, None);
     requests.insert(original_request_id, orig_req.clone());
+
+    // dual bookkeeping here, necessary evil
+    let mut inbound = client.inbound_requests.write().await;
+    inbound.insert(
+      original_request_id,
+      PendingRequest::Subscribe(orig_req.clone()),
+    );
+
     debug!(
       "inserted request into client's subscribe requests: {:?}",
       orig_req
@@ -447,6 +455,10 @@ async fn handle_unsubscribe_message(
   {
     let mut requests = client.subscribe_requests.write().await;
     requests.remove(&unsubscribe_message.request_id);
+
+    let mut inbound = client.inbound_requests.write().await;
+    inbound.remove(&unsubscribe_message.request_id);
+
     debug!(
       "Cleaned up client subscribe request {} after Unsubscribe",
       unsubscribe_message.request_id
@@ -484,6 +496,16 @@ pub async fn handle_request_update(
       }
     }
   };
+
+  {
+    let mut inbound = client.inbound_requests.write().await;
+    if let Some(PendingRequest::Subscribe(req)) = inbound.get_mut(&existing_req_id) {
+      apply_message_parameter_update(
+        &mut req.original_subscribe_request.subscribe_parameters,
+        update_msg.parameters.clone(),
+      );
+    }
+  }
 
   // 2. Get the track instance
   let track_lock = context.track_manager.get_track(&full_track_name).await;

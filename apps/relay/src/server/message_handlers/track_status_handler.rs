@@ -233,6 +233,14 @@ pub async fn handle(
       Ok(())
     }
 
+    ControlMessage::RequestUpdate(m) => {
+      warn!(
+        "Protocol Violation: Client attempted to update TrackStatus request ID {}",
+        m.existing_request_id
+      );
+      Err(TerminationCode::ProtocolViolation)
+    }
+
     _ => Ok(()),
   }
 }

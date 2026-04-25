@@ -27,6 +27,7 @@ use moqtail::model::control::{
 };
 use moqtail::model::error::TerminationCode;
 use moqtail::model::parameter::constant::MessageParameterType;
+use moqtail::model::parameter::message_parameter::apply_message_parameter_update;
 use moqtail::model::parameter::message_parameter::{MessageParameter, MessageParameterVecExt};
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
@@ -150,6 +151,18 @@ pub async fn handle(
           .add_publish_message(full_track_name.clone(), context.connection_id, (*m).clone())
           .await;
 
+        {
+          let mut map = client.inbound_requests.write().await;
+          map.insert(
+            request_id,
+            PendingRequest::Publish {
+              publisher_connection_id: context.connection_id,
+              original_request_id: request_id,
+              message: (*m).clone(),
+            },
+          );
+        }
+
         let subscribers = context
           .track_manager
           .get_namespace_subscribers(&m.track_namespace)
@@ -187,6 +200,7 @@ pub async fn handle(
               PendingRequest::Publish {
                 publisher_connection_id: context.connection_id,
                 original_request_id: request_id,
+                message: (*m_clone).clone(),
               },
             );
           }
@@ -260,6 +274,7 @@ pub async fn handle(
         .send(&ControlMessage::PublishOk(publish_ok))
         .await
     }
+
     ControlMessage::PublishDone(m) => {
       info!(
         "Received PublishDone message for request ID: {} with status: {:?}",
@@ -271,7 +286,7 @@ pub async fn handle(
 
       // Remove the request from the unified map to avoid memory leak
       {
-        let mut map = context.relay_pending_requests.write().await;
+        let mut map = client.inbound_requests.write().await;
         map.remove(&m.request_id);
         debug!(
           "Removed terminated PUBLISH request {} from pending requests map",
@@ -337,6 +352,114 @@ pub async fn handle(
           );
         }
       }
+
+      Ok(())
+    }
+
+    ControlMessage::RequestUpdate(m) => {
+      let update_msg = *m;
+      let publisher_req_id = update_msg.existing_request_id;
+      let update_req_id = update_msg.request_id;
+
+      {
+        let mut map = client.inbound_requests.write().await;
+        match map.get_mut(&publisher_req_id) {
+          Some(PendingRequest::Publish { message, .. }) => {
+            apply_message_parameter_update(&mut message.parameters, update_msg.parameters.clone());
+          }
+          _ => {
+            warn!(
+              "Request {} is not a valid Publish request",
+              publisher_req_id
+            );
+            return Err(TerminationCode::ProtocolViolation);
+          }
+        }
+      }
+
+      // 2. Look up the track this publisher owns
+      let full_track_name = match context
+        .track_manager
+        .get_track_name_by_publisher(client.connection_id, publisher_req_id)
+        .await
+      {
+        Some(name) => name,
+        None => {
+          warn!(
+            "No active track found for publisher request {}",
+            publisher_req_id
+          );
+          return Err(TerminationCode::ProtocolViolation);
+        }
+      };
+
+      let track_arc = match context.track_manager.get_track(&full_track_name).await {
+        Some(t) => t,
+        None => {
+          warn!("Track metadata missing for {:?}", full_track_name);
+          return Err(TerminationCode::InternalError);
+        }
+      };
+
+      info!(
+        "Processing Publish REQUEST_UPDATE for track {:?}",
+        full_track_name
+      );
+
+      // 3. Update the Track's global metadata
+      context
+        .track_manager
+        .update_publish_message_parameters(
+          &full_track_name,
+          client.connection_id,
+          &update_msg.parameters,
+        )
+        .await;
+
+      // 4. FAN-OUT: Translate the IDs and notify all downstream subscribers
+      let active_subscriptions = {
+        let track_read = track_arc.read().await;
+        track_read
+          .subscription_manager
+          .get_all_subscriptions()
+          .await
+      };
+
+      if active_subscriptions.is_empty() {
+        info!(
+          "No active subscribers for track {:?}, skipping fan-out.",
+          full_track_name
+        );
+      } else {
+        info!(
+          "Fanning out Publish update to {} subscribers",
+          active_subscriptions.len()
+        );
+      }
+
+      for sub_lock in active_subscriptions {
+        let sub = sub_lock.read().await;
+        let subscriber_client = sub.subscriber().clone();
+
+        let subscriber_existing_id = sub.request_id;
+
+        let relay_update_id =
+          Session::get_next_relay_request_id(context.relay_next_request_id.clone()).await;
+
+        let mut forwarded_update = update_msg.clone();
+        forwarded_update.request_id = relay_update_id;
+        forwarded_update.existing_request_id = subscriber_existing_id;
+
+        subscriber_client
+          .queue_message(ControlMessage::RequestUpdate(Box::new(forwarded_update)))
+          .await;
+      }
+
+      use moqtail::model::control::request_ok::RequestOk;
+      let ok_msg = RequestOk::new(update_req_id, vec![]);
+      control_stream_handler
+        .send(&ControlMessage::RequestOk(Box::new(ok_msg)))
+        .await?;
 
       Ok(())
     }

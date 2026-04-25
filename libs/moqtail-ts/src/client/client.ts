@@ -32,7 +32,7 @@ import {
   Subscribe,
   SubscribeNamespace,
   SubscribeError,
-  SubscribeUpdate,
+  RequestUpdate,
   Unsubscribe,
   UnsubscribeNamespace,
   Publish,
@@ -1108,7 +1108,7 @@ export class MOQtailClient {
             new SubscriptionFilter(FilterType.AbsoluteRange, startLocation, endGroup),
             ...(parameters ?? []),
           ]
-          const msg = new SubscribeUpdate(requestId, subscriptionRequestId, priority, forward, updateParams)
+          const msg = new RequestUpdate(requestId, subscriptionRequestId, updateParams)
           subscription.update(msg) // This also updates the request since both maps store the same object
           await this.controlStream.send(msg)
         }
@@ -1275,10 +1275,10 @@ export class MOQtailClient {
           'MOQtailClient.fetch',
           `subscriberPriority: ${priority} must be in range of [0-255]`,
         )
-      const params = [
-        new SubscriberPriority(priority).toKeyValuePair(),
-        ...(groupOrder !== GroupOrder.Original ? [new GroupOrderParam(groupOrder).toKeyValuePair()] : []),
-        ...(parameters?.map((p) => p.toKeyValuePair()) ?? []),
+      const params: MessageParameter[] = [
+        new SubscriberPriority(priority),
+        ...(groupOrder !== GroupOrder.Original ? [new GroupOrderParam(groupOrder)] : []),
+        ...(parameters ?? []),
       ]
       let msg: Fetch
       let joiningRequest: MOQtailRequest | undefined
@@ -1561,7 +1561,7 @@ export class MOQtailClient {
     this.#ensureActive()
     try {
       // TODO: Check for duplicate announces
-      const params = parameters?.map((p) => p.toKeyValuePair()) ?? []
+      const params: MessageParameter[] = parameters ?? []
       const msg = new PublishNamespace(this.#nextClientRequestId, trackNamespace, params)
       const request = new PublishNamespaceRequest(msg.requestId, msg)
       this.requests.set(msg.requestId, request)
@@ -1673,7 +1673,7 @@ export class MOQtailClient {
   async subscribeNamespace(trackNamespacePrefix: Tuple, parameters?: MessageParameter[]) {
     this.#ensureActive()
     try {
-      const params = parameters?.map((p) => p.toKeyValuePair()) ?? []
+      const params: MessageParameter[] = parameters ?? []
       const msg = new SubscribeNamespace(this.#nextClientRequestId, trackNamespacePrefix, params)
       const request = new SubscribeNamespaceRequest(msg)
 

@@ -22,7 +22,9 @@ use moqtail::model::control::constant::RequestErrorCode;
 use moqtail::model::control::request_error::RequestError;
 use moqtail::model::control::subscribe::Subscribe;
 use moqtail::model::error::TerminationCode;
-use moqtail::model::parameter::message_parameter::{MessageParameter, MessageParameterVecExt};
+use moqtail::model::parameter::message_parameter::{
+  MessageParameter, MessageParameterVecExt, apply_message_parameter_update,
+};
 use moqtail::model::{
   common::reason_phrase::ReasonPhrase, control::control_message::ControlMessage,
 };
@@ -248,6 +250,14 @@ async fn handle_subscribe_message(
     let mut requests = client.subscribe_requests.write().await;
     let orig_req = SubscribeRequest::new(original_request_id, context.connection_id, sub, None);
     requests.insert(original_request_id, orig_req.clone());
+
+    // dual bookkeeping here, necessary evil
+    let mut inbound = client.inbound_requests.write().await;
+    inbound.insert(
+      original_request_id,
+      PendingRequest::Subscribe(orig_req.clone()),
+    );
+
     debug!(
       "inserted request into client's subscribe requests: {:?}",
       orig_req
@@ -445,6 +455,10 @@ async fn handle_unsubscribe_message(
   {
     let mut requests = client.subscribe_requests.write().await;
     requests.remove(&unsubscribe_message.request_id);
+
+    let mut inbound = client.inbound_requests.write().await;
+    inbound.remove(&unsubscribe_message.request_id);
+
     debug!(
       "Cleaned up client subscribe request {} after Unsubscribe",
       unsubscribe_message.request_id
@@ -454,60 +468,104 @@ async fn handle_unsubscribe_message(
   Ok(())
 }
 
-async fn handle_subscribe_update_message(
+pub async fn handle_request_update(
   client: Arc<MOQTClient>,
-  _control_stream_handler: &mut ControlStreamHandler,
-  subscribe_update_message: moqtail::model::control::subscribe_update::SubscribeUpdate,
+  control_stream_handler: &mut ControlStreamHandler,
+  update_msg: moqtail::model::control::request_update::RequestUpdate,
   context: Arc<SessionContext>,
 ) -> Result<(), TerminationCode> {
-  info!(
-    "received SubscribeUpdate message: {:?}",
-    subscribe_update_message
-  );
+  let existing_req_id = update_msg.existing_request_id;
+  let update_req_id = update_msg.request_id;
 
-  // a subscribe update message contains subscription_request_id
-  // which is the request id of the subscription we want to update
-  let sub_request_id = subscribe_update_message.subscription_request_id;
+  let full_track_name = {
+    let mut client_requests = client.subscribe_requests.write().await;
+    match client_requests.get_mut(&existing_req_id) {
+      Some(req) => {
+        apply_message_parameter_update(
+          &mut req.original_subscribe_request.subscribe_parameters,
+          update_msg.parameters.clone(),
+        );
+        req.original_subscribe_request.get_full_track_name()
+      }
+      None => {
+        warn!(
+          "RequestUpdate existing_request_id {} is not a valid Subscribe request for this client",
+          existing_req_id
+        );
+        return Err(TerminationCode::ProtocolViolation);
+      }
+    }
+  };
 
-  let requests = client.subscribe_requests.read().await;
-  let request = requests.get(&sub_request_id);
-  if request.is_none() {
-    warn!(
-      "request not found for subscriber request id: {:?}",
-      sub_request_id
-    );
-    return Err(TerminationCode::ProtocolViolation);
+  {
+    let mut inbound = client.inbound_requests.write().await;
+    if let Some(PendingRequest::Subscribe(req)) = inbound.get_mut(&existing_req_id) {
+      apply_message_parameter_update(
+        &mut req.original_subscribe_request.subscribe_parameters,
+        update_msg.parameters.clone(),
+      );
+    }
   }
-  let request = request.unwrap();
 
-  // we can not get the full track name and hence, the track instance
-  let full_track_name = request.original_subscribe_request.get_full_track_name();
+  // 2. Get the track instance
   let track_lock = context.track_manager.get_track(&full_track_name).await;
 
   if track_lock.is_none() {
-    warn!("track not found for track name: {:?}", full_track_name);
+    warn!("Track not found for track name: {:?}", full_track_name);
     return Err(TerminationCode::ProtocolViolation);
   }
 
   let track_arc = track_lock.unwrap();
   let track_guard = track_arc.read().await;
 
-  if let Some(subscription) = track_guard.get_subscription(context.connection_id).await {
+  // 3. Update the actual active edge subscription
+  if let Some(subscription) = track_guard.get_subscription(client.connection_id).await {
     let sub = subscription.read().await;
-    match sub.update_subscription(subscribe_update_message).await {
-      Ok(_) => info!(
-        "subscription updated, track: {:?} subscriber: {}",
-        full_track_name, context.connection_id
-      ),
-      Err(e) => error!(
-        "subscription could not be updated, track: {:?} subscriber: {} error: {:?}",
-        full_track_name, context.connection_id, e
-      ),
+
+    match sub.update_subscription(update_msg.clone()).await {
+      Ok(_) => {
+        info!(
+          "Subscription updated successfully for track: {:?}",
+          full_track_name
+        );
+
+        use moqtail::model::control::request_ok::RequestOk;
+        let ok_msg = RequestOk::new(update_req_id, vec![]);
+        let _ = control_stream_handler.send_impl(&ok_msg).await;
+      }
+      Err(e) => {
+        error!(
+          "Subscription update failed for track: {:?}, error: {:?}",
+          full_track_name, e
+        );
+
+        let err_msg = RequestError::new(
+          update_req_id,
+          RequestErrorCode::InternalError,
+          0,
+          ReasonPhrase::try_new(format!("Update failed: {:?}", e))
+            .unwrap_or_else(|_| ReasonPhrase::try_new("Update failed".to_string()).unwrap()),
+        );
+        let _ = control_stream_handler.send_impl(&err_msg).await;
+      }
     }
+  } else {
+    warn!(
+      "No active subscription found for client {} on track {:?}",
+      client.connection_id, full_track_name
+    );
+
+    let err_msg = RequestError::new(
+      update_req_id,
+      RequestErrorCode::DoesNotExist,
+      0,
+      ReasonPhrase::try_new("Subscription not found".to_string()).unwrap(),
+    );
+    let _ = control_stream_handler.send_impl(&err_msg).await;
   }
+
   Ok(())
 }
-
 async fn handle_subscribe_error_message(
   _client: Arc<MOQTClient>,
   _control_stream_handler: &mut ControlStreamHandler,
@@ -748,8 +806,8 @@ pub async fn handle(
     ControlMessage::Unsubscribe(m) => {
       handle_unsubscribe_message(client, control_stream_handler, *m, context).await
     }
-    ControlMessage::SubscribeUpdate(m) => {
-      handle_subscribe_update_message(client, control_stream_handler, *m, context).await
+    ControlMessage::RequestUpdate(m) => {
+      handle_request_update(client, control_stream_handler, *m, context).await
     }
     ControlMessage::RequestError(m) => {
       handle_subscribe_error_message(client, control_stream_handler, *m, context).await

@@ -22,6 +22,7 @@ use moqtail::model::control::publish_namespace::PublishNamespace;
 use moqtail::model::control::request_error::RequestError;
 use moqtail::model::control::request_ok::RequestOk;
 use moqtail::model::error::TerminationCode;
+use moqtail::model::parameter::message_parameter::apply_message_parameter_update;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
@@ -68,16 +69,21 @@ pub async fn handle(
       // 1. Store the Subscription in TrackManager
       context
         .track_manager
-        .add_namespace_subscriber(sub_ns.track_namespace_prefix.clone(), client.clone())
+        .add_namespace_subscriber(
+          sub_ns.track_namespace_prefix.clone(),
+          client.clone(),
+          (*sub_ns).clone(),
+        )
         .await;
 
       {
-        let mut map = context.relay_pending_requests.write().await;
+        let mut map = client.inbound_requests.write().await;
         map.insert(
           sub_ns.request_id,
           PendingRequest::SubscribeNamespace {
             client_connection_id: client.connection_id,
             original_request_id: sub_ns.request_id,
+            message: (*sub_ns).clone(),
           },
         );
       }
@@ -114,6 +120,7 @@ pub async fn handle(
             PendingRequest::PublishNamespace {
               client_connection_id: client.connection_id,
               original_request_id: relay_announce_id,
+              message: notify.clone(),
             },
           );
         }
@@ -154,6 +161,7 @@ pub async fn handle(
               PendingRequest::Publish {
                 publisher_connection_id: client.connection_id,
                 original_request_id: relay_publish_id,
+                message: original_publish_message.clone(),
               },
             );
           }
@@ -182,6 +190,7 @@ pub async fn handle(
         }
       }
     }
+
     ControlMessage::RequestOk(m) => {
       let msg = *m;
 
@@ -191,6 +200,7 @@ pub async fn handle(
           Some(PendingRequest::SubscribeNamespace {
             client_connection_id,
             original_request_id,
+            ..
           }) => Some((client_connection_id, original_request_id)),
           Some(_) => {
             warn!(
@@ -225,6 +235,48 @@ pub async fn handle(
           msg.request_id
         );
       }
+    }
+
+    ControlMessage::RequestUpdate(m) => {
+      let update_msg = *m;
+      let existing_req_id = update_msg.existing_request_id;
+      let update_req_id = update_msg.request_id;
+
+      let target_prefix = {
+        let mut map = client.inbound_requests.write().await;
+        match map.get_mut(&existing_req_id) {
+          Some(PendingRequest::SubscribeNamespace { message, .. }) => {
+            apply_message_parameter_update(&mut message.parameters, update_msg.parameters.clone());
+            message.track_namespace_prefix.clone()
+          }
+          _ => {
+            warn!(
+              "Request {} is not a valid SubscribeNamespace request",
+              existing_req_id
+            );
+            return Err(TerminationCode::ProtocolViolation);
+          }
+        }
+      };
+
+      info!(
+        "Processing SUBSCRIBE_NAMESPACE update for prefix: {:?}",
+        target_prefix
+      );
+
+      context
+        .track_manager
+        .update_namespace_subscription_parameters(
+          &target_prefix,
+          client.connection_id,
+          update_msg.parameters.clone(),
+        )
+        .await;
+
+      let ok_msg = RequestOk::new(update_req_id, vec![]);
+      handler
+        .send(&ControlMessage::RequestOk(Box::new(ok_msg)))
+        .await?;
     }
 
     _ => {

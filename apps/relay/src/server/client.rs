@@ -17,6 +17,7 @@ pub(crate) mod track_subscription_map;
 
 use crate::server::{
   client::track_subscription_map::TrackSubscriptionMap,
+  session_context::PendingRequest,
   stream_id::{StreamId, StreamType},
   utils,
 };
@@ -59,6 +60,7 @@ pub(crate) struct MOQTClient {
   #[allow(dead_code)]
   pub client_setup: Arc<ClientSetup>,
   pub announced_track_namespaces: Arc<RwLock<Vec<Tuple>>>, // the track namespaces the publisher announced
+  pub outbound_announcements: Arc<RwLock<HashMap<Tuple, u64>>>, //Maps a Namespace to the outbound request_id we used to announce it to the client
   pub published_tracks: Arc<RwLock<HashMap<u64, FullTrackName>>>, // request_id -> track the client is publishing
   pub subscribers: Arc<RwLock<Vec<usize>>>, // the subscribers the client is subscribed to
 
@@ -72,6 +74,8 @@ pub(crate) struct MOQTClient {
   // this contains the requests made by the client and the corresponding request.
   // The key value is the original request id.
   pub subscribe_requests: Arc<RwLock<BTreeMap<u64, SubscribeRequest>>>,
+
+  pub inbound_requests: Arc<RwLock<BTreeMap<u64, PendingRequest>>>,
 
   // Senders for cancelling active fetch tasks, keyed by request_id.
   pub fetch_cancel_senders: Arc<RwLock<HashMap<u64, watch::Sender<bool>>>>,
@@ -98,6 +102,7 @@ impl MOQTClient {
       connection,
       client_setup,
       announced_track_namespaces: Arc::new(RwLock::new(Vec::new())),
+      outbound_announcements: Arc::new(RwLock::new(HashMap::new())),
       published_tracks: Arc::new(RwLock::new(HashMap::new())),
       subscribers: Arc::new(RwLock::new(Vec::new())),
       message_queue: Arc::new(RwLock::new(VecDeque::new())),
@@ -105,6 +110,7 @@ impl MOQTClient {
       send_streams: Arc::new(send_streams),
       fetch_requests: Arc::new(RwLock::new(BTreeMap::new())),
       subscribe_requests: Arc::new(RwLock::new(BTreeMap::new())),
+      inbound_requests: Arc::new(RwLock::new(BTreeMap::new())),
       fetch_cancel_senders: Arc::new(RwLock::new(HashMap::new())),
       subscriptions: TrackSubscriptionMap::new(),
       switch_context: SwitchContext::new(),
@@ -119,6 +125,16 @@ impl MOQTClient {
   pub(crate) async fn add_subscriber(&self, subscriber_id: usize) {
     let mut subscribers = self.subscribers.write().await;
     subscribers.push(subscriber_id);
+  }
+
+  pub(crate) async fn register_outbound_announce_id(&self, namespace: Tuple, request_id: u64) {
+    let mut map = self.outbound_announcements.write().await;
+    map.insert(namespace, request_id);
+  }
+
+  pub(crate) async fn get_outbound_announce_id(&self, namespace: &Tuple) -> Option<u64> {
+    let map = self.outbound_announcements.read().await;
+    map.get(namespace).cloned()
   }
 
   pub(crate) async fn add_published_track(&self, request_id: u64, full_track_name: FullTrackName) {

@@ -15,11 +15,11 @@
 use crate::connection::MoqConnection;
 use anyhow::Result;
 use moqtail::model::common::location::Location;
-use moqtail::model::common::pair::KeyValuePair;
 use moqtail::model::common::tuple::{Tuple, TupleField};
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::fetch::{Fetch, StandaloneFetchProps};
 use moqtail::model::control::fetch_cancel::FetchCancel;
+use moqtail::model::parameter::message_parameter::MessageParameter;
 use moqtail::transport::data_stream_handler::{FetchRequest, RecvDataStream};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -54,7 +54,7 @@ pub async fn run(moq: MoqConnection, config: FetchConfig) -> Result<()> {
     end_location: Location::new(config.end_group, config.end_object),
   };
 
-  let parameters = vec![KeyValuePair::try_new_varint(100, 200)?];
+  let parameters = vec![MessageParameter::new_subscriber_priority(200)];
 
   let fetch = Fetch::new_standalone(request_id, standalone_fetch_props, parameters);
 

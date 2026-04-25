@@ -13,13 +13,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
 import { Location } from '../common/location'
 import { Tuple } from '../common/tuple'
-import { KeyValuePair } from '../common/pair'
 import { ControlMessageType, FilterType, GroupOrder } from '../control/constant'
 import { FullTrackName } from '../data'
+import { MessageParameter, MessageParameters } from '../parameter/message_parameter'
+import { AuthorizationToken } from '../parameter/common/authorization_token'
 
 // TODO: Couple filter type and bounded parameters for idiomatic design
 export class TrackStatus {
@@ -33,7 +33,7 @@ export class TrackStatus {
     public filterType: FilterType,
     public startLocation: Location | undefined,
     public endGroup: bigint | undefined,
-    public subscribeParameters: KeyValuePair[],
+    public subscribeParameters: MessageParameter[],
   ) {}
 
   static newNextGroupStart(
@@ -43,7 +43,7 @@ export class TrackStatus {
     subscriberPriority: number,
     groupOrder: GroupOrder,
     forward: boolean,
-    subscribeParameters: KeyValuePair[],
+    subscribeParameters: MessageParameter[],
   ): TrackStatus {
     return new TrackStatus(
       requestId,
@@ -66,7 +66,7 @@ export class TrackStatus {
     subscriberPriority: number,
     groupOrder: GroupOrder,
     forward: boolean,
-    subscribeParameters: KeyValuePair[],
+    subscribeParameters: MessageParameter[],
   ): TrackStatus {
     return new TrackStatus(
       requestId,
@@ -90,7 +90,7 @@ export class TrackStatus {
     groupOrder: GroupOrder,
     forward: boolean,
     startLocation: Location,
-    subscribeParameters: KeyValuePair[],
+    subscribeParameters: MessageParameter[],
   ): TrackStatus {
     return new TrackStatus(
       requestId,
@@ -115,7 +115,7 @@ export class TrackStatus {
     forward: boolean,
     startLocation: Location,
     endGroup: bigint,
-    subscribeParameters: KeyValuePair[],
+    subscribeParameters: MessageParameter[],
   ): TrackStatus {
     if (endGroup < startLocation.group) {
       throw new Error('End Group must be >= Start Group')
@@ -163,7 +163,7 @@ export class TrackStatus {
 
     payload.putVI(this.subscribeParameters.length)
     for (const param of this.subscribeParameters) {
-      payload.putBytes(param.serialize().toUint8Array())
+      payload.putKeyValuePair(param.toKeyValuePair())
     }
 
     const payloadBytes = payload.toUint8Array()
@@ -193,10 +193,11 @@ export class TrackStatus {
     }
 
     const paramCount = Number(buf.getVI())
-    const subscribeParameters: KeyValuePair[] = []
+    const rawParams = new Array(paramCount)
     for (let i = 0; i < paramCount; i++) {
-      subscribeParameters.push(KeyValuePair.deserialize(buf))
+      rawParams[i] = buf.getKeyValuePair()
     }
+    const subscribeParameters = MessageParameters.fromKeyValuePairs(rawParams)
 
     return new TrackStatus(
       requestId,
@@ -226,7 +227,7 @@ if (import.meta.vitest) {
       true,
       new Location(81n, 81n),
       100n,
-      [KeyValuePair.tryNewVarInt(0n, 10n), KeyValuePair.tryNewBytes(1n, new TextEncoder().encode('DemoString'))],
+      [AuthorizationToken.newUseValue(0n, new TextEncoder().encode('test-token'))],
     )
   }
 

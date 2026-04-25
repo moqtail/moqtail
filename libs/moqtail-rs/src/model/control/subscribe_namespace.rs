@@ -14,24 +14,26 @@
 
 use super::constant::ControlMessageType;
 use super::control_message::ControlMessageTrait;
-use crate::model::common::pair::KeyValuePair;
 use crate::model::common::tuple::Tuple;
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
 use crate::model::error::ParseError;
+use crate::model::parameter::message_parameter::{
+  MessageParameter, deserialize_message_parameters,
+};
 use bytes::{BufMut, Bytes, BytesMut};
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct SubscribeNamespace {
   pub request_id: u64,
   pub track_namespace_prefix: Tuple,
-  pub parameters: Vec<KeyValuePair>,
+  pub parameters: Vec<MessageParameter>,
 }
 
 impl SubscribeNamespace {
   pub fn new(
     request_id: u64,
     track_namespace_prefix: Tuple,
-    parameters: Vec<KeyValuePair>,
+    parameters: Vec<MessageParameter>,
   ) -> Self {
     Self {
       request_id,
@@ -73,22 +75,9 @@ impl ControlMessageTrait for SubscribeNamespace {
     let request_id = payload.get_vi()?;
     let track_namespace_prefix = Tuple::deserialize(payload)?;
 
-    let param_count_u64 = payload.get_vi()?;
-    let param_count: usize =
-      param_count_u64
-        .try_into()
-        .map_err(|e: std::num::TryFromIntError| ParseError::CastingError {
-          context: "SubscribeNamespace::deserialize(param_count)",
-          from_type: "u64",
-          to_type: "usize",
-          details: e.to_string(),
-        })?;
-
-    let mut parameters = Vec::with_capacity(param_count);
-    for _ in 0..param_count {
-      let param = KeyValuePair::deserialize(payload)?;
-      parameters.push(param);
-    }
+    let param_count = payload.get_vi()?;
+    let parameters =
+      deserialize_message_parameters(payload, param_count, ControlMessageType::SubscribeNamespace)?;
 
     Ok(Box::new(SubscribeNamespace {
       request_id,
@@ -104,6 +93,8 @@ impl ControlMessageTrait for SubscribeNamespace {
 
 #[cfg(test)]
 mod tests {
+  use crate::model::parameter::authorization_token::AuthorizationToken;
+
   use super::*;
   use bytes::Buf;
 
@@ -112,8 +103,11 @@ mod tests {
     let request_id = 241421;
     let track_namespace_prefix = Tuple::from_utf8_path("pre/fix/me");
     let parameters = vec![
-      KeyValuePair::try_new_varint(0, 10).unwrap(),
-      KeyValuePair::try_new_bytes(1, Bytes::from_static(b"Roggan?!")).unwrap(),
+      MessageParameter::new_authorization_token(AuthorizationToken::new_use_value(
+        0,
+        Bytes::from_static(b"test-token"),
+      )),
+      MessageParameter::new_forward(true),
     ];
     let subscribe_namespace = SubscribeNamespace {
       request_id,
@@ -136,8 +130,11 @@ mod tests {
     let request_id = 241421;
     let track_namespace_prefix = Tuple::from_utf8_path("pre/fix/me");
     let parameters = vec![
-      KeyValuePair::try_new_varint(0, 10).unwrap(),
-      KeyValuePair::try_new_bytes(1, Bytes::from_static(b"Roggan?!")).unwrap(),
+      MessageParameter::new_authorization_token(AuthorizationToken::new_use_value(
+        0,
+        Bytes::from_static(b"test-token"),
+      )),
+      MessageParameter::new_forward(true),
     ];
     let subscribe_namespace = SubscribeNamespace {
       request_id,
@@ -166,8 +163,11 @@ mod tests {
     let request_id = 241421;
     let track_namespace_prefix = Tuple::from_utf8_path("pre/fix/me");
     let parameters = vec![
-      KeyValuePair::try_new_varint(0, 10).unwrap(),
-      KeyValuePair::try_new_bytes(1, Bytes::from_static(b"Roggan?!")).unwrap(),
+      MessageParameter::new_authorization_token(AuthorizationToken::new_use_value(
+        0,
+        Bytes::from_static(b"test-token"),
+      )),
+      MessageParameter::new_forward(true),
     ];
     let subscribe_namespace = SubscribeNamespace {
       request_id,

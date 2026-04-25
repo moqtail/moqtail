@@ -39,7 +39,7 @@ export enum ControlMessageType {
   SubscribeOk = 0x04,
   SubscribeError = 0x05,
   Unsubscribe = 0x0a,
-  SubscribeUpdate = 0x02,
+  RequestUpdate = 0x02,
   PublishDone = 0x0b,
   Fetch = 0x16,
   FetchOk = 0x18,
@@ -94,7 +94,7 @@ export function controlMessageTypeFromBigInt(v: bigint): ControlMessageType {
     case 0x0an:
       return ControlMessageType.Unsubscribe
     case 0x02n:
-      return ControlMessageType.SubscribeUpdate
+      return ControlMessageType.RequestUpdate
     case 0x0bn:
       return ControlMessageType.PublishDone
     case 0x16n:

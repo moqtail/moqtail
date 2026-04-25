@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::server::client::MOQTClient;
-use crate::server::session_context::SessionContext;
+use crate::server::session_context::{PendingRequest, SessionContext};
 use crate::server::stream_id::StreamId;
 use crate::server::track_cache::CacheConsumeEvent;
 use crate::server::utils::build_stream_id;
@@ -27,7 +27,7 @@ use moqtail::model::data::fetch_header::FetchHeader;
 use moqtail::model::error::TerminationCode;
 use moqtail::model::{common::reason_phrase::ReasonPhrase, control::constant::FetchType};
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
-use moqtail::transport::data_stream_handler::HeaderInfo;
+use moqtail::transport::data_stream_handler::{FetchRequest, HeaderInfo};
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::watch;
@@ -59,6 +59,26 @@ pub async fn handle(
         }
       }
 
+      {
+        let req = FetchRequest {
+          original_request_id: request_id,
+          requested_by: client.connection_id,
+          fetch_request: fetch.clone(),
+          track_alias: 0,
+        };
+
+        client
+          .fetch_requests
+          .write()
+          .await
+          .insert(request_id, req.clone());
+        client
+          .inbound_requests
+          .write()
+          .await
+          .insert(request_id, PendingRequest::Fetch(req));
+      }
+
       let fn_ = async {
         if let Some(joining_fetch_props) = fetch.clone().joining_fetch_props {
           let sub_request_id = joining_fetch_props.joining_request_id;
@@ -72,7 +92,6 @@ pub async fn handle(
               "handle_fetch_messages | Joining fetch request id not found: {:?} {:?}",
               sub_request_id, sub_requests
             );
-            // return Err(TerminationCode::InternalError);
             return (None, None, None);
           }
           let existing_sub = existing_sub.unwrap().1;
@@ -97,7 +116,6 @@ pub async fn handle(
                 request_id,
                 RequestErrorCode::InvalidRange,
                 ReasonPhrase::try_new(String::from("Invalid range")).unwrap(),
-                &context,
               )
               .await;
               return (None, None, None);
@@ -153,7 +171,6 @@ pub async fn handle(
           request_id,
           RequestErrorCode::DoesNotExist,
           ReasonPhrase::try_new(String::from("Track does not exist")).unwrap(),
-          &context,
         )
         .await;
         return Ok(());
@@ -166,6 +183,18 @@ pub async fn handle(
       );
 
       let track = track.unwrap();
+      {
+        let track_read = track.read().await;
+
+        let mut inbound = client.inbound_requests.write().await;
+        if let Some(PendingRequest::Fetch(req)) = inbound.get_mut(&request_id) {
+          req.track_alias = track_read.relay_track_id;
+        }
+        let mut fetches = client.fetch_requests.write().await;
+        if let Some(req) = fetches.get_mut(&request_id) {
+          req.track_alias = track_read.relay_track_id;
+        }
+      }
 
       // Register a cancel channel for this fetch request
       let (cancel_tx, mut cancel_rx) = watch::channel(false);
@@ -408,11 +437,8 @@ pub async fn handle(
         }
 
         // Clean up the unified map since the fetch is done
-        context
-          .relay_pending_requests
-          .write()
-          .await
-          .remove(&request_id);
+        client.inbound_requests.write().await.remove(&request_id);
+        client.fetch_requests.write().await.remove(&request_id);
 
         // Clean up cancel sender
         client
@@ -435,12 +461,12 @@ pub async fn handle(
         senders.remove(&request_id)
       };
 
-      // Remove the fetch request from the unified map
+      // Remove the fetch request from the client maps
       {
-        let mut map = context.relay_pending_requests.write().await;
-        map.remove(&request_id);
+        client.inbound_requests.write().await.remove(&request_id);
+        client.fetch_requests.write().await.remove(&request_id);
         debug!(
-          "Removed FETCH request {} from pending requests map after Cancel",
+          "Removed FETCH request {} from client maps after Cancel",
           request_id
         );
       }
@@ -491,7 +517,6 @@ async fn send_request_error(
   request_id: u64,
   error_code: RequestErrorCode,
   reason_phrase: ReasonPhrase,
-  context: &Arc<SessionContext>,
 ) {
   // TODO: Implement this later.
   // Draft 16 requires a retry interval. Setting to 0 (no retries) for now.
@@ -501,10 +526,7 @@ async fn send_request_error(
   client
     .queue_message(ControlMessage::RequestError(Box::new(request_error)))
     .await;
-  // Remove the request from the map on error
-  context
-    .relay_pending_requests
-    .write()
-    .await
-    .remove(&request_id);
+  // Remove the request from the client maps on error
+  client.inbound_requests.write().await.remove(&request_id);
+  client.fetch_requests.write().await.remove(&request_id);
 }

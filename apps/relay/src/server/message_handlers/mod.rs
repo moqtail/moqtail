@@ -48,7 +48,7 @@ impl MessageHandler {
       ControlMessage::Publish(msg) => Some(msg.request_id),
       ControlMessage::Fetch(msg) => Some(msg.request_id),
       ControlMessage::Subscribe(msg) => Some(msg.request_id),
-      ControlMessage::SubscribeUpdate(msg) => Some(msg.request_id),
+      ControlMessage::RequestUpdate(msg) => Some(msg.request_id),
       ControlMessage::TrackStatus(msg) => Some(msg.request_id),
       ControlMessage::SubscribeNamespace(msg) => Some(msg.request_id),
       ControlMessage::Switch(msg) => Some(msg.request_id),
@@ -91,7 +91,6 @@ impl MessageHandler {
       }
       ControlMessage::Subscribe(_)
       | ControlMessage::SubscribeOk(_)
-      | ControlMessage::SubscribeUpdate(_)
       | ControlMessage::Unsubscribe(_)
       | ControlMessage::Switch(_) => {
         subscribe_handler::handle(client.clone(), control_stream_handler, msg, context.clone())
@@ -100,68 +99,6 @@ impl MessageHandler {
 
       ControlMessage::TrackStatus(_) => {
         track_status_handler::handle(control_stream_handler, msg, context.clone()).await
-      }
-      ControlMessage::RequestOk(ok_msg) => {
-        let req_id = ok_msg.request_id;
-
-        enum Route {
-          TrackStatus,
-          SubscribeNamespace,
-          PublishNamespace,
-          Unhandled,
-          NotFound,
-        }
-
-        // 1. Peek at the unified map to determine the routing destination
-        let route = {
-          let map = context.relay_pending_requests.read().await;
-          match map.get(&req_id) {
-            Some(PendingRequest::TrackStatus(_)) => Route::TrackStatus,
-            Some(PendingRequest::SubscribeNamespace { .. }) => Route::SubscribeNamespace,
-            Some(PendingRequest::PublishNamespace { .. }) => Route::PublishNamespace,
-            Some(_) => Route::Unhandled, // Unroutable RequestOk
-            None => Route::NotFound,     // Untracked request
-          }
-        };
-
-        // 2. Dispatch to the correct handler
-        match route {
-          Route::TrackStatus => {
-            track_status_handler::handle(control_stream_handler, msg, context.clone()).await
-          }
-          Route::SubscribeNamespace => {
-            subscribe_namespace_handler::handle(
-              client.clone(),
-              control_stream_handler,
-              msg,
-              context.clone(),
-            )
-            .await
-          }
-          Route::PublishNamespace => {
-            publish_namespace_handler::handle(
-              client.clone(),
-              control_stream_handler,
-              msg,
-              context.clone(),
-            )
-            .await
-          }
-          Route::Unhandled => {
-            warn!(
-              "Router received RequestOk for request_id: {}, but no route is configured for this request type.",
-              req_id
-            );
-            Ok(())
-          }
-          Route::NotFound => {
-            warn!(
-              "Router received RequestOk for untracked request_id: {}",
-              req_id
-            );
-            Ok(())
-          }
-        }
       }
       ControlMessage::Fetch(_) | ControlMessage::FetchCancel(_) | ControlMessage::FetchOk(_) => {
         fetch_handler::handle(client.clone(), control_stream_handler, msg, context.clone()).await
@@ -172,45 +109,57 @@ impl MessageHandler {
         publish_handler::handle(client.clone(), control_stream_handler, msg, context.clone()).await
       }
 
-      ControlMessage::RequestError(err_msg) => {
-        let req_id = err_msg.request_id;
+      ControlMessage::RequestOk(_)
+      | ControlMessage::RequestError(_)
+      | ControlMessage::RequestUpdate(_) => {
+        // 1. Extract the target ID and the directionality (response vs update)
+        let (target_req_id, is_response_to_relay) = match &msg {
+          ControlMessage::RequestOk(m) => (m.request_id, true),
+          ControlMessage::RequestError(m) => (m.request_id, true),
+          ControlMessage::RequestUpdate(m) => (m.existing_request_id, false),
+          _ => unreachable!(),
+        };
 
         enum Route {
           Fetch,
-          Subscribe,
-          TrackStatus,
-          PublishNamespace,
-          SubscribeNamespace,
           Publish,
+          PublishNamespace,
+          Subscribe,
+          SubscribeNamespace,
+          TrackStatus,
           NotFound,
         }
 
-        // 1. Peek at the unified map to determine the routing destination
-        let route = {
-          let map = context.relay_pending_requests.read().await;
-          match map.get(&req_id) {
-            Some(PendingRequest::Fetch(_)) => Route::Fetch,
-            Some(PendingRequest::Subscribe(_)) => Route::Subscribe,
-            Some(PendingRequest::TrackStatus(_)) => Route::TrackStatus,
-            Some(PendingRequest::PublishNamespace { .. }) => Route::PublishNamespace,
-            Some(PendingRequest::SubscribeNamespace { .. }) => Route::SubscribeNamespace,
-            Some(PendingRequest::Publish { .. }) => Route::Publish,
-            None => Route::NotFound,
-          }
+        // 2. Helper closure to map a PendingRequest to a Route
+        let determine_route = |req: Option<&PendingRequest>| match req {
+          Some(PendingRequest::Fetch(_)) => Route::Fetch,
+          Some(PendingRequest::Publish { .. }) => Route::Publish,
+          Some(PendingRequest::PublishNamespace { .. }) => Route::PublishNamespace,
+          Some(PendingRequest::Subscribe(_)) => Route::Subscribe,
+          Some(PendingRequest::SubscribeNamespace { .. }) => Route::SubscribeNamespace,
+          Some(PendingRequest::TrackStatus(_)) => Route::TrackStatus,
+          Some(PendingRequest::RequestUpdate { .. }) => Route::NotFound,
+          None => Route::NotFound,
         };
 
-        // 2. Dispatch the original message to the correct handler
+        // 3. Lock the appropriate map, determine the route, and immediately drop the lock
+        let route = if is_response_to_relay {
+          let map = context.relay_pending_requests.read().await;
+          determine_route(map.get(&target_req_id))
+        } else {
+          let map = client.inbound_requests.read().await;
+          determine_route(map.get(&target_req_id))
+        };
+
+        // 4. Route to the appropriate handler (defined only once!)
         match route {
           Route::Fetch => {
             fetch_handler::handle(client.clone(), control_stream_handler, msg, context.clone())
               .await
           }
-          Route::Subscribe => {
-            subscribe_handler::handle(client.clone(), control_stream_handler, msg, context.clone())
+          Route::Publish => {
+            publish_handler::handle(client.clone(), control_stream_handler, msg, context.clone())
               .await
-          }
-          Route::TrackStatus => {
-            track_status_handler::handle(control_stream_handler, msg, context.clone()).await
           }
           Route::PublishNamespace => {
             publish_namespace_handler::handle(
@@ -221,6 +170,10 @@ impl MessageHandler {
             )
             .await
           }
+          Route::Subscribe => {
+            subscribe_handler::handle(client.clone(), control_stream_handler, msg, context.clone())
+              .await
+          }
           Route::SubscribeNamespace => {
             subscribe_namespace_handler::handle(
               client.clone(),
@@ -230,16 +183,22 @@ impl MessageHandler {
             )
             .await
           }
-          Route::Publish => {
-            publish_handler::handle(client.clone(), control_stream_handler, msg, context.clone())
-              .await
+          Route::TrackStatus => {
+            track_status_handler::handle(control_stream_handler, msg, context.clone()).await
           }
           Route::NotFound => {
             warn!(
-              "Router received RequestError for untracked request_id: {}",
-              req_id
+              "Router received generic message ({:?}) for untracked ID: {}",
+              msg.get_type(),
+              target_req_id
             );
-            Ok(())
+
+            // Draft-16: Unknown Update = ProtocolViolation. Unknown Response = Ignore.
+            if !is_response_to_relay {
+              Err(TerminationCode::ProtocolViolation)
+            } else {
+              Ok(())
+            }
           }
         }
       }

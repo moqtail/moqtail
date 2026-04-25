@@ -13,23 +13,25 @@
 // limitations under the License.
 
 use super::control_message::ControlMessageTrait;
-use crate::model::common::pair::KeyValuePair;
 use crate::model::common::tuple::Tuple;
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
 use crate::model::control::constant::ControlMessageType;
 use crate::model::error::ParseError;
+use crate::model::parameter::message_parameter::{
+  MessageParameter, deserialize_message_parameters,
+};
 use bytes::{BufMut, Bytes, BytesMut};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PublishNamespace {
   pub request_id: u64,
   pub track_namespace: Tuple,
-  pub parameters: Vec<KeyValuePair>,
+  pub parameters: Vec<MessageParameter>, // Updated Type
 }
 
 impl PublishNamespace {
   /// * Creates a new PublishNamespace message.
-  pub fn new(request_id: u64, track_namespace: Tuple, parameters: &[KeyValuePair]) -> Self {
+  pub fn new(request_id: u64, track_namespace: Tuple, parameters: &[MessageParameter]) -> Self {
     PublishNamespace {
       request_id,
       track_namespace,
@@ -71,21 +73,11 @@ impl ControlMessageTrait for PublishNamespace {
     let track_namespace = Tuple::deserialize(payload)?;
 
     let param_count_u64 = payload.get_vi()?;
-    let param_count: usize =
-      param_count_u64
-        .try_into()
-        .map_err(|e: std::num::TryFromIntError| ParseError::CastingError {
-          context: "PublishNamespace::deserialize(param_count)",
-          from_type: "u64",
-          to_type: "usize",
-          details: e.to_string(),
-        })?;
-
-    let mut parameters = Vec::with_capacity(param_count);
-    for _ in 0..param_count {
-      let param = KeyValuePair::deserialize(payload)?;
-      parameters.push(param);
-    }
+    let parameters = deserialize_message_parameters(
+      payload,
+      param_count_u64,
+      ControlMessageType::PublishNamespace,
+    )?;
 
     Ok(Box::new(PublishNamespace {
       request_id,
@@ -101,6 +93,8 @@ impl ControlMessageTrait for PublishNamespace {
 
 #[cfg(test)]
 mod tests {
+  use crate::model::parameter::authorization_token::AuthorizationToken;
+
   use super::*;
   use bytes::Buf;
 
@@ -108,10 +102,9 @@ mod tests {
   fn test_roundtrip() {
     let request_id = 12345;
     let track_namespace = Tuple::from_utf8_path("god/dayyum");
-    let parameters = vec![
-      KeyValuePair::try_new_varint(0, 10).unwrap(),
-      KeyValuePair::try_new_bytes(1, Bytes::from_static(b"wololoo")).unwrap(),
-    ];
+    let parameters = vec![MessageParameter::new_authorization_token(
+      AuthorizationToken::new_use_value(0, Bytes::from_static(b"test-token")),
+    )];
     let announce = PublishNamespace {
       request_id,
       track_namespace,
@@ -132,10 +125,9 @@ mod tests {
   fn test_excess_roundtrip() {
     let request_id = 12345;
     let track_namespace = Tuple::from_utf8_path("god/dayyum");
-    let parameters = vec![
-      KeyValuePair::try_new_varint(0, 10).unwrap(),
-      KeyValuePair::try_new_bytes(1, Bytes::from_static(b"wololoo")).unwrap(),
-    ];
+    let parameters = vec![MessageParameter::new_authorization_token(
+      AuthorizationToken::new_use_value(0, Bytes::from_static(b"test-token")),
+    )];
     let announce = PublishNamespace {
       request_id,
       track_namespace,
@@ -162,10 +154,9 @@ mod tests {
   fn test_partial_message() {
     let request_id = 12345;
     let track_namespace = Tuple::from_utf8_path("god/dayyum");
-    let parameters = vec![
-      KeyValuePair::try_new_varint(0, 10).unwrap(),
-      KeyValuePair::try_new_bytes(1, Bytes::from_static(b"wololoo")).unwrap(),
-    ];
+    let parameters = vec![MessageParameter::new_authorization_token(
+      AuthorizationToken::new_use_value(0, Bytes::from_static(b"test-token")),
+    )];
     let announce = PublishNamespace {
       request_id,
       track_namespace,

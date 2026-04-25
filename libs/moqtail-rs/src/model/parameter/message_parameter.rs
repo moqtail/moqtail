@@ -123,7 +123,7 @@ impl MessageParameter {
         msg_type,
         ControlMessageType::Publish
           | ControlMessageType::Subscribe
-          | ControlMessageType::SubscribeUpdate
+          | ControlMessageType::RequestUpdate
           | ControlMessageType::SubscribeNamespace
           | ControlMessageType::PublishNamespace
           | ControlMessageType::TrackStatus
@@ -133,13 +133,13 @@ impl MessageParameter {
         msg_type,
         ControlMessageType::PublishOk
           | ControlMessageType::Subscribe
-          | ControlMessageType::SubscribeUpdate
+          | ControlMessageType::RequestUpdate
       ),
       Self::SubscriberPriority { .. } => matches!(
         msg_type,
         ControlMessageType::Subscribe
           | ControlMessageType::Fetch
-          | ControlMessageType::SubscribeUpdate
+          | ControlMessageType::RequestUpdate
           | ControlMessageType::PublishOk
       ),
       Self::GroupOrder { .. } => matches!(
@@ -156,7 +156,7 @@ impl MessageParameter {
         msg_type,
         ControlMessageType::Subscribe
           | ControlMessageType::PublishOk
-          | ControlMessageType::SubscribeUpdate
+          | ControlMessageType::RequestUpdate
       ),
       Self::Expires { .. } => matches!(
         msg_type,
@@ -175,7 +175,7 @@ impl MessageParameter {
       Self::Forward { .. } => matches!(
         msg_type,
         ControlMessageType::Subscribe
-          | ControlMessageType::SubscribeUpdate
+          | ControlMessageType::RequestUpdate
           | ControlMessageType::Publish
           | ControlMessageType::PublishOk
           | ControlMessageType::SubscribeNamespace
@@ -184,7 +184,7 @@ impl MessageParameter {
         msg_type,
         ControlMessageType::PublishOk
           | ControlMessageType::Subscribe
-          | ControlMessageType::SubscribeUpdate
+          | ControlMessageType::RequestUpdate
       ),
     }
   }

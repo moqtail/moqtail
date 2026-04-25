@@ -22,10 +22,10 @@ use super::{
   publish_done::PublishDone, publish_namespace::PublishNamespace,
   publish_namespace_cancel::PublishNamespaceCancel, publish_namespace_done::PublishNamespaceDone,
   publish_ok::PublishOk, request_error::RequestError, request_ok::RequestOk,
-  requests_blocked::RequestsBlocked, server_setup::ServerSetup, subscribe::Subscribe,
-  subscribe_namespace::SubscribeNamespace, subscribe_ok::SubscribeOk,
-  subscribe_update::SubscribeUpdate, switch::Switch, track_status::TrackStatus,
-  unsubscribe::Unsubscribe, unsubscribe_namespace::UnsubscribeNamespace,
+  request_update::RequestUpdate, requests_blocked::RequestsBlocked, server_setup::ServerSetup,
+  subscribe::Subscribe, subscribe_namespace::SubscribeNamespace, subscribe_ok::SubscribeOk,
+  switch::Switch, track_status::TrackStatus, unsubscribe::Unsubscribe,
+  unsubscribe_namespace::UnsubscribeNamespace,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -45,7 +45,7 @@ pub enum ControlMessage {
   ServerSetup(Box<ServerSetup>),
   Subscribe(Box<Subscribe>),
   SubscribeOk(Box<SubscribeOk>),
-  SubscribeUpdate(Box<SubscribeUpdate>),
+  RequestUpdate(Box<RequestUpdate>),
   RequestsBlocked(Box<RequestsBlocked>),
   TrackStatus(Box<TrackStatus>),
   PublishNamespaceDone(Box<PublishNamespaceDone>),
@@ -136,8 +136,8 @@ impl ControlMessage {
       ControlMessageType::SubscribeOk => {
         SubscribeOk::parse_payload(&mut payload).map(ControlMessage::SubscribeOk)
       }
-      ControlMessageType::SubscribeUpdate => {
-        SubscribeUpdate::parse_payload(&mut payload).map(ControlMessage::SubscribeUpdate)
+      ControlMessageType::RequestUpdate => {
+        RequestUpdate::parse_payload(&mut payload).map(ControlMessage::RequestUpdate)
       }
       ControlMessageType::RequestsBlocked => {
         RequestsBlocked::parse_payload(&mut payload).map(ControlMessage::RequestsBlocked)
@@ -192,7 +192,7 @@ impl ControlMessage {
       ControlMessage::ServerSetup(msg) => msg.serialize(),
       ControlMessage::Subscribe(msg) => msg.serialize(),
       ControlMessage::SubscribeOk(msg) => msg.serialize(),
-      ControlMessage::SubscribeUpdate(msg) => msg.serialize(),
+      ControlMessage::RequestUpdate(msg) => msg.serialize(),
       ControlMessage::RequestsBlocked(msg) => msg.serialize(),
       ControlMessage::TrackStatus(msg) => msg.serialize(),
       ControlMessage::Unsubscribe(msg) => msg.serialize(),
@@ -222,7 +222,7 @@ impl ControlMessage {
       ControlMessage::ServerSetup(_) => ControlMessageType::ServerSetup,
       ControlMessage::Subscribe(_) => ControlMessageType::Subscribe,
       ControlMessage::SubscribeOk(_) => ControlMessageType::SubscribeOk,
-      ControlMessage::SubscribeUpdate(_) => ControlMessageType::SubscribeUpdate,
+      ControlMessage::RequestUpdate(_) => ControlMessageType::RequestUpdate,
       ControlMessage::RequestsBlocked(_) => ControlMessageType::RequestsBlocked,
       ControlMessage::TrackStatus(_) => ControlMessageType::TrackStatus,
       ControlMessage::Unsubscribe(_) => ControlMessageType::Unsubscribe,
@@ -235,7 +235,10 @@ impl ControlMessage {
 
 #[cfg(test)]
 mod tests {
-  use crate::model::common::{pair::KeyValuePair, tuple::Tuple};
+  use crate::model::{
+    common::tuple::Tuple,
+    parameter::{authorization_token::AuthorizationToken, message_parameter::MessageParameter},
+  };
 
   use super::*;
 
@@ -243,10 +246,9 @@ mod tests {
   fn test_announce_roundtrip() {
     let request_id = 12345;
     let track_namespace = Tuple::from_utf8_path("god/dayyum");
-    let parameters = vec![
-      KeyValuePair::try_new_varint(0, 10).unwrap(),
-      KeyValuePair::try_new_bytes(1, Bytes::from_static(b"wololoo")).unwrap(),
-    ];
+    let parameters = vec![MessageParameter::new_authorization_token(
+      AuthorizationToken::new_use_value(0, Bytes::from_static(b"test-token")),
+    )];
     let announce = PublishNamespace {
       request_id,
       track_namespace,

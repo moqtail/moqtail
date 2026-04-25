@@ -15,10 +15,12 @@
 use super::constant::{ControlMessageType, FetchType};
 use super::control_message::ControlMessageTrait;
 use crate::model::common::location::Location;
-use crate::model::common::pair::KeyValuePair;
 use crate::model::common::tuple::{Tuple, TupleField};
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
 use crate::model::error::ParseError;
+use crate::model::parameter::message_parameter::{
+  MessageParameter, deserialize_message_parameters,
+};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 #[derive(Debug, PartialEq, Clone)]
@@ -41,7 +43,7 @@ pub struct Fetch {
   pub fetch_type: FetchType,
   pub standalone_fetch_props: Option<StandaloneFetchProps>,
   pub joining_fetch_props: Option<JoiningFetchProps>,
-  pub parameters: Vec<KeyValuePair>,
+  pub parameters: Vec<MessageParameter>,
 }
 
 impl Fetch {
@@ -49,7 +51,7 @@ impl Fetch {
   pub fn new_standalone(
     request_id: u64,
     standalone_fetch_props: StandaloneFetchProps,
-    parameters: Vec<KeyValuePair>,
+    parameters: Vec<MessageParameter>,
   ) -> Self {
     Self {
       request_id,
@@ -66,7 +68,7 @@ impl Fetch {
     fetch_type: FetchType,
     joining_request_id: u64,
     joining_start: u64,
-    parameters: Vec<KeyValuePair>,
+    parameters: Vec<MessageParameter>,
   ) -> Result<Self, &'static str> {
     match fetch_type {
       FetchType::AbsoluteFetch | FetchType::RelativeFetch => Ok(Self {
@@ -183,22 +185,9 @@ impl ControlMessageTrait for Fetch {
       }
     }
 
-    let param_count_u64 = payload.get_vi()?;
-    let param_count: usize =
-      param_count_u64
-        .try_into()
-        .map_err(|e: std::num::TryFromIntError| ParseError::CastingError {
-          context: "Fetch::deserialize(param_count)",
-          from_type: "u64",
-          to_type: "usize",
-          details: e.to_string(),
-        })?;
-
-    let mut parameters = Vec::with_capacity(param_count);
-    for _ in 0..param_count {
-      let param = KeyValuePair::deserialize(payload)?;
-      parameters.push(param);
-    }
+    let param_count = payload.get_vi()?;
+    let parameters =
+      deserialize_message_parameters(payload, param_count, ControlMessageType::Fetch)?;
 
     Ok(Box::new(Fetch {
       request_id,
@@ -218,7 +207,10 @@ impl ControlMessageTrait for Fetch {
 mod tests {
 
   use super::*;
-  use crate::model::common::tuple::TupleField;
+  use crate::model::{
+    common::tuple::TupleField, control::constant::GroupOrder,
+    parameter::authorization_token::AuthorizationToken,
+  };
   use bytes::Buf;
 
   #[test]
@@ -232,8 +224,12 @@ mod tests {
         joining_start: 73,
       }),
       parameters: vec![
-        KeyValuePair::try_new_varint(4444, 12321).unwrap(),
-        KeyValuePair::try_new_bytes(1, Bytes::from_static(b"fetch me ok")).unwrap(),
+        MessageParameter::new_authorization_token(AuthorizationToken::new_use_value(
+          0,
+          Bytes::from_static(b"test-token"),
+        )),
+        MessageParameter::new_subscriber_priority(42),
+        MessageParameter::new_group_order(GroupOrder::Ascending),
       ],
     };
 
@@ -258,8 +254,12 @@ mod tests {
         joining_start: 73,
       }),
       parameters: vec![
-        KeyValuePair::try_new_varint(4444, 12321).unwrap(),
-        KeyValuePair::try_new_bytes(1, Bytes::from_static(b"fetch me ok")).unwrap(),
+        MessageParameter::new_authorization_token(AuthorizationToken::new_use_value(
+          0,
+          Bytes::from_static(b"test-token"),
+        )),
+        MessageParameter::new_subscriber_priority(42),
+        MessageParameter::new_group_order(GroupOrder::Ascending),
       ],
     };
 
@@ -290,8 +290,12 @@ mod tests {
         joining_start: 73,
       }),
       parameters: vec![
-        KeyValuePair::try_new_varint(4444, 12321).unwrap(),
-        KeyValuePair::try_new_bytes(1, Bytes::from_static(b"fetch me ok")).unwrap(),
+        MessageParameter::new_authorization_token(AuthorizationToken::new_use_value(
+          0,
+          Bytes::from_static(b"test-token"),
+        )),
+        MessageParameter::new_subscriber_priority(42),
+        MessageParameter::new_group_order(GroupOrder::Ascending),
       ],
     };
 
@@ -315,7 +319,14 @@ mod tests {
     let track_name = TupleField::from_utf8("video_track");
     let start_location = Location::new(5, 10);
     let end_location = Location::new(15, 20);
-    let parameters = vec![KeyValuePair::try_new_varint(100, 200).unwrap()];
+    let parameters: Vec<MessageParameter> = vec![
+      MessageParameter::new_authorization_token(AuthorizationToken::new_use_value(
+        0,
+        Bytes::from_static(b"test-token"),
+      )),
+      MessageParameter::new_subscriber_priority(42),
+      MessageParameter::new_group_order(GroupOrder::Ascending),
+    ];
     let standalone_fetch_props = StandaloneFetchProps {
       track_namespace,
       track_name,
@@ -343,7 +354,14 @@ mod tests {
 
   #[test]
   fn test_new_joining_constructor_absolute() {
-    let parameters = vec![KeyValuePair::try_new_varint(300, 400).unwrap()];
+    let parameters: Vec<MessageParameter> = vec![
+      MessageParameter::new_authorization_token(AuthorizationToken::new_use_value(
+        0,
+        Bytes::from_static(b"test-token"),
+      )),
+      MessageParameter::new_subscriber_priority(42),
+      MessageParameter::new_group_order(GroupOrder::Ascending),
+    ];
 
     let fetch =
       Fetch::new_joining(123, FetchType::AbsoluteFetch, 456, 789, parameters.clone()).unwrap();

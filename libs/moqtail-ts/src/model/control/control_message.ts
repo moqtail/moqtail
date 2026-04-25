@@ -34,7 +34,7 @@ import { PublishOk } from './publish_ok'
 import { PublishError } from './publish_error'
 import { SubscribeError } from './subscribe_error'
 import { SubscribeOk } from './subscribe_ok'
-import { SubscribeUpdate } from './subscribe_update'
+import { RequestUpdate } from './request_update'
 import { RequestsBlocked } from './requests_blocked'
 import { TrackStatus } from './track_status'
 import { PublishNamespaceDone } from './publish_namespace_done'
@@ -45,6 +45,7 @@ import { UnsubscribeNamespace } from './unsubscribe_namespace'
 import { NotEnoughBytesError } from '../error/error'
 import { Tuple, KeyValuePair } from '../common'
 import { TrackStatusError } from './track_status_error'
+import { AuthorizationToken } from '../parameter/common/authorization_token'
 import { RequestOk } from './request_ok'
 
 export type ControlMessage =
@@ -66,7 +67,7 @@ export type ControlMessage =
   | Subscribe
   | SubscribeError
   | SubscribeOk
-  | SubscribeUpdate
+  | RequestUpdate
   | RequestsBlocked
   | TrackStatus
   | TrackStatusError
@@ -124,8 +125,8 @@ export namespace ControlMessage {
         return SubscribeError.parsePayload(payload)
       case ControlMessageType.SubscribeOk:
         return SubscribeOk.parsePayload(payload)
-      case ControlMessageType.SubscribeUpdate:
-        return SubscribeUpdate.parsePayload(payload)
+      case ControlMessageType.RequestUpdate:
+        return RequestUpdate.parsePayload(payload)
       case ControlMessageType.RequestsBlocked:
         return RequestsBlocked.parsePayload(payload)
       case ControlMessageType.TrackStatus:
@@ -162,8 +163,7 @@ if (import.meta.vitest) {
     describe('PublishNamespace', () => {
       function buildTestPublishNamespace(): PublishNamespace {
         return new PublishNamespace(12345n, Tuple.fromUtf8Path('god/dayyum'), [
-          KeyValuePair.tryNewVarInt(0, 10),
-          KeyValuePair.tryNewBytes(1, new TextEncoder().encode('wololoo')),
+          AuthorizationToken.newUseValue(0n, new TextEncoder().encode('test-token')),
         ])
       }
 
@@ -203,10 +203,7 @@ if (import.meta.vitest) {
         const joiningRequestId = 119n
         const joiningStart = 73n
         const type = FetchType.Relative
-        const parameters = [
-          KeyValuePair.tryNewVarInt(4444, 12321n),
-          KeyValuePair.tryNewBytes(1, new TextEncoder().encode('fetch me ok')),
-        ]
+        const parameters = [AuthorizationToken.newUseValue(0n, new TextEncoder().encode('test-token'))]
         return new Fetch(requestId, { type, props: { joiningRequestId, joiningStart } }, parameters)
       }
 

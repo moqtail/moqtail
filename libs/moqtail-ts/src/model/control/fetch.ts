@@ -16,10 +16,11 @@
 
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
 import { Location } from '../common/location'
-import { KeyValuePair } from '../common/pair'
 import { ControlMessageType, FetchType, fetchTypeFromBigInt } from './constant'
 import { LengthExceedsMaxError } from '../error/error'
 import { FullTrackName } from '../data'
+import { MessageParameter, MessageParameters } from '../parameter/message_parameter'
+import { SubscriberPriority } from '../parameter/message/subscriber_priority'
 
 export class Fetch {
   constructor(
@@ -37,7 +38,7 @@ export class Fetch {
           readonly type: FetchType.Absolute
           readonly props: { joiningRequestId: bigint; joiningStart: bigint }
         },
-    public readonly parameters: KeyValuePair[],
+    public readonly parameters: MessageParameter[],
   ) {}
 
   getType(): ControlMessageType {
@@ -66,7 +67,7 @@ export class Fetch {
     }
     payload.putVI(this.parameters.length)
     for (const param of this.parameters) {
-      payload.putKeyValuePair(param)
+      payload.putKeyValuePair(param.toKeyValuePair())
     }
     const payloadBytes = payload.toUint8Array()
     if (payloadBytes.length > 0xffff) {
@@ -110,10 +111,11 @@ export class Fetch {
     }
 
     const paramCount = buf.getNumberVI()
-    const parameters: KeyValuePair[] = new Array(paramCount)
+    const rawParams = new Array(paramCount)
     for (let i = 0; i < paramCount; i++) {
-      parameters[i] = buf.getKeyValuePair()
+      rawParams[i] = buf.getKeyValuePair()
     }
+    const parameters = MessageParameters.fromKeyValuePairs(rawParams)
 
     return new Fetch(requestId, props, parameters)
   }
@@ -124,10 +126,7 @@ if (import.meta.vitest) {
   describe('Fetch', () => {
     test('roundtrip', () => {
       const requestId = 161803n
-      const parameters = [
-        KeyValuePair.tryNewVarInt(4444, 12321n),
-        KeyValuePair.tryNewBytes(1, new TextEncoder().encode('fetch me ok')),
-      ]
+      const parameters = [new SubscriberPriority(42)]
       const fetch = new Fetch(
         requestId,
         {
@@ -151,10 +150,7 @@ if (import.meta.vitest) {
 
     test('excess roundtrip', () => {
       const requestId = 161803n
-      const parameters = [
-        KeyValuePair.tryNewVarInt(4444, 12321n),
-        KeyValuePair.tryNewBytes(1, new TextEncoder().encode('fetch me ok')),
-      ]
+      const parameters = [new SubscriberPriority(42)]
       const fetch = new Fetch(
         requestId,
         {
@@ -180,10 +176,7 @@ if (import.meta.vitest) {
 
     test('partial message', () => {
       const requestId = 161803n
-      const parameters = [
-        KeyValuePair.tryNewVarInt(4444, 12321n),
-        KeyValuePair.tryNewBytes(1, new TextEncoder().encode('fetch me ok')),
-      ]
+      const parameters = [new SubscriberPriority(42)]
       const fetch = new Fetch(
         requestId,
         {

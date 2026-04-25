@@ -175,15 +175,23 @@ export class MoqtObject {
   }
 
   static fromFetchObject(fetchObject: FetchObject, fullTrackName: FullTrackName): MoqtObject {
+    if (fetchObject.kind !== 'object') {
+      throw new ProtocolViolationError(
+        'MoqtObject.fromFetchObject',
+        'EndOfRange markers cannot be converted to MoqtObject',
+      )
+    }
+    const subgroupId =
+      fetchObject.forwardingPreference === ObjectForwardingPreference.Subgroup ? fetchObject.subgroupId : null
     return new MoqtObject(
       fullTrackName,
       fetchObject.location,
       fetchObject.publisherPriority,
-      ObjectForwardingPreference.Subgroup,
-      fetchObject.subgroupId,
-      fetchObject.objectStatus || ObjectStatus.Normal,
+      fetchObject.forwardingPreference,
+      subgroupId,
+      ObjectStatus.Normal,
       fetchObject.extensionHeaders,
-      fetchObject.payload,
+      fetchObject.payload && fetchObject.payload.length > 0 ? fetchObject.payload : null,
     )
   }
 
@@ -247,40 +255,43 @@ export class MoqtObject {
     }
   }
   tryIntoFetchObject(): FetchObject {
-    if (this.objectForwardingPreference !== ObjectForwardingPreference.Subgroup) {
+    // Draft-16 §10.4.4 FETCH objects carry no status; non-Normal status must be
+    // surfaced as an EndOfRange marker by the caller instead.
+    if (this.objectStatus !== ObjectStatus.Normal) {
       throw new CastingError(
         'MoqtObject.tryIntoFetchObject',
         'MoqtObject',
         'FetchObject',
-        'Object Forwarding Preference must be Subgroup',
+        'non-Normal status cannot be serialized as a fetch payload; use EndOfRange instead',
       )
     }
-    if (this.subgroupId === null) {
-      throw new ProtocolViolationError(
-        'MoqtObject.tryIntoFetchObject',
-        'Subgroup ID is required for Subgroup forwarding preference',
-      )
-    }
-
-    if (this.objectStatus === ObjectStatus.Normal && this.payload) {
-      return FetchObject.newWithPayload(
-        this.groupId,
-        this.subgroupId!,
-        this.objectId,
-        this.publisherPriority,
-        this.extensionHeaders,
-        this.payload,
-      )
+    let subgroupId: bigint | number
+    if (this.objectForwardingPreference === ObjectForwardingPreference.Subgroup) {
+      if (this.subgroupId === null) {
+        throw new ProtocolViolationError(
+          'MoqtObject.tryIntoFetchObject',
+          'Subgroup ID is required for Subgroup forwarding preference',
+        )
+      }
+      subgroupId = this.subgroupId
     } else {
-      return FetchObject.newWithStatus(
-        this.groupId,
-        this.subgroupId!,
-        this.objectId,
-        this.publisherPriority,
-        this.extensionHeaders,
-        this.objectStatus,
-      )
+      if (this.subgroupId !== null) {
+        throw new ProtocolViolationError(
+          'MoqtObject.tryIntoFetchObject',
+          'Subgroup ID must not be set for Datagram forwarding preference',
+        )
+      }
+      subgroupId = this.objectId
     }
+    return FetchObject.newObject(
+      this.groupId,
+      subgroupId,
+      this.objectId,
+      this.publisherPriority,
+      this.objectForwardingPreference,
+      this.extensionHeaders,
+      this.payload ?? new Uint8Array(0),
+    )
   }
   tryIntoSubgroupObject(): SubgroupObject {
     if (this.objectForwardingPreference !== ObjectForwardingPreference.Subgroup) {
@@ -415,7 +426,15 @@ if (import.meta.vitest) {
     test('convert from/to FetchObject', () => {
       const payload = new TextEncoder().encode('fetch payload')
       const fullTrackName = FullTrackName.tryNew('test/demo', 'track4')
-      const fetchObj = FetchObject.newWithPayload(100n, 5n, 10n, 128, null, payload)
+      const fetchObj = FetchObject.newObject(
+        100n,
+        5n,
+        10n,
+        128,
+        ObjectForwardingPreference.Subgroup,
+        null,
+        payload,
+      )
 
       const moqtObj = MoqtObject.fromFetchObject(fetchObj, fullTrackName)
       expect(moqtObj.objectForwardingPreference).toBe(ObjectForwardingPreference.Subgroup)

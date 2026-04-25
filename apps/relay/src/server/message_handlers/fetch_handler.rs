@@ -211,6 +211,9 @@ pub async fn handle(
         let mut object_count = 0;
         let mut send_stream = None;
         let mut cancelled = false;
+        let mut fetch_prev_ctx: Option<
+          moqtail::model::data::fetch_object::FetchObjectContext,
+        > = None;
         loop {
           tokio::select! {
             event = object_rx.recv() => {
@@ -256,11 +259,17 @@ pub async fn handle(
                       };
                     }
                     let object_id = object.object_id;
+                    let fetch_obj =
+                      moqtail::model::data::fetch_object::FetchObject::Object(object.clone());
+                    let serialized = fetch_obj
+                      .serialize(fetch_prev_ctx.as_ref())
+                      .unwrap();
+                    fetch_prev_ctx = fetch_obj.context();
                     let is_sent = if let Err(e) = client
                       .write_stream_object(
                         &stream_id,
                         object_id,
-                        object.serialize().unwrap(),
+                        serialized,
                         send_stream.as_ref().cloned(),
                       )
                       .await
@@ -283,6 +292,14 @@ pub async fn handle(
                     // Log fetch stream object if enabled
                     if context.server_config.enable_object_logging {
                       let sending_time = crate::server::utils::passed_time_since_start();
+                      let subgroup_id = match object.forwarding_preference {
+                        moqtail::model::data::constant::ObjectForwardingPreference::Subgroup => {
+                          Some(object.subgroup_id)
+                        }
+                        moqtail::model::data::constant::ObjectForwardingPreference::Datagram => {
+                          None
+                        }
+                      };
                       let fetch_object = moqtail::model::data::object::Object {
                         track_alias: track_read.relay_track_id,
                         location: moqtail::model::common::location::Location::new(
@@ -290,14 +307,15 @@ pub async fn handle(
                           object.object_id,
                         ),
                         publisher_priority: object.publisher_priority,
-                        forwarding_preference:
-                          moqtail::model::data::constant::ObjectForwardingPreference::Subgroup,
-                        subgroup_id: Some(object.subgroup_id),
-                        status: object
-                          .object_status
-                          .unwrap_or(moqtail::model::data::constant::ObjectStatus::Normal),
+                        forwarding_preference: object.forwarding_preference.clone(),
+                        subgroup_id,
+                        status: moqtail::model::data::constant::ObjectStatus::Normal,
                         extensions: object.extension_headers.clone(),
-                        payload: object.payload.clone(),
+                        payload: if object.payload.is_empty() {
+                          None
+                        } else {
+                          Some(object.payload.clone())
+                        },
                       };
                       track_read
                         .object_logger

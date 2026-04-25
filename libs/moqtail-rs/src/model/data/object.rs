@@ -22,7 +22,7 @@ use crate::model::extension_header::object_extension::ObjectExtension;
 
 use super::constant::{ObjectForwardingPreference, ObjectStatus};
 use super::datagram::Datagram;
-use super::fetch_object::FetchObject;
+use super::fetch_object::FetchObjectPayload;
 use super::subgroup_object::SubgroupObject;
 
 #[derive(Clone, PartialEq)]
@@ -108,19 +108,33 @@ impl Object {
     })
   }
 
-  pub fn try_from_fetch(fetch_obj: FetchObject, track_alias: u64) -> Result<Self, ParseError> {
+  /// Convert a draft-16 fetch-stream payload object into the unified Object view.
+  /// Fetch objects carry no status (§10.4.4); status is always Normal here.
+  pub fn try_from_fetch(
+    fetch_obj: FetchObjectPayload,
+    track_alias: u64,
+  ) -> Result<Self, ParseError> {
+    let subgroup_id = match fetch_obj.forwarding_preference {
+      ObjectForwardingPreference::Subgroup => Some(fetch_obj.subgroup_id),
+      ObjectForwardingPreference::Datagram => None,
+    };
+    let payload = if fetch_obj.payload.is_empty() {
+      None
+    } else {
+      Some(fetch_obj.payload)
+    };
     Ok(Object {
-      track_alias, // Context from FetchHeader RequestId == Fetch Message Request Id, Fetch.track_alias
+      track_alias,
       location: Location {
         group: fetch_obj.group_id,
         object: fetch_obj.object_id,
       },
       publisher_priority: fetch_obj.publisher_priority,
-      forwarding_preference: ObjectForwardingPreference::Subgroup,
-      subgroup_id: Some(fetch_obj.subgroup_id),
-      status: fetch_obj.object_status.unwrap_or(ObjectStatus::Normal),
+      forwarding_preference: fetch_obj.forwarding_preference,
+      subgroup_id,
+      status: ObjectStatus::Normal,
       extensions: fetch_obj.extension_headers,
-      payload: fetch_obj.payload,
+      payload,
     })
   }
 }
@@ -240,35 +254,27 @@ impl Object {
     })
   }
 
-  pub fn try_into_fetch(self) -> Result<FetchObject, ParseError> {
-    let (payload, object_status) = match self.status {
-      ObjectStatus::Normal => (
-        Some(self.payload.ok_or(ParseError::CastingError {
-          context: "Object::try_into_fetch(payload)",
-          from_type: "Object",
-          to_type: "FetchObject",
-          details: "Payload must be present for Normal status".to_string(),
-        })?),
-        None,
-      ),
-      other_status => {
-        if self.payload.is_some() {
-          return Err(ParseError::CastingError {
-            context: "Object::try_into_fetch(payload)",
-            from_type: "Object",
-            to_type: "FetchObject",
-            details: "Payload must be None for non-Normal status".to_string(),
-          });
-        }
-        (None, Some(other_status))
-      }
-    };
+  /// Convert to a draft-16 fetch-stream payload object.
+  /// Fetch objects carry no status field; non-Normal status must be surfaced
+  /// as an EndOfRange marker by the caller instead.
+  pub fn try_into_fetch(self) -> Result<FetchObjectPayload, ParseError> {
+    if self.status != ObjectStatus::Normal {
+      return Err(ParseError::CastingError {
+        context: "Object::try_into_fetch(status)",
+        from_type: "Object",
+        to_type: "FetchObjectPayload",
+        details:
+          "non-Normal status cannot be serialized as a fetch payload; use EndOfRange instead"
+            .to_string(),
+      });
+    }
+    let payload = self.payload.unwrap_or_default();
 
     let subgroup_id = match self.forwarding_preference {
       ObjectForwardingPreference::Subgroup => self.subgroup_id.ok_or(ParseError::CastingError {
         context: "Object::try_into_fetch(subgroup_id)",
         from_type: "Object",
-        to_type: "FetchObject",
+        to_type: "FetchObjectPayload",
         details: "Subgroup ID must be present for Subgroup forwarding".to_string(),
       })?,
       ObjectForwardingPreference::Datagram => {
@@ -276,7 +282,7 @@ impl Object {
           return Err(ParseError::CastingError {
             context: "Object::try_into_fetch(subgroup_id)",
             from_type: "Object",
-            to_type: "FetchObject",
+            to_type: "FetchObjectPayload",
             details: "Subgroup ID must not be present for Datagram forwarding".to_string(),
           });
         }
@@ -284,14 +290,14 @@ impl Object {
       }
     };
 
-    Ok(FetchObject {
+    Ok(FetchObjectPayload {
       group_id: self.location.group,
       subgroup_id,
       object_id: self.location.object,
       publisher_priority: self.publisher_priority,
+      forwarding_preference: self.forwarding_preference,
       extension_headers: self.extensions,
       payload,
-      object_status,
     })
   }
 }

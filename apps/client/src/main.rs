@@ -53,6 +53,8 @@ async fn main() -> Result<(), anyhow::Error> {
         track_alias: cli
           .track_alias
           .unwrap_or_else(|| rand::random::<u64>() & ((1u64 << 62) - 1)),
+        publisher_priority: cli.publisher_priority,
+        group_order: cli.group_order.into(),
       };
       publisher::run(moq_conn, config).await
     }
@@ -64,16 +66,26 @@ async fn main() -> Result<(), anyhow::Error> {
         interval: cli.interval,
         objects_per_group: cli.objects_per_group,
         payload_size: cli.payload_size,
+        publisher_priority: cli.publisher_priority,
+        group_order: cli.group_order.into(),
       };
       publisher::run_namespace(moq_conn, config).await
     }
     Command::Subscribe => {
+      let extra = cli.extra_track.as_deref().and_then(|s| {
+        let (name, prio) = s.rsplit_once(':')?;
+        let priority: u8 = prio.parse().ok()?;
+        Some((name.to_string(), priority))
+      });
       subscriber::run(
         moq_conn,
         &cli.namespace,
         &cli.track_name,
         cli.forwarding_preference,
         cli.duration,
+        cli.subscriber_priority,
+        cli.group_order.into(),
+        extra,
       )
       .await
     }

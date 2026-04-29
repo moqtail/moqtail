@@ -71,6 +71,11 @@ pub struct Cli {
   /// Initial maximum request ID
   #[arg(long, default_value_t = u64::MAX / 8)]
   pub initial_max_request_id: u64,
+
+  /// Simulate a bandwidth cap per subscriber connection (kbps). 0 = unlimited.
+  /// Useful for testing QUIC stream priority scheduling without OS-level throttling.
+  #[arg(long, default_value_t = 0)]
+  pub write_kbps_limit: u64,
 }
 #[derive(Debug, Clone)]
 pub struct AppConfig {
@@ -88,6 +93,8 @@ pub struct AppConfig {
   pub enable_token_logging: bool,
   pub token_log_path: String,
   pub initial_max_request_id: u64,
+  /// 0 = unlimited. Non-zero caps relay writes to this many kbps per subscriber connection.
+  pub write_kbps_limit: u64,
 }
 
 impl AppConfig {
@@ -110,6 +117,7 @@ impl AppConfig {
         enable_token_logging: cli.enable_token_logging,
         token_log_path: cli.token_log_path,
         initial_max_request_id: cli.initial_max_request_id,
+        write_kbps_limit: cli.write_kbps_limit,
       }
     })
   }
@@ -174,6 +182,7 @@ mod tests {
       enable_token_logging: false,
       token_log_path: "/tmp/moqtail_relay_tokens.csv".to_string(),
       initial_max_request_id: u64::MAX / 8,
+      write_kbps_limit: 0,
     };
 
     let config = AppConfig {
@@ -191,6 +200,7 @@ mod tests {
       enable_token_logging: cli.enable_token_logging,
       token_log_path: cli.token_log_path,
       initial_max_request_id: cli.initial_max_request_id,
+      write_kbps_limit: cli.write_kbps_limit,
     };
 
     assert_eq!(config.initial_max_request_id, u64::MAX / 8);

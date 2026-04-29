@@ -45,6 +45,8 @@ pub struct PublishConfig {
   pub objects_per_group: u64,
   pub payload_size: usize,
   pub track_alias: u64,
+  pub publisher_priority: u8,
+  pub group_order: GroupOrder,
 }
 
 pub struct PublishNamespaceConfig {
@@ -54,6 +56,8 @@ pub struct PublishNamespaceConfig {
   pub interval: u64,
   pub objects_per_group: u64,
   pub payload_size: usize,
+  pub publisher_priority: u8,
+  pub group_order: GroupOrder,
 }
 
 pub async fn run_namespace(moq: MoqConnection, config: PublishNamespaceConfig) -> Result<()> {
@@ -73,6 +77,7 @@ pub async fn run_namespace(moq: MoqConnection, config: PublishNamespaceConfig) -
     interval: config.interval,
     objects_per_group: config.objects_per_group,
     payload_size: config.payload_size,
+    publisher_priority: config.publisher_priority,
   };
 
   // Step 2: Listen for Subscribe messages and serve data
@@ -96,6 +101,7 @@ pub async fn run_namespace(moq: MoqConnection, config: PublishNamespaceConfig) -
         );
 
         let msg = SubscribeOk::new(m.request_id, track_alias, vec![], vec![]);
+
         control_stream.send_impl(&msg).await?;
         info!(
           "SubscribeOk sent for request_id={}, track_alias={}",
@@ -152,6 +158,7 @@ pub async fn run(moq: MoqConnection, config: PublishConfig) -> Result<()> {
     interval: config.interval,
     objects_per_group: config.objects_per_group,
     payload_size: config.payload_size,
+    publisher_priority: config.publisher_priority,
   };
 
   publish_track(
@@ -160,6 +167,7 @@ pub async fn run(moq: MoqConnection, config: PublishConfig) -> Result<()> {
     &ns,
     &config.track_name,
     config.track_alias,
+    config.group_order,
     &data_config,
   )
   .await?;
@@ -212,6 +220,7 @@ struct DataConfig {
   interval: u64,
   objects_per_group: u64,
   payload_size: usize,
+  publisher_priority: u8,
 }
 
 async fn publish_track(
@@ -220,6 +229,7 @@ async fn publish_track(
   namespace: &Tuple,
   track_name: &str,
   track_alias: u64,
+  group_order: GroupOrder,
   data_config: &DataConfig,
 ) -> Result<()> {
   info!("Publishing track: track_alias={}", track_alias);
@@ -229,7 +239,7 @@ async fn publish_track(
     TupleField::from_utf8(track_name),
     track_alias,
     vec![
-      MessageParameter::new_group_order(GroupOrder::Ascending),
+      MessageParameter::new_group_order(group_order),
       MessageParameter::new_largest_object(Location::new(0, 0)),
       MessageParameter::Forward { forward: true },
     ],
@@ -264,6 +274,7 @@ async fn send_data(
         config.interval,
         config.objects_per_group,
         config.payload_size,
+        config.publisher_priority,
       )
       .await
     }
@@ -275,6 +286,7 @@ async fn send_data(
         config.interval,
         config.objects_per_group,
         config.payload_size,
+        config.publisher_priority,
       )
       .await
     }
@@ -288,6 +300,7 @@ async fn send_datagrams(
   interval_ms: u64,
   objects_per_group: u64,
   payload_size: usize,
+  publisher_priority: u8,
 ) -> Result<()> {
   let interval = Duration::from_millis(interval_ms);
   info!(
@@ -303,8 +316,8 @@ async fn send_datagrams(
         track_alias,
         group_id,
         object_id,
-        Some(0), // publisher_priority
-        None,    // extension_headers
+        Some(publisher_priority), // publisher_priority
+        None,                     // extension_headers
         Bytes::from(payload),
         false, // end_of_group
       );
@@ -346,6 +359,7 @@ async fn send_via_streams(
   interval_ms: u64,
   objects_per_group: u64,
   payload_size: usize,
+  publisher_priority: u8,
 ) -> Result<()> {
   let interval = Duration::from_millis(interval_ms);
   info!(
@@ -357,8 +371,14 @@ async fn send_via_streams(
     info!("Opening stream for group {}", group_id);
     let stream = connection.open_uni().await?.await?;
 
-    let sub_header =
-      SubgroupHeader::new_with_explicit_id(track_alias, group_id, 1u64, Some(1u8), true, true);
+    let sub_header = SubgroupHeader::new_with_explicit_id(
+      track_alias,
+      group_id,
+      1u64,
+      Some(publisher_priority),
+      true,
+      true,
+    );
     let header_info = HeaderInfo::Subgroup { header: sub_header };
     let stream = Arc::new(Mutex::new(stream));
     let mut handler = SendDataStream::new(stream, header_info).await?;

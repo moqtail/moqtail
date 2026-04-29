@@ -37,11 +37,51 @@ use switch_context::SwitchContext;
 use std::{
   collections::{BTreeMap, HashMap, VecDeque},
   sync::Arc,
+  time::Duration,
 };
 use tokio::sync::Notify;
 use tokio::sync::{Mutex, RwLock, watch};
+use tokio::time::Instant;
 use tracing::{debug, error, info, warn};
 use wtransport::{Connection, SendStream, error::StreamWriteError};
+
+/// Token-bucket rate limiter. All streams of one subscriber share a single
+/// bucket so they compete for bandwidth — the QUIC scheduler then drains
+/// higher-priority streams first when writes are pending.
+#[derive(Debug)]
+struct TokenBucket {
+  rate_bytes_per_sec: f64,
+  tokens: f64,
+  last_refill: Instant,
+}
+
+impl TokenBucket {
+  fn new(rate_kbps: u64) -> Self {
+    let rate = rate_kbps as f64 * 1000.0 / 8.0; // kbps → bytes/sec
+    Self {
+      rate_bytes_per_sec: rate,
+      tokens: rate, // start with one second worth of tokens
+      last_refill: Instant::now(),
+    }
+  }
+
+  async fn consume(&mut self, bytes: usize) {
+    let now = Instant::now();
+    let elapsed = now.duration_since(self.last_refill).as_secs_f64();
+    self.tokens = (self.tokens + elapsed * self.rate_bytes_per_sec).min(self.rate_bytes_per_sec); // cap at 1 second of burst
+    self.last_refill = now;
+
+    let needed = bytes as f64;
+    if self.tokens < needed {
+      let deficit = needed - self.tokens;
+      let wait = Duration::from_secs_f64(deficit / self.rate_bytes_per_sec);
+      tokio::time::sleep(wait).await;
+      self.tokens = 0.0;
+    } else {
+      self.tokens -= needed;
+    }
+  }
+}
 
 /// Number of partitions for send stream management to reduce lock contention.
 /// Each partition contains a separate HashMap protected by its own RwLock.
@@ -84,6 +124,10 @@ pub(crate) struct MOQTClient {
   pub subscriptions: TrackSubscriptionMap,
 
   pub switch_context: SwitchContext,
+
+  // Optional per-connection write rate limiter. All streams of this client share
+  // the same bucket so they compete for bandwidth, exercising QUIC stream priority.
+  rate_limiter: Option<Arc<Mutex<TokenBucket>>>,
 }
 
 impl MOQTClient {
@@ -96,6 +140,13 @@ impl MOQTClient {
     for _ in 0..SEND_STREAM_PARTITION_COUNT {
       send_streams.push(Arc::new(RwLock::new(HashMap::new())));
     }
+
+    let kbps = crate::server::config::AppConfig::load().write_kbps_limit;
+    let rate_limiter = if kbps > 0 {
+      Some(Arc::new(Mutex::new(TokenBucket::new(kbps))))
+    } else {
+      None
+    };
 
     MOQTClient {
       connection_id,
@@ -114,6 +165,7 @@ impl MOQTClient {
       fetch_cancel_senders: Arc::new(RwLock::new(HashMap::new())),
       subscriptions: TrackSubscriptionMap::new(),
       switch_context: SwitchContext::new(),
+      rate_limiter,
     }
   }
 
@@ -354,7 +406,12 @@ impl MOQTClient {
       }
     };
 
-    // flow control
+    // Rate-limit before writing so all streams of this connection compete for
+    // the shared bandwidth budget, causing QUIC buffers to fill and the QUIC
+    // stream priority scheduler to choose between them.
+    if let Some(rl) = &self.rate_limiter {
+      rl.lock().await.consume(object.len()).await;
+    }
 
     if let Some(s) = send_stream {
       let mut stream = s.lock().await;

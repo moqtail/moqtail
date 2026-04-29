@@ -240,9 +240,8 @@ pub async fn handle(
         let mut object_count = 0;
         let mut send_stream = None;
         let mut cancelled = false;
-        let mut fetch_prev_ctx: Option<
-          moqtail::model::data::fetch_object::FetchObjectContext,
-        > = None;
+        let mut fetch_prev_ctx: Option<moqtail::model::data::fetch_object::FetchObjectContext> =
+          None;
         loop {
           tokio::select! {
             event = object_rx.recv() => {

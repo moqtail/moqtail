@@ -15,10 +15,13 @@
  */
 
 import { ControlStream } from './control_stream'
+import { RequestStream } from './request_stream'
 import {
   PublishNamespace,
   PublishNamespaceDone,
-  PublishNamespaceError,
+  Namespace,
+  NamespaceDone,
+  NamespaceSubscribeOptions,
   ClientSetup,
   ControlMessage,
   Fetch,
@@ -75,7 +78,6 @@ import { Track } from './track/track'
 import { PublishNamespaceRequest } from './request/publish_namespace'
 import { FetchRequest } from './request/fetch'
 import { SubscribeRequest } from './request/subscribe'
-import { SubscribeNamespaceRequest } from './request/subscribe_namespace'
 import { PublishRequest } from './request/publish'
 import { getHandlerForControlMessage } from './handler/handler'
 import { SubscribePublication } from './publication/subscribe'
@@ -128,7 +130,7 @@ const logger = createLogger('MOQtailClient')
  * ```ts
  * const client = await MOQtailClient.new({ url });
  * const publishNamespaceResult = await client.publishNamespace(["camera", "main"]);
- * if (!(publishNamespaceResult instanceof PublishNamespaceError)) {
+ * if (!(publishNamespaceResult instanceof SubscribeError)) {
  *   // Ready to publish objects under this namespace
  * }
  * ```
@@ -295,6 +297,12 @@ export class MOQtailClient {
 
   /** Fired when an inbound SUBSCRIBE_NAMESPACE control message is received. */
   onPeerSubscribeNamespace?: (msg: SubscribeNamespace) => void
+
+  /** Fired when a NAMESPACE message arrives on a SUBSCRIBE_NAMESPACE bi-stream (prefix + suffix). */
+  onPeerNamespace?: (prefix: Tuple, suffix: Tuple) => void
+
+  /** Fired when a NAMESPACE_DONE message arrives on a SUBSCRIBE_NAMESPACE bi-stream (prefix + suffix). */
+  onPeerNamespaceDone?: (prefix: Tuple, suffix: Tuple) => void
 
   /** Datagram writer for sending datagrams. */
   #datagramWriter: WritableStreamDefaultWriter<Uint8Array> | undefined
@@ -482,6 +490,7 @@ export class MOQtailClient {
 
       client.#handleIncomingControlMessages()
       client.#acceptIncomingUniStreams()
+      client.#acceptIncomingBiStreams()
 
       // Optionally enable datagram support
       if (enableDatagrams) {
@@ -1528,7 +1537,7 @@ export class MOQtailClient {
    * - trackNamespace: Tuple representing the namespace prefix (e.g. ["camera","main"]). All tracks whose full names start with this tuple are considered within the announce scope.
    * - parameters: Optional {@link MessageParameters}; omitted =\> default instance.
    *
-   * Returns: {@link RequestOk} on success (namespace added to `announcedNamespaces`) or {@link PublishNamespaceError} explaining refusal.
+   * Returns: {@link RequestOk} on success (namespace added to `announcedNamespaces`) or {@link SubscribeError} explaining refusal.
    *
    * Use cases:
    * - Make a camera or sensor namespace available before any objects are pushed.
@@ -1669,34 +1678,69 @@ export class MOQtailClient {
     }
   }
 
-  // INFO: Subscriber calls this the get matching announce messages with this prefix
-  async subscribeNamespace(trackNamespacePrefix: Tuple, parameters?: MessageParameter[]) {
+  async subscribeNamespace(
+    trackNamespacePrefix: Tuple,
+    subscribeOptions: NamespaceSubscribeOptions = NamespaceSubscribeOptions.Both,
+    parameters?: MessageParameter[],
+  ): Promise<{ response: RequestOk | SubscribeError; cancel: () => Promise<void> }> {
     this.#ensureActive()
     try {
       const params: MessageParameter[] = parameters ?? []
-      const msg = new SubscribeNamespace(this.#nextClientRequestId, trackNamespacePrefix, params)
-      const request = new SubscribeNamespaceRequest(msg)
+      const msg = new SubscribeNamespace(this.#nextClientRequestId, trackNamespacePrefix, subscribeOptions, params)
 
-      this.requests.set(msg.requestId, request)
-      this.controlStream.send(msg)
+      const biStream = await this.webTransport.createBidirectionalStream()
+      const requestStream = new RequestStream(biStream)
+      await requestStream.send(msg)
 
       logger.log('subscribeNamespace | sent msg', msg, msg.trackNamespacePrefix.toUtf8Path(), msg.requestId)
 
-      const response = await request
+      const reader = requestStream.stream.getReader()
+      const { value: response, done } = await reader.read()
+      reader.releaseLock()
+
+      if (done || !response) {
+        throw new InternalError('MOQtailClient.subscribeNamespace', 'Stream closed before response')
+      }
+      if (!(response instanceof RequestOk || response instanceof SubscribeError)) {
+        throw new ProtocolViolationError('MOQtailClient.subscribeNamespace', 'Unexpected response message type')
+      }
 
       logger.log('subscribeNamespace | got response', response)
 
       if (response instanceof RequestOk) {
-        this.subscribedAnnounces.add(msg.trackNamespacePrefix)
+        this.subscribedAnnounces.add(trackNamespacePrefix)
+        void this.#drainNamespaceStream(requestStream, trackNamespacePrefix)
       }
 
-      this.requests.delete(msg.requestId)
-      return response
+      return {
+        response,
+        cancel: () => {
+          this.subscribedAnnounces.delete(trackNamespacePrefix)
+          return requestStream.close()
+        },
+      }
     } catch (error) {
       await this.disconnect(
         new InternalError('MOQtailClient.subscribeNamespace', error instanceof Error ? error.message : String(error)),
       )
       throw error
+    }
+  }
+
+  async #drainNamespaceStream(requestStream: RequestStream, prefix: Tuple): Promise<void> {
+    const reader = requestStream.stream.getReader()
+    try {
+      while (true) {
+        const { value: msg, done } = await reader.read()
+        if (done || !msg) break
+        if (msg instanceof Namespace && this.onPeerNamespace) {
+          this.onPeerNamespace(prefix, msg.trackNamespaceSuffix)
+        } else if (msg instanceof NamespaceDone && this.onPeerNamespaceDone) {
+          this.onPeerNamespaceDone(prefix, msg.trackNamespaceSuffix)
+        }
+      }
+    } finally {
+      reader.releaseLock()
     }
   }
 
@@ -1748,6 +1792,34 @@ export class MOQtailClient {
       }
     }
   }
+  #acceptIncomingBiStreams(): void {
+    void (async () => {
+      const reader = this.webTransport.incomingBidirectionalStreams.getReader()
+      while (true) {
+        const { value: biStream, done } = await reader.read()
+        if (done) break
+        void this.#dispatchIncomingRequestStream(new RequestStream(biStream))
+      }
+    })()
+  }
+
+  async #dispatchIncomingRequestStream(requestStream: RequestStream): Promise<void> {
+    const reader = requestStream.stream.getReader()
+    const { value: msg, done } = await reader.read()
+    reader.releaseLock()
+    if (done || !msg) return
+
+    if (msg instanceof SubscribeNamespace) {
+      if (this.onPeerSubscribeNamespace) {
+        this.onPeerSubscribeNamespace(msg)
+      }
+      await requestStream.send(new RequestOk(msg.requestId))
+    } else {
+      logger.warn('Unsupported message type on incoming request bi-stream')
+      await requestStream.close()
+    }
+  }
+
   // TODO: Handle request cancellation. Cancel streams are expected to receive some on-fly objects.
   // Do a timeout? Wait for certain amount of objects?
   async #handleRecvStreams(incomingUniStream: ReadableStream): Promise<void> {

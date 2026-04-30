@@ -16,6 +16,7 @@
 
 import { useRef, useState } from 'react';
 import { MOQtailClient } from 'moqtail/client';
+import { RequestOk } from 'moqtail/model';
 import {
   FullTrackName,
   Tuple,
@@ -106,7 +107,11 @@ export default function App() {
     const key = ns.toUtf8Path();
     if (subscribedNsRef.current.has(key)) return;
     subscribedNsRef.current.add(key);
-    await client.subscribeNamespace(ns);
+    const { response } = await client.subscribeNamespace(ns);
+    if (!(response instanceof RequestOk)) {
+      console.warn('subscribeNamespace failed for', key);
+      subscribedNsRef.current.delete(key);
+    }
   }
 
   function addPeer(peerUsername: string) {

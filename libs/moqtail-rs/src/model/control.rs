@@ -20,6 +20,8 @@ pub mod fetch_cancel;
 pub mod fetch_ok;
 pub mod goaway;
 pub mod max_request_id;
+pub mod namespace;
+pub mod namespace_done;
 pub mod publish;
 pub mod publish_done;
 pub mod publish_namespace;

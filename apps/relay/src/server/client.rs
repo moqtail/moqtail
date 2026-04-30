@@ -127,11 +127,6 @@ impl MOQTClient {
     subscribers.push(subscriber_id);
   }
 
-  pub(crate) async fn register_outbound_announce_id(&self, namespace: Tuple, request_id: u64) {
-    let mut map = self.outbound_announcements.write().await;
-    map.insert(namespace, request_id);
-  }
-
   pub(crate) async fn get_outbound_announce_id(&self, namespace: &Tuple) -> Option<u64> {
     let map = self.outbound_announcements.read().await;
     map.get(namespace).cloned()

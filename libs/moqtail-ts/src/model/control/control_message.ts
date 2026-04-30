@@ -18,7 +18,8 @@ import { FrozenByteBuffer } from '../common/byte_buffer'
 import { ControlMessageType, controlMessageTypeFromBigInt, FetchType } from './constant'
 import { PublishNamespace } from './publish_namespace'
 import { PublishNamespaceCancel } from './publish_namespace_cancel'
-import { PublishNamespaceError } from './publish_namespace_error'
+import { Namespace } from './namespace'
+import { NamespaceDone } from './namespace_done'
 import { ClientSetup } from './client_setup'
 import { Fetch } from './fetch'
 import { FetchCancel } from './fetch_cancel'
@@ -55,7 +56,8 @@ export type ControlMessage =
   | PublishDone
   | PublishNamespace
   | PublishNamespaceCancel
-  | PublishNamespaceError
+  | Namespace
+  | NamespaceDone
   | ClientSetup
   | Fetch
   | FetchCancel
@@ -99,8 +101,10 @@ export namespace ControlMessage {
         return PublishNamespace.parsePayload(payload)
       case ControlMessageType.PublishNamespaceCancel:
         return PublishNamespaceCancel.parsePayload(payload)
-      case ControlMessageType.PublishNamespaceError:
-        return PublishNamespaceError.parsePayload(payload)
+      case ControlMessageType.Namespace:
+        return Namespace.parsePayload(payload)
+      case ControlMessageType.NamespaceDone:
+        return NamespaceDone.parsePayload(payload)
       case ControlMessageType.RequestOk:
         return RequestOk.parsePayload(payload)
       case ControlMessageType.ClientSetup:

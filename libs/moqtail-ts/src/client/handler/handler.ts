@@ -19,12 +19,9 @@ import {
   handlerPublishNamespace,
   handlerPublishNamespaceCancel,
   handlerPublishNamespaceDone,
-  handlerPublishNamespaceError,
   handlerMaxRequestId,
   handlerRequestsBlocked,
   handlerSubscribe,
-  handlerSubscribeNamespace,
-  handlerSubscribeNamespaceError,
   handlerSubscribeError,
   handlerSubscribeOk,
   handlerSubscribeUpdate,
@@ -47,7 +44,6 @@ import {
   PublishNamespace,
   PublishNamespaceCancel,
   PublishNamespaceDone,
-  PublishNamespaceError,
   Fetch,
   FetchCancel,
   FetchError,
@@ -56,8 +52,6 @@ import {
   MaxRequestId,
   RequestsBlocked,
   Subscribe,
-  SubscribeNamespace,
-  SubscribeNamespaceError,
   PublishDone,
   SubscribeError,
   SubscribeOk,
@@ -83,7 +77,6 @@ export function getHandlerForControlMessage(msg: ControlMessage): ControlMessage
   if (msg instanceof PublishNamespace) return handlerPublishNamespace
   if (msg instanceof PublishNamespaceCancel) return handlerPublishNamespaceCancel
   if (msg instanceof PublishNamespaceDone) return handlerPublishNamespaceDone
-  if (msg instanceof PublishNamespaceError) return handlerPublishNamespaceError
   if (msg instanceof Fetch) return handlerFetch
   if (msg instanceof FetchCancel) return handlerFetchCancel
   if (msg instanceof FetchError) return handlerFetchError
@@ -91,8 +84,6 @@ export function getHandlerForControlMessage(msg: ControlMessage): ControlMessage
   if (msg instanceof GoAway) return handlerGoAway
   if (msg instanceof MaxRequestId) return handlerMaxRequestId
   if (msg instanceof Subscribe) return handlerSubscribe
-  if (msg instanceof SubscribeNamespace) return handlerSubscribeNamespace
-  if (msg instanceof SubscribeNamespaceError) return handlerSubscribeNamespaceError
   if (msg instanceof SubscribeError) return handlerSubscribeError
   if (msg instanceof SubscribeOk) return handlerSubscribeOk
   if (msg instanceof RequestUpdate) return handlerSubscribeUpdate

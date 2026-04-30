@@ -29,7 +29,7 @@ mod max_request_id_handler;
 mod publish_handler;
 mod publish_namespace_handler;
 mod subscribe_handler;
-mod subscribe_namespace_handler;
+pub(crate) mod subscribe_namespace_handler;
 mod track_status_handler;
 use super::utils;
 
@@ -50,7 +50,6 @@ impl MessageHandler {
       ControlMessage::Subscribe(msg) => Some(msg.request_id),
       ControlMessage::RequestUpdate(msg) => Some(msg.request_id),
       ControlMessage::TrackStatus(msg) => Some(msg.request_id),
-      ControlMessage::SubscribeNamespace(msg) => Some(msg.request_id),
       ControlMessage::Switch(msg) => Some(msg.request_id),
       _ => None,
     };
@@ -77,13 +76,8 @@ impl MessageHandler {
         .await
       }
       ControlMessage::SubscribeNamespace(_) => {
-        subscribe_namespace_handler::handle(
-          client.clone(),
-          control_stream_handler,
-          msg,
-          context.clone(),
-        )
-        .await
+        warn!("SUBSCRIBE_NAMESPACE received on control stream — must use a dedicated bi-stream");
+        Err(TerminationCode::ProtocolViolation)
       }
       ControlMessage::MaxRequestId(_) => {
         max_request_id_handler::handle(client.clone(), control_stream_handler, msg, context.clone())

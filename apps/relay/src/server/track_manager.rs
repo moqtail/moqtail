@@ -15,6 +15,7 @@
 use super::track::Track;
 use crate::server::client::MOQTClient;
 use moqtail::model::common::tuple::Tuple;
+use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::publish::Publish;
 use moqtail::model::control::publish_namespace::PublishNamespace;
 use moqtail::model::control::subscribe_namespace::SubscribeNamespace;
@@ -24,6 +25,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::RwLock;
+use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, info, warn};
 
 #[derive(Clone)]
@@ -32,8 +34,18 @@ pub struct TrackManager {
   /// Maps (publisher_connection_id, publisher_track_alias) -> FullTrackName.
   /// Connection-scoped to avoid alias collisions across different publishers.
   pub track_aliases: Arc<RwLock<HashMap<(usize, u64), FullTrackName>>>,
-  pub namespace_subscribers:
-    Arc<RwLock<HashMap<Tuple, Vec<(Arc<MOQTClient>, SubscribeNamespace)>>>>,
+  pub namespace_subscribers: Arc<
+    RwLock<
+      HashMap<
+        Tuple,
+        Vec<(
+          Arc<MOQTClient>,
+          SubscribeNamespace,
+          UnboundedSender<ControlMessage>,
+        )>,
+      >,
+    >,
+  >,
   pub announcements: Arc<RwLock<HashMap<Tuple, (Arc<MOQTClient>, PublishNamespace)>>>,
   pub publishes: Arc<RwLock<HashMap<FullTrackName, HashMap<usize, Publish>>>>,
   /// Counter for generating stable relay_track_id values.
@@ -242,6 +254,7 @@ impl TrackManager {
     prefix: Tuple,
     client: Arc<MOQTClient>,
     message: SubscribeNamespace,
+    namespace_tx: UnboundedSender<ControlMessage>,
   ) {
     let mut subs = self.namespace_subscribers.write().await;
 
@@ -251,9 +264,9 @@ impl TrackManager {
     // Avoid duplicates
     if !clients
       .iter()
-      .any(|(c, _)| c.connection_id == client.connection_id)
+      .any(|(c, _, _)| c.connection_id == client.connection_id)
     {
-      clients.push((client, message));
+      clients.push((client, message, namespace_tx));
     }
     info!("Added namespace subscriber for prefix {:?}", prefix);
   }
@@ -266,7 +279,7 @@ impl TrackManager {
     // Example: Target "meet.room1", Prefix "meet" -> Match.
     for (prefix, clients) in subs.iter() {
       if target_namespace.starts_with(prefix) {
-        for (client, _message) in clients {
+        for (client, _message, _tx) in clients {
           interested_clients.push(client.clone());
         }
       }
@@ -320,7 +333,15 @@ impl TrackManager {
   pub async fn remove_namespace_subscriber(&self, connection_id: usize) {
     let mut subs = self.namespace_subscribers.write().await;
     for (_, clients) in subs.iter_mut() {
-      clients.retain(|(c, _)| c.connection_id != connection_id);
+      clients.retain(|(c, _, _)| c.connection_id != connection_id);
+    }
+    subs.retain(|_, clients| !clients.is_empty());
+  }
+
+  pub async fn remove_namespace_subscriber_by_prefix(&self, prefix: &Tuple, connection_id: usize) {
+    let mut subs = self.namespace_subscribers.write().await;
+    if let Some(clients) = subs.get_mut(prefix) {
+      clients.retain(|(c, _, _)| c.connection_id != connection_id);
     }
     subs.retain(|_, clients| !clients.is_empty());
   }
@@ -344,9 +365,9 @@ impl TrackManager {
   ) {
     let mut subs = self.namespace_subscribers.write().await;
     if let Some(clients) = subs.get_mut(prefix)
-      && let Some((_client, message)) = clients
+      && let Some((_client, message, _tx)) = clients
         .iter_mut()
-        .find(|(c, _)| c.connection_id == connection_id)
+        .find(|(c, _, _)| c.connection_id == connection_id)
     {
       apply_message_parameter_update(&mut message.parameters, new_parameters);
     }
@@ -409,7 +430,7 @@ impl TrackManager {
     for (existing_prefix, clients) in subs.iter() {
       if clients
         .iter()
-        .any(|(c, _)| c.connection_id == connection_id)
+        .any(|(c, _, _)| c.connection_id == connection_id)
         && namespace_prefixes_overlap(new_prefix, existing_prefix)
       {
         return Some(existing_prefix.clone());

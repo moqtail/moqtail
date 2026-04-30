@@ -15,7 +15,7 @@
  */
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
 import { Tuple } from '../common/tuple'
-import { ControlMessageType } from './constant'
+import { ControlMessageType, NamespaceSubscribeOptions } from './constant'
 import { LengthExceedsMaxError } from '../error/error'
 import { MessageParameter, MessageParameters } from '../parameter/message_parameter'
 import { AuthorizationToken } from '../parameter/common/authorization_token'
@@ -25,6 +25,7 @@ export class SubscribeNamespace {
   constructor(
     public readonly requestId: bigint,
     public readonly trackNamespacePrefix: Tuple,
+    public readonly subscribeOptions: NamespaceSubscribeOptions,
     public readonly parameters: MessageParameter[],
   ) {}
 
@@ -38,6 +39,7 @@ export class SubscribeNamespace {
     const payload = new ByteBuffer()
     payload.putVI(this.requestId)
     payload.putTuple(this.trackNamespacePrefix)
+    payload.putVI(this.subscribeOptions)
     payload.putVI(this.parameters.length)
     for (const param of this.parameters) {
       payload.putKeyValuePair(param.toKeyValuePair())
@@ -54,13 +56,14 @@ export class SubscribeNamespace {
   static parsePayload(buf: BaseByteBuffer): SubscribeNamespace {
     const requestId = buf.getVI()
     const trackNamespacePrefix = buf.getTuple()
+    const subscribeOptions = Number(buf.getVI()) as NamespaceSubscribeOptions
     const paramCount = buf.getNumberVI()
     const rawParams = new Array(paramCount)
     for (let i = 0; i < paramCount; i++) {
       rawParams[i] = buf.getKeyValuePair()
     }
     const parameters = MessageParameters.fromKeyValuePairs(rawParams)
-    return new SubscribeNamespace(requestId, trackNamespacePrefix, parameters)
+    return new SubscribeNamespace(requestId, trackNamespacePrefix, subscribeOptions, parameters)
   }
 }
 
@@ -75,7 +78,7 @@ if (import.meta.vitest) {
       const requestId = 241421n
       const trackNamespacePrefix = Tuple.fromUtf8Path('pre/fix/me')
       const parameters = getTestParameters()
-      const msg = new SubscribeNamespace(requestId, trackNamespacePrefix, parameters)
+      const msg = new SubscribeNamespace(requestId, trackNamespacePrefix, NamespaceSubscribeOptions.Both, parameters)
       const frozen = msg.serialize()
       const msgType = frozen.getVI()
       expect(msgType).toBe(BigInt(ControlMessageType.SubscribeNamespace))
@@ -84,6 +87,7 @@ if (import.meta.vitest) {
       const deserialized = SubscribeNamespace.parsePayload(frozen)
       expect(deserialized.requestId).toBe(msg.requestId)
       expect(deserialized.trackNamespacePrefix.equals(msg.trackNamespacePrefix)).toBe(true)
+      expect(deserialized.subscribeOptions).toBe(msg.subscribeOptions)
       expect(deserialized.parameters).toEqual(msg.parameters)
       expect(frozen.remaining).toBe(0)
     })
@@ -91,7 +95,7 @@ if (import.meta.vitest) {
       const requestId = 241421n
       const trackNamespacePrefix = Tuple.fromUtf8Path('pre/fix/me')
       const parameters = getTestParameters()
-      const msg = new SubscribeNamespace(requestId, trackNamespacePrefix, parameters)
+      const msg = new SubscribeNamespace(requestId, trackNamespacePrefix, NamespaceSubscribeOptions.Both, parameters)
       const serialized = msg.serialize().toUint8Array()
       const excess = new Uint8Array([9, 1, 1])
       const buf = new ByteBuffer()
@@ -105,6 +109,7 @@ if (import.meta.vitest) {
       const deserialized = SubscribeNamespace.parsePayload(frozen)
       expect(deserialized.requestId).toBe(msg.requestId)
       expect(deserialized.trackNamespacePrefix.equals(msg.trackNamespacePrefix)).toBe(true)
+      expect(deserialized.subscribeOptions).toBe(msg.subscribeOptions)
       expect(deserialized.parameters).toEqual(msg.parameters)
       expect(frozen.remaining).toBe(3)
       expect(Array.from(frozen.getBytes(3))).toEqual([9, 1, 1])
@@ -113,7 +118,7 @@ if (import.meta.vitest) {
       const requestId = 241421n
       const trackNamespacePrefix = Tuple.fromUtf8Path('pre/fix/me')
       const parameters = getTestParameters()
-      const msg = new SubscribeNamespace(requestId, trackNamespacePrefix, parameters)
+      const msg = new SubscribeNamespace(requestId, trackNamespacePrefix, NamespaceSubscribeOptions.Both, parameters)
       const serialized = msg.serialize().toUint8Array()
       const upper = Math.floor(serialized.length / 2)
       const partial = serialized.slice(0, upper)

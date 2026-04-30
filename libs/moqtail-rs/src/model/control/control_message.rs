@@ -18,18 +18,20 @@ use bytes::{Buf, Bytes};
 
 use super::{
   client_setup::ClientSetup, constant::ControlMessageType, fetch::Fetch, fetch_cancel::FetchCancel,
-  fetch_ok::FetchOk, goaway::GoAway, max_request_id::MaxRequestId, publish::Publish,
-  publish_done::PublishDone, publish_namespace::PublishNamespace,
-  publish_namespace_cancel::PublishNamespaceCancel, publish_namespace_done::PublishNamespaceDone,
-  publish_ok::PublishOk, request_error::RequestError, request_ok::RequestOk,
-  request_update::RequestUpdate, requests_blocked::RequestsBlocked, server_setup::ServerSetup,
-  subscribe::Subscribe, subscribe_namespace::SubscribeNamespace, subscribe_ok::SubscribeOk,
-  switch::Switch, track_status::TrackStatus, unsubscribe::Unsubscribe,
+  fetch_ok::FetchOk, goaway::GoAway, max_request_id::MaxRequestId, namespace::Namespace,
+  namespace_done::NamespaceDone, publish::Publish, publish_done::PublishDone,
+  publish_namespace::PublishNamespace, publish_namespace_cancel::PublishNamespaceCancel,
+  publish_namespace_done::PublishNamespaceDone, publish_ok::PublishOk, request_error::RequestError,
+  request_ok::RequestOk, request_update::RequestUpdate, requests_blocked::RequestsBlocked,
+  server_setup::ServerSetup, subscribe::Subscribe, subscribe_namespace::SubscribeNamespace,
+  subscribe_ok::SubscribeOk, switch::Switch, track_status::TrackStatus, unsubscribe::Unsubscribe,
   unsubscribe_namespace::UnsubscribeNamespace,
 };
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ControlMessage {
+  Namespace(Box<Namespace>),
+  NamespaceDone(Box<NamespaceDone>),
   PublishNamespace(Box<PublishNamespace>),
   PublishNamespaceCancel(Box<PublishNamespaceCancel>),
   RequestOk(Box<RequestOk>),
@@ -88,6 +90,12 @@ impl ControlMessage {
 
     let mut payload = bytes.copy_to_bytes(payload_length);
     let message = match msg_type {
+      ControlMessageType::Namespace => {
+        Namespace::parse_payload(&mut payload).map(ControlMessage::Namespace)
+      }
+      ControlMessageType::NamespaceDone => {
+        NamespaceDone::parse_payload(&mut payload).map(ControlMessage::NamespaceDone)
+      }
       ControlMessageType::PublishNamespace => {
         PublishNamespace::parse_payload(&mut payload).map(ControlMessage::PublishNamespace)
       }
@@ -175,6 +183,8 @@ impl ControlMessage {
 
   pub fn serialize(&self) -> Result<Bytes, ParseError> {
     match self {
+      ControlMessage::Namespace(msg) => msg.serialize(),
+      ControlMessage::NamespaceDone(msg) => msg.serialize(),
       ControlMessage::PublishNamespace(msg) => msg.serialize(),
       ControlMessage::PublishNamespaceCancel(msg) => msg.serialize(),
       ControlMessage::PublishNamespaceDone(msg) => msg.serialize(),
@@ -205,6 +215,8 @@ impl ControlMessage {
   /// Returns the message type of the control message.
   pub fn get_type(&self) -> ControlMessageType {
     match self {
+      ControlMessage::Namespace(_) => ControlMessageType::Namespace,
+      ControlMessage::NamespaceDone(_) => ControlMessageType::NamespaceDone,
       ControlMessage::PublishNamespace(_) => ControlMessageType::PublishNamespace,
       ControlMessage::PublishNamespaceCancel(_) => ControlMessageType::PublishNamespaceCancel,
       ControlMessage::PublishNamespaceDone(_) => ControlMessageType::PublishNamespaceDone,

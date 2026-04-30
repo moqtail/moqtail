@@ -79,7 +79,7 @@ impl From<Publish> for SubscriptionOrigin {
 #[derive(Debug, Clone)]
 pub struct SubscriptionState {
   pub subscriber_priority: u8,
-  pub _group_order: GroupOrder,
+  pub group_order: GroupOrder,
   pub forward: bool,
   pub filter_type: FilterType,
   pub start_location: Option<Location>,
@@ -177,7 +177,7 @@ impl From<SubscriptionOrigin> for SubscriptionState {
 
         Self {
           subscriber_priority,
-          _group_order: group_order,
+          group_order,
           forward,
           filter_type,
           start_location,
@@ -244,7 +244,7 @@ impl From<SubscriptionOrigin> for SubscriptionState {
 
         Self {
           subscriber_priority,
-          _group_order: group_order,
+          group_order,
           forward,
           filter_type,
           start_location,
@@ -256,6 +256,28 @@ impl From<SubscriptionOrigin> for SubscriptionState {
         }
       }
     }
+  }
+}
+
+/// Compute QUIC stream priority from MOQT scheduling parameters.
+///
+/// The i32 space is divided into 65536 bands (one per sub_prio × pub_prio pair).
+/// Within each band, group_id determines relative position according to group_order:
+///   Ascending / Original – lower group_id = higher priority (counts down from band_max)
+///   Descending            – higher group_id = higher priority (counts up from band_min)
+fn compute_stream_priority(
+  sub_prio: u8,
+  pub_prio: u8,
+  group_order: GroupOrder,
+  group_id: u64,
+) -> i32 {
+  const BAND_SIZE: i64 = 65536;
+  let priority_index = (255 - sub_prio as i64) * 256 + (255 - pub_prio as i64);
+  let band_min = i32::MIN as i64 + priority_index * BAND_SIZE;
+  let group_slot = (group_id % BAND_SIZE as u64) as i64;
+  match group_order {
+    GroupOrder::Ascending | GroupOrder::Original => (band_min + BAND_SIZE - 1 - group_slot) as i32,
+    GroupOrder::Descending => (band_min + group_slot) as i32,
   }
 }
 
@@ -1053,9 +1075,17 @@ impl Subscription {
         utils::bytes_to_hex(&header_payload)
       );
 
-      // set priority based on the current time
-      // TODO: revisit this logic to set priority based on the subscription
-      let priority = i32::MAX - (utils::passed_time_since_start() % i32::MAX as u128) as i32;
+      let (pub_prio, group_id) = match &header_info {
+        HeaderInfo::Subgroup { header } => {
+          (header.publisher_priority.unwrap_or(128u8), header.group_id)
+        }
+        HeaderInfo::Fetch { .. } => (128u8, 0u64),
+      };
+      let (sub_prio, group_order) = {
+        let state = self.subscription_state.read().await;
+        (state.subscriber_priority, state.group_order)
+      };
+      let priority = compute_stream_priority(sub_prio, pub_prio, group_order, group_id);
 
       let send_stream = match self
         .subscriber
@@ -1261,5 +1291,92 @@ impl Subscription {
     );
 
     Ok(())
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use moqtail::model::control::constant::GroupOrder;
+
+  #[test]
+  fn test_highest_priority_near_i32_max() {
+    let p = compute_stream_priority(0, 0, GroupOrder::Ascending, 0);
+    assert!(
+      p > 2_100_000_000,
+      "highest priority should be near i32::MAX, got {p}"
+    );
+  }
+
+  #[test]
+  fn test_lowest_priority_near_i32_min() {
+    let p = compute_stream_priority(255, 255, GroupOrder::Ascending, 0);
+    assert!(
+      p < -2_100_000_000,
+      "lowest priority should be near i32::MIN, got {p}"
+    );
+  }
+
+  #[test]
+  fn test_ascending_lower_group_higher_priority() {
+    let p0 = compute_stream_priority(0, 0, GroupOrder::Ascending, 0);
+    let p1 = compute_stream_priority(0, 0, GroupOrder::Ascending, 1);
+    assert!(p0 > p1, "group 0 should outrank group 1 in Ascending order");
+  }
+
+  #[test]
+  fn test_descending_higher_group_higher_priority() {
+    let p0 = compute_stream_priority(0, 0, GroupOrder::Descending, 0);
+    let p1 = compute_stream_priority(0, 0, GroupOrder::Descending, 1);
+    assert!(
+      p1 > p0,
+      "group 1 should outrank group 0 in Descending order"
+    );
+  }
+
+  #[test]
+  fn test_original_same_as_ascending() {
+    for g in [0u64, 1, 100, 65535] {
+      assert_eq!(
+        compute_stream_priority(10, 20, GroupOrder::Original, g),
+        compute_stream_priority(10, 20, GroupOrder::Ascending, g),
+        "Original should behave like Ascending for group {g}"
+      );
+    }
+  }
+
+  #[test]
+  fn test_subscriber_priority_dominates() {
+    // sub=0,pub=255 must outrank sub=1,pub=0 regardless of group
+    let high = compute_stream_priority(0, 255, GroupOrder::Ascending, 0);
+    let low = compute_stream_priority(1, 0, GroupOrder::Ascending, 0);
+    assert!(
+      high > low,
+      "subscriber priority must dominate publisher priority"
+    );
+  }
+
+  #[test]
+  fn test_publisher_priority_tie_break() {
+    let high = compute_stream_priority(10, 0, GroupOrder::Ascending, 0);
+    let low = compute_stream_priority(10, 1, GroupOrder::Ascending, 0);
+    assert!(high > low, "lower pub_prio number = higher priority");
+  }
+
+  #[test]
+  fn test_all_values_within_i32_range() {
+    for sub in [0u8, 128, 255] {
+      for pub_ in [0u8, 128, 255] {
+        for &order in &[
+          GroupOrder::Ascending,
+          GroupOrder::Descending,
+          GroupOrder::Original,
+        ] {
+          for group in [0u64, 1, 65534, 65535, 65536, u64::MAX] {
+            let _ = compute_stream_priority(sub, pub_, order, group); // must not panic/overflow
+          }
+        }
+      }
+    }
   }
 }

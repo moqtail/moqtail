@@ -36,6 +36,9 @@ use crate::model::data::subgroup_object::SubgroupObject;
 use crate::model::error::ParseError;
 use tracing::{debug, error, info};
 
+type ObjectParseResult =
+  Result<(Option<u64>, Option<FetchObjectContext>, Option<Object>), ParseError>;
+
 // Timeout for header and subsequent objects
 const DATA_STREAM_TIMEOUT: Duration = Duration::from_secs(15);
 const MTU_SIZE: usize = 1500; // Standard MTU size
@@ -488,43 +491,42 @@ impl RecvDataStream {
     if !bytes_cursor.is_empty() {
       let original_remaining = bytes_cursor.remaining();
 
-      let parse_result: Result<(Option<u64>, Option<FetchObjectContext>, Option<Object>), ParseError> =
-        match header_info {
-          HeaderInfo::Fetch { .. } => {
-            FetchObject::deserialize(&mut bytes_cursor, fetch_prev_ctx.as_ref()).and_then(
-              |fetch_obj| {
-                let new_ctx = fetch_obj.context();
-                match fetch_obj {
-                  FetchObject::Object(payload) => {
-                    // TODO: Get track alias from fetch_request
-                    let object = Object::try_from_fetch(payload, 0)?;
-                    Ok((None, new_ctx, Some(object)))
-                  }
-                  FetchObject::EndOfRange { .. } => {
-                    // Range markers advance the stream but do not enqueue an object.
-                    debug!("FetchObject::EndOfRange received, skipping");
-                    Ok((None, None, None))
-                  }
+      let parse_result: ObjectParseResult = match header_info {
+        HeaderInfo::Fetch { .. } => {
+          FetchObject::deserialize(&mut bytes_cursor, fetch_prev_ctx.as_ref()).and_then(
+            |fetch_obj| {
+              let new_ctx = fetch_obj.context();
+              match fetch_obj {
+                FetchObject::Object(payload) => {
+                  // TODO: Get track alias from fetch_request
+                  let object = Object::try_from_fetch(payload, 0)?;
+                  Ok((None, new_ctx, Some(object)))
                 }
-              },
-            )
-          }
-          HeaderInfo::Subgroup { header, .. } => {
-            let has_extensions = header.header_type.has_extensions();
-            SubgroupObject::deserialize(&mut bytes_cursor, previous_object_id, has_extensions)
-              .and_then(|subgroup_obj| {
-                let object_id = subgroup_obj.object_id;
-                let object = Object::try_from_subgroup(
-                  subgroup_obj,
-                  header.track_alias,
-                  header.group_id,
-                  header.subgroup_id,
-                  header.publisher_priority,
-                )?;
-                Ok((Some(object_id), None, Some(object)))
-              })
-          }
-        };
+                FetchObject::EndOfRange { .. } => {
+                  // Range markers advance the stream but do not enqueue an object.
+                  debug!("FetchObject::EndOfRange received, skipping");
+                  Ok((None, None, None))
+                }
+              }
+            },
+          )
+        }
+        HeaderInfo::Subgroup { header, .. } => {
+          let has_extensions = header.header_type.has_extensions();
+          SubgroupObject::deserialize(&mut bytes_cursor, previous_object_id, has_extensions)
+            .and_then(|subgroup_obj| {
+              let object_id = subgroup_obj.object_id;
+              let object = Object::try_from_subgroup(
+                subgroup_obj,
+                header.track_alias,
+                header.group_id,
+                header.subgroup_id,
+                header.publisher_priority,
+              )?;
+              Ok((Some(object_id), None, Some(object)))
+            })
+        }
+      };
 
       match parse_result {
         Ok((object_id, new_ctx, maybe_object)) => {

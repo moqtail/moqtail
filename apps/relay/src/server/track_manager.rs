@@ -28,25 +28,22 @@ use tokio::sync::RwLock;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, info, warn};
 
+pub type NamespacePrefix = Tuple;
+pub type NamespaceSubscriber = (
+  Arc<MOQTClient>,
+  SubscribeNamespace,
+  UnboundedSender<ControlMessage>,
+);
+pub type AnnouncementSubscriber = (Arc<MOQTClient>, PublishNamespace);
+
 #[derive(Clone)]
 pub struct TrackManager {
   pub tracks: Arc<RwLock<HashMap<FullTrackName, Arc<RwLock<Track>>>>>,
   /// Maps (publisher_connection_id, publisher_track_alias) -> FullTrackName.
   /// Connection-scoped to avoid alias collisions across different publishers.
   pub track_aliases: Arc<RwLock<HashMap<(usize, u64), FullTrackName>>>,
-  pub namespace_subscribers: Arc<
-    RwLock<
-      HashMap<
-        Tuple,
-        Vec<(
-          Arc<MOQTClient>,
-          SubscribeNamespace,
-          UnboundedSender<ControlMessage>,
-        )>,
-      >,
-    >,
-  >,
-  pub announcements: Arc<RwLock<HashMap<Tuple, (Arc<MOQTClient>, PublishNamespace)>>>,
+  pub namespace_subscribers: Arc<RwLock<HashMap<NamespacePrefix, Vec<NamespaceSubscriber>>>>,
+  pub announcements: Arc<RwLock<HashMap<Tuple, AnnouncementSubscriber>>>,
   pub publishes: Arc<RwLock<HashMap<FullTrackName, HashMap<usize, Publish>>>>,
   /// Counter for generating stable relay_track_id values.
   next_relay_track_id: Arc<AtomicU64>,

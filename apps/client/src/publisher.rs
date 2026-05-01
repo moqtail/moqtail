@@ -57,7 +57,6 @@ pub struct PublishNamespaceConfig {
   pub objects_per_group: u64,
   pub payload_size: usize,
   pub publisher_priority: u8,
-  pub group_order: GroupOrder,
 }
 
 pub async fn run_namespace(moq: MoqConnection, config: PublishNamespaceConfig) -> Result<()> {

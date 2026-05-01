@@ -276,15 +276,14 @@ impl FetchObject {
     };
 
     let payload_len = bytes.get_vi()?;
-    let payload_len: usize =
-      payload_len
-        .try_into()
-        .map_err(|e: std::num::TryFromIntError| ParseError::CastingError {
-          context: "FetchObject::deserialize(payload_len)",
-          from_type: "u64",
-          to_type: "usize",
-          details: e.to_string(),
-        })?;
+    let payload_len: usize = payload_len
+      .try_into()
+      .map_err(|e: std::num::TryFromIntError| ParseError::CastingError {
+        context: "FetchObject::deserialize(payload_len)",
+        from_type: "u64",
+        to_type: "usize",
+        details: e.to_string(),
+      })?;
     if bytes.remaining() < payload_len {
       return Err(ParseError::NotEnoughBytes {
         context: "FetchObject::deserialize(payload)",
@@ -320,7 +319,10 @@ fn serialize_payload(
   p: &FetchObjectPayload,
   prev: Option<&FetchObjectContext>,
 ) -> Result<Bytes, ParseError> {
-  let is_datagram = matches!(p.forwarding_preference, ObjectForwardingPreference::Datagram);
+  let is_datagram = matches!(
+    p.forwarding_preference,
+    ObjectForwardingPreference::Datagram
+  );
 
   let (has_group_id, group_id_inherited) = match prev {
     Some(pc) if pc.group_id == p.group_id => (false, true),
@@ -339,22 +341,6 @@ fn serialize_payload(
 
   let has_extensions = matches!(&p.extension_headers, Some(v) if !v.is_empty());
 
-  let subgroup_mode = if is_datagram {
-    SUBGROUP_MODE_ZERO
-  } else if p.subgroup_id == 0 {
-    SUBGROUP_MODE_ZERO
-  } else if let Some(pc) = prev {
-    if pc.subgroup_id == p.subgroup_id {
-      SUBGROUP_MODE_PRIOR
-    } else if pc.subgroup_id + 1 == p.subgroup_id {
-      SUBGROUP_MODE_PRIOR_PLUS_ONE
-    } else {
-      SUBGROUP_MODE_PRESENT
-    }
-  } else {
-    SUBGROUP_MODE_PRESENT
-  };
-
   // First object on the stream cannot inherit.
   let (has_group_id, has_object_id, has_priority, subgroup_mode) = if prev.is_none() {
     let sm = if is_datagram || p.subgroup_id == 0 {
@@ -364,6 +350,19 @@ fn serialize_payload(
     };
     (true, true, true, sm)
   } else {
+    let subgroup_mode = if is_datagram || p.subgroup_id == 0 {
+      SUBGROUP_MODE_ZERO
+    } else if let Some(pc) = prev {
+      if pc.subgroup_id == p.subgroup_id {
+        SUBGROUP_MODE_PRIOR
+      } else if pc.subgroup_id + 1 == p.subgroup_id {
+        SUBGROUP_MODE_PRIOR_PLUS_ONE
+      } else {
+        SUBGROUP_MODE_PRESENT
+      }
+    } else {
+      SUBGROUP_MODE_PRESENT
+    };
     (
       has_group_id || !group_id_inherited,
       has_object_id || !object_id_inherited,
@@ -528,8 +527,7 @@ mod tests {
   #[test]
   fn reject_first_object_inheriting_priority() {
     // flags = subgroup_mode present | object_id present | group_id present, priority absent → violation.
-    let flags =
-      SUBGROUP_MODE_PRESENT | FLAG_OBJECT_ID_PRESENT | FLAG_GROUP_ID_PRESENT;
+    let flags = SUBGROUP_MODE_PRESENT | FLAG_OBJECT_ID_PRESENT | FLAG_GROUP_ID_PRESENT;
     let mut buf = BytesMut::new();
     buf.put_vi(flags as u64).unwrap();
     buf.put_vi(1u64).unwrap();

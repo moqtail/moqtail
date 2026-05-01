@@ -29,11 +29,7 @@ pub struct RequestUpdate {
 }
 
 impl RequestUpdate {
-  pub fn new(
-    request_id: u64,
-    existing_request_id: u64,
-    parameters: Vec<MessageParameter>,
-  ) -> Self {
+  pub fn new(request_id: u64, existing_request_id: u64, parameters: Vec<MessageParameter>) -> Self {
     Self {
       request_id,
       existing_request_id,

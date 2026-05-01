@@ -70,17 +70,17 @@ async fn subscribe_track(
   }
 }
 
-pub async fn run(
-  moq: MoqConnection,
-  namespace: &str,
-  track_name: &str,
-  forwarding_preference: ForwardingPreference,
-  duration: u64,
-  subscriber_priority: u8,
-  group_order: GroupOrder,
-  // Optional second track for priority testing: (track_name, subscriber_priority)
-  extra_track: Option<(String, u8)>,
-) -> Result<()> {
+pub struct SubscribeConfig {
+  pub namespace: String,
+  pub track_name: String,
+  pub forwarding_preference: ForwardingPreference,
+  pub duration: u64,
+  pub subscriber_priority: u8,
+  pub group_order: GroupOrder,
+  pub extra_track: Option<(String, u8)>,
+}
+
+pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
   let MoqConnection {
     connection,
     mut control_stream,
@@ -88,22 +88,22 @@ pub async fn run(
 
   let track_alias = subscribe_track(
     &mut control_stream,
-    namespace,
-    track_name,
+    &config.namespace,
+    &config.track_name,
     0,
-    subscriber_priority,
-    group_order,
+    config.subscriber_priority,
+    config.group_order,
   )
   .await?;
 
-  let extra_alias = if let Some((ref extra_name, extra_priority)) = extra_track {
+  let extra_alias = if let Some((ref extra_name, extra_priority)) = config.extra_track {
     let alias = subscribe_track(
       &mut control_stream,
-      namespace,
+      &config.namespace,
       extra_name,
       1,
       extra_priority,
-      group_order,
+      config.group_order,
     )
     .await?;
     Some((extra_name.clone(), alias))
@@ -111,10 +111,12 @@ pub async fn run(
     None
   };
 
-  match forwarding_preference {
-    ForwardingPreference::Datagram => receive_datagrams(&connection, track_alias, duration).await,
+  match config.forwarding_preference {
+    ForwardingPreference::Datagram => {
+      receive_datagrams(&connection, track_alias, config.duration).await
+    }
     ForwardingPreference::Subgroup => {
-      receive_streams(&connection, track_alias, extra_alias, duration).await
+      receive_streams(&connection, track_alias, extra_alias, config.duration).await
     }
   }
 }

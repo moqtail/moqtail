@@ -280,10 +280,18 @@ impl Session {
         return Ok(());
       }
       tokio::select! {
-        _ = context.connection.accept_bi()  => {
-          error!("One bi-directional stream is allowed per connection | connection id: {}", context.connection_id);
-          Self::close_session(context.clone(), TerminationCode::ProtocolViolation, "One bi-directional stream is allowed per connection");
-          return Ok(());
+        stream = context.connection.accept_bi() => {
+          match stream {
+            Ok((send, recv)) => {
+              let ctx = context.clone();
+              tokio::spawn(async move {
+                Self::handle_request_stream(ctx, send, recv).await;
+              });
+            }
+            Err(e) => {
+              error!("Failed to accept bi-stream: {:?}", e);
+            }
+          }
         }
 
         stream = context.connection.accept_uni() => {
@@ -352,6 +360,125 @@ impl Session {
             }
           });
         }
+      }
+    }
+  }
+
+  async fn handle_request_stream(
+    context: Arc<SessionContext>,
+    send_stream: SendStream,
+    recv_stream: RecvStream,
+  ) {
+    let client = match context.get_client().await {
+      Some(c) => c,
+      None => return,
+    };
+    let mut stream_handler = ControlStreamHandler::new(send_stream, recv_stream);
+
+    let msg = match stream_handler.next_message().await {
+      Ok(m) => m,
+      Err(e) => {
+        error!("Failed to read first message on request bi-stream: {:?}", e);
+        return;
+      }
+    };
+
+    // Validate request_id
+    let request_id_opt = match &msg {
+      ControlMessage::SubscribeNamespace(m) => Some(m.request_id),
+      _ => None,
+    };
+    if let Some(rid) = request_id_opt {
+      let max_request_id = context
+        .max_request_id
+        .load(std::sync::atomic::Ordering::Relaxed);
+      if rid >= max_request_id {
+        warn!(
+          "Request bi-stream: request_id ({}) >= max_request_id ({})",
+          rid, max_request_id
+        );
+        Self::close_session(
+          context,
+          TerminationCode::TooManyRequests,
+          "Request ID exceeds maximum",
+        );
+        return;
+      }
+    }
+
+    Self::dispatch_request_stream_message(client, stream_handler, msg, context).await;
+  }
+
+  async fn dispatch_request_stream_message(
+    client: Arc<MOQTClient>,
+    mut stream_handler: ControlStreamHandler,
+    msg: ControlMessage,
+    context: Arc<SessionContext>,
+  ) {
+    match msg {
+      ControlMessage::SubscribeNamespace(sub_ns) => {
+        let request_id = sub_ns.request_id;
+
+        let (namespace_tx, mut namespace_rx) =
+          tokio::sync::mpsc::unbounded_channel::<ControlMessage>();
+
+        let result = message_handlers::subscribe_namespace_handler::handle_subscribe_namespace(
+          client.clone(),
+          &mut stream_handler,
+          sub_ns,
+          context.clone(),
+          namespace_tx,
+        )
+        .await;
+
+        if let Err(e) = result {
+          error!("handle_subscribe_namespace error: {:?}", e);
+          return;
+        }
+
+        // Long-lived loop: forward NAMESPACE messages to bi-stream, or cancel on stream close
+        loop {
+          tokio::select! {
+            biased;
+            msg_opt = namespace_rx.recv() => {
+              match msg_opt {
+                Some(ns_msg) => {
+                  if let Err(e) = stream_handler.send(&ns_msg).await {
+                    warn!("Error writing NAMESPACE to bi-stream: {:?}", e);
+                    message_handlers::subscribe_namespace_handler::cancel(client, request_id, &context).await;
+                    return;
+                  }
+                }
+                None => return, // channel dropped, subscription ended
+              }
+            }
+            result = stream_handler.next_message() => {
+              match result {
+                Ok(extra) => {
+                  warn!("Unexpected message {:?} on request bi-stream", extra.get_type());
+                  Self::close_session(context, TerminationCode::ProtocolViolation, "Unexpected message on request bi-stream");
+                  return;
+                }
+                Err(_) => {
+                  // FIN or RESET — subscriber cancelled
+                  message_handlers::subscribe_namespace_handler::cancel(client, request_id, &context).await;
+                  return;
+                }
+              }
+            }
+          }
+        }
+      }
+      _ => {
+        warn!(
+          "Unsupported message type {:?} on request bi-stream",
+          msg.get_type()
+        );
+        Self::close_session(
+          context,
+          TerminationCode::ProtocolViolation,
+          "Unsupported message type on request bi-stream",
+        );
       }
     }
   }

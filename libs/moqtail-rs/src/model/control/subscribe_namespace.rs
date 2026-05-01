@@ -26,6 +26,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 pub struct SubscribeNamespace {
   pub request_id: u64,
   pub track_namespace_prefix: Tuple,
+  pub subscribe_options: u64,
   pub parameters: Vec<MessageParameter>,
 }
 
@@ -33,11 +34,13 @@ impl SubscribeNamespace {
   pub fn new(
     request_id: u64,
     track_namespace_prefix: Tuple,
+    subscribe_options: u64,
     parameters: Vec<MessageParameter>,
   ) -> Self {
     Self {
       request_id,
       track_namespace_prefix,
+      subscribe_options,
       parameters,
     }
   }
@@ -51,6 +54,7 @@ impl ControlMessageTrait for SubscribeNamespace {
     let mut payload = BytesMut::new();
     payload.put_vi(self.request_id)?;
     payload.extend_from_slice(&self.track_namespace_prefix.serialize()?);
+    payload.put_vi(self.subscribe_options)?;
 
     payload.put_vi(self.parameters.len())?;
     for param in &self.parameters {
@@ -74,6 +78,16 @@ impl ControlMessageTrait for SubscribeNamespace {
   fn parse_payload(payload: &mut Bytes) -> Result<Box<Self>, ParseError> {
     let request_id = payload.get_vi()?;
     let track_namespace_prefix = Tuple::deserialize(payload)?;
+    if track_namespace_prefix.fields.len() > 32 {
+      return Err(ParseError::ProtocolViolation {
+        context: "SubscribeNamespace::parse_payload",
+        details: format!(
+          "Track namespace prefix has {} fields, maximum is 32",
+          track_namespace_prefix.fields.len()
+        ),
+      });
+    }
+    let subscribe_options = payload.get_vi()?;
 
     let param_count = payload.get_vi()?;
     let parameters =
@@ -82,6 +96,7 @@ impl ControlMessageTrait for SubscribeNamespace {
     Ok(Box::new(SubscribeNamespace {
       request_id,
       track_namespace_prefix,
+      subscribe_options,
       parameters,
     }))
   }
@@ -102,6 +117,7 @@ mod tests {
   fn test_roundtrip() {
     let request_id = 241421;
     let track_namespace_prefix = Tuple::from_utf8_path("pre/fix/me");
+    let subscribe_options = 0x02u64; // Both
     let parameters = vec![
       MessageParameter::new_authorization_token(AuthorizationToken::new_use_value(
         0,
@@ -112,6 +128,7 @@ mod tests {
     let subscribe_namespace = SubscribeNamespace {
       request_id,
       track_namespace_prefix,
+      subscribe_options,
       parameters,
     };
 
@@ -129,6 +146,7 @@ mod tests {
   fn test_excess_roundtrip() {
     let request_id = 241421;
     let track_namespace_prefix = Tuple::from_utf8_path("pre/fix/me");
+    let subscribe_options = 0x01u64; // NamespaceOnly
     let parameters = vec![
       MessageParameter::new_authorization_token(AuthorizationToken::new_use_value(
         0,
@@ -139,6 +157,7 @@ mod tests {
     let subscribe_namespace = SubscribeNamespace {
       request_id,
       track_namespace_prefix,
+      subscribe_options,
       parameters,
     };
 
@@ -162,6 +181,7 @@ mod tests {
   fn test_partial_message() {
     let request_id = 241421;
     let track_namespace_prefix = Tuple::from_utf8_path("pre/fix/me");
+    let subscribe_options = 0x00u64; // PublishOnly
     let parameters = vec![
       MessageParameter::new_authorization_token(AuthorizationToken::new_use_value(
         0,
@@ -172,6 +192,7 @@ mod tests {
     let subscribe_namespace = SubscribeNamespace {
       request_id,
       track_namespace_prefix,
+      subscribe_options,
       parameters,
     };
 

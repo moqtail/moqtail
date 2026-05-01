@@ -13,10 +13,9 @@
 // limitations under the License.
 
 use crate::server::client::MOQTClient;
-use crate::server::session::Session;
 use crate::server::session_context::{PendingRequest, SessionContext};
 use core::result::Result;
-use moqtail::model::control::publish_namespace::PublishNamespace;
+use moqtail::model::control::namespace::Namespace;
 use moqtail::model::control::{control_message::ControlMessage, request_ok::RequestOk};
 use moqtail::model::error::TerminationCode;
 use moqtail::model::parameter::message_parameter::apply_message_parameter_update;
@@ -76,48 +75,25 @@ pub async fn handle(
       // TODO: Remove this request_id from relay_pending_requests when a PUBLISH_NAMESPACE_DONE
       // is received for this namespace, or if the client disconnects. Until then this is a memory leak.
 
-      // and forward the message to people who are subscribed to the namespace
+      // Forward the announcement to namespace subscribers via their bi-stream channels
       {
         let subs_map = context.track_manager.namespace_subscribers.read().await;
         for (prefix, subscribers) in subs_map.iter() {
           if m.track_namespace.starts_with(prefix) {
-            for (sub, _subscribe_ns_message) in subscribers {
+            for (sub, _subscribe_ns_message, namespace_tx) in subscribers {
               // Don't echo back to announcer
               if sub.connection_id == client.connection_id {
                 continue;
               }
 
-              info!(
-                "Forwarding announcement {:?} to subscriber {}",
-                m.track_namespace, sub.connection_id
-              );
-              let relay_announce_id =
-                Session::get_next_relay_request_id(context.relay_next_request_id.clone()).await;
-              sub
-                .register_outbound_announce_id(m.track_namespace.clone(), relay_announce_id)
-                .await;
-
-              let notify = PublishNamespace::new(relay_announce_id, m.track_namespace.clone(), &[]);
-
-              // Register the message in unified map for draft-16 response tracking
-              {
-                let mut map = client.inbound_requests.write().await;
-                map.insert(
-                  m.request_id,
-                  PendingRequest::PublishNamespace {
-                    client_connection_id: client.connection_id,
-                    original_request_id: m.request_id,
-                    message: (*m).clone(),
-                  },
+              if let Some(suffix) = m.track_namespace.suffix(prefix) {
+                info!(
+                  "Forwarding NAMESPACE suffix {:?} to subscriber {}",
+                  suffix, sub.connection_id
                 );
+                let ns_msg = ControlMessage::Namespace(Box::new(Namespace::new(suffix)));
+                let _ = namespace_tx.send(ns_msg);
               }
-
-              let sub_clone = sub.clone();
-              tokio::spawn(async move {
-                let _ = sub_clone
-                  .queue_message(ControlMessage::PublishNamespace(Box::new(notify)))
-                  .await;
-              });
             }
           }
         }

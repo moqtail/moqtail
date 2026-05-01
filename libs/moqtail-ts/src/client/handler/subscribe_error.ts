@@ -17,6 +17,7 @@
 import { ProtocolViolationError } from '@/model/error'
 import { SubscribeError } from '../../model/control'
 import { SubscribeRequest } from '../request/subscribe'
+import { PublishNamespaceRequest } from '../request/publish_namespace'
 import { ControlMessageHandler } from './handler'
 import { createLogger } from '../../util/logger'
 
@@ -25,7 +26,7 @@ const logger = createLogger('handler/subscribe_error')
 export const handlerSubscribeError: ControlMessageHandler<SubscribeError> = async (client, msg) => {
   logger.warn('requestId, code, reason', msg.requestId, msg.errorCode, msg.errorReason)
   const request = client.requests.get(msg.requestId)
-  if (request instanceof SubscribeRequest) {
+  if (request instanceof SubscribeRequest || request instanceof PublishNamespaceRequest) {
     request.resolve(msg)
   } else {
     throw new ProtocolViolationError(

@@ -49,8 +49,9 @@ export enum ControlMessageType {
   TrackStatusError = 0x0f,
   PublishNamespace = 0x06,
   RequestOk = 0x07,
-  PublishNamespaceError = 0x08,
+  Namespace = 0x08,
   PublishNamespaceDone = 0x09,
+  NamespaceDone = 0x0e,
   PublishNamespaceCancel = 0x0c,
   SubscribeNamespace = 0x11,
   SubscribeNamespaceError = 0x13,
@@ -112,9 +113,11 @@ export function controlMessageTypeFromBigInt(v: bigint): ControlMessageType {
     case 0x07n:
       return ControlMessageType.RequestOk
     case 0x08n:
-      return ControlMessageType.PublishNamespaceError
+      return ControlMessageType.Namespace
     case 0x09n:
       return ControlMessageType.PublishNamespaceDone
+    case 0x0en:
+      return ControlMessageType.NamespaceDone
     case 0x0cn:
       return ControlMessageType.PublishNamespaceCancel
     case 0x11n:
@@ -176,6 +179,16 @@ export function publishNamespaceErrorCodeFromBigInt(v: bigint): PublishNamespace
     default:
       throw new Error(`Invalid PublishNamespaceErrorCode: ${v}`)
   }
+}
+
+/**
+ * @public
+ * Subscribe options for SUBSCRIBE_NAMESPACE requests.
+ */
+export enum NamespaceSubscribeOptions {
+  PublishOnly = 0x00,
+  NamespaceOnly = 0x01,
+  Both = 0x02,
 }
 
 /**

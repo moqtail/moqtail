@@ -61,9 +61,16 @@ export class SendStream {
       const newCtx = object.toContext()
       if (newCtx) this.#fetchPrevCtx = newCtx
     } else {
+      if (this.#lastObjectId !== undefined && object.objectId <= this.#lastObjectId) {
+        throw new Error(
+          `SendStream.write: Out-of-order object detected. ` +
+            `Attempted to write objectId=${object.objectId}, but lastObjectId=${this.#lastObjectId}.`,
+        )
+      }
       serializedObject = object.serialize(this.#lastObjectId).toUint8Array()
       this.#lastObjectId = object.objectId
     }
+
     await this.#writer.write(serializedObject)
     if (this.onDataSent) this.onDataSent(object)
   }
@@ -267,15 +274,7 @@ if (import.meta.vitest) {
 
       test('Full object roundtrip', async () => {
         const payload = new Uint8Array([1, 2, 3, 4, 5])
-        const fetchObject = FetchObject.newObject(
-          1,
-          1,
-          1,
-          1,
-          ObjectForwardingPreference.Subgroup,
-          null,
-          payload,
-        )
+        const fetchObject = FetchObject.newObject(1, 1, 1, 1, ObjectForwardingPreference.Subgroup, null, payload)
         const reader = recvStream.stream.getReader()
         const receivePromise = reader.read()
         await sendStream.write(fetchObject)
@@ -330,6 +329,40 @@ if (import.meta.vitest) {
         expect(receivedObject).toEqual(fetchObject)
         reader.releaseLock()
       })
+    })
+  })
+}
+
+if (import.meta.vitest) {
+  const { describe, test, expect } = import.meta.vitest
+
+  describe('SendStream', () => {
+    test('write cleanly rejects out-of-order objects', async () => {
+      const writeStream = new WritableStream<Uint8Array>({
+        write(_chunk) {},
+      })
+
+      const dummyHeader = {
+        serialize: () => ({ toUint8Array: () => new Uint8Array() }),
+      }
+      const sendStream = await SendStream.new(writeStream, dummyHeader as any)
+      const dummySerialized = { toUint8Array: () => new Uint8Array() }
+
+      await expect(
+        sendStream.write({
+          objectId: 10n,
+          serialize: () => dummySerialized,
+        } as any),
+      ).resolves.not.toThrow()
+
+      await expect(
+        sendStream.write({
+          objectId: 9n,
+          serialize: () => dummySerialized,
+        } as any),
+      ).rejects.toThrow(/Out-of-order object detected/)
+
+      await sendStream.close()
     })
   })
 }

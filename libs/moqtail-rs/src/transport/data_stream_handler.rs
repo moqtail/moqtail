@@ -34,7 +34,7 @@ use crate::model::data::object::Object;
 use crate::model::data::subgroup_header::SubgroupHeader;
 use crate::model::data::subgroup_object::SubgroupObject;
 use crate::model::error::ParseError;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, trace};
 
 type ObjectParseResult =
   Result<(Option<u64>, Option<FetchObjectContext>, Option<Object>), ParseError>;
@@ -343,7 +343,7 @@ impl RecvDataStream {
 
           consumed = c;
 
-          debug!(
+          trace!(
             "previous_object_id: {:?} object_id: {:?} consumed: {}",
             previous_object_id, &object_id, consumed
           );
@@ -542,7 +542,7 @@ impl RecvDataStream {
           Ok((consumed, object_id, new_ctx))
         }
         Err(ParseError::NotEnoughBytes { .. }) => {
-          debug!("Not enough bytes to parse the object, continuing to read...");
+          trace!("Not enough bytes to parse the object, continuing to read...");
           Ok((0, None, None))
         }
         Err(e) => {

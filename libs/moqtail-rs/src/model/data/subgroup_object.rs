@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use bytes::{Buf, Bytes, BytesMut};
-use tracing::debug;
+use tracing::trace;
 
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
 use crate::model::error::ParseError;
@@ -45,7 +45,7 @@ impl SubgroupObject {
       self.object_id
     };
 
-    debug!(
+    trace!(
       "SubgroupObject::serialize || object_id_delta: {} prev: {:?} object_id: {} ext_headers: {:?}",
       object_id_delta, previous_object_id, self.object_id, &self.extension_headers
     );
@@ -91,7 +91,7 @@ impl SubgroupObject {
       object_id_delta
     };
 
-    debug!(
+    trace!(
       "SubgroupObject::deserialize || object_id_delta: {} prev: {:?} object_id: {}",
       object_id_delta, previous_object_id, object_id
     );

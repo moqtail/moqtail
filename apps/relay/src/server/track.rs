@@ -298,21 +298,30 @@ impl Track {
       );
     }
 
-    match object.clone().try_into_fetch() {
-      Ok(fetch_object) => {
-        self.cache.add_object(fetch_object).await;
-      }
-      Err(e) => {
-        warn!(
-          "new_subgroup_object: object cannot be cached | relay_track_id={} location: {:?} stream_id={} diff_ms={} object: {:?}\nerr: {:?}",
-          self.relay_track_id,
-          object.location,
-          stream_id,
-          utils::passed_time_since_start(),
-          object,
-          e
-        );
-      }
+    // Send single Object event with optional header info
+    let event = TrackEvent::SubgroupObject {
+      stream_id: stream_id.clone(),
+      object: object.clone(),
+      header_info: header_info.cloned(),
+    };
+
+    self
+      .subscription_manager
+      .send_event_to_subscribers(event)
+      .await?;
+
+    if let Ok(fetch_object) = object.clone().try_into_fetch() {
+      self.cache.add_object(fetch_object).await;
+    } else {
+      warn!(
+        "new_subgroup_object: object cannot be cached | relay_track_id: {} track_alias: {} location: {:?} stream_id: {} diff_ms: {} object: {:?}",
+        self.relay_track_id,
+        object.track_alias,
+        object.location,
+        stream_id,
+        utils::passed_time_since_start(),
+        object
+      );
     }
 
     // Track-level logging - log every object arrival if enabled
@@ -335,18 +344,6 @@ impl Track {
         largest_location.object = object.location.object;
       }
     }
-
-    // Send single Object event with optional header info
-    let event = TrackEvent::SubgroupObject {
-      stream_id: stream_id.clone(),
-      object: object.clone(),
-      header_info: header_info.cloned(),
-    };
-
-    self
-      .subscription_manager
-      .send_event_to_subscribers(event)
-      .await?;
     Ok(())
   }
 

@@ -37,10 +37,7 @@ export class DeliveryTimeout implements Parameter {
   static fromKeyValuePair(pair: KeyValuePair): DeliveryTimeout | undefined {
     if (Number(pair.typeValue) !== DeliveryTimeout.TYPE || typeof pair.value !== 'bigint') return undefined
     if (pair.value === 0n) {
-      throw new ProtocolViolationError(
-        'DeliveryTimeout.fromKeyValuePair',
-        'DELIVERY_TIMEOUT must be greater than 0',
-      )
+      throw new ProtocolViolationError('DeliveryTimeout.fromKeyValuePair', 'DELIVERY_TIMEOUT must be greater than 0')
     }
     return new DeliveryTimeout(pair.value)
   }
@@ -51,11 +48,11 @@ if (import.meta.vitest) {
 
   describe('DeliveryTimeout', () => {
     test('roundtrips correctly', () => {
-      const orig = new DeliveryTimeout(0xABCDn)
+      const orig = new DeliveryTimeout(0xabcdn)
       const pair = orig.toKeyValuePair()
       const parsed = DeliveryTimeout.fromKeyValuePair(pair)
       expect(parsed).toBeInstanceOf(DeliveryTimeout)
-      expect(parsed?.timeout).toBe(0xABCDn)
+      expect(parsed?.timeout).toBe(0xabcdn)
     })
     test('fromKeyValuePair returns undefined for wrong type', () => {
       const pair = KeyValuePair.tryNewVarInt(MessageParameterType.Expires, 100n)

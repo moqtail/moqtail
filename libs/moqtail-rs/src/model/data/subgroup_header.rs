@@ -112,11 +112,8 @@ impl SubgroupHeader {
     buf.put_vi(u64::from(self.header_type))?;
 
     // Track Alias may be set by the subscription for multi-publisher cases
-    if track_alias.is_none() {
-      buf.put_vi(self.track_alias)?;
-    } else {
-      buf.put_vi(track_alias.unwrap())?;
-    }
+    let alias = track_alias.unwrap_or(self.track_alias);
+    buf.put_vi(alias)?;
 
     // Group ID
     buf.put_vi(self.group_id)?;

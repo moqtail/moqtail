@@ -8,7 +8,11 @@ export default defineConfig({
     util: 'src/util/index.ts',
   },
   format: ['cjs', 'esm'],
-  dts: true,
+  dts: {
+    compilerOptions: {
+      ignoreDeprecations: '6.0',
+    },
+  },
   outDir: 'dist',
   splitting: false,
   sourcemap: false,

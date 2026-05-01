@@ -426,15 +426,7 @@ if (import.meta.vitest) {
     test('convert from/to FetchObject', () => {
       const payload = new TextEncoder().encode('fetch payload')
       const fullTrackName = FullTrackName.tryNew('test/demo', 'track4')
-      const fetchObj = FetchObject.newObject(
-        100n,
-        5n,
-        10n,
-        128,
-        ObjectForwardingPreference.Subgroup,
-        null,
-        payload,
-      )
+      const fetchObj = FetchObject.newObject(100n, 5n, 10n, 128, ObjectForwardingPreference.Subgroup, null, payload)
 
       const moqtObj = MoqtObject.fromFetchObject(fetchObj, fullTrackName)
       expect(moqtObj.objectForwardingPreference).toBe(ObjectForwardingPreference.Subgroup)

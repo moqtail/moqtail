@@ -37,10 +37,7 @@ export class Forward implements Parameter {
   static fromKeyValuePair(pair: KeyValuePair): Forward | undefined {
     if (Number(pair.typeValue) !== Forward.TYPE || typeof pair.value !== 'bigint') return undefined
     if (pair.value !== 0n && pair.value !== 1n) {
-      throw new ProtocolViolationError(
-        'Forward.fromKeyValuePair',
-        `FORWARD must be 0 or 1, got ${pair.value}`,
-      )
+      throw new ProtocolViolationError('Forward.fromKeyValuePair', `FORWARD must be 0 or 1, got ${pair.value}`)
     }
     return new Forward(pair.value === 1n)
   }

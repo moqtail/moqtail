@@ -121,11 +121,7 @@ export class FetchObject {
     )
   }
 
-  static newEndOfRange(
-    kind: EndOfRangeKind,
-    groupId: bigint | number,
-    objectId: bigint | number,
-  ): FetchObject {
+  static newEndOfRange(kind: EndOfRangeKind, groupId: bigint | number, objectId: bigint | number): FetchObject {
     return new FetchObject(
       'end_of_range',
       new Location(groupId, objectId),
@@ -235,10 +231,7 @@ export class FetchObject {
         )
       }
       if (!isDatagram && (subgroupMode === SUBGROUP_MODE_PRIOR || subgroupMode === SUBGROUP_MODE_PRIOR_PLUS_ONE)) {
-        throw new ProtocolViolationError(
-          'FetchObject.deserialize',
-          'first object cannot reference prior subgroup',
-        )
+        throw new ProtocolViolationError('FetchObject.deserialize', 'first object cannot reference prior subgroup')
       }
     }
 
@@ -246,10 +239,7 @@ export class FetchObject {
       ? buf.getVI()
       : (() => {
           if (!prev)
-            throw new ProtocolViolationError(
-              'FetchObject.deserialize',
-              'group_id inherited but no prior object',
-            )
+            throw new ProtocolViolationError('FetchObject.deserialize', 'group_id inherited but no prior object')
           return prev.groupId
         })()
 
@@ -263,28 +253,19 @@ export class FetchObject {
           break
         case SUBGROUP_MODE_PRIOR:
           if (!prev)
-            throw new ProtocolViolationError(
-              'FetchObject.deserialize',
-              'subgroup_id inherited but no prior object',
-            )
+            throw new ProtocolViolationError('FetchObject.deserialize', 'subgroup_id inherited but no prior object')
           subgroupId = prev.subgroupId
           break
         case SUBGROUP_MODE_PRIOR_PLUS_ONE:
           if (!prev)
-            throw new ProtocolViolationError(
-              'FetchObject.deserialize',
-              'subgroup_id inherited but no prior object',
-            )
+            throw new ProtocolViolationError('FetchObject.deserialize', 'subgroup_id inherited but no prior object')
           subgroupId = prev.subgroupId + 1n
           break
         case SUBGROUP_MODE_PRESENT:
           subgroupId = buf.getVI()
           break
         default:
-          throw new ProtocolViolationError(
-            'FetchObject.deserialize',
-            `invalid subgroup mode ${subgroupMode}`,
-          )
+          throw new ProtocolViolationError('FetchObject.deserialize', `invalid subgroup mode ${subgroupMode}`)
       }
     }
 
@@ -292,10 +273,7 @@ export class FetchObject {
       ? buf.getVI()
       : (() => {
           if (!prev)
-            throw new ProtocolViolationError(
-              'FetchObject.deserialize',
-              'object_id inherited but no prior object',
-            )
+            throw new ProtocolViolationError('FetchObject.deserialize', 'object_id inherited but no prior object')
           return prev.objectId + 1n
         })()
 
@@ -303,10 +281,7 @@ export class FetchObject {
       ? buf.getU8()
       : (() => {
           if (!prev)
-            throw new ProtocolViolationError(
-              'FetchObject.deserialize',
-              'priority inherited but no prior object',
-            )
+            throw new ProtocolViolationError('FetchObject.deserialize', 'priority inherited but no prior object')
           return prev.publisherPriority
         })()
 
@@ -323,9 +298,7 @@ export class FetchObject {
     const payloadLen = buf.getNumberVI()
     const payload = buf.getBytes(payloadLen)
 
-    const forwardingPreference = isDatagram
-      ? ObjectForwardingPreference.Datagram
-      : ObjectForwardingPreference.Subgroup
+    const forwardingPreference = isDatagram ? ObjectForwardingPreference.Datagram : ObjectForwardingPreference.Subgroup
 
     // For Datagram forwarding, synthesize subgroup_id from object_id so the
     // unified Object view matches other ingress paths.
@@ -353,10 +326,7 @@ if (import.meta.vitest) {
         10n,
         255,
         ObjectForwardingPreference.Subgroup,
-        [
-          KeyValuePair.tryNewVarInt(0, 10),
-          KeyValuePair.tryNewBytes(1, new TextEncoder().encode('wololoo')),
-        ],
+        [KeyValuePair.tryNewVarInt(0, 10), KeyValuePair.tryNewBytes(1, new TextEncoder().encode('wololoo'))],
         new TextEncoder().encode('01239gjawkk92837aldmi'),
       )
 

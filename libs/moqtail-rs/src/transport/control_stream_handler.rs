@@ -89,10 +89,8 @@ impl ControlStreamHandler {
             return Err(TerminationCode::ProtocolViolation);
           }
 
-          Err(ParseError::NotEnoughBytes { .. }) => {
-            if self.partial_message_deadline.is_none() {
-              self.partial_message_deadline = Some(Instant::now() + CONTROL_MESSAGE_TIMEOUT);
-            }
+          Err(ParseError::NotEnoughBytes { .. }) if self.partial_message_deadline.is_none() => {
+            self.partial_message_deadline = Some(Instant::now() + CONTROL_MESSAGE_TIMEOUT);
           }
           _ => {}
         }

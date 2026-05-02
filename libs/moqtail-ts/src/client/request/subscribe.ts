@@ -16,19 +16,18 @@
 
 import {
   FullTrackName,
-  KeyValuePair,
   Location,
   MessageParameter,
   MoqtObject,
   Subscribe,
-  SubscribeError,
+  RequestError,
   SubscribeOk,
   RequestUpdate,
   applyMessageParameterUpdate,
 } from '@/model'
 
 // TODO: Add timeout mechanism for unsubscribing
-export class SubscribeRequest implements PromiseLike<SubscribeOk | SubscribeError> {
+export class SubscribeRequest implements PromiseLike<SubscribeOk | RequestError> {
   requestId: bigint
   fullTrackName: FullTrackName
   isCanceled: boolean = false
@@ -42,8 +41,8 @@ export class SubscribeRequest implements PromiseLike<SubscribeOk | SubscribeErro
   expectedStreams: bigint | undefined // Defined upon SUBSCRIBE_DONE
   readonly controller!: ReadableStreamDefaultController<MoqtObject>
   readonly stream: ReadableStream<MoqtObject>
-  #promise: Promise<SubscribeOk | SubscribeError>
-  #resolve!: (value: SubscribeOk | SubscribeError | PromiseLike<SubscribeOk | SubscribeError>) => void
+  #promise: Promise<SubscribeOk | RequestError>
+  #resolve!: (value: SubscribeOk | RequestError | PromiseLike<SubscribeOk | RequestError>) => void
   #reject!: (reason?: any) => void
 
   constructor(msg: Subscribe) {
@@ -62,7 +61,7 @@ export class SubscribeRequest implements PromiseLike<SubscribeOk | SubscribeErro
         ;(this.controller as any) = controller
       },
     })
-    this.#promise = new Promise<SubscribeOk | SubscribeError>((resolve, reject) => {
+    this.#promise = new Promise<SubscribeOk | RequestError>((resolve, reject) => {
       this.#resolve = resolve
       this.#reject = reject
     })
@@ -87,7 +86,7 @@ export class SubscribeRequest implements PromiseLike<SubscribeOk | SubscribeErro
   switch(newTrackName: FullTrackName, newParameters: MessageParameter[]): void {
     this.fullTrackName = newTrackName
     this.subscribeParameters = newParameters
-    this.#promise = new Promise<SubscribeOk | SubscribeError>((resolve, reject) => {
+    this.#promise = new Promise<SubscribeOk | RequestError>((resolve, reject) => {
       this.#resolve = resolve
       this.#reject = reject
     })
@@ -95,7 +94,7 @@ export class SubscribeRequest implements PromiseLike<SubscribeOk | SubscribeErro
   unsubscribe(): void {
     this.isCanceled = true
   }
-  resolve(value: SubscribeOk | SubscribeError | PromiseLike<SubscribeOk | SubscribeError>): void {
+  resolve(value: SubscribeOk | RequestError | PromiseLike<SubscribeOk | RequestError>): void {
     this.#resolve(value)
   }
 
@@ -103,8 +102,8 @@ export class SubscribeRequest implements PromiseLike<SubscribeOk | SubscribeErro
     this.#reject(reason)
   }
 
-  then<TResult1 = SubscribeOk | SubscribeError, TResult2 = never>(
-    onfulfilled?: ((value: SubscribeOk | SubscribeError) => TResult1 | PromiseLike<TResult1>) | undefined | null,
+  then<TResult1 = SubscribeOk | RequestError, TResult2 = never>(
+    onfulfilled?: ((value: SubscribeOk | RequestError) => TResult1 | PromiseLike<TResult1>) | undefined | null,
     onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | undefined | null,
   ): PromiseLike<TResult1 | TResult2> {
     return this.#promise.then(onfulfilled, onrejected)
@@ -112,11 +111,11 @@ export class SubscribeRequest implements PromiseLike<SubscribeOk | SubscribeErro
 
   catch<TResult = never>(
     onrejected?: ((reason: any) => TResult | PromiseLike<TResult>) | undefined | null,
-  ): Promise<SubscribeOk | SubscribeError | TResult> {
+  ): Promise<SubscribeOk | RequestError | TResult> {
     return this.#promise.catch(onrejected)
   }
 
-  finally(onfinally?: (() => void) | undefined | null): Promise<SubscribeOk | SubscribeError> {
+  finally(onfinally?: (() => void) | undefined | null): Promise<SubscribeOk | RequestError> {
     return this.#promise.finally(onfinally)
   }
 }

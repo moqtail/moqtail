@@ -15,7 +15,6 @@
  */
 
 import { CastingError } from '../error'
-import { ClientSetup, ServerSetup } from '../control'
 /**
  * Protocol string array exchanged in wt-available-protocols header
  */
@@ -37,16 +36,14 @@ export enum ControlMessageType {
   RequestsBlocked = 0x1a,
   Subscribe = 0x03,
   SubscribeOk = 0x04,
-  SubscribeError = 0x05,
+  RequestError = 0x05,
   Unsubscribe = 0x0a,
   RequestUpdate = 0x02,
   PublishDone = 0x0b,
   Fetch = 0x16,
   FetchOk = 0x18,
-  FetchError = 0x19,
   FetchCancel = 0x17,
   TrackStatus = 0x0d,
-  TrackStatusError = 0x0f,
   PublishNamespace = 0x06,
   RequestOk = 0x07,
   Namespace = 0x08,
@@ -54,11 +51,9 @@ export enum ControlMessageType {
   NamespaceDone = 0x0e,
   PublishNamespaceCancel = 0x0c,
   SubscribeNamespace = 0x11,
-  SubscribeNamespaceError = 0x13,
   UnsubscribeNamespace = 0x14,
   Publish = 0x1d,
   PublishOk = 0x1e,
-  PublishError = 0x1f,
   Switch = 0x22,
 }
 
@@ -91,7 +86,7 @@ export function controlMessageTypeFromBigInt(v: bigint): ControlMessageType {
     case 0x04n:
       return ControlMessageType.SubscribeOk
     case 0x05n:
-      return ControlMessageType.SubscribeError
+      return ControlMessageType.RequestError
     case 0x0an:
       return ControlMessageType.Unsubscribe
     case 0x02n:
@@ -102,8 +97,6 @@ export function controlMessageTypeFromBigInt(v: bigint): ControlMessageType {
       return ControlMessageType.Fetch
     case 0x18n:
       return ControlMessageType.FetchOk
-    case 0x19n:
-      return ControlMessageType.FetchError
     case 0x17n:
       return ControlMessageType.FetchCancel
     case 0x0dn:
@@ -122,16 +115,12 @@ export function controlMessageTypeFromBigInt(v: bigint): ControlMessageType {
       return ControlMessageType.PublishNamespaceCancel
     case 0x11n:
       return ControlMessageType.SubscribeNamespace
-    case 0x13n:
-      return ControlMessageType.SubscribeNamespaceError
     case 0x14n:
       return ControlMessageType.UnsubscribeNamespace
     case 0x1dn:
       return ControlMessageType.Publish
     case 0x1en:
       return ControlMessageType.PublishOk
-    case 0x1fn:
-      return ControlMessageType.PublishError
     default:
       throw new Error(`Invalid ControlMessageType: ${v}`)
   }
@@ -141,46 +130,6 @@ export function controlMessageTypeFromBigInt(v: bigint): ControlMessageType {
  * @public
  * Error codes for PublishNamespace control messages.
  */
-export enum PublishNamespaceErrorCode {
-  InternalError = 0x0,
-  Unauthorized = 0x1,
-  Timeout = 0x2,
-  NotSupported = 0x3,
-  Uninterested = 0x4,
-  MalformedAuthToken = 0x10,
-  UnknownAuthTokenAlias = 0x11,
-  ExpiredAuthToken = 0x12,
-}
-
-/**
- * Converts a bigint value to an  enum.
- * @param v - The bigint value.
- * @returns The corresponding PublishNamespaceErrorCode.
- * @throws Error if the value is not a valid announce error code.
- */
-export function publishNamespaceErrorCodeFromBigInt(v: bigint): PublishNamespaceErrorCode {
-  switch (v) {
-    case 0x0n:
-      return PublishNamespaceErrorCode.InternalError
-    case 0x1n:
-      return PublishNamespaceErrorCode.Unauthorized
-    case 0x2n:
-      return PublishNamespaceErrorCode.Timeout
-    case 0x3n:
-      return PublishNamespaceErrorCode.NotSupported
-    case 0x4n:
-      return PublishNamespaceErrorCode.Uninterested
-    case 0x10n:
-      return PublishNamespaceErrorCode.MalformedAuthToken
-    case 0x11n:
-      return PublishNamespaceErrorCode.UnknownAuthTokenAlias
-    case 0x12n:
-      return PublishNamespaceErrorCode.ExpiredAuthToken
-    default:
-      throw new Error(`Invalid PublishNamespaceErrorCode: ${v}`)
-  }
-}
-
 /**
  * @public
  * Subscribe options for SUBSCRIBE_NAMESPACE requests.
@@ -283,106 +232,6 @@ export function groupOrderFromNumber(v: number): GroupOrder {
 
 /**
  * @public
- * Error codes for Subscribe control messages.
- */
-export enum SubscribeErrorCode {
-  InternalError = 0x0,
-  Unauthorized = 0x1,
-  Timeout = 0x2,
-  NotSupported = 0x3,
-  TrackDoesNotExist = 0x4,
-  InvalidRange = 0x5,
-  MalformedAuthToken = 0x10,
-  ExpiredAuthToken = 0x12,
-}
-
-/**
- * Converts a bigint value to a SubscribeErrorCode enum.
- * @param v - The bigint value.
- * @returns The corresponding SubscribeErrorCode.
- * @throws Error if the value is not a valid subscribe error code.
- */
-export function subscribeErrorCodeFromBigInt(v: bigint): SubscribeErrorCode {
-  switch (v) {
-    case 0x0n:
-      return SubscribeErrorCode.InternalError
-    case 0x1n:
-      return SubscribeErrorCode.Unauthorized
-    case 0x2n:
-      return SubscribeErrorCode.Timeout
-    case 0x3n:
-      return SubscribeErrorCode.NotSupported
-    case 0x4n:
-      return SubscribeErrorCode.TrackDoesNotExist
-    case 0x5n:
-      return SubscribeErrorCode.InvalidRange
-    case 0x10n:
-      return SubscribeErrorCode.MalformedAuthToken
-    case 0x12n:
-      return SubscribeErrorCode.ExpiredAuthToken
-    default:
-      throw new Error(`Invalid SubscribeErrorCode: ${v}`)
-  }
-}
-
-/**
- * @public
- * Error codes for Fetch control messages.
- */
-export enum FetchErrorCode {
-  InternalError = 0x0,
-  Unauthorized = 0x1,
-  Timeout = 0x2,
-  NotSupported = 0x3,
-  TrackDoesNotExist = 0x4,
-  InvalidRange = 0x5,
-  NoObjects = 0x6,
-  InvalidJoiningRequestId = 0x7,
-  UnknownStatusInRange = 0x8,
-  MalformedTrack = 0x9,
-  MalformedAuthToken = 0x10,
-  ExpiredAuthToken = 0x12,
-}
-
-/**
- * Converts a bigint value to a FetchErrorCode enum.
- * @param v - The bigint value.
- * @returns The corresponding FetchErrorCode.
- * @throws CastingError if the value is not a valid fetch error code.
- */
-export function fetchErrorCodeFromBigInt(v: bigint): FetchErrorCode {
-  switch (v) {
-    case 0x0n:
-      return FetchErrorCode.InternalError
-    case 0x1n:
-      return FetchErrorCode.Unauthorized
-    case 0x2n:
-      return FetchErrorCode.Timeout
-    case 0x3n:
-      return FetchErrorCode.NotSupported
-    case 0x4n:
-      return FetchErrorCode.TrackDoesNotExist
-    case 0x5n:
-      return FetchErrorCode.InvalidRange
-    case 0x6n:
-      return FetchErrorCode.NoObjects
-    case 0x7n:
-      return FetchErrorCode.InvalidJoiningRequestId
-    case 0x8n:
-      return FetchErrorCode.UnknownStatusInRange
-    case 0x9n:
-      return FetchErrorCode.MalformedTrack
-    case 0x10n:
-      return FetchErrorCode.MalformedAuthToken
-    case 0x12n:
-      return FetchErrorCode.ExpiredAuthToken
-    default:
-      throw new CastingError('fetchErrorCodeFromBigInt', 'number', 'FetchErrorCode', 'Invalid fetch error code')
-  }
-}
-
-/**
- * @public
  * Status codes for track status responses.
  */
 export enum TrackStatusCode {
@@ -413,50 +262,6 @@ export function trackStatusCodeFromBigInt(v: bigint): TrackStatusCode {
       return TrackStatusCode.RelayUnavailable
     default:
       throw new Error(`Invalid TrackStatusCode: ${v}`)
-  }
-}
-
-/**
- * @public
- * Error codes for SubscribeNamespace control messages.
- */
-export enum SubscribeNamespaceErrorCode {
-  InternalError = 0x0,
-  Unauthorized = 0x1,
-  Timeout = 0x2,
-  NotSupported = 0x3,
-  NamespacePrefixUnknown = 0x4,
-  NamespacePrefixOverlap = 0x5,
-  MalformedAuthToken = 0x10,
-  ExpiredAuthToken = 0x12,
-}
-
-/**
- * Converts a bigint value to a SubscribeNamespaceErrorCode enum.
- * @param v - The bigint value.
- * @returns The corresponding SubscribeNamespaceErrorCode.
- * @throws Error if the value is not a valid subscribe announces error code.
- */
-export function subscribeNamespaceErrorCodeFromBigInt(v: bigint): SubscribeNamespaceErrorCode {
-  switch (v) {
-    case 0x0n:
-      return SubscribeNamespaceErrorCode.InternalError
-    case 0x1n:
-      return SubscribeNamespaceErrorCode.Unauthorized
-    case 0x2n:
-      return SubscribeNamespaceErrorCode.Timeout
-    case 0x3n:
-      return SubscribeNamespaceErrorCode.NotSupported
-    case 0x4n:
-      return SubscribeNamespaceErrorCode.NamespacePrefixUnknown
-    case 0x5n:
-      return SubscribeNamespaceErrorCode.NamespacePrefixOverlap
-    case 0x10n:
-      return SubscribeNamespaceErrorCode.MalformedAuthToken
-    case 0x12n:
-      return SubscribeNamespaceErrorCode.ExpiredAuthToken
-    default:
-      throw new Error(`Invalid SubscribeNamespaceErrorCode: ${v}`)
   }
 }
 
@@ -509,47 +314,64 @@ export function publishDoneStatusCodeFromBigInt(v: bigint): PublishDoneStatusCod
 
 /**
  * @public
- * Error codes for Publish control messages.
+ * Unified error codes for REQUEST_ERROR control messages.
  */
-export enum PublishErrorCode {
+export enum RequestErrorCode {
   InternalError = 0x0,
   Unauthorized = 0x1,
   Timeout = 0x2,
   NotSupported = 0x3,
-  InvalidNamespace = 0x4,
-  InvalidTrackName = 0x5,
-  MalformedAuthToken = 0x10,
-  UnknownAuthTokenAlias = 0x11,
-  ExpiredAuthToken = 0x12,
+  MalformedAuthToken = 0x4,
+  ExpiredAuthToken = 0x5,
+  DoesNotExist = 0x10,
+  InvalidRange = 0x11,
+  MalformedTrack = 0x12,
+  DuplicateSubscription = 0x19,
+  Uninterested = 0x20,
+  PrefixOverlap = 0x30,
+  InvalidJoiningRequestId = 0x32,
 }
 
 /**
- * Converts a bigint value to a PublishErrorCode enum.
+ * Converts a bigint value to a RequestErrorCode enum.
  * @param v - The bigint value.
- * @returns The corresponding PublishErrorCode.
- * @throws Error if the value is not a valid publish error code.
+ * @returns The corresponding RequestErrorCode.
+ * @throws CastingError if the value is not a valid request error code.
  */
-export function publishErrorCodeFromBigInt(v: bigint): PublishErrorCode {
+export function requestErrorCodeFromBigInt(v: bigint): RequestErrorCode {
   switch (v) {
     case 0x0n:
-      return PublishErrorCode.InternalError
+      return RequestErrorCode.InternalError
     case 0x1n:
-      return PublishErrorCode.Unauthorized
+      return RequestErrorCode.Unauthorized
     case 0x2n:
-      return PublishErrorCode.Timeout
+      return RequestErrorCode.Timeout
     case 0x3n:
-      return PublishErrorCode.NotSupported
+      return RequestErrorCode.NotSupported
     case 0x4n:
-      return PublishErrorCode.InvalidNamespace
+      return RequestErrorCode.MalformedAuthToken
     case 0x5n:
-      return PublishErrorCode.InvalidTrackName
+      return RequestErrorCode.ExpiredAuthToken
     case 0x10n:
-      return PublishErrorCode.MalformedAuthToken
+      return RequestErrorCode.DoesNotExist
     case 0x11n:
-      return PublishErrorCode.UnknownAuthTokenAlias
+      return RequestErrorCode.InvalidRange
     case 0x12n:
-      return PublishErrorCode.ExpiredAuthToken
+      return RequestErrorCode.MalformedTrack
+    case 0x19n:
+      return RequestErrorCode.DuplicateSubscription
+    case 0x20n:
+      return RequestErrorCode.Uninterested
+    case 0x30n:
+      return RequestErrorCode.PrefixOverlap
+    case 0x32n:
+      return RequestErrorCode.InvalidJoiningRequestId
     default:
-      throw new Error(`Invalid PublishErrorCode: ${v}`)
+      throw new CastingError(
+        'requestErrorCodeFromBigInt',
+        'bigint',
+        'RequestErrorCode',
+        `Invalid RequestErrorCode: ${v}`,
+      )
   }
 }

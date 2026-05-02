@@ -14,16 +14,17 @@
  * limitations under the License.
  */
 
-import { ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
+import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
 import { KeyValuePair } from '../common/pair'
 import { ControlMessageType } from './constant'
-import { LengthExceedsMaxError } from '../error/error'
+import { CastingError, LengthExceedsMaxError } from '../error/error'
+import { MessageParameter } from '../parameter/message_parameter'
 
 export class RequestOk {
   public readonly requestId: bigint
-  public readonly parameters: KeyValuePair[]
+  public readonly parameters: MessageParameter[]
 
-  constructor(requestId: bigint | number, parameters: KeyValuePair[] = []) {
+  constructor(requestId: bigint | number, parameters: MessageParameter[] = []) {
     this.requestId = BigInt(requestId)
     this.parameters = parameters
   }
@@ -41,7 +42,7 @@ export class RequestOk {
     payload.putVI(BigInt(this.parameters.length))
 
     for (const param of this.parameters) {
-      payload.putBytes(param.serialize().toUint8Array())
+      payload.putBytes(param.toKeyValuePair().serialize().toUint8Array())
     }
 
     const payloadBytes = payload.toUint8Array()
@@ -55,15 +56,72 @@ export class RequestOk {
     return buf.freeze()
   }
 
-  static parsePayload(frozen: FrozenByteBuffer): RequestOk {
-    const requestId = frozen.getVI()
-    const numParams = Number(frozen.getVI())
-    const parameters: KeyValuePair[] = []
+  static parsePayload(buf: BaseByteBuffer): RequestOk {
+    const requestId = buf.getVI()
+    const numParamsBig = buf.getVI()
+    const numParams = Number(numParamsBig)
+    if (BigInt(numParams) !== numParamsBig) {
+      throw new CastingError('RequestOk.parsePayload numParams', 'bigint', 'number', `${numParamsBig}`)
+    }
 
+    const parameters: MessageParameter[] = []
     for (let i = 0; i < numParams; i++) {
-      parameters.push(KeyValuePair.deserialize(frozen))
+      const kvp = KeyValuePair.deserialize(buf)
+      const param = MessageParameter.fromKeyValuePair(kvp)
+      if (param !== undefined) parameters.push(param)
     }
 
     return new RequestOk(requestId, parameters)
   }
+}
+
+if (import.meta.vitest) {
+  const { describe, test, expect } = import.meta.vitest
+
+  describe('RequestOk', () => {
+    test('roundtrip', () => {
+      const requestId = 42n
+      const msg = new RequestOk(requestId)
+      const frozen = msg.serialize()
+      const msgType = frozen.getVI()
+      expect(msgType).toBe(BigInt(ControlMessageType.RequestOk))
+      const msgLength = frozen.getU16()
+      expect(msgLength).toBe(frozen.remaining)
+      const deserialized = RequestOk.parsePayload(frozen)
+      expect(deserialized.requestId).toBe(msg.requestId)
+      expect(deserialized.parameters.length).toBe(0)
+      expect(frozen.remaining).toBe(0)
+    })
+    test('excess roundtrip', () => {
+      const requestId = 1337n
+      const msg = new RequestOk(requestId)
+      const serialized = msg.serialize().toUint8Array()
+      const excess = new Uint8Array([9, 1, 1])
+      const buf = new ByteBuffer()
+      buf.putBytes(serialized)
+      buf.putBytes(excess)
+      const frozen = buf.freeze()
+      const msgType = frozen.getVI()
+      expect(msgType).toBe(BigInt(ControlMessageType.RequestOk))
+      const msgLength = frozen.getU16()
+      expect(msgLength).toBe(frozen.remaining - 3)
+      const deserialized = RequestOk.parsePayload(frozen)
+      expect(deserialized.requestId).toBe(msg.requestId)
+      expect(deserialized.parameters.length).toBe(0)
+      expect(frozen.remaining).toBe(3)
+      expect(Array.from(frozen.getBytes(3))).toEqual([9, 1, 1])
+    })
+    test('partial message', () => {
+      const msg = new RequestOk(99n)
+      const serialized = msg.serialize().toUint8Array()
+      const upper = Math.floor(serialized.length / 2)
+      const partial = serialized.slice(0, upper)
+      const frozen = new FrozenByteBuffer(partial)
+      expect(() => {
+        frozen.getVI()
+        frozen.getU16()
+        RequestOk.parsePayload(frozen)
+      }).toThrow()
+    })
+  })
 }

@@ -14,29 +14,29 @@
  * limitations under the License.
  */
 
-import { RequestOk, SubscribeError } from '../../model/control'
-import { SubscribeErrorCode } from '../../model/control/constant'
+import { RequestOk, RequestError } from '../../model/control'
+import { RequestErrorCode } from '../../model/control/constant'
 import { PublishNamespace } from '../../model/control/publish_namespace'
 import { ReasonPhrase } from '../../model/common/reason_phrase'
 
 // TODO: add publish namespace done
-export class PublishNamespaceRequest implements PromiseLike<RequestOk | SubscribeError> {
+export class PublishNamespaceRequest implements PromiseLike<RequestOk | RequestError> {
   public readonly requestId: bigint
   public readonly message: PublishNamespace
-  private _resolve!: (value: RequestOk | SubscribeError | PromiseLike<RequestOk | SubscribeError>) => void
+  private _resolve!: (value: RequestOk | RequestError | PromiseLike<RequestOk | RequestError>) => void
   private _reject!: (reason?: any) => void
-  private promise: Promise<RequestOk | SubscribeError>
+  private promise: Promise<RequestOk | RequestError>
 
   constructor(requestId: bigint, message: PublishNamespace) {
     this.requestId = requestId
     this.message = message
-    this.promise = new Promise<RequestOk | SubscribeError>((resolve, reject) => {
+    this.promise = new Promise<RequestOk | RequestError>((resolve, reject) => {
       this._resolve = resolve
       this._reject = reject
     })
   }
 
-  public resolve(value: RequestOk | SubscribeError | PromiseLike<RequestOk | SubscribeError>): void {
+  public resolve(value: RequestOk | RequestError | PromiseLike<RequestOk | RequestError>): void {
     this._resolve(value)
   }
 
@@ -44,8 +44,8 @@ export class PublishNamespaceRequest implements PromiseLike<RequestOk | Subscrib
     this._reject(reason)
   }
 
-  public then<TResult1 = RequestOk | SubscribeError, TResult2 = never>(
-    onfulfilled?: ((value: RequestOk | SubscribeError) => TResult1 | PromiseLike<TResult1>) | undefined | null,
+  public then<TResult1 = RequestOk | RequestError, TResult2 = never>(
+    onfulfilled?: ((value: RequestOk | RequestError) => TResult1 | PromiseLike<TResult1>) | undefined | null,
     onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | undefined | null,
   ): PromiseLike<TResult1 | TResult2> {
     return this.promise.then(onfulfilled, onrejected)
@@ -53,11 +53,11 @@ export class PublishNamespaceRequest implements PromiseLike<RequestOk | Subscrib
 
   public catch<TResult = never>(
     onrejected?: ((reason: any) => TResult | PromiseLike<TResult>) | undefined | null,
-  ): Promise<RequestOk | SubscribeError | TResult> {
+  ): Promise<RequestOk | RequestError | TResult> {
     return this.promise.catch(onrejected)
   }
 
-  public finally(onfinally?: (() => void) | undefined | null): Promise<RequestOk | SubscribeError> {
+  public finally(onfinally?: (() => void) | undefined | null): Promise<RequestOk | RequestError> {
     return this.promise.finally(onfinally)
   }
 }
@@ -76,18 +76,18 @@ if (import.meta.vitest) {
       expect(result.requestId).toBe(123n)
     })
 
-    test('should resolve with SubscribeError on protocol error', async () => {
+    test('should resolve with RequestError on protocol error', async () => {
       const announceMessage = {} as PublishNamespace
       const request = new PublishNamespaceRequest(123n, announceMessage)
-      const announceError = new SubscribeError(123n, SubscribeErrorCode.InternalError, new ReasonPhrase('wololo'))
+      const announceError = new RequestError(123n, RequestErrorCode.InternalError, 0n, new ReasonPhrase('wololo'))
       setTimeout(() => request.resolve(announceError), 0)
       const result = await request
-      expect(result).toBeInstanceOf(SubscribeError)
+      expect(result).toBeInstanceOf(RequestError)
       expect(result.requestId).toBe(123n)
-      if (result instanceof SubscribeError) {
-        expect(result.errorCode).toBe(SubscribeErrorCode.InternalError)
+      if (result instanceof RequestError) {
+        expect(result.errorCode).toBe(RequestErrorCode.InternalError)
       } else {
-        throw new Error('Expected SubscribeError')
+        throw new Error('Expected RequestError')
       }
     })
 
@@ -112,19 +112,20 @@ if (import.meta.vitest) {
     test('can be used with async/await for protocol error', async () => {
       const announceMessage = {} as PublishNamespace
       const request = new PublishNamespaceRequest(789n, announceMessage)
-      const announceError = new SubscribeError(
+      const announceError = new RequestError(
         789n,
-        SubscribeErrorCode.MalformedAuthToken,
+        RequestErrorCode.MalformedAuthToken,
+        0n,
         new ReasonPhrase('bad token'),
       )
       setTimeout(() => request.resolve(announceError), 10)
       const result = await request
-      expect(result).toBeInstanceOf(SubscribeError)
+      expect(result).toBeInstanceOf(RequestError)
       expect(result.requestId).toBe(789n)
-      if (result instanceof SubscribeError) {
-        expect(result.errorCode).toBe(SubscribeErrorCode.MalformedAuthToken)
+      if (result instanceof RequestError) {
+        expect(result.errorCode).toBe(RequestErrorCode.MalformedAuthToken)
       } else {
-        throw new Error('Expected SubscribeError')
+        throw new Error('Expected RequestError')
       }
     })
 

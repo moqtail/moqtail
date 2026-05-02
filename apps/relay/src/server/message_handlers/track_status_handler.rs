@@ -196,7 +196,7 @@ pub async fn handle(
       Ok(())
     }
     ControlMessage::RequestError(m) => {
-      info!("received TrackStatusError from Publisher: {:?}", m);
+      info!("received RequestError from Publisher: {:?}", m);
       let msg = *m;
 
       let mapping = {
@@ -205,7 +205,7 @@ pub async fn handle(
           Some(PendingRequest::TrackStatus(req)) => Some(req),
           Some(_) => {
             warn!(
-              "Mismatched request type for TrackStatusError: {}",
+              "Mismatched request type for RequestError: {}",
               msg.request_id
             );
             None
@@ -224,7 +224,7 @@ pub async fn handle(
             msg.reason_phrase,
           );
 
-          info!("Forwarding TrackStatusError to Client {}", req.requested_by);
+          info!("Forwarding RequestError to Client {}", req.requested_by);
           downstream_client
             .queue_message(ControlMessage::RequestError(Box::new(forwarded_msg)))
             .await;

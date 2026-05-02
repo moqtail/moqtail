@@ -15,18 +15,16 @@
  */
 
 import {
-  FetchError,
   FetchType,
   FilterType,
   FullTrackName,
   GroupOrder,
   Location,
   MoqtObject,
-  SubscribeError,
   Tuple,
 } from 'moqtail';
 import { MOQtailClient } from 'moqtail/client';
-import { CMSFCatalog } from 'moqtail/model';
+import { CMSFCatalog, RequestError } from 'moqtail/model';
 import { logger } from '@/lib/logger';
 
 interface MOQStreamStruct {
@@ -338,7 +336,7 @@ export class Player {
           },
         },
       });
-      if (result instanceof FetchError)
+      if (result instanceof RequestError)
         throw new Error(`Error occured during catalog fetch: ${result.reasonPhrase.phrase}`);
       struct = {
         trackName: 'catalog',
@@ -385,8 +383,8 @@ export class Player {
       forward: true,
       priority: params.priority ?? 0,
     });
-    if (result instanceof SubscribeError)
-      throw new Error(`Error occured during subscription: ${result.errorReason.phrase}`);
+    if (result instanceof RequestError)
+      throw new Error(`Error occured during subscription: ${result.reasonPhrase.phrase}`);
     struct = {
       trackName: params.trackName,
       requestId: result.requestId,

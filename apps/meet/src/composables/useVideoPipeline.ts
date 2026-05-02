@@ -19,7 +19,7 @@ import {
   ObjectForwardingPreference,
   FilterType,
   GroupOrder,
-  SubscribeError,
+  RequestError,
   Tuple,
   FullTrackName,
   MoqtObject,
@@ -669,7 +669,7 @@ function subscribeAndPipeToWorker(
 ): Promise<bigint | undefined> {
   return moqClient.subscribe(subscribeArgs).then(response => {
     window.appSettings.playoutBufferConfig.maxLatencyMs;
-    if (!(response instanceof SubscribeError)) {
+    if (!(response instanceof RequestError)) {
       const { requestId, stream } = response;
       const buffer = new PlayoutBuffer(stream, {
         targetLatencyMs: window.appSettings.playoutBufferConfig.targetLatencyMs,
@@ -719,7 +719,7 @@ export function subscribeOnlyVideo(moqClient: MOQtailClient, videoFullTrackName:
         priority: 0,
       });
 
-      if (response instanceof SubscribeError) {
+      if (response instanceof RequestError) {
         console.error('subscribeOnlyVideo: subscribe returned error', response);
         return { cleanup: async () => {} };
       }

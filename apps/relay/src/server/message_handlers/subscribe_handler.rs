@@ -585,10 +585,7 @@ async fn handle_subscribe_error_message(
     match requests.remove(&request_id) {
       Some(PendingRequest::Subscribe(m)) => m,
       Some(_) => {
-        warn!(
-          "SubscribeError for mismatched request type: {:?}",
-          request_id
-        );
+        warn!("RequestError for mismatched request type: {:?}", request_id);
         return Ok(());
       }
       None => {

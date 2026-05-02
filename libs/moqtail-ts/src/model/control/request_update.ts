@@ -18,7 +18,7 @@ import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buf
 import { Location } from '../common/location'
 import { KeyValuePair } from '../common/pair'
 import { ControlMessageType, FilterType } from './constant'
-import { CastingError } from '../error/error'
+import { CastingError, LengthExceedsMaxError } from '../error/error'
 import { MessageParameter } from '../parameter/message_parameter'
 import { SubscriptionFilter } from '../parameter/message/subscription_filter'
 import { Forward } from '../parameter/message/forward'
@@ -29,6 +29,10 @@ export class RequestUpdate {
     public existingRequestId: bigint,
     public parameters: MessageParameter[],
   ) {}
+
+  getType(): ControlMessageType {
+    return ControlMessageType.RequestUpdate
+  }
 
   serialize(): FrozenByteBuffer {
     const buf = new ByteBuffer()
@@ -44,6 +48,9 @@ export class RequestUpdate {
     }
 
     const payloadBytes = payload.toUint8Array()
+    if (payloadBytes.length > 0xffff) {
+      throw new LengthExceedsMaxError('RequestUpdate::serialize(payloadBytes)', 0xffff, payloadBytes.length)
+    }
     buf.putU16(payloadBytes.length)
     buf.putBytes(payloadBytes)
 

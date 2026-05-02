@@ -15,7 +15,7 @@
  */
 
 import { ReasonPhrase } from '@/model'
-import { Subscribe, SubscribeError, SubscribeErrorCode, SubscribeOk } from '../../model/control'
+import { Subscribe, RequestError, RequestErrorCode, SubscribeOk } from '../../model/control'
 import { ControlMessageHandler } from './handler'
 import { SubscribePublication } from '../publication/subscribe'
 import { createLogger } from '../../util/logger'
@@ -27,18 +27,20 @@ export const handlerSubscribe: ControlMessageHandler<Subscribe> = async (client,
   logger.log('requestId, trackName', msg.requestId, msg.fullTrackName.toString())
   const track = client.trackSources.get(msg.fullTrackName.toString())
   if (!track) {
-    const subscribeError = new SubscribeError(
+    const subscribeError = new RequestError(
       msg.requestId,
-      SubscribeErrorCode.TrackDoesNotExist,
+      RequestErrorCode.DoesNotExist,
+      0n,
       new ReasonPhrase('Track does not exist'),
     )
     await client.controlStream.send(subscribeError)
     return
   }
   if (!track.trackSource.live) {
-    const response = new SubscribeError(
+    const response = new RequestError(
       msg.requestId,
-      SubscribeErrorCode.NotSupported,
+      RequestErrorCode.NotSupported,
+      0n,
       new ReasonPhrase('Requested track does not support subscribe'),
     )
     await client.controlStream.send(response)

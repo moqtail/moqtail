@@ -15,12 +15,11 @@
  */
 
 import { FullTrackName, InternalError, Location, ReasonPhrase } from '@/model'
-import { Fetch, FetchError, FetchErrorCode, FetchOk, FetchType } from '../../model/control'
+import { Fetch, FetchOk, FetchType, RequestError, RequestErrorCode } from '../../model/control'
 import { ControlMessageHandler } from './handler'
 import { SubscribePublication } from '../publication/subscribe'
 import { FetchPublication } from '../publication/fetch'
 import { PublishPublication } from '../publication'
-import { MessageParameters } from '../../model/parameter/message_parameter'
 import { createLogger } from '../../util/logger'
 
 const logger = createLogger('handler/fetch')
@@ -45,9 +44,10 @@ export const handlerFetch: ControlMessageHandler<Fetch> = async (client, msg) =>
   }
   const track = client.trackSources.get(fullTrackName.toString())
   if (!track) {
-    const response = new FetchError(
+    const response = new RequestError(
       msg.requestId,
-      FetchErrorCode.TrackDoesNotExist,
+      RequestErrorCode.DoesNotExist,
+      0n,
       new ReasonPhrase('Track does not exists'),
     )
     await client.controlStream.send(response)
@@ -55,9 +55,10 @@ export const handlerFetch: ControlMessageHandler<Fetch> = async (client, msg) =>
   }
 
   if (!track.trackSource.past) {
-    const response = new FetchError(
+    const response = new RequestError(
       msg.requestId,
-      FetchErrorCode.NotSupported,
+      RequestErrorCode.NotSupported,
+      0n,
       new ReasonPhrase('Requested track does not support fetch'),
     )
     await client.controlStream.send(response)

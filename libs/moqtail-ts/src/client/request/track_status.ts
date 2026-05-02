@@ -14,26 +14,26 @@
  * limitations under the License.
  */
 
-import { TrackStatus, TrackStatusError, RequestOk } from '@/model'
+import { TrackStatus, RequestError, RequestOk } from '@/model'
 
-export class TrackStatusRequest implements PromiseLike<RequestOk | TrackStatusError> {
+export class TrackStatusRequest implements PromiseLike<RequestOk | RequestError> {
   public readonly requestId: bigint
   public readonly message: TrackStatus
 
-  private _resolve!: (value: RequestOk | TrackStatusError | PromiseLike<RequestOk | TrackStatusError>) => void
+  private _resolve!: (value: RequestOk | RequestError | PromiseLike<RequestOk | RequestError>) => void
   private _reject!: (reason?: any) => void
-  private promise: Promise<RequestOk | TrackStatusError>
+  private promise: Promise<RequestOk | RequestError>
 
   constructor(msg: TrackStatus) {
     this.requestId = msg.requestId
     this.message = msg
-    this.promise = new Promise<RequestOk | TrackStatusError>((resolve, reject) => {
+    this.promise = new Promise<RequestOk | RequestError>((resolve, reject) => {
       this._resolve = resolve
       this._reject = reject
     })
   }
 
-  public resolve(value: RequestOk | TrackStatusError | PromiseLike<RequestOk | TrackStatusError>): void {
+  public resolve(value: RequestOk | RequestError | PromiseLike<RequestOk | RequestError>): void {
     this._resolve(value)
   }
 
@@ -41,8 +41,8 @@ export class TrackStatusRequest implements PromiseLike<RequestOk | TrackStatusEr
     this._reject(reason)
   }
 
-  public then<TResult1 = RequestOk | TrackStatusError, TResult2 = never>(
-    onfulfilled?: ((value: RequestOk | TrackStatusError) => TResult1 | PromiseLike<TResult1>) | undefined | null,
+  public then<TResult1 = RequestOk | RequestError, TResult2 = never>(
+    onfulfilled?: ((value: RequestOk | RequestError) => TResult1 | PromiseLike<TResult1>) | undefined | null,
     onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | undefined | null,
   ): PromiseLike<TResult1 | TResult2> {
     return this.promise.then(onfulfilled, onrejected)
@@ -50,11 +50,11 @@ export class TrackStatusRequest implements PromiseLike<RequestOk | TrackStatusEr
 
   public catch<TResult = never>(
     onrejected?: ((reason: any) => TResult | PromiseLike<TResult>) | undefined | null,
-  ): Promise<RequestOk | TrackStatusError | TResult> {
+  ): Promise<RequestOk | RequestError | TResult> {
     return this.promise.catch(onrejected)
   }
 
-  public finally(onfinally?: (() => void) | undefined | null): Promise<RequestOk | TrackStatusError> {
+  public finally(onfinally?: (() => void) | undefined | null): Promise<RequestOk | RequestError> {
     return this.promise.finally(onfinally)
   }
 }

@@ -23,7 +23,7 @@ import {
   ObjectForwardingPreference,
   FilterType,
   GroupOrder,
-  SubscribeError,
+  RequestError,
 } from 'moqtail/model';
 
 const MOQTAIL_DEMO_NS = 'moqtail/demo';
@@ -129,7 +129,7 @@ export async function setupSignalling(
   });
 
   console.log('signalling: subscribe response', subResponse);
-  if (subResponse instanceof SubscribeError) {
+  if (subResponse instanceof RequestError) {
     console.warn('signalling: subscribe failed', subResponse);
   } else {
     const { stream } = subResponse;

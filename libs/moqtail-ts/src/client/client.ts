@@ -26,7 +26,6 @@ import {
   ControlMessage,
   Fetch,
   FetchCancel,
-  FetchError,
   FetchType,
   FilterType,
   GoAway,
@@ -34,12 +33,11 @@ import {
   ServerSetup,
   Subscribe,
   SubscribeNamespace,
-  SubscribeError,
+  RequestError,
   RequestUpdate,
   Unsubscribe,
   UnsubscribeNamespace,
   Publish,
-  PublishError,
   RequestOk,
   Switch,
   SubscribeOk,
@@ -119,7 +117,7 @@ const logger = createLogger('MOQtailClient')
  *   groupOrder: GroupOrder.Original,
  *   priority: 0
  * });
- * if (!(result instanceof SubscribeError)) {
+ * if (!(result instanceof RequestError)) {
  *   for await (const object of result.stream) {
  *     // Consume MOQT objects
  *   }
@@ -130,7 +128,7 @@ const logger = createLogger('MOQtailClient')
  * ```ts
  * const client = await MOQtailClient.new({ url });
  * const publishNamespaceResult = await client.publishNamespace(["camera", "main"]);
- * if (!(publishNamespaceResult instanceof SubscribeError)) {
+ * if (!(publishNamespaceResult instanceof RequestError)) {
  *   // Ready to publish objects under this namespace
  * }
  * ```
@@ -880,11 +878,11 @@ export class MOQtailClient {
    * - `filterType: AbsoluteRange` lets you specify a start and end group, both of should be in the future; the stream waits for those objects. If the start location is \< the latest object
    * observed at the publisher then it behaves as `filterType: LatestObject`.
    *
-   * The method returns either a {@link SubscribeError} (on refusal) or an object with the subscription `requestId` and a `ReadableStream` of {@link MoqtObject}s.
+   * The method returns either a {@link RequestError} (on refusal) or an object with the subscription `requestId` and a `ReadableStream` of {@link MoqtObject}s.
    * Use the `requestId` for {@link MOQtailClient.unsubscribe} or {@link MOQtailClient.subscribeUpdate}. Use the `stream` to decode and display objects.
    *
    * @param args - {@link SubscribeOptions} describing the subscription window and relay forwarding behavior.
-   * @returns Either a {@link SubscribeError} or `{ requestId, stream }` for consuming objects.
+   * @returns Either a {@link RequestError} or `{ requestId, stream }` for consuming objects.
    * @throws : {@link MOQtailError} If the client is destroyed.
    * @throws : {@link ProtocolViolationError} If required fields are missing or inconsistent.
    * @throws : {@link InternalError} On transport/protocol failure (disconnect is triggered before rethrow).
@@ -898,7 +896,7 @@ export class MOQtailClient {
    *   groupOrder: GroupOrder.Original,
    *   priority: 32
    * });
-   * if (!(result instanceof SubscribeError)) {
+   * if (!(result instanceof RequestError)) {
    *   for await (const obj of result.stream) {
    *     // decode and display obj
    *   }
@@ -920,7 +918,7 @@ export class MOQtailClient {
    */
   async subscribe(
     args: SubscribeOptions,
-  ): Promise<SubscribeError | { requestId: bigint; stream: ReadableStream<MoqtObject> }> {
+  ): Promise<RequestError | { requestId: bigint; stream: ReadableStream<MoqtObject> }> {
     this.#ensureActive()
     try {
       let { fullTrackName, priority, groupOrder, forward, filterType, parameters, startLocation, endGroup } = args
@@ -971,7 +969,7 @@ export class MOQtailClient {
       this.requestIdMap.addMapping(request.requestId, request.fullTrackName)
       await this.controlStream.send(msg)
       const response = await request
-      if (response instanceof SubscribeError) {
+      if (response instanceof RequestError) {
         this.requests.delete(request.requestId)
         this.requestIdMap.removeMappingByRequestId(request.requestId)
         return response
@@ -1010,7 +1008,7 @@ export class MOQtailClient {
    * @example Subscribe and later unsubscribe
    * ```ts
    * const sub = await client.subscribe({ fullTrackName, filterType: FilterType.LatestObject, forward: true, groupOrder: GroupOrder.Original, priority: 0 });
-   * if (!(sub instanceof SubscribeError)) {
+   * if (!(sub instanceof RequestError)) {
    *   // ...consume objects...
    *   await client.unsubscribe(sub.requestId);
    * }
@@ -1150,9 +1148,7 @@ export class MOQtailClient {
    * await client.switch({ subscriptionRequestId, fullTrackName: newTrackName });
    * ```
    */
-  async switch(
-    args: SwitchOptions,
-  ): Promise<SubscribeError | { requestId: bigint; stream: ReadableStream<MoqtObject> }> {
+  async switch(args: SwitchOptions): Promise<RequestError | { requestId: bigint; stream: ReadableStream<MoqtObject> }> {
     this.#ensureActive()
     let { fullTrackName, subscriptionRequestId, parameters } = args
     try {
@@ -1226,7 +1222,7 @@ export class MOQtailClient {
    * - typeAndProps: Discriminated union carrying parameters specific to each fetch mode (see examples).
    * - parameters: Optional version-specific extension block.
    *
-   * Returns either a {@link FetchError} (refusal / invalid request at protocol level) or `{ requestId, stream }` whose `stream`
+   * Returns either a {@link RequestError} (refusal / invalid request at protocol level) or `{ requestId, stream }` whose `stream`
    * ends naturally after the bounded range completes (no explicit cancel needed for normal completion).
    *
    * Use cases:
@@ -1253,7 +1249,7 @@ export class MOQtailClient {
    *     props: { fullTrackName, startLocation, endLocation }
    *   }
    * })
-   * if (!(r instanceof FetchError)) {
+   * if (!(r instanceof RequestError)) {
    *   for await (const obj of r.stream as any) {
    *     // consume objects then stream ends automatically
    *   }
@@ -1263,7 +1259,7 @@ export class MOQtailClient {
    * @example Relative to live subscription (e.g. last 5 groups)
    * ```ts
    * const sub = await client.subscribe({ fullTrackName, filterType: FilterType.LatestObject, forward: true, groupOrder: GroupOrder.Original, priority: 0 })
-   * if (!(sub instanceof SubscribeError)) {
+   * if (!(sub instanceof RequestError)) {
    *   const slice = await client.fetch({
    *     priority: 32,
    *     groupOrder: GroupOrder.Original,
@@ -1275,7 +1271,7 @@ export class MOQtailClient {
   // TODO: figure out how to handle joining fetch types
   // Do we need an existing subscription? What happens if that subscription forwards objects?
   // Will the subscribe objects be pushed through this FetchRequest.controller?
-  async fetch(args: FetchOptions): Promise<FetchError | { requestId: bigint; stream: ReadableStream<MoqtObject> }> {
+  async fetch(args: FetchOptions): Promise<RequestError | { requestId: bigint; stream: ReadableStream<MoqtObject> }> {
     this.#ensureActive()
     try {
       const { priority, groupOrder, typeAndProps, parameters } = args
@@ -1337,7 +1333,7 @@ export class MOQtailClient {
       await this.controlStream.send(msg)
       logger.log('fetch: fetch message sent successfully, waiting for response')
       const response = await request
-      if (response instanceof FetchError) {
+      if (response instanceof RequestError) {
         this.requests.delete(msg.requestId)
         return response
       } else {
@@ -1375,7 +1371,7 @@ export class MOQtailClient {
    * @example Cancel shortly after starting
    * ```ts
    * const r = await client.fetch({ priority: 32, groupOrder: GroupOrder.Original, typeAndProps: { type: FetchType.Standalone, props: { fullTrackName, startLocation, endLocation } } })
-   * if (!(r instanceof FetchError)) {
+   * if (!(r instanceof RequestError)) {
    *   // user navigated away
    *   await client.fetchCancel(r.requestId)
    * }
@@ -1439,7 +1435,7 @@ export class MOQtailClient {
       await this.controlStream.send(msg)
       const response = await request
 
-      if (response instanceof PublishError) {
+      if (response instanceof RequestError) {
         this.requests.delete(msg.requestId)
         this.requestIdMap.removeMappingByRequestId(msg.requestId)
         this.subscriptionAliasMap.delete(msg.requestId)
@@ -1537,7 +1533,7 @@ export class MOQtailClient {
    * - trackNamespace: Tuple representing the namespace prefix (e.g. ["camera","main"]). All tracks whose full names start with this tuple are considered within the announce scope.
    * - parameters: Optional {@link MessageParameters}; omitted =\> default instance.
    *
-   * Returns: {@link RequestOk} on success (namespace added to `announcedNamespaces`) or {@link SubscribeError} explaining refusal.
+   * Returns: {@link RequestOk} on success (namespace added to `announcedNamespaces`) or {@link RequestError} explaining refusal.
    *
    * Use cases:
    * - Make a camera or sensor namespace available before any objects are pushed.
@@ -1682,7 +1678,7 @@ export class MOQtailClient {
     trackNamespacePrefix: Tuple,
     subscribeOptions: NamespaceSubscribeOptions = NamespaceSubscribeOptions.Both,
     parameters?: MessageParameter[],
-  ): Promise<{ response: RequestOk | SubscribeError; cancel: () => Promise<void> }> {
+  ): Promise<{ response: RequestOk | RequestError; cancel: () => Promise<void> }> {
     this.#ensureActive()
     try {
       const params: MessageParameter[] = parameters ?? []
@@ -1701,7 +1697,7 @@ export class MOQtailClient {
       if (done || !response) {
         throw new InternalError('MOQtailClient.subscribeNamespace', 'Stream closed before response')
       }
-      if (!(response instanceof RequestOk || response instanceof SubscribeError)) {
+      if (!(response instanceof RequestOk || response instanceof RequestError)) {
         throw new ProtocolViolationError('MOQtailClient.subscribeNamespace', 'Unexpected response message type')
       }
 

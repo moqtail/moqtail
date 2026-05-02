@@ -134,13 +134,13 @@ pub async fn run(moq: MoqConnection, config: FetchConfig) -> Result<()> {
     }
   });
 
-  // Wait for control messages (FetchOk/FetchError)
+  // Wait for control messages (RequestOk/RequestError)
   match control_stream.next_message().await {
-    Ok(ControlMessage::FetchOk(m)) => {
-      info!("Received FetchOk: {:?}", m);
+    Ok(ControlMessage::RequestOk(m)) => {
+      info!("Received RequestOk: {:?}", m);
     }
     Ok(ControlMessage::RequestError(m)) => {
-      error!("Received FetchError: {:?}", m);
+      error!("Received RequestError: {:?}", m);
     }
     Ok(m) => {
       info!("Received message: {:?}", m);

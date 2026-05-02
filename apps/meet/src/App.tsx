@@ -16,7 +16,7 @@
 
 import { useRef, useState } from 'react';
 import { MOQtailClient } from 'moqtail/client';
-import { RequestOk } from 'moqtail/model';
+import { RequestError } from 'moqtail/model';
 import {
   FullTrackName,
   Tuple,
@@ -108,8 +108,9 @@ export default function App() {
     if (subscribedNsRef.current.has(key)) return;
     subscribedNsRef.current.add(key);
     const { response } = await client.subscribeNamespace(ns);
-    if (!(response instanceof RequestOk)) {
-      console.warn('subscribeNamespace failed for', key);
+    console.log('subscribeNamespaceOnce: response for ns %s: %o', ns.toUtf8Path(), response);
+    if (response instanceof RequestError) {
+      console.warn('subscribeNamespace failed for', key, ':', response);
       subscribedNsRef.current.delete(key);
     }
   }

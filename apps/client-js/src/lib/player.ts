@@ -77,19 +77,26 @@ export class Player {
     // If we already received the catalog, skip initialization
     if (this.catalog) return this.catalog;
 
+    logger.info('player', `Connecting to relay: ${this.#options.relayUrl}`);
     try {
-      // Initialize the client and fetch the catalog
       this.client = await MOQtailClient.new({
         url: this.#options.relayUrl,
+        callbacks: {
+          onMessageSent: msg => logger.debug('player', `control →relay: ${msg.constructor.name}`),
+          onMessageReceived: msg =>
+            logger.debug('player', `control ←relay: ${msg.constructor.name}`),
+        },
       });
+      logger.info('player', 'Connected to relay');
     } catch (error) {
       logger.error('media', 'Failed to connect to relay', (error as Error).message);
       throw error;
     }
 
-    // Fetch the catalog
+    logger.info('player', 'Retrieving catalog...');
     try {
       this.catalog = await this.retrieveCatalog();
+      logger.info('player', `Catalog retrieved — ${this.catalog.getTracks().length} track(s)`);
     } catch (error) {
       logger.error('media', 'Failed to retrieve catalog', (error as Error).message);
       throw error;
@@ -126,6 +133,8 @@ export class Player {
     if (!this.catalog) throw new Error('Catalog not loaded');
     if (!this.client) throw new Error('MOQProcessor not initialized');
 
+    logger.info('player', `addMediaTrack: "${trackName}"`);
+
     // We require a catalog entry to be present
     if (!this.catalog?.getByTrackName(trackName))
       throw new Error(`Track not found in catalog: ${trackName}`);
@@ -136,11 +145,20 @@ export class Player {
         `Unsupported packaging type for track ${trackName}, only 'cmaf' and 'chunk-per-object' are supported`,
       );
 
+    const codecString = this.catalog.getCodecString(trackName);
+    const role = this.catalog.getRole(trackName);
+    logger.info('player', `addMediaTrack: "${trackName}" role=${role} codec=${codecString}`);
+
     // Get the stream struct
     const struct = await this.subscribe({ trackName });
 
     // Create new Source Buffer
     await this.#newSourceBufferMSE(struct, trackName);
+
+    logger.info(
+      'player',
+      `addMediaTrack: SourceBuffer created for "${trackName}" requestId=${struct.requestId}`,
+    );
 
     // Return the request ID
     return struct.requestId;
@@ -150,6 +168,11 @@ export class Player {
     if (!this.client) throw new Error('MOQProcessor not initialized');
     if (!this.#element) throw new Error('Media element not attached');
     if (this.#streams.length === 0) throw new Error('No active media streams to start');
+
+    logger.info(
+      'player',
+      `startMedia: ${this.#streams.length} stream(s), MSE state="${this.#mse?.readyState}"`,
+    );
 
     // Convenience function to wait for buffer updates
     const waitForBufferUpdate = (sourceBuffer: SourceBuffer) =>
@@ -167,22 +190,40 @@ export class Player {
       target = Math.max(target, end);
 
       gotNotification++;
+      logger.info(
+        'player',
+        `bufferNotification: stream ${gotNotification}/${this.#streams.length} ready, bufferEnd=${end.toFixed(3)}s`,
+      );
       if (gotNotification === this.#streams.length) {
-        console.log('All buffers ready, seeking to', target);
+        logger.info(
+          'player',
+          `All buffers ready — seeking to ${target.toFixed(3)}s and calling play()`,
+        );
         this.#element!.currentTime = target;
-        this.#element!.play();
+        this.#element!.play()
+          .then(() => logger.info('player', 'play() resolved'))
+          .catch(e => logger.error('player', 'play() rejected', e));
       }
       return true;
     };
 
     // Iterate over all added roles
     for (const struct of this.#streams) {
+      logger.info(
+        'player',
+        `startMedia: setting up stream for "${struct.trackName}" requestId=${struct.requestId}`,
+      );
+
       // Get the init segment for the track
       const initSegment = this.catalog?.getInitData(struct.trackName);
       if (!initSegment) {
         await this.unsubscribe(struct.requestId);
         throw new Error(`Failed to get init segment for track: ${struct.trackName}`);
       }
+      logger.debug(
+        'player',
+        `startMedia: init segment size=${initSegment.byteLength}B for "${struct.trackName}"`,
+      );
 
       // Get the Buffer and AbortController for this track
       const { sourceBuffer, ac } = struct.buffer!;
@@ -191,6 +232,7 @@ export class Player {
       try {
         sourceBuffer.appendBuffer(initSegment);
         await waitForBufferUpdate(sourceBuffer);
+        logger.info('player', `startMedia: init segment appended for "${struct.trackName}"`);
       } catch (error) {
         await this.unsubscribe(struct.requestId);
         throw new Error(
@@ -201,6 +243,7 @@ export class Player {
       // MSE State
       let lastMSEErrorLogged = 0;
       let kickStarted = false;
+      let objectCount = 0;
 
       // Create the WritableStream to handle incoming objects
       const writable = new WritableStream<MoqtObject>({
@@ -208,16 +251,34 @@ export class Player {
           try {
             // Skip end-of-group objects
             if (object.isEndOfGroup()) {
-              logger.info(
-                'media',
-                `Received end-of-group object for track ${struct.trackName}, ignoring`,
+              logger.debug(
+                'player',
+                `[${struct.trackName}] end-of-group (group=${object.groupId}, obj=${object.objectId})`,
               );
               return;
             }
 
+            objectCount++;
+            if (objectCount === 1) {
+              logger.info(
+                'player',
+                `[${struct.trackName}] first object received — group=${object.groupId} obj=${object.objectId} size=${object.payload?.byteLength ?? 0}B`,
+              );
+            } else if (objectCount % 30 === 0) {
+              const buf = sourceBuffer.buffered;
+              const bufEnd = buf.length > 0 ? buf.end(buf.length - 1).toFixed(3) : 'none';
+              logger.debug(
+                'player',
+                `[${struct.trackName}] object #${objectCount} group=${object.groupId} obj=${object.objectId} bufferEnd=${bufEnd}s`,
+              );
+            }
+
             // Make TypeScript happy
             if (!(object.payload?.buffer instanceof ArrayBuffer)) {
-              console.warn('Received non-ArrayBuffer payload, ignoring', object);
+              logger.warn(
+                'player',
+                `[${struct.trackName}] non-ArrayBuffer payload, ignoring (type=${typeof object.payload?.buffer})`,
+              );
               return;
             }
 
@@ -231,10 +292,7 @@ export class Player {
             let maxRetries = 5;
             while (maxRetries--) {
               try {
-                // Append the data
                 sourceBuffer.appendBuffer(object.payload.buffer);
-
-                // Wait for the source buffer to be consumed
                 await waitForBufferUpdate(sourceBuffer);
                 break;
               } catch (error) {
@@ -243,8 +301,8 @@ export class Player {
                 else if (lastMSEErrorLogged + 5000 < performance.now()) {
                   lastMSEErrorLogged = performance.now();
                   logger.error(
-                    'media',
-                    `Error appending to SourceBuffer, retrying... (${maxRetries} attempts left)`,
+                    'player',
+                    `[${struct.trackName}] SourceBuffer appendBuffer failed, retrying (${maxRetries} left): ${(error as Error).message}`,
                   );
                 }
               }
@@ -255,7 +313,14 @@ export class Player {
               const minStart = sourceBuffer.buffered.start(0);
               const maxEnd = sourceBuffer.buffered.end(sourceBuffer.buffered.length - 1);
               const bufferDuration = maxEnd - minStart;
-              if (bufferDuration > 1.0) bufferNotification(maxEnd);
+              logger.debug(
+                'player',
+                `[${struct.trackName}] buffered ${bufferDuration.toFixed(3)}s (${minStart.toFixed(3)}–${maxEnd.toFixed(3)}s), kickStarted=${kickStarted}`,
+              );
+              if (bufferDuration > 1.0) {
+                kickStarted = true;
+                bufferNotification(maxEnd);
+              }
             }
           } catch (error) {
             logger.error('media', 'Error processing media object:', error);
@@ -265,14 +330,26 @@ export class Player {
       });
 
       // Pipe to the writable stream
+      logger.info('player', `startMedia: piping "${struct.trackName}" stream into WritableStream`);
       const promise = struct.source.pipeTo(writable, { signal: ac.signal });
 
       // Cleanup stream
       promise
         .catch(error => {
-          if (!['AbortError', 'InternalError'].includes(error.name)) throw error;
+          if (!['AbortError', 'InternalError'].includes(error.name)) {
+            logger.error(
+              'player',
+              `[${struct.trackName}] pipeTo error: ${error.name} — ${error.message}`,
+            );
+            throw error;
+          }
+          logger.info('player', `[${struct.trackName}] pipeTo ended: ${error.name}`);
         })
         .finally(async () => {
+          logger.info(
+            'player',
+            `[${struct.trackName}] stream finished — MSE readyState="${this.#mse!.readyState}"`,
+          );
           if (this.#mse!.readyState === 'open') this.#mse!.endOfStream();
         });
     }
@@ -281,11 +358,18 @@ export class Player {
   async #newSourceBufferMSE(struct: MOQStreamStruct, trackName: string) {
     if (!this.#mse) throw new Error('MediaSource not initialized');
 
+    logger.info(
+      'player',
+      `#newSourceBufferMSE: "${trackName}" MSE readyState="${this.#mse.readyState}"`,
+    );
+
     // Wait for media source to be open
     if (this.#mse.readyState === 'closed') {
+      logger.info('player', '#newSourceBufferMSE: waiting for MSE sourceopen...');
       await new Promise(resolve => {
         const onSourceOpen = () => {
           this.#mse!.removeEventListener('sourceopen', onSourceOpen);
+          logger.info('player', '#newSourceBufferMSE: MSE sourceopen fired');
           resolve(true);
         };
         this.#mse!.addEventListener('sourceopen', onSourceOpen);
@@ -302,6 +386,10 @@ export class Player {
 
     // Check if the MIME type is supported
     const mimeType = `${role}/mp4; codecs="${codecString}"`;
+    logger.info(
+      'player',
+      `#newSourceBufferMSE: mimeType="${mimeType}" supported=${MediaSource.isTypeSupported(mimeType)}`,
+    );
     if (!MediaSource.isTypeSupported(mimeType)) {
       await this.unsubscribe(struct.requestId);
       throw new Error(`MIME type not supported: ${mimeType}`);
@@ -309,6 +397,7 @@ export class Player {
 
     // Create a new SourceBuffer
     const sourceBuffer = this.#mse.addSourceBuffer(mimeType);
+    logger.info('player', `#newSourceBufferMSE: SourceBuffer added for "${trackName}"`);
 
     // Register the SourceBuffer
     struct.buffer = {
@@ -320,10 +409,19 @@ export class Player {
   async retrieveCatalog(): Promise<CMSFCatalog> {
     if (!this.client) throw new Error('MOQProcessor not initialized');
 
+    const ns = this.#options.namespace.toUtf8Path();
+    const via = this.#options.receiveCatalogViaSubscribe ? 'SUBSCRIBE' : 'FETCH';
+    logger.info('player', `retrieveCatalog: ns="${ns}" via=${via}`);
+
     let struct: MOQStreamStruct;
     if (this.#options.receiveCatalogViaSubscribe) {
       struct = await this.subscribe({ trackName: 'catalog', priority: 0 });
     } else {
+      const [startLoc, endLoc] = this.#options.catalogLocation;
+      logger.info(
+        'player',
+        `retrieveCatalog: FETCH group=${startLoc.group}:${startLoc.object} → ${endLoc.group}:${endLoc.object}`,
+      );
       const result = await this.client.fetch({
         groupOrder: GroupOrder.Original,
         priority: 0,
@@ -331,13 +429,19 @@ export class Player {
           type: FetchType.Standalone,
           props: {
             fullTrackName: getFullTrackName(this.#options.namespace, 'catalog'),
-            startLocation: this.#options.catalogLocation[0],
-            endLocation: this.#options.catalogLocation[1],
+            startLocation: startLoc,
+            endLocation: endLoc,
           },
         },
       });
-      if (result instanceof RequestError)
+      if (result instanceof RequestError) {
+        logger.error(
+          'player',
+          `retrieveCatalog: FETCH failed — code=${result.errorCode} reason="${result.reasonPhrase.phrase}"`,
+        );
         throw new Error(`Error occured during catalog fetch: ${result.reasonPhrase.phrase}`);
+      }
+      logger.info('player', `retrieveCatalog: FETCH OK requestId=${result.requestId}`);
       struct = {
         trackName: 'catalog',
         requestId: result.requestId,
@@ -348,25 +452,42 @@ export class Player {
     // Pull the latest catalog object
     const reader = struct.source.getReader();
     let buffer: ArrayBufferLike | undefined;
+    let objectsRead = 0;
     while (!buffer) {
       const result = await reader.read();
       if (result.done) {
-        reader.releaseLock();
+        logger.error(
+          'player',
+          `retrieveCatalog: stream closed after ${objectsRead} object(s) — no catalog data`,
+        );
+        await reader.releaseLock();
         throw new Error('Catalog stream closed unexpectedly while waiting for data');
       }
       const value = result.value;
-      if (value.isEndOfGroup()) continue;
+      objectsRead++;
+      if (value.isEndOfGroup()) {
+        logger.debug('player', `retrieveCatalog: skipping end-of-group object (#${objectsRead})`);
+        continue;
+      }
       if (!value.payload?.buffer) {
         logger.warn('media', 'Received catalog object without payload, ignoring');
         continue;
       }
+      logger.info(
+        'player',
+        `retrieveCatalog: got catalog payload — ${value.payload.byteLength}B (after ${objectsRead} read(s))`,
+      );
       buffer = value.payload.buffer;
     }
 
     // Parse and store the catalog
     const catalog = CMSFCatalog.from(buffer);
+    const tracks = catalog.getTracks();
+    logger.info(
+      'player',
+      `retrieveCatalog: parsed ${tracks.length} track(s): ${tracks.map(t => `${t.name}(${t.role})`).join(', ')}`,
+    );
 
-    // Unsubscribe from the catalog stream since we only needed the latest object
     if (this.#options.receiveCatalogViaSubscribe) await this.unsubscribe(struct.requestId);
     return catalog;
   }
@@ -374,18 +495,29 @@ export class Player {
   private async subscribe(params: SubscribeOptions): Promise<MOQStreamStruct> {
     if (!this.client) throw new Error('MOQProcessor not initialized');
 
-    // Send the appropriate control message
-    let struct: MOQStreamStruct;
+    const ftn = getFullTrackName(this.#options.namespace, params.trackName);
+    logger.info(
+      'player',
+      `subscribe: "${params.trackName}" ftn="${ftn.toString()}" priority=${params.priority ?? 0}`,
+    );
+
     const result = await this.client.subscribe({
-      fullTrackName: getFullTrackName(this.#options.namespace, params.trackName),
+      fullTrackName: ftn,
       groupOrder: GroupOrder.Original,
       filterType: FilterType.LatestObject,
       forward: true,
       priority: params.priority ?? 0,
     });
-    if (result instanceof RequestError)
+    if (result instanceof RequestError) {
+      logger.error(
+        'player',
+        `subscribe: "${params.trackName}" failed — code=${result.errorCode} reason="${result.reasonPhrase.phrase}"`,
+      );
       throw new Error(`Error occured during subscription: ${result.reasonPhrase.phrase}`);
-    struct = {
+    }
+    logger.info('player', `subscribe: "${params.trackName}" OK requestId=${result.requestId}`);
+
+    const struct: MOQStreamStruct = {
       trackName: params.trackName,
       requestId: result.requestId,
       source: result.stream,
@@ -405,10 +537,8 @@ export class Player {
     const struct = this.#streams[index];
     if (!struct) throw new Error(`No active subscription found for requestId ${requestId}`);
 
-    // Send the UNSUBSCRIBE message
+    logger.info('player', `unsubscribe: "${struct.trackName}" requestId=${requestId}`);
     await this.client.unsubscribe(struct.requestId);
-
-    // Remove the stream from the pool
     this.#streams.splice(index, 1);
   }
 }

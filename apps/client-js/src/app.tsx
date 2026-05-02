@@ -22,6 +22,9 @@ import type { Track, Status } from '@/types';
 import { Header } from '@/components/Header';
 import { Sidebar } from '@/components/Sidebar';
 import { VideoPlayer } from '@/components/VideoPlayer';
+import { logger } from '@/lib/logger';
+
+logger.setDefaultLevel('debug');
 
 function sortTracks(tracks: CMSFTrack[]) {
   return tracks.sort((a, b) => {
@@ -69,6 +72,7 @@ export function App() {
   const initializePlaybackSession = useCallback(async () => {
     if (!videoRef.current) return null;
 
+    logger.info('app', `initializePlaybackSession: relay="${relayUrl}" ns="${namespace}"`);
     const player = new Player({
       relayUrl,
       namespace: Tuple.fromUtf8Path(namespace),
@@ -78,10 +82,15 @@ export function App() {
 
     const catalog = await player.initialize();
     const allTracks = sortTracks(catalog.getTracks());
+    logger.info(
+      'app',
+      `initializePlaybackSession: ${allTracks.length} track(s): ${allTracks.map(t => `${t.name}(${t.role})`).join(', ')}`,
+    );
     setTracks(allTracks);
 
     await player.attachMedia(videoRef.current);
     bufferRef.current = new MSEBuffer(videoRef.current);
+    logger.info('app', 'initializePlaybackSession: media attached, MSEBuffer created');
 
     return { player, allTracks };
   }, [relayUrl, namespace]);
@@ -103,16 +112,21 @@ export function App() {
       const { player, allTracks } = session;
 
       const firstVideo = allTracks.find(t => t.role === 'video');
+      logger.info('app', `handleConnect: firstVideo="${firstVideo?.name ?? 'none'}"`);
       if (firstVideo) {
         setSelectedVideo(firstVideo.name);
         setStatus('restarting');
         await player.addMediaTrack(firstVideo.name);
+        logger.info('app', 'handleConnect: addMediaTrack done, calling startMedia');
         await player.startMedia();
+        logger.info('app', 'handleConnect: startMedia done — status=playing');
         setStatus('playing');
       } else {
+        logger.warn('app', 'handleConnect: no video track found in catalog');
         setStatus('ready');
       }
     } catch (err) {
+      logger.error('app', `handleConnect: error — ${(err as Error).message}`);
       setError((err as Error).message);
       setStatus('error');
       await disposePlayer();
@@ -128,6 +142,10 @@ export function App() {
         return;
       }
 
+      logger.info(
+        'app',
+        `startPlayback: video="${videoTrack ?? 'none'}" audio="${audioTrack ?? 'none'}"`,
+      );
       setStatus('restarting');
       await disposePlayer();
 
@@ -140,9 +158,12 @@ export function App() {
         if (videoTrack) await player.addMediaTrack(videoTrack);
         if (audioTrack) await player.addMediaTrack(audioTrack);
 
+        logger.info('app', 'startPlayback: calling startMedia');
         await player.startMedia();
+        logger.info('app', 'startPlayback: startMedia done — status=playing');
         setStatus('playing');
       } catch (err) {
+        logger.error('app', `startPlayback: error — ${(err as Error).message}`);
         setError((err as Error).message);
         setStatus('error');
         await disposePlayer();

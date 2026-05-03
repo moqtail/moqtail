@@ -18,6 +18,9 @@ import { ControlMessage } from '../model/control/control_message'
 import { FrozenByteBuffer, ByteBuffer } from '../model/common/byte_buffer'
 import { NotEnoughBytesError, TerminationError } from '../model/error/error'
 import { TerminationCode } from '../model/error/constant'
+import { createLogger } from '../util/logger'
+
+const logger = createLogger('request_stream')
 
 /**
  * Wraps a WebTransport bidirectional stream for request-style MOQT streams
@@ -37,6 +40,7 @@ export class RequestStream {
       start: (controller) => this.#ingestLoop(controller),
       cancel: () => this.close(),
     })
+    logger.debug('opened')
   }
 
   async send(message: ControlMessage): Promise<void> {
@@ -44,14 +48,17 @@ export class RequestStream {
       const serialized = ControlMessage.serialize(message)
       await this.#writer.ready
       await this.#writer.write(serialized.toUint8Array())
+      logger.debug(`sent ${message.constructor.name}`)
     } catch (error: any) {
       await this.close()
       const msg = error instanceof Error ? error.message : String(error)
+      logger.error(`send failed: ${msg}`)
       throw new TerminationError(`RequestStream.send: Failed to write message: ${msg}`, TerminationCode.INTERNAL_ERROR)
     }
   }
 
   async close(): Promise<void> {
+    logger.debug('closed')
     await Promise.allSettled([this.#writer.close().catch(() => {}), this.#reader.cancel().catch(() => {})])
   }
 
@@ -88,6 +95,7 @@ export class RequestStream {
             this.#handleReadResult(readResult)
             if (readResult.done) break
           } else {
+            logger.error(`deserialization error: ${error.message}`)
             controller.error(
               new TerminationError(
                 `RequestStream: Deserialization error: ${error.message}`,
@@ -100,6 +108,7 @@ export class RequestStream {
         }
       }
     } catch (error) {
+      logger.error('ingest loop error', error)
       controller.error(error)
       await this.close()
     } finally {

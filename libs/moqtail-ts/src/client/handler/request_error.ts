@@ -26,14 +26,15 @@ import { FetchRequest } from '../request/fetch'
 const logger = createLogger('handler/request_error')
 
 export const handlerRequestError: ControlMessageHandler<RequestError> = async (client, msg) => {
-  logger.warn('requestId, code, reason', msg.requestId, msg.errorCode, msg.reasonPhrase)
+  logger.error(`received requestId=${msg.requestId} code=${msg.errorCode} reason="${msg.reasonPhrase.phrase}"`)
 
   const request = client.requests.get(msg.requestId)
   if (!request) {
-    logger.warn(`Received RequestError for unknown or already-resolved request id: ${msg.requestId}`)
+    logger.warn(`requestId=${msg.requestId} — no pending request found (already resolved or unknown)`)
     return
   }
 
+  logger.debug(`requestId=${msg.requestId} — resolving ${request.constructor.name} with error`)
   if (
     request instanceof SubscribeRequest ||
     request instanceof PublishRequest ||

@@ -141,7 +141,7 @@ export class LiveTrackSource implements LiveObjectSource {
       queue = queue
         .then(() => listener(obj))
         .catch((err) => {
-          console.error('LiveTrackSource: Error in subscriber listener:', err)
+          logger.error('Error in subscriber listener:', err)
         })
     }
 

@@ -27,6 +27,9 @@ import { FetchObjectContext } from '../model/data/fetch_object'
 import { ObjectForwardingPreference } from '../model/data/constant'
 import { Header } from '../model/data/header'
 import { NotEnoughBytesError, ProtocolViolationError, TimeoutError } from '../model/error/error'
+import { createLogger } from '../util/logger'
+
+const logger = createLogger('data_stream')
 
 export class SendStream {
   #lastObjectId?: bigint
@@ -51,6 +54,7 @@ export class SendStream {
     const serializedHeader = header.serialize().toUint8Array()
     await writer.write(serializedHeader)
     if (onDataSent) onDataSent(header)
+    logger.debug(`SendStream opened type=${header.type}`)
     return new SendStream(header, writer, onDataSent)
   }
 
@@ -62,6 +66,7 @@ export class SendStream {
       if (newCtx) this.#fetchPrevCtx = newCtx
     } else {
       if (this.#lastObjectId !== undefined && object.objectId <= this.#lastObjectId) {
+        logger.error(`SendStream out-of-order objectId=${object.objectId} lastObjectId=${this.#lastObjectId}`)
         throw new Error(
           `SendStream.write: Out-of-order object detected. ` +
             `Attempted to write objectId=${object.objectId}, but lastObjectId=${this.#lastObjectId}.`,
@@ -77,6 +82,7 @@ export class SendStream {
 
   async close(): Promise<void> {
     if (this.#writer) {
+      logger.debug(`SendStream closed type=${this.header.type}`)
       await this.#writer.close()
     }
   }
@@ -170,6 +176,7 @@ export class RecvStream {
       throw error
     }
     if (onDataReceived) onDataReceived(headerInstance)
+    logger.debug(`RecvStream opened type=${headerInstance.type}`)
     return new RecvStream(headerInstance, reader, internalBuffer, partialDataTimeout, onDataReceived)
   }
 
@@ -224,6 +231,7 @@ export class RecvStream {
         const { done, value } = readResult
         if (done) {
           if (this.#internalBuffer.remaining > 0) {
+            logger.error(`RecvStream closed with incomplete data remaining=${this.#internalBuffer.remaining}`)
             controller.error(
               new ProtocolViolationError(
                 'RecvStream',
@@ -231,6 +239,7 @@ export class RecvStream {
               ),
             )
           } else {
+            logger.debug(`RecvStream closed type=${this.header.type}`)
             controller.close()
           }
           break
@@ -240,6 +249,7 @@ export class RecvStream {
         }
       }
     } catch (error) {
+      logger.error('RecvStream ingest loop error', error)
       // Cleanup on error
       await this.#reader.cancel(error).catch(() => {})
       controller.error(error)

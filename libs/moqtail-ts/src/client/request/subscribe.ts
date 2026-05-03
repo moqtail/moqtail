@@ -25,6 +25,9 @@ import {
   RequestUpdate,
   applyMessageParameterUpdate,
 } from '@/model'
+import { createLogger } from '../../util/logger'
+
+const logger = createLogger('request/subscribe')
 
 // TODO: Add timeout mechanism for unsubscribing
 export class SubscribeRequest implements PromiseLike<SubscribeOk | RequestError> {
@@ -65,6 +68,9 @@ export class SubscribeRequest implements PromiseLike<SubscribeOk | RequestError>
       this.#resolve = resolve
       this.#reject = reject
     })
+    logger.debug(
+      `created requestId=${this.requestId} ftn="${this.fullTrackName}" priority=${this.priority} forward=${this.forward}`,
+    )
   }
   update(msg: RequestUpdate): void {
     const filter = msg.parameters.find(MessageParameter.isSubscriptionFilter)
@@ -95,10 +101,18 @@ export class SubscribeRequest implements PromiseLike<SubscribeOk | RequestError>
     this.isCanceled = true
   }
   resolve(value: SubscribeOk | RequestError | PromiseLike<SubscribeOk | RequestError>): void {
+    if (value instanceof RequestError) {
+      logger.error(
+        `resolved with error requestId=${this.requestId} code=${value.errorCode} reason="${value.reasonPhrase.phrase}"`,
+      )
+    } else if (value instanceof SubscribeOk) {
+      logger.debug(`resolved with OK requestId=${this.requestId} trackAlias=${value.trackAlias}`)
+    }
     this.#resolve(value)
   }
 
   reject(reason?: any): void {
+    logger.error(`rejected requestId=${this.requestId}`, reason)
     this.#reject(reason)
   }
 

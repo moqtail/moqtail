@@ -15,6 +15,9 @@
  */
 
 import { SubscribeNamespace, RequestError, RequestOk } from '@/model'
+import { createLogger } from '../../util/logger'
+
+const logger = createLogger('request/subscribe_namespace')
 
 export class SubscribeNamespaceRequest implements PromiseLike<RequestOk | RequestError> {
   public readonly requestId: bigint
@@ -30,13 +33,22 @@ export class SubscribeNamespaceRequest implements PromiseLike<RequestOk | Reques
       this._resolve = resolve
       this._reject = reject
     })
+    logger.debug(`created requestId=${this.requestId} namespace="${msg.trackNamespacePrefix}"`)
   }
 
   public resolve(value: RequestOk | RequestError | PromiseLike<RequestOk | RequestError>): void {
+    if (value instanceof RequestError) {
+      logger.error(
+        `resolved with error requestId=${this.requestId} code=${value.errorCode} reason="${value.reasonPhrase.phrase}"`,
+      )
+    } else if (value instanceof RequestOk) {
+      logger.debug(`resolved with OK requestId=${this.requestId}`)
+    }
     this._resolve(value)
   }
 
   public reject(reason?: any): void {
+    logger.error(`rejected requestId=${this.requestId}`, reason)
     this._reject(reason)
   }
 

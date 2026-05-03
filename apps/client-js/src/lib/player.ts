@@ -20,6 +20,7 @@ import {
   FullTrackName,
   GroupOrder,
   Location,
+  LogLevel,
   MoqtObject,
   Tuple,
 } from 'moqtail';
@@ -87,6 +88,7 @@ export class Player {
             logger.debug('player', `control ←relay: ${msg.constructor.name}`),
         },
       });
+      MOQtailClient.setLogLevel(LogLevel.WARN);
       logger.info('player', 'Connected to relay');
     } catch (error) {
       logger.error('media', 'Failed to connect to relay', (error as Error).message);

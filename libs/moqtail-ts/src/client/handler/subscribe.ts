@@ -24,9 +24,11 @@ import { LargestObject } from '../../model/parameter/message/largest_object'
 const logger = createLogger('handler/subscribe')
 
 export const handlerSubscribe: ControlMessageHandler<Subscribe> = async (client, msg) => {
-  logger.log('requestId, trackName', msg.requestId, msg.fullTrackName.toString())
+  logger.debug(`received requestId=${msg.requestId} ftn="${msg.fullTrackName}"`)
+
   const track = client.trackSources.get(msg.fullTrackName.toString())
   if (!track) {
+    logger.error(`requestId=${msg.requestId} ftn="${msg.fullTrackName}" — track not found, sending REQUEST_ERROR`)
     const subscribeError = new RequestError(
       msg.requestId,
       RequestErrorCode.DoesNotExist,
@@ -37,6 +39,9 @@ export const handlerSubscribe: ControlMessageHandler<Subscribe> = async (client,
     return
   }
   if (!track.trackSource.live) {
+    logger.error(
+      `requestId=${msg.requestId} ftn="${msg.fullTrackName}" — track has no live source, sending REQUEST_ERROR`,
+    )
     const response = new RequestError(
       msg.requestId,
       RequestErrorCode.NotSupported,
@@ -54,8 +59,12 @@ export const handlerSubscribe: ControlMessageHandler<Subscribe> = async (client,
     parameters.push(new LargestObject(largestLocation))
   }
 
+  logger.debug(
+    `requestId=${msg.requestId} ftn="${msg.fullTrackName}" trackAlias=${track.trackAlias} largestLocation=${largestLocation ? `${largestLocation.group}:${largestLocation.object}` : 'none'} — sending SUBSCRIBE_OK`,
+  )
   const subscribeOk = SubscribeOk.create(msg.requestId, track.trackAlias, parameters, track.trackExtensions ?? [])
   const publication = new SubscribePublication(client, track, msg, largestLocation)
   client.publications.set(msg.requestId, publication)
   await client.controlStream.send(subscribeOk)
+  logger.debug(`requestId=${msg.requestId} — SUBSCRIBE_OK sent, publication registered`)
 }

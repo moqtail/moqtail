@@ -923,6 +923,10 @@ export class MOQtailClient {
     try {
       let { fullTrackName, priority, groupOrder, forward, filterType, parameters, startLocation, endGroup } = args
 
+      logger.debug(
+        `subscribe: ftn="${fullTrackName}" filterType=${filterType} priority=${priority} forward=${forward} groupOrder=${groupOrder}`,
+      )
+
       let msg: Subscribe
       if (typeof endGroup === 'number') endGroup = BigInt(endGroup)
       const baseParams: MessageParameter[] = [
@@ -967,19 +971,29 @@ export class MOQtailClient {
       const request = new SubscribeRequest(msg)
       this.requests.set(request.requestId, request)
       this.requestIdMap.addMapping(request.requestId, request.fullTrackName)
+
+      logger.debug(`subscribe: sending SUBSCRIBE requestId=${msg.requestId} ftn="${fullTrackName}"`)
       await this.controlStream.send(msg)
+      logger.debug(`subscribe: SUBSCRIBE sent, awaiting SUBSCRIBE_OK/REQUEST_ERROR requestId=${msg.requestId}`)
+
       const response = await request
+
       if (response instanceof RequestError) {
+        logger.error(
+          `subscribe: SUBSCRIBE_ERROR requestId=${request.requestId} code=${response.errorCode} reason="${response.reasonPhrase.phrase}"`,
+        )
         this.requests.delete(request.requestId)
         this.requestIdMap.removeMappingByRequestId(request.requestId)
         return response
       } else {
+        logger.debug(`subscribe: SUBSCRIBE_OK requestId=${request.requestId} trackAlias=${response.trackAlias}`)
         this.subscriptions.set(response.trackAlias, request)
         this.subscriptionAliasMap.set(request.requestId, response.trackAlias)
         this.aliasFullTrackNameMap.set(response.trackAlias, fullTrackName)
         return { requestId: msg.requestId, stream: request.stream }
       }
     } catch (error) {
+      logger.error(`subscribe: unexpected error — ${error instanceof Error ? error.message : String(error)}`)
       await this.disconnect(
         new InternalError('MOQtailClient.subscribe', error instanceof Error ? error.message : String(error)),
       )

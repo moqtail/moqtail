@@ -15,6 +15,9 @@
  */
 
 import { Fetch, FetchOk, MoqtObject, RequestError } from '@/model'
+import { createLogger } from '../../util/logger'
+
+const logger = createLogger('request/fetch')
 
 // TODO: add timeout mechanism for cancelled requests
 // (we cant know how many in-flight objects there are)
@@ -41,13 +44,22 @@ export class FetchRequest implements PromiseLike<FetchOk | RequestError> {
       this._resolve = resolve
       this._reject = reject
     })
+    logger.debug(`created requestId=${this.requestId}`)
   }
 
   public resolve(value: FetchOk | RequestError | PromiseLike<FetchOk | RequestError>): void {
+    if (value instanceof RequestError) {
+      logger.error(
+        `resolved with error requestId=${this.requestId} code=${value.errorCode} reason="${value.reasonPhrase.phrase}"`,
+      )
+    } else if (value instanceof FetchOk) {
+      logger.debug(`resolved with OK requestId=${this.requestId}`)
+    }
     this._resolve(value)
   }
 
   public reject(reason?: any): void {
+    logger.error(`rejected requestId=${this.requestId}`, reason)
     this._reject(reason)
   }
 

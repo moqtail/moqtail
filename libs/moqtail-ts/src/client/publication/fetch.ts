@@ -29,6 +29,9 @@ import { MOQtailClient } from '../client'
 import { Track } from '../track/track'
 import { SubscribePublication } from './subscribe'
 import { PublishPublication } from './publish'
+import { createLogger } from '../../util/logger'
+
+const logger = createLogger('publication/fetch')
 
 // TODO: Use group order
 // TODO: Use fetch parameters
@@ -80,16 +83,19 @@ export class FetchPublication {
         this.#endLocation = joiningRequest.latestLocation
         break
     }
+    logger.debug(`created requestId=${this.#requestId} type=${this.#msg.typeAndProps.type}`)
     this.publish()
   }
 
   cancel() {
+    logger.debug(`canceled requestId=${this.#requestId}`)
     this.#isCanceled = true
   }
 
   async publish(): Promise<void> {
     if (this.#isCanceled) return
     if (!this.#track.trackSource.past) throw new MOQtailError('FetchPublication.publish, Track does not support fetch')
+    logger.debug(`publishing requestId=${this.#requestId} start=${this.#startLocation} end=${this.#endLocation}`)
     try {
       this.#objects = await this.#track.trackSource.past.getRange(this.#startLocation, this.#endLocation)
       // TODO: Calculate and use stream priority from subscriber priority from the msg + publisher priority from the track
@@ -100,6 +106,7 @@ export class FetchPublication {
       let fetchPrevCtx: FetchObjectContext | undefined = undefined
       for (const obj of this.#objects) {
         if (this.#isCanceled) {
+          logger.debug(`aborted during publish requestId=${this.#requestId}`)
           await this.#writer.abort('Fetch cancelled during publish')
           this.#client.publications.delete(this.#requestId)
           return
@@ -110,10 +117,12 @@ export class FetchPublication {
         if (newCtx) fetchPrevCtx = newCtx
       }
       await this.#writer.close()
+      logger.debug(`published requestId=${this.#requestId} objects=${this.#objects.length}`)
       this.#client.publications.delete(this.#requestId)
     } catch (error: unknown) {
       await this.#writer?.abort('Fetch failed during publish')
       const message = error instanceof Error ? error.message : String(error)
+      logger.error(`publish failed requestId=${this.#requestId}`, message)
       throw new InternalError('FetchPublication.publish', `Failed to publish: ${message}`)
     }
   }

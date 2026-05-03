@@ -416,21 +416,24 @@ async fn handle_unsubscribe_message(
   context: Arc<SessionContext>,
 ) -> Result<(), TerminationCode> {
   info!("received Unsubscribe message: {:?}", unsubscribe_message);
-  // stop sending objects for the track for the subscriber
-  // by removing the subscription
+
   // find the track alias by using the request id
-  let requests = client.subscribe_requests.read().await;
-  let request = requests.get(&unsubscribe_message.request_id);
-  if request.is_none() {
-    // a warning is enough
-    warn!(
-      "request not found for request id: {:?}",
-      unsubscribe_message.request_id
-    );
-    return Ok(());
-  }
-  let request = request.unwrap();
-  let full_track_name = request.original_subscribe_request.get_full_track_name();
+  let full_track_name = {
+    let requests = client.subscribe_requests.read().await;
+    let request = requests.get(&unsubscribe_message.request_id);
+    if request.is_none() {
+      // a warning is enough
+      warn!(
+        "request not found for request id: {:?}",
+        unsubscribe_message.request_id
+      );
+      return Ok(());
+    }
+    request
+      .unwrap()
+      .original_subscribe_request
+      .get_full_track_name()
+  }; // read lock dropped here
 
   // remove the subscription from the track
   let track_option = context.track_manager.get_track(&full_track_name).await;

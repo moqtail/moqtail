@@ -46,6 +46,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc::UnboundedReceiver;
+use tracing::trace;
 use tracing::warn;
 use tracing::{debug, error, info};
 use wtransport::SendStream;
@@ -475,7 +476,7 @@ impl Subscription {
           }
           // TODO: implement max timeout here
           // 5 second timeout to check if the subscription is still valid
-          _ = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {
+          _ = tokio::time::sleep(tokio::time::Duration::from_millis(5000)) => {
             continue;
           }
         }
@@ -576,10 +577,6 @@ impl Subscription {
       "Finishing subscription for subscriber={} relay_track_id={}",
       self.client_connection_id, self.relay_track_id
     );
-
-    let mut receiver_guard = self.event_rx.lock().await;
-    let _ = receiver_guard.take(); // This replaces the Some(receiver) with None
-    drop(receiver_guard); // Release the lock
 
     info!(
       "Subscription finished for subscriber={} relay_track_id={}",
@@ -785,32 +782,35 @@ impl Subscription {
       self.client_connection_id, self.relay_track_id
     );
 
-    // Dequeue while holding the lock, then release before processing.
+    let mut event_rx_guard = self.event_rx.lock().await;
     let recv_result = {
-      let mut guard = self.event_rx.lock().await;
-      if let Some(ref mut rx) = *guard {
-        rx.recv().await
-      } else {
-        // Receiver was already taken by finish(); loop will break on is_finished().
+      let Some(ref mut rx) = *event_rx_guard else {
         return;
-      }
+      };
+      rx.recv().await
     };
 
+    trace!(
+      "Received event for subscriber={} relay_track_id={}: {:?}",
+      self.client_connection_id, self.relay_track_id, recv_result
+    );
+
     match recv_result {
-      Some(event) => {
-        if self.finished.load(Ordering::Relaxed) {
-          return;
-        }
+      Some(event) if !self.finished.load(Ordering::Relaxed) => {
+        drop(event_rx_guard);
         self.handle_track_event(event).await;
       }
+      Some(_) => {
+        event_rx_guard.take();
+      }
       None => {
-        // For unbounded receivers, recv() returns None when the channel is closed
-        // The channel is closed, we should finish the subscription
         info!(
           "Event receiver closed for subscriber={} relay_track_id={}, finishing subscription",
           self.client_connection_id, self.relay_track_id
         );
         self.finish().await;
+        event_rx_guard.take();
+        drop(event_rx_guard);
       }
     }
   }

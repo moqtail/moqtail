@@ -1129,6 +1129,24 @@ export class MOQtailClient {
     }
   }
 
+  async cancelSubgroup(trackAlias: bigint, groupId: bigint): Promise<void> {
+    this.#ensureActive()
+    const subscription = this.subscriptions.get(trackAlias)
+    if (!subscription) return
+
+    const activeStreamInfo = subscription.activeRecvStreams?.get(groupId)
+    if (activeStreamInfo) {
+      console.warn(`[MOQT] Canceling subgroup stream for Group ${groupId} due to latency.`)
+
+      // 0x2 is the IETF Draft 16 standard code for DELIVERY_TIMEOUT
+      const DELIVERY_TIMEOUT_CODE = 0x2
+
+      await activeStreamInfo.recvStream.stream.cancel(DELIVERY_TIMEOUT_CODE)
+
+      subscription.activeRecvStreams.delete(groupId)
+    }
+  }
+
   /**
    * Switches an active subscription to a different track while retaining the same subscription parameters.
    *

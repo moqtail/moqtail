@@ -1,5 +1,11 @@
 # moqtail-ts
 
+## 0.10.1
+
+### Patch Changes
+
+- [#184](https://github.com/moqtail/moqtail/pull/184) [`ce9959e`](https://github.com/moqtail/moqtail/commit/ce9959e162b2a4eddad377d47a649397e3a5c8ae) Thanks [@zafergurel](https://github.com/zafergurel)! - add setEarlyDiscardPolicy to cancel slow subgroup streams after a configurable timeout
+
 ## 0.10.0
 
 ### Minor Changes

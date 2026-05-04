@@ -89,6 +89,7 @@ import {
   FetchOptions,
   MOQtailClientOptions,
   SwitchOptions,
+  EarlyDiscardPolicyConfig,
 } from './types'
 import { SendDatagramStream } from './datagram_stream'
 import { logger, LogLevel, setLogLevel, setLogEnabledModules } from '../util/logger'
@@ -207,6 +208,8 @@ export class MOQtailClient {
   #isDestroyed = false
   /** Internal monotonically increasing client-assigned request id counter (even/odd parity scheme advances by 2). */
   #dontUseRequestId: bigint = 0n
+  /** Active early discard policy; undefined means no per-stream deadline is applied. */
+  #earlyDiscardPolicy: EarlyDiscardPolicyConfig | undefined
 
   /**
    * TODO: onNamespaceAnnounced may be a better name
@@ -739,6 +742,26 @@ export class MOQtailClient {
     } catch {
       return FullTrackName.tryNew('unknown', `track-${trackAlias}`)
     }
+  }
+
+  /**
+   * Sets (or replaces) the early discard policy for incoming subgroup streams.
+   *
+   * When set, each incoming subgroup QUIC stream is given a deadline of `subgroupReceiveTimeout` ms to
+   * complete. If the stream has not finished within that window it is cancelled — objects already
+   * delivered to the subscription are kept, but no further objects arrive from that stream.
+   *
+   * The policy takes effect on the next stream accepted after this call. Passing a new config
+   * replaces the previous one. Pass `undefined` to remove the policy.
+   *
+   * @example
+   * ```ts
+   * client.setEarlyDiscardPolicy({ subgroupReceiveTimeout: 2000 })
+   * ```
+   */
+  setEarlyDiscardPolicy(config: EarlyDiscardPolicyConfig | undefined): void {
+    this.#ensureActive()
+    this.#earlyDiscardPolicy = config
   }
 
   /**
@@ -1933,47 +1956,58 @@ export class MOQtailClient {
           subscription.streamsAccepted++
           let firstObjectId: bigint | null = null
 
-          while (true) {
-            const { done, value: nextObject } = await reader.read()
-            if (done) {
-              break
-            }
-            if (nextObject) {
-              if (nextObject instanceof SubgroupObject) {
-                // TODO: validate if it's a valid subgroup object
-                if (!firstObjectId) {
-                  firstObjectId = nextObject.objectId
-                }
-                let subgroupId: bigint | null = null
-                if (SubgroupHeaderType.isSubgroupIdZero(header.type)) {
-                  subgroupId = 0n
-                } else if (SubgroupHeaderType.isSubgroupIdFirstObjectId(header.type)) {
-                  subgroupId = firstObjectId ?? null
-                } else if (SubgroupHeaderType.hasExplicitSubgroupId(header.type)) {
-                  subgroupId = header.subgroupId ?? null
-                }
+          let subgroupTimeoutId: ReturnType<typeof setTimeout> | undefined
+          if (this.#earlyDiscardPolicy?.subgroupReceiveTimeout !== undefined) {
+            subgroupTimeoutId = setTimeout(() => {
+              reader.cancel('early discard: subgroupReceiveTimeout exceeded').catch(() => {})
+            }, this.#earlyDiscardPolicy.subgroupReceiveTimeout)
+          }
 
-                const fullTrackName = this.aliasFullTrackNameMap.get(header.trackAlias)
-                if (!fullTrackName) {
-                  throw new ProtocolViolationError('MOQtailClient', 'No full track name for received track alias')
-                }
-
-                const moqtObject = MoqtObject.fromSubgroupObject(
-                  nextObject,
-                  header.groupId,
-                  header.publisherPriority,
-                  subgroupId,
-                  fullTrackName,
-                )
-                if (!subscription.largestLocation) subscription.largestLocation = moqtObject.location
-                if (subscription.largestLocation.compare(moqtObject.location) == -1)
-                  subscription.largestLocation = moqtObject.location
-
-                subscription.controller?.enqueue(moqtObject)
-                continue
+          try {
+            while (true) {
+              const { done, value: nextObject } = await reader.read()
+              if (done) {
+                break
               }
-              throw new ProtocolViolationError('MOQtailClient', 'Received fetch object after subgroup header')
+              if (nextObject) {
+                if (nextObject instanceof SubgroupObject) {
+                  // TODO: validate if it's a valid subgroup object
+                  if (!firstObjectId) {
+                    firstObjectId = nextObject.objectId
+                  }
+                  let subgroupId: bigint | null = null
+                  if (SubgroupHeaderType.isSubgroupIdZero(header.type)) {
+                    subgroupId = 0n
+                  } else if (SubgroupHeaderType.isSubgroupIdFirstObjectId(header.type)) {
+                    subgroupId = firstObjectId ?? null
+                  } else if (SubgroupHeaderType.hasExplicitSubgroupId(header.type)) {
+                    subgroupId = header.subgroupId ?? null
+                  }
+
+                  const fullTrackName = this.aliasFullTrackNameMap.get(header.trackAlias)
+                  if (!fullTrackName) {
+                    throw new ProtocolViolationError('MOQtailClient', 'No full track name for received track alias')
+                  }
+
+                  const moqtObject = MoqtObject.fromSubgroupObject(
+                    nextObject,
+                    header.groupId,
+                    header.publisherPriority,
+                    subgroupId,
+                    fullTrackName,
+                  )
+                  if (!subscription.largestLocation) subscription.largestLocation = moqtObject.location
+                  if (subscription.largestLocation.compare(moqtObject.location) == -1)
+                    subscription.largestLocation = moqtObject.location
+
+                  subscription.controller?.enqueue(moqtObject)
+                  continue
+                }
+                throw new ProtocolViolationError('MOQtailClient', 'Received fetch object after subgroup header')
+              }
             }
+          } finally {
+            if (subgroupTimeoutId !== undefined) clearTimeout(subgroupTimeoutId)
           }
 
           // Subscribe Cleanup

@@ -4,7 +4,7 @@
 
 ### Minor Changes
 
-- [#145](https://github.com/moqtail/moqtail/pull/145) [`1b855cf`](https://github.com/moqtail/moqtail/commit/1b855cfece77cbade63f8263f485b8b5c7839134) Thanks [@zafergurel](https://github.com/zafergurel)! - Implement MOQ Transport draft-16 compliance across all packages.
+- [#145](https://github.com/moqtail/moqtail/pull/145) [`1b855cf`](https://github.com/moqtail/moqtail/commit/1b855cfece77cbade63f8263f485b8b5c7839134) Thanks [@zafergurel](https://github.com/zafergurel), [@fatih-alperen](https://github.com/fatih-alperen), [@ctllmp](https://github.com/ctllmp), [@beyzademirr](https://github.com/beyzademirr)! - Implement MOQ Transport draft-16 compliance across all packages.
   - New ALPN-based session setup flow (ClientSetup / ServerSetup)
   - Replaced VersionParameter with MessageParameter; added typed parameters: DeliveryTimeout, Expires, Forward, GroupOrder, LargestObject, NewGroupRequest, SubscriberPriority, SubscriptionFilter
   - Implemented TrackExtension and ObjectExtension; updated Publish, Subscribe, Fetch, PublishOk, SubscribeOk, FetchOk messages

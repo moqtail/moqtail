@@ -101,14 +101,14 @@
 
 - [#33](https://github.com/streaming-university/moqtail/pull/33) [`0b59e15`](https://github.com/streaming-university/moqtail/commit/0b59e1582aca3eb307e75097b4a3716971dd523d) Thanks [@LeventAksakal](https://github.com/LeventAksakal)! - Refactor fetch message structure for better type safety and API design
   - **BREAKING**: Refactored `Fetch` class to use discriminated union for `typeAndProps`
-    - Removed static factory methods (`Fetch.newStandalone`, `Fetch.newRelative`, `Fetch.newAbsolute`)
+    - Removed static factory methods (`Fetch.newStandAlone`, `Fetch.newRelative`, `Fetch.newAbsolute`)
     - Combined fetch type and properties into a single discriminated union field
     - Enables automatic TypeScript type narrowing based on fetch type
   - **NEW**: Implemented both publisher and subscriber functionality for fetch operations
   - **TODO**: Joining fetches require additional handling (partial implementation)
   - **PERFORMANCE**: Reduced test timeouts to improve CI pipeline speed
-    - Telemetry tests: 5s -> 1s timeouts
-    - ControlStream tests: 3s -> 1s timeouts
+    - Telemetry tests: 5s → 1s timeouts
+    - ControlStream tests: 3s → 1s timeouts
     - AkamaiOffset tests: mocked network calls instead of real ones
   - **CI**: Update husky hooks
     - Remove exec < /dev/tty from pre-commit and prepare-commit-msg for windows compatibility

@@ -23,7 +23,7 @@ import {
   ObjectForwardingPreference,
   DefaultPublisherPriorityExtension,
 } from 'moqtail/model';
-import { createMoqtailClient } from './moq/client';
+import { createMOQtailClient } from './moq/client';
 import { setupSignalling } from './moq/signalling';
 import {
   announceNamespaces,
@@ -149,7 +149,7 @@ export default function App() {
     setScreen('connecting');
 
     try {
-      const client = await createMoqtailClient(relayUrl);
+      const client = await createMOQtailClient(relayUrl);
       moqClientRef.current = client;
 
       // Route incoming publish streams to the correct peer's decode worker

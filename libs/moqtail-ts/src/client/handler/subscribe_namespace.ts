@@ -16,12 +16,10 @@
 
 import { SubscribeNamespace, RequestOk } from '../../model/control'
 import { ControlMessageHandler } from './handler'
-import { createLogger } from '../../util/logger'
-
-const logger = createLogger('handler/subscribe_namespace')
+import { logger } from '../../util/logger'
 
 export const handlerSubscribeNamespace: ControlMessageHandler<SubscribeNamespace> = async (client, msg) => {
-  logger.log('namespace', msg.trackNamespacePrefix.toUtf8Path())
+  logger.log('handler/subscribe_namespace', 'namespace', msg.trackNamespacePrefix.toUtf8Path())
   // Bubble the event up to the application layer
   if (client.onPeerSubscribeNamespace) {
     client.onPeerSubscribeNamespace(msg)

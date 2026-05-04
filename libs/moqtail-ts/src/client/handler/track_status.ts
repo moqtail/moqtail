@@ -16,11 +16,9 @@
 
 import { TrackStatus } from '../../model/control'
 import { ControlMessageHandler } from './handler'
-import { createLogger } from '../../util/logger'
-
-const logger = createLogger('handler/track_status')
+import { logger } from '../../util/logger'
 
 export const handlerTrackStatus: ControlMessageHandler<TrackStatus> = async (_client, msg) => {
-  logger.debug('not implemented', msg)
+  logger.debug('handler/track_status', 'not implemented', msg)
   // TODO: Implement TrackStatus handler logic
 }

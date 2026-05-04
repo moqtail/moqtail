@@ -26,7 +26,7 @@ import {
 } from 'moqtail';
 import { MOQtailClient } from 'moqtail/client';
 import { CMSFCatalog, RequestError } from 'moqtail/model';
-import { logger } from '@/lib/logger';
+import { Logger, logger } from '@/lib/logger';
 
 interface MOQStreamStruct {
   trackName: string;
@@ -88,7 +88,10 @@ export class Player {
             logger.debug('player', `control ←relay: ${msg.constructor.name}`),
         },
       });
-      MOQtailClient.setLogLevel(LogLevel.WARN);
+      const qs = new URLSearchParams(window.location.search).get('logLevel');
+      const raw = qs ?? (window as any).__moqtailLogLevel ?? 'warn';
+      applyLogLevel(parseLogLevel(raw) ?? parseLogLevel('warn')!);
+      logger.info('player', `log level: "${raw}"`);
       logger.info('player', 'Connected to relay');
     } catch (error) {
       logger.error('media', 'Failed to connect to relay', (error as Error).message);
@@ -548,3 +551,38 @@ export class Player {
 function getFullTrackName(ns: Tuple, name: string): FullTrackName {
   return FullTrackName.tryNew(ns, new TextEncoder().encode(name));
 }
+
+type AppLogLevel = 'debug' | 'info' | 'warn' | 'error';
+
+function parseLogLevel(raw: string | null | undefined): { app: AppLogLevel; moq: LogLevel } | null {
+  switch (raw?.toLowerCase()) {
+    case 'debug':
+      return { app: 'debug', moq: LogLevel.DEBUG };
+    case 'log':
+    case 'info':
+      return { app: 'info', moq: LogLevel.LOG };
+    case 'warn':
+      return { app: 'warn', moq: LogLevel.WARN };
+    case 'error':
+      return { app: 'error', moq: LogLevel.ERROR };
+    case 'none':
+      return { app: 'error', moq: LogLevel.NONE };
+    default:
+      return null;
+  }
+}
+
+function applyLogLevel(level: { app: AppLogLevel; moq: LogLevel }) {
+  Logger.setLevel(level.app);
+  MOQtailClient.setLogLevel(level.moq);
+}
+
+(window as any).setMOQtailLogLevel = (raw: string) => {
+  const level = parseLogLevel(raw);
+  if (!level) {
+    logger.warn('player', `MOQtail unknown log level: "${raw}"`);
+    return;
+  }
+  applyLogLevel(level);
+  logger.info('player', `MOQtail log level set to "${raw}"`);
+};

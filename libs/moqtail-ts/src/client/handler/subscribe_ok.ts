@@ -18,26 +18,31 @@ import { ProtocolViolationError } from '@/model'
 import { SubscribeOk } from '../../model/control'
 import { SubscribeRequest } from '../request/subscribe'
 import { ControlMessageHandler } from './handler'
-import { createLogger } from '../../util/logger'
-
-const logger = createLogger('handler/subscribe_ok')
+import { logger } from '../../util/logger'
 
 export const handlerSubscribeOk: ControlMessageHandler<SubscribeOk> = async (client, msg) => {
-  logger.debug(`received requestId=${msg.requestId} trackAlias=${msg.trackAlias}`)
+  logger.debug('handler/subscribe_ok', `received requestId=${msg.requestId} trackAlias=${msg.trackAlias}`)
 
   const request = client.requests.get(msg.requestId)
   if (request instanceof SubscribeRequest) {
     if (msg.trackExtensions.length > 0) {
-      logger.debug(`requestId=${msg.requestId} — applying ${msg.trackExtensions.length} track extension(s)`)
+      logger.debug(
+        'handler/subscribe_ok',
+        `requestId=${msg.requestId} — applying ${msg.trackExtensions.length} track extension(s)`,
+      )
       const track = client.trackSources.get(request.fullTrackName.toString())
       if (track !== undefined) {
         track.trackExtensions = msg.trackExtensions
       }
     }
-    logger.debug(`requestId=${msg.requestId} — resolving SubscribeRequest ftn="${request.fullTrackName}"`)
+    logger.debug(
+      'handler/subscribe_ok',
+      `requestId=${msg.requestId} — resolving SubscribeRequest ftn="${request.fullTrackName}"`,
+    )
     request.resolve(msg)
   } else {
     logger.error(
+      'handler/subscribe_ok',
       `requestId=${msg.requestId} — no pending SubscribeRequest found (got ${request?.constructor.name ?? 'undefined'})`,
     )
     throw new ProtocolViolationError('handlerSubscribeOk', 'No subscribe request was found with the given request id')

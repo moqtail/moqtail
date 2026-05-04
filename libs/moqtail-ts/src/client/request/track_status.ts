@@ -15,9 +15,7 @@
  */
 
 import { TrackStatus, RequestError, RequestOk } from '@/model'
-import { createLogger } from '../../util/logger'
-
-const logger = createLogger('request/track_status')
+import { logger } from '../../util/logger'
 
 export class TrackStatusRequest implements PromiseLike<RequestOk | RequestError> {
   public readonly requestId: bigint
@@ -34,22 +32,23 @@ export class TrackStatusRequest implements PromiseLike<RequestOk | RequestError>
       this._resolve = resolve
       this._reject = reject
     })
-    logger.debug(`created requestId=${this.requestId} ftn="${msg.fullTrackName}"`)
+    logger.debug('request/track_status', `created requestId=${this.requestId} ftn="${msg.fullTrackName}"`)
   }
 
   public resolve(value: RequestOk | RequestError | PromiseLike<RequestOk | RequestError>): void {
     if (value instanceof RequestError) {
       logger.error(
+        'request/track_status',
         `resolved with error requestId=${this.requestId} code=${value.errorCode} reason="${value.reasonPhrase.phrase}"`,
       )
     } else if (value instanceof RequestOk) {
-      logger.debug(`resolved with OK requestId=${this.requestId}`)
+      logger.debug('request/track_status', `resolved with OK requestId=${this.requestId}`)
     }
     this._resolve(value)
   }
 
   public reject(reason?: any): void {
-    logger.error(`rejected requestId=${this.requestId}`, reason)
+    logger.error('request/track_status', `rejected requestId=${this.requestId}`, reason)
     this._reject(reason)
   }
 

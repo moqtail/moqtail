@@ -36,31 +36,27 @@ export function setLogEnabledModules(modules: string[] | null): void {
 }
 
 export class Logger {
-  constructor(private readonly module: string) {}
-
-  private isEnabled(level: LogLevel): boolean {
+  private isEnabled(module: string, level: LogLevel): boolean {
     if (level < _config.level) return false
-    if (_config.enabledModules !== null && !_config.enabledModules.includes(this.module)) return false
+    if (_config.enabledModules !== null && !_config.enabledModules.includes(module)) return false
     return true
   }
 
-  debug(...args: unknown[]): void {
-    if (this.isEnabled(LogLevel.DEBUG)) console.debug(`[MOQtail][${this.module}]`, ...args)
+  debug(module: string, ...args: unknown[]): void {
+    if (this.isEnabled(module, LogLevel.DEBUG)) console.debug(`[MOQtail][${module}]`, ...args)
   }
 
-  log(...args: unknown[]): void {
-    if (this.isEnabled(LogLevel.LOG)) console.log(`[MOQtail][${this.module}]`, ...args)
+  log(module: string, ...args: unknown[]): void {
+    if (this.isEnabled(module, LogLevel.LOG)) console.log(`[MOQtail][${module}]`, ...args)
   }
 
-  warn(...args: unknown[]): void {
-    if (this.isEnabled(LogLevel.WARN)) console.warn(`[MOQtail][${this.module}]`, ...args)
+  warn(module: string, ...args: unknown[]): void {
+    if (this.isEnabled(module, LogLevel.WARN)) console.warn(`[MOQtail][${module}]`, ...args)
   }
 
-  error(...args: unknown[]): void {
-    if (this.isEnabled(LogLevel.ERROR)) console.error(`[MOQtail][${this.module}]`, ...args)
+  error(module: string, ...args: unknown[]): void {
+    if (this.isEnabled(module, LogLevel.ERROR)) console.error(`[MOQtail][${module}]`, ...args)
   }
 }
 
-export function createLogger(module: string): Logger {
-  return new Logger(module)
-}
+export const logger = new Logger()

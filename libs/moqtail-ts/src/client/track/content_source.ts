@@ -17,9 +17,7 @@
 import { ObjectCache } from './object_cache'
 import { Location } from '../../model/common/location'
 import { MoqtObject } from '../../model/data/object'
-import { createLogger } from '../../util/logger'
-
-const logger = createLogger('track/content_source')
+import { logger } from '../../util/logger'
 
 // TODO: Consider switching to readable stream
 /**
@@ -121,7 +119,7 @@ export class LiveTrackSource implements LiveObjectSource {
         }
       }
     } catch (error) {
-      logger.error('Error during live object ingestion:', error)
+      logger.error('track/content_source', 'Error during live object ingestion:', error)
     } finally {
       this.#ingestActive = false
       this.#reader?.releaseLock()
@@ -141,7 +139,7 @@ export class LiveTrackSource implements LiveObjectSource {
       queue = queue
         .then(() => listener(obj))
         .catch((err) => {
-          logger.error('Error in subscriber listener:', err)
+          logger.error('track/content_source', 'Error in subscriber listener:', err)
         })
     }
 

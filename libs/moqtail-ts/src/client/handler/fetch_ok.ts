@@ -19,12 +19,10 @@ import { FetchOk, FetchType } from '../../model/control'
 import { FetchRequest } from '../request/fetch'
 import { SubscribeRequest } from '../request/subscribe'
 import { ControlMessageHandler } from './handler'
-import { createLogger } from '../../util/logger'
-
-const logger = createLogger('handler/fetch_ok')
+import { logger } from '../../util/logger'
 
 export const handlerFetchOk: ControlMessageHandler<FetchOk> = async (client, msg) => {
-  logger.log('requestId', msg.requestId)
+  logger.log('handler/fetch_ok', 'requestId', msg.requestId)
   const request = client.requests.get(msg.requestId)
   if (request instanceof FetchRequest) {
     if (msg.trackExtensions.length > 0) {

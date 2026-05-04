@@ -23,9 +23,7 @@ import { SubgroupHeader } from '@/model/data/subgroup_header'
 import { MoqtObject } from '@/model/data/object'
 import { SimpleLock } from '../../util/simple_lock'
 import { getTransportPriority } from '../util/priority'
-import { createLogger } from '../../util/logger'
-
-const logger = createLogger('publication/publish')
+import { logger } from '../../util/logger'
 
 /**
  * @public
@@ -118,7 +116,9 @@ export class PublishPublication {
     // Attempt to cleanly close any open streams
     this.#lock.acquire().then(() => {
       for (const [groupId, stream] of this.#streams.entries()) {
-        stream.close().catch((e) => logger.warn(`Failed to close stream for group ${groupId}:`, e))
+        stream
+          .close()
+          .catch((e) => logger.warn('publication/publish', `Failed to close stream for group ${groupId}:`, e))
       }
       this.#streams.clear()
       this.#lock.release()
@@ -184,13 +184,14 @@ export class PublishPublication {
               try {
                 await prevStream.close()
               } catch (err) {
-                logger.warn('error in closing stream', prevGroup, err)
+                logger.warn('publication/publish', 'error in closing stream', prevGroup, err)
               }
               this.#streams.delete(prevGroup)
             }
             await this.#lock.release()
           } catch (err) {
             logger.warn(
+              'publication/publish',
               'error in closing stream: id, latestLocation.group, err',
               this.#id,
               this.latestLocation.group,

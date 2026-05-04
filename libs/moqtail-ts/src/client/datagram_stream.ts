@@ -16,9 +16,8 @@
 
 import { Datagram } from '../model/data'
 import { MoqtObject, FullTrackName } from '../model/data'
-import { createLogger } from '../util/logger'
+import { logger } from '../util/logger'
 import { FrozenByteBuffer } from '@/model'
-const logger = createLogger('datagram_stream')
 
 /**
  * Sends MoqtObjects as WebTransport datagrams.
@@ -89,15 +88,16 @@ export class SendDatagramStream {
     const datagram = object.tryIntoDatagram(this.#trackAlias)
     const serialized = datagram.serialize().toUint8Array()
     logger.log(
+      'datagram_stream',
       `Writing datagram: trackAlias=${this.#trackAlias}, group=${object.location?.group}, obj=${object.location?.object}, size=${serialized.byteLength}`,
     )
     if (this.onDataSent) this.onDataSent(datagram)
 
     try {
       await this.#writer.write(serialized)
-      logger.log(`Successfully wrote ${serialized.byteLength} bytes to WebTransport datagram`)
+      logger.log('datagram_stream', `Successfully wrote ${serialized.byteLength} bytes to WebTransport datagram`)
     } catch (err) {
-      logger.error(`ERROR writing datagram:`, err)
+      logger.error('datagram_stream', `ERROR writing datagram:`, err)
       throw err
     }
   }
@@ -200,7 +200,7 @@ export class RecvDatagramStream {
           controller.enqueue(moqtObject)
         } catch (error) {
           // Log but don't break the stream - individual datagrams may be corrupt
-          logger.warn('Failed to parse datagram:', error)
+          logger.warn('datagram_stream', 'Failed to parse datagram:', error)
           continue
         }
       }

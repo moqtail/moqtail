@@ -16,11 +16,9 @@
 
 import { PublishNamespaceCancel } from '../../model/control'
 import { ControlMessageHandler } from './handler'
-import { createLogger } from '../../util/logger'
-
-const logger = createLogger('handler/publish_namespace_cancel')
+import { logger } from '../../util/logger'
 
 export const handlerPublishNamespaceCancel: ControlMessageHandler<PublishNamespaceCancel> = async (_client, msg) => {
-  logger.debug('not implemented', msg)
+  logger.debug('handler/publish_namespace_cancel', 'not implemented', msg)
   // TODO: Implement PublishNamespaceCancel handler logic
 }

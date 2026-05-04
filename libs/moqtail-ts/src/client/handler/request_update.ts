@@ -18,12 +18,10 @@ import { ProtocolViolationError } from '@/model'
 import { RequestUpdate } from '../../model/control'
 import { ControlMessageHandler } from './handler'
 import { SubscribePublication } from '../publication/subscribe'
-import { createLogger } from '../../util/logger'
-
-const logger = createLogger('handler/subscribe_update')
+import { logger } from '../../util/logger'
 
 export const handlerSubscribeUpdate: ControlMessageHandler<RequestUpdate> = async (client, msg) => {
-  logger.log('requestId', msg.requestId)
+  logger.log('handler/subscribe_update', 'requestId', msg.requestId)
   const publication = client.publications.get(msg.requestId)
   if (publication instanceof SubscribePublication) {
     publication.update(msg)

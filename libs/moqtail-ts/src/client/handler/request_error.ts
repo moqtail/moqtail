@@ -16,25 +16,29 @@
 
 import { RequestError } from '../../model/control'
 import { ControlMessageHandler } from './handler'
-import { createLogger } from '../../util/logger'
+import { logger } from '../../util/logger'
 import { SubscribeRequest } from '../request/subscribe'
 import { PublishRequest } from '../request/publish'
 import { PublishNamespaceRequest } from '../request/publish_namespace'
 import { SubscribeNamespaceRequest } from '../request/subscribe_namespace'
 import { FetchRequest } from '../request/fetch'
 
-const logger = createLogger('handler/request_error')
-
 export const handlerRequestError: ControlMessageHandler<RequestError> = async (client, msg) => {
-  logger.error(`received requestId=${msg.requestId} code=${msg.errorCode} reason="${msg.reasonPhrase.phrase}"`)
+  logger.error(
+    'handler/request_error',
+    `received requestId=${msg.requestId} code=${msg.errorCode} reason="${msg.reasonPhrase.phrase}"`,
+  )
 
   const request = client.requests.get(msg.requestId)
   if (!request) {
-    logger.warn(`requestId=${msg.requestId} — no pending request found (already resolved or unknown)`)
+    logger.warn(
+      'handler/request_error',
+      `requestId=${msg.requestId} — no pending request found (already resolved or unknown)`,
+    )
     return
   }
 
-  logger.debug(`requestId=${msg.requestId} — resolving ${request.constructor.name} with error`)
+  logger.debug('handler/request_error', `requestId=${msg.requestId} — resolving ${request.constructor.name} with error`)
   if (
     request instanceof SubscribeRequest ||
     request instanceof PublishRequest ||

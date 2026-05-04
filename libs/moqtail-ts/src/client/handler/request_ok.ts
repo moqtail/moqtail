@@ -16,23 +16,21 @@
 
 import { RequestOk } from '../../model/control'
 import { ControlMessageHandler } from './handler'
-import { createLogger } from '../../util/logger'
+import { logger } from '../../util/logger'
 import { ProtocolViolationError } from '@/model'
 import { PublishNamespaceRequest } from '../request/publish_namespace'
 import { SubscribeNamespaceRequest } from '../request/subscribe_namespace'
 import { TrackStatusRequest } from '../request/track_status'
 
-const logger = createLogger('handler/request_ok')
-
 export const handlerRequestOk: ControlMessageHandler<RequestOk> = async (client, msg) => {
-  logger.log('received RequestOk for requestId:', msg.requestId)
+  logger.log('handler/request_ok', 'received RequestOk for requestId:', msg.requestId)
 
   // 1. Look up the pending request by ID
   const request = client.requests.get(msg.requestId)
 
   // 2. Handle untracked IDs gracefully
   if (!request) {
-    logger.warn(`Received RequestOk for unknown or already-resolved request id: ${msg.requestId}`)
+    logger.warn('handler/request_ok', `Received RequestOk for unknown or already-resolved request id: ${msg.requestId}`)
     return
   }
 

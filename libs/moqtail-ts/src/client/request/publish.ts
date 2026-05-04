@@ -15,9 +15,7 @@
  */
 
 import { Publish, PublishOk, RequestError } from '@/model'
-import { createLogger } from '../../util/logger'
-
-const logger = createLogger('request/publish')
+import { logger } from '../../util/logger'
 
 export class PublishRequest implements PromiseLike<PublishOk | RequestError> {
   public readonly requestId: bigint
@@ -33,22 +31,23 @@ export class PublishRequest implements PromiseLike<PublishOk | RequestError> {
       this._resolve = resolve
       this._reject = reject
     })
-    logger.debug(`created requestId=${this.requestId} ftn="${msg.fullTrackName}"`)
+    logger.debug('request/publish', `created requestId=${this.requestId} ftn="${msg.fullTrackName}"`)
   }
 
   public resolve(value: PublishOk | RequestError | PromiseLike<PublishOk | RequestError>): void {
     if (value instanceof RequestError) {
       logger.error(
+        'request/publish',
         `resolved with error requestId=${this.requestId} code=${value.errorCode} reason="${value.reasonPhrase.phrase}"`,
       )
     } else if (value instanceof PublishOk) {
-      logger.debug(`resolved with OK requestId=${this.requestId}`)
+      logger.debug('request/publish', `resolved with OK requestId=${this.requestId}`)
     }
     this._resolve(value)
   }
 
   public reject(reason?: any): void {
-    logger.error(`rejected requestId=${this.requestId}`, reason)
+    logger.error('request/publish', `rejected requestId=${this.requestId}`, reason)
     this._reject(reason)
   }
 

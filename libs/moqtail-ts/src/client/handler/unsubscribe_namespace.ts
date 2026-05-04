@@ -16,11 +16,9 @@
 
 import { UnsubscribeNamespace } from '@/model'
 import { ControlMessageHandler } from './handler'
-import { createLogger } from '../../util/logger'
-
-const logger = createLogger('handler/unsubscribe_namespace')
+import { logger } from '../../util/logger'
 
 export const handlerUnsubscribeNamespace: ControlMessageHandler<UnsubscribeNamespace> = async (_client, msg) => {
-  logger.debug('not implemented', msg)
+  logger.debug('handler/unsubscribe_namespace', 'not implemented', msg)
   // TODO: Implement UnsubscribeNamespace handler logic
 }

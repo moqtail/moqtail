@@ -19,9 +19,7 @@ import { PublishOk } from '../../model/control'
 import { PublishRequest } from '../request/publish'
 import { ControlMessageHandler } from './handler'
 import { PublishPublication } from '../publication/publish'
-import { createLogger } from '../../util/logger'
-
-const logger = createLogger('handler/publish_ok')
+import { logger } from '../../util/logger'
 
 export const handlerPublishOk: ControlMessageHandler<PublishOk> = async (client, msg) => {
   const request = client.requests.get(msg.requestId)
@@ -29,13 +27,13 @@ export const handlerPublishOk: ControlMessageHandler<PublishOk> = async (client,
     request.resolve(msg)
     const fullTrackName = client.requestIdMap.getNameByRequestId(msg.requestId)
     if (!fullTrackName) {
-      logger.warn(`No track mapped for PublishOk requestId: ${msg.requestId}`)
+      logger.warn('handler/publish_ok', `No track mapped for PublishOk requestId: ${msg.requestId}`)
       return
     }
 
     const track = client.trackSources.get(fullTrackName.toString())
     if (!track || !track.trackSource.live) {
-      logger.warn(`Live track source not found for ${fullTrackName.toString()}`)
+      logger.warn('handler/publish_ok', `Live track source not found for ${fullTrackName.toString()}`)
       return
     }
 

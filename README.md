@@ -15,13 +15,13 @@
 	</a>
 	<br>
 	<br>
-	Draft 16 Media-over-QUIC libraries and relay components.<br>
-	Rust and TypeScript tooling for publishers, subscribers, demos, and relay deployments.
+	Draft 16 MOQ Transport (MOQT) libraries and relay components.<br>
+	Rust and TypeScript tooling for publishers, subscribers, demos and relay deployments.
 </p>
 
 # MOQtail
 
-MOQtail is a Draft 16-compliant MOQT toolkit for building publisher, subscriber, and relay applications. The repository includes Rust and TypeScript libraries, reference clients, and a relay that can be run locally or pulled as a container image from GHCR.
+MOQtail is a draft 16-compliant MOQT toolkit for building publisher, subscriber, and relay applications. The repository includes Rust and TypeScript libraries, reference clients, and a relay that can be run locally or pulled as a container image from GHCR.
 
 ## Components
 

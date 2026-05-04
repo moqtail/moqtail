@@ -1,5 +1,11 @@
 # client
 
+## 0.13.0
+
+### Minor Changes
+
+- [#145](https://github.com/moqtail/moqtail/pull/145) [`1b855cf`](https://github.com/moqtail/moqtail/commit/1b855cfece77cbade63f8263f485b8b5c7839134) Draft-16 compliance
+
 ## 0.11.0
 
 ### Minor Changes

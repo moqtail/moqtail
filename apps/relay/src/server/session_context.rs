@@ -19,7 +19,9 @@ use std::{
     atomic::{AtomicBool, AtomicU64},
   },
 };
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, mpsc};
+
+use moqtail::model::data::fetch_object::FetchObjectPayload;
 use wtransport::Connection;
 
 use moqtail::transport::data_stream_handler::{FetchRequest, SubscribeRequest};
@@ -58,8 +60,24 @@ pub enum PendingRequest {
   },
 }
 
+/// This is used when the relay sends a FETCH request to the upstream.
+/// It gets an event of this type from the upstream, and calls send() on
+/// the relevant upstream_fetch_senders entry.
+/// The receiver awaits entries in a loop and sends them downstream.
+#[allow(dead_code)]
+pub(crate) enum UpstreamFetchEvent {
+  Object(FetchObjectPayload),
+  StreamClosed,
+  Error(String),
+}
+
 pub struct RequestMaps {
   pub relay_pending_requests: Arc<RwLock<BTreeMap<u64, PendingRequest>>>,
+  /// This is used when the relay sends a FETCH request to the upstream.
+  /// When objects are received from the upstream, send() is called on the relevant entry
+  /// in the upstream_fetch_senders.
+  /// The receiver loop awaits the entries and sends them downstream.
+  pub upstream_fetch_senders: Arc<RwLock<BTreeMap<u64, mpsc::Sender<UpstreamFetchEvent>>>>,
 }
 
 pub struct SessionContext {
@@ -73,6 +91,7 @@ pub struct SessionContext {
   pub(crate) is_connection_closed: Arc<AtomicBool>,
   pub(crate) relay_next_request_id: Arc<AtomicU64>,
   pub(crate) max_request_id: Arc<AtomicU64>,
+  pub(crate) upstream_fetch_senders: Arc<RwLock<BTreeMap<u64, mpsc::Sender<UpstreamFetchEvent>>>>,
 }
 
 impl SessionContext {
@@ -95,6 +114,7 @@ impl SessionContext {
       is_connection_closed: Arc::new(AtomicBool::new(false)),
       relay_next_request_id,
       max_request_id: Arc::new(AtomicU64::new(server_config.initial_max_request_id)),
+      upstream_fetch_senders: request_maps.upstream_fetch_senders,
     }
   }
 

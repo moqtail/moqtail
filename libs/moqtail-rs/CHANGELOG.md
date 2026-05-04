@@ -1,5 +1,11 @@
 # moqtail-rs
 
+## 0.13.1
+
+### Patch Changes
+
+- [`50eeb39`](https://github.com/moqtail/moqtail/commit/50eeb3975d976618d7dcdf7c1b30f8ccabb3bdbd) Thanks [@zafergurel](https://github.com/zafergurel)! - Update draft version from 14 to 16 in Cargo.toml
+
 ## 0.13.0
 
 ### Minor Changes

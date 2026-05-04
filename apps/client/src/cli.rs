@@ -13,6 +13,24 @@
 // limitations under the License.
 
 use clap::{Parser, ValueEnum};
+use moqtail::model::control::constant::GroupOrder;
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum CliGroupOrder {
+  Original,
+  Ascending,
+  Descending,
+}
+
+impl From<CliGroupOrder> for GroupOrder {
+  fn from(o: CliGroupOrder) -> Self {
+    match o {
+      CliGroupOrder::Original => GroupOrder::Original,
+      CliGroupOrder::Ascending => GroupOrder::Ascending,
+      CliGroupOrder::Descending => GroupOrder::Descending,
+    }
+  }
+}
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum ForwardingPreference {
@@ -109,4 +127,21 @@ pub struct Cli {
   /// Cancel the fetch after receiving N objects (fetch only, 0 = no cancel)
   #[arg(long, default_value_t = 0)]
   pub cancel_after: u64,
+
+  /// Subscriber priority 0 (highest) – 255 (lowest) (subscribe only)
+  #[arg(long, default_value_t = 128)]
+  pub subscriber_priority: u8,
+
+  /// Publisher priority 0 (highest) – 255 (lowest) (publish only)
+  #[arg(long, default_value_t = 128)]
+  pub publisher_priority: u8,
+
+  /// Group order for the track
+  #[arg(long, value_enum, default_value = "ascending")]
+  pub group_order: CliGroupOrder,
+
+  /// Additional track to subscribe to for priority testing: "track-name:priority"
+  /// e.g. --extra-track demo2:200
+  #[arg(long)]
+  pub extra_track: Option<String>,
 }

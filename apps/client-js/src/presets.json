@@ -1,7 +1,7 @@
 {
   "relays": [
     {
-      "url": "https://relay.moqtail.dev",
+      "url": "https://localhost:4433",
       "namespaces": [
         { "name": "moqtail/testsrc", "label": "Test Source", "videoTracks": 1, "audioTracks": 1 },
         { "name": "moqtail/ch00", "label": "Channel 00", "videoTracks": 4, "audioTracks": 1 },

@@ -23,6 +23,17 @@ export enum LOCHeaderExtensionId {
   VideoConfig = 13,
 }
 
+export enum TrackExtensionType {
+  DeliveryTimeout = 0x02,
+  MaxCacheDuration = 0x04,
+  ImmutableExtensions = 0x0b,
+  DefaultPublisherPriority = 0x0e,
+  DefaultPublisherGroupOrder = 0x22,
+  DynamicGroups = 0x30,
+  PriorGroupIdGap = 0x3c,
+  PriorObjectIdGap = 0x3e,
+}
+
 export function locHeaderExtensionIdFromNumber(value: number): LOCHeaderExtensionId {
   switch (value) {
     case 2:

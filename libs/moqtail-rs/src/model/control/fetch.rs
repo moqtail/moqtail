@@ -12,17 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::constant::{ControlMessageType, FetchType, GroupOrder};
+use super::constant::{ControlMessageType, FetchType};
 use super::control_message::ControlMessageTrait;
 use crate::model::common::location::Location;
-use crate::model::common::pair::KeyValuePair;
 use crate::model::common::tuple::{Tuple, TupleField};
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
 use crate::model::error::ParseError;
+use crate::model::parameter::message_parameter::{
+  MessageParameter, deserialize_message_parameters,
+};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 #[derive(Debug, PartialEq, Clone)]
-pub struct StandAloneFetchProps {
+pub struct StandaloneFetchProps {
   pub track_namespace: Tuple,
   pub track_name: TupleField,
   pub start_location: Location,
@@ -38,28 +40,22 @@ pub struct JoiningFetchProps {
 #[derive(Debug, PartialEq, Clone)]
 pub struct Fetch {
   pub request_id: u64,
-  pub subscriber_priority: u8,
-  pub group_order: GroupOrder,
   pub fetch_type: FetchType,
-  pub standalone_fetch_props: Option<StandAloneFetchProps>,
+  pub standalone_fetch_props: Option<StandaloneFetchProps>,
   pub joining_fetch_props: Option<JoiningFetchProps>,
-  pub parameters: Vec<KeyValuePair>,
+  pub parameters: Vec<MessageParameter>,
 }
 
 impl Fetch {
   /// Create a new standalone fetch request
   pub fn new_standalone(
     request_id: u64,
-    subscriber_priority: u8,
-    group_order: GroupOrder,
-    standalone_fetch_props: StandAloneFetchProps,
-    parameters: Vec<KeyValuePair>,
+    standalone_fetch_props: StandaloneFetchProps,
+    parameters: Vec<MessageParameter>,
   ) -> Self {
     Self {
       request_id,
-      subscriber_priority,
-      group_order,
-      fetch_type: FetchType::StandAlone,
+      fetch_type: FetchType::Standalone,
       standalone_fetch_props: Some(standalone_fetch_props),
       joining_fetch_props: None,
       parameters,
@@ -69,18 +65,14 @@ impl Fetch {
   /// Create a new joining fetch request (absolute or relative)
   pub fn new_joining(
     request_id: u64,
-    subscriber_priority: u8,
-    group_order: GroupOrder,
     fetch_type: FetchType,
     joining_request_id: u64,
     joining_start: u64,
-    parameters: Vec<KeyValuePair>,
+    parameters: Vec<MessageParameter>,
   ) -> Result<Self, &'static str> {
     match fetch_type {
       FetchType::AbsoluteFetch | FetchType::RelativeFetch => Ok(Self {
         request_id,
-        subscriber_priority,
-        group_order,
         fetch_type,
         standalone_fetch_props: None,
         joining_fetch_props: Some(JoiningFetchProps {
@@ -89,29 +81,7 @@ impl Fetch {
         }),
         parameters,
       }),
-      FetchType::StandAlone => Err("Use new_standalone for standalone fetch requests"),
-    }
-  }
-
-  /// Create a new fetch request (legacy method - prefer new_standalone or new_joining)
-  #[deprecated(note = "Use new_standalone or new_joining for better ergonomics")]
-  pub fn new(
-    request_id: u64,
-    subscriber_priority: u8,
-    group_order: GroupOrder,
-    fetch_type: FetchType,
-    standalone_fetch_props: Option<StandAloneFetchProps>,
-    joining_fetch_props: Option<JoiningFetchProps>,
-    parameters: Vec<KeyValuePair>,
-  ) -> Self {
-    Self {
-      request_id,
-      subscriber_priority,
-      group_order,
-      fetch_type,
-      standalone_fetch_props,
-      joining_fetch_props,
-      parameters,
+      FetchType::Standalone => Err("Use new_standalone for standalone fetch requests"),
     }
   }
 }
@@ -123,8 +93,6 @@ impl ControlMessageTrait for Fetch {
 
     let mut payload = BytesMut::new();
     payload.put_vi(self.request_id)?;
-    payload.put_u8(self.subscriber_priority);
-    payload.put_u8(self.group_order as u8);
     payload.put_vi(self.fetch_type)?;
     match &self.fetch_type {
       FetchType::AbsoluteFetch => {
@@ -137,7 +105,7 @@ impl ControlMessageTrait for Fetch {
         payload.put_vi(props.joining_request_id)?;
         payload.put_vi(props.joining_start)?;
       }
-      FetchType::StandAlone => {
+      FetchType::Standalone => {
         let props = self.standalone_fetch_props.as_ref().unwrap();
         payload.extend_from_slice(&props.track_namespace.serialize()?);
         payload.put_vi(props.track_name.len())?;
@@ -171,29 +139,10 @@ impl ControlMessageTrait for Fetch {
   fn parse_payload(payload: &mut Bytes) -> Result<Box<Self>, ParseError> {
     let request_id = payload.get_vi()?;
 
-    if payload.remaining() < 1 {
-      return Err(ParseError::NotEnoughBytes {
-        context: "Fetch::parse_payload(subscriber_priority)",
-        needed: 1,
-        available: 0,
-      });
-    }
-    let subscriber_priority = payload.get_u8();
-
-    if payload.remaining() < 1 {
-      return Err(ParseError::NotEnoughBytes {
-        context: "Fetch::parse_payload(group_order)",
-        needed: 1,
-        available: 0,
-      });
-    }
-    let group_order_raw = payload.get_u8();
-    let group_order = GroupOrder::try_from(group_order_raw)?;
-
     let fetch_type_raw = payload.get_vi()?;
     let fetch_type = FetchType::try_from(fetch_type_raw)?;
 
-    let mut standalone_fetch_props: Option<StandAloneFetchProps> = None;
+    let mut standalone_fetch_props: Option<StandaloneFetchProps> = None;
     let mut joining_fetch_props: Option<JoiningFetchProps> = None;
 
     match fetch_type {
@@ -213,7 +162,7 @@ impl ControlMessageTrait for Fetch {
           joining_start,
         });
       }
-      FetchType::StandAlone => {
+      FetchType::Standalone => {
         let track_namespace = Tuple::deserialize(payload)?;
         let track_name_len = payload.get_vi()? as usize;
         if payload.remaining() < track_name_len {
@@ -227,7 +176,7 @@ impl ControlMessageTrait for Fetch {
         let start_location = Location::deserialize(payload)?;
         let end_location = Location::deserialize(payload)?;
 
-        standalone_fetch_props = Some(StandAloneFetchProps {
+        standalone_fetch_props = Some(StandaloneFetchProps {
           track_namespace,
           track_name,
           start_location,
@@ -236,27 +185,12 @@ impl ControlMessageTrait for Fetch {
       }
     }
 
-    let param_count_u64 = payload.get_vi()?;
-    let param_count: usize =
-      param_count_u64
-        .try_into()
-        .map_err(|e: std::num::TryFromIntError| ParseError::CastingError {
-          context: "Fetch::deserialize(param_count)",
-          from_type: "u64",
-          to_type: "usize",
-          details: e.to_string(),
-        })?;
-
-    let mut parameters = Vec::with_capacity(param_count);
-    for _ in 0..param_count {
-      let param = KeyValuePair::deserialize(payload)?;
-      parameters.push(param);
-    }
+    let param_count = payload.get_vi()?;
+    let parameters =
+      deserialize_message_parameters(payload, param_count, ControlMessageType::Fetch)?;
 
     Ok(Box::new(Fetch {
       request_id,
-      subscriber_priority,
-      group_order,
       fetch_type,
       standalone_fetch_props,
       joining_fetch_props,
@@ -273,31 +207,30 @@ impl ControlMessageTrait for Fetch {
 mod tests {
 
   use super::*;
-  use crate::model::common::tuple::TupleField;
+  use crate::model::{
+    common::tuple::TupleField, control::constant::GroupOrder,
+    parameter::authorization_token::AuthorizationToken,
+  };
   use bytes::Buf;
 
   #[test]
   fn test_roundtrip() {
-    let request_id = 161803;
-    let subscriber_priority = 15u8;
-    let group_order = GroupOrder::Descending;
-    let fetch_type = FetchType::AbsoluteFetch;
-    let joining_fetch_props = JoiningFetchProps {
-      joining_request_id: 119,
-      joining_start: 73,
-    };
-    let parameters = vec![
-      KeyValuePair::try_new_varint(4444, 12321).unwrap(),
-      KeyValuePair::try_new_bytes(1, Bytes::from_static(b"fetch me ok")).unwrap(),
-    ];
     let fetch = Fetch {
-      request_id,
-      subscriber_priority,
-      group_order,
-      fetch_type,
+      request_id: 161803,
+      fetch_type: FetchType::AbsoluteFetch,
       standalone_fetch_props: None,
-      joining_fetch_props: Some(joining_fetch_props),
-      parameters,
+      joining_fetch_props: Some(JoiningFetchProps {
+        joining_request_id: 119,
+        joining_start: 73,
+      }),
+      parameters: vec![
+        MessageParameter::new_authorization_token(AuthorizationToken::new_use_value(
+          0,
+          Bytes::from_static(b"test-token"),
+        )),
+        MessageParameter::new_subscriber_priority(42),
+        MessageParameter::new_group_order(GroupOrder::Ascending),
+      ],
     };
 
     let mut buf = fetch.serialize().unwrap();
@@ -312,26 +245,22 @@ mod tests {
 
   #[test]
   fn test_excess_roundtrip() {
-    let request_id = 161803;
-    let subscriber_priority = 15u8;
-    let group_order = GroupOrder::Descending;
-    let fetch_type = FetchType::AbsoluteFetch;
-    let joining_fetch_props = JoiningFetchProps {
-      joining_request_id: 119,
-      joining_start: 73,
-    };
-    let parameters = vec![
-      KeyValuePair::try_new_varint(4444, 12321).unwrap(),
-      KeyValuePair::try_new_bytes(1, Bytes::from_static(b"fetch me ok")).unwrap(),
-    ];
     let fetch = Fetch {
-      request_id,
-      subscriber_priority,
-      group_order,
-      fetch_type,
+      request_id: 161803,
+      fetch_type: FetchType::AbsoluteFetch,
       standalone_fetch_props: None,
-      joining_fetch_props: Some(joining_fetch_props),
-      parameters,
+      joining_fetch_props: Some(JoiningFetchProps {
+        joining_request_id: 119,
+        joining_start: 73,
+      }),
+      parameters: vec![
+        MessageParameter::new_authorization_token(AuthorizationToken::new_use_value(
+          0,
+          Bytes::from_static(b"test-token"),
+        )),
+        MessageParameter::new_subscriber_priority(42),
+        MessageParameter::new_group_order(GroupOrder::Ascending),
+      ],
     };
 
     let serialized = fetch.serialize().unwrap();
@@ -352,26 +281,22 @@ mod tests {
 
   #[test]
   fn test_partial_message() {
-    let request_id = 161803;
-    let subscriber_priority = 15u8;
-    let group_order = GroupOrder::Descending;
-    let fetch_type = FetchType::AbsoluteFetch;
-    let joining_fetch_props = JoiningFetchProps {
-      joining_request_id: 119,
-      joining_start: 73,
-    };
-    let parameters = vec![
-      KeyValuePair::try_new_varint(4444, 12321).unwrap(),
-      KeyValuePair::try_new_bytes(1, Bytes::from_static(b"fetch me ok")).unwrap(),
-    ];
     let fetch = Fetch {
-      request_id,
-      subscriber_priority,
-      group_order,
-      fetch_type,
+      request_id: 161803,
+      fetch_type: FetchType::AbsoluteFetch,
       standalone_fetch_props: None,
-      joining_fetch_props: Some(joining_fetch_props),
-      parameters,
+      joining_fetch_props: Some(JoiningFetchProps {
+        joining_request_id: 119,
+        joining_start: 73,
+      }),
+      parameters: vec![
+        MessageParameter::new_authorization_token(AuthorizationToken::new_use_value(
+          0,
+          Bytes::from_static(b"test-token"),
+        )),
+        MessageParameter::new_subscriber_priority(42),
+        MessageParameter::new_group_order(GroupOrder::Ascending),
+      ],
     };
 
     let mut buf = fetch.serialize().unwrap();
@@ -394,26 +319,25 @@ mod tests {
     let track_name = TupleField::from_utf8("video_track");
     let start_location = Location::new(5, 10);
     let end_location = Location::new(15, 20);
-    let parameters = vec![KeyValuePair::try_new_varint(100, 200).unwrap()];
-    let standalone_fetch_props = StandAloneFetchProps {
+    let parameters: Vec<MessageParameter> = vec![
+      MessageParameter::new_authorization_token(AuthorizationToken::new_use_value(
+        0,
+        Bytes::from_static(b"test-token"),
+      )),
+      MessageParameter::new_subscriber_priority(42),
+      MessageParameter::new_group_order(GroupOrder::Ascending),
+    ];
+    let standalone_fetch_props = StandaloneFetchProps {
       track_namespace,
       track_name,
       start_location,
       end_location,
     };
 
-    let fetch = Fetch::new_standalone(
-      42,
-      1,
-      GroupOrder::Ascending,
-      standalone_fetch_props.clone(),
-      parameters.clone(),
-    );
+    let fetch = Fetch::new_standalone(42, standalone_fetch_props.clone(), parameters.clone());
 
     assert_eq!(fetch.request_id, 42);
-    assert_eq!(fetch.subscriber_priority, 1);
-    assert_eq!(fetch.group_order, GroupOrder::Ascending);
-    assert_eq!(fetch.fetch_type, FetchType::StandAlone);
+    assert_eq!(fetch.fetch_type, FetchType::Standalone);
     assert!(fetch.standalone_fetch_props.is_some());
     assert!(fetch.joining_fetch_props.is_none());
 
@@ -430,22 +354,19 @@ mod tests {
 
   #[test]
   fn test_new_joining_constructor_absolute() {
-    let parameters = vec![KeyValuePair::try_new_varint(300, 400).unwrap()];
+    let parameters: Vec<MessageParameter> = vec![
+      MessageParameter::new_authorization_token(AuthorizationToken::new_use_value(
+        0,
+        Bytes::from_static(b"test-token"),
+      )),
+      MessageParameter::new_subscriber_priority(42),
+      MessageParameter::new_group_order(GroupOrder::Ascending),
+    ];
 
-    let fetch = Fetch::new_joining(
-      123,
-      5,
-      GroupOrder::Descending,
-      FetchType::AbsoluteFetch,
-      456,
-      789,
-      parameters.clone(),
-    )
-    .unwrap();
+    let fetch =
+      Fetch::new_joining(123, FetchType::AbsoluteFetch, 456, 789, parameters.clone()).unwrap();
 
     assert_eq!(fetch.request_id, 123);
-    assert_eq!(fetch.subscriber_priority, 5);
-    assert_eq!(fetch.group_order, GroupOrder::Descending);
     assert_eq!(fetch.fetch_type, FetchType::AbsoluteFetch);
     assert!(fetch.standalone_fetch_props.is_none());
     assert!(fetch.joining_fetch_props.is_some());
@@ -458,18 +379,7 @@ mod tests {
 
   #[test]
   fn test_new_joining_constructor_relative() {
-    let parameters = vec![];
-
-    let fetch = Fetch::new_joining(
-      111,
-      2,
-      GroupOrder::Ascending,
-      FetchType::RelativeFetch,
-      222,
-      333,
-      parameters.clone(),
-    )
-    .unwrap();
+    let fetch = Fetch::new_joining(111, FetchType::RelativeFetch, 222, 333, vec![]).unwrap();
 
     assert_eq!(fetch.fetch_type, FetchType::RelativeFetch);
     let props = fetch.joining_fetch_props.unwrap();
@@ -479,17 +389,7 @@ mod tests {
 
   #[test]
   fn test_new_joining_constructor_rejects_standalone() {
-    let parameters = vec![];
-
-    let result = Fetch::new_joining(
-      111,
-      2,
-      GroupOrder::Ascending,
-      FetchType::StandAlone,
-      222,
-      333,
-      parameters,
-    );
+    let result = Fetch::new_joining(111, FetchType::Standalone, 222, 333, vec![]);
 
     assert!(result.is_err());
     assert_eq!(

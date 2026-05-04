@@ -20,7 +20,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MaxRequestId {
-  pub request_id: u64,
+  pub max_request_id: u64,
 }
 
 impl ControlMessageTrait for MaxRequestId {
@@ -28,7 +28,7 @@ impl ControlMessageTrait for MaxRequestId {
     let mut buf = BytesMut::new();
     let mut payload = BytesMut::new();
 
-    payload.put_vi(self.request_id)?;
+    payload.put_vi(self.max_request_id)?;
 
     buf.put_vi(ControlMessageType::MaxRequestId)?;
     let payload_len: u16 = payload
@@ -47,8 +47,8 @@ impl ControlMessageTrait for MaxRequestId {
   }
 
   fn parse_payload(payload: &mut Bytes) -> Result<Box<Self>, ParseError> {
-    let request_id = payload.get_vi()?;
-    Ok(Box::new(MaxRequestId { request_id }))
+    let max_request_id = payload.get_vi()?;
+    Ok(Box::new(MaxRequestId { max_request_id }))
   }
 
   fn get_type(&self) -> ControlMessageType {
@@ -63,8 +63,10 @@ mod tests {
 
   #[test]
   fn test_roundtrip() {
-    let request_id = 12345;
-    let max_request_id = MaxRequestId { request_id };
+    let max_request_id_val = 12345;
+    let max_request_id = MaxRequestId {
+      max_request_id: max_request_id_val,
+    };
     let mut buf = max_request_id.serialize().unwrap();
     let msg_type = buf.get_vi().unwrap();
     assert_eq!(msg_type, ControlMessageType::MaxRequestId as u64);
@@ -77,8 +79,9 @@ mod tests {
 
   #[test]
   fn test_excess_roundtrip() {
-    let request_id = 67890;
-    let max_request_id = MaxRequestId { request_id };
+    let max_request_id = MaxRequestId {
+      max_request_id: 67890,
+    };
 
     let serialized = max_request_id.serialize().unwrap();
     let mut excess = BytesMut::new();
@@ -96,8 +99,9 @@ mod tests {
 
   #[test]
   fn test_partial_message() {
-    let request_id = 112233;
-    let max_request_id = MaxRequestId { request_id };
+    let max_request_id = MaxRequestId {
+      max_request_id: 112233,
+    };
     let mut buf = max_request_id.serialize().unwrap();
     let msg_type = buf.get_vi().unwrap();
     assert_eq!(msg_type, ControlMessageType::MaxRequestId as u64);

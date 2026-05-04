@@ -21,17 +21,12 @@ use bytes::{BufMut, Bytes, BytesMut};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClientSetup {
-  pub supported_versions: Vec<u32>,
   pub setup_parameters: Vec<KeyValuePair>,
 }
 
 impl ClientSetup {
-  //TODO: Assert supported versions and params are not empty during initialization
-  pub fn new(supported_versions: Vec<u32>, setup_parameters: Vec<KeyValuePair>) -> Self {
-    ClientSetup {
-      supported_versions,
-      setup_parameters,
-    }
+  pub fn new(setup_parameters: Vec<KeyValuePair>) -> Self {
+    ClientSetup { setup_parameters }
   }
 }
 
@@ -41,10 +36,7 @@ impl ControlMessageTrait for ClientSetup {
     buf.put_vi(ControlMessageType::ClientSetup)?;
 
     let mut payload = BytesMut::new();
-    payload.put_vi(self.supported_versions.len())?;
-    for version in &self.supported_versions {
-      payload.put_vi(*version)?;
-    }
+
     payload.put_vi(self.setup_parameters.len())?;
     for param in &self.setup_parameters {
       payload.extend_from_slice(&param.serialize()?);
@@ -67,32 +59,6 @@ impl ControlMessageTrait for ClientSetup {
   }
 
   fn parse_payload(payload: &mut Bytes) -> Result<Box<Self>, ParseError> {
-    let number_of_supported_versions = payload.get_vi()?;
-
-    if number_of_supported_versions == 0 {
-      return Err(ParseError::ProtocolViolation {
-        context: "ClientSetup::parse_payload(number_of_supported_versions)",
-        details: "Must support at least one version".to_string(),
-      });
-    }
-
-    let mut supported_versions = Vec::new();
-
-    for _ in 0..number_of_supported_versions {
-      let ver = payload.get_vi()?;
-
-      let supported_version: u32 =
-        ver
-          .try_into()
-          .map_err(|e: std::num::TryFromIntError| ParseError::CastingError {
-            context: "ClientSetup::parse_payload(supported_version)",
-            from_type: "u64",
-            to_type: "u32",
-            details: e.to_string(),
-          })?;
-      supported_versions.push(supported_version);
-    }
-
     let number_of_parameters = payload.get_vi()?;
     let mut setup_parameters = Vec::new();
 
@@ -101,10 +67,7 @@ impl ControlMessageTrait for ClientSetup {
       setup_parameters.push(param);
     }
 
-    Ok(Box::new(ClientSetup {
-      supported_versions,
-      setup_parameters,
-    }))
+    Ok(Box::new(ClientSetup { setup_parameters }))
   }
 
   fn get_type(&self) -> ControlMessageType {
@@ -114,22 +77,16 @@ impl ControlMessageTrait for ClientSetup {
 
 #[cfg(test)]
 mod tests {
-  use crate::model::control::constant::DRAFT_14;
-
   use super::*;
   use bytes::Buf;
 
   #[test]
   fn test_roundtrip() {
-    let supported_versions = vec![12345, DRAFT_14];
     let setup_parameters = vec![
       KeyValuePair::try_new_varint(0, 10).unwrap(),
       KeyValuePair::try_new_bytes(1, Bytes::from_static(b"Set me up!")).unwrap(),
     ];
-    let client_setup = ClientSetup {
-      supported_versions,
-      setup_parameters,
-    };
+    let client_setup = ClientSetup { setup_parameters };
 
     let mut buf = client_setup.serialize().unwrap();
     let msg_type = buf.get_vi().unwrap();
@@ -143,15 +100,11 @@ mod tests {
 
   #[test]
   fn test_excess_roundtrip() {
-    let supported_versions = vec![12345, DRAFT_14];
     let setup_parameters = vec![
       KeyValuePair::try_new_varint(0, 10).unwrap(),
       KeyValuePair::try_new_bytes(1, Bytes::from_static(b"Set me up!")).unwrap(),
     ];
-    let client_setup = ClientSetup {
-      supported_versions,
-      setup_parameters,
-    };
+    let client_setup = ClientSetup { setup_parameters };
 
     let serialized = client_setup.serialize().unwrap();
     let mut excess = BytesMut::new();
@@ -171,15 +124,11 @@ mod tests {
 
   #[test]
   fn test_partial_message() {
-    let supported_versions = vec![12345, DRAFT_14];
     let setup_parameters: Vec<KeyValuePair> = vec![
       KeyValuePair::try_new_varint(0, 10).unwrap(),
       KeyValuePair::try_new_bytes(1, Bytes::from_static(b"Set me up!")).unwrap(),
     ];
-    let client_setup = ClientSetup {
-      supported_versions,
-      setup_parameters,
-    };
+    let client_setup = ClientSetup { setup_parameters };
 
     let mut buf = client_setup.serialize().unwrap();
     let msg_type = buf.get_vi().unwrap();

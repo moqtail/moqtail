@@ -21,58 +21,103 @@ use moqtail::model::common::tuple::{Tuple, TupleField};
 use moqtail::model::control::constant::GroupOrder;
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::subscribe::Subscribe;
-use moqtail::model::data::datagram_object::DatagramObject;
+use moqtail::model::data::datagram::Datagram;
+use moqtail::model::parameter::message_parameter::MessageParameter;
 use moqtail::transport::data_stream_handler::RecvDataStream;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info};
 
-pub async fn run(
-  moq: MoqConnection,
+/// Subscribe to one track and return its assigned track alias.
+async fn subscribe_track(
+  control_stream: &mut moqtail::transport::control_stream_handler::ControlStreamHandler,
   namespace: &str,
   track_name: &str,
-  forwarding_preference: ForwardingPreference,
-  duration: u64,
-) -> Result<()> {
-  let MoqConnection {
-    connection,
-    mut control_stream,
-  } = moq;
-
-  // Subscribe to track
+  request_id: u64,
+  subscriber_priority: u8,
+  group_order: GroupOrder,
+) -> Result<u64> {
   let ns = Tuple::from_utf8_path(namespace);
-  info!("Subscribing to track: {}/{}", namespace, track_name);
+  info!(
+    "Subscribing to track: {}/{} (request_id={}, priority={})",
+    namespace, track_name, request_id, subscriber_priority
+  );
   let subscribe = Subscribe::new_latest_object(
-    0, // request_id
+    request_id,
     ns,
-    TupleField::from_utf8(track_name), // track_name
-    0,                                 // subscriber_priority
-    GroupOrder::Ascending,
-    true, // forward
-    vec![],
+    TupleField::from_utf8(track_name),
+    vec![
+      MessageParameter::new_subscriber_priority(subscriber_priority),
+      MessageParameter::new_group_order(group_order),
+      MessageParameter::new_forward(true),
+    ],
   );
   control_stream
     .send(&ControlMessage::Subscribe(Box::new(subscribe)))
     .await?;
 
-  // Wait for SubscribeOk
-  info!("Waiting for SubscribeOk...");
-  let track_alias = match control_stream.next_message().await {
+  match control_stream.next_message().await {
     Ok(ControlMessage::SubscribeOk(m)) => {
       info!(
-        "Subscribed: track_alias={}, content_exists={}",
-        m.track_alias, m.content_exists
+        "Subscribed: track={} track_alias={}",
+        track_name, m.track_alias
       );
-      m.track_alias
+      Ok(m.track_alias)
     }
-    Ok(m) => anyhow::bail!("Expected SubscribeOk, got {:?}", m),
-    Err(e) => anyhow::bail!("Failed waiting for SubscribeOk: {:?}", e),
+    Ok(m) => anyhow::bail!("Expected SubscribeOk for {}, got {:?}", track_name, m),
+    Err(e) => anyhow::bail!("Failed waiting for SubscribeOk for {}: {:?}", track_name, e),
+  }
+}
+
+pub struct SubscribeConfig {
+  pub namespace: String,
+  pub track_name: String,
+  pub forwarding_preference: ForwardingPreference,
+  pub duration: u64,
+  pub subscriber_priority: u8,
+  pub group_order: GroupOrder,
+  pub extra_track: Option<(String, u8)>,
+}
+
+pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
+  let MoqConnection {
+    connection,
+    mut control_stream,
+  } = moq;
+
+  let track_alias = subscribe_track(
+    &mut control_stream,
+    &config.namespace,
+    &config.track_name,
+    0,
+    config.subscriber_priority,
+    config.group_order,
+  )
+  .await?;
+
+  let extra_alias = if let Some((ref extra_name, extra_priority)) = config.extra_track {
+    let alias = subscribe_track(
+      &mut control_stream,
+      &config.namespace,
+      extra_name,
+      1,
+      extra_priority,
+      config.group_order,
+    )
+    .await?;
+    Some((extra_name.clone(), alias))
+  } else {
+    None
   };
 
-  match forwarding_preference {
-    ForwardingPreference::Datagram => receive_datagrams(&connection, track_alias, duration).await,
-    ForwardingPreference::Subgroup => receive_streams(&connection, track_alias, duration).await,
+  match config.forwarding_preference {
+    ForwardingPreference::Datagram => {
+      receive_datagrams(&connection, track_alias, config.duration).await
+    }
+    ForwardingPreference::Subgroup => {
+      receive_streams(&connection, track_alias, extra_alias, config.duration).await
+    }
   }
 }
 
@@ -93,7 +138,7 @@ async fn receive_datagrams(
           let bytes = bytes::Bytes::from(datagram.payload().to_vec());
           let mut bytes_mut = bytes.clone();
 
-          match DatagramObject::deserialize(&mut bytes_mut) {
+          match Datagram::deserialize(&mut bytes_mut) {
             Ok(obj) => {
               if obj.track_alias != track_alias {
                 debug!(
@@ -121,7 +166,7 @@ async fn receive_datagrams(
                   stats.total_received,
                   obj.group_id,
                   obj.object_id,
-                  obj.payload.len(),
+                  obj.payload.as_ref().map_or(0, |p| p.len()),
                   stats.elapsed_ms(),
                   if sequence_ok { "OK" } else { "GAP" }
                 );
@@ -166,10 +211,19 @@ async fn receive_datagrams(
 
 async fn receive_streams(
   connection: &Arc<wtransport::Connection>,
-  _track_alias: u64,
+  primary_alias: u64,
+  extra_alias: Option<(String, u64)>,
   duration: u64,
 ) -> Result<()> {
   info!("Listening for incoming streams...");
+
+  // Build a map from track_alias → label for log output
+  let mut alias_to_label = std::collections::HashMap::new();
+  alias_to_label.insert(primary_alias, format!("alias={primary_alias}(primary)"));
+  if let Some((ref name, alias)) = extra_alias {
+    alias_to_label.insert(alias, format!("alias={alias}({name})"));
+  }
+  let alias_to_label = Arc::new(alias_to_label);
 
   let pending_fetches = Arc::new(RwLock::new(BTreeMap::new()));
   let conn = connection.clone();
@@ -181,7 +235,6 @@ async fn receive_streams(
     loop {
       match conn.accept_uni().await {
         Ok(stream) => {
-          info!("Accepted unidirectional stream");
           let stream_handler = RecvDataStream::new(stream, pending_fetches_clone.clone());
           let mut handler = &stream_handler;
 
@@ -190,25 +243,30 @@ async fn receive_streams(
             match object {
               Some(obj) => {
                 let sequence_ok = stats.record_object(obj.location.group, obj.location.object);
+                let label = alias_to_label
+                  .get(&obj.track_alias)
+                  .map(|s| s.as_str())
+                  .unwrap_or("unknown");
 
                 if should_log(stats.total_received) || !sequence_ok {
                   info!(
-                    "Received object {}: group={}, object={}, seq={}",
+                    "Received object {}: track={} group={}, object={}, seq={}",
                     stats.total_received,
+                    label,
                     obj.location.group,
                     obj.location.object,
                     if sequence_ok { "OK" } else { "GAP" }
                   );
                 } else {
                   debug!(
-                    "Received object {}: group={}, object={}",
-                    stats.total_received, obj.location.group, obj.location.object
+                    "Received object {}: track={} group={}, object={}",
+                    stats.total_received, label, obj.location.group, obj.location.object
                   );
                 }
                 handler = next_handler;
               }
               None => {
-                info!("Stream closed");
+                debug!("Stream closed");
                 break;
               }
             }

@@ -15,16 +15,18 @@
 use bytes::{Buf, Bytes, BytesMut};
 use tracing::trace;
 
-use crate::model::common::pair::KeyValuePair;
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
 use crate::model::error::ParseError;
+use crate::model::extension_header::object_extension::{
+  ObjectExtension, deserialize_object_extensions,
+};
 
 use super::constant::ObjectStatus;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SubgroupObject {
   pub object_id: u64,
-  pub extension_headers: Option<Vec<KeyValuePair>>,
+  pub extension_headers: Option<Vec<ObjectExtension>>,
   pub object_status: Option<ObjectStatus>,
   pub payload: Option<Bytes>,
 }
@@ -117,20 +119,12 @@ impl SubgroupObject {
         }
 
         let mut header_bytes = bytes.copy_to_bytes(ext_len);
-        let mut headers: Vec<KeyValuePair> = Vec::new();
-
-        while header_bytes.has_remaining() {
-          match KeyValuePair::deserialize(&mut header_bytes) {
-            Ok(header) => headers.push(header),
-            Err(_) => {
-              return Err(ParseError::ProtocolViolation {
-                context: "SubgroupObject::deserialize",
-                details: "Failed to parse extension header".to_string(),
-              });
-            }
+        let headers = deserialize_object_extensions(&mut header_bytes).map_err(|_| {
+          ParseError::ProtocolViolation {
+            context: "SubgroupObject::deserialize",
+            details: "Failed to parse extension header".to_string(),
           }
-        }
-
+        })?;
         Some(headers)
       } else {
         // TODO: this is a hack to deal with the fact that we can understand
@@ -181,6 +175,7 @@ impl SubgroupObject {
 mod tests {
 
   use super::*;
+  use crate::model::common::pair::KeyValuePair;
   use bytes::Buf;
 
   #[test]
@@ -188,8 +183,12 @@ mod tests {
     let object_id: u64 = 10;
     let prev_object_id = 9;
     let extension_headers = Some(vec![
-      KeyValuePair::try_new_varint(0, 10).unwrap(),
-      KeyValuePair::try_new_bytes(1, Bytes::from_static(b"wololoo")).unwrap(),
+      ObjectExtension::Unknown {
+        kvp: KeyValuePair::try_new_varint(0, 10).unwrap(),
+      },
+      ObjectExtension::Unknown {
+        kvp: KeyValuePair::try_new_bytes(1, Bytes::from_static(b"wololoo")).unwrap(),
+      },
     ]);
     let object_status = None;
     let payload = Some(Bytes::from_static(b"01239gjawkk92837aldmi"));
@@ -214,8 +213,12 @@ mod tests {
     let object_id: u64 = 10;
     let prev_object_id = 9;
     let extension_headers = Some(vec![
-      KeyValuePair::try_new_varint(0, 10).unwrap(),
-      KeyValuePair::try_new_bytes(1, Bytes::from_static(b"wololoo")).unwrap(),
+      ObjectExtension::Unknown {
+        kvp: KeyValuePair::try_new_varint(0, 10).unwrap(),
+      },
+      ObjectExtension::Unknown {
+        kvp: KeyValuePair::try_new_bytes(1, Bytes::from_static(b"wololoo")).unwrap(),
+      },
     ]);
     let object_status = None;
     let payload = Some(Bytes::from_static(b"01239gjawkk92837aldmi"));
@@ -245,8 +248,12 @@ mod tests {
     let object_id: u64 = 10;
     let prev_object_id = 9;
     let extension_headers = Some(vec![
-      KeyValuePair::try_new_varint(0, 10).unwrap(),
-      KeyValuePair::try_new_bytes(1, Bytes::from_static(b"wololoo")).unwrap(),
+      ObjectExtension::Unknown {
+        kvp: KeyValuePair::try_new_varint(0, 10).unwrap(),
+      },
+      ObjectExtension::Unknown {
+        kvp: KeyValuePair::try_new_bytes(1, Bytes::from_static(b"wololoo")).unwrap(),
+      },
     ]);
     let object_status = None;
     let payload = Some(Bytes::from_static(b"01239gjawkk92837aldmi"));

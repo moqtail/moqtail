@@ -18,13 +18,12 @@ import {
   FullTrackName,
   GroupOrder,
   FilterType,
-  VersionSpecificParameters,
+  MessageParameter,
   FetchType,
   Location,
   SetupParameters,
   ControlMessage,
-  DatagramObject,
-  DatagramStatus,
+  Datagram,
 } from '@/model'
 import { PublishNamespaceRequest } from './request/publish_namespace'
 import { FetchRequest } from './request/fetch'
@@ -99,12 +98,10 @@ export type MOQtailRequest =
 export type MOQtailClientOptions = {
   /** Relay / server endpoint for the underlying {@link https://developer.mozilla.org/docs/Web/API/WebTransport | WebTransport} session (can be absolute {@link https://developer.mozilla.org/en-US/docs/Web/API/URL | URL} or string).*/
   url: string | URL
-  /** Ordered preference list of MOQT protocol version numbers (e.g. `0xff00000b`).   */
-  supportedVersions: number[]
   /**  {@link SetupParameters} customizations; if omitted a default instance is built.*/
   setupParameters?: SetupParameters
   /**  Passed directly to the browser's {@link https://developer.mozilla.org/docs/Web/API/WebTransport | WebTransport} constructor for {@link https://developer.mozilla.org/docs/Web/API/WebTransportOptions | WebTransportOptions}. */
-  transportOptions?: WebTransportOptions
+  transportOptions?: WebTransportOptions & { protocols?: string[] }
   /** Per *data* uni-stream idle timeout in milliseconds. */
   dataStreamTimeoutMs?: number
   /** Control stream read timeout in milliseconds. */
@@ -120,9 +117,9 @@ export type MOQtailClientOptions = {
     /** Fired once when the session ends (normal or error). Receives the reason passed to {@link MOQtailClient.disconnect | disconnect}. */
     onSessionTerminated?: (reason?: unknown) => void
     /** Invoked for each decoded datagram object/status arriving. */
-    onDatagramReceived?: (data: DatagramObject | DatagramStatus) => void
+    onDatagramReceived?: (data: Datagram) => void
     /** Invoked after enqueuing each outbound datagram object/status. */
-    onDatagramSent?: (data: DatagramObject | DatagramStatus) => void
+    onDatagramSent?: (data: Datagram) => void
   }
 }
 
@@ -163,8 +160,8 @@ export type SubscribeOptions = {
   forward: boolean
   /** {@link FilterType} variant controlling starting subset (e.g. {@link FilterType.LatestObject}). */
   filterType: FilterType
-  /** Optional extension {@link VersionSpecificParameters} appended to the SUBSCRIBE control message. */
-  parameters?: VersionSpecificParameters
+  /** Optional extension parameters appended to the SUBSCRIBE control message. */
+  parameters?: MessageParameter[]
   /** Required for {@link FilterType.AbsoluteStart} / {@link FilterType.AbsoluteRange}; earliest {@link Location} to include. */
   startLocation?: Location
   /** Required for {@link FilterType.AbsoluteRange}; exclusive upper group boundary (coerced to bigint if number provided). */
@@ -198,8 +195,8 @@ export type SubscribeUpdateOptions = {
   priority: number
   /** Updated direction flag. */
   forward: boolean
-  /** Optional additional {@link VersionSpecificParameters}; existing parameters persist if omitted. */
-  parameters?: VersionSpecificParameters
+  /** Optional additional parameters; existing parameters persist if omitted. */
+  parameters?: MessageParameter[]
 }
 
 /**
@@ -218,8 +215,8 @@ export type SwitchOptions = {
   fullTrackName: FullTrackName
   /** The original SUBSCRIBE request id (bigint) being updated. */
   subscriptionRequestId: bigint
-  /** Optional additional {@link VersionSpecificParameters}; existing parameters persist if omitted. */
-  parameters?: VersionSpecificParameters
+  /** Optional additional parameters; existing parameters persist if omitted. */
+  parameters?: MessageParameter[]
 }
 
 /**
@@ -231,7 +228,7 @@ export type SwitchOptions = {
  *   priority: 64,
  *   groupOrder: GroupOrder.Original,
  *   typeAndProps: {
- *     type: FetchType.StandAlone,
+ *     type: FetchType.Standalone,
  *     props: { fullTrackName, startLocation, endLocation }
  *   }
  * })
@@ -255,7 +252,7 @@ export type SwitchOptions = {
  * })
  * ```
  */
-// TODO: Define BaseOptions and extend it with StandAloneOptions, RelativeOptions etc.
+// TODO: Define BaseOptions and extend it with StandaloneOptions, RelativeOptions etc.
 // Move the type to top level
 export type FetchOptions = {
   /** Request priority (0 = highest, 255 = lowest). Rounded & clamped. */
@@ -264,13 +261,13 @@ export type FetchOptions = {
   groupOrder: GroupOrder
   /**
    * Discriminated union selecting the {@link FetchType} mode and its specific properties:
-   * - StandAlone: full explicit range on a {@link FullTrackName} with start/end {@link Location}s.
+   * - Standalone: full explicit range on a {@link FullTrackName} with start/end {@link Location}s.
    * - Relative / Absolute: join an existing {@link SubscribeRequest} (identified by `joiningRequestId`) with starting position `joiningStart`.
    */
   typeAndProps:
     | {
         /** Standalone historical/segment fetch for a specific {@link FullTrackName}. */
-        type: FetchType.StandAlone
+        type: FetchType.Standalone
         /** Properties for standalone fetch: explicit track and range. */
         props: { fullTrackName: FullTrackName; startLocation: Location; endLocation: Location }
       }
@@ -286,6 +283,6 @@ export type FetchOptions = {
         /** Properties for absolute fetch: subscription id and starting position. */
         props: { joiningRequestId: bigint; joiningStart: bigint }
       }
-  /** Optional {@link VersionSpecificParameters} block. */
-  parameters?: VersionSpecificParameters
+  /** Optional parameters block. */
+  parameters?: MessageParameter[]
 }

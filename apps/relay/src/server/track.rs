@@ -13,23 +13,25 @@
 // limitations under the License.
 
 use super::track_cache::TrackCache;
-use crate::server::client::MOQTClient;
 use crate::server::config::AppConfig;
 use crate::server::object_logger::ObjectLogger;
 use crate::server::stream_id::StreamId;
 use crate::server::subscription::Subscription;
 use crate::server::subscription_manager::SubscriptionManager;
 use crate::server::utils;
+use crate::server::{client::MOQTClient, subscription::SubscriptionOrigin};
 use anyhow::Result;
 use moqtail::model::common::location::Location;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
-use moqtail::model::control::constant::SubscribeErrorCode;
-use moqtail::model::control::subscribe::Subscribe;
+use moqtail::model::control::constant::RequestErrorCode;
 use moqtail::model::data::constant::ObjectForwardingPreference;
-use moqtail::model::data::datagram_object::DatagramObject;
+use moqtail::model::data::datagram::Datagram;
 use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::model::data::object::Object;
+use moqtail::model::extension_header::track_extension::TrackExtension;
+use moqtail::model::parameter::message_parameter::MessageParameter;
 use moqtail::transport::data_stream_handler::HeaderInfo;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokio::sync::{Notify, RwLock};
 use tracing::{debug, error, info, warn};
@@ -41,13 +43,11 @@ pub enum TrackStatus {
   Pending,
   /// Publisher confirmed with SubscribeOk.
   Confirmed {
-    publisher_track_alias: u64,
-    expires: u64,
-    largest_location: Option<Location>,
+    subscribe_parameters: Vec<MessageParameter>,
   },
-  /// Publisher rejected with SubscribeError.
+  /// Publisher rejected with RequestError.
   Rejected {
-    error_code: SubscribeErrorCode,
+    error_code: RequestErrorCode,
     reason_phrase: ReasonPhrase,
   },
 }
@@ -60,8 +60,8 @@ pub enum TrackEvent {
     object: Object,
     header_info: Option<HeaderInfo>,
   },
-  DatagramObject {
-    object: DatagramObject,
+  Datagram {
+    object: Datagram,
   },
   StreamClosed {
     stream_id: StreamId,
@@ -70,12 +70,15 @@ pub enum TrackEvent {
     reason: String,
   },
 }
+
 #[derive(Debug, Clone)]
 pub struct Track {
-  pub track_alias: u64,
+  /// Stable relay-assigned track identifier, independent of publisher aliases.
+  pub relay_track_id: u64,
   pub full_track_name: FullTrackName,
   pub subscription_manager: SubscriptionManager,
-  pub publisher_connection_id: usize,
+  /// Maps publisher_connection_id -> publisher_track_alias for all active publishers.
+  pub publisher_aliases: Arc<RwLock<BTreeMap<usize, u64>>>,
   pub(crate) cache: TrackCache,
   pub largest_location: Arc<RwLock<Location>>,
   pub object_logger: ObjectLogger,
@@ -85,29 +88,30 @@ pub struct Track {
   pub status_notify: Arc<Notify>,
   /// Subscribers waiting for track confirmation: (request_id, connection_id).
   pub pending_subscribers: Arc<RwLock<Vec<(u64, usize)>>>,
+  /// Cached track extensions from PUBLISH or SUBSCRIBE_OK (relays MUST cache).
+  pub track_extensions: Arc<RwLock<Vec<TrackExtension>>>,
 }
 
 // TODO: this track implementation should be static? At least
 // its lifetime should be same as the server's lifetime
 impl Track {
   pub fn new(
-    track_alias: u64,
+    relay_track_id: u64,
     full_track_name: FullTrackName,
-    publisher_connection_id: usize,
     config: &'static AppConfig,
     initial_status: TrackStatus,
   ) -> Self {
     Track {
-      track_alias,
+      relay_track_id,
       full_track_name: full_track_name.clone(),
       subscription_manager: SubscriptionManager::new(
-        track_alias,
+        relay_track_id,
         full_track_name,
         config.log_folder.clone(),
         config,
       ),
-      publisher_connection_id,
-      cache: TrackCache::new(track_alias, config.cache_size.into(), config),
+      publisher_aliases: Arc::new(RwLock::new(BTreeMap::new())),
+      cache: TrackCache::new(relay_track_id, config.cache_size.into(), config),
       largest_location: Arc::new(RwLock::new(Location::new(0, 0))),
       object_logger: ObjectLogger::new(config.log_folder.clone()),
       config,
@@ -115,32 +119,84 @@ impl Track {
       status: Arc::new(RwLock::new(initial_status)),
       status_notify: Arc::new(Notify::new()),
       pending_subscribers: Arc::new(RwLock::new(Vec::new())),
+      track_extensions: Arc::new(RwLock::new(Vec::new())),
     }
   }
 
-  /// Transition from Pending to Confirmed. Updates track_alias and notifies waiters.
+  /// Add a publisher (connection_id -> track_alias) to this track.
+  pub async fn add_publisher(&self, connection_id: usize, track_alias: u64) {
+    let mut aliases = self.publisher_aliases.write().await;
+    aliases.insert(connection_id, track_alias);
+    info!(
+      "Added publisher {}@alias={} to relay_track_id={}",
+      connection_id, track_alias, self.relay_track_id
+    );
+  }
+
+  /// Remove a publisher by connection_id. Returns the removed alias if found.
+  /// If no publishers remain after removal, sends PublisherDisconnected to all subscribers.
+  pub async fn remove_publisher(&self, connection_id: usize) -> Option<u64> {
+    let removed_alias = {
+      let mut aliases = self.publisher_aliases.write().await;
+      aliases.remove(&connection_id)
+    };
+
+    if let Some(alias) = removed_alias {
+      let has_publishers = !self.publisher_aliases.read().await.is_empty();
+      info!(
+        "Removed publisher {}@alias={} from relay_track_id={} | publishers_remaining={}",
+        connection_id, alias, self.relay_track_id, has_publishers
+      );
+
+      if !has_publishers && let Err(e) = self.notify_publisher_disconnected().await {
+        error!(
+          "Failed to notify subscribers after last publisher removed for relay_track_id={}: {:?}",
+          self.relay_track_id, e
+        );
+      }
+    }
+
+    removed_alias
+  }
+
+  /// Returns true if there is at least one active publisher for this track.
+  pub async fn has_publishers(&self) -> bool {
+    !self.publisher_aliases.read().await.is_empty()
+  }
+
+  /// Transition from Pending to Confirmed. Adds publisher alias and notifies waiters.
   pub async fn confirm(
     &mut self,
+    publisher_connection_id: usize,
     publisher_track_alias: u64,
-    expires: u64,
-    largest_location: Option<Location>,
+    subscribe_parameters: Vec<MessageParameter>,
+    extensions: Vec<TrackExtension>,
   ) {
-    self.track_alias = publisher_track_alias;
-    self
-      .subscription_manager
-      .update_track_alias(publisher_track_alias);
+    {
+      let mut aliases = self.publisher_aliases.write().await;
+      aliases.insert(publisher_connection_id, publisher_track_alias);
+    }
     let mut status = self.status.write().await;
     *status = TrackStatus::Confirmed {
-      publisher_track_alias,
-      expires,
-      largest_location,
+      subscribe_parameters,
     };
     drop(status);
+    *self.track_extensions.write().await = extensions;
     self.status_notify.notify_waiters();
+
+    info!(
+      "Track confirmed: relay_track_id={} publisher_connection_id={} publisher_alias={}",
+      self.relay_track_id, publisher_connection_id, publisher_track_alias
+    );
+  }
+
+  /// Updates the cached track extensions (per spec: most recent set replaces any previous).
+  pub async fn set_track_extensions(&self, extensions: Vec<TrackExtension>) {
+    *self.track_extensions.write().await = extensions;
   }
 
   /// Transition from Pending to Rejected. Notifies waiters.
-  pub async fn reject(&self, error_code: SubscribeErrorCode, reason_phrase: ReasonPhrase) {
+  pub async fn reject(&self, error_code: RequestErrorCode, reason_phrase: ReasonPhrase) {
     let mut status = self.status.write().await;
     *status = TrackStatus::Rejected {
       error_code,
@@ -161,11 +217,11 @@ impl Track {
   pub async fn add_subscription(
     &self,
     subscriber: Arc<MOQTClient>,
-    subscribe_message: Subscribe,
+    origin_message: impl Into<SubscriptionOrigin>,
     is_switch: bool,
   ) -> Result<Arc<RwLock<Subscription>>, anyhow::Error> {
+    let origin_enum = origin_message.into();
     // Check if subscription already exists
-
     if let Some(sub_guard) = self
       .subscription_manager
       .get_subscription(subscriber.connection_id)
@@ -173,13 +229,13 @@ impl Track {
     {
       if !is_switch {
         error!(
-          "Subscriber with connection_id: {} already exists in track: {}",
-          subscriber.connection_id, self.track_alias
+          "Subscriber with connection_id: {} already exists in relay_track_id={}",
+          subscriber.connection_id, self.relay_track_id
         );
       } else {
         info!(
-          "Subscriber with connection_id: {} already exists in track: {} (switch subscription)",
-          subscriber.connection_id, self.track_alias
+          "Subscriber with connection_id: {} already exists in relay_track_id={} (switch subscription)",
+          subscriber.connection_id, self.relay_track_id
         );
         // inform the existing subscription about the switch
         let sub = sub_guard.read().await;
@@ -192,7 +248,7 @@ impl Track {
 
     let subscription = self
       .subscription_manager
-      .add_subscription(subscriber, subscribe_message, self.cache.clone())
+      .add_subscription(subscriber, origin_enum, self.cache.clone())
       .await?;
 
     if is_switch {
@@ -225,8 +281,8 @@ impl Track {
     header_info: Option<&HeaderInfo>,
   ) -> Result<(), anyhow::Error> {
     debug!(
-      "new_subgroup_object: track: {:?} location: {:?} stream_id: {} diff_ms: {}",
-      object.track_alias,
+      "new_subgroup_object: relay_track_id={} location: {:?} stream_id={} diff_ms={}",
+      self.relay_track_id,
       object.location,
       stream_id,
       utils::passed_time_since_start()
@@ -234,8 +290,8 @@ impl Track {
 
     if header_info.is_some() {
       info!(
-        "new group: track: {:?} location: {:?} stream_id: {} time: {}",
-        object.track_alias,
+        "new group: relay_track_id={} location: {:?} stream_id={} time={}",
+        self.relay_track_id,
         object.location,
         stream_id,
         utils::passed_time_since_start()
@@ -258,7 +314,8 @@ impl Track {
       self.cache.add_object(fetch_object).await;
     } else {
       warn!(
-        "new_subgroup_object: object cannot be cached | track: {:?} location: {:?} stream_id: {} diff_ms: {} object: {:?}",
+        "new_subgroup_object: object cannot be cached | relay_track_id: {} track_alias: {} location: {:?} stream_id: {} diff_ms: {} object: {:?}",
+        self.relay_track_id,
         object.track_alias,
         object.location,
         stream_id,
@@ -272,7 +329,7 @@ impl Track {
       let object_received_time = utils::passed_time_since_start();
       self
         .object_logger
-        .log_track_object(self.track_alias, object, object_received_time)
+        .log_track_object(self.relay_track_id, object, object_received_time)
         .await;
     }
 
@@ -290,25 +347,21 @@ impl Track {
     Ok(())
   }
 
-  pub async fn new_datagram_object(
-    &self,
-    datagram_object: &DatagramObject,
-  ) -> Result<(), anyhow::Error> {
+  pub async fn new_datagram(&self, datagram: &Datagram) -> Result<(), anyhow::Error> {
     debug!(
-      "new_datagram_object: track: {:?} group: {:?} object_id: {} diff_ms: {}",
-      datagram_object.track_alias,
-      datagram_object.group_id,
-      datagram_object.object_id,
+      "new_datagram: relay_track_id={} group: {:?} object_id={} diff_ms={}",
+      self.relay_track_id,
+      datagram.group_id,
+      datagram.object_id,
       utils::passed_time_since_start()
     );
 
-    match Object::try_from_datagram(datagram_object.clone()) {
+    match Object::try_from_datagram(datagram.clone(), 0) {
       Ok((object, end_of_group)) => {
-        // Draft-14: end_of_group indicates this is the last object in the group
         if end_of_group {
           debug!(
-            "new_datagram_object: end_of_group received for track: {:?} group: {:?} object_id: {}",
-            datagram_object.track_alias, datagram_object.group_id, datagram_object.object_id
+            "new_datagram: end_of_group received for track: {:?} group: {:?} object_id: {}",
+            datagram.track_alias, datagram.group_id, datagram.object_id
           );
         }
 
@@ -316,10 +369,10 @@ impl Track {
           self.cache.add_object(fetch_object).await;
         } else {
           warn!(
-            "new_datagram_object: object cannot be cached | track: {:?} group: {:?} object_id: {} diff_ms: {} object: {:?}",
-            datagram_object.track_alias,
-            datagram_object.group_id,
-            datagram_object.object_id,
+            "new_datagram: object cannot be cached | relay_track_id={} group: {:?} object_id={} diff_ms={} object: {:?}",
+            self.relay_track_id,
+            datagram.group_id,
+            datagram.object_id,
             utils::passed_time_since_start(),
             object
           );
@@ -328,17 +381,16 @@ impl Track {
         // Track-level logging - log every object arrival if enabled
         if self.config.enable_object_logging {
           let object_received_time = utils::passed_time_since_start();
-
           self
             .object_logger
-            .log_track_object(self.track_alias, &object, object_received_time)
+            .log_track_object(self.relay_track_id, &object, object_received_time)
             .await;
         }
       }
       Err(e) => {
         error!(
-          "Failed to convert datagram object to object for logging: group: {:?} object_id: {} error: {}",
-          datagram_object.group_id, datagram_object.object_id, e
+          "Failed to convert datagram to object for logging: group: {:?} object_id={} error={}",
+          datagram.group_id, datagram.object_id, e
         );
       }
     }
@@ -346,17 +398,17 @@ impl Track {
     // update the largest location
     {
       let mut largest_location = self.largest_location.write().await;
-      if datagram_object.group_id > largest_location.group
-        || (datagram_object.group_id == largest_location.group
-          && datagram_object.object_id > largest_location.object)
+      if datagram.group_id > largest_location.group
+        || (datagram.group_id == largest_location.group
+          && datagram.object_id > largest_location.object)
       {
-        largest_location.group = datagram_object.group_id;
-        largest_location.object = datagram_object.object_id;
+        largest_location.group = datagram.group_id;
+        largest_location.object = datagram.object_id;
       }
     }
 
-    let event = TrackEvent::DatagramObject {
-      object: datagram_object.clone(),
+    let event = TrackEvent::Datagram {
+      object: datagram.clone(),
     };
 
     self
@@ -380,11 +432,12 @@ impl Track {
     Ok(())
   }
 
-  /// Send PublisherDisconnected event to all subscribers
+  /// Send PublisherDisconnected event to all subscribers.
+  /// Called internally by remove_publisher() when the last publisher leaves.
   pub async fn notify_publisher_disconnected(&self) -> Result<(), anyhow::Error> {
     info!(
-      "Publisher disconnected for track: {} - notifying all subscribers",
-      self.track_alias
+      "All publishers gone for relay_track_id={} - notifying all subscribers",
+      self.relay_track_id
     );
 
     let event = TrackEvent::PublisherDisconnected {

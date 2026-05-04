@@ -16,19 +16,18 @@
 
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
 import { Location } from '../common/location'
-import { KeyValuePair } from '../common/pair'
-import { ControlMessageType, FetchType, fetchTypeFromBigInt, GroupOrder, groupOrderFromNumber } from './constant'
-import { LengthExceedsMaxError, NotEnoughBytesError } from '../error/error'
+import { ControlMessageType, FetchType, fetchTypeFromBigInt } from './constant'
+import { LengthExceedsMaxError } from '../error/error'
 import { FullTrackName } from '../data'
+import { MessageParameter, MessageParameters } from '../parameter/message_parameter'
+import { SubscriberPriority } from '../parameter/message/subscriber_priority'
 
 export class Fetch {
   constructor(
     public readonly requestId: bigint,
-    public readonly subscriberPriority: number,
-    public readonly groupOrder: GroupOrder,
     public readonly typeAndProps:
       | {
-          readonly type: FetchType.StandAlone
+          readonly type: FetchType.Standalone
           readonly props: { fullTrackName: FullTrackName; startLocation: Location; endLocation: Location }
         }
       | {
@@ -39,7 +38,7 @@ export class Fetch {
           readonly type: FetchType.Absolute
           readonly props: { joiningRequestId: bigint; joiningStart: bigint }
         },
-    public readonly parameters: KeyValuePair[],
+    public readonly parameters: MessageParameter[],
   ) {}
 
   getType(): ControlMessageType {
@@ -51,8 +50,6 @@ export class Fetch {
     buf.putVI(ControlMessageType.Fetch)
     const payload = new ByteBuffer()
     payload.putVI(this.requestId)
-    payload.putU8(this.subscriberPriority)
-    payload.putU8(this.groupOrder)
     payload.putVI(this.typeAndProps.type)
     switch (this.typeAndProps.type) {
       case FetchType.Absolute:
@@ -61,7 +58,7 @@ export class Fetch {
         payload.putVI(this.typeAndProps.props.joiningStart)
         break
       }
-      case FetchType.StandAlone: {
+      case FetchType.Standalone: {
         payload.putFullTrackName(this.typeAndProps.props.fullTrackName)
         payload.putLocation(this.typeAndProps.props.startLocation)
         payload.putLocation(this.typeAndProps.props.endLocation)
@@ -70,7 +67,7 @@ export class Fetch {
     }
     payload.putVI(this.parameters.length)
     for (const param of this.parameters) {
-      payload.putKeyValuePair(param)
+      payload.putKeyValuePair(param.toKeyValuePair())
     }
     const payloadBytes = payload.toUint8Array()
     if (payloadBytes.length > 0xffff) {
@@ -83,11 +80,6 @@ export class Fetch {
 
   static parsePayload(buf: BaseByteBuffer): Fetch {
     const requestId = buf.getVI()
-    if (buf.remaining < 1) throw new NotEnoughBytesError('Fetch::parse_payload(subscriber_priority)', 1, buf.remaining)
-    const subscriberPriority = buf.getU8()
-    if (buf.remaining < 1) throw new NotEnoughBytesError('Fetch::parse_payload(group_order)', 1, buf.remaining)
-    const groupOrderRaw = buf.getU8()
-    const groupOrder = groupOrderFromNumber(groupOrderRaw)
     const fetchTypeRaw = buf.getVI()
     const fetchType = fetchTypeFromBigInt(fetchTypeRaw)
 
@@ -104,12 +96,12 @@ export class Fetch {
         }
         break
       }
-      case FetchType.StandAlone: {
+      case FetchType.Standalone: {
         const fullTrackName = buf.getFullTrackName()
         const startLocation = buf.getLocation()
         const endLocation = buf.getLocation()
         props = {
-          type: FetchType.StandAlone,
+          type: FetchType.Standalone,
           props: { fullTrackName, startLocation, endLocation },
         }
         break
@@ -119,12 +111,13 @@ export class Fetch {
     }
 
     const paramCount = buf.getNumberVI()
-    const parameters: KeyValuePair[] = new Array(paramCount)
+    const rawParams = new Array(paramCount)
     for (let i = 0; i < paramCount; i++) {
-      parameters[i] = buf.getKeyValuePair()
+      rawParams[i] = buf.getKeyValuePair()
     }
+    const parameters = MessageParameters.fromKeyValuePairs(rawParams)
 
-    return new Fetch(requestId, subscriberPriority, groupOrder, props, parameters)
+    return new Fetch(requestId, props, parameters)
   }
 }
 
@@ -133,16 +126,9 @@ if (import.meta.vitest) {
   describe('Fetch', () => {
     test('roundtrip', () => {
       const requestId = 161803n
-      const subscriberPriority = 15
-      const groupOrder = GroupOrder.Descending
-      const parameters = [
-        KeyValuePair.tryNewVarInt(4444, 12321n),
-        KeyValuePair.tryNewBytes(1, new TextEncoder().encode('fetch me ok')),
-      ]
+      const parameters = [new SubscriberPriority(42)]
       const fetch = new Fetch(
         requestId,
-        subscriberPriority,
-        groupOrder,
         {
           type: FetchType.Absolute,
           props: { joiningRequestId: 119n, joiningStart: 73n },
@@ -164,16 +150,9 @@ if (import.meta.vitest) {
 
     test('excess roundtrip', () => {
       const requestId = 161803n
-      const subscriberPriority = 15
-      const groupOrder = GroupOrder.Descending
-      const parameters = [
-        KeyValuePair.tryNewVarInt(4444, 12321n),
-        KeyValuePair.tryNewBytes(1, new TextEncoder().encode('fetch me ok')),
-      ]
+      const parameters = [new SubscriberPriority(42)]
       const fetch = new Fetch(
         requestId,
-        subscriberPriority,
-        groupOrder,
         {
           type: FetchType.Absolute,
           props: { joiningRequestId: 119n, joiningStart: 73n },
@@ -197,16 +176,9 @@ if (import.meta.vitest) {
 
     test('partial message', () => {
       const requestId = 161803n
-      const subscriberPriority = 15
-      const groupOrder = GroupOrder.Descending
-      const parameters = [
-        KeyValuePair.tryNewVarInt(4444, 12321n),
-        KeyValuePair.tryNewBytes(1, new TextEncoder().encode('fetch me ok')),
-      ]
+      const parameters = [new SubscriberPriority(42)]
       const fetch = new Fetch(
         requestId,
-        subscriberPriority,
-        groupOrder,
         {
           type: FetchType.Absolute,
           props: { joiningRequestId: 119n, joiningStart: 73n },

@@ -14,10 +14,12 @@
 
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
-use std::sync::OnceLock;
+use moqtail::model::control::constant::SUPPORTED_VERSIONS;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
-use tracing::error;
-use wtransport::{Identity, ServerConfig};
+use tracing::{error, info};
+use wtransport::quinn::congestion::BbrConfig;
+use wtransport::{Identity, ServerConfig, quinn::TransportConfig};
 
 /// Cache expiration strategy
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -71,6 +73,11 @@ pub struct Cli {
   /// Initial maximum request ID
   #[arg(long, default_value_t = u64::MAX / 8)]
   pub initial_max_request_id: u64,
+
+  /// Simulate a bandwidth cap per subscriber connection (kbps). 0 = unlimited.
+  /// Useful for testing QUIC stream priority scheduling without OS-level throttling.
+  #[arg(long, default_value_t = 0)]
+  pub write_kbps_limit: u64,
 }
 #[derive(Debug, Clone)]
 pub struct AppConfig {
@@ -88,6 +95,8 @@ pub struct AppConfig {
   pub enable_token_logging: bool,
   pub token_log_path: String,
   pub initial_max_request_id: u64,
+  /// 0 = unlimited. Non-zero caps relay writes to this many kbps per subscriber connection.
+  pub write_kbps_limit: u64,
 }
 
 impl AppConfig {
@@ -110,6 +119,7 @@ impl AppConfig {
         enable_token_logging: cli.enable_token_logging,
         token_log_path: cli.token_log_path,
         initial_max_request_id: cli.initial_max_request_id,
+        write_kbps_limit: cli.write_kbps_limit,
       }
     })
   }
@@ -123,9 +133,27 @@ impl AppConfig {
       }
     };
 
+    /* TODO: When raw-quic is aneb */
+    let mut tls_config = wtransport::tls::server::build_default_tls_config(identity);
+
+    /*
+      This is for future raw-QUIC implementation.
+      A raw-QUIC client will use ALPN at the QUIC level.
+      A WebTransport client will send h3 at the QUIC level ALPN
+      and send moq version in wt-available-protocols header.
+    */
+    for version in SUPPORTED_VERSIONS.replace(" ", "").split(",") {
+      tls_config.alpn_protocols.push(version.as_bytes().to_vec());
+    }
+    info!("QUIC ALPN Protocols: {:?}", tls_config.alpn_protocols);
+
+    // set up BBR congestion control
+    let mut quic_transport_config = TransportConfig::default();
+    quic_transport_config.congestion_controller_factory(Arc::new(BbrConfig::default()));
+
     let config = ServerConfig::builder()
       .with_bind_default(self.port)
-      .with_identity(identity)
+      .with_custom_tls_and_transport(tls_config, quic_transport_config)
       .keep_alive_interval(Some(Duration::from_secs(self.keep_alive_interval)))
       .max_idle_timeout(Some(Duration::from_secs(self.max_idle_timeout)))
       .unwrap()
@@ -174,6 +202,7 @@ mod tests {
       enable_token_logging: false,
       token_log_path: "/tmp/moqtail_relay_tokens.csv".to_string(),
       initial_max_request_id: u64::MAX / 8,
+      write_kbps_limit: 0,
     };
 
     let config = AppConfig {
@@ -191,6 +220,7 @@ mod tests {
       enable_token_logging: cli.enable_token_logging,
       token_log_path: cli.token_log_path,
       initial_max_request_id: cli.initial_max_request_id,
+      write_kbps_limit: cli.write_kbps_limit,
     };
 
     assert_eq!(config.initial_max_request_id, u64::MAX / 8);

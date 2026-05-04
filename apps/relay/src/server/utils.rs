@@ -45,14 +45,14 @@ pub fn bytes_to_hex(buffer: &Bytes) -> String {
   hex
 }
 
-pub fn build_stream_id(track_alias: u64, header: &HeaderInfo) -> StreamId {
+pub fn build_stream_id(relay_track_id: u64, header: &HeaderInfo) -> StreamId {
   match header {
     HeaderInfo::Fetch {
       header,
       fetch_request: _,
-    } => StreamId::new_fetch(track_alias, header.request_id),
+    } => StreamId::new_fetch(relay_track_id, header.request_id),
     HeaderInfo::Subgroup { header } => {
-      StreamId::new_subgroup(track_alias, header.group_id, header.subgroup_id)
+      StreamId::new_subgroup(relay_track_id, header.group_id, header.subgroup_id)
     }
   }
 }

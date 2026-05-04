@@ -16,17 +16,19 @@
 
 import {
   FullTrackName,
-  KeyValuePair,
   Location,
+  MessageParameter,
   MoqtObject,
   Subscribe,
-  SubscribeError,
+  RequestError,
   SubscribeOk,
-  SubscribeUpdate,
+  RequestUpdate,
+  applyMessageParameterUpdate,
 } from '@/model'
+import { logger } from '../../util/logger'
 
 // TODO: Add timeout mechanism for unsubscribing
-export class SubscribeRequest implements PromiseLike<SubscribeOk | SubscribeError> {
+export class SubscribeRequest implements PromiseLike<SubscribeOk | RequestError> {
   requestId: bigint
   fullTrackName: FullTrackName
   isCanceled: boolean = false
@@ -34,45 +36,62 @@ export class SubscribeRequest implements PromiseLike<SubscribeOk | SubscribeErro
   endGroup: bigint | undefined
   priority: number
   forward: boolean
-  subscribeParameters: KeyValuePair[]
+  subscribeParameters: MessageParameter[]
   largestLocation: Location | undefined // Updated on each received object
   streamsAccepted: bigint = 0n
   expectedStreams: bigint | undefined // Defined upon SUBSCRIBE_DONE
   readonly controller!: ReadableStreamDefaultController<MoqtObject>
   readonly stream: ReadableStream<MoqtObject>
-  #promise: Promise<SubscribeOk | SubscribeError>
-  #resolve!: (value: SubscribeOk | SubscribeError | PromiseLike<SubscribeOk | SubscribeError>) => void
+  #promise: Promise<SubscribeOk | RequestError>
+  #resolve!: (value: SubscribeOk | RequestError | PromiseLike<SubscribeOk | RequestError>) => void
   #reject!: (reason?: any) => void
 
   constructor(msg: Subscribe) {
     this.requestId = msg.requestId
     this.fullTrackName = msg.fullTrackName
-    this.startLocation = msg.startLocation
-    this.endGroup = msg.endGroup
-    this.priority = msg.subscriberPriority
-    this.forward = msg.forward
+    const filter = msg.parameters.find(MessageParameter.isSubscriptionFilter)
+    this.startLocation = filter?.startLocation
+    this.endGroup = filter?.endGroup
+    const subPriority = msg.parameters.find(MessageParameter.isSubscriberPriority)
+    this.priority = subPriority?.priority ?? 128
+    const fwd = msg.parameters.find(MessageParameter.isForward)
+    this.forward = fwd?.forward ?? true
     this.subscribeParameters = msg.parameters
     this.stream = new ReadableStream<MoqtObject>({
       start: (controller) => {
         ;(this.controller as any) = controller
       },
     })
-    this.#promise = new Promise<SubscribeOk | SubscribeError>((resolve, reject) => {
+    this.#promise = new Promise<SubscribeOk | RequestError>((resolve, reject) => {
       this.#resolve = resolve
       this.#reject = reject
     })
+    logger.debug(
+      'request/subscribe',
+      `created requestId=${this.requestId} ftn="${this.fullTrackName}" priority=${this.priority} forward=${this.forward}`,
+    )
   }
-  update(msg: SubscribeUpdate): void {
-    this.startLocation = msg.startLocation
-    this.endGroup = msg.endGroup
-    this.forward = msg.forward
-    this.priority = msg.subscriberPriority
-    this.subscribeParameters = msg.parameters
+  update(msg: RequestUpdate): void {
+    const filter = msg.parameters.find(MessageParameter.isSubscriptionFilter)
+    if (filter?.startLocation !== undefined) this.startLocation = filter.startLocation
+    if (filter?.endGroup !== undefined) this.endGroup = filter.endGroup
+
+    for (const param of msg.parameters) {
+      if (MessageParameter.isSubscriberPriority?.(param)) {
+        this.priority = (param as any).priority
+      } else if (MessageParameter.isForward?.(param)) {
+        this.forward = (param as any).forward
+      }
+    }
+
+    if (typeof applyMessageParameterUpdate === 'function') {
+      applyMessageParameterUpdate(this.subscribeParameters, msg.parameters)
+    }
   }
-  switch(newTrackName: FullTrackName, newParameters: KeyValuePair[]): void {
+  switch(newTrackName: FullTrackName, newParameters: MessageParameter[]): void {
     this.fullTrackName = newTrackName
     this.subscribeParameters = newParameters
-    this.#promise = new Promise<SubscribeOk | SubscribeError>((resolve, reject) => {
+    this.#promise = new Promise<SubscribeOk | RequestError>((resolve, reject) => {
       this.#resolve = resolve
       this.#reject = reject
     })
@@ -80,16 +99,25 @@ export class SubscribeRequest implements PromiseLike<SubscribeOk | SubscribeErro
   unsubscribe(): void {
     this.isCanceled = true
   }
-  resolve(value: SubscribeOk | SubscribeError | PromiseLike<SubscribeOk | SubscribeError>): void {
+  resolve(value: SubscribeOk | RequestError | PromiseLike<SubscribeOk | RequestError>): void {
+    if (value instanceof RequestError) {
+      logger.error(
+        'request/subscribe',
+        `resolved with error requestId=${this.requestId} code=${value.errorCode} reason="${value.reasonPhrase.phrase}"`,
+      )
+    } else if (value instanceof SubscribeOk) {
+      logger.debug('request/subscribe', `resolved with OK requestId=${this.requestId} trackAlias=${value.trackAlias}`)
+    }
     this.#resolve(value)
   }
 
   reject(reason?: any): void {
+    logger.error('request/subscribe', `rejected requestId=${this.requestId}`, reason)
     this.#reject(reason)
   }
 
-  then<TResult1 = SubscribeOk | SubscribeError, TResult2 = never>(
-    onfulfilled?: ((value: SubscribeOk | SubscribeError) => TResult1 | PromiseLike<TResult1>) | undefined | null,
+  then<TResult1 = SubscribeOk | RequestError, TResult2 = never>(
+    onfulfilled?: ((value: SubscribeOk | RequestError) => TResult1 | PromiseLike<TResult1>) | undefined | null,
     onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | undefined | null,
   ): PromiseLike<TResult1 | TResult2> {
     return this.#promise.then(onfulfilled, onrejected)
@@ -97,11 +125,11 @@ export class SubscribeRequest implements PromiseLike<SubscribeOk | SubscribeErro
 
   catch<TResult = never>(
     onrejected?: ((reason: any) => TResult | PromiseLike<TResult>) | undefined | null,
-  ): Promise<SubscribeOk | SubscribeError | TResult> {
+  ): Promise<SubscribeOk | RequestError | TResult> {
     return this.#promise.catch(onrejected)
   }
 
-  finally(onfinally?: (() => void) | undefined | null): Promise<SubscribeOk | SubscribeError> {
+  finally(onfinally?: (() => void) | undefined | null): Promise<SubscribeOk | RequestError> {
     return this.#promise.finally(onfinally)
   }
 }

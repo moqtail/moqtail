@@ -16,7 +16,9 @@
 
 import { MaxRequestId } from '../../model/control'
 import { ControlMessageHandler } from './handler'
+import { logger } from '../../util/logger'
 
-export const handlerMaxRequestId: ControlMessageHandler<MaxRequestId> = async (_client, _msg) => {
+export const handlerMaxRequestId: ControlMessageHandler<MaxRequestId> = async (_client, msg) => {
+  logger.debug('handler/max_request_id', 'not implemented', msg)
   // TODO: Implement MaxRequestId handler logic
 }

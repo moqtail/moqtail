@@ -12,15 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::server::subscription::SubscriptionOrigin;
+
 use super::client::MOQTClient;
 use super::config::AppConfig;
 use super::subscription::Subscription;
 use super::track::TrackEvent;
 use super::utils;
 use anyhow::Result;
-use moqtail::model::control::subscribe::Subscribe;
 use moqtail::model::data::full_track_name::FullTrackName;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::{collections::BTreeMap, collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
 use tokio::sync::mpsc::UnboundedSender;
@@ -38,7 +38,7 @@ pub type SubscriberSenderList = Vec<SubscriberSenderLock>;
 
 #[derive(Debug, Clone)]
 pub(crate) struct SubscriptionManager {
-  track_alias: Arc<AtomicU64>,
+  relay_track_id: u64,
   full_track_name: FullTrackName,
   subscriptions: Arc<RwLock<BTreeMap<usize, Arc<RwLock<Subscription>>>>>,
   subscriber_senders: Arc<SubscriberSenderList>,
@@ -48,7 +48,7 @@ pub(crate) struct SubscriptionManager {
 
 impl SubscriptionManager {
   pub fn new(
-    track_alias: u64,
+    relay_track_id: u64,
     full_track_name: FullTrackName,
     log_folder: String,
     config: &'static AppConfig,
@@ -60,7 +60,7 @@ impl SubscriptionManager {
     }
 
     SubscriptionManager {
-      track_alias: Arc::new(AtomicU64::new(track_alias)),
+      relay_track_id,
       full_track_name,
       subscriptions: Arc::new(RwLock::new(BTreeMap::new())),
       subscriber_senders: Arc::from(subscriber_senders),
@@ -88,27 +88,31 @@ impl SubscriptionManager {
     senders.get(&subscriber_id).cloned()
   }
 
+  pub async fn get_all_subscriptions(&self) -> Vec<Arc<RwLock<Subscription>>> {
+    let subs = self.subscriptions.read().await;
+    subs.values().cloned().collect()
+  }
+
   pub async fn add_subscription(
     &self,
     subscriber: Arc<MOQTClient>,
-    subscribe_message: Subscribe,
+    origin_message: SubscriptionOrigin,
     cache: super::track_cache::TrackCache,
   ) -> Result<Arc<RwLock<Subscription>>, anyhow::Error> {
     let connection_id = { subscriber.connection_id };
-    let alias = self.track_alias.load(Ordering::Relaxed);
 
     info!(
-      "Adding subscription for subscriber_id: {} to track: {} subscription message: {:?}",
-      connection_id, alias, subscribe_message
+      "Adding subscription for subscriber_id={} to relay_track_id={} subscription message: {:?}",
+      connection_id, self.relay_track_id, origin_message
     );
 
     // Create a separate unbounded channel for this subscriber
     let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<TrackEvent>();
 
     let subscription = Subscription::new(
-      self.track_alias.clone(),
+      self.relay_track_id,
       self.full_track_name.clone(),
-      subscribe_message,
+      origin_message,
       subscriber.clone(),
       event_rx,
       cache,
@@ -120,8 +124,8 @@ impl SubscriptionManager {
     let mut subscriptions = self.subscriptions.write().await;
     if subscriptions.contains_key(&connection_id) {
       error!(
-        "Subscriber with connection_id: {} already exists in track: {}",
-        connection_id, alias
+        "Subscriber with connection_id={} already exists in relay_track_id={}",
+        connection_id, self.relay_track_id
       );
       return Err(anyhow::anyhow!("Subscriber already exists"));
     }
@@ -141,9 +145,8 @@ impl SubscriptionManager {
   // subscriber_id is the connection id of the client
   pub async fn get_subscription(&self, subscriber_id: usize) -> Option<Arc<RwLock<Subscription>>> {
     debug!(
-      "Getting subscription for subscriber_id: {} from track: {}",
-      subscriber_id,
-      self.track_alias.load(Ordering::Relaxed)
+      "Getting subscription for subscriber_id={} from relay_track_id={}",
+      subscriber_id, self.relay_track_id
     );
     let subscriptions = self.subscriptions.read().await;
     // find the subscription by subscriber_id and finish it
@@ -151,10 +154,9 @@ impl SubscriptionManager {
   }
 
   pub async fn remove_subscription(&self, subscriber_id: usize) {
-    let alias = self.track_alias.load(Ordering::Relaxed);
     info!(
-      "Removing subscription for subscriber_id: {} from track: {}",
-      subscriber_id, alias
+      "Removing subscription for subscriber_id={} from relay_track_id={}",
+      subscriber_id, self.relay_track_id
     );
     let mut subscriptions = self.subscriptions.write().await;
     let sub = subscriptions.remove(&subscriber_id);
@@ -172,15 +174,11 @@ impl SubscriptionManager {
     if let Some(_sender) = senders.remove(&subscriber_id) {
       // The sender is automatically dropped here, which closes the channel
       info!(
-        "Disposed sender for subscriber_id: {} from track: {}",
-        subscriber_id, alias
+        "Disposed sender for subscriber_id={} from relay_track_id={}",
+        subscriber_id, self.relay_track_id
       );
     }
     drop(senders);
-  }
-
-  pub fn update_track_alias(&self, new_track_alias: u64) {
-    self.track_alias.store(new_track_alias, Ordering::Relaxed);
   }
 
   // Send event to all subscribers
@@ -210,19 +208,18 @@ impl SubscriptionManager {
       }
     }
 
-    let alias = self.track_alias.load(Ordering::Relaxed);
     if !failed_subscribers.is_empty() {
       error!(
-        "{:?} event sent to {} subscribers, {} failed for track: {}",
+        "{:?} event sent to {} subscribers, {} failed for relay_track_id={}",
         event,
         total_subscribers - failed_subscribers.len(),
         failed_subscribers.len(),
-        alias
+        self.relay_track_id
       );
     } else if total_subscribers > 0 {
       debug!(
-        "{:?} event sent successfully to {} subscribers for track: {}",
-        event, total_subscribers, alias
+        "{:?} event sent successfully to {} subscribers for relay_track_id={}",
+        event, total_subscribers, self.relay_track_id
       );
     }
 

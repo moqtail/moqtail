@@ -15,44 +15,22 @@
  */
 
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
-import { Location } from '../common/location'
 import { KeyValuePair } from '../common/pair'
+import { Location } from '../common/location'
 import { LengthExceedsMaxError } from '../error/error'
-import { ControlMessageType, FilterType, filterTypeFromBigInt } from './constant'
+import { ControlMessageType, FilterType, GroupOrder } from './constant'
+import { MessageParameter, MessageParameters } from '../parameter/message_parameter'
+import { Forward } from '../parameter/message/forward'
+import { SubscriberPriority } from '../parameter/message/subscriber_priority'
+import { GroupOrderParam } from '../parameter/message/group_order_param'
+import { SubscriptionFilter } from '../parameter/message/subscription_filter'
+import { DeliveryTimeout } from '../parameter/message/delivery_timeout'
 
 export class PublishOk {
   constructor(
     public readonly requestId: bigint,
-    public readonly forward: number,
-    public readonly subscriberPriority: number,
-    public readonly groupOrder: number,
-    public readonly filterType: FilterType,
-    public readonly startLocation: Location | undefined,
-    public readonly endGroup: bigint | undefined,
-    public readonly parameters: KeyValuePair[],
+    public readonly parameters: MessageParameter[],
   ) {}
-
-  static new(
-    requestId: bigint | number,
-    forward: number,
-    subscriberPriority: number,
-    groupOrder: number,
-    filterType: FilterType,
-    startLocation: Location | undefined,
-    endGroup: bigint | number | undefined,
-    parameters: KeyValuePair[],
-  ): PublishOk {
-    return new PublishOk(
-      BigInt(requestId),
-      forward,
-      subscriberPriority,
-      groupOrder,
-      filterType,
-      startLocation,
-      endGroup !== undefined ? BigInt(endGroup) : undefined,
-      parameters,
-    )
-  }
 
   getType(): ControlMessageType {
     return ControlMessageType.PublishOk
@@ -63,27 +41,12 @@ export class PublishOk {
     buf.putVI(ControlMessageType.PublishOk)
     const payload = new ByteBuffer()
     payload.putVI(this.requestId)
-    payload.putU8(this.forward)
-    payload.putU8(this.subscriberPriority)
-    payload.putU8(this.groupOrder)
-    payload.putVI(this.filterType)
-
-    // Handle optional fields based on filter type
-    if (this.filterType === FilterType.AbsoluteStart || this.filterType === FilterType.AbsoluteRange) {
-      if (this.startLocation !== undefined) {
-        payload.putBytes(this.startLocation.serialize().toUint8Array())
-      }
-    }
-    if (this.filterType === FilterType.AbsoluteRange) {
-      if (this.endGroup !== undefined) {
-        payload.putVI(this.endGroup)
-      }
-    }
 
     payload.putVI(this.parameters.length)
     for (const param of this.parameters) {
-      payload.putKeyValuePair(param)
+      payload.putKeyValuePair(param.toKeyValuePair())
     }
+
     const payloadBytes = payload.toUint8Array()
     if (payloadBytes.length > 0xffff) {
       throw new LengthExceedsMaxError('PublishOk::serialize(payloadBytes.length)', 0xffff, payloadBytes.length)
@@ -95,39 +58,14 @@ export class PublishOk {
 
   static parsePayload(buf: BaseByteBuffer): PublishOk {
     const requestId = buf.getVI()
-    const forward = buf.getU8()
-    const subscriberPriority = buf.getU8()
-    const groupOrder = buf.getU8()
-    const filterTypeRaw = buf.getVI()
-    const filterType = filterTypeFromBigInt(filterTypeRaw)
-
-    let startLocation: Location | undefined
-    let endGroup: bigint | undefined
-
-    // Handle optional fields based on filter type
-    if (filterType === FilterType.AbsoluteStart || filterType === FilterType.AbsoluteRange) {
-      startLocation = Location.deserialize(buf)
-    }
-    if (filterType === FilterType.AbsoluteRange) {
-      endGroup = buf.getVI()
-    }
-
     const paramCount = buf.getVI()
-    const parameters: KeyValuePair[] = new Array(Number(paramCount))
+    const kvps: KeyValuePair[] = []
     for (let i = 0; i < paramCount; i++) {
-      parameters[i] = buf.getKeyValuePair()
+      kvps.push(buf.getKeyValuePair())
     }
+    const parameters = MessageParameters.fromKeyValuePairs(kvps)
 
-    return new PublishOk(
-      requestId,
-      forward,
-      subscriberPriority,
-      groupOrder,
-      filterType,
-      startLocation,
-      endGroup,
-      parameters,
-    )
+    return new PublishOk(requestId, parameters)
   }
 }
 
@@ -135,28 +73,28 @@ if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
 
   describe('PublishOk', () => {
-    test('roundtrip with NextGroupStart filter', () => {
-      const requestId = 12345n
-      const forward = 1
-      const subscriberPriority = 100
-      const groupOrder = 1
-      const filterType = FilterType.NextGroupStart
-      const startLocation = undefined
-      const endGroup = undefined
-      const parameters = [
-        KeyValuePair.tryNewVarInt(0, 100n),
-        KeyValuePair.tryNewBytes(1, new TextEncoder().encode('test')),
+    test('roundtrip with no parameters', () => {
+      const publishOk = new PublishOk(12345n, [])
+
+      const frozen = publishOk.serialize()
+      const msgType = frozen.getVI()
+      expect(msgType).toBe(BigInt(ControlMessageType.PublishOk))
+      const msgLength = frozen.getU16()
+      expect(msgLength).toBe(frozen.remaining)
+      const deserialized = PublishOk.parsePayload(frozen)
+      expect(deserialized.requestId).toBe(publishOk.requestId)
+      expect(deserialized.parameters.length).toBe(0)
+      expect(frozen.remaining).toBe(0)
+    })
+
+    test('roundtrip with parameters', () => {
+      const parameters: MessageParameter[] = [
+        new Forward(true),
+        new SubscriberPriority(100),
+        new GroupOrderParam(GroupOrder.Ascending),
+        new SubscriptionFilter(FilterType.LatestObject, undefined, undefined),
       ]
-      const publishOk = PublishOk.new(
-        requestId,
-        forward,
-        subscriberPriority,
-        groupOrder,
-        filterType,
-        startLocation,
-        endGroup,
-        parameters,
-      )
+      const publishOk = new PublishOk(12345n, parameters)
 
       const frozen = publishOk.serialize()
       const msgType = frozen.getVI()
@@ -165,35 +103,16 @@ if (import.meta.vitest) {
       expect(msgLength).toBe(frozen.remaining)
       const deserialized = PublishOk.parsePayload(frozen)
       expect(deserialized.requestId).toBe(publishOk.requestId)
-      expect(deserialized.forward).toBe(publishOk.forward)
-      expect(deserialized.subscriberPriority).toBe(publishOk.subscriberPriority)
-      expect(deserialized.groupOrder).toBe(publishOk.groupOrder)
-      expect(deserialized.filterType).toBe(publishOk.filterType)
-      expect(deserialized.startLocation).toBe(undefined)
-      expect(deserialized.endGroup).toBe(undefined)
-      expect(deserialized.parameters.length).toBe(publishOk.parameters.length)
+      expect(deserialized.parameters.length).toBe(parameters.length)
       expect(frozen.remaining).toBe(0)
     })
 
-    test('roundtrip with AbsoluteStart filter', () => {
-      const requestId = 12345n
-      const forward = 1
-      const subscriberPriority = 100
-      const groupOrder = 1
-      const filterType = FilterType.AbsoluteStart
-      const startLocation = new Location(5n, 10n)
-      const endGroup = undefined
-      const parameters = [KeyValuePair.tryNewVarInt(0, 100n)]
-      const publishOk = PublishOk.new(
-        requestId,
-        forward,
-        subscriberPriority,
-        groupOrder,
-        filterType,
-        startLocation,
-        endGroup,
-        parameters,
-      )
+    test('roundtrip with AbsoluteRange subscription filter', () => {
+      const parameters: MessageParameter[] = [
+        new SubscriptionFilter(FilterType.AbsoluteRange, new Location(5n, 10n), 20n),
+        new DeliveryTimeout(5000n),
+      ]
+      const publishOk = new PublishOk(789n, parameters)
 
       const frozen = publishOk.serialize()
       const msgType = frozen.getVI()
@@ -201,75 +120,13 @@ if (import.meta.vitest) {
       const msgLength = frozen.getU16()
       expect(msgLength).toBe(frozen.remaining)
       const deserialized = PublishOk.parsePayload(frozen)
-      expect(deserialized.requestId).toBe(publishOk.requestId)
-      expect(deserialized.forward).toBe(publishOk.forward)
-      expect(deserialized.subscriberPriority).toBe(publishOk.subscriberPriority)
-      expect(deserialized.groupOrder).toBe(publishOk.groupOrder)
-      expect(deserialized.filterType).toBe(publishOk.filterType)
-      expect(deserialized.startLocation?.group).toBe(startLocation.group)
-      expect(deserialized.startLocation?.object).toBe(startLocation.object)
-      expect(deserialized.endGroup).toBe(undefined)
-      expect(deserialized.parameters.length).toBe(publishOk.parameters.length)
-      expect(frozen.remaining).toBe(0)
-    })
-
-    test('roundtrip with AbsoluteRange filter', () => {
-      const requestId = 12345n
-      const forward = 1
-      const subscriberPriority = 100
-      const groupOrder = 1
-      const filterType = FilterType.AbsoluteRange
-      const startLocation = new Location(5n, 10n)
-      const endGroup = 20n
-      const parameters = [KeyValuePair.tryNewVarInt(0, 100n)]
-      const publishOk = PublishOk.new(
-        requestId,
-        forward,
-        subscriberPriority,
-        groupOrder,
-        filterType,
-        startLocation,
-        endGroup,
-        parameters,
-      )
-
-      const frozen = publishOk.serialize()
-      const msgType = frozen.getVI()
-      expect(msgType).toBe(BigInt(ControlMessageType.PublishOk))
-      const msgLength = frozen.getU16()
-      expect(msgLength).toBe(frozen.remaining)
-      const deserialized = PublishOk.parsePayload(frozen)
-      expect(deserialized.requestId).toBe(publishOk.requestId)
-      expect(deserialized.forward).toBe(publishOk.forward)
-      expect(deserialized.subscriberPriority).toBe(publishOk.subscriberPriority)
-      expect(deserialized.groupOrder).toBe(publishOk.groupOrder)
-      expect(deserialized.filterType).toBe(publishOk.filterType)
-      expect(deserialized.startLocation?.group).toBe(startLocation.group)
-      expect(deserialized.startLocation?.object).toBe(startLocation.object)
-      expect(deserialized.endGroup).toBe(endGroup)
-      expect(deserialized.parameters.length).toBe(publishOk.parameters.length)
+      expect(deserialized.requestId).toBe(789n)
+      expect(deserialized.parameters.length).toBe(2)
       expect(frozen.remaining).toBe(0)
     })
 
     test('excess roundtrip', () => {
-      const requestId = 12345n
-      const forward = 1
-      const subscriberPriority = 100
-      const groupOrder = 1
-      const filterType = FilterType.LatestObject
-      const startLocation = undefined
-      const endGroup = undefined
-      const parameters = [KeyValuePair.tryNewVarInt(0, 100n)]
-      const publishOk = PublishOk.new(
-        requestId,
-        forward,
-        subscriberPriority,
-        groupOrder,
-        filterType,
-        startLocation,
-        endGroup,
-        parameters,
-      )
+      const publishOk = new PublishOk(12345n, [new Forward(true)])
       const serialized = publishOk.serialize().toUint8Array()
       const excess = new Uint8Array([9, 1, 1])
       const buf = new ByteBuffer()
@@ -282,30 +139,12 @@ if (import.meta.vitest) {
       expect(msgLength).toBe(frozen.remaining - 3)
       const deserialized = PublishOk.parsePayload(frozen)
       expect(deserialized.requestId).toBe(publishOk.requestId)
-      expect(deserialized.filterType).toBe(publishOk.filterType)
       expect(frozen.remaining).toBe(3)
       expect(Array.from(frozen.getBytes(3))).toEqual([9, 1, 1])
     })
 
     test('partial message', () => {
-      const requestId = 12345n
-      const forward = 1
-      const subscriberPriority = 100
-      const groupOrder = 1
-      const filterType = FilterType.NextGroupStart
-      const startLocation = undefined
-      const endGroup = undefined
-      const parameters = [KeyValuePair.tryNewVarInt(0, 100n)]
-      const publishOk = PublishOk.new(
-        requestId,
-        forward,
-        subscriberPriority,
-        groupOrder,
-        filterType,
-        startLocation,
-        endGroup,
-        parameters,
-      )
+      const publishOk = new PublishOk(12345n, [new Forward(true)])
       const serialized = publishOk.serialize().toUint8Array()
       const upper = Math.floor(serialized.length / 2)
       const partial = serialized.slice(0, upper)

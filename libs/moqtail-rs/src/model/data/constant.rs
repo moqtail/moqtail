@@ -162,8 +162,6 @@ pub enum ObjectForwardingPreference {
 pub enum ObjectStatus {
   /// 0x0: Normal object. Implicit for any non-zero length object. Zero-length objects explicitly encode this status.
   Normal = 0x0,
-  /// 0x1: Indicates Object does not exist. This object does not exist at any publisher and will not be published in the future. SHOULD be cached.
-  DoesNotExist = 0x1,
   /// 0x3: Indicates end of Group. ObjectId is one greater than the largest object produced in the group identified by the GroupID.
   /// Sent right after the last object in the group. If ObjectID is 0, there are no Objects in this Group. SHOULD be cached.
   EndOfGroup = 0x3,
@@ -178,7 +176,6 @@ impl TryFrom<u64> for ObjectStatus {
   fn try_from(value: u64) -> Result<Self, Self::Error> {
     match value {
       0x0 => Ok(ObjectStatus::Normal),
-      0x1 => Ok(ObjectStatus::DoesNotExist),
       0x3 => Ok(ObjectStatus::EndOfGroup),
       0x4 => Ok(ObjectStatus::EndOfTrack),
       _ => Err(ParseError::InvalidType {

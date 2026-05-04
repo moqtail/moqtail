@@ -344,13 +344,11 @@ export namespace ObjectForwardingPreference {
  * @public
  * Object status codes for MOQT objects.
  * - `Normal`: Object exists and is available.
- * - `DoesNotExist`: Object does not exist.
  * - `EndOfGroup`: End of group marker.
  * - `EndOfTrack`: End of track marker.
  */
 export enum ObjectStatus {
   Normal = 0x0,
-  DoesNotExist = 0x1,
   EndOfGroup = 0x3,
   EndOfTrack = 0x4,
 }
@@ -370,8 +368,6 @@ export namespace ObjectStatus {
     switch (v) {
       case 0x0:
         return ObjectStatus.Normal
-      case 0x1:
-        return ObjectStatus.DoesNotExist
       case 0x3:
         return ObjectStatus.EndOfGroup
       case 0x4:

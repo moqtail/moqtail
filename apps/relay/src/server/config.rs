@@ -78,6 +78,13 @@ pub struct Cli {
   /// Useful for testing QUIC stream priority scheduling without OS-level throttling.
   #[arg(long, default_value_t = 0)]
   pub write_kbps_limit: u64,
+
+  /// Maximum number of upstream fetch gaps before skipping
+  #[arg(long, default_value_t = 10)]
+  pub max_upstream_fetch_gaps: u64,
+  /// Timeout in seconds for upstream fetch responses
+  #[arg(long, default_value_t = 10)]
+  pub upstream_fetch_timeout_secs: u64,
 }
 #[derive(Debug, Clone)]
 pub struct AppConfig {
@@ -97,6 +104,8 @@ pub struct AppConfig {
   pub initial_max_request_id: u64,
   /// 0 = unlimited. Non-zero caps relay writes to this many kbps per subscriber connection.
   pub write_kbps_limit: u64,
+  pub _max_upstream_fetch_gaps: u64,
+  pub _upstream_fetch_timeout: Duration,
 }
 
 impl AppConfig {
@@ -120,6 +129,8 @@ impl AppConfig {
         token_log_path: cli.token_log_path,
         initial_max_request_id: cli.initial_max_request_id,
         write_kbps_limit: cli.write_kbps_limit,
+        _max_upstream_fetch_gaps: cli.max_upstream_fetch_gaps,
+        _upstream_fetch_timeout: Duration::from_secs(cli.upstream_fetch_timeout_secs),
       }
     })
   }
@@ -203,6 +214,8 @@ mod tests {
       token_log_path: "/tmp/moqtail_relay_tokens.csv".to_string(),
       initial_max_request_id: u64::MAX / 8,
       write_kbps_limit: 0,
+      max_upstream_fetch_gaps: 10,
+      upstream_fetch_timeout_secs: 10,
     };
 
     let config = AppConfig {
@@ -221,6 +234,8 @@ mod tests {
       token_log_path: cli.token_log_path,
       initial_max_request_id: cli.initial_max_request_id,
       write_kbps_limit: cli.write_kbps_limit,
+      _max_upstream_fetch_gaps: cli.max_upstream_fetch_gaps,
+      _upstream_fetch_timeout: Duration::from_secs(cli.upstream_fetch_timeout_secs),
     };
 
     assert_eq!(config.initial_max_request_id, u64::MAX / 8);

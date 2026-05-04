@@ -80,9 +80,6 @@ export class MoqtObject {
   isEndOfTrack(): boolean {
     return this.objectStatus === ObjectStatus.EndOfTrack
   }
-  doesNotExist(): boolean {
-    return this.objectStatus === ObjectStatus.DoesNotExist
-  }
   hasPayload(): boolean {
     return this.payload !== null
   }

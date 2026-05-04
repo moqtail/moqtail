@@ -249,14 +249,6 @@ function processObject(object: MoqtObject) {
         processData(object.payload)
       }
       break
-    case ObjectStatus.ObjectDoesNotExist:
-      // Object was not available
-      handleMissingObject(object.groupId, object.objectId)
-      break
-    case ObjectStatus.GroupDoesNotExist:
-      // Entire group was not available
-      handleMissingGroup(object.groupId)
-      break
     case ObjectStatus.EndOfGroup:
       // Marks the end of a group
       finalizeGroup(object.groupId)

@@ -446,7 +446,7 @@ mod tests {
 
   #[test]
   fn test_roundtrip_status_with_default_priority() {
-    let datagram = Datagram::new_status(1, 5, 10, None, None, ObjectStatus::DoesNotExist);
+    let datagram = Datagram::new_status(1, 5, 10, None, None, ObjectStatus::Normal);
 
     let mut buf = datagram.serialize().unwrap();
     // Type 0x28: STATUS + DEFAULT_PRIORITY

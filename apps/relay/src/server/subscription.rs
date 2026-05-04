@@ -870,14 +870,6 @@ impl Subscription {
           }
 
           if state.end_group > 0 && object.location.group > state.end_group {
-            /* With Draft-15, the end group can be increased or decreased.
-            TODO: Remove the following code after draft-15 support.
-            info!(
-              "Finishing subscription for subscriber={} relay_track_id={}",
-              self.client_connection_id, self.relay_track_id
-            );
-            self.finish().await;
-            */
             debug!(
               "Object beyond end group for subscriber={} relay_track_id={} object location: {:?} end group: {}",
               self.client_connection_id, self.relay_track_id, object.location, state.end_group

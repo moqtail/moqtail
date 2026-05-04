@@ -26,8 +26,5 @@ fn main() {
   let version = env!("CARGO_PKG_VERSION");
   let moqtail_version = format!("moqtail/{version}+{commit}");
 
-  // TODO: Version string should not include the commit hash in production builds.
-  // We can use a separate env var for the full version string with the commit hash,
-  // and a simpler version string without the commit hash for production builds.
   println!("cargo:rustc-env=MOQTAIL_VERSION={}", moqtail_version);
 }

@@ -1,6 +1,6 @@
 # MOQtail Test Client
 
-A unified test client for the MOQtail relay, supporting publish, subscribe, and fetch operations over MoQ Transport (draft-14). Supports both subgroup (unidirectional streams) and datagram object forwarding preferences.
+A unified test client for the MOQtail relay, supporting publish, subscribe, and fetch operations over MoQ Transport (draft-16). Supports both subgroup (unidirectional streams) and datagram object forwarding preferences.
 
 ## Usage
 

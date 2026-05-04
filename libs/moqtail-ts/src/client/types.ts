@@ -252,7 +252,15 @@ export type SwitchOptions = {
  * })
  * ```
  */
-// TODO: Define BaseOptions and extend it with StandaloneOptions, RelativeOptions etc.
+/**
+ * Configuration for the early discard policy applied to incoming subgroup streams.
+ */
+export type EarlyDiscardPolicyConfig = {
+  /** Cancel a subgroup QUIC stream if it has not fully completed within this many milliseconds. */
+  subgroupReceiveTimeout: number
+}
+
+// TODO: Define BaseOptions and extend it with StandAloneOptions, RelativeOptions etc.
 // Move the type to top level
 export type FetchOptions = {
   /** Request priority (0 = highest, 255 = lowest). Rounded & clamped. */

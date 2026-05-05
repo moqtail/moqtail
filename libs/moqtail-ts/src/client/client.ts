@@ -745,14 +745,17 @@ export class MOQtailClient {
   }
 
   /**
-   * Sets (or replaces) the early discard policy for incoming subgroup streams.
+   * Sets (or replaces) the client-level default early discard policy for incoming subgroup streams.
    *
    * When set, each incoming subgroup QUIC stream is given a deadline of `subgroupReceiveTimeout` ms to
    * complete. If the stream has not finished within that window it is cancelled — objects already
    * delivered to the subscription are kept, but no further objects arrive from that stream.
    *
+   * This is a client-wide default. Individual subscriptions can override it via the `earlyDiscardPolicy`
+   * field in {@link SubscribeOptions}, which takes precedence over this setting.
+   *
    * The policy takes effect on the next stream accepted after this call. Passing a new config
-   * replaces the previous one. Pass `undefined` to remove the policy.
+   * replaces the previous one. Pass `undefined` to remove the default.
    *
    * @example
    * ```ts
@@ -991,6 +994,7 @@ export class MOQtailClient {
           break
       }
       const request = new SubscribeRequest(msg)
+      request.earlyDiscardPolicy = args.earlyDiscardPolicy
       this.requests.set(request.requestId, request)
       this.requestIdMap.addMapping(request.requestId, request.fullTrackName)
 
@@ -1957,10 +1961,11 @@ export class MOQtailClient {
           let firstObjectId: bigint | null = null
 
           let subgroupTimeoutId: ReturnType<typeof setTimeout> | undefined
-          if (this.#earlyDiscardPolicy?.subgroupReceiveTimeout !== undefined) {
+          const effectiveDiscardPolicy = subscription.earlyDiscardPolicy ?? this.#earlyDiscardPolicy
+          if (effectiveDiscardPolicy?.subgroupReceiveTimeout !== undefined) {
             subgroupTimeoutId = setTimeout(() => {
               reader.cancel('early discard: subgroupReceiveTimeout exceeded').catch(() => {})
-            }, this.#earlyDiscardPolicy.subgroupReceiveTimeout)
+            }, effectiveDiscardPolicy.subgroupReceiveTimeout)
           }
 
           try {

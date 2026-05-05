@@ -25,6 +25,7 @@ import {
   RequestUpdate,
   applyMessageParameterUpdate,
 } from '@/model'
+import type { EarlyDiscardPolicyConfig } from '../types'
 import { logger } from '../../util/logger'
 
 // TODO: Add timeout mechanism for unsubscribing
@@ -37,6 +38,7 @@ export class SubscribeRequest implements PromiseLike<SubscribeOk | RequestError>
   priority: number
   forward: boolean
   subscribeParameters: MessageParameter[]
+  earlyDiscardPolicy: EarlyDiscardPolicyConfig | undefined
   largestLocation: Location | undefined // Updated on each received object
   streamsAccepted: bigint = 0n
   expectedStreams: bigint | undefined // Defined upon SUBSCRIBE_DONE

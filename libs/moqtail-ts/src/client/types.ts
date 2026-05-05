@@ -166,6 +166,8 @@ export type SubscribeOptions = {
   startLocation?: Location
   /** Required for {@link FilterType.AbsoluteRange}; exclusive upper group boundary (coerced to bigint if number provided). */
   endGroup?: bigint | number
+  /** Per-subscription early discard policy. Overrides the client-level default set via {@link MOQtailClient.setEarlyDiscardPolicy}. */
+  earlyDiscardPolicy?: EarlyDiscardPolicyConfig
 }
 
 /**

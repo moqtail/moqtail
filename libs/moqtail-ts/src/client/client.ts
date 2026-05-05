@@ -82,6 +82,7 @@ import { SubscribePublication } from './publication/subscribe'
 import { FetchPublication } from './publication/fetch'
 import { PublishPublication } from './publication/publish'
 import { random60bitId } from './util/random_id'
+import { isValidTrackAlias } from './util/validators'
 import {
   MOQtailRequest,
   SubscribeOptions,
@@ -855,7 +856,7 @@ export class MOQtailClient {
    */
   addOrUpdateTrack(track: Track) {
     this.#ensureActive()
-    if (!track.trackAlias) {
+    if (!isValidTrackAlias(track.trackAlias)) {
       track.trackAlias = random60bitId()
     }
     this.trackSources.set(track.fullTrackName.toString(), track)
@@ -1151,7 +1152,7 @@ export class MOQtailClient {
         const request = this.requests.get(subscriptionRequestId)!
         if (request instanceof SubscribeRequest) {
           const trackAlias = this.subscriptionAliasMap.get(subscriptionRequestId)
-          if (!trackAlias)
+          if (!isValidTrackAlias(trackAlias))
             throw new InternalError('MOQtailClient.subscribeUpdate', 'Request exists but track alias mapping does not')
           const subscription = this.subscriptions.get(trackAlias)
           if (!subscription)
@@ -1210,7 +1211,7 @@ export class MOQtailClient {
         throw new ProtocolViolationError('MOQtailClient.switch', 'Request id is not a subscription')
 
       const trackAlias = this.subscriptionAliasMap.get(subscriptionRequestId)
-      if (!trackAlias)
+      if (!isValidTrackAlias(trackAlias))
         throw new InternalError('MOQtailClient.switch', 'Request exists but track alias mapping does not')
       const subscription = this.subscriptions.get(trackAlias)
       if (!subscription) throw new InternalError('MOQtailClient.switch', 'Request exists but subscription does not')

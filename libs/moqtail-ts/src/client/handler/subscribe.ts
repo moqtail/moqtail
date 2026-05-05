@@ -20,6 +20,7 @@ import { ControlMessageHandler } from './handler'
 import { SubscribePublication } from '../publication/subscribe'
 import { logger } from '../../util/logger'
 import { LargestObject } from '../../model/parameter/message/largest_object'
+import { isValidTrackAlias } from '../util/validators'
 
 export const handlerSubscribe: ControlMessageHandler<Subscribe> = async (client, msg) => {
   logger.debug('handler/subscribe', `received requestId=${msg.requestId} ftn="${msg.fullTrackName}"`)
@@ -53,7 +54,8 @@ export const handlerSubscribe: ControlMessageHandler<Subscribe> = async (client,
     await client.controlStream.send(response)
     return
   }
-  if (!track.trackAlias) throw new Error('Expected track alias to be set')
+
+  if (!isValidTrackAlias(track.trackAlias)) throw new Error('Expected track alias to be set')
 
   const largestLocation = track.trackSource.live.largestLocation
   const parameters = [...msg.parameters]

@@ -167,6 +167,15 @@ impl Tuple {
     self.fields.clear();
   }
 
+  pub fn suffix(&self, prefix: &Tuple) -> Option<Tuple> {
+    if !self.starts_with(prefix) {
+      return None;
+    }
+    Some(Tuple {
+      fields: self.fields[prefix.fields.len()..].to_vec(),
+    })
+  }
+
   pub fn starts_with(&self, prefix: &Tuple) -> bool {
     if prefix.fields.len() > self.fields.len() {
       return false;

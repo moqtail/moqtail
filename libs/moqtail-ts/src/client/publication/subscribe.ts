@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { FilterType, Subscribe, PublishDone, PublishDoneStatusCode, SubscribeUpdate } from '@/model/control'
+import { FilterType, Subscribe, PublishDone, PublishDoneStatusCode, RequestUpdate } from '@/model/control'
 import { MOQtailClient } from '../client'
 import { Track } from '../track/track'
 import {
@@ -22,14 +22,15 @@ import {
   Location,
   ReasonPhrase,
   SubgroupHeaderType,
-  VersionSpecificParameter,
-  VersionSpecificParameters,
+  MessageParameter,
+  applyMessageParameterUpdate,
 } from '@/model'
 import { SendStream } from '../data_stream'
 import { SubgroupHeader } from '@/model/data/subgroup_header'
 import { MoqtObject } from '@/model/data/object'
 import { SimpleLock } from '../../util/simple_lock'
 import { getTransportPriority } from '../util/priority'
+import { logger } from '../../util/logger'
 
 /**
  * @public
@@ -75,7 +76,7 @@ export class SubscribePublication {
   /**
    * The subscription parameters for this publication.
    */
-  #subscribeParameters: VersionSpecificParameter[]
+  #parameters: MessageParameter[]
 
   /**
    * The number of streams opened for this subscription.
@@ -127,8 +128,16 @@ export class SubscribePublication {
   ) {
     this.#trackAlias = track.trackAlias!
     this.#publisherPriority = track.publisherPriority
-    this.#subscriberPriority = subscribeMsg.subscriberPriority
-    switch (subscribeMsg.filterType) {
+    const subPriority = subscribeMsg.parameters.find(MessageParameter.isSubscriberPriority)
+    const fwd = subscribeMsg.parameters.find(MessageParameter.isForward)
+    const filter = subscribeMsg.parameters.find(MessageParameter.isSubscriptionFilter)
+    this.#subscriberPriority = subPriority?.priority ?? 128
+    this.#forward = fwd?.forward ?? true
+    this.#parameters = [...subscribeMsg.parameters]
+    this.#startLocation = new Location(0n, 0n)
+
+    const filterType = filter?.filterType ?? FilterType.LatestObject
+    switch (filterType) {
       case FilterType.LatestObject:
         if (largestLocation) {
           this.#startLocation = new Location(largestLocation.group, largestLocation.object + 1n)
@@ -144,15 +153,13 @@ export class SubscribePublication {
         }
         break
       case FilterType.AbsoluteStart:
-        this.#startLocation = subscribeMsg.startLocation!
+        this.#startLocation = filter?.startLocation ?? new Location(0n, 0n)
         break
       case FilterType.AbsoluteRange:
-        this.#startLocation = subscribeMsg.startLocation!
-        this.#endGroup = subscribeMsg.endGroup
+        this.#startLocation = filter?.startLocation ?? new Location(0n, 0n)
+        this.#endGroup = filter?.endGroup
         break
     }
-    this.#forward = subscribeMsg.forward
-    this.#subscribeParameters = VersionSpecificParameters.fromKeyValuePairs(subscribeMsg.parameters)
     this.publish()
   }
 
@@ -193,18 +200,24 @@ export class SubscribePublication {
   }
 
   /**
-   * Updates the subscription parameters and locations based on a SubscribeUpdate message.
-   * @param msg - The update message containing new subscription details.
+   * Updates the subscription parameters and locations based on a RequestUpdate message.
+   * @param msg - The update message containing new request details.
    */
-  update(msg: SubscribeUpdate): void {
-    // TODO: Control checks on update rules e.g only narrowing, end>start either here or in update handler
-    this.#startLocation = msg.startLocation
-    this.#endGroup = msg.endGroup
-    this.#subscriberPriority = msg.subscriberPriority
-    this.#forward = msg.forward
-    this.#subscribeParameters = VersionSpecificParameters.fromKeyValuePairs(msg.parameters)
-  }
+  update(msg: RequestUpdate): void {
+    const filter = msg.parameters.find(MessageParameter.isSubscriptionFilter) as any
+    if (filter?.startLocation !== undefined) this.#startLocation = filter.startLocation
+    if (filter?.endGroup !== undefined) this.#endGroup = filter.endGroup
 
+    for (const param of msg.parameters) {
+      if (MessageParameter.isSubscriberPriority?.(param)) {
+        this.#subscriberPriority = (param as any).priority
+      } else if (MessageParameter.isForward?.(param)) {
+        this.#forward = (param as any).forward
+      }
+    }
+
+    applyMessageParameterUpdate(this.#parameters, msg.parameters)
+  }
   /**
    * Publishes MOQT objects to the subscriber as they become available.
    * Handles stream creation, object writing, and stream closure based on subscription parameters.
@@ -266,7 +279,13 @@ export class SubscribePublication {
               }
               await this.#lock.release()
             } catch (err) {
-              console.warn('error in closing stream: id, endGroup, err', this.#id, this.#endGroup, err)
+              logger.warn(
+                'publication/subscribe',
+                'error in closing stream: id, endGroup, err',
+                this.#id,
+                this.#endGroup,
+                err,
+              )
             }
             await this.done(PublishDoneStatusCode.SubscriptionEnded)
             this.cancel()
@@ -281,13 +300,14 @@ export class SubscribePublication {
                 try {
                   await prevStream.close()
                 } catch (err) {
-                  console.warn('error in closing stream', prevGroup, err)
+                  logger.warn('publication/subscribe', 'error in closing stream', prevGroup, err)
                 }
                 this.#streams.delete(prevGroup)
               }
               await this.#lock.release()
             } catch (err) {
-              console.warn(
+              logger.warn(
+                'publication/subscribe',
                 'error in closing stream: id, latestLocation.group, err',
                 this.#id,
                 this.latestLocation.group,

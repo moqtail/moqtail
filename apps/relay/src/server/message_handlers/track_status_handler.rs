@@ -13,16 +13,14 @@
 // limitations under the License.
 
 use crate::server::session::Session;
-use crate::server::session_context::SessionContext;
+use crate::server::session_context::{PendingRequest, SessionContext};
 use core::result::Result;
 use moqtail::model::error::TerminationCode;
 use moqtail::model::{
-  common::reason_phrase::ReasonPhrase,
-  control::constant::SubscribeErrorCode,
-  control::control_message::ControlMessage,
-  control::subscribe::Subscribe, // Needed for the storage hack
-  control::track_status_error::TrackStatusError,
-  control::track_status_ok::TrackStatusOk,
+  common::reason_phrase::ReasonPhrase, control::constant::RequestErrorCode,
+  control::control_message::ControlMessage, control::request_error::RequestError,
+  control::request_ok::RequestOk, control::subscribe::Subscribe,
+  parameter::message_parameter::MessageParameter,
 };
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use moqtail::transport::data_stream_handler::SubscribeRequest;
@@ -53,18 +51,26 @@ pub async fn handle(
         }
       }
 
-      // B. Check Local Track Existence (Short Circuit)
-      // If Relay already has this track, we can answer "OK" immediately.
-      if context.track_manager.has_track(&full_track_name).await {
-        info!("Track found locally on Relay. Sending TrackStatusOk directly.");
+      // B. Check Local Track Existence
+      if let Some(track_arc) = context.track_manager.get_track(&full_track_name).await {
+        info!("track found: {:?}", full_track_name);
+        let track = track_arc.read().await;
+        let largest_location = track.largest_location.read().await;
 
-        let ok_msg = TrackStatusOk::new_ascending_with_content(request_id, 0, 0, None, None);
+        let params = vec![MessageParameter::new_largest_object(
+          largest_location.clone(),
+        )];
 
-        control_stream_handler.send_impl(&ok_msg).await.unwrap();
+        let ok_msg = RequestOk::new(request_id, params);
+        control_stream_handler
+          .send(&ControlMessage::RequestOk(Box::new(ok_msg)))
+          .await
+          .unwrap();
         return Ok(());
       }
 
       // C. Find Upstream Publisher
+      // TODO: send to every interested publisher
       let publisher = {
         debug!("Finding publisher for TrackStatus...");
         let m = context.client_manager.read().await;
@@ -81,9 +87,10 @@ pub async fn handle(
         p.clone()
       } else {
         info!("No publisher found for {:?}", track_namespace);
-        let err = TrackStatusError::new(
+        let err = RequestError::new(
           request_id,
-          SubscribeErrorCode::TrackDoesNotExist,
+          RequestErrorCode::DoesNotExist,
+          0, //TODO: Maybe decide on another retry interval?
           ReasonPhrase::try_new("No publisher found".to_string()).unwrap(),
         );
         control_stream_handler.send_impl(&err).await.unwrap();
@@ -105,20 +112,25 @@ pub async fn handle(
         .queue_message(ControlMessage::TrackStatus(Box::new(new_req.clone())))
         .await;
 
-      // E. Store Mapping (The Storage Hack)
+      // E. Store Mapping
       // We convert TrackStatus -> Subscribe to fit it into 'SubscribeRequest' container
-      // This is safe because fields are identical.
+      let mut fake_params = vec![
+        MessageParameter::new_forward(status_req.forward),
+        MessageParameter::new_subscriber_priority(status_req.subscriber_priority),
+        MessageParameter::new_subscription_filter(
+          status_req.filter_type,
+          status_req.start_location,
+          status_req.end_group,
+        ),
+      ];
+
+      fake_params.extend(status_req.subscribe_parameters.clone());
+
       let fake_sub = Subscribe {
         request_id: status_req.request_id,
         track_namespace: status_req.track_namespace,
         track_name: status_req.track_name,
-        subscriber_priority: status_req.subscriber_priority,
-        group_order: status_req.group_order,
-        forward: status_req.forward,
-        filter_type: status_req.filter_type,
-        start_location: status_req.start_location,
-        end_group: status_req.end_group,
-        subscribe_parameters: status_req.subscribe_parameters,
+        subscribe_parameters: fake_params,
       };
 
       // We also need a fake "new_sub" for the relay-side mapping
@@ -132,83 +144,101 @@ pub async fn handle(
         Some(fake_new_sub),
       );
 
-      let mut map = context.relay_track_status_requests.write().await;
-      map.insert(relay_request_id, req_mapping);
+      let mut map = context.relay_pending_requests.write().await;
+      map.insert(relay_request_id, PendingRequest::TrackStatus(req_mapping));
 
       Ok(())
     }
-
-    // =======================================================================
-    // 2. HANDLE OK RESPONSE (Publisher -> Relay -> Client)
-    // =======================================================================
-    ControlMessage::TrackStatusOk(m) => {
-      info!("received TrackStatusOk from Publisher: {:?}", m);
+    ControlMessage::RequestOk(m) => {
+      info!("received RequestOk from Publisher: {:?}", m);
       let msg = *m;
 
-      // A. Look up who asked for this
+      // A. Look up who asked for this and remove it from the map
       let mapping = {
-        let map = context.relay_track_status_requests.read().await;
-        map.get(&msg.request_id).cloned()
+        let mut map = context.relay_pending_requests.write().await;
+        match map.remove(&msg.request_id) {
+          Some(PendingRequest::TrackStatus(req)) => Some(req),
+          Some(_) => {
+            warn!(
+              "Mismatched request type for TrackStatusOk: {}",
+              msg.request_id
+            );
+            None
+          }
+          None => None,
+        }
       };
 
       if let Some(req) = mapping {
-        // B. Find the Client
+        // C. Find the Client
         let manager = context.client_manager.read().await;
         if let Some(downstream_client) = manager.get(req.requested_by).await {
-          // C. Construct Forwarded Message
-          // We must restore the ORIGINAL request ID that the client sent us
-          let forwarded_msg = TrackStatusOk::new_ascending_with_content(
-            req.original_request_id,
-            msg.track_alias,
-            msg.expires,
-            msg.largest_location,
-            msg.subscribe_parameters,
-          );
+          // D. Construct Forwarded Message
+          let forwarded_msg = RequestOk::new(req.original_request_id, msg.parameters);
 
-          info!("Forwarding TrackStatusOk to Client {}", req.requested_by);
+          info!(
+            "Forwarding RequestOk (for TrackStatus) to Client {}",
+            req.requested_by
+          );
           downstream_client
-            .queue_message(ControlMessage::TrackStatusOk(Box::new(forwarded_msg)))
+            .queue_message(ControlMessage::RequestOk(Box::new(forwarded_msg)))
             .await;
         } else {
           warn!("Downstream client {} disconnected", req.requested_by);
         }
       } else {
-        warn!(
-          "Received TrackStatusOk for unknown request ID: {}",
+        // we shouldn't hit this normally
+        debug!(
+          "Received RequestOk for request ID {} (Not a TrackStatus relay)",
           msg.request_id
         );
       }
       Ok(())
     }
-
-    // =======================================================================
-    // 3. HANDLE ERROR RESPONSE (Publisher -> Relay -> Client)
-    // =======================================================================
-    ControlMessage::TrackStatusError(m) => {
-      info!("received TrackStatusError from Publisher: {:?}", m);
+    ControlMessage::RequestError(m) => {
+      info!("received RequestError from Publisher: {:?}", m);
       let msg = *m;
 
       let mapping = {
-        let map = context.relay_track_status_requests.read().await;
-        map.get(&msg.request_id).cloned()
+        let mut map = context.relay_pending_requests.write().await;
+        match map.remove(&msg.request_id) {
+          Some(PendingRequest::TrackStatus(req)) => Some(req),
+          Some(_) => {
+            warn!(
+              "Mismatched request type for RequestError: {}",
+              msg.request_id
+            );
+            None
+          }
+          None => None,
+        }
       };
 
       if let Some(req) = mapping {
         let manager = context.client_manager.read().await;
         if let Some(downstream_client) = manager.get(req.requested_by).await {
-          let forwarded_msg = TrackStatusError::new(
+          let forwarded_msg = RequestError::new(
             req.original_request_id, // <--- Restore ID
             msg.error_code,
+            0, //TODO: Maybe decide on another retry interval?
             msg.reason_phrase,
           );
 
-          info!("Forwarding TrackStatusError to Client {}", req.requested_by);
+          info!("Forwarding RequestError to Client {}", req.requested_by);
           downstream_client
-            .queue_message(ControlMessage::TrackStatusError(Box::new(forwarded_msg)))
+            .queue_message(ControlMessage::RequestError(Box::new(forwarded_msg)))
             .await;
         }
       }
       Ok(())
+    }
+
+    ControlMessage::RequestUpdate(m) => {
+      warn!(
+        "Protocol Violation: Client attempted to update TrackStatus request ID {}",
+        m.existing_request_id
+      );
+      Err(TerminationCode::ProtocolViolation)
     }
 
     _ => Ok(()),

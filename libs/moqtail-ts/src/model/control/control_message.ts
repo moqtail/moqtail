@@ -15,15 +15,14 @@
  */
 
 import { FrozenByteBuffer } from '../common/byte_buffer'
-import { ControlMessageType, controlMessageTypeFromBigInt, FetchType, GroupOrder } from './constant'
+import { ControlMessageType, controlMessageTypeFromBigInt, FetchType } from './constant'
 import { PublishNamespace } from './publish_namespace'
 import { PublishNamespaceCancel } from './publish_namespace_cancel'
-import { PublishNamespaceError } from './publish_namespace_error'
-import { PublishNamespaceOk } from './publish_namespace_ok'
+import { Namespace } from './namespace'
+import { NamespaceDone } from './namespace_done'
 import { ClientSetup } from './client_setup'
 import { Fetch } from './fetch'
 import { FetchCancel } from './fetch_cancel'
-import { FetchError } from './fetch_error'
 import { FetchOk } from './fetch_ok'
 import { GoAway } from './goaway'
 import { MaxRequestId } from './max_request_id'
@@ -32,54 +31,46 @@ import { Subscribe } from './subscribe'
 import { PublishDone } from './publish_done'
 import { Publish } from './publish'
 import { PublishOk } from './publish_ok'
-import { PublishError } from './publish_error'
-import { SubscribeError } from './subscribe_error'
 import { SubscribeOk } from './subscribe_ok'
-import { SubscribeUpdate } from './subscribe_update'
+import { RequestUpdate } from './request_update'
 import { RequestsBlocked } from './requests_blocked'
 import { TrackStatus } from './track_status'
 import { PublishNamespaceDone } from './publish_namespace_done'
 import { Unsubscribe } from './unsubscribe'
 import { SubscribeNamespace } from './subscribe_namespace'
-import { SubscribeNamespaceOk } from './subscribe_namespace_ok'
-import { SubscribeNamespaceError } from './subscribe_namespace_error'
 import { UnsubscribeNamespace } from './unsubscribe_namespace'
 import { NotEnoughBytesError } from '../error/error'
-import { Tuple, KeyValuePair } from '../common'
-import { TrackStatusOk } from './track_status_ok'
-import { TrackStatusError } from './track_status_error'
+import { Tuple } from '../common'
+import { AuthorizationToken } from '../parameter/common/authorization_token'
+import { RequestOk } from './request_ok'
+import { RequestError } from './request_error'
 
 export type ControlMessage =
   | Publish
-  | PublishError
   | PublishOk
   | PublishDone
   | PublishNamespace
   | PublishNamespaceCancel
-  | PublishNamespaceError
-  | PublishNamespaceOk
+  | Namespace
+  | NamespaceDone
   | ClientSetup
   | Fetch
   | FetchCancel
-  | FetchError
   | FetchOk
   | GoAway
   | MaxRequestId
   | ServerSetup
   | Subscribe
-  | SubscribeError
+  | RequestError
   | SubscribeOk
-  | SubscribeUpdate
+  | RequestUpdate
   | RequestsBlocked
   | TrackStatus
-  | TrackStatusOk
-  | TrackStatusError
   | PublishNamespaceDone
   | Unsubscribe
   | SubscribeNamespace
-  | SubscribeNamespaceOk
-  | SubscribeNamespaceError
   | UnsubscribeNamespace
+  | RequestOk
 
 export namespace ControlMessage {
   export function deserialize(buf: FrozenByteBuffer): ControlMessage {
@@ -95,26 +86,26 @@ export namespace ControlMessage {
         return Publish.parsePayload(payload)
       case ControlMessageType.PublishOk:
         return PublishOk.parsePayload(payload)
-      case ControlMessageType.PublishError:
-        return PublishError.parsePayload(payload)
       case ControlMessageType.PublishDone:
         return PublishDone.parsePayload(payload)
       case ControlMessageType.PublishNamespace:
         return PublishNamespace.parsePayload(payload)
       case ControlMessageType.PublishNamespaceCancel:
         return PublishNamespaceCancel.parsePayload(payload)
-      case ControlMessageType.PublishNamespaceError:
-        return PublishNamespaceError.parsePayload(payload)
-      case ControlMessageType.PublishNamespaceOk:
-        return PublishNamespaceOk.parsePayload(payload)
+      case ControlMessageType.Namespace:
+        return Namespace.parsePayload(payload)
+      case ControlMessageType.NamespaceDone:
+        return NamespaceDone.parsePayload(payload)
+      case ControlMessageType.RequestOk:
+        return RequestOk.parsePayload(payload)
+      case ControlMessageType.RequestError:
+        return RequestError.parsePayload(payload)
       case ControlMessageType.ClientSetup:
         return ClientSetup.parsePayload(payload)
       case ControlMessageType.Fetch:
         return Fetch.parsePayload(payload)
       case ControlMessageType.FetchCancel:
         return FetchCancel.parsePayload(payload)
-      case ControlMessageType.FetchError:
-        return FetchError.parsePayload(payload)
       case ControlMessageType.FetchOk:
         return FetchOk.parsePayload(payload)
       case ControlMessageType.GoAway:
@@ -125,16 +116,12 @@ export namespace ControlMessage {
         return ServerSetup.parsePayload(payload)
       case ControlMessageType.Subscribe:
         return Subscribe.parsePayload(payload)
-      case ControlMessageType.SubscribeError:
-        return SubscribeError.parsePayload(payload)
       case ControlMessageType.SubscribeOk:
         return SubscribeOk.parsePayload(payload)
-      case ControlMessageType.SubscribeUpdate:
-        return SubscribeUpdate.parsePayload(payload)
+      case ControlMessageType.RequestUpdate:
+        return RequestUpdate.parsePayload(payload)
       case ControlMessageType.RequestsBlocked:
         return RequestsBlocked.parsePayload(payload)
-      case ControlMessageType.TrackStatus:
-        return TrackStatus.parsePayload(payload)
       case ControlMessageType.TrackStatus:
         return TrackStatus.parsePayload(payload)
       case ControlMessageType.PublishNamespaceDone:
@@ -143,16 +130,9 @@ export namespace ControlMessage {
         return Unsubscribe.parsePayload(payload)
       case ControlMessageType.SubscribeNamespace:
         return SubscribeNamespace.parsePayload(payload)
-      case ControlMessageType.SubscribeNamespaceOk:
-        return SubscribeNamespaceOk.parsePayload(payload)
-      case ControlMessageType.SubscribeNamespaceError:
-        return SubscribeNamespaceError.parsePayload(payload)
       case ControlMessageType.UnsubscribeNamespace:
         return UnsubscribeNamespace.parsePayload(payload)
       default:
-        // This case should ideally be unreachable if controlMessageTypeFromBigInt is exhaustive
-        // or throws on unknown types. If it can return a type not in the switch,
-        // an error here is appropriate.
         throw new Error(`Unknown or unhandled ControlMessageType: ${messageType}`)
     }
   }
@@ -169,8 +149,7 @@ if (import.meta.vitest) {
     describe('PublishNamespace', () => {
       function buildTestPublishNamespace(): PublishNamespace {
         return new PublishNamespace(12345n, Tuple.fromUtf8Path('god/dayyum'), [
-          KeyValuePair.tryNewVarInt(0, 10),
-          KeyValuePair.tryNewBytes(1, new TextEncoder().encode('wololoo')),
+          AuthorizationToken.newUseValue(0n, new TextEncoder().encode('test-token')),
         ])
       }
 
@@ -191,7 +170,7 @@ if (import.meta.vitest) {
         const buf = new FrozenByteBuffer(excessBytes)
         const deserialized = ControlMessage.deserialize(buf)
         expect(deserialized).toEqual(announce)
-        expect(buf.remaining).toBe(3) // Check that excess bytes are still there
+        expect(buf.remaining).toBe(3)
         expect(Array.from(buf.getBytes(3))).toEqual([9, 1, 1])
       })
 
@@ -207,22 +186,11 @@ if (import.meta.vitest) {
     describe('Fetch', () => {
       function buildTestFetch(): Fetch {
         const requestId = 161803n
-        const subscriberPriority = 15
-        const groupOrder = GroupOrder.Descending
         const joiningRequestId = 119n
         const joiningStart = 73n
         const type = FetchType.Relative
-        const parameters = [
-          KeyValuePair.tryNewVarInt(4444, 12321n),
-          KeyValuePair.tryNewBytes(1, new TextEncoder().encode('fetch me ok')),
-        ]
-        return new Fetch(
-          requestId,
-          subscriberPriority,
-          groupOrder,
-          { type, props: { joiningRequestId, joiningStart } },
-          parameters,
-        )
+        const parameters = [AuthorizationToken.newUseValue(0n, new TextEncoder().encode('test-token'))]
+        return new Fetch(requestId, { type, props: { joiningRequestId, joiningStart } }, parameters)
       }
 
       test('should roundtrip Fetch correctly', () => {

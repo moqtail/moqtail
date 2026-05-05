@@ -29,12 +29,15 @@ use crate::model::control::fetch::Fetch;
 use crate::model::control::subscribe::Subscribe;
 use crate::model::data::constant::FetchHeaderType;
 use crate::model::data::fetch_header::FetchHeader;
-use crate::model::data::fetch_object::FetchObject;
+use crate::model::data::fetch_object::{FetchObject, FetchObjectContext};
 use crate::model::data::object::Object;
 use crate::model::data::subgroup_header::SubgroupHeader;
 use crate::model::data::subgroup_object::SubgroupObject;
 use crate::model::error::ParseError;
 use tracing::{debug, error, info, trace};
+
+type ObjectParseResult =
+  Result<(Option<u64>, Option<FetchObjectContext>, Option<Object>), ParseError>;
 
 // Timeout for header and subsequent objects
 const DATA_STREAM_TIMEOUT: Duration = Duration::from_secs(15);
@@ -118,6 +121,7 @@ impl SubscribeRequest {
 pub struct SendDataStream {
   send_stream: Arc<Mutex<SendStream>>,
   header_info: HeaderInfo,
+  fetch_prev_ctx: Option<FetchObjectContext>,
 }
 
 // TODO: Major issue, can't distinguish from FetchHeader + FetchObject from SubgroupHeader
@@ -134,7 +138,7 @@ impl SendDataStream {
         buf.extend_from_slice(&header.serialize()?);
       }
       HeaderInfo::Subgroup { header, .. } => {
-        buf.extend_from_slice(&header.serialize()?);
+        buf.extend_from_slice(&header.serialize(None)?);
       }
     }
 
@@ -151,6 +155,7 @@ impl SendDataStream {
     Ok(Self {
       send_stream,
       header_info,
+      fetch_prev_ctx: None,
     })
   }
 
@@ -164,8 +169,10 @@ impl SendDataStream {
 
     match &self.header_info {
       HeaderInfo::Fetch { .. } => {
-        let fetch_obj = object.try_into_fetch()?;
-        buf.extend_from_slice(&fetch_obj.serialize()?);
+        let payload = object.try_into_fetch()?;
+        let fetch_obj = FetchObject::Object(payload);
+        buf.extend_from_slice(&fetch_obj.serialize(self.fetch_prev_ctx.as_ref())?);
+        self.fetch_prev_ctx = fetch_obj.context();
       }
       HeaderInfo::Subgroup { header, .. } => {
         let has_extensions = header.header_type.has_extensions();
@@ -279,6 +286,7 @@ impl RecvDataStream {
     let mut timeout_at = Instant::now() + DATA_STREAM_TIMEOUT;
 
     let mut previous_object_id: Option<u64> = None;
+    let mut fetch_prev_ctx: Option<FetchObjectContext> = None;
 
     loop {
       let bytes_cursor = recv_bytes.clone().freeze();
@@ -309,12 +317,13 @@ impl RecvDataStream {
         let mut consumed = 0;
         if !recv_bytes.is_empty() {
           let header_info = header_info.clone().unwrap().1;
-          let (c, object_id) = Self::read_object(
+          let (c, object_id, new_fetch_ctx) = Self::read_object(
             bytes_cursor,
             &header_info,
             is_closed.clone(),
             objects.clone(),
             &previous_object_id,
+            &fetch_prev_ctx,
           )
           .await
           .map_err(|e| {
@@ -325,6 +334,9 @@ impl RecvDataStream {
           // if consumed bytes is more than 0, it means we have a valid object
           if c > 0 {
             previous_object_id = object_id;
+            if new_fetch_ctx.is_some() {
+              fetch_prev_ctx = new_fetch_ctx;
+            }
             notify.notify_waiters();
             recv_bytes.advance(c);
           }
@@ -474,61 +486,64 @@ impl RecvDataStream {
     is_closed: Arc<AtomicBool>,
     objects: Arc<RwLock<VecDeque<Object>>>,
     previous_object_id: &Option<u64>,
-  ) -> Result<(usize, Option<u64>), ParseError> {
-    // debug!("RecvDataStream::parse_object() called");
-
+    fetch_prev_ctx: &Option<FetchObjectContext>,
+  ) -> Result<(usize, Option<u64>, Option<FetchObjectContext>), ParseError> {
     if !bytes_cursor.is_empty() {
       let original_remaining = bytes_cursor.remaining();
 
-      // debug!("bytes_cursor remaining: {}", original_remaining);
-
-      // get the last object_id and object
-      // for fetch objects, the previous object id is not required
-      let parse_result = match header_info {
+      let parse_result: ObjectParseResult = match header_info {
         HeaderInfo::Fetch { .. } => {
-          FetchObject::deserialize(&mut bytes_cursor).and_then(|fetch_obj| {
-            // TODO: Validation checks fetch objects arriving correctly
-            // TODO: Get track alias from fetch_request
-            Object::try_from_fetch(fetch_obj, 0).map(|object| (0u64, object))
-          })
+          FetchObject::deserialize(&mut bytes_cursor, fetch_prev_ctx.as_ref()).and_then(
+            |fetch_obj| {
+              let new_ctx = fetch_obj.context();
+              match fetch_obj {
+                FetchObject::Object(payload) => {
+                  // TODO: Get track alias from fetch_request
+                  let object = Object::try_from_fetch(payload, 0)?;
+                  Ok((None, new_ctx, Some(object)))
+                }
+                FetchObject::EndOfRange { .. } => {
+                  // Range markers advance the stream but do not enqueue an object.
+                  debug!("FetchObject::EndOfRange received, skipping");
+                  Ok((None, None, None))
+                }
+              }
+            },
+          )
         }
         HeaderInfo::Subgroup { header, .. } => {
           let has_extensions = header.header_type.has_extensions();
           SubgroupObject::deserialize(&mut bytes_cursor, previous_object_id, has_extensions)
             .and_then(|subgroup_obj| {
-              // TODO: Validation checks
-
               let object_id = subgroup_obj.object_id;
-
-              Object::try_from_subgroup(
+              let object = Object::try_from_subgroup(
                 subgroup_obj,
                 header.track_alias,
                 header.group_id,
                 header.subgroup_id,
                 header.publisher_priority,
-              )
-              .map(|object| (object_id, object))
+              )?;
+              Ok((Some(object_id), None, Some(object)))
             })
         }
       };
 
-      // debug!("parse_result: {:?}", parse_result);
-
       match parse_result {
-        Ok(object) => {
+        Ok((object_id, new_ctx, maybe_object)) => {
           let consumed = original_remaining - bytes_cursor.remaining();
           debug!(
-            "consumed: {} Parsed  payload object: {:?}",
-            consumed, object
+            "consumed: {} Parsed payload object: {:?}",
+            consumed, maybe_object
           );
-          let mut objects = objects.write().await;
-          objects.push_back(object.1);
-          Ok((consumed, Some(object.0)))
+          if let Some(object) = maybe_object {
+            let mut objects = objects.write().await;
+            objects.push_back(object);
+          }
+          Ok((consumed, object_id, new_ctx))
         }
         Err(ParseError::NotEnoughBytes { .. }) => {
-          // Not enough bytes to parse the object, continue reading
           trace!("Not enough bytes to parse the object, continuing to read...");
-          Ok((0, None)) // Indicate that we need more data
+          Ok((0, None, None))
         }
         Err(e) => {
           is_closed.store(true, Ordering::Relaxed);
@@ -540,7 +555,7 @@ impl RecvDataStream {
       }
     } else {
       debug!("No bytes available to parse an object");
-      Ok((0, None)) // No bytes to parse, wait for more data
+      Ok((0, None, None))
     }
   }
 
@@ -616,10 +631,13 @@ mod tests {
   use crate::model::common::location::Location;
   use crate::model::common::pair::KeyValuePair;
   use crate::model::common::tuple::{Tuple, TupleField};
-  use crate::model::control::constant::{FetchType, FilterType, GroupOrder};
+  use crate::model::control::constant::{FetchType, GroupOrder};
   use crate::model::control::fetch::JoiningFetchProps;
   use crate::model::control::{fetch::Fetch, subscribe::Subscribe};
   use crate::model::data::constant::SubgroupHeaderType;
+  use crate::model::extension_header::object_extension::ObjectExtension;
+  use crate::model::parameter::authorization_token::AuthorizationToken;
+  use crate::model::parameter::message_parameter::MessageParameter;
   use bytes::Bytes;
   use std::error::Error;
   use std::sync::Arc;
@@ -629,56 +647,52 @@ mod tests {
   use wtransport::{ClientConfig, Connection, Endpoint, Identity, RecvStream, SendStream};
 
   fn make_fetch_header_and_request() -> (FetchHeader, Fetch) {
-    let request_id = 161803;
-    let subscriber_priority = 15u8;
-    let group_order = GroupOrder::Descending;
-    let fetch_type = FetchType::AbsoluteFetch;
-    let joining_fetch_props = JoiningFetchProps {
-      joining_request_id: 119,
-      joining_start: 73,
-    };
-    let parameters = vec![
-      KeyValuePair::try_new_varint(4444, 12321).unwrap(),
-      KeyValuePair::try_new_bytes(1, Bytes::from_static(b"fetch me ok")).unwrap(),
-    ];
     let fetch = Fetch {
-      request_id,
-      subscriber_priority,
-      group_order,
-      fetch_type,
+      request_id: 161803,
+      fetch_type: FetchType::AbsoluteFetch,
       standalone_fetch_props: None,
-      joining_fetch_props: Some(joining_fetch_props),
-      parameters,
+      joining_fetch_props: Some(JoiningFetchProps {
+        joining_request_id: 119,
+        joining_start: 73,
+      }),
+      parameters: vec![
+        MessageParameter::new_authorization_token(AuthorizationToken::new_use_value(
+          0,
+          Bytes::from_static(b"test-token"),
+        )),
+        MessageParameter::new_subscriber_priority(42),
+        MessageParameter::new_group_order(GroupOrder::Ascending),
+      ],
     };
     (FetchHeader { request_id: 161803 }, fetch)
   }
 
-  fn make_fetch_object() -> FetchObject {
-    let group_id: u64 = 9;
-    let subgroup_id = 144;
-    let object_id: u64 = 10;
-    let publisher_priority: u8 = 255;
-    let extension_headers = Some(vec![
-      KeyValuePair::try_new_varint(0, 10).unwrap(),
-      KeyValuePair::try_new_bytes(1, Bytes::from_static(b"wololoo")).unwrap(),
-    ]);
-    let object_status = None;
-    let payload = Some(Bytes::from_static(
-      b"01239gjawkk92837aljwdnjwandjnanwdjnajwndkjawndjkanwdkjnawkjddmi",
-    ));
-
-    FetchObject {
-      group_id,
-      subgroup_id,
-      object_id,
-      publisher_priority,
-      extension_headers,
-      payload,
-      object_status,
+  fn make_fetch_object() -> crate::model::data::fetch_object::FetchObjectPayload {
+    use crate::model::data::constant::ObjectForwardingPreference;
+    use crate::model::data::fetch_object::FetchObjectPayload;
+    FetchObjectPayload {
+      group_id: 9,
+      subgroup_id: 144,
+      object_id: 10,
+      publisher_priority: 255,
+      forwarding_preference: ObjectForwardingPreference::Subgroup,
+      extension_headers: Some(vec![
+        ObjectExtension::Unknown {
+          kvp: KeyValuePair::try_new_varint(0, 10).unwrap(),
+        },
+        ObjectExtension::Unknown {
+          kvp: KeyValuePair::try_new_bytes(1, Bytes::from_static(b"wololoo")).unwrap(),
+        },
+      ]),
+      payload: Bytes::from_static(
+        b"01239gjawkk92837aljwdnjwandjnanwdjnajwndkjawndjkanwdkjnawkjddmi",
+      ),
     }
   }
 
-  fn make_object_from_fetch(fetch_obj: &FetchObject) -> Object {
+  fn make_object_from_fetch(
+    fetch_obj: &crate::model::data::fetch_object::FetchObjectPayload,
+  ) -> Object {
     Object::try_from_fetch(fetch_obj.clone(), 0).unwrap()
   }
 
@@ -687,36 +701,27 @@ mod tests {
     let request_id = 128242;
     let track_namespace = Tuple::from_utf8_path("nein/nein/nein");
     let track_name = TupleField::from_utf8("track_42");
-    let subscriber_priority = 31;
-    let group_order = GroupOrder::Original;
-    let forward = true;
-    let filter_type = FilterType::AbsoluteRange;
     let start_location = Location {
       group: 81,
       object: 81,
     };
-    let end_group = 25;
-    let subscribe_parameters = vec![
-      KeyValuePair::try_new_varint(0, 10).unwrap(),
-      KeyValuePair::try_new_bytes(1, Bytes::from_static(b"I'll sync you up")).unwrap(),
-    ];
-    let subscribe = Subscribe {
+    let subscribe = Subscribe::new_absolute_range(
       request_id,
       track_namespace,
       track_name,
-      subscriber_priority,
-      group_order,
-      forward,
-      filter_type,
-      start_location: Some(start_location),
-      end_group: Some(end_group),
-      subscribe_parameters,
-    };
-    let header_type = SubgroupHeaderType::Type0x15;
+      start_location,
+      25,
+      vec![
+        MessageParameter::new_subscriber_priority(31),
+        MessageParameter::new_group_order(GroupOrder::Original),
+        MessageParameter::new_forward(true),
+      ],
+    );
+    let header_type = SubgroupHeaderType::try_new(0x15).unwrap();
     let track_alias = 999;
     let group_id = 9;
     let subgroup_id = Some(11);
-    let publisher_priority = 255;
+    let publisher_priority = Some(255);
     let subgroup_header = SubgroupHeader {
       header_type,
       track_alias,
@@ -731,8 +736,12 @@ mod tests {
   fn make_subgroup_object() -> SubgroupObject {
     let object_id: u64 = 10;
     let extension_headers = Some(vec![
-      KeyValuePair::try_new_varint(0, 10).unwrap(),
-      KeyValuePair::try_new_bytes(1, Bytes::from_static(b"wololoo")).unwrap(),
+      ObjectExtension::Unknown {
+        kvp: KeyValuePair::try_new_varint(0, 10).unwrap(),
+      },
+      ObjectExtension::Unknown {
+        kvp: KeyValuePair::try_new_bytes(1, Bytes::from_static(b"wololoo")).unwrap(),
+      },
     ]);
     let object_status = None;
     let payload = Some(Bytes::from_static(b"01239gjawkk92837aldmi"));
@@ -1035,7 +1044,9 @@ mod tests {
     let receiver = RecvDataStream::new(recv, pending_fetches);
 
     // Serialize object and send in two parts
-    let bytes = fetch_obj.serialize().unwrap();
+    let bytes = FetchObject::Object(fetch_obj.clone())
+      .serialize(None)
+      .unwrap();
     let half = bytes.len() / 2;
     let first_half = &bytes[..half];
     let second_half = &bytes[half..];

@@ -15,18 +15,20 @@
  */
 
 import { FullTrackName, InternalError, Location, ReasonPhrase } from '@/model'
-import { Fetch, FetchError, FetchErrorCode, FetchOk, FetchType } from '../../model/control'
+import { Fetch, FetchOk, FetchType, RequestError, RequestErrorCode } from '../../model/control'
 import { ControlMessageHandler } from './handler'
 import { SubscribePublication } from '../publication/subscribe'
 import { FetchPublication } from '../publication/fetch'
 import { PublishPublication } from '../publication'
+import { logger } from '../../util/logger'
 
 export const handlerFetch: ControlMessageHandler<Fetch> = async (client, msg) => {
+  logger.log('handler/fetch', 'requestId, type', msg.requestId, msg.typeAndProps.type)
   // TODO: Use fetch parameters and handle authorization
   let fullTrackName: FullTrackName | undefined
   let joiningRequest: SubscribePublication | FetchPublication | PublishPublication | undefined
   switch (msg.typeAndProps.type) {
-    case FetchType.StandAlone:
+    case FetchType.Standalone:
       fullTrackName = msg.typeAndProps.props.fullTrackName
       break
 
@@ -40,9 +42,10 @@ export const handlerFetch: ControlMessageHandler<Fetch> = async (client, msg) =>
   }
   const track = client.trackSources.get(fullTrackName.toString())
   if (!track) {
-    const response = new FetchError(
+    const response = new RequestError(
       msg.requestId,
-      FetchErrorCode.TrackDoesNotExist,
+      RequestErrorCode.DoesNotExist,
+      0n,
       new ReasonPhrase('Track does not exists'),
     )
     await client.controlStream.send(response)
@@ -50,9 +53,10 @@ export const handlerFetch: ControlMessageHandler<Fetch> = async (client, msg) =>
   }
 
   if (!track.trackSource.past) {
-    const response = new FetchError(
+    const response = new RequestError(
       msg.requestId,
-      FetchErrorCode.NotSupported,
+      RequestErrorCode.NotSupported,
+      0n,
       new ReasonPhrase('Requested track does not support fetch'),
     )
     await client.controlStream.send(response)
@@ -63,6 +67,6 @@ export const handlerFetch: ControlMessageHandler<Fetch> = async (client, msg) =>
   // TODO: Figure out what to do with endOfTrack and end location
   const publication = new FetchPublication(client, track, msg)
   client.publications.set(msg.requestId, publication)
-  const response = FetchOk.newAscending(msg.requestId, false, new Location(0n, 0n), msg.parameters)
+  const response = new FetchOk(msg.requestId, false, new Location(0n, 0n), msg.parameters, track.trackExtensions ?? [])
   await client.controlStream.send(response)
 }

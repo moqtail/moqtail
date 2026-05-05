@@ -19,6 +19,7 @@ import { FrozenByteBuffer, ByteBuffer } from '../model/common/byte_buffer'
 import { NotEnoughBytesError, TerminationError, TimeoutError } from '../model/error/error'
 import { TerminationCode } from '../model/error/constant'
 import { SetupParameters, ClientSetup } from '@/model'
+import { logger } from '../util/logger'
 
 function withTimeout<T>(promise: Promise<T>, ms?: number, errorMsg?: string): Promise<T> {
   if (ms === undefined) return promise
@@ -74,14 +75,19 @@ export class ControlStream {
   }
 
   async send(message: ControlMessage): Promise<void> {
+    const msgName = message.constructor.name
     try {
       const serializedMessage = ControlMessage.serialize(message)
+      logger.debug('control_stream', `send: waiting for writer.ready — ${msgName} (${serializedMessage.length}B)`)
       await this.#writer.ready
+      logger.debug('control_stream', `send: writer ready, writing — ${msgName}`)
       await this.#writer.write(serializedMessage.toUint8Array())
+      logger.debug('control_stream', `send: write complete — ${msgName}`)
       if (this.onMessageSent) this.onMessageSent(message)
     } catch (error: any) {
-      await this.close()
       const errorMessage = error instanceof Error ? error.message : String(error)
+      logger.error('control_stream', `send: failed to write ${msgName} — ${errorMessage}`)
+      await this.close()
       throw new TerminationError(
         `ControlStream.send: Failed to write message: ${errorMessage}`,
         TerminationCode.INTERNAL_ERROR,
@@ -90,16 +96,24 @@ export class ControlStream {
   }
 
   public async close(): Promise<void> {
+    logger.debug('control_stream', 'close: closing writer and cancelling reader')
     await Promise.allSettled([this.#writer.close().catch(() => {}), this.#reader.cancel().catch(() => {})])
+    logger.debug('control_stream', 'close: done')
   }
 
   async #ingestLoop(controller: ReadableStreamDefaultController<ControlMessage>) {
+    logger.debug('control_stream', 'ingestLoop: started')
     try {
       while (true) {
         if (this.#receiveBuffer.length === 0) {
+          logger.debug('control_stream', 'ingestLoop: buffer empty, awaiting reader.read()')
           const readResult = await this.#reader.read()
           this.#handleReadResult(readResult)
-          if (readResult.done) break
+          if (readResult.done) {
+            logger.debug('control_stream', 'ingestLoop: reader done (stream closed by peer)')
+            break
+          }
+          logger.debug('control_stream', `ingestLoop: received ${readResult.value?.byteLength ?? 0}B chunk`)
           continue
         }
         try {
@@ -115,11 +129,16 @@ export class ControlStream {
             this.#receiveBuffer.commit()
             this.#expectedPayloadLength = null
             const msg = ControlMessage.deserialize(new FrozenByteBuffer(messageBytes))
+            logger.debug('control_stream', `ingestLoop: deserialized ${msg.constructor.name} (${totalMessageSize}B)`)
             controller.enqueue(msg)
             if (this.onMessageReceived) this.onMessageReceived(msg)
             continue
           }
           this.#expectedPayloadLength = payloadLength
+          logger.debug(
+            'control_stream',
+            `ingestLoop: partial message — have ${this.#receiveBuffer.length}B, need ${totalMessageSize}B, awaiting more data`,
+          )
           const timeoutMessage = `ControlStream: Timeout waiting for partial message data (expected ${payloadLength} bytes)`
           let readResult
           if (this.#partialMessageTimeoutMs !== undefined) {
@@ -128,9 +147,13 @@ export class ControlStream {
             readResult = await this.#reader.read()
           }
           this.#handleReadResult(readResult as ReadableStreamReadResult<Uint8Array>)
-          if ((readResult as ReadableStreamReadResult<Uint8Array>).done) break
+          if ((readResult as ReadableStreamReadResult<Uint8Array>).done) {
+            logger.debug('control_stream', 'ingestLoop: reader done while waiting for partial message')
+            break
+          }
         } catch (error: any) {
           if (error instanceof NotEnoughBytesError) {
+            logger.debug('control_stream', 'ingestLoop: not enough bytes for header, awaiting more data')
             let readResult
             if (this.#partialMessageTimeoutMs !== undefined) {
               readResult = await withTimeout(
@@ -142,8 +165,12 @@ export class ControlStream {
               readResult = await this.#reader.read()
             }
             this.#handleReadResult(readResult as ReadableStreamReadResult<Uint8Array>)
-            if ((readResult as ReadableStreamReadResult<Uint8Array>).done) break
+            if ((readResult as ReadableStreamReadResult<Uint8Array>).done) {
+              logger.debug('control_stream', 'ingestLoop: reader done while waiting for header')
+              break
+            }
           } else {
+            logger.error('control_stream', `ingestLoop: deserialization error — ${error.message}`)
             controller.error(
               new TerminationError(
                 `ControlStream: Deserialization error: ${error.message}`,
@@ -156,9 +183,14 @@ export class ControlStream {
         }
       }
     } catch (error) {
+      logger.error(
+        'control_stream',
+        `ingestLoop: unexpected error — ${error instanceof Error ? error.message : String(error)}`,
+      )
       controller.error(error)
       await this.close()
     } finally {
+      logger.debug('control_stream', 'ingestLoop: ended, closing controller')
       controller.close()
       await this.close()
     }
@@ -167,6 +199,10 @@ export class ControlStream {
   #handleReadResult(readResult: ReadableStreamReadResult<Uint8Array>): void {
     if (readResult.done) {
       if (this.#receiveBuffer.length > 0 || this.#expectedPayloadLength !== null) {
+        logger.error(
+          'control_stream',
+          `handleReadResult: peer closed stream with incomplete data — bufferLen=${this.#receiveBuffer.length} expectedPayload=${this.#expectedPayloadLength}`,
+        )
         throw new TerminationError(
           'ControlStream: Stream closed by peer with incomplete message data.',
           TerminationCode.PROTOCOL_VIOLATION,
@@ -176,6 +212,10 @@ export class ControlStream {
     }
     if (readResult.value) {
       this.#receiveBuffer.putBytes(readResult.value)
+      logger.debug(
+        'control_stream',
+        `handleReadResult: appended ${readResult.value.byteLength}B — bufferLen=${this.#receiveBuffer.length}`,
+      )
     }
   }
 }
@@ -302,7 +342,7 @@ if (import.meta.vitest) {
           .addMaxAuthTokenCacheSize(500n)
           .build()
 
-        const originalMessage = new ClientSetup([0xff000001], setupParams)
+        const originalMessage = new ClientSetup(setupParams)
         const messageBytes = originalMessage.serialize().toUint8Array()
         mockBidirectionalStream = createMockBidirectionalStream([messageBytes])
         controlStream = ControlStream.new(mockBidirectionalStream)
@@ -317,7 +357,7 @@ if (import.meta.vitest) {
       it('should handle excess bytes successful roundtrip then timeout', async () => {
         const setupParams = new SetupParameters().addPath('/excess/test').build()
 
-        const originalMessage = new ClientSetup([0xff000001, 0xff000002], setupParams)
+        const originalMessage = new ClientSetup(setupParams)
         const messageBytes = originalMessage.serialize().toUint8Array()
         const excessBytes = new Uint8Array([0xff, 0x13, 0x25])
 
@@ -335,7 +375,7 @@ if (import.meta.vitest) {
       })
       it('should timeout on partial message', async () => {
         const setupParams = new SetupParameters().addPath('/partial/test').addMaxRequestId(42n).build()
-        const originalMessage = new ClientSetup([0xff000001], setupParams)
+        const originalMessage = new ClientSetup(setupParams)
         const completeMessageBytes = originalMessage.serialize().toUint8Array()
 
         // Send only partial message (first 10 bytes)

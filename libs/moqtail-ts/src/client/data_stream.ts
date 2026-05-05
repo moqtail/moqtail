@@ -23,11 +23,15 @@ import {
   SubgroupHeaderType,
   SubgroupObject,
 } from '../model/data'
+import { FetchObjectContext } from '../model/data/fetch_object'
+import { ObjectForwardingPreference } from '../model/data/constant'
 import { Header } from '../model/data/header'
 import { NotEnoughBytesError, ProtocolViolationError, TimeoutError } from '../model/error/error'
+import { logger } from '../util/logger'
 
 export class SendStream {
   #lastObjectId?: bigint
+  #fetchPrevCtx?: FetchObjectContext
   readonly #writer: WritableStreamDefaultWriter<Uint8Array>
   readonly onDataSent?: (data: SubgroupObject | SubgroupHeader | FetchObject | FetchHeader) => void
   private constructor(
@@ -48,24 +52,38 @@ export class SendStream {
     const serializedHeader = header.serialize().toUint8Array()
     await writer.write(serializedHeader)
     if (onDataSent) onDataSent(header)
+    logger.debug('data_stream', `SendStream opened type=${header.type}`)
     return new SendStream(header, writer, onDataSent)
   }
 
   async write(object: FetchObject | SubgroupObject): Promise<void> {
-    if (this.#lastObjectId !== undefined && object.objectId <= this.#lastObjectId) {
-      throw new Error(
-        `SendStream.write: Out-of-order object detected. ` +
-          `Attempted to write objectId=${object.objectId}, but lastObjectId=${this.#lastObjectId}.`,
-      )
+    let serializedObject: Uint8Array
+    if (object instanceof FetchObject) {
+      serializedObject = object.serialize(this.#fetchPrevCtx).toUint8Array()
+      const newCtx = object.toContext()
+      if (newCtx) this.#fetchPrevCtx = newCtx
+    } else {
+      if (this.#lastObjectId !== undefined && object.objectId <= this.#lastObjectId) {
+        logger.error(
+          'data_stream',
+          `SendStream out-of-order objectId=${object.objectId} lastObjectId=${this.#lastObjectId}`,
+        )
+        throw new Error(
+          `SendStream.write: Out-of-order object detected. ` +
+            `Attempted to write objectId=${object.objectId}, but lastObjectId=${this.#lastObjectId}.`,
+        )
+      }
+      serializedObject = object.serialize(this.#lastObjectId).toUint8Array()
+      this.#lastObjectId = object.objectId
     }
-    const serializedObject = object.serialize(this.#lastObjectId).toUint8Array()
-    this.#lastObjectId = object.objectId
+
     await this.#writer.write(serializedObject)
     if (this.onDataSent) this.onDataSent(object)
   }
 
   async close(): Promise<void> {
     if (this.#writer) {
+      logger.debug('data_stream', `SendStream closed type=${this.header.type}`)
       await this.#writer.close()
     }
   }
@@ -159,12 +177,14 @@ export class RecvStream {
       throw error
     }
     if (onDataReceived) onDataReceived(headerInstance)
+    logger.debug('data_stream', `RecvStream opened type=${headerInstance.type}`)
     return new RecvStream(headerInstance, reader, internalBuffer, partialDataTimeout, onDataReceived)
   }
 
   async #ingestLoop(controller: ReadableStreamDefaultController<FetchObject | SubgroupObject>) {
     try {
       let previousObjectId: bigint | undefined = undefined
+      let fetchPrevCtx: FetchObjectContext | undefined = undefined
       while (true) {
         // Try to parse an object from buffer
         if (this.#internalBuffer.remaining > 0) {
@@ -172,7 +192,9 @@ export class RecvStream {
             this.#internalBuffer.checkpoint()
             let object: FetchObject | SubgroupObject
             if (Header.isFetch(this.header)) {
-              object = FetchObject.deserialize(this.#internalBuffer)
+              object = FetchObject.deserialize(this.#internalBuffer, fetchPrevCtx)
+              const newCtx = object.toContext()
+              if (newCtx) fetchPrevCtx = newCtx
             } else {
               object = SubgroupObject.deserialize(
                 this.#internalBuffer,
@@ -210,6 +232,10 @@ export class RecvStream {
         const { done, value } = readResult
         if (done) {
           if (this.#internalBuffer.remaining > 0) {
+            logger.error(
+              'data_stream',
+              `RecvStream closed with incomplete data remaining=${this.#internalBuffer.remaining}`,
+            )
             controller.error(
               new ProtocolViolationError(
                 'RecvStream',
@@ -217,6 +243,7 @@ export class RecvStream {
               ),
             )
           } else {
+            logger.debug('data_stream', `RecvStream closed type=${this.header.type}`)
             controller.close()
           }
           break
@@ -226,6 +253,7 @@ export class RecvStream {
         }
       }
     } catch (error) {
+      logger.error('data_stream', 'RecvStream ingest loop error', error)
       // Cleanup on error
       await this.#reader.cancel(error).catch(() => {})
       controller.error(error)
@@ -260,12 +288,17 @@ if (import.meta.vitest) {
 
       test('Full object roundtrip', async () => {
         const payload = new Uint8Array([1, 2, 3, 4, 5])
-        const fetchObject = FetchObject.newWithPayload(1, 1, 1, 1, null, payload)
+        const fetchObject = FetchObject.newObject(1, 1, 1, 1, ObjectForwardingPreference.Subgroup, null, payload)
         const reader = recvStream.stream.getReader()
         const receivePromise = reader.read()
         await sendStream.write(fetchObject)
         const { value: receivedObject } = await receivePromise
-        expect(receivedObject).toEqual(fetchObject)
+        expect(receivedObject).toBeInstanceOf(FetchObject)
+        const received = receivedObject as FetchObject
+        expect(received.groupId).toEqual(fetchObject.groupId)
+        expect(received.subgroupId).toEqual(fetchObject.subgroupId)
+        expect(received.objectId).toEqual(fetchObject.objectId)
+        expect(received.payload).toEqual(fetchObject.payload)
         reader.releaseLock()
       })
 
@@ -289,7 +322,7 @@ if (import.meta.vitest) {
 
     describe('Subgroup', () => {
       beforeEach(async () => {
-        testSubgroupHeader = Header.newSubgroup(SubgroupHeaderType.Type0x10, 0n, 0n, 0, 0)
+        testSubgroupHeader = Header.newSubgroup(SubgroupHeaderType.fromProperties(false, 0, false), 0n, 0n, 0, 0)
         const transport = new TransformStream<Uint8Array, Uint8Array>()
         const sendStreamPromise = SendStream.new(transport.writable, testSubgroupHeader)
         const recvStreamPromise = RecvStream.new(transport.readable)

@@ -14,17 +14,17 @@
  * limitations under the License.
  */
 
-import { Fetch, FetchError, FetchOk, MoqtObject } from '@/model'
+import { Fetch, FetchOk, MoqtObject, RequestError } from '@/model'
+import { logger } from '../../util/logger'
 
 // TODO: add timeout mechanism for cancelled requests
 // (we cant know how many in-flight objects there are)
-export class FetchRequest implements PromiseLike<FetchOk | FetchError> {
+export class FetchRequest implements PromiseLike<FetchOk | RequestError> {
   public readonly requestId: bigint
   public readonly message: Fetch
-  // TODO: add lateinit attributes from FetchOk for object validation in dataRecvLoop
-  private _resolve!: (value: FetchOk | FetchError | PromiseLike<FetchOk | FetchError>) => void
+  private _resolve!: (value: FetchOk | RequestError | PromiseLike<FetchOk | RequestError>) => void
   private _reject!: (reason?: any) => void
-  private promise: Promise<FetchOk | FetchError>
+  private promise: Promise<FetchOk | RequestError>
   public controller?: ReadableStreamDefaultController<MoqtObject>
   public stream: ReadableStream<MoqtObject>
   public isActive: boolean = true
@@ -38,22 +38,32 @@ export class FetchRequest implements PromiseLike<FetchOk | FetchError> {
         this.controller = controller
       },
     })
-    this.promise = new Promise<FetchOk | FetchError>((resolve, reject) => {
+    this.promise = new Promise<FetchOk | RequestError>((resolve, reject) => {
       this._resolve = resolve
       this._reject = reject
     })
+    logger.debug('request/fetch', `created requestId=${this.requestId}`)
   }
 
-  public resolve(value: FetchOk | FetchError | PromiseLike<FetchOk | FetchError>): void {
+  public resolve(value: FetchOk | RequestError | PromiseLike<FetchOk | RequestError>): void {
+    if (value instanceof RequestError) {
+      logger.error(
+        'request/fetch',
+        `resolved with error requestId=${this.requestId} code=${value.errorCode} reason="${value.reasonPhrase.phrase}"`,
+      )
+    } else if (value instanceof FetchOk) {
+      logger.debug('request/fetch', `resolved with OK requestId=${this.requestId}`)
+    }
     this._resolve(value)
   }
 
   public reject(reason?: any): void {
+    logger.error('request/fetch', `rejected requestId=${this.requestId}`, reason)
     this._reject(reason)
   }
 
-  public then<TResult1 = FetchOk | FetchError, TResult2 = never>(
-    onfulfilled?: ((value: FetchOk | FetchError) => TResult1 | PromiseLike<TResult1>) | undefined | null,
+  public then<TResult1 = FetchOk | RequestError, TResult2 = never>(
+    onfulfilled?: ((value: FetchOk | RequestError) => TResult1 | PromiseLike<TResult1>) | undefined | null,
     onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | undefined | null,
   ): PromiseLike<TResult1 | TResult2> {
     return this.promise.then(onfulfilled, onrejected)
@@ -61,11 +71,11 @@ export class FetchRequest implements PromiseLike<FetchOk | FetchError> {
 
   public catch<TResult = never>(
     onrejected?: ((reason: any) => TResult | PromiseLike<TResult>) | undefined | null,
-  ): Promise<FetchOk | FetchError | TResult> {
+  ): Promise<FetchOk | RequestError | TResult> {
     return this.promise.catch(onrejected)
   }
 
-  public finally(onfinally?: (() => void) | undefined | null): Promise<FetchOk | FetchError> {
+  public finally(onfinally?: (() => void) | undefined | null): Promise<FetchOk | RequestError> {
     return this.promise.finally(onfinally)
   }
 }

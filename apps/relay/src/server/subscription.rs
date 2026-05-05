@@ -24,38 +24,68 @@ use crate::server::utils;
 use anyhow::Result;
 use bytes::Bytes;
 use moqtail::model::common::location::Location;
-use moqtail::model::common::pair::KeyValuePair;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::control::constant::FilterType;
 use moqtail::model::control::constant::GroupOrder;
 use moqtail::model::control::constant::PublishDoneStatusCode;
 use moqtail::model::control::control_message::ControlMessage;
+use moqtail::model::control::publish::Publish;
 use moqtail::model::control::publish_done::PublishDone;
+use moqtail::model::control::request_update::RequestUpdate;
 use moqtail::model::control::subscribe::Subscribe;
-use moqtail::model::control::subscribe_update::SubscribeUpdate;
 use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::model::data::object::Object;
 use moqtail::model::data::subgroup_header::SubgroupHeader;
+use moqtail::model::parameter::message_parameter::{
+  MessageParameter, apply_message_parameter_update,
+};
 use moqtail::transport::data_stream_handler::HeaderInfo;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc::UnboundedReceiver;
+use tracing::trace;
 use tracing::warn;
 use tracing::{debug, error, info};
 use wtransport::SendStream;
 
 #[derive(Debug, Clone)]
+pub enum SubscriptionOrigin {
+  Subscribe(Subscribe),
+  Publish(Publish),
+}
+
+impl SubscriptionOrigin {
+  pub fn request_id(&self) -> u64 {
+    match self {
+      SubscriptionOrigin::Subscribe(s) => s.request_id,
+      SubscriptionOrigin::Publish(p) => p.request_id,
+    }
+  }
+}
+impl From<Subscribe> for SubscriptionOrigin {
+  fn from(msg: Subscribe) -> Self {
+    SubscriptionOrigin::Subscribe(msg)
+  }
+}
+
+impl From<Publish> for SubscriptionOrigin {
+  fn from(msg: Publish) -> Self {
+    SubscriptionOrigin::Publish(msg)
+  }
+}
+
+#[derive(Debug, Clone)]
 pub struct SubscriptionState {
   pub subscriber_priority: u8,
-  pub _group_order: GroupOrder,
+  pub group_order: GroupOrder,
   pub forward: bool,
-  pub _filter_type: FilterType,
+  pub filter_type: FilterType,
   pub start_location: Option<Location>,
   pub end_group: u64,
-  pub subscribe_parameters: Vec<KeyValuePair>,
+  pub subscribe_parameters: Vec<MessageParameter>,
   pub last_sent_max_location: Option<Location>,
   pub last_received_object_location: Option<Location>,
   pub is_joining: bool,
@@ -89,27 +119,173 @@ impl SubscriptionState {
   }
 }
 
-impl From<Subscribe> for SubscriptionState {
-  fn from(subscribe: Subscribe) -> Self {
-    Self {
-      subscriber_priority: subscribe.subscriber_priority,
-      _group_order: subscribe.group_order,
-      forward: subscribe.forward,
-      _filter_type: subscribe.filter_type,
-      start_location: subscribe.start_location,
-      end_group: subscribe.end_group.unwrap_or(0),
-      subscribe_parameters: subscribe.subscribe_parameters,
-      last_sent_max_location: None,
-      last_received_object_location: None,
-      is_joining: false,
+impl From<SubscriptionOrigin> for SubscriptionState {
+  fn from(origin: SubscriptionOrigin) -> Self {
+    match origin {
+      SubscriptionOrigin::Subscribe(subscribe) => {
+        let subscriber_priority = subscribe
+          .subscribe_parameters
+          .iter()
+          .find_map(|p| {
+            if let MessageParameter::SubscriberPriority { priority } = p {
+              Some(*priority)
+            } else {
+              None
+            }
+          })
+          .unwrap_or(128);
+
+        let group_order = subscribe
+          .subscribe_parameters
+          .iter()
+          .find_map(|p| {
+            if let MessageParameter::GroupOrder { order } = p {
+              Some(*order)
+            } else {
+              None
+            }
+          })
+          .unwrap_or(GroupOrder::Ascending);
+
+        let forward = subscribe
+          .subscribe_parameters
+          .iter()
+          .find_map(|p| {
+            if let MessageParameter::Forward { forward } = p {
+              Some(*forward)
+            } else {
+              None
+            }
+          })
+          .unwrap_or(true);
+
+        let (filter_type, start_location, end_group) = subscribe
+          .subscribe_parameters
+          .iter()
+          .find_map(|p| {
+            if let MessageParameter::SubscriptionFilter {
+              filter_type,
+              start_location,
+              end_group,
+            } = p
+            {
+              Some((*filter_type, start_location.clone(), end_group.unwrap_or(0)))
+            } else {
+              None
+            }
+          })
+          .unwrap_or((FilterType::LatestObject, None, 0));
+
+        Self {
+          subscriber_priority,
+          group_order,
+          forward,
+          filter_type,
+          start_location,
+          end_group,
+          subscribe_parameters: subscribe.subscribe_parameters,
+          last_sent_max_location: None,
+          last_received_object_location: None,
+          is_joining: false,
+        }
+      }
+      SubscriptionOrigin::Publish(publish) => {
+        let subscriber_priority = publish
+          .parameters
+          .iter()
+          .find_map(|p| {
+            if let MessageParameter::SubscriberPriority { priority } = p {
+              Some(*priority)
+            } else {
+              None
+            }
+          })
+          .unwrap_or(128);
+
+        let group_order = publish
+          .parameters
+          .iter()
+          .find_map(|p| {
+            if let MessageParameter::GroupOrder { order } = p {
+              Some(*order)
+            } else {
+              None
+            }
+          })
+          .unwrap_or(GroupOrder::Ascending);
+
+        let forward = publish
+          .parameters
+          .iter()
+          .find_map(|p| {
+            if let MessageParameter::Forward { forward } = p {
+              Some(*forward)
+            } else {
+              None
+            }
+          })
+          .unwrap_or(true);
+
+        let (filter_type, start_location, end_group) = publish
+          .parameters
+          .iter()
+          .find_map(|p| {
+            if let MessageParameter::SubscriptionFilter {
+              filter_type,
+              start_location,
+              end_group,
+            } = p
+            {
+              Some((*filter_type, start_location.clone(), end_group.unwrap_or(0)))
+            } else {
+              None
+            }
+          })
+          .unwrap_or((FilterType::LatestObject, None, 0));
+
+        Self {
+          subscriber_priority,
+          group_order,
+          forward,
+          filter_type,
+          start_location,
+          end_group,
+          subscribe_parameters: publish.parameters,
+          last_sent_max_location: None,
+          last_received_object_location: None,
+          is_joining: false,
+        }
+      }
     }
+  }
+}
+
+/// Compute QUIC stream priority from MOQT scheduling parameters.
+///
+/// The i32 space is divided into 65536 bands (one per sub_prio × pub_prio pair).
+/// Within each band, group_id determines relative position according to group_order:
+///   Ascending / Original – lower group_id = higher priority (counts down from band_max)
+///   Descending            – higher group_id = higher priority (counts up from band_min)
+fn compute_stream_priority(
+  sub_prio: u8,
+  pub_prio: u8,
+  group_order: GroupOrder,
+  group_id: u64,
+) -> i32 {
+  const BAND_SIZE: i64 = 65536;
+  let priority_index = (255 - sub_prio as i64) * 256 + (255 - pub_prio as i64);
+  let band_min = i32::MIN as i64 + priority_index * BAND_SIZE;
+  let group_slot = (group_id % BAND_SIZE as u64) as i64;
+  match group_order {
+    GroupOrder::Ascending | GroupOrder::Original => (band_min + BAND_SIZE - 1 - group_slot) as i32,
+    GroupOrder::Descending => (band_min + group_slot) as i32,
   }
 }
 
 #[derive(Debug, Clone)]
 pub struct Subscription {
   pub request_id: u64,
-  track_alias_ref: Arc<AtomicU64>,
+  relay_track_id: u64,
   pub full_track_name: FullTrackName,
   pub subscription_state: Arc<RwLock<SubscriptionState>>,
   subscriber: Arc<MOQTClient>,
@@ -126,16 +302,11 @@ pub struct Subscription {
 
 #[allow(clippy::too_many_arguments)]
 impl Subscription {
-  /// Get the current track alias value (shared with SubscriptionManager).
-  fn track_alias(&self) -> u64 {
-    self.track_alias_ref.load(Ordering::Relaxed)
-  }
-
   fn create_instance(
-    track_alias_ref: Arc<AtomicU64>,
+    relay_track_id: u64,
     full_track_name: FullTrackName,
     request_id: u64,
-    subscribe_message: Subscribe,
+    origin_message: SubscriptionOrigin,
     subscriber: Arc<MOQTClient>,
     event_rx: Arc<Mutex<Option<UnboundedReceiver<TrackEvent>>>>,
     cache: TrackCache,
@@ -144,10 +315,10 @@ impl Subscription {
     config: &'static AppConfig,
   ) -> Self {
     Self {
-      track_alias_ref,
+      relay_track_id,
       full_track_name,
       request_id,
-      subscription_state: Arc::new(RwLock::new(subscribe_message.into())),
+      subscription_state: Arc::new(RwLock::new(origin_message.into())),
       subscriber,
       event_rx,
       send_stream_last_object_ids: Arc::new(RwLock::new(HashMap::new())),
@@ -159,10 +330,11 @@ impl Subscription {
       check_switch_context_on_next_object: Arc::new(AtomicBool::new(false)),
     }
   }
+
   pub fn new(
-    track_alias: Arc<AtomicU64>,
+    relay_track_id: u64,
     full_track_name: FullTrackName,
-    subscribe_message: Subscribe,
+    origin_message: SubscriptionOrigin,
     subscriber: Arc<MOQTClient>,
     event_rx: UnboundedReceiver<TrackEvent>,
     cache: TrackCache,
@@ -172,10 +344,10 @@ impl Subscription {
   ) -> Self {
     let event_rx = Arc::new(Mutex::new(Some(event_rx)));
     let sub = Self::create_instance(
-      track_alias.clone(),
+      relay_track_id,
       full_track_name,
-      subscribe_message.request_id,
-      subscribe_message,
+      origin_message.request_id(),
+      origin_message,
       subscriber,
       event_rx,
       cache.clone(),
@@ -184,11 +356,9 @@ impl Subscription {
       config,
     );
 
-    let track_alias = track_alias.load(Ordering::Relaxed);
-
     info!(
-      "Created new Subscription instance for subscriber: {} track: {} subscription state: {:?}",
-      client_connection_id, track_alias, sub.subscription_state
+      "Created new Subscription instance for subscriber={} relay_track_id={} subscription state: {:?}",
+      client_connection_id, relay_track_id, sub.subscription_state
     );
 
     let mut instance = sub.clone();
@@ -210,9 +380,9 @@ impl Subscription {
             let start_location = start_location.unwrap_or_default();
             if let Some(last_received_object_location) = last_received_object_location_opt {
               info!(
-                "Joining state - subscriber: {} track: {} from location: {:?} to last received location: {:?}",
+                "Joining state - subscriber={} relay_track_id={} from location: {:?} to last received location: {:?}",
                 instance.client_connection_id,
-                track_alias,
+                relay_track_id,
                 start_location,
                 last_received_object_location
               );
@@ -246,17 +416,17 @@ impl Subscription {
                           // the last object. Need to look into the draft.
                           let subgroup_header = HeaderInfo::Subgroup {
                             header: SubgroupHeader::new_with_explicit_id(
-                              track_alias,
+                              relay_track_id,
                               object.group_id,
                               object.subgroup_id,
-                              object.publisher_priority,
+                              Some(object.publisher_priority),
                               has_extensions,
                               false,
                             ),
                           };
                           info!(
-                            "FROM CACHE: Joining state - subscriber: {} track: {} sending subgroup header: {:?}",
-                            instance.client_connection_id, track_alias, subgroup_header
+                            "FROM CACHE: Joining state - subscriber={} relay_track_id={} sending subgroup header: {:?}",
+                            instance.client_connection_id, relay_track_id, subgroup_header
                           );
                           last_group = object.group_id;
                           let stream_id = instance.get_stream_id(&subgroup_header);
@@ -267,7 +437,7 @@ impl Subscription {
                           (None, last_stream_id.clone())
                         };
 
-                        let the_object = Object::try_from_fetch(object, track_alias).unwrap();
+                        let the_object = Object::try_from_fetch(object, relay_track_id).unwrap();
 
                         let track_event = TrackEvent::SubgroupObject {
                           stream_id: stream_id.unwrap(),
@@ -275,8 +445,8 @@ impl Subscription {
                           header_info,
                         };
                         info!(
-                          "Joining state - subscriber: {} track: {} sending object location: {:?}",
-                          instance.client_connection_id, track_alias, track_event
+                          "Joining state - subscriber={} relay_track_id={} sending object location: {:?}",
+                          instance.client_connection_id, relay_track_id, track_event
                         );
                         instance.handle_track_event(track_event).await;
                       }
@@ -293,8 +463,8 @@ impl Subscription {
             let mut state = instance.subscription_state.write().await;
             state.is_joining = false;
             info!(
-              "Finished joining state for subscriber: {} track: {}",
-              instance.client_connection_id, track_alias
+              "Finished joining state for subscriber={} relay_track_id={}",
+              instance.client_connection_id, relay_track_id
             );
           }
         }
@@ -306,7 +476,7 @@ impl Subscription {
           }
           // TODO: implement max timeout here
           // 5 second timeout to check if the subscription is still valid
-          _ = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {
+          _ = tokio::time::sleep(tokio::time::Duration::from_millis(5000)) => {
             continue;
           }
         }
@@ -330,51 +500,66 @@ impl Subscription {
     !self.is_finished().await && self.is_forwarding().await
   }
 
-  // This method updates the subscribe message with the new subscribe update
-  // It ensures that the Start Location does not decrease and the End Group does not increase
+  pub fn subscriber(&self) -> Arc<MOQTClient> {
+    self.subscriber.clone()
+  }
+
+  // This method updates the subscribe message with the new request update
   // Returns Ok if the update is successful
   // Returns error if the update is invalid
-  pub async fn update_subscription(&self, subscribe_update: SubscribeUpdate) -> Result<()> {
+  pub async fn update_subscription(&self, request_update: RequestUpdate) -> Result<()> {
     let mut state = self.subscription_state.write().await;
-    // map subscribe_update fields to subscribe_message
 
-    // The Start Location MUST NOT decrease
-    // and the End Group MUST NOT increase.
-    // In Draft-15 end group can be increased or decreased.
-    if subscribe_update.start_location < state.start_location.clone().unwrap_or_default() {
-      // invalid update
-      return Err(anyhow::anyhow!(
-        "Invalid SubscribeUpdate: Start Location cannot decrease. Current start location: {:?} Subscribe Update Start Location: {:?}",
-        state.start_location,
-        subscribe_update.start_location
-      ));
+    // Extract filter_type, start_location and end_group from SubscriptionFilter parameter
+    let (new_filter_type, new_start_location, new_end_group) = request_update
+      .parameters
+      .iter()
+      .find_map(|p| {
+        if let MessageParameter::SubscriptionFilter {
+          filter_type,
+          start_location,
+          end_group,
+        } = p
+        {
+          Some((Some(*filter_type), start_location.clone(), *end_group))
+        } else {
+          None
+        }
+      })
+      .unwrap_or((None, None, None));
+
+    if let Some(ref new_loc) = new_start_location {
+      state.start_location = Some(new_loc.clone());
     }
 
-    // update subscription state
-    state.start_location = Some(subscribe_update.start_location);
-    state.subscriber_priority = subscribe_update.subscriber_priority;
-    state.forward = subscribe_update.forward;
-    state.end_group = subscribe_update.end_group;
-
-    // update parameters. If a parameter included in SUBSCRIBE is not present in
-    // SUBSCRIBE_UPDATE, its value remains unchanged.  There is no mechanism
-    // to remove a parameter from a subscription.
-    for param in subscribe_update.subscribe_parameters {
-      if let Some(existing_param) = state
-        .subscribe_parameters
-        .iter_mut()
-        .find(|p| p.is_same_type(&param))
-      {
-        *existing_param = param;
-      } else {
-        state.subscribe_parameters.push(param);
+    // Update explicit subscription state fields if they are present in the parameters
+    for param in &request_update.parameters {
+      match param {
+        MessageParameter::SubscriberPriority { priority } => {
+          state.subscriber_priority = *priority;
+        }
+        MessageParameter::Forward { forward } => {
+          state.forward = *forward;
+        }
+        _ => {}
       }
     }
 
+    if let Some(ft) = new_filter_type {
+      state.filter_type = ft;
+    }
+    if let Some(eg) = new_end_group {
+      state.end_group = eg;
+    }
+
+    // Update parameters. If a parameter included in SUBSCRIBE is not present in
+    // REQUEST_UPDATE, its value remains unchanged. There is no mechanism
+    // to remove a parameter from a request.
+    apply_message_parameter_update(&mut state.subscribe_parameters, request_update.parameters);
+
     info!(
-      "update_subscription | new subscription state for {}: {:?}",
-      self.track_alias(),
-      state
+      "update_subscription | new subscription state for relay_track_id={}: {:?}",
+      self.relay_track_id, state
     );
     Ok(())
   }
@@ -389,19 +574,13 @@ impl Subscription {
     }
 
     info!(
-      "Finishing subscription for subscriber: {} and track: {}",
-      self.client_connection_id,
-      self.track_alias()
+      "Finishing subscription for subscriber={} relay_track_id={}",
+      self.client_connection_id, self.relay_track_id
     );
 
-    let mut receiver_guard = self.event_rx.lock().await;
-    let _ = receiver_guard.take(); // This replaces the Some(receiver) with None
-    drop(receiver_guard); // Release the lock
-
     info!(
-      "Subscription finished for subscriber: {} and track: {}",
-      self.client_connection_id,
-      self.track_alias()
+      "Subscription finished for subscriber={} relay_track_id={}",
+      self.client_connection_id, self.relay_track_id
     );
 
     // Close all send streams asynchronously to avoid blocking subscription cleanup
@@ -418,43 +597,43 @@ impl Subscription {
     if !stream_ids.is_empty() {
       let subscriber = self.subscriber.clone();
       let connection_id = self.client_connection_id;
-      let track_alias = self.track_alias();
+      let relay_track_id = self.relay_track_id;
 
       // Spawn background task for graceful stream cleanup
       tokio::spawn(async move {
         info!(
-          "Starting background cleanup of {} streams for subscriber: {} track: {}",
+          "Starting background cleanup of {} streams for subscriber={} relay_track_id={}",
           stream_ids.len(),
           connection_id,
-          track_alias
+          relay_track_id
         );
 
         for stream_id in stream_ids.iter() {
           let res = subscriber.close_stream(stream_id).await;
           if let Err(e) = res {
             warn!(
-              "Background stream cleanup error for subscriber: {} stream_id: {} track: {} error: {:?}",
-              connection_id, stream_id, track_alias, e
+              "Background stream cleanup error for subscriber={} stream_id={} relay_track_id={} error: {:?}",
+              connection_id, stream_id, relay_track_id, e
             );
           } else if let Ok(closed) = res {
             if closed {
               debug!(
-                "Background stream cleanup successful for subscriber: {} stream_id: {} track: {}",
-                connection_id, stream_id, track_alias
+                "Background stream cleanup successful for subscriber={} stream_id={} relay_track_id={}",
+                connection_id, stream_id, relay_track_id
               );
             } else {
               debug!(
-                "Background stream cleanup: stream not found for subscriber: {} stream_id: {} track: {}",
-                connection_id, stream_id, track_alias
+                "Background stream cleanup: stream not found for subscriber={} stream_id={} relay_track_id={}",
+                connection_id, stream_id, relay_track_id
               );
             }
           }
         }
 
         info!(
-          "Background cleanup completed for subscriber: {} track: {} ({} streams)",
+          "Background cleanup completed for subscriber={} relay_track_id={} ({} streams)",
           connection_id,
-          track_alias,
+          relay_track_id,
           stream_ids.len()
         );
       });
@@ -464,9 +643,8 @@ impl Subscription {
   // Notify the subscription to check the switch context on the next object
   pub async fn notify_switch(&self) {
     info!(
-      "Notifying subscription to check switch context on next object for subscriber: {} track: {}",
-      self.client_connection_id,
-      self.track_alias()
+      "Notifying subscription to check switch context on next object for subscriber={} relay_track_id={}",
+      self.client_connection_id, self.relay_track_id
     );
     self
       .check_switch_context_on_next_object
@@ -534,10 +712,8 @@ impl Subscription {
 
           // the following method also sets the current active track's status to None if any
           info!(
-            "check_switch_context: Setting track to Current for subscriber: {} track: {} object location group: {}",
-            self.client_connection_id,
-            self.track_alias(),
-            object_location.group
+            "check_switch_context: Setting track to Current for subscriber={} relay_track_id={} object location group: {}",
+            self.client_connection_id, self.relay_track_id, object_location.group
           );
           subscriber
             .switch_context
@@ -562,9 +738,9 @@ impl Subscription {
           state.end_group = 0; // remove end group limit
 
           info!(
-            "check_switch_context: Will forward objects for subscriber: {} track: {} starting from group: {}",
+            "check_switch_context: Will forward objects for subscriber={} relay_track_id={} starting from group: {}",
             self.client_connection_id,
-            self.track_alias(),
+            self.relay_track_id,
             state.start_location.as_ref().unwrap().group
           );
         } else {
@@ -572,10 +748,8 @@ impl Subscription {
           // set forward to false if it is true
           if self.is_forwarding().await {
             info!(
-              "check_switch_context: Setting forward to false for Next track for subscriber: {} track: {} obkject location group: {}",
-              self.client_connection_id,
-              self.track_alias(),
-              object_location.group
+              "check_switch_context: Setting forward to false for Next track for subscriber={} relay_track_id={} object location group: {}",
+              self.client_connection_id, self.relay_track_id, object_location.group
             );
             self.subscription_state.write().await.forward = false;
           }
@@ -589,10 +763,8 @@ impl Subscription {
         // set forward to false if it is true
         if self.is_forwarding().await {
           info!(
-            "check_switch_context: Setting end group to {} for None track for subscriber: {} track: {}",
-            object_location.group,
-            self.client_connection_id,
-            self.track_alias()
+            "check_switch_context: Setting end group to {} for None track for subscriber={} relay_track_id={}",
+            object_location.group, self.client_connection_id, self.relay_track_id
           );
           let mut state = self.subscription_state.write().await;
           state.forward = false;
@@ -607,55 +779,54 @@ impl Subscription {
   async fn receive(&mut self) {
     debug!(
       "Receiving for subscriber: {} track: {}",
-      self.client_connection_id,
-      self.track_alias()
+      self.client_connection_id, self.relay_track_id
     );
 
-    // Dequeue while holding the lock, then release before processing.
+    let mut event_rx_guard = self.event_rx.lock().await;
     let recv_result = {
-      let mut guard = self.event_rx.lock().await;
-      if let Some(ref mut rx) = *guard {
-        rx.recv().await
-      } else {
-        // Receiver was already taken by finish(); loop will break on is_finished().
+      let Some(ref mut rx) = *event_rx_guard else {
         return;
-      }
+      };
+      rx.recv().await
     };
 
+    trace!(
+      "Received event for subscriber={} relay_track_id={}: {:?}",
+      self.client_connection_id, self.relay_track_id, recv_result
+    );
+
     match recv_result {
-      Some(event) => {
-        if self.finished.load(Ordering::Relaxed) {
-          return;
-        }
+      Some(event) if !self.finished.load(Ordering::Relaxed) => {
+        drop(event_rx_guard);
         self.handle_track_event(event).await;
       }
+      Some(_) => {
+        event_rx_guard.take();
+      }
       None => {
-        // Channel closed (all senders dropped).
         info!(
-          "Event receiver closed for subscriber: {} track: {}, finishing subscription",
-          self.client_connection_id,
-          self.track_alias()
+          "Event receiver closed for subscriber={} relay_track_id={}, finishing subscription",
+          self.client_connection_id, self.relay_track_id
         );
         self.finish().await;
+        event_rx_guard.take();
+        drop(event_rx_guard);
       }
     }
   }
 
   async fn handle_track_event(&self, event: TrackEvent) {
     debug!(
-      "Event received for subscriber: {} track: {} event: {:?}",
-      self.client_connection_id,
-      self.track_alias(),
-      event
+      "Event received for subscriber={} relay_track_id={} event: {:?}",
+      self.client_connection_id, self.relay_track_id, event
     );
     match event {
       TrackEvent::SubgroupObject {
         mut object,
-        mut stream_id,
+        stream_id,
         header_info,
       } => {
-        object.track_alias = self.track_alias();
-        stream_id.track_alias = self.track_alias();
+        object.track_alias = self.relay_track_id;
         // update last received object location
         {
           let mut state = self.subscription_state.write().await;
@@ -673,13 +844,12 @@ impl Subscription {
               .check_switch_context_on_next_object
               .store(false, std::sync::atomic::Ordering::Relaxed);
           }
-          // Check wheter this track is in a switch context and update forward state
+          // Check whether this track is in a switch context and update forward state
           if !self.check_switch_context(&object.location).await {
             // if this returns false, do not start the stream
             info!(
-              "Not forwarding object for subscriber: {} track: {} due to switch context state",
-              self.client_connection_id,
-              self.track_alias()
+              "Not forwarding object for subscriber={} relay_track_id={} due to switch context state",
+              self.client_connection_id, self.relay_track_id
             );
             return;
           }
@@ -693,30 +863,16 @@ impl Subscription {
             && object.location < *start
           {
             debug!(
-              "Object before start location for subscriber: {} track: {} object location: {:?} start location: {:?}",
-              self.client_connection_id,
-              self.track_alias(),
-              object.location,
-              start
+              "Object before start location for subscriber={} relay_track_id={} object location: {:?} start location: {:?}",
+              self.client_connection_id, self.relay_track_id, object.location, start
             );
             return;
           }
 
           if state.end_group > 0 && object.location.group > state.end_group {
-            /* With Draft-15, the end group can be increased or decreased.
-            TODO: Remove the following code after draft-15 support.
-            info!(
-              "Finishing subscription for subscriber: {} track: {}",
-              self.client_connection_id, self.track_alias
-            );
-            self.finish().await;
-            */
             debug!(
-              "Object beyond end group for subscriber: {} track: {} object location: {:?} end group: {}",
-              self.client_connection_id,
-              self.track_alias(),
-              object.location,
-              state.end_group
+              "Object beyond end group for subscriber={} relay_track_id={} object location: {:?} end group: {}",
+              self.client_connection_id, self.relay_track_id, object.location, state.end_group
             );
             return;
           }
@@ -730,9 +886,9 @@ impl Subscription {
         let mut send_stream = if let Some(header) = header_info {
           if let HeaderInfo::Subgroup { header: _ } = header {
             info!(
-              "Creating stream - subscriber: {} track: {} now: {} received time: {} object: {:?} header: {:?}",
+              "Creating stream - subscriber={} relay_track_id={} now={} received time={} object: {:?} header: {:?}",
               self.client_connection_id,
-              self.track_alias(),
+              self.relay_track_id,
               utils::passed_time_since_start(),
               object_received_time,
               object.location,
@@ -745,10 +901,10 @@ impl Subscription {
                 send_stream_last_object_ids.insert(stream_id.clone(), None);
               }
               info!(
-                "Stream created - subscriber: {} stream_id: {} track: {} now: {} received time: {} object: {:?}",
+                "Stream created - subscriber={} stream_id={} relay_track_id={} now={} received time={} object: {:?}",
                 self.client_connection_id,
                 stream_id,
-                self.track_alias(),
+                self.relay_track_id,
                 utils::passed_time_since_start(),
                 object_received_time,
                 object.location
@@ -772,10 +928,10 @@ impl Subscription {
         if send_stream.is_none() {
           // wait a little bit and try again
           warn!(
-            "Send stream not found, retrying - subscriber: {} stream_id: {} track: {} now: {} received time: {} object: {:?}",
+            "Send stream not found, retrying - subscriber={} stream_id={} relay_track_id={} now={} received time={} object: {:?}",
             self.client_connection_id,
             stream_id,
-            self.track_alias(),
+            self.relay_track_id,
             utils::passed_time_since_start(),
             object_received_time,
             object.location
@@ -795,10 +951,10 @@ impl Subscription {
           };
 
           debug!(
-            "Received Object event: subscriber: {} stream_id: {} track: {} previous_object_id: {:?} object: {:?} now: {} received time: {}",
+            "Received Object event: subscriber={} stream_id={} relay_track_id={} previous_object_id: {:?} object: {:?} now={} received time={}",
             self.client_connection_id,
             stream_id,
-            self.track_alias(),
+            self.relay_track_id,
             previous_object_id,
             object,
             utils::passed_time_since_start(),
@@ -834,7 +990,7 @@ impl Subscription {
             self
               .object_logger
               .log_subscription_object(
-                self.track_alias(),
+                self.relay_track_id,
                 self.client_connection_id,
                 &object,
                 send_status,
@@ -844,22 +1000,22 @@ impl Subscription {
           }
         } else {
           error!(
-            "Received Object event without a valid send stream for subscriber: {} stream_id: {} track: {} object: {:?} now: {} received time: {}",
+            "Received Object event without a valid send stream for subscriber={} stream_id={} relay_track_id={} object: {:?} now={} received time={}",
             self.client_connection_id,
             stream_id,
-            self.track_alias(),
+            self.relay_track_id,
             object.location,
             utils::passed_time_since_start(),
             object_received_time
           );
         }
       }
-      TrackEvent::DatagramObject { object } => {
-        // Handle datagram object - serialize full MOQT datagram format
+      TrackEvent::Datagram { object } => {
+        // Handle datagram - serialize full MOQT datagram format
         // Must include type, track_alias, group_id, object_id, publisher_priority, and payload
 
         let mut norm_object = object.clone();
-        norm_object.track_alias = self.track_alias();
+        norm_object.track_alias = self.relay_track_id;
 
         match norm_object.serialize() {
           Ok(serialized_bytes) => {
@@ -868,30 +1024,25 @@ impl Subscription {
               .write_datagram_object(serialized_bytes)
               .await
             {
-              error!("Failed to write datagram object: {:?}", e);
+              error!("Failed to write datagram: {:?}", e);
             }
           }
           Err(e) => {
-            error!("Failed to serialize datagram object: {:?}", e);
+            error!("Failed to serialize datagram: {:?}", e);
           }
         }
       }
-      TrackEvent::StreamClosed { mut stream_id } => {
-        stream_id.track_alias = self.track_alias();
+      TrackEvent::StreamClosed { stream_id } => {
         info!(
-          "Received StreamClosed event: subscriber: {} stream_id: {} track: {}",
-          self.client_connection_id,
-          stream_id,
-          self.track_alias()
+          "Received StreamClosed event: subscriber={} stream_id={} relay_track_id={}",
+          self.client_connection_id, stream_id, self.relay_track_id
         );
         let _ = self.handle_stream_closed(&stream_id).await;
       }
       TrackEvent::PublisherDisconnected { reason } => {
         info!(
-          "Received PublisherDisconnected event: subscriber: {}, reason: {} track: {}",
-          self.client_connection_id,
-          reason,
-          self.track_alias()
+          "Received PublisherDisconnected event: subscriber={}, reason={} relay_track_id={}",
+          self.client_connection_id, reason, self.relay_track_id
         );
 
         // Send PublishDone message and finish the subscription
@@ -900,10 +1051,8 @@ impl Subscription {
           .await
         {
           error!(
-            "Failed to send PublishDone for publisher disconnect: subscriber: {} track: {} error: {:?}",
-            self.client_connection_id,
-            self.track_alias(),
-            e
+            "Failed to send PublishDone for publisher disconnect: subscriber={} relay_track_id={} error: {:?}",
+            self.client_connection_id, self.relay_track_id, e
           );
         }
 
@@ -928,9 +1077,17 @@ impl Subscription {
         utils::bytes_to_hex(&header_payload)
       );
 
-      // set priority based on the current time
-      // TODO: revisit this logic to set priority based on the subscription
-      let priority = i32::MAX - (utils::passed_time_since_start() % i32::MAX as u128) as i32;
+      let (pub_prio, group_id) = match &header_info {
+        HeaderInfo::Subgroup { header } => {
+          (header.publisher_priority.unwrap_or(128u8), header.group_id)
+        }
+        HeaderInfo::Fetch { .. } => (128u8, 0u64),
+      };
+      let (sub_prio, group_order) = {
+        let state = self.subscription_state.read().await;
+        (state.subscriber_priority, state.group_order)
+      };
+      let priority = compute_stream_priority(sub_prio, pub_prio, group_order, group_id);
 
       let send_stream = match self
         .subscriber
@@ -940,11 +1097,8 @@ impl Subscription {
         Ok(send_stream) => send_stream,
         Err(e) => {
           error!(
-            "Failed to open stream {}: {:?} subscriber: {} track: {}",
-            stream_id,
-            e,
-            self.client_connection_id,
-            self.track_alias()
+            "Failed to open stream {}: {:?} subscriber={} relay_track_id={}",
+            stream_id, e, self.client_connection_id, self.relay_track_id
           );
           return Err(e);
         }
@@ -955,16 +1109,14 @@ impl Subscription {
       Ok((stream_id, send_stream.clone()))
     } else {
       error!(
-        "Failed to serialize header payload for stream {} subscriber: {} track: {}",
-        stream_id,
-        self.client_connection_id,
-        self.track_alias()
+        "Failed to serialize header payload for stream {} subscriber={} relay_track_id={}",
+        stream_id, self.client_connection_id, self.relay_track_id
       );
       Err(anyhow::anyhow!(
-        "Failed to serialize header payload for stream {} subscriber: {} track: {}",
+        "Failed to serialize header payload for stream {} subscriber={} relay_track_id={}",
         stream_id,
         self.client_connection_id,
-        self.track_alias()
+        self.relay_track_id
       ))
     }
   }
@@ -977,8 +1129,8 @@ impl Subscription {
     send_stream: Arc<Mutex<SendStream>>,
   ) -> Result<()> {
     debug!(
-      "Handling object track: {} location: {:?} stream_id: {} diff_ms: {}",
-      object.track_alias,
+      "Handling object relay_track_id={} location: {:?} stream_id={} diff_ms={}",
+      self.relay_track_id,
       object.location,
       stream_id,
       utils::passed_time_since_start()
@@ -994,12 +1146,8 @@ impl Subscription {
         Ok(data) => data,
         Err(e) => {
           error!(
-            "Error in serializing object before writing to stream for subscriber {} track: {}, location: {:?}, previous_object_id: {:?}, error: {:?}",
-            self.client_connection_id,
-            self.track_alias(),
-            object_location,
-            previous_object_id,
-            e
+            "Error in serializing object before writing to stream for subscriber={} relay_track_id={}, location: {:?}, previous_object_id: {:?}, error: {:?}",
+            self.client_connection_id, self.relay_track_id, object_location, previous_object_id, e
           );
           return Err(e.into());
         }
@@ -1024,25 +1172,21 @@ impl Subscription {
         .await
         .map_err(|open_stream_err| {
           error!(
-            "Error writing object to stream for subscriber {} track: {}, error: {:?}",
-            self.client_connection_id,
-            self.track_alias(),
-            open_stream_err
+            "Error writing object to stream for subscriber={} relay_track_id={}, error: {:?}",
+            self.client_connection_id, self.relay_track_id, open_stream_err
           );
           open_stream_err
         })
     } else {
       debug!(
-        "Could not convert object to subgroup. stream_id: {:?} subscriber: {} track: {}",
-        stream_id,
-        self.client_connection_id,
-        self.track_alias()
+        "Could not convert object to subgroup. stream_id: {:?} subscriber={} relay_track_id={}",
+        stream_id, self.client_connection_id, self.relay_track_id
       );
       Err(anyhow::anyhow!(
-        "Could not convert object to subgroup. stream_id: {:?} subscriber: {} track: {}",
+        "Could not convert object to subgroup. stream_id: {:?} subscriber={} relay_track_id={}",
         stream_id,
         self.client_connection_id,
-        self.track_alias()
+        self.relay_track_id
       ))
     }
   }
@@ -1062,30 +1206,30 @@ impl Subscription {
     let subscriber = self.subscriber.clone();
     let stream_id = stream_id.clone();
     let connection_id = self.client_connection_id;
-    let track_alias = self.track_alias();
+    let relay_track_id = self.relay_track_id;
 
     tokio::spawn(async move {
       debug!(
-        "Starting graceful stream closure in background: subscriber: {} stream_id: {} track: {}",
-        connection_id, stream_id, track_alias
+        "Starting graceful stream closure in background: subscriber={} stream_id={} relay_track_id={}",
+        connection_id, stream_id, relay_track_id
       );
 
       let res = subscriber.close_stream(&stream_id).await;
       if let Err(e) = res {
         warn!(
-          "handle_stream_closed | error for subscriber: {} stream_id: {} track: {} error: {:?}",
-          connection_id, stream_id, track_alias, e
+          "handle_stream_closed | error for subscriber={} stream_id={} relay_track_id={} error: {:?}",
+          connection_id, stream_id, relay_track_id, e
         );
       } else if let Ok(closed) = res {
         if closed {
           debug!(
-            "handle_stream_closed | successful for subscriber: {} stream_id: {} track: {}",
-            connection_id, stream_id, track_alias
+            "handle_stream_closed | successful for subscriber={} stream_id={} relay_track_id={}",
+            connection_id, stream_id, relay_track_id
           );
         } else {
           debug!(
-            "handle_stream_closed | stream not found for subscriber: {} stream_id: {} track: {}",
-            connection_id, stream_id, track_alias
+            "handle_stream_closed | stream not found for subscriber={} stream_id={} relay_track_id={}",
+            connection_id, stream_id, relay_track_id
           );
         }
       }
@@ -1097,32 +1241,21 @@ impl Subscription {
 
   async fn get_header_payload(&self, header_info: &HeaderInfo) -> Result<Bytes> {
     let connection_id = self.client_connection_id;
-
-    let mut rewritten_header = header_info.clone();
-
-    match &mut rewritten_header {
-      HeaderInfo::Subgroup { header } => {
-        header.track_alias = self.track_alias();
-
-        header.serialize().map_err(|e| {
-          error!(
-            "Error serializing subgroup header: {:?} subscriber: {} track: {}",
-            e,
-            connection_id,
-            self.track_alias()
-          );
-          e.into()
-        })
-      }
+    match header_info {
+      HeaderInfo::Subgroup { header } => header.serialize(Some(self.relay_track_id)).map_err(|e| {
+        error!(
+          "Error serializing subgroup header: {:?} subscriber={} relay_track_id={}",
+          e, connection_id, self.relay_track_id
+        );
+        e.into()
+      }),
       HeaderInfo::Fetch {
         header,
         fetch_request: _,
       } => header.serialize().map_err(|e| {
         error!(
-          "Error serializing fetch header: {:?} subscriber: {} track: {}",
-          e,
-          connection_id,
-          self.track_alias()
+          "Error serializing fetch header: {:?} subscriber={} relay_track_id={}",
+          e, connection_id, self.relay_track_id
         );
         e.into()
       }),
@@ -1130,7 +1263,7 @@ impl Subscription {
   }
 
   fn get_stream_id(&self, header_info: &HeaderInfo) -> StreamId {
-    utils::build_stream_id(self.track_alias(), header_info)
+    utils::build_stream_id(self.relay_track_id, header_info)
   }
 
   /// Send PublishDone message to this subscriber
@@ -1155,12 +1288,97 @@ impl Subscription {
       .await;
 
     info!(
-      "Sent PublishDone to subscriber {} track: {} for request_id {}",
-      self.client_connection_id,
-      self.track_alias(),
-      self.request_id
+      "Sent PublishDone to subscriber={} relay_track_id={} for request_id={}",
+      self.client_connection_id, self.relay_track_id, self.request_id
     );
 
     Ok(())
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use moqtail::model::control::constant::GroupOrder;
+
+  #[test]
+  fn test_highest_priority_near_i32_max() {
+    let p = compute_stream_priority(0, 0, GroupOrder::Ascending, 0);
+    assert!(
+      p > 2_100_000_000,
+      "highest priority should be near i32::MAX, got {p}"
+    );
+  }
+
+  #[test]
+  fn test_lowest_priority_near_i32_min() {
+    let p = compute_stream_priority(255, 255, GroupOrder::Ascending, 0);
+    assert!(
+      p < -2_100_000_000,
+      "lowest priority should be near i32::MIN, got {p}"
+    );
+  }
+
+  #[test]
+  fn test_ascending_lower_group_higher_priority() {
+    let p0 = compute_stream_priority(0, 0, GroupOrder::Ascending, 0);
+    let p1 = compute_stream_priority(0, 0, GroupOrder::Ascending, 1);
+    assert!(p0 > p1, "group 0 should outrank group 1 in Ascending order");
+  }
+
+  #[test]
+  fn test_descending_higher_group_higher_priority() {
+    let p0 = compute_stream_priority(0, 0, GroupOrder::Descending, 0);
+    let p1 = compute_stream_priority(0, 0, GroupOrder::Descending, 1);
+    assert!(
+      p1 > p0,
+      "group 1 should outrank group 0 in Descending order"
+    );
+  }
+
+  #[test]
+  fn test_original_same_as_ascending() {
+    for g in [0u64, 1, 100, 65535] {
+      assert_eq!(
+        compute_stream_priority(10, 20, GroupOrder::Original, g),
+        compute_stream_priority(10, 20, GroupOrder::Ascending, g),
+        "Original should behave like Ascending for group {g}"
+      );
+    }
+  }
+
+  #[test]
+  fn test_subscriber_priority_dominates() {
+    // sub=0,pub=255 must outrank sub=1,pub=0 regardless of group
+    let high = compute_stream_priority(0, 255, GroupOrder::Ascending, 0);
+    let low = compute_stream_priority(1, 0, GroupOrder::Ascending, 0);
+    assert!(
+      high > low,
+      "subscriber priority must dominate publisher priority"
+    );
+  }
+
+  #[test]
+  fn test_publisher_priority_tie_break() {
+    let high = compute_stream_priority(10, 0, GroupOrder::Ascending, 0);
+    let low = compute_stream_priority(10, 1, GroupOrder::Ascending, 0);
+    assert!(high > low, "lower pub_prio number = higher priority");
+  }
+
+  #[test]
+  fn test_all_values_within_i32_range() {
+    for sub in [0u8, 128, 255] {
+      for pub_ in [0u8, 128, 255] {
+        for &order in &[
+          GroupOrder::Ascending,
+          GroupOrder::Descending,
+          GroupOrder::Original,
+        ] {
+          for group in [0u64, 1, 65534, 65535, 65536, u64::MAX] {
+            let _ = compute_stream_priority(sub, pub_, order, group); // must not panic/overflow
+          }
+        }
+      }
+    }
   }
 }

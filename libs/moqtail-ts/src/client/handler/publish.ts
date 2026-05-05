@@ -16,8 +16,11 @@
 import { FilterType, GroupOrder, Publish, PublishOk } from '../../model/control'
 import { ControlMessageHandler } from './handler'
 import { MoqtObject } from '../../model/data' // Make sure to import MoqtObject
+import { logger } from '../../util/logger'
 
 export const handlerPublish: ControlMessageHandler<Publish> = async (client, msg) => {
+  logger.log('handler/publish', 'track: %s alias: %d', msg.fullTrackName.toString(), msg.trackAlias)
+
   // 1. Create a stream to receive the pushed objects natively
   let streamController!: ReadableStreamDefaultController<MoqtObject>
   const stream = new ReadableStream<MoqtObject>({

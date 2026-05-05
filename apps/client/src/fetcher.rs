@@ -15,12 +15,11 @@
 use crate::connection::MoqConnection;
 use anyhow::Result;
 use moqtail::model::common::location::Location;
-use moqtail::model::common::pair::KeyValuePair;
 use moqtail::model::common::tuple::{Tuple, TupleField};
-use moqtail::model::control::constant::GroupOrder;
 use moqtail::model::control::control_message::ControlMessage;
-use moqtail::model::control::fetch::{Fetch, StandAloneFetchProps};
+use moqtail::model::control::fetch::{Fetch, StandaloneFetchProps};
 use moqtail::model::control::fetch_cancel::FetchCancel;
+use moqtail::model::parameter::message_parameter::MessageParameter;
 use moqtail::transport::data_stream_handler::{FetchRequest, RecvDataStream};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -48,22 +47,16 @@ pub async fn run(moq: MoqConnection, config: FetchConfig) -> Result<()> {
   // Send Fetch request
   let request_id = 0u64;
   let ns = Tuple::from_utf8_path(&config.namespace);
-  let standalone_fetch_props = StandAloneFetchProps {
+  let standalone_fetch_props = StandaloneFetchProps {
     track_namespace: ns,
     track_name: TupleField::from_utf8(&config.track_name),
     start_location: Location::new(config.start_group, config.start_object),
     end_location: Location::new(config.end_group, config.end_object),
   };
 
-  let parameters = vec![KeyValuePair::try_new_varint(100, 200)?];
+  let parameters = vec![MessageParameter::new_subscriber_priority(200)];
 
-  let fetch = Fetch::new_standalone(
-    request_id,
-    1, // subscriber_priority
-    GroupOrder::Ascending,
-    standalone_fetch_props,
-    parameters,
-  );
+  let fetch = Fetch::new_standalone(request_id, standalone_fetch_props, parameters);
 
   info!(
     "Sending Fetch: groups {}:{} to {}:{}",
@@ -141,13 +134,13 @@ pub async fn run(moq: MoqConnection, config: FetchConfig) -> Result<()> {
     }
   });
 
-  // Wait for control messages (FetchOk/FetchError)
+  // Wait for control messages (RequestOk/RequestError)
   match control_stream.next_message().await {
-    Ok(ControlMessage::FetchOk(m)) => {
-      info!("Received FetchOk: {:?}", m);
+    Ok(ControlMessage::RequestOk(m)) => {
+      info!("Received RequestOk: {:?}", m);
     }
-    Ok(ControlMessage::FetchError(m)) => {
-      error!("Received FetchError: {:?}", m);
+    Ok(ControlMessage::RequestError(m)) => {
+      error!("Received RequestError: {:?}", m);
     }
     Ok(m) => {
       info!("Received message: {:?}", m);

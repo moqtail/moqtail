@@ -17,6 +17,7 @@ pub(crate) mod track_subscription_map;
 
 use crate::server::{
   client::track_subscription_map::TrackSubscriptionMap,
+  session_context::PendingRequest,
   stream_id::{StreamId, StreamType},
   utils,
 };
@@ -36,11 +37,51 @@ use switch_context::SwitchContext;
 use std::{
   collections::{BTreeMap, HashMap, VecDeque},
   sync::Arc,
+  time::Duration,
 };
 use tokio::sync::Notify;
 use tokio::sync::{Mutex, RwLock, watch};
+use tokio::time::Instant;
 use tracing::{debug, error, info, warn};
 use wtransport::{Connection, SendStream, error::StreamWriteError};
+
+/// Token-bucket rate limiter. All streams of one subscriber share a single
+/// bucket so they compete for bandwidth — the QUIC scheduler then drains
+/// higher-priority streams first when writes are pending.
+#[derive(Debug)]
+struct TokenBucket {
+  rate_bytes_per_sec: f64,
+  tokens: f64,
+  last_refill: Instant,
+}
+
+impl TokenBucket {
+  fn new(rate_kbps: u64) -> Self {
+    let rate = rate_kbps as f64 * 1000.0 / 8.0; // kbps → bytes/sec
+    Self {
+      rate_bytes_per_sec: rate,
+      tokens: rate, // start with one second worth of tokens
+      last_refill: Instant::now(),
+    }
+  }
+
+  async fn consume(&mut self, bytes: usize) {
+    let now = Instant::now();
+    let elapsed = now.duration_since(self.last_refill).as_secs_f64();
+    self.tokens = (self.tokens + elapsed * self.rate_bytes_per_sec).min(self.rate_bytes_per_sec); // cap at 1 second of burst
+    self.last_refill = now;
+
+    let needed = bytes as f64;
+    if self.tokens < needed {
+      let deficit = needed - self.tokens;
+      let wait = Duration::from_secs_f64(deficit / self.rate_bytes_per_sec);
+      tokio::time::sleep(wait).await;
+      self.tokens = 0.0;
+    } else {
+      self.tokens -= needed;
+    }
+  }
+}
 
 /// Number of partitions for send stream management to reduce lock contention.
 /// Each partition contains a separate HashMap protected by its own RwLock.
@@ -59,7 +100,8 @@ pub(crate) struct MOQTClient {
   #[allow(dead_code)]
   pub client_setup: Arc<ClientSetup>,
   pub announced_track_namespaces: Arc<RwLock<Vec<Tuple>>>, // the track namespaces the publisher announced
-  pub published_tracks: Arc<RwLock<Vec<FullTrackName>>>,   // the tracks the client is publishing
+  pub outbound_announcements: Arc<RwLock<HashMap<Tuple, u64>>>, //Maps a Namespace to the outbound request_id we used to announce it to the client
+  pub published_tracks: Arc<RwLock<HashMap<u64, FullTrackName>>>, // request_id -> track the client is publishing
   pub subscribers: Arc<RwLock<Vec<usize>>>, // the subscribers the client is subscribed to
 
   pub message_queue: Arc<RwLock<VecDeque<ControlMessage>>>, // the control messages the client has sent
@@ -73,6 +115,8 @@ pub(crate) struct MOQTClient {
   // The key value is the original request id.
   pub subscribe_requests: Arc<RwLock<BTreeMap<u64, SubscribeRequest>>>,
 
+  pub inbound_requests: Arc<RwLock<BTreeMap<u64, PendingRequest>>>,
+
   // Senders for cancelling active fetch tasks, keyed by request_id.
   pub fetch_cancel_senders: Arc<RwLock<HashMap<u64, watch::Sender<bool>>>>,
 
@@ -80,6 +124,10 @@ pub(crate) struct MOQTClient {
   pub subscriptions: TrackSubscriptionMap,
 
   pub switch_context: SwitchContext,
+
+  // Optional per-connection write rate limiter. All streams of this client share
+  // the same bucket so they compete for bandwidth, exercising QUIC stream priority.
+  rate_limiter: Option<Arc<Mutex<TokenBucket>>>,
 }
 
 impl MOQTClient {
@@ -93,21 +141,31 @@ impl MOQTClient {
       send_streams.push(Arc::new(RwLock::new(HashMap::new())));
     }
 
+    let kbps = crate::server::config::AppConfig::load().write_kbps_limit;
+    let rate_limiter = if kbps > 0 {
+      Some(Arc::new(Mutex::new(TokenBucket::new(kbps))))
+    } else {
+      None
+    };
+
     MOQTClient {
       connection_id,
       connection,
       client_setup,
       announced_track_namespaces: Arc::new(RwLock::new(Vec::new())),
-      published_tracks: Arc::new(RwLock::new(Vec::new())),
+      outbound_announcements: Arc::new(RwLock::new(HashMap::new())),
+      published_tracks: Arc::new(RwLock::new(HashMap::new())),
       subscribers: Arc::new(RwLock::new(Vec::new())),
       message_queue: Arc::new(RwLock::new(VecDeque::new())),
       message_notify: Arc::new(Notify::default()),
       send_streams: Arc::new(send_streams),
       fetch_requests: Arc::new(RwLock::new(BTreeMap::new())),
       subscribe_requests: Arc::new(RwLock::new(BTreeMap::new())),
+      inbound_requests: Arc::new(RwLock::new(BTreeMap::new())),
       fetch_cancel_senders: Arc::new(RwLock::new(HashMap::new())),
       subscriptions: TrackSubscriptionMap::new(),
       switch_context: SwitchContext::new(),
+      rate_limiter,
     }
   }
 
@@ -121,9 +179,14 @@ impl MOQTClient {
     subscribers.push(subscriber_id);
   }
 
-  pub(crate) async fn add_published_track(&self, full_track_name: FullTrackName) {
+  pub(crate) async fn get_outbound_announce_id(&self, namespace: &Tuple) -> Option<u64> {
+    let map = self.outbound_announcements.read().await;
+    map.get(namespace).cloned()
+  }
+
+  pub(crate) async fn add_published_track(&self, request_id: u64, full_track_name: FullTrackName) {
     let mut published_tracks = self.published_tracks.write().await;
-    published_tracks.push(full_track_name);
+    published_tracks.insert(request_id, full_track_name);
   }
 
   /// Get the next control message from the queue.
@@ -155,15 +218,15 @@ impl MOQTClient {
   fn get_partition_index(&self, stream_id: &StreamId) -> usize {
     let value = match stream_id.stream_type {
       StreamType::Fetch => {
-        // Use a simple hash combining track_alias and fetch_request_id
+        // Use a simple hash combining relay_track_id and fetch_request_id
         stream_id
-          .track_alias
+          .relay_track_id
           .wrapping_add(stream_id.fetch_request_id.unwrap_or(0).wrapping_mul(13))
       }
       StreamType::Subgroup => {
         // Better distribution using prime number multipliers
         stream_id
-          .track_alias
+          .relay_track_id
           .wrapping_add(stream_id.group_id.unwrap_or(0).wrapping_mul(17))
           .wrapping_add(stream_id.subgroup_id.unwrap_or(0).wrapping_mul(31))
       }
@@ -338,7 +401,12 @@ impl MOQTClient {
       }
     };
 
-    // flow control
+    // Rate-limit before writing so all streams of this connection compete for
+    // the shared bandwidth budget, causing QUIC buffers to fill and the QUIC
+    // stream priority scheduler to choose between them.
+    if let Some(rl) = &self.rate_limiter {
+      rl.lock().await.consume(object.len()).await;
+    }
 
     if let Some(s) = send_stream {
       let mut stream = s.lock().await;
@@ -399,15 +467,15 @@ mod tests {
     fn get_partition_index(stream_id: &StreamId) -> usize {
       let value = match stream_id.stream_type {
         StreamType::Fetch => {
-          // Use a simple hash combining track_alias and fetch_request_id
+          // Use a simple hash combining relay_track_id and fetch_request_id
           stream_id
-            .track_alias
+            .relay_track_id
             .wrapping_add(stream_id.fetch_request_id.unwrap_or(0).wrapping_mul(13))
         }
         StreamType::Subgroup => {
           // Better distribution using prime number multipliers
           stream_id
-            .track_alias
+            .relay_track_id
             .wrapping_add(stream_id.group_id.unwrap_or(0).wrapping_mul(17))
             .wrapping_add(stream_id.subgroup_id.unwrap_or(0).wrapping_mul(31))
         }
@@ -420,10 +488,10 @@ mod tests {
   }
 
   /// Helper function to create a Fetch stream ID
-  fn create_fetch_stream_id(track_alias: u64, fetch_request_id: u64) -> StreamId {
+  fn create_fetch_stream_id(relay_track_id: u64, fetch_request_id: u64) -> StreamId {
     StreamId {
       stream_type: StreamType::Fetch,
-      track_alias,
+      relay_track_id,
       group_id: None,
       subgroup_id: None,
       fetch_request_id: Some(fetch_request_id),
@@ -432,13 +500,13 @@ mod tests {
 
   /// Helper function to create a Subgroup stream ID
   fn create_subgroup_stream_id(
-    track_alias: u64,
+    relay_track_id: u64,
     group_id: Option<u64>,
     subgroup_id: Option<u64>,
   ) -> StreamId {
     StreamId {
       stream_type: StreamType::Subgroup,
-      track_alias,
+      relay_track_id,
       group_id,
       subgroup_id,
       fetch_request_id: None,

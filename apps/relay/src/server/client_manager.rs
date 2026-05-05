@@ -47,7 +47,6 @@ impl ClientManager {
   }
 
   // returns the first publisher that matches the full_track_name
-  // TODO: we need to handle the case where multiple publishers are publishing the same track
   pub(crate) async fn get_publisher_by_full_track_name(
     &self,
     full_track_name: &FullTrackName,
@@ -60,7 +59,8 @@ impl ClientManager {
         .published_tracks
         .read()
         .await
-        .contains(full_track_name)
+        .values()
+        .any(|n| n == full_track_name)
       {
         return Some(client.clone());
       }

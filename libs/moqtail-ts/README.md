@@ -127,7 +127,7 @@ As a subscriber, the MOQtail client enables you to discover, request, and consum
 
 ### Live Content Subscription
 
-For real-time streaming content, use `subscribe()` which returns either a `ReadableStream<MoqtObject>` or a `SubscribeError`:
+For real-time streaming content, use `subscribe()` which returns either a `ReadableStream<MoqtObject>` or a `RequestError`:
 
 #### Subscribe Implementation
 
@@ -156,11 +156,11 @@ const subscribe = new Subscribe(
 
 const result = await client.subscribe(subscribe)
 
-if (result instanceof SubscribeError) {
+if (result instanceof RequestError) {
   console.error(`Subscription failed: ${result.reasonPhrase}`)
   // Handle error based on error code
   switch (result.errorCode) {
-    case SubscribeErrorCode.InvalidRange:
+    case RequestErrorCode.InvalidRange:
       // Adjust range and retry
       break
     default:
@@ -188,7 +188,7 @@ if (result instanceof SubscribeError) {
 
 ### On-Demand Content Fetching
 
-For static or archived content, use `fetch()` which returns either a `ReadableStream<MoqtObject>` or a `FetchError`:
+For static or archived content, use `fetch()` which returns either a `ReadableStream<MoqtObject>` or a `RequestError`:
 
 #### Fetch Implementation
 
@@ -213,7 +213,7 @@ const fetch = new Fetch(
 
 const result = await client.fetch(fetch)
 
-if (result instanceof FetchError) {
+if (result instanceof RequestError) {
   console.error(`Fetch failed: ${result.reasonPhrase}`)
   // Handle fetch error
 } else {
@@ -249,14 +249,6 @@ function processObject(object: MoqtObject) {
         processData(object.payload)
       }
       break
-    case ObjectStatus.ObjectDoesNotExist:
-      // Object was not available
-      handleMissingObject(object.groupId, object.objectId)
-      break
-    case ObjectStatus.GroupDoesNotExist:
-      // Entire group was not available
-      handleMissingGroup(object.groupId)
-      break
     case ObjectStatus.EndOfGroup:
       // Marks the end of a group
       finalizeGroup(object.groupId)
@@ -278,7 +270,7 @@ function processObject(object: MoqtObject) {
 const subscribe = new Subscribe(/*...*/)
 const result = await client.subscribe(subscribe)
 
-if (result instanceof SubscribeError) {
+if (result instanceof RequestError) {
   console.error(`Subscription failed: ${result.reasonPhrase}`)
 } else {
   console.log('Subscription successful, processing stream...')
@@ -331,7 +323,7 @@ async function createSubscriber() {
 
   const result = await client.subscribe(subscribe)
 
-  if (result instanceof SubscribeError) {
+  if (result instanceof RequestError) {
     console.error(`Failed to subscribe: ${result.reasonPhrase}`)
     return
   }
@@ -415,7 +407,7 @@ Query the status of specific tracks:
 const trackStatus = new TrackStatusMessage(client.nextClientRequestId, FullTrackName.tryNew('live/conference', 'video'))
 
 const result = await client.trackStatus(trackStatus)
-if (result instanceof TrackStatusError) {
+if (result instanceof RequestError) {
   console.error(`Track status request failed: ${result.reasonPhrase}`)
 } else {
   // result is TrackStatus

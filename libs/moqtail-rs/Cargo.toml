@@ -1,8 +1,8 @@
 [package]
 name = "moqtail"
-description = "Draft 14-compliant Media-over-QUIC (MoQ) protocol library."
+description = "Draft 16-compliant Media-over-QUIC (MoQ) protocol library."
 keywords = ["moq", "quic", "media", "protocol"]
-version = "0.11.1"
+version = "0.13.1"
 edition = "2024"
 license = "Apache-2.0"
 

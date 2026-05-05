@@ -15,7 +15,6 @@
 use crate::server::client::MOQTClient;
 use crate::server::session_context::{PendingRequest, SessionContext, UpstreamFetchEvent};
 use crate::server::stream_id::StreamId;
-use crate::server::track_cache::CacheConsumeEvent;
 use crate::server::utils::build_stream_id;
 use core::result::Result::{Err, Ok};
 use moqtail::model::common::location::Location;
@@ -33,6 +32,8 @@ use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, error, info, warn};
+
+const UPSTREAM_FETCH_CHANNEL_CAPACITY: usize = 64;
 
 pub async fn handle(
   client: Arc<MOQTClient>,
@@ -69,7 +70,7 @@ pub async fn handle(
         };
 
         client
-          .fetch_requests
+          .incoming_fetch_requests
           .write()
           .await
           .insert(request_id, req.clone());
@@ -191,35 +192,28 @@ pub async fn handle(
         if let Some(PendingRequest::Fetch(req)) = inbound.get_mut(&request_id) {
           req.track_alias = track_read.relay_track_id;
         }
-        let mut fetches = client.fetch_requests.write().await;
+        let mut fetches = client.incoming_fetch_requests.write().await;
         if let Some(req) = fetches.get_mut(&request_id) {
           req.track_alias = track_read.relay_track_id;
         }
       }
 
       // Register a cancel channel for this fetch request
-      let (cancel_tx, mut cancel_rx) = watch::channel(false);
+      let (cancel_tx, cancel_rx) = watch::channel(false);
       {
         let mut senders = client.fetch_cancel_senders.write().await;
         senders.insert(request_id, cancel_tx);
       }
 
       tokio::spawn(async move {
-        // TODO: verify the range exist. Currently we just return what we have...
         let track_read = track.read().await;
-        let mut object_rx = track_read
-          .cache
-          .read_objects(
-            start_location.clone().unwrap(),
-            end_location.clone().unwrap(),
-            true, /* report_end_location */
-          )
-          .await;
+        let start_location = start_location.unwrap();
+        let end_location = end_location.unwrap();
 
         let fetch_header = FetchHeader::new(request_id);
         let header_info = HeaderInfo::Fetch {
           header: fetch_header,
-          fetch_request: fetch,
+          fetch_request: fetch.clone(),
         };
 
         let stream_id = build_stream_id(track_read.relay_track_id, &header_info);
@@ -239,143 +233,227 @@ pub async fn handle(
         };
 
         let mut object_count = 0;
+        let mut upstream_gap_count: u64 = 0;
         let mut send_stream = None;
         let mut cancelled = false;
         let mut fetch_prev_ctx: Option<moqtail::model::data::fetch_object::FetchObjectContext> =
           None;
-        loop {
-          tokio::select! {
-            event = object_rx.recv() => {
-              match event {
-                Some(event) => match event {
-                  CacheConsumeEvent::NoObject => {
-                    // there is no object found
-                    break;
-                  }
-                  CacheConsumeEvent::EndLocation(end_location) => {
-                    info!(
-                      "handle_fetch_messages | sending fetch_ok | actual end_location: {:?}",
-                      &end_location
-                    );
-                    // TODO: implement descending fetch
-                    // TODO: end of track is correct?
-                    let largest_location = track_read.largest_location.read().await;
-                    let end_of_track = largest_location.group == end_location.group;
-                    drop(largest_location);
-                    let cached_extensions = { track_read.track_extensions.read().await.clone() };
-                    let fetch_ok = FetchOk::new(
-                      request_id,
-                      end_of_track,
-                      end_location,
-                      vec![],
-                      cached_extensions,
-                    );
+        let mut group_id = start_location.group;
 
+        while group_id <= end_location.group {
+          if *cancel_rx.borrow() {
+            info!(
+              "handle_fetch_messages | Fetch cancelled for request_id: {}",
+              request_id
+            );
+            cancelled = true;
+            break;
+          }
+
+          if let Some(group_objects) = track_read.cache.get_group(group_id).await {
+            // === CACHE HIT ===
+            let objects = group_objects.read().await;
+            for object in objects.iter() {
+              if group_id == start_location.group && object.object_id < start_location.object {
+                continue;
+              }
+              if group_id == end_location.group && object.object_id >= end_location.object {
+                break;
+              }
+
+              if object_count == 0 {
+                send_stream = match stream_fn(client.clone(), &stream_id).await {
+                  Some(ss) => Some(ss),
+                  None => {
                     client
-                      .queue_message(ControlMessage::FetchOk(Box::new(fetch_ok)))
-                      .await;
+                      .fetch_cancel_senders
+                      .write()
+                      .await
+                      .remove(&request_id);
+                    return Err(TerminationCode::InternalError);
                   }
-                  CacheConsumeEvent::Object(object) => {
+                };
+              }
+
+              let fetch_obj =
+                moqtail::model::data::fetch_object::FetchObject::Object(object.clone());
+              let serialized = fetch_obj.serialize(fetch_prev_ctx.as_ref()).unwrap();
+              fetch_prev_ctx = fetch_obj.context();
+
+              if let Err(e) = client
+                .write_stream_object(
+                  &stream_id,
+                  object.object_id,
+                  serialized,
+                  send_stream.as_ref().cloned(),
+                )
+                .await
+              {
+                error!(
+                  "handle_fetch_messages | Error writing object to stream: {:?}",
+                  e
+                );
+                client
+                  .fetch_cancel_senders
+                  .write()
+                  .await
+                  .remove(&request_id);
+                return Err(TerminationCode::InternalError);
+              }
+
+              if context.server_config.enable_object_logging {
+                let sending_time = crate::server::utils::passed_time_since_start();
+                if let Ok(fetch_object) = moqtail::model::data::object::Object::try_from_fetch(
+                  object.clone(),
+                  track_read.relay_track_id,
+                ) {
+                  track_read
+                    .object_logger
+                    .log_fetch_object(
+                      track_read.relay_track_id,
+                      context.connection_id,
+                      request_id,
+                      &fetch_object,
+                      true,
+                      sending_time,
+                    )
+                    .await;
+                }
+              }
+
+              object_count += 1;
+            }
+            group_id += 1;
+          } else {
+            // === CACHE MISS ===
+            // Scan ahead to find contiguous gap [gap_start .. gap_end]
+            let gap_start: u64 = group_id;
+            let mut gap_end = group_id;
+            while gap_end < end_location.group
+              && track_read.cache.get_group(gap_end + 1).await.is_none()
+            {
+              gap_end += 1;
+            }
+
+            let max_upstream_fetch_gaps = context.server_config.max_upstream_fetch_gaps;
+            if upstream_gap_count >= max_upstream_fetch_gaps {
+              warn!(
+                "handle_fetch_delivery | Reached max upstream fetch gap limit ({}), skipping gap at group {}",
+                max_upstream_fetch_gaps, gap_start
+              );
+              group_id = gap_end + 1;
+              continue;
+            }
+            upstream_gap_count += 1;
+
+            // Issue upstream fetch for the gap
+            let upstream_rx = send_upstream_fetch_for_range(
+              &client,
+              &context,
+              &track_read,
+              &fetch,
+              gap_start,
+              gap_end,
+            )
+            .await;
+
+            if let Some(mut rx) = upstream_rx {
+              let timeout = context.server_config.upstream_fetch_timeout;
+              loop {
+                match tokio::time::timeout(timeout, rx.recv()).await {
+                  Ok(Some(UpstreamFetchEvent::Object(object))) => {
                     if object_count == 0 {
-                      info!("handle_fetch_messages | starting stream {:?}", &stream_id);
                       send_stream = match stream_fn(client.clone(), &stream_id).await {
                         Some(ss) => Some(ss),
                         None => {
-                          // Clean up cancel sender before returning
-                          client.fetch_cancel_senders.write().await.remove(&request_id);
+                          client
+                            .fetch_cancel_senders
+                            .write()
+                            .await
+                            .remove(&request_id);
                           return Err(TerminationCode::InternalError);
                         }
                       };
                     }
-                    let object_id = object.object_id;
+
                     let fetch_obj =
                       moqtail::model::data::fetch_object::FetchObject::Object(object.clone());
-                    let serialized = fetch_obj
-                      .serialize(fetch_prev_ctx.as_ref())
-                      .unwrap();
+                    let serialized = fetch_obj.serialize(fetch_prev_ctx.as_ref()).unwrap();
                     fetch_prev_ctx = fetch_obj.context();
-                    let is_sent = if let Err(e) = client
+
+                    if let Err(e) = client
                       .write_stream_object(
                         &stream_id,
-                        object_id,
+                        object.object_id,
                         serialized,
                         send_stream.as_ref().cloned(),
                       )
                       .await
                     {
                       error!(
-                        "handle_fetch_messages | Error writing object to stream: {:?}",
+                        "handle_fetch_messages | Error writing upstream object to stream: {:?}",
                         e
                       );
-                      false
-                    } else {
-                      true
-                    };
-
-                    if !is_sent {
-                      // Clean up cancel sender before returning
-                      client.fetch_cancel_senders.write().await.remove(&request_id);
+                      client
+                        .fetch_cancel_senders
+                        .write()
+                        .await
+                        .remove(&request_id);
                       return Err(TerminationCode::InternalError);
                     }
 
-                    // Log fetch stream object if enabled
                     if context.server_config.enable_object_logging {
                       let sending_time = crate::server::utils::passed_time_since_start();
-                      let subgroup_id = match object.forwarding_preference {
-                        moqtail::model::data::constant::ObjectForwardingPreference::Subgroup => {
-                          Some(object.subgroup_id)
-                        }
-                        moqtail::model::data::constant::ObjectForwardingPreference::Datagram => {
-                          None
-                        }
-                      };
-                      let fetch_object = moqtail::model::data::object::Object {
-                        track_alias: track_read.relay_track_id,
-                        location: moqtail::model::common::location::Location::new(
-                          object.group_id,
-                          object.object_id,
-                        ),
-                        publisher_priority: object.publisher_priority,
-                        forwarding_preference: object.forwarding_preference.clone(),
-                        subgroup_id,
-                        status: moqtail::model::data::constant::ObjectStatus::Normal,
-                        extensions: object.extension_headers.clone(),
-                        payload: if object.payload.is_empty() {
-                          None
-                        } else {
-                          Some(object.payload.clone())
-                        },
-                      };
-                      track_read
-                        .object_logger
-                        .log_fetch_object(
-                          track_read.relay_track_id,
-                          context.connection_id,
-                          request_id,
-                          &fetch_object,
-                          is_sent,
-                          sending_time,
-                        )
-                        .await;
+                      if let Ok(fetch_object) = moqtail::model::data::object::Object::try_from_fetch(
+                        object.clone(),
+                        track_read.relay_track_id,
+                      ) {
+                        track_read
+                          .object_logger
+                          .log_fetch_object(
+                            track_read.relay_track_id,
+                            context.connection_id,
+                            request_id,
+                            &fetch_object,
+                            true,
+                            sending_time,
+                          )
+                          .await;
+                      }
                     }
-                    info!(
-                      "handle_fetch_messages | Wrote object to stream: {} object_id: {}",
-                      &stream_id, object_id
-                    );
+
                     object_count += 1;
                   }
-                },
-                None => {
-                  warn!("handle_fetch_messages | No object.");
-                  break;
+                  Ok(Some(UpstreamFetchEvent::StreamClosed)) => {
+                    break;
+                  }
+                  Ok(Some(UpstreamFetchEvent::Error(e))) => {
+                    warn!(
+                      "handle_fetch_messages | Upstream fetch error for gap [{}, {}]: {}",
+                      gap_start, gap_end, e
+                    );
+                    break;
+                  }
+                  Ok(None) => {
+                    break;
+                  }
+                  Err(_) => {
+                    warn!(
+                      "handle_fetch_messages | Upstream fetch timed out for gap [{}, {}]",
+                      gap_start, gap_end
+                    );
+                    context
+                      .upstream_fetch_senders
+                      .write()
+                      .await
+                      .remove(&gap_start);
+                    break;
+                  }
                 }
               }
             }
-            _ = cancel_rx.changed() => {
-              info!("handle_fetch_messages | Fetch cancelled for request_id: {}", request_id);
-              cancelled = true;
-              break;
-            }
+
+            group_id = gap_end + 1;
           }
         }
 
@@ -403,7 +481,7 @@ pub async fn handle(
           );
 
           // 1. Send FETCH_OK
-          let end_loc = start_location.clone().unwrap_or(Location::new(0, 0));
+          let end_loc = start_location.clone();
           let fetch_ok = FetchOk::new(request_id, false, end_loc, vec![], vec![]);
 
           client
@@ -438,7 +516,11 @@ pub async fn handle(
 
         // Clean up the unified map since the fetch is done
         client.inbound_requests.write().await.remove(&request_id);
-        client.fetch_requests.write().await.remove(&request_id);
+        client
+          .incoming_fetch_requests
+          .write()
+          .await
+          .remove(&request_id);
 
         // Clean up cancel sender
         client
@@ -464,7 +546,11 @@ pub async fn handle(
       // Remove the fetch request from the client maps
       {
         client.inbound_requests.write().await.remove(&request_id);
-        client.fetch_requests.write().await.remove(&request_id);
+        client
+          .incoming_fetch_requests
+          .write()
+          .await
+          .remove(&request_id);
         debug!(
           "Removed FETCH request {} from client maps after Cancel",
           request_id
@@ -564,20 +650,33 @@ async fn send_upstream_fetch_for_range(
     original_fetch.parameters.clone(),
   );
 
-  let (upstream_tx, upstream_rx) = mpsc::channel(64);
+  let (upstream_tx, upstream_rx) = mpsc::channel(UPSTREAM_FETCH_CHANNEL_CAPACITY);
 
   {
-    let pending = PendingRequest::Fetch(FetchRequest {
+    // Use the publisher's track alias so handle_uni_stream can resolve the track on the response.
+    let publisher_alias = track_read
+      .publisher_aliases
+      .read()
+      .await
+      .get(&publisher.connection_id)
+      .copied()
+      .unwrap_or(0);
+    let req = FetchRequest {
       original_request_id: relay_request_id,
       requested_by: client.connection_id,
       fetch_request: upstream_fetch.clone(),
-      track_alias: track_read.relay_track_id,
-    });
+      track_alias: publisher_alias,
+    };
+    publisher
+      .outgoing_fetch_requests
+      .write()
+      .await
+      .insert(relay_request_id, req.clone());
     context
       .relay_pending_requests
       .write()
       .await
-      .insert(relay_request_id, pending);
+      .insert(relay_request_id, PendingRequest::Fetch(req));
     context
       .upstream_fetch_senders
       .write()
@@ -608,5 +707,9 @@ async fn send_request_error(
     .await;
   // Remove the request from the client maps on error
   client.inbound_requests.write().await.remove(&request_id);
-  client.fetch_requests.write().await.remove(&request_id);
+  client
+    .incoming_fetch_requests
+    .write()
+    .await
+    .remove(&request_id);
 }

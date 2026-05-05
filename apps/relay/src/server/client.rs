@@ -108,8 +108,10 @@ pub(crate) struct MOQTClient {
   pub message_notify: Arc<Notify>, // notify when a new message is available
   pub send_streams: Arc<SendStreamList>,
 
-  // this contains the requests made by the client and the corresponding request
-  pub fetch_requests: Arc<RwLock<BTreeMap<u64, FetchRequest>>>,
+  // fetch requests that this client sent to the relay
+  pub incoming_fetch_requests: Arc<RwLock<BTreeMap<u64, FetchRequest>>>,
+  // fetch requests that the relay sent to this client
+  pub outgoing_fetch_requests: Arc<RwLock<BTreeMap<u64, FetchRequest>>>,
 
   // this contains the requests made by the client and the corresponding request.
   // The key value is the original request id.
@@ -159,7 +161,8 @@ impl MOQTClient {
       message_queue: Arc::new(RwLock::new(VecDeque::new())),
       message_notify: Arc::new(Notify::default()),
       send_streams: Arc::new(send_streams),
-      fetch_requests: Arc::new(RwLock::new(BTreeMap::new())),
+      incoming_fetch_requests: Arc::new(RwLock::new(BTreeMap::new())),
+      outgoing_fetch_requests: Arc::new(RwLock::new(BTreeMap::new())),
       subscribe_requests: Arc::new(RwLock::new(BTreeMap::new())),
       inbound_requests: Arc::new(RwLock::new(BTreeMap::new())),
       fetch_cancel_senders: Arc::new(RwLock::new(HashMap::new())),

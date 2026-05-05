@@ -1,5 +1,13 @@
 # moqtail-ts
 
+## 0.11.0
+
+### Minor Changes
+
+- [#189](https://github.com/moqtail/moqtail/pull/189) [`996f334`](https://github.com/moqtail/moqtail/commit/996f3347d28586b74d993654abdce40ed92d9a44) Thanks [@zafergurel](https://github.com/zafergurel)! - Early discard policy can be defined per subscription.
+
+- [#191](https://github.com/moqtail/moqtail/pull/191) [`a9c4431`](https://github.com/moqtail/moqtail/commit/a9c4431e6995af87333ba64bda934fd75b6b1b6a) Thanks [@zafergurel](https://github.com/zafergurel)! - Add `isValidTrackAlias` type guard in `src/client/util/validators.ts`. Thanks to [thexeos](https://github.com/thexeos) for pointing out the bug and proposing the fix.
+
 ## 0.10.1
 
 ### Patch Changes

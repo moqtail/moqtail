@@ -23,9 +23,13 @@ mkcert -key-file key.pem -cert-file cert.pem localhost 127.0.0.1 ::1
   - Enable `WebTransport Developer Mode`
   - Restart Chrome
 
+- Firefox:
+  - Navigate to `about:config`
+  - Set `network.http.http3.disable_when_third_party_roots_found` to `false`
+
 > [!NOTE]
-> Instructions for Firefox and Edge are pending. Currently only Chrome is fully tested.
-> If you successfully configure these browsers, please consider contributing the steps!
+> Instructions for Edge are pending. If you successfully configure this browser,
+> please consider contributing the steps!
 
 ---
 

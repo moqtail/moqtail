@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::server::client::MOQTClient;
-use crate::server::session_context::{PendingRequest, SessionContext};
+use crate::server::session_context::{PendingRequest, SessionContext, UpstreamFetchEvent};
 use crate::server::stream_id::StreamId;
 use crate::server::track_cache::CacheConsumeEvent;
 use crate::server::utils::build_stream_id;
@@ -21,6 +21,7 @@ use core::result::Result::{Err, Ok};
 use moqtail::model::common::location::Location;
 use moqtail::model::control::constant::RequestErrorCode;
 use moqtail::model::control::control_message::ControlMessage;
+use moqtail::model::control::fetch::Fetch;
 use moqtail::model::control::fetch_ok::FetchOk;
 use moqtail::model::control::request_error::RequestError;
 use moqtail::model::data::fetch_header::FetchHeader;
@@ -30,7 +31,7 @@ use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use moqtail::transport::data_stream_handler::{FetchRequest, HeaderInfo};
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use tracing::{debug, error, info, warn};
 
 pub async fn handle(
@@ -509,6 +510,86 @@ pub async fn handle(
       Ok(())
     }
   }
+}
+
+/// Send an upstream Fetch to the publisher for a cache gap [gap_start, gap_end].
+/// Returns an mpsc::Receiver through which upstream objects will be forwarded.
+#[allow(dead_code)]
+async fn send_upstream_fetch_for_range(
+  client: &Arc<MOQTClient>,
+  context: &Arc<SessionContext>,
+  track_read: &crate::server::track::Track,
+  original_fetch: &Fetch,
+  gap_start: u64,
+  gap_end: u64,
+) -> Option<mpsc::Receiver<UpstreamFetchEvent>> {
+  let publisher = {
+    let m = context.client_manager.read().await;
+    match m
+      .get_publisher_by_full_track_name(&track_read.full_track_name)
+      .await
+    {
+      Some(p) => Some(p),
+      None => {
+        m.get_publisher_by_announced_track_namespace(&track_read.full_track_name.namespace)
+          .await
+      }
+    }
+  };
+  let publisher = match publisher {
+    Some(p) => p,
+    None => {
+      info!(
+        "send_upstream_fetch_for_range | No publisher found for {:?}",
+        &track_read.full_track_name
+      );
+      return None;
+    }
+  };
+
+  let relay_request_id = crate::server::session::Session::get_next_relay_request_id(
+    context.relay_next_request_id.clone(),
+  )
+  .await;
+
+  let standalone_props = moqtail::model::control::fetch::StandaloneFetchProps {
+    track_namespace: track_read.full_track_name.namespace.clone(),
+    track_name: track_read.full_track_name.name.clone(),
+    start_location: Location::new(gap_start, 0),
+    end_location: Location::new(gap_end, 0),
+  };
+  let upstream_fetch = Fetch::new_standalone(
+    relay_request_id,
+    standalone_props,
+    original_fetch.parameters.clone(),
+  );
+
+  let (upstream_tx, upstream_rx) = mpsc::channel(64);
+
+  {
+    let pending = PendingRequest::Fetch(FetchRequest {
+      original_request_id: relay_request_id,
+      requested_by: client.connection_id,
+      fetch_request: upstream_fetch.clone(),
+      track_alias: track_read.relay_track_id,
+    });
+    context
+      .relay_pending_requests
+      .write()
+      .await
+      .insert(relay_request_id, pending);
+    context
+      .upstream_fetch_senders
+      .write()
+      .await
+      .insert(relay_request_id, upstream_tx);
+  }
+
+  publisher
+    .queue_message(ControlMessage::Fetch(Box::new(upstream_fetch)))
+    .await;
+
+  Some(upstream_rx)
 }
 
 async fn send_request_error(

@@ -29,7 +29,7 @@ mod track_cache;
 mod track_manager;
 mod utils;
 
-use crate::server::session_context::PendingRequest;
+use crate::server::session_context::{PendingRequest, UpstreamFetchEvent};
 use crate::server::{config::AppConfig, session::Session};
 use anyhow::Result;
 use client_manager::ClientManager;
@@ -37,8 +37,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use tokio::signal;
-use tokio::sync::Notify;
-use tokio::sync::RwLock;
+use tokio::sync::{Notify, RwLock, mpsc};
 use tracing::{debug, error, info};
 use tracing_subscriber::fmt::writer::MakeWriterExt;
 use tracing_subscriber::{EnvFilter, filter::LevelFilter};
@@ -52,6 +51,7 @@ pub(crate) struct Server {
   pub relay_pending_requests: Arc<RwLock<BTreeMap<u64, PendingRequest>>>,
   pub app_config: &'static AppConfig,
   pub relay_next_request_id: Arc<AtomicU64>,
+  pub upstream_fetch_senders: Arc<RwLock<BTreeMap<u64, mpsc::Sender<UpstreamFetchEvent>>>>,
 }
 
 impl Server {
@@ -68,6 +68,7 @@ impl Server {
       relay_pending_requests: Arc::new(RwLock::new(BTreeMap::new())),
       app_config: config,
       relay_next_request_id: Arc::new(AtomicU64::new(1u64)), // relay's request id starts at 1 and are odd
+      upstream_fetch_senders: Arc::new(RwLock::new(BTreeMap::new())),
     }
   }
 

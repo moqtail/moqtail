@@ -579,7 +579,7 @@ impl Session {
 
     debug!("client is {}", client.connection_id);
 
-    let mut stream_handler = &RecvDataStream::new(stream, client.fetch_requests.clone());
+    let mut stream_handler = &RecvDataStream::new(stream, client.outgoing_fetch_requests.clone());
 
     let mut first_object = true;
     let mut track_alias = 0u64;
@@ -623,7 +623,7 @@ impl Session {
                 debug!("received Fetch header: {:?}", header);
                 let fetch_request_id = header.request_id;
                 track_alias = client
-                  .fetch_requests
+                  .outgoing_fetch_requests
                   .read()
                   .await
                   .get(&fetch_request_id)

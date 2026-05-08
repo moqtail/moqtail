@@ -16,7 +16,10 @@ pub(crate) mod switch_context;
 pub(crate) mod track_subscription_map;
 
 use crate::server::{
-  abr, client::track_subscription_map::TrackSubscriptionMap, stream_id::{StreamId, StreamType}, utils
+  abr,
+  client::track_subscription_map::TrackSubscriptionMap,
+  stream_id::{StreamId, StreamType},
+  utils,
 };
 use anyhow::Result;
 #[allow(dead_code)]
@@ -25,7 +28,7 @@ use moqtail::{
   model::{
     common::tuple::Tuple,
     control::{client_setup::ClientSetup, control_message::ControlMessage},
-    data::full_track_name::FullTrackName,
+    data::{full_track_name::FullTrackName, group},
   },
   transport::data_stream_handler::{FetchRequest, SubscribeRequest},
 };
@@ -33,7 +36,10 @@ use switch_context::SwitchContext;
 
 use std::{
   collections::{BTreeMap, HashMap, VecDeque},
-  sync::Arc,
+  sync::{
+    Arc,
+    atomic::{AtomicU64, AtomicUsize, Ordering},
+  },
 };
 use tokio::sync::Notify;
 use tokio::sync::{Mutex, RwLock, watch};
@@ -85,6 +91,10 @@ pub(crate) struct MOQTClient {
   pub group_decisions: Arc<RwLock<HashMap<u64, u64>>>,
   pub decision_tx: tokio::sync::watch::Sender<u64>,
   pub decision_rx: tokio::sync::watch::Receiver<u64>,
+  pub active_send_tasks: Arc<AtomicUsize>,
+  /// Stream discard timeout in milliseconds. Written by the ABR controller to
+  /// shed stale data faster under congestion; read by close_stream and write_stream_object.
+  pub discard_timeout_ms: Arc<AtomicU64>,
 }
 
 impl MOQTClient {
@@ -121,6 +131,8 @@ impl MOQTClient {
       group_decisions: Arc::new(RwLock::new(HashMap::new())),
       decision_tx,
       decision_rx,
+      active_send_tasks: Arc::new(AtomicUsize::new(0)),
+      discard_timeout_ms: Arc::new(AtomicU64::new(500)),
     }
   }
 
@@ -237,6 +249,7 @@ impl MOQTClient {
           send_stream.set_priority(priority);
           let s = Arc::new(Mutex::new(send_stream));
           entry.insert(s.clone());
+          self.active_send_tasks.fetch_add(1, Ordering::SeqCst);
           info!(
             "open_stream | added send_stream to send streams ({}) connection_id: {}",
             stream_id, self.connection_id
@@ -295,34 +308,45 @@ impl MOQTClient {
     let stream = self.remove_stream_by_stream_id(stream_id).await;
 
     if let Some(send_stream) = stream {
-      // gracefully close the stream
+      let mut rx_cancel = self.decision_rx.clone();
+      let group_id = stream_id.group_id.unwrap_or(0);
+
       let mut stream = send_stream.lock().await;
 
-      // gracefully close the stream
-      // No new data may be written after calling this method.
-      // Completes when the peer has acknowledged all sent data, retransmitting data as needed.
-      stream
-        .finish()
-        .await
-        .map_err(|e| {
-          error!(
-            "close_stream | Failed to finish send stream ({}): {:?} connection_id: {}",
-            stream_id, e, self.connection_id
-          );
-          anyhow::anyhow!("Failed to finish send stream ({}): {:?}", stream_id, e)
-        })
-        .map(|_| true)
+      tokio::select! {
+        // BRANCH 1: Normal Finish (Wait for BBR to push the buffer)
+        finish_result = stream.finish() => {
+          self.active_send_tasks.fetch_sub(1, Ordering::SeqCst);
+
+          finish_result.map_err(|e| {
+            error!("close_stream | Failed to finish send stream ({}): {:?}", stream_id, e);
+            anyhow::anyhow!("Failed to finish send stream ({}): {:?}", stream_id, e)
+          }).map(|_| true)
+        }
+        // 💣 BRANCH 2: THE TRUE TIMEBOMB (Ruthless)
+        _ = tokio::time::sleep(std::time::Duration::from_millis(self.discard_timeout_ms.load(Ordering::Relaxed))) => {
+          warn!("💥 TIMEBOMB: Group {} choked in the network! Executing reset().", group_id);
+          
+          self.active_send_tasks.fetch_sub(1, Ordering::SeqCst);
+          
+          // 1. THE TRUE EXECUTION
+          // We pass 0 as the application error code. This forcefully flushes 
+          // the OS buffer and sends a RESET_STREAM instantly!
+          let _ = stream.reset(wtransport::VarInt::from_u32(0));
+          let _ = self.abr_tx.try_send(u64::MAX);
+
+          // 2. Leave the Poison Pill to block stray frames
+          {
+              let mut decisions = self.group_decisions.write().await;
+              decisions.insert(group_id, u64::MAX); 
+          }
+          return Ok(true);
+        }
+      }
     } else {
-      // it is possible that no stream was created for this stream id
-      // because the subscription can be in no forwarding state
-      debug!(
-        "close_stream | Send stream not found for {} connection_id: {}",
-        stream_id, self.connection_id
-      );
       Ok(false)
     }
   }
-
   // Just remove the stream from the stream_map
   // The caller finishes the stream and calls this to remove it from the map
   pub async fn remove_stream_by_stream_id(
@@ -342,33 +366,6 @@ impl MOQTClient {
     the_stream: Option<Arc<Mutex<SendStream>>>,
   ) -> Result<(), anyhow::Error> {
     let group_id = stream_id.group_id.unwrap_or(0);
-
-    // 1. Wake up the ABR controller if this is the start of a group
-    if object_id == 0 {
-      let _ = self.abr_tx.try_send(group_id);
-    }
-
-    // 2. PAUSE TIME: Wait for the ABR controller to decide this group's fate
-    let mut rx = self.decision_rx.clone();
-    loop {
-      {
-        let decisions = self.group_decisions.read().await;
-        if let Some(&chosen_alias) = decisions.get(&group_id) {
-          if stream_id.track_alias != chosen_alias {
-            // This track lost. Vaporize the data!
-            return Ok(());
-          }
-          // This track won! Break the loop and forward it.
-          break;
-        }
-      }
-
-      // Sleep until the ABR controller broadcasts a new decision
-      if rx.changed().await.is_err() {
-        break; // Client disconnected
-      }
-    }
-
     debug!(
       "write_stream_object | Writing object to stream ({} - {}) connection_id: {}",
       object_id, stream_id, self.connection_id
@@ -387,28 +384,53 @@ impl MOQTClient {
     };
 
     // flow control
-
     if let Some(s) = send_stream {
+      let mut rx_cancel = self.decision_rx.clone();
       let mut stream = s.lock().await;
-      match stream.write_all(&object).await {
-        Ok(..) => {}
-        Err(e) => {
-          match &e {
-            StreamWriteError::Closed | StreamWriteError::Stopped(_) => {
-              warn!(
-                "write_stream_object | Send stream is closed or stopped ({})",
-                stream_id.get_stream_id()
-              );
-              drop(stream);
-              // remove this from the streams
-              let stream_map = self.get_stream_map(stream_id);
-              let mut send_streams = stream_map.write().await;
-              send_streams.remove(stream_id.get_stream_id().as_str());
+      tokio::select! {
+        // BRANCH 1: The Normal Write Operation
+        result = stream.write_all(&object) => {
+          match result {
+            Ok(..) => {
+              }
+            Err(e) => {
+              match &e {
+                StreamWriteError::Closed | StreamWriteError::Stopped(_) => {
+                  warn!(
+                    "write_stream_object | Send stream is closed or stopped ({})",
+                    stream_id.get_stream_id()
+                  );
+                  drop(stream);
+                  // remove this from the streams
+                  let stream_map = self.get_stream_map(stream_id);
+                  let mut send_streams = stream_map.write().await;
+                  if send_streams.remove(stream_id.get_stream_id().as_str()).is_some() {
+                      self.active_send_tasks.fetch_sub(1, Ordering::SeqCst);
+                  }
+                }
+                _ => {}
+              }
             }
-            _ => {}
-          }
+          };
         }
-      };
+
+        _ = tokio::time::sleep(std::time::Duration::from_millis(self.discard_timeout_ms.load(Ordering::Relaxed))) => {
+            warn!("⏳ DEADLOCK PREVENTED: write_all for Group {} hung! Aborting frame.", group_id);
+            drop(stream);
+            let stream_map = self.get_stream_map(stream_id);
+            let mut send_streams = stream_map.write().await;
+            if send_streams.remove(stream_id.get_stream_id().as_str()).is_some() {
+                self.active_send_tasks.fetch_sub(1, Ordering::SeqCst);
+            }
+            {
+                let mut decisions = self.group_decisions.write().await;
+                decisions.insert(group_id, u64::MAX); 
+            }
+            return Ok(());
+        }
+
+
+      }
       Ok(())
     } else {
       warn!(

@@ -826,7 +826,33 @@ impl Subscription {
         stream_id,
         header_info,
       } => {
-        object.track_alias = self.relay_track_id;
+        object.track_alias = self.track_alias();
+        stream_id.track_alias = self.track_alias();
+        // 🛡️ THE FRONT-DOOR GATEKEEPER 🛡️
+        let group_id = object.location.group;
+
+        // 1. Wake up the ABR if this is the first frame of the group
+        if object.location.object == 0 {
+            let _ = self.subscriber.abr_tx.try_send(group_id);
+        }
+
+        // 2. Pause the background task and wait for the ABR to decide
+        let mut rx = self.subscriber.decision_rx.clone();
+        loop {
+            {
+                let decisions = self.subscriber.group_decisions.read().await;
+                if let Some(&chosen_alias) = decisions.get(&group_id) {
+                    if self.track_alias() != chosen_alias {
+                        return;
+                    }
+                    break;
+                }
+            }
+
+            if rx.changed().await.is_err() {
+                break;
+            }
+        }
         // update last received object location
         {
           let mut state = self.subscription_state.write().await;

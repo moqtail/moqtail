@@ -53,6 +53,33 @@ pub fn log_network_stats(
     write_entry(&log_entry);
 }
 
+pub fn log_abr_state(
+    state: &str,
+    quality_index: usize,
+    queueing_delay_ms: f64,
+    window_app_limited_frac: f64,
+    backlog_rising: bool,
+    loss_ewma: f64,
+) {
+    let now_us = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_micros();
+
+    let log_entry = json!({
+        "timestamp_us": now_us as u64,
+        "event_type": "ABR_STATE",
+        "state": state,
+        "quality_index": quality_index,
+        "queueing_delay_ms": queueing_delay_ms,
+        "window_app_limited_frac": window_app_limited_frac,
+        "backlog_rising": backlog_rising,
+        "loss_ewma": loss_ewma,
+    });
+
+    write_entry(&log_entry);
+}
+
 fn write_entry(entry: &serde_json::Value) {
     match OpenOptions::new().create(true).append(true).open("logs/relay_telemetry.jsonl") {
         Ok(mut file) => {

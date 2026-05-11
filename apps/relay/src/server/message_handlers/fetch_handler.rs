@@ -357,7 +357,7 @@ pub async fn handle(
             )
             .await;
 
-            if let Some((relay_request_id, mut rx)) = upstream_rx {
+            if let Some((relay_request_id, upstream_publisher, mut rx)) = upstream_rx {
               let timeout = context.server_config.upstream_fetch_timeout;
               loop {
                 tokio::select! {
@@ -444,11 +444,6 @@ pub async fn handle(
                           "handle_fetch_messages | Upstream fetch timed out for gap [{}, {}]",
                           gap_start, gap_end
                         );
-                        context
-                          .upstream_fetch_senders
-                          .write()
-                          .await
-                          .remove(&relay_request_id);
                         break;
                       }
                     }
@@ -463,6 +458,23 @@ pub async fn handle(
                   }
                 }
               }
+
+              // Clean up upstream fetch state
+              context
+                .upstream_fetch_senders
+                .write()
+                .await
+                .remove(&relay_request_id);
+              context
+                .relay_pending_requests
+                .write()
+                .await
+                .remove(&relay_request_id);
+              upstream_publisher
+                .outgoing_fetch_requests
+                .write()
+                .await
+                .remove(&relay_request_id);
             }
 
             group_id = gap_end + 1;
@@ -611,7 +623,8 @@ pub async fn handle(
 }
 
 /// Send an upstream Fetch to the publisher for a cache gap [gap_start, gap_end].
-/// Returns the relay request ID and an mpsc::Receiver through which upstream objects will be forwarded.
+/// Returns the relay request ID, the publisher client, and an mpsc::Receiver through which
+/// upstream objects will be forwarded.
 #[allow(dead_code)]
 async fn send_upstream_fetch_for_range(
   client: &Arc<MOQTClient>,
@@ -620,7 +633,7 @@ async fn send_upstream_fetch_for_range(
   original_fetch: &Fetch,
   gap_start: u64,
   gap_end: u64,
-) -> Option<(u64, mpsc::Receiver<UpstreamFetchEvent>)> {
+) -> Option<(u64, Arc<MOQTClient>, mpsc::Receiver<UpstreamFetchEvent>)> {
   let publisher = {
     let m = context.client_manager.read().await;
     match m
@@ -709,7 +722,7 @@ async fn send_upstream_fetch_for_range(
     .queue_message(ControlMessage::Fetch(Box::new(upstream_fetch)))
     .await;
 
-  Some((relay_request_id, upstream_rx))
+  Some((relay_request_id, publisher, upstream_rx))
 }
 
 async fn send_request_error(

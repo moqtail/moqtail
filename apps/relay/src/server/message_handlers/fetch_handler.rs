@@ -666,13 +666,22 @@ async fn send_upstream_fetch_for_range(
 
   {
     // Use the publisher's track alias so handle_uni_stream can resolve the track on the response.
-    let publisher_alias = track_read
+    let publisher_alias = match track_read
       .publisher_aliases
       .read()
       .await
       .get(&publisher.connection_id)
       .copied()
-      .unwrap_or(0);
+    {
+      Some(alias) => alias,
+      None => {
+        warn!(
+          "send_upstream_fetch_for_range | No publisher alias found for connection {}",
+          publisher.connection_id
+        );
+        return None;
+      }
+    };
     let req = FetchRequest {
       original_request_id: relay_request_id,
       requested_by: client.connection_id,

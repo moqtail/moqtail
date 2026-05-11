@@ -199,7 +199,7 @@ pub async fn handle(
       }
 
       // Register a cancel channel for this fetch request
-      let (cancel_tx, cancel_rx) = watch::channel(false);
+      let (cancel_tx, mut cancel_rx) = watch::channel(false);
       {
         let mut senders = client.fetch_cancel_senders.write().await;
         senders.insert(request_id, cancel_tx);
@@ -360,12 +360,42 @@ pub async fn handle(
             if let Some((relay_request_id, mut rx)) = upstream_rx {
               let timeout = context.server_config.upstream_fetch_timeout;
               loop {
-                match tokio::time::timeout(timeout, rx.recv()).await {
-                  Ok(Some(UpstreamFetchEvent::Object(object))) => {
-                    if object_count == 0 {
-                      send_stream = match stream_fn(client.clone(), &stream_id).await {
-                        Some(ss) => Some(ss),
-                        None => {
+                tokio::select! {
+                  result = tokio::time::timeout(timeout, rx.recv()) => {
+                    match result {
+                      Ok(Some(UpstreamFetchEvent::Object(object))) => {
+                        if object_count == 0 {
+                          send_stream = match stream_fn(client.clone(), &stream_id).await {
+                            Some(ss) => Some(ss),
+                            None => {
+                              client
+                                .fetch_cancel_senders
+                                .write()
+                                .await
+                                .remove(&request_id);
+                              return Err(TerminationCode::InternalError);
+                            }
+                          };
+                        }
+
+                        let fetch_obj =
+                          moqtail::model::data::fetch_object::FetchObject::Object(object.clone());
+                        let serialized = fetch_obj.serialize(fetch_prev_ctx.as_ref()).unwrap();
+                        fetch_prev_ctx = fetch_obj.context();
+
+                        if let Err(e) = client
+                          .write_stream_object(
+                            &stream_id,
+                            object.object_id,
+                            serialized,
+                            send_stream.as_ref().cloned(),
+                          )
+                          .await
+                        {
+                          error!(
+                            "handle_fetch_messages | Error writing upstream object to stream: {:?}",
+                            e
+                          );
                           client
                             .fetch_cancel_senders
                             .write()
@@ -373,80 +403,62 @@ pub async fn handle(
                             .remove(&request_id);
                           return Err(TerminationCode::InternalError);
                         }
-                      };
-                    }
 
-                    let fetch_obj =
-                      moqtail::model::data::fetch_object::FetchObject::Object(object.clone());
-                    let serialized = fetch_obj.serialize(fetch_prev_ctx.as_ref()).unwrap();
-                    fetch_prev_ctx = fetch_obj.context();
-
-                    if let Err(e) = client
-                      .write_stream_object(
-                        &stream_id,
-                        object.object_id,
-                        serialized,
-                        send_stream.as_ref().cloned(),
-                      )
-                      .await
-                    {
-                      error!(
-                        "handle_fetch_messages | Error writing upstream object to stream: {:?}",
-                        e
-                      );
-                      client
-                        .fetch_cancel_senders
-                        .write()
-                        .await
-                        .remove(&request_id);
-                      return Err(TerminationCode::InternalError);
-                    }
-
-                    if context.server_config.enable_object_logging {
-                      let sending_time = crate::server::utils::passed_time_since_start();
-                      if let Ok(fetch_object) = moqtail::model::data::object::Object::try_from_fetch(
-                        object.clone(),
-                        track_read.relay_track_id,
-                      ) {
-                        track_read
-                          .object_logger
-                          .log_fetch_object(
+                        if context.server_config.enable_object_logging {
+                          let sending_time = crate::server::utils::passed_time_since_start();
+                          if let Ok(fetch_object) = moqtail::model::data::object::Object::try_from_fetch(
+                            object.clone(),
                             track_read.relay_track_id,
-                            context.connection_id,
-                            request_id,
-                            &fetch_object,
-                            true,
-                            sending_time,
-                          )
-                          .await;
+                          ) {
+                            track_read
+                              .object_logger
+                              .log_fetch_object(
+                                track_read.relay_track_id,
+                                context.connection_id,
+                                request_id,
+                                &fetch_object,
+                                true,
+                                sending_time,
+                              )
+                              .await;
+                          }
+                        }
+
+                        object_count += 1;
+                      }
+                      Ok(Some(UpstreamFetchEvent::StreamClosed)) => {
+                        break;
+                      }
+                      Ok(Some(UpstreamFetchEvent::Error(e))) => {
+                        warn!(
+                          "handle_fetch_messages | Upstream fetch error for gap [{}, {}]: {}",
+                          gap_start, gap_end, e
+                        );
+                        break;
+                      }
+                      Ok(None) => {
+                        break;
+                      }
+                      Err(_) => {
+                        warn!(
+                          "handle_fetch_messages | Upstream fetch timed out for gap [{}, {}]",
+                          gap_start, gap_end
+                        );
+                        context
+                          .upstream_fetch_senders
+                          .write()
+                          .await
+                          .remove(&relay_request_id);
+                        break;
                       }
                     }
-
-                    object_count += 1;
                   }
-                  Ok(Some(UpstreamFetchEvent::StreamClosed)) => {
-                    break;
-                  }
-                  Ok(Some(UpstreamFetchEvent::Error(e))) => {
-                    warn!(
-                      "handle_fetch_messages | Upstream fetch error for gap [{}, {}]: {}",
-                      gap_start, gap_end, e
+                  _ = cancel_rx.changed() => {
+                    info!(
+                      "handle_fetch_messages | Fetch cancelled during upstream fetch for request_id: {}",
+                      request_id
                     );
-                    break;
-                  }
-                  Ok(None) => {
-                    break;
-                  }
-                  Err(_) => {
-                    warn!(
-                      "handle_fetch_messages | Upstream fetch timed out for gap [{}, {}]",
-                      gap_start, gap_end
-                    );
-                    context
-                      .upstream_fetch_senders
-                      .write()
-                      .await
-                      .remove(&relay_request_id);
+                    cancelled = true;
                     break;
                   }
                 }

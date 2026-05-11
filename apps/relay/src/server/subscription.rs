@@ -450,7 +450,7 @@ impl Subscription {
                         );
                         instance.handle_track_event(track_event).await;
                       }
-                      CacheConsumeEvent::EndLocation(_) => {}
+                      CacheConsumeEvent::EndLocation => {}
                     },
                     None => {
                       warn!("handle_fetch_messages | No object.");

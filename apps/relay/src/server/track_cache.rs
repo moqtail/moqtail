@@ -65,7 +65,7 @@ pub struct TrackCache {
 #[derive(Debug, Clone)]
 pub enum CacheConsumeEvent {
   Object(FetchObjectPayload),
-  EndLocation(Location),
+  EndLocation,
   NoObject,
 }
 
@@ -262,7 +262,7 @@ impl TrackCache {
           groups_in_range.len(),
           &end_location
         );
-        if let Err(err) = tx.send(CacheConsumeEvent::EndLocation(end_location)).await {
+        if let Err(err) = tx.send(CacheConsumeEvent::EndLocation).await {
           warn!("read_objects | An error occurred: {:?}", err);
           return;
         }

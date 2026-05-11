@@ -104,8 +104,8 @@ pub struct AppConfig {
   pub initial_max_request_id: u64,
   /// 0 = unlimited. Non-zero caps relay writes to this many kbps per subscriber connection.
   pub write_kbps_limit: u64,
-  pub _max_upstream_fetch_gaps: u64,
-  pub _upstream_fetch_timeout: Duration,
+  pub max_upstream_fetch_gaps: u64,
+  pub upstream_fetch_timeout: Duration,
 }
 
 impl AppConfig {
@@ -129,8 +129,8 @@ impl AppConfig {
         token_log_path: cli.token_log_path,
         initial_max_request_id: cli.initial_max_request_id,
         write_kbps_limit: cli.write_kbps_limit,
-        _max_upstream_fetch_gaps: cli.max_upstream_fetch_gaps,
-        _upstream_fetch_timeout: Duration::from_secs(cli.upstream_fetch_timeout_secs),
+        max_upstream_fetch_gaps: cli.max_upstream_fetch_gaps,
+        upstream_fetch_timeout: Duration::from_secs(cli.upstream_fetch_timeout_secs),
       }
     })
   }
@@ -234,8 +234,8 @@ mod tests {
       token_log_path: cli.token_log_path,
       initial_max_request_id: cli.initial_max_request_id,
       write_kbps_limit: cli.write_kbps_limit,
-      _max_upstream_fetch_gaps: cli.max_upstream_fetch_gaps,
-      _upstream_fetch_timeout: Duration::from_secs(cli.upstream_fetch_timeout_secs),
+      max_upstream_fetch_gaps: cli.max_upstream_fetch_gaps,
+      upstream_fetch_timeout: Duration::from_secs(cli.upstream_fetch_timeout_secs),
     };
 
     assert_eq!(config.initial_max_request_id, u64::MAX / 8);

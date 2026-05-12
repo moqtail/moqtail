@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cli::ForwardingPreference;
+use crate::cli::DeliveryMode;
 use crate::connection::MoqConnection;
 use crate::utils::should_log;
 use anyhow::Result;
@@ -39,7 +39,7 @@ use tracing::{debug, error, info};
 pub struct PublishConfig {
   pub namespace: String,
   pub track_name: String,
-  pub forwarding_preference: ForwardingPreference,
+  pub delivery_mode: DeliveryMode,
   pub group_count: u64,
   pub interval: u64,
   pub objects_per_group: u64,
@@ -51,7 +51,7 @@ pub struct PublishConfig {
 
 pub struct PublishNamespaceConfig {
   pub namespace: String,
-  pub forwarding_preference: ForwardingPreference,
+  pub delivery_mode: DeliveryMode,
   pub group_count: u64,
   pub interval: u64,
   pub objects_per_group: u64,
@@ -71,7 +71,7 @@ pub async fn run_namespace(moq: MoqConnection, config: PublishNamespaceConfig) -
   publish_namespace(&mut control_stream, &ns).await?;
 
   let data_config = DataConfig {
-    forwarding_preference: config.forwarding_preference,
+    delivery_mode: config.delivery_mode,
     group_count: config.group_count,
     interval: config.interval,
     objects_per_group: config.objects_per_group,
@@ -152,7 +152,7 @@ pub async fn run(moq: MoqConnection, config: PublishConfig) -> Result<()> {
   let ns = Tuple::from_utf8_path(&config.namespace);
 
   let data_config = DataConfig {
-    forwarding_preference: config.forwarding_preference,
+    delivery_mode: config.delivery_mode,
     group_count: config.group_count,
     interval: config.interval,
     objects_per_group: config.objects_per_group,
@@ -214,7 +214,7 @@ async fn publish_namespace(
 
 #[derive(Clone)]
 struct DataConfig {
-  forwarding_preference: ForwardingPreference,
+  delivery_mode: DeliveryMode,
   group_count: u64,
   interval: u64,
   objects_per_group: u64,
@@ -264,8 +264,8 @@ async fn send_data(
   track_alias: u64,
   config: &DataConfig,
 ) -> Result<()> {
-  match config.forwarding_preference {
-    ForwardingPreference::Datagram => {
+  match config.delivery_mode {
+    DeliveryMode::Datagram => {
       send_datagrams(
         connection,
         track_alias,
@@ -277,7 +277,7 @@ async fn send_data(
       )
       .await
     }
-    ForwardingPreference::Subgroup => {
+    DeliveryMode::Subgroup => {
       send_via_streams(
         connection,
         track_alias,

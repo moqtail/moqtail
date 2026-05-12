@@ -68,14 +68,14 @@ export function setupTracks(
   const audioContentSource = new LiveTrackSource(audioStream);
   moqClient.addOrUpdateTrack({
     fullTrackName: audioFullTrackName,
-    forwardingPreference: ObjectForwardingPreference.Subgroup,
+
     trackSource: { live: audioContentSource },
     publisherPriority: 128,
   });
   const videoContentSource = new LiveTrackSource(videoStream);
   moqClient.addOrUpdateTrack({
     fullTrackName: videoFullTrackName,
-    forwardingPreference: ObjectForwardingPreference.Subgroup,
+
     trackSource: { live: videoContentSource },
     publisherPriority: 128,
   });

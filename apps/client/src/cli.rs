@@ -33,10 +33,10 @@ impl From<CliGroupOrder> for GroupOrder {
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
-pub enum ForwardingPreference {
-  /// Send objects via unidirectional streams with subgroup headers
+pub enum DeliveryMode {
+  /// Send/receive objects via unidirectional streams with subgroup headers
   Subgroup,
-  /// Send objects via QUIC datagrams
+  /// Send/receive objects via QUIC datagrams
   Datagram,
 }
 
@@ -80,9 +80,9 @@ pub struct Cli {
   #[arg(long, default_value_t = false)]
   pub no_cert_validation: bool,
 
-  /// Forwarding preference (subgroup, datagram)
+  /// Delivery mode: how objects are sent/received (subgroup streams or QUIC datagrams)
   #[arg(long, value_enum, default_value = "subgroup")]
-  pub forwarding_preference: ForwardingPreference,
+  pub delivery_mode: DeliveryMode,
 
   /// Number of groups to send (publish only)
   #[arg(long, default_value_t = 100)]

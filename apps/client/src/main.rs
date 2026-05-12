@@ -45,7 +45,7 @@ async fn main() -> Result<(), anyhow::Error> {
       let config = publisher::PublishConfig {
         namespace: cli.namespace,
         track_name: cli.track_name,
-        forwarding_preference: cli.forwarding_preference,
+        delivery_mode: cli.delivery_mode,
         group_count: cli.group_count,
         interval: cli.interval,
         objects_per_group: cli.objects_per_group,
@@ -61,7 +61,7 @@ async fn main() -> Result<(), anyhow::Error> {
     Command::PublishNamespace => {
       let config = publisher::PublishNamespaceConfig {
         namespace: cli.namespace,
-        forwarding_preference: cli.forwarding_preference,
+        delivery_mode: cli.delivery_mode,
         group_count: cli.group_count,
         interval: cli.interval,
         objects_per_group: cli.objects_per_group,
@@ -74,7 +74,7 @@ async fn main() -> Result<(), anyhow::Error> {
       let config = subscriber::SubscribeConfig {
         namespace: cli.namespace,
         track_name: cli.track_name,
-        forwarding_preference: cli.forwarding_preference,
+        delivery_mode: cli.delivery_mode,
         duration: cli.duration,
         subscriber_priority: cli.subscriber_priority,
         group_order: cli.group_order.into(),

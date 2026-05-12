@@ -1,1 +1,7 @@
 npx --no -- commitlint --edit $1
+
+if ! grep -q "^Signed-off-by: " "$1"; then
+  NAME=$(git config user.name)
+  EMAIL=$(git config user.email)
+  printf "\nSigned-off-by: %s <%s>\n" "$NAME" "$EMAIL" >> "$1"
+fi

@@ -18,7 +18,7 @@ use moqtail::model::{
   control::{
     constant::SUPPORTED_VERSIONS, control_message::ControlMessage, server_setup::ServerSetup,
   },
-  data::{constant::ObjectForwardingPreference, datagram::Datagram},
+  data::datagram::Datagram,
   error::TerminationCode,
 };
 use moqtail::transport::{
@@ -345,10 +345,6 @@ impl Session {
 
                 if let Some(track) = context_clone.track_manager.get_track_by_alias(context_clone.connection_id, datagram_obj.track_alias).await {
                   let track = track.read().await;
-                  // Set forwarding preference to Datagram
-                  track.set_forwarding_preference(ObjectForwardingPreference::Datagram).await;
-
-                  // Call new_datagram
                   if let Err(e) = track.new_datagram(&datagram_obj).await {
                     error!("Failed to process datagram: {:?}", e);
                   }

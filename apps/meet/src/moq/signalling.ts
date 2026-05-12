@@ -70,7 +70,6 @@ export async function setupSignalling(
   const textSource = new LiveTrackSource(signalStream);
   moqClient.addOrUpdateTrack({
     fullTrackName: signalFTN,
-    forwardingPreference: ObjectForwardingPreference.Subgroup,
     trackSource: { live: textSource },
     publisherPriority: 1,
     trackAlias: 1000n, // need to use the same track alias

@@ -24,7 +24,6 @@ use anyhow::Result;
 use moqtail::model::common::location::Location;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::control::constant::RequestErrorCode;
-use moqtail::model::data::constant::ObjectForwardingPreference;
 use moqtail::model::data::datagram::Datagram;
 use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::model::data::object::Object;
@@ -83,7 +82,6 @@ pub struct Track {
   pub largest_location: Arc<RwLock<Location>>,
   pub object_logger: ObjectLogger,
   config: &'static AppConfig,
-  pub forwarding_preference: Arc<RwLock<ObjectForwardingPreference>>,
   pub status: Arc<RwLock<TrackStatus>>,
   pub status_notify: Arc<Notify>,
   /// Subscribers waiting for track confirmation: (request_id, connection_id).
@@ -115,7 +113,6 @@ impl Track {
       largest_location: Arc::new(RwLock::new(Location::new(0, 0))),
       object_logger: ObjectLogger::new(config.log_folder.clone()),
       config,
-      forwarding_preference: Arc::new(RwLock::new(ObjectForwardingPreference::Subgroup)),
       status: Arc::new(RwLock::new(initial_status)),
       status_notify: Arc::new(Notify::new()),
       pending_subscribers: Arc::new(RwLock::new(Vec::new())),
@@ -208,10 +205,6 @@ impl Track {
 
   pub async fn get_status(&self) -> TrackStatus {
     self.status.read().await.clone()
-  }
-
-  pub async fn set_forwarding_preference(&self, preference: ObjectForwardingPreference) {
-    *self.forwarding_preference.write().await = preference;
   }
 
   pub async fn add_subscription(

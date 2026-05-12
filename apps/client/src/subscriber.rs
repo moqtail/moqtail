@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cli::ForwardingPreference;
+use crate::cli::DeliveryMode;
 use crate::connection::MoqConnection;
 use crate::stats::ReceptionStats;
 use crate::utils::should_log;
@@ -73,7 +73,7 @@ async fn subscribe_track(
 pub struct SubscribeConfig {
   pub namespace: String,
   pub track_name: String,
-  pub forwarding_preference: ForwardingPreference,
+  pub delivery_mode: DeliveryMode,
   pub duration: u64,
   pub subscriber_priority: u8,
   pub group_order: GroupOrder,
@@ -111,11 +111,9 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
     None
   };
 
-  match config.forwarding_preference {
-    ForwardingPreference::Datagram => {
-      receive_datagrams(&connection, track_alias, config.duration).await
-    }
-    ForwardingPreference::Subgroup => {
+  match config.delivery_mode {
+    DeliveryMode::Datagram => receive_datagrams(&connection, track_alias, config.duration).await,
+    DeliveryMode::Subgroup => {
       receive_streams(&connection, track_alias, extra_alias, config.duration).await
     }
   }

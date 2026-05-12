@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { FullTrackName, ObjectForwardingPreference } from '@/model'
+import { FullTrackName } from '@/model'
 import { TrackSource } from './content_source'
 import { TrackExtension } from '../../model/extension_header/track_extension'
 
@@ -27,7 +27,6 @@ import { TrackExtension } from '../../model/extension_header/track_extension'
  * const liveStream: ReadableStream<MoqtObject> = buildCameraStream()
  * const track: Track = {
  *   fullTrackName,
- *   forwardingPreference: ObjectForwardingPreference.Latest,
  *   trackSource: { live: liveStream },
  *   publisherPriority: 0
  * }
@@ -40,7 +39,6 @@ import { TrackExtension } from '../../model/extension_header/track_extension'
  * recording.forEach(obj => cache.add(obj))
  * const track: Track = {
  *   fullTrackName,
- *   forwardingPreference: ObjectForwardingPreference.All,
  *   trackSource: { past: cache },
  *   publisherPriority: 64
  * }
@@ -53,7 +51,6 @@ import { TrackExtension } from '../../model/extension_header/track_extension'
  * const liveStream = buildLiveReadableStream()
  * const track: Track = {
  *   fullTrackName,
- *   forwardingPreference: ObjectForwardingPreference.Latest,
  *   trackSource: { past: cache, live: liveStream },
  *   publisherPriority: 8
  * }
@@ -65,11 +62,6 @@ export type Track = {
    * Globally unique identifier for the track.
    */
   fullTrackName: FullTrackName
-
-  /**
-   * Hint controlling which objects SHOULD be forwarded / prioritized.
-   */
-  forwardingPreference: ObjectForwardingPreference
 
   /**
    * Accessors for live and/or past objects belonging to this track.

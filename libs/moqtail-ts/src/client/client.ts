@@ -838,7 +838,6 @@ export class MOQtailClient {
    * // Register the track for live subscription
    * client.addOrUpdateTrack({
    *   fullTrackName: { namespace: ["camera"], name: "main" },
-   *   forwardingPreference: ObjectForwardingPreference.Latest,
    *   trackSource: { live: liveReadableStream },
    *   publisherPriority: 0 // highest priority
    * });
@@ -848,7 +847,6 @@ export class MOQtailClient {
    * const cache = new MemoryObjectCache(); // Caches are not yet fully supported
    * client.addOrUpdateTrack({
    *   fullTrackName: { namespace: ["camera"], name: "main" },
-   *   forwardingPreference: ObjectForwardingPreference.Latest,
    *   trackSource: { live: liveReadableStream, past: cache },
    *   publisherPriority: 8
    * });

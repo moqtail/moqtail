@@ -50,6 +50,33 @@ jobs:
       - name: Run EditorConfig Check
         run: editorconfig-checker -format gcc
 
+  dco:
+    name: DCO Sign-off Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check DCO sign-off on all PR commits
+        run: |
+          MISSING=0
+          while IFS= read -r sha; do
+            msg=$(git log --format=%B -n 1 "$sha")
+            if ! echo "$msg" | grep -q "^Signed-off-by: "; then
+              echo "Missing Signed-off-by in commit $sha: $(git log --format=%s -n 1 $sha)"
+              MISSING=1
+            fi
+          done < <(git log --format=%H ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }})
+          if [ "$MISSING" -ne 0 ]; then
+            echo ""
+            echo "All commits must include a Signed-off-by line."
+            echo "Use 'git commit -s' or 'git rebase --signoff HEAD~N' to fix."
+            exit 1
+          fi
+          echo "All commits have DCO sign-off."
+
   license:
     name: License Check
     if: github.event.action == 'opened' || github.event.action == 'synchronize'

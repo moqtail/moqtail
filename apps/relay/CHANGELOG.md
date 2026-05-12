@@ -1,5 +1,13 @@
 # relay
 
+## 0.13.2
+
+### Patch Changes
+
+- [#193](https://github.com/moqtail/moqtail/pull/193) [`0d2c5e7`](https://github.com/moqtail/moqtail/commit/0d2c5e7f5c4b726ad0612ec734163898e04d321a) Thanks [@sharmafb](https://github.com/sharmafb)! - Send fetches upstream for cache misses
+
+- [#179](https://github.com/moqtail/moqtail/pull/179) [`7583b5b`](https://github.com/moqtail/moqtail/commit/7583b5bca1e34dd1b321271b5157eff147918a1f) Thanks [@davemevans](https://github.com/davemevans)! - chore: add instructions for Firefox testing using private CA
+
 ## 0.13.0
 
 ### Minor Changes

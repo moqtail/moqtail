@@ -1063,7 +1063,7 @@ checksum = "7a2d987857b319362043e95f5353c0535c1f58eec5336fdfcf626430af7def58"
 
 [[package]]
 name = "relay"
-version = "0.13.0"
+version = "0.13.2"
 dependencies = [
  "anyhow",
  "bytes",

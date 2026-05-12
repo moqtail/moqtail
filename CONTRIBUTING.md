@@ -49,6 +49,37 @@ fix(subscribe): correct endGroup validation for AbsoluteRange
 > [!NOTE]
 > The commit message format is purely for consistency and clarity. Changelogs and versioning will be handled by changesets.
 
+## Commit Sign-off (DCO)
+
+All commits **must** include a `Signed-off-by` line — the [Developer Certificate of Origin](https://developercertificate.org/) (DCO). This certifies that you wrote the contribution or have the right to submit it under the project's license.
+
+```bash
+# Sign off every commit with -s
+git commit -s -m "feat(control): add SubscribeNamespace support"
+```
+
+This appends:
+
+```
+Signed-off-by: Your Name <your.email@example.com>
+```
+
+**Forgot to sign off?** Fix before pushing:
+
+```bash
+# Amend the last commit
+git commit --amend -s --no-edit
+
+# For multiple commits (replace N with the count)
+git rebase --signoff HEAD~N
+```
+
+The Husky `commit-msg` hook enforces this locally, and a CI check on every PR blocks merging if any commit is missing the sign-off.
+
+## Contributor License Agreement (CLA)
+
+For significant or large-scale contributions, the core team may request that you sign a Contributor License Agreement (CLA). This is not required for all contributions — the team will reach out after a PR is submitted if a CLA is needed and will provide the document at that time.
+
 ## Changesets
 
 Changesets are used to manage versioning and changelogs. When you make a user-facing change, you will be prompted to create a changeset. This helps keep track of changes and ensures proper versioning. Usually, the `pre-commit` hook will prompt you to create a changeset every time you commit something. If you wish to create a changeset manually, you can run:

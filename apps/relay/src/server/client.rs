@@ -29,7 +29,7 @@ use moqtail::{
   model::{
     common::tuple::Tuple,
     control::{client_setup::ClientSetup, control_message::ControlMessage},
-    data::{full_track_name::FullTrackName, group},
+    data::full_track_name::FullTrackName,
   },
   transport::data_stream_handler::{FetchRequest, SubscribeRequest},
 };
@@ -98,6 +98,12 @@ pub type SendStreamLock = Arc<RwLock<SendStreamMap>>;
 pub type SendStreamList = Vec<SendStreamLock>;
 
 #[derive(Debug, Clone)]
+pub(crate) enum AbrMessage {
+    NewGroup(u64),
+    StreamTimeout { group_id: u64, tier_index: usize },
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct MOQTClient {
   pub connection_id: usize,
   pub connection: Arc<Connection>,
@@ -135,8 +141,8 @@ pub(crate) struct MOQTClient {
   // the same bucket so they compete for bandwidth, exercising QUIC stream priority.
   rate_limiter: Option<Arc<Mutex<TokenBucket>>>,
 
-  pub abr_tx: tokio::sync::mpsc::Sender<u64>,
-  pub abr_rx: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<u64>>>>,
+  pub abr_tx: tokio::sync::mpsc::Sender<AbrMessage>,
+  pub abr_rx: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<AbrMessage>>>>,
 
   pub group_decisions: Arc<RwLock<HashMap<u64, u64>>>,
   pub decision_tx: tokio::sync::watch::Sender<u64>,
@@ -370,47 +376,43 @@ impl MOQTClient {
 
   // Remove the stream from the map and finish it
   // if the stream is found, return true, else false
-  pub async fn close_stream(&self, stream_id: &StreamId) -> Result<bool> {
+pub async fn close_stream(&self, stream_id: &StreamId, tier_index: usize) -> Result<bool> {
     let stream = self.remove_stream_by_stream_id(stream_id).await;
+    let group_id = stream_id.group_id.unwrap_or(0);
 
     if let Some(send_stream) = stream {
-      let mut rx_cancel = self.decision_rx.clone();
-      let group_id = stream_id.group_id.unwrap_or(0);
+        let mut stream = send_stream.lock().await;
 
-      let mut stream = send_stream.lock().await;
+        tokio::select! {
+            // Normal finish
+            finish_result = stream.finish() => {
+                self.active_send_tasks.fetch_sub(1, Ordering::SeqCst);
+                finish_result.map_err(|e| anyhow::anyhow!(
+                    "close_stream | Failed to finish ({}): {:?}", stream_id, e
+                )).map(|_| true)
+            }
 
-      tokio::select! {
-        // BRANCH 1: Normal Finish (Wait for BBR to push the buffer)
-        finish_result = stream.finish() => {
-          self.active_send_tasks.fetch_sub(1, Ordering::SeqCst);
-
-          finish_result.map_err(|e| {
-            error!("close_stream | Failed to finish send stream ({}): {:?}", stream_id, e);
-            anyhow::anyhow!("Failed to finish send stream ({}): {:?}", stream_id, e)
-          }).map(|_| true)
+            // Timebomb: group took too long end-to-end
+            _ = tokio::time::sleep(std::time::Duration::from_millis(
+                self.discard_timeout_ms.load(Ordering::Relaxed)
+            )) => {
+                warn!("💥 TIMEBOMB: Group {} tier {} timed out — resetting", group_id, tier_index);
+                self.active_send_tasks.fetch_sub(1, Ordering::SeqCst);
+                let _ = stream.reset(wtransport::VarInt::from_u32(2)); // DELIVERY_TIMEOUT
+                {
+                    let mut decisions = self.group_decisions.write().await;
+                    decisions.insert(group_id, u64::MAX);
+                }
+                // Structured notification — ABR now knows which tier failed
+                let _ = self.abr_tx.try_send(AbrMessage::StreamTimeout {
+                    group_id,
+                    tier_index,
+                });
+                Ok(true)
+            }
         }
-        // 💣 BRANCH 2: THE TRUE TIMEBOMB (Ruthless)
-        _ = tokio::time::sleep(std::time::Duration::from_millis(self.discard_timeout_ms.load(Ordering::Relaxed))) => {
-          warn!("💥 TIMEBOMB: Group {} choked in the network! Executing reset().", group_id);
-          
-          self.active_send_tasks.fetch_sub(1, Ordering::SeqCst);
-          
-          // 1. THE TRUE EXECUTION
-          // We pass 0 as the application error code. This forcefully flushes 
-          // the OS buffer and sends a RESET_STREAM instantly!
-          let _ = stream.reset(wtransport::VarInt::from_u32(0));
-          let _ = self.abr_tx.try_send(u64::MAX);
-
-          // 2. Leave the Poison Pill to block stray frames
-          {
-              let mut decisions = self.group_decisions.write().await;
-              decisions.insert(group_id, u64::MAX); 
-          }
-          return Ok(true);
-        }
-      }
     } else {
-      Ok(false)
+        Ok(false)
     }
   }
   // Just remove the stream from the stream_map
@@ -430,6 +432,7 @@ impl MOQTClient {
     object_id: u64,
     object: Bytes,
     the_stream: Option<Arc<Mutex<SendStream>>>,
+    tier_index: usize,          // ← new parameter
   ) -> Result<(), anyhow::Error> {
     let group_id = stream_id.group_id.unwrap_or(0);
     debug!(
@@ -452,63 +455,72 @@ impl MOQTClient {
     // flow control
 
     if let Some(s) = send_stream {
-      let mut rx_cancel = self.decision_rx.clone();
-      let mut stream = s.lock().await;
-      tokio::select! {
-        // BRANCH 1: The Normal Write Operation
-        result = stream.write_all(&object) => {
-          match result {
-            Ok(..) => {
-              }
-            Err(e) => {
-              match &e {
-                StreamWriteError::Closed | StreamWriteError::Stopped(_) => {
-                  warn!(
-                    "write_stream_object | Send stream is closed or stopped ({})",
-                    stream_id.get_stream_id()
-                  );
-                  drop(stream);
-                  // remove this from the streams
-                  let stream_map = self.get_stream_map(stream_id);
-                  let mut send_streams = stream_map.write().await;
-                  if send_streams.remove(stream_id.get_stream_id().as_str()).is_some() {
-                      self.active_send_tasks.fetch_sub(1, Ordering::SeqCst);
-                  }
+        let mut stream = s.lock().await;
+        tokio::select! {
+            result = stream.write_all(&object) => {
+                match result {
+                    Ok(()) => {}
+                    Err(e) => {
+                        match &e {
+                            StreamWriteError::Closed | StreamWriteError::Stopped(_) => {
+                                warn!(
+                                    "write_stream_object | stream closed/stopped ({})",
+                                    stream_id.get_stream_id()
+                                );
+                                drop(stream);
+                                let stream_map = self.get_stream_map(stream_id);
+                                let mut send_streams = stream_map.write().await;
+                                if send_streams.remove(stream_id.get_stream_id().as_str()).is_some() {
+                                    self.active_send_tasks.fetch_sub(1, Ordering::SeqCst);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
                 }
-                _ => {}
-              }
             }
-          };
+
+            // THE ONE TIMEOUT PATH
+            _ = tokio::time::sleep(
+                std::time::Duration::from_millis(
+                    self.discard_timeout_ms.load(Ordering::Relaxed)
+                )
+            ) => {
+                warn!(
+                    "write_stream_object | timeout on group {} tier {} — resetting stream",
+                    group_id, tier_index
+                );
+                // Send QUIC RESET_STREAM with DELIVERY_TIMEOUT error code (0x2 per MOQT spec)
+                let _ = stream.reset(wtransport::VarInt::from_u32(2));
+                drop(stream);
+
+                // Remove from map and decrement backlog
+                let stream_map = self.get_stream_map(stream_id);
+                let mut send_streams = stream_map.write().await;
+                if send_streams.remove(stream_id.get_stream_id().as_str()).is_some() {
+                    self.active_send_tasks.fetch_sub(1, Ordering::SeqCst);
+                }
+
+                // Poison so stray writes to this group are dropped
+                {
+                    let mut decisions = self.group_decisions.write().await;
+                    decisions.insert(group_id, u64::MAX);
+                }
+
+                // Notify ABR with tier information — this is the only notification path
+                let _ = self.abr_tx.try_send(AbrMessage::StreamTimeout {
+                    group_id,
+                    tier_index,
+                });
+
+                return Ok(());
+            }
         }
-
-        _ = tokio::time::sleep(std::time::Duration::from_millis(self.discard_timeout_ms.load(Ordering::Relaxed))) => {
-            warn!("⏳ DEADLOCK PREVENTED: write_all for Group {} hung! Aborting frame.", group_id);
-            drop(stream);
-            let stream_map = self.get_stream_map(stream_id);
-            let mut send_streams = stream_map.write().await;
-            if send_streams.remove(stream_id.get_stream_id().as_str()).is_some() {
-                self.active_send_tasks.fetch_sub(1, Ordering::SeqCst);
-            }
-            {
-                let mut decisions = self.group_decisions.write().await;
-                decisions.insert(group_id, u64::MAX); 
-            }
-            return Ok(());
-        }
-
-
-      }
-      Ok(())
+        Ok(())
     } else {
-      warn!(
-        "write_stream_object | Send stream not found for {} connection_id: {}",
-        stream_id, self.connection_id
-      );
-      // This is not an error. The stream already started, wait for the next group...
-      // Err(anyhow::anyhow!("Send stream not found ({})", stream_id))
-      Ok(())
+        Ok(())
     }
-  }
+}
 
   pub async fn write_datagram_object(&self, object: Bytes) -> Result<(), anyhow::Error> {
     debug!(

@@ -14,12 +14,11 @@
 
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
-use moqtail::model::control::constant::SUPPORTED_VERSIONS;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
-use tracing::{error, info};
-use wtransport::quinn::congestion::BbrConfig;
-use wtransport::{Identity, ServerConfig, quinn::TransportConfig};
+use tracing::error;
+use wtransport::{Identity, ServerConfig};
+use wtransport::config::QuicTransportConfig;
 
 /// Cache expiration strategy
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -144,27 +143,14 @@ impl AppConfig {
       }
     };
 
-    /* TODO: When raw-quic is aneb */
-    let mut tls_config = wtransport::tls::server::build_default_tls_config(identity);
-
-    /*
-      This is for future raw-QUIC implementation.
-      A raw-QUIC client will use ALPN at the QUIC level.
-      A WebTransport client will send h3 at the QUIC level ALPN
-      and send moq version in wt-available-protocols header.
-    */
-    for version in SUPPORTED_VERSIONS.replace(" ", "").split(",") {
-      tls_config.alpn_protocols.push(version.as_bytes().to_vec());
-    }
-    info!("QUIC ALPN Protocols: {:?}", tls_config.alpn_protocols);
-
-    // set up BBR congestion control
-    let mut quic_transport_config = TransportConfig::default();
-    quic_transport_config.congestion_controller_factory(Arc::new(BbrConfig::default()));
+    let mut transport_config = QuicTransportConfig::default();
+    transport_config.congestion_controller_factory(Arc::new(
+        wtransport::quinn::congestion::BbrConfig::default(),
+    ));
 
     let config = ServerConfig::builder()
       .with_bind_default(self.port)
-      .with_custom_tls_and_transport(tls_config, quic_transport_config)
+      .with_custom_transport(identity, transport_config)
       .keep_alive_interval(Some(Duration::from_secs(self.keep_alive_interval)))
       .max_idle_timeout(Some(Duration::from_secs(self.max_idle_timeout)))
       .unwrap()

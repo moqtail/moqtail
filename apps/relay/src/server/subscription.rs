@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::server::client::AbrMessage;
 use crate::server::client::MOQTClient;
 use crate::server::client::switch_context::SwitchStatus;
 use crate::server::config::AppConfig;
@@ -597,43 +598,45 @@ impl Subscription {
     if !stream_ids.is_empty() {
       let subscriber = self.subscriber.clone();
       let connection_id = self.client_connection_id;
-      let relay_track_id = self.relay_track_id;
+      let track_alias = self.relay_track_id;
+      let tier_index = crate::server::abr::tier_index_for_track(&self.full_track_name);
 
       // Spawn background task for graceful stream cleanup
       tokio::spawn(async move {
         info!(
-          "Starting background cleanup of {} streams for subscriber={} relay_track_id={}",
+          "Starting background cleanup of {} streams for subscriber={} track_alias={}",
           stream_ids.len(),
           connection_id,
-          relay_track_id
+          track_alias
         );
 
         for stream_id in stream_ids.iter() {
-          let res = subscriber.close_stream(stream_id).await;
+          let res = subscriber.close_stream(&stream_id, tier_index).await;
+
           if let Err(e) = res {
             warn!(
-              "Background stream cleanup error for subscriber={} stream_id={} relay_track_id={} error: {:?}",
-              connection_id, stream_id, relay_track_id, e
+              "Background stream cleanup error for subscriber={} stream_id={} track_alias={} error: {:?}",
+              connection_id, stream_id, track_alias, e
             );
           } else if let Ok(closed) = res {
             if closed {
               debug!(
-                "Background stream cleanup successful for subscriber={} stream_id={} relay_track_id={}",
-                connection_id, stream_id, relay_track_id
+                "Background stream cleanup successful for subscriber={} stream_id={} track_alias={}",
+                connection_id, stream_id, track_alias
               );
             } else {
               debug!(
-                "Background stream cleanup: stream not found for subscriber={} stream_id={} relay_track_id={}",
-                connection_id, stream_id, relay_track_id
+                "Background stream cleanup: stream not found for subscriber={} stream_id={} track_alias={}",
+                connection_id, stream_id, track_alias
               );
             }
           }
         }
 
         info!(
-          "Background cleanup completed for subscriber={} relay_track_id={} ({} streams)",
+          "Background cleanup completed for subscriber={} track_alias={} ({} streams)",
           connection_id,
-          relay_track_id,
+          track_alias,
           stream_ids.len()
         );
       });
@@ -823,17 +826,17 @@ impl Subscription {
     match event {
       TrackEvent::SubgroupObject {
         mut object,
-        stream_id,
+        mut stream_id,
         header_info,
       } => {
-        object.track_alias = self.track_alias();
-        stream_id.track_alias = self.track_alias();
+        object.track_alias = self.relay_track_id;
+        stream_id.relay_track_id = self.relay_track_id;
         // 🛡️ THE FRONT-DOOR GATEKEEPER 🛡️
         let group_id = object.location.group;
 
         // 1. Wake up the ABR if this is the first frame of the group
         if object.location.object == 0 {
-            let _ = self.subscriber.abr_tx.try_send(group_id);
+            let _ = self.subscriber.abr_tx.try_send(AbrMessage::NewGroup(group_id));
         }
 
         // 2. Pause the background task and wait for the ABR to decide
@@ -842,7 +845,7 @@ impl Subscription {
             {
                 let decisions = self.subscriber.group_decisions.read().await;
                 if let Some(&chosen_alias) = decisions.get(&group_id) {
-                    if self.track_alias() != chosen_alias {
+                    if self.relay_track_id != chosen_alias {
                         return;
                     }
                     break;
@@ -1187,6 +1190,8 @@ impl Subscription {
       );
       */
 
+      let tier_index = crate::server::abr::tier_index_for_track(&self.full_track_name);
+
       self
         .subscriber
         .write_stream_object(
@@ -1194,6 +1199,7 @@ impl Subscription {
           sub_object.object_id,
           object_bytes,
           Some(send_stream.clone()),
+          tier_index
         )
         .await
         .map_err(|open_stream_err| {
@@ -1232,30 +1238,31 @@ impl Subscription {
     let subscriber = self.subscriber.clone();
     let stream_id = stream_id.clone();
     let connection_id = self.client_connection_id;
-    let relay_track_id = self.relay_track_id;
+    let track_alias = self.relay_track_id;
+    let tier_index = crate::server::abr::tier_index_for_track(&self.full_track_name);
 
     tokio::spawn(async move {
       debug!(
-        "Starting graceful stream closure in background: subscriber={} stream_id={} relay_track_id={}",
-        connection_id, stream_id, relay_track_id
+        "Starting graceful stream closure in background: subscriber={} stream_id={} track_alias={}",
+        connection_id, stream_id, track_alias
       );
 
-      let res = subscriber.close_stream(&stream_id).await;
+      let res = subscriber.close_stream(&stream_id, tier_index).await;
       if let Err(e) = res {
         warn!(
-          "handle_stream_closed | error for subscriber={} stream_id={} relay_track_id={} error: {:?}",
-          connection_id, stream_id, relay_track_id, e
+          "handle_stream_closed | error for subscriber={} stream_id={} track_alias={} error: {:?}",
+          connection_id, stream_id, track_alias, e
         );
       } else if let Ok(closed) = res {
         if closed {
           debug!(
-            "handle_stream_closed | successful for subscriber={} stream_id={} relay_track_id={}",
-            connection_id, stream_id, relay_track_id
+            "handle_stream_closed | successful for subscriber={} stream_id={} track_alias={}",
+            connection_id, stream_id, track_alias
           );
         } else {
           debug!(
-            "handle_stream_closed | stream not found for subscriber={} stream_id={} relay_track_id={}",
-            connection_id, stream_id, relay_track_id
+            "handle_stream_closed | stream not found for subscriber={} stream_id={} track_alias={}",
+            connection_id, stream_id, track_alias
           );
         }
       }

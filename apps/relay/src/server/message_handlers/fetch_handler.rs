@@ -286,6 +286,7 @@ pub async fn handle(
                   object.object_id,
                   serialized,
                   send_stream.as_ref().cloned(),
+                  0,
                 )
                 .await
               {
@@ -389,6 +390,7 @@ pub async fn handle(
                             object.object_id,
                             serialized,
                             send_stream.as_ref().cloned(),
+                            0,
                           )
                           .await
                         {

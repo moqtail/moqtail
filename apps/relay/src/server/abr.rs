@@ -56,14 +56,18 @@ struct AbrState {
     /// Cleared back to None once depth hits DEPTH_TARGET (baseline restored).
     post_downshift_depth: Option<u64>,
     tier_failure_times:   [Option<Instant>; NUM_TIERS],
+    /// Stream timeouts that fired since the last NewGroup decision.
+    /// Added to live depth so cancelled streams still count as load.
+    timeouts_since_last_decision: u64,
 }
 
 impl AbrState {
     fn new() -> Self {
         Self {
-            clear_streak:         0,
-            post_downshift_depth: None,
-            tier_failure_times:   [None; NUM_TIERS],
+            clear_streak:                0,
+            post_downshift_depth:        None,
+            tier_failure_times:          [None; NUM_TIERS],
+            timeouts_since_last_decision: 0,
         }
     }
 
@@ -129,7 +133,9 @@ pub(crate) fn start_abr_controller(client: Arc<MOQTClient>, track_manager: Arc<T
                             if group_id <= last_decided_group { continue; }
                             last_decided_group = group_id;
 
-                            let depth = client.active_send_tasks.load(Ordering::SeqCst) as u64;
+                            let live_depth = client.active_send_tasks.load(Ordering::SeqCst) as u64;
+                            let depth = live_depth + state.timeouts_since_last_decision;
+                            state.timeouts_since_last_decision = 0;
 
                             // ── Baseline restored: exit cooldown ──────────────
                             // Old groups have drained, we are back to steady state.
@@ -231,8 +237,9 @@ pub(crate) fn start_abr_controller(client: Arc<MOQTClient>, track_manager: Arc<T
                             let depth = client.active_send_tasks.load(Ordering::SeqCst) as u64;
                             warn!(
                                 "ABR: stream timeout — group={group_id} tier={tier_index} \
-                                 depth={depth} — penalising tier for {TIER_PENALTY_SECS}s"
+                                 depth={depth} — counting toward adjusted depth"
                             );
+                            state.timeouts_since_last_decision += 1;
                             if tier_index < state.tier_failure_times.len() {
                                 state.tier_failure_times[tier_index] = Some(Instant::now());
                             }

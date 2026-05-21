@@ -29,7 +29,7 @@ use moqtail::{
   model::{
     common::tuple::Tuple,
     control::{client_setup::ClientSetup, control_message::ControlMessage},
-    data::{full_track_name::FullTrackName, group},
+    data::{full_track_name::FullTrackName},
   },
   transport::data_stream_handler::{FetchRequest, SubscribeRequest},
 };
@@ -40,52 +40,12 @@ use std::{
   sync::{
     Arc,
     atomic::{AtomicU64, AtomicUsize, Ordering},
-  },
-  time::Duration,
+  }
 };
 use tokio::sync::Notify;
 use tokio::sync::{Mutex, RwLock, watch};
-use tokio::time::Instant;
 use tracing::{debug, error, info, warn};
 use wtransport::{Connection, SendStream, error::StreamWriteError};
-
-/// Token-bucket rate limiter. All streams of one subscriber share a single
-/// bucket so they compete for bandwidth — the QUIC scheduler then drains
-/// higher-priority streams first when writes are pending.
-#[derive(Debug)]
-struct TokenBucket {
-  rate_bytes_per_sec: f64,
-  tokens: f64,
-  last_refill: Instant,
-}
-
-impl TokenBucket {
-  fn new(rate_kbps: u64) -> Self {
-    let rate = rate_kbps as f64 * 1000.0 / 8.0; // kbps → bytes/sec
-    Self {
-      rate_bytes_per_sec: rate,
-      tokens: rate, // start with one second worth of tokens
-      last_refill: Instant::now(),
-    }
-  }
-
-  async fn consume(&mut self, bytes: usize) {
-    let now = Instant::now();
-    let elapsed = now.duration_since(self.last_refill).as_secs_f64();
-    self.tokens = (self.tokens + elapsed * self.rate_bytes_per_sec).min(self.rate_bytes_per_sec); // cap at 1 second of burst
-    self.last_refill = now;
-
-    let needed = bytes as f64;
-    if self.tokens < needed {
-      let deficit = needed - self.tokens;
-      let wait = Duration::from_secs_f64(deficit / self.rate_bytes_per_sec);
-      tokio::time::sleep(wait).await;
-      self.tokens = 0.0;
-    } else {
-      self.tokens -= needed;
-    }
-  }
-}
 
 /// Number of partitions for send stream management to reduce lock contention.
 /// Each partition contains a separate HashMap protected by its own RwLock.

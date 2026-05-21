@@ -101,8 +101,6 @@ pub struct AppConfig {
   pub enable_token_logging: bool,
   pub token_log_path: String,
   pub initial_max_request_id: u64,
-  /// 0 = unlimited. Non-zero caps relay writes to this many kbps per subscriber connection.
-  pub write_kbps_limit: u64,
   pub max_upstream_fetch_gaps: u64,
   pub upstream_fetch_timeout: Duration,
 }
@@ -127,7 +125,6 @@ impl AppConfig {
         enable_token_logging: cli.enable_token_logging,
         token_log_path: cli.token_log_path,
         initial_max_request_id: cli.initial_max_request_id,
-        write_kbps_limit: cli.write_kbps_limit,
         max_upstream_fetch_gaps: cli.max_upstream_fetch_gaps,
         upstream_fetch_timeout: Duration::from_secs(cli.upstream_fetch_timeout_secs),
       }
@@ -219,7 +216,6 @@ mod tests {
       enable_token_logging: cli.enable_token_logging,
       token_log_path: cli.token_log_path,
       initial_max_request_id: cli.initial_max_request_id,
-      write_kbps_limit: cli.write_kbps_limit,
       max_upstream_fetch_gaps: cli.max_upstream_fetch_gaps,
       upstream_fetch_timeout: Duration::from_secs(cli.upstream_fetch_timeout_secs),
     };

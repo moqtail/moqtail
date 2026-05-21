@@ -29,7 +29,7 @@ use moqtail::{
   model::{
     common::tuple::Tuple,
     control::{client_setup::ClientSetup, control_message::ControlMessage},
-    data::full_track_name::FullTrackName,
+    data::{full_track_name::FullTrackName, group},
   },
   transport::data_stream_handler::{FetchRequest, SubscribeRequest},
 };
@@ -137,10 +137,6 @@ pub(crate) struct MOQTClient {
 
   pub switch_context: SwitchContext,
 
-  // Optional per-connection write rate limiter. All streams of this client share
-  // the same bucket so they compete for bandwidth, exercising QUIC stream priority.
-  rate_limiter: Option<Arc<Mutex<TokenBucket>>>,
-
   pub abr_tx: tokio::sync::mpsc::Sender<AbrMessage>,
   pub abr_rx: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<AbrMessage>>>>,
 
@@ -164,13 +160,6 @@ impl MOQTClient {
       send_streams.push(Arc::new(RwLock::new(HashMap::new())));
     }
 
-    let kbps = crate::server::config::AppConfig::load().write_kbps_limit;
-    let rate_limiter = if kbps > 0 {
-      Some(Arc::new(Mutex::new(TokenBucket::new(kbps))))
-    } else {
-      None
-    };
-
     let (abr_tx, abr_rx) = tokio::sync::mpsc::channel(100);
     let (decision_tx, decision_rx) = tokio::sync::watch::channel(0);
 
@@ -192,7 +181,6 @@ impl MOQTClient {
       fetch_cancel_senders: Arc::new(RwLock::new(HashMap::new())),
       subscriptions: TrackSubscriptionMap::new(),
       switch_context: SwitchContext::new(),
-      rate_limiter,
       abr_tx,
       abr_rx: Arc::new(Mutex::new(Some(abr_rx))),
       group_decisions: Arc::new(RwLock::new(HashMap::new())),
@@ -453,7 +441,6 @@ pub async fn close_stream(&self, stream_id: &StreamId, tier_index: usize) -> Res
     };
 
     // flow control
-
     if let Some(s) = send_stream {
         let mut stream = s.lock().await;
         tokio::select! {

@@ -1227,6 +1227,24 @@ impl Subscription {
     // Handle the stream closed event
     debug!("Stream closed: {}", stream_id.get_stream_id());
 
+    // Read the last object_id before removing from the map.
+    // last_object_id + 1 = total objects forwarded for this group.
+    let objects_forwarded = {
+        let send_stream_last_object_ids = self.send_stream_last_object_ids.read().await;
+        send_stream_last_object_ids
+            .get(stream_id)
+            .and_then(|id| *id)
+            .map(|last_id| last_id + 1)
+            .unwrap_or(0)
+    };
+    if let Some(group_id) = stream_id.group_id {
+        crate::telemetry::log_group_forwarded(
+            group_id,
+            &self.full_track_name.to_string(),
+            objects_forwarded,
+        );
+    }
+
     // remove the stream id from send_stream_last_object_ids immediately
     let mut send_stream_last_object_ids = self.send_stream_last_object_ids.write().await;
     send_stream_last_object_ids.remove(stream_id);

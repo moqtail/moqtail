@@ -82,6 +82,30 @@ pub fn log_abr_state(
     write_entry(&log_entry);
 }
 
+/// Logged when a stream closes normally — tells us how many objects the relay
+/// actually forwarded for this group.  The subscriber's object_count for the
+/// same group_id is the received count; the difference is dropped frames.
+pub fn log_group_forwarded(
+    group_id: u64,
+    track: &str,
+    objects_forwarded: u64,
+) {
+    let now_us = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_micros();
+
+    let log_entry = json!({
+        "timestamp_us": now_us as u64,
+        "event_type": "GROUP_FORWARDED",
+        "group_id": group_id,
+        "track": track,
+        "objects_forwarded": objects_forwarded,
+    });
+
+    write_entry(&log_entry);
+}
+
 fn write_entry(entry: &serde_json::Value) {
     match OpenOptions::new().create(true).append(true).open("logs/relay_telemetry.jsonl") {
         Ok(mut file) => {

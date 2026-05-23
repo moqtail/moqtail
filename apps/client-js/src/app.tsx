@@ -23,6 +23,7 @@ import { Header } from '@/components/Header';
 import { Sidebar } from '@/components/Sidebar';
 import { VideoPlayer } from '@/components/VideoPlayer';
 import { logger } from '@/lib/logger';
+import { applyLogLevel, parseLogLevel } from '@/lib/utils';
 
 logger.setDefaultLevel('debug');
 
@@ -71,6 +72,11 @@ export function App() {
 
   const initializePlaybackSession = useCallback(async () => {
     if (!videoRef.current) return null;
+
+    const qs = new URLSearchParams(window.location.search).get('logLevel');
+    const raw = qs ?? (window as any).__moqtailLogLevel ?? 'warn';
+    applyLogLevel(parseLogLevel(raw) ?? parseLogLevel('warn')!);
+    logger.info('player', `log level: "${raw}"`);
 
     logger.info('app', `initializePlaybackSession: relay="${relayUrl}" ns="${namespace}"`);
     const player = new Player({

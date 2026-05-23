@@ -15,8 +15,47 @@
  */
 
 import clsx, { type ClassValue } from 'clsx';
+import { LogLevel, MOQtailClient } from 'moqtail';
 import { twMerge } from 'tailwind-merge';
+import { logger, Logger } from './logger';
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
+
+type AppLogLevel = 'debug' | 'info' | 'warn' | 'error';
+
+export function parseLogLevel(
+  raw: string | null | undefined,
+): { app: AppLogLevel; moq: LogLevel } | null {
+  switch (raw?.toLowerCase()) {
+    case 'debug':
+      return { app: 'debug', moq: LogLevel.DEBUG };
+    case 'log':
+    case 'info':
+      return { app: 'info', moq: LogLevel.LOG };
+    case 'warn':
+      return { app: 'warn', moq: LogLevel.WARN };
+    case 'error':
+      return { app: 'error', moq: LogLevel.ERROR };
+    case 'none':
+      return { app: 'error', moq: LogLevel.NONE };
+    default:
+      return null;
+  }
+}
+
+export function applyLogLevel(level: { app: AppLogLevel; moq: LogLevel }) {
+  Logger.setLevel(level.app);
+  MOQtailClient.setLogLevel(level.moq);
+}
+
+(window as any).setMOQtailLogLevel = (raw: string) => {
+  const level = parseLogLevel(raw);
+  if (!level) {
+    logger.warn('player', `MOQtail unknown log level: "${raw}"`);
+    return;
+  }
+  applyLogLevel(level);
+  logger.info('player', `MOQtail log level set to "${raw}"`);
+};

@@ -195,12 +195,22 @@ export class Player {
         `bufferNotification: stream ${gotNotification}/${this.#streams.length} ready, bufferEnd=${end.toFixed(3)}s`,
       );
       if (gotNotification === this.#streams.length) {
+        // Don't seek/play if already playing
+        const video = this.#element!;
+        const alreadyPlaying = !video.paused && !video.ended && video.readyState > 2;
+
+        if (alreadyPlaying) {
+          logger.debug('player', 'Already playing, skipping seek/play');
+          return true;
+        }
+
         logger.info(
           'player',
           `All buffers ready — seeking to ${target.toFixed(3)}s and calling play()`,
         );
-        this.#element!.currentTime = target;
-        this.#element!.play()
+        video.currentTime = target;
+        video
+          .play()
           .then(() => logger.info('player', 'play() resolved'))
           .catch(e => logger.error('player', 'play() rejected', e));
       }

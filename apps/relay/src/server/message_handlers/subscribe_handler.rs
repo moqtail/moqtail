@@ -18,6 +18,7 @@ use crate::server::session::Session;
 use crate::server::session_context::{PendingRequest, SessionContext};
 use crate::server::track::{Track, TrackStatus};
 use core::result::Result;
+use moqtail::model::common::location::Location;
 use moqtail::model::control::constant::RequestErrorCode;
 use moqtail::model::control::request_error::RequestError;
 use moqtail::model::control::subscribe::Subscribe;
@@ -209,10 +210,16 @@ async fn handle_subscribe_message(
           client.connection_id
         );
         let cached_extensions = { track.track_extensions.read().await.clone() };
+        let largest_loc = {
+          let ll = track.largest_location.read().await;
+          Location::new(ll.group, ll.object)
+        };
+        let mut params = subscribe_parameters;
+        params.push(MessageParameter::new_largest_object(largest_loc));
         let subscribe_ok = moqtail::model::control::subscribe_ok::SubscribeOk::new(
           sub.request_id,
           track.relay_track_id,
-          subscribe_parameters,
+          params,
           cached_extensions,
         );
         control_stream_handler.send_impl(&subscribe_ok).await

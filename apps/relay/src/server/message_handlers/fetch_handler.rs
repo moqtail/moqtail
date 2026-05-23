@@ -198,6 +198,20 @@ pub async fn handle(
         }
       }
 
+      // Send FetchOk immediately on the control stream before delivering objects.
+      {
+        let fetch_ok = FetchOk::new(
+          request_id,
+          false,
+          end_location.clone().unwrap(),
+          vec![],
+          vec![],
+        );
+        client
+          .queue_message(ControlMessage::FetchOk(Box::new(fetch_ok)))
+          .await;
+      }
+
       // Register a cancel channel for this fetch request
       let (cancel_tx, mut cancel_rx) = watch::channel(false);
       {

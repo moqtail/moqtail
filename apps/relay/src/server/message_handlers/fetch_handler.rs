@@ -130,7 +130,7 @@ pub async fn handle(
             };
 
             let start_location = Location::new(start_group, 0);
-            let end_location = Location::new(largest_location.group, 0);
+            let end_location = Location::new(largest_location.group, largest_location.object + 1);
             (
               Some(track_lock.clone()),
               Some(start_location),

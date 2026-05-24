@@ -30,10 +30,12 @@ use moqtail::model::data::object::Object;
 use moqtail::model::extension_header::track_extension::TrackExtension;
 use moqtail::model::parameter::message_parameter::MessageParameter;
 use moqtail::transport::data_stream_handler::HeaderInfo;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use tokio::sync::{Notify, RwLock};
 use tracing::{debug, error, info, warn};
+
+pub type ActiveSubgroupHeaderMap = Arc<RwLock<HashMap<StreamId, HeaderInfo>>>;
 
 /// Lifecycle status of a track on the relay.
 #[derive(Debug, Clone)]
@@ -88,6 +90,11 @@ pub struct Track {
   pub pending_subscribers: Arc<RwLock<Vec<(u64, usize)>>>,
   /// Cached track extensions from PUBLISH or SUBSCRIBE_OK (relays MUST cache).
   pub track_extensions: Arc<RwLock<Vec<TrackExtension>>>,
+  /// Original subgroup headers for open publisher streams, keyed by stream_id.
+  /// Used so new mid-group subscribers can open a QUIC send stream
+  /// Inserted when the first object of a subgroup arrives; removed when the
+  /// publisher's unistream closes (stream_closed signal).
+  pub active_subgroup_headers: ActiveSubgroupHeaderMap,
 }
 
 // TODO: this track implementation should be static? At least
@@ -117,6 +124,7 @@ impl Track {
       status_notify: Arc::new(Notify::new()),
       pending_subscribers: Arc::new(RwLock::new(Vec::new())),
       track_extensions: Arc::new(RwLock::new(Vec::new())),
+      active_subgroup_headers: Arc::new(RwLock::new(HashMap::new())),
     }
   }
 
@@ -241,7 +249,12 @@ impl Track {
 
     let subscription = self
       .subscription_manager
-      .add_subscription(subscriber, origin_enum, self.cache.clone())
+      .add_subscription(
+        subscriber,
+        origin_enum,
+        self.cache.clone(),
+        Arc::clone(&self.active_subgroup_headers),
+      )
       .await?;
 
     if is_switch {
@@ -281,7 +294,7 @@ impl Track {
       utils::passed_time_since_start()
     );
 
-    if header_info.is_some() {
+    if let Some(h) = header_info {
       info!(
         "new group: relay_track_id={} location: {:?} stream_id={} time={}",
         self.relay_track_id,
@@ -289,6 +302,11 @@ impl Track {
         stream_id,
         utils::passed_time_since_start()
       );
+      self
+        .active_subgroup_headers
+        .write()
+        .await
+        .insert(stream_id.clone(), h.clone());
     }
 
     // Send single Object event with optional header info
@@ -413,6 +431,8 @@ impl Track {
   }
 
   pub async fn stream_closed(&self, stream_id: &StreamId) -> Result<(), anyhow::Error> {
+    self.active_subgroup_headers.write().await.remove(stream_id);
+
     let event = TrackEvent::StreamClosed {
       stream_id: stream_id.clone(),
     };

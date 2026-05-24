@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::server::subscription::SubscriptionOrigin;
+use crate::server::{subscription::SubscriptionOrigin, track::ActiveSubgroupHeaderMap};
 
 use super::client::MOQTClient;
 use super::config::AppConfig;
@@ -98,6 +98,7 @@ impl SubscriptionManager {
     subscriber: Arc<MOQTClient>,
     origin_message: SubscriptionOrigin,
     cache: super::track_cache::TrackCache,
+    active_subgroup_headers: ActiveSubgroupHeaderMap,
   ) -> Result<Arc<RwLock<Subscription>>, anyhow::Error> {
     let connection_id = { subscriber.connection_id };
 
@@ -119,6 +120,7 @@ impl SubscriptionManager {
       connection_id,
       self.log_folder.clone(),
       self.config,
+      active_subgroup_headers,
     );
 
     let mut subscriptions = self.subscriptions.write().await;

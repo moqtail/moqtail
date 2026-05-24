@@ -17,6 +17,7 @@ use crate::server::client::switch_context::SwitchStatus;
 use crate::server::config::AppConfig;
 use crate::server::object_logger::ObjectLogger;
 use crate::server::stream_id::StreamId;
+use crate::server::track::ActiveSubgroupHeaderMap;
 use crate::server::track::TrackEvent;
 use crate::server::track_cache::CacheConsumeEvent;
 use crate::server::track_cache::TrackCache;
@@ -298,6 +299,13 @@ pub struct Subscription {
   object_logger: ObjectLogger,
   config: &'static AppConfig,
   check_switch_context_on_next_object: Arc<AtomicBool>,
+  /// Subgroup header cached while forward=false. Cleared when forward becomes true (stream opened)
+  /// or when a new group starts (old group ended without forward ever becoming true).
+  pending_header: Arc<Mutex<Option<(StreamId, HeaderInfo)>>>,
+  /// Shared map of open publisher subgroup streams and their original subgroup header.
+  /// Used to open a QUIC send stream for a new mid-group subscriber with the exact
+  /// original header rather than a synthesized one.
+  active_subgroup_headers: ActiveSubgroupHeaderMap,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -313,6 +321,7 @@ impl Subscription {
     client_connection_id: usize,
     log_folder: String,
     config: &'static AppConfig,
+    active_subgroup_headers: ActiveSubgroupHeaderMap,
   ) -> Self {
     Self {
       relay_track_id,
@@ -328,6 +337,8 @@ impl Subscription {
       object_logger: ObjectLogger::new(log_folder),
       config,
       check_switch_context_on_next_object: Arc::new(AtomicBool::new(false)),
+      pending_header: Arc::new(Mutex::new(None)),
+      active_subgroup_headers,
     }
   }
 
@@ -341,6 +352,7 @@ impl Subscription {
     client_connection_id: usize,
     log_folder: String,
     config: &'static AppConfig,
+    active_subgroup_headers: ActiveSubgroupHeaderMap,
   ) -> Self {
     let event_rx = Arc::new(Mutex::new(Some(event_rx)));
     let sub = Self::create_instance(
@@ -354,6 +366,7 @@ impl Subscription {
       client_connection_id,
       log_folder,
       config,
+      active_subgroup_headers,
     );
 
     info!(
@@ -508,59 +521,89 @@ impl Subscription {
   // Returns Ok if the update is successful
   // Returns error if the update is invalid
   pub async fn update_subscription(&self, request_update: RequestUpdate) -> Result<()> {
-    let mut state = self.subscription_state.write().await;
+    let forward_becoming_true = {
+      let mut state = self.subscription_state.write().await;
 
-    // Extract filter_type, start_location and end_group from SubscriptionFilter parameter
-    let (new_filter_type, new_start_location, new_end_group) = request_update
-      .parameters
-      .iter()
-      .find_map(|p| {
-        if let MessageParameter::SubscriptionFilter {
-          filter_type,
-          start_location,
-          end_group,
-        } = p
-        {
-          Some((Some(*filter_type), start_location.clone(), *end_group))
-        } else {
-          None
-        }
-      })
-      .unwrap_or((None, None, None));
+      // Extract filter_type, start_location and end_group from SubscriptionFilter parameter
+      let (new_filter_type, new_start_location, new_end_group) = request_update
+        .parameters
+        .iter()
+        .find_map(|p| {
+          if let MessageParameter::SubscriptionFilter {
+            filter_type,
+            start_location,
+            end_group,
+          } = p
+          {
+            Some((Some(*filter_type), start_location.clone(), *end_group))
+          } else {
+            None
+          }
+        })
+        .unwrap_or((None, None, None));
 
-    if let Some(ref new_loc) = new_start_location {
-      state.start_location = Some(new_loc.clone());
-    }
+      if let Some(ref new_loc) = new_start_location {
+        state.start_location = Some(new_loc.clone());
+      }
 
-    // Update explicit subscription state fields if they are present in the parameters
-    for param in &request_update.parameters {
-      match param {
-        MessageParameter::SubscriberPriority { priority } => {
-          state.subscriber_priority = *priority;
+      // Update explicit subscription state fields if they are present in the parameters.
+      // Track whether forward transitions false to true so we can flush pending_header below.
+      let mut transition = false;
+      for param in &request_update.parameters {
+        match param {
+          MessageParameter::SubscriberPriority { priority } => {
+            state.subscriber_priority = *priority;
+          }
+          MessageParameter::Forward { forward } => {
+            if *forward && !state.forward {
+              transition = true;
+            }
+            state.forward = *forward;
+          }
+          _ => {}
         }
-        MessageParameter::Forward { forward } => {
-          state.forward = *forward;
+      }
+
+      if let Some(ft) = new_filter_type {
+        state.filter_type = ft;
+      }
+      if let Some(eg) = new_end_group {
+        state.end_group = eg;
+      }
+
+      // Update parameters. If a parameter included in SUBSCRIBE is not present in
+      // REQUEST_UPDATE, its value remains unchanged. There is no mechanism
+      // to remove a parameter from a request.
+      apply_message_parameter_update(&mut state.subscribe_parameters, request_update.parameters);
+
+      info!(
+        "update_subscription | new subscription state for relay_track_id={}: {:?}",
+        self.relay_track_id, state
+      );
+
+      transition
+      // write lock on subscription_state is dropped here
+    };
+
+    // If forward just became true, open the stream for the current mid-group header
+    // that was cached while forward=false.
+    if forward_becoming_true {
+      let pending = self.pending_header.lock().await.take();
+      if let Some((pending_stream_id, pending_header_info)) = pending {
+        info!(
+          "update_subscription | forward became true, opening pending stream {} for subscriber={} relay_track_id={}",
+          pending_stream_id, self.client_connection_id, self.relay_track_id
+        );
+        if self.handle_header(pending_header_info).await.is_ok() {
+          self
+            .send_stream_last_object_ids
+            .write()
+            .await
+            .insert(pending_stream_id, None);
         }
-        _ => {}
       }
     }
 
-    if let Some(ft) = new_filter_type {
-      state.filter_type = ft;
-    }
-    if let Some(eg) = new_end_group {
-      state.end_group = eg;
-    }
-
-    // Update parameters. If a parameter included in SUBSCRIBE is not present in
-    // REQUEST_UPDATE, its value remains unchanged. There is no mechanism
-    // to remove a parameter from a request.
-    apply_message_parameter_update(&mut state.subscribe_parameters, request_update.parameters);
-
-    info!(
-      "update_subscription | new subscription state for relay_track_id={}: {:?}",
-      self.relay_track_id, state
-    );
     Ok(())
   }
 
@@ -878,12 +921,25 @@ impl Subscription {
           }
 
           if !state.forward {
+            // Cache the subgroup header so we can open the stream immediately
+            // if forward transitions to true mid-group (sub-update-forward method).
+            if let Some(ref header) = header_info {
+              let mut pending = self.pending_header.lock().await;
+              *pending = Some((stream_id.clone(), header.clone()));
+            }
             return;
           }
         }
 
+        // Entering forward=true: clear any stale pending header (group boundary case).
+        // If forward was already true, pending_header is None and this is a no-op.
+        {
+          let mut pending = self.pending_header.lock().await;
+          pending.take();
+        }
+
         // Handle header info if this is the first object
-        let mut send_stream = if let Some(header) = header_info {
+        let send_stream = if let Some(header) = header_info {
           if let HeaderInfo::Subgroup { header: _ } = header {
             info!(
               "Creating stream - subscriber={} relay_track_id={} now={} received time={} object: {:?} header: {:?}",
@@ -922,23 +978,33 @@ impl Subscription {
             None
           }
         } else {
-          self.subscriber.get_stream(&stream_id).await
+          match self.subscriber.get_stream(&stream_id).await {
+            Some(s) => Some(s),
+            None => {
+              // New subscriber joined mid-subgroup. Look up the original header
+              // from the track-level cache and open a QUIC send stream with it.
+              let cached = self
+                .active_subgroup_headers
+                .read()
+                .await
+                .get(&stream_id)
+                .cloned();
+              if let Some(h) = cached {
+                debug!(
+                  "mid-subgroup join: opening stream from cached header for subscriber={} relay_track_id={} stream_id={}",
+                  self.client_connection_id, self.relay_track_id, stream_id
+                );
+                self
+                  .handle_header(h)
+                  .await
+                  .ok()
+                  .map(|(_, send_stream)| send_stream)
+              } else {
+                None
+              }
+            }
+          }
         };
-
-        if send_stream.is_none() {
-          // wait a little bit and try again
-          warn!(
-            "Send stream not found, retrying - subscriber={} stream_id={} relay_track_id={} now={} received time={} object: {:?}",
-            self.client_connection_id,
-            stream_id,
-            self.relay_track_id,
-            utils::passed_time_since_start(),
-            object_received_time,
-            object.location
-          );
-          tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-          send_stream = self.subscriber.get_stream(&stream_id).await;
-        }
 
         if let Some(send_stream) = send_stream {
           // Get the previous object ID for this stream

@@ -990,7 +990,7 @@ impl Subscription {
                 .get(&stream_id)
                 .cloned();
               if let Some(h) = cached {
-                info!(
+                debug!(
                   "mid-subgroup join: opening stream from cached header for subscriber={} relay_track_id={} stream_id={}",
                   self.client_connection_id, self.relay_track_id, stream_id
                 );

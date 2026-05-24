@@ -98,6 +98,7 @@ impl SubscriptionManager {
     subscriber: Arc<MOQTClient>,
     origin_message: SubscriptionOrigin,
     cache: super::track_cache::TrackCache,
+    active_headers: super::track::ActiveHeaders,
   ) -> Result<Arc<RwLock<Subscription>>, anyhow::Error> {
     let connection_id = { subscriber.connection_id };
 
@@ -119,6 +120,7 @@ impl SubscriptionManager {
       connection_id,
       self.log_folder.clone(),
       self.config,
+      active_headers,
     );
 
     let mut subscriptions = self.subscriptions.write().await;

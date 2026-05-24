@@ -35,8 +35,7 @@ use std::sync::Arc;
 use tokio::sync::{Notify, RwLock};
 use tracing::{debug, error, info, warn};
 
-/// Shared map of open publisher subgroup streams → original subgroup header.
-pub type ActiveHeaders = Arc<RwLock<HashMap<StreamId, HeaderInfo>>>;
+pub type ActiveSubgroupHeaderMap = Arc<RwLock<HashMap<StreamId, HeaderInfo>>>;
 
 /// Lifecycle status of a track on the relay.
 #[derive(Debug, Clone)]
@@ -92,11 +91,10 @@ pub struct Track {
   /// Cached track extensions from PUBLISH or SUBSCRIBE_OK (relays MUST cache).
   pub track_extensions: Arc<RwLock<Vec<TrackExtension>>>,
   /// Original subgroup headers for open publisher streams, keyed by stream_id.
-  /// Used so new mid-group subscribers can open a QUIC send stream with the
-  /// exact original header rather than a synthesized one.
+  /// Used so new mid-group subscribers can open a QUIC send stream
   /// Inserted when the first object of a subgroup arrives; removed when the
   /// publisher's unistream closes (stream_closed signal).
-  pub active_headers: Arc<RwLock<HashMap<StreamId, HeaderInfo>>>,
+  pub active_subgroup_headers: ActiveSubgroupHeaderMap,
 }
 
 // TODO: this track implementation should be static? At least
@@ -126,7 +124,7 @@ impl Track {
       status_notify: Arc::new(Notify::new()),
       pending_subscribers: Arc::new(RwLock::new(Vec::new())),
       track_extensions: Arc::new(RwLock::new(Vec::new())),
-      active_headers: Arc::new(RwLock::new(HashMap::new())),
+      active_subgroup_headers: Arc::new(RwLock::new(HashMap::new())),
     }
   }
 
@@ -255,7 +253,7 @@ impl Track {
         subscriber,
         origin_enum,
         self.cache.clone(),
-        Arc::clone(&self.active_headers),
+        Arc::clone(&self.active_subgroup_headers),
       )
       .await?;
 
@@ -305,7 +303,7 @@ impl Track {
         utils::passed_time_since_start()
       );
       self
-        .active_headers
+        .active_subgroup_headers
         .write()
         .await
         .insert(stream_id.clone(), h.clone());
@@ -433,7 +431,7 @@ impl Track {
   }
 
   pub async fn stream_closed(&self, stream_id: &StreamId) -> Result<(), anyhow::Error> {
-    self.active_headers.write().await.remove(stream_id);
+    self.active_subgroup_headers.write().await.remove(stream_id);
 
     let event = TrackEvent::StreamClosed {
       stream_id: stream_id.clone(),

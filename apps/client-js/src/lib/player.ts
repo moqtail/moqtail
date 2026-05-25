@@ -514,7 +514,7 @@ export class Player {
     const result = await this.client.subscribe({
       fullTrackName: ftn,
       groupOrder: GroupOrder.Original,
-      filterType: FilterType.LatestObject,
+      filterType: FilterType.NextGroupStart,
       forward: true,
       priority: params.priority ?? 0,
     });

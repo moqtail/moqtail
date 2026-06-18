@@ -1,0 +1,310 @@
+{
+  "repo_notes": [
+    {
+      "content": "moqtail/moqtail is a Draft 16-compliant MOQ Transport (MOQT) monorepo combining a Rust workspace (Cargo.toml, Cargo.lock at root) and an npm workspace (package.json, package-lock.json at root). Top-level folders: 'libs' (protocol libraries: moqtail-rs, moqtail-ts), 'apps' (relay server and client applications), 'scripts' (tooling), plus .changeset (release automation), .github (CI/CD workflows), .husky (git hooks), and cert generation under apps/relay/cert. The relay server is published as a Docker image to ghcr.io/moqtail/relay. License is Apache-2.0. Citation/academic reference: Gurel, Ugur, Begen, 'MOQtail: open-source, IETF-compliant MOQT protocol libraries,' ACM MMSys 2026."
+    },
+    {
+      "content": "Two parallel implementations of the same protocol exist side by side: moqtail-rs (Rust, used by the relay and native client) and moqtail-ts (TypeScript, used by the browser client and meet demo app). Both must be kept in sync with Draft 16 of the IETF MOQ Transport spec. When documenting protocol concepts, prefer linking both implementations rather than treating one as canonical."
+    },
+    {
+      "content": "Versioning uses changesets (.changeset directory) with linked packages, publishing libraries to npm and crates.io. The relay server is published as a container image to ghcr.io/moqtail/relay via the relay.yml workflow. CI is GitHub Actions with separate workflows for Rust (rust.yml), JS (js.yml), misc checks (misc.yml), player checks (player.yml), relay checks (relay.yml), release to npm/crates.io (release-rust.yml, release.yml), and container image building (relay.yml)."
+    }
+  ],
+  "pages": [
+    {
+      "title": "MOQtail Overview",
+      "purpose": "High-level introduction to the MOQtail project: what Media-over-QUIC (MOQ) is, why MOQtail exists, the components it ships (moqtail-rs, moqtail-ts, relay, client apps), and how they fit together as a Draft 16-compliant MOQT toolkit.",
+      "page_notes": [
+        {
+          "content": "Source primarily from the root README.md, which already summarizes Components (moqtail-ts, moqtail-rs, Relay), Getting Started prerequisites/installation, and the academic citation block. Mention the live demo at player.moqtail.dev and the project topics (streaming, real-time, media, MOQ)."
+        }
+      ]
+    },
+    {
+      "title": "Repository Structure",
+      "purpose": "Explain the monorepo organization: the Cargo workspace vs the npm workspace, the top-level libs/ and apps/ directories, and how Rust and TypeScript components relate to and depend on each other.",
+      "parent": "MOQtail Overview",
+      "page_notes": [
+        {
+          "content": "Document the dual workspace setup: root Cargo.toml defines the Rust workspace members: apps/relay, apps/client, libs/moqtail-rs. Root package.json defines npm workspaces via wildcard patterns: apps/*, libs/* (resolving to libs/moqtail-ts, apps/client-js, apps/meet). Note .vscode, .editorconfig, .prettierrc, rustfmt.toml, commitlint.config.ts, lint-staged.config.js as shared tooling config that spans both languages. Root package.json orchestrates npm scripts across workspaces."
+        }
+      ]
+    },
+    {
+      "title": "MOQ Protocol Basics",
+      "purpose": "Overview of the Media-over-QUIC (MOQT) protocol as defined by IETF draft-ietf-moq-transport (Draft 16 in this repo), and the core data model concepts: tracks, namespaces, groups, objects, subscriptions, and fetch.",
+      "parent": "MOQtail Overview",
+      "page_notes": [
+        {
+          "content": "Frame this as protocol/domain documentation rather than implementation documentation — it should explain MOQT concepts (control vs data streams, tracks/groups/objects, publisher/subscriber/relay roles, LOC and CMSF media formats mentioned in the repo description) independent of language, then point readers to the Rust and TypeScript library pages for implementation specifics. Cite the IETF draft-ietf-moq-transport spec for protocol terminology."
+        }
+      ]
+    },
+    {
+      "title": "Protocol Libraries",
+      "purpose": "Section landing page documenting the core protocol implementation libraries shared across the codebase, in both Rust and TypeScript.",
+      "page_notes": [
+        {
+          "content": "Acts as a parent/index page linking to moqtail-rs, Control Stream Handler, Data Stream Handler, moqtail-ts, Client API, and Playout Buffer child pages."
+        }
+      ]
+    },
+    {
+      "title": "moqtail-rs (Rust Library)",
+      "purpose": "Detailed documentation of the Rust protocol library: crate architecture, module layout, key dependencies (e.g. QUIC/WebTransport crates, serde-style serialization), and the public API surface consumed by the relay and native client.",
+      "parent": "Protocol Libraries",
+      "page_notes": [
+        {
+          "content": "Start from libs/moqtail-rs/README.md (linked directly from the root README). The crate exposes four public modules: client, model, relay, transport. The model module contains sub-modules for catalog (WARP format), common (location, varint, tuple, pair), control (all MOQT control message types), data (subgroup/object/datagram types), error (parse/termination), extension_header (LOC, audio_level, video_config), and parameter (setup/message/authorization). The transport module contains control_stream_handler and data_stream_handler. Cross-link to the Control Stream Handler and Data Stream Handler pages."
+        }
+      ]
+    },
+    {
+      "title": "Control Stream Handler",
+      "purpose": "Documentation of control message exchange in moqtail-rs: serialization/deserialization of MOQT control messages (SETUP, ANNOUNCE, SUBSCRIBE, FETCH, etc.), timeout handling, and the control-plane communication layer used by both relay and client.",
+      "parent": "Protocol Libraries",
+      "page_notes": [
+        {
+          "content": "Located at libs/moqtail-rs/src/transport/control_stream_handler.rs. Document the message enum/struct types, the read/write loop, and how timeouts and malformed-message errors are surfaced to callers (relay Session Management and Message Handlers pages depend on this)."
+        }
+      ]
+    },
+    {
+      "title": "Data Stream Handler",
+      "purpose": "Documentation of data stream transmission and reception in moqtail-rs, including SendDataStream and RecvDataStream abstractions used for object delivery over QUIC/WebTransport streams.",
+      "parent": "Protocol Libraries",
+      "page_notes": [
+        {
+          "content": "Document SendDataStream / RecvDataStream APIs, group/object framing on the wire, and how these are consumed by the relay's Track and Subscription system as well as client publisher/subscriber/fetcher modes."
+        }
+      ]
+    },
+    {
+      "title": "moqtail-ts (TypeScript Library)",
+      "purpose": "Detailed documentation of the TypeScript client library: package structure, build system (bundler/tsconfig), browser/WebTransport integration, and how it's consumed by client-js and the meet app.",
+      "parent": "Protocol Libraries",
+      "page_notes": [
+        {
+          "content": "Start from libs/moqtail-ts/README.md, which is linked from the root README and shown on the project's Mintlify docs site (moqtail-moqtail.mintlify.app) with a usage example: `import { MOQtailClient } from 'moqtail/client'`. Document the npm package name/exports, build tooling, and browser compatibility (WebTransport requirement)."
+        }
+      ]
+    },
+    {
+      "title": "Client API",
+      "purpose": "Documentation of the MOQTClient/MOQtailClient class in moqtail-ts: connection setup, subscribe/fetch operations, publication and namespace management, and request/response handling.",
+      "parent": "Protocol Libraries",
+      "page_notes": [
+        {
+          "content": "Public API sketch from the docs site example: `MOQtailClient.new(clientSetup, webTransport)`, `client.addOrUpdateTrack(myTrack)`, `client.publishNamespace(namespace)`, `client.subscribe(subscribe)`. Verify exact method signatures against libs/moqtail-ts/src and document error handling and the relationship to the Playout Buffer for incoming subscriptions."
+        }
+      ]
+    },
+    {
+      "title": "Playout Buffer",
+      "purpose": "Documentation of the client-side buffering and timing system that smooths out network jitter for consistent media playback, including latency/target-buffer configuration.",
+      "parent": "Protocol Libraries",
+      "page_notes": [
+        {
+          "content": "The main playout buffer implementation lives at apps/meet/src/lib/playout_buffer.ts (used by the Meet App), with a simpler buffer at apps/client-js/src/lib/buffer.ts (used by the browser client). Document configurable latency targets, how it interacts with the Client API's subscribe path, and how it hands frames off to the media pipeline (WebCodecs decoding)."
+        }
+      ]
+    },
+    {
+      "title": "Relay Server",
+      "purpose": "Comprehensive documentation of the relay server architecture — the most critical component, responsible for forwarding MOQT control and data messages between publishers and subscribers. Includes how to run it locally and as a container.",
+      "page_notes": [
+        {
+          "content": "Root README gives the canonical run commands: `cargo run -p relay -- --port 4433 --cert-file apps/relay/cert/cert.pem --key-file apps/relay/cert/key.pem` for local runs, and `docker run -v ./cert:/cert ghcr.io/moqtail/relay:latest --port 4433 --cert-file /cert/cert.pem --key-file /cert/key.pem` for container runs. Docker images are published to ghcr.io/moqtail/relay by the relay.yml workflow with the following tags: on branch pushes — `{branch-name}` and `sha-{short-sha}`; on `relay@x.y.z` version tags — `{version}` (e.g. `0.13.4`) and `latest`. Local image build: `docker build -f apps/relay/Dockerfile -t moqtail-relay .` from the workspace root. Certificate generation/browser trust setup is documented separately in apps/relay/cert/README.md — link to it rather than duplicating."
+        }
+      ]
+    },
+    {
+      "title": "Server Architecture",
+      "purpose": "Overview of the relay server's internal architecture: the Server/Session model, how incoming WebTransport/QUIC connections are accepted, and the concurrent (async) processing pattern used per session.",
+      "parent": "Relay Server",
+      "page_notes": [
+        {
+          "content": "Document the top-level Server struct/entry point (likely apps/relay/src/main.rs), how it binds the QUIC/WebTransport listener using cert-file/key-file CLI args, and how it spawns one Session task per connection. Cross-link to Session Management for per-connection detail and to Client Management for the registry that spans sessions."
+        }
+      ]
+    },
+    {
+      "title": "Session Management",
+      "purpose": "Documentation of session lifecycle: connection establishment/teardown, SessionContext state, and control-stream message processing loop for a single client connection.",
+      "parent": "Relay Server",
+      "page_notes": [
+        {
+          "content": "Document SessionContext fields (client identity, negotiated parameters, associated streams), the control-stream read loop (built on moqtail-rs's Control Stream Handler), and graceful/error teardown paths. Note interactions with ClientManager for registering/deregistering sessions."
+        }
+      ]
+    },
+    {
+      "title": "Client Management",
+      "purpose": "Documentation of the MOQTClient abstraction in the relay, partitioned stream management for scaling outbound delivery, message queuing, and the ClientManager registry that tracks all connected clients.",
+      "parent": "Relay Server",
+      "page_notes": [
+        {
+          "content": "Document how MOQTClient wraps a session's outbound data streams (partitioned, likely sharded by track or group for parallelism), the queuing/backpressure strategy, and how ClientManager is looked up by Track/Subscription processing when fanning out objects to subscribers."
+        }
+      ]
+    },
+    {
+      "title": "Track and Subscription System",
+      "purpose": "Section landing page explaining how tracks manage content distribution from publishers and how subscriptions handle per-client delivery, caching, and filtering.",
+      "parent": "Relay Server",
+      "page_notes": [
+        {
+          "content": "Index/parent page linking Track Management, Subscription Processing, Caching System, and Message Handlers — together these form the relay's data-plane logic."
+        }
+      ]
+    },
+    {
+      "title": "Track Management",
+      "purpose": "Documentation of the Track abstraction: subscriber registration/removal, event distribution via partitioned channels, and object logging for replay/caching.",
+      "parent": "Relay Server",
+      "page_notes": [
+        {
+          "content": "Document the Track struct's subscriber list, the partitioned broadcast-channel mechanism used to fan out newly published objects without a single bottleneck, and how published objects are logged/handed to the Caching System for fetch support."
+        }
+      ]
+    },
+    {
+      "title": "Subscription Processing",
+      "purpose": "Documentation of subscription lifecycle (Subscribe -> active -> Unsubscribe/error), filtering of objects by group/object location ranges, per-subscription stream management, and the subscription state machine.",
+      "parent": "Relay Server",
+      "page_notes": [
+        {
+          "content": "Document the state machine driving a subscription (pending/active/ended), how SUBSCRIBE filter parameters (e.g. start/end group-object location) are applied to incoming objects, and how a subscription's data stream is opened/closed against the Data Stream Handler from moqtail-rs."
+        }
+      ]
+    },
+    {
+      "title": "Caching System",
+      "purpose": "Documentation of the TrackCache, built on the moka caching library: eviction policies (TTL/TTI), object storage organized by group, and how the cache backs Fetch (on-demand) requests.",
+      "parent": "Relay Server",
+      "page_notes": [
+        {
+          "content": "Document TrackCache's use of moka for TTL/TTI-based eviction, the per-group object storage layout, and how a FETCH control message is resolved against cached objects versus live data. Cross-link to Configuration and Deployment for cache size/TTL configuration knobs."
+        }
+      ]
+    },
+    {
+      "title": "Message Handlers",
+      "purpose": "Documentation of control message processing in the relay: SUBSCRIBE, FETCH, ANNOUNCE, and UNSUBSCRIBE handlers, and the relay (forwarding) logic that ties publishers to subscribers.",
+      "parent": "Relay Server",
+      "page_notes": [
+        {
+          "content": "Document each handler's responsibilities: ANNOUNCE registers a namespace/track with the relay; SUBSCRIBE creates a Subscription against an existing or to-be-announced Track; FETCH resolves against the Caching System; UNSUBSCRIBE/UNANNOUNCE tear down state. Note how handlers depend on ClientManager, Track Management, and Subscription Processing."
+        }
+      ]
+    },
+    {
+      "title": "Configuration and Deployment",
+      "purpose": "Documentation of relay server configuration: command-line options (port, cert-file, key-file), cache settings, network parameters, TLS certificate setup, and container deployment.",
+      "parent": "Relay Server",
+      "page_notes": [
+        {
+          "content": "Document CLI flags shown in the README (`--port`, `--cert-file`, `--key-file`) plus any additional flags found in apps/relay/src (e.g. cache TTL/size, log level). Document the GHCR image tagging scheme from the relay.yml workflow: on branch pushes images are tagged with `{branch-name}` and `sha-{short-sha}`; on `relay@x.y.z` version tags images are tagged with `{version}` and `latest`. Also document the local cert generation / browser trust workflow from apps/relay/cert/README.md."
+        }
+      ]
+    },
+    {
+      "title": "Client Applications",
+      "purpose": "Section landing page for the client applications that act as publishers or subscribers against the relay: the browser client, the native Rust client, and the Meet video-conferencing demo.",
+      "page_notes": [
+        {
+          "content": "Index/parent page linking Browser Client (client-js), Native Client (client), and Meet App."
+        }
+      ]
+    },
+    {
+      "title": "Browser Client (client-js)",
+      "purpose": "Documentation of the Preact-based browser client: UI components, the media pipeline, video decoding, and WebTransport integration with the relay.",
+      "parent": "Client Applications",
+      "page_notes": [
+        {
+          "content": "Located at apps/client-js/. Document the Preact component tree (Header, Sidebar, VideoPlayer), how moqtail-ts's Client API and buffer are wired into the UI, and the video decode path (WebCodecs)."
+        }
+      ]
+    },
+    {
+      "title": "Native Client (client)",
+      "purpose": "Documentation of the Rust-based native client supporting publisher, subscriber, and fetcher modes via a command-line interface, built on moqtail-rs.",
+      "parent": "Client Applications",
+      "page_notes": [
+        {
+          "content": "Document the CLI argument surface (mode selection: publish/subscribe/fetch, relay address, track/namespace identifiers, cert handling for local testing) and how each mode maps to moqtail-rs's Control Stream Handler and Data Stream Handler."
+        }
+      ]
+    },
+    {
+      "title": "Meet App (Video Conferencing Demo)",
+      "purpose": "Documentation of the React-based video conferencing demo: the media pipeline, WebCodecs-based encoding/decoding, signalling carried over MOQ tracks, and Playout Buffer integration for synchronized playback.",
+      "parent": "Client Applications",
+      "page_notes": [
+        {
+          "content": "Located at apps/meet/. Document how signalling (room membership, track announcements) rides over dedicated MOQ tracks rather than a separate channel, how WebCodecs is used for encode (publisher side via decoder worker) and decode (subscriber side), and how it differs from client-js (full conferencing UI with signalling vs simpler player)."
+        }
+      ]
+    },
+    {
+      "title": "Development Guide",
+      "purpose": "Comprehensive guide for developers contributing to MOQtail: environment setup, prerequisites, and day-to-day workflows across the Rust and TypeScript workspaces.",
+      "page_notes": [
+        {
+          "content": "Base prerequisites per README: Rust toolchain, Node.js 22+, npm, and Docker (for relay container builds/runs). Setup: `git clone https://github.com/moqtail/moqtail.git && cd moqtail && npm install`. Commit requirements (enforced by Husky hooks and CI): every commit must include a `Signed-off-by` line (DCO — Developer Certificate of Origin, appended via `git commit -s`); commit messages must follow Conventional Commits format; user-facing changes require a changeset (prompted by pre-commit hook). A CLA may be requested for significant contributions. Full details in CONTRIBUTING.md."
+        }
+      ]
+    },
+    {
+      "title": "Build System",
+      "purpose": "Documentation of the build process: the Cargo workspace (Rust crates), npm workspaces (TypeScript packages/apps), and how cross-language dependencies (e.g. shared protocol constants or generated types) are kept consistent.",
+      "parent": "Development Guide",
+      "page_notes": [
+        {
+          "content": "Cargo workspace (from root Cargo.toml) members: apps/relay, apps/client, libs/moqtail-rs. npm workspace (from root package.json) uses wildcard patterns: apps/* and libs/* (resolving to libs/moqtail-ts, apps/client-js, apps/meet). Root package.json scripts orchestrate builds (npm run build runs tsup for moqtail-ts then vite for client-js) and tests (vitest for moqtail-ts). Build scripts live under scripts/ (postversion.mjs, precommit.mjs, test-client.sh). No code-generation step currently exists for cross-language alignment."
+        }
+      ]
+    },
+    {
+      "title": "Testing Strategy",
+      "purpose": "Documentation of the testing infrastructure: vitest for TypeScript packages, Rust unit/integration tests via cargo test, and any cross-language or end-to-end integration testing approach.",
+      "parent": "Development Guide",
+      "page_notes": [
+        {
+          "content": "Document npm test scripts (vitest config/location) and `cargo test` usage per crate. Cross-reference .github/workflows/rust.yml and js.yml (badged in the README as 'Rust Checks' and 'JavaScript Checks') for how tests run in CI, including any relay-vs-client interop testing."
+        }
+      ]
+    },
+    {
+      "title": "CI/CD Pipeline",
+      "purpose": "Documentation of GitHub Actions workflows: pull request checks (Rust and JavaScript), release automation (changesets-driven publishing), container image builds/pushes to GHCR, and documentation deployment.",
+      "parent": "Development Guide",
+      "page_notes": [
+        {
+          "content": "Seven workflows exist under .github/workflows/: rust.yml (Rust format/lint/test), js.yml (JavaScript checks), misc.yml (miscellaneous checks), player.yml (player-specific checks), relay.yml (relay-specific checks), release-rust.yml (crates.io releases), and release.yml (npm + GHCR releases). Document the release workflow that publishes packages via changesets and builds/pushes the relay image to ghcr.io/moqtail/relay with latest/version/branch/commit-SHA tags."
+        }
+      ]
+    },
+    {
+      "title": "Versioning and Releases",
+      "purpose": "Documentation of the changesets-based release workflow: semantic versioning, linked/grouped packages, and publishing to npm (TypeScript) and crates.io (Rust), plus relay container image releases.",
+      "parent": "Development Guide",
+      "page_notes": [
+        {
+          "content": "Document the changeset authoring flow (adding a changeset per PR), how linked packages are configured (e.g. moqtail-ts and its dependents bumped together), and the release tag convention `relay@x.y.z` used to trigger relay image publishing — root README's Releases history shows e.g. relay@0.13.4 as latest."
+        }
+      ]
+    },
+    {
+      "title": "Code Quality Tools",
+      "purpose": "Documentation of linting, formatting, commit message conventions, and pre-commit hooks enforced across the project.",
+      "parent": "Development Guide",
+      "page_notes": [
+        {
+          "content": "Document Prettier (.prettierrc) and rustfmt (rustfmt.toml) as the formatters for TS and Rust respectively, .editorconfig for cross-editor consistency, commitlint.config.ts for enforced commit message format (likely Conventional Commits), lint-staged.config.js for staged-file checks, and .husky/ git hooks that wire these into pre-commit/pre-push."
+        }
+      ]
+    }
+  ]
+}

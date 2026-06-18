@@ -85,7 +85,7 @@ For local certificate generation and browser trust setup, see [apps/relay/cert/R
 ### Prerequisites
 
 - [Rust](https://www.rust-lang.org/tools/install)
-- [Node.js](https://nodejs.org/) 18 or newer
+- [Node.js](https://nodejs.org/) 22 or newer
 - [npm](https://www.npmjs.com/)
 - [Docker](https://www.docker.com/) for containerized relay builds and runs
 

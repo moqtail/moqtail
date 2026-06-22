@@ -14,18 +14,41 @@
  * limitations under the License.
  */
 
-import { useState, useRef, useCallback } from 'preact/hooks';
+import { useState, useRef, useCallback, useEffect } from 'preact/hooks';
+import { uniqueNamesGenerator, colors, animals } from 'unique-names-generator';
 import { Player } from '@/lib/player';
+import { Publisher } from '@/lib/publisher';
 import { Tuple, type CMSFTrack } from 'moqtail';
 import MSEBuffer from '@/lib/buffer';
-import type { Track, Status } from '@/types';
+import type { Track, Status, SourceState, SourceKind, PublishStatus } from '@/types';
 import { Header } from '@/components/Header';
 import { Sidebar } from '@/components/Sidebar';
 import { VideoPlayer } from '@/components/VideoPlayer';
+import { LocalPreview } from '@/components/LocalPreview';
 import { logger } from '@/lib/logger';
 import { applyLogLevel, parseLogLevel } from '@/lib/utils';
+import { parseMsfUrl, buildMsfUrl } from '@/lib/msf-url';
 
 logger.setDefaultLevel('debug');
+
+type Tab = 'watch' | 'publish';
+
+function generateNamespace(): string {
+  const slug = uniqueNamesGenerator({
+    dictionaries: [colors, animals],
+    separator: '-',
+    length: 2,
+    style: 'lowerCase',
+  });
+  return `moqtail/${slug}`;
+}
+
+function getWatchUrl(relayUrl: string, namespace: string): string {
+  const msfUrl = buildMsfUrl(relayUrl, namespace);
+  if (!msfUrl) return '';
+  const base = window.location.origin + window.location.pathname;
+  return `${base}?url=${encodeURIComponent(msfUrl)}`;
+}
 
 function sortTracks(tracks: CMSFTrack[]) {
   return tracks.sort((a, b) => {
@@ -42,7 +65,14 @@ function sortTracks(tracks: CMSFTrack[]) {
   });
 }
 
+const DEFAULT_SOURCES: SourceState[] = [
+  { kind: 'camera', enabled: false, available: false, embedTimestamp: false },
+  { kind: 'screen', enabled: false, available: false, embedTimestamp: false },
+  { kind: 'test', enabled: false, available: true, embedTimestamp: true },
+];
+
 export function App() {
+  // Playback state
   const [relayUrl, setRelayUrl] = useState('https://relay.moqtail.dev');
   const [namespace, setNamespace] = useState('moqtail/testsrc');
   const [status, setStatus] = useState<Status>('idle');
@@ -54,6 +84,62 @@ export function App() {
   const playerRef = useRef<Player | null>(null);
   const bufferRef = useRef<MSEBuffer | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+
+  // Tab state
+  const [tab, setTab] = useState<Tab>('watch');
+
+  // Publish state
+  const [publishRelayUrl, setPublishRelayUrl] = useState('https://relay.moqtail.dev');
+  const [publishNamespace, setPublishNamespace] = useState(generateNamespace);
+  const [publishSources, setPublishSources] = useState<SourceState[]>(DEFAULT_SOURCES);
+  const [publishStatus, setPublishStatus] = useState<PublishStatus>('idle');
+  const [publishError, setPublishError] = useState<string | null>(null);
+  const publisherRef = useRef<Publisher | null>(null);
+
+  // Pre-populate watch fields from a ?url=moqt://... query param.
+  useEffect(() => {
+    const raw = new URLSearchParams(window.location.search).get('url');
+    if (!raw) return;
+    const parts = parseMsfUrl(raw);
+    if (!parts) return;
+    setRelayUrl(parts.relayUrl);
+    setNamespace(parts.namespace);
+  }, []);
+
+  // Check device availability when switching to publish tab
+  useEffect(() => {
+    if (tab !== 'publish') return;
+    const check = async () => {
+      const md = navigator.mediaDevices;
+      const hasGetDisplay = typeof md?.getDisplayMedia === 'function';
+
+      let hasCamera = false;
+      let camReason: string | undefined;
+
+      try {
+        const devices = await md.enumerateDevices();
+        hasCamera = devices.some(d => d.kind === 'videoinput');
+        if (!hasCamera) camReason = 'No camera detected';
+      } catch {
+        camReason = 'Cannot enumerate devices';
+      }
+
+      setPublishSources(prev =>
+        prev.map(s => {
+          if (s.kind === 'camera')
+            return { ...s, available: hasCamera, unavailableReason: camReason };
+          if (s.kind === 'screen')
+            return {
+              ...s,
+              available: hasGetDisplay,
+              unavailableReason: hasGetDisplay ? undefined : 'Screen capture not supported',
+            };
+          return s; // test source always available
+        }),
+      );
+    };
+    check();
+  }, [tab]);
 
   const disposePlayer = useCallback(async () => {
     if (playerRef.current) {
@@ -186,7 +272,6 @@ export function App() {
       let newAudio = selectedAudio;
 
       if (track.role === 'video') {
-        // clicking the active track unchecks it; clicking any other switches to it
         newVideo = track.name === selectedVideo && !checked ? null : track.name;
       } else {
         newAudio = track.name === selectedAudio && !checked ? null : track.name;
@@ -199,15 +284,124 @@ export function App() {
     [selectedVideo, selectedAudio, startPlayback],
   );
 
+  const handleSourceToggle = useCallback(async (kind: SourceKind, enabled: boolean) => {
+    if (enabled) {
+      try {
+        let stream: MediaStream;
+        if (kind === 'camera') {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: {
+              width: { ideal: 1280 },
+              height: { ideal: 720 },
+              aspectRatio: { ideal: 16 / 9 },
+            },
+          });
+        } else if (kind === 'screen') {
+          stream = await (navigator.mediaDevices as any).getDisplayMedia({
+            video: true,
+            audio: false,
+          });
+        } else {
+          // test source — no stream needed
+          setPublishSources(prev => prev.map(s => (s.kind === kind ? { ...s, enabled: true } : s)));
+          return;
+        }
+
+        setPublishSources(prev =>
+          prev.map(s => (s.kind === kind ? { ...s, enabled: true, stream } : s)),
+        );
+      } catch (err) {
+        // Permission denied or cancelled — leave unchecked
+        logger.warn('app', `source toggle denied for ${kind}: ${(err as Error).message}`);
+      }
+    } else {
+      setPublishSources(prev =>
+        prev.map(s => {
+          if (s.kind !== kind) return s;
+          s.stream?.getTracks().forEach(t => t.stop());
+          return { ...s, enabled: false, stream: undefined };
+        }),
+      );
+    }
+  }, []);
+
+  const handleTimestampToggle = useCallback((kind: SourceKind, embed: boolean) => {
+    setPublishSources(prev =>
+      prev.map(s => (s.kind === kind ? { ...s, embedTimestamp: embed } : s)),
+    );
+  }, []);
+
+  const handlePublish = useCallback(async () => {
+    if (publisherRef.current) return;
+
+    setPublishStatus('connecting');
+    setPublishError(null);
+
+    const nsParts = publishNamespace.split('/').filter(Boolean);
+    const publisher = new Publisher({
+      relayUrl: publishRelayUrl,
+      namespace: nsParts,
+      sources: publishSources,
+      onStatus: (s, err) => {
+        setPublishStatus(s);
+        setPublishError(err ?? null);
+      },
+    });
+    publisherRef.current = publisher;
+    await publisher.start();
+  }, [publishRelayUrl, publishNamespace, publishSources]);
+
+  const handleStop = useCallback(async () => {
+    await publisherRef.current?.stop();
+    publisherRef.current = null;
+    setPublishStatus('idle');
+    setPublishError(null);
+  }, []);
+
+  const handleRefreshNamespace = useCallback(() => {
+    if (publishStatus === 'publishing' || publishStatus === 'connecting') return;
+    setPublishNamespace(generateNamespace());
+  }, [publishStatus]);
+
+  const handleTabChange = useCallback(
+    async (next: Tab) => {
+      if (next === 'publish' && tab === 'watch') {
+        await disposePlayer();
+        setStatus('idle');
+        setError(null);
+        setTracks([]);
+        setSelectedVideo(null);
+        setSelectedAudio(null);
+      }
+      setTab(next);
+    },
+    [tab, disposePlayer],
+  );
+
+  // Derived state
   const hasTracks = tracks.length > 0;
+  const activeCameraStream =
+    publishSources.find(s => s.kind === 'camera' && s.enabled)?.stream ?? null;
+  const activeScreenStream =
+    publishSources.find(s => s.kind === 'screen' && s.enabled)?.stream ?? null;
+  const isTestSource = publishSources.some(s => s.kind === 'test' && s.enabled);
+  const testStream =
+    isTestSource && publishStatus === 'publishing'
+      ? (publisherRef.current?.testStream ?? null)
+      : null;
+  const previewCameraStream = activeCameraStream ?? testStream;
+  const showPreview =
+    tab === 'publish' &&
+    (publishStatus === 'publishing' || !!activeCameraStream || !!activeScreenStream) &&
+    (!!previewCameraStream || !!activeScreenStream);
 
   return (
     <div className="flex h-dvh w-dvw flex-col bg-neutral-950 font-sans text-neutral-100 antialiased">
       <Header status={status} />
 
-      {/* Body */}
       <div className="flex h-full min-h-0 w-full flex-1 grow flex-col md:flex-row">
         <Sidebar
+          // Watch tab props
           relayUrl={relayUrl}
           onRelayUrlChange={setRelayUrl}
           namespace={namespace}
@@ -219,8 +413,42 @@ export function App() {
           onConnect={handleConnect}
           onTrackChange={handleTrackChange}
           error={error}
+          // Tab
+          tab={tab}
+          onTabChange={handleTabChange}
+          // Publish tab props
+          publishProps={{
+            relayUrl: publishRelayUrl,
+            onRelayUrlChange: setPublishRelayUrl,
+            namespace: publishNamespace,
+            onNamespaceChange: setPublishNamespace,
+            onRefreshNamespace: handleRefreshNamespace,
+            sources: publishSources,
+            onSourceToggle: handleSourceToggle,
+            onTimestampToggle: handleTimestampToggle,
+            publishStatus,
+            onPublish: handlePublish,
+            onStop: handleStop,
+            error: publishError,
+            watchUrl: getWatchUrl(publishRelayUrl, publishNamespace),
+          }}
         />
-        <VideoPlayer ref={videoRef} hasTracks={hasTracks} />
+
+        {/* Main area */}
+        {tab === 'watch' ? (
+          <VideoPlayer ref={videoRef} hasTracks={hasTracks} mode="watch" />
+        ) : showPreview ? (
+          <main className="relative flex flex-1 flex-col items-center justify-center overflow-hidden bg-neutral-950 p-4 md:p-6">
+            <div
+              className="w-full overflow-hidden rounded-xl bg-black shadow-2xl shadow-black/60"
+              style={{ aspectRatio: '16/9' }}
+            >
+              <LocalPreview cameraStream={previewCameraStream} screenStream={activeScreenStream} />
+            </div>
+          </main>
+        ) : (
+          <VideoPlayer ref={videoRef} hasTracks={false} mode="publish" />
+        )}
       </div>
     </div>
   );

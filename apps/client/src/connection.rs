@@ -19,6 +19,7 @@ use moqtail::model::error::TerminationCode;
 use moqtail::model::{
   control::client_setup::ClientSetup, parameter::setup_parameter::SetupParameter,
 };
+use moqtail::transport::connection::TransportConnection;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,7 +32,7 @@ use wtransport::{ClientConfig, Endpoint, tls};
 const CLIENT_SUPPORTED_VERSIONS: &str = "moqt-16";
 
 pub struct MoqConnection {
-  pub connection: Arc<wtransport::Connection>,
+  pub connection: Arc<TransportConnection>,
   pub control_stream: ControlStreamHandler,
 }
 
@@ -80,13 +81,15 @@ impl MoqConnection {
       .add_header("wt-available-protocols", wt_available_protocols_str)
       .build();
 
-    let connection = Arc::new(endpoint.connect(options).await?);
+    let connection = Arc::new(TransportConnection::WebTransport(
+      endpoint.connect(options).await?,
+    ));
 
     info!("Connected! Connection ID: {}", connection.stable_id());
 
     // Open bidirectional stream for control messages
     info!("Opening control stream...");
-    let (send_stream, recv_stream) = connection.open_bi().await?.await?;
+    let (send_stream, recv_stream) = connection.open_bi().await?;
     let mut control_stream = ControlStreamHandler::new(send_stream, recv_stream);
 
     // Send ClientSetup

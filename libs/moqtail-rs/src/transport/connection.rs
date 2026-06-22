@@ -1,0 +1,451 @@
+// Copyright 2026 The MOQtail Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+//! Transport-agnostic wrappers over the two QUIC-based backends MOQtail speaks:
+//! WebTransport (via `wtransport`) and raw QUIC (via `wtransport::quinn`, the exact
+//! quinn crate wtransport uses internally). Both backends have near-identical APIs
+//! (wtransport's stream types are literal newtypes over quinn's), so these enums just
+//! pick the right inner call and normalize the handful of places where the two
+//! diverge (error types, and `finish`/`set_priority` sync-vs-async).
+
+use bytes::Bytes;
+use std::net::SocketAddr;
+use thiserror::Error;
+use tokio::io::AsyncWriteExt;
+use wtransport::quinn;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransportKind {
+  WebTransport,
+  Quic,
+}
+
+impl std::fmt::Display for TransportKind {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match self {
+      TransportKind::WebTransport => write!(f, "webtransport"),
+      TransportKind::Quic => write!(f, "quic"),
+    }
+  }
+}
+
+#[derive(Debug, Error)]
+pub enum TransportConnectionError {
+  #[error("application closed")]
+  ApplicationClosed,
+  #[error("{0}")]
+  Other(String),
+}
+
+impl From<wtransport::error::ConnectionError> for TransportConnectionError {
+  fn from(e: wtransport::error::ConnectionError) -> Self {
+    match e {
+      wtransport::error::ConnectionError::ApplicationClosed(_) => Self::ApplicationClosed,
+      other => Self::Other(format!("{other:?}")),
+    }
+  }
+}
+
+impl From<quinn::ConnectionError> for TransportConnectionError {
+  fn from(e: quinn::ConnectionError) -> Self {
+    match e {
+      quinn::ConnectionError::ApplicationClosed(_) => Self::ApplicationClosed,
+      other => Self::Other(format!("{other:?}")),
+    }
+  }
+}
+
+impl From<wtransport::error::StreamOpeningError> for TransportConnectionError {
+  fn from(e: wtransport::error::StreamOpeningError) -> Self {
+    Self::Other(format!("{e:?}"))
+  }
+}
+
+impl From<wtransport::error::SendDatagramError> for TransportConnectionError {
+  fn from(e: wtransport::error::SendDatagramError) -> Self {
+    Self::Other(format!("{e:?}"))
+  }
+}
+
+impl From<quinn::SendDatagramError> for TransportConnectionError {
+  fn from(e: quinn::SendDatagramError) -> Self {
+    Self::Other(format!("{e:?}"))
+  }
+}
+
+#[derive(Debug, Error)]
+pub enum TransportWriteError {
+  #[error("stream closed or stopped")]
+  ClosedOrStopped,
+  #[error("{0}")]
+  Other(String),
+}
+
+impl From<wtransport::error::StreamWriteError> for TransportWriteError {
+  fn from(e: wtransport::error::StreamWriteError) -> Self {
+    use wtransport::error::StreamWriteError as E;
+    match e {
+      E::Closed | E::Stopped(_) => Self::ClosedOrStopped,
+      other => Self::Other(format!("{other:?}")),
+    }
+  }
+}
+
+impl From<quinn::WriteError> for TransportWriteError {
+  fn from(e: quinn::WriteError) -> Self {
+    use quinn::WriteError as E;
+    match e {
+      E::ClosedStream | E::Stopped(_) => Self::ClosedOrStopped,
+      other => Self::Other(format!("{other:?}")),
+    }
+  }
+}
+
+impl From<quinn::ClosedStream> for TransportWriteError {
+  fn from(_: quinn::ClosedStream) -> Self {
+    Self::ClosedOrStopped
+  }
+}
+
+#[derive(Debug, Error)]
+pub enum TransportReadError {
+  #[error("not connected")]
+  NotConnected,
+  #[error("{0}")]
+  Other(String),
+}
+
+impl From<wtransport::error::StreamReadError> for TransportReadError {
+  fn from(e: wtransport::error::StreamReadError) -> Self {
+    use wtransport::error::StreamReadError as E;
+    match e {
+      E::NotConnected => Self::NotConnected,
+      other => Self::Other(format!("{other:?}")),
+    }
+  }
+}
+
+impl From<quinn::ReadError> for TransportReadError {
+  fn from(e: quinn::ReadError) -> Self {
+    use quinn::ReadError as E;
+    match e {
+      E::ConnectionLost(_) | E::ClosedStream => Self::NotConnected,
+      other => Self::Other(format!("{other:?}")),
+    }
+  }
+}
+
+#[derive(Debug)]
+pub enum TransportSendStream {
+  WebTransport(wtransport::SendStream),
+  Quic(quinn::SendStream),
+}
+
+impl TransportSendStream {
+  pub async fn write_all(&mut self, buf: &[u8]) -> Result<(), TransportWriteError> {
+    match self {
+      Self::WebTransport(s) => s.write_all(buf).await.map_err(Into::into),
+      Self::Quic(s) => s.write_all(buf).await.map_err(Into::into),
+    }
+  }
+
+  pub async fn finish(&mut self) -> Result<(), TransportWriteError> {
+    match self {
+      Self::WebTransport(s) => s.finish().await.map_err(Into::into),
+      Self::Quic(s) => s.finish().map_err(Into::into),
+    }
+  }
+
+  pub async fn flush(&mut self) -> Result<(), TransportWriteError> {
+    let result = match self {
+      Self::WebTransport(s) => s.flush().await,
+      Self::Quic(s) => s.flush().await,
+    };
+    result.map_err(|e| TransportWriteError::Other(e.to_string()))
+  }
+
+  /// Best-effort: if the stream is already closed, setting priority is a no-op.
+  pub fn set_priority(&self, priority: i32) {
+    match self {
+      Self::WebTransport(s) => s.set_priority(priority),
+      Self::Quic(s) => {
+        let _ = s.set_priority(priority);
+      }
+    }
+  }
+}
+
+#[derive(Debug)]
+pub enum TransportRecvStream {
+  WebTransport(wtransport::RecvStream),
+  Quic(quinn::RecvStream),
+}
+
+impl TransportRecvStream {
+  pub async fn read(&mut self, buf: &mut [u8]) -> Result<Option<usize>, TransportReadError> {
+    match self {
+      Self::WebTransport(s) => s.read(buf).await.map_err(Into::into),
+      Self::Quic(s) => s.read(buf).await.map_err(Into::into),
+    }
+  }
+}
+
+#[derive(Debug, Clone)]
+pub enum TransportConnection {
+  WebTransport(wtransport::Connection),
+  Quic(quinn::Connection),
+}
+
+impl TransportConnection {
+  pub fn kind(&self) -> TransportKind {
+    match self {
+      Self::WebTransport(_) => TransportKind::WebTransport,
+      Self::Quic(_) => TransportKind::Quic,
+    }
+  }
+
+  pub fn stable_id(&self) -> usize {
+    match self {
+      Self::WebTransport(c) => c.stable_id(),
+      Self::Quic(c) => c.stable_id(),
+    }
+  }
+
+  pub fn remote_address(&self) -> SocketAddr {
+    match self {
+      Self::WebTransport(c) => c.remote_address(),
+      Self::Quic(c) => c.remote_address(),
+    }
+  }
+
+  /// Closes the connection with an application error code and reason.
+  pub fn close(&self, error_code: u32, reason: &[u8]) {
+    match self {
+      Self::WebTransport(c) => c.close(error_code.into(), reason),
+      Self::Quic(c) => c.close(error_code.into(), reason),
+    }
+  }
+
+  /// Waits for the connection to be closed, for any reason.
+  pub async fn closed(&self) {
+    match self {
+      Self::WebTransport(c) => {
+        c.closed().await;
+      }
+      Self::Quic(c) => {
+        c.closed().await;
+      }
+    }
+  }
+
+  pub async fn open_bi(
+    &self,
+  ) -> Result<(TransportSendStream, TransportRecvStream), TransportConnectionError> {
+    match self {
+      Self::WebTransport(c) => {
+        let (send, recv) = c.open_bi().await?.await?;
+        Ok((
+          TransportSendStream::WebTransport(send),
+          TransportRecvStream::WebTransport(recv),
+        ))
+      }
+      Self::Quic(c) => {
+        let (send, recv) = c.open_bi().await?;
+        Ok((
+          TransportSendStream::Quic(send),
+          TransportRecvStream::Quic(recv),
+        ))
+      }
+    }
+  }
+
+  pub async fn accept_bi(
+    &self,
+  ) -> Result<(TransportSendStream, TransportRecvStream), TransportConnectionError> {
+    match self {
+      Self::WebTransport(c) => {
+        let (send, recv) = c.accept_bi().await?;
+        Ok((
+          TransportSendStream::WebTransport(send),
+          TransportRecvStream::WebTransport(recv),
+        ))
+      }
+      Self::Quic(c) => {
+        let (send, recv) = c.accept_bi().await?;
+        Ok((
+          TransportSendStream::Quic(send),
+          TransportRecvStream::Quic(recv),
+        ))
+      }
+    }
+  }
+
+  pub async fn open_uni(&self) -> Result<TransportSendStream, TransportConnectionError> {
+    match self {
+      Self::WebTransport(c) => {
+        let send = c.open_uni().await?.await?;
+        Ok(TransportSendStream::WebTransport(send))
+      }
+      Self::Quic(c) => {
+        let send = c.open_uni().await?;
+        Ok(TransportSendStream::Quic(send))
+      }
+    }
+  }
+
+  pub async fn accept_uni(&self) -> Result<TransportRecvStream, TransportConnectionError> {
+    match self {
+      Self::WebTransport(c) => Ok(TransportRecvStream::WebTransport(c.accept_uni().await?)),
+      Self::Quic(c) => Ok(TransportRecvStream::Quic(c.accept_uni().await?)),
+    }
+  }
+
+  pub async fn receive_datagram(&self) -> Result<Bytes, TransportConnectionError> {
+    match self {
+      Self::WebTransport(c) => Ok(Bytes::from(c.receive_datagram().await?.payload().to_vec())),
+      Self::Quic(c) => Ok(c.read_datagram().await?),
+    }
+  }
+
+  pub fn send_datagram(&self, payload: Bytes) -> Result<(), TransportConnectionError> {
+    match self {
+      Self::WebTransport(c) => c.send_datagram(payload).map_err(Into::into),
+      Self::Quic(c) => c.send_datagram(payload).map_err(Into::into),
+    }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use std::error::Error;
+  use std::sync::Arc;
+  use wtransport::endpoint::IntoConnectOptions;
+
+  const TEST_ALPN: &[u8] = b"test-moqt";
+
+  async fn webtransport_pair() -> Result<(TransportConnection, TransportConnection), Box<dyn Error>>
+  {
+    let server_identity = wtransport::Identity::self_signed(std::iter::once("localhost"))?;
+    let server_cert_hash = server_identity.certificate_chain().as_slice()[0].hash();
+
+    let server_config = wtransport::ServerConfig::builder()
+      .with_bind_address("127.0.0.1:0".parse()?)
+      .with_identity(server_identity)
+      .build();
+    let server_endpoint = wtransport::Endpoint::server(server_config)?;
+    let server_addr = server_endpoint.local_addr()?;
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+      let incoming = server_endpoint.accept().await;
+      let session_request = incoming.await.expect("session request");
+      let connection = session_request.accept().await.expect("accept");
+      let _ = tx.send(connection);
+    });
+
+    let client_config = wtransport::ClientConfig::builder()
+      .with_bind_default()
+      .with_server_certificate_hashes(vec![server_cert_hash])
+      .build();
+    let client_endpoint = wtransport::Endpoint::client(client_config)?;
+    let client = client_endpoint
+      .connect(format!("https://{}:{}", server_addr.ip(), server_addr.port()).into_options())
+      .await?;
+
+    let server = rx.await?;
+
+    Ok((
+      TransportConnection::WebTransport(client),
+      TransportConnection::WebTransport(server),
+    ))
+  }
+
+  async fn quic_pair() -> Result<(TransportConnection, TransportConnection), Box<dyn Error>> {
+    let server_identity = wtransport::Identity::self_signed(std::iter::once("localhost"))?;
+    let server_cert_hash = server_identity.certificate_chain().as_slice()[0].hash();
+
+    let mut server_tls = wtransport::tls::server::build_default_tls_config(server_identity);
+    server_tls.alpn_protocols = vec![TEST_ALPN.to_vec()];
+    let quic_server_config = quinn::crypto::rustls::QuicServerConfig::try_from(server_tls)?;
+    let server_config = quinn::ServerConfig::with_crypto(Arc::new(quic_server_config));
+    let server_endpoint = quinn::Endpoint::server(server_config, "127.0.0.1:0".parse()?)?;
+    let server_addr = server_endpoint.local_addr()?;
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+      let incoming = server_endpoint.accept().await.expect("incoming");
+      let connection = incoming.await.expect("connection");
+      let _ = tx.send(connection);
+    });
+
+    let mut client_tls = wtransport::tls::client::build_default_tls_config(
+      Arc::new(wtransport::tls::rustls::RootCertStore::empty()),
+      Some(Arc::new(
+        wtransport::tls::client::NoServerVerification::new(),
+      )),
+    );
+    client_tls.alpn_protocols = vec![TEST_ALPN.to_vec()];
+    let _ = server_cert_hash; // NoServerVerification skips cert checks for this test
+    let quic_client_config = quinn::crypto::rustls::QuicClientConfig::try_from(client_tls)?;
+    let client_config = quinn::ClientConfig::new(Arc::new(quic_client_config));
+
+    let client_endpoint = quinn::Endpoint::client("127.0.0.1:0".parse()?)?;
+    let client = client_endpoint
+      .connect_with(client_config, server_addr, "localhost")?
+      .await?;
+
+    let server = rx.await?;
+
+    Ok((
+      TransportConnection::Quic(client),
+      TransportConnection::Quic(server),
+    ))
+  }
+
+  async fn roundtrip_bi(client: TransportConnection, server: TransportConnection) {
+    // Raw QUIC sends nothing on the wire for an opened-but-unwritten stream (unlike
+    // WebTransport, whose open_bi() writes a stream-type header immediately), so write
+    // before waiting on the peer's accept_bi() or it can idle out waiting for a stream
+    // it was never told about.
+    let (mut client_send, _client_recv) = client.open_bi().await.expect("client open_bi");
+    client_send.write_all(b"hello").await.expect("write_all");
+
+    let (_server_send, mut server_recv) = server.accept_bi().await.expect("server accept_bi");
+
+    let mut buf = [0u8; 5];
+    let mut read = 0;
+    while read < buf.len() {
+      let n = server_recv
+        .read(&mut buf[read..])
+        .await
+        .expect("read")
+        .expect("stream open");
+      read += n;
+    }
+    assert_eq!(&buf, b"hello");
+  }
+
+  #[tokio::test]
+  async fn webtransport_backend_roundtrip() {
+    let (client, server) = webtransport_pair().await.expect("webtransport_pair");
+    roundtrip_bi(client, server).await;
+  }
+
+  #[tokio::test]
+  async fn quic_backend_roundtrip() {
+    let (client, server) = quic_pair().await.expect("quic_pair");
+    roundtrip_bi(client, server).await;
+  }
+}

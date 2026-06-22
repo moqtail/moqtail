@@ -30,7 +30,10 @@ use moqtail::{
     control::{client_setup::ClientSetup, control_message::ControlMessage},
     data::full_track_name::FullTrackName,
   },
-  transport::data_stream_handler::{FetchRequest, SubscribeRequest},
+  transport::{
+    connection::{TransportConnection, TransportSendStream, TransportWriteError},
+    data_stream_handler::{FetchRequest, SubscribeRequest},
+  },
 };
 use switch_context::SwitchContext;
 
@@ -43,7 +46,6 @@ use tokio::sync::Notify;
 use tokio::sync::{Mutex, RwLock, watch};
 use tokio::time::Instant;
 use tracing::{debug, error, info, warn};
-use wtransport::{Connection, SendStream, error::StreamWriteError};
 
 /// Token-bucket rate limiter. All streams of one subscriber share a single
 /// bucket so they compete for bandwidth — the QUIC scheduler then drains
@@ -89,14 +91,14 @@ impl TokenBucket {
 /// Should be a power of 2 for optimal modulo performance.
 pub const SEND_STREAM_PARTITION_COUNT: usize = 16;
 
-pub type SendStreamMap = HashMap<String, Arc<Mutex<SendStream>>>;
+pub type SendStreamMap = HashMap<String, Arc<Mutex<TransportSendStream>>>;
 pub type SendStreamLock = Arc<RwLock<SendStreamMap>>;
 pub type SendStreamList = Vec<SendStreamLock>;
 
 #[derive(Debug, Clone)]
 pub(crate) struct MOQTClient {
   pub connection_id: usize,
-  pub connection: Arc<Connection>,
+  pub connection: Arc<TransportConnection>,
   #[allow(dead_code)]
   pub client_setup: Arc<ClientSetup>,
   pub announced_track_namespaces: Arc<RwLock<Vec<Tuple>>>, // the track namespaces the publisher announced
@@ -135,7 +137,7 @@ pub(crate) struct MOQTClient {
 impl MOQTClient {
   pub(crate) fn new(
     connection_id: usize,
-    connection: Arc<Connection>,
+    connection: Arc<TransportConnection>,
     client_setup: Arc<ClientSetup>,
   ) -> Self {
     let mut send_streams = Vec::with_capacity(SEND_STREAM_PARTITION_COUNT);
@@ -243,7 +245,7 @@ impl MOQTClient {
   fn get_stream_map(
     &self,
     stream_id: &StreamId,
-  ) -> Arc<RwLock<HashMap<String, Arc<Mutex<SendStream>>>>> {
+  ) -> Arc<RwLock<HashMap<String, Arc<Mutex<TransportSendStream>>>>> {
     let partition_index = self.get_partition_index(stream_id);
     debug!(
       "get_stream_map | stream_id: {} partition_index: {}",
@@ -252,7 +254,7 @@ impl MOQTClient {
     self.send_streams[partition_index].clone()
   }
 
-  pub async fn get_stream(&self, stream_id: &StreamId) -> Option<Arc<Mutex<SendStream>>> {
+  pub async fn get_stream(&self, stream_id: &StreamId) -> Option<Arc<Mutex<TransportSendStream>>> {
     let send_stream_map = self.get_stream_map(stream_id);
     let send_streams = send_stream_map.read().await;
     let send_stream = send_streams.get(stream_id.get_stream_id().as_str());
@@ -264,21 +266,17 @@ impl MOQTClient {
     stream_id: &StreamId,
     header_payload: Bytes,
     priority: i32, // Priority for the stream
-  ) -> Result<Arc<Mutex<SendStream>>> {
+  ) -> Result<Arc<Mutex<TransportSendStream>>> {
     let send_stream = {
       let send_stream_map = self.get_stream_map(stream_id);
       let mut send_streams = send_stream_map.write().await;
       match send_streams.entry(stream_id.get_stream_id().to_string()) {
         std::collections::hash_map::Entry::Vacant(entry) => {
-          let result = self
+          let send_stream = self
             .connection
             .open_uni()
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to open send stream 1: {:?}", e))?;
-
-          let send_stream = result
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to open send stream 2: {:?}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to open send stream: {:?}", e))?;
 
           send_stream.set_priority(priority);
           let s = Arc::new(Mutex::new(send_stream));
@@ -374,7 +372,7 @@ impl MOQTClient {
   pub async fn remove_stream_by_stream_id(
     &self,
     stream_id: &StreamId,
-  ) -> Option<Arc<Mutex<SendStream>>> {
+  ) -> Option<Arc<Mutex<TransportSendStream>>> {
     let send_stream_map = self.get_stream_map(stream_id);
     let mut send_streams = send_stream_map.write().await;
     send_streams.remove(stream_id.get_stream_id().as_str())
@@ -385,7 +383,7 @@ impl MOQTClient {
     stream_id: &StreamId,
     object_id: u64,
     object: Bytes,
-    the_stream: Option<Arc<Mutex<SendStream>>>,
+    the_stream: Option<Arc<Mutex<TransportSendStream>>>,
   ) -> Result<(), anyhow::Error> {
     debug!(
       "write_stream_object | Writing object to stream ({} - {}) connection_id: {}",
@@ -416,19 +414,16 @@ impl MOQTClient {
       match stream.write_all(&object).await {
         Ok(..) => {}
         Err(e) => {
-          match &e {
-            StreamWriteError::Closed | StreamWriteError::Stopped(_) => {
-              warn!(
-                "write_stream_object | Send stream is closed or stopped ({})",
-                stream_id.get_stream_id()
-              );
-              drop(stream);
-              // remove this from the streams
-              let stream_map = self.get_stream_map(stream_id);
-              let mut send_streams = stream_map.write().await;
-              send_streams.remove(stream_id.get_stream_id().as_str());
-            }
-            _ => {}
+          if let TransportWriteError::ClosedOrStopped = &e {
+            warn!(
+              "write_stream_object | Send stream is closed or stopped ({})",
+              stream_id.get_stream_id()
+            );
+            drop(stream);
+            // remove this from the streams
+            let stream_map = self.get_stream_map(stream_id);
+            let mut send_streams = stream_map.write().await;
+            send_streams.remove(stream_id.get_stream_id().as_str());
           }
         }
       };

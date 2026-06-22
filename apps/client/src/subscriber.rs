@@ -23,6 +23,7 @@ use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::subscribe::Subscribe;
 use moqtail::model::data::datagram::Datagram;
 use moqtail::model::parameter::message_parameter::MessageParameter;
+use moqtail::transport::connection::TransportConnection;
 use moqtail::transport::data_stream_handler::RecvDataStream;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -120,7 +121,7 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
 }
 
 async fn receive_datagrams(
-  connection: &Arc<wtransport::Connection>,
+  connection: &Arc<TransportConnection>,
   track_alias: u64,
   duration: u64,
 ) -> Result<()> {
@@ -133,8 +134,7 @@ async fn receive_datagrams(
     loop {
       match connection_clone.receive_datagram().await {
         Ok(datagram) => {
-          let bytes = bytes::Bytes::from(datagram.payload().to_vec());
-          let mut bytes_mut = bytes.clone();
+          let mut bytes_mut = datagram.clone();
 
           match Datagram::deserialize(&mut bytes_mut) {
             Ok(obj) => {
@@ -195,7 +195,7 @@ async fn receive_datagrams(
   if duration > 0 {
     tokio::time::sleep(tokio::time::Duration::from_secs(duration)).await;
     info!("Duration elapsed, closing connection...");
-    connection.close(0u32.into(), b"Done");
+    connection.close(0u32, b"Done");
   }
 
   let stats = datagram_task.await?;
@@ -208,7 +208,7 @@ async fn receive_datagrams(
 }
 
 async fn receive_streams(
-  connection: &Arc<wtransport::Connection>,
+  connection: &Arc<TransportConnection>,
   primary_alias: u64,
   extra_alias: Option<(String, u64)>,
   duration: u64,
@@ -284,7 +284,7 @@ async fn receive_streams(
   if duration > 0 {
     tokio::time::sleep(tokio::time::Duration::from_secs(duration)).await;
     info!("Duration elapsed, closing connection...");
-    connection.close(0u32.into(), b"Done");
+    connection.close(0u32, b"Done");
   }
 
   let stats = stream_task.await?;

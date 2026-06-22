@@ -38,11 +38,12 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use tokio::signal;
 use tokio::sync::{Notify, RwLock, mpsc};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::fmt::writer::MakeWriterExt;
 use tracing_subscriber::{EnvFilter, filter::LevelFilter};
 use track_manager::TrackManager;
-use wtransport::Endpoint;
+use wtransport::endpoint::IncomingSessionFuture;
+use wtransport::quinn;
 
 #[derive(Clone)]
 pub(crate) struct Server {
@@ -73,18 +74,13 @@ impl Server {
   }
 
   pub async fn start(&mut self) -> Result<()> {
-    let server_config = self.app_config.build_server_config().await?;
-    let server = match Endpoint::server(server_config) {
-      Ok(server) => server,
-      Err(e) => {
-        error!("Failed to create server endpoint. Error: {:?}", e);
-        return Err(anyhow::Error::from(e));
-      }
-    };
+    let endpoint = self.app_config.build_quic_endpoint().await?;
 
     info!(
-      "{} is running at https://{}:{}",
+      "{} is running -- WebTransport clients: https://{}:{}  Raw QUIC clients: moqt://{}:{}",
       env!("MOQTAIL_VERSION"),
+      self.app_config.host,
+      self.app_config.port,
       self.app_config.host,
       self.app_config.port
     );
@@ -110,10 +106,14 @@ impl Server {
           info!("Ctrl-C received, exiting...");
           break;
         },
-        incoming_session = server.accept() => {
+        incoming = endpoint.accept() => {
+          let Some(incoming) = incoming else {
+            info!("QUIC endpoint closed, exiting accept loop");
+            break;
+          };
           let server = self.clone();
           tokio::spawn(async move {
-            match Session::new(incoming_session, server).await {
+            match Self::accept_incoming(incoming, server).await {
               Ok(_) => {
                 info!("New session: {}", id);
               }
@@ -131,6 +131,47 @@ impl Server {
       }
     }
     Ok(())
+  }
+
+  /// Demultiplexes one incoming QUIC connection by its negotiated ALPN protocol —
+  /// `h3` is routed to the existing WebTransport path, any MOQT version string
+  /// (e.g. `moqt-16`) is routed to the raw-QUIC path. Both share the same UDP
+  /// socket/port; see `AppConfig::build_quic_endpoint` for the listener setup.
+  async fn accept_incoming(incoming: quinn::Incoming, server: Server) -> Result<()> {
+    let remote_addr = incoming.remote_address();
+    let mut connecting = incoming.accept()?;
+
+    let handshake_data = connecting.handshake_data().await?;
+    let protocol = handshake_data
+      .downcast::<quinn::crypto::rustls::HandshakeData>()
+      .ok()
+      .and_then(|data| data.protocol);
+
+    match protocol.as_deref() {
+      Some(b"h3") => {
+        debug!(remote = %remote_addr, "demuxed incoming QUIC connection as WebTransport (h3)");
+        let session_request = IncomingSessionFuture::with_quic_connecting(connecting).await?;
+        Session::accept_webtransport(session_request, server)
+          .await
+          .map(|_| ())
+      }
+      Some(other) => {
+        debug!(
+          remote = %remote_addr,
+          alpn = %String::from_utf8_lossy(other),
+          "demuxed incoming QUIC connection as raw QUIC"
+        );
+        let connection = connecting.await?;
+        Session::accept_quic(connection, server).await.map(|_| ())
+      }
+      None => {
+        warn!(
+          remote = %remote_addr,
+          "QUIC connection completed handshake with no negotiated ALPN protocol; rejecting"
+        );
+        Err(anyhow::anyhow!("no ALPN protocol negotiated"))
+      }
+    }
   }
 }
 

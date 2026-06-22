@@ -15,11 +15,14 @@
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
 use moqtail::model::control::constant::SUPPORTED_VERSIONS;
+use socket2::{Domain, Socket, Type};
+use std::net::{Ipv6Addr, SocketAddr, UdpSocket};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tracing::{error, info};
+use wtransport::Identity;
 use wtransport::quinn::congestion::BbrConfig;
-use wtransport::{Identity, ServerConfig, quinn::TransportConfig};
+use wtransport::quinn::{self, TransportConfig};
 
 /// Cache expiration strategy
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -135,7 +138,12 @@ impl AppConfig {
     })
   }
 
-  pub async fn build_server_config(&self) -> Result<ServerConfig> {
+  /// Builds the relay's single QUIC listener. WebTransport and raw-QUIC clients share
+  /// this one UDP socket/port: the TLS config offers ALPN for both `h3` (WebTransport,
+  /// added by `build_default_tls_config`) and the MOQT versions (raw QUIC), and the
+  /// accept loop in `Server::start` demultiplexes by the negotiated protocol before
+  /// handing the connection to either path. See `Server::start` for the demux.
+  pub async fn build_quic_endpoint(&self) -> Result<quinn::Endpoint> {
     let identity = match Identity::load_pemfiles(&self.cert_file, &self.key_file).await {
       Ok(identity) => identity,
       Err(e) => {
@@ -144,33 +152,38 @@ impl AppConfig {
       }
     };
 
-    /* TODO: When raw-quic is aneb */
     let mut tls_config = wtransport::tls::server::build_default_tls_config(identity);
 
-    /*
-      This is for future raw-QUIC implementation.
-      A raw-QUIC client will use ALPN at the QUIC level.
-      A WebTransport client will send h3 at the QUIC level ALPN
-      and send moq version in wt-available-protocols header.
-    */
     for version in SUPPORTED_VERSIONS.replace(" ", "").split(",") {
       tls_config.alpn_protocols.push(version.as_bytes().to_vec());
     }
-    info!("QUIC ALPN Protocols: {:?}", tls_config.alpn_protocols);
+    info!(
+      "QUIC ALPN protocols (WebTransport + raw QUIC): {:?}",
+      tls_config.alpn_protocols
+    );
+
+    let quic_crypto_config = quinn::crypto::rustls::QuicServerConfig::try_from(tls_config)?;
 
     // set up BBR congestion control
-    let mut quic_transport_config = TransportConfig::default();
-    quic_transport_config.congestion_controller_factory(Arc::new(BbrConfig::default()));
+    let mut transport_config = TransportConfig::default();
+    transport_config.congestion_controller_factory(Arc::new(BbrConfig::default()));
+    transport_config.keep_alive_interval(Some(Duration::from_secs(self.keep_alive_interval)));
+    transport_config.max_idle_timeout(Some(Duration::from_secs(self.max_idle_timeout).try_into()?));
 
-    let config = ServerConfig::builder()
-      .with_bind_default(self.port)
-      .with_custom_tls_and_transport(tls_config, quic_transport_config)
-      .keep_alive_interval(Some(Duration::from_secs(self.keep_alive_interval)))
-      .max_idle_timeout(Some(Duration::from_secs(self.max_idle_timeout)))
-      .unwrap()
-      .build();
+    let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(quic_crypto_config));
+    server_config.transport_config(Arc::new(transport_config));
 
-    Ok(config)
+    let socket = bind_dual_stack_udp_socket(self.port)?;
+    let runtime = quinn::default_runtime()
+      .ok_or_else(|| anyhow::anyhow!("no async runtime found for QUIC endpoint"))?;
+    let endpoint = quinn::Endpoint::new(
+      quinn::EndpointConfig::default(),
+      Some(server_config),
+      socket,
+      runtime,
+    )?;
+
+    Ok(endpoint)
   }
 
   /// Get cache expiration duration
@@ -189,6 +202,19 @@ impl AppConfig {
   pub fn is_cache_tti(&self) -> bool {
     matches!(self.cache_expiration_type, CacheExpirationType::Tti)
   }
+}
+
+/// Binds a UDP socket on `[::]:port` with IPv6 dual-stack explicitly enabled, matching
+/// `wtransport`'s own `with_bind_default()` (`IpBindConfig::InAddrAnyDual`) semantics.
+/// `quinn::Endpoint::server`'s plain `UdpSocket::bind` leaves dual-stack to the OS
+/// default, which isn't guaranteed across platforms, so this is done explicitly.
+fn bind_dual_stack_udp_socket(port: u16) -> Result<UdpSocket> {
+  let socket = Socket::new(Domain::IPV6, Type::DGRAM, None)?;
+  socket.set_only_v6(false)?;
+  let addr: SocketAddr = (Ipv6Addr::UNSPECIFIED, port).into();
+  socket.bind(&addr.into())?;
+  socket.set_nonblocking(true)?;
+  Ok(socket.into())
 }
 
 #[cfg(test)]

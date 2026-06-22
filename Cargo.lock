@@ -1074,6 +1074,7 @@ dependencies = [
  "moqtail",
  "once_cell",
  "serde_json",
+ "socket2",
  "tokio",
  "tracing",
  "tracing-appender",

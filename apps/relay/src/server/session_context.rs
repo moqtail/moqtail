@@ -23,7 +23,7 @@ use tokio::sync::{RwLock, mpsc};
 
 use moqtail::model::data::fetch_object::FetchObjectPayload;
 
-use moqtail::transport::connection::TransportConnection;
+use moqtail::transport::connection::{TransportConnection, TransportKind};
 use moqtail::transport::data_stream_handler::{FetchRequest, SubscribeRequest};
 
 use super::{
@@ -85,6 +85,7 @@ pub struct SessionContext {
   pub(crate) track_manager: TrackManager,
   pub(crate) relay_pending_requests: Arc<RwLock<BTreeMap<u64, PendingRequest>>>,
   pub(crate) connection_id: usize,
+  pub(crate) transport_kind: TransportKind,
   pub(crate) client: Arc<RwLock<Option<Arc<MOQTClient>>>>, // the client that is connected to this session
   pub(crate) connection: TransportConnection,
   pub(crate) server_config: &'static AppConfig,
@@ -108,6 +109,7 @@ impl SessionContext {
       track_manager,
       relay_pending_requests: request_maps.relay_pending_requests,
       connection_id: connection.stable_id(),
+      transport_kind: connection.kind(),
       client: Arc::new(RwLock::new(None)), // initially no client is set
       connection,
       server_config,

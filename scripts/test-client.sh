@@ -12,26 +12,25 @@ SERVER="${SERVER:-$DEFAULT_SERVER}"
 NAMESPACE="moqtail"
 TRACK="demo"
 
-# Parse global --server / -s flag before the subcommand
-ARGS=("$@")
-SUBCMD=""
-
-
-
-for i in "${!ARGS[@]}"; do
-  case "${ARGS[$i]}" in
+# Parse global --server / -s flag (can appear anywhere) and collect the rest
+ARGS=()
+while [ $# -gt 0 ]; do
+  case "$1" in
     --server|-s)
-      SERVER="${ARGS[$((i+1))]}"
-      unset 'ARGS[$i]' 'ARGS[$((i+1))]'
+      SERVER="$2"
+      shift 2
+      ;;
+    *)
+      ARGS+=("$1")
+      shift
       ;;
   esac
 done
 
-# Re-index after deletions
 if [ ${#ARGS[@]} -eq 0 ]; then
   SUBCMD="help"
 else
-  SUBCMD="${ARGS[0]:-help}"
+  SUBCMD="${ARGS[0]}"
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -62,13 +61,13 @@ case "$SUBCMD" in
   publish-subgroup)
     build
     echo "Publishing via subgroup streams (default settings)"
-    run_client -c publish --forwarding-preference subgroup
+    run_client -c publish --delivery-mode subgroup
     ;;
 
   publish-datagram)
     build
     echo "Publishing via datagrams"
-    run_client -c publish --forwarding-preference datagram
+    run_client -c publish --delivery-mode datagram
     ;;
 
   publish-fast)
@@ -100,13 +99,13 @@ case "$SUBCMD" in
   subscribe-subgroup)
     build
     echo "Subscribing via subgroup streams"
-    run_client -c subscribe --forwarding-preference subgroup
+    run_client -c subscribe --delivery-mode subgroup
     ;;
 
   subscribe-datagram)
     build
     echo "Subscribing via datagrams"
-    run_client -c subscribe --forwarding-preference datagram
+    run_client -c subscribe --delivery-mode datagram
     ;;
 
   subscribe-timed)
@@ -134,17 +133,17 @@ case "$SUBCMD" in
   pub-sub)
     build
     echo "Running publisher + subscriber (subgroup)"
-    run_client -c publish --forwarding-preference subgroup &
+    run_client -c publish --delivery-mode subgroup &
     sleep 1
-    run_client -c subscribe --forwarding-preference subgroup --duration 15
+    run_client -c subscribe --delivery-mode subgroup --duration 15
     ;;
 
   pub-sub-datagram)
     build
     echo "Running publisher + subscriber (datagram)"
-    run_client -c publish --forwarding-preference datagram &
+    run_client -c publish --delivery-mode datagram &
     sleep 1
-    run_client -c subscribe --forwarding-preference datagram --duration 15
+    run_client -c subscribe --delivery-mode datagram --duration 15
     ;;
 
   ## ── Help ─────────────────────────────────────────────────

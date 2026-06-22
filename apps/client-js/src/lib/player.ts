@@ -180,6 +180,14 @@ export class Player {
         sourceBuffer.addEventListener('updateend', () => resolve(), { once: true }),
       );
 
+    const isInOrder = (a: MoqtObject, b: MoqtObject) => {
+      // First objects are most likely to be RAPs
+      if (b.location.object === 0n) return true;
+      if (a.location.group < b.location.group) return true;
+      if (a.location.group > b.location.group) return false;
+      return a.location.object < b.location.object;
+    };
+
     // Seek to buffer end
     let gotNotification = 0;
     let target = 0;
@@ -254,6 +262,7 @@ export class Player {
       let lastMSEErrorLogged = 0;
       let kickStarted = false;
       let objectCount = 0;
+      let previousObject: MoqtObject | null = null;
 
       // Create the WritableStream to handle incoming objects
       const writable = new WritableStream<MoqtObject>({
@@ -297,6 +306,17 @@ export class Player {
               controller.error(new DOMException('Stream aborted', 'InternalError'));
               return;
             }
+
+            // This is a very crude attempt to ensure video playback continues when objects from multiple streams arrive out of order.
+            // Normally we order the objects but this is simpler.
+            if (previousObject && !isInOrder(previousObject, object)) {
+              logger.warn(
+                'player',
+                `[${struct.trackName}] out-of-order object detected (group=${object.groupId}, obj=${object.objectId}), discarding...`,
+              );
+              return;
+            }
+            previousObject = object;
 
             // Append the data
             let maxRetries = 5;

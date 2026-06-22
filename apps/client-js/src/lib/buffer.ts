@@ -239,28 +239,6 @@ class MSEBuffer {
           return { seek: true, targetTime: nextRangeStart };
         }
 
-        // Next range must have enough buffer to jump to
-        const nextRangeEnd = buffered.end(currentRangeIndex + 1);
-        const nextRangeDuration = nextRangeEnd - nextRangeStart;
-
-        if (nextRangeDuration < this.config.stallThreshold) {
-          logger.warn(
-            'buffer',
-            `[mseBuffer] Next range too short (${nextRangeDuration.toFixed(3)}s), not seeking`,
-          );
-          continue;
-        }
-
-        if (nextRangeDuration < this.config.liveEdgeDelay) {
-          logger.warn(
-            'buffer',
-            `[mseBuffer] Next range shorter than live edge delay (${nextRangeDuration.toFixed(
-              3,
-            )}s < ${this.config.liveEdgeDelay}s), not seeking`,
-          );
-          continue;
-        }
-
         if (gap > 0) {
           logger.warn(
             'buffer',

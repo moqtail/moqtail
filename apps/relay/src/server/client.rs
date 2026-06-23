@@ -31,7 +31,7 @@ use moqtail::{
     data::full_track_name::FullTrackName,
   },
   transport::{
-    connection::{TransportConnection, TransportSendStream, TransportWriteError},
+    connection::{TransportConnection, TransportKind, TransportSendStream, TransportWriteError},
     data_stream_handler::{FetchRequest, SubscribeRequest},
   },
 };
@@ -98,6 +98,7 @@ pub type SendStreamList = Vec<SendStreamLock>;
 #[derive(Debug, Clone)]
 pub(crate) struct MOQTClient {
   pub connection_id: usize,
+  pub transport_kind: TransportKind,
   pub connection: Arc<TransportConnection>,
   #[allow(dead_code)]
   pub client_setup: Arc<ClientSetup>,
@@ -154,6 +155,7 @@ impl MOQTClient {
 
     MOQTClient {
       connection_id,
+      transport_kind: connection.kind(),
       connection,
       client_setup,
       announced_track_namespaces: Arc::new(RwLock::new(Vec::new())),

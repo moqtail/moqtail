@@ -31,9 +31,13 @@ impl ClientManager {
 
   pub(crate) async fn add(&mut self, client: Arc<MOQTClient>) {
     let connection_id = client.connection_id;
+    let transport_kind = client.transport_kind;
     let mut clients = self.clients.write().await;
     clients.insert(connection_id, client);
-    info!("Added client connection_id: {}", connection_id);
+    info!(
+      "Added client connection_id: {} transport: {}",
+      connection_id, transport_kind
+    );
   }
 
   pub(crate) async fn remove(&self, connection_id: usize) -> Option<Arc<MOQTClient>> {

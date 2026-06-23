@@ -21,10 +21,12 @@ use moqtail::model::{
 };
 use moqtail::transport::connection::TransportConnection;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{error, info};
 use wtransport::endpoint::ConnectOptions;
+use wtransport::quinn;
 use wtransport::quinn::TransportConfig;
 use wtransport::quinn::congestion::BbrConfig;
 use wtransport::{ClientConfig, Endpoint, tls};
@@ -38,54 +40,27 @@ pub struct MoqConnection {
 
 impl MoqConnection {
   pub async fn establish(server: &str, no_cert_validation: bool) -> Result<Self> {
-    let c = ClientConfig::builder().with_bind_default();
+    let mut setup_parameters = vec![SetupParameter::new_max_request_id(1000).try_into().unwrap()];
 
-    let mut tls_config = if no_cert_validation {
-      tls::client::build_default_tls_config(
-        Arc::new(tls::rustls::RootCertStore::empty()),
-        Some(Arc::new(tls::client::NoServerVerification::new())),
-      )
-    } else {
-      tls::client::build_default_tls_config(Arc::new(tls::build_native_cert_store()), None)
+    let connection = match server.strip_prefix("moqt://") {
+      Some(authority_and_path) => {
+        let (authority, path) = split_authority_and_path(authority_and_path);
+        // Raw QUIC only there's no HTTP CONNECT to carry the authority/path,
+        // so CLIENT_SETUP must carry them instead. Sending these
+        // over WebTransport is a protocol violation, so this only happens here.
+        setup_parameters.push(
+          SetupParameter::new_authority(authority.to_string())
+            .try_into()
+            .unwrap(),
+        );
+        setup_parameters.push(SetupParameter::new_path(path).try_into().unwrap());
+        Self::connect_quic(authority, no_cert_validation).await?
+      }
+      None => Self::connect_webtransport(server, no_cert_validation).await?,
     };
 
-    /*
-      We use WebTransport, so we don't use ALPN at the QUIC level.
-      If we use raw QUIC, we need to remove h3 and just leave the moq version.
-    */
-    for version in CLIENT_SUPPORTED_VERSIONS.replace(" ", "").split(",") {
-      tls_config.alpn_protocols.push(version.as_bytes().to_vec());
-    }
-
-    info!("alpn protocols: {:?}", tls_config.alpn_protocols);
-
-    let mut transport_config = TransportConfig::default();
-    transport_config.congestion_controller_factory(Arc::new(BbrConfig::default()));
-
-    let config = c
-      .with_custom_tls_and_transport(tls_config, transport_config)
-      .keep_alive_interval(Some(Duration::from_secs(3)))
-      .max_idle_timeout(Some(Duration::from_secs(7)))
-      .unwrap()
-      .build();
-
-    info!("Connecting to relay server at {}", server);
-    let endpoint = Endpoint::client(config)?;
-    // strings should be surrounded by quotes
-    let wt_available_protocols: Vec<String> = CLIENT_SUPPORTED_VERSIONS
-      .split(",")
-      .map(|s| format!("\"{}\"", s))
-      .collect();
-    let wt_available_protocols_str = wt_available_protocols.join(", ");
-    let options = ConnectOptions::builder(server)
-      .add_header("wt-available-protocols", wt_available_protocols_str)
-      .build();
-
-    let connection = Arc::new(TransportConnection::WebTransport(
-      endpoint.connect(options).await?,
-    ));
-
     info!("Connected! Connection ID: {}", connection.stable_id());
+    let connection = Arc::new(connection);
 
     // Open bidirectional stream for control messages
     info!("Opening control stream...");
@@ -94,11 +69,7 @@ impl MoqConnection {
 
     // Send ClientSetup
     info!("Sending ClientSetup...");
-    let max_request_id_param = SetupParameter::new_max_request_id(1000000)
-      .try_into()
-      .unwrap();
-
-    let client_setup = ClientSetup::new(vec![max_request_id_param]);
+    let client_setup = ClientSetup::new(setup_parameters);
     control_stream.send_impl(&client_setup).await?;
 
     // Receive ServerSetup
@@ -129,5 +100,129 @@ impl MoqConnection {
       connection,
       control_stream,
     })
+  }
+
+  /// Connects over WebTransport (HTTP/3). ALPN here is just `h3` (the default from
+  /// `build_default_tls_config`) -- MOQT version negotiation happens via the
+  /// `wt-available-protocols` header, not ALPN.
+  async fn connect_webtransport(
+    server: &str,
+    no_cert_validation: bool,
+  ) -> Result<TransportConnection> {
+    let c = ClientConfig::builder().with_bind_default();
+
+    let tls_config = if no_cert_validation {
+      tls::client::build_default_tls_config(
+        Arc::new(tls::rustls::RootCertStore::empty()),
+        Some(Arc::new(tls::client::NoServerVerification::new())),
+      )
+    } else {
+      tls::client::build_default_tls_config(Arc::new(tls::build_native_cert_store()), None)
+    };
+
+    info!("alpn protocols: {:?}", tls_config.alpn_protocols);
+
+    let mut transport_config = TransportConfig::default();
+    transport_config.congestion_controller_factory(Arc::new(BbrConfig::default()));
+
+    let config = c
+      .with_custom_tls_and_transport(tls_config, transport_config)
+      .keep_alive_interval(Some(Duration::from_secs(3)))
+      .max_idle_timeout(Some(Duration::from_secs(7)))
+      .unwrap()
+      .build();
+
+    info!("Connecting via WebTransport to {}", server);
+    let endpoint = Endpoint::client(config)?;
+    // strings should be surrounded by quotes
+    let wt_available_protocols: Vec<String> = CLIENT_SUPPORTED_VERSIONS
+      .split(",")
+      .map(|s| format!("\"{}\"", s))
+      .collect();
+    let wt_available_protocols_str = wt_available_protocols.join(", ");
+    let options = ConnectOptions::builder(server)
+      .add_header("wt-available-protocols", wt_available_protocols_str)
+      .build();
+
+    let connection = endpoint.connect(options).await?;
+    Ok(TransportConnection::WebTransport(connection))
+  }
+
+  /// Connects over raw QUIC (`moqt://authority[/path]`). ALPN here is
+  /// the MOQT version string itself (no `h3`) -- that's what the relay's ALPN demux
+  /// uses to route the connection to the raw-QUIC path instead of WebTransport.
+  async fn connect_quic(authority: &str, no_cert_validation: bool) -> Result<TransportConnection> {
+    let (host, port) = match authority.rsplit_once(':') {
+      Some((host, port)) => (
+        host,
+        port
+          .parse::<u16>()
+          .map_err(|_| anyhow::anyhow!("invalid port in moqt:// authority: {}", authority))?,
+      ),
+      None => (authority, 443u16),
+    };
+
+    let mut tls_config = if no_cert_validation {
+      tls::client::build_default_tls_config(
+        Arc::new(tls::rustls::RootCertStore::empty()),
+        Some(Arc::new(tls::client::NoServerVerification::new())),
+      )
+    } else {
+      tls::client::build_default_tls_config(Arc::new(tls::build_native_cert_store()), None)
+    };
+    tls_config.alpn_protocols = CLIENT_SUPPORTED_VERSIONS
+      .replace(" ", "")
+      .split(",")
+      .map(|version| version.as_bytes().to_vec())
+      .collect();
+
+    info!("alpn protocols: {:?}", tls_config.alpn_protocols);
+
+    let quic_crypto_config = quinn::crypto::rustls::QuicClientConfig::try_from(tls_config)?;
+
+    let mut transport_config = TransportConfig::default();
+    transport_config.congestion_controller_factory(Arc::new(BbrConfig::default()));
+    transport_config.keep_alive_interval(Some(Duration::from_secs(3)));
+    transport_config.max_idle_timeout(Some(Duration::from_secs(7).try_into()?));
+
+    let mut client_config = quinn::ClientConfig::new(Arc::new(quic_crypto_config));
+    client_config.transport_config(Arc::new(transport_config));
+
+    let bind_addr: SocketAddr = if host.parse::<std::net::Ipv6Addr>().is_ok() {
+      "[::]:0".parse()?
+    } else {
+      "0.0.0.0:0".parse()?
+    };
+    let endpoint = quinn::Endpoint::client(bind_addr)?;
+
+    info!("Connecting via raw QUIC to {}:{}", host, port);
+    let remote_addr = resolve_host_port(host, port).await?;
+    let connection = endpoint
+      .connect_with(client_config, remote_addr, host)?
+      .await?;
+    Ok(TransportConnection::Quic(connection))
+  }
+}
+
+async fn resolve_host_port(host: &str, port: u16) -> Result<SocketAddr> {
+  if let Ok(ip) = host.parse::<IpAddr>() {
+    return Ok(SocketAddr::new(ip, port));
+  }
+  tokio::net::lookup_host((host, port))
+    .await?
+    .next()
+    .ok_or_else(|| anyhow::anyhow!("DNS resolution failed for host: {}", host))
+}
+
+/// Splits `moqt://` URI remainder (everything after the scheme) into the authority
+/// (`host[:port]`) and the path-abempty (+ `?query`, if present)
+/// e.g. `host:9443/moq-relay` -> (`host:9443`, `/moq-relay`), `host:9443` -> (`host:9443`, ``).
+fn split_authority_and_path(authority_and_path: &str) -> (&str, String) {
+  match authority_and_path.find('/') {
+    Some(idx) => (
+      &authority_and_path[..idx],
+      authority_and_path[idx..].to_string(),
+    ),
+    None => (authority_and_path, String::new()),
   }
 }

@@ -19,3 +19,4 @@ once_cell = "1.21.3"
 moka = { version = "0.12", features = ["future"] }
 fnv = "1.0.7"
 hex = "0.4"
+socket2 = "0.6"

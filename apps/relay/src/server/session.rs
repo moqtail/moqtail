@@ -33,7 +33,8 @@ use std::{
 };
 use tokio::sync::RwLock;
 use tracing::{Instrument, debug, error, info, info_span, warn};
-use wtransport::endpoint::IncomingSession;
+use wtransport::endpoint::SessionRequest;
+use wtransport::quinn;
 
 use crate::server::{Server, stream_id::StreamId};
 
@@ -48,9 +49,14 @@ use super::{
 pub struct Session {}
 
 impl Session {
-  pub async fn new(incoming_session: IncomingSession, server: Server) -> Result<Session> {
-    let session_request = incoming_session.await?;
-
+  /// Accepts a connection that the relay's ALPN demux (see `Server::accept_incoming`)
+  /// has already identified as WebTransport (negotiated ALPN `h3`). Does the
+  /// WebTransport-specific extended-CONNECT negotiation (path/headers/version-via-header),
+  /// then hands off to `Session::start`, which is shared with the raw-QUIC path.
+  pub async fn accept_webtransport(
+    session_request: SessionRequest,
+    server: Server,
+  ) -> Result<Session> {
     let remote_addr = session_request.remote_address();
     let origin = session_request.origin();
     let authority = session_request.authority();
@@ -94,13 +100,27 @@ impl Session {
 
     // in the headers, we expect wt-available-protocols
 
+    let connection = TransportConnection::WebTransport(session_request.accept().await?);
+    Self::start(connection, server).await
+  }
+
+  /// Accepts a connection that the relay's ALPN demux (see `Server::accept_incoming`)
+  /// has already identified as raw QUIC (negotiated ALPN is a MOQT version string).
+  /// Raw QUIC has no headers/path/origin and the version was already pinned by ALPN
+  /// during the demux, so there's nothing WebTransport-specific to do here.
+  pub async fn accept_quic(connection: quinn::Connection, server: Server) -> Result<Session> {
+    Self::start(TransportConnection::Quic(connection), server).await
+  }
+
+  /// Shared session bootstrap once a connection has been accepted by either transport:
+  /// build the `SessionContext` and spawn the long-lived control-stream/close-watcher tasks.
+  async fn start(connection: TransportConnection, server: Server) -> Result<Session> {
     let client_manager = server.client_manager.clone();
     let track_manager = server.track_manager.clone();
     let server_config = server.app_config;
     let relay_pending_requests = server.relay_pending_requests.clone();
     let upstream_fetch_senders = server.upstream_fetch_senders.clone();
     let relay_next_request_id = server.relay_next_request_id.clone();
-    let connection = TransportConnection::WebTransport(session_request.accept().await?);
 
     let request_maps = RequestMaps {
       relay_pending_requests,
@@ -116,6 +136,13 @@ impl Session {
       relay_next_request_id,
     ));
 
+    info!(
+      "New session: connection_id={} transport={} remote={}",
+      context.connection_id,
+      context.transport_kind,
+      context.connection.remote_address()
+    );
+
     tokio::spawn(Self::handle_connection_close(context.clone()));
     tokio::spawn(Self::accept_control_stream(context.clone()));
 
@@ -127,10 +154,15 @@ impl Session {
       Ok((send_stream, recv_stream)) => {
         let session_context = context.clone();
         let connection_id = session_context.connection_id;
+        let transport = session_context.transport_kind;
         tokio::spawn(async move {
           if let Err(e) =
             Self::handle_control_messages(session_context.clone(), send_stream, recv_stream)
-              .instrument(info_span!("handle_control_messages", connection_id))
+              .instrument(info_span!(
+                "handle_control_messages",
+                connection_id,
+                %transport
+              ))
               .await
           {
             match e {
@@ -175,7 +207,11 @@ impl Session {
 
     // Client-server negotiation
     let client = match Self::negotiate(context.clone(), &mut control_stream_handler)
-      .instrument(info_span!("negotiate", context.connection_id))
+      .instrument(info_span!(
+        "negotiate",
+        context.connection_id,
+        transport = %context.transport_kind
+      ))
       .await
     {
       Ok(client) => client,

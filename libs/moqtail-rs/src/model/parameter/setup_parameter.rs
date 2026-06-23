@@ -24,11 +24,18 @@ pub enum SetupParameter {
   MaxRequestId { request_id: u64 },
   AuthorizationToken { token: AuthorizationToken },
   MaxAuthTokenCacheSize { max_size: u64 },
+  Authority { authority: String },
   MoqtImplementation { info: String },
 }
 impl SetupParameter {
   pub fn new_path(moqt_path: String) -> Self {
     SetupParameter::Path { moqt_path }
+  }
+
+  /// Raw-QUIC only: the authority component of the `moqt://` URI.
+  /// MUST NOT be sent over WebTransport.
+  pub fn new_authority(authority: String) -> Self {
+    SetupParameter::Authority { authority }
   }
 
   pub fn new_max_request_id(request_id: u64) -> Self {
@@ -98,6 +105,15 @@ impl SetupParameter {
         let slice = kvp.serialize()?;
         bytes.extend_from_slice(&slice);
       }
+      Self::Authority { authority } => {
+        let data = authority.as_bytes();
+        let kvp = KeyValuePair::try_new_bytes(
+          SetupParameterType::Authority as u64,
+          Bytes::copy_from_slice(data),
+        )?;
+        let slice = kvp.serialize()?;
+        bytes.extend_from_slice(&slice);
+      }
     }
     Ok(bytes.freeze())
   }
@@ -139,6 +155,14 @@ impl SetupParameter {
             })?;
             Ok(SetupParameter::MoqtImplementation { info })
           }
+          SetupParameterType::Authority => {
+            let authority =
+              String::from_utf8(value.to_vec()).map_err(|e| ParseError::InvalidUTF8 {
+                context: "SetupParameter::deserialize",
+                details: e.to_string(),
+              })?;
+            Ok(SetupParameter::Authority { authority })
+          }
           _ => Err(ParseError::KeyValueFormattingError {
             context: "SetupParameter::deserialize",
           }),
@@ -172,6 +196,10 @@ impl TryInto<KeyValuePair> for SetupParameter {
       SetupParameter::MoqtImplementation { info } => KeyValuePair::try_new_bytes(
         SetupParameterType::MoqtImplementation as u64,
         Bytes::copy_from_slice(info.as_bytes()),
+      ),
+      SetupParameter::Authority { authority } => KeyValuePair::try_new_bytes(
+        SetupParameterType::Authority as u64,
+        Bytes::copy_from_slice(authority.as_bytes()),
       ),
     }
   }
@@ -232,6 +260,17 @@ mod tests {
   #[test]
   fn test_roundtrip_moqt_implementation() {
     let orig = SetupParameter::new_moqt_implementation("moqtail".to_string());
+    let serialized = orig.serialize().unwrap();
+    let mut buf = serialized.clone();
+    let kvp = KeyValuePair::deserialize(&mut buf).unwrap();
+    let got = SetupParameter::deserialize(&kvp).unwrap();
+    assert_eq!(orig, got);
+    assert_eq!(buf.remaining(), 0);
+  }
+
+  #[test]
+  fn test_roundtrip_authority() {
+    let orig = SetupParameter::new_authority("example.com:9443".to_string());
     let serialized = orig.serialize().unwrap();
     let mut buf = serialized.clone();
     let kvp = KeyValuePair::deserialize(&mut buf).unwrap();

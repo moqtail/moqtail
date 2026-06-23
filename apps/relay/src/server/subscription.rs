@@ -40,6 +40,7 @@ use moqtail::model::data::subgroup_header::SubgroupHeader;
 use moqtail::model::parameter::message_parameter::{
   MessageParameter, apply_message_parameter_update,
 };
+use moqtail::transport::connection::TransportSendStream;
 use moqtail::transport::data_stream_handler::HeaderInfo;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -50,7 +51,6 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use tracing::trace;
 use tracing::warn;
 use tracing::{debug, error, info};
-use wtransport::SendStream;
 
 #[derive(Debug, Clone)]
 pub enum SubscriptionOrigin {
@@ -1131,7 +1131,7 @@ impl Subscription {
   async fn handle_header(
     &self,
     header_info: HeaderInfo,
-  ) -> Result<(StreamId, Arc<Mutex<SendStream>>)> {
+  ) -> Result<(StreamId, Arc<Mutex<TransportSendStream>>)> {
     // Handle the header information
     debug!("Handling header: {:?}", header_info);
     let stream_id = self.get_stream_id(&header_info);
@@ -1192,7 +1192,7 @@ impl Subscription {
     object: Object,
     previous_object_id: Option<u64>,
     stream_id: &StreamId,
-    send_stream: Arc<Mutex<SendStream>>,
+    send_stream: Arc<Mutex<TransportSendStream>>,
   ) -> Result<()> {
     debug!(
       "Handling object relay_track_id={} location: {:?} stream_id={} diff_ms={}",

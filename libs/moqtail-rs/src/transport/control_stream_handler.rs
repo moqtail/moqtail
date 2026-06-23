@@ -15,26 +15,25 @@
 use bytes::{Buf, BufMut, BytesMut};
 use tokio::time::{Duration, Instant, sleep_until};
 use tracing::{error, info, warn};
-use wtransport::error::StreamReadError;
-use wtransport::{RecvStream, SendStream};
 
 use crate::model::control::control_message::{ControlMessage, ControlMessageTrait};
 use crate::model::error::{ParseError, TerminationCode};
+use crate::transport::connection::{TransportReadError, TransportRecvStream, TransportSendStream};
 
 const CONTROL_MESSAGE_TIMEOUT: Duration = Duration::from_secs(5);
 
 const MTU_SIZE: usize = 1500; // Standard MTU size, max 2^16-1
 
 pub struct ControlStreamHandler {
-  send: SendStream,
-  recv: RecvStream,
+  send: TransportSendStream,
+  recv: TransportRecvStream,
   recv_bytes: BytesMut,
   recv_buf: Box<[u8; MTU_SIZE]>,
   partial_message_deadline: Option<Instant>,
 }
 
 impl ControlStreamHandler {
-  pub fn new(send: SendStream, recv: RecvStream) -> Self {
+  pub fn new(send: TransportSendStream, recv: TransportRecvStream) -> Self {
     Self {
       send,
       recv,
@@ -135,7 +134,7 @@ impl ControlStreamHandler {
   /// Handle the result of a stream read operation
   fn handle_read_result(
     &mut self,
-    res: Result<Option<usize>, wtransport::error::StreamReadError>,
+    res: Result<Option<usize>, TransportReadError>,
     is_partial_message: bool,
   ) -> Result<(), TerminationCode> {
     match res {
@@ -160,7 +159,7 @@ impl ControlStreamHandler {
       }
       Err(e) => {
         match e {
-          StreamReadError::NotConnected => {
+          TransportReadError::NotConnected => {
             info!("Client disconnected while reading control stream");
             // Client has disconnected - this is not an error, return NoError
             // so the caller knows not to try closing the connection
@@ -205,7 +204,7 @@ mod tests {
   use tokio::sync::Mutex;
   use tokio::time::sleep;
   use wtransport::endpoint::IntoConnectOptions;
-  use wtransport::{ClientConfig, Connection, Endpoint, Identity};
+  use wtransport::{ClientConfig, Connection, Endpoint, Identity, SendStream};
 
   struct TestSetup {
     client: Connection,
@@ -312,7 +311,10 @@ mod tests {
       // Set control stream to max priority
       server_send.set_priority(i32::MAX);
 
-      let plane = ControlStreamHandler::new(client_send, client_recv);
+      let plane = ControlStreamHandler::new(
+        TransportSendStream::WebTransport(client_send),
+        TransportRecvStream::WebTransport(client_recv),
+      );
       Ok((plane, server_send))
     }
   }

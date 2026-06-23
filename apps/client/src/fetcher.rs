@@ -175,7 +175,7 @@ pub async fn run(moq: MoqConnection, config: FetchConfig) -> Result<()> {
   tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
 
   info!("Closing connection...");
-  connection.close(0u32.into(), b"Done");
+  connection.close(0u32, b"Done");
 
   let _ = receive_task.await;
   info!("Fetch complete");

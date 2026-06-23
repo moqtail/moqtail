@@ -29,6 +29,7 @@ use moqtail::model::data::object::Object;
 use moqtail::model::data::subgroup_header::SubgroupHeader;
 use moqtail::model::data::subgroup_object::SubgroupObject;
 use moqtail::model::parameter::message_parameter::MessageParameter;
+use moqtail::transport::connection::TransportConnection;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use moqtail::transport::data_stream_handler::{HeaderInfo, SendDataStream};
 use std::sync::Arc;
@@ -138,7 +139,7 @@ pub async fn run_namespace(moq: MoqConnection, config: PublishNamespaceConfig) -
   tokio::time::sleep(Duration::from_secs(2)).await;
 
   info!("Closing connection...");
-  connection.close(0u32.into(), b"Done");
+  connection.close(0u32, b"Done");
 
   Ok(())
 }
@@ -176,7 +177,7 @@ pub async fn run(moq: MoqConnection, config: PublishConfig) -> Result<()> {
   tokio::time::sleep(Duration::from_secs(2)).await;
 
   info!("Closing connection...");
-  connection.close(0u32.into(), b"Done");
+  connection.close(0u32, b"Done");
 
   Ok(())
 }
@@ -223,7 +224,7 @@ struct DataConfig {
 }
 
 async fn publish_track(
-  connection: &Arc<wtransport::Connection>,
+  connection: &Arc<TransportConnection>,
   control_stream: &mut ControlStreamHandler,
   namespace: &Tuple,
   track_name: &str,
@@ -260,7 +261,7 @@ async fn publish_track(
 }
 
 async fn send_data(
-  connection: &Arc<wtransport::Connection>,
+  connection: &Arc<TransportConnection>,
   track_alias: u64,
   config: &DataConfig,
 ) -> Result<()> {
@@ -293,7 +294,7 @@ async fn send_data(
 }
 
 async fn send_datagrams(
-  connection: &wtransport::Connection,
+  connection: &TransportConnection,
   track_alias: u64,
   group_count: u64,
   interval_ms: u64,
@@ -352,7 +353,7 @@ async fn send_datagrams(
 }
 
 async fn send_via_streams(
-  connection: &wtransport::Connection,
+  connection: &TransportConnection,
   track_alias: u64,
   group_count: u64,
   interval_ms: u64,
@@ -368,7 +369,7 @@ async fn send_via_streams(
 
   for group_id in 0..group_count {
     info!("Opening stream for group {}", group_id);
-    let stream = connection.open_uni().await?.await?;
+    let stream = connection.open_uni().await?;
 
     let sub_header = SubgroupHeader::new_with_explicit_id(
       track_alias,

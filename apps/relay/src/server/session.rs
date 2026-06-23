@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use anyhow::Result;
-use bytes::Bytes;
 use moqtail::model::{
   control::{
     constant::SUPPORTED_VERSIONS, control_message::ControlMessage, server_setup::ServerSetup,
@@ -22,6 +21,9 @@ use moqtail::model::{
   error::TerminationCode,
 };
 use moqtail::transport::{
+  connection::{
+    TransportConnection, TransportConnectionError, TransportRecvStream, TransportSendStream,
+  },
   control_stream_handler::ControlStreamHandler,
   data_stream_handler::{HeaderInfo, RecvDataStream},
 };
@@ -31,7 +33,7 @@ use std::{
 };
 use tokio::sync::RwLock;
 use tracing::{Instrument, debug, error, info, info_span, warn};
-use wtransport::{RecvStream, SendStream, endpoint::IncomingSession, error::ConnectionError};
+use wtransport::endpoint::IncomingSession;
 
 use crate::server::{Server, stream_id::StreamId};
 
@@ -98,7 +100,7 @@ impl Session {
     let relay_pending_requests = server.relay_pending_requests.clone();
     let upstream_fetch_senders = server.upstream_fetch_senders.clone();
     let relay_next_request_id = server.relay_next_request_id.clone();
-    let connection = session_request.accept().await?;
+    let connection = TransportConnection::WebTransport(session_request.accept().await?);
 
     let request_maps = RequestMaps {
       relay_pending_requests,
@@ -165,8 +167,8 @@ impl Session {
 
   async fn handle_control_messages(
     context: Arc<SessionContext>,
-    send_stream: SendStream,
-    recv_stream: RecvStream,
+    send_stream: TransportSendStream,
+    recv_stream: TransportRecvStream,
   ) -> core::result::Result<(), TerminationCode> {
     info!("new control message stream");
     let mut control_stream_handler = ControlStreamHandler::new(send_stream, recv_stream);
@@ -178,7 +180,7 @@ impl Session {
     {
       Ok(client) => client,
       Err(e) => {
-        context.connection.close(0u32.into(), b"Setup failed");
+        context.connection.close(0u32, b"Setup failed");
         return Err(e);
       }
     };
@@ -260,7 +262,7 @@ impl Session {
   fn close_session(context: Arc<SessionContext>, error_code: TerminationCode, msg: &str) {
     context
       .connection
-      .close(error_code.to_u32().into(), msg.as_bytes());
+      .close(error_code.to_u32(), msg.as_bytes());
   }
 
   // TODO: in an error close the connection
@@ -324,7 +326,7 @@ impl Session {
           let datagram_bytes = match datagram_result {
             Ok(bytes) => bytes,
             Err(e) => {
-              if matches!(e, ConnectionError::ApplicationClosed(_)) {
+              if matches!(e, TransportConnectionError::ApplicationClosed) {
                 continue; // Connection closed, exit the loop
               }
               error!("Failed to receive datagram from client {}: {:?}", connection_id, e);
@@ -336,8 +338,7 @@ impl Session {
             debug!("Received datagram from client {}", connection_id);
 
             // Parse the datagram
-            let bytes = Bytes::from(datagram_bytes.payload().to_vec());
-            let mut bytes = bytes;
+            let mut bytes = datagram_bytes;
             match Datagram::deserialize(&mut bytes) {
               Ok(datagram_obj) => {
                 debug!("Parsed datagram: track_alias={}, group_id={}, object_id={}",
@@ -364,8 +365,8 @@ impl Session {
 
   async fn handle_request_stream(
     context: Arc<SessionContext>,
-    send_stream: SendStream,
-    recv_stream: RecvStream,
+    send_stream: TransportSendStream,
+    recv_stream: TransportRecvStream,
   ) {
     let client = match context.get_client().await {
       Some(c) => c,
@@ -565,7 +566,10 @@ impl Session {
     Ok(())
   }
 
-  async fn handle_uni_stream(context: Arc<SessionContext>, stream: RecvStream) -> Result<()> {
+  async fn handle_uni_stream(
+    context: Arc<SessionContext>,
+    stream: TransportRecvStream,
+  ) -> Result<()> {
     debug!("accepted unidirectional stream");
     let client = context.get_client().await;
     let client = match client {

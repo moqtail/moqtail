@@ -18,12 +18,9 @@ use std::time::Duration;
 use bytes::{Buf, BufMut, BytesMut};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex, Notify, RwLock};
 use tokio::task::yield_now;
 use tokio::time::{Instant, sleep_until};
-use wtransport::error::StreamReadError;
-use wtransport::{RecvStream, SendStream};
 
 use crate::model::control::fetch::Fetch;
 use crate::model::control::subscribe::Subscribe;
@@ -34,6 +31,7 @@ use crate::model::data::object::Object;
 use crate::model::data::subgroup_header::SubgroupHeader;
 use crate::model::data::subgroup_object::SubgroupObject;
 use crate::model::error::ParseError;
+use crate::transport::connection::{TransportReadError, TransportRecvStream, TransportSendStream};
 use tracing::{debug, error, info, trace};
 
 type ObjectParseResult =
@@ -119,7 +117,7 @@ impl SubscribeRequest {
 ///
 /// ```
 pub struct SendDataStream {
-  send_stream: Arc<Mutex<SendStream>>,
+  send_stream: Arc<Mutex<TransportSendStream>>,
   header_info: HeaderInfo,
   fetch_prev_ctx: Option<FetchObjectContext>,
 }
@@ -128,7 +126,7 @@ pub struct SendDataStream {
 // Suggestion: SubgroupHeader should start with Request ID and discard track_alias
 impl SendDataStream {
   pub async fn new(
-    send_stream: Arc<Mutex<SendStream>>,
+    send_stream: Arc<Mutex<TransportSendStream>>,
     header_info: HeaderInfo,
   ) -> Result<Self, ParseError> {
     let mut buf = BytesMut::new();
@@ -241,7 +239,7 @@ pub enum RecvDataStreamReadError {
 /// }
 /// ```
 pub struct RecvDataStream {
-  recv_stream: Arc<Mutex<RecvStream>>,
+  recv_stream: Arc<Mutex<TransportRecvStream>>,
   header_info: Arc<Mutex<Option<HeaderInfo>>>,
   pending_fetches: Arc<RwLock<BTreeMap<u64, FetchRequest>>>, // Mutable borrow to potentially remove entry
   objects: Arc<RwLock<VecDeque<Object>>>,                    // Buffer for parsed objects
@@ -252,7 +250,7 @@ pub struct RecvDataStream {
 
 impl RecvDataStream {
   pub fn new(
-    recv_stream: RecvStream,
+    recv_stream: TransportRecvStream,
     pending_fetches: Arc<RwLock<BTreeMap<u64, FetchRequest>>>, // Mutable borrow to potentially remove entry
   ) -> Self {
     Self {
@@ -273,7 +271,7 @@ impl RecvDataStream {
   }
 
   async fn read(
-    recv_stream: Arc<Mutex<RecvStream>>,
+    recv_stream: Arc<Mutex<TransportRecvStream>>,
     is_closed: Arc<AtomicBool>,
     the_header_info: Arc<Mutex<Option<HeaderInfo>>>,
     pending_fetches: Arc<RwLock<BTreeMap<u64, FetchRequest>>>,
@@ -396,7 +394,7 @@ impl RecvDataStream {
               Err(e) => {
                 debug!("RecvDataStream::read() Read error: {:?}", e);
                 is_closed.store(true, Ordering::Relaxed);
-                if e == StreamReadError::NotConnected {
+                if matches!(e, TransportReadError::NotConnected) {
                   return Err(RecvDataStreamReadError::StreamClosed);
                 }
                 return Err(RecvDataStreamReadError::ParseError(ParseError::Other { context: "RecvDataStream::new(header_read)", msg:e.to_string() }));
@@ -1027,7 +1025,7 @@ mod tests {
     );
 
     let sender = SendDataStream::new(
-      Arc::new(Mutex::new(send)),
+      Arc::new(Mutex::new(TransportSendStream::WebTransport(send))),
       HeaderInfo::Fetch {
         header: fetch_header,
         fetch_request: fetch_req.clone(),
@@ -1041,7 +1039,7 @@ mod tests {
 
     let pending_fetches = Arc::new(RwLock::new(pending_fetches));
 
-    let receiver = RecvDataStream::new(recv, pending_fetches);
+    let receiver = RecvDataStream::new(TransportRecvStream::WebTransport(recv), pending_fetches);
 
     // Serialize object and send in two parts
     let bytes = FetchObject::Object(fetch_obj.clone())

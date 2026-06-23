@@ -29,7 +29,6 @@ use moqtail::model::{common::reason_phrase::ReasonPhrase, control::constant::Fet
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use moqtail::transport::data_stream_handler::{FetchRequest, HeaderInfo};
 use std::sync::Arc;
-use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, error, info, warn};
 
@@ -498,7 +497,7 @@ pub async fn handle(
         if cancelled {
           // Close the stream promptly as per the spec
           if let Some(the_stream) = send_stream {
-            if let Err(e) = the_stream.lock().await.shutdown().await {
+            if let Err(e) = the_stream.lock().await.finish().await {
               error!(
                 "handle_fetch_messages | Error closing stream on cancel: {:?}",
                 e
@@ -529,7 +528,7 @@ pub async fn handle(
           // 2. Open Stream, Write Header, and Close (FIN)
           if let Some(the_stream) = stream_fn(client.clone(), &stream_id).await {
             let mut stream_lock = the_stream.lock().await;
-            if let Err(e) = stream_lock.shutdown().await {
+            if let Err(e) = stream_lock.finish().await {
               error!(
                 "handle_fetch_messages | Error closing empty fetch stream: {:?}",
                 e
@@ -541,7 +540,7 @@ pub async fn handle(
           // close the stream instantly
           if let Some(the_stream) = send_stream {
             // gracefully finish the stream here
-            if let Err(e) = the_stream.lock().await.shutdown().await {
+            if let Err(e) = the_stream.lock().await.finish().await {
               error!("handle_fetch_messages | Error closing stream: {:?}", e);
               // return Err(TerminationCode::InternalError);
             } else {

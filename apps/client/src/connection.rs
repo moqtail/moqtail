@@ -40,9 +40,21 @@ pub struct MoqConnection {
 
 impl MoqConnection {
   pub async fn establish(server: &str, no_cert_validation: bool) -> Result<Self> {
+    let mut setup_parameters = vec![SetupParameter::new_max_request_id(1000).try_into().unwrap()];
+
     let connection = match server.strip_prefix("moqt://") {
       Some(authority_and_path) => {
-        Self::connect_quic(authority_and_path, no_cert_validation).await?
+        let (authority, path) = split_authority_and_path(authority_and_path);
+        // Raw QUIC only there's no HTTP CONNECT to carry the authority/path,
+        // so CLIENT_SETUP must carry them instead. Sending these
+        // over WebTransport is a protocol violation, so this only happens here.
+        setup_parameters.push(
+          SetupParameter::new_authority(authority.to_string())
+            .try_into()
+            .unwrap(),
+        );
+        setup_parameters.push(SetupParameter::new_path(path).try_into().unwrap());
+        Self::connect_quic(authority, no_cert_validation).await?
       }
       None => Self::connect_webtransport(server, no_cert_validation).await?,
     };
@@ -57,11 +69,7 @@ impl MoqConnection {
 
     // Send ClientSetup
     info!("Sending ClientSetup...");
-    let max_request_id_param = SetupParameter::new_max_request_id(1000000)
-      .try_into()
-      .unwrap();
-
-    let client_setup = ClientSetup::new(vec![max_request_id_param]);
+    let client_setup = ClientSetup::new(setup_parameters);
     control_stream.send_impl(&client_setup).await?;
 
     // Receive ServerSetup
@@ -140,17 +148,10 @@ impl MoqConnection {
     Ok(TransportConnection::WebTransport(connection))
   }
 
-  /// Connects over raw QUIC (draft sec 3.1.2: `moqt://authority[/path]`). ALPN here is
+  /// Connects over raw QUIC (`moqt://authority[/path]`). ALPN here is
   /// the MOQT version string itself (no `h3`) -- that's what the relay's ALPN demux
   /// uses to route the connection to the raw-QUIC path instead of WebTransport.
-  async fn connect_quic(
-    authority_and_path: &str,
-    no_cert_validation: bool,
-  ) -> Result<TransportConnection> {
-    let authority = authority_and_path
-      .split('/')
-      .next()
-      .unwrap_or(authority_and_path);
+  async fn connect_quic(authority: &str, no_cert_validation: bool) -> Result<TransportConnection> {
     let (host, port) = match authority.rsplit_once(':') {
       Some((host, port)) => (
         host,
@@ -211,4 +212,17 @@ async fn resolve_host_port(host: &str, port: u16) -> Result<SocketAddr> {
     .await?
     .next()
     .ok_or_else(|| anyhow::anyhow!("DNS resolution failed for host: {}", host))
+}
+
+/// Splits `moqt://` URI remainder (everything after the scheme) into the authority
+/// (`host[:port]`) and the path-abempty (+ `?query`, if present)
+/// e.g. `host:9443/moq-relay` -> (`host:9443`, `/moq-relay`), `host:9443` -> (`host:9443`, ``).
+fn split_authority_and_path(authority_and_path: &str) -> (&str, String) {
+  match authority_and_path.find('/') {
+    Some(idx) => (
+      &authority_and_path[..idx],
+      authority_and_path[idx..].to_string(),
+    ),
+    None => (authority_and_path, String::new()),
+  }
 }

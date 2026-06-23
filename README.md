@@ -23,7 +23,7 @@
 
 # MOQtail
 
-MOQtail is a draft 16-compliant MOQT toolkit for building publisher, subscriber, and relay applications. The repository includes Rust and TypeScript libraries, reference clients, and a relay that can be run locally or pulled as a container image from GHCR.
+MOQtail is a draft 16-compliant MOQT toolkit for building publisher, subscriber, and relay applications. The repository includes Rust and TypeScript libraries, reference clients, and a relay that can be run locally or pulled as a container image from GHCR. The relay and Rust client support both WebTransport (`https://`) and raw QUIC (`moqt://`) on the same port.
 
 > [!IMPORTANT]
 > **To cite MOQtail in your academic research and elsewhere, please use:**
@@ -52,7 +52,7 @@ Library documentation: [libs/moqtail-rs/README.md](libs/moqtail-rs/README.md)
 
 ### Relay
 
-The relay is the deployable Rust service that forwards MoQ messages between publishers and subscribers.
+The relay is the deployable Rust service that forwards MoQ messages between publishers and subscribers. It accepts both WebTransport and raw QUIC connections on the same UDP socket/port, demultiplexing them via ALPN.
 
 Local run:
 
@@ -79,6 +79,21 @@ docker build -f apps/relay/Dockerfile -t moqtail-relay .
 ```
 
 For local certificate generation and browser trust setup, see [apps/relay/cert/README.md](apps/relay/cert/README.md).
+
+#### Transports: WebTransport and raw QUIC
+
+The relay and the Rust test client (`apps/client`) support two transports on the same port:
+
+- **WebTransport** — connect with an `https://` server URL (e.g. `https://127.0.0.1:4433`). Used by browser clients and `moqtail-ts`.
+- **Raw QUIC** — connect with a `moqt://` server URL (e.g. `moqt://127.0.0.1:4433/path`). Since raw QUIC has no HTTP CONNECT to carry the authority/path, the client sends them as CLIENT_SETUP parameters instead.
+
+```bash
+# WebTransport
+cargo run --bin client -- -c publish --server https://127.0.0.1:4433
+
+# Raw QUIC
+cargo run --bin client -- -c publish --server moqt://127.0.0.1:4433
+```
 
 ## Getting Started
 

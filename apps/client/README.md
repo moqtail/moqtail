@@ -19,14 +19,14 @@ cargo run --bin client -- --command <COMMAND> [OPTIONS]
 
 ## Global Options
 
-| Option                    | Short | Default                  | Description                                             |
-| ------------------------- | ----- | ------------------------ | ------------------------------------------------------- |
-| `--command`               | `-c`  | _(required)_             | Command to run                                          |
-| `--server`                | `-s`  | `https://127.0.0.1:4433` | Server address                                          |
-| `--namespace`             | `-n`  | `moqtail`                | Track namespace                                         |
-| `--track-name`            | `-T`  | `demo`                   | Track name                                              |
-| `--no-cert-validation`    |       | `false`                  | Skip certificate validation                             |
-| `--forwarding-preference` |       | `subgroup`               | Object forwarding preference (`subgroup` or `datagram`) |
+| Option                    | Short | Default                  | Description                                                         |
+| ------------------------- | ----- | ------------------------ | ------------------------------------------------------------------- |
+| `--command`               | `-c`  | _(required)_             | Command to run                                                      |
+| `--server`                | `-s`  | `https://127.0.0.1:4433` | Server address. `https://` for WebTransport, `moqt://` for raw QUIC |
+| `--namespace`             | `-n`  | `moqtail`                | Track namespace                                                     |
+| `--track-name`            | `-T`  | `demo`                   | Track name                                                          |
+| `--no-cert-validation`    |       | `false`                  | Skip certificate validation                                         |
+| `--forwarding-preference` |       | `subgroup`               | Object forwarding preference (`subgroup` or `datagram`)             |
 
 ## Publish Options
 
@@ -88,6 +88,12 @@ Connect to a remote server with certificate validation disabled:
 
 ```
 cargo run --bin client -- -c publish --server https://relay.example.com:4433 --no-cert-validation
+```
+
+Connect over raw QUIC instead of WebTransport:
+
+```
+cargo run --bin client -- -c subscribe --server moqt://relay.example.com:4433
 ```
 
 ## Testing QUIC Stream Priority Scheduling

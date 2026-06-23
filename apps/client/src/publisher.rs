@@ -17,9 +17,7 @@ use crate::connection::MoqConnection;
 use crate::utils::should_log;
 use anyhow::Result;
 use bytes::Bytes;
-use moqtail::model::common::location::Location;
 use moqtail::model::common::tuple::{Tuple, TupleField};
-use moqtail::model::control::constant::GroupOrder;
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::publish::Publish;
 use moqtail::model::control::publish_namespace::PublishNamespace;
@@ -47,7 +45,6 @@ pub struct PublishConfig {
   pub payload_size: usize,
   pub track_alias: u64,
   pub publisher_priority: u8,
-  pub group_order: GroupOrder,
 }
 
 pub struct PublishNamespaceConfig {
@@ -167,7 +164,6 @@ pub async fn run(moq: MoqConnection, config: PublishConfig) -> Result<()> {
     &ns,
     &config.track_name,
     config.track_alias,
-    config.group_order,
     &data_config,
   )
   .await?;
@@ -229,7 +225,6 @@ async fn publish_track(
   namespace: &Tuple,
   track_name: &str,
   track_alias: u64,
-  group_order: GroupOrder,
   data_config: &DataConfig,
 ) -> Result<()> {
   info!("Publishing track: track_alias={}", track_alias);
@@ -238,11 +233,7 @@ async fn publish_track(
     namespace.clone(),
     TupleField::from_utf8(track_name),
     track_alias,
-    vec![
-      MessageParameter::new_group_order(group_order),
-      MessageParameter::new_largest_object(Location::new(0, 0)),
-      MessageParameter::Forward { forward: true },
-    ],
+    vec![MessageParameter::Forward { forward: true }],
     vec![],
   );
   control_stream

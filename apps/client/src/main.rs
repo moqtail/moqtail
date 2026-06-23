@@ -54,7 +54,6 @@ async fn main() -> Result<(), anyhow::Error> {
           .track_alias
           .unwrap_or_else(|| rand::random::<u64>() & ((1u64 << 62) - 1)),
         publisher_priority: cli.publisher_priority,
-        group_order: cli.group_order.into(),
       };
       publisher::run(moq_conn, config).await
     }

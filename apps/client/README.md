@@ -19,15 +19,14 @@ cargo run --bin client -- --command <COMMAND> [OPTIONS]
 
 ## Global Options
 
-| Option                    | Short | Default                  | Description                                                  |
-| ------------------------- | ----- | ------------------------ | ------------------------------------------------------------ |
-| `--command`               | `-c`  | _(required)_             | Command to run                                               |
-| `--server`                | `-s`  | `https://127.0.0.1:4433` | Server address                                               |
-| `--namespace`             | `-n`  | `moqtail`                | Track namespace                                              |
-| `--track-name`            | `-T`  | `demo`                   | Track name                                                   |
-| `--no-cert-validation`    |       | `false`                  | Skip certificate validation                                  |
-| `--forwarding-preference` |       | `subgroup`               | Object forwarding preference (`subgroup` or `datagram`)      |
-| `--group-order`           |       | `ascending`              | Group delivery order (`original`, `ascending`, `descending`) |
+| Option                    | Short | Default                  | Description                                             |
+| ------------------------- | ----- | ------------------------ | ------------------------------------------------------- |
+| `--command`               | `-c`  | _(required)_             | Command to run                                          |
+| `--server`                | `-s`  | `https://127.0.0.1:4433` | Server address                                          |
+| `--namespace`             | `-n`  | `moqtail`                | Track namespace                                         |
+| `--track-name`            | `-T`  | `demo`                   | Track name                                              |
+| `--no-cert-validation`    |       | `false`                  | Skip certificate validation                             |
+| `--forwarding-preference` |       | `subgroup`               | Object forwarding preference (`subgroup` or `datagram`) |
 
 ## Publish Options
 
@@ -42,11 +41,12 @@ cargo run --bin client -- --command <COMMAND> [OPTIONS]
 
 ## Subscribe Options
 
-| Option                  | Short | Default  | Description                                                     |
-| ----------------------- | ----- | -------- | --------------------------------------------------------------- |
-| `--duration`            | `-d`  | `0`      | Duration to listen in seconds (0 = indefinite)                  |
-| `--subscriber-priority` |       | `128`    | Subscriber priority 0 (highest) – 255 (lowest)                  |
-| `--extra-track`         |       | _(none)_ | Second track subscription for priority testing: `name:priority` |
+| Option                  | Short | Default     | Description                                                     |
+| ----------------------- | ----- | ----------- | --------------------------------------------------------------- |
+| `--duration`            | `-d`  | `0`         | Duration to listen in seconds (0 = indefinite)                  |
+| `--subscriber-priority` |       | `128`       | Subscriber priority 0 (highest) – 255 (lowest)                  |
+| `--group-order`         |       | `ascending` | Group delivery order (`original`, `ascending`, `descending`)    |
+| `--extra-track`         |       | _(none)_    | Second track subscription for priority testing: `name:priority` |
 
 ## Fetch Options
 
@@ -141,12 +141,12 @@ The `seq=GAP` messages in the subscriber output are expected — the stats count
 
 ### Priority parameters
 
-| Parameter               | Where set                | Effect                                                                      |
-| ----------------------- | ------------------------ | --------------------------------------------------------------------------- |
-| `--subscriber-priority` | subscriber CLI           | Most significant priority tier (0 = highest)                                |
-| `--publisher-priority`  | publisher CLI            | Second tier, tie-breaks within same subscriber priority                     |
-| `--group-order`         | publisher/subscriber CLI | `ascending`: earlier groups preferred; `descending`: later groups preferred |
-| `--extra-track name:N`  | subscriber CLI           | Subscribes to a second track at priority N on the same connection           |
+| Parameter               | Where set      | Effect                                                                      |
+| ----------------------- | -------------- | --------------------------------------------------------------------------- |
+| `--subscriber-priority` | subscriber CLI | Most significant priority tier (0 = highest)                                |
+| `--publisher-priority`  | publisher CLI  | Second tier, tie-breaks within same subscriber priority                     |
+| `--group-order`         | subscriber CLI | `ascending`: earlier groups preferred; `descending`: later groups preferred |
+| `--extra-track name:N`  | subscriber CLI | Subscribes to a second track at priority N on the same connection           |
 
 ### Using OS-level bandwidth throttling
 

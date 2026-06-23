@@ -136,7 +136,7 @@ pub struct Cli {
   #[arg(long, default_value_t = 128)]
   pub publisher_priority: u8,
 
-  /// Group order for the track
+  /// Group order for the track (subscribe only)
   #[arg(long, value_enum, default_value = "ascending")]
   pub group_order: CliGroupOrder,
 

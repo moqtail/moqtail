@@ -34,3 +34,15 @@ export interface PresetRelay {
 export interface Presets {
   relays: PresetRelay[];
 }
+
+export type PublishStatus = 'idle' | 'connecting' | 'publishing' | 'error';
+export type SourceKind = 'camera' | 'screen' | 'test';
+
+export interface SourceState {
+  kind: SourceKind;
+  enabled: boolean;
+  available: boolean;
+  unavailableReason?: string;
+  embedTimestamp: boolean;
+  stream?: MediaStream;
+}

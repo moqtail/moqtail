@@ -17,8 +17,10 @@
 import { useState, useRef, useEffect } from 'preact/hooks';
 import type { ComponentChildren } from 'preact';
 import { cn } from '@/lib/utils';
+import { LuChevronDown, LuCheck, LuLoader } from 'react-icons/lu';
 import type { Track, Status, Presets } from '@/types';
 import presets from '@/presets.json';
+import { PublisherPanel, type PublisherPanelProps } from './PublisherPanel';
 
 const inputCls =
   'w-full rounded-lg bg-neutral-900 border border-neutral-700/80 px-3 py-2 text-sm text-neutral-100 placeholder:text-neutral-600 focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all';
@@ -110,21 +112,13 @@ function PresetDropdown({
         <span className={selected ? 'text-neutral-100' : 'text-neutral-600'}>
           {selected ? selected.ns.label : '— select preset —'}
         </span>
-        <svg
+        <LuChevronDown
           className={cn(
             'h-4 w-4 shrink-0 text-neutral-500 transition-transform duration-150',
             open && 'rotate-180',
           )}
-          viewBox="0 0 20 20"
-          fill="currentColor"
           aria-hidden="true"
-        >
-          <path
-            fillRule="evenodd"
-            d="M5.22 8.22a.75.75 0 011.06 0L10 11.94l3.72-3.72a.75.75 0 111.06 1.06l-4.25 4.25a.75.75 0 01-1.06 0L5.22 9.28a.75.75 0 010-1.06z"
-            clipRule="evenodd"
-          />
-        </svg>
+        />
       </button>
 
       {open && menuStyle && (
@@ -219,17 +213,7 @@ function Checkbox({
           checked ? 'border-blue-500 bg-blue-500' : 'border-neutral-600 bg-neutral-800/60',
         )}
       >
-        {checked && (
-          <svg
-            className="h-2.5 w-2.5 text-white"
-            viewBox="0 0 10 10"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-          >
-            <polyline points="2,5 4,8 8,2" />
-          </svg>
-        )}
+        {checked && <LuCheck className="h-2.5 w-2.5 text-white" aria-hidden="true" />}
       </span>
     </span>
   );
@@ -329,6 +313,53 @@ function TrackGroup({
   );
 }
 
+type Tab = 'watch' | 'publish';
+
+function TabButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: ComponentChildren;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        'flex-1 cursor-pointer border-b-2 py-2.5 text-xs font-semibold transition-colors',
+        active
+          ? 'border-blue-500 text-neutral-100'
+          : 'border-transparent text-neutral-500 hover:text-neutral-300',
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
+export interface SidebarProps {
+  // Watch tab
+  relayUrl: string;
+  onRelayUrlChange: (url: string) => void;
+  namespace: string;
+  onNamespaceChange: (ns: string) => void;
+  status: Status;
+  tracks: Track[];
+  selectedVideo: string | null;
+  selectedAudio: string | null;
+  onConnect: () => void;
+  onTrackChange: (track: Track, checked: boolean) => void;
+  error: string | null;
+  // Tab
+  tab: Tab;
+  onTabChange: (tab: Tab) => void;
+  // Publish tab
+  publishProps: PublisherPanelProps;
+}
+
 export function Sidebar({
   relayUrl,
   onRelayUrlChange,
@@ -341,102 +372,114 @@ export function Sidebar({
   onConnect,
   onTrackChange,
   error,
-}: {
-  relayUrl: string;
-  onRelayUrlChange: (url: string) => void;
-  namespace: string;
-  onNamespaceChange: (ns: string) => void;
-  status: Status;
-  tracks: Track[];
-  selectedVideo: string | null;
-  selectedAudio: string | null;
-  onConnect: () => void;
-  onTrackChange: (track: Track, checked: boolean) => void;
-  error: string | null;
-}) {
+  tab,
+  onTabChange,
+  publishProps,
+}: SidebarProps) {
   const isBusy = status === 'connecting' || status === 'restarting';
   const hasTracks = tracks.length > 0;
   const videoTracks = tracks.filter(t => t.role === 'video');
   const audioTracks = tracks.filter(t => t.role === 'audio');
 
   return (
-    <aside className="order-last flex max-h-full flex-col overflow-auto border-t border-white/6 bg-neutral-950 md:order-first md:w-72 md:border-t-0 md:border-r">
-      {/* Connection */}
-      <form
-        className="space-y-3 border-b border-white/6 p-4"
-        onSubmit={e => {
-          e.preventDefault();
-          if (!isBusy && relayUrl && namespace) onConnect();
-        }}
-      >
-        {presets.relays.length > 0 && (
-          <Field label="Preset">
-            <PresetDropdown
-              presets={presets}
-              relayUrl={relayUrl}
-              namespace={namespace}
-              onSelect={(url, ns) => {
-                onRelayUrlChange(url);
-                onNamespaceChange(ns);
-              }}
-            />
-          </Field>
-        )}
-        <div className="grid grid-cols-2 gap-3 md:grid-cols-1">
-          <Field label="Relay URL">
-            <input
-              type="url"
-              value={relayUrl}
-              onInput={e => onRelayUrlChange((e.target as HTMLInputElement).value)}
-              placeholder="https://relay.example.com:443"
-              class={inputCls}
-            />
-          </Field>
-          <Field label="Namespace">
-            <input
-              type="text"
-              value={namespace}
-              onInput={e => onNamespaceChange((e.target as HTMLInputElement).value)}
-              placeholder="org/channel"
-              class={inputCls}
-            />
-          </Field>
-        </div>
-        <button
-          type="submit"
-          disabled={isBusy || !relayUrl || !namespace}
-          className="w-full cursor-pointer rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium transition-colors hover:bg-blue-500 active:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          {status === 'connecting' ? 'Connecting…' : 'Connect'}
-        </button>
-        {status === 'error' && error && (
-          <p className="rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs leading-relaxed text-red-400">
-            {error}
-          </p>
-        )}
-      </form>
+    <aside className="order-last flex max-h-full flex-col overflow-hidden border-t border-white/6 bg-neutral-950 md:order-first md:w-72 md:border-t-0 md:border-r">
+      {/* Tab switcher */}
+      <div className="flex shrink-0 border-b border-white/6">
+        <TabButton active={tab === 'watch'} onClick={() => onTabChange('watch')}>
+          Watch
+        </TabButton>
+        <TabButton active={tab === 'publish'} onClick={() => onTabChange('publish')}>
+          Publish
+        </TabButton>
+      </div>
 
-      {/* Tracks */}
-      {hasTracks && (
-        <div className="space-y-4 p-3">
-          <TrackGroup
-            title="Video"
-            color="bg-violet-400"
-            tracks={videoTracks}
-            selectedVideo={selectedVideo}
-            selectedAudio={selectedAudio}
-            disabled={isBusy}
-            onChange={onTrackChange}
-          />
-          <TrackGroup
-            title="Audio"
-            color="bg-teal-400"
-            tracks={audioTracks}
-            selectedVideo={selectedVideo}
-            selectedAudio={selectedAudio}
-            disabled={isBusy}
-            onChange={onTrackChange}
-          />
+      {tab === 'watch' ? (
+        <div className="flex min-h-0 flex-1 flex-col overflow-auto">
+          {/* Connection */}
+          <form
+            className="space-y-3 border-b border-white/6 p-4"
+            onSubmit={e => {
+              e.preventDefault();
+              if (!isBusy && relayUrl && namespace) onConnect();
+            }}
+          >
+            {presets.relays.length > 0 && (
+              <Field label="Preset">
+                <PresetDropdown
+                  presets={presets}
+                  relayUrl={relayUrl}
+                  namespace={namespace}
+                  onSelect={(url, ns) => {
+                    onRelayUrlChange(url);
+                    onNamespaceChange(ns);
+                  }}
+                />
+              </Field>
+            )}
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-1">
+              <Field label="Relay URL">
+                <input
+                  type="url"
+                  value={relayUrl}
+                  onInput={e => onRelayUrlChange((e.target as HTMLInputElement).value)}
+                  placeholder="https://relay.example.com:443"
+                  className={inputCls}
+                />
+              </Field>
+              <Field label="Namespace">
+                <input
+                  type="text"
+                  value={namespace}
+                  onInput={e => onNamespaceChange((e.target as HTMLInputElement).value)}
+                  placeholder="org/channel"
+                  className={inputCls}
+                />
+              </Field>
+            </div>
+            <button
+              type="submit"
+              disabled={isBusy || !relayUrl || !namespace}
+              className="flex w-full items-center justify-center gap-2 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium transition-colors hover:bg-blue-500 active:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {status === 'connecting' && (
+                <LuLoader className="h-4 w-4 animate-spin" aria-hidden="true" />
+              )}
+              {status === 'connecting' ? 'Connecting…' : 'Connect'}
+            </button>
+            {status === 'error' && error && (
+              <p className="rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs leading-relaxed text-red-400">
+                {error}
+              </p>
+            )}
+          </form>
+
+          {/* Tracks */}
+          {hasTracks && (
+            <div className="space-y-4 p-3">
+              <TrackGroup
+                title="Video"
+                color="bg-violet-400"
+                tracks={videoTracks}
+                selectedVideo={selectedVideo}
+                selectedAudio={selectedAudio}
+                disabled={isBusy}
+                onChange={onTrackChange}
+              />
+              <TrackGroup
+                title="Audio"
+                color="bg-teal-400"
+                tracks={audioTracks}
+                selectedVideo={selectedVideo}
+                selectedAudio={selectedAudio}
+                disabled={isBusy}
+                onChange={onTrackChange}
+              />
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="flex min-h-0 flex-1 flex-col overflow-auto">
+          <PublisherPanel {...publishProps} />
         </div>
       )}
     </aside>

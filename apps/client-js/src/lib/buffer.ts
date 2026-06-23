@@ -18,14 +18,14 @@ import { logger } from '@/lib/logger';
 
 // MSE Buffer Configuration
 export const MSE_IMMEDIATE_SEEK_THRESHOLD = 0.1; // seconds
-export const DEFAULT_LIVE_EDGE_DELAY = 1.25; // seconds
+export const DEFAULT_LIVE_EDGE_DELAY = 0.6; // seconds
 export const DEFAULT_LIVE_EDGE_TOLERANCE = 0.1; // seconds
 export const DEFAULT_BUFFER_CHECK_INTERVAL = 250; // milliseconds
 export const DEFAULT_STALL_THRESHOLD = 0.5; // seconds
 export const DEFAULT_CATCHUP_PLAYBACK_RATE = 1.05; // 5% faster
 
 interface MSEBufferConfig {
-  /** Delay from live edge in seconds (default: 1.25) */
+  /** Delay from live edge in seconds (default: 0.6) */
   liveEdgeDelay: number;
   /** Tolerance for live edge in seconds (default: 0.1) */
   liveEdgeTolerance: number;
@@ -237,28 +237,6 @@ class MSEBuffer {
             `[mseBuffer] Small gap of ${gap.toFixed(3)}s to next range, seeking immediately`,
           );
           return { seek: true, targetTime: nextRangeStart };
-        }
-
-        // Next range must have enough buffer to jump to
-        const nextRangeEnd = buffered.end(currentRangeIndex + 1);
-        const nextRangeDuration = nextRangeEnd - nextRangeStart;
-
-        if (nextRangeDuration < this.config.stallThreshold) {
-          logger.warn(
-            'buffer',
-            `[mseBuffer] Next range too short (${nextRangeDuration.toFixed(3)}s), not seeking`,
-          );
-          continue;
-        }
-
-        if (nextRangeDuration < this.config.liveEdgeDelay) {
-          logger.warn(
-            'buffer',
-            `[mseBuffer] Next range shorter than live edge delay (${nextRangeDuration.toFixed(
-              3,
-            )}s < ${this.config.liveEdgeDelay}s), not seeking`,
-          );
-          continue;
         }
 
         if (gap > 0) {

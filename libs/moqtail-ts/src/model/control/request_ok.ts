@@ -15,7 +15,7 @@
  */
 
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
-import { KeyValuePair } from '../common/pair'
+import { deserializeKvpList, serializeKvpList } from '../common/pair'
 import { ControlMessageType } from './constant'
 import { CastingError, LengthExceedsMaxError } from '../error/error'
 import { MessageParameter } from '../parameter/message_parameter'
@@ -41,9 +41,7 @@ export class RequestOk {
     payload.putVI(this.requestId)
     payload.putVI(BigInt(this.parameters.length))
 
-    for (const param of this.parameters) {
-      payload.putBytes(param.toKeyValuePair().serialize().toUint8Array())
-    }
+    payload.putBytes(serializeKvpList(this.parameters.map((p) => p.toKeyValuePair())).toUint8Array())
 
     const payloadBytes = payload.toUint8Array()
     if (payloadBytes.length > 0xffff) {
@@ -65,8 +63,7 @@ export class RequestOk {
     }
 
     const parameters: MessageParameter[] = []
-    for (let i = 0; i < numParams; i++) {
-      const kvp = KeyValuePair.deserialize(buf)
+    for (const kvp of deserializeKvpList(buf, numParams)) {
       const param = MessageParameter.fromKeyValuePair(kvp)
       if (param !== undefined) parameters.push(param)
     }

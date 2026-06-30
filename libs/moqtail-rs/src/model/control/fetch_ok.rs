@@ -21,7 +21,7 @@ use crate::model::extension_header::track_extension::{
   TrackExtension, deserialize_track_extensions, serialize_track_extensions,
 };
 use crate::model::parameter::message_parameter::{
-  MessageParameter, deserialize_message_parameters,
+  MessageParameter, deserialize_message_parameters, serialize_message_parameters,
 };
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
@@ -62,9 +62,7 @@ impl ControlMessageTrait for FetchOk {
     payload.put_u8(if self.end_of_track { 1u8 } else { 0u8 });
     payload.extend_from_slice(&self.end_location.serialize()?);
     payload.put_vi(self.subscribe_parameters.len())?;
-    for param in &self.subscribe_parameters {
-      payload.extend_from_slice(&param.serialize()?);
-    }
+    payload.extend_from_slice(&serialize_message_parameters(&self.subscribe_parameters)?);
 
     // Track Extensions (no length prefix; bounded by outer message Length field)
     payload.extend_from_slice(&serialize_track_extensions(&self.track_extensions)?);

@@ -15,7 +15,7 @@
  */
 
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
-import { KeyValuePair } from '../common/pair'
+import { KeyValuePair, deserializeKvpListUntilEmpty, serializeKvpList } from '../common/pair'
 import { ProtocolViolationError } from '../error/error'
 import { TrackExtensionType } from './constant'
 
@@ -25,27 +25,22 @@ export class ImmutableExtensionsObjectExtension {
   constructor(public readonly extensions: KeyValuePair[]) {}
 
   toKeyValuePair(): KeyValuePair {
-    const inner = new ByteBuffer()
-    for (const kvp of this.extensions) {
-      inner.putBytes(kvp.serialize().toUint8Array())
-    }
-    return KeyValuePair.tryNewBytes(ImmutableExtensionsObjectExtension.TYPE, inner.toUint8Array())
+    return KeyValuePair.tryNewBytes(
+      ImmutableExtensionsObjectExtension.TYPE,
+      serializeKvpList(this.extensions).toUint8Array(),
+    )
   }
 
   static fromKeyValuePair(pair: KeyValuePair): ImmutableExtensionsObjectExtension | undefined {
     if (Number(pair.typeValue) !== ImmutableExtensionsObjectExtension.TYPE || !(pair.value instanceof Uint8Array))
       return undefined
     const buf = new FrozenByteBuffer(pair.value)
-    const extensions: KeyValuePair[] = []
-    while (buf.remaining > 0) {
-      const inner = KeyValuePair.deserialize(buf)
-      if (Number(inner.typeValue) === TrackExtensionType.ImmutableExtensions) {
-        throw new ProtocolViolationError(
-          'ImmutableExtensionsObjectExtension.fromKeyValuePair',
-          'ImmutableExtensions must not contain nested ImmutableExtensions (0x0B)',
-        )
-      }
-      extensions.push(inner)
+    const extensions = deserializeKvpListUntilEmpty(buf)
+    if (extensions.some((inner) => Number(inner.typeValue) === TrackExtensionType.ImmutableExtensions)) {
+      throw new ProtocolViolationError(
+        'ImmutableExtensionsObjectExtension.fromKeyValuePair',
+        'ImmutableExtensions must not contain nested ImmutableExtensions (0x0B)',
+      )
     }
     return new ImmutableExtensionsObjectExtension(extensions)
   }
@@ -110,18 +105,11 @@ export namespace ObjectExtension {
   }
 
   export function deserializeAll(buf: BaseByteBuffer): ObjectExtension[] {
-    const result: ObjectExtension[] = []
-    while (buf.remaining > 0) {
-      const kvp = KeyValuePair.deserialize(buf)
-      result.push(fromKeyValuePair(kvp))
-    }
-    return result
+    return deserializeKvpListUntilEmpty(buf).map(fromKeyValuePair)
   }
 
   export function serializeInto(exts: ObjectExtension[], payload: ByteBuffer): void {
-    for (const ext of exts) {
-      payload.putBytes(ext.toKeyValuePair().serialize().toUint8Array())
-    }
+    payload.putBytes(serializeKvpList(exts.map((ext) => ext.toKeyValuePair())).toUint8Array())
   }
 
   export function isImmutableExtensions(ext: ObjectExtension): ext is ImmutableExtensionsObjectExtension {
@@ -196,16 +184,34 @@ if (import.meta.vitest) {
     })
 
     test('mixed list roundtrip', () => {
+      // Order matches the canonical ascending-by-type wire order (delta-encoding requirement).
       const exts: ObjectExtension[] = [
+        new ImmutableExtensionsObjectExtension([]),
         new PriorGroupIdGapExtension(5n),
         new PriorObjectIdGapExtension(2n),
-        new ImmutableExtensionsObjectExtension([]),
       ]
       const result = roundtrip(exts)
       expect(result.length).toBe(3)
-      expect(result[0]).toBeInstanceOf(PriorGroupIdGapExtension)
-      expect(result[1]).toBeInstanceOf(PriorObjectIdGapExtension)
-      expect(result[2]).toBeInstanceOf(ImmutableExtensionsObjectExtension)
+      expect(result[0]).toBeInstanceOf(ImmutableExtensionsObjectExtension)
+      expect(result[1]).toBeInstanceOf(PriorGroupIdGapExtension)
+      expect(result[2]).toBeInstanceOf(PriorObjectIdGapExtension)
+    })
+
+    test('ImmutableExtensions independent of outer prevType', () => {
+      // A low-type extension precedes ImmutableExtensions (0x0B) in the outer
+      // list, so the outer prevType is nonzero by the time ImmutableExtensions
+      // is reached. The inner KVP list must restart its own delta state from
+      // 0, independent of the outer list's running prevType.
+      const inner = [
+        KeyValuePair.tryNewVarInt(0x02, 7n),
+        KeyValuePair.tryNewBytes(0x03, new TextEncoder().encode('data')),
+      ]
+      const exts: ObjectExtension[] = [
+        new UnknownObjectExtension(KeyValuePair.tryNewVarInt(0x04, 99n)),
+        new ImmutableExtensionsObjectExtension(inner),
+      ]
+      const result = roundtrip(exts)
+      expect(result).toEqual(exts)
     })
   })
 }

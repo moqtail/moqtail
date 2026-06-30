@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use super::control_message::ControlMessageTrait;
-use crate::model::common::pair::KeyValuePair;
+use crate::model::common::pair::{KeyValuePair, deserialize_kvp_list, serialize_kvp_list};
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
 use crate::model::error::ParseError;
 use bytes::{BufMut, Bytes, BytesMut};
@@ -38,10 +38,7 @@ impl ControlMessageTrait for ServerSetup {
 
     let mut payload = BytesMut::new();
     payload.put_vi(self.setup_parameters.len())?;
-
-    for param in &self.setup_parameters {
-      payload.extend_from_slice(&param.serialize()?);
-    }
+    payload.extend_from_slice(&serialize_kvp_list(&self.setup_parameters)?);
 
     let payload_len: u16 = payload
       .len()
@@ -60,12 +57,7 @@ impl ControlMessageTrait for ServerSetup {
 
   fn parse_payload(payload: &mut Bytes) -> Result<Box<Self>, ParseError> {
     let number_of_parameters = payload.get_vi()?;
-    let mut setup_parameters = Vec::new();
-
-    for _ in 0..number_of_parameters {
-      let param = KeyValuePair::deserialize(payload)?;
-      setup_parameters.push(param);
-    }
+    let setup_parameters = deserialize_kvp_list(payload, number_of_parameters)?;
 
     Ok(Box::new(ServerSetup { setup_parameters }))
   }

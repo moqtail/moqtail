@@ -17,7 +17,7 @@
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
 import { Location } from '../common/location'
 import { Tuple } from '../common/tuple'
-import { KeyValuePair } from '../common/pair'
+import { deserializeKvpList, serializeKvpList } from '../common/pair'
 import { ControlMessageType, FilterType, GroupOrder } from '../control/constant'
 import { FullTrackName } from '../data'
 import { MessageParameter } from '../parameter/message_parameter'
@@ -77,9 +77,7 @@ export class Subscribe {
     payload.putBytes(this.fullTrackName.serialize().toUint8Array())
 
     payload.putVI(this.parameters.length)
-    for (const param of this.parameters) {
-      payload.putBytes(param.toKeyValuePair().serialize().toUint8Array())
-    }
+    payload.putBytes(serializeKvpList(this.parameters.map((p) => p.toKeyValuePair())).toUint8Array())
 
     const payloadBytes = payload.toUint8Array()
     buf.putU16(payloadBytes.length)
@@ -94,8 +92,7 @@ export class Subscribe {
 
     const paramCount = Number(buf.getVI())
     const parameters: MessageParameter[] = []
-    for (let i = 0; i < paramCount; i++) {
-      const kvp = KeyValuePair.deserialize(buf)
+    for (const kvp of deserializeKvpList(buf, paramCount)) {
       const param = MessageParameter.fromKeyValuePair(kvp)
       if (param !== undefined) parameters.push(param)
     }
@@ -108,13 +105,20 @@ if (import.meta.vitest) {
   const { describe, it, expect } = import.meta.vitest
 
   function buildTestSubscribe(): Subscribe {
-    return Subscribe.newAbsoluteRange(
+    const subscribe = Subscribe.newAbsoluteRange(
       128242n,
       FullTrackName.tryNew('track/namespace', 'trackName'),
       new Location(81n, 81n),
       100n,
       [new Forward(true), new GroupOrderParam(GroupOrder.Ascending)],
     )
+    // Wire encoding canonicalizes parameter order ascending by type (delta-encoding requirement).
+    subscribe.parameters.sort((a, b) => {
+      const at = a.toKeyValuePair().typeValue
+      const bt = b.toKeyValuePair().typeValue
+      return at < bt ? -1 : at > bt ? 1 : 0
+    })
+    return subscribe
   }
 
   describe('Subscribe', () => {

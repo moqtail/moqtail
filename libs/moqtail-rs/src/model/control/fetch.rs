@@ -19,7 +19,7 @@ use crate::model::common::tuple::{Tuple, TupleField};
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
 use crate::model::error::ParseError;
 use crate::model::parameter::message_parameter::{
-  MessageParameter, deserialize_message_parameters,
+  MessageParameter, deserialize_message_parameters, serialize_message_parameters,
 };
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
@@ -116,9 +116,7 @@ impl ControlMessageTrait for Fetch {
     }
 
     payload.put_vi(self.parameters.len())?;
-    for param in &self.parameters {
-      payload.extend_from_slice(&param.serialize()?);
-    }
+    payload.extend_from_slice(&serialize_message_parameters(&self.parameters)?);
 
     let payload_len: u16 = payload
       .len()

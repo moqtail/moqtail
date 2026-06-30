@@ -20,6 +20,7 @@ import { ControlMessageType, FilterType, GroupOrder } from '../control/constant'
 import { FullTrackName } from '../data'
 import { MessageParameter, MessageParameters } from '../parameter/message_parameter'
 import { AuthorizationToken } from '../parameter/common/authorization_token'
+import { deserializeKvpList, serializeKvpList } from '../common/pair'
 
 // TODO: Couple filter type and bounded parameters for idiomatic design
 export class TrackStatus {
@@ -162,9 +163,7 @@ export class TrackStatus {
     }
 
     payload.putVI(this.subscribeParameters.length)
-    for (const param of this.subscribeParameters) {
-      payload.putKeyValuePair(param.toKeyValuePair())
-    }
+    payload.putBytes(serializeKvpList(this.subscribeParameters.map((p) => p.toKeyValuePair())).toUint8Array())
 
     const payloadBytes = payload.toUint8Array()
     buf.putU16(payloadBytes.length)
@@ -193,10 +192,7 @@ export class TrackStatus {
     }
 
     const paramCount = Number(buf.getVI())
-    const rawParams = new Array(paramCount)
-    for (let i = 0; i < paramCount; i++) {
-      rawParams[i] = buf.getKeyValuePair()
-    }
+    const rawParams = deserializeKvpList(buf, paramCount)
     const subscribeParameters = MessageParameters.fromKeyValuePairs(rawParams)
 
     return new TrackStatus(

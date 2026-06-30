@@ -16,7 +16,7 @@
 
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
 import { Location } from '../common/location'
-import { KeyValuePair } from '../common/pair'
+import { deserializeKvpList, serializeKvpList } from '../common/pair'
 import { ControlMessageType, FilterType } from './constant'
 import { CastingError, LengthExceedsMaxError } from '../error/error'
 import { MessageParameter } from '../parameter/message_parameter'
@@ -43,9 +43,7 @@ export class RequestUpdate {
     payload.putVI(this.existingRequestId)
     payload.putVI(this.parameters.length)
 
-    for (const param of this.parameters) {
-      payload.putBytes(param.toKeyValuePair().serialize().toUint8Array())
-    }
+    payload.putBytes(serializeKvpList(this.parameters.map((p) => p.toKeyValuePair())).toUint8Array())
 
     const payloadBytes = payload.toUint8Array()
     if (payloadBytes.length > 0xffff) {
@@ -68,8 +66,7 @@ export class RequestUpdate {
     }
 
     const parameters: MessageParameter[] = []
-    for (let i = 0; i < paramCount; i++) {
-      const kvp = KeyValuePair.deserialize(buf)
+    for (const kvp of deserializeKvpList(buf, paramCount)) {
       const param = MessageParameter.fromKeyValuePair(kvp)
       if (param !== undefined) parameters.push(param)
     }
@@ -104,10 +101,16 @@ if (import.meta.vitest) {
 
   describe('RequestUpdate', () => {
     function buildTestUpdate(): RequestUpdate {
-      return new RequestUpdate(120205n, 120204n, [
+      // Wire encoding canonicalizes parameter order ascending by type (delta-encoding requirement).
+      const parameters = [
         new SubscriptionFilter(FilterType.AbsoluteRange, new Location(81n, 81n), 25n),
         new Forward(true),
-      ])
+      ].sort((a, b) => {
+        const at = a.toKeyValuePair().typeValue
+        const bt = b.toKeyValuePair().typeValue
+        return at < bt ? -1 : at > bt ? 1 : 0
+      })
+      return new RequestUpdate(120205n, 120204n, parameters)
     }
 
     it('should roundtrip correctly', () => {

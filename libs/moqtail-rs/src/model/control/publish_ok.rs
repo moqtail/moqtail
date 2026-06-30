@@ -17,7 +17,7 @@ use super::control_message::ControlMessageTrait;
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
 use crate::model::error::ParseError;
 use crate::model::parameter::message_parameter::{
-  MessageParameter, deserialize_message_parameters,
+  MessageParameter, deserialize_message_parameters, serialize_message_parameters,
 };
 use bytes::{BufMut, Bytes, BytesMut};
 
@@ -45,9 +45,7 @@ impl ControlMessageTrait for PublishOk {
     payload.put_vi(self.request_id)?;
 
     payload.put_vi(self.parameters.len() as u64)?;
-    for param in &self.parameters {
-      payload.extend_from_slice(&param.serialize()?);
-    }
+    payload.extend_from_slice(&serialize_message_parameters(&self.parameters)?);
 
     let payload_len: u16 = payload
       .len()
@@ -105,7 +103,7 @@ mod tests {
 
   #[test]
   fn test_roundtrip_with_params() {
-    let publish_ok = PublishOk::new(
+    let mut publish_ok = PublishOk::new(
       456,
       vec![
         MessageParameter::new_forward(true),
@@ -114,6 +112,8 @@ mod tests {
         MessageParameter::new_subscription_filter(FilterType::LatestObject, None, None),
       ],
     );
+    // Wire encoding canonicalizes parameter order ascending by type (delta-encoding requirement).
+    publish_ok.parameters.sort_by_key(|p| p.type_value());
 
     let mut buf = publish_ok.serialize().unwrap();
     let msg_type = buf.get_vi().unwrap();
@@ -127,7 +127,7 @@ mod tests {
 
   #[test]
   fn test_roundtrip_absolute_range_filter() {
-    let publish_ok = PublishOk::new(
+    let mut publish_ok = PublishOk::new(
       789,
       vec![
         MessageParameter::new_subscription_filter(
@@ -138,6 +138,8 @@ mod tests {
         MessageParameter::new_delivery_timeout(5000),
       ],
     );
+    // Wire encoding canonicalizes parameter order ascending by type (delta-encoding requirement).
+    publish_ok.parameters.sort_by_key(|p| p.type_value());
 
     let mut buf = publish_ok.serialize().unwrap();
     let msg_type = buf.get_vi().unwrap();

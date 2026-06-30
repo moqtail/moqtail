@@ -15,9 +15,15 @@
  */
 
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from './byte_buffer'
-import { NotEnoughBytesError, LengthExceedsMaxError, KeyValueFormattingError } from '../error/error'
+import {
+  NotEnoughBytesError,
+  LengthExceedsMaxError,
+  KeyValueFormattingError,
+  ProtocolViolationError,
+} from '../error/error'
 
 const MAX_VALUE_LENGTH = 2 ** 16 - 1 // 65535
+const MAX_U64 = 2n ** 64n - 1n
 
 /**
  * @public
@@ -92,11 +98,30 @@ export class KeyValuePair {
 
   /**
    * Serializes this key-value pair to a frozen byte buffer.
+   * Equivalent to {@link KeyValuePair.serializeDelta} with `prevType = 0n`.
    * @returns The serialized buffer.
    */
   serialize(): FrozenByteBuffer {
+    return this.serializeDelta(0n)
+  }
+
+  /**
+   * Serializes this pair's wire form, encoding the Type as a delta from
+   * `prevType` (the type of the previous KVP in the same list, or 0n if this
+   * is the first entry).
+   * @param prevType - The type of the previous KVP in the same list.
+   * @throws ProtocolViolationError if this pair's type is less than prevType
+   *   (Delta Type is an unsigned varint, so the list must be sorted ascending).
+   */
+  serializeDelta(prevType: bigint): FrozenByteBuffer {
+    if (this.typeValue < prevType) {
+      throw new ProtocolViolationError(
+        'KeyValuePair.serializeDelta',
+        `type ${this.typeValue} is less than previous type ${prevType}; a KVP list must be sorted by ascending type to be delta-encoded`,
+      )
+    }
     const buf = new ByteBuffer()
-    buf.putVI(this.typeValue)
+    buf.putVI(this.typeValue - prevType)
     if (isVarInt(this)) {
       buf.putVI(this.value)
     } else if (isBytes(this)) {
@@ -107,13 +132,33 @@ export class KeyValuePair {
 
   /**
    * Deserializes a KeyValuePair from a buffer.
+   * Equivalent to {@link KeyValuePair.deserializeDelta} with `prevType = 0n`.
    * @param buf - The buffer to read from.
    * @returns The deserialized KeyValuePair.
    * @throws LengthExceedsMaxError if blob length exceeds 65535 bytes.
    * @throws NotEnoughBytesError if buffer does not contain enough bytes.
    */
   static deserialize(buf: BaseByteBuffer): KeyValuePair {
-    const typeValue = buf.getVI()
+    return KeyValuePair.deserializeDelta(buf, 0n)
+  }
+
+  /**
+   * Deserializes a wire-form KVP whose Type field is a delta from `prevType`
+   * (the type of the previous KVP in the same list, or 0n if this is the
+   * first entry).
+   * @param buf - The buffer to read from.
+   * @param prevType - The type of the previous KVP in the same list.
+   * @throws ProtocolViolationError if prevType + delta exceeds 2^64 - 1.
+   */
+  static deserializeDelta(buf: BaseByteBuffer, prevType: bigint): KeyValuePair {
+    const deltaType = buf.getVI()
+    const typeValue = prevType + deltaType
+    if (typeValue > MAX_U64) {
+      throw new ProtocolViolationError(
+        'KeyValuePair.deserializeDelta',
+        `previous type ${prevType} plus delta type ${deltaType} exceeds 2^64 - 1`,
+      )
+    }
     if (typeValue % 2n === 0n) {
       const value = buf.getVI()
       return new KeyValuePair(typeValue, value)
@@ -148,6 +193,51 @@ export class KeyValuePair {
     }
     return false
   }
+}
+
+/**
+ * Delta-encodes and serializes a list of Key-Value-Pairs to wire bytes.
+ * The list is sorted by ascending type first, since Delta Type is an
+ * unsigned varint and cannot represent a type decrease.
+ */
+export function serializeKvpList(items: KeyValuePair[]): FrozenByteBuffer {
+  const sorted = [...items].sort((a, b) => (a.typeValue < b.typeValue ? -1 : a.typeValue > b.typeValue ? 1 : 0))
+  const buf = new ByteBuffer()
+  let prevType = 0n
+  for (const kvp of sorted) {
+    buf.putBytes(kvp.serializeDelta(prevType).toUint8Array())
+    prevType = kvp.typeValue
+  }
+  return buf.freeze()
+}
+
+/**
+ * Reads exactly `count` delta-encoded Key-Value-Pairs from `buf`.
+ */
+export function deserializeKvpList(buf: BaseByteBuffer, count: number | bigint): KeyValuePair[] {
+  const n = typeof count === 'bigint' ? Number(count) : count
+  const items: KeyValuePair[] = new Array(n)
+  let prevType = 0n
+  for (let i = 0; i < n; i++) {
+    const kvp = KeyValuePair.deserializeDelta(buf, prevType)
+    prevType = kvp.typeValue
+    items[i] = kvp
+  }
+  return items
+}
+
+/**
+ * Reads delta-encoded Key-Value-Pairs from `buf` until it is exhausted.
+ */
+export function deserializeKvpListUntilEmpty(buf: BaseByteBuffer): KeyValuePair[] {
+  const items: KeyValuePair[] = []
+  let prevType = 0n
+  while (buf.remaining > 0) {
+    const kvp = KeyValuePair.deserializeDelta(buf, prevType)
+    prevType = kvp.typeValue
+    items.push(kvp)
+  }
+  return items
 }
 
 /**
@@ -217,6 +307,38 @@ if (import.meta.vitest) {
       buf.putVI(huge)
       const frozen = buf.freeze()
       expect(() => KeyValuePair.deserialize(frozen))
+    })
+
+    it('deserializeDelta overflow is a protocol violation', () => {
+      // previous_type + delta_type must not exceed 2^64 - 1.
+      const buf = new ByteBuffer()
+      buf.putVI(10n)
+      const frozen = buf.freeze()
+      expect(() => KeyValuePair.deserializeDelta(frozen, MAX_U64 - 5n)).toThrow(ProtocolViolationError)
+    })
+
+    it('serializeDelta with decreasing type is a protocol violation', () => {
+      // Delta Type is an unsigned varint, so a type lower than prevType can't be encoded.
+      const kvp = KeyValuePair.tryNewVarInt(2, 1)
+      expect(() => kvp.serializeDelta(10n)).toThrow(ProtocolViolationError)
+    })
+
+    it('serializeKvpList sorts and delta-encodes', () => {
+      const items = [
+        KeyValuePair.tryNewVarInt(0x20, 1),
+        KeyValuePair.tryNewVarInt(0x10, 2),
+        KeyValuePair.tryNewBytes(0x21, new TextEncoder().encode('x')),
+      ]
+      const frozen = serializeKvpList(items)
+      const decoded = deserializeKvpList(frozen, 3)
+      expect(decoded.map((k) => k.typeValue)).toEqual([0x10n, 0x20n, 0x21n])
+    })
+
+    it('deserializeKvpListUntilEmpty reads a delta-encoded stream', () => {
+      const items = [KeyValuePair.tryNewVarInt(0x04, 1), KeyValuePair.tryNewVarInt(0x02, 2)]
+      const frozen = serializeKvpList(items)
+      const decoded = deserializeKvpListUntilEmpty(frozen)
+      expect(decoded.map((k) => k.typeValue)).toEqual([0x02n, 0x04n])
     })
   })
 }

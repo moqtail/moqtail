@@ -17,7 +17,7 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
 use crate::model::error::ParseError;
 use crate::model::extension_header::object_extension::{
-  ObjectExtension, deserialize_object_extensions,
+  ObjectExtension, deserialize_object_extensions, serialize_object_extensions,
 };
 
 use super::constant::{ObjectDatagramType, ObjectStatus};
@@ -143,10 +143,7 @@ impl Datagram {
 
     // Write extension headers if present
     if let Some(ext_headers) = &self.extension_headers {
-      let mut payload_buf = BytesMut::new();
-      for header in ext_headers {
-        payload_buf.extend_from_slice(&header.serialize()?);
-      }
+      let payload_buf = serialize_object_extensions(ext_headers)?;
       buf.put_vi(payload_buf.len())?;
       buf.extend_from_slice(&payload_buf);
     }

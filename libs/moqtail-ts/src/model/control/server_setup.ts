@@ -16,7 +16,7 @@
 
 import { ByteBuffer, FrozenByteBuffer, BaseByteBuffer } from '../common/byte_buffer'
 import { ControlMessageType } from './constant'
-import { KeyValuePair } from '../common/pair'
+import { KeyValuePair, deserializeKvpList, serializeKvpList } from '../common/pair'
 import { LengthExceedsMaxError } from '../error/error'
 
 export class ServerSetup {
@@ -31,9 +31,7 @@ export class ServerSetup {
     buf.putVI(ControlMessageType.ServerSetup)
     const payload = new ByteBuffer()
     payload.putVI(this.setupParameters.length)
-    for (const param of this.setupParameters) {
-      payload.putKeyValuePair(param)
-    }
+    payload.putBytes(serializeKvpList(this.setupParameters).toUint8Array())
     const payloadBytes = payload.toUint8Array()
     if (payloadBytes.length > 0xffff) {
       throw new LengthExceedsMaxError('ServerSetup::serialize(payloadBytes.length)', 0xffff, payloadBytes.length)
@@ -45,10 +43,7 @@ export class ServerSetup {
 
   static parsePayload(buf: BaseByteBuffer): ServerSetup {
     const paramCount = buf.getNumberVI()
-    const setupParameters: KeyValuePair[] = new Array(paramCount)
-    for (let i = 0; i < paramCount; i++) {
-      setupParameters[i] = buf.getKeyValuePair()
-    }
+    const setupParameters = deserializeKvpList(buf, paramCount)
     return new ServerSetup(setupParameters)
   }
 }

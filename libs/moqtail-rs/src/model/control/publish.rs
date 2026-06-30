@@ -21,7 +21,7 @@ use crate::model::extension_header::track_extension::{
   TrackExtension, deserialize_track_extensions, serialize_track_extensions,
 };
 use crate::model::parameter::message_parameter::{
-  MessageParameter, deserialize_message_parameters,
+  MessageParameter, deserialize_message_parameters, serialize_message_parameters,
 };
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
@@ -72,9 +72,7 @@ impl ControlMessageTrait for Publish {
 
     // Parameters
     payload.put_vi(self.parameters.len() as u64)?;
-    for param in &self.parameters {
-      payload.extend_from_slice(&param.serialize()?);
-    }
+    payload.extend_from_slice(&serialize_message_parameters(&self.parameters)?);
 
     // Track Extensions (no length prefix; bounded by outer message Length field)
     payload.extend_from_slice(&serialize_track_extensions(&self.track_extensions)?);
@@ -144,7 +142,7 @@ mod tests {
 
   #[test]
   fn test_roundtrip() {
-    let publish = Publish::new(
+    let mut publish = Publish::new(
       123,
       Tuple::from_utf8_path("example/track"),
       TupleField::from_utf8("video"),
@@ -157,6 +155,8 @@ mod tests {
       ],
       vec![],
     );
+    // Wire encoding canonicalizes parameter order ascending by type (delta-encoding requirement).
+    publish.parameters.sort_by_key(|p| p.type_value());
 
     let mut buf = publish.serialize().unwrap();
     let msg_type = buf.get_vi().unwrap();

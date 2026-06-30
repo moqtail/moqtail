@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::model::common::location::Location;
-use crate::model::common::pair::KeyValuePair;
+use crate::model::common::pair::{KeyValuePair, deserialize_kvp_list, serialize_kvp_list};
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
 use crate::model::control::constant::{ControlMessageType, FilterType, GroupOrder};
 use crate::model::error::ParseError;
@@ -418,10 +418,10 @@ pub fn deserialize_message_parameters(
   count: u64,
   msg_type: ControlMessageType,
 ) -> Result<Vec<MessageParameter>, ParseError> {
-  let mut params = Vec::with_capacity(count as usize);
-  for _ in 0..count {
-    let kvp = KeyValuePair::deserialize(bytes)?;
-    let param = MessageParameter::deserialize(&kvp)?;
+  let kvps = deserialize_kvp_list(bytes, count)?;
+  let mut params = Vec::with_capacity(kvps.len());
+  for kvp in &kvps {
+    let param = MessageParameter::deserialize(kvp)?;
     if param.is_valid_for(msg_type) {
       params.push(param);
     }
@@ -430,11 +430,14 @@ pub fn deserialize_message_parameters(
   Ok(params)
 }
 
-/// Serializes a Vec<MessageParameter> into a Vec<KeyValuePair>.
-pub fn serialize_message_parameters(
-  params: Vec<MessageParameter>,
-) -> Result<Vec<KeyValuePair>, ParseError> {
-  params.into_iter().map(|p| p.try_into()).collect()
+/// Serializes a slice of MessageParameters into delta-encoded wire bytes,
+/// ready to be appended directly to a message payload.
+pub fn serialize_message_parameters(params: &[MessageParameter]) -> Result<Bytes, ParseError> {
+  let kvps: Vec<KeyValuePair> = params
+    .iter()
+    .map(|p| p.clone().try_into())
+    .collect::<Result<_, ParseError>>()?;
+  serialize_kvp_list(&kvps)
 }
 
 /// Applies a set of parameter updates to an existing parameter list.
@@ -568,16 +571,11 @@ mod tests {
       MessageParameter::new_delivery_timeout(100),
       MessageParameter::new_subscriber_priority(50),
     ];
-    let kvps = serialize_message_parameters(params).unwrap();
-    let mut buf = BytesMut::new();
-    for kvp in &kvps {
-      buf.extend_from_slice(&kvp.serialize().unwrap());
-    }
-    let mut bytes = buf.freeze();
+    let param_count = params.len() as u64;
+    let mut bytes = serialize_message_parameters(&params).unwrap();
     // DeliveryTimeout is invalid for Fetch; SubscriberPriority is valid
     let result =
-      deserialize_message_parameters(&mut bytes, kvps.len() as u64, ControlMessageType::Fetch)
-        .unwrap();
+      deserialize_message_parameters(&mut bytes, param_count, ControlMessageType::Fetch).unwrap();
     assert_eq!(result.len(), 1);
     assert_eq!(result[0], MessageParameter::new_subscriber_priority(50));
   }
@@ -627,6 +625,67 @@ mod tests {
     assert_eq!(
       MessageParameter::new_forward(true).type_value(),
       MessageParameterType::Forward as u64
+    );
+  }
+
+  #[test]
+  fn test_bug_report_wire_format_is_delta_encoded() {
+    // Regression for the reported interop bug: SUBSCRIBER_PRIORITY (0x20),
+    // FORWARD (0x10) and SUBSCRIPTION_FILTER (0x21), built in non-ascending
+    // insertion order. A spec-compliant v16 peer decodes Type as a delta from
+    // the previous Type in the list; encoding them "as-is" (absolute) made a
+    // correct delta-decoder compute types 48 and 81 instead.
+    let params = vec![
+      MessageParameter::new_subscriber_priority(0),
+      MessageParameter::new_forward(true),
+      MessageParameter::new_subscription_filter(FilterType::LatestObject, None, None),
+    ];
+    let mut bytes = serialize_message_parameters(&params).unwrap();
+
+    // Decode independently of deserialize_message_parameters, using raw delta
+    // semantics, to prove the wire bytes are genuinely delta-encoded and not
+    // just self-consistent with our own (potentially still-buggy) decoder.
+    let mut prev_type = 0u64;
+    let mut types = Vec::new();
+    while bytes.has_remaining() {
+      let kvp = KeyValuePair::deserialize_delta(&mut bytes, prev_type).unwrap();
+      prev_type = kvp.get_type();
+      types.push(prev_type);
+    }
+    assert_eq!(
+      types,
+      vec![
+        MessageParameterType::Forward as u64,
+        MessageParameterType::SubscriberPriority as u64,
+        MessageParameterType::SubscriptionFilter as u64,
+      ]
+    );
+  }
+
+  #[test]
+  fn test_decode_delta_encoded_peer_stream() {
+    // Simulates a spec-compliant peer sending FORWARD then SUBSCRIBER_PRIORITY,
+    // correctly delta-encoded. This is the direction the reporter's own
+    // workaround (disabling delta decoding) broke.
+    let mut buf = BytesMut::new();
+    buf.put_vi(MessageParameterType::Forward as u64).unwrap(); // delta from 0 -> 0x10
+    buf.put_vi(1u64).unwrap(); // true
+    buf
+      .put_vi(
+        MessageParameterType::SubscriberPriority as u64 - MessageParameterType::Forward as u64,
+      )
+      .unwrap(); // delta from 0x10 -> 0x20
+    buf.put_vi(5u64).unwrap();
+    let mut bytes = buf.freeze();
+
+    let params =
+      deserialize_message_parameters(&mut bytes, 2, ControlMessageType::Subscribe).unwrap();
+    assert_eq!(
+      params,
+      vec![
+        MessageParameter::new_forward(true),
+        MessageParameter::new_subscriber_priority(5),
+      ]
     );
   }
 }

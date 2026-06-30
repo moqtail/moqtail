@@ -14,7 +14,8 @@
  * limitations under the License.
  */
 
-import { KeyValuePair } from '../common/pair'
+import { KeyValuePair, deserializeKvpList, serializeKvpList } from '../common/pair'
+import { ByteBuffer } from '../common/byte_buffer'
 import { FilterType } from '../control/constant'
 import { Location } from '../common'
 import { AuthorizationToken } from './common'
@@ -224,6 +225,50 @@ if (import.meta.vitest) {
       expect(current.some((p) => MessageParameter.isSubscriberPriority(p) && p.priority === 50)).toBe(true)
       expect(current.some((p) => MessageParameter.isForward(p) && p.forward === true)).toBe(true)
       expect(current.some((p) => MessageParameter.isDeliveryTimeout(p) && p.timeout === 500n)).toBe(true)
+    })
+  })
+
+  describe('delta-encoding regression', () => {
+    test('bug report wire format is delta-encoded', () => {
+      // Regression for the reported interop bug: SUBSCRIBER_PRIORITY (0x20),
+      // FORWARD (0x10) and SUBSCRIPTION_FILTER (0x21), built in non-ascending
+      // insertion order. A spec-compliant v16 peer decodes Type as a delta
+      // from the previous Type in the list; encoding them "as-is" (absolute)
+      // made a correct delta-decoder compute the wrong types.
+      const params: MessageParameter[] = [
+        new SubscriberPriority(0),
+        new Forward(true),
+        new SubscriptionFilter(FilterType.LatestObject),
+      ]
+      const frozen = serializeKvpList(params.map((p) => p.toKeyValuePair()))
+
+      // Decode independently of deserializeKvpList, using raw delta
+      // semantics, to prove the wire bytes are genuinely delta-encoded and
+      // not just self-consistent with our own (potentially still-buggy) decoder.
+      let prevType = 0n
+      const types: bigint[] = []
+      while (frozen.remaining > 0) {
+        const kvp = KeyValuePair.deserializeDelta(frozen, prevType)
+        prevType = kvp.typeValue
+        types.push(prevType)
+      }
+      expect(types).toEqual([Forward.TYPE, SubscriberPriority.TYPE, SubscriptionFilter.TYPE].map(BigInt))
+    })
+
+    test('decodes a delta-encoded peer stream', () => {
+      // Simulates a spec-compliant peer sending FORWARD then SUBSCRIBER_PRIORITY,
+      // correctly delta-encoded. This is the direction the reporter's own
+      // workaround (disabling delta decoding) broke.
+      const buf = new ByteBuffer()
+      buf.putVI(BigInt(Forward.TYPE)) // delta from 0 -> Forward
+      buf.putVI(1n) // true
+      buf.putVI(BigInt(SubscriberPriority.TYPE) - BigInt(Forward.TYPE)) // delta from Forward -> SubscriberPriority
+      buf.putVI(5n)
+      const frozen = buf.freeze()
+
+      const kvps = deserializeKvpList(frozen, 2)
+      const params = MessageParameters.fromKeyValuePairs(kvps)
+      expect(params).toEqual([new Forward(true), new SubscriberPriority(5)])
     })
   })
 }

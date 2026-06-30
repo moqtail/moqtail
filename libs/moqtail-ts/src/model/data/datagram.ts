@@ -15,7 +15,7 @@
  */
 
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
-import { KeyValuePair } from '../common/pair'
+import { KeyValuePair, deserializeKvpListUntilEmpty, serializeKvpList } from '../common/pair'
 import { ObjectDatagramType, ObjectStatus } from './constant'
 import { Location } from '../common/location'
 
@@ -131,13 +131,9 @@ export class Datagram {
 
     // Extensions are present when EXTENSIONS bit is set
     if (ObjectDatagramType.hasExtensions(this.type)) {
-      const extBuf = new ByteBuffer()
-      if (this.extensionHeaders) {
-        for (const header of this.extensionHeaders) {
-          extBuf.putKeyValuePair(header)
-        }
-      }
-      const extBytes = extBuf.toUint8Array()
+      const extBytes = this.extensionHeaders
+        ? serializeKvpList(this.extensionHeaders).toUint8Array()
+        : new Uint8Array(0)
       buf.putLengthPrefixedBytes(extBytes)
     }
 
@@ -178,10 +174,7 @@ export class Datagram {
     if (ObjectDatagramType.hasExtensions(msgType)) {
       const extBytes = buf.getLengthPrefixedBytes()
       const headerBytes = new FrozenByteBuffer(extBytes)
-      extensionHeaders = []
-      while (headerBytes.remaining > 0) {
-        extensionHeaders.push(headerBytes.getKeyValuePair())
-      }
+      extensionHeaders = deserializeKvpListUntilEmpty(headerBytes)
     }
 
     // STATUS bit determines whether we read Object Status or Object Payload
@@ -216,9 +209,10 @@ if (import.meta.vitest) {
       const groupId = 9n
       const objectId = 10n
       const publisherPriority = 255
+      // Order matches the canonical ascending-by-type wire order (delta-encoding requirement).
       const extensionHeaders = [
-        KeyValuePair.tryNewVarInt(2, 10),
         KeyValuePair.tryNewBytes(1, new TextEncoder().encode('wololoo')),
+        KeyValuePair.tryNewVarInt(2, 10),
       ]
       const payload = new TextEncoder().encode('01239gjawkk92837aldmi')
       const datagram = Datagram.newPayload(

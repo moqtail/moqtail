@@ -21,6 +21,7 @@ import { LengthExceedsMaxError } from '../error/error'
 import { FullTrackName } from '../data'
 import { MessageParameter, MessageParameters } from '../parameter/message_parameter'
 import { SubscriberPriority } from '../parameter/message/subscriber_priority'
+import { deserializeKvpList, serializeKvpList } from '../common/pair'
 
 export class Fetch {
   constructor(
@@ -66,9 +67,7 @@ export class Fetch {
       }
     }
     payload.putVI(this.parameters.length)
-    for (const param of this.parameters) {
-      payload.putKeyValuePair(param.toKeyValuePair())
-    }
+    payload.putBytes(serializeKvpList(this.parameters.map((p) => p.toKeyValuePair())).toUint8Array())
     const payloadBytes = payload.toUint8Array()
     if (payloadBytes.length > 0xffff) {
       throw new LengthExceedsMaxError('Fetch::serialize(payload_length)', 0xffff, payloadBytes.length)
@@ -111,10 +110,7 @@ export class Fetch {
     }
 
     const paramCount = buf.getNumberVI()
-    const rawParams = new Array(paramCount)
-    for (let i = 0; i < paramCount; i++) {
-      rawParams[i] = buf.getKeyValuePair()
-    }
+    const rawParams = deserializeKvpList(buf, paramCount)
     const parameters = MessageParameters.fromKeyValuePairs(rawParams)
 
     return new Fetch(requestId, props, parameters)

@@ -18,6 +18,13 @@ import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buf
 import { KeyValuePair, deserializeKvpListUntilEmpty, serializeKvpList } from '../common/pair'
 import { ObjectStatus } from './constant'
 
+function normalizeExtensionHeaders(extensionHeaders: KeyValuePair[] | null): KeyValuePair[] | null {
+  if (extensionHeaders === null || extensionHeaders.length === 0) {
+    return null
+  }
+  return extensionHeaders
+}
+
 export class SubgroupObject {
   public readonly objectId: bigint
 
@@ -35,7 +42,7 @@ export class SubgroupObject {
     extensionHeaders: KeyValuePair[] | null,
     objectStatus: ObjectStatus,
   ): SubgroupObject {
-    return new SubgroupObject(objectId, extensionHeaders, objectStatus, null)
+    return new SubgroupObject(objectId, normalizeExtensionHeaders(extensionHeaders), objectStatus, null)
   }
 
   static newWithPayload(
@@ -43,7 +50,7 @@ export class SubgroupObject {
     extensionHeaders: KeyValuePair[] | null,
     payload: Uint8Array,
   ): SubgroupObject {
-    return new SubgroupObject(objectId, extensionHeaders, null, payload)
+    return new SubgroupObject(objectId, normalizeExtensionHeaders(extensionHeaders), null, payload)
   }
 
   serialize(previousObjectId: bigint | undefined): FrozenByteBuffer {
@@ -54,7 +61,7 @@ export class SubgroupObject {
 
     const buf = new ByteBuffer()
     buf.putVI(objectIdDelta)
-    if (this.extensionHeaders) {
+    if (this.extensionHeaders !== null) {
       buf.putLengthPrefixedBytes(serializeKvpList(this.extensionHeaders).toUint8Array())
     }
     if (this.payload) {
@@ -87,7 +94,7 @@ export class SubgroupObject {
     } else {
       payload = buf.getBytes(payloadLen)
     }
-    return new SubgroupObject(objectId, extensionHeaders, objectStatus, payload)
+    return new SubgroupObject(objectId, normalizeExtensionHeaders(extensionHeaders), objectStatus, payload)
   }
 }
 
@@ -107,6 +114,15 @@ if (import.meta.vitest) {
       expect(parsed.extensionHeaders).toEqual(extensionHeaders)
       expect(parsed.payload).toEqual(payload)
       expect(frozen.remaining).toBe(0)
+    })
+    test('serializes empty extension headers as absent', () => {
+      const objectId = 10n
+      const payload = new Uint8Array([0xab])
+
+      const withNoHeaders = SubgroupObject.newWithPayload(objectId, null, payload).serialize(undefined).toUint8Array()
+      const withEmptyHeaders = SubgroupObject.newWithPayload(objectId, [], payload).serialize(undefined).toUint8Array()
+
+      expect(Array.from(withEmptyHeaders)).toEqual(Array.from(withNoHeaders))
     })
     test('excess roundtrip', () => {
       const objectId = 10n

@@ -1,6 +1,5 @@
 ---
 'moqtail-ts': minor
-'moqtail-rs': minor
 'moqtail': patch
 ---
 

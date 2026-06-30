@@ -15,7 +15,7 @@
  */
 
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
-import { KeyValuePair } from '../common/pair'
+import { KeyValuePair, deserializeKvpListUntilEmpty, serializeKvpList } from '../common/pair'
 import { Location } from '../common/location'
 import { ObjectForwardingPreference } from './constant'
 import { ProtocolViolationError } from '../error/error'
@@ -186,9 +186,7 @@ export class FetchObject {
     if (hasObjectId) buf.putVI(this.objectId)
     if (hasPriority) buf.putU8(this.publisherPriority)
     if (hasExtensions) {
-      const extBuf = new ByteBuffer()
-      for (const h of this.extensionHeaders!) extBuf.putKeyValuePair(h)
-      buf.putLengthPrefixedBytes(extBuf.toUint8Array())
+      buf.putLengthPrefixedBytes(serializeKvpList(this.extensionHeaders!).toUint8Array())
     }
     const payloadBytes = this.payload ?? new Uint8Array(0)
     buf.putLengthPrefixedBytes(payloadBytes)
@@ -289,10 +287,7 @@ export class FetchObject {
     if (hasExtensions) {
       const extLen = buf.getNumberVI()
       const headerBytes = new FrozenByteBuffer(buf.getBytes(extLen))
-      extensionHeaders = []
-      while (headerBytes.remaining > 0) {
-        extensionHeaders.push(headerBytes.getKeyValuePair())
-      }
+      extensionHeaders = deserializeKvpListUntilEmpty(headerBytes)
     }
 
     const payloadLen = buf.getNumberVI()

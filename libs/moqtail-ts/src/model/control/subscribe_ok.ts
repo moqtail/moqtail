@@ -19,6 +19,7 @@ import { ControlMessageType } from './constant'
 import { LengthExceedsMaxError } from '../error/error'
 import { MessageParameter, MessageParameters } from '../parameter/message_parameter'
 import { TrackExtension } from '../extension_header/track_extension'
+import { deserializeKvpList, serializeKvpList } from '../common/pair'
 
 import { Location } from '../common/location'
 import { GroupOrder } from './constant'
@@ -63,9 +64,7 @@ export class SubscribeOk {
     payload.putVI(this.requestId)
     payload.putVI(this.trackAlias)
     payload.putVI(this.parameters.length)
-    for (const param of this.parameters) {
-      payload.putKeyValuePair(param.toKeyValuePair())
-    }
+    payload.putBytes(serializeKvpList(this.parameters.map((p) => p.toKeyValuePair())).toUint8Array())
     TrackExtension.serializeInto(this.trackExtensions, payload)
     const payloadBytes = payload.toUint8Array()
     if (payloadBytes.length > 0xffff) {
@@ -80,10 +79,7 @@ export class SubscribeOk {
     const requestId = buf.getVI()
     const trackAlias = buf.getVI()
     const paramCount = buf.getNumberVI()
-    const rawParams = new Array(paramCount)
-    for (let i = 0; i < paramCount; i++) {
-      rawParams[i] = buf.getKeyValuePair()
-    }
+    const rawParams = deserializeKvpList(buf, paramCount)
     const parameters = MessageParameters.fromKeyValuePairs(rawParams)
     const trackExtensions = TrackExtension.deserializeAll(buf)
     return new SubscribeOk(requestId, trackAlias, parameters, trackExtensions)

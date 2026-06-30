@@ -15,7 +15,7 @@
  */
 
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
-import { KeyValuePair } from '../common/pair'
+import { KeyValuePair, deserializeKvpListUntilEmpty, serializeKvpList } from '../common/pair'
 import { ObjectStatus } from './constant'
 
 export class SubgroupObject {
@@ -54,13 +54,8 @@ export class SubgroupObject {
 
     const buf = new ByteBuffer()
     buf.putVI(objectIdDelta)
-    const extensionHeaders = new ByteBuffer()
     if (this.extensionHeaders) {
-      for (const header of this.extensionHeaders) {
-        extensionHeaders.putKeyValuePair(header)
-      }
-      const headerBytes = extensionHeaders.toUint8Array()
-      buf.putLengthPrefixedBytes(headerBytes)
+      buf.putLengthPrefixedBytes(serializeKvpList(this.extensionHeaders).toUint8Array())
     }
     if (this.payload) {
       buf.putLengthPrefixedBytes(this.payload)
@@ -80,12 +75,9 @@ export class SubgroupObject {
     let objectId = previousObjectId !== undefined ? previousObjectId + objectDelta + BigInt(1) : objectDelta
     let extensionHeaders: KeyValuePair[] | null = null
     if (hasExtensions) {
-      extensionHeaders = []
       const extLen = buf.getNumberVI()
       const headerBytes = new FrozenByteBuffer(buf.getBytes(extLen))
-      while (headerBytes.remaining > 0) {
-        extensionHeaders.push(headerBytes.getKeyValuePair())
-      }
+      extensionHeaders = deserializeKvpListUntilEmpty(headerBytes)
     }
     const payloadLen = buf.getNumberVI()
     let objectStatus: ObjectStatus | null = null

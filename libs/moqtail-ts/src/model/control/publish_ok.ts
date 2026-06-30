@@ -15,7 +15,7 @@
  */
 
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
-import { KeyValuePair } from '../common/pair'
+import { deserializeKvpList, serializeKvpList } from '../common/pair'
 import { Location } from '../common/location'
 import { LengthExceedsMaxError } from '../error/error'
 import { ControlMessageType, FilterType, GroupOrder } from './constant'
@@ -43,9 +43,7 @@ export class PublishOk {
     payload.putVI(this.requestId)
 
     payload.putVI(this.parameters.length)
-    for (const param of this.parameters) {
-      payload.putKeyValuePair(param.toKeyValuePair())
-    }
+    payload.putBytes(serializeKvpList(this.parameters.map((p) => p.toKeyValuePair())).toUint8Array())
 
     const payloadBytes = payload.toUint8Array()
     if (payloadBytes.length > 0xffff) {
@@ -59,10 +57,7 @@ export class PublishOk {
   static parsePayload(buf: BaseByteBuffer): PublishOk {
     const requestId = buf.getVI()
     const paramCount = buf.getVI()
-    const kvps: KeyValuePair[] = []
-    for (let i = 0; i < paramCount; i++) {
-      kvps.push(buf.getKeyValuePair())
-    }
+    const kvps = deserializeKvpList(buf, paramCount)
     const parameters = MessageParameters.fromKeyValuePairs(kvps)
 
     return new PublishOk(requestId, parameters)

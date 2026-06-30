@@ -19,6 +19,7 @@ import { ControlMessageType } from './constant'
 import { NotEnoughBytesError, LengthExceedsMaxError } from '../error/error'
 import { MessageParameter, MessageParameters } from '../parameter/message_parameter'
 import { AuthorizationToken } from '../parameter/common/authorization_token'
+import { deserializeKvpList, serializeKvpList } from '../common/pair'
 
 /**
  * Represents a protocol PublishNamespace message, used to announce a track and its parameters.
@@ -65,9 +66,7 @@ export class PublishNamespace {
     payload.putVI(this.requestId)
     payload.putTuple(this.trackNamespace)
     payload.putVI(this.parameters.length)
-    for (const param of this.parameters) {
-      payload.putKeyValuePair(param.toKeyValuePair())
-    }
+    payload.putBytes(serializeKvpList(this.parameters.map((p) => p.toKeyValuePair())).toUint8Array())
     const payloadBytes = payload.toUint8Array()
     if (payloadBytes.length > 0xffff) {
       throw new LengthExceedsMaxError('PublishNamespace::serialize(payloadBytes.length)', 0xffff, payloadBytes.length)
@@ -89,10 +88,7 @@ export class PublishNamespace {
     const requestId = buf.getVI()
     const trackNamespace = buf.getTuple()
     const paramCount = buf.getNumberVI()
-    const rawParams = new Array(paramCount)
-    for (let i = 0; i < paramCount; i++) {
-      rawParams[i] = buf.getKeyValuePair()
-    }
+    const rawParams = deserializeKvpList(buf, paramCount)
     const parameters = MessageParameters.fromKeyValuePairs(rawParams)
     return new PublishNamespace(requestId, trackNamespace, parameters)
   }

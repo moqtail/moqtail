@@ -269,4 +269,47 @@ mod tests {
     assert_eq!(kv1.get_type(), 2);
     assert_eq!(kv2.get_type(), 1);
   }
+
+  #[test]
+  fn deserialize_delta_overflow_is_protocol_violation() {
+    // previous_type + delta_type must not exceed u64::MAX per draft-16 1.4.2.
+    let mut buf = BytesMut::new();
+    buf.put_vi(10u64).unwrap();
+    let mut bytes = buf.freeze();
+    let err = KeyValuePair::deserialize_delta(&mut bytes, u64::MAX - 5).unwrap_err();
+    assert!(matches!(err, ParseError::ProtocolViolation { .. }));
+  }
+
+  #[test]
+  fn serialize_delta_decreasing_type_is_protocol_violation() {
+    // Delta Type is an unsigned varint, so a type lower than prev_type can't be encoded.
+    let kvp = KeyValuePair::try_new_varint(2, 1).unwrap();
+    let err = kvp.serialize_delta(10).unwrap_err();
+    assert!(matches!(err, ParseError::ProtocolViolation { .. }));
+  }
+
+  #[test]
+  fn serialize_kvp_list_sorts_and_delta_encodes() {
+    let items = vec![
+      KeyValuePair::try_new_varint(0x20, 1).unwrap(),
+      KeyValuePair::try_new_varint(0x10, 2).unwrap(),
+      KeyValuePair::try_new_bytes(0x21, Bytes::from_static(b"x")).unwrap(),
+    ];
+    let mut bytes = serialize_kvp_list(&items).unwrap();
+    let decoded = deserialize_kvp_list(&mut bytes, 3).unwrap();
+    let types: Vec<u64> = decoded.iter().map(|k| k.get_type()).collect();
+    assert_eq!(types, vec![0x10, 0x20, 0x21]);
+  }
+
+  #[test]
+  fn deserialize_kvp_list_until_empty_reads_delta_encoded_stream() {
+    let items = vec![
+      KeyValuePair::try_new_varint(0x04, 1).unwrap(),
+      KeyValuePair::try_new_varint(0x02, 2).unwrap(),
+    ];
+    let mut bytes = serialize_kvp_list(&items).unwrap();
+    let decoded = deserialize_kvp_list_until_empty(&mut bytes).unwrap();
+    let types: Vec<u64> = decoded.iter().map(|k| k.get_type()).collect();
+    assert_eq!(types, vec![0x02, 0x04]);
+  }
 }

@@ -230,4 +230,28 @@ mod tests {
     let deserialized = deserialize_object_extensions(&mut buf).unwrap();
     assert!(deserialized.is_empty());
   }
+
+  #[test]
+  fn test_immutable_extensions_independent_of_outer_prev_type() {
+    // A low-type extension precedes ImmutableExtensions (0x0B) in the outer
+    // list, so the outer prev_type is nonzero by the time ImmutableExtensions
+    // is reached. The inner KVP list must restart its own delta state from 0,
+    // independent of the outer list's running prev_type.
+    let inner = vec![
+      KeyValuePair::try_new_varint(0x02, 7).unwrap(),
+      KeyValuePair::try_new_bytes(0x03, Bytes::from_static(b"data")).unwrap(),
+    ];
+    let exts = vec![
+      ObjectExtension::Unknown {
+        kvp: KeyValuePair::try_new_varint(0x04, 99).unwrap(),
+      },
+      ObjectExtension::ImmutableExtensions {
+        extensions: inner.clone(),
+      },
+    ];
+    let serialized = serialize_object_extensions(&exts).unwrap();
+    let mut buf = serialized;
+    let deserialized = deserialize_object_extensions(&mut buf).unwrap();
+    assert_eq!(deserialized, exts);
+  }
 }

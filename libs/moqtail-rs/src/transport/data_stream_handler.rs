@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::time::Duration;
 
 use bytes::{Buf, BufMut, BytesMut};
@@ -24,9 +24,9 @@ use tokio::time::{Instant, sleep_until};
 
 use crate::model::control::fetch::Fetch;
 use crate::model::control::subscribe::Subscribe;
-use crate::model::data::constant::FetchHeaderType;
+use crate::model::data::constant::{FetchHeaderType, ObjectForwardingPreference};
 use crate::model::data::fetch_header::FetchHeader;
-use crate::model::data::fetch_object::{FetchObject, FetchObjectContext};
+use crate::model::data::fetch_object::{FetchObject, FetchObjectContext, FetchObjectPayload};
 use crate::model::data::object::Object;
 use crate::model::data::subgroup_header::SubgroupHeader;
 use crate::model::data::subgroup_object::SubgroupObject;
@@ -40,6 +40,28 @@ type ObjectParseResult =
 // Timeout for header and subsequent objects
 const DATA_STREAM_TIMEOUT: Duration = Duration::from_secs(15);
 const MTU_SIZE: usize = 1500; // Standard MTU size
+
+fn validate_fetch_subgroup_priority(
+  payload: &FetchObjectPayload,
+  subgroup_priorities: &mut HashMap<u64, u8>,
+) -> Result<(), ParseError> {
+  if payload.forwarding_preference != ObjectForwardingPreference::Subgroup {
+    return Ok(());
+  }
+
+  match subgroup_priorities.insert(payload.subgroup_id, payload.publisher_priority) {
+    Some(previous_priority) if previous_priority != payload.publisher_priority => {
+      Err(ParseError::ProtocolViolation {
+        context: "RecvDataStream::read_object(fetch_malformed_track)",
+        details: format!(
+          "FETCH object for subgroup_id {} changed publisher_priority from {} to {}",
+          payload.subgroup_id, previous_priority, payload.publisher_priority
+        ),
+      })
+    }
+    _ => Ok(()),
+  }
+}
 
 // Stores the context derived from the initial header message
 #[derive(Debug, Clone)]
@@ -244,6 +266,7 @@ pub struct RecvDataStream {
   pending_fetches: Arc<RwLock<BTreeMap<u64, FetchRequest>>>, // Mutable borrow to potentially remove entry
   objects: Arc<RwLock<VecDeque<Object>>>,                    // Buffer for parsed objects
   is_closed: Arc<AtomicBool>,
+  malformed_track: Arc<AtomicBool>,
   started_read_task: Arc<AtomicBool>,
   notify: Arc<Notify>,
 }
@@ -259,9 +282,14 @@ impl RecvDataStream {
       pending_fetches,
       objects: Arc::new(RwLock::new(VecDeque::new())), // Initialize the object buffer
       is_closed: Arc::new(AtomicBool::new(false)),
+      malformed_track: Arc::new(AtomicBool::new(false)),
       started_read_task: Arc::new(AtomicBool::new(false)),
       notify: Arc::new(Notify::new()),
     }
+  }
+
+  pub fn is_malformed_track(&self) -> bool {
+    self.malformed_track.load(Ordering::Relaxed)
   }
 
   pub async fn get_header_info(&self) -> Option<HeaderInfo> {
@@ -276,6 +304,7 @@ impl RecvDataStream {
     the_header_info: Arc<Mutex<Option<HeaderInfo>>>,
     pending_fetches: Arc<RwLock<BTreeMap<u64, FetchRequest>>>,
     objects: Arc<RwLock<VecDeque<Object>>>,
+    malformed_track: Arc<AtomicBool>,
     notify: Arc<Notify>,
   ) -> Result<(), RecvDataStreamReadError> {
     let mut header_info = None;
@@ -285,6 +314,7 @@ impl RecvDataStream {
 
     let mut previous_object_id: Option<u64> = None;
     let mut fetch_prev_ctx: Option<FetchObjectContext> = None;
+    let mut fetch_subgroup_priorities: HashMap<u64, u8> = HashMap::new();
 
     loop {
       let bytes_cursor = recv_bytes.clone().freeze();
@@ -322,6 +352,8 @@ impl RecvDataStream {
             objects.clone(),
             &previous_object_id,
             &fetch_prev_ctx,
+            &mut fetch_subgroup_priorities,
+            malformed_track.clone(),
           )
           .await
           .map_err(|e| {
@@ -485,6 +517,8 @@ impl RecvDataStream {
     objects: Arc<RwLock<VecDeque<Object>>>,
     previous_object_id: &Option<u64>,
     fetch_prev_ctx: &Option<FetchObjectContext>,
+    fetch_subgroup_priorities: &mut HashMap<u64, u8>,
+    malformed_track: Arc<AtomicBool>,
   ) -> Result<(usize, Option<u64>, Option<FetchObjectContext>), ParseError> {
     if !bytes_cursor.is_empty() {
       let original_remaining = bytes_cursor.remaining();
@@ -496,6 +530,12 @@ impl RecvDataStream {
               let new_ctx = fetch_obj.context();
               match fetch_obj {
                 FetchObject::Object(payload) => {
+                  if let Err(e) =
+                    validate_fetch_subgroup_priority(&payload, fetch_subgroup_priorities)
+                  {
+                    malformed_track.store(true, Ordering::Relaxed);
+                    return Err(e);
+                  }
                   // TODO: Get track alias from fetch_request
                   let object = Object::try_from_fetch(payload, 0)?;
                   Ok((None, new_ctx, Some(object)))
@@ -566,6 +606,7 @@ impl RecvDataStream {
     {
       let recv_stream = self.recv_stream.clone();
       let is_closed = self.is_closed.clone();
+      let malformed_track = self.malformed_track.clone();
       let pending_fetches = self.pending_fetches.clone();
       let objects = self.objects.clone();
       let header_info = self.header_info.clone();
@@ -580,6 +621,7 @@ impl RecvDataStream {
           header_info,
           pending_fetches,
           objects,
+          malformed_track,
           notify,
         )
         .await

@@ -196,5 +196,22 @@ if (import.meta.vitest) {
       expect(result[1]).toBeInstanceOf(PriorGroupIdGapExtension)
       expect(result[2]).toBeInstanceOf(PriorObjectIdGapExtension)
     })
+
+    test('ImmutableExtensions independent of outer prevType', () => {
+      // A low-type extension precedes ImmutableExtensions (0x0B) in the outer
+      // list, so the outer prevType is nonzero by the time ImmutableExtensions
+      // is reached. The inner KVP list must restart its own delta state from
+      // 0, independent of the outer list's running prevType.
+      const inner = [
+        KeyValuePair.tryNewVarInt(0x02, 7n),
+        KeyValuePair.tryNewBytes(0x03, new TextEncoder().encode('data')),
+      ]
+      const exts: ObjectExtension[] = [
+        new UnknownObjectExtension(KeyValuePair.tryNewVarInt(0x04, 99n)),
+        new ImmutableExtensionsObjectExtension(inner),
+      ]
+      const result = roundtrip(exts)
+      expect(result).toEqual(exts)
+    })
   })
 }

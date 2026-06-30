@@ -308,5 +308,37 @@ if (import.meta.vitest) {
       const frozen = buf.freeze()
       expect(() => KeyValuePair.deserialize(frozen))
     })
+
+    it('deserializeDelta overflow is a protocol violation', () => {
+      // previous_type + delta_type must not exceed 2^64 - 1.
+      const buf = new ByteBuffer()
+      buf.putVI(10n)
+      const frozen = buf.freeze()
+      expect(() => KeyValuePair.deserializeDelta(frozen, MAX_U64 - 5n)).toThrow(ProtocolViolationError)
+    })
+
+    it('serializeDelta with decreasing type is a protocol violation', () => {
+      // Delta Type is an unsigned varint, so a type lower than prevType can't be encoded.
+      const kvp = KeyValuePair.tryNewVarInt(2, 1)
+      expect(() => kvp.serializeDelta(10n)).toThrow(ProtocolViolationError)
+    })
+
+    it('serializeKvpList sorts and delta-encodes', () => {
+      const items = [
+        KeyValuePair.tryNewVarInt(0x20, 1),
+        KeyValuePair.tryNewVarInt(0x10, 2),
+        KeyValuePair.tryNewBytes(0x21, new TextEncoder().encode('x')),
+      ]
+      const frozen = serializeKvpList(items)
+      const decoded = deserializeKvpList(frozen, 3)
+      expect(decoded.map((k) => k.typeValue)).toEqual([0x10n, 0x20n, 0x21n])
+    })
+
+    it('deserializeKvpListUntilEmpty reads a delta-encoded stream', () => {
+      const items = [KeyValuePair.tryNewVarInt(0x04, 1), KeyValuePair.tryNewVarInt(0x02, 2)]
+      const frozen = serializeKvpList(items)
+      const decoded = deserializeKvpListUntilEmpty(frozen)
+      expect(decoded.map((k) => k.typeValue)).toEqual([0x02n, 0x04n])
+    })
   })
 }

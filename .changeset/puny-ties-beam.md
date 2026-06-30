@@ -1,5 +1,5 @@
 ---
-'client-js': minor
+'moqtail-rs': minor
 'moqtail': patch
 ---
 

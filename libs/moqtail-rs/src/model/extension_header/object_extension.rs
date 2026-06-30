@@ -13,9 +13,11 @@
 // limitations under the License.
 
 use super::constant::TrackExtensionType;
-use crate::model::common::pair::KeyValuePair;
+use crate::model::common::pair::{
+  KeyValuePair, deserialize_kvp_list_until_empty, serialize_kvp_list,
+};
 use crate::model::error::ParseError;
-use bytes::{Buf, Bytes, BytesMut};
+use bytes::Bytes;
 
 /// Typed representation of a MOQT object-level Extension Header.
 ///
@@ -59,17 +61,16 @@ impl ObjectExtension {
       TrackExtensionType::ImmutableExtensions => {
         let bytes = kvp_bytes_value(&kvp, "ObjectExtension::deserialize(ImmutableExtensions)")?;
         let mut buf = bytes;
-        let mut extensions = Vec::new();
-        while buf.has_remaining() {
-          let inner = KeyValuePair::deserialize(&mut buf)?;
-          if inner.get_type() == TrackExtensionType::ImmutableExtensions as u64 {
-            return Err(ParseError::ProtocolViolation {
-              context: "ObjectExtension::deserialize(ImmutableExtensions)",
-              details: "ImmutableExtensions MUST NOT contain another ImmutableExtensions key"
-                .to_string(),
-            });
-          }
-          extensions.push(inner);
+        let extensions = deserialize_kvp_list_until_empty(&mut buf)?;
+        if extensions
+          .iter()
+          .any(|inner| inner.get_type() == TrackExtensionType::ImmutableExtensions as u64)
+        {
+          return Err(ParseError::ProtocolViolation {
+            context: "ObjectExtension::deserialize(ImmutableExtensions)",
+            details: "ImmutableExtensions MUST NOT contain another ImmutableExtensions key"
+              .to_string(),
+          });
         }
         Ok(Self::ImmutableExtensions { extensions })
       }
@@ -92,13 +93,10 @@ impl TryInto<KeyValuePair> for ObjectExtension {
 
   fn try_into(self) -> Result<KeyValuePair, Self::Error> {
     match self {
-      Self::ImmutableExtensions { extensions } => {
-        let mut buf = BytesMut::new();
-        for ext in &extensions {
-          buf.extend_from_slice(&ext.serialize()?);
-        }
-        KeyValuePair::try_new_bytes(TrackExtensionType::ImmutableExtensions as u64, buf.freeze())
-      }
+      Self::ImmutableExtensions { extensions } => KeyValuePair::try_new_bytes(
+        TrackExtensionType::ImmutableExtensions as u64,
+        serialize_kvp_list(&extensions)?,
+      ),
       Self::PriorGroupIdGap { gap } => {
         KeyValuePair::try_new_varint(TrackExtensionType::PriorGroupIdGap as u64, gap)
       }
@@ -112,11 +110,11 @@ impl TryInto<KeyValuePair> for ObjectExtension {
 
 /// Serializes a slice of ObjectExtensions to their concatenated wire KVP bytes.
 pub fn serialize_object_extensions(exts: &[ObjectExtension]) -> Result<Bytes, ParseError> {
-  let mut buf = BytesMut::new();
-  for ext in exts {
-    buf.extend_from_slice(&ext.serialize()?);
-  }
-  Ok(buf.freeze())
+  let kvps: Vec<KeyValuePair> = exts
+    .iter()
+    .map(|e| e.clone().try_into())
+    .collect::<Result<_, ParseError>>()?;
+  serialize_kvp_list(&kvps)
 }
 
 /// Deserializes ObjectExtensions from a byte slice of known length.
@@ -124,12 +122,10 @@ pub fn serialize_object_extensions(exts: &[ObjectExtension]) -> Result<Bytes, Pa
 pub fn deserialize_object_extensions(
   bytes: &mut Bytes,
 ) -> Result<Vec<ObjectExtension>, ParseError> {
-  let mut extensions = Vec::new();
-  while bytes.has_remaining() {
-    let kvp = KeyValuePair::deserialize(bytes)?;
-    extensions.push(ObjectExtension::deserialize(kvp)?);
-  }
-  Ok(extensions)
+  deserialize_kvp_list_until_empty(bytes)?
+    .into_iter()
+    .map(ObjectExtension::deserialize)
+    .collect()
 }
 
 fn kvp_varint_value(kvp: &KeyValuePair, context: &'static str) -> Result<u64, ParseError> {
@@ -159,7 +155,7 @@ fn kvp_bytes_value(kvp: &KeyValuePair, context: &'static str) -> Result<Bytes, P
 #[cfg(test)]
 mod tests {
   use super::*;
-  use bytes::Bytes;
+  use bytes::{Buf, Bytes};
 
   fn roundtrip(ext: ObjectExtension) -> ObjectExtension {
     let serialized = ext.serialize().unwrap();

@@ -357,7 +357,7 @@ mod tests {
       group: 81,
       object: 81,
     };
-    Subscribe::new_absolute_range(
+    let mut subscribe = Subscribe::new_absolute_range(
       request_id,
       track_namespace,
       track_name,
@@ -368,14 +368,19 @@ mod tests {
         MessageParameter::new_group_order(GroupOrder::Original),
         MessageParameter::new_forward(true),
       ],
-    )
+    );
+    // Wire encoding canonicalizes parameter order ascending by type (delta-encoding requirement).
+    subscribe
+      .subscribe_parameters
+      .sort_by_key(|p| p.type_value());
+    subscribe
   }
 
   fn create_test_subscribe_ok() -> SubscribeOk {
     use crate::model::control::constant::GroupOrder;
     use crate::model::extension_header::track_extension::TrackExtension;
     use crate::model::parameter::message_parameter::MessageParameter;
-    SubscribeOk::new(
+    let mut subscribe_ok = SubscribeOk::new(
       145136,
       999,
       vec![
@@ -388,7 +393,12 @@ mod tests {
         MessageParameter::new_expires(100),
       ],
       vec![TrackExtension::DeliveryTimeout { timeout_ms: 5000 }],
-    )
+    );
+    // Wire encoding canonicalizes parameter order ascending by type (delta-encoding requirement).
+    subscribe_ok
+      .subscribe_parameters
+      .sort_by_key(|p| p.type_value());
+    subscribe_ok
   }
 
   fn create_test_client_setup() -> ClientSetup {

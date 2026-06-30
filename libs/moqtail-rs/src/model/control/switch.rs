@@ -27,7 +27,7 @@ SWITCH Message {
 */
 use super::constant::ControlMessageType;
 use super::control_message::ControlMessageTrait;
-use crate::model::common::pair::KeyValuePair;
+use crate::model::common::pair::{KeyValuePair, deserialize_kvp_list, serialize_kvp_list};
 use crate::model::common::tuple::{Tuple, TupleField};
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
 use crate::model::data::full_track_name::FullTrackName;
@@ -82,9 +82,7 @@ impl ControlMessageTrait for Switch {
     payload.put_vi(self.subscription_request_id)?;
 
     payload.put_vi(self.subscribe_parameters.len())?;
-    for param in &self.subscribe_parameters {
-      payload.extend_from_slice(&param.serialize()?);
-    }
+    payload.extend_from_slice(&serialize_kvp_list(&self.subscribe_parameters)?);
 
     let payload_len: u16 = payload
       .len()
@@ -145,11 +143,7 @@ impl ControlMessageTrait for Switch {
           details: e.to_string(),
         })?;
 
-    let mut subscribe_parameters = Vec::with_capacity(param_count);
-    for _ in 0..param_count {
-      let param = KeyValuePair::deserialize(payload)?;
-      subscribe_parameters.push(param);
-    }
+    let subscribe_parameters = deserialize_kvp_list(payload, param_count as u64)?;
 
     Ok(Box::new(Switch {
       request_id,

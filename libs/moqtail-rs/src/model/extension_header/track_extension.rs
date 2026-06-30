@@ -13,10 +13,12 @@
 // limitations under the License.
 
 use super::constant::TrackExtensionType;
-use crate::model::common::pair::KeyValuePair;
+use crate::model::common::pair::{
+  KeyValuePair, deserialize_kvp_list_until_empty, serialize_kvp_list,
+};
 use crate::model::control::constant::GroupOrder;
 use crate::model::error::ParseError;
-use bytes::{Buf, Bytes, BytesMut};
+use bytes::Bytes;
 
 /// Typed representation of a MOQT track-level Extension Header.
 ///
@@ -83,17 +85,16 @@ impl TrackExtension {
       TrackExtensionType::ImmutableExtensions => {
         let bytes = kvp_bytes_value(&kvp, "TrackExtension::deserialize(ImmutableExtensions)")?;
         let mut buf = bytes;
-        let mut extensions = Vec::new();
-        while buf.has_remaining() {
-          let inner = KeyValuePair::deserialize(&mut buf)?;
-          if inner.get_type() == TrackExtensionType::ImmutableExtensions as u64 {
-            return Err(ParseError::ProtocolViolation {
-              context: "TrackExtension::deserialize(ImmutableExtensions)",
-              details: "ImmutableExtensions MUST NOT contain another ImmutableExtensions key"
-                .to_string(),
-            });
-          }
-          extensions.push(inner);
+        let extensions = deserialize_kvp_list_until_empty(&mut buf)?;
+        if extensions
+          .iter()
+          .any(|inner| inner.get_type() == TrackExtensionType::ImmutableExtensions as u64)
+        {
+          return Err(ParseError::ProtocolViolation {
+            context: "TrackExtension::deserialize(ImmutableExtensions)",
+            details: "ImmutableExtensions MUST NOT contain another ImmutableExtensions key"
+              .to_string(),
+          });
         }
         Ok(Self::ImmutableExtensions { extensions })
       }
@@ -162,13 +163,10 @@ impl TryInto<KeyValuePair> for TrackExtension {
       Self::MaxCacheDuration { duration_ms } => {
         KeyValuePair::try_new_varint(TrackExtensionType::MaxCacheDuration as u64, duration_ms)
       }
-      Self::ImmutableExtensions { extensions } => {
-        let mut buf = BytesMut::new();
-        for ext in &extensions {
-          buf.extend_from_slice(&ext.serialize()?);
-        }
-        KeyValuePair::try_new_bytes(TrackExtensionType::ImmutableExtensions as u64, buf.freeze())
-      }
+      Self::ImmutableExtensions { extensions } => KeyValuePair::try_new_bytes(
+        TrackExtensionType::ImmutableExtensions as u64,
+        serialize_kvp_list(&extensions)?,
+      ),
       Self::DefaultPublisherPriority { priority } => KeyValuePair::try_new_varint(
         TrackExtensionType::DefaultPublisherPriority as u64,
         priority as u64,
@@ -189,22 +187,20 @@ impl TryInto<KeyValuePair> for TrackExtension {
 /// Serializes a slice of TrackExtensions to their concatenated wire KVP bytes.
 /// Empty slice produces no bytes (zero wire overhead).
 pub fn serialize_track_extensions(exts: &[TrackExtension]) -> Result<Bytes, ParseError> {
-  let mut buf = BytesMut::new();
-  for ext in exts {
-    buf.extend_from_slice(&ext.serialize()?);
-  }
-  Ok(buf.freeze())
+  let kvps: Vec<KeyValuePair> = exts
+    .iter()
+    .map(|e| e.clone().try_into())
+    .collect::<Result<_, ParseError>>()?;
+  serialize_kvp_list(&kvps)
 }
 
 /// Deserializes TrackExtensions from remaining payload bytes.
 /// Reads KVPs until the buffer is empty. Returns an empty Vec if no bytes remain.
 pub fn deserialize_track_extensions(bytes: &mut Bytes) -> Result<Vec<TrackExtension>, ParseError> {
-  let mut extensions = Vec::new();
-  while bytes.has_remaining() {
-    let kvp = KeyValuePair::deserialize(bytes)?;
-    extensions.push(TrackExtension::deserialize(kvp)?);
-  }
-  Ok(extensions)
+  deserialize_kvp_list_until_empty(bytes)?
+    .into_iter()
+    .map(TrackExtension::deserialize)
+    .collect()
 }
 
 fn kvp_varint_value(kvp: &KeyValuePair, context: &'static str) -> Result<u64, ParseError> {
@@ -234,7 +230,7 @@ fn kvp_bytes_value(kvp: &KeyValuePair, context: &'static str) -> Result<Bytes, P
 #[cfg(test)]
 mod tests {
   use super::*;
-  use bytes::Bytes;
+  use bytes::{Buf, Bytes};
 
   fn roundtrip(ext: TrackExtension) -> TrackExtension {
     let serialized = ext.serialize().unwrap();

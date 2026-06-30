@@ -18,7 +18,7 @@ use tracing::trace;
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
 use crate::model::error::ParseError;
 use crate::model::extension_header::object_extension::{
-  ObjectExtension, deserialize_object_extensions,
+  ObjectExtension, deserialize_object_extensions, serialize_object_extensions,
 };
 
 use super::constant::ObjectStatus;
@@ -56,10 +56,7 @@ impl SubgroupObject {
       if ext_headers.is_empty() {
         buf.put_vi(0)?;
       } else {
-        let mut ext_buf = BytesMut::new();
-        for header in ext_headers {
-          ext_buf.extend_from_slice(&header.serialize()?);
-        }
+        let ext_buf = serialize_object_extensions(ext_headers)?;
         buf.put_vi(ext_buf.len())?;
         buf.extend_from_slice(&ext_buf);
       }

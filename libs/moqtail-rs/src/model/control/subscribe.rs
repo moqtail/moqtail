@@ -20,7 +20,7 @@ use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
 use crate::model::data::full_track_name::FullTrackName;
 use crate::model::error::ParseError;
 use crate::model::parameter::message_parameter::{
-  MessageParameter, deserialize_message_parameters,
+  MessageParameter, deserialize_message_parameters, serialize_message_parameters,
 };
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
@@ -151,9 +151,7 @@ impl ControlMessageTrait for Subscribe {
     payload.extend_from_slice(self.track_name.as_bytes());
 
     payload.put_vi(self.subscribe_parameters.len())?;
-    for param in &self.subscribe_parameters {
-      payload.extend_from_slice(&param.serialize()?);
-    }
+    payload.extend_from_slice(&serialize_message_parameters(&self.subscribe_parameters)?);
 
     let payload_len: u16 = payload
       .len()
@@ -218,7 +216,7 @@ mod tests {
 
   #[test]
   fn test_roundtrip() {
-    let subscribe = Subscribe::new_absolute_range(
+    let mut subscribe = Subscribe::new_absolute_range(
       128242,
       Tuple::from_utf8_path("nein/nein/nein"),
       TupleField::from_utf8("${Name}"),
@@ -232,6 +230,10 @@ mod tests {
         MessageParameter::new_forward(false),
       ],
     );
+    // Wire encoding canonicalizes parameter order ascending by type (delta-encoding requirement).
+    subscribe
+      .subscribe_parameters
+      .sort_by_key(|p| p.type_value());
 
     let mut buf = subscribe.serialize().unwrap();
     let msg_type = buf.get_vi().unwrap();
@@ -245,7 +247,7 @@ mod tests {
 
   #[test]
   fn test_excess_roundtrip() {
-    let subscribe = Subscribe::new_absolute_range(
+    let mut subscribe = Subscribe::new_absolute_range(
       128242,
       Tuple::from_utf8_path("nein/nein/nein"),
       TupleField::from_utf8("${Name}"),
@@ -260,6 +262,10 @@ mod tests {
         MessageParameter::new_forward(true),
       ],
     );
+    // Wire encoding canonicalizes parameter order ascending by type (delta-encoding requirement).
+    subscribe
+      .subscribe_parameters
+      .sort_by_key(|p| p.type_value());
 
     let serialized = subscribe.serialize().unwrap();
     let mut excess = BytesMut::new();

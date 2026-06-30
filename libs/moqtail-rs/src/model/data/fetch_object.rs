@@ -15,7 +15,7 @@
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
 use crate::model::error::ParseError;
 use crate::model::extension_header::object_extension::{
-  ObjectExtension, deserialize_object_extensions,
+  ObjectExtension, deserialize_object_extensions, serialize_object_extensions,
 };
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
@@ -404,10 +404,7 @@ fn serialize_payload(
     buf.put_u8(p.publisher_priority);
   }
   if has_extensions {
-    let mut ext_buf = BytesMut::new();
-    for h in p.extension_headers.as_ref().unwrap() {
-      ext_buf.extend_from_slice(&h.serialize()?);
-    }
+    let ext_buf = serialize_object_extensions(p.extension_headers.as_ref().unwrap())?;
     buf.put_vi(ext_buf.len() as u64)?;
     buf.extend_from_slice(&ext_buf);
   }

@@ -56,14 +56,30 @@ impl KeyValuePair {
   }
 
   pub fn serialize(&self) -> Result<Bytes, ParseError> {
+    self.serialize_delta(0)
+  }
+
+  /// Serializes this pair's wire form, encoding the Type as a delta from
+  /// `prev_type` (the type of the previous KVP in the same list, or 0 if
+  /// this is the first entry), per draft-ietf-moq-transport-16 1.4.2.
+  pub fn serialize_delta(&self, prev_type: u64) -> Result<Bytes, ParseError> {
+    let delta_type = self.get_type().checked_sub(prev_type).ok_or_else(|| {
+      ParseError::ProtocolViolation {
+        context: "KeyValuePair::serialize_delta",
+        details: format!(
+          "type {} is less than previous type {prev_type}; a KVP list must be sorted by ascending type to be delta-encoded",
+          self.get_type()
+        ),
+      }
+    })?;
+
     let mut buf = BytesMut::new();
+    buf.put_vi(delta_type)?;
     match self {
-      Self::VarInt { type_value, value } => {
-        buf.put_vi(*type_value)?;
+      Self::VarInt { value, .. } => {
         buf.put_vi(*value)?;
       }
-      Self::Bytes { type_value, value } => {
-        buf.put_vi(*type_value)?;
+      Self::Bytes { value, .. } => {
         buf.put_vi(value.len() as u64)?;
         buf.extend_from_slice(value);
       }
@@ -72,7 +88,23 @@ impl KeyValuePair {
   }
 
   pub fn deserialize(bytes: &mut Bytes) -> Result<Self, ParseError> {
-    let type_value = bytes.get_vi()?;
+    Self::deserialize_delta(bytes, 0)
+  }
+
+  /// Deserializes a wire-form KVP whose Type field is a delta from
+  /// `prev_type` (the type of the previous KVP in the same list, or 0 if
+  /// this is the first entry), per draft-ietf-moq-transport-16 1.4.2.
+  pub fn deserialize_delta(bytes: &mut Bytes, prev_type: u64) -> Result<Self, ParseError> {
+    let delta_type = bytes.get_vi()?;
+    let type_value =
+      prev_type
+        .checked_add(delta_type)
+        .ok_or_else(|| ParseError::ProtocolViolation {
+          context: "KeyValuePair::deserialize_delta",
+          details: format!(
+            "previous type {prev_type} plus delta type {delta_type} exceeds 2^64 - 1"
+          ),
+        })?;
 
     if type_value % 2 == 0 {
       // VarInt variant
@@ -122,6 +154,51 @@ impl KeyValuePair {
       KeyValuePair::Bytes { type_value, .. } => *type_value,
     }
   }
+}
+
+/// Delta-encodes and serializes a list of Key-Value-Pairs to wire bytes.
+/// The list is sorted by ascending type first, since Delta Type is an
+/// unsigned varint and cannot represent a type decrease.
+pub fn serialize_kvp_list(items: &[KeyValuePair]) -> Result<Bytes, ParseError> {
+  let mut sorted: Vec<&KeyValuePair> = items.iter().collect();
+  sorted.sort_by_key(|kvp| kvp.get_type());
+
+  let mut buf = BytesMut::new();
+  let mut prev_type = 0u64;
+  for kvp in sorted {
+    buf.extend_from_slice(&kvp.serialize_delta(prev_type)?);
+    prev_type = kvp.get_type();
+  }
+  Ok(buf.freeze())
+}
+
+/// Reads exactly `count` delta-encoded Key-Value-Pairs from `bytes`.
+pub fn deserialize_kvp_list(
+  bytes: &mut Bytes,
+  count: u64,
+) -> Result<Vec<KeyValuePair>, ParseError> {
+  let mut items = Vec::with_capacity(count as usize);
+  let mut prev_type = 0u64;
+  for _ in 0..count {
+    let kvp = KeyValuePair::deserialize_delta(bytes, prev_type)?;
+    prev_type = kvp.get_type();
+    items.push(kvp);
+  }
+  Ok(items)
+}
+
+/// Reads delta-encoded Key-Value-Pairs from `bytes` until it is exhausted.
+pub fn deserialize_kvp_list_until_empty(
+  bytes: &mut Bytes,
+) -> Result<Vec<KeyValuePair>, ParseError> {
+  let mut items = Vec::new();
+  let mut prev_type = 0u64;
+  while bytes.has_remaining() {
+    let kvp = KeyValuePair::deserialize_delta(bytes, prev_type)?;
+    prev_type = kvp.get_type();
+    items.push(kvp);
+  }
+  Ok(items)
 }
 
 #[cfg(test)]

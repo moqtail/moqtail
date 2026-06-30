@@ -20,7 +20,7 @@ use crate::model::extension_header::track_extension::{
   TrackExtension, deserialize_track_extensions, serialize_track_extensions,
 };
 use crate::model::parameter::message_parameter::{
-  MessageParameter, deserialize_message_parameters,
+  MessageParameter, deserialize_message_parameters, serialize_message_parameters,
 };
 use bytes::{BufMut, Bytes, BytesMut};
 
@@ -58,9 +58,7 @@ impl ControlMessageTrait for SubscribeOk {
     payload.put_vi(self.track_alias)?;
 
     payload.put_vi(self.subscribe_parameters.len() as u64)?;
-    for param in &self.subscribe_parameters {
-      payload.extend_from_slice(&param.serialize()?);
-    }
+    payload.extend_from_slice(&serialize_message_parameters(&self.subscribe_parameters)?);
 
     // Track Extensions (no length prefix; bounded by outer message Length field)
     payload.extend_from_slice(&serialize_track_extensions(&self.track_extensions)?);
@@ -115,7 +113,7 @@ mod tests {
 
   #[test]
   fn test_roundtrip() {
-    let subscribe_ok = SubscribeOk {
+    let mut subscribe_ok = SubscribeOk {
       request_id: 145136,
       track_alias: 0,
       subscribe_parameters: vec![
@@ -129,6 +127,10 @@ mod tests {
       ],
       track_extensions: vec![],
     };
+    // Wire encoding canonicalizes parameter order ascending by type (delta-encoding requirement).
+    subscribe_ok
+      .subscribe_parameters
+      .sort_by_key(|p| p.type_value());
 
     let mut buf = subscribe_ok.serialize().unwrap();
     let msg_type = buf.get_vi().unwrap();

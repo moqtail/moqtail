@@ -35,7 +35,7 @@ impl SubgroupObject {
   pub fn serialize(
     &self,
     previous_object_id: Option<u64>,
-    _has_extensions: bool,
+    has_extensions: bool,
   ) -> Result<Bytes, ParseError> {
     let mut buf = BytesMut::new();
 
@@ -52,17 +52,22 @@ impl SubgroupObject {
 
     buf.put_vi(object_id_delta)?;
 
-    if let Some(ext_headers) = &self.extension_headers {
-      if ext_headers.is_empty() {
-        buf.put_vi(0)?;
-      } else {
-        let mut ext_buf = BytesMut::new();
-        for header in ext_headers {
-          ext_buf.extend_from_slice(&header.serialize()?);
-        }
-        buf.put_vi(ext_buf.len())?;
-        buf.extend_from_slice(&ext_buf);
+    let extension_headers = self.extension_headers.as_deref().unwrap_or(&[]);
+
+    if !has_extensions && !extension_headers.is_empty() {
+      return Err(ParseError::ProtocolViolation {
+        context: "SubgroupObject::serialize(extension_headers)",
+        details: "extension headers are present but header type has no extensions".to_string(),
+      });
+    }
+
+    if has_extensions {
+      let mut ext_buf = BytesMut::new();
+      for header in extension_headers {
+        ext_buf.extend_from_slice(&header.serialize()?);
       }
+      buf.put_vi(ext_buf.len())?;
+      buf.extend_from_slice(&ext_buf);
     }
 
     if let Some(payload) = &self.payload
@@ -206,6 +211,32 @@ mod tests {
     let deserialized = SubgroupObject::deserialize(&mut buf, &Some(prev_object_id), true).unwrap();
     assert_eq!(deserialized, subgroup_object);
     assert!(!buf.has_remaining());
+  }
+
+  #[test]
+  fn test_serializes_empty_extension_headers_as_absent() {
+    let object_id: u64 = 10;
+    let payload = Some(Bytes::from_static(&[0xab]));
+
+    let with_no_headers = SubgroupObject {
+      object_id,
+      extension_headers: None,
+      object_status: None,
+      payload: payload.clone(),
+    }
+    .serialize(None, false)
+    .unwrap();
+
+    let with_empty_headers = SubgroupObject {
+      object_id,
+      extension_headers: Some(vec![]),
+      object_status: None,
+      payload,
+    }
+    .serialize(None, false)
+    .unwrap();
+
+    assert_eq!(with_empty_headers, with_no_headers);
   }
 
   #[test]

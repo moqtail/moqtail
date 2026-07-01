@@ -37,8 +37,8 @@ jobs:
           cache: 'npm'
 
       - run: npm clean-install
-      - run: npm install --global corepack@latest
-      - run: corepack npm audit signatures
+      - run: corepack enable
+      - run: npm audit signatures
 
       - name: Cache Rust Workspace
         uses: Swatinem/rust-cache@v2

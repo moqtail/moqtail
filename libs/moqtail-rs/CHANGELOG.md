@@ -1,5 +1,17 @@
 # moqtail-rs
 
+## 0.14.0
+
+### Minor Changes
+
+- [`0ca44e5`](https://github.com/moqtail/moqtail/commit/0ca44e59cf39ac97e73e465e80b64dba0302b2ba) Thanks [@zafergurel](https://github.com/zafergurel)! - Add raw QUIC transport support alongside WebTransport. `TransportConnection`/`TransportSendStream`/`TransportRecvStream` in moqtail-rs now wrap both wtransport and raw quinn behind one API, threaded through the relay and client stream handlers. The relay's QUIC listener demultiplexes WebTransport and raw-QUIC connections on the same UDP socket/port via ALPN, and the client connects over raw QUIC when given a `moqt://authority[/path]` server URL (carrying authority/path via CLIENT_SETUP parameters instead of HTTP CONNECT).
+
+### Patch Changes
+
+- [#208](https://github.com/moqtail/moqtail/pull/208) [`211ce94`](https://github.com/moqtail/moqtail/commit/211ce94bd1890cb4846d1805dc476e2b6702321b) Thanks [@zafergurel](https://github.com/zafergurel)! - Fix Key-Value-Pair Type fields being encoded/decoded as raw absolute values instead of deltas from the previous Type in the same list, per draft-ietf-moq-transport-16 (#1315). This broke interop with spec-compliant v16 peers: parameters such as FORWARD or SUBSCRIPTION_FILTER could be received as the wrong type (e.g. logged as "Unsupported parameter 48/81") by any peer that correctly delta-decodes. Affects Setup/Message Parameters and Object/Track Extension Headers (including the nested ImmutableExtensions list) in both the Rust (`moqtail-rs`) and TypeScript (`moqtail`) libraries.
+
+- [#206](https://github.com/moqtail/moqtail/pull/206) [`9c236c9`](https://github.com/moqtail/moqtail/commit/9c236c9117578aaf1033ee1a8e7e52ad04086979) Thanks [@kerembkmz](https://github.com/kerembkmz)! - Normalize empty subgroup extension headers to null so [] serializes the same as no headers.
+
 ## 0.13.1
 
 ### Patch Changes

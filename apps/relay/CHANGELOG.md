@@ -1,5 +1,17 @@
 # relay
 
+## 0.14.0
+
+### Minor Changes
+
+- [`0ca44e5`](https://github.com/moqtail/moqtail/commit/0ca44e59cf39ac97e73e465e80b64dba0302b2ba) Thanks [@zafergurel](https://github.com/zafergurel)! - Add raw QUIC transport support alongside WebTransport. `TransportConnection`/`TransportSendStream`/`TransportRecvStream` in moqtail-rs now wrap both wtransport and raw quinn behind one API, threaded through the relay and client stream handlers. The relay's QUIC listener demultiplexes WebTransport and raw-QUIC connections on the same UDP socket/port via ALPN, and the client connects over raw QUIC when given a `moqt://authority[/path]` server URL (carrying authority/path via CLIENT_SETUP parameters instead of HTTP CONNECT).
+
+### Patch Changes
+
+- [#201](https://github.com/moqtail/moqtail/pull/201) [`41d6ff4`](https://github.com/moqtail/moqtail/commit/41d6ff4e054a485640a099f8bd94b3866e0b0dcb) Thanks [@zafergurel](https://github.com/zafergurel)! - Fix silent object drops for subscribers joining a track mid-subgroup. New subscribers had no open QUIC send stream for an in-progress subgroup, so objects with no header info were silently discarded. The relay now caches the original subgroup header when the first object of each subgroup arrives and uses it to open a send stream for late joiners. The cache entry is evicted when the publisher unistream closes.
+
+- [#201](https://github.com/moqtail/moqtail/pull/201) [`41d6ff4`](https://github.com/moqtail/moqtail/commit/41d6ff4e054a485640a099f8bd94b3866e0b0dcb) Thanks [@zafergurel](https://github.com/zafergurel)! - When a subscription's `forward` parameter transitions from false to true via REQUEST_UPDATE mid-group, the relay now immediately opens a QUIC send stream for the subscriber using the subgroup header that arrived while forwarding was paused. Previously, if no new group boundary arrived after the toggle, the subscriber would miss the remainder of the current subgroup.
+
 ## 0.13.4
 
 ### Patch Changes

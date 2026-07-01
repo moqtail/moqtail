@@ -1,5 +1,15 @@
 # moqtail-ts
 
+## 0.12.0
+
+### Minor Changes
+
+- [#206](https://github.com/moqtail/moqtail/pull/206) [`9c236c9`](https://github.com/moqtail/moqtail/commit/9c236c9117578aaf1033ee1a8e7e52ad04086979) Thanks [@kerembkmz](https://github.com/kerembkmz)! - Normalize empty subgroup extension headers to null so [] serializes the same as no headers.
+
+### Patch Changes
+
+- [#208](https://github.com/moqtail/moqtail/pull/208) [`211ce94`](https://github.com/moqtail/moqtail/commit/211ce94bd1890cb4846d1805dc476e2b6702321b) Thanks [@zafergurel](https://github.com/zafergurel)! - Fix Key-Value-Pair Type fields being encoded/decoded as raw absolute values instead of deltas from the previous Type in the same list, per draft-ietf-moq-transport-16 (#1315). This broke interop with spec-compliant v16 peers: parameters such as FORWARD or SUBSCRIPTION_FILTER could be received as the wrong type (e.g. logged as "Unsupported parameter 48/81") by any peer that correctly delta-decodes. Affects Setup/Message Parameters and Object/Track Extension Headers (including the nested ImmutableExtensions list) in both the Rust (`moqtail-rs`) and TypeScript (`moqtail`) libraries.
+
 ## 0.11.0
 
 ### Minor Changes

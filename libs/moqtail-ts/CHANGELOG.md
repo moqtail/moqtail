@@ -1,5 +1,11 @@
 # moqtail-ts
 
+## 0.12.1
+
+### Patch Changes
+
+- [#211](https://github.com/moqtail/moqtail/pull/211) [`a229d93`](https://github.com/moqtail/moqtail/commit/a229d93183adfc508badcc3d886290e0ed013d49) Thanks [@zafergurel](https://github.com/zafergurel)! - Fix `Header.deserialize` rejecting subgroup headers with default publisher priority. The dispatch previously used an explicit switch covering only `0x10–0x15` and `0x18–0x1D`, missing the `0x30–0x35` and `0x38–0x3D` ranges (DEFAULT_PRIORITY bit set). Replaced with bitmask detection matching the Rust validator.
+
 ## 0.12.0
 
 ### Minor Changes

@@ -52,6 +52,7 @@ jobs:
 
   dco:
     name: DCO Sign-off Check
+    if: ${{ !startsWith(github.head_ref, 'changeset') }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code

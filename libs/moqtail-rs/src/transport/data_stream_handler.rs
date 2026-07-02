@@ -636,13 +636,14 @@ impl RecvDataStream {
           pending_fetches,
           objects,
           malformed_track,
-          notify,
+          notify.clone(),
         )
         .await
         {
           Ok(_) => debug!("RecvDataStream read task completed successfully"),
           Err(e) => {
             error!("RecvDataStream read task encountered an error: {:?}", e);
+            notify.notify_waiters();
             // if not connected error, do nothing and return, let the caller handle it
             if matches!(e, RecvDataStreamReadError::StreamClosed) {
               debug!("Stream is closed, returning EOF");

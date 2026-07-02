@@ -26,6 +26,13 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{error, info};
 
+enum FetchReceiveSignal {
+  // The configured cancel_after object threshold was reached.
+  CancelAfter,
+  // The FETCH response was detected as a malformed track.
+  MalformedTrack,
+}
+
 pub struct FetchConfig {
   pub namespace: String,
   pub track_name: String,
@@ -81,17 +88,11 @@ pub async fn run(moq: MoqConnection, config: FetchConfig) -> Result<()> {
   // make sure that there is a publisher sending enough objects to trigger the cancellation
   // in a reasonable time frame otherwise you may get Track Does Not Exist error or
   // not enough objects received before the test ends
-  let (cancel_tx, cancel_rx) = if config.cancel_after > 0 {
-    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
-    (Some(tx), Some(rx))
-  } else {
-    (None, None)
-  };
+  let (signal_tx, mut signal_rx) = tokio::sync::mpsc::unbounded_channel::<FetchReceiveSignal>();
 
   let cancel_after = config.cancel_after;
   let receive_task = tokio::spawn(async move {
     let mut total_objects = 0u64;
-    let mut cancel_tx = cancel_tx;
     loop {
       match conn.accept_uni().await {
         Ok(stream) => {
@@ -113,13 +114,16 @@ pub async fn run(moq: MoqConnection, config: FetchConfig) -> Result<()> {
                 // Signal cancellation if threshold reached
                 if cancel_after > 0 && total_objects >= cancel_after {
                   info!("Received {} objects, signaling FETCH_CANCEL", total_objects);
-                  if let Some(tx) = cancel_tx.take() {
-                    let _ = tx.send(());
-                  }
-                  break;
+                  let _ = signal_tx.send(FetchReceiveSignal::CancelAfter);
+                  return;
                 }
               }
               None => {
+                if stream_handler.is_malformed_track() {
+                  error!("Fetch response is malformed; signaling FETCH_CANCEL");
+                  let _ = signal_tx.send(FetchReceiveSignal::MalformedTrack);
+                  return;
+                }
                 info!("Fetch stream closed");
                 break;
               }
@@ -150,29 +154,41 @@ pub async fn run(moq: MoqConnection, config: FetchConfig) -> Result<()> {
     }
   }
 
-  // If cancel_after is set, wait for the receive task to signal, then send FETCH_CANCEL
-  if let Some(cancel_rx) = cancel_rx {
-    match cancel_rx.await {
-      Ok(()) => {
-        info!("Sending FETCH_CANCEL for request_id: {}", request_id);
-        let fetch_cancel = FetchCancel::new(request_id);
-        if let Err(e) = control_stream
-          .send(&ControlMessage::FetchCancel(Box::new(fetch_cancel)))
-          .await
-        {
-          error!("Error sending FETCH_CANCEL: {:?}", e);
-        } else {
-          info!("FETCH_CANCEL sent successfully");
-        }
+  let receive_signal = if cancel_after > 0 {
+    signal_rx.recv().await
+  } else {
+    tokio::time::timeout(tokio::time::Duration::from_secs(5), signal_rx.recv())
+      .await
+      .ok()
+      .flatten()
+  };
+
+  if let Some(signal) = receive_signal {
+    match signal {
+      FetchReceiveSignal::CancelAfter => {
+        info!("Received cancel_after threshold, sending FETCH_CANCEL");
       }
-      Err(_) => {
-        error!("Cancel signal channel closed unexpectedly");
+      FetchReceiveSignal::MalformedTrack => {
+        error!("Received malformed FETCH response, sending FETCH_CANCEL");
       }
+    }
+
+    info!("Sending FETCH_CANCEL for request_id: {}", request_id);
+    let fetch_cancel = FetchCancel::new(request_id);
+    if let Err(e) = control_stream
+      .send(&ControlMessage::FetchCancel(Box::new(fetch_cancel)))
+      .await
+    {
+      error!("Error sending FETCH_CANCEL: {:?}", e);
+    } else {
+      info!("FETCH_CANCEL sent successfully");
     }
   }
 
   // Wait for fetch data to arrive
-  tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+  if cancel_after > 0 {
+    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+  }
 
   info!("Closing connection...");
   connection.close(0u32, b"Done");

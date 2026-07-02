@@ -41,25 +41,44 @@ type ObjectParseResult =
 const DATA_STREAM_TIMEOUT: Duration = Duration::from_secs(15);
 const MTU_SIZE: usize = 1500; // Standard MTU size
 
-fn validate_fetch_subgroup_priority(
-  payload: &FetchObjectPayload,
-  subgroup_priorities: &mut HashMap<u64, u8>,
-) -> Result<(), ParseError> {
-  if payload.forwarding_preference != ObjectForwardingPreference::Subgroup {
-    return Ok(());
-  }
+#[derive(Default)]
+struct FetchReadState {
+  prev_ctx: Option<FetchObjectContext>,
+  subgroup_priorities: FetchSubgroupPriorityState,
+}
 
-  match subgroup_priorities.insert(payload.subgroup_id, payload.publisher_priority) {
-    Some(previous_priority) if previous_priority != payload.publisher_priority => {
-      Err(ParseError::ProtocolViolation {
-        context: "RecvDataStream::read_object(fetch_malformed_track)",
-        details: format!(
-          "FETCH object for subgroup_id {} changed publisher_priority from {} to {}",
-          payload.subgroup_id, previous_priority, payload.publisher_priority
-        ),
-      })
+#[derive(Default)]
+struct FetchSubgroupPriorityState {
+  group_id: Option<u64>,
+  priorities: HashMap<u64, u8>,
+}
+
+impl FetchSubgroupPriorityState {
+  fn validate(&mut self, payload: &FetchObjectPayload) -> Result<(), ParseError> {
+    if self.group_id != Some(payload.group_id) {
+      self.group_id = Some(payload.group_id);
+      self.priorities.clear();
     }
-    _ => Ok(()),
+
+    if payload.forwarding_preference != ObjectForwardingPreference::Subgroup {
+      return Ok(());
+    }
+
+    match self
+      .priorities
+      .insert(payload.subgroup_id, payload.publisher_priority)
+    {
+      Some(previous_priority) if previous_priority != payload.publisher_priority => {
+        Err(ParseError::ProtocolViolation {
+          context: "RecvDataStream::read_object(fetch_malformed_track)",
+          details: format!(
+            "FETCH object for subgroup_id {} changed publisher_priority from {} to {}",
+            payload.subgroup_id, previous_priority, payload.publisher_priority
+          ),
+        })
+      }
+      _ => Ok(()),
+    }
   }
 }
 
@@ -313,8 +332,7 @@ impl RecvDataStream {
     let mut timeout_at = Instant::now() + DATA_STREAM_TIMEOUT;
 
     let mut previous_object_id: Option<u64> = None;
-    let mut fetch_prev_ctx: Option<FetchObjectContext> = None;
-    let mut fetch_subgroup_priorities: HashMap<u64, u8> = HashMap::new();
+    let mut fetch_state = FetchReadState::default();
 
     loop {
       let bytes_cursor = recv_bytes.clone().freeze();
@@ -351,8 +369,7 @@ impl RecvDataStream {
             is_closed.clone(),
             objects.clone(),
             &previous_object_id,
-            &fetch_prev_ctx,
-            &mut fetch_subgroup_priorities,
+            &mut fetch_state,
             malformed_track.clone(),
           )
           .await
@@ -365,7 +382,7 @@ impl RecvDataStream {
           if c > 0 {
             previous_object_id = object_id;
             if new_fetch_ctx.is_some() {
-              fetch_prev_ctx = new_fetch_ctx;
+              fetch_state.prev_ctx = new_fetch_ctx;
             }
             notify.notify_waiters();
             recv_bytes.advance(c);
@@ -516,8 +533,7 @@ impl RecvDataStream {
     is_closed: Arc<AtomicBool>,
     objects: Arc<RwLock<VecDeque<Object>>>,
     previous_object_id: &Option<u64>,
-    fetch_prev_ctx: &Option<FetchObjectContext>,
-    fetch_subgroup_priorities: &mut HashMap<u64, u8>,
+    fetch_state: &mut FetchReadState,
     malformed_track: Arc<AtomicBool>,
   ) -> Result<(usize, Option<u64>, Option<FetchObjectContext>), ParseError> {
     if !bytes_cursor.is_empty() {
@@ -525,14 +541,12 @@ impl RecvDataStream {
 
       let parse_result: ObjectParseResult = match header_info {
         HeaderInfo::Fetch { .. } => {
-          FetchObject::deserialize(&mut bytes_cursor, fetch_prev_ctx.as_ref()).and_then(
+          FetchObject::deserialize(&mut bytes_cursor, fetch_state.prev_ctx.as_ref()).and_then(
             |fetch_obj| {
               let new_ctx = fetch_obj.context();
               match fetch_obj {
                 FetchObject::Object(payload) => {
-                  if let Err(e) =
-                    validate_fetch_subgroup_priority(&payload, fetch_subgroup_priorities)
-                  {
+                  if let Err(e) = fetch_state.subgroup_priorities.validate(&payload) {
                     malformed_track.store(true, Ordering::Relaxed);
                     return Err(e);
                   }

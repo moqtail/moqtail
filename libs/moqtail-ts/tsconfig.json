@@ -4,7 +4,7 @@
     "rootDir": ".",
     "declaration": false,
     "noUnusedLocals": false,
-    "moduleResolution": "node",
+    "moduleResolution": "bundler",
     "experimentalDecorators": true,
     "allowSyntheticDefaultImports": true,
     "importHelpers": true,
@@ -15,7 +15,6 @@
     "skipDefaultLibCheck": true,
     "checkJs": false,
     "types": ["vitest/importMeta"],
-    "baseUrl": ".",
     "paths": {
       "@": ["./src"],
       "@/*": ["./src/*"]

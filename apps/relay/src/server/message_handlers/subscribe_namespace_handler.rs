@@ -23,7 +23,9 @@ use moqtail::model::control::request_error::RequestError;
 use moqtail::model::control::request_ok::RequestOk;
 use moqtail::model::control::subscribe_namespace::SubscribeNamespace;
 use moqtail::model::error::TerminationCode;
+use moqtail::model::parameter::constant::MessageParameterType;
 use moqtail::model::parameter::message_parameter::apply_message_parameter_update;
+use moqtail::model::parameter::message_parameter::{MessageParameter, MessageParameterVecExt};
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
@@ -99,6 +101,39 @@ pub async fn handle_subscribe_namespace(
     );
   }
 
+  // Parse optional TrackFilter parameter.
+  let track_filter: Option<(u64, usize)> = sub_ns
+    .parameters
+    .get_param(MessageParameterType::TrackFilter)
+    .and_then(|p| {
+      if let MessageParameter::TrackFilter {
+        property_type,
+        max_selected,
+      } = p
+      {
+        Some((*property_type, *max_selected as usize))
+      } else {
+        None
+      }
+    });
+
+  // If subscriber requested top-N filtering, register with coordinator.
+  if let Some((property_type, n)) = track_filter {
+    context
+      .top_n_coordinator
+      .register_subscriber(
+        sub_ns.track_namespace_prefix.clone(),
+        client.clone(),
+        property_type,
+        n,
+      )
+      .await;
+    info!(
+      "TopN filter registered: prefix={:?} property_type=0x{:02X} n={}",
+      sub_ns.track_namespace_prefix, property_type, n
+    );
+  }
+
   // Send REQUEST_OK on the bi-stream
   let ok = RequestOk::new(sub_ns.request_id, vec![]);
   stream_handler
@@ -130,6 +165,40 @@ pub async fn handle_subscribe_namespace(
 
   for (full_track_name, track_arc, original_publish_message_opt) in matched_tracks {
     if let Some(mut original_publish_message) = original_publish_message_opt {
+      // Top-N gate: if subscriber has a TrackFilter, only subscribe if:
+      // - The track has never emitted the property extension (pass-through), OR
+      // - The track IS in the current top-N for this subscriber.
+      // Tracks that have been ranked but are outside the top-N are skipped;
+      // the coordinator's next tick will add them if they rank in.
+      if let Some((property_type, _)) = track_filter {
+        let in_ranker = context
+          .top_n_coordinator
+          .ranker_has_entry(
+            &sub_ns.track_namespace_prefix,
+            property_type,
+            &full_track_name,
+          )
+          .await;
+
+        if in_ranker {
+          // Track is already ranked; check if it's currently in top-N.
+          let top_n = context
+            .top_n_coordinator
+            .compute_top_n_for(&sub_ns.track_namespace_prefix, client.connection_id)
+            .await
+            .unwrap_or_default();
+
+          if !top_n.contains(&full_track_name) {
+            info!(
+              "TopN gate: skipping catch-up sub for ranked-out track {:?}",
+              full_track_name
+            );
+            continue;
+          }
+        }
+        // else: not yet ranked → pass-through, subscribe unconditionally
+      }
+
       info!(
         "Forwarding existing track for new subscriber: {:?}",
         full_track_name
@@ -199,6 +268,10 @@ pub async fn cancel(client: Arc<MOQTClient>, request_id: u64, context: &Arc<Sess
       .track_manager
       .remove_namespace_subscriber_by_prefix(&prefix, client.connection_id)
       .await;
+    context
+      .top_n_coordinator
+      .remove_subscriber(&prefix, client.connection_id)
+      .await;
     info!(
       "Cancelled namespace subscription for prefix {:?} (connection {})",
       prefix, client.connection_id
@@ -250,6 +323,25 @@ pub async fn handle(
           update_msg.parameters.clone(),
         )
         .await;
+
+      // Propagate TrackFilter updates to coordinator.
+      if let Some(MessageParameter::TrackFilter {
+        property_type,
+        max_selected,
+      }) = update_msg
+        .parameters
+        .get_param(MessageParameterType::TrackFilter)
+      {
+        context
+          .top_n_coordinator
+          .update_subscriber(
+            &target_prefix,
+            client.connection_id,
+            *property_type,
+            *max_selected as usize,
+          )
+          .await;
+      }
 
       let ok_msg = RequestOk::new(update_req_id, vec![]);
       handler

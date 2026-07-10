@@ -27,7 +27,8 @@ use moqtail::transport::connection::{TransportConnection, TransportKind};
 use moqtail::transport::data_stream_handler::{FetchRequest, SubscribeRequest};
 
 use super::{
-  client::MOQTClient, client_manager::ClientManager, config::AppConfig, track_manager::TrackManager,
+  client::MOQTClient, client_manager::ClientManager, config::AppConfig,
+  top_n_coordinator::TopNCoordinator, track_manager::TrackManager,
 };
 
 #[allow(dead_code)]
@@ -93,6 +94,7 @@ pub struct SessionContext {
   pub(crate) relay_next_request_id: Arc<AtomicU64>,
   pub(crate) max_request_id: Arc<AtomicU64>,
   pub(crate) upstream_fetch_senders: Arc<RwLock<BTreeMap<u64, mpsc::Sender<UpstreamFetchEvent>>>>,
+  pub(crate) top_n_coordinator: Arc<TopNCoordinator>,
 }
 
 impl SessionContext {
@@ -103,6 +105,7 @@ impl SessionContext {
     request_maps: RequestMaps,
     connection: TransportConnection,
     relay_next_request_id: Arc<AtomicU64>,
+    top_n_coordinator: Arc<TopNCoordinator>,
   ) -> Self {
     Self {
       client_manager,
@@ -117,6 +120,7 @@ impl SessionContext {
       relay_next_request_id,
       max_request_id: Arc::new(AtomicU64::new(server_config.initial_max_request_id)),
       upstream_fetch_senders: request_maps.upstream_fetch_senders,
+      top_n_coordinator,
     }
   }
 

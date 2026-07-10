@@ -134,11 +134,12 @@ pub async fn handle(
           )
           .await;
         {
-          let track = track_arc.write().await;
+          let mut track = track_arc.write().await;
           track
             .add_publisher(context.connection_id, track_alias)
             .await;
           track.set_track_extensions(m.track_extensions.clone()).await;
+          track.set_top_n_coordinator(context.top_n_coordinator.clone());
         }
 
         client
@@ -177,6 +178,48 @@ pub async fn handle(
         }
 
         for subscriber in subscribers {
+          // Top-N gate: if this subscriber has a TrackFilter registered for a prefix
+          // that covers this track's namespace, check whether the track is eligible.
+          let sub_prefix = context
+            .track_manager
+            .get_namespace_prefix_for_subscriber(subscriber.connection_id, &m.track_namespace)
+            .await;
+
+          if let Some(prefix) = sub_prefix
+            && context
+              .top_n_coordinator
+              .is_top_n_subscriber(&prefix, subscriber.connection_id)
+              .await
+          {
+            let sub_property_type = context
+              .top_n_coordinator
+              .get_subscriber_property_type(&prefix, subscriber.connection_id)
+              .await;
+
+            if let Some(property_type) = sub_property_type {
+              let in_ranker = context
+                .top_n_coordinator
+                .ranker_has_entry(&prefix, property_type, &full_track_name)
+                .await;
+
+              if in_ranker {
+                let top_n = context
+                  .top_n_coordinator
+                  .compute_top_n_for(&prefix, subscriber.connection_id)
+                  .await
+                  .unwrap_or_default();
+
+                if !top_n.contains(&full_track_name) {
+                  info!(
+                    "TopN gate: skipping Publish fan-out to conn={} for ranked-out track {:?}",
+                    subscriber.connection_id, full_track_name
+                  );
+                  continue;
+                }
+              }
+            }
+          }
+
           info!(
             "Forwarding Publish to interested client: {}",
             subscriber.connection_id
@@ -520,6 +563,10 @@ async fn cleanup_published_track(
 
   let track = track_arc.read().await;
   if let Some(alias) = track.remove_publisher(client.connection_id).await {
+    context
+      .top_n_coordinator
+      .on_publisher_disconnected(client.connection_id)
+      .await;
     context
       .track_manager
       .remove_publisher_alias(client.connection_id, alias)

@@ -52,6 +52,13 @@ pub enum MessageParameter {
   NewGroupRequest {
     group: u64,
   },
+  /// Top-N track filter (moq-transport PR #1401).
+  /// Packed VarInt: value = (property_type << 8) | max_selected.
+  /// property_type=0x12 selects speech-activity VAD; max_selected is the N value.
+  TrackFilter {
+    property_type: u64,
+    max_selected: u32,
+  },
 }
 
 impl MessageParameter {
@@ -99,6 +106,13 @@ impl MessageParameter {
     Self::NewGroupRequest { group }
   }
 
+  pub fn new_track_filter(property_type: u64, max_selected: u32) -> Self {
+    Self::TrackFilter {
+      property_type,
+      max_selected,
+    }
+  }
+
   /// Returns the raw wire type value for this parameter.
   pub fn type_value(&self) -> u64 {
     match self {
@@ -111,6 +125,7 @@ impl MessageParameter {
       Self::GroupOrder { .. } => MessageParameterType::GroupOrder as u64,
       Self::SubscriptionFilter { .. } => MessageParameterType::SubscriptionFilter as u64,
       Self::NewGroupRequest { .. } => MessageParameterType::NewGroupRequest as u64,
+      Self::TrackFilter { .. } => MessageParameterType::TrackFilter as u64,
     }
   }
 
@@ -186,6 +201,10 @@ impl MessageParameter {
           | ControlMessageType::Subscribe
           | ControlMessageType::RequestUpdate
       ),
+      Self::TrackFilter { .. } => matches!(
+        msg_type,
+        ControlMessageType::SubscribeNamespace | ControlMessageType::RequestUpdate
+      ),
     }
   }
 
@@ -253,6 +272,14 @@ impl MessageParameter {
             }),
           },
           MessageParameterType::NewGroupRequest => Ok(Self::NewGroupRequest { group: *value }),
+          MessageParameterType::TrackFilter => {
+            let property_type = value >> 8;
+            let max_selected = (value & 0xFF) as u32;
+            Ok(Self::TrackFilter {
+              property_type,
+              max_selected,
+            })
+          }
           _ => Err(ParseError::ProtocolViolation {
             context: "MessageParameter::deserialize",
             details: format!("Parameter type {type_value} is bytes-typed but received as varint"),
@@ -370,6 +397,13 @@ impl TryInto<KeyValuePair> for MessageParameter {
       }
       Self::NewGroupRequest { group } => {
         KeyValuePair::try_new_varint(MessageParameterType::NewGroupRequest as u64, group)
+      }
+      Self::TrackFilter {
+        property_type,
+        max_selected,
+      } => {
+        let packed = (property_type << 8) | (max_selected as u64);
+        KeyValuePair::try_new_varint(MessageParameterType::TrackFilter as u64, packed)
       }
       Self::AuthorizationToken { token } => {
         let payload = token.serialize()?;

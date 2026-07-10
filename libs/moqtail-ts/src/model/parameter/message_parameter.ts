@@ -27,6 +27,7 @@ import { LargestObject } from './message/largest_object'
 import { NewGroupRequest } from './message/new_group_request'
 import { SubscriberPriority } from './message/subscriber_priority'
 import { SubscriptionFilter } from './message/subscription_filter'
+import { TrackFilter } from './message/track_filter'
 
 export type MessageParameter =
   | DeliveryTimeout
@@ -34,6 +35,7 @@ export type MessageParameter =
   | Expires
   | LargestObject
   | Forward
+  | TrackFilter
   | SubscriberPriority
   | GroupOrderParam
   | SubscriptionFilter
@@ -52,6 +54,7 @@ export namespace MessageParameter {
       Expires.fromKeyValuePair(pair) ??
       LargestObject.fromKeyValuePair(pair) ??
       Forward.fromKeyValuePair(pair) ??
+      TrackFilter.fromKeyValuePair(pair) ??
       SubscriberPriority.fromKeyValuePair(pair) ??
       GroupOrderParam.fromKeyValuePair(pair) ??
       SubscriptionFilter.fromKeyValuePair(pair) ??
@@ -81,6 +84,10 @@ export namespace MessageParameter {
 
   export function isForward(param: MessageParameter): param is Forward {
     return param instanceof Forward
+  }
+
+  export function isTrackFilter(param: MessageParameter): param is TrackFilter {
+    return param instanceof TrackFilter
   }
 
   export function isSubscriberPriority(param: MessageParameter): param is SubscriberPriority {

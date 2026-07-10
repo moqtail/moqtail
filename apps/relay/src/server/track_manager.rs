@@ -450,6 +450,42 @@ impl TrackManager {
     None
   }
 
+  /// Returns any (publisher_connection_id, Publish) pair for the given track.
+  /// Used by the TopNCoordinator when adding a subscription without knowing which publisher.
+  pub async fn get_any_publish_message(
+    &self,
+    full_track_name: &FullTrackName,
+  ) -> Option<(usize, Publish)> {
+    let publishes = self.publishes.read().await;
+    if let Some(map) = publishes.get(full_track_name) {
+      return map
+        .iter()
+        .next()
+        .map(|(conn_id, msg)| (*conn_id, msg.clone()));
+    }
+    None
+  }
+
+  /// Returns the registered namespace prefix for a subscriber that covers the given namespace.
+  /// Used by publish_handler to decide whether to apply Top-N gating.
+  pub async fn get_namespace_prefix_for_subscriber(
+    &self,
+    connection_id: usize,
+    namespace: &Tuple,
+  ) -> Option<Tuple> {
+    let subs = self.namespace_subscribers.read().await;
+    for (prefix, clients) in subs.iter() {
+      if clients
+        .iter()
+        .any(|(c, _, _)| c.connection_id == connection_id)
+        && namespace.starts_with(prefix)
+      {
+        return Some(prefix.clone());
+      }
+    }
+    None
+  }
+
   pub async fn get_track_name_by_publisher(
     &self,
     connection_id: usize,

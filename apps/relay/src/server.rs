@@ -24,12 +24,14 @@ mod stream_id;
 mod subscription;
 mod subscription_manager;
 mod token_logger;
+mod top_n_coordinator;
 mod track;
 mod track_cache;
 mod track_manager;
 mod utils;
 
 use crate::server::session_context::{PendingRequest, UpstreamFetchEvent};
+use crate::server::top_n_coordinator::TopNCoordinator;
 use crate::server::{config::AppConfig, session::Session};
 use anyhow::Result;
 use client_manager::ClientManager;
@@ -53,6 +55,7 @@ pub(crate) struct Server {
   pub app_config: &'static AppConfig,
   pub relay_next_request_id: Arc<AtomicU64>,
   pub upstream_fetch_senders: Arc<RwLock<BTreeMap<u64, mpsc::Sender<UpstreamFetchEvent>>>>,
+  pub top_n_coordinator: Arc<TopNCoordinator>,
 }
 
 impl Server {
@@ -63,13 +66,25 @@ impl Server {
 
     debug!("Server | App. Config.: {:?}", config);
 
+    let relay_next_request_id = Arc::new(AtomicU64::new(1u64));
+    let relay_pending_requests = Arc::new(RwLock::new(BTreeMap::new()));
+    let track_manager = TrackManager::new();
+
+    let top_n_coordinator = Arc::new(TopNCoordinator::new(
+      track_manager.clone(),
+      relay_next_request_id.clone(),
+      relay_pending_requests.clone(),
+      config,
+    ));
+
     Server {
       client_manager: Arc::new(RwLock::new(ClientManager::new())),
-      track_manager: TrackManager::new(),
-      relay_pending_requests: Arc::new(RwLock::new(BTreeMap::new())),
+      track_manager,
+      relay_pending_requests,
       app_config: config,
-      relay_next_request_id: Arc::new(AtomicU64::new(1u64)), // relay's request id starts at 1 and are odd
+      relay_next_request_id,
       upstream_fetch_senders: Arc::new(RwLock::new(BTreeMap::new())),
+      top_n_coordinator,
     }
   }
 
@@ -84,6 +99,9 @@ impl Server {
       self.app_config.host,
       self.app_config.port
     );
+
+    // Start the Top-N coordinator tick loop.
+    self.top_n_coordinator.clone().spawn_tick_loop();
 
     let shutdown_notify = Arc::new(Notify::new());
     let notify_clone = shutdown_notify.clone();

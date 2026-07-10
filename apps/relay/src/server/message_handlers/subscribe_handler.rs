@@ -154,6 +154,11 @@ async fn handle_subscribe_message(
     })
     .await;
 
+  if is_creator {
+    let mut track = track_arc.write().await;
+    track.set_top_n_coordinator(context.top_n_coordinator.clone());
+  }
+
   let track = track_arc.read().await;
 
   add_subscription(sub.clone(), &track, client.clone(), is_switch).await;

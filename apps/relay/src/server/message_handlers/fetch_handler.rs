@@ -638,7 +638,6 @@ pub async fn handle(
 /// Send an upstream Fetch to the publisher for a cache gap [gap_start, gap_end].
 /// Returns the relay request ID, the publisher client, and an mpsc::Receiver through which
 /// upstream objects will be forwarded.
-#[allow(dead_code)]
 async fn send_upstream_fetch_for_range(
   client: &Arc<MOQTClient>,
   context: &Arc<SessionContext>,

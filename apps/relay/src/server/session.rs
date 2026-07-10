@@ -121,6 +121,7 @@ impl Session {
     let relay_pending_requests = server.relay_pending_requests.clone();
     let upstream_fetch_senders = server.upstream_fetch_senders.clone();
     let relay_next_request_id = server.relay_next_request_id.clone();
+    let top_n_coordinator = server.top_n_coordinator.clone();
 
     let request_maps = RequestMaps {
       relay_pending_requests,
@@ -134,6 +135,7 @@ impl Session {
       request_maps,
       connection,
       relay_next_request_id,
+      top_n_coordinator,
     ));
 
     info!(
@@ -569,6 +571,12 @@ impl Session {
       );
     }
 
+    // Notify coordinator about publisher disconnect (removes ranker entries)
+    context
+      .top_n_coordinator
+      .on_publisher_disconnected(context.connection_id)
+      .await;
+
     // Remove announcements for the disconnecting publisher
     track_manager_cleanup
       .remove_announcements_by_connection(context.connection_id)
@@ -577,6 +585,12 @@ impl Session {
     // Remove the disconnecting client from namespace_subscribers
     track_manager_cleanup
       .remove_namespace_subscriber(context.connection_id)
+      .await;
+
+    // Remove any top-N filter registrations for this connection
+    context
+      .top_n_coordinator
+      .remove_subscriber_by_connection(context.connection_id)
       .await;
 
     // Remove client from client_manager

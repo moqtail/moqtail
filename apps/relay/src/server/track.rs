@@ -18,6 +18,7 @@ use crate::server::object_logger::ObjectLogger;
 use crate::server::stream_id::StreamId;
 use crate::server::subscription::Subscription;
 use crate::server::subscription_manager::SubscriptionManager;
+use crate::server::top_n_coordinator::TopNCoordinator;
 use crate::server::utils;
 use crate::server::{client::MOQTClient, subscription::SubscriptionOrigin};
 use anyhow::Result;
@@ -95,6 +96,9 @@ pub struct Track {
   /// Inserted when the first object of a subgroup arrives; removed when the
   /// publisher's unistream closes (stream_closed signal).
   pub active_subgroup_headers: ActiveSubgroupHeaderMap,
+  /// Optional coordinator for Top-N active-speaker filtering.
+  /// Set once after construction; None means no filtering is active.
+  pub top_n_coordinator: Option<Arc<TopNCoordinator>>,
 }
 
 // TODO: this track implementation should be static? At least
@@ -125,7 +129,12 @@ impl Track {
       pending_subscribers: Arc::new(RwLock::new(Vec::new())),
       track_extensions: Arc::new(RwLock::new(Vec::new())),
       active_subgroup_headers: Arc::new(RwLock::new(HashMap::new())),
+      top_n_coordinator: None,
     }
+  }
+
+  pub fn set_top_n_coordinator(&mut self, coordinator: Arc<TopNCoordinator>) {
+    self.top_n_coordinator = Some(coordinator);
   }
 
   /// Add a publisher (connection_id -> track_alias) to this track.
@@ -355,6 +364,20 @@ impl Track {
         largest_location.object = object.location.object;
       }
     }
+
+    if let (Some(coord), Some(exts)) = (&self.top_n_coordinator, &object.extensions) {
+      let pub_conn_ids: Vec<usize> = self
+        .publisher_aliases
+        .read()
+        .await
+        .keys()
+        .copied()
+        .collect();
+      coord
+        .observe_object_extension(&self.full_track_name, pub_conn_ids, exts)
+        .await;
+    }
+
     Ok(())
   }
 
@@ -426,6 +449,19 @@ impl Track {
       .subscription_manager
       .send_event_to_subscribers(event)
       .await?;
+
+    if let (Some(coord), Some(exts)) = (&self.top_n_coordinator, &datagram.extension_headers) {
+      let pub_conn_ids: Vec<usize> = self
+        .publisher_aliases
+        .read()
+        .await
+        .keys()
+        .copied()
+        .collect();
+      coord
+        .observe_object_extension(&self.full_track_name, pub_conn_ids, exts)
+        .await;
+    }
 
     Ok(())
   }

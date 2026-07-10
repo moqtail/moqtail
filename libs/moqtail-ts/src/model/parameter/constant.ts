@@ -44,6 +44,7 @@ export enum MessageParameterType {
   Expires = 0x08,
   LargestObject = 0x09,
   Forward = 0x10,
+  TrackFilter = 0x12,
   SubscriberPriority = 0x20,
   SubscriptionFilter = 0x21,
   GroupOrder = 0x22,
@@ -63,6 +64,8 @@ export function messageParameterTypeFromNumber(value: bigint | number): MessageP
       return MessageParameterType.LargestObject
     case 0x10:
       return MessageParameterType.Forward
+    case 0x12:
+      return MessageParameterType.TrackFilter
     case 0x20:
       return MessageParameterType.SubscriberPriority
     case 0x21:

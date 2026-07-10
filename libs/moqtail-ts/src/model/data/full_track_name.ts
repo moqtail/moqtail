@@ -22,6 +22,22 @@ export const MAX_NAMESPACE_TUPLE_COUNT = 32
 export const MAX_FULL_TRACK_NAME_LENGTH = 4096
 
 /**
+ * Escapes raw bytes the same way as the Rust `TupleField::as_str` implementation:
+ * ASCII alphanumerics and `_` are kept as-is, every other byte becomes `.xx` (lowercase hex).
+ */
+function escapeFieldBytes(bytes: Uint8Array): string {
+  let res = ''
+  for (const b of bytes) {
+    if ((b >= 0x61 && b <= 0x7a) || (b >= 0x41 && b <= 0x5a) || (b >= 0x30 && b <= 0x39) || b === 0x5f) {
+      res += String.fromCharCode(b)
+    } else {
+      res += '.' + b.toString(16).padStart(2, '0')
+    }
+  }
+  return res
+}
+
+/**
  * Fully-qualified track identifier = hierarchical namespace (tuple) + leaf name bytes.
  *
  * Constraints enforced (throws {@link TrackNameError}):
@@ -39,7 +55,8 @@ export const MAX_FULL_TRACK_NAME_LENGTH = 4096
  *
  * Instances are created via {@link FullTrackName.tryNew} (validates) or {@link FullTrackName.deserialize}.
  * Use {@link FullTrackName.serialize} for wire encoding and {@link FullTrackName.toString} for a human friendly
- * diagnostic format: `namespace/segments:hexname` (name rendered as lowercase hex, no 0x prefix).
+ * diagnostic format: `field-field--name` (each segment escaped: alphanumerics/`_` kept as-is,
+ * other bytes rendered as `.xx` lowercase hex).
  *
  * The string form is intended for logs/debug only; do not parse it for protocol operations.
  */
@@ -50,17 +67,13 @@ export class FullTrackName {
   ) {}
 
   /**
-   * Human-readable representation: `\<namespace path joined by '/'\>:\<name as lowercase hex\>`.
-   * If the underlying {@link Tuple} exposes `toUtf8Path`, it's used; otherwise the raw fields are joined.
-   * This is lossy only in the sense that name bytes are hex encoded; round-tripping requires serialization.
+   * Human-readable representation: namespace fields joined by `-` (each field escaped
+   * so only alphanumerics/`_` are kept as-is, other bytes rendered as `.xx` lowercase hex),
+   * followed by `--`, followed by the escaped name.
    */
   toString(): string {
-    // Namespace as slash-separated UTF-8 path, name as hex
-    const nsStr = this.namespace.toUtf8Path ? this.namespace.toUtf8Path() : Array.from(this.namespace.fields).join('/')
-    const nameStr = Array.from(this.name)
-      .map((b) => b.toString(16).padStart(2, '0'))
-      .join('')
-    return `${nsStr}:${nameStr}`
+    const nsStr = this.namespace.fields.map((f) => escapeFieldBytes(f.value)).join('-')
+    return `${nsStr}--${escapeFieldBytes(this.name)}`
   }
 
   /**
@@ -76,7 +89,7 @@ export class FullTrackName {
    * @example
    * ```ts
    * const full = FullTrackName.tryNew('media/video', 'keyframe')
-   * console.log(full.toString()) // media/video:6b65796672616d65
+   * console.log(full.toString()) // media-video--keyframe
    * ```
    */
   static tryNew(namespace: string | Tuple, name: string | Uint8Array): FullTrackName {

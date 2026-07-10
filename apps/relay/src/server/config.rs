@@ -88,6 +88,14 @@ pub struct Cli {
   /// Timeout in seconds for upstream fetch responses
   #[arg(long, default_value_t = 10)]
   pub upstream_fetch_timeout_secs: u64,
+
+  /// Interval in ms between Top-N re-rank ticks.
+  #[arg(long, default_value_t = 250)]
+  pub top_n_tick_interval_ms: u64,
+
+  /// Min consecutive ticks a track must rank outside top-N before its subscription is dropped. 1 = off.
+  #[arg(long, default_value_t = 2)]
+  pub top_n_dwell_ticks: u32,
 }
 #[derive(Debug, Clone)]
 pub struct AppConfig {
@@ -109,6 +117,8 @@ pub struct AppConfig {
   pub write_kbps_limit: u64,
   pub max_upstream_fetch_gaps: u64,
   pub upstream_fetch_timeout: Duration,
+  pub top_n_tick_interval: Duration,
+  pub top_n_dwell_ticks: u32,
 }
 
 impl AppConfig {
@@ -134,6 +144,8 @@ impl AppConfig {
         write_kbps_limit: cli.write_kbps_limit,
         max_upstream_fetch_gaps: cli.max_upstream_fetch_gaps,
         upstream_fetch_timeout: Duration::from_secs(cli.upstream_fetch_timeout_secs),
+        top_n_tick_interval: Duration::from_millis(cli.top_n_tick_interval_ms),
+        top_n_dwell_ticks: cli.top_n_dwell_ticks,
       }
     })
   }
@@ -242,6 +254,8 @@ mod tests {
       write_kbps_limit: 0,
       max_upstream_fetch_gaps: 10,
       upstream_fetch_timeout_secs: 10,
+      top_n_tick_interval_ms: 250,
+      top_n_dwell_ticks: 2,
     };
 
     let config = AppConfig {
@@ -262,6 +276,8 @@ mod tests {
       write_kbps_limit: cli.write_kbps_limit,
       max_upstream_fetch_gaps: cli.max_upstream_fetch_gaps,
       upstream_fetch_timeout: Duration::from_secs(cli.upstream_fetch_timeout_secs),
+      top_n_tick_interval: Duration::from_millis(cli.top_n_tick_interval_ms),
+      top_n_dwell_ticks: cli.top_n_dwell_ticks,
     };
 
     assert_eq!(config.initial_max_request_id, u64::MAX / 8);

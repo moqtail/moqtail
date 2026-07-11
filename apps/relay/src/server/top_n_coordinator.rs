@@ -37,7 +37,7 @@ use moqtail::model::extension_header::object_extension::ObjectExtension;
 use moqtail::model::filter::top_n::{TieBreakPolicy, TopNRanker, TopNRankerConfig};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
@@ -72,6 +72,8 @@ pub struct TopNCoordinator {
   rankers: Arc<RwLock<RankerMap>>,
   subscribers: Arc<RwLock<SubscriberMap>>,
   update_seq: Arc<AtomicU64>,
+  /// Set to true when any ranker's state changes. Tick skips when false.
+  ranker_dirty: Arc<AtomicBool>,
   config: &'static AppConfig,
 }
 
@@ -95,6 +97,7 @@ impl TopNCoordinator {
       rankers: Arc::new(RwLock::new(RankerMap::new())),
       subscribers: Arc::new(RwLock::new(SubscriberMap::new())),
       update_seq: Arc::new(AtomicU64::new(0)),
+      ranker_dirty: Arc::new(AtomicBool::new(false)),
       config,
     }
   }
@@ -264,15 +267,21 @@ impl TopNCoordinator {
     let mut rankers = self.rankers.write().await;
     let namespace = &full_track_name.namespace;
 
+    let mut any_changed = false;
     for ((prefix, pt), ranker) in rankers.iter_mut() {
       if *pt == SPEECH_ACTIVITY_KEY && namespace.starts_with(prefix) {
-        ranker.observe_value(
+        if ranker.observe_value(
           full_track_name,
           publisher_conn_ids.clone(),
           value,
           update_seq,
-        );
+        ) {
+          any_changed = true;
+        }
       }
+    }
+    if any_changed {
+      self.ranker_dirty.store(true, Ordering::Relaxed);
     }
   }
 
@@ -280,8 +289,14 @@ impl TopNCoordinator {
   /// Subscription teardown happens on the next tick.
   pub async fn on_publisher_disconnected(&self, connection_id: usize) {
     let mut rankers = self.rankers.write().await;
+    let mut any_changed = false;
     for ranker in rankers.values_mut() {
-      ranker.remove_publisher(connection_id);
+      if ranker.remove_publisher(connection_id) {
+        any_changed = true;
+      }
+    }
+    if any_changed {
+      self.ranker_dirty.store(true, Ordering::Relaxed);
     }
   }
 
@@ -299,6 +314,11 @@ impl TopNCoordinator {
   // ──────────────────────────────── Tick ──────────────────────────────────────
 
   async fn tick(&self) {
+    // 0. Skip if no ranker state has changed since the last tick.
+    if !self.ranker_dirty.swap(false, Ordering::Relaxed) {
+      return;
+    }
+
     // 1. Clone subscriber entries. Drop lock before any .await into Track/TrackManager.
     let subscriber_snapshot: Vec<(SubscriberKey, SubscriberSnapshot)> = {
       let subs = self.subscribers.read().await;

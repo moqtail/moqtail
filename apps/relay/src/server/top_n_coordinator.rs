@@ -60,6 +60,9 @@ struct SubscriberFilterState {
   current_selected: HashSet<FullTrackName>,
   /// How many consecutive ticks each track has ranked outside top-N (for dwell debounce).
   pending_removal_streak: HashMap<FullTrackName, u32>,
+  /// True if this connection also publishes tracks (panelist). False for audience-only.
+  /// Audience subscribers share identical top-N results (no self-exclusion needed).
+  is_publisher: bool,
 }
 
 pub struct TopNCoordinator {
@@ -105,6 +108,7 @@ impl TopNCoordinator {
     client: Arc<MOQTClient>,
     property_type: u64,
     n: usize,
+    is_publisher: bool,
   ) {
     // Create ranker if not already present for this (prefix, property_type) pair.
     {
@@ -126,6 +130,7 @@ impl TopNCoordinator {
       n,
       current_selected: HashSet::new(),
       pending_removal_streak: HashMap::new(),
+      is_publisher,
     };
 
     self
@@ -308,6 +313,7 @@ impl TopNCoordinator {
               n: state.n,
               current_selected: state.current_selected.clone(),
               pending_removal_streak: state.pending_removal_streak.clone(),
+              is_publisher: state.is_publisher,
             },
           )
         })
@@ -320,21 +326,38 @@ impl TopNCoordinator {
 
     let dwell_ticks = self.config.top_n_dwell_ticks;
 
-    // 2. For each subscriber, compute diff and execute changes.
-    for ((prefix, conn_id), mut snap) in subscriber_snapshot {
-      // Clone ranker snapshot (drop lock immediately after clone).
-      let ranker_clone = {
-        let rankers = self.rankers.read().await;
-        rankers.get(&(prefix.clone(), snap.property_type)).cloned()
-      };
+    // 2. Clone ranker snapshots once (keyed by (prefix, property_type)).
+    let ranker_snapshots: HashMap<RankerKey, TopNRanker> = {
+      let rankers = self.rankers.read().await;
+      rankers.clone()
+    };
 
-      let ranker = match ranker_clone {
+    // 3. Cache audience top-N results. Audience-only subscribers (is_publisher=false)
+    //    with the same (prefix, property_type, n) get identical rankings because they
+    //    have no published tracks to self-exclude. Compute once, reuse for all.
+    let mut audience_cache: HashMap<(Tuple, u64, usize), HashSet<FullTrackName>> = HashMap::new();
+
+    // 4. For each subscriber, compute diff and execute changes.
+    for ((prefix, conn_id), mut snap) in subscriber_snapshot {
+      let ranker = match ranker_snapshots.get(&(prefix.clone(), snap.property_type)) {
         Some(r) => r,
         None => continue, // No ranker yet — subscriber registered but no tracks have spoken
       };
 
-      let ranked = ranker.compute_top_n(conn_id, snap.n);
-      let ranked_set: HashSet<FullTrackName> = ranked.into_iter().collect();
+      let ranked_set: HashSet<FullTrackName> = if snap.is_publisher {
+        // Publisher/panelist: must compute individually due to self-exclusion.
+        ranker.compute_top_n(conn_id, snap.n).into_iter().collect()
+      } else {
+        // Audience-only: reuse cached result for this (prefix, property_type, n).
+        let cache_key = (prefix.clone(), snap.property_type, snap.n);
+        audience_cache
+          .entry(cache_key)
+          .or_insert_with(|| {
+            // Use usize::MAX as sentinel — no publisher tracks to exclude.
+            ranker.compute_top_n(usize::MAX, snap.n).into_iter().collect()
+          })
+          .clone()
+      };
 
       // Hysteresis: tracks that enter top-N are added immediately.
       // Tracks that leave top-N must stay out for dwell_ticks consecutive ticks before removal.
@@ -539,6 +562,7 @@ struct SubscriberSnapshot {
   n: usize,
   current_selected: HashSet<FullTrackName>,
   pending_removal_streak: HashMap<FullTrackName, u32>,
+  is_publisher: bool,
 }
 
 // ─────────────────────────── Extension helpers ──────────────────────────────

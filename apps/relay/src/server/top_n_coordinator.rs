@@ -38,8 +38,17 @@ use moqtail::model::filter::top_n::{TieBreakPolicy, TopNRanker, TopNRankerConfig
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Mutex;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
+
+/// Buffered observation for batch application at tick time.
+struct PendingObservation {
+  full_track_name: FullTrackName,
+  publisher_conn_ids: Vec<usize>,
+  value: u64,
+  update_seq: u64,
+}
 
 /// Speech-activity extension key (moq-transport PR #1401 custom extension).
 const SPEECH_ACTIVITY_KEY: u64 = 0x12;
@@ -74,6 +83,8 @@ pub struct TopNCoordinator {
   update_seq: Arc<AtomicU64>,
   /// Set to true when any ranker's state changes. Tick skips when false.
   ranker_dirty: Arc<AtomicBool>,
+  /// Buffered observations from the hot path, drained at each tick.
+  pending_observations: Arc<Mutex<Vec<PendingObservation>>>,
   config: &'static AppConfig,
 }
 
@@ -98,6 +109,7 @@ impl TopNCoordinator {
       subscribers: Arc::new(RwLock::new(SubscriberMap::new())),
       update_seq: Arc::new(AtomicU64::new(0)),
       ranker_dirty: Arc::new(AtomicBool::new(false)),
+      pending_observations: Arc::new(Mutex::new(Vec::new())),
       config,
     }
   }
@@ -250,8 +262,9 @@ impl TopNCoordinator {
     }
   }
 
-  /// Hot-path: scan object extensions for the configured property key and update the ranker.
-  /// Returns immediately (no lock) if the key is absent — this is the common case.
+  /// Hot-path: buffer object extension observation for batch processing at next tick.
+  /// Returns immediately if the speech-activity key is absent (common case).
+  /// Uses a std::sync::Mutex (not async) for minimal contention on the hot path.
   pub async fn observe_object_extension(
     &self,
     full_track_name: &FullTrackName,
@@ -264,24 +277,36 @@ impl TopNCoordinator {
     };
 
     let update_seq = self.update_seq.fetch_add(1, Ordering::Relaxed);
-    let mut rankers = self.rankers.write().await;
-    let namespace = &full_track_name.namespace;
+    self
+      .pending_observations
+      .lock()
+      .unwrap()
+      .push(PendingObservation {
+        full_track_name: full_track_name.clone(),
+        publisher_conn_ids,
+        value,
+        update_seq,
+      });
+    self.ranker_dirty.store(true, Ordering::Relaxed);
+  }
 
-    let mut any_changed = false;
-    for ((prefix, pt), ranker) in rankers.iter_mut() {
-      if *pt == SPEECH_ACTIVITY_KEY && namespace.starts_with(prefix) {
-        if ranker.observe_value(
-          full_track_name,
-          publisher_conn_ids.clone(),
-          value,
-          update_seq,
-        ) {
-          any_changed = true;
+  /// Drain buffered observations into rankers. Called at the start of each tick.
+  fn drain_pending_observations(&self, rankers: &mut RankerMap) {
+    let observations: Vec<PendingObservation> =
+      self.pending_observations.lock().unwrap().drain(..).collect();
+
+    for obs in observations {
+      let namespace = &obs.full_track_name.namespace;
+      for ((prefix, pt), ranker) in rankers.iter_mut() {
+        if *pt == SPEECH_ACTIVITY_KEY && namespace.starts_with(prefix) {
+          ranker.observe_value(
+            &obs.full_track_name,
+            obs.publisher_conn_ids.clone(),
+            obs.value,
+            obs.update_seq,
+          );
         }
       }
-    }
-    if any_changed {
-      self.ranker_dirty.store(true, Ordering::Relaxed);
     }
   }
 
@@ -346,9 +371,10 @@ impl TopNCoordinator {
 
     let dwell_ticks = self.config.top_n_dwell_ticks;
 
-    // 2. Clone ranker snapshots once (keyed by (prefix, property_type)).
+    // 2. Drain buffered observations and clone ranker snapshots.
     let ranker_snapshots: HashMap<RankerKey, TopNRanker> = {
-      let rankers = self.rankers.read().await;
+      let mut rankers = self.rankers.write().await;
+      self.drain_pending_observations(&mut rankers);
       rankers.clone()
     };
 

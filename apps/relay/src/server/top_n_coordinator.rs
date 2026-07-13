@@ -451,6 +451,23 @@ impl TopNCoordinator {
       }
     };
 
+    // The subscriber may already hold a subscription to this track via the unconditional
+    // pass-through path in subscribe_namespace_handler (tracks that hadn't emitted the
+    // ranked property yet at SUBSCRIBE_NAMESPACE catch-up time). Re-publishing/re-adding
+    // would always fail — a connection can only hold one subscription per track — and
+    // without this check we'd retry (and re-send Publish) every tick forever. Just record
+    // it as selected instead.
+    if track_arc
+      .read()
+      .await
+      .get_subscription(conn_id)
+      .await
+      .is_some()
+    {
+      snap.current_selected.insert(track_name.clone());
+      return;
+    }
+
     let (_, mut pub_msg) = match self.track_manager.get_any_publish_message(track_name).await {
       Some(p) => p,
       None => {

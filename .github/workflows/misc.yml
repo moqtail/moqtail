@@ -6,6 +6,9 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
 concurrency:
   group: pr-checks-${{ github.event.pull_request.number }}
   cancel-in-progress: true
@@ -16,12 +19,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 24
           cache: 'npm'
@@ -39,24 +42,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Set up Problem Matchers
         run: echo "::add-matcher::${{ github.workspace }}/.github/matchers.json"
 
       - name: Install EditorConfig CLI
-        uses: editorconfig-checker/action-editorconfig-checker@main
+        uses: editorconfig-checker/action-editorconfig-checker@840e866d93b8e032123c23bac69dece044d4d84c # v2.2.0
 
       - name: Run EditorConfig Check
         run: editorconfig-checker -format gcc
 
   dco:
     name: DCO Sign-off Check
-    if: ${{ !startsWith(github.head_ref, 'changeset') }}
+    if: ${{ !startsWith(github.head_ref, 'changeset') && !startsWith(github.head_ref, 'dependabot') }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
 
@@ -87,11 +90,11 @@ jobs:
       pull-requests: read
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Get all relevant changed files
         id: changed-files
-        uses: tj-actions/changed-files@24d32ffd492484c1d75e0c0b894501ddb9d30d62 # v47
+        uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96 # v47.0.6
         with:
           files: |
             **.rs
@@ -100,7 +103,7 @@ jobs:
 
       - name: Set up Go
         if: steps.changed-files.outputs.any_changed == 'true'
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: '1.21'
 

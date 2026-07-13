@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { defineConfig } from 'tsup'
+import { defineConfig } from 'tsdown'
 
 export default defineConfig({
   entry: {
@@ -24,17 +24,13 @@ export default defineConfig({
     util: 'src/util/index.ts',
   },
   format: ['cjs', 'esm'],
-  dts: {
-    compilerOptions: {
-      ignoreDeprecations: '6.0',
-    },
-  },
+  dts: true,
   outDir: 'dist',
-  splitting: false,
   sourcemap: false,
   clean: true,
   treeshake: true,
   define: {
     'import.meta.vitest': 'undefined',
   },
+  target: false,
 })

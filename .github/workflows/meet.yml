@@ -1,24 +1,24 @@
-name: Player
+name: Meet
 
 on:
   push:
     branches:
       - main
     paths:
-      - apps/client-js/**
+      - apps/meet/**
       - libs/moqtail-ts/**
-      - .github/workflows/player.yml
+      - .github/workflows/meet.yml
 
 permissions:
   contents: read
   deployments: write
 
 concurrency:
-  group: 'player-page'
+  group: 'meet-page'
   cancel-in-progress: true
 
 jobs:
-  player:
+  meet:
     if: ${{ github.repository_owner == 'moqtail' }}
     runs-on: ubuntu-latest
     environment:
@@ -45,8 +45,13 @@ jobs:
           echo "VITE_BUILD_COMMIT=$commit" >> $GITHUB_ENV
           echo "VITE_BUILD_DATE=$date" >> $GITHUB_ENV
 
-      - name: Build MOQtail Library and Player
+      - name: Build MOQtail Library and Meet
         run: npm run build
+
+      - name: Update app settings
+        working-directory: apps/meet/dist
+        run: |
+          sed -i "s|relayUrl:.*|relayUrl: 'https://relay.n1.fra.moqtail.dev',|g" appsettings.js
 
       - name: Deploy
         id: deploy
@@ -55,4 +60,4 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           gitHubToken: ${{ secrets.GITHUB_TOKEN }}
-          command: deploy --name player --assets apps/client-js/dist --compatibility-date 2026-07-13
+          command: deploy --name meet --assets apps/meet/dist --compatibility-date 2026-07-13

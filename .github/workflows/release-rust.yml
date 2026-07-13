@@ -5,6 +5,9 @@ on:
     tags:
       - 'moqtail-rs@*'
 
+permissions:
+  contents: read
+
 concurrency:
   group: release
   cancel-in-progress: false

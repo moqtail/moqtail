@@ -6,6 +6,9 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
 concurrency:
   group: rust-checks-${{ github.event.pull_request.number }}
   cancel-in-progress: true

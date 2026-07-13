@@ -30,13 +30,13 @@
     "dist"
   ],
   "main": "dist/index.cjs",
-  "module": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.mts",
   "exports": {
     ".": {
       "import": {
-        "types": "./dist/index.d.ts",
-        "default": "./dist/index.js"
+        "types": "./dist/index.d.mts",
+        "default": "./dist/index.mjs"
       },
       "require": {
         "types": "./dist/index.d.cts",
@@ -45,8 +45,8 @@
     },
     "./client": {
       "import": {
-        "types": "./dist/client.d.ts",
-        "default": "./dist/client.js"
+        "types": "./dist/client.d.mts",
+        "default": "./dist/client.mjs"
       },
       "require": {
         "types": "./dist/client.d.cts",
@@ -55,8 +55,8 @@
     },
     "./model": {
       "import": {
-        "types": "./dist/model.d.ts",
-        "default": "./dist/model.js"
+        "types": "./dist/model.d.mts",
+        "default": "./dist/model.mjs"
       },
       "require": {
         "types": "./dist/model.d.cts",
@@ -65,8 +65,8 @@
     },
     "./util": {
       "import": {
-        "types": "./dist/util.d.ts",
-        "default": "./dist/util.js"
+        "types": "./dist/util.d.mts",
+        "default": "./dist/util.mjs"
       },
       "require": {
         "types": "./dist/util.d.cts",
@@ -75,7 +75,7 @@
     }
   },
   "scripts": {
-    "build": "tsc --noEmit && tsup && api-extractor run",
+    "build": "tsc --noEmit && tsdown && api-extractor run",
     "test": "vitest",
     "format": "prettier --check .",
     "test:run": "vitest run",
@@ -83,12 +83,12 @@
     "docs": "typedoc"
   },
   "devDependencies": {
-    "@microsoft/api-extractor": "^7.57.6",
+    "@microsoft/api-extractor": "^7.58.9",
     "@tsconfig/strictest": "^2.0.8",
     "tslib": "^2.8.1",
-    "tsup": "^8.5.1",
-    "typedoc": "^0.28.17",
-    "typescript": "^5.9.3",
-    "vitest": "^3.2.4"
+    "tsdown": "^0.22.3",
+    "typedoc": "^0.28.20",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.10"
   }
 }

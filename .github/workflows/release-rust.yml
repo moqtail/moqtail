@@ -5,6 +5,9 @@ on:
     tags:
       - 'moqtail-rs@*'
 
+permissions:
+  contents: read
+
 concurrency:
   group: release
   cancel-in-progress: false
@@ -22,10 +25,10 @@ jobs:
       url: https://crates.io/crates/moqtail
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Cache Rust Workspace
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: Publish to crates.io
         env:

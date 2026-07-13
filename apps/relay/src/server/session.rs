@@ -95,12 +95,17 @@ impl Session {
       }
     };
 
-    let mut response_headers: HashMap<String, String> = HashMap::new();
-    response_headers.insert("wt-protocol".to_string(), selected_version);
+    let response_headers = Self::wt_protocol_response_headers(&selected_version);
 
-    // in the headers, we expect wt-available-protocols
-
-    let connection = TransportConnection::WebTransport(session_request.accept().await?);
+    // accept_with_headers(), not accept(): accept() replies 200 without any
+    // extra headers, so the negotiated subprotocol would never be echoed back
+    // and clients that require the `wt-protocol` response header fail version
+    // negotiation.
+    let connection = TransportConnection::WebTransport(
+      session_request
+        .accept_with_headers(response_headers)
+        .await?,
+    );
     Self::start(connection, server).await
   }
 
@@ -807,6 +812,19 @@ impl Session {
     })
   }
 
+  /// Builds the extended-CONNECT response headers that echo the negotiated
+  /// WebTransport subprotocol back to the client. `wt-protocol` is an RFC 8941
+  /// sf-string and must be serialized in quoted form (e.g. `"moqt-16"`),
+  /// matching the quoted items the client sent in `wt-available-protocols`.
+  /// Strict clients reject the bare-token form as an invalid Structured Field
+  /// and tear down the CONNECT.
+  fn wt_protocol_response_headers(selected_version: &str) -> HashMap<String, String> {
+    HashMap::from([(
+      "wt-protocol".to_string(),
+      format!("\"{}\"", selected_version),
+    )])
+  }
+
   async fn negotiate(
     context: Arc<SessionContext>,
     control_stream_handler: &mut ControlStreamHandler,
@@ -909,5 +927,39 @@ impl Session {
         Err(TerminationCode::InternalError)
       }
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn wt_protocol_response_header_is_sf_quoted() {
+    let headers = Session::wt_protocol_response_headers("moqt-16");
+    assert_eq!(
+      headers.get("wt-protocol").map(String::as_str),
+      Some("\"moqt-16\"")
+    );
+  }
+
+  #[test]
+  fn wt_protocol_response_header_echoes_client_quoted_item() {
+    // Round-trip: the response header must carry the exact quoted sf-string
+    // item the client offered in wt-available-protocols.
+    let mut request_headers = HashMap::new();
+    request_headers.insert(
+      "wt-available-protocols".to_string(),
+      "\"moqt-16\", \"moqt-15\"".to_string(),
+    );
+
+    let client_protocols = Session::parse_available_protocols(&request_headers);
+    let selected = Session::select_protocol(&client_protocols).expect("moqt-16 is supported");
+    let response_headers = Session::wt_protocol_response_headers(selected);
+
+    assert!(
+      client_protocols.contains(response_headers.get("wt-protocol").unwrap()),
+      "response wt-protocol must match one of the client's quoted offers"
+    );
   }
 }

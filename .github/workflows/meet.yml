@@ -8,6 +8,7 @@ on:
       - apps/meet/**
       - libs/moqtail-ts/**
       - .github/workflows/meet.yml
+  workflow_dispatch:
 
 permissions:
   contents: read

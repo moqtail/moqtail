@@ -52,7 +52,7 @@ jobs:
 
   dco:
     name: DCO Sign-off Check
-    if: ${{ !startsWith(github.head_ref, 'changeset') }}
+    if: ${{ !startsWith(github.head_ref, 'changeset') && !startsWith(github.head_ref, 'dependabot') }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code

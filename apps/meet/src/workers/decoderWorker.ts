@@ -241,6 +241,18 @@ self.onmessage = async e => {
       headers.find(h => ExtensionHeader.isCaptureTimestamp(h))?.timestamp ?? 0n,
     );
 
+    // Speech-activity VAD (raw key 0x12, not a recognized ExtensionHeader type):
+    // 0=SILENT, 1=SPEAKING, 2=SPEECH_START. Reported immediately, independent of decode timing.
+    const speechActivityPair = (extensionHeaders ?? []).find(
+      (kv: { typeValue: bigint }) => kv.typeValue === 0x12n,
+    );
+    if (speechActivityPair) {
+      self.postMessage({
+        type: 'speech-activity',
+        value: Number(speechActivityPair.value as bigint),
+      });
+    }
+
     if (!audioDecoder) {
       // console.debug('[DECODER] Creating new audio decoder at', new Date().toISOString())
       audioDecoder = new AudioDecoder({

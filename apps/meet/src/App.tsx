@@ -22,6 +22,7 @@ import {
   Tuple,
   ObjectForwardingPreference,
   DefaultPublisherPriorityExtension,
+  TrackFilter,
 } from 'moqtail/model';
 import { createMOQtailClient } from './moq/client';
 import { setupSignalling } from './moq/signalling';
@@ -76,10 +77,12 @@ export default function App() {
   const [isPublishing, setIsPublishing] = useState(false);
   const [isReceiving, setIsReceiving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [activeAudioPeers, setActiveAudioPeers] = useState<Set<string>>(new Set());
 
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const stopEncoderRef = useRef<(() => Promise<void>) | null>(null);
+  const audioControlRef = useRef<{ setActive: (active: boolean) => void } | null>(null);
   // Stable refs for use inside async callbacks
   const moqClientRef = useRef<MOQtailClient | null>(null);
   const trackUsernameRef = useRef<string>('');
@@ -91,6 +94,10 @@ export default function App() {
   const peerCanvasesRef = useRef<Map<string, HTMLCanvasElement>>(new Map());
   const peerWorkersRef = useRef<Map<string, Worker>>(new Map());
   const pendingStreamsRef = useRef<Map<string, Array<(worker: Worker) => void>>>(new Map());
+  // Per-peer "audio active" hide timers: each speaking (value > 0) VAD update pushes
+  // the hide-out 500ms further; the label clears only once no speech is seen for 500ms.
+  const audioActiveTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const AUDIO_ACTIVE_HOLD_MS = 500;
 
   // set log level to debug
   MOQtailClient.setLogLevel(LogLevel.DEBUG);
@@ -146,21 +153,42 @@ export default function App() {
     peerCanvasesRef.current.clear();
     peerWorkersRef.current.clear();
     pendingStreamsRef.current.clear();
+    audioActiveTimersRef.current.forEach(t => clearTimeout(t));
+    audioActiveTimersRef.current.clear();
     setScreen('connecting');
 
     try {
       const client = await createMOQtailClient(relayUrl);
       moqClientRef.current = client;
 
+      const topN = window.appSettings?.topN;
+
       // Route incoming publish streams to the correct peer's decode worker
       client.onPeerPublish = (msg, stream) => {
+        const fullTrackNameStr = msg.fullTrackName.toString();
         const nsPath = msg.fullTrackName.namespace.toUtf8Path();
         const peerUsername = nsPath.startsWith(NS_PREFIX) ? nsPath.slice(NS_PREFIX.length) : null;
-        console.log('onPeerPublish | peerUsername: %s', peerUsername, nsPath);
+        console.log('onPeerPublish | peerUsername: %s track: %s', peerUsername, fullTrackNameStr);
         if (!peerUsername) return;
 
         const worker = peerWorkersRef.current.get(peerUsername);
         const trackName = new TextDecoder().decode(msg.fullTrackName.name);
+
+        if (trackName === 'audio') {
+          // "Audio active" reflects the speech-activity VAD extension carried on each
+          // object (wired up via prepareReceiverForCanvas), not mere track presence.
+          console.info('onPeerPublish | audio track from %s', peerUsername);
+
+          if (!worker) {
+            const pipe = (w: Worker) => pipeStreamToCanvas(stream, 'moq-audio', w);
+            const q = pendingStreamsRef.current.get(peerUsername) ?? [];
+            q.push(pipe);
+            pendingStreamsRef.current.set(peerUsername, q);
+          } else {
+            pipeStreamToCanvas(stream, 'moq-audio', worker);
+          }
+          return;
+        }
 
         if (!worker) {
           // Worker not ready yet — queue and drain once the canvas mounts
@@ -170,9 +198,7 @@ export default function App() {
                   pipeStreamToCanvas(stream, 'moq', w);
                   setIsReceiving(true);
                 }
-              : trackName === 'audio'
-                ? (w: Worker) => pipeStreamToCanvas(stream, 'moq-audio', w)
-                : null;
+              : null;
           if (pipe) {
             const q = pendingStreamsRef.current.get(peerUsername) ?? [];
             q.push(pipe);
@@ -184,30 +210,47 @@ export default function App() {
         if (trackName === 'video') {
           pipeStreamToCanvas(stream, 'moq', worker);
           setIsReceiving(true);
-        } else if (trackName === 'audio') {
-          pipeStreamToCanvas(stream, 'moq-audio', worker);
         }
       };
 
       setScreen('main');
 
+      // If Top-N is enabled, subscribe once at room level with TrackFilter;
+      // the relay selects which audio tracks to forward (top N speakers).
+      // When disabled, fall back to per-peer subscriptions below.
+      if (topN) {
+        const roomNs = Tuple.fromUtf8Path(NS_PREFIX.slice(0, -1)); // '/moqtail/demo'
+        // property_type=0x12 (speech-activity VAD), max_selected=N
+        const { response } = await client.subscribeNamespace(roomNs, undefined, [
+          new TrackFilter(0x12n, topN.n),
+        ]);
+        if (response instanceof RequestError) {
+          console.warn('Room-level TopN subscribeNamespace failed:', response);
+        } else {
+          console.log('Room-level TopN subscription active, n=%d', topN.n);
+        }
+      }
+
       const { sendSignal, cleanup } = await setupSignalling(client, trackUsername, token, {
         onPeerJoin: peerUsername => {
           console.log('onPeerJoin peerUsername: %s', peerUsername);
           addPeer(peerUsername);
-          const peerNs = Tuple.fromUtf8Path(`${NS_PREFIX}${peerUsername}`);
-          // add a random delay
-          delay(Math.ceil(Math.random() * 100)).then(_ => {
-            subscribeNamespaceOnce(client, peerNs);
-          });
+          if (!topN) {
+            const peerNs = Tuple.fromUtf8Path(`${NS_PREFIX}${peerUsername}`);
+            delay(Math.ceil(Math.random() * 100)).then(_ => {
+              subscribeNamespaceOnce(client, peerNs);
+            });
+          }
         },
         onOwnJoinWelcomed: peerUsername => {
           console.log('onOwnJoinWelcomed: welcomed by %s', peerUsername);
           addPeer(peerUsername);
-          const peerNs = Tuple.fromUtf8Path(`${NS_PREFIX}${peerUsername}`);
-          delay(Math.ceil(Math.random() * 100)).then(_ => {
-            subscribeNamespaceOnce(client, peerNs);
-          });
+          if (!topN) {
+            const peerNs = Tuple.fromUtf8Path(`${NS_PREFIX}${peerUsername}`);
+            delay(Math.ceil(Math.random() * 100)).then(_ => {
+              subscribeNamespaceOnce(client, peerNs);
+            });
+          }
         },
         onDuplicateUser: () => {
           console.warn('Duplicate username detected, returning to entrance');
@@ -235,9 +278,9 @@ export default function App() {
       video: { aspectRatio: 16 / 9 },
       audio: true,
     });
-    stream.getAudioTracks().forEach(t => {
-      t.enabled = isMicOnRef.current;
-    });
+    // Keep the raw track enabled at all times: Chromium never resumes real audio on a
+    // MediaStreamAudioSourceNode once its source track has been disabled and re-enabled.
+    // Muting is instead handled downstream via audioControlRef.setActive.
     mediaStreamRef.current = stream;
 
     if (localVideoRef.current) {
@@ -270,7 +313,7 @@ export default function App() {
       objectForwardingPreference: ObjectForwardingPreference.Subgroup,
     });
 
-    await startAudioEncoder({
+    const audioResult = await startAudioEncoder({
       stream,
       audioFullTrackName: audioFTN,
       audioStreamController: tracks.getAudioStreamController(),
@@ -278,6 +321,8 @@ export default function App() {
       audioGroupId: 0,
       objectForwardingPreference: ObjectForwardingPreference.Subgroup,
     });
+    audioResult.setActive(isMicOnRef.current);
+    audioControlRef.current = audioResult;
 
     stopEncoderRef.current = videoResult?.stop ?? null;
     setIsPublishing(true);
@@ -286,6 +331,7 @@ export default function App() {
   async function stopPublishing() {
     await stopEncoderRef.current?.();
     stopEncoderRef.current = null;
+    audioControlRef.current = null;
     mediaStreamRef.current?.getTracks().forEach(t => t.stop());
     mediaStreamRef.current = null;
     if (localVideoRef.current) localVideoRef.current.srcObject = null;
@@ -308,11 +354,7 @@ export default function App() {
     const next = !isMicOn;
     isMicOnRef.current = next;
     setIsMicOn(next);
-    if (mediaStreamRef.current) {
-      mediaStreamRef.current.getAudioTracks().forEach(t => {
-        t.enabled = next;
-      });
-    }
+    audioControlRef.current?.setActive(next);
   }
 
   // ── Entrance screen ────────────────────────────────────────────────────────
@@ -489,11 +531,38 @@ export default function App() {
                 <span className="text-center text-[11px] font-semibold tracking-widest text-neutral-500 uppercase select-none">
                   {peerUsername}
                 </span>
+                {activeAudioPeers.has(peerUsername) && (
+                  <div className="flex items-center justify-center gap-1">
+                    <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-green-400" />
+                    <span className="text-[10px] font-medium text-green-400 select-none">
+                      Audio active
+                    </span>
+                  </div>
+                )}
                 <canvas
                   ref={el => {
                     if (!el || peerCanvasesRef.current.has(peerUsername)) return;
                     peerCanvasesRef.current.set(peerUsername, el);
-                    prepareReceiverForCanvas({ current: el }).then(w => {
+                    prepareReceiverForCanvas({ current: el }, value => {
+                      if (value <= 0) return;
+                      const timers = audioActiveTimersRef.current;
+                      const existing = timers.get(peerUsername);
+                      if (existing) clearTimeout(existing);
+                      setActiveAudioPeers(prev =>
+                        prev.has(peerUsername) ? prev : new Set(prev).add(peerUsername),
+                      );
+                      timers.set(
+                        peerUsername,
+                        setTimeout(() => {
+                          setActiveAudioPeers(prev => {
+                            const next = new Set(prev);
+                            next.delete(peerUsername);
+                            return next;
+                          });
+                          timers.delete(peerUsername);
+                        }, AUDIO_ACTIVE_HOLD_MS),
+                      );
+                    }).then(w => {
                       if (!w) return;
                       peerWorkersRef.current.set(peerUsername, w);
                       // Drain any streams that arrived before the worker was ready

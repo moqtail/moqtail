@@ -25,4 +25,7 @@ export interface AppSettings {
     targetLatencyMs: number;
     maxLatencyMs: number;
   };
+  topN?: {
+    n: number;
+  };
 }

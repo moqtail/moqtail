@@ -31,4 +31,7 @@ window.appSettings = {
     targetLatencyMs: 100,
     maxLatencyMs: 1000,
   },
+  topN: {
+    n: 1,
+  },
 };

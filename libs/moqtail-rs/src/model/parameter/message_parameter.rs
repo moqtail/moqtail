@@ -55,9 +55,11 @@ pub enum MessageParameter {
   /// Top-N track filter (moq-transport PR #1401).
   /// Packed VarInt: value = (property_type << 8) | max_selected.
   /// property_type=0x12 selects speech-activity VAD; max_selected is the N value.
+  /// max_selected is u8 because it occupies only the low 8 bits of the packed value —
+  /// a wider type would silently corrupt property_type on overflow.
   TrackFilter {
     property_type: u64,
-    max_selected: u32,
+    max_selected: u8,
   },
 }
 
@@ -106,7 +108,7 @@ impl MessageParameter {
     Self::NewGroupRequest { group }
   }
 
-  pub fn new_track_filter(property_type: u64, max_selected: u32) -> Self {
+  pub fn new_track_filter(property_type: u64, max_selected: u8) -> Self {
     Self::TrackFilter {
       property_type,
       max_selected,
@@ -274,7 +276,7 @@ impl MessageParameter {
           MessageParameterType::NewGroupRequest => Ok(Self::NewGroupRequest { group: *value }),
           MessageParameterType::TrackFilter => {
             let property_type = value >> 8;
-            let max_selected = (value & 0xFF) as u32;
+            let max_selected = (value & 0xFF) as u8;
             Ok(Self::TrackFilter {
               property_type,
               max_selected,

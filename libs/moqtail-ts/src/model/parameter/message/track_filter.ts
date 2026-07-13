@@ -15,6 +15,7 @@
  */
 
 import { KeyValuePair } from '../../common/pair'
+import { ProtocolViolationError } from '../../error/error'
 import { MessageParameterType } from '../constant'
 import { Parameter } from '../parameter'
 
@@ -24,6 +25,8 @@ import { Parameter } from '../parameter'
  *
  * Wire encoding: single packed VarInt = `(propertyType << 8n) | BigInt(maxSelected)`.
  * Example: propertyType=0x12n (speech-activity VAD), maxSelected=2 → value=0x1202n.
+ * maxSelected occupies only the low 8 bits of the packed value, so it must be 0-255 —
+ * a larger value would silently corrupt propertyType.
  */
 export class TrackFilter implements Parameter {
   static readonly TYPE = MessageParameterType.TrackFilter
@@ -31,7 +34,14 @@ export class TrackFilter implements Parameter {
   constructor(
     public readonly propertyType: bigint,
     public readonly maxSelected: number,
-  ) {}
+  ) {
+    if (!Number.isInteger(maxSelected) || maxSelected < 0 || maxSelected > 255) {
+      throw new ProtocolViolationError(
+        'TrackFilter.constructor',
+        `maxSelected must be an integer 0-255, got ${maxSelected}`,
+      )
+    }
+  }
 
   toKeyValuePair(): KeyValuePair {
     const packed = (this.propertyType << 8n) | BigInt(this.maxSelected)
@@ -66,6 +76,17 @@ if (import.meta.vitest) {
     test('fromKeyValuePair returns undefined for wrong type', () => {
       const pair = KeyValuePair.tryNewVarInt(MessageParameterType.Forward, 0x1202n)
       expect(TrackFilter.fromKeyValuePair(pair)).toBeUndefined()
+    })
+    test('accepts boundary values 0 and 255', () => {
+      expect(new TrackFilter(0x12n, 0).maxSelected).toBe(0)
+      expect(new TrackFilter(0x12n, 255).maxSelected).toBe(255)
+    })
+    test('constructor throws on maxSelected > 255', () => {
+      expect(() => new TrackFilter(0x12n, 256)).toThrow(ProtocolViolationError)
+    })
+    test('constructor throws on negative or non-integer maxSelected', () => {
+      expect(() => new TrackFilter(0x12n, -1)).toThrow(ProtocolViolationError)
+      expect(() => new TrackFilter(0x12n, 1.5)).toThrow(ProtocolViolationError)
     })
   })
 }

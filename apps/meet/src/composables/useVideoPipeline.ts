@@ -166,7 +166,6 @@ export async function startAudioEncoder({
   const AUDIO_PACKET_SAMPLES = 960;
 
   audioNode.port.onmessage = event => {
-    console.log('Audio node message received:', event.data, topNEnabled);
     if (!audioEncoder) return;
     if (!shouldEncode) return;
 

@@ -17,11 +17,11 @@ use super::control_message::ControlMessageTrait;
 use crate::model::common::location::Location;
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
 use crate::model::error::ParseError;
-use crate::model::extension_header::track_extension::{
-  TrackExtension, deserialize_track_extensions, serialize_track_extensions,
-};
 use crate::model::parameter::message_parameter::{
   MessageParameter, deserialize_message_parameters, serialize_message_parameters,
+};
+use crate::model::property::track_property::{
+  TrackProperty, deserialize_track_properties, serialize_track_properties,
 };
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
@@ -31,7 +31,7 @@ pub struct FetchOk {
   pub end_of_track: bool,
   pub end_location: Location,
   pub subscribe_parameters: Vec<MessageParameter>,
-  pub track_extensions: Vec<TrackExtension>,
+  pub track_properties: Vec<TrackProperty>,
 }
 
 impl FetchOk {
@@ -40,14 +40,14 @@ impl FetchOk {
     end_of_track: bool,
     end_location: Location,
     subscribe_parameters: Vec<MessageParameter>,
-    track_extensions: Vec<TrackExtension>,
+    track_properties: Vec<TrackProperty>,
   ) -> Self {
     Self {
       request_id,
       end_of_track,
       end_location,
       subscribe_parameters,
-      track_extensions,
+      track_properties,
     }
   }
 }
@@ -64,8 +64,8 @@ impl ControlMessageTrait for FetchOk {
     payload.put_vi(self.subscribe_parameters.len())?;
     payload.extend_from_slice(&serialize_message_parameters(&self.subscribe_parameters)?);
 
-    // Track Extensions (no length prefix; bounded by outer message Length field)
-    payload.extend_from_slice(&serialize_track_extensions(&self.track_extensions)?);
+    // Track Properties (no length prefix; bounded by outer message Length field)
+    payload.extend_from_slice(&serialize_track_properties(&self.track_properties)?);
 
     let payload_len: u16 = payload
       .len()
@@ -109,15 +109,15 @@ impl ControlMessageTrait for FetchOk {
     let subscribe_parameters =
       deserialize_message_parameters(payload, param_count, ControlMessageType::FetchOk)?;
 
-    // Track Extensions: consume whatever remains in the payload
-    let track_extensions = deserialize_track_extensions(payload)?;
+    // Track Properties: consume whatever remains in the payload
+    let track_properties = deserialize_track_properties(payload)?;
 
     Ok(Box::new(FetchOk {
       request_id,
       end_of_track,
       end_location,
       subscribe_parameters,
-      track_extensions,
+      track_properties,
     }))
   }
 
@@ -143,7 +143,7 @@ mod tests {
         object: 57,
       },
       subscribe_parameters: vec![],
-      track_extensions: vec![],
+      track_properties: vec![],
     };
     let mut buf = fetch_ok.serialize().unwrap();
     let msg_type = buf.get_vi().unwrap();
@@ -165,7 +165,7 @@ mod tests {
         object: 57,
       },
       subscribe_parameters: vec![MessageParameter::new_group_order(GroupOrder::Ascending)],
-      track_extensions: vec![],
+      track_properties: vec![],
     };
     let mut buf = fetch_ok.serialize().unwrap();
     let msg_type = buf.get_vi().unwrap();
@@ -178,7 +178,7 @@ mod tests {
   }
 
   #[test]
-  fn test_roundtrip_with_track_extensions() {
+  fn test_roundtrip_with_track_properties() {
     let fetch_ok = FetchOk {
       request_id: 12345,
       end_of_track: false,
@@ -187,9 +187,9 @@ mod tests {
         object: 0,
       },
       subscribe_parameters: vec![],
-      track_extensions: vec![
-        TrackExtension::MaxCacheDuration { duration_ms: 60000 },
-        TrackExtension::DefaultPublisherGroupOrder {
+      track_properties: vec![
+        TrackProperty::MaxCacheDuration { duration_ms: 60000 },
+        TrackProperty::DefaultPublisherGroupOrder {
           order: GroupOrder::Ascending,
         },
       ],
@@ -214,7 +214,7 @@ mod tests {
         object: 57,
       },
       subscribe_parameters: vec![],
-      track_extensions: vec![],
+      track_properties: vec![],
     };
 
     let serialized = fetch_ok.serialize().unwrap();
@@ -245,7 +245,7 @@ mod tests {
         object: 57,
       },
       subscribe_parameters: vec![],
-      track_extensions: vec![],
+      track_properties: vec![],
     };
     let mut buf = fetch_ok.serialize().unwrap();
     let msg_type = buf.get_vi().unwrap();

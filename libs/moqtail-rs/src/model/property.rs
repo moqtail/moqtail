@@ -14,5 +14,5 @@
 
 pub mod constant;
 pub mod loc;
-pub mod object_extension;
-pub mod track_extension;
+pub mod object_property;
+pub mod track_property;

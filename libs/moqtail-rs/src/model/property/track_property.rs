@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::constant::TrackExtensionType;
+use super::constant::TrackPropertyType;
 use crate::model::common::pair::{
   KeyValuePair, deserialize_kvp_list_until_empty, serialize_kvp_list,
 };
@@ -20,92 +20,89 @@ use crate::model::control::constant::GroupOrder;
 use crate::model::error::ParseError;
 use bytes::Bytes;
 
-/// Typed representation of a MOQT track-level Extension Header.
+/// Typed representation of a MOQT track-level Property.
 ///
-/// Unknown extension types are preserved as raw KeyValuePairs so that relays
+/// Unknown property types are preserved as raw KeyValuePairs so that relays
 /// can forward them unchanged per spec (relays MUST NOT modify or drop unknown
-/// extensions).
+/// properties).
 #[derive(Debug, Clone, PartialEq)]
-pub enum TrackExtension {
+pub enum TrackProperty {
   DeliveryTimeout { timeout_ms: u64 },
   MaxCacheDuration { duration_ms: u64 },
-  ImmutableExtensions { extensions: Vec<KeyValuePair> },
+  ImmutableProperties { properties: Vec<KeyValuePair> },
   DefaultPublisherPriority { priority: u8 },
   DefaultPublisherGroupOrder { order: GroupOrder },
   DynamicGroups { enabled: bool },
   Unknown { kvp: KeyValuePair },
 }
 
-impl TrackExtension {
-  /// Returns the raw wire type value for this extension.
+impl TrackProperty {
+  /// Returns the raw wire type value for this property.
   pub fn type_value(&self) -> u64 {
     match self {
-      Self::DeliveryTimeout { .. } => TrackExtensionType::DeliveryTimeout as u64,
-      Self::MaxCacheDuration { .. } => TrackExtensionType::MaxCacheDuration as u64,
-      Self::ImmutableExtensions { .. } => TrackExtensionType::ImmutableExtensions as u64,
-      Self::DefaultPublisherPriority { .. } => TrackExtensionType::DefaultPublisherPriority as u64,
+      Self::DeliveryTimeout { .. } => TrackPropertyType::DeliveryTimeout as u64,
+      Self::MaxCacheDuration { .. } => TrackPropertyType::MaxCacheDuration as u64,
+      Self::ImmutableProperties { .. } => TrackPropertyType::ImmutableProperties as u64,
+      Self::DefaultPublisherPriority { .. } => TrackPropertyType::DefaultPublisherPriority as u64,
       Self::DefaultPublisherGroupOrder { .. } => {
-        TrackExtensionType::DefaultPublisherGroupOrder as u64
+        TrackPropertyType::DefaultPublisherGroupOrder as u64
       }
-      Self::DynamicGroups { .. } => TrackExtensionType::DynamicGroups as u64,
+      Self::DynamicGroups { .. } => TrackPropertyType::DynamicGroups as u64,
       Self::Unknown { kvp } => kvp.get_type(),
     }
   }
 
-  /// Serializes this extension to its wire KVP bytes.
+  /// Serializes this property to its wire KVP bytes.
   pub fn serialize(&self) -> Result<Bytes, ParseError> {
     let kvp: KeyValuePair = self.clone().try_into()?;
     kvp.serialize()
   }
 
-  /// Deserializes a TrackExtension from a pre-parsed KeyValuePair.
+  /// Deserializes a TrackProperty from a pre-parsed KeyValuePair.
   /// Unknown type values are returned as `Unknown { kvp }` rather than an error.
   pub fn deserialize(kvp: KeyValuePair) -> Result<Self, ParseError> {
     let type_value = kvp.get_type();
-    let ext_type = match TrackExtensionType::try_from(type_value) {
+    let ext_type = match TrackPropertyType::try_from(type_value) {
       Ok(t) => t,
       Err(_) => return Ok(Self::Unknown { kvp }),
     };
 
     match ext_type {
-      TrackExtensionType::DeliveryTimeout => {
-        let value = kvp_varint_value(&kvp, "TrackExtension::deserialize(DeliveryTimeout)")?;
+      TrackPropertyType::DeliveryTimeout => {
+        let value = kvp_varint_value(&kvp, "TrackProperty::deserialize(DeliveryTimeout)")?;
         if value == 0 {
           return Err(ParseError::ProtocolViolation {
-            context: "TrackExtension::deserialize(DeliveryTimeout)",
+            context: "TrackProperty::deserialize(DeliveryTimeout)",
             details: "DELIVERY_TIMEOUT must be greater than 0".to_string(),
           });
         }
         Ok(Self::DeliveryTimeout { timeout_ms: value })
       }
-      TrackExtensionType::MaxCacheDuration => {
-        let value = kvp_varint_value(&kvp, "TrackExtension::deserialize(MaxCacheDuration)")?;
+      TrackPropertyType::MaxCacheDuration => {
+        let value = kvp_varint_value(&kvp, "TrackProperty::deserialize(MaxCacheDuration)")?;
         Ok(Self::MaxCacheDuration { duration_ms: value })
       }
-      TrackExtensionType::ImmutableExtensions => {
-        let bytes = kvp_bytes_value(&kvp, "TrackExtension::deserialize(ImmutableExtensions)")?;
+      TrackPropertyType::ImmutableProperties => {
+        let bytes = kvp_bytes_value(&kvp, "TrackProperty::deserialize(ImmutableProperties)")?;
         let mut buf = bytes;
-        let extensions = deserialize_kvp_list_until_empty(&mut buf)?;
-        if extensions
+        let properties = deserialize_kvp_list_until_empty(&mut buf)?;
+        if properties
           .iter()
-          .any(|inner| inner.get_type() == TrackExtensionType::ImmutableExtensions as u64)
+          .any(|inner| inner.get_type() == TrackPropertyType::ImmutableProperties as u64)
         {
           return Err(ParseError::ProtocolViolation {
-            context: "TrackExtension::deserialize(ImmutableExtensions)",
-            details: "ImmutableExtensions MUST NOT contain another ImmutableExtensions key"
+            context: "TrackProperty::deserialize(ImmutableProperties)",
+            details: "ImmutableProperties MUST NOT contain another ImmutableProperties key"
               .to_string(),
           });
         }
-        Ok(Self::ImmutableExtensions { extensions })
+        Ok(Self::ImmutableProperties { properties })
       }
-      TrackExtensionType::DefaultPublisherPriority => {
-        let value = kvp_varint_value(
-          &kvp,
-          "TrackExtension::deserialize(DefaultPublisherPriority)",
-        )?;
+      TrackPropertyType::DefaultPublisherPriority => {
+        let value = kvp_varint_value(&kvp, "TrackProperty::deserialize(DefaultPublisherPriority)")?;
         if value > 255 {
           return Err(ParseError::ProtocolViolation {
-            context: "TrackExtension::deserialize(DefaultPublisherPriority)",
+            context: "TrackProperty::deserialize(DefaultPublisherPriority)",
             details: format!("DEFAULT_PUBLISHER_PRIORITY must be 0-255, got {value}"),
           });
         }
@@ -113,17 +110,17 @@ impl TrackExtension {
           priority: value as u8,
         })
       }
-      TrackExtensionType::DefaultPublisherGroupOrder => {
+      TrackPropertyType::DefaultPublisherGroupOrder => {
         let value = kvp_varint_value(
           &kvp,
-          "TrackExtension::deserialize(DefaultPublisherGroupOrder)",
+          "TrackProperty::deserialize(DefaultPublisherGroupOrder)",
         )?;
         let order = match value {
           1 => GroupOrder::Ascending,
           2 => GroupOrder::Descending,
           _ => {
             return Err(ParseError::ProtocolViolation {
-              context: "TrackExtension::deserialize(DefaultPublisherGroupOrder)",
+              context: "TrackProperty::deserialize(DefaultPublisherGroupOrder)",
               details: format!(
                 "DEFAULT_PUBLISHER_GROUP_ORDER must be 1 (Ascending) or 2 (Descending), got {value}"
               ),
@@ -132,51 +129,51 @@ impl TrackExtension {
         };
         Ok(Self::DefaultPublisherGroupOrder { order })
       }
-      TrackExtensionType::DynamicGroups => {
-        let value = kvp_varint_value(&kvp, "TrackExtension::deserialize(DynamicGroups)")?;
+      TrackPropertyType::DynamicGroups => {
+        let value = kvp_varint_value(&kvp, "TrackProperty::deserialize(DynamicGroups)")?;
         let enabled = match value {
           0 => false,
           1 => true,
           _ => {
             return Err(ParseError::ProtocolViolation {
-              context: "TrackExtension::deserialize(DynamicGroups)",
+              context: "TrackProperty::deserialize(DynamicGroups)",
               details: format!("DYNAMIC_GROUPS must be 0 or 1, got {value}"),
             });
           }
         };
         Ok(Self::DynamicGroups { enabled })
       }
-      // Object-scope extensions; treated as unknown at track level
+      // Object-scope properties; treated as unknown at track level
       _ => Ok(Self::Unknown { kvp }),
     }
   }
 }
 
-impl TryInto<KeyValuePair> for TrackExtension {
+impl TryInto<KeyValuePair> for TrackProperty {
   type Error = ParseError;
 
   fn try_into(self) -> Result<KeyValuePair, Self::Error> {
     match self {
       Self::DeliveryTimeout { timeout_ms } => {
-        KeyValuePair::try_new_varint(TrackExtensionType::DeliveryTimeout as u64, timeout_ms)
+        KeyValuePair::try_new_varint(TrackPropertyType::DeliveryTimeout as u64, timeout_ms)
       }
       Self::MaxCacheDuration { duration_ms } => {
-        KeyValuePair::try_new_varint(TrackExtensionType::MaxCacheDuration as u64, duration_ms)
+        KeyValuePair::try_new_varint(TrackPropertyType::MaxCacheDuration as u64, duration_ms)
       }
-      Self::ImmutableExtensions { extensions } => KeyValuePair::try_new_bytes(
-        TrackExtensionType::ImmutableExtensions as u64,
-        serialize_kvp_list(&extensions)?,
+      Self::ImmutableProperties { properties } => KeyValuePair::try_new_bytes(
+        TrackPropertyType::ImmutableProperties as u64,
+        serialize_kvp_list(&properties)?,
       ),
       Self::DefaultPublisherPriority { priority } => KeyValuePair::try_new_varint(
-        TrackExtensionType::DefaultPublisherPriority as u64,
+        TrackPropertyType::DefaultPublisherPriority as u64,
         priority as u64,
       ),
       Self::DefaultPublisherGroupOrder { order } => KeyValuePair::try_new_varint(
-        TrackExtensionType::DefaultPublisherGroupOrder as u64,
+        TrackPropertyType::DefaultPublisherGroupOrder as u64,
         order as u64,
       ),
       Self::DynamicGroups { enabled } => KeyValuePair::try_new_varint(
-        TrackExtensionType::DynamicGroups as u64,
+        TrackPropertyType::DynamicGroups as u64,
         if enabled { 1 } else { 0 },
       ),
       Self::Unknown { kvp } => Ok(kvp),
@@ -184,9 +181,9 @@ impl TryInto<KeyValuePair> for TrackExtension {
   }
 }
 
-/// Serializes a slice of TrackExtensions to their concatenated wire KVP bytes.
+/// Serializes a slice of TrackProperties to their concatenated wire KVP bytes.
 /// Empty slice produces no bytes (zero wire overhead).
-pub fn serialize_track_extensions(exts: &[TrackExtension]) -> Result<Bytes, ParseError> {
+pub fn serialize_track_properties(exts: &[TrackProperty]) -> Result<Bytes, ParseError> {
   let kvps: Vec<KeyValuePair> = exts
     .iter()
     .map(|e| e.clone().try_into())
@@ -194,12 +191,12 @@ pub fn serialize_track_extensions(exts: &[TrackExtension]) -> Result<Bytes, Pars
   serialize_kvp_list(&kvps)
 }
 
-/// Deserializes TrackExtensions from remaining payload bytes.
+/// Deserializes TrackProperties from remaining payload bytes.
 /// Reads KVPs until the buffer is empty. Returns an empty Vec if no bytes remain.
-pub fn deserialize_track_extensions(bytes: &mut Bytes) -> Result<Vec<TrackExtension>, ParseError> {
+pub fn deserialize_track_properties(bytes: &mut Bytes) -> Result<Vec<TrackProperty>, ParseError> {
   deserialize_kvp_list_until_empty(bytes)?
     .into_iter()
-    .map(TrackExtension::deserialize)
+    .map(TrackProperty::deserialize)
     .collect()
 }
 
@@ -209,7 +206,7 @@ fn kvp_varint_value(kvp: &KeyValuePair, context: &'static str) -> Result<u64, Pa
     KeyValuePair::Bytes { type_value, .. } => Err(ParseError::ProtocolViolation {
       context,
       details: format!(
-        "Extension type 0x{type_value:02X} expects VarInt encoding but received Bytes"
+        "Property type 0x{type_value:02X} expects VarInt encoding but received Bytes"
       ),
     }),
   }
@@ -221,7 +218,7 @@ fn kvp_bytes_value(kvp: &KeyValuePair, context: &'static str) -> Result<Bytes, P
     KeyValuePair::VarInt { type_value, .. } => Err(ParseError::ProtocolViolation {
       context,
       details: format!(
-        "Extension type 0x{type_value:02X} expects Bytes encoding but received VarInt"
+        "Property type 0x{type_value:02X} expects Bytes encoding but received VarInt"
       ),
     }),
   }
@@ -232,50 +229,50 @@ mod tests {
   use super::*;
   use bytes::{Buf, Bytes};
 
-  fn roundtrip(ext: TrackExtension) -> TrackExtension {
+  fn roundtrip(ext: TrackProperty) -> TrackProperty {
     let serialized = ext.serialize().unwrap();
     let mut buf = serialized;
     let kvp = KeyValuePair::deserialize(&mut buf).unwrap();
     assert!(!buf.has_remaining());
-    TrackExtension::deserialize(kvp).unwrap()
+    TrackProperty::deserialize(kvp).unwrap()
   }
 
   #[test]
   fn test_roundtrip_delivery_timeout() {
-    let ext = TrackExtension::DeliveryTimeout { timeout_ms: 5000 };
+    let ext = TrackProperty::DeliveryTimeout { timeout_ms: 5000 };
     assert_eq!(roundtrip(ext.clone()), ext);
   }
 
   #[test]
   fn test_roundtrip_max_cache_duration() {
-    let ext = TrackExtension::MaxCacheDuration { duration_ms: 10000 };
+    let ext = TrackProperty::MaxCacheDuration { duration_ms: 10000 };
     assert_eq!(roundtrip(ext.clone()), ext);
   }
 
   #[test]
-  fn test_roundtrip_immutable_extensions() {
+  fn test_roundtrip_immutable_properties() {
     let inner = vec![
       KeyValuePair::try_new_varint(0x10, 42).unwrap(),
       KeyValuePair::try_new_bytes(0x11, Bytes::from_static(b"hello")).unwrap(),
     ];
-    let ext = TrackExtension::ImmutableExtensions {
-      extensions: inner.clone(),
+    let ext = TrackProperty::ImmutableProperties {
+      properties: inner.clone(),
     };
     assert_eq!(roundtrip(ext.clone()), ext);
   }
 
   #[test]
   fn test_roundtrip_default_publisher_priority() {
-    let ext = TrackExtension::DefaultPublisherPriority { priority: 128 };
+    let ext = TrackProperty::DefaultPublisherPriority { priority: 128 };
     assert_eq!(roundtrip(ext.clone()), ext);
-    let ext_max = TrackExtension::DefaultPublisherPriority { priority: 255 };
+    let ext_max = TrackProperty::DefaultPublisherPriority { priority: 255 };
     assert_eq!(roundtrip(ext_max.clone()), ext_max);
   }
 
   #[test]
   fn test_roundtrip_default_publisher_group_order() {
     for order in [GroupOrder::Ascending, GroupOrder::Descending] {
-      let ext = TrackExtension::DefaultPublisherGroupOrder { order };
+      let ext = TrackProperty::DefaultPublisherGroupOrder { order };
       assert_eq!(roundtrip(ext.clone()), ext);
     }
   }
@@ -283,7 +280,7 @@ mod tests {
   #[test]
   fn test_roundtrip_dynamic_groups() {
     for enabled in [true, false] {
-      let ext = TrackExtension::DynamicGroups { enabled };
+      let ext = TrackProperty::DynamicGroups { enabled };
       assert_eq!(roundtrip(ext.clone()), ext);
     }
   }
@@ -291,7 +288,7 @@ mod tests {
   #[test]
   fn test_roundtrip_unknown() {
     let kvp = KeyValuePair::try_new_varint(0xFE, 99).unwrap();
-    let ext = TrackExtension::Unknown { kvp };
+    let ext = TrackProperty::Unknown { kvp };
     assert_eq!(roundtrip(ext.clone()), ext);
   }
 
@@ -299,7 +296,7 @@ mod tests {
   fn test_delivery_timeout_zero_is_error() {
     let kvp = KeyValuePair::try_new_varint(0x02, 0).unwrap();
     assert!(matches!(
-      TrackExtension::deserialize(kvp).unwrap_err(),
+      TrackProperty::deserialize(kvp).unwrap_err(),
       ParseError::ProtocolViolation { .. }
     ));
   }
@@ -308,7 +305,7 @@ mod tests {
   fn test_default_publisher_priority_over_255_is_error() {
     let kvp = KeyValuePair::try_new_varint(0x0E, 256).unwrap();
     assert!(matches!(
-      TrackExtension::deserialize(kvp).unwrap_err(),
+      TrackProperty::deserialize(kvp).unwrap_err(),
       ParseError::ProtocolViolation { .. }
     ));
   }
@@ -317,7 +314,7 @@ mod tests {
   fn test_default_publisher_group_order_original_is_error() {
     let kvp = KeyValuePair::try_new_varint(0x22, 0).unwrap(); // 0 = Original, invalid
     assert!(matches!(
-      TrackExtension::deserialize(kvp).unwrap_err(),
+      TrackProperty::deserialize(kvp).unwrap_err(),
       ParseError::ProtocolViolation { .. }
     ));
   }
@@ -326,18 +323,18 @@ mod tests {
   fn test_dynamic_groups_over_1_is_error() {
     let kvp = KeyValuePair::try_new_varint(0x30, 2).unwrap();
     assert!(matches!(
-      TrackExtension::deserialize(kvp).unwrap_err(),
+      TrackProperty::deserialize(kvp).unwrap_err(),
       ParseError::ProtocolViolation { .. }
     ));
   }
 
   #[test]
-  fn test_immutable_extensions_nested_is_error() {
+  fn test_immutable_properties_nested_is_error() {
     let inner_immutable = KeyValuePair::try_new_bytes(0x0B, Bytes::from_static(b"")).unwrap();
     let inner_bytes = inner_immutable.serialize().unwrap();
     let outer = KeyValuePair::try_new_bytes(0x0B, inner_bytes).unwrap();
     assert!(matches!(
-      TrackExtension::deserialize(outer).unwrap_err(),
+      TrackProperty::deserialize(outer).unwrap_err(),
       ParseError::ProtocolViolation { .. }
     ));
   }
@@ -345,32 +342,32 @@ mod tests {
   #[test]
   fn test_serialize_deserialize_mixed() {
     let exts = vec![
-      TrackExtension::DeliveryTimeout { timeout_ms: 1000 },
-      TrackExtension::DefaultPublisherPriority { priority: 64 },
-      TrackExtension::DynamicGroups { enabled: true },
-      TrackExtension::Unknown {
+      TrackProperty::DeliveryTimeout { timeout_ms: 1000 },
+      TrackProperty::DefaultPublisherPriority { priority: 64 },
+      TrackProperty::DynamicGroups { enabled: true },
+      TrackProperty::Unknown {
         kvp: KeyValuePair::try_new_varint(0xFE, 7).unwrap(),
       },
     ];
-    let serialized = serialize_track_extensions(&exts).unwrap();
+    let serialized = serialize_track_properties(&exts).unwrap();
     let mut buf = serialized;
-    let deserialized = deserialize_track_extensions(&mut buf).unwrap();
+    let deserialized = deserialize_track_properties(&mut buf).unwrap();
     assert_eq!(deserialized, exts);
   }
 
   #[test]
   fn test_serialize_deserialize_empty() {
-    let serialized = serialize_track_extensions(&[]).unwrap();
+    let serialized = serialize_track_properties(&[]).unwrap();
     assert!(serialized.is_empty());
     let mut buf = serialized;
-    let deserialized = deserialize_track_extensions(&mut buf).unwrap();
+    let deserialized = deserialize_track_properties(&mut buf).unwrap();
     assert!(deserialized.is_empty());
   }
 
   #[test]
-  fn test_immutable_extensions_independent_of_outer_prev_type() {
-    // A low-type extension precedes ImmutableExtensions (0x0B) in the outer
-    // list, so the outer prev_type is nonzero by the time ImmutableExtensions
+  fn test_immutable_properties_independent_of_outer_prev_type() {
+    // A low-type property precedes ImmutableProperties (0x0B) in the outer
+    // list, so the outer prev_type is nonzero by the time ImmutableProperties
     // is reached. The inner KVP list must restart its own delta state from 0,
     // independent of the outer list's running prev_type.
     let inner = vec![
@@ -378,14 +375,14 @@ mod tests {
       KeyValuePair::try_new_bytes(0x03, Bytes::from_static(b"data")).unwrap(),
     ];
     let exts = vec![
-      TrackExtension::DeliveryTimeout { timeout_ms: 100 },
-      TrackExtension::ImmutableExtensions {
-        extensions: inner.clone(),
+      TrackProperty::DeliveryTimeout { timeout_ms: 100 },
+      TrackProperty::ImmutableProperties {
+        properties: inner.clone(),
       },
     ];
-    let serialized = serialize_track_extensions(&exts).unwrap();
+    let serialized = serialize_track_properties(&exts).unwrap();
     let mut buf = serialized;
-    let deserialized = deserialize_track_extensions(&mut buf).unwrap();
+    let deserialized = deserialize_track_properties(&mut buf).unwrap();
     assert_eq!(deserialized, exts);
   }
 }

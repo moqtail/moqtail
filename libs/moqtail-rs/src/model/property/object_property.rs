@@ -12,104 +12,104 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::constant::TrackExtensionType;
+use super::constant::TrackPropertyType;
 use crate::model::common::pair::{
   KeyValuePair, deserialize_kvp_list_until_empty, serialize_kvp_list,
 };
 use crate::model::error::ParseError;
 use bytes::Bytes;
 
-/// Typed representation of a MOQT object-level Extension Header.
+/// Typed representation of a MOQT object-level Property.
 ///
-/// Unknown extension types are preserved as raw KeyValuePairs so that relays
+/// Unknown property types are preserved as raw KeyValuePairs so that relays
 /// can forward them unchanged per spec.
 #[derive(Debug, Clone, PartialEq)]
-pub enum ObjectExtension {
-  ImmutableExtensions { extensions: Vec<KeyValuePair> },
+pub enum ObjectProperty {
+  ImmutableProperties { properties: Vec<KeyValuePair> },
   PriorGroupIdGap { gap: u64 },
   PriorObjectIdGap { gap: u64 },
   Unknown { kvp: KeyValuePair },
 }
 
-impl ObjectExtension {
-  /// Returns the raw wire type value for this extension.
+impl ObjectProperty {
+  /// Returns the raw wire type value for this property.
   pub fn type_value(&self) -> u64 {
     match self {
-      Self::ImmutableExtensions { .. } => TrackExtensionType::ImmutableExtensions as u64,
-      Self::PriorGroupIdGap { .. } => TrackExtensionType::PriorGroupIdGap as u64,
-      Self::PriorObjectIdGap { .. } => TrackExtensionType::PriorObjectIdGap as u64,
+      Self::ImmutableProperties { .. } => TrackPropertyType::ImmutableProperties as u64,
+      Self::PriorGroupIdGap { .. } => TrackPropertyType::PriorGroupIdGap as u64,
+      Self::PriorObjectIdGap { .. } => TrackPropertyType::PriorObjectIdGap as u64,
       Self::Unknown { kvp } => kvp.get_type(),
     }
   }
 
-  /// Serializes this extension to its wire KVP bytes.
+  /// Serializes this property to its wire KVP bytes.
   pub fn serialize(&self) -> Result<Bytes, ParseError> {
     let kvp: KeyValuePair = self.clone().try_into()?;
     kvp.serialize()
   }
 
-  /// Deserializes an ObjectExtension from a pre-parsed KeyValuePair.
+  /// Deserializes an ObjectProperty from a pre-parsed KeyValuePair.
   /// Unknown type values are returned as `Unknown { kvp }` rather than an error.
   pub fn deserialize(kvp: KeyValuePair) -> Result<Self, ParseError> {
     let type_value = kvp.get_type();
-    let ext_type = match TrackExtensionType::try_from(type_value) {
+    let ext_type = match TrackPropertyType::try_from(type_value) {
       Ok(t) => t,
       Err(_) => return Ok(Self::Unknown { kvp }),
     };
 
     match ext_type {
-      TrackExtensionType::ImmutableExtensions => {
-        let bytes = kvp_bytes_value(&kvp, "ObjectExtension::deserialize(ImmutableExtensions)")?;
+      TrackPropertyType::ImmutableProperties => {
+        let bytes = kvp_bytes_value(&kvp, "ObjectProperty::deserialize(ImmutableProperties)")?;
         let mut buf = bytes;
-        let extensions = deserialize_kvp_list_until_empty(&mut buf)?;
-        if extensions
+        let properties = deserialize_kvp_list_until_empty(&mut buf)?;
+        if properties
           .iter()
-          .any(|inner| inner.get_type() == TrackExtensionType::ImmutableExtensions as u64)
+          .any(|inner| inner.get_type() == TrackPropertyType::ImmutableProperties as u64)
         {
           return Err(ParseError::ProtocolViolation {
-            context: "ObjectExtension::deserialize(ImmutableExtensions)",
-            details: "ImmutableExtensions MUST NOT contain another ImmutableExtensions key"
+            context: "ObjectProperty::deserialize(ImmutableProperties)",
+            details: "ImmutableProperties MUST NOT contain another ImmutableProperties key"
               .to_string(),
           });
         }
-        Ok(Self::ImmutableExtensions { extensions })
+        Ok(Self::ImmutableProperties { properties })
       }
-      TrackExtensionType::PriorGroupIdGap => {
-        let value = kvp_varint_value(&kvp, "ObjectExtension::deserialize(PriorGroupIdGap)")?;
+      TrackPropertyType::PriorGroupIdGap => {
+        let value = kvp_varint_value(&kvp, "ObjectProperty::deserialize(PriorGroupIdGap)")?;
         Ok(Self::PriorGroupIdGap { gap: value })
       }
-      TrackExtensionType::PriorObjectIdGap => {
-        let value = kvp_varint_value(&kvp, "ObjectExtension::deserialize(PriorObjectIdGap)")?;
+      TrackPropertyType::PriorObjectIdGap => {
+        let value = kvp_varint_value(&kvp, "ObjectProperty::deserialize(PriorObjectIdGap)")?;
         Ok(Self::PriorObjectIdGap { gap: value })
       }
-      // Track-scope extensions; treated as unknown at object level
+      // Track-scope properties; treated as unknown at object level
       _ => Ok(Self::Unknown { kvp }),
     }
   }
 }
 
-impl TryInto<KeyValuePair> for ObjectExtension {
+impl TryInto<KeyValuePair> for ObjectProperty {
   type Error = ParseError;
 
   fn try_into(self) -> Result<KeyValuePair, Self::Error> {
     match self {
-      Self::ImmutableExtensions { extensions } => KeyValuePair::try_new_bytes(
-        TrackExtensionType::ImmutableExtensions as u64,
-        serialize_kvp_list(&extensions)?,
+      Self::ImmutableProperties { properties } => KeyValuePair::try_new_bytes(
+        TrackPropertyType::ImmutableProperties as u64,
+        serialize_kvp_list(&properties)?,
       ),
       Self::PriorGroupIdGap { gap } => {
-        KeyValuePair::try_new_varint(TrackExtensionType::PriorGroupIdGap as u64, gap)
+        KeyValuePair::try_new_varint(TrackPropertyType::PriorGroupIdGap as u64, gap)
       }
       Self::PriorObjectIdGap { gap } => {
-        KeyValuePair::try_new_varint(TrackExtensionType::PriorObjectIdGap as u64, gap)
+        KeyValuePair::try_new_varint(TrackPropertyType::PriorObjectIdGap as u64, gap)
       }
       Self::Unknown { kvp } => Ok(kvp),
     }
   }
 }
 
-/// Serializes a slice of ObjectExtensions to their concatenated wire KVP bytes.
-pub fn serialize_object_extensions(exts: &[ObjectExtension]) -> Result<Bytes, ParseError> {
+/// Serializes a slice of ObjectProperties to their concatenated wire KVP bytes.
+pub fn serialize_object_properties(exts: &[ObjectProperty]) -> Result<Bytes, ParseError> {
   let kvps: Vec<KeyValuePair> = exts
     .iter()
     .map(|e| e.clone().try_into())
@@ -117,14 +117,12 @@ pub fn serialize_object_extensions(exts: &[ObjectExtension]) -> Result<Bytes, Pa
   serialize_kvp_list(&kvps)
 }
 
-/// Deserializes ObjectExtensions from a byte slice of known length.
+/// Deserializes ObjectProperties from a byte slice of known length.
 /// Reads KVPs until the buffer is empty.
-pub fn deserialize_object_extensions(
-  bytes: &mut Bytes,
-) -> Result<Vec<ObjectExtension>, ParseError> {
+pub fn deserialize_object_properties(bytes: &mut Bytes) -> Result<Vec<ObjectProperty>, ParseError> {
   deserialize_kvp_list_until_empty(bytes)?
     .into_iter()
-    .map(ObjectExtension::deserialize)
+    .map(ObjectProperty::deserialize)
     .collect()
 }
 
@@ -134,7 +132,7 @@ fn kvp_varint_value(kvp: &KeyValuePair, context: &'static str) -> Result<u64, Pa
     KeyValuePair::Bytes { type_value, .. } => Err(ParseError::ProtocolViolation {
       context,
       details: format!(
-        "Extension type 0x{type_value:02X} expects VarInt encoding but received Bytes"
+        "Property type 0x{type_value:02X} expects VarInt encoding but received Bytes"
       ),
     }),
   }
@@ -146,7 +144,7 @@ fn kvp_bytes_value(kvp: &KeyValuePair, context: &'static str) -> Result<Bytes, P
     KeyValuePair::VarInt { type_value, .. } => Err(ParseError::ProtocolViolation {
       context,
       details: format!(
-        "Extension type 0x{type_value:02X} expects Bytes encoding but received VarInt"
+        "Property type 0x{type_value:02X} expects Bytes encoding but received VarInt"
       ),
     }),
   }
@@ -157,52 +155,52 @@ mod tests {
   use super::*;
   use bytes::{Buf, Bytes};
 
-  fn roundtrip(ext: ObjectExtension) -> ObjectExtension {
+  fn roundtrip(ext: ObjectProperty) -> ObjectProperty {
     let serialized = ext.serialize().unwrap();
     let mut buf = serialized;
     let kvp = KeyValuePair::deserialize(&mut buf).unwrap();
     assert!(!buf.has_remaining());
-    ObjectExtension::deserialize(kvp).unwrap()
+    ObjectProperty::deserialize(kvp).unwrap()
   }
 
   #[test]
-  fn test_roundtrip_immutable_extensions() {
+  fn test_roundtrip_immutable_properties() {
     let inner = vec![
       KeyValuePair::try_new_varint(0x10, 7).unwrap(),
       KeyValuePair::try_new_bytes(0x11, Bytes::from_static(b"data")).unwrap(),
     ];
-    let ext = ObjectExtension::ImmutableExtensions {
-      extensions: inner.clone(),
+    let ext = ObjectProperty::ImmutableProperties {
+      properties: inner.clone(),
     };
     assert_eq!(roundtrip(ext.clone()), ext);
   }
 
   #[test]
   fn test_roundtrip_prior_group_id_gap() {
-    let ext = ObjectExtension::PriorGroupIdGap { gap: 3 };
+    let ext = ObjectProperty::PriorGroupIdGap { gap: 3 };
     assert_eq!(roundtrip(ext.clone()), ext);
   }
 
   #[test]
   fn test_roundtrip_prior_object_id_gap() {
-    let ext = ObjectExtension::PriorObjectIdGap { gap: 5 };
+    let ext = ObjectProperty::PriorObjectIdGap { gap: 5 };
     assert_eq!(roundtrip(ext.clone()), ext);
   }
 
   #[test]
   fn test_roundtrip_unknown() {
     let kvp = KeyValuePair::try_new_varint(0xFE, 42).unwrap();
-    let ext = ObjectExtension::Unknown { kvp };
+    let ext = ObjectProperty::Unknown { kvp };
     assert_eq!(roundtrip(ext.clone()), ext);
   }
 
   #[test]
-  fn test_immutable_extensions_nested_is_error() {
+  fn test_immutable_properties_nested_is_error() {
     let inner_immutable = KeyValuePair::try_new_bytes(0x0B, Bytes::from_static(b"")).unwrap();
     let inner_bytes = inner_immutable.serialize().unwrap();
     let outer = KeyValuePair::try_new_bytes(0x0B, inner_bytes).unwrap();
     assert!(matches!(
-      ObjectExtension::deserialize(outer).unwrap_err(),
+      ObjectProperty::deserialize(outer).unwrap_err(),
       ParseError::ProtocolViolation { .. }
     ));
   }
@@ -210,31 +208,31 @@ mod tests {
   #[test]
   fn test_serialize_deserialize_mixed() {
     let exts = vec![
-      ObjectExtension::PriorGroupIdGap { gap: 2 },
-      ObjectExtension::PriorObjectIdGap { gap: 1 },
-      ObjectExtension::Unknown {
+      ObjectProperty::PriorGroupIdGap { gap: 2 },
+      ObjectProperty::PriorObjectIdGap { gap: 1 },
+      ObjectProperty::Unknown {
         kvp: KeyValuePair::try_new_varint(0xFC, 0).unwrap(),
       },
     ];
-    let serialized = serialize_object_extensions(&exts).unwrap();
+    let serialized = serialize_object_properties(&exts).unwrap();
     let mut buf = serialized;
-    let deserialized = deserialize_object_extensions(&mut buf).unwrap();
+    let deserialized = deserialize_object_properties(&mut buf).unwrap();
     assert_eq!(deserialized, exts);
   }
 
   #[test]
   fn test_serialize_deserialize_empty() {
-    let serialized = serialize_object_extensions(&[]).unwrap();
+    let serialized = serialize_object_properties(&[]).unwrap();
     assert!(serialized.is_empty());
     let mut buf = serialized;
-    let deserialized = deserialize_object_extensions(&mut buf).unwrap();
+    let deserialized = deserialize_object_properties(&mut buf).unwrap();
     assert!(deserialized.is_empty());
   }
 
   #[test]
-  fn test_immutable_extensions_independent_of_outer_prev_type() {
-    // A low-type extension precedes ImmutableExtensions (0x0B) in the outer
-    // list, so the outer prev_type is nonzero by the time ImmutableExtensions
+  fn test_immutable_properties_independent_of_outer_prev_type() {
+    // A low-type property precedes ImmutableProperties (0x0B) in the outer
+    // list, so the outer prev_type is nonzero by the time ImmutableProperties
     // is reached. The inner KVP list must restart its own delta state from 0,
     // independent of the outer list's running prev_type.
     let inner = vec![
@@ -242,16 +240,16 @@ mod tests {
       KeyValuePair::try_new_bytes(0x03, Bytes::from_static(b"data")).unwrap(),
     ];
     let exts = vec![
-      ObjectExtension::Unknown {
+      ObjectProperty::Unknown {
         kvp: KeyValuePair::try_new_varint(0x04, 99).unwrap(),
       },
-      ObjectExtension::ImmutableExtensions {
-        extensions: inner.clone(),
+      ObjectProperty::ImmutableProperties {
+        properties: inner.clone(),
       },
     ];
-    let serialized = serialize_object_extensions(&exts).unwrap();
+    let serialized = serialize_object_properties(&exts).unwrap();
     let mut buf = serialized;
-    let deserialized = deserialize_object_extensions(&mut buf).unwrap();
+    let deserialized = deserialize_object_properties(&mut buf).unwrap();
     assert_eq!(deserialized, exts);
   }
 }

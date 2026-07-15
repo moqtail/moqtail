@@ -138,7 +138,7 @@ pub async fn handle(
           track
             .add_publisher(context.connection_id, track_alias)
             .await;
-          track.set_track_extensions(m.track_extensions.clone()).await;
+          track.set_track_properties(m.track_properties.clone()).await;
         }
 
         client

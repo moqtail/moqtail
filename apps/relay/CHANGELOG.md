@@ -1,5 +1,11 @@
 # relay
 
+## 0.14.1
+
+### Patch Changes
+
+- [#219](https://github.com/moqtail/moqtail/pull/219) [`78bfab7`](https://github.com/moqtail/moqtail/commit/78bfab7eb51847da64c473e8f3ff2b8165d1c198) Thanks [@zafergurel](https://github.com/zafergurel)! - Fixes missing header bug. Thanks to [kkroo](https://github.com/kkroo)
+
 ## 0.14.0
 
 ### Minor Changes

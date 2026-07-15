@@ -85,10 +85,7 @@ export class UnknownObjectExtension {
 }
 
 export type ObjectExtension =
-  | ImmutableExtensionsObjectExtension
-  | PriorGroupIdGapExtension
-  | PriorObjectIdGapExtension
-  | UnknownObjectExtension
+  ImmutableExtensionsObjectExtension | PriorGroupIdGapExtension | PriorObjectIdGapExtension | UnknownObjectExtension
 
 export namespace ObjectExtension {
   export function fromKeyValuePair(pair: KeyValuePair): ObjectExtension {

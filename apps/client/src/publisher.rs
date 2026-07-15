@@ -308,7 +308,7 @@ async fn send_datagrams(
         group_id,
         object_id,
         Some(publisher_priority), // publisher_priority
-        None,                     // extension_headers
+        None,                     // properties
         Bytes::from(payload),
         false, // end_of_group
       );
@@ -380,7 +380,7 @@ async fn send_via_streams(
 
       let subgroup_obj = SubgroupObject {
         object_id,
-        extension_headers: Some(vec![]),
+        properties: Some(vec![]),
         object_status: None,
         payload: Some(Bytes::from(payload)),
       };

@@ -214,9 +214,9 @@ impl SendDataStream {
         self.fetch_prev_ctx = fetch_obj.context();
       }
       HeaderInfo::Subgroup { header, .. } => {
-        let has_extensions = header.header_type.has_extensions();
+        let has_properties = header.header_type.has_properties();
         let subgroup_obj = object.try_into_subgroup()?;
-        buf.extend_from_slice(&subgroup_obj.serialize(previous_object_id, has_extensions)?);
+        buf.extend_from_slice(&subgroup_obj.serialize(previous_object_id, has_properties)?);
       }
     }
 
@@ -564,8 +564,8 @@ impl RecvDataStream {
           )
         }
         HeaderInfo::Subgroup { header, .. } => {
-          let has_extensions = header.header_type.has_extensions();
-          SubgroupObject::deserialize(&mut bytes_cursor, previous_object_id, has_extensions)
+          let has_properties = header.header_type.has_properties();
+          SubgroupObject::deserialize(&mut bytes_cursor, previous_object_id, has_properties)
             .and_then(|subgroup_obj| {
               let object_id = subgroup_obj.object_id;
               let object = Object::try_from_subgroup(
@@ -690,9 +690,9 @@ mod tests {
   use crate::model::control::fetch::JoiningFetchProps;
   use crate::model::control::{fetch::Fetch, subscribe::Subscribe};
   use crate::model::data::constant::SubgroupHeaderType;
-  use crate::model::extension_header::object_extension::ObjectExtension;
   use crate::model::parameter::authorization_token::AuthorizationToken;
   use crate::model::parameter::message_parameter::MessageParameter;
+  use crate::model::property::object_property::ObjectProperty;
   use bytes::Bytes;
   use std::error::Error;
   use std::sync::Arc;
@@ -731,11 +731,11 @@ mod tests {
       object_id: 10,
       publisher_priority: 255,
       forwarding_preference: ObjectForwardingPreference::Subgroup,
-      extension_headers: Some(vec![
-        ObjectExtension::Unknown {
+      properties: Some(vec![
+        ObjectProperty::Unknown {
           kvp: KeyValuePair::try_new_varint(0, 10).unwrap(),
         },
-        ObjectExtension::Unknown {
+        ObjectProperty::Unknown {
           kvp: KeyValuePair::try_new_bytes(1, Bytes::from_static(b"wololoo")).unwrap(),
         },
       ]),
@@ -790,11 +790,11 @@ mod tests {
   #[allow(dead_code)]
   fn make_subgroup_object() -> SubgroupObject {
     let object_id: u64 = 10;
-    let extension_headers = Some(vec![
-      ObjectExtension::Unknown {
+    let properties = Some(vec![
+      ObjectProperty::Unknown {
         kvp: KeyValuePair::try_new_varint(0, 10).unwrap(),
       },
-      ObjectExtension::Unknown {
+      ObjectProperty::Unknown {
         kvp: KeyValuePair::try_new_bytes(1, Bytes::from_static(b"wololoo")).unwrap(),
       },
     ]);
@@ -803,7 +803,7 @@ mod tests {
 
     SubgroupObject {
       object_id,
-      extension_headers,
+      properties,
       payload,
       object_status,
     }

@@ -23,7 +23,7 @@ pub enum FetchHeaderType {
 /// Subgroup Header Type
 ///
 /// Type bit layout (0b00X1XXXX):
-/// - Bit 0 (0x01): EXTENSIONS - Extensions present in all objects
+/// - Bit 0 (0x01): PROPERTIES - Properties present in all objects
 /// - Bits 1-2 (0x06): SUBGROUP_ID_MODE - How subgroup ID is encoded
 ///   - 0b00 (0x00): Subgroup ID = 0 (absent from header)
 ///   - 0b01 (0x02): Subgroup ID = First Object ID (absent from header)
@@ -39,8 +39,8 @@ pub enum FetchHeaderType {
 pub struct SubgroupHeaderType(u8);
 
 impl SubgroupHeaderType {
-  /// Extensions present in all objects (bit 0)
-  pub const EXTENSIONS: u8 = 0x01;
+  /// Properties present in all objects (bit 0)
+  pub const PROPERTIES: u8 = 0x01;
   /// Mask for SUBGROUP_ID_MODE (bits 1-2)
   pub const SUBGROUP_ID_MODE_MASK: u8 = 0x06;
   /// This subgroup contains the final object in the group (bit 3)
@@ -83,9 +83,9 @@ impl SubgroupHeaderType {
     self.0
   }
 
-  /// Check if extensions are present (bit 0 set)
-  pub fn has_extensions(&self) -> bool {
-    self.0 & Self::EXTENSIONS != 0
+  /// Check if properties are present (bit 0 set)
+  pub fn has_properties(&self) -> bool {
+    self.0 & Self::PROPERTIES != 0
   }
 
   /// Check if subgroup ID is explicit in header (SUBGROUP_ID_MODE = 0b10)
@@ -117,14 +117,14 @@ impl SubgroupHeaderType {
   /// Create type from property flags.
   /// subgroup_id_mode: 0=zero, 1=firstObjId, 2=explicit
   pub fn from_properties(
-    has_extensions: bool,
+    has_properties: bool,
     subgroup_id_mode: u8,
     contains_end_of_group: bool,
     has_default_priority: bool,
   ) -> Self {
     let mut v: u8 = Self::REQUIRED_BIT;
-    if has_extensions {
-      v |= Self::EXTENSIONS;
+    if has_properties {
+      v |= Self::PROPERTIES;
     }
     v |= (subgroup_id_mode & 0x03) << 1; // bits 1-2
     if contains_end_of_group {
@@ -195,7 +195,7 @@ impl From<ObjectStatus> for u64 {
 /// Draft-16 Object Datagram Type (bitmask newtype).
 ///
 /// Type bit layout (form `0b00X0XXXX`):
-/// - Bit 0 (0x01): EXTENSIONS — Extensions field present
+/// - Bit 0 (0x01): PROPERTIES — Properties field present
 /// - Bit 1 (0x02): END_OF_GROUP — Last object in group
 /// - Bit 2 (0x04): ZERO_OBJECT_ID — Object ID omitted (assumed 0)
 /// - Bit 3 (0x08): DEFAULT_PRIORITY — Publisher Priority omitted (inherited)
@@ -208,7 +208,7 @@ impl From<ObjectStatus> for u64 {
 pub struct ObjectDatagramType(u8);
 
 impl ObjectDatagramType {
-  pub const EXTENSIONS: u8 = 0x01;
+  pub const PROPERTIES: u8 = 0x01;
   pub const END_OF_GROUP: u8 = 0x02;
   pub const ZERO_OBJECT_ID: u8 = 0x04;
   pub const DEFAULT_PRIORITY: u8 = 0x08;
@@ -240,9 +240,9 @@ impl ObjectDatagramType {
     self.0
   }
 
-  /// Check if extensions are present (bit 0).
-  pub fn has_extensions(&self) -> bool {
-    self.0 & Self::EXTENSIONS != 0
+  /// Check if properties are present (bit 0).
+  pub fn has_properties(&self) -> bool {
+    self.0 & Self::PROPERTIES != 0
   }
 
   /// Check if this is end of group (bit 1).
@@ -270,15 +270,15 @@ impl ObjectDatagramType {
   /// Create type from property flags.
   /// Returns error if STATUS and END_OF_GROUP are both true.
   pub fn from_properties(
-    has_extensions: bool,
+    has_properties: bool,
     end_of_group: bool,
     object_id_is_zero: bool,
     default_priority: bool,
     is_status: bool,
   ) -> Result<Self, ParseError> {
     let mut v: u8 = 0;
-    if has_extensions {
-      v |= Self::EXTENSIONS;
+    if has_properties {
+      v |= Self::PROPERTIES;
     }
     if end_of_group {
       v |= Self::END_OF_GROUP;

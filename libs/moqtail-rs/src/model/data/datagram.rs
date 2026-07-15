@@ -16,8 +16,8 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
 use crate::model::error::ParseError;
-use crate::model::extension_header::object_extension::{
-  ObjectExtension, deserialize_object_extensions, serialize_object_extensions,
+use crate::model::property::object_property::{
+  ObjectProperty, deserialize_object_properties, serialize_object_properties,
 };
 
 use super::constant::{ObjectDatagramType, ObjectStatus};
@@ -25,7 +25,7 @@ use super::constant::{ObjectDatagramType, ObjectStatus};
 /// Draft-16 unified Object Datagram.
 ///
 /// Type bit layout (form 0b00X0XXXX):
-/// - Bit 0 (0x01): EXTENSIONS - Extensions field present
+/// - Bit 0 (0x01): PROPERTIES - Properties field present
 /// - Bit 1 (0x02): END_OF_GROUP - Last object in group
 /// - Bit 2 (0x04): ZERO_OBJECT_ID - Object ID omitted (assumed 0)
 /// - Bit 3 (0x08): DEFAULT_PRIORITY - Publisher Priority omitted (inherited)
@@ -39,7 +39,7 @@ pub struct Datagram {
   pub group_id: u64,
   pub object_id: u64,
   pub publisher_priority: Option<u8>,
-  pub extension_headers: Option<Vec<ObjectExtension>>,
+  pub properties: Option<Vec<ObjectProperty>>,
   pub payload: Option<Bytes>,
   pub object_status: Option<ObjectStatus>,
   pub end_of_group: bool,
@@ -52,7 +52,7 @@ impl Datagram {
     group_id: u64,
     object_id: u64,
     publisher_priority: Option<u8>,
-    extension_headers: Option<Vec<ObjectExtension>>,
+    properties: Option<Vec<ObjectProperty>>,
     payload: Bytes,
     end_of_group: bool,
   ) -> Self {
@@ -61,7 +61,7 @@ impl Datagram {
       group_id,
       object_id,
       publisher_priority,
-      extension_headers,
+      properties,
       payload: Some(payload),
       object_status: None,
       end_of_group,
@@ -75,7 +75,7 @@ impl Datagram {
     group_id: u64,
     object_id: u64,
     publisher_priority: Option<u8>,
-    extension_headers: Option<Vec<ObjectExtension>>,
+    properties: Option<Vec<ObjectProperty>>,
     object_status: ObjectStatus,
   ) -> Self {
     Datagram {
@@ -83,14 +83,14 @@ impl Datagram {
       group_id,
       object_id,
       publisher_priority,
-      extension_headers,
+      properties,
       payload: None,
       object_status: Some(object_status),
       end_of_group: false,
     }
   }
 
-  /// Create a simple payload datagram without extensions.
+  /// Create a simple payload datagram without properties.
   pub fn new(
     track_alias: u64,
     group_id: u64,
@@ -103,7 +103,7 @@ impl Datagram {
       group_id,
       object_id,
       publisher_priority: Some(publisher_priority),
-      extension_headers: None,
+      properties: None,
       payload: Some(payload),
       object_status: None,
       end_of_group: false,
@@ -113,13 +113,13 @@ impl Datagram {
   pub fn serialize(&self) -> Result<Bytes, ParseError> {
     let mut buf = BytesMut::new();
 
-    let has_extensions = self.extension_headers.is_some();
+    let has_properties = self.properties.is_some();
     let object_id_is_zero = self.object_id == 0;
     let default_priority = self.publisher_priority.is_none();
     let is_status = self.object_status.is_some();
 
     let dtype = ObjectDatagramType::from_properties(
-      has_extensions,
+      has_properties,
       self.end_of_group,
       object_id_is_zero,
       default_priority,
@@ -141,9 +141,9 @@ impl Datagram {
       buf.put_u8(priority);
     }
 
-    // Write extension headers if present
-    if let Some(ext_headers) = &self.extension_headers {
-      let payload_buf = serialize_object_extensions(ext_headers)?;
+    // Write properties if present
+    if let Some(ext_headers) = &self.properties {
+      let payload_buf = serialize_object_properties(ext_headers)?;
       buf.put_vi(payload_buf.len())?;
       buf.extend_from_slice(&payload_buf);
     }
@@ -187,14 +187,14 @@ impl Datagram {
       None
     };
 
-    // Read extension headers if type indicates they're present
-    let extension_headers = if msg_type.has_extensions() {
+    // Read properties if type indicates they're present
+    let properties = if msg_type.has_properties() {
       let ext_len = bytes.get_vi()?;
 
       if ext_len == 0 {
         return Err(ParseError::ProtocolViolation {
-          context: "Datagram::deserialize(extension_length)",
-          details: "Extension headers present but length is 0".to_string(),
+          context: "Datagram::deserialize(properties_length)",
+          details: "Properties present but length is 0".to_string(),
         });
       }
 
@@ -210,14 +210,14 @@ impl Datagram {
 
       if bytes.remaining() < ext_len {
         return Err(ParseError::NotEnoughBytes {
-          context: "Datagram::deserialize(extension_headers)",
+          context: "Datagram::deserialize(properties)",
           needed: ext_len,
           available: bytes.remaining(),
         });
       }
 
       let mut header_bytes = bytes.copy_to_bytes(ext_len);
-      let headers = deserialize_object_extensions(&mut header_bytes).map_err(|e| {
+      let headers = deserialize_object_properties(&mut header_bytes).map_err(|e| {
         ParseError::ProtocolViolation {
           context: "Datagram::deserialize, can't parse headers",
           details: e.to_string(),
@@ -245,7 +245,7 @@ impl Datagram {
       group_id,
       object_id,
       publisher_priority,
-      extension_headers,
+      properties,
       payload,
       object_status,
       end_of_group,
@@ -272,7 +272,7 @@ mod tests {
     );
 
     let mut buf = datagram.serialize().unwrap();
-    // Type 0x00: no extensions, no end_of_group, object_id present, priority present, not status
+    // Type 0x00: no properties, no end_of_group, object_id present, priority present, not status
     assert_eq!(buf[0], 0x00);
 
     let deserialized = Datagram::deserialize(&mut buf).unwrap();
@@ -281,17 +281,17 @@ mod tests {
   }
 
   #[test]
-  fn test_roundtrip_payload_with_extensions() {
+  fn test_roundtrip_payload_with_properties() {
     let datagram = Datagram::new_payload(
       144,
       9,
       10,
       Some(255),
       Some(vec![
-        ObjectExtension::Unknown {
+        ObjectProperty::Unknown {
           kvp: KeyValuePair::try_new_varint(0, 10).unwrap(),
         },
-        ObjectExtension::Unknown {
+        ObjectProperty::Unknown {
           kvp: KeyValuePair::try_new_bytes(1, Bytes::from_static(b"wololoo")).unwrap(),
         },
       ]),
@@ -300,7 +300,7 @@ mod tests {
     );
 
     let mut buf = datagram.serialize().unwrap();
-    // Type 0x01: extensions present
+    // Type 0x01: properties present
     assert_eq!(buf[0], 0x01);
 
     let deserialized = Datagram::deserialize(&mut buf).unwrap();
@@ -376,13 +376,13 @@ mod tests {
 
   #[test]
   fn test_roundtrip_all_payload_flags() {
-    // extensions + end_of_group + zero_object_id + default_priority = 0x0F
+    // properties + end_of_group + zero_object_id + default_priority = 0x0F
     let datagram = Datagram::new_payload(
       1,
       5,
       0,
       None,
-      Some(vec![ObjectExtension::Unknown {
+      Some(vec![ObjectProperty::Unknown {
         kvp: KeyValuePair::try_new_varint(0, 42).unwrap(),
       }]),
       Bytes::from_static(b"payload"),
@@ -402,11 +402,11 @@ mod tests {
   }
 
   #[test]
-  fn test_roundtrip_status_without_extensions() {
+  fn test_roundtrip_status_without_properties() {
     let datagram = Datagram::new_status(144, 9, 10, Some(128), None, ObjectStatus::EndOfGroup);
 
     let mut buf = datagram.serialize().unwrap();
-    // Type 0x20: STATUS set, no extensions
+    // Type 0x20: STATUS set, no properties
     assert_eq!(buf[0], 0x20);
 
     let deserialized = Datagram::deserialize(&mut buf).unwrap();
@@ -415,17 +415,17 @@ mod tests {
   }
 
   #[test]
-  fn test_roundtrip_status_with_extensions() {
+  fn test_roundtrip_status_with_properties() {
     let datagram = Datagram::new_status(
       144,
       9,
       10,
       Some(255),
       Some(vec![
-        ObjectExtension::Unknown {
+        ObjectProperty::Unknown {
           kvp: KeyValuePair::try_new_varint(0, 10).unwrap(),
         },
-        ObjectExtension::Unknown {
+        ObjectProperty::Unknown {
           kvp: KeyValuePair::try_new_bytes(1, Bytes::from_static(b"wololoo")).unwrap(),
         },
       ]),
@@ -433,7 +433,7 @@ mod tests {
     );
 
     let mut buf = datagram.serialize().unwrap();
-    // Type 0x21: STATUS + extensions
+    // Type 0x21: STATUS + properties
     assert_eq!(buf[0], 0x21);
 
     let deserialized = Datagram::deserialize(&mut buf).unwrap();

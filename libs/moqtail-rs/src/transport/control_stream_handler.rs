@@ -378,8 +378,8 @@ mod tests {
 
   fn create_test_subscribe_ok() -> SubscribeOk {
     use crate::model::control::constant::GroupOrder;
-    use crate::model::extension_header::track_extension::TrackExtension;
     use crate::model::parameter::message_parameter::MessageParameter;
+    use crate::model::property::track_property::TrackProperty;
     let mut subscribe_ok = SubscribeOk::new(
       145136,
       999,
@@ -392,7 +392,7 @@ mod tests {
         }),
         MessageParameter::new_expires(100),
       ],
-      vec![TrackExtension::DeliveryTimeout { timeout_ms: 5000 }],
+      vec![TrackProperty::DeliveryTimeout { timeout_ms: 5000 }],
     );
     // Wire encoding canonicalizes parameter order ascending by type (delta-encoding requirement).
     subscribe_ok

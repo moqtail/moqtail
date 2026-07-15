@@ -14,8 +14,8 @@
 
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
 use crate::model::error::ParseError;
-use crate::model::extension_header::object_extension::{
-  ObjectExtension, deserialize_object_extensions, serialize_object_extensions,
+use crate::model::property::object_property::{
+  ObjectProperty, deserialize_object_properties, serialize_object_properties,
 };
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
@@ -26,7 +26,7 @@ const FLAG_SUBGROUP_MODE_MASK: u8 = 0x03;
 const FLAG_OBJECT_ID_PRESENT: u8 = 0x04;
 const FLAG_GROUP_ID_PRESENT: u8 = 0x08;
 const FLAG_PRIORITY_PRESENT: u8 = 0x10;
-const FLAG_EXTENSIONS_PRESENT: u8 = 0x20;
+const FLAG_PROPERTIES_PRESENT: u8 = 0x20;
 const FLAG_DATAGRAM: u8 = 0x40;
 
 const SUBGROUP_MODE_ZERO: u8 = 0b00;
@@ -74,7 +74,7 @@ pub struct FetchObjectPayload {
   pub object_id: u64,
   pub publisher_priority: u8,
   pub forwarding_preference: ObjectForwardingPreference,
-  pub extension_headers: Option<Vec<ObjectExtension>>,
+  pub properties: Option<Vec<ObjectProperty>>,
   /// Draft-16 §10.4.4 FETCH objects carry no Object Status field; zero-length
   /// payload signals a zero-length Normal object.
   pub payload: Bytes,
@@ -154,7 +154,7 @@ impl FetchObject {
     let has_object_id = flags & FLAG_OBJECT_ID_PRESENT != 0;
     let has_group_id = flags & FLAG_GROUP_ID_PRESENT != 0;
     let has_priority = flags & FLAG_PRIORITY_PRESENT != 0;
-    let has_extensions = flags & FLAG_EXTENSIONS_PRESENT != 0;
+    let has_properties = flags & FLAG_PROPERTIES_PRESENT != 0;
     let is_datagram = flags & FLAG_DATAGRAM != 0;
 
     // First object on the stream must not reference prior state.
@@ -245,7 +245,7 @@ impl FetchObject {
         .publisher_priority
     };
 
-    let extension_headers = if has_extensions {
+    let properties = if has_properties {
       let ext_len = bytes.get_vi()?;
       let ext_len: usize =
         ext_len
@@ -258,16 +258,16 @@ impl FetchObject {
           })?;
       if bytes.remaining() < ext_len {
         return Err(ParseError::NotEnoughBytes {
-          context: "FetchObject::deserialize(extensions)",
+          context: "FetchObject::deserialize(properties)",
           needed: ext_len,
           available: bytes.remaining(),
         });
       }
       let mut header_bytes = bytes.copy_to_bytes(ext_len);
-      let headers = deserialize_object_extensions(&mut header_bytes).map_err(|_| {
+      let headers = deserialize_object_properties(&mut header_bytes).map_err(|_| {
         ParseError::ProtocolViolation {
-          context: "FetchObject::deserialize(extensions)",
-          details: "cannot parse object extensions".to_string(),
+          context: "FetchObject::deserialize(properties)",
+          details: "cannot parse object properties".to_string(),
         }
       })?;
       Some(headers)
@@ -309,7 +309,7 @@ impl FetchObject {
       object_id,
       publisher_priority,
       forwarding_preference,
-      extension_headers,
+      properties,
       payload,
     }))
   }
@@ -339,7 +339,7 @@ fn serialize_payload(
     _ => (true, false),
   };
 
-  let has_extensions = matches!(&p.extension_headers, Some(v) if !v.is_empty());
+  let has_properties = matches!(&p.properties, Some(v) if !v.is_empty());
 
   // First object on the stream cannot inherit.
   let (has_group_id, has_object_id, has_priority, subgroup_mode) = if prev.is_none() {
@@ -381,8 +381,8 @@ fn serialize_payload(
   if has_priority {
     flags |= FLAG_PRIORITY_PRESENT;
   }
-  if has_extensions {
-    flags |= FLAG_EXTENSIONS_PRESENT;
+  if has_properties {
+    flags |= FLAG_PROPERTIES_PRESENT;
   }
   if is_datagram {
     flags |= FLAG_DATAGRAM;
@@ -403,8 +403,8 @@ fn serialize_payload(
   if has_priority {
     buf.put_u8(p.publisher_priority);
   }
-  if has_extensions {
-    let ext_buf = serialize_object_extensions(p.extension_headers.as_ref().unwrap())?;
+  if has_properties {
+    let ext_buf = serialize_object_properties(p.properties.as_ref().unwrap())?;
     buf.put_vi(ext_buf.len() as u64)?;
     buf.extend_from_slice(&ext_buf);
   }
@@ -427,11 +427,11 @@ mod tests {
       object_id: 10,
       publisher_priority: 255,
       forwarding_preference: ObjectForwardingPreference::Subgroup,
-      extension_headers: Some(vec![
-        ObjectExtension::Unknown {
+      properties: Some(vec![
+        ObjectProperty::Unknown {
           kvp: KeyValuePair::try_new_varint(0, 10).unwrap(),
         },
-        ObjectExtension::Unknown {
+        ObjectProperty::Unknown {
           kvp: KeyValuePair::try_new_bytes(1, Bytes::from_static(b"wololoo")).unwrap(),
         },
       ]),
@@ -453,9 +453,9 @@ mod tests {
     let first = sample_payload();
     let obj1 = FetchObject::Object(first.clone());
     let mut second = first.clone();
-    // Inheritable: same group, object_id = prior + 1, same subgroup, same priority, no extensions.
+    // Inheritable: same group, object_id = prior + 1, same subgroup, same priority, no properties.
     second.object_id = first.object_id + 1;
-    second.extension_headers = None;
+    second.properties = None;
     second.payload = Bytes::from_static(b"second");
     let obj2 = FetchObject::Object(second);
 

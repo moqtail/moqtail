@@ -27,8 +27,8 @@ use moqtail::model::control::constant::RequestErrorCode;
 use moqtail::model::data::datagram::Datagram;
 use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::model::data::object::Object;
-use moqtail::model::extension_header::track_extension::TrackExtension;
 use moqtail::model::parameter::message_parameter::MessageParameter;
+use moqtail::model::property::track_property::TrackProperty;
 use moqtail::transport::data_stream_handler::HeaderInfo;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -88,8 +88,8 @@ pub struct Track {
   pub status_notify: Arc<Notify>,
   /// Subscribers waiting for track confirmation: (request_id, connection_id).
   pub pending_subscribers: Arc<RwLock<Vec<(u64, usize)>>>,
-  /// Cached track extensions from PUBLISH or SUBSCRIBE_OK (relays MUST cache).
-  pub track_extensions: Arc<RwLock<Vec<TrackExtension>>>,
+  /// Cached track properties from PUBLISH or SUBSCRIBE_OK (relays MUST cache).
+  pub track_properties: Arc<RwLock<Vec<TrackProperty>>>,
   /// Original subgroup headers for open publisher streams, keyed by stream_id.
   /// Used so new mid-group subscribers can open a QUIC send stream
   /// Inserted when the first object of a subgroup arrives; removed when the
@@ -123,7 +123,7 @@ impl Track {
       status: Arc::new(RwLock::new(initial_status)),
       status_notify: Arc::new(Notify::new()),
       pending_subscribers: Arc::new(RwLock::new(Vec::new())),
-      track_extensions: Arc::new(RwLock::new(Vec::new())),
+      track_properties: Arc::new(RwLock::new(Vec::new())),
       active_subgroup_headers: Arc::new(RwLock::new(HashMap::new())),
     }
   }
@@ -175,7 +175,7 @@ impl Track {
     publisher_connection_id: usize,
     publisher_track_alias: u64,
     subscribe_parameters: Vec<MessageParameter>,
-    extensions: Vec<TrackExtension>,
+    properties: Vec<TrackProperty>,
   ) {
     {
       let mut aliases = self.publisher_aliases.write().await;
@@ -186,7 +186,7 @@ impl Track {
       subscribe_parameters,
     };
     drop(status);
-    *self.track_extensions.write().await = extensions;
+    *self.track_properties.write().await = properties;
     self.status_notify.notify_waiters();
 
     info!(
@@ -195,9 +195,9 @@ impl Track {
     );
   }
 
-  /// Updates the cached track extensions (per spec: most recent set replaces any previous).
-  pub async fn set_track_extensions(&self, extensions: Vec<TrackExtension>) {
-    *self.track_extensions.write().await = extensions;
+  /// Updates the cached track properties (per spec: most recent set replaces any previous).
+  pub async fn set_track_properties(&self, properties: Vec<TrackProperty>) {
+    *self.track_properties.write().await = properties;
   }
 
   /// Transition from Pending to Rejected. Notifies waiters.

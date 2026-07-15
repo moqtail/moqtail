@@ -18,44 +18,44 @@ use crate::model::error::ParseError;
 
 #[repr(u64)]
 #[derive(Clone, Debug, Copy, PartialEq)]
-pub enum LOCHeaderExtensionId {
+pub enum LOCPropertyId {
   CaptureTimestamp = 2,  // Section 2.3.1.1 - Common Header
   VideoFrameMarking = 4, // Section 2.3.2.2 - Video Header
   AudioLevel = 6,        // Section 2.3.3.1 - Audio Header
   VideoConfig = 13,      // Section 2.3.2.1 - Video Header
 }
 
-impl TryFrom<u64> for LOCHeaderExtensionId {
+impl TryFrom<u64> for LOCPropertyId {
   type Error = ParseError;
 
   fn try_from(value: u64) -> Result<Self, Self::Error> {
     match value {
-      2 => Ok(LOCHeaderExtensionId::CaptureTimestamp),
-      4 => Ok(LOCHeaderExtensionId::VideoFrameMarking),
-      6 => Ok(LOCHeaderExtensionId::AudioLevel),
-      13 => Ok(LOCHeaderExtensionId::VideoConfig),
+      2 => Ok(LOCPropertyId::CaptureTimestamp),
+      4 => Ok(LOCPropertyId::VideoFrameMarking),
+      6 => Ok(LOCPropertyId::AudioLevel),
+      13 => Ok(LOCPropertyId::VideoConfig),
       _ => Err(ParseError::InvalidType {
-        context: "LOCHeaderExtensionId::try_from(u64)",
+        context: "LOCPropertyId::try_from(u64)",
         details: format!("Invalid type, got {value}"),
       }),
     }
   }
 }
 
-impl From<LOCHeaderExtensionId> for u64 {
-  fn from(value: LOCHeaderExtensionId) -> Self {
+impl From<LOCPropertyId> for u64 {
+  fn from(value: LOCPropertyId) -> Self {
     value as u64
   }
 }
 
-/// MOQT extension header type values.
+/// MOQT property type values.
 /// Even type values use VarInt KVP encoding; odd type values use Bytes KVP encoding.
 #[repr(u64)]
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
-pub enum TrackExtensionType {
+pub enum TrackPropertyType {
   DeliveryTimeout = 0x02,            // Track scope, VarInt (ms, must be > 0)
   MaxCacheDuration = 0x04,           // Track scope, VarInt (ms)
-  ImmutableExtensions = 0x0B,        // Track+Object scope, Bytes (nested KVPs)
+  ImmutableProperties = 0x0B,        // Track+Object scope, Bytes (nested KVPs)
   DefaultPublisherPriority = 0x0E,   // Track scope, VarInt (0-255)
   DefaultPublisherGroupOrder = 0x22, // Track scope, VarInt (1=Ascending, 2=Descending)
   DynamicGroups = 0x30,              // Track scope, VarInt (0 or 1)
@@ -63,29 +63,29 @@ pub enum TrackExtensionType {
   PriorObjectIdGap = 0x3E,           // Object scope, VarInt
 }
 
-impl TryFrom<u64> for TrackExtensionType {
+impl TryFrom<u64> for TrackPropertyType {
   type Error = ParseError;
 
   fn try_from(value: u64) -> Result<Self, Self::Error> {
     match value {
-      0x02 => Ok(TrackExtensionType::DeliveryTimeout),
-      0x04 => Ok(TrackExtensionType::MaxCacheDuration),
-      0x0B => Ok(TrackExtensionType::ImmutableExtensions),
-      0x0E => Ok(TrackExtensionType::DefaultPublisherPriority),
-      0x22 => Ok(TrackExtensionType::DefaultPublisherGroupOrder),
-      0x30 => Ok(TrackExtensionType::DynamicGroups),
-      0x3C => Ok(TrackExtensionType::PriorGroupIdGap),
-      0x3E => Ok(TrackExtensionType::PriorObjectIdGap),
+      0x02 => Ok(TrackPropertyType::DeliveryTimeout),
+      0x04 => Ok(TrackPropertyType::MaxCacheDuration),
+      0x0B => Ok(TrackPropertyType::ImmutableProperties),
+      0x0E => Ok(TrackPropertyType::DefaultPublisherPriority),
+      0x22 => Ok(TrackPropertyType::DefaultPublisherGroupOrder),
+      0x30 => Ok(TrackPropertyType::DynamicGroups),
+      0x3C => Ok(TrackPropertyType::PriorGroupIdGap),
+      0x3E => Ok(TrackPropertyType::PriorObjectIdGap),
       _ => Err(ParseError::InvalidType {
-        context: "TrackExtensionType::try_from(u64)",
-        details: format!("Unknown extension type, got {value}"),
+        context: "TrackPropertyType::try_from(u64)",
+        details: format!("Unknown property type, got {value}"),
       }),
     }
   }
 }
 
-impl From<TrackExtensionType> for u64 {
-  fn from(value: TrackExtensionType) -> Self {
+impl From<TrackPropertyType> for u64 {
+  fn from(value: TrackPropertyType) -> Self {
     value as u64
   }
 }
@@ -95,27 +95,27 @@ mod tests {
   use super::*;
 
   #[test]
-  fn test_track_extension_type_roundtrip() {
+  fn test_track_property_type_roundtrip() {
     let known = [
-      (0x02u64, TrackExtensionType::DeliveryTimeout),
-      (0x04, TrackExtensionType::MaxCacheDuration),
-      (0x0B, TrackExtensionType::ImmutableExtensions),
-      (0x0E, TrackExtensionType::DefaultPublisherPriority),
-      (0x22, TrackExtensionType::DefaultPublisherGroupOrder),
-      (0x30, TrackExtensionType::DynamicGroups),
-      (0x3C, TrackExtensionType::PriorGroupIdGap),
-      (0x3E, TrackExtensionType::PriorObjectIdGap),
+      (0x02u64, TrackPropertyType::DeliveryTimeout),
+      (0x04, TrackPropertyType::MaxCacheDuration),
+      (0x0B, TrackPropertyType::ImmutableProperties),
+      (0x0E, TrackPropertyType::DefaultPublisherPriority),
+      (0x22, TrackPropertyType::DefaultPublisherGroupOrder),
+      (0x30, TrackPropertyType::DynamicGroups),
+      (0x3C, TrackPropertyType::PriorGroupIdGap),
+      (0x3E, TrackPropertyType::PriorObjectIdGap),
     ];
     for (raw, expected) in known {
-      let parsed = TrackExtensionType::try_from(raw).unwrap();
+      let parsed = TrackPropertyType::try_from(raw).unwrap();
       assert_eq!(parsed, expected);
       assert_eq!(u64::from(parsed), raw);
     }
   }
 
   #[test]
-  fn test_track_extension_type_unknown() {
-    assert!(TrackExtensionType::try_from(0xFF).is_err());
-    assert!(TrackExtensionType::try_from(0x00).is_err());
+  fn test_track_property_type_unknown() {
+    assert!(TrackPropertyType::try_from(0xFF).is_err());
+    assert!(TrackPropertyType::try_from(0x00).is_err());
   }
 }

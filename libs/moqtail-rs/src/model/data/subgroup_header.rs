@@ -34,12 +34,12 @@ impl SubgroupHeader {
     track_alias: u64,
     group_id: u64,
     publisher_priority: Option<u8>,
-    has_extensions: bool,
+    has_properties: bool,
     contains_end_of_group: bool,
   ) -> Self {
     let has_default_priority = publisher_priority.is_none();
     let header_type = SubgroupHeaderType::from_properties(
-      has_extensions,
+      has_properties,
       0,
       contains_end_of_group,
       has_default_priority,
@@ -59,12 +59,12 @@ impl SubgroupHeader {
     track_alias: u64,
     group_id: u64,
     publisher_priority: Option<u8>,
-    has_extensions: bool,
+    has_properties: bool,
     contains_end_of_group: bool,
   ) -> Self {
     let has_default_priority = publisher_priority.is_none();
     let header_type = SubgroupHeaderType::from_properties(
-      has_extensions,
+      has_properties,
       1,
       contains_end_of_group,
       has_default_priority,
@@ -85,12 +85,12 @@ impl SubgroupHeader {
     group_id: u64,
     subgroup_id: u64,
     publisher_priority: Option<u8>,
-    has_extensions: bool,
+    has_properties: bool,
     contains_end_of_group: bool,
   ) -> Self {
     let has_default_priority = publisher_priority.is_none();
     let header_type = SubgroupHeaderType::from_properties(
-      has_extensions,
+      has_properties,
       2,
       contains_end_of_group,
       has_default_priority,
@@ -434,13 +434,13 @@ mod tests {
         .contains_end_of_group()
     );
 
-    // Test has_extensions
-    assert!(SubgroupHeaderType::try_new(0x11).unwrap().has_extensions());
-    assert!(SubgroupHeaderType::try_new(0x13).unwrap().has_extensions());
-    assert!(SubgroupHeaderType::try_new(0x15).unwrap().has_extensions());
-    assert!(SubgroupHeaderType::try_new(0x19).unwrap().has_extensions());
-    assert!(SubgroupHeaderType::try_new(0x1B).unwrap().has_extensions());
-    assert!(SubgroupHeaderType::try_new(0x1D).unwrap().has_extensions());
+    // Test has_properties
+    assert!(SubgroupHeaderType::try_new(0x11).unwrap().has_properties());
+    assert!(SubgroupHeaderType::try_new(0x13).unwrap().has_properties());
+    assert!(SubgroupHeaderType::try_new(0x15).unwrap().has_properties());
+    assert!(SubgroupHeaderType::try_new(0x19).unwrap().has_properties());
+    assert!(SubgroupHeaderType::try_new(0x1B).unwrap().has_properties());
+    assert!(SubgroupHeaderType::try_new(0x1D).unwrap().has_properties());
   }
 
   #[test]
@@ -597,7 +597,7 @@ mod tests {
     // Create a subgroup object
     let subgroup_obj = SubgroupObject {
       object_id: 42,
-      extension_headers: None,
+      properties: None,
       payload: Some(Bytes::from_static(b"test payload")),
       object_status: None,
     };
@@ -636,7 +636,7 @@ mod tests {
     let object = Object::try_from_subgroup(
       SubgroupObject {
         object_id: 43,
-        extension_headers: None,
+        properties: None,
         payload: Some(Bytes::from_static(b"test payload 2")),
         object_status: None,
       },
@@ -662,7 +662,7 @@ mod tests {
     let object = Object::try_from_subgroup(
       SubgroupObject {
         object_id: 55,
-        extension_headers: None,
+        properties: None,
         payload: Some(Bytes::from_static(b"test payload 3")),
         object_status: None,
       },

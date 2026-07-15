@@ -422,7 +422,7 @@ impl Subscription {
 
                           // TODO: check this. If is_some returns true, we may not need
                           // to check the length.
-                          let has_extensions = object.extension_headers.as_ref().is_some();
+                          let has_properties = object.properties.as_ref().is_some();
 
                           // create a fake subgroup header using the object attributes
                           // TODO: It think contains_end_of_group should be checked by looking at
@@ -433,7 +433,7 @@ impl Subscription {
                               object.group_id,
                               object.subgroup_id,
                               Some(object.publisher_priority),
-                              has_extensions,
+                              has_properties,
                               false,
                             ),
                           };
@@ -1207,8 +1207,8 @@ impl Subscription {
     // This loop will keep the stream open and process incoming objects
     // TODO: revisit this logic to handle also fetch requests
     if let Ok(sub_object) = object.try_into_subgroup() {
-      let has_extensions = sub_object.extension_headers.is_some();
-      let object_bytes = match sub_object.serialize(previous_object_id, has_extensions) {
+      let has_properties = sub_object.properties.is_some();
+      let object_bytes = match sub_object.serialize(previous_object_id, has_properties) {
         Ok(data) => data,
         Err(e) => {
           error!(

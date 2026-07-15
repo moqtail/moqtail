@@ -465,7 +465,7 @@ extraction remains.
 > 📎 **A.2 : 7401** — "Copy DELIVERY_TIMEOUT min requirement from parameter to property (#1427)"
 
 - **Files:** `model/parameter/constant.rs` (`MessageParameterType`);
-  `model/extension_header/constant.rs:55-63` (`TrackExtensionType`)
+  `model/property/constant.rs:55-63` (`TrackPropertyType`) — renamed by RS-8
 - **Change — Parameters** (vs §15.7; current enum has 9 of 13):
   | Type | Name | Status |
   |---|---|---|

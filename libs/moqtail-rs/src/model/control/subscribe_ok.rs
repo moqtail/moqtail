@@ -16,11 +16,11 @@ use super::constant::ControlMessageType;
 use super::control_message::ControlMessageTrait;
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
 use crate::model::error::ParseError;
-use crate::model::extension_header::track_extension::{
-  TrackExtension, deserialize_track_extensions, serialize_track_extensions,
-};
 use crate::model::parameter::message_parameter::{
   MessageParameter, deserialize_message_parameters, serialize_message_parameters,
+};
+use crate::model::property::track_property::{
+  TrackProperty, deserialize_track_properties, serialize_track_properties,
 };
 use bytes::{BufMut, Bytes, BytesMut};
 
@@ -29,7 +29,7 @@ pub struct SubscribeOk {
   pub request_id: u64,
   pub track_alias: u64,
   pub subscribe_parameters: Vec<MessageParameter>,
-  pub track_extensions: Vec<TrackExtension>,
+  pub track_properties: Vec<TrackProperty>,
 }
 
 impl SubscribeOk {
@@ -37,13 +37,13 @@ impl SubscribeOk {
     request_id: u64,
     track_alias: u64,
     subscribe_parameters: Vec<MessageParameter>,
-    track_extensions: Vec<TrackExtension>,
+    track_properties: Vec<TrackProperty>,
   ) -> Self {
     Self {
       request_id,
       track_alias,
       subscribe_parameters,
-      track_extensions,
+      track_properties,
     }
   }
 }
@@ -60,8 +60,8 @@ impl ControlMessageTrait for SubscribeOk {
     payload.put_vi(self.subscribe_parameters.len() as u64)?;
     payload.extend_from_slice(&serialize_message_parameters(&self.subscribe_parameters)?);
 
-    // Track Extensions (no length prefix; bounded by outer message Length field)
-    payload.extend_from_slice(&serialize_track_extensions(&self.track_extensions)?);
+    // Track Properties (no length prefix; bounded by outer message Length field)
+    payload.extend_from_slice(&serialize_track_properties(&self.track_properties)?);
 
     let payload_len: u16 = payload
       .len()
@@ -87,14 +87,14 @@ impl ControlMessageTrait for SubscribeOk {
     let subscribe_parameters =
       deserialize_message_parameters(payload, param_count, ControlMessageType::SubscribeOk)?;
 
-    // Track Extensions: consume whatever remains in the payload
-    let track_extensions = deserialize_track_extensions(payload)?;
+    // Track Properties: consume whatever remains in the payload
+    let track_properties = deserialize_track_properties(payload)?;
 
     Ok(Box::new(SubscribeOk {
       request_id,
       track_alias,
       subscribe_parameters,
-      track_extensions,
+      track_properties,
     }))
   }
 
@@ -108,7 +108,7 @@ mod tests {
   use super::*;
   use crate::model::common::location::Location;
   use crate::model::control::constant::GroupOrder;
-  use crate::model::extension_header::track_extension::TrackExtension;
+  use crate::model::property::track_property::TrackProperty;
   use bytes::Buf;
 
   #[test]
@@ -125,7 +125,7 @@ mod tests {
         }),
         MessageParameter::new_expires(100),
       ],
-      track_extensions: vec![],
+      track_properties: vec![],
     };
     // Wire encoding canonicalizes parameter order ascending by type (delta-encoding requirement).
     subscribe_ok
@@ -143,7 +143,7 @@ mod tests {
   }
 
   #[test]
-  fn test_roundtrip_with_track_extensions() {
+  fn test_roundtrip_with_track_properties() {
     let subscribe_ok = SubscribeOk {
       request_id: 999,
       track_alias: 42,
@@ -151,9 +151,9 @@ mod tests {
         MessageParameter::new_expires(0),
         MessageParameter::new_group_order(GroupOrder::Descending),
       ],
-      track_extensions: vec![
-        TrackExtension::DeliveryTimeout { timeout_ms: 500 },
-        TrackExtension::DynamicGroups { enabled: true },
+      track_properties: vec![
+        TrackProperty::DeliveryTimeout { timeout_ms: 500 },
+        TrackProperty::DynamicGroups { enabled: true },
       ],
     };
 
@@ -179,7 +179,7 @@ mod tests {
           object: 0,
         }),
       ],
-      track_extensions: vec![],
+      track_properties: vec![],
     };
 
     let serialized = subscribe_ok.serialize().unwrap();
@@ -212,7 +212,7 @@ mod tests {
           object: 0,
         }),
       ],
-      track_extensions: vec![],
+      track_properties: vec![],
     };
     let mut buf = subscribe_ok.serialize().unwrap();
     let msg_type = buf.get_vi().unwrap();

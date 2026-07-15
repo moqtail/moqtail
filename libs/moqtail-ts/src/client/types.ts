@@ -62,11 +62,7 @@ import { PublishRequest } from './request/publish'
  * ```
  */
 export type MOQtailRequest =
-  | PublishRequest
-  | PublishNamespaceRequest
-  | SubscribeNamespaceRequest
-  | FetchRequest
-  | SubscribeRequest
+  PublishRequest | PublishNamespaceRequest | SubscribeNamespaceRequest | FetchRequest | SubscribeRequest
 
 /**
  * Options for {@link MOQtailClient.new} controlling connection target, protocol negotiation, timeouts,
@@ -154,7 +150,7 @@ export type SubscribeOptions = {
   fullTrackName: FullTrackName
   /** Subscriber priority (0 = highest, 255 = lowest). Values outside range are clamped. Fractional values are rounded. */
   priority: number
-  /** Desired {@link GroupOrder} (e.g. {@link GroupOrder.Original}) specifying delivery ordering semantics. */
+  /** Desired {@link (GroupOrder:enum)} (e.g. {@link (GroupOrder:enum).Original}) specifying delivery ordering semantics. */
   groupOrder: GroupOrder
   /** If true, deliver objects forward (ascending); if false, reverse/backward semantics (implementation dependent). */
   forward: boolean
@@ -267,10 +263,10 @@ export type EarlyDiscardPolicyConfig = {
 export type FetchOptions = {
   /** Request priority (0 = highest, 255 = lowest). Rounded & clamped. */
   priority: number
-  /** {@link GroupOrder} governing sequencing. */
+  /** {@link (GroupOrder:enum)} governing sequencing. */
   groupOrder: GroupOrder
   /**
-   * Discriminated union selecting the {@link FetchType} mode and its specific properties:
+   * Discriminated union selecting the {@link (FetchType:enum)} mode and its specific properties:
    * - Standalone: full explicit range on a {@link FullTrackName} with start/end {@link Location}s.
    * - Relative / Absolute: join an existing {@link SubscribeRequest} (identified by `joiningRequestId`) with starting position `joiningStart`.
    */

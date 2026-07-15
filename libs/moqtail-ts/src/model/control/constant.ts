@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { CastingError } from '../error'
+import { InvalidEnumValue } from '../error'
 /**
  * Protocol string array exchanged in wt-available-protocols header
  */
@@ -61,68 +61,71 @@ export enum ControlMessageType {
  * Converts a bigint value to a ControlMessageType enum.
  * @param v - The bigint value.
  * @returns The corresponding ControlMessageType.
- * @throws Error if the value is not a valid control message type.
+ * @throws InvalidEnumValue if the value is not a valid control message type.
  */
-export function controlMessageTypeFromBigInt(v: bigint): ControlMessageType {
-  switch (v) {
-    case 0x01n:
-      return ControlMessageType.ReservedSetupV00
-    case 0x40n:
-      return ControlMessageType.ReservedClientSetupV10
-    case 0x41n:
-      return ControlMessageType.ReservedServerSetupV10
-    case 0x20n:
-      return ControlMessageType.ClientSetup
-    case 0x21n:
-      return ControlMessageType.ServerSetup
-    case 0x10n:
-      return ControlMessageType.GoAway
-    case 0x15n:
-      return ControlMessageType.MaxRequestId
-    case 0x1an:
-      return ControlMessageType.RequestsBlocked
-    case 0x03n:
-      return ControlMessageType.Subscribe
-    case 0x04n:
-      return ControlMessageType.SubscribeOk
-    case 0x05n:
-      return ControlMessageType.RequestError
-    case 0x0an:
-      return ControlMessageType.Unsubscribe
-    case 0x02n:
-      return ControlMessageType.RequestUpdate
-    case 0x0bn:
-      return ControlMessageType.PublishDone
-    case 0x16n:
-      return ControlMessageType.Fetch
-    case 0x18n:
-      return ControlMessageType.FetchOk
-    case 0x17n:
-      return ControlMessageType.FetchCancel
-    case 0x0dn:
-      return ControlMessageType.TrackStatus
-    case 0x06n:
-      return ControlMessageType.PublishNamespace
-    case 0x07n:
-      return ControlMessageType.RequestOk
-    case 0x08n:
-      return ControlMessageType.Namespace
-    case 0x09n:
-      return ControlMessageType.PublishNamespaceDone
-    case 0x0en:
-      return ControlMessageType.NamespaceDone
-    case 0x0cn:
-      return ControlMessageType.PublishNamespaceCancel
-    case 0x11n:
-      return ControlMessageType.SubscribeNamespace
-    case 0x14n:
-      return ControlMessageType.UnsubscribeNamespace
-    case 0x1dn:
-      return ControlMessageType.Publish
-    case 0x1en:
-      return ControlMessageType.PublishOk
-    default:
-      throw new Error(`Invalid ControlMessageType: ${v}`)
+export namespace ControlMessageType {
+  /** Convert bigint discriminant to enum value or throw on invalid. */
+  export function tryFrom(v: bigint): ControlMessageType {
+    switch (v) {
+      case 0x01n:
+        return ControlMessageType.ReservedSetupV00
+      case 0x40n:
+        return ControlMessageType.ReservedClientSetupV10
+      case 0x41n:
+        return ControlMessageType.ReservedServerSetupV10
+      case 0x20n:
+        return ControlMessageType.ClientSetup
+      case 0x21n:
+        return ControlMessageType.ServerSetup
+      case 0x10n:
+        return ControlMessageType.GoAway
+      case 0x15n:
+        return ControlMessageType.MaxRequestId
+      case 0x1an:
+        return ControlMessageType.RequestsBlocked
+      case 0x03n:
+        return ControlMessageType.Subscribe
+      case 0x04n:
+        return ControlMessageType.SubscribeOk
+      case 0x05n:
+        return ControlMessageType.RequestError
+      case 0x0an:
+        return ControlMessageType.Unsubscribe
+      case 0x02n:
+        return ControlMessageType.RequestUpdate
+      case 0x0bn:
+        return ControlMessageType.PublishDone
+      case 0x16n:
+        return ControlMessageType.Fetch
+      case 0x18n:
+        return ControlMessageType.FetchOk
+      case 0x17n:
+        return ControlMessageType.FetchCancel
+      case 0x0dn:
+        return ControlMessageType.TrackStatus
+      case 0x06n:
+        return ControlMessageType.PublishNamespace
+      case 0x07n:
+        return ControlMessageType.RequestOk
+      case 0x08n:
+        return ControlMessageType.Namespace
+      case 0x09n:
+        return ControlMessageType.PublishNamespaceDone
+      case 0x0en:
+        return ControlMessageType.NamespaceDone
+      case 0x0cn:
+        return ControlMessageType.PublishNamespaceCancel
+      case 0x11n:
+        return ControlMessageType.SubscribeNamespace
+      case 0x14n:
+        return ControlMessageType.UnsubscribeNamespace
+      case 0x1dn:
+        return ControlMessageType.Publish
+      case 0x1en:
+        return ControlMessageType.PublishOk
+      default:
+        throw new InvalidEnumValue('ControlMessageType.tryFrom', v)
+    }
   }
 }
 
@@ -155,20 +158,22 @@ export enum FilterType {
  * Converts a bigint value to a FilterType enum.
  * @param v - The bigint value.
  * @returns The corresponding FilterType.
- * @throws Error if the value is not a valid filter type.
+ * @throws InvalidEnumValue if the value is not a valid filter type.
  */
-export function filterTypeFromBigInt(v: bigint): FilterType {
-  switch (v) {
-    case 0x1n:
-      return FilterType.NextGroupStart
-    case 0x2n:
-      return FilterType.LatestObject
-    case 0x3n:
-      return FilterType.AbsoluteStart
-    case 0x4n:
-      return FilterType.AbsoluteRange
-    default:
-      throw new Error(`Invalid FilterType: ${v}`)
+export namespace FilterType {
+  export function tryFrom(v: bigint): FilterType {
+    switch (v) {
+      case 0x1n:
+        return FilterType.NextGroupStart
+      case 0x2n:
+        return FilterType.LatestObject
+      case 0x3n:
+        return FilterType.AbsoluteStart
+      case 0x4n:
+        return FilterType.AbsoluteRange
+      default:
+        throw new InvalidEnumValue('FilterType.tryFrom', v)
+    }
   }
 }
 
@@ -186,18 +191,20 @@ export enum FetchType {
  * Converts a bigint value to a FetchType enum.
  * @param v - The bigint value.
  * @returns The corresponding FetchType.
- * @throws CastingError if the value is not a valid fetch type.
+ * @throws InvalidEnumValue if the value is not a valid fetch type.
  */
-export function fetchTypeFromBigInt(v: bigint): FetchType {
-  switch (v) {
-    case 0x1n:
-      return FetchType.Standalone
-    case 0x2n:
-      return FetchType.Relative
-    case 0x3n:
-      return FetchType.Absolute
-    default:
-      throw new CastingError('fetchTypeFromBigInt', 'bigint', 'FetchType', `Invalid FetchType:${v}`)
+export namespace FetchType {
+  export function tryFrom(v: bigint): FetchType {
+    switch (v) {
+      case 0x1n:
+        return FetchType.Standalone
+      case 0x2n:
+        return FetchType.Relative
+      case 0x3n:
+        return FetchType.Absolute
+      default:
+        throw new InvalidEnumValue('FetchType.tryFrom', v)
+    }
   }
 }
 
@@ -215,18 +222,20 @@ export enum GroupOrder {
  * Converts a number value to a GroupOrder enum.
  * @param v - The number value.
  * @returns The corresponding GroupOrder.
- * @throws CastingError if the value is not a valid group order.
+ * @throws InvalidEnumValue if the value is not a valid group order.
  */
-export function groupOrderFromNumber(v: number): GroupOrder {
-  switch (v) {
-    case 0x0:
-      return GroupOrder.Original
-    case 0x1:
-      return GroupOrder.Ascending
-    case 0x2:
-      return GroupOrder.Descending
-    default:
-      throw new CastingError('groupOrderFromNumber', 'number', 'GroupOrder', `Invalid GroupOrder: ${v}`)
+export namespace GroupOrder {
+  export function tryFrom(v: number): GroupOrder {
+    switch (v) {
+      case 0x0:
+        return GroupOrder.Original
+      case 0x1:
+        return GroupOrder.Ascending
+      case 0x2:
+        return GroupOrder.Descending
+      default:
+        throw new InvalidEnumValue('GroupOrder.tryFrom', v)
+    }
   }
 }
 
@@ -246,22 +255,24 @@ export enum TrackStatusCode {
  * Converts a bigint value to a TrackStatusCode enum.
  * @param v - The bigint value.
  * @returns The corresponding TrackStatusCode.
- * @throws Error if the value is not a valid track status code.
+ * @throws InvalidEnumValue if the value is not a valid track status code.
  */
-export function trackStatusCodeFromBigInt(v: bigint): TrackStatusCode {
-  switch (v) {
-    case 0x00n:
-      return TrackStatusCode.InProgress
-    case 0x01n:
-      return TrackStatusCode.DoesNotExist
-    case 0x02n:
-      return TrackStatusCode.NotYetBegun
-    case 0x03n:
-      return TrackStatusCode.Finished
-    case 0x04n:
-      return TrackStatusCode.RelayUnavailable
-    default:
-      throw new Error(`Invalid TrackStatusCode: ${v}`)
+export namespace TrackStatusCode {
+  export function tryFrom(v: bigint): TrackStatusCode {
+    switch (v) {
+      case 0x00n:
+        return TrackStatusCode.InProgress
+      case 0x01n:
+        return TrackStatusCode.DoesNotExist
+      case 0x02n:
+        return TrackStatusCode.NotYetBegun
+      case 0x03n:
+        return TrackStatusCode.Finished
+      case 0x04n:
+        return TrackStatusCode.RelayUnavailable
+      default:
+        throw new InvalidEnumValue('TrackStatusCode.tryFrom', v)
+    }
   }
 }
 
@@ -285,30 +296,32 @@ export enum PublishDoneStatusCode {
  * Converts a bigint value to a PublishDoneStatusCode enum.
  * @param v - The bigint value.
  * @returns The corresponding PublishDoneStatusCode.
- * @throws Error if the value is not a valid subscribe done status code.
+ * @throws InvalidEnumValue if the value is not a valid subscribe done status code.
  */
-export function publishDoneStatusCodeFromBigInt(v: bigint): PublishDoneStatusCode {
-  switch (v) {
-    case 0x0n:
-      return PublishDoneStatusCode.InternalError
-    case 0x1n:
-      return PublishDoneStatusCode.Unauthorized
-    case 0x2n:
-      return PublishDoneStatusCode.TrackEnded
-    case 0x3n:
-      return PublishDoneStatusCode.SubscriptionEnded
-    case 0x4n:
-      return PublishDoneStatusCode.GoingAway
-    case 0x5n:
-      return PublishDoneStatusCode.Expired
-    case 0x6n:
-      return PublishDoneStatusCode.TooFarBehind
-    case 0x8n:
-      return PublishDoneStatusCode.UpdateFailed
-    case 0x12n:
-      return PublishDoneStatusCode.MalformedTrack
-    default:
-      throw new Error(`Invalid PublishDoneStatusCode: ${v}`)
+export namespace PublishDoneStatusCode {
+  export function tryFrom(v: bigint): PublishDoneStatusCode {
+    switch (v) {
+      case 0x0n:
+        return PublishDoneStatusCode.InternalError
+      case 0x1n:
+        return PublishDoneStatusCode.Unauthorized
+      case 0x2n:
+        return PublishDoneStatusCode.TrackEnded
+      case 0x3n:
+        return PublishDoneStatusCode.SubscriptionEnded
+      case 0x4n:
+        return PublishDoneStatusCode.GoingAway
+      case 0x5n:
+        return PublishDoneStatusCode.Expired
+      case 0x6n:
+        return PublishDoneStatusCode.TooFarBehind
+      case 0x8n:
+        return PublishDoneStatusCode.UpdateFailed
+      case 0x12n:
+        return PublishDoneStatusCode.MalformedTrack
+      default:
+        throw new InvalidEnumValue('PublishDoneStatusCode.tryFrom', v)
+    }
   }
 }
 
@@ -336,42 +349,39 @@ export enum RequestErrorCode {
  * Converts a bigint value to a RequestErrorCode enum.
  * @param v - The bigint value.
  * @returns The corresponding RequestErrorCode.
- * @throws CastingError if the value is not a valid request error code.
+ * @throws InvalidEnumValue if the value is not a valid request error code.
  */
-export function requestErrorCodeFromBigInt(v: bigint): RequestErrorCode {
-  switch (v) {
-    case 0x0n:
-      return RequestErrorCode.InternalError
-    case 0x1n:
-      return RequestErrorCode.Unauthorized
-    case 0x2n:
-      return RequestErrorCode.Timeout
-    case 0x3n:
-      return RequestErrorCode.NotSupported
-    case 0x4n:
-      return RequestErrorCode.MalformedAuthToken
-    case 0x5n:
-      return RequestErrorCode.ExpiredAuthToken
-    case 0x10n:
-      return RequestErrorCode.DoesNotExist
-    case 0x11n:
-      return RequestErrorCode.InvalidRange
-    case 0x12n:
-      return RequestErrorCode.MalformedTrack
-    case 0x19n:
-      return RequestErrorCode.DuplicateSubscription
-    case 0x20n:
-      return RequestErrorCode.Uninterested
-    case 0x30n:
-      return RequestErrorCode.PrefixOverlap
-    case 0x32n:
-      return RequestErrorCode.InvalidJoiningRequestId
-    default:
-      throw new CastingError(
-        'requestErrorCodeFromBigInt',
-        'bigint',
-        'RequestErrorCode',
-        `Invalid RequestErrorCode: ${v}`,
-      )
+export namespace RequestErrorCode {
+  export function tryFrom(v: bigint): RequestErrorCode {
+    switch (v) {
+      case 0x0n:
+        return RequestErrorCode.InternalError
+      case 0x1n:
+        return RequestErrorCode.Unauthorized
+      case 0x2n:
+        return RequestErrorCode.Timeout
+      case 0x3n:
+        return RequestErrorCode.NotSupported
+      case 0x4n:
+        return RequestErrorCode.MalformedAuthToken
+      case 0x5n:
+        return RequestErrorCode.ExpiredAuthToken
+      case 0x10n:
+        return RequestErrorCode.DoesNotExist
+      case 0x11n:
+        return RequestErrorCode.InvalidRange
+      case 0x12n:
+        return RequestErrorCode.MalformedTrack
+      case 0x19n:
+        return RequestErrorCode.DuplicateSubscription
+      case 0x20n:
+        return RequestErrorCode.Uninterested
+      case 0x30n:
+        return RequestErrorCode.PrefixOverlap
+      case 0x32n:
+        return RequestErrorCode.InvalidJoiningRequestId
+      default:
+        throw new InvalidEnumValue('RequestErrorCode.tryFrom', v)
+    }
   }
 }

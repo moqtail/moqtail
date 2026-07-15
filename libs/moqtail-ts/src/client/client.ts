@@ -1267,7 +1267,7 @@ export class MOQtailClient {
    *
    * Field highlights (in {@link FetchOptions}):
    * - priority: 0 (highest) .. 255 (lowest); out-of-range rejected; non-integers rounded by caller expectation.
-   * - groupOrder: {@link GroupOrder.Original} to preserve publisher order; or reorder ascending/descending if supported by server.
+   * - groupOrder: {@link (GroupOrder:enum).Original} to preserve publisher order; or reorder ascending/descending if supported by server.
    * - typeAndProps: Discriminated union carrying parameters specific to each fetch mode (see examples).
    * - parameters: Optional version-specific extension block.
    *

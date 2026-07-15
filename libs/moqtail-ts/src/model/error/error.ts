@@ -98,6 +98,18 @@ export class InvalidTypeError extends MOQtailError {
 }
 
 /**
+ * Invalid enum discriminant / value encountered when mapping to a protocol enum.
+ */
+export class InvalidEnumValue extends MOQtailError {
+  constructor(
+    public context: string,
+    public value: bigint | number,
+  ) {
+    super(`Invalid enum value: [${context}], [${value}]`)
+  }
+}
+
+/**
  * Invalid UTF-8 encountered in a string or bytes field.
  */
 export class InvalidUTF8Error extends MOQtailError {

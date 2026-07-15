@@ -16,7 +16,7 @@
 
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
 import { Location } from '../common/location'
-import { ControlMessageType, FetchType, fetchTypeFromBigInt } from './constant'
+import { ControlMessageType, FetchType } from './constant'
 import { LengthExceedsMaxError } from '../error/error'
 import { FullTrackName } from '../data'
 import { MessageParameter, MessageParameters } from '../parameter/message_parameter'
@@ -80,7 +80,7 @@ export class Fetch {
   static parsePayload(buf: BaseByteBuffer): Fetch {
     const requestId = buf.getVI()
     const fetchTypeRaw = buf.getVI()
-    const fetchType = fetchTypeFromBigInt(fetchTypeRaw)
+    const fetchType = FetchType.tryFrom(fetchTypeRaw)
 
     let props: Fetch['typeAndProps']
 

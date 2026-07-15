@@ -15,7 +15,7 @@
  */
 
 import { FrozenByteBuffer } from '../common/byte_buffer'
-import { ControlMessageType, controlMessageTypeFromBigInt, FetchType } from './constant'
+import { ControlMessageType, FetchType } from './constant'
 import { PublishNamespace } from './publish_namespace'
 import { PublishNamespaceCancel } from './publish_namespace_cancel'
 import { Namespace } from './namespace'
@@ -75,7 +75,7 @@ export type ControlMessage =
 export namespace ControlMessage {
   export function deserialize(buf: FrozenByteBuffer): ControlMessage {
     const messageTypeRaw = buf.getVI()
-    const messageType = controlMessageTypeFromBigInt(messageTypeRaw)
+    const messageType = ControlMessageType.tryFrom(messageTypeRaw)
     const payloadLength = buf.getU16()
     if (buf.remaining < payloadLength)
       throw new NotEnoughBytesError('ControlMessage.deserialize(payload_bytes)', payloadLength, buf.remaining)

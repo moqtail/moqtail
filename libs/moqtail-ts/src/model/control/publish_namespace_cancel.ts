@@ -16,7 +16,7 @@
 
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
 import { ReasonPhrase } from '../common/reason_phrase'
-import { ControlMessageType, RequestErrorCode, requestErrorCodeFromBigInt } from './constant'
+import { ControlMessageType, RequestErrorCode } from './constant'
 import { LengthExceedsMaxError } from '../error/error'
 
 export class PublishNamespaceCancel {
@@ -53,7 +53,7 @@ export class PublishNamespaceCancel {
   static parsePayload(buf: BaseByteBuffer): PublishNamespaceCancel {
     const requestId = buf.getVI()
     const errorCodeRaw = buf.getVI()
-    const errorCode = requestErrorCodeFromBigInt(errorCodeRaw)
+    const errorCode = RequestErrorCode.tryFrom(errorCodeRaw)
     const reasonPhrase = buf.getReasonPhrase()
     return new PublishNamespaceCancel(requestId, errorCode, reasonPhrase)
   }

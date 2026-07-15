@@ -1,8 +1,11 @@
 # Execution Plan: moqtail draft-16 → draft-18
 
-Companion to `draft16to18diff.md` (spec deltas) and `draft16to18requiredcodechanges.md`
-(code audit). This document is the **execution plan**: ordered, independently-verifiable
-tasks, each sized to become one GitHub issue / one PR.
+The **execution plan** for migrating this repo from draft-ietf-moq-transport-16 to -18:
+ordered, independently-verifiable tasks, each sized to become one GitHub issue / one PR.
+
+Self-contained — it supersedes an earlier set of working notes (a spec diff and a code
+audit) that are not part of the repo. Where a finding below contradicts those notes, §0
+records the correction and the evidence, so nothing depends on reading them.
 
 Every task cites the **exact changelog bullet(s)** it implements, quoted verbatim with a
 line number into `docs/draft-ietf-moq-transport-18.txt`, in this form:
@@ -24,6 +27,90 @@ sections → its task — so coverage can be checked in either direction.
 | `MT-`  | meet                    | `apps/meet`        |
 
 Order: **C → RS → RL → CL → (Rust interop gate) → TS → JS → MT → (JS interop gate)**.
+
+All tasks are filed as GitHub issues under the
+[**draft-18** milestone](https://github.com/moqtail/moqtail/milestone/3), with dependencies
+expressed as native GitHub `blocked_by` relationships rather than prose — so the milestone
+view shows what is actually startable, and this table is only for mapping a task ID back to
+its issue.
+
+**Startable today (no blockers):** [#222](https://github.com/moqtail/moqtail/issues/222) `RS-2a`,
+[#223](https://github.com/moqtail/moqtail/issues/223) `C-1`,
+[#224](https://github.com/moqtail/moqtail/issues/224) `RS-21`,
+[#275](https://github.com/moqtail/moqtail/issues/275) `TS-17`.
+
+<details>
+<summary><b>Task → issue map</b> (58 issues)</summary>
+
+| Task           | Issue                                                 | Title                                                                               |
+| -------------- | ----------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| **Common**     |                                                       |                                                                                     |
+| `C-1`          | [#223](https://github.com/moqtail/moqtail/issues/223) | Lock draft-18 constants and varint vectors into shared conformance fixtures         |
+| **moqtail-rs** |                                                       |                                                                                     |
+| `RS-2a`        | [#222](https://github.com/moqtail/moqtail/issues/222) | Bump ALPN to moqt-18 — wire format is draft-18 but still advertises moqt-16         |
+| `RS-2`         | [#225](https://github.com/moqtail/moqtail/issues/225) | Update the control message type table to draft-18 (Table 5)                         |
+| `RS-3`         | [#227](https://github.com/moqtail/moqtail/issues/227) | Collapse CLIENT_SETUP/SERVER_SETUP into a single SETUP message                      |
+| `RS-4`         | [#232](https://github.com/moqtail/moqtail/issues/232) | Change the control stream from one bidi stream to a pair of uni streams             |
+| `RS-5`         | [#235](https://github.com/moqtail/moqtail/issues/235) | Move all seven request types onto their own bidirectional request streams           |
+| `RS-6`         | [#236](https://github.com/moqtail/moqtail/issues/236) | Remove MAX_REQUEST_ID and REQUESTS_BLOCKED                                          |
+| `RS-6b`        | [#241](https://github.com/moqtail/moqtail/issues/241) | Remove the cancel/teardown message family                                           |
+| `RS-7`         | [#237](https://github.com/moqtail/moqtail/issues/237) | Fold PUBLISH_OK into REQUEST_OK and add Track Properties to REQUEST_OK              |
+| `RS-7b`        | [#242](https://github.com/moqtail/moqtail/issues/242) | Remove Request ID from response messages                                            |
+| `RS-8`         | [#226](https://github.com/moqtail/moqtail/issues/226) | Rename Extension Headers to Properties                                              |
+| `RS-9`         | [#228](https://github.com/moqtail/moqtail/issues/228) | Split DELIVERY_TIMEOUT, add RENDEZVOUS_TIMEOUT/FILL_TIMEOUT, align property numbers |
+| `RS-10`        | [#238](https://github.com/moqtail/moqtail/issues/238) | Add stream reset error codes and build the reset path                               |
+| `RS-11`        | [#243](https://github.com/moqtail/moqtail/issues/243) | Split SUBSCRIBE_NAMESPACE into SUBSCRIBE_NAMESPACE and SUBSCRIBE_TRACKS             |
+| `RS-12`        | [#247](https://github.com/moqtail/moqtail/issues/247) | Allow zero-element track namespaces (bound 1-32 → 0-32)                             |
+| `RS-13`        | [#244](https://github.com/moqtail/moqtail/issues/244) | GOAWAY: add Request ID and Timeout, per-request migration, REDIRECT                 |
+| `RS-14`        | [#229](https://github.com/moqtail/moqtail/issues/229) | Add the FIRST_OBJECT bit to SUBGROUP_HEADER                                         |
+| `RS-15`        | [#230](https://github.com/moqtail/moqtail/issues/230) | Delta-encode Group/Object ID in FETCH responses; close session on wrap              |
+| `RS-16`        | [#248](https://github.com/moqtail/moqtail/issues/248) | Add the PUBLISH_BLOCKED message                                                     |
+| `RS-17`        | [#252](https://github.com/moqtail/moqtail/issues/252) | Deferred data-plane additions (padding, subgroup reopen, EndGroup delta, .session)  |
+| `RS-18`        | [#234](https://github.com/moqtail/moqtail/issues/234) | Add GREASE support and reserve the application-specific Property ranges             |
+| `RS-19`        | [#239](https://github.com/moqtail/moqtail/issues/239) | Remove TRACK_STATUS from REQUEST_UPDATE                                             |
+| `RS-20`        | [#240](https://github.com/moqtail/moqtail/issues/240) | Make the auth token cache safe across multiple request streams                      |
+| `RS-21`        | [#224](https://github.com/moqtail/moqtail/issues/224) | Document `Switch = 0x22` as a non-conformant local extension                        |
+| **relay**      |                                                       |                                                                                     |
+| `RL-1`         | [#231](https://github.com/moqtail/moqtail/issues/231) | Enforce Mandatory Track Properties (0x4000-0x7FFF) at the relay                     |
+| `RL-2`         | [#253](https://github.com/moqtail/moqtail/issues/253) | Handle SUBSCRIBE_TRACKS and emit PUBLISH_BLOCKED                                    |
+| `RL-3`         | [#249](https://github.com/moqtail/moqtail/issues/249) | SUBSCRIBE takes precedence over SUBSCRIBE_NAMESPACE; exclude own tracks             |
+| `RL-4`         | [#245](https://github.com/moqtail/moqtail/issues/245) | Truthful LARGEST_OBJECT; tolerate unknown error codes                               |
+| `RL-5`         | [#250](https://github.com/moqtail/moqtail/issues/250) | Emit stream reset codes on abort paths; GOAWAY per-request migration                |
+| `RL-6`         | [#246](https://github.com/moqtail/moqtail/issues/246) | Coalesce REQUEST_UPDATE processing; EXPIRES update mechanism                        |
+| `RL-7`         | [#251](https://github.com/moqtail/moqtail/issues/251) | FETCH semantics (empty track, End Location, joining fetch)                          |
+| **client**     |                                                       |                                                                                     |
+| `CL-1`         | [#233](https://github.com/moqtail/moqtail/issues/233) | Make `moqt://` the unified scheme on the client, including WebTransport             |
+| `CL-2`         | [#254](https://github.com/moqtail/moqtail/issues/254) | Rust interop gate: client to relay end-to-end on draft-18                           |
+| **moqtail-ts** |                                                       |                                                                                     |
+| `TS-2`         | [#255](https://github.com/moqtail/moqtail/issues/255) | Update the control message type table to draft-18                                   |
+| `TS-3`         | [#256](https://github.com/moqtail/moqtail/issues/256) | Collapse CLIENT_SETUP/SERVER_SETUP into SETUP; add missing setup options            |
+| `TS-4`         | [#257](https://github.com/moqtail/moqtail/issues/257) | Control stream from one bidi to a pair of uni streams                               |
+| `TS-5`         | [#258](https://github.com/moqtail/moqtail/issues/258) | Move all seven request types onto their own bidi request streams                    |
+| `TS-6`         | [#259](https://github.com/moqtail/moqtail/issues/259) | Remove MAX_REQUEST_ID and REQUESTS_BLOCKED                                          |
+| `TS-6b`        | [#261](https://github.com/moqtail/moqtail/issues/261) | Remove the cancel/teardown message family                                           |
+| `TS-7`         | [#262](https://github.com/moqtail/moqtail/issues/262) | Fold PUBLISH_OK into REQUEST_OK; add Track Properties to REQUEST_OK                 |
+| `TS-7b`        | [#263](https://github.com/moqtail/moqtail/issues/263) | Remove Request ID from response messages                                            |
+| `TS-8`         | [#264](https://github.com/moqtail/moqtail/issues/264) | Rename Extension Headers to Properties                                              |
+| `TS-9`         | [#265](https://github.com/moqtail/moqtail/issues/265) | Split DELIVERY_TIMEOUT, add RENDEZVOUS_TIMEOUT/FILL_TIMEOUT, align property numbers |
+| `TS-10`        | [#260](https://github.com/moqtail/moqtail/issues/260) | Add stream reset error codes and build the abort path                               |
+| `TS-11`        | [#266](https://github.com/moqtail/moqtail/issues/266) | Split SUBSCRIBE_NAMESPACE into SUBSCRIBE_NAMESPACE and SUBSCRIBE_TRACKS             |
+| `TS-12`        | [#267](https://github.com/moqtail/moqtail/issues/267) | Allow zero-element track namespaces                                                 |
+| `TS-13`        | [#268](https://github.com/moqtail/moqtail/issues/268) | GOAWAY Request ID and Timeout, per-request migration, REDIRECT                      |
+| `TS-14`        | [#269](https://github.com/moqtail/moqtail/issues/269) | Add the FIRST_OBJECT bit to SUBGROUP_HEADER                                         |
+| `TS-15`        | [#270](https://github.com/moqtail/moqtail/issues/270) | Delta-decode Group/Object ID in FETCH responses                                     |
+| `TS-16`        | [#271](https://github.com/moqtail/moqtail/issues/271) | Add the PUBLISH_BLOCKED message                                                     |
+| `TS-17`        | [#275](https://github.com/moqtail/moqtail/issues/275) | Fix TerminationCode.tryFrom throwing on five valid enum values                      |
+| `TS-18`        | [#272](https://github.com/moqtail/moqtail/issues/272) | Add GREASE support and the application-specific Property ranges                     |
+| `TS-19`        | [#273](https://github.com/moqtail/moqtail/issues/273) | Remove TRACK_STATUS from REQUEST_UPDATE                                             |
+| `TS-20`        | [#274](https://github.com/moqtail/moqtail/issues/274) | Make the auth token cache safe across multiple request streams                      |
+| **client-js**  |                                                       |                                                                                     |
+| `JS-1`         | [#276](https://github.com/moqtail/moqtail/issues/276) | Absorb the moqtail-ts API break                                                     |
+| `JS-2`         | [#278](https://github.com/moqtail/moqtail/issues/278) | Make `moqt://` the real transport scheme + JS interop gate                          |
+| **meet**       |                                                       |                                                                                     |
+| `MT-1`         | [#277](https://github.com/moqtail/moqtail/issues/277) | Absorb the moqtail-ts API break                                                     |
+| `MT-2`         | [#279](https://github.com/moqtail/moqtail/issues/279) | Adopt `moqt://`                                                                     |
+
+</details>
 
 ---
 
@@ -116,8 +203,8 @@ do. All four carry `request_id` today (`subscribe_ok.rs:29`, `fetch_ok.rs:30`,
 
 ### ✏️ Corrections to the previous revision of this plan
 
-1. **"Property side is already correct — only the Parameter side needs work"** (inherited from
-   audit B11) is **wrong**. `TrackExtensionType`
+1. **"Property side is already correct — only the Parameter side needs work"** (a claim carried
+   over from the earlier code audit) is **wrong**. `TrackExtensionType`
    (`model/extension_header/constant.rs:55-63`) is missing `SUBGROUP_DELIVERY_TIMEOUT 0x06`
    entirely, and needs `DeliveryTimeout → ObjectDeliveryTimeout` plus
    `ImmutableExtensions → ImmutableProperties`. Both sides need work. See RS-9.
@@ -260,7 +347,7 @@ extraction remains.
   `apps/relay/src/server/session.rs:833-851`; `apps/client/src/connection.rs:43-73`
 - **Change:** one `Setup { setup_options: Vec<KeyValuePair> }` at `0x2F00`, sent by both peers.
   Rename `SetupParameter` → `SetupOption` throughout.
-  **Smaller than the audit implies:** both structs already carry only parameters, and version
+  **Smaller than it looks:** both structs already carry only parameters, and version
   negotiation already lives in ALPN (draft-18 §3.1: SETUP has no version fields). There is no
   negotiation logic to build — this is a merge plus a rename.
   Enforce client-only options: `AUTHORITY` and `PATH` MUST NOT arrive from a server, and
@@ -389,7 +476,7 @@ extraction remains.
   | `0x08` `0x09` `0x10` `0x20` `0x21` `0x22` `0x32` | EXPIRES, LARGEST_OBJECT, FORWARD, SUBSCRIBER_PRIORITY, SUBSCRIPTION_FILTER, GROUP_ORDER, NEW_GROUP_REQUEST | ✓ present |
   | `0x0A` | `FILL_TIMEOUT` | **missing — add** (FETCH-only) |
   | `0x34` | `TRACK_NAMESPACE_PREFIX` | **missing — add** |
-- **Change — Properties** (vs §15.8): **contrary to audit B11, this side is not already
+- **Change — Properties** (vs §15.8): **contrary to the earlier audit, this side is not already
   correct.** Add `SUBGROUP_DELIVERY_TIMEOUT 0x06`; rename `DeliveryTimeout → ObjectDeliveryTimeout`
   and `ImmutableExtensions → ImmutableProperties`. `MaxCacheDuration 0x04`,
   `DefaultPublisherPriority 0x0E`, `DefaultPublisherGroupOrder 0x22`, `DynamicGroups 0x30`,

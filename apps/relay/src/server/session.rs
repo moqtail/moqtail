@@ -100,7 +100,11 @@ impl Session {
 
     // in the headers, we expect wt-available-protocols
 
-    let connection = TransportConnection::WebTransport(session_request.accept().await?);
+    let connection = TransportConnection::WebTransport(
+      session_request
+        .accept_with_headers(response_headers)
+        .await?,
+    );
     Self::start(connection, server).await
   }
 

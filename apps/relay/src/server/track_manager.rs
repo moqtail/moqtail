@@ -329,7 +329,7 @@ impl TrackManager {
 
   pub async fn remove_namespace_subscriber(&self, connection_id: usize) {
     let mut subs = self.namespace_subscribers.write().await;
-    for (_, clients) in subs.iter_mut() {
+    for clients in subs.values_mut() {
       clients.retain(|(c, _, _)| c.connection_id != connection_id);
     }
     subs.retain(|_, clients| !clients.is_empty());
@@ -346,7 +346,7 @@ impl TrackManager {
   pub async fn get_announcements_by_prefix(&self, prefix: &Tuple) -> Vec<Tuple> {
     let announcements = self.announcements.read().await;
     let mut matches = Vec::new();
-    for (ns, _) in announcements.iter() {
+    for ns in announcements.keys() {
       if ns.starts_with(prefix) {
         matches.push(ns.clone());
       }

@@ -2,4 +2,4 @@
 'relay': minor
 ---
 
-fixes missing header bug
+Fixes missing header bug. Thanks to [kkroo](https://github.com/kkroo)

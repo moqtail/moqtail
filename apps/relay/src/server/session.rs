@@ -594,7 +594,7 @@ impl Session {
     );
 
     // Remove client from all remaining tracks (as a subscriber)
-    for (_, track_lock) in track_manager_cleanup.tracks.read().await.iter() {
+    for track_lock in track_manager_cleanup.tracks.read().await.values() {
       let track = track_lock.read().await;
       track.remove_subscription(context.connection_id).await;
     }

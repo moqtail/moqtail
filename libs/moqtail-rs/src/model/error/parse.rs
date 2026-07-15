@@ -31,9 +31,6 @@ pub enum ParseError {
     details: String,
   },
 
-  #[error("[{context}] value {value} too large to encode as varint")]
-  VarIntOverflow { context: &'static str, value: u64 },
-
   #[error("[{context}] length {len} exceeds maximum of {max}, protocol violation")]
   LengthExceedsMax {
     context: &'static str,

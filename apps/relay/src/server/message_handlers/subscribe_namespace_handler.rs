@@ -119,6 +119,11 @@ pub async fn handle_subscribe_namespace(
 
   // If subscriber requested top-N filtering, register with coordinator.
   if let Some((property_type, n)) = track_filter {
+    // Check if this connection is also a publisher (panelist vs audience-only).
+    let is_publisher = context
+      .track_manager
+      .connection_has_published_tracks(client.connection_id)
+      .await;
     context
       .top_n_coordinator
       .register_subscriber(
@@ -126,6 +131,7 @@ pub async fn handle_subscribe_namespace(
         client.clone(),
         property_type,
         n,
+        is_publisher,
       )
       .await;
     info!(

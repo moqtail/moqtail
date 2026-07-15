@@ -486,6 +486,15 @@ impl TrackManager {
     None
   }
 
+  /// Returns true if the given connection has any published tracks.
+  /// Used to distinguish panelists (pub+sub) from audience-only subscribers.
+  pub async fn connection_has_published_tracks(&self, connection_id: usize) -> bool {
+    let publishes = self.publishes.read().await;
+    publishes
+      .values()
+      .any(|map| map.contains_key(&connection_id))
+  }
+
   pub async fn get_track_name_by_publisher(
     &self,
     connection_id: usize,

@@ -70,19 +70,22 @@ impl TopNRanker {
   /// Record a new property_value observation for a track.
   /// `update_seq` is the coordinator's logical clock at call time.
   /// Only updates `last_update_seq` when the value actually changes.
+  /// Returns `true` if the ranking-relevant state changed (new entry or value change).
   pub fn observe_value(
     &mut self,
     full_track_name: &FullTrackName,
     publisher_conn_ids: Vec<usize>,
     value: u64,
     update_seq: u64,
-  ) {
+  ) -> bool {
+    let mut changed = false;
     let entry = self
       .entries
       .entry(full_track_name.clone())
       .or_insert_with(|| {
         let seq = self.next_arrival_seq;
         self.next_arrival_seq += 1;
+        changed = true;
         RankEntry {
           publisher_connection_ids: publisher_conn_ids.clone(),
           property_value: value,
@@ -95,7 +98,9 @@ impl TopNRanker {
     if entry.property_value != value {
       entry.property_value = value;
       entry.last_update_seq = update_seq;
+      changed = true;
     }
+    changed
   }
 
   /// Remove all entries whose publisher_connection_ids contain `connection_id`.

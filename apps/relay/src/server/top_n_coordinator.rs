@@ -37,9 +37,18 @@ use moqtail::model::extension_header::object_extension::ObjectExtension;
 use moqtail::model::filter::top_n::{TieBreakPolicy, TopNRanker, TopNRankerConfig};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Mutex;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
+
+/// Buffered observation for batch application at tick time.
+struct PendingObservation {
+  full_track_name: FullTrackName,
+  publisher_conn_ids: Vec<usize>,
+  value: u64,
+  update_seq: u64,
+}
 
 /// Speech-activity extension key (moq-transport PR #1401 custom extension).
 const SPEECH_ACTIVITY_KEY: u64 = 0x12;
@@ -60,6 +69,9 @@ struct SubscriberFilterState {
   current_selected: HashSet<FullTrackName>,
   /// How many consecutive ticks each track has ranked outside top-N (for dwell debounce).
   pending_removal_streak: HashMap<FullTrackName, u32>,
+  /// True if this connection also publishes tracks (panelist). False for audience-only.
+  /// Audience subscribers share identical top-N results (no self-exclusion needed).
+  is_publisher: bool,
 }
 
 pub struct TopNCoordinator {
@@ -69,6 +81,10 @@ pub struct TopNCoordinator {
   rankers: Arc<RwLock<RankerMap>>,
   subscribers: Arc<RwLock<SubscriberMap>>,
   update_seq: Arc<AtomicU64>,
+  /// Set to true when any ranker's state changes. Tick skips when false.
+  ranker_dirty: Arc<AtomicBool>,
+  /// Buffered observations from the hot path, drained at each tick.
+  pending_observations: Arc<Mutex<Vec<PendingObservation>>>,
   config: &'static AppConfig,
 }
 
@@ -92,6 +108,8 @@ impl TopNCoordinator {
       rankers: Arc::new(RwLock::new(RankerMap::new())),
       subscribers: Arc::new(RwLock::new(SubscriberMap::new())),
       update_seq: Arc::new(AtomicU64::new(0)),
+      ranker_dirty: Arc::new(AtomicBool::new(false)),
+      pending_observations: Arc::new(Mutex::new(Vec::new())),
       config,
     }
   }
@@ -105,6 +123,7 @@ impl TopNCoordinator {
     client: Arc<MOQTClient>,
     property_type: u64,
     n: usize,
+    is_publisher: bool,
   ) {
     // Create ranker if not already present for this (prefix, property_type) pair.
     {
@@ -126,6 +145,7 @@ impl TopNCoordinator {
       n,
       current_selected: HashSet::new(),
       pending_removal_streak: HashMap::new(),
+      is_publisher,
     };
 
     self
@@ -242,8 +262,9 @@ impl TopNCoordinator {
     }
   }
 
-  /// Hot-path: scan object extensions for the configured property key and update the ranker.
-  /// Returns immediately (no lock) if the key is absent — this is the common case.
+  /// Hot-path: buffer object extension observation for batch processing at next tick.
+  /// Returns immediately if the speech-activity key is absent (common case).
+  /// Uses a std::sync::Mutex (not async) for minimal contention on the hot path.
   pub async fn observe_object_extension(
     &self,
     full_track_name: &FullTrackName,
@@ -256,17 +277,35 @@ impl TopNCoordinator {
     };
 
     let update_seq = self.update_seq.fetch_add(1, Ordering::Relaxed);
-    let mut rankers = self.rankers.write().await;
-    let namespace = &full_track_name.namespace;
+    self
+      .pending_observations
+      .lock()
+      .unwrap()
+      .push(PendingObservation {
+        full_track_name: full_track_name.clone(),
+        publisher_conn_ids,
+        value,
+        update_seq,
+      });
+    self.ranker_dirty.store(true, Ordering::Relaxed);
+  }
 
-    for ((prefix, pt), ranker) in rankers.iter_mut() {
-      if *pt == SPEECH_ACTIVITY_KEY && namespace.starts_with(prefix) {
-        ranker.observe_value(
-          full_track_name,
-          publisher_conn_ids.clone(),
-          value,
-          update_seq,
-        );
+  /// Drain buffered observations into rankers. Called at the start of each tick.
+  fn drain_pending_observations(&self, rankers: &mut RankerMap) {
+    let observations: Vec<PendingObservation> =
+      self.pending_observations.lock().unwrap().drain(..).collect();
+
+    for obs in observations {
+      let namespace = &obs.full_track_name.namespace;
+      for ((prefix, pt), ranker) in rankers.iter_mut() {
+        if *pt == SPEECH_ACTIVITY_KEY && namespace.starts_with(prefix) {
+          ranker.observe_value(
+            &obs.full_track_name,
+            obs.publisher_conn_ids.clone(),
+            obs.value,
+            obs.update_seq,
+          );
+        }
       }
     }
   }
@@ -275,8 +314,14 @@ impl TopNCoordinator {
   /// Subscription teardown happens on the next tick.
   pub async fn on_publisher_disconnected(&self, connection_id: usize) {
     let mut rankers = self.rankers.write().await;
+    let mut any_changed = false;
     for ranker in rankers.values_mut() {
-      ranker.remove_publisher(connection_id);
+      if ranker.remove_publisher(connection_id) {
+        any_changed = true;
+      }
+    }
+    if any_changed {
+      self.ranker_dirty.store(true, Ordering::Relaxed);
     }
   }
 
@@ -294,6 +339,11 @@ impl TopNCoordinator {
   // ──────────────────────────────── Tick ──────────────────────────────────────
 
   async fn tick(&self) {
+    // 0. Skip if no ranker state has changed since the last tick.
+    if !self.ranker_dirty.swap(false, Ordering::Relaxed) {
+      return;
+    }
+
     // 1. Clone subscriber entries. Drop lock before any .await into Track/TrackManager.
     let subscriber_snapshot: Vec<(SubscriberKey, SubscriberSnapshot)> = {
       let subs = self.subscribers.read().await;
@@ -308,6 +358,7 @@ impl TopNCoordinator {
               n: state.n,
               current_selected: state.current_selected.clone(),
               pending_removal_streak: state.pending_removal_streak.clone(),
+              is_publisher: state.is_publisher,
             },
           )
         })
@@ -320,21 +371,39 @@ impl TopNCoordinator {
 
     let dwell_ticks = self.config.top_n_dwell_ticks;
 
-    // 2. For each subscriber, compute diff and execute changes.
-    for ((prefix, conn_id), mut snap) in subscriber_snapshot {
-      // Clone ranker snapshot (drop lock immediately after clone).
-      let ranker_clone = {
-        let rankers = self.rankers.read().await;
-        rankers.get(&(prefix.clone(), snap.property_type)).cloned()
-      };
+    // 2. Drain buffered observations and clone ranker snapshots.
+    let ranker_snapshots: HashMap<RankerKey, TopNRanker> = {
+      let mut rankers = self.rankers.write().await;
+      self.drain_pending_observations(&mut rankers);
+      rankers.clone()
+    };
 
-      let ranker = match ranker_clone {
+    // 3. Cache audience top-N results. Audience-only subscribers (is_publisher=false)
+    //    with the same (prefix, property_type, n) get identical rankings because they
+    //    have no published tracks to self-exclude. Compute once, reuse for all.
+    let mut audience_cache: HashMap<(Tuple, u64, usize), HashSet<FullTrackName>> = HashMap::new();
+
+    // 4. For each subscriber, compute diff and execute changes.
+    for ((prefix, conn_id), mut snap) in subscriber_snapshot {
+      let ranker = match ranker_snapshots.get(&(prefix.clone(), snap.property_type)) {
         Some(r) => r,
         None => continue, // No ranker yet — subscriber registered but no tracks have spoken
       };
 
-      let ranked = ranker.compute_top_n(conn_id, snap.n);
-      let ranked_set: HashSet<FullTrackName> = ranked.into_iter().collect();
+      let ranked_set: HashSet<FullTrackName> = if snap.is_publisher {
+        // Publisher/panelist: must compute individually due to self-exclusion.
+        ranker.compute_top_n(conn_id, snap.n).into_iter().collect()
+      } else {
+        // Audience-only: reuse cached result for this (prefix, property_type, n).
+        let cache_key = (prefix.clone(), snap.property_type, snap.n);
+        audience_cache
+          .entry(cache_key)
+          .or_insert_with(|| {
+            // Use usize::MAX as sentinel — no publisher tracks to exclude.
+            ranker.compute_top_n(usize::MAX, snap.n).into_iter().collect()
+          })
+          .clone()
+      };
 
       // Hysteresis: tracks that enter top-N are added immediately.
       // Tracks that leave top-N must stay out for dwell_ticks consecutive ticks before removal.
@@ -556,6 +625,7 @@ struct SubscriberSnapshot {
   n: usize,
   current_selected: HashSet<FullTrackName>,
   pending_removal_streak: HashMap<FullTrackName, u32>,
+  is_publisher: bool,
 }
 
 // ─────────────────────────── Extension helpers ──────────────────────────────

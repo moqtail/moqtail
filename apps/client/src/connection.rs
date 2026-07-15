@@ -31,7 +31,7 @@ use wtransport::quinn::TransportConfig;
 use wtransport::quinn::congestion::BbrConfig;
 use wtransport::{ClientConfig, Endpoint, tls};
 
-const CLIENT_SUPPORTED_VERSIONS: &str = "moqt-16";
+const CLIENT_SUPPORTED_VERSIONS: &str = "moqt-18";
 
 pub struct MoqConnection {
   pub connection: Arc<TransportConnection>,

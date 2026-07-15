@@ -135,7 +135,7 @@ impl Server {
 
   /// Demultiplexes one incoming QUIC connection by its negotiated ALPN protocol —
   /// `h3` is routed to the existing WebTransport path, any MOQT version string
-  /// (e.g. `moqt-16`) is routed to the raw-QUIC path. Both share the same UDP
+  /// (e.g. `moqt-18`) is routed to the raw-QUIC path. Both share the same UDP
   /// socket/port; see `AppConfig::build_quic_endpoint` for the listener setup.
   async fn accept_incoming(incoming: quinn::Incoming, server: Server) -> Result<()> {
     let remote_addr = incoming.remote_address();

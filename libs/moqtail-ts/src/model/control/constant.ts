@@ -18,7 +18,7 @@ import { InvalidEnumValue } from '../error'
 /**
  * Protocol string array exchanged in wt-available-protocols header
  */
-export const SUPPORTED_VERSIONS = ['moqt-16']
+export const SUPPORTED_VERSIONS = ['moqt-18']
 
 /**
  * @public

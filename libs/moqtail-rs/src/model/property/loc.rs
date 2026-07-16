@@ -21,7 +21,8 @@ use super::constant::LOCPropertyId;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum LOCProperty {
-  CaptureTimestamp { value: u64 },
+  Timestamp { value: u64 },
+  Timescale { value: u64 },
   VideoFrameMarking { value: u64 },
   AudioLevel { value: u64 },
   VideoConfig { value: Bytes },
@@ -31,8 +32,12 @@ impl LOCProperty {
   pub fn serialize(&self) -> Result<Bytes, ParseError> {
     let mut buf = BytesMut::new();
     match self {
-      LOCProperty::CaptureTimestamp { value } => {
-        buf.put_vi(LOCPropertyId::CaptureTimestamp)?;
+      LOCProperty::Timestamp { value } => {
+        buf.put_vi(LOCPropertyId::Timestamp)?;
+        buf.put_vi(*value)?;
+      }
+      LOCProperty::Timescale { value } => {
+        buf.put_vi(LOCPropertyId::Timescale)?;
         buf.put_vi(*value)?;
       }
       LOCProperty::VideoFrameMarking { value } => {
@@ -74,9 +79,13 @@ impl LOCProperty {
         let value = payload.get_vi()?;
         Ok(LOCProperty::AudioLevel { value })
       }
-      LOCPropertyId::CaptureTimestamp => {
+      LOCPropertyId::Timestamp => {
         let value = payload.get_vi()?;
-        Ok(LOCProperty::CaptureTimestamp { value })
+        Ok(LOCProperty::Timestamp { value })
+      }
+      LOCPropertyId::Timescale => {
+        let value = payload.get_vi()?;
+        Ok(LOCProperty::Timescale { value })
       }
       LOCPropertyId::VideoFrameMarking => {
         let value = payload.get_vi()?;
@@ -94,7 +103,8 @@ impl TryFrom<KeyValuePair> for LOCProperty {
         let id = LOCPropertyId::try_from(type_value)?;
         match id {
           LOCPropertyId::AudioLevel => Ok(LOCProperty::AudioLevel { value }),
-          LOCPropertyId::CaptureTimestamp => Ok(LOCProperty::CaptureTimestamp { value }),
+          LOCPropertyId::Timestamp => Ok(LOCProperty::Timestamp { value }),
+          LOCPropertyId::Timescale => Ok(LOCProperty::Timescale { value }),
           LOCPropertyId::VideoFrameMarking => Ok(LOCProperty::VideoFrameMarking { value }),
           _ => Err(ParseError::InvalidType {
             context: "LOCProperty::try_from(KeyValuePair::VarInt)",

@@ -405,10 +405,6 @@ mod enum_conformance {
   /// table (§15.8 Table 15), so they are held to it too.
   #[test]
   fn loc_property_ids_match_fixture() {
-    // No exceptions: #282 renames CaptureTimestamp to Timestamp, so the expected
-    // identifier is the plain PascalCase of the spec name. Pinning the old name here
-    // would keep the entry non-conformant after #282 lands and the marker would never
-    // fire.
     assert_registry(&property_types().provisional, &[], |cp| {
       LOCPropertyId::try_from(cp).ok().map(|p| format!("{p:?}"))
     });

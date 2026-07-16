@@ -15,7 +15,8 @@
  */
 
 export * from './constant'
-export * from './capture_time_stamp'
+export * from './timestamp'
+export * from './timescale'
 export * from './video_frame_marking'
 export * from './audio_level'
 export * from './video_config'

@@ -313,7 +313,7 @@ if (import.meta.vitest) {
   describe('MoqtObject', () => {
     test('create object with payload', () => {
       const payload = new TextEncoder().encode('test payload')
-      const extensionHeaders = new ExtensionHeaders().addAudioLevel(100).addCaptureTimestamp(0).build()
+      const extensionHeaders = new ExtensionHeaders().addAudioLevel(100).addTimestamp(0).build()
       const fullTrackName = FullTrackName.tryNew('test/demo', 'track1')
       const location = new Location(100n, 10n)
       const obj = MoqtObject.newWithPayload(

@@ -352,7 +352,7 @@ export class Publisher {
       );
     }
     const headers = new ExtensionHeaders()
-      .addCaptureTimestamp(Date.now())
+      .addTimestamp(Date.now())
       .addVideoFrameMarking(isKey ? 1 : 0)
       .build();
 

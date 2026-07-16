@@ -108,7 +108,7 @@ export class PlayoutBuffer {
     if (object.extensionHeaders) {
       const headers = ExtensionHeaders.fromKeyValuePairs(object.extensionHeaders);
       for (const header of headers) {
-        if (ExtensionHeader.isCaptureTimestamp(header)) {
+        if (ExtensionHeader.isTimestamp(header)) {
           return Number(header.timestamp);
         }
       }

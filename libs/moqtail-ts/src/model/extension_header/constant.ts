@@ -17,10 +17,11 @@
 import { InvalidTypeError } from '../error'
 
 export enum LOCHeaderExtensionId {
-  CaptureTimestamp = 2,
-  VideoFrameMarking = 4,
-  AudioLevel = 6,
-  VideoConfig = 13,
+  Timestamp = 0x06,
+  Timescale = 0x08,
+  VideoFrameMarking = 0x0a,
+  AudioLevel = 0x0c,
+  VideoConfig = 0x0d,
 }
 
 export enum TrackExtensionType {
@@ -36,13 +37,15 @@ export enum TrackExtensionType {
 
 export function locHeaderExtensionIdFromNumber(value: number): LOCHeaderExtensionId {
   switch (value) {
-    case 2:
-      return LOCHeaderExtensionId.CaptureTimestamp
-    case 4:
+    case 0x06:
+      return LOCHeaderExtensionId.Timestamp
+    case 0x08:
+      return LOCHeaderExtensionId.Timescale
+    case 0x0a:
       return LOCHeaderExtensionId.VideoFrameMarking
-    case 6:
+    case 0x0c:
       return LOCHeaderExtensionId.AudioLevel
-    case 13:
+    case 0x0d:
       return LOCHeaderExtensionId.VideoConfig
     default:
       throw new InvalidTypeError('locHeaderExtensionIdFromNumber', `Invalid LOC header extension id: ${value}`)
@@ -62,10 +65,7 @@ if (import.meta.vitest) {
     })
 
     // The LOC properties are registered in the same number space as the draft's own
-    // table (§15.8 Table 15), so they are held to it too. No exceptions: #282 renames
-    // CaptureTimestamp to Timestamp, so the expected identifier is the plain PascalCase
-    // of the spec name. Pinning the old name here would keep the entry non-conformant
-    // after #282 lands and the marker would never fire.
+    // table (§15.8 Table 15), so they are held to it too.
     test('LOCHeaderExtensionId matches the provisional LOC registry', async () => {
       const { propertyTypes, assertRegistry, pascalIdent } = await fixture()
       assertRegistry(propertyTypes().provisional, pascalIdent(), (codepoint) => {

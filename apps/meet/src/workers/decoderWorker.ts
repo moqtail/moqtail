@@ -148,9 +148,7 @@ self.onmessage = async e => {
     //console.debug('[WORKER]Received the payload:', moqtObj)
     //console.debug('[WORKER]Received the extension headers:', extensionHeaders)
     const headers = ExtensionHeaders.fromKeyValuePairs(extensionHeaders ?? []);
-    const timestamp = Number(
-      headers.find(h => ExtensionHeader.isCaptureTimestamp(h))?.timestamp ?? 0n,
-    );
+    const timestamp = Number(headers.find(h => ExtensionHeader.isTimestamp(h))?.timestamp ?? 0n);
     const configHeader = headers.find(h => ExtensionHeader.isVideoConfig(h));
     const isKey = headers.some(h => ExtensionHeader.isVideoFrameMarking(h) && h.value === 1n);
 
@@ -237,9 +235,7 @@ self.onmessage = async e => {
     const extensionHeaders = extensions;
 
     const headers = ExtensionHeaders.fromKeyValuePairs(extensionHeaders ?? []);
-    const timestamp = Number(
-      headers.find(h => ExtensionHeader.isCaptureTimestamp(h))?.timestamp ?? 0n,
-    );
+    const timestamp = Number(headers.find(h => ExtensionHeader.isTimestamp(h))?.timestamp ?? 0n);
 
     if (!audioDecoder) {
       // console.debug('[DECODER] Creating new audio decoder at', new Date().toISOString())

@@ -129,7 +129,7 @@ export async function startAudioEncoder({
         chunk.copyTo(payload);
 
         const captureTime = Math.round(Date.now());
-        const locHeaders = new ExtensionHeaders().addCaptureTimestamp(captureTime);
+        const locHeaders = new ExtensionHeaders().addTimestamp(captureTime);
 
         // console.warn('Audio Group ID is:', currentAudioGroupId)
         const moqt = MoqtObject.newWithPayload(
@@ -244,7 +244,7 @@ export function initializeVideoEncoder({
         }
 
         const locHeaders = new ExtensionHeaders()
-          .addCaptureTimestamp(captureTime)
+          .addTimestamp(captureTime)
           .addVideoFrameMarking(chunk.type === 'key' ? 1 : 0);
 
         const desc = meta?.decoderConfig?.description;
@@ -432,7 +432,7 @@ export async function startVideoEncoder({
         }
 
         const locHeaders = new ExtensionHeaders()
-          .addCaptureTimestamp(captureTime)
+          .addTimestamp(captureTime)
           .addVideoFrameMarking(chunk.type === 'key' ? 1 : 0);
 
         const desc = meta?.decoderConfig?.description;

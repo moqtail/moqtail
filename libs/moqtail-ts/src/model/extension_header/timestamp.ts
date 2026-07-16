@@ -17,18 +17,18 @@
 import { KeyValuePair } from '../common/pair'
 import { LOCHeaderExtensionId } from './constant'
 
-export class CaptureTimestamp {
-  static readonly TYPE = LOCHeaderExtensionId.CaptureTimestamp
+export class Timestamp {
+  static readonly TYPE = LOCHeaderExtensionId.Timestamp
   constructor(public readonly timestamp: bigint) {}
 
   toKeyValuePair(): KeyValuePair {
-    return KeyValuePair.tryNewVarInt(CaptureTimestamp.TYPE, this.timestamp)
+    return KeyValuePair.tryNewVarInt(Timestamp.TYPE, this.timestamp)
   }
 
-  static fromKeyValuePair(pair: KeyValuePair): CaptureTimestamp | undefined {
+  static fromKeyValuePair(pair: KeyValuePair): Timestamp | undefined {
     const type = Number(pair.typeValue)
-    if (type === CaptureTimestamp.TYPE && typeof pair.value === 'bigint') {
-      return new CaptureTimestamp(pair.value)
+    if (type === Timestamp.TYPE && typeof pair.value === 'bigint') {
+      return new Timestamp(pair.value)
     }
     return undefined
   }
@@ -36,12 +36,12 @@ export class CaptureTimestamp {
 
 if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
-  describe('CaptureTimestampExtensionHeader', () => {
-    test('should roundtrip CaptureTimestamp', () => {
+  describe('TimestampExtensionHeader', () => {
+    test('should roundtrip Timestamp', () => {
       const value = 1234567890123456789n
-      const pair = new CaptureTimestamp(value).toKeyValuePair()
-      const header = CaptureTimestamp.fromKeyValuePair(pair)
-      expect(header).toBeInstanceOf(CaptureTimestamp)
+      const pair = new Timestamp(value).toKeyValuePair()
+      const header = Timestamp.fromKeyValuePair(pair)
+      expect(header).toBeInstanceOf(Timestamp)
       expect(header?.timestamp).toBe(value)
     })
   })

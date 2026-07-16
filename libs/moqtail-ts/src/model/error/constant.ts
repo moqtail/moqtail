@@ -81,6 +81,16 @@ export namespace TerminationCode {
         return TerminationCode.DUPLICATE_AUTH_TOKEN_ALIAS
       case TerminationCode.VERSION_NEGOTIATION_FAILED:
         return TerminationCode.VERSION_NEGOTIATION_FAILED
+      case TerminationCode.MALFORMED_AUTH_TOKEN:
+        return TerminationCode.MALFORMED_AUTH_TOKEN
+      case TerminationCode.UNKNOWN_AUTH_TOKEN_ALIAS:
+        return TerminationCode.UNKNOWN_AUTH_TOKEN_ALIAS
+      case TerminationCode.EXPIRED_AUTH_TOKEN:
+        return TerminationCode.EXPIRED_AUTH_TOKEN
+      case TerminationCode.INVALID_AUTHORITY:
+        return TerminationCode.INVALID_AUTHORITY
+      case TerminationCode.MALFORMED_AUTHORITY:
+        return TerminationCode.MALFORMED_AUTHORITY
       default:
         throw new InvalidTypeError('TerminationCode.tryFrom', `Unknown termination code: ${code}`)
     }
@@ -88,7 +98,20 @@ export namespace TerminationCode {
 }
 
 if (import.meta.vitest) {
-  const { describe, test } = import.meta.vitest
+  const { describe, test, expect } = import.meta.vitest
+
+  describe('TerminationCode.tryFrom', () => {
+    test('round-trips every enum member', () => {
+      for (const [name, code] of Object.entries(TerminationCode)) {
+        if (typeof code !== 'number') continue
+        expect(TerminationCode.tryFrom(code), name).toBe(code)
+      }
+    })
+
+    test('throws on a code outside the enum', () => {
+      expect(() => TerminationCode.tryFrom(0x1b)).toThrow(InvalidTypeError)
+    })
+  })
 
   // Asserted against dev/conformance/draft18/, which is shared with moqtail-rs. Unlike
   // this package's other enums, TerminationCode spells its members exactly as the draft

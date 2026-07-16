@@ -1,6 +1,6 @@
 {
-  "source": "draft-ietf-moq-transport-18 §15.10.1 Table 17",
-  "description": "Session termination error codes (§3.5).",
+  "source": "draft-ietf-moq-transport-18 \u00a715.10.1 Table 17",
+  "description": "Session termination error codes (\u00a73.5).",
   "greasing": {
     "formula": "0x7f * N + 0x9D",
     "spec": "Section 14",
@@ -85,47 +85,27 @@
     {
       "name": "MALFORMED_AUTH_TOKEN",
       "value": "0x16",
-      "spec": "Section 3.5",
-      "notes": "moqtail-ts defines this but TerminationCode.tryFrom throws on it.",
-      "pending": {
-        "ts": 275
-      }
+      "spec": "Section 3.5"
     },
     {
       "name": "UNKNOWN_AUTH_TOKEN_ALIAS",
       "value": "0x17",
-      "spec": "Section 3.5",
-      "notes": "moqtail-ts defines this but TerminationCode.tryFrom throws on it.",
-      "pending": {
-        "ts": 275
-      }
+      "spec": "Section 3.5"
     },
     {
       "name": "EXPIRED_AUTH_TOKEN",
       "value": "0x18",
-      "spec": "Section 3.5",
-      "notes": "moqtail-ts defines this but TerminationCode.tryFrom throws on it.",
-      "pending": {
-        "ts": 275
-      }
+      "spec": "Section 3.5"
     },
     {
       "name": "INVALID_AUTHORITY",
       "value": "0x19",
-      "spec": "Section 3.5",
-      "notes": "moqtail-ts defines this but TerminationCode.tryFrom throws on it.",
-      "pending": {
-        "ts": 275
-      }
+      "spec": "Section 3.5"
     },
     {
       "name": "MALFORMED_AUTHORITY",
       "value": "0x1A",
-      "spec": "Section 3.5",
-      "notes": "moqtail-ts defines this but TerminationCode.tryFrom throws on it.",
-      "pending": {
-        "ts": 275
-      }
+      "spec": "Section 3.5"
     }
   ],
   "not_in_draft": [

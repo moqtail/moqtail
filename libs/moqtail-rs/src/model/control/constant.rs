@@ -28,16 +28,13 @@ pub const SUPPORTED_VERSIONS: &str = "moqt-18";
 /// SERVER_SETUP for version <= 10) and `0x20`/`0x21` (CLIENT_SETUP / SERVER_SETUP in
 /// version <= 16). Reserved codepoints are deliberately absent from this enum:
 /// `TryFrom` rejects them, which is what §10 requires — an endpoint receiving an
-/// unknown message type MUST close the session. `0x20` and `0x21` are still live below
-/// as CLIENT_SETUP / SERVER_SETUP and become reserved once they are folded into SETUP.
+/// unknown message type MUST close the session.
 ///
 /// The values here are asserted against `dev/conformance/draft18/message_types.json`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u64)]
 pub enum ControlMessageType {
   Setup = 0x2F00,                // Control
-  ClientSetup = 0x20,            // RESERVED in draft-18; folded into Setup
-  ServerSetup = 0x21,            // RESERVED in draft-18; folded into Setup
   GoAway = 0x10,                 // Control, Request
   MaxRequestId = 0x15,           // not in draft-18
   RequestsBlocked = 0x1A,        // not in draft-18
@@ -72,8 +69,6 @@ impl TryFrom<u64> for ControlMessageType {
   fn try_from(value: u64) -> Result<Self, Self::Error> {
     match value {
       0x2F00 => Ok(ControlMessageType::Setup),
-      0x20 => Ok(ControlMessageType::ClientSetup),
-      0x21 => Ok(ControlMessageType::ServerSetup),
       0x10 => Ok(ControlMessageType::GoAway),
       0x15 => Ok(ControlMessageType::MaxRequestId),
       0x1A => Ok(ControlMessageType::RequestsBlocked),

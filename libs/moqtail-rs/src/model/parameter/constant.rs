@@ -16,7 +16,7 @@ use crate::model::error::ParseError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u64)]
-pub enum SetupParameterType {
+pub enum SetupOptionType {
   Path = 0x01,
   MaxRequestId = 0x02,
   AuthorizationToken = 0x03,
@@ -25,27 +25,27 @@ pub enum SetupParameterType {
   MoqtImplementation = 0x07,
 }
 
-impl TryFrom<u64> for SetupParameterType {
+impl TryFrom<u64> for SetupOptionType {
   type Error = ParseError;
 
   fn try_from(value: u64) -> Result<Self, Self::Error> {
     match value {
-      0x01 => Ok(SetupParameterType::Path),
-      0x02 => Ok(SetupParameterType::MaxRequestId),
-      0x03 => Ok(SetupParameterType::AuthorizationToken),
-      0x04 => Ok(SetupParameterType::MaxAuthTokenCacheSize),
-      0x05 => Ok(SetupParameterType::Authority),
-      0x07 => Ok(SetupParameterType::MoqtImplementation),
+      0x01 => Ok(SetupOptionType::Path),
+      0x02 => Ok(SetupOptionType::MaxRequestId),
+      0x03 => Ok(SetupOptionType::AuthorizationToken),
+      0x04 => Ok(SetupOptionType::MaxAuthTokenCacheSize),
+      0x05 => Ok(SetupOptionType::Authority),
+      0x07 => Ok(SetupOptionType::MoqtImplementation),
       _ => Err(ParseError::InvalidType {
-        context: "SetupParameterType::try_from(u64)",
+        context: "SetupOptionType::try_from(u64)",
         details: format!("Invalid type, got {value}"),
       }),
     }
   }
 }
 
-impl From<SetupParameterType> for u64 {
-  fn from(value: SetupParameterType) -> Self {
+impl From<SetupOptionType> for u64 {
+  fn from(value: SetupOptionType) -> Self {
     value as u64
   }
 }

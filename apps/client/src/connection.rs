@@ -17,7 +17,8 @@ use moqtail::model::control::constant::SUPPORTED_VERSIONS;
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::error::TerminationCode;
 use moqtail::model::{
-  control::client_setup::ClientSetup, parameter::setup_parameter::SetupParameter,
+  control::setup::{Setup, SetupSender},
+  parameter::setup_option::SetupOption,
 };
 use moqtail::transport::connection::TransportConnection;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
@@ -40,7 +41,7 @@ pub struct MoqConnection {
 
 impl MoqConnection {
   pub async fn establish(server: &str, no_cert_validation: bool) -> Result<Self> {
-    let mut setup_parameters = vec![SetupParameter::new_max_request_id(1000).try_into().unwrap()];
+    let mut setup_options = vec![SetupOption::new_max_request_id(1000).try_into().unwrap()];
 
     let connection = match server.strip_prefix("moqt://") {
       Some(authority_and_path) => {
@@ -48,12 +49,12 @@ impl MoqConnection {
         // Raw QUIC only there's no HTTP CONNECT to carry the authority/path,
         // so CLIENT_SETUP must carry them instead. Sending these
         // over WebTransport is a protocol violation, so this only happens here.
-        setup_parameters.push(
-          SetupParameter::new_authority(authority.to_string())
+        setup_options.push(
+          SetupOption::new_authority(authority.to_string())
             .try_into()
             .unwrap(),
         );
-        setup_parameters.push(SetupParameter::new_path(path).try_into().unwrap());
+        setup_options.push(SetupOption::new_path(path).try_into().unwrap());
         Self::connect_quic(authority, no_cert_validation).await?
       }
       None => Self::connect_webtransport(server, no_cert_validation).await?,
@@ -67,22 +68,28 @@ impl MoqConnection {
     let (send_stream, recv_stream) = connection.open_bi().await?;
     let mut control_stream = ControlStreamHandler::new(send_stream, recv_stream);
 
-    // Send ClientSetup
-    info!("Sending ClientSetup...");
-    let client_setup = ClientSetup::new(setup_parameters);
+    // Send SETUP
+    info!("Sending SETUP...");
+    let client_setup = Setup::new(setup_options);
     control_stream.send_impl(&client_setup).await?;
 
-    // Receive ServerSetup
+    // Receive the peer's SETUP
     // If the server does not support the requested version, the connection will
-    // be terminated with VersionNegotiationFailed rather than receiving a ServerSetup.
-    info!("Waiting for ServerSetup...");
+    // be terminated with VersionNegotiationFailed rather than receiving a SETUP.
+    info!("Waiting for SETUP...");
     match control_stream.next_message().await {
-      Ok(ControlMessage::ServerSetup(m)) => {
-        info!("ServerSetup received: {:?}", m);
+      Ok(ControlMessage::Setup(m)) => {
+        // AUTHORITY and PATH are client-only; a server sending either closes the
+        // session (§10.3.1.1, §10.3.1.2).
+        if let Err(code) = m.validate_incoming(SetupSender::Server, connection.kind()) {
+          error!("Server sent a client-only setup option: {:?}", code);
+          anyhow::bail!("Server sent a client-only setup option: {:?}", code);
+        }
+        info!("SETUP received: {:?}", m);
       }
       Ok(m) => {
         error!("Unexpected message: {:?}", m);
-        anyhow::bail!("Expected ServerSetup, got {:?}", m);
+        anyhow::bail!("Expected SETUP, got {:?}", m);
       }
       Err(TerminationCode::VersionNegotiationFailed) => {
         anyhow::bail!(
@@ -91,8 +98,8 @@ impl MoqConnection {
         );
       }
       Err(e) => {
-        error!("Failed to receive ServerSetup: {:?}", e);
-        anyhow::bail!("Failed to receive ServerSetup: {:?}", e);
+        error!("Failed to receive SETUP: {:?}", e);
+        anyhow::bail!("Failed to receive SETUP: {:?}", e);
       }
     };
 

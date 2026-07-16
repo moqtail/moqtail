@@ -1,0 +1,142 @@
+{
+  "source": "draft-ietf-moq-transport-18 §15.10.1 Table 17",
+  "description": "Session termination error codes (§3.5).",
+  "greasing": {
+    "formula": "0x7f * N + 0x9D",
+    "spec": "Section 14",
+    "notes": "Reserved for greasing. Not a single codepoint; excluded from the entries below."
+  },
+  "entries": [
+    {
+      "name": "NO_ERROR",
+      "value": "0x0",
+      "spec": "Section 3.5"
+    },
+    {
+      "name": "INTERNAL_ERROR",
+      "value": "0x1",
+      "spec": "Section 3.5"
+    },
+    {
+      "name": "UNAUTHORIZED",
+      "value": "0x2",
+      "spec": "Section 3.5"
+    },
+    {
+      "name": "PROTOCOL_VIOLATION",
+      "value": "0x3",
+      "spec": "Section 3.5"
+    },
+    {
+      "name": "INVALID_REQUEST_ID",
+      "value": "0x4",
+      "spec": "Section 3.5"
+    },
+    {
+      "name": "DUPLICATE_TRACK_ALIAS",
+      "value": "0x5",
+      "spec": "Section 3.5"
+    },
+    {
+      "name": "KEY_VALUE_FORMATTING_ERROR",
+      "value": "0x6",
+      "spec": "Section 3.5"
+    },
+    {
+      "name": "INVALID_PATH",
+      "value": "0x8",
+      "spec": "Section 3.5"
+    },
+    {
+      "name": "MALFORMED_PATH",
+      "value": "0x9",
+      "spec": "Section 3.5"
+    },
+    {
+      "name": "GOAWAY_TIMEOUT",
+      "value": "0x10",
+      "spec": "Section 3.5"
+    },
+    {
+      "name": "CONTROL_MESSAGE_TIMEOUT",
+      "value": "0x11",
+      "spec": "Section 3.5"
+    },
+    {
+      "name": "DATA_STREAM_TIMEOUT",
+      "value": "0x12",
+      "spec": "Section 3.5"
+    },
+    {
+      "name": "AUTH_TOKEN_CACHE_OVERFLOW",
+      "value": "0x13",
+      "spec": "Section 3.5"
+    },
+    {
+      "name": "DUPLICATE_AUTH_TOKEN_ALIAS",
+      "value": "0x14",
+      "spec": "Section 3.5"
+    },
+    {
+      "name": "VERSION_NEGOTIATION_FAILED",
+      "value": "0x15",
+      "spec": "Section 3.5"
+    },
+    {
+      "name": "MALFORMED_AUTH_TOKEN",
+      "value": "0x16",
+      "spec": "Section 3.5",
+      "notes": "moqtail-ts defines this but TerminationCode.tryFrom throws on it.",
+      "pending": {
+        "ts": 275
+      }
+    },
+    {
+      "name": "UNKNOWN_AUTH_TOKEN_ALIAS",
+      "value": "0x17",
+      "spec": "Section 3.5",
+      "notes": "moqtail-ts defines this but TerminationCode.tryFrom throws on it.",
+      "pending": {
+        "ts": 275
+      }
+    },
+    {
+      "name": "EXPIRED_AUTH_TOKEN",
+      "value": "0x18",
+      "spec": "Section 3.5",
+      "notes": "moqtail-ts defines this but TerminationCode.tryFrom throws on it.",
+      "pending": {
+        "ts": 275
+      }
+    },
+    {
+      "name": "INVALID_AUTHORITY",
+      "value": "0x19",
+      "spec": "Section 3.5",
+      "notes": "moqtail-ts defines this but TerminationCode.tryFrom throws on it.",
+      "pending": {
+        "ts": 275
+      }
+    },
+    {
+      "name": "MALFORMED_AUTHORITY",
+      "value": "0x1A",
+      "spec": "Section 3.5",
+      "notes": "moqtail-ts defines this but TerminationCode.tryFrom throws on it.",
+      "pending": {
+        "ts": 275
+      }
+    }
+  ],
+  "not_in_draft": [
+    {
+      "name": "TOO_MANY_REQUESTS",
+      "value": "0x7",
+      "notes": "Both stacks carry this; Table 17 has no 0x7. Removed alongside MAX_REQUEST_ID / REQUESTS_BLOCKED.",
+      "pending": {
+        "rs": 236,
+        "ts": 259
+      }
+    }
+  ]
+}

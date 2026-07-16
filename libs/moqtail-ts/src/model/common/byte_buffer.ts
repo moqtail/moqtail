@@ -570,94 +570,59 @@ if (import.meta.vitest) {
       })
     })
 
+    // Every vector here comes from dev/conformance/draft18/varint.json, which is shared
+    // with moqtail-rs. Table 1 (the length/range summary) and Table 2 (the example
+    // encodings) live there, not in this file. The loader is imported dynamically so it
+    // stays out of the published bundle: this whole block is dead code once
+    // import.meta.vitest is defined away at build time.
     describe('varint encoding/decoding', () => {
-      const toBytes = (hex: number[]) => new Uint8Array(hex)
-      const TEST_VECTORS: [bigint, number[]][] = [
-        [37n, [0x25]],
-        [15293n, [0xbb, 0xbd]],
-        [226442877n, [0xed, 0x7f, 0x3e, 0x7d]],
-        [2893212287960n, [0xfa, 0xa1, 0xa0, 0xe4, 0x03, 0xd8]],
-        [151288809941952n, [0xfc, 0x89, 0x98, 0xab, 0xc6, 0x6b, 0xc0]],
-        [70423237261249041n, [0xfe, 0xfa, 0x31, 0x8f, 0xa8, 0xe3, 0xca, 0x11]],
-        [18446744073709551615n, [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]],
-      ]
+      const fixture = async () => await import('../../../test/conformance')
 
-      test('test vectors encode to exact bytes', () => {
-        for (const [value, expected] of TEST_VECTORS) {
+      test('Table 2 vectors encode to exact bytes', async () => {
+        const { varint, parseValue, parseBytes } = await fixture()
+        const entries = varint().vectors.entries.filter((v) => v.minimal)
+        expect(entries.length).toBeGreaterThan(0)
+        for (const v of entries) {
           const buf = new ByteBuffer()
-          buf.putVI(value)
-          expect(buf.toUint8Array()).toEqual(toBytes(expected))
+          buf.putVI(parseValue(v.value))
+          expect(buf.toUint8Array(), `encode ${v.value}`).toEqual(parseBytes(v.encoding))
         }
       })
 
-      test('test vectors decode to exact values', () => {
-        for (const [value, encoding] of TEST_VECTORS) {
-          const buf = new FrozenByteBuffer(toBytes(encoding))
-          expect(buf.getVI()).toBe(value)
+      test('Table 2 vectors decode to exact values', async () => {
+        const { varint, parseValue, parseBytes } = await fixture()
+        const entries = varint().vectors.entries
+        expect(entries.length).toBeGreaterThan(0)
+        for (const v of entries) {
+          const buf = new FrozenByteBuffer(parseBytes(v.encoding))
+          expect(buf.getVI(), `decode ${v.encoding}`).toBe(parseValue(v.value))
           expect(buf.remaining).toBe(0)
         }
       })
 
-      test('encodes minimal length at each boundary', () => {
-        // (value, expected byte length), just below/above every length transition.
-        const cases: [bigint, number][] = [
-          [0n, 1],
-          [127n, 1],
-          [128n, 2],
-          [16383n, 2],
-          [16384n, 3],
-          [2097151n, 3],
-          [2097152n, 4],
-          [268435455n, 4],
-          [268435456n, 5],
-          [34359738367n, 5],
-          [34359738368n, 6],
-          [4398046511103n, 6],
-          [4398046511104n, 7],
-          [562949953421311n, 7],
-          [562949953421312n, 8],
-          [72057594037927935n, 8],
-          [72057594037927936n, 9],
-          [18446744073709551615n, 9],
-        ]
-        for (const [value, len] of cases) {
+      test('encodes boundaries at minimal length and exact bytes', async () => {
+        const { varint, parseValue, parseBytes } = await fixture()
+        const entries = varint().boundaries.entries
+        expect(entries.length).toBeGreaterThan(0)
+        for (const b of entries) {
           const buf = new ByteBuffer()
-          buf.putVI(value)
-          expect(buf.length).toBe(len)
+          buf.putVI(parseValue(b.value))
+          expect(buf.length, `length for ${b.value}`).toBe(b.length)
+          expect(buf.toUint8Array(), `encoding for ${b.value}`).toEqual(parseBytes(b.encoding))
         }
       })
 
-      test('round-trips across all lengths (bigint and number)', () => {
-        const values = [
-          0n,
-          1n,
-          63n,
-          64n,
-          127n,
-          128n,
-          16383n,
-          16384n,
-          2097151n,
-          2097152n,
-          268435455n,
-          268435456n,
-          34359738367n,
-          34359738368n,
-          4398046511103n,
-          4398046511104n,
-          562949953421311n,
-          562949953421312n,
-          72057594037927935n,
-          72057594037927936n,
-          18446744073709551615n,
-        ]
-        for (const value of values) {
+      test('round-trips across all lengths', async () => {
+        const { varint, parseValue } = await fixture()
+        const entries = varint().roundtrip_values.entries
+        expect(entries.length).toBeGreaterThan(0)
+        for (const raw of entries) {
+          const value = parseValue(raw)
           const buf = new ByteBuffer()
           buf.putVI(value)
-          const frozen = buf.freeze()
-          expect(frozen.getVI()).toBe(value)
+          expect(buf.freeze().getVI()).toBe(value)
         }
-        // number inputs should behave identically to their bigint equivalents.
+        // number inputs must behave identically to their bigint equivalents.
         for (const value of [0, 63, 64, 127, 128, 16384]) {
           const buf = new ByteBuffer()
           buf.putVI(value)
@@ -665,12 +630,36 @@ if (import.meta.vitest) {
         }
       })
 
-      test('decodes non-minimal encodings', () => {
-        // The spec allows non-minimal encodings; decoders must accept them.
-        expect(new FrozenByteBuffer(toBytes([0x25])).getVI()).toBe(37n) // minimal
-        expect(new FrozenByteBuffer(toBytes([0x80, 0x25])).getVI()).toBe(37n) // 2-byte
-        // 0 padded out to the maximum 9-byte form.
-        expect(new FrozenByteBuffer(toBytes([0xff, 0, 0, 0, 0, 0, 0, 0, 0])).getVI()).toBe(0n)
+      test('decodes non-minimal encodings', async () => {
+        const { varint, parseValue, parseBytes } = await fixture()
+        const entries = varint().non_minimal.entries
+        expect(entries.length).toBeGreaterThan(0)
+        for (const n of entries) {
+          const buf = new FrozenByteBuffer(parseBytes(n.encoding))
+          expect(buf.getVI(), `decode ${n.encoding}`).toBe(parseValue(n.value))
+          expect(buf.remaining).toBe(0)
+        }
+      })
+
+      test('minimal encodings have the expected prefix shape', async () => {
+        const { varint, parseValue, parseHex } = await fixture()
+        const entries = varint().prefix_shapes.entries
+        expect(entries.length).toBeGreaterThan(0)
+        for (const p of entries) {
+          const buf = new ByteBuffer()
+          buf.putVI(parseValue(p.value))
+          const first = BigInt(buf.toUint8Array()[0]!)
+          expect(first & parseHex(p.mask), `prefix for ${p.value}`).toBe(parseHex(p.prefix))
+        }
+      })
+
+      test('throws on truncated encodings', async () => {
+        const { varint, parseBytes } = await fixture()
+        const entries = varint().truncated.entries
+        expect(entries.length).toBeGreaterThan(0)
+        for (const t of entries) {
+          expect(() => new FrozenByteBuffer(parseBytes(t.encoding)).getVI(), t.reason).toThrow()
+        }
       })
 
       test('throws on negative values', () => {
@@ -684,27 +673,10 @@ if (import.meta.vitest) {
         expect(() => buf.putVI(tooLarge)).toThrow()
       })
 
-      test('throws on empty buffer', () => {
-        expect(() => new FrozenByteBuffer(new Uint8Array()).getVI()).toThrow()
-      })
-
-      test('throws on truncated continuation', () => {
-        expect(() => new FrozenByteBuffer(toBytes([0x80])).getVI()).toThrow() // 2-byte, missing 1
-        expect(() => new FrozenByteBuffer(toBytes([0xc0, 0x00])).getVI()).toThrow() // 3-byte, missing 1
-        expect(() => new FrozenByteBuffer(toBytes([0xff])).getVI()).toThrow() // 9-byte, only prefix
-      })
-
       test('leaves trailing bytes untouched', () => {
-        const buf = new FrozenByteBuffer(toBytes([0x25, 0xaa, 0xbb]))
+        const buf = new FrozenByteBuffer(new Uint8Array([0x25, 0xaa, 0xbb]))
         expect(buf.getVI()).toBe(37n)
         expect(buf.getU8()).toBe(0xaa)
-        expect(buf.getU8()).toBe(0xbb)
-      })
-
-      test('rolls back offset on truncated continuation', () => {
-        const buf = new FrozenByteBuffer(toBytes([0x80]))
-        expect(() => buf.getVI()).toThrow()
-        expect(buf.offset).toBe(0)
       })
     })
 

@@ -48,3 +48,33 @@ export function locHeaderExtensionIdFromNumber(value: number): LOCHeaderExtensio
       throw new InvalidTypeError('locHeaderExtensionIdFromNumber', `Invalid LOC header extension id: ${value}`)
   }
 }
+
+if (import.meta.vitest) {
+  const { describe, test } = import.meta.vitest
+
+  // Asserted against dev/conformance/draft18/, which is shared with moqtail-rs.
+  describe('draft-18 conformance', () => {
+    const fixture = async () => await import('../../../test/conformance')
+
+    test('TrackExtensionType matches property_types.json', async () => {
+      const { propertyTypes, assertRegistry, pascalIdent } = await fixture()
+      assertRegistry(propertyTypes(), pascalIdent(), (codepoint) => TrackExtensionType[Number(codepoint)])
+    })
+
+    // The LOC properties are registered in the same number space as the draft's own
+    // table (§15.8 Table 15), so they are held to it too. No exceptions: #282 renames
+    // CaptureTimestamp to Timestamp, so the expected identifier is the plain PascalCase
+    // of the spec name. Pinning the old name here would keep the entry non-conformant
+    // after #282 lands and the marker would never fire.
+    test('LOCHeaderExtensionId matches the provisional LOC registry', async () => {
+      const { propertyTypes, assertRegistry, pascalIdent } = await fixture()
+      assertRegistry(propertyTypes().provisional, pascalIdent(), (codepoint) => {
+        try {
+          return LOCHeaderExtensionId[locHeaderExtensionIdFromNumber(Number(codepoint))]
+        } catch {
+          return undefined
+        }
+      })
+    })
+  })
+}

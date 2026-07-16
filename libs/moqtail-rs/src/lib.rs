@@ -16,3 +16,8 @@ pub mod client;
 pub mod model;
 pub mod relay;
 pub mod transport;
+
+/// Shared conformance fixtures. Test-only: nothing outside `#[cfg(test)]` reads them,
+/// and gating the module keeps the fixture path out of published builds.
+#[cfg(test)]
+pub mod conformance;

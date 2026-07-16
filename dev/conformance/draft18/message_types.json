@@ -60,7 +60,6 @@
       "stream": "Control",
       "spec": "Section 10.3",
       "pending": {
-        "rs": 225,
         "ts": 255
       }
     },
@@ -132,9 +131,8 @@
       "value": "0x50",
       "stream": "Request, First",
       "spec": "Section 10.18",
-      "notes": "Renumbered from 0x11. Both stacks still carry 0x11.",
+      "notes": "Renumbered from 0x11. moqtail-ts still carries 0x11.",
       "pending": {
-        "rs": 225,
         "ts": 255
       }
     },
@@ -144,7 +142,6 @@
       "stream": "Request, First",
       "spec": "Section 10.19",
       "pending": {
-        "rs": 225,
         "ts": 255
       }
     },
@@ -166,7 +163,6 @@
       "stream": "Request",
       "spec": "Section 10.20",
       "pending": {
-        "rs": 225,
         "ts": 255
       }
     },

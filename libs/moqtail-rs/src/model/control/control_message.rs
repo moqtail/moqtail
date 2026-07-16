@@ -163,6 +163,15 @@ impl ControlMessage {
         UnsubscribeNamespace::parse_payload(&mut payload).map(ControlMessage::UnsubscribeNamespace)
       }
       ControlMessageType::Switch => Switch::parse_payload(&mut payload).map(ControlMessage::Switch),
+      // Draft-18 assigns these codepoints but their bodies are not built yet. Parsing
+      // fails rather than the type being rejected outright, so the error says the type
+      // was understood and the body was not.
+      ControlMessageType::Setup
+      | ControlMessageType::SubscribeTracks
+      | ControlMessageType::PublishBlocked => Err(ParseError::Other {
+        context: "ControlMessage::deserialize(payload)",
+        msg: format!("{msg_type:?} is a draft-18 message type with no body implemented yet"),
+      }),
     }
     .map_err(|err| ParseError::ProtocolViolation {
       context: "ControlMessage::deserialize(payload)",

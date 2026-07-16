@@ -385,3 +385,41 @@ export namespace RequestErrorCode {
     }
   }
 }
+
+if (import.meta.vitest) {
+  const { describe, expect, test } = import.meta.vitest
+
+  // Asserted against dev/conformance/draft18/, which is shared with moqtail-rs. No
+  // codepoint is repeated here: each test asks the enum what it parses a fixture value
+  // as. The loader is imported dynamically so it stays out of the published bundle.
+  describe('draft-18 conformance', () => {
+    const fixture = async () => await import('../../../test/conformance')
+
+    test('ControlMessageType matches message_types.json', async () => {
+      const { messageTypes, assertRegistry, pascalIdent } = await fixture()
+      assertRegistry(messageTypes(), pascalIdent({ GOAWAY: 'GoAway' }), (codepoint) => {
+        try {
+          return ControlMessageType[Number(ControlMessageType.tryFrom(codepoint))]
+        } catch {
+          return undefined
+        }
+      })
+    })
+
+    test('RequestErrorCode matches request_error_codes.json', async () => {
+      const { requestErrorCodes, assertRegistry, pascalIdent } = await fixture()
+      assertRegistry(requestErrorCodes(), pascalIdent(), (codepoint) => {
+        try {
+          return RequestErrorCode[Number(RequestErrorCode.tryFrom(codepoint))]
+        } catch {
+          return undefined
+        }
+      })
+    })
+
+    test('every message_types.json entry is exercised', async () => {
+      const { messageTypes } = await fixture()
+      expect(messageTypes().entries.length).toBeGreaterThan(0)
+    })
+  })
+}

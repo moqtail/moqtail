@@ -1,0 +1,264 @@
+{
+  "source": "draft-ietf-moq-transport-18 §10 Table 5",
+  "description": "Control message types. The stream field records which stream a message is sent on: \"Control\" is the control stream (§3.3), \"Request\" a bidirectional request stream. \"First\" means the message MUST be the first on a new request stream. Reserved codepoints carry no stream and MUST be rejected.",
+  "entries": [
+    {
+      "name": "RESERVED_SETUP_V00",
+      "value": "0x01",
+      "reserved": true,
+      "spec": "Table 5",
+      "notes": "SETUP for version 00. moqtail-ts maps this to a ReservedSetupV00 variant instead of rejecting it.",
+      "pending": {
+        "ts": 255
+      }
+    },
+    {
+      "name": "RESERVED_CLIENT_SETUP_V10",
+      "value": "0x40",
+      "reserved": true,
+      "spec": "Table 5",
+      "notes": "CLIENT_SETUP for version <= 10. moqtail-ts maps this to a ReservedClientSetupV10 variant instead of rejecting it.",
+      "pending": {
+        "ts": 255
+      }
+    },
+    {
+      "name": "RESERVED_SERVER_SETUP_V10",
+      "value": "0x41",
+      "reserved": true,
+      "spec": "Table 5",
+      "notes": "SERVER_SETUP for version <= 10. moqtail-ts maps this to a ReservedServerSetupV10 variant instead of rejecting it.",
+      "pending": {
+        "ts": 255
+      }
+    },
+    {
+      "name": "RESERVED_CLIENT_SETUP_V16",
+      "value": "0x20",
+      "reserved": true,
+      "spec": "Table 5",
+      "notes": "CLIENT_SETUP in version <= 16. Both stacks still carry a live CLIENT_SETUP here.",
+      "pending": {
+        "rs": 227,
+        "ts": 256
+      }
+    },
+    {
+      "name": "RESERVED_SERVER_SETUP_V16",
+      "value": "0x21",
+      "reserved": true,
+      "spec": "Table 5",
+      "notes": "SERVER_SETUP in version <= 16. Both stacks still carry a live SERVER_SETUP here.",
+      "pending": {
+        "rs": 227,
+        "ts": 256
+      }
+    },
+    {
+      "name": "SETUP",
+      "value": "0x2F00",
+      "stream": "Control",
+      "spec": "Section 10.3",
+      "pending": {
+        "rs": 225,
+        "ts": 255
+      }
+    },
+    {
+      "name": "GOAWAY",
+      "value": "0x10",
+      "stream": "Control, Request",
+      "spec": "Section 10.4"
+    },
+    {
+      "name": "SUBSCRIBE",
+      "value": "0x3",
+      "stream": "Request, First",
+      "spec": "Section 10.7"
+    },
+    {
+      "name": "SUBSCRIBE_OK",
+      "value": "0x4",
+      "stream": "Request",
+      "spec": "Section 10.8",
+      "notes": "Remains a distinct message with its own body; not folded into REQUEST_OK."
+    },
+    {
+      "name": "PUBLISH",
+      "value": "0x1D",
+      "stream": "Request, First",
+      "spec": "Section 10.10"
+    },
+    {
+      "name": "PUBLISH_OK",
+      "value": "0x1E",
+      "stream": "Request",
+      "spec": "Section 10.5",
+      "notes": "Table 5 keeps this codepoint but points it at Section 10.5, REQUEST_OK: it is an alias, not a message with its own body."
+    },
+    {
+      "name": "PUBLISH_DONE",
+      "value": "0xB",
+      "stream": "Request",
+      "spec": "Section 10.11"
+    },
+    {
+      "name": "FETCH",
+      "value": "0x16",
+      "stream": "Request, First",
+      "spec": "Section 10.12"
+    },
+    {
+      "name": "FETCH_OK",
+      "value": "0x18",
+      "stream": "Request",
+      "spec": "Section 10.13",
+      "notes": "Remains a distinct message with its own body; not folded into REQUEST_OK."
+    },
+    {
+      "name": "TRACK_STATUS",
+      "value": "0xD",
+      "stream": "Request, First",
+      "spec": "Section 10.14"
+    },
+    {
+      "name": "PUBLISH_NAMESPACE",
+      "value": "0x6",
+      "stream": "Request, First",
+      "spec": "Section 10.15"
+    },
+    {
+      "name": "SUBSCRIBE_NAMESPACE",
+      "value": "0x50",
+      "stream": "Request, First",
+      "spec": "Section 10.18",
+      "notes": "Renumbered from 0x11. Both stacks still carry 0x11.",
+      "pending": {
+        "rs": 225,
+        "ts": 255
+      }
+    },
+    {
+      "name": "SUBSCRIBE_TRACKS",
+      "value": "0x51",
+      "stream": "Request, First",
+      "spec": "Section 10.19",
+      "pending": {
+        "rs": 225,
+        "ts": 255
+      }
+    },
+    {
+      "name": "NAMESPACE",
+      "value": "0x8",
+      "stream": "Request",
+      "spec": "Section 10.16"
+    },
+    {
+      "name": "NAMESPACE_DONE",
+      "value": "0xE",
+      "stream": "Request",
+      "spec": "Section 10.17"
+    },
+    {
+      "name": "PUBLISH_BLOCKED",
+      "value": "0xF",
+      "stream": "Request",
+      "spec": "Section 10.20",
+      "pending": {
+        "rs": 225,
+        "ts": 255
+      }
+    },
+    {
+      "name": "REQUEST_UPDATE",
+      "value": "0x2",
+      "stream": "Request",
+      "spec": "Section 10.9"
+    },
+    {
+      "name": "REQUEST_OK",
+      "value": "0x7",
+      "stream": "Request",
+      "spec": "Section 10.5"
+    },
+    {
+      "name": "REQUEST_ERROR",
+      "value": "0x5",
+      "stream": "Request",
+      "spec": "Section 10.6"
+    }
+  ],
+  "not_in_draft": [
+    {
+      "name": "MAX_REQUEST_ID",
+      "value": "0x15",
+      "notes": "Table 5 has no 0x15.",
+      "pending": {
+        "rs": 236,
+        "ts": 259
+      }
+    },
+    {
+      "name": "REQUESTS_BLOCKED",
+      "value": "0x1A",
+      "notes": "Table 5 has no 0x1A.",
+      "pending": {
+        "rs": 236,
+        "ts": 259
+      }
+    },
+    {
+      "name": "UNSUBSCRIBE",
+      "value": "0x0A",
+      "notes": "Requests are cancelled by resetting the request stream (§3.3.2), not by a message.",
+      "pending": {
+        "rs": 241,
+        "ts": 261
+      }
+    },
+    {
+      "name": "FETCH_CANCEL",
+      "value": "0x17",
+      "notes": "Requests are cancelled by resetting the request stream (§3.3.2), not by a message.",
+      "pending": {
+        "rs": 241,
+        "ts": 261
+      }
+    },
+    {
+      "name": "UNSUBSCRIBE_NAMESPACE",
+      "value": "0x14",
+      "notes": "Requests are cancelled by closing the request stream (§3.3.2), not by a message.",
+      "pending": {
+        "rs": 241,
+        "ts": 261
+      }
+    },
+    {
+      "name": "PUBLISH_NAMESPACE_CANCEL",
+      "value": "0x0C",
+      "notes": "Table 5 has no 0x0C.",
+      "pending": {
+        "rs": 241,
+        "ts": 261
+      }
+    },
+    {
+      "name": "PUBLISH_NAMESPACE_DONE",
+      "value": "0x09",
+      "notes": "Table 5 has no 0x09. NAMESPACE_DONE (0xE) survives.",
+      "pending": {
+        "rs": 241,
+        "ts": 261
+      }
+    }
+  ],
+  "local_extensions": [
+    {
+      "name": "SWITCH",
+      "value": "0x22",
+      "notes": "moqtail's own track-switching research extension. Not in the draft, and deliberately kept: draft-18 defines no registry for control message types, so there is no sanctioned range for it. Documented rather than removed. 0x22 is unassigned in Table 5 but live in neighbouring registries (GROUP_ORDER parameter, DEFAULT_PUBLISHER_GROUP_ORDER property), so it is a plausible future assignment."
+    }
+  ]
+}

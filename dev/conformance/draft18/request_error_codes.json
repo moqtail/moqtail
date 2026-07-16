@@ -1,0 +1,57 @@
+{
+  "source": "draft-ietf-moq-transport-18 §15.10.2 Table 18",
+  "description": "Error codes carried by REQUEST_ERROR (§10.6).",
+
+  "greasing": {
+    "formula": "0x7f * N + 0x9D",
+    "spec": "Section 14",
+    "notes": "Reserved for greasing. Not a single codepoint; excluded from the entries below."
+  },
+
+  "entries": [
+    { "name": "INTERNAL_ERROR", "value": "0x0", "spec": "Section 10.6" },
+    { "name": "UNAUTHORIZED", "value": "0x1", "spec": "Section 10.6" },
+    { "name": "TIMEOUT", "value": "0x2", "spec": "Section 10.6" },
+    { "name": "NOT_SUPPORTED", "value": "0x3", "spec": "Section 10.6" },
+    { "name": "MALFORMED_AUTH_TOKEN", "value": "0x4", "spec": "Section 10.6" },
+    { "name": "EXPIRED_AUTH_TOKEN", "value": "0x5", "spec": "Section 10.6" },
+    {
+      "name": "GOING_AWAY",
+      "value": "0x6",
+      "spec": "Section 10.6",
+      "pending": { "rs": 238, "ts": 260 }
+    },
+    {
+      "name": "EXCESSIVE_LOAD",
+      "value": "0x9",
+      "spec": "Section 10.6",
+      "pending": { "rs": 238, "ts": 260 }
+    },
+    { "name": "DOES_NOT_EXIST", "value": "0x10", "spec": "Section 10.6" },
+    { "name": "INVALID_RANGE", "value": "0x11", "spec": "Section 10.6" },
+    { "name": "MALFORMED_TRACK", "value": "0x12", "spec": "Section 10.6" },
+    { "name": "DUPLICATE_SUBSCRIPTION", "value": "0x19", "spec": "Section 10.6" },
+    { "name": "UNINTERESTED", "value": "0x20", "spec": "Section 10.6" },
+    { "name": "PREFIX_OVERLAP", "value": "0x30", "spec": "Section 10.6" },
+    {
+      "name": "NAMESPACE_TOO_LARGE",
+      "value": "0x31",
+      "spec": "Section 10.6",
+      "pending": { "rs": 238, "ts": 260 }
+    },
+    { "name": "INVALID_JOINING_REQUEST_ID", "value": "0x32", "spec": "Section 10.6" },
+    {
+      "name": "UNSUPPORTED_EXTENSION",
+      "value": "0x33",
+      "spec": "Section 10.6",
+      "pending": { "rs": 238, "ts": 260 }
+    },
+    {
+      "name": "REDIRECT",
+      "value": "0x34",
+      "spec": "Section 10.6",
+      "notes": "Used by GOAWAY-driven request migration.",
+      "pending": { "rs": 244, "ts": 268 }
+    }
+  ]
+}

@@ -1,0 +1,126 @@
+{
+  "source": "draft-ietf-moq-transport-18 §1.4.1 (Table 1, Table 2)",
+  "description": "Variable-length integer encoding. The number of leading 1 bits of the first byte gives length - 1. Values are decimal strings; encodings are lowercase hex without a 0x prefix.",
+
+  "lengths": {
+    "description": "Table 1. Summary of integer encodings.",
+    "entries": [
+      { "leading_bits": "0", "length": 1, "usable_bits": 7, "max": "127" },
+      { "leading_bits": "10", "length": 2, "usable_bits": 14, "max": "16383" },
+      { "leading_bits": "110", "length": 3, "usable_bits": 21, "max": "2097151" },
+      { "leading_bits": "1110", "length": 4, "usable_bits": 28, "max": "268435455" },
+      { "leading_bits": "11110", "length": 5, "usable_bits": 35, "max": "34359738367" },
+      { "leading_bits": "111110", "length": 6, "usable_bits": 42, "max": "4398046511103" },
+      { "leading_bits": "1111110", "length": 7, "usable_bits": 49, "max": "562949953421311" },
+      { "leading_bits": "11111110", "length": 8, "usable_bits": 56, "max": "72057594037927935" },
+      { "leading_bits": "11111111", "length": 9, "usable_bits": 64, "max": "18446744073709551615" }
+    ]
+  },
+
+  "vectors": {
+    "description": "Table 2. Example integer encodings, verbatim. Entries with minimal=false are non-minimal: they must decode to the value, but encoding the value produces a shorter form.",
+    "entries": [
+      { "encoding": "25", "value": "37", "minimal": true },
+      { "encoding": "8025", "value": "37", "minimal": false },
+      { "encoding": "bbbd", "value": "15293", "minimal": true },
+      { "encoding": "ed7f3e7d", "value": "226442877", "minimal": true },
+      { "encoding": "faa1a0e403d8", "value": "2893212287960", "minimal": true },
+      { "encoding": "fc8998abc66bc0", "value": "151288809941952", "minimal": true },
+      { "encoding": "fefa318fa8e3ca11", "value": "70423237261249041", "minimal": true },
+      { "encoding": "ffffffffffffffffff", "value": "18446744073709551615", "minimal": true }
+    ]
+  },
+
+  "boundaries": {
+    "description": "The values just below and just above every length transition, with the exact minimal encoding of each.",
+    "entries": [
+      { "value": "0", "length": 1, "encoding": "00" },
+      { "value": "127", "length": 1, "encoding": "7f" },
+      { "value": "128", "length": 2, "encoding": "8080" },
+      { "value": "16383", "length": 2, "encoding": "bfff" },
+      { "value": "16384", "length": 3, "encoding": "c04000" },
+      { "value": "2097151", "length": 3, "encoding": "dfffff" },
+      { "value": "2097152", "length": 4, "encoding": "e0200000" },
+      { "value": "268435455", "length": 4, "encoding": "efffffff" },
+      { "value": "268435456", "length": 5, "encoding": "f010000000" },
+      { "value": "34359738367", "length": 5, "encoding": "f7ffffffff" },
+      { "value": "34359738368", "length": 6, "encoding": "f80800000000" },
+      { "value": "4398046511103", "length": 6, "encoding": "fbffffffffff" },
+      { "value": "4398046511104", "length": 7, "encoding": "fc040000000000" },
+      { "value": "562949953421311", "length": 7, "encoding": "fdffffffffffff" },
+      { "value": "562949953421312", "length": 8, "encoding": "fe02000000000000" },
+      { "value": "72057594037927935", "length": 8, "encoding": "feffffffffffffff" },
+      { "value": "72057594037927936", "length": 9, "encoding": "ff0100000000000000" },
+      { "value": "18446744073709551615", "length": 9, "encoding": "ffffffffffffffffff" }
+    ]
+  },
+
+  "non_minimal": {
+    "description": "\"Variable length integers do not need to be encoded using the minimum number of bytes; any encoding length that can represent the value is valid.\" Decoders must accept every one of these.",
+    "entries": [
+      { "encoding": "25", "value": "37", "length": 1 },
+      { "encoding": "8025", "value": "37", "length": 2 },
+      { "encoding": "c00025", "value": "37", "length": 3 },
+      { "encoding": "e0000025", "value": "37", "length": 4 },
+      { "encoding": "f000000025", "value": "37", "length": 5 },
+      { "encoding": "f80000000025", "value": "37", "length": 6 },
+      { "encoding": "fc000000000025", "value": "37", "length": 7 },
+      { "encoding": "fe00000000000025", "value": "37", "length": 8 },
+      { "encoding": "ff0000000000000025", "value": "37", "length": 9 },
+      { "encoding": "ff0000000000000000", "value": "0", "length": 9 }
+    ]
+  },
+
+  "prefix_shapes": {
+    "description": "The smallest value at each length, and the leading-bit pattern its first byte must carry.",
+    "entries": [
+      { "value": "0", "mask": "0x80", "prefix": "0x00" },
+      { "value": "128", "mask": "0xc0", "prefix": "0x80" },
+      { "value": "16384", "mask": "0xe0", "prefix": "0xc0" },
+      { "value": "2097152", "mask": "0xf0", "prefix": "0xe0" },
+      { "value": "268435456", "mask": "0xf8", "prefix": "0xf0" },
+      { "value": "34359738368", "mask": "0xfc", "prefix": "0xf8" },
+      { "value": "4398046511104", "mask": "0xfe", "prefix": "0xfc" },
+      { "value": "562949953421312", "mask": "0xff", "prefix": "0xfe" },
+      { "value": "72057594037927936", "mask": "0xff", "prefix": "0xff" }
+    ]
+  },
+
+  "roundtrip_values": {
+    "description": "Values that must survive encode-then-decode unchanged, covering every length.",
+    "entries": [
+      "0",
+      "1",
+      "63",
+      "64",
+      "127",
+      "128",
+      "16383",
+      "16384",
+      "2097151",
+      "2097152",
+      "268435455",
+      "268435456",
+      "34359738367",
+      "34359738368",
+      "4398046511103",
+      "4398046511104",
+      "562949953421311",
+      "562949953421312",
+      "72057594037927935",
+      "72057594037927936",
+      "18446744073709551615"
+    ]
+  },
+
+  "truncated": {
+    "description": "Encodings whose first byte announces more bytes than are present. Decoding must fail rather than read past the end.",
+    "entries": [
+      { "encoding": "", "reason": "empty input" },
+      { "encoding": "80", "reason": "2-byte form, 1 byte missing" },
+      { "encoding": "c000", "reason": "3-byte form, 1 byte missing" },
+      { "encoding": "fe00", "reason": "8-byte form, 6 bytes missing" },
+      { "encoding": "ff", "reason": "9-byte form, only the prefix" }
+    ]
+  }
+}

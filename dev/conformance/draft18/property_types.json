@@ -1,0 +1,107 @@
+{
+  "source": "draft-ietf-moq-transport-18 §15.8 Table 14, Table 15",
+  "description": "Property types. Scope is Track, Object, or both. Endpoints MUST ignore unknown Property types, skipping them using the length field. Even type values use VarInt KVP encoding; odd type values use Bytes KVP encoding.",
+
+  "greasing": {
+    "formula": "0x7f * N + 0x9D",
+    "spec": "Section 14",
+    "scope": "Any"
+  },
+
+  "ranges": {
+    "description": "Registration policy for the Property Type space.",
+    "entries": [
+      { "from": "0x00", "to": "0x77", "policy": "Standards Action or IESG Approval (1-byte encoding)" },
+      {
+        "from": "0x78",
+        "to": "0x7F",
+        "policy": "Reserved for application-specific use (1-byte encoding, no registration permitted)"
+      },
+      { "from": "0x80", "to": "0x37FF", "policy": "Specification Required (2-byte encoding)" },
+      {
+        "from": "0x3800",
+        "to": "0x3FFF",
+        "policy": "Reserved for application-specific use (2-byte encoding, no registration permitted)"
+      },
+      {
+        "from": "0x4000",
+        "to": "0x7FFF",
+        "policy": "Reserved for Mandatory Track Properties (§2.5.1). Properties registered in this range MUST have Track scope; Object scope properties MUST NOT be registered in this range."
+      },
+      { "from": "0x8000", "to": null, "policy": "First Come First Served" }
+    ]
+  },
+
+  "entries": [
+    {
+      "name": "OBJECT_DELIVERY_TIMEOUT",
+      "value": "0x02",
+      "scope": "Track",
+      "spec": "Section 12.2",
+      "notes": "Both stacks call this DeliveryTimeout.",
+      "pending": { "rs": 228, "ts": 265 }
+    },
+    { "name": "MAX_CACHE_DURATION", "value": "0x04", "scope": "Track", "spec": "Section 12.3" },
+    {
+      "name": "SUBGROUP_DELIVERY_TIMEOUT",
+      "value": "0x06",
+      "scope": "Track",
+      "spec": "Section 12.1",
+      "notes": "Missing from both stacks entirely.",
+      "pending": { "rs": 228, "ts": 265 }
+    },
+    {
+      "name": "IMMUTABLE_PROPERTIES",
+      "value": "0x0B",
+      "scope": "Track, Object",
+      "spec": "Section 12.7",
+      "notes": "moqtail-ts still calls this ImmutableExtensions.",
+      "pending": { "ts": 264 }
+    },
+    { "name": "DEFAULT_PUBLISHER_PRIORITY", "value": "0x0E", "scope": "Track", "spec": "Section 12.4" },
+    { "name": "DEFAULT_PUBLISHER_GROUP_ORDER", "value": "0x22", "scope": "Track", "spec": "Section 12.5" },
+    { "name": "DYNAMIC_GROUPS", "value": "0x30", "scope": "Track", "spec": "Section 12.6" },
+    { "name": "PRIOR_GROUP_ID_GAP", "value": "0x3C", "scope": "Object", "spec": "Section 12.8" },
+    { "name": "PRIOR_OBJECT_ID_GAP", "value": "0x3E", "scope": "Object", "spec": "Section 12.9" }
+  ],
+
+  "provisional": {
+    "source": "§15.8 Table 15",
+    "description": "Provisional registrations for other active drafts in the moq working group. These share the same Property Type space as the entries above, so they are not a private namespace and must not collide with it. Both stacks carry ids from an older revision of draft-ietf-moq-loc.",
+    "entries": [
+      {
+        "name": "TIMESTAMP",
+        "value": "0x06",
+        "scope": "Object",
+        "spec": "draft-ietf-moq-loc",
+        "notes": "Both stacks call this CaptureTimestamp and put it at 0x02, which is OBJECT_DELIVERY_TIMEOUT.",
+        "pending": { "rs": 282, "ts": 282 }
+      },
+      {
+        "name": "TIMESCALE",
+        "value": "0x08",
+        "scope": "Track, Object",
+        "spec": "draft-ietf-moq-loc",
+        "notes": "Missing from both stacks.",
+        "pending": { "rs": 282, "ts": 282 }
+      },
+      {
+        "name": "VIDEO_FRAME_MARKING",
+        "value": "0x0A",
+        "scope": "Object",
+        "spec": "draft-ietf-moq-loc",
+        "notes": "Both stacks put this at 0x04, which is MAX_CACHE_DURATION.",
+        "pending": { "rs": 282, "ts": 282 }
+      },
+      {
+        "name": "AUDIO_LEVEL",
+        "value": "0x0C",
+        "scope": "Object",
+        "spec": "draft-ietf-moq-loc",
+        "notes": "Both stacks put this at 0x06, which is SUBGROUP_DELIVERY_TIMEOUT and also TIMESTAMP in this table — a draft-18 peer decodes an audio level as a timestamp rather than failing.",
+        "pending": { "rs": 282, "ts": 282 }
+      },
+      { "name": "VIDEO_CONFIG", "value": "0x0D", "scope": "Object", "spec": "draft-ietf-moq-loc" }
+    ]
+  }
+}

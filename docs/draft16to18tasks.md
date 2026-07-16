@@ -859,14 +859,21 @@ the library cannot.
 - **Depends on:** all RS-_, RL-_, CL-1. **Size:** M.
 - **This gate is the point of the Rust-first ordering.** Once green, the relay is a known-good
   draft-18 peer, so every JS failure below is a JS bug rather than an ambiguity about who is wrong.
+  It gates the **JS interop gate (JS-2)**, not the individual TS dev tasks: those mirror their RS
+  twins and develop against the shared C-1 fixtures, so TS work can proceed in parallel with the
+  Rust phase (see Phase TS).
 
 ---
 
 ## 6. Phase TS — moqtail-ts
 
-Mirrors the RS tasks; changelog citations are identical to the Rust twin. Each TS task's
-acceptance includes **interop against the CL-2 relay**, not just unit tests — that is what the
-Rust-first order buys.
+Mirrors the RS tasks; changelog citations are identical to the Rust twin. Each TS task depends
+on its RS twin (for the reference codepoints) but **not** on the CL-2 interop gate. Since C-1
+the two stacks assert against the same normative fixtures in `dev/conformance/draft18/`, so a
+TS task can be built and unit-tested in parallel with the Rust phase — drift is caught by the
+fixture tests, not only by live interop. End-to-end interop against the known-good relay is
+verified once, at the JS interop gate (JS-2), rather than being a per-task blocker. This lets a
+second developer start the TS phase without waiting for the whole Rust phase to go green.
 
 | Task          | Mirrors | Notes                                                                                                                                                                                                                                                                                                                                    |
 | ------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -1076,9 +1083,10 @@ C-1
                                   RS-8 ──> RL-1 ;  RS-7 ──> RL-4
                         RS-10 + RS-13 ──> RL-5 ;  RS-7b + RS-15 ──> RL-7
                                   RS-3 ──> CL-1
-  all RS + RL + CL-1 ──────────────────> CL-2  🚦 Rust interop gate
-                              CL-2 ─────> TS-2 … TS-21
-                              TS-* ─────> JS-1 ──> JS-2  🚦 JS interop gate — main interoperable again
+  all RS + RL + CL-1 ──────────────────> CL-2  🚦 Rust interop gate ──┐
+                     each TS-N mirrors its RS-N twin                   │  TS develops against the
+                     (built + unit-tested vs the C-1 fixtures)         │  C-1 fixtures, not CL-2
+                    CL-2 + all TS-* ─────> JS-1 ──> JS-2  🚦 JS interop gate ◄─┘  main interoperable again
                               TS-* ─────> MT-1 ──> MT-2
 
 independent, land any time: TS-17, RS-21 (docs only)

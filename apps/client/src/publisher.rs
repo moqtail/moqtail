@@ -369,6 +369,8 @@ async fn send_via_streams(
       Some(publisher_priority),
       true,
       true,
+      true, // first_object: a fresh stream is opened per group, so its first object is
+            // the first the publisher produced in this subgroup
     );
     let header_info = HeaderInfo::Subgroup { header: sub_header };
     let stream = Arc::new(Mutex::new(stream));

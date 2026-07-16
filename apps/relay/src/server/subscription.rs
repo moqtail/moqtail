@@ -435,6 +435,11 @@ impl Subscription {
                               Some(object.publisher_priority),
                               has_properties,
                               false,
+                              // first_object: FIRST_OBJECT marks the original publisher's
+                              // first object in the subgroup. A relay forwarding from cache
+                              // is not that publisher and may start mid-subgroup, so it is
+                              // left unset here (see #229 / RS-14 scope).
+                              false,
                             ),
                           };
                           info!(

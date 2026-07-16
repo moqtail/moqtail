@@ -20,9 +20,9 @@ pub enum FetchHeaderType {
   Type0x05 = 0x05,
 }
 
-/// Subgroup Header Type
+/// Subgroup Header Type, per draft-18 §11.4.2.
 ///
-/// Type bit layout (0b00X1XXXX):
+/// Type bit layout (form `0b0XX1XXXX`):
 /// - Bit 0 (0x01): PROPERTIES - Properties present in all objects
 /// - Bits 1-2 (0x06): SUBGROUP_ID_MODE - How subgroup ID is encoded
 ///   - 0b00 (0x00): Subgroup ID = 0 (absent from header)
@@ -32,9 +32,13 @@ pub enum FetchHeaderType {
 /// - Bit 3 (0x08): END_OF_GROUP - This subgroup contains the final object in the group
 /// - Bit 4 (0x10): Always set (distinguishes subgroup from other header types)
 /// - Bit 5 (0x20): DEFAULT_PRIORITY - Publisher priority field omitted, inherited from subscription
+/// - Bit 6 (0x40): FIRST_OBJECT - The first object on this stream is the first the original
+///   publisher published in the subgroup
+/// - Bit 7 (0x80): Must be 0
 ///
-/// Valid ranges: 0x10-0x15, 0x18-0x1D (bit 5=0), 0x30-0x35, 0x38-0x3D (bit 5=1)
-/// Invalid: 0x16, 0x17, 0x1E, 0x1F, 0x36, 0x37, 0x3E, 0x3F (SUBGROUP_ID_MODE=0b11)
+/// Valid Type values are exactly the ranges 0x10-0x1F, 0x30-0x3F, 0x50-0x5F and 0x70-0x7F
+/// (bit 4 set, bit 7 clear), minus those with SUBGROUP_ID_MODE = 0b11: 0x16, 0x17, 0x1E, 0x1F,
+/// 0x36, 0x37, 0x3E, 0x3F, 0x56, 0x57, 0x5E, 0x5F, 0x76, 0x77, 0x7E, 0x7F.
 #[derive(Debug, PartialEq, Clone, Copy, Eq)]
 pub struct SubgroupHeaderType(u8);
 
@@ -49,8 +53,10 @@ impl SubgroupHeaderType {
   pub const REQUIRED_BIT: u8 = 0x10;
   /// Publisher priority field omitted, inherited from subscription (bit 5)
   pub const DEFAULT_PRIORITY: u8 = 0x20;
-  /// Mask for bits that must be zero: bits 6-7
-  const INVALID_BITS_MASK: u8 = 0xC0;
+  /// First object on this stream is the first published in the subgroup (bit 6)
+  pub const FIRST_OBJECT: u8 = 0x40;
+  /// Mask for bits that must be zero: bit 7 only
+  const INVALID_BITS_MASK: u8 = 0x80;
   /// Reserved SUBGROUP_ID_MODE value (0b11)
   const RESERVED_SUBGROUP_MODE: u8 = 0x06;
 
@@ -114,6 +120,12 @@ impl SubgroupHeaderType {
     self.0 & Self::DEFAULT_PRIORITY != 0
   }
 
+  /// Check if this stream's first object is the first the original publisher published
+  /// in the subgroup (bit 6 set).
+  pub fn is_first_object(&self) -> bool {
+    self.0 & Self::FIRST_OBJECT != 0
+  }
+
   /// Create type from property flags.
   /// subgroup_id_mode: 0=zero, 1=firstObjId, 2=explicit
   pub fn from_properties(
@@ -121,6 +133,7 @@ impl SubgroupHeaderType {
     subgroup_id_mode: u8,
     contains_end_of_group: bool,
     has_default_priority: bool,
+    first_object: bool,
   ) -> Self {
     let mut v: u8 = Self::REQUIRED_BIT;
     if has_properties {
@@ -132,6 +145,9 @@ impl SubgroupHeaderType {
     }
     if has_default_priority {
       v |= Self::DEFAULT_PRIORITY;
+    }
+    if first_object {
+      v |= Self::FIRST_OBJECT;
     }
     Self(v)
   }
@@ -307,5 +323,69 @@ impl TryFrom<u64> for ObjectDatagramType {
 impl From<ObjectDatagramType> for u64 {
   fn from(dtype: ObjectDatagramType) -> Self {
     dtype.0 as u64
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  /// The independent oracle for a valid SUBGROUP_HEADER type byte (draft-18 §11.4.2):
+  /// bit 7 clear, bit 4 set, and SUBGROUP_ID_MODE (bits 1-2) not 0b11.
+  fn is_valid_subgroup_type(b: u8) -> bool {
+    b & 0x80 == 0 && b & 0x10 != 0 && b & 0x06 != 0x06
+  }
+
+  #[test]
+  fn subgroup_header_type_classifies_all_256_bytes() {
+    // The 16 reserved SUBGROUP_ID_MODE = 0b11 values named explicitly in §11.4.2, as a
+    // cross-check that the oracle and the spec agree.
+    let reserved_mode_3 = [
+      0x16u8, 0x17, 0x1E, 0x1F, 0x36, 0x37, 0x3E, 0x3F, 0x56, 0x57, 0x5E, 0x5F, 0x76, 0x77, 0x7E,
+      0x7F,
+    ];
+
+    for b in 0u8..=255 {
+      let accepted = SubgroupHeaderType::try_new(b as u64).is_ok();
+      let expected = is_valid_subgroup_type(b);
+      assert_eq!(accepted, expected, "type byte {b:#04x}");
+
+      if reserved_mode_3.contains(&b) {
+        assert!(
+          !accepted,
+          "reserved SUBGROUP_ID_MODE 0b11 value {b:#04x} must be rejected"
+        );
+      }
+      // Round-trips preserve the byte for accepted values.
+      if accepted {
+        assert_eq!(SubgroupHeaderType::try_new(b as u64).unwrap().value(), b);
+      }
+    }
+
+    // Exactly the four ranges minus the 16 reserved values are valid.
+    let valid_count = (0u8..=255).filter(|&b| is_valid_subgroup_type(b)).count();
+    assert_eq!(valid_count, 4 * 16 - 16, "expected 48 valid type bytes");
+  }
+
+  #[test]
+  fn first_object_bit_round_trips() {
+    let with = SubgroupHeaderType::from_properties(false, 2, false, false, true);
+    assert!(with.is_first_object());
+    assert_eq!(with.value() & SubgroupHeaderType::FIRST_OBJECT, 0x40);
+    assert_eq!(
+      SubgroupHeaderType::try_new(with.value() as u64).unwrap(),
+      with
+    );
+
+    let without = SubgroupHeaderType::from_properties(false, 2, false, false, false);
+    assert!(!without.is_first_object());
+  }
+
+  #[test]
+  fn first_object_alone_is_a_valid_type() {
+    // 0x50 = FIRST_OBJECT (0x40) + REQUIRED_BIT (0x10), mode 0b00. Rejected before RS-14
+    // because 0x40 was in INVALID_BITS_MASK.
+    let t = SubgroupHeaderType::try_new(0x50).unwrap();
+    assert!(t.is_first_object());
   }
 }

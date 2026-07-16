@@ -18,35 +18,52 @@ use crate::model::error::ParseError;
 
 pub const SUPPORTED_VERSIONS: &str = "moqt-18";
 
+/// Control message types, per draft-18 Table 5.
+///
+/// The comment on each variant is the Stream column: `Control` is the control stream
+/// (§3.3), `Request` a bidirectional request stream, and `First` means the message MUST
+/// be the first on a new request stream.
+///
+/// Table 5 also reserves `0x01` (SETUP for version 00), `0x40`/`0x41` (CLIENT_SETUP /
+/// SERVER_SETUP for version <= 10) and `0x20`/`0x21` (CLIENT_SETUP / SERVER_SETUP in
+/// version <= 16). Reserved codepoints are deliberately absent from this enum:
+/// `TryFrom` rejects them, which is what §10 requires — an endpoint receiving an
+/// unknown message type MUST close the session. `0x20` and `0x21` are still live below
+/// as CLIENT_SETUP / SERVER_SETUP and become reserved once they are folded into SETUP.
+///
+/// The values here are asserted against `dev/conformance/draft18/message_types.json`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u64)]
 pub enum ControlMessageType {
-  ClientSetup = 0x20,
-  ServerSetup = 0x21,
-  GoAway = 0x10,
-  MaxRequestId = 0x15,
-  RequestsBlocked = 0x1A,
-  Subscribe = 0x03,
-  SubscribeOk = 0x04,
-  RequestError = 0x05,
-  Unsubscribe = 0x0A,
-  RequestUpdate = 0x02,
-  Fetch = 0x16,
-  FetchOk = 0x18,
-  FetchCancel = 0x17,
-  TrackStatus = 0x0D,
-  PublishNamespace = 0x06,
-  RequestOk = 0x07,
-  Namespace = 0x08,
-  PublishNamespaceDone = 0x09,
-  NamespaceDone = 0x0E,
-  PublishNamespaceCancel = 0x0C,
-  SubscribeNamespace = 0x11,
-  UnsubscribeNamespace = 0x14,
-  Publish = 0x1D,
-  PublishDone = 0x0B,
-  PublishOk = 0x1E,
-  Switch = 0x22,
+  Setup = 0x2F00,                // Control
+  ClientSetup = 0x20,            // RESERVED in draft-18; folded into Setup
+  ServerSetup = 0x21,            // RESERVED in draft-18; folded into Setup
+  GoAway = 0x10,                 // Control, Request
+  MaxRequestId = 0x15,           // not in draft-18
+  RequestsBlocked = 0x1A,        // not in draft-18
+  Subscribe = 0x03,              // Request, First
+  SubscribeOk = 0x04,            // Request
+  RequestError = 0x05,           // Request
+  Unsubscribe = 0x0A,            // not in draft-18
+  RequestUpdate = 0x02,          // Request
+  Fetch = 0x16,                  // Request, First
+  FetchOk = 0x18,                // Request
+  FetchCancel = 0x17,            // not in draft-18
+  TrackStatus = 0x0D,            // Request, First
+  PublishNamespace = 0x06,       // Request, First
+  RequestOk = 0x07,              // Request
+  Namespace = 0x08,              // Request
+  PublishNamespaceDone = 0x09,   // not in draft-18
+  NamespaceDone = 0x0E,          // Request
+  PublishNamespaceCancel = 0x0C, // not in draft-18
+  SubscribeNamespace = 0x50,     // Request, First
+  SubscribeTracks = 0x51,        // Request, First
+  UnsubscribeNamespace = 0x14,   // not in draft-18
+  Publish = 0x1D,                // Request, First
+  PublishDone = 0x0B,            // Request
+  PublishOk = 0x1E,              // Request; an alias of RequestOk (§10.5), not its own body
+  PublishBlocked = 0x0F,         // Request
+  Switch = 0x22,                 // not in draft-18; moqtail-local extension
 }
 
 impl TryFrom<u64> for ControlMessageType {
@@ -54,6 +71,7 @@ impl TryFrom<u64> for ControlMessageType {
 
   fn try_from(value: u64) -> Result<Self, Self::Error> {
     match value {
+      0x2F00 => Ok(ControlMessageType::Setup),
       0x20 => Ok(ControlMessageType::ClientSetup),
       0x21 => Ok(ControlMessageType::ServerSetup),
       0x10 => Ok(ControlMessageType::GoAway),
@@ -75,10 +93,12 @@ impl TryFrom<u64> for ControlMessageType {
       0x09 => Ok(ControlMessageType::PublishNamespaceDone),
       0x0E => Ok(ControlMessageType::NamespaceDone),
       0x0C => Ok(ControlMessageType::PublishNamespaceCancel),
-      0x11 => Ok(ControlMessageType::SubscribeNamespace),
+      0x50 => Ok(ControlMessageType::SubscribeNamespace),
+      0x51 => Ok(ControlMessageType::SubscribeTracks),
       0x14 => Ok(ControlMessageType::UnsubscribeNamespace),
       0x1D => Ok(ControlMessageType::Publish),
       0x1E => Ok(ControlMessageType::PublishOk),
+      0x0F => Ok(ControlMessageType::PublishBlocked),
       0x22 => Ok(ControlMessageType::Switch),
       _ => Err(ParseError::InvalidType {
         context: " ControlMessageType::try_from(u64)",

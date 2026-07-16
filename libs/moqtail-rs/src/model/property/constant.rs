@@ -55,14 +55,15 @@ impl From<LOCPropertyId> for u64 {
 #[repr(u64)]
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
 pub enum TrackPropertyType {
-  DeliveryTimeout = 0x02,            // Track scope, VarInt (ms, must be > 0)
-  MaxCacheDuration = 0x04,           // Track scope, VarInt (ms)
-  ImmutableProperties = 0x0B,        // Track+Object scope, Bytes (nested KVPs)
-  DefaultPublisherPriority = 0x0E,   // Track scope, VarInt (0-255)
+  ObjectDeliveryTimeout = 0x02, // Track scope, VarInt (ms, 0 = no timeout)
+  MaxCacheDuration = 0x04,      // Track scope, VarInt (ms)
+  SubgroupDeliveryTimeout = 0x06, // Track scope, VarInt (ms, 0 = no timeout)
+  ImmutableProperties = 0x0B,   // Track+Object scope, Bytes (nested KVPs)
+  DefaultPublisherPriority = 0x0E, // Track scope, VarInt (0-255)
   DefaultPublisherGroupOrder = 0x22, // Track scope, VarInt (1=Ascending, 2=Descending)
-  DynamicGroups = 0x30,              // Track scope, VarInt (0 or 1)
-  PriorGroupIdGap = 0x3C,            // Object scope, VarInt
-  PriorObjectIdGap = 0x3E,           // Object scope, VarInt
+  DynamicGroups = 0x30,         // Track scope, VarInt (0 or 1)
+  PriorGroupIdGap = 0x3C,       // Object scope, VarInt
+  PriorObjectIdGap = 0x3E,      // Object scope, VarInt
 }
 
 impl TryFrom<u64> for TrackPropertyType {
@@ -70,8 +71,9 @@ impl TryFrom<u64> for TrackPropertyType {
 
   fn try_from(value: u64) -> Result<Self, Self::Error> {
     match value {
-      0x02 => Ok(TrackPropertyType::DeliveryTimeout),
+      0x02 => Ok(TrackPropertyType::ObjectDeliveryTimeout),
       0x04 => Ok(TrackPropertyType::MaxCacheDuration),
+      0x06 => Ok(TrackPropertyType::SubgroupDeliveryTimeout),
       0x0B => Ok(TrackPropertyType::ImmutableProperties),
       0x0E => Ok(TrackPropertyType::DefaultPublisherPriority),
       0x22 => Ok(TrackPropertyType::DefaultPublisherGroupOrder),
@@ -99,8 +101,9 @@ mod tests {
   #[test]
   fn test_track_property_type_roundtrip() {
     let known = [
-      (0x02u64, TrackPropertyType::DeliveryTimeout),
+      (0x02u64, TrackPropertyType::ObjectDeliveryTimeout),
       (0x04, TrackPropertyType::MaxCacheDuration),
+      (0x06, TrackPropertyType::SubgroupDeliveryTimeout),
       (0x0B, TrackPropertyType::ImmutableProperties),
       (0x0E, TrackPropertyType::DefaultPublisherPriority),
       (0x22, TrackPropertyType::DefaultPublisherGroupOrder),

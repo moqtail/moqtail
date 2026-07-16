@@ -27,7 +27,8 @@ use bytes::Bytes;
 /// properties).
 #[derive(Debug, Clone, PartialEq)]
 pub enum TrackProperty {
-  DeliveryTimeout { timeout_ms: u64 },
+  ObjectDeliveryTimeout { timeout_ms: u64 },
+  SubgroupDeliveryTimeout { timeout_ms: u64 },
   MaxCacheDuration { duration_ms: u64 },
   ImmutableProperties { properties: Vec<KeyValuePair> },
   DefaultPublisherPriority { priority: u8 },
@@ -40,7 +41,8 @@ impl TrackProperty {
   /// Returns the raw wire type value for this property.
   pub fn type_value(&self) -> u64 {
     match self {
-      Self::DeliveryTimeout { .. } => TrackPropertyType::DeliveryTimeout as u64,
+      Self::ObjectDeliveryTimeout { .. } => TrackPropertyType::ObjectDeliveryTimeout as u64,
+      Self::SubgroupDeliveryTimeout { .. } => TrackPropertyType::SubgroupDeliveryTimeout as u64,
       Self::MaxCacheDuration { .. } => TrackPropertyType::MaxCacheDuration as u64,
       Self::ImmutableProperties { .. } => TrackPropertyType::ImmutableProperties as u64,
       Self::DefaultPublisherPriority { .. } => TrackPropertyType::DefaultPublisherPriority as u64,
@@ -68,15 +70,14 @@ impl TrackProperty {
     };
 
     match ext_type {
-      TrackPropertyType::DeliveryTimeout => {
-        let value = kvp_varint_value(&kvp, "TrackProperty::deserialize(DeliveryTimeout)")?;
-        if value == 0 {
-          return Err(ParseError::ProtocolViolation {
-            context: "TrackProperty::deserialize(DeliveryTimeout)",
-            details: "DELIVERY_TIMEOUT must be greater than 0".to_string(),
-          });
-        }
-        Ok(Self::DeliveryTimeout { timeout_ms: value })
+      TrackPropertyType::ObjectDeliveryTimeout => {
+        // §8: a value of 0 means no timeout is set. It is valid, not a violation.
+        let value = kvp_varint_value(&kvp, "TrackProperty::deserialize(ObjectDeliveryTimeout)")?;
+        Ok(Self::ObjectDeliveryTimeout { timeout_ms: value })
+      }
+      TrackPropertyType::SubgroupDeliveryTimeout => {
+        let value = kvp_varint_value(&kvp, "TrackProperty::deserialize(SubgroupDeliveryTimeout)")?;
+        Ok(Self::SubgroupDeliveryTimeout { timeout_ms: value })
       }
       TrackPropertyType::MaxCacheDuration => {
         let value = kvp_varint_value(&kvp, "TrackProperty::deserialize(MaxCacheDuration)")?;
@@ -154,9 +155,13 @@ impl TryInto<KeyValuePair> for TrackProperty {
 
   fn try_into(self) -> Result<KeyValuePair, Self::Error> {
     match self {
-      Self::DeliveryTimeout { timeout_ms } => {
-        KeyValuePair::try_new_varint(TrackPropertyType::DeliveryTimeout as u64, timeout_ms)
+      Self::ObjectDeliveryTimeout { timeout_ms } => {
+        KeyValuePair::try_new_varint(TrackPropertyType::ObjectDeliveryTimeout as u64, timeout_ms)
       }
+      Self::SubgroupDeliveryTimeout { timeout_ms } => KeyValuePair::try_new_varint(
+        TrackPropertyType::SubgroupDeliveryTimeout as u64,
+        timeout_ms,
+      ),
       Self::MaxCacheDuration { duration_ms } => {
         KeyValuePair::try_new_varint(TrackPropertyType::MaxCacheDuration as u64, duration_ms)
       }
@@ -239,7 +244,7 @@ mod tests {
 
   #[test]
   fn test_roundtrip_delivery_timeout() {
-    let ext = TrackProperty::DeliveryTimeout { timeout_ms: 5000 };
+    let ext = TrackProperty::ObjectDeliveryTimeout { timeout_ms: 5000 };
     assert_eq!(roundtrip(ext.clone()), ext);
   }
 
@@ -293,12 +298,19 @@ mod tests {
   }
 
   #[test]
-  fn test_delivery_timeout_zero_is_error() {
+  fn test_delivery_timeout_zero_means_no_timeout() {
+    // §8: a value of 0 means no timeout is set. It is valid, not a violation.
     let kvp = KeyValuePair::try_new_varint(0x02, 0).unwrap();
-    assert!(matches!(
-      TrackProperty::deserialize(kvp).unwrap_err(),
-      ParseError::ProtocolViolation { .. }
-    ));
+    assert_eq!(
+      TrackProperty::deserialize(kvp).unwrap(),
+      TrackProperty::ObjectDeliveryTimeout { timeout_ms: 0 }
+    );
+
+    let kvp = KeyValuePair::try_new_varint(0x06, 0).unwrap();
+    assert_eq!(
+      TrackProperty::deserialize(kvp).unwrap(),
+      TrackProperty::SubgroupDeliveryTimeout { timeout_ms: 0 }
+    );
   }
 
   #[test]
@@ -342,7 +354,7 @@ mod tests {
   #[test]
   fn test_serialize_deserialize_mixed() {
     let exts = vec![
-      TrackProperty::DeliveryTimeout { timeout_ms: 1000 },
+      TrackProperty::ObjectDeliveryTimeout { timeout_ms: 1000 },
       TrackProperty::DefaultPublisherPriority { priority: 64 },
       TrackProperty::DynamicGroups { enabled: true },
       TrackProperty::Unknown {
@@ -375,7 +387,7 @@ mod tests {
       KeyValuePair::try_new_bytes(0x03, Bytes::from_static(b"data")).unwrap(),
     ];
     let exts = vec![
-      TrackProperty::DeliveryTimeout { timeout_ms: 100 },
+      TrackProperty::ObjectDeliveryTimeout { timeout_ms: 100 },
       TrackProperty::ImmutableProperties {
         properties: inner.clone(),
       },

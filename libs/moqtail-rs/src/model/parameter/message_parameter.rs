@@ -23,7 +23,16 @@ use bytes::{Bytes, BytesMut};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum MessageParameter {
-  DeliveryTimeout {
+  ObjectDeliveryTimeout {
+    timeout: u64,
+  },
+  SubgroupDeliveryTimeout {
+    timeout: u64,
+  },
+  RendezvousTimeout {
+    timeout: u64,
+  },
+  FillTimeout {
     timeout: u64,
   },
   AuthorizationToken {
@@ -55,8 +64,20 @@ pub enum MessageParameter {
 }
 
 impl MessageParameter {
-  pub fn new_delivery_timeout(timeout: u64) -> Self {
-    Self::DeliveryTimeout { timeout }
+  pub fn new_object_delivery_timeout(timeout: u64) -> Self {
+    Self::ObjectDeliveryTimeout { timeout }
+  }
+
+  pub fn new_subgroup_delivery_timeout(timeout: u64) -> Self {
+    Self::SubgroupDeliveryTimeout { timeout }
+  }
+
+  pub fn new_rendezvous_timeout(timeout: u64) -> Self {
+    Self::RendezvousTimeout { timeout }
+  }
+
+  pub fn new_fill_timeout(timeout: u64) -> Self {
+    Self::FillTimeout { timeout }
   }
 
   pub fn new_authorization_token(token: AuthorizationToken) -> Self {
@@ -102,7 +123,10 @@ impl MessageParameter {
   /// Returns the raw wire type value for this parameter.
   pub fn type_value(&self) -> u64 {
     match self {
-      Self::DeliveryTimeout { .. } => MessageParameterType::DeliveryTimeout as u64,
+      Self::ObjectDeliveryTimeout { .. } => MessageParameterType::ObjectDeliveryTimeout as u64,
+      Self::SubgroupDeliveryTimeout { .. } => MessageParameterType::SubgroupDeliveryTimeout as u64,
+      Self::RendezvousTimeout { .. } => MessageParameterType::RendezvousTimeout as u64,
+      Self::FillTimeout { .. } => MessageParameterType::FillTimeout as u64,
       Self::AuthorizationToken { .. } => MessageParameterType::AuthorizationToken as u64,
       Self::Expires { .. } => MessageParameterType::Expires as u64,
       Self::LargestObject { .. } => MessageParameterType::LargestObject as u64,
@@ -115,8 +139,8 @@ impl MessageParameter {
   }
 
   /// Returns true if this parameter is permitted in the given control message type.
-  /// Per spec: if a known parameter appears in a message where it is not defined,
-  /// it MUST be ignored by the receiver.
+  /// §10.2.1: a parameter appearing in a message type it is not defined for is a
+  /// PROTOCOL_VIOLATION (draft-16 ignored it; draft-18 rejects it).
   pub fn is_valid_for(&self, msg_type: ControlMessageType) -> bool {
     match self {
       Self::AuthorizationToken { .. } => matches!(
@@ -129,12 +153,17 @@ impl MessageParameter {
           | ControlMessageType::TrackStatus
           | ControlMessageType::Fetch
       ),
-      Self::DeliveryTimeout { .. } => matches!(
+      // §10.2.4 / §10.2.3: PUBLISH_OK, SUBSCRIBE, or REQUEST_UPDATE.
+      Self::ObjectDeliveryTimeout { .. } | Self::SubgroupDeliveryTimeout { .. } => matches!(
         msg_type,
         ControlMessageType::PublishOk
           | ControlMessageType::Subscribe
           | ControlMessageType::RequestUpdate
       ),
+      // §10.2.6: SUBSCRIBE only.
+      Self::RendezvousTimeout { .. } => matches!(msg_type, ControlMessageType::Subscribe),
+      // §10.2.5: FETCH only.
+      Self::FillTimeout { .. } => matches!(msg_type, ControlMessageType::Fetch),
       Self::SubscriberPriority { .. } => matches!(
         msg_type,
         ControlMessageType::Subscribe
@@ -206,15 +235,17 @@ impl MessageParameter {
           }
         })?;
         match param_type {
-          MessageParameterType::DeliveryTimeout => {
-            if *value == 0 {
-              return Err(ParseError::ProtocolViolation {
-                context: "MessageParameter::deserialize",
-                details: "DELIVERY_TIMEOUT must be greater than 0".to_string(),
-              });
-            }
-            Ok(Self::DeliveryTimeout { timeout: *value })
+          // §8: a value of 0 means no timeout is set. It is valid, not a violation.
+          MessageParameterType::ObjectDeliveryTimeout => {
+            Ok(Self::ObjectDeliveryTimeout { timeout: *value })
           }
+          MessageParameterType::SubgroupDeliveryTimeout => {
+            Ok(Self::SubgroupDeliveryTimeout { timeout: *value })
+          }
+          MessageParameterType::RendezvousTimeout => {
+            Ok(Self::RendezvousTimeout { timeout: *value })
+          }
+          MessageParameterType::FillTimeout => Ok(Self::FillTimeout { timeout: *value }),
           MessageParameterType::Expires => Ok(Self::Expires { expires: *value }),
           MessageParameterType::Forward => match *value {
             0 => Ok(Self::Forward { forward: false }),
@@ -351,8 +382,18 @@ impl TryInto<KeyValuePair> for MessageParameter {
 
   fn try_into(self) -> Result<KeyValuePair, Self::Error> {
     match self {
-      Self::DeliveryTimeout { timeout } => {
-        KeyValuePair::try_new_varint(MessageParameterType::DeliveryTimeout as u64, timeout)
+      Self::ObjectDeliveryTimeout { timeout } => {
+        KeyValuePair::try_new_varint(MessageParameterType::ObjectDeliveryTimeout as u64, timeout)
+      }
+      Self::SubgroupDeliveryTimeout { timeout } => KeyValuePair::try_new_varint(
+        MessageParameterType::SubgroupDeliveryTimeout as u64,
+        timeout,
+      ),
+      Self::RendezvousTimeout { timeout } => {
+        KeyValuePair::try_new_varint(MessageParameterType::RendezvousTimeout as u64, timeout)
+      }
+      Self::FillTimeout { timeout } => {
+        KeyValuePair::try_new_varint(MessageParameterType::FillTimeout as u64, timeout)
       }
       Self::Expires { expires } => {
         KeyValuePair::try_new_varint(MessageParameterType::Expires as u64, expires)
@@ -412,7 +453,10 @@ impl TryInto<KeyValuePair> for MessageParameter {
 
 /// Deserializes `count` MessageParameters from a raw byte buffer for the given message type.
 /// - Unknown parameter types → ProtocolViolation error
-/// - Known parameters not valid for `msg_type` → silently ignored per spec
+/// - Known parameters not valid for `msg_type` → ProtocolViolation error
+///
+/// §10.2.1: a parameter appearing in a message type it is not defined for MUST close the
+/// session with PROTOCOL_VIOLATION. (Draft-16 ignored it; draft-18 rejects it.)
 pub fn deserialize_message_parameters(
   bytes: &mut Bytes,
   count: u64,
@@ -422,10 +466,16 @@ pub fn deserialize_message_parameters(
   let mut params = Vec::with_capacity(kvps.len());
   for kvp in &kvps {
     let param = MessageParameter::deserialize(kvp)?;
-    if param.is_valid_for(msg_type) {
-      params.push(param);
+    if !param.is_valid_for(msg_type) {
+      return Err(ParseError::ProtocolViolation {
+        context: "deserialize_message_parameters",
+        details: format!(
+          "parameter type 0x{:02X} is not allowed in {msg_type:?}",
+          param.type_value()
+        ),
+      });
     }
-    // else: silently ignore per spec
+    params.push(param);
   }
   Ok(params)
 }
@@ -475,7 +525,7 @@ mod tests {
 
   #[test]
   fn test_roundtrip_delivery_timeout() {
-    let orig = MessageParameter::new_delivery_timeout(0xABCD);
+    let orig = MessageParameter::new_object_delivery_timeout(0xABCD);
     assert_eq!(roundtrip(orig.clone()), orig);
   }
 
@@ -565,19 +615,42 @@ mod tests {
   }
 
   #[test]
-  fn test_bulk_deserialize_ignores_wrong_message_params() {
-    // DeliveryTimeout is not valid in Fetch messages — should be silently dropped
+  fn test_bulk_deserialize_rejects_wrong_message_params() {
+    // §10.2.1: a parameter in a message type it is not defined for MUST close the
+    // session with PROTOCOL_VIOLATION. ObjectDeliveryTimeout is not valid in FETCH.
     let params = vec![
-      MessageParameter::new_delivery_timeout(100),
+      MessageParameter::new_object_delivery_timeout(100),
       MessageParameter::new_subscriber_priority(50),
     ];
     let param_count = params.len() as u64;
     let mut bytes = serialize_message_parameters(&params).unwrap();
-    // DeliveryTimeout is invalid for Fetch; SubscriberPriority is valid
-    let result =
-      deserialize_message_parameters(&mut bytes, param_count, ControlMessageType::Fetch).unwrap();
-    assert_eq!(result.len(), 1);
-    assert_eq!(result[0], MessageParameter::new_subscriber_priority(50));
+    let err = deserialize_message_parameters(&mut bytes, param_count, ControlMessageType::Fetch)
+      .unwrap_err();
+    assert!(matches!(err, ParseError::ProtocolViolation { .. }));
+  }
+
+  #[test]
+  fn test_fill_timeout_rejected_outside_fetch() {
+    // FILL_TIMEOUT is FETCH-only (§10.2.5); in a SUBSCRIBE it must be rejected.
+    let params = vec![MessageParameter::new_fill_timeout(3000)];
+    let mut bytes = serialize_message_parameters(&params).unwrap();
+    let err =
+      deserialize_message_parameters(&mut bytes, 1, ControlMessageType::Subscribe).unwrap_err();
+    assert!(matches!(err, ParseError::ProtocolViolation { .. }));
+
+    // And accepted in a FETCH.
+    let mut bytes = serialize_message_parameters(&params).unwrap();
+    let ok = deserialize_message_parameters(&mut bytes, 1, ControlMessageType::Fetch).unwrap();
+    assert_eq!(ok, vec![MessageParameter::new_fill_timeout(3000)]);
+  }
+
+  #[test]
+  fn test_delivery_timeout_zero_means_no_timeout() {
+    // §8: a value of 0 is valid and means no timeout.
+    let params = vec![MessageParameter::new_object_delivery_timeout(0)];
+    let mut bytes = serialize_message_parameters(&params).unwrap();
+    let ok = deserialize_message_parameters(&mut bytes, 1, ControlMessageType::Subscribe).unwrap();
+    assert_eq!(ok, vec![MessageParameter::new_object_delivery_timeout(0)]);
   }
 
   #[test]
@@ -599,18 +672,18 @@ mod tests {
     ];
     let updates = vec![
       MessageParameter::new_subscriber_priority(50),
-      MessageParameter::new_delivery_timeout(500),
+      MessageParameter::new_object_delivery_timeout(500),
     ];
     apply_message_parameter_update(&mut current, updates);
     assert_eq!(current.len(), 3);
     assert!(current.contains(&MessageParameter::new_subscriber_priority(50)));
     assert!(current.contains(&MessageParameter::new_forward(true)));
-    assert!(current.contains(&MessageParameter::new_delivery_timeout(500)));
+    assert!(current.contains(&MessageParameter::new_object_delivery_timeout(500)));
   }
 
   #[test]
   fn test_is_valid_for() {
-    let timeout = MessageParameter::new_delivery_timeout(100);
+    let timeout = MessageParameter::new_object_delivery_timeout(100);
     assert!(timeout.is_valid_for(ControlMessageType::Subscribe));
     assert!(timeout.is_valid_for(ControlMessageType::PublishOk));
     assert!(!timeout.is_valid_for(ControlMessageType::Fetch));
@@ -619,8 +692,8 @@ mod tests {
   #[test]
   fn test_type_value() {
     assert_eq!(
-      MessageParameter::new_delivery_timeout(0).type_value(),
-      MessageParameterType::DeliveryTimeout as u64
+      MessageParameter::new_object_delivery_timeout(0).type_value(),
+      MessageParameterType::ObjectDeliveryTimeout as u64
     );
     assert_eq!(
       MessageParameter::new_forward(true).type_value(),

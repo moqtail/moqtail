@@ -152,7 +152,7 @@ mod tests {
         MessageParameter::new_group_order(GroupOrder::Descending),
       ],
       track_properties: vec![
-        TrackProperty::DeliveryTimeout { timeout_ms: 500 },
+        TrackProperty::ObjectDeliveryTimeout { timeout_ms: 500 },
         TrackProperty::DynamicGroups { enabled: true },
       ],
     };

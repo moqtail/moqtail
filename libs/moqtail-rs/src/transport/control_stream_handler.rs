@@ -391,7 +391,7 @@ mod tests {
         }),
         MessageParameter::new_expires(100),
       ],
-      vec![TrackProperty::DeliveryTimeout { timeout_ms: 5000 }],
+      vec![TrackProperty::ObjectDeliveryTimeout { timeout_ms: 5000 }],
     );
     // Wire encoding canonicalizes parameter order ascending by type (delta-encoding requirement).
     subscribe_ok

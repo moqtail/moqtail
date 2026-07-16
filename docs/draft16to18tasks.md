@@ -959,53 +959,53 @@ Read this the other way round to confirm nothing is dropped. Line numbers index
 
 ### A.1 — Since draft-ietf-moq-transport-17 (line 7202)
 
-| Line | Bullet                                                                          | Task                                       |
-| ---- | ------------------------------------------------------------------------------- | ------------------------------------------ |
-| 7206 | Unified moqt:// URI scheme for QUIC and WebTransport (#1486)                    | CL-1, JS-2, MT-2                           |
-| 7208 | Add fragment identifier support for moqt URIs (#1571)                           | CL-1, JS-2                                 |
-| 7210 | Split SUBSCRIBE_NAMESPACE into SUBSCRIBE_NAMESPACE and SUBSCRIBE_TRACKS (#1542) | RS-11, TS-11, RL-2                         |
-| 7213 | Remove Required Request ID (#1615)                                              | **RS-7b**, TS-7b                           |
-| 7215 | Add REDIRECT for request errors and established subscriptions (#1534)           | RS-13, TS-13                               |
-| 7218 | Allow GOAWAY on request streams to migrate individual requests (#1617)          | RS-13, RL-5                                |
-| 7229 | Add Request ID to GOAWAY (#1559)                                                | RS-13, TS-13                               |
-| 7231 | Remove PUBLISH_OK message type, make it a REQUEST_OK alias (#1611)              | RS-2, RS-7                                 |
-| 7233 | Generalize stream reset codes to all request streams… (#1606)                   | RS-10, RL-5                                |
-| 7236 | Add Track Properties to REQUEST_OK (#1576)                                      | RS-7                                       |
-| 7238 | Add support for mandatory-to-understand track extensions (#1509)                | RL-1, RS-10 (`UNSUPPORTED_EXTENSION 0x33`) |
-| 7240 | Exclude your own tracks from SUBSCRIBE_NAMESPACE (#1596)                        | RL-3                                       |
-| 7242 | Add Session-Level Tracks reserved namespace (#1562)                             | RS-17                                      |
-| 7244 | Allow coalescing REQUEST_UPDATE processing (#1540)                              | **RL-6**                                   |
-| 7246 | SUBSCRIBE takes precedence over SUBSCRIBE_NAMESPACE at relay (#1533)            | RL-3                                       |
-| 7249 | Don't close the Session for unknown errors (#1561)                              | RL-4                                       |
-| 7251 | Clarify REQUEST_UPDATE failure behavior for all request types (#1539)           | RS-19                                      |
-| 7254 | Clarify SUBSCRIBE_NAMESPACE stream closure semantics (#1541)                    | RS-11                                      |
-| 7256 | FETCH to a track with no objects returns INVALID_RANGE (#1537)                  | **RL-7**                                   |
-| 7258 | Clarify FETCH_OK End Location semantics (#1536)                                 | **RL-7**                                   |
-| 7260 | Clarify definition of scope (#1629)                                             | — editorial, no action                     |
-| 7262 | Clarify Joining Fetch behavior:                                                 | **RL-7**                                   |
-| 7264 | ↳ Joining FETCH is unaffected by forward changing to 0 (#1620)                  | **RL-7**                                   |
-| 7266 | ↳ Joining Fetch forward state mismatch is a request error (#1609)               | **RL-7**                                   |
-| 7268 | ↳ Clarify Joining Fetch ordering with Forward State transitions (#1577)         | **RL-7**                                   |
-| 7273 | Make Object ID and Group ID delta encoded in Fetch responses (#1586)            | RS-15, TS-15                               |
-| 7276 | Add FIRST_OBJECT bit to SUBGROUP_HEADER type (#1618)                            | RS-14, TS-14                               |
-| 7285 | Split DELIVERY_TIMEOUT into two types of timeout (#1605)                        | RS-9, TS-9                                 |
-| 7287 | FILL_TIMEOUT parameter (#1490)                                                  | RS-9, TS-9                                 |
-| 7289 | Forbid relays from lying about LARGEST_OBJECT (#1621)                           | RL-4                                       |
-| 7291 | Allow publisher to reopen subgroup after REQUEST_UPDATE forward 0->1 (#1583)    | RS-17                                      |
-| 7294 | Allow 7-byte varint and non-minimal encodings (#1595)                           | ✅ **RS-1 + TS-1 DONE**                    |
-| 7296 | Padding streams and datagrams (#1475)                                           | RS-17                                      |
-| 7298 | Close session when delta encoding wraps (#1560)                                 | RS-15                                      |
-| 7302 | Clarify Object existence and cross-source contradictions (#1566)                | RL-4                                       |
-| 7304 | Clarify immutable track properties (#1535)                                      | RL-1                                       |
-| 7306 | Improve Startup Latency and 0-RTT guidance (#1544)                              | — editorial                                |
-| 7308 | Improve Security Considerations section (#1625)                                 | — editorial                                |
-| 7310 | Rewrite abstract and introduction (#1556)                                       | — editorial                                |
-| 7312 | Define textual aliases for REQUEST_OK by request type (#1610)                   | RS-7                                       |
-| 7314 | Add IANA registry for Setup Options (#1564)                                     | RS-3                                       |
-| 7316 | Add provisional registry for LOC properties (#1624)                             | RS-8 (`LOCHeaderExtensionId`)              |
-| 7318 | Update MOQ Properties registration policies (#1525)                             | — editorial                                |
-| 7320 | Add stream type column to message type table (#1555)                            | RS-2                                       |
-| 7322 | Fix grease examples to match 0x7f multiplier (#1569)                            | RS-18                                      |
+| Line | Bullet                                                                          | Task                                                                                                                                                |
+| ---- | ------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 7206 | Unified moqt:// URI scheme for QUIC and WebTransport (#1486)                    | CL-1, JS-2, MT-2                                                                                                                                    |
+| 7208 | Add fragment identifier support for moqt URIs (#1571)                           | CL-1, JS-2                                                                                                                                          |
+| 7210 | Split SUBSCRIBE_NAMESPACE into SUBSCRIBE_NAMESPACE and SUBSCRIBE_TRACKS (#1542) | RS-11, TS-11, RL-2                                                                                                                                  |
+| 7213 | Remove Required Request ID (#1615)                                              | **RS-7b**, TS-7b                                                                                                                                    |
+| 7215 | Add REDIRECT for request errors and established subscriptions (#1534)           | RS-13, TS-13                                                                                                                                        |
+| 7218 | Allow GOAWAY on request streams to migrate individual requests (#1617)          | RS-13, RL-5                                                                                                                                         |
+| 7229 | Add Request ID to GOAWAY (#1559)                                                | RS-13, TS-13                                                                                                                                        |
+| 7231 | Remove PUBLISH_OK message type, make it a REQUEST_OK alias (#1611)              | RS-2, RS-7                                                                                                                                          |
+| 7233 | Generalize stream reset codes to all request streams… (#1606)                   | RS-10, RL-5                                                                                                                                         |
+| 7236 | Add Track Properties to REQUEST_OK (#1576)                                      | RS-7                                                                                                                                                |
+| 7238 | Add support for mandatory-to-understand track extensions (#1509)                | RL-1, RS-10 (`UNSUPPORTED_EXTENSION 0x33`)                                                                                                          |
+| 7240 | Exclude your own tracks from SUBSCRIBE_NAMESPACE (#1596)                        | RL-3                                                                                                                                                |
+| 7242 | Add Session-Level Tracks reserved namespace (#1562)                             | RS-17                                                                                                                                               |
+| 7244 | Allow coalescing REQUEST_UPDATE processing (#1540)                              | **RL-6**                                                                                                                                            |
+| 7246 | SUBSCRIBE takes precedence over SUBSCRIBE_NAMESPACE at relay (#1533)            | RL-3                                                                                                                                                |
+| 7249 | Don't close the Session for unknown errors (#1561)                              | RL-4                                                                                                                                                |
+| 7251 | Clarify REQUEST_UPDATE failure behavior for all request types (#1539)           | RS-19                                                                                                                                               |
+| 7254 | Clarify SUBSCRIBE_NAMESPACE stream closure semantics (#1541)                    | RS-11                                                                                                                                               |
+| 7256 | FETCH to a track with no objects returns INVALID_RANGE (#1537)                  | **RL-7**                                                                                                                                            |
+| 7258 | Clarify FETCH_OK End Location semantics (#1536)                                 | **RL-7**                                                                                                                                            |
+| 7260 | Clarify definition of scope (#1629)                                             | RS-9 — a parameter in the wrong message type flips from "ignore" (draft-16) to session-closing PROTOCOL_VIOLATION (draft-18 §10.2.1); not editorial |
+| 7262 | Clarify Joining Fetch behavior:                                                 | **RL-7**                                                                                                                                            |
+| 7264 | ↳ Joining FETCH is unaffected by forward changing to 0 (#1620)                  | **RL-7**                                                                                                                                            |
+| 7266 | ↳ Joining Fetch forward state mismatch is a request error (#1609)               | **RL-7**                                                                                                                                            |
+| 7268 | ↳ Clarify Joining Fetch ordering with Forward State transitions (#1577)         | **RL-7**                                                                                                                                            |
+| 7273 | Make Object ID and Group ID delta encoded in Fetch responses (#1586)            | RS-15, TS-15                                                                                                                                        |
+| 7276 | Add FIRST_OBJECT bit to SUBGROUP_HEADER type (#1618)                            | RS-14, TS-14                                                                                                                                        |
+| 7285 | Split DELIVERY_TIMEOUT into two types of timeout (#1605)                        | RS-9, TS-9                                                                                                                                          |
+| 7287 | FILL_TIMEOUT parameter (#1490)                                                  | RS-9, TS-9                                                                                                                                          |
+| 7289 | Forbid relays from lying about LARGEST_OBJECT (#1621)                           | RL-4                                                                                                                                                |
+| 7291 | Allow publisher to reopen subgroup after REQUEST_UPDATE forward 0->1 (#1583)    | RS-17                                                                                                                                               |
+| 7294 | Allow 7-byte varint and non-minimal encodings (#1595)                           | ✅ **RS-1 + TS-1 DONE**                                                                                                                             |
+| 7296 | Padding streams and datagrams (#1475)                                           | RS-17                                                                                                                                               |
+| 7298 | Close session when delta encoding wraps (#1560)                                 | RS-15                                                                                                                                               |
+| 7302 | Clarify Object existence and cross-source contradictions (#1566)                | RL-4                                                                                                                                                |
+| 7304 | Clarify immutable track properties (#1535)                                      | RL-1                                                                                                                                                |
+| 7306 | Improve Startup Latency and 0-RTT guidance (#1544)                              | — editorial                                                                                                                                         |
+| 7308 | Improve Security Considerations section (#1625)                                 | — editorial                                                                                                                                         |
+| 7310 | Rewrite abstract and introduction (#1556)                                       | — editorial                                                                                                                                         |
+| 7312 | Define textual aliases for REQUEST_OK by request type (#1610)                   | RS-7                                                                                                                                                |
+| 7314 | Add IANA registry for Setup Options (#1564)                                     | RS-3                                                                                                                                                |
+| 7316 | Add provisional registry for LOC properties (#1624)                             | RS-8 (`LOCHeaderExtensionId`)                                                                                                                       |
+| 7318 | Update MOQ Properties registration policies (#1525)                             | — editorial                                                                                                                                         |
+| 7320 | Add stream type column to message type table (#1555)                            | RS-2                                                                                                                                                |
+| 7322 | Fix grease examples to match 0x7f multiplier (#1569)                            | RS-18                                                                                                                                               |
 
 ### A.2 — Since draft-ietf-moq-transport-16 (line 7324)
 

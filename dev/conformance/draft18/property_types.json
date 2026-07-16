@@ -47,9 +47,7 @@
       "value": "0x02",
       "scope": "Track",
       "spec": "Section 12.2",
-      "notes": "Both stacks call this DeliveryTimeout.",
       "pending": {
-        "rs": 228,
         "ts": 265
       }
     },
@@ -64,9 +62,7 @@
       "value": "0x06",
       "scope": "Track",
       "spec": "Section 12.1",
-      "notes": "Missing from both stacks entirely.",
       "pending": {
-        "rs": 228,
         "ts": 265
       }
     },

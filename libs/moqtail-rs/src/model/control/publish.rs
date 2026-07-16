@@ -198,7 +198,7 @@ mod tests {
       7,
       vec![],
       vec![
-        TrackProperty::DeliveryTimeout { timeout_ms: 3000 },
+        TrackProperty::ObjectDeliveryTimeout { timeout_ms: 3000 },
         TrackProperty::DefaultPublisherPriority { priority: 100 },
       ],
     );

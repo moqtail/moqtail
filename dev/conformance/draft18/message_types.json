@@ -37,9 +37,8 @@
       "value": "0x20",
       "reserved": true,
       "spec": "Table 5",
-      "notes": "CLIENT_SETUP in version <= 16. Both stacks still carry a live CLIENT_SETUP here.",
+      "notes": "CLIENT_SETUP in version <= 16. moqtail-ts still carries a live CLIENT_SETUP here.",
       "pending": {
-        "rs": 227,
         "ts": 256
       }
     },
@@ -48,9 +47,8 @@
       "value": "0x21",
       "reserved": true,
       "spec": "Table 5",
-      "notes": "SERVER_SETUP in version <= 16. Both stacks still carry a live SERVER_SETUP here.",
+      "notes": "SERVER_SETUP in version <= 16. moqtail-ts still carries a live SERVER_SETUP here.",
       "pending": {
-        "rs": 227,
         "ts": 256
       }
     },

@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub mod client_setup;
 pub mod constant;
 pub mod control_message;
 pub mod fetch;
@@ -32,7 +31,7 @@ pub mod request_error;
 pub mod request_ok;
 pub mod request_update;
 pub mod requests_blocked;
-pub mod server_setup;
+pub mod setup;
 pub mod subscribe;
 pub mod subscribe_namespace;
 pub mod subscribe_ok;

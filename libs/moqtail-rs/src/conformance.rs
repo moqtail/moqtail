@@ -267,7 +267,7 @@ mod enum_conformance {
   use super::*;
   use crate::model::control::constant::{ControlMessageType, RequestErrorCode};
   use crate::model::error::TerminationCode;
-  use crate::model::parameter::constant::{MessageParameterType, SetupParameterType};
+  use crate::model::parameter::constant::{MessageParameterType, SetupOptionType};
   use crate::model::property::constant::{LOCPropertyId, TrackPropertyType};
 
   /// `SUBSCRIBE_NAMESPACE` -> `SubscribeNamespace`, this crate's identifier convention.
@@ -377,9 +377,7 @@ mod enum_conformance {
   #[test]
   fn setup_options_match_fixture() {
     assert_registry(&parameter_types().setup_options, &[], |cp| {
-      SetupParameterType::try_from(cp)
-        .ok()
-        .map(|p| format!("{p:?}"))
+      SetupOptionType::try_from(cp).ok().map(|p| format!("{p:?}"))
     });
   }
 

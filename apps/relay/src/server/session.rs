@@ -15,7 +15,9 @@
 use anyhow::Result;
 use moqtail::model::{
   control::{
-    constant::SUPPORTED_VERSIONS, control_message::ControlMessage, server_setup::ServerSetup,
+    constant::SUPPORTED_VERSIONS,
+    control_message::ControlMessage,
+    setup::{Setup, SetupSender},
   },
   data::datagram::Datagram,
   error::TerminationCode,
@@ -817,7 +819,7 @@ impl Session {
   ) -> Result<Arc<MOQTClient>, TerminationCode> {
     debug!("Negotiating with client...");
     let client_setup = match control_stream_handler.next_message().await {
-      Ok(ControlMessage::ClientSetup(m)) => *m,
+      Ok(ControlMessage::Setup(m)) => *m,
       Ok(_) => {
         error!("Unexpected message received");
         return Err(TerminationCode::ProtocolViolation);
@@ -832,27 +834,29 @@ impl Session {
       }
     };
 
+    // AUTHORITY and PATH are for native QUIC only; over WebTransport the transport
+    // carries them (§10.3.1.1, §10.3.1.2).
+    client_setup.validate_incoming(SetupSender::Client, context.transport_kind)?;
+
     utils::print_msg_bytes(&client_setup);
 
     let max_request_id_param = {
       let max_request_id = context
         .max_request_id
         .load(std::sync::atomic::Ordering::Relaxed);
-      moqtail::model::parameter::setup_parameter::SetupParameter::new_max_request_id(
-        max_request_id + 1,
-      )
-      .try_into()
-      .unwrap()
+      moqtail::model::parameter::setup_option::SetupOption::new_max_request_id(max_request_id + 1)
+        .try_into()
+        .unwrap()
     };
 
     let moqt_implementation_param =
-      moqtail::model::parameter::setup_parameter::SetupParameter::new_moqt_implementation(
+      moqtail::model::parameter::setup_option::SetupOption::new_moqt_implementation(
         env!("MOQTAIL_VERSION").to_string(),
       )
       .try_into()
       .unwrap();
 
-    let server_setup = ServerSetup::new(vec![max_request_id_param, moqt_implementation_param]);
+    let server_setup = Setup::new(vec![max_request_id_param, moqt_implementation_param]);
 
     debug!("client setup: {:?}", client_setup);
     debug!("server setup: {:?}", server_setup);
@@ -861,14 +865,14 @@ impl Session {
     if context.server_config.enable_token_logging {
       // Import the necessary types
       use moqtail::model::parameter::constant::TokenAliasType;
-      use moqtail::model::parameter::setup_parameter::SetupParameter;
+      use moqtail::model::parameter::setup_option::SetupOption;
 
       // Iterate through setup parameters to find authorization tokens
-      for param in &client_setup.setup_parameters {
-        // Try to deserialize as a SetupParameter
-        if let Ok(setup_param) = SetupParameter::deserialize(param) {
+      for param in &client_setup.setup_options {
+        // Try to deserialize as a SetupOption
+        if let Ok(setup_param) = SetupOption::deserialize(param) {
           // Check if it's an AuthorizationToken
-          if let SetupParameter::AuthorizationToken { token } = setup_param
+          if let SetupOption::AuthorizationToken { token } = setup_param
             && token.alias_type == TokenAliasType::Register as u64
           {
             // Get client port number from the connection

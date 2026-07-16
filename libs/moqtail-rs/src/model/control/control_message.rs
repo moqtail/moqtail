@@ -17,13 +17,13 @@ use crate::model::error::ParseError;
 use bytes::{Buf, Bytes};
 
 use super::{
-  client_setup::ClientSetup, constant::ControlMessageType, fetch::Fetch, fetch_cancel::FetchCancel,
-  fetch_ok::FetchOk, goaway::GoAway, max_request_id::MaxRequestId, namespace::Namespace,
+  constant::ControlMessageType, fetch::Fetch, fetch_cancel::FetchCancel, fetch_ok::FetchOk,
+  goaway::GoAway, max_request_id::MaxRequestId, namespace::Namespace,
   namespace_done::NamespaceDone, publish::Publish, publish_done::PublishDone,
   publish_namespace::PublishNamespace, publish_namespace_cancel::PublishNamespaceCancel,
   publish_namespace_done::PublishNamespaceDone, publish_ok::PublishOk, request_error::RequestError,
   request_ok::RequestOk, request_update::RequestUpdate, requests_blocked::RequestsBlocked,
-  server_setup::ServerSetup, subscribe::Subscribe, subscribe_namespace::SubscribeNamespace,
+  setup::Setup, subscribe::Subscribe, subscribe_namespace::SubscribeNamespace,
   subscribe_ok::SubscribeOk, switch::Switch, track_status::TrackStatus, unsubscribe::Unsubscribe,
   unsubscribe_namespace::UnsubscribeNamespace,
 };
@@ -38,13 +38,12 @@ pub enum ControlMessage {
   Publish(Box<Publish>),
   PublishOk(Box<PublishOk>),
   PublishDone(Box<PublishDone>),
-  ClientSetup(Box<ClientSetup>),
   Fetch(Box<Fetch>),
   FetchCancel(Box<FetchCancel>),
   FetchOk(Box<FetchOk>),
   Goaway(Box<GoAway>),
   MaxRequestId(Box<MaxRequestId>),
-  ServerSetup(Box<ServerSetup>),
+  Setup(Box<Setup>),
   Subscribe(Box<Subscribe>),
   SubscribeOk(Box<SubscribeOk>),
   RequestUpdate(Box<RequestUpdate>),
@@ -121,9 +120,7 @@ impl ControlMessage {
       ControlMessageType::PublishDone => {
         PublishDone::parse_payload(&mut payload).map(ControlMessage::PublishDone)
       }
-      ControlMessageType::ClientSetup => {
-        ClientSetup::parse_payload(&mut payload).map(ControlMessage::ClientSetup)
-      }
+      ControlMessageType::Setup => Setup::parse_payload(&mut payload).map(ControlMessage::Setup),
       ControlMessageType::Fetch => Fetch::parse_payload(&mut payload).map(ControlMessage::Fetch),
       ControlMessageType::FetchCancel => {
         FetchCancel::parse_payload(&mut payload).map(ControlMessage::FetchCancel)
@@ -134,9 +131,6 @@ impl ControlMessage {
       ControlMessageType::GoAway => GoAway::parse_payload(&mut payload).map(ControlMessage::Goaway),
       ControlMessageType::MaxRequestId => {
         MaxRequestId::parse_payload(&mut payload).map(ControlMessage::MaxRequestId)
-      }
-      ControlMessageType::ServerSetup => {
-        ServerSetup::parse_payload(&mut payload).map(ControlMessage::ServerSetup)
       }
       ControlMessageType::Subscribe => {
         Subscribe::parse_payload(&mut payload).map(ControlMessage::Subscribe)
@@ -166,12 +160,12 @@ impl ControlMessage {
       // Draft-18 assigns these codepoints but their bodies are not built yet. Parsing
       // fails rather than the type being rejected outright, so the error says the type
       // was understood and the body was not.
-      ControlMessageType::Setup
-      | ControlMessageType::SubscribeTracks
-      | ControlMessageType::PublishBlocked => Err(ParseError::Other {
-        context: "ControlMessage::deserialize(payload)",
-        msg: format!("{msg_type:?} is a draft-18 message type with no body implemented yet"),
-      }),
+      ControlMessageType::SubscribeTracks | ControlMessageType::PublishBlocked => {
+        Err(ParseError::Other {
+          context: "ControlMessage::deserialize(payload)",
+          msg: format!("{msg_type:?} is a draft-18 message type with no body implemented yet"),
+        })
+      }
     }
     .map_err(|err| ParseError::ProtocolViolation {
       context: "ControlMessage::deserialize(payload)",
@@ -202,13 +196,12 @@ impl ControlMessage {
       ControlMessage::Publish(msg) => msg.serialize(),
       ControlMessage::PublishOk(msg) => msg.serialize(),
       ControlMessage::PublishDone(msg) => msg.serialize(),
-      ControlMessage::ClientSetup(msg) => msg.serialize(),
       ControlMessage::Fetch(msg) => msg.serialize(),
       ControlMessage::FetchCancel(msg) => msg.serialize(),
       ControlMessage::FetchOk(msg) => msg.serialize(),
       ControlMessage::Goaway(msg) => msg.serialize(),
       ControlMessage::MaxRequestId(msg) => msg.serialize(),
-      ControlMessage::ServerSetup(msg) => msg.serialize(),
+      ControlMessage::Setup(msg) => msg.serialize(),
       ControlMessage::Subscribe(msg) => msg.serialize(),
       ControlMessage::SubscribeOk(msg) => msg.serialize(),
       ControlMessage::RequestUpdate(msg) => msg.serialize(),
@@ -234,13 +227,12 @@ impl ControlMessage {
       ControlMessage::Publish(_) => ControlMessageType::Publish,
       ControlMessage::PublishOk(_) => ControlMessageType::PublishOk,
       ControlMessage::PublishDone(_) => ControlMessageType::PublishDone,
-      ControlMessage::ClientSetup(_) => ControlMessageType::ClientSetup,
       ControlMessage::Fetch(_) => ControlMessageType::Fetch,
       ControlMessage::FetchCancel(_) => ControlMessageType::FetchCancel,
       ControlMessage::FetchOk(_) => ControlMessageType::FetchOk,
       ControlMessage::Goaway(_) => ControlMessageType::GoAway,
       ControlMessage::MaxRequestId(_) => ControlMessageType::MaxRequestId,
-      ControlMessage::ServerSetup(_) => ControlMessageType::ServerSetup,
+      ControlMessage::Setup(_) => ControlMessageType::Setup,
       ControlMessage::Subscribe(_) => ControlMessageType::Subscribe,
       ControlMessage::SubscribeOk(_) => ControlMessageType::SubscribeOk,
       ControlMessage::RequestUpdate(_) => ControlMessageType::RequestUpdate,

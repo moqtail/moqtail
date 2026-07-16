@@ -27,7 +27,7 @@ use bytes::Bytes;
 use moqtail::{
   model::{
     common::tuple::Tuple,
-    control::{client_setup::ClientSetup, control_message::ControlMessage},
+    control::{control_message::ControlMessage, setup::Setup},
     data::full_track_name::FullTrackName,
   },
   transport::{
@@ -101,7 +101,7 @@ pub(crate) struct MOQTClient {
   pub transport_kind: TransportKind,
   pub connection: Arc<TransportConnection>,
   #[allow(dead_code)]
-  pub client_setup: Arc<ClientSetup>,
+  pub client_setup: Arc<Setup>,
   pub announced_track_namespaces: Arc<RwLock<Vec<Tuple>>>, // the track namespaces the publisher announced
   pub outbound_announcements: Arc<RwLock<HashMap<Tuple, u64>>>, //Maps a Namespace to the outbound request_id we used to announce it to the client
   pub published_tracks: Arc<RwLock<HashMap<u64, FullTrackName>>>, // request_id -> track the client is publishing
@@ -139,7 +139,7 @@ impl MOQTClient {
   pub(crate) fn new(
     connection_id: usize,
     connection: Arc<TransportConnection>,
-    client_setup: Arc<ClientSetup>,
+    client_setup: Arc<Setup>,
   ) -> Self {
     let mut send_streams = Vec::with_capacity(SEND_STREAM_PARTITION_COUNT);
     for _ in 0..SEND_STREAM_PARTITION_COUNT {

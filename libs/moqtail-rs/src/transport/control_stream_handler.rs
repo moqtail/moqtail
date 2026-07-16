@@ -187,13 +187,12 @@ mod tests {
   use crate::model::common::reason_phrase::ReasonPhrase;
   use crate::model::common::tuple::{Tuple, TupleField};
   use crate::model::common::varint::BufMutVarIntExt;
-  use crate::model::control::client_setup::ClientSetup;
   use crate::model::control::constant::RequestErrorCode;
   use crate::model::control::constant::{ControlMessageType, GroupOrder};
   use crate::model::control::publish_namespace::PublishNamespace;
   use crate::model::control::publish_namespace_cancel::PublishNamespaceCancel;
   use crate::model::control::request_ok::RequestOk;
-  use crate::model::control::server_setup::ServerSetup;
+  use crate::model::control::setup::Setup;
   use crate::model::control::subscribe::Subscribe;
   use crate::model::control::subscribe_ok::SubscribeOk;
   use crate::model::parameter::authorization_token::AuthorizationToken;
@@ -401,20 +400,20 @@ mod tests {
     subscribe_ok
   }
 
-  fn create_test_client_setup() -> ClientSetup {
-    let setup_parameters = vec![
+  fn create_test_client_setup() -> Setup {
+    let setup_options = vec![
       KeyValuePair::try_new_varint(0, 10).unwrap(),
       KeyValuePair::try_new_bytes(1, Bytes::from_static(b"Set me up!")).unwrap(),
     ];
-    ClientSetup { setup_parameters }
+    Setup { setup_options }
   }
 
-  fn create_test_server_setup() -> ServerSetup {
-    let setup_parameters = vec![
+  fn create_test_server_setup() -> Setup {
+    let setup_options = vec![
       KeyValuePair::try_new_varint(0, 10).unwrap(),
       KeyValuePair::try_new_bytes(1, Bytes::from_static(b"Set me up!")).unwrap(),
     ];
-    ServerSetup { setup_parameters }
+    Setup { setup_options }
   }
 
   #[tokio::test]
@@ -534,8 +533,8 @@ mod tests {
     let server_setup = Box::new(create_test_server_setup());
 
     let messages_to_send = vec![
-      ControlMessage::ClientSetup(client_setup),
-      ControlMessage::ServerSetup(server_setup),
+      ControlMessage::Setup(client_setup),
+      ControlMessage::Setup(server_setup),
       ControlMessage::PublishNamespace(announce1),
       ControlMessage::RequestOk(announce_ok1),
       ControlMessage::Subscribe(subscribe1),

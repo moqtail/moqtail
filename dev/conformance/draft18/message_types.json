@@ -7,30 +7,21 @@
       "value": "0x01",
       "reserved": true,
       "spec": "Table 5",
-      "notes": "SETUP for version 00. moqtail-ts maps this to a ReservedSetupV00 variant instead of rejecting it.",
-      "pending": {
-        "ts": 255
-      }
+      "notes": "SETUP for version 00."
     },
     {
       "name": "RESERVED_CLIENT_SETUP_V10",
       "value": "0x40",
       "reserved": true,
       "spec": "Table 5",
-      "notes": "CLIENT_SETUP for version <= 10. moqtail-ts maps this to a ReservedClientSetupV10 variant instead of rejecting it.",
-      "pending": {
-        "ts": 255
-      }
+      "notes": "CLIENT_SETUP for version <= 10."
     },
     {
       "name": "RESERVED_SERVER_SETUP_V10",
       "value": "0x41",
       "reserved": true,
       "spec": "Table 5",
-      "notes": "SERVER_SETUP for version <= 10. moqtail-ts maps this to a ReservedServerSetupV10 variant instead of rejecting it.",
-      "pending": {
-        "ts": 255
-      }
+      "notes": "SERVER_SETUP for version <= 10."
     },
     {
       "name": "RESERVED_CLIENT_SETUP_V16",
@@ -56,10 +47,7 @@
       "name": "SETUP",
       "value": "0x2F00",
       "stream": "Control",
-      "spec": "Section 10.3",
-      "pending": {
-        "ts": 255
-      }
+      "spec": "Section 10.3"
     },
     {
       "name": "GOAWAY",
@@ -129,19 +117,13 @@
       "value": "0x50",
       "stream": "Request, First",
       "spec": "Section 10.18",
-      "notes": "Renumbered from 0x11. moqtail-ts still carries 0x11.",
-      "pending": {
-        "ts": 255
-      }
+      "notes": "Renumbered from 0x11."
     },
     {
       "name": "SUBSCRIBE_TRACKS",
       "value": "0x51",
       "stream": "Request, First",
-      "spec": "Section 10.19",
-      "pending": {
-        "ts": 255
-      }
+      "spec": "Section 10.19"
     },
     {
       "name": "NAMESPACE",
@@ -159,10 +141,7 @@
       "name": "PUBLISH_BLOCKED",
       "value": "0xF",
       "stream": "Request",
-      "spec": "Section 10.20",
-      "pending": {
-        "ts": 255
-      }
+      "spec": "Section 10.20"
     },
     {
       "name": "REQUEST_UPDATE",

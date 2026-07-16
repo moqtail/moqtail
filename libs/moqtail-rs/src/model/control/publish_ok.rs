@@ -135,7 +135,7 @@ mod tests {
           Some(Location::new(5, 10)),
           Some(100),
         ),
-        MessageParameter::new_delivery_timeout(5000),
+        MessageParameter::new_object_delivery_timeout(5000),
       ],
     );
     // Wire encoding canonicalizes parameter order ascending by type (delta-encoding requirement).

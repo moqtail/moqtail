@@ -1,7 +1,6 @@
 {
   "source": "draft-ietf-moq-transport-18 §15.4 Table 10, §15.7 Table 13",
   "description": "Two distinct registries. Setup Options appear in SETUP (§10.3); Message Parameters appear in request and response messages (§10.2). They share no number space.",
-
   "setup_options": {
     "source": "§15.4 Table 10",
     "greasing": {
@@ -10,22 +9,38 @@
       "notes": "Reserved for greasing. Endpoints MUST ignore unknown Setup Options (§10.3)."
     },
     "entries": [
-      { "name": "PATH", "value": "0x01", "spec": "Section 10.3.1.2" },
-      { "name": "AUTHORIZATION_TOKEN", "value": "0x03", "spec": "Section 10.3.1.4" },
-      { "name": "MAX_AUTH_TOKEN_CACHE_SIZE", "value": "0x04", "spec": "Section 10.3.1.3" },
+      {
+        "name": "PATH",
+        "value": "0x01",
+        "spec": "Section 10.3.1.2"
+      },
+      {
+        "name": "AUTHORIZATION_TOKEN",
+        "value": "0x03",
+        "spec": "Section 10.3.1.4"
+      },
+      {
+        "name": "MAX_AUTH_TOKEN_CACHE_SIZE",
+        "value": "0x04",
+        "spec": "Section 10.3.1.3"
+      },
       {
         "name": "AUTHORITY",
         "value": "0x05",
         "spec": "Section 10.3.1.1",
         "notes": "moqtail-rs has this; moqtail-ts does not.",
-        "pending": { "ts": 256 }
+        "pending": {
+          "ts": 256
+        }
       },
       {
         "name": "MOQT_IMPLEMENTATION",
         "value": "0x07",
         "spec": "Section 10.3.1.5",
         "notes": "moqtail-rs has this; moqtail-ts does not.",
-        "pending": { "ts": 256 }
+        "pending": {
+          "ts": 256
+        }
       }
     ],
     "not_in_draft": [
@@ -33,11 +48,13 @@
         "name": "MAX_REQUEST_ID",
         "value": "0x02",
         "notes": "Table 10 has no 0x02. Removed with the MAX_REQUEST_ID message.",
-        "pending": { "rs": 236, "ts": 259 }
+        "pending": {
+          "rs": 236,
+          "ts": 259
+        }
       }
     ]
   },
-
   "message_parameters": {
     "source": "§15.7 Table 13",
     "entries": [
@@ -45,40 +62,81 @@
         "name": "OBJECT_DELIVERY_TIMEOUT",
         "value": "0x02",
         "spec": "Section 10.2.4",
-        "notes": "Both stacks call this DeliveryTimeout; draft-18 splits the timeout in two and renames this one.",
-        "pending": { "rs": 228, "ts": 265 }
+        "pending": {
+          "ts": 265
+        }
       },
-      { "name": "AUTHORIZATION_TOKEN", "value": "0x03", "spec": "Section 10.2.2" },
+      {
+        "name": "AUTHORIZATION_TOKEN",
+        "value": "0x03",
+        "spec": "Section 10.2.2"
+      },
       {
         "name": "RENDEZVOUS_TIMEOUT",
         "value": "0x04",
         "spec": "Section 10.2.6",
-        "pending": { "rs": 228, "ts": 265 }
+        "pending": {
+          "ts": 265
+        }
       },
       {
         "name": "SUBGROUP_DELIVERY_TIMEOUT",
         "value": "0x06",
         "spec": "Section 10.2.3",
-        "pending": { "rs": 228, "ts": 265 }
+        "pending": {
+          "ts": 265
+        }
       },
-      { "name": "EXPIRES", "value": "0x08", "spec": "Section 10.2.10" },
-      { "name": "LARGEST_OBJECT", "value": "0x09", "spec": "Section 10.2.11" },
+      {
+        "name": "EXPIRES",
+        "value": "0x08",
+        "spec": "Section 10.2.10"
+      },
+      {
+        "name": "LARGEST_OBJECT",
+        "value": "0x09",
+        "spec": "Section 10.2.11"
+      },
       {
         "name": "FILL_TIMEOUT",
         "value": "0x0A",
         "spec": "Section 10.2.5",
-        "pending": { "rs": 228, "ts": 265 }
+        "pending": {
+          "ts": 265
+        }
       },
-      { "name": "FORWARD", "value": "0x10", "spec": "Section 10.2.12" },
-      { "name": "SUBSCRIBER_PRIORITY", "value": "0x20", "spec": "Section 10.2.7" },
-      { "name": "SUBSCRIPTION_FILTER", "value": "0x21", "spec": "Section 10.2.9" },
-      { "name": "GROUP_ORDER", "value": "0x22", "spec": "Section 10.2.8" },
-      { "name": "NEW_GROUP_REQUEST", "value": "0x32", "spec": "Section 10.2.13" },
+      {
+        "name": "FORWARD",
+        "value": "0x10",
+        "spec": "Section 10.2.12"
+      },
+      {
+        "name": "SUBSCRIBER_PRIORITY",
+        "value": "0x20",
+        "spec": "Section 10.2.7"
+      },
+      {
+        "name": "SUBSCRIPTION_FILTER",
+        "value": "0x21",
+        "spec": "Section 10.2.9"
+      },
+      {
+        "name": "GROUP_ORDER",
+        "value": "0x22",
+        "spec": "Section 10.2.8"
+      },
+      {
+        "name": "NEW_GROUP_REQUEST",
+        "value": "0x32",
+        "spec": "Section 10.2.13"
+      },
       {
         "name": "TRACK_NAMESPACE_PREFIX",
         "value": "0x34",
         "spec": "Section 10.2.14",
-        "pending": { "rs": 228, "ts": 265 }
+        "pending": {
+          "ts": 265
+        }
       }
     ]
   }

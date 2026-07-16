@@ -53,15 +53,19 @@ impl From<SetupOptionType> for u64 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u64)]
 pub enum MessageParameterType {
-  DeliveryTimeout = 0x02,
+  ObjectDeliveryTimeout = 0x02,
   AuthorizationToken = 0x03,
+  RendezvousTimeout = 0x04,
+  SubgroupDeliveryTimeout = 0x06,
   Expires = 0x08,
   LargestObject = 0x09,
+  FillTimeout = 0x0A,
   Forward = 0x10,
   SubscriberPriority = 0x20,
   SubscriptionFilter = 0x21,
   GroupOrder = 0x22,
   NewGroupRequest = 0x32,
+  TrackNamespacePrefix = 0x34,
 }
 
 impl TryFrom<u64> for MessageParameterType {
@@ -69,15 +73,19 @@ impl TryFrom<u64> for MessageParameterType {
 
   fn try_from(value: u64) -> Result<Self, Self::Error> {
     match value {
-      0x02 => Ok(MessageParameterType::DeliveryTimeout),
+      0x02 => Ok(MessageParameterType::ObjectDeliveryTimeout),
       0x03 => Ok(MessageParameterType::AuthorizationToken),
+      0x04 => Ok(MessageParameterType::RendezvousTimeout),
+      0x06 => Ok(MessageParameterType::SubgroupDeliveryTimeout),
       0x08 => Ok(MessageParameterType::Expires),
       0x09 => Ok(MessageParameterType::LargestObject),
+      0x0A => Ok(MessageParameterType::FillTimeout),
       0x10 => Ok(MessageParameterType::Forward),
       0x20 => Ok(MessageParameterType::SubscriberPriority),
       0x21 => Ok(MessageParameterType::SubscriptionFilter),
       0x22 => Ok(MessageParameterType::GroupOrder),
       0x32 => Ok(MessageParameterType::NewGroupRequest),
+      0x34 => Ok(MessageParameterType::TrackNamespacePrefix),
       _ => Err(ParseError::InvalidType {
         context: "MessageParameterType::try_from(u64)",
         details: format!("Unknown parameter type, got {value}"),

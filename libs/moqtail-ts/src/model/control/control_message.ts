@@ -132,6 +132,12 @@ export namespace ControlMessage {
         return SubscribeNamespace.parsePayload(payload)
       case ControlMessageType.UnsubscribeNamespace:
         return UnsubscribeNamespace.parsePayload(payload)
+      case ControlMessageType.Setup:
+        throw new Error('ControlMessageType.Setup (0x2F00) has no message body yet (#256)')
+      case ControlMessageType.SubscribeTracks:
+        throw new Error('ControlMessageType.SubscribeTracks (0x51) has no message body yet (#266)')
+      case ControlMessageType.PublishBlocked:
+        throw new Error('ControlMessageType.PublishBlocked (0xF) has no message body yet (#271)')
       default:
         throw new Error(`Unknown or unhandled ControlMessageType: ${messageType}`)
     }

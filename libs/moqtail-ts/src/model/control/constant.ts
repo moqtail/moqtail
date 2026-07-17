@@ -22,39 +22,53 @@ export const SUPPORTED_VERSIONS = ['moqt-18']
 
 /**
  * @public
- * Control message types for MOQT protocol.
- * Each value corresponds to a specific control frame.
+ * Control message types, per draft-18 Table 5.
+ *
+ * The comment on each member is the Stream column: `Control` is the control stream
+ * (§3.3), `Request` a bidirectional request stream, and `First` means the message MUST
+ * be the first on a new request stream.
+ *
+ * Table 5 reserves `0x01` (SETUP for version 00), `0x40`/`0x41` (CLIENT_SETUP /
+ * SERVER_SETUP for versions 10 and below) and `0x20`/`0x21` (CLIENT_SETUP /
+ * SERVER_SETUP for versions 16 and below). The first three stay in the enum as
+ * documentation, but `tryFrom` rejects every RESERVED codepoint, which is what §10
+ * requires — an endpoint receiving an unknown message type MUST close the session.
+ * `0x20` and `0x21` are still live as ClientSetup / ServerSetup and become reserved
+ * once they are folded into Setup (#256).
  */
 export enum ControlMessageType {
-  ReservedSetupV00 = 0x01,
-  ReservedClientSetupV10 = 0x40,
-  ReservedServerSetupV10 = 0x41,
-  ClientSetup = 0x20,
-  ServerSetup = 0x21,
-  GoAway = 0x10,
-  MaxRequestId = 0x15,
-  RequestsBlocked = 0x1a,
-  Subscribe = 0x03,
-  SubscribeOk = 0x04,
-  RequestError = 0x05,
-  Unsubscribe = 0x0a,
-  RequestUpdate = 0x02,
-  PublishDone = 0x0b,
-  Fetch = 0x16,
-  FetchOk = 0x18,
-  FetchCancel = 0x17,
-  TrackStatus = 0x0d,
-  PublishNamespace = 0x06,
-  RequestOk = 0x07,
-  Namespace = 0x08,
-  PublishNamespaceDone = 0x09,
-  NamespaceDone = 0x0e,
-  PublishNamespaceCancel = 0x0c,
-  SubscribeNamespace = 0x11,
-  UnsubscribeNamespace = 0x14,
-  Publish = 0x1d,
-  PublishOk = 0x1e,
-  Switch = 0x22,
+  ReservedSetupV00 = 0x01, // RESERVED; rejected by tryFrom
+  ReservedClientSetupV10 = 0x40, // RESERVED; rejected by tryFrom
+  ReservedServerSetupV10 = 0x41, // RESERVED; rejected by tryFrom
+  Setup = 0x2f00, // Control
+  ClientSetup = 0x20, // RESERVED in draft-18; folded into Setup
+  ServerSetup = 0x21, // RESERVED in draft-18; folded into Setup
+  GoAway = 0x10, // Control, Request
+  MaxRequestId = 0x15, // not in draft-18
+  RequestsBlocked = 0x1a, // not in draft-18
+  Subscribe = 0x03, // Request, First
+  SubscribeOk = 0x04, // Request
+  RequestError = 0x05, // Request
+  Unsubscribe = 0x0a, // not in draft-18
+  RequestUpdate = 0x02, // Request
+  PublishDone = 0x0b, // Request
+  Fetch = 0x16, // Request, First
+  FetchOk = 0x18, // Request
+  FetchCancel = 0x17, // not in draft-18
+  TrackStatus = 0x0d, // Request, First
+  PublishNamespace = 0x06, // Request, First
+  RequestOk = 0x07, // Request
+  Namespace = 0x08, // Request
+  PublishNamespaceDone = 0x09, // not in draft-18
+  NamespaceDone = 0x0e, // Request
+  PublishNamespaceCancel = 0x0c, // not in draft-18
+  SubscribeNamespace = 0x50, // Request, First
+  SubscribeTracks = 0x51, // Request, First
+  UnsubscribeNamespace = 0x14, // not in draft-18
+  Publish = 0x1d, // Request, First
+  PublishOk = 0x1e, // Request; an alias of RequestOk (§10.5), not its own body
+  PublishBlocked = 0x0f, // Request
+  Switch = 0x22, // not in draft-18; moqtail-local extension
 }
 
 /**
@@ -67,12 +81,8 @@ export namespace ControlMessageType {
   /** Convert bigint discriminant to enum value or throw on invalid. */
   export function tryFrom(v: bigint): ControlMessageType {
     switch (v) {
-      case 0x01n:
-        return ControlMessageType.ReservedSetupV00
-      case 0x40n:
-        return ControlMessageType.ReservedClientSetupV10
-      case 0x41n:
-        return ControlMessageType.ReservedServerSetupV10
+      case 0x2f00n:
+        return ControlMessageType.Setup
       case 0x20n:
         return ControlMessageType.ClientSetup
       case 0x21n:
@@ -115,14 +125,18 @@ export namespace ControlMessageType {
         return ControlMessageType.NamespaceDone
       case 0x0cn:
         return ControlMessageType.PublishNamespaceCancel
-      case 0x11n:
+      case 0x50n:
         return ControlMessageType.SubscribeNamespace
+      case 0x51n:
+        return ControlMessageType.SubscribeTracks
       case 0x14n:
         return ControlMessageType.UnsubscribeNamespace
       case 0x1dn:
         return ControlMessageType.Publish
       case 0x1en:
         return ControlMessageType.PublishOk
+      case 0x0fn:
+        return ControlMessageType.PublishBlocked
       default:
         throw new InvalidEnumValue('ControlMessageType.tryFrom', v)
     }

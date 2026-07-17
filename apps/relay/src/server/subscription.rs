@@ -435,10 +435,16 @@ impl Subscription {
                               Some(object.publisher_priority),
                               has_properties,
                               false,
-                              // first_object: FIRST_OBJECT marks the original publisher's
-                              // first object in the subgroup. A relay forwarding from cache
-                              // is not that publisher and may start mid-subgroup, so it is
-                              // left unset here (see #229 / RS-14 scope).
+                              // first_object: draft-18 §2.2 requires that a relay
+                              // forwarding a subgroup which begins with the subgroup's
+                              // first-ever object MUST set FIRST_OBJECT. This cache-join
+                              // path replays from `start_location`, which may be
+                              // mid-subgroup, and the first-ever object is not
+                              // necessarily object_id 0, so the cache does not tell us
+                              // whether we are at that object. We therefore always leave
+                              // FIRST_OBJECT unset here. This is a known conformance gap
+                              // for the case where we do start at the first object;
+                              // closing it is deferred to #229 / RS-14.
                               false,
                             ),
                           };

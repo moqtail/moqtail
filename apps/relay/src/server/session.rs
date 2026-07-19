@@ -469,29 +469,6 @@ impl Session {
       return;
     }
 
-    // Validate request_id
-    let request_id_opt = match &msg {
-      ControlMessage::SubscribeNamespace(m) => Some(m.request_id),
-      _ => None,
-    };
-    if let Some(rid) = request_id_opt {
-      let max_request_id = context
-        .max_request_id
-        .load(std::sync::atomic::Ordering::Relaxed);
-      if rid >= max_request_id {
-        warn!(
-          "Request bi-stream: request_id ({}) >= max_request_id ({})",
-          rid, max_request_id
-        );
-        Self::close_session(
-          context,
-          TerminationCode::TooManyRequests,
-          "Request ID exceeds maximum",
-        );
-        return;
-      }
-    }
-
     Self::dispatch_request_stream_message(client, stream_handler, msg, context).await;
   }
 
@@ -960,15 +937,6 @@ impl Session {
 
     utils::print_msg_bytes(&client_setup);
 
-    let max_request_id_param = {
-      let max_request_id = context
-        .max_request_id
-        .load(std::sync::atomic::Ordering::Relaxed);
-      moqtail::model::parameter::setup_option::SetupOption::new_max_request_id(max_request_id + 1)
-        .try_into()
-        .unwrap()
-    };
-
     let moqt_implementation_param =
       moqtail::model::parameter::setup_option::SetupOption::new_moqt_implementation(
         env!("MOQTAIL_VERSION").to_string(),
@@ -976,7 +944,7 @@ impl Session {
       .try_into()
       .unwrap();
 
-    let server_setup = Setup::new(vec![max_request_id_param, moqt_implementation_param]);
+    let server_setup = Setup::new(vec![moqt_implementation_param]);
 
     debug!("client setup: {:?}", client_setup);
     debug!("server setup: {:?}", server_setup);

@@ -40,17 +40,6 @@ pub async fn handle(
       let request_id = status_req.request_id;
       let full_track_name = status_req.get_full_track_name();
 
-      // A. Check Max Request ID
-      {
-        let max_request_id = context
-          .max_request_id
-          .load(std::sync::atomic::Ordering::Relaxed);
-        if request_id >= max_request_id {
-          warn!("request id ({}) > max ({})", request_id, max_request_id);
-          return Err(TerminationCode::TooManyRequests);
-        }
-      }
-
       // B. Check Local Track Existence
       if let Some(track_arc) = context.track_manager.get_track(&full_track_name).await {
         info!("track found: {:?}", full_track_name);

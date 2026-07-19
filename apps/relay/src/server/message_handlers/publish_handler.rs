@@ -46,20 +46,6 @@ pub async fn handle(
       let request_id = m.request_id;
       let track_alias = m.track_alias;
 
-      // Check request ID
-      {
-        let max_request_id = context
-          .max_request_id
-          .load(std::sync::atomic::Ordering::Relaxed);
-        if request_id >= max_request_id {
-          warn!(
-            "Request ID ({}) is greater than max request ID ({})",
-            request_id, max_request_id
-          );
-          return Err(TerminationCode::TooManyRequests);
-        }
-      }
-
       // §2.5.1: reject a PUBLISH with an unsupported mandatory track property.
       if has_unsupported_mandatory(&m.track_properties) {
         let reason_phrase =

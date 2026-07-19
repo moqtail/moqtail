@@ -73,9 +73,10 @@ pub struct Cli {
   /// Token log file path
   #[arg(long, default_value = "/tmp/tokens.csv")]
   pub token_log_path: String,
-  /// Initial maximum request ID
-  #[arg(long, default_value_t = u64::MAX / 8)]
-  pub initial_max_request_id: u64,
+  /// Maximum number of concurrent request streams a peer may open (applied as the
+  /// QUIC max_concurrent_bidi_streams limit).
+  #[arg(long, default_value_t = 10_000)]
+  pub max_request_streams: u64,
 
   /// Simulate a bandwidth cap per subscriber connection (kbps). 0 = unlimited.
   /// Useful for testing QUIC stream priority scheduling without OS-level throttling.
@@ -104,7 +105,7 @@ pub struct AppConfig {
   pub enable_object_logging: bool,
   pub enable_token_logging: bool,
   pub token_log_path: String,
-  pub initial_max_request_id: u64,
+  pub max_request_streams: u64,
   /// 0 = unlimited. Non-zero caps relay writes to this many kbps per subscriber connection.
   pub write_kbps_limit: u64,
   pub max_upstream_fetch_gaps: u64,
@@ -130,7 +131,7 @@ impl AppConfig {
         enable_object_logging: cli.enable_object_logging,
         enable_token_logging: cli.enable_token_logging,
         token_log_path: cli.token_log_path,
-        initial_max_request_id: cli.initial_max_request_id,
+        max_request_streams: cli.max_request_streams,
         write_kbps_limit: cli.write_kbps_limit,
         max_upstream_fetch_gaps: cli.max_upstream_fetch_gaps,
         upstream_fetch_timeout: Duration::from_secs(cli.upstream_fetch_timeout_secs),
@@ -169,6 +170,9 @@ impl AppConfig {
     transport_config.congestion_controller_factory(Arc::new(BbrConfig::default()));
     transport_config.keep_alive_interval(Some(Duration::from_secs(self.keep_alive_interval)));
     transport_config.max_idle_timeout(Some(Duration::from_secs(self.max_idle_timeout).try_into()?));
+    // Request flow control: bound the number of concurrent request streams a peer
+    // may open.
+    transport_config.max_concurrent_bidi_streams(self.max_request_stream_limit());
 
     let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(quic_crypto_config));
     server_config.transport_config(Arc::new(transport_config));
@@ -184,6 +188,13 @@ impl AppConfig {
     )?;
 
     Ok(endpoint)
+  }
+
+  /// The concurrent request-stream limit applied to the QUIC endpoint via
+  /// `max_concurrent_bidi_streams`. Values above the QUIC VarInt maximum are
+  /// clamped to it.
+  pub fn max_request_stream_limit(&self) -> quinn::VarInt {
+    quinn::VarInt::from_u64(self.max_request_streams).unwrap_or(quinn::VarInt::MAX)
   }
 
   /// Get cache expiration duration
@@ -221,49 +232,45 @@ fn bind_dual_stack_udp_socket(port: u16) -> Result<UdpSocket> {
 mod tests {
   use super::*;
 
-  #[test]
-  fn test_default_initial_max_request_id() {
-    // Test that the default value for initial_max_request_id is u64::MAX
-    let cli = Cli {
+  fn test_config(max_request_streams: u64) -> AppConfig {
+    AppConfig {
       port: 4433,
       host: "localhost".to_string(),
       cert_file: "apps/relay/cert/cert.pem".to_string(),
       key_file: "apps/relay/cert/key.pem".to_string(),
-      cache_size: 1000,
       max_idle_timeout: 7,
       keep_alive_interval: 3,
+      cache_size: 1000,
       log_folder: "/tmp".to_string(),
       cache_expiration_type: CacheExpirationType::Ttl,
       cache_expiration_minutes: 30,
       enable_object_logging: false,
       enable_token_logging: false,
       token_log_path: "/tmp/moqtail_relay_tokens.csv".to_string(),
-      initial_max_request_id: u64::MAX / 8,
+      max_request_streams,
       write_kbps_limit: 0,
       max_upstream_fetch_gaps: 10,
-      upstream_fetch_timeout_secs: 10,
-    };
+      upstream_fetch_timeout: Duration::from_secs(10),
+    }
+  }
 
-    let config = AppConfig {
-      port: cli.port,
-      host: cli.host,
-      cert_file: cli.cert_file,
-      key_file: cli.key_file,
-      max_idle_timeout: cli.max_idle_timeout,
-      keep_alive_interval: cli.keep_alive_interval,
-      cache_size: cli.cache_size,
-      log_folder: cli.log_folder,
-      cache_expiration_type: cli.cache_expiration_type,
-      cache_expiration_minutes: cli.cache_expiration_minutes,
-      enable_object_logging: cli.enable_object_logging,
-      enable_token_logging: cli.enable_token_logging,
-      token_log_path: cli.token_log_path,
-      initial_max_request_id: cli.initial_max_request_id,
-      write_kbps_limit: cli.write_kbps_limit,
-      max_upstream_fetch_gaps: cli.max_upstream_fetch_gaps,
-      upstream_fetch_timeout: Duration::from_secs(cli.upstream_fetch_timeout_secs),
-    };
+  #[test]
+  fn test_default_max_request_streams() {
+    // The CLI default is the concurrent request-stream limit.
+    let cli = Cli::parse_from(["relay"]);
+    assert_eq!(cli.max_request_streams, 10_000);
+  }
 
-    assert_eq!(config.initial_max_request_id, u64::MAX / 8);
+  #[test]
+  fn max_request_stream_limit_is_applied_to_the_endpoint() {
+    // The configured limit becomes the QUIC max_concurrent_bidi_streams value.
+    let config = test_config(2_500);
+    assert_eq!(
+      config.max_request_stream_limit(),
+      quinn::VarInt::from_u64(2_500).unwrap()
+    );
+    // A value above the QUIC VarInt maximum is clamped rather than rejected.
+    let clamped = test_config(u64::MAX);
+    assert_eq!(clamped.max_request_stream_limit(), quinn::VarInt::MAX);
   }
 }

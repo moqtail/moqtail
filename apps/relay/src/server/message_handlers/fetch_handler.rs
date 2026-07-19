@@ -46,20 +46,6 @@ pub async fn handle(
       let fetch = *m;
       let request_id = fetch.clone().request_id;
 
-      // check request id
-      {
-        let max_request_id = context
-          .max_request_id
-          .load(std::sync::atomic::Ordering::Relaxed);
-        if request_id >= max_request_id {
-          warn!(
-            "request id ({}) is greater than max request id ({})",
-            request_id, max_request_id
-          );
-          return Err(TerminationCode::TooManyRequests);
-        }
-      }
-
       {
         let req = FetchRequest {
           original_request_id: request_id,

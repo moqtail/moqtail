@@ -36,8 +36,6 @@ pub const SUPPORTED_VERSIONS: &str = "moqt-18";
 pub enum ControlMessageType {
   Setup = 0x2F00,                // Control
   GoAway = 0x10,                 // Control, Request
-  MaxRequestId = 0x15,           // not in draft-18
-  RequestsBlocked = 0x1A,        // not in draft-18
   Subscribe = 0x03,              // Request, First
   SubscribeOk = 0x04,            // Request
   RequestError = 0x05,           // Request
@@ -70,8 +68,6 @@ impl TryFrom<u64> for ControlMessageType {
     match value {
       0x2F00 => Ok(ControlMessageType::Setup),
       0x10 => Ok(ControlMessageType::GoAway),
-      0x15 => Ok(ControlMessageType::MaxRequestId),
-      0x1A => Ok(ControlMessageType::RequestsBlocked),
       0x03 => Ok(ControlMessageType::Subscribe),
       0x04 => Ok(ControlMessageType::SubscribeOk),
       0x05 => Ok(ControlMessageType::RequestError),

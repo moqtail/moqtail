@@ -50,7 +50,7 @@ impl MoqConnection {
     no_cert_validation: bool,
     transport: Transport,
   ) -> Result<Self> {
-    let mut setup_options = vec![SetupOption::new_max_request_id(1000).try_into().unwrap()];
+    let mut setup_options = Vec::new();
 
     // moqt:// is the single input scheme; the transport is chosen separately.
     let url = MoqtUrl::parse(server)?;

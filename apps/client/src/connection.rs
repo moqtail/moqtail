@@ -37,6 +37,10 @@ const CLIENT_SUPPORTED_VERSIONS: &str = "moqt-18";
 
 pub struct MoqConnection {
   pub connection: Arc<TransportConnection>,
+  // Held for the session's lifetime so the control stream is not closed (which
+  // would be a protocol violation). Requests use their own bidi streams, so it is
+  // otherwise unused after SETUP.
+  #[allow(dead_code)]
   pub control_stream: ControlStreamHandler,
 }
 

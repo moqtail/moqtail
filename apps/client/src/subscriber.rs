@@ -24,21 +24,24 @@ use moqtail::model::control::subscribe::Subscribe;
 use moqtail::model::data::datagram::Datagram;
 use moqtail::model::parameter::message_parameter::MessageParameter;
 use moqtail::transport::connection::TransportConnection;
+use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use moqtail::transport::data_stream_handler::RecvDataStream;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info};
 
-/// Subscribe to one track and return its assigned track alias.
+/// Subscribe to one track on its own bidirectional request stream. Returns the
+/// assigned track alias and the request-stream handler, which the caller keeps
+/// alive for the subscription's lifetime.
 async fn subscribe_track(
-  control_stream: &mut moqtail::transport::control_stream_handler::ControlStreamHandler,
+  connection: &Arc<TransportConnection>,
   namespace: &str,
   track_name: &str,
   request_id: u64,
   subscriber_priority: u8,
   group_order: GroupOrder,
-) -> Result<u64> {
+) -> Result<(u64, ControlStreamHandler)> {
   let ns = Tuple::from_utf8_path(namespace);
   info!(
     "Subscribing to track: {}/{} (request_id={}, priority={})",
@@ -54,17 +57,23 @@ async fn subscribe_track(
       MessageParameter::new_forward(true),
     ],
   );
-  control_stream
-    .send(&ControlMessage::Subscribe(Box::new(subscribe)))
-    .await?;
 
-  match control_stream.next_message().await {
+  // A request opens its own bidi stream, beginning with SUBSCRIBE; the response
+  // comes back on the same stream.
+  let (send, recv) = connection.open_bi().await?;
+  let mut request_stream = ControlStreamHandler::new(send, recv);
+  request_stream
+    .send(&ControlMessage::Subscribe(Box::new(subscribe)))
+    .await
+    .map_err(|e| anyhow::anyhow!("Failed to send SUBSCRIBE: {:?}", e))?;
+
+  match request_stream.next_message().await {
     Ok(ControlMessage::SubscribeOk(m)) => {
       info!(
         "Subscribed: track={} track_alias={}",
         track_name, m.track_alias
       );
-      Ok(m.track_alias)
+      Ok((m.track_alias, request_stream))
     }
     Ok(m) => anyhow::bail!("Expected SubscribeOk for {}, got {:?}", track_name, m),
     Err(e) => anyhow::bail!("Failed waiting for SubscribeOk for {}: {:?}", track_name, e),
@@ -82,13 +91,16 @@ pub struct SubscribeConfig {
 }
 
 pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
-  let MoqConnection {
-    connection,
-    mut control_stream,
-  } = moq;
+  // Keep `moq` alive for the whole function: its control stream carries only
+  // SETUP now, but must stay open for the session's lifetime. Subscriptions use
+  // their own bidi request streams; objects arrive on uni streams.
+  let connection = moq.connection.clone();
 
-  let track_alias = subscribe_track(
-    &mut control_stream,
+  // Each subscription's request stream is held open for its lifetime.
+  let mut request_streams = Vec::new();
+
+  let (track_alias, primary_stream) = subscribe_track(
+    &connection,
     &config.namespace,
     &config.track_name,
     0,
@@ -96,10 +108,11 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
     config.group_order,
   )
   .await?;
+  request_streams.push(primary_stream);
 
   let extra_alias = if let Some((ref extra_name, extra_priority)) = config.extra_track {
-    let alias = subscribe_track(
-      &mut control_stream,
+    let (alias, extra_stream) = subscribe_track(
+      &connection,
       &config.namespace,
       extra_name,
       1,
@@ -107,17 +120,20 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
       config.group_order,
     )
     .await?;
+    request_streams.push(extra_stream);
     Some((extra_name.clone(), alias))
   } else {
     None
   };
 
-  match config.delivery_mode {
+  let result = match config.delivery_mode {
     DeliveryMode::Datagram => receive_datagrams(&connection, track_alias, config.duration).await,
     DeliveryMode::Subgroup => {
       receive_streams(&connection, track_alias, extra_alias, config.duration).await
     }
-  }
+  };
+  drop(request_streams);
+  result
 }
 
 async fn receive_datagrams(

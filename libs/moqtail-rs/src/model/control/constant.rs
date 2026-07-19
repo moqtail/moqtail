@@ -109,6 +109,24 @@ impl From<ControlMessageType> for u64 {
   }
 }
 
+impl ControlMessageType {
+  /// True if this message type MUST be the first on a new bidirectional request
+  /// stream. A request stream that opens with any other type is a protocol
+  /// violation and MUST be reset.
+  pub fn is_first(self) -> bool {
+    matches!(
+      self,
+      Self::Subscribe
+        | Self::Fetch
+        | Self::TrackStatus
+        | Self::PublishNamespace
+        | Self::SubscribeNamespace
+        | Self::SubscribeTracks
+        | Self::Publish
+    )
+  }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(u64)]
 pub enum FilterType {
@@ -387,6 +405,34 @@ impl From<PublishDoneStatusCode> for u64 {
 mod tests {
   use super::*;
   use crate::model::common::grease::grease_value;
+
+  #[test]
+  fn is_first_matches_the_request_opening_types() {
+    let first = [
+      ControlMessageType::Subscribe,
+      ControlMessageType::Fetch,
+      ControlMessageType::TrackStatus,
+      ControlMessageType::PublishNamespace,
+      ControlMessageType::SubscribeNamespace,
+      ControlMessageType::SubscribeTracks,
+      ControlMessageType::Publish,
+    ];
+    for t in first {
+      assert!(t.is_first(), "{t:?} should open a request stream");
+    }
+    // A response / control type must not open a request stream.
+    for t in [
+      ControlMessageType::Setup,
+      ControlMessageType::GoAway,
+      ControlMessageType::SubscribeOk,
+      ControlMessageType::RequestOk,
+      ControlMessageType::RequestError,
+      ControlMessageType::FetchOk,
+      ControlMessageType::Unsubscribe,
+    ] {
+      assert!(!t.is_first(), "{t:?} must not open a request stream");
+    }
+  }
 
   #[test]
   fn from_wire_maps_unknown_and_grease_to_internal_error() {

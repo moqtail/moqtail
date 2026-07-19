@@ -58,15 +58,13 @@ pub struct PublishNamespaceConfig {
 }
 
 pub async fn run_namespace(moq: MoqConnection, config: PublishNamespaceConfig) -> Result<()> {
-  let MoqConnection {
-    connection,
-    mut control_stream,
-  } = moq;
+  // Keep `moq` alive for the session; the control stream carries only SETUP now.
+  let connection = moq.connection.clone();
 
   let ns = Tuple::from_utf8_path(&config.namespace);
 
-  // Step 1: Announce namespace
-  publish_namespace(&mut control_stream, &ns).await?;
+  // Step 1: Announce namespace on its own request stream (kept open below).
+  let _namespace_stream = publish_namespace(&connection, &ns).await?;
 
   let data_config = DataConfig {
     delivery_mode: config.delivery_mode,
@@ -77,58 +75,57 @@ pub async fn run_namespace(moq: MoqConnection, config: PublishNamespaceConfig) -
     publisher_priority: config.publisher_priority,
   };
 
-  // Step 2: Listen for Subscribe messages and serve data
-  let mut track_alias_counter: u64 = 1;
-  let mut tasks: Vec<tokio::task::JoinHandle<Result<()>>> = Vec::new();
+  // Step 2: the relay forwards each SUBSCRIBE on its own bidirectional request
+  // stream. Accept those streams and answer SUBSCRIBE on the same stream.
+  let track_alias_counter = Arc::new(std::sync::atomic::AtomicU64::new(1));
 
   info!(
-    "Waiting for Subscribe messages on namespace '{}'...",
+    "Waiting for Subscribe request streams on namespace '{}'...",
     config.namespace
   );
 
   loop {
-    match control_stream.next_message().await {
-      Ok(ControlMessage::Subscribe(m)) => {
-        let track_alias = track_alias_counter;
-        track_alias_counter += 1;
-
-        info!(
-          "Received Subscribe: request_id={}, track={:?}, assigning track_alias={}",
-          m.request_id, m.track_name, track_alias
-        );
-
-        let msg = SubscribeOk::new(m.request_id, track_alias, vec![], vec![]);
-
-        control_stream.send_impl(&msg).await?;
-        info!(
-          "SubscribeOk sent for request_id={}, track_alias={}",
-          m.request_id, track_alias
-        );
-
-        // Spawn a task to send data for this subscription
-        let conn = connection.clone();
-        let dc = data_config.clone();
-        let task = tokio::spawn(async move { send_data(&conn, track_alias, &dc).await });
-        tasks.push(task);
-      }
-      Ok(ControlMessage::Unsubscribe(m)) => {
-        info!("Received Unsubscribe: {:?}", m);
-      }
-      Ok(m) => {
-        info!("Received control message: {:?}", m);
-      }
+    let (send, recv) = match connection.accept_bi().await {
+      Ok(streams) => streams,
       Err(e) => {
-        info!("Control stream ended: {:?}", e);
+        info!("Request stream accept ended: {:?}", e);
         break;
       }
-    }
-  }
+    };
 
-  // Wait for all spawned data-sending tasks to complete
-  for task in tasks {
-    if let Err(e) = task.await {
-      error!("Data sending task failed: {:?}", e);
-    }
+    let conn = connection.clone();
+    let dc = data_config.clone();
+    let counter = track_alias_counter.clone();
+    tokio::spawn(async move {
+      let mut request_stream = ControlStreamHandler::new(send, recv);
+      match request_stream.next_message().await {
+        Ok(ControlMessage::Subscribe(m)) => {
+          let track_alias = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+          info!(
+            "Received Subscribe on request stream: request_id={}, track={:?}, assigning track_alias={}",
+            m.request_id, m.track_name, track_alias
+          );
+
+          let ok = SubscribeOk::new(m.request_id, track_alias, vec![], vec![]);
+          if let Err(e) = request_stream.send_impl(&ok).await {
+            error!("Failed to send SubscribeOk: {:?}", e);
+            return;
+          }
+          info!(
+            "SubscribeOk sent for request_id={}, track_alias={}",
+            m.request_id, track_alias
+          );
+
+          // Serve data; keep the request stream open until the objects are sent.
+          if let Err(e) = send_data(&conn, track_alias, &dc).await {
+            error!("Data sending failed: {:?}", e);
+          }
+          drop(request_stream);
+        }
+        Ok(other) => info!("Unexpected message on request stream: {:?}", other),
+        Err(e) => info!("Request stream read error: {:?}", e),
+      }
+    });
   }
 
   // Keep connection alive briefly to ensure delivery
@@ -142,10 +139,10 @@ pub async fn run_namespace(moq: MoqConnection, config: PublishNamespaceConfig) -
 }
 
 pub async fn run(moq: MoqConnection, config: PublishConfig) -> Result<()> {
-  let MoqConnection {
-    connection,
-    mut control_stream,
-  } = moq;
+  // Keep `moq` alive for the whole function: its control stream carries only
+  // SETUP now, but must stay open for the session's lifetime. The PUBLISH request
+  // uses its own bidi stream; objects go out on uni streams.
+  let connection = moq.connection.clone();
 
   let ns = Tuple::from_utf8_path(&config.namespace);
 
@@ -160,7 +157,6 @@ pub async fn run(moq: MoqConnection, config: PublishConfig) -> Result<()> {
 
   publish_track(
     &connection,
-    &mut control_stream,
     &ns,
     &config.track_name,
     config.track_alias,
@@ -178,24 +174,29 @@ pub async fn run(moq: MoqConnection, config: PublishConfig) -> Result<()> {
   Ok(())
 }
 
+/// Announce a namespace on its own bidi request stream. Returns the stream, which
+/// the caller keeps open for the announcement's lifetime.
 async fn publish_namespace(
-  control_stream: &mut ControlStreamHandler,
+  connection: &Arc<TransportConnection>,
   namespace: &Tuple,
-) -> Result<()> {
+) -> Result<ControlStreamHandler> {
   info!("Publishing namespace...");
   let publish_namespace = PublishNamespace::new(0, namespace.clone(), &[]);
   let expected_request_id = publish_namespace.request_id;
 
-  control_stream
+  let (send, recv) = connection.open_bi().await?;
+  let mut request_stream = ControlStreamHandler::new(send, recv);
+  request_stream
     .send(&ControlMessage::PublishNamespace(Box::new(
       publish_namespace,
     )))
-    .await?;
+    .await
+    .map_err(|e| anyhow::anyhow!("Failed to send PUBLISH_NAMESPACE: {:?}", e))?;
 
-  match control_stream.next_message().await {
+  match request_stream.next_message().await {
     Ok(ControlMessage::RequestOk(ok)) if ok.request_id == expected_request_id => {
       info!("Namespace published successfully");
-      Ok(())
+      Ok(request_stream)
     }
     Ok(ControlMessage::RequestOk(ok)) => {
       anyhow::bail!(
@@ -221,7 +222,6 @@ struct DataConfig {
 
 async fn publish_track(
   connection: &Arc<TransportConnection>,
-  control_stream: &mut ControlStreamHandler,
   namespace: &Tuple,
   track_name: &str,
   track_alias: u64,
@@ -236,11 +236,16 @@ async fn publish_track(
     vec![MessageParameter::Forward { forward: true }],
     vec![],
   );
-  control_stream
-    .send(&ControlMessage::Publish(Box::new(publish)))
-    .await?;
 
-  match control_stream.next_message().await {
+  // PUBLISH opens its own bidi request stream; the response returns on it.
+  let (send, recv) = connection.open_bi().await?;
+  let mut request_stream = ControlStreamHandler::new(send, recv);
+  request_stream
+    .send(&ControlMessage::Publish(Box::new(publish)))
+    .await
+    .map_err(|e| anyhow::anyhow!("Failed to send PUBLISH: {:?}", e))?;
+
+  match request_stream.next_message().await {
     Ok(ControlMessage::PublishOk(m)) => {
       info!("Track published, request_id: {}", m.request_id);
     }
@@ -248,7 +253,10 @@ async fn publish_track(
     Err(e) => anyhow::bail!("Failed waiting for PublishOk: {:?}", e),
   }
 
-  send_data(connection, track_alias, data_config).await
+  // Hold the request stream open while objects are delivered on uni streams.
+  let result = send_data(connection, track_alias, data_config).await;
+  drop(request_stream);
+  result
 }
 
 async fn send_data(

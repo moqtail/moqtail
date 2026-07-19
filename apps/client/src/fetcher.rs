@@ -20,6 +20,7 @@ use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::fetch::{Fetch, StandaloneFetchProps};
 use moqtail::model::control::fetch_cancel::FetchCancel;
 use moqtail::model::parameter::message_parameter::MessageParameter;
+use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use moqtail::transport::data_stream_handler::{FetchRequest, RecvDataStream};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -44,10 +45,10 @@ pub struct FetchConfig {
 }
 
 pub async fn run(moq: MoqConnection, config: FetchConfig) -> Result<()> {
-  let MoqConnection {
-    connection,
-    mut control_stream,
-  } = moq;
+  // Keep `moq` alive for the whole function: its control stream carries only
+  // SETUP now, but must stay open for the session's lifetime. Requests use their
+  // own bidi streams; data arrives on uni streams.
+  let connection = moq.connection.clone();
 
   let pending_fetches = Arc::new(RwLock::new(BTreeMap::new()));
 
@@ -70,9 +71,13 @@ pub async fn run(moq: MoqConnection, config: FetchConfig) -> Result<()> {
     config.start_group, config.start_object, config.end_group, config.end_object
   );
 
-  control_stream
+  // FETCH opens its own bidi request stream; the response returns on it.
+  let (send, recv) = connection.open_bi().await?;
+  let mut request_stream = ControlStreamHandler::new(send, recv);
+  request_stream
     .send(&ControlMessage::Fetch(Box::new(fetch.clone())))
-    .await?;
+    .await
+    .map_err(|e| anyhow::anyhow!("Failed to send FETCH: {:?}", e))?;
 
   pending_fetches
     .write()
@@ -138,8 +143,8 @@ pub async fn run(moq: MoqConnection, config: FetchConfig) -> Result<()> {
     }
   });
 
-  // Wait for control messages (RequestOk/RequestError)
-  match control_stream.next_message().await {
+  // Wait for the fetch response on the request stream (FetchOk / RequestError).
+  match request_stream.next_message().await {
     Ok(ControlMessage::RequestOk(m)) => {
       info!("Received RequestOk: {:?}", m);
     }
@@ -147,10 +152,10 @@ pub async fn run(moq: MoqConnection, config: FetchConfig) -> Result<()> {
       error!("Received RequestError: {:?}", m);
     }
     Ok(m) => {
-      info!("Received message: {:?}", m);
+      info!("Received fetch response: {:?}", m);
     }
     Err(e) => {
-      error!("Error receiving control message: {:?}", e);
+      error!("Error receiving fetch response: {:?}", e);
     }
   }
 
@@ -175,7 +180,7 @@ pub async fn run(moq: MoqConnection, config: FetchConfig) -> Result<()> {
 
     info!("Sending FETCH_CANCEL for request_id: {}", request_id);
     let fetch_cancel = FetchCancel::new(request_id);
-    if let Err(e) = control_stream
+    if let Err(e) = request_stream
       .send(&ControlMessage::FetchCancel(Box::new(fetch_cancel)))
       .await
     {

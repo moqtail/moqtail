@@ -91,7 +91,6 @@ pub struct SessionContext {
   pub(crate) server_config: &'static AppConfig,
   pub(crate) is_connection_closed: Arc<AtomicBool>,
   pub(crate) relay_next_request_id: Arc<AtomicU64>,
-  pub(crate) max_request_id: Arc<AtomicU64>,
   pub(crate) upstream_fetch_senders: Arc<RwLock<BTreeMap<u64, mpsc::Sender<UpstreamFetchEvent>>>>,
 }
 
@@ -115,7 +114,6 @@ impl SessionContext {
       server_config,
       is_connection_closed: Arc::new(AtomicBool::new(false)),
       relay_next_request_id,
-      max_request_id: Arc::new(AtomicU64::new(server_config.initial_max_request_id)),
       upstream_fetch_senders: request_maps.upstream_fetch_senders,
     }
   }

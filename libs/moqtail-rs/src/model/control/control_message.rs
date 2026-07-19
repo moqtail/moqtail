@@ -18,14 +18,13 @@ use bytes::{Buf, Bytes};
 
 use super::{
   constant::ControlMessageType, fetch::Fetch, fetch_cancel::FetchCancel, fetch_ok::FetchOk,
-  goaway::GoAway, max_request_id::MaxRequestId, namespace::Namespace,
-  namespace_done::NamespaceDone, publish::Publish, publish_done::PublishDone,
-  publish_namespace::PublishNamespace, publish_namespace_cancel::PublishNamespaceCancel,
-  publish_namespace_done::PublishNamespaceDone, publish_ok::PublishOk, request_error::RequestError,
-  request_ok::RequestOk, request_update::RequestUpdate, requests_blocked::RequestsBlocked,
-  setup::Setup, subscribe::Subscribe, subscribe_namespace::SubscribeNamespace,
-  subscribe_ok::SubscribeOk, switch::Switch, track_status::TrackStatus, unsubscribe::Unsubscribe,
-  unsubscribe_namespace::UnsubscribeNamespace,
+  goaway::GoAway, namespace::Namespace, namespace_done::NamespaceDone, publish::Publish,
+  publish_done::PublishDone, publish_namespace::PublishNamespace,
+  publish_namespace_cancel::PublishNamespaceCancel, publish_namespace_done::PublishNamespaceDone,
+  publish_ok::PublishOk, request_error::RequestError, request_ok::RequestOk,
+  request_update::RequestUpdate, setup::Setup, subscribe::Subscribe,
+  subscribe_namespace::SubscribeNamespace, subscribe_ok::SubscribeOk, switch::Switch,
+  track_status::TrackStatus, unsubscribe::Unsubscribe, unsubscribe_namespace::UnsubscribeNamespace,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -42,12 +41,10 @@ pub enum ControlMessage {
   FetchCancel(Box<FetchCancel>),
   FetchOk(Box<FetchOk>),
   Goaway(Box<GoAway>),
-  MaxRequestId(Box<MaxRequestId>),
   Setup(Box<Setup>),
   Subscribe(Box<Subscribe>),
   SubscribeOk(Box<SubscribeOk>),
   RequestUpdate(Box<RequestUpdate>),
-  RequestsBlocked(Box<RequestsBlocked>),
   TrackStatus(Box<TrackStatus>),
   PublishNamespaceDone(Box<PublishNamespaceDone>),
   Unsubscribe(Box<Unsubscribe>),
@@ -129,9 +126,6 @@ impl ControlMessage {
         FetchOk::parse_payload(&mut payload).map(ControlMessage::FetchOk)
       }
       ControlMessageType::GoAway => GoAway::parse_payload(&mut payload).map(ControlMessage::Goaway),
-      ControlMessageType::MaxRequestId => {
-        MaxRequestId::parse_payload(&mut payload).map(ControlMessage::MaxRequestId)
-      }
       ControlMessageType::Subscribe => {
         Subscribe::parse_payload(&mut payload).map(ControlMessage::Subscribe)
       }
@@ -140,9 +134,6 @@ impl ControlMessage {
       }
       ControlMessageType::RequestUpdate => {
         RequestUpdate::parse_payload(&mut payload).map(ControlMessage::RequestUpdate)
-      }
-      ControlMessageType::RequestsBlocked => {
-        RequestsBlocked::parse_payload(&mut payload).map(ControlMessage::RequestsBlocked)
       }
       ControlMessageType::TrackStatus => {
         TrackStatus::parse_payload(&mut payload).map(ControlMessage::TrackStatus)
@@ -200,12 +191,10 @@ impl ControlMessage {
       ControlMessage::FetchCancel(msg) => msg.serialize(),
       ControlMessage::FetchOk(msg) => msg.serialize(),
       ControlMessage::Goaway(msg) => msg.serialize(),
-      ControlMessage::MaxRequestId(msg) => msg.serialize(),
       ControlMessage::Setup(msg) => msg.serialize(),
       ControlMessage::Subscribe(msg) => msg.serialize(),
       ControlMessage::SubscribeOk(msg) => msg.serialize(),
       ControlMessage::RequestUpdate(msg) => msg.serialize(),
-      ControlMessage::RequestsBlocked(msg) => msg.serialize(),
       ControlMessage::TrackStatus(msg) => msg.serialize(),
       ControlMessage::Unsubscribe(msg) => msg.serialize(),
       ControlMessage::SubscribeNamespace(msg) => msg.serialize(),
@@ -231,12 +220,10 @@ impl ControlMessage {
       ControlMessage::FetchCancel(_) => ControlMessageType::FetchCancel,
       ControlMessage::FetchOk(_) => ControlMessageType::FetchOk,
       ControlMessage::Goaway(_) => ControlMessageType::GoAway,
-      ControlMessage::MaxRequestId(_) => ControlMessageType::MaxRequestId,
       ControlMessage::Setup(_) => ControlMessageType::Setup,
       ControlMessage::Subscribe(_) => ControlMessageType::Subscribe,
       ControlMessage::SubscribeOk(_) => ControlMessageType::SubscribeOk,
       ControlMessage::RequestUpdate(_) => ControlMessageType::RequestUpdate,
-      ControlMessage::RequestsBlocked(_) => ControlMessageType::RequestsBlocked,
       ControlMessage::TrackStatus(_) => ControlMessageType::TrackStatus,
       ControlMessage::Unsubscribe(_) => ControlMessageType::Unsubscribe,
       ControlMessage::SubscribeNamespace(_) => ControlMessageType::SubscribeNamespace,

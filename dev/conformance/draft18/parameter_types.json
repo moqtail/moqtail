@@ -49,7 +49,6 @@
         "value": "0x02",
         "notes": "Table 10 has no 0x02. Removed with the MAX_REQUEST_ID message.",
         "pending": {
-          "rs": 236,
           "ts": 259
         }
       }

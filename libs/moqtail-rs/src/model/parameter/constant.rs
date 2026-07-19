@@ -18,7 +18,6 @@ use crate::model::error::ParseError;
 #[repr(u64)]
 pub enum SetupOptionType {
   Path = 0x01,
-  MaxRequestId = 0x02,
   AuthorizationToken = 0x03,
   MaxAuthTokenCacheSize = 0x04,
   Authority = 0x05, // MQOtail does not use this (WebTransport)
@@ -31,7 +30,6 @@ impl TryFrom<u64> for SetupOptionType {
   fn try_from(value: u64) -> Result<Self, Self::Error> {
     match value {
       0x01 => Ok(SetupOptionType::Path),
-      0x02 => Ok(SetupOptionType::MaxRequestId),
       0x03 => Ok(SetupOptionType::AuthorizationToken),
       0x04 => Ok(SetupOptionType::MaxAuthTokenCacheSize),
       0x05 => Ok(SetupOptionType::Authority),

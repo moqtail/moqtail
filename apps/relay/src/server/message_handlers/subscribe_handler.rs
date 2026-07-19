@@ -119,22 +119,7 @@ async fn handle_subscribe_message(
 ) -> Result<(), TerminationCode> {
   info!("received Subscribe message: {:?}", sub);
   let track_namespace = sub.track_namespace.clone();
-  let request_id = sub.request_id;
   let full_track_name = sub.get_full_track_name();
-
-  // check request id
-  {
-    let max_request_id = context
-      .max_request_id
-      .load(std::sync::atomic::Ordering::Relaxed);
-    if request_id >= max_request_id {
-      warn!(
-        "request id ({}) is greater than max request id ({})",
-        request_id, max_request_id
-      );
-      return Err(TerminationCode::TooManyRequests);
-    }
-  }
 
   // find who is the publisher
   // first we try with the full track name

@@ -33,21 +33,6 @@ pub async fn handle(
     ControlMessage::PublishNamespace(m) => {
       // TODO: the namespace is already announced, return error
       info!("received PublishNamespace message");
-      let request_id = m.request_id;
-
-      // check request id
-      {
-        let max_request_id = context
-          .max_request_id
-          .load(std::sync::atomic::Ordering::Relaxed);
-        if request_id >= max_request_id {
-          warn!(
-            "request id ({}) is greater than max request id ({})",
-            request_id, max_request_id
-          );
-          return Err(TerminationCode::TooManyRequests);
-        }
-      }
 
       // this is a publisher, add it to the client manager
       client

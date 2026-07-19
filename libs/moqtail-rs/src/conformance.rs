@@ -485,7 +485,6 @@ mod enum_conformance {
       TerminationCode::InvalidRequestID,
       TerminationCode::DuplicateTrackAlias,
       TerminationCode::KeyValueFormattingError,
-      TerminationCode::TooManyRequests,
       TerminationCode::InvalidPath,
       TerminationCode::MalformedPath,
       TerminationCode::GoawayTimeout,

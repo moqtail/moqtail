@@ -168,7 +168,6 @@
       "value": "0x15",
       "notes": "Table 5 has no 0x15.",
       "pending": {
-        "rs": 236,
         "ts": 259
       }
     },
@@ -177,7 +176,6 @@
       "value": "0x1A",
       "notes": "Table 5 has no 0x1A.",
       "pending": {
-        "rs": 236,
         "ts": 259
       }
     },

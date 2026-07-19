@@ -21,7 +21,6 @@ use bytes::{Bytes, BytesMut};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SetupOption {
   Path { moqt_path: String },
-  MaxRequestId { request_id: u64 },
   AuthorizationToken { token: AuthorizationToken },
   MaxAuthTokenCacheSize { max_size: u64 },
   Authority { authority: String },
@@ -36,10 +35,6 @@ impl SetupOption {
   /// MUST NOT be sent over WebTransport.
   pub fn new_authority(authority: String) -> Self {
     SetupOption::Authority { authority }
-  }
-
-  pub fn new_max_request_id(request_id: u64) -> Self {
-    SetupOption::MaxRequestId { request_id }
   }
 
   pub fn new_auth_token(token: AuthorizationToken) -> Self {
@@ -61,11 +56,6 @@ impl SetupOption {
         let data = moqt_path.as_bytes();
         let kvp =
           KeyValuePair::try_new_bytes(SetupOptionType::Path as u64, Bytes::copy_from_slice(data))?;
-        let slice = kvp.serialize()?;
-        bytes.extend_from_slice(&slice);
-      }
-      Self::MaxRequestId { request_id } => {
-        let kvp = KeyValuePair::try_new_varint(SetupOptionType::MaxRequestId as u64, *request_id)?;
         let slice = kvp.serialize()?;
         bytes.extend_from_slice(&slice);
       }
@@ -115,7 +105,6 @@ impl SetupOption {
       KeyValuePair::VarInt { type_value, value } => {
         let type_value = SetupOptionType::try_from(*type_value)?;
         match type_value {
-          SetupOptionType::MaxRequestId => Ok(SetupOption::MaxRequestId { request_id: *value }),
           SetupOptionType::MaxAuthTokenCacheSize => {
             Ok(SetupOption::MaxAuthTokenCacheSize { max_size: *value })
           }
@@ -171,9 +160,6 @@ impl TryInto<KeyValuePair> for SetupOption {
         let data = moqt_path.as_bytes();
         KeyValuePair::try_new_bytes(SetupOptionType::Path as u64, Bytes::copy_from_slice(data))
       }
-      SetupOption::MaxRequestId { request_id } => {
-        KeyValuePair::try_new_varint(SetupOptionType::MaxRequestId as u64, request_id)
-      }
       SetupOption::AuthorizationToken { token } => KeyValuePair::try_new_bytes(
         SetupOptionType::AuthorizationToken as u64,
         token.serialize()?,
@@ -215,17 +201,6 @@ mod tests {
   #[test]
   fn test_roundtrip_empty_path() {
     let orig = SetupOption::new_path(String::new());
-    let serialized = orig.serialize().unwrap();
-    let mut buf = serialized.clone();
-    let kvp = KeyValuePair::deserialize(&mut buf).unwrap();
-    let got = SetupOption::deserialize(&kvp).unwrap();
-    assert_eq!(orig, got);
-    assert_eq!(buf.remaining(), 0);
-  }
-
-  #[test]
-  fn test_roundtrip_max_request_id() {
-    let orig = SetupOption::new_max_request_id(0xDEAD_BEEFu64);
     let serialized = orig.serialize().unwrap();
     let mut buf = serialized.clone();
     let kvp = KeyValuePair::deserialize(&mut buf).unwrap();
@@ -300,16 +275,6 @@ mod tests {
   }
 
   #[test]
-  fn test_deserialize_max_request_id_missing_value() {
-    let mut buf = BytesMut::new();
-    buf.put_vi(SetupOptionType::MaxRequestId as u64).unwrap();
-    // no ID varint
-    let mut bytes = buf.freeze();
-    let err = KeyValuePair::deserialize(&mut bytes);
-    assert!(err.is_err());
-  }
-
-  #[test]
   fn test_deserialize_max_auth_cache_missing_value() {
     let mut buf = BytesMut::new();
     buf
@@ -332,19 +297,6 @@ mod tests {
     assert_eq!(got, orig);
     assert_eq!(bytes.remaining(), 3);
     assert_eq!(&bytes[..], b"XYZ");
-  }
-
-  #[test]
-  fn test_excess_bytes_after_max_request_id() {
-    let orig = SetupOption::new_max_request_id(42);
-    let mut buf = BytesMut::from(&orig.serialize().unwrap()[..]);
-    buf.extend_from_slice(&[0xFF, 0xEE]);
-    let mut bytes = buf.freeze();
-    let kvp = KeyValuePair::deserialize(&mut bytes).unwrap();
-    let got = SetupOption::deserialize(&kvp).unwrap();
-    assert_eq!(got, orig);
-    assert_eq!(bytes.remaining(), 2);
-    assert_eq!(&bytes[..], &[0xFF, 0xEE]);
   }
 
   #[test]

@@ -246,11 +246,14 @@ async fn publish_track(
     .map_err(|e| anyhow::anyhow!("Failed to send PUBLISH: {:?}", e))?;
 
   match request_stream.next_message().await {
-    Ok(ControlMessage::PublishOk(m)) => {
+    // PUBLISH is answered by REQUEST_OK (PUBLISH_OK); Track Properties must be empty.
+    Ok(ControlMessage::RequestOk(m)) => {
+      m.validate_track_properties(false)
+        .map_err(|_| anyhow::anyhow!("PUBLISH_OK carried Track Properties"))?;
       info!("Track published, request_id: {}", m.request_id);
     }
-    Ok(m) => anyhow::bail!("Expected PublishOk, got {:?}", m),
-    Err(e) => anyhow::bail!("Failed waiting for PublishOk: {:?}", e),
+    Ok(m) => anyhow::bail!("Expected REQUEST_OK, got {:?}", m),
+    Err(e) => anyhow::bail!("Failed waiting for REQUEST_OK: {:?}", e),
   }
 
   // Hold the request stream open while objects are delivered on uni streams.

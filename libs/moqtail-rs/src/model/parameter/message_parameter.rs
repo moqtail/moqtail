@@ -157,6 +157,7 @@ impl MessageParameter {
       Self::ObjectDeliveryTimeout { .. } | Self::SubgroupDeliveryTimeout { .. } => matches!(
         msg_type,
         ControlMessageType::PublishOk
+          | ControlMessageType::RequestOk
           | ControlMessageType::Subscribe
           | ControlMessageType::RequestUpdate
       ),
@@ -170,6 +171,7 @@ impl MessageParameter {
           | ControlMessageType::Fetch
           | ControlMessageType::RequestUpdate
           | ControlMessageType::PublishOk
+          | ControlMessageType::RequestOk
       ),
       Self::GroupOrder { .. } => matches!(
         msg_type,
@@ -185,6 +187,7 @@ impl MessageParameter {
         msg_type,
         ControlMessageType::Subscribe
           | ControlMessageType::PublishOk
+          | ControlMessageType::RequestOk
           | ControlMessageType::RequestUpdate
       ),
       Self::Expires { .. } => matches!(
@@ -207,11 +210,13 @@ impl MessageParameter {
           | ControlMessageType::RequestUpdate
           | ControlMessageType::Publish
           | ControlMessageType::PublishOk
+          | ControlMessageType::RequestOk
           | ControlMessageType::SubscribeNamespace
       ),
       Self::NewGroupRequest { .. } => matches!(
         msg_type,
         ControlMessageType::PublishOk
+          | ControlMessageType::RequestOk
           | ControlMessageType::Subscribe
           | ControlMessageType::RequestUpdate
       ),

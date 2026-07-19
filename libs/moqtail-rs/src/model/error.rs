@@ -13,7 +13,11 @@
 // limitations under the License.
 
 mod parse;
+mod request_error;
+mod stream_reset;
 mod termination;
 /// Re-export the error types for easier access
 pub use parse::*;
+pub use request_error::*;
+pub use stream_reset::*;
 pub use termination::*;

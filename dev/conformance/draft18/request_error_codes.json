@@ -19,13 +19,13 @@
       "name": "GOING_AWAY",
       "value": "0x6",
       "spec": "Section 10.6",
-      "pending": { "rs": 238, "ts": 260 }
+      "pending": { "ts": 260 }
     },
     {
       "name": "EXCESSIVE_LOAD",
       "value": "0x9",
       "spec": "Section 10.6",
-      "pending": { "rs": 238, "ts": 260 }
+      "pending": { "ts": 260 }
     },
     { "name": "DOES_NOT_EXIST", "value": "0x10", "spec": "Section 10.6" },
     { "name": "INVALID_RANGE", "value": "0x11", "spec": "Section 10.6" },
@@ -37,7 +37,7 @@
       "name": "NAMESPACE_TOO_LARGE",
       "value": "0x31",
       "spec": "Section 10.6",
-      "pending": { "rs": 238, "ts": 260 }
+      "pending": { "ts": 260 }
     },
     { "name": "INVALID_JOINING_REQUEST_ID", "value": "0x32", "spec": "Section 10.6" },
     {

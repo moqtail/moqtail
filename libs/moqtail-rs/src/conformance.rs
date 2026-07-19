@@ -294,7 +294,8 @@ mod tests {
 #[cfg(test)]
 mod enum_conformance {
   use super::*;
-  use crate::model::control::constant::{ControlMessageType, RequestErrorCode};
+  use crate::model::control::constant::ControlMessageType;
+  use crate::model::error::RequestErrorCode;
   use crate::model::error::TerminationCode;
   use crate::model::parameter::constant::{MessageParameterType, SetupOptionType};
   use crate::model::property::constant::{LOCPropertyId, TrackPropertyType};
@@ -514,10 +515,10 @@ mod enum_conformance {
 
   #[test]
   fn stream_reset_codes_match_fixture() {
-    // This crate has no stream reset code enum yet, so every codepoint is unparsed.
-    // The fixture marks all of them pending; this test fails the moment one lands
-    // without its marker being cleared.
-    assert_registry(&stream_reset_codes(), &[], |_| None);
+    use crate::model::error::StreamResetCode;
+    assert_registry(&stream_reset_codes(), &[], |cp| {
+      StreamResetCode::try_from(cp).ok().map(|c| format!("{c:?}"))
+    });
   }
 
   #[test]

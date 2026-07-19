@@ -203,7 +203,6 @@ mod tests {
   use crate::model::common::reason_phrase::ReasonPhrase;
   use crate::model::common::tuple::{Tuple, TupleField};
   use crate::model::common::varint::BufMutVarIntExt;
-  use crate::model::control::constant::RequestErrorCode;
   use crate::model::control::constant::{ControlMessageType, GroupOrder};
   use crate::model::control::publish_namespace::PublishNamespace;
   use crate::model::control::publish_namespace_cancel::PublishNamespaceCancel;
@@ -211,6 +210,7 @@ mod tests {
   use crate::model::control::setup::Setup;
   use crate::model::control::subscribe::Subscribe;
   use crate::model::control::subscribe_ok::SubscribeOk;
+  use crate::model::error::RequestErrorCode;
   use crate::model::parameter::authorization_token::AuthorizationToken;
   use crate::model::parameter::message_parameter::MessageParameter;
   use bytes::Bytes;

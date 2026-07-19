@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::constant::{ControlMessageType, RequestErrorCode};
+use super::constant::ControlMessageType;
 use super::control_message::ControlMessageTrait;
 use crate::model::common::reason_phrase::ReasonPhrase;
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
-use crate::model::error::ParseError;
+use crate::model::error::{ParseError, RequestErrorCode};
 use bytes::{BufMut, Bytes, BytesMut};
 
 #[derive(Debug, PartialEq, Clone)]

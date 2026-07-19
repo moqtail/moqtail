@@ -19,9 +19,9 @@ use crate::server::session_context::{PendingRequest, SessionContext};
 use crate::server::track::{Track, TrackStatus};
 use core::result::Result;
 use moqtail::model::common::location::Location;
-use moqtail::model::control::constant::RequestErrorCode;
 use moqtail::model::control::request_error::RequestError;
 use moqtail::model::control::subscribe::Subscribe;
+use moqtail::model::error::RequestErrorCode;
 use moqtail::model::error::TerminationCode;
 use moqtail::model::parameter::message_parameter::{
   MessageParameter, MessageParameterVecExt, apply_message_parameter_update,

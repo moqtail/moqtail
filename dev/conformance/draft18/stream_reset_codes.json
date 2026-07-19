@@ -14,70 +14,70 @@
       "value": "0x0",
       "spec": "Section 3.3.3",
       "notes": "An implementation specific error.",
-      "pending": { "rs": 238, "ts": 260 }
+      "pending": { "ts": 260 }
     },
     {
       "name": "CANCELLED",
       "value": "0x1",
       "spec": "Section 3.3.3",
       "notes": "The stream was cancelled by either endpoint. For subscriptions, PUBLISH_DONE may carry a more detailed status code.",
-      "pending": { "rs": 238, "ts": 260 }
+      "pending": { "ts": 260 }
     },
     {
       "name": "DELIVERY_TIMEOUT",
       "value": "0x2",
       "spec": "Section 3.3.3",
       "notes": "A delivery timeout (§8) was exceeded for this stream.",
-      "pending": { "rs": 238, "ts": 260 }
+      "pending": { "ts": 260 }
     },
     {
       "name": "SESSION_CLOSED",
       "value": "0x3",
       "spec": "Section 3.3.3",
       "notes": "The session is being closed.",
-      "pending": { "rs": 238, "ts": 260 }
+      "pending": { "ts": 260 }
     },
     {
       "name": "GOING_AWAY",
       "value": "0x4",
       "spec": "Section 3.3.3",
       "notes": "The endpoint is rejecting this request because it has sent or received a GOAWAY.",
-      "pending": { "rs": 238, "ts": 260 }
+      "pending": { "ts": 260 }
     },
     {
       "name": "TOO_FAR_BEHIND",
       "value": "0x5",
       "spec": "Section 3.3.3",
       "notes": "The corresponding subscription has exceeded the publisher's resource limits and is being terminated (§8).",
-      "pending": { "rs": 238, "ts": 260 }
+      "pending": { "ts": 260 }
     },
     {
       "name": "UNKNOWN_OBJECT_STATUS",
       "value": "0x6",
       "spec": "Section 3.3.3",
       "notes": "In response to a FETCH, the publisher is unable to determine the status of the next Object in the requested range.",
-      "pending": { "rs": 238, "ts": 260 }
+      "pending": { "ts": 260 }
     },
     {
       "name": "EXPIRED_AUTH_TOKEN",
       "value": "0x7",
       "spec": "Section 3.3.3",
       "notes": "The authorization token for the request has expired.",
-      "pending": { "rs": 238, "ts": 260 }
+      "pending": { "ts": 260 }
     },
     {
       "name": "EXCESSIVE_LOAD",
       "value": "0x9",
       "spec": "Section 3.3.3",
       "notes": "The endpoint is overloaded and is resetting this stream.",
-      "pending": { "rs": 238, "ts": 260 }
+      "pending": { "ts": 260 }
     },
     {
       "name": "MALFORMED_TRACK",
       "value": "0x12",
       "spec": "Section 3.3.3",
       "notes": "A relay publisher detected that the track was malformed (§2.4.2).",
-      "pending": { "rs": 238, "ts": 260 }
+      "pending": { "ts": 260 }
     }
   ]
 }

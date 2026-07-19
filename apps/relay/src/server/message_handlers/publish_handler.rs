@@ -22,8 +22,8 @@ use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::control::{
   constant::{FilterType, GroupOrder, RequestErrorCode},
   control_message::ControlMessage,
-  publish_ok::PublishOk,
   request_error::RequestError,
+  request_ok::RequestOk,
 };
 use moqtail::model::error::TerminationCode;
 use moqtail::model::parameter::constant::MessageParameterType;
@@ -258,7 +258,8 @@ pub async fn handle(
         MessageParameterType::Forward,
         MessageParameter::new_forward(true),
       );
-      let publish_ok = Box::new(PublishOk::new(
+      // PUBLISH is answered by REQUEST_OK (PUBLISH_OK); no Track Properties.
+      let publish_ok = Box::new(RequestOk::new(
         request_id,
         vec![
           publish_forward_param,
@@ -274,7 +275,7 @@ pub async fn handle(
       );
 
       control_stream_handler
-        .send(&ControlMessage::PublishOk(publish_ok))
+        .send(&ControlMessage::RequestOk(publish_ok))
         .await
     }
 
@@ -300,8 +301,13 @@ pub async fn handle(
       Ok(())
     }
 
-    ControlMessage::PublishOk(m) => {
+    // PUBLISH_OK arrives as a REQUEST_OK (routed here by request type). Track
+    // Properties are only valid in TRACK_STATUS_OK, so they must be empty here.
+    ControlMessage::RequestOk(m) => {
       info!("Received PublishOk for request_id: {}", m.request_id);
+      if m.validate_track_properties(false).is_err() {
+        return Err(TerminationCode::ProtocolViolation);
+      }
 
       let pending_request = {
         let map = context.relay_pending_requests.read().await;

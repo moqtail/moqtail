@@ -21,10 +21,10 @@ use super::{
   goaway::GoAway, namespace::Namespace, namespace_done::NamespaceDone, publish::Publish,
   publish_done::PublishDone, publish_namespace::PublishNamespace,
   publish_namespace_cancel::PublishNamespaceCancel, publish_namespace_done::PublishNamespaceDone,
-  publish_ok::PublishOk, request_error::RequestError, request_ok::RequestOk,
-  request_update::RequestUpdate, setup::Setup, subscribe::Subscribe,
-  subscribe_namespace::SubscribeNamespace, subscribe_ok::SubscribeOk, switch::Switch,
-  track_status::TrackStatus, unsubscribe::Unsubscribe, unsubscribe_namespace::UnsubscribeNamespace,
+  request_error::RequestError, request_ok::RequestOk, request_update::RequestUpdate, setup::Setup,
+  subscribe::Subscribe, subscribe_namespace::SubscribeNamespace, subscribe_ok::SubscribeOk,
+  switch::Switch, track_status::TrackStatus, unsubscribe::Unsubscribe,
+  unsubscribe_namespace::UnsubscribeNamespace,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -35,7 +35,6 @@ pub enum ControlMessage {
   PublishNamespaceCancel(Box<PublishNamespaceCancel>),
   RequestOk(Box<RequestOk>),
   Publish(Box<Publish>),
-  PublishOk(Box<PublishOk>),
   PublishDone(Box<PublishDone>),
   Fetch(Box<Fetch>),
   FetchCancel(Box<FetchCancel>),
@@ -111,8 +110,10 @@ impl ControlMessage {
       ControlMessageType::Publish => {
         Publish::parse_payload(&mut payload).map(ControlMessage::Publish)
       }
+      // PUBLISH_OK (0x1E) is a REQUEST_OK alias with no body of its own: PUBLISH is
+      // answered by REQUEST_OK. Parse its body as REQUEST_OK.
       ControlMessageType::PublishOk => {
-        PublishOk::parse_payload(&mut payload).map(ControlMessage::PublishOk)
+        RequestOk::parse_payload(&mut payload).map(ControlMessage::RequestOk)
       }
       ControlMessageType::PublishDone => {
         PublishDone::parse_payload(&mut payload).map(ControlMessage::PublishDone)
@@ -185,7 +186,6 @@ impl ControlMessage {
       ControlMessage::RequestError(msg) => msg.serialize(),
       ControlMessage::RequestOk(msg) => msg.serialize(),
       ControlMessage::Publish(msg) => msg.serialize(),
-      ControlMessage::PublishOk(msg) => msg.serialize(),
       ControlMessage::PublishDone(msg) => msg.serialize(),
       ControlMessage::Fetch(msg) => msg.serialize(),
       ControlMessage::FetchCancel(msg) => msg.serialize(),
@@ -214,7 +214,6 @@ impl ControlMessage {
       ControlMessage::RequestError(_) => ControlMessageType::RequestError,
       ControlMessage::RequestOk(_) => ControlMessageType::RequestOk,
       ControlMessage::Publish(_) => ControlMessageType::Publish,
-      ControlMessage::PublishOk(_) => ControlMessageType::PublishOk,
       ControlMessage::PublishDone(_) => ControlMessageType::PublishDone,
       ControlMessage::Fetch(_) => ControlMessageType::Fetch,
       ControlMessage::FetchCancel(_) => ControlMessageType::FetchCancel,

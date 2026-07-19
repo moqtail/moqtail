@@ -25,7 +25,6 @@ pub mod publish_done;
 pub mod publish_namespace;
 pub mod publish_namespace_cancel;
 pub mod publish_namespace_done;
-pub mod publish_ok;
 pub mod request_error;
 pub mod request_ok;
 pub mod request_update;

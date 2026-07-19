@@ -103,6 +103,35 @@ pub struct PropertyTypes {
   #[serde(flatten)]
   pub registry: Registry,
   pub provisional: Registry,
+  pub ranges: PropertyRanges,
+}
+
+/// The registration-policy ranges for the Property Type space.
+#[derive(Debug, Deserialize)]
+pub struct PropertyRanges {
+  pub entries: Vec<RangeEntry>,
+}
+
+/// One registration-policy range. Bounds are 0x-prefixed hex strings on the wire
+/// (like every codepoint in these fixtures); use the accessors to get numbers.
+/// `to` is absent for the open-ended top range.
+#[derive(Debug, Deserialize)]
+pub struct RangeEntry {
+  pub from: String,
+  pub to: Option<String>,
+  pub policy: String,
+}
+
+impl RangeEntry {
+  /// Inclusive lower bound as a number.
+  pub fn from_codepoint(&self) -> u64 {
+    parse_hex(&self.from)
+  }
+
+  /// Inclusive upper bound as a number, or `None` for an open-ended range.
+  pub fn to_codepoint(&self) -> Option<u64> {
+    self.to.as_deref().map(parse_hex)
+  }
 }
 
 pub fn message_types() -> Registry {
@@ -397,6 +426,42 @@ mod enum_conformance {
         .ok()
         .map(|p| format!("{p:?}"))
     });
+  }
+
+  /// This crate's Property-range constants must match the fixture's ranges,
+  /// in order, including the open-ended First Come First Served range.
+  #[test]
+  fn property_ranges_match_fixture() {
+    use crate::model::property::constant::property_ranges as r;
+
+    let expected: Vec<(u64, Option<u64>)> = vec![
+      (
+        *r::STANDARDS_ACTION.start(),
+        Some(*r::STANDARDS_ACTION.end()),
+      ),
+      (
+        *r::APP_SPECIFIC_1BYTE.start(),
+        Some(*r::APP_SPECIFIC_1BYTE.end()),
+      ),
+      (*r::SPEC_REQUIRED.start(), Some(*r::SPEC_REQUIRED.end())),
+      (
+        *r::APP_SPECIFIC_2BYTE.start(),
+        Some(*r::APP_SPECIFIC_2BYTE.end()),
+      ),
+      (*r::MANDATORY_TRACK.start(), Some(*r::MANDATORY_TRACK.end())),
+      (r::FCFS_START, None),
+    ];
+
+    let fixture = property_types().ranges.entries;
+    assert_eq!(
+      fixture.len(),
+      expected.len(),
+      "range count differs from the fixture"
+    );
+    for (entry, (from, to)) in fixture.iter().zip(expected) {
+      assert_eq!(entry.from_codepoint(), from, "start for {:?}", entry.policy);
+      assert_eq!(entry.to_codepoint(), to, "end for {:?}", entry.policy);
+    }
   }
 
   /// The LOC properties are registered in the same number space as the draft's own

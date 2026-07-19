@@ -64,8 +64,9 @@ impl ControlMessageTrait for PublishNamespaceCancel {
   fn parse_payload(payload: &mut Bytes) -> Result<Box<Self>, ParseError> {
     let request_id = payload.get_vi()?;
 
+    // An unknown or GREASE error code is not fatal; treat it as InternalError.
     let error_code_raw = payload.get_vi()?;
-    let error_code = RequestErrorCode::try_from(error_code_raw)?;
+    let error_code = RequestErrorCode::from_wire(error_code_raw);
     let reason_phrase = ReasonPhrase::deserialize(payload)?;
 
     Ok(Box::new(PublishNamespaceCancel {

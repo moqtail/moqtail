@@ -73,8 +73,9 @@ impl ControlMessageTrait for RequestError {
   fn parse_payload(payload: &mut Bytes) -> Result<Box<Self>, ParseError> {
     let request_id = payload.get_vi()?;
 
+    // An unknown or GREASE error code is not fatal; treat it as InternalError.
     let error_code_raw = payload.get_vi()?;
-    let error_code = RequestErrorCode::try_from(error_code_raw)?;
+    let error_code = RequestErrorCode::from_wire(error_code_raw);
 
     let retry_interval = payload.get_vi()?;
 
@@ -96,7 +97,29 @@ impl ControlMessageTrait for RequestError {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::model::common::grease::grease_value;
+  use crate::model::common::varint::BufMutVarIntExt;
   use bytes::Buf;
+
+  /// A REQUEST_ERROR carrying a grease (unknown) error code must parse, not fail,
+  /// and is surfaced as InternalError.
+  #[test]
+  fn grease_error_code_parses_as_internal_error() {
+    let mut payload = BytesMut::new();
+    payload.put_vi(42).unwrap(); // request_id
+    payload.put_vi(grease_value(3).unwrap()).unwrap(); // grease error code
+    payload.put_vi(0).unwrap(); // retry_interval
+    payload.extend_from_slice(
+      &ReasonPhrase::try_new("grease".to_string())
+        .unwrap()
+        .serialize()
+        .unwrap(),
+    );
+    let mut buf = payload.freeze();
+    let parsed = RequestError::parse_payload(&mut buf).unwrap();
+    assert_eq!(parsed.error_code, RequestErrorCode::InternalError);
+    assert!(!buf.has_remaining());
+  }
 
   #[test]
   fn test_roundtrip() {

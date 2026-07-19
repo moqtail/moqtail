@@ -94,6 +94,30 @@ impl From<TrackPropertyType> for u64 {
   }
 }
 
+/// Registration-policy ranges for the Property Type space.
+pub mod property_ranges {
+  use std::ops::RangeInclusive;
+
+  /// Standards Action or IESG Approval (1-byte encoding).
+  pub const STANDARDS_ACTION: RangeInclusive<u64> = 0x00..=0x77;
+  /// Application-specific use, no registration permitted (1-byte encoding).
+  pub const APP_SPECIFIC_1BYTE: RangeInclusive<u64> = 0x78..=0x7f;
+  /// Specification Required (2-byte encoding).
+  pub const SPEC_REQUIRED: RangeInclusive<u64> = 0x80..=0x37ff;
+  /// Application-specific use, no registration permitted (2-byte encoding).
+  pub const APP_SPECIFIC_2BYTE: RangeInclusive<u64> = 0x3800..=0x3fff;
+  /// Mandatory Track Properties; Track scope only.
+  pub const MANDATORY_TRACK: RangeInclusive<u64> = 0x4000..=0x7fff;
+  /// First Come First Served begins here (open-ended).
+  pub const FCFS_START: u64 = 0x8000;
+
+  /// True if a Property Type is reserved for application-specific use (either
+  /// encoding-width range), for which no IANA registration is permitted.
+  pub fn is_application_specific(type_value: u64) -> bool {
+    APP_SPECIFIC_1BYTE.contains(&type_value) || APP_SPECIFIC_2BYTE.contains(&type_value)
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;

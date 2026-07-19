@@ -71,8 +71,9 @@ impl ControlMessageTrait for PublishDone {
 
   fn parse_payload(payload: &mut Bytes) -> Result<Box<Self>, ParseError> {
     let request_id = payload.get_vi()?;
+    // An unknown or GREASE status code is not fatal; treat it as InternalError.
     let status_code_raw = payload.get_vi()?;
-    let status_code = PublishDoneStatusCode::try_from(status_code_raw)?;
+    let status_code = PublishDoneStatusCode::from_wire(status_code_raw);
     let stream_count = payload.get_vi()?;
     let reason_phrase = ReasonPhrase::deserialize(payload)?;
 

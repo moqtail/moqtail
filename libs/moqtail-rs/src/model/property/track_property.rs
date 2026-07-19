@@ -59,8 +59,9 @@ pub enum TrackProperty {
   },
 }
 
-/// §2.5.1 Mandatory Track Properties range.
-pub const MANDATORY_TRACK_PROPERTY_RANGE: std::ops::RangeInclusive<u64> = 0x4000..=0x7FFF;
+/// Mandatory Track Properties range.
+pub const MANDATORY_TRACK_PROPERTY_RANGE: std::ops::RangeInclusive<u64> =
+  super::constant::property_ranges::MANDATORY_TRACK;
 
 /// True if any property is an unrecognized Mandatory Track Property (§2.5.1).
 pub fn has_unsupported_mandatory(properties: &[TrackProperty]) -> bool {
@@ -433,6 +434,18 @@ mod tests {
         TrackProperty::Unknown { kvp }
       );
     }
+  }
+
+  #[test]
+  fn test_grease_property_is_forwarded_as_unknown() {
+    use crate::model::common::grease::grease_value;
+    // grease_value(1) = 0x11C is even (VarInt); it is unknown and outside the
+    // mandatory range, so it is preserved as an ordinary Unknown property.
+    let kvp = KeyValuePair::try_new_varint(grease_value(1).unwrap(), 7).unwrap();
+    assert_eq!(
+      TrackProperty::deserialize(kvp.clone()).unwrap(),
+      TrackProperty::Unknown { kvp }
+    );
   }
 
   #[test]

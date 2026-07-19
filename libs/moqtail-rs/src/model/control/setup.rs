@@ -145,6 +145,33 @@ mod tests {
   }
 
   #[test]
+  fn test_grease_setup_option_is_preserved_and_ignored() {
+    use crate::model::common::grease::grease_value;
+    // grease_value(0) = 0x9D is odd (Bytes KVP).
+    let grease =
+      KeyValuePair::try_new_bytes(grease_value(0).unwrap(), Bytes::from_static(b"anything"))
+        .unwrap();
+    let setup = Setup {
+      setup_options: vec![KeyValuePair::try_new_varint(0, 10).unwrap(), grease],
+    };
+
+    // The grease option survives a round-trip untouched.
+    let mut buf = setup.serialize().unwrap();
+    let _ = buf.get_vi().unwrap();
+    let _ = buf.get_u16();
+    let deserialized = Setup::parse_payload(&mut buf).unwrap();
+    assert_eq!(*deserialized, setup);
+
+    // And it is ignored by validation, even from a server over WebTransport,
+    // where a real AUTHORITY/PATH option would be rejected.
+    assert!(
+      deserialized
+        .validate_incoming(SetupSender::Server, TransportKind::WebTransport)
+        .is_ok()
+    );
+  }
+
+  #[test]
   fn test_roundtrip_no_options() {
     let setup = Setup {
       setup_options: vec![],

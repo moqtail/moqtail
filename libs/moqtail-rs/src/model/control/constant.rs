@@ -247,6 +247,15 @@ impl TryFrom<u64> for RequestErrorCode {
   }
 }
 
+impl RequestErrorCode {
+  /// Maps a received error code to a known variant, treating any unknown value
+  /// (including GREASE) as `InternalError`. An unknown error code is never fatal
+  /// and never closes the session.
+  pub fn from_wire(value: u64) -> Self {
+    Self::try_from(value).unwrap_or(Self::InternalError)
+  }
+}
+
 impl From<RequestErrorCode> for u64 {
   fn from(value: RequestErrorCode) -> Self {
     value as u64
@@ -360,8 +369,47 @@ impl TryFrom<u64> for PublishDoneStatusCode {
   }
 }
 
+impl PublishDoneStatusCode {
+  /// Maps a received status code to a known variant, treating any unknown value
+  /// (including GREASE) as `InternalError`. An unknown code is never fatal.
+  pub fn from_wire(value: u64) -> Self {
+    Self::try_from(value).unwrap_or(Self::InternalError)
+  }
+}
+
 impl From<PublishDoneStatusCode> for u64 {
   fn from(value: PublishDoneStatusCode) -> Self {
     value as u64
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::model::common::grease::grease_value;
+
+  #[test]
+  fn from_wire_maps_unknown_and_grease_to_internal_error() {
+    // Known codes are preserved.
+    assert_eq!(
+      RequestErrorCode::from_wire(0x1),
+      RequestErrorCode::Unauthorized
+    );
+    assert_eq!(
+      PublishDoneStatusCode::from_wire(0x2),
+      PublishDoneStatusCode::TrackEnded
+    );
+
+    // Unknown and grease codes fall back to InternalError instead of failing.
+    for raw in [0x7Eu64, grease_value(0).unwrap(), grease_value(5).unwrap()] {
+      assert_eq!(
+        RequestErrorCode::from_wire(raw),
+        RequestErrorCode::InternalError
+      );
+      assert_eq!(
+        PublishDoneStatusCode::from_wire(raw),
+        PublishDoneStatusCode::InternalError
+      );
+    }
   }
 }

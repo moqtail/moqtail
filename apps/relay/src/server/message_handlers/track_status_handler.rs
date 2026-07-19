@@ -27,7 +27,7 @@ use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 pub async fn handle(
-  control_stream_handler: &mut ControlStreamHandler,
+  stream_handler: &mut ControlStreamHandler,
   msg: ControlMessage,
   context: Arc<SessionContext>,
 ) -> Result<(), TerminationCode> {
@@ -50,7 +50,7 @@ pub async fn handle(
         )];
 
         let ok_msg = RequestOk::new(request_id, params);
-        control_stream_handler
+        stream_handler
           .send(&ControlMessage::RequestOk(Box::new(ok_msg)))
           .await
           .unwrap();
@@ -81,7 +81,7 @@ pub async fn handle(
           0, //TODO: Maybe decide on another retry interval?
           ReasonPhrase::try_new("No publisher found".to_string()).unwrap(),
         );
-        control_stream_handler.send_impl(&err).await.unwrap();
+        stream_handler.send_impl(&err).await.unwrap();
         return Ok(());
       };
 
@@ -223,12 +223,36 @@ pub async fn handle(
 
     ControlMessage::RequestUpdate(m) => {
       warn!(
-        "Protocol Violation: Client attempted to update TrackStatus request ID {}",
+        "REQUEST_UPDATE is not valid for a TRACK_STATUS request (id {})",
         m.existing_request_id
       );
-      Err(TerminationCode::ProtocolViolation)
+      let err = track_status_update_error(m.request_id);
+      stream_handler
+        .send(&ControlMessage::RequestError(Box::new(err)))
+        .await
     }
 
     _ => Ok(()),
+  }
+}
+
+fn track_status_update_error(request_id: u64) -> RequestError {
+  RequestError::new(
+    request_id,
+    RequestErrorCode::NotSupported,
+    0,
+    ReasonPhrase::try_new("TRACK_STATUS does not support REQUEST_UPDATE".to_string()).unwrap(),
+  )
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn request_update_on_track_status_is_not_supported() {
+    let err = track_status_update_error(42);
+    assert_eq!(err.request_id, 42);
+    assert_eq!(err.error_code, RequestErrorCode::NotSupported);
   }
 }

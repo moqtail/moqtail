@@ -55,6 +55,14 @@ impl ControlStreamHandler {
     Ok(())
   }
 
+  /// Resets this request stream with an application error code (QUIC
+  /// RESET_STREAM). Used to abort a request, e.g. a failed REQUEST_UPDATE.
+  pub fn reset(&mut self, code: u64) {
+    if let Err(e) = self.send.reset(code) {
+      warn!("Error resetting request stream: {:?}", e);
+    }
+  }
+
   // TODO: refactor here, implement Serializable trait for ControlMessage
   pub async fn send_impl(
     &mut self,

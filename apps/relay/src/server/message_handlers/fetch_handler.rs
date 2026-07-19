@@ -24,6 +24,7 @@ use moqtail::model::control::fetch_ok::FetchOk;
 use moqtail::model::control::request_error::RequestError;
 use moqtail::model::data::fetch_header::FetchHeader;
 use moqtail::model::error::RequestErrorCode;
+use moqtail::model::error::StreamResetCode;
 use moqtail::model::error::TerminationCode;
 use moqtail::model::{common::reason_phrase::ReasonPhrase, control::constant::FetchType};
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
@@ -34,9 +35,18 @@ use tracing::{debug, error, info, warn};
 
 const UPSTREAM_FETCH_CHANNEL_CAPACITY: usize = 64;
 
+/// Why a fetch's object stream is torn down early. A normal cancel closes the
+/// stream with a FIN; a failed REQUEST_UPDATE resets it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FetchStop {
+  Running,
+  Cancelled,
+  UpdateFailed,
+}
+
 pub async fn handle(
   client: Arc<MOQTClient>,
-  control_stream_handler: &mut ControlStreamHandler,
+  stream_handler: &mut ControlStreamHandler,
   msg: ControlMessage,
   context: Arc<SessionContext>,
 ) -> Result<(), TerminationCode> {
@@ -192,13 +202,13 @@ pub async fn handle(
           vec![],
           vec![],
         );
-        control_stream_handler
+        stream_handler
           .send(&ControlMessage::FetchOk(Box::new(fetch_ok)))
           .await?;
       }
 
       // Register a cancel channel for this fetch request
-      let (cancel_tx, mut cancel_rx) = watch::channel(false);
+      let (cancel_tx, mut cancel_rx) = watch::channel(FetchStop::Running);
       {
         let mut senders = client.fetch_cancel_senders.write().await;
         senders.insert(request_id, cancel_tx);
@@ -234,19 +244,20 @@ pub async fn handle(
         let mut object_count = 0;
         let mut upstream_gap_count: u64 = 0;
         let mut send_stream = None;
-        let mut cancelled = false;
+        let mut stop_reason = FetchStop::Running;
         let mut fetch_prev_ctx: Option<moqtail::model::data::fetch_object::FetchObjectContext> =
           None;
         let group_order = fetch.group_order();
         let mut group_id = start_location.group;
 
         while group_id <= end_location.group {
-          if *cancel_rx.borrow() {
+          let reason = *cancel_rx.borrow();
+          if reason != FetchStop::Running {
             info!(
-              "handle_fetch_messages | Fetch cancelled for request_id: {}",
-              request_id
+              "handle_fetch_messages | Fetch stopped ({:?}) for request_id: {}",
+              reason, request_id
             );
-            cancelled = true;
+            stop_reason = reason;
             break;
           }
 
@@ -452,11 +463,12 @@ pub async fn handle(
                     }
                   }
                   _ = cancel_rx.changed() => {
+                    let reason = *cancel_rx.borrow();
                     info!(
-                      "handle_fetch_messages | Fetch cancelled during upstream fetch for request_id: {}",
-                      request_id
+                      "handle_fetch_messages | Fetch stopped ({:?}) during upstream fetch for request_id: {}",
+                      reason, request_id
                     );
-                    cancelled = true;
+                    stop_reason = reason;
                     break;
                   }
                 }
@@ -484,20 +496,25 @@ pub async fn handle(
           }
         }
 
-        if cancelled {
-          // Close the stream promptly as per the spec
+        if stop_reason != FetchStop::Running {
           if let Some(the_stream) = send_stream {
-            if let Err(e) = the_stream.lock().await.finish().await {
+            let mut stream = the_stream.lock().await;
+            let result = match stop_reason {
+              FetchStop::UpdateFailed => stream.reset(StreamResetCode::Cancelled.to_u64()),
+              _ => stream.finish().await,
+            };
+            if let Err(e) = result {
               error!(
-                "handle_fetch_messages | Error closing stream on cancel: {:?}",
-                e
+                "handle_fetch_messages | Error closing stream on stop ({:?}): {:?}",
+                stop_reason, e
               );
             } else {
               info!(
-                "handle_fetch_messages | closed fetch stream on cancel: {:?}",
-                &stream_id
+                "handle_fetch_messages | closed fetch stream on stop ({:?}): {:?}",
+                stop_reason, &stream_id
               );
             }
+            drop(stream);
             client.remove_stream_by_stream_id(&stream_id).await;
           }
         } else if object_count == 0 {
@@ -585,7 +602,7 @@ pub async fn handle(
       }
 
       if let Some(tx) = cancel_tx {
-        let _ = tx.send(true);
+        let _ = tx.send(FetchStop::Cancelled);
         info!(
           "handle_fetch_messages | Sent cancel signal for request_id: {}",
           request_id
@@ -616,6 +633,21 @@ pub async fn handle(
         return Err(TerminationCode::InternalError);
       }
 
+      Ok(())
+    }
+    ControlMessage::RequestUpdate(m) => {
+      warn!(
+        "REQUEST_UPDATE for FETCH request {} cannot be applied; stopping delivery",
+        m.existing_request_id
+      );
+      let cancel_tx = client
+        .fetch_cancel_senders
+        .write()
+        .await
+        .remove(&m.existing_request_id);
+      if let Some(tx) = cancel_tx {
+        let _ = tx.send(FetchStop::UpdateFailed);
+      }
       Ok(())
     }
     _ => {

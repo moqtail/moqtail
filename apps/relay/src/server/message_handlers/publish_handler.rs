@@ -36,7 +36,7 @@ use tracing::{debug, info, warn};
 
 pub async fn handle(
   client: Arc<MOQTClient>,
-  control_stream_handler: &mut ControlStreamHandler,
+  stream_handler: &mut ControlStreamHandler,
   msg: ControlMessage,
   context: Arc<SessionContext>,
 ) -> Result<(), TerminationCode> {
@@ -57,7 +57,7 @@ pub async fn handle(
           0,
           reason_phrase,
         ));
-        return control_stream_handler
+        return stream_handler
           .send(&ControlMessage::RequestError(publish_error))
           .await;
       }
@@ -78,7 +78,7 @@ pub async fn handle(
           reason_phrase,
         ));
 
-        return control_stream_handler
+        return stream_handler
           .send(&ControlMessage::RequestError(publish_error))
           .await;
       }
@@ -274,7 +274,7 @@ pub async fn handle(
         m_clone.track_name, m_clone.track_alias
       );
 
-      control_stream_handler
+      stream_handler
         .send(&ControlMessage::RequestOk(publish_ok))
         .await
     }
@@ -466,7 +466,7 @@ pub async fn handle(
 
       use moqtail::model::control::request_ok::RequestOk;
       let ok_msg = RequestOk::new(update_req_id, vec![]);
-      control_stream_handler
+      stream_handler
         .send(&ControlMessage::RequestOk(Box::new(ok_msg)))
         .await?;
 

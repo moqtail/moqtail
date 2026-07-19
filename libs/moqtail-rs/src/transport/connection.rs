@@ -122,6 +122,9 @@ impl From<quinn::ClosedStream> for TransportWriteError {
 pub enum TransportReadError {
   #[error("not connected")]
   NotConnected,
+  /// The peer reset the stream with this application error code.
+  #[error("stream reset with code {0:#x}")]
+  Reset(u64),
   #[error("{0}")]
   Other(String),
 }
@@ -131,6 +134,7 @@ impl From<wtransport::error::StreamReadError> for TransportReadError {
     use wtransport::error::StreamReadError as E;
     match e {
       E::NotConnected => Self::NotConnected,
+      E::Reset(code) => Self::Reset(code.into_inner()),
       other => Self::Other(format!("{other:?}")),
     }
   }
@@ -141,6 +145,7 @@ impl From<quinn::ReadError> for TransportReadError {
     use quinn::ReadError as E;
     match e {
       E::ConnectionLost(_) | E::ClosedStream => Self::NotConnected,
+      E::Reset(code) => Self::Reset(code.into_inner()),
       other => Self::Other(format!("{other:?}")),
     }
   }
@@ -181,6 +186,25 @@ impl TransportSendStream {
       Self::WebTransport(s) => s.set_priority(priority),
       Self::Quic(s) => {
         let _ = s.set_priority(priority);
+      }
+    }
+  }
+
+  /// Abruptly terminates the send side of the stream with an application error
+  /// code (QUIC RESET_STREAM). The peer observes the code via `read` returning
+  /// [`TransportReadError::Reset`].
+  pub fn reset(&mut self, code: u64) -> Result<(), TransportWriteError> {
+    match self {
+      Self::WebTransport(s) => {
+        let vi = wtransport::VarInt::try_from_u64(code)
+          .map_err(|_| TransportWriteError::Other("reset code exceeds VarInt max".to_string()))?;
+        s.reset(vi)
+          .map_err(|_| TransportWriteError::ClosedOrStopped)
+      }
+      Self::Quic(s) => {
+        let vi = quinn::VarInt::from_u64(code)
+          .map_err(|_| TransportWriteError::Other("reset code exceeds VarInt max".to_string()))?;
+        s.reset(vi).map_err(Into::into)
       }
     }
   }
@@ -447,5 +471,57 @@ mod tests {
   async fn quic_backend_roundtrip() {
     let (client, server) = quic_pair().await.expect("quic_pair");
     roundtrip_bi(client, server).await;
+  }
+
+  /// Resetting a stream with a numeric code (as a delivery timeout would) and the
+  /// peer reading that exact code back. The round-trip of the code is the point.
+  async fn reset_roundtrip(client: TransportConnection, server: TransportConnection) {
+    use crate::model::error::StreamResetCode;
+    let code = StreamResetCode::DeliveryTimeout.to_u64();
+    assert_eq!(code, 0x2);
+
+    // Establish the stream first (write + read some data), so the reset that
+    // follows isn't racing the stream open.
+    let (mut client_send, _client_recv) = client.open_bi().await.expect("client open_bi");
+    client_send.write_all(b"partial").await.expect("write_all");
+    client_send.flush().await.expect("flush");
+
+    let (_server_send, mut server_recv) = server.accept_bi().await.expect("server accept_bi");
+    let mut buf = [0u8; 64];
+    let n = server_recv
+      .read(&mut buf)
+      .await
+      .expect("read data")
+      .expect("stream open");
+    assert_eq!(&buf[..n], b"partial");
+
+    // Now reset with the numeric code; the peer must read it back.
+    client_send.reset(code).expect("reset");
+    loop {
+      match server_recv.read(&mut buf).await {
+        Ok(Some(_)) => continue,
+        Ok(None) => panic!("expected a stream reset, got a clean FIN"),
+        Err(TransportReadError::Reset(read_code)) => {
+          assert_eq!(
+            read_code, code,
+            "peer must read back the numeric reset code"
+          );
+          break;
+        }
+        Err(e) => panic!("unexpected read error: {e:?}"),
+      }
+    }
+  }
+
+  #[tokio::test]
+  async fn quic_reset_code_round_trips() {
+    let (client, server) = quic_pair().await.expect("quic_pair");
+    reset_roundtrip(client, server).await;
+  }
+
+  #[tokio::test]
+  async fn webtransport_reset_code_round_trips() {
+    let (client, server) = webtransport_pair().await.expect("webtransport_pair");
+    reset_roundtrip(client, server).await;
   }
 }

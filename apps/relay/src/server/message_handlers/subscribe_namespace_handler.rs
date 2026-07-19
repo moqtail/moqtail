@@ -16,18 +16,39 @@ use crate::server::session_context::{PendingRequest, SessionContext};
 use crate::server::{client::MOQTClient, session::Session};
 use core::result::Result;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
-use moqtail::model::control::constant::RequestErrorCode;
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::namespace::Namespace;
 use moqtail::model::control::request_error::RequestError;
 use moqtail::model::control::request_ok::RequestOk;
 use moqtail::model::control::subscribe_namespace::SubscribeNamespace;
+use moqtail::model::error::RequestErrorCode;
 use moqtail::model::error::TerminationCode;
 use moqtail::model::parameter::message_parameter::apply_message_parameter_update;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{info, warn};
+
+/// The relay will not enumerate a namespace prefix broader than this many fields.
+const MAX_NAMESPACE_PREFIX_FIELDS: usize = 32;
+
+/// A NAMESPACE_TOO_LARGE error if the prefix exceeds what the relay will
+/// enumerate, otherwise `None`.
+fn oversized_namespace_error(
+  request_id: u64,
+  prefix: &moqtail::model::common::tuple::Tuple,
+) -> Option<RequestError> {
+  if prefix.fields.len() > MAX_NAMESPACE_PREFIX_FIELDS {
+    Some(RequestError::new(
+      request_id,
+      RequestErrorCode::NamespaceTooLarge,
+      0,
+      ReasonPhrase::try_new("Namespace prefix is too large".to_string()).unwrap(),
+    ))
+  } else {
+    None
+  }
+}
 
 /// Handle an incoming SUBSCRIBE_NAMESPACE on a dedicated bi-stream.
 /// Called from `dispatch_request_stream_message()` in session.rs.
@@ -43,13 +64,18 @@ pub async fn handle_subscribe_namespace(
     sub_ns.track_namespace_prefix
   );
 
-  // Validate prefix field count (> 32 → PROTOCOL_VIOLATION)
-  if sub_ns.track_namespace_prefix.fields.len() > 32 {
+  // An over-large namespace prefix is rejected with NAMESPACE_TOO_LARGE on the
+  // request stream (not a session teardown).
+  if let Some(err) = oversized_namespace_error(sub_ns.request_id, &sub_ns.track_namespace_prefix) {
     warn!(
-      "SUBSCRIBE_NAMESPACE prefix has {} fields, maximum is 32",
-      sub_ns.track_namespace_prefix.fields.len()
+      "SUBSCRIBE_NAMESPACE prefix has {} fields, maximum is {}",
+      sub_ns.track_namespace_prefix.fields.len(),
+      MAX_NAMESPACE_PREFIX_FIELDS
     );
-    return Err(TerminationCode::ProtocolViolation);
+    stream_handler
+      .send(&ControlMessage::RequestError(Box::new(err)))
+      .await?;
+    return Ok(());
   }
 
   // Check for prefix overlap per draft spec (PREFIX_OVERLAP)
@@ -266,4 +292,34 @@ pub async fn handle(
   }
 
   Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use moqtail::model::common::tuple::{Tuple, TupleField};
+
+  #[test]
+  fn oversized_namespace_prefix_yields_namespace_too_large() {
+    let big = Tuple {
+      fields: (0..=MAX_NAMESPACE_PREFIX_FIELDS)
+        .map(|i| TupleField::from_utf8(&i.to_string()))
+        .collect(),
+    };
+    let err = oversized_namespace_error(7, &big).expect("over-long prefix must be rejected");
+    assert_eq!(err.request_id, 7);
+    assert_eq!(err.error_code, RequestErrorCode::NamespaceTooLarge);
+    assert_eq!(u64::from(err.error_code), 0x31);
+  }
+
+  #[test]
+  fn normal_namespace_prefix_is_accepted() {
+    let small = Tuple {
+      fields: vec![
+        TupleField::from_utf8("moqtail"),
+        TupleField::from_utf8("demo"),
+      ],
+    };
+    assert!(oversized_namespace_error(1, &small).is_none());
+  }
 }

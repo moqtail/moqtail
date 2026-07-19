@@ -14,12 +14,12 @@
 
 use bytes::{BufMut, Bytes, BytesMut};
 
-use super::constant::RequestErrorCode;
 use super::control_message::ControlMessageTrait;
 use crate::model::common::reason_phrase::ReasonPhrase;
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
 use crate::model::control::constant::ControlMessageType;
 use crate::model::error::ParseError;
+use crate::model::error::RequestErrorCode;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PublishNamespaceCancel {

@@ -15,12 +15,11 @@
 use crate::server::session::Session;
 use crate::server::session_context::{PendingRequest, SessionContext};
 use core::result::Result;
-use moqtail::model::error::TerminationCode;
+use moqtail::model::error::{RequestErrorCode, TerminationCode};
 use moqtail::model::{
-  common::reason_phrase::ReasonPhrase, control::constant::RequestErrorCode,
-  control::control_message::ControlMessage, control::request_error::RequestError,
-  control::request_ok::RequestOk, control::subscribe::Subscribe,
-  parameter::message_parameter::MessageParameter,
+  common::reason_phrase::ReasonPhrase, control::control_message::ControlMessage,
+  control::request_error::RequestError, control::request_ok::RequestOk,
+  control::subscribe::Subscribe, parameter::message_parameter::MessageParameter,
 };
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use moqtail::transport::data_stream_handler::SubscribeRequest;

@@ -20,12 +20,12 @@ use crate::server::track::{Track, TrackStatus};
 use core::result::Result;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::control::{
-  constant::{FilterType, GroupOrder, RequestErrorCode},
+  constant::{FilterType, GroupOrder},
   control_message::ControlMessage,
   request_error::RequestError,
   request_ok::RequestOk,
 };
-use moqtail::model::error::TerminationCode;
+use moqtail::model::error::{RequestErrorCode, TerminationCode};
 use moqtail::model::parameter::constant::MessageParameterType;
 use moqtail::model::parameter::message_parameter::apply_message_parameter_update;
 use moqtail::model::parameter::message_parameter::{MessageParameter, MessageParameterVecExt};

@@ -36,7 +36,7 @@ const UPSTREAM_FETCH_CHANNEL_CAPACITY: usize = 64;
 
 pub async fn handle(
   client: Arc<MOQTClient>,
-  _control_stream_handler: &mut ControlStreamHandler,
+  control_stream_handler: &mut ControlStreamHandler,
   msg: ControlMessage,
   context: Arc<SessionContext>,
 ) -> Result<(), TerminationCode> {
@@ -197,7 +197,7 @@ pub async fn handle(
         }
       }
 
-      // Send FetchOk immediately on the control stream before delivering objects.
+      // Send FetchOk on the request stream before delivering objects.
       {
         let fetch_ok = FetchOk::new(
           request_id,
@@ -206,9 +206,9 @@ pub async fn handle(
           vec![],
           vec![],
         );
-        client
-          .queue_message(ControlMessage::FetchOk(Box::new(fetch_ok)))
-          .await;
+        control_stream_handler
+          .send(&ControlMessage::FetchOk(Box::new(fetch_ok)))
+          .await?;
       }
 
       // Register a cancel channel for this fetch request

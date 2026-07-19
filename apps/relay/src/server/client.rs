@@ -43,7 +43,7 @@ use std::{
   time::Duration,
 };
 use tokio::sync::Notify;
-use tokio::sync::{Mutex, RwLock, watch};
+use tokio::sync::{Mutex, RwLock, mpsc, watch};
 use tokio::time::Instant;
 use tracing::{debug, error, info, warn};
 
@@ -95,6 +95,11 @@ pub type SendStreamMap = HashMap<String, Arc<Mutex<TransportSendStream>>>;
 pub type SendStreamLock = Arc<RwLock<SendStreamMap>>;
 pub type SendStreamList = Vec<SendStreamLock>;
 
+// Per-request response channels, sharded like the send-stream map so a
+// register/lookup only locks one partition.
+pub type ResponseSenderMap = HashMap<u64, mpsc::UnboundedSender<ControlMessage>>;
+pub type ResponseSenderList = Vec<Arc<RwLock<ResponseSenderMap>>>;
+
 #[derive(Debug, Clone)]
 pub(crate) struct MOQTClient {
   pub connection_id: usize,
@@ -110,6 +115,12 @@ pub(crate) struct MOQTClient {
   pub message_queue: Arc<RwLock<VecDeque<ControlMessage>>>, // the control messages the client has sent
   pub message_notify: Arc<Notify>, // notify when a new message is available
   pub send_streams: Arc<SendStreamList>,
+
+  // Per-request response channels, keyed by the request's (downstream) request id
+  // and sharded across partitions. A request stream registers its sender here so
+  // responses/follow-ups produced elsewhere (e.g. a deferred SUBSCRIBE_OK fan-out)
+  // are delivered onto that stream instead of the control stream.
+  pub response_senders: Arc<ResponseSenderList>,
 
   // fetch requests that this client sent to the relay
   pub incoming_fetch_requests: Arc<RwLock<BTreeMap<u64, FetchRequest>>>,
@@ -165,6 +176,11 @@ impl MOQTClient {
       message_queue: Arc::new(RwLock::new(VecDeque::new())),
       message_notify: Arc::new(Notify::default()),
       send_streams: Arc::new(send_streams),
+      response_senders: Arc::new(
+        (0..SEND_STREAM_PARTITION_COUNT)
+          .map(|_| Arc::new(RwLock::new(HashMap::new())))
+          .collect(),
+      ),
       incoming_fetch_requests: Arc::new(RwLock::new(BTreeMap::new())),
       outgoing_fetch_requests: Arc::new(RwLock::new(BTreeMap::new())),
       subscribe_requests: Arc::new(RwLock::new(BTreeMap::new())),
@@ -217,6 +233,42 @@ impl MOQTClient {
     let mut message_queue = self.message_queue.write().await;
     message_queue.push_back(control_message);
     self.message_notify.notify_one();
+  }
+
+  /// The response-sender shard for a request id (sequential ids spread evenly).
+  fn response_partition(&self, request_id: u64) -> usize {
+    (request_id % self.response_senders.len() as u64) as usize
+  }
+
+  /// Register a request stream's response channel under its request id.
+  pub(crate) async fn register_response_sender(
+    &self,
+    request_id: u64,
+    tx: mpsc::UnboundedSender<ControlMessage>,
+  ) {
+    let idx = self.response_partition(request_id);
+    self.response_senders[idx]
+      .write()
+      .await
+      .insert(request_id, tx);
+  }
+
+  /// Remove a request stream's response channel (on stream close).
+  pub(crate) async fn unregister_response_sender(&self, request_id: u64) {
+    let idx = self.response_partition(request_id);
+    self.response_senders[idx].write().await.remove(&request_id);
+  }
+
+  /// Deliver a message onto the request stream registered for `request_id`.
+  /// Returns true if a request stream was registered and accepted it; false
+  /// otherwise (the caller may fall back to the control-stream queue).
+  pub(crate) async fn send_response(&self, request_id: u64, message: ControlMessage) -> bool {
+    let idx = self.response_partition(request_id);
+    let senders = self.response_senders[idx].read().await;
+    match senders.get(&request_id) {
+      Some(tx) => tx.send(message).is_ok(),
+      None => false,
+    }
   }
 
   /// Calculate the partition index for stream distribution across buckets.

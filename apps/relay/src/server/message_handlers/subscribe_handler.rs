@@ -56,6 +56,60 @@ async fn add_subscription(
   }
 }
 
+/// Forward a SUBSCRIBE to the upstream publisher on its own bidirectional request
+/// stream, then read the response (and follow-ups) on that stream and dispatch
+/// them so the result fans out to the downstream subscribers.
+async fn forward_subscribe_upstream(
+  publisher: Arc<MOQTClient>,
+  new_sub: Subscribe,
+  context: Arc<SessionContext>,
+) {
+  let (send, recv) = match publisher.connection.open_bi().await {
+    Ok(streams) => streams,
+    Err(e) => {
+      error!("Failed to open upstream subscribe stream: {:?}", e);
+      return;
+    }
+  };
+  let mut upstream = ControlStreamHandler::new(send, recv);
+  if let Err(e) = upstream
+    .send(&ControlMessage::Subscribe(Box::new(new_sub)))
+    .await
+  {
+    error!("Failed to send upstream SUBSCRIBE: {:?}", e);
+    return;
+  }
+
+  loop {
+    match upstream.next_message().await {
+      Ok(ControlMessage::SubscribeOk(m)) => {
+        if let Err(e) =
+          handle_subscribe_ok_message(publisher.clone(), &mut upstream, *m, context.clone()).await
+        {
+          error!("Error handling upstream SubscribeOk: {:?}", e);
+          return;
+        }
+      }
+      Ok(ControlMessage::RequestError(m)) => {
+        let _ =
+          handle_subscribe_error_message(publisher.clone(), &mut upstream, *m, context.clone())
+            .await;
+        return;
+      }
+      Ok(other) => {
+        warn!(
+          "Unexpected {:?} on upstream subscribe stream",
+          other.get_type()
+        );
+      }
+      Err(_) => {
+        debug!("Upstream subscribe stream closed");
+        return;
+      }
+    }
+  }
+}
+
 async fn handle_subscribe_message(
   client: Arc<MOQTClient>,
   control_stream_handler: &mut ControlStreamHandler,
@@ -177,11 +231,8 @@ async fn handle_subscribe_message(
     new_sub.request_id =
       Session::get_next_relay_request_id(context.relay_next_request_id.clone()).await;
 
-    publisher
-      .queue_message(ControlMessage::Subscribe(Box::new(new_sub.clone())))
-      .await;
-
-    // Store relay subscribe request mapping in the unified pending requests map
+    // Store the relay subscribe request mapping before forwarding, so the
+    // upstream response can be routed back to this subscription.
     // TODO: we need to add a timeout here or another loop to control expired requests
     let req = SubscribeRequest::new(
       original_request_id,
@@ -189,12 +240,23 @@ async fn handle_subscribe_message(
       sub.clone(),
       Some(new_sub.clone()),
     );
-    let mut requests = context.relay_pending_requests.write().await;
-    requests.insert(new_sub.request_id, PendingRequest::Subscribe(req.clone()));
+    {
+      let mut requests = context.relay_pending_requests.write().await;
+      requests.insert(new_sub.request_id, PendingRequest::Subscribe(req.clone()));
+    }
     info!(
       "inserted request into relay's pending requests: {:?} with relay's request id: {:?}",
       req, new_sub.request_id
     );
+
+    // Forward SUBSCRIBE upstream on its own bidirectional request stream and read
+    // the response there, per the request-stream model.
+    let publisher_fwd = publisher.clone();
+    let context_fwd = context.clone();
+    tokio::spawn(async move {
+      forward_subscribe_upstream(publisher_fwd, new_sub, context_fwd).await;
+    });
+
     // Do NOT send SubscribeOk yet -- wait for publisher confirmation
     Ok(())
   } else {
@@ -277,7 +339,8 @@ async fn handle_subscribe_message(
 }
 
 async fn handle_subscribe_ok_message(
-  _client: Arc<MOQTClient>,
+  // The publisher that sent this SUBSCRIBE_OK; its connection id keys the track alias.
+  publisher: Arc<MOQTClient>,
   _control_stream_handler: &mut ControlStreamHandler,
   msg: moqtail::model::control::subscribe_ok::SubscribeOk,
   context: Arc<SessionContext>,
@@ -322,7 +385,7 @@ async fn handle_subscribe_ok_message(
       0,
       reason,
     );
-    return handle_subscribe_error_message(_client, _control_stream_handler, err, context).await;
+    return handle_subscribe_error_message(publisher, _control_stream_handler, err, context).await;
   }
 
   let full_track_name = sub_request.original_subscribe_request.get_full_track_name();
@@ -344,7 +407,7 @@ async fn handle_subscribe_ok_message(
     let mut track = track_arc.write().await;
     track
       .confirm(
-        context.connection_id,
+        publisher.connection_id,
         msg.track_alias,
         msg.subscribe_parameters.clone(),
         msg.track_properties.clone(),
@@ -357,7 +420,7 @@ async fn handle_subscribe_ok_message(
   context
     .track_manager
     .add_track_alias(
-      context.connection_id,
+      publisher.connection_id,
       msg.track_alias,
       full_track_name.clone(),
     )
@@ -384,9 +447,18 @@ async fn handle_subscribe_ok_message(
         "sending SubscribeOk to creator subscriber: {:?}",
         subscriber.connection_id
       );
-      subscriber
-        .queue_message(ControlMessage::SubscribeOk(Box::new(subscribe_ok)))
+      let delivered = subscriber
+        .send_response(
+          sub_request.original_request_id,
+          ControlMessage::SubscribeOk(Box::new(subscribe_ok)),
+        )
         .await;
+      if !delivered {
+        warn!(
+          "no request stream for creator subscriber request {}",
+          sub_request.original_request_id
+        );
+      }
     } else {
       warn!(
         "creator subscriber not found: {:?}",
@@ -423,9 +495,18 @@ async fn handle_subscribe_ok_message(
           "sending SubscribeOk to pending subscriber: {:?}",
           subscriber.connection_id
         );
-        subscriber
-          .queue_message(ControlMessage::SubscribeOk(Box::new(subscribe_ok)))
+        let delivered = subscriber
+          .send_response(
+            subscriber_request_id,
+            ControlMessage::SubscribeOk(Box::new(subscribe_ok)),
+          )
           .await;
+        if !delivered {
+          warn!(
+            "no request stream for pending subscriber request {}",
+            subscriber_request_id
+          );
+        }
       }
     }
   }
@@ -649,7 +730,10 @@ async fn handle_subscribe_error_message(
         msg.reason_phrase.clone(),
       );
       subscriber
-        .queue_message(ControlMessage::RequestError(Box::new(subscribe_error)))
+        .send_response(
+          sub_request.original_request_id,
+          ControlMessage::RequestError(Box::new(subscribe_error)),
+        )
         .await;
     }
   }
@@ -675,7 +759,10 @@ async fn handle_subscribe_error_message(
           msg.reason_phrase.clone(),
         );
         subscriber
-          .queue_message(ControlMessage::RequestError(Box::new(subscribe_error)))
+          .send_response(
+            subscriber_request_id,
+            ControlMessage::RequestError(Box::new(subscribe_error)),
+          )
           .await;
       }
     }

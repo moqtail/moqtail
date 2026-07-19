@@ -291,7 +291,22 @@ impl Session {
         } // end of tokio::select!
       }
 
-      let message_type = &msg.get_type();
+      let message_type = msg.get_type();
+
+      // Request-opening types must arrive on their own bidi request streams; the
+      // control stream carries only session-level messages and responses.
+      if message_type.is_first() {
+        error!(
+          "Request type {:?} received on the control stream",
+          message_type
+        );
+        Self::close_session(
+          context.clone(),
+          TerminationCode::ProtocolViolation,
+          "Request type received on the control stream",
+        );
+        return Err(TerminationCode::ProtocolViolation);
+      }
 
       let handling_result = message_handlers::MessageHandler::handle(
         client.clone(),
@@ -439,6 +454,21 @@ impl Session {
       }
     };
 
+    // A request stream MUST begin with a First-marked type; anything else is a
+    // protocol violation and closes the session.
+    if !msg.get_type().is_first() {
+      warn!(
+        "Request bi-stream opened with non-First message {:?}",
+        msg.get_type()
+      );
+      Self::close_session(
+        context,
+        TerminationCode::ProtocolViolation,
+        "Request stream must begin with a First-marked message",
+      );
+      return;
+    }
+
     // Validate request_id
     let request_id_opt = match &msg {
       ControlMessage::SubscribeNamespace(m) => Some(m.request_id),
@@ -524,6 +554,84 @@ impl Session {
             }
           }
         }
+      }
+      // Request/response request types: the handler writes its immediate response
+      // on this bi-stream. A response channel registered under the request id lets
+      // deferred responses (e.g. a SUBSCRIBE_OK fan-out produced elsewhere) land on
+      // this stream too. The loop then also forwards follow-ups (UNSUBSCRIBE,
+      // REQUEST_UPDATE, FETCH_CANCEL) until the peer closes the stream.
+      first @ (ControlMessage::Subscribe(_)
+      | ControlMessage::Publish(_)
+      | ControlMessage::Fetch(_)
+      | ControlMessage::PublishNamespace(_)
+      | ControlMessage::TrackStatus(_)) => {
+        let request_id = match &first {
+          ControlMessage::Subscribe(m) => m.request_id,
+          ControlMessage::Publish(m) => m.request_id,
+          ControlMessage::Fetch(m) => m.request_id,
+          ControlMessage::PublishNamespace(m) => m.request_id,
+          ControlMessage::TrackStatus(m) => m.request_id,
+          _ => unreachable!("matched above"),
+        };
+
+        let (response_tx, mut response_rx) = tokio::sync::mpsc::unbounded_channel();
+        client
+          .register_response_sender(request_id, response_tx)
+          .await;
+
+        if let Err(e) = message_handlers::MessageHandler::handle(
+          client.clone(),
+          &mut stream_handler,
+          first,
+          context.clone(),
+        )
+        .await
+        {
+          client.unregister_response_sender(request_id).await;
+          Self::close_session(context, e, "Error handling request stream message");
+          return;
+        }
+
+        loop {
+          tokio::select! {
+            biased;
+            deferred = response_rx.recv() => {
+              match deferred {
+                Some(msg) => {
+                  if let Err(e) = stream_handler.send(&msg).await {
+                    warn!("Error writing response to request bi-stream: {:?}", e);
+                    break;
+                  }
+                }
+                None => break, // response channel closed
+              }
+            }
+            incoming = stream_handler.next_message() => {
+              match incoming {
+                Ok(follow_up) => {
+                  if let Err(e) = message_handlers::MessageHandler::handle(
+                    client.clone(),
+                    &mut stream_handler,
+                    follow_up,
+                    context.clone(),
+                  )
+                  .await
+                  {
+                    client.unregister_response_sender(request_id).await;
+                    Self::close_session(context, e, "Error handling request stream follow-up");
+                    return;
+                  }
+                }
+                Err(_) => {
+                  // FIN or RESET: the requester closed the stream.
+                  debug!("Request bi-stream closed by peer");
+                  break;
+                }
+              }
+            }
+          }
+        }
+        client.unregister_response_sender(request_id).await;
       }
       _ => {
         warn!(

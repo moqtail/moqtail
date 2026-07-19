@@ -41,6 +41,14 @@ pub enum DeliveryMode {
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum Transport {
+  /// WebTransport over HTTP/3 (derives an https:// URI from the moqt:// URL)
+  WebTransport,
+  /// Native QUIC (carries authority/path in Setup Options)
+  Quic,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum Command {
   /// Publish objects to a track
   Publish,
@@ -64,9 +72,13 @@ pub struct Cli {
   #[arg(long, short, value_enum)]
   pub command: Command,
 
-  /// Server address
-  #[arg(long, short, default_value = "https://127.0.0.1:4433")]
+  /// Server address (moqt:// URI, e.g. moqt://127.0.0.1:4433/path#type:value)
+  #[arg(long, short, default_value = "moqt://127.0.0.1:4433")]
   pub server: String,
+
+  /// Transport to establish the moqt:// session over
+  #[arg(long, value_enum, default_value = "web-transport")]
+  pub transport: Transport,
 
   /// Track namespace
   #[arg(long, short, default_value = "moqtail")]

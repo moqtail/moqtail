@@ -17,6 +17,7 @@ use tokio::time::{Duration, Instant, sleep_until};
 use tracing::{error, info, warn};
 
 use crate::model::control::control_message::{ControlMessage, ControlMessageTrait};
+use crate::model::control::setup::Setup;
 use crate::model::error::{ParseError, TerminationCode};
 use crate::transport::connection::{TransportReadError, TransportRecvStream, TransportSendStream};
 
@@ -67,6 +68,21 @@ impl ControlStreamHandler {
       return Err(TerminationCode::InternalError);
     }
     Ok(())
+  }
+
+  /// Reads the first message on a control stream, which must be SETUP. Any other
+  /// first message closes the session with PROTOCOL_VIOLATION.
+  pub async fn read_setup(&mut self) -> Result<Setup, TerminationCode> {
+    match self.next_message().await? {
+      ControlMessage::Setup(setup) => Ok(*setup),
+      other => {
+        warn!(
+          "Control stream did not begin with SETUP, got {:?}",
+          other.get_type()
+        );
+        Err(TerminationCode::ProtocolViolation)
+      }
+    }
   }
 
   pub async fn next_message(&mut self) -> Result<ControlMessage, TerminationCode> {
@@ -443,6 +459,58 @@ mod tests {
     assert_eq!(buf, [1, 2, 3, 4]);
 
     Ok(())
+  }
+
+  /// The control plane is a pair of uni streams, each beginning with SETUP.
+  /// Drive the full client<->server handshake and assert both sides read SETUP
+  /// as the first message.
+  #[tokio::test]
+  async fn test_setup_handshake_over_two_uni_streams() -> Result<(), Box<dyn Error>> {
+    let setup = TestSetup::new().await?;
+
+    // Client opens its control send stream and writes CLIENT_SETUP first.
+    let mut client_send = setup.client.open_uni().await?.await?;
+    let client_setup = create_test_client_setup();
+    client_send.write_all(&client_setup.serialize()?).await?;
+
+    // Server accepts the client's control stream and opens its own, SETUP first.
+    let server_recv = setup.server.accept_uni().await?;
+    let mut server_send = setup.server.open_uni().await?.await?;
+    let server_setup = create_test_server_setup();
+    server_send.write_all(&server_setup.serialize()?).await?;
+
+    let client_recv = setup.client.accept_uni().await?;
+
+    let mut server_plane = ControlStreamHandler::new(
+      TransportSendStream::WebTransport(server_send),
+      TransportRecvStream::WebTransport(server_recv),
+    );
+    let mut client_plane = ControlStreamHandler::new(
+      TransportSendStream::WebTransport(client_send),
+      TransportRecvStream::WebTransport(client_recv),
+    );
+
+    // Each direction's first message is SETUP.
+    assert_eq!(server_plane.read_setup().await.unwrap(), client_setup);
+    assert_eq!(client_plane.read_setup().await.unwrap(), server_setup);
+
+    Ok(())
+  }
+
+  /// A control stream whose first message is not SETUP is a PROTOCOL_VIOLATION.
+  #[tokio::test]
+  async fn test_first_message_not_setup_is_protocol_violation() -> Result<(), Box<dyn Error>> {
+    let setup = TestSetup::new().await?;
+    let (mut plane, mut server_send) = setup.create_control_plane().await?;
+
+    // Send a non-SETUP message as the first message on the control stream.
+    let announce = ControlMessage::PublishNamespace(Box::new(create_test_publish_namespace()));
+    server_send.write_all(&announce.serialize()?).await?;
+
+    match plane.read_setup().await {
+      Err(TerminationCode::ProtocolViolation) => Ok(()),
+      other => panic!("Expected ProtocolViolation, got {other:?}"),
+    }
   }
 
   #[tokio::test]

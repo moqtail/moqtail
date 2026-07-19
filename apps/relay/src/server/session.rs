@@ -156,8 +156,23 @@ impl Session {
   }
 
   async fn accept_control_stream(context: Arc<SessionContext>) -> Result<()> {
-    match context.connection.accept_bi().await {
-      Ok((send_stream, recv_stream)) => {
+    // The control plane is a pair of unidirectional streams. Accept the peer's
+    // control stream (recv half) and open our own (send half), each beginning
+    // with SETUP.
+    let recv_stream = match context.connection.accept_uni().await {
+      Ok(recv_stream) => recv_stream,
+      Err(e) => {
+        error!("Failed to accept control stream: {:?}", e);
+        Self::close_session(
+          context.clone(),
+          TerminationCode::InternalError,
+          "Error in control stream handler",
+        );
+        return Err(e.into());
+      }
+    };
+    match context.connection.open_uni().await {
+      Ok(send_stream) => {
         let session_context = context.clone();
         let connection_id = session_context.connection_id;
         let transport = session_context.transport_kind;
@@ -192,7 +207,7 @@ impl Session {
         Ok(())
       }
       Err(e) => {
-        error!("Failed to accept stream: {:?}", e);
+        error!("Failed to open control send stream: {:?}", e);
         Self::close_session(
           context.clone(),
           TerminationCode::InternalError,
@@ -818,18 +833,15 @@ impl Session {
     control_stream_handler: &mut ControlStreamHandler,
   ) -> Result<Arc<MOQTClient>, TerminationCode> {
     debug!("Negotiating with client...");
-    let client_setup = match control_stream_handler.next_message().await {
-      Ok(ControlMessage::Setup(m)) => *m,
-      Ok(_) => {
-        error!("Unexpected message received");
-        return Err(TerminationCode::ProtocolViolation);
-      }
+    // The client's control stream MUST begin with SETUP.
+    let client_setup = match control_stream_handler.read_setup().await {
+      Ok(m) => m,
       Err(TerminationCode::NoError) => {
         info!("Client disconnected during negotiation");
         return Err(TerminationCode::NoError);
       }
       Err(e) => {
-        error!("Failed to deserialize message: {:?}", e);
+        error!("Client control stream did not begin with SETUP: {:?}", e);
         return Err(e);
       }
     };

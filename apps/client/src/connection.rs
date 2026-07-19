@@ -14,7 +14,7 @@
 
 use anyhow::Result;
 use moqtail::model::control::constant::SUPPORTED_VERSIONS;
-use moqtail::model::control::control_message::ControlMessage;
+use moqtail::model::control::control_message::ControlMessageTrait;
 use moqtail::model::error::TerminationCode;
 use moqtail::model::{
   control::setup::{Setup, SetupSender},
@@ -63,22 +63,30 @@ impl MoqConnection {
     info!("Connected! Connection ID: {}", connection.stable_id());
     let connection = Arc::new(connection);
 
-    // Open bidirectional stream for control messages
-    info!("Opening control stream...");
-    let (send_stream, recv_stream) = connection.open_bi().await?;
+    // The control plane is a pair of unidirectional streams. Open our send half
+    // and write CLIENT_SETUP first so it goes out without waiting on the
+    // server's stream, then accept the server's half.
+    info!("Opening control stream and sending SETUP...");
+    let mut send_stream = connection.open_uni().await?;
+    let client_setup = Setup::new(setup_options);
+    let setup_bytes = client_setup
+      .serialize()
+      .map_err(|e| anyhow::anyhow!("Failed to serialize CLIENT_SETUP: {e:?}"))?;
+    send_stream
+      .write_all(&setup_bytes)
+      .await
+      .map_err(|e| anyhow::anyhow!("Failed to send CLIENT_SETUP: {e:?}"))?;
+
+    info!("Waiting for server control stream...");
+    let recv_stream = connection.accept_uni().await?;
     let mut control_stream = ControlStreamHandler::new(send_stream, recv_stream);
 
-    // Send SETUP
-    info!("Sending SETUP...");
-    let client_setup = Setup::new(setup_options);
-    control_stream.send_impl(&client_setup).await?;
-
-    // Receive the peer's SETUP
-    // If the server does not support the requested version, the connection will
-    // be terminated with VersionNegotiationFailed rather than receiving a SETUP.
+    // Receive the server's SETUP, which must be the first message. If the server
+    // does not support the requested version, the connection is terminated with
+    // VersionNegotiationFailed rather than a SETUP arriving.
     info!("Waiting for SETUP...");
-    match control_stream.next_message().await {
-      Ok(ControlMessage::Setup(m)) => {
+    match control_stream.read_setup().await {
+      Ok(m) => {
         // AUTHORITY and PATH are client-only; a server sending either closes the
         // session (§10.3.1.1, §10.3.1.2).
         if let Err(code) = m.validate_incoming(SetupSender::Server, connection.kind()) {
@@ -87,15 +95,14 @@ impl MoqConnection {
         }
         info!("SETUP received: {:?}", m);
       }
-      Ok(m) => {
-        error!("Unexpected message: {:?}", m);
-        anyhow::bail!("Expected SETUP, got {:?}", m);
-      }
       Err(TerminationCode::VersionNegotiationFailed) => {
         anyhow::bail!(
           "Version negotiation failed: server does not support versions: {}",
           SUPPORTED_VERSIONS
         );
+      }
+      Err(TerminationCode::ProtocolViolation) => {
+        anyhow::bail!("Server control stream did not begin with SETUP");
       }
       Err(e) => {
         error!("Failed to receive SETUP: {:?}", e);

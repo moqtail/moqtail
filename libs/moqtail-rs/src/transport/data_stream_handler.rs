@@ -207,10 +207,11 @@ impl SendDataStream {
     let object = object.clone();
 
     match &self.header_info {
-      HeaderInfo::Fetch { .. } => {
+      HeaderInfo::Fetch { fetch_request, .. } => {
+        let group_order = fetch_request.group_order();
         let payload = object.try_into_fetch()?;
         let fetch_obj = FetchObject::Object(payload);
-        buf.extend_from_slice(&fetch_obj.serialize(self.fetch_prev_ctx.as_ref())?);
+        buf.extend_from_slice(&fetch_obj.serialize(self.fetch_prev_ctx.as_ref(), group_order)?);
         self.fetch_prev_ctx = fetch_obj.context();
       }
       HeaderInfo::Subgroup { header, .. } => {
@@ -540,28 +541,32 @@ impl RecvDataStream {
       let original_remaining = bytes_cursor.remaining();
 
       let parse_result: ObjectParseResult = match header_info {
-        HeaderInfo::Fetch { .. } => {
-          FetchObject::deserialize(&mut bytes_cursor, fetch_state.prev_ctx.as_ref()).and_then(
-            |fetch_obj| {
-              let new_ctx = fetch_obj.context();
-              match fetch_obj {
-                FetchObject::Object(payload) => {
-                  if let Err(e) = fetch_state.subgroup_priorities.validate(&payload) {
-                    malformed_track.store(true, Ordering::Relaxed);
-                    return Err(e);
-                  }
-                  // TODO: Get track alias from fetch_request
-                  let object = Object::try_from_fetch(payload, 0)?;
-                  Ok((None, new_ctx, Some(object)))
-                }
-                FetchObject::EndOfRange { .. } => {
-                  // Range markers advance the stream but do not enqueue an object.
-                  debug!("FetchObject::EndOfRange received, skipping");
-                  Ok((None, None, None))
-                }
-              }
-            },
+        HeaderInfo::Fetch { fetch_request, .. } => {
+          let group_order = fetch_request.group_order();
+          FetchObject::deserialize(
+            &mut bytes_cursor,
+            fetch_state.prev_ctx.as_ref(),
+            group_order,
           )
+          .and_then(|fetch_obj| {
+            let new_ctx = fetch_obj.context();
+            match fetch_obj {
+              FetchObject::Object(payload) => {
+                if let Err(e) = fetch_state.subgroup_priorities.validate(&payload) {
+                  malformed_track.store(true, Ordering::Relaxed);
+                  return Err(e);
+                }
+                // TODO: Get track alias from fetch_request
+                let object = Object::try_from_fetch(payload, 0)?;
+                Ok((None, new_ctx, Some(object)))
+              }
+              FetchObject::EndOfRange { .. } => {
+                // Range markers advance the stream but do not enqueue an object.
+                debug!("FetchObject::EndOfRange received, skipping");
+                Ok((None, None, None))
+              }
+            }
+          })
         }
         HeaderInfo::Subgroup { header, .. } => {
           let has_properties = header.header_type.has_properties();
@@ -1100,7 +1105,7 @@ mod tests {
 
     // Serialize object and send in two parts
     let bytes = FetchObject::Object(fetch_obj.clone())
-      .serialize(None)
+      .serialize(None, fetch_req.group_order())
       .unwrap();
     let half = bytes.len() / 2;
     let first_half = &bytes[..half];

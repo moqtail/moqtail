@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
+use crate::model::control::constant::GroupOrder;
 use crate::model::error::ParseError;
 use crate::model::property::object_property::{
   ObjectProperty, deserialize_object_properties, serialize_object_properties,
@@ -21,7 +22,7 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use super::constant::ObjectForwardingPreference;
 
-/// Draft-16 §10.4.4 Serialization Flags bit layout.
+/// Draft-18 §11.4.4 Serialization Flags bit layout.
 const FLAG_SUBGROUP_MODE_MASK: u8 = 0x03;
 const FLAG_OBJECT_ID_PRESENT: u8 = 0x04;
 const FLAG_GROUP_ID_PRESENT: u8 = 0x08;
@@ -106,7 +107,11 @@ impl FetchObject {
     }
   }
 
-  pub fn serialize(&self, prev: Option<&FetchObjectContext>) -> Result<Bytes, ParseError> {
+  pub fn serialize(
+    &self,
+    prev: Option<&FetchObjectContext>,
+    group_order: GroupOrder,
+  ) -> Result<Bytes, ParseError> {
     match self {
       FetchObject::EndOfRange {
         kind,
@@ -119,13 +124,14 @@ impl FetchObject {
         buf.put_vi(*object_id)?;
         Ok(buf.freeze())
       }
-      FetchObject::Object(p) => serialize_payload(p, prev),
+      FetchObject::Object(p) => serialize_payload(p, prev, group_order),
     }
   }
 
   pub fn deserialize(
     bytes: &mut Bytes,
     prev: Option<&FetchObjectContext>,
+    group_order: GroupOrder,
   ) -> Result<Self, ParseError> {
     let flags_raw = bytes.get_vi()?;
 
@@ -175,8 +181,33 @@ impl FetchObject {
       }
     }
 
+    // Group ID Delta present. For the first Object (no prior) the delta is the
+    // absolute Group ID; otherwise it is applied to the prior Group ID per the
+    // Group Order (draft-18 §11.4.4.1). A computed value outside [0, 2^64-1] is a
+    // PROTOCOL_VIOLATION.
     let group_id = if has_group_id {
-      bytes.get_vi()?
+      let delta = bytes.get_vi()?;
+      match prev {
+        None => delta,
+        Some(pc) => {
+          let computed = match group_order {
+            GroupOrder::Descending => delta
+              .checked_add(1)
+              .and_then(|step| pc.group_id.checked_sub(step)),
+            GroupOrder::Ascending | GroupOrder::Original => pc
+              .group_id
+              .checked_add(delta)
+              .and_then(|v| v.checked_add(1)),
+          };
+          computed.ok_or(ParseError::ProtocolViolation {
+            context: "FetchObject::deserialize",
+            details: format!(
+              "group id delta wraps: prior={} delta={} order={group_order:?}",
+              pc.group_id, delta
+            ),
+          })?
+        }
+      }
     } else {
       prev
         .ok_or(ParseError::ProtocolViolation {
@@ -215,16 +246,38 @@ impl FetchObject {
       }
     };
 
+    // Object ID resolution (draft-18 §11.4.4.1):
+    // - Object ID Delta present + Group ID Delta present (or first Object): the
+    //   Object ID is the delta itself (absolute).
+    // - Object ID Delta present + Group ID Delta absent: prior Object ID + delta.
+    // - Object ID Delta absent: prior Object ID + 1.
+    // A computed value greater than 2^64-1 is a PROTOCOL_VIOLATION.
     let object_id = if has_object_id {
-      bytes.get_vi()?
+      let delta = bytes.get_vi()?;
+      match prev {
+        None => delta,
+        Some(_) if has_group_id => delta,
+        Some(pc) => pc.object_id.checked_add(delta).ok_or({
+          ParseError::ProtocolViolation {
+            context: "FetchObject::deserialize",
+            details: format!(
+              "object id delta wraps: prior={} delta={delta}",
+              pc.object_id
+            ),
+          }
+        })?,
+      }
     } else {
-      prev
+      let pc = prev.ok_or(ParseError::ProtocolViolation {
+        context: "FetchObject::deserialize",
+        details: "object_id inherited but no prior object".to_string(),
+      })?;
+      pc.object_id
+        .checked_add(1)
         .ok_or(ParseError::ProtocolViolation {
           context: "FetchObject::deserialize",
-          details: "object_id inherited but no prior object".to_string(),
+          details: format!("object id wraps: prior={} +1", pc.object_id),
         })?
-        .object_id
-        + 1
     };
 
     let publisher_priority = if has_priority {
@@ -318,64 +371,81 @@ impl FetchObject {
 fn serialize_payload(
   p: &FetchObjectPayload,
   prev: Option<&FetchObjectContext>,
+  group_order: GroupOrder,
 ) -> Result<Bytes, ParseError> {
   let is_datagram = matches!(
     p.forwarding_preference,
     ObjectForwardingPreference::Datagram
   );
 
-  let (has_group_id, group_id_inherited) = match prev {
-    Some(pc) if pc.group_id == p.group_id => (false, true),
-    _ => (true, false),
+  // Group ID Delta field. Present for the first Object (delta = absolute Group ID)
+  // and whenever the Group ID changes; absent when the Group ID is inherited.
+  let group_delta: Option<u64> = match prev {
+    None => Some(p.group_id),
+    Some(pc) if pc.group_id == p.group_id => None,
+    Some(pc) => {
+      let delta = match group_order {
+        GroupOrder::Descending => pc
+          .group_id
+          .checked_sub(p.group_id)
+          .and_then(|d| d.checked_sub(1)),
+        GroupOrder::Ascending | GroupOrder::Original => p
+          .group_id
+          .checked_sub(pc.group_id)
+          .and_then(|d| d.checked_sub(1)),
+      };
+      Some(delta.ok_or(ParseError::ProtocolViolation {
+        context: "FetchObject::serialize",
+        details: format!(
+          "group id not monotonic for {group_order:?}: prior={} current={}",
+          pc.group_id, p.group_id
+        ),
+      })?)
+    }
   };
 
-  let (has_object_id, object_id_inherited) = match prev {
-    Some(pc) if pc.object_id + 1 == p.object_id => (false, true),
-    _ => (true, false),
+  // Object ID Delta field (draft-18 §11.4.4.1):
+  // - first Object, or a new group: absolute Object ID.
+  // - same group, prior + 1: field omitted.
+  // - same group otherwise: prior + delta.
+  let object_delta: Option<u64> = match prev {
+    None => Some(p.object_id),
+    Some(_) if group_delta.is_some() => Some(p.object_id),
+    Some(pc) if pc.object_id + 1 == p.object_id => None,
+    Some(pc) => Some(p.object_id.checked_sub(pc.object_id).ok_or({
+      ParseError::ProtocolViolation {
+        context: "FetchObject::serialize",
+        details: format!(
+          "object id not monotonic: prior={} current={}",
+          pc.object_id, p.object_id
+        ),
+      }
+    })?),
   };
 
-  let (has_priority, priority_inherited) = match prev {
-    Some(pc) if pc.publisher_priority == p.publisher_priority => (false, true),
-    _ => (true, false),
+  let has_priority = match prev {
+    Some(pc) => pc.publisher_priority != p.publisher_priority,
+    None => true,
   };
 
   let has_properties = matches!(&p.properties, Some(v) if !v.is_empty());
 
-  // First object on the stream cannot inherit.
-  let (has_group_id, has_object_id, has_priority, subgroup_mode) = if prev.is_none() {
-    let sm = if is_datagram || p.subgroup_id == 0 {
-      SUBGROUP_MODE_ZERO
-    } else {
-      SUBGROUP_MODE_PRESENT
-    };
-    (true, true, true, sm)
+  // Subgroup mode. The first Object (no prior) cannot reference a prior subgroup.
+  let subgroup_mode = if is_datagram || p.subgroup_id == 0 {
+    SUBGROUP_MODE_ZERO
   } else {
-    let subgroup_mode = if is_datagram || p.subgroup_id == 0 {
-      SUBGROUP_MODE_ZERO
-    } else if let Some(pc) = prev {
-      if pc.subgroup_id == p.subgroup_id {
-        SUBGROUP_MODE_PRIOR
-      } else if pc.subgroup_id + 1 == p.subgroup_id {
-        SUBGROUP_MODE_PRIOR_PLUS_ONE
-      } else {
-        SUBGROUP_MODE_PRESENT
-      }
-    } else {
-      SUBGROUP_MODE_PRESENT
-    };
-    (
-      has_group_id || !group_id_inherited,
-      has_object_id || !object_id_inherited,
-      has_priority || !priority_inherited,
-      subgroup_mode,
-    )
+    match prev {
+      Some(pc) if pc.subgroup_id == p.subgroup_id => SUBGROUP_MODE_PRIOR,
+      Some(pc) if pc.subgroup_id + 1 == p.subgroup_id => SUBGROUP_MODE_PRIOR_PLUS_ONE,
+      _ => SUBGROUP_MODE_PRESENT,
+    }
   };
 
   let mut flags: u8 = subgroup_mode & FLAG_SUBGROUP_MODE_MASK;
-  if has_object_id {
+  if object_delta.is_some() {
     flags |= FLAG_OBJECT_ID_PRESENT;
   }
-  if has_group_id {
+  if group_delta.is_some() {
     flags |= FLAG_GROUP_ID_PRESENT;
   }
   if has_priority {
@@ -391,14 +461,14 @@ fn serialize_payload(
   let mut buf = BytesMut::new();
   buf.put_vi(flags as u64)?;
 
-  if has_group_id {
-    buf.put_vi(p.group_id)?;
+  if let Some(delta) = group_delta {
+    buf.put_vi(delta)?;
   }
   if !is_datagram && subgroup_mode == SUBGROUP_MODE_PRESENT {
     buf.put_vi(p.subgroup_id)?;
   }
-  if has_object_id {
-    buf.put_vi(p.object_id)?;
+  if let Some(delta) = object_delta {
+    buf.put_vi(delta)?;
   }
   if has_priority {
     buf.put_u8(p.publisher_priority);
@@ -439,11 +509,13 @@ mod tests {
     }
   }
 
+  const ASC: GroupOrder = GroupOrder::Ascending;
+
   #[test]
   fn roundtrip_first_object() {
     let obj = FetchObject::Object(sample_payload());
-    let mut buf = obj.serialize(None).unwrap();
-    let parsed = FetchObject::deserialize(&mut buf, None).unwrap();
+    let mut buf = obj.serialize(None, ASC).unwrap();
+    let parsed = FetchObject::deserialize(&mut buf, None, ASC).unwrap();
     assert_eq!(parsed, obj);
     assert!(!buf.has_remaining());
   }
@@ -460,17 +532,145 @@ mod tests {
     let obj2 = FetchObject::Object(second);
 
     let mut wire = BytesMut::new();
-    wire.extend_from_slice(&obj1.serialize(None).unwrap());
+    wire.extend_from_slice(&obj1.serialize(None, ASC).unwrap());
     let ctx = obj1.context();
-    wire.extend_from_slice(&obj2.serialize(ctx.as_ref()).unwrap());
+    wire.extend_from_slice(&obj2.serialize(ctx.as_ref(), ASC).unwrap());
     let mut wire = wire.freeze();
 
-    let parsed1 = FetchObject::deserialize(&mut wire, None).unwrap();
+    let parsed1 = FetchObject::deserialize(&mut wire, None, ASC).unwrap();
     assert_eq!(parsed1, obj1);
     let ctx1 = parsed1.context();
-    let parsed2 = FetchObject::deserialize(&mut wire, ctx1.as_ref()).unwrap();
+    let parsed2 = FetchObject::deserialize(&mut wire, ctx1.as_ref(), ASC).unwrap();
     assert_eq!(parsed2, obj2);
     assert!(!wire.has_remaining());
+  }
+
+  /// A run of objects that cross a group boundary must round-trip, with the
+  /// Object ID resetting inside the new group and the Group ID recovered from
+  /// its delta.
+  #[test]
+  fn roundtrip_across_group_boundary() {
+    let mut a = sample_payload();
+    a.group_id = 4;
+    a.object_id = 7;
+    let mut b = a.clone();
+    b.object_id = 8; // same group, prior + 1
+    b.properties = None;
+    let mut c = a.clone();
+    c.group_id = 6; // new group two ahead (ascending delta = 1)
+    c.object_id = 0; // object id resets
+    c.properties = None;
+
+    let objs = [
+      FetchObject::Object(a),
+      FetchObject::Object(b),
+      FetchObject::Object(c),
+    ];
+
+    for order in [
+      GroupOrder::Ascending,
+      GroupOrder::Descending,
+      GroupOrder::Original,
+    ] {
+      // Descending needs decreasing group ids; flip the run for that order.
+      let run: Vec<FetchObject> = if order == GroupOrder::Descending {
+        let mut a = sample_payload();
+        a.group_id = 6;
+        a.object_id = 7;
+        let mut b = a.clone();
+        b.object_id = 8;
+        b.properties = None;
+        let mut c = a.clone();
+        c.group_id = 4;
+        c.object_id = 0;
+        c.properties = None;
+        vec![
+          FetchObject::Object(a),
+          FetchObject::Object(b),
+          FetchObject::Object(c),
+        ]
+      } else {
+        objs.to_vec()
+      };
+
+      let mut wire = BytesMut::new();
+      let mut ctx: Option<FetchObjectContext> = None;
+      for o in &run {
+        wire.extend_from_slice(&o.serialize(ctx.as_ref(), order).unwrap());
+        ctx = o.context();
+      }
+      let mut wire = wire.freeze();
+
+      let mut ctx: Option<FetchObjectContext> = None;
+      for o in &run {
+        let parsed = FetchObject::deserialize(&mut wire, ctx.as_ref(), order).unwrap();
+        assert_eq!(&parsed, o, "order={order:?}");
+        ctx = parsed.context();
+      }
+      assert!(!wire.has_remaining(), "order={order:?}");
+    }
+  }
+
+  /// An Object ID delta that pushes the value past 2^64-1 is a PROTOCOL_VIOLATION.
+  #[test]
+  fn object_id_delta_wrap_closes_session() {
+    let prev = FetchObjectContext {
+      group_id: 3,
+      subgroup_id: 0,
+      object_id: u64::MAX - 1,
+      publisher_priority: 5,
+    };
+    // Same group (group delta absent), object delta present = 5 → prior + 5 wraps.
+    let flags = SUBGROUP_MODE_ZERO | FLAG_OBJECT_ID_PRESENT;
+    let mut buf = BytesMut::new();
+    buf.put_vi(flags as u64).unwrap();
+    buf.put_vi(5u64).unwrap();
+    buf.put_vi(0u64).unwrap(); // payload length
+    let mut frozen = buf.freeze();
+    let err = FetchObject::deserialize(&mut frozen, Some(&prev), ASC).unwrap_err();
+    assert!(matches!(err, ParseError::ProtocolViolation { .. }));
+  }
+
+  /// An ascending Group ID delta that overflows 2^64-1 is a PROTOCOL_VIOLATION.
+  #[test]
+  fn group_id_delta_wrap_closes_session() {
+    let prev = FetchObjectContext {
+      group_id: u64::MAX - 1,
+      subgroup_id: 0,
+      object_id: 0,
+      publisher_priority: 5,
+    };
+    // Group delta present = 5 → prior + 5 + 1 wraps; object delta present (absolute).
+    let flags = SUBGROUP_MODE_ZERO | FLAG_GROUP_ID_PRESENT | FLAG_OBJECT_ID_PRESENT;
+    let mut buf = BytesMut::new();
+    buf.put_vi(flags as u64).unwrap();
+    buf.put_vi(5u64).unwrap(); // group delta
+    buf.put_vi(0u64).unwrap(); // object id (absolute)
+    buf.put_vi(0u64).unwrap(); // payload length
+    let mut frozen = buf.freeze();
+    let err = FetchObject::deserialize(&mut frozen, Some(&prev), ASC).unwrap_err();
+    assert!(matches!(err, ParseError::ProtocolViolation { .. }));
+  }
+
+  /// A descending Group ID delta that underflows below 0 is a PROTOCOL_VIOLATION.
+  #[test]
+  fn group_id_delta_underflow_closes_session() {
+    let prev = FetchObjectContext {
+      group_id: 0,
+      subgroup_id: 0,
+      object_id: 0,
+      publisher_priority: 5,
+    };
+    let flags = SUBGROUP_MODE_ZERO | FLAG_GROUP_ID_PRESENT | FLAG_OBJECT_ID_PRESENT;
+    let mut buf = BytesMut::new();
+    buf.put_vi(flags as u64).unwrap();
+    buf.put_vi(0u64).unwrap(); // group delta → prior - (0 + 1) underflows
+    buf.put_vi(0u64).unwrap();
+    buf.put_vi(0u64).unwrap();
+    let mut frozen = buf.freeze();
+    let err =
+      FetchObject::deserialize(&mut frozen, Some(&prev), GroupOrder::Descending).unwrap_err();
+    assert!(matches!(err, ParseError::ProtocolViolation { .. }));
   }
 
   #[test]
@@ -480,8 +680,8 @@ mod tests {
     // For datagrams, subgroup_id is synthesized to match object_id on decode.
     p.subgroup_id = p.object_id;
     let obj = FetchObject::Object(p);
-    let mut buf = obj.serialize(None).unwrap();
-    let parsed = FetchObject::deserialize(&mut buf, None).unwrap();
+    let mut buf = obj.serialize(None, ASC).unwrap();
+    let parsed = FetchObject::deserialize(&mut buf, None, ASC).unwrap();
     assert_eq!(parsed, obj);
   }
 
@@ -492,8 +692,8 @@ mod tests {
       group_id: 7,
       object_id: 42,
     };
-    let mut buf = obj.serialize(None).unwrap();
-    let parsed = FetchObject::deserialize(&mut buf, None).unwrap();
+    let mut buf = obj.serialize(None, ASC).unwrap();
+    let parsed = FetchObject::deserialize(&mut buf, None, ASC).unwrap();
     assert_eq!(parsed, obj);
   }
 
@@ -504,8 +704,8 @@ mod tests {
       group_id: 100,
       object_id: 0,
     };
-    let mut buf = obj.serialize(None).unwrap();
-    let parsed = FetchObject::deserialize(&mut buf, None).unwrap();
+    let mut buf = obj.serialize(None, ASC).unwrap();
+    let parsed = FetchObject::deserialize(&mut buf, None, ASC).unwrap();
     assert_eq!(parsed, obj);
   }
 
@@ -517,7 +717,7 @@ mod tests {
     buf.put_vi(1u64).unwrap();
     buf.put_vi(1u64).unwrap();
     let mut frozen = buf.freeze();
-    let err = FetchObject::deserialize(&mut frozen, None).unwrap_err();
+    let err = FetchObject::deserialize(&mut frozen, None, ASC).unwrap_err();
     assert!(matches!(err, ParseError::ProtocolViolation { .. }));
   }
 
@@ -532,19 +732,19 @@ mod tests {
     buf.put_vi(1u64).unwrap();
     buf.put_vi(0u64).unwrap();
     let mut frozen = buf.freeze();
-    let err = FetchObject::deserialize(&mut frozen, None).unwrap_err();
+    let err = FetchObject::deserialize(&mut frozen, None, ASC).unwrap_err();
     assert!(matches!(err, ParseError::ProtocolViolation { .. }));
   }
 
   #[test]
   fn excess_bytes_preserved() {
     let obj = FetchObject::Object(sample_payload());
-    let serialized = obj.serialize(None).unwrap();
+    let serialized = obj.serialize(None, ASC).unwrap();
     let mut excess = BytesMut::new();
     excess.extend_from_slice(&serialized);
     excess.extend_from_slice(&[9u8, 1u8, 1u8]);
     let mut buf = excess.freeze();
-    let parsed = FetchObject::deserialize(&mut buf, None).unwrap();
+    let parsed = FetchObject::deserialize(&mut buf, None, ASC).unwrap();
     assert_eq!(parsed, obj);
     assert_eq!(buf.chunk(), &[9u8, 1u8, 1u8]);
   }
@@ -552,10 +752,10 @@ mod tests {
   #[test]
   fn partial_message_fails() {
     let obj = FetchObject::Object(sample_payload());
-    let buf = obj.serialize(None).unwrap();
+    let buf = obj.serialize(None, ASC).unwrap();
     let upper = buf.remaining() / 2;
     let mut partial = buf.slice(..upper);
-    let result = FetchObject::deserialize(&mut partial, None);
+    let result = FetchObject::deserialize(&mut partial, None, ASC);
     assert!(result.is_err());
   }
 }

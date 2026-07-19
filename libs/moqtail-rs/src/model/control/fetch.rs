@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::constant::{ControlMessageType, FetchType};
+use super::constant::{ControlMessageType, FetchType, GroupOrder};
 use super::control_message::ControlMessageTrait;
 use crate::model::common::location::Location;
 use crate::model::common::tuple::{Tuple, TupleField};
@@ -83,6 +83,17 @@ impl Fetch {
       }),
       FetchType::Standalone => Err("Use new_standalone for standalone fetch requests"),
     }
+  }
+
+  pub fn group_order(&self) -> GroupOrder {
+    self
+      .parameters
+      .iter()
+      .find_map(|p| match p {
+        MessageParameter::GroupOrder { order } => Some(*order),
+        _ => None,
+      })
+      .unwrap_or(GroupOrder::Ascending)
   }
 }
 

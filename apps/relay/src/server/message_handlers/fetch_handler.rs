@@ -251,6 +251,7 @@ pub async fn handle(
         let mut cancelled = false;
         let mut fetch_prev_ctx: Option<moqtail::model::data::fetch_object::FetchObjectContext> =
           None;
+        let group_order = fetch.group_order();
         let mut group_id = start_location.group;
 
         while group_id <= end_location.group {
@@ -290,7 +291,9 @@ pub async fn handle(
 
               let fetch_obj =
                 moqtail::model::data::fetch_object::FetchObject::Object(object.clone());
-              let serialized = fetch_obj.serialize(fetch_prev_ctx.as_ref()).unwrap();
+              let serialized = fetch_obj
+                .serialize(fetch_prev_ctx.as_ref(), group_order)
+                .unwrap();
               fetch_prev_ctx = fetch_obj.context();
 
               if let Err(e) = client
@@ -393,7 +396,8 @@ pub async fn handle(
 
                         let fetch_obj =
                           moqtail::model::data::fetch_object::FetchObject::Object(object.clone());
-                        let serialized = fetch_obj.serialize(fetch_prev_ctx.as_ref()).unwrap();
+                        let serialized =
+                          fetch_obj.serialize(fetch_prev_ctx.as_ref(), group_order).unwrap();
                         fetch_prev_ctx = fetch_obj.context();
 
                         if let Err(e) = client

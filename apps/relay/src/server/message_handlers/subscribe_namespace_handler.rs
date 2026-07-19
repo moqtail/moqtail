@@ -21,8 +21,8 @@ use moqtail::model::control::namespace::Namespace;
 use moqtail::model::control::request_error::RequestError;
 use moqtail::model::control::request_ok::RequestOk;
 use moqtail::model::control::subscribe_namespace::SubscribeNamespace;
-use moqtail::model::error::RequestErrorCode;
 use moqtail::model::error::TerminationCode;
+use moqtail::model::error::{RequestErrorCode, StreamResetCode};
 use moqtail::model::parameter::message_parameter::apply_message_parameter_update;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
@@ -255,10 +255,11 @@ pub async fn handle(
           }
           _ => {
             warn!(
-              "Request {} is not a valid SubscribeNamespace request",
+              "REQUEST_UPDATE for SUBSCRIBE_NAMESPACE request {} cannot be applied; closing the stream",
               existing_req_id
             );
-            return Err(TerminationCode::ProtocolViolation);
+            handler.reset(StreamResetCode::Cancelled.to_u64());
+            return Ok(());
           }
         }
       };

@@ -17,7 +17,7 @@ use crate::server::session_context::{PendingRequest, SessionContext};
 use core::result::Result;
 use moqtail::model::control::namespace::Namespace;
 use moqtail::model::control::{control_message::ControlMessage, request_ok::RequestOk};
-use moqtail::model::error::TerminationCode;
+use moqtail::model::error::{StreamResetCode, TerminationCode};
 use moqtail::model::parameter::message_parameter::apply_message_parameter_update;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
@@ -143,10 +143,11 @@ pub async fn handle(
           }
           _ => {
             warn!(
-              "Request {} is not a valid PublishNamespace request",
+              "REQUEST_UPDATE for PUBLISH_NAMESPACE request {} cannot be applied; closing the stream",
               existing_req_id
             );
-            return Err(TerminationCode::ProtocolViolation);
+            control_stream_handler.reset(StreamResetCode::Cancelled.to_u64());
+            return Ok(());
           }
         }
       };

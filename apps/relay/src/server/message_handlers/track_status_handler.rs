@@ -223,12 +223,36 @@ pub async fn handle(
 
     ControlMessage::RequestUpdate(m) => {
       warn!(
-        "Protocol Violation: Client attempted to update TrackStatus request ID {}",
+        "REQUEST_UPDATE is not valid for a TRACK_STATUS request (id {})",
         m.existing_request_id
       );
-      Err(TerminationCode::ProtocolViolation)
+      let err = track_status_update_error(m.request_id);
+      control_stream_handler
+        .send(&ControlMessage::RequestError(Box::new(err)))
+        .await
     }
 
     _ => Ok(()),
+  }
+}
+
+fn track_status_update_error(request_id: u64) -> RequestError {
+  RequestError::new(
+    request_id,
+    RequestErrorCode::NotSupported,
+    0,
+    ReasonPhrase::try_new("TRACK_STATUS does not support REQUEST_UPDATE".to_string()).unwrap(),
+  )
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn request_update_on_track_status_is_not_supported() {
+    let err = track_status_update_error(42);
+    assert_eq!(err.request_id, 42);
+    assert_eq!(err.error_code, RequestErrorCode::NotSupported);
   }
 }

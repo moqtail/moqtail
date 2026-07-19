@@ -14,7 +14,11 @@
 
 use bytes::Bytes;
 use moqtail::{
-  model::{control::control_message::ControlMessage, error::TerminationCode},
+  model::{
+    common::reason_phrase::ReasonPhrase,
+    control::{control_message::ControlMessage, request_error::RequestError},
+    error::{RequestErrorCode, TerminationCode},
+  },
   transport::control_stream_handler::ControlStreamHandler,
 };
 use tracing::{info, warn};
@@ -24,7 +28,7 @@ use crate::server::{
   session_context::{PendingRequest, SessionContext},
 };
 use std::sync::Arc;
-mod fetch_handler;
+pub(crate) mod fetch_handler;
 mod publish_handler;
 mod publish_namespace_handler;
 mod subscribe_handler;
@@ -157,11 +161,22 @@ impl MessageHandler {
               target_req_id
             );
 
-            // Draft-16: Unknown Update = ProtocolViolation. Unknown Response = Ignore.
-            if !is_response_to_relay {
-              Err(TerminationCode::ProtocolViolation)
-            } else {
-              Ok(())
+            // A REQUEST_UPDATE that cannot be applied (e.g. a TRACK_STATUS target,
+            // or an unknown request) is answered with REQUEST_ERROR; an unknown
+            // response is ignored.
+            match &msg {
+              ControlMessage::RequestUpdate(m) => {
+                let err = RequestError::new(
+                  m.request_id,
+                  RequestErrorCode::NotSupported,
+                  0,
+                  ReasonPhrase::try_new("REQUEST_UPDATE is not applicable".to_string()).unwrap(),
+                );
+                control_stream_handler
+                  .send(&ControlMessage::RequestError(Box::new(err)))
+                  .await
+              }
+              _ => Ok(()),
             }
           }
         }

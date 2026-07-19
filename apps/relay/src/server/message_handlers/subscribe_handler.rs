@@ -19,7 +19,10 @@ use crate::server::session_context::{PendingRequest, SessionContext};
 use crate::server::track::{Track, TrackStatus};
 use core::result::Result;
 use moqtail::model::common::location::Location;
+use moqtail::model::control::constant::PublishDoneStatusCode;
+use moqtail::model::control::publish_done::PublishDone;
 use moqtail::model::control::request_error::RequestError;
+use moqtail::model::control::request_ok::RequestOk;
 use moqtail::model::control::subscribe::Subscribe;
 use moqtail::model::error::RequestErrorCode;
 use moqtail::model::error::TerminationCode;
@@ -611,52 +614,80 @@ pub async fn handle_request_update(
   }
 
   let track_arc = track_lock.unwrap();
-  let track_guard = track_arc.read().await;
 
-  // 3. Update the actual active edge subscription
-  if let Some(subscription) = track_guard.get_subscription(client.connection_id).await {
-    let sub = subscription.read().await;
-
-    match sub.update_subscription(update_msg.clone()).await {
-      Ok(_) => {
-        info!(
-          "Subscription updated successfully for track: {:?}",
-          full_track_name
-        );
-
-        use moqtail::model::control::request_ok::RequestOk;
-        let ok_msg = RequestOk::new(update_req_id, vec![]);
-        let _ = control_stream_handler.send_impl(&ok_msg).await;
-      }
-      Err(e) => {
-        error!(
-          "Subscription update failed for track: {:?}, error: {:?}",
-          full_track_name, e
-        );
-
-        let err_msg = RequestError::new(
-          update_req_id,
-          RequestErrorCode::InternalError,
-          0,
-          ReasonPhrase::try_new(format!("Update failed: {:?}", e))
-            .unwrap_or_else(|_| ReasonPhrase::try_new("Update failed".to_string()).unwrap()),
-        );
-        let _ = control_stream_handler.send_impl(&err_msg).await;
-      }
+  // Apply the update, releasing the track/sub read locks before responding or
+  // terminating so termination can take the track write lock.
+  let update_result = {
+    let track_guard = track_arc.read().await;
+    match track_guard.get_subscription(client.connection_id).await {
+      Some(subscription) => Some(
+        subscription
+          .read()
+          .await
+          .update_subscription(update_msg)
+          .await,
+      ),
+      None => None,
     }
-  } else {
-    warn!(
-      "No active subscription found for client {} on track {:?}",
-      client.connection_id, full_track_name
-    );
+  };
 
-    let err_msg = RequestError::new(
-      update_req_id,
-      RequestErrorCode::DoesNotExist,
-      0,
-      ReasonPhrase::try_new("Subscription not found".to_string()).unwrap(),
-    );
-    let _ = control_stream_handler.send_impl(&err_msg).await;
+  match update_result {
+    Some(Ok(())) => {
+      info!(
+        "Subscription updated successfully for track: {:?}",
+        full_track_name
+      );
+      let ok_msg = RequestOk::new(update_req_id, vec![]);
+      let _ = control_stream_handler.send_impl(&ok_msg).await;
+    }
+    Some(Err(e)) => {
+      error!(
+        "Subscription update failed for track: {:?}, error: {:?}",
+        full_track_name, e
+      );
+
+      let err_msg = RequestError::new(
+        update_req_id,
+        RequestErrorCode::InternalError,
+        0,
+        ReasonPhrase::try_new(format!("Update failed: {:?}", e))
+          .unwrap_or_else(|_| ReasonPhrase::try_new("Update failed".to_string()).unwrap()),
+      );
+      let _ = control_stream_handler.send_impl(&err_msg).await;
+
+      // A failed update terminates the subscription with PUBLISH_DONE(UPDATE_FAILED).
+      let done = PublishDone::new(
+        existing_req_id,
+        PublishDoneStatusCode::UpdateFailed,
+        0,
+        ReasonPhrase::try_new("REQUEST_UPDATE failed".to_string()).unwrap(),
+      );
+      let _ = control_stream_handler.send_impl(&done).await;
+
+      track_arc
+        .write()
+        .await
+        .remove_subscription(client.connection_id)
+        .await;
+      client
+        .subscriptions
+        .remove_subscription(&full_track_name)
+        .await;
+    }
+    None => {
+      warn!(
+        "No active subscription found for client {} on track {:?}",
+        client.connection_id, full_track_name
+      );
+
+      let err_msg = RequestError::new(
+        update_req_id,
+        RequestErrorCode::DoesNotExist,
+        0,
+        ReasonPhrase::try_new("Subscription not found".to_string()).unwrap(),
+      );
+      let _ = control_stream_handler.send_impl(&err_msg).await;
+    }
   }
 
   Ok(())

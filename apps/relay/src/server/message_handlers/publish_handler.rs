@@ -29,6 +29,7 @@ use moqtail::model::error::TerminationCode;
 use moqtail::model::parameter::constant::MessageParameterType;
 use moqtail::model::parameter::message_parameter::apply_message_parameter_update;
 use moqtail::model::parameter::message_parameter::{MessageParameter, MessageParameterVecExt};
+use moqtail::model::property::track_property::has_unsupported_mandatory;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
@@ -57,6 +58,22 @@ pub async fn handle(
           );
           return Err(TerminationCode::TooManyRequests);
         }
+      }
+
+      // §2.5.1: reject a PUBLISH with an unsupported mandatory track property.
+      if has_unsupported_mandatory(&m.track_properties) {
+        let reason_phrase =
+          ReasonPhrase::try_new("Unsupported mandatory track property".to_string())
+            .map_err(|_| TerminationCode::InternalError)?;
+        let publish_error = Box::new(RequestError::new(
+          request_id,
+          RequestErrorCode::UnsupportedExtension,
+          0,
+          reason_phrase,
+        ));
+        return control_stream_handler
+          .send(&ControlMessage::RequestError(publish_error))
+          .await;
       }
 
       // Validate track namespace authorization

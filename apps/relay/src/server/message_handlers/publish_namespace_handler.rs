@@ -25,7 +25,7 @@ use tracing::{debug, info, warn};
 
 pub async fn handle(
   client: Arc<MOQTClient>,
-  control_stream_handler: &mut ControlStreamHandler,
+  stream_handler: &mut ControlStreamHandler,
   msg: ControlMessage,
   context: Arc<SessionContext>,
 ) -> Result<(), TerminationCode> {
@@ -89,7 +89,7 @@ pub async fn handle(
         vec![], // No parameters needed for a basic namespace OK
       ));
 
-      control_stream_handler
+      stream_handler
         .send(&ControlMessage::RequestOk(request_ok))
         .await
     }
@@ -146,7 +146,7 @@ pub async fn handle(
               "REQUEST_UPDATE for PUBLISH_NAMESPACE request {} cannot be applied; closing the stream",
               existing_req_id
             );
-            control_stream_handler.reset(StreamResetCode::Cancelled.to_u64());
+            stream_handler.reset(StreamResetCode::Cancelled.to_u64());
             return Ok(());
           }
         }
@@ -204,7 +204,7 @@ pub async fn handle(
       }
 
       let ok_msg = RequestOk::new(update_req_id, vec![]);
-      control_stream_handler
+      stream_handler
         .send(&ControlMessage::RequestOk(Box::new(ok_msg)))
         .await?;
 

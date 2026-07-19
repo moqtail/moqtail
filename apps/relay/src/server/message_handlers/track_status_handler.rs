@@ -27,7 +27,7 @@ use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 pub async fn handle(
-  control_stream_handler: &mut ControlStreamHandler,
+  stream_handler: &mut ControlStreamHandler,
   msg: ControlMessage,
   context: Arc<SessionContext>,
 ) -> Result<(), TerminationCode> {
@@ -50,7 +50,7 @@ pub async fn handle(
         )];
 
         let ok_msg = RequestOk::new(request_id, params);
-        control_stream_handler
+        stream_handler
           .send(&ControlMessage::RequestOk(Box::new(ok_msg)))
           .await
           .unwrap();
@@ -81,7 +81,7 @@ pub async fn handle(
           0, //TODO: Maybe decide on another retry interval?
           ReasonPhrase::try_new("No publisher found".to_string()).unwrap(),
         );
-        control_stream_handler.send_impl(&err).await.unwrap();
+        stream_handler.send_impl(&err).await.unwrap();
         return Ok(());
       };
 
@@ -227,7 +227,7 @@ pub async fn handle(
         m.existing_request_id
       );
       let err = track_status_update_error(m.request_id);
-      control_stream_handler
+      stream_handler
         .send(&ControlMessage::RequestError(Box::new(err)))
         .await
     }

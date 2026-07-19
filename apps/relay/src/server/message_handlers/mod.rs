@@ -41,19 +41,14 @@ pub struct MessageHandler {}
 impl MessageHandler {
   pub async fn handle(
     client: Arc<MOQTClient>,
-    control_stream_handler: &mut ControlStreamHandler,
+    stream_handler: &mut ControlStreamHandler,
     msg: ControlMessage,
     context: Arc<SessionContext>,
   ) -> Result<(), TerminationCode> {
     let handling_result = match &msg {
       ControlMessage::PublishNamespace(_) => {
-        publish_namespace_handler::handle(
-          client.clone(),
-          control_stream_handler,
-          msg,
-          context.clone(),
-        )
-        .await
+        publish_namespace_handler::handle(client.clone(), stream_handler, msg, context.clone())
+          .await
       }
       ControlMessage::SubscribeNamespace(_) => {
         warn!("SUBSCRIBE_NAMESPACE received on control stream — must use a dedicated bi-stream");
@@ -63,18 +58,17 @@ impl MessageHandler {
       | ControlMessage::SubscribeOk(_)
       | ControlMessage::Unsubscribe(_)
       | ControlMessage::Switch(_) => {
-        subscribe_handler::handle(client.clone(), control_stream_handler, msg, context.clone())
-          .await
+        subscribe_handler::handle(client.clone(), stream_handler, msg, context.clone()).await
       }
 
       ControlMessage::TrackStatus(_) => {
-        track_status_handler::handle(control_stream_handler, msg, context.clone()).await
+        track_status_handler::handle(stream_handler, msg, context.clone()).await
       }
       ControlMessage::Fetch(_) | ControlMessage::FetchCancel(_) | ControlMessage::FetchOk(_) => {
-        fetch_handler::handle(client.clone(), control_stream_handler, msg, context.clone()).await
+        fetch_handler::handle(client.clone(), stream_handler, msg, context.clone()).await
       }
       ControlMessage::Publish(_) | ControlMessage::PublishDone(_) => {
-        publish_handler::handle(client.clone(), control_stream_handler, msg, context.clone()).await
+        publish_handler::handle(client.clone(), stream_handler, msg, context.clone()).await
       }
 
       ControlMessage::RequestOk(_)
@@ -122,37 +116,29 @@ impl MessageHandler {
         // 4. Route to the appropriate handler (defined only once!)
         match route {
           Route::Fetch => {
-            fetch_handler::handle(client.clone(), control_stream_handler, msg, context.clone())
-              .await
+            fetch_handler::handle(client.clone(), stream_handler, msg, context.clone()).await
           }
           Route::Publish => {
-            publish_handler::handle(client.clone(), control_stream_handler, msg, context.clone())
-              .await
+            publish_handler::handle(client.clone(), stream_handler, msg, context.clone()).await
           }
           Route::PublishNamespace => {
-            publish_namespace_handler::handle(
-              client.clone(),
-              control_stream_handler,
-              msg,
-              context.clone(),
-            )
-            .await
+            publish_namespace_handler::handle(client.clone(), stream_handler, msg, context.clone())
+              .await
           }
           Route::Subscribe => {
-            subscribe_handler::handle(client.clone(), control_stream_handler, msg, context.clone())
-              .await
+            subscribe_handler::handle(client.clone(), stream_handler, msg, context.clone()).await
           }
           Route::SubscribeNamespace => {
             subscribe_namespace_handler::handle(
               client.clone(),
-              control_stream_handler,
+              stream_handler,
               msg,
               context.clone(),
             )
             .await
           }
           Route::TrackStatus => {
-            track_status_handler::handle(control_stream_handler, msg, context.clone()).await
+            track_status_handler::handle(stream_handler, msg, context.clone()).await
           }
           Route::NotFound => {
             warn!(
@@ -172,7 +158,7 @@ impl MessageHandler {
                   0,
                   ReasonPhrase::try_new("REQUEST_UPDATE is not applicable".to_string()).unwrap(),
                 );
-                control_stream_handler
+                stream_handler
                   .send(&ControlMessage::RequestError(Box::new(err)))
                   .await
               }

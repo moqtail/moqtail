@@ -115,7 +115,7 @@ async fn forward_subscribe_upstream(
 
 async fn handle_subscribe_message(
   client: Arc<MOQTClient>,
-  control_stream_handler: &mut ControlStreamHandler,
+  stream_handler: &mut ControlStreamHandler,
   sub: Subscribe,
   context: Arc<SessionContext>,
   is_switch: bool,
@@ -168,10 +168,7 @@ async fn handle_subscribe_message(
       0, //TODO: Maybe decide on another retry interval?
       ReasonPhrase::try_new("Unknown track namespace".to_string()).unwrap(),
     );
-    control_stream_handler
-      .send_impl(&subscribe_error)
-      .await
-      .unwrap();
+    stream_handler.send_impl(&subscribe_error).await.unwrap();
     return Ok(());
   };
 
@@ -273,7 +270,7 @@ async fn handle_subscribe_message(
           params,
           cached_properties,
         );
-        control_stream_handler.send_impl(&subscribe_ok).await
+        stream_handler.send_impl(&subscribe_ok).await
       }
       TrackStatus::Pending => {
         info!(
@@ -298,7 +295,7 @@ async fn handle_subscribe_message(
           0, //TODO: Maybe decide on another retry interval?
           reason_phrase,
         );
-        control_stream_handler.send_impl(&subscribe_error).await
+        stream_handler.send_impl(&subscribe_error).await
       }
     }
   };
@@ -329,7 +326,7 @@ async fn handle_subscribe_message(
 async fn handle_subscribe_ok_message(
   // The publisher that sent this SUBSCRIBE_OK; its connection id keys the track alias.
   publisher: Arc<MOQTClient>,
-  _control_stream_handler: &mut ControlStreamHandler,
+  _stream_handler: &mut ControlStreamHandler,
   msg: moqtail::model::control::subscribe_ok::SubscribeOk,
   context: Arc<SessionContext>,
 ) -> Result<(), TerminationCode> {
@@ -373,7 +370,7 @@ async fn handle_subscribe_ok_message(
       0,
       reason,
     );
-    return handle_subscribe_error_message(publisher, _control_stream_handler, err, context).await;
+    return handle_subscribe_error_message(publisher, _stream_handler, err, context).await;
   }
 
   let full_track_name = sub_request.original_subscribe_request.get_full_track_name();
@@ -506,7 +503,7 @@ async fn handle_subscribe_ok_message(
 
 async fn handle_unsubscribe_message(
   client: Arc<MOQTClient>,
-  _control_stream_handler: &mut ControlStreamHandler,
+  _stream_handler: &mut ControlStreamHandler,
   unsubscribe_message: moqtail::model::control::unsubscribe::Unsubscribe,
   context: Arc<SessionContext>,
 ) -> Result<(), TerminationCode> {
@@ -568,7 +565,7 @@ async fn handle_unsubscribe_message(
 
 pub async fn handle_request_update(
   client: Arc<MOQTClient>,
-  control_stream_handler: &mut ControlStreamHandler,
+  stream_handler: &mut ControlStreamHandler,
   update_msg: moqtail::model::control::request_update::RequestUpdate,
   context: Arc<SessionContext>,
 ) -> Result<(), TerminationCode> {
@@ -638,7 +635,7 @@ pub async fn handle_request_update(
         full_track_name
       );
       let ok_msg = RequestOk::new(update_req_id, vec![]);
-      let _ = control_stream_handler.send_impl(&ok_msg).await;
+      let _ = stream_handler.send_impl(&ok_msg).await;
     }
     Some(Err(e)) => {
       error!(
@@ -653,7 +650,7 @@ pub async fn handle_request_update(
         ReasonPhrase::try_new(format!("Update failed: {:?}", e))
           .unwrap_or_else(|_| ReasonPhrase::try_new("Update failed".to_string()).unwrap()),
       );
-      let _ = control_stream_handler.send_impl(&err_msg).await;
+      let _ = stream_handler.send_impl(&err_msg).await;
 
       // A failed update terminates the subscription with PUBLISH_DONE(UPDATE_FAILED).
       let done = PublishDone::new(
@@ -662,7 +659,7 @@ pub async fn handle_request_update(
         0,
         ReasonPhrase::try_new("REQUEST_UPDATE failed".to_string()).unwrap(),
       );
-      let _ = control_stream_handler.send_impl(&done).await;
+      let _ = stream_handler.send_impl(&done).await;
 
       track_arc
         .write()
@@ -686,7 +683,7 @@ pub async fn handle_request_update(
         0,
         ReasonPhrase::try_new("Subscription not found".to_string()).unwrap(),
       );
-      let _ = control_stream_handler.send_impl(&err_msg).await;
+      let _ = stream_handler.send_impl(&err_msg).await;
     }
   }
 
@@ -694,7 +691,7 @@ pub async fn handle_request_update(
 }
 async fn handle_subscribe_error_message(
   _client: Arc<MOQTClient>,
-  _control_stream_handler: &mut ControlStreamHandler,
+  _stream_handler: &mut ControlStreamHandler,
   subscribe_error_message: RequestError,
   context: Arc<SessionContext>,
 ) -> Result<(), TerminationCode> {
@@ -795,7 +792,7 @@ async fn handle_subscribe_error_message(
 
 async fn handle_switch_message(
   client: Arc<MOQTClient>,
-  control_stream_handler: &mut ControlStreamHandler,
+  stream_handler: &mut ControlStreamHandler,
   switch_message: moqtail::model::control::switch::Switch,
   context: Arc<SessionContext>,
 ) -> Result<(), TerminationCode> {
@@ -890,7 +887,7 @@ async fn handle_switch_message(
 
   if let Err(e) = handle_subscribe_message(
     client.clone(),
-    control_stream_handler,
+    stream_handler,
     subscribe,
     context.clone(),
     true, // is_switch
@@ -921,29 +918,27 @@ async fn handle_switch_message(
 
 pub async fn handle(
   client: Arc<MOQTClient>,
-  control_stream_handler: &mut ControlStreamHandler,
+  stream_handler: &mut ControlStreamHandler,
   msg: ControlMessage,
   context: Arc<SessionContext>,
 ) -> Result<(), TerminationCode> {
   match msg {
     ControlMessage::Subscribe(m) => {
-      handle_subscribe_message(client, control_stream_handler, *m, context, false).await
+      handle_subscribe_message(client, stream_handler, *m, context, false).await
     }
     ControlMessage::SubscribeOk(m) => {
-      handle_subscribe_ok_message(client, control_stream_handler, *m, context).await
+      handle_subscribe_ok_message(client, stream_handler, *m, context).await
     }
     ControlMessage::Unsubscribe(m) => {
-      handle_unsubscribe_message(client, control_stream_handler, *m, context).await
+      handle_unsubscribe_message(client, stream_handler, *m, context).await
     }
     ControlMessage::RequestUpdate(m) => {
-      handle_request_update(client, control_stream_handler, *m, context).await
+      handle_request_update(client, stream_handler, *m, context).await
     }
     ControlMessage::RequestError(m) => {
-      handle_subscribe_error_message(client, control_stream_handler, *m, context).await
+      handle_subscribe_error_message(client, stream_handler, *m, context).await
     }
-    ControlMessage::Switch(m) => {
-      handle_switch_message(client, control_stream_handler, *m, context).await
-    }
+    ControlMessage::Switch(m) => handle_switch_message(client, stream_handler, *m, context).await,
     _ => {
       // no-op
       Ok(())

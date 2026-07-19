@@ -46,7 +46,7 @@ pub enum FetchStop {
 
 pub async fn handle(
   client: Arc<MOQTClient>,
-  control_stream_handler: &mut ControlStreamHandler,
+  stream_handler: &mut ControlStreamHandler,
   msg: ControlMessage,
   context: Arc<SessionContext>,
 ) -> Result<(), TerminationCode> {
@@ -202,7 +202,7 @@ pub async fn handle(
           vec![],
           vec![],
         );
-        control_stream_handler
+        stream_handler
           .send(&ControlMessage::FetchOk(Box::new(fetch_ok)))
           .await?;
       }

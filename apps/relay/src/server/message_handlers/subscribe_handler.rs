@@ -26,6 +26,7 @@ use moqtail::model::error::TerminationCode;
 use moqtail::model::parameter::message_parameter::{
   MessageParameter, MessageParameterVecExt, apply_message_parameter_update,
 };
+use moqtail::model::property::track_property::has_unsupported_mandatory;
 use moqtail::model::{
   common::reason_phrase::ReasonPhrase, control::control_message::ControlMessage,
 };
@@ -305,6 +306,24 @@ async fn handle_subscribe_ok_message(
       }
     }
   };
+
+  // §2.5.1: SUBSCRIBE_OK with an unsupported mandatory track property. Reuse the
+  // RequestError fan-out to cancel and notify downstream subscribers.
+  if has_unsupported_mandatory(&msg.track_properties) {
+    warn!(
+      "SubscribeOk for request {} carries an unsupported mandatory track property; rejecting",
+      request_id
+    );
+    let reason = ReasonPhrase::try_new("Unsupported mandatory track property".to_string())
+      .map_err(|_| TerminationCode::InternalError)?;
+    let err = RequestError::new(
+      request_id,
+      RequestErrorCode::UnsupportedExtension,
+      0,
+      reason,
+    );
+    return handle_subscribe_error_message(_client, _control_stream_handler, err, context).await;
+  }
 
   let full_track_name = sub_request.original_subscribe_request.get_full_track_name();
 

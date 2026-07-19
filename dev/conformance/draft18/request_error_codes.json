@@ -44,7 +44,7 @@
       "name": "UNSUPPORTED_EXTENSION",
       "value": "0x33",
       "spec": "Section 10.6",
-      "pending": { "rs": 238, "ts": 260 }
+      "pending": { "ts": 260 }
     },
     {
       "name": "REDIRECT",

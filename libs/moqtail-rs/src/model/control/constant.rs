@@ -217,6 +217,7 @@ pub enum RequestErrorCode {
   Uninterested = 0x20,
   PrefixOverlap = 0x30,
   InvalidJoiningRequestId = 0x32,
+  UnsupportedExtension = 0x33,
 }
 
 impl TryFrom<u64> for RequestErrorCode {
@@ -237,6 +238,7 @@ impl TryFrom<u64> for RequestErrorCode {
       0x20 => Ok(RequestErrorCode::Uninterested),
       0x30 => Ok(RequestErrorCode::PrefixOverlap),
       0x32 => Ok(RequestErrorCode::InvalidJoiningRequestId),
+      0x33 => Ok(RequestErrorCode::UnsupportedExtension),
       _ => Err(ParseError::InvalidType {
         context: "RequestErrorCode::try_from(u64)",
         details: format!("Invalid type, got {value}"),

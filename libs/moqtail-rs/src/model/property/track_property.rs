@@ -27,14 +27,46 @@ use bytes::Bytes;
 /// properties).
 #[derive(Debug, Clone, PartialEq)]
 pub enum TrackProperty {
-  ObjectDeliveryTimeout { timeout_ms: u64 },
-  SubgroupDeliveryTimeout { timeout_ms: u64 },
-  MaxCacheDuration { duration_ms: u64 },
-  ImmutableProperties { properties: Vec<KeyValuePair> },
-  DefaultPublisherPriority { priority: u8 },
-  DefaultPublisherGroupOrder { order: GroupOrder },
-  DynamicGroups { enabled: bool },
-  Unknown { kvp: KeyValuePair },
+  ObjectDeliveryTimeout {
+    timeout_ms: u64,
+  },
+  SubgroupDeliveryTimeout {
+    timeout_ms: u64,
+  },
+  MaxCacheDuration {
+    duration_ms: u64,
+  },
+  ImmutableProperties {
+    properties: Vec<KeyValuePair>,
+  },
+  DefaultPublisherPriority {
+    priority: u8,
+  },
+  DefaultPublisherGroupOrder {
+    order: GroupOrder,
+  },
+  DynamicGroups {
+    enabled: bool,
+  },
+  Unknown {
+    kvp: KeyValuePair,
+  },
+  /// Unrecognized property in the mandatory range (§2.5.1). Preserved through
+  /// parsing so the handler can reject the request instead of the parser
+  /// killing the session.
+  UnknownMandatory {
+    kvp: KeyValuePair,
+  },
+}
+
+/// §2.5.1 Mandatory Track Properties range.
+pub const MANDATORY_TRACK_PROPERTY_RANGE: std::ops::RangeInclusive<u64> = 0x4000..=0x7FFF;
+
+/// True if any property is an unrecognized Mandatory Track Property (§2.5.1).
+pub fn has_unsupported_mandatory(properties: &[TrackProperty]) -> bool {
+  properties
+    .iter()
+    .any(|p| matches!(p, TrackProperty::UnknownMandatory { .. }))
 }
 
 impl TrackProperty {
@@ -50,7 +82,7 @@ impl TrackProperty {
         TrackPropertyType::DefaultPublisherGroupOrder as u64
       }
       Self::DynamicGroups { .. } => TrackPropertyType::DynamicGroups as u64,
-      Self::Unknown { kvp } => kvp.get_type(),
+      Self::Unknown { kvp } | Self::UnknownMandatory { kvp } => kvp.get_type(),
     }
   }
 
@@ -66,7 +98,16 @@ impl TrackProperty {
     let type_value = kvp.get_type();
     let ext_type = match TrackPropertyType::try_from(type_value) {
       Ok(t) => t,
-      Err(_) => return Ok(Self::Unknown { kvp }),
+      Err(_) => {
+        // §2.5.1: keep mandatory-range unknowns as UnknownMandatory (handler
+        // rejects them); forward ordinary unknowns. Check the full u64 — a u16
+        // cast would alias high types into the range (e.g. 0x14000 -> 0x4000).
+        if MANDATORY_TRACK_PROPERTY_RANGE.contains(&type_value) {
+          return Ok(Self::UnknownMandatory { kvp });
+        } else {
+          return Ok(Self::Unknown { kvp });
+        }
+      }
     };
 
     match ext_type {
@@ -181,7 +222,7 @@ impl TryInto<KeyValuePair> for TrackProperty {
         TrackPropertyType::DynamicGroups as u64,
         if enabled { 1 } else { 0 },
       ),
-      Self::Unknown { kvp } => Ok(kvp),
+      Self::Unknown { kvp } | Self::UnknownMandatory { kvp } => Ok(kvp),
     }
   }
 }
@@ -329,6 +370,80 @@ mod tests {
       TrackProperty::deserialize(kvp).unwrap_err(),
       ParseError::ProtocolViolation { .. }
     ));
+  }
+
+  #[test]
+  fn test_mandatory_range_unknown_is_preserved() {
+    // §2.5.1: unknown types in 0x4000-0x7FFF are preserved as UnknownMandatory
+    // (the handling layer rejects the request), including the range boundaries.
+    // Even types carry a VarInt, odd types carry Bytes.
+    let varint_types = [0x4000u64, 0x5000, 0x7FFE];
+    for ty in varint_types {
+      let kvp = KeyValuePair::try_new_varint(ty, 1).unwrap();
+      assert_eq!(
+        TrackProperty::deserialize(kvp.clone()).unwrap(),
+        TrackProperty::UnknownMandatory { kvp: kvp.clone() },
+        "type {ty:#x} should be UnknownMandatory"
+      );
+      // Byte-identical on round-trip so a REQUEST_ERROR path can still inspect it.
+      assert_eq!(
+        roundtrip(TrackProperty::UnknownMandatory { kvp: kvp.clone() }).type_value(),
+        ty
+      );
+    }
+    let bytes_types = [0x4001u64, 0x7FFF];
+    for ty in bytes_types {
+      let kvp = KeyValuePair::try_new_bytes(ty, Bytes::from_static(b"x")).unwrap();
+      assert_eq!(
+        TrackProperty::deserialize(kvp.clone()).unwrap(),
+        TrackProperty::UnknownMandatory { kvp },
+        "type {ty:#x} should be UnknownMandatory"
+      );
+    }
+  }
+
+  #[test]
+  fn test_has_unsupported_mandatory_helper() {
+    let ordinary = vec![
+      TrackProperty::ObjectDeliveryTimeout { timeout_ms: 1 },
+      TrackProperty::Unknown {
+        kvp: KeyValuePair::try_new_varint(0x8000, 1).unwrap(),
+      },
+    ];
+    assert!(!has_unsupported_mandatory(&ordinary));
+
+    let mut with_mandatory = ordinary.clone();
+    with_mandatory.push(TrackProperty::UnknownMandatory {
+      kvp: KeyValuePair::try_new_varint(0x4000, 1).unwrap(),
+    });
+    assert!(has_unsupported_mandatory(&with_mandatory));
+  }
+
+  #[test]
+  fn test_outside_mandatory_range_forwarded_verbatim() {
+    // Just below (0x3FFF), just above (0x8000), and a low value are all unknown
+    // ordinary properties: preserved as Unknown and byte-identical on round-trip.
+    let below = KeyValuePair::try_new_bytes(0x3FFF, Bytes::from_static(b"lo")).unwrap();
+    let above = KeyValuePair::try_new_varint(0x8000, 42).unwrap();
+    for kvp in [below, above] {
+      let ext = TrackProperty::Unknown { kvp: kvp.clone() };
+      assert_eq!(roundtrip(ext.clone()), ext);
+      assert_eq!(
+        TrackProperty::deserialize(kvp.clone()).unwrap(),
+        TrackProperty::Unknown { kvp }
+      );
+    }
+  }
+
+  #[test]
+  fn test_mandatory_range_check_uses_full_u64() {
+    // Regression: 0x14000 truncates to 0x4000 in u16, but as a full u64 it is far
+    // above the mandatory range and must be forwarded as Unknown, not flagged.
+    let kvp = KeyValuePair::try_new_varint(0x14000, 7).unwrap();
+    assert_eq!(
+      TrackProperty::deserialize(kvp.clone()).unwrap(),
+      TrackProperty::Unknown { kvp }
+    );
   }
 
   #[test]

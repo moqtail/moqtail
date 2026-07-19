@@ -38,7 +38,8 @@ async fn main() -> Result<(), anyhow::Error> {
     cli.server, cli.namespace, cli.track_name
   );
 
-  let moq_conn = MoqConnection::establish(&cli.server, cli.no_cert_validation).await?;
+  let moq_conn =
+    MoqConnection::establish(&cli.server, cli.no_cert_validation, cli.transport).await?;
 
   match cli.command {
     Command::Publish => {

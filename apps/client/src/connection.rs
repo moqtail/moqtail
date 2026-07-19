@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::cli::Transport;
 use anyhow::Result;
 use moqtail::model::control::constant::SUPPORTED_VERSIONS;
 use moqtail::model::control::control_message::ControlMessageTrait;
@@ -40,24 +41,45 @@ pub struct MoqConnection {
 }
 
 impl MoqConnection {
-  pub async fn establish(server: &str, no_cert_validation: bool) -> Result<Self> {
+  pub async fn establish(
+    server: &str,
+    no_cert_validation: bool,
+    transport: Transport,
+  ) -> Result<Self> {
     let mut setup_options = vec![SetupOption::new_max_request_id(1000).try_into().unwrap()];
 
-    let connection = match server.strip_prefix("moqt://") {
-      Some(authority_and_path) => {
-        let (authority, path) = split_authority_and_path(authority_and_path);
-        // Raw QUIC only there's no HTTP CONNECT to carry the authority/path,
-        // so CLIENT_SETUP must carry them instead. Sending these
-        // over WebTransport is a protocol violation, so this only happens here.
+    // moqt:// is the single input scheme; the transport is chosen separately.
+    let url = MoqtUrl::parse(server)?;
+    if let Some(fragment) = &url.fragment {
+      // The fragment is processed locally and never sent to the server.
+      info!(
+        "moqt:// fragment (local-only): {}:{}",
+        fragment.kind, fragment.value
+      );
+    }
+
+    let connection = match transport {
+      Transport::Quic => {
+        // Native QUIC has no HTTP CONNECT to carry the authority/path, so
+        // CLIENT_SETUP carries them instead. Sending AUTHORITY over WebTransport
+        // is a protocol violation, so this only happens on the QUIC path.
         setup_options.push(
-          SetupOption::new_authority(authority.to_string())
+          SetupOption::new_authority(url.authority.clone())
             .try_into()
             .unwrap(),
         );
-        setup_options.push(SetupOption::new_path(path).try_into().unwrap());
-        Self::connect_quic(authority, no_cert_validation).await?
+        setup_options.push(
+          SetupOption::new_path(url.path_and_query())
+            .try_into()
+            .unwrap(),
+        );
+        Self::connect_quic(&url.authority, no_cert_validation).await?
       }
-      None => Self::connect_webtransport(server, no_cert_validation).await?,
+      Transport::WebTransport => {
+        // WebTransport derives an https:// URI from the moqt:// URL; the CONNECT
+        // request carries the authority/path, so no AUTHORITY/PATH setup options.
+        Self::connect_webtransport(&url.to_https(), no_cert_validation).await?
+      }
     };
 
     info!("Connected! Connection ID: {}", connection.stable_id());
@@ -228,15 +250,159 @@ async fn resolve_host_port(host: &str, port: u16) -> Result<SocketAddr> {
     .ok_or_else(|| anyhow::anyhow!("DNS resolution failed for host: {}", host))
 }
 
-/// Splits `moqt://` URI remainder (everything after the scheme) into the authority
-/// (`host[:port]`) and the path-abempty (+ `?query`, if present)
-/// e.g. `host:9443/moq-relay` -> (`host:9443`, `/moq-relay`), `host:9443` -> (`host:9443`, ``).
-fn split_authority_and_path(authority_and_path: &str) -> (&str, String) {
-  match authority_and_path.find('/') {
-    Some(idx) => (
-      &authority_and_path[..idx],
-      authority_and_path[idx..].to_string(),
-    ),
-    None => (authority_and_path, String::new()),
+/// A local-only fragment, `#<type>:<value>`. Not transmitted to the server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MoqtFragment {
+  kind: String,
+  value: String,
+}
+
+/// A parsed `moqt://authority/path[?query][#fragment]` URI.
+///
+/// `moqt-URI = "moqt" "://" authority path-abempty [ "?" query ]`, with an
+/// optional local-only fragment. `authority` is `host[:port]`; `path` keeps its
+/// leading `/` (empty when absent); `query` excludes the `?`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MoqtUrl {
+  authority: String,
+  path: String,
+  query: Option<String>,
+  fragment: Option<MoqtFragment>,
+}
+
+impl MoqtUrl {
+  fn parse(input: &str) -> Result<Self> {
+    let rest = input
+      .strip_prefix("moqt://")
+      .ok_or_else(|| anyhow::anyhow!("server URL must use the moqt:// scheme: {input}"))?;
+
+    // The fragment is split off first; it never reaches authority/path/query.
+    let (rest, fragment) = match rest.split_once('#') {
+      Some((before, frag)) => (before, Some(parse_fragment(frag)?)),
+      None => (rest, None),
+    };
+
+    // Then the query, then the path, leaving the authority.
+    let (rest, query) = match rest.split_once('?') {
+      Some((before, q)) => (before, Some(q.to_string())),
+      None => (rest, None),
+    };
+
+    let (authority, path) = match rest.find('/') {
+      Some(idx) => (&rest[..idx], rest[idx..].to_string()),
+      None => (rest, String::new()),
+    };
+
+    if authority.is_empty() {
+      anyhow::bail!("moqt:// URL has an empty authority: {input}");
+    }
+
+    Ok(Self {
+      authority: authority.to_string(),
+      path,
+      query,
+      fragment,
+    })
+  }
+
+  /// The `path[?query]` string carried in the PATH setup option on native QUIC.
+  fn path_and_query(&self) -> String {
+    match &self.query {
+      Some(q) => format!("{}?{}", self.path, q),
+      None => self.path.clone(),
+    }
+  }
+
+  /// The equivalent `https://` URL for WebTransport, dropping the local fragment.
+  fn to_https(&self) -> String {
+    format!("https://{}{}", self.authority, self.path_and_query())
+  }
+}
+
+/// Parses a fragment `<type>:<value>`. The type identifier must be ASCII
+/// lowercase letters, digits, and hyphens; the value is opaque here.
+fn parse_fragment(fragment: &str) -> Result<MoqtFragment> {
+  let (kind, value) = fragment
+    .split_once(':')
+    .ok_or_else(|| anyhow::anyhow!("moqt:// fragment must be <type>:<value>, got #{fragment}"))?;
+  if kind.is_empty()
+    || !kind
+      .bytes()
+      .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+  {
+    anyhow::bail!("moqt:// fragment type must be [a-z0-9-]+, got #{fragment}");
+  }
+  Ok(MoqtFragment {
+    kind: kind.to_string(),
+    value: value.to_string(),
+  })
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn parses_authority_only() {
+    let url = MoqtUrl::parse("moqt://host:4433").unwrap();
+    assert_eq!(url.authority, "host:4433");
+    assert_eq!(url.path, "");
+    assert_eq!(url.query, None);
+    assert_eq!(url.fragment, None);
+    assert_eq!(url.to_https(), "https://host:4433");
+    assert_eq!(url.path_and_query(), "");
+  }
+
+  #[test]
+  fn parses_path_and_query() {
+    let url = MoqtUrl::parse("moqt://host:4433/moq-relay?a=1").unwrap();
+    assert_eq!(url.authority, "host:4433");
+    assert_eq!(url.path, "/moq-relay");
+    assert_eq!(url.query.as_deref(), Some("a=1"));
+    assert_eq!(url.path_and_query(), "/moq-relay?a=1");
+    assert_eq!(url.to_https(), "https://host:4433/moq-relay?a=1");
+  }
+
+  #[test]
+  fn fragment_is_parsed_and_stripped_from_https_and_path() {
+    let url = MoqtUrl::parse("moqt://host/app?q=1#warp:abc").unwrap();
+    assert_eq!(
+      url.fragment,
+      Some(MoqtFragment {
+        kind: "warp".to_string(),
+        value: "abc".to_string(),
+      })
+    );
+    // The fragment never appears in the transmitted URL or path.
+    assert_eq!(url.to_https(), "https://host/app?q=1");
+    assert_eq!(url.path_and_query(), "/app?q=1");
+  }
+
+  #[test]
+  fn fragment_value_may_contain_colons() {
+    let url = MoqtUrl::parse("moqt://host#loc:a:b:c").unwrap();
+    let f = url.fragment.unwrap();
+    assert_eq!(f.kind, "loc");
+    assert_eq!(f.value, "a:b:c");
+  }
+
+  #[test]
+  fn rejects_non_moqt_scheme() {
+    assert!(MoqtUrl::parse("https://host:4433").is_err());
+  }
+
+  #[test]
+  fn rejects_empty_authority() {
+    assert!(MoqtUrl::parse("moqt:///path").is_err());
+  }
+
+  #[test]
+  fn rejects_malformed_fragments() {
+    // No colon.
+    assert!(MoqtUrl::parse("moqt://host#nocolon").is_err());
+    // Empty type.
+    assert!(MoqtUrl::parse("moqt://host#:value").is_err());
+    // Invalid type characters (uppercase).
+    assert!(MoqtUrl::parse("moqt://host#Warp:abc").is_err());
   }
 }

@@ -12,8 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::server::client::MOQTClient;
 use crate::server::session_context::{PendingRequest, SessionContext};
-use crate::server::{client::MOQTClient, session::Session};
+use crate::server::track_manager::SubscribeKind;
 use core::result::Result;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::control::control_message::ControlMessage;
@@ -30,11 +31,11 @@ use tokio::sync::mpsc::UnboundedSender;
 use tracing::{info, warn};
 
 /// The relay will not enumerate a namespace prefix broader than this many fields.
-const MAX_NAMESPACE_PREFIX_FIELDS: usize = 32;
+pub(crate) const MAX_NAMESPACE_PREFIX_FIELDS: usize = 32;
 
 /// A NAMESPACE_TOO_LARGE error if the prefix exceeds what the relay will
 /// enumerate, otherwise `None`.
-fn oversized_namespace_error(
+pub(crate) fn oversized_namespace_error(
   prefix: &moqtail::model::common::tuple::Tuple,
 ) -> Option<RequestError> {
   if prefix.fields.len() > MAX_NAMESPACE_PREFIX_FIELDS {
@@ -76,10 +77,14 @@ pub async fn handle_subscribe_namespace(
     return Ok(());
   }
 
-  // Check for prefix overlap per draft spec (PREFIX_OVERLAP)
+  // Independent overlap space: only other SUBSCRIBE_NAMESPACE prefixes conflict.
   if let Some(existing_prefix) = context
     .track_manager
-    .find_overlapping_namespace_subscription(client.connection_id, &sub_ns.track_namespace_prefix)
+    .find_overlapping_namespace_subscription(
+      client.connection_id,
+      &sub_ns.track_namespace_prefix,
+      SubscribeKind::Namespace,
+    )
     .await
   {
     warn!(
@@ -104,7 +109,8 @@ pub async fn handle_subscribe_namespace(
     .add_namespace_subscriber(
       sub_ns.track_namespace_prefix.clone(),
       client.clone(),
-      (*sub_ns).clone(),
+      SubscribeKind::Namespace,
+      sub_ns.parameters.clone(),
       namespace_tx,
     )
     .await;
@@ -132,99 +138,74 @@ pub async fn handle_subscribe_namespace(
     sub_ns.request_id
   );
 
-  // Catch-up: send NAMESPACE for each already-announced matching namespace
+  // Discovery: send NAMESPACE for each matching announced namespace, and echo the
+  // namespaces of tracks already published under the prefix.
+  send_namespace_catchup(stream_handler, &context, &sub_ns.track_namespace_prefix).await?;
+
+  Ok(())
+}
+
+/// Send NAMESPACE messages for a discovery subscription: matching announced
+/// namespaces and the namespaces of tracks already published under the prefix.
+async fn send_namespace_catchup(
+  stream_handler: &mut ControlStreamHandler,
+  context: &Arc<SessionContext>,
+  prefix: &moqtail::model::common::tuple::Tuple,
+) -> Result<(), TerminationCode> {
+  let mut seen: std::collections::HashSet<moqtail::model::common::tuple::Tuple> =
+    std::collections::HashSet::new();
+
   let matched_announcements = context
     .track_manager
-    .get_announcements_by_prefix(&sub_ns.track_namespace_prefix)
+    .get_announcements_by_prefix(prefix)
     .await;
-
   for ns in matched_announcements {
-    if let Some(suffix) = ns.suffix(&sub_ns.track_namespace_prefix) {
+    if seen.insert(ns.clone())
+      && let Some(suffix) = ns.suffix(prefix)
+    {
       let ns_msg = ControlMessage::Namespace(Box::new(Namespace::new(suffix)));
       stream_handler.send(&ns_msg).await?;
     }
   }
 
-  // Catch up on active published Tracks (via control stream)
   let matched_tracks = context
     .track_manager
-    .get_tracks_and_publishes_by_namespace_prefix(&sub_ns.track_namespace_prefix)
+    .get_tracks_and_publishes_by_namespace_prefix(prefix)
     .await;
-
-  for (full_track_name, track_arc, original_publish_message_opt) in matched_tracks {
-    if let Some(mut original_publish_message) = original_publish_message_opt {
-      info!(
-        "Forwarding existing track for new subscriber: {:?}",
-        full_track_name
-      );
-
-      let relay_track_id = {
-        let track = track_arc.read().await;
-        track.relay_track_id
-      };
-
-      let relay_publish_id =
-        Session::get_next_relay_request_id(context.relay_next_request_id.clone()).await;
-      original_publish_message.request_id = relay_publish_id;
-      original_publish_message.track_alias = relay_track_id;
-
-      {
-        let mut map = context.relay_pending_requests.write().await;
-        map.insert(
-          relay_publish_id,
-          PendingRequest::Publish {
-            publisher_connection_id: client.connection_id,
-            original_request_id: relay_publish_id,
-            message: original_publish_message.clone(),
-          },
-        );
-      }
-
-      client
-        .queue_message(ControlMessage::Publish(Box::new(
-          original_publish_message.clone(),
-        )))
-        .await;
-
-      let track_read = track_arc.read().await;
-      if let Err(e) = track_read
-        .add_subscription(client.clone(), original_publish_message.clone(), false)
-        .await
-      {
-        warn!("Failed retroactive auto-subscribe for track: {:?}", e);
-      } else {
-        info!("Successfully initialized retroactive subscription.");
-      }
-    } else {
-      warn!(
-        "The track has no associated publish message, track: {:?}",
-        full_track_name
-      );
+  for (full_track_name, _track_arc, _publish) in matched_tracks {
+    let ns = full_track_name.namespace.clone();
+    if seen.insert(ns.clone())
+      && let Some(suffix) = ns.suffix(prefix)
+    {
+      let ns_msg = ControlMessage::Namespace(Box::new(Namespace::new(suffix)));
+      stream_handler.send(&ns_msg).await?;
     }
   }
-
   Ok(())
 }
 
 /// Remove the namespace subscription when the subscriber closes or resets the bi-stream.
 pub async fn cancel(client: Arc<MOQTClient>, request_id: u64, context: &Arc<SessionContext>) {
-  let prefix = {
+  let target = {
     let mut map = client.inbound_requests.write().await;
     match map.remove(&request_id) {
       Some(PendingRequest::SubscribeNamespace { message, .. }) => {
-        Some(message.track_namespace_prefix)
+        Some((message.track_namespace_prefix, SubscribeKind::Namespace))
+      }
+      Some(PendingRequest::SubscribeTracks { message, .. }) => {
+        Some((message.track_namespace_prefix, SubscribeKind::Tracks))
       }
       _ => None,
     }
   };
-  if let Some(prefix) = prefix {
+  if let Some((prefix, kind)) = target {
     context
       .track_manager
-      .remove_namespace_subscriber_by_prefix(&prefix, client.connection_id)
+      .remove_namespace_subscriber_by_prefix(&prefix, client.connection_id, kind)
       .await;
     info!(
-      "Cancelled namespace subscription for prefix {:?} (connection {})",
-      prefix, client.connection_id
+      "Cancelled {:?} subscription for prefix {:?} (connection {})",
+      kind, prefix, client.connection_id
     );
   }
 }
@@ -249,9 +230,13 @@ pub async fn handle(
             apply_message_parameter_update(&mut message.parameters, update_msg.parameters.clone());
             message.track_namespace_prefix.clone()
           }
+          Some(PendingRequest::SubscribeTracks { message, .. }) => {
+            apply_message_parameter_update(&mut message.parameters, update_msg.parameters.clone());
+            message.track_namespace_prefix.clone()
+          }
           _ => {
             warn!(
-              "REQUEST_UPDATE for SUBSCRIBE_NAMESPACE request {} cannot be applied; closing the stream",
+              "REQUEST_UPDATE for prefix subscription request {} cannot be applied; closing the stream",
               existing_req_id
             );
             handler.reset(StreamResetCode::Cancelled.to_u64());

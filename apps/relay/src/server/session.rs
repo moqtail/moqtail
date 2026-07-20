@@ -486,27 +486,46 @@ impl Session {
     context: Arc<SessionContext>,
   ) {
     match msg {
-      ControlMessage::SubscribeNamespace(sub_ns) => {
-        let request_id = sub_ns.request_id;
+      first @ (ControlMessage::SubscribeNamespace(_) | ControlMessage::SubscribeTracks(_)) => {
+        let request_id = match &first {
+          ControlMessage::SubscribeNamespace(m) => m.request_id,
+          ControlMessage::SubscribeTracks(m) => m.request_id,
+          _ => unreachable!("matched above"),
+        };
 
         let (namespace_tx, mut namespace_rx) =
           tokio::sync::mpsc::unbounded_channel::<ControlMessage>();
 
-        let result = message_handlers::subscribe_namespace_handler::handle_subscribe_namespace(
-          client.clone(),
-          &mut stream_handler,
-          sub_ns,
-          context.clone(),
-          namespace_tx,
-        )
-        .await;
+        let result = match first {
+          ControlMessage::SubscribeNamespace(sub_ns) => {
+            message_handlers::subscribe_namespace_handler::handle_subscribe_namespace(
+              client.clone(),
+              &mut stream_handler,
+              sub_ns,
+              context.clone(),
+              namespace_tx,
+            )
+            .await
+          }
+          ControlMessage::SubscribeTracks(sub_tracks) => {
+            message_handlers::subscribe_tracks_handler::handle_subscribe_tracks(
+              client.clone(),
+              &mut stream_handler,
+              sub_tracks,
+              context.clone(),
+              namespace_tx,
+            )
+            .await
+          }
+          _ => unreachable!("matched above"),
+        };
 
         if let Err(e) = result {
-          error!("handle_subscribe_namespace error: {:?}", e);
+          error!("prefix subscription handler error: {:?}", e);
           return;
         }
 
-        // Long-lived loop: forward NAMESPACE messages to bi-stream, or cancel on stream close
+        // Long-lived loop: forward NAMESPACE/PUBLISH messages to the bi-stream, or cancel on close.
         loop {
           tokio::select! {
             biased;

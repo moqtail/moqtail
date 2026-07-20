@@ -14,6 +14,7 @@
 
 use crate::server::client::MOQTClient;
 use crate::server::session_context::{PendingRequest, SessionContext};
+use crate::server::track_manager::SubscribeKind;
 use core::result::Result;
 use moqtail::model::control::namespace::Namespace;
 use moqtail::model::control::{control_message::ControlMessage, request_ok::RequestOk};
@@ -65,7 +66,11 @@ pub async fn handle(
         let subs_map = context.track_manager.namespace_subscribers.read().await;
         for (prefix, subscribers) in subs_map.iter() {
           if m.track_namespace.starts_with(prefix) {
-            for (sub, _subscribe_ns_message, namespace_tx) in subscribers {
+            for (sub, kind, _params, namespace_tx) in subscribers {
+              // NAMESPACE advertisements go to discovery (SUBSCRIBE_NAMESPACE) subscribers.
+              if *kind != SubscribeKind::Namespace {
+                continue;
+              }
               // Don't echo back to announcer
               if sub.connection_id == client.connection_id {
                 continue;
@@ -125,7 +130,7 @@ pub async fn handle(
 
       let downstream_sessions = context
         .track_manager
-        .get_namespace_subscribers(&target_namespace)
+        .get_namespace_subscribers(&target_namespace, SubscribeKind::Namespace)
         .await;
 
       for session in downstream_sessions {

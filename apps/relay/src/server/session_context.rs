@@ -48,6 +48,11 @@ pub enum PendingRequest {
     original_request_id: u64,
     message: moqtail::model::control::subscribe_namespace::SubscribeNamespace,
   },
+  SubscribeTracks {
+    client_connection_id: usize,
+    original_request_id: u64,
+    message: moqtail::model::control::subscribe_tracks::SubscribeTracks,
+  },
   Publish {
     publisher_connection_id: usize,
     original_request_id: u64,

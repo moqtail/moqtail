@@ -29,6 +29,7 @@ mod publish_handler;
 mod publish_namespace_handler;
 pub(crate) mod subscribe_handler;
 pub(crate) mod subscribe_namespace_handler;
+pub(crate) mod subscribe_tracks_handler;
 mod track_status_handler;
 use super::utils;
 
@@ -97,6 +98,7 @@ impl MessageHandler {
           Some(PendingRequest::PublishNamespace { .. }) => Route::PublishNamespace,
           Some(PendingRequest::Subscribe(_)) => Route::Subscribe,
           Some(PendingRequest::SubscribeNamespace { .. }) => Route::SubscribeNamespace,
+          Some(PendingRequest::SubscribeTracks { .. }) => Route::SubscribeNamespace,
           Some(PendingRequest::TrackStatus(_)) => Route::TrackStatus,
           Some(PendingRequest::RequestUpdate { .. }) => Route::NotFound,
           None => Route::NotFound,

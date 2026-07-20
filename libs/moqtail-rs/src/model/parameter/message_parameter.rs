@@ -149,6 +149,7 @@ impl MessageParameter {
           | ControlMessageType::Subscribe
           | ControlMessageType::RequestUpdate
           | ControlMessageType::SubscribeNamespace
+          | ControlMessageType::SubscribeTracks
           | ControlMessageType::PublishNamespace
           | ControlMessageType::TrackStatus
           | ControlMessageType::Fetch
@@ -212,6 +213,7 @@ impl MessageParameter {
           | ControlMessageType::PublishOk
           | ControlMessageType::RequestOk
           | ControlMessageType::SubscribeNamespace
+          | ControlMessageType::SubscribeTracks
       ),
       Self::NewGroupRequest { .. } => matches!(
         msg_type,

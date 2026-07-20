@@ -18,9 +18,10 @@ use moqtail::model::common::tuple::Tuple;
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::publish::Publish;
 use moqtail::model::control::publish_namespace::PublishNamespace;
-use moqtail::model::control::subscribe_namespace::SubscribeNamespace;
 use moqtail::model::data::full_track_name::FullTrackName;
-use moqtail::model::parameter::message_parameter::apply_message_parameter_update;
+use moqtail::model::parameter::message_parameter::{
+  MessageParameter, apply_message_parameter_update,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -29,9 +30,25 @@ use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, info, warn};
 
 pub type NamespacePrefix = Tuple;
+
+/// The two prefix-subscription request types. They share a wire shape but have
+/// independent overlap spaces: a Namespace and a Tracks subscription may share a
+/// prefix, but two of the same kind may not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubscribeKind {
+  /// SUBSCRIBE_NAMESPACE (0x50): discovery — the relay sends NAMESPACE /
+  /// NAMESPACE_DONE for matching namespaces.
+  Namespace,
+  /// SUBSCRIBE_TRACKS (0x51): the relay sends a PUBLISH for every matching track.
+  Tracks,
+}
+
+/// A prefix subscription: which client, which kind, its parameters, and the
+/// channel that forwards messages onto its request stream.
 pub type NamespaceSubscriber = (
   Arc<MOQTClient>,
-  SubscribeNamespace,
+  SubscribeKind,
+  Vec<MessageParameter>,
   UnboundedSender<ControlMessage>,
 );
 pub type AnnouncementSubscriber = (Arc<MOQTClient>, PublishNamespace);
@@ -250,7 +267,8 @@ impl TrackManager {
     &self,
     prefix: Tuple,
     client: Arc<MOQTClient>,
-    message: SubscribeNamespace,
+    kind: SubscribeKind,
+    parameters: Vec<MessageParameter>,
     namespace_tx: UnboundedSender<ControlMessage>,
   ) {
     let mut subs = self.namespace_subscribers.write().await;
@@ -258,17 +276,22 @@ impl TrackManager {
     // Get or create the list for this prefix
     let clients = subs.entry(prefix.clone()).or_insert_with(Vec::new);
 
-    // Avoid duplicates
+    // Avoid duplicates of the same client and kind
     if !clients
       .iter()
-      .any(|(c, _, _)| c.connection_id == client.connection_id)
+      .any(|(c, k, _, _)| c.connection_id == client.connection_id && *k == kind)
     {
-      clients.push((client, message, namespace_tx));
+      clients.push((client, kind, parameters, namespace_tx));
     }
     info!("Added namespace subscriber for prefix {:?}", prefix);
   }
 
-  pub async fn get_namespace_subscribers(&self, target_namespace: &Tuple) -> Vec<Arc<MOQTClient>> {
+  /// Clients of the given kind whose prefix matches the target namespace.
+  pub async fn get_namespace_subscribers(
+    &self,
+    target_namespace: &Tuple,
+    kind: SubscribeKind,
+  ) -> Vec<Arc<MOQTClient>> {
     let subs = self.namespace_subscribers.read().await;
     let mut interested_clients = Vec::new();
 
@@ -276,8 +299,10 @@ impl TrackManager {
     // Example: Target "meet.room1", Prefix "meet" -> Match.
     for (prefix, clients) in subs.iter() {
       if target_namespace.starts_with(prefix) {
-        for (client, _message, _tx) in clients {
-          interested_clients.push(client.clone());
+        for (client, k, _params, _tx) in clients {
+          if *k == kind {
+            interested_clients.push(client.clone());
+          }
         }
       }
     }
@@ -330,15 +355,20 @@ impl TrackManager {
   pub async fn remove_namespace_subscriber(&self, connection_id: usize) {
     let mut subs = self.namespace_subscribers.write().await;
     for clients in subs.values_mut() {
-      clients.retain(|(c, _, _)| c.connection_id != connection_id);
+      clients.retain(|(c, _, _, _)| c.connection_id != connection_id);
     }
     subs.retain(|_, clients| !clients.is_empty());
   }
 
-  pub async fn remove_namespace_subscriber_by_prefix(&self, prefix: &Tuple, connection_id: usize) {
+  pub async fn remove_namespace_subscriber_by_prefix(
+    &self,
+    prefix: &Tuple,
+    connection_id: usize,
+    kind: SubscribeKind,
+  ) {
     let mut subs = self.namespace_subscribers.write().await;
     if let Some(clients) = subs.get_mut(prefix) {
-      clients.retain(|(c, _, _)| c.connection_id != connection_id);
+      clients.retain(|(c, k, _, _)| !(c.connection_id == connection_id && *k == kind));
     }
     subs.retain(|_, clients| !clients.is_empty());
   }
@@ -362,11 +392,11 @@ impl TrackManager {
   ) {
     let mut subs = self.namespace_subscribers.write().await;
     if let Some(clients) = subs.get_mut(prefix)
-      && let Some((_client, message, _tx)) = clients
+      && let Some((_client, _kind, params, _tx)) = clients
         .iter_mut()
-        .find(|(c, _, _)| c.connection_id == connection_id)
+        .find(|(c, _, _, _)| c.connection_id == connection_id)
     {
-      apply_message_parameter_update(&mut message.parameters, new_parameters);
+      apply_message_parameter_update(params, new_parameters);
     }
   }
 
@@ -418,16 +448,20 @@ impl TrackManager {
   /// Returns the first existing namespace subscription prefix for `connection_id`
   /// that overlaps with `new_prefix` (equal, or one is a prefix of the other).
   /// Returns `None` if no overlap is found.
+  /// A prefix already subscribed by this connection with the same kind that
+  /// overlaps the new prefix. Overlap spaces are independent per kind, so a
+  /// SUBSCRIBE_NAMESPACE never conflicts with a SUBSCRIBE_TRACKS.
   pub async fn find_overlapping_namespace_subscription(
     &self,
     connection_id: usize,
     new_prefix: &Tuple,
+    kind: SubscribeKind,
   ) -> Option<Tuple> {
     let subs = self.namespace_subscribers.read().await;
     for (existing_prefix, clients) in subs.iter() {
       if clients
         .iter()
-        .any(|(c, _, _)| c.connection_id == connection_id)
+        .any(|(c, k, _, _)| c.connection_id == connection_id && *k == kind)
         && namespace_prefixes_overlap(new_prefix, existing_prefix)
       {
         return Some(existing_prefix.clone());

@@ -17,6 +17,7 @@ use crate::server::session::Session;
 use crate::server::session_context::PendingRequest;
 use crate::server::session_context::SessionContext;
 use crate::server::track::{Track, TrackStatus};
+use crate::server::track_manager::SubscribeKind;
 use core::result::Result;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::control::{
@@ -167,7 +168,7 @@ pub async fn handle(
 
         let subscribers = context
           .track_manager
-          .get_namespace_subscribers(&m.track_namespace)
+          .get_namespace_subscribers(&m.track_namespace, SubscribeKind::Tracks)
           .await;
 
         if !subscribers.is_empty() {

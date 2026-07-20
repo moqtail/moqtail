@@ -17,14 +17,12 @@ use crate::model::error::ParseError;
 use bytes::{Buf, Bytes};
 
 use super::{
-  constant::ControlMessageType, fetch::Fetch, fetch_cancel::FetchCancel, fetch_ok::FetchOk,
-  goaway::GoAway, namespace::Namespace, namespace_done::NamespaceDone, publish::Publish,
-  publish_done::PublishDone, publish_namespace::PublishNamespace,
-  publish_namespace_cancel::PublishNamespaceCancel, publish_namespace_done::PublishNamespaceDone,
-  request_error::RequestError, request_ok::RequestOk, request_update::RequestUpdate, setup::Setup,
-  subscribe::Subscribe, subscribe_namespace::SubscribeNamespace, subscribe_ok::SubscribeOk,
-  switch::Switch, track_status::TrackStatus, unsubscribe::Unsubscribe,
-  unsubscribe_namespace::UnsubscribeNamespace,
+  constant::ControlMessageType, fetch::Fetch, fetch_ok::FetchOk, goaway::GoAway,
+  namespace::Namespace, namespace_done::NamespaceDone, publish::Publish, publish_done::PublishDone,
+  publish_namespace::PublishNamespace, request_error::RequestError, request_ok::RequestOk,
+  request_update::RequestUpdate, setup::Setup, subscribe::Subscribe,
+  subscribe_namespace::SubscribeNamespace, subscribe_ok::SubscribeOk, switch::Switch,
+  track_status::TrackStatus,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -32,12 +30,10 @@ pub enum ControlMessage {
   Namespace(Box<Namespace>),
   NamespaceDone(Box<NamespaceDone>),
   PublishNamespace(Box<PublishNamespace>),
-  PublishNamespaceCancel(Box<PublishNamespaceCancel>),
   RequestOk(Box<RequestOk>),
   Publish(Box<Publish>),
   PublishDone(Box<PublishDone>),
   Fetch(Box<Fetch>),
-  FetchCancel(Box<FetchCancel>),
   FetchOk(Box<FetchOk>),
   Goaway(Box<GoAway>),
   Setup(Box<Setup>),
@@ -45,11 +41,8 @@ pub enum ControlMessage {
   SubscribeOk(Box<SubscribeOk>),
   RequestUpdate(Box<RequestUpdate>),
   TrackStatus(Box<TrackStatus>),
-  PublishNamespaceDone(Box<PublishNamespaceDone>),
-  Unsubscribe(Box<Unsubscribe>),
   SubscribeNamespace(Box<SubscribeNamespace>),
   RequestError(Box<RequestError>),
-  UnsubscribeNamespace(Box<UnsubscribeNamespace>),
   Switch(Box<Switch>),
 }
 
@@ -94,13 +87,6 @@ impl ControlMessage {
       ControlMessageType::PublishNamespace => {
         PublishNamespace::parse_payload(&mut payload).map(ControlMessage::PublishNamespace)
       }
-      ControlMessageType::PublishNamespaceCancel => {
-        PublishNamespaceCancel::parse_payload(&mut payload)
-          .map(ControlMessage::PublishNamespaceCancel)
-      }
-      ControlMessageType::PublishNamespaceDone => {
-        PublishNamespaceDone::parse_payload(&mut payload).map(ControlMessage::PublishNamespaceDone)
-      }
       ControlMessageType::RequestError => {
         RequestError::parse_payload(&mut payload).map(ControlMessage::RequestError)
       }
@@ -120,9 +106,6 @@ impl ControlMessage {
       }
       ControlMessageType::Setup => Setup::parse_payload(&mut payload).map(ControlMessage::Setup),
       ControlMessageType::Fetch => Fetch::parse_payload(&mut payload).map(ControlMessage::Fetch),
-      ControlMessageType::FetchCancel => {
-        FetchCancel::parse_payload(&mut payload).map(ControlMessage::FetchCancel)
-      }
       ControlMessageType::FetchOk => {
         FetchOk::parse_payload(&mut payload).map(ControlMessage::FetchOk)
       }
@@ -139,14 +122,8 @@ impl ControlMessage {
       ControlMessageType::TrackStatus => {
         TrackStatus::parse_payload(&mut payload).map(ControlMessage::TrackStatus)
       }
-      ControlMessageType::Unsubscribe => {
-        Unsubscribe::parse_payload(&mut payload).map(ControlMessage::Unsubscribe)
-      }
       ControlMessageType::SubscribeNamespace => {
         SubscribeNamespace::parse_payload(&mut payload).map(ControlMessage::SubscribeNamespace)
-      }
-      ControlMessageType::UnsubscribeNamespace => {
-        UnsubscribeNamespace::parse_payload(&mut payload).map(ControlMessage::UnsubscribeNamespace)
       }
       ControlMessageType::Switch => Switch::parse_payload(&mut payload).map(ControlMessage::Switch),
       // Draft-18 assigns these codepoints but their bodies are not built yet. Parsing
@@ -181,14 +158,11 @@ impl ControlMessage {
       ControlMessage::Namespace(msg) => msg.serialize(),
       ControlMessage::NamespaceDone(msg) => msg.serialize(),
       ControlMessage::PublishNamespace(msg) => msg.serialize(),
-      ControlMessage::PublishNamespaceCancel(msg) => msg.serialize(),
-      ControlMessage::PublishNamespaceDone(msg) => msg.serialize(),
       ControlMessage::RequestError(msg) => msg.serialize(),
       ControlMessage::RequestOk(msg) => msg.serialize(),
       ControlMessage::Publish(msg) => msg.serialize(),
       ControlMessage::PublishDone(msg) => msg.serialize(),
       ControlMessage::Fetch(msg) => msg.serialize(),
-      ControlMessage::FetchCancel(msg) => msg.serialize(),
       ControlMessage::FetchOk(msg) => msg.serialize(),
       ControlMessage::Goaway(msg) => msg.serialize(),
       ControlMessage::Setup(msg) => msg.serialize(),
@@ -196,9 +170,7 @@ impl ControlMessage {
       ControlMessage::SubscribeOk(msg) => msg.serialize(),
       ControlMessage::RequestUpdate(msg) => msg.serialize(),
       ControlMessage::TrackStatus(msg) => msg.serialize(),
-      ControlMessage::Unsubscribe(msg) => msg.serialize(),
       ControlMessage::SubscribeNamespace(msg) => msg.serialize(),
-      ControlMessage::UnsubscribeNamespace(msg) => msg.serialize(),
       ControlMessage::Switch(msg) => msg.serialize(),
     }
   }
@@ -209,14 +181,11 @@ impl ControlMessage {
       ControlMessage::Namespace(_) => ControlMessageType::Namespace,
       ControlMessage::NamespaceDone(_) => ControlMessageType::NamespaceDone,
       ControlMessage::PublishNamespace(_) => ControlMessageType::PublishNamespace,
-      ControlMessage::PublishNamespaceCancel(_) => ControlMessageType::PublishNamespaceCancel,
-      ControlMessage::PublishNamespaceDone(_) => ControlMessageType::PublishNamespaceDone,
       ControlMessage::RequestError(_) => ControlMessageType::RequestError,
       ControlMessage::RequestOk(_) => ControlMessageType::RequestOk,
       ControlMessage::Publish(_) => ControlMessageType::Publish,
       ControlMessage::PublishDone(_) => ControlMessageType::PublishDone,
       ControlMessage::Fetch(_) => ControlMessageType::Fetch,
-      ControlMessage::FetchCancel(_) => ControlMessageType::FetchCancel,
       ControlMessage::FetchOk(_) => ControlMessageType::FetchOk,
       ControlMessage::Goaway(_) => ControlMessageType::GoAway,
       ControlMessage::Setup(_) => ControlMessageType::Setup,
@@ -224,9 +193,7 @@ impl ControlMessage {
       ControlMessage::SubscribeOk(_) => ControlMessageType::SubscribeOk,
       ControlMessage::RequestUpdate(_) => ControlMessageType::RequestUpdate,
       ControlMessage::TrackStatus(_) => ControlMessageType::TrackStatus,
-      ControlMessage::Unsubscribe(_) => ControlMessageType::Unsubscribe,
       ControlMessage::SubscribeNamespace(_) => ControlMessageType::SubscribeNamespace,
-      ControlMessage::UnsubscribeNamespace(_) => ControlMessageType::UnsubscribeNamespace,
       ControlMessage::Switch(_) => ControlMessageType::Switch,
     }
   }

@@ -184,7 +184,6 @@
       "value": "0x0A",
       "notes": "Requests are cancelled by resetting the request stream (§3.3.2), not by a message.",
       "pending": {
-        "rs": 241,
         "ts": 261
       }
     },
@@ -193,7 +192,6 @@
       "value": "0x17",
       "notes": "Requests are cancelled by resetting the request stream (§3.3.2), not by a message.",
       "pending": {
-        "rs": 241,
         "ts": 261
       }
     },
@@ -202,7 +200,6 @@
       "value": "0x14",
       "notes": "Requests are cancelled by closing the request stream (§3.3.2), not by a message.",
       "pending": {
-        "rs": 241,
         "ts": 261
       }
     },
@@ -211,7 +208,6 @@
       "value": "0x0C",
       "notes": "Table 5 has no 0x0C.",
       "pending": {
-        "rs": 241,
         "ts": 261
       }
     },
@@ -220,7 +216,6 @@
       "value": "0x09",
       "notes": "Table 5 has no 0x09. NAMESPACE_DONE (0xE) survives.",
       "pending": {
-        "rs": 241,
         "ts": 261
       }
     }

@@ -48,6 +48,13 @@ use super::{
   utils,
 };
 
+/// Which cleanup to run when a request stream is reset or closed by the peer.
+enum RequestStreamKind {
+  Subscribe,
+  Fetch,
+  Other,
+}
+
 pub struct Session {}
 
 impl Session {
@@ -551,6 +558,14 @@ impl Session {
           _ => unreachable!("matched above"),
         };
 
+        // A request is cancelled by resetting/closing its stream, so remember the
+        // kind to run the right cleanup when the peer closes it.
+        let request_kind = match &first {
+          ControlMessage::Subscribe(_) => RequestStreamKind::Subscribe,
+          ControlMessage::Fetch(_) => RequestStreamKind::Fetch,
+          _ => RequestStreamKind::Other,
+        };
+
         let (response_tx, mut response_rx) = tokio::sync::mpsc::unbounded_channel();
         client
           .register_response_sender(request_id, response_tx)
@@ -600,8 +615,23 @@ impl Session {
                   }
                 }
                 Err(_) => {
-                  // FIN or RESET: the requester closed the stream.
+                  // FIN or RESET: the requester cancelled by closing the stream.
                   debug!("Request bi-stream closed by peer");
+                  match request_kind {
+                    RequestStreamKind::Subscribe => {
+                      message_handlers::subscribe_handler::cancel_subscription(
+                        client.clone(),
+                        request_id,
+                        &context,
+                      )
+                      .await;
+                    }
+                    RequestStreamKind::Fetch => {
+                      message_handlers::fetch_handler::cancel_fetch(client.clone(), request_id)
+                        .await;
+                    }
+                    RequestStreamKind::Other => {}
+                  }
                   break;
                 }
               }

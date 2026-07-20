@@ -31,7 +31,7 @@ use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use moqtail::transport::data_stream_handler::{FetchRequest, HeaderInfo};
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 const UPSTREAM_FETCH_CHANNEL_CAPACITY: usize = 64;
 
@@ -563,45 +563,6 @@ pub async fn handle(
 
       Ok(())
     }
-    ControlMessage::FetchCancel(m) => {
-      info!("received FetchCancel message: {:?}", m);
-      let request_id = m.request_id;
-
-      // Look up the cancel sender for this request and signal cancellation
-      let cancel_tx = {
-        let mut senders = client.fetch_cancel_senders.write().await;
-        senders.remove(&request_id)
-      };
-
-      // Remove the fetch request from the client maps
-      {
-        client.inbound_requests.write().await.remove(&request_id);
-        client
-          .incoming_fetch_requests
-          .write()
-          .await
-          .remove(&request_id);
-        debug!(
-          "Removed FETCH request {} from client maps after Cancel",
-          request_id
-        );
-      }
-
-      if let Some(tx) = cancel_tx {
-        let _ = tx.send(FetchStop::Cancelled);
-        info!(
-          "handle_fetch_messages | Sent cancel signal for request_id: {}",
-          request_id
-        );
-      } else {
-        warn!(
-          "handle_fetch_messages | FetchCancel received but no active fetch for request_id: {}",
-          request_id
-        );
-      }
-
-      Ok(())
-    }
     ControlMessage::RequestUpdate(m) => {
       warn!(
         "REQUEST_UPDATE for FETCH request {} cannot be applied; stopping delivery",
@@ -621,6 +582,29 @@ pub async fn handle(
       // no-op
       Ok(())
     }
+  }
+}
+
+/// Cancel a fetch when its FETCH request stream is reset or closed: signal the
+/// serving task to stop and remove the request from the client maps.
+pub(crate) async fn cancel_fetch(client: Arc<MOQTClient>, request_id: u64) {
+  let cancel_tx = {
+    let mut senders = client.fetch_cancel_senders.write().await;
+    senders.remove(&request_id)
+  };
+
+  {
+    client.inbound_requests.write().await.remove(&request_id);
+    client
+      .incoming_fetch_requests
+      .write()
+      .await
+      .remove(&request_id);
+  }
+
+  if let Some(tx) = cancel_tx {
+    let _ = tx.send(FetchStop::Cancelled);
+    info!("Cancelled fetch delivery for request_id: {}", request_id);
   }
 }
 

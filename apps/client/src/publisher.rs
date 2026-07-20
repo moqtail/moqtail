@@ -117,9 +117,16 @@ pub async fn run_namespace(moq: MoqConnection, config: PublishNamespaceConfig) -
             m.request_id, track_alias
           );
 
-          // Serve data; keep the request stream open until the objects are sent.
-          if let Err(e) = send_data(&conn, track_alias, &dc).await {
-            error!("Data sending failed: {:?}", e);
+          // Serve data, but stop if the subscriber cancels by resetting the stream.
+          tokio::select! {
+            res = send_data(&conn, track_alias, &dc) => {
+              if let Err(e) = res {
+                error!("Data sending failed: {:?}", e);
+              }
+            }
+            _ = request_stream.next_message() => {
+              info!("Subscriber cancelled (stream reset); stopping data delivery");
+            }
           }
           drop(request_stream);
         }

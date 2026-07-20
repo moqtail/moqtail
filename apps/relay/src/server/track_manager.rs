@@ -436,20 +436,6 @@ impl TrackManager {
     None
   }
 
-  // Retrieve the original Publish message used to create the track
-  pub async fn get_publish_message(
-    &self,
-    full_track_name: &FullTrackName,
-    connection_id: usize,
-  ) -> Option<Publish> {
-    let publishes = self.publishes.read().await;
-    if let Some(map) = publishes.get(full_track_name) {
-      let publish_opt = map.get(&connection_id);
-      return publish_opt.cloned();
-    }
-    None
-  }
-
   pub async fn get_track_name_by_publisher(
     &self,
     connection_id: usize,

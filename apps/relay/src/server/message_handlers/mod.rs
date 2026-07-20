@@ -14,11 +14,7 @@
 
 use bytes::Bytes;
 use moqtail::{
-  model::{
-    common::reason_phrase::ReasonPhrase,
-    control::{control_message::ControlMessage, request_error::RequestError},
-    error::{RequestErrorCode, TerminationCode},
-  },
+  model::{control::control_message::ControlMessage, error::TerminationCode},
   transport::control_stream_handler::ControlStreamHandler,
 };
 use tracing::{info, warn};
@@ -54,33 +50,35 @@ impl MessageHandler {
         warn!("SUBSCRIBE_NAMESPACE received on control stream — must use a dedicated bi-stream");
         Err(TerminationCode::ProtocolViolation)
       }
-      ControlMessage::Subscribe(_)
-      | ControlMessage::SubscribeOk(_)
-      | ControlMessage::Unsubscribe(_)
-      | ControlMessage::Switch(_) => {
+      ControlMessage::Subscribe(_) | ControlMessage::Unsubscribe(_) | ControlMessage::Switch(_) => {
         subscribe_handler::handle(client.clone(), stream_handler, msg, context.clone()).await
       }
 
       ControlMessage::TrackStatus(_) => {
         track_status_handler::handle(stream_handler, msg, context.clone()).await
       }
-      ControlMessage::Fetch(_) | ControlMessage::FetchCancel(_) | ControlMessage::FetchOk(_) => {
+      ControlMessage::Fetch(_) | ControlMessage::FetchCancel(_) => {
         fetch_handler::handle(client.clone(), stream_handler, msg, context.clone()).await
       }
       ControlMessage::Publish(_) | ControlMessage::PublishDone(_) => {
         publish_handler::handle(client.clone(), stream_handler, msg, context.clone()).await
       }
 
+      // A response is read on the request's own bidi stream; reaching the control
+      // stream is a disallowed action.
       ControlMessage::RequestOk(_)
       | ControlMessage::RequestError(_)
-      | ControlMessage::RequestUpdate(_) => {
-        // 1. Extract the target ID and the directionality (response vs update)
-        let (target_req_id, is_response_to_relay) = match &msg {
-          ControlMessage::RequestOk(m) => (m.request_id, true),
-          ControlMessage::RequestError(m) => (m.request_id, true),
-          ControlMessage::RequestUpdate(m) => (m.existing_request_id, false),
-          _ => unreachable!(),
-        };
+      | ControlMessage::SubscribeOk(_)
+      | ControlMessage::FetchOk(_) => {
+        warn!(
+          "{:?} on the control stream; closing session",
+          msg.get_type()
+        );
+        Err(TerminationCode::ProtocolViolation)
+      }
+
+      ControlMessage::RequestUpdate(m) => {
+        let target_req_id = m.existing_request_id;
 
         enum Route {
           Fetch,
@@ -92,7 +90,7 @@ impl MessageHandler {
           NotFound,
         }
 
-        // 2. Helper closure to map a PendingRequest to a Route
+        // Map a PendingRequest to a Route
         let determine_route = |req: Option<&PendingRequest>| match req {
           Some(PendingRequest::Fetch(_)) => Route::Fetch,
           Some(PendingRequest::Publish { .. }) => Route::Publish,
@@ -104,16 +102,12 @@ impl MessageHandler {
           None => Route::NotFound,
         };
 
-        // 3. Lock the appropriate map, determine the route, and immediately drop the lock
-        let route = if is_response_to_relay {
-          let map = context.relay_pending_requests.read().await;
-          determine_route(map.get(&target_req_id))
-        } else {
+        let route = {
           let map = client.inbound_requests.read().await;
           determine_route(map.get(&target_req_id))
         };
 
-        // 4. Route to the appropriate handler (defined only once!)
+        // Route to the appropriate handler (defined only once!)
         match route {
           Route::Fetch => {
             fetch_handler::handle(client.clone(), stream_handler, msg, context.clone()).await
@@ -141,29 +135,13 @@ impl MessageHandler {
             track_status_handler::handle(stream_handler, msg, context.clone()).await
           }
           Route::NotFound => {
+            // A REQUEST_UPDATE referencing an unknown request is disallowed: it
+            // must travel on the request's own stream.
             warn!(
-              "Router received generic message ({:?}) for untracked ID: {}",
-              msg.get_type(),
+              "REQUEST_UPDATE for untracked request id {}; closing session",
               target_req_id
             );
-
-            // A REQUEST_UPDATE that cannot be applied (e.g. a TRACK_STATUS target,
-            // or an unknown request) is answered with REQUEST_ERROR; an unknown
-            // response is ignored.
-            match &msg {
-              ControlMessage::RequestUpdate(m) => {
-                let err = RequestError::new(
-                  m.request_id,
-                  RequestErrorCode::NotSupported,
-                  0,
-                  ReasonPhrase::try_new("REQUEST_UPDATE is not applicable".to_string()).unwrap(),
-                );
-                stream_handler
-                  .send(&ControlMessage::RequestError(Box::new(err)))
-                  .await
-              }
-              _ => Ok(()),
-            }
+            Err(TerminationCode::ProtocolViolation)
           }
         }
       }

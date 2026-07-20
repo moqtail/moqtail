@@ -35,12 +35,10 @@ const MAX_NAMESPACE_PREFIX_FIELDS: usize = 32;
 /// A NAMESPACE_TOO_LARGE error if the prefix exceeds what the relay will
 /// enumerate, otherwise `None`.
 fn oversized_namespace_error(
-  request_id: u64,
   prefix: &moqtail::model::common::tuple::Tuple,
 ) -> Option<RequestError> {
   if prefix.fields.len() > MAX_NAMESPACE_PREFIX_FIELDS {
     Some(RequestError::new(
-      request_id,
       RequestErrorCode::NamespaceTooLarge,
       0,
       ReasonPhrase::try_new("Namespace prefix is too large".to_string()).unwrap(),
@@ -66,7 +64,7 @@ pub async fn handle_subscribe_namespace(
 
   // An over-large namespace prefix is rejected with NAMESPACE_TOO_LARGE on the
   // request stream (not a session teardown).
-  if let Some(err) = oversized_namespace_error(sub_ns.request_id, &sub_ns.track_namespace_prefix) {
+  if let Some(err) = oversized_namespace_error(&sub_ns.track_namespace_prefix) {
     warn!(
       "SUBSCRIBE_NAMESPACE prefix has {} fields, maximum is {}",
       sub_ns.track_namespace_prefix.fields.len(),
@@ -89,7 +87,6 @@ pub async fn handle_subscribe_namespace(
       sub_ns.track_namespace_prefix, existing_prefix
     );
     let err = RequestError::new(
-      sub_ns.request_id,
       RequestErrorCode::PrefixOverlap,
       0,
       ReasonPhrase::try_new("Namespace prefix overlaps with existing subscription".to_string())
@@ -126,7 +123,7 @@ pub async fn handle_subscribe_namespace(
   }
 
   // Send REQUEST_OK on the bi-stream
-  let ok = RequestOk::new(sub_ns.request_id, vec![]);
+  let ok = RequestOk::new(vec![]);
   stream_handler
     .send(&ControlMessage::RequestOk(Box::new(ok)))
     .await?;
@@ -244,7 +241,6 @@ pub async fn handle(
     ControlMessage::RequestUpdate(m) => {
       let update_msg = *m;
       let existing_req_id = update_msg.existing_request_id;
-      let update_req_id = update_msg.request_id;
 
       let target_prefix = {
         let mut map = client.inbound_requests.write().await;
@@ -278,7 +274,7 @@ pub async fn handle(
         )
         .await;
 
-      let ok_msg = RequestOk::new(update_req_id, vec![]);
+      let ok_msg = RequestOk::new(vec![]);
       handler
         .send(&ControlMessage::RequestOk(Box::new(ok_msg)))
         .await?;
@@ -307,8 +303,7 @@ mod tests {
         .map(|i| TupleField::from_utf8(&i.to_string()))
         .collect(),
     };
-    let err = oversized_namespace_error(7, &big).expect("over-long prefix must be rejected");
-    assert_eq!(err.request_id, 7);
+    let err = oversized_namespace_error(&big).expect("over-long prefix must be rejected");
     assert_eq!(err.error_code, RequestErrorCode::NamespaceTooLarge);
     assert_eq!(u64::from(err.error_code), 0x31);
   }
@@ -321,6 +316,6 @@ mod tests {
         TupleField::from_utf8("demo"),
       ],
     };
-    assert!(oversized_namespace_error(1, &small).is_none());
+    assert!(oversized_namespace_error(&small).is_none());
   }
 }

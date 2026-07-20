@@ -21,7 +21,6 @@ use bytes::{BufMut, Bytes, BytesMut};
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct RequestError {
-  pub request_id: u64,
   pub error_code: RequestErrorCode,
   pub retry_interval: u64,
   pub reason_phrase: ReasonPhrase,
@@ -29,13 +28,11 @@ pub struct RequestError {
 
 impl RequestError {
   pub fn new(
-    request_id: u64,
     error_code: RequestErrorCode,
     retry_interval: u64,
     reason_phrase: ReasonPhrase,
   ) -> Self {
     Self {
-      request_id,
       error_code,
       retry_interval,
       reason_phrase,
@@ -49,7 +46,6 @@ impl ControlMessageTrait for RequestError {
     buf.put_vi(ControlMessageType::RequestError)?;
 
     let mut payload = BytesMut::new();
-    payload.put_vi(self.request_id)?;
     payload.put_vi(self.error_code as u64)?;
     payload.put_vi(self.retry_interval)?;
     payload.extend_from_slice(&self.reason_phrase.serialize()?);
@@ -71,8 +67,6 @@ impl ControlMessageTrait for RequestError {
   }
 
   fn parse_payload(payload: &mut Bytes) -> Result<Box<Self>, ParseError> {
-    let request_id = payload.get_vi()?;
-
     // An unknown or GREASE error code is not fatal; treat it as InternalError.
     let error_code_raw = payload.get_vi()?;
     let error_code = RequestErrorCode::from_wire(error_code_raw);
@@ -82,7 +76,6 @@ impl ControlMessageTrait for RequestError {
     let reason_phrase = ReasonPhrase::deserialize(payload)?;
 
     Ok(Box::new(RequestError {
-      request_id,
       error_code,
       retry_interval,
       reason_phrase,
@@ -106,7 +99,6 @@ mod tests {
   #[test]
   fn grease_error_code_parses_as_internal_error() {
     let mut payload = BytesMut::new();
-    payload.put_vi(42).unwrap(); // request_id
     payload.put_vi(grease_value(3).unwrap()).unwrap(); // grease error code
     payload.put_vi(0).unwrap(); // retry_interval
     payload.extend_from_slice(
@@ -123,12 +115,10 @@ mod tests {
 
   #[test]
   fn test_roundtrip() {
-    let request_id = 160669;
     let error_code = RequestErrorCode::InternalError; // Update to match your new constant
     let retry_interval = 0; // As requested, set to 0 to state no retries for now
     let reason_phrase = ReasonPhrase::try_new("They see me rollin'".to_string()).unwrap();
     let request_error = RequestError {
-      request_id,
       error_code,
       retry_interval,
       reason_phrase,
@@ -145,12 +135,10 @@ mod tests {
 
   #[test]
   fn test_excess_roundtrip() {
-    let request_id = 160669;
     let error_code = RequestErrorCode::InternalError;
     let retry_interval = 0;
     let reason_phrase = ReasonPhrase::try_new("They see me rollin'".to_string()).unwrap();
     let request_error = RequestError {
-      request_id,
       error_code,
       retry_interval,
       reason_phrase,
@@ -173,12 +161,10 @@ mod tests {
 
   #[test]
   fn test_partial_message() {
-    let request_id = 160669;
     let error_code = RequestErrorCode::InternalError;
     let retry_interval = 0;
     let reason_phrase = ReasonPhrase::try_new("They see me rollin'".to_string()).unwrap();
     let request_error = RequestError {
-      request_id,
       error_code,
       retry_interval,
       reason_phrase,

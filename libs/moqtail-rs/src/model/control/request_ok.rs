@@ -30,7 +30,6 @@ use bytes::{BufMut, Bytes, BytesMut};
 /// shorthands, not distinct messages.
 #[derive(Debug, PartialEq, Clone)]
 pub struct RequestOk {
-  pub request_id: u64,
   pub parameters: Vec<MessageParameter>,
   /// Populated only in TRACK_STATUS_OK; empty for every other request type.
   pub track_properties: Vec<TrackProperty>,
@@ -38,9 +37,8 @@ pub struct RequestOk {
 
 impl RequestOk {
   /// A REQUEST_OK with no Track Properties (every request type except TRACK_STATUS).
-  pub fn new(request_id: u64, parameters: Vec<MessageParameter>) -> Self {
+  pub fn new(parameters: Vec<MessageParameter>) -> Self {
     Self {
-      request_id,
       parameters,
       track_properties: Vec::new(),
     }
@@ -48,12 +46,10 @@ impl RequestOk {
 
   /// A TRACK_STATUS_OK carrying Track Properties.
   pub fn new_track_status(
-    request_id: u64,
     parameters: Vec<MessageParameter>,
     track_properties: Vec<TrackProperty>,
   ) -> Self {
     Self {
-      request_id,
       parameters,
       track_properties,
     }
@@ -80,8 +76,6 @@ impl ControlMessageTrait for RequestOk {
     buf.put_vi(ControlMessageType::RequestOk)?;
 
     let mut payload = BytesMut::new();
-    payload.put_vi(self.request_id)?;
-
     payload.put_vi(self.parameters.len() as u64)?;
     payload.extend_from_slice(&serialize_message_parameters(&self.parameters)?);
 
@@ -105,7 +99,6 @@ impl ControlMessageTrait for RequestOk {
   }
 
   fn parse_payload(payload: &mut Bytes) -> Result<Box<Self>, ParseError> {
-    let request_id = payload.get_vi()?;
     let param_count = payload.get_vi()?;
     let parameters =
       deserialize_message_parameters(payload, param_count, ControlMessageType::RequestOk)?;
@@ -114,7 +107,6 @@ impl ControlMessageTrait for RequestOk {
     let track_properties = deserialize_track_properties(payload)?;
 
     Ok(Box::new(RequestOk {
-      request_id,
       parameters,
       track_properties,
     }))
@@ -133,7 +125,7 @@ mod tests {
 
   #[test]
   fn test_roundtrip_no_params() {
-    let request_ok = RequestOk::new(12345, vec![]);
+    let request_ok = RequestOk::new(vec![]);
 
     let mut buf = request_ok.serialize().unwrap();
     let msg_type = buf.get_vi().unwrap();
@@ -147,13 +139,10 @@ mod tests {
 
   #[test]
   fn test_roundtrip_with_params() {
-    let request_ok = RequestOk::new(
-      67890,
-      vec![
-        MessageParameter::new_expires(3600),
-        MessageParameter::new_group_order(GroupOrder::Ascending),
-      ],
-    );
+    let request_ok = RequestOk::new(vec![
+      MessageParameter::new_expires(3600),
+      MessageParameter::new_group_order(GroupOrder::Ascending),
+    ]);
 
     let mut buf = request_ok.serialize().unwrap();
     let msg_type = buf.get_vi().unwrap();
@@ -167,7 +156,7 @@ mod tests {
 
   #[test]
   fn test_excess_roundtrip() {
-    let request_ok = RequestOk::new(112233, vec![MessageParameter::new_expires(3600)]);
+    let request_ok = RequestOk::new(vec![MessageParameter::new_expires(3600)]);
 
     let serialized = request_ok.serialize().unwrap();
     let mut excess = BytesMut::new();
@@ -189,7 +178,7 @@ mod tests {
 
   #[test]
   fn test_partial_message() {
-    let request_ok = RequestOk::new(112233, vec![MessageParameter::new_expires(3600)]);
+    let request_ok = RequestOk::new(vec![MessageParameter::new_expires(3600)]);
     let mut buf = request_ok.serialize().unwrap();
     let msg_type = buf.get_vi().unwrap();
     assert_eq!(msg_type, ControlMessageType::RequestOk as u64);
@@ -206,7 +195,6 @@ mod tests {
   fn test_roundtrip_track_status_with_track_properties() {
     use crate::model::property::track_property::TrackProperty;
     let request_ok = RequestOk::new_track_status(
-      555,
       vec![MessageParameter::new_expires(60)],
       vec![
         TrackProperty::MaxCacheDuration {
@@ -230,7 +218,6 @@ mod tests {
   fn test_track_properties_only_valid_for_track_status() {
     use crate::model::property::track_property::TrackProperty;
     let with_props = RequestOk::new_track_status(
-      1,
       vec![],
       vec![TrackProperty::MaxCacheDuration { duration_ms: 1 }],
     );
@@ -243,7 +230,7 @@ mod tests {
     ));
 
     // Empty properties are always fine.
-    let empty = RequestOk::new(2, vec![]);
+    let empty = RequestOk::new(vec![]);
     assert!(empty.validate_track_properties(false).is_ok());
     assert!(empty.validate_track_properties(true).is_ok());
   }

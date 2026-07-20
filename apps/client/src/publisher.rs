@@ -21,6 +21,7 @@ use moqtail::model::common::tuple::{Tuple, TupleField};
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::publish::Publish;
 use moqtail::model::control::publish_namespace::PublishNamespace;
+use moqtail::model::control::request_ok::RequestOk;
 use moqtail::model::control::subscribe_ok::SubscribeOk;
 use moqtail::model::data::datagram::Datagram;
 use moqtail::model::data::object::Object;
@@ -106,7 +107,7 @@ pub async fn run_namespace(moq: MoqConnection, config: PublishNamespaceConfig) -
             m.request_id, m.track_name, track_alias
           );
 
-          let ok = SubscribeOk::new(m.request_id, track_alias, vec![], vec![]);
+          let ok = SubscribeOk::new(track_alias, vec![], vec![]);
           if let Err(e) = request_stream.send_impl(&ok).await {
             error!("Failed to send SubscribeOk: {:?}", e);
             return;
@@ -119,6 +120,28 @@ pub async fn run_namespace(moq: MoqConnection, config: PublishNamespaceConfig) -
           // Serve data; keep the request stream open until the objects are sent.
           if let Err(e) = send_data(&conn, track_alias, &dc).await {
             error!("Data sending failed: {:?}", e);
+          }
+          drop(request_stream);
+        }
+        Ok(ControlMessage::TrackStatus(m)) => {
+          info!(
+            "Received TrackStatus on request stream for track={:?}",
+            m.track_name
+          );
+          let ok = RequestOk::new(vec![]);
+          if let Err(e) = request_stream.send_impl(&ok).await {
+            error!("Failed to send TrackStatus RequestOk: {:?}", e);
+          }
+          drop(request_stream);
+        }
+        Ok(ControlMessage::Publish(m)) => {
+          info!(
+            "Received pushed Publish on request stream for track={:?}",
+            m.track_name
+          );
+          let ok = RequestOk::new(vec![]);
+          if let Err(e) = request_stream.send_impl(&ok).await {
+            error!("Failed to send PublishOk: {:?}", e);
           }
           drop(request_stream);
         }
@@ -182,7 +205,6 @@ async fn publish_namespace(
 ) -> Result<ControlStreamHandler> {
   info!("Publishing namespace...");
   let publish_namespace = PublishNamespace::new(0, namespace.clone(), &[]);
-  let expected_request_id = publish_namespace.request_id;
 
   let (send, recv) = connection.open_bi().await?;
   let mut request_stream = ControlStreamHandler::new(send, recv);
@@ -193,17 +215,11 @@ async fn publish_namespace(
     .await
     .map_err(|e| anyhow::anyhow!("Failed to send PUBLISH_NAMESPACE: {:?}", e))?;
 
+  // The response returns on this same request stream, so it needs no request id.
   match request_stream.next_message().await {
-    Ok(ControlMessage::RequestOk(ok)) if ok.request_id == expected_request_id => {
+    Ok(ControlMessage::RequestOk(_)) => {
       info!("Namespace published successfully");
       Ok(request_stream)
-    }
-    Ok(ControlMessage::RequestOk(ok)) => {
-      anyhow::bail!(
-        "PublishNamespace got RequestOk for another request ID: expected {}, got {}",
-        expected_request_id,
-        ok.request_id
-      )
     }
     Ok(m) => anyhow::bail!("Expected RequestOk, got {:?}", m),
     Err(e) => anyhow::bail!("Failed waiting for RequestOk: {:?}", e),
@@ -250,7 +266,7 @@ async fn publish_track(
     Ok(ControlMessage::RequestOk(m)) => {
       m.validate_track_properties(false)
         .map_err(|_| anyhow::anyhow!("PUBLISH_OK carried Track Properties"))?;
-      info!("Track published, request_id: {}", m.request_id);
+      info!("Track published");
     }
     Ok(m) => anyhow::bail!("Expected REQUEST_OK, got {:?}", m),
     Err(e) => anyhow::bail!("Failed waiting for REQUEST_OK: {:?}", e),

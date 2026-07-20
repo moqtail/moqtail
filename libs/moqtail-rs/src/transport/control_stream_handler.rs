@@ -356,8 +356,7 @@ mod tests {
   }
 
   fn create_test_announce_ok() -> RequestOk {
-    let request_id = 12345;
-    RequestOk::new(request_id, vec![])
+    RequestOk::new(vec![])
   }
 
   fn create_test_announce_cancel() -> PublishNamespaceCancel {
@@ -404,7 +403,6 @@ mod tests {
     use crate::model::parameter::message_parameter::MessageParameter;
     use crate::model::property::track_property::TrackProperty;
     let mut subscribe_ok = SubscribeOk::new(
-      145136,
       999,
       vec![
         MessageParameter::new_expires(16),

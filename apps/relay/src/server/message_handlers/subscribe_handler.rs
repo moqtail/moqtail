@@ -74,6 +74,9 @@ async fn forward_subscribe_upstream(
       return;
     }
   };
+  // The response returns on this stream, so correlate it by the relay request id
+  // we sent upstream rather than a field in the response.
+  let relay_request_id = new_sub.request_id;
   let mut upstream = ControlStreamHandler::new(send, recv);
   if let Err(e) = upstream
     .send(&ControlMessage::Subscribe(Box::new(new_sub)))
@@ -87,16 +90,15 @@ async fn forward_subscribe_upstream(
     match upstream.next_message().await {
       Ok(ControlMessage::SubscribeOk(m)) => {
         if let Err(e) =
-          handle_subscribe_ok_message(publisher.clone(), &mut upstream, *m, context.clone()).await
+          handle_subscribe_ok_message(publisher.clone(), relay_request_id, *m, context.clone())
+            .await
         {
           error!("Error handling upstream SubscribeOk: {:?}", e);
           return;
         }
       }
       Ok(ControlMessage::RequestError(m)) => {
-        let _ =
-          handle_subscribe_error_message(publisher.clone(), &mut upstream, *m, context.clone())
-            .await;
+        let _ = handle_subscribe_error_message(relay_request_id, *m, context.clone()).await;
         return;
       }
       Ok(other) => {
@@ -163,7 +165,6 @@ async fn handle_subscribe_message(
     );
     // send RequestError
     let subscribe_error = RequestError::new(
-      sub.request_id,
       RequestErrorCode::DoesNotExist,
       0, //TODO: Maybe decide on another retry interval?
       ReasonPhrase::try_new("Unknown track namespace".to_string()).unwrap(),
@@ -265,7 +266,6 @@ async fn handle_subscribe_message(
         let mut params = subscribe_parameters;
         params.push(MessageParameter::new_largest_object(largest_loc));
         let subscribe_ok = moqtail::model::control::subscribe_ok::SubscribeOk::new(
-          sub.request_id,
           track.relay_track_id,
           params,
           cached_properties,
@@ -290,7 +290,6 @@ async fn handle_subscribe_message(
           client.connection_id
         );
         let subscribe_error = RequestError::new(
-          sub.request_id,
           error_code,
           0, //TODO: Maybe decide on another retry interval?
           reason_phrase,
@@ -326,12 +325,12 @@ async fn handle_subscribe_message(
 async fn handle_subscribe_ok_message(
   // The publisher that sent this SUBSCRIBE_OK; its connection id keys the track alias.
   publisher: Arc<MOQTClient>,
-  _stream_handler: &mut ControlStreamHandler,
+  // The relay request id we sent upstream; this stream identifies the request.
+  request_id: u64,
   msg: moqtail::model::control::subscribe_ok::SubscribeOk,
   context: Arc<SessionContext>,
 ) -> Result<(), TerminationCode> {
   info!("received SubscribeOk message: {:?}", msg);
-  let request_id = msg.request_id;
 
   // Look up the relay subscribe request from the unified map
   let sub_request = {
@@ -364,13 +363,8 @@ async fn handle_subscribe_ok_message(
     );
     let reason = ReasonPhrase::try_new("Unsupported mandatory track property".to_string())
       .map_err(|_| TerminationCode::InternalError)?;
-    let err = RequestError::new(
-      request_id,
-      RequestErrorCode::UnsupportedExtension,
-      0,
-      reason,
-    );
-    return handle_subscribe_error_message(publisher, _stream_handler, err, context).await;
+    let err = RequestError::new(RequestErrorCode::UnsupportedExtension, 0, reason);
+    return handle_subscribe_error_message(request_id, err, context).await;
   }
 
   let full_track_name = sub_request.original_subscribe_request.get_full_track_name();
@@ -423,7 +417,6 @@ async fn handle_subscribe_ok_message(
         track.track_properties.read().await.clone()
       };
       let subscribe_ok = moqtail::model::control::subscribe_ok::SubscribeOk::new(
-        sub_request.original_request_id,
         relay_track_id,
         msg.subscribe_parameters.clone(),
         cached_properties,
@@ -471,7 +464,6 @@ async fn handle_subscribe_ok_message(
           track.track_properties.read().await.clone()
         };
         let subscribe_ok = moqtail::model::control::subscribe_ok::SubscribeOk::new(
-          subscriber_request_id,
           relay_track_id,
           msg.subscribe_parameters.clone(),
           cached_properties,
@@ -570,7 +562,6 @@ pub async fn handle_request_update(
   context: Arc<SessionContext>,
 ) -> Result<(), TerminationCode> {
   let existing_req_id = update_msg.existing_request_id;
-  let update_req_id = update_msg.request_id;
 
   let full_track_name = {
     let mut client_requests = client.subscribe_requests.write().await;
@@ -634,7 +625,7 @@ pub async fn handle_request_update(
         "Subscription updated successfully for track: {:?}",
         full_track_name
       );
-      let ok_msg = RequestOk::new(update_req_id, vec![]);
+      let ok_msg = RequestOk::new(vec![]);
       let _ = stream_handler.send_impl(&ok_msg).await;
     }
     Some(Err(e)) => {
@@ -644,7 +635,6 @@ pub async fn handle_request_update(
       );
 
       let err_msg = RequestError::new(
-        update_req_id,
         RequestErrorCode::InternalError,
         0,
         ReasonPhrase::try_new(format!("Update failed: {:?}", e))
@@ -678,7 +668,6 @@ pub async fn handle_request_update(
       );
 
       let err_msg = RequestError::new(
-        update_req_id,
         RequestErrorCode::DoesNotExist,
         0,
         ReasonPhrase::try_new("Subscription not found".to_string()).unwrap(),
@@ -690,8 +679,8 @@ pub async fn handle_request_update(
   Ok(())
 }
 async fn handle_subscribe_error_message(
-  _client: Arc<MOQTClient>,
-  _stream_handler: &mut ControlStreamHandler,
+  // The relay request id we sent upstream; this stream identifies the request.
+  request_id: u64,
   subscribe_error_message: RequestError,
   context: Arc<SessionContext>,
 ) -> Result<(), TerminationCode> {
@@ -700,7 +689,6 @@ async fn handle_subscribe_error_message(
     subscribe_error_message
   );
   let msg = subscribe_error_message;
-  let request_id = msg.request_id;
 
   // Look up and remove the relay subscribe request from the unified map
   let sub_request = {
@@ -737,7 +725,6 @@ async fn handle_subscribe_error_message(
     };
     if let Some(subscriber) = subscriber {
       let subscribe_error = RequestError::new(
-        sub_request.original_request_id,
         msg.error_code,
         0, //TODO: Maybe decide on another retry interval?
         msg.reason_phrase.clone(),
@@ -766,7 +753,6 @@ async fn handle_subscribe_error_message(
       };
       if let Some(subscriber) = subscriber {
         let subscribe_error = RequestError::new(
-          subscriber_request_id,
           msg.error_code,
           0, //TODO: Maybe decide on another retry interval?
           msg.reason_phrase.clone(),
@@ -926,17 +912,11 @@ pub async fn handle(
     ControlMessage::Subscribe(m) => {
       handle_subscribe_message(client, stream_handler, *m, context, false).await
     }
-    ControlMessage::SubscribeOk(m) => {
-      handle_subscribe_ok_message(client, stream_handler, *m, context).await
-    }
     ControlMessage::Unsubscribe(m) => {
       handle_unsubscribe_message(client, stream_handler, *m, context).await
     }
     ControlMessage::RequestUpdate(m) => {
       handle_request_update(client, stream_handler, *m, context).await
-    }
-    ControlMessage::RequestError(m) => {
-      handle_subscribe_error_message(client, stream_handler, *m, context).await
     }
     ControlMessage::Switch(m) => handle_switch_message(client, stream_handler, *m, context).await,
     _ => {

@@ -27,7 +27,6 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct FetchOk {
-  pub request_id: u64,
   pub end_of_track: bool,
   pub end_location: Location,
   pub subscribe_parameters: Vec<MessageParameter>,
@@ -36,14 +35,12 @@ pub struct FetchOk {
 
 impl FetchOk {
   pub fn new(
-    request_id: u64,
     end_of_track: bool,
     end_location: Location,
     subscribe_parameters: Vec<MessageParameter>,
     track_properties: Vec<TrackProperty>,
   ) -> Self {
     Self {
-      request_id,
       end_of_track,
       end_location,
       subscribe_parameters,
@@ -58,7 +55,6 @@ impl ControlMessageTrait for FetchOk {
     buf.put_vi(ControlMessageType::FetchOk)?;
 
     let mut payload = BytesMut::new();
-    payload.put_vi(self.request_id)?;
     payload.put_u8(if self.end_of_track { 1u8 } else { 0u8 });
     payload.extend_from_slice(&self.end_location.serialize()?);
     payload.put_vi(self.subscribe_parameters.len())?;
@@ -82,8 +78,6 @@ impl ControlMessageTrait for FetchOk {
   }
 
   fn parse_payload(payload: &mut Bytes) -> Result<Box<Self>, ParseError> {
-    let request_id = payload.get_vi()?;
-
     if payload.remaining() < 1 {
       return Err(ParseError::NotEnoughBytes {
         context: "FetchOk::parse_payload(end_of_track)",
@@ -113,7 +107,6 @@ impl ControlMessageTrait for FetchOk {
     let track_properties = deserialize_track_properties(payload)?;
 
     Ok(Box::new(FetchOk {
-      request_id,
       end_of_track,
       end_location,
       subscribe_parameters,
@@ -136,7 +129,6 @@ mod tests {
   #[test]
   fn test_roundtrip() {
     let fetch_ok = FetchOk {
-      request_id: 271828,
       end_of_track: true,
       end_location: Location {
         group: 17,
@@ -158,7 +150,6 @@ mod tests {
   #[test]
   fn test_roundtrip_with_group_order_param() {
     let fetch_ok = FetchOk {
-      request_id: 271828,
       end_of_track: true,
       end_location: Location {
         group: 17,
@@ -180,7 +171,6 @@ mod tests {
   #[test]
   fn test_roundtrip_with_track_properties() {
     let fetch_ok = FetchOk {
-      request_id: 12345,
       end_of_track: false,
       end_location: Location {
         group: 5,
@@ -207,7 +197,6 @@ mod tests {
   #[test]
   fn test_excess_roundtrip() {
     let fetch_ok = FetchOk {
-      request_id: 271828,
       end_of_track: true,
       end_location: Location {
         group: 17,
@@ -238,7 +227,6 @@ mod tests {
   #[test]
   fn test_partial_message() {
     let fetch_ok = FetchOk {
-      request_id: 271828,
       end_of_track: true,
       end_location: Location {
         group: 17,

@@ -26,7 +26,6 @@ use bytes::{BufMut, Bytes, BytesMut};
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct SubscribeOk {
-  pub request_id: u64,
   pub track_alias: u64,
   pub subscribe_parameters: Vec<MessageParameter>,
   pub track_properties: Vec<TrackProperty>,
@@ -34,13 +33,11 @@ pub struct SubscribeOk {
 
 impl SubscribeOk {
   pub fn new(
-    request_id: u64,
     track_alias: u64,
     subscribe_parameters: Vec<MessageParameter>,
     track_properties: Vec<TrackProperty>,
   ) -> Self {
     Self {
-      request_id,
       track_alias,
       subscribe_parameters,
       track_properties,
@@ -54,7 +51,6 @@ impl ControlMessageTrait for SubscribeOk {
     buf.put_vi(ControlMessageType::SubscribeOk)?;
 
     let mut payload = BytesMut::new();
-    payload.put_vi(self.request_id)?;
     payload.put_vi(self.track_alias)?;
 
     payload.put_vi(self.subscribe_parameters.len() as u64)?;
@@ -80,7 +76,6 @@ impl ControlMessageTrait for SubscribeOk {
   }
 
   fn parse_payload(payload: &mut Bytes) -> Result<Box<Self>, ParseError> {
-    let request_id = payload.get_vi()?;
     let track_alias = payload.get_vi()?;
 
     let param_count = payload.get_vi()?;
@@ -91,7 +86,6 @@ impl ControlMessageTrait for SubscribeOk {
     let track_properties = deserialize_track_properties(payload)?;
 
     Ok(Box::new(SubscribeOk {
-      request_id,
       track_alias,
       subscribe_parameters,
       track_properties,
@@ -114,7 +108,6 @@ mod tests {
   #[test]
   fn test_roundtrip() {
     let mut subscribe_ok = SubscribeOk {
-      request_id: 145136,
       track_alias: 0,
       subscribe_parameters: vec![
         MessageParameter::new_expires(16),
@@ -145,7 +138,6 @@ mod tests {
   #[test]
   fn test_roundtrip_with_track_properties() {
     let subscribe_ok = SubscribeOk {
-      request_id: 999,
       track_alias: 42,
       subscribe_parameters: vec![
         MessageParameter::new_expires(0),
@@ -170,7 +162,6 @@ mod tests {
   #[test]
   fn test_excess_roundtrip() {
     let subscribe_ok = SubscribeOk {
-      request_id: 145136,
       track_alias: 89123u64,
       subscribe_parameters: vec![
         MessageParameter::new_expires(16),
@@ -203,7 +194,6 @@ mod tests {
   #[test]
   fn test_partial_message() {
     let subscribe_ok = SubscribeOk {
-      request_id: 145136,
       track_alias: 1223u64,
       subscribe_parameters: vec![
         MessageParameter::new_expires(16),

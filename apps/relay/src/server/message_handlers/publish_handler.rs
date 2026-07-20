@@ -22,6 +22,7 @@ use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::control::{
   constant::{FilterType, GroupOrder},
   control_message::ControlMessage,
+  publish::Publish,
   request_error::RequestError,
   request_ok::RequestOk,
 };
@@ -32,7 +33,7 @@ use moqtail::model::parameter::message_parameter::{MessageParameter, MessagePara
 use moqtail::model::property::track_property::has_unsupported_mandatory;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 pub async fn handle(
   client: Arc<MOQTClient>,
@@ -52,7 +53,6 @@ pub async fn handle(
           ReasonPhrase::try_new("Unsupported mandatory track property".to_string())
             .map_err(|_| TerminationCode::InternalError)?;
         let publish_error = Box::new(RequestError::new(
-          request_id,
           RequestErrorCode::UnsupportedExtension,
           0,
           reason_phrase,
@@ -72,7 +72,6 @@ pub async fn handle(
             .map_err(|_| TerminationCode::InternalError)?;
 
         let publish_error = Box::new(RequestError::new(
-          request_id,
           RequestErrorCode::Unauthorized,
           0, //TODO: Maybe decide on another retry interval?
           reason_phrase,
@@ -208,13 +207,6 @@ pub async fn handle(
             );
           }
 
-          let m_clone2 = m_clone.clone();
-          tokio::spawn(async move {
-            sub_clone
-              .queue_message(ControlMessage::Publish(m_clone2))
-              .await;
-          });
-
           let track_write = track_arc.read().await;
           if let Err(e) = track_write
             .add_subscription(subscriber.clone(), (*m_clone).clone(), false)
@@ -225,6 +217,12 @@ pub async fn handle(
               subscriber.connection_id, e
             );
           }
+
+          // Push the PUBLISH on its own bidi stream and read PUBLISH_OK there.
+          let push_msg = *m_clone.clone();
+          tokio::spawn(async move {
+            forward_publish_downstream(sub_clone, push_msg).await;
+          });
         }
       } else {
         // Another publisher for the same track with a different alias.
@@ -259,15 +257,12 @@ pub async fn handle(
         MessageParameter::new_forward(true),
       );
       // PUBLISH is answered by REQUEST_OK (PUBLISH_OK); no Track Properties.
-      let publish_ok = Box::new(RequestOk::new(
-        request_id,
-        vec![
-          publish_forward_param,
-          MessageParameter::new_subscriber_priority(5),
-          MessageParameter::new_group_order(GroupOrder::Ascending),
-          MessageParameter::new_subscription_filter(FilterType::LatestObject, None, None),
-        ],
-      ));
+      let publish_ok = Box::new(RequestOk::new(vec![
+        publish_forward_param,
+        MessageParameter::new_subscriber_priority(5),
+        MessageParameter::new_group_order(GroupOrder::Ascending),
+        MessageParameter::new_subscription_filter(FilterType::LatestObject, None, None),
+      ]));
 
       info!(
         "Accepted publish request for track: {:?} with alias: {}",
@@ -301,74 +296,9 @@ pub async fn handle(
       Ok(())
     }
 
-    // PUBLISH_OK arrives as a REQUEST_OK (routed here by request type). Track
-    // Properties are only valid in TRACK_STATUS_OK, so they must be empty here.
-    ControlMessage::RequestOk(m) => {
-      info!("Received PublishOk for request_id: {}", m.request_id);
-      if m.validate_track_properties(false).is_err() {
-        return Err(TerminationCode::ProtocolViolation);
-      }
-
-      let pending_request = {
-        let map = context.relay_pending_requests.read().await;
-        map.get(&m.request_id).cloned()
-      };
-
-      match pending_request {
-        Some(PendingRequest::Publish { .. }) => {
-          // 1. Look up which track this PublishOk corresponds to using the connection_id and request_id
-          if let Some(full_track_name) = context
-            .track_manager
-            .get_track_name_by_publisher(client.connection_id, m.request_id)
-            .await
-          {
-            // 2. Fetch the track and the original publish message details
-            if let Some(track_arc) = context.track_manager.get_track(&full_track_name).await
-              && let Some(orig_publish) = context
-                .track_manager
-                .get_publish_message(&full_track_name, client.connection_id)
-                .await
-            {
-              info!(
-                "Publish accepted! Wiring up data stream for: {:?}",
-                full_track_name
-              );
-
-              let track_read = track_arc.read().await;
-              if let Err(e) = track_read
-                .add_subscription(client.clone(), orig_publish.clone(), false)
-                .await
-              {
-                warn!("Failed to auto-subscribe client after PublishOk: {:?}", e);
-              } else {
-                info!("Successfully wired data stream!");
-              }
-            }
-          } else {
-            warn!(
-              "Received PublishOk for an unknown push request_id: {}",
-              m.request_id
-            );
-          }
-        }
-        Some(_) => {
-          warn!("Mismatched request type for PublishOk: {}", m.request_id);
-        }
-        None => {
-          warn!(
-            "Received PublishOk for untracked request_id: {}",
-            m.request_id
-          );
-        }
-      }
-
-      Ok(())
-    }
-
     ControlMessage::RequestUpdate(m) => {
       let update_msg = *m;
       let publisher_req_id = update_msg.existing_request_id;
-      let update_req_id = update_msg.request_id;
 
       {
         let mut map = client.inbound_requests.write().await;
@@ -465,7 +395,7 @@ pub async fn handle(
       }
 
       use moqtail::model::control::request_ok::RequestOk;
-      let ok_msg = RequestOk::new(update_req_id, vec![]);
+      let ok_msg = RequestOk::new(vec![]);
       stream_handler
         .send(&ControlMessage::RequestOk(Box::new(ok_msg)))
         .await?;
@@ -473,6 +403,47 @@ pub async fn handle(
       Ok(())
     }
     _ => Ok(()),
+  }
+}
+
+/// Push a PUBLISH to a subscriber on its own bidirectional request stream and
+/// read the PUBLISH_OK (or REQUEST_ERROR) there. The subscription is already
+/// wired before this runs; a rejection is logged.
+async fn forward_publish_downstream(subscriber: Arc<MOQTClient>, publish: Publish) {
+  let (send, recv) = match subscriber.connection.open_bi().await {
+    Ok(streams) => streams,
+    Err(e) => {
+      error!("Failed to open downstream publish stream: {:?}", e);
+      return;
+    }
+  };
+  let mut stream = ControlStreamHandler::new(send, recv);
+  if let Err(e) = stream
+    .send(&ControlMessage::Publish(Box::new(publish)))
+    .await
+  {
+    error!("Failed to push PUBLISH downstream: {:?}", e);
+    return;
+  }
+
+  match stream.next_message().await {
+    Ok(ControlMessage::RequestOk(_)) => {
+      info!(
+        "Pushed PUBLISH accepted by subscriber {}",
+        subscriber.connection_id
+      );
+    }
+    Ok(ControlMessage::RequestError(m)) => {
+      warn!(
+        "Subscriber {} rejected pushed PUBLISH: {:?}",
+        subscriber.connection_id, m.error_code
+      );
+    }
+    Ok(other) => warn!(
+      "Unexpected {:?} on downstream publish stream",
+      other.get_type()
+    ),
+    Err(_) => debug!("Downstream publish stream closed"),
   }
 }
 

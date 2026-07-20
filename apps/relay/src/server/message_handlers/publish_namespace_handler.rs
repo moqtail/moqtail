@@ -21,7 +21,7 @@ use moqtail::model::error::{StreamResetCode, TerminationCode};
 use moqtail::model::parameter::message_parameter::apply_message_parameter_update;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 pub async fn handle(
   client: Arc<MOQTClient>,
@@ -84,55 +84,16 @@ pub async fn handle(
         }
       }
 
-      let request_ok = Box::new(RequestOk::new(
-        m.request_id,
-        vec![], // No parameters needed for a basic namespace OK
-      ));
+      let request_ok = Box::new(RequestOk::new(vec![]));
 
       stream_handler
         .send(&ControlMessage::RequestOk(request_ok))
         .await
     }
 
-    ControlMessage::RequestOk(m) => {
-      let msg = *m;
-
-      let mapping = {
-        let mut map = context.relay_pending_requests.write().await;
-        match map.remove(&msg.request_id) {
-          Some(PendingRequest::PublishNamespace {
-            client_connection_id,
-            ..
-          }) => Some(client_connection_id),
-          Some(_) => {
-            warn!(
-              "Mismatched request type for RequestOk (PublishNamespace): {}",
-              msg.request_id
-            );
-            None
-          }
-          None => None,
-        }
-      };
-
-      if let Some(client_connection_id) = mapping {
-        debug!(
-          "Received acknowledgment (RequestOk) from subscriber {} for PublishNamespace broadcast",
-          client_connection_id
-        );
-      } else {
-        debug!(
-          "PublishNamespace handler received RequestOk for untracked ID: {}",
-          msg.request_id
-        );
-      }
-      Ok(())
-    }
-
     ControlMessage::RequestUpdate(m) => {
       let update_msg = *m;
       let existing_req_id = update_msg.existing_request_id;
-      let update_req_id = update_msg.request_id;
 
       let target_namespace = {
         let mut map = client.inbound_requests.write().await;
@@ -203,7 +164,7 @@ pub async fn handle(
         }
       }
 
-      let ok_msg = RequestOk::new(update_req_id, vec![]);
+      let ok_msg = RequestOk::new(vec![]);
       stream_handler
         .send(&ControlMessage::RequestOk(Box::new(ok_msg)))
         .await?;

@@ -195,13 +195,7 @@ pub async fn handle(
 
       // Send FetchOk on the request stream before delivering objects.
       {
-        let fetch_ok = FetchOk::new(
-          request_id,
-          false,
-          end_location.clone().unwrap(),
-          vec![],
-          vec![],
-        );
+        let fetch_ok = FetchOk::new(false, end_location.clone().unwrap(), vec![], vec![]);
         stream_handler
           .send(&ControlMessage::FetchOk(Box::new(fetch_ok)))
           .await?;
@@ -518,21 +512,13 @@ pub async fn handle(
             client.remove_stream_by_stream_id(&stream_id).await;
           }
         } else if object_count == 0 {
-          // Draft 16: If range is valid but empty, send FETCH_OK + Empty Stream with FIN.
+          // Range is valid but empty: FETCH_OK was already sent on the request
+          // stream, so just open the data stream, write the header, and FIN.
           info!(
-            "handle_fetch_messages | Empty range for request_id: {}. Sending FETCH_OK and empty stream.",
+            "handle_fetch_messages | Empty range for request_id: {}. Sending empty stream.",
             request_id
           );
 
-          // 1. Send FETCH_OK
-          let end_loc = start_location.clone();
-          let fetch_ok = FetchOk::new(request_id, false, end_loc, vec![], vec![]);
-
-          client
-            .queue_message(ControlMessage::FetchOk(Box::new(fetch_ok)))
-            .await;
-
-          // 2. Open Stream, Write Header, and Close (FIN)
           if let Some(the_stream) = stream_fn(client.clone(), &stream_id).await {
             let mut stream_lock = the_stream.lock().await;
             if let Err(e) = stream_lock.finish().await {
@@ -612,25 +598,6 @@ pub async fn handle(
           "handle_fetch_messages | FetchCancel received but no active fetch for request_id: {}",
           request_id
         );
-      }
-
-      Ok(())
-    }
-    ControlMessage::FetchOk(m) => {
-      info!("received FetchOk message: {:?}", m);
-      let msg = *m;
-
-      // TODO: When the relay sends a fetch request to the publisher,
-      // it will wait for Fetch OK. However this is not implemented yet.
-      // Here is just a preliminary attempt for this, validating request id
-      let pending_request = {
-        let map = context.relay_pending_requests.read().await;
-        map.get(&msg.request_id).cloned()
-      };
-
-      if pending_request.is_none() {
-        error!("handle_fetch_messages | FetchOk | request_id does not exist in pending registry");
-        return Err(TerminationCode::InternalError);
       }
 
       Ok(())
@@ -769,10 +736,13 @@ async fn send_request_error(
   // TODO: Implement this later.
   // Draft 16 requires a retry interval. Setting to 0 (no retries) for now.
   let retry_interval = 0;
-  let request_error = RequestError::new(request_id, error_code, retry_interval, reason_phrase);
+  let request_error = RequestError::new(error_code, retry_interval, reason_phrase);
 
   client
-    .queue_message(ControlMessage::RequestError(Box::new(request_error)))
+    .send_response(
+      request_id,
+      ControlMessage::RequestError(Box::new(request_error)),
+    )
     .await;
   // Remove the request from the client maps on error
   client.inbound_requests.write().await.remove(&request_id);

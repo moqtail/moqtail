@@ -18,10 +18,10 @@ use bytes::{Buf, Bytes};
 
 use super::{
   constant::ControlMessageType, fetch::Fetch, fetch_ok::FetchOk, goaway::GoAway,
-  namespace::Namespace, namespace_done::NamespaceDone, publish::Publish, publish_done::PublishDone,
-  publish_namespace::PublishNamespace, request_error::RequestError, request_ok::RequestOk,
-  request_update::RequestUpdate, setup::Setup, subscribe::Subscribe,
-  subscribe_namespace::SubscribeNamespace, subscribe_ok::SubscribeOk,
+  namespace::Namespace, namespace_done::NamespaceDone, publish::Publish,
+  publish_blocked::PublishBlocked, publish_done::PublishDone, publish_namespace::PublishNamespace,
+  request_error::RequestError, request_ok::RequestOk, request_update::RequestUpdate, setup::Setup,
+  subscribe::Subscribe, subscribe_namespace::SubscribeNamespace, subscribe_ok::SubscribeOk,
   subscribe_tracks::SubscribeTracks, switch::Switch, track_status::TrackStatus,
 };
 
@@ -44,6 +44,7 @@ pub enum ControlMessage {
   SubscribeNamespace(Box<SubscribeNamespace>),
   SubscribeTracks(Box<SubscribeTracks>),
   RequestError(Box<RequestError>),
+  PublishBlocked(Box<PublishBlocked>),
   Switch(Box<Switch>),
 }
 
@@ -129,14 +130,10 @@ impl ControlMessage {
       ControlMessageType::SubscribeTracks => {
         SubscribeTracks::parse_payload(&mut payload).map(ControlMessage::SubscribeTracks)
       }
+      ControlMessageType::PublishBlocked => {
+        PublishBlocked::parse_payload(&mut payload).map(ControlMessage::PublishBlocked)
+      }
       ControlMessageType::Switch => Switch::parse_payload(&mut payload).map(ControlMessage::Switch),
-      // Draft-18 assigns these codepoints but their bodies are not built yet. Parsing
-      // fails rather than the type being rejected outright, so the error says the type
-      // was understood and the body was not.
-      ControlMessageType::PublishBlocked => Err(ParseError::Other {
-        context: "ControlMessage::deserialize(payload)",
-        msg: format!("{msg_type:?} is a draft-18 message type with no body implemented yet"),
-      }),
     }
     .map_err(|err| ParseError::ProtocolViolation {
       context: "ControlMessage::deserialize(payload)",
@@ -174,6 +171,7 @@ impl ControlMessage {
       ControlMessage::TrackStatus(msg) => msg.serialize(),
       ControlMessage::SubscribeNamespace(msg) => msg.serialize(),
       ControlMessage::SubscribeTracks(msg) => msg.serialize(),
+      ControlMessage::PublishBlocked(msg) => msg.serialize(),
       ControlMessage::Switch(msg) => msg.serialize(),
     }
   }
@@ -198,6 +196,7 @@ impl ControlMessage {
       ControlMessage::TrackStatus(_) => ControlMessageType::TrackStatus,
       ControlMessage::SubscribeNamespace(_) => ControlMessageType::SubscribeNamespace,
       ControlMessage::SubscribeTracks(_) => ControlMessageType::SubscribeTracks,
+      ControlMessage::PublishBlocked(_) => ControlMessageType::PublishBlocked,
       ControlMessage::Switch(_) => ControlMessageType::Switch,
     }
   }

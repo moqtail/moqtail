@@ -20,6 +20,7 @@ pub mod goaway;
 pub mod namespace;
 pub mod namespace_done;
 pub mod publish;
+pub mod publish_blocked;
 pub mod publish_done;
 pub mod publish_namespace;
 pub mod request_error;

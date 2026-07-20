@@ -208,17 +208,14 @@ mod tests {
   use super::*;
   use crate::model::common::location::Location;
   use crate::model::common::pair::KeyValuePair;
-  use crate::model::common::reason_phrase::ReasonPhrase;
   use crate::model::common::tuple::{Tuple, TupleField};
   use crate::model::common::varint::BufMutVarIntExt;
   use crate::model::control::constant::{ControlMessageType, GroupOrder};
   use crate::model::control::publish_namespace::PublishNamespace;
-  use crate::model::control::publish_namespace_cancel::PublishNamespaceCancel;
   use crate::model::control::request_ok::RequestOk;
   use crate::model::control::setup::Setup;
   use crate::model::control::subscribe::Subscribe;
   use crate::model::control::subscribe_ok::SubscribeOk;
-  use crate::model::error::RequestErrorCode;
   use crate::model::parameter::authorization_token::AuthorizationToken;
   use crate::model::parameter::message_parameter::MessageParameter;
   use bytes::Bytes;
@@ -357,18 +354,6 @@ mod tests {
 
   fn create_test_announce_ok() -> RequestOk {
     RequestOk::new(vec![])
-  }
-
-  fn create_test_announce_cancel() -> PublishNamespaceCancel {
-    let request_id = 1337;
-    let error_code = RequestErrorCode::InternalError;
-    let reason_phrase = ReasonPhrase::try_new("bomboclad".to_string()).unwrap();
-
-    PublishNamespaceCancel {
-      request_id,
-      error_code,
-      reason_phrase,
-    }
   }
 
   fn create_test_subscribe() -> Subscribe {
@@ -565,8 +550,8 @@ mod tests {
     let (mut plane, mut server_send) = setup.create_control_plane().await?;
 
     // Create a valid message using helper
-    let announce_cancel = Box::new(create_test_announce_cancel());
-    let msg = ControlMessage::PublishNamespaceCancel(announce_cancel.clone()); // Clone for assertion
+    let announce = Box::new(create_test_publish_namespace());
+    let msg = ControlMessage::PublishNamespace(announce.clone()); // Clone for assertion
     let bytes = msg.serialize().unwrap();
 
     // Send first half
@@ -583,7 +568,7 @@ mod tests {
     // Should successfully receive the complete message
     let received = plane.next_message().await.unwrap();
     match received {
-      ControlMessage::PublishNamespaceCancel(rec_cancel) => assert_eq!(rec_cancel, announce_cancel),
+      ControlMessage::PublishNamespace(rec) => assert_eq!(rec, announce),
       _ => panic!("Received incorrect message type"),
     }
 
@@ -602,7 +587,6 @@ mod tests {
     let announce_ok1 = Box::new(create_test_announce_ok());
     let subscribe1 = Box::new(create_test_subscribe());
     let subscribe_ok1 = Box::new(create_test_subscribe_ok());
-    let announce_cancel1 = Box::new(create_test_announce_cancel());
     let client_setup = Box::new(create_test_client_setup());
     let server_setup = Box::new(create_test_server_setup());
 
@@ -613,7 +597,6 @@ mod tests {
       ControlMessage::RequestOk(announce_ok1),
       ControlMessage::Subscribe(subscribe1),
       ControlMessage::SubscribeOk(subscribe_ok1),
-      ControlMessage::PublishNamespaceCancel(announce_cancel1),
     ];
 
     // Clone messages for sending task

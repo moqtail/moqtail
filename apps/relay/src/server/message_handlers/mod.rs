@@ -27,7 +27,7 @@ use std::sync::Arc;
 pub(crate) mod fetch_handler;
 mod publish_handler;
 mod publish_namespace_handler;
-mod subscribe_handler;
+pub(crate) mod subscribe_handler;
 pub(crate) mod subscribe_namespace_handler;
 mod track_status_handler;
 use super::utils;
@@ -50,14 +50,14 @@ impl MessageHandler {
         warn!("SUBSCRIBE_NAMESPACE received on control stream — must use a dedicated bi-stream");
         Err(TerminationCode::ProtocolViolation)
       }
-      ControlMessage::Subscribe(_) | ControlMessage::Unsubscribe(_) | ControlMessage::Switch(_) => {
+      ControlMessage::Subscribe(_) | ControlMessage::Switch(_) => {
         subscribe_handler::handle(client.clone(), stream_handler, msg, context.clone()).await
       }
 
       ControlMessage::TrackStatus(_) => {
         track_status_handler::handle(stream_handler, msg, context.clone()).await
       }
-      ControlMessage::Fetch(_) | ControlMessage::FetchCancel(_) => {
+      ControlMessage::Fetch(_) => {
         fetch_handler::handle(client.clone(), stream_handler, msg, context.clone()).await
       }
       ControlMessage::Publish(_) | ControlMessage::PublishDone(_) => {

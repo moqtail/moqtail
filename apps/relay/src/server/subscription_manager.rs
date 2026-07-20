@@ -183,6 +183,10 @@ impl SubscriptionManager {
     drop(senders);
   }
 
+  pub async fn subscriber_count(&self) -> usize {
+    self.subscriptions.read().await.len()
+  }
+
   // Send event to all subscribers
   pub async fn send_event_to_subscribers(
     &self,

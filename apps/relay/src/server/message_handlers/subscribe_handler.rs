@@ -25,6 +25,7 @@ use moqtail::model::control::request_error::RequestError;
 use moqtail::model::control::request_ok::RequestOk;
 use moqtail::model::control::subscribe::Subscribe;
 use moqtail::model::error::RequestErrorCode;
+use moqtail::model::error::StreamResetCode;
 use moqtail::model::error::TerminationCode;
 use moqtail::model::parameter::message_parameter::{
   MessageParameter, MessageParameterVecExt, apply_message_parameter_update,
@@ -36,6 +37,7 @@ use moqtail::model::{
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use moqtail::transport::data_stream_handler::SubscribeRequest;
 use std::sync::Arc;
+use tokio::sync::oneshot;
 use tracing::{debug, error, info, warn};
 
 async fn add_subscription(
@@ -77,6 +79,7 @@ async fn forward_subscribe_upstream(
   // The response returns on this stream, so correlate it by the relay request id
   // we sent upstream rather than a field in the response.
   let relay_request_id = new_sub.request_id;
+  let full_track_name = new_sub.get_full_track_name();
   let mut upstream = ControlStreamHandler::new(send, recv);
   if let Err(e) = upstream
     .send(&ControlMessage::Subscribe(Box::new(new_sub)))
@@ -86,30 +89,44 @@ async fn forward_subscribe_upstream(
     return;
   }
 
+  // Register a cancel signal on the track so the last downstream unsubscribe
+  // resets this upstream stream and the publisher observes CANCELLED.
+  let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
+  if let Some(track) = context.track_manager.get_track(&full_track_name).await {
+    *track.read().await.upstream_cancel.lock().await = Some(cancel_tx);
+  }
+
   loop {
-    match upstream.next_message().await {
-      Ok(ControlMessage::SubscribeOk(m)) => {
-        if let Err(e) =
-          handle_subscribe_ok_message(publisher.clone(), relay_request_id, *m, context.clone())
-            .await
-        {
-          error!("Error handling upstream SubscribeOk: {:?}", e);
-          return;
+    tokio::select! {
+      biased;
+      _ = &mut cancel_rx => {
+        info!("Downstream unsubscribed; resetting upstream subscribe stream (CANCELLED)");
+        upstream.reset(StreamResetCode::Cancelled.to_u64());
+        return;
+      }
+      msg = upstream.next_message() => {
+        match msg {
+          Ok(ControlMessage::SubscribeOk(m)) => {
+            if let Err(e) =
+              handle_subscribe_ok_message(publisher.clone(), relay_request_id, *m, context.clone())
+                .await
+            {
+              error!("Error handling upstream SubscribeOk: {:?}", e);
+              return;
+            }
+          }
+          Ok(ControlMessage::RequestError(m)) => {
+            let _ = handle_subscribe_error_message(relay_request_id, *m, context.clone()).await;
+            return;
+          }
+          Ok(other) => {
+            warn!("Unexpected {:?} on upstream subscribe stream", other.get_type());
+          }
+          Err(_) => {
+            debug!("Upstream subscribe stream closed");
+            return;
+          }
         }
-      }
-      Ok(ControlMessage::RequestError(m)) => {
-        let _ = handle_subscribe_error_message(relay_request_id, *m, context.clone()).await;
-        return;
-      }
-      Ok(other) => {
-        warn!(
-          "Unexpected {:?} on upstream subscribe stream",
-          other.get_type()
-        );
-      }
-      Err(_) => {
-        debug!("Upstream subscribe stream closed");
-        return;
       }
     }
   }
@@ -493,25 +510,19 @@ async fn handle_subscribe_ok_message(
   Ok(())
 }
 
-async fn handle_unsubscribe_message(
+/// Cancel a subscription when its SUBSCRIBE request stream is reset or closed.
+pub(crate) async fn cancel_subscription(
   client: Arc<MOQTClient>,
-  _stream_handler: &mut ControlStreamHandler,
-  unsubscribe_message: moqtail::model::control::unsubscribe::Unsubscribe,
-  context: Arc<SessionContext>,
-) -> Result<(), TerminationCode> {
-  info!("received Unsubscribe message: {:?}", unsubscribe_message);
-
+  request_id: u64,
+  context: &Arc<SessionContext>,
+) {
   // find the track alias by using the request id
   let full_track_name = {
     let requests = client.subscribe_requests.read().await;
-    let request = requests.get(&unsubscribe_message.request_id);
+    let request = requests.get(&request_id);
     if request.is_none() {
-      // a warning is enough
-      warn!(
-        "request not found for request id: {:?}",
-        unsubscribe_message.request_id
-      );
-      return Ok(());
+      warn!("request not found for request id: {:?}", request_id);
+      return;
     }
     request
       .unwrap()
@@ -523,11 +534,18 @@ async fn handle_unsubscribe_message(
   let track_option = context.track_manager.get_track(&full_track_name).await;
 
   if let Some(track_lock) = track_option {
-    let track = track_lock.write().await;
+    let track = track_lock.read().await;
     track.remove_subscription(context.connection_id).await;
+    // When the last subscriber goes away, reset the upstream subscribe stream so
+    // the publisher observes the cancellation.
+    if track.subscriber_count().await == 0
+      && let Some(cancel) = track.upstream_cancel.lock().await.take()
+    {
+      let _ = cancel.send(());
+    }
   } else {
-    tracing::warn!(
-      "Ignored Unsubscribe: Track {:?} already removed.",
+    warn!(
+      "Subscription cancel: Track {:?} already removed.",
       full_track_name
     );
   }
@@ -541,18 +559,16 @@ async fn handle_unsubscribe_message(
   // Remove the request from the client's request map so it doesn't leak
   {
     let mut requests = client.subscribe_requests.write().await;
-    requests.remove(&unsubscribe_message.request_id);
+    requests.remove(&request_id);
 
     let mut inbound = client.inbound_requests.write().await;
-    inbound.remove(&unsubscribe_message.request_id);
+    inbound.remove(&request_id);
 
     debug!(
-      "Cleaned up client subscribe request {} after Unsubscribe",
-      unsubscribe_message.request_id
+      "Cleaned up client subscribe request {} on cancel",
+      request_id
     );
   }
-
-  Ok(())
 }
 
 pub async fn handle_request_update(
@@ -911,9 +927,6 @@ pub async fn handle(
   match msg {
     ControlMessage::Subscribe(m) => {
       handle_subscribe_message(client, stream_handler, *m, context, false).await
-    }
-    ControlMessage::Unsubscribe(m) => {
-      handle_unsubscribe_message(client, stream_handler, *m, context).await
     }
     ControlMessage::RequestUpdate(m) => {
       handle_request_update(client, stream_handler, *m, context).await

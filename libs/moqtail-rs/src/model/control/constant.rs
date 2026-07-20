@@ -34,31 +34,26 @@ pub const SUPPORTED_VERSIONS: &str = "moqt-18";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u64)]
 pub enum ControlMessageType {
-  Setup = 0x2F00,                // Control
-  GoAway = 0x10,                 // Control, Request
-  Subscribe = 0x03,              // Request, First
-  SubscribeOk = 0x04,            // Request
-  RequestError = 0x05,           // Request
-  Unsubscribe = 0x0A,            // not in draft-18
-  RequestUpdate = 0x02,          // Request
-  Fetch = 0x16,                  // Request, First
-  FetchOk = 0x18,                // Request
-  FetchCancel = 0x17,            // not in draft-18
-  TrackStatus = 0x0D,            // Request, First
-  PublishNamespace = 0x06,       // Request, First
-  RequestOk = 0x07,              // Request
-  Namespace = 0x08,              // Request
-  PublishNamespaceDone = 0x09,   // not in draft-18
-  NamespaceDone = 0x0E,          // Request
-  PublishNamespaceCancel = 0x0C, // not in draft-18
-  SubscribeNamespace = 0x50,     // Request, First
-  SubscribeTracks = 0x51,        // Request, First
-  UnsubscribeNamespace = 0x14,   // not in draft-18
-  Publish = 0x1D,                // Request, First
-  PublishDone = 0x0B,            // Request
-  PublishOk = 0x1E,              // Request; an alias of RequestOk (§10.5), not its own body
-  PublishBlocked = 0x0F,         // Request
-  Switch = 0x22,                 // not in draft-18; moqtail-local extension
+  Setup = 0x2F00,            // Control
+  GoAway = 0x10,             // Control, Request
+  Subscribe = 0x03,          // Request, First
+  SubscribeOk = 0x04,        // Request
+  RequestError = 0x05,       // Request
+  RequestUpdate = 0x02,      // Request
+  Fetch = 0x16,              // Request, First
+  FetchOk = 0x18,            // Request
+  TrackStatus = 0x0D,        // Request, First
+  PublishNamespace = 0x06,   // Request, First
+  RequestOk = 0x07,          // Request
+  Namespace = 0x08,          // Request
+  NamespaceDone = 0x0E,      // Request
+  SubscribeNamespace = 0x50, // Request, First
+  SubscribeTracks = 0x51,    // Request, First
+  Publish = 0x1D,            // Request, First
+  PublishDone = 0x0B,        // Request
+  PublishOk = 0x1E,          // Request; an alias of RequestOk (§10.5), not its own body
+  PublishBlocked = 0x0F,     // Request
+  Switch = 0x22,             // not in draft-18; moqtail-local extension
 }
 
 impl TryFrom<u64> for ControlMessageType {
@@ -71,22 +66,17 @@ impl TryFrom<u64> for ControlMessageType {
       0x03 => Ok(ControlMessageType::Subscribe),
       0x04 => Ok(ControlMessageType::SubscribeOk),
       0x05 => Ok(ControlMessageType::RequestError),
-      0x0A => Ok(ControlMessageType::Unsubscribe),
       0x02 => Ok(ControlMessageType::RequestUpdate),
       0x0B => Ok(ControlMessageType::PublishDone),
       0x16 => Ok(ControlMessageType::Fetch),
       0x18 => Ok(ControlMessageType::FetchOk),
-      0x17 => Ok(ControlMessageType::FetchCancel),
       0x0D => Ok(ControlMessageType::TrackStatus),
       0x06 => Ok(ControlMessageType::PublishNamespace),
       0x07 => Ok(ControlMessageType::RequestOk),
       0x08 => Ok(ControlMessageType::Namespace),
-      0x09 => Ok(ControlMessageType::PublishNamespaceDone),
       0x0E => Ok(ControlMessageType::NamespaceDone),
-      0x0C => Ok(ControlMessageType::PublishNamespaceCancel),
       0x50 => Ok(ControlMessageType::SubscribeNamespace),
       0x51 => Ok(ControlMessageType::SubscribeTracks),
-      0x14 => Ok(ControlMessageType::UnsubscribeNamespace),
       0x1D => Ok(ControlMessageType::Publish),
       0x1E => Ok(ControlMessageType::PublishOk),
       0x0F => Ok(ControlMessageType::PublishBlocked),
@@ -363,7 +353,6 @@ mod tests {
       ControlMessageType::RequestOk,
       ControlMessageType::RequestError,
       ControlMessageType::FetchOk,
-      ControlMessageType::Unsubscribe,
     ] {
       assert!(!t.is_first(), "{t:?} must not open a request stream");
     }

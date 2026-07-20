@@ -32,7 +32,7 @@ use moqtail::model::property::track_property::TrackProperty;
 use moqtail::transport::data_stream_handler::HeaderInfo;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
-use tokio::sync::{Notify, RwLock};
+use tokio::sync::{Mutex, Notify, RwLock, oneshot};
 use tracing::{debug, error, info, warn};
 
 pub type ActiveSubgroupHeaderMap = Arc<RwLock<HashMap<StreamId, HeaderInfo>>>;
@@ -95,6 +95,16 @@ pub struct Track {
   /// Inserted when the first object of a subgroup arrives; removed when the
   /// publisher's unistream closes (stream_closed signal).
   pub active_subgroup_headers: ActiveSubgroupHeaderMap,
+  /// Signals the relay's outbound SUBSCRIBE task to reset its stream when the
+  /// last downstream subscriber goes away.
+  ///
+  /// This is only set on the pull path: when a subscriber is the first to create
+  /// a track, the relay opens its OWN SUBSCRIBE stream to the publisher and
+  /// stores the signal here. It guards that relay-owned stream only — never a
+  /// publisher-initiated PUBLISH stream. A track created by a PUBLISH leaves this
+  /// None, so a subscriber leaving never cancels the publisher; the pushed track
+  /// stays alive as long as the publisher keeps publishing.
+  pub upstream_cancel: Arc<Mutex<Option<oneshot::Sender<()>>>>,
 }
 
 // TODO: this track implementation should be static? At least
@@ -125,6 +135,7 @@ impl Track {
       pending_subscribers: Arc::new(RwLock::new(Vec::new())),
       track_properties: Arc::new(RwLock::new(Vec::new())),
       active_subgroup_headers: Arc::new(RwLock::new(HashMap::new())),
+      upstream_cancel: Arc::new(Mutex::new(None)),
     }
   }
 
@@ -278,6 +289,10 @@ impl Track {
       .subscription_manager
       .remove_subscription(subscriber_id)
       .await
+  }
+
+  pub async fn subscriber_count(&self) -> usize {
+    self.subscription_manager.subscriber_count().await
   }
 
   pub async fn new_subgroup_object(

@@ -18,7 +18,7 @@ use moqtail::model::common::location::Location;
 use moqtail::model::common::tuple::{Tuple, TupleField};
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::fetch::{Fetch, StandaloneFetchProps};
-use moqtail::model::control::fetch_cancel::FetchCancel;
+use moqtail::model::error::StreamResetCode;
 use moqtail::model::parameter::message_parameter::MessageParameter;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use moqtail::transport::data_stream_handler::{FetchRequest, RecvDataStream};
@@ -178,16 +178,8 @@ pub async fn run(moq: MoqConnection, config: FetchConfig) -> Result<()> {
       }
     }
 
-    info!("Sending FETCH_CANCEL for request_id: {}", request_id);
-    let fetch_cancel = FetchCancel::new(request_id);
-    if let Err(e) = request_stream
-      .send(&ControlMessage::FetchCancel(Box::new(fetch_cancel)))
-      .await
-    {
-      error!("Error sending FETCH_CANCEL: {:?}", e);
-    } else {
-      info!("FETCH_CANCEL sent successfully");
-    }
+    info!("Cancelling fetch by resetting the request stream");
+    request_stream.reset(StreamResetCode::Cancelled.to_u64());
   }
 
   // Wait for fetch data to arrive

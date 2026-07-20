@@ -70,17 +70,10 @@ impl ControlMessageTrait for SubscribeNamespace {
   }
 
   fn parse_payload(payload: &mut Bytes) -> Result<Box<Self>, ParseError> {
+    // The 0-32 field bound is a relay policy answered with NAMESPACE_TOO_LARGE, not
+    // a parse error, so it is enforced by the handler rather than here.
     let request_id = payload.get_vi()?;
     let track_namespace_prefix = Tuple::deserialize(payload)?;
-    if track_namespace_prefix.fields.len() > 32 {
-      return Err(ParseError::ProtocolViolation {
-        context: "SubscribeNamespace::parse_payload",
-        details: format!(
-          "Track namespace prefix has {} fields, maximum is 32",
-          track_namespace_prefix.fields.len()
-        ),
-      });
-    }
     let param_count = payload.get_vi()?;
     let parameters =
       deserialize_message_parameters(payload, param_count, ControlMessageType::SubscribeNamespace)?;

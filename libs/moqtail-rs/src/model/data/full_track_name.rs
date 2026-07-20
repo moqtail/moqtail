@@ -53,12 +53,10 @@ impl Display for FullTrackName {
 impl FullTrackName {
   pub fn new(namespace: Tuple, name: TupleField) -> Result<Self, ParseError> {
     let ns_count = namespace.fields.len();
-    if ns_count == 0 || ns_count > MAX_NAMESPACE_TUPLE_COUNT {
+    if ns_count > MAX_NAMESPACE_TUPLE_COUNT {
       return Err(ParseError::TrackNameError {
         context: "FullTrackName::new(ns_count)",
-        details: format!(
-          "Namespace cannot be empty or cannot exceed {MAX_NAMESPACE_TUPLE_COUNT} fields"
-        ),
+        details: format!("Namespace cannot exceed {MAX_NAMESPACE_TUPLE_COUNT} fields"),
       });
     }
 
@@ -94,12 +92,10 @@ impl FullTrackName {
   pub fn deserialize(buf: &mut Bytes) -> Result<Self, ParseError> {
     let namespace = Tuple::deserialize(buf)?;
     let ns_count = namespace.fields.len();
-    if ns_count == 0 || ns_count > MAX_NAMESPACE_TUPLE_COUNT {
+    if ns_count > MAX_NAMESPACE_TUPLE_COUNT {
       return Err(ParseError::TrackNameError {
         context: "FullTrackName::deserialize(ns_count)",
-        details: format!(
-          "Namespace cannot be empty or cannot exceed {MAX_NAMESPACE_TUPLE_COUNT} fields"
-        ),
+        details: format!("Namespace cannot exceed {MAX_NAMESPACE_TUPLE_COUNT} fields"),
       });
     }
     let name_len = buf.get_vi()? as usize;
@@ -125,5 +121,44 @@ impl FullTrackName {
       namespace,
       name: TupleField::new(name),
     })
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn ns(field_count: usize) -> Tuple {
+    Tuple {
+      fields: (0..field_count)
+        .map(|i| TupleField::from_utf8(&i.to_string()))
+        .collect(),
+    }
+  }
+
+  #[test]
+  fn zero_element_namespace_round_trips() {
+    let ftn = FullTrackName::new(Tuple::new(), TupleField::from_utf8("track")).unwrap();
+    assert_eq!(ftn.namespace.fields.len(), 0);
+
+    let mut bytes = ftn.serialize().unwrap();
+    let parsed = FullTrackName::deserialize(&mut bytes).unwrap();
+    assert_eq!(parsed, ftn);
+  }
+
+  #[test]
+  fn thirty_two_field_namespace_is_allowed() {
+    assert!(FullTrackName::new(ns(MAX_NAMESPACE_TUPLE_COUNT), TupleField::from_utf8("t")).is_ok());
+  }
+
+  #[test]
+  fn thirty_three_field_namespace_is_rejected() {
+    assert!(
+      FullTrackName::new(
+        ns(MAX_NAMESPACE_TUPLE_COUNT + 1),
+        TupleField::from_utf8("t")
+      )
+      .is_err()
+    );
   }
 }

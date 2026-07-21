@@ -180,6 +180,19 @@ pub async fn handle(
         }
 
         for subscriber in subscribers {
+          // Never push a track back to its own publisher, and let an explicit
+          // SUBSCRIBE take precedence over SUBSCRIBE_TRACKS for the same track.
+          if subscriber.connection_id == context.connection_id
+            || track_arc
+              .read()
+              .await
+              .get_subscription(subscriber.connection_id)
+              .await
+              .is_some()
+          {
+            continue;
+          }
+
           info!(
             "Forwarding Publish to interested client: {}",
             subscriber.connection_id

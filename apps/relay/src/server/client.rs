@@ -433,6 +433,16 @@ impl MOQTClient {
     send_streams.remove(stream_id.get_stream_id().as_str())
   }
 
+  /// Reset a data stream with an application error code (QUIC RESET_STREAM) and
+  /// drop it from the send-stream map.
+  pub async fn reset_stream(&self, stream_id: &StreamId, code: u64) {
+    if let Some(stream) = self.remove_stream_by_stream_id(stream_id).await
+      && let Err(e) = stream.lock().await.reset(code)
+    {
+      warn!("Error resetting data stream {}: {:?}", stream_id, e);
+    }
+  }
+
   pub async fn write_stream_object(
     &self,
     stream_id: &StreamId,

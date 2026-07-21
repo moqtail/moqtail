@@ -39,6 +39,7 @@ pub enum RequestErrorCode {
   NamespaceTooLarge = 0x31,
   InvalidJoiningRequestId = 0x32,
   UnsupportedExtension = 0x33,
+  Redirect = 0x34,
 }
 
 impl TryFrom<u64> for RequestErrorCode {
@@ -63,6 +64,7 @@ impl TryFrom<u64> for RequestErrorCode {
       0x31 => Ok(RequestErrorCode::NamespaceTooLarge),
       0x32 => Ok(RequestErrorCode::InvalidJoiningRequestId),
       0x33 => Ok(RequestErrorCode::UnsupportedExtension),
+      0x34 => Ok(RequestErrorCode::Redirect),
       _ => Err(ParseError::InvalidType {
         context: "RequestErrorCode::try_from(u64)",
         details: format!("Invalid type, got {value}"),

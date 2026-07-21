@@ -51,7 +51,7 @@
       "value": "0x34",
       "spec": "Section 10.6",
       "notes": "Used by GOAWAY-driven request migration.",
-      "pending": { "rs": 244, "ts": 268 }
+      "pending": { "ts": 268 }
     }
   ]
 }

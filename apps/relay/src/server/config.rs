@@ -84,6 +84,11 @@ pub struct Cli {
   #[arg(long, default_value_t = 0)]
   pub max_active_requests: u64,
 
+  /// Max objects queued for a subscriber before its data streams are reset with
+  /// TOO_FAR_BEHIND. 0 disables the check.
+  #[arg(long, default_value_t = 0)]
+  pub max_subscriber_lag: u64,
+
   /// Simulate a bandwidth cap per subscriber connection (kbps). 0 = unlimited.
   /// Useful for testing QUIC stream priority scheduling without OS-level throttling.
   #[arg(long, default_value_t = 0)]
@@ -113,6 +118,7 @@ pub struct AppConfig {
   pub token_log_path: String,
   pub max_request_streams: u64,
   pub max_active_requests: u64,
+  pub max_subscriber_lag: u64,
   /// 0 = unlimited. Non-zero caps relay writes to this many kbps per subscriber connection.
   pub write_kbps_limit: u64,
   pub max_upstream_fetch_gaps: u64,
@@ -140,6 +146,7 @@ impl AppConfig {
         token_log_path: cli.token_log_path,
         max_request_streams: cli.max_request_streams,
         max_active_requests: cli.max_active_requests,
+        max_subscriber_lag: cli.max_subscriber_lag,
         write_kbps_limit: cli.write_kbps_limit,
         max_upstream_fetch_gaps: cli.max_upstream_fetch_gaps,
         upstream_fetch_timeout: Duration::from_secs(cli.upstream_fetch_timeout_secs),
@@ -257,6 +264,7 @@ mod tests {
       token_log_path: "/tmp/moqtail_relay_tokens.csv".to_string(),
       max_request_streams,
       max_active_requests: 0,
+      max_subscriber_lag: 0,
       write_kbps_limit: 0,
       max_upstream_fetch_gaps: 10,
       upstream_fetch_timeout: Duration::from_secs(10),

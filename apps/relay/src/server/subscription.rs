@@ -37,6 +37,7 @@ use moqtail::model::control::subscribe::Subscribe;
 use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::model::data::object::Object;
 use moqtail::model::data::subgroup_header::SubgroupHeader;
+use moqtail::model::error::StreamResetCode;
 use moqtail::model::parameter::message_parameter::{
   MessageParameter, apply_message_parameter_update,
 };
@@ -837,17 +838,36 @@ impl Subscription {
     );
 
     let mut event_rx_guard = self.event_rx.lock().await;
-    let recv_result = {
+    let (recv_result, backlog) = {
       let Some(ref mut rx) = *event_rx_guard else {
         return;
       };
-      rx.recv().await
+      let event = rx.recv().await;
+      let backlog = rx.len();
+      (event, backlog)
     };
 
     trace!(
       "Received event for subscriber={} relay_track_id={}: {:?}",
       self.client_connection_id, self.relay_track_id, recv_result
     );
+
+    // Slow-subscriber shedding: once the queued backlog exceeds the limit, the
+    // subscriber can't keep up, so reset its data streams with TOO_FAR_BEHIND.
+    let max_lag = self.config.max_subscriber_lag;
+    if max_lag > 0 && backlog as u64 > max_lag && !self.finished.load(Ordering::Relaxed) {
+      warn!(
+        "Subscriber {} too far behind on relay_track_id={} ({} queued > {}); resetting data streams (TOO_FAR_BEHIND)",
+        self.client_connection_id, self.relay_track_id, backlog, max_lag
+      );
+      event_rx_guard.take();
+      drop(event_rx_guard);
+      self
+        .reset_data_streams(StreamResetCode::TooFarBehind.to_u64())
+        .await;
+      self.finish().await;
+      return;
+    }
 
     match recv_result {
       Some(event) if !self.finished.load(Ordering::Relaxed) => {
@@ -866,6 +886,17 @@ impl Subscription {
         event_rx_guard.take();
         drop(event_rx_guard);
       }
+    }
+  }
+
+  /// Reset every data stream this subscription has opened with the given code.
+  async fn reset_data_streams(&self, code: u64) {
+    let stream_ids: Vec<StreamId> = {
+      let map = self.send_stream_last_object_ids.read().await;
+      map.keys().cloned().collect()
+    };
+    for stream_id in stream_ids {
+      self.subscriber.reset_stream(&stream_id, code).await;
     }
   }
 

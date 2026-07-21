@@ -78,6 +78,12 @@ pub struct Cli {
   #[arg(long, default_value_t = 10_000)]
   pub max_request_streams: u64,
 
+  /// Application-level load-shedding limit: once this many request streams are
+  /// being served across the relay, new ones are reset with EXCESSIVE_LOAD.
+  /// 0 disables load shedding.
+  #[arg(long, default_value_t = 0)]
+  pub max_active_requests: u64,
+
   /// Simulate a bandwidth cap per subscriber connection (kbps). 0 = unlimited.
   /// Useful for testing QUIC stream priority scheduling without OS-level throttling.
   #[arg(long, default_value_t = 0)]
@@ -106,6 +112,7 @@ pub struct AppConfig {
   pub enable_token_logging: bool,
   pub token_log_path: String,
   pub max_request_streams: u64,
+  pub max_active_requests: u64,
   /// 0 = unlimited. Non-zero caps relay writes to this many kbps per subscriber connection.
   pub write_kbps_limit: u64,
   pub max_upstream_fetch_gaps: u64,
@@ -132,6 +139,7 @@ impl AppConfig {
         enable_token_logging: cli.enable_token_logging,
         token_log_path: cli.token_log_path,
         max_request_streams: cli.max_request_streams,
+        max_active_requests: cli.max_active_requests,
         write_kbps_limit: cli.write_kbps_limit,
         max_upstream_fetch_gaps: cli.max_upstream_fetch_gaps,
         upstream_fetch_timeout: Duration::from_secs(cli.upstream_fetch_timeout_secs),
@@ -248,6 +256,7 @@ mod tests {
       enable_token_logging: false,
       token_log_path: "/tmp/moqtail_relay_tokens.csv".to_string(),
       max_request_streams,
+      max_active_requests: 0,
       write_kbps_limit: 0,
       max_upstream_fetch_gaps: 10,
       upstream_fetch_timeout: Duration::from_secs(10),

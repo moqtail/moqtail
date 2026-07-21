@@ -180,6 +180,15 @@ impl Track {
     !self.publisher_aliases.read().await.is_empty()
   }
 
+  /// Whether the given connection is one of this track's publishers.
+  pub async fn is_published_by(&self, connection_id: usize) -> bool {
+    self
+      .publisher_aliases
+      .read()
+      .await
+      .contains_key(&connection_id)
+  }
+
   /// Transition from Pending to Confirmed. Adds publisher alias and notifies waiters.
   pub async fn confirm(
     &mut self,

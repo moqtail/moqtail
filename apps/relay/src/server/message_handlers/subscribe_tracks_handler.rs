@@ -119,6 +119,17 @@ pub async fn handle_subscribe_tracks(
     .await;
 
   for (full_track_name, track_arc, original_publish_message_opt) in matched_tracks {
+    // Exclude the subscriber's own published tracks, and let an explicit
+    // SUBSCRIBE take precedence over SUBSCRIBE_TRACKS for the same track.
+    let already_served = {
+      let track = track_arc.read().await;
+      track.is_published_by(client.connection_id).await
+        || track.get_subscription(client.connection_id).await.is_some()
+    };
+    if already_served {
+      continue;
+    }
+
     if let Some(mut original_publish_message) = original_publish_message_opt {
       info!("Forwarding existing track to SUBSCRIBE_TRACKS subscriber: {full_track_name:?}");
 

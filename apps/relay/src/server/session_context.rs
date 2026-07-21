@@ -98,9 +98,12 @@ pub struct SessionContext {
   pub(crate) relay_next_request_id: Arc<AtomicU64>,
   pub(crate) upstream_fetch_senders: Arc<RwLock<BTreeMap<u64, mpsc::Sender<UpstreamFetchEvent>>>>,
   pub(crate) active_request_streams: Arc<AtomicU64>,
+  /// Set once the relay is draining (GOAWAY sent); new requests are rejected.
+  pub(crate) draining: Arc<AtomicBool>,
 }
 
 impl SessionContext {
+  #[allow(clippy::too_many_arguments)]
   pub fn new(
     server_config: &'static AppConfig,
     client_manager: Arc<RwLock<ClientManager>>,
@@ -109,6 +112,7 @@ impl SessionContext {
     connection: TransportConnection,
     relay_next_request_id: Arc<AtomicU64>,
     active_request_streams: Arc<AtomicU64>,
+    draining: Arc<AtomicBool>,
   ) -> Self {
     Self {
       client_manager,
@@ -123,6 +127,7 @@ impl SessionContext {
       relay_next_request_id,
       upstream_fetch_senders: request_maps.upstream_fetch_senders,
       active_request_streams,
+      draining,
     }
   }
 

@@ -20,7 +20,7 @@ use moqtail::model::{
     setup::{Setup, SetupSender},
   },
   data::datagram::Datagram,
-  error::TerminationCode,
+  error::{StreamResetCode, TerminationCode},
 };
 use moqtail::transport::{
   connection::{
@@ -147,6 +147,7 @@ impl Session {
       request_maps,
       connection,
       relay_next_request_id,
+      server.active_request_streams.clone(),
     ));
 
     info!(
@@ -476,7 +477,28 @@ impl Session {
       return;
     }
 
-    Self::dispatch_request_stream_message(client, stream_handler, msg, context).await;
+    // Load shedding: once the relay is serving its configured maximum of request
+    // streams, reset new ones with EXCESSIVE_LOAD instead of serving them.
+    use std::sync::atomic::Ordering;
+    let max_active = context.server_config.max_active_requests;
+    if max_active > 0 && context.active_request_streams.load(Ordering::Relaxed) >= max_active {
+      warn!(
+        "Load shedding request stream {:?}: {} active >= max {}",
+        msg.get_type(),
+        context.active_request_streams.load(Ordering::Relaxed),
+        max_active
+      );
+      stream_handler.reset(StreamResetCode::ExcessiveLoad.to_u64());
+      return;
+    }
+
+    context
+      .active_request_streams
+      .fetch_add(1, Ordering::Relaxed);
+    Self::dispatch_request_stream_message(client, stream_handler, msg, context.clone()).await;
+    context
+      .active_request_streams
+      .fetch_sub(1, Ordering::Relaxed);
   }
 
   async fn dispatch_request_stream_message(

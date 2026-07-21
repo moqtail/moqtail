@@ -97,6 +97,7 @@ pub struct SessionContext {
   pub(crate) is_connection_closed: Arc<AtomicBool>,
   pub(crate) relay_next_request_id: Arc<AtomicU64>,
   pub(crate) upstream_fetch_senders: Arc<RwLock<BTreeMap<u64, mpsc::Sender<UpstreamFetchEvent>>>>,
+  pub(crate) active_request_streams: Arc<AtomicU64>,
 }
 
 impl SessionContext {
@@ -107,6 +108,7 @@ impl SessionContext {
     request_maps: RequestMaps,
     connection: TransportConnection,
     relay_next_request_id: Arc<AtomicU64>,
+    active_request_streams: Arc<AtomicU64>,
   ) -> Self {
     Self {
       client_manager,
@@ -120,6 +122,7 @@ impl SessionContext {
       is_connection_closed: Arc::new(AtomicBool::new(false)),
       relay_next_request_id,
       upstream_fetch_senders: request_maps.upstream_fetch_senders,
+      active_request_streams,
     }
   }
 

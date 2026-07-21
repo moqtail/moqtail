@@ -53,6 +53,8 @@ pub(crate) struct Server {
   pub app_config: &'static AppConfig,
   pub relay_next_request_id: Arc<AtomicU64>,
   pub upstream_fetch_senders: Arc<RwLock<BTreeMap<u64, mpsc::Sender<UpstreamFetchEvent>>>>,
+  /// Request streams currently being served across the relay (for load shedding).
+  pub active_request_streams: Arc<AtomicU64>,
 }
 
 impl Server {
@@ -70,6 +72,7 @@ impl Server {
       app_config: config,
       relay_next_request_id: Arc::new(AtomicU64::new(1u64)), // relay's request id starts at 1 and are odd
       upstream_fetch_senders: Arc::new(RwLock::new(BTreeMap::new())),
+      active_request_streams: Arc::new(AtomicU64::new(0)),
     }
   }
 

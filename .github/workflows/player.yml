@@ -3,7 +3,7 @@ name: Player
 on:
   push:
     branches:
-      - main
+      - draft-16
     paths:
       - apps/client-js/**
       - libs/moqtail-ts/**

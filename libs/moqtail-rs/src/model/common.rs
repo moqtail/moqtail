@@ -16,5 +16,6 @@ pub mod grease;
 pub mod location;
 pub mod pair;
 pub mod reason_phrase;
+pub mod redirect;
 pub mod tuple;
 pub mod varint;

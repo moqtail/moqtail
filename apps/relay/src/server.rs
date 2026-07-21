@@ -29,13 +29,17 @@ mod track_cache;
 mod track_manager;
 mod utils;
 
+use crate::server::client::MOQTClient;
 use crate::server::session_context::{PendingRequest, UpstreamFetchEvent};
 use crate::server::{config::AppConfig, session::Session};
 use anyhow::Result;
 use client_manager::ClientManager;
+use moqtail::model::control::control_message::ControlMessage;
+use moqtail::model::control::goaway::GoAway;
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Duration;
 use tokio::signal;
 use tokio::sync::{Notify, RwLock, mpsc};
 use tracing::{debug, error, info, warn};
@@ -55,6 +59,11 @@ pub(crate) struct Server {
   pub upstream_fetch_senders: Arc<RwLock<BTreeMap<u64, mpsc::Sender<UpstreamFetchEvent>>>>,
   /// Request streams currently being served across the relay (for load shedding).
   pub active_request_streams: Arc<AtomicU64>,
+  /// Set once the relay is draining (GOAWAY broadcast); new requests are rejected.
+  pub draining: Arc<AtomicBool>,
+  /// GOAWAY redirect URI clients should migrate to. Seeded from config; a future
+  /// admin API mutates this at runtime.
+  pub redirect_uri: Arc<RwLock<Option<String>>>,
 }
 
 impl Server {
@@ -73,7 +82,15 @@ impl Server {
       relay_next_request_id: Arc::new(AtomicU64::new(1u64)), // relay's request id starts at 1 and are odd
       upstream_fetch_senders: Arc::new(RwLock::new(BTreeMap::new())),
       active_request_streams: Arc::new(AtomicU64::new(0)),
+      draining: Arc::new(AtomicBool::new(false)),
+      redirect_uri: Arc::new(RwLock::new(config.redirect_uri.clone())),
     }
+  }
+
+  /// The redirect URI advertised in GOAWAY. Reads the runtime value; the config
+  /// default seeds it at startup.
+  async fn redirect_uri(&self) -> Option<String> {
+    self.redirect_uri.read().await.clone()
   }
 
   pub async fn start(&mut self) -> Result<()> {
@@ -100,6 +117,12 @@ impl Server {
 
     let notify_clone = shutdown_notify.clone();
 
+    // SIGTERM drains the relay: broadcast GOAWAY, reject new requests, then exit
+    // after the drain timeout.
+    let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate())
+      .expect("Failed to install SIGTERM handler");
+    const DRAIN_TIMEOUT_MS: u64 = 10_000;
+
     let mut session_id_counter: u64 = 0;
 
     loop {
@@ -108,6 +131,16 @@ impl Server {
         _ = notify_clone.notified() => {
           info!("Ctrl-C received, exiting...");
           break;
+        },
+        _ = sigterm.recv() => {
+          info!("SIGTERM received, draining (GOAWAY, timeout {}ms)...", DRAIN_TIMEOUT_MS);
+          self.draining.store(true, Ordering::Relaxed);
+          self.broadcast_goaway(DRAIN_TIMEOUT_MS).await;
+          let notify = shutdown_notify.clone();
+          tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(DRAIN_TIMEOUT_MS)).await;
+            notify.notify_waiters();
+          });
         },
         incoming = endpoint.accept() => {
           let Some(incoming) = incoming else {
@@ -134,6 +167,27 @@ impl Server {
       }
     }
     Ok(())
+  }
+
+  /// Sends GOAWAY to every connected client so they can migrate before the relay exits.
+  async fn broadcast_goaway(&self, timeout_ms: u64) {
+    let redirect_uri = self.redirect_uri().await;
+    let clients: Vec<Arc<MOQTClient>> = {
+      let client_manager = self.client_manager.read().await;
+      let clients = client_manager.clients.read().await;
+      clients.values().cloned().collect()
+    };
+    info!(
+      "Broadcasting GOAWAY (uri: {:?}) to {} client(s)",
+      redirect_uri,
+      clients.len()
+    );
+    for client in clients {
+      let goaway = GoAway::new(redirect_uri.clone(), timeout_ms, Some(0));
+      client
+        .queue_message(ControlMessage::Goaway(Box::new(goaway)))
+        .await;
+    }
   }
 
   /// Demultiplexes one incoming QUIC connection by its negotiated ALPN protocol —

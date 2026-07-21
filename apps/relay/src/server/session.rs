@@ -14,13 +14,15 @@
 
 use anyhow::Result;
 use moqtail::model::{
+  common::reason_phrase::ReasonPhrase,
   control::{
     constant::SUPPORTED_VERSIONS,
     control_message::ControlMessage,
+    request_error::RequestError,
     setup::{Setup, SetupSender},
   },
   data::datagram::Datagram,
-  error::{StreamResetCode, TerminationCode},
+  error::{RequestErrorCode, StreamResetCode, TerminationCode},
 };
 use moqtail::transport::{
   connection::{
@@ -134,6 +136,7 @@ impl Session {
     let relay_pending_requests = server.relay_pending_requests.clone();
     let upstream_fetch_senders = server.upstream_fetch_senders.clone();
     let relay_next_request_id = server.relay_next_request_id.clone();
+    let draining = server.draining.clone();
 
     let request_maps = RequestMaps {
       relay_pending_requests,
@@ -148,6 +151,7 @@ impl Session {
       connection,
       relay_next_request_id,
       server.active_request_streams.clone(),
+      draining,
     ));
 
     info!(
@@ -477,9 +481,27 @@ impl Session {
       return;
     }
 
+    use std::sync::atomic::Ordering;
+
+    // While draining, reject new requests with GOING_AWAY per draft-18 10.4.
+    if context.draining.load(Ordering::Relaxed) {
+      warn!(
+        "Rejecting new request {:?} while draining (GOING_AWAY)",
+        msg.get_type()
+      );
+      let err = RequestError::new(
+        RequestErrorCode::GoingAway,
+        0,
+        ReasonPhrase::try_new("Relay is draining".to_string()).unwrap(),
+      );
+      let _ = stream_handler
+        .send(&ControlMessage::RequestError(Box::new(err)))
+        .await;
+      return;
+    }
+
     // Load shedding: once the relay is serving its configured maximum of request
     // streams, reset new ones with EXCESSIVE_LOAD instead of serving them.
-    use std::sync::atomic::Ordering;
     let max_active = context.server_config.max_active_requests;
     if max_active > 0 && context.active_request_streams.load(Ordering::Relaxed) >= max_active {
       warn!(

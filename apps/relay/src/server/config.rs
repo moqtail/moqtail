@@ -89,6 +89,11 @@ pub struct Cli {
   #[arg(long, default_value_t = 0)]
   pub write_kbps_limit: u64,
 
+  /// URI advertised to clients in GOAWAY so they can migrate to another relay.
+  /// Empty reuses the current URI. Future admin API overrides this at runtime.
+  #[arg(long)]
+  pub redirect_uri: Option<String>,
+
   /// Maximum number of upstream fetch gaps before skipping
   #[arg(long, default_value_t = 10)]
   pub max_upstream_fetch_gaps: u64,
@@ -115,6 +120,8 @@ pub struct AppConfig {
   pub max_active_requests: u64,
   /// 0 = unlimited. Non-zero caps relay writes to this many kbps per subscriber connection.
   pub write_kbps_limit: u64,
+  /// Default GOAWAY redirect URI; the runtime value lives on `Server`.
+  pub redirect_uri: Option<String>,
   pub max_upstream_fetch_gaps: u64,
   pub upstream_fetch_timeout: Duration,
 }
@@ -141,6 +148,7 @@ impl AppConfig {
         max_request_streams: cli.max_request_streams,
         max_active_requests: cli.max_active_requests,
         write_kbps_limit: cli.write_kbps_limit,
+        redirect_uri: cli.redirect_uri,
         max_upstream_fetch_gaps: cli.max_upstream_fetch_gaps,
         upstream_fetch_timeout: Duration::from_secs(cli.upstream_fetch_timeout_secs),
       }
@@ -258,6 +266,7 @@ mod tests {
       max_request_streams,
       max_active_requests: 0,
       write_kbps_limit: 0,
+      redirect_uri: None,
       max_upstream_fetch_gaps: 10,
       upstream_fetch_timeout: Duration::from_secs(10),
     }

@@ -28,6 +28,7 @@ use moqtail::model::data::object::Object;
 use moqtail::model::data::subgroup_header::SubgroupHeader;
 use moqtail::model::data::subgroup_object::SubgroupObject;
 use moqtail::model::parameter::message_parameter::MessageParameter;
+use moqtail::model::property::object_property::ObjectProperty;
 use moqtail::transport::connection::TransportConnection;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use moqtail::transport::data_stream_handler::{HeaderInfo, SendDataStream};
@@ -43,6 +44,8 @@ pub struct PublishConfig {
   pub group_count: u64,
   pub interval: u64,
   pub objects_per_group: u64,
+  pub object_id_step: u64,
+  pub group_id_step: u64,
   pub payload_size: usize,
   pub track_alias: u64,
   pub publisher_priority: u8,
@@ -54,6 +57,8 @@ pub struct PublishNamespaceConfig {
   pub group_count: u64,
   pub interval: u64,
   pub objects_per_group: u64,
+  pub object_id_step: u64,
+  pub group_id_step: u64,
   pub payload_size: usize,
   pub publisher_priority: u8,
 }
@@ -72,6 +77,8 @@ pub async fn run_namespace(moq: MoqConnection, config: PublishNamespaceConfig) -
     group_count: config.group_count,
     interval: config.interval,
     objects_per_group: config.objects_per_group,
+    object_id_step: config.object_id_step,
+    group_id_step: config.group_id_step,
     payload_size: config.payload_size,
     publisher_priority: config.publisher_priority,
   };
@@ -181,6 +188,8 @@ pub async fn run(moq: MoqConnection, config: PublishConfig) -> Result<()> {
     group_count: config.group_count,
     interval: config.interval,
     objects_per_group: config.objects_per_group,
+    object_id_step: config.object_id_step,
+    group_id_step: config.group_id_step,
     payload_size: config.payload_size,
     publisher_priority: config.publisher_priority,
   };
@@ -239,6 +248,8 @@ struct DataConfig {
   group_count: u64,
   interval: u64,
   objects_per_group: u64,
+  object_id_step: u64,
+  group_id_step: u64,
   payload_size: usize,
   publisher_priority: u8,
 }
@@ -298,6 +309,8 @@ async fn send_data(
         config.group_count,
         config.interval,
         config.objects_per_group,
+        config.object_id_step,
+        config.group_id_step,
         config.payload_size,
         config.publisher_priority,
       )
@@ -310,6 +323,8 @@ async fn send_data(
         config.group_count,
         config.interval,
         config.objects_per_group,
+        config.object_id_step,
+        config.group_id_step,
         config.payload_size,
         config.publisher_priority,
       )
@@ -318,31 +333,49 @@ async fn send_data(
   }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn send_datagrams(
   connection: &TransportConnection,
   track_alias: u64,
   group_count: u64,
   interval_ms: u64,
   objects_per_group: u64,
+  object_id_step: u64,
+  group_id_step: u64,
   payload_size: usize,
   publisher_priority: u8,
 ) -> Result<()> {
   let interval = Duration::from_millis(interval_ms);
   info!(
-    "Sending datagrams: {} groups, {} objects/group, {} byte payloads",
-    group_count, objects_per_group, payload_size
+    "Sending datagrams: {} groups, {} objects/group, object-id step {}, group-id step {}, {} byte payloads",
+    group_count, objects_per_group, object_id_step, group_id_step, payload_size
   );
 
-  for group_id in 0..group_count {
-    for object_id in 0..objects_per_group {
+  for g in 0..group_count {
+    let group_id = g * group_id_step;
+    for i in 0..objects_per_group {
+      let object_id = i * object_id_step;
       let payload = generate_payload(payload_size);
+
+      // Communicate the ID gaps explicitly (draft 12.8 / 12.9).
+      let mut properties = Vec::new();
+      if g > 0 && i == 0 && group_id_step > 1 {
+        properties.push(ObjectProperty::PriorGroupIdGap {
+          gap: group_id_step - 1,
+        });
+      }
+      if i > 0 && object_id_step > 1 {
+        properties.push(ObjectProperty::PriorObjectIdGap {
+          gap: object_id_step - 1,
+        });
+      }
 
       let datagram_obj = Datagram::new_payload(
         track_alias,
         group_id,
         object_id,
-        Some(publisher_priority), // publisher_priority
-        None,                     // properties
+        Some(publisher_priority),
+        Some(properties),
         Bytes::from(payload),
         false, // end_of_group
       );
@@ -351,7 +384,7 @@ async fn send_datagrams(
 
       match connection.send_datagram(serialized) {
         Ok(_) => {
-          let total = group_id * objects_per_group + object_id;
+          let total = g * objects_per_group + i;
           if should_log(total) {
             info!(
               "Sent datagram: group={}, object={}, size={} bytes",
@@ -377,22 +410,26 @@ async fn send_datagrams(
   Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn send_via_streams(
   connection: &TransportConnection,
   track_alias: u64,
   group_count: u64,
   interval_ms: u64,
   objects_per_group: u64,
+  object_id_step: u64,
+  group_id_step: u64,
   payload_size: usize,
   publisher_priority: u8,
 ) -> Result<()> {
   let interval = Duration::from_millis(interval_ms);
   info!(
-    "Sending via streams: {} groups, {} objects/group, {} byte payloads",
-    group_count, objects_per_group, payload_size
+    "Sending via streams: {} groups, {} objects/group, object-id step {}, group-id step {}, {} byte payloads",
+    group_count, objects_per_group, object_id_step, group_id_step, payload_size
   );
 
-  for group_id in 0..group_count {
+  for g in 0..group_count {
+    let group_id = g * group_id_step;
     info!("Opening stream for group {}", group_id);
     let stream = connection.open_uni().await?;
 
@@ -411,12 +448,28 @@ async fn send_via_streams(
     let mut handler = SendDataStream::new(stream, header_info).await?;
 
     let mut prev_object_id = None;
-    for object_id in 0..objects_per_group {
+    for i in 0..objects_per_group {
+      let object_id = i * object_id_step;
       let payload = generate_payload(payload_size);
+
+      // Communicate the ID gaps explicitly (draft 12.8 / 12.9): the first object
+      // of a skipped group carries Prior Group ID Gap; every skipped object
+      // carries Prior Object ID Gap.
+      let mut properties = Vec::new();
+      if g > 0 && i == 0 && group_id_step > 1 {
+        properties.push(ObjectProperty::PriorGroupIdGap {
+          gap: group_id_step - 1,
+        });
+      }
+      if i > 0 && object_id_step > 1 {
+        properties.push(ObjectProperty::PriorObjectIdGap {
+          gap: object_id_step - 1,
+        });
+      }
 
       let subgroup_obj = SubgroupObject {
         object_id,
-        properties: Some(vec![]),
+        properties: Some(properties),
         object_status: None,
         payload: Some(Bytes::from(payload)),
       };
@@ -425,7 +478,7 @@ async fn send_via_streams(
 
       match handler.send_object(&object, prev_object_id).await {
         Ok(_) => {
-          let total = group_id * objects_per_group + object_id;
+          let total = g * objects_per_group + i;
           if should_log(total) {
             info!(
               "Sent object: group={}, object={}, size={} bytes",

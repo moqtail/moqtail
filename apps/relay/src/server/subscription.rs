@@ -45,7 +45,7 @@ use moqtail::transport::connection::TransportSendStream;
 use moqtail::transport::data_stream_handler::HeaderInfo;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -293,6 +293,9 @@ pub struct Subscription {
   subscriber: Arc<MOQTClient>,
   event_rx: Arc<Mutex<Option<UnboundedReceiver<TrackEvent>>>>,
   send_stream_last_object_ids: Arc<RwLock<HashMap<StreamId, Option<u64>>>>,
+  /// Monotonic count of data streams opened for this subscription, including
+  /// empty subgroups. Reported as PUBLISH_DONE Stream Count.
+  opened_stream_count: Arc<AtomicU64>,
   finished: Arc<AtomicBool>,
   #[allow(dead_code)]
   cache: TrackCache,
@@ -332,6 +335,7 @@ impl Subscription {
       subscriber,
       event_rx,
       send_stream_last_object_ids: Arc::new(RwLock::new(HashMap::new())),
+      opened_stream_count: Arc::new(AtomicU64::new(0)),
       finished: Arc::new(AtomicBool::new(false)),
       cache,
       client_connection_id,
@@ -518,6 +522,12 @@ impl Subscription {
   pub async fn is_forwarding(&self) -> bool {
     let state = self.subscription_state.read().await;
     state.forward
+  }
+
+  /// Number of data streams opened for this subscription (PUBLISH_DONE Stream
+  /// Count), including subgroups that carried no objects.
+  pub fn opened_stream_count(&self) -> u64 {
+    self.opened_stream_count.load(Ordering::Relaxed)
   }
 
   // Returns true if the subscription is active (not finished and forwarding objects)
@@ -1214,6 +1224,10 @@ impl Subscription {
 
       info!("Created stream: {}", stream_id.get_stream_id());
 
+      // Count every data stream opened for this subscription (PUBLISH_DONE
+      // Stream Count), including subgroups that end up carrying no objects.
+      self.opened_stream_count.fetch_add(1, Ordering::Relaxed);
+
       Ok((stream_id, send_stream.clone()))
     } else {
       error!(
@@ -1386,7 +1400,7 @@ impl Subscription {
     let publish_done = PublishDone::new(
       self.request_id,
       status_code,
-      0, // stream_count - set to 0 as track is ending
+      self.opened_stream_count.load(Ordering::Relaxed),
       reason_phrase,
     );
 
@@ -1396,8 +1410,11 @@ impl Subscription {
       .await;
 
     info!(
-      "Sent PublishDone to subscriber={} relay_track_id={} for request_id={}",
-      self.client_connection_id, self.relay_track_id, self.request_id
+      "Sent PublishDone to subscriber={} relay_track_id={} for request_id={} stream_count={}",
+      self.client_connection_id,
+      self.relay_track_id,
+      self.request_id,
+      self.opened_stream_count.load(Ordering::Relaxed)
     );
 
     Ok(())

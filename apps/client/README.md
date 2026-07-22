@@ -31,14 +31,16 @@ cargo run --bin client -- --command <COMMAND> [OPTIONS]
 
 ## Publish Options
 
-| Option                 | Short | Default    | Description                                   |
-| ---------------------- | ----- | ---------- | --------------------------------------------- |
-| `--group-count`        |       | `100`      | Number of groups to send                      |
-| `--interval`           | `-i`  | `1000`     | Interval between objects in milliseconds      |
-| `--objects-per-group`  |       | `10`       | Number of objects per group                   |
-| `--payload-size`       |       | `1200`     | Payload size in bytes                         |
-| `--track-alias`        |       | _(random)_ | Track alias (random if not specified)         |
-| `--publisher-priority` |       | `128`      | Publisher priority 0 (highest) – 255 (lowest) |
+| Option                 | Short | Default    | Description                                                           |
+| ---------------------- | ----- | ---------- | --------------------------------------------------------------------- |
+| `--group-count`        |       | `100`      | Number of groups to send                                              |
+| `--interval`           | `-i`  | `1000`     | Interval between objects in milliseconds                              |
+| `--objects-per-group`  |       | `10`       | Number of objects per group                                           |
+| `--object-id-step`     |       | `1`        | Stride between object IDs (`2` → 0, 2, 4 …); sets Prior Object ID Gap |
+| `--group-id-step`      |       | `1`        | Stride between group IDs (`2` → 0, 2, 4 …); sets Prior Group ID Gap   |
+| `--payload-size`       |       | `1200`     | Payload size in bytes                                                 |
+| `--track-alias`        |       | _(random)_ | Track alias (random if not specified)                                 |
+| `--publisher-priority` |       | `128`      | Publisher priority 0 (highest) – 255 (lowest)                         |
 
 ## Subscribe Options
 
@@ -87,6 +89,26 @@ Fetch objects from groups 0-10:
 
 ```
 cargo run --bin client -- -c fetch --start-group 0 --end-group 10
+```
+
+Publish a track with gaps in the object IDs (0, 2, 4 …), then FETCH it — the
+response delivers only the existing objects and closes with a FIN, so the gaps
+signal non-existent objects. Each skipped object also carries the Prior Object
+ID Gap property (draft 12.9), which the fetcher logs as `[prior_object_gap=N]`:
+
+```
+cargo run --bin client -- -c publish --object-id-step 2 --objects-per-group 3
+cargo run --bin client -- -c fetch --start-group 0 --end-group 3
+```
+
+Group-ID gaps work the same way via `--group-id-step`, setting the Prior Group
+ID Gap property (draft 12.8) on the first object of each gapped group. Run the
+relay with `--max-upstream-fetch-gaps 0` so it serves only the cached groups
+instead of trying to fetch the (non-existent) missing groups upstream:
+
+```
+cargo run --bin client -- -c publish --group-id-step 2 --objects-per-group 2
+cargo run --bin client -- -c fetch --start-group 0 --end-group 7
 ```
 
 Subscribe, then issue a Joining FETCH for the last 2 groups (a Joining FETCH is

@@ -125,6 +125,18 @@ pub struct Cli {
   #[arg(long, default_value_t = 10)]
   pub objects_per_group: u64,
 
+  /// Stride between object IDs within a group (publish only). >1 leaves gaps in
+  /// the object IDs (e.g. 2 emits 0, 2, 4) and sets the Prior Object ID Gap
+  /// property (draft 12.9) so gaps are communicated explicitly.
+  #[arg(long, default_value_t = 1)]
+  pub object_id_step: u64,
+
+  /// Stride between group IDs (publish only). >1 leaves gaps in the group IDs
+  /// (e.g. 2 emits 0, 2, 4) and sets the Prior Group ID Gap property
+  /// (draft 12.8) so gaps are communicated explicitly.
+  #[arg(long, default_value_t = 1)]
+  pub group_id_step: u64,
+
   /// Payload size in bytes (publish only)
   #[arg(long, default_value_t = 1200)]
   pub payload_size: usize,

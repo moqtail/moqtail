@@ -50,6 +50,8 @@ async fn main() -> Result<(), anyhow::Error> {
         group_count: cli.group_count,
         interval: cli.interval,
         objects_per_group: cli.objects_per_group,
+        object_id_step: cli.object_id_step,
+        group_id_step: cli.group_id_step,
         payload_size: cli.payload_size,
         track_alias: cli
           .track_alias
@@ -65,6 +67,8 @@ async fn main() -> Result<(), anyhow::Error> {
         group_count: cli.group_count,
         interval: cli.interval,
         objects_per_group: cli.objects_per_group,
+        object_id_step: cli.object_id_step,
+        group_id_step: cli.group_id_step,
         payload_size: cli.payload_size,
         publisher_priority: cli.publisher_priority,
       };

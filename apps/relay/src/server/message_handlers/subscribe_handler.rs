@@ -659,10 +659,19 @@ pub async fn handle_request_update(
       let _ = stream_handler.send_impl(&err_msg).await;
 
       // A failed update terminates the subscription with PUBLISH_DONE(UPDATE_FAILED).
+      let stream_count = match track_arc
+        .read()
+        .await
+        .get_subscription(client.connection_id)
+        .await
+      {
+        Some(sub) => sub.read().await.opened_stream_count(),
+        None => 0,
+      };
       let done = PublishDone::new(
         existing_req_id,
         PublishDoneStatusCode::UpdateFailed,
-        0,
+        stream_count,
         ReasonPhrase::try_new("REQUEST_UPDATE failed".to_string()).unwrap(),
       );
       let _ = stream_handler.send_impl(&done).await;

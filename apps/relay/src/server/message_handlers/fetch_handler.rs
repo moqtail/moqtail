@@ -129,6 +129,24 @@ pub async fn handle(
           .insert(request_id, PendingRequest::Fetch(req));
       }
 
+      // Reserved namespaces are resolved locally and never forwarded upstream.
+      if let Some(props) = &fetch.standalone_fetch_props
+        && let Some(reason) = crate::server::utils::reserved_namespace_rejection(
+          &props.track_namespace,
+          &props.track_name,
+        )
+      {
+        info!("Rejecting FETCH for reserved namespace: {}", reason);
+        send_request_error(
+          client.clone(),
+          request_id,
+          RequestErrorCode::DoesNotExist,
+          ReasonPhrase::try_new(reason.to_string()).unwrap(),
+        )
+        .await;
+        return Ok(());
+      }
+
       // Resolves the fetch target. The bool is `rejected`: true when a
       // REQUEST_ERROR was already sent, so the caller must stop without also
       // sending DoesNotExist.

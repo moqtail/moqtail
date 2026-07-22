@@ -89,6 +89,21 @@ pub async fn handle(
         name: m.track_name.clone(),
       };
 
+      // Tracks MUST NOT be published under a reserved namespace.
+      if let Some(reason) =
+        crate::server::utils::reserved_namespace_rejection(&m.track_namespace, &m.track_name)
+      {
+        info!("Rejecting PUBLISH for reserved namespace: {}", reason);
+        let publish_error = Box::new(RequestError::new(
+          RequestErrorCode::DoesNotExist,
+          0,
+          ReasonPhrase::try_new(reason.to_string()).map_err(|_| TerminationCode::InternalError)?,
+        ));
+        return stream_handler
+          .send(&ControlMessage::RequestError(publish_error))
+          .await;
+      }
+
       // Multiple publishers may share the same alias for the same track (fan-out).
       // Only reject if the alias already maps to a different full track name for this connection.
       {

@@ -190,6 +190,31 @@ impl Tuple {
     true
   }
 
+  /// Whether the first field marks a reserved namespace, i.e. begins with a
+  /// period (0x2e). Reserved namespaces are managed by MOQT, not the application.
+  pub fn is_reserved_namespace(&self) -> bool {
+    self
+      .fields
+      .first()
+      .and_then(|f| f.as_bytes().first())
+      .is_some_and(|b| *b == b'.')
+  }
+
+  /// Whether the first field is exactly a single period (`.`), the fully
+  /// reserved namespace that must never be used.
+  pub fn is_reserved_dot(&self) -> bool {
+    self.fields.first().is_some_and(|f| f.as_bytes() == b".")
+  }
+
+  /// Whether the first field is exactly `.session`, the session-level namespace
+  /// managed by the MOQT implementation and never forwarded across sessions.
+  pub fn is_session_namespace(&self) -> bool {
+    self
+      .fields
+      .first()
+      .is_some_and(|f| f.as_bytes() == b".session")
+  }
+
   pub fn serialize(&self) -> Result<Bytes, ParseError> {
     let mut buf = BytesMut::new();
     buf.put_vi(self.fields.len() as u64)?;
@@ -360,5 +385,30 @@ mod tests {
     let tuple = Tuple::new();
     let prefix = Tuple::new();
     assert!(tuple.starts_with(&prefix));
+  }
+
+  #[test]
+  fn test_reserved_namespace_helpers() {
+    let session = Tuple::from_utf8_path(".session/foo");
+    assert!(session.is_reserved_namespace());
+    assert!(session.is_session_namespace());
+    assert!(!session.is_reserved_dot());
+
+    let dot = Tuple::from_utf8_path(".");
+    assert!(dot.is_reserved_namespace());
+    assert!(dot.is_reserved_dot());
+    assert!(!dot.is_session_namespace());
+
+    let other_reserved = Tuple::from_utf8_path(".future/thing");
+    assert!(other_reserved.is_reserved_namespace());
+    assert!(!other_reserved.is_reserved_dot());
+    assert!(!other_reserved.is_session_namespace());
+
+    let normal = Tuple::from_utf8_path("meet/room1");
+    assert!(!normal.is_reserved_namespace());
+    assert!(!normal.is_reserved_dot());
+    assert!(!normal.is_session_namespace());
+
+    assert!(!Tuple::new().is_reserved_namespace());
   }
 }

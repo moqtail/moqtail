@@ -143,6 +143,20 @@ async fn handle_subscribe_message(
   let track_namespace = sub.track_namespace.clone();
   let full_track_name = sub.get_full_track_name();
 
+  // Reserved namespaces are resolved locally and never forwarded upstream.
+  if let Some(reason) =
+    crate::server::utils::reserved_namespace_rejection(&track_namespace, &sub.track_name)
+  {
+    info!("Rejecting SUBSCRIBE for reserved namespace: {}", reason);
+    let err = RequestError::new(
+      RequestErrorCode::DoesNotExist,
+      0,
+      ReasonPhrase::try_new(reason.to_string()).unwrap(),
+    );
+    stream_handler.send_impl(&err).await.unwrap();
+    return Ok(());
+  }
+
   // find who is the publisher
   // first we try with the full track name
   // if not found, we try with the announced track namespace

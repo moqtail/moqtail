@@ -16,9 +16,11 @@ use crate::server::client::MOQTClient;
 use crate::server::session_context::{PendingRequest, SessionContext};
 use crate::server::track_manager::SubscribeKind;
 use core::result::Result;
+use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::control::namespace::Namespace;
+use moqtail::model::control::request_error::RequestError;
 use moqtail::model::control::{control_message::ControlMessage, request_ok::RequestOk};
-use moqtail::model::error::{StreamResetCode, TerminationCode};
+use moqtail::model::error::{RequestErrorCode, StreamResetCode, TerminationCode};
 use moqtail::model::parameter::message_parameter::apply_message_parameter_update;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
@@ -34,6 +36,20 @@ pub async fn handle(
     ControlMessage::PublishNamespace(m) => {
       // TODO: the namespace is already announced, return error
       info!("received PublishNamespace message");
+
+      // Namespaces MUST NOT be published under a reserved namespace.
+      if m.track_namespace.is_reserved_dot() || m.track_namespace.is_session_namespace() {
+        info!("Rejecting PUBLISH_NAMESPACE for reserved namespace");
+        let err = RequestError::new(
+          RequestErrorCode::DoesNotExist,
+          0,
+          ReasonPhrase::try_new("reserved namespace cannot be published".to_string()).unwrap(),
+        );
+        stream_handler
+          .send(&ControlMessage::RequestError(Box::new(err)))
+          .await?;
+        return Ok(());
+      }
 
       // this is a publisher, add it to the client manager
       client

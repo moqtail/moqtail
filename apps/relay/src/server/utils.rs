@@ -15,6 +15,7 @@
 use crate::server::stream_id::StreamId;
 use bytes::Bytes;
 use fnv::FnvHasher;
+use moqtail::model::common::tuple::{Tuple, TupleField};
 use moqtail::{
   model::control::control_message::ControlMessageTrait, transport::data_stream_handler::HeaderInfo,
 };
@@ -24,6 +25,28 @@ use std::time::Instant;
 
 // Static reference time: set when the program starts
 pub static BASE_TIME: Lazy<Instant> = Lazy::new(Instant::now);
+
+/// Reserved-namespace policy. Returns a rejection reason when a request for this
+/// namespace/track must be rejected with DOES_NOT_EXIST: the single `.`
+/// namespace, and any `.session` request (session-level tracks are managed
+/// locally and never forwarded to other sessions; the relay defines none, and
+/// an empty track name under `.session` is defined not to exist). Other reserved
+/// namespaces (a first field beginning with `.`) are passed through unchanged.
+pub fn reserved_namespace_rejection(
+  namespace: &Tuple,
+  track_name: &TupleField,
+) -> Option<&'static str> {
+  if namespace.is_reserved_dot() {
+    return Some("the '.' namespace is reserved and does not exist");
+  }
+  if namespace.is_session_namespace() {
+    if track_name.is_empty() {
+      return Some(".session with an empty track name does not exist");
+    }
+    return Some("unrecognized session-level track");
+  }
+  None
+}
 
 pub fn print_msg_bytes(msg: &impl ControlMessageTrait) {
   let bytes = msg.serialize();

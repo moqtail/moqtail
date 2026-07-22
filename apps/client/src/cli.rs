@@ -191,6 +191,12 @@ pub struct Cli {
   #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
   pub forward: bool,
 
+  /// Seconds after subscribing to send a REQUEST_UPDATE setting Forward State 1
+  /// (subscribe only, 0 = never). Use with --forward false to test that delivery
+  /// resumes after Forward flips 0->1.
+  #[arg(long, default_value_t = 0)]
+  pub update_forward_after: u64,
+
   /// After subscribing, issue a Joining FETCH referencing the subscription
   /// (subscribe only).
   #[arg(long, default_value_t = false)]

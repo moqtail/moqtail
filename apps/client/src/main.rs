@@ -91,6 +91,7 @@ async fn main() -> Result<(), anyhow::Error> {
         joining_fetch: cli.joining_fetch,
         joining_start: cli.joining_start,
         joining_type: cli.joining_type.into(),
+        update_forward_after: cli.update_forward_after,
       };
       subscriber::run(moq_conn, config).await
     }

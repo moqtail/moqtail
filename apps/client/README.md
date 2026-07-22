@@ -44,16 +44,17 @@ cargo run --bin client -- --command <COMMAND> [OPTIONS]
 
 ## Subscribe Options
 
-| Option                  | Short | Default     | Description                                                         |
-| ----------------------- | ----- | ----------- | ------------------------------------------------------------------- |
-| `--duration`            | `-d`  | `0`         | Duration to listen in seconds (0 = indefinite)                      |
-| `--subscriber-priority` |       | `128`       | Subscriber priority 0 (highest) – 255 (lowest)                      |
-| `--group-order`         |       | `ascending` | Group delivery order (`original`, `ascending`, `descending`)        |
-| `--extra-track`         |       | _(none)_    | Second track subscription for priority testing: `name:priority`     |
-| `--forward`             |       | `true`      | Subscription Forward State; set `false` to suppress object delivery |
-| `--joining-fetch`       |       | `false`     | After subscribing, issue a Joining FETCH against the subscription   |
-| `--joining-start`       |       | `0`         | Joining FETCH start group (with `--joining-fetch`)                  |
-| `--joining-type`        |       | `relative`  | Joining FETCH type (`relative` or `absolute`)                       |
+| Option                   | Short | Default     | Description                                                                |
+| ------------------------ | ----- | ----------- | -------------------------------------------------------------------------- |
+| `--duration`             | `-d`  | `0`         | Duration to listen in seconds (0 = indefinite)                             |
+| `--subscriber-priority`  |       | `128`       | Subscriber priority 0 (highest) – 255 (lowest)                             |
+| `--group-order`          |       | `ascending` | Group delivery order (`original`, `ascending`, `descending`)               |
+| `--extra-track`          |       | _(none)_    | Second track subscription for priority testing: `name:priority`            |
+| `--forward`              |       | `true`      | Subscription Forward State; set `false` to suppress object delivery        |
+| `--update-forward-after` |       | `0`         | Seconds after subscribing to REQUEST_UPDATE Forward State to 1 (0 = never) |
+| `--joining-fetch`        |       | `false`     | After subscribing, issue a Joining FETCH against the subscription          |
+| `--joining-start`        |       | `0`         | Joining FETCH start group (with `--joining-fetch`)                         |
+| `--joining-type`         |       | `relative`  | Joining FETCH type (`relative` or `absolute`)                              |
 
 ## Fetch Options
 
@@ -123,6 +124,13 @@ FETCH with `REQUEST_ERROR` / `INVALID_RANGE`:
 
 ```
 cargo run --bin client -- -c subscribe --forward false --joining-fetch --joining-start 2
+```
+
+Subscribe with Forward State 0 (no objects), then flip it to 1 after 3 seconds —
+the relay reopens the subgroup and delivery resumes:
+
+```
+cargo run --bin client -- -c subscribe --forward false --update-forward-after 3 --duration 8
 ```
 
 Connect to a remote server with certificate validation disabled:

@@ -21,6 +21,7 @@ use moqtail::model::common::tuple::{Tuple, TupleField};
 use moqtail::model::control::constant::{FetchType, GroupOrder};
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::fetch::Fetch;
+use moqtail::model::control::request_update::RequestUpdate;
 use moqtail::model::control::subscribe::Subscribe;
 use moqtail::model::data::datagram::Datagram;
 use moqtail::model::parameter::message_parameter::MessageParameter;
@@ -94,6 +95,7 @@ pub struct SubscribeConfig {
   pub joining_fetch: bool,
   pub joining_start: u64,
   pub joining_type: FetchType,
+  pub update_forward_after: u64,
 }
 
 /// Issue a Joining FETCH referencing an existing subscription and log the
@@ -163,7 +165,27 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
     config.forward,
   )
   .await?;
-  request_streams.push(primary_stream);
+
+  // Optionally flip Forward State 0->1 after a delay by sending a REQUEST_UPDATE
+  // on the subscription's request stream, then hold the stream open.
+  if config.update_forward_after > 0 {
+    let delay = config.update_forward_after;
+    let mut stream = primary_stream;
+    tokio::spawn(async move {
+      tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
+      info!("Sending REQUEST_UPDATE to set Forward State 1");
+      let update = RequestUpdate::new(10, 0, vec![MessageParameter::new_forward(true)]);
+      if let Err(e) = stream
+        .send(&ControlMessage::RequestUpdate(Box::new(update)))
+        .await
+      {
+        error!("Failed to send REQUEST_UPDATE: {:?}", e);
+      }
+      std::future::pending::<()>().await;
+    });
+  } else {
+    request_streams.push(primary_stream);
+  }
 
   // Issue a Joining FETCH against the primary subscription (request_id 0). Kept
   // before the receive loop so its response is observed directly.

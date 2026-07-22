@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use clap::{Parser, ValueEnum};
-use moqtail::model::control::constant::GroupOrder;
+use moqtail::model::control::constant::{FetchType, GroupOrder};
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum CliGroupOrder {
@@ -28,6 +28,23 @@ impl From<CliGroupOrder> for GroupOrder {
       CliGroupOrder::Original => GroupOrder::Original,
       CliGroupOrder::Ascending => GroupOrder::Ascending,
       CliGroupOrder::Descending => GroupOrder::Descending,
+    }
+  }
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum CliJoiningType {
+  /// Joining Fetch relative to the Largest group (start = largest - joining_start)
+  Relative,
+  /// Absolute Joining Fetch (start = joining_start)
+  Absolute,
+}
+
+impl From<CliJoiningType> for FetchType {
+  fn from(t: CliJoiningType) -> Self {
+    match t {
+      CliJoiningType::Relative => FetchType::RelativeFetch,
+      CliJoiningType::Absolute => FetchType::AbsoluteFetch,
     }
   }
 }
@@ -156,4 +173,22 @@ pub struct Cli {
   /// e.g. --extra-track demo2:200
   #[arg(long)]
   pub extra_track: Option<String>,
+
+  /// Subscription Forward State (subscribe only). Set false to test that a
+  /// joining FETCH against a non-forwarding subscription is rejected.
+  #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+  pub forward: bool,
+
+  /// After subscribing, issue a Joining FETCH referencing the subscription
+  /// (subscribe only).
+  #[arg(long, default_value_t = false)]
+  pub joining_fetch: bool,
+
+  /// Joining FETCH start group (subscribe + --joining-fetch only)
+  #[arg(long, default_value_t = 0)]
+  pub joining_start: u64,
+
+  /// Joining FETCH type (subscribe + --joining-fetch only)
+  #[arg(long, value_enum, default_value = "relative")]
+  pub joining_type: CliJoiningType,
 }

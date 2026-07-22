@@ -326,8 +326,17 @@ impl MessageParameter {
               }
               FilterType::AbsoluteRange => {
                 let loc = Location::deserialize(&mut payload)?;
-                let eg = payload.get_vi()?;
-                (Some(loc), Some(eg))
+                // End Group is a delta from the Start Group on the wire.
+                let delta = payload.get_vi()?;
+                let end_group =
+                  loc
+                    .group
+                    .checked_add(delta)
+                    .ok_or_else(|| ParseError::ProtocolViolation {
+                      context: "MessageParameter::deserialize",
+                      details: "AbsoluteRange End Group Delta overflows u64".to_string(),
+                    })?;
+                (Some(loc), Some(end_group))
               }
               _ => (None, None),
             };
@@ -436,10 +445,11 @@ impl TryInto<KeyValuePair> for MessageParameter {
       } => {
         let mut buf = BytesMut::new();
         buf.put_vi(filter_type as u64)?;
+        let start_group = start_location.as_ref().map(|l| l.group).unwrap_or(0);
         if matches!(
           filter_type,
           FilterType::AbsoluteStart | FilterType::AbsoluteRange
-        ) && let Some(loc) = start_location
+        ) && let Some(loc) = &start_location
         {
           buf.put_vi(loc.group)?;
           buf.put_vi(loc.object)?;
@@ -447,7 +457,8 @@ impl TryInto<KeyValuePair> for MessageParameter {
         if filter_type == FilterType::AbsoluteRange
           && let Some(eg) = end_group
         {
-          buf.put_vi(eg)?;
+          // End Group is encoded on the wire as a delta from the Start Group.
+          buf.put_vi(eg.saturating_sub(start_group))?;
         }
         KeyValuePair::try_new_bytes(
           MessageParameterType::SubscriptionFilter as u64,
@@ -612,6 +623,50 @@ mod tests {
       Some(20),
     );
     assert_eq!(roundtrip(orig.clone()), orig);
+  }
+
+  #[test]
+  fn test_absolute_range_end_group_is_delta_on_wire() {
+    // Start group 5, absolute End Group 20 must serialize End Group as the
+    // delta 15, not the absolute 20.
+    let orig = MessageParameter::new_subscription_filter(
+      FilterType::AbsoluteRange,
+      Some(Location {
+        group: 5,
+        object: 0,
+      }),
+      Some(20),
+    );
+    let mut bytes = orig.serialize().unwrap();
+    let kvp = KeyValuePair::deserialize(&mut bytes).unwrap();
+    let KeyValuePair::Bytes { value, .. } = kvp else {
+      panic!("SubscriptionFilter must be a bytes KVP");
+    };
+    let mut value = value;
+    assert_eq!(value.get_vi().unwrap(), FilterType::AbsoluteRange as u64);
+    assert_eq!(value.get_vi().unwrap(), 5); // start group
+    assert_eq!(value.get_vi().unwrap(), 0); // start object
+    assert_eq!(value.get_vi().unwrap(), 15); // End Group Delta = 20 - 5
+  }
+
+  #[test]
+  fn test_absolute_range_end_group_delta_overflow_is_protocol_violation() {
+    // Start group u64::MAX plus a non-zero delta overflows the absolute Group ID
+    // and MUST be rejected.
+    let mut value = BytesMut::new();
+    value.put_vi(FilterType::AbsoluteRange as u64).unwrap();
+    value.put_vi(u64::MAX).unwrap(); // start group
+    value.put_vi(0u64).unwrap(); // start object
+    value.put_vi(1u64).unwrap(); // End Group Delta -> overflow
+    let kvp = KeyValuePair::try_new_bytes(
+      MessageParameterType::SubscriptionFilter as u64,
+      value.freeze(),
+    )
+    .unwrap();
+    assert!(matches!(
+      MessageParameter::deserialize(&kvp),
+      Err(ParseError::ProtocolViolation { .. })
+    ));
   }
 
   #[test]

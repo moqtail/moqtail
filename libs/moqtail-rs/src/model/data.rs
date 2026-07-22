@@ -19,6 +19,7 @@ pub mod fetch_object;
 pub mod full_track_name;
 pub mod group;
 pub mod object;
+pub mod padding;
 pub mod subgroup;
 pub mod subgroup_header;
 pub mod subgroup_object;

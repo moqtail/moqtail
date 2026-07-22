@@ -103,7 +103,7 @@ mod tests {
           group: 81,
           object: 81,
         }),
-        Some(25),
+        Some(106),
       )],
     );
 
@@ -128,7 +128,7 @@ mod tests {
           group: 81,
           object: 81,
         }),
-        Some(25),
+        Some(106),
       )],
     );
 
@@ -159,7 +159,7 @@ mod tests {
           group: 81,
           object: 81,
         }),
-        Some(25),
+        Some(106),
       )],
     );
 

@@ -177,13 +177,6 @@ pub async fn handle_subscribe_tracks(
         );
       }
 
-      client
-        .queue_message(ControlMessage::Publish(Box::new(
-          original_publish_message.clone(),
-        )))
-        .await;
-      published += 1;
-
       let track_read = track_arc.read().await;
       if let Err(e) = track_read
         .add_subscription(client.clone(), original_publish_message.clone(), false)
@@ -191,6 +184,16 @@ pub async fn handle_subscribe_tracks(
       {
         warn!("Failed retroactive auto-subscribe for track: {:?}", e);
       }
+      drop(track_read);
+
+      // Each PUBLISH is a request on its own bidi stream.
+      let sub = client.clone();
+      let push_msg = original_publish_message.clone();
+      tokio::spawn(async move {
+        crate::server::message_handlers::publish_handler::forward_publish_downstream(sub, push_msg)
+          .await;
+      });
+      published += 1;
     } else {
       warn!("The track has no associated publish message, track: {full_track_name:?}");
     }

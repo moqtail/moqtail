@@ -83,6 +83,10 @@ async fn main() -> Result<(), anyhow::Error> {
           let priority: u8 = prio.parse().ok()?;
           Some((name.to_string(), priority))
         }),
+        forward: cli.forward,
+        joining_fetch: cli.joining_fetch,
+        joining_start: cli.joining_start,
+        joining_type: cli.joining_type.into(),
       };
       subscriber::run(moq_conn, config).await
     }

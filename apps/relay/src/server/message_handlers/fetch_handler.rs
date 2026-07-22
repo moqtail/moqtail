@@ -129,64 +129,80 @@ pub async fn handle(
           .insert(request_id, PendingRequest::Fetch(req));
       }
 
+      // Resolves the fetch target. The bool is `rejected`: true when a
+      // REQUEST_ERROR was already sent, so the caller must stop without also
+      // sending DoesNotExist.
       let fn_ = async {
         if let Some(joining_fetch_props) = fetch.clone().joining_fetch_props {
           let sub_request_id = joining_fetch_props.joining_request_id;
-          let sub_requests = client.subscribe_requests.read().await;
-          // the original request id is the request id of the subscribe request that created the subscription
-          let existing_sub = sub_requests
-            .iter()
-            .find(|e| e.1.original_request_id == sub_request_id);
-          if existing_sub.is_none() {
+
+          // Resolve the associated subscription regardless of how it was created
+          // (SUBSCRIBE, PUBLISH/PUBLISH_OK or REQUEST_UPDATE).
+          let Some((track_lock, subscription)) = context
+            .track_manager
+            .find_subscription_by_request_id(client.connection_id, sub_request_id)
+            .await
+          else {
             error!(
-              "handle_fetch_messages | Joining fetch request id not found: {:?} {:?}",
-              sub_request_id, sub_requests
+              "handle_fetch_messages | Joining fetch subscription not found: request_id={}",
+              sub_request_id
             );
-            return (None, None, None);
-          }
-          let existing_sub = existing_sub.unwrap().1;
+            return (None, None, None, false);
+          };
 
-          let full_track_name = existing_sub
-            .original_subscribe_request
-            .get_full_track_name();
-          let track_lock = context.track_manager.get_track(&full_track_name).await;
-
-          if let Some(track_lock) = track_lock {
-            let track = track_lock.read().await;
-            let largest_location = track.largest_location.read().await;
-
-            // TODO: validate the range
-            if largest_location.group < joining_fetch_props.joining_start {
-              error!(
-                "handle_fetch_messages | Joining fetch start location is larger than the track's largest location: {:?} {:?}",
-                largest_location, joining_fetch_props.joining_start
-              );
-              send_request_error(
-                client.clone(),
-                request_id,
-                RequestErrorCode::InvalidRange,
-                ReasonPhrase::try_new(String::from("Invalid range")).unwrap(),
-              )
-              .await;
-              return (None, None, None);
-            }
-
-            let start_group = if fetch.fetch_type == FetchType::RelativeFetch {
-              largest_location.group - joining_fetch_props.joining_start
-            } else {
-              joining_fetch_props.joining_start
-            };
-
-            let start_location = Location::new(start_group, 0);
-            let end_location = Location::new(largest_location.group, largest_location.object + 1);
-            (
-              Some(track_lock.clone()),
-              Some(start_location),
-              Some(end_location),
+          // A Joining Fetch is only permitted when the associated subscription
+          // has Forward State 1. REQUEST_UPDATE keeps this state current, so
+          // reading it here already reflects any processed update.
+          if !subscription.read().await.is_forwarding().await {
+            warn!(
+              "handle_fetch_messages | Joining fetch on non-forwarding subscription {}; INVALID_RANGE",
+              sub_request_id
+            );
+            send_request_error(
+              client.clone(),
+              request_id,
+              RequestErrorCode::InvalidRange,
+              ReasonPhrase::try_new(String::from(
+                "Joining fetch requires a forwarding subscription",
+              ))
+              .unwrap(),
             )
-          } else {
-            (None, None, None)
+            .await;
+            return (None, None, None, true);
           }
+
+          let track = track_lock.read().await;
+          let largest_location = track.largest_location.read().await;
+
+          if largest_location.group < joining_fetch_props.joining_start {
+            error!(
+              "handle_fetch_messages | Joining fetch start location is larger than the track's largest location: {:?} {:?}",
+              largest_location, joining_fetch_props.joining_start
+            );
+            send_request_error(
+              client.clone(),
+              request_id,
+              RequestErrorCode::InvalidRange,
+              ReasonPhrase::try_new(String::from("Invalid range")).unwrap(),
+            )
+            .await;
+            return (None, None, None, true);
+          }
+
+          let start_group = if fetch.fetch_type == FetchType::RelativeFetch {
+            largest_location.group - joining_fetch_props.joining_start
+          } else {
+            joining_fetch_props.joining_start
+          };
+
+          let start_location = Location::new(start_group, 0);
+          let end_location = Location::new(largest_location.group, largest_location.object + 1);
+          (
+            Some(track_lock.clone()),
+            Some(start_location),
+            Some(end_location),
+            false,
+          )
         } else {
           // standalone fetch
           let props = fetch.standalone_fetch_props.clone().unwrap();
@@ -203,14 +219,20 @@ pub async fn handle(
               Some(track),
               Some(props.start_location.clone()),
               Some(props.end_location.clone()),
+              false,
             )
           } else {
-            (None, None, None)
+            (None, None, None, false)
           }
         }
       };
 
-      let (track, start_location, end_location) = fn_.await;
+      let (track, start_location, end_location, rejected) = fn_.await;
+
+      // A REQUEST_ERROR was already sent during resolution; stop here.
+      if rejected {
+        return Ok(());
+      }
 
       // TODO: send fetch message to the publisher
       if track.is_none() {

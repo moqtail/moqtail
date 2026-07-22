@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use super::subscription::Subscription;
 use super::track::Track;
 use crate::server::client::MOQTClient;
 use moqtail::model::common::tuple::Tuple;
@@ -184,6 +185,32 @@ impl TrackManager {
   pub async fn has_track(&self, full_track_name: &FullTrackName) -> bool {
     let tracks = self.tracks.read().await;
     tracks.contains_key(full_track_name)
+  }
+
+  /// Find the subscription a connection holds with the given request id, across
+  /// all tracks, regardless of how it was created (SUBSCRIBE, PUBLISH/PUBLISH_OK
+  /// or REQUEST_UPDATE). Used to resolve the subscription a Joining FETCH targets.
+  pub async fn find_subscription_by_request_id(
+    &self,
+    connection_id: usize,
+    request_id: u64,
+  ) -> Option<(Arc<RwLock<Track>>, Arc<RwLock<Subscription>>)> {
+    let track_arcs: Vec<Arc<RwLock<Track>>> = {
+      let tracks = self.tracks.read().await;
+      tracks.values().cloned().collect()
+    };
+    for track_arc in track_arcs {
+      let sub_opt = {
+        let track = track_arc.read().await;
+        track.get_subscription(connection_id).await
+      };
+      if let Some(sub) = sub_opt
+        && sub.read().await.request_id == request_id
+      {
+        return Some((track_arc, sub));
+      }
+    }
+    None
   }
 
   pub async fn has_track_alias(&self, connection_id: usize, track_alias: &u64) -> bool {

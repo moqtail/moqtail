@@ -1,6 +1,6 @@
 # MOQtail Test Client
 
-A unified test client for the MOQtail relay, supporting publish, subscribe, and fetch operations over MoQ Transport (draft-16). Supports both subgroup (unidirectional streams) and datagram object forwarding preferences.
+A unified test client for the MOQtail relay, supporting publish, subscribe, and fetch operations over MoQ Transport (draft-18). Supports both subgroup (unidirectional streams) and datagram object forwarding preferences.
 
 ## Usage
 
@@ -19,14 +19,15 @@ cargo run --bin client -- --command <COMMAND> [OPTIONS]
 
 ## Global Options
 
-| Option                    | Short | Default                  | Description                                                         |
-| ------------------------- | ----- | ------------------------ | ------------------------------------------------------------------- |
-| `--command`               | `-c`  | _(required)_             | Command to run                                                      |
-| `--server`                | `-s`  | `https://127.0.0.1:4433` | Server address. `https://` for WebTransport, `moqt://` for raw QUIC |
-| `--namespace`             | `-n`  | `moqtail`                | Track namespace                                                     |
-| `--track-name`            | `-T`  | `demo`                   | Track name                                                          |
-| `--no-cert-validation`    |       | `false`                  | Skip certificate validation                                         |
-| `--forwarding-preference` |       | `subgroup`               | Object forwarding preference (`subgroup` or `datagram`)             |
+| Option                 | Short | Default                 | Description                                     |
+| ---------------------- | ----- | ----------------------- | ----------------------------------------------- |
+| `--command`            | `-c`  | _(required)_            | Command to run                                  |
+| `--server`             | `-s`  | `moqt://127.0.0.1:4433` | Server address as a `moqt://` URI               |
+| `--transport`          |       | `web-transport`         | Session transport (`web-transport` or `quic`)   |
+| `--namespace`          | `-n`  | `moqtail`               | Track namespace                                 |
+| `--track-name`         | `-T`  | `demo`                  | Track name                                      |
+| `--no-cert-validation` |       | `false`                 | Skip certificate validation                     |
+| `--delivery-mode`      |       | `subgroup`              | Object delivery mode (`subgroup` or `datagram`) |
 
 ## Publish Options
 
@@ -41,12 +42,16 @@ cargo run --bin client -- --command <COMMAND> [OPTIONS]
 
 ## Subscribe Options
 
-| Option                  | Short | Default     | Description                                                     |
-| ----------------------- | ----- | ----------- | --------------------------------------------------------------- |
-| `--duration`            | `-d`  | `0`         | Duration to listen in seconds (0 = indefinite)                  |
-| `--subscriber-priority` |       | `128`       | Subscriber priority 0 (highest) – 255 (lowest)                  |
-| `--group-order`         |       | `ascending` | Group delivery order (`original`, `ascending`, `descending`)    |
-| `--extra-track`         |       | _(none)_    | Second track subscription for priority testing: `name:priority` |
+| Option                  | Short | Default     | Description                                                         |
+| ----------------------- | ----- | ----------- | ------------------------------------------------------------------- |
+| `--duration`            | `-d`  | `0`         | Duration to listen in seconds (0 = indefinite)                      |
+| `--subscriber-priority` |       | `128`       | Subscriber priority 0 (highest) – 255 (lowest)                      |
+| `--group-order`         |       | `ascending` | Group delivery order (`original`, `ascending`, `descending`)        |
+| `--extra-track`         |       | _(none)_    | Second track subscription for priority testing: `name:priority`     |
+| `--forward`             |       | `true`      | Subscription Forward State; set `false` to suppress object delivery |
+| `--joining-fetch`       |       | `false`     | After subscribing, issue a Joining FETCH against the subscription   |
+| `--joining-start`       |       | `0`         | Joining FETCH start group (with `--joining-fetch`)                  |
+| `--joining-type`        |       | `relative`  | Joining FETCH type (`relative` or `absolute`)                       |
 
 ## Fetch Options
 
@@ -63,13 +68,13 @@ cargo run --bin client -- --command <COMMAND> [OPTIONS]
 Publish 50 groups of datagrams at 500ms intervals:
 
 ```
-cargo run --bin client -- -c publish --forwarding-preference datagram --group-count 50 --interval 500
+cargo run --bin client -- -c publish --delivery-mode datagram --group-count 50 --interval 500
 ```
 
 Subscribe to datagrams for 30 seconds:
 
 ```
-cargo run --bin client -- -c subscribe --forwarding-preference datagram --duration 30
+cargo run --bin client -- -c subscribe --delivery-mode datagram --duration 30
 ```
 
 Subscribe to subgroup streams indefinitely:
@@ -84,16 +89,30 @@ Fetch objects from groups 0-10:
 cargo run --bin client -- -c fetch --start-group 0 --end-group 10
 ```
 
+Subscribe, then issue a Joining FETCH for the last 2 groups (a Joining FETCH is
+only accepted when the subscription is forwarding):
+
+```
+cargo run --bin client -- -c subscribe --joining-fetch --joining-start 2
+```
+
+Same, but with a non-forwarding subscription — the relay rejects the Joining
+FETCH with `REQUEST_ERROR` / `INVALID_RANGE`:
+
+```
+cargo run --bin client -- -c subscribe --forward false --joining-fetch --joining-start 2
+```
+
 Connect to a remote server with certificate validation disabled:
 
 ```
-cargo run --bin client -- -c publish --server https://relay.example.com:4433 --no-cert-validation
+cargo run --bin client -- -c publish --server moqt://relay.example.com:4433 --no-cert-validation
 ```
 
 Connect over raw QUIC instead of WebTransport:
 
 ```
-cargo run --bin client -- -c subscribe --server moqt://relay.example.com:4433
+cargo run --bin client -- -c subscribe --server moqt://relay.example.com:4433 --transport quic
 ```
 
 ## Testing QUIC Stream Priority Scheduling

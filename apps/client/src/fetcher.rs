@@ -20,12 +20,31 @@ use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::fetch::{Fetch, StandaloneFetchProps};
 use moqtail::model::error::StreamResetCode;
 use moqtail::model::parameter::message_parameter::MessageParameter;
+use moqtail::model::property::object_property::ObjectProperty;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use moqtail::transport::data_stream_handler::{FetchRequest, RecvDataStream};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{error, info};
+
+/// Render any Prior Group/Object ID Gap properties (draft 12.8 / 12.9) for logging.
+fn format_prior_gaps(properties: &Option<Vec<ObjectProperty>>) -> String {
+  let Some(props) = properties else {
+    return String::new();
+  };
+  let mut out = String::new();
+  for p in props {
+    match p {
+      ObjectProperty::PriorGroupIdGap { gap } => out.push_str(&format!(" [prior_group_gap={gap}]")),
+      ObjectProperty::PriorObjectIdGap { gap } => {
+        out.push_str(&format!(" [prior_object_gap={gap}]"))
+      }
+      _ => {}
+    }
+  }
+  out
+}
 
 enum FetchReceiveSignal {
   // The configured cancel_after object threshold was reached.
@@ -110,8 +129,10 @@ pub async fn run(moq: MoqConnection, config: FetchConfig) -> Result<()> {
             match object {
               Some(obj) => {
                 info!(
-                  "Fetched object: group={}, object={}",
-                  obj.location.group, obj.location.object
+                  "Fetched object: group={}, object={}{}",
+                  obj.location.group,
+                  obj.location.object,
+                  format_prior_gaps(&obj.properties)
                 );
                 total_objects += 1;
                 handler = next_handler;

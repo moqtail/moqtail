@@ -21,6 +21,7 @@ use moqtail::model::common::tuple::{Tuple, TupleField};
 use moqtail::model::control::constant::{FetchType, GroupOrder};
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::fetch::Fetch;
+use moqtail::model::control::request_ok::RequestOk;
 use moqtail::model::control::request_update::RequestUpdate;
 use moqtail::model::control::subscribe::Subscribe;
 use moqtail::model::control::subscribe_tracks::SubscribeTracks;
@@ -179,6 +180,38 @@ pub async fn run_subscribe_tracks(
         Ok(other) => info!("SUBSCRIBE_TRACKS: received {:?}", other.get_type()),
         Err(e) => {
           info!("SUBSCRIBE_TRACKS response stream ended: {:?}", e);
+          break;
+        }
+      }
+    }
+  });
+
+  // Each forwarded track arrives as a PUBLISH on its own bidi stream; log it and
+  // answer REQUEST_OK.
+  let conn = connection.clone();
+  tokio::spawn(async move {
+    loop {
+      match conn.accept_bi().await {
+        Ok((send, recv)) => {
+          tokio::spawn(async move {
+            let mut handler = ControlStreamHandler::new(send, recv);
+            match handler.next_message().await {
+              Ok(ControlMessage::Publish(m)) => {
+                info!(
+                  "SUBSCRIBE_TRACKS: received PUBLISH for {:?}/{:?}",
+                  m.track_namespace, m.track_name
+                );
+                let _ = handler
+                  .send(&ControlMessage::RequestOk(Box::new(RequestOk::new(vec![]))))
+                  .await;
+              }
+              Ok(other) => info!("SUBSCRIBE_TRACKS: bidi stream got {:?}", other.get_type()),
+              Err(e) => info!("SUBSCRIBE_TRACKS: bidi stream ended: {:?}", e),
+            }
+          });
+        }
+        Err(e) => {
+          info!("SUBSCRIBE_TRACKS: accept_bi ended: {:?}", e);
           break;
         }
       }

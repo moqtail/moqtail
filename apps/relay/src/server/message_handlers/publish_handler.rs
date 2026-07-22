@@ -438,7 +438,7 @@ pub async fn handle(
 /// Push a PUBLISH to a subscriber on its own bidirectional request stream and
 /// read the PUBLISH_OK (or REQUEST_ERROR) there. The subscription is already
 /// wired before this runs; a rejection is logged.
-async fn forward_publish_downstream(subscriber: Arc<MOQTClient>, publish: Publish) {
+pub(crate) async fn forward_publish_downstream(subscriber: Arc<MOQTClient>, publish: Publish) {
   let (send, recv) = match subscriber.connection.open_bi().await {
     Ok(streams) => streams,
     Err(e) => {

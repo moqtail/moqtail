@@ -10,7 +10,10 @@ on:
       - 'apps/relay/**'
       - 'libs/moqtail-rs/**'
       - 'Cargo.toml'
+      - 'Cargo.lock'
       - '.github/workflows/relay.yml'
+  create:
+  workflow_dispatch:
 
 concurrency:
   group: relay-image-${{ github.ref }}

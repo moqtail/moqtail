@@ -73,6 +73,8 @@ pub enum Command {
   PublishNamespace,
   /// Subscribe to a track and receive objects
   Subscribe,
+  /// Subscribe to all tracks under a namespace prefix (SUBSCRIBE_TRACKS)
+  SubscribeTracks,
   /// Fetch specific object ranges from a track
   Fetch,
 }

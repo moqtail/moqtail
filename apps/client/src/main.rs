@@ -95,6 +95,9 @@ async fn main() -> Result<(), anyhow::Error> {
       };
       subscriber::run(moq_conn, config).await
     }
+    Command::SubscribeTracks => {
+      subscriber::run_subscribe_tracks(moq_conn, cli.namespace, cli.duration).await
+    }
     Command::Fetch => {
       let config = fetcher::FetchConfig {
         namespace: cli.namespace,

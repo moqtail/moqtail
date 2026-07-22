@@ -22,6 +22,7 @@ use crate::server::track_manager::SubscribeKind;
 use core::result::Result;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::control::control_message::ControlMessage;
+use moqtail::model::control::publish_blocked::PublishBlocked;
 use moqtail::model::control::request_error::RequestError;
 use moqtail::model::control::request_ok::RequestOk;
 use moqtail::model::control::subscribe_tracks::SubscribeTracks;
@@ -118,6 +119,9 @@ pub async fn handle_subscribe_tracks(
     .get_tracks_and_publishes_by_namespace_prefix(&sub_tracks.track_namespace_prefix)
     .await;
 
+  let max_publish_streams = context.server_config.max_publish_streams;
+  let mut published = 0u64;
+
   for (full_track_name, track_arc, original_publish_message_opt) in matched_tracks {
     // Exclude the subscriber's own published tracks, and let an explicit
     // SUBSCRIBE take precedence over SUBSCRIBE_TRACKS for the same track.
@@ -131,6 +135,24 @@ pub async fn handle_subscribe_tracks(
     }
 
     if let Some(mut original_publish_message) = original_publish_message_opt {
+      // Out of streams to initiate this subscription: send PUBLISH_BLOCKED on
+      // the response stream and stop (no PUBLISH may follow it).
+      if max_publish_streams > 0 && published >= max_publish_streams {
+        let suffix = full_track_name
+          .namespace
+          .suffix(&sub_tracks.track_namespace_prefix)
+          .unwrap_or_else(|| full_track_name.namespace.clone());
+        warn!(
+          "SUBSCRIBE_TRACKS out of streams ({} sent, max {}); PUBLISH_BLOCKED for {full_track_name:?}",
+          published, max_publish_streams
+        );
+        let blocked = PublishBlocked::new(suffix, full_track_name.name.clone());
+        stream_handler
+          .send(&ControlMessage::PublishBlocked(Box::new(blocked)))
+          .await?;
+        break;
+      }
+
       info!("Forwarding existing track to SUBSCRIBE_TRACKS subscriber: {full_track_name:?}");
 
       let relay_track_id = {
@@ -160,6 +182,7 @@ pub async fn handle_subscribe_tracks(
           original_publish_message.clone(),
         )))
         .await;
+      published += 1;
 
       let track_read = track_arc.read().await;
       if let Err(e) = track_read

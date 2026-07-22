@@ -15,6 +15,7 @@ cargo run --bin client -- --command <COMMAND> [OPTIONS]
 | `publish`           | Publish objects to a track                         |
 | `publish-namespace` | Publish a namespace and auto-respond to subscribes |
 | `subscribe`         | Subscribe to a track and receive objects           |
+| `subscribe-tracks`  | Subscribe to all tracks under a namespace prefix   |
 | `fetch`             | Fetch specific object ranges from a track          |
 
 ## Global Options
@@ -131,6 +132,15 @@ the relay reopens the subgroup and delivery resumes:
 
 ```
 cargo run --bin client -- -c subscribe --forward false --update-forward-after 3 --duration 8
+```
+
+Subscribe to every track under a namespace prefix (SUBSCRIBE_TRACKS). The relay
+answers `REQUEST_OK`, forwards a `PUBLISH` for each matching track, and sends
+`PUBLISH_BLOCKED` if it runs out of streams (start the relay with
+`--max-publish-streams N` to cap it):
+
+```
+cargo run --bin client -- -c subscribe-tracks -n test/ns --duration 5
 ```
 
 Connect to a remote server with certificate validation disabled:

@@ -35,6 +35,59 @@ use tracing::{error, info, warn};
 
 const UPSTREAM_FETCH_CHANNEL_CAPACITY: usize = 64;
 
+/// Why a standalone FETCH range cannot be served as requested.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FetchRangeError {
+  /// No Objects published, or Start Location beyond the Largest Object.
+  InvalidRange,
+  /// End Location precedes Start Location.
+  ProtocolViolation,
+}
+
+/// Resolve a standalone FETCH's requested range against the track's Largest
+/// Object (`largest` is None when the track has no published Objects). Returns
+/// the End Location to advertise in FETCH_OK, clamped to published data when the
+/// request overruns it.
+///
+/// End Location uses the FETCH encoding: the last Object plus 1, or 0 to mean
+/// the entire Group.
+pub(crate) fn resolve_standalone_fetch_range(
+  start: Location,
+  requested_end: Location,
+  largest: Option<Location>,
+) -> Result<Location, FetchRangeError> {
+  // 0 in the Object field means "the entire group", i.e. the largest possible
+  // end within that group.
+  let effective_end = if requested_end.object == 0 {
+    Location::new(requested_end.group, u64::MAX)
+  } else {
+    requested_end.clone()
+  };
+
+  // End Location MUST be the same or larger than Start Location.
+  if effective_end < start {
+    return Err(FetchRangeError::ProtocolViolation);
+  }
+
+  // No Objects published, or Start beyond the Largest Object: INVALID_RANGE.
+  let Some(largest) = largest else {
+    return Err(FetchRangeError::InvalidRange);
+  };
+  if start > largest {
+    return Err(FetchRangeError::InvalidRange);
+  }
+
+  // Clamp End Location to {Largest.Group, Largest.Object + 1} when the request
+  // extends beyond published data.
+  let clamped_end = Location::new(largest.group, largest.object + 1);
+  let end_location = if effective_end > clamped_end {
+    clamped_end
+  } else {
+    requested_end
+  };
+  Ok(end_location)
+}
+
 /// Why a fetch's object stream is torn down early. A normal cancel closes the
 /// stream with a FIN; a failed REQUEST_UPDATE resets it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -192,6 +245,48 @@ pub async fn handle(
           req.track_alias = track_read.relay_track_id;
         }
       }
+
+      // Standalone FETCH: validate the requested range and clamp the FETCH_OK
+      // End Location to published data (draft 10.12/10.13). Joining fetches
+      // resolve their own range above.
+      let end_location = if fetch.joining_fetch_props.is_none() {
+        let largest = track.read().await.largest_object().await;
+        let start = start_location.clone().unwrap();
+        let requested_end = end_location.clone().unwrap();
+        match resolve_standalone_fetch_range(start.clone(), requested_end.clone(), largest.clone())
+        {
+          Ok(clamped) => Some(clamped),
+          Err(FetchRangeError::ProtocolViolation) => {
+            warn!(
+              "FETCH request {}: End {:?} precedes Start {:?}; closing session (PROTOCOL_VIOLATION)",
+              request_id, requested_end, start
+            );
+            return Err(TerminationCode::ProtocolViolation);
+          }
+          Err(FetchRangeError::InvalidRange) => {
+            // Only authoritative when there is no upstream publisher that could
+            // still serve the range; otherwise fall through to upstream fetch.
+            if has_upstream_publisher(&context, &track).await {
+              end_location
+            } else {
+              warn!(
+                "FETCH request {}: INVALID_RANGE (start {:?}, end {:?}, largest {:?})",
+                request_id, start, requested_end, largest
+              );
+              send_request_error(
+                client.clone(),
+                request_id,
+                RequestErrorCode::InvalidRange,
+                ReasonPhrase::try_new(String::from("Invalid range")).unwrap(),
+              )
+              .await;
+              return Ok(());
+            }
+          }
+        }
+      } else {
+        end_location
+      };
 
       // Send FetchOk on the request stream before delivering objects.
       {
@@ -711,6 +806,24 @@ async fn send_upstream_fetch_for_range(
   Some((relay_request_id, publisher, upstream_rx))
 }
 
+/// Whether a connected publisher could still serve Objects for this track, as
+/// its origin or via an announced namespace. Used to decide whether an empty
+/// local range is authoritative (INVALID_RANGE) or should be fetched upstream.
+async fn has_upstream_publisher(
+  context: &Arc<SessionContext>,
+  track: &Arc<tokio::sync::RwLock<crate::server::track::Track>>,
+) -> bool {
+  let full_track_name = track.read().await.full_track_name.clone();
+  let m = context.client_manager.read().await;
+  m.get_publisher_by_full_track_name(&full_track_name)
+    .await
+    .is_some()
+    || m
+      .get_publisher_by_announced_track_namespace(&full_track_name.namespace)
+      .await
+      .is_some()
+}
+
 async fn send_request_error(
   client: Arc<MOQTClient>,
   request_id: u64,
@@ -735,4 +848,59 @@ async fn send_request_error(
     .write()
     .await
     .remove(&request_id);
+}
+
+#[cfg(test)]
+mod tests {
+  use super::{FetchRangeError, resolve_standalone_fetch_range};
+  use moqtail::model::common::location::Location;
+
+  fn loc(group: u64, object: u64) -> Location {
+    Location::new(group, object)
+  }
+
+  #[test]
+  fn empty_track_is_invalid_range() {
+    // A track with no published Objects (largest = None) -> INVALID_RANGE.
+    assert_eq!(
+      resolve_standalone_fetch_range(loc(0, 0), loc(5, 0), None),
+      Err(FetchRangeError::InvalidRange)
+    );
+  }
+
+  #[test]
+  fn start_beyond_largest_is_invalid_range() {
+    // Start Location past the Largest Object -> INVALID_RANGE.
+    assert_eq!(
+      resolve_standalone_fetch_range(loc(10, 0), loc(12, 1), Some(loc(4, 2))),
+      Err(FetchRangeError::InvalidRange)
+    );
+  }
+
+  #[test]
+  fn end_before_start_is_protocol_violation() {
+    // End Location earlier than Start Location -> PROTOCOL_VIOLATION.
+    assert_eq!(
+      resolve_standalone_fetch_range(loc(5, 3), loc(5, 1), Some(loc(9, 0))),
+      Err(FetchRangeError::ProtocolViolation)
+    );
+  }
+
+  #[test]
+  fn end_beyond_largest_is_clamped() {
+    // Requested end overruns published data -> clamp to {Largest.Group, Largest.Object + 1}.
+    assert_eq!(
+      resolve_standalone_fetch_range(loc(0, 0), loc(100, 0), Some(loc(4, 2))),
+      Ok(loc(4, 3))
+    );
+  }
+
+  #[test]
+  fn end_within_published_data_is_unchanged() {
+    // Requested end within published data is echoed back verbatim.
+    assert_eq!(
+      resolve_standalone_fetch_range(loc(0, 0), loc(3, 1), Some(loc(4, 2))),
+      Ok(loc(3, 1))
+    );
+  }
 }

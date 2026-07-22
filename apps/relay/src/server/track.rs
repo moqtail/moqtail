@@ -32,6 +32,7 @@ use moqtail::model::property::track_property::TrackProperty;
 use moqtail::transport::data_stream_handler::HeaderInfo;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{Mutex, Notify, RwLock, oneshot};
 use tracing::{debug, error, info, warn};
 
@@ -82,6 +83,9 @@ pub struct Track {
   pub publisher_aliases: Arc<RwLock<BTreeMap<usize, u64>>>,
   pub(crate) cache: TrackCache,
   pub largest_location: Arc<RwLock<Location>>,
+  /// Set once at least one Object (subgroup or datagram) has been seen for this
+  /// track, so `largest_location` becomes meaningful (it starts at {0,0}).
+  has_objects: Arc<AtomicBool>,
   pub object_logger: ObjectLogger,
   config: &'static AppConfig,
   pub status: Arc<RwLock<TrackStatus>>,
@@ -128,6 +132,7 @@ impl Track {
       publisher_aliases: Arc::new(RwLock::new(BTreeMap::new())),
       cache: TrackCache::new(relay_track_id, config.cache_size.into(), config),
       largest_location: Arc::new(RwLock::new(Location::new(0, 0))),
+      has_objects: Arc::new(AtomicBool::new(false)),
       object_logger: ObjectLogger::new(config.log_folder.clone()),
       config,
       status: Arc::new(RwLock::new(initial_status)),
@@ -187,6 +192,17 @@ impl Track {
       .read()
       .await
       .contains_key(&connection_id)
+  }
+
+  /// The Largest Object seen for this track, or None if no Objects have been
+  /// published yet (so `largest_location`'s default {0,0} is not mistaken for
+  /// a real Object).
+  pub async fn largest_object(&self) -> Option<Location> {
+    if self.has_objects.load(Ordering::Relaxed) {
+      Some(self.largest_location.read().await.clone())
+    } else {
+      None
+    }
   }
 
   /// Transition from Pending to Confirmed. Adds publisher alias and notifies waiters.
@@ -379,6 +395,7 @@ impl Track {
         largest_location.object = object.location.object;
       }
     }
+    self.has_objects.store(true, Ordering::Relaxed);
     Ok(())
   }
 
@@ -441,6 +458,7 @@ impl Track {
         largest_location.object = datagram.object_id;
       }
     }
+    self.has_objects.store(true, Ordering::Relaxed);
 
     let event = TrackEvent::Datagram {
       object: datagram.clone(),

@@ -22,7 +22,7 @@ use crate::model::property::object_property::{
 
 use super::constant::{ObjectDatagramType, ObjectStatus};
 
-/// Draft-16 unified Object Datagram.
+/// Unified Object Datagram.
 ///
 /// Type bit layout (form 0b00X0XXXX):
 /// - Bit 0 (0x01): PROPERTIES - Properties field present
@@ -239,6 +239,15 @@ impl Datagram {
     };
 
     let end_of_group = msg_type.is_end_of_group();
+
+    // Only Normal Objects can carry Properties: a STATUS datagram with a
+    // non-Normal status and Properties present is a protocol violation.
+    if properties.is_some() && matches!(object_status, Some(s) if s != ObjectStatus::Normal) {
+      return Err(ParseError::ProtocolViolation {
+        context: "Datagram::deserialize",
+        details: "STATUS datagram with non-Normal status carries Properties".to_string(),
+      });
+    }
 
     Ok(Datagram {
       track_alias,
@@ -466,5 +475,26 @@ mod tests {
   fn test_invalid_type_is_error() {
     let result = ObjectDatagramType::try_from(0x10u64);
     assert!(result.is_err());
+  }
+
+  #[test]
+  fn test_status_non_normal_with_properties_is_error() {
+    // Only Normal Objects can carry Properties: a STATUS datagram with a
+    // non-Normal status and Properties present is a PROTOCOL_VIOLATION.
+    let datagram = Datagram::new_status(
+      144,
+      9,
+      10,
+      Some(255),
+      Some(vec![ObjectProperty::Unknown {
+        kvp: KeyValuePair::try_new_varint(0, 10).unwrap(),
+      }]),
+      ObjectStatus::EndOfGroup,
+    );
+    let mut buf = datagram.serialize().unwrap();
+    assert!(matches!(
+      Datagram::deserialize(&mut buf),
+      Err(ParseError::ProtocolViolation { .. })
+    ));
   }
 }

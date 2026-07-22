@@ -89,6 +89,11 @@ pub struct Cli {
   #[arg(long, default_value_t = 0)]
   pub max_subscriber_lag: u64,
 
+  /// Max PUBLISH streams the relay initiates for one SUBSCRIBE_TRACKS before it
+  /// runs out of streams and emits PUBLISH_BLOCKED. 0 = unlimited.
+  #[arg(long, default_value_t = 0)]
+  pub max_publish_streams: u64,
+
   /// Simulate a bandwidth cap per subscriber connection (kbps). 0 = unlimited.
   /// Useful for testing QUIC stream priority scheduling without OS-level throttling.
   #[arg(long, default_value_t = 0)]
@@ -124,6 +129,7 @@ pub struct AppConfig {
   pub max_request_streams: u64,
   pub max_active_requests: u64,
   pub max_subscriber_lag: u64,
+  pub max_publish_streams: u64,
   /// 0 = unlimited. Non-zero caps relay writes to this many kbps per subscriber connection.
   pub write_kbps_limit: u64,
   /// Default GOAWAY redirect URI; the runtime value lives on `Server`.
@@ -154,6 +160,7 @@ impl AppConfig {
         max_request_streams: cli.max_request_streams,
         max_active_requests: cli.max_active_requests,
         max_subscriber_lag: cli.max_subscriber_lag,
+        max_publish_streams: cli.max_publish_streams,
         write_kbps_limit: cli.write_kbps_limit,
         redirect_uri: cli.redirect_uri,
         max_upstream_fetch_gaps: cli.max_upstream_fetch_gaps,
@@ -273,6 +280,7 @@ mod tests {
       max_request_streams,
       max_active_requests: 0,
       max_subscriber_lag: 0,
+      max_publish_streams: 0,
       write_kbps_limit: 0,
       redirect_uri: None,
       max_upstream_fetch_gaps: 10,

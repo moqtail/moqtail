@@ -106,7 +106,17 @@ impl KeyValuePair {
           ),
         })?;
 
-    if type_value % 2 == 0 {
+    Self::deserialize_value(bytes, type_value)
+  }
+
+  /// Deserializes the Value of a KVP whose `type_value` has already been read
+  /// (or reconstructed from a Type Delta). The generic encoding is chosen by
+  /// Type parity: even Types carry a varint, odd Types a length-prefixed byte
+  /// string. Callers with per-Type value shapes (e.g. Message Parameters,
+  /// where some even Types are a fixed uint8) handle those cases themselves
+  /// before falling back here.
+  pub fn deserialize_value(bytes: &mut Bytes, type_value: u64) -> Result<Self, ParseError> {
+    if type_value.is_multiple_of(2) {
       // VarInt variant
       let value = bytes.get_vi()?;
       Ok(KeyValuePair::VarInt { type_value, value })

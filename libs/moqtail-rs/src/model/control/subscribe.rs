@@ -284,6 +284,65 @@ mod tests {
   }
 
   #[test]
+  fn test_parse_wire_subscribe_with_uint8_priority() {
+    // Real SUBSCRIBE captured from an interop peer:
+    //   03 00 14 00 01 03 61 62 63 03 64 65 66 04 10 01 10 80 01 01 02 01 01
+    // Params are FORWARD=1, SUBSCRIBER_PRIORITY=128, SUBSCRIPTION_FILTER
+    // (LargestObject), GROUP_ORDER=Ascending. The FORWARD (0x10),
+    // SUBSCRIBER_PRIORITY (0x20) and GROUP_ORDER (0x22) values
+    // are a single uint8, NOT the generic even-key varint. SUBSCRIBER_PRIORITY
+    // here is 0x80 (128); read as a QUIC varint that byte starts a 4-byte
+    // sequence, which desyncs the whole parameter block.
+    let frame: &[u8] = &[
+      0x03, 0x00, 0x14, 0x00, 0x01, 0x03, 0x61, 0x62, 0x63, 0x03, 0x64, 0x65, 0x66, 0x04, 0x10,
+      0x01, 0x10, 0x80, 0x01, 0x01, 0x02, 0x01, 0x01,
+    ];
+    let mut buf = Bytes::copy_from_slice(frame);
+    let msg_type = buf.get_vi().unwrap();
+    assert_eq!(msg_type, ControlMessageType::Subscribe as u64);
+    let msg_length = buf.get_u16();
+    assert_eq!(msg_length as usize, buf.remaining());
+
+    let sub = Subscribe::parse_payload(&mut buf).expect("SUBSCRIBE should parse");
+    assert!(!buf.has_remaining(), "entire payload should be consumed");
+
+    assert_eq!(sub.request_id, 0);
+    assert_eq!(sub.track_namespace, Tuple::from_utf8_path("abc"));
+    assert_eq!(sub.track_name, TupleField::from_utf8("def"));
+
+    use crate::model::parameter::constant::MessageParameterType;
+    use crate::model::parameter::message_parameter::MessageParameterVecExt;
+    assert_eq!(
+      sub
+        .subscribe_parameters
+        .get_param(MessageParameterType::Forward),
+      Some(&MessageParameter::new_forward(true))
+    );
+    assert_eq!(
+      sub
+        .subscribe_parameters
+        .get_param(MessageParameterType::SubscriberPriority),
+      Some(&MessageParameter::new_subscriber_priority(128)),
+    );
+    assert_eq!(
+      sub
+        .subscribe_parameters
+        .get_param(MessageParameterType::GroupOrder),
+      Some(&MessageParameter::new_group_order(GroupOrder::Ascending)),
+    );
+    assert_eq!(
+      sub.get_subscription_filter(),
+      Some((FilterType::LatestObject, None, None)),
+    );
+
+    // Re-serialize: the params are already in ascending Type order on the wire,
+    // so the output must be byte-identical to the captured frame. This also
+    // proves the uint8 priority is written as a single byte (0x80), not a varint.
+    let reserialized = sub.serialize().unwrap();
+    assert_eq!(reserialized.as_ref(), frame);
+  }
+
+  #[test]
   fn test_partial_message() {
     let subscribe = Subscribe::new_absolute_range(
       128242,

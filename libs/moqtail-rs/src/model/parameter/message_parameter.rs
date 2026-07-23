@@ -13,13 +13,13 @@
 // limitations under the License.
 
 use crate::model::common::location::Location;
-use crate::model::common::pair::{KeyValuePair, deserialize_kvp_list, serialize_kvp_list};
+use crate::model::common::pair::KeyValuePair;
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
 use crate::model::control::constant::{ControlMessageType, FilterType, GroupOrder};
 use crate::model::error::ParseError;
 use crate::model::parameter::authorization_token::AuthorizationToken;
 use crate::model::parameter::constant::MessageParameterType;
-use bytes::{Bytes, BytesMut};
+use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum MessageParameter {
@@ -480,10 +480,43 @@ pub fn deserialize_message_parameters(
   count: u64,
   msg_type: ControlMessageType,
 ) -> Result<Vec<MessageParameter>, ParseError> {
-  let kvps = deserialize_kvp_list(bytes, count)?;
-  let mut params = Vec::with_capacity(kvps.len());
-  for kvp in &kvps {
-    let param = MessageParameter::deserialize(kvp)?;
+  let mut params = Vec::with_capacity(count as usize);
+  let mut prev_type = 0u64;
+  for _ in 0..count {
+    let delta_type = bytes.get_vi()?;
+    let type_value =
+      prev_type
+        .checked_add(delta_type)
+        .ok_or_else(|| ParseError::ProtocolViolation {
+          context: "deserialize_message_parameters",
+          details: format!(
+            "previous type {prev_type} plus delta type {delta_type} exceeds 2^64 - 1"
+          ),
+        })?;
+    prev_type = type_value;
+
+    let kvp = if is_uint8_message_param(type_value) {
+      // FORWARD, SUBSCRIBER_PRIORITY and GROUP_ORDER carry a single uint8, not
+      // the generic even-Type varint. These Types are even, so without this the
+      // parity rule below would read a varint and desync on any value >= 64
+      // (e.g. the default SUBSCRIBER_PRIORITY of 128 = 0x80 starts a multi-byte
+      // varint).
+      if !bytes.has_remaining() {
+        return Err(ParseError::NotEnoughBytes {
+          context: "deserialize_message_parameters(uint8 value)",
+          needed: 1,
+          available: 0,
+        });
+      }
+      KeyValuePair::VarInt {
+        type_value,
+        value: bytes.get_u8() as u64,
+      }
+    } else {
+      KeyValuePair::deserialize_value(bytes, type_value)?
+    };
+
+    let param = MessageParameter::deserialize(&kvp)?;
     if !param.is_valid_for(msg_type) {
       return Err(ParseError::ProtocolViolation {
         context: "deserialize_message_parameters",
@@ -498,14 +531,58 @@ pub fn deserialize_message_parameters(
   Ok(params)
 }
 
+/// Message parameters whose Value is a single uint8 byte rather than the generic
+/// even-Type varint: FORWARD (0x10), SUBSCRIBER_PRIORITY (0x20) and GROUP_ORDER
+/// (0x22). All three have even Parameter Types, so the KVP parity rule would
+/// otherwise read them as varints and desync on any value >= 64.
+const fn is_uint8_message_param(type_value: u64) -> bool {
+  matches!(type_value, 0x10 | 0x20 | 0x22)
+}
+
 /// Serializes a slice of MessageParameters into delta-encoded wire bytes,
-/// ready to be appended directly to a message payload.
+/// ready to be appended directly to a message payload. Parameters are sorted by
+/// ascending Type first, since the Type Delta is an unsigned varint and cannot
+/// represent a decrease.
 pub fn serialize_message_parameters(params: &[MessageParameter]) -> Result<Bytes, ParseError> {
-  let kvps: Vec<KeyValuePair> = params
+  let mut kvps: Vec<KeyValuePair> = params
     .iter()
     .map(|p| p.clone().try_into())
     .collect::<Result<_, ParseError>>()?;
-  serialize_kvp_list(&kvps)
+  kvps.sort_by_key(|kvp| kvp.get_type());
+
+  let mut buf = BytesMut::new();
+  let mut prev_type = 0u64;
+  for kvp in &kvps {
+    let type_value = kvp.get_type();
+    let delta_type =
+      type_value
+        .checked_sub(prev_type)
+        .ok_or_else(|| ParseError::ProtocolViolation {
+          context: "serialize_message_parameters",
+          details: format!("type {type_value} is less than previous type {prev_type}"),
+        })?;
+    buf.put_vi(delta_type)?;
+    match kvp {
+      // FORWARD, SUBSCRIBER_PRIORITY and GROUP_ORDER are a single uint8, not the
+      // generic even-Type varint that serialize_delta would emit.
+      KeyValuePair::VarInt { value, .. } if is_uint8_message_param(type_value) => {
+        let byte: u8 = (*value)
+          .try_into()
+          .map_err(|_| ParseError::ProtocolViolation {
+            context: "serialize_message_parameters",
+            details: format!("uint8 parameter 0x{type_value:02X} value {value} exceeds 255"),
+          })?;
+        buf.put_u8(byte);
+      }
+      KeyValuePair::VarInt { value, .. } => buf.put_vi(*value)?,
+      KeyValuePair::Bytes { value, .. } => {
+        buf.put_vi(value.len() as u64)?;
+        buf.extend_from_slice(value);
+      }
+    }
+    prev_type = type_value;
+  }
+  Ok(buf.freeze())
 }
 
 /// Applies a set of parameter updates to an existing parameter list.

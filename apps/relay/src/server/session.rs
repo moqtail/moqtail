@@ -483,7 +483,7 @@ impl Session {
 
     use std::sync::atomic::Ordering;
 
-    // While draining, reject new requests with GOING_AWAY per draft-18 10.4.
+    // While draining, reject new requests with GOING_AWAY.
     if context.draining.load(Ordering::Relaxed) {
       warn!(
         "Rejecting new request {:?} while draining (GOING_AWAY)",
@@ -1025,7 +1025,7 @@ impl Session {
     };
 
     // AUTHORITY and PATH are for native QUIC only; over WebTransport the transport
-    // carries them (§10.3.1.1, §10.3.1.2).
+    // carries them.
     client_setup.validate_incoming(SetupSender::Client, context.transport_kind)?;
 
     utils::print_msg_bytes(&client_setup);

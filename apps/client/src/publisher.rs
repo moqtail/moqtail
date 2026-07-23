@@ -357,7 +357,7 @@ async fn send_datagrams(
       let object_id = i * object_id_step;
       let payload = generate_payload(payload_size);
 
-      // Communicate the ID gaps explicitly (draft 12.8 / 12.9).
+      // Communicate the ID gaps explicitly.
       let mut properties = Vec::new();
       if g > 0 && i == 0 && group_id_step > 1 {
         properties.push(ObjectProperty::PriorGroupIdGap {
@@ -452,7 +452,7 @@ async fn send_via_streams(
       let object_id = i * object_id_step;
       let payload = generate_payload(payload_size);
 
-      // Communicate the ID gaps explicitly (draft 12.8 / 12.9): the first object
+      // Communicate the ID gaps explicitly: the first object
       // of a skipped group carries Prior Group ID Gap; every skipped object
       // carries Prior Object ID Gap.
       let mut properties = Vec::new();

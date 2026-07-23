@@ -28,7 +28,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{error, info};
 
-/// Render any Prior Group/Object ID Gap properties (draft 12.8 / 12.9) for logging.
+/// Render any Prior Group/Object ID Gap properties for logging.
 fn format_prior_gaps(properties: &Option<Vec<ObjectProperty>>) -> String {
   let Some(props) = properties else {
     return String::new();

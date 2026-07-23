@@ -20,7 +20,7 @@ pub enum FetchHeaderType {
   Type0x05 = 0x05,
 }
 
-/// Subgroup Header Type, per draft-18 §11.4.2.
+/// Subgroup Header Type.
 ///
 /// Type bit layout (form `0b0XX1XXXX`):
 /// - Bit 0 (0x01): PROPERTIES - Properties present in all objects
@@ -330,7 +330,7 @@ impl From<ObjectDatagramType> for u64 {
 mod tests {
   use super::*;
 
-  /// The independent oracle for a valid SUBGROUP_HEADER type byte (draft-18 §11.4.2):
+  /// The independent oracle for a valid SUBGROUP_HEADER type byte:
   /// bit 7 clear, bit 4 set, and SUBGROUP_ID_MODE (bits 1-2) not 0b11.
   fn is_valid_subgroup_type(b: u8) -> bool {
     b & 0x80 == 0 && b & 0x10 != 0 && b & 0x06 != 0x06
@@ -338,7 +338,7 @@ mod tests {
 
   #[test]
   fn subgroup_header_type_classifies_all_256_bytes() {
-    // The 16 reserved SUBGROUP_ID_MODE = 0b11 values named explicitly in §11.4.2, as a
+    // The 16 reserved SUBGROUP_ID_MODE = 0b11 values named explicitly, as a
     // cross-check that the oracle and the spec agree.
     let reserved_mode_3 = [
       0x16u8, 0x17, 0x1E, 0x1F, 0x36, 0x37, 0x3E, 0x3F, 0x56, 0x57, 0x5E, 0x5F, 0x76, 0x77, 0x7E,

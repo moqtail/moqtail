@@ -108,8 +108,8 @@ impl Object {
     })
   }
 
-  /// Convert a draft-16 fetch-stream payload object into the unified Object view.
-  /// Fetch objects carry no status (§10.4.4); status is always Normal here.
+  /// Convert a fetch-stream payload object into the unified Object view.
+  /// Fetch objects carry no status; status is always Normal here.
   pub fn try_from_fetch(
     fetch_obj: FetchObjectPayload,
     track_alias: u64,
@@ -254,7 +254,7 @@ impl Object {
     })
   }
 
-  /// Convert to a draft-16 fetch-stream payload object.
+  /// Convert to a fetch-stream payload object.
   /// Fetch objects carry no status field; non-Normal status must be surfaced
   /// as an EndOfRange marker by the caller instead.
   pub fn try_into_fetch(self) -> Result<FetchObjectPayload, ParseError> {

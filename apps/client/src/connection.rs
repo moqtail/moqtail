@@ -114,7 +114,7 @@ impl MoqConnection {
     match control_stream.read_setup().await {
       Ok(m) => {
         // AUTHORITY and PATH are client-only; a server sending either closes the
-        // session (§10.3.1.1, §10.3.1.2).
+        // session.
         if let Err(code) = m.validate_incoming(SetupSender::Server, connection.kind()) {
           error!("Server sent a client-only setup option: {:?}", code);
           anyhow::bail!("Server sent a client-only setup option: {:?}", code);

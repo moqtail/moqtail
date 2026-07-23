@@ -22,7 +22,7 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use super::constant::ObjectForwardingPreference;
 
-/// Draft-18 §11.4.4 Serialization Flags bit layout.
+/// Serialization Flags bit layout.
 const FLAG_SUBGROUP_MODE_MASK: u8 = 0x03;
 const FLAG_OBJECT_ID_PRESENT: u8 = 0x04;
 const FLAG_GROUP_ID_PRESENT: u8 = 0x08;
@@ -49,7 +49,7 @@ pub struct FetchObjectContext {
   pub publisher_priority: u8,
 }
 
-/// Kind discriminator for End-of-Range markers (§10.4.4.2).
+/// Kind discriminator for End-of-Range markers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EndOfRangeKind {
   /// Serialization Flags = 0x8C: all objects in the range are known not to exist.
@@ -67,7 +67,7 @@ impl EndOfRangeKind {
   }
 }
 
-/// Payload-bearing fetch object (§10.4.4, non-End-of-Range form).
+/// Payload-bearing fetch object (non-End-of-Range form).
 #[derive(Debug, Clone, PartialEq)]
 pub struct FetchObjectPayload {
   pub group_id: u64,
@@ -76,7 +76,7 @@ pub struct FetchObjectPayload {
   pub publisher_priority: u8,
   pub forwarding_preference: ObjectForwardingPreference,
   pub properties: Option<Vec<ObjectProperty>>,
-  /// Draft-16 §10.4.4 FETCH objects carry no Object Status field; zero-length
+  /// FETCH objects carry no Object Status field; zero-length
   /// payload signals a zero-length Normal object.
   pub payload: Bytes,
 }
@@ -183,7 +183,7 @@ impl FetchObject {
 
     // Group ID Delta present. For the first Object (no prior) the delta is the
     // absolute Group ID; otherwise it is applied to the prior Group ID per the
-    // Group Order (draft-18 §11.4.4.1). A computed value outside [0, 2^64-1] is a
+    // Group Order. A computed value outside [0, 2^64-1] is a
     // PROTOCOL_VIOLATION.
     let group_id = if has_group_id {
       let delta = bytes.get_vi()?;
@@ -246,7 +246,7 @@ impl FetchObject {
       }
     };
 
-    // Object ID resolution (draft-18 §11.4.4.1):
+    // Object ID resolution:
     // - Object ID Delta present + Group ID Delta present (or first Object): the
     //   Object ID is the delta itself (absolute).
     // - Object ID Delta present + Group ID Delta absent: prior Object ID + delta.
@@ -404,7 +404,7 @@ fn serialize_payload(
     }
   };
 
-  // Object ID Delta field (draft-18 §11.4.4.1):
+  // Object ID Delta field:
   // - first Object, or a new group: absolute Object ID.
   // - same group, prior + 1: field omitted.
   // - same group otherwise: prior + delta.

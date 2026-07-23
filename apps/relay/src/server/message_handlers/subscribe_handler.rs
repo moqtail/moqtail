@@ -385,7 +385,7 @@ async fn handle_subscribe_ok_message(
     }
   };
 
-  // §2.5.1: SUBSCRIBE_OK with an unsupported mandatory track property. Reuse the
+  // SUBSCRIBE_OK with an unsupported mandatory track property. Reuse the
   // RequestError fan-out to cancel and notify downstream subscribers.
   if has_unsupported_mandatory(&msg.track_properties) {
     warn!(

@@ -186,7 +186,10 @@ impl AppConfig {
     let mut tls_config = wtransport::tls::server::build_default_tls_config(identity);
 
     for version in SUPPORTED_VERSIONS.replace(" ", "").split(",") {
-      tls_config.alpn_protocols.push(version.as_bytes().to_vec());
+      // ALPN version strings are quoted, matching the WebTransport convention.
+      tls_config
+        .alpn_protocols
+        .push(format!("\"{version}\"").into_bytes());
     }
     info!(
       "QUIC ALPN protocols (WebTransport + raw QUIC): {:?}",

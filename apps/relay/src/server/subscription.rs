@@ -431,7 +431,7 @@ impl Subscription {
 
                           // create a fake subgroup header using the object attributes
                           // TODO: It think contains_end_of_group should be checked by looking at
-                          // the last object. Need to look into the draft.
+                          // the last object. Need to look into this.
                           let subgroup_header = HeaderInfo::Subgroup {
                             header: SubgroupHeader::new_with_explicit_id(
                               relay_track_id,
@@ -440,7 +440,7 @@ impl Subscription {
                               Some(object.publisher_priority),
                               has_properties,
                               false,
-                              // first_object: draft-18 §2.2 requires that a relay
+                              // first_object: a relay
                               // forwarding a subgroup which begins with the subgroup's
                               // first-ever object MUST set FIRST_OBJECT. This cache-join
                               // path replays from `start_location`, which may be

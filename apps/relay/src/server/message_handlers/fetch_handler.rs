@@ -287,7 +287,7 @@ pub async fn handle(
       }
 
       // Standalone FETCH: validate the requested range and clamp the FETCH_OK
-      // End Location to published data (draft 10.12/10.13). Joining fetches
+      // End Location to published data. Joining fetches
       // resolve their own range above.
       let end_location = if fetch.joining_fetch_props.is_none() {
         let largest = track.read().await.largest_object().await;

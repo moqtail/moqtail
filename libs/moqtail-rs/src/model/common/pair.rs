@@ -61,7 +61,7 @@ impl KeyValuePair {
 
   /// Serializes this pair's wire form, encoding the Type as a delta from
   /// `prev_type` (the type of the previous KVP in the same list, or 0 if
-  /// this is the first entry), per draft-ietf-moq-transport-16 1.4.2.
+  /// this is the first entry).
   pub fn serialize_delta(&self, prev_type: u64) -> Result<Bytes, ParseError> {
     let delta_type = self.get_type().checked_sub(prev_type).ok_or_else(|| {
       ParseError::ProtocolViolation {
@@ -93,7 +93,7 @@ impl KeyValuePair {
 
   /// Deserializes a wire-form KVP whose Type field is a delta from
   /// `prev_type` (the type of the previous KVP in the same list, or 0 if
-  /// this is the first entry), per draft-ietf-moq-transport-16 1.4.2.
+  /// this is the first entry).
   pub fn deserialize_delta(bytes: &mut Bytes, prev_type: u64) -> Result<Self, ParseError> {
     let delta_type = bytes.get_vi()?;
     let type_value =
@@ -272,7 +272,7 @@ mod tests {
 
   #[test]
   fn deserialize_delta_overflow_is_protocol_violation() {
-    // previous_type + delta_type must not exceed u64::MAX per draft-16 1.4.2.
+    // previous_type + delta_type must not exceed u64::MAX.
     let mut buf = BytesMut::new();
     buf.put_vi(10u64).unwrap();
     let mut bytes = buf.freeze();

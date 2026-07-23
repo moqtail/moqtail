@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Error codes carried by REQUEST_ERROR (§10.6).
+//! Error codes carried by REQUEST_ERROR.
 //!
 //! This is a distinct registry from stream reset codes; the two disagree on some
 //! names — e.g. `GOING_AWAY` is `0x6` here but `0x4` as a stream reset code.

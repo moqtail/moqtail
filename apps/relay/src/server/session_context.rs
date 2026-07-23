@@ -31,7 +31,7 @@ use super::{
 };
 
 #[allow(dead_code)]
-// TODO: Remove the dead_code attribute after merging all the draft-16 changes.
+// TODO: Remove the dead_code attribute after merging all the migration changes.
 // These changes are required for message unification and will be useful in other branches.
 #[derive(Debug, Clone)]
 pub enum PendingRequest {

@@ -18,7 +18,7 @@ use crate::model::error::ParseError;
 use bytes::{Buf, Bytes, BytesMut};
 
 /// Directs the peer to retry a request at a different URI and/or Full Track Name
-/// (draft §10.6.1). Carried by a REQUEST_ERROR whose code is REDIRECT.
+/// Carried by a REQUEST_ERROR whose code is REDIRECT.
 #[derive(Debug, PartialEq, Clone)]
 pub struct Redirect {
   /// The URI to connect to. Empty means reuse the current session's URI.

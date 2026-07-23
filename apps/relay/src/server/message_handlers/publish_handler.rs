@@ -48,7 +48,7 @@ pub async fn handle(
       let request_id = m.request_id;
       let track_alias = m.track_alias;
 
-      // §2.5.1: reject a PUBLISH with an unsupported mandatory track property.
+      // reject a PUBLISH with an unsupported mandatory track property.
       if has_unsupported_mandatory(&m.track_properties) {
         let reason_phrase =
           ReasonPhrase::try_new("Unsupported mandatory track property".to_string())
@@ -223,7 +223,7 @@ pub async fn handle(
           m_clone.request_id = relay_req_id;
           m_clone.track_alias = relay_track_id;
 
-          // Register the message in unified map for draft-16 response tracking
+          // Register the message in unified map for response tracking
           {
             let mut map = context.relay_pending_requests.write().await;
             map.insert(

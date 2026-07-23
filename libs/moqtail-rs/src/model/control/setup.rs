@@ -23,10 +23,10 @@ use crate::model::parameter::constant::SetupOptionType;
 use crate::transport::connection::TransportKind;
 use bytes::{BufMut, Bytes, BytesMut};
 
-/// The first message each endpoint sends on its control stream (§10.3).
+/// The first message each endpoint sends on its control stream.
 ///
 /// Both peers send the same message; there are no separate client and server forms and
-/// no version fields, since version negotiation happens over ALPN (§3.1).
+/// no version fields, since version negotiation happens over ALPN.
 ///
 /// Some options are client-only — see [`SetupOptionType`](crate::model::parameter::constant::SetupOptionType).
 /// Whether a peer is allowed to send a given option depends on which side it is and on
@@ -50,7 +50,7 @@ impl Setup {
     Setup { setup_options }
   }
 
-  /// Checks the options a peer is allowed to send, per §10.3.1.1 and §10.3.1.2.
+  /// Checks the options a peer is allowed to send.
   ///
   /// AUTHORITY and PATH carry the authority and path of the MoQ URI for native QUIC,
   /// where there is no HTTP CONNECT to carry them. Both MUST NOT be sent by a server,
@@ -58,7 +58,7 @@ impl Setup {
   /// violation closes the session: `INVALID_AUTHORITY` for AUTHORITY, `INVALID_PATH`
   /// for PATH.
   ///
-  /// Unknown options are ignored rather than rejected (§10.3).
+  /// Unknown options are ignored rather than rejected.
   pub fn validate_incoming(
     &self,
     sender: SetupSender,
@@ -70,7 +70,7 @@ impl Setup {
         Ok(SetupOptionType::Path) => TerminationCode::InvalidPath,
         // Every other option may be sent by either peer on either transport.
         Ok(_) => continue,
-        // §10.3: receivers MUST ignore unrecognized Setup Options.
+        // receivers MUST ignore unrecognized Setup Options.
         Err(_) => continue,
       };
 
@@ -186,7 +186,7 @@ mod tests {
     assert_eq!(*deserialized, setup);
   }
 
-  /// The options are bounded by Length, not preceded by a count (§10.3).
+  /// The options are bounded by Length, not preceded by a count.
   #[test]
   fn test_payload_carries_no_option_count() {
     let setup = Setup {
@@ -272,7 +272,7 @@ mod tests {
     }
   }
 
-  /// §10.3: receivers MUST ignore unrecognized Setup Options, so an unknown option is
+  /// Receivers MUST ignore unrecognized Setup Options, so an unknown option is
   /// never a reason to close the session.
   #[test]
   fn unknown_options_are_ignored() {

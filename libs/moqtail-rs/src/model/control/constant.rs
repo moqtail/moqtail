@@ -18,16 +18,16 @@ use crate::model::error::ParseError;
 
 pub const SUPPORTED_VERSIONS: &str = "moqt-18";
 
-/// Control message types, per draft-18 Table 5.
+/// Control message types.
 ///
-/// The comment on each variant is the Stream column: `Control` is the control stream
-/// (§3.3), `Request` a bidirectional request stream, and `First` means the message MUST
+/// The comment on each variant is the Stream column: `Control` is the control stream,
+/// `Request` a bidirectional request stream, and `First` means the message MUST
 /// be the first on a new request stream.
 ///
-/// Table 5 also reserves `0x01` (SETUP for version 00), `0x40`/`0x41` (CLIENT_SETUP /
-/// SERVER_SETUP for version <= 10) and `0x20`/`0x21` (CLIENT_SETUP / SERVER_SETUP in
-/// version <= 16). Reserved codepoints are deliberately absent from this enum:
-/// `TryFrom` rejects them, which is what §10 requires — an endpoint receiving an
+/// Earlier protocol versions also reserve `0x01` (SETUP for version 00), `0x40`/`0x41`
+/// (CLIENT_SETUP / SERVER_SETUP for version <= 10) and `0x20`/`0x21` (CLIENT_SETUP /
+/// SERVER_SETUP in version <= 16). Reserved codepoints are deliberately absent from this
+/// enum: `TryFrom` rejects them — an endpoint receiving an
 /// unknown message type MUST close the session.
 ///
 /// The values here are asserted against `dev/conformance/draft18/message_types.json`.
@@ -51,9 +51,9 @@ pub enum ControlMessageType {
   SubscribeTracks = 0x51,    // Request, First
   Publish = 0x1D,            // Request, First
   PublishDone = 0x0B,        // Request
-  PublishOk = 0x1E,          // Request; an alias of RequestOk (§10.5), not its own body
+  PublishOk = 0x1E,          // Request; an alias of RequestOk, not its own body
   PublishBlocked = 0x0F,     // Request
-  Switch = 0x22,             // not in draft-18; moqtail-local extension
+  Switch = 0x22,             // moqtail-local extension, not a standard message type
 }
 
 impl TryFrom<u64> for ControlMessageType {

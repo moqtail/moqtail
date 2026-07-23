@@ -561,14 +561,32 @@ pub(crate) async fn cancel_subscription(
   let track_option = context.track_manager.get_track(&full_track_name).await;
 
   if let Some(track_lock) = track_option {
-    let track = track_lock.read().await;
-    track.remove_subscription(context.connection_id).await;
-    // When the last subscriber goes away, reset the upstream subscribe stream so
-    // the publisher observes the cancellation.
-    if track.subscriber_count().await == 0
-      && let Some(cancel) = track.upstream_cancel.lock().await.take()
-    {
-      let _ = cancel.send(());
+    let is_last_subscriber = {
+      let track = track_lock.read().await;
+      track.remove_subscription(context.connection_id).await;
+      // When the last subscriber goes away, reset the upstream subscribe stream so
+      // the publisher observes the cancellation.
+      if track.subscriber_count().await == 0 {
+        if let Some(cancel) = track.upstream_cancel.lock().await.take() {
+          let _ = cancel.send(());
+        }
+        true
+      } else {
+        false
+      }
+    }; // track read lock dropped here
+
+    // With the last subscriber gone the upstream subscription has been cancelled,
+    // so the cached track is stale (its status stays Confirmed and its
+    // largest_location keeps the old value). Remove it, so the next SUBSCRIBE for
+    // this track is treated as a fresh subscription and re-forwarded upstream to
+    // the publisher instead of being answered from the stale cache.
+    if is_last_subscriber {
+      context.track_manager.remove_track(&full_track_name).await;
+      info!(
+        "Removed track {:?} after last subscriber left; next SUBSCRIBE will re-subscribe upstream",
+        full_track_name
+      );
     }
   } else {
     warn!(

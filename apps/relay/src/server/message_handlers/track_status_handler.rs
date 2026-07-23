@@ -130,7 +130,7 @@ async fn forward_track_status_upstream(
       return;
     }
   };
-  let mut upstream = ControlStreamHandler::new(send, recv);
+  let mut upstream = ControlStreamHandler::new(send, recv).with_peer_id(publisher.connection_id);
   if let Err(e) = upstream
     .send(&ControlMessage::TrackStatus(Box::new(new_req)))
     .await

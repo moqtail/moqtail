@@ -25,12 +25,27 @@ const CONTROL_MESSAGE_TIMEOUT: Duration = Duration::from_secs(5);
 
 const MTU_SIZE: usize = 1500; // Standard MTU size, max 2^16-1
 
+/// Formats bytes as space-separated lowercase hex, for tracing raw control
+/// messages on the wire (paste straight into tools/moq_decode.py).
+fn to_hex(bytes: &[u8]) -> String {
+  use std::fmt::Write;
+  let mut s = String::with_capacity(bytes.len() * 3);
+  for b in bytes {
+    let _ = write!(s, "{b:02x} ");
+  }
+  s.pop();
+  s
+}
+
 pub struct ControlStreamHandler {
   send: TransportSendStream,
   recv: TransportRecvStream,
   recv_bytes: BytesMut,
   recv_buf: Box<[u8; MTU_SIZE]>,
   partial_message_deadline: Option<Instant>,
+  /// Id of the peer connection on the other end of this stream, used to label
+  /// control-message traces. `None` when the caller did not set one.
+  peer_id: Option<usize>,
 }
 
 impl ControlStreamHandler {
@@ -41,6 +56,23 @@ impl ControlStreamHandler {
       recv_bytes: BytesMut::new(),
       recv_buf: Box::new([0; MTU_SIZE]),
       partial_message_deadline: None,
+      peer_id: None,
+    }
+  }
+
+  /// Associates the peer connection id with this stream so control-message
+  /// traces can name the other endpoint. RX lines read as "received from" this
+  /// peer, TX lines as "sending to" it.
+  pub fn with_peer_id(mut self, peer_id: usize) -> Self {
+    self.peer_id = Some(peer_id);
+    self
+  }
+
+  /// Renders the peer connection for trace lines, e.g. `conn 12` or `conn ?`.
+  fn peer(&self) -> String {
+    match self.peer_id {
+      Some(id) => format!("conn {id}"),
+      None => "conn ?".to_string(),
     }
   }
 
@@ -48,6 +80,13 @@ impl ControlStreamHandler {
     let bytes = message
       .serialize()
       .map_err(|_| TerminationCode::InternalError)?;
+    info!(
+      "control message sending to {} — {:?} ({} bytes): {}",
+      self.peer(),
+      message.get_type(),
+      bytes.len(),
+      to_hex(&bytes)
+    );
     if (self.send.write_all(&bytes).await).is_err() {
       warn!("Error sending message: {:?}", message);
       return Err(TerminationCode::InternalError);
@@ -71,6 +110,13 @@ impl ControlStreamHandler {
     let bytes = message
       .serialize()
       .map_err(|_| TerminationCode::InternalError)?;
+    info!(
+      "control message sending to {} — {:?} ({} bytes): {}",
+      self.peer(),
+      message.get_type(),
+      bytes.len(),
+      to_hex(&bytes)
+    );
     if (self.send.write_all(&bytes).await).is_err() {
       warn!("Error sending (send_impl) message: {:?}", message);
       return Err(TerminationCode::InternalError);
@@ -102,6 +148,13 @@ impl ControlStreamHandler {
         match ControlMessage::deserialize(&mut bytes) {
           Ok(msg) => {
             let consumed = original_remaining - bytes.remaining();
+            info!(
+              "control message received from {} — {:?} ({} bytes): {}",
+              self.peer(),
+              msg.get_type(),
+              consumed,
+              to_hex(&self.recv_bytes[..consumed])
+            );
             self.recv_bytes.advance(consumed);
 
             self.partial_message_deadline = None;
@@ -109,6 +162,12 @@ impl ControlStreamHandler {
             return Ok(msg);
           }
           Err(ParseError::ProtocolViolation { .. }) => {
+            warn!(
+              "control message received from {} failed to parse ({} bytes): {}",
+              self.peer(),
+              self.recv_bytes.len(),
+              to_hex(&self.recv_bytes)
+            );
             return Err(TerminationCode::ProtocolViolation);
           }
 

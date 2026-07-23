@@ -194,6 +194,19 @@ async fn handle_subscribe_message(
       "no publisher found for track namespace: {:?}",
       track_namespace
     );
+    // Dump what the relay actually had registered at the miss, so the sent
+    // full track name / namespace can be compared against live registrations.
+    info!(
+      "SUBSCRIBE miss: sent full_track_name={:?} namespace={:?}; registrations:{}",
+      full_track_name,
+      track_namespace,
+      context
+        .client_manager
+        .read()
+        .await
+        .dump_registrations()
+        .await
+    );
     // send RequestError
     let subscribe_error = RequestError::new(
       RequestErrorCode::DoesNotExist,

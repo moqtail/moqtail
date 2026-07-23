@@ -100,4 +100,26 @@ impl ClientManager {
     }
     None
   }
+
+  /// Diagnostic snapshot of every client's announced namespaces and published
+  /// track names. Used to log what the relay had registered at the moment a
+  /// SUBSCRIBE lookup missed, so the sent name/namespace can be compared against
+  /// what actually exists.
+  pub(crate) async fn dump_registrations(&self) -> String {
+    let clients = self.clients.read().await;
+    let mut out = String::new();
+    for (connection_id, client) in clients.iter() {
+      let announced = client.announced_track_namespaces.read().await;
+      let published = client.published_tracks.read().await;
+      out.push_str(&format!(
+        "\n  client {connection_id}: announced_namespaces={:?} published_tracks={:?}",
+        announced.iter().collect::<Vec<_>>(),
+        published.values().collect::<Vec<_>>(),
+      ));
+    }
+    if out.is_empty() {
+      out.push_str(" <no clients>");
+    }
+    out
+  }
 }

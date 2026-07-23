@@ -139,8 +139,8 @@ impl MessageParameter {
   }
 
   /// Returns true if this parameter is permitted in the given control message type.
-  /// §10.2.1: a parameter appearing in a message type it is not defined for is a
-  /// PROTOCOL_VIOLATION (draft-16 ignored it; draft-18 rejects it).
+  /// A parameter appearing in a message type it is not defined for is a
+  /// PROTOCOL_VIOLATION.
   pub fn is_valid_for(&self, msg_type: ControlMessageType) -> bool {
     match self {
       Self::AuthorizationToken { .. } => matches!(
@@ -154,7 +154,7 @@ impl MessageParameter {
           | ControlMessageType::TrackStatus
           | ControlMessageType::Fetch
       ),
-      // §10.2.4 / §10.2.3: PUBLISH_OK, SUBSCRIBE, or REQUEST_UPDATE.
+      // PUBLISH_OK, SUBSCRIBE, or REQUEST_UPDATE.
       Self::ObjectDeliveryTimeout { .. } | Self::SubgroupDeliveryTimeout { .. } => matches!(
         msg_type,
         ControlMessageType::PublishOk
@@ -162,9 +162,9 @@ impl MessageParameter {
           | ControlMessageType::Subscribe
           | ControlMessageType::RequestUpdate
       ),
-      // §10.2.6: SUBSCRIBE only.
+      // SUBSCRIBE only.
       Self::RendezvousTimeout { .. } => matches!(msg_type, ControlMessageType::Subscribe),
-      // §10.2.5: FETCH only.
+      // FETCH only.
       Self::FillTimeout { .. } => matches!(msg_type, ControlMessageType::Fetch),
       Self::SubscriberPriority { .. } => matches!(
         msg_type,
@@ -242,7 +242,7 @@ impl MessageParameter {
           }
         })?;
         match param_type {
-          // §8: a value of 0 means no timeout is set. It is valid, not a violation.
+          // A value of 0 means no timeout is set. It is valid, not a violation.
           MessageParameterType::ObjectDeliveryTimeout => {
             Ok(Self::ObjectDeliveryTimeout { timeout: *value })
           }
@@ -473,8 +473,8 @@ impl TryInto<KeyValuePair> for MessageParameter {
 /// - Unknown parameter types → ProtocolViolation error
 /// - Known parameters not valid for `msg_type` → ProtocolViolation error
 ///
-/// §10.2.1: a parameter appearing in a message type it is not defined for MUST close the
-/// session with PROTOCOL_VIOLATION. (Draft-16 ignored it; draft-18 rejects it.)
+/// A parameter appearing in a message type it is not defined for MUST close the
+/// session with PROTOCOL_VIOLATION.
 pub fn deserialize_message_parameters(
   bytes: &mut Bytes,
   count: u64,
@@ -678,7 +678,7 @@ mod tests {
 
   #[test]
   fn test_bulk_deserialize_rejects_wrong_message_params() {
-    // §10.2.1: a parameter in a message type it is not defined for MUST close the
+    // A parameter in a message type it is not defined for MUST close the
     // session with PROTOCOL_VIOLATION. ObjectDeliveryTimeout is not valid in FETCH.
     let params = vec![
       MessageParameter::new_object_delivery_timeout(100),
@@ -693,7 +693,7 @@ mod tests {
 
   #[test]
   fn test_fill_timeout_rejected_outside_fetch() {
-    // FILL_TIMEOUT is FETCH-only (§10.2.5); in a SUBSCRIBE it must be rejected.
+    // FILL_TIMEOUT is FETCH-only; in a SUBSCRIBE it must be rejected.
     let params = vec![MessageParameter::new_fill_timeout(3000)];
     let mut bytes = serialize_message_parameters(&params).unwrap();
     let err =
@@ -708,7 +708,7 @@ mod tests {
 
   #[test]
   fn test_delivery_timeout_zero_means_no_timeout() {
-    // §8: a value of 0 is valid and means no timeout.
+    // A value of 0 is valid and means no timeout.
     let params = vec![MessageParameter::new_object_delivery_timeout(0)];
     let mut bytes = serialize_message_parameters(&params).unwrap();
     let ok = deserialize_message_parameters(&mut bytes, 1, ControlMessageType::Subscribe).unwrap();

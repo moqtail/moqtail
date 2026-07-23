@@ -51,7 +51,7 @@ pub enum TrackProperty {
   Unknown {
     kvp: KeyValuePair,
   },
-  /// Unrecognized property in the mandatory range (§2.5.1). Preserved through
+  /// Unrecognized property in the mandatory range. Preserved through
   /// parsing so the handler can reject the request instead of the parser
   /// killing the session.
   UnknownMandatory {
@@ -63,7 +63,7 @@ pub enum TrackProperty {
 pub const MANDATORY_TRACK_PROPERTY_RANGE: std::ops::RangeInclusive<u64> =
   super::constant::property_ranges::MANDATORY_TRACK;
 
-/// True if any property is an unrecognized Mandatory Track Property (§2.5.1).
+/// True if any property is an unrecognized Mandatory Track Property.
 pub fn has_unsupported_mandatory(properties: &[TrackProperty]) -> bool {
   properties
     .iter()
@@ -100,7 +100,7 @@ impl TrackProperty {
     let ext_type = match TrackPropertyType::try_from(type_value) {
       Ok(t) => t,
       Err(_) => {
-        // §2.5.1: keep mandatory-range unknowns as UnknownMandatory (handler
+        // keep mandatory-range unknowns as UnknownMandatory (handler
         // rejects them); forward ordinary unknowns. Check the full u64 — a u16
         // cast would alias high types into the range (e.g. 0x14000 -> 0x4000).
         if MANDATORY_TRACK_PROPERTY_RANGE.contains(&type_value) {
@@ -113,7 +113,7 @@ impl TrackProperty {
 
     match ext_type {
       TrackPropertyType::ObjectDeliveryTimeout => {
-        // §8: a value of 0 means no timeout is set. It is valid, not a violation.
+        // A value of 0 means no timeout is set. It is valid, not a violation.
         let value = kvp_varint_value(&kvp, "TrackProperty::deserialize(ObjectDeliveryTimeout)")?;
         Ok(Self::ObjectDeliveryTimeout { timeout_ms: value })
       }
@@ -341,7 +341,7 @@ mod tests {
 
   #[test]
   fn test_delivery_timeout_zero_means_no_timeout() {
-    // §8: a value of 0 means no timeout is set. It is valid, not a violation.
+    // A value of 0 means no timeout is set. It is valid, not a violation.
     let kvp = KeyValuePair::try_new_varint(0x02, 0).unwrap();
     assert_eq!(
       TrackProperty::deserialize(kvp).unwrap(),
@@ -375,7 +375,7 @@ mod tests {
 
   #[test]
   fn test_mandatory_range_unknown_is_preserved() {
-    // §2.5.1: unknown types in 0x4000-0x7FFF are preserved as UnknownMandatory
+    // unknown types in 0x4000-0x7FFF are preserved as UnknownMandatory
     // (the handling layer rejects the request), including the range boundaries.
     // Even types carry a VarInt, odd types carry Bytes.
     let varint_types = [0x4000u64, 0x5000, 0x7FFE];

@@ -213,8 +213,7 @@ impl MoqConnection {
     tls_config.alpn_protocols = CLIENT_SUPPORTED_VERSIONS
       .replace(" ", "")
       .split(",")
-      // ALPN version strings are quoted, matching the WebTransport convention.
-      .map(|version| format!("\"{version}\"").into_bytes())
+      .map(|version| version.as_bytes().to_vec())
       .collect();
 
     info!("alpn protocols: {:?}", tls_config.alpn_protocols);

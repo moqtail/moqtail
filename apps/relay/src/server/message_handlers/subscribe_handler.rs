@@ -80,7 +80,7 @@ async fn forward_subscribe_upstream(
   // we sent upstream rather than a field in the response.
   let relay_request_id = new_sub.request_id;
   let full_track_name = new_sub.get_full_track_name();
-  let mut upstream = ControlStreamHandler::new(send, recv);
+  let mut upstream = ControlStreamHandler::new(send, recv).with_peer_id(publisher.connection_id);
   if let Err(e) = upstream
     .send(&ControlMessage::Subscribe(Box::new(new_sub)))
     .await

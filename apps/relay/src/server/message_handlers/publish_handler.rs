@@ -446,7 +446,7 @@ pub(crate) async fn forward_publish_downstream(subscriber: Arc<MOQTClient>, publ
       return;
     }
   };
-  let mut stream = ControlStreamHandler::new(send, recv);
+  let mut stream = ControlStreamHandler::new(send, recv).with_peer_id(subscriber.connection_id);
   if let Err(e) = stream
     .send(&ControlMessage::Publish(Box::new(publish)))
     .await

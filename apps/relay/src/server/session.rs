@@ -236,7 +236,8 @@ impl Session {
     recv_stream: TransportRecvStream,
   ) -> core::result::Result<(), TerminationCode> {
     info!("new control message stream");
-    let mut control_stream_handler = ControlStreamHandler::new(send_stream, recv_stream);
+    let mut control_stream_handler =
+      ControlStreamHandler::new(send_stream, recv_stream).with_peer_id(context.connection_id);
 
     // Client-server negotiation
     let client = match Self::negotiate(context.clone(), &mut control_stream_handler)
@@ -456,7 +457,8 @@ impl Session {
       Some(c) => c,
       None => return,
     };
-    let mut stream_handler = ControlStreamHandler::new(send_stream, recv_stream);
+    let mut stream_handler =
+      ControlStreamHandler::new(send_stream, recv_stream).with_peer_id(context.connection_id);
 
     let msg = match stream_handler.next_message().await {
       Ok(m) => m,

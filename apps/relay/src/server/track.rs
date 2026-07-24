@@ -23,6 +23,7 @@ use crate::server::{client::MOQTClient, subscription::SubscriptionOrigin};
 use anyhow::Result;
 use moqtail::model::common::location::Location;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
+use moqtail::model::control::constant::PublishDoneStatusCode;
 use moqtail::model::data::datagram::Datagram;
 use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::model::data::object::Object;
@@ -69,6 +70,7 @@ pub enum TrackEvent {
     stream_id: StreamId,
   },
   PublisherDisconnected {
+    status_code: PublishDoneStatusCode,
     reason: String,
   },
 }
@@ -495,8 +497,26 @@ impl Track {
       self.relay_track_id
     );
 
+    self
+      .notify_publish_done(
+        PublishDoneStatusCode::TrackEnded,
+        "Publisher disconnected".to_string(),
+      )
+      .await
+  }
+
+  /// Fan a PUBLISH_DONE out to all subscribers with the given status/reason.
+  /// Used when an upstream publisher signals it is done for the track, so the
+  /// upstream's status code is relayed downstream verbatim rather than being
+  /// flattened to a generic disconnect.
+  pub async fn notify_publish_done(
+    &self,
+    status_code: PublishDoneStatusCode,
+    reason: String,
+  ) -> Result<(), anyhow::Error> {
     let event = TrackEvent::PublisherDisconnected {
-      reason: "Publisher disconnected".to_string(),
+      status_code,
+      reason,
     };
 
     self

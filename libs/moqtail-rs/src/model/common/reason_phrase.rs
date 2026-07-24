@@ -37,6 +37,10 @@ impl ReasonPhrase {
     }
   }
 
+  pub fn as_str(&self) -> &str {
+    &self.phrase
+  }
+
   pub fn serialize(&self) -> Result<Bytes, ParseError> {
     let data = self.phrase.as_bytes();
     let mut buf = BytesMut::new();

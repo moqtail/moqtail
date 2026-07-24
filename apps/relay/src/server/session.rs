@@ -107,9 +107,10 @@ impl Session {
     };
 
     let mut response_headers: HashMap<String, String> = HashMap::new();
-    response_headers.insert("wt-protocol".to_string(), selected_version);
-
-    // in the headers, we expect wt-available-protocols
+    response_headers.insert(
+      "wt-protocol".to_string(),
+      format!("\"{}\"", selected_version),
+    );
 
     let connection = TransportConnection::WebTransport(
       session_request

@@ -200,7 +200,7 @@ pub async fn run(moq: MoqConnection, config: FetchConfig) -> Result<()> {
     }
 
     info!("Cancelling fetch by resetting the request stream");
-    request_stream.reset(StreamResetCode::Cancelled.to_u64());
+    request_stream.reset_and_stop(StreamResetCode::Cancelled.to_u64());
   }
 
   // Wait for fetch data to arrive

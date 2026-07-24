@@ -1157,17 +1157,17 @@ impl Subscription {
         );
         let _ = self.handle_stream_closed(&stream_id).await;
       }
-      TrackEvent::PublisherDisconnected { reason } => {
+      TrackEvent::PublisherDisconnected {
+        status_code,
+        reason,
+      } => {
         info!(
-          "Received PublisherDisconnected event: subscriber={}, reason={} relay_track_id={}",
-          self.client_connection_id, reason, self.relay_track_id
+          "Received PublisherDisconnected event: subscriber={}, status={:?} reason={} relay_track_id={}",
+          self.client_connection_id, status_code, reason, self.relay_track_id
         );
 
         // Send PublishDone message and finish the subscription
-        if let Err(e) = self
-          .send_publish_done(PublishDoneStatusCode::TrackEnded, &reason)
-          .await
-        {
+        if let Err(e) = self.send_publish_done(status_code, &reason).await {
           error!(
             "Failed to send PublishDone for publisher disconnect: subscriber={} relay_track_id={} error: {:?}",
             self.client_connection_id, self.relay_track_id, e

@@ -102,6 +102,19 @@ impl ControlStreamHandler {
     }
   }
 
+  /// Aborts this bidirectional request stream in both directions with the same
+  /// application error code: RESET_STREAM on the send half and STOP_SENDING on
+  /// the recv half. Consumes the handler, since stopping the recv half takes
+  /// ownership. Prefer this over `reset` when cancelling a bidi request, so the
+  /// peer observes a coherent code on both halves instead of a STOP_SENDING(0)
+  /// (InternalError) emitted when the handler is later dropped.
+  pub fn reset_and_stop(mut self, code: u64) {
+    if let Err(e) = self.send.reset(code) {
+      warn!("Error resetting request stream: {:?}", e);
+    }
+    self.recv.stop(code);
+  }
+
   // TODO: refactor here, implement Serializable trait for ControlMessage
   pub async fn send_impl(
     &mut self,
@@ -632,6 +645,44 @@ mod tests {
     }
 
     Ok(())
+  }
+
+  /// A PUBLISH_DONE written and immediately followed by the stream FIN (so the
+  /// payload and the FIN arrive together) must still be delivered by
+  /// `next_message()` before the FIN is reported on the following call. This is
+  /// what lets the relay forward an upstream's final PUBLISH_DONE instead of
+  /// losing it to the coalesced close.
+  #[tokio::test]
+  async fn test_publish_done_coalesced_with_fin_is_delivered() -> Result<(), Box<dyn Error>> {
+    use crate::model::common::reason_phrase::ReasonPhrase;
+    use crate::model::control::constant::PublishDoneStatusCode;
+    use crate::model::control::publish_done::PublishDone;
+
+    let setup = TestSetup::new().await?;
+    let (mut plane, mut server_send) = setup.create_control_plane().await?;
+
+    let done = PublishDone::new(
+      42,
+      PublishDoneStatusCode::TrackEnded,
+      3,
+      ReasonPhrase::try_new("bye".to_string()).unwrap(),
+    );
+    let msg = ControlMessage::PublishDone(Box::new(done.clone()));
+
+    // Write the message, then FIN so the payload and the FIN are coalesced.
+    server_send.write_all(&msg.serialize()?).await?;
+    server_send.finish().await?;
+
+    match plane.next_message().await {
+      Ok(ControlMessage::PublishDone(rec)) => assert_eq!(*rec, done),
+      other => panic!("Expected PublishDone, got {other:?}"),
+    }
+
+    // The FIN is only observed as an error on the following call.
+    match plane.next_message().await {
+      Err(_) => Ok(()),
+      Ok(m) => panic!("Expected error after FIN, got {m:?}"),
+    }
   }
 
   #[tokio::test]

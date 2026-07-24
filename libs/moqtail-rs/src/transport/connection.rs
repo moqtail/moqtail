@@ -223,6 +223,26 @@ impl TransportRecvStream {
       Self::Quic(s) => s.read(buf).await.map_err(Into::into),
     }
   }
+
+  /// Asks the peer to stop sending on this stream (QUIC STOP_SENDING) with an
+  /// application error code, consuming the stream. Simply dropping the stream
+  /// instead sends STOP_SENDING with code 0, which the peer decodes as
+  /// InternalError; passing an explicit code keeps a cancellation coherent with
+  /// the RESET_STREAM sent on the peer's paired send half.
+  pub fn stop(self, code: u64) {
+    match self {
+      Self::WebTransport(s) => {
+        if let Ok(vi) = wtransport::VarInt::try_from_u64(code) {
+          s.stop(vi);
+        }
+      }
+      Self::Quic(mut s) => {
+        if let Ok(vi) = quinn::VarInt::from_u64(code) {
+          let _ = s.stop(vi);
+        }
+      }
+    }
+  }
 }
 
 #[derive(Debug, Clone)]

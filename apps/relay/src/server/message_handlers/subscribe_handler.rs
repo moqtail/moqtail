@@ -101,8 +101,13 @@ async fn forward_subscribe_upstream(
       biased;
       _ = &mut cancel_rx => {
         info!("Downstream unsubscribed; resetting upstream subscribe stream (CANCELLED)");
-        upstream.reset(StreamResetCode::Cancelled.to_u64());
-        return;
+        // Break and tear the stream down after the loop: `reset_and_stop`
+        // consumes `upstream`, which can't be moved inside the select while the
+        // `next_message()` branch borrows it. Reset the send half and stop the
+        // recv half with the same CANCELLED code, so the publisher sees a
+        // coherent cancellation on both halves rather than a STOP_SENDING(0)
+        // (InternalError) emitted when the handler is dropped.
+        break;
       }
       msg = upstream.next_message() => {
         match msg {
@@ -119,17 +124,44 @@ async fn forward_subscribe_upstream(
             let _ = handle_subscribe_error_message(relay_request_id, *m, context.clone()).await;
             return;
           }
+          Ok(ControlMessage::PublishDone(m)) => {
+            // Upstream is done for this track; relay its PUBLISH_DONE (status and
+            // reason verbatim) to the downstream subscribers. It usually arrives
+            // coalesced with the upstream stream FIN.
+            info!(
+              "Upstream PUBLISH_DONE for {:?}: status={:?} reason={}",
+              full_track_name,
+              m.status_code,
+              m.reason_phrase.as_str()
+            );
+            if let Some(track) = context.track_manager.get_track(&full_track_name).await
+              && let Err(e) = track
+                .read()
+                .await
+                .notify_publish_done(m.status_code, m.reason_phrase.as_str().to_string())
+                .await
+            {
+              error!("Failed to relay upstream PUBLISH_DONE downstream: {:?}", e);
+            }
+            return;
+          }
           Ok(other) => {
             warn!("Unexpected {:?} on upstream subscribe stream", other.get_type());
+            let _ = handle_subscribe_error_message(relay_request_id, RequestError::new(RequestErrorCode::InternalError, 0, ReasonPhrase::try_new("Unexpected message on upstream subscription stream".to_string()).unwrap()), context.clone()).await;
+            return;
           }
-          Err(_) => {
-            debug!("Upstream subscribe stream closed");
+          Err(code) => {
+            warn!("Upstream subscribe stream closed with error; resetting: {:?}", code);
+            // TODO: is this the right error code to send downstream?
+            let _ = handle_subscribe_error_message(relay_request_id, RequestError::new(RequestErrorCode::InternalError, 0, ReasonPhrase::try_new("Upstream subscription failed".to_string()).unwrap()), context.clone()).await;
             return;
           }
         }
       }
     }
   }
+
+  upstream.reset_and_stop(StreamResetCode::Cancelled.to_u64());
 }
 
 async fn handle_subscribe_message(

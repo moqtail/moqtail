@@ -17,9 +17,12 @@ use crate::connection::MoqConnection;
 use crate::utils::should_log;
 use anyhow::Result;
 use bytes::Bytes;
+use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::common::tuple::{Tuple, TupleField};
+use moqtail::model::control::constant::PublishDoneStatusCode;
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::publish::Publish;
+use moqtail::model::control::publish_done::PublishDone;
 use moqtail::model::control::publish_namespace::PublishNamespace;
 use moqtail::model::control::request_ok::RequestOk;
 use moqtail::model::control::subscribe_ok::SubscribeOk;
@@ -127,8 +130,12 @@ pub async fn run_namespace(moq: MoqConnection, config: PublishNamespaceConfig) -
           // Serve data, but stop if the subscriber cancels by resetting the stream.
           tokio::select! {
             res = send_data(&conn, track_alias, &dc) => {
-              if let Err(e) = res {
-                error!("Data sending failed: {:?}", e);
+              match res {
+                Ok(()) => {
+                  // Finished delivering; signal completion on the request stream.
+                  send_publish_done(&mut request_stream, m.request_id, stream_count(&dc)).await;
+                }
+                Err(e) => error!("Data sending failed: {:?}", e),
               }
             }
             _ = request_stream.next_message() => {
@@ -254,6 +261,30 @@ struct DataConfig {
   publisher_priority: u8,
 }
 
+/// Send PUBLISH_DONE as the final message on a subscription's request stream to
+/// signal the publisher is done sending objects for it.
+async fn send_publish_done(
+  request_stream: &mut ControlStreamHandler,
+  request_id: u64,
+  stream_count: u64,
+) {
+  let reason = ReasonPhrase::try_new("done".to_string()).expect("reason within length limit");
+  let done = PublishDone::new(
+    request_id,
+    PublishDoneStatusCode::TrackEnded,
+    stream_count,
+    reason,
+  );
+  if let Err(e) = request_stream
+    .send(&ControlMessage::PublishDone(Box::new(done)))
+    .await
+  {
+    error!("Failed to send PUBLISH_DONE: {:?}", e);
+  } else {
+    info!("Sent PUBLISH_DONE for request_id={}", request_id);
+  }
+}
+
 async fn publish_track(
   connection: &Arc<TransportConnection>,
   namespace: &Tuple,
@@ -292,8 +323,24 @@ async fn publish_track(
 
   // Hold the request stream open while objects are delivered on uni streams.
   let result = send_data(connection, track_alias, data_config).await;
+
+  // PUBLISH_DONE is the final message on the request stream once all objects are
+  // delivered, so the peer learns the publisher is done rather than inferring it
+  // from the stream closing.
+  if result.is_ok() {
+    send_publish_done(&mut request_stream, 0, stream_count(data_config)).await;
+  }
+
   drop(request_stream);
   result
+}
+
+/// Number of subgroup streams a run opens (one per group); datagram mode opens none.
+fn stream_count(config: &DataConfig) -> u64 {
+  match config.delivery_mode {
+    DeliveryMode::Subgroup => config.group_count,
+    DeliveryMode::Datagram => 0,
+  }
 }
 
 async fn send_data(

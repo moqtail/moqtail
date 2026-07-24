@@ -1,5 +1,13 @@
 # moqtail-rs
 
+## 0.14.2
+
+### Patch Changes
+
+- [#214](https://github.com/moqtail/moqtail/pull/214) [`fbdbc75`](https://github.com/moqtail/moqtail/commit/fbdbc752fdf6c83b976539cc904bed476236d49c) Thanks [@sharmafb](https://github.com/sharmafb)! - handle malformed FETCH track on end client
+
+- [#214](https://github.com/moqtail/moqtail/pull/214) [`fbdbc75`](https://github.com/moqtail/moqtail/commit/fbdbc752fdf6c83b976539cc904bed476236d49c) Thanks [@sharmafb](https://github.com/sharmafb)! - helper function to validate subgroup priority in FETCH
+
 ## 0.14.0
 
 ### Minor Changes

@@ -1,5 +1,11 @@
 # moqtail-ts
 
+## 0.12.2
+
+### Patch Changes
+
+- [`04d0df2`](https://github.com/moqtail/moqtail/commit/04d0df27467e067fe0968c35fbaabf0488b4f48a) Thanks [@acbegen](https://github.com/acbegen)! - refactor enums to use tryFrom for cleaner API
+
 ## 0.12.1
 
 ### Patch Changes

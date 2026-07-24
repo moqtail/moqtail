@@ -1,5 +1,13 @@
 # client
 
+## 0.14.2
+
+### Patch Changes
+
+- [#214](https://github.com/moqtail/moqtail/pull/214) [`fbdbc75`](https://github.com/moqtail/moqtail/commit/fbdbc752fdf6c83b976539cc904bed476236d49c) Thanks [@sharmafb](https://github.com/sharmafb)! - handle malformed FETCH track on end client
+
+- [#289](https://github.com/moqtail/moqtail/pull/289) [`7daccb6`](https://github.com/moqtail/moqtail/commit/7daccb61603cd2d50826011bea7f79ac94d7615e) Thanks [@kerembkmz](https://github.com/kerembkmz)! - fix(moqtail-ts): stop TerminationCode.tryFrom throwing on five valid enum values
+
 ## 0.14.0
 
 ### Minor Changes

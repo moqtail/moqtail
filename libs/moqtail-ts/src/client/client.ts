@@ -22,7 +22,7 @@ import {
   Namespace,
   NamespaceDone,
   NamespaceSubscribeOptions,
-  ClientSetup,
+  Setup,
   ControlMessage,
   Fetch,
   FetchCancel,
@@ -30,7 +30,6 @@ import {
   FilterType,
   GoAway,
   GroupOrder,
-  ServerSetup,
   Subscribe,
   SubscribeNamespace,
   RequestError,
@@ -63,7 +62,8 @@ import {
   MOQtailError,
   ProtocolViolationError,
   ReasonPhrase,
-  SetupParameters,
+  SetupOptions,
+  assertNoAuthorityOverWebTransport,
   Tuple,
   MessageParameter,
   Forward,
@@ -194,8 +194,8 @@ export class MOQtailClient {
 
   /** Underlying WebTransport session (set after successful construction in MOQtailClient.new). */
   webTransport!: WebTransport
-  /** Validated ServerSetup message captured during handshake (protocol parameters negotiated). */
-  #serverSetup!: ServerSetup
+  /** Validated Setup message the server sent back during handshake (protocol parameters negotiated). */
+  #serverSetup!: Setup
   /** Outgoing / incoming control message bidirectional stream wrapper. */
   controlStream!: ControlStream
   /** Timeout (ms) applied to reading incoming data streams; undefined =\> no explicit timeout. */
@@ -348,9 +348,9 @@ export class MOQtailClient {
   /**
    * Gets the current server setup configuration.
    *
-   * @returns The {@link ServerSetup} instance associated with this client.
+   * @returns The {@link Setup} instance the server sent back during handshake.
    */
-  get serverSetup(): ServerSetup {
+  get serverSetup(): Setup {
     return this.#serverSetup
   }
 
@@ -416,7 +416,7 @@ export class MOQtailClient {
    * ```ts
    * const client = await MOQtailClient.new({
    *   url,
-   *   setupParameters: new SetupParameters().addMaxRequestId(1000),
+   *   setupOptions: new SetupOptions().addMaxRequestId(1000),
    *   transportOptions: { congestionControl: 'default' },
    *   dataStreamTimeoutMs: 5000,
    *   controlStreamTimeoutMs: 2000,
@@ -433,7 +433,7 @@ export class MOQtailClient {
   static async new(args: MOQtailClientOptions): Promise<MOQtailClient> {
     let {
       url,
-      setupParameters,
+      setupOptions,
       transportOptions,
       dataStreamTimeoutMs,
       controlStreamTimeoutMs,
@@ -476,14 +476,15 @@ export class MOQtailClient {
         client.onMessageSent,
         client.onMessageReceived,
       )
-      const params = setupParameters ? setupParameters.build() : new SetupParameters().build()
-      const clientSetup = new ClientSetup(params)
-      client.controlStream.send(clientSetup)
+      const params = setupOptions ? setupOptions.build() : new SetupOptions().build()
+      assertNoAuthorityOverWebTransport(params)
+      const setup = new Setup(params)
+      client.controlStream.send(setup)
       const reader = client.controlStream.stream.getReader()
       const { value: response, done } = await reader.read()
       if (done) throw new ProtocolViolationError('MOQtailClient.new', 'Stream closed after client setup')
-      if (!(response instanceof ServerSetup))
-        throw new ProtocolViolationError('MOQtailClient.new', 'Expected server setup after client setup')
+      if (!(response instanceof Setup))
+        throw new ProtocolViolationError('MOQtailClient.new', 'Expected setup after client setup')
 
       client.#serverSetup = response
       reader.releaseLock()

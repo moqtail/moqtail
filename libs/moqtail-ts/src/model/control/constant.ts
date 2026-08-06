@@ -30,19 +30,18 @@ export const SUPPORTED_VERSIONS = ['moqt-18']
  *
  * Table 5 reserves `0x01` (SETUP for version 00), `0x40`/`0x41` (CLIENT_SETUP /
  * SERVER_SETUP for versions 10 and below) and `0x20`/`0x21` (CLIENT_SETUP /
- * SERVER_SETUP for versions 16 and below). The first three stay in the enum as
- * documentation, but `tryFrom` rejects every RESERVED codepoint, which is what §10
- * requires — an endpoint receiving an unknown message type MUST close the session.
- * `0x20` and `0x21` are still live as ClientSetup / ServerSetup and become reserved
- * once they are folded into Setup (#256).
+ * SERVER_SETUP for versions 16 and below — folded into Setup by #256). All five stay
+ * in the enum as documentation, but `tryFrom` rejects every RESERVED codepoint, which
+ * is what §10 requires — an endpoint receiving an unknown message type MUST close the
+ * session.
  */
 export enum ControlMessageType {
   ReservedSetupV00 = 0x01, // RESERVED; rejected by tryFrom
   ReservedClientSetupV10 = 0x40, // RESERVED; rejected by tryFrom
   ReservedServerSetupV10 = 0x41, // RESERVED; rejected by tryFrom
+  ReservedClientSetupV16 = 0x20, // RESERVED; rejected by tryFrom
+  ReservedServerSetupV16 = 0x21, // RESERVED; rejected by tryFrom
   Setup = 0x2f00, // Control
-  ClientSetup = 0x20, // RESERVED in draft-18; folded into Setup
-  ServerSetup = 0x21, // RESERVED in draft-18; folded into Setup
   GoAway = 0x10, // Control, Request
   MaxRequestId = 0x15, // not in draft-18
   RequestsBlocked = 0x1a, // not in draft-18
@@ -83,10 +82,6 @@ export namespace ControlMessageType {
     switch (v) {
       case 0x2f00n:
         return ControlMessageType.Setup
-      case 0x20n:
-        return ControlMessageType.ClientSetup
-      case 0x21n:
-        return ControlMessageType.ServerSetup
       case 0x10n:
         return ControlMessageType.GoAway
       case 0x15n:

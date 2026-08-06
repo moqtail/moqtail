@@ -18,7 +18,7 @@ import { ControlMessage } from '../model/control/control_message'
 import { FrozenByteBuffer, ByteBuffer } from '../model/common/byte_buffer'
 import { NotEnoughBytesError, TerminationError, TimeoutError } from '../model/error/error'
 import { TerminationCode } from '../model/error/constant'
-import { SetupParameters, ClientSetup } from '@/model'
+import { SetupOptions, Setup } from '@/model'
 import { logger } from '../util/logger'
 
 function withTimeout<T>(promise: Promise<T>, ms?: number, errorMsg?: string): Promise<T> {
@@ -329,20 +329,20 @@ if (import.meta.vitest) {
     }
   }
   describe('ControlStream', () => {
-    describe('ClientSetup', () => {
+    describe('Setup', () => {
       let controlStream: ControlStream
       let mockBidirectionalStream: WebTransportBidirectionalStream
       beforeEach(() => {
         vi.clearAllMocks()
       })
       it('should handle full message roundtrip', async () => {
-        const setupParams = new SetupParameters()
+        const setupParams = new SetupOptions()
           .addPath('/test/path')
           .addMaxRequestId(1000n)
           .addMaxAuthTokenCacheSize(500n)
           .build()
 
-        const originalMessage = new ClientSetup(setupParams)
+        const originalMessage = new Setup(setupParams)
         const messageBytes = originalMessage.serialize().toUint8Array()
         mockBidirectionalStream = createMockBidirectionalStream([messageBytes])
         controlStream = ControlStream.new(mockBidirectionalStream)
@@ -350,14 +350,14 @@ if (import.meta.vitest) {
         await controlStream.send(originalMessage)
         const reader = controlStream.stream.getReader()
         const { value: receivedMessage } = await reader.read()
-        expect(receivedMessage).toBeInstanceOf(ClientSetup)
+        expect(receivedMessage).toBeInstanceOf(Setup)
         expect(receivedMessage).toEqual(originalMessage)
         reader.releaseLock()
       })
       it('should handle excess bytes successful roundtrip then timeout', async () => {
-        const setupParams = new SetupParameters().addPath('/excess/test').build()
+        const setupParams = new SetupOptions().addPath('/excess/test').build()
 
-        const originalMessage = new ClientSetup(setupParams)
+        const originalMessage = new Setup(setupParams)
         const messageBytes = originalMessage.serialize().toUint8Array()
         const excessBytes = new Uint8Array([0xff, 0x13, 0x25])
 
@@ -374,8 +374,8 @@ if (import.meta.vitest) {
         reader.releaseLock()
       })
       it('should timeout on partial message', async () => {
-        const setupParams = new SetupParameters().addPath('/partial/test').addMaxRequestId(42n).build()
-        const originalMessage = new ClientSetup(setupParams)
+        const setupParams = new SetupOptions().addPath('/partial/test').addMaxRequestId(42n).build()
+        const originalMessage = new Setup(setupParams)
         const completeMessageBytes = originalMessage.serialize().toUint8Array()
 
         // Send only partial message (first 10 bytes)

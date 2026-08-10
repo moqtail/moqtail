@@ -21,7 +21,7 @@ import {
   MessageParameter,
   FetchType,
   Location,
-  SetupParameters,
+  SetupOptions,
   ControlMessage,
   Datagram,
 } from '@/model'
@@ -94,8 +94,8 @@ export type MOQtailRequest =
 export type MOQtailClientOptions = {
   /** Relay / server endpoint for the underlying {@link https://developer.mozilla.org/docs/Web/API/WebTransport | WebTransport} session (can be absolute {@link https://developer.mozilla.org/en-US/docs/Web/API/URL | URL} or string).*/
   url: string | URL
-  /**  {@link SetupParameters} customizations; if omitted a default instance is built.*/
-  setupParameters?: SetupParameters
+  /**  {@link SetupOptions} customizations; if omitted a default instance is built.*/
+  setupOptions?: SetupOptions
   /**  Passed directly to the browser's {@link https://developer.mozilla.org/docs/Web/API/WebTransport | WebTransport} constructor for {@link https://developer.mozilla.org/docs/Web/API/WebTransportOptions | WebTransportOptions}. */
   transportOptions?: WebTransportOptions & { protocols?: string[] }
   /** Per *data* uni-stream idle timeout in milliseconds. */

@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { ControlStream } from './control_stream'
+import { ControlRecvStream, ControlSendStream, ControlStream } from './control_stream'
 import { RequestStream } from './request_stream'
 import {
   PublishNamespace,
@@ -196,8 +196,10 @@ export class MOQtailClient {
   webTransport!: WebTransport
   /** Validated Setup message the server sent back during handshake (protocol parameters negotiated). */
   #serverSetup!: Setup
-  /** Outgoing / incoming control message bidirectional stream wrapper. */
+  /** Outgoing / incoming control message stream pair. */
   controlStream!: ControlStream
+  /** Reader over incoming uni streams: the control recv half first, data streams after. */
+  #incomingUniStreams!: ReadableStreamDefaultReader<ReadableStream<Uint8Array>>
   /** Timeout (ms) applied to reading incoming data streams; undefined =\> no explicit timeout. */
   dataStreamTimeoutMs?: number
   /** Timeout (ms) for control stream read operations; undefined =\> no explicit timeout. */
@@ -468,23 +470,31 @@ export class MOQtailClient {
       if (dataStreamTimeoutMs) client.dataStreamTimeoutMs = dataStreamTimeoutMs
       if (controlStreamTimeoutMs) client.controlStreamTimeoutMs = controlStreamTimeoutMs
 
-      // Control stream should have the highest priority
-      const biStream = await client.webTransport.createBidirectionalStream({ sendOrder: Number.MAX_SAFE_INTEGER })
-      client.controlStream = ControlStream.new(
-        biStream,
-        client.controlStreamTimeoutMs,
-        client.onMessageSent,
-        client.onMessageReceived,
-      )
+      // The control plane is a pair of uni streams. Open our send half and write
+      // SETUP first so it goes out without waiting on the server's half, which the
+      // relay only opens after accepting ours. Control streams get the highest priority.
+      const sendStream = await client.webTransport.createUnidirectionalStream({
+        sendOrder: Number.MAX_SAFE_INTEGER,
+      })
+      const sendHalf = new ControlSendStream(sendStream, client.onMessageSent)
       const params = setupOptions ? setupOptions.build() : new SetupOptions().build()
       assertNoAuthorityOverWebTransport(params)
-      const setup = new Setup(params)
-      client.controlStream.send(setup)
+      await sendHalf.send(new Setup(params))
+
+      // The server's control stream is the first uni stream it opens; every later
+      // one is a data stream, so the same reader is reused by #acceptIncomingUniStreams.
+      client.#incomingUniStreams = client.webTransport.incomingUnidirectionalStreams.getReader()
+      const { value: recvStream, done: recvStreamDone } = await client.#incomingUniStreams.read()
+      if (recvStreamDone || !recvStream)
+        throw new ProtocolViolationError('MOQtailClient.new', 'Session closed before the server control stream')
+      const recvHalf = new ControlRecvStream(recvStream, client.controlStreamTimeoutMs, client.onMessageReceived)
+      client.controlStream = new ControlStream(sendHalf, recvHalf)
+
       const reader = client.controlStream.stream.getReader()
       const { value: response, done } = await reader.read()
       if (done) throw new ProtocolViolationError('MOQtailClient.new', 'Stream closed after client setup')
       if (!(response instanceof Setup))
-        throw new ProtocolViolationError('MOQtailClient.new', 'Expected setup after client setup')
+        throw new ProtocolViolationError('MOQtailClient.new', 'Expected setup as the first control message')
 
       client.#serverSetup = response
       reader.releaseLock()
@@ -1834,8 +1844,7 @@ export class MOQtailClient {
 
   async #acceptIncomingUniStreams() {
     this.#ensureActive()
-    const uds = this.webTransport.incomingUnidirectionalStreams
-    const reader = uds.getReader()
+    const reader = this.#incomingUniStreams
     let isDone = false
     while (!isDone) {
       try {
@@ -2031,4 +2040,83 @@ export class MOQtailClient {
       throw error
     }
   }
+}
+
+if (import.meta.vitest) {
+  const { describe, it, expect, afterEach, vi } = import.meta.vitest
+
+  class MockWebTransport {
+    static last: MockWebTransport
+    readonly ready = Promise.resolve()
+    readonly closed = new Promise<void>(() => {})
+    readonly sentChunks: Uint8Array[] = []
+    readonly uniStreamOptions: unknown[] = []
+    readonly incomingBidirectionalStreams = new ReadableStream()
+    readonly incomingUnidirectionalStreams: ReadableStream<ReadableStream<Uint8Array>>
+    #incoming!: ReadableStreamDefaultController<ReadableStream<Uint8Array>>
+
+    constructor() {
+      this.incomingUnidirectionalStreams = new ReadableStream<ReadableStream<Uint8Array>>({
+        start: (controller) => {
+          this.#incoming = controller
+        },
+      })
+      MockWebTransport.last = this
+    }
+
+    async createUnidirectionalStream(options?: unknown): Promise<WritableStream<Uint8Array>> {
+      this.uniStreamOptions.push(options)
+      return new WritableStream<Uint8Array>({
+        write: (chunk) => {
+          this.sentChunks.push(chunk)
+        },
+      })
+    }
+
+    /** Opens a peer uni stream carrying `bytes`, left open so the reader keeps waiting. */
+    openIncomingUniStream(bytes: Uint8Array): void {
+      this.#incoming.enqueue(
+        new ReadableStream<Uint8Array>({
+          start: (controller) => controller.enqueue(bytes),
+        }),
+      )
+    }
+
+    close(): void {}
+  }
+
+  describe('MOQtailClient control plane', () => {
+    const originalWebTransport = globalThis.WebTransport
+
+    afterEach(() => {
+      globalThis.WebTransport = originalWebTransport
+    })
+
+    function connect(): Promise<MOQtailClient> {
+      globalThis.WebTransport = MockWebTransport as unknown as typeof WebTransport
+      return MOQtailClient.new({ url: 'https://relay.example/moq' })
+    }
+
+    it('handshakes over a pair of uni streams, SETUP first in both directions', async () => {
+      const connecting = connect()
+      const transport = MockWebTransport.last
+      await vi.waitFor(() => expect(transport.sentChunks).toHaveLength(1))
+
+      transport.openIncomingUniStream(new Setup(new SetupOptions().build()).serialize().toUint8Array())
+      const client = await connecting
+
+      expect(transport.uniStreamOptions).toEqual([{ sendOrder: Number.MAX_SAFE_INTEGER }])
+      expect(ControlMessage.deserialize(new FrozenByteBuffer(transport.sentChunks[0]!))).toBeInstanceOf(Setup)
+      await client.disconnect()
+    })
+
+    it('rejects a peer control stream that does not begin with SETUP', async () => {
+      const connecting = connect()
+      const transport = MockWebTransport.last
+      await vi.waitFor(() => expect(transport.sentChunks).toHaveLength(1))
+
+      transport.openIncomingUniStream(new GoAway('https://elsewhere.example').serialize().toUint8Array())
+      await expect(connecting).rejects.toThrow('Expected setup as the first control message')
+    })
+  })
 }

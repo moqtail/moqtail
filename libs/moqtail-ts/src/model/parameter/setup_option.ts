@@ -57,12 +57,7 @@ export namespace SetupOption {
   }
 }
 
-/**
- * Throws if `params` carries AUTHORITY, which MUST NOT be sent over WebTransport
- * (draft-18 §10.3.1.1). moqtail-ts always connects over WebTransport — there is no
- * native-QUIC transport to make this conditional on — so `MOQtailClient.new` calls this
- * on the built SetupOptions before sending its Setup.
- */
+/** Throws if `params` carries AUTHORITY, which MUST NOT be sent over WebTransport. */
 export function assertNoAuthorityOverWebTransport(params: KeyValuePair[]): void {
   if (params.some((p) => Number(p.typeValue) === SetupOptionType.Authority)) {
     throw new ProtocolViolationError(
@@ -92,16 +87,6 @@ export class SetupOptions {
 
   addAuthorizationToken(auth: AuthorizationToken): this {
     this.kvps.push(auth.toKeyValuePair())
-    return this
-  }
-
-  /**
-   * Raw-QUIC only. MUST NOT be sent over WebTransport (draft-18 §10.3.1.1) — moqtail-ts
-   * always connects over WebTransport, so `MOQtailClient.new` rejects a SetupOptions
-   * that carries this.
-   */
-  addAuthority(authority: string): this {
-    this.kvps.push(new Authority(authority).toKeyValuePair())
     return this
   }
 
@@ -145,7 +130,7 @@ if (import.meta.vitest) {
         .addMaxRequestId(42n)
         .addMaxAuthTokenCacheSize(123n)
         .addAuthorizationToken(AuthorizationToken.newUseAlias(1n))
-        .addAuthority('example.com')
+        .addRaw(new Authority('example.com').toKeyValuePair())
         .addMoqtImplementation('moqtail-ts/0.1')
         .build()
       const parsed = SetupOptions.fromKeyValuePairs(kvps)
@@ -172,7 +157,7 @@ if (import.meta.vitest) {
 
   describe('assertNoAuthorityOverWebTransport', () => {
     test('throws when params carry AUTHORITY', () => {
-      const params = new SetupOptions().addPath('/x').addAuthority('example.com').build()
+      const params = new SetupOptions().addPath('/x').addRaw(new Authority('example.com').toKeyValuePair()).build()
       expect(() => assertNoAuthorityOverWebTransport(params)).toThrow(ProtocolViolationError)
     })
     test('does not throw when params carry no AUTHORITY', () => {

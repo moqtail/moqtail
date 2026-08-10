@@ -27,6 +27,10 @@ export class Switch {
     public parameters: KeyValuePair[],
   ) {}
 
+  getType(): ControlMessageType {
+    return ControlMessageType.Switch
+  }
+
   serialize(): FrozenByteBuffer {
     const buf = new ByteBuffer()
     buf.putVI(ControlMessageType.Switch)

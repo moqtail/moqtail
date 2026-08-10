@@ -13,17 +13,17 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import { FilterType, GroupOrder, Publish, PublishOk } from '../../model/control'
-import { ControlMessageHandler } from './handler'
+import { Publish, PublishOk } from '../../model/control'
+import { RequestStreamMessageHandler } from './handler'
 import { MoqtObject } from '../../model/data' // Make sure to import MoqtObject
 import { logger } from '../../util/logger'
 
-export const handlerPublish: ControlMessageHandler<Publish> = async (client, msg) => {
+export const handlerPublish: RequestStreamMessageHandler<Publish> = async (client, msg, stream) => {
   logger.log('handler/publish', 'track: %s alias: %d', msg.fullTrackName.toString(), msg.trackAlias)
 
   // 1. Create a stream to receive the pushed objects natively
   let streamController!: ReadableStreamDefaultController<MoqtObject>
-  const stream = new ReadableStream<MoqtObject>({
+  const objects = new ReadableStream<MoqtObject>({
     start(c) {
       streamController = c
     },
@@ -49,6 +49,10 @@ export const handlerPublish: ControlMessageHandler<Publish> = async (client, msg
 
   // 4. Bubble the event up to the application layer, passing the data stream!
   if (client.onPeerPublish) {
-    client.onPeerPublish(msg, stream)
+    client.onPeerPublish(msg, objects)
   }
+
+  // 5. Accept the push on the stream it arrived on. The publisher waits for this
+  // before opening any data stream.
+  await stream.send(new PublishOk(msg.requestId, []))
 }

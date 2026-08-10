@@ -17,11 +17,11 @@
 import { ProtocolViolationError } from '@/model'
 import { PublishOk } from '../../model/control'
 import { PublishRequest } from '../request/publish'
-import { ControlMessageHandler } from './handler'
+import { RequestStreamMessageHandler } from './handler'
 import { PublishPublication } from '../publication/publish'
 import { logger } from '../../util/logger'
 
-export const handlerPublishOk: ControlMessageHandler<PublishOk> = async (client, msg) => {
+export const handlerPublishOk: RequestStreamMessageHandler<PublishOk> = async (client, msg) => {
   const request = client.requests.get(msg.requestId)
   if (request instanceof PublishRequest) {
     request.resolve(msg)

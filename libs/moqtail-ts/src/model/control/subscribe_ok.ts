@@ -56,6 +56,10 @@ export class SubscribeOk {
     return new SubscribeOk(requestId, trackAlias, parameters, trackExtensions)
   }
 
+  getType(): ControlMessageType {
+    return ControlMessageType.SubscribeOk
+  }
+
   serialize(): FrozenByteBuffer {
     const buf = new ByteBuffer()
     buf.putVI(ControlMessageType.SubscribeOk)

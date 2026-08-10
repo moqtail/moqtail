@@ -15,15 +15,16 @@
  */
 
 import { RequestError } from '../../model/control'
-import { ControlMessageHandler } from './handler'
+import { RequestStreamMessageHandler } from './handler'
 import { logger } from '../../util/logger'
 import { SubscribeRequest } from '../request/subscribe'
 import { PublishRequest } from '../request/publish'
 import { PublishNamespaceRequest } from '../request/publish_namespace'
 import { SubscribeNamespaceRequest } from '../request/subscribe_namespace'
+import { TrackStatusRequest } from '../request/track_status'
 import { FetchRequest } from '../request/fetch'
 
-export const handlerRequestError: ControlMessageHandler<RequestError> = async (client, msg) => {
+export const handlerRequestError: RequestStreamMessageHandler<RequestError> = async (client, msg) => {
   logger.error(
     'handler/request_error',
     `received requestId=${msg.requestId} code=${msg.errorCode} reason="${msg.reasonPhrase.phrase}"`,
@@ -44,6 +45,7 @@ export const handlerRequestError: ControlMessageHandler<RequestError> = async (c
     request instanceof PublishRequest ||
     request instanceof PublishNamespaceRequest ||
     request instanceof SubscribeNamespaceRequest ||
+    request instanceof TrackStatusRequest ||
     request instanceof FetchRequest
   ) {
     request.resolve(msg)

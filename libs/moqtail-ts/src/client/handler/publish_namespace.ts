@@ -14,13 +14,14 @@
  * limitations under the License.
  */
 
-import { PublishNamespace } from '../../model/control'
-import { ControlMessageHandler } from './handler'
+import { PublishNamespace, RequestOk } from '../../model/control'
+import { RequestStreamMessageHandler } from './handler'
 import { logger } from '../../util/logger'
 
-export const handlerPublishNamespace: ControlMessageHandler<PublishNamespace> = async (client, msg) => {
+export const handlerPublishNamespace: RequestStreamMessageHandler<PublishNamespace> = async (client, msg, stream) => {
   logger.log('handler/publish_namespace', 'namespace', msg.trackNamespace.toUtf8Path())
   if (client.onNamespacePublished) {
     client.onNamespacePublished(msg)
   }
+  await stream.send(new RequestOk(msg.requestId))
 }

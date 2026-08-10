@@ -17,10 +17,10 @@
 import { ProtocolViolationError } from '@/model'
 import { SubscribeOk } from '../../model/control'
 import { SubscribeRequest } from '../request/subscribe'
-import { ControlMessageHandler } from './handler'
+import { RequestStreamMessageHandler } from './handler'
 import { logger } from '../../util/logger'
 
-export const handlerSubscribeOk: ControlMessageHandler<SubscribeOk> = async (client, msg) => {
+export const handlerSubscribeOk: RequestStreamMessageHandler<SubscribeOk> = async (client, msg) => {
   logger.debug('handler/subscribe_ok', `received requestId=${msg.requestId} trackAlias=${msg.trackAlias}`)
 
   const request = client.requests.get(msg.requestId)

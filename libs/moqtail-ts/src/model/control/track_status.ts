@@ -135,6 +135,10 @@ export class TrackStatus {
     )
   }
 
+  getType(): ControlMessageType {
+    return ControlMessageType.TrackStatus
+  }
+
   serialize(): FrozenByteBuffer {
     const buf = new ByteBuffer()
     buf.putVI(ControlMessageType.TrackStatus)

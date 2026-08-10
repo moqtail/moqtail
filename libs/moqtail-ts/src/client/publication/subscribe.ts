@@ -26,6 +26,7 @@ import {
   applyMessageParameterUpdate,
 } from '@/model'
 import { SendStream } from '../data_stream'
+import { RequestStream } from '../request_stream'
 import { SubgroupHeader } from '@/model/data/subgroup_header'
 import { MoqtObject } from '@/model/data/object'
 import { SimpleLock } from '../../util/simple_lock'
@@ -118,12 +119,15 @@ export class SubscribePublication {
    * @param client - The MOQT client managing the subscription.
    * @param track - The track being published.
    * @param subscribeMsg - The subscribe message containing subscription details.
+   * @param requestStream - The bidi request stream the SUBSCRIBE arrived on. Every
+   * message this publication sends back to the subscriber goes on it.
    * @param largestLocation - The largest location seen so far, used for determining start location.
    */
   constructor(
     private readonly client: MOQtailClient,
     readonly track: Track,
     private readonly subscribeMsg: Subscribe,
+    private readonly requestStream: RequestStream,
     largestLocation?: Location,
   ) {
     this.#trackAlias = track.trackAlias!
@@ -196,7 +200,7 @@ export class SubscribePublication {
       new ReasonPhrase('Subscription ended'),
     )
     // TODO: Handle track completion, there might be ongoing streams. Wait for all to finish before cleaning the state
-    await this.client.controlStream.send(publishDone)
+    await this.requestStream.send(publishDone)
   }
 
   /**

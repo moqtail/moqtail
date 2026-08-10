@@ -15,16 +15,21 @@
  */
 
 import { SubscribeNamespace, RequestOk } from '../../model/control'
-import { ControlMessageHandler } from './handler'
+import { RequestStreamMessageHandler } from './handler'
 import { logger } from '../../util/logger'
 
-export const handlerSubscribeNamespace: ControlMessageHandler<SubscribeNamespace> = async (client, msg) => {
+export const handlerSubscribeNamespace: RequestStreamMessageHandler<SubscribeNamespace> = async (
+  client,
+  msg,
+  stream,
+) => {
   logger.log('handler/subscribe_namespace', 'namespace', msg.trackNamespacePrefix.toUtf8Path())
   // Bubble the event up to the application layer
   if (client.onPeerSubscribeNamespace) {
     client.onPeerSubscribeNamespace(msg)
   }
 
-  const okMsg = new RequestOk(msg.requestId)
-  await client.controlStream.send(okMsg)
+  // The peer holds this stream open for the subscription's lifetime; NAMESPACE and
+  // NAMESPACE_DONE for matching announcements are written to it.
+  await stream.send(new RequestOk(msg.requestId))
 }

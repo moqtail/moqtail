@@ -16,13 +16,13 @@
 
 import { FullTrackName, InternalError, Location, ReasonPhrase } from '@/model'
 import { Fetch, FetchOk, FetchType, RequestError, RequestErrorCode } from '../../model/control'
-import { ControlMessageHandler } from './handler'
+import { RequestStreamMessageHandler } from './handler'
 import { SubscribePublication } from '../publication/subscribe'
 import { FetchPublication } from '../publication/fetch'
 import { PublishPublication } from '../publication'
 import { logger } from '../../util/logger'
 
-export const handlerFetch: ControlMessageHandler<Fetch> = async (client, msg) => {
+export const handlerFetch: RequestStreamMessageHandler<Fetch> = async (client, msg, stream) => {
   logger.log('handler/fetch', 'requestId, type', msg.requestId, msg.typeAndProps.type)
   // TODO: Use fetch parameters and handle authorization
   let fullTrackName: FullTrackName | undefined
@@ -48,7 +48,7 @@ export const handlerFetch: ControlMessageHandler<Fetch> = async (client, msg) =>
       0n,
       new ReasonPhrase('Track does not exists'),
     )
-    await client.controlStream.send(response)
+    await stream.send(response)
     return
   }
 
@@ -59,7 +59,7 @@ export const handlerFetch: ControlMessageHandler<Fetch> = async (client, msg) =>
       0n,
       new ReasonPhrase('Requested track does not support fetch'),
     )
-    await client.controlStream.send(response)
+    await stream.send(response)
     return
   }
   // TODO: Add support for descending group order
@@ -68,5 +68,5 @@ export const handlerFetch: ControlMessageHandler<Fetch> = async (client, msg) =>
   const publication = new FetchPublication(client, track, msg)
   client.publications.set(msg.requestId, publication)
   const response = new FetchOk(msg.requestId, false, new Location(0n, 0n), msg.parameters, track.trackExtensions ?? [])
-  await client.controlStream.send(response)
+  await stream.send(response)
 }

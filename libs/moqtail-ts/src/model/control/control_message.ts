@@ -37,6 +37,7 @@ import { TrackStatus } from './track_status'
 import { PublishNamespaceDone } from './publish_namespace_done'
 import { Unsubscribe } from './unsubscribe'
 import { SubscribeNamespace } from './subscribe_namespace'
+import { Switch } from './switch'
 import { UnsubscribeNamespace } from './unsubscribe_namespace'
 import { NotEnoughBytesError } from '../error/error'
 import { Tuple } from '../common'
@@ -69,6 +70,9 @@ export type ControlMessage =
   | SubscribeNamespace
   | UnsubscribeNamespace
   | RequestOk
+  // moqtail-local extension (0x22), not a draft-18 type: it is sent but never parsed,
+  // so `deserialize` below has no case for it and `tryFrom` rejects the codepoint.
+  | Switch
 
 export namespace ControlMessage {
   export function deserialize(buf: FrozenByteBuffer): ControlMessage {

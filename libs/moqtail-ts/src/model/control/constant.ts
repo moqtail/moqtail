@@ -77,6 +77,27 @@ export enum ControlMessageType {
  * @throws InvalidEnumValue if the value is not a valid control message type.
  */
 export namespace ControlMessageType {
+  /**
+   * True for the seven types marked `First` in Table 5: each one MUST be the first
+   * message on a new bidirectional request stream, and no other type may open one.
+   * Every remaining type travels on the control stream or on an already-open request
+   * stream.
+   */
+  export function isFirst(t: ControlMessageType): boolean {
+    switch (t) {
+      case ControlMessageType.Subscribe:
+      case ControlMessageType.Fetch:
+      case ControlMessageType.TrackStatus:
+      case ControlMessageType.PublishNamespace:
+      case ControlMessageType.SubscribeNamespace:
+      case ControlMessageType.SubscribeTracks:
+      case ControlMessageType.Publish:
+        return true
+      default:
+        return false
+    }
+  }
+
   /** Convert bigint discriminant to enum value or throw on invalid. */
   export function tryFrom(v: bigint): ControlMessageType {
     switch (v) {
@@ -429,6 +450,24 @@ if (import.meta.vitest) {
     test('every message_types.json entry is exercised', async () => {
       const { messageTypes } = await fixture()
       expect(messageTypes().entries.length).toBeGreaterThan(0)
+    })
+
+    test('isFirst matches the Stream column of message_types.json', async () => {
+      const { messageTypes, parseHex } = await fixture()
+      const graded = messageTypes()
+        .entries.filter((entry) => !entry.reserved)
+        .map((entry) => {
+          const codepoint = parseHex(entry.value)
+          return {
+            name: entry.name,
+            expected: (entry.stream ?? '').includes('First'),
+            // SUBSCRIBE_TRACKS and PUBLISH_BLOCKED have no body yet (#266, #271) but
+            // their codepoints already parse, so the Stream column applies to them too.
+            actual: ControlMessageType.isFirst(ControlMessageType.tryFrom(codepoint)),
+          }
+        })
+      expect(graded.filter((e) => e.expected).map((e) => e.name).length).toBe(7)
+      expect(graded.filter((e) => e.actual !== e.expected)).toEqual([])
     })
   })
 }

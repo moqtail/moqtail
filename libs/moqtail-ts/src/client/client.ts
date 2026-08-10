@@ -25,7 +25,7 @@ import {
   Setup,
   ControlMessage,
   Fetch,
-  FetchCancel,
+  FetchOk,
   FetchType,
   FilterType,
   GoAway,
@@ -34,12 +34,14 @@ import {
   SubscribeNamespace,
   RequestError,
   RequestUpdate,
-  Unsubscribe,
   UnsubscribeNamespace,
   Publish,
+  PublishOk,
   RequestOk,
   Switch,
   SubscribeOk,
+  TrackStatus,
+  ControlMessageType,
   SUPPORTED_VERSIONS,
   PublishDone,
 } from '../model/control'
@@ -59,6 +61,7 @@ import { TrackExtension } from '../model/extension_header/track_extension'
 import { RecvStream } from './data_stream'
 import {
   InternalError,
+  Location,
   MOQtailError,
   ProtocolViolationError,
   ReasonPhrase,
@@ -77,7 +80,8 @@ import { PublishNamespaceRequest } from './request/publish_namespace'
 import { FetchRequest } from './request/fetch'
 import { SubscribeRequest } from './request/subscribe'
 import { PublishRequest } from './request/publish'
-import { getHandlerForControlMessage } from './handler/handler'
+import { TrackStatusRequest } from './request/track_status'
+import { getHandlerForControlMessage, getHandlerForRequestStreamMessage } from './handler/handler'
 import { SubscribePublication } from './publication/subscribe'
 import { FetchPublication } from './publication/fetch'
 import { PublishPublication } from './publication/publish'
@@ -191,6 +195,21 @@ export class MOQtailClient {
    * Used to avoid premature state updates.
    */
   readonly pendingStateUpdates: Map<bigint, (newTrackAlias: bigint) => boolean> = new Map()
+
+  /**
+   * The bidirectional request stream each locally issued request runs on, keyed by the
+   * requestId of the message that opened it (draft-18 §3.3.2). The stream stays open for
+   * the request's lifetime: responses and follow-ups arrive on it, updates are written to
+   * it, and closing it is how the request is cancelled.
+   */
+  readonly #requestStreams: Map<bigint, RequestStream> = new Map()
+
+  /**
+   * Namespace path -\> the requestId that announced or subscribed to it, so the
+   * namespace-keyed APIs ({@link MOQtailClient.publishNamespaceDone}) can find the
+   * stream to close.
+   */
+  readonly #namespaceRequestIds: Map<string, bigint> = new Map()
 
   /** Underlying WebTransport session (set after successful construction in MOQtailClient.new). */
   webTransport!: WebTransport
@@ -818,6 +837,13 @@ export class MOQtailClient {
     // Stop datagrams first
     await this.stopDatagrams()
 
+    // Close every open request stream so peers see each request cancelled rather than
+    // only the session going away.
+    const openStreams = [...this.#requestStreams.values()]
+    this.#requestStreams.clear()
+    this.#namespaceRequestIds.clear()
+    await Promise.allSettled(openStreams.map((requestStream) => requestStream.close()))
+
     if (!this.webTransport.closed) this.webTransport.close()
     if (this.onSessionTerminated)
       this.onSessionTerminated(
@@ -1009,7 +1035,7 @@ export class MOQtailClient {
       this.requestIdMap.addMapping(request.requestId, request.fullTrackName)
 
       logger.debug('MOQtailClient', `subscribe: sending SUBSCRIBE requestId=${msg.requestId} ftn="${fullTrackName}"`)
-      await this.controlStream.send(msg)
+      await this.#openRequestStream(request.requestId, msg)
       logger.debug(
         'MOQtailClient',
         `subscribe: SUBSCRIBE sent, awaiting SUBSCRIBE_OK/REQUEST_ERROR requestId=${msg.requestId}`,
@@ -1092,7 +1118,8 @@ export class MOQtailClient {
           const trackAlias = this.subscriptionAliasMap.get(requestId)!
           cleanupData = { requestId, trackAlias, subscription }
 
-          await this.controlStream.send(new Unsubscribe(requestId))
+          // Closing the subscription's request stream is what tells the publisher to stop.
+          await this.#closeRequestStream(requestId)
           subscription.unsubscribe()
         }
       }
@@ -1177,7 +1204,8 @@ export class MOQtailClient {
           ]
           const msg = new RequestUpdate(requestId, subscriptionRequestId, updateParams)
           subscription.update(msg) // This also updates the request since both maps store the same object
-          await this.controlStream.send(msg)
+          // A REQUEST_UPDATE travels on the stream of the request it updates.
+          await this.#requestStreamFor(subscriptionRequestId, 'MOQtailClient.subscribeUpdate').send(msg)
         }
       }
       // Q: Throw? Idempotent?
@@ -1232,7 +1260,13 @@ export class MOQtailClient {
       const kvpParams = switchParams.map((p) => p.toKeyValuePair())
       const msg = new Switch(requestId, fullTrackName, subscriptionRequestId, kvpParams)
       subscription.switch(fullTrackName, switchParams)
-      await this.controlStream.send(msg)
+      // SWITCH retargets an existing subscription, so it goes on that subscription's
+      // stream and its SUBSCRIBE_OK comes back there.
+      const requestStream = this.#requestStreamFor(subscriptionRequestId, 'MOQtailClient.switch')
+      await requestStream.send(msg)
+      // The switched subscription is addressed by the new id from here on, so file the
+      // stream under it too — unsubscribe(requestId) must still find it.
+      this.#requestStreams.set(requestId, requestStream)
 
       const response = await subscription
       if (response instanceof SubscribeOk) {
@@ -1397,7 +1431,7 @@ export class MOQtailClient {
       })
       this.requests.set(msg.requestId, request)
       logger.log('MOQtailClient', 'fetch: about to send fetch message to server')
-      await this.controlStream.send(msg)
+      await this.#openRequestStream(msg.requestId, msg)
       logger.log('MOQtailClient', 'fetch: fetch message sent successfully, waiting for response')
       const response = await request
       if (response instanceof RequestError) {
@@ -1455,11 +1489,12 @@ export class MOQtailClient {
     try {
       if (typeof requestId === 'number') requestId = BigInt(requestId)
       const request = this.requests.get(requestId)
-      if (request) {
-        if (request instanceof Fetch) {
-          // TODO: Fetch cancel, mark data streams for closure
-          this.controlStream.send(new FetchCancel(requestId))
-        }
+      if (request instanceof FetchRequest) {
+        // Draft-18 §3.3.2: there is no FETCH_CANCEL. Resetting the fetch's request
+        // stream is the cancellation. The FetchRequest stays in `requests` so the
+        // objects already in flight still resolve their track name.
+        // TODO: mark the fetch's data streams for closure.
+        await this.#closeRequestStream(requestId)
       }
       // No matching fetch request, idempotent
     } catch (error) {
@@ -1499,7 +1534,7 @@ export class MOQtailClient {
       this.requestIdMap.addMapping(msg.requestId, fullTrackName)
       this.subscriptionAliasMap.set(msg.requestId, trackAlias)
 
-      await this.controlStream.send(msg)
+      await this.#openRequestStream(msg.requestId, msg)
       const response = await request
 
       if (response instanceof RequestError) {
@@ -1532,7 +1567,14 @@ export class MOQtailClient {
       // Create the PublishDone message. (StreamCount is set to 0n as a default)
       const msg = new PublishDone(publishRequestId, statusCode, 0n, new ReasonPhrase(reasonPhrase))
 
-      await this.controlStream.send(msg)
+      // PUBLISH_DONE is the last message on the PUBLISH request's own stream.
+      const requestStream = this.#requestStreams.get(publishRequestId)
+      if (requestStream) {
+        await requestStream.send(msg)
+        await this.#closeRequestStream(publishRequestId)
+      } else {
+        logger.warn('MOQtailClient', `publishDone: no request stream for requestId=${publishRequestId}`)
+      }
 
       // Clean up local publisher-side state
       this.requests.delete(publishRequestId)
@@ -1637,11 +1679,16 @@ export class MOQtailClient {
       const msg = new PublishNamespace(this.#nextClientRequestId, trackNamespace, params)
       const request = new PublishNamespaceRequest(msg.requestId, msg)
       this.requests.set(msg.requestId, request)
-      this.controlStream.send(msg)
+      await this.#openRequestStream(msg.requestId, msg)
       const response = await request
 
       if (response instanceof RequestOk) {
         this.announcedNamespaces.add(msg.trackNamespace)
+        // The stream stays open for as long as the namespace is announced; closing it
+        // is what withdraws the announcement (see publishNamespaceDone).
+        this.#namespaceRequestIds.set(msg.trackNamespace.toUtf8Path(), msg.requestId)
+      } else {
+        await this.#closeRequestStream(msg.requestId)
       }
 
       this.requests.delete(msg.requestId)
@@ -1689,9 +1736,10 @@ export class MOQtailClient {
   async publishNamespaceDone(trackNamespace: Tuple) {
     this.#ensureActive()
     try {
-      const msg = new PublishNamespaceDone(trackNamespace)
-      this.announcedNamespaces.delete(msg.trackNamespace)
-      await this.controlStream.send(msg)
+      this.announcedNamespaces.delete(trackNamespace)
+      // Draft-18 §3.3.2: there is no PUBLISH_NAMESPACE_DONE. Closing the stream the
+      // PUBLISH_NAMESPACE opened withdraws the announcement.
+      await this.#closeNamespaceRequestStream(trackNamespace)
     } catch (err) {
       // TODO: Match against error cases
       await this.disconnect()
@@ -1729,7 +1777,9 @@ export class MOQtailClient {
   async publishNamespaceCancel(msg: PublishNamespaceCancel) {
     this.#ensureActive()
     try {
-      await this.controlStream.send(msg)
+      // Draft-18 §3.3.2: there is no PUBLISH_NAMESPACE_CANCEL either. Retracting the
+      // announce is a reset of the stream it was sent on.
+      await this.#closeRequestStream(msg.requestId)
     } catch (error) {
       await this.disconnect(
         new InternalError(
@@ -1751,9 +1801,11 @@ export class MOQtailClient {
       const params: MessageParameter[] = parameters ?? []
       const msg = new SubscribeNamespace(this.#nextClientRequestId, trackNamespacePrefix, subscribeOptions, params)
 
-      const biStream = await this.webTransport.createBidirectionalStream()
-      const requestStream = new RequestStream(biStream)
-      await requestStream.send(msg)
+      // No #openRequestStream here: NAMESPACE / NAMESPACE_DONE carry only a suffix, so
+      // they are only meaningful next to the prefix that opened this stream. The generic
+      // pump has no prefix to hand them, hence the bespoke drain below.
+      const requestStream = await RequestStream.open(this.webTransport, msg)
+      this.#requestStreams.set(msg.requestId, requestStream)
 
       logger.log(
         'MOQtailClient',
@@ -1763,11 +1815,9 @@ export class MOQtailClient {
         msg.requestId,
       )
 
-      const reader = requestStream.stream.getReader()
-      const { value: response, done } = await reader.read()
-      reader.releaseLock()
+      const response = await requestStream.next()
 
-      if (done || !response) {
+      if (!response) {
         throw new InternalError('MOQtailClient.subscribeNamespace', 'Stream closed before response')
       }
       if (!(response instanceof RequestOk || response instanceof RequestError)) {
@@ -1778,14 +1828,18 @@ export class MOQtailClient {
 
       if (response instanceof RequestOk) {
         this.subscribedAnnounces.add(trackNamespacePrefix)
-        void this.#drainNamespaceStream(requestStream, trackNamespacePrefix)
+        this.#namespaceRequestIds.set(trackNamespacePrefix.toUtf8Path(), msg.requestId)
+        void this.#drainNamespaceStream(requestStream, msg.requestId, trackNamespacePrefix)
+      } else {
+        await this.#closeRequestStream(msg.requestId)
       }
 
       return {
         response,
-        cancel: () => {
+        cancel: async () => {
           this.subscribedAnnounces.delete(trackNamespacePrefix)
-          return requestStream.close()
+          this.#namespaceRequestIds.delete(trackNamespacePrefix.toUtf8Path())
+          await this.#closeRequestStream(msg.requestId)
         },
       }
     } catch (error) {
@@ -1796,12 +1850,11 @@ export class MOQtailClient {
     }
   }
 
-  async #drainNamespaceStream(requestStream: RequestStream, prefix: Tuple): Promise<void> {
-    const reader = requestStream.stream.getReader()
+  async #drainNamespaceStream(requestStream: RequestStream, requestId: bigint, prefix: Tuple): Promise<void> {
     try {
       while (true) {
-        const { value: msg, done } = await reader.read()
-        if (done || !msg) break
+        const msg = await requestStream.next()
+        if (!msg) break
         if (msg instanceof Namespace && this.onPeerNamespace) {
           this.onPeerNamespace(prefix, msg.trackNamespaceSuffix)
         } else if (msg instanceof NamespaceDone && this.onPeerNamespaceDone) {
@@ -1809,14 +1862,18 @@ export class MOQtailClient {
         }
       }
     } finally {
-      reader.releaseLock()
+      this.#requestStreams.delete(requestId)
+      this.#namespaceRequestIds.delete(prefix.toUtf8Path())
     }
   }
 
   async unsubscribeNamespace(msg: UnsubscribeNamespace) {
     this.#ensureActive()
     try {
-      await this.controlStream.send(msg)
+      // Draft-18 §3.3.2: there is no UNSUBSCRIBE_NAMESPACE. Closing the stream the
+      // SUBSCRIBE_NAMESPACE opened ends the prefix subscription.
+      this.subscribedAnnounces.delete(msg.trackNamespacePrefix)
+      await this.#closeNamespaceRequestStream(msg.trackNamespacePrefix)
     } catch (error) {
       await this.disconnect(
         new InternalError('MOQtailClient.unsubscribeNamespace', error instanceof Error ? error.message : String(error)),
@@ -1825,6 +1882,139 @@ export class MOQtailClient {
     }
   }
 
+  /**
+   * Asks the peer for the current status of a track.
+   *
+   * TRACK_STATUS is the seventh `First`-marked type: it opens its own bidi stream and
+   * the REQUEST_OK answering it comes back there, after which the stream is closed.
+   *
+   * @param fullTrackName - The track to report on.
+   * @param trackAlias - Alias to carry in the request.
+   * @param parameters - Optional message parameters.
+   * @returns A {@link RequestOk} on success or a {@link RequestError} on refusal.
+   *
+   * @example
+   * ```ts
+   * const status = await client.trackStatus(fullTrackName, trackAlias)
+   * if (!(status instanceof RequestError)) {
+   *   // track exists
+   * }
+   * ```
+   */
+  async trackStatus(
+    fullTrackName: FullTrackName,
+    trackAlias: bigint,
+    parameters?: MessageParameter[],
+  ): Promise<RequestOk | RequestError> {
+    this.#ensureActive()
+    try {
+      const msg = TrackStatus.newLatestObject(
+        this.#nextClientRequestId,
+        trackAlias,
+        fullTrackName,
+        128,
+        GroupOrder.Original,
+        false,
+        parameters ?? [],
+      )
+      const request = new TrackStatusRequest(msg)
+      this.requests.set(msg.requestId, request)
+      await this.#openRequestStream(msg.requestId, msg)
+      const response = await request
+      await this.#closeRequestStream(msg.requestId)
+      this.requests.delete(msg.requestId)
+      return response
+    } catch (error) {
+      await this.disconnect(
+        new InternalError('MOQtailClient.trackStatus', error instanceof Error ? error.message : String(error)),
+      )
+      throw error
+    }
+  }
+
+  /**
+   * Opens a bidi request stream for `first` and starts reading responses off it.
+   *
+   * @param requestId - The requestId carried by `first`; the key the stream is filed under.
+   */
+  async #openRequestStream(requestId: bigint, first: ControlMessage): Promise<RequestStream> {
+    const requestStream = await RequestStream.open(this.webTransport, first)
+    this.#requestStreams.set(requestId, requestStream)
+    void this.#pumpRequestStream(requestId, requestStream)
+    return requestStream
+  }
+
+  /**
+   * The stream a previously issued request runs on.
+   *
+   * @throws :{@link InternalError} If the request has no open stream — it was never
+   * issued, or it has already completed or been cancelled.
+   */
+  #requestStreamFor(requestId: bigint, context: string): RequestStream {
+    const requestStream = this.#requestStreams.get(requestId)
+    if (!requestStream) throw new InternalError(context, `No open request stream for request id ${requestId}`)
+    return requestStream
+  }
+
+  /**
+   * Reads responses and follow-ups off a locally opened request stream until the peer
+   * closes it. Each message belongs to this request by virtue of the stream it arrived
+   * on, so no request id is consulted to route it.
+   */
+  async #pumpRequestStream(requestId: bigint, requestStream: RequestStream): Promise<void> {
+    // §10.5: the response is the first message on the response stream, so anything
+    // arriving here means the request was answered.
+    let answered = false
+    try {
+      while (true) {
+        const msg = await requestStream.next()
+        if (!msg) break
+        const handler = getHandlerForRequestStreamMessage(msg)
+        if (!handler) {
+          throw new ProtocolViolationError(
+            'MOQtailClient',
+            `${msg.constructor.name} is not valid on a request stream (request id ${requestId})`,
+          )
+        }
+        await handler(this, msg, requestStream)
+        answered = true
+      }
+      logger.debug('MOQtailClient', `request stream for requestId=${requestId} closed by peer`)
+    } catch (error) {
+      logger.error('MOQtailClient', `request stream for requestId=${requestId} failed`, error)
+    } finally {
+      this.#requestStreams.delete(requestId)
+      // A stream that dies before answering leaves the caller awaiting forever.
+      if (!answered) {
+        this.requests
+          .get(requestId)
+          ?.reject(new InternalError('MOQtailClient', `Request stream closed before answering request ${requestId}`))
+      }
+    }
+  }
+
+  /** Closes the request stream filed under `requestId`, if it is still open. */
+  async #closeRequestStream(requestId: bigint): Promise<void> {
+    const requestStream = this.#requestStreams.get(requestId)
+    if (!requestStream) return
+    this.#requestStreams.delete(requestId)
+    await requestStream.close()
+  }
+
+  /** Closes the request stream opened for `namespace`, if there is one. */
+  async #closeNamespaceRequestStream(namespace: Tuple): Promise<void> {
+    const path = namespace.toUtf8Path()
+    const requestId = this.#namespaceRequestIds.get(path)
+    if (requestId === undefined) return
+    this.#namespaceRequestIds.delete(path)
+    await this.#closeRequestStream(requestId)
+  }
+
+  /**
+   * Reads the shared control stream, which after draft-18 §3.3 carries only SETUP and
+   * GOAWAY. SETUP is consumed by the handshake, so GOAWAY is all that is handled here;
+   * every request type has its own bidi stream.
+   */
   async #handleIncomingControlMessages(): Promise<void> {
     this.#ensureActive()
     try {
@@ -1833,7 +2023,16 @@ export class MOQtailClient {
         const { done, value: msg } = await reader.read()
         if (done) throw new MOQtailError('WebTransport session is terminated')
         const handler = getHandlerForControlMessage(msg)
-        if (!handler) throw new ProtocolViolationError('MOQtailClient', 'No handler for the received message')
+        if (!handler) {
+          // Strictly a PROTOCOL_VIOLATION, but the relay still pushes a few messages
+          // here (PUBLISH_DONE, REQUEST_UPDATE fan-out) that draft-18 puts on request
+          // streams. Warn rather than tear the session down until that is cleaned up.
+          logger.warn(
+            'MOQtailClient',
+            `${msg.constructor.name} on the control stream; draft-18 allows only SETUP and GOAWAY there`,
+          )
+          continue
+        }
         await handler(this, msg)
       }
     } catch (error) {
@@ -1871,19 +2070,45 @@ export class MOQtailClient {
     })()
   }
 
+  /**
+   * Serves one peer-opened request stream: the first message must be a `First`-marked
+   * type, its handler answers on this same stream, and follow-ups are read until the
+   * peer closes it. That close is the peer's cancellation, so it tears down whatever
+   * the first message started.
+   */
   async #dispatchIncomingRequestStream(requestStream: RequestStream): Promise<void> {
-    const reader = requestStream.stream.getReader()
-    const { value: msg, done } = await reader.read()
-    reader.releaseLock()
-    if (done || !msg) return
+    const first = await requestStream.next()
+    if (!first) return
 
-    if (msg instanceof SubscribeNamespace) {
-      if (this.onPeerSubscribeNamespace) {
-        this.onPeerSubscribeNamespace(msg)
+    if (!ControlMessageType.isFirst(first.getType())) {
+      logger.warn('MOQtailClient', `${first.constructor.name} may not open a request stream; resetting it`)
+      await requestStream.close()
+      return
+    }
+
+    try {
+      let msg: ControlMessage | undefined = first
+      while (msg) {
+        const handler = getHandlerForRequestStreamMessage(msg)
+        if (!handler) {
+          throw new ProtocolViolationError(
+            'MOQtailClient',
+            `No handler for ${msg.constructor.name} on a request stream`,
+          )
+        }
+        await handler(this, msg, requestStream)
+        msg = await requestStream.next()
       }
-      await requestStream.send(new RequestOk(msg.requestId))
-    } else {
-      logger.warn('MOQtailClient', 'Unsupported message type on incoming request bi-stream')
+    } catch (error) {
+      logger.error('MOQtailClient', 'incoming request stream failed', error)
+    } finally {
+      // The peer closed or reset the stream: cancel whatever it was serving. Every
+      // First-marked type carries a request id, but the union as a whole does not.
+      const requestId = 'requestId' in first ? first.requestId : undefined
+      if (requestId !== undefined) {
+        this.publications.get(requestId)?.cancel()
+        this.publications.delete(requestId)
+      }
       await requestStream.close()
     }
   }
@@ -2045,17 +2270,76 @@ export class MOQtailClient {
 if (import.meta.vitest) {
   const { describe, it, expect, afterEach, vi } = import.meta.vitest
 
+  /** One bidirectional stream: what the client wrote, and a way to answer on it. */
+  class MockBidiStream {
+    readonly sentChunks: Uint8Array[] = []
+    readonly readable: ReadableStream<Uint8Array>
+    readonly writable: WritableStream<Uint8Array>
+    isClosed = false
+    #peer!: ReadableStreamDefaultController<Uint8Array>
+
+    constructor() {
+      this.readable = new ReadableStream<Uint8Array>({
+        start: (controller) => {
+          this.#peer = controller
+        },
+      })
+      this.writable = new WritableStream<Uint8Array>({
+        write: (chunk) => {
+          this.sentChunks.push(chunk)
+        },
+        close: () => {
+          this.isClosed = true
+        },
+        abort: () => {
+          this.isClosed = true
+        },
+      })
+    }
+
+    /** Delivers `msg` to the client on this stream, as the peer would. */
+    respond(msg: ControlMessage): void {
+      this.#peer.enqueue(ControlMessage.serialize(msg).toUint8Array())
+    }
+
+    /** Everything the client has written to this stream so far. */
+    get messages(): ControlMessage[] {
+      return this.sentChunks.map((chunk) => ControlMessage.deserialize(new FrozenByteBuffer(chunk)))
+    }
+  }
+
   class MockWebTransport {
     static last: MockWebTransport
     readonly ready = Promise.resolve()
     readonly closed = new Promise<void>(() => {})
     readonly sentChunks: Uint8Array[] = []
     readonly uniStreamOptions: unknown[] = []
-    readonly incomingBidirectionalStreams = new ReadableStream()
+    /** Bidi streams the client opened, in order. */
+    readonly biStreams: MockBidiStream[] = []
+    readonly incomingBidirectionalStreams: ReadableStream<WebTransportBidirectionalStream>
     readonly incomingUnidirectionalStreams: ReadableStream<ReadableStream<Uint8Array>>
     #incoming!: ReadableStreamDefaultController<ReadableStream<Uint8Array>>
+    #incomingBi!: ReadableStreamDefaultController<WebTransportBidirectionalStream>
+
+    async createBidirectionalStream(): Promise<WebTransportBidirectionalStream> {
+      const biStream = new MockBidiStream()
+      this.biStreams.push(biStream)
+      return biStream as unknown as WebTransportBidirectionalStream
+    }
+
+    /** Opens a peer-initiated bidi stream, as the relay would for a forwarded request. */
+    openIncomingBiStream(): MockBidiStream {
+      const biStream = new MockBidiStream()
+      this.#incomingBi.enqueue(biStream as unknown as WebTransportBidirectionalStream)
+      return biStream
+    }
 
     constructor() {
+      this.incomingBidirectionalStreams = new ReadableStream<WebTransportBidirectionalStream>({
+        start: (controller) => {
+          this.#incomingBi = controller
+        },
+      })
       this.incomingUnidirectionalStreams = new ReadableStream<ReadableStream<Uint8Array>>({
         start: (controller) => {
           this.#incoming = controller
@@ -2117,6 +2401,163 @@ if (import.meta.vitest) {
 
       transport.openIncomingUniStream(new GoAway('https://elsewhere.example').serialize().toUint8Array())
       await expect(connecting).rejects.toThrow('Expected setup as the first control message')
+    })
+  })
+
+  describe('MOQtailClient request streams', () => {
+    const originalWebTransport = globalThis.WebTransport
+    const ftn = FullTrackName.tryNew('room/alice', 'video')
+
+    afterEach(() => {
+      globalThis.WebTransport = originalWebTransport
+    })
+
+    /** A connected client whose handshake is already done. */
+    async function connected(): Promise<{ client: MOQtailClient; transport: MockWebTransport }> {
+      globalThis.WebTransport = MockWebTransport as unknown as typeof WebTransport
+      const connecting = MOQtailClient.new({ url: 'https://relay.example/moq' })
+      const transport = MockWebTransport.last
+      await vi.waitFor(() => expect(transport.sentChunks).toHaveLength(1))
+      transport.openIncomingUniStream(new Setup(new SetupOptions().build()).serialize().toUint8Array())
+      return { client: await connecting, transport }
+    }
+
+    /** Waits for the client to open its n-th bidi stream and write its first message. */
+    async function openedStream(transport: MockWebTransport, index: number): Promise<MockBidiStream> {
+      await vi.waitFor(() => {
+        expect(transport.biStreams.length).toBeGreaterThan(index)
+        expect(transport.biStreams[index]!.sentChunks.length).toBeGreaterThan(0)
+      })
+      return transport.biStreams[index]!
+    }
+
+    it('opens a stream per request and answers each on the stream it came from', async () => {
+      const { client, transport } = await connected()
+
+      const subscribing = client.subscribe({
+        fullTrackName: ftn,
+        filterType: FilterType.LatestObject,
+        forward: true,
+        groupOrder: GroupOrder.Original,
+        priority: 0,
+      })
+      const subscribeStream = await openedStream(transport, 0)
+      const subscribeMsg = subscribeStream.messages[0]
+      expect(subscribeMsg).toBeInstanceOf(Subscribe)
+      subscribeStream.respond(SubscribeOk.create((subscribeMsg as Subscribe).requestId, 7n, [], []))
+      expect(await subscribing).toMatchObject({ requestId: (subscribeMsg as Subscribe).requestId })
+
+      const fetching = client.fetch({
+        priority: 0,
+        groupOrder: GroupOrder.Original,
+        typeAndProps: {
+          type: FetchType.Standalone,
+          props: { fullTrackName: ftn, startLocation: new Location(0n, 0n), endLocation: new Location(1n, 0n) },
+        },
+      })
+      const fetchStream = await openedStream(transport, 1)
+      const fetchMsg = fetchStream.messages[0]
+      expect(fetchMsg).toBeInstanceOf(Fetch)
+      fetchStream.respond(new FetchOk((fetchMsg as Fetch).requestId, false, new Location(1n, 0n), []))
+      expect(await fetching).toMatchObject({ requestId: (fetchMsg as Fetch).requestId })
+
+      const publishing = client.publish(ftn, true, 9n)
+      const publishStream = await openedStream(transport, 2)
+      const publishMsg = publishStream.messages[0]
+      expect(publishMsg).toBeInstanceOf(Publish)
+      publishStream.respond(new PublishOk((publishMsg as Publish).requestId, []))
+      expect(await publishing).toMatchObject({ trackAlias: 9n })
+
+      const announcing = client.publishNamespace(Tuple.fromUtf8Path('room/alice'))
+      const announceStream = await openedStream(transport, 3)
+      const announceMsg = announceStream.messages[0]
+      expect(announceMsg).toBeInstanceOf(PublishNamespace)
+      announceStream.respond(new RequestOk((announceMsg as PublishNamespace).requestId))
+      expect(await announcing).toBeInstanceOf(RequestOk)
+
+      const subscribingNs = client.subscribeNamespace(Tuple.fromUtf8Path('room'))
+      const subscribeNsStream = await openedStream(transport, 4)
+      const subscribeNsMsg = subscribeNsStream.messages[0]
+      expect(subscribeNsMsg).toBeInstanceOf(SubscribeNamespace)
+      subscribeNsStream.respond(new RequestOk((subscribeNsMsg as SubscribeNamespace).requestId))
+      expect((await subscribingNs).response).toBeInstanceOf(RequestOk)
+
+      const statusing = client.trackStatus(ftn, 11n)
+      const statusStream = await openedStream(transport, 5)
+      const statusMsg = statusStream.messages[0]
+      expect(statusMsg).toBeInstanceOf(TrackStatus)
+      statusStream.respond(new RequestOk((statusMsg as TrackStatus).requestId))
+      expect(await statusing).toBeInstanceOf(RequestOk)
+
+      // Six streams, six requests, and the control stream still carries only the SETUP
+      // written during the handshake. SUBSCRIBE_TRACKS is the seventh type; it has no
+      // message body yet (#266).
+      expect(transport.biStreams).toHaveLength(6)
+      expect(transport.sentChunks).toHaveLength(1)
+      expect(ControlMessage.deserialize(new FrozenByteBuffer(transport.sentChunks[0]!))).toBeInstanceOf(Setup)
+
+      await client.disconnect()
+    })
+
+    it('sends REQUEST_UPDATE on the subscription stream and cancels by closing it', async () => {
+      const { client, transport } = await connected()
+
+      const subscribing = client.subscribe({
+        fullTrackName: ftn,
+        filterType: FilterType.LatestObject,
+        forward: true,
+        groupOrder: GroupOrder.Original,
+        priority: 0,
+      })
+      const subscribeStream = await openedStream(transport, 0)
+      const requestId = (subscribeStream.messages[0] as Subscribe).requestId
+      subscribeStream.respond(SubscribeOk.create(requestId, 7n, [], []))
+      await subscribing
+
+      await client.subscribeUpdate({
+        subscriptionRequestId: requestId,
+        startLocation: new Location(1n, 0n),
+        endGroup: 5n,
+        forward: false,
+        priority: 200,
+      })
+      expect(subscribeStream.messages[1]).toBeInstanceOf(RequestUpdate)
+      expect(transport.biStreams).toHaveLength(1)
+
+      await client.unsubscribe(requestId)
+      // No UNSUBSCRIBE message: closing the stream is the cancellation.
+      expect(subscribeStream.messages).toHaveLength(2)
+      expect(subscribeStream.isClosed).toBe(true)
+
+      await client.disconnect()
+    })
+
+    it('answers a peer-opened request stream on that stream', async () => {
+      const { client, transport } = await connected()
+
+      const incoming = transport.openIncomingBiStream()
+      const subscribe = Subscribe.newLatestObject(4n, ftn, [])
+      incoming.respond(subscribe)
+
+      // No such track is registered, so the refusal comes back here rather than on the
+      // control stream.
+      await vi.waitFor(() => expect(incoming.messages).toHaveLength(1))
+      expect(incoming.messages[0]).toBeInstanceOf(RequestError)
+      expect(transport.sentChunks).toHaveLength(1)
+
+      await client.disconnect()
+    })
+
+    it('refuses a peer-opened stream that does not begin with a First-marked type', async () => {
+      const { client, transport } = await connected()
+
+      const incoming = transport.openIncomingBiStream()
+      incoming.respond(new RequestOk(4n))
+
+      await vi.waitFor(() => expect(incoming.isClosed).toBe(true))
+      expect(incoming.messages).toHaveLength(0)
+
+      await client.disconnect()
     })
   })
 }

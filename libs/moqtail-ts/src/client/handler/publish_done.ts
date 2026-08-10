@@ -16,11 +16,11 @@
 
 import { ProtocolViolationError } from '@/model/error'
 import { PublishDone } from '../../model/control'
-import { ControlMessageHandler } from './handler'
+import { RequestStreamMessageHandler } from './handler'
 import { SubscribeRequest } from '../request/subscribe'
 import { logger } from '../../util/logger'
 
-export const handlerPublishDone: ControlMessageHandler<PublishDone> = async (client, msg) => {
+export const handlerPublishDone: RequestStreamMessageHandler<PublishDone> = async (client, msg) => {
   if (client.onPeerPublishDone) {
     client.onPeerPublishDone(msg)
   }

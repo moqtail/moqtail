@@ -15,11 +15,11 @@
  */
 
 import { KeyValuePair } from '../../common/pair'
-import { SetupParameterType } from '../constant'
+import { SetupOptionType } from '../constant'
 import { Parameter } from '../parameter'
 
 export class MaxAuthTokenCacheSize implements Parameter {
-  static readonly TYPE = SetupParameterType.MaxAuthTokenCacheSize
+  static readonly TYPE = SetupOptionType.MaxAuthTokenCacheSize
   constructor(public readonly maxSize: bigint) {}
 
   toKeyValuePair(): KeyValuePair {
@@ -43,7 +43,7 @@ if (import.meta.vitest) {
       expect(param?.maxSize).toBe(123n)
     })
     test('fromKeyValuePair returns undefined for wrong type', () => {
-      const pair = KeyValuePair.tryNewVarInt(SetupParameterType.MaxRequestId, 123n)
+      const pair = KeyValuePair.tryNewVarInt(SetupOptionType.MaxRequestId, 123n)
       const param = MaxAuthTokenCacheSize.fromKeyValuePair(pair)
       expect(param).toBeUndefined()
     })

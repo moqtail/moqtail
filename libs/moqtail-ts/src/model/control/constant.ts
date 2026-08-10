@@ -30,19 +30,18 @@ export const SUPPORTED_VERSIONS = ['moqt-18']
  *
  * Table 5 reserves `0x01` (SETUP for version 00), `0x40`/`0x41` (CLIENT_SETUP /
  * SERVER_SETUP for versions 10 and below) and `0x20`/`0x21` (CLIENT_SETUP /
- * SERVER_SETUP for versions 16 and below). The first three stay in the enum as
- * documentation, but `tryFrom` rejects every RESERVED codepoint, which is what §10
- * requires — an endpoint receiving an unknown message type MUST close the session.
- * `0x20` and `0x21` are still live as ClientSetup / ServerSetup and become reserved
- * once they are folded into Setup (#256).
+ * SERVER_SETUP for versions 16 and below — folded into Setup by #256). All five stay
+ * in the enum as documentation, but `tryFrom` rejects every RESERVED codepoint, which
+ * is what §10 requires — an endpoint receiving an unknown message type MUST close the
+ * session.
  */
 export enum ControlMessageType {
   ReservedSetupV00 = 0x01, // RESERVED; rejected by tryFrom
   ReservedClientSetupV10 = 0x40, // RESERVED; rejected by tryFrom
   ReservedServerSetupV10 = 0x41, // RESERVED; rejected by tryFrom
+  ReservedClientSetupV16 = 0x20, // RESERVED; rejected by tryFrom
+  ReservedServerSetupV16 = 0x21, // RESERVED; rejected by tryFrom
   Setup = 0x2f00, // Control
-  ClientSetup = 0x20, // RESERVED in draft-18; folded into Setup
-  ServerSetup = 0x21, // RESERVED in draft-18; folded into Setup
   GoAway = 0x10, // Control, Request
   MaxRequestId = 0x15, // not in draft-18
   RequestsBlocked = 0x1a, // not in draft-18
@@ -78,15 +77,32 @@ export enum ControlMessageType {
  * @throws InvalidEnumValue if the value is not a valid control message type.
  */
 export namespace ControlMessageType {
+  /**
+   * True for the seven types marked `First` in Table 5: each one MUST be the first
+   * message on a new bidirectional request stream, and no other type may open one.
+   * Every remaining type travels on the control stream or on an already-open request
+   * stream.
+   */
+  export function isFirst(t: ControlMessageType): boolean {
+    switch (t) {
+      case ControlMessageType.Subscribe:
+      case ControlMessageType.Fetch:
+      case ControlMessageType.TrackStatus:
+      case ControlMessageType.PublishNamespace:
+      case ControlMessageType.SubscribeNamespace:
+      case ControlMessageType.SubscribeTracks:
+      case ControlMessageType.Publish:
+        return true
+      default:
+        return false
+    }
+  }
+
   /** Convert bigint discriminant to enum value or throw on invalid. */
   export function tryFrom(v: bigint): ControlMessageType {
     switch (v) {
       case 0x2f00n:
         return ControlMessageType.Setup
-      case 0x20n:
-        return ControlMessageType.ClientSetup
-      case 0x21n:
-        return ControlMessageType.ServerSetup
       case 0x10n:
         return ControlMessageType.GoAway
       case 0x15n:
@@ -434,6 +450,24 @@ if (import.meta.vitest) {
     test('every message_types.json entry is exercised', async () => {
       const { messageTypes } = await fixture()
       expect(messageTypes().entries.length).toBeGreaterThan(0)
+    })
+
+    test('isFirst matches the Stream column of message_types.json', async () => {
+      const { messageTypes, parseHex } = await fixture()
+      const graded = messageTypes()
+        .entries.filter((entry) => !entry.reserved)
+        .map((entry) => {
+          const codepoint = parseHex(entry.value)
+          return {
+            name: entry.name,
+            expected: (entry.stream ?? '').includes('First'),
+            // SUBSCRIBE_TRACKS and PUBLISH_BLOCKED have no body yet (#266, #271) but
+            // their codepoints already parse, so the Stream column applies to them too.
+            actual: ControlMessageType.isFirst(ControlMessageType.tryFrom(codepoint)),
+          }
+        })
+      expect(graded.filter((e) => e.expected).map((e) => e.name).length).toBe(7)
+      expect(graded.filter((e) => e.actual !== e.expected)).toEqual([])
     })
   })
 }

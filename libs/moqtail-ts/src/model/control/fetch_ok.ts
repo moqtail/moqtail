@@ -32,6 +32,10 @@ export class FetchOk {
     public readonly trackExtensions: TrackExtension[] = [],
   ) {}
 
+  getType(): ControlMessageType {
+    return ControlMessageType.FetchOk
+  }
+
   serialize(): FrozenByteBuffer {
     const buf = new ByteBuffer()
     buf.putVI(BigInt(ControlMessageType.FetchOk))

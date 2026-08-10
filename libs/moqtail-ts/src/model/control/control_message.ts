@@ -20,13 +20,12 @@ import { PublishNamespace } from './publish_namespace'
 import { PublishNamespaceCancel } from './publish_namespace_cancel'
 import { Namespace } from './namespace'
 import { NamespaceDone } from './namespace_done'
-import { ClientSetup } from './client_setup'
+import { Setup } from './setup'
 import { Fetch } from './fetch'
 import { FetchCancel } from './fetch_cancel'
 import { FetchOk } from './fetch_ok'
 import { GoAway } from './goaway'
 import { MaxRequestId } from './max_request_id'
-import { ServerSetup } from './server_setup'
 import { Subscribe } from './subscribe'
 import { PublishDone } from './publish_done'
 import { Publish } from './publish'
@@ -38,6 +37,7 @@ import { TrackStatus } from './track_status'
 import { PublishNamespaceDone } from './publish_namespace_done'
 import { Unsubscribe } from './unsubscribe'
 import { SubscribeNamespace } from './subscribe_namespace'
+import { Switch } from './switch'
 import { UnsubscribeNamespace } from './unsubscribe_namespace'
 import { NotEnoughBytesError } from '../error/error'
 import { Tuple } from '../common'
@@ -53,13 +53,12 @@ export type ControlMessage =
   | PublishNamespaceCancel
   | Namespace
   | NamespaceDone
-  | ClientSetup
+  | Setup
   | Fetch
   | FetchCancel
   | FetchOk
   | GoAway
   | MaxRequestId
-  | ServerSetup
   | Subscribe
   | RequestError
   | SubscribeOk
@@ -71,6 +70,9 @@ export type ControlMessage =
   | SubscribeNamespace
   | UnsubscribeNamespace
   | RequestOk
+  // moqtail-local extension (0x22), not a draft-18 type: it is sent but never parsed,
+  // so `deserialize` below has no case for it and `tryFrom` rejects the codepoint.
+  | Switch
 
 export namespace ControlMessage {
   export function deserialize(buf: FrozenByteBuffer): ControlMessage {
@@ -100,8 +102,6 @@ export namespace ControlMessage {
         return RequestOk.parsePayload(payload)
       case ControlMessageType.RequestError:
         return RequestError.parsePayload(payload)
-      case ControlMessageType.ClientSetup:
-        return ClientSetup.parsePayload(payload)
       case ControlMessageType.Fetch:
         return Fetch.parsePayload(payload)
       case ControlMessageType.FetchCancel:
@@ -112,8 +112,6 @@ export namespace ControlMessage {
         return GoAway.parsePayload(payload)
       case ControlMessageType.MaxRequestId:
         return MaxRequestId.parsePayload(payload)
-      case ControlMessageType.ServerSetup:
-        return ServerSetup.parsePayload(payload)
       case ControlMessageType.Subscribe:
         return Subscribe.parsePayload(payload)
       case ControlMessageType.SubscribeOk:
@@ -133,7 +131,9 @@ export namespace ControlMessage {
       case ControlMessageType.UnsubscribeNamespace:
         return UnsubscribeNamespace.parsePayload(payload)
       case ControlMessageType.Setup:
-        throw new Error('ControlMessageType.Setup (0x2F00) has no message body yet (#256)')
+        return Setup.parsePayload(payload)
+      // Draft-18 types whose bodies are owned by later tasks: SUBSCRIBE_TRACKS (#266),
+      // PUBLISH_BLOCKED (#271).
       case ControlMessageType.SubscribeTracks:
         throw new Error('ControlMessageType.SubscribeTracks (0x51) has no message body yet (#266)')
       case ControlMessageType.PublishBlocked:

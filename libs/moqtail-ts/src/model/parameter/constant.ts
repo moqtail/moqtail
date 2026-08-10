@@ -16,25 +16,32 @@
 
 import { InvalidTypeError } from '../error'
 
-export enum SetupParameterType {
+export enum SetupOptionType {
   Path = 0x01,
   MaxRequestId = 0x02,
   AuthorizationToken = 0x03,
   MaxAuthTokenCacheSize = 0x04,
+  /** Raw-QUIC only. Client-only; MUST NOT be sent over WebTransport (draft-18 §10.3.1.1). */
+  Authority = 0x05,
+  MoqtImplementation = 0x07,
 }
 
-export function setupParameterTypeFromNumber(value: number): SetupParameterType {
+export function setupOptionTypeFromNumber(value: number): SetupOptionType {
   switch (value) {
     case 0x01:
-      return SetupParameterType.Path
+      return SetupOptionType.Path
     case 0x02:
-      return SetupParameterType.MaxRequestId
+      return SetupOptionType.MaxRequestId
     case 0x03:
-      return SetupParameterType.AuthorizationToken
+      return SetupOptionType.AuthorizationToken
     case 0x04:
-      return SetupParameterType.MaxAuthTokenCacheSize
+      return SetupOptionType.MaxAuthTokenCacheSize
+    case 0x05:
+      return SetupOptionType.Authority
+    case 0x07:
+      return SetupOptionType.MoqtImplementation
     default:
-      throw new InvalidTypeError('setupParameterTypeFromNumber', `Invalid setup parameter type: ${value}`)
+      throw new InvalidTypeError('setupOptionTypeFromNumber', `Invalid setup option type: ${value}`)
   }
 }
 
@@ -106,13 +113,9 @@ if (import.meta.vitest) {
   describe('draft-18 conformance', () => {
     const fixture = async () => await import('../../../test/conformance')
 
-    test('SetupParameterType matches parameter_types.json', async () => {
+    test('SetupOptionType matches parameter_types.json', async () => {
       const { parameterTypes, assertRegistry, pascalIdent } = await fixture()
-      assertRegistry(
-        parameterTypes().setup_options,
-        pascalIdent(),
-        (codepoint) => SetupParameterType[Number(codepoint)],
-      )
+      assertRegistry(parameterTypes().setup_options, pascalIdent(), (codepoint) => SetupOptionType[Number(codepoint)])
     })
 
     test('MessageParameterType matches parameter_types.json', async () => {

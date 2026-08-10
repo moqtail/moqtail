@@ -15,14 +15,14 @@
  */
 
 import { RequestOk } from '../../model/control'
-import { ControlMessageHandler } from './handler'
+import { RequestStreamMessageHandler } from './handler'
 import { logger } from '../../util/logger'
 import { ProtocolViolationError } from '@/model'
 import { PublishNamespaceRequest } from '../request/publish_namespace'
 import { SubscribeNamespaceRequest } from '../request/subscribe_namespace'
 import { TrackStatusRequest } from '../request/track_status'
 
-export const handlerRequestOk: ControlMessageHandler<RequestOk> = async (client, msg) => {
+export const handlerRequestOk: RequestStreamMessageHandler<RequestOk> = async (client, msg) => {
   logger.log('handler/request_ok', 'received RequestOk for requestId:', msg.requestId)
 
   // 1. Look up the pending request by ID

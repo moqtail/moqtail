@@ -27,20 +27,12 @@
       {
         "name": "AUTHORITY",
         "value": "0x05",
-        "spec": "Section 10.3.1.1",
-        "notes": "moqtail-rs has this; moqtail-ts does not.",
-        "pending": {
-          "ts": 256
-        }
+        "spec": "Section 10.3.1.1"
       },
       {
         "name": "MOQT_IMPLEMENTATION",
         "value": "0x07",
-        "spec": "Section 10.3.1.5",
-        "notes": "moqtail-rs has this; moqtail-ts does not.",
-        "pending": {
-          "ts": 256
-        }
+        "spec": "Section 10.3.1.5"
       }
     ],
     "not_in_draft": [

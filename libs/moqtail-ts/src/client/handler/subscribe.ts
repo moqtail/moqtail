@@ -16,13 +16,13 @@
 
 import { ReasonPhrase } from '@/model'
 import { Subscribe, RequestError, RequestErrorCode, SubscribeOk } from '../../model/control'
-import { ControlMessageHandler } from './handler'
+import { RequestStreamMessageHandler } from './handler'
 import { SubscribePublication } from '../publication/subscribe'
 import { logger } from '../../util/logger'
 import { LargestObject } from '../../model/parameter/message/largest_object'
 import { isValidTrackAlias } from '../util/validators'
 
-export const handlerSubscribe: ControlMessageHandler<Subscribe> = async (client, msg) => {
+export const handlerSubscribe: RequestStreamMessageHandler<Subscribe> = async (client, msg, stream) => {
   logger.debug('handler/subscribe', `received requestId=${msg.requestId} ftn="${msg.fullTrackName}"`)
 
   const track = client.trackSources.get(msg.fullTrackName.toString())
@@ -37,7 +37,7 @@ export const handlerSubscribe: ControlMessageHandler<Subscribe> = async (client,
       0n,
       new ReasonPhrase('Track does not exist'),
     )
-    await client.controlStream.send(subscribeError)
+    await stream.send(subscribeError)
     return
   }
   if (!track.trackSource.live) {
@@ -51,7 +51,7 @@ export const handlerSubscribe: ControlMessageHandler<Subscribe> = async (client,
       0n,
       new ReasonPhrase('Requested track does not support subscribe'),
     )
-    await client.controlStream.send(response)
+    await stream.send(response)
     return
   }
 
@@ -68,8 +68,10 @@ export const handlerSubscribe: ControlMessageHandler<Subscribe> = async (client,
     `requestId=${msg.requestId} ftn="${msg.fullTrackName}" trackAlias=${track.trackAlias} largestLocation=${largestLocation ? `${largestLocation.group}:${largestLocation.object}` : 'none'} — sending SUBSCRIBE_OK`,
   )
   const subscribeOk = SubscribeOk.create(msg.requestId, track.trackAlias, parameters, track.trackExtensions ?? [])
-  const publication = new SubscribePublication(client, track, msg, largestLocation)
+  // The publication keeps the stream: PUBLISH_DONE and any later response for this
+  // subscription must go back on the stream the SUBSCRIBE arrived on.
+  const publication = new SubscribePublication(client, track, msg, stream, largestLocation)
   client.publications.set(msg.requestId, publication)
-  await client.controlStream.send(subscribeOk)
+  await stream.send(subscribeOk)
   logger.debug('handler/subscribe', `requestId=${msg.requestId} — SUBSCRIBE_OK sent, publication registered`)
 }

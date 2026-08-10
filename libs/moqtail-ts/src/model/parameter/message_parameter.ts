@@ -102,7 +102,7 @@ export namespace MessageParameter {
 
 /**
  * Builder for constructing a list of MessageParameters.
- * Mirrors the SetupParameters builder pattern.
+ * Mirrors the SetupOptions builder pattern.
  */
 export class MessageParameters {
   private params: MessageParameter[] = []

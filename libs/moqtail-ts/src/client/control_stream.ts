@@ -18,7 +18,7 @@ import { ControlMessage } from '../model/control/control_message'
 import { FrozenByteBuffer, ByteBuffer } from '../model/common/byte_buffer'
 import { NotEnoughBytesError, TerminationError, TimeoutError } from '../model/error/error'
 import { TerminationCode } from '../model/error/constant'
-import { SetupParameters, ClientSetup } from '@/model'
+import { SetupOptions, Setup } from '@/model'
 import { logger } from '../util/logger'
 
 function withTimeout<T>(promise: Promise<T>, ms?: number, errorMsg?: string): Promise<T> {
@@ -30,48 +30,17 @@ function withTimeout<T>(promise: Promise<T>, ms?: number, errorMsg?: string): Pr
   return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timeoutId))
 }
 
-export class ControlStream {
-  readonly stream: ReadableStream<ControlMessage>
-  #receiveBuffer: ByteBuffer
-  #expectedPayloadLength: number | null = null
-  #partialMessageTimeoutMs: number | undefined
-  #reader: ReadableStreamDefaultReader<Uint8Array>
+/**
+ * Send half of the control plane: a unidirectional stream this endpoint opens and
+ * whose first message must be SETUP.
+ */
+export class ControlSendStream {
   #writer: WritableStreamDefaultWriter<Uint8Array>
   onMessageSent?: (msg: ControlMessage) => void
-  onMessageReceived?: (msg: ControlMessage) => void
 
-  private constructor(
-    readStream: ReadableStream<Uint8Array>,
-    writeStream: WritableStream<Uint8Array>,
-    partialMessageTimeoutMs?: number,
-    onMessageSent?: (msg: ControlMessage) => void,
-    onMessageReceived?: (msg: ControlMessage) => void,
-  ) {
-    this.#receiveBuffer = new ByteBuffer()
-    this.#partialMessageTimeoutMs = partialMessageTimeoutMs
-    this.#reader = readStream.getReader()
+  constructor(writeStream: WritableStream<Uint8Array>, onMessageSent?: (msg: ControlMessage) => void) {
     this.#writer = writeStream.getWriter()
-    if (onMessageReceived) this.onMessageReceived = onMessageReceived
     if (onMessageSent) this.onMessageSent = onMessageSent
-    this.stream = new ReadableStream<ControlMessage>({
-      start: (controller) => this.#ingestLoop(controller),
-      cancel: () => this.close(),
-    })
-  }
-
-  static new(
-    bidirectionalStream: WebTransportBidirectionalStream,
-    partialMessageTimeoutMs?: number,
-    onMessageSent?: (msg: ControlMessage) => void,
-    onMessageReceived?: (msg: ControlMessage) => void,
-  ): ControlStream {
-    return new ControlStream(
-      bidirectionalStream.readable,
-      bidirectionalStream.writable,
-      partialMessageTimeoutMs,
-      onMessageSent,
-      onMessageReceived,
-    )
   }
 
   async send(message: ControlMessage): Promise<void> {
@@ -95,10 +64,42 @@ export class ControlStream {
     }
   }
 
-  public async close(): Promise<void> {
-    logger.debug('control_stream', 'close: closing writer and cancelling reader')
-    await Promise.allSettled([this.#writer.close().catch(() => {}), this.#reader.cancel().catch(() => {})])
-    logger.debug('control_stream', 'close: done')
+  async close(): Promise<void> {
+    logger.debug('control_stream', 'close: closing writer')
+    await this.#writer.close().catch(() => {})
+  }
+}
+
+/**
+ * Receive half of the control plane: the unidirectional stream the peer opens,
+ * whose first message must be SETUP.
+ */
+export class ControlRecvStream {
+  readonly stream: ReadableStream<ControlMessage>
+  #receiveBuffer: ByteBuffer
+  #expectedPayloadLength: number | null = null
+  #partialMessageTimeoutMs: number | undefined
+  #reader: ReadableStreamDefaultReader<Uint8Array>
+  onMessageReceived?: (msg: ControlMessage) => void
+
+  constructor(
+    readStream: ReadableStream<Uint8Array>,
+    partialMessageTimeoutMs?: number,
+    onMessageReceived?: (msg: ControlMessage) => void,
+  ) {
+    this.#receiveBuffer = new ByteBuffer()
+    this.#partialMessageTimeoutMs = partialMessageTimeoutMs
+    this.#reader = readStream.getReader()
+    if (onMessageReceived) this.onMessageReceived = onMessageReceived
+    this.stream = new ReadableStream<ControlMessage>({
+      start: (controller) => this.#ingestLoop(controller),
+      cancel: () => this.close(),
+    })
+  }
+
+  async close(): Promise<void> {
+    logger.debug('control_stream', 'close: cancelling reader')
+    await this.#reader.cancel().catch(() => {})
   }
 
   async #ingestLoop(controller: ReadableStreamDefaultController<ControlMessage>) {
@@ -220,6 +221,35 @@ export class ControlStream {
   }
 }
 
+/**
+ * The control plane as a whole: the two independent unidirectional halves opened by
+ * each endpoint.
+ */
+export class ControlStream {
+  readonly stream: ReadableStream<ControlMessage>
+  #sendHalf: ControlSendStream
+  #recvHalf: ControlRecvStream
+
+  constructor(sendHalf: ControlSendStream, recvHalf: ControlRecvStream) {
+    this.#sendHalf = sendHalf
+    this.#recvHalf = recvHalf
+    this.stream = recvHalf.stream
+  }
+
+  async send(message: ControlMessage): Promise<void> {
+    try {
+      await this.#sendHalf.send(message)
+    } catch (error) {
+      await this.#recvHalf.close()
+      throw error
+    }
+  }
+
+  async close(): Promise<void> {
+    await Promise.allSettled([this.#sendHalf.close(), this.#recvHalf.close()])
+  }
+}
+
 if (import.meta.vitest) {
   const { describe, it, expect, vi, beforeEach } = import.meta.vitest
 
@@ -319,45 +349,50 @@ if (import.meta.vitest) {
     }
   }
 
-  function createMockBidirectionalStream(readableChunks: Uint8Array[] = []): WebTransportBidirectionalStream {
+  function createMockControlStream(readableChunks: Uint8Array[] = [], partialMessageTimeoutMs?: number) {
     const readable = new MockReadableStream(readableChunks)
     const writable = new MockWritableStream()
-
-    return {
-      readable: readable as unknown as ReadableStream<Uint8Array>,
-      writable: writable as unknown as WritableStream<Uint8Array>,
-    }
+    const sendHalf = new ControlSendStream(writable as unknown as WritableStream<Uint8Array>)
+    const recvHalf = new ControlRecvStream(readable as unknown as ReadableStream<Uint8Array>, partialMessageTimeoutMs)
+    return { controlStream: new ControlStream(sendHalf, recvHalf), writable }
   }
+
   describe('ControlStream', () => {
-    describe('ClientSetup', () => {
-      let controlStream: ControlStream
-      let mockBidirectionalStream: WebTransportBidirectionalStream
+    describe('Setup', () => {
       beforeEach(() => {
         vi.clearAllMocks()
       })
       it('should handle full message roundtrip', async () => {
-        const setupParams = new SetupParameters()
+        const setupParams = new SetupOptions()
           .addPath('/test/path')
           .addMaxRequestId(1000n)
           .addMaxAuthTokenCacheSize(500n)
           .build()
 
-        const originalMessage = new ClientSetup(setupParams)
+        const originalMessage = new Setup(setupParams)
         const messageBytes = originalMessage.serialize().toUint8Array()
-        mockBidirectionalStream = createMockBidirectionalStream([messageBytes])
-        controlStream = ControlStream.new(mockBidirectionalStream)
+        const { controlStream } = createMockControlStream([messageBytes])
 
         await controlStream.send(originalMessage)
         const reader = controlStream.stream.getReader()
         const { value: receivedMessage } = await reader.read()
-        expect(receivedMessage).toBeInstanceOf(ClientSetup)
+        expect(receivedMessage).toBeInstanceOf(Setup)
         expect(receivedMessage).toEqual(originalMessage)
         reader.releaseLock()
       })
-      it('should handle excess bytes successful roundtrip then timeout', async () => {
-        const setupParams = new SetupParameters().addPath('/excess/test').build()
+      it('should send SETUP as the first message on the send half', async () => {
+        const originalMessage = new Setup(new SetupOptions().addPath('/first/message').build())
+        const { controlStream, writable } = createMockControlStream()
 
-        const originalMessage = new ClientSetup(setupParams)
+        await controlStream.send(originalMessage)
+        const written = writable.getWrittenData()
+        expect(written).toHaveLength(1)
+        expect(ControlMessage.deserialize(new FrozenByteBuffer(written[0]!))).toEqual(originalMessage)
+      })
+      it('should handle excess bytes successful roundtrip then timeout', async () => {
+        const setupParams = new SetupOptions().addPath('/excess/test').build()
+
+        const originalMessage = new Setup(setupParams)
         const messageBytes = originalMessage.serialize().toUint8Array()
         const excessBytes = new Uint8Array([0xff, 0x13, 0x25])
 
@@ -365,8 +400,7 @@ if (import.meta.vitest) {
         combinedBytes.set(messageBytes, 0)
         combinedBytes.set(excessBytes, messageBytes.length)
 
-        mockBidirectionalStream = createMockBidirectionalStream([combinedBytes])
-        controlStream = ControlStream.new(mockBidirectionalStream, 250)
+        const { controlStream } = createMockControlStream([combinedBytes], 250)
         const reader = controlStream.stream.getReader()
         const { value: receivedMessage } = await reader.read()
         expect(receivedMessage).toEqual(originalMessage)
@@ -374,15 +408,14 @@ if (import.meta.vitest) {
         reader.releaseLock()
       })
       it('should timeout on partial message', async () => {
-        const setupParams = new SetupParameters().addPath('/partial/test').addMaxRequestId(42n).build()
-        const originalMessage = new ClientSetup(setupParams)
+        const setupParams = new SetupOptions().addPath('/partial/test').addMaxRequestId(42n).build()
+        const originalMessage = new Setup(setupParams)
         const completeMessageBytes = originalMessage.serialize().toUint8Array()
 
         // Send only partial message (first 10 bytes)
         const partialBytes = completeMessageBytes.slice(0, Math.min(10, completeMessageBytes.length))
 
-        mockBidirectionalStream = createMockBidirectionalStream([partialBytes])
-        controlStream = ControlStream.new(mockBidirectionalStream, 250)
+        const { controlStream } = createMockControlStream([partialBytes], 250)
         const reader = controlStream.stream.getReader()
         await expect(reader.read()).rejects.toThrow(TerminationError)
         reader.releaseLock()

@@ -29,7 +29,7 @@ export class GoAway {
     }
   }
 
-  static getType(): ControlMessageType {
+  getType(): ControlMessageType {
     return ControlMessageType.GoAway
   }
 

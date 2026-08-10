@@ -15,10 +15,13 @@
  */
 
 import { PublishNamespaceCancel } from '../../model/control'
-import { ControlMessageHandler } from './handler'
+import { RequestStreamMessageHandler } from './handler'
 import { logger } from '../../util/logger'
 
-export const handlerPublishNamespaceCancel: ControlMessageHandler<PublishNamespaceCancel> = async (_client, msg) => {
+export const handlerPublishNamespaceCancel: RequestStreamMessageHandler<PublishNamespaceCancel> = async (
+  _client,
+  msg,
+) => {
   logger.debug('handler/publish_namespace_cancel', 'not implemented', msg)
   // TODO: Implement PublishNamespaceCancel handler logic
 }

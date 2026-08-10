@@ -68,6 +68,10 @@ export class Subscribe {
     ])
   }
 
+  getType(): ControlMessageType {
+    return ControlMessageType.Subscribe
+  }
+
   serialize(): FrozenByteBuffer {
     const buf = new ByteBuffer()
     buf.putVI(ControlMessageType.Subscribe)

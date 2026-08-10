@@ -15,20 +15,24 @@
  */
 
 import { ControlMessage } from '../model/control/control_message'
+import { ControlMessageType } from '../model/control/constant'
 import { FrozenByteBuffer, ByteBuffer } from '../model/common/byte_buffer'
-import { NotEnoughBytesError, TerminationError } from '../model/error/error'
+import { NotEnoughBytesError, ProtocolViolationError, TerminationError } from '../model/error/error'
 import { TerminationCode } from '../model/error/constant'
 import { logger } from '../util/logger'
 
 /**
- * Wraps a WebTransport bidirectional stream for request-style MOQT streams
- * such as SUBSCRIBE_NAMESPACE.
+ * Wraps a WebTransport bidirectional stream carrying one MOQT request.
+ * Because a response is correlated by the stream it arrives on, nothing here needs a
+ * request id.
  */
 export class RequestStream {
   readonly stream: ReadableStream<ControlMessage>
   readonly #reader: ReadableStreamDefaultReader<Uint8Array>
   readonly #writer: WritableStreamDefaultWriter<Uint8Array>
   #receiveBuffer: ByteBuffer
+  /** Held for the stream's lifetime once {@link next} is first called. */
+  #messageReader?: ReadableStreamDefaultReader<ControlMessage>
 
   constructor(biStream: WebTransportBidirectionalStream) {
     this.#receiveBuffer = new ByteBuffer()
@@ -39,6 +43,37 @@ export class RequestStream {
       cancel: () => this.close(),
     })
     logger.debug('request_stream', 'opened')
+  }
+
+  /**
+   * Opens a new bidi stream and writes `first` on it.
+   *
+   * @throws :{@link ProtocolViolationError} If `first` is not one of the seven types
+   * Table 5 marks `First`; those are the only ones allowed to open a request stream.
+   */
+  static async open(webTransport: WebTransport, first: ControlMessage): Promise<RequestStream> {
+    if (!ControlMessageType.isFirst(first.getType()))
+      throw new ProtocolViolationError(
+        'RequestStream.open',
+        `${first.constructor.name} may not open a request stream: only First-marked types can`,
+      )
+    const biStream = await webTransport.createBidirectionalStream()
+    const requestStream = new RequestStream(biStream)
+    await requestStream.send(first)
+    return requestStream
+  }
+
+  /**
+   * Reads the next control message off this stream, or `undefined` once the peer has
+   * closed or reset it.
+   *
+   * Takes ownership of {@link RequestStream.stream}'s reader on first use, so callers
+   * must not mix `next()` with `stream.getReader()`.
+   */
+  async next(): Promise<ControlMessage | undefined> {
+    this.#messageReader ??= this.stream.getReader()
+    const { value, done } = await this.#messageReader.read()
+    return done ? undefined : value
   }
 
   async send(message: ControlMessage): Promise<void> {

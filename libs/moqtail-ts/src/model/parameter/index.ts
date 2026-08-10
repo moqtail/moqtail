@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-export * from './setup_parameter'
+export * from './setup_option'
 export * from './message_parameter'
 export * from './parameter'
 export * from './constant'

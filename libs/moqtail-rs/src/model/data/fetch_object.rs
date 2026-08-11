@@ -490,6 +490,54 @@ mod tests {
   use super::*;
   use crate::model::common::pair::KeyValuePair;
 
+  /// The FETCH object layout, byte for byte. Round-trip tests cannot catch a field in
+  /// the wrong place or a field that should not be there, because both ends share this
+  /// encoder.
+  #[test]
+  fn wire_layout_is_byte_exact() {
+    let first = FetchObject::Object(FetchObjectPayload {
+      group_id: 2,
+      subgroup_id: 0,
+      object_id: 0,
+      publisher_priority: 0,
+      forwarding_preference: ObjectForwardingPreference::Subgroup,
+      properties: None,
+      payload: Bytes::from_static(b"abc"),
+    });
+    let bytes = first.serialize(None, GroupOrder::Ascending).unwrap();
+    assert_eq!(
+      bytes.as_ref(),
+      &[
+        0x1c, // flags: subgroup zero, object id + group id + priority present
+        0x02, // Group ID Delta — absolute on the first object
+        // no Subgroup ID: the flags say it is zero
+        0x00, // Object ID Delta — absolute on the first object
+        0x00, // Publisher Priority
+        // no Properties: the flags say absent
+        0x03, // Object Payload Length
+        b'a', b'b', b'c',
+      ]
+    );
+
+    // The next object in the same group inherits everything, so only the payload is sent.
+    // A zero-length payload here is a zero-length Normal object; FETCH has no status
+    // field, and a missing range is spelled with an End of Range indicator instead.
+    let prev = first.context();
+    let second = FetchObject::Object(FetchObjectPayload {
+      group_id: 2,
+      subgroup_id: 0,
+      object_id: 1,
+      publisher_priority: 0,
+      forwarding_preference: ObjectForwardingPreference::Subgroup,
+      properties: None,
+      payload: Bytes::from_static(b"de"),
+    });
+    let bytes = second
+      .serialize(prev.as_ref(), GroupOrder::Ascending)
+      .unwrap();
+    assert_eq!(bytes.as_ref(), &[0x00, 0x02, b'd', b'e']);
+  }
+
   fn sample_payload() -> FetchObjectPayload {
     FetchObjectPayload {
       group_id: 9,

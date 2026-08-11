@@ -900,14 +900,32 @@ impl Subscription {
   }
 
   /// Reset every data stream this subscription has opened with the given code.
+  /// Resets every open data stream, draining the map so `finish` does not then try to
+  /// close a stream that has already been reset.
   async fn reset_data_streams(&self, code: u64) {
     let stream_ids: Vec<StreamId> = {
-      let map = self.send_stream_last_object_ids.read().await;
-      map.keys().cloned().collect()
+      let mut map = self.send_stream_last_object_ids.write().await;
+      map.drain().map(|(stream_id, _)| stream_id).collect()
     };
     for stream_id in stream_ids {
       self.subscriber.reset_stream(&stream_id, code).await;
     }
+  }
+
+  /// Ends the subscription because the subscriber cancelled it.
+  ///
+  /// A cancelled subscription's streams are reset, not finished. A finish is a FIN,
+  /// which asks the peer to take delivery of everything already written — data the
+  /// subscriber has just said it no longer wants.
+  pub async fn cancel(&self) {
+    info!(
+      "Cancelling subscription for subscriber={} relay_track_id={}",
+      self.client_connection_id, self.relay_track_id
+    );
+    self
+      .reset_data_streams(StreamResetCode::Cancelled.to_u64())
+      .await;
+    self.finish().await;
   }
 
   async fn handle_track_event(&self, event: TrackEvent) {

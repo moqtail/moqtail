@@ -30,6 +30,7 @@ use moqtail::model::data::datagram::Datagram;
 use moqtail::model::data::object::Object;
 use moqtail::model::data::subgroup_header::SubgroupHeader;
 use moqtail::model::data::subgroup_object::SubgroupObject;
+use moqtail::model::error::StreamResetCode;
 use moqtail::model::parameter::message_parameter::MessageParameter;
 use moqtail::model::property::object_property::ObjectProperty;
 use moqtail::transport::connection::TransportConnection;
@@ -56,6 +57,7 @@ pub struct PublishConfig {
 
 pub struct PublishNamespaceConfig {
   pub namespace: String,
+  pub withdraw_after: u64,
   pub delivery_mode: DeliveryMode,
   pub group_count: u64,
   pub interval: u64,
@@ -72,8 +74,22 @@ pub async fn run_namespace(moq: MoqConnection, config: PublishNamespaceConfig) -
 
   let ns = Tuple::from_utf8_path(&config.namespace);
 
-  // Step 1: Announce namespace on its own request stream (kept open below).
-  let _namespace_stream = publish_namespace(&connection, &ns).await?;
+  // Step 1: Announce namespace on its own request stream. The namespace is published
+  // for exactly as long as that stream is open, so a publisher withdraws by resetting
+  // it -- and keeps the announcement by simply holding it.
+  let namespace_stream = publish_namespace(&connection, &ns).await?;
+  let _namespace_stream = if config.withdraw_after > 0 {
+    let after = config.withdraw_after;
+    let namespace = config.namespace.clone();
+    tokio::spawn(async move {
+      tokio::time::sleep(Duration::from_secs(after)).await;
+      info!("Withdrawing namespace '{namespace}' after {after}s; session stays open");
+      namespace_stream.reset_and_stop(StreamResetCode::Cancelled.to_u64());
+    });
+    None
+  } else {
+    Some(namespace_stream)
+  };
 
   let data_config = DataConfig {
     delivery_mode: config.delivery_mode,

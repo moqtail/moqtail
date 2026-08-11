@@ -18,6 +18,7 @@ use moqtail::model::{
   control::{
     constant::SUPPORTED_VERSIONS,
     control_message::ControlMessage,
+    namespace_done::NamespaceDone,
     request_error::RequestError,
     setup::{Setup, SetupSender},
   },
@@ -54,6 +55,7 @@ use super::{
 enum RequestStreamKind {
   Subscribe,
   Fetch,
+  PublishNamespace,
   Other,
 }
 
@@ -630,6 +632,7 @@ impl Session {
         let request_kind = match &first {
           ControlMessage::Subscribe(_) => RequestStreamKind::Subscribe,
           ControlMessage::Fetch(_) => RequestStreamKind::Fetch,
+          ControlMessage::PublishNamespace(_) => RequestStreamKind::PublishNamespace,
           _ => RequestStreamKind::Other,
         };
 
@@ -698,6 +701,14 @@ impl Session {
                     RequestStreamKind::Fetch => {
                       message_handlers::fetch_handler::cancel_fetch(client.clone(), request_id)
                         .await;
+                    }
+                    RequestStreamKind::PublishNamespace => {
+                      message_handlers::publish_namespace_handler::cancel(
+                        client.clone(),
+                        request_id,
+                        &context,
+                      )
+                      .await;
                     }
                     RequestStreamKind::Other => {}
                   }
@@ -774,10 +785,21 @@ impl Session {
       );
     }
 
-    // Remove announcements for the disconnecting publisher
-    track_manager_cleanup
+    // Remove announcements for the disconnecting publisher. Losing the publisher ends
+    // its namespaces just as closing the request stream would, so subscribers are told
+    // the same way.
+    let withdrawn = track_manager_cleanup
       .remove_announcements_by_connection(context.connection_id)
       .await;
+    for namespace in &withdrawn {
+      message_handlers::publish_namespace_handler::announce_to_namespace_subscribers(
+        &context,
+        namespace,
+        context.connection_id,
+        |s| ControlMessage::NamespaceDone(Box::new(NamespaceDone::new(s))),
+      )
+      .await;
+    }
 
     // Remove the disconnecting client from namespace_subscribers
     track_manager_cleanup

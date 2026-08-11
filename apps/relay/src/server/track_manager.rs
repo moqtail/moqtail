@@ -403,19 +403,39 @@ impl TrackManager {
     info!("Stored announcement for namespace: {:?}", namespace);
   }
 
-  pub async fn remove_announcements_by_connection(&self, connection_id: usize) {
+  /// Drops the announcement only if this connection is the one that made it.
+  pub async fn remove_announcement(&self, namespace: &Tuple, connection_id: usize) -> bool {
     let mut announcements = self.announcements.write().await;
+    match announcements.get(namespace) {
+      Some((client, _message)) if client.connection_id == connection_id => {
+        announcements.remove(namespace);
+        info!(
+          "Removed announcement for namespace {:?} (publisher {})",
+          namespace, connection_id
+        );
+        true
+      }
+      _ => false,
+    }
+  }
+
+  /// Returns what it removed, so the caller can tell the subscribers that heard about them.
+  pub async fn remove_announcements_by_connection(&self, connection_id: usize) -> Vec<Tuple> {
+    let mut announcements = self.announcements.write().await;
+    let mut removed = Vec::new();
     announcements.retain(|ns, (client, _message)| {
       if client.connection_id == connection_id {
         info!(
           "Removed announcement for namespace {:?} (publisher {} disconnected)",
           ns, connection_id
         );
+        removed.push(ns.clone());
         false
       } else {
         true
       }
     });
+    removed
   }
 
   pub async fn remove_namespace_subscriber(&self, connection_id: usize) {

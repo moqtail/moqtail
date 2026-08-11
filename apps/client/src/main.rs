@@ -63,6 +63,7 @@ async fn main() -> Result<(), anyhow::Error> {
     Command::PublishNamespace => {
       let config = publisher::PublishNamespaceConfig {
         namespace: cli.namespace,
+        withdraw_after: cli.withdraw_after,
         delivery_mode: cli.delivery_mode,
         group_count: cli.group_count,
         interval: cli.interval,

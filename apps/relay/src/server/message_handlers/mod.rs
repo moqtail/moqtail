@@ -30,7 +30,7 @@ use crate::server::{
 use std::sync::Arc;
 pub(crate) mod fetch_handler;
 mod publish_handler;
-mod publish_namespace_handler;
+pub(crate) mod publish_namespace_handler;
 pub(crate) mod subscribe_handler;
 pub(crate) mod subscribe_namespace_handler;
 pub(crate) mod subscribe_tracks_handler;

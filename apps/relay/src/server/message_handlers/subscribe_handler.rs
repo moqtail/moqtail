@@ -16,7 +16,7 @@ use crate::server::client::MOQTClient;
 use crate::server::client::switch_context::SwitchStatus;
 use crate::server::session::Session;
 use crate::server::session_context::{PendingRequest, SessionContext};
-use crate::server::track::{Track, TrackStatus};
+use crate::server::track::{Track, TrackOrigin, TrackStatus};
 use core::result::Result;
 use moqtail::model::common::location::Location;
 use moqtail::model::control::constant::PublishDoneStatusCode;
@@ -267,6 +267,7 @@ async fn handle_subscribe_message(
         full_track_name.clone(),
         context.server_config,
         TrackStatus::Pending,
+        TrackOrigin::Subscribe,
       )
     })
     .await;
@@ -593,27 +594,28 @@ pub(crate) async fn cancel_subscription(
   let track_option = context.track_manager.get_track(&full_track_name).await;
 
   if let Some(track_lock) = track_option {
-    let is_last_subscriber = {
+    let (is_last_subscriber, origin) = {
       let track = track_lock.read().await;
       track.remove_subscription(context.connection_id).await;
       // When the last subscriber goes away, reset the upstream subscribe stream so
       // the publisher observes the cancellation.
-      if track.subscriber_count().await == 0 {
+      let last = if track.subscriber_count().await == 0 {
         if let Some(cancel) = track.upstream_cancel.lock().await.take() {
           let _ = cancel.send(());
         }
         true
       } else {
         false
-      }
+      };
+      (last, track.origin)
     }; // track read lock dropped here
 
-    // With the last subscriber gone the upstream subscription has been cancelled,
-    // so the cached track is stale (its status stays Confirmed and its
-    // largest_location keeps the old value). Remove it, so the next SUBSCRIBE for
-    // this track is treated as a fresh subscription and re-forwarded upstream to
-    // the publisher instead of being answered from the stale cache.
-    if is_last_subscriber {
+    // Only a SUBSCRIBE-created track is removed here: its upstream subscription
+    // has just been cancelled, so its cached state is stale and the next
+    // SUBSCRIBE must re-subscribe upstream rather than be answered from it. A
+    // PUBLISH-created track has a publisher still pushing to it and outlives
+    // any number of subscribers.
+    if is_last_subscriber && origin == TrackOrigin::Subscribe {
       context.track_manager.remove_track(&full_track_name).await;
       info!(
         "Removed track {:?} after last subscriber left; next SUBSCRIBE will re-subscribe upstream",

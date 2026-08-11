@@ -16,7 +16,7 @@ use crate::server::client::MOQTClient;
 use crate::server::session::Session;
 use crate::server::session_context::PendingRequest;
 use crate::server::session_context::SessionContext;
-use crate::server::track::{Track, TrackStatus};
+use crate::server::track::{Track, TrackOrigin, TrackStatus};
 use crate::server::track_manager::SubscribeKind;
 use core::result::Result;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
@@ -141,6 +141,7 @@ pub async fn handle(
           TrackStatus::Confirmed {
             subscribe_parameters: vec![],
           },
+          TrackOrigin::Publish,
         );
         let track_arc = context
           .track_manager

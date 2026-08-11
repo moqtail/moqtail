@@ -31,7 +31,7 @@ use moqtail::model::error::RequestErrorCode;
 use moqtail::model::parameter::message_parameter::MessageParameter;
 use moqtail::model::property::track_property::TrackProperty;
 use moqtail::transport::data_stream_handler::HeaderInfo;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{Mutex, Notify, RwLock, oneshot};
@@ -87,6 +87,32 @@ pub enum TrackEvent {
   },
 }
 
+/// Records `location` and reports whether it had already been recorded. The oldest
+/// groups are dropped once more than `retained` are held, which bounds this on a
+/// long-running track at the cost of not detecting a duplicate from a publisher that
+/// has fallen more than `retained` groups behind.
+fn record_location(
+  seen: &mut BTreeMap<u64, HashSet<u64>>,
+  location: &Location,
+  retained: usize,
+) -> bool {
+  // Retaining nothing means detection is off.
+  if retained == 0 {
+    return false;
+  }
+
+  let fresh = seen
+    .entry(location.group)
+    .or_default()
+    .insert(location.object);
+
+  // The map is ordered by group, so the first entry is the oldest. `pop_first` both
+  // finds and removes it, and stops the loop if the map is somehow already empty.
+  while seen.len() > retained && seen.pop_first().is_some() {}
+
+  !fresh
+}
+
 #[derive(Debug, Clone)]
 pub struct Track {
   /// Stable relay-assigned track identifier, independent of publisher aliases.
@@ -98,6 +124,8 @@ pub struct Track {
   pub publisher_aliases: Arc<RwLock<BTreeMap<usize, u64>>>,
   pub(crate) cache: TrackCache,
   pub largest_location: Arc<RwLock<Location>>,
+  /// Object ids already ingested, keyed by group, to drop duplicates from multiple publishers.
+  seen_objects: Arc<RwLock<BTreeMap<u64, HashSet<u64>>>>,
   /// Set once at least one Object (subgroup or datagram) has been seen for this
   /// track, so `largest_location` becomes meaningful (it starts at {0,0}).
   has_objects: Arc<AtomicBool>,
@@ -154,6 +182,7 @@ impl Track {
       publisher_aliases: Arc::new(RwLock::new(BTreeMap::new())),
       cache: TrackCache::new(relay_track_id, config.cache_size.into(), config),
       largest_location: Arc::new(RwLock::new(Location::new(0, 0))),
+      seen_objects: Arc::new(RwLock::new(BTreeMap::new())),
       has_objects: Arc::new(AtomicBool::new(false)),
       object_logger: ObjectLogger::new(config.log_folder.clone()),
       config,
@@ -236,6 +265,17 @@ impl Track {
     } else {
       None
     }
+  }
+
+  /// Records an Object's location and reports whether it had already been seen.
+  async fn is_duplicate(&self, location: &Location) -> bool {
+    let retained = self.config.dedup_retained_groups;
+    // Detection off: not even the lock is worth taking.
+    if retained == 0 {
+      return false;
+    }
+    let mut seen = self.seen_objects.write().await;
+    record_location(&mut seen, location, retained)
   }
 
   /// Transition from Pending to Confirmed. Adds publisher alias and notifies waiters.
@@ -367,6 +407,14 @@ impl Track {
       utils::passed_time_since_start()
     );
 
+    if self.is_duplicate(&object.location).await {
+      debug!(
+        "new_subgroup_object: dropping duplicate | relay_track_id={} location: {:?}",
+        self.relay_track_id, object.location
+      );
+      return Ok(());
+    }
+
     if let Some(h) = header_info {
       info!(
         "new group: relay_track_id={} location: {:?} stream_id={} time={}",
@@ -443,6 +491,14 @@ impl Track {
 
     match Object::try_from_datagram(datagram.clone(), 0) {
       Ok((object, end_of_group)) => {
+        if self.is_duplicate(&object.location).await {
+          debug!(
+            "new_datagram: dropping duplicate | relay_track_id={} location: {:?}",
+            self.relay_track_id, object.location
+          );
+          return Ok(());
+        }
+
         if end_of_group {
           debug!(
             "new_datagram: end_of_group received for track: {:?} group: {:?} object_id: {}",
@@ -560,3 +616,53 @@ impl Track {
 }
 
 // TODO: Test
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn duplicate_locations_are_detected_within_the_window() {
+    let mut seen = BTreeMap::new();
+    let loc = Location::new(4, 2);
+
+    assert!(
+      !record_location(&mut seen, &loc, 4),
+      "first sighting is new"
+    );
+    assert!(record_location(&mut seen, &loc, 4), "second is a duplicate");
+
+    // A different object in the same group, and the same object id in another group,
+    // are both distinct locations.
+    assert!(!record_location(&mut seen, &Location::new(4, 3), 4));
+    assert!(!record_location(&mut seen, &Location::new(5, 2), 4));
+  }
+
+  /// A window of zero keeps nothing, so every Object looks new. That is duplicate
+  /// detection turned off, not unbounded retention.
+  #[test]
+  fn a_zero_window_disables_detection() {
+    let mut seen = BTreeMap::new();
+    let loc = Location::new(1, 1);
+
+    assert!(!record_location(&mut seen, &loc, 0));
+    assert!(!record_location(&mut seen, &loc, 0));
+    assert!(seen.is_empty());
+  }
+
+  #[test]
+  fn groups_beyond_the_window_are_forgotten() {
+    let mut seen = BTreeMap::new();
+    let early = Location::new(0, 0);
+    assert!(!record_location(&mut seen, &early, 2));
+
+    // Two further groups push the first out of the window.
+    record_location(&mut seen, &Location::new(1, 0), 2);
+    record_location(&mut seen, &Location::new(2, 0), 2);
+    assert_eq!(seen.len(), 2);
+
+    // The evicted group is no longer recognised. This is the documented limit of the
+    // bound, not a defect: a publisher that far behind gets its duplicate through.
+    assert!(!record_location(&mut seen, &early, 2));
+  }
+}

@@ -15,19 +15,16 @@
  */
 
 import { KeyValuePair } from '../common/pair'
-import { MaxRequestId } from './setup/max_request_id'
 import { Path, MaxAuthTokenCacheSize, Authority, MoqtImplementation } from './setup'
 import { AuthorizationToken } from './common'
 import { SetupOptionType, TokenAliasType } from './constant'
 import { ProtocolViolationError } from '../error/error'
 
-export type SetupOption =
-  Path | MaxRequestId | MaxAuthTokenCacheSize | AuthorizationToken | Authority | MoqtImplementation
+export type SetupOption = Path | MaxAuthTokenCacheSize | AuthorizationToken | Authority | MoqtImplementation
 export namespace SetupOption {
   export function fromKeyValuePair(pair: KeyValuePair): SetupOption | undefined {
     return (
       Path.fromKeyValuePair(pair) ||
-      MaxRequestId.fromKeyValuePair(pair) ||
       MaxAuthTokenCacheSize.fromKeyValuePair(pair) ||
       AuthorizationToken.fromKeyValuePair(pair) ||
       Authority.fromKeyValuePair(pair) ||
@@ -39,9 +36,6 @@ export namespace SetupOption {
   }
   export function isPath(param: SetupOption): param is Path {
     return param instanceof Path
-  }
-  export function isMaxRequestId(param: SetupOption): param is MaxRequestId {
-    return param instanceof MaxRequestId
   }
   export function isMaxAuthTokenCacheSize(param: SetupOption): param is MaxAuthTokenCacheSize {
     return param instanceof MaxAuthTokenCacheSize
@@ -75,11 +69,6 @@ export class SetupOptions {
     return this
   }
 
-  addMaxRequestId(maxId: bigint | number): this {
-    this.kvps.push(new MaxRequestId(BigInt(maxId)).toKeyValuePair())
-    return this
-  }
-
   addPath(moqtPath: string): this {
     this.kvps.push(new Path(moqtPath).toKeyValuePair())
     return this
@@ -109,7 +98,6 @@ export class SetupOptions {
     for (const kvp of kvps) {
       const parsed =
         Path.fromKeyValuePair(kvp) ||
-        MaxRequestId.fromKeyValuePair(kvp) ||
         MaxAuthTokenCacheSize.fromKeyValuePair(kvp) ||
         AuthorizationToken.fromKeyValuePair(kvp) ||
         Authority.fromKeyValuePair(kvp) ||
@@ -127,24 +115,22 @@ if (import.meta.vitest) {
     test('build and fromKeyValuePairs returns correct parameters', () => {
       const kvps = new SetupOptions()
         .addPath('abc')
-        .addMaxRequestId(42n)
         .addMaxAuthTokenCacheSize(123n)
         .addAuthorizationToken(AuthorizationToken.newUseAlias(1n))
         .addRaw(new Authority('example.com').toKeyValuePair())
         .addMoqtImplementation('moqtail-ts/0.1')
         .build()
       const parsed = SetupOptions.fromKeyValuePairs(kvps)
-      expect(parsed.length).toBe(6)
+      expect(parsed.length).toBe(5)
       expect(parsed[0] && SetupOption.isPath(parsed[0]) && parsed[0].moqtPath === 'abc').toBe(true)
-      expect(parsed[1] && SetupOption.isMaxRequestId(parsed[1]) && parsed[1].maxId === 42n).toBe(true)
-      expect(parsed[2] && SetupOption.isMaxAuthTokenCacheSize(parsed[2]) && parsed[2].maxSize === 123n).toBe(true)
+      expect(parsed[1] && SetupOption.isMaxAuthTokenCacheSize(parsed[1]) && parsed[1].maxSize === 123n).toBe(true)
       expect(
-        parsed[3] &&
-          SetupOption.isAuthorizationToken(parsed[3]) &&
-          parsed[3].variant.aliasType === TokenAliasType.UseAlias,
+        parsed[2] &&
+          SetupOption.isAuthorizationToken(parsed[2]) &&
+          parsed[2].variant.aliasType === TokenAliasType.UseAlias,
       ).toBe(true)
-      expect(parsed[4] && SetupOption.isAuthority(parsed[4]) && parsed[4].authority === 'example.com').toBe(true)
-      expect(parsed[5] && SetupOption.isMoqtImplementation(parsed[5]) && parsed[5].info === 'moqtail-ts/0.1').toBe(true)
+      expect(parsed[3] && SetupOption.isAuthority(parsed[3]) && parsed[3].authority === 'example.com').toBe(true)
+      expect(parsed[4] && SetupOption.isMoqtImplementation(parsed[4]) && parsed[4].info === 'moqtail-ts/0.1').toBe(true)
     })
     test('fromKeyValuePairs skips unknown parameter', () => {
       const unknown = KeyValuePair.tryNewVarInt(998, 1n)
@@ -161,7 +147,7 @@ if (import.meta.vitest) {
       expect(() => assertNoAuthorityOverWebTransport(params)).toThrow(ProtocolViolationError)
     })
     test('does not throw when params carry no AUTHORITY', () => {
-      const params = new SetupOptions().addPath('/x').addMaxRequestId(1n).build()
+      const params = new SetupOptions().addPath('/x').addMaxAuthTokenCacheSize(1n).build()
       expect(() => assertNoAuthorityOverWebTransport(params)).not.toThrow()
     })
     test('does not throw for an empty params list', () => {

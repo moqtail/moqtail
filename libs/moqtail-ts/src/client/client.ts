@@ -223,8 +223,6 @@ export class MOQtailClient {
   dataStreamTimeoutMs?: number
   /** Timeout (ms) for control stream read operations; undefined =\> no explicit timeout. */
   controlStreamTimeoutMs?: number
-  /** Optional highest request id allowed (enforced externally / via configuration). */
-  maxRequestId?: bigint
 
   /** Flag indicating the client has been disconnected/destroyed and cannot accept further API calls. */
   #isDestroyed = false
@@ -437,7 +435,7 @@ export class MOQtailClient {
    * ```ts
    * const client = await MOQtailClient.new({
    *   url,
-   *   setupOptions: new SetupOptions().addMaxRequestId(1000),
+   *   setupOptions: new SetupOptions().addPath('/live'),
    *   transportOptions: { congestionControl: 'default' },
    *   dataStreamTimeoutMs: 5000,
    *   controlStreamTimeoutMs: 2000,

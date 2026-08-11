@@ -158,22 +158,6 @@
   ],
   "not_in_draft": [
     {
-      "name": "MAX_REQUEST_ID",
-      "value": "0x15",
-      "notes": "Table 5 has no 0x15.",
-      "pending": {
-        "ts": 259
-      }
-    },
-    {
-      "name": "REQUESTS_BLOCKED",
-      "value": "0x1A",
-      "notes": "Table 5 has no 0x1A.",
-      "pending": {
-        "ts": 259
-      }
-    },
-    {
       "name": "UNSUBSCRIBE",
       "value": "0x0A",
       "notes": "Requests are cancelled by resetting the request stream (§3.3.2), not by a message.",

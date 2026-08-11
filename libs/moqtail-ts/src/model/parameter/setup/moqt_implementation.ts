@@ -49,7 +49,7 @@ if (import.meta.vitest) {
       expect(param?.info).toBe('moqtail-ts/0.1')
     })
     test('fromKeyValuePair returns undefined for wrong type', () => {
-      const pair = KeyValuePair.tryNewVarInt(SetupOptionType.MaxRequestId, 1n)
+      const pair = KeyValuePair.tryNewVarInt(SetupOptionType.MaxAuthTokenCacheSize, 1n)
       const param = MoqtImplementation.fromKeyValuePair(pair)
       expect(param).toBeUndefined()
     })

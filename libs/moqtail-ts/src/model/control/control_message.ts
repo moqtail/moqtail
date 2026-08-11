@@ -25,14 +25,12 @@ import { Fetch } from './fetch'
 import { FetchCancel } from './fetch_cancel'
 import { FetchOk } from './fetch_ok'
 import { GoAway } from './goaway'
-import { MaxRequestId } from './max_request_id'
 import { Subscribe } from './subscribe'
 import { PublishDone } from './publish_done'
 import { Publish } from './publish'
 import { PublishOk } from './publish_ok'
 import { SubscribeOk } from './subscribe_ok'
 import { RequestUpdate } from './request_update'
-import { RequestsBlocked } from './requests_blocked'
 import { TrackStatus } from './track_status'
 import { PublishNamespaceDone } from './publish_namespace_done'
 import { Unsubscribe } from './unsubscribe'
@@ -58,12 +56,10 @@ export type ControlMessage =
   | FetchCancel
   | FetchOk
   | GoAway
-  | MaxRequestId
   | Subscribe
   | RequestError
   | SubscribeOk
   | RequestUpdate
-  | RequestsBlocked
   | TrackStatus
   | PublishNamespaceDone
   | Unsubscribe
@@ -110,16 +106,12 @@ export namespace ControlMessage {
         return FetchOk.parsePayload(payload)
       case ControlMessageType.GoAway:
         return GoAway.parsePayload(payload)
-      case ControlMessageType.MaxRequestId:
-        return MaxRequestId.parsePayload(payload)
       case ControlMessageType.Subscribe:
         return Subscribe.parsePayload(payload)
       case ControlMessageType.SubscribeOk:
         return SubscribeOk.parsePayload(payload)
       case ControlMessageType.RequestUpdate:
         return RequestUpdate.parsePayload(payload)
-      case ControlMessageType.RequestsBlocked:
-        return RequestsBlocked.parsePayload(payload)
       case ControlMessageType.TrackStatus:
         return TrackStatus.parsePayload(payload)
       case ControlMessageType.PublishNamespaceDone:

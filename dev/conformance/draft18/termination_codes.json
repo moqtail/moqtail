@@ -107,15 +107,5 @@
       "value": "0x1A",
       "spec": "Section 3.5"
     }
-  ],
-  "not_in_draft": [
-    {
-      "name": "TOO_MANY_REQUESTS",
-      "value": "0x7",
-      "notes": "Both stacks carry this; Table 17 has no 0x7. Removed alongside MAX_REQUEST_ID / REQUESTS_BLOCKED.",
-      "pending": {
-        "ts": 259
-      }
-    }
   ]
 }

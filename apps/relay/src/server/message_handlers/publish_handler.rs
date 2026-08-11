@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::server::client::MOQTClient;
+use crate::server::message_handlers::parameters;
 use crate::server::session::Session;
 use crate::server::session_context::PendingRequest;
 use crate::server::session_context::SessionContext;
@@ -138,7 +139,7 @@ pub async fn handle(
           full_track_name.clone(),
           context.server_config,
           TrackStatus::Confirmed {
-            subscribe_parameters: vec![],
+            upstream_parameters: vec![],
           },
           TrackOrigin::Publish,
         );
@@ -194,7 +195,7 @@ pub async fn handle(
           );
         }
 
-        for subscriber in subscribers {
+        for (subscriber, subscribe_tracks_params) in subscribers {
           // Never push a track back to its own publisher, and let an explicit
           // SUBSCRIBE take precedence over SUBSCRIBE_TRACKS for the same track.
           if subscriber.connection_id == context.connection_id
@@ -222,6 +223,11 @@ pub async fn handle(
 
           m_clone.request_id = relay_req_id;
           m_clone.track_alias = relay_track_id;
+          m_clone.parameters = parameters::downstream_publish(
+            &m.parameters,
+            &subscribe_tracks_params,
+            track_arc.read().await.largest_object().await,
+          );
 
           // Register the message in unified map for response tracking
           {

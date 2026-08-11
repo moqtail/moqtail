@@ -14,11 +14,11 @@
 
 use crate::server::client::MOQTClient;
 use crate::server::client::switch_context::SwitchStatus;
+use crate::server::message_handlers::parameters;
 use crate::server::session::Session;
 use crate::server::session_context::{PendingRequest, SessionContext};
 use crate::server::track::{Track, TrackOrigin, TrackStatus};
 use core::result::Result;
-use moqtail::model::common::location::Location;
 use moqtail::model::control::constant::PublishDoneStatusCode;
 use moqtail::model::control::publish_done::PublishDone;
 use moqtail::model::control::request_error::RequestError;
@@ -28,7 +28,6 @@ use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::model::error::RequestErrorCode;
 use moqtail::model::error::StreamResetCode;
 use moqtail::model::error::TerminationCode;
-use moqtail::model::parameter::constant::MessageParameterType;
 use moqtail::model::parameter::message_parameter::{
   MessageParameter, MessageParameterVecExt, apply_message_parameter_update,
 };
@@ -255,37 +254,6 @@ async fn end_upstream_subscription(
   }
 }
 
-/// The larger of what the upstream publisher reported and what the relay has observed
-/// itself. `None` when neither exists, which is how "no Objects yet" is expressed: the
-/// parameter is then omitted rather than sent as `{0,0}`.
-fn merge_largest_object(
-  upstream: Option<Location>,
-  observed: Option<Location>,
-) -> Option<Location> {
-  match (upstream, observed) {
-    (Some(u), Some(o)) => Some(if o > u { o } else { u }),
-    (u, o) => u.or(o),
-  }
-}
-
-/// The LARGEST_OBJECT to advertise downstream for a track.
-///
-/// A relay reports the larger of what its upstream told it and what it has seen itself,
-/// and omits the parameter entirely when neither exists — an absent parameter means no
-/// Objects, where `{0,0}` would claim one at the start of the track. `set_param` rather
-/// than a push, because a single-valued parameter must not appear twice.
-async fn apply_largest_object(params: &mut Vec<MessageParameter>, track: &Track) {
-  let upstream = match params.get_param(MessageParameterType::LargestObject) {
-    Some(MessageParameter::LargestObject { location }) => Some(location.clone()),
-    _ => None,
-  };
-  let observed = track.largest_object().await;
-
-  if let Some(largest) = merge_largest_object(upstream, observed) {
-    params.set_param(MessageParameter::new_largest_object(largest));
-  }
-}
-
 async fn handle_subscribe_message(
   client: Arc<MOQTClient>,
   stream_handler: &mut ControlStreamHandler,
@@ -422,13 +390,7 @@ async fn handle_subscribe_message(
     );
 
     let mut new_sub = sub.clone();
-    // Ensure forward=true in parameters
-    new_sub
-      .subscribe_parameters
-      .retain(|p| !matches!(p, MessageParameter::Forward { .. }));
-    new_sub
-      .subscribe_parameters
-      .push(MessageParameter::new_forward(true));
+    new_sub.subscribe_parameters = parameters::upstream_subscribe();
     new_sub.request_id =
       Session::get_next_relay_request_id(context.relay_next_request_id.clone()).await;
 
@@ -467,15 +429,15 @@ async fn handle_subscribe_message(
 
     match status {
       TrackStatus::Confirmed {
-        subscribe_parameters,
+        upstream_parameters,
       } => {
         info!(
           "Track confirmed, sending SubscribeOk to subscriber {}",
           client.connection_id
         );
         let cached_properties = { track.track_properties.read().await.clone() };
-        let mut params = subscribe_parameters;
-        apply_largest_object(&mut params, &track).await;
+        let params =
+          parameters::downstream_subscribe_ok(&upstream_parameters, track.largest_object().await);
         let subscribe_ok = moqtail::model::control::subscribe_ok::SubscribeOk::new(
           track.relay_track_id,
           params,
@@ -622,13 +584,11 @@ async fn handle_subscribe_ok_message(
     )
     .await;
 
-  // What the relay advertises downstream is not necessarily what upstream sent: by the
-  // time this runs the relay may already have seen a later Object than upstream knew of.
+  // What the relay advertises downstream is not what upstream sent: by the time this
+  // runs the relay may already have seen a later Object than upstream knew of.
   let downstream_params = {
     let track = track_arc.read().await;
-    let mut params = msg.subscribe_parameters.clone();
-    apply_largest_object(&mut params, &track).await;
-    params
+    parameters::downstream_subscribe_ok(&msg.subscribe_parameters, track.largest_object().await)
   };
 
   // Send SubscribeOk to the FIRST subscriber (the creator)
@@ -1184,37 +1144,6 @@ pub async fn handle(
 #[cfg(test)]
 mod tests {
   use super::*;
-
-  #[test]
-  fn largest_object_takes_the_larger_of_the_two() {
-    let earlier = Location::new(4, 2);
-    let later = Location::new(4, 9);
-    let later_group = Location::new(5, 0);
-
-    // Whichever side is ahead wins, regardless of which side it is.
-    assert_eq!(
-      merge_largest_object(Some(earlier.clone()), Some(later.clone())),
-      Some(later.clone())
-    );
-    assert_eq!(
-      merge_largest_object(Some(later.clone()), Some(earlier.clone())),
-      Some(later.clone())
-    );
-    assert_eq!(
-      merge_largest_object(Some(later.clone()), Some(later_group.clone())),
-      Some(later_group)
-    );
-
-    // One side only.
-    assert_eq!(
-      merge_largest_object(Some(later.clone()), None),
-      Some(later.clone())
-    );
-    assert_eq!(merge_largest_object(None, Some(later.clone())), Some(later));
-
-    // Neither: the parameter is omitted, never sent as {0,0}.
-    assert_eq!(merge_largest_object(None, None), None);
-  }
 
   #[test]
   fn upstream_errors_map_to_a_publish_done_status() {

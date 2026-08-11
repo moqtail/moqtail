@@ -14,8 +14,9 @@
  * limitations under the License.
  */
 
-import { KeyValuePair, deserializeKvpList, serializeKvpList } from '../common/pair'
-import { ByteBuffer } from '../common/byte_buffer'
+import { KeyValuePair, deserializeKvpList, isBytes, isVarInt, serializeKvpList } from '../common/pair'
+import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
+import { ProtocolViolationError } from '../error/error'
 import { FilterType } from '../control/constant'
 import { Location } from '../common'
 import { AuthorizationToken } from './common'
@@ -164,6 +165,82 @@ export class MessageParameters {
 }
 
 /**
+ * LARGEST_OBJECT (0x09) is a bare Location -- two consecutive varints with no
+ * length prefix. Its Type is odd, so the generic KVP parity rule would read a
+ * length prefix and desync. This is a message-parameter encoding: the same Type
+ * number in the setup-option namespace means something else, so the rule lives
+ * here rather than in the shared codec.
+ */
+function isLocationMessageParam(typeValue: bigint): boolean {
+  return typeValue === 0x09n
+}
+
+/**
+ * FORWARD (0x10), SUBSCRIBER_PRIORITY (0x20) and GROUP_ORDER (0x22) carry a
+ * single uint8, not the generic even-Type varint. These Types are even, so
+ * without this the parity rule would read a varint and desync on any value
+ * >= 64 (e.g. the default SUBSCRIBER_PRIORITY of 128 = 0x80).
+ */
+function isUint8MessageParam(typeValue: bigint): boolean {
+  return typeValue === 0x10n || typeValue === 0x20n || typeValue === 0x22n
+}
+
+/**
+ * Serializes a list of message-parameter KVPs, delta-encoding the Types.
+ * Mirrors {@link serializeKvpList} but honours per-parameter value encodings.
+ */
+export function serializeMessageParameterKvps(items: KeyValuePair[]): FrozenByteBuffer {
+  const sorted = [...items].sort((a, b) => (a.typeValue < b.typeValue ? -1 : a.typeValue > b.typeValue ? 1 : 0))
+  const buf = new ByteBuffer()
+  let prevType = 0n
+  for (const kvp of sorted) {
+    buf.putVI(kvp.typeValue - prevType)
+    if (isVarInt(kvp) && isUint8MessageParam(kvp.typeValue)) {
+      if (kvp.value < 0n || kvp.value > 255n) {
+        throw new ProtocolViolationError(
+          'serializeMessageParameterKvps',
+          `uint8 parameter 0x${kvp.typeValue.toString(16)} value ${kvp.value} exceeds 255`,
+        )
+      }
+      buf.putU8(Number(kvp.value))
+    } else if (isVarInt(kvp)) {
+      buf.putVI(kvp.value)
+    } else if (isBytes(kvp) && isLocationMessageParam(kvp.typeValue)) {
+      buf.putBytes(kvp.value)
+    } else if (isBytes(kvp)) {
+      buf.putLengthPrefixedBytes(kvp.value)
+    }
+    prevType = kvp.typeValue
+  }
+  return buf.freeze()
+}
+
+/**
+ * Reads exactly `count` delta-encoded message-parameter KVPs.
+ * Mirrors {@link deserializeKvpList} but honours per-parameter value encodings.
+ */
+export function deserializeMessageParameterKvps(buf: BaseByteBuffer, count: number | bigint): KeyValuePair[] {
+  const n = typeof count === 'bigint' ? Number(count) : count
+  const items: KeyValuePair[] = new Array(n)
+  let prevType = 0n
+  for (let i = 0; i < n; i++) {
+    const typeValue = prevType + buf.getVI()
+    if (isUint8MessageParam(typeValue)) {
+      items[i] = KeyValuePair.tryNewVarInt(typeValue, BigInt(buf.getU8()))
+    } else if (isLocationMessageParam(typeValue)) {
+      const loc = new ByteBuffer()
+      loc.putVI(buf.getVI())
+      loc.putVI(buf.getVI())
+      items[i] = KeyValuePair.tryNewBytes(typeValue, loc.toUint8Array())
+    } else {
+      items[i] = KeyValuePair.deserializeValue(buf, typeValue)
+    }
+    prevType = typeValue
+  }
+  return items
+}
+
+/**
  * Applies a set of parameter updates to an existing parameter list.
  * For each update, replaces the matching parameter (by wire type value) or appends it.
  * Per spec: "If omitted from REQUEST_UPDATE/SUBSCRIBE_UPDATE, the value is unchanged."
@@ -187,6 +264,37 @@ if (import.meta.vitest) {
     test('fromKeyValuePair returns undefined for unknown type', () => {
       const pair = KeyValuePair.tryNewVarInt(998n, 1n)
       expect(MessageParameter.fromKeyValuePair(pair)).toBeUndefined()
+    })
+  })
+
+  describe('message parameter wire encodings', () => {
+    test('LARGEST_OBJECT is an unprefixed Location', () => {
+      // Type Delta 0x09 then the Group and Object varints, no length prefix.
+      // These are the bytes another implementation put on the wire for {1, 13}.
+      const wire = new Uint8Array([0x09, 0x01, 0x0d])
+
+      const buf = new ByteBuffer()
+      buf.putBytes(wire)
+      const frozen = buf.freeze()
+      const params = MessageParameters.fromKeyValuePairs(deserializeMessageParameterKvps(frozen, 1))
+
+      expect(params).toEqual([new LargestObject(new Location(1n, 13n))])
+      expect(frozen.remaining).toBe(0)
+      expect(serializeMessageParameterKvps(params.map((p) => p.toKeyValuePair())).toUint8Array()).toEqual(wire)
+    })
+
+    test('SUBSCRIBER_PRIORITY is a single byte, not a varint', () => {
+      // 128 is the default priority and the first value where uint8 and varint
+      // encodings differ: one byte 0x80 rather than the two bytes 0x40 0x80.
+      const params = [new SubscriberPriority(128)]
+      const wire = serializeMessageParameterKvps(params.map((p) => p.toKeyValuePair())).toUint8Array()
+
+      expect(wire).toEqual(new Uint8Array([0x20, 0x80]))
+
+      const buf = new ByteBuffer()
+      buf.putBytes(wire)
+      const frozen = buf.freeze()
+      expect(MessageParameters.fromKeyValuePairs(deserializeMessageParameterKvps(frozen, 1))).toEqual(params)
     })
   })
 

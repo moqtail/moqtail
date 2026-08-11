@@ -16,10 +16,14 @@
 
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
 import { Location } from '../common/location'
-import { deserializeKvpList, serializeKvpList } from '../common/pair'
+
 import { ControlMessageType, FilterType } from './constant'
 import { CastingError, LengthExceedsMaxError } from '../error/error'
-import { MessageParameter } from '../parameter/message_parameter'
+import {
+  MessageParameter,
+  deserializeMessageParameterKvps,
+  serializeMessageParameterKvps,
+} from '../parameter/message_parameter'
 import { SubscriptionFilter } from '../parameter/message/subscription_filter'
 import { Forward } from '../parameter/message/forward'
 
@@ -43,7 +47,7 @@ export class RequestUpdate {
     payload.putVI(this.existingRequestId)
     payload.putVI(this.parameters.length)
 
-    payload.putBytes(serializeKvpList(this.parameters.map((p) => p.toKeyValuePair())).toUint8Array())
+    payload.putBytes(serializeMessageParameterKvps(this.parameters.map((p) => p.toKeyValuePair())).toUint8Array())
 
     const payloadBytes = payload.toUint8Array()
     if (payloadBytes.length > 0xffff) {
@@ -66,7 +70,7 @@ export class RequestUpdate {
     }
 
     const parameters: MessageParameter[] = []
-    for (const kvp of deserializeKvpList(buf, paramCount)) {
+    for (const kvp of deserializeMessageParameterKvps(buf, paramCount)) {
       const param = MessageParameter.fromKeyValuePair(kvp)
       if (param !== undefined) parameters.push(param)
     }

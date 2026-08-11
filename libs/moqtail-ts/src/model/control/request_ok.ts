@@ -15,10 +15,14 @@
  */
 
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
-import { deserializeKvpList, serializeKvpList } from '../common/pair'
+
 import { ControlMessageType } from './constant'
 import { CastingError, LengthExceedsMaxError } from '../error/error'
-import { MessageParameter } from '../parameter/message_parameter'
+import {
+  MessageParameter,
+  deserializeMessageParameterKvps,
+  serializeMessageParameterKvps,
+} from '../parameter/message_parameter'
 
 export class RequestOk {
   public readonly requestId: bigint
@@ -41,7 +45,7 @@ export class RequestOk {
     payload.putVI(this.requestId)
     payload.putVI(BigInt(this.parameters.length))
 
-    payload.putBytes(serializeKvpList(this.parameters.map((p) => p.toKeyValuePair())).toUint8Array())
+    payload.putBytes(serializeMessageParameterKvps(this.parameters.map((p) => p.toKeyValuePair())).toUint8Array())
 
     const payloadBytes = payload.toUint8Array()
     if (payloadBytes.length > 0xffff) {
@@ -63,7 +67,7 @@ export class RequestOk {
     }
 
     const parameters: MessageParameter[] = []
-    for (const kvp of deserializeKvpList(buf, numParams)) {
+    for (const kvp of deserializeMessageParameterKvps(buf, numParams)) {
       const param = MessageParameter.fromKeyValuePair(kvp)
       if (param !== undefined) parameters.push(param)
     }

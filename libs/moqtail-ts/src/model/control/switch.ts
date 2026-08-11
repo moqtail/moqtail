@@ -15,7 +15,8 @@
  */
 
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
-import { KeyValuePair, deserializeKvpList, serializeKvpList } from '../common/pair'
+import { deserializeMessageParameterKvps, serializeMessageParameterKvps } from '../parameter/message_parameter'
+import { KeyValuePair } from '../common/pair'
 import { ControlMessageType } from './constant'
 import { FullTrackName } from '../data'
 
@@ -41,7 +42,7 @@ export class Switch {
     payload.putVI(this.subscriptionRequestId)
 
     payload.putVI(this.parameters.length)
-    payload.putBytes(serializeKvpList(this.parameters).toUint8Array())
+    payload.putBytes(serializeMessageParameterKvps(this.parameters).toUint8Array())
 
     const payloadBytes = payload.toUint8Array()
     buf.putU16(payloadBytes.length)
@@ -56,7 +57,7 @@ export class Switch {
     const subscriptionRequestId = buf.getVI()
 
     const paramCount = Number(buf.getVI())
-    const parameters: KeyValuePair[] = deserializeKvpList(buf, paramCount)
+    const parameters: KeyValuePair[] = deserializeMessageParameterKvps(buf, paramCount)
 
     return new Switch(requestId, fullTrackName, subscriptionRequestId, parameters)
   }

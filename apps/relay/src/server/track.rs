@@ -39,6 +39,18 @@ use tracing::{debug, error, info, warn};
 
 pub type ActiveSubgroupHeaderMap = Arc<RwLock<HashMap<StreamId, HeaderInfo>>>;
 
+/// What created a track. Decides whether it survives its last subscriber.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrackOrigin {
+  /// Created by a downstream SUBSCRIBE. The relay owns the upstream
+  /// subscription; with no subscribers left it is cancelled and the track goes
+  /// stale, so it must be removed to force a fresh upstream SUBSCRIBE.
+  Subscribe,
+  /// Created by an upstream PUBLISH. The publisher keeps pushing regardless of
+  /// subscriber count, so the track outlives them.
+  Publish,
+}
+
 /// Lifecycle status of a track on the relay.
 #[derive(Debug, Clone)]
 pub enum TrackStatus {
@@ -80,6 +92,7 @@ pub struct Track {
   /// Stable relay-assigned track identifier, independent of publisher aliases.
   pub relay_track_id: u64,
   pub full_track_name: FullTrackName,
+  pub origin: TrackOrigin,
   pub subscription_manager: SubscriptionManager,
   /// Maps publisher_connection_id -> publisher_track_alias for all active publishers.
   pub publisher_aliases: Arc<RwLock<BTreeMap<usize, u64>>>,
@@ -121,10 +134,12 @@ impl Track {
     full_track_name: FullTrackName,
     config: &'static AppConfig,
     initial_status: TrackStatus,
+    origin: TrackOrigin,
   ) -> Self {
     Track {
       relay_track_id,
       full_track_name: full_track_name.clone(),
+      origin,
       subscription_manager: SubscriptionManager::new(
         relay_track_id,
         full_track_name,

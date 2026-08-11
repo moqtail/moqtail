@@ -512,6 +512,11 @@ pub fn deserialize_message_parameters(
         type_value,
         value: bytes.get_u8() as u64,
       }
+    } else if is_location_message_param(type_value) {
+      let mut loc = BytesMut::new();
+      loc.put_vi(bytes.get_vi()?)?;
+      loc.put_vi(bytes.get_vi()?)?;
+      KeyValuePair::try_new_bytes(type_value, loc.freeze())?
     } else {
       KeyValuePair::deserialize_value(bytes, type_value)?
     };
@@ -537,6 +542,13 @@ pub fn deserialize_message_parameters(
 /// otherwise read them as varints and desync on any value >= 64.
 const fn is_uint8_message_param(type_value: u64) -> bool {
   matches!(type_value, 0x10 | 0x20 | 0x22)
+}
+
+/// LARGEST_OBJECT (0x09) is a bare Location -- two consecutive varints with no
+/// length prefix. Its Type is odd, so without this the KVP parity rule would
+/// read a length prefix and desync.
+const fn is_location_message_param(type_value: u64) -> bool {
+  matches!(type_value, 0x09)
 }
 
 /// Serializes a slice of MessageParameters into delta-encoded wire bytes,
@@ -575,6 +587,10 @@ pub fn serialize_message_parameters(params: &[MessageParameter]) -> Result<Bytes
         buf.put_u8(byte);
       }
       KeyValuePair::VarInt { value, .. } => buf.put_vi(*value)?,
+      // LARGEST_OBJECT carries the Location varints directly, with no length.
+      KeyValuePair::Bytes { value, .. } if is_location_message_param(type_value) => {
+        buf.extend_from_slice(value);
+      }
       KeyValuePair::Bytes { value, .. } => {
         buf.put_vi(value.len() as u64)?;
         buf.extend_from_slice(value);
@@ -605,6 +621,30 @@ pub fn apply_message_parameter_update(
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  /// LARGEST_OBJECT is a bare Location: Type Delta 0x09 followed by the Group
+  /// and Object varints, with no length prefix. These are the bytes another
+  /// implementation put on the wire in a SUBSCRIBE_OK carrying {1, 13}.
+  #[test]
+  fn largest_object_is_an_unprefixed_location() {
+    let wire = Bytes::from_static(&[0x09, 0x01, 0x0d]);
+
+    let mut buf = wire.clone();
+    let params =
+      deserialize_message_parameters(&mut buf, 1, ControlMessageType::SubscribeOk).unwrap();
+
+    assert_eq!(
+      params,
+      vec![MessageParameter::LargestObject {
+        location: Location {
+          group: 1,
+          object: 13
+        }
+      }]
+    );
+    assert!(!buf.has_remaining(), "the parameter must consume 3 bytes");
+    assert_eq!(serialize_message_parameters(&params).unwrap(), wire);
+  }
   use crate::model::common::pair::KeyValuePair;
   use crate::model::parameter::authorization_token::AuthorizationToken;
   use bytes::{Buf, BytesMut};

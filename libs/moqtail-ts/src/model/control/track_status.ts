@@ -18,9 +18,13 @@ import { Location } from '../common/location'
 import { Tuple } from '../common/tuple'
 import { ControlMessageType, FilterType, GroupOrder } from '../control/constant'
 import { FullTrackName } from '../data'
-import { MessageParameter, MessageParameters } from '../parameter/message_parameter'
+import {
+  MessageParameter,
+  MessageParameters,
+  deserializeMessageParameterKvps,
+  serializeMessageParameterKvps,
+} from '../parameter/message_parameter'
 import { AuthorizationToken } from '../parameter/common/authorization_token'
-import { deserializeKvpList, serializeKvpList } from '../common/pair'
 
 // TODO: Couple filter type and bounded parameters for idiomatic design
 export class TrackStatus {
@@ -167,7 +171,9 @@ export class TrackStatus {
     }
 
     payload.putVI(this.subscribeParameters.length)
-    payload.putBytes(serializeKvpList(this.subscribeParameters.map((p) => p.toKeyValuePair())).toUint8Array())
+    payload.putBytes(
+      serializeMessageParameterKvps(this.subscribeParameters.map((p) => p.toKeyValuePair())).toUint8Array(),
+    )
 
     const payloadBytes = payload.toUint8Array()
     buf.putU16(payloadBytes.length)
@@ -196,7 +202,7 @@ export class TrackStatus {
     }
 
     const paramCount = Number(buf.getVI())
-    const rawParams = deserializeKvpList(buf, paramCount)
+    const rawParams = deserializeMessageParameterKvps(buf, paramCount)
     const subscribeParameters = MessageParameters.fromKeyValuePairs(rawParams)
 
     return new TrackStatus(

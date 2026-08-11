@@ -18,10 +18,14 @@ import { ByteBuffer, FrozenByteBuffer, BaseByteBuffer } from '../common/byte_buf
 import { ControlMessageType } from './constant'
 import { Location } from '../common/location'
 import { LengthExceedsMaxError, NotEnoughBytesError, ProtocolViolationError } from '../error/error'
-import { MessageParameter, MessageParameters } from '../parameter/message_parameter'
+import {
+  MessageParameter,
+  MessageParameters,
+  deserializeMessageParameterKvps,
+  serializeMessageParameterKvps,
+} from '../parameter/message_parameter'
 import { TrackExtension, DeliveryTimeoutExtension } from '../extension_header/track_extension'
 import { DeliveryTimeout } from '../parameter/message/delivery_timeout'
-import { deserializeKvpList, serializeKvpList } from '../common/pair'
 
 export class FetchOk {
   constructor(
@@ -44,7 +48,7 @@ export class FetchOk {
     payload.putU8(this.endOfTrack ? 1 : 0)
     payload.putLocation(this.endLocation)
     payload.putVI(this.parameters.length)
-    payload.putBytes(serializeKvpList(this.parameters.map((p) => p.toKeyValuePair())).toUint8Array())
+    payload.putBytes(serializeMessageParameterKvps(this.parameters.map((p) => p.toKeyValuePair())).toUint8Array())
     TrackExtension.serializeInto(this.trackExtensions, payload)
     const payloadBytes = payload.toUint8Array()
     if (payloadBytes.length > 0xffff) {
@@ -74,7 +78,7 @@ export class FetchOk {
     }
     const endLocation = buf.getLocation()
     const paramCount = buf.getNumberVI()
-    const rawParams = deserializeKvpList(buf, paramCount)
+    const rawParams = deserializeMessageParameterKvps(buf, paramCount)
     const parameters = MessageParameters.fromKeyValuePairs(rawParams)
     const trackExtensions = TrackExtension.deserializeAll(buf)
     return new FetchOk(requestId, endOfTrack, endLocation, parameters, trackExtensions)

@@ -30,7 +30,6 @@ import { Forward } from '../parameter/message/forward'
 export class RequestUpdate {
   constructor(
     public requestId: bigint,
-    public existingRequestId: bigint,
     public parameters: MessageParameter[],
   ) {}
 
@@ -44,7 +43,6 @@ export class RequestUpdate {
 
     const payload = new ByteBuffer()
     payload.putVI(this.requestId)
-    payload.putVI(this.existingRequestId)
     payload.putVI(this.parameters.length)
 
     payload.putBytes(serializeMessageParameterKvps(this.parameters.map((p) => p.toKeyValuePair())).toUint8Array())
@@ -61,7 +59,6 @@ export class RequestUpdate {
 
   static parsePayload(buf: BaseByteBuffer): RequestUpdate {
     const requestId = buf.getVI()
-    const existingRequestId = buf.getVI()
 
     const paramCountBig = buf.getVI()
     const paramCount = Number(paramCountBig)
@@ -75,15 +72,11 @@ export class RequestUpdate {
       if (param !== undefined) parameters.push(param)
     }
 
-    return new RequestUpdate(requestId, existingRequestId, parameters)
+    return new RequestUpdate(requestId, parameters)
   }
 
   equals(other: RequestUpdate): boolean {
-    if (
-      this.requestId !== other.requestId ||
-      this.existingRequestId !== other.existingRequestId ||
-      this.parameters.length !== other.parameters.length
-    ) {
+    if (this.requestId !== other.requestId || this.parameters.length !== other.parameters.length) {
       return false
     }
 
@@ -114,7 +107,7 @@ if (import.meta.vitest) {
         const bt = b.toKeyValuePair().typeValue
         return at < bt ? -1 : at > bt ? 1 : 0
       })
-      return new RequestUpdate(120205n, 120204n, parameters)
+      return new RequestUpdate(120205n, parameters)
     }
 
     it('should roundtrip correctly', () => {
@@ -175,7 +168,7 @@ if (import.meta.vitest) {
     })
 
     it('should handle empty parameters', () => {
-      const update = new RequestUpdate(120206n, 120205n, [])
+      const update = new RequestUpdate(120206n, [])
       const serialized = update.serialize()
       const buf = new ByteBuffer()
       buf.putBytes(serialized.toUint8Array())

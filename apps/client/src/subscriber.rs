@@ -255,7 +255,7 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
     tokio::spawn(async move {
       tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
       info!("Sending REQUEST_UPDATE to set Forward State 1");
-      let update = RequestUpdate::new(10, 0, vec![MessageParameter::new_forward(true)]);
+      let update = RequestUpdate::new(10, vec![MessageParameter::new_forward(true)]);
       if let Err(e) = stream
         .send(&ControlMessage::RequestUpdate(Box::new(update)))
         .await

@@ -102,6 +102,7 @@ pub async fn handle(
   stream_handler: &mut ControlStreamHandler,
   msg: ControlMessage,
   context: Arc<SessionContext>,
+  opening_request_id: Option<u64>,
 ) -> Result<(), TerminationCode> {
   match msg {
     ControlMessage::Fetch(m) => {
@@ -698,16 +699,19 @@ pub async fn handle(
 
       Ok(())
     }
-    ControlMessage::RequestUpdate(m) => {
+    ControlMessage::RequestUpdate(_) => {
+      let Some(target_request_id) = opening_request_id else {
+        return Err(TerminationCode::ProtocolViolation);
+      };
       warn!(
         "REQUEST_UPDATE for FETCH request {} cannot be applied; stopping delivery",
-        m.existing_request_id
+        target_request_id
       );
       let cancel_tx = client
         .fetch_cancel_senders
         .write()
         .await
-        .remove(&m.existing_request_id);
+        .remove(&target_request_id);
       if let Some(tx) = cancel_tx {
         let _ = tx.send(FetchStop::UpdateFailed);
       }

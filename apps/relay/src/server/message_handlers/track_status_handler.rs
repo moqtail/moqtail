@@ -30,6 +30,7 @@ pub async fn handle(
   stream_handler: &mut ControlStreamHandler,
   msg: ControlMessage,
   context: Arc<SessionContext>,
+  opening_request_id: Option<u64>,
 ) -> Result<(), TerminationCode> {
   match msg {
     ControlMessage::TrackStatus(m) => {
@@ -98,10 +99,10 @@ pub async fn handle(
       Ok(())
     }
 
-    ControlMessage::RequestUpdate(m) => {
+    ControlMessage::RequestUpdate(_) => {
       warn!(
-        "REQUEST_UPDATE is not valid for a TRACK_STATUS request (id {})",
-        m.existing_request_id
+        "REQUEST_UPDATE is not valid for a TRACK_STATUS request (id {:?})",
+        opening_request_id
       );
       let err = track_status_update_error();
       stream_handler

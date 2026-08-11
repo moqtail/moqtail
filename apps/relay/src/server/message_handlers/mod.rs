@@ -41,28 +41,58 @@ impl MessageHandler {
     stream_handler: &mut ControlStreamHandler,
     msg: ControlMessage,
     context: Arc<SessionContext>,
+    // Request ID of the First-marked message that opened this request stream,
+    // or None on the control stream.
+    opening_request_id: Option<u64>,
   ) -> Result<(), TerminationCode> {
     let handling_result = match &msg {
       ControlMessage::PublishNamespace(_) => {
-        publish_namespace_handler::handle(client.clone(), stream_handler, msg, context.clone())
-          .await
+        publish_namespace_handler::handle(
+          client.clone(),
+          stream_handler,
+          msg,
+          context.clone(),
+          opening_request_id,
+        )
+        .await
       }
       ControlMessage::SubscribeNamespace(_) => {
         warn!("SUBSCRIBE_NAMESPACE received on control stream — must use a dedicated bi-stream");
         Err(TerminationCode::ProtocolViolation)
       }
       ControlMessage::Subscribe(_) | ControlMessage::Switch(_) => {
-        subscribe_handler::handle(client.clone(), stream_handler, msg, context.clone()).await
+        subscribe_handler::handle(
+          client.clone(),
+          stream_handler,
+          msg,
+          context.clone(),
+          opening_request_id,
+        )
+        .await
       }
 
       ControlMessage::TrackStatus(_) => {
-        track_status_handler::handle(stream_handler, msg, context.clone()).await
+        track_status_handler::handle(stream_handler, msg, context.clone(), opening_request_id).await
       }
       ControlMessage::Fetch(_) => {
-        fetch_handler::handle(client.clone(), stream_handler, msg, context.clone()).await
+        fetch_handler::handle(
+          client.clone(),
+          stream_handler,
+          msg,
+          context.clone(),
+          opening_request_id,
+        )
+        .await
       }
       ControlMessage::Publish(_) | ControlMessage::PublishDone(_) => {
-        publish_handler::handle(client.clone(), stream_handler, msg, context.clone()).await
+        publish_handler::handle(
+          client.clone(),
+          stream_handler,
+          msg,
+          context.clone(),
+          opening_request_id,
+        )
+        .await
       }
 
       // A response is read on the request's own bidi stream; reaching the control
@@ -78,8 +108,11 @@ impl MessageHandler {
         Err(TerminationCode::ProtocolViolation)
       }
 
-      ControlMessage::RequestUpdate(m) => {
-        let target_req_id = m.existing_request_id;
+      ControlMessage::RequestUpdate(_) => {
+        let Some(target_req_id) = opening_request_id else {
+          warn!("REQUEST_UPDATE on the control stream; closing session");
+          return Err(TerminationCode::ProtocolViolation);
+        };
 
         enum Route {
           Fetch,
@@ -112,17 +145,44 @@ impl MessageHandler {
         // Route to the appropriate handler (defined only once!)
         match route {
           Route::Fetch => {
-            fetch_handler::handle(client.clone(), stream_handler, msg, context.clone()).await
+            fetch_handler::handle(
+              client.clone(),
+              stream_handler,
+              msg,
+              context.clone(),
+              opening_request_id,
+            )
+            .await
           }
           Route::Publish => {
-            publish_handler::handle(client.clone(), stream_handler, msg, context.clone()).await
+            publish_handler::handle(
+              client.clone(),
+              stream_handler,
+              msg,
+              context.clone(),
+              opening_request_id,
+            )
+            .await
           }
           Route::PublishNamespace => {
-            publish_namespace_handler::handle(client.clone(), stream_handler, msg, context.clone())
-              .await
+            publish_namespace_handler::handle(
+              client.clone(),
+              stream_handler,
+              msg,
+              context.clone(),
+              opening_request_id,
+            )
+            .await
           }
           Route::Subscribe => {
-            subscribe_handler::handle(client.clone(), stream_handler, msg, context.clone()).await
+            subscribe_handler::handle(
+              client.clone(),
+              stream_handler,
+              msg,
+              context.clone(),
+              opening_request_id,
+            )
+            .await
           }
           Route::SubscribeNamespace => {
             subscribe_namespace_handler::handle(
@@ -130,11 +190,13 @@ impl MessageHandler {
               stream_handler,
               msg,
               context.clone(),
+              opening_request_id,
             )
             .await
           }
           Route::TrackStatus => {
-            track_status_handler::handle(stream_handler, msg, context.clone()).await
+            track_status_handler::handle(stream_handler, msg, context.clone(), opening_request_id)
+              .await
           }
           Route::NotFound => {
             // A REQUEST_UPDATE referencing an unknown request is disallowed: it

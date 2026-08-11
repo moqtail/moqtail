@@ -21,11 +21,8 @@ use crate::server::track_manager::SubscribeKind;
 use core::result::Result;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::control::{
-  constant::{FilterType, GroupOrder},
-  control_message::ControlMessage,
-  publish::Publish,
-  request_error::RequestError,
-  request_ok::RequestOk,
+  constant::GroupOrder, control_message::ControlMessage, publish::Publish,
+  request_error::RequestError, request_ok::RequestOk,
 };
 use moqtail::model::error::{RequestErrorCode, TerminationCode};
 use moqtail::model::parameter::constant::MessageParameterType;
@@ -34,6 +31,7 @@ use moqtail::model::parameter::message_parameter::{MessageParameter, MessagePara
 use moqtail::model::property::track_property::has_unsupported_mandatory;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use tracing::{debug, error, info, warn};
 
 pub async fn handle(
@@ -41,6 +39,7 @@ pub async fn handle(
   stream_handler: &mut ControlStreamHandler,
   msg: ControlMessage,
   context: Arc<SessionContext>,
+  opening_request_id: Option<u64>,
 ) -> Result<(), TerminationCode> {
   match msg {
     ControlMessage::Publish(m) => {
@@ -282,16 +281,35 @@ pub async fn handle(
       }
 
       let m_clone = m.clone();
-      let publish_forward_param = m_clone.parameters.get_param_or(
-        MessageParameterType::Forward,
-        MessageParameter::new_forward(true),
+      // FORWARD in PUBLISH is the publisher declaring its own behaviour: 0 means
+      // it sends nothing until we raise the state, omitted or 1 means it sends
+      // immediately. That declaration is the initial Forward State, but the reply
+      // must be 1 whenever a downstream subscriber already wants Objects.
+      let publisher_forwards = matches!(
+        m_clone.parameters.get_param_or(
+          MessageParameterType::Forward,
+          MessageParameter::new_forward(true),
+        ),
+        MessageParameter::Forward { forward: true }
       );
+      let forwarding = match context.track_manager.get_track(&full_track_name).await {
+        Some(track_arc) => {
+          let track = track_arc.read().await;
+          let forwarding = publisher_forwards || track.has_forwarding_subscriber().await;
+          track.upstream_forward.store(forwarding, Ordering::Relaxed);
+          forwarding
+        }
+        None => publisher_forwards,
+      };
       // PUBLISH is answered by REQUEST_OK (PUBLISH_OK); no Track Properties.
+      // SUBSCRIBER_PRIORITY is omitted so the publisher uses the default of 128;
+      // the relay has no reason to rank a pushed track above everything else.
+      // SUBSCRIPTION_FILTER is omitted so the subscription is unfiltered: a relay
+      // wants every Object, both to serve downstream filters and to fill its
+      // cache for FETCH.
       let publish_ok = Box::new(RequestOk::new(vec![
-        publish_forward_param,
-        MessageParameter::new_subscriber_priority(5),
+        MessageParameter::new_forward(forwarding),
         MessageParameter::new_group_order(GroupOrder::Ascending),
-        MessageParameter::new_subscription_filter(FilterType::LatestObject, None, None),
       ]));
 
       info!(
@@ -328,7 +346,10 @@ pub async fn handle(
 
     ControlMessage::RequestUpdate(m) => {
       let update_msg = *m;
-      let publisher_req_id = update_msg.existing_request_id;
+      let Some(target_request_id) = opening_request_id else {
+        return Err(TerminationCode::ProtocolViolation);
+      };
+      let publisher_req_id = target_request_id;
 
       {
         let mut map = client.inbound_requests.write().await;
@@ -417,10 +438,14 @@ pub async fn handle(
 
         let mut forwarded_update = update_msg.clone();
         forwarded_update.request_id = relay_update_id;
-        forwarded_update.existing_request_id = subscriber_existing_id;
 
+        // Goes on the subscription's own request stream, which is what names
+        // the request being updated.
         subscriber_client
-          .queue_message(ControlMessage::RequestUpdate(Box::new(forwarded_update)))
+          .send_response(
+            subscriber_existing_id,
+            ControlMessage::RequestUpdate(Box::new(forwarded_update)),
+          )
           .await;
       }
 
@@ -433,6 +458,72 @@ pub async fn handle(
       Ok(())
     }
     _ => Ok(()),
+  }
+}
+
+/// Raise a PUBLISH-created track's upstream Forward State to 1 once something
+/// downstream wants Objects. A publisher that declared FORWARD=0 sends nothing
+/// until told to, so without this the track never delivers.
+pub(crate) async fn ensure_upstream_forwarding(
+  track_arc: &Arc<tokio::sync::RwLock<Track>>,
+  context: &Arc<SessionContext>,
+) {
+  let (origin, full_track_name) = {
+    let track = track_arc.read().await;
+    (track.origin, track.full_track_name.clone())
+  };
+  if origin != TrackOrigin::Publish {
+    return;
+  }
+
+  let publisher_ids: Vec<usize> = {
+    let track = track_arc.read().await;
+    if !track.has_forwarding_subscriber().await {
+      return;
+    }
+    // swap returns the previous value, so false means this call is the one that
+    // set the flag and therefore owns the update; true means someone beat us.
+    if track.upstream_forward.swap(true, Ordering::Relaxed) {
+      return;
+    }
+    let aliases = track.publisher_aliases.read().await;
+    aliases.keys().copied().collect()
+  };
+
+  for connection_id in publisher_ids {
+    let Some(publisher_request_id) = context
+      .track_manager
+      .get_publish_request_id(&full_track_name, connection_id)
+      .await
+    else {
+      warn!("No stored PUBLISH for publisher {connection_id} on {full_track_name:?}");
+      continue;
+    };
+    let publisher = {
+      let manager = context.client_manager.read().await;
+      manager.get(connection_id).await
+    };
+    let Some(publisher) = publisher else {
+      continue;
+    };
+
+    let update = moqtail::model::control::request_update::RequestUpdate::new(
+      Session::get_next_relay_request_id(context.relay_next_request_id.clone()).await,
+      vec![MessageParameter::new_forward(true)],
+    );
+    // Goes on the publisher's own PUBLISH request stream, where the responses to
+    // that request belong.
+    let delivered = publisher
+      .send_response(
+        publisher_request_id,
+        ControlMessage::RequestUpdate(Box::new(update)),
+      )
+      .await;
+    if delivered {
+      info!("Raised upstream Forward State for {full_track_name:?} (publisher {connection_id})");
+    } else {
+      warn!("No open PUBLISH request stream for publisher {connection_id} on {full_track_name:?}");
+    }
   }
 }
 

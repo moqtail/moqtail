@@ -323,21 +323,27 @@ pub async fn handle(
     }
 
     ControlMessage::PublishDone(m) => {
+      // PUBLISH_DONE names no request; it ends the one that opened this stream.
+      let Some(publisher_req_id) = opening_request_id else {
+        warn!("PUBLISH_DONE on the control stream; closing session");
+        return Err(TerminationCode::ProtocolViolation);
+      };
+
       info!(
         "Received PublishDone message for request ID: {} with status: {:?}",
-        m.request_id, m.status_code
+        publisher_req_id, m.status_code
       );
 
       // Clean up the published track
-      cleanup_published_track(&client, m.request_id, &context).await;
+      cleanup_published_track(&client, publisher_req_id, &context).await;
 
       // Remove the request from the unified map to avoid memory leak
       {
         let mut map = client.inbound_requests.write().await;
-        map.remove(&m.request_id);
+        map.remove(&publisher_req_id);
         debug!(
           "Removed terminated PUBLISH request {} from pending requests map",
-          m.request_id
+          publisher_req_id
         );
       }
 

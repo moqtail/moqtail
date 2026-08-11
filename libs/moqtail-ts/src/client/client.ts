@@ -1565,7 +1565,8 @@ export class MOQtailClient {
       if (typeof publishRequestId === 'number') publishRequestId = BigInt(publishRequestId)
 
       // Create the PublishDone message. (StreamCount is set to 0n as a default)
-      const msg = new PublishDone(publishRequestId, statusCode, 0n, new ReasonPhrase(reasonPhrase))
+      // It carries no request id: the stream it is sent on names the request it ends.
+      const msg = new PublishDone(statusCode, 0n, new ReasonPhrase(reasonPhrase))
 
       // PUBLISH_DONE is the last message on the PUBLISH request's own stream.
       const requestStream = this.#requestStreams.get(publishRequestId)
@@ -1976,7 +1977,7 @@ export class MOQtailClient {
             `${msg.constructor.name} is not valid on a request stream (request id ${requestId})`,
           )
         }
-        await handler(this, msg, requestStream)
+        await handler(this, msg, requestStream, requestId)
         answered = true
       }
       logger.debug('MOQtailClient', `request stream for requestId=${requestId} closed by peer`)
@@ -2086,6 +2087,9 @@ export class MOQtailClient {
       return
     }
 
+    // The first message names the request; everything later on this stream belongs to it.
+    const openingRequestId = (first as { requestId: bigint }).requestId
+
     try {
       let msg: ControlMessage | undefined = first
       while (msg) {
@@ -2096,7 +2100,7 @@ export class MOQtailClient {
             `No handler for ${msg.constructor.name} on a request stream`,
           )
         }
-        await handler(this, msg, requestStream)
+        await handler(this, msg, requestStream, openingRequestId)
         msg = await requestStream.next()
       }
     } catch (error) {

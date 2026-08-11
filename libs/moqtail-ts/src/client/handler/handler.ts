@@ -65,9 +65,16 @@ export type ControlMessageHandler<T> = (client: MOQtailClient, msg: T) => Promis
 
 /**
  * A message on a bidirectional request stream. `stream` is the stream the message
- * arrived on and the only place a response to it may be written.
+ * arrived on and the only place a response to it may be written. `openingRequestId` is
+ * the id of the request that opened it, which is what names the request for messages
+ * that carry no id of their own.
  */
-export type RequestStreamMessageHandler<T> = (client: MOQtailClient, msg: T, stream: RequestStream) => Promise<void>
+export type RequestStreamMessageHandler<T> = (
+  client: MOQtailClient,
+  msg: T,
+  stream: RequestStream,
+  openingRequestId: bigint,
+) => Promise<void>
 
 /**
  * Draft-18 §3.3: the control stream carries SETUP and GOAWAY, nothing else. SETUP is

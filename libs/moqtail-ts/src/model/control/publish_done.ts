@@ -21,19 +21,13 @@ import { ControlMessageType, PublishDoneStatusCode } from './constant'
 
 export class PublishDone {
   constructor(
-    public readonly requestId: bigint,
     public readonly statusCode: PublishDoneStatusCode,
     public readonly streamCount: bigint,
     public readonly errorReason: ReasonPhrase,
   ) {}
 
-  static new(
-    requestId: bigint | number,
-    statusCode: PublishDoneStatusCode,
-    streamCount: bigint,
-    errorReason: ReasonPhrase,
-  ): PublishDone {
-    return new PublishDone(BigInt(requestId), statusCode, streamCount, errorReason)
+  static new(statusCode: PublishDoneStatusCode, streamCount: bigint, errorReason: ReasonPhrase): PublishDone {
+    return new PublishDone(statusCode, streamCount, errorReason)
   }
 
   getType(): ControlMessageType {
@@ -44,7 +38,6 @@ export class PublishDone {
     const buf = new ByteBuffer()
     buf.putVI(ControlMessageType.PublishDone)
     const payload = new ByteBuffer()
-    payload.putVI(this.requestId)
     payload.putVI(this.statusCode)
     payload.putVI(this.streamCount)
     payload.putReasonPhrase(this.errorReason)
@@ -58,12 +51,11 @@ export class PublishDone {
   }
 
   static parsePayload(buf: BaseByteBuffer): PublishDone {
-    const requestId = buf.getVI()
     const statusCodeRaw = buf.getVI()
     const statusCode = PublishDoneStatusCode.tryFrom(statusCodeRaw)
     const streamCount = buf.getVI()
     const errorReason = buf.getReasonPhrase()
-    return new PublishDone(requestId, statusCode, streamCount, errorReason)
+    return new PublishDone(statusCode, streamCount, errorReason)
   }
 }
 
@@ -72,11 +64,10 @@ if (import.meta.vitest) {
 
   describe('PublishDone', () => {
     test('roundtrip', () => {
-      const requestId = 12345n
       const statusCode = PublishDoneStatusCode.SubscriptionEnded
       const streamCount = 123n
       const errorReason = new ReasonPhrase('Lorem ipsum dolor sit amet')
-      const publishDone = PublishDone.new(requestId, statusCode, streamCount, errorReason)
+      const publishDone = PublishDone.new(statusCode, streamCount, errorReason)
 
       const frozen = publishDone.serialize()
       const msgType = frozen.getVI()
@@ -84,7 +75,6 @@ if (import.meta.vitest) {
       const msgLength = frozen.getU16()
       expect(msgLength).toBe(frozen.remaining)
       const deserialized = PublishDone.parsePayload(frozen)
-      expect(deserialized.requestId).toBe(publishDone.requestId)
       expect(deserialized.statusCode).toBe(publishDone.statusCode)
       expect(deserialized.streamCount).toBe(publishDone.streamCount)
       expect(deserialized.errorReason.phrase).toBe(publishDone.errorReason.phrase)
@@ -92,11 +82,10 @@ if (import.meta.vitest) {
     })
 
     test('excess roundtrip', () => {
-      const requestId = 12345n
       const statusCode = PublishDoneStatusCode.Expired
       const streamCount = 123n
       const errorReason = new ReasonPhrase('Lorem ipsum dolor sit amet')
-      const publishDone = PublishDone.new(requestId, statusCode, streamCount, errorReason)
+      const publishDone = PublishDone.new(statusCode, streamCount, errorReason)
       const serialized = publishDone.serialize().toUint8Array()
       const excess = new Uint8Array([9, 1, 1])
       const buf = new ByteBuffer()
@@ -108,7 +97,6 @@ if (import.meta.vitest) {
       const msgLength = frozen.getU16()
       expect(msgLength).toBe(frozen.remaining - 3)
       const deserialized = PublishDone.parsePayload(frozen)
-      expect(deserialized.requestId).toBe(publishDone.requestId)
       expect(deserialized.statusCode).toBe(publishDone.statusCode)
       expect(deserialized.streamCount).toBe(publishDone.streamCount)
       expect(deserialized.errorReason.phrase).toBe(publishDone.errorReason.phrase)
@@ -117,11 +105,10 @@ if (import.meta.vitest) {
     })
 
     test('partial message', () => {
-      const requestId = 12345n
       const statusCode = PublishDoneStatusCode.Expired
       const streamCount = 123n
       const errorReason = new ReasonPhrase('Lorem ipsum dolor sit amet')
-      const publishDone = PublishDone.new(requestId, statusCode, streamCount, errorReason)
+      const publishDone = PublishDone.new(statusCode, streamCount, errorReason)
       const serialized = publishDone.serialize().toUint8Array()
       const upper = Math.floor(serialized.length / 2)
       const partial = serialized.slice(0, upper)

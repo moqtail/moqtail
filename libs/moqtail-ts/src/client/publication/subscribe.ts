@@ -193,12 +193,7 @@ export class SubscribePublication {
    */
   async done(statusCode: PublishDoneStatusCode): Promise<void> {
     this.#isCompleted = true
-    const publishDone = new PublishDone(
-      this.subscribeMsg.requestId,
-      statusCode,
-      BigInt(this.#streamsOpened),
-      new ReasonPhrase('Subscription ended'),
-    )
+    const publishDone = new PublishDone(statusCode, BigInt(this.#streamsOpened), new ReasonPhrase('Subscription ended'))
     // TODO: Handle track completion, there might be ongoing streams. Wait for all to finish before cleaning the state
     await this.requestStream.send(publishDone)
   }

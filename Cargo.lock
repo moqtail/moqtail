@@ -1893,8 +1893,7 @@ checksum = "9edde0db4769d2dc68579893f2306b26c6ecfbe0ef499b013d731b7b9247e0b9"
 [[package]]
 name = "wtransport"
 version = "0.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ea4aacf790813ee1956751491800537f4e04af7557b7b370501ccbfbc85963e4"
+source = "git+https://github.com/BiagioFesta/wtransport?rev=d96cbb87c9127fcb453fb05bbb47ef93402daec2#d96cbb87c9127fcb453fb05bbb47ef93402daec2"
 dependencies = [
  "bytes",
  "pem",
@@ -1917,8 +1916,7 @@ dependencies = [
 [[package]]
 name = "wtransport-proto"
 version = "0.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d5867c629e4252f7439d82315923daaf27f4fa442410d51b78ab93ef4c432a11"
+source = "git+https://github.com/BiagioFesta/wtransport?rev=d96cbb87c9127fcb453fb05bbb47ef93402daec2#d96cbb87c9127fcb453fb05bbb47ef93402daec2"
 dependencies = [
  "httlib-huffman",
  "octets",

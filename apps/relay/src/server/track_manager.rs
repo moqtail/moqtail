@@ -443,6 +443,20 @@ impl TrackManager {
     }
   }
 
+  /// The request id of the PUBLISH this connection used for the track, which
+  /// identifies the request stream its responses belong on.
+  pub async fn get_publish_request_id(
+    &self,
+    full_track_name: &FullTrackName,
+    connection_id: usize,
+  ) -> Option<u64> {
+    let publishes = self.publishes.read().await;
+    publishes
+      .get(full_track_name)
+      .and_then(|by_connection| by_connection.get(&connection_id))
+      .map(|publish| publish.request_id)
+  }
+
   pub async fn get_tracks_and_publishes_by_namespace_prefix(
     &self,
     prefix: &Tuple,

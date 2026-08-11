@@ -31,6 +31,7 @@ pub async fn handle(
   stream_handler: &mut ControlStreamHandler,
   msg: ControlMessage,
   context: Arc<SessionContext>,
+  opening_request_id: Option<u64>,
 ) -> Result<(), TerminationCode> {
   match msg {
     ControlMessage::PublishNamespace(m) => {
@@ -114,7 +115,10 @@ pub async fn handle(
 
     ControlMessage::RequestUpdate(m) => {
       let update_msg = *m;
-      let existing_req_id = update_msg.existing_request_id;
+      let Some(target_request_id) = opening_request_id else {
+        return Err(TerminationCode::ProtocolViolation);
+      };
+      let existing_req_id = target_request_id;
 
       let target_namespace = {
         let mut map = client.inbound_requests.write().await;
@@ -158,7 +162,6 @@ pub async fn handle(
 
           let fanout_msg = moqtail::model::control::request_update::RequestUpdate::new(
             relay_update_id,
-            downstream_req_id,
             update_msg.parameters.clone(),
           );
 
@@ -174,8 +177,13 @@ pub async fn handle(
             );
           }
 
+          // Goes on the namespace subscription's own request stream, which is
+          // what names the request being updated.
           session
-            .queue_message(ControlMessage::RequestUpdate(Box::new(fanout_msg)))
+            .send_response(
+              downstream_req_id,
+              ControlMessage::RequestUpdate(Box::new(fanout_msg)),
+            )
             .await;
         } else {
           warn!(

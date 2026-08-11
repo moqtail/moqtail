@@ -124,6 +124,11 @@ pub struct Track {
   /// None, so a subscriber leaving never cancels the publisher; the pushed track
   /// stays alive as long as the publisher keeps publishing.
   pub upstream_cancel: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+  /// Forward State the relay last gave the upstream publisher of a
+  /// PUBLISH-created track. A relay may answer PUBLISH with Forward State 0
+  /// while nothing downstream wants the track; this records whether it has
+  /// since been raised, so it is raised only once.
+  pub upstream_forward: Arc<AtomicBool>,
 }
 
 // TODO: this track implementation should be static? At least
@@ -158,7 +163,18 @@ impl Track {
       track_properties: Arc::new(RwLock::new(Vec::new())),
       active_subgroup_headers: Arc::new(RwLock::new(HashMap::new())),
       upstream_cancel: Arc::new(Mutex::new(None)),
+      upstream_forward: Arc::new(AtomicBool::new(false)),
     }
+  }
+
+  /// Whether any subscription on this track currently wants Objects forwarded.
+  pub async fn has_forwarding_subscriber(&self) -> bool {
+    for sub in self.subscription_manager.get_all_subscriptions().await {
+      if sub.read().await.is_forwarding().await {
+        return true;
+      }
+    }
+    false
   }
 
   /// Add a publisher (connection_id -> track_alias) to this track.

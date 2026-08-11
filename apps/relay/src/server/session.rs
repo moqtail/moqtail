@@ -327,6 +327,7 @@ impl Session {
         &mut control_stream_handler,
         msg,
         context.clone(),
+        None,
       )
       .await;
 
@@ -642,6 +643,7 @@ impl Session {
           &mut stream_handler,
           first,
           context.clone(),
+          Some(request_id),
         )
         .await
         {
@@ -672,6 +674,7 @@ impl Session {
                     &mut stream_handler,
                     follow_up,
                     context.clone(),
+                    Some(request_id),
                   )
                   .await
                   {

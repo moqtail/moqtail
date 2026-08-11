@@ -1202,7 +1202,7 @@ export class MOQtailClient {
             new SubscriptionFilter(FilterType.AbsoluteRange, startLocation, endGroup),
             ...(parameters ?? []),
           ]
-          const msg = new RequestUpdate(requestId, subscriptionRequestId, updateParams)
+          const msg = new RequestUpdate(requestId, updateParams)
           subscription.update(msg) // This also updates the request since both maps store the same object
           // A REQUEST_UPDATE travels on the stream of the request it updates.
           await this.#requestStreamFor(subscriptionRequestId, 'MOQtailClient.subscribeUpdate').send(msg)

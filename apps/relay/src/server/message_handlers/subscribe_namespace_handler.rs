@@ -217,11 +217,15 @@ pub async fn handle(
   handler: &mut ControlStreamHandler,
   msg: ControlMessage,
   context: Arc<SessionContext>,
+  opening_request_id: Option<u64>,
 ) -> Result<(), TerminationCode> {
   match msg {
     ControlMessage::RequestUpdate(m) => {
       let update_msg = *m;
-      let existing_req_id = update_msg.existing_request_id;
+      let Some(target_request_id) = opening_request_id else {
+        return Err(TerminationCode::ProtocolViolation);
+      };
+      let existing_req_id = target_request_id;
 
       let target_prefix = {
         let mut map = client.inbound_requests.write().await;

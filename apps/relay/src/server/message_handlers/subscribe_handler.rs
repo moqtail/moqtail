@@ -376,6 +376,12 @@ async fn handle_subscribe_message(
     }
   };
 
+  // A subscriber attaching to a PUBLISH-created track is what makes the relay
+  // want Objects, so tell the publisher to start sending.
+  if res.is_ok() {
+    super::publish_handler::ensure_upstream_forwarding(&track_arc, &context).await;
+  }
+
   // Store in client's subscribe requests on success
   if res.is_ok() {
     let mut requests = client.subscribe_requests.write().await;
@@ -655,9 +661,8 @@ pub async fn handle_request_update(
   stream_handler: &mut ControlStreamHandler,
   update_msg: moqtail::model::control::request_update::RequestUpdate,
   context: Arc<SessionContext>,
+  existing_req_id: u64,
 ) -> Result<(), TerminationCode> {
-  let existing_req_id = update_msg.existing_request_id;
-
   let full_track_name = {
     let mut client_requests = client.subscribe_requests.write().await;
     match client_requests.get_mut(&existing_req_id) {
@@ -720,6 +725,9 @@ pub async fn handle_request_update(
         "Subscription updated successfully for track: {:?}",
         full_track_name
       );
+      // The update may have turned this subscriber's Forward State on, which is
+      // the first thing wanting Objects from a PUBLISH-created track.
+      super::publish_handler::ensure_upstream_forwarding(&track_arc, &context).await;
       let ok_msg = RequestOk::new(vec![]);
       let _ = stream_handler.send_impl(&ok_msg).await;
     }
@@ -1011,13 +1019,17 @@ pub async fn handle(
   stream_handler: &mut ControlStreamHandler,
   msg: ControlMessage,
   context: Arc<SessionContext>,
+  opening_request_id: Option<u64>,
 ) -> Result<(), TerminationCode> {
   match msg {
     ControlMessage::Subscribe(m) => {
       handle_subscribe_message(client, stream_handler, *m, context, false).await
     }
     ControlMessage::RequestUpdate(m) => {
-      handle_request_update(client, stream_handler, *m, context).await
+      let Some(target_request_id) = opening_request_id else {
+        return Err(TerminationCode::ProtocolViolation);
+      };
+      handle_request_update(client, stream_handler, *m, context, target_request_id).await
     }
     ControlMessage::Switch(m) => handle_switch_message(client, stream_handler, *m, context).await,
     _ => {

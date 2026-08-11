@@ -108,6 +108,7 @@ export interface PropertyTypes extends Registry {
 
 export const messageTypes = (): Registry => load<Registry>('message_types.json')
 export const requestErrorCodes = (): Registry => load<Registry>('request_error_codes.json')
+export const publishDoneCodes = (): Registry => load<Registry>('publish_done_codes.json')
 export const terminationCodes = (): Registry => load<Registry>('termination_codes.json')
 export const streamResetCodes = (): Registry => load<Registry>('stream_reset_codes.json')
 export const propertyTypes = (): PropertyTypes => load<PropertyTypes>('property_types.json')

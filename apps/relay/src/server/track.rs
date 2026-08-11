@@ -56,9 +56,11 @@ pub enum TrackOrigin {
 pub enum TrackStatus {
   /// Track created, subscribe forwarded to publisher, awaiting response.
   Pending,
-  /// Publisher confirmed with SubscribeOk.
+  /// Publisher confirmed with SubscribeOk, with the parameters it sent. They were
+  /// addressed to the relay, so they are what a later SUBSCRIBE_OK is derived from,
+  /// never what it forwards.
   Confirmed {
-    subscribe_parameters: Vec<MessageParameter>,
+    upstream_parameters: Vec<MessageParameter>,
   },
   /// Publisher rejected with RequestError.
   Rejected {
@@ -283,7 +285,7 @@ impl Track {
     &mut self,
     publisher_connection_id: usize,
     publisher_track_alias: u64,
-    subscribe_parameters: Vec<MessageParameter>,
+    upstream_parameters: Vec<MessageParameter>,
     properties: Vec<TrackProperty>,
   ) {
     {
@@ -292,7 +294,7 @@ impl Track {
     }
     let mut status = self.status.write().await;
     *status = TrackStatus::Confirmed {
-      subscribe_parameters,
+      upstream_parameters,
     };
     drop(status);
     *self.track_properties.write().await = properties;

@@ -357,7 +357,7 @@ impl TrackManager {
     &self,
     target_namespace: &Tuple,
     kind: SubscribeKind,
-  ) -> Vec<Arc<MOQTClient>> {
+  ) -> Vec<(Arc<MOQTClient>, Vec<MessageParameter>)> {
     let subs = self.namespace_subscribers.read().await;
     let mut interested_clients = Vec::new();
 
@@ -365,9 +365,11 @@ impl TrackManager {
     // Example: Target "meet.room1", Prefix "meet" -> Match.
     for (prefix, clients) in subs.iter() {
       if target_namespace.starts_with(prefix) {
-        for (client, k, _params, _tx) in clients {
+        for (client, k, params, _tx) in clients {
           if *k == kind {
-            interested_clients.push(client.clone());
+            // The parameters come along: what the relay sends a subscriber is derived
+            // from the request that asked for it, not from the publisher upstream.
+            interested_clients.push((client.clone(), params.clone()));
           }
         }
       }

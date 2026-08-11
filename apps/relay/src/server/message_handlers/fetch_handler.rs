@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::server::client::MOQTClient;
+use crate::server::message_handlers::parameters;
 use crate::server::session_context::{PendingRequest, SessionContext, UpstreamFetchEvent};
 use crate::server::stream_id::StreamId;
 use crate::server::utils::build_stream_id;
@@ -490,15 +491,9 @@ pub async fn handle(
             upstream_gap_count += 1;
 
             // Issue upstream fetch for the gap
-            let upstream_rx = send_upstream_fetch_for_range(
-              &client,
-              &context,
-              &track_read,
-              &fetch,
-              gap_start,
-              gap_end,
-            )
-            .await;
+            let upstream_rx =
+              send_upstream_fetch_for_range(&client, &context, &track_read, gap_start, gap_end)
+                .await;
 
             if let Some((relay_request_id, upstream_publisher, mut rx)) = upstream_rx {
               let timeout = context.server_config.upstream_fetch_timeout;
@@ -754,7 +749,6 @@ async fn send_upstream_fetch_for_range(
   client: &Arc<MOQTClient>,
   context: &Arc<SessionContext>,
   track_read: &crate::server::track::Track,
-  original_fetch: &Fetch,
   gap_start: u64,
   gap_end: u64,
 ) -> Option<(u64, Arc<MOQTClient>, mpsc::Receiver<UpstreamFetchEvent>)> {
@@ -796,7 +790,7 @@ async fn send_upstream_fetch_for_range(
   let upstream_fetch = Fetch::new_standalone(
     relay_request_id,
     standalone_props,
-    original_fetch.parameters.clone(),
+    parameters::upstream_fetch(),
   );
 
   let (upstream_tx, upstream_rx) = mpsc::channel(UPSTREAM_FETCH_CHANNEL_CAPACITY);

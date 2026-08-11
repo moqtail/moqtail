@@ -195,7 +195,7 @@ pub async fn handle(
         .get_namespace_subscribers(&target_namespace, SubscribeKind::Namespace)
         .await;
 
-      for session in downstream_sessions {
+      for (session, _) in downstream_sessions {
         if let Some(downstream_req_id) = session.get_outbound_announce_id(&target_namespace).await {
           let relay_update_id = crate::server::session::Session::get_next_relay_request_id(
             context.relay_next_request_id.clone(),

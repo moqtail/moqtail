@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::server::client::MOQTClient;
+use crate::server::message_handlers::parameters;
 use crate::server::message_handlers::subscribe_namespace_handler::{
   MAX_NAMESPACE_PREFIX_FIELDS, oversized_namespace_error,
 };
@@ -164,6 +165,11 @@ pub async fn handle_subscribe_tracks(
         Session::get_next_relay_request_id(context.relay_next_request_id.clone()).await;
       original_publish_message.request_id = relay_publish_id;
       original_publish_message.track_alias = relay_track_id;
+      original_publish_message.parameters = parameters::downstream_publish(
+        &original_publish_message.parameters,
+        &sub_tracks.parameters,
+        track_arc.read().await.largest_object().await,
+      );
 
       {
         let mut map = context.relay_pending_requests.write().await;

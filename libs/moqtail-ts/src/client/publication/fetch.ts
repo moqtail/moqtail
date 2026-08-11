@@ -25,6 +25,8 @@ import {
   MoqtObject,
 } from '@/model'
 import { FetchObjectContext } from '@/model/data/fetch_object'
+import { StreamResetCode } from '@/model/error/stream_reset'
+import { streamResetReason } from '../util/stream_reset'
 import { MOQtailClient } from '../client'
 import { Track } from '../track/track'
 import { SubscribePublication } from './subscribe'
@@ -108,7 +110,7 @@ export class FetchPublication {
       for (const obj of this.#objects) {
         if (this.#isCanceled) {
           logger.debug('publication/fetch', `aborted during publish requestId=${this.#requestId}`)
-          await this.#writer.abort('Fetch cancelled during publish')
+          await this.#writer.abort(streamResetReason(StreamResetCode.Cancelled))
           this.#client.publications.delete(this.#requestId)
           return
         }
@@ -121,7 +123,7 @@ export class FetchPublication {
       logger.debug('publication/fetch', `published requestId=${this.#requestId} objects=${this.#objects.length}`)
       this.#client.publications.delete(this.#requestId)
     } catch (error: unknown) {
-      await this.#writer?.abort('Fetch failed during publish')
+      await this.#writer?.abort(streamResetReason(StreamResetCode.InternalError))
       const message = error instanceof Error ? error.message : String(error)
       logger.error('publication/fetch', `publish failed requestId=${this.#requestId}`, message)
       throw new InternalError('FetchPublication.publish', `Failed to publish: ${message}`)

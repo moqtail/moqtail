@@ -72,6 +72,7 @@ import {
   SubscriberPriority,
   GroupOrderParam,
   SubscriptionFilter,
+  StreamResetCode,
 } from '../model'
 import { PublishNamespaceCancel } from '../model/control/publish_namespace_cancel'
 import { Track } from './track/track'
@@ -86,6 +87,7 @@ import { FetchPublication } from './publication/fetch'
 import { PublishPublication } from './publication/publish'
 import { random60bitId } from './util/random_id'
 import { isValidTrackAlias } from './util/validators'
+import { streamResetCodeOf, streamResetReason } from './util/stream_reset'
 import {
   MOQtailRequest,
   SubscribeOptions,
@@ -2080,7 +2082,7 @@ export class MOQtailClient {
 
     if (!ControlMessageType.isFirst(first.getType())) {
       logger.warn('MOQtailClient', `${first.constructor.name} may not open a request stream; resetting it`)
-      await requestStream.close()
+      await requestStream.reset(StreamResetCode.InternalError)
       return
     }
 
@@ -2199,7 +2201,7 @@ export class MOQtailClient {
           const effectiveDiscardPolicy = subscription.earlyDiscardPolicy ?? this.#earlyDiscardPolicy
           if (effectiveDiscardPolicy?.subgroupReceiveTimeout !== undefined) {
             subgroupTimeoutId = setTimeout(() => {
-              reader.cancel('early discard: subgroupReceiveTimeout exceeded').catch(() => {})
+              reader.cancel(streamResetReason(StreamResetCode.DeliveryTimeout)).catch(() => {})
             }, effectiveDiscardPolicy.subgroupReceiveTimeout)
           }
 
@@ -2277,12 +2279,19 @@ if (import.meta.vitest) {
     readonly readable: ReadableStream<Uint8Array>
     readonly writable: WritableStream<Uint8Array>
     isClosed = false
+    /** The reason the client aborted the send side with, if it did. */
+    abortReason: unknown
+    /** The reason the client cancelled the receive side with, if it did. */
+    cancelReason: unknown
     #peer!: ReadableStreamDefaultController<Uint8Array>
 
     constructor() {
       this.readable = new ReadableStream<Uint8Array>({
         start: (controller) => {
           this.#peer = controller
+        },
+        cancel: (reason) => {
+          this.cancelReason = reason
         },
       })
       this.writable = new WritableStream<Uint8Array>({
@@ -2292,8 +2301,9 @@ if (import.meta.vitest) {
         close: () => {
           this.isClosed = true
         },
-        abort: () => {
+        abort: (reason) => {
           this.isClosed = true
+          this.abortReason = reason
         },
       })
     }
@@ -2358,11 +2368,17 @@ if (import.meta.vitest) {
       })
     }
 
+    /** Reasons the client cancelled peer uni streams with, in order. */
+    readonly uniCancelReasons: unknown[] = []
+
     /** Opens a peer uni stream carrying `bytes`, left open so the reader keeps waiting. */
     openIncomingUniStream(bytes: Uint8Array): void {
       this.#incoming.enqueue(
         new ReadableStream<Uint8Array>({
           start: (controller) => controller.enqueue(bytes),
+          cancel: (reason) => {
+            this.uniCancelReasons.push(reason)
+          },
         }),
       )
     }
@@ -2614,6 +2630,8 @@ if (import.meta.vitest) {
 
       await vi.waitFor(() => expect(incoming.isClosed).toBe(true))
       expect(incoming.messages).toHaveLength(0)
+      expect(streamResetCodeOf(incoming.abortReason)).toBe(StreamResetCode.InternalError)
+      expect(streamResetCodeOf(incoming.cancelReason)).toBe(StreamResetCode.InternalError)
 
       await client.disconnect()
     })

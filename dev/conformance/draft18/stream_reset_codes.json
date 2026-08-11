@@ -1,6 +1,6 @@
 {
   "source": "draft-ietf-moq-transport-18 §3.3.3, §15.10.4 Table 20",
-  "description": "Error codes used when resetting a stream or sending STOP_SENDING. \"The application SHOULD use a relevant error code when resetting or sending STOP_SENDING on any stream.\" Neither stack has this enum yet.",
+  "description": "Error codes used when resetting a stream or sending STOP_SENDING. \"The application SHOULD use a relevant error code when resetting or sending STOP_SENDING on any stream.\" Distinct from REQUEST_ERROR codes; the two disagree on shared names.",
 
   "greasing": {
     "formula": "0x7f * N + 0x9D",
@@ -13,71 +13,61 @@
       "name": "INTERNAL_ERROR",
       "value": "0x0",
       "spec": "Section 3.3.3",
-      "notes": "An implementation specific error.",
-      "pending": { "ts": 260 }
+      "notes": "An implementation specific error."
     },
     {
       "name": "CANCELLED",
       "value": "0x1",
       "spec": "Section 3.3.3",
-      "notes": "The stream was cancelled by either endpoint. For subscriptions, PUBLISH_DONE may carry a more detailed status code.",
-      "pending": { "ts": 260 }
+      "notes": "The stream was cancelled by either endpoint. For subscriptions, PUBLISH_DONE may carry a more detailed status code."
     },
     {
       "name": "DELIVERY_TIMEOUT",
       "value": "0x2",
       "spec": "Section 3.3.3",
-      "notes": "A delivery timeout (§8) was exceeded for this stream.",
-      "pending": { "ts": 260 }
+      "notes": "A delivery timeout (§8) was exceeded for this stream."
     },
     {
       "name": "SESSION_CLOSED",
       "value": "0x3",
       "spec": "Section 3.3.3",
-      "notes": "The session is being closed.",
-      "pending": { "ts": 260 }
+      "notes": "The session is being closed."
     },
     {
       "name": "GOING_AWAY",
       "value": "0x4",
       "spec": "Section 3.3.3",
-      "notes": "The endpoint is rejecting this request because it has sent or received a GOAWAY.",
-      "pending": { "ts": 260 }
+      "notes": "The endpoint is rejecting this request because it has sent or received a GOAWAY."
     },
     {
       "name": "TOO_FAR_BEHIND",
       "value": "0x5",
       "spec": "Section 3.3.3",
-      "notes": "The corresponding subscription has exceeded the publisher's resource limits and is being terminated (§8).",
-      "pending": { "ts": 260 }
+      "notes": "The corresponding subscription has exceeded the publisher's resource limits and is being terminated (§8)."
     },
     {
       "name": "UNKNOWN_OBJECT_STATUS",
       "value": "0x6",
       "spec": "Section 3.3.3",
-      "notes": "In response to a FETCH, the publisher is unable to determine the status of the next Object in the requested range.",
-      "pending": { "ts": 260 }
+      "notes": "In response to a FETCH, the publisher is unable to determine the status of the next Object in the requested range."
     },
     {
       "name": "EXPIRED_AUTH_TOKEN",
       "value": "0x7",
       "spec": "Section 3.3.3",
-      "notes": "The authorization token for the request has expired.",
-      "pending": { "ts": 260 }
+      "notes": "The authorization token for the request has expired."
     },
     {
       "name": "EXCESSIVE_LOAD",
       "value": "0x9",
       "spec": "Section 3.3.3",
-      "notes": "The endpoint is overloaded and is resetting this stream.",
-      "pending": { "ts": 260 }
+      "notes": "The endpoint is overloaded and is resetting this stream."
     },
     {
       "name": "MALFORMED_TRACK",
       "value": "0x12",
       "spec": "Section 3.3.3",
-      "notes": "A relay publisher detected that the track was malformed (§2.4.2).",
-      "pending": { "ts": 260 }
+      "notes": "A relay publisher detected that the track was malformed (§2.4.2)."
     }
   ]
 }

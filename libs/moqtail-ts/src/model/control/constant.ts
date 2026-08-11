@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { InvalidEnumValue } from '../error'
+import { InvalidEnumValue, StreamResetCode } from '../error'
 /**
  * Protocol string array exchanged in wt-available-protocols header
  */
@@ -355,6 +355,9 @@ export namespace PublishDoneStatusCode {
 /**
  * @public
  * Unified error codes for REQUEST_ERROR control messages.
+ *
+ * A separate registry from {@link (StreamResetCode:enum)}, which disagrees with it on
+ * the same names: `GOING_AWAY` is `0x6` here but `0x4` as a stream reset code.
  */
 export enum RequestErrorCode {
   InternalError = 0x0,
@@ -363,13 +366,17 @@ export enum RequestErrorCode {
   NotSupported = 0x3,
   MalformedAuthToken = 0x4,
   ExpiredAuthToken = 0x5,
+  GoingAway = 0x6,
+  ExcessiveLoad = 0x9,
   DoesNotExist = 0x10,
   InvalidRange = 0x11,
   MalformedTrack = 0x12,
   DuplicateSubscription = 0x19,
   Uninterested = 0x20,
   PrefixOverlap = 0x30,
+  NamespaceTooLarge = 0x31,
   InvalidJoiningRequestId = 0x32,
+  UnsupportedExtension = 0x33,
 }
 
 /**
@@ -393,6 +400,10 @@ export namespace RequestErrorCode {
         return RequestErrorCode.MalformedAuthToken
       case 0x5n:
         return RequestErrorCode.ExpiredAuthToken
+      case 0x6n:
+        return RequestErrorCode.GoingAway
+      case 0x9n:
+        return RequestErrorCode.ExcessiveLoad
       case 0x10n:
         return RequestErrorCode.DoesNotExist
       case 0x11n:
@@ -405,8 +416,12 @@ export namespace RequestErrorCode {
         return RequestErrorCode.Uninterested
       case 0x30n:
         return RequestErrorCode.PrefixOverlap
+      case 0x31n:
+        return RequestErrorCode.NamespaceTooLarge
       case 0x32n:
         return RequestErrorCode.InvalidJoiningRequestId
+      case 0x33n:
+        return RequestErrorCode.UnsupportedExtension
       default:
         throw new InvalidEnumValue('RequestErrorCode.tryFrom', v)
     }
@@ -453,6 +468,13 @@ if (import.meta.vitest) {
           return undefined
         }
       })
+    })
+
+    test('the reset and request-error registries stay separate', () => {
+      expect(StreamResetCode.GoingAway).toBe(0x4)
+      expect(RequestErrorCode.GoingAway).toBe(0x6)
+      expect(StreamResetCode.ExpiredAuthToken).toBe(0x7)
+      expect(RequestErrorCode.ExpiredAuthToken).toBe(0x5)
     })
 
     test('every message_types.json entry is exercised', async () => {

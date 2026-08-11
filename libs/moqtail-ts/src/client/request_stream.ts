@@ -19,6 +19,8 @@ import { ControlMessageType } from '../model/control/constant'
 import { FrozenByteBuffer, ByteBuffer } from '../model/common/byte_buffer'
 import { NotEnoughBytesError, ProtocolViolationError, TerminationError } from '../model/error/error'
 import { TerminationCode } from '../model/error/constant'
+import { StreamResetCode } from '../model/error/stream_reset'
+import { asStreamResetError, streamResetReason } from './util/stream_reset'
 import { logger } from '../util/logger'
 
 /**
@@ -95,6 +97,16 @@ export class RequestStream {
     await Promise.allSettled([this.#writer.close().catch(() => {}), this.#reader.cancel().catch(() => {})])
   }
 
+  /**
+   * Cancels the request by resetting its stream with `code` (§3.3.2), which is how
+   * draft-18 cancels a request now that the dedicated cancel messages are gone.
+   */
+  async reset(code: StreamResetCode): Promise<void> {
+    logger.debug('request_stream', `reset code=${code}`)
+    const reason = streamResetReason(code)
+    await Promise.allSettled([this.#writer.abort(reason).catch(() => {}), this.#reader.cancel(reason).catch(() => {})])
+  }
+
   async #ingestLoop(controller: ReadableStreamDefaultController<ControlMessage>) {
     try {
       while (true) {
@@ -142,7 +154,7 @@ export class RequestStream {
       }
     } catch (error) {
       logger.error('request_stream', 'ingest loop error', error)
-      controller.error(error)
+      controller.error(asStreamResetError('RequestStream', error))
       await this.close()
     } finally {
       controller.close()

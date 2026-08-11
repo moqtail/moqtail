@@ -37,7 +37,6 @@ use super::{
 pub enum PendingRequest {
   Fetch(FetchRequest),
   Subscribe(SubscribeRequest),
-  TrackStatus(SubscribeRequest),
   PublishNamespace {
     client_connection_id: usize,
     original_request_id: u64,

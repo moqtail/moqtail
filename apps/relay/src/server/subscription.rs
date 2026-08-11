@@ -1404,10 +1404,22 @@ impl Subscription {
       reason_phrase,
     );
 
-    self
+    // PUBLISH_DONE ends a subscription, so it belongs on that subscription's own
+    // request stream rather than the control stream.
+    if !self
       .subscriber
-      .queue_message(ControlMessage::PublishDone(Box::new(publish_done)))
-      .await;
+      .send_response(
+        self.request_id,
+        ControlMessage::PublishDone(Box::new(publish_done)),
+      )
+      .await
+    {
+      warn!(
+        "No request stream for subscriber={} request_id={}; PUBLISH_DONE dropped",
+        self.client_connection_id, self.request_id
+      );
+      return Ok(());
+    }
 
     info!(
       "Sent PublishDone to subscriber={} relay_track_id={} for request_id={} stream_count={}",

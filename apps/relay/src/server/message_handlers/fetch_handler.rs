@@ -31,7 +31,7 @@ use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use moqtail::transport::data_stream_handler::{FetchRequest, HeaderInfo};
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 const UPSTREAM_FETCH_CHANNEL_CAPACITY: usize = 64;
 
@@ -750,7 +750,6 @@ pub(crate) async fn cancel_fetch(client: Arc<MOQTClient>, request_id: u64) {
 /// Send an upstream Fetch to the publisher for a cache gap [gap_start, gap_end].
 /// Returns the relay request ID, the publisher client, and an mpsc::Receiver through which
 /// upstream objects will be forwarded.
-#[allow(dead_code)]
 async fn send_upstream_fetch_for_range(
   client: &Arc<MOQTClient>,
   context: &Arc<SessionContext>,
@@ -802,6 +801,20 @@ async fn send_upstream_fetch_for_range(
 
   let (upstream_tx, upstream_rx) = mpsc::channel(UPSTREAM_FETCH_CHANNEL_CAPACITY);
 
+  // FETCH is Request, First: it opens its own bidirectional stream. Open it before
+  // registering the request so a failure here leaves no state behind.
+  let (send, recv) = match publisher.connection.open_bi().await {
+    Ok(streams) => streams,
+    Err(e) => {
+      warn!(
+        "send_upstream_fetch_for_range | Failed to open upstream fetch stream: {:?}",
+        e
+      );
+      return None;
+    }
+  };
+  let mut upstream = ControlStreamHandler::new(send, recv).with_peer_id(publisher.connection_id);
+
   {
     // Use the publisher's track alias so handle_uni_stream can resolve the track on the response.
     let publisher_alias = match track_read
@@ -840,12 +853,59 @@ async fn send_upstream_fetch_for_range(
       .upstream_fetch_senders
       .write()
       .await
-      .insert(relay_request_id, upstream_tx);
+      .insert(relay_request_id, upstream_tx.clone());
   }
 
-  publisher
-    .queue_message(ControlMessage::Fetch(Box::new(upstream_fetch)))
-    .await;
+  // Sent only once the sender is registered, so Objects arriving first are not dropped.
+  if let Err(e) = upstream
+    .send(&ControlMessage::Fetch(Box::new(upstream_fetch)))
+    .await
+  {
+    warn!(
+      "send_upstream_fetch_for_range | Failed to send upstream FETCH: {:?}",
+      e
+    );
+    return None;
+  }
+
+  // Draft-18 10.12: the response can come at any time relative to object delivery, so
+  // it is read on a task. Holding the handler keeps the request stream open for the
+  // fetch's lifetime — dropping it would reach the publisher as a cancellation.
+  let response_tx = upstream_tx;
+  tokio::spawn(async move {
+    match upstream.next_message().await {
+      Ok(ControlMessage::FetchOk(ok)) => {
+        info!(
+          "Upstream FETCH {} accepted, end location {:?}",
+          relay_request_id, ok.end_location
+        );
+      }
+      Ok(ControlMessage::RequestError(err)) => {
+        // Tell the waiting gap loop now instead of letting it sit until its timeout.
+        let _ = response_tx
+          .send(UpstreamFetchEvent::Error(format!(
+            "upstream FETCH {} rejected: {:?}",
+            relay_request_id, err.error_code
+          )))
+          .await;
+        return;
+      }
+      Ok(other) => {
+        warn!(
+          "Unexpected {:?} on upstream fetch stream {}",
+          other.get_type(),
+          relay_request_id
+        );
+        return;
+      }
+      Err(e) => {
+        debug!("Upstream fetch stream {} closed: {:?}", relay_request_id, e);
+        return;
+      }
+    }
+    // Stays parked until the publisher closes the request stream.
+    let _ = upstream.next_message().await;
+  });
 
   Some((relay_request_id, publisher, upstream_rx))
 }

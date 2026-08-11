@@ -18,7 +18,6 @@ import { InvalidTypeError } from '../error'
 
 export enum SetupOptionType {
   Path = 0x01,
-  MaxRequestId = 0x02,
   AuthorizationToken = 0x03,
   MaxAuthTokenCacheSize = 0x04,
   /** Raw-QUIC only. Client-only; MUST NOT be sent over WebTransport (draft-18 §10.3.1.1). */
@@ -30,8 +29,6 @@ export function setupOptionTypeFromNumber(value: number): SetupOptionType {
   switch (value) {
     case 0x01:
       return SetupOptionType.Path
-    case 0x02:
-      return SetupOptionType.MaxRequestId
     case 0x03:
       return SetupOptionType.AuthorizationToken
     case 0x04:

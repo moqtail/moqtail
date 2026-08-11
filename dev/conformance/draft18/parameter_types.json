@@ -34,16 +34,6 @@
         "value": "0x07",
         "spec": "Section 10.3.1.5"
       }
-    ],
-    "not_in_draft": [
-      {
-        "name": "MAX_REQUEST_ID",
-        "value": "0x02",
-        "notes": "Table 10 has no 0x02. Removed with the MAX_REQUEST_ID message.",
-        "pending": {
-          "ts": 259
-        }
-      }
     ]
   },
   "message_parameters": {

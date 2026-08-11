@@ -43,8 +43,6 @@ export enum ControlMessageType {
   ReservedServerSetupV16 = 0x21, // RESERVED; rejected by tryFrom
   Setup = 0x2f00, // Control
   GoAway = 0x10, // Control, Request
-  MaxRequestId = 0x15, // not in draft-18
-  RequestsBlocked = 0x1a, // not in draft-18
   Subscribe = 0x03, // Request, First
   SubscribeOk = 0x04, // Request
   RequestError = 0x05, // Request
@@ -105,10 +103,6 @@ export namespace ControlMessageType {
         return ControlMessageType.Setup
       case 0x10n:
         return ControlMessageType.GoAway
-      case 0x15n:
-        return ControlMessageType.MaxRequestId
-      case 0x1an:
-        return ControlMessageType.RequestsBlocked
       case 0x03n:
         return ControlMessageType.Subscribe
       case 0x04n:

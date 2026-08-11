@@ -46,7 +46,7 @@ if (import.meta.vitest) {
       expect(param?.moqtPath).toBe('abc')
     })
     test('fromKeyValuePair returns undefined for wrong type', () => {
-      const pair = KeyValuePair.tryNewVarInt(SetupOptionType.MaxRequestId, 1n)
+      const pair = KeyValuePair.tryNewVarInt(SetupOptionType.MaxAuthTokenCacheSize, 1n)
       const param = Path.fromKeyValuePair(pair)
       expect(param).toBeUndefined()
     })

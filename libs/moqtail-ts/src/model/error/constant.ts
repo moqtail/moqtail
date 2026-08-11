@@ -24,7 +24,6 @@ export enum TerminationCode {
   INVALID_REQUEST_ID = 0x4,
   DUPLICATE_TRACK_ALIAS = 0x5,
   KEY_VALUE_FORMATTING_ERROR = 0x6,
-  TOO_MANY_REQUESTS = 0x7,
   INVALID_PATH = 0x8,
   MALFORMED_PATH = 0x9,
   GOAWAY_TIMEOUT = 0x10,
@@ -63,8 +62,6 @@ export namespace TerminationCode {
         return TerminationCode.DUPLICATE_TRACK_ALIAS
       case TerminationCode.KEY_VALUE_FORMATTING_ERROR:
         return TerminationCode.KEY_VALUE_FORMATTING_ERROR
-      case TerminationCode.TOO_MANY_REQUESTS:
-        return TerminationCode.TOO_MANY_REQUESTS
       case TerminationCode.INVALID_PATH:
         return TerminationCode.INVALID_PATH
       case TerminationCode.MALFORMED_PATH:

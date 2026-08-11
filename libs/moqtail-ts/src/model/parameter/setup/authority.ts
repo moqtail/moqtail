@@ -53,7 +53,7 @@ if (import.meta.vitest) {
       expect(param?.authority).toBe('example.com')
     })
     test('fromKeyValuePair returns undefined for wrong type', () => {
-      const pair = KeyValuePair.tryNewVarInt(SetupOptionType.MaxRequestId, 1n)
+      const pair = KeyValuePair.tryNewVarInt(SetupOptionType.MaxAuthTokenCacheSize, 1n)
       const param = Authority.fromKeyValuePair(pair)
       expect(param).toBeUndefined()
     })

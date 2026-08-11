@@ -363,11 +363,7 @@ if (import.meta.vitest) {
         vi.clearAllMocks()
       })
       it('should handle full message roundtrip', async () => {
-        const setupParams = new SetupOptions()
-          .addPath('/test/path')
-          .addMaxRequestId(1000n)
-          .addMaxAuthTokenCacheSize(500n)
-          .build()
+        const setupParams = new SetupOptions().addPath('/test/path').addMaxAuthTokenCacheSize(500n).build()
 
         const originalMessage = new Setup(setupParams)
         const messageBytes = originalMessage.serialize().toUint8Array()
@@ -408,7 +404,7 @@ if (import.meta.vitest) {
         reader.releaseLock()
       })
       it('should timeout on partial message', async () => {
-        const setupParams = new SetupOptions().addPath('/partial/test').addMaxRequestId(42n).build()
+        const setupParams = new SetupOptions().addPath('/partial/test').addMaxAuthTokenCacheSize(42n).build()
         const originalMessage = new Setup(setupParams)
         const completeMessageBytes = originalMessage.serialize().toUint8Array()
 

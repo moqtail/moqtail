@@ -64,8 +64,9 @@ pub async fn handle(
         .add_announcement(m.track_namespace.clone(), client.clone(), (*m).clone())
         .await;
 
+      // Track in inbound_requests so a REQUEST_UPDATE on this request's stream can find it
       {
-        let mut map = context.relay_pending_requests.write().await;
+        let mut map = client.inbound_requests.write().await;
         map.insert(
           m.request_id,
           PendingRequest::PublishNamespace {
@@ -75,8 +76,7 @@ pub async fn handle(
           },
         );
       }
-      // TODO: Remove this request_id from relay_pending_requests when a PUBLISH_NAMESPACE_DONE
-      // is received for this namespace, or if the client disconnects. Until then this is a memory leak.
+      // TODO: Remove this request_id when a PUBLISH_NAMESPACE_DONE is received for this namespace.
 
       // Forward the announcement to namespace subscribers via their bi-stream channels
       {

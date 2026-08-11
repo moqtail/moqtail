@@ -1,0 +1,23 @@
+{
+  "source": "draft-ietf-moq-transport-18 §15.10.3 Table 19",
+  "description": "Status codes carried by PUBLISH_DONE (§10.11).",
+
+  "greasing": {
+    "formula": "0x7f * N + 0x9D",
+    "spec": "Section 14",
+    "notes": "Reserved for greasing. Not a single codepoint; excluded from the entries below."
+  },
+
+  "entries": [
+    { "name": "INTERNAL_ERROR", "value": "0x0", "spec": "Section 10.11" },
+    { "name": "UNAUTHORIZED", "value": "0x1", "spec": "Section 10.11" },
+    { "name": "TRACK_ENDED", "value": "0x2", "spec": "Section 10.11" },
+    { "name": "SUBSCRIPTION_ENDED", "value": "0x3", "spec": "Section 10.11" },
+    { "name": "GOING_AWAY", "value": "0x4", "spec": "Section 10.11" },
+    { "name": "TOO_FAR_BEHIND", "value": "0x5", "spec": "Section 10.11" },
+    { "name": "EXPIRED", "value": "0x6", "spec": "Section 10.11" },
+    { "name": "UPDATE_FAILED", "value": "0x8", "spec": "Section 10.11" },
+    { "name": "EXCESSIVE_LOAD", "value": "0x9", "spec": "Section 10.11" },
+    { "name": "MALFORMED_TRACK", "value": "0x12", "spec": "Section 10.11" }
+  ]
+}

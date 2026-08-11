@@ -24,9 +24,11 @@ use moqtail::model::control::publish_done::PublishDone;
 use moqtail::model::control::request_error::RequestError;
 use moqtail::model::control::request_ok::RequestOk;
 use moqtail::model::control::subscribe::Subscribe;
+use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::model::error::RequestErrorCode;
 use moqtail::model::error::StreamResetCode;
 use moqtail::model::error::TerminationCode;
+use moqtail::model::parameter::constant::MessageParameterType;
 use moqtail::model::parameter::message_parameter::{
   MessageParameter, MessageParameterVecExt, apply_message_parameter_update,
 };
@@ -121,7 +123,15 @@ async fn forward_subscribe_upstream(
             }
           }
           Ok(ControlMessage::RequestError(m)) => {
-            let _ = handle_subscribe_error_message(relay_request_id, *m, context.clone()).await;
+            let status = publish_done_status_for(m.error_code);
+            end_upstream_subscription(
+              relay_request_id,
+              &full_track_name,
+              *m,
+              status,
+              context.clone(),
+            )
+            .await;
             return;
           }
           Ok(ControlMessage::PublishDone(m)) => {
@@ -147,13 +157,38 @@ async fn forward_subscribe_upstream(
           }
           Ok(other) => {
             warn!("Unexpected {:?} on upstream subscribe stream", other.get_type());
-            let _ = handle_subscribe_error_message(relay_request_id, RequestError::new(RequestErrorCode::InternalError, 0, ReasonPhrase::try_new("Unexpected message on upstream subscription stream".to_string()).unwrap()), context.clone()).await;
+            let err = RequestError::new(
+              RequestErrorCode::InternalError,
+              0,
+              ReasonPhrase::try_new("Unexpected message on upstream subscription stream".to_string()).unwrap(),
+            );
+            // Nothing about the track changed; the pipeline misbehaved.
+            end_upstream_subscription(
+              relay_request_id,
+              &full_track_name,
+              err,
+              PublishDoneStatusCode::InternalError,
+              context.clone(),
+            )
+            .await;
             return;
           }
           Err(code) => {
             warn!("Upstream subscribe stream closed with error; resetting: {:?}", code);
-            // TODO: is this the right error code to send downstream?
-            let _ = handle_subscribe_error_message(relay_request_id, RequestError::new(RequestErrorCode::InternalError, 0, ReasonPhrase::try_new("Upstream subscription failed".to_string()).unwrap()), context.clone()).await;
+            let err = RequestError::new(
+              RequestErrorCode::InternalError,
+              0,
+              ReasonPhrase::try_new("Upstream subscription failed".to_string()).unwrap(),
+            );
+            // The upstream stream is gone, so the track is no longer being published.
+            end_upstream_subscription(
+              relay_request_id,
+              &full_track_name,
+              err,
+              PublishDoneStatusCode::TrackEnded,
+              context.clone(),
+            )
+            .await;
             return;
           }
         }
@@ -162,6 +197,93 @@ async fn forward_subscribe_upstream(
   }
 
   upstream.reset_and_stop(StreamResetCode::Cancelled.to_u64());
+}
+
+/// The PUBLISH_DONE status that carries an upstream REQUEST_ERROR downstream. Only a few
+/// of the two registries line up; the rest are a generic failure as far as a subscriber
+/// is concerned.
+fn publish_done_status_for(error_code: RequestErrorCode) -> PublishDoneStatusCode {
+  match error_code {
+    RequestErrorCode::Unauthorized => PublishDoneStatusCode::Unauthorized,
+    RequestErrorCode::GoingAway => PublishDoneStatusCode::GoingAway,
+    RequestErrorCode::MalformedTrack => PublishDoneStatusCode::MalformedTrack,
+    RequestErrorCode::ExcessiveLoad => PublishDoneStatusCode::ExcessiveLoad,
+    RequestErrorCode::DoesNotExist => PublishDoneStatusCode::TrackEnded,
+    _ => PublishDoneStatusCode::InternalError,
+  }
+}
+
+/// Ends every downstream subscription for a track whose upstream subscription failed.
+///
+/// Which message ends it depends on how far the downstream request got. One still
+/// waiting for its answer is answered with REQUEST_ERROR. One already accepted has had
+/// its single response, and only PUBLISH_DONE can end it — a second response on that
+/// stream would be a protocol violation.
+async fn end_upstream_subscription(
+  relay_request_id: u64,
+  full_track_name: &FullTrackName,
+  error: RequestError,
+  status_code: PublishDoneStatusCode,
+  context: Arc<SessionContext>,
+) {
+  let track = context.track_manager.get_track(full_track_name).await;
+  let confirmed = match &track {
+    Some(track) => matches!(
+      *track.read().await.status.read().await,
+      TrackStatus::Confirmed { .. }
+    ),
+    None => false,
+  };
+
+  if !confirmed {
+    let _ = handle_subscribe_error_message(relay_request_id, error, context).await;
+    return;
+  }
+
+  info!(
+    "Upstream subscription for {:?} failed after acceptance; ending downstream with PUBLISH_DONE",
+    full_track_name
+  );
+  if let Some(track) = track
+    && let Err(e) = track
+      .read()
+      .await
+      .notify_publish_done(status_code, error.reason_phrase.as_str().to_string())
+      .await
+  {
+    error!("Failed to end downstream subscriptions: {:?}", e);
+  }
+}
+
+/// The larger of what the upstream publisher reported and what the relay has observed
+/// itself. `None` when neither exists, which is how "no Objects yet" is expressed: the
+/// parameter is then omitted rather than sent as `{0,0}`.
+fn merge_largest_object(
+  upstream: Option<Location>,
+  observed: Option<Location>,
+) -> Option<Location> {
+  match (upstream, observed) {
+    (Some(u), Some(o)) => Some(if o > u { o } else { u }),
+    (u, o) => u.or(o),
+  }
+}
+
+/// The LARGEST_OBJECT to advertise downstream for a track.
+///
+/// A relay reports the larger of what its upstream told it and what it has seen itself,
+/// and omits the parameter entirely when neither exists — an absent parameter means no
+/// Objects, where `{0,0}` would claim one at the start of the track. `set_param` rather
+/// than a push, because a single-valued parameter must not appear twice.
+async fn apply_largest_object(params: &mut Vec<MessageParameter>, track: &Track) {
+  let upstream = match params.get_param(MessageParameterType::LargestObject) {
+    Some(MessageParameter::LargestObject { location }) => Some(location.clone()),
+    _ => None,
+  };
+  let observed = track.largest_object().await;
+
+  if let Some(largest) = merge_largest_object(upstream, observed) {
+    params.set_param(MessageParameter::new_largest_object(largest));
+  }
 }
 
 async fn handle_subscribe_message(
@@ -274,7 +396,23 @@ async fn handle_subscribe_message(
 
   let track = track_arc.read().await;
 
-  add_subscription(sub.clone(), &track, client.clone(), is_switch).await;
+  // An endpoint may hold only one subscription per track in a given role. A SWITCH is
+  // the exception: it deliberately reuses the existing subscription, and the failure
+  // here is how it hands over.
+  if !add_subscription(sub.clone(), &track, client.clone(), is_switch).await && !is_switch {
+    drop(track);
+    info!(
+      "Rejecting SUBSCRIBE from {} for {:?}: already subscribed",
+      context.connection_id, &full_track_name
+    );
+    let err = RequestError::new(
+      RequestErrorCode::DuplicateSubscription,
+      0,
+      ReasonPhrase::try_new("already subscribed to this track".to_string()).unwrap(),
+    );
+    stream_handler.send_impl(&err).await.unwrap();
+    return Ok(());
+  }
 
   let res: Result<(), TerminationCode> = if is_creator {
     // First subscriber for this track: forward Subscribe to publisher
@@ -336,12 +474,8 @@ async fn handle_subscribe_message(
           client.connection_id
         );
         let cached_properties = { track.track_properties.read().await.clone() };
-        let largest_loc = {
-          let ll = track.largest_location.read().await;
-          Location::new(ll.group, ll.object)
-        };
         let mut params = subscribe_parameters;
-        params.push(MessageParameter::new_largest_object(largest_loc));
+        apply_largest_object(&mut params, &track).await;
         let subscribe_ok = moqtail::model::control::subscribe_ok::SubscribeOk::new(
           track.relay_track_id,
           params,
@@ -488,6 +622,15 @@ async fn handle_subscribe_ok_message(
     )
     .await;
 
+  // What the relay advertises downstream is not necessarily what upstream sent: by the
+  // time this runs the relay may already have seen a later Object than upstream knew of.
+  let downstream_params = {
+    let track = track_arc.read().await;
+    let mut params = msg.subscribe_parameters.clone();
+    apply_largest_object(&mut params, &track).await;
+    params
+  };
+
   // Send SubscribeOk to the FIRST subscriber (the creator)
   {
     let subscriber = {
@@ -501,7 +644,7 @@ async fn handle_subscribe_ok_message(
       };
       let subscribe_ok = moqtail::model::control::subscribe_ok::SubscribeOk::new(
         relay_track_id,
-        msg.subscribe_parameters.clone(),
+        downstream_params.clone(),
         cached_properties,
       );
       info!(
@@ -548,7 +691,7 @@ async fn handle_subscribe_ok_message(
         };
         let subscribe_ok = moqtail::model::control::subscribe_ok::SubscribeOk::new(
           relay_track_id,
-          msg.subscribe_parameters.clone(),
+          downstream_params.clone(),
           cached_properties,
         );
         info!(
@@ -1034,6 +1177,79 @@ pub async fn handle(
     _ => {
       // no-op
       Ok(())
+    }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn largest_object_takes_the_larger_of_the_two() {
+    let earlier = Location::new(4, 2);
+    let later = Location::new(4, 9);
+    let later_group = Location::new(5, 0);
+
+    // Whichever side is ahead wins, regardless of which side it is.
+    assert_eq!(
+      merge_largest_object(Some(earlier.clone()), Some(later.clone())),
+      Some(later.clone())
+    );
+    assert_eq!(
+      merge_largest_object(Some(later.clone()), Some(earlier.clone())),
+      Some(later.clone())
+    );
+    assert_eq!(
+      merge_largest_object(Some(later.clone()), Some(later_group.clone())),
+      Some(later_group)
+    );
+
+    // One side only.
+    assert_eq!(
+      merge_largest_object(Some(later.clone()), None),
+      Some(later.clone())
+    );
+    assert_eq!(merge_largest_object(None, Some(later.clone())), Some(later));
+
+    // Neither: the parameter is omitted, never sent as {0,0}.
+    assert_eq!(merge_largest_object(None, None), None);
+  }
+
+  #[test]
+  fn upstream_errors_map_to_a_publish_done_status() {
+    for (error, status) in [
+      (
+        RequestErrorCode::Unauthorized,
+        PublishDoneStatusCode::Unauthorized,
+      ),
+      (
+        RequestErrorCode::GoingAway,
+        PublishDoneStatusCode::GoingAway,
+      ),
+      (
+        RequestErrorCode::MalformedTrack,
+        PublishDoneStatusCode::MalformedTrack,
+      ),
+      (
+        RequestErrorCode::ExcessiveLoad,
+        PublishDoneStatusCode::ExcessiveLoad,
+      ),
+      (
+        RequestErrorCode::DoesNotExist,
+        PublishDoneStatusCode::TrackEnded,
+      ),
+      // No counterpart: a subscriber can only be told something went wrong.
+      (
+        RequestErrorCode::InvalidRange,
+        PublishDoneStatusCode::InternalError,
+      ),
+      (
+        RequestErrorCode::Timeout,
+        PublishDoneStatusCode::InternalError,
+      ),
+    ] {
+      assert_eq!(publish_done_status_for(error), status, "for {error:?}");
     }
   }
 }

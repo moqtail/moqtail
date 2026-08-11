@@ -1132,6 +1132,44 @@ impl Subscription {
         // Handle datagram - serialize full MOQT datagram format
         // Must include type, track_alias, group_id, object_id, publisher_priority, and payload
 
+        let location = Location::new(object.group_id, object.object_id);
+        {
+          let mut state = self.subscription_state.write().await;
+          state.update_last_received_object_location(location.clone());
+        }
+
+        // A datagram is subject to the same filter and forward state as any other
+        // object. There is no stream to hold open, so nothing is cached for a later
+        // forward transition: a datagram missed while paused is simply missed.
+        {
+          let state = self.subscription_state.read().await;
+          if let Some(start) = &state.start_location
+            && location < *start
+          {
+            debug!(
+              "Datagram before start location for subscriber={} relay_track_id={} object location: {:?} start location: {:?}",
+              self.client_connection_id, self.relay_track_id, location, start
+            );
+            return;
+          }
+
+          if state.end_group > 0 && location.group > state.end_group {
+            debug!(
+              "Datagram beyond end group for subscriber={} relay_track_id={} object location: {:?} end group: {}",
+              self.client_connection_id, self.relay_track_id, location, state.end_group
+            );
+            return;
+          }
+
+          if !state.forward {
+            debug!(
+              "Not forwarding datagram for subscriber={} relay_track_id={}: forward state is 0",
+              self.client_connection_id, self.relay_track_id
+            );
+            return;
+          }
+        }
+
         let mut norm_object = object.clone();
         norm_object.track_alias = self.relay_track_id;
 

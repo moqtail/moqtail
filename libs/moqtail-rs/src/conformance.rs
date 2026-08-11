@@ -145,6 +145,13 @@ pub fn request_error_codes() -> Registry {
   )
 }
 
+pub fn publish_done_codes() -> Registry {
+  parse(
+    fixture!("publish_done_codes.json"),
+    "publish_done_codes.json",
+  )
+}
+
 pub fn termination_codes() -> Registry {
   parse(fixture!("termination_codes.json"), "termination_codes.json")
 }
@@ -294,7 +301,7 @@ mod tests {
 #[cfg(test)]
 mod enum_conformance {
   use super::*;
-  use crate::model::control::constant::ControlMessageType;
+  use crate::model::control::constant::{ControlMessageType, PublishDoneStatusCode};
   use crate::model::error::RequestErrorCode;
   use crate::model::error::TerminationCode;
   use crate::model::parameter::constant::{MessageParameterType, SetupOptionType};
@@ -399,6 +406,15 @@ mod enum_conformance {
   fn request_error_codes_match_fixture() {
     assert_registry(&request_error_codes(), &[], |cp| {
       RequestErrorCode::try_from(cp)
+        .ok()
+        .map(|c| format!("{c:?}"))
+    });
+  }
+
+  #[test]
+  fn publish_done_codes_match_fixture() {
+    assert_registry(&publish_done_codes(), &[], |cp| {
+      PublishDoneStatusCode::try_from(cp)
         .ok()
         .map(|c| format!("{c:?}"))
     });

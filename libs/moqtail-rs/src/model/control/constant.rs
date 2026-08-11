@@ -284,9 +284,10 @@ pub enum PublishDoneStatusCode {
   TrackEnded = 0x2,
   SubscriptionEnded = 0x3,
   GoingAway = 0x4,
-  Expired = 0x5,
-  TooFarBehind = 0x6,
+  TooFarBehind = 0x5,
+  Expired = 0x6,
   UpdateFailed = 0x8,
+  ExcessiveLoad = 0x9,
   MalformedTrack = 0x12,
 }
 
@@ -300,9 +301,10 @@ impl TryFrom<u64> for PublishDoneStatusCode {
       0x2 => Ok(PublishDoneStatusCode::TrackEnded),
       0x3 => Ok(PublishDoneStatusCode::SubscriptionEnded),
       0x4 => Ok(PublishDoneStatusCode::GoingAway),
-      0x5 => Ok(PublishDoneStatusCode::Expired),
-      0x6 => Ok(PublishDoneStatusCode::TooFarBehind),
+      0x5 => Ok(PublishDoneStatusCode::TooFarBehind),
+      0x6 => Ok(PublishDoneStatusCode::Expired),
       0x8 => Ok(PublishDoneStatusCode::UpdateFailed),
+      0x9 => Ok(PublishDoneStatusCode::ExcessiveLoad),
       0x12 => Ok(PublishDoneStatusCode::MalformedTrack),
       _ => Err(ParseError::InvalidType {
         context: "PublishDoneStatusCode::try_from(u64)",

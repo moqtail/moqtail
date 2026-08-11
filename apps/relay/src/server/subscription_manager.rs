@@ -164,10 +164,11 @@ impl SubscriptionManager {
     let sub = subscriptions.remove(&subscriber_id);
     drop(subscriptions);
 
-    // find the subscription by subscriber_id and finish it
+    // find the subscription by subscriber_id and cancel it. Every caller of this
+    // reaches it because the subscriber went away, so its streams are reset.
     if let Some(subscription) = sub {
       let sub = subscription.write().await;
-      sub.finish().await;
+      sub.cancel().await;
     }
 
     // Remove and dispose the sender for this subscriber from the appropriate partition

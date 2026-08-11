@@ -30,7 +30,6 @@ pub async fn handle(
   stream_handler: &mut ControlStreamHandler,
   msg: ControlMessage,
   context: Arc<SessionContext>,
-  opening_request_id: Option<u64>,
 ) -> Result<(), TerminationCode> {
   match msg {
     ControlMessage::TrackStatus(m) => {
@@ -99,17 +98,6 @@ pub async fn handle(
       Ok(())
     }
 
-    ControlMessage::RequestUpdate(_) => {
-      warn!(
-        "REQUEST_UPDATE is not valid for a TRACK_STATUS request (id {:?})",
-        opening_request_id
-      );
-      let err = track_status_update_error();
-      stream_handler
-        .send(&ControlMessage::RequestError(Box::new(err)))
-        .await
-    }
-
     _ => Ok(()),
   }
 }
@@ -165,24 +153,5 @@ async fn forward_track_status_upstream(
       "no request stream for track-status requester {}",
       downstream_request_id
     );
-  }
-}
-
-fn track_status_update_error() -> RequestError {
-  RequestError::new(
-    RequestErrorCode::NotSupported,
-    0,
-    ReasonPhrase::try_new("TRACK_STATUS does not support REQUEST_UPDATE".to_string()).unwrap(),
-  )
-}
-
-#[cfg(test)]
-mod tests {
-  use super::*;
-
-  #[test]
-  fn request_update_on_track_status_is_not_supported() {
-    let err = track_status_update_error();
-    assert_eq!(err.error_code, RequestErrorCode::NotSupported);
   }
 }

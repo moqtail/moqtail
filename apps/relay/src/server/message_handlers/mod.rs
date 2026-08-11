@@ -14,7 +14,11 @@
 
 use bytes::Bytes;
 use moqtail::{
-  model::{control::control_message::ControlMessage, error::TerminationCode},
+  model::{
+    common::reason_phrase::ReasonPhrase,
+    control::{control_message::ControlMessage, request_error::RequestError},
+    error::{RequestErrorCode, TerminationCode},
+  },
   transport::control_stream_handler::ControlStreamHandler,
 };
 use tracing::{info, warn};
@@ -72,7 +76,7 @@ impl MessageHandler {
       }
 
       ControlMessage::TrackStatus(_) => {
-        track_status_handler::handle(stream_handler, msg, context.clone(), opening_request_id).await
+        track_status_handler::handle(stream_handler, msg, context.clone()).await
       }
       ControlMessage::Fetch(_) => {
         fetch_handler::handle(
@@ -120,7 +124,6 @@ impl MessageHandler {
           PublishNamespace,
           Subscribe,
           SubscribeNamespace,
-          TrackStatus,
           NotFound,
         }
 
@@ -132,7 +135,6 @@ impl MessageHandler {
           Some(PendingRequest::Subscribe(_)) => Route::Subscribe,
           Some(PendingRequest::SubscribeNamespace { .. }) => Route::SubscribeNamespace,
           Some(PendingRequest::SubscribeTracks { .. }) => Route::SubscribeNamespace,
-          Some(PendingRequest::TrackStatus(_)) => Route::TrackStatus,
           Some(PendingRequest::RequestUpdate { .. }) => Route::NotFound,
           None => Route::NotFound,
         };
@@ -194,18 +196,19 @@ impl MessageHandler {
             )
             .await
           }
-          Route::TrackStatus => {
-            track_status_handler::handle(stream_handler, msg, context.clone(), opening_request_id)
-              .await
-          }
           Route::NotFound => {
-            // A REQUEST_UPDATE referencing an unknown request is disallowed: it
-            // must travel on the request's own stream.
-            warn!(
-              "REQUEST_UPDATE for untracked request id {}; closing session",
-              target_req_id
+            // Draft-18 10.9: a REQUEST_UPDATE must be answered with exactly one
+            // REQUEST_OK or REQUEST_ERROR, so an update naming a request the relay
+            // holds no updatable record of is rejected rather than terminating.
+            warn!("REQUEST_UPDATE for untracked request id {}", target_req_id);
+            let err = RequestError::new(
+              RequestErrorCode::NotSupported,
+              0,
+              ReasonPhrase::try_new("request does not support REQUEST_UPDATE".to_string()).unwrap(),
             );
-            Err(TerminationCode::ProtocolViolation)
+            stream_handler
+              .send(&ControlMessage::RequestError(Box::new(err)))
+              .await
           }
         }
       }

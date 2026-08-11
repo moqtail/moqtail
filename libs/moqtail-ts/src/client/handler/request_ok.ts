@@ -18,23 +18,43 @@ import { RequestOk } from '../../model/control'
 import { RequestStreamMessageHandler } from './handler'
 import { logger } from '../../util/logger'
 import { ProtocolViolationError } from '@/model'
+import { PublishRequest } from '../request/publish'
 import { PublishNamespaceRequest } from '../request/publish_namespace'
 import { SubscribeNamespaceRequest } from '../request/subscribe_namespace'
 import { TrackStatusRequest } from '../request/track_status'
+import { PublishPublication } from '../publication/publish'
 
 export const handlerRequestOk: RequestStreamMessageHandler<RequestOk> = async (client, msg) => {
   logger.log('handler/request_ok', 'received RequestOk for requestId:', msg.requestId)
 
-  // 1. Look up the pending request by ID
   const request = client.requests.get(msg.requestId)
 
-  // 2. Handle untracked IDs gracefully
   if (!request) {
     logger.warn('handler/request_ok', `Received RequestOk for unknown or already-resolved request id: ${msg.requestId}`)
     return
   }
 
-  // 3. Verify that the pending request actually expects a RequestOk response
+  msg.validateTrackProperties(request instanceof TrackStatusRequest)
+
+  if (request instanceof PublishRequest) {
+    request.resolve(msg)
+
+    const fullTrackName = client.requestIdMap.getNameByRequestId(msg.requestId)
+    if (!fullTrackName) {
+      logger.warn('handler/request_ok', `No track mapped for PublishRequest requestId: ${msg.requestId}`)
+      return
+    }
+
+    const track = client.trackSources.get(fullTrackName.toString())
+    if (!track || !track.trackSource.live) {
+      logger.warn('handler/request_ok', `Live track source not found for ${fullTrackName.toString()}`)
+      return
+    }
+
+    client.publications.set(msg.requestId, new PublishPublication(client, track, request.message))
+    return
+  }
+
   if (
     request instanceof PublishNamespaceRequest ||
     request instanceof SubscribeNamespaceRequest ||

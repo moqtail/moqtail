@@ -28,7 +28,6 @@ import { GoAway } from './goaway'
 import { Subscribe } from './subscribe'
 import { PublishDone } from './publish_done'
 import { Publish } from './publish'
-import { PublishOk } from './publish_ok'
 import { SubscribeOk } from './subscribe_ok'
 import { RequestUpdate } from './request_update'
 import { TrackStatus } from './track_status'
@@ -45,7 +44,6 @@ import { RequestError } from './request_error'
 
 export type ControlMessage =
   | Publish
-  | PublishOk
   | PublishDone
   | PublishNamespace
   | PublishNamespaceCancel
@@ -82,8 +80,10 @@ export namespace ControlMessage {
     switch (messageType) {
       case ControlMessageType.Publish:
         return Publish.parsePayload(payload)
+      // PUBLISH_OK (0x1E) is a REQUEST_OK alias with no body of its own: PUBLISH is
+      // answered by REQUEST_OK. Parse its body as REQUEST_OK.
       case ControlMessageType.PublishOk:
-        return PublishOk.parsePayload(payload)
+        return RequestOk.parsePayload(payload)
       case ControlMessageType.PublishDone:
         return PublishDone.parsePayload(payload)
       case ControlMessageType.PublishNamespace:
@@ -178,6 +178,19 @@ if (import.meta.vitest) {
         const partial = serialized.slice(0, Math.floor(serialized.length / 2))
         const buf = new FrozenByteBuffer(partial)
         expect(() => ControlMessage.deserialize(buf)).toThrow(NotEnoughBytesError)
+      })
+    })
+
+    describe('RequestOk', () => {
+      test('PUBLISH_OK (0x1E) parses as RequestOk', () => {
+        const requestOk = new RequestOk(12345n)
+        const bytes = ControlMessage.serialize(requestOk).toUint8Array()
+        // Table 5 keeps 0x1E but points it at §10.5, REQUEST_OK. Both codepoints are
+        // one-byte varints, so retyping the message is a single-byte edit.
+        bytes[0] = ControlMessageType.PublishOk
+        const deserialized = ControlMessage.deserialize(new FrozenByteBuffer(bytes))
+        expect(deserialized).toBeInstanceOf(RequestOk)
+        expect(deserialized).toEqual(requestOk)
       })
     })
 

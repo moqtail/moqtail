@@ -36,7 +36,6 @@ import {
   RequestUpdate,
   UnsubscribeNamespace,
   Publish,
-  PublishOk,
   RequestOk,
   Switch,
   SubscribeOk,
@@ -57,7 +56,7 @@ import {
   RequestIdMap,
 } from '../model/data'
 import { FrozenByteBuffer } from '../model/common/byte_buffer'
-import { TrackExtension } from '../model/extension_header/track_extension'
+import { DeliveryTimeoutExtension, TrackExtension } from '../model/extension_header/track_extension'
 import { RecvStream } from './data_stream'
 import {
   InternalError,
@@ -2467,7 +2466,8 @@ if (import.meta.vitest) {
       const publishStream = await openedStream(transport, 2)
       const publishMsg = publishStream.messages[0]
       expect(publishMsg).toBeInstanceOf(Publish)
-      publishStream.respond(new PublishOk((publishMsg as Publish).requestId, []))
+      // PUBLISH is answered by REQUEST_OK; PUBLISH_OK is only that message's alias here.
+      publishStream.respond(new RequestOk((publishMsg as Publish).requestId))
       expect(await publishing).toMatchObject({ trackAlias: 9n })
 
       const announcing = client.publishNamespace(Tuple.fromUtf8Path('room/alice'))
@@ -2532,6 +2532,22 @@ if (import.meta.vitest) {
       expect(subscribeStream.isClosed).toBe(true)
 
       await client.disconnect()
+    })
+
+    it('refuses a REQUEST_OK carrying Track Properties outside a TRACK_STATUS_OK', async () => {
+      const { client, transport } = await connected()
+
+      const announcing = client.publishNamespace(Tuple.fromUtf8Path('room/alice'))
+      const announceStream = await openedStream(transport, 0)
+      const announceMsg = announceStream.messages[0] as PublishNamespace
+      // §10.5 populates Track Properties in a TRACK_STATUS_OK and nowhere else, so this
+      // PUBLISH_NAMESPACE_OK is a protocol violation: the request fails rather than
+      // resolving with a namespace the peer never really accepted.
+      announceStream.respond(new RequestOk(announceMsg.requestId, [], [new DeliveryTimeoutExtension(5000n)]))
+
+      // Without the properties the same exchange resolves; see the request-per-stream
+      // test above.
+      await expect(announcing).rejects.toThrow()
     })
 
     it('answers a peer-opened request stream on that stream', async () => {

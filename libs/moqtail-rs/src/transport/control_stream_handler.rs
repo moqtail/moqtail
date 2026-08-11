@@ -250,8 +250,10 @@ impl ControlStreamHandler {
         } else {
           warn!("Stream closed cleanly while waiting for data");
         }
-        // The stream was closed cleanly by the peer.
-        Err(TerminationCode::InternalError)
+        // A peer that closes the control stream mid-session commits a protocol
+        // violation. On a request stream a clean close is instead the ordinary
+        // cancellation, and those callers act on the close rather than this code.
+        Err(TerminationCode::ProtocolViolation)
       }
       Err(e) => {
         match e {

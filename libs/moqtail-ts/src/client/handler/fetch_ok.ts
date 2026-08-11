@@ -21,9 +21,11 @@ import { SubscribeRequest } from '../request/subscribe'
 import { RequestStreamMessageHandler } from './handler'
 import { logger } from '../../util/logger'
 
-export const handlerFetchOk: RequestStreamMessageHandler<FetchOk> = async (client, msg) => {
-  logger.log('handler/fetch_ok', 'requestId', msg.requestId)
-  const request = client.requests.get(msg.requestId)
+export const handlerFetchOk: RequestStreamMessageHandler<FetchOk> = async (client, msg, _stream, requestId) => {
+  logger.log('handler/fetch_ok', 'requestId', requestId)
+  // FETCH_OK carries no request id of its own: the stream it arrived on names the FETCH
+  // it answers (§10.1).
+  const request = client.requests.get(requestId)
   if (request instanceof FetchRequest) {
     if (msg.trackExtensions.length > 0) {
       const fetchMsg = request.message
@@ -45,7 +47,7 @@ export const handlerFetchOk: RequestStreamMessageHandler<FetchOk> = async (clien
   } else {
     throw new ProtocolViolationError(
       'handlerFetchOk',
-      `No fetch request was found with the given request id: ${msg.requestId}`,
+      `FETCH_OK on a stream with no pending fetch request (request id ${requestId})`,
     )
   }
 }

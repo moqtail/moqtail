@@ -33,31 +33,28 @@ import { LargestObject } from '../parameter/message/largest_object'
 import { GroupOrderParam } from '../parameter/message/group_order_param'
 import { DeliveryTimeout } from '../parameter/message/delivery_timeout'
 
+/**
+ * SUBSCRIBE_OK (0x4) keeps a body of its own rather than folding into REQUEST_OK, but
+ * like every other response it carries no Request ID: the request stream it arrives on
+ * identifies the request (§10.1).
+ */
 export class SubscribeOk {
-  requestId: bigint
   trackAlias: bigint
   parameters: MessageParameter[]
   trackExtensions: TrackExtension[]
 
-  private constructor(
-    requestId: bigint,
-    trackAlias: bigint,
-    parameters: MessageParameter[],
-    trackExtensions: TrackExtension[],
-  ) {
-    this.requestId = requestId
+  private constructor(trackAlias: bigint, parameters: MessageParameter[], trackExtensions: TrackExtension[]) {
     this.trackAlias = trackAlias
     this.parameters = parameters
     this.trackExtensions = trackExtensions
   }
 
   static create(
-    requestId: bigint,
     trackAlias: bigint,
     parameters: MessageParameter[],
     trackExtensions: TrackExtension[] = [],
   ): SubscribeOk {
-    return new SubscribeOk(requestId, trackAlias, parameters, trackExtensions)
+    return new SubscribeOk(trackAlias, parameters, trackExtensions)
   }
 
   getType(): ControlMessageType {
@@ -69,7 +66,6 @@ export class SubscribeOk {
     buf.putVI(ControlMessageType.SubscribeOk)
 
     const payload = new ByteBuffer()
-    payload.putVI(this.requestId)
     payload.putVI(this.trackAlias)
     payload.putVI(this.parameters.length)
     payload.putBytes(serializeMessageParameterKvps(this.parameters.map((p) => p.toKeyValuePair())).toUint8Array())
@@ -84,13 +80,12 @@ export class SubscribeOk {
   }
 
   static parsePayload(buf: BaseByteBuffer): SubscribeOk {
-    const requestId = buf.getVI()
     const trackAlias = buf.getVI()
     const paramCount = buf.getNumberVI()
     const rawParams = deserializeMessageParameterKvps(buf, paramCount)
     const parameters = MessageParameters.fromKeyValuePairs(rawParams)
     const trackExtensions = TrackExtension.deserializeAll(buf)
-    return new SubscribeOk(requestId, trackAlias, parameters, trackExtensions)
+    return new SubscribeOk(trackAlias, parameters, trackExtensions)
   }
 }
 
@@ -99,7 +94,6 @@ if (import.meta.vitest) {
 
   describe('SubscribeOk', () => {
     test('roundtrip', () => {
-      const requestId = 145136n
       const trackAlias = 999n
       const largestLocation = new Location(34n, 0n)
       const parameters = [
@@ -108,14 +102,13 @@ if (import.meta.vitest) {
         new LargestObject(largestLocation),
         new DeliveryTimeout(100n),
       ]
-      const subscribeOk = SubscribeOk.create(requestId, trackAlias, parameters)
+      const subscribeOk = SubscribeOk.create(trackAlias, parameters)
       const frozen = subscribeOk.serialize()
       const msgType = frozen.getVI()
       expect(msgType).toBe(BigInt(ControlMessageType.SubscribeOk))
       const msgLength = frozen.getU16()
       expect(msgLength).toBe(frozen.remaining)
       const deserialized = SubscribeOk.parsePayload(frozen)
-      expect(deserialized.requestId).toBe(subscribeOk.requestId)
       expect(deserialized.trackAlias).toBe(subscribeOk.trackAlias)
       expect(deserialized.parameters.length).toBe(4)
       expect(deserialized.trackExtensions.length).toBe(0)
@@ -124,7 +117,6 @@ if (import.meta.vitest) {
 
     test('roundtrip with track extensions', () => {
       const subscribeOk = SubscribeOk.create(
-        145136n,
         999n,
         [new Expires(16n), new LargestObject(new Location(34n, 0n))],
         [new DeliveryTimeoutExtension(5000n)],
@@ -140,9 +132,8 @@ if (import.meta.vitest) {
     })
 
     test('excess roundtrip', () => {
-      const requestId = 145136n
       const trackAlias = 999n
-      const subscribeOk = SubscribeOk.create(requestId, trackAlias, [
+      const subscribeOk = SubscribeOk.create(trackAlias, [
         new Expires(16n),
         new LargestObject(new Location(34n, 0n)),
         new DeliveryTimeout(100n),
@@ -159,7 +150,6 @@ if (import.meta.vitest) {
       expect(msgLength).toBe(frozen.remaining - 3)
       const payload = new FrozenByteBuffer(frozen.getBytes(msgLength))
       const deserialized = SubscribeOk.parsePayload(payload)
-      expect(deserialized.requestId).toBe(subscribeOk.requestId)
       expect(deserialized.trackAlias).toBe(subscribeOk.trackAlias)
       expect(deserialized.parameters.length).toBe(3)
       expect(payload.remaining).toBe(0)
@@ -167,10 +157,7 @@ if (import.meta.vitest) {
     })
 
     test('partial message', () => {
-      const subscribeOk = SubscribeOk.create(145136n, 999n, [
-        new Expires(16n),
-        new LargestObject(new Location(34n, 0n)),
-      ])
+      const subscribeOk = SubscribeOk.create(999n, [new Expires(16n), new LargestObject(new Location(34n, 0n))])
       const serialized = subscribeOk.serialize().toUint8Array()
       const upper = Math.floor(serialized.length / 2)
       const partial = serialized.slice(0, upper)

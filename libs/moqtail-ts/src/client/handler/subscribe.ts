@@ -31,12 +31,7 @@ export const handlerSubscribe: RequestStreamMessageHandler<Subscribe> = async (c
       'handler/subscribe',
       `requestId=${msg.requestId} ftn="${msg.fullTrackName}" — track not found, sending REQUEST_ERROR`,
     )
-    const subscribeError = new RequestError(
-      msg.requestId,
-      RequestErrorCode.DoesNotExist,
-      0n,
-      new ReasonPhrase('Track does not exist'),
-    )
+    const subscribeError = new RequestError(RequestErrorCode.DoesNotExist, 0n, new ReasonPhrase('Track does not exist'))
     await stream.send(subscribeError)
     return
   }
@@ -46,7 +41,6 @@ export const handlerSubscribe: RequestStreamMessageHandler<Subscribe> = async (c
       `requestId=${msg.requestId} ftn="${msg.fullTrackName}" — track has no live source, sending REQUEST_ERROR`,
     )
     const response = new RequestError(
-      msg.requestId,
       RequestErrorCode.NotSupported,
       0n,
       new ReasonPhrase('Requested track does not support subscribe'),
@@ -67,7 +61,7 @@ export const handlerSubscribe: RequestStreamMessageHandler<Subscribe> = async (c
     'handler/subscribe',
     `requestId=${msg.requestId} ftn="${msg.fullTrackName}" trackAlias=${track.trackAlias} largestLocation=${largestLocation ? `${largestLocation.group}:${largestLocation.object}` : 'none'} — sending SUBSCRIBE_OK`,
   )
-  const subscribeOk = SubscribeOk.create(msg.requestId, track.trackAlias, parameters, track.trackExtensions ?? [])
+  const subscribeOk = SubscribeOk.create(track.trackAlias, parameters, track.trackExtensions ?? [])
   // The publication keeps the stream: PUBLISH_DONE and any later response for this
   // subscription must go back on the stream the SUBSCRIBE arrived on.
   const publication = new SubscribePublication(client, track, msg, stream, largestLocation)

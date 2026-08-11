@@ -24,22 +24,29 @@ import { SubscribeNamespaceRequest } from '../request/subscribe_namespace'
 import { TrackStatusRequest } from '../request/track_status'
 import { FetchRequest } from '../request/fetch'
 
-export const handlerRequestError: RequestStreamMessageHandler<RequestError> = async (client, msg) => {
+export const handlerRequestError: RequestStreamMessageHandler<RequestError> = async (
+  client,
+  msg,
+  _stream,
+  requestId,
+) => {
   logger.error(
     'handler/request_error',
-    `received requestId=${msg.requestId} code=${msg.errorCode} reason="${msg.reasonPhrase.phrase}"`,
+    `received requestId=${requestId} code=${msg.errorCode} reason="${msg.reasonPhrase.phrase}"`,
   )
 
-  const request = client.requests.get(msg.requestId)
+  // REQUEST_ERROR carries no request id of its own: the stream it arrived on names the
+  // request it refuses (§10.1).
+  const request = client.requests.get(requestId)
   if (!request) {
     logger.warn(
       'handler/request_error',
-      `requestId=${msg.requestId} — no pending request found (already resolved or unknown)`,
+      `requestId=${requestId} — no pending request found (already resolved or unknown)`,
     )
     return
   }
 
-  logger.debug('handler/request_error', `requestId=${msg.requestId} — resolving ${request.constructor.name} with error`)
+  logger.debug('handler/request_error', `requestId=${requestId} — resolving ${request.constructor.name} with error`)
   if (
     request instanceof SubscribeRequest ||
     request instanceof PublishRequest ||
@@ -49,6 +56,6 @@ export const handlerRequestError: RequestStreamMessageHandler<RequestError> = as
     request instanceof FetchRequest
   ) {
     request.resolve(msg)
-    client.requests.delete(msg.requestId)
+    client.requests.delete(requestId)
   }
 }

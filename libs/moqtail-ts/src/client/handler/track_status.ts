@@ -23,5 +23,5 @@ export const handlerTrackStatus: RequestStreamMessageHandler<TrackStatus> = asyn
   // TODO (#273): report the real track status. REQUEST_OK now carries the Track
   // Properties that would hold it, but nothing populates them yet, so this stays a bare
   // acknowledgement.
-  await stream.send(new RequestOk(msg.requestId))
+  await stream.send(new RequestOk())
 }

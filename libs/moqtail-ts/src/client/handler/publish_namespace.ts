@@ -23,5 +23,5 @@ export const handlerPublishNamespace: RequestStreamMessageHandler<PublishNamespa
   if (client.onNamespacePublished) {
     client.onNamespacePublished(msg)
   }
-  await stream.send(new RequestOk(msg.requestId))
+  await stream.send(new RequestOk())
 }

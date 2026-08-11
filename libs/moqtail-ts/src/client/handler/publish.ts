@@ -55,5 +55,5 @@ export const handlerPublish: RequestStreamMessageHandler<Publish> = async (clien
   // 5. Accept the push on the stream it arrived on. The publisher waits for this
   // before opening any data stream. PUBLISH is answered by REQUEST_OK: PUBLISH_OK is
   // just that message's name for this request type (§10.5), not a message of its own.
-  await stream.send(new RequestOk(msg.requestId))
+  await stream.send(new RequestOk())
 }

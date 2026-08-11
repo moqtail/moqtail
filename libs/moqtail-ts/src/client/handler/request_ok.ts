@@ -24,13 +24,15 @@ import { SubscribeNamespaceRequest } from '../request/subscribe_namespace'
 import { TrackStatusRequest } from '../request/track_status'
 import { PublishPublication } from '../publication/publish'
 
-export const handlerRequestOk: RequestStreamMessageHandler<RequestOk> = async (client, msg) => {
-  logger.log('handler/request_ok', 'received RequestOk for requestId:', msg.requestId)
+export const handlerRequestOk: RequestStreamMessageHandler<RequestOk> = async (client, msg, _stream, requestId) => {
+  logger.log('handler/request_ok', 'received RequestOk for requestId:', requestId)
 
-  const request = client.requests.get(msg.requestId)
+  // REQUEST_OK carries no request id of its own: the stream it arrived on names the
+  // request it answers (§10.1).
+  const request = client.requests.get(requestId)
 
   if (!request) {
-    logger.warn('handler/request_ok', `Received RequestOk for unknown or already-resolved request id: ${msg.requestId}`)
+    logger.warn('handler/request_ok', `Received RequestOk for unknown or already-resolved request id: ${requestId}`)
     return
   }
 
@@ -39,9 +41,9 @@ export const handlerRequestOk: RequestStreamMessageHandler<RequestOk> = async (c
   if (request instanceof PublishRequest) {
     request.resolve(msg)
 
-    const fullTrackName = client.requestIdMap.getNameByRequestId(msg.requestId)
+    const fullTrackName = client.requestIdMap.getNameByRequestId(requestId)
     if (!fullTrackName) {
-      logger.warn('handler/request_ok', `No track mapped for PublishRequest requestId: ${msg.requestId}`)
+      logger.warn('handler/request_ok', `No track mapped for PublishRequest requestId: ${requestId}`)
       return
     }
 
@@ -51,7 +53,7 @@ export const handlerRequestOk: RequestStreamMessageHandler<RequestOk> = async (c
       return
     }
 
-    client.publications.set(msg.requestId, new PublishPublication(client, track, request.message))
+    client.publications.set(requestId, new PublishPublication(client, track, request.message))
     return
   }
 
@@ -64,13 +66,13 @@ export const handlerRequestOk: RequestStreamMessageHandler<RequestOk> = async (c
     request.resolve(msg)
 
     // remove the request from the map
-    client.requests.delete(msg.requestId)
+    client.requests.delete(requestId)
   } else {
     // If the ID matches a request like 'FetchRequest' which expects a 'FetchOk',
     // the server sent us the wrong message type!
     throw new ProtocolViolationError(
       'handlerRequestOk',
-      `Request ID ${msg.requestId} matched a pending request, but it does not expect a RequestOk response.`,
+      `Request ID ${requestId} matched a pending request, but it does not expect a RequestOk response.`,
     )
   }
 }

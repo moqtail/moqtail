@@ -42,9 +42,11 @@ import { DeliveryTimeout } from '../parameter/message/delivery_timeout'
  * SUBSCRIBE_TRACKS and PUBLISH_NAMESPACE. There is one wire type; the per-request-type
  * names (PUBLISH_OK, TRACK_STATUS_OK, ...) are shorthands for logging, not distinct
  * messages. SUBSCRIBE_OK (0x4) and FETCH_OK (0x18) do keep bodies of their own.
+ *
+ * It carries no Request ID: the request stream it arrives on identifies the request
+ * (§10.1).
  */
 export class RequestOk {
-  public readonly requestId: bigint
   public readonly parameters: MessageParameter[]
   /**
    * Draft-18 Track Properties, which the trailing bytes of the payload carry with no
@@ -57,8 +59,7 @@ export class RequestOk {
    */
   public readonly trackExtensions: TrackExtension[]
 
-  constructor(requestId: bigint | number, parameters: MessageParameter[] = [], trackExtensions: TrackExtension[] = []) {
-    this.requestId = BigInt(requestId)
+  constructor(parameters: MessageParameter[] = [], trackExtensions: TrackExtension[] = []) {
     this.parameters = parameters
     this.trackExtensions = trackExtensions
   }
@@ -90,7 +91,6 @@ export class RequestOk {
     buf.putVI(ControlMessageType.RequestOk)
 
     const payload = new ByteBuffer()
-    payload.putVI(this.requestId)
     payload.putVI(BigInt(this.parameters.length))
 
     payload.putBytes(serializeMessageParameterKvps(this.parameters.map((p) => p.toKeyValuePair())).toUint8Array())
@@ -115,7 +115,6 @@ export class RequestOk {
    * be parsed as properties.
    */
   static parsePayload(buf: BaseByteBuffer): RequestOk {
-    const requestId = buf.getVI()
     const numParamsBig = buf.getVI()
     const numParams = Number(numParamsBig)
     if (BigInt(numParams) !== numParamsBig) {
@@ -130,7 +129,7 @@ export class RequestOk {
 
     const trackExtensions = TrackExtension.deserializeAll(buf)
 
-    return new RequestOk(requestId, parameters, trackExtensions)
+    return new RequestOk(parameters, trackExtensions)
   }
 }
 
@@ -147,11 +146,13 @@ if (import.meta.vitest) {
   }
 
   describe('RequestOk', () => {
+    // The request stream identifies the request (§10.1), so an empty REQUEST_OK is a
+    // one-byte payload: the parameter count, and nothing before it.
     test('roundtrip', () => {
-      const msg = new RequestOk(42n)
+      const msg = new RequestOk()
       const payload = payloadOf(msg)
+      expect(payload.remaining).toBe(1)
       const deserialized = RequestOk.parsePayload(payload)
-      expect(deserialized.requestId).toBe(msg.requestId)
       expect(deserialized.parameters.length).toBe(0)
       expect(deserialized.trackExtensions.length).toBe(0)
       expect(payload.remaining).toBe(0)
@@ -166,10 +167,9 @@ if (import.meta.vitest) {
         new GroupOrderParam(GroupOrder.Ascending),
         new SubscriptionFilter(FilterType.LatestObject, undefined, undefined),
       ]
-      const msg = new RequestOk(12345n, parameters)
+      const msg = new RequestOk(parameters)
       const payload = payloadOf(msg)
       const deserialized = RequestOk.parsePayload(payload)
-      expect(deserialized.requestId).toBe(12345n)
       expect(deserialized.parameters.length).toBe(parameters.length)
       expect(payload.remaining).toBe(0)
     })
@@ -179,17 +179,15 @@ if (import.meta.vitest) {
         new SubscriptionFilter(FilterType.AbsoluteRange, new Location(5n, 10n), 20n),
         new DeliveryTimeout(5000n),
       ]
-      const msg = new RequestOk(789n, parameters)
+      const msg = new RequestOk(parameters)
       const payload = payloadOf(msg)
       const deserialized = RequestOk.parsePayload(payload)
-      expect(deserialized.requestId).toBe(789n)
       expect(deserialized.parameters.length).toBe(2)
       expect(payload.remaining).toBe(0)
     })
 
     test('roundtrip with track properties (TRACK_STATUS_OK)', () => {
       const msg = new RequestOk(
-        7n,
         [new DeliveryTimeout(100n)],
         [new DeliveryTimeoutExtension(5000n), new MaxCacheDurationExtension(60000n)],
       )
@@ -203,7 +201,7 @@ if (import.meta.vitest) {
     })
 
     test('track properties are only valid in a TRACK_STATUS_OK', () => {
-      const withProperties = new RequestOk(1n, [], [new MaxCacheDurationExtension(1n)])
+      const withProperties = new RequestOk([], [new MaxCacheDurationExtension(1n)])
       // Answering a TRACK_STATUS: allowed.
       expect(() => withProperties.validateTrackProperties(true)).not.toThrow()
       // Answering PUBLISH, REQUEST_UPDATE, SUBSCRIBE_NAMESPACE or PUBLISH_NAMESPACE: a
@@ -211,13 +209,13 @@ if (import.meta.vitest) {
       expect(() => withProperties.validateTrackProperties(false)).toThrow(ProtocolViolationError)
 
       // No properties is always fine.
-      const empty = new RequestOk(1n)
+      const empty = new RequestOk()
       expect(() => empty.validateTrackProperties(true)).not.toThrow()
       expect(() => empty.validateTrackProperties(false)).not.toThrow()
     })
 
     test('excess roundtrip', () => {
-      const msg = new RequestOk(1337n)
+      const msg = new RequestOk([new DeliveryTimeout(5000n)])
       const serialized = msg.serialize().toUint8Array()
       const excess = new Uint8Array([9, 1, 1])
       const buf = new ByteBuffer()
@@ -230,15 +228,14 @@ if (import.meta.vitest) {
       expect(msgLength).toBe(frozen.remaining - 3)
       const payload = new FrozenByteBuffer(frozen.getBytes(msgLength))
       const deserialized = RequestOk.parsePayload(payload)
-      expect(deserialized.requestId).toBe(msg.requestId)
-      expect(deserialized.parameters.length).toBe(0)
+      expect(deserialized.parameters.length).toBe(1)
       expect(payload.remaining).toBe(0)
       expect(frozen.remaining).toBe(3)
       expect(Array.from(frozen.getBytes(3))).toEqual([9, 1, 1])
     })
 
     test('partial message', () => {
-      const msg = new RequestOk(99n, [new DeliveryTimeout(5000n)])
+      const msg = new RequestOk([new DeliveryTimeout(5000n)])
       const serialized = msg.serialize().toUint8Array()
       const upper = Math.floor(serialized.length / 2)
       const partial = serialized.slice(0, upper)

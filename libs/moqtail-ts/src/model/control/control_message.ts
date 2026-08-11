@@ -183,7 +183,7 @@ if (import.meta.vitest) {
 
     describe('RequestOk', () => {
       test('PUBLISH_OK (0x1E) parses as RequestOk', () => {
-        const requestOk = new RequestOk(12345n)
+        const requestOk = new RequestOk()
         const bytes = ControlMessage.serialize(requestOk).toUint8Array()
         // Table 5 keeps 0x1E but points it at §10.5, REQUEST_OK. Both codepoints are
         // one-byte varints, so retyping the message is a single-byte edit.

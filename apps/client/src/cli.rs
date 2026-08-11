@@ -147,6 +147,11 @@ pub struct Cli {
   #[arg(long)]
   pub track_alias: Option<u64>,
 
+  /// Seconds after announcing to withdraw the namespace, by resetting its request
+  /// stream while the session stays open (publish-namespace only, 0 = never).
+  #[arg(long, default_value_t = 0)]
+  pub withdraw_after: u64,
+
   /// Duration to listen in seconds, 0 = indefinite (subscribe only)
   #[arg(long, short, default_value_t = 0)]
   pub duration: u64,

@@ -12,9 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::constant::{ControlMessageType, FilterType, GroupOrder};
+use super::constant::ControlMessageType;
 use super::control_message::ControlMessageTrait;
-use crate::model::common::location::Location;
 use crate::model::common::tuple::{Tuple, TupleField};
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
 use crate::model::data::full_track_name::FullTrackName;
@@ -24,117 +23,27 @@ use crate::model::parameter::message_parameter::{
 };
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
+/// A TRACK_STATUS has the same shape as a SUBSCRIBE. It asks for a track's properties
+/// without subscribing, so parameters that govern delivery do not belong on it.
 #[derive(Debug, PartialEq, Clone)]
 pub struct TrackStatus {
   pub request_id: u64,
   pub track_namespace: Tuple,
   pub track_name: TupleField,
-  pub subscriber_priority: u8,
-  pub group_order: GroupOrder,
-  pub forward: bool,
-  pub filter_type: FilterType,
-  pub start_location: Option<Location>,
-  pub end_group: Option<u64>,
   pub subscribe_parameters: Vec<MessageParameter>,
 }
 
-#[allow(clippy::too_many_arguments)]
 impl TrackStatus {
-  pub fn new_next_group_start(
+  pub fn new(
     request_id: u64,
     track_namespace: Tuple,
     track_name: TupleField,
-    subscriber_priority: u8,
-    group_order: GroupOrder,
-    forward: bool,
     subscribe_parameters: Vec<MessageParameter>,
   ) -> Self {
     Self {
       request_id,
       track_namespace,
       track_name,
-      subscriber_priority,
-      group_order,
-      forward,
-      filter_type: FilterType::NextGroupStart,
-      start_location: None,
-      end_group: None,
-      subscribe_parameters,
-    }
-  }
-
-  pub fn new_latest_object(
-    request_id: u64,
-    track_namespace: Tuple,
-    track_name: TupleField,
-    subscriber_priority: u8,
-    group_order: GroupOrder,
-    forward: bool,
-    subscribe_parameters: Vec<MessageParameter>,
-  ) -> Self {
-    Self {
-      request_id,
-      track_namespace,
-      track_name,
-      subscriber_priority,
-      group_order,
-      forward,
-      filter_type: FilterType::LatestObject,
-      start_location: None,
-      end_group: None,
-      subscribe_parameters,
-    }
-  }
-
-  pub fn new_absolute_start(
-    request_id: u64,
-    track_namespace: Tuple,
-    track_name: TupleField,
-    subscriber_priority: u8,
-    group_order: GroupOrder,
-    forward: bool,
-    start_location: Location,
-    subscribe_parameters: Vec<MessageParameter>,
-  ) -> Self {
-    Self {
-      request_id,
-      track_namespace,
-      track_name,
-      subscriber_priority,
-      group_order,
-      forward,
-      filter_type: FilterType::AbsoluteStart,
-      start_location: Some(start_location),
-      end_group: None,
-      subscribe_parameters,
-    }
-  }
-
-  pub fn new_absolute_range(
-    request_id: u64,
-    track_namespace: Tuple,
-    track_name: TupleField,
-    subscriber_priority: u8,
-    group_order: GroupOrder,
-    forward: bool,
-    start_location: Location,
-    end_group: u64,
-    subscribe_parameters: Vec<MessageParameter>,
-  ) -> Self {
-    assert!(
-      end_group >= start_location.group,
-      "End Group must be >= Start Group"
-    );
-    Self {
-      request_id,
-      track_namespace,
-      track_name,
-      subscriber_priority,
-      group_order,
-      forward,
-      filter_type: FilterType::AbsoluteRange,
-      start_location: Some(start_location),
-      end_group: Some(end_group),
       subscribe_parameters,
     }
   }
@@ -146,6 +55,7 @@ impl TrackStatus {
     }
   }
 }
+
 impl ControlMessageTrait for TrackStatus {
   fn serialize(&self) -> Result<Bytes, ParseError> {
     let mut buf = BytesMut::new();
@@ -153,34 +63,9 @@ impl ControlMessageTrait for TrackStatus {
 
     let mut payload = BytesMut::new();
     payload.put_vi(self.request_id)?;
-
     payload.extend_from_slice(&self.track_namespace.serialize()?);
     payload.put_vi(self.track_name.len())?;
     payload.extend_from_slice(self.track_name.as_bytes());
-    payload.put_u8(self.subscriber_priority);
-    payload.put_u8(self.group_order as u8);
-    payload.put_u8(if self.forward { 1 } else { 0 });
-    payload.put_vi(self.filter_type)?;
-
-    match self.filter_type {
-      FilterType::AbsoluteStart => {
-        if let Some(ref loc) = self.start_location {
-          payload.extend_from_slice(&loc.serialize()?);
-        } else {
-          unreachable!()
-        }
-      }
-      FilterType::AbsoluteRange => {
-        if let Some(ref loc) = self.start_location {
-          payload.extend_from_slice(&loc.serialize()?);
-        }
-        if let Some(eg) = self.end_group {
-          payload.put_vi(eg)?;
-        }
-      }
-      _ => {}
-    }
-
     payload.put_vi(self.subscribe_parameters.len())?;
     payload.extend_from_slice(&serialize_message_parameters(&self.subscribe_parameters)?);
 
@@ -222,55 +107,6 @@ impl ControlMessageTrait for TrackStatus {
     }
     let track_name = TupleField::new(payload.copy_to_bytes(name_len));
 
-    if payload.remaining() < 1 {
-      return Err(ParseError::NotEnoughBytes {
-        context: "TrackStatus::parse_payload(subscriber_priority)",
-        needed: 1,
-        available: 0,
-      });
-    }
-    let subscriber_priority = payload.get_u8();
-
-    if payload.remaining() < 1 {
-      return Err(ParseError::NotEnoughBytes {
-        context: "TrackStatus::parse_payload(group_order)",
-        needed: 1,
-        available: 0,
-      });
-    }
-    let group_order_raw = payload.get_u8();
-    let group_order = GroupOrder::try_from(group_order_raw)?;
-
-    let forward_raw = payload.get_u8();
-    let forward = match forward_raw {
-      0 => false,
-      1 => true,
-      _ => {
-        return Err(ParseError::ProtocolViolation {
-          context: "TrackStatus::parse_payload(forward)",
-          details: format!("Invalid value: {forward_raw}"),
-        });
-      }
-    };
-
-    let filter_type_raw = payload.get_vi()?;
-    let filter_type = FilterType::try_from(filter_type_raw)?;
-
-    let mut start_location: Option<Location> = None;
-    let mut end_group: Option<u64> = None;
-
-    match filter_type {
-      FilterType::AbsoluteRange => {
-        start_location = Some(Location::deserialize(payload)?);
-        end_group = Some(payload.get_vi()?);
-      }
-      FilterType::AbsoluteStart => {
-        start_location = Some(Location::deserialize(payload)?);
-      }
-      FilterType::LatestObject => {}
-      FilterType::NextGroupStart => {}
-    }
-
     let param_count = payload.get_vi()?;
     let subscribe_parameters =
       deserialize_message_parameters(payload, param_count, ControlMessageType::TrackStatus)?;
@@ -279,56 +115,35 @@ impl ControlMessageTrait for TrackStatus {
       request_id,
       track_namespace,
       track_name,
-      subscriber_priority,
-      group_order,
-      forward,
-      filter_type,
-      start_location,
-      end_group,
       subscribe_parameters,
     }))
   }
+
   fn get_type(&self) -> ControlMessageType {
     ControlMessageType::TrackStatus
   }
 }
+
 #[cfg(test)]
 mod tests {
-  use crate::model::parameter::authorization_token::AuthorizationToken;
-
   use super::*;
+  use crate::model::parameter::authorization_token::AuthorizationToken;
   use bytes::Buf;
+
+  fn sample() -> TrackStatus {
+    TrackStatus::new(
+      128,
+      Tuple::from_utf8_path("un/deux/trois"),
+      TupleField::from_utf8("quatre"),
+      vec![MessageParameter::new_authorization_token(
+        AuthorizationToken::new_use_alias(42),
+      )],
+    )
+  }
 
   #[test]
   fn test_roundtrip() {
-    let request_id = 128242;
-    let track_namespace = Tuple::from_utf8_path("nein/nein/nein");
-    let track_name = TupleField::from_utf8("${Name}");
-    let subscriber_priority = 31;
-    let group_order = GroupOrder::Original;
-    let forward = true;
-    let filter_type = FilterType::AbsoluteRange;
-    let start_location = Location {
-      group: 81,
-      object: 81,
-    };
-    let end_group = 25;
-    let subscribe_parameters = vec![MessageParameter::new_authorization_token(
-      AuthorizationToken::new_use_value(0, Bytes::from_static(b"test-token")),
-    )];
-    let track_status = TrackStatus {
-      request_id,
-      track_namespace,
-      track_name,
-      subscriber_priority,
-      group_order,
-      forward,
-      filter_type,
-      start_location: Some(start_location),
-      end_group: Some(end_group),
-      subscribe_parameters,
-    };
-
+    let track_status = sample();
     let mut buf = track_status.serialize().unwrap();
     let msg_type = buf.get_vi().unwrap();
     assert_eq!(msg_type, ControlMessageType::TrackStatus as u64);
@@ -341,34 +156,7 @@ mod tests {
 
   #[test]
   fn test_excess_roundtrip() {
-    let request_id = 128242;
-    let track_namespace = Tuple::from_utf8_path("nein/nein/nein");
-    let track_name = TupleField::from_utf8("${Name}");
-    let subscriber_priority = 31;
-    let group_order = GroupOrder::Original;
-    let forward = true;
-    let filter_type = FilterType::AbsoluteRange;
-    let start_location = Location {
-      group: 81,
-      object: 81,
-    };
-    let end_group = 25;
-    let subscribe_parameters = vec![MessageParameter::new_authorization_token(
-      AuthorizationToken::new_use_value(0, Bytes::from_static(b"test-token")),
-    )];
-    let track_status = TrackStatus {
-      request_id,
-      track_namespace,
-      track_name,
-      subscriber_priority,
-      group_order,
-      forward,
-      filter_type,
-      start_location: Some(start_location),
-      end_group: Some(end_group),
-      subscribe_parameters,
-    };
-
+    let track_status = sample();
     let serialized = track_status.serialize().unwrap();
     let mut excess = BytesMut::new();
     excess.extend_from_slice(&serialized);
@@ -378,7 +166,6 @@ mod tests {
     let msg_type = buf.get_vi().unwrap();
     assert_eq!(msg_type, ControlMessageType::TrackStatus as u64);
     let msg_length = buf.get_u16();
-
     assert_eq!(msg_length as usize, buf.remaining() - 3);
     let deserialized = TrackStatus::parse_payload(&mut buf).unwrap();
     assert_eq!(*deserialized, track_status);
@@ -387,43 +174,32 @@ mod tests {
 
   #[test]
   fn test_partial_message() {
-    let request_id = 128242;
-    let track_namespace = Tuple::from_utf8_path("nein/nein/nein");
-    let track_name = TupleField::from_utf8("${Name}");
-    let subscriber_priority = 31;
-    let group_order = GroupOrder::Original;
-    let forward = true;
-    let filter_type = FilterType::AbsoluteRange;
-    let start_location = Location {
-      group: 81,
-      object: 81,
-    };
-    let end_group = 25;
-    let subscribe_parameters = vec![MessageParameter::new_authorization_token(
-      AuthorizationToken::new_use_value(0, Bytes::from_static(b"test-token")),
-    )];
-    let track_status = TrackStatus {
-      request_id,
-      track_namespace,
-      track_name,
-      subscriber_priority,
-      group_order,
-      forward,
-      filter_type,
-      start_location: Some(start_location),
-      end_group: Some(end_group),
-      subscribe_parameters,
-    };
-
+    let track_status = sample();
     let mut buf = track_status.serialize().unwrap();
-    let msg_type = buf.get_vi().unwrap();
-    assert_eq!(msg_type, ControlMessageType::TrackStatus as u64);
-    let msg_length = buf.get_u16();
-    assert_eq!(msg_length as usize, buf.remaining());
-
+    let _ = buf.get_vi().unwrap();
+    let _ = buf.get_u16();
     let upper = buf.remaining() / 2;
     let mut partial = buf.slice(..upper);
-    let deserialized = TrackStatus::parse_payload(&mut partial);
-    assert!(deserialized.is_err());
+    assert!(TrackStatus::parse_payload(&mut partial).is_err());
+  }
+
+  /// The body is a SUBSCRIBE body: the delivery fields draft-16 carried inline are gone.
+  #[test]
+  fn body_matches_subscribe() {
+    use super::super::subscribe::Subscribe;
+    let track_status = sample();
+    let subscribe = Subscribe::new(
+      track_status.request_id,
+      track_status.track_namespace.clone(),
+      track_status.track_name.clone(),
+      track_status.subscribe_parameters.clone(),
+    );
+
+    let mut ts = track_status.serialize().unwrap();
+    let mut sub = subscribe.serialize().unwrap();
+    let _ = ts.get_vi().unwrap();
+    let _ = sub.get_vi().unwrap();
+    assert_eq!(ts.get_u16(), sub.get_u16());
+    assert_eq!(ts.chunk(), sub.chunk());
   }
 }

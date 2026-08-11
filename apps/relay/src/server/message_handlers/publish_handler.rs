@@ -274,6 +274,13 @@ pub async fn handle(
         client
           .add_published_track(request_id, full_track_name.clone())
           .await;
+        // Store this publisher's PUBLISH too. Raising the Forward State later needs the
+        // request id it arrived on, and without it this publisher is skipped and never
+        // told to start sending.
+        context
+          .track_manager
+          .add_publish_message(full_track_name.clone(), context.connection_id, (*m).clone())
+          .await;
         info!(
           "Additional publisher for existing track {:?}/{}: registered alias {}",
           m.track_namespace, m.track_name, m.track_alias

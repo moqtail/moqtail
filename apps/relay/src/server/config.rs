@@ -33,6 +33,10 @@ pub enum CacheExpirationType {
   Tti,
 }
 
+/// Upper bound on `--dedup-retained-groups`. Retention costs groups × objects-per-group,
+/// and nothing bounds the second factor, so the first is bounded here.
+const MAX_DEDUP_RETAINED_GROUPS: u64 = 1000;
+
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 pub struct Cli {
@@ -114,6 +118,11 @@ pub struct Cli {
   /// alias before the stream is abandoned
   #[arg(long, default_value_t = 500)]
   pub track_alias_resolution_timeout_ms: u64,
+  /// How many recent groups of Object ids are remembered per track, to drop duplicates
+  /// when several publishers serve the same Track. 0 turns duplicate detection off.
+  /// Capped, because the memory this costs also scales with the size of a group
+  #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(0..=MAX_DEDUP_RETAINED_GROUPS))]
+  pub dedup_retained_groups: u64,
 }
 #[derive(Debug, Clone)]
 pub struct AppConfig {
@@ -143,6 +152,9 @@ pub struct AppConfig {
   /// A data stream can arrive before the control message that establishes its track
   /// alias. The stream waits this long for it, then is abandoned.
   pub track_alias_resolution_timeout: Duration,
+  /// Groups of Object ids retained per track for duplicate detection. Bounds what that
+  /// costs; a publisher more than this many groups behind can slip a duplicate through.
+  pub dedup_retained_groups: usize,
 }
 
 impl AppConfig {
@@ -175,6 +187,7 @@ impl AppConfig {
         track_alias_resolution_timeout: Duration::from_millis(
           cli.track_alias_resolution_timeout_ms,
         ),
+        dedup_retained_groups: cli.dedup_retained_groups as usize,
       }
     })
   }
@@ -296,6 +309,7 @@ mod tests {
       max_upstream_fetch_gaps: 10,
       upstream_fetch_timeout: Duration::from_secs(10),
       track_alias_resolution_timeout: Duration::from_millis(500),
+      dedup_retained_groups: 30,
     }
   }
 

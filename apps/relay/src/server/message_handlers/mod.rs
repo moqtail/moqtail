@@ -197,9 +197,9 @@ impl MessageHandler {
             .await
           }
           Route::NotFound => {
-            // Draft-18 10.9: a REQUEST_UPDATE must be answered with exactly one
-            // REQUEST_OK or REQUEST_ERROR, so an update naming a request the relay
-            // holds no updatable record of is rejected rather than terminating.
+            // A REQUEST_UPDATE must be answered with exactly one REQUEST_OK or
+            // REQUEST_ERROR, so an update naming a request the relay holds no
+            // updatable record of is rejected rather than terminating.
             warn!("REQUEST_UPDATE for untracked request id {}", target_req_id);
             let err = RequestError::new(
               RequestErrorCode::NotSupported,

@@ -2466,7 +2466,6 @@ if (import.meta.vitest) {
       const publishStream = await openedStream(transport, 2)
       const publishMsg = publishStream.messages[0]
       expect(publishMsg).toBeInstanceOf(Publish)
-      // PUBLISH is answered by REQUEST_OK; PUBLISH_OK is only that message's alias here.
       publishStream.respond(new RequestOk())
       expect(await publishing).toMatchObject({ trackAlias: 9n })
 

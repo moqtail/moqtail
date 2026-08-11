@@ -27,6 +27,8 @@ import { FetchObjectContext } from '../model/data/fetch_object'
 import { ObjectForwardingPreference } from '../model/data/constant'
 import { Header } from '../model/data/header'
 import { NotEnoughBytesError, ProtocolViolationError, TimeoutError } from '../model/error/error'
+import { StreamResetCode } from '../model/error/stream_reset'
+import { asStreamResetError, streamResetCodeOf, streamResetReason } from './util/stream_reset'
 import { logger } from '../util/logger'
 
 export class SendStream {
@@ -87,6 +89,12 @@ export class SendStream {
       await this.#writer.close()
     }
   }
+
+  /** Abruptly tears the stream down, so the peer reads back `code` (§3.3.3). */
+  async reset(code: StreamResetCode): Promise<void> {
+    logger.debug('data_stream', `SendStream reset type=${this.header.type} code=${code}`)
+    await this.#writer.abort(streamResetReason(code)).catch(() => {})
+  }
 }
 
 function withTimeout<T>(promise: Promise<T>, ms?: number, errorMsg?: string): Promise<T> {
@@ -117,7 +125,8 @@ export class RecvStream {
     if (onDataReceived) this.onDataReceived = onDataReceived
     this.stream = new ReadableStream<FetchObject | SubgroupObject>({
       start: (controller) => this.#ingestLoop(controller),
-      cancel: () => this.#reader.cancel(),
+      // Forwarded, not dropped: the reason is what carries the reset code to the peer.
+      cancel: (reason) => this.#reader.cancel(reason),
     })
   }
 
@@ -171,10 +180,9 @@ export class RecvStream {
         }
       }
     } catch (error) {
-      // Cleanup on error
-      await reader.cancel(error).catch(() => {})
+      await reader.cancel(streamResetReason(StreamResetCode.InternalError)).catch(() => {})
       reader.releaseLock()
-      throw error
+      throw asStreamResetError('RecvStream.new', error)
     }
     if (onDataReceived) onDataReceived(headerInstance)
     logger.debug('data_stream', `RecvStream opened type=${headerInstance.type}`)
@@ -254,10 +262,15 @@ export class RecvStream {
       }
     } catch (error) {
       logger.error('data_stream', 'RecvStream ingest loop error', error)
-      // Cleanup on error
-      await this.#reader.cancel(error).catch(() => {})
-      controller.error(error)
+      await this.#reader.cancel(streamResetReason(StreamResetCode.InternalError)).catch(() => {})
+      controller.error(asStreamResetError('RecvStream', error))
     }
+  }
+
+  /** Asks the peer to stop sending on this stream, reporting `code` (§3.3.3). */
+  async stopSending(code: StreamResetCode): Promise<void> {
+    logger.debug('data_stream', `RecvStream stopSending type=${this.header.type} code=${code}`)
+    await this.#reader.cancel(streamResetReason(code)).catch(() => {})
   }
 }
 
@@ -377,6 +390,53 @@ if (import.meta.vitest) {
       ).rejects.toThrow(/Out-of-order object detected/)
 
       await sendStream.close()
+    })
+  })
+
+  describe('stream reset codes', () => {
+    const header = () => Header.newFetch(FetchHeaderType.Type0x05, 5n)
+
+    /** A SendStream over a writable that records what it was aborted with. */
+    async function sender(): Promise<{ send: SendStream; reason: () => unknown }> {
+      let reason: unknown
+      const writable = new WritableStream<Uint8Array>({
+        write: () => {},
+        abort: (r) => {
+          reason = r
+        },
+      })
+      return { send: await SendStream.new(writable, header()), reason: () => reason }
+    }
+
+    /** A RecvStream over a readable that records what it was cancelled with. */
+    async function receiver(): Promise<{ recv: RecvStream; reason: () => unknown }> {
+      let reason: unknown
+      const bytes = header().serialize().toUint8Array()
+      const readable = new ReadableStream<Uint8Array>({
+        start: (controller) => controller.enqueue(bytes),
+        cancel: (r) => {
+          reason = r
+        },
+      })
+      return { recv: await RecvStream.new(readable), reason: () => reason }
+    }
+
+    test('SendStream.reset aborts with a numeric code the peer can read back', async () => {
+      const { send, reason } = await sender()
+      await send.reset(StreamResetCode.DeliveryTimeout)
+      expect(streamResetCodeOf(reason())).toBe(StreamResetCode.DeliveryTimeout)
+    })
+
+    test('RecvStream.stopSending cancels with a numeric code', async () => {
+      const { recv, reason } = await receiver()
+      await recv.stopSending(StreamResetCode.TooFarBehind)
+      expect(streamResetCodeOf(reason())).toBe(StreamResetCode.TooFarBehind)
+    })
+
+    test('cancelling the object stream forwards the code to the transport', async () => {
+      const { recv, reason } = await receiver()
+      await recv.stream.getReader().cancel(streamResetReason(StreamResetCode.DeliveryTimeout))
+      expect(streamResetCodeOf(reason())).toBe(StreamResetCode.DeliveryTimeout)
     })
   })
 }

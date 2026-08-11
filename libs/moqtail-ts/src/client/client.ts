@@ -21,7 +21,6 @@ import {
   PublishNamespaceDone,
   Namespace,
   NamespaceDone,
-  NamespaceSubscribeOptions,
   Setup,
   ControlMessage,
   Fetch,
@@ -32,7 +31,9 @@ import {
   GroupOrder,
   Subscribe,
   SubscribeNamespace,
+  SubscribeTracks,
   RequestError,
+  RequestErrorCode,
   RequestUpdate,
   UnsubscribeNamespace,
   Publish,
@@ -72,6 +73,7 @@ import {
   SubscriberPriority,
   GroupOrderParam,
   SubscriptionFilter,
+  StreamResetCode,
 } from '../model'
 import { PublishNamespaceCancel } from '../model/control/publish_namespace_cancel'
 import { Track } from './track/track'
@@ -86,6 +88,7 @@ import { FetchPublication } from './publication/fetch'
 import { PublishPublication } from './publication/publish'
 import { random60bitId } from './util/random_id'
 import { isValidTrackAlias } from './util/validators'
+import { streamResetCodeOf, streamResetReason } from './util/stream_reset'
 import {
   MOQtailRequest,
   SubscribeOptions,
@@ -152,6 +155,8 @@ export class MOQtailClient {
    * of incoming PUBLISH_NAMESPACE / PUBLISH_NAMESPACE_DONE. Maintained locally; no dedupe of overlapping / shadowing prefixes yet.
    */
   readonly subscribedAnnounces = new Set<Tuple>()
+
+  readonly subscribedTracks = new Set<Tuple>()
   /**
    * Track namespaces this client has successfully announced (received ANNOUNCE_OK). Source of truth for
    * deciding what to PUBLISH_NAMESPACE_DONE on teardown or targeted withdrawal.(future optimization: prefix trie).
@@ -315,6 +320,9 @@ export class MOQtailClient {
 
   /** Fired when an inbound SUBSCRIBE_NAMESPACE control message is received. */
   onPeerSubscribeNamespace?: (msg: SubscribeNamespace) => void
+
+  /** Fired when an inbound SUBSCRIBE_TRACKS control message is received. */
+  onPeerSubscribeTracks?: (msg: SubscribeTracks) => void
 
   /** Fired when a NAMESPACE message arrives on a SUBSCRIBE_NAMESPACE bi-stream (prefix + suffix). */
   onPeerNamespace?: (prefix: Tuple, suffix: Tuple) => void
@@ -1789,15 +1797,20 @@ export class MOQtailClient {
     }
   }
 
+  /**
+   * Subscribes to namespace announcements under a prefix (§10.18). Discovery only: the
+   * peer answers NAMESPACE and NAMESPACE_DONE for matching namespaces, and nothing is
+   * subscribed to. To be sent the tracks themselves, use
+   * {@link MOQtailClient.subscribeTracks}.
+   */
   async subscribeNamespace(
     trackNamespacePrefix: Tuple,
-    subscribeOptions: NamespaceSubscribeOptions = NamespaceSubscribeOptions.Both,
     parameters?: MessageParameter[],
   ): Promise<{ response: RequestOk | RequestError; cancel: () => Promise<void> }> {
     this.#ensureActive()
     try {
       const params: MessageParameter[] = parameters ?? []
-      const msg = new SubscribeNamespace(this.#nextClientRequestId, trackNamespacePrefix, subscribeOptions, params)
+      const msg = new SubscribeNamespace(this.#nextClientRequestId, trackNamespacePrefix, params)
 
       // No #openRequestStream here: NAMESPACE / NAMESPACE_DONE carry only a suffix, so
       // they are only meaningful next to the prefix that opened this stream. The generic
@@ -1843,6 +1856,46 @@ export class MOQtailClient {
     } catch (error) {
       await this.disconnect(
         new InternalError('MOQtailClient.subscribeNamespace', error instanceof Error ? error.message : String(error)),
+      )
+      throw error
+    }
+  }
+
+  async subscribeTracks(
+    trackNamespacePrefix: Tuple,
+    parameters?: MessageParameter[],
+  ): Promise<{ response: RequestOk | RequestError; cancel: () => Promise<void> }> {
+    this.#ensureActive()
+    try {
+      const msg = new SubscribeTracks(this.#nextClientRequestId, trackNamespacePrefix, parameters ?? [])
+      const requestStream = await RequestStream.open(this.webTransport, msg)
+      this.#requestStreams.set(msg.requestId, requestStream)
+
+      const response = await requestStream.next()
+      if (!response) {
+        throw new InternalError('MOQtailClient.subscribeTracks', 'Stream closed before response')
+      }
+      if (!(response instanceof RequestOk || response instanceof RequestError)) {
+        throw new ProtocolViolationError('MOQtailClient.subscribeTracks', 'Unexpected response message type')
+      }
+
+      if (response instanceof RequestOk) {
+        this.subscribedTracks.add(trackNamespacePrefix)
+        void this.#pumpRequestStream(msg.requestId, requestStream)
+      } else {
+        await this.#closeRequestStream(msg.requestId)
+      }
+
+      return {
+        response,
+        cancel: async () => {
+          this.subscribedTracks.delete(trackNamespacePrefix)
+          await this.#closeRequestStream(msg.requestId)
+        },
+      }
+    } catch (error) {
+      await this.disconnect(
+        new InternalError('MOQtailClient.subscribeTracks', error instanceof Error ? error.message : String(error)),
       )
       throw error
     }
@@ -2080,7 +2133,7 @@ export class MOQtailClient {
 
     if (!ControlMessageType.isFirst(first.getType())) {
       logger.warn('MOQtailClient', `${first.constructor.name} may not open a request stream; resetting it`)
-      await requestStream.close()
+      await requestStream.reset(StreamResetCode.InternalError)
       return
     }
 
@@ -2199,7 +2252,7 @@ export class MOQtailClient {
           const effectiveDiscardPolicy = subscription.earlyDiscardPolicy ?? this.#earlyDiscardPolicy
           if (effectiveDiscardPolicy?.subgroupReceiveTimeout !== undefined) {
             subgroupTimeoutId = setTimeout(() => {
-              reader.cancel('early discard: subgroupReceiveTimeout exceeded').catch(() => {})
+              reader.cancel(streamResetReason(StreamResetCode.DeliveryTimeout)).catch(() => {})
             }, effectiveDiscardPolicy.subgroupReceiveTimeout)
           }
 
@@ -2277,12 +2330,19 @@ if (import.meta.vitest) {
     readonly readable: ReadableStream<Uint8Array>
     readonly writable: WritableStream<Uint8Array>
     isClosed = false
+    /** The reason the client aborted the send side with, if it did. */
+    abortReason: unknown
+    /** The reason the client cancelled the receive side with, if it did. */
+    cancelReason: unknown
     #peer!: ReadableStreamDefaultController<Uint8Array>
 
     constructor() {
       this.readable = new ReadableStream<Uint8Array>({
         start: (controller) => {
           this.#peer = controller
+        },
+        cancel: (reason) => {
+          this.cancelReason = reason
         },
       })
       this.writable = new WritableStream<Uint8Array>({
@@ -2292,8 +2352,9 @@ if (import.meta.vitest) {
         close: () => {
           this.isClosed = true
         },
-        abort: () => {
+        abort: (reason) => {
           this.isClosed = true
+          this.abortReason = reason
         },
       })
     }
@@ -2358,11 +2419,17 @@ if (import.meta.vitest) {
       })
     }
 
+    /** Reasons the client cancelled peer uni streams with, in order. */
+    readonly uniCancelReasons: unknown[] = []
+
     /** Opens a peer uni stream carrying `bytes`, left open so the reader keeps waiting. */
     openIncomingUniStream(bytes: Uint8Array): void {
       this.#incoming.enqueue(
         new ReadableStream<Uint8Array>({
           start: (controller) => controller.enqueue(bytes),
+          cancel: (reason) => {
+            this.uniCancelReasons.push(reason)
+          },
         }),
       )
     }
@@ -2490,12 +2557,61 @@ if (import.meta.vitest) {
       statusStream.respond(new RequestOk())
       expect(await statusing).toBeInstanceOf(RequestOk)
 
-      // Six streams, six requests, and the control stream still carries only the SETUP
-      // written during the handshake. SUBSCRIBE_TRACKS is the seventh type; it has no
-      // message body yet (#266).
-      expect(transport.biStreams).toHaveLength(6)
+      const subscribingTracks = client.subscribeTracks(Tuple.fromUtf8Path('room'))
+      const subscribeTracksStream = await openedStream(transport, 6)
+      expect(subscribeTracksStream.messages[0]).toBeInstanceOf(SubscribeTracks)
+      subscribeTracksStream.respond(new RequestOk())
+      expect((await subscribingTracks).response).toBeInstanceOf(RequestOk)
+
+      // All seven First-marked types, one stream each, and the control stream still
+      // carries only the SETUP written during the handshake.
+      expect(transport.biStreams).toHaveLength(7)
       expect(transport.sentChunks).toHaveLength(1)
       expect(ControlMessage.deserialize(new FrozenByteBuffer(transport.sentChunks[0]!))).toBeInstanceOf(Setup)
+
+      await client.disconnect()
+    })
+
+    it('holds one prefix under both SUBSCRIBE_NAMESPACE and SUBSCRIBE_TRACKS', async () => {
+      const { client, transport } = await connected()
+      const prefix = Tuple.fromUtf8Path('room')
+
+      const subscribingNs = client.subscribeNamespace(prefix)
+      const nsStream = await openedStream(transport, 0)
+      expect(nsStream.messages[0]).toBeInstanceOf(SubscribeNamespace)
+      nsStream.respond(new RequestOk())
+      expect((await subscribingNs).response).toBeInstanceOf(RequestOk)
+
+      const subscribingTracks = client.subscribeTracks(prefix)
+      const tracksStream = await openedStream(transport, 1)
+      expect(tracksStream.messages[0]).toBeInstanceOf(SubscribeTracks)
+      tracksStream.respond(new RequestOk())
+      expect((await subscribingTracks).response).toBeInstanceOf(RequestOk)
+
+      // Independent overlap spaces (§10.19), so the prefix is tracked twice over.
+      expect(client.subscribedAnnounces.has(prefix)).toBe(true)
+      expect(client.subscribedTracks.has(prefix)).toBe(true)
+
+      await client.disconnect()
+    })
+
+    it('surfaces PREFIX_OVERLAP for a second overlapping SUBSCRIBE_TRACKS', async () => {
+      const { client, transport } = await connected()
+
+      const first = client.subscribeTracks(Tuple.fromUtf8Path('room'))
+      const firstStream = await openedStream(transport, 0)
+      firstStream.respond(new RequestOk())
+      expect((await first).response).toBeInstanceOf(RequestOk)
+
+      const second = client.subscribeTracks(Tuple.fromUtf8Path('room/alice'))
+      const secondStream = await openedStream(transport, 1)
+      expect(secondStream.messages[0]).toBeInstanceOf(SubscribeTracks)
+      secondStream.respond(new RequestError(RequestErrorCode.PrefixOverlap, 0n, new ReasonPhrase('overlaps')))
+
+      const { response } = await second
+      expect(response).toBeInstanceOf(RequestError)
+      expect((response as RequestError).errorCode).toBe(RequestErrorCode.PrefixOverlap)
+      expect(client.subscribedTracks.size).toBe(1)
 
       await client.disconnect()
     })
@@ -2614,6 +2730,8 @@ if (import.meta.vitest) {
 
       await vi.waitFor(() => expect(incoming.isClosed).toBe(true))
       expect(incoming.messages).toHaveLength(0)
+      expect(streamResetCodeOf(incoming.abortReason)).toBe(StreamResetCode.InternalError)
+      expect(streamResetCodeOf(incoming.cancelReason)).toBe(StreamResetCode.InternalError)
 
       await client.disconnect()
     })

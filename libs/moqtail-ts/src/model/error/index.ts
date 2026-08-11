@@ -16,3 +16,4 @@
 
 export * from './error'
 export * from './constant'
+export * from './stream_reset'

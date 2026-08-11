@@ -155,20 +155,6 @@ export namespace ControlMessageType {
 
 /**
  * @public
- * Error codes for PublishNamespace control messages.
- */
-/**
- * @public
- * Subscribe options for SUBSCRIBE_NAMESPACE requests.
- */
-export enum NamespaceSubscribeOptions {
-  PublishOnly = 0x00,
-  NamespaceOnly = 0x01,
-  Both = 0x02,
-}
-
-/**
- * @public
  * Filter types for subscription requests.
  */
 export enum FilterType {

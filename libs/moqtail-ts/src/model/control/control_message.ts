@@ -34,6 +34,7 @@ import { TrackStatus } from './track_status'
 import { PublishNamespaceDone } from './publish_namespace_done'
 import { Unsubscribe } from './unsubscribe'
 import { SubscribeNamespace } from './subscribe_namespace'
+import { SubscribeTracks } from './subscribe_tracks'
 import { Switch } from './switch'
 import { UnsubscribeNamespace } from './unsubscribe_namespace'
 import { NotEnoughBytesError } from '../error/error'
@@ -62,6 +63,7 @@ export type ControlMessage =
   | PublishNamespaceDone
   | Unsubscribe
   | SubscribeNamespace
+  | SubscribeTracks
   | UnsubscribeNamespace
   | RequestOk
   // moqtail-local extension (0x22), not a draft-18 type: it is sent but never parsed,
@@ -120,14 +122,13 @@ export namespace ControlMessage {
         return Unsubscribe.parsePayload(payload)
       case ControlMessageType.SubscribeNamespace:
         return SubscribeNamespace.parsePayload(payload)
+      case ControlMessageType.SubscribeTracks:
+        return SubscribeTracks.parsePayload(payload)
       case ControlMessageType.UnsubscribeNamespace:
         return UnsubscribeNamespace.parsePayload(payload)
       case ControlMessageType.Setup:
         return Setup.parsePayload(payload)
-      // Draft-18 types whose bodies are owned by later tasks: SUBSCRIBE_TRACKS (#266),
-      // PUBLISH_BLOCKED (#271).
-      case ControlMessageType.SubscribeTracks:
-        throw new Error('ControlMessageType.SubscribeTracks (0x51) has no message body yet (#266)')
+      // PUBLISH_BLOCKED's body is owned by #271.
       case ControlMessageType.PublishBlocked:
         throw new Error('ControlMessageType.PublishBlocked (0xF) has no message body yet (#271)')
       default:

@@ -33,6 +33,7 @@ import {
   handlerGoAway,
   handlerPublish,
   handlerSubscribeNamespace,
+  handlerSubscribeTracks,
 } from '.'
 import {
   Publish,
@@ -53,6 +54,7 @@ import {
   Unsubscribe,
   UnsubscribeNamespace,
   SubscribeNamespace,
+  SubscribeTracks,
 } from '../../model/control'
 import { MOQtailClient } from '../client'
 import { ControlMessage } from '../../model/control'
@@ -98,6 +100,7 @@ export function getHandlerForRequestStreamMessage(msg: ControlMessage): RequestS
   if (msg instanceof PublishNamespace) return handlerPublishNamespace
   if (msg instanceof TrackStatus) return handlerTrackStatus
   if (msg instanceof SubscribeNamespace) return handlerSubscribeNamespace
+  if (msg instanceof SubscribeTracks) return handlerSubscribeTracks
   // Responses, correlated by the stream they arrive on.
   if (msg instanceof SubscribeOk) return handlerSubscribeOk
   if (msg instanceof FetchOk) return handlerFetchOk

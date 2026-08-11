@@ -364,7 +364,23 @@ async fn handle_subscribe_message(
 
   let track = track_arc.read().await;
 
-  add_subscription(sub.clone(), &track, client.clone(), is_switch).await;
+  // An endpoint may hold only one subscription per track in a given role. A SWITCH is
+  // the exception: it deliberately reuses the existing subscription, and the failure
+  // here is how it hands over.
+  if !add_subscription(sub.clone(), &track, client.clone(), is_switch).await && !is_switch {
+    drop(track);
+    info!(
+      "Rejecting SUBSCRIBE from {} for {:?}: already subscribed",
+      context.connection_id, &full_track_name
+    );
+    let err = RequestError::new(
+      RequestErrorCode::DuplicateSubscription,
+      0,
+      ReasonPhrase::try_new("already subscribed to this track".to_string()).unwrap(),
+    );
+    stream_handler.send_impl(&err).await.unwrap();
+    return Ok(());
+  }
 
   let res: Result<(), TerminationCode> = if is_creator {
     // First subscriber for this track: forward Subscribe to publisher

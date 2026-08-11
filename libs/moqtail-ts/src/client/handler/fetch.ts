@@ -42,19 +42,13 @@ export const handlerFetch: RequestStreamMessageHandler<Fetch> = async (client, m
   }
   const track = client.trackSources.get(fullTrackName.toString())
   if (!track) {
-    const response = new RequestError(
-      msg.requestId,
-      RequestErrorCode.DoesNotExist,
-      0n,
-      new ReasonPhrase('Track does not exists'),
-    )
+    const response = new RequestError(RequestErrorCode.DoesNotExist, 0n, new ReasonPhrase('Track does not exists'))
     await stream.send(response)
     return
   }
 
   if (!track.trackSource.past) {
     const response = new RequestError(
-      msg.requestId,
       RequestErrorCode.NotSupported,
       0n,
       new ReasonPhrase('Requested track does not support fetch'),
@@ -67,6 +61,6 @@ export const handlerFetch: RequestStreamMessageHandler<Fetch> = async (client, m
   // TODO: Figure out what to do with endOfTrack and end location
   const publication = new FetchPublication(client, track, msg)
   client.publications.set(msg.requestId, publication)
-  const response = new FetchOk(msg.requestId, false, new Location(0n, 0n), msg.parameters, track.trackExtensions ?? [])
+  const response = new FetchOk(false, new Location(0n, 0n), msg.parameters, track.trackExtensions ?? [])
   await stream.send(response)
 }

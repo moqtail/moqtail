@@ -36,7 +36,6 @@ import {
   RequestUpdate,
   UnsubscribeNamespace,
   Publish,
-  PublishOk,
   RequestOk,
   Switch,
   SubscribeOk,
@@ -57,7 +56,7 @@ import {
   RequestIdMap,
 } from '../model/data'
 import { FrozenByteBuffer } from '../model/common/byte_buffer'
-import { TrackExtension } from '../model/extension_header/track_extension'
+import { DeliveryTimeoutExtension, TrackExtension } from '../model/extension_header/track_extension'
 import { RecvStream } from './data_stream'
 import {
   InternalError,
@@ -1767,10 +1766,10 @@ export class MOQtailClient {
    *
    * @example Cancel immediately after a mistaken announce
    * ```ts
-   * const publishNamespaceResp = await client.publishNamespace(["camera","temp"]) // wrong namespace
-   * // Assume you kept the original announce requestId (e.g. from PublishNamespaceRequest)
-   * const cancelMsg = new PublishNamespaceCancel(publishNamespaceResp.requestId as bigint)
-   * await client.publishNamespaceCancel(cancelMsg)
+   * await client.publishNamespace(Tuple.fromUtf8Path('camera/temp')) // wrong namespace
+   * // The REQUEST_OK carries no request id — responses are named by their stream — so
+   * // retract by namespace rather than by the id of the answer.
+   * await client.publishNamespaceDone(Tuple.fromUtf8Path('camera/temp'))
    * ```
    */
   async publishNamespaceCancel(msg: PublishNamespaceCancel) {
@@ -2446,7 +2445,7 @@ if (import.meta.vitest) {
       const subscribeStream = await openedStream(transport, 0)
       const subscribeMsg = subscribeStream.messages[0]
       expect(subscribeMsg).toBeInstanceOf(Subscribe)
-      subscribeStream.respond(SubscribeOk.create((subscribeMsg as Subscribe).requestId, 7n, [], []))
+      subscribeStream.respond(SubscribeOk.create(7n, [], []))
       expect(await subscribing).toMatchObject({ requestId: (subscribeMsg as Subscribe).requestId })
 
       const fetching = client.fetch({
@@ -2460,35 +2459,35 @@ if (import.meta.vitest) {
       const fetchStream = await openedStream(transport, 1)
       const fetchMsg = fetchStream.messages[0]
       expect(fetchMsg).toBeInstanceOf(Fetch)
-      fetchStream.respond(new FetchOk((fetchMsg as Fetch).requestId, false, new Location(1n, 0n), []))
+      fetchStream.respond(new FetchOk(false, new Location(1n, 0n), []))
       expect(await fetching).toMatchObject({ requestId: (fetchMsg as Fetch).requestId })
 
       const publishing = client.publish(ftn, true, 9n)
       const publishStream = await openedStream(transport, 2)
       const publishMsg = publishStream.messages[0]
       expect(publishMsg).toBeInstanceOf(Publish)
-      publishStream.respond(new PublishOk((publishMsg as Publish).requestId, []))
+      publishStream.respond(new RequestOk())
       expect(await publishing).toMatchObject({ trackAlias: 9n })
 
       const announcing = client.publishNamespace(Tuple.fromUtf8Path('room/alice'))
       const announceStream = await openedStream(transport, 3)
       const announceMsg = announceStream.messages[0]
       expect(announceMsg).toBeInstanceOf(PublishNamespace)
-      announceStream.respond(new RequestOk((announceMsg as PublishNamespace).requestId))
+      announceStream.respond(new RequestOk())
       expect(await announcing).toBeInstanceOf(RequestOk)
 
       const subscribingNs = client.subscribeNamespace(Tuple.fromUtf8Path('room'))
       const subscribeNsStream = await openedStream(transport, 4)
       const subscribeNsMsg = subscribeNsStream.messages[0]
       expect(subscribeNsMsg).toBeInstanceOf(SubscribeNamespace)
-      subscribeNsStream.respond(new RequestOk((subscribeNsMsg as SubscribeNamespace).requestId))
+      subscribeNsStream.respond(new RequestOk())
       expect((await subscribingNs).response).toBeInstanceOf(RequestOk)
 
       const statusing = client.trackStatus(ftn, 11n)
       const statusStream = await openedStream(transport, 5)
       const statusMsg = statusStream.messages[0]
       expect(statusMsg).toBeInstanceOf(TrackStatus)
-      statusStream.respond(new RequestOk((statusMsg as TrackStatus).requestId))
+      statusStream.respond(new RequestOk())
       expect(await statusing).toBeInstanceOf(RequestOk)
 
       // Six streams, six requests, and the control stream still carries only the SETUP
@@ -2497,6 +2496,48 @@ if (import.meta.vitest) {
       expect(transport.biStreams).toHaveLength(6)
       expect(transport.sentChunks).toHaveLength(1)
       expect(ControlMessage.deserialize(new FrozenByteBuffer(transport.sentChunks[0]!))).toBeInstanceOf(Setup)
+
+      await client.disconnect()
+    })
+
+    it('routes two concurrent SUBSCRIBE_OKs by stream, not by request id', async () => {
+      const { client, transport } = await connected()
+      const otherFtn = FullTrackName.tryNew('room/bob', 'video')
+
+      const subscribingAlice = client.subscribe({
+        fullTrackName: ftn,
+        filterType: FilterType.LatestObject,
+        forward: true,
+        groupOrder: GroupOrder.Original,
+        priority: 0,
+      })
+      const aliceStream = await openedStream(transport, 0)
+      const subscribingBob = client.subscribe({
+        fullTrackName: otherFtn,
+        filterType: FilterType.LatestObject,
+        forward: true,
+        groupOrder: GroupOrder.Original,
+        priority: 0,
+      })
+      const bobStream = await openedStream(transport, 1)
+
+      const aliceId = (aliceStream.messages[0] as Subscribe).requestId
+      const bobId = (bobStream.messages[0] as Subscribe).requestId
+      expect(aliceId).not.toBe(bobId)
+
+      // Neither SUBSCRIBE_OK carries a request id, and they come back in the opposite
+      // order to the requests: only the stream each arrives on can tell them apart.
+      bobStream.respond(SubscribeOk.create(8n, [], []))
+      aliceStream.respond(SubscribeOk.create(7n, [], []))
+
+      expect(await subscribingAlice).toMatchObject({ requestId: aliceId })
+      expect(await subscribingBob).toMatchObject({ requestId: bobId })
+
+      // Each track alias resolved to the subscription that actually asked for it.
+      expect(client.subscriptions.get(7n).fullTrackName.toString()).toBe(ftn.toString())
+      expect(client.subscriptions.get(8n).fullTrackName.toString()).toBe(otherFtn.toString())
+      expect(client.subscriptionAliasMap.get(aliceId)).toBe(7n)
+      expect(client.subscriptionAliasMap.get(bobId)).toBe(8n)
 
       await client.disconnect()
     })
@@ -2513,7 +2554,7 @@ if (import.meta.vitest) {
       })
       const subscribeStream = await openedStream(transport, 0)
       const requestId = (subscribeStream.messages[0] as Subscribe).requestId
-      subscribeStream.respond(SubscribeOk.create(requestId, 7n, [], []))
+      subscribeStream.respond(SubscribeOk.create(7n, [], []))
       await subscribing
 
       await client.subscribeUpdate({
@@ -2532,6 +2573,21 @@ if (import.meta.vitest) {
       expect(subscribeStream.isClosed).toBe(true)
 
       await client.disconnect()
+    })
+
+    it('refuses a REQUEST_OK carrying Track Properties outside a TRACK_STATUS_OK', async () => {
+      const { client, transport } = await connected()
+
+      const announcing = client.publishNamespace(Tuple.fromUtf8Path('room/alice'))
+      const announceStream = await openedStream(transport, 0)
+      // §10.5 populates Track Properties in a TRACK_STATUS_OK and nowhere else, so this
+      // PUBLISH_NAMESPACE_OK is a protocol violation: the request fails rather than
+      // resolving with a namespace the peer never really accepted.
+      announceStream.respond(new RequestOk([], [new DeliveryTimeoutExtension(5000n)]))
+
+      // Without the properties the same exchange resolves; see the request-per-stream
+      // test above.
+      await expect(announcing).rejects.toThrow()
     })
 
     it('answers a peer-opened request stream on that stream', async () => {
@@ -2554,7 +2610,7 @@ if (import.meta.vitest) {
       const { client, transport } = await connected()
 
       const incoming = transport.openIncomingBiStream()
-      incoming.respond(new RequestOk(4n))
+      incoming.respond(new RequestOk())
 
       await vi.waitFor(() => expect(incoming.isClosed).toBe(true))
       expect(incoming.messages).toHaveLength(0)

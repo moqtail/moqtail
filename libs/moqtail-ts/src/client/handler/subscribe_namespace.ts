@@ -31,5 +31,5 @@ export const handlerSubscribeNamespace: RequestStreamMessageHandler<SubscribeNam
 
   // The peer holds this stream open for the subscription's lifetime; NAMESPACE and
   // NAMESPACE_DONE for matching announcements are written to it.
-  await stream.send(new RequestOk(msg.requestId))
+  await stream.send(new RequestOk())
 }

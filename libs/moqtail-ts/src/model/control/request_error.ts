@@ -19,14 +19,16 @@ import { ReasonPhrase } from '../common/reason_phrase'
 import { ControlMessageType, RequestErrorCode } from './constant'
 import { LengthExceedsMaxError } from '../error/error'
 
+/**
+ * REQUEST_ERROR (0x5) refuses any request type. It carries no Request ID: the request
+ * stream it arrives on identifies the request (§10.1).
+ */
 export class RequestError {
-  public readonly requestId: bigint
   public readonly errorCode: RequestErrorCode
   public readonly retryInterval: bigint
   public readonly reasonPhrase: ReasonPhrase
 
-  constructor(requestId: bigint, errorCode: RequestErrorCode, retryInterval: bigint, reasonPhrase: ReasonPhrase) {
-    this.requestId = requestId
+  constructor(errorCode: RequestErrorCode, retryInterval: bigint, reasonPhrase: ReasonPhrase) {
     this.errorCode = errorCode
     this.retryInterval = retryInterval
     this.reasonPhrase = reasonPhrase
@@ -40,7 +42,6 @@ export class RequestError {
     const buf = new ByteBuffer()
     buf.putVI(ControlMessageType.RequestError)
     const payload = new ByteBuffer()
-    payload.putVI(this.requestId)
     payload.putVI(this.errorCode)
     payload.putVI(this.retryInterval)
     payload.putReasonPhrase(this.reasonPhrase)
@@ -54,12 +55,11 @@ export class RequestError {
   }
 
   static parsePayload(buf: BaseByteBuffer): RequestError {
-    const requestId = buf.getVI()
     const errorCodeRaw = buf.getVI()
     const errorCode = RequestErrorCode.tryFrom(errorCodeRaw)
     const retryInterval = buf.getVI()
     const reasonPhrase = buf.getReasonPhrase()
-    return new RequestError(requestId, errorCode, retryInterval, reasonPhrase)
+    return new RequestError(errorCode, retryInterval, reasonPhrase)
   }
 }
 
@@ -67,18 +67,16 @@ if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
   describe('RequestError', () => {
     test('roundtrip', () => {
-      const requestId = 160669n
       const errorCode = RequestErrorCode.InternalError
       const retryInterval = 0n
       const reasonPhrase = new ReasonPhrase("They see me rollin'")
-      const requestError = new RequestError(requestId, errorCode, retryInterval, reasonPhrase)
+      const requestError = new RequestError(errorCode, retryInterval, reasonPhrase)
       const frozen = requestError.serialize()
       const msgType = frozen.getVI()
       expect(msgType).toBe(BigInt(ControlMessageType.RequestError))
       const msgLength = frozen.getU16()
       expect(msgLength).toBe(frozen.remaining)
       const deserialized = RequestError.parsePayload(frozen)
-      expect(deserialized.requestId).toBe(requestError.requestId)
       expect(deserialized.errorCode).toBe(requestError.errorCode)
       expect(deserialized.retryInterval).toBe(requestError.retryInterval)
       expect(deserialized.reasonPhrase.phrase).toBe(requestError.reasonPhrase.phrase)
@@ -86,11 +84,10 @@ if (import.meta.vitest) {
     })
 
     test('excess roundtrip', () => {
-      const requestId = 160669n
       const errorCode = RequestErrorCode.InternalError
       const retryInterval = 0n
       const reasonPhrase = new ReasonPhrase("They see me rollin'")
-      const requestError = new RequestError(requestId, errorCode, retryInterval, reasonPhrase)
+      const requestError = new RequestError(errorCode, retryInterval, reasonPhrase)
       const serialized = requestError.serialize().toUint8Array()
       const excess = new Uint8Array([9, 1, 1])
       const buf = new ByteBuffer()
@@ -102,7 +99,6 @@ if (import.meta.vitest) {
       const msgLength = frozen.getU16()
       expect(msgLength).toBe(frozen.remaining - 3)
       const deserialized = RequestError.parsePayload(frozen)
-      expect(deserialized.requestId).toBe(requestError.requestId)
       expect(deserialized.errorCode).toBe(requestError.errorCode)
       expect(deserialized.retryInterval).toBe(requestError.retryInterval)
       expect(deserialized.reasonPhrase.phrase).toBe(requestError.reasonPhrase.phrase)
@@ -111,11 +107,10 @@ if (import.meta.vitest) {
     })
 
     test('partial message', () => {
-      const requestId = 160669n
       const errorCode = RequestErrorCode.InternalError
       const retryInterval = 0n
       const reasonPhrase = new ReasonPhrase("They see me rollin'")
-      const requestError = new RequestError(requestId, errorCode, retryInterval, reasonPhrase)
+      const requestError = new RequestError(errorCode, retryInterval, reasonPhrase)
       const serialized = requestError.serialize().toUint8Array()
       const upper = Math.floor(serialized.length / 2)
       const partial = serialized.slice(0, upper)

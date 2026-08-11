@@ -32,7 +32,6 @@ import {
   handlerFetchOk,
   handlerGoAway,
   handlerPublish,
-  handlerPublishOk,
   handlerSubscribeNamespace,
 } from '.'
 import {
@@ -54,7 +53,6 @@ import {
   Unsubscribe,
   UnsubscribeNamespace,
   SubscribeNamespace,
-  PublishOk,
 } from '../../model/control'
 import { MOQtailClient } from '../client'
 import { ControlMessage } from '../../model/control'
@@ -103,7 +101,8 @@ export function getHandlerForRequestStreamMessage(msg: ControlMessage): RequestS
   // Responses, correlated by the stream they arrive on.
   if (msg instanceof SubscribeOk) return handlerSubscribeOk
   if (msg instanceof FetchOk) return handlerFetchOk
-  if (msg instanceof PublishOk) return handlerPublishOk
+  // RequestOk also answers PUBLISH: PUBLISH_OK (0x1E) is an alias of REQUEST_OK, so
+  // both codepoints arrive here as a RequestOk.
   if (msg instanceof RequestOk) return handlerRequestOk
   if (msg instanceof RequestError) return handlerRequestError
   // Follow-ups on an open request stream.

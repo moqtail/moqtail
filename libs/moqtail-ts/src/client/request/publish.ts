@@ -14,33 +14,33 @@
  * limitations under the License.
  */
 
-import { Publish, PublishOk, RequestError } from '@/model'
+import { Publish, RequestError, RequestOk } from '@/model'
 import { logger } from '../../util/logger'
 
-export class PublishRequest implements PromiseLike<PublishOk | RequestError> {
+export class PublishRequest implements PromiseLike<RequestOk | RequestError> {
   public readonly requestId: bigint
   public readonly message: Publish
-  private _resolve!: (value: PublishOk | RequestError | PromiseLike<PublishOk | RequestError>) => void
+  private _resolve!: (value: RequestOk | RequestError | PromiseLike<RequestOk | RequestError>) => void
   private _reject!: (reason?: any) => void
-  private promise: Promise<PublishOk | RequestError>
+  private promise: Promise<RequestOk | RequestError>
 
   constructor(msg: Publish) {
     this.requestId = msg.requestId
     this.message = msg
-    this.promise = new Promise<PublishOk | RequestError>((resolve, reject) => {
+    this.promise = new Promise<RequestOk | RequestError>((resolve, reject) => {
       this._resolve = resolve
       this._reject = reject
     })
     logger.debug('request/publish', `created requestId=${this.requestId} ftn="${msg.fullTrackName}"`)
   }
 
-  public resolve(value: PublishOk | RequestError | PromiseLike<PublishOk | RequestError>): void {
+  public resolve(value: RequestOk | RequestError | PromiseLike<RequestOk | RequestError>): void {
     if (value instanceof RequestError) {
       logger.error(
         'request/publish',
         `resolved with error requestId=${this.requestId} code=${value.errorCode} reason="${value.reasonPhrase.phrase}"`,
       )
-    } else if (value instanceof PublishOk) {
+    } else if (value instanceof RequestOk) {
       logger.debug('request/publish', `resolved with OK requestId=${this.requestId}`)
     }
     this._resolve(value)
@@ -51,8 +51,8 @@ export class PublishRequest implements PromiseLike<PublishOk | RequestError> {
     this._reject(reason)
   }
 
-  public then<TResult1 = PublishOk | RequestError, TResult2 = never>(
-    onfulfilled?: ((value: PublishOk | RequestError) => TResult1 | PromiseLike<TResult1>) | undefined | null,
+  public then<TResult1 = RequestOk | RequestError, TResult2 = never>(
+    onfulfilled?: ((value: RequestOk | RequestError) => TResult1 | PromiseLike<TResult1>) | undefined | null,
     onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | undefined | null,
   ): PromiseLike<TResult1 | TResult2> {
     return this.promise.then(onfulfilled, onrejected)
@@ -60,11 +60,11 @@ export class PublishRequest implements PromiseLike<PublishOk | RequestError> {
 
   public catch<TResult = never>(
     onrejected?: ((reason: any) => TResult | PromiseLike<TResult>) | undefined | null,
-  ): Promise<PublishOk | RequestError | TResult> {
+  ): Promise<RequestOk | RequestError | TResult> {
     return this.promise.catch(onrejected)
   }
 
-  public finally(onfinally?: (() => void) | undefined | null): Promise<PublishOk | RequestError> {
+  public finally(onfinally?: (() => void) | undefined | null): Promise<RequestOk | RequestError> {
     return this.promise.finally(onfinally)
   }
 }

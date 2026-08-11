@@ -83,21 +83,19 @@ if (import.meta.vitest) {
     test('should resolve with RequestOk on success', async () => {
       const announceMessage = {} as PublishNamespace
       const request = new PublishNamespaceRequest(123n, announceMessage)
-      const announceOkResponse = new RequestOk(123n)
+      const announceOkResponse = new RequestOk()
       setTimeout(() => request.resolve(announceOkResponse), 0)
       const result = await request
       expect(result).toBeInstanceOf(RequestOk)
-      expect(result.requestId).toBe(123n)
     })
 
     test('should resolve with RequestError on protocol error', async () => {
       const announceMessage = {} as PublishNamespace
       const request = new PublishNamespaceRequest(123n, announceMessage)
-      const announceError = new RequestError(123n, RequestErrorCode.InternalError, 0n, new ReasonPhrase('wololo'))
+      const announceError = new RequestError(RequestErrorCode.InternalError, 0n, new ReasonPhrase('wololo'))
       setTimeout(() => request.resolve(announceError), 0)
       const result = await request
       expect(result).toBeInstanceOf(RequestError)
-      expect(result.requestId).toBe(123n)
       if (result instanceof RequestError) {
         expect(result.errorCode).toBe(RequestErrorCode.InternalError)
       } else {
@@ -116,26 +114,19 @@ if (import.meta.vitest) {
     test('can be used with async/await for success', async () => {
       const announceMessage = {} as PublishNamespace
       const request = new PublishNamespaceRequest(456n, announceMessage)
-      const announceOkResponse = new RequestOk(456n)
+      const announceOkResponse = new RequestOk()
       setTimeout(() => request.resolve(announceOkResponse), 10)
       const result = await request
       expect(result).toBeInstanceOf(RequestOk)
-      expect(result.requestId).toBe(456n)
     })
 
     test('can be used with async/await for protocol error', async () => {
       const announceMessage = {} as PublishNamespace
       const request = new PublishNamespaceRequest(789n, announceMessage)
-      const announceError = new RequestError(
-        789n,
-        RequestErrorCode.MalformedAuthToken,
-        0n,
-        new ReasonPhrase('bad token'),
-      )
+      const announceError = new RequestError(RequestErrorCode.MalformedAuthToken, 0n, new ReasonPhrase('bad token'))
       setTimeout(() => request.resolve(announceError), 10)
       const result = await request
       expect(result).toBeInstanceOf(RequestError)
-      expect(result.requestId).toBe(789n)
       if (result instanceof RequestError) {
         expect(result.errorCode).toBe(RequestErrorCode.MalformedAuthToken)
       } else {
@@ -146,7 +137,7 @@ if (import.meta.vitest) {
     test('finally block is executed on resolve', async () => {
       const announceMessage = {} as PublishNamespace
       const request = new PublishNamespaceRequest(111n, announceMessage)
-      const announceOkResponse = new RequestOk(111n)
+      const announceOkResponse = new RequestOk()
       const finallyCallback = vi.fn()
       setTimeout(() => request.resolve(announceOkResponse), 0)
       await request.finally(finallyCallback)

@@ -24,6 +24,7 @@ use moqtail::model::control::publish_done::PublishDone;
 use moqtail::model::control::request_error::RequestError;
 use moqtail::model::control::request_ok::RequestOk;
 use moqtail::model::control::subscribe::Subscribe;
+use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::model::error::RequestErrorCode;
 use moqtail::model::error::StreamResetCode;
 use moqtail::model::error::TerminationCode;
@@ -121,7 +122,15 @@ async fn forward_subscribe_upstream(
             }
           }
           Ok(ControlMessage::RequestError(m)) => {
-            let _ = handle_subscribe_error_message(relay_request_id, *m, context.clone()).await;
+            let status = publish_done_status_for(m.error_code);
+            end_upstream_subscription(
+              relay_request_id,
+              &full_track_name,
+              *m,
+              status,
+              context.clone(),
+            )
+            .await;
             return;
           }
           Ok(ControlMessage::PublishDone(m)) => {
@@ -147,13 +156,38 @@ async fn forward_subscribe_upstream(
           }
           Ok(other) => {
             warn!("Unexpected {:?} on upstream subscribe stream", other.get_type());
-            let _ = handle_subscribe_error_message(relay_request_id, RequestError::new(RequestErrorCode::InternalError, 0, ReasonPhrase::try_new("Unexpected message on upstream subscription stream".to_string()).unwrap()), context.clone()).await;
+            let err = RequestError::new(
+              RequestErrorCode::InternalError,
+              0,
+              ReasonPhrase::try_new("Unexpected message on upstream subscription stream".to_string()).unwrap(),
+            );
+            // Nothing about the track changed; the pipeline misbehaved.
+            end_upstream_subscription(
+              relay_request_id,
+              &full_track_name,
+              err,
+              PublishDoneStatusCode::InternalError,
+              context.clone(),
+            )
+            .await;
             return;
           }
           Err(code) => {
             warn!("Upstream subscribe stream closed with error; resetting: {:?}", code);
-            // TODO: is this the right error code to send downstream?
-            let _ = handle_subscribe_error_message(relay_request_id, RequestError::new(RequestErrorCode::InternalError, 0, ReasonPhrase::try_new("Upstream subscription failed".to_string()).unwrap()), context.clone()).await;
+            let err = RequestError::new(
+              RequestErrorCode::InternalError,
+              0,
+              ReasonPhrase::try_new("Upstream subscription failed".to_string()).unwrap(),
+            );
+            // The upstream stream is gone, so the track is no longer being published.
+            end_upstream_subscription(
+              relay_request_id,
+              &full_track_name,
+              err,
+              PublishDoneStatusCode::TrackEnded,
+              context.clone(),
+            )
+            .await;
             return;
           }
         }
@@ -162,6 +196,62 @@ async fn forward_subscribe_upstream(
   }
 
   upstream.reset_and_stop(StreamResetCode::Cancelled.to_u64());
+}
+
+/// The PUBLISH_DONE status that carries an upstream REQUEST_ERROR downstream. Only a few
+/// of the two registries line up; the rest are a generic failure as far as a subscriber
+/// is concerned.
+fn publish_done_status_for(error_code: RequestErrorCode) -> PublishDoneStatusCode {
+  match error_code {
+    RequestErrorCode::Unauthorized => PublishDoneStatusCode::Unauthorized,
+    RequestErrorCode::GoingAway => PublishDoneStatusCode::GoingAway,
+    RequestErrorCode::MalformedTrack => PublishDoneStatusCode::MalformedTrack,
+    RequestErrorCode::ExcessiveLoad => PublishDoneStatusCode::ExcessiveLoad,
+    RequestErrorCode::DoesNotExist => PublishDoneStatusCode::TrackEnded,
+    _ => PublishDoneStatusCode::InternalError,
+  }
+}
+
+/// Ends every downstream subscription for a track whose upstream subscription failed.
+///
+/// Which message ends it depends on how far the downstream request got. One still
+/// waiting for its answer is answered with REQUEST_ERROR. One already accepted has had
+/// its single response, and only PUBLISH_DONE can end it — a second response on that
+/// stream would be a protocol violation.
+async fn end_upstream_subscription(
+  relay_request_id: u64,
+  full_track_name: &FullTrackName,
+  error: RequestError,
+  status_code: PublishDoneStatusCode,
+  context: Arc<SessionContext>,
+) {
+  let track = context.track_manager.get_track(full_track_name).await;
+  let confirmed = match &track {
+    Some(track) => matches!(
+      *track.read().await.status.read().await,
+      TrackStatus::Confirmed { .. }
+    ),
+    None => false,
+  };
+
+  if !confirmed {
+    let _ = handle_subscribe_error_message(relay_request_id, error, context).await;
+    return;
+  }
+
+  info!(
+    "Upstream subscription for {:?} failed after acceptance; ending downstream with PUBLISH_DONE",
+    full_track_name
+  );
+  if let Some(track) = track
+    && let Err(e) = track
+      .read()
+      .await
+      .notify_publish_done(status_code, error.reason_phrase.as_str().to_string())
+      .await
+  {
+    error!("Failed to end downstream subscriptions: {:?}", e);
+  }
 }
 
 async fn handle_subscribe_message(
@@ -1034,6 +1124,48 @@ pub async fn handle(
     _ => {
       // no-op
       Ok(())
+    }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn upstream_errors_map_to_a_publish_done_status() {
+    for (error, status) in [
+      (
+        RequestErrorCode::Unauthorized,
+        PublishDoneStatusCode::Unauthorized,
+      ),
+      (
+        RequestErrorCode::GoingAway,
+        PublishDoneStatusCode::GoingAway,
+      ),
+      (
+        RequestErrorCode::MalformedTrack,
+        PublishDoneStatusCode::MalformedTrack,
+      ),
+      (
+        RequestErrorCode::ExcessiveLoad,
+        PublishDoneStatusCode::ExcessiveLoad,
+      ),
+      (
+        RequestErrorCode::DoesNotExist,
+        PublishDoneStatusCode::TrackEnded,
+      ),
+      // No counterpart: a subscriber can only be told something went wrong.
+      (
+        RequestErrorCode::InvalidRange,
+        PublishDoneStatusCode::InternalError,
+      ),
+      (
+        RequestErrorCode::Timeout,
+        PublishDoneStatusCode::InternalError,
+      ),
+    ] {
+      assert_eq!(publish_done_status_for(error), status, "for {error:?}");
     }
   }
 }

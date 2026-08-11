@@ -26,8 +26,11 @@ use moqtail::model::parameter::message_parameter::{
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
+use tokio::sync::Notify;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc::UnboundedSender;
+use tokio::time::Instant;
 use tracing::{debug, info, warn};
 
 pub type NamespacePrefix = Tuple;
@@ -65,6 +68,9 @@ pub struct TrackManager {
   pub publishes: Arc<RwLock<HashMap<FullTrackName, HashMap<usize, Publish>>>>,
   /// Counter for generating stable relay_track_id values.
   next_relay_track_id: Arc<AtomicU64>,
+  /// Fires whenever a track alias is registered, so a data stream that arrived ahead of
+  /// the control message establishing its alias can wait instead of polling.
+  alias_registered: Arc<Notify>,
 }
 
 impl TrackManager {
@@ -72,6 +78,7 @@ impl TrackManager {
     TrackManager {
       tracks: Arc::new(RwLock::new(HashMap::new())),
       track_aliases: Arc::new(RwLock::new(HashMap::new())),
+      alias_registered: Arc::new(Notify::new()),
       namespace_subscribers: Arc::new(RwLock::new(HashMap::new())),
       announcements: Arc::new(RwLock::new(HashMap::new())),
       publishes: Arc::new(RwLock::new(HashMap::new())),
@@ -282,12 +289,44 @@ impl TrackManager {
     track_alias: u64,
     full_track_name: FullTrackName,
   ) {
-    let mut track_aliases = self.track_aliases.write().await;
-    track_aliases.insert((connection_id, track_alias), full_track_name.clone());
+    {
+      let mut track_aliases = self.track_aliases.write().await;
+      track_aliases.insert((connection_id, track_alias), full_track_name.clone());
+    }
+    self.alias_registered.notify_waiters();
     info!(
       "Registered track alias {}@{} -> {:?}",
       track_alias, connection_id, full_track_name
     );
+  }
+
+  /// Resolves an alias to its track, waiting up to `timeout` for the control message
+  /// that establishes it. Data streams can outrun that message, which the specification
+  /// anticipates: a receiver may buffer briefly before abandoning the stream.
+  pub async fn resolve_track_by_alias(
+    &self,
+    connection_id: usize,
+    track_alias: u64,
+    timeout: Duration,
+  ) -> Option<Arc<RwLock<Track>>> {
+    let deadline = Instant::now() + timeout;
+    loop {
+      // Subscribe before looking, so a registration between the two is not missed.
+      let registered = self.alias_registered.notified();
+
+      let full_track_name = {
+        let aliases = self.track_aliases.read().await;
+        aliases.get(&(connection_id, track_alias)).cloned()
+      };
+      if let Some(full_track_name) = full_track_name {
+        return self.get_track(&full_track_name).await;
+      }
+
+      let remaining = deadline.saturating_duration_since(Instant::now());
+      if remaining.is_zero() || tokio::time::timeout(remaining, registered).await.is_err() {
+        return None;
+      }
+    }
   }
 
   pub async fn add_namespace_subscriber(

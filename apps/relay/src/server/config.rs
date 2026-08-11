@@ -110,6 +110,10 @@ pub struct Cli {
   /// Timeout in seconds for upstream fetch responses
   #[arg(long, default_value_t = 10)]
   pub upstream_fetch_timeout_secs: u64,
+  /// How long a data stream waits for the control message that establishes its track
+  /// alias before the stream is abandoned
+  #[arg(long, default_value_t = 500)]
+  pub track_alias_resolution_timeout_ms: u64,
 }
 #[derive(Debug, Clone)]
 pub struct AppConfig {
@@ -136,6 +140,9 @@ pub struct AppConfig {
   pub redirect_uri: Option<String>,
   pub max_upstream_fetch_gaps: u64,
   pub upstream_fetch_timeout: Duration,
+  /// A data stream can arrive before the control message that establishes its track
+  /// alias. The stream waits this long for it, then is abandoned.
+  pub track_alias_resolution_timeout: Duration,
 }
 
 impl AppConfig {
@@ -165,6 +172,9 @@ impl AppConfig {
         redirect_uri: cli.redirect_uri,
         max_upstream_fetch_gaps: cli.max_upstream_fetch_gaps,
         upstream_fetch_timeout: Duration::from_secs(cli.upstream_fetch_timeout_secs),
+        track_alias_resolution_timeout: Duration::from_millis(
+          cli.track_alias_resolution_timeout_ms,
+        ),
       }
     })
   }
@@ -285,6 +295,7 @@ mod tests {
       redirect_uri: None,
       max_upstream_fetch_gaps: 10,
       upstream_fetch_timeout: Duration::from_secs(10),
+      track_alias_resolution_timeout: Duration::from_millis(500),
     }
   }
 

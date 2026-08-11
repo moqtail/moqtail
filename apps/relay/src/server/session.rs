@@ -884,51 +884,27 @@ impl Session {
               }
             }
 
-            // The track might have not been added yet, wait for it for a few attempts
-            let mut attempt_count = 5;
-            let attempt_interval_ms = 100;
+            // A data stream can outrun the control message that establishes its alias,
+            // so wait briefly for it. An alias that never arrives is not a session
+            // error: the stream is abandoned and the session carries on.
             debug!("looking for track with alias: {:?}", track_alias);
-            loop {
-              if attempt_count == 0 {
-                error!("track not found after multiple attempts: {:?}", track_alias);
-                return Err(anyhow::Error::msg(TerminationCode::InternalError.to_json()));
-              }
-              let full_track_name_opt = context
-                .track_manager
-                .track_aliases
-                .read()
-                .await
-                .get(&(client.connection_id, track_alias))
-                .cloned();
-
-              if full_track_name_opt.is_none() {
-                attempt_count -= 1;
-                tokio::time::sleep(std::time::Duration::from_millis(attempt_interval_ms)).await;
-                continue;
-              }
-
-              current_track = if let Some(full_track_name) = full_track_name_opt {
-                if let Some(t) = context.track_manager.get_track(&full_track_name).await {
-                  debug!("track found: {:?}", track_alias);
-                  Some(t)
-                } else {
-                  error!(
-                    "track not found: {:?} full track name: {:?}",
-                    track_alias, &full_track_name
-                  );
-                  return Err(anyhow::Error::msg(TerminationCode::InternalError.to_json()));
-                }
-              } else {
-                None
-              };
-              break;
-            }
+            current_track = context
+              .track_manager
+              .resolve_track_by_alias(
+                client.connection_id,
+                track_alias,
+                context.server_config.track_alias_resolution_timeout,
+              )
+              .await;
 
             let relay_track_id = match current_track.as_ref() {
               Some(t) => t.read().await.relay_track_id,
               None => {
-                error!("track not found when building stream_id: {:?}", track_alias);
-                return Err(anyhow::Error::msg(TerminationCode::InternalError.to_json()));
+                warn!(
+                  "Abandoning data stream for unresolved track alias {} after {:?}",
+                  track_alias, context.server_config.track_alias_resolution_timeout
+                );
+                return Ok(());
               }
             };
             stream_id = Some(utils::build_stream_id(relay_track_id, &header_info));

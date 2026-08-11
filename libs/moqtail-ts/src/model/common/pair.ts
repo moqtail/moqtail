@@ -159,6 +159,17 @@ export class KeyValuePair {
         `previous type ${prevType} plus delta type ${deltaType} exceeds 2^64 - 1`,
       )
     }
+    return KeyValuePair.deserializeValue(buf, typeValue)
+  }
+
+  /**
+   * Reads a value whose Type has already been decoded, applying the parity
+   * rule. Callers in a type namespace where a Type uses a different encoding
+   * read that value themselves and do not call this.
+   * @param buf - The buffer to read from.
+   * @param typeValue - The already-decoded Type.
+   */
+  static deserializeValue(buf: BaseByteBuffer, typeValue: bigint): KeyValuePair {
     if (typeValue % 2n === 0n) {
       const value = buf.getVI()
       return new KeyValuePair(typeValue, value)

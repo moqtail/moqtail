@@ -15,11 +15,16 @@
  */
 
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
-import { deserializeKvpList, serializeKvpList } from '../common/pair'
+
 import { Location } from '../common/location'
 import { LengthExceedsMaxError } from '../error/error'
 import { ControlMessageType, FilterType, GroupOrder } from './constant'
-import { MessageParameter, MessageParameters } from '../parameter/message_parameter'
+import {
+  MessageParameter,
+  MessageParameters,
+  deserializeMessageParameterKvps,
+  serializeMessageParameterKvps,
+} from '../parameter/message_parameter'
 import { Forward } from '../parameter/message/forward'
 import { SubscriberPriority } from '../parameter/message/subscriber_priority'
 import { GroupOrderParam } from '../parameter/message/group_order_param'
@@ -43,7 +48,7 @@ export class PublishOk {
     payload.putVI(this.requestId)
 
     payload.putVI(this.parameters.length)
-    payload.putBytes(serializeKvpList(this.parameters.map((p) => p.toKeyValuePair())).toUint8Array())
+    payload.putBytes(serializeMessageParameterKvps(this.parameters.map((p) => p.toKeyValuePair())).toUint8Array())
 
     const payloadBytes = payload.toUint8Array()
     if (payloadBytes.length > 0xffff) {
@@ -57,7 +62,7 @@ export class PublishOk {
   static parsePayload(buf: BaseByteBuffer): PublishOk {
     const requestId = buf.getVI()
     const paramCount = buf.getVI()
-    const kvps = deserializeKvpList(buf, paramCount)
+    const kvps = deserializeMessageParameterKvps(buf, paramCount)
     const parameters = MessageParameters.fromKeyValuePairs(kvps)
 
     return new PublishOk(requestId, parameters)

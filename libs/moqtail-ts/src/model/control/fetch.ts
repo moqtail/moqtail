@@ -19,9 +19,13 @@ import { Location } from '../common/location'
 import { ControlMessageType, FetchType } from './constant'
 import { LengthExceedsMaxError } from '../error/error'
 import { FullTrackName } from '../data'
-import { MessageParameter, MessageParameters } from '../parameter/message_parameter'
+import {
+  MessageParameter,
+  MessageParameters,
+  deserializeMessageParameterKvps,
+  serializeMessageParameterKvps,
+} from '../parameter/message_parameter'
 import { SubscriberPriority } from '../parameter/message/subscriber_priority'
-import { deserializeKvpList, serializeKvpList } from '../common/pair'
 
 export class Fetch {
   constructor(
@@ -67,7 +71,7 @@ export class Fetch {
       }
     }
     payload.putVI(this.parameters.length)
-    payload.putBytes(serializeKvpList(this.parameters.map((p) => p.toKeyValuePair())).toUint8Array())
+    payload.putBytes(serializeMessageParameterKvps(this.parameters.map((p) => p.toKeyValuePair())).toUint8Array())
     const payloadBytes = payload.toUint8Array()
     if (payloadBytes.length > 0xffff) {
       throw new LengthExceedsMaxError('Fetch::serialize(payload_length)', 0xffff, payloadBytes.length)
@@ -110,7 +114,7 @@ export class Fetch {
     }
 
     const paramCount = buf.getNumberVI()
-    const rawParams = deserializeKvpList(buf, paramCount)
+    const rawParams = deserializeMessageParameterKvps(buf, paramCount)
     const parameters = MessageParameters.fromKeyValuePairs(rawParams)
 
     return new Fetch(requestId, props, parameters)

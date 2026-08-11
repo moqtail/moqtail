@@ -17,10 +17,14 @@
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
 import { Location } from '../common/location'
 import { Tuple } from '../common/tuple'
-import { deserializeKvpList, serializeKvpList } from '../common/pair'
+
 import { ControlMessageType, FilterType, GroupOrder } from '../control/constant'
 import { FullTrackName } from '../data'
-import { MessageParameter } from '../parameter/message_parameter'
+import {
+  MessageParameter,
+  deserializeMessageParameterKvps,
+  serializeMessageParameterKvps,
+} from '../parameter/message_parameter'
 import { SubscriptionFilter } from '../parameter/message/subscription_filter'
 import { Forward } from '../parameter/message/forward'
 import { GroupOrderParam } from '../parameter/message/group_order_param'
@@ -81,7 +85,7 @@ export class Subscribe {
     payload.putBytes(this.fullTrackName.serialize().toUint8Array())
 
     payload.putVI(this.parameters.length)
-    payload.putBytes(serializeKvpList(this.parameters.map((p) => p.toKeyValuePair())).toUint8Array())
+    payload.putBytes(serializeMessageParameterKvps(this.parameters.map((p) => p.toKeyValuePair())).toUint8Array())
 
     const payloadBytes = payload.toUint8Array()
     buf.putU16(payloadBytes.length)
@@ -96,7 +100,7 @@ export class Subscribe {
 
     const paramCount = Number(buf.getVI())
     const parameters: MessageParameter[] = []
-    for (const kvp of deserializeKvpList(buf, paramCount)) {
+    for (const kvp of deserializeMessageParameterKvps(buf, paramCount)) {
       const param = MessageParameter.fromKeyValuePair(kvp)
       if (param !== undefined) parameters.push(param)
     }

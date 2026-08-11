@@ -18,11 +18,15 @@ import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buf
 import { LengthExceedsMaxError } from '../error/error'
 import { ControlMessageType } from './constant'
 import { FullTrackName } from '../data'
-import { MessageParameter, MessageParameters } from '../parameter/message_parameter'
+import {
+  MessageParameter,
+  MessageParameters,
+  deserializeMessageParameterKvps,
+  serializeMessageParameterKvps,
+} from '../parameter/message_parameter'
 import { TrackExtension, DeliveryTimeoutExtension } from '../extension_header/track_extension'
 import { DeliveryTimeout } from '../parameter/message/delivery_timeout'
 import { Forward } from '../parameter/message/forward'
-import { deserializeKvpList, serializeKvpList } from '../common/pair'
 
 export class Publish {
   constructor(
@@ -45,7 +49,7 @@ export class Publish {
     payload.putBytes(this.fullTrackName.serialize().toUint8Array())
     payload.putVI(this.trackAlias)
     payload.putVI(this.parameters.length)
-    payload.putBytes(serializeKvpList(this.parameters.map((p) => p.toKeyValuePair())).toUint8Array())
+    payload.putBytes(serializeMessageParameterKvps(this.parameters.map((p) => p.toKeyValuePair())).toUint8Array())
     TrackExtension.serializeInto(this.trackExtensions, payload)
     const payloadBytes = payload.toUint8Array()
     if (payloadBytes.length > 0xffff) {
@@ -61,7 +65,7 @@ export class Publish {
     const fullTrackName = buf.getFullTrackName()
     const trackAlias = buf.getVI()
     const paramCount = buf.getNumberVI()
-    const rawParams = deserializeKvpList(buf, paramCount)
+    const rawParams = deserializeMessageParameterKvps(buf, paramCount)
     const parameters = MessageParameters.fromKeyValuePairs(rawParams)
     const trackExtensions = TrackExtension.deserializeAll(buf)
     return new Publish(requestId, fullTrackName, trackAlias, parameters, trackExtensions)

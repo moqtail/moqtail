@@ -198,6 +198,12 @@ impl MOQTClient {
     announced_track_namespaces.push(track_namespace);
   }
 
+  /// Leaving a withdrawn namespace here would keep routing subscriptions to this client.
+  pub(crate) async fn remove_announced_track_namespace(&self, track_namespace: &Tuple) {
+    let mut announced_track_namespaces = self.announced_track_namespaces.write().await;
+    announced_track_namespaces.retain(|ns| ns != track_namespace);
+  }
+
   pub(crate) async fn add_subscriber(&self, subscriber_id: usize) {
     let mut subscribers = self.subscribers.write().await;
     subscribers.push(subscriber_id);

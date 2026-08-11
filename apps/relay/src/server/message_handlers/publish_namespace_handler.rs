@@ -17,7 +17,9 @@ use crate::server::session_context::{PendingRequest, SessionContext};
 use crate::server::track_manager::SubscribeKind;
 use core::result::Result;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
+use moqtail::model::common::tuple::Tuple;
 use moqtail::model::control::namespace::Namespace;
+use moqtail::model::control::namespace_done::NamespaceDone;
 use moqtail::model::control::request_error::RequestError;
 use moqtail::model::control::{control_message::ControlMessage, request_ok::RequestOk};
 use moqtail::model::error::{RequestErrorCode, StreamResetCode, TerminationCode};
@@ -25,6 +27,69 @@ use moqtail::model::parameter::message_parameter::apply_message_parameter_update
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
 use tracing::{info, warn};
+
+/// Sends one message per matching discovery subscriber, naming the namespace by the
+/// suffix that subscriber's own prefix leaves. The announcer is skipped so it is never
+/// told about its own namespace.
+pub(crate) async fn announce_to_namespace_subscribers(
+  context: &Arc<SessionContext>,
+  namespace: &Tuple,
+  announcer_connection_id: usize,
+  message_for: impl Fn(Tuple) -> ControlMessage,
+) {
+  let subs_map = context.track_manager.namespace_subscribers.read().await;
+  for (prefix, subscribers) in subs_map.iter() {
+    if !namespace.starts_with(prefix) {
+      continue;
+    }
+    let Some(suffix) = namespace.suffix(prefix) else {
+      continue;
+    };
+    for (sub, kind, _params, namespace_tx) in subscribers {
+      if *kind != SubscribeKind::Namespace || sub.connection_id == announcer_connection_id {
+        continue;
+      }
+      info!(
+        "Forwarding namespace suffix {:?} to subscriber {}",
+        suffix, sub.connection_id
+      );
+      let _ = namespace_tx.send(message_for(suffix.clone()));
+    }
+  }
+}
+
+/// A namespace is announced for as long as its request stream is open, so closing that
+/// stream withdraws it. Everything that named the publisher for this namespace is
+/// dropped, and the subscribers that heard the announcement are told it is over.
+pub async fn cancel(client: Arc<MOQTClient>, request_id: u64, context: &Arc<SessionContext>) {
+  let namespace = {
+    let mut map = client.inbound_requests.write().await;
+    match map.remove(&request_id) {
+      Some(PendingRequest::PublishNamespace { message, .. }) => Some(message.track_namespace),
+      _ => None,
+    }
+  };
+  let Some(namespace) = namespace else {
+    return;
+  };
+
+  client.remove_announced_track_namespace(&namespace).await;
+
+  // A publisher whose announcement was already replaced by another's has nothing to
+  // withdraw, and must not send a NAMESPACE_DONE for a namespace that is still served.
+  if !context
+    .track_manager
+    .remove_announcement(&namespace, client.connection_id)
+    .await
+  {
+    return;
+  }
+
+  announce_to_namespace_subscribers(context, &namespace, client.connection_id, |s| {
+    ControlMessage::NamespaceDone(Box::new(NamespaceDone::new(s)))
+  })
+  .await;
+}
 
 pub async fn handle(
   client: Arc<MOQTClient>,
@@ -64,7 +129,8 @@ pub async fn handle(
         .add_announcement(m.track_namespace.clone(), client.clone(), (*m).clone())
         .await;
 
-      // Track in inbound_requests so a REQUEST_UPDATE on this request's stream can find it
+      // Track in inbound_requests so a REQUEST_UPDATE on this request's stream can find it,
+      // and so closing that stream can find the namespace to withdraw.
       {
         let mut map = client.inbound_requests.write().await;
         map.insert(
@@ -76,35 +142,11 @@ pub async fn handle(
           },
         );
       }
-      // TODO: Remove this request_id when a PUBLISH_NAMESPACE_DONE is received for this namespace.
 
-      // Forward the announcement to namespace subscribers via their bi-stream channels
-      {
-        let subs_map = context.track_manager.namespace_subscribers.read().await;
-        for (prefix, subscribers) in subs_map.iter() {
-          if m.track_namespace.starts_with(prefix) {
-            for (sub, kind, _params, namespace_tx) in subscribers {
-              // NAMESPACE advertisements go to discovery (SUBSCRIBE_NAMESPACE) subscribers.
-              if *kind != SubscribeKind::Namespace {
-                continue;
-              }
-              // Don't echo back to announcer
-              if sub.connection_id == client.connection_id {
-                continue;
-              }
-
-              if let Some(suffix) = m.track_namespace.suffix(prefix) {
-                info!(
-                  "Forwarding NAMESPACE suffix {:?} to subscriber {}",
-                  suffix, sub.connection_id
-                );
-                let ns_msg = ControlMessage::Namespace(Box::new(Namespace::new(suffix)));
-                let _ = namespace_tx.send(ns_msg);
-              }
-            }
-          }
-        }
-      }
+      announce_to_namespace_subscribers(&context, &m.track_namespace, client.connection_id, |s| {
+        ControlMessage::Namespace(Box::new(Namespace::new(s)))
+      })
+      .await;
 
       let request_ok = Box::new(RequestOk::new(vec![]));
 

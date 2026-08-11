@@ -662,7 +662,6 @@ mod tests {
     let (mut plane, mut server_send) = setup.create_control_plane().await?;
 
     let done = PublishDone::new(
-      42,
       PublishDoneStatusCode::TrackEnded,
       3,
       ReasonPhrase::try_new("bye".to_string()).unwrap(),

@@ -20,12 +20,17 @@ import { RequestStreamMessageHandler } from './handler'
 import { SubscribeRequest } from '../request/subscribe'
 import { logger } from '../../util/logger'
 
-export const handlerPublishDone: RequestStreamMessageHandler<PublishDone> = async (client, msg) => {
+export const handlerPublishDone: RequestStreamMessageHandler<PublishDone> = async (
+  client,
+  msg,
+  _stream,
+  openingRequestId,
+) => {
   if (client.onPeerPublishDone) {
     client.onPeerPublishDone(msg)
   }
   //TODO: Check for all kinds of subscriptions, not jus tthe ones initiated with subscribe messages
-  const request = client.requests.get(msg.requestId)
+  const request = client.requests.get(openingRequestId)
   if (request instanceof SubscribeRequest) {
     request.expectedStreams = msg.streamCount
   } else {

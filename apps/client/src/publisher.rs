@@ -269,12 +269,7 @@ async fn send_publish_done(
   stream_count: u64,
 ) {
   let reason = ReasonPhrase::try_new("done".to_string()).expect("reason within length limit");
-  let done = PublishDone::new(
-    request_id,
-    PublishDoneStatusCode::TrackEnded,
-    stream_count,
-    reason,
-  );
+  let done = PublishDone::new(PublishDoneStatusCode::TrackEnded, stream_count, reason);
   if let Err(e) = request_stream
     .send(&ControlMessage::PublishDone(Box::new(done)))
     .await

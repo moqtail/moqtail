@@ -756,7 +756,6 @@ pub async fn handle_request_update(
         None => 0,
       };
       let done = PublishDone::new(
-        existing_req_id,
         PublishDoneStatusCode::UpdateFailed,
         stream_count,
         ReasonPhrase::try_new("REQUEST_UPDATE failed".to_string()).unwrap(),

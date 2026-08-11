@@ -1398,7 +1398,6 @@ impl Subscription {
       .map_err(|e| anyhow::anyhow!("Failed to create reason phrase: {:?}", e))?;
 
     let publish_done = PublishDone::new(
-      self.request_id,
       status_code,
       self.opened_stream_count.load(Ordering::Relaxed),
       reason_phrase,

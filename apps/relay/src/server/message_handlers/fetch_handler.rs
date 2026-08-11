@@ -868,9 +868,9 @@ async fn send_upstream_fetch_for_range(
     return None;
   }
 
-  // Draft-18 10.12: the response can come at any time relative to object delivery, so
-  // it is read on a task. Holding the handler keeps the request stream open for the
-  // fetch's lifetime — dropping it would reach the publisher as a cancellation.
+  // The response can come at any time relative to object delivery, so it is read on a
+  // task. Holding the handler keeps the request stream open for the fetch's lifetime —
+  // dropping it would reach the publisher as a cancellation.
   let response_tx = upstream_tx;
   tokio::spawn(async move {
     match upstream.next_message().await {

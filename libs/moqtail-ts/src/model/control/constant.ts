@@ -316,9 +316,10 @@ export enum PublishDoneStatusCode {
   TrackEnded = 0x2,
   SubscriptionEnded = 0x3,
   GoingAway = 0x4,
-  Expired = 0x5,
-  TooFarBehind = 0x6,
+  TooFarBehind = 0x5,
+  Expired = 0x6,
   UpdateFailed = 0x8,
+  ExcessiveLoad = 0x9,
   MalformedTrack = 0x12,
 }
 
@@ -342,11 +343,13 @@ export namespace PublishDoneStatusCode {
       case 0x4n:
         return PublishDoneStatusCode.GoingAway
       case 0x5n:
-        return PublishDoneStatusCode.Expired
-      case 0x6n:
         return PublishDoneStatusCode.TooFarBehind
+      case 0x6n:
+        return PublishDoneStatusCode.Expired
       case 0x8n:
         return PublishDoneStatusCode.UpdateFailed
+      case 0x9n:
+        return PublishDoneStatusCode.ExcessiveLoad
       case 0x12n:
         return PublishDoneStatusCode.MalformedTrack
       default:
@@ -441,6 +444,17 @@ if (import.meta.vitest) {
       assertRegistry(requestErrorCodes(), pascalIdent(), (codepoint) => {
         try {
           return RequestErrorCode[Number(RequestErrorCode.tryFrom(codepoint))]
+        } catch {
+          return undefined
+        }
+      })
+    })
+
+    test('PublishDoneStatusCode matches publish_done_codes.json', async () => {
+      const { publishDoneCodes, assertRegistry, pascalIdent } = await fixture()
+      assertRegistry(publishDoneCodes(), pascalIdent(), (codepoint) => {
+        try {
+          return PublishDoneStatusCode[Number(PublishDoneStatusCode.tryFrom(codepoint))]
         } catch {
           return undefined
         }

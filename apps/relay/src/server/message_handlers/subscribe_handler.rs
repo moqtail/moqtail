@@ -38,6 +38,7 @@ use moqtail::model::{
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use moqtail::transport::data_stream_handler::SubscribeRequest;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use tokio::sync::oneshot;
 use tracing::{debug, error, info, warn};
 
@@ -94,8 +95,23 @@ async fn forward_subscribe_upstream(
   // resets this upstream stream and the publisher observes CANCELLED.
   let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
   if let Some(track) = context.track_manager.get_track(&full_track_name).await {
-    *track.read().await.upstream_cancel.lock().await = Some(cancel_tx);
+    track
+      .read()
+      .await
+      .upstream_subscribe_cancellers
+      .lock()
+      .await
+      .push(cancel_tx);
   }
+
+  // A publisher owes exactly one SUBSCRIBE_OK or REQUEST_ERROR. One that stays
+  // connected and sends neither would otherwise hold the subscriber's request stream
+  // open forever, and — where several publishers were asked — keep the others' answers
+  // from ever being acted on. The deadline only covers that first response; once it
+  // arrives the stream lives as long as the subscription does.
+  let answer_deadline = tokio::time::sleep(context.server_config.upstream_subscribe_timeout);
+  tokio::pin!(answer_deadline);
+  let mut answered = false;
 
   loop {
     tokio::select! {
@@ -110,7 +126,29 @@ async fn forward_subscribe_upstream(
         // (InternalError) emitted when the handler is dropped.
         break;
       }
+      _ = &mut answer_deadline, if !answered => {
+        warn!(
+          "Publisher {} did not answer the SUBSCRIBE for {:?} in time; treating it as declined",
+          publisher.connection_id, full_track_name
+        );
+        let err = RequestError::new(
+          RequestErrorCode::Timeout,
+          0,
+          ReasonPhrase::try_new("Publisher did not answer the subscribe".to_string()).unwrap(),
+        );
+        end_upstream_subscription(
+          relay_request_id,
+          publisher.connection_id,
+          &full_track_name,
+          err,
+          PublishDoneStatusCode::InternalError,
+          context.clone(),
+        )
+        .await;
+        break;
+      }
       msg = upstream.next_message() => {
+        answered = true;
         match msg {
           Ok(ControlMessage::SubscribeOk(m)) => {
             if let Err(e) =
@@ -125,6 +163,7 @@ async fn forward_subscribe_upstream(
             let status = publish_done_status_for(m.error_code);
             end_upstream_subscription(
               relay_request_id,
+              publisher.connection_id,
               &full_track_name,
               *m,
               status,
@@ -164,6 +203,7 @@ async fn forward_subscribe_upstream(
             // Nothing about the track changed; the pipeline misbehaved.
             end_upstream_subscription(
               relay_request_id,
+              publisher.connection_id,
               &full_track_name,
               err,
               PublishDoneStatusCode::InternalError,
@@ -182,6 +222,7 @@ async fn forward_subscribe_upstream(
             // The upstream stream is gone, so the track is no longer being published.
             end_upstream_subscription(
               relay_request_id,
+              publisher.connection_id,
               &full_track_name,
               err,
               PublishDoneStatusCode::TrackEnded,
@@ -220,35 +261,81 @@ fn publish_done_status_for(error_code: RequestErrorCode) -> PublishDoneStatusCod
 /// stream would be a protocol violation.
 async fn end_upstream_subscription(
   relay_request_id: u64,
+  publisher_connection_id: usize,
   full_track_name: &FullTrackName,
   error: RequestError,
   status_code: PublishDoneStatusCode,
   context: Arc<SessionContext>,
 ) {
   let track = context.track_manager.get_track(full_track_name).await;
-  let confirmed = match &track {
-    Some(track) => matches!(
-      *track.read().await.status.read().await,
-      TrackStatus::Confirmed { .. }
-    ),
-    None => false,
+  let (confirmed, others_may_still_accept) = match &track {
+    Some(track) => {
+      let track = track.read().await;
+      let confirmed = matches!(*track.status.read().await, TrackStatus::Confirmed { .. });
+      // This publisher has answered; whatever remains counted has not.
+      let remaining = track
+        .pending_upstream_subscribe_count
+        .fetch_sub(1, Ordering::SeqCst)
+        .saturating_sub(1);
+      (confirmed, remaining > 0)
+    }
+    None => (false, false),
   };
 
   if !confirmed {
+    // `handle_subscribe_error_message` marks the whole track Rejected and answers the
+    // subscriber's request stream, ending the subscription for everyone. One publisher
+    // declining is not grounds for that while others may still accept, and the stream
+    // takes exactly one response either way. Every publisher answers or times out, so
+    // the last one to do so reaches this with nothing outstanding and decides.
+    if others_may_still_accept {
+      info!(
+        "A publisher declined {:?}; others have yet to answer, so the subscriber waits",
+        full_track_name
+      );
+      // Nothing will answer this request now, and it is the relay's own bookkeeping.
+      context
+        .relay_pending_requests
+        .write()
+        .await
+        .remove(&relay_request_id);
+      return;
+    }
     let _ = handle_subscribe_error_message(relay_request_id, error, context).await;
     return;
   }
 
+  // The track was already accepted, so this publisher's failure ends its own upstream
+  // subscription rather than the request. Only when it was the last publisher serving
+  // the track is there nothing left to deliver, and the subscribers are told it is
+  // over; while another still serves it they carry on and must not hear PUBLISH_DONE.
+  let Some(track) = track else {
+    return;
+  };
+  let still_served = {
+    let track = track.read().await;
+    let mut aliases = track.publisher_aliases.write().await;
+    aliases.remove(&publisher_connection_id);
+    !aliases.is_empty()
+  };
+
+  if still_served {
+    info!(
+      "Upstream subscription for {:?} from publisher {} failed; other publishers still serve it",
+      full_track_name, publisher_connection_id
+    );
+    return;
+  }
+
   info!(
-    "Upstream subscription for {:?} failed after acceptance; ending downstream with PUBLISH_DONE",
+    "Last upstream subscription for {:?} failed after acceptance; ending downstream with PUBLISH_DONE",
     full_track_name
   );
-  if let Some(track) = track
-    && let Err(e) = track
-      .read()
-      .await
-      .notify_publish_done(status_code, error.reason_phrase.as_str().to_string())
-      .await
+  if let Err(e) = track
+    .read()
+    .await
+    .notify_publish_done(status_code, error.reason_phrase.as_str().to_string())
+    .await
   {
     error!("Failed to end downstream subscriptions: {:?}", e);
   }
@@ -279,39 +366,15 @@ async fn handle_subscribe_message(
     return Ok(());
   }
 
-  // find who is the publisher
-  // first we try with the full track name
-  // if not found, we try with the announced track namespace
-  // in both cases, the first publisher that satisfies the condition is returned
-  // TODO: support multiple publishers
-  let publisher = {
-    debug!("trying to get the publisher");
+  // Every publisher of the exact Track, plus every publisher that announced a namespace
+  // it falls under. A SUBSCRIBE goes to all of them, not to whichever matched first.
+  let publishers = {
+    debug!("trying to get the publishers");
     let m = context.client_manager.read().await;
-    debug!(
-      "client manager obtained, current client id: {}",
-      context.connection_id
-    );
-    match m.get_publisher_by_full_track_name(&full_track_name).await {
-      Some(p) => Some(p),
-      None => {
-        info!(
-          "no publisher found for full track name: {:?}",
-          &full_track_name
-        );
-        let m = context.client_manager.read().await;
-        debug!(
-          "client manager obtained, current client id: {}",
-          context.connection_id
-        );
-        m.get_publisher_by_announced_track_namespace(&track_namespace)
-          .await
-      }
-    }
+    m.get_publishers_for_track(&full_track_name).await
   };
 
-  let publisher = if let Some(publisher) = publisher {
-    publisher.clone()
-  } else {
+  if publishers.is_empty() {
     info!(
       "no publisher found for track namespace: {:?}",
       track_namespace
@@ -339,11 +402,15 @@ async fn handle_subscribe_message(
     return Ok(());
   };
 
-  publisher.add_subscriber(context.connection_id).await;
+  for publisher in &publishers {
+    publisher.add_subscriber(context.connection_id).await;
+  }
 
   info!(
-    "Subscriber ({}) added to the publisher ({})",
-    context.connection_id, publisher.connection_id
+    "Subscriber ({}) added to {} publisher(s) for {:?}",
+    context.connection_id,
+    publishers.len(),
+    full_track_name
   );
 
   let original_request_id = sub.request_id;
@@ -389,36 +456,48 @@ async fn handle_subscribe_message(
       &full_track_name
     );
 
-    let mut new_sub = sub.clone();
-    new_sub.subscribe_parameters = parameters::upstream_subscribe();
-    new_sub.request_id =
-      Session::get_next_relay_request_id(context.relay_next_request_id.clone()).await;
-
-    // Store the relay subscribe request mapping before forwarding, so the
-    // upstream response can be routed back to this subscription.
-    // TODO: we need to add a timeout here or another loop to control expired requests
-    let req = SubscribeRequest::new(
-      original_request_id,
-      context.connection_id,
-      sub.clone(),
-      Some(new_sub.clone()),
-    );
+    // Counted before any request goes out, since a publisher can answer while the rest
+    // are still being sent.
     {
-      let mut requests = context.relay_pending_requests.write().await;
-      requests.insert(new_sub.request_id, PendingRequest::Subscribe(req.clone()));
+      let track = track_arc.read().await;
+      track
+        .pending_upstream_subscribe_count
+        .store(publishers.len(), Ordering::SeqCst);
     }
-    info!(
-      "inserted request into relay's pending requests: {:?} with relay's request id: {:?}",
-      req, new_sub.request_id
-    );
 
-    // Forward SUBSCRIBE upstream on its own bidirectional request stream and read
-    // the response there, per the request-stream model.
-    let publisher_fwd = publisher.clone();
-    let context_fwd = context.clone();
-    tokio::spawn(async move {
-      forward_subscribe_upstream(publisher_fwd, new_sub, context_fwd).await;
-    });
+    for publisher in &publishers {
+      let mut new_sub = sub.clone();
+      new_sub.subscribe_parameters = parameters::upstream_subscribe();
+      // Its own request id, which is what routes this publisher's response back.
+      new_sub.request_id =
+        Session::get_next_relay_request_id(context.relay_next_request_id.clone()).await;
+
+      // Store the relay subscribe request mapping before forwarding, so the
+      // upstream response can be routed back to this subscription.
+      // TODO: we need to add a timeout here or another loop to control expired requests
+      let req = SubscribeRequest::new(
+        original_request_id,
+        context.connection_id,
+        sub.clone(),
+        Some(new_sub.clone()),
+      );
+      {
+        let mut requests = context.relay_pending_requests.write().await;
+        requests.insert(new_sub.request_id, PendingRequest::Subscribe(req.clone()));
+      }
+      info!(
+        "forwarding SUBSCRIBE for {:?} to publisher {} as relay request {}",
+        full_track_name, publisher.connection_id, new_sub.request_id
+      );
+
+      // Forward SUBSCRIBE upstream on its own bidirectional request stream and read
+      // the response there, per the request-stream model.
+      let publisher_fwd = publisher.clone();
+      let context_fwd = context.clone();
+      tokio::spawn(async move {
+        forward_subscribe_upstream(publisher_fwd, new_sub, context_fwd).await;
+      });
+    }
 
     // Do NOT send SubscribeOk yet -- wait for publisher confirmation
     Ok(())
@@ -561,9 +640,9 @@ async fn handle_subscribe_ok_message(
   };
 
   // Confirm the track with publisher's metadata; capture relay_track_id for SubscribeOk messages
-  let relay_track_id = {
+  let (relay_track_id, confirmed_now) = {
     let mut track = track_arc.write().await;
-    track
+    let confirmed_now = track
       .confirm(
         publisher.connection_id,
         msg.track_alias,
@@ -571,10 +650,16 @@ async fn handle_subscribe_ok_message(
         msg.track_properties.clone(),
       )
       .await;
-    track.relay_track_id
+    // This publisher has answered.
+    track
+      .pending_upstream_subscribe_count
+      .fetch_sub(1, Ordering::SeqCst);
+    (track.relay_track_id, confirmed_now)
   };
 
-  // Register the publisher's alias for data stream routing
+  // Register the publisher's alias for data stream routing. Every accepting publisher
+  // needs this, whether or not it was the one that confirmed the track, or its Objects
+  // arrive on a stream the relay cannot route.
   context
     .track_manager
     .add_track_alias(
@@ -583,6 +668,17 @@ async fn handle_subscribe_ok_message(
       full_track_name.clone(),
     )
     .await;
+
+  // Only the publisher that confirmed the track answers downstream. The others are now
+  // serving it too, but the subscribers were told once already and their request
+  // streams take exactly one response.
+  if !confirmed_now {
+    info!(
+      "Publisher {} also accepted {:?}; subscribers already answered",
+      publisher.connection_id, full_track_name
+    );
+    return Ok(());
+  }
 
   // What the relay advertises downstream is not what upstream sent: by the time this
   // runs the relay may already have seen a later Object than upstream knew of.
@@ -706,10 +802,10 @@ pub(crate) async fn cancel_subscription(
     let (is_last_subscriber, origin) = {
       let track = track_lock.read().await;
       track.remove_subscription(context.connection_id).await;
-      // When the last subscriber goes away, reset the upstream subscribe stream so
-      // the publisher observes the cancellation.
+      // When the last subscriber goes away, reset the upstream subscribe streams so
+      // the publishers observe the cancellation. One per publisher serving the track.
       let last = if track.subscriber_count().await == 0 {
-        if let Some(cancel) = track.upstream_cancel.lock().await.take() {
+        for cancel in track.upstream_subscribe_cancellers.lock().await.drain(..) {
           let _ = cancel.send(());
         }
         true

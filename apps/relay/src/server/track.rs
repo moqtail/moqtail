@@ -33,7 +33,7 @@ use moqtail::model::property::track_property::TrackProperty;
 use moqtail::transport::data_stream_handler::HeaderInfo;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio::sync::{Mutex, Notify, RwLock, oneshot};
 use tracing::{debug, error, info, warn};
 
@@ -144,16 +144,13 @@ pub struct Track {
   /// Inserted when the first object of a subgroup arrives; removed when the
   /// publisher's unistream closes (stream_closed signal).
   pub active_subgroup_headers: ActiveSubgroupHeaderMap,
-  /// Signals the relay's outbound SUBSCRIBE task to reset its stream when the
-  /// last downstream subscriber goes away.
-  ///
-  /// This is only set on the pull path: when a subscriber is the first to create
-  /// a track, the relay opens its OWN SUBSCRIBE stream to the publisher and
-  /// stores the signal here. It guards that relay-owned stream only — never a
-  /// publisher-initiated PUBLISH stream. A track created by a PUBLISH leaves this
-  /// None, so a subscriber leaving never cancels the publisher; the pushed track
-  /// stays alive as long as the publisher keeps publishing.
-  pub upstream_cancel: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+  /// One per publisher; firing it resets that relay-owned upstream SUBSCRIBE stream
+  /// when the last downstream subscriber goes away. Only the pull path fills this, so
+  /// a PUBLISH-created track leaves it empty and a subscriber leaving never cancels
+  /// the publisher.
+  pub upstream_subscribe_cancellers: Arc<Mutex<Vec<oneshot::Sender<()>>>>,
+  /// Upstream SUBSCRIBEs still awaiting a SUBSCRIBE_OK or REQUEST_ERROR.
+  pub pending_upstream_subscribe_count: Arc<AtomicUsize>,
   /// Forward State the relay last gave the upstream publisher of a
   /// PUBLISH-created track. A relay may answer PUBLISH with Forward State 0
   /// while nothing downstream wants the track; this records whether it has
@@ -193,7 +190,8 @@ impl Track {
       pending_subscribers: Arc::new(RwLock::new(Vec::new())),
       track_properties: Arc::new(RwLock::new(Vec::new())),
       active_subgroup_headers: Arc::new(RwLock::new(HashMap::new())),
-      upstream_cancel: Arc::new(Mutex::new(None)),
+      upstream_subscribe_cancellers: Arc::new(Mutex::new(Vec::new())),
+      pending_upstream_subscribe_count: Arc::new(AtomicUsize::new(0)),
       upstream_forward: Arc::new(AtomicBool::new(false)),
     }
   }
@@ -280,30 +278,39 @@ impl Track {
     record_location(&mut seen, location, retained)
   }
 
-  /// Transition from Pending to Confirmed. Adds publisher alias and notifies waiters.
+  /// Registers an accepting publisher. Returns true only for the one that took the
+  /// track out of Pending, since only it has a downstream response to send.
   pub async fn confirm(
     &mut self,
     publisher_connection_id: usize,
     publisher_track_alias: u64,
     upstream_parameters: Vec<MessageParameter>,
     properties: Vec<TrackProperty>,
-  ) {
+  ) -> bool {
     {
       let mut aliases = self.publisher_aliases.write().await;
       aliases.insert(publisher_connection_id, publisher_track_alias);
     }
-    let mut status = self.status.write().await;
-    *status = TrackStatus::Confirmed {
-      upstream_parameters,
-    };
-    drop(status);
     *self.track_properties.write().await = properties;
-    self.status_notify.notify_waiters();
+
+    let mut status = self.status.write().await;
+    let was_pending = matches!(*status, TrackStatus::Pending);
+    if was_pending {
+      *status = TrackStatus::Confirmed {
+        upstream_parameters,
+      };
+    }
+    drop(status);
+
+    if was_pending {
+      self.status_notify.notify_waiters();
+    }
 
     info!(
-      "Track confirmed: relay_track_id={} publisher_connection_id={} publisher_alias={}",
-      self.relay_track_id, publisher_connection_id, publisher_track_alias
+      "Track publisher accepted: relay_track_id={} publisher_connection_id={} publisher_alias={} confirmed_now={}",
+      self.relay_track_id, publisher_connection_id, publisher_track_alias, was_pending
     );
+    was_pending
   }
 
   /// Updates the cached track properties (per spec: most recent set replaces any previous).

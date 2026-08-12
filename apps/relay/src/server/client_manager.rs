@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use super::client::MOQTClient;
-use moqtail::model::{common::tuple::Tuple, data::full_track_name::FullTrackName};
+use moqtail::model::data::full_track_name::FullTrackName;
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::RwLock;
 use tracing::{debug, info};
@@ -50,55 +50,44 @@ impl ClientManager {
     clients.get(&connection_id).cloned()
   }
 
-  // returns the first publisher that matches the full_track_name
-  pub(crate) async fn get_publisher_by_full_track_name(
+  /// Every publisher a request for this Track must reach: those already publishing the
+  /// exact Track, and those that announced a namespace the Track falls under. Both are
+  /// matches, so this is their union rather than a preference between them, and a
+  /// publisher matching in both ways is returned once.
+  pub(crate) async fn get_publishers_for_track(
     &self,
     full_track_name: &FullTrackName,
-  ) -> Option<Arc<MOQTClient>> {
+  ) -> Vec<Arc<MOQTClient>> {
     let clients = self.clients.read().await;
+    let mut matched = Vec::new();
 
-    for client_ref in clients.iter() {
-      let client = client_ref.1;
-      if client
+    for (connection_id, client) in clients.iter() {
+      debug!("checking client: {:?}", connection_id);
+
+      let publishes_track = client
         .published_tracks
         .read()
         .await
         .values()
-        .any(|n| n == full_track_name)
-      {
-        return Some(client.clone());
+        .any(|n| n == full_track_name);
+
+      let announced_namespace = !publishes_track && {
+        let announced = client.announced_track_namespaces.read().await;
+        debug!(
+          "client announced track namespaces: {:?} track namespace: {:?}",
+          announced, full_track_name.namespace
+        );
+        // Equal to, or a prefix of, the Track's namespace.
+        announced
+          .iter()
+          .any(|ns| full_track_name.namespace.starts_with(ns))
+      };
+
+      if publishes_track || announced_namespace {
+        matched.push(client.clone());
       }
     }
-    None
-  }
-
-  // TODO: same namespace can be used by different publishers
-  // In our implementation, we expect a unique namespace is announced
-  // by every publisher such as /moqtail/my_room/user_1
-  // This can be solved by the Publish message.
-  pub(crate) async fn get_publisher_by_announced_track_namespace(
-    &self,
-    track_namespace: &Tuple,
-  ) -> Option<Arc<MOQTClient>> {
-    let clients = self.clients.read().await;
-    for client_ref in clients.iter() {
-      debug!("checking client: {:?}", client_ref.0);
-      let client = client_ref.1;
-
-      debug!(
-        "client announced track namespaces: {:?} track namespace: {:?}",
-        client.announced_track_namespaces, track_namespace
-      );
-      let announced_track_namespaces = client.announced_track_namespaces.read().await;
-
-      for announced_track_namespace in announced_track_namespaces.iter() {
-        // Check if track_namespace is equal to or a child of announced_track_namespace
-        if track_namespace.starts_with(announced_track_namespace) {
-          return Some(client_ref.1.clone());
-        }
-      }
-    }
-    None
+    matched
   }
 
   /// Diagnostic snapshot of every client's announced namespaces and published

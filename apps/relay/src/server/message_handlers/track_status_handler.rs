@@ -57,18 +57,15 @@ pub async fn handle(
         return Ok(());
       }
 
-      // C. Find Upstream Publisher
-      // TODO: send to every interested publisher
+      // C. Find Upstream Publisher. One is enough: this asks for a track's status, and
+      // any publisher serving it can answer, where a SUBSCRIBE must reach all of them.
       let publisher = {
         debug!("Finding publisher for TrackStatus...");
         let m = context.client_manager.read().await;
-        match m.get_publisher_by_full_track_name(&full_track_name).await {
-          Some(p) => Some(p),
-          None => {
-            m.get_publisher_by_announced_track_namespace(&track_namespace)
-              .await
-          }
-        }
+        m.get_publishers_for_track(&full_track_name)
+          .await
+          .into_iter()
+          .next()
       };
 
       let publisher = if let Some(p) = publisher {

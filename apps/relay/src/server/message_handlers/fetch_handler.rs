@@ -752,18 +752,14 @@ async fn send_upstream_fetch_for_range(
   gap_start: u64,
   gap_end: u64,
 ) -> Option<(u64, Arc<MOQTClient>, mpsc::Receiver<UpstreamFetchEvent>)> {
+  // A FETCH goes to one publisher, unlike a SUBSCRIBE: any of the matching ones may
+  // serve the range, so the first will do.
   let publisher = {
     let m = context.client_manager.read().await;
-    match m
-      .get_publisher_by_full_track_name(&track_read.full_track_name)
+    m.get_publishers_for_track(&track_read.full_track_name)
       .await
-    {
-      Some(p) => Some(p),
-      None => {
-        m.get_publisher_by_announced_track_namespace(&track_read.full_track_name.namespace)
-          .await
-      }
-    }
+      .into_iter()
+      .next()
   };
   let publisher = match publisher {
     Some(p) => p,
@@ -913,13 +909,9 @@ async fn has_upstream_publisher(
 ) -> bool {
   let full_track_name = track.read().await.full_track_name.clone();
   let m = context.client_manager.read().await;
-  m.get_publisher_by_full_track_name(&full_track_name)
+  !m.get_publishers_for_track(&full_track_name)
     .await
-    .is_some()
-    || m
-      .get_publisher_by_announced_track_namespace(&full_track_name.namespace)
-      .await
-      .is_some()
+    .is_empty()
 }
 
 async fn send_request_error(

@@ -15,12 +15,35 @@
  */
 
 import { GoAway } from '../../model/control'
-import { ControlMessageHandler } from './handler'
+import { ProtocolViolationError } from '../../model/error/error'
+import { ControlMessageHandler, RequestStreamMessageHandler } from './handler'
 import { logger } from '../../util/logger'
 
 export const handlerGoAway: ControlMessageHandler<GoAway> = async (client, msg) => {
-  logger.log('handler/goaway', 'newSessionUri', msg.newSessionUri)
+  logger.log('handler/goaway', 'newSessionUri', msg.newSessionUri, 'timeout', msg.timeout, 'requestId', msg.requestId)
+  if (client.goawayReceived) {
+    await client.disconnect(
+      new ProtocolViolationError('handler/goaway', 'A second GOAWAY arrived on the control stream'),
+    )
+    return
+  }
+  client.goawayReceived = true
   if (client.onGoaway) {
     client.onGoaway(msg)
   }
+}
+
+/**
+ * GOAWAY on a request stream: the peer is migrating that one request (§10.4). The
+ * request is re-issued on a fresh stream and the session, along with every other request
+ * on it, carries on.
+ */
+export const handlerGoAwayOnRequestStream: RequestStreamMessageHandler<GoAway> = async (
+  client,
+  msg,
+  _stream,
+  requestId,
+) => {
+  logger.log('handler/goaway', `GOAWAY migrating request ${requestId}`, 'timeout', msg.timeout)
+  await client.migrateRequest(requestId, msg)
 }

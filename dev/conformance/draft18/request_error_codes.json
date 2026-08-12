@@ -30,8 +30,7 @@
       "name": "REDIRECT",
       "value": "0x34",
       "spec": "Section 10.6",
-      "notes": "Used by GOAWAY-driven request migration.",
-      "pending": { "ts": 268 }
+      "notes": "Used by GOAWAY-driven request migration."
     }
   ]
 }

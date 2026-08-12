@@ -467,15 +467,15 @@ extraction remains.
 - **Files:** `model/parameter/constant.rs` (`MessageParameterType`);
   `model/property/constant.rs:55-63` (`TrackPropertyType`) — renamed by RS-8
 - **Change — Parameters** (vs §15.7; current enum has 9 of 13):
-  | Type | Name | Status |
-  |---|---|---|
-  | `0x02` | `OBJECT_DELIVERY_TIMEOUT` | rename from `DeliveryTimeout` |
-  | `0x03` | `AUTHORIZATION_TOKEN` | ✓ present |
-  | `0x04` | `RENDEZVOUS_TIMEOUT` | **missing — add** |
-  | `0x06` | `SUBGROUP_DELIVERY_TIMEOUT` | **missing — add** |
-  | `0x08` `0x09` `0x10` `0x20` `0x21` `0x22` `0x32` | EXPIRES, LARGEST_OBJECT, FORWARD, SUBSCRIBER_PRIORITY, SUBSCRIPTION_FILTER, GROUP_ORDER, NEW_GROUP_REQUEST | ✓ present |
-  | `0x0A` | `FILL_TIMEOUT` | **missing — add** (FETCH-only) |
-  | `0x34` | `TRACK_NAMESPACE_PREFIX` | **missing — add** |
+  | Type                                             | Name                                                                                                       | Status                         |
+  | ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------- | ------------------------------ |
+  | `0x02`                                           | `OBJECT_DELIVERY_TIMEOUT`                                                                                  | rename from `DeliveryTimeout`  |
+  | `0x03`                                           | `AUTHORIZATION_TOKEN`                                                                                      | ✓ present                      |
+  | `0x04`                                           | `RENDEZVOUS_TIMEOUT`                                                                                       | **missing — add**              |
+  | `0x06`                                           | `SUBGROUP_DELIVERY_TIMEOUT`                                                                                | **missing — add**              |
+  | `0x08` `0x09` `0x10` `0x20` `0x21` `0x22` `0x32` | EXPIRES, LARGEST_OBJECT, FORWARD, SUBSCRIBER_PRIORITY, SUBSCRIPTION_FILTER, GROUP_ORDER, NEW_GROUP_REQUEST | ✓ present                      |
+  | `0x0A`                                           | `FILL_TIMEOUT`                                                                                             | **missing — add** (FETCH-only) |
+  | `0x34`                                           | `TRACK_NAMESPACE_PREFIX`                                                                                   | **missing — add**              |
 - **Change — Properties** (vs §15.8): **contrary to the earlier audit, this side is not already
   correct.** Add `SUBGROUP_DELIVERY_TIMEOUT 0x06`; rename `DeliveryTimeout → ObjectDeliveryTimeout`
   and `ImmutableExtensions → ImmutableProperties`. `MaxCacheDuration 0x04`,
@@ -509,14 +509,14 @@ into one enum — `GOING_AWAY` is `0x4` as a stream reset code and `0x6` as a re
 - **Change (b) — extend `RequestErrorCode`** (`model/control/constant.rs`, §15 table). Verified
   present: `0x0`-`0x5`, `0x10`, `0x11`, `0x12`, `0x19`, `0x20`, `0x30`, `0x32`. **Missing —
   add five:**
-  | Code | Name | Bullet |
-  |---|---|---|
-  | `0x6` | `GOING_AWAY` | A.2 : 7360 (#1434) |
-  | `0x9` | `EXCESSIVE_LOAD` | A.2 : 7362 (#1479) |
-  | `0x31` | `NAMESPACE_TOO_LARGE` | A.2 : 7364 (#1496) |
-  | `0x33` | `UNSUPPORTED_EXTENSION` | A.1 : 7238 (#1509) |
-  | `0x34` | `REDIRECT` | A.1 : 7215 (#1534) → RS-13 |
-  plus `0x7f * N + 0x9D` reserved for greasing (RS-18).
+  | Code                                                  | Name                    | Bullet                     |
+  | ----------------------------------------------------- | ----------------------- | -------------------------- |
+  | `0x6`                                                 | `GOING_AWAY`            | A.2 : 7360 (#1434)         |
+  | `0x9`                                                 | `EXCESSIVE_LOAD`        | A.2 : 7362 (#1479)         |
+  | `0x31`                                                | `NAMESPACE_TOO_LARGE`   | A.2 : 7364 (#1496)         |
+  | `0x33`                                                | `UNSUPPORTED_EXTENSION` | A.1 : 7238 (#1509)         |
+  | `0x34`                                                | `REDIRECT`              | A.1 : 7215 (#1534) → RS-13 |
+  | plus `0x7f * N + 0x9D` reserved for greasing (RS-18). |
 - **Change (c) — build the reset path itself. No spike needed; the question is answered:**
   **there are no stream-reset call sites to wire codes into, because neither implementation ever
   resets a stream with an error code.** Verified:
@@ -661,14 +661,15 @@ into one enum — `GOING_AWAY` is `0x4` as a stream reset code and `0x6` as a re
   (§14) in the Property registry; ignore-unknown behaviour for greased Setup Options,
   Properties and error codes; reserve the application-specific Property ranges below.
 - **Property registry ranges — use §15.8 (line 6693-6720), not §2.5:**
-  | Range | Policy |
-  |---|---|
-  | `0x00`–`0x77` | Standards Action or IESG Approval (1-byte) |
+
+  | Range             | Policy                                                       |
+  | ----------------- | ------------------------------------------------------------ |
+  | `0x00`–`0x77`     | Standards Action or IESG Approval (1-byte)                   |
   | **`0x78`–`0x7F`** | **application-specific, no registration permitted** (1-byte) |
-  | `0x80`–`0x37FF` | Specification Required (2-byte) |
-  | `0x3800`–`0x3FFF` | application-specific, no registration permitted (2-byte) |
-  | `0x4000`–`0x7FFF` | Mandatory Track Properties (RL-1); Track scope only |
-  | `0x8000`+ | First Come First Served |
+  | `0x80`–`0x37FF`   | Specification Required (2-byte)                              |
+  | `0x3800`–`0x3FFF` | application-specific, no registration permitted (2-byte)     |
+  | `0x4000`–`0x7FFF` | Mandatory Track Properties (RL-1); Track scope only          |
+  | `0x8000`+         | First Come First Served                                      |
 
   ⚠️ §2.5 (line 1188) contradicts this, giving the 1-byte range as `0x38-0x3F`. **§15.8 is the
   correct one**, and the reason is worth knowing: draft-18's new varint (RS-1) puts **7 usable
@@ -890,7 +891,7 @@ second developer start the TS phase without waiting for the whole Rust phase to 
 | **TS-9**      | RS-9    | `model/parameter/constant.ts:41-51` **and** `model/extension_header/constant.ts:26-35` — same both-sides correction as RS-9.                                                                                                                                                                                                             |
 | **TS-10**     | RS-10   | Two enums (reset codes + `RequestErrorCode`) **and** the reset path itself. Today the only `.abort()` calls are `client/publication/fetch.ts:111,124` and both pass a **string**, not a code; `reader.cancel(<string>)` elsewhere. Needs `abort(code)` plumbing over WebTransport + receive-side `streamErrorCode` mapping. **Size:** L. |
 | **TS-11**     | RS-11   | `model/control/subscribe_namespace.ts` + new `subscribe_tracks.ts`. TS has **no** `subscribe_options`, so purely additive here; the divergence is resolved Rust-side.                                                                                                                                                                    |
-| **TS-12**     | RS-12   | `model/data/full_track_name.ts:21,84,120`. TS has no `== 0` guard — add the zero-length regression test rather than removing a check.                                                                                                                                                                                                    |
+| **TS-12**     | RS-12   | `model/data/full_track_name.ts:21,84,120`. **Correction:** TS _does_ carry the `nsCount === 0` guard, at both `tryNew` and `deserialize` — drop it exactly as RS-12 did in Rust, then add the zero-length regression test.                                                                                                               |
 | **TS-13**     | RS-13   | `model/control/goaway.ts:21-87`.                                                                                                                                                                                                                                                                                                         |
 | **TS-14**     | RS-14   | `model/data/constant.ts:200-311`; `INVALID_BITS_MASK 0xc0` at `:244`; `subgroup_header.ts:22-86`.                                                                                                                                                                                                                                        |
 | **TS-15**     | RS-15   | Fetch object delta decode.                                                                                                                                                                                                                                                                                                               |

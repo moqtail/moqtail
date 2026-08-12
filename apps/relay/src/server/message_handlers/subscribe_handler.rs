@@ -370,8 +370,10 @@ async fn handle_subscribe_message(
   // it falls under. A SUBSCRIBE goes to all of them, not to whichever matched first.
   let publishers = {
     debug!("trying to get the publishers");
-    let m = context.client_manager.read().await;
-    m.get_publishers_for_track(&full_track_name).await
+    context
+      .client_manager
+      .get_publishers_for_track(&full_track_name)
+      .await
   };
 
   if publishers.is_empty() {
@@ -385,12 +387,7 @@ async fn handle_subscribe_message(
       "SUBSCRIBE miss: sent full_track_name={:?} namespace={:?}; registrations:{}",
       full_track_name,
       track_namespace,
-      context
-        .client_manager
-        .read()
-        .await
-        .dump_registrations()
-        .await
+      context.client_manager.dump_registrations().await
     );
     // send RequestError
     let subscribe_error = RequestError::new(
@@ -689,10 +686,7 @@ async fn handle_subscribe_ok_message(
 
   // Send SubscribeOk to the FIRST subscriber (the creator)
   {
-    let subscriber = {
-      let mngr = context.client_manager.read().await;
-      mngr.get(sub_request.requested_by).await
-    };
+    let subscriber = { context.client_manager.get(sub_request.requested_by).await };
     if let Some(subscriber) = subscriber {
       let cached_properties = {
         let track = track_arc.read().await;
@@ -736,10 +730,7 @@ async fn handle_subscribe_ok_message(
     };
 
     for (subscriber_request_id, subscriber_connection_id) in pending {
-      let subscriber = {
-        let mngr = context.client_manager.read().await;
-        mngr.get(subscriber_connection_id).await
-      };
+      let subscriber = { context.client_manager.get(subscriber_connection_id).await };
       if let Some(subscriber) = subscriber {
         let cached_properties = {
           let track = track_arc.read().await;
@@ -1029,10 +1020,7 @@ async fn handle_subscribe_error_message(
 
   // Send RequestError to the FIRST subscriber (the creator)
   {
-    let subscriber = {
-      let mngr = context.client_manager.read().await;
-      mngr.get(sub_request.requested_by).await
-    };
+    let subscriber = { context.client_manager.get(sub_request.requested_by).await };
     if let Some(subscriber) = subscriber {
       let subscribe_error = RequestError::new(
         msg.error_code,
@@ -1057,10 +1045,7 @@ async fn handle_subscribe_error_message(
     };
 
     for (subscriber_request_id, subscriber_connection_id) in pending {
-      let subscriber = {
-        let mngr = context.client_manager.read().await;
-        mngr.get(subscriber_connection_id).await
-      };
+      let subscriber = { context.client_manager.get(subscriber_connection_id).await };
       if let Some(subscriber) = subscriber {
         let subscribe_error = RequestError::new(
           msg.error_code,

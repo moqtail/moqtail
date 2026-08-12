@@ -61,8 +61,9 @@ pub async fn handle(
       // any publisher serving it can answer, where a SUBSCRIBE must reach all of them.
       let publisher = {
         debug!("Finding publisher for TrackStatus...");
-        let m = context.client_manager.read().await;
-        m.get_publishers_for_track(&full_track_name)
+        context
+          .client_manager
+          .get_publishers_for_track(&full_track_name)
           .await
           .into_iter()
           .next()

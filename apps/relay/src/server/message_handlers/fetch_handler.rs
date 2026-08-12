@@ -755,8 +755,9 @@ async fn send_upstream_fetch_for_range(
   // A FETCH goes to one publisher, unlike a SUBSCRIBE: any of the matching ones may
   // serve the range, so the first will do.
   let publisher = {
-    let m = context.client_manager.read().await;
-    m.get_publishers_for_track(&track_read.full_track_name)
+    context
+      .client_manager
+      .get_publishers_for_track(&track_read.full_track_name)
       .await
       .into_iter()
       .next()
@@ -908,8 +909,9 @@ async fn has_upstream_publisher(
   track: &Arc<tokio::sync::RwLock<crate::server::track::Track>>,
 ) -> bool {
   let full_track_name = track.read().await.full_track_name.clone();
-  let m = context.client_manager.read().await;
-  !m.get_publishers_for_track(&full_track_name)
+  !context
+    .client_manager
+    .get_publishers_for_track(&full_track_name)
     .await
     .is_empty()
 }

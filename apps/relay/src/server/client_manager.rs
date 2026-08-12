@@ -18,6 +18,7 @@ use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::RwLock;
 use tracing::{debug, info};
 
+#[derive(Clone)]
 pub(crate) struct ClientManager {
   pub clients: Arc<RwLock<BTreeMap<usize, Arc<MOQTClient>>>>,
 }
@@ -29,7 +30,7 @@ impl ClientManager {
     }
   }
 
-  pub(crate) async fn add(&mut self, client: Arc<MOQTClient>) {
+  pub(crate) async fn add(&self, client: Arc<MOQTClient>) {
     let connection_id = client.connection_id;
     let transport_kind = client.transport_kind;
     let mut clients = self.clients.write().await;

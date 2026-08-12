@@ -85,7 +85,7 @@ pub struct RequestMaps {
 }
 
 pub struct SessionContext {
-  pub(crate) client_manager: Arc<RwLock<ClientManager>>,
+  pub(crate) client_manager: ClientManager,
   pub(crate) track_manager: TrackManager,
   pub(crate) relay_pending_requests: Arc<RwLock<BTreeMap<u64, PendingRequest>>>,
   pub(crate) connection_id: usize,
@@ -105,7 +105,7 @@ impl SessionContext {
   #[allow(clippy::too_many_arguments)]
   pub fn new(
     server_config: &'static AppConfig,
-    client_manager: Arc<RwLock<ClientManager>>,
+    client_manager: ClientManager,
     track_manager: TrackManager,
     request_maps: RequestMaps,
     connection: TransportConnection,

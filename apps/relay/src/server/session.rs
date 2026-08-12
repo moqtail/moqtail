@@ -735,7 +735,6 @@ impl Session {
   }
 
   async fn handle_connection_close(context: Arc<SessionContext>) -> Result<()> {
-    let client_manager_cleanup = context.client_manager.clone();
     let track_manager_cleanup = context.track_manager.clone();
 
     debug!(
@@ -808,8 +807,7 @@ impl Session {
 
     // Remove client from client_manager
     {
-      let cm = client_manager_cleanup.read().await;
-      cm.remove(context.connection_id).await;
+      context.client_manager.remove(context.connection_id).await;
     }
     debug!(
       "handle_connection_close | removed client {} from client manager",
@@ -1082,15 +1080,13 @@ impl Session {
       }
     }
 
-    let mut m = context.client_manager.write().await;
-
     let client = MOQTClient::new(
       context.connection_id,
       Arc::new(context.connection.clone()),
       Arc::new(client_setup),
     );
     let client = Arc::new(client);
-    m.add(client.clone()).await;
+    context.client_manager.add(client.clone()).await;
 
     match control_stream_handler.send_impl(&server_setup).await {
       Ok(_) => {

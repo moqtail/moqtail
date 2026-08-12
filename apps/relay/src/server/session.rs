@@ -972,6 +972,14 @@ impl Session {
             stream_id.clone(),
             object_count
           );
+          // A relay-initiated fetch ends when its stream does. Without this the loop
+          // waiting on those Objects has nothing to end it but its own timeout.
+          if let Some(ref sender) = upstream_sender {
+            let _ = sender
+              .send(super::session_context::UpstreamFetchEvent::StreamClosed)
+              .await;
+          }
+
           // Close the stream for all subscribers
           if let Some(track_lock) = &current_track {
             return track_lock

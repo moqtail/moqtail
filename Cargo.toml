@@ -3,4 +3,4 @@ members = ["apps/relay", "apps/client", "libs/moqtail-rs"]
 resolver = "2"
 
 [workspace.dependencies]
-wtransport = { git = "https://github.com/BiagioFesta/wtransport", rev = "d96cbb87c9127fcb453fb05bbb47ef93402daec2", features = ["quinn"] }
+wtransport = { version = "0.7.2", features = ["quinn"] }

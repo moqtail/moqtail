@@ -21,6 +21,7 @@ use std::{
 };
 use tokio::sync::{RwLock, mpsc};
 
+use moqtail::model::common::location::Location;
 use moqtail::model::data::fetch_object::FetchObjectPayload;
 
 use moqtail::transport::connection::{TransportConnection, TransportKind};
@@ -70,6 +71,11 @@ pub enum PendingRequest {
 /// The receiver awaits entries in a loop and sends them downstream.
 #[allow(dead_code)]
 pub(crate) enum UpstreamFetchEvent {
+  /// The publisher's FETCH_OK, carrying the range it will actually deliver. A relay
+  /// cannot answer its own subscriber until it has this.
+  Accepted {
+    end_location: Location,
+  },
   Object(FetchObjectPayload),
   StreamClosed,
   Error(String),
@@ -85,7 +91,7 @@ pub struct RequestMaps {
 }
 
 pub struct SessionContext {
-  pub(crate) client_manager: Arc<RwLock<ClientManager>>,
+  pub(crate) client_manager: ClientManager,
   pub(crate) track_manager: TrackManager,
   pub(crate) relay_pending_requests: Arc<RwLock<BTreeMap<u64, PendingRequest>>>,
   pub(crate) connection_id: usize,
@@ -105,7 +111,7 @@ impl SessionContext {
   #[allow(clippy::too_many_arguments)]
   pub fn new(
     server_config: &'static AppConfig,
-    client_manager: Arc<RwLock<ClientManager>>,
+    client_manager: ClientManager,
     track_manager: TrackManager,
     request_maps: RequestMaps,
     connection: TransportConnection,

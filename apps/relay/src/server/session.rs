@@ -735,7 +735,6 @@ impl Session {
   }
 
   async fn handle_connection_close(context: Arc<SessionContext>) -> Result<()> {
-    let client_manager_cleanup = context.client_manager.clone();
     let track_manager_cleanup = context.track_manager.clone();
 
     debug!(
@@ -808,8 +807,7 @@ impl Session {
 
     // Remove client from client_manager
     {
-      let cm = client_manager_cleanup.read().await;
-      cm.remove(context.connection_id).await;
+      context.client_manager.remove(context.connection_id).await;
     }
     debug!(
       "handle_connection_close | removed client {} from client manager",
@@ -974,6 +972,14 @@ impl Session {
             stream_id.clone(),
             object_count
           );
+          // A relay-initiated fetch ends when its stream does. Without this the loop
+          // waiting on those Objects has nothing to end it but its own timeout.
+          if let Some(ref sender) = upstream_sender {
+            let _ = sender
+              .send(super::session_context::UpstreamFetchEvent::StreamClosed)
+              .await;
+          }
+
           // Close the stream for all subscribers
           if let Some(track_lock) = &current_track {
             return track_lock
@@ -1082,15 +1088,13 @@ impl Session {
       }
     }
 
-    let mut m = context.client_manager.write().await;
-
     let client = MOQTClient::new(
       context.connection_id,
       Arc::new(context.connection.clone()),
       Arc::new(client_setup),
     );
     let client = Arc::new(client);
-    m.add(client.clone()).await;
+    context.client_manager.add(client.clone()).await;
 
     match control_stream_handler.send_impl(&server_setup).await {
       Ok(_) => {

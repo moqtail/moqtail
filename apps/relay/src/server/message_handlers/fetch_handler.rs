@@ -89,6 +89,83 @@ pub(crate) fn resolve_standalone_fetch_range(
   Ok(end_location)
 }
 
+/// An upstream FETCH issued before FETCH_OK to learn the End Location. It covers the
+/// whole requested range, and is handed to the delivery loop so those groups are served
+/// from it rather than requested a second time.
+pub(crate) struct PendingUpstreamFetch {
+  pub relay_request_id: u64,
+  pub publisher: Arc<MOQTClient>,
+  pub rx: mpsc::Receiver<UpstreamFetchEvent>,
+}
+
+/// Whether the relay can answer a standalone FETCH's End Location from what it holds.
+///
+/// It can when the request ends at or before what it has seen: the clamp cannot bind,
+/// so anything the publisher knows beyond that cannot change the answer. Past that
+/// point local state would understate the range whenever the relay is behind, and a
+/// relay must withhold FETCH_OK until it knows rather than answer early and short.
+pub(crate) fn local_state_answers(known: &Option<Location>, requested_end: &Location) -> bool {
+  match known {
+    Some(known) => requested_end <= &Location::new(known.group, known.object + 1),
+    None => false,
+  }
+}
+
+/// Issues the upstream FETCH for the requested range and waits for its FETCH_OK, so the
+/// relay learns the End Location before answering. Updates `largest` from the answer and
+/// returns the fetch for the delivery loop to read the Objects from.
+///
+/// `None` when there is no publisher to ask, or it declines or stays silent; the caller
+/// then answers from local state, which is all the relay can honestly claim.
+async fn resolve_range_upstream(
+  client: &Arc<MOQTClient>,
+  context: &Arc<SessionContext>,
+  track: &Arc<tokio::sync::RwLock<crate::server::track::Track>>,
+  start_group: u64,
+  end_group: u64,
+  largest: &mut Option<Location>,
+) -> Option<PendingUpstreamFetch> {
+  let (relay_request_id, publisher, mut rx) = {
+    let track_read = track.read().await;
+    send_upstream_fetch_for_range(client, context, &track_read, start_group, end_group).await?
+  };
+
+  let accepted =
+    tokio::time::timeout(context.server_config.upstream_fetch_timeout, rx.recv()).await;
+
+  match accepted {
+    Ok(Some(UpstreamFetchEvent::Accepted { end_location })) => {
+      // FETCH_OK's End Location is the last Object plus one, where Largest Object is
+      // the last Object itself.
+      let upstream_largest =
+        Location::new(end_location.group, end_location.object.saturating_sub(1));
+      if largest
+        .as_ref()
+        .is_none_or(|known| *known < upstream_largest)
+      {
+        *largest = Some(upstream_largest);
+      }
+      Some(PendingUpstreamFetch {
+        relay_request_id,
+        publisher,
+        rx,
+      })
+    }
+    Ok(Some(UpstreamFetchEvent::Error(e))) => {
+      warn!("Upstream FETCH {relay_request_id} rejected while resolving the range: {e}");
+      None
+    }
+    Ok(Some(_)) | Ok(None) => {
+      warn!("Upstream FETCH {relay_request_id} ended before answering with FETCH_OK");
+      None
+    }
+    Err(_) => {
+      warn!("Upstream FETCH {relay_request_id} was not answered in time");
+      None
+    }
+  }
+}
+
 /// Why a fetch's object stream is torn down early. A normal cancel closes the
 /// stream with a FIN; a failed REQUEST_UPDATE resets it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -291,10 +368,32 @@ pub async fn handle(
       // Standalone FETCH: validate the requested range and clamp the FETCH_OK
       // End Location to published data. Joining fetches
       // resolve their own range above.
+      // Set when the End Location had to be learned from the publisher; the groups it
+      // covers are then served from it instead of being fetched again.
+      let mut pending_upstream: Option<PendingUpstreamFetch> = None;
+
       let end_location = if fetch.joining_fetch_props.is_none() {
-        let largest = track.read().await.largest_object().await;
         let start = start_location.clone().unwrap();
         let requested_end = end_location.clone().unwrap();
+        let mut largest = track.read().await.largest_object().await;
+
+        // A relay must not answer until it knows the End Location. Where the request
+        // runs past what the relay has seen, the publisher is asked -- with the upstream
+        // FETCH the missing groups need anyway, whose FETCH_OK carries the range it
+        // will really serve.
+        if !local_state_answers(&largest, &requested_end)
+          && let Some(pending) = resolve_range_upstream(
+            &client,
+            &context,
+            &track,
+            start.group,
+            requested_end.group,
+            &mut largest,
+          )
+          .await
+        {
+          pending_upstream = Some(pending);
+        }
         match resolve_standalone_fetch_range(start.clone(), requested_end.clone(), largest.clone())
         {
           Ok(clamped) => Some(clamped),
@@ -392,7 +491,16 @@ pub async fn handle(
             break;
           }
 
-          if let Some(group_objects) = track_read.cache.get_group(group_id).await {
+          // A fetch already issued to learn the End Location covers this whole range and
+          // its Objects are on their way, so the cache is not consulted for it: reading
+          // both would deliver some of them twice.
+          let cached = if pending_upstream.is_some() {
+            None
+          } else {
+            track_read.cache.get_group(group_id).await
+          };
+
+          if let Some(group_objects) = cached {
             // === CACHE HIT ===
             let objects = group_objects.read().await;
             for object in objects.iter() {
@@ -490,10 +598,19 @@ pub async fn handle(
             }
             upstream_gap_count += 1;
 
-            // Issue upstream fetch for the gap
-            let upstream_rx =
-              send_upstream_fetch_for_range(&client, &context, &track_read, gap_start, gap_end)
-                .await;
+            // Reuse the fetch that was issued to learn the End Location: it already
+            // covers the rest of the range, so there is nothing more to ask for.
+            // Without one, this is an ordinary cache gap and only the gap is fetched.
+            let upstream_rx = match pending_upstream.take() {
+              Some(pending) => {
+                gap_end = end_location.group;
+                Some((pending.relay_request_id, pending.publisher, pending.rx))
+              }
+              None => {
+                send_upstream_fetch_for_range(&client, &context, &track_read, gap_start, gap_end)
+                  .await
+              }
+            };
 
             if let Some((relay_request_id, upstream_publisher, mut rx)) = upstream_rx {
               let timeout = context.server_config.upstream_fetch_timeout;
@@ -501,6 +618,14 @@ pub async fn handle(
                 tokio::select! {
                   result = tokio::time::timeout(timeout, rx.recv()) => {
                     match result {
+                      // The downstream End Location is already settled by the time a gap
+                      // is filled, so this only gets logged.
+                      Ok(Some(UpstreamFetchEvent::Accepted { end_location })) => {
+                        debug!(
+                          "Upstream FETCH {} for groups {}..{} accepted, end location {:?}",
+                          relay_request_id, gap_start, gap_end, end_location
+                        );
+                      }
                       Ok(Some(UpstreamFetchEvent::Object(object))) => {
                         if object_count == 0 {
                           send_stream = match stream_fn(client.clone(), &stream_id).await {
@@ -755,8 +880,9 @@ async fn send_upstream_fetch_for_range(
   // A FETCH goes to one publisher, unlike a SUBSCRIBE: any of the matching ones may
   // serve the range, so the first will do.
   let publisher = {
-    let m = context.client_manager.read().await;
-    m.get_publishers_for_track(&track_read.full_track_name)
+    context
+      .client_manager
+      .get_publishers_for_track(&track_read.full_track_name)
       .await
       .into_iter()
       .next()
@@ -869,6 +995,12 @@ async fn send_upstream_fetch_for_range(
           "Upstream FETCH {} accepted, end location {:?}",
           relay_request_id, ok.end_location
         );
+        // The caller may be holding its own FETCH_OK until it learns this.
+        let _ = response_tx
+          .send(UpstreamFetchEvent::Accepted {
+            end_location: ok.end_location.clone(),
+          })
+          .await;
       }
       Ok(ControlMessage::RequestError(err)) => {
         // Tell the waiting gap loop now instead of letting it sit until its timeout.
@@ -908,8 +1040,10 @@ async fn has_upstream_publisher(
   track: &Arc<tokio::sync::RwLock<crate::server::track::Track>>,
 ) -> bool {
   let full_track_name = track.read().await.full_track_name.clone();
-  let m = context.client_manager.read().await;
-  !m.get_publishers_for_track(&full_track_name)
+
+  !context
+    .client_manager
+    .get_publishers_for_track(&full_track_name)
     .await
     .is_empty()
 }
@@ -942,7 +1076,7 @@ async fn send_request_error(
 
 #[cfg(test)]
 mod tests {
-  use super::{FetchRangeError, resolve_standalone_fetch_range};
+  use super::{FetchRangeError, local_state_answers, resolve_standalone_fetch_range};
   use moqtail::model::common::location::Location;
 
   fn loc(group: u64, object: u64) -> Location {
@@ -992,5 +1126,31 @@ mod tests {
       resolve_standalone_fetch_range(loc(0, 0), loc(3, 1), Some(loc(4, 2))),
       Ok(loc(3, 1))
     );
+  }
+
+  #[test]
+  fn a_request_within_what_is_held_is_answered_locally() {
+    // The clamp cannot bind, so whatever the publisher knows past this is irrelevant.
+    assert!(local_state_answers(&Some(loc(4, 2)), &loc(3, 1)));
+    assert!(local_state_answers(&Some(loc(4, 2)), &loc(4, 0)));
+  }
+
+  #[test]
+  fn a_request_ending_exactly_at_the_clamp_is_answered_locally() {
+    // End Location is the last Object plus one, so {4,3} is precisely "all of {4,2}"
+    // and needs nothing from the publisher.
+    assert!(local_state_answers(&Some(loc(4, 2)), &loc(4, 3)));
+  }
+
+  #[test]
+  fn a_request_past_what_is_held_needs_the_publisher() {
+    // One object further is already past it: answering locally would understate.
+    assert!(!local_state_answers(&Some(loc(4, 2)), &loc(4, 4)));
+    assert!(!local_state_answers(&Some(loc(4, 2)), &loc(5, 0)));
+  }
+
+  #[test]
+  fn holding_nothing_always_needs_the_publisher() {
+    assert!(!local_state_answers(&None, &loc(0, 1)));
   }
 }

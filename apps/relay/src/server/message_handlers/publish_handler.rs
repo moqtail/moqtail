@@ -518,10 +518,7 @@ pub(crate) async fn ensure_upstream_forwarding(
       warn!("No stored PUBLISH for publisher {connection_id} on {full_track_name:?}");
       continue;
     };
-    let publisher = {
-      let manager = context.client_manager.read().await;
-      manager.get(connection_id).await
-    };
+    let publisher = { context.client_manager.get(connection_id).await };
     let Some(publisher) = publisher else {
       continue;
     };

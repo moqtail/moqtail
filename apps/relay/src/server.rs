@@ -51,7 +51,7 @@ use wtransport::quinn;
 
 #[derive(Clone)]
 pub(crate) struct Server {
-  pub client_manager: Arc<RwLock<ClientManager>>,
+  pub client_manager: ClientManager,
   pub track_manager: TrackManager,
   pub relay_pending_requests: Arc<RwLock<BTreeMap<u64, PendingRequest>>>,
   pub app_config: &'static AppConfig,
@@ -75,7 +75,7 @@ impl Server {
     debug!("Server | App. Config.: {:?}", config);
 
     Server {
-      client_manager: Arc::new(RwLock::new(ClientManager::new())),
+      client_manager: ClientManager::new(),
       track_manager: TrackManager::new(),
       relay_pending_requests: Arc::new(RwLock::new(BTreeMap::new())),
       app_config: config,
@@ -173,8 +173,7 @@ impl Server {
   async fn broadcast_goaway(&self, timeout_ms: u64) {
     let redirect_uri = self.redirect_uri().await;
     let clients: Vec<Arc<MOQTClient>> = {
-      let client_manager = self.client_manager.read().await;
-      let clients = client_manager.clients.read().await;
+      let clients = self.client_manager.clients.read().await;
       clients.values().cloned().collect()
     };
     info!(

@@ -30,6 +30,14 @@ import { logger } from '../util/logger'
  */
 export class RequestStream {
   readonly stream: ReadableStream<ControlMessage>
+  /**
+   * The message this side opened the stream with, kept so the request can be re-issued
+   * on a fresh stream when the peer migrates it with a GOAWAY (§10.4). Undefined on a
+   * peer-opened stream, which is the peer's request to re-issue, not ours.
+   */
+  first?: ControlMessage
+  /** Set when the request this stream carried has been re-issued on a new stream. */
+  migrated = false
   readonly #reader: ReadableStreamDefaultReader<Uint8Array>
   readonly #writer: WritableStreamDefaultWriter<Uint8Array>
   #receiveBuffer: ByteBuffer
@@ -61,6 +69,7 @@ export class RequestStream {
       )
     const biStream = await webTransport.createBidirectionalStream()
     const requestStream = new RequestStream(biStream)
+    requestStream.first = first
     await requestStream.send(first)
     return requestStream
   }

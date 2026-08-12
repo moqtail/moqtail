@@ -16,8 +16,10 @@
 
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
 import { ReasonPhrase } from '../common/reason_phrase'
+import { Redirect } from '../common/redirect'
+import { Tuple } from '../common/tuple'
 import { ControlMessageType, RequestErrorCode } from './constant'
-import { LengthExceedsMaxError } from '../error/error'
+import { LengthExceedsMaxError, ProtocolViolationError } from '../error/error'
 
 /**
  * REQUEST_ERROR (0x5) refuses any request type. It carries no Request ID: the request
@@ -27,11 +29,25 @@ export class RequestError {
   public readonly errorCode: RequestErrorCode
   public readonly retryInterval: bigint
   public readonly reasonPhrase: ReasonPhrase
+  /** Present exactly when {@link RequestError.errorCode} is `REDIRECT` (§10.6.2). */
+  public readonly redirect: Redirect | undefined
 
-  constructor(errorCode: RequestErrorCode, retryInterval: bigint, reasonPhrase: ReasonPhrase) {
+  constructor(errorCode: RequestErrorCode, retryInterval: bigint, reasonPhrase: ReasonPhrase, redirect?: Redirect) {
+    if ((errorCode === RequestErrorCode.Redirect) !== (redirect !== undefined)) {
+      throw new ProtocolViolationError(
+        'RequestError::constructor(redirect)',
+        'A Redirect belongs to a REDIRECT error and to no other code',
+      )
+    }
     this.errorCode = errorCode
     this.retryInterval = retryInterval
     this.reasonPhrase = reasonPhrase
+    this.redirect = redirect
+  }
+
+  /** A REQUEST_ERROR that redirects the request elsewhere (§10.6.1). */
+  static redirect(retryInterval: bigint, reasonPhrase: ReasonPhrase, redirect: Redirect): RequestError {
+    return new RequestError(RequestErrorCode.Redirect, retryInterval, reasonPhrase, redirect)
   }
 
   getType(): ControlMessageType {
@@ -45,6 +61,7 @@ export class RequestError {
     payload.putVI(this.errorCode)
     payload.putVI(this.retryInterval)
     payload.putReasonPhrase(this.reasonPhrase)
+    if (this.redirect) payload.putBytes(this.redirect.serialize().toUint8Array())
     const payloadBytes = payload.toUint8Array()
     if (payloadBytes.length > 0xffff) {
       throw new LengthExceedsMaxError('RequestError::serialize(payloadBytes.length)', 0xffff, payloadBytes.length)
@@ -59,7 +76,8 @@ export class RequestError {
     const errorCode = RequestErrorCode.tryFrom(errorCodeRaw)
     const retryInterval = buf.getVI()
     const reasonPhrase = buf.getReasonPhrase()
-    return new RequestError(errorCode, retryInterval, reasonPhrase)
+    const redirect = errorCode === RequestErrorCode.Redirect ? Redirect.deserialize(buf) : undefined
+    return new RequestError(errorCode, retryInterval, reasonPhrase, redirect)
   }
 }
 
@@ -104,6 +122,42 @@ if (import.meta.vitest) {
       expect(deserialized.reasonPhrase.phrase).toBe(requestError.reasonPhrase.phrase)
       expect(frozen.remaining).toBe(3)
       expect(Array.from(frozen.getBytes(3))).toEqual([9, 1, 1])
+    })
+
+    test('a REDIRECT carries its Redirect, and no other code may', () => {
+      const redirect = new Redirect(
+        'moqt://other.example',
+        Tuple.fromUtf8Path('room1/audio'),
+        new TextEncoder().encode('track-9'),
+      )
+      const requestError = RequestError.redirect(1000n, new ReasonPhrase('moved'), redirect)
+      const frozen = requestError.serialize()
+      frozen.getVI()
+      frozen.getU16()
+
+      const deserialized = RequestError.parsePayload(frozen)
+      expect(deserialized.errorCode).toBe(RequestErrorCode.Redirect)
+      expect(deserialized.redirect?.connectUri).toBe('moqt://other.example')
+      expect(deserialized.redirect?.trackNamespace.equals(redirect.trackNamespace)).toBe(true)
+      expect(deserialized.redirect?.trackName).toEqual(redirect.trackName)
+      expect(frozen.remaining).toBe(0)
+
+      expect(() => new RequestError(RequestErrorCode.InternalError, 0n, new ReasonPhrase('no'), redirect)).toThrow(
+        ProtocolViolationError,
+      )
+      expect(() => new RequestError(RequestErrorCode.Redirect, 0n, new ReasonPhrase('no'))).toThrow(
+        ProtocolViolationError,
+      )
+    })
+
+    test('a non-REDIRECT error carries no Redirect', () => {
+      const requestError = new RequestError(RequestErrorCode.GoingAway, 0n, new ReasonPhrase('bye'))
+      const frozen = requestError.serialize()
+      frozen.getVI()
+      frozen.getU16()
+
+      expect(RequestError.parsePayload(frozen).redirect).toBeUndefined()
+      expect(frozen.remaining).toBe(0)
     })
 
     test('partial message', () => {

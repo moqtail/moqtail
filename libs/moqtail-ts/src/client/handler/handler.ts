@@ -31,6 +31,7 @@ import {
   handlerFetchCancel,
   handlerFetchOk,
   handlerGoAway,
+  handlerGoAwayOnRequestStream,
   handlerPublish,
   handlerSubscribeNamespace,
   handlerSubscribeTracks,
@@ -109,6 +110,8 @@ export function getHandlerForRequestStreamMessage(msg: ControlMessage): RequestS
   if (msg instanceof RequestOk) return handlerRequestOk
   if (msg instanceof RequestError) return handlerRequestError
   // Follow-ups on an open request stream.
+  // GOAWAY is Control *and* Request in Table 5: here it migrates this one request.
+  if (msg instanceof GoAway) return handlerGoAwayOnRequestStream
   if (msg instanceof RequestUpdate) return handlerSubscribeUpdate
   if (msg instanceof PublishDone) return handlerPublishDone
   if (msg instanceof PublishNamespaceDone) return handlerPublishNamespaceDone

@@ -363,6 +363,7 @@ export enum RequestErrorCode {
   NamespaceTooLarge = 0x31,
   InvalidJoiningRequestId = 0x32,
   UnsupportedExtension = 0x33,
+  Redirect = 0x34,
 }
 
 /**
@@ -408,6 +409,8 @@ export namespace RequestErrorCode {
         return RequestErrorCode.InvalidJoiningRequestId
       case 0x33n:
         return RequestErrorCode.UnsupportedExtension
+      case 0x34n:
+        return RequestErrorCode.Redirect
       default:
         throw new InvalidEnumValue('RequestErrorCode.tryFrom', v)
     }

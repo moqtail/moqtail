@@ -209,6 +209,14 @@ export class MOQtailClient {
   readonly #requestStreams: Map<bigint, RequestStream> = new Map()
 
   /**
+   * Request ids of requests re-issued after a per-request GOAWAY (§10.4), which consumes
+   * a fresh Request ID each time (§10.1). The id the caller was given stays the client's
+   * key for the request; these two maps translate it to and from the id now on the wire.
+   */
+  readonly #wireRequestIds: Map<bigint, bigint> = new Map()
+  readonly #clientRequestIds: Map<bigint, bigint> = new Map()
+
+  /**
    * Namespace path -\> the requestId that announced or subscribed to it, so the
    * namespace-keyed APIs ({@link MOQtailClient.publishNamespaceDone}) can find the
    * stream to close.
@@ -256,6 +264,13 @@ export class MOQtailClient {
    * Lifecycle handler.
    */
   onGoaway?: (msg: GoAway) => void
+
+  /**
+   * Whether the peer has sent a GOAWAY on the control stream. Once it has, this side
+   * should not start new requests (§10.4); a second one closes the session with
+   * PROTOCOL_VIOLATION.
+   */
+  goawayReceived = false
 
   /**
    * Fired if the underlying WebTransport session fails (ready -\> closed prematurely).
@@ -1409,7 +1424,18 @@ export class MOQtailClient {
               'MOQtailClient.fetch',
               `No subscribe request for the given joiningRequestId: ${typeAndProps.props.joiningRequestId}`,
             )
-          msg = new Fetch(requestId, { type: typeAndProps.type, props: typeAndProps.props }, params)
+          // The peer knows the subscription by the id it was last issued under (§10.1).
+          msg = new Fetch(
+            requestId,
+            {
+              type: typeAndProps.type,
+              props: {
+                ...typeAndProps.props,
+                joiningRequestId: this.#wireRequestId(typeAndProps.props.joiningRequestId),
+              },
+            },
+            params,
+          )
           break
         case FetchType.Absolute:
           joiningRequest = this.requests.get(typeAndProps.props.joiningRequestId)
@@ -1418,7 +1444,17 @@ export class MOQtailClient {
               'MOQtailClient.fetch',
               `No subscribe request for the given joiningRequestId: ${typeAndProps.props.joiningRequestId}`,
             )
-          msg = new Fetch(requestId, { type: typeAndProps.type, props: typeAndProps.props }, params)
+          msg = new Fetch(
+            requestId,
+            {
+              type: typeAndProps.type,
+              props: {
+                ...typeAndProps.props,
+                joiningRequestId: this.#wireRequestId(typeAndProps.props.joiningRequestId),
+              },
+            },
+            params,
+          )
           break
       }
       const request = new FetchRequest(msg)
@@ -1996,6 +2032,60 @@ export class MOQtailClient {
   }
 
   /**
+   * Re-issues one request on a fresh stream after the peer sent a GOAWAY on its request
+   * stream (§10.4). Only that request moves: the session, and every other request on it,
+   * are left alone.
+   *
+   * The re-issued request consumes a new Request ID (§10.1), so the opening message is
+   * re-stamped with it. The id the caller holds keeps naming the request; only the id on
+   * the wire changes.
+   *
+   * @returns True if the request was re-issued here. A GOAWAY naming a new session URI
+   * is not: opening a session is the application's call, so it is surfaced through
+   * {@link MOQtailClient.onGoaway} and the request stream is closed.
+   *
+   * @internal
+   */
+  async migrateRequest(requestId: bigint, goAway: GoAway): Promise<boolean> {
+    const oldStream = this.#requestStreams.get(requestId)
+    const first = oldStream?.first
+    if (!oldStream || !first) {
+      logger.warn('MOQtailClient', `GOAWAY on a request stream this side did not open (request id ${requestId})`)
+      return false
+    }
+
+    if (goAway.newSessionUri) {
+      logger.log('MOQtailClient', `GOAWAY migrates request ${requestId} to ${goAway.newSessionUri}`)
+      this.onGoaway?.(goAway)
+      await this.#closeRequestStream(requestId)
+      return false
+    }
+
+    // A copy, not the original: the caller still holds that message and its id.
+    const wireRequestId = this.#nextClientRequestId
+    const reissued = ControlMessage.deserialize(ControlMessage.serialize(first))
+    ;(reissued as { requestId: bigint }).requestId = wireRequestId
+    this.#wireRequestIds.set(requestId, wireRequestId)
+    this.#clientRequestIds.set(wireRequestId, requestId)
+
+    oldStream.migrated = true
+    await oldStream.close()
+    await this.#openRequestStream(requestId, reissued)
+    logger.log('MOQtailClient', `re-issued request ${requestId} as request id ${wireRequestId}`)
+    return true
+  }
+
+  /** The Request ID `requestId` currently travels under, which a migration has moved on. */
+  #wireRequestId(requestId: bigint): bigint {
+    return this.#wireRequestIds.get(requestId) ?? requestId
+  }
+
+  /** The request a peer-supplied Request ID belongs to, undoing any migration. */
+  #clientRequestId(wireRequestId: bigint): bigint {
+    return this.#clientRequestIds.get(wireRequestId) ?? wireRequestId
+  }
+
+  /**
    * The stream a previously issued request runs on.
    *
    * @throws :{@link InternalError} If the request has no open stream — it was never
@@ -2034,12 +2124,16 @@ export class MOQtailClient {
     } catch (error) {
       logger.error('MOQtailClient', `request stream for requestId=${requestId} failed`, error)
     } finally {
-      this.#requestStreams.delete(requestId)
-      // A stream that dies before answering leaves the caller awaiting forever.
-      if (!answered) {
-        this.requests
-          .get(requestId)
-          ?.reject(new InternalError('MOQtailClient', `Request stream closed before answering request ${requestId}`))
+      // A migrated request lives on under the same id on its new stream, so this one
+      // ending is not the request ending.
+      if (!requestStream.migrated) {
+        this.#requestStreams.delete(requestId)
+        // A stream that dies before answering leaves the caller awaiting forever.
+        if (!answered) {
+          this.requests
+            .get(requestId)
+            ?.reject(new InternalError('MOQtailClient', `Request stream closed before answering request ${requestId}`))
+        }
       }
     }
   }
@@ -2177,7 +2271,9 @@ export class MOQtailClient {
       const reader = recvStream.stream.getReader()
 
       if (header instanceof FetchHeader) {
-        const request = this.requests.get(header.requestId)
+        // The header names the fetch by the id it was issued under, which a migration
+        // may have moved on from.
+        const request = this.requests.get(this.#clientRequestId(header.requestId))
         if (request && request instanceof FetchRequest) {
           let fullTrackName: FullTrackName
           switch (request.message.typeAndProps.type) {
@@ -2422,16 +2518,25 @@ if (import.meta.vitest) {
     /** Reasons the client cancelled peer uni streams with, in order. */
     readonly uniCancelReasons: unknown[] = []
 
-    /** Opens a peer uni stream carrying `bytes`, left open so the reader keeps waiting. */
-    openIncomingUniStream(bytes: Uint8Array): void {
+    /**
+     * Opens a peer uni stream carrying `bytes`, left open so the reader keeps waiting.
+     * The returned controller writes more onto that same stream, which is how a second
+     * control message reaches the client after the handshake.
+     */
+    openIncomingUniStream(bytes: Uint8Array): ReadableStreamDefaultController<Uint8Array> {
+      let streamController!: ReadableStreamDefaultController<Uint8Array>
       this.#incoming.enqueue(
         new ReadableStream<Uint8Array>({
-          start: (controller) => controller.enqueue(bytes),
+          start: (controller) => {
+            streamController = controller
+            controller.enqueue(bytes)
+          },
           cancel: (reason) => {
             this.uniCancelReasons.push(reason)
           },
         }),
       )
+      return streamController
     }
 
     close(): void {}
@@ -2480,14 +2585,18 @@ if (import.meta.vitest) {
       globalThis.WebTransport = originalWebTransport
     })
 
-    /** A connected client whose handshake is already done. */
-    async function connected(): Promise<{ client: MOQtailClient; transport: MockWebTransport }> {
+    /** A connected client whose handshake is already done, plus its peer control stream. */
+    async function connected(): Promise<{
+      client: MOQtailClient
+      transport: MockWebTransport
+      control: ReadableStreamDefaultController<Uint8Array>
+    }> {
       globalThis.WebTransport = MockWebTransport as unknown as typeof WebTransport
       const connecting = MOQtailClient.new({ url: 'https://relay.example/moq' })
       const transport = MockWebTransport.last
       await vi.waitFor(() => expect(transport.sentChunks).toHaveLength(1))
-      transport.openIncomingUniStream(new Setup(new SetupOptions().build()).serialize().toUint8Array())
-      return { client: await connecting, transport }
+      const control = transport.openIncomingUniStream(new Setup(new SetupOptions().build()).serialize().toUint8Array())
+      return { client: await connecting, transport, control }
     }
 
     /** Waits for the client to open its n-th bidi stream and write its first message. */
@@ -2720,6 +2829,69 @@ if (import.meta.vitest) {
       expect(transport.sentChunks).toHaveLength(1)
 
       await client.disconnect()
+    })
+
+    it('re-issues the one request a GOAWAY migrates and leaves the session up', async () => {
+      const { client, transport } = await connected()
+
+      const subscribing = client.subscribe({
+        fullTrackName: ftn,
+        filterType: FilterType.LatestObject,
+        forward: true,
+        groupOrder: GroupOrder.Original,
+        priority: 0,
+      })
+      const subscribeStream = await openedStream(transport, 0)
+      const requestId = (subscribeStream.messages[0] as Subscribe).requestId
+
+      const subscribingTracks = client.subscribeTracks(Tuple.fromUtf8Path('room'))
+      const tracksStream = await openedStream(transport, 1)
+
+      // §10.4: a GOAWAY on a request stream migrates that request and nothing else. No
+      // URI, so it is re-issued on this same session.
+      subscribeStream.respond(new GoAway(undefined, 250n))
+
+      const reissuedStream = await openedStream(transport, 2)
+      const reissued = reissuedStream.messages[0]
+      expect(reissued).toBeInstanceOf(Subscribe)
+      expect((reissued as Subscribe).fullTrackName.toString()).toBe(ftn.toString())
+      // A re-issued request consumes a fresh Request ID (§10.1)...
+      expect((reissued as Subscribe).requestId).not.toBe(requestId)
+      expect(subscribeStream.isClosed).toBe(true)
+
+      // ...but the caller keeps the id it was handed, and the answer on the new stream
+      // completes the call it made.
+      reissuedStream.respond(SubscribeOk.create(7n, [], []))
+      expect(await subscribing).toMatchObject({ requestId })
+      expect(client.subscriptionAliasMap.get(requestId)).toBe(7n)
+
+      // The other request rode through untouched, and the session was never torn down.
+      tracksStream.respond(new RequestOk())
+      expect((await subscribingTracks).response).toBeInstanceOf(RequestOk)
+      expect(transport.biStreams).toHaveLength(3)
+      expect(client.goawayReceived).toBe(false)
+
+      await client.disconnect()
+    })
+
+    it('closes the session on a second GOAWAY on the control stream', async () => {
+      const { client, control } = await connected()
+      const seen: GoAway[] = []
+      const terminated: unknown[] = []
+      client.onGoaway = (msg) => seen.push(msg)
+      client.onSessionTerminated = (reason) => terminated.push(reason)
+
+      control.enqueue(new GoAway('https://elsewhere.example', 5000n, 4n).serialize().toUint8Array())
+      await vi.waitFor(() => expect(seen).toHaveLength(1))
+      expect(seen[0]!.newSessionUri).toBe('https://elsewhere.example')
+      expect(seen[0]!.timeout).toBe(5000n)
+      expect(seen[0]!.requestId).toBe(4n)
+      expect(client.goawayReceived).toBe(true)
+
+      // §10.4: more than one GOAWAY on the control stream is a protocol violation.
+      control.enqueue(new GoAway(undefined, 0n, 6n).serialize().toUint8Array())
+      await vi.waitFor(() => expect(terminated).toHaveLength(1))
+      expect(seen).toHaveLength(1)
     })
 
     it('refuses a peer-opened stream that does not begin with a First-marked type', async () => {

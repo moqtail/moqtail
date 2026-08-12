@@ -21,6 +21,7 @@ use std::{
 };
 use tokio::sync::{RwLock, mpsc};
 
+use moqtail::model::common::location::Location;
 use moqtail::model::data::fetch_object::FetchObjectPayload;
 
 use moqtail::transport::connection::{TransportConnection, TransportKind};
@@ -70,6 +71,11 @@ pub enum PendingRequest {
 /// The receiver awaits entries in a loop and sends them downstream.
 #[allow(dead_code)]
 pub(crate) enum UpstreamFetchEvent {
+  /// The publisher's FETCH_OK, carrying the range it will actually deliver. A relay
+  /// cannot answer its own subscriber until it has this.
+  Accepted {
+    end_location: Location,
+  },
   Object(FetchObjectPayload),
   StreamClosed,
   Error(String),

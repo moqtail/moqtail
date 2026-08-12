@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { Tuple } from '../common/tuple'
+import { Tuple, TupleField } from '../common/tuple'
 import { ByteBuffer, BaseByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
 import { TrackNameError } from '../error/error'
 
@@ -25,12 +25,12 @@ export const MAX_FULL_TRACK_NAME_LENGTH = 4096
  * Fully-qualified track identifier = hierarchical namespace (tuple) + leaf name bytes.
  *
  * Constraints enforced (throws {@link TrackNameError}):
- * - Namespace tuple field count: 1 .. {@link MAX_NAMESPACE_TUPLE_COUNT} (must not be empty).
+ * - Namespace tuple field count: 0 .. {@link MAX_NAMESPACE_TUPLE_COUNT} (draft-18 §2.4.1; an empty namespace is legal).
  * - Total serialized length (namespace tuple + raw name bytes) less than or equals {@link MAX_FULL_TRACK_NAME_LENGTH} bytes.
  *
  * Namespace input may be:
- * - `string` path with segments separated by `/` (converted via {@link Tuple.fromUtf8Path}). Empty segments are preserved
- *   except leading/trailing slashes are treated as empty fields and will be rejected by the length check if result is 0.
+ * - `string` path with segments separated by `/` (converted via {@link Tuple.fromUtf8Path}). Empty segments are dropped,
+ *   so `''` and `'/'` both yield a zero-element namespace.
  * - Existing {@link Tuple} instance.
  *
  * Name input may be:
@@ -68,7 +68,7 @@ export class FullTrackName {
    *
    * Validation steps:
    * 1. Convert namespace string -\> {@link Tuple} (split on '/') if needed.
-   * 2. Reject if namespace tuple field count is 0 or \> {@link MAX_NAMESPACE_TUPLE_COUNT}.
+   * 2. Reject if namespace tuple field count is \> {@link MAX_NAMESPACE_TUPLE_COUNT}.
    * 3. Encode name string to UTF-8 if needed.
    * 4. Reject if total serialized length (namespace tuple + name bytes) \> {@link MAX_FULL_TRACK_NAME_LENGTH}.
    *
@@ -82,10 +82,10 @@ export class FullTrackName {
   static tryNew(namespace: string | Tuple, name: string | Uint8Array): FullTrackName {
     const nsTuple = typeof namespace === 'string' ? Tuple.fromUtf8Path(namespace) : namespace
     const nsCount = nsTuple.fields.length
-    if (nsCount === 0 || nsCount > MAX_NAMESPACE_TUPLE_COUNT) {
+    if (nsCount > MAX_NAMESPACE_TUPLE_COUNT) {
       throw new TrackNameError(
         'FullTrackName::tryNew(nsCount)',
-        `Namespace cannot be empty or cannot exceed ${MAX_NAMESPACE_TUPLE_COUNT} fields`,
+        `Namespace cannot exceed ${MAX_NAMESPACE_TUPLE_COUNT} fields`,
       )
     }
     const nameBytes = typeof name === 'string' ? new TextEncoder().encode(name) : name
@@ -118,10 +118,10 @@ export class FullTrackName {
   static deserialize(buf: BaseByteBuffer): FullTrackName {
     const namespace = buf.getTuple()
     const nsCount = namespace.fields.length
-    if (nsCount === 0 || nsCount > MAX_NAMESPACE_TUPLE_COUNT) {
+    if (nsCount > MAX_NAMESPACE_TUPLE_COUNT) {
       throw new TrackNameError(
         'FullTrackName::deserialize(nsCount)',
-        `Namespace cannot be empty or cannot exceed ${MAX_NAMESPACE_TUPLE_COUNT} fields`,
+        `Namespace cannot exceed ${MAX_NAMESPACE_TUPLE_COUNT} fields`,
       )
     }
     const name = buf.getLengthPrefixedBytes()
@@ -134,4 +134,51 @@ export class FullTrackName {
     }
     return new FullTrackName(namespace, name)
   }
+}
+
+if (import.meta.vitest) {
+  const { describe, test, expect } = import.meta.vitest
+
+  const ns = (fieldCount: number) =>
+    new Tuple(Array.from({ length: fieldCount }, (_, i) => TupleField.fromUtf8(`${i}`)))
+
+  describe('FullTrackName namespace bounds', () => {
+    test('zero-element namespace round-trips', () => {
+      const ftn = FullTrackName.tryNew(new Tuple(), 'track')
+      expect(ftn.namespace.fields.length).toBe(0)
+
+      const frozen = ftn.serialize()
+      // The wire form the Rust relay parses: a zero field count, then the name.
+      expect(Array.from(frozen.toUint8Array())).toEqual([0x00, 0x05, ...new TextEncoder().encode('track')])
+
+      const parsed = FullTrackName.deserialize(frozen)
+      expect(parsed.namespace.fields.length).toBe(0)
+      expect(parsed.name).toEqual(ftn.name)
+      expect(frozen.remaining).toBe(0)
+    })
+
+    test('an empty path string yields a zero-element namespace', () => {
+      expect(FullTrackName.tryNew('', 'track').namespace.fields.length).toBe(0)
+      expect(FullTrackName.tryNew('/', 'track').namespace.fields.length).toBe(0)
+    })
+
+    test('32 fields are accepted', () => {
+      const ftn = FullTrackName.tryNew(ns(MAX_NAMESPACE_TUPLE_COUNT), 'track')
+      expect(FullTrackName.deserialize(ftn.serialize()).namespace.fields.length).toBe(MAX_NAMESPACE_TUPLE_COUNT)
+    })
+
+    test('33 fields are rejected', () => {
+      expect(() => FullTrackName.tryNew(ns(MAX_NAMESPACE_TUPLE_COUNT + 1), 'track')).toThrow(TrackNameError)
+
+      const buf = new ByteBuffer()
+      buf.putTuple(ns(MAX_NAMESPACE_TUPLE_COUNT + 1))
+      buf.putLengthPrefixedBytes(new TextEncoder().encode('track'))
+      expect(() => FullTrackName.deserialize(buf.freeze())).toThrow(TrackNameError)
+    })
+
+    test('total length over 4096 is still rejected', () => {
+      const long = new Uint8Array(MAX_FULL_TRACK_NAME_LENGTH + 1)
+      expect(() => FullTrackName.tryNew(new Tuple(), long)).toThrow(TrackNameError)
+    })
+  })
 }

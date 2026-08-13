@@ -16,6 +16,7 @@
 
 import { FrozenByteBuffer } from '../common/byte_buffer'
 import { ControlMessageType, FetchType } from './constant'
+import { PublishBlocked } from './publish_blocked'
 import { PublishNamespace } from './publish_namespace'
 import { PublishNamespaceCancel } from './publish_namespace_cancel'
 import { Namespace } from './namespace'
@@ -45,6 +46,7 @@ import { RequestError } from './request_error'
 
 export type ControlMessage =
   | Publish
+  | PublishBlocked
   | PublishDone
   | PublishNamespace
   | PublishNamespaceCancel
@@ -128,9 +130,8 @@ export namespace ControlMessage {
         return UnsubscribeNamespace.parsePayload(payload)
       case ControlMessageType.Setup:
         return Setup.parsePayload(payload)
-      // PUBLISH_BLOCKED's body is owned by #271.
       case ControlMessageType.PublishBlocked:
-        throw new Error('ControlMessageType.PublishBlocked (0xF) has no message body yet (#271)')
+        return PublishBlocked.parsePayload(payload)
       default:
         throw new Error(`Unknown or unhandled ControlMessageType: ${messageType}`)
     }

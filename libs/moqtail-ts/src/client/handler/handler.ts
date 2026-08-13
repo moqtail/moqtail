@@ -33,11 +33,13 @@ import {
   handlerGoAway,
   handlerGoAwayOnRequestStream,
   handlerPublish,
+  handlerPublishBlocked,
   handlerSubscribeNamespace,
   handlerSubscribeTracks,
 } from '.'
 import {
   Publish,
+  PublishBlocked,
   PublishNamespace,
   PublishNamespaceCancel,
   PublishNamespaceDone,
@@ -114,6 +116,9 @@ export function getHandlerForRequestStreamMessage(msg: ControlMessage): RequestS
   if (msg instanceof GoAway) return handlerGoAwayOnRequestStream
   if (msg instanceof RequestUpdate) return handlerSubscribeUpdate
   if (msg instanceof PublishDone) return handlerPublishDone
+  // The publisher's answer when the peer's bidi stream limit leaves it no stream to
+  // send a track's PUBLISH on (§10.20). It travels on the SUBSCRIBE_TRACKS stream.
+  if (msg instanceof PublishBlocked) return handlerPublishBlocked
   if (msg instanceof PublishNamespaceDone) return handlerPublishNamespaceDone
   // Retired by draft-18; cancellation is a stream reset now. Kept until #261 deletes
   // the message types themselves so a peer still sending them is not fatal.

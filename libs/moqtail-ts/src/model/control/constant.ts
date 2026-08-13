@@ -480,8 +480,6 @@ if (import.meta.vitest) {
           return {
             name: entry.name,
             expected: (entry.stream ?? '').includes('First'),
-            // SUBSCRIBE_TRACKS and PUBLISH_BLOCKED have no body yet (#266, #271) but
-            // their codepoints already parse, so the Stream column applies to them too.
             actual: ControlMessageType.isFirst(ControlMessageType.tryFrom(codepoint)),
           }
         })

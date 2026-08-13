@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+export * from './publish_blocked'
 export * from './publish_namespace'
 export * from './subscribe'
 export * from './switch'

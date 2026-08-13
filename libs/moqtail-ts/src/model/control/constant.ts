@@ -91,6 +91,25 @@ export namespace ControlMessageType {
     }
   }
 
+  /**
+   * True for the six request types §10.9 lets a REQUEST_UPDATE modify. TRACK_STATUS
+   * opens a request stream but is not one of them, so an update on its stream is
+   * refused with a REQUEST_ERROR.
+   */
+  export function isUpdatable(t: ControlMessageType): boolean {
+    switch (t) {
+      case ControlMessageType.Subscribe:
+      case ControlMessageType.Publish:
+      case ControlMessageType.Fetch:
+      case ControlMessageType.PublishNamespace:
+      case ControlMessageType.SubscribeNamespace:
+      case ControlMessageType.SubscribeTracks:
+        return true
+      default:
+        return false
+    }
+  }
+
   /** Convert bigint discriminant to enum value or throw on invalid. */
   export function tryFrom(v: bigint): ControlMessageType {
     switch (v) {
@@ -470,6 +489,21 @@ if (import.meta.vitest) {
         })
       expect(graded.filter((e) => e.expected).map((e) => e.name).length).toBe(7)
       expect(graded.filter((e) => e.actual !== e.expected)).toEqual([])
+    })
+
+    test('isUpdatable covers the request types §10.9 names, and not TRACK_STATUS', () => {
+      const updatable = [
+        ControlMessageType.Subscribe,
+        ControlMessageType.Publish,
+        ControlMessageType.Fetch,
+        ControlMessageType.PublishNamespace,
+        ControlMessageType.SubscribeNamespace,
+        ControlMessageType.SubscribeTracks,
+      ]
+      expect(updatable.every(ControlMessageType.isUpdatable)).toBe(true)
+      // TRACK_STATUS opens a request stream but §10.9 no longer lets it be updated.
+      expect(ControlMessageType.isFirst(ControlMessageType.TrackStatus)).toBe(true)
+      expect(ControlMessageType.isUpdatable(ControlMessageType.TrackStatus)).toBe(false)
     })
   })
 }

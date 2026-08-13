@@ -43,6 +43,7 @@ import {
   SUPPORTED_VERSIONS,
   PublishBlocked,
   PublishDone,
+  PublishDoneStatusCode,
 } from '../model/control'
 import {
   Datagram,
@@ -75,6 +76,7 @@ import {
   StreamResetCode,
 } from '../model'
 import { Track } from './track/track'
+import { LiveTrackSource } from './track/content_source'
 import { PublishNamespaceRequest } from './request/publish_namespace'
 import { FetchRequest } from './request/fetch'
 import { SubscribeRequest } from './request/subscribe'
@@ -2209,6 +2211,7 @@ export class MOQtailClient {
 
     // The first message names the request; everything later on this stream belongs to it.
     const openingRequestId = (first as { requestId: bigint }).requestId
+    requestStream.openingType = first.getType()
 
     try {
       let msg: ControlMessage | undefined = first
@@ -2828,6 +2831,86 @@ if (import.meta.vitest) {
       await vi.waitFor(() => expect(incoming.messages).toHaveLength(1))
       expect(incoming.messages[0]).toBeInstanceOf(RequestError)
       expect(transport.sentChunks).toHaveLength(1)
+
+      await client.disconnect()
+    })
+
+    it('refuses a REQUEST_UPDATE on a TRACK_STATUS stream', async () => {
+      const { client, transport } = await connected()
+
+      const incoming = transport.openIncomingBiStream()
+      incoming.respond(TrackStatus.newLatestObject(4n, 11n, ftn, 128, GroupOrder.Original, false, []))
+      await vi.waitFor(() => expect(incoming.messages).toHaveLength(1))
+      expect(incoming.messages[0]).toBeInstanceOf(RequestOk)
+
+      // §10.9 dropped TRACK_STATUS from the request types an update may modify.
+      incoming.respond(new RequestUpdate(4n, [new SubscriberPriority(200)]))
+      await vi.waitFor(() => expect(incoming.messages).toHaveLength(2))
+      const refusal = incoming.messages[1]
+      expect(refusal).toBeInstanceOf(RequestError)
+      expect((refusal as RequestError).errorCode).toBe(RequestErrorCode.NotSupported)
+      // Refused, not failed: the TRACK_STATUS itself is left alone.
+      expect(incoming.isClosed).toBe(false)
+
+      await client.disconnect()
+    })
+
+    it('applies a REQUEST_UPDATE on a SUBSCRIBE stream', async () => {
+      const { client, transport } = await connected()
+      client.addOrUpdateTrack({
+        fullTrackName: ftn,
+        trackSource: { live: new LiveTrackSource(new ReadableStream<MoqtObject>()) },
+        publisherPriority: 0,
+        trackAlias: 7n,
+      })
+
+      const incoming = transport.openIncomingBiStream()
+      incoming.respond(Subscribe.newLatestObject(4n, ftn, []))
+      await vi.waitFor(() => expect(incoming.messages).toHaveLength(1))
+      expect(incoming.messages[0]).toBeInstanceOf(SubscribeOk)
+
+      incoming.respond(new RequestUpdate(4n, [new SubscriberPriority(200)]))
+      await vi.waitFor(() => expect(incoming.messages).toHaveLength(2))
+      expect(incoming.messages[1]).toBeInstanceOf(RequestOk)
+      expect(client.publications.get(4n)).toBeInstanceOf(SubscribePublication)
+
+      await client.disconnect()
+    })
+
+    it('ends a subscription whose REQUEST_UPDATE fails with PUBLISH_DONE(UPDATE_FAILED)', async () => {
+      const { client, transport } = await connected()
+
+      const incoming = transport.openIncomingBiStream()
+      // No such track, so the SUBSCRIBE is refused and leaves no subscription to update.
+      incoming.respond(Subscribe.newLatestObject(4n, ftn, []))
+      await vi.waitFor(() => expect(incoming.messages).toHaveLength(1))
+      expect(incoming.messages[0]).toBeInstanceOf(RequestError)
+
+      incoming.respond(new RequestUpdate(4n, [new SubscriberPriority(200)]))
+      await vi.waitFor(() => expect(incoming.messages).toHaveLength(3))
+      expect((incoming.messages[1] as RequestError).errorCode).toBe(RequestErrorCode.NotSupported)
+      // §10.9.1: a failed update also terminates the subscription.
+      const done = incoming.messages[2]
+      expect(done).toBeInstanceOf(PublishDone)
+      expect((done as PublishDone).statusCode).toBe(PublishDoneStatusCode.UpdateFailed)
+
+      await client.disconnect()
+    })
+
+    it('closes the bidi stream when a namespace request update fails', async () => {
+      const { client, transport } = await connected()
+
+      const incoming = transport.openIncomingBiStream()
+      incoming.respond(new SubscribeNamespace(4n, Tuple.fromUtf8Path('room'), []))
+      await vi.waitFor(() => expect(incoming.messages).toHaveLength(1))
+      expect(incoming.messages[0]).toBeInstanceOf(RequestOk)
+
+      // The client keeps no prefix-subscription state to update, so §10.9.1 ends the
+      // request by closing its stream.
+      incoming.respond(new RequestUpdate(4n, []))
+      await vi.waitFor(() => expect(incoming.messages).toHaveLength(2))
+      expect(incoming.messages[1]).toBeInstanceOf(RequestError)
+      await vi.waitFor(() => expect(incoming.isClosed).toBe(true))
 
       await client.disconnect()
     })

@@ -92,6 +92,16 @@ export class FetchPublication {
     this.#isCanceled = true
   }
 
+  /**
+   * Resets the data stream this fetch is being delivered on, which §10.9.1 requires when
+   * a REQUEST_UPDATE for a FETCH fails.
+   */
+  async resetDataStream(code: StreamResetCode): Promise<void> {
+    logger.debug('publication/fetch', `reset data stream requestId=${this.#requestId} code=${code}`)
+    this.#isCanceled = true
+    await this.#writer?.abort(streamResetReason(code)).catch(() => {})
+  }
+
   async publish(): Promise<void> {
     if (this.#isCanceled) return
     if (!this.#track.trackSource.past) throw new MOQtailError('FetchPublication.publish, Track does not support fetch')
@@ -123,6 +133,8 @@ export class FetchPublication {
       logger.debug('publication/fetch', `published requestId=${this.#requestId} objects=${this.#objects.length}`)
       this.#client.publications.delete(this.#requestId)
     } catch (error: unknown) {
+      // A write that fails because the stream was reset on purpose is not a failure.
+      if (this.#isCanceled) return
       await this.#writer?.abort(streamResetReason(StreamResetCode.InternalError))
       const message = error instanceof Error ? error.message : String(error)
       logger.error('publication/fetch', `publish failed requestId=${this.#requestId}`, message)

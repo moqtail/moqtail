@@ -36,6 +36,12 @@ export class RequestStream {
    * peer-opened stream, which is the peer's request to re-issue, not ours.
    */
   first?: ControlMessage
+  /**
+   * The type of the message that opened this stream, whichever side opened it. It is
+   * what the request on this stream *is*, which decides what may follow — a
+   * REQUEST_UPDATE is only valid for the types §10.9 lists.
+   */
+  openingType?: ControlMessageType
   /** Set when the request this stream carried has been re-issued on a new stream. */
   migrated = false
   readonly #reader: ReadableStreamDefaultReader<Uint8Array>
@@ -70,6 +76,7 @@ export class RequestStream {
     const biStream = await webTransport.createBidirectionalStream()
     const requestStream = new RequestStream(biStream)
     requestStream.first = first
+    requestStream.openingType = first.getType()
     await requestStream.send(first)
     return requestStream
   }

@@ -19,7 +19,7 @@ import {
   handlerPublishNamespace,
   handlerSubscribe,
   handlerSubscribeOk,
-  handlerSubscribeUpdate,
+  handlerRequestUpdate,
   handlerTrackStatus,
   handlerRequestOk,
   handlerRequestError,
@@ -104,7 +104,7 @@ export function getHandlerForRequestStreamMessage(msg: ControlMessage): RequestS
   // Follow-ups on an open request stream.
   // GOAWAY is Control *and* Request in Table 5: here it migrates this one request.
   if (msg instanceof GoAway) return handlerGoAwayOnRequestStream
-  if (msg instanceof RequestUpdate) return handlerSubscribeUpdate
+  if (msg instanceof RequestUpdate) return handlerRequestUpdate
   if (msg instanceof PublishDone) return handlerPublishDone
   // The publisher's answer when the peer's bidi stream limit leaves it no stream to
   // send a track's PUBLISH on (§10.20). It travels on the SUBSCRIBE_TRACKS stream.

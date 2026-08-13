@@ -14,6 +14,7 @@
 
 use crate::server::client::MOQTClient;
 use crate::server::message_handlers::parameters;
+use crate::server::message_handlers::publish_handler;
 use crate::server::message_handlers::subscribe_namespace_handler::{
   MAX_NAMESPACE_PREFIX_FIELDS, oversized_namespace_error,
 };
@@ -190,14 +191,14 @@ pub async fn handle_subscribe_tracks(
       {
         warn!("Failed retroactive auto-subscribe for track: {:?}", e);
       }
+      let subscription = track_read.get_subscription(client.connection_id).await;
       drop(track_read);
 
       // Each PUBLISH is a request on its own bidi stream.
       let sub = client.clone();
       let push_msg = original_publish_message.clone();
       tokio::spawn(async move {
-        crate::server::message_handlers::publish_handler::forward_publish_downstream(sub, push_msg)
-          .await;
+        publish_handler::forward_publish_downstream(sub, push_msg, subscription).await;
       });
       published += 1;
     } else {

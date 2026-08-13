@@ -123,6 +123,11 @@ pub struct Cli {
   /// alias before the stream is abandoned
   #[arg(long, default_value_t = 500)]
   pub track_alias_resolution_timeout_ms: u64,
+  /// How long forwarding waits for the control message that carries a subscriber's
+  /// track alias (SUBSCRIBE_OK, or PUBLISH when the relay pushes) to be sent. Objects
+  /// queue meanwhile; once it elapses they are forwarded regardless.
+  #[arg(long, default_value_t = 3000)]
+  pub downstream_alias_timeout_ms: u64,
   /// How many recent groups of Object ids are remembered per track, to drop duplicates
   /// when several publishers serve the same Track. 0 turns duplicate detection off.
   /// Capped, because the memory this costs also scales with the size of a group
@@ -160,6 +165,9 @@ pub struct AppConfig {
   /// A data stream can arrive before the control message that establishes its track
   /// alias. The stream waits this long for it, then is abandoned.
   pub track_alias_resolution_timeout: Duration,
+  /// A subscriber cannot place a data stream until it has the track alias. Forwarding
+  /// waits this long for the control message carrying it, then proceeds regardless.
+  pub downstream_alias_timeout: Duration,
   /// Groups of Object ids retained per track for duplicate detection. Bounds what that
   /// costs; a publisher more than this many groups behind can slip a duplicate through.
   pub dedup_retained_groups: usize,
@@ -196,6 +204,7 @@ impl AppConfig {
         track_alias_resolution_timeout: Duration::from_millis(
           cli.track_alias_resolution_timeout_ms,
         ),
+        downstream_alias_timeout: Duration::from_millis(cli.downstream_alias_timeout_ms),
         dedup_retained_groups: cli.dedup_retained_groups as usize,
       }
     })
@@ -319,6 +328,7 @@ mod tests {
       upstream_fetch_timeout: Duration::from_secs(10),
       upstream_subscribe_timeout: Duration::from_secs(10),
       track_alias_resolution_timeout: Duration::from_millis(500),
+      downstream_alias_timeout: Duration::from_millis(3000),
       dedup_retained_groups: 30,
     }
   }

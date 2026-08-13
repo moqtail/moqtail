@@ -242,7 +242,7 @@ export class Publisher {
 
     if (this.client) {
       try {
-        await this.client.publishNamespaceDone(Tuple.fromUtf8Path(this.config.namespace.join('/')));
+        await this.client.unpublishNamespace(Tuple.fromUtf8Path(this.config.namespace.join('/')));
       } catch {
         /* ignore */
       }

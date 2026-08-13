@@ -152,16 +152,16 @@ export class MOQtailClient {
   readonly peerSubscribeNamespace = new Set<Tuple>()
   /**
    * Namespace prefixes this client has subscribed to (issued SUBSCRIBE_NAMESPACE). Enables automatic filtering
-   * of incoming PUBLISH_NAMESPACE / PUBLISH_NAMESPACE_DONE. Maintained locally; no dedupe of overlapping / shadowing prefixes yet.
+   * of incoming NAMESPACE / NAMESPACE_DONE. Maintained locally; no dedupe of overlapping / shadowing prefixes yet.
    */
-  readonly subscribedAnnounces = new Set<Tuple>()
+  readonly subscribedNamespaces = new Set<Tuple>()
 
   readonly subscribedTracks = new Set<Tuple>()
   /**
-   * Track namespaces this client has successfully announced (received ANNOUNCE_OK). Source of truth for
-   * deciding what to PUBLISH_NAMESPACE_DONE on teardown or targeted withdrawal.(future optimization: prefix trie).
+   * Track namespaces this client has successfully published (received REQUEST_OK). Source of truth for
+   * deciding what to withdraw on teardown or targeted removal (future optimization: prefix trie).
    */
-  readonly announcedNamespaces = new Set<Tuple>()
+  readonly publishedNamespaces = new Set<Tuple>()
   /**
    * Locally registered track definitions keyed by full track name string. Populated via addOrUpdateTrack.
    * Does not imply the track has been announced or has active publications.
@@ -218,7 +218,7 @@ export class MOQtailClient {
 
   /**
    * Namespace path -\> the requestId that announced or subscribed to it, so the
-   * namespace-keyed APIs ({@link MOQtailClient.publishNamespaceDone}) can find the
+   * namespace-keyed APIs ({@link MOQtailClient.unpublishNamespace}) can find the
    * stream to close.
    */
   readonly #namespaceRequestIds: Map<string, bigint> = new Map()
@@ -923,7 +923,7 @@ export class MOQtailClient {
    *
    * This deletes the in-memory entry inserted via {@link MOQtailClient.addOrUpdateTrack}, so future lookups by its {@link Track.fullTrackName} will fail.
    * Does **not** automatically:
-   * - Withdraw the namespace announcement (call {@link MOQtailClient.publishNamespaceDone} separately if you want to inform peers)
+   * - Withdraw the namespace announcement (call {@link MOQtailClient.unpublishNamespace} separately if you want to inform peers)
    * - Cancel active subscriptions or fetches (they continue until normal completion)
    * - Affect already-sent objects.
    *
@@ -941,7 +941,7 @@ export class MOQtailClient {
    * client.removeTrack(track);
    *
    * // Optionally, inform peers that the namespace is no longer available:
-   * await client.publishNamespaceDone(track.fullTrackName.namespace);
+   * await client.unpublishNamespace(track.fullTrackName.namespace);
    * ```
    */
   removeTrack(track: Track) {
@@ -1681,13 +1681,13 @@ export class MOQtailClient {
    * Typical flow (publisher side):
    * 1. Prepare / register one or more {@link Track} objects locally (see {@link MOQtailClient.addOrUpdateTrack}).
    * 2. Call `publishNamespace(namespace)` once per namespace prefix to expose those tracks.
-   * 3. Later, call {@link MOQtailClient.publishNamespaceDone} when no longer publishing under that namespace.
+   * 3. Later, call {@link MOQtailClient.unpublishNamespace} when no longer publishing under that namespace.
    *
    * Parameter semantics:
    * - trackNamespace: Tuple representing the namespace prefix (e.g. ["camera","main"]). All tracks whose full names start with this tuple are considered within the announce scope.
    * - parameters: Optional {@link MessageParameters}; omitted =\> default instance.
    *
-   * Returns: {@link RequestOk} on success (namespace added to `announcedNamespaces`) or {@link RequestError} explaining refusal.
+   * Returns: {@link RequestOk} on success (namespace added to `publishedNamespaces`) or {@link RequestError} explaining refusal.
    *
    * Use cases:
    * - Make a camera or sensor namespace available before any objects are pushed.
@@ -1699,7 +1699,7 @@ export class MOQtailClient {
    *
    * @remarks
    * - Duplicate announce detection is TODO (currently a second call will still send another PUBLISH_NAMESPACE; receiver behavior may vary).
-   * - Successful announces are tracked in `announcedNamespaces`; manual removal occurs via {@link MOQtailClient.publishNamespaceDone}.
+   * - Successful announces are tracked in `publishedNamespaces`; manual removal occurs via {@link MOQtailClient.unpublishNamespace}.
    * - Discovery subscribers (those who issued {@link MOQtailClient.subscribeNamespace}) will receive the resulting {@link PublishNamespace} message.
    *
    * @example Minimal announce
@@ -1728,9 +1728,9 @@ export class MOQtailClient {
       const response = await request
 
       if (response instanceof RequestOk) {
-        this.announcedNamespaces.add(msg.trackNamespace)
+        this.publishedNamespaces.add(msg.trackNamespace)
         // The stream stays open for as long as the namespace is announced; closing it
-        // is what withdraws the announcement (see publishNamespaceDone).
+        // is what withdraws the announcement (see unpublishNamespace).
         this.#namespaceRequestIds.set(msg.trackNamespace.toUtf8Path(), msg.requestId)
       } else {
         await this.#closeRequestStream(msg.requestId)
@@ -1750,7 +1750,7 @@ export class MOQtailClient {
    * Withdraw a previously announced namespace so new subscribers no longer discover its tracks.
    *
    * Use when shutting down publishing for a logical scope (camera offline, room closed, session ended).
-   * Removes the namespace from `announcedNamespaces` locally and closes the stream its PUBLISH_NAMESPACE opened,
+   * Removes the namespace from `publishedNamespaces` locally and closes the stream its PUBLISH_NAMESPACE opened,
    * which is what withdraws the announcement (§3.3.2). This is also how an announce is retracted before the peer
    * has finished processing it.
    *
@@ -1771,19 +1771,19 @@ export class MOQtailClient {
    *
    * @example Basic usage
    * ```ts
-   * await client.publishNamespaceDone(["camera","main"])
+   * await client.unpublishNamespace(["camera","main"])
    * ```
    *
    * @example Idempotent
    * ```ts
-   * await client.publishNamespaceDone(["camera","main"]) // first time
-   * await client.publishNamespaceDone(["camera","main"]) // no error, already removed
+   * await client.unpublishNamespace(["camera","main"]) // first time
+   * await client.unpublishNamespace(["camera","main"]) // no error, already removed
    * ```
    */
-  async publishNamespaceDone(trackNamespace: Tuple) {
+  async unpublishNamespace(trackNamespace: Tuple) {
     this.#ensureActive()
     try {
-      this.announcedNamespaces.delete(trackNamespace)
+      this.publishedNamespaces.delete(trackNamespace)
       // Draft-18 §3.3.2: there is no PUBLISH_NAMESPACE_DONE. Closing the stream the
       // PUBLISH_NAMESPACE opened withdraws the announcement.
       await this.#closeNamespaceRequestStream(trackNamespace)
@@ -1835,7 +1835,7 @@ export class MOQtailClient {
       logger.log('MOQtailClient', 'subscribeNamespace | got response', response)
 
       if (response instanceof RequestOk) {
-        this.subscribedAnnounces.add(trackNamespacePrefix)
+        this.subscribedNamespaces.add(trackNamespacePrefix)
         this.#namespaceRequestIds.set(trackNamespacePrefix.toUtf8Path(), msg.requestId)
         void this.#drainNamespaceStream(requestStream, msg.requestId, trackNamespacePrefix)
       } else {
@@ -1845,7 +1845,7 @@ export class MOQtailClient {
       return {
         response,
         cancel: async () => {
-          this.subscribedAnnounces.delete(trackNamespacePrefix)
+          this.subscribedNamespaces.delete(trackNamespacePrefix)
           this.#namespaceRequestIds.delete(trackNamespacePrefix.toUtf8Path())
           await this.#closeRequestStream(msg.requestId)
         },
@@ -1925,7 +1925,7 @@ export class MOQtailClient {
     try {
       // Draft-18 §3.3.2: there is no UNSUBSCRIBE_NAMESPACE. Closing the stream the
       // SUBSCRIBE_NAMESPACE opened ends the prefix subscription.
-      this.subscribedAnnounces.delete(trackNamespacePrefix)
+      this.subscribedNamespaces.delete(trackNamespacePrefix)
       await this.#closeNamespaceRequestStream(trackNamespacePrefix)
     } catch (error) {
       await this.disconnect(
@@ -2677,7 +2677,7 @@ if (import.meta.vitest) {
       expect((await subscribingTracks).response).toBeInstanceOf(RequestOk)
 
       // Independent overlap spaces (§10.19), so the prefix is tracked twice over.
-      expect(client.subscribedAnnounces.has(prefix)).toBe(true)
+      expect(client.subscribedNamespaces.has(prefix)).toBe(true)
       expect(client.subscribedTracks.has(prefix)).toBe(true)
 
       await client.disconnect()

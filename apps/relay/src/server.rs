@@ -18,6 +18,7 @@ mod config;
 mod errors;
 mod message_handlers;
 mod object_logger;
+mod seen_objects;
 mod session;
 mod session_context;
 mod stream_id;

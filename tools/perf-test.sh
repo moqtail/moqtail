@@ -50,32 +50,51 @@
 #   --remote-perf N        Profile the remote relay with perf for N seconds once
 #                          the subscribers have ramped; the report is copied back
 #                          to LOG_DIR/remote/. Linux relay only.
+#
+# Settings file: tools/perf-test.env or .perf-test.env (or $PERF_TEST_ENV) is
+# sourced if present, so the stable settings for a machine live there instead of on
+# every command line. See tools/perf-test.env.example. Flags override it.
 
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 
+# ── Settings file ─────────────────────────────────────────────────────────────
+# A shell fragment of VAR=value lines, so the host, the moxygen bin directory and
+# whatever else is stable for this machine need not be retyped every run. Anything
+# it sets is a default; a command-line flag still wins. First one found is used.
+for candidate in ${PERF_TEST_ENV:+"$PERF_TEST_ENV"} \
+                 "$REPO/tools/perf-test.env" \
+                 "$REPO/.perf-test.env"; do
+  if [[ -r "$candidate" ]]; then
+    # shellcheck source=/dev/null
+    source "$candidate"
+    ENV_FILE="$candidate"
+    break
+  fi
+done
+
 # ── Defaults ───────────────────────────────────────────────────────────────────
 BINARY="${RELAY:-$REPO/target/release/relay}"
 MOQBIN="${MOQBIN:-}"
-SUBSCRIBER_MAX=500
-RAMP=100
-DURATION=30
-DELIVERY_TIMEOUT=500
-TRANSPORT="quic"
-CLIENT_THREADS=2
-RELAY_PORT=4433
-RELAY_LOG_SPEC="warn"
-CERT_FILE=""
-KEY_FILE=""
+SUBSCRIBER_MAX="${SUBSCRIBER_MAX:-500}"
+RAMP="${RAMP:-100}"
+DURATION="${DURATION:-30}"
+DELIVERY_TIMEOUT="${DELIVERY_TIMEOUT:-500}"
+TRANSPORT="${TRANSPORT:-quic}"
+CLIENT_THREADS="${CLIENT_THREADS:-2}"
+RELAY_PORT="${RELAY_PORT:-4433}"
+RELAY_LOG_SPEC="${RELAY_LOG_SPEC:-warn}"
+CERT_FILE="${CERT_FILE:-}"
+KEY_FILE="${KEY_FILE:-}"
 RELAY_EXTRA_ARGS=()
 CLIENT_EXTRA_ARGS=()
-METRICS_OUT=""
-CLIENT_GRACE=45
-REMOTE_RELAY_HOST=""
+METRICS_OUT="${METRICS_OUT:-}"
+CLIENT_GRACE="${CLIENT_GRACE:-45}"
+REMOTE_RELAY_HOST="${REMOTE_RELAY_HOST:-}"
 REMOTE_PATH="${REMOTE_PATH:-moqtail}"
-REMOTE_SKIP_BUILD=false
-REMOTE_PERF=0
+REMOTE_SKIP_BUILD="${REMOTE_SKIP_BUILD:-false}"
+REMOTE_PERF="${REMOTE_PERF:-0}"
 
 ENDPOINT="/moq-relay"
 # MOQtail's only supported draft; all three parties are pinned to it.
@@ -228,6 +247,7 @@ trap cleanup EXIT
   else
     echo "relay_binary:     $BINARY"
   fi
+  echo "env_file:         ${ENV_FILE:-none}"
   echo "moqbin:           $MOQBIN"
   echo "relay_url:        $RELAY_URL"
   echo "transport:        $TRANSPORT"

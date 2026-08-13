@@ -18,12 +18,10 @@ import { FrozenByteBuffer } from '../common/byte_buffer'
 import { ControlMessageType, FetchType } from './constant'
 import { PublishBlocked } from './publish_blocked'
 import { PublishNamespace } from './publish_namespace'
-import { PublishNamespaceCancel } from './publish_namespace_cancel'
 import { Namespace } from './namespace'
 import { NamespaceDone } from './namespace_done'
 import { Setup } from './setup'
 import { Fetch } from './fetch'
-import { FetchCancel } from './fetch_cancel'
 import { FetchOk } from './fetch_ok'
 import { GoAway } from './goaway'
 import { Subscribe } from './subscribe'
@@ -32,12 +30,9 @@ import { Publish } from './publish'
 import { SubscribeOk } from './subscribe_ok'
 import { RequestUpdate } from './request_update'
 import { TrackStatus } from './track_status'
-import { PublishNamespaceDone } from './publish_namespace_done'
-import { Unsubscribe } from './unsubscribe'
 import { SubscribeNamespace } from './subscribe_namespace'
 import { SubscribeTracks } from './subscribe_tracks'
 import { Switch } from './switch'
-import { UnsubscribeNamespace } from './unsubscribe_namespace'
 import { NotEnoughBytesError } from '../error/error'
 import { Tuple } from '../common'
 import { AuthorizationToken } from '../parameter/common/authorization_token'
@@ -49,12 +44,10 @@ export type ControlMessage =
   | PublishBlocked
   | PublishDone
   | PublishNamespace
-  | PublishNamespaceCancel
   | Namespace
   | NamespaceDone
   | Setup
   | Fetch
-  | FetchCancel
   | FetchOk
   | GoAway
   | Subscribe
@@ -62,11 +55,8 @@ export type ControlMessage =
   | SubscribeOk
   | RequestUpdate
   | TrackStatus
-  | PublishNamespaceDone
-  | Unsubscribe
   | SubscribeNamespace
   | SubscribeTracks
-  | UnsubscribeNamespace
   | RequestOk
   // moqtail-local extension (0x22), not a draft-18 type: it is sent but never parsed,
   // so `deserialize` below has no case for it and `tryFrom` rejects the codepoint.
@@ -92,8 +82,6 @@ export namespace ControlMessage {
         return PublishDone.parsePayload(payload)
       case ControlMessageType.PublishNamespace:
         return PublishNamespace.parsePayload(payload)
-      case ControlMessageType.PublishNamespaceCancel:
-        return PublishNamespaceCancel.parsePayload(payload)
       case ControlMessageType.Namespace:
         return Namespace.parsePayload(payload)
       case ControlMessageType.NamespaceDone:
@@ -104,8 +92,6 @@ export namespace ControlMessage {
         return RequestError.parsePayload(payload)
       case ControlMessageType.Fetch:
         return Fetch.parsePayload(payload)
-      case ControlMessageType.FetchCancel:
-        return FetchCancel.parsePayload(payload)
       case ControlMessageType.FetchOk:
         return FetchOk.parsePayload(payload)
       case ControlMessageType.GoAway:
@@ -118,16 +104,10 @@ export namespace ControlMessage {
         return RequestUpdate.parsePayload(payload)
       case ControlMessageType.TrackStatus:
         return TrackStatus.parsePayload(payload)
-      case ControlMessageType.PublishNamespaceDone:
-        return PublishNamespaceDone.parsePayload(payload)
-      case ControlMessageType.Unsubscribe:
-        return Unsubscribe.parsePayload(payload)
       case ControlMessageType.SubscribeNamespace:
         return SubscribeNamespace.parsePayload(payload)
       case ControlMessageType.SubscribeTracks:
         return SubscribeTracks.parsePayload(payload)
-      case ControlMessageType.UnsubscribeNamespace:
-        return UnsubscribeNamespace.parsePayload(payload)
       case ControlMessageType.Setup:
         return Setup.parsePayload(payload)
       case ControlMessageType.PublishBlocked:

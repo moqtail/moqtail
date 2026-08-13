@@ -18,7 +18,6 @@ import { ControlRecvStream, ControlSendStream, ControlStream } from './control_s
 import { RequestStream } from './request_stream'
 import {
   PublishNamespace,
-  PublishNamespaceDone,
   Namespace,
   NamespaceDone,
   Setup,
@@ -35,7 +34,6 @@ import {
   RequestError,
   RequestErrorCode,
   RequestUpdate,
-  UnsubscribeNamespace,
   Publish,
   RequestOk,
   Switch,
@@ -76,7 +74,6 @@ import {
   SubscriptionFilter,
   StreamResetCode,
 } from '../model'
-import { PublishNamespaceCancel } from '../model/control/publish_namespace_cancel'
 import { Track } from './track/track'
 import { PublishNamespaceRequest } from './request/publish_namespace'
 import { FetchRequest } from './request/fetch'
@@ -251,13 +248,6 @@ export class MOQtailClient {
    * Discovery event.
    */
   onNamespacePublished?: (msg: PublishNamespace) => void
-
-  /**
-   * Fired when an PUBLISH_NAMESPACE_DONE control message is processed for a namespace.
-   * Use to remove tracks from UI or stop discovery.
-   * Discovery event.
-   */
-  onNamespaceDone?: (msg: PublishNamespaceDone) => void
 
   /**
    * Fired on GOAWAY reception signaling graceful session wind-down.
@@ -931,7 +921,7 @@ export class MOQtailClient {
    *
    * This deletes the in-memory entry inserted via {@link MOQtailClient.addOrUpdateTrack}, so future lookups by its {@link Track.fullTrackName} will fail.
    * Does **not** automatically:
-   * - Send an {@link PublishNamespaceDone} (call {@link MOQtailClient.publishNamespaceDone} separately if you want to inform peers)
+   * - Withdraw the namespace announcement (call {@link MOQtailClient.publishNamespaceDone} separately if you want to inform peers)
    * - Cancel active subscriptions or fetches (they continue until normal completion)
    * - Affect already-sent objects.
    *
@@ -1105,14 +1095,14 @@ export class MOQtailClient {
   /**
    * Stops an active subscription identified by its original SUBSCRIBE `requestId`.
    *
-   * Sends an {@link Unsubscribe} control frame if the subscription is still active. If the id is unknown or already
+   * Resets the subscription's request stream with `CANCELLED` if it is still active. If the id is unknown or already
    * cleaned up, the call is a silent no-op (hence multiple calls are idempotent).
    *
    * Use this when you no longer want incoming objects for a track (e.g. user navigated away, switching quality).
    * Canceling the consumer stream reader does **not** auto-unsubscribe; call this explicitly for prompt cleanup.
    *
    * @param requestId - The id returned from {@link MOQtailClient.subscribe}.
-   * @returns Promise that resolves when the unsubscribe control frame is sent.
+   * @returns Promise that resolves once the request stream has been reset.
    * @throws :{@link MOQtailError} If the client is destroyed.
    * @throws :{@link InternalError} Wrapped lower-level failure while attempting to send (session will be disconnected first).
    *
@@ -1147,8 +1137,10 @@ export class MOQtailClient {
           const trackAlias = this.subscriptionAliasMap.get(requestId)!
           cleanupData = { requestId, trackAlias, subscription }
 
-          // Closing the subscription's request stream is what tells the publisher to stop.
-          await this.#closeRequestStream(requestId)
+          // Draft-18 §3.3.2: there is no UNSUBSCRIBE. Resetting the subscription's
+          // request stream is what tells the publisher to stop, and the code it reads
+          // back off that reset is CANCELLED.
+          await this.#resetRequestStream(requestId, StreamResetCode.Cancelled)
           subscription.unsubscribe()
         }
       }
@@ -1503,7 +1495,7 @@ export class MOQtailClient {
    * Request early termination of an in‑flight FETCH identified by its `requestId`.
    *
    * Use when the consumer no longer needs the remaining objects (user scrubbed away, UI panel closed, replaced by a new fetch).
-   * Sends a {@link FetchCancel} control frame if the id currently maps to an active fetch; otherwise silent no-op (idempotent).
+   * Resets the fetch's request stream with `CANCELLED` if the id currently maps to an active fetch; otherwise silent no-op (idempotent).
    *
    * Parameter semantics:
    * - requestId: bigint returned from {@link MOQtailClient.fetch}. Numbers auto-converted to bigint.
@@ -1541,10 +1533,10 @@ export class MOQtailClient {
       const request = this.requests.get(requestId)
       if (request instanceof FetchRequest) {
         // Draft-18 §3.3.2: there is no FETCH_CANCEL. Resetting the fetch's request
-        // stream is the cancellation. The FetchRequest stays in `requests` so the
-        // objects already in flight still resolve their track name.
+        // stream with CANCELLED is the cancellation. The FetchRequest stays in
+        // `requests` so the objects already in flight still resolve their track name.
         // TODO: mark the fetch's data streams for closure.
-        await this.#closeRequestStream(requestId)
+        await this.#resetRequestStream(requestId, StreamResetCode.Cancelled)
       }
       // No matching fetch request, idempotent
     } catch (error) {
@@ -1756,7 +1748,9 @@ export class MOQtailClient {
    * Withdraw a previously announced namespace so new subscribers no longer discover its tracks.
    *
    * Use when shutting down publishing for a logical scope (camera offline, room closed, session ended).
-   * Removes the namespace from `announcedNamespaces` locally and sends an {@link PublishNamespaceDone} control frame.
+   * Removes the namespace from `announcedNamespaces` locally and closes the stream its PUBLISH_NAMESPACE opened,
+   * which is what withdraws the announcement (§3.3.2). This is also how an announce is retracted before the peer
+   * has finished processing it.
    *
    * Parameter semantics:
    * - trackNamespace: Exact tuple used during {@link MOQtailClient.publishNamespace}. Must match to be removed from internal set.
@@ -1770,7 +1764,7 @@ export class MOQtailClient {
    * @throws (rethrows original error) Any lower-level failure while sending results in a disconnect (unwrapped TODO: future wrap with InternalError for consistency).
    *
    * @remarks
-   * Peers that issued {@link MOQtailClient.subscribeNamespace} for a matching prefix should receive the resulting {@link PublishNamespaceDone}.
+   * Peers that issued {@link MOQtailClient.subscribeNamespace} for a matching prefix should receive the resulting NAMESPACE_DONE.
    * Consider calling this before {@link MOQtailClient.disconnect} to give consumers prompt notice.
    *
    * @example Basic usage
@@ -1795,50 +1789,6 @@ export class MOQtailClient {
       // TODO: Match against error cases
       await this.disconnect()
       throw err
-    }
-  }
-
-  /**
-   * Send an {@link PublishNamespaceCancel} to abort a previously issued ANNOUNCE before (or after) the peer fully processes it.
-   *
-   * Use when an announce was sent prematurely (e.g. validation failed locally, namespace no longer needed) and you want
-   * to retract it without waiting for normal announce lifecycle or before publishing any objects.
-   *
-   * Parameter semantics:
-   * - msg: Pre-constructed {@link PublishNamespaceCancel} referencing the original announce request id / namespace (builder provided elsewhere).
-   *
-   * Behavior:
-   * - Simply forwards the control frame; does not modify `announcedNamespaces` (call {@link MOQtailClient.publishNamespaceDone} for local bookkeeping removal).
-   * - Safe to send even if the announce already succeeded; peer may ignore duplicates per spec guidance.
-   *
-   * @throws MOQtailError If client is destroyed.
-   * @throws InternalError Wrapped transport/control send failure (client disconnects first) then rethrows.
-   *
-   * @remarks
-   * Use in tandem with internal tracking if you want to prevent subsequent object publication until a new announce is issued.
-   *
-   * @example Cancel immediately after a mistaken announce
-   * ```ts
-   * await client.publishNamespace(Tuple.fromUtf8Path('camera/temp')) // wrong namespace
-   * // The REQUEST_OK carries no request id — responses are named by their stream — so
-   * // retract by namespace rather than by the id of the answer.
-   * await client.publishNamespaceDone(Tuple.fromUtf8Path('camera/temp'))
-   * ```
-   */
-  async publishNamespaceCancel(msg: PublishNamespaceCancel) {
-    this.#ensureActive()
-    try {
-      // Draft-18 §3.3.2: there is no PUBLISH_NAMESPACE_CANCEL either. Retracting the
-      // announce is a reset of the stream it was sent on.
-      await this.#closeRequestStream(msg.requestId)
-    } catch (error) {
-      await this.disconnect(
-        new InternalError(
-          'MOQtailClient.publishNamespaceCancel',
-          error instanceof Error ? error.message : String(error),
-        ),
-      )
-      throw error
     }
   }
 
@@ -1963,13 +1913,18 @@ export class MOQtailClient {
     }
   }
 
-  async unsubscribeNamespace(msg: UnsubscribeNamespace) {
+  /**
+   * Ends a prefix subscription started with {@link MOQtailClient.subscribeNamespace}.
+   *
+   * @param trackNamespacePrefix - The prefix that subscription was opened with.
+   */
+  async unsubscribeNamespace(trackNamespacePrefix: Tuple) {
     this.#ensureActive()
     try {
       // Draft-18 §3.3.2: there is no UNSUBSCRIBE_NAMESPACE. Closing the stream the
       // SUBSCRIBE_NAMESPACE opened ends the prefix subscription.
-      this.subscribedAnnounces.delete(msg.trackNamespacePrefix)
-      await this.#closeNamespaceRequestStream(msg.trackNamespacePrefix)
+      this.subscribedAnnounces.delete(trackNamespacePrefix)
+      await this.#closeNamespaceRequestStream(trackNamespacePrefix)
     } catch (error) {
       await this.disconnect(
         new InternalError('MOQtailClient.unsubscribeNamespace', error instanceof Error ? error.message : String(error)),
@@ -2153,6 +2108,18 @@ export class MOQtailClient {
     if (!requestStream) return
     this.#requestStreams.delete(requestId)
     await requestStream.close()
+  }
+
+  /**
+   * Resets the request stream filed under `requestId` with `code`, if it is still open.
+   * §3.3.2: this is how draft-18 cancels a request now that the cancel messages are
+   * gone — the peer reads the code back off the RESET_STREAM.
+   */
+  async #resetRequestStream(requestId: bigint, code: StreamResetCode): Promise<void> {
+    const requestStream = this.#requestStreams.get(requestId)
+    if (!requestStream) return
+    this.#requestStreams.delete(requestId)
+    await requestStream.reset(code)
   }
 
   /** Closes the request stream opened for `namespace`, if there is one. */
@@ -2926,6 +2893,56 @@ if (import.meta.vitest) {
       control.enqueue(new GoAway(undefined, 0n, 6n).serialize().toUint8Array())
       await vi.waitFor(() => expect(terminated).toHaveLength(1))
       expect(seen).toHaveLength(1)
+    })
+
+    it('unsubscribes by resetting the SUBSCRIBE stream with CANCELLED', async () => {
+      const { client, transport } = await connected()
+
+      const subscribing = client.subscribe({
+        fullTrackName: ftn,
+        filterType: FilterType.LatestObject,
+        forward: true,
+        groupOrder: GroupOrder.Original,
+        priority: 0,
+      })
+      const subscribeStream = await openedStream(transport, 0)
+      subscribeStream.respond(SubscribeOk.create(7n, [], []))
+      const subscribed = await subscribing
+      expect(subscribed).not.toBeInstanceOf(RequestError)
+
+      await client.unsubscribe((subscribed as { requestId: bigint }).requestId)
+
+      // §3.3.2: UNSUBSCRIBE is gone. Nothing follows the SUBSCRIBE on the wire — the
+      // publisher learns the subscription ended from the reset code.
+      expect(subscribeStream.messages).toHaveLength(1)
+      expect(streamResetCodeOf(subscribeStream.abortReason)).toBe(StreamResetCode.Cancelled)
+      expect(streamResetCodeOf(subscribeStream.cancelReason)).toBe(StreamResetCode.Cancelled)
+
+      await client.disconnect()
+    })
+
+    it('cancels a fetch by resetting the FETCH stream with CANCELLED', async () => {
+      const { client, transport } = await connected()
+
+      const fetching = client.fetch({
+        priority: 0,
+        groupOrder: GroupOrder.Original,
+        typeAndProps: {
+          type: FetchType.Standalone,
+          props: { fullTrackName: ftn, startLocation: new Location(0n, 0n), endLocation: new Location(1n, 0n) },
+        },
+      })
+      const fetchStream = await openedStream(transport, 0)
+      fetchStream.respond(new FetchOk(false, new Location(1n, 0n), []))
+      const fetched = await fetching
+      expect(fetched).not.toBeInstanceOf(RequestError)
+
+      await client.fetchCancel((fetched as { requestId: bigint }).requestId)
+
+      expect(fetchStream.messages).toHaveLength(1)
+      expect(streamResetCodeOf(fetchStream.abortReason)).toBe(StreamResetCode.Cancelled)
+
+      await client.disconnect()
     })
 
     it('refuses a peer-opened stream that does not begin with a First-marked type', async () => {

@@ -519,7 +519,13 @@ async fn handle_subscribe_message(
           params,
           cached_properties,
         );
-        stream_handler.send_impl(&subscribe_ok).await
+        let sent = stream_handler.send_impl(&subscribe_ok).await;
+        if sent.is_ok()
+          && let Some(subscription) = track.get_subscription(client.connection_id).await
+        {
+          subscription.read().await.mark_alias_announced();
+        }
+        sent
       }
       TrackStatus::Pending => {
         info!(
@@ -712,6 +718,13 @@ async fn handle_subscribe_ok_message(
           "no request stream for creator subscriber request {}",
           sub_request.original_request_id
         );
+      } else if let Some(subscription) = track_arc
+        .read()
+        .await
+        .get_subscription(subscriber.connection_id)
+        .await
+      {
+        subscription.read().await.mark_alias_announced();
       }
     } else {
       warn!(
@@ -756,6 +769,8 @@ async fn handle_subscribe_ok_message(
             "no request stream for pending subscriber request {}",
             subscriber_request_id
           );
+        } else if let Some(subscription) = track.get_subscription(subscriber.connection_id).await {
+          subscription.read().await.mark_alias_announced();
         }
       }
     }

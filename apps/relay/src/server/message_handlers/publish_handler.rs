@@ -17,6 +17,7 @@ use crate::server::message_handlers::parameters;
 use crate::server::session::Session;
 use crate::server::session_context::PendingRequest;
 use crate::server::session_context::SessionContext;
+use crate::server::subscription::Subscription;
 use crate::server::track::{Track, TrackOrigin, TrackStatus};
 use crate::server::track_manager::SubscribeKind;
 use core::result::Result;
@@ -33,6 +34,7 @@ use moqtail::model::property::track_property::has_unsupported_mandatory;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 pub async fn handle(
@@ -255,8 +257,9 @@ pub async fn handle(
 
           // Push the PUBLISH on its own bidi stream and read PUBLISH_OK there.
           let push_msg = *m_clone.clone();
+          let subscription = track_write.get_subscription(subscriber.connection_id).await;
           tokio::spawn(async move {
-            forward_publish_downstream(sub_clone, push_msg).await;
+            forward_publish_downstream(sub_clone, push_msg, subscription).await;
           });
         }
       } else {
@@ -543,10 +546,13 @@ pub(crate) async fn ensure_upstream_forwarding(
   }
 }
 
-/// Push a PUBLISH to a subscriber on its own bidirectional request stream and
-/// read the PUBLISH_OK (or REQUEST_ERROR) there. The subscription is already
-/// wired before this runs; a rejection is logged.
-pub(crate) async fn forward_publish_downstream(subscriber: Arc<MOQTClient>, publish: Publish) {
+/// Push a PUBLISH to a subscriber on its own bidirectional request stream and read the
+/// PUBLISH_OK (or REQUEST_ERROR) there; a rejection is logged.
+pub(crate) async fn forward_publish_downstream(
+  subscriber: Arc<MOQTClient>,
+  publish: Publish,
+  subscription: Option<Arc<RwLock<Subscription>>>,
+) {
   let (send, recv) = match subscriber.connection.open_bi().await {
     Ok(streams) => streams,
     Err(e) => {
@@ -561,6 +567,12 @@ pub(crate) async fn forward_publish_downstream(subscriber: Arc<MOQTClient>, publ
   {
     error!("Failed to push PUBLISH downstream: {:?}", e);
     return;
+  }
+
+  // The subscription is now live and can forward Objects; the PUBLISH_OK
+  // (or REQUEST_ERROR) is just a status message and doesn't affect the subscription.
+  if let Some(subscription) = &subscription {
+    subscription.read().await.mark_alias_announced();
   }
 
   match stream.next_message().await {

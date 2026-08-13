@@ -47,6 +47,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::sync::Mutex;
+use tokio::sync::Notify;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tracing::trace;
@@ -310,6 +311,12 @@ pub struct Subscription {
   /// Used to open a QUIC send stream for a new mid-group subscriber with the exact
   /// original header rather than a synthesized one.
   active_subgroup_headers: ActiveSubgroupHeaderMap,
+  /// Set once the control message carrying this subscriber's track alias has gone out
+  /// (SUBSCRIBE_OK, or PUBLISH when the relay pushes). Data streams carry only the
+  /// alias, so a subscriber that gets one first cannot place it and drops the objects.
+  /// Forwarding waits for this, and the queued Objects follow in order.
+  alias_announced: Arc<AtomicBool>,
+  alias_announced_notify: Arc<Notify>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -344,6 +351,37 @@ impl Subscription {
       check_switch_context_on_next_object: Arc::new(AtomicBool::new(false)),
       pending_header: Arc::new(Mutex::new(None)),
       active_subgroup_headers,
+      alias_announced: Arc::new(AtomicBool::new(false)),
+      alias_announced_notify: Arc::new(Notify::new()),
+    }
+  }
+
+  /// Called once the subscriber has been sent its track alias, releasing forwarding.
+  pub fn mark_alias_announced(&self) {
+    self.alias_announced.store(true, Ordering::Release);
+    self.alias_announced_notify.notify_waiters();
+  }
+
+  /// Waits for the alias to be announced, giving up after `downstream_alias_timeout`
+  /// so a subscription that never gets one still drains rather than queueing forever.
+  async fn wait_for_alias_announced(&self) {
+    if self.alias_announced.load(Ordering::Acquire) {
+      return;
+    }
+    // Registered before the second check, so a notify landing between the two is not
+    // lost. Waking can only come from mark_alias_announced, which sets the flag first.
+    let notified = self.alias_announced_notify.notified();
+    if self.alias_announced.load(Ordering::Acquire) || self.is_finished().await {
+      return;
+    }
+    if tokio::time::timeout(self.config.downstream_alias_timeout, notified)
+      .await
+      .is_err()
+    {
+      warn!(
+        "no track alias sent to subscriber {} within {:?}; forwarding anyway",
+        self.client_connection_id, self.config.downstream_alias_timeout
+      );
     }
   }
 
@@ -382,6 +420,9 @@ impl Subscription {
     let mut instance = sub.clone();
 
     tokio::spawn(async move {
+      // Nothing may go out before the subscriber knows the alias those streams carry.
+      instance.wait_for_alias_announced().await;
+
       loop {
         if instance.is_finished().await {
           break;

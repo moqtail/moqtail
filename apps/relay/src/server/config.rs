@@ -19,7 +19,7 @@ use socket2::{Domain, Socket, Type};
 use std::net::{Ipv6Addr, SocketAddr, UdpSocket};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use wtransport::Identity;
 use wtransport::quinn::congestion::BbrConfig;
 use wtransport::quinn::{self, TransportConfig};
@@ -32,6 +32,10 @@ pub enum CacheExpirationType {
   /// Time-to-idle: entries expire after a period of inactivity
   Tti,
 }
+
+/// Upper bound on `--io-sockets`. Past the core count extra sockets only add
+/// accept loops with nothing to do.
+const MAX_IO_SOCKETS: usize = 256;
 
 /// Upper bound on `--dedup-retained-groups`. Retention costs groups × objects-per-group,
 /// and nothing bounds the second factor, so the first is bounded here.
@@ -77,6 +81,14 @@ pub struct Cli {
   /// Token log file path
   #[arg(long, default_value = "/tmp/tokens.csv")]
   pub token_log_path: String,
+  /// Number of UDP sockets to listen on, all bound to the same port with
+  /// SO_REUSEPORT. Connections are spread across them by the kernel, and each socket
+  /// carries its own I/O readiness state, so drivers stop contending over one.
+  /// Linux only: elsewhere the kernel does not distribute across sockets, so this
+  /// stays at 1 there.
+  #[arg(long, default_value_t = 1)]
+  pub io_sockets: usize,
+
   /// Maximum number of concurrent request streams a peer may open (applied as the
   /// QUIC max_concurrent_bidi_streams limit).
   #[arg(long, default_value_t = 10_000)]
@@ -149,6 +161,7 @@ pub struct AppConfig {
   pub enable_object_logging: bool,
   pub enable_token_logging: bool,
   pub token_log_path: String,
+  pub io_sockets: usize,
   pub max_request_streams: u64,
   pub max_active_requests: u64,
   pub max_subscriber_lag: u64,
@@ -192,6 +205,7 @@ impl AppConfig {
         enable_object_logging: cli.enable_object_logging,
         enable_token_logging: cli.enable_token_logging,
         token_log_path: cli.token_log_path,
+        io_sockets: cli.io_sockets,
         max_request_streams: cli.max_request_streams,
         max_active_requests: cli.max_active_requests,
         max_subscriber_lag: cli.max_subscriber_lag,
@@ -210,12 +224,17 @@ impl AppConfig {
     })
   }
 
-  /// Builds the relay's single QUIC listener. WebTransport and raw-QUIC clients share
-  /// this one UDP socket/port: the TLS config offers ALPN for both `h3` (WebTransport,
-  /// added by `build_default_tls_config`) and the MOQT versions (raw QUIC), and the
-  /// accept loop in `Server::start` demultiplexes by the negotiated protocol before
-  /// handing the connection to either path. See `Server::start` for the demux.
-  pub async fn build_quic_endpoint(&self) -> Result<quinn::Endpoint> {
+  /// Builds the relay's QUIC listeners. WebTransport and raw-QUIC clients share the
+  /// same port: the TLS config offers ALPN for both `h3` (WebTransport, added by
+  /// `build_default_tls_config`) and the MOQT versions (raw QUIC), and the accept
+  /// loops in `Server::start` demultiplex by the negotiated protocol before handing
+  /// the connection to either path.
+  ///
+  /// `--io-sockets` decides how many are returned. They share one server config and
+  /// differ only in owning separate UDP sockets, which is the point: a socket's I/O
+  /// readiness state is behind a single lock, so every connection driver on one
+  /// socket contends with every other for it.
+  pub async fn build_quic_endpoints(&self) -> Result<Vec<quinn::Endpoint>> {
     let identity = match Identity::load_pemfiles(&self.cert_file, &self.key_file).await {
       Ok(identity) => identity,
       Err(e) => {
@@ -248,17 +267,39 @@ impl AppConfig {
     let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(quic_crypto_config));
     server_config.transport_config(Arc::new(transport_config));
 
-    let socket = bind_dual_stack_udp_socket(self.port)?;
+    let count = self.listener_count();
     let runtime = quinn::default_runtime()
       .ok_or_else(|| anyhow::anyhow!("no async runtime found for QUIC endpoint"))?;
-    let endpoint = quinn::Endpoint::new(
-      quinn::EndpointConfig::default(),
-      Some(server_config),
-      socket,
-      runtime,
-    )?;
 
-    Ok(endpoint)
+    let mut endpoints = Vec::with_capacity(count);
+    for _ in 0..count {
+      // SO_REUSEPORT only where more than one socket is wanted, so a single-socket
+      // relay still fails loudly on a port another process already holds.
+      let socket = bind_dual_stack_udp_socket(self.port, count > 1)?;
+      endpoints.push(quinn::Endpoint::new(
+        quinn::EndpointConfig::default(),
+        Some(server_config.clone()),
+        socket,
+        runtime.clone(),
+      )?);
+    }
+
+    Ok(endpoints)
+  }
+
+  /// How many UDP sockets to bind. Only Linux spreads connections across sockets
+  /// sharing a port, so asking for more anywhere else would put every connection on
+  /// whichever socket the kernel picked and hide the fact behind a config value.
+  fn listener_count(&self) -> usize {
+    let requested = self.io_sockets.clamp(1, MAX_IO_SOCKETS);
+    if requested > 1 && !cfg!(target_os = "linux") {
+      warn!(
+        "--io-sockets {} ignored: only Linux distributes connections across sockets sharing a port",
+        requested
+      );
+      return 1;
+    }
+    requested
   }
 
   /// The concurrent request-stream limit applied to the QUIC endpoint via
@@ -290,9 +331,15 @@ impl AppConfig {
 /// `wtransport`'s own `with_bind_default()` (`IpBindConfig::InAddrAnyDual`) semantics.
 /// `quinn::Endpoint::server`'s plain `UdpSocket::bind` leaves dual-stack to the OS
 /// default, which isn't guaranteed across platforms, so this is done explicitly.
-fn bind_dual_stack_udp_socket(port: u16) -> Result<UdpSocket> {
+///
+/// `reuse_port` lets several sockets share the port, which is how the relay listens on
+/// more than one; the kernel then hashes each connection onto one of them.
+fn bind_dual_stack_udp_socket(port: u16, reuse_port: bool) -> Result<UdpSocket> {
   let socket = Socket::new(Domain::IPV6, Type::DGRAM, None)?;
   socket.set_only_v6(false)?;
+  if reuse_port {
+    socket.set_reuse_port(true)?;
+  }
   let addr: SocketAddr = (Ipv6Addr::UNSPECIFIED, port).into();
   socket.bind(&addr.into())?;
   socket.set_nonblocking(true)?;
@@ -318,6 +365,7 @@ mod tests {
       enable_object_logging: false,
       enable_token_logging: false,
       token_log_path: "/tmp/moqtail_relay_tokens.csv".to_string(),
+      io_sockets: 1,
       max_request_streams,
       max_active_requests: 0,
       max_subscriber_lag: 0,
@@ -331,6 +379,31 @@ mod tests {
       downstream_alias_timeout: Duration::from_millis(3000),
       dedup_retained_groups: 30,
     }
+  }
+
+  #[test]
+  fn a_single_listener_is_the_default() {
+    let cli = Cli::parse_from(["relay"]);
+    assert_eq!(cli.io_sockets, 1);
+    assert_eq!(test_config(10).listener_count(), 1);
+  }
+
+  /// Sharing a port only spreads connections on Linux, so asking for more sockets
+  /// anywhere else is refused rather than silently piling every connection onto one.
+  #[test]
+  fn extra_listeners_are_linux_only() {
+    let mut config = test_config(10);
+    config.io_sockets = 8;
+    let expected = if cfg!(target_os = "linux") { 8 } else { 1 };
+    assert_eq!(config.listener_count(), expected);
+  }
+
+  /// A count of 0 would leave the relay listening on nothing at all.
+  #[test]
+  fn zero_listeners_is_treated_as_one() {
+    let mut config = test_config(10);
+    config.io_sockets = 0;
+    assert_eq!(config.listener_count(), 1);
   }
 
   #[test]

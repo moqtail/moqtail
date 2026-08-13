@@ -42,7 +42,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::signal;
-use tokio::sync::{Notify, RwLock, mpsc};
+use tokio::sync::{RwLock, mpsc, watch};
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::fmt::writer::MakeWriterExt;
 use tracing_subscriber::{EnvFilter, filter::LevelFilter};
@@ -95,28 +95,55 @@ impl Server {
   }
 
   pub async fn start(&mut self) -> Result<()> {
-    let endpoint = self.app_config.build_quic_endpoint().await?;
+    let endpoints = self.app_config.build_quic_endpoints().await?;
 
     info!(
-      "{} is running -- WebTransport clients: https://{}:{}  Raw QUIC clients: moqt://{}:{}",
+      "{} is running on {} UDP socket(s) -- WebTransport clients: https://{}:{}  Raw QUIC clients: moqt://{}:{}",
       env!("MOQTAIL_VERSION"),
+      endpoints.len(),
       self.app_config.host,
       self.app_config.port,
       self.app_config.host,
       self.app_config.port
     );
 
-    let shutdown_notify = Arc::new(Notify::new());
-    let notify_clone = shutdown_notify.clone();
-    // catch ctrl-c signal to shutdown the server gracefully
-    let _ctrl_c_handler = tokio::spawn(async move {
-      signal::ctrl_c()
-        .await
-        .expect("Failed to listen for ctrl-c signal");
-      notify_clone.notify_waiters();
-    });
+    // Level-triggered, so an accept loop between two iterations when shutdown is
+    // signalled still sees it, which a Notify would not guarantee.
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    // Only used to correlate log lines, so any unique value will do.
+    let session_id_counter = Arc::new(AtomicU64::new(0));
 
-    let notify_clone = shutdown_notify.clone();
+    let mut accept_loops = Vec::with_capacity(endpoints.len());
+    for (socket_index, endpoint) in endpoints.into_iter().enumerate() {
+      let server = self.clone();
+      let counter = session_id_counter.clone();
+      let mut shutdown = shutdown_rx.clone();
+      accept_loops.push(tokio::spawn(async move {
+        loop {
+          tokio::select! {
+            _ = shutdown.changed() => break,
+            incoming = endpoint.accept() => {
+              let Some(incoming) = incoming else {
+                info!("QUIC endpoint on socket {} closed, exiting accept loop", socket_index);
+                break;
+              };
+              let id = counter.fetch_add(1, Ordering::Relaxed);
+              let server = server.clone();
+              tokio::spawn(async move {
+                match Self::accept_incoming(incoming, server).await {
+                  Ok(_) => {
+                    info!("New session: {}", id);
+                  }
+                  Err(e) => {
+                    error!("Error occurred in session {}: {:?}", id, e);
+                  }
+                }
+              });
+            }
+          }
+        }
+      }));
+    }
 
     // SIGTERM drains the relay: broadcast GOAWAY, reject new requests, then exit
     // after the drain timeout.
@@ -124,48 +151,25 @@ impl Server {
       .expect("Failed to install SIGTERM handler");
     const DRAIN_TIMEOUT_MS: u64 = 10_000;
 
-    let mut session_id_counter: u64 = 0;
-
-    loop {
-      let id = session_id_counter;
-      tokio::select! {
-        _ = notify_clone.notified() => {
-          info!("Ctrl-C received, exiting...");
-          break;
-        },
-        _ = sigterm.recv() => {
-          info!("SIGTERM received, draining (GOAWAY, timeout {}ms)...", DRAIN_TIMEOUT_MS);
-          self.draining.store(true, Ordering::Relaxed);
-          self.broadcast_goaway(DRAIN_TIMEOUT_MS).await;
-          let notify = shutdown_notify.clone();
-          tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(DRAIN_TIMEOUT_MS)).await;
-            notify.notify_waiters();
-          });
-        },
-        incoming = endpoint.accept() => {
-          let Some(incoming) = incoming else {
-            info!("QUIC endpoint closed, exiting accept loop");
-            break;
-          };
-          let server = self.clone();
-          tokio::spawn(async move {
-            match Self::accept_incoming(incoming, server).await {
-              Ok(_) => {
-                info!("New session: {}", id);
-              }
-              Err(e) => {
-                error!("Error occurred in session {}: {:?}", id, e);
-              }
-            }
-          });
-          if session_id_counter == u64::MAX {
-            session_id_counter = 0;
-          } else {
-            session_id_counter += 1;
-          }
+    tokio::select! {
+      _ = signal::ctrl_c() => {
+        info!("Ctrl-C received, exiting...");
+      },
+      _ = sigterm.recv() => {
+        info!("SIGTERM received, draining (GOAWAY, timeout {}ms)...", DRAIN_TIMEOUT_MS);
+        self.draining.store(true, Ordering::Relaxed);
+        self.broadcast_goaway(DRAIN_TIMEOUT_MS).await;
+        // Keep accepting while draining; a second Ctrl-C cuts it short.
+        tokio::select! {
+          _ = tokio::time::sleep(Duration::from_millis(DRAIN_TIMEOUT_MS)) => {},
+          _ = signal::ctrl_c() => info!("Ctrl-C received during drain, exiting..."),
         }
-      }
+      },
+    }
+
+    let _ = shutdown_tx.send(true);
+    for accept_loop in accept_loops {
+      let _ = accept_loop.await;
     }
     Ok(())
   }
@@ -192,8 +196,8 @@ impl Server {
 
   /// Demultiplexes one incoming QUIC connection by its negotiated ALPN protocol —
   /// `h3` is routed to the existing WebTransport path, any MOQT version string
-  /// (e.g. `moqt-18`) is routed to the raw-QUIC path. Both share the same UDP
-  /// socket/port; see `AppConfig::build_quic_endpoint` for the listener setup.
+  /// (e.g. `moqt-18`) is routed to the raw-QUIC path. Both share the same port; see
+  /// `AppConfig::build_quic_endpoints` for the listener setup.
   async fn accept_incoming(incoming: quinn::Incoming, server: Server) -> Result<()> {
     let remote_addr = incoming.remote_address();
     let mut connecting = incoming.accept()?;

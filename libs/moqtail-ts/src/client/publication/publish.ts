@@ -95,6 +95,14 @@ export class PublishPublication {
   }
 
   /**
+   * How many data streams this publication has opened, which is what a PUBLISH_DONE
+   * reports to the subscriber.
+   */
+  get streamsOpened(): bigint {
+    return this.#streamsOpened
+  }
+
+  /**
    * Calculates the stream priority based on publisher priority.
    * (Since this is a proactive push, there is no subscriber priority to average with).
    */

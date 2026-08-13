@@ -17,32 +17,26 @@
 import {
   handlerPublishDone,
   handlerPublishNamespace,
-  handlerPublishNamespaceCancel,
-  handlerPublishNamespaceDone,
   handlerSubscribe,
   handlerSubscribeOk,
-  handlerSubscribeUpdate,
+  handlerRequestUpdate,
   handlerTrackStatus,
   handlerRequestOk,
   handlerRequestError,
-  handlerUnsubscribe,
-  handlerUnsubscribeNamespace,
   handlerFetch,
-  handlerFetchCancel,
   handlerFetchOk,
   handlerGoAway,
   handlerGoAwayOnRequestStream,
   handlerPublish,
+  handlerPublishBlocked,
   handlerSubscribeNamespace,
   handlerSubscribeTracks,
 } from '.'
 import {
   Publish,
+  PublishBlocked,
   PublishNamespace,
-  PublishNamespaceCancel,
-  PublishNamespaceDone,
   Fetch,
-  FetchCancel,
   FetchOk,
   GoAway,
   Subscribe,
@@ -52,8 +46,6 @@ import {
   TrackStatus,
   RequestOk,
   RequestError,
-  Unsubscribe,
-  UnsubscribeNamespace,
   SubscribeNamespace,
   SubscribeTracks,
 } from '../../model/control'
@@ -112,14 +104,10 @@ export function getHandlerForRequestStreamMessage(msg: ControlMessage): RequestS
   // Follow-ups on an open request stream.
   // GOAWAY is Control *and* Request in Table 5: here it migrates this one request.
   if (msg instanceof GoAway) return handlerGoAwayOnRequestStream
-  if (msg instanceof RequestUpdate) return handlerSubscribeUpdate
+  if (msg instanceof RequestUpdate) return handlerRequestUpdate
   if (msg instanceof PublishDone) return handlerPublishDone
-  if (msg instanceof PublishNamespaceDone) return handlerPublishNamespaceDone
-  // Retired by draft-18; cancellation is a stream reset now. Kept until #261 deletes
-  // the message types themselves so a peer still sending them is not fatal.
-  if (msg instanceof Unsubscribe) return handlerUnsubscribe
-  if (msg instanceof FetchCancel) return handlerFetchCancel
-  if (msg instanceof PublishNamespaceCancel) return handlerPublishNamespaceCancel
-  if (msg instanceof UnsubscribeNamespace) return handlerUnsubscribeNamespace
+  // The publisher's answer when the peer's bidi stream limit leaves it no stream to
+  // send a track's PUBLISH on (§10.20). It travels on the SUBSCRIBE_TRACKS stream.
+  if (msg instanceof PublishBlocked) return handlerPublishBlocked
   return undefined
 }

@@ -46,22 +46,17 @@ export enum ControlMessageType {
   Subscribe = 0x03, // Request, First
   SubscribeOk = 0x04, // Request
   RequestError = 0x05, // Request
-  Unsubscribe = 0x0a, // not in draft-18
   RequestUpdate = 0x02, // Request
   PublishDone = 0x0b, // Request
   Fetch = 0x16, // Request, First
   FetchOk = 0x18, // Request
-  FetchCancel = 0x17, // not in draft-18
   TrackStatus = 0x0d, // Request, First
   PublishNamespace = 0x06, // Request, First
   RequestOk = 0x07, // Request
   Namespace = 0x08, // Request
-  PublishNamespaceDone = 0x09, // not in draft-18
   NamespaceDone = 0x0e, // Request
-  PublishNamespaceCancel = 0x0c, // not in draft-18
   SubscribeNamespace = 0x50, // Request, First
   SubscribeTracks = 0x51, // Request, First
-  UnsubscribeNamespace = 0x14, // not in draft-18
   Publish = 0x1d, // Request, First
   PublishOk = 0x1e, // Request; an alias of RequestOk (§10.5), not its own body
   PublishBlocked = 0x0f, // Request
@@ -96,6 +91,25 @@ export namespace ControlMessageType {
     }
   }
 
+  /**
+   * True for the six request types §10.9 lets a REQUEST_UPDATE modify. TRACK_STATUS
+   * opens a request stream but is not one of them, so an update on its stream is
+   * refused with a REQUEST_ERROR.
+   */
+  export function isUpdatable(t: ControlMessageType): boolean {
+    switch (t) {
+      case ControlMessageType.Subscribe:
+      case ControlMessageType.Publish:
+      case ControlMessageType.Fetch:
+      case ControlMessageType.PublishNamespace:
+      case ControlMessageType.SubscribeNamespace:
+      case ControlMessageType.SubscribeTracks:
+        return true
+      default:
+        return false
+    }
+  }
+
   /** Convert bigint discriminant to enum value or throw on invalid. */
   export function tryFrom(v: bigint): ControlMessageType {
     switch (v) {
@@ -109,8 +123,6 @@ export namespace ControlMessageType {
         return ControlMessageType.SubscribeOk
       case 0x05n:
         return ControlMessageType.RequestError
-      case 0x0an:
-        return ControlMessageType.Unsubscribe
       case 0x02n:
         return ControlMessageType.RequestUpdate
       case 0x0bn:
@@ -119,8 +131,6 @@ export namespace ControlMessageType {
         return ControlMessageType.Fetch
       case 0x18n:
         return ControlMessageType.FetchOk
-      case 0x17n:
-        return ControlMessageType.FetchCancel
       case 0x0dn:
         return ControlMessageType.TrackStatus
       case 0x06n:
@@ -129,18 +139,12 @@ export namespace ControlMessageType {
         return ControlMessageType.RequestOk
       case 0x08n:
         return ControlMessageType.Namespace
-      case 0x09n:
-        return ControlMessageType.PublishNamespaceDone
       case 0x0en:
         return ControlMessageType.NamespaceDone
-      case 0x0cn:
-        return ControlMessageType.PublishNamespaceCancel
       case 0x50n:
         return ControlMessageType.SubscribeNamespace
       case 0x51n:
         return ControlMessageType.SubscribeTracks
-      case 0x14n:
-        return ControlMessageType.UnsubscribeNamespace
       case 0x1dn:
         return ControlMessageType.Publish
       case 0x1en:
@@ -480,13 +484,26 @@ if (import.meta.vitest) {
           return {
             name: entry.name,
             expected: (entry.stream ?? '').includes('First'),
-            // SUBSCRIBE_TRACKS and PUBLISH_BLOCKED have no body yet (#266, #271) but
-            // their codepoints already parse, so the Stream column applies to them too.
             actual: ControlMessageType.isFirst(ControlMessageType.tryFrom(codepoint)),
           }
         })
       expect(graded.filter((e) => e.expected).map((e) => e.name).length).toBe(7)
       expect(graded.filter((e) => e.actual !== e.expected)).toEqual([])
+    })
+
+    test('isUpdatable covers the request types §10.9 names, and not TRACK_STATUS', () => {
+      const updatable = [
+        ControlMessageType.Subscribe,
+        ControlMessageType.Publish,
+        ControlMessageType.Fetch,
+        ControlMessageType.PublishNamespace,
+        ControlMessageType.SubscribeNamespace,
+        ControlMessageType.SubscribeTracks,
+      ]
+      expect(updatable.every(ControlMessageType.isUpdatable)).toBe(true)
+      // TRACK_STATUS opens a request stream but §10.9 no longer lets it be updated.
+      expect(ControlMessageType.isFirst(ControlMessageType.TrackStatus)).toBe(true)
+      expect(ControlMessageType.isUpdatable(ControlMessageType.TrackStatus)).toBe(false)
     })
   })
 }

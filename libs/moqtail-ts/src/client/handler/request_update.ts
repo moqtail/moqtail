@@ -14,18 +14,105 @@
  * limitations under the License.
  */
 
-import { ProtocolViolationError } from '@/model'
-import { RequestUpdate } from '../../model/control'
+import { ReasonPhrase } from '@/model'
+import {
+  ControlMessageType,
+  PublishDone,
+  PublishDoneStatusCode,
+  RequestError,
+  RequestErrorCode,
+  RequestOk,
+  RequestUpdate,
+} from '../../model/control'
+import { StreamResetCode } from '../../model/error/stream_reset'
 import { RequestStreamMessageHandler } from './handler'
+import { RequestStream } from '../request_stream'
+import { MOQtailClient } from '../client'
+import { FetchPublication } from '../publication/fetch'
+import { PublishPublication } from '../publication/publish'
 import { SubscribePublication } from '../publication/subscribe'
 import { logger } from '../../util/logger'
 
-export const handlerSubscribeUpdate: RequestStreamMessageHandler<RequestUpdate> = async (client, msg) => {
-  logger.log('handler/subscribe_update', 'requestId', msg.requestId)
-  const publication = client.publications.get(msg.requestId)
+/**
+ * A REQUEST_UPDATE modifies the request whose stream it arrived on, and §10.9 requires
+ * exactly one REQUEST_OK or REQUEST_ERROR back on that stream. TRACK_STATUS is no longer
+ * one of the updatable request types, so an update naming one is refused.
+ */
+export const handlerRequestUpdate: RequestStreamMessageHandler<RequestUpdate> = async (
+  client,
+  msg,
+  stream,
+  requestId,
+) => {
+  logger.log('handler/request_update', 'requestId', requestId)
+
+  const openingType = stream.openingType
+  if (openingType !== undefined && !ControlMessageType.isUpdatable(openingType)) {
+    // Refused, not failed: the request it named carries on untouched.
+    await stream.send(
+      new RequestError(RequestErrorCode.NotSupported, 0n, new ReasonPhrase('request does not support REQUEST_UPDATE')),
+    )
+    return
+  }
+
+  const publication = client.publications.get(requestId)
   if (publication instanceof SubscribePublication) {
-    publication.update(msg)
-  } else {
-    throw new ProtocolViolationError('handlerSubscribeUpdate', 'No subscribe request found for the given request id')
+    try {
+      publication.update(msg)
+    } catch (error) {
+      logger.error('handler/request_update', `update failed for requestId=${requestId}`, error)
+      await failUpdate(client, stream, requestId, RequestErrorCode.InternalError, 'REQUEST_UPDATE failed')
+      return
+    }
+    await stream.send(new RequestOk())
+    return
+  }
+
+  // A FETCH, a PUBLISH-established subscription and a namespace request all lack the
+  // state to update here, so the update fails and takes the request with it.
+  logger.warn('handler/request_update', `no updatable request for requestId=${requestId}`)
+  await failUpdate(client, stream, requestId, RequestErrorCode.NotSupported, 'REQUEST_UPDATE cannot be applied')
+}
+
+/**
+ * Refuses the update, then ends the request the way §10.9.1 requires for its type: a
+ * subscription is terminated with PUBLISH_DONE(UPDATE_FAILED), a FETCH has its data
+ * stream reset, and a namespace request has its bidi stream closed.
+ */
+async function failUpdate(
+  client: MOQtailClient,
+  stream: RequestStream,
+  requestId: bigint,
+  errorCode: RequestErrorCode,
+  reason: string,
+): Promise<void> {
+  await stream.send(new RequestError(errorCode, 0n, new ReasonPhrase(reason)))
+
+  const publication = client.publications.get(requestId)
+  switch (stream.openingType) {
+    case ControlMessageType.Subscribe:
+    case ControlMessageType.Publish:
+      if (publication instanceof SubscribePublication) {
+        await publication.done(PublishDoneStatusCode.UpdateFailed)
+      } else {
+        const streamCount = publication instanceof PublishPublication ? publication.streamsOpened : 0n
+        await stream.send(
+          new PublishDone(PublishDoneStatusCode.UpdateFailed, streamCount, new ReasonPhrase('REQUEST_UPDATE failed')),
+        )
+      }
+      publication?.cancel()
+      client.publications.delete(requestId)
+      break
+
+    case ControlMessageType.Fetch:
+      if (publication instanceof FetchPublication) await publication.resetDataStream(StreamResetCode.Cancelled)
+      client.publications.delete(requestId)
+      break
+
+    case ControlMessageType.PublishNamespace:
+    case ControlMessageType.SubscribeNamespace:
+    case ControlMessageType.SubscribeTracks:
+      await stream.close()
+      break
   }
 }

@@ -375,9 +375,9 @@ if (result instanceof PublishNamespaceError) {
   console.log('Namespace published successfully')
 }
 
-// Stop announcing a namespace
-const publish_namespace_done = new publishNamespaceDone(Tuple.tryNew(['live', 'conference']))
-await client.publishNamespaceDone(publish_namespace_done)
+// Stop announcing a namespace: draft-18 has no PUBLISH_NAMESPACE_DONE, so this closes
+// the stream the PUBLISH_NAMESPACE opened (§3.3.2)
+await client.unpublishNamespace(Tuple.tryNew(['live', 'conference']))
 ```
 
 #### Subscribe to Announcements
@@ -394,9 +394,9 @@ await client.subscribeNamespace(subscribeNamespace)
 // The client will now receive announce messages for tracks
 // matching the 'live' prefix through its announcement handling
 
-// Stop subscribing to announcements
-const unsubscribeNamespace = new UnsubscribeNamespace(Tuple.tryNew(['live']))
-await client.unsubscribeNamespace(unsubscribeNamespace)
+// Stop subscribing to announcements: likewise no UNSUBSCRIBE_NAMESPACE, the
+// SUBSCRIBE_NAMESPACE stream is simply closed
+await client.unsubscribeNamespace(Tuple.tryNew(['live']))
 ```
 
 #### Track Status Requests

@@ -23,14 +23,14 @@ import {
   deserializeMessageParameterKvps,
   serializeMessageParameterKvps,
 } from '../parameter/message_parameter'
-import { TrackProperty, DeliveryTimeoutProperty, MaxCacheDurationProperty } from '../property/track_property'
+import { TrackProperty, ObjectDeliveryTimeoutProperty, MaxCacheDurationProperty } from '../property/track_property'
 
 import { Location } from '../common/location'
 import { Forward } from '../parameter/message/forward'
 import { SubscriberPriority } from '../parameter/message/subscriber_priority'
 import { GroupOrderParam } from '../parameter/message/group_order_param'
 import { SubscriptionFilter } from '../parameter/message/subscription_filter'
-import { DeliveryTimeout } from '../parameter/message/delivery_timeout'
+import { ObjectDeliveryTimeout } from '../parameter/message/object_delivery_timeout'
 
 /**
  * @public
@@ -169,7 +169,7 @@ if (import.meta.vitest) {
     test('roundtrip with AbsoluteRange subscription filter', () => {
       const parameters: MessageParameter[] = [
         new SubscriptionFilter(FilterType.AbsoluteRange, new Location(5n, 10n), 20n),
-        new DeliveryTimeout(5000n),
+        new ObjectDeliveryTimeout(5000n),
       ]
       const msg = new RequestOk(parameters)
       const payload = payloadOf(msg)
@@ -180,14 +180,14 @@ if (import.meta.vitest) {
 
     test('roundtrip with track properties (TRACK_STATUS_OK)', () => {
       const msg = new RequestOk(
-        [new DeliveryTimeout(100n)],
-        [new DeliveryTimeoutProperty(5000n), new MaxCacheDurationProperty(60000n)],
+        [new ObjectDeliveryTimeout(100n)],
+        [new ObjectDeliveryTimeoutProperty(5000n), new MaxCacheDurationProperty(60000n)],
       )
       const payload = payloadOf(msg)
       const deserialized = RequestOk.parsePayload(payload)
       expect(deserialized.parameters.length).toBe(1)
       expect(deserialized.trackProperties.length).toBe(2)
-      expect(deserialized.trackProperties[0]).toBeInstanceOf(DeliveryTimeoutProperty)
+      expect(deserialized.trackProperties[0]).toBeInstanceOf(ObjectDeliveryTimeoutProperty)
       expect(deserialized.trackProperties[1]).toBeInstanceOf(MaxCacheDurationProperty)
       expect(payload.remaining).toBe(0)
     })
@@ -207,7 +207,7 @@ if (import.meta.vitest) {
     })
 
     test('excess roundtrip', () => {
-      const msg = new RequestOk([new DeliveryTimeout(5000n)])
+      const msg = new RequestOk([new ObjectDeliveryTimeout(5000n)])
       const serialized = msg.serialize().toUint8Array()
       const excess = new Uint8Array([9, 1, 1])
       const buf = new ByteBuffer()
@@ -227,7 +227,7 @@ if (import.meta.vitest) {
     })
 
     test('partial message', () => {
-      const msg = new RequestOk([new DeliveryTimeout(5000n)])
+      const msg = new RequestOk([new ObjectDeliveryTimeout(5000n)])
       const serialized = msg.serialize().toUint8Array()
       const upper = Math.floor(serialized.length / 2)
       const partial = serialized.slice(0, upper)

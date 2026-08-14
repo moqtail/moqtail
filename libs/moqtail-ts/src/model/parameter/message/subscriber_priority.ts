@@ -65,7 +65,7 @@ if (import.meta.vitest) {
       expect(() => SubscriberPriority.fromKeyValuePair(pair)).toThrow(ProtocolViolationError)
     })
     test('fromKeyValuePair returns undefined for wrong type', () => {
-      const pair = KeyValuePair.tryNewVarInt(MessageParameterType.DeliveryTimeout, 100n)
+      const pair = KeyValuePair.tryNewVarInt(MessageParameterType.ObjectDeliveryTimeout, 100n)
       expect(SubscriberPriority.fromKeyValuePair(pair)).toBeUndefined()
     })
   })

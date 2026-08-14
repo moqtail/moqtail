@@ -57,7 +57,7 @@ import {
   RequestIdMap,
 } from '../model/data'
 import { FrozenByteBuffer } from '../model/common/byte_buffer'
-import { DeliveryTimeoutProperty, TrackProperty } from '../model/property/track_property'
+import { ObjectDeliveryTimeoutProperty, TrackProperty } from '../model/property/track_property'
 import { RecvStream } from './data_stream'
 import {
   InternalError,
@@ -2812,7 +2812,7 @@ if (import.meta.vitest) {
       // §10.5 populates Track Properties in a TRACK_STATUS_OK and nowhere else, so this
       // PUBLISH_NAMESPACE_OK is a protocol violation: the request fails rather than
       // resolving with a namespace the peer never really accepted.
-      announceStream.respond(new RequestOk([], [new DeliveryTimeoutProperty(5000n)]))
+      announceStream.respond(new RequestOk([], [new ObjectDeliveryTimeoutProperty(5000n)]))
 
       // Without the properties the same exchange resolves; see the request-per-stream
       // test above.

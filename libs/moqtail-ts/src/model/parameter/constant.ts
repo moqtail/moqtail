@@ -43,28 +43,43 @@ export function setupOptionTypeFromNumber(value: number): SetupOptionType {
 }
 
 export enum MessageParameterType {
-  DeliveryTimeout = 0x02,
+  ObjectDeliveryTimeout = 0x02,
   AuthorizationToken = 0x03,
+  RendezvousTimeout = 0x04,
+  SubgroupDeliveryTimeout = 0x06,
   Expires = 0x08,
   LargestObject = 0x09,
+  FillTimeout = 0x0a,
   Forward = 0x10,
   SubscriberPriority = 0x20,
   SubscriptionFilter = 0x21,
   GroupOrder = 0x22,
   NewGroupRequest = 0x32,
+  /**
+   * Registered codepoint with no typed parameter yet: its consumer is REQUEST_UPDATE for
+   * SUBSCRIBE_TRACKS (TS-11), and the value is a Track Namespace tuple rather than the
+   * varint its even Type implies.
+   */
+  TrackNamespacePrefix = 0x34,
 }
 
 export function messageParameterTypeFromNumber(value: bigint | number): MessageParameterType {
   const numValue = Number(value)
   switch (numValue) {
     case 0x02:
-      return MessageParameterType.DeliveryTimeout
+      return MessageParameterType.ObjectDeliveryTimeout
     case 0x03:
       return MessageParameterType.AuthorizationToken
+    case 0x04:
+      return MessageParameterType.RendezvousTimeout
+    case 0x06:
+      return MessageParameterType.SubgroupDeliveryTimeout
     case 0x08:
       return MessageParameterType.Expires
     case 0x09:
       return MessageParameterType.LargestObject
+    case 0x0a:
+      return MessageParameterType.FillTimeout
     case 0x10:
       return MessageParameterType.Forward
     case 0x20:
@@ -75,6 +90,8 @@ export function messageParameterTypeFromNumber(value: bigint | number): MessageP
       return MessageParameterType.GroupOrder
     case 0x32:
       return MessageParameterType.NewGroupRequest
+    case 0x34:
+      return MessageParameterType.TrackNamespacePrefix
     default:
       throw new InvalidTypeError('messageParameterTypeFromNumber', `Unknown message parameter type: ${value}`)
   }

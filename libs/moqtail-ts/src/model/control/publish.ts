@@ -24,8 +24,8 @@ import {
   deserializeMessageParameterKvps,
   serializeMessageParameterKvps,
 } from '../parameter/message_parameter'
-import { TrackProperty, DeliveryTimeoutProperty } from '../property/track_property'
-import { DeliveryTimeout } from '../parameter/message/delivery_timeout'
+import { TrackProperty, ObjectDeliveryTimeoutProperty } from '../property/track_property'
+import { ObjectDeliveryTimeout } from '../parameter/message/object_delivery_timeout'
 import { Forward } from '../parameter/message/forward'
 
 export class Publish {
@@ -80,7 +80,7 @@ if (import.meta.vitest) {
       const requestId = 12345n
       const fullTrackName = FullTrackName.tryNew('video/stream', 'camera1')
       const trackAlias = 123n
-      const parameters = [new DeliveryTimeout(500n), new Forward(true)]
+      const parameters = [new ObjectDeliveryTimeout(500n), new Forward(true)]
       const publish = new Publish(requestId, fullTrackName, trackAlias, parameters)
 
       const frozen = publish.serialize()
@@ -118,14 +118,14 @@ if (import.meta.vitest) {
     test('roundtrip with track properties', () => {
       const requestId = 12345n
       const fullTrackName = FullTrackName.tryNew('video/stream', 'camera1')
-      const publish = new Publish(requestId, fullTrackName, 1n, [], [new DeliveryTimeoutProperty(3000n)])
+      const publish = new Publish(requestId, fullTrackName, 1n, [], [new ObjectDeliveryTimeoutProperty(3000n)])
       const frozen = publish.serialize()
       frozen.getVI() // message type
       const msgLength = frozen.getU16()
       const payload = new FrozenByteBuffer(frozen.getBytes(msgLength))
       const deserialized = Publish.parsePayload(payload)
       expect(deserialized.trackProperties.length).toBe(1)
-      expect(deserialized.trackProperties[0]).toBeInstanceOf(DeliveryTimeoutProperty)
+      expect(deserialized.trackProperties[0]).toBeInstanceOf(ObjectDeliveryTimeoutProperty)
       expect(payload.remaining).toBe(0)
     })
 
@@ -133,7 +133,7 @@ if (import.meta.vitest) {
       const requestId = 12345n
       const fullTrackName = FullTrackName.tryNew('video/stream', 'camera1')
       const trackAlias = 123n
-      const parameters = [new DeliveryTimeout(500n)]
+      const parameters = [new ObjectDeliveryTimeout(500n)]
       const publish = new Publish(requestId, fullTrackName, trackAlias, parameters)
       const serialized = publish.serialize().toUint8Array()
       const excess = new Uint8Array([9, 1, 1])
@@ -157,7 +157,7 @@ if (import.meta.vitest) {
     test('partial message', () => {
       const requestId = 12345n
       const fullTrackName = FullTrackName.tryNew('video/stream', 'camera1')
-      const publish = new Publish(requestId, fullTrackName, 123n, [new DeliveryTimeout(500n)])
+      const publish = new Publish(requestId, fullTrackName, 123n, [new ObjectDeliveryTimeout(500n)])
       const serialized = publish.serialize().toUint8Array()
       const upper = Math.floor(serialized.length / 2)
       const partial = serialized.slice(0, upper)

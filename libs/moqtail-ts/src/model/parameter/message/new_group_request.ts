@@ -55,7 +55,7 @@ if (import.meta.vitest) {
       expect(parsed?.group).toBe(0n)
     })
     test('fromKeyValuePair returns undefined for wrong type', () => {
-      const pair = KeyValuePair.tryNewVarInt(MessageParameterType.DeliveryTimeout, 100n)
+      const pair = KeyValuePair.tryNewVarInt(MessageParameterType.ObjectDeliveryTimeout, 100n)
       expect(NewGroupRequest.fromKeyValuePair(pair)).toBeUndefined()
     })
   })

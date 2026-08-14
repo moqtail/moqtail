@@ -27,11 +27,11 @@ import { TrackProperty } from '../property/track_property'
 
 import { Location } from '../common/location'
 import { GroupOrder } from './constant'
-import { DeliveryTimeoutProperty } from '../property/track_property'
+import { ObjectDeliveryTimeoutProperty } from '../property/track_property'
 import { Expires } from '../parameter/message/expires'
 import { LargestObject } from '../parameter/message/largest_object'
 import { GroupOrderParam } from '../parameter/message/group_order_param'
-import { DeliveryTimeout } from '../parameter/message/delivery_timeout'
+import { ObjectDeliveryTimeout } from '../parameter/message/object_delivery_timeout'
 
 /**
  * SUBSCRIBE_OK (0x4) keeps a body of its own rather than folding into REQUEST_OK, but
@@ -100,7 +100,7 @@ if (import.meta.vitest) {
         new Expires(16n),
         new GroupOrderParam(GroupOrder.Ascending),
         new LargestObject(largestLocation),
-        new DeliveryTimeout(100n),
+        new ObjectDeliveryTimeout(100n),
       ]
       const subscribeOk = SubscribeOk.create(trackAlias, parameters)
       const frozen = subscribeOk.serialize()
@@ -119,7 +119,7 @@ if (import.meta.vitest) {
       const subscribeOk = SubscribeOk.create(
         999n,
         [new Expires(16n), new LargestObject(new Location(34n, 0n))],
-        [new DeliveryTimeoutProperty(5000n)],
+        [new ObjectDeliveryTimeoutProperty(5000n)],
       )
       const frozen = subscribeOk.serialize()
       frozen.getVI() // message type
@@ -127,7 +127,7 @@ if (import.meta.vitest) {
       const payload = new FrozenByteBuffer(frozen.getBytes(msgLength))
       const deserialized = SubscribeOk.parsePayload(payload)
       expect(deserialized.trackProperties.length).toBe(1)
-      expect(deserialized.trackProperties[0]).toBeInstanceOf(DeliveryTimeoutProperty)
+      expect(deserialized.trackProperties[0]).toBeInstanceOf(ObjectDeliveryTimeoutProperty)
       expect(payload.remaining).toBe(0)
     })
 
@@ -136,7 +136,7 @@ if (import.meta.vitest) {
       const subscribeOk = SubscribeOk.create(trackAlias, [
         new Expires(16n),
         new LargestObject(new Location(34n, 0n)),
-        new DeliveryTimeout(100n),
+        new ObjectDeliveryTimeout(100n),
       ])
       const serialized = subscribeOk.serialize().toUint8Array()
       const excess = new Uint8Array([9, 1, 1])

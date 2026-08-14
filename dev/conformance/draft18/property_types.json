@@ -46,10 +46,7 @@
       "name": "OBJECT_DELIVERY_TIMEOUT",
       "value": "0x02",
       "scope": "Track",
-      "spec": "Section 12.2",
-      "pending": {
-        "ts": 265
-      }
+      "spec": "Section 12.2"
     },
     {
       "name": "MAX_CACHE_DURATION",
@@ -61,10 +58,7 @@
       "name": "SUBGROUP_DELIVERY_TIMEOUT",
       "value": "0x06",
       "scope": "Track",
-      "spec": "Section 12.1",
-      "pending": {
-        "ts": 265
-      }
+      "spec": "Section 12.1"
     },
     {
       "name": "IMMUTABLE_PROPERTIES",

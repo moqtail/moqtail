@@ -25,8 +25,9 @@ export enum LOCPropertyId {
 }
 
 export enum TrackPropertyType {
-  DeliveryTimeout = 0x02,
+  ObjectDeliveryTimeout = 0x02,
   MaxCacheDuration = 0x04,
+  SubgroupDeliveryTimeout = 0x06,
   ImmutableProperties = 0x0b,
   DefaultPublisherPriority = 0x0e,
   DefaultPublisherGroupOrder = 0x22,

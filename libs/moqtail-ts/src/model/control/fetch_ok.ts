@@ -24,8 +24,8 @@ import {
   deserializeMessageParameterKvps,
   serializeMessageParameterKvps,
 } from '../parameter/message_parameter'
-import { TrackProperty, DeliveryTimeoutProperty } from '../property/track_property'
-import { DeliveryTimeout } from '../parameter/message/delivery_timeout'
+import { TrackProperty, ObjectDeliveryTimeoutProperty } from '../property/track_property'
+import { ObjectDeliveryTimeout } from '../parameter/message/object_delivery_timeout'
 
 /**
  * FETCH_OK (0x18) keeps a body of its own rather than folding into REQUEST_OK, but like
@@ -94,7 +94,7 @@ if (import.meta.vitest) {
     test('roundtrip', () => {
       const endOfTrack = true
       const endLocation = new Location(17n, 57n)
-      const parameters = [new DeliveryTimeout(200n)]
+      const parameters = [new ObjectDeliveryTimeout(200n)]
       const msg = new FetchOk(endOfTrack, endLocation, parameters)
       const frozen = msg.serialize()
       const msgType = frozen.getVI()
@@ -113,8 +113,8 @@ if (import.meta.vitest) {
       const msg = new FetchOk(
         true,
         new Location(17n, 57n),
-        [new DeliveryTimeout(200n)],
-        [new DeliveryTimeoutProperty(8000n)],
+        [new ObjectDeliveryTimeout(200n)],
+        [new ObjectDeliveryTimeoutProperty(8000n)],
       )
       const frozen = msg.serialize()
       frozen.getVI() // message type
@@ -122,14 +122,14 @@ if (import.meta.vitest) {
       const payload = new FrozenByteBuffer(frozen.getBytes(msgLength))
       const parsed = FetchOk.parsePayload(payload)
       expect(parsed.trackProperties.length).toBe(1)
-      expect(parsed.trackProperties[0]).toBeInstanceOf(DeliveryTimeoutProperty)
+      expect(parsed.trackProperties[0]).toBeInstanceOf(ObjectDeliveryTimeoutProperty)
       expect(payload.remaining).toBe(0)
     })
 
     test('excess roundtrip', () => {
       const endOfTrack = true
       const endLocation = new Location(17n, 57n)
-      const parameters = [new DeliveryTimeout(200n)]
+      const parameters = [new ObjectDeliveryTimeout(200n)]
       const msg = new FetchOk(endOfTrack, endLocation, parameters)
       const serialized = msg.serialize().toUint8Array()
       const excess = new Uint8Array([9, 1, 1])
@@ -153,7 +153,7 @@ if (import.meta.vitest) {
     test('partial message', () => {
       const endOfTrack = true
       const endLocation = new Location(17n, 57n)
-      const parameters = [new DeliveryTimeout(200n)]
+      const parameters = [new ObjectDeliveryTimeout(200n)]
       const msg = new FetchOk(endOfTrack, endLocation, parameters)
       const serialized = msg.serialize().toUint8Array()
       const upper = Math.floor(serialized.length / 2)

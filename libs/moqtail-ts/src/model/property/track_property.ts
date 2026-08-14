@@ -20,24 +20,36 @@ import { ProtocolViolationError } from '../error/error'
 import { GroupOrder } from '../control/constant'
 import { TrackPropertyType } from './constant'
 
-export class DeliveryTimeoutProperty {
-  static readonly TYPE = TrackPropertyType.DeliveryTimeout
+/** A timeout of 0 means no timeout is set (§8), on this side as on the parameter side. */
+export class ObjectDeliveryTimeoutProperty {
+  static readonly TYPE = TrackPropertyType.ObjectDeliveryTimeout
 
   constructor(public readonly timeoutMs: bigint) {}
 
   toKeyValuePair(): KeyValuePair {
-    return KeyValuePair.tryNewVarInt(DeliveryTimeoutProperty.TYPE, this.timeoutMs)
+    return KeyValuePair.tryNewVarInt(ObjectDeliveryTimeoutProperty.TYPE, this.timeoutMs)
   }
 
-  static fromKeyValuePair(pair: KeyValuePair): DeliveryTimeoutProperty | undefined {
-    if (Number(pair.typeValue) !== DeliveryTimeoutProperty.TYPE || typeof pair.value !== 'bigint') return undefined
-    if (pair.value === 0n) {
-      throw new ProtocolViolationError(
-        'DeliveryTimeoutProperty.fromKeyValuePair',
-        'DELIVERY_TIMEOUT must be greater than 0',
-      )
-    }
-    return new DeliveryTimeoutProperty(pair.value)
+  static fromKeyValuePair(pair: KeyValuePair): ObjectDeliveryTimeoutProperty | undefined {
+    if (Number(pair.typeValue) !== ObjectDeliveryTimeoutProperty.TYPE || typeof pair.value !== 'bigint')
+      return undefined
+    return new ObjectDeliveryTimeoutProperty(pair.value)
+  }
+}
+
+export class SubgroupDeliveryTimeoutProperty {
+  static readonly TYPE = TrackPropertyType.SubgroupDeliveryTimeout
+
+  constructor(public readonly timeoutMs: bigint) {}
+
+  toKeyValuePair(): KeyValuePair {
+    return KeyValuePair.tryNewVarInt(SubgroupDeliveryTimeoutProperty.TYPE, this.timeoutMs)
+  }
+
+  static fromKeyValuePair(pair: KeyValuePair): SubgroupDeliveryTimeoutProperty | undefined {
+    if (Number(pair.typeValue) !== SubgroupDeliveryTimeoutProperty.TYPE || typeof pair.value !== 'bigint')
+      return undefined
+    return new SubgroupDeliveryTimeoutProperty(pair.value)
   }
 }
 
@@ -157,7 +169,8 @@ export class UnknownTrackProperty {
 }
 
 export type TrackProperty =
-  | DeliveryTimeoutProperty
+  | ObjectDeliveryTimeoutProperty
+  | SubgroupDeliveryTimeoutProperty
   | MaxCacheDurationProperty
   | ImmutablePropertiesTrackProperty
   | DefaultPublisherPriorityProperty
@@ -168,7 +181,8 @@ export type TrackProperty =
 export namespace TrackProperty {
   export function fromKeyValuePair(pair: KeyValuePair): TrackProperty {
     return (
-      DeliveryTimeoutProperty.fromKeyValuePair(pair) ??
+      ObjectDeliveryTimeoutProperty.fromKeyValuePair(pair) ??
+      SubgroupDeliveryTimeoutProperty.fromKeyValuePair(pair) ??
       MaxCacheDurationProperty.fromKeyValuePair(pair) ??
       ImmutablePropertiesTrackProperty.fromKeyValuePair(pair) ??
       DefaultPublisherPriorityProperty.fromKeyValuePair(pair) ??
@@ -190,8 +204,12 @@ export namespace TrackProperty {
     payload.putBytes(serializeKvpList(exts.map((ext) => ext.toKeyValuePair())).toUint8Array())
   }
 
-  export function isDeliveryTimeout(ext: TrackProperty): ext is DeliveryTimeoutProperty {
-    return ext instanceof DeliveryTimeoutProperty
+  export function isObjectDeliveryTimeout(ext: TrackProperty): ext is ObjectDeliveryTimeoutProperty {
+    return ext instanceof ObjectDeliveryTimeoutProperty
+  }
+
+  export function isSubgroupDeliveryTimeout(ext: TrackProperty): ext is SubgroupDeliveryTimeoutProperty {
+    return ext instanceof SubgroupDeliveryTimeoutProperty
   }
 
   export function isMaxCacheDuration(ext: TrackProperty): ext is MaxCacheDurationProperty {
@@ -234,16 +252,25 @@ if (import.meta.vitest) {
       expect(TrackProperty.deserializeAll(buf)).toEqual([])
     })
 
-    test('DeliveryTimeoutProperty roundtrip', () => {
-      const ext = new DeliveryTimeoutProperty(5000n)
+    test('ObjectDeliveryTimeoutProperty roundtrip', () => {
+      const ext = new ObjectDeliveryTimeoutProperty(5000n)
       const [result] = roundtrip([ext])
-      expect(result).toBeInstanceOf(DeliveryTimeoutProperty)
-      expect((result as DeliveryTimeoutProperty).timeoutMs).toBe(5000n)
+      expect(result).toBeInstanceOf(ObjectDeliveryTimeoutProperty)
+      expect((result as ObjectDeliveryTimeoutProperty).timeoutMs).toBe(5000n)
     })
 
-    test('DeliveryTimeoutProperty throws on zero', () => {
-      const kvp = KeyValuePair.tryNewVarInt(TrackPropertyType.DeliveryTimeout, 0)
-      expect(() => DeliveryTimeoutProperty.fromKeyValuePair(kvp)).toThrow(ProtocolViolationError)
+    test('SubgroupDeliveryTimeoutProperty roundtrip', () => {
+      const ext = new SubgroupDeliveryTimeoutProperty(2500n)
+      const [result] = roundtrip([ext])
+      expect(result).toBeInstanceOf(SubgroupDeliveryTimeoutProperty)
+      expect((result as SubgroupDeliveryTimeoutProperty).timeoutMs).toBe(2500n)
+    })
+
+    // §8: draft-16 rejected 0; draft-18 reads it as "no timeout", matching the
+    // parameter side.
+    test('a delivery timeout of 0 means no timeout', () => {
+      const kvp = KeyValuePair.tryNewVarInt(TrackPropertyType.ObjectDeliveryTimeout, 0)
+      expect(ObjectDeliveryTimeoutProperty.fromKeyValuePair(kvp)?.timeoutMs).toBe(0n)
     })
 
     test('MaxCacheDurationProperty roundtrip', () => {
@@ -342,14 +369,14 @@ if (import.meta.vitest) {
     test('mixed list roundtrip', () => {
       // Order matches the canonical ascending-by-type wire order (delta-encoding requirement).
       const exts: TrackProperty[] = [
-        new DeliveryTimeoutProperty(1000n),
+        new ObjectDeliveryTimeoutProperty(1000n),
         new MaxCacheDurationProperty(500n),
         new DefaultPublisherPriorityProperty(42),
         new DynamicGroupsProperty(true),
       ]
       const result = roundtrip(exts)
       expect(result.length).toBe(4)
-      expect(result[0]).toBeInstanceOf(DeliveryTimeoutProperty)
+      expect(result[0]).toBeInstanceOf(ObjectDeliveryTimeoutProperty)
       expect(result[1]).toBeInstanceOf(MaxCacheDurationProperty)
       expect(result[2]).toBeInstanceOf(DefaultPublisherPriorityProperty)
       expect(result[3]).toBeInstanceOf(DynamicGroupsProperty)
@@ -364,7 +391,10 @@ if (import.meta.vitest) {
         KeyValuePair.tryNewVarInt(0x02, 7n),
         KeyValuePair.tryNewBytes(0x03, new TextEncoder().encode('data')),
       ]
-      const exts: TrackProperty[] = [new DeliveryTimeoutProperty(100n), new ImmutablePropertiesTrackProperty(inner)]
+      const exts: TrackProperty[] = [
+        new ObjectDeliveryTimeoutProperty(100n),
+        new ImmutablePropertiesTrackProperty(inner),
+      ]
       const result = roundtrip(exts)
       expect(result).toEqual(exts)
     })

@@ -16,7 +16,7 @@
 
 import { KeyValuePair } from '../common/pair'
 import { CastingError, ProtocolViolationError } from '../error/error'
-import { ExtensionHeaders } from '../extension_header'
+import { LOCProperties } from '../property'
 import { ObjectDatagramType, ObjectForwardingPreference, ObjectStatus, SubgroupHeaderType } from './constant'
 import { Datagram } from './datagram'
 import { FetchObject } from './fetch_object'
@@ -35,7 +35,7 @@ export class MoqtObject {
     public readonly objectForwardingPreference: ObjectForwardingPreference,
     subgroupId: bigint | number | null,
     public readonly objectStatus: ObjectStatus,
-    public readonly extensionHeaders: KeyValuePair[] | null,
+    public readonly properties: KeyValuePair[] | null,
     public readonly payload: Uint8Array | null,
   ) {
     this.location = location
@@ -49,8 +49,12 @@ export class MoqtObject {
     return this.location.object
   }
 
-  getSubgroupHeaderType(containsEnd: boolean, useDefaultPriority: boolean = false): SubgroupHeaderType {
-    const hasExtensions = !!this.extensionHeaders && this.extensionHeaders.length > 0
+  getSubgroupHeaderType(
+    containsEnd: boolean,
+    useDefaultPriority: boolean = false,
+    firstObject: boolean = false,
+  ): SubgroupHeaderType {
+    const hasProperties = !!this.properties && this.properties.length > 0
 
     // Determine SUBGROUP_ID_MODE (bits 1-2):
     // 0b00 (0): Subgroup ID = 0 (absent from header)
@@ -65,7 +69,13 @@ export class MoqtObject {
       subgroupIdMode = 2 // explicit mode
     }
 
-    return SubgroupHeaderType.fromProperties(hasExtensions, subgroupIdMode, containsEnd, useDefaultPriority)
+    return SubgroupHeaderType.fromProperties(
+      hasProperties,
+      subgroupIdMode,
+      containsEnd,
+      useDefaultPriority,
+      firstObject,
+    )
   }
 
   isDatagram(): boolean {
@@ -93,7 +103,7 @@ export class MoqtObject {
     publisherPriority: number,
     objectForwardingPreference: ObjectForwardingPreference,
     subgroupId: bigint | number | null,
-    extensionHeaders: KeyValuePair[] | null,
+    properties: KeyValuePair[] | null,
     payload: Uint8Array,
   ): MoqtObject {
     return new MoqtObject(
@@ -103,7 +113,7 @@ export class MoqtObject {
       objectForwardingPreference,
       subgroupId,
       ObjectStatus.Normal,
-      extensionHeaders,
+      properties,
       payload,
     )
   }
@@ -114,7 +124,7 @@ export class MoqtObject {
     publisherPriority: number,
     objectForwardingPreference: ObjectForwardingPreference,
     subgroupId: bigint | number | null,
-    extensionHeaders: KeyValuePair[] | null,
+    properties: KeyValuePair[] | null,
     objectStatus: ObjectStatus,
   ): MoqtObject {
     return new MoqtObject(
@@ -124,7 +134,7 @@ export class MoqtObject {
       objectForwardingPreference,
       subgroupId,
       objectStatus,
-      extensionHeaders,
+      properties,
       null,
     )
   }
@@ -145,7 +155,7 @@ export class MoqtObject {
         ObjectForwardingPreference.Datagram,
         null,
         datagram.objectStatus!,
-        datagram.extensionHeaders,
+        datagram.properties,
         null,
       )
     } else {
@@ -156,7 +166,7 @@ export class MoqtObject {
         ObjectForwardingPreference.Datagram,
         null,
         ObjectStatus.Normal,
-        datagram.extensionHeaders,
+        datagram.properties,
         datagram.payload,
       )
     }
@@ -187,7 +197,7 @@ export class MoqtObject {
       fetchObject.forwardingPreference,
       subgroupId,
       ObjectStatus.Normal,
-      fetchObject.extensionHeaders,
+      fetchObject.properties,
       fetchObject.payload && fetchObject.payload.length > 0 ? fetchObject.payload : null,
     )
   }
@@ -206,7 +216,7 @@ export class MoqtObject {
       ObjectForwardingPreference.Subgroup,
       subgroupId,
       subgroupObject.objectStatus || ObjectStatus.Normal,
-      subgroupObject.extensionHeaders,
+      subgroupObject.properties,
       subgroupObject.payload,
     )
   }
@@ -232,7 +242,7 @@ export class MoqtObject {
       defaultPriority !== undefined && defaultPriority === this.publisherPriority ? null : this.publisherPriority
 
     if (this.hasStatus()) {
-      return Datagram.newStatus(alias, this.groupId, this.objectId, priority, this.extensionHeaders, this.objectStatus)
+      return Datagram.newStatus(alias, this.groupId, this.objectId, priority, this.properties, this.objectStatus)
     } else {
       if (!this.payload) {
         throw new ProtocolViolationError(
@@ -245,7 +255,7 @@ export class MoqtObject {
         this.groupId,
         this.objectId,
         priority,
-        this.extensionHeaders,
+        this.properties,
         this.payload,
         endOfGroup,
       )
@@ -286,7 +296,7 @@ export class MoqtObject {
       this.objectId,
       this.publisherPriority,
       this.objectForwardingPreference,
-      this.extensionHeaders,
+      this.properties,
       this.payload ?? new Uint8Array(0),
     )
   }
@@ -300,9 +310,9 @@ export class MoqtObject {
       )
     }
     if (this.objectStatus === ObjectStatus.Normal && this.payload) {
-      return SubgroupObject.newWithPayload(this.location.object, this.extensionHeaders, this.payload)
+      return SubgroupObject.newWithPayload(this.location.object, this.properties, this.payload)
     } else {
-      return SubgroupObject.newWithStatus(this.location.object, this.extensionHeaders, this.objectStatus)
+      return SubgroupObject.newWithStatus(this.location.object, this.properties, this.objectStatus)
     }
   }
 }
@@ -313,7 +323,7 @@ if (import.meta.vitest) {
   describe('MoqtObject', () => {
     test('create object with payload', () => {
       const payload = new TextEncoder().encode('test payload')
-      const extensionHeaders = new ExtensionHeaders().addAudioLevel(100).addTimestamp(0).build()
+      const properties = new LOCProperties().addAudioLevel(100).addTimestamp(0).build()
       const fullTrackName = FullTrackName.tryNew('test/demo', 'track1')
       const location = new Location(100n, 10n)
       const obj = MoqtObject.newWithPayload(
@@ -322,7 +332,7 @@ if (import.meta.vitest) {
         128,
         ObjectForwardingPreference.Subgroup,
         5n,
-        extensionHeaders,
+        properties,
         payload,
       )
 
@@ -333,7 +343,7 @@ if (import.meta.vitest) {
       expect(obj.objectForwardingPreference).toBe(ObjectForwardingPreference.Subgroup)
       expect(obj.subgroupId).toBe(5n)
       expect(obj.objectStatus).toBe(ObjectStatus.Normal)
-      expect(obj.extensionHeaders).toEqual(extensionHeaders)
+      expect(obj.properties).toEqual(properties)
       expect(obj.payload).toEqual(payload)
       expect(obj.hasPayload()).toBe(true)
       expect(obj.hasStatus()).toBe(false)
@@ -359,7 +369,7 @@ if (import.meta.vitest) {
       expect(obj.objectForwardingPreference).toBe(ObjectForwardingPreference.Datagram)
       expect(obj.subgroupId).toBe(null)
       expect(obj.objectStatus).toBe(ObjectStatus.EndOfGroup)
-      expect(obj.extensionHeaders).toBe(null)
+      expect(obj.properties).toBe(null)
       expect(obj.payload).toBe(null)
       expect(obj.hasPayload()).toBe(false)
       expect(obj.hasStatus()).toBe(true)

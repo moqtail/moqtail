@@ -15,7 +15,7 @@
  */
 
 import {
-  ExtensionHeaders,
+  LOCProperties,
   ObjectForwardingPreference,
   FilterType,
   GroupOrder,
@@ -129,7 +129,7 @@ export async function startAudioEncoder({
         chunk.copyTo(payload);
 
         const captureTime = Math.round(Date.now());
-        const locHeaders = new ExtensionHeaders().addTimestamp(captureTime);
+        const locHeaders = new LOCProperties().addTimestamp(captureTime);
 
         // console.warn('Audio Group ID is:', currentAudioGroupId)
         const moqt = MoqtObject.newWithPayload(
@@ -243,7 +243,7 @@ export function initializeVideoEncoder({
           captureTime = Math.round(Date.now());
         }
 
-        const locHeaders = new ExtensionHeaders()
+        const locHeaders = new LOCProperties()
           .addTimestamp(captureTime)
           .addVideoFrameMarking(chunk.type === 'key' ? 1 : 0);
 
@@ -431,7 +431,7 @@ export async function startVideoEncoder({
           captureTime = Math.round(Date.now());
         }
 
-        const locHeaders = new ExtensionHeaders()
+        const locHeaders = new LOCProperties()
           .addTimestamp(captureTime)
           .addVideoFrameMarking(chunk.type === 'key' ? 1 : 0);
 
@@ -645,7 +645,7 @@ export function pipeStreamToCanvas(
     worker.postMessage(
       {
         type: trackType,
-        extensions: obj.extensionHeaders,
+        extensions: obj.properties,
         payload: obj,
         serverTimestamp: Date.now(),
       },
@@ -692,7 +692,7 @@ function subscribeAndPipeToWorker(
         worker.postMessage(
           {
             type,
-            extensions: obj.extensionHeaders,
+            extensions: obj.properties,
             payload: obj,
             serverTimestamp: Date.now(),
           },

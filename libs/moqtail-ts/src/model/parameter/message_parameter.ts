@@ -17,10 +17,13 @@
 import { KeyValuePair, deserializeKvpList, isBytes, isVarInt, serializeKvpList } from '../common/pair'
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
 import { ProtocolViolationError } from '../error/error'
-import { FilterType } from '../control/constant'
+import { FilterType, GroupOrder } from '../control/constant'
 import { Location } from '../common'
 import { AuthorizationToken } from './common'
-import { DeliveryTimeout } from './message/delivery_timeout'
+import { FillTimeout } from './message/fill_timeout'
+import { ObjectDeliveryTimeout } from './message/object_delivery_timeout'
+import { RendezvousTimeout } from './message/rendezvous_timeout'
+import { SubgroupDeliveryTimeout } from './message/subgroup_delivery_timeout'
 import { Expires } from './message/expires'
 import { Forward } from './message/forward'
 import { GroupOrderParam } from './message/group_order_param'
@@ -30,7 +33,10 @@ import { SubscriberPriority } from './message/subscriber_priority'
 import { SubscriptionFilter } from './message/subscription_filter'
 
 export type MessageParameter =
-  | DeliveryTimeout
+  | ObjectDeliveryTimeout
+  | SubgroupDeliveryTimeout
+  | RendezvousTimeout
+  | FillTimeout
   | AuthorizationToken
   | Expires
   | LargestObject
@@ -48,7 +54,10 @@ export namespace MessageParameter {
    */
   export function fromKeyValuePair(pair: KeyValuePair): MessageParameter | undefined {
     return (
-      DeliveryTimeout.fromKeyValuePair(pair) ??
+      ObjectDeliveryTimeout.fromKeyValuePair(pair) ??
+      SubgroupDeliveryTimeout.fromKeyValuePair(pair) ??
+      RendezvousTimeout.fromKeyValuePair(pair) ??
+      FillTimeout.fromKeyValuePair(pair) ??
       AuthorizationToken.fromKeyValuePair(pair) ??
       Expires.fromKeyValuePair(pair) ??
       LargestObject.fromKeyValuePair(pair) ??
@@ -64,8 +73,20 @@ export namespace MessageParameter {
     return param.toKeyValuePair()
   }
 
-  export function isDeliveryTimeout(param: MessageParameter): param is DeliveryTimeout {
-    return param instanceof DeliveryTimeout
+  export function isObjectDeliveryTimeout(param: MessageParameter): param is ObjectDeliveryTimeout {
+    return param instanceof ObjectDeliveryTimeout
+  }
+
+  export function isSubgroupDeliveryTimeout(param: MessageParameter): param is SubgroupDeliveryTimeout {
+    return param instanceof SubgroupDeliveryTimeout
+  }
+
+  export function isRendezvousTimeout(param: MessageParameter): param is RendezvousTimeout {
+    return param instanceof RendezvousTimeout
+  }
+
+  export function isFillTimeout(param: MessageParameter): param is FillTimeout {
+    return param instanceof FillTimeout
   }
 
   export function isAuthorizationToken(param: MessageParameter): param is AuthorizationToken {
@@ -92,6 +113,11 @@ export namespace MessageParameter {
     return param instanceof GroupOrderParam
   }
 
+  /** The negotiated Group Order, or {@link (GroupOrder:enum).Original} when unparameterized. */
+  export function groupOrderOf(params: readonly MessageParameter[]): GroupOrder {
+    return params.find(isGroupOrderParam)?.order ?? GroupOrder.Original
+  }
+
   export function isSubscriptionFilter(param: MessageParameter): param is SubscriptionFilter {
     return param instanceof SubscriptionFilter
   }
@@ -113,8 +139,20 @@ export class MessageParameters {
     return this
   }
 
-  addDeliveryTimeout(timeout: bigint | number): this {
-    return this.add(new DeliveryTimeout(BigInt(timeout)))
+  addObjectDeliveryTimeout(timeout: bigint | number): this {
+    return this.add(new ObjectDeliveryTimeout(BigInt(timeout)))
+  }
+
+  addSubgroupDeliveryTimeout(timeout: bigint | number): this {
+    return this.add(new SubgroupDeliveryTimeout(BigInt(timeout)))
+  }
+
+  addRendezvousTimeout(timeout: bigint | number): this {
+    return this.add(new RendezvousTimeout(BigInt(timeout)))
+  }
+
+  addFillTimeout(timeout: bigint | number): this {
+    return this.add(new FillTimeout(BigInt(timeout)))
   }
 
   addAuthorizationToken(token: AuthorizationToken): this {
@@ -301,7 +339,7 @@ if (import.meta.vitest) {
   describe('MessageParameters builder', () => {
     test('builds and roundtrips parameters', () => {
       const kvps = new MessageParameters()
-        .addDeliveryTimeout(150n)
+        .addObjectDeliveryTimeout(150n)
         .addForward(false)
         .addSubscriberPriority(42)
         .addSubscriptionFilter(new SubscriptionFilter(FilterType.AbsoluteRange, new Location(10n, 0n), 20n))
@@ -310,7 +348,7 @@ if (import.meta.vitest) {
 
       const parsed = MessageParameters.fromKeyValuePairs(kvps)
       expect(parsed.length).toBe(4)
-      expect(MessageParameter.isDeliveryTimeout(parsed[0]!) && parsed[0].timeout).toBe(150n)
+      expect(MessageParameter.isObjectDeliveryTimeout(parsed[0]!) && parsed[0].timeout).toBe(150n)
       expect(MessageParameter.isForward(parsed[1]!) && parsed[1].forward).toBe(false)
       expect(MessageParameter.isSubscriberPriority(parsed[2]!) && parsed[2].priority).toBe(42)
       expect(MessageParameter.isSubscriptionFilter(parsed[3]!) && parsed[3].filterType).toBe(FilterType.AbsoluteRange)
@@ -318,21 +356,21 @@ if (import.meta.vitest) {
 
     test('fromKeyValuePairs skips unknown types', () => {
       const unknown = KeyValuePair.tryNewVarInt(998n, 1n)
-      const valid = new DeliveryTimeout(100n).toKeyValuePair()
+      const valid = new ObjectDeliveryTimeout(100n).toKeyValuePair()
       const parsed = MessageParameters.fromKeyValuePairs([unknown, valid])
       expect(parsed.length).toBe(1)
-      expect(MessageParameter.isDeliveryTimeout(parsed[0]!)).toBe(true)
+      expect(MessageParameter.isObjectDeliveryTimeout(parsed[0]!)).toBe(true)
     })
   })
 
   describe('applyMessageParameterUpdate', () => {
     test('replaces existing parameter and appends new ones', () => {
       const current: MessageParameter[] = [new SubscriberPriority(100), new Forward(true)]
-      applyMessageParameterUpdate(current, [new SubscriberPriority(50), new DeliveryTimeout(500n)])
+      applyMessageParameterUpdate(current, [new SubscriberPriority(50), new ObjectDeliveryTimeout(500n)])
       expect(current.length).toBe(3)
       expect(current.some((p) => MessageParameter.isSubscriberPriority(p) && p.priority === 50)).toBe(true)
       expect(current.some((p) => MessageParameter.isForward(p) && p.forward === true)).toBe(true)
-      expect(current.some((p) => MessageParameter.isDeliveryTimeout(p) && p.timeout === 500n)).toBe(true)
+      expect(current.some((p) => MessageParameter.isObjectDeliveryTimeout(p) && p.timeout === 500n)).toBe(true)
     })
   })
 

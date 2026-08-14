@@ -115,6 +115,13 @@ export class SubscribePublication {
   #id = Math.floor(Math.random() * 1000000)
 
   /**
+   * Highest group this publication has already opened a stream for or skipped objects of.
+   * A stream for a group at or below it either reopens a subgroup or starts past the
+   * subgroup's first object, so it cannot claim FIRST_OBJECT.
+   */
+  #highestGroupSeen: bigint | undefined
+
+  /**
    * Creates a new SubscribePublication instance.
    * @param client - The MOQT client managing the subscription.
    * @param track - The track being published.
@@ -217,6 +224,13 @@ export class SubscribePublication {
 
     applyMessageParameterUpdate(this.#parameters, msg.parameters)
   }
+
+  #markGroupSeen(group: bigint): void {
+    if (this.#highestGroupSeen === undefined || group > this.#highestGroupSeen) {
+      this.#highestGroupSeen = group
+    }
+  }
+
   /**
    * Publishes MOQT objects to the subscriber as they become available.
    * Handles stream creation, object writing, and stream closure based on subscription parameters.
@@ -231,12 +245,20 @@ export class SubscribePublication {
       this.done(PublishDoneStatusCode.TrackEnded)
     })
 
+    // Objects produced before the subscription started are never forwarded, so the group they
+    // belong to cannot claim to start at its first object.
+    this.#highestGroupSeen = this.track.trackSource.live.largestLocation?.group
+
     this.#cancelPublishing = this.track.trackSource.live.onNewObject(async (obj: MoqtObject) => {
       if (this.#isCompleted) return
-      if (!this.#forward) return
+      if (!this.#forward) {
+        this.#markGroupSeen(obj.location.group)
+        return
+      }
       if (!this.#isStarted && this.#startLocation.compare(obj.location) <= 0) {
         this.#isStarted = true
       }
+      if (!this.#isStarted) this.#markGroupSeen(obj.location.group)
       if (this.#isStarted) {
         try {
           if (!this.#streams.has(obj.location.group)) {
@@ -246,11 +268,13 @@ export class SubscribePublication {
               const writeStream = await this.client.webTransport.createUnidirectionalStream({
                 sendOrder: this.#streamPriority,
               })
+              const firstObject = this.#highestGroupSeen === undefined || obj.location.group > this.#highestGroupSeen
+              const headerType = obj.getSubgroupHeaderType(true, false, firstObject)
+
               let subgroupId: bigint | undefined
-              if (SubgroupHeaderType.hasExplicitSubgroupId(obj.getSubgroupHeaderType(true)))
-                subgroupId = obj.subgroupId!
+              if (SubgroupHeaderType.hasExplicitSubgroupId(headerType)) subgroupId = obj.subgroupId!
               const header = new SubgroupHeader(
-                obj.getSubgroupHeaderType(true),
+                headerType,
                 this.#trackAlias,
                 obj.location.group,
                 subgroupId,
@@ -259,6 +283,7 @@ export class SubscribePublication {
               const sendStream = await SendStream.new(writeStream, header)
               this.#streams.set(obj.location.group, sendStream)
               this.#streamsOpened++
+              this.#markGroupSeen(obj.location.group)
             }
             await this.#lock.release()
           }

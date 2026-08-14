@@ -27,7 +27,7 @@ export const handlerFetchOk: RequestStreamMessageHandler<FetchOk> = async (clien
   // it answers (§10.1).
   const request = client.requests.get(requestId)
   if (request instanceof FetchRequest) {
-    if (msg.trackExtensions.length > 0) {
+    if (msg.trackProperties.length > 0) {
       const fetchMsg = request.message
       let fullTrackName =
         fetchMsg.typeAndProps.type === FetchType.Standalone
@@ -39,7 +39,7 @@ export const handlerFetchOk: RequestStreamMessageHandler<FetchOk> = async (clien
       if (fullTrackName !== undefined) {
         const track = client.trackSources.get(fullTrackName.toString())
         if (track !== undefined) {
-          track.trackExtensions = msg.trackExtensions
+          track.trackProperties = msg.trackProperties
         }
       }
     }

@@ -23,18 +23,14 @@ import {
   deserializeMessageParameterKvps,
   serializeMessageParameterKvps,
 } from '../parameter/message_parameter'
-import {
-  TrackExtension,
-  DeliveryTimeoutExtension,
-  MaxCacheDurationExtension,
-} from '../extension_header/track_extension'
+import { TrackProperty, ObjectDeliveryTimeoutProperty, MaxCacheDurationProperty } from '../property/track_property'
 
 import { Location } from '../common/location'
 import { Forward } from '../parameter/message/forward'
 import { SubscriberPriority } from '../parameter/message/subscriber_priority'
 import { GroupOrderParam } from '../parameter/message/group_order_param'
 import { SubscriptionFilter } from '../parameter/message/subscription_filter'
-import { DeliveryTimeout } from '../parameter/message/delivery_timeout'
+import { ObjectDeliveryTimeout } from '../parameter/message/object_delivery_timeout'
 
 /**
  * @public
@@ -52,16 +48,12 @@ export class RequestOk {
    * Draft-18 Track Properties, which the trailing bytes of the payload carry with no
    * count of their own. Populated only in TRACK_STATUS_OK; empty for every other request
    * type — see {@link RequestOk.validateTrackProperties}.
-   *
-   * Named after `TrackExtension` because that is what this tree still calls the type;
-   * the rename to Properties is TS-8 (#264), which renames it here and on `SubscribeOk`
-   * and `FetchOk` together.
    */
-  public readonly trackExtensions: TrackExtension[]
+  public readonly trackProperties: TrackProperty[]
 
-  constructor(parameters: MessageParameter[] = [], trackExtensions: TrackExtension[] = []) {
+  constructor(parameters: MessageParameter[] = [], trackProperties: TrackProperty[] = []) {
     this.parameters = parameters
-    this.trackExtensions = trackExtensions
+    this.trackProperties = trackProperties
   }
 
   getType(): ControlMessageType {
@@ -78,7 +70,7 @@ export class RequestOk {
    * REQUEST_OK does not answer a TRACK_STATUS.
    */
   validateTrackProperties(answersTrackStatus: boolean): void {
-    if (!answersTrackStatus && this.trackExtensions.length > 0) {
+    if (!answersTrackStatus && this.trackProperties.length > 0) {
       throw new ProtocolViolationError(
         'RequestOk.validateTrackProperties',
         'Track Properties present in a non-TRACK_STATUS REQUEST_OK',
@@ -96,7 +88,7 @@ export class RequestOk {
     payload.putBytes(serializeMessageParameterKvps(this.parameters.map((p) => p.toKeyValuePair())).toUint8Array())
 
     // Track Properties span the remaining message length (no explicit count).
-    TrackExtension.serializeInto(this.trackExtensions, payload)
+    TrackProperty.serializeInto(this.trackProperties, payload)
 
     const payloadBytes = payload.toUint8Array()
     if (payloadBytes.length > 0xffff) {
@@ -127,9 +119,9 @@ export class RequestOk {
       if (param !== undefined) parameters.push(param)
     }
 
-    const trackExtensions = TrackExtension.deserializeAll(buf)
+    const trackProperties = TrackProperty.deserializeAll(buf)
 
-    return new RequestOk(parameters, trackExtensions)
+    return new RequestOk(parameters, trackProperties)
   }
 }
 
@@ -154,7 +146,7 @@ if (import.meta.vitest) {
       expect(payload.remaining).toBe(1)
       const deserialized = RequestOk.parsePayload(payload)
       expect(deserialized.parameters.length).toBe(0)
-      expect(deserialized.trackExtensions.length).toBe(0)
+      expect(deserialized.trackProperties.length).toBe(0)
       expect(payload.remaining).toBe(0)
     })
 
@@ -177,7 +169,7 @@ if (import.meta.vitest) {
     test('roundtrip with AbsoluteRange subscription filter', () => {
       const parameters: MessageParameter[] = [
         new SubscriptionFilter(FilterType.AbsoluteRange, new Location(5n, 10n), 20n),
-        new DeliveryTimeout(5000n),
+        new ObjectDeliveryTimeout(5000n),
       ]
       const msg = new RequestOk(parameters)
       const payload = payloadOf(msg)
@@ -188,20 +180,20 @@ if (import.meta.vitest) {
 
     test('roundtrip with track properties (TRACK_STATUS_OK)', () => {
       const msg = new RequestOk(
-        [new DeliveryTimeout(100n)],
-        [new DeliveryTimeoutExtension(5000n), new MaxCacheDurationExtension(60000n)],
+        [new ObjectDeliveryTimeout(100n)],
+        [new ObjectDeliveryTimeoutProperty(5000n), new MaxCacheDurationProperty(60000n)],
       )
       const payload = payloadOf(msg)
       const deserialized = RequestOk.parsePayload(payload)
       expect(deserialized.parameters.length).toBe(1)
-      expect(deserialized.trackExtensions.length).toBe(2)
-      expect(deserialized.trackExtensions[0]).toBeInstanceOf(DeliveryTimeoutExtension)
-      expect(deserialized.trackExtensions[1]).toBeInstanceOf(MaxCacheDurationExtension)
+      expect(deserialized.trackProperties.length).toBe(2)
+      expect(deserialized.trackProperties[0]).toBeInstanceOf(ObjectDeliveryTimeoutProperty)
+      expect(deserialized.trackProperties[1]).toBeInstanceOf(MaxCacheDurationProperty)
       expect(payload.remaining).toBe(0)
     })
 
     test('track properties are only valid in a TRACK_STATUS_OK', () => {
-      const withProperties = new RequestOk([], [new MaxCacheDurationExtension(1n)])
+      const withProperties = new RequestOk([], [new MaxCacheDurationProperty(1n)])
       // Answering a TRACK_STATUS: allowed.
       expect(() => withProperties.validateTrackProperties(true)).not.toThrow()
       // Answering PUBLISH, REQUEST_UPDATE, SUBSCRIBE_NAMESPACE or PUBLISH_NAMESPACE: a
@@ -215,7 +207,7 @@ if (import.meta.vitest) {
     })
 
     test('excess roundtrip', () => {
-      const msg = new RequestOk([new DeliveryTimeout(5000n)])
+      const msg = new RequestOk([new ObjectDeliveryTimeout(5000n)])
       const serialized = msg.serialize().toUint8Array()
       const excess = new Uint8Array([9, 1, 1])
       const buf = new ByteBuffer()
@@ -235,7 +227,7 @@ if (import.meta.vitest) {
     })
 
     test('partial message', () => {
-      const msg = new RequestOk([new DeliveryTimeout(5000n)])
+      const msg = new RequestOk([new ObjectDeliveryTimeout(5000n)])
       const serialized = msg.serialize().toUint8Array()
       const upper = Math.floor(serialized.length / 2)
       const partial = serialized.slice(0, upper)

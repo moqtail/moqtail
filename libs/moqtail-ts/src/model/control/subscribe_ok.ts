@@ -23,15 +23,15 @@ import {
   deserializeMessageParameterKvps,
   serializeMessageParameterKvps,
 } from '../parameter/message_parameter'
-import { TrackExtension } from '../extension_header/track_extension'
+import { TrackProperty } from '../property/track_property'
 
 import { Location } from '../common/location'
 import { GroupOrder } from './constant'
-import { DeliveryTimeoutExtension } from '../extension_header/track_extension'
+import { ObjectDeliveryTimeoutProperty } from '../property/track_property'
 import { Expires } from '../parameter/message/expires'
 import { LargestObject } from '../parameter/message/largest_object'
 import { GroupOrderParam } from '../parameter/message/group_order_param'
-import { DeliveryTimeout } from '../parameter/message/delivery_timeout'
+import { ObjectDeliveryTimeout } from '../parameter/message/object_delivery_timeout'
 
 /**
  * SUBSCRIBE_OK (0x4) keeps a body of its own rather than folding into REQUEST_OK, but
@@ -41,20 +41,20 @@ import { DeliveryTimeout } from '../parameter/message/delivery_timeout'
 export class SubscribeOk {
   trackAlias: bigint
   parameters: MessageParameter[]
-  trackExtensions: TrackExtension[]
+  trackProperties: TrackProperty[]
 
-  private constructor(trackAlias: bigint, parameters: MessageParameter[], trackExtensions: TrackExtension[]) {
+  private constructor(trackAlias: bigint, parameters: MessageParameter[], trackProperties: TrackProperty[]) {
     this.trackAlias = trackAlias
     this.parameters = parameters
-    this.trackExtensions = trackExtensions
+    this.trackProperties = trackProperties
   }
 
   static create(
     trackAlias: bigint,
     parameters: MessageParameter[],
-    trackExtensions: TrackExtension[] = [],
+    trackProperties: TrackProperty[] = [],
   ): SubscribeOk {
-    return new SubscribeOk(trackAlias, parameters, trackExtensions)
+    return new SubscribeOk(trackAlias, parameters, trackProperties)
   }
 
   getType(): ControlMessageType {
@@ -69,7 +69,7 @@ export class SubscribeOk {
     payload.putVI(this.trackAlias)
     payload.putVI(this.parameters.length)
     payload.putBytes(serializeMessageParameterKvps(this.parameters.map((p) => p.toKeyValuePair())).toUint8Array())
-    TrackExtension.serializeInto(this.trackExtensions, payload)
+    TrackProperty.serializeInto(this.trackProperties, payload)
     const payloadBytes = payload.toUint8Array()
     if (payloadBytes.length > 0xffff) {
       throw new LengthExceedsMaxError('SubscribeOk::serialize(payloadBytes.length)', 0xffff, payloadBytes.length)
@@ -84,8 +84,8 @@ export class SubscribeOk {
     const paramCount = buf.getNumberVI()
     const rawParams = deserializeMessageParameterKvps(buf, paramCount)
     const parameters = MessageParameters.fromKeyValuePairs(rawParams)
-    const trackExtensions = TrackExtension.deserializeAll(buf)
-    return new SubscribeOk(trackAlias, parameters, trackExtensions)
+    const trackProperties = TrackProperty.deserializeAll(buf)
+    return new SubscribeOk(trackAlias, parameters, trackProperties)
   }
 }
 
@@ -100,7 +100,7 @@ if (import.meta.vitest) {
         new Expires(16n),
         new GroupOrderParam(GroupOrder.Ascending),
         new LargestObject(largestLocation),
-        new DeliveryTimeout(100n),
+        new ObjectDeliveryTimeout(100n),
       ]
       const subscribeOk = SubscribeOk.create(trackAlias, parameters)
       const frozen = subscribeOk.serialize()
@@ -111,23 +111,23 @@ if (import.meta.vitest) {
       const deserialized = SubscribeOk.parsePayload(frozen)
       expect(deserialized.trackAlias).toBe(subscribeOk.trackAlias)
       expect(deserialized.parameters.length).toBe(4)
-      expect(deserialized.trackExtensions.length).toBe(0)
+      expect(deserialized.trackProperties.length).toBe(0)
       expect(frozen.remaining).toBe(0)
     })
 
-    test('roundtrip with track extensions', () => {
+    test('roundtrip with track properties', () => {
       const subscribeOk = SubscribeOk.create(
         999n,
         [new Expires(16n), new LargestObject(new Location(34n, 0n))],
-        [new DeliveryTimeoutExtension(5000n)],
+        [new ObjectDeliveryTimeoutProperty(5000n)],
       )
       const frozen = subscribeOk.serialize()
       frozen.getVI() // message type
       const msgLength = frozen.getU16()
       const payload = new FrozenByteBuffer(frozen.getBytes(msgLength))
       const deserialized = SubscribeOk.parsePayload(payload)
-      expect(deserialized.trackExtensions.length).toBe(1)
-      expect(deserialized.trackExtensions[0]).toBeInstanceOf(DeliveryTimeoutExtension)
+      expect(deserialized.trackProperties.length).toBe(1)
+      expect(deserialized.trackProperties[0]).toBeInstanceOf(ObjectDeliveryTimeoutProperty)
       expect(payload.remaining).toBe(0)
     })
 
@@ -136,7 +136,7 @@ if (import.meta.vitest) {
       const subscribeOk = SubscribeOk.create(trackAlias, [
         new Expires(16n),
         new LargestObject(new Location(34n, 0n)),
-        new DeliveryTimeout(100n),
+        new ObjectDeliveryTimeout(100n),
       ])
       const serialized = subscribeOk.serialize().toUint8Array()
       const excess = new Uint8Array([9, 1, 1])

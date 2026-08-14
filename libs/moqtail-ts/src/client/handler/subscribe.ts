@@ -61,7 +61,7 @@ export const handlerSubscribe: RequestStreamMessageHandler<Subscribe> = async (c
     'handler/subscribe',
     `requestId=${msg.requestId} ftn="${msg.fullTrackName}" trackAlias=${track.trackAlias} largestLocation=${largestLocation ? `${largestLocation.group}:${largestLocation.object}` : 'none'} — sending SUBSCRIBE_OK`,
   )
-  const subscribeOk = SubscribeOk.create(track.trackAlias, parameters, track.trackExtensions ?? [])
+  const subscribeOk = SubscribeOk.create(track.trackAlias, parameters, track.trackProperties ?? [])
   // The publication keeps the stream: PUBLISH_DONE and any later response for this
   // subscription must go back on the stream the SUBSCRIBE arrived on.
   const publication = new SubscribePublication(client, track, msg, stream, largestLocation)

@@ -24,6 +24,7 @@ import {
   SubgroupObject,
 } from '../model/data'
 import { FetchObjectContext } from '../model/data/fetch_object'
+import { GroupOrder } from '../model/control/constant'
 import { ObjectForwardingPreference } from '../model/data/constant'
 import { Header } from '../model/data/header'
 import { NotEnoughBytesError, ProtocolViolationError, TimeoutError } from '../model/error/error'
@@ -35,33 +36,37 @@ export class SendStream {
   #lastObjectId?: bigint
   #fetchPrevCtx?: FetchObjectContext
   readonly #writer: WritableStreamDefaultWriter<Uint8Array>
+  readonly #groupOrder: GroupOrder
   readonly onDataSent?: (data: SubgroupObject | SubgroupHeader | FetchObject | FetchHeader) => void
   private constructor(
     readonly header: Header,
     writer: WritableStreamDefaultWriter<Uint8Array>,
     onDataSent?: (data: SubgroupObject | SubgroupHeader | FetchObject | FetchHeader) => void,
+    groupOrder: GroupOrder = GroupOrder.Original,
   ) {
     if (onDataSent) this.onDataSent = onDataSent
     this.#writer = writer
+    this.#groupOrder = groupOrder
   }
 
   static async new(
     writeStream: WritableStream<Uint8Array>,
     header: Header,
     onDataSent?: (data: SubgroupObject | SubgroupHeader | FetchObject | FetchHeader) => void,
+    groupOrder: GroupOrder = GroupOrder.Original,
   ): Promise<SendStream> {
     const writer = writeStream.getWriter()
     const serializedHeader = header.serialize().toUint8Array()
     await writer.write(serializedHeader)
     if (onDataSent) onDataSent(header)
     logger.debug('data_stream', `SendStream opened type=${header.type}`)
-    return new SendStream(header, writer, onDataSent)
+    return new SendStream(header, writer, onDataSent, groupOrder)
   }
 
   async write(object: FetchObject | SubgroupObject): Promise<void> {
     let serializedObject: Uint8Array
     if (object instanceof FetchObject) {
-      serializedObject = object.serialize(this.#fetchPrevCtx).toUint8Array()
+      serializedObject = object.serialize(this.#fetchPrevCtx, this.#groupOrder).toUint8Array()
       const newCtx = object.toContext()
       if (newCtx) this.#fetchPrevCtx = newCtx
     } else {
@@ -111,6 +116,7 @@ export class RecvStream {
   readonly #partialDataTimeout: number | undefined
   readonly #reader: ReadableStreamDefaultReader<Uint8Array>
   readonly #internalBuffer: ByteBuffer
+  readonly #groupOrder: GroupOrder
   readonly onDataReceived?: (data: SubgroupObject | SubgroupHeader | FetchObject | FetchHeader) => void
   private constructor(
     readonly header: Header,
@@ -118,10 +124,12 @@ export class RecvStream {
     internalBuffer: ByteBuffer,
     partialDataTimeout?: number,
     onDataReceived?: (data: SubgroupObject | SubgroupHeader | FetchObject | FetchHeader) => void,
+    groupOrder: GroupOrder = GroupOrder.Original,
   ) {
     this.#reader = reader
     this.#internalBuffer = internalBuffer
     this.#partialDataTimeout = partialDataTimeout
+    this.#groupOrder = groupOrder
     if (onDataReceived) this.onDataReceived = onDataReceived
     this.stream = new ReadableStream<FetchObject | SubgroupObject>({
       start: (controller) => this.#ingestLoop(controller),
@@ -130,10 +138,15 @@ export class RecvStream {
     })
   }
 
+  /**
+   * @param resolveGroupOrder - Consulted once the FETCH header names its request, since
+   *   Group ID deltas on the stream are signed by the Group Order the request negotiated.
+   */
   static async new(
     readStream: ReadableStream<Uint8Array>,
     partialDataTimeout?: number,
     onDataReceived?: (data: SubgroupObject | SubgroupHeader | FetchObject | FetchHeader) => void,
+    resolveGroupOrder?: (header: Header) => GroupOrder,
   ): Promise<RecvStream> {
     const reader = readStream.getReader()
     const internalBuffer = new ByteBuffer()
@@ -186,7 +199,10 @@ export class RecvStream {
     }
     if (onDataReceived) onDataReceived(headerInstance)
     logger.debug('data_stream', `RecvStream opened type=${headerInstance.type}`)
-    return new RecvStream(headerInstance, reader, internalBuffer, partialDataTimeout, onDataReceived)
+    // Resolved before the ingest loop starts: the first object may already be buffered.
+    const groupOrder =
+      Header.isFetch(headerInstance) && resolveGroupOrder ? resolveGroupOrder(headerInstance) : GroupOrder.Original
+    return new RecvStream(headerInstance, reader, internalBuffer, partialDataTimeout, onDataReceived, groupOrder)
   }
 
   async #ingestLoop(controller: ReadableStreamDefaultController<FetchObject | SubgroupObject>) {
@@ -200,13 +216,13 @@ export class RecvStream {
             this.#internalBuffer.checkpoint()
             let object: FetchObject | SubgroupObject
             if (Header.isFetch(this.header)) {
-              object = FetchObject.deserialize(this.#internalBuffer, fetchPrevCtx)
+              object = FetchObject.deserialize(this.#internalBuffer, fetchPrevCtx, this.#groupOrder)
               const newCtx = object.toContext()
               if (newCtx) fetchPrevCtx = newCtx
             } else {
               object = SubgroupObject.deserialize(
                 this.#internalBuffer,
-                SubgroupHeaderType.hasExtensions(this.header.type),
+                SubgroupHeaderType.hasProperties(this.header.type),
                 previousObjectId,
               )
               previousObjectId = object.objectId

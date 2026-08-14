@@ -21,7 +21,7 @@ import {
   FullTrackName,
   Tuple,
   ObjectForwardingPreference,
-  DefaultPublisherPriorityExtension,
+  DefaultPublisherPriorityProperty,
 } from 'moqtail/model';
 import { createMOQtailClient } from './moq/client';
 import { setupSignalling } from './moq/signalling';
@@ -256,10 +256,10 @@ export default function App() {
     const audioTrack = client.trackSources.get(audioFTN.toString())!;
 
     await client.publish(videoFTN, true, videoTrack.trackAlias!, undefined, [
-      new DefaultPublisherPriorityExtension(128),
+      new DefaultPublisherPriorityProperty(128),
     ]);
     await client.publish(audioFTN, true, audioTrack.trackAlias!, undefined, [
-      new DefaultPublisherPriorityExtension(0),
+      new DefaultPublisherPriorityProperty(0),
     ]);
 
     const videoResult = await startVideoEncoder({

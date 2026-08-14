@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { MoqtObject, ExtensionHeaders, ExtensionHeader } from 'moqtail/model';
+import { MoqtObject, LOCProperties, LOCProperty } from 'moqtail/model';
 import Heap from 'heap-js';
 
 const DEFAULT_TARGET_LATENCY_MS = 100;
@@ -105,10 +105,10 @@ export class PlayoutBuffer {
   }
 
   #extractCreatedAt(object: MoqtObject): number {
-    if (object.extensionHeaders) {
-      const headers = ExtensionHeaders.fromKeyValuePairs(object.extensionHeaders);
+    if (object.properties) {
+      const headers = LOCProperties.fromKeyValuePairs(object.properties);
       for (const header of headers) {
-        if (ExtensionHeader.isTimestamp(header)) {
+        if (LOCProperty.isTimestamp(header)) {
           return Number(header.timestamp);
         }
       }

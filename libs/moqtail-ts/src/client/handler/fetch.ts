@@ -61,6 +61,6 @@ export const handlerFetch: RequestStreamMessageHandler<Fetch> = async (client, m
   // TODO: Figure out what to do with endOfTrack and end location
   const publication = new FetchPublication(client, track, msg)
   client.publications.set(msg.requestId, publication)
-  const response = new FetchOk(false, new Location(0n, 0n), msg.parameters, track.trackExtensions ?? [])
+  const response = new FetchOk(false, new Location(0n, 0n), msg.parameters, track.trackProperties ?? [])
   await stream.send(response)
 }

@@ -71,7 +71,7 @@ All content is packaged as `MoqtObject` instances, which represent the atomic un
 
 - **Location**: Identified by `groupId` and `objectId` (e.g., video frames within GOPs)
 - **Payload**: The actual media data or content
-- **Metadata**: Publisher priority, forwarding preferences, and extension headers
+- **Metadata**: Publisher priority, forwarding preferences, and properties
 - **Status**: Normal data, end-of-group markers, or error conditions
 
 ### Object Caching

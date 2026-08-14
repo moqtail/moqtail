@@ -27,14 +27,14 @@ export const handlerSubscribeOk: RequestStreamMessageHandler<SubscribeOk> = asyn
   // SUBSCRIBE it answers (§10.1).
   const request = client.requests.get(requestId)
   if (request instanceof SubscribeRequest) {
-    if (msg.trackExtensions.length > 0) {
+    if (msg.trackProperties.length > 0) {
       logger.debug(
         'handler/subscribe_ok',
-        `requestId=${requestId} — applying ${msg.trackExtensions.length} track extension(s)`,
+        `requestId=${requestId} — applying ${msg.trackProperties.length} track propert(ies)`,
       )
       const track = client.trackSources.get(request.fullTrackName.toString())
       if (track !== undefined) {
-        track.trackExtensions = msg.trackExtensions
+        track.trackProperties = msg.trackProperties
       }
     }
     logger.debug(

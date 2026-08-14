@@ -21,7 +21,7 @@ import { Parameter } from '../parameter'
 /**
  * The largest Group ID in the Track known by the subscriber, plus 1.
  * A value of 0 indicates the subscriber has no Group information for the Track.
- * Only valid for tracks with the DYNAMIC_GROUPS extension (value 1).
+ * Only valid for tracks with the DYNAMIC_GROUPS property (value 1).
  */
 export class NewGroupRequest implements Parameter {
   static readonly TYPE = MessageParameterType.NewGroupRequest
@@ -55,7 +55,7 @@ if (import.meta.vitest) {
       expect(parsed?.group).toBe(0n)
     })
     test('fromKeyValuePair returns undefined for wrong type', () => {
-      const pair = KeyValuePair.tryNewVarInt(MessageParameterType.DeliveryTimeout, 100n)
+      const pair = KeyValuePair.tryNewVarInt(MessageParameterType.ObjectDeliveryTimeout, 100n)
       expect(NewGroupRequest.fromKeyValuePair(pair)).toBeUndefined()
     })
   })

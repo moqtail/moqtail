@@ -57,7 +57,7 @@ import {
   RequestIdMap,
 } from '../model/data'
 import { FrozenByteBuffer } from '../model/common/byte_buffer'
-import { DeliveryTimeoutExtension, TrackExtension } from '../model/extension_header/track_extension'
+import { ObjectDeliveryTimeoutProperty, TrackProperty } from '../model/property/track_property'
 import { RecvStream } from './data_stream'
 import {
   InternalError,
@@ -1557,7 +1557,7 @@ export class MOQtailClient {
     forward: boolean,
     trackAlias: bigint,
     parameters?: MessageParameter[],
-    trackExtensions?: TrackExtension[],
+    trackProperties?: TrackProperty[],
   ) {
     this.#ensureActive()
     try {
@@ -1568,7 +1568,7 @@ export class MOQtailClient {
         fullTrackName,
         trackAlias,
         [new Forward(forward), ...(parameters ?? [])],
-        trackExtensions ?? [],
+        trackProperties ?? [],
       )
 
       const request = new PublishRequest(msg)
@@ -2245,7 +2245,17 @@ export class MOQtailClient {
   async #handleRecvStreams(incomingUniStream: ReadableStream): Promise<void> {
     this.#ensureActive()
     try {
-      const recvStream = await RecvStream.new(incomingUniStream, this.dataStreamTimeoutMs, this.onDataReceived)
+      const recvStream = await RecvStream.new(
+        incomingUniStream,
+        this.dataStreamTimeoutMs,
+        this.onDataReceived,
+        (header) => {
+          if (!(header instanceof FetchHeader)) return GroupOrder.Original
+          const request = this.requests.get(this.#clientRequestId(header.requestId))
+          if (!(request instanceof FetchRequest)) return GroupOrder.Original
+          return MessageParameter.groupOrderOf(request.message.parameters)
+        },
+      )
       const header = recvStream.header
       const reader = recvStream.stream.getReader()
 
@@ -2812,7 +2822,7 @@ if (import.meta.vitest) {
       // §10.5 populates Track Properties in a TRACK_STATUS_OK and nowhere else, so this
       // PUBLISH_NAMESPACE_OK is a protocol violation: the request fails rather than
       // resolving with a namespace the peer never really accepted.
-      announceStream.respond(new RequestOk([], [new DeliveryTimeoutExtension(5000n)]))
+      announceStream.respond(new RequestOk([], [new ObjectDeliveryTimeoutProperty(5000n)]))
 
       // Without the properties the same exchange resolves; see the request-per-stream
       // test above.

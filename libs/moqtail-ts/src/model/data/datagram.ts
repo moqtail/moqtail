@@ -23,7 +23,7 @@ import { Location } from '../common/location'
  * Represents a unified OBJECT_DATAGRAM message (Draft-16).
  *
  * Type bit layout (form 0b00X0XXXX):
- * - Bit 0 (0x01): EXTENSIONS
+ * - Bit 0 (0x01): PROPERTIES
  * - Bit 1 (0x02): END_OF_GROUP
  * - Bit 2 (0x04): ZERO_OBJECT_ID
  * - Bit 3 (0x08): DEFAULT_PRIORITY
@@ -38,7 +38,7 @@ export class Datagram {
     trackAlias: number | bigint,
     location: Location,
     public readonly publisherPriority: number | null,
-    public readonly extensionHeaders: KeyValuePair[] | null,
+    public readonly properties: KeyValuePair[] | null,
     public readonly payload: Uint8Array | null,
     public readonly objectStatus: ObjectStatus | null,
     public readonly endOfGroup: boolean,
@@ -63,21 +63,21 @@ export class Datagram {
     groupId: bigint,
     objectId: bigint,
     publisherPriority: number | null,
-    extensionHeaders: KeyValuePair[] | null,
+    properties: KeyValuePair[] | null,
     payload: Uint8Array,
     endOfGroup: boolean = false,
   ): Datagram {
-    const hasExtensions = extensionHeaders !== null && extensionHeaders.length > 0
+    const hasProperties = properties !== null && properties.length > 0
     const objectIdIsZero = objectId === 0n
     const defaultPriority = publisherPriority === null
-    const type = ObjectDatagramType.fromProperties(hasExtensions, endOfGroup, objectIdIsZero, defaultPriority, false)
+    const type = ObjectDatagramType.fromProperties(hasProperties, endOfGroup, objectIdIsZero, defaultPriority, false)
 
     return new Datagram(
       type,
       trackAlias,
       new Location(groupId, objectId),
       publisherPriority,
-      hasExtensions ? extensionHeaders : null,
+      hasProperties ? properties : null,
       payload,
       null,
       endOfGroup,
@@ -93,20 +93,20 @@ export class Datagram {
     groupId: bigint,
     objectId: bigint,
     publisherPriority: number | null,
-    extensionHeaders: KeyValuePair[] | null,
+    properties: KeyValuePair[] | null,
     objectStatus: ObjectStatus,
   ): Datagram {
-    const hasExtensions = extensionHeaders !== null && extensionHeaders.length > 0
+    const hasProperties = properties !== null && properties.length > 0
     const objectIdIsZero = objectId === 0n
     const defaultPriority = publisherPriority === null
-    const type = ObjectDatagramType.fromProperties(hasExtensions, false, objectIdIsZero, defaultPriority, true)
+    const type = ObjectDatagramType.fromProperties(hasProperties, false, objectIdIsZero, defaultPriority, true)
 
     return new Datagram(
       type,
       trackAlias,
       new Location(groupId, objectId),
       publisherPriority,
-      hasExtensions ? extensionHeaders : null,
+      hasProperties ? properties : null,
       null,
       objectStatus,
       false,
@@ -129,11 +129,9 @@ export class Datagram {
       buf.putU8(this.publisherPriority!)
     }
 
-    // Extensions are present when EXTENSIONS bit is set
-    if (ObjectDatagramType.hasExtensions(this.type)) {
-      const extBytes = this.extensionHeaders
-        ? serializeKvpList(this.extensionHeaders).toUint8Array()
-        : new Uint8Array(0)
+    // Properties are present when PROPERTIES bit is set
+    if (ObjectDatagramType.hasProperties(this.type)) {
+      const extBytes = this.properties ? serializeKvpList(this.properties).toUint8Array() : new Uint8Array(0)
       buf.putLengthPrefixedBytes(extBytes)
     }
 
@@ -169,12 +167,12 @@ export class Datagram {
       publisherPriority = buf.getU8()
     }
 
-    // Extensions are present when EXTENSIONS bit is set
-    let extensionHeaders: KeyValuePair[] | null = null
-    if (ObjectDatagramType.hasExtensions(msgType)) {
+    // Properties are present when PROPERTIES bit is set
+    let properties: KeyValuePair[] | null = null
+    if (ObjectDatagramType.hasProperties(msgType)) {
       const extBytes = buf.getLengthPrefixedBytes()
       const headerBytes = new FrozenByteBuffer(extBytes)
-      extensionHeaders = deserializeKvpListUntilEmpty(headerBytes)
+      properties = deserializeKvpListUntilEmpty(headerBytes)
     }
 
     // STATUS bit determines whether we read Object Status or Object Payload
@@ -193,7 +191,7 @@ export class Datagram {
       trackAlias,
       new Location(groupId, objectId),
       publisherPriority,
-      extensionHeaders,
+      properties,
       payload,
       objectStatus,
       endOfGroup,
@@ -204,34 +202,26 @@ export class Datagram {
 if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
   describe('Datagram (Draft-16)', () => {
-    test('roundtrip payload with extensions and explicit objectId', () => {
+    test('roundtrip payload with properties and explicit objectId', () => {
       const trackAlias = 500n
       const groupId = 9n
       const objectId = 10n
       const publisherPriority = 255
       // Order matches the canonical ascending-by-type wire order (delta-encoding requirement).
-      const extensionHeaders = [
+      const properties = [
         KeyValuePair.tryNewBytes(1, new TextEncoder().encode('wololoo')),
         KeyValuePair.tryNewVarInt(2, 10),
       ]
       const payload = new TextEncoder().encode('01239gjawkk92837aldmi')
-      const datagram = Datagram.newPayload(
-        trackAlias,
-        groupId,
-        objectId,
-        publisherPriority,
-        extensionHeaders,
-        payload,
-        false,
-      )
-      expect(datagram.type).toBe(ObjectDatagramType.Type0x01) // Has extensions, not EOG, has objectId, no default priority
+      const datagram = Datagram.newPayload(trackAlias, groupId, objectId, publisherPriority, properties, payload, false)
+      expect(datagram.type).toBe(ObjectDatagramType.Type0x01) // Has properties, not EOG, has objectId, no default priority
       const frozen = datagram.serialize()
       const parsed = Datagram.deserialize(frozen)
       expect(parsed.trackAlias).toBe(trackAlias)
       expect(parsed.groupId).toBe(groupId)
       expect(parsed.objectId).toBe(objectId)
       expect(parsed.publisherPriority).toBe(publisherPriority)
-      expect(parsed.extensionHeaders).toEqual(extensionHeaders)
+      expect(parsed.properties).toEqual(properties)
       expect(parsed.payload).toEqual(payload)
       expect(parsed.objectStatus).toBeNull()
       expect(parsed.endOfGroup).toBe(false)
@@ -245,14 +235,14 @@ if (import.meta.vitest) {
       const publisherPriority = 128
       const payload = new TextEncoder().encode('hello')
       const datagram = Datagram.newPayload(trackAlias, groupId, objectId, publisherPriority, null, payload, false)
-      expect(datagram.type).toBe(ObjectDatagramType.Type0x04) // No extensions, not EOG, objectId = 0, no default priority
+      expect(datagram.type).toBe(ObjectDatagramType.Type0x04) // No properties, not EOG, objectId = 0, no default priority
       const frozen = datagram.serialize()
       const parsed = Datagram.deserialize(frozen)
       expect(parsed.trackAlias).toBe(trackAlias)
       expect(parsed.groupId).toBe(groupId)
       expect(parsed.objectId).toBe(0n)
       expect(parsed.publisherPriority).toBe(publisherPriority)
-      expect(parsed.extensionHeaders).toBeNull()
+      expect(parsed.properties).toBeNull()
       expect(parsed.payload).toEqual(payload)
       expect(parsed.endOfGroup).toBe(false)
     })
@@ -264,7 +254,7 @@ if (import.meta.vitest) {
       const publisherPriority = 0
       const payload = new TextEncoder().encode('final object')
       const datagram = Datagram.newPayload(trackAlias, groupId, objectId, publisherPriority, null, payload, true)
-      expect(datagram.type).toBe(ObjectDatagramType.Type0x02) // No extensions, EOG, has objectId, no default priority
+      expect(datagram.type).toBe(ObjectDatagramType.Type0x02) // No properties, EOG, has objectId, no default priority
       const frozen = datagram.serialize()
       const parsed = Datagram.deserialize(frozen)
       expect(parsed.trackAlias).toBe(trackAlias)
@@ -279,7 +269,7 @@ if (import.meta.vitest) {
       const objectId = 5n
       const payload = new TextEncoder().encode('default priority')
       const datagram = Datagram.newPayload(trackAlias, groupId, objectId, null, null, payload, false)
-      expect(datagram.type).toBe(ObjectDatagramType.Type0x08) // No extensions, not EOG, has objectId, default priority
+      expect(datagram.type).toBe(ObjectDatagramType.Type0x08) // No properties, not EOG, has objectId, default priority
       expect(ObjectDatagramType.hasDefaultPriority(datagram.type)).toBe(true)
       const frozen = datagram.serialize()
       const parsed = Datagram.deserialize(frozen)
@@ -290,26 +280,26 @@ if (import.meta.vitest) {
       expect(parsed.payload).toEqual(payload)
     })
 
-    test('roundtrip payload with all bits: extensions + EOG + ZERO_OBJECT_ID + DEFAULT_PRIORITY', () => {
+    test('roundtrip payload with all bits: properties + EOG + ZERO_OBJECT_ID + DEFAULT_PRIORITY', () => {
       const trackAlias = 300n
       const groupId = 1n
       const objectId = 0n
-      const extensionHeaders = [KeyValuePair.tryNewVarInt(4, 12345)]
+      const properties = [KeyValuePair.tryNewVarInt(4, 12345)]
       const payload = new TextEncoder().encode('all bits')
-      const datagram = Datagram.newPayload(trackAlias, groupId, objectId, null, extensionHeaders, payload, true)
+      const datagram = Datagram.newPayload(trackAlias, groupId, objectId, null, properties, payload, true)
       expect(datagram.type).toBe(ObjectDatagramType.Type0x0F) // All payload bits set
       const frozen = datagram.serialize()
       const parsed = Datagram.deserialize(frozen)
       expect(parsed.trackAlias).toBe(trackAlias)
       expect(parsed.objectId).toBe(0n)
       expect(parsed.publisherPriority).toBeNull()
-      expect(parsed.extensionHeaders).toEqual(extensionHeaders)
+      expect(parsed.properties).toEqual(properties)
       expect(parsed.endOfGroup).toBe(true)
       expect(parsed.payload).toEqual(payload)
       expect(parsed.objectStatus).toBeNull()
     })
 
-    test('roundtrip status without extensions', () => {
+    test('roundtrip status without properties', () => {
       const trackAlias = 999n
       const location = new Location(5n, 42n)
       const publisherPriority = 128
@@ -322,7 +312,7 @@ if (import.meta.vitest) {
         ObjectStatus.EndOfGroup,
       )
       expect(ObjectDatagramType.isStatus(datagram.type)).toBe(true)
-      expect(datagram.type).toBe(ObjectDatagramType.Type0x20) // Status, no extensions, has objectId, no default priority
+      expect(datagram.type).toBe(ObjectDatagramType.Type0x20) // Status, no properties, has objectId, no default priority
       const frozen = datagram.serialize()
       const parsed = Datagram.deserialize(frozen)
       expect(parsed.trackAlias).toBe(trackAlias)
@@ -334,21 +324,21 @@ if (import.meta.vitest) {
       expect(parsed.endOfGroup).toBe(false)
     })
 
-    test('roundtrip status with extensions', () => {
+    test('roundtrip status with properties', () => {
       const trackAlias = 144n
-      const extensionHeaders = [
+      const properties = [
         KeyValuePair.tryNewVarInt(0, 10),
         KeyValuePair.tryNewBytes(1, new TextEncoder().encode('wololoo')),
       ]
-      const datagram = Datagram.newStatus(trackAlias, 9n, 10n, 255, extensionHeaders, ObjectStatus.EndOfTrack)
-      expect(datagram.type).toBe(ObjectDatagramType.Type0x21) // Status, with extensions, has objectId, no default priority
+      const datagram = Datagram.newStatus(trackAlias, 9n, 10n, 255, properties, ObjectStatus.EndOfTrack)
+      expect(datagram.type).toBe(ObjectDatagramType.Type0x21) // Status, with properties, has objectId, no default priority
       const frozen = datagram.serialize()
       const parsed = Datagram.deserialize(frozen)
       expect(parsed.trackAlias).toBe(trackAlias)
       expect(parsed.groupId).toBe(9n)
       expect(parsed.objectId).toBe(10n)
       expect(parsed.publisherPriority).toBe(255)
-      expect(parsed.extensionHeaders).toEqual(extensionHeaders)
+      expect(parsed.properties).toEqual(properties)
       expect(parsed.objectStatus).toBe(ObjectStatus.EndOfTrack)
     })
 

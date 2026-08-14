@@ -93,7 +93,7 @@ if (import.meta.vitest) {
       expect(parsed?.endGroup).toBe(20n)
     })
     test('fromKeyValuePair returns undefined for wrong type', () => {
-      const pair = KeyValuePair.tryNewVarInt(MessageParameterType.DeliveryTimeout, 100n)
+      const pair = KeyValuePair.tryNewVarInt(MessageParameterType.ObjectDeliveryTimeout, 100n)
       expect(SubscriptionFilter.fromKeyValuePair(pair)).toBeUndefined()
     })
   })

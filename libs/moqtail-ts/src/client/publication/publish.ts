@@ -77,6 +77,12 @@ export class PublishPublication {
   #id = Math.floor(Math.random() * 1000000)
 
   /**
+   * Highest group this publication has already opened a stream for or skipped objects of.
+   * A stream for a group at or below it reopens a subgroup, so it cannot claim FIRST_OBJECT.
+   */
+  #highestGroupSeen: bigint | undefined
+
+  /**
    * Creates a new PublishPublication instance.
    * @param client - The MOQT client managing the connection.
    * @param track - The track being proactively published.
@@ -133,6 +139,12 @@ export class PublishPublication {
     })
   }
 
+  #markGroupSeen(group: bigint): void {
+    if (this.#highestGroupSeen === undefined || group > this.#highestGroupSeen) {
+      this.#highestGroupSeen = group
+    }
+  }
+
   /**
    * Publishes MOQT objects to the relay as they become available.
    * Handles stream creation, object writing, and stream closure.
@@ -145,6 +157,10 @@ export class PublishPublication {
     this.track.trackSource.live.onDone(() => {
       this.cancel()
     })
+
+    // Objects produced before publishing started are never sent, so the group they belong to
+    // cannot claim to start at its first object.
+    this.#highestGroupSeen = this.track.trackSource.live.largestLocation?.group
 
     this.#cancelPublishing = this.track.trackSource.live.onNewObject(async (obj: MoqtObject) => {
       if (this.#isCompleted) return
@@ -159,11 +175,14 @@ export class PublishPublication {
               sendOrder: this.#streamPriority,
             })
 
+            const firstObject = this.#highestGroupSeen === undefined || obj.location.group > this.#highestGroupSeen
+            const headerType = obj.getSubgroupHeaderType(true, false, firstObject)
+
             let subgroupId: bigint | undefined
-            if (SubgroupHeaderType.hasExplicitSubgroupId(obj.getSubgroupHeaderType(true))) subgroupId = obj.subgroupId!
+            if (SubgroupHeaderType.hasExplicitSubgroupId(headerType)) subgroupId = obj.subgroupId!
 
             const header = new SubgroupHeader(
-              obj.getSubgroupHeaderType(true),
+              headerType,
               this.#trackAlias,
               obj.location.group,
               subgroupId,
@@ -173,6 +192,7 @@ export class PublishPublication {
             const sendStream = await SendStream.new(writeStream, header)
             this.#streams.set(obj.location.group, sendStream)
             this.#streamsOpened++
+            this.#markGroupSeen(obj.location.group)
           }
           await this.#lock.release()
         }
@@ -217,4 +237,123 @@ export class PublishPublication {
       }
     })
   }
+}
+
+if (import.meta.vitest) {
+  const { describe, test, expect, vi } = import.meta.vitest
+  const { FullTrackName, ObjectForwardingPreference } = await import('@/model')
+  const { LiveTrackSource } = await import('../track/content_source')
+  const { SubgroupHeader: Header } = await import('@/model/data/subgroup_header')
+  const { FrozenByteBuffer } = await import('@/model/common/byte_buffer')
+
+  describe('PublishPublication FIRST_OBJECT', () => {
+    const ftn = FullTrackName.tryNew('room/alice', 'video')
+
+    /** Header types of the subgroup streams the publication opened, in order. */
+    function publishing(): { headerTypes: number[]; push: (group: number, object: number) => void; done: () => void } {
+      const headerTypes: number[] = []
+      const webTransport = {
+        createUnidirectionalStream: async () => {
+          let first = true
+          return new WritableStream<Uint8Array>({
+            write: (chunk) => {
+              if (!first) return
+              first = false
+              headerTypes.push(Number(Header.deserialize(new FrozenByteBuffer(chunk)).type))
+            },
+          })
+        },
+      }
+
+      let source!: ReadableStreamDefaultController<MoqtObject>
+      const live = new LiveTrackSource(new ReadableStream<MoqtObject>({ start: (controller) => (source = controller) }))
+      const track: Track = {
+        fullTrackName: ftn,
+        trackSource: { live },
+        publisherPriority: 0,
+        trackAlias: 1n,
+      }
+      const client = { webTransport, publications: new Map() } as unknown as MOQtailClient
+      new PublishPublication(client, track, { requestId: 0n } as unknown as Publish)
+
+      const push = (group: number, object: number) =>
+        source.enqueue(
+          MoqtObject.newWithPayload(
+            ftn,
+            new Location(BigInt(group), BigInt(object)),
+            0,
+            ObjectForwardingPreference.Subgroup,
+            0n,
+            null,
+            new Uint8Array([1]),
+          ),
+        )
+      return { headerTypes, push, done: () => source.close() }
+    }
+
+    test('sets the bit on each new subgroup', async () => {
+      const { headerTypes, push } = publishing()
+      push(0, 0)
+      push(1, 0)
+      await vi.waitFor(() => expect(headerTypes).toHaveLength(2))
+      expect(headerTypes.map(SubgroupHeaderType.isFirstObject)).toEqual([true, true])
+    })
+
+    test('leaves the bit clear when a closed subgroup is reopened', async () => {
+      const { headerTypes, push } = publishing()
+      push(0, 0)
+      push(1, 0)
+      await vi.waitFor(() => expect(headerTypes).toHaveLength(2))
+      // Group 0's stream was closed when group 1 arrived; a later group 0 object reopens it.
+      push(0, 1)
+      await vi.waitFor(() => expect(headerTypes).toHaveLength(3))
+      expect(headerTypes.map(SubgroupHeaderType.isFirstObject)).toEqual([true, true, false])
+    })
+
+    test('leaves the bit clear for a group already in progress when publishing starts', async () => {
+      const headerTypes: number[] = []
+      const webTransport = {
+        createUnidirectionalStream: async () => {
+          let first = true
+          return new WritableStream<Uint8Array>({
+            write: (chunk) => {
+              if (!first) return
+              first = false
+              headerTypes.push(Number(Header.deserialize(new FrozenByteBuffer(chunk)).type))
+            },
+          })
+        },
+      }
+      let source!: ReadableStreamDefaultController<MoqtObject>
+      const live = new LiveTrackSource(new ReadableStream<MoqtObject>({ start: (controller) => (source = controller) }))
+      const object = (group: number, objectId: number) =>
+        MoqtObject.newWithPayload(
+          ftn,
+          new Location(BigInt(group), BigInt(objectId)),
+          0,
+          ObjectForwardingPreference.Subgroup,
+          0n,
+          null,
+          new Uint8Array([1]),
+        )
+
+      // Group 3 is already flowing before anyone publishes it, so its first object is gone.
+      source.enqueue(object(3, 0))
+      await vi.waitFor(() => expect(live.largestLocation?.group).toBe(3n))
+
+      const client = { webTransport, publications: new Map() } as unknown as MOQtailClient
+      new PublishPublication(
+        client,
+        { fullTrackName: ftn, trackSource: { live }, publisherPriority: 0, trackAlias: 1n },
+        {
+          requestId: 0n,
+        } as unknown as Publish,
+      )
+
+      source.enqueue(object(3, 1))
+      source.enqueue(object(4, 0))
+      await vi.waitFor(() => expect(headerTypes).toHaveLength(2))
+      expect(headerTypes.map(SubgroupHeaderType.isFirstObject)).toEqual([false, true])
+    })
+  })
 }

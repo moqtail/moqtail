@@ -44,7 +44,7 @@ export namespace Header {
     buf.restore()
     if (type === 0x05) {
       return FetchHeader.deserialize(buf)
-    } else if ((type & SubgroupHeaderType.REQUIRED_BIT) !== 0 && (type & 0xc0) === 0) {
+    } else if ((type & SubgroupHeaderType.REQUIRED_BIT) !== 0 && (type & SubgroupHeaderType.INVALID_BITS_MASK) === 0) {
       return SubgroupHeader.deserialize(buf)
     } else {
       throw new InvalidTypeError('Header::deserialize(type)', `Unknown header type: ${type}`)

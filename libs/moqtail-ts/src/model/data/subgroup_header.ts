@@ -146,6 +146,19 @@ if (import.meta.vitest) {
       expect(frozen.remaining).toBe(3)
       expect(Array.from(frozen.getBytes(3))).toEqual([9, 1, 1])
     })
+    test('FIRST_OBJECT survives a roundtrip and is absent on a reopened subgroup', () => {
+      const newSubgroup = SubgroupHeaderType.fromProperties(false, 2, false, false, true)
+      const header = new SubgroupHeader(newSubgroup, 87n, 9n, 11n, 128)
+      expect(SubgroupHeaderType.isFirstObject(header.type)).toBe(true)
+      const parsed = SubgroupHeader.deserialize(header.serialize())
+      expect(parsed.type).toBe(newSubgroup)
+      expect(SubgroupHeaderType.isFirstObject(parsed.type)).toBe(true)
+
+      // A stream reopening an existing subgroup does not start at its first object.
+      const reopened = SubgroupHeaderType.fromProperties(false, 2, false, false, false)
+      expect(SubgroupHeaderType.isFirstObject(reopened)).toBe(false)
+      expect(newSubgroup - reopened).toBe(SubgroupHeaderType.FIRST_OBJECT)
+    })
     test('partial message fails', () => {
       // explicit subgroup ID, no properties, no end-of-group, priority present
       const headerType = SubgroupHeaderType.fromProperties(false, 2, false)

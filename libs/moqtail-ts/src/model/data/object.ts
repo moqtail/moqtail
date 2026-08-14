@@ -49,7 +49,11 @@ export class MoqtObject {
     return this.location.object
   }
 
-  getSubgroupHeaderType(containsEnd: boolean, useDefaultPriority: boolean = false): SubgroupHeaderType {
+  getSubgroupHeaderType(
+    containsEnd: boolean,
+    useDefaultPriority: boolean = false,
+    firstObject: boolean = false,
+  ): SubgroupHeaderType {
     const hasProperties = !!this.properties && this.properties.length > 0
 
     // Determine SUBGROUP_ID_MODE (bits 1-2):
@@ -65,7 +69,13 @@ export class MoqtObject {
       subgroupIdMode = 2 // explicit mode
     }
 
-    return SubgroupHeaderType.fromProperties(hasProperties, subgroupIdMode, containsEnd, useDefaultPriority)
+    return SubgroupHeaderType.fromProperties(
+      hasProperties,
+      subgroupIdMode,
+      containsEnd,
+      useDefaultPriority,
+      firstObject,
+    )
   }
 
   isDatagram(): boolean {

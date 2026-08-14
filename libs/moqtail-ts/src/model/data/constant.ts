@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+import { InvalidTypeError, ProtocolViolationError } from '../error'
+
 /**
  * @public
  * Object datagram types for MOQT objects (Draft-16).
@@ -187,18 +189,22 @@ export namespace FetchHeaderType {
  * @public
  * Subgroup header types for MOQT subgroups.
  *
- * Type bit layout (0b00X1XXXX):
+ * Type bit layout (0b0XX1XXXX):
  * - Bit 0 (0x01): PROPERTIES - Properties present in all objects
  * - Bits 1-2 (0x06): SUBGROUP_ID_MODE - How subgroup ID is encoded (0b00=zero, 0b01=firstObjId, 0b10=explicit, 0b11=invalid)
  * - Bit 3 (0x08): END_OF_GROUP - This subgroup contains the final object in the group
  * - Bit 4 (0x10): Always set (distinguishes subgroup from other header types)
  * - Bit 5 (0x20): DEFAULT_PRIORITY - Publisher priority field omitted, inherited from subscription
+ * - Bit 6 (0x40): FIRST_OBJECT - The first object on this stream is the first the original
+ *   publisher published in the subgroup
+ * - Bit 7 (0x80): Must be zero
  *
- * Valid ranges: 0x10-0x15, 0x18-0x1D (bit 5=0), 0x30-0x35, 0x38-0x3D (bit 5=1)
- * Invalid: 0x16, 0x17, 0x1E, 0x1F, 0x36, 0x37, 0x3E, 0x3F (SUBGROUP_ID_MODE=0b11)
+ * Valid ranges: 0x10-0x15, 0x18-0x1D, 0x30-0x35, 0x38-0x3D, 0x50-0x55, 0x58-0x5D, 0x70-0x75, 0x78-0x7D
+ * Invalid: 0x16, 0x17, 0x1E, 0x1F, 0x36, 0x37, 0x3E, 0x3F, 0x56, 0x57, 0x5E, 0x5F, 0x76, 0x77, 0x7E,
+ * 0x7F (SUBGROUP_ID_MODE=0b11)
  */
 export enum SubgroupHeaderType {
-  // Bit 5 = 0 (priority present)
+  // Bit 6 = 0 (not the subgroup's first object), bit 5 = 0 (priority present)
   Type0x10 = 0x10,
   Type0x11 = 0x11,
   Type0x12 = 0x12,
@@ -211,7 +217,7 @@ export enum SubgroupHeaderType {
   Type0x1B = 0x1b,
   Type0x1C = 0x1c,
   Type0x1D = 0x1d,
-  // Bit 5 = 1 (default priority)
+  // Bit 6 = 0, bit 5 = 1 (default priority)
   Type0x30 = 0x30,
   Type0x31 = 0x31,
   Type0x32 = 0x32,
@@ -224,6 +230,32 @@ export enum SubgroupHeaderType {
   Type0x3B = 0x3b,
   Type0x3C = 0x3c,
   Type0x3D = 0x3d,
+  // Bit 6 = 1 (subgroup's first object), bit 5 = 0 (priority present)
+  Type0x50 = 0x50,
+  Type0x51 = 0x51,
+  Type0x52 = 0x52,
+  Type0x53 = 0x53,
+  Type0x54 = 0x54,
+  Type0x55 = 0x55,
+  Type0x58 = 0x58,
+  Type0x59 = 0x59,
+  Type0x5A = 0x5a,
+  Type0x5B = 0x5b,
+  Type0x5C = 0x5c,
+  Type0x5D = 0x5d,
+  // Bit 6 = 1, bit 5 = 1 (default priority)
+  Type0x70 = 0x70,
+  Type0x71 = 0x71,
+  Type0x72 = 0x72,
+  Type0x73 = 0x73,
+  Type0x74 = 0x74,
+  Type0x75 = 0x75,
+  Type0x78 = 0x78,
+  Type0x79 = 0x79,
+  Type0x7A = 0x7a,
+  Type0x7B = 0x7b,
+  Type0x7C = 0x7c,
+  Type0x7D = 0x7d,
 }
 
 /**
@@ -240,8 +272,10 @@ export namespace SubgroupHeaderType {
   export const REQUIRED_BIT = 0x10
   /** Publisher priority field omitted, inherited from subscription (bit 5) */
   export const DEFAULT_PRIORITY = 0x20
-  /** Mask for bits that must be zero: bits 6-7 */
-  const INVALID_BITS_MASK = 0xc0
+  /** First object on this stream is the first published in the subgroup (bit 6) */
+  export const FIRST_OBJECT = 0x40
+  /** Mask for bits that must be zero: bit 7 only */
+  export const INVALID_BITS_MASK = 0x80
   /** Reserved SUBGROUP_ID_MODE value (0b11) */
   const RESERVED_SUBGROUP_MODE = 0x06
 
@@ -269,23 +303,30 @@ export namespace SubgroupHeaderType {
     return (t & DEFAULT_PRIORITY) !== 0
   }
 
+  export function isFirstObject(t: SubgroupHeaderType): boolean {
+    return (t & FIRST_OBJECT) !== 0
+  }
+
   /**
    * Converts a number or bigint to SubgroupHeaderType.
-   * Validates bit 4 must be set, SUBGROUP_ID_MODE must not be 0b11.
+   * Validates bit 7 must be zero, bit 4 must be set, SUBGROUP_ID_MODE must not be 0b11.
    */
   export function tryFrom(value: number | bigint): SubgroupHeaderType {
     const v = typeof value === 'bigint' ? Number(value) : value
 
-    if ((v & INVALID_BITS_MASK) !== 0) {
-      throw new Error(`Invalid SubgroupHeaderType: 0x${v.toString(16)} (invalid bits set)`)
+    if (v < 0 || v > 0xff || (v & INVALID_BITS_MASK) !== 0) {
+      throw new InvalidTypeError('SubgroupHeaderType.tryFrom', `invalid bits set, got 0x${v.toString(16)}`)
     }
 
     if ((v & REQUIRED_BIT) === 0) {
-      throw new Error(`Invalid SubgroupHeaderType: 0x${v.toString(16)} (bit 4 not set)`)
+      throw new InvalidTypeError('SubgroupHeaderType.tryFrom', `bit 4 not set, got 0x${v.toString(16)}`)
     }
 
     if ((v & SUBGROUP_ID_MODE_MASK) === RESERVED_SUBGROUP_MODE) {
-      throw new Error(`Invalid SubgroupHeaderType: 0x${v.toString(16)} (reserved SUBGROUP_ID_MODE)`)
+      throw new ProtocolViolationError(
+        'SubgroupHeaderType.tryFrom',
+        `reserved SUBGROUP_ID_MODE 0b11, got 0x${v.toString(16)}`,
+      )
     }
 
     return v as SubgroupHeaderType
@@ -294,18 +335,22 @@ export namespace SubgroupHeaderType {
   /**
    * Determines the appropriate type for given properties.
    * @param subgroupIdMode - SUBGROUP_ID_MODE (0=zero, 1=firstObjId, 2=explicit).
+   * @param firstObject - Whether the first object on the stream is the first the original
+   * publisher published in the subgroup.
    */
   export function fromProperties(
     hasProperties: boolean,
     subgroupIdMode: 0 | 1 | 2,
     containsEndOfGroup: boolean,
     hasDefaultPriority: boolean = false,
+    firstObject: boolean = false,
   ): SubgroupHeaderType {
     let t = REQUIRED_BIT
     if (hasProperties) t |= PROPERTIES
     t |= (subgroupIdMode & 0x03) << 1
     if (containsEndOfGroup) t |= END_OF_GROUP
     if (hasDefaultPriority) t |= DEFAULT_PRIORITY
+    if (firstObject) t |= FIRST_OBJECT
     return t as SubgroupHeaderType
   }
 }
@@ -376,4 +421,69 @@ export namespace ObjectStatus {
         throw new Error(`Invalid ObjectStatus: ${value}`)
     }
   }
+}
+
+if (import.meta.vitest) {
+  const { describe, test, expect } = import.meta.vitest
+  describe('SubgroupHeaderType', () => {
+    // Draft-18 form 0b0XX1XXXX, minus the reserved SUBGROUP_ID_MODE 0b11.
+    const isValid = (b: number) => (b & 0x80) === 0 && (b & 0x10) !== 0 && (b & 0x06) !== 0x06
+
+    test('classifies all 256 type bytes', () => {
+      const accepted: number[] = []
+      for (let b = 0; b <= 0xff; b++) {
+        let ok = true
+        try {
+          expect(SubgroupHeaderType.tryFrom(b)).toBe(b)
+        } catch {
+          ok = false
+        }
+        if (ok) accepted.push(b)
+        expect([b, ok]).toEqual([b, isValid(b)])
+      }
+      expect(accepted.length).toBe(48)
+      const declared = Object.entries(SubgroupHeaderType)
+        .filter(([k, v]) => k.startsWith('Type0x') && typeof v === 'number')
+        .map(([, v]) => v as number)
+      expect(accepted).toEqual(declared)
+    })
+
+    test('rejects reserved SUBGROUP_ID_MODE with a protocol violation', () => {
+      for (const b of [0x16, 0x17, 0x1e, 0x1f, 0x36, 0x37, 0x3e, 0x3f, 0x56, 0x57, 0x5e, 0x5f, 0x76, 0x77, 0x7e, 0x7f])
+        expect(() => SubgroupHeaderType.tryFrom(b)).toThrow(ProtocolViolationError)
+    })
+
+    test('bit accessors agree with the type byte', () => {
+      for (let b = 0; b <= 0xff; b++) {
+        if (!isValid(b)) continue
+        const t = SubgroupHeaderType.tryFrom(b)
+        expect(SubgroupHeaderType.hasProperties(t)).toBe((b & 0x01) !== 0)
+        expect(SubgroupHeaderType.isSubgroupIdZero(t)).toBe((b & 0x06) === 0x00)
+        expect(SubgroupHeaderType.isSubgroupIdFirstObjectId(t)).toBe((b & 0x06) === 0x02)
+        expect(SubgroupHeaderType.hasExplicitSubgroupId(t)).toBe((b & 0x06) === 0x04)
+        expect(SubgroupHeaderType.containsEndOfGroup(t)).toBe((b & 0x08) !== 0)
+        expect(SubgroupHeaderType.hasDefaultPriority(t)).toBe((b & 0x20) !== 0)
+        expect(SubgroupHeaderType.isFirstObject(t)).toBe((b & 0x40) !== 0)
+      }
+    })
+
+    test('fromProperties round-trips every valid type byte', () => {
+      for (let b = 0; b <= 0xff; b++) {
+        if (!isValid(b)) continue
+        const t = SubgroupHeaderType.fromProperties(
+          (b & 0x01) !== 0,
+          ((b & 0x06) >> 1) as 0 | 1 | 2,
+          (b & 0x08) !== 0,
+          (b & 0x20) !== 0,
+          (b & 0x40) !== 0,
+        )
+        expect(t).toBe(b)
+      }
+    })
+
+    test('FIRST_OBJECT defaults to unset', () => {
+      expect(SubgroupHeaderType.fromProperties(false, 2, false)).toBe(0x14)
+      expect(SubgroupHeaderType.fromProperties(false, 2, false, false, true)).toBe(0x54)
+    })
+  })
 }

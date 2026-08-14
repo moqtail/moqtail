@@ -2245,7 +2245,17 @@ export class MOQtailClient {
   async #handleRecvStreams(incomingUniStream: ReadableStream): Promise<void> {
     this.#ensureActive()
     try {
-      const recvStream = await RecvStream.new(incomingUniStream, this.dataStreamTimeoutMs, this.onDataReceived)
+      const recvStream = await RecvStream.new(
+        incomingUniStream,
+        this.dataStreamTimeoutMs,
+        this.onDataReceived,
+        (header) => {
+          if (!(header instanceof FetchHeader)) return GroupOrder.Original
+          const request = this.requests.get(this.#clientRequestId(header.requestId))
+          if (!(request instanceof FetchRequest)) return GroupOrder.Original
+          return MessageParameter.groupOrderOf(request.message.parameters)
+        },
+      )
       const header = recvStream.header
       const reader = recvStream.stream.getReader()
 

@@ -22,6 +22,7 @@ import {
   InternalError,
   Location,
   MOQtailError,
+  MessageParameter,
   MoqtObject,
 } from '@/model'
 import { FetchObjectContext } from '@/model/data/fetch_object'
@@ -116,6 +117,9 @@ export class FetchPublication {
       this.#writer = this.#stream.getWriter()
       const header = new FetchHeader(FetchHeaderType.Type0x05, this.#requestId)
       await this.#writer.write(header)
+      // Signs the Group ID deltas below. Note the objects are not yet reordered to match
+      // (see the TODO above), so a Descending request is rejected by the encoder.
+      const groupOrder = MessageParameter.groupOrderOf(this.#msg.parameters)
       let fetchPrevCtx: FetchObjectContext | undefined = undefined
       for (const obj of this.#objects) {
         if (this.#isCanceled) {
@@ -125,7 +129,7 @@ export class FetchPublication {
           return
         }
         const fetchObj = obj.tryIntoFetchObject()
-        await this.#writer.write(fetchObj.serialize(fetchPrevCtx).toUint8Array())
+        await this.#writer.write(fetchObj.serialize(fetchPrevCtx, groupOrder).toUint8Array())
         const newCtx = fetchObj.toContext()
         if (newCtx) fetchPrevCtx = newCtx
       }

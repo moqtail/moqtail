@@ -17,7 +17,7 @@
 import { KeyValuePair, deserializeKvpList, isBytes, isVarInt, serializeKvpList } from '../common/pair'
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
 import { ProtocolViolationError } from '../error/error'
-import { FilterType } from '../control/constant'
+import { FilterType, GroupOrder } from '../control/constant'
 import { Location } from '../common'
 import { AuthorizationToken } from './common'
 import { FillTimeout } from './message/fill_timeout'
@@ -111,6 +111,11 @@ export namespace MessageParameter {
 
   export function isGroupOrderParam(param: MessageParameter): param is GroupOrderParam {
     return param instanceof GroupOrderParam
+  }
+
+  /** The negotiated Group Order, or {@link (GroupOrder:enum).Original} when unparameterized. */
+  export function groupOrderOf(params: readonly MessageParameter[]): GroupOrder {
+    return params.find(isGroupOrderParam)?.order ?? GroupOrder.Original
   }
 
   export function isSubscriptionFilter(param: MessageParameter): param is SubscriptionFilter {

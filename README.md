@@ -17,13 +17,16 @@
 	<a href="https://deepwiki.com/moqtail/moqtail"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki"></a>
 	<br>
 	<br>
-	Draft 16 MOQ Transport (MOQT) libraries and relay components.<br>
+	Draft 18 MOQ Transport (MOQT) libraries and relay components.<br>
 	Rust and TypeScript tooling for publishers, subscribers, demos and relay deployments.
 </p>
 
 # MOQtail
 
-MOQtail is a draft 16-compliant MOQT toolkit for building publisher, subscriber, and relay applications. The repository includes Rust and TypeScript libraries, reference clients, and a relay that can be run locally or pulled as a container image from GHCR. The relay and Rust client support both WebTransport (`https://`) and raw QUIC (`moqt://`) on the same port.
+MOQtail is a draft 18-compliant MOQT toolkit for building publisher, subscriber, and relay applications. The repository includes Rust and TypeScript libraries, reference clients, and a relay that can be run locally or pulled as a container image from GHCR. The relay and Rust client support both WebTransport (`https://`) and raw QUIC (`moqt://`) on the same port.
+
+> [!WARNING]
+> **Branch status:** `main` is a work in progress while the draft 18 upgrade lands, and its APIs and wire behavior may change without notice. For a stable, draft 16-compliant MOQtail, use the [`draft-16`](https://github.com/moqtail/moqtail/tree/draft-16) branch.
 
 > [!IMPORTANT]
 > **To cite MOQtail in your academic research and elsewhere, please use:**

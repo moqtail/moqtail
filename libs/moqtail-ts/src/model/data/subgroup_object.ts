@@ -18,11 +18,11 @@ import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buf
 import { KeyValuePair, deserializeKvpListUntilEmpty, serializeKvpList } from '../common/pair'
 import { ObjectStatus } from './constant'
 
-function normalizeExtensionHeaders(extensionHeaders: KeyValuePair[] | null): KeyValuePair[] | null {
-  if (extensionHeaders === null || extensionHeaders.length === 0) {
+function normalizeProperties(properties: KeyValuePair[] | null): KeyValuePair[] | null {
+  if (properties === null || properties.length === 0) {
     return null
   }
-  return extensionHeaders
+  return properties
 }
 
 export class SubgroupObject {
@@ -30,7 +30,7 @@ export class SubgroupObject {
 
   private constructor(
     objectId: bigint | number,
-    public readonly extensionHeaders: KeyValuePair[] | null,
+    public readonly properties: KeyValuePair[] | null,
     public readonly objectStatus: ObjectStatus | null,
     public readonly payload: Uint8Array | null,
   ) {
@@ -39,18 +39,18 @@ export class SubgroupObject {
 
   static newWithStatus(
     objectId: bigint | number,
-    extensionHeaders: KeyValuePair[] | null,
+    properties: KeyValuePair[] | null,
     objectStatus: ObjectStatus,
   ): SubgroupObject {
-    return new SubgroupObject(objectId, normalizeExtensionHeaders(extensionHeaders), objectStatus, null)
+    return new SubgroupObject(objectId, normalizeProperties(properties), objectStatus, null)
   }
 
   static newWithPayload(
     objectId: bigint | number,
-    extensionHeaders: KeyValuePair[] | null,
+    properties: KeyValuePair[] | null,
     payload: Uint8Array,
   ): SubgroupObject {
-    return new SubgroupObject(objectId, normalizeExtensionHeaders(extensionHeaders), null, payload)
+    return new SubgroupObject(objectId, normalizeProperties(properties), null, payload)
   }
 
   serialize(previousObjectId: bigint | undefined): FrozenByteBuffer {
@@ -61,8 +61,8 @@ export class SubgroupObject {
 
     const buf = new ByteBuffer()
     buf.putVI(objectIdDelta)
-    if (this.extensionHeaders !== null) {
-      buf.putLengthPrefixedBytes(serializeKvpList(this.extensionHeaders).toUint8Array())
+    if (this.properties !== null) {
+      buf.putLengthPrefixedBytes(serializeKvpList(this.properties).toUint8Array())
     }
     if (this.payload) {
       buf.putLengthPrefixedBytes(this.payload)
@@ -75,16 +75,16 @@ export class SubgroupObject {
 
   static deserialize(
     buf: BaseByteBuffer,
-    hasExtensions: boolean,
+    hasProperties: boolean,
     previousObjectId: bigint | undefined,
   ): SubgroupObject {
     const objectDelta = buf.getVI()
     let objectId = previousObjectId !== undefined ? previousObjectId + objectDelta + BigInt(1) : objectDelta
-    let extensionHeaders: KeyValuePair[] | null = null
-    if (hasExtensions) {
+    let properties: KeyValuePair[] | null = null
+    if (hasProperties) {
       const extLen = buf.getNumberVI()
       const headerBytes = new FrozenByteBuffer(buf.getBytes(extLen))
-      extensionHeaders = deserializeKvpListUntilEmpty(headerBytes)
+      properties = deserializeKvpListUntilEmpty(headerBytes)
     }
     const payloadLen = buf.getNumberVI()
     let objectStatus: ObjectStatus | null = null
@@ -94,7 +94,7 @@ export class SubgroupObject {
     } else {
       payload = buf.getBytes(payloadLen)
     }
-    return new SubgroupObject(objectId, normalizeExtensionHeaders(extensionHeaders), objectStatus, payload)
+    return new SubgroupObject(objectId, normalizeProperties(properties), objectStatus, payload)
   }
 }
 
@@ -103,19 +103,19 @@ if (import.meta.vitest) {
   describe('SubgroupObject', () => {
     test('roundtrip', () => {
       const objectId = 10n
-      const extensionHeaders = [
+      const properties = [
         KeyValuePair.tryNewVarInt(0, 10),
         KeyValuePair.tryNewBytes(1, new TextEncoder().encode('wololoo')),
       ]
       const payload = new TextEncoder().encode('01239gjawkk92837aldmi')
-      const frozen = SubgroupObject.newWithPayload(objectId, extensionHeaders, payload).serialize(undefined)
+      const frozen = SubgroupObject.newWithPayload(objectId, properties, payload).serialize(undefined)
       const parsed = SubgroupObject.deserialize(frozen, true, undefined)
       expect(parsed.objectId).toBe(objectId)
-      expect(parsed.extensionHeaders).toEqual(extensionHeaders)
+      expect(parsed.properties).toEqual(properties)
       expect(parsed.payload).toEqual(payload)
       expect(frozen.remaining).toBe(0)
     })
-    test('serializes empty extension headers as absent', () => {
+    test('serializes empty properties as absent', () => {
       const objectId = 10n
       const payload = new Uint8Array([0xab])
 
@@ -126,12 +126,12 @@ if (import.meta.vitest) {
     })
     test('excess roundtrip', () => {
       const objectId = 10n
-      const extensionHeaders = [
+      const properties = [
         KeyValuePair.tryNewVarInt(0, 10),
         KeyValuePair.tryNewBytes(1, new TextEncoder().encode('wololoo')),
       ]
       const payload = new TextEncoder().encode('01239gjawkk92837aldmi')
-      const serialized = SubgroupObject.newWithPayload(objectId, extensionHeaders, payload)
+      const serialized = SubgroupObject.newWithPayload(objectId, properties, payload)
         .serialize(undefined)
         .toUint8Array()
       const buf = new ByteBuffer()
@@ -141,19 +141,19 @@ if (import.meta.vitest) {
       const frozen = buf.freeze()
       const parsed = SubgroupObject.deserialize(frozen, true, undefined)
       expect(parsed.objectId).toBe(objectId)
-      expect(parsed.extensionHeaders).toEqual(extensionHeaders)
+      expect(parsed.properties).toEqual(properties)
       expect(parsed.payload).toEqual(payload)
       expect(frozen.remaining).toBe(3)
       expect(Array.from(frozen.getBytes(3))).toEqual([9, 1, 1])
     })
     test('partial message fails', () => {
       const objectId = 10n
-      const extensionHeaders = [
+      const properties = [
         KeyValuePair.tryNewVarInt(0, 10),
         KeyValuePair.tryNewBytes(1, new TextEncoder().encode('wololoo')),
       ]
       const payload = new TextEncoder().encode('01239gjawkk92837aldmi')
-      const serialized = SubgroupObject.newWithPayload(objectId, extensionHeaders, payload)
+      const serialized = SubgroupObject.newWithPayload(objectId, properties, payload)
         .serialize(undefined)
         .toUint8Array()
       const upper = Math.floor(serialized.length / 2)

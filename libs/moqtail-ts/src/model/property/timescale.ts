@@ -15,10 +15,10 @@
  */
 
 import { KeyValuePair } from '../common/pair'
-import { LOCHeaderExtensionId } from './constant'
+import { LOCPropertyId } from './constant'
 
 export class Timescale {
-  static readonly TYPE = LOCHeaderExtensionId.Timescale
+  static readonly TYPE = LOCPropertyId.Timescale
 
   constructor(public readonly timescale: bigint) {}
 
@@ -37,7 +37,7 @@ export class Timescale {
 
 if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
-  describe('TimescaleExtensionHeader', () => {
+  describe('TimescaleProperty', () => {
     test('should roundtrip Timescale', () => {
       const value = 90000n
       const pair = new Timescale(value).toKeyValuePair()
@@ -47,7 +47,7 @@ if (import.meta.vitest) {
     })
 
     test('should return undefined for a different type', () => {
-      const pair = KeyValuePair.tryNewVarInt(LOCHeaderExtensionId.AudioLevel, 1n)
+      const pair = KeyValuePair.tryNewVarInt(LOCPropertyId.AudioLevel, 1n)
       expect(Timescale.fromKeyValuePair(pair)).toBeUndefined()
     })
   })

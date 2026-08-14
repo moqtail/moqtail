@@ -24,7 +24,7 @@ import {
   deserializeMessageParameterKvps,
   serializeMessageParameterKvps,
 } from '../parameter/message_parameter'
-import { TrackExtension, DeliveryTimeoutExtension } from '../extension_header/track_extension'
+import { TrackProperty, DeliveryTimeoutProperty } from '../property/track_property'
 import { DeliveryTimeout } from '../parameter/message/delivery_timeout'
 
 /**
@@ -37,7 +37,7 @@ export class FetchOk {
     public readonly endOfTrack: boolean,
     public readonly endLocation: Location,
     public readonly parameters: MessageParameter[],
-    public readonly trackExtensions: TrackExtension[] = [],
+    public readonly trackProperties: TrackProperty[] = [],
   ) {}
 
   getType(): ControlMessageType {
@@ -52,7 +52,7 @@ export class FetchOk {
     payload.putLocation(this.endLocation)
     payload.putVI(this.parameters.length)
     payload.putBytes(serializeMessageParameterKvps(this.parameters.map((p) => p.toKeyValuePair())).toUint8Array())
-    TrackExtension.serializeInto(this.trackExtensions, payload)
+    TrackProperty.serializeInto(this.trackProperties, payload)
     const payloadBytes = payload.toUint8Array()
     if (payloadBytes.length > 0xffff) {
       throw new LengthExceedsMaxError('FetchOk::serialize(payloadBytes.length)', 0xffff, payloadBytes.length)
@@ -82,8 +82,8 @@ export class FetchOk {
     const paramCount = buf.getNumberVI()
     const rawParams = deserializeMessageParameterKvps(buf, paramCount)
     const parameters = MessageParameters.fromKeyValuePairs(rawParams)
-    const trackExtensions = TrackExtension.deserializeAll(buf)
-    return new FetchOk(endOfTrack, endLocation, parameters, trackExtensions)
+    const trackProperties = TrackProperty.deserializeAll(buf)
+    return new FetchOk(endOfTrack, endLocation, parameters, trackProperties)
   }
 }
 
@@ -105,24 +105,24 @@ if (import.meta.vitest) {
       expect(parsed.endOfTrack).toBe(endOfTrack)
       expect(parsed.endLocation.equals(endLocation)).toBe(true)
       expect(parsed.parameters.length).toBe(1)
-      expect(parsed.trackExtensions.length).toBe(0)
+      expect(parsed.trackProperties.length).toBe(0)
       expect(frozen.remaining).toBe(0)
     })
 
-    test('roundtrip with track extensions', () => {
+    test('roundtrip with track properties', () => {
       const msg = new FetchOk(
         true,
         new Location(17n, 57n),
         [new DeliveryTimeout(200n)],
-        [new DeliveryTimeoutExtension(8000n)],
+        [new DeliveryTimeoutProperty(8000n)],
       )
       const frozen = msg.serialize()
       frozen.getVI() // message type
       const msgLength = frozen.getU16()
       const payload = new FrozenByteBuffer(frozen.getBytes(msgLength))
       const parsed = FetchOk.parsePayload(payload)
-      expect(parsed.trackExtensions.length).toBe(1)
-      expect(parsed.trackExtensions[0]).toBeInstanceOf(DeliveryTimeoutExtension)
+      expect(parsed.trackProperties.length).toBe(1)
+      expect(parsed.trackProperties[0]).toBeInstanceOf(DeliveryTimeoutProperty)
       expect(payload.remaining).toBe(0)
     })
 

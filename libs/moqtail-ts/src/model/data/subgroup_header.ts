@@ -90,7 +90,7 @@ if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
   describe('SubgroupHeader', () => {
     test('roundtrip serialization/deserialization', () => {
-      // explicit subgroup ID, no extensions, no end-of-group, priority present
+      // explicit subgroup ID, no properties, no end-of-group, priority present
       const headerType = SubgroupHeaderType.fromProperties(false, 2, false)
       const trackAlias = 87n
       const groupId = 9n
@@ -124,7 +124,7 @@ if (import.meta.vitest) {
       expect(frozen.remaining).toBe(0)
     })
     test('excess roundtrip', () => {
-      // explicit subgroup ID, no extensions, no end-of-group, priority present
+      // explicit subgroup ID, no properties, no end-of-group, priority present
       const headerType = SubgroupHeaderType.fromProperties(false, 2, false)
       const trackAlias = 87n
       const groupId = 9n
@@ -147,7 +147,7 @@ if (import.meta.vitest) {
       expect(Array.from(frozen.getBytes(3))).toEqual([9, 1, 1])
     })
     test('partial message fails', () => {
-      // explicit subgroup ID, no extensions, no end-of-group, priority present
+      // explicit subgroup ID, no properties, no end-of-group, priority present
       const headerType = SubgroupHeaderType.fromProperties(false, 2, false)
       const trackAlias = 87n
       const groupId = 9n

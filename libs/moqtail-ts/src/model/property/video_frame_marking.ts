@@ -15,10 +15,10 @@
  */
 
 import { KeyValuePair } from '../common/pair'
-import { LOCHeaderExtensionId } from './constant'
+import { LOCPropertyId } from './constant'
 
 export class VideoFrameMarking {
-  static readonly TYPE = LOCHeaderExtensionId.VideoFrameMarking
+  static readonly TYPE = LOCPropertyId.VideoFrameMarking
   constructor(public readonly value: bigint) {}
 
   toKeyValuePair(): KeyValuePair {
@@ -36,7 +36,7 @@ export class VideoFrameMarking {
 
 if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
-  describe('VideoFrameMarkingExtensionHeader', () => {
+  describe('VideoFrameMarkingProperty', () => {
     test('should roundtrip VideoFrameMarking', () => {
       const value = 9876543210987654321n
       const pair = new VideoFrameMarking(value).toKeyValuePair()

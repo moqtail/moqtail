@@ -21,10 +21,10 @@ import { VideoFrameMarking } from './video_frame_marking'
 import { AudioLevel } from './audio_level'
 import { VideoConfig } from './video_config'
 
-export type ExtensionHeader = Timestamp | Timescale | VideoFrameMarking | AudioLevel | VideoConfig
+export type LOCProperty = Timestamp | Timescale | VideoFrameMarking | AudioLevel | VideoConfig
 
-export namespace ExtensionHeader {
-  export function fromKeyValuePair(pair: KeyValuePair): ExtensionHeader | undefined {
+export namespace LOCProperty {
+  export function fromKeyValuePair(pair: KeyValuePair): LOCProperty | undefined {
     return (
       Timestamp.fromKeyValuePair(pair) ||
       Timescale.fromKeyValuePair(pair) ||
@@ -34,28 +34,28 @@ export namespace ExtensionHeader {
     )
   }
 
-  export function toKeyValuePair(header: ExtensionHeader): KeyValuePair {
+  export function toKeyValuePair(header: LOCProperty): KeyValuePair {
     return header.toKeyValuePair()
   }
 
-  export function isTimestamp(header: ExtensionHeader): header is Timestamp {
+  export function isTimestamp(header: LOCProperty): header is Timestamp {
     return header instanceof Timestamp
   }
-  export function isTimescale(header: ExtensionHeader): header is Timescale {
+  export function isTimescale(header: LOCProperty): header is Timescale {
     return header instanceof Timescale
   }
-  export function isVideoFrameMarking(header: ExtensionHeader): header is VideoFrameMarking {
+  export function isVideoFrameMarking(header: LOCProperty): header is VideoFrameMarking {
     return header instanceof VideoFrameMarking
   }
-  export function isAudioLevel(header: ExtensionHeader): header is AudioLevel {
+  export function isAudioLevel(header: LOCProperty): header is AudioLevel {
     return header instanceof AudioLevel
   }
-  export function isVideoConfig(header: ExtensionHeader): header is VideoConfig {
+  export function isVideoConfig(header: LOCProperty): header is VideoConfig {
     return header instanceof VideoConfig
   }
 }
 
-export class ExtensionHeaders {
+export class LOCProperties {
   private kvps: KeyValuePair[] = []
 
   addTimestamp(timestamp: bigint | number): this {
@@ -85,10 +85,10 @@ export class ExtensionHeaders {
   build(): KeyValuePair[] {
     return this.kvps
   }
-  static fromKeyValuePairs(kvps: KeyValuePair[]): ExtensionHeader[] {
-    const result: ExtensionHeader[] = []
+  static fromKeyValuePairs(kvps: KeyValuePair[]): LOCProperty[] {
+    const result: LOCProperty[] = []
     for (const kvp of kvps) {
-      const parsed = ExtensionHeader.fromKeyValuePair(kvp)
+      const parsed = LOCProperty.fromKeyValuePair(kvp)
       if (parsed) result.push(parsed)
     }
     return result
@@ -97,24 +97,24 @@ export class ExtensionHeaders {
 
 if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
-  describe('ExtensionHeaders', () => {
+  describe('LOCProperties', () => {
     test('build and fromKeyValuePairs returns correct parameters', () => {
       const timestamp = 11223344n
       const marking = 99887766n
       const audioLevel = 99n
       const videoConfig = new Uint8Array([3, 1, 2, 4, 5, 6, 2, 5, 3])
-      const kvps = new ExtensionHeaders()
+      const kvps = new LOCProperties()
         .addTimestamp(timestamp)
         .addVideoFrameMarking(marking)
         .addAudioLevel(audioLevel)
         .addVideoConfig(videoConfig)
         .build()
-      const parsed = ExtensionHeaders.fromKeyValuePairs(kvps)
+      const parsed = LOCProperties.fromKeyValuePairs(kvps)
       expect(parsed.length).toBe(4)
-      expect(parsed[0] && ExtensionHeader.isTimestamp(parsed[0]) && parsed[0].timestamp === timestamp).toBe(true)
-      expect(parsed[1] && ExtensionHeader.isVideoFrameMarking(parsed[1]) && parsed[1].value === marking).toBe(true)
-      expect(parsed[2] && ExtensionHeader.isAudioLevel(parsed[2]) && parsed[2].audioLevel === audioLevel).toBe(true)
-      expect(parsed[3] && ExtensionHeader.isVideoConfig(parsed[3]) && parsed[3].config === videoConfig).toBe(true)
+      expect(parsed[0] && LOCProperty.isTimestamp(parsed[0]) && parsed[0].timestamp === timestamp).toBe(true)
+      expect(parsed[1] && LOCProperty.isVideoFrameMarking(parsed[1]) && parsed[1].value === marking).toBe(true)
+      expect(parsed[2] && LOCProperty.isAudioLevel(parsed[2]) && parsed[2].audioLevel === audioLevel).toBe(true)
+      expect(parsed[3] && LOCProperty.isVideoConfig(parsed[3]) && parsed[3].config === videoConfig).toBe(true)
     })
 
     test('fromKeyValuePairs skips unknown parameter', () => {
@@ -122,17 +122,17 @@ if (import.meta.vitest) {
       const timestamp = 5927836n
       const marking = 15938n
       const audioLevel = 99n
-      const kvps = new ExtensionHeaders()
+      const kvps = new LOCProperties()
         .addTimestamp(timestamp)
         .addRaw(unknown)
         .addVideoFrameMarking(marking)
         .addAudioLevel(audioLevel)
         .build()
-      const parsed = ExtensionHeaders.fromKeyValuePairs(kvps)
+      const parsed = LOCProperties.fromKeyValuePairs(kvps)
       expect(parsed.length).toBe(3)
-      expect(parsed[0] && ExtensionHeader.isTimestamp(parsed[0]) && parsed[0].timestamp === timestamp).toBe(true)
-      expect(parsed[1] && ExtensionHeader.isVideoFrameMarking(parsed[1]) && parsed[1].value === marking).toBe(true)
-      expect(parsed[2] && ExtensionHeader.isAudioLevel(parsed[2]) && parsed[2].audioLevel === audioLevel).toBe(true)
+      expect(parsed[0] && LOCProperty.isTimestamp(parsed[0]) && parsed[0].timestamp === timestamp).toBe(true)
+      expect(parsed[1] && LOCProperty.isVideoFrameMarking(parsed[1]) && parsed[1].value === marking).toBe(true)
+      expect(parsed[2] && LOCProperty.isAudioLevel(parsed[2]) && parsed[2].audioLevel === audioLevel).toBe(true)
     })
   })
 }

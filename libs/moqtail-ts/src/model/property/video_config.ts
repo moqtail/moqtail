@@ -15,10 +15,10 @@
  */
 
 import { KeyValuePair } from '../common/pair'
-import { LOCHeaderExtensionId } from './constant'
+import { LOCPropertyId } from './constant'
 
 export class VideoConfig {
-  static readonly TYPE = LOCHeaderExtensionId.VideoConfig
+  static readonly TYPE = LOCPropertyId.VideoConfig
   constructor(public readonly config: Uint8Array) {}
 
   toKeyValuePair(): KeyValuePair {
@@ -36,7 +36,7 @@ export class VideoConfig {
 
 if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
-  describe('VideoConfigExtensionHeader', () => {
+  describe('VideoConfigProperty', () => {
     test('should roundtrip VideoConfig', () => {
       const value = new Uint8Array([1, 2, 3, 4])
       const pair = new VideoConfig(value).toKeyValuePair()

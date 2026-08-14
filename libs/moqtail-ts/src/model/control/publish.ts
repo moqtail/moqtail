@@ -24,7 +24,7 @@ import {
   deserializeMessageParameterKvps,
   serializeMessageParameterKvps,
 } from '../parameter/message_parameter'
-import { TrackExtension, DeliveryTimeoutExtension } from '../extension_header/track_extension'
+import { TrackProperty, DeliveryTimeoutProperty } from '../property/track_property'
 import { DeliveryTimeout } from '../parameter/message/delivery_timeout'
 import { Forward } from '../parameter/message/forward'
 
@@ -34,7 +34,7 @@ export class Publish {
     public readonly fullTrackName: FullTrackName,
     public readonly trackAlias: bigint,
     public readonly parameters: MessageParameter[],
-    public readonly trackExtensions: TrackExtension[] = [],
+    public readonly trackProperties: TrackProperty[] = [],
   ) {}
 
   getType(): ControlMessageType {
@@ -50,7 +50,7 @@ export class Publish {
     payload.putVI(this.trackAlias)
     payload.putVI(this.parameters.length)
     payload.putBytes(serializeMessageParameterKvps(this.parameters.map((p) => p.toKeyValuePair())).toUint8Array())
-    TrackExtension.serializeInto(this.trackExtensions, payload)
+    TrackProperty.serializeInto(this.trackProperties, payload)
     const payloadBytes = payload.toUint8Array()
     if (payloadBytes.length > 0xffff) {
       throw new LengthExceedsMaxError('Publish::serialize(payloadBytes.length)', 0xffff, payloadBytes.length)
@@ -67,8 +67,8 @@ export class Publish {
     const paramCount = buf.getNumberVI()
     const rawParams = deserializeMessageParameterKvps(buf, paramCount)
     const parameters = MessageParameters.fromKeyValuePairs(rawParams)
-    const trackExtensions = TrackExtension.deserializeAll(buf)
-    return new Publish(requestId, fullTrackName, trackAlias, parameters, trackExtensions)
+    const trackProperties = TrackProperty.deserializeAll(buf)
+    return new Publish(requestId, fullTrackName, trackAlias, parameters, trackProperties)
   }
 }
 
@@ -94,7 +94,7 @@ if (import.meta.vitest) {
       expect(deserialized.fullTrackName.name).toEqual(publish.fullTrackName.name)
       expect(deserialized.trackAlias).toBe(publish.trackAlias)
       expect(deserialized.parameters.length).toBe(2)
-      expect(deserialized.trackExtensions.length).toBe(0)
+      expect(deserialized.trackProperties.length).toBe(0)
       expect(frozen.remaining).toBe(0)
     })
 
@@ -115,17 +115,17 @@ if (import.meta.vitest) {
       expect(frozen.remaining).toBe(0)
     })
 
-    test('roundtrip with track extensions', () => {
+    test('roundtrip with track properties', () => {
       const requestId = 12345n
       const fullTrackName = FullTrackName.tryNew('video/stream', 'camera1')
-      const publish = new Publish(requestId, fullTrackName, 1n, [], [new DeliveryTimeoutExtension(3000n)])
+      const publish = new Publish(requestId, fullTrackName, 1n, [], [new DeliveryTimeoutProperty(3000n)])
       const frozen = publish.serialize()
       frozen.getVI() // message type
       const msgLength = frozen.getU16()
       const payload = new FrozenByteBuffer(frozen.getBytes(msgLength))
       const deserialized = Publish.parsePayload(payload)
-      expect(deserialized.trackExtensions.length).toBe(1)
-      expect(deserialized.trackExtensions[0]).toBeInstanceOf(DeliveryTimeoutExtension)
+      expect(deserialized.trackProperties.length).toBe(1)
+      expect(deserialized.trackProperties[0]).toBeInstanceOf(DeliveryTimeoutProperty)
       expect(payload.remaining).toBe(0)
     })
 

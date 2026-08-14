@@ -15,10 +15,10 @@
  */
 
 import { KeyValuePair } from '../common/pair'
-import { LOCHeaderExtensionId } from './constant'
+import { LOCPropertyId } from './constant'
 
 export class AudioLevel {
-  static readonly TYPE = LOCHeaderExtensionId.AudioLevel
+  static readonly TYPE = LOCPropertyId.AudioLevel
   constructor(public readonly audioLevel: bigint) {}
 
   toKeyValuePair(): KeyValuePair {
@@ -36,7 +36,7 @@ export class AudioLevel {
 
 if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
-  describe('AudioLevelExtensionHeader', () => {
+  describe('AudioLevelProperty', () => {
     test('should roundtrip AudioLevel', () => {
       const value = 42n
       const pair = new AudioLevel(value).toKeyValuePair()

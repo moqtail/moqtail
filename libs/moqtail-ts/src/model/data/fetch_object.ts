@@ -25,7 +25,7 @@ const FLAG_SUBGROUP_MODE_MASK = 0x03
 const FLAG_OBJECT_ID_PRESENT = 0x04
 const FLAG_GROUP_ID_PRESENT = 0x08
 const FLAG_PRIORITY_PRESENT = 0x10
-const FLAG_EXTENSIONS_PRESENT = 0x20
+const FLAG_PROPERTIES_PRESENT = 0x20
 const FLAG_DATAGRAM = 0x40
 
 const SUBGROUP_MODE_ZERO = 0b00
@@ -71,7 +71,7 @@ export class FetchObject {
     subgroupId: bigint | number,
     public readonly publisherPriority: number,
     public readonly forwardingPreference: ObjectForwardingPreference,
-    public readonly extensionHeaders: KeyValuePair[] | null,
+    public readonly properties: KeyValuePair[] | null,
     public readonly payload: Uint8Array | null,
     public readonly endOfRange: EndOfRangeKind | null,
   ) {
@@ -106,7 +106,7 @@ export class FetchObject {
     objectId: bigint | number,
     publisherPriority: number,
     forwardingPreference: ObjectForwardingPreference,
-    extensionHeaders: KeyValuePair[] | null,
+    properties: KeyValuePair[] | null,
     payload: Uint8Array,
   ): FetchObject {
     return new FetchObject(
@@ -115,7 +115,7 @@ export class FetchObject {
       subgroupId,
       publisherPriority,
       forwardingPreference,
-      extensionHeaders,
+      properties,
       payload,
       null,
     )
@@ -144,7 +144,7 @@ export class FetchObject {
     }
 
     const isDatagram = this.forwardingPreference === ObjectForwardingPreference.Datagram
-    const hasExtensions = !!(this.extensionHeaders && this.extensionHeaders.length > 0)
+    const hasProperties = !!(this.properties && this.properties.length > 0)
 
     let hasGroupId: boolean
     let hasObjectId: boolean
@@ -177,7 +177,7 @@ export class FetchObject {
     if (hasObjectId) flags |= FLAG_OBJECT_ID_PRESENT
     if (hasGroupId) flags |= FLAG_GROUP_ID_PRESENT
     if (hasPriority) flags |= FLAG_PRIORITY_PRESENT
-    if (hasExtensions) flags |= FLAG_EXTENSIONS_PRESENT
+    if (hasProperties) flags |= FLAG_PROPERTIES_PRESENT
     if (isDatagram) flags |= FLAG_DATAGRAM
 
     buf.putVI(flags)
@@ -185,8 +185,8 @@ export class FetchObject {
     if (!isDatagram && subgroupMode === SUBGROUP_MODE_PRESENT) buf.putVI(this.subgroupId)
     if (hasObjectId) buf.putVI(this.objectId)
     if (hasPriority) buf.putU8(this.publisherPriority)
-    if (hasExtensions) {
-      buf.putLengthPrefixedBytes(serializeKvpList(this.extensionHeaders!).toUint8Array())
+    if (hasProperties) {
+      buf.putLengthPrefixedBytes(serializeKvpList(this.properties!).toUint8Array())
     }
     const payloadBytes = this.payload ?? new Uint8Array(0)
     buf.putLengthPrefixedBytes(payloadBytes)
@@ -218,7 +218,7 @@ export class FetchObject {
     const hasObjectId = (flags & FLAG_OBJECT_ID_PRESENT) !== 0
     const hasGroupId = (flags & FLAG_GROUP_ID_PRESENT) !== 0
     const hasPriority = (flags & FLAG_PRIORITY_PRESENT) !== 0
-    const hasExtensions = (flags & FLAG_EXTENSIONS_PRESENT) !== 0
+    const hasProperties = (flags & FLAG_PROPERTIES_PRESENT) !== 0
     const isDatagram = (flags & FLAG_DATAGRAM) !== 0
 
     if (!prev) {
@@ -283,11 +283,11 @@ export class FetchObject {
           return prev.publisherPriority
         })()
 
-    let extensionHeaders: KeyValuePair[] | null = null
-    if (hasExtensions) {
+    let properties: KeyValuePair[] | null = null
+    if (hasProperties) {
       const extLen = buf.getNumberVI()
       const headerBytes = new FrozenByteBuffer(buf.getBytes(extLen))
-      extensionHeaders = deserializeKvpListUntilEmpty(headerBytes)
+      properties = deserializeKvpListUntilEmpty(headerBytes)
     }
 
     const payloadLen = buf.getNumberVI()
@@ -305,7 +305,7 @@ export class FetchObject {
       objectId,
       publisherPriority,
       forwardingPreference,
-      extensionHeaders,
+      properties,
       payload,
     )
   }
@@ -334,7 +334,7 @@ if (import.meta.vitest) {
       expect(parsed.subgroupId).toBe(obj.subgroupId)
       expect(parsed.objectId).toBe(obj.objectId)
       expect(parsed.publisherPriority).toBe(obj.publisherPriority)
-      expect(parsed.extensionHeaders).toEqual(obj.extensionHeaders)
+      expect(parsed.properties).toEqual(obj.properties)
       expect(parsed.payload).toEqual(obj.payload)
       expect(frozen.remaining).toBe(0)
     })

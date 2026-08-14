@@ -19,7 +19,7 @@
  * Object datagram types for MOQT objects (Draft-16).
  *
  * Type bit layout (form 0b00X0XXXX):
- * - Bit 0 (0x01): EXTENSIONS - Extensions field present
+ * - Bit 0 (0x01): PROPERTIES - Properties field present
  * - Bit 1 (0x02): END_OF_GROUP - Last object in group
  * - Bit 2 (0x04): ZERO_OBJECT_ID - Object ID omitted (assumed 0)
  * - Bit 3 (0x08): DEFAULT_PRIORITY - Publisher Priority omitted (inherited)
@@ -84,10 +84,10 @@ export namespace ObjectDatagramType {
   }
 
   /**
-   * Returns true if the type has extensions (bit 0 set).
+   * Returns true if the type has properties (bit 0 set).
    * @param t - The ObjectDatagramType.
    */
-  export function hasExtensions(t: ObjectDatagramType): boolean {
+  export function hasProperties(t: ObjectDatagramType): boolean {
     return (t & 0x01) !== 0
   }
 
@@ -127,7 +127,7 @@ export namespace ObjectDatagramType {
 
   /**
    * Determines the appropriate type for given properties.
-   * @param hasExtensions - Whether extensions are present.
+   * @param hasProperties - Whether properties are present.
    * @param endOfGroup - Whether this is the last object in the group.
    * @param objectIdIsZero - Whether the objectId is 0.
    * @param defaultPriority - Whether publisher priority is inherited (omitted).
@@ -135,7 +135,7 @@ export namespace ObjectDatagramType {
    * @throws Error if STATUS and END_OF_GROUP are both true (PROTOCOL_VIOLATION).
    */
   export function fromProperties(
-    hasExtensions: boolean,
+    hasProperties: boolean,
     endOfGroup: boolean,
     objectIdIsZero: boolean,
     defaultPriority: boolean,
@@ -145,7 +145,7 @@ export namespace ObjectDatagramType {
       throw new Error('PROTOCOL_VIOLATION: STATUS and END_OF_GROUP cannot both be set')
     }
     let type = 0
-    if (hasExtensions) type |= 0x01
+    if (hasProperties) type |= 0x01
     if (endOfGroup) type |= 0x02
     if (objectIdIsZero) type |= 0x04
     if (defaultPriority) type |= 0x08
@@ -188,7 +188,7 @@ export namespace FetchHeaderType {
  * Subgroup header types for MOQT subgroups.
  *
  * Type bit layout (0b00X1XXXX):
- * - Bit 0 (0x01): EXTENSIONS - Extensions present in all objects
+ * - Bit 0 (0x01): PROPERTIES - Properties present in all objects
  * - Bits 1-2 (0x06): SUBGROUP_ID_MODE - How subgroup ID is encoded (0b00=zero, 0b01=firstObjId, 0b10=explicit, 0b11=invalid)
  * - Bit 3 (0x08): END_OF_GROUP - This subgroup contains the final object in the group
  * - Bit 4 (0x10): Always set (distinguishes subgroup from other header types)
@@ -230,8 +230,8 @@ export enum SubgroupHeaderType {
  * Namespace for SubgroupHeaderType utilities and bit constants.
  */
 export namespace SubgroupHeaderType {
-  /** Extensions present in all objects (bit 0) */
-  export const EXTENSIONS = 0x01
+  /** Properties present in all objects (bit 0) */
+  export const PROPERTIES = 0x01
   /** Mask for SUBGROUP_ID_MODE (bits 1-2) */
   export const SUBGROUP_ID_MODE_MASK = 0x06
   /** This subgroup contains the final object in the group (bit 3) */
@@ -245,8 +245,8 @@ export namespace SubgroupHeaderType {
   /** Reserved SUBGROUP_ID_MODE value (0b11) */
   const RESERVED_SUBGROUP_MODE = 0x06
 
-  export function hasExtensions(t: SubgroupHeaderType): boolean {
-    return (t & EXTENSIONS) !== 0
+  export function hasProperties(t: SubgroupHeaderType): boolean {
+    return (t & PROPERTIES) !== 0
   }
 
   export function hasExplicitSubgroupId(t: SubgroupHeaderType): boolean {
@@ -296,13 +296,13 @@ export namespace SubgroupHeaderType {
    * @param subgroupIdMode - SUBGROUP_ID_MODE (0=zero, 1=firstObjId, 2=explicit).
    */
   export function fromProperties(
-    hasExtensions: boolean,
+    hasProperties: boolean,
     subgroupIdMode: 0 | 1 | 2,
     containsEndOfGroup: boolean,
     hasDefaultPriority: boolean = false,
   ): SubgroupHeaderType {
     let t = REQUIRED_BIT
-    if (hasExtensions) t |= EXTENSIONS
+    if (hasProperties) t |= PROPERTIES
     t |= (subgroupIdMode & 0x03) << 1
     if (containsEndOfGroup) t |= END_OF_GROUP
     if (hasDefaultPriority) t |= DEFAULT_PRIORITY

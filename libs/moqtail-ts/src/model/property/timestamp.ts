@@ -15,10 +15,10 @@
  */
 
 import { KeyValuePair } from '../common/pair'
-import { LOCHeaderExtensionId } from './constant'
+import { LOCPropertyId } from './constant'
 
 export class Timestamp {
-  static readonly TYPE = LOCHeaderExtensionId.Timestamp
+  static readonly TYPE = LOCPropertyId.Timestamp
   constructor(public readonly timestamp: bigint) {}
 
   toKeyValuePair(): KeyValuePair {
@@ -36,7 +36,7 @@ export class Timestamp {
 
 if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
-  describe('TimestampExtensionHeader', () => {
+  describe('TimestampProperty', () => {
     test('should roundtrip Timestamp', () => {
       const value = 1234567890123456789n
       const pair = new Timestamp(value).toKeyValuePair()

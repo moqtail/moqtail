@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { ExtensionHeader, ExtensionHeaders } from 'moqtail/model';
+import { LOCProperty, LOCProperties } from 'moqtail/model';
 
 let ctx: OffscreenCanvasRenderingContext2D | null = null;
 let videoDecoder: VideoDecoder | null = null;
@@ -138,7 +138,7 @@ self.onmessage = async e => {
 
   if (type === 'moq') {
     const moqtObj = payload;
-    const extensionHeaders = extensions;
+    const properties = extensions;
 
     moqObjectCount++;
     if (moqObjectCount % 50 === 0) {
@@ -146,11 +146,11 @@ self.onmessage = async e => {
     }
 
     //console.debug('[WORKER]Received the payload:', moqtObj)
-    //console.debug('[WORKER]Received the extension headers:', extensionHeaders)
-    const headers = ExtensionHeaders.fromKeyValuePairs(extensionHeaders ?? []);
-    const timestamp = Number(headers.find(h => ExtensionHeader.isTimestamp(h))?.timestamp ?? 0n);
-    const configHeader = headers.find(h => ExtensionHeader.isVideoConfig(h));
-    const isKey = headers.some(h => ExtensionHeader.isVideoFrameMarking(h) && h.value === 1n);
+    //console.debug('[WORKER]Received the properties:', properties)
+    const headers = LOCProperties.fromKeyValuePairs(properties ?? []);
+    const timestamp = Number(headers.find(h => LOCProperty.isTimestamp(h))?.timestamp ?? 0n);
+    const configHeader = headers.find(h => LOCProperty.isVideoConfig(h));
+    const isKey = headers.some(h => LOCProperty.isVideoFrameMarking(h) && h.value === 1n);
 
     if (frameTimeoutId) {
       clearTimeout(frameTimeoutId);
@@ -232,10 +232,10 @@ self.onmessage = async e => {
 
   if (type === 'moq-audio') {
     const moqtObj = payload;
-    const extensionHeaders = extensions;
+    const properties = extensions;
 
-    const headers = ExtensionHeaders.fromKeyValuePairs(extensionHeaders ?? []);
-    const timestamp = Number(headers.find(h => ExtensionHeader.isTimestamp(h))?.timestamp ?? 0n);
+    const headers = LOCProperties.fromKeyValuePairs(properties ?? []);
+    const timestamp = Number(headers.find(h => LOCProperty.isTimestamp(h))?.timestamp ?? 0n);
 
     if (!audioDecoder) {
       // console.debug('[DECODER] Creating new audio decoder at', new Date().toISOString())

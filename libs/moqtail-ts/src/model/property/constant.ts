@@ -16,7 +16,7 @@
 
 import { InvalidTypeError } from '../error'
 
-export enum LOCHeaderExtensionId {
+export enum LOCPropertyId {
   Timestamp = 0x06,
   Timescale = 0x08,
   VideoFrameMarking = 0x0a,
@@ -24,10 +24,10 @@ export enum LOCHeaderExtensionId {
   VideoConfig = 0x0d,
 }
 
-export enum TrackExtensionType {
+export enum TrackPropertyType {
   DeliveryTimeout = 0x02,
   MaxCacheDuration = 0x04,
-  ImmutableExtensions = 0x0b,
+  ImmutableProperties = 0x0b,
   DefaultPublisherPriority = 0x0e,
   DefaultPublisherGroupOrder = 0x22,
   DynamicGroups = 0x30,
@@ -35,20 +35,20 @@ export enum TrackExtensionType {
   PriorObjectIdGap = 0x3e,
 }
 
-export function locHeaderExtensionIdFromNumber(value: number): LOCHeaderExtensionId {
+export function locPropertyIdFromNumber(value: number): LOCPropertyId {
   switch (value) {
     case 0x06:
-      return LOCHeaderExtensionId.Timestamp
+      return LOCPropertyId.Timestamp
     case 0x08:
-      return LOCHeaderExtensionId.Timescale
+      return LOCPropertyId.Timescale
     case 0x0a:
-      return LOCHeaderExtensionId.VideoFrameMarking
+      return LOCPropertyId.VideoFrameMarking
     case 0x0c:
-      return LOCHeaderExtensionId.AudioLevel
+      return LOCPropertyId.AudioLevel
     case 0x0d:
-      return LOCHeaderExtensionId.VideoConfig
+      return LOCPropertyId.VideoConfig
     default:
-      throw new InvalidTypeError('locHeaderExtensionIdFromNumber', `Invalid LOC header extension id: ${value}`)
+      throw new InvalidTypeError('locPropertyIdFromNumber', `Invalid LOC property id: ${value}`)
   }
 }
 
@@ -59,18 +59,18 @@ if (import.meta.vitest) {
   describe('draft-18 conformance', () => {
     const fixture = async () => await import('../../../test/conformance')
 
-    test('TrackExtensionType matches property_types.json', async () => {
+    test('TrackPropertyType matches property_types.json', async () => {
       const { propertyTypes, assertRegistry, pascalIdent } = await fixture()
-      assertRegistry(propertyTypes(), pascalIdent(), (codepoint) => TrackExtensionType[Number(codepoint)])
+      assertRegistry(propertyTypes(), pascalIdent(), (codepoint) => TrackPropertyType[Number(codepoint)])
     })
 
     // The LOC properties are registered in the same number space as the draft's own
     // table (§15.8 Table 15), so they are held to it too.
-    test('LOCHeaderExtensionId matches the provisional LOC registry', async () => {
+    test('LOCPropertyId matches the provisional LOC registry', async () => {
       const { propertyTypes, assertRegistry, pascalIdent } = await fixture()
       assertRegistry(propertyTypes().provisional, pascalIdent(), (codepoint) => {
         try {
-          return LOCHeaderExtensionId[locHeaderExtensionIdFromNumber(Number(codepoint))]
+          return LOCPropertyId[locPropertyIdFromNumber(Number(codepoint))]
         } catch {
           return undefined
         }

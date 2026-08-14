@@ -70,11 +70,7 @@
       "name": "IMMUTABLE_PROPERTIES",
       "value": "0x0B",
       "scope": "Track, Object",
-      "spec": "Section 12.7",
-      "notes": "moqtail-ts still calls this ImmutableExtensions.",
-      "pending": {
-        "ts": 264
-      }
+      "spec": "Section 12.7"
     },
     {
       "name": "DEFAULT_PUBLISHER_PRIORITY",

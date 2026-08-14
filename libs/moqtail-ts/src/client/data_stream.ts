@@ -206,7 +206,7 @@ export class RecvStream {
             } else {
               object = SubgroupObject.deserialize(
                 this.#internalBuffer,
-                SubgroupHeaderType.hasExtensions(this.header.type),
+                SubgroupHeaderType.hasProperties(this.header.type),
                 previousObjectId,
               )
               previousObjectId = object.objectId

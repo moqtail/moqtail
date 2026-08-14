@@ -20,7 +20,7 @@ import {
   FullTrackName,
   Location,
   MoqtObject,
-  ExtensionHeaders,
+  LOCProperties,
   ObjectForwardingPreference,
   Tuple,
   type CMSF,
@@ -351,7 +351,7 @@ export class Publisher {
         `keyframe → group=${channel.groupId} payload=${payload.byteLength}B`,
       );
     }
-    const headers = new ExtensionHeaders()
+    const headers = new LOCProperties()
       .addTimestamp(Date.now())
       .addVideoFrameMarking(isKey ? 1 : 0)
       .build();

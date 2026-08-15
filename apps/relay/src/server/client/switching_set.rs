@@ -12,35 +12,89 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! SSTS switching sets (draft-wilaw-moq-moqt-ssts).
+//!
+//! A switching set is a collection of tracks representing the same content
+//! at different throughput levels; the ABR selects exactly one track per
+//! active set to forward. `throughput threshold` is a per-member property,
+//! while `weight`, `activate` and `rank` are set properties: when several
+//! subscriptions in the same set specify different values, the most recently
+//! received message wins.
+
 use moqtail::model::data::full_track_name::FullTrackName;
 use std::collections::HashMap;
+use std::fmt;
 
-#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub enum SwitchingSetError {
+  /// The track is already assigned to a different switching set; the
+  /// subscription MUST be rejected with a Parameter Error.
+  TrackInDifferentSet,
+  /// The track does not belong to any switching set.
+  TrackNotInSet,
+}
+
+impl fmt::Display for SwitchingSetError {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    match self {
+      Self::TrackInDifferentSet => {
+        write!(f, "track is already assigned to a different switching set")
+      }
+      Self::TrackNotInSet => write!(f, "track is not in any switching set"),
+    }
+  }
+}
+
+/// A track's membership in a switching set.
 #[derive(Debug, Clone)]
 pub struct SwitchingSetMember {
   pub full_track_name: FullTrackName,
   pub relay_track_id: u64,
+  /// Minimum throughput (kbps) required to select this track. Property of
+  /// the subscription.
   pub throughput_threshold_kbps: u64,
+  /// Bookkeeping: the request id that established this track's subscription
+  /// (SUBSCRIBE request id, or the PUBLISH request id for pushed tracks).
+  #[allow(dead_code)]
   pub request_id: u64,
 }
 
-#[allow(dead_code)]
-#[derive(Debug, Clone, Default)]
+/// A switching set: tracks representing the same content at different
+/// throughput levels.
+#[derive(Debug, Clone)]
 pub struct SwitchingSet {
   pub id: u64,
+  pub algorithm_id: u64,
+  /// Sorted by throughput threshold, ascending (index 0 = lowest quality).
   pub members: Vec<SwitchingSetMember>,
-  pub fraction: u8,
+  /// Relative weight for bandwidth allocation among sets that share the same
+  /// rank; 1..=10.
+  pub weight: u64,
+  /// 0 pauses SSTS for this set; switching activates once the number of
+  /// assigned tracks is >= this value.
+  pub activate: u64,
+  /// Degradation priority; lower values are protected first.
   pub rank: u8,
-  pub active: bool,
-  pub selected_relay_track_id: Option<u64>,
+}
+
+impl SwitchingSet {
+  /// Whether the allocation runs for this set: enabled and enough tracks.
+  pub fn is_active(&self) -> bool {
+    self.activate > 0 && self.members.len() as u64 >= self.activate
+  }
+
+  /// The highest-throughput track in the set, if any.
+  #[allow(dead_code)]
+  pub fn top_member(&self) -> Option<&SwitchingSetMember> {
+    self.members.last()
+  }
 }
 
 #[derive(Debug, Default)]
 pub struct SwitchingSetManager {
   pub sets: HashMap<u64, SwitchingSet>,
+  /// Track -> switching set id. A track MUST only be in one set at a time.
   pub track_to_set: HashMap<FullTrackName, u64>,
-  // Reverse index: relay_track_id -> switching_set_id for fast per-set stream counting
-  pub relay_track_to_set: HashMap<u64, u64>,
 }
 
 impl SwitchingSetManager {
@@ -55,15 +109,16 @@ impl SwitchingSetManager {
     relay_track_id: u64,
     request_id: u64,
     switching_set_id: u64,
+    algorithm_id: u64,
     throughput_threshold_kbps: u64,
-    fraction: u8,
+    weight: u64,
+    activate: u64,
     rank: u8,
-    activate: bool,
-  ) -> Result<(), &'static str> {
+  ) -> Result<(), SwitchingSetError> {
     if let Some(&existing_set_id) = self.track_to_set.get(&full_track_name)
       && existing_set_id != switching_set_id
     {
-      return Err("Track already assigned to a different switching set");
+      return Err(SwitchingSetError::TrackInDifferentSet);
     }
 
     let member = SwitchingSetMember {
@@ -78,13 +133,20 @@ impl SwitchingSetManager {
       .entry(switching_set_id)
       .or_insert_with(|| SwitchingSet {
         id: switching_set_id,
-        ..Default::default()
+        algorithm_id,
+        members: Vec::new(),
+        weight,
+        activate,
+        rank,
       });
 
-    set.fraction = fraction;
+    // Set properties: the most recently received message wins.
+    set.algorithm_id = algorithm_id;
+    set.weight = weight;
+    set.activate = activate;
     set.rank = rank;
 
-    // Replace or insert member
+    // Replace or insert the member.
     if let Some(existing) = set
       .members
       .iter_mut()
@@ -95,78 +157,59 @@ impl SwitchingSetManager {
       set.members.push(member);
     }
 
-    // Sort members by throughput ascending (lowest quality = index 0)
     set.members.sort_by_key(|m| m.throughput_threshold_kbps);
 
     self.track_to_set.insert(full_track_name, switching_set_id);
-    self
-      .relay_track_to_set
-      .insert(relay_track_id, switching_set_id);
-
-    if activate {
-      set.active = true;
-    }
-
     Ok(())
   }
 
+  /// Remove a track (unsubscribed or PUBLISH_DONE); decrement `activate`
+  /// (floor zero) and delete the set once its last track leaves.
   pub fn remove(&mut self, full_track_name: &FullTrackName) {
-    if let Some(set_id) = self.track_to_set.remove(full_track_name)
-      && let Some(set) = self.sets.get_mut(&set_id)
-    {
-      // Clean up relay_track_to_set for the removed member
-      let removed_members: Vec<_> = set
-        .members
-        .iter()
-        .filter(|m| m.full_track_name == *full_track_name)
-        .map(|m| m.relay_track_id)
-        .collect();
-      for rtid in &removed_members {
-        self.relay_track_to_set.remove(rtid);
-      }
-
-      set
-        .members
-        .retain(|m| m.full_track_name != *full_track_name);
-      if set.members.is_empty() {
-        self.sets.remove(&set_id);
-      }
+    let Some(set_id) = self.track_to_set.remove(full_track_name) else {
+      return;
+    };
+    let Some(set) = self.sets.get_mut(&set_id) else {
+      return;
+    };
+    set
+      .members
+      .retain(|m| m.full_track_name != *full_track_name);
+    set.activate = set.activate.saturating_sub(1);
+    if set.members.is_empty() {
+      self.sets.remove(&set_id);
     }
   }
 
-  /// Look up the switching set ID that a given relay_track_id belongs to.
-  /// Returns `None` if the track is not part of any switching set.
-  pub fn get_set_id_for_relay_track(&self, relay_track_id: u64) -> Option<u64> {
-    self.relay_track_to_set.get(&relay_track_id).copied()
-  }
-
+  /// Apply a SWITCHING_SET_ASSIGNMENT update (REQUEST_UPDATE) to the set the
+  /// track belongs to. Only the provided values override the set properties
+  /// (last write wins).
   pub fn update_assignment(
     &mut self,
     full_track_name: &FullTrackName,
-    fraction: Option<u8>,
+    weight: Option<u64>,
+    activate: Option<u64>,
     rank: Option<u8>,
-    activate: Option<bool>,
-  ) -> Result<(), &'static str> {
+  ) -> Result<(), SwitchingSetError> {
     let set_id = self
       .track_to_set
       .get(full_track_name)
       .copied()
-      .ok_or("Track not found in any switching set")?;
+      .ok_or(SwitchingSetError::TrackNotInSet)?;
 
-    if let Some(set) = self.sets.get_mut(&set_id) {
-      if let Some(f) = fraction {
-        set.fraction = f;
-      }
-      if let Some(r) = rank {
-        set.rank = r;
-      }
-      if let Some(a) = activate {
-        set.active = a;
-      }
-      Ok(())
-    } else {
-      Err("Switching set not found")
+    let Some(set) = self.sets.get_mut(&set_id) else {
+      return Err(SwitchingSetError::TrackNotInSet);
+    };
+    if let Some(w) = weight {
+      set.weight = w;
     }
+    if let Some(a) = activate {
+      set.activate = a;
+    }
+    if let Some(r) = rank {
+      set.rank = r;
+    }
+    Ok(())
   }
 
   pub fn get_set_for_track(&self, full_track_name: &FullTrackName) -> Option<&SwitchingSet> {
@@ -187,48 +230,115 @@ mod tests {
       .expect("create track name")
   }
 
-  #[tokio::test]
-  async fn test_assign_and_remove() {
+  fn assign(
+    manager: &mut SwitchingSetManager,
+    track: &FullTrackName,
+    relay_track_id: u64,
+    set_id: u64,
+    threshold: u64,
+  ) {
+    manager
+      .assign(
+        track.clone(),
+        relay_track_id,
+        relay_track_id,
+        set_id,
+        0,
+        threshold,
+        5,
+        2,
+        0,
+      )
+      .unwrap();
+  }
+
+  #[test]
+  fn test_assign_and_remove() {
     let mut manager = SwitchingSetManager::new();
     let track1 = make_track("ns", "1080p");
     let track2 = make_track("ns", "480p");
 
-    manager
-      .assign(track1.clone(), 10, 1, 1, 3000, 6, 1, false)
-      .unwrap();
-    manager
-      .assign(track2.clone(), 20, 2, 1, 800, 6, 1, true)
-      .unwrap();
+    assign(&mut manager, &track1, 10, 1, 3000);
+    assign(&mut manager, &track2, 20, 1, 800);
 
-    let result = manager.assign(track1.clone(), 10, 1, 2, 3000, 4, 2, true);
-    assert!(result.is_err());
+    // Assigning the same track to a different set must fail.
+    assert!(matches!(
+      manager.assign(track1.clone(), 10, 1, 2, 0, 3000, 5, 2, 0),
+      Err(SwitchingSetError::TrackInDifferentSet)
+    ));
 
     manager.remove(&track1);
     assert!(manager.get_set_for_track(&track1).is_none());
 
     let set = manager.get_set_for_track(&track2).unwrap();
     assert_eq!(set.members.len(), 1);
+    // activate is decremented by one on removal (2 -> 1).
+    assert_eq!(set.activate, 1);
   }
 
   #[test]
-  fn test_relay_track_to_set_lookup() {
+  fn test_activate_decrement_floors_at_zero_and_set_deletion() {
     let mut manager = SwitchingSetManager::new();
-    let track1 = make_track("ns", "1080p");
-    let track2 = make_track("ns", "480p");
+    let track = make_track("ns", "t");
+    assign(&mut manager, &track, 1, 7, 100);
+
+    manager.remove(&track);
+    // The last member removed the set entirely.
+    assert!(!manager.sets.contains_key(&7));
+    assert!(manager.get_set_for_track(&track).is_none());
+  }
+
+  #[test]
+  fn test_is_active() {
+    let mut manager = SwitchingSetManager::new();
+    let track1 = make_track("ns", "a");
+    let track2 = make_track("ns", "b");
+
+    // activate = 2, only one track assigned: not active yet.
+    manager
+      .assign(track1.clone(), 1, 1, 1, 0, 100, 5, 2, 0)
+      .unwrap();
+    assert!(!manager.get_set_for_track(&track1).unwrap().is_active());
 
     manager
-      .assign(track1.clone(), 100, 1, 5, 3000, 6, 1, true)
+      .assign(track2.clone(), 2, 2, 1, 0, 200, 5, 2, 0)
       .unwrap();
+    assert!(manager.get_set_for_track(&track2).unwrap().is_active());
+  }
+
+  #[test]
+  fn test_update_assignment_last_write_wins() {
+    let mut manager = SwitchingSetManager::new();
+    let track = make_track("ns", "t");
+    assign(&mut manager, &track, 1, 3, 100);
+
     manager
-      .assign(track2.clone(), 200, 2, 5, 800, 6, 1, true)
+      .update_assignment(&track, Some(9), Some(0), Some(4))
       .unwrap();
+    let set = manager.get_set_for_track(&track).unwrap();
+    assert_eq!(set.weight, 9);
+    assert_eq!(set.activate, 0);
+    assert_eq!(set.rank, 4);
+    // Paused sets are never active.
+    assert!(!set.is_active());
 
-    assert_eq!(manager.get_set_id_for_relay_track(100), Some(5));
-    assert_eq!(manager.get_set_id_for_relay_track(200), Some(5));
-    assert_eq!(manager.get_set_id_for_relay_track(999), None);
+    // None fields keep the previous values.
+    manager
+      .update_assignment(&track, None, None, Some(1))
+      .unwrap();
+    let set = manager.get_set_for_track(&track).unwrap();
+    assert_eq!(set.weight, 9);
+    assert_eq!(set.activate, 0);
+    assert_eq!(set.rank, 1);
+  }
 
-    manager.remove(&track1);
-    assert_eq!(manager.get_set_id_for_relay_track(100), None);
-    assert_eq!(manager.get_set_id_for_relay_track(200), Some(5));
+  #[test]
+  fn test_update_assignment_unknown_track() {
+    let mut manager = SwitchingSetManager::new();
+    let track = make_track("ns", "t");
+    assert!(matches!(
+      manager.update_assignment(&track, Some(1), None, None),
+      Err(SwitchingSetError::TrackNotInSet)
+    ));
   }
 }

@@ -40,6 +40,7 @@ use moqtail::transport::data_stream_handler::SubscribeRequest;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use tokio::sync::oneshot;
+use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 async fn add_subscription(
@@ -60,6 +61,20 @@ async fn add_subscription(
       true
     }
     Err(_) => false, // error already logged in add_subscription and it means that subscription already exists
+  }
+}
+
+/// Drop a subscription that must be rejected after `add_subscription` already
+/// registered it. A SWITCH reuses the pre-existing subscription, so only a
+/// fresh one is removed.
+async fn reject_subscription(
+  track_arc: &Arc<RwLock<Track>>,
+  subscriber_id: usize,
+  is_switch: bool,
+) {
+  if !is_switch {
+    let track = track_arc.read().await;
+    track.remove_subscription(subscriber_id).await;
   }
 }
 
@@ -213,6 +228,9 @@ async fn upstream_subscribe_exchange(
               )
               .await;
 
+              // SSTS: the track is no longer available upstream; remove it
+              // from the switching sets of its subscribers (Section 6.3).
+              track.read().await.remove_from_subscriber_switching_sets().await;
               if let Err(e) = track
                 .read()
                 .await
@@ -356,13 +374,17 @@ async fn end_upstream_subscription(
     "Last upstream subscription for {:?} failed after acceptance; ending downstream with PUBLISH_DONE",
     full_track_name
   );
-  if let Err(e) = track
-    .read()
-    .await
-    .notify_publish_done(status_code, error.reason_phrase.as_str().to_string())
-    .await
   {
-    error!("Failed to end downstream subscriptions: {:?}", e);
+    let track = track.read().await;
+    // SSTS: the track is no longer available upstream; remove it from the
+    // switching sets of its subscribers (Section 6.3).
+    track.remove_from_subscriber_switching_sets().await;
+    if let Err(e) = track
+      .notify_publish_done(status_code, error.reason_phrase.as_str().to_string())
+      .await
+    {
+      error!("Failed to end downstream subscriptions: {:?}", e);
+    }
   }
 }
 
@@ -477,33 +499,75 @@ async fn handle_subscribe_message(
     return Ok(());
   }
 
-  // Sender-side track switching: register this track in its switching set.
+  // Sender-side track switching (draft-wilaw-moq-moqt-ssts): register this
+  // track in its switching set.
   if let Some(p) = sub
     .subscribe_parameters
     .iter()
     .find(|p| matches!(p, MessageParameter::SwitchingSetAssignment { .. }))
-    && let MessageParameter::SwitchingSetAssignment {
-      switching_set_id,
-      throughput_threshold_kbps,
-      fraction,
-      activate,
-      rank,
-    } = p
   {
-    let mut manager = client.switching_sets.write().await;
-    let relay_track_id = track_arc.read().await.relay_track_id;
-    if let Err(e) = manager.assign(
-      full_track_name.clone(),
-      relay_track_id,
-      sub.request_id,
-      *switching_set_id,
-      *throughput_threshold_kbps,
-      *fraction,
-      *rank,
-      *activate,
-    ) {
-      warn!("Failed to assign switching set: {}", e);
-      // TODO: Send RequestError with Parameter Error code
+    // The absence of the SSTS_ALGORITHMS setup option (or an empty list)
+    // prohibits the use of SSTS (Section 3).
+    if !client.ssts_enabled {
+      warn!(
+        "Rejecting SUBSCRIBE from {}: SSTS was not negotiated in SETUP",
+        context.connection_id
+      );
+      reject_subscription(&track_arc, client.connection_id, is_switch).await;
+      let err = RequestError::new(
+        RequestErrorCode::UnsupportedExtension,
+        0,
+        ReasonPhrase::try_new("SSTS not negotiated".to_string()).unwrap(),
+      );
+      stream_handler.send_impl(&err).await.unwrap();
+      return Ok(());
+    }
+
+    if let MessageParameter::SwitchingSetAssignment {
+      switching_set_id,
+      algorithm_id,
+      throughput_threshold_kbps,
+      set_throughput_weight,
+      activate_switching,
+      set_rank,
+    } = p
+    {
+      let mut manager = client.switching_sets.write().await;
+      let relay_track_id = track_arc.read().await.relay_track_id;
+      if let Err(e) = manager.assign(
+        full_track_name.clone(),
+        relay_track_id,
+        sub.request_id,
+        *switching_set_id,
+        *algorithm_id,
+        *throughput_threshold_kbps,
+        *set_throughput_weight,
+        *activate_switching,
+        *set_rank,
+      ) {
+        drop(manager);
+        // A track MUST only be assigned to one switching set at a time; the
+        // subscription is rejected (spec: Parameter Error; the draft-18
+        // REQUEST_ERROR codes have no dedicated parameter code).
+        warn!("Rejecting SUBSCRIBE from {}: {}", context.connection_id, e);
+        reject_subscription(&track_arc, client.connection_id, is_switch).await;
+        let err = RequestError::new(
+          RequestErrorCode::UnsupportedExtension,
+          0,
+          ReasonPhrase::try_new(e.to_string()).unwrap(),
+        );
+        stream_handler.send_impl(&err).await.unwrap();
+        return Ok(());
+      }
+
+      // The spec starts switching-set subscriptions with Forward=0; keep this
+      // subscription forwarding so the Object gating can select per group.
+      if let Some(subscription) =
+        track_arc.read().await.get_subscription(client.connection_id).await {
+        let sub = subscription.read().await;
+        let mut state = sub.subscription_state.write().await;
+        state.forward = true;
+      }
     }
   }
 
@@ -955,20 +1019,26 @@ pub async fn handle_request_update(
         let track_name = req.original_subscribe_request.get_full_track_name();
 
         // Sender-side track switching: apply switching set parameter updates.
+        // All fields are present in the parameter, and the most recently
+        // received message wins.
         if let Some(p) = update_msg
           .parameters
           .iter()
           .find(|p| matches!(p, MessageParameter::SwitchingSetAssignment { .. }))
           && let MessageParameter::SwitchingSetAssignment {
-            fraction,
-            activate,
-            rank,
+            set_throughput_weight,
+            activate_switching,
+            set_rank,
             ..
           } = p
         {
           let mut manager = client.switching_sets.write().await;
-          let _ =
-            manager.update_assignment(&track_name, Some(*fraction), Some(*rank), Some(*activate));
+          let _ = manager.update_assignment(
+            &track_name,
+            Some(*set_throughput_weight),
+            Some(*activate_switching),
+            Some(*set_rank),
+          );
         }
 
         track_name

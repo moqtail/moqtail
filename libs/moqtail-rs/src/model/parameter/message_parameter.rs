@@ -65,6 +65,13 @@ pub enum MessageParameter {
   TrackNamespacePrefix {
     prefix: Tuple,
   },
+  SwitchingSetAssignment {
+    switching_set_id: u64,
+    throughput_threshold_kbps: u64,
+    fraction: u8,
+    activate: bool,
+    rank: u8,
+  },
 }
 
 impl MessageParameter {
@@ -128,6 +135,22 @@ impl MessageParameter {
     Self::NewGroupRequest { group }
   }
 
+  pub fn new_switching_set_assignment(
+    switching_set_id: u64,
+    throughput_threshold_kbps: u64,
+    fraction: u8,
+    activate: bool,
+    rank: u8,
+  ) -> Self {
+    Self::SwitchingSetAssignment {
+      switching_set_id,
+      throughput_threshold_kbps,
+      fraction,
+      activate,
+      rank,
+    }
+  }
+
   /// Returns the raw wire type value for this parameter.
   pub fn type_value(&self) -> u64 {
     match self {
@@ -144,6 +167,7 @@ impl MessageParameter {
       Self::SubscriptionFilter { .. } => MessageParameterType::SubscriptionFilter as u64,
       Self::NewGroupRequest { .. } => MessageParameterType::NewGroupRequest as u64,
       Self::TrackNamespacePrefix { .. } => MessageParameterType::TrackNamespacePrefix as u64,
+      Self::SwitchingSetAssignment { .. } => MessageParameterType::SwitchingSetAssignment as u64,
     }
   }
 
@@ -232,6 +256,13 @@ impl MessageParameter {
           | ControlMessageType::RequestUpdate
       ),
       Self::TrackNamespacePrefix { .. } => matches!(msg_type, ControlMessageType::RequestUpdate),
+      Self::SwitchingSetAssignment { .. } => matches!(
+        msg_type,
+        ControlMessageType::Publish
+          | ControlMessageType::PublishOk
+          | ControlMessageType::Subscribe
+          | ControlMessageType::RequestUpdate
+      ),
     }
   }
 
@@ -334,6 +365,44 @@ impl MessageParameter {
               });
             }
             Ok(Self::TrackNamespacePrefix { prefix })
+          }
+          MessageParameterType::SwitchingSetAssignment => {
+            let mut payload = value.clone();
+            let switching_set_id = payload.get_vi()?;
+            let throughput_threshold_kbps = payload.get_vi()?;
+            let fraction_raw = payload.get_vi()?;
+
+            if !(1..=10).contains(&fraction_raw) {
+              return Err(ParseError::ProtocolViolation {
+                context: "MessageParameter::deserialize",
+                details: format!("SWITCHING_SET_FRACTION must be 1-10, got {}", fraction_raw),
+              });
+            }
+            let fraction = fraction_raw as u8;
+
+            let activate_byte = payload.get_u8();
+            let activate = activate_byte & 0x01 != 0;
+
+            let rank = if payload.has_remaining() {
+              let r = payload.get_u8();
+              if r < 1 {
+                return Err(ParseError::ProtocolViolation {
+                  context: "MessageParameter::deserialize",
+                  details: format!("SWITCHING_SET_RANK must be 1-255, got {}", r),
+                });
+              }
+              r
+            } else {
+              1 // Default
+            };
+
+            Ok(Self::SwitchingSetAssignment {
+              switching_set_id,
+              throughput_threshold_kbps,
+              fraction,
+              activate,
+              rank,
+            })
           }
           MessageParameterType::SubscriptionFilter => {
             let mut payload = value.clone();
@@ -457,6 +526,29 @@ impl TryInto<KeyValuePair> for MessageParameter {
         buf.put_vi(location.group)?;
         buf.put_vi(location.object)?;
         KeyValuePair::try_new_bytes(MessageParameterType::LargestObject as u64, buf.freeze())
+      }
+      Self::SwitchingSetAssignment {
+        switching_set_id,
+        throughput_threshold_kbps,
+        fraction,
+        activate,
+        rank,
+      } => {
+        let mut buf = BytesMut::new();
+        buf.put_vi(switching_set_id)?;
+        buf.put_vi(throughput_threshold_kbps)?;
+        buf.put_vi(fraction as u64)?;
+
+        // Pack activate into 1 byte (bit 0). Remaining 7 bits are padding (0).
+        let activate_byte = if activate { 0x01 } else { 0x00 };
+        buf.put_u8(activate_byte);
+
+        buf.put_u8(rank);
+
+        KeyValuePair::try_new_bytes(
+          MessageParameterType::SwitchingSetAssignment as u64,
+          buf.freeze(),
+        )
       }
       Self::SubscriptionFilter {
         filter_type,
@@ -733,6 +825,15 @@ mod tests {
   #[test]
   fn test_roundtrip_new_group_request() {
     let orig = MessageParameter::new_group_request(7);
+    assert_eq!(roundtrip(orig.clone()), orig);
+  }
+
+  #[test]
+  fn test_roundtrip_switching_set_assignment() {
+    let orig = MessageParameter::new_switching_set_assignment(7, 2000, 5, true, 2);
+    assert_eq!(roundtrip(orig.clone()), orig);
+
+    let orig = MessageParameter::new_switching_set_assignment(0, 0, 1, false, 1);
     assert_eq!(roundtrip(orig.clone()), orig);
   }
 

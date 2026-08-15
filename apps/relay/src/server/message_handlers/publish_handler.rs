@@ -166,6 +166,35 @@ pub async fn handle(
           .add_published_track(request_id, full_track_name.clone())
           .await;
 
+        // Sender-side track switching: register this track in its switching set.
+        if let Some(p) = m
+          .parameters
+          .iter()
+          .find(|p| matches!(p, MessageParameter::SwitchingSetAssignment { .. }))
+          && let MessageParameter::SwitchingSetAssignment {
+            switching_set_id,
+            throughput_threshold_kbps,
+            fraction,
+            activate,
+            rank,
+          } = p
+        {
+          let mut manager = client.switching_sets.write().await;
+          let relay_track_id = track_arc.read().await.relay_track_id;
+          if let Err(e) = manager.assign(
+            full_track_name.clone(),
+            relay_track_id,
+            m.request_id,
+            *switching_set_id,
+            *throughput_threshold_kbps,
+            *fraction,
+            *rank,
+            *activate,
+          ) {
+            warn!("Failed to assign switching set on PUBLISH: {}", e);
+          }
+        }
+
         // register this publish message
         context
           .track_manager
@@ -662,4 +691,6 @@ async fn cleanup_published_track(
       );
     }
   }
+
+  client.switching_sets.write().await.remove(&full_track_name);
 }

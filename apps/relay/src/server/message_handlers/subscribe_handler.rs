@@ -446,6 +446,35 @@ async fn handle_subscribe_message(
     return Ok(());
   }
 
+  // Sender-side track switching: register this track in its switching set.
+  if let Some(p) = sub
+    .subscribe_parameters
+    .iter()
+    .find(|p| matches!(p, MessageParameter::SwitchingSetAssignment { .. }))
+    && let MessageParameter::SwitchingSetAssignment {
+      switching_set_id,
+      throughput_threshold_kbps,
+      fraction,
+      activate,
+      rank,
+    } = p
+  {
+    let mut manager = client.switching_sets.write().await;
+    if let Err(e) = manager.assign(
+      track.full_track_name.clone(),
+      track.relay_track_id,
+      sub.request_id,
+      *switching_set_id,
+      *throughput_threshold_kbps,
+      *fraction,
+      *rank,
+      *activate,
+    ) {
+      warn!("Failed to assign switching set: {}", e);
+      // TODO: Send RequestError with Parameter Error code
+    }
+  }
+
   let res: Result<(), TerminationCode> = if is_creator {
     // First subscriber for this track: forward Subscribe to publisher
     info!(
@@ -801,6 +830,12 @@ pub(crate) async fn cancel_subscription(
       .get_full_track_name()
   }; // read lock dropped here
 
+  // Sender-side track switching: remove the track from its switching set.
+  {
+    let mut manager = client.switching_sets.write().await;
+    manager.remove(&full_track_name);
+  }
+
   // remove the subscription from the track
   let track_option = context.track_manager.get_track(&full_track_name).await;
 
@@ -876,7 +911,26 @@ pub async fn handle_request_update(
           &mut req.original_subscribe_request.subscribe_parameters,
           update_msg.parameters.clone(),
         );
-        req.original_subscribe_request.get_full_track_name()
+        let track_name = req.original_subscribe_request.get_full_track_name();
+
+        // Sender-side track switching: apply switching set parameter updates.
+        if let Some(p) = update_msg
+          .parameters
+          .iter()
+          .find(|p| matches!(p, MessageParameter::SwitchingSetAssignment { .. }))
+          && let MessageParameter::SwitchingSetAssignment {
+            fraction,
+            activate,
+            rank,
+            ..
+          } = p
+        {
+          let mut manager = client.switching_sets.write().await;
+          let _ =
+            manager.update_assignment(&track_name, Some(*fraction), Some(*rank), Some(*activate));
+        }
+
+        track_name
       }
       None => {
         warn!(

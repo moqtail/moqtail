@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::server::client::AbrMessage;
 use crate::server::client::MOQTClient;
 use crate::server::client::switch_context::SwitchStatus;
 use crate::server::config::AppConfig;
@@ -981,6 +982,51 @@ impl Subscription {
         header_info,
       } => {
         object.track_alias = self.relay_track_id;
+
+        // If this track belongs to a switching set, wait for the ABR to select a tier.
+        let my_set_id = {
+          let manager = self.subscriber.switching_sets.read().await;
+          manager
+            .get_set_for_track(&self.full_track_name)
+            .map(|s| s.id)
+        };
+
+        if let Some(set_id) = my_set_id {
+          let group_id = object.location.group;
+
+          // Wake the ABR if no decision exists for this group+set
+          let needs_decision = match self.subscriber.group_decisions.read().await.get(&group_id) {
+            Some(map) => !map.contains_key(&set_id),
+            None => true,
+          };
+
+          if needs_decision
+            && let Err(e) = self
+              .subscriber
+              .abr_tx
+              .send(AbrMessage::NewGroup(group_id))
+              .await
+          {
+            warn!("Failed to send NewGroup to ABR: {:?}", e);
+          }
+
+          loop {
+            {
+              let decisions = self.subscriber.group_decisions.read().await;
+              if let Some(set_map) = decisions.get(&group_id)
+                && let Some(&chosen_alias) = set_map.get(&set_id)
+              {
+                if self.relay_track_id != chosen_alias {
+                  // Not the selected tier – drop this object.
+                  return;
+                }
+                break; // We are the chosen tier, proceed with forwarding.
+              }
+            }
+            self.subscriber.decision_notify.notified().await;
+          }
+        }
+
         // update last received object location
         {
           let mut state = self.subscription_state.write().await;

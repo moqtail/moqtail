@@ -64,6 +64,7 @@ pub enum MessageParameterType {
   GroupOrder = 0x22,
   NewGroupRequest = 0x32,
   TrackNamespacePrefix = 0x34,
+  SwitchingSetAssignment = 0x41,
 }
 
 impl TryFrom<u64> for MessageParameterType {
@@ -84,6 +85,7 @@ impl TryFrom<u64> for MessageParameterType {
       0x22 => Ok(MessageParameterType::GroupOrder),
       0x32 => Ok(MessageParameterType::NewGroupRequest),
       0x34 => Ok(MessageParameterType::TrackNamespacePrefix),
+      0x41 => Ok(MessageParameterType::SwitchingSetAssignment),
       _ => Err(ParseError::InvalidType {
         context: "MessageParameterType::try_from(u64)",
         details: format!("Unknown parameter type, got {value}"),

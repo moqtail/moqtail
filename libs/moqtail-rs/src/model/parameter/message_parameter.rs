@@ -61,12 +61,20 @@ pub enum MessageParameter {
   NewGroupRequest {
     group: u64,
   },
+  /// Assigns a subscription to an SSTS switching set
+  /// (draft-wilaw-moq-moqt-ssts). Only the default algorithm (id 0) is
+  /// understood; its fields follow the base parameter (set id, algorithm id).
   SwitchingSetAssignment {
     switching_set_id: u64,
+    algorithm_id: u64,
     throughput_threshold_kbps: u64,
-    fraction: u8,
-    activate: bool,
-    rank: u8,
+    /// Relative bandwidth weight among same-rank sets; 1 <= N <= 10.
+    set_throughput_weight: u64,
+    /// 0 pauses SSTS for the set; switching activates once the number of
+    /// assigned tracks is >= this value.
+    activate_switching: u64,
+    /// Degradation priority; lower values are protected first. Default 0.
+    set_rank: u8,
   },
 }
 
@@ -129,17 +137,19 @@ impl MessageParameter {
 
   pub fn new_switching_set_assignment(
     switching_set_id: u64,
+    algorithm_id: u64,
     throughput_threshold_kbps: u64,
-    fraction: u8,
-    activate: bool,
-    rank: u8,
+    set_throughput_weight: u64,
+    activate_switching: u64,
+    set_rank: u8,
   ) -> Self {
     Self::SwitchingSetAssignment {
       switching_set_id,
+      algorithm_id,
       throughput_threshold_kbps,
-      fraction,
-      activate,
-      rank,
+      set_throughput_weight,
+      activate_switching,
+      set_rank,
     }
   }
 
@@ -246,10 +256,13 @@ impl MessageParameter {
           | ControlMessageType::Subscribe
           | ControlMessageType::RequestUpdate
       ),
+      // The parameter MAY appear in a SUBSCRIBE, REQUEST_UPDATE, or PUBLISH_OK
+      // message (draft-wilaw-moq-moqt-ssts, Section 5). PUBLISH_OK is carried
+      // as REQUEST_OK in this draft.
       Self::SwitchingSetAssignment { .. } => matches!(
         msg_type,
-        ControlMessageType::Publish
-          | ControlMessageType::PublishOk
+        ControlMessageType::PublishOk
+          | ControlMessageType::RequestOk
           | ControlMessageType::Subscribe
           | ControlMessageType::RequestUpdate
       ),
@@ -349,39 +362,44 @@ impl MessageParameter {
           MessageParameterType::SwitchingSetAssignment => {
             let mut payload = value.clone();
             let switching_set_id = payload.get_vi()?;
-            let throughput_threshold_kbps = payload.get_vi()?;
-            let fraction_raw = payload.get_vi()?;
-
-            if !(1..=10).contains(&fraction_raw) {
+            let algorithm_id = payload.get_vi()?;
+            if algorithm_id != 0 {
               return Err(ParseError::ProtocolViolation {
                 context: "MessageParameter::deserialize",
-                details: format!("SWITCHING_SET_FRACTION must be 1-10, got {}", fraction_raw),
+                details: format!("Unsupported SSTS algorithm id {algorithm_id}"),
               });
             }
-            let fraction = fraction_raw as u8;
-
-            let activate_byte = payload.get_u8();
-            let activate = activate_byte & 0x01 != 0;
-
-            let rank = if payload.has_remaining() {
-              let r = payload.get_u8();
-              if r < 1 {
-                return Err(ParseError::ProtocolViolation {
-                  context: "MessageParameter::deserialize",
-                  details: format!("SWITCHING_SET_RANK must be 1-255, got {}", r),
-                });
-              }
-              r
+            let throughput_threshold_kbps = payload.get_vi()?;
+            let set_throughput_weight = payload.get_vi()?;
+            if !(1..=10).contains(&set_throughput_weight) {
+              return Err(ParseError::ProtocolViolation {
+                context: "MessageParameter::deserialize",
+                details: format!(
+                  "SET THROUGHPUT WEIGHT must be 1-10, got {}",
+                  set_throughput_weight
+                ),
+              });
+            }
+            let activate_switching = payload.get_vi()?;
+            let set_rank = if payload.has_remaining() {
+              payload.get_u8()
             } else {
-              1 // Default
+              0 // Default
             };
+            if payload.has_remaining() {
+              return Err(ParseError::ProtocolViolation {
+                context: "MessageParameter::deserialize",
+                details: "Excess bytes in SWITCHING_SET_ASSIGNMENT parameter".to_string(),
+              });
+            }
 
             Ok(Self::SwitchingSetAssignment {
               switching_set_id,
+              algorithm_id,
               throughput_threshold_kbps,
-              fraction,
-              activate,
-              rank,
+              set_throughput_weight,
+              activate_switching,
+              set_rank,
             })
           }
           MessageParameterType::SubscriptionFilter => {
@@ -509,21 +527,19 @@ impl TryInto<KeyValuePair> for MessageParameter {
       }
       Self::SwitchingSetAssignment {
         switching_set_id,
+        algorithm_id,
         throughput_threshold_kbps,
-        fraction,
-        activate,
-        rank,
+        set_throughput_weight,
+        activate_switching,
+        set_rank,
       } => {
         let mut buf = BytesMut::new();
         buf.put_vi(switching_set_id)?;
+        buf.put_vi(algorithm_id)?;
         buf.put_vi(throughput_threshold_kbps)?;
-        buf.put_vi(fraction as u64)?;
-
-        // Pack activate into 1 byte (bit 0). Remaining 7 bits are padding (0).
-        let activate_byte = if activate { 0x01 } else { 0x00 };
-        buf.put_u8(activate_byte);
-
-        buf.put_u8(rank);
+        buf.put_vi(set_throughput_weight)?;
+        buf.put_vi(activate_switching)?;
+        buf.put_u8(set_rank);
 
         KeyValuePair::try_new_bytes(
           MessageParameterType::SwitchingSetAssignment as u64,
@@ -788,10 +804,10 @@ mod tests {
 
   #[test]
   fn test_roundtrip_switching_set_assignment() {
-    let orig = MessageParameter::new_switching_set_assignment(7, 2000, 5, true, 2);
+    let orig = MessageParameter::new_switching_set_assignment(7, 0, 2000, 5, 2, 2);
     assert_eq!(roundtrip(orig.clone()), orig);
 
-    let orig = MessageParameter::new_switching_set_assignment(0, 0, 1, false, 1);
+    let orig = MessageParameter::new_switching_set_assignment(0, 0, 0, 1, 0, 0);
     assert_eq!(roundtrip(orig.clone()), orig);
   }
 

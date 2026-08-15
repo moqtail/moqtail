@@ -983,7 +983,9 @@ impl Subscription {
       } => {
         object.track_alias = self.relay_track_id;
 
-        // If this track belongs to a switching set, wait for the ABR to select a tier.
+        // SSTS: if this track is in a switching set, only forward Objects on
+        // the track the ABR selected for this group; `None` means the set
+        // sends nothing this group.
         let my_set_id = {
           let manager = self.subscriber.switching_sets.read().await;
           manager
@@ -994,36 +996,40 @@ impl Subscription {
         if let Some(set_id) = my_set_id {
           let group_id = object.location.group;
 
-          // Wake the ABR if no decision exists for this group+set
-          let needs_decision = match self.subscriber.group_decisions.read().await.get(&group_id) {
-            Some(map) => !map.contains_key(&set_id),
-            None => true,
-          };
-
-          if needs_decision
-            && let Err(e) = self
-              .subscriber
-              .abr_tx
-              .send(AbrMessage::NewGroup(group_id))
-              .await
-          {
-            warn!("Failed to send NewGroup to ABR: {:?}", e);
-          }
-
           loop {
-            {
+            let decision = {
               let decisions = self.subscriber.group_decisions.read().await;
-              if let Some(set_map) = decisions.get(&group_id)
-                && let Some(&chosen_alias) = set_map.get(&set_id)
-              {
-                if self.relay_track_id != chosen_alias {
-                  // Not the selected tier – drop this object.
+              decisions
+                .get(&group_id)
+                .and_then(|m| m.get(&set_id))
+                .copied()
+            };
+
+            match decision {
+              Some(Some(chosen)) => {
+                if self.relay_track_id != chosen {
+                  // Not the selected track – drop this object.
                   return;
                 }
-                break; // We are the chosen tier, proceed with forwarding.
+                break; // We are the selected track, proceed with forwarding.
+              }
+              Some(None) => {
+                // The set is not forwarded for this group – drop this object.
+                return;
+              }
+              None => {
+                // No decision yet for this group+set: wake the ABR and wait.
+                if let Err(e) = self
+                  .subscriber
+                  .abr_tx
+                  .send(AbrMessage::NewGroup(group_id))
+                  .await
+                {
+                  warn!("Failed to send NewGroup to ABR: {:?}", e);
+                }
+                self.subscriber.decision_notify.notified().await;
               }
             }
-            self.subscriber.decision_notify.notified().await;
           }
         }
 

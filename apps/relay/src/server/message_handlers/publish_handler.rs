@@ -26,6 +26,7 @@ use moqtail::model::control::{
   constant::GroupOrder, control_message::ControlMessage, publish::Publish,
   request_error::RequestError, request_ok::RequestOk,
 };
+use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::model::error::{RequestErrorCode, TerminationCode};
 use moqtail::model::parameter::constant::MessageParameterType;
 use moqtail::model::parameter::message_parameter::apply_message_parameter_update;
@@ -165,35 +166,6 @@ pub async fn handle(
         client
           .add_published_track(request_id, full_track_name.clone())
           .await;
-
-        // Sender-side track switching: register this track in its switching set.
-        if let Some(p) = m
-          .parameters
-          .iter()
-          .find(|p| matches!(p, MessageParameter::SwitchingSetAssignment { .. }))
-          && let MessageParameter::SwitchingSetAssignment {
-            switching_set_id,
-            throughput_threshold_kbps,
-            fraction,
-            activate,
-            rank,
-          } = p
-        {
-          let mut manager = client.switching_sets.write().await;
-          let relay_track_id = track_arc.read().await.relay_track_id;
-          if let Err(e) = manager.assign(
-            full_track_name.clone(),
-            relay_track_id,
-            m.request_id,
-            *switching_set_id,
-            *throughput_threshold_kbps,
-            *fraction,
-            *rank,
-            *activate,
-          ) {
-            warn!("Failed to assign switching set on PUBLISH: {}", e);
-          }
-        }
 
         // register this publish message
         context
@@ -591,7 +563,7 @@ pub(crate) async fn forward_publish_downstream(
   };
   let mut stream = ControlStreamHandler::new(send, recv).with_peer_id(subscriber.connection_id);
   if let Err(e) = stream
-    .send(&ControlMessage::Publish(Box::new(publish)))
+    .send(&ControlMessage::Publish(Box::new(publish.clone())))
     .await
   {
     error!("Failed to push PUBLISH downstream: {:?}", e);
@@ -605,7 +577,14 @@ pub(crate) async fn forward_publish_downstream(
   }
 
   match stream.next_message().await {
-    Ok(ControlMessage::RequestOk(_)) => {
+    Ok(ControlMessage::RequestOk(ok)) => {
+      register_ssts_assignment_from_publish_ok(
+        subscriber.clone(),
+        &publish,
+        *ok,
+        subscription.as_ref(),
+      )
+      .await;
       info!(
         "Pushed PUBLISH accepted by subscriber {}",
         subscriber.connection_id
@@ -622,6 +601,80 @@ pub(crate) async fn forward_publish_downstream(
       other.get_type()
     ),
     Err(_) => debug!("Downstream publish stream closed"),
+  }
+}
+
+/// The subscriber may assign a track to an SSTS switching set by appending
+/// SWITCHING_SET_ASSIGNMENT to the PUBLISH_OK that accepts a pushed PUBLISH
+/// (draft-wilaw-moq-moqt-ssts, Section 4).
+async fn register_ssts_assignment_from_publish_ok(
+  subscriber: Arc<MOQTClient>,
+  publish: &Publish,
+  ok: RequestOk,
+  subscription: Option<&Arc<RwLock<Subscription>>>,
+) {
+  let Some(p) = ok
+    .parameters
+    .iter()
+    .find(|p| matches!(p, MessageParameter::SwitchingSetAssignment { .. }))
+  else {
+    return;
+  };
+
+  // The absence of the SSTS_ALGORITHMS setup option (or an empty list)
+  // prohibits the use of SSTS (Section 3).
+  if !subscriber.ssts_enabled {
+    warn!(
+      "Ignoring SWITCHING_SET_ASSIGNMENT in PUBLISH_OK from {}: SSTS was not negotiated in SETUP",
+      subscriber.connection_id
+    );
+    return;
+  }
+
+  let Ok(full_track_name) =
+    FullTrackName::new(publish.track_namespace.clone(), publish.track_name.clone())
+  else {
+    return;
+  };
+
+  // The pushed PUBLISH's track alias is the relay track id.
+  let relay_track_id = publish.track_alias;
+
+  if let MessageParameter::SwitchingSetAssignment {
+    switching_set_id,
+    algorithm_id,
+    throughput_threshold_kbps,
+    set_throughput_weight,
+    activate_switching,
+    set_rank,
+  } = p
+  {
+    let mut manager = subscriber.switching_sets.write().await;
+    if let Err(e) = manager.assign(
+      full_track_name.clone(),
+      relay_track_id,
+      publish.request_id,
+      *switching_set_id,
+      *algorithm_id,
+      *throughput_threshold_kbps,
+      *set_throughput_weight,
+      *activate_switching,
+      *set_rank,
+    ) {
+      warn!(
+        "Ignoring SWITCHING_SET_ASSIGNMENT in PUBLISH_OK from {}: {}",
+        subscriber.connection_id, e
+      );
+      return;
+    }
+
+    // Same forward-state reasoning as the SUBSCRIBE path: the gating in the
+    // subscription implements the spec's per-group forward selection.
+    if let Some(subscription) = subscription {
+      let sub = subscription.read().await;
+      let mut state = sub.subscription_state.write().await;
+      state.forward = true;
+    }
   }
 }
 
@@ -676,6 +729,15 @@ async fn cleanup_published_track(
     }
   };
 
+  // SSTS: the upstream track is going away (PUBLISH_DONE); remove it from the
+  // switching sets of all downstream subscribers (Section 6.3). Done before
+  // the track may be dropped below.
+  track_arc
+    .read()
+    .await
+    .remove_from_subscriber_switching_sets()
+    .await;
+
   let track = track_arc.read().await;
   if let Some(alias) = track.remove_publisher(client.connection_id).await {
     context
@@ -691,6 +753,4 @@ async fn cleanup_published_track(
       );
     }
   }
-
-  client.switching_sets.write().await.remove(&full_track_name);
 }

@@ -1047,7 +1047,14 @@ impl Session {
       .try_into()
       .unwrap();
 
-    let server_setup = Setup::new(vec![moqt_implementation_param]);
+    // Advertise support for the default SSTS algorithm
+    // (draft-wilaw-moq-moqt-ssts, Section 3).
+    let ssts_algorithms_param =
+      moqtail::model::parameter::setup_option::SetupOption::new_ssts_algorithms(vec![0])
+        .try_into()
+        .unwrap();
+
+    let server_setup = Setup::new(vec![moqt_implementation_param, ssts_algorithms_param]);
 
     debug!("client setup: {:?}", client_setup);
     debug!("server setup: {:?}", server_setup);

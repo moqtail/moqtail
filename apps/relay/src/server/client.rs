@@ -43,7 +43,7 @@ use std::{
   collections::{BTreeMap, HashMap, VecDeque},
   sync::{
     Arc,
-    atomic::{AtomicU64, AtomicUsize, Ordering},
+    atomic::{AtomicU64, Ordering},
   },
   time::Duration,
 };
@@ -105,9 +105,26 @@ pub type SendStreamList = Vec<SendStreamLock>;
 pub type ResponseSenderMap = HashMap<u64, mpsc::UnboundedSender<ControlMessage>>;
 pub type ResponseSenderList = Vec<Arc<RwLock<ResponseSenderMap>>>;
 
+/// SSTS per-group allocation decisions: group -> set -> selected relay
+/// track id, or `None` when nothing from the set is forwarded.
+pub type GroupDecisions = HashMap<u64, HashMap<u64, Option<u64>>>;
+
+/// Whether the client's SETUP advertises the default SSTS algorithm (id 0).
+fn setup_advertises_default_ssts(setup: &Setup) -> bool {
+  use moqtail::model::parameter::setup_option::SetupOption;
+  setup.setup_options.iter().any(|kvp| {
+    matches!(
+      SetupOption::deserialize(kvp),
+      Ok(SetupOption::SstsAlgorithms { ref algorithms })
+        if algorithms.contains(&0)
+    )
+  })
+}
+
 pub(crate) enum AbrMessage {
+  /// An Object arrived on a group larger than the previously largest group:
+  /// run the bandwidth allocation for that group.
   NewGroup(u64),
-  StreamTimeout { group_id: u64 },
 }
 
 #[derive(Debug, Clone)]
@@ -159,13 +176,12 @@ pub(crate) struct MOQTClient {
   pub abr_tx: tokio::sync::mpsc::Sender<AbrMessage>,
   pub abr_rx: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<AbrMessage>>>>,
 
-  pub group_decisions: Arc<RwLock<HashMap<u64, HashMap<u64, u64>>>>,
+  /// SSTS decisions (see `GroupDecisions`).
+  pub group_decisions: Arc<RwLock<GroupDecisions>>,
   pub decision_notify: Arc<tokio::sync::Notify>,
-  /// Per-switching-set open stream counters. Only tracks streams belonging to
-  /// active switching sets (looked up via relay_track_id). Non-ABR streams are
-  /// not tracked here.
-  pub active_streams_per_set: Arc<RwLock<HashMap<u64, Arc<AtomicUsize>>>>,
   pub discard_timeout_ms: Arc<AtomicU64>,
+  /// Whether this client's SETUP advertised the default SSTS algorithm.
+  pub ssts_enabled: bool,
 }
 
 impl MOQTClient {
@@ -187,6 +203,8 @@ impl MOQTClient {
     };
 
     let (abr_tx, abr_rx) = tokio::sync::mpsc::channel(100);
+
+    let ssts_enabled = setup_advertises_default_ssts(&client_setup);
 
     MOQTClient {
       connection_id,
@@ -218,8 +236,8 @@ impl MOQTClient {
       abr_rx: Arc::new(Mutex::new(Some(abr_rx))),
       group_decisions: Arc::new(RwLock::new(HashMap::new())),
       decision_notify: Arc::new(tokio::sync::Notify::new()),
-      active_streams_per_set: Arc::new(RwLock::new(HashMap::new())),
       discard_timeout_ms: Arc::new(AtomicU64::new(0)),
+      ssts_enabled,
     }
   }
 
@@ -362,7 +380,7 @@ impl MOQTClient {
     header_payload: Bytes,
     priority: i32, // Priority for the stream
   ) -> Result<Arc<Mutex<TransportSendStream>>> {
-    let (send_stream, is_new) = {
+    let send_stream = {
       let send_stream_map = self.get_stream_map(stream_id);
       let mut send_streams = send_stream_map.write().await;
       match send_streams.entry(stream_id.get_stream_id().to_string()) {
@@ -380,23 +398,17 @@ impl MOQTClient {
             "open_stream | added send_stream to send streams ({}) connection_id: {}",
             stream_id, self.connection_id
           );
-          (s, true)
+          s
         }
         std::collections::hash_map::Entry::Occupied(s) => {
           debug!(
             "open_stream | Send stream for {} already exists connection_id: {}",
             stream_id, self.connection_id
           );
-          (s.get().clone(), false)
+          s.get().clone()
         }
       }
     };
-
-    // Track in per-switching-set counter if this is a new stream belonging to an ABR set.
-    // Done outside the send_streams lock to avoid holding it across .await.
-    if is_new {
-      self.increment_active_stream(stream_id.relay_track_id).await;
-    }
 
     debug!(
       "open_stream |  writing to stream ({}) connection_id: {}",
@@ -421,7 +433,6 @@ impl MOQTClient {
         let send_stream_map = self.get_stream_map(stream_id);
         let mut send_streams = send_stream_map.write().await;
         send_streams.remove(&stream_id.get_stream_id().to_string());
-        self.decrement_active_stream(stream_id.relay_track_id).await;
 
         return Err(anyhow::anyhow!(
           "Failed to write header payload to send stream ({}): {:?} connection_id: {}",
@@ -456,13 +467,11 @@ impl MOQTClient {
           );
           anyhow::anyhow!("Failed to finish send stream ({}): {:?}", stream_id, e)
         })?;
-        self.decrement_active_stream(stream_id.relay_track_id).await;
         return Ok(true);
       }
 
       tokio::select! {
         finish_result = stream.finish() => {
-            self.decrement_active_stream(stream_id.relay_track_id).await;
             finish_result.map_err(|e| anyhow::anyhow!(
                 "close_stream | Failed to finish ({}): {:?}", stream_id, e
             )).map(|_| true)
@@ -473,17 +482,7 @@ impl MOQTClient {
                 group_id = %group_id,
                 "Stream timeout on close — resetting"
             );
-            self.decrement_active_stream(stream_id.relay_track_id).await;
             let _ = stream.reset(2);
-            {
-                let mut decisions = self.group_decisions.write().await;
-                decisions.insert(group_id, std::collections::HashMap::new());
-            }
-
-            let _ = self.abr_tx.try_send(AbrMessage::StreamTimeout {
-                group_id
-            });
-
             Ok(true)
         }
       }
@@ -496,62 +495,6 @@ impl MOQTClient {
       );
       Ok(false)
     }
-  }
-
-  /// Increment the active stream counter for the switching set this
-  /// relay_track_id belongs to. No-op if the track is not in any switching set.
-  async fn increment_active_stream(&self, relay_track_id: u64) {
-    let set_id = {
-      let sets = self.switching_sets.read().await;
-      sets.get_set_id_for_relay_track(relay_track_id)
-    };
-    if let Some(set_id) = set_id {
-      let counter = {
-        let mut map = self.active_streams_per_set.write().await;
-        map
-          .entry(set_id)
-          .or_insert_with(|| Arc::new(AtomicUsize::new(0)))
-          .clone()
-      };
-      counter.fetch_add(1, Ordering::SeqCst);
-    }
-  }
-
-  /// Decrement the active stream counter for the switching set this
-  /// relay_track_id belongs to. No-op if the track is not in any switching set
-  /// or the counter is already zero.
-  async fn decrement_active_stream(&self, relay_track_id: u64) {
-    let set_id = {
-      let sets = self.switching_sets.read().await;
-      sets.get_set_id_for_relay_track(relay_track_id)
-    };
-    if let Some(set_id) = set_id {
-      let counter = {
-        let map = self.active_streams_per_set.read().await;
-        map.get(&set_id).cloned()
-      };
-      if let Some(counter) = counter {
-        // Atomic check-and-subtract to prevent underflow from concurrent decrements
-        let _ = counter.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |x| {
-          if x > 0 { Some(x - 1) } else { None }
-        });
-      }
-    }
-  }
-
-  /// Index of a relay track within its switching set (0 = lowest throughput).
-  /// Used to order ABR tier logging; defaults to 0 for non-ABR tracks.
-  #[allow(dead_code)]
-  pub async fn tier_index_for_relay_track(&self, relay_track_id: u64) -> usize {
-    let sets = self.switching_sets.read().await;
-    for set in sets.sets.values() {
-      for (idx, member) in set.members.iter().enumerate() {
-        if member.relay_track_id == relay_track_id {
-          return idx;
-        }
-      }
-    }
-    0 // default if not found (fetch streams, non-ABR, etc.)
   }
 
   // Just remove the stream from the stream_map
@@ -568,11 +511,10 @@ impl MOQTClient {
   /// Reset a data stream with an application error code (QUIC RESET_STREAM) and
   /// drop it from the send-stream map.
   pub async fn reset_stream(&self, stream_id: &StreamId, code: u64) {
-    if let Some(stream) = self.remove_stream_by_stream_id(stream_id).await {
-      if let Err(e) = stream.lock().await.reset(code) {
-        warn!("Error resetting data stream {}: {:?}", stream_id, e);
-      }
-      self.decrement_active_stream(stream_id.relay_track_id).await;
+    if let Some(stream) = self.remove_stream_by_stream_id(stream_id).await
+      && let Err(e) = stream.lock().await.reset(code)
+    {
+      warn!("Error resetting data stream {}: {:?}", stream_id, e);
     }
   }
 

@@ -259,6 +259,20 @@ impl TransportConnection {
     }
   }
 
+  /// Rough path bandwidth estimate in kbps: the congestion controller's window
+  /// (bytes that may be in flight) divided by the smoothed RTT, i.e. the
+  /// bandwidth-delay product. Returns 0 when the estimate is unavailable.
+  pub fn bandwidth_estimate_kbps(&self) -> u64 {
+    let conn = match self {
+      Self::WebTransport(c) => c.quic_connection(),
+      Self::Quic(c) => c,
+    };
+    let window_bytes = conn.congestion_state().window();
+    let rtt = conn.rtt().max(std::time::Duration::from_millis(1));
+    // kbps = window_bytes * 8 bits / rtt_seconds / 1000
+    window_bytes.saturating_mul(8_000) / u64::try_from(rtt.as_micros()).unwrap_or(u64::MAX).max(1)
+  }
+
   pub fn stable_id(&self) -> usize {
     match self {
       Self::WebTransport(c) => c.stable_id(),

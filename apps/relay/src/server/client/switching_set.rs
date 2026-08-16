@@ -95,6 +95,9 @@ pub struct SwitchingSetManager {
   pub sets: HashMap<u64, SwitchingSet>,
   /// Track -> switching set id. A track MUST only be in one set at a time.
   pub track_to_set: HashMap<FullTrackName, u64>,
+  /// Relay track id -> switching set id. Lets the per-client open-stream
+  /// counters (backpressure ABR) map a forwarding stream to its set.
+  pub relay_track_to_set: HashMap<u64, u64>,
 }
 
 impl SwitchingSetManager {
@@ -160,6 +163,9 @@ impl SwitchingSetManager {
     set.members.sort_by_key(|m| m.throughput_threshold_kbps);
 
     self.track_to_set.insert(full_track_name, switching_set_id);
+    self
+      .relay_track_to_set
+      .insert(relay_track_id, switching_set_id);
     Ok(())
   }
 
@@ -172,10 +178,18 @@ impl SwitchingSetManager {
     let Some(set) = self.sets.get_mut(&set_id) else {
       return;
     };
+    let relay_track_id = set
+      .members
+      .iter()
+      .find(|m| m.full_track_name == *full_track_name)
+      .map(|m| m.relay_track_id);
     set
       .members
       .retain(|m| m.full_track_name != *full_track_name);
     set.activate = set.activate.saturating_sub(1);
+    if let Some(relay_track_id) = relay_track_id {
+      self.relay_track_to_set.remove(&relay_track_id);
+    }
     if set.members.is_empty() {
       self.sets.remove(&set_id);
     }
@@ -217,6 +231,11 @@ impl SwitchingSetManager {
       .track_to_set
       .get(full_track_name)
       .and_then(|id| self.sets.get(id))
+  }
+
+  /// The switching set id a relay track id belongs to, if any.
+  pub fn get_set_id_for_relay_track(&self, relay_track_id: u64) -> Option<u64> {
+    self.relay_track_to_set.get(&relay_track_id).copied()
   }
 }
 
@@ -330,6 +349,17 @@ mod tests {
     assert_eq!(set.weight, 9);
     assert_eq!(set.activate, 0);
     assert_eq!(set.rank, 1);
+  }
+
+  #[test]
+  fn test_relay_track_to_set_mapping() {
+    let mut manager = SwitchingSetManager::new();
+    let track = make_track("ns", "t");
+    assign(&mut manager, &track, 42, 7, 100);
+    assert_eq!(manager.get_set_id_for_relay_track(42), Some(7));
+
+    manager.remove(&track);
+    assert_eq!(manager.get_set_id_for_relay_track(42), None);
   }
 
   #[test]

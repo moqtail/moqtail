@@ -18,6 +18,7 @@ import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buf
 import { ReasonPhrase } from '../common/reason_phrase'
 import { Redirect } from '../common/redirect'
 import { Tuple } from '../common/tuple'
+import { greaseValue } from '../common/grease'
 import { ControlMessageType, RequestErrorCode } from './constant'
 import { LengthExceedsMaxError, ProtocolViolationError } from '../error/error'
 
@@ -72,8 +73,8 @@ export class RequestError {
   }
 
   static parsePayload(buf: BaseByteBuffer): RequestError {
-    const errorCodeRaw = buf.getVI()
-    const errorCode = RequestErrorCode.tryFrom(errorCodeRaw)
+    // An unknown or GREASE error code is not fatal; treat it as InternalError.
+    const errorCode = RequestErrorCode.fromWire(buf.getVI())
     const retryInterval = buf.getVI()
     const reasonPhrase = buf.getReasonPhrase()
     const redirect = errorCode === RequestErrorCode.Redirect ? Redirect.deserialize(buf) : undefined
@@ -99,6 +100,18 @@ if (import.meta.vitest) {
       expect(deserialized.retryInterval).toBe(requestError.retryInterval)
       expect(deserialized.reasonPhrase.phrase).toBe(requestError.reasonPhrase.phrase)
       expect(frozen.remaining).toBe(0)
+    })
+
+    // §14: a REQUEST_ERROR carrying a greased (unknown) error code must parse, not
+    // throw, and is surfaced as InternalError.
+    test('a greased error code parses as InternalError', () => {
+      const payload = new ByteBuffer()
+      payload.putVI(greaseValue(3)!)
+      payload.putVI(0n) // retryInterval
+      payload.putReasonPhrase(new ReasonPhrase('grease'))
+      const parsed = RequestError.parsePayload(payload.freeze())
+      expect(parsed.errorCode).toBe(RequestErrorCode.InternalError)
+      expect(parsed.reasonPhrase.phrase).toBe('grease')
     })
 
     test('excess roundtrip', () => {

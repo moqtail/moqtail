@@ -16,6 +16,7 @@
 
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
 import { KeyValuePair, deserializeKvpListUntilEmpty, serializeKvpList } from '../common/pair'
+import { greaseValue } from '../common/grease'
 import { ProtocolViolationError } from '../error/error'
 import { GroupOrder } from '../control/constant'
 import { TrackPropertyType } from './constant'
@@ -364,6 +365,16 @@ if (import.meta.vitest) {
       const [result] = roundtrip([ext])
       expect(result).toBeInstanceOf(UnknownTrackProperty)
       expect((result as UnknownTrackProperty).kvp.typeValue).toBe(0x3cn)
+    })
+
+    // §14: greased property types are unknown by construction and are forwarded
+    // verbatim, like any other unknown property.
+    test('a greased property is forwarded as unknown', () => {
+      // greaseValue(1) = 0x11C is even, so it is a VarInt KVP.
+      const kvp = KeyValuePair.tryNewVarInt(greaseValue(1)!, 7n)
+      const [result] = roundtrip([new UnknownTrackProperty(kvp)])
+      expect(result).toBeInstanceOf(UnknownTrackProperty)
+      expect((result as UnknownTrackProperty).kvp).toEqual(kvp)
     })
 
     test('mixed list roundtrip', () => {

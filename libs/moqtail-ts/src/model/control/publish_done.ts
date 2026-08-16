@@ -51,8 +51,8 @@ export class PublishDone {
   }
 
   static parsePayload(buf: BaseByteBuffer): PublishDone {
-    const statusCodeRaw = buf.getVI()
-    const statusCode = PublishDoneStatusCode.tryFrom(statusCodeRaw)
+    // An unknown or GREASE status code is not fatal; treat it as InternalError.
+    const statusCode = PublishDoneStatusCode.fromWire(buf.getVI())
     const streamCount = buf.getVI()
     const errorReason = buf.getReasonPhrase()
     return new PublishDone(statusCode, streamCount, errorReason)

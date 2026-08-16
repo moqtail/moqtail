@@ -15,6 +15,7 @@
  */
 
 export * from './byte_buffer'
+export * from './grease'
 export * from './pair'
 export * from './location'
 export * from './tuple'

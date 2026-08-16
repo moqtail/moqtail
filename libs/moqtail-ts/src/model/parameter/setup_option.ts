@@ -15,6 +15,7 @@
  */
 
 import { KeyValuePair } from '../common/pair'
+import { greaseValue } from '../common/grease'
 import { Path, MaxAuthTokenCacheSize, Authority, MoqtImplementation } from './setup'
 import { AuthorizationToken } from './common'
 import { SetupOptionType, TokenAliasType } from './constant'
@@ -138,6 +139,14 @@ if (import.meta.vitest) {
       const parsed = SetupOptions.fromKeyValuePairs(kvps)
       expect(parsed.length).toBe(1)
       expect(parsed[0] && SetupOption.isPath(parsed[0]) && parsed[0].moqtPath === 'wololoo').toBe(true)
+    })
+    // §14: a greased option is just another unknown one -- skipped, never fatal.
+    test('fromKeyValuePairs skips a greased option', () => {
+      const grease = KeyValuePair.tryNewVarInt(greaseValue(1)!, 1n)
+      const kvps = new SetupOptions().addRaw(grease).addPath('wololoo').build()
+      const parsed = SetupOptions.fromKeyValuePairs(kvps)
+      expect(parsed.length).toBe(1)
+      expect(parsed[0] && SetupOption.isPath(parsed[0])).toBe(true)
     })
   })
 

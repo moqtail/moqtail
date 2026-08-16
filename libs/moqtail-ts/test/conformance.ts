@@ -104,6 +104,17 @@ function load<T>(name: string): T {
  */
 export interface PropertyTypes extends Registry {
   provisional: Registry
+  ranges: { entries: RangeEntry[] }
+}
+
+/**
+ * One registration-policy range. Bounds are 0x-prefixed hex strings, like every other
+ * codepoint in these fixtures; `to` is null for the open-ended top range.
+ */
+export interface RangeEntry {
+  from: string
+  to: string | null
+  policy: string
 }
 
 export const messageTypes = (): Registry => load<Registry>('message_types.json')

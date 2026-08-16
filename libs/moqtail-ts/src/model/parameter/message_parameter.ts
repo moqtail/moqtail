@@ -16,6 +16,7 @@
 
 import { KeyValuePair, deserializeKvpList, isBytes, isVarInt, serializeKvpList } from '../common/pair'
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
+import { greaseValue } from '../common/grease'
 import { ProtocolViolationError } from '../error/error'
 import { FilterType, GroupOrder } from '../control/constant'
 import { Location } from '../common'
@@ -352,6 +353,13 @@ if (import.meta.vitest) {
       expect(MessageParameter.isForward(parsed[1]!) && parsed[1].forward).toBe(false)
       expect(MessageParameter.isSubscriberPriority(parsed[2]!) && parsed[2].priority).toBe(42)
       expect(MessageParameter.isSubscriptionFilter(parsed[3]!) && parsed[3].filterType).toBe(FilterType.AbsoluteRange)
+    })
+
+    // §14: a greased parameter is just another unknown one -- skipped, never fatal.
+    test('fromKeyValuePairs skips a greased type', () => {
+      const grease = KeyValuePair.tryNewVarInt(greaseValue(1)!, 1n)
+      const valid = new ObjectDeliveryTimeout(100n).toKeyValuePair()
+      expect(MessageParameters.fromKeyValuePairs([grease, valid])).toEqual([new ObjectDeliveryTimeout(100n)])
     })
 
     test('fromKeyValuePairs skips unknown types', () => {

@@ -15,6 +15,7 @@
  */
 
 import { InvalidEnumValue, StreamResetCode } from '../error'
+import { greaseValue } from '../common/grease'
 /**
  * Protocol string array exchanged in wt-available-protocols header
  */
@@ -340,6 +341,18 @@ export namespace PublishDoneStatusCode {
         throw new InvalidEnumValue('PublishDoneStatusCode.tryFrom', v)
     }
   }
+
+  /**
+   * Maps a received status code to a known variant, treating any unknown value
+   * (including GREASE) as InternalError. An unknown code is never fatal.
+   */
+  export function fromWire(v: bigint): PublishDoneStatusCode {
+    try {
+      return tryFrom(v)
+    } catch {
+      return PublishDoneStatusCode.InternalError
+    }
+  }
 }
 
 /**
@@ -419,6 +432,19 @@ export namespace RequestErrorCode {
         throw new InvalidEnumValue('RequestErrorCode.tryFrom', v)
     }
   }
+
+  /**
+   * Maps a received error code to a known variant, treating any unknown value
+   * (including GREASE) as InternalError. An unknown error code is never fatal and
+   * never closes the session.
+   */
+  export function fromWire(v: bigint): RequestErrorCode {
+    try {
+      return tryFrom(v)
+    } catch {
+      return RequestErrorCode.InternalError
+    }
+  }
 }
 
 if (import.meta.vitest) {
@@ -461,6 +487,16 @@ if (import.meta.vitest) {
           return undefined
         }
       })
+    })
+
+    // §14: unknown and greased codes are reported as InternalError, never thrown.
+    test('fromWire maps unknown and grease codes to InternalError', () => {
+      expect(RequestErrorCode.fromWire(0x1n)).toBe(RequestErrorCode.Unauthorized)
+      expect(PublishDoneStatusCode.fromWire(0x2n)).toBe(PublishDoneStatusCode.TrackEnded)
+      for (const raw of [0x7en, greaseValue(0)!, greaseValue(5)!]) {
+        expect(RequestErrorCode.fromWire(raw)).toBe(RequestErrorCode.InternalError)
+        expect(PublishDoneStatusCode.fromWire(raw)).toBe(PublishDoneStatusCode.InternalError)
+      }
     })
 
     test('the reset and request-error registries stay separate', () => {

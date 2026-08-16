@@ -17,6 +17,7 @@
 import { ByteBuffer, FrozenByteBuffer, BaseByteBuffer } from '../common/byte_buffer'
 import { ControlMessageType } from './constant'
 import { KeyValuePair, deserializeKvpListUntilEmpty, serializeKvpList } from '../common/pair'
+import { greaseValue } from '../common/grease'
 import { LengthExceedsMaxError } from '../error/error'
 
 /**
@@ -75,6 +76,20 @@ if (import.meta.vitest) {
       const deserialized = Setup.parsePayload(frozen)
       expect(deserialized.setupOptions).toEqual(setupOptions)
       expect(frozen.remaining).toBe(0)
+    })
+
+    // §14: a peer may send greased options to exercise unknown-value handling. They
+    // must survive parsing untouched rather than fail the handshake.
+    test('a greased setup option is preserved', () => {
+      // greaseValue(0) = 0x9D is odd, so it is a Bytes KVP.
+      const setupOptions = [
+        KeyValuePair.tryNewVarInt(0, 10),
+        KeyValuePair.tryNewBytes(greaseValue(0)!, new TextEncoder().encode('anything')),
+      ]
+      const frozen = new Setup(setupOptions).serialize()
+      frozen.getVI()
+      frozen.getU16()
+      expect(Setup.parsePayload(frozen).setupOptions).toEqual(setupOptions)
     })
 
     test('roundtrip with no options', () => {

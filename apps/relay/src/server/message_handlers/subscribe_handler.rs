@@ -496,6 +496,25 @@ async fn handle_subscribe_message(
       set_rank,
     } = p
     {
+      // Only the algorithms both the relay supports and the client
+      // advertised in SETUP may be used.
+      if !crate::server::abr::SUPPORTED_SSTS_ALGORITHMS.contains(algorithm_id)
+        || !client.ssts_algorithms.contains(algorithm_id)
+      {
+        warn!(
+          "Rejecting SUBSCRIBE from {}: unsupported SSTS algorithm {}",
+          context.connection_id, algorithm_id
+        );
+        reject_subscription(&track, client.connection_id, is_switch).await;
+        let err = RequestError::new(
+          RequestErrorCode::UnsupportedExtension,
+          0,
+          ReasonPhrase::try_new(format!("unsupported SSTS algorithm {algorithm_id}")).unwrap(),
+        );
+        stream_handler.send_impl(&err).await.unwrap();
+        return Ok(());
+      }
+
       let mut manager = client.switching_sets.write().await;
       if let Err(e) = manager.assign(
         track.full_track_name.clone(),

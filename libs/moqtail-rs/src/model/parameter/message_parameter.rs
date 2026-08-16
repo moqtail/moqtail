@@ -62,8 +62,8 @@ pub enum MessageParameter {
     group: u64,
   },
   /// Assigns a subscription to an SSTS switching set
-  /// (draft-wilaw-moq-moqt-ssts). Only the default algorithm (id 0) is
-  /// understood; its fields follow the base parameter (set id, algorithm id).
+  /// (draft-wilaw-moq-moqt-ssts). Id 0 is the default algorithm of Section
+  /// 6.3.1; other ids select implementation-specific algorithms.
   SwitchingSetAssignment {
     switching_set_id: u64,
     algorithm_id: u64,
@@ -363,12 +363,6 @@ impl MessageParameter {
             let mut payload = value.clone();
             let switching_set_id = payload.get_vi()?;
             let algorithm_id = payload.get_vi()?;
-            if algorithm_id != 0 {
-              return Err(ParseError::ProtocolViolation {
-                context: "MessageParameter::deserialize",
-                details: format!("Unsupported SSTS algorithm id {algorithm_id}"),
-              });
-            }
             let throughput_threshold_kbps = payload.get_vi()?;
             let set_throughput_weight = payload.get_vi()?;
             if !(1..=10).contains(&set_throughput_weight) {

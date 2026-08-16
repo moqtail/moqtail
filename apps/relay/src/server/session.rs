@@ -1047,12 +1047,14 @@ impl Session {
       .try_into()
       .unwrap();
 
-    // Advertise support for the default SSTS algorithm
+    // Advertise the SSTS algorithms the relay implements
     // (draft-wilaw-moq-moqt-ssts, Section 3).
     let ssts_algorithms_param =
-      moqtail::model::parameter::setup_option::SetupOption::new_ssts_algorithms(vec![0])
-        .try_into()
-        .unwrap();
+      moqtail::model::parameter::setup_option::SetupOption::new_ssts_algorithms(
+        super::abr::SUPPORTED_SSTS_ALGORITHMS.to_vec(),
+      )
+      .try_into()
+      .unwrap();
 
     let server_setup = Setup::new(vec![moqt_implementation_param, ssts_algorithms_param]);
 

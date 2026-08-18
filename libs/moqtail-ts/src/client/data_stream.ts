@@ -277,8 +277,19 @@ export class RecvStream {
         }
       }
     } catch (error) {
-      logger.error('data_stream', 'RecvStream ingest loop error', error)
-      await this.#reader.cancel(streamResetReason(StreamResetCode.InternalError)).catch(() => {})
+      const peerReset = streamResetCodeOf(error)
+      if (peerReset !== undefined) {
+        // The peer reset the stream. That is an ordinary way for one to end in
+        // draft-18, which replaced UNSUBSCRIBE and FETCH_CANCEL with resets, so it is
+        // not an error here -- and there is nothing to cancel back on a stream the
+        // peer has already torn down.
+        logger.debug('data_stream', `RecvStream reset by peer code=${StreamResetCode[peerReset]}`)
+      } else {
+        logger.error('data_stream', 'RecvStream ingest loop error', error)
+        await this.#reader.cancel(streamResetReason(StreamResetCode.InternalError)).catch(() => {})
+      }
+      // Either way the consumer is told, so a half-read stream is never mistaken for
+      // one that ended cleanly.
       controller.error(asStreamResetError('RecvStream', error))
     }
   }

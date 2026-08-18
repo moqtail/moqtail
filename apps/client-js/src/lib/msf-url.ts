@@ -20,6 +20,10 @@
  * URL shape:
  *   moqt://host[:port][/path]#msf:<ns-encoded>[--<track-encoded>]
  *
+ * moqt:// syntax itself -- scheme, authority, path, and the `#<type>:<value>`
+ * fragment -- is parsed by the library's MoqtUrl, so there is one parser. Only the
+ * MSF-specific encoding of the fragment value is handled here.
+ *
  * §11.1.2 field encoding:
  *   - [a-zA-Z0-9_] → literal
  *   - everything else → .XX  (period + 2 lowercase hex digits)
@@ -27,8 +31,10 @@
  *   - namespace / track-name boundary is  --
  */
 
+import { MoqtUrl } from 'moqtail';
+
 export interface MsfUrlParts {
-  relayUrl: string; // https://host[:port][/path]
+  relayUrl: string; // moqt://host[:port][/path] -- the scheme actually connected with
   namespace: string; // slash-separated tuple fields, e.g. "moqtail/testsrc"
   trackName?: string;
 }
@@ -67,20 +73,19 @@ function decodeMsfField(s: string): string {
  * Returns null if the input is not a valid MSF URL.
  */
 export function parseMsfUrl(url: string): MsfUrlParts | null {
-  let parsed: URL;
+  // MoqtUrl owns moqt:// syntax and rejects anything malformed by throwing; an
+  // unparseable or non-MSF URL is not an error here, it is simply not ours.
+  let parsed: MoqtUrl;
   try {
-    parsed = new URL(url);
+    parsed = MoqtUrl.parse(url);
   } catch {
     return null;
   }
 
-  if (parsed.protocol !== 'moqt:') return null;
-
-  const fragment = parsed.hash.slice(1); // strip leading #
-  if (!fragment.startsWith('msf:')) return null;
+  if (parsed.fragment?.kind !== 'msf') return null;
 
   // Ignore any &parameters per §11.1.1 — only extract the track identifier.
-  const trackId = fragment.slice(4).split('&')[0];
+  const trackId = parsed.fragment.value.split('&')[0];
 
   const sepIdx = trackId.indexOf('--');
   const nsEncoded = sepIdx === -1 ? trackId : trackId.slice(0, sepIdx);
@@ -91,8 +96,10 @@ export function parseMsfUrl(url: string): MsfUrlParts | null {
 
   const trackName = trackEncoded !== undefined ? decodeMsfField(trackEncoded) : undefined;
 
-  const path = parsed.pathname !== '/' ? parsed.pathname : '';
-  const relayUrl = `https://${parsed.host}${path}`;
+  // Kept as moqt://: the library resolves it to the WebTransport URL itself, so the
+  // scheme the user shared is the scheme actually connected with. The query rides
+  // along, as it does in MoqtUrl.toHttps().
+  const relayUrl = `moqt://${parsed.authority}${parsed.pathAndQuery()}`;
 
   return { relayUrl, namespace, trackName };
 }

@@ -43,7 +43,7 @@ interface SubscribeOptions {
 }
 
 export interface PlayerOptions {
-  /** The URL of the relay to connect to. */
+  /** The URL of the relay to connect to. `moqt://` or `https://`. */
   relayUrl: string;
   /** The namespace to use for this session. */
   namespace: Tuple;
@@ -54,7 +54,7 @@ export interface PlayerOptions {
 }
 
 const DefaultOptions: Required<PlayerOptions> = {
-  relayUrl: 'https://relay.moqtail.dev',
+  relayUrl: 'moqt://relay.moqtail.dev',
   namespace: Tuple.fromUtf8Path('/moqtail'),
   receiveCatalogViaSubscribe: false,
   catalogLocation: [new Location(0n, 0n), new Location(0n, 1n)],

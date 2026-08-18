@@ -74,6 +74,7 @@ import {
   GroupOrderParam,
   SubscriptionFilter,
   StreamResetCode,
+  resolveTransportUrl,
 } from '../model'
 import { Track } from './track/track'
 import { LiveTrackSource } from './track/content_source'
@@ -497,7 +498,14 @@ export class MOQtailClient {
 
     logger.log('MOQtailClient', 'transportOptions', transportOptions)
 
-    client.webTransport = new WebTransport(url, transportOptions)
+    const { transportUrl, moqtUrl } = resolveTransportUrl(url)
+    if (moqtUrl) {
+      logger.log('MOQtailClient', `moqt:// resolved to ${transportUrl}`)
+      if (moqtUrl.fragment)
+        logger.log('MOQtailClient', `moqt:// fragment (local-only): ${moqtUrl.fragment.kind}:${moqtUrl.fragment.value}`)
+    }
+
+    client.webTransport = new WebTransport(transportUrl, transportOptions)
 
     await client.webTransport.ready
     try {

@@ -73,7 +73,7 @@ const DEFAULT_SOURCES: SourceState[] = [
 
 export function App() {
   // Playback state
-  const [relayUrl, setRelayUrl] = useState('https://relay.moqtail.dev');
+  const [relayUrl, setRelayUrl] = useState('moqt://relay.moqtail.dev');
   const [namespace, setNamespace] = useState('moqtail/testsrc');
   const [status, setStatus] = useState<Status>('idle');
   const [tracks, setTracks] = useState<Track[]>([]);
@@ -89,7 +89,7 @@ export function App() {
   const [tab, setTab] = useState<Tab>('watch');
 
   // Publish state
-  const [publishRelayUrl, setPublishRelayUrl] = useState('https://relay.moqtail.dev');
+  const [publishRelayUrl, setPublishRelayUrl] = useState('moqt://relay.moqtail.dev');
   const [publishNamespace, setPublishNamespace] = useState(generateNamespace);
   const [publishSources, setPublishSources] = useState<SourceState[]>(DEFAULT_SOURCES);
   const [publishStatus, setPublishStatus] = useState<PublishStatus>('idle');

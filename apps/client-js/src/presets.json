@@ -12,12 +12,6 @@
         { "name": "moqtail/ch05", "label": "Channel 05", "videoTracks": 4, "audioTracks": 1 },
         { "name": "moqtail/ch06", "label": "Channel 06", "videoTracks": 4, "audioTracks": 1 }
       ]
-    },
-    {
-      "url": "moqt://127.0.0.1:4433",
-      "namespaces": [
-        { "name": "moqtail/local", "label": "Local relay", "videoTracks": 1, "audioTracks": 0 }
-      ]
     }
   ]
 }

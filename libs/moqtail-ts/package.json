@@ -75,11 +75,12 @@
     }
   },
   "scripts": {
-    "build": "tsc --noEmit && tsdown && api-extractor run",
+    "prepare": "npm run transpile",
+    "transpile": "tsdown",
+    "build": "tsc --noEmit && npm run transpile && api-extractor run",
     "test": "vitest",
     "format": "prettier --check .",
     "test:run": "vitest run",
-    "clean": "rimraf dist",
     "docs": "typedoc"
   },
   "devDependencies": {

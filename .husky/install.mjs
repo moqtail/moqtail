@@ -4,10 +4,16 @@ if (process.env.NODE_ENV === 'production' || process.env.CI === 'true') {
 }
 
 // Install Husky hooks
-console.log('Installing Husky...');
-const husky = (await import('husky')).default;
-const output = husky();
+try {
+  console.log('Installing Husky...');
+  const husky = (await import('husky')).default;
+  const output = husky();
 
-if (output && output.length > 0) {
-  console.log(output);
+  if (output && output.length > 0) {
+    console.log(output);
+  }
+} catch (error) {
+  if (error.code !== 'ERR_MODULE_NOT_FOUND') {
+    throw error;
+  }
 }

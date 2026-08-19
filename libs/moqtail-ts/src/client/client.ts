@@ -2180,7 +2180,7 @@ export class MOQtailClient {
         // unhandled rejection. A peer reset is an ordinary way for a data stream to
         // end (the subscription was dropped, TooFarBehind, a delivery timeout), so it
         // is reported, not escalated: one stream ending must not stop the accept loop.
-        void this.#handleRecvStreams(stream).catch((error) => {
+        this.#handleRecvStreams(stream).catch((error) => {
           if (error instanceof PeerStreamResetError) {
             logger.debug('MOQtailClient', `data stream ended: ${error.message}`)
             return

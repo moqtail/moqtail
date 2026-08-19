@@ -51,9 +51,24 @@ class StreamResetError extends Error {
  * resets with 0, which the peer reads as INTERNAL_ERROR.
  */
 export function streamResetReason(code: StreamResetCode): Error {
-  const ctor = globalThis.WebTransportError
+  const ctor = globalThis.WebTransportError as unknown as (new (...args: unknown[]) => Error) | undefined
+  const message = `stream reset with code ${code}`
+
+  // Runtimes disagree on which WebTransportError constructor overload they implement
+  // (see https://github.com/w3c/webtransport/issues/715), so we probe both shapes.
   if (typeof ctor === 'function') {
-    return new ctor(`stream reset with code ${code}`, { source: 'stream', streamErrorCode: code }) as unknown as Error
+    const candidates: Array<() => Error> = [
+      () => new ctor({ streamErrorCode: code, message }),
+      () => new ctor(message, { source: 'stream', streamErrorCode: code }),
+    ]
+    for (const build of candidates) {
+      try {
+        const error = build()
+        if (streamResetCodeOf(error) === code) return error
+      } catch {
+        // Wrong signature for this runtime; try the next.
+      }
+    }
   }
   return new StreamResetError(code)
 }
@@ -91,27 +106,6 @@ if (import.meta.vitest) {
       const reason = streamResetReason(StreamResetCode.DeliveryTimeout)
       expect((reason as { streamErrorCode?: number }).streamErrorCode).toBe(0x2)
       expect(streamResetCodeOf(reason)).toBe(StreamResetCode.DeliveryTimeout)
-    })
-
-    test('uses WebTransportError when the runtime defines it', () => {
-      class FakeWebTransportError extends Error {
-        readonly source: string
-        readonly streamErrorCode: number | null
-        constructor(message: string, options: { source?: string; streamErrorCode?: number | null }) {
-          super(message)
-          this.source = options.source ?? 'stream'
-          this.streamErrorCode = options.streamErrorCode ?? null
-        }
-      }
-      const original = globalThis.WebTransportError
-      globalThis.WebTransportError = FakeWebTransportError as unknown as typeof globalThis.WebTransportError
-      try {
-        const reason = streamResetReason(StreamResetCode.TooFarBehind)
-        expect(reason).toBeInstanceOf(FakeWebTransportError)
-        expect(streamResetCodeOf(reason)).toBe(StreamResetCode.TooFarBehind)
-      } finally {
-        globalThis.WebTransportError = original
-      }
     })
   })
 

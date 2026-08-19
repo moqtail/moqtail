@@ -88,7 +88,7 @@ import { FetchPublication } from './publication/fetch'
 import { PublishPublication } from './publication/publish'
 import { random60bitId } from './util/random_id'
 import { isValidTrackAlias } from './util/validators'
-import { streamResetCodeOf, streamResetReason } from './util/stream_reset'
+import { PeerStreamResetError, streamResetCodeOf, streamResetReason } from './util/stream_reset'
 import {
   MOQtailRequest,
   SubscribeOptions,
@@ -2175,7 +2175,18 @@ export class MOQtailClient {
           isDone = true
           throw new MOQtailError('WebTransport session is terminated')
         }
-        this.#handleRecvStreams(stream)
+        // Not awaited -- streams are served concurrently -- so its rejection has to be
+        // handled here rather than by the enclosing catch, or it surfaces as an
+        // unhandled rejection. A peer reset is an ordinary way for a data stream to
+        // end (the subscription was dropped, TooFarBehind, a delivery timeout), so it
+        // is reported, not escalated: one stream ending must not stop the accept loop.
+        this.#handleRecvStreams(stream).catch((error) => {
+          if (error instanceof PeerStreamResetError) {
+            logger.debug('MOQtailClient', `data stream ended: ${error.message}`)
+            return
+          }
+          logger.error('MOQtailClient', 'handleRecvStreams error', error)
+        })
       } catch (error) {
         logger.error('MOQtailClient', 'acceptIncomingUniStreams error', error)
         if (this.#isDestroyed) break

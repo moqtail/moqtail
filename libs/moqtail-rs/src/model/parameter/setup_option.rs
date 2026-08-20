@@ -14,17 +14,33 @@
 
 use crate::model::{
   common::pair::KeyValuePair,
+  common::varint::{BufMutVarIntExt, BufVarIntExt},
   error::ParseError,
   parameter::{authorization_token::AuthorizationToken, constant::SetupOptionType},
 };
-use bytes::{Bytes, BytesMut};
+use bytes::{Buf, Bytes, BytesMut};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SetupOption {
-  Path { moqt_path: String },
-  AuthorizationToken { token: AuthorizationToken },
-  MaxAuthTokenCacheSize { max_size: u64 },
-  Authority { authority: String },
-  MoqtImplementation { info: String },
+  Path {
+    moqt_path: String,
+  },
+  AuthorizationToken {
+    token: AuthorizationToken,
+  },
+  MaxAuthTokenCacheSize {
+    max_size: u64,
+  },
+  Authority {
+    authority: String,
+  },
+  MoqtImplementation {
+    info: String,
+  },
+  /// SSTS algorithms this endpoint supports (draft-wilaw-moq-moqt-ssts, Section 3.1).
+  /// An empty list — or the absence of this option — prohibits the use of SSTS.
+  SstsAlgorithms {
+    algorithms: Vec<u64>,
+  },
 }
 impl SetupOption {
   pub fn new_path(moqt_path: String) -> Self {
@@ -47,6 +63,10 @@ impl SetupOption {
 
   pub fn new_moqt_implementation(info: String) -> Self {
     SetupOption::MoqtImplementation { info }
+  }
+
+  pub fn new_ssts_algorithms(algorithms: Vec<u64>) -> Self {
+    SetupOption::SstsAlgorithms { algorithms }
   }
 
   pub fn serialize(&self) -> Result<Bytes, ParseError> {
@@ -97,6 +117,16 @@ impl SetupOption {
         let slice = kvp.serialize()?;
         bytes.extend_from_slice(&slice);
       }
+      Self::SstsAlgorithms { algorithms } => {
+        let mut data = BytesMut::new();
+        for algorithm in algorithms {
+          data.put_vi(*algorithm)?;
+        }
+        let kvp =
+          KeyValuePair::try_new_bytes(SetupOptionType::SstsAlgorithms as u64, data.freeze())?;
+        let slice = kvp.serialize()?;
+        bytes.extend_from_slice(&slice);
+      }
     }
     Ok(bytes.freeze())
   }
@@ -143,6 +173,14 @@ impl SetupOption {
               })?;
             Ok(SetupOption::Authority { authority })
           }
+          SetupOptionType::SstsAlgorithms => {
+            let mut payload = value.clone();
+            let mut algorithms = Vec::new();
+            while payload.has_remaining() {
+              algorithms.push(payload.get_vi()?);
+            }
+            Ok(SetupOption::SstsAlgorithms { algorithms })
+          }
           _ => Err(ParseError::KeyValueFormattingError {
             context: "SetupOption::deserialize",
           }),
@@ -175,6 +213,13 @@ impl TryInto<KeyValuePair> for SetupOption {
         SetupOptionType::Authority as u64,
         Bytes::copy_from_slice(authority.as_bytes()),
       ),
+      SetupOption::SstsAlgorithms { algorithms } => {
+        let mut data = BytesMut::new();
+        for algorithm in &algorithms {
+          data.put_vi(*algorithm)?;
+        }
+        KeyValuePair::try_new_bytes(SetupOptionType::SstsAlgorithms as u64, data.freeze())
+      }
     }
   }
 }
@@ -240,6 +285,28 @@ mod tests {
     let got = SetupOption::deserialize(&kvp).unwrap();
     assert_eq!(orig, got);
     assert_eq!(buf.remaining(), 0);
+  }
+
+  #[test]
+  fn test_roundtrip_ssts_algorithms() {
+    let orig = SetupOption::new_ssts_algorithms(vec![0]);
+    let serialized = orig.serialize().unwrap();
+    let mut buf = serialized.clone();
+    let kvp = KeyValuePair::deserialize(&mut buf).unwrap();
+    let got = SetupOption::deserialize(&kvp).unwrap();
+    assert_eq!(orig, got);
+    assert_eq!(buf.remaining(), 0);
+  }
+
+  #[test]
+  fn test_roundtrip_ssts_algorithms_empty() {
+    // An empty algorithm list is legal and means SSTS is not supported.
+    let orig = SetupOption::new_ssts_algorithms(Vec::new());
+    let serialized = orig.serialize().unwrap();
+    let mut buf = serialized.clone();
+    let kvp = KeyValuePair::deserialize(&mut buf).unwrap();
+    let got = SetupOption::deserialize(&kvp).unwrap();
+    assert_eq!(got, SetupOption::SstsAlgorithms { algorithms: vec![] });
   }
 
   #[test]

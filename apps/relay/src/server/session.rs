@@ -1047,7 +1047,16 @@ impl Session {
       .try_into()
       .unwrap();
 
-    let server_setup = Setup::new(vec![moqt_implementation_param]);
+    // Advertise the SSTS algorithms the relay implements
+    // (draft-wilaw-moq-moqt-ssts, Section 3).
+    let ssts_algorithms_param =
+      moqtail::model::parameter::setup_option::SetupOption::new_ssts_algorithms(
+        super::abr::SUPPORTED_SSTS_ALGORITHMS.to_vec(),
+      )
+      .try_into()
+      .unwrap();
+
+    let server_setup = Setup::new(vec![moqt_implementation_param, ssts_algorithms_param]);
 
     debug!("client setup: {:?}", client_setup);
     debug!("server setup: {:?}", server_setup);
@@ -1094,6 +1103,7 @@ impl Session {
       Arc::new(client_setup),
     );
     let client = Arc::new(client);
+    client.clone().start_abr_controller();
     context.client_manager.add(client.clone()).await;
 
     match control_stream_handler.send_impl(&server_setup).await {

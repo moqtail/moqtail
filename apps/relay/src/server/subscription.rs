@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::server::client::AbrMessage;
 use crate::server::client::MOQTClient;
 use crate::server::client::switch_context::SwitchStatus;
 use crate::server::config::AppConfig;
@@ -981,6 +982,57 @@ impl Subscription {
         header_info,
       } => {
         object.track_alias = self.relay_track_id;
+
+        // SSTS: if this track is in a switching set, only forward Objects on
+        // the track the ABR selected for this group; `None` means the set
+        // sends nothing this group.
+        let my_set_id = {
+          let manager = self.subscriber.switching_sets.read().await;
+          manager
+            .get_set_for_track(&self.full_track_name)
+            .map(|s| s.id)
+        };
+
+        if let Some(set_id) = my_set_id {
+          let group_id = object.location.group;
+
+          loop {
+            let decision = {
+              let decisions = self.subscriber.group_decisions.read().await;
+              decisions
+                .get(&group_id)
+                .and_then(|m| m.get(&set_id))
+                .copied()
+            };
+
+            match decision {
+              Some(Some(chosen)) => {
+                if self.relay_track_id != chosen {
+                  // Not the selected track – drop this object.
+                  return;
+                }
+                break; // We are the selected track, proceed with forwarding.
+              }
+              Some(None) => {
+                // The set is not forwarded for this group – drop this object.
+                return;
+              }
+              None => {
+                // No decision yet for this group+set: wake the ABR and wait.
+                if let Err(e) = self
+                  .subscriber
+                  .abr_tx
+                  .send(AbrMessage::NewGroup(group_id))
+                  .await
+                {
+                  warn!("Failed to send NewGroup to ABR: {:?}", e);
+                }
+                self.subscriber.decision_notify.notified().await;
+              }
+            }
+          }
+        }
+
         // update last received object location
         {
           let mut state = self.subscription_state.write().await;

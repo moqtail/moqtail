@@ -22,6 +22,7 @@ pub enum SetupOptionType {
   MaxAuthTokenCacheSize = 0x04,
   Authority = 0x05, // MQOtail does not use this (WebTransport)
   MoqtImplementation = 0x07,
+  SstsAlgorithms = 0x09, // Sender-Side Track Switching (draft-wilaw-moq-moqt-ssts)
 }
 
 impl TryFrom<u64> for SetupOptionType {
@@ -34,6 +35,7 @@ impl TryFrom<u64> for SetupOptionType {
       0x04 => Ok(SetupOptionType::MaxAuthTokenCacheSize),
       0x05 => Ok(SetupOptionType::Authority),
       0x07 => Ok(SetupOptionType::MoqtImplementation),
+      0x09 => Ok(SetupOptionType::SstsAlgorithms),
       _ => Err(ParseError::InvalidType {
         context: "SetupOptionType::try_from(u64)",
         details: format!("Invalid type, got {value}"),
@@ -64,6 +66,7 @@ pub enum MessageParameterType {
   GroupOrder = 0x22,
   NewGroupRequest = 0x32,
   TrackNamespacePrefix = 0x34,
+  SwitchingSetAssignment = 0x41,
 }
 
 impl TryFrom<u64> for MessageParameterType {
@@ -84,6 +87,7 @@ impl TryFrom<u64> for MessageParameterType {
       0x22 => Ok(MessageParameterType::GroupOrder),
       0x32 => Ok(MessageParameterType::NewGroupRequest),
       0x34 => Ok(MessageParameterType::TrackNamespacePrefix),
+      0x41 => Ok(MessageParameterType::SwitchingSetAssignment),
       _ => Err(ParseError::InvalidType {
         context: "MessageParameterType::try_from(u64)",
         details: format!("Unknown parameter type, got {value}"),

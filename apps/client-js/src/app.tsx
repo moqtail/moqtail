@@ -18,7 +18,7 @@ import { useState, useRef, useCallback, useEffect } from 'preact/hooks';
 import { uniqueNamesGenerator, colors, animals } from 'unique-names-generator';
 import { Player } from '@/lib/player';
 import { Publisher } from '@/lib/publisher';
-import { Tuple, type CMSFTrack } from 'moqtail';
+import { FilterType, GroupOrder, Tuple, type CMSFTrack } from 'moqtail';
 import MSEBuffer from '@/lib/buffer';
 import type { Track, Status, SourceState, SourceKind, PublishStatus } from '@/types';
 import { Header } from '@/components/Header';
@@ -80,6 +80,12 @@ export function App() {
   const [selectedVideo, setSelectedVideo] = useState<string | null>(null);
   const [selectedAudio, setSelectedAudio] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Wire-level knobs — these pick which draft-18 code paths the media session takes.
+  const [catalogViaSubscribe, setCatalogViaSubscribe] = useState(true);
+  const [filterType, setFilterType] = useState<FilterType>(FilterType.NextGroupStart);
+  const [groupOrder, setGroupOrder] = useState<GroupOrder>(GroupOrder.Original);
+  const [logObjectProperties, setLogObjectProperties] = useState(false);
 
   const playerRef = useRef<Player | null>(null);
   const bufferRef = useRef<MSEBuffer | null>(null);
@@ -168,7 +174,10 @@ export function App() {
     const player = new Player({
       relayUrl,
       namespace: Tuple.fromUtf8Path(namespace),
-      receiveCatalogViaSubscribe: true,
+      receiveCatalogViaSubscribe: catalogViaSubscribe,
+      filterType,
+      groupOrder,
+      logObjectProperties,
     });
     playerRef.current = player;
 
@@ -185,7 +194,7 @@ export function App() {
     logger.info('app', 'initializePlaybackSession: media attached, MSEBuffer created');
 
     return { player, allTracks };
-  }, [relayUrl, namespace]);
+  }, [relayUrl, namespace, catalogViaSubscribe, filterType, groupOrder, logObjectProperties]);
 
   const handleConnect = useCallback(async () => {
     if (!videoRef.current) return;
@@ -413,6 +422,16 @@ export function App() {
           onConnect={handleConnect}
           onTrackChange={handleTrackChange}
           error={error}
+          wireOptions={{
+            catalogViaSubscribe,
+            onCatalogViaSubscribeChange: setCatalogViaSubscribe,
+            filterType,
+            onFilterTypeChange: setFilterType,
+            groupOrder,
+            onGroupOrderChange: setGroupOrder,
+            logObjectProperties,
+            onLogObjectPropertiesChange: setLogObjectProperties,
+          }}
           // Tab
           tab={tab}
           onTabChange={handleTabChange}

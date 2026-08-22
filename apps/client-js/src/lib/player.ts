@@ -20,12 +20,35 @@ import {
   FullTrackName,
   GroupOrder,
   Location,
+  LOCProperties,
+  LOCProperty,
   MoqtObject,
   Tuple,
 } from 'moqtail';
 import { MOQtailClient } from 'moqtail/client';
 import { CMSFCatalog, RequestError } from 'moqtail/model';
 import { logger } from '@/lib/logger';
+
+/**
+ * Renders an object's Properties for the log. Draft-18 renamed Extension Headers to
+ * Properties and renumbered the LOC set, so this is where a mismatch between what the
+ * publisher wrote and what the relay forwarded becomes visible.
+ */
+function formatProperties(object: MoqtObject): string {
+  const pairs = object.properties;
+  if (!pairs || pairs.length === 0) return 'none';
+  const parsed = LOCProperties.fromKeyValuePairs(pairs);
+  const named = parsed.map(p => {
+    if (LOCProperty.isTimestamp(p)) return `Timestamp=${p.timestamp}`;
+    if (LOCProperty.isTimescale(p)) return `Timescale=${p.timescale}`;
+    if (LOCProperty.isVideoFrameMarking(p)) return `VideoFrameMarking=${p.value}`;
+    if (LOCProperty.isAudioLevel(p)) return `AudioLevel=${p.audioLevel}`;
+    if (LOCProperty.isVideoConfig(p)) return `VideoConfig=${p.config.byteLength}B`;
+    return 'unknown';
+  });
+  const unrecognized = pairs.length - parsed.length;
+  return `${named.join(', ') || 'none'}${unrecognized > 0 ? ` (+${unrecognized} unrecognized)` : ''}`;
+}
 
 interface MOQStreamStruct {
   trackName: string;
@@ -51,6 +74,12 @@ export interface PlayerOptions {
   receiveCatalogViaSubscribe?: boolean;
   /** Catalog location (default: group 0, object 1) */
   catalogLocation?: [Location, Location];
+  /** Filter applied to media subscriptions. */
+  filterType?: FilterType;
+  /** Group order requested for media subscriptions. */
+  groupOrder?: GroupOrder;
+  /** Log the Properties carried by each received object. */
+  logObjectProperties?: boolean;
 }
 
 const DefaultOptions: Required<PlayerOptions> = {
@@ -58,6 +87,9 @@ const DefaultOptions: Required<PlayerOptions> = {
   namespace: Tuple.fromUtf8Path('/moqtail'),
   receiveCatalogViaSubscribe: false,
   catalogLocation: [new Location(0n, 0n), new Location(0n, 1n)],
+  filterType: FilterType.NextGroupStart,
+  groupOrder: GroupOrder.Original,
+  logObjectProperties: false,
 };
 
 export class Player {
@@ -283,7 +315,17 @@ export class Player {
                 'player',
                 `[${struct.trackName}] first object received — group=${object.groupId} obj=${object.objectId} size=${object.payload?.byteLength ?? 0}B`,
               );
-            } else if (objectCount % 30 === 0) {
+              logger.info(
+                'player',
+                `[${struct.trackName}] first object properties: ${formatProperties(object)}`,
+              );
+            } else if (this.#options.logObjectProperties) {
+              logger.debug(
+                'player',
+                `[${struct.trackName}] group=${object.groupId} obj=${object.objectId} properties: ${formatProperties(object)}`,
+              );
+            }
+            if (objectCount % 30 === 0) {
               const buf = sourceBuffer.buffered;
               const bufEnd = buf.length > 0 ? buf.end(buf.length - 1).toFixed(3) : 'none';
               logger.debug(
@@ -528,13 +570,14 @@ export class Player {
     const ftn = getFullTrackName(this.#options.namespace, params.trackName);
     logger.info(
       'player',
-      `subscribe: "${params.trackName}" ftn="${ftn.toString()}" priority=${params.priority ?? 0}`,
+      `subscribe: "${params.trackName}" ftn="${ftn.toString()}" priority=${params.priority ?? 0} ` +
+        `filterType=${FilterType[this.#options.filterType]} groupOrder=${GroupOrder[this.#options.groupOrder]}`,
     );
 
     const result = await this.client.subscribe({
       fullTrackName: ftn,
-      groupOrder: GroupOrder.Original,
-      filterType: FilterType.NextGroupStart,
+      groupOrder: this.#options.groupOrder,
+      filterType: this.#options.filterType,
       forward: true,
       priority: params.priority ?? 0,
     });

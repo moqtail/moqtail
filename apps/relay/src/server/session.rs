@@ -45,7 +45,7 @@ use crate::server::{Server, stream_id::StreamId};
 
 use super::{
   client::MOQTClient,
-  message_handlers,
+  message_handlers, prefix_subscription,
   session_context::{RequestMaps, SessionContext},
   track::Track,
   utils,
@@ -584,7 +584,7 @@ impl Session {
                 Some(ns_msg) => {
                   if let Err(e) = stream_handler.send(&ns_msg).await {
                     warn!("Error writing NAMESPACE to bi-stream: {:?}", e);
-                    message_handlers::subscribe_namespace_handler::cancel(client, request_id, &context).await;
+                    prefix_subscription::cancel(client, request_id, &context).await;
                     return;
                   }
                 }
@@ -593,6 +593,22 @@ impl Session {
             }
             result = stream_handler.next_message() => {
               match result {
+                // A REQUEST_UPDATE travels on the stream of the request it updates,
+                // so this is where one for a prefix subscription arrives.
+                Ok(update @ ControlMessage::RequestUpdate(_)) => {
+                  if let Err(e) = message_handlers::MessageHandler::handle(
+                    client.clone(),
+                    &mut stream_handler,
+                    update,
+                    context.clone(),
+                    Some(request_id),
+                  )
+                  .await
+                  {
+                    Self::close_session(context, e, "Error handling prefix subscription update");
+                    return;
+                  }
+                }
                 Ok(extra) => {
                   warn!("Unexpected message {:?} on request bi-stream", extra.get_type());
                   Self::close_session(context, TerminationCode::ProtocolViolation, "Unexpected message on request bi-stream");
@@ -600,7 +616,7 @@ impl Session {
                 }
                 Err(_) => {
                   // FIN or RESET — subscriber cancelled
-                  message_handlers::subscribe_namespace_handler::cancel(client, request_id, &context).await;
+                  prefix_subscription::cancel(client, request_id, &context).await;
                   return;
                 }
               }

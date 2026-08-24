@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::server::client::MOQTClient;
+use crate::server::prefix_subscription::{MAX_NAMESPACE_PREFIX_FIELDS, oversized_namespace_error};
 use crate::server::session_context::{PendingRequest, SessionContext};
 use crate::server::track_manager::SubscribeKind;
 use core::result::Result;
@@ -22,32 +23,12 @@ use moqtail::model::control::namespace::Namespace;
 use moqtail::model::control::request_error::RequestError;
 use moqtail::model::control::request_ok::RequestOk;
 use moqtail::model::control::subscribe_namespace::SubscribeNamespace;
+use moqtail::model::error::RequestErrorCode;
 use moqtail::model::error::TerminationCode;
-use moqtail::model::error::{RequestErrorCode, StreamResetCode};
-use moqtail::model::parameter::message_parameter::apply_message_parameter_update;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{info, warn};
-
-/// The relay will not enumerate a namespace prefix broader than this many fields.
-pub(crate) const MAX_NAMESPACE_PREFIX_FIELDS: usize = 32;
-
-/// A NAMESPACE_TOO_LARGE error if the prefix exceeds what the relay will
-/// enumerate, otherwise `None`.
-pub(crate) fn oversized_namespace_error(
-  prefix: &moqtail::model::common::tuple::Tuple,
-) -> Option<RequestError> {
-  if prefix.fields.len() > MAX_NAMESPACE_PREFIX_FIELDS {
-    Some(RequestError::new(
-      RequestErrorCode::NamespaceTooLarge,
-      0,
-      ReasonPhrase::try_new("Namespace prefix is too large".to_string()).unwrap(),
-    ))
-  } else {
-    None
-  }
-}
 
 /// Handle an incoming SUBSCRIBE_NAMESPACE on a dedicated bi-stream.
 /// Called from `dispatch_request_stream_message()` in session.rs.
@@ -84,6 +65,7 @@ pub async fn handle_subscribe_namespace(
       client.connection_id,
       &sub_ns.track_namespace_prefix,
       SubscribeKind::Namespace,
+      None,
     )
     .await
   {
@@ -182,129 +164,4 @@ async fn send_namespace_catchup(
     }
   }
   Ok(())
-}
-
-/// Remove the namespace subscription when the subscriber closes or resets the bi-stream.
-pub async fn cancel(client: Arc<MOQTClient>, request_id: u64, context: &Arc<SessionContext>) {
-  let target = {
-    let mut map = client.inbound_requests.write().await;
-    match map.remove(&request_id) {
-      Some(PendingRequest::SubscribeNamespace { message, .. }) => {
-        Some((message.track_namespace_prefix, SubscribeKind::Namespace))
-      }
-      Some(PendingRequest::SubscribeTracks { message, .. }) => {
-        Some((message.track_namespace_prefix, SubscribeKind::Tracks))
-      }
-      _ => None,
-    }
-  };
-  if let Some((prefix, kind)) = target {
-    context
-      .track_manager
-      .remove_namespace_subscriber_by_prefix(&prefix, client.connection_id, kind)
-      .await;
-    info!(
-      "Cancelled {:?} subscription for prefix {:?} (connection {})",
-      kind, prefix, client.connection_id
-    );
-  }
-}
-
-/// Handle control-stream messages that route to the SUBSCRIBE_NAMESPACE handler.
-/// Currently handles RequestUpdate (parameter updates for existing subscriptions).
-pub async fn handle(
-  client: Arc<MOQTClient>,
-  handler: &mut ControlStreamHandler,
-  msg: ControlMessage,
-  context: Arc<SessionContext>,
-  opening_request_id: Option<u64>,
-) -> Result<(), TerminationCode> {
-  match msg {
-    ControlMessage::RequestUpdate(m) => {
-      let update_msg = *m;
-      let Some(target_request_id) = opening_request_id else {
-        return Err(TerminationCode::ProtocolViolation);
-      };
-      let existing_req_id = target_request_id;
-
-      let target_prefix = {
-        let mut map = client.inbound_requests.write().await;
-        match map.get_mut(&existing_req_id) {
-          Some(PendingRequest::SubscribeNamespace { message, .. }) => {
-            apply_message_parameter_update(&mut message.parameters, update_msg.parameters.clone());
-            message.track_namespace_prefix.clone()
-          }
-          Some(PendingRequest::SubscribeTracks { message, .. }) => {
-            apply_message_parameter_update(&mut message.parameters, update_msg.parameters.clone());
-            message.track_namespace_prefix.clone()
-          }
-          _ => {
-            warn!(
-              "REQUEST_UPDATE for prefix subscription request {} cannot be applied; closing the stream",
-              existing_req_id
-            );
-            handler.reset(StreamResetCode::Cancelled.to_u64());
-            return Ok(());
-          }
-        }
-      };
-
-      info!(
-        "Processing SUBSCRIBE_NAMESPACE update for prefix: {:?}",
-        target_prefix
-      );
-
-      context
-        .track_manager
-        .update_namespace_subscription_parameters(
-          &target_prefix,
-          client.connection_id,
-          update_msg.parameters.clone(),
-        )
-        .await;
-
-      let ok_msg = RequestOk::new(vec![]);
-      handler
-        .send(&ControlMessage::RequestOk(Box::new(ok_msg)))
-        .await?;
-    }
-
-    _ => {
-      warn!(
-        "Unexpected message in subscribe_namespace_handler: {:?}",
-        msg
-      );
-    }
-  }
-
-  Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-  use super::*;
-  use moqtail::model::common::tuple::{Tuple, TupleField};
-
-  #[test]
-  fn oversized_namespace_prefix_yields_namespace_too_large() {
-    let big = Tuple {
-      fields: (0..=MAX_NAMESPACE_PREFIX_FIELDS)
-        .map(|i| TupleField::from_utf8(&i.to_string()))
-        .collect(),
-    };
-    let err = oversized_namespace_error(&big).expect("over-long prefix must be rejected");
-    assert_eq!(err.error_code, RequestErrorCode::NamespaceTooLarge);
-    assert_eq!(u64::from(err.error_code), 0x31);
-  }
-
-  #[test]
-  fn normal_namespace_prefix_is_accepted() {
-    let small = Tuple {
-      fields: vec![
-        TupleField::from_utf8("moqtail"),
-        TupleField::from_utf8("demo"),
-      ],
-    };
-    assert!(oversized_namespace_error(&small).is_none());
-  }
 }

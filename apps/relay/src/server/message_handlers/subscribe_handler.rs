@@ -71,6 +71,24 @@ async fn forward_subscribe_upstream(
   new_sub: Subscribe,
   context: Arc<SessionContext>,
 ) {
+  let relay_request_id = new_sub.request_id;
+  upstream_subscribe_exchange(publisher, new_sub, context.clone()).await;
+
+  // The entry exists to resolve this publisher's response against, and the exchange
+  // has ended one way or another: answered, declined, timed out, cancelled, or never
+  // sent. Dropping it here covers every exit inside, several of which return early.
+  context
+    .relay_pending_requests
+    .write()
+    .await
+    .remove(&relay_request_id);
+}
+
+async fn upstream_subscribe_exchange(
+  publisher: Arc<MOQTClient>,
+  new_sub: Subscribe,
+  context: Arc<SessionContext>,
+) {
   let (send, recv) = match publisher.connection.open_bi().await {
     Ok(streams) => streams,
     Err(e) => {
@@ -293,12 +311,6 @@ async fn end_upstream_subscription(
         "A publisher declined {:?}; others have yet to answer, so the subscriber waits",
         full_track_name
       );
-      // Nothing will answer this request now, and it is the relay's own bookkeeping.
-      context
-        .relay_pending_requests
-        .write()
-        .await
-        .remove(&relay_request_id);
       return;
     }
     let _ = handle_subscribe_error_message(relay_request_id, error, context).await;

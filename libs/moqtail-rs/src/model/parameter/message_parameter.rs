@@ -13,7 +13,8 @@
 // limitations under the License.
 
 use crate::model::common::location::Location;
-use crate::model::common::pair::KeyValuePair;
+use crate::model::common::pair::{KeyValuePair, MAX_VALUE_LENGTH};
+use crate::model::common::tuple::Tuple;
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
 use crate::model::control::constant::{ControlMessageType, FilterType, GroupOrder};
 use crate::model::error::ParseError;
@@ -60,6 +61,9 @@ pub enum MessageParameter {
   },
   NewGroupRequest {
     group: u64,
+  },
+  TrackNamespacePrefix {
+    prefix: Tuple,
   },
 }
 
@@ -116,6 +120,10 @@ impl MessageParameter {
     }
   }
 
+  pub fn new_track_namespace_prefix(prefix: Tuple) -> Self {
+    Self::TrackNamespacePrefix { prefix }
+  }
+
   pub fn new_group_request(group: u64) -> Self {
     Self::NewGroupRequest { group }
   }
@@ -135,6 +143,7 @@ impl MessageParameter {
       Self::GroupOrder { .. } => MessageParameterType::GroupOrder as u64,
       Self::SubscriptionFilter { .. } => MessageParameterType::SubscriptionFilter as u64,
       Self::NewGroupRequest { .. } => MessageParameterType::NewGroupRequest as u64,
+      Self::TrackNamespacePrefix { .. } => MessageParameterType::TrackNamespacePrefix as u64,
     }
   }
 
@@ -222,6 +231,7 @@ impl MessageParameter {
           | ControlMessageType::Subscribe
           | ControlMessageType::RequestUpdate
       ),
+      Self::TrackNamespacePrefix { .. } => matches!(msg_type, ControlMessageType::RequestUpdate),
     }
   }
 
@@ -314,6 +324,16 @@ impl MessageParameter {
             let mut payload = value.clone();
             let location = Location::deserialize(&mut payload)?;
             Ok(Self::LargestObject { location })
+          }
+          MessageParameterType::TrackNamespacePrefix => {
+            let mut payload = value.clone();
+            let prefix = Tuple::deserialize(&mut payload)?;
+            if payload.has_remaining() {
+              return Err(ParseError::KeyValueFormattingError {
+                context: "MessageParameter::deserialize(TrackNamespacePrefix)",
+              });
+            }
+            Ok(Self::TrackNamespacePrefix { prefix })
           }
           MessageParameterType::SubscriptionFilter => {
             let mut payload = value.clone();
@@ -465,6 +485,21 @@ impl TryInto<KeyValuePair> for MessageParameter {
           buf.freeze(),
         )
       }
+      // A namespace tuple: length-prefixed, even though the Type is even.
+      Self::TrackNamespacePrefix { prefix } => {
+        let value = prefix.serialize()?;
+        if value.len() > MAX_VALUE_LENGTH {
+          return Err(ParseError::LengthExceedsMax {
+            context: "MessageParameter::try_into(TrackNamespacePrefix)",
+            max: MAX_VALUE_LENGTH,
+            len: value.len(),
+          });
+        }
+        Ok(KeyValuePair::Bytes {
+          type_value: MessageParameterType::TrackNamespacePrefix as u64,
+          value,
+        })
+      }
     }
   }
 }
@@ -517,6 +552,8 @@ pub fn deserialize_message_parameters(
       loc.put_vi(bytes.get_vi()?)?;
       loc.put_vi(bytes.get_vi()?)?;
       KeyValuePair::try_new_bytes(type_value, loc.freeze())?
+    } else if is_length_prefixed_message_param(type_value) {
+      KeyValuePair::deserialize_bytes_value(bytes, type_value)?
     } else {
       KeyValuePair::deserialize_value(bytes, type_value)?
     };
@@ -536,19 +573,23 @@ pub fn deserialize_message_parameters(
   Ok(params)
 }
 
-/// Message parameters whose Value is a single uint8 byte rather than the generic
-/// even-Type varint: FORWARD (0x10), SUBSCRIBER_PRIORITY (0x20) and GROUP_ORDER
-/// (0x22). All three have even Parameter Types, so the KVP parity rule would
-/// otherwise read them as varints and desync on any value >= 64.
+/// Parameters whose Value is a single uint8 byte rather than a varint, even
+/// though their Type is even. Reading them as varints desyncs on any value >= 64.
 const fn is_uint8_message_param(type_value: u64) -> bool {
-  matches!(type_value, 0x10 | 0x20 | 0x22)
+  type_value == MessageParameterType::Forward as u64
+    || type_value == MessageParameterType::SubscriberPriority as u64
+    || type_value == MessageParameterType::GroupOrder as u64
 }
 
-/// LARGEST_OBJECT (0x09) is a bare Location -- two consecutive varints with no
-/// length prefix. Its Type is odd, so without this the KVP parity rule would
-/// read a length prefix and desync.
+/// Parameters that are a bare Location -- two consecutive varints with no length
+/// prefix -- even though their Type is odd.
 const fn is_location_message_param(type_value: u64) -> bool {
-  matches!(type_value, 0x09)
+  type_value == MessageParameterType::LargestObject as u64
+}
+
+/// Parameters that are length-prefixed even though their Type is even.
+const fn is_length_prefixed_message_param(type_value: u64) -> bool {
+  type_value == MessageParameterType::TrackNamespacePrefix as u64
 }
 
 /// Serializes a slice of MessageParameters into delta-encoded wire bytes,
@@ -621,6 +662,7 @@ pub fn apply_message_parameter_update(
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::model::common::tuple::TupleField;
 
   /// LARGEST_OBJECT is a bare Location: Type Delta 0x09 followed by the Group
   /// and Object varints, with no length prefix. These are the bytes another
@@ -830,6 +872,58 @@ mod tests {
     let mut bytes = serialize_message_parameters(&params).unwrap();
     let ok = deserialize_message_parameters(&mut bytes, 1, ControlMessageType::Subscribe).unwrap();
     assert_eq!(ok, vec![MessageParameter::new_object_delivery_timeout(0)]);
+  }
+
+  #[test]
+  fn test_track_namespace_prefix_round_trips_in_a_parameter_list() {
+    // Alongside a neighbour on each side, so a desync in the length-prefixed value
+    // shows up as a corrupted list rather than passing unnoticed.
+    let prefix = Tuple::from_utf8_path("meet/room1/sub");
+    let params = vec![
+      MessageParameter::new_subscriber_priority(200),
+      MessageParameter::new_track_namespace_prefix(prefix.clone()),
+    ];
+    let count = params.len() as u64;
+    let mut bytes = serialize_message_parameters(&params).unwrap();
+    let decoded =
+      deserialize_message_parameters(&mut bytes, count, ControlMessageType::RequestUpdate).unwrap();
+
+    assert!(!bytes.has_remaining(), "the list left trailing bytes");
+    assert_eq!(
+      decoded.get_param(MessageParameterType::TrackNamespacePrefix),
+      Some(&MessageParameter::new_track_namespace_prefix(prefix))
+    );
+    assert_eq!(
+      decoded.get_param(MessageParameterType::SubscriberPriority),
+      Some(&MessageParameter::new_subscriber_priority(200))
+    );
+  }
+
+  #[test]
+  fn test_track_namespace_prefix_rejected_outside_request_update() {
+    let params = vec![MessageParameter::new_track_namespace_prefix(
+      Tuple::from_utf8_path("meet"),
+    )];
+    let mut bytes = serialize_message_parameters(&params).unwrap();
+    let err = deserialize_message_parameters(&mut bytes, 1, ControlMessageType::SubscribeNamespace)
+      .unwrap_err();
+    assert!(matches!(err, ParseError::ProtocolViolation { .. }));
+  }
+
+  #[test]
+  fn test_track_namespace_prefix_rejects_a_short_field_count() {
+    // A count that leaves fields unread must not silently truncate the prefix.
+    let mut value = BytesMut::new();
+    value.put_vi(1u64).unwrap(); // claims one field
+    value.extend_from_slice(&TupleField::from_utf8("meet").serialize().unwrap());
+    value.extend_from_slice(&TupleField::from_utf8("room1").serialize().unwrap());
+
+    let kvp = KeyValuePair::Bytes {
+      type_value: MessageParameterType::TrackNamespacePrefix as u64,
+      value: value.freeze(),
+    };
+    let err = MessageParameter::deserialize(&kvp).unwrap_err();
+    assert!(matches!(err, ParseError::KeyValueFormattingError { .. }));
   }
 
   #[test]

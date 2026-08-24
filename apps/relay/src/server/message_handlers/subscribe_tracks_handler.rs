@@ -13,12 +13,8 @@
 // limitations under the License.
 
 use crate::server::client::MOQTClient;
-use crate::server::message_handlers::parameters;
 use crate::server::message_handlers::publish_handler;
-use crate::server::message_handlers::subscribe_namespace_handler::{
-  MAX_NAMESPACE_PREFIX_FIELDS, oversized_namespace_error,
-};
-use crate::server::session::Session;
+use crate::server::prefix_subscription::{MAX_NAMESPACE_PREFIX_FIELDS, oversized_namespace_error};
 use crate::server::session_context::{PendingRequest, SessionContext};
 use crate::server::track_manager::SubscribeKind;
 use core::result::Result;
@@ -68,6 +64,7 @@ pub async fn handle_subscribe_tracks(
       client.connection_id,
       &sub_tracks.track_namespace_prefix,
       SubscribeKind::Tracks,
+      None,
     )
     .await
   {
@@ -136,7 +133,7 @@ pub async fn handle_subscribe_tracks(
       continue;
     }
 
-    if let Some(mut original_publish_message) = original_publish_message_opt {
+    if let Some(original_publish_message) = original_publish_message_opt {
       // Out of streams to initiate this subscription: send PUBLISH_BLOCKED on
       // the response stream and stop (no PUBLISH may follow it).
       if max_publish_streams > 0 && published >= max_publish_streams {
@@ -157,49 +154,14 @@ pub async fn handle_subscribe_tracks(
 
       info!("Forwarding existing track to SUBSCRIBE_TRACKS subscriber: {full_track_name:?}");
 
-      let relay_track_id = {
-        let track = track_arc.read().await;
-        track.relay_track_id
-      };
-
-      let relay_publish_id =
-        Session::get_next_relay_request_id(context.relay_next_request_id.clone()).await;
-      original_publish_message.request_id = relay_publish_id;
-      original_publish_message.track_alias = relay_track_id;
-      original_publish_message.parameters = parameters::downstream_publish(
-        &original_publish_message.parameters,
+      publish_handler::push_track_to_subscriber(
+        &context,
+        client.clone(),
+        &track_arc,
+        &original_publish_message,
         &sub_tracks.parameters,
-        track_arc.read().await.largest_object().await,
-      );
-
-      {
-        let mut map = context.relay_pending_requests.write().await;
-        map.insert(
-          relay_publish_id,
-          PendingRequest::Publish {
-            publisher_connection_id: client.connection_id,
-            original_request_id: relay_publish_id,
-            message: original_publish_message.clone(),
-          },
-        );
-      }
-
-      let track_read = track_arc.read().await;
-      if let Err(e) = track_read
-        .add_subscription(client.clone(), original_publish_message.clone(), false)
-        .await
-      {
-        warn!("Failed retroactive auto-subscribe for track: {:?}", e);
-      }
-      let subscription = track_read.get_subscription(client.connection_id).await;
-      drop(track_read);
-
-      // Each PUBLISH is a request on its own bidi stream.
-      let sub = client.clone();
-      let push_msg = original_publish_message.clone();
-      tokio::spawn(async move {
-        publish_handler::forward_publish_downstream(sub, push_msg, subscription).await;
-      });
+      )
+      .await;
       published += 1;
     } else {
       warn!("The track has no associated publish message, track: {full_track_name:?}");

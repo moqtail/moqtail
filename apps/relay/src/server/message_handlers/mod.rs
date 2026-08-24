@@ -124,7 +124,8 @@ impl MessageHandler {
           Publish,
           PublishNamespace,
           Subscribe,
-          SubscribeNamespace,
+          /// SUBSCRIBE_NAMESPACE and SUBSCRIBE_TRACKS are updated the same way.
+          PrefixSubscription,
           NotFound,
         }
 
@@ -134,8 +135,8 @@ impl MessageHandler {
           Some(PendingRequest::Publish { .. }) => Route::Publish,
           Some(PendingRequest::PublishNamespace { .. }) => Route::PublishNamespace,
           Some(PendingRequest::Subscribe(_)) => Route::Subscribe,
-          Some(PendingRequest::SubscribeNamespace { .. }) => Route::SubscribeNamespace,
-          Some(PendingRequest::SubscribeTracks { .. }) => Route::SubscribeNamespace,
+          Some(PendingRequest::SubscribeNamespace { .. }) => Route::PrefixSubscription,
+          Some(PendingRequest::SubscribeTracks { .. }) => Route::PrefixSubscription,
           Some(PendingRequest::RequestUpdate { .. }) => Route::NotFound,
           None => Route::NotFound,
         };
@@ -187,8 +188,8 @@ impl MessageHandler {
             )
             .await
           }
-          Route::SubscribeNamespace => {
-            subscribe_namespace_handler::handle(
+          Route::PrefixSubscription => {
+            crate::server::prefix_subscription::handle(
               client.clone(),
               stream_handler,
               msg,

@@ -216,51 +216,14 @@ pub async fn handle(
             subscriber.connection_id
           );
 
-          let sub_clone = subscriber.clone();
-
-          let mut m_clone = m.clone();
-
-          let relay_req_id =
-            Session::get_next_relay_request_id(context.relay_next_request_id.clone()).await;
-
-          m_clone.request_id = relay_req_id;
-          m_clone.track_alias = relay_track_id;
-          m_clone.parameters = parameters::downstream_publish(
-            &m.parameters,
+          push_track_to_subscriber(
+            &context,
+            subscriber,
+            &track_arc,
+            &m,
             &subscribe_tracks_params,
-            track_arc.read().await.largest_object().await,
-          );
-
-          // Register the message in unified map for response tracking
-          {
-            let mut map = context.relay_pending_requests.write().await;
-            map.insert(
-              relay_req_id,
-              PendingRequest::Publish {
-                publisher_connection_id: context.connection_id,
-                original_request_id: request_id,
-                message: (*m_clone).clone(),
-              },
-            );
-          }
-
-          let track_write = track_arc.read().await;
-          if let Err(e) = track_write
-            .add_subscription(subscriber.clone(), (*m_clone).clone(), false)
-            .await
-          {
-            warn!(
-              "Failed to auto-subscribe client {} to pushed track: {:?}",
-              subscriber.connection_id, e
-            );
-          }
-
-          // Push the PUBLISH on its own bidi stream and read PUBLISH_OK there.
-          let push_msg = *m_clone.clone();
-          let subscription = track_write.get_subscription(subscriber.connection_id).await;
-          tokio::spawn(async move {
-            forward_publish_downstream(sub_clone, push_msg, subscription).await;
-          });
+          )
+          .await;
         }
       } else {
         // Another publisher for the same track with a different alias.
@@ -544,6 +507,52 @@ pub(crate) async fn ensure_upstream_forwarding(
       warn!("No open PUBLISH request stream for publisher {connection_id} on {full_track_name:?}");
     }
   }
+}
+
+/// Send a PUBLISH for one track to one SUBSCRIBE_TRACKS subscriber, re-originated for
+/// this hop: the relay's own request id, its own track alias, and parameters it builds
+/// rather than forwards.
+///
+/// The caller decides whether this subscriber should be served, and owns any push limit.
+pub(crate) async fn push_track_to_subscriber(
+  context: &Arc<SessionContext>,
+  subscriber: Arc<MOQTClient>,
+  track_arc: &Arc<RwLock<Track>>,
+  publish: &Publish,
+  subscribe_tracks_params: &[MessageParameter],
+) {
+  let relay_request_id =
+    Session::get_next_relay_request_id(context.relay_next_request_id.clone()).await;
+
+  let mut downstream = publish.clone();
+  downstream.request_id = relay_request_id;
+  {
+    let track = track_arc.read().await;
+    downstream.track_alias = track.relay_track_id;
+    downstream.parameters = parameters::downstream_publish(
+      &publish.parameters,
+      subscribe_tracks_params,
+      track.largest_object().await,
+    );
+  }
+
+  let track = track_arc.read().await;
+  if let Err(e) = track
+    .add_subscription(subscriber.clone(), downstream.clone(), false)
+    .await
+  {
+    warn!(
+      "Failed to auto-subscribe client {} to pushed track: {:?}",
+      subscriber.connection_id, e
+    );
+  }
+  let subscription = track.get_subscription(subscriber.connection_id).await;
+  drop(track);
+
+  // Each PUBLISH is a request on its own bidi stream.
+  tokio::spawn(async move {
+    forward_publish_downstream(subscriber, downstream, subscription).await;
+  });
 }
 
 /// Push a PUBLISH to a subscriber on its own bidirectional request stream and read the

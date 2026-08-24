@@ -18,7 +18,7 @@ use std::convert::TryInto;
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
 use crate::model::error::ParseError;
 
-const MAX_VALUE_LENGTH: usize = 65535; // 2^16-1
+pub const MAX_VALUE_LENGTH: usize = 65535; // 2^16-1
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum KeyValuePair {
@@ -121,37 +121,41 @@ impl KeyValuePair {
       let value = bytes.get_vi()?;
       Ok(KeyValuePair::VarInt { type_value, value })
     } else {
-      // Bytes variant
-      let len_u64 = bytes.get_vi()?;
-      let len: usize =
-        len_u64
-          .try_into()
-          .map_err(|e: std::num::TryFromIntError| ParseError::CastingError {
-            context: "KeyValuePair::deserialize length",
-            from_type: "u64",
-            to_type: "usize",
-            details: e.to_string(),
-          })?;
-
-      if len > MAX_VALUE_LENGTH {
-        return Err(ParseError::LengthExceedsMax {
-          context: "KeyValuePair::deserialize",
-          max: MAX_VALUE_LENGTH,
-          len,
-        });
-      }
-      if bytes.remaining() < len {
-        return Err(ParseError::NotEnoughBytes {
-          context: "KeyValuePair::deserialize value",
-          needed: len,
-          available: bytes.remaining(),
-        });
-      }
-
-      let value = bytes.copy_to_bytes(len);
-
-      Ok(KeyValuePair::Bytes { type_value, value })
+      Self::deserialize_bytes_value(bytes, type_value)
     }
+  }
+
+  /// Reads a length-prefixed byte-string Value, independent of Type parity.
+  pub fn deserialize_bytes_value(bytes: &mut Bytes, type_value: u64) -> Result<Self, ParseError> {
+    let len_u64 = bytes.get_vi()?;
+    let len: usize =
+      len_u64
+        .try_into()
+        .map_err(|e: std::num::TryFromIntError| ParseError::CastingError {
+          context: "KeyValuePair::deserialize length",
+          from_type: "u64",
+          to_type: "usize",
+          details: e.to_string(),
+        })?;
+
+    if len > MAX_VALUE_LENGTH {
+      return Err(ParseError::LengthExceedsMax {
+        context: "KeyValuePair::deserialize",
+        max: MAX_VALUE_LENGTH,
+        len,
+      });
+    }
+    if bytes.remaining() < len {
+      return Err(ParseError::NotEnoughBytes {
+        context: "KeyValuePair::deserialize value",
+        needed: len,
+        available: bytes.remaining(),
+      });
+    }
+
+    let value = bytes.copy_to_bytes(len);
+
+    Ok(KeyValuePair::Bytes { type_value, value })
   }
 
   pub fn is_same_type(&self, other: &KeyValuePair) -> bool {

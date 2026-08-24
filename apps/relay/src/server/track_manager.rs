@@ -538,7 +538,7 @@ impl TrackManager {
         matches.push((
           full_track_name.clone(),
           track_arc.clone(),
-          pub_msg_map.values().nth(0).cloned(),
+          pub_msg_map.values().next().cloned(),
         ));
       } else if is_match {
         warn!("No publish for track {}", full_track_name);
@@ -553,14 +553,21 @@ impl TrackManager {
   /// A prefix already subscribed by this connection with the same kind that
   /// overlaps the new prefix. Overlap spaces are independent per kind, so a
   /// SUBSCRIBE_NAMESPACE never conflicts with a SUBSCRIBE_TRACKS.
+  ///
+  /// `exclude` names a prefix to skip, which is how a subscription being moved
+  /// avoids conflicting with the entry it is about to vacate.
   pub async fn find_overlapping_namespace_subscription(
     &self,
     connection_id: usize,
     new_prefix: &Tuple,
     kind: SubscribeKind,
+    exclude: Option<&Tuple>,
   ) -> Option<Tuple> {
     let subs = self.namespace_subscribers.read().await;
     for (existing_prefix, clients) in subs.iter() {
+      if exclude == Some(existing_prefix) {
+        continue;
+      }
       if clients
         .iter()
         .any(|(c, k, _, _)| c.connection_id == connection_id && *k == kind)
@@ -570,6 +577,37 @@ impl TrackManager {
       }
     }
     None
+  }
+
+  /// Moves this connection's prefix subscription of `kind` from `old_prefix` to
+  /// `new_prefix`, carrying its parameters and channel across so the subscriber
+  /// keeps receiving on the stream it already has. Returns false if there was no
+  /// such subscription to move.
+  pub async fn rekey_namespace_subscriber(
+    &self,
+    old_prefix: &Tuple,
+    new_prefix: Tuple,
+    connection_id: usize,
+    kind: SubscribeKind,
+  ) -> bool {
+    let mut subs = self.namespace_subscribers.write().await;
+
+    let Some(clients) = subs.get_mut(old_prefix) else {
+      return false;
+    };
+    let Some(position) = clients
+      .iter()
+      .position(|(c, k, _, _)| c.connection_id == connection_id && *k == kind)
+    else {
+      return false;
+    };
+    let subscriber = clients.remove(position);
+    if clients.is_empty() {
+      subs.remove(old_prefix);
+    }
+
+    subs.entry(new_prefix).or_default().push(subscriber);
+    true
   }
 
   pub async fn get_track_name_by_publisher(

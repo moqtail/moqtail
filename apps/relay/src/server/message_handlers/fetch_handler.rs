@@ -730,11 +730,6 @@ pub async fn handle(
                 .write()
                 .await
                 .remove(&relay_request_id);
-              context
-                .relay_pending_requests
-                .write()
-                .await
-                .remove(&relay_request_id);
               upstream_publisher
                 .outgoing_fetch_requests
                 .write()
@@ -959,12 +954,7 @@ async fn send_upstream_fetch_for_range(
       .outgoing_fetch_requests
       .write()
       .await
-      .insert(relay_request_id, req.clone());
-    context
-      .relay_pending_requests
-      .write()
-      .await
-      .insert(relay_request_id, PendingRequest::Fetch(req));
+      .insert(relay_request_id, req);
     context
       .upstream_fetch_senders
       .write()

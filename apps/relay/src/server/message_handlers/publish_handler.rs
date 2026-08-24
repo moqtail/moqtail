@@ -222,7 +222,6 @@ pub async fn handle(
             &track_arc,
             &m,
             &subscribe_tracks_params,
-            context.connection_id,
           )
           .await;
         }
@@ -521,13 +520,9 @@ pub(crate) async fn push_track_to_subscriber(
   track_arc: &Arc<RwLock<Track>>,
   publish: &Publish,
   subscribe_tracks_params: &[MessageParameter],
-  publisher_connection_id: usize,
 ) {
   let relay_request_id =
     Session::get_next_relay_request_id(context.relay_next_request_id.clone()).await;
-
-  // Read before the rewrite: the incoming request id is the publisher's own.
-  let publisher_request_id = publish.request_id;
 
   let mut downstream = publish.clone();
   downstream.request_id = relay_request_id;
@@ -538,18 +533,6 @@ pub(crate) async fn push_track_to_subscriber(
       &publish.parameters,
       subscribe_tracks_params,
       track.largest_object().await,
-    );
-  }
-
-  {
-    let mut map = context.relay_pending_requests.write().await;
-    map.insert(
-      relay_request_id,
-      PendingRequest::Publish {
-        publisher_connection_id,
-        original_request_id: publisher_request_id,
-        message: downstream.clone(),
-      },
     );
   }
 

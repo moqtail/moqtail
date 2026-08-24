@@ -207,18 +207,6 @@ pub async fn handle(
             update_msg.parameters.clone(),
           );
 
-          {
-            let mut map = context.relay_pending_requests.write().await;
-            map.insert(
-              relay_update_id,
-              PendingRequest::RequestUpdate {
-                client_connection_id: session.connection_id,
-                original_request_id: relay_update_id,
-                message: fanout_msg.clone(),
-              },
-            );
-          }
-
           // Goes on the namespace subscription's own request stream, which is
           // what names the request being updated.
           session

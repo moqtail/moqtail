@@ -133,8 +133,7 @@ pub async fn handle_subscribe_tracks(
       continue;
     }
 
-    if let Some((publisher_connection_id, original_publish_message)) = original_publish_message_opt
-    {
+    if let Some(original_publish_message) = original_publish_message_opt {
       // Out of streams to initiate this subscription: send PUBLISH_BLOCKED on
       // the response stream and stop (no PUBLISH may follow it).
       if max_publish_streams > 0 && published >= max_publish_streams {
@@ -161,7 +160,6 @@ pub async fn handle_subscribe_tracks(
         &track_arc,
         &original_publish_message,
         &sub_tracks.parameters,
-        publisher_connection_id,
       )
       .await;
       published += 1;

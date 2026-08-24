@@ -521,7 +521,7 @@ impl TrackManager {
   pub async fn get_tracks_and_publishes_by_namespace_prefix(
     &self,
     prefix: &Tuple,
-  ) -> Vec<(FullTrackName, Arc<RwLock<Track>>, Option<(usize, Publish)>)> {
+  ) -> Vec<(FullTrackName, Arc<RwLock<Track>>, Option<Publish>)> {
     let tracks = self.tracks.read().await;
     let publishes = self.publishes.read().await;
     let mut matches = Vec::new();
@@ -534,15 +534,11 @@ impl TrackManager {
       );
 
       if is_match && let Some(pub_msg_map) = publishes.get(full_track_name) {
-        // The first publish message, with the connection it came from: a pushed
-        // PUBLISH has to record where the track originated, not who it went to.
+        // return the first publish message
         matches.push((
           full_track_name.clone(),
           track_arc.clone(),
-          pub_msg_map
-            .iter()
-            .next()
-            .map(|(connection_id, publish)| (*connection_id, publish.clone())),
+          pub_msg_map.values().next().cloned(),
         ));
       } else if is_match {
         warn!("No publish for track {}", full_track_name);

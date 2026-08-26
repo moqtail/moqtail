@@ -31,6 +31,7 @@ use crate::model::data::object::Object;
 use crate::model::data::subgroup_header::SubgroupHeader;
 use crate::model::data::subgroup_object::SubgroupObject;
 use crate::model::error::ParseError;
+use crate::model::property::object_property::validate_prior_gaps;
 use crate::transport::connection::{TransportReadError, TransportRecvStream, TransportSendStream};
 use tracing::{debug, error, info, trace};
 
@@ -552,7 +553,17 @@ impl RecvDataStream {
             let new_ctx = fetch_obj.context();
             match fetch_obj {
               FetchObject::Object(payload) => {
-                if let Err(e) = fetch_state.subgroup_priorities.validate(&payload) {
+                let validated = fetch_state
+                  .subgroup_priorities
+                  .validate(&payload)
+                  .and_then(|()| {
+                    validate_prior_gaps(
+                      payload.group_id,
+                      payload.object_id,
+                      payload.properties.as_deref(),
+                    )
+                  });
+                if let Err(e) = validated {
                   malformed_track.store(true, Ordering::Relaxed);
                   return Err(e);
                 }

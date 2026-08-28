@@ -54,6 +54,7 @@ export enum MessageParameterType {
   SubscriberPriority = 0x20,
   SubscriptionFilter = 0x21,
   GroupOrder = 0x22,
+  SwitchFrom = 0x24,
   NewGroupRequest = 0x32,
   /**
    * Registered codepoint with no typed parameter yet: its consumer is REQUEST_UPDATE for
@@ -88,6 +89,8 @@ export function messageParameterTypeFromNumber(value: bigint | number): MessageP
       return MessageParameterType.SubscriptionFilter
     case 0x22:
       return MessageParameterType.GroupOrder
+    case 0x24:
+      return MessageParameterType.SwitchFrom
     case 0x32:
       return MessageParameterType.NewGroupRequest
     case 0x34:

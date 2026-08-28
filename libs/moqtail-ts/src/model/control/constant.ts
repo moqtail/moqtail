@@ -61,7 +61,6 @@ export enum ControlMessageType {
   Publish = 0x1d, // Request, First
   PublishOk = 0x1e, // Request; an alias of RequestOk (§10.5), not its own body
   PublishBlocked = 0x0f, // Request
-  Switch = 0x22, // not in draft-18; moqtail-local extension
 }
 
 /**
@@ -190,6 +189,15 @@ export namespace FilterType {
         throw new InvalidEnumValue('FilterType.tryFrom', v)
     }
   }
+}
+
+/**
+ * @public
+ * Switch modes for subscription switching requests.
+ */
+export enum SwitchMode {
+  Hard = 0x0,
+  Soft = 0x1,
 }
 
 /**

@@ -24,6 +24,7 @@ import {
   SetupOptions,
   ControlMessage,
   Datagram,
+  SwitchMode,
 } from '@/model'
 import { PublishNamespaceRequest } from './request/publish_namespace'
 import { FetchRequest } from './request/fetch'
@@ -206,21 +207,28 @@ export type SubscribeUpdateOptions = {
 /**
  * Parameters for {@link MOQtailClient.switch | switching} an existing SUBSCRIBE to a new track.
  *
- * @example Switching subscription to a new track
+ * @example Switching a subscription to a new track
  * ```ts
  * await client.switch({
- *   fullTrackName: newFullTrackName,
- *   subscriptionRequestId
+ *   switchFromRequestId,
+ *   switchMode: SwitchMode.Soft,
+ *   newSubscribeOptions: {
+ *     fullTrackName: newFullTrackName,
+ *     priority: 0,
+ *     groupOrder: GroupOrder.Original,
+ *     forward: true,
+ *     filterType: FilterType.LatestObject
+ *   }
  * })
  * ```
  */
 export type SwitchOptions = {
-  /** Fully qualified track identifier to switch to ({@link FullTrackName}). */
-  fullTrackName: FullTrackName
-  /** The original SUBSCRIBE request id (bigint) being updated. */
-  subscriptionRequestId: bigint
-  /** Optional additional parameters; existing parameters persist if omitted. */
-  parameters?: MessageParameter[]
+  /** The original SUBSCRIBE request id (bigint) being switched from. */
+  switchFromRequestId: bigint
+  /** {@link SwitchMode} controlling how the switch is applied. */
+  switchMode: SwitchMode
+  /** New subscription options to switch to. */
+  newSubscribeOptions: SubscribeOptions
 }
 
 /**

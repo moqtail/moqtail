@@ -36,7 +36,6 @@ import {
   RequestUpdate,
   Publish,
   RequestOk,
-  Switch,
   SubscribeOk,
   TrackStatus,
   ControlMessageType,
@@ -75,12 +74,14 @@ import {
   SubscriptionFilter,
   StreamResetCode,
   resolveTransportUrl,
+  SwitchFrom,
+  SwitchMode,
 } from '../model'
 import { Track } from './track/track'
 import { LiveTrackSource } from './track/content_source'
 import { PublishNamespaceRequest } from './request/publish_namespace'
 import { FetchRequest } from './request/fetch'
-import { SubscribeRequest } from './request/subscribe'
+import { SubscribeRequest, Subscription } from './request/subscribe'
 import { PublishRequest } from './request/publish'
 import { TrackStatusRequest } from './request/track_status'
 import { getHandlerForControlMessage, getHandlerForRequestStreamMessage } from './handler/handler'
@@ -195,11 +196,6 @@ export class MOQtailClient {
    * Maps track aliases to full track names for quick resolution during data handling.
    */
   readonly aliasFullTrackNameMap: Map<bigint, FullTrackName> = new Map()
-  /**
-   * Pending state updates keyed by requestId and applied once a new track alias is seen.
-   * Used to avoid premature state updates.
-   */
-  readonly pendingStateUpdates: Map<bigint, (newTrackAlias: bigint) => boolean> = new Map()
 
   /**
    * The bidirectional request stream each locally issued request runs on, keyed by the
@@ -1059,6 +1055,7 @@ export class MOQtailClient {
           break
       }
       const request = new SubscribeRequest(msg)
+      request.manager = new Subscription(request)
       request.earlyDiscardPolicy = args.earlyDiscardPolicy
       this.requests.set(request.requestId, request)
       this.requestIdMap.addMapping(request.requestId, request.fullTrackName)
@@ -1138,21 +1135,22 @@ export class MOQtailClient {
   async unsubscribe(requestId: bigint | number): Promise<void> {
     this.#ensureActive()
     if (typeof requestId === 'number') requestId = BigInt(requestId)
-    let cleanupData: { requestId: bigint; trackAlias: bigint; subscription: SubscribeRequest } | null = null
+    const subscription = this.requests.get(requestId)
+    if (!(subscription instanceof SubscribeRequest)) return
+
+    // A switched subscription may still be tracking several requests racing to take
+    // over (soft-switch handover); unsubscribing tears down the whole chain, not just
+    // the id passed in.
+    const owner = subscription.manager
+    const targets = owner ? owner.requests.slice() : [subscription]
 
     try {
-      if (this.requests.has(requestId)) {
-        const subscription = this.requests.get(requestId)!
-        if (subscription instanceof SubscribeRequest) {
-          const trackAlias = this.subscriptionAliasMap.get(requestId)!
-          cleanupData = { requestId, trackAlias, subscription }
-
-          // Draft-18 §3.3.2: there is no UNSUBSCRIBE. Resetting the subscription's
-          // request stream is what tells the publisher to stop, and the code it reads
-          // back off that reset is CANCELLED.
-          await this.#resetRequestStream(requestId, StreamResetCode.Cancelled)
-          subscription.unsubscribe()
-        }
+      for (const target of targets) {
+        // Draft-18 §3.3.2: there is no UNSUBSCRIBE. Resetting the subscription's
+        // request stream is what tells the publisher to stop, and the code it reads
+        // back off that reset is CANCELLED.
+        await this.#resetRequestStream(target.requestId, StreamResetCode.Cancelled)
+        target.unsubscribe()
       }
       // Q: Throw? Idempotent?
     } catch (error) {
@@ -1161,12 +1159,17 @@ export class MOQtailClient {
       )
       throw error
     } finally {
-      if (cleanupData) {
-        this.requests.delete(cleanupData.requestId)
-        this.subscriptions.delete(cleanupData.trackAlias)
-        this.aliasFullTrackNameMap.delete(cleanupData.trackAlias)
-        this.requestIdMap.removeMappingByRequestId(cleanupData.requestId)
+      for (const target of targets) {
+        const trackAlias = this.subscriptionAliasMap.get(target.requestId)
+        this.requests.delete(target.requestId)
+        this.requestIdMap.removeMappingByRequestId(target.requestId)
+        this.subscriptionAliasMap.delete(target.requestId)
+        if (trackAlias !== undefined) {
+          this.subscriptions.delete(trackAlias)
+          this.aliasFullTrackNameMap.delete(trackAlias)
+        }
       }
+      owner?.clear()
     }
   }
 
@@ -1249,88 +1252,81 @@ export class MOQtailClient {
   }
 
   /**
-   * Switches an active subscription to a different track while retaining the same subscription parameters.
+   * Switches an active subscription to a different track while retaining the same subscription's
+   * output stream.
    *
-   * Use this to change the subscribed track without tearing down and re-establishing a new subscription.
+   * Sends a fresh SUBSCRIBE carrying a SwitchFrom parameter referencing `switchFromRequestId`. A soft
+   * switch may keep delivering objects from the old track for a while after SUBSCRIBE_OK, and this can
+   * be called again before the previous target has produced anything; only the first object actually
+   * delivered by the newest switch target retires everything older.
    *
-   * @param args - {@link SwitchOptions} referencing the original subscription `requestId` and new track name.
-   * @returns Promise that resolves when the switch control frame is sent.
+   * @param args - {@link SwitchOptions} referencing the subscription to switch from and the new subscription options.
+   * @returns Either a {@link RequestError} (refusal) or `{ requestId, stream }`, where `stream` is the
+   * same {@link https://developer.mozilla.org/docs/Web/API/ReadableStream | ReadableStream} object returned by the original `subscribe()` call.
    * @throws :{@link MOQtailError} If the client is destroyed.
+   * @throws :{@link ProtocolViolationError} If `switchFromRequestId` does not name an active subscription.
    * @throws :{@link InternalError} On transport/control failure (disconnect is triggered before rethrow).
-   *
-   * @remarks
-   * - Only applies to active SUBSCRIBE requests; ignored if the request is not a subscription.
-   * - All other subscription parameters (window, forwarding, priority) remain unchanged.
    *
    * @example Switch to a different track
    * ```ts
-   * await client.switch({ subscriptionRequestId, fullTrackName: newTrackName });
+   * await client.switch({
+   *   switchFromRequestId,
+   *   switchMode: SwitchMode.Soft,
+   *   newSubscribeOptions: { fullTrackName: newTrackName, priority: 0, groupOrder: GroupOrder.Original, forward: true, filterType: FilterType.LatestObject }
+   * });
    * ```
    */
   async switch(args: SwitchOptions): Promise<RequestError | { requestId: bigint; stream: ReadableStream<MoqtObject> }> {
     this.#ensureActive()
-    let { fullTrackName, subscriptionRequestId, parameters } = args
+    const { switchFromRequestId, switchMode, newSubscribeOptions } = args
     try {
-      if (!this.requests.has(subscriptionRequestId))
-        throw new ProtocolViolationError('MOQtailClient.switch', 'Unknown subscription request id')
+      const fromRequest = this.requests.get(switchFromRequestId)
+      if (!(fromRequest instanceof SubscribeRequest) || !fromRequest.manager)
+        throw new ProtocolViolationError('MOQtailClient.switch', 'switchFromRequestId is not an active subscription')
+      const subscription = fromRequest.manager
 
-      const request = this.requests.get(subscriptionRequestId)!
-      if (!(request instanceof SubscribeRequest))
-        throw new ProtocolViolationError('MOQtailClient.switch', 'Request id is not a subscription')
-
-      const trackAlias = this.subscriptionAliasMap.get(subscriptionRequestId)
-      if (!isValidTrackAlias(trackAlias))
-        throw new InternalError('MOQtailClient.switch', 'Request exists but track alias mapping does not')
-      const subscription = this.subscriptions.get(trackAlias)
-      if (!subscription) throw new InternalError('MOQtailClient.switch', 'Request exists but subscription does not')
-
-      const requestId = this.#nextClientRequestId
-      this.requests.set(requestId, subscription)
-
-      const switchParams: MessageParameter[] = parameters ?? []
-      const kvpParams = switchParams.map((p) => p.toKeyValuePair())
-      const msg = new Switch(requestId, fullTrackName, subscriptionRequestId, kvpParams)
-      subscription.switch(fullTrackName, switchParams)
-      // SWITCH retargets an existing subscription, so it goes on that subscription's
-      // stream and its SUBSCRIBE_OK comes back there.
-      const requestStream = this.#requestStreamFor(subscriptionRequestId, 'MOQtailClient.switch')
-      await requestStream.send(msg)
-      // The switched subscription is addressed by the new id from here on, so file the
-      // stream under it too — unsubscribe(requestId) must still find it.
-      this.#requestStreams.set(requestId, requestStream)
-
-      const response = await subscription
-      if (response instanceof SubscribeOk) {
-        // Generate a new update callback mapping for the new track alias
-        this.aliasFullTrackNameMap.set(response.trackAlias, fullTrackName)
-        this.pendingStateUpdates.set(subscriptionRequestId, (newTrackAlias: bigint) => {
-          if (newTrackAlias !== response.trackAlias) return false
-          // Update internal state to expect the new subscription
-          this.subscriptions.set(response.trackAlias, subscription)
-          this.subscriptionAliasMap.set(requestId, response.trackAlias)
-          subscription.requestId = requestId
-
-          // Old subscription id is no longer valid
-          this.requestIdMap.removeMappingByRequestId(subscriptionRequestId)
-          this.requestIdMap.addMapping(subscriptionRequestId, fullTrackName)
-
-          // remove the old subscription
-          this.subscriptions.delete(trackAlias)
-          return true
-        })
-
-        return { requestId, stream: subscription.stream }
-      } else {
-        this.requestIdMap.removeMappingByRequestId(requestId)
-        this.requests.delete(requestId)
-        return response
+      subscription.onSuperseded ??= (superseded) => {
+        for (const request of superseded) void this.#retireSwitchedRequest(request)
       }
+
+      const existingSwitchFrom = newSubscribeOptions.parameters?.find(MessageParameter.isSwitchFrom)
+      if (existingSwitchFrom)
+        logger.warn(
+          'MOQtailClient',
+          `switch: overwriting existing SwitchFrom parameter for requestId=${switchFromRequestId}`,
+        )
+      const parameters = [
+        ...(newSubscribeOptions.parameters?.filter((p) => !MessageParameter.isSwitchFrom(p)) ?? []),
+        new SwitchFrom(switchFromRequestId, switchMode, false),
+      ]
+
+      // subscribe() gives the new request its own stream/controller, but nothing ever
+      // reads them — Subscription.deliver() re-routes its objects onto the original stream.
+      const result = await this.subscribe({ ...newSubscribeOptions, parameters })
+      if (result instanceof RequestError) return result
+
+      const newRequest = this.requests.get(result.requestId) as SubscribeRequest
+      subscription.addSwitchTarget(newRequest)
+      return { requestId: result.requestId, stream: subscription.stream }
     } catch (error) {
       await this.disconnect(
         new InternalError('MOQtailClient.switch', error instanceof Error ? error.message : String(error)),
       )
       throw error
     }
+  }
+
+  /** Tears down a switch target that lost the handover race to a newer one. */
+  async #retireSwitchedRequest(request: SubscribeRequest): Promise<void> {
+    const trackAlias = this.subscriptionAliasMap.get(request.requestId)
+    this.requests.delete(request.requestId)
+    this.requestIdMap.removeMappingByRequestId(request.requestId)
+    this.subscriptionAliasMap.delete(request.requestId)
+    if (trackAlias !== undefined) {
+      this.subscriptions.delete(trackAlias)
+      this.aliasFullTrackNameMap.delete(trackAlias)
+    }
+    await this.#resetRequestStream(request.requestId, StreamResetCode.Cancelled)
   }
 
   /**
@@ -2334,19 +2330,7 @@ export class MOQtailClient {
         }
         throw new ProtocolViolationError('MOQtailClient', 'No request for received request id')
       } else {
-        let subscription = this.subscriptions.get(header.trackAlias)
-
-        // Check pending state updates for switch operations
-        if (!subscription) {
-          for (const [subscriptionId, callback] of this.pendingStateUpdates) {
-            const matched = callback(header.trackAlias)
-            if (matched) {
-              subscription = this.subscriptions.get(header.trackAlias)
-              this.pendingStateUpdates.delete(subscriptionId)
-              break
-            }
-          }
-        }
+        const subscription = this.subscriptions.get(header.trackAlias)
 
         if (subscription) {
           subscription.streamsAccepted++
@@ -2397,7 +2381,8 @@ export class MOQtailClient {
                   if (subscription.largestLocation.compare(moqtObject.location) == -1)
                     subscription.largestLocation = moqtObject.location
 
-                  subscription.controller?.enqueue(moqtObject)
+                  if (subscription.manager) subscription.manager.deliver(subscription, moqtObject)
+                  else subscription.controller?.enqueue(moqtObject)
                   continue
                 }
                 throw new ProtocolViolationError('MOQtailClient', 'Received fetch object after subgroup header')
@@ -2409,7 +2394,13 @@ export class MOQtailClient {
 
           // Subscribe Cleanup
           if (subscription.expectedStreams && subscription.expectedStreams === subscription.streamsAccepted) {
-            subscription.controller?.close()
+            const owner = subscription.manager
+            if (owner) {
+              owner.drop(subscription)
+              if (owner.requests.length === 0) owner.controller.close()
+            } else {
+              subscription.controller?.close()
+            }
             this.subscriptions.delete(header.trackAlias)
             this.requests.delete(subscription.requestId)
           }

@@ -18,7 +18,7 @@ import { KeyValuePair, deserializeKvpList, isBytes, isVarInt, serializeKvpList }
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
 import { greaseValue } from '../common/grease'
 import { ProtocolViolationError } from '../error/error'
-import { FilterType, GroupOrder } from '../control/constant'
+import { FilterType, GroupOrder, SwitchMode } from '../control/constant'
 import { Location } from '../common'
 import { AuthorizationToken } from './common'
 import { FillTimeout } from './message/fill_timeout'
@@ -32,6 +32,7 @@ import { LargestObject } from './message/largest_object'
 import { NewGroupRequest } from './message/new_group_request'
 import { SubscriberPriority } from './message/subscriber_priority'
 import { SubscriptionFilter } from './message/subscription_filter'
+import { SwitchFrom } from './message/switch_from'
 
 export type MessageParameter =
   | ObjectDeliveryTimeout
@@ -46,6 +47,7 @@ export type MessageParameter =
   | GroupOrderParam
   | SubscriptionFilter
   | NewGroupRequest
+  | SwitchFrom
 
 export namespace MessageParameter {
   /**
@@ -66,7 +68,8 @@ export namespace MessageParameter {
       SubscriberPriority.fromKeyValuePair(pair) ??
       GroupOrderParam.fromKeyValuePair(pair) ??
       SubscriptionFilter.fromKeyValuePair(pair) ??
-      NewGroupRequest.fromKeyValuePair(pair)
+      NewGroupRequest.fromKeyValuePair(pair) ??
+      SwitchFrom.fromKeyValuePair(pair)
     )
   }
 
@@ -126,6 +129,10 @@ export namespace MessageParameter {
   export function isNewGroupRequest(param: MessageParameter): param is NewGroupRequest {
     return param instanceof NewGroupRequest
   }
+
+  export function isSwitchFrom(param: MessageParameter): param is SwitchFrom {
+    return param instanceof SwitchFrom
+  }
 }
 
 /**
@@ -182,6 +189,10 @@ export class MessageParameters {
 
   addNewGroupRequest(group: bigint | number): this {
     return this.add(new NewGroupRequest(BigInt(group)))
+  }
+
+  addSwitchFrom(requestId: bigint | number, mode: SwitchMode, publishDone: boolean): this {
+    return this.add(new SwitchFrom(BigInt(requestId), mode, publishDone))
   }
 
   build(): MessageParameter[] {

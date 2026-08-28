@@ -17,7 +17,6 @@
 export * from './publish_blocked'
 export * from './publish_namespace'
 export * from './subscribe'
-export * from './switch'
 export * from './namespace'
 export * from './namespace_done'
 export * from './setup'

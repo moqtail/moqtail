@@ -15,6 +15,7 @@
 use crate::server::client::MOQTClient;
 use crate::server::client::switch_context::SwitchStatus;
 use crate::server::config::AppConfig;
+use crate::server::message_handlers::fetch_handler::FetchStop;
 use crate::server::object_logger::ObjectLogger;
 use crate::server::stream_id::StreamId;
 use crate::server::track::ActiveSubgroupHeaderMap;
@@ -50,6 +51,7 @@ use tokio::sync::Mutex;
 use tokio::sync::Notify;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::watch;
 use tracing::trace;
 use tracing::warn;
 use tracing::{debug, error, info};
@@ -88,6 +90,8 @@ pub struct SubscriptionState {
   pub filter_type: FilterType,
   pub start_location: Option<Location>,
   pub end_group: u64,
+  /// How many groups back from the Largest Object a RelativeStartFill starts.
+  pub relative_previous: Option<u64>,
   pub subscribe_parameters: Vec<MessageParameter>,
   pub last_sent_max_location: Option<Location>,
   pub last_received_object_location: Option<Location>,
@@ -162,7 +166,7 @@ impl From<SubscriptionOrigin> for SubscriptionState {
           })
           .unwrap_or(true);
 
-        let (filter_type, start_location, end_group) = subscribe
+        let (filter_type, start_location, end_group, relative_previous) = subscribe
           .subscribe_parameters
           .iter()
           .find_map(|p| {
@@ -170,15 +174,20 @@ impl From<SubscriptionOrigin> for SubscriptionState {
               filter_type,
               start_location,
               end_group,
-              ..
+              relative_previous,
             } = p
             {
-              Some((*filter_type, start_location.clone(), end_group.unwrap_or(0)))
+              Some((
+                *filter_type,
+                start_location.clone(),
+                end_group.unwrap_or(0),
+                *relative_previous,
+              ))
             } else {
               None
             }
           })
-          .unwrap_or((FilterType::LatestObject, None, 0));
+          .unwrap_or((FilterType::LatestObject, None, 0, None));
 
         Self {
           subscriber_priority,
@@ -187,6 +196,7 @@ impl From<SubscriptionOrigin> for SubscriptionState {
           filter_type,
           start_location,
           end_group,
+          relative_previous,
           subscribe_parameters: subscribe.subscribe_parameters,
           last_sent_max_location: None,
           last_received_object_location: None,
@@ -230,7 +240,7 @@ impl From<SubscriptionOrigin> for SubscriptionState {
           })
           .unwrap_or(true);
 
-        let (filter_type, start_location, end_group) = publish
+        let (filter_type, start_location, end_group, relative_previous) = publish
           .parameters
           .iter()
           .find_map(|p| {
@@ -238,15 +248,20 @@ impl From<SubscriptionOrigin> for SubscriptionState {
               filter_type,
               start_location,
               end_group,
-              ..
+              relative_previous,
             } = p
             {
-              Some((*filter_type, start_location.clone(), end_group.unwrap_or(0)))
+              Some((
+                *filter_type,
+                start_location.clone(),
+                end_group.unwrap_or(0),
+                *relative_previous,
+              ))
             } else {
               None
             }
           })
-          .unwrap_or((FilterType::LatestObject, None, 0));
+          .unwrap_or((FilterType::LatestObject, None, 0, None));
 
         Self {
           subscriber_priority,
@@ -255,6 +270,7 @@ impl From<SubscriptionOrigin> for SubscriptionState {
           filter_type,
           start_location,
           end_group,
+          relative_previous,
           subscribe_parameters: publish.parameters,
           last_sent_max_location: None,
           last_received_object_location: None,
@@ -265,13 +281,16 @@ impl From<SubscriptionOrigin> for SubscriptionState {
   }
 }
 
+/// The publisher priority assumed where a stream carries no single Object's own.
+pub(crate) const DEFAULT_PUBLISHER_PRIORITY: u8 = 128;
+
 /// Compute QUIC stream priority from MOQT scheduling parameters.
 ///
 /// The i32 space is divided into 65536 bands (one per sub_prio × pub_prio pair).
 /// Within each band, group_id determines relative position according to group_order:
 ///   Ascending / Original – lower group_id = higher priority (counts down from band_max)
 ///   Descending            – higher group_id = higher priority (counts up from band_min)
-fn compute_stream_priority(
+pub(crate) fn compute_stream_priority(
   sub_prio: u8,
   pub_prio: u8,
   group_order: GroupOrder,
@@ -319,6 +338,9 @@ pub struct Subscription {
   /// Forwarding waits for this, and the queued Objects follow in order.
   alias_announced: Arc<AtomicBool>,
   alias_announced_notify: Arc<Notify>,
+  /// Fill fetch streams still delivering, keyed by the request that asked for the
+  /// fill. Held so Forward State 0 and cancellation can stop them.
+  fill_streams: Arc<RwLock<HashMap<u64, watch::Sender<FetchStop>>>>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -355,7 +377,29 @@ impl Subscription {
       active_subgroup_headers,
       alias_announced: Arc::new(AtomicBool::new(false)),
       alias_announced_notify: Arc::new(Notify::new()),
+      fill_streams: Arc::new(RwLock::new(HashMap::new())),
     }
+  }
+
+  /// Tracks a fill fetch stream that has started delivering.
+  pub async fn register_fill_stream(&self, request_id: u64, cancel: watch::Sender<FetchStop>) {
+    self.fill_streams.write().await.insert(request_id, cancel);
+  }
+
+  pub async fn unregister_fill_stream(&self, request_id: u64) {
+    self.fill_streams.write().await.remove(&request_id);
+  }
+
+  /// Stops every fill fetch stream still delivering for this subscription.
+  pub async fn stop_fill_streams(&self, reason: FetchStop) {
+    for (_, cancel) in self.fill_streams.write().await.drain() {
+      let _ = cancel.send(reason);
+    }
+  }
+
+  /// A fill fetch stream counts towards PUBLISH_DONE Stream Count like any other.
+  pub fn note_fill_stream_opened(&self) {
+    self.opened_stream_count.fetch_add(1, Ordering::Relaxed);
   }
 
   /// Called once the subscriber has been sent its track alias, releasing forwarding.
@@ -581,7 +625,7 @@ impl Subscription {
   // Returns Ok if the update is successful
   // Returns error if the update is invalid
   pub async fn update_subscription(&self, request_update: RequestUpdate) -> Result<()> {
-    let forward_becoming_true = {
+    let (forward_becoming_true, forward_becoming_false) = {
       let mut state = self.subscription_state.write().await;
 
       // Extract filter_type, start_location and end_group from SubscriptionFilter parameter
@@ -608,8 +652,10 @@ impl Subscription {
       }
 
       // Update explicit subscription state fields if they are present in the parameters.
-      // Track whether forward transitions false to true so we can flush pending_header below.
+      // Track which way forward transitioned: false to true flushes pending_header
+      // below, true to false stops anything still filling.
       let mut transition = false;
+      let mut forward_becoming_false = false;
       for param in &request_update.parameters {
         match param {
           MessageParameter::SubscriberPriority { priority } => {
@@ -618,6 +664,9 @@ impl Subscription {
           MessageParameter::Forward { forward } => {
             if *forward && !state.forward {
               transition = true;
+            }
+            if !*forward && state.forward {
+              forward_becoming_false = true;
             }
             state.forward = *forward;
           }
@@ -642,9 +691,14 @@ impl Subscription {
         self.relay_track_id, state
       );
 
-      transition
+      (transition, forward_becoming_false)
       // write lock on subscription_state is dropped here
     };
+
+    // Forward State 0 ends any fill in progress along with live delivery.
+    if forward_becoming_false {
+      self.stop_fill_streams(FetchStop::Cancelled).await;
+    }
 
     // If forward just became true, open the stream for the current mid-group header
     // that was cached while forward=false.

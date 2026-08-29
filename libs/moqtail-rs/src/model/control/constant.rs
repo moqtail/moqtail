@@ -53,7 +53,6 @@ pub enum ControlMessageType {
   PublishDone = 0x0B,        // Request
   PublishOk = 0x1E,          // Request; an alias of RequestOk, not its own body
   PublishBlocked = 0x0F,     // Request
-  Switch = 0x22,             // moqtail-local extension, not a standard message type
 }
 
 impl TryFrom<u64> for ControlMessageType {
@@ -80,7 +79,6 @@ impl TryFrom<u64> for ControlMessageType {
       0x1D => Ok(ControlMessageType::Publish),
       0x1E => Ok(ControlMessageType::PublishOk),
       0x0F => Ok(ControlMessageType::PublishBlocked),
-      0x22 => Ok(ControlMessageType::Switch),
       _ => Err(ParseError::InvalidType {
         context: " ControlMessageType::try_from(u64)",
         details: format!("Invalid type, got {value}"),

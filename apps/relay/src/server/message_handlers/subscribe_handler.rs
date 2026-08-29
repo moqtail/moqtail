@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use crate::server::client::MOQTClient;
-use crate::server::client::switch_context::SwitchStatus;
 use crate::server::message_handlers::parameters;
 use crate::server::session::Session;
 use crate::server::session_context::{PendingRequest, SessionContext};
@@ -28,9 +27,7 @@ use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::model::error::RequestErrorCode;
 use moqtail::model::error::StreamResetCode;
 use moqtail::model::error::TerminationCode;
-use moqtail::model::parameter::message_parameter::{
-  MessageParameter, MessageParameterVecExt, apply_message_parameter_update,
-};
+use moqtail::model::parameter::message_parameter::apply_message_parameter_update;
 use moqtail::model::property::track_property::has_unsupported_mandatory;
 use moqtail::model::{
   common::reason_phrase::ReasonPhrase, control::control_message::ControlMessage,
@@ -1098,132 +1095,6 @@ async fn handle_subscribe_error_message(
   Ok(())
 }
 
-async fn handle_switch_message(
-  client: Arc<MOQTClient>,
-  stream_handler: &mut ControlStreamHandler,
-  switch_message: moqtail::model::control::switch::Switch,
-  context: Arc<SessionContext>,
-) -> Result<(), TerminationCode> {
-  info!("received Switch message: {:?}", switch_message);
-
-  // now different from a normal subscribe, we need to
-  // check whether there is a related track to switch from
-  let switch_from_track = {
-    let requests = client.subscribe_requests.read().await;
-
-    let req = requests.get(&switch_message.subscription_request_id);
-    match req {
-      Some(req) => {
-        let track_name = req.original_subscribe_request.get_full_track_name();
-        if let Some(track) = context.track_manager.get_track(&track_name).await {
-          info!(
-            "found old track request, original request id: {:?}",
-            req.original_request_id
-          );
-          Some(track.clone())
-        } else {
-          warn!("old track not found for track name: {:?}", track_name);
-          None
-        }
-      }
-      None => None,
-    }
-  };
-
-  if switch_from_track.is_none() {
-    warn!(
-      "no existing track found for switch subscription request id: {:?}",
-      switch_message.subscription_request_id
-    );
-    return Err(TerminationCode::ProtocolViolation);
-  }
-
-  let switch_from_track_guard = switch_from_track.unwrap();
-
-  let switch_from_track = switch_from_track_guard.read().await;
-
-  if let Some(sub) = client
-    .subscriptions
-    .get_subscription(&switch_from_track.full_track_name)
-    .await
-  {
-    if sub.upgrade().is_none() {
-      warn!(
-        "subscription weak reference is dead for track: {:?} subscriber: {}",
-        switch_from_track.full_track_name, context.connection_id
-      );
-      return Err(TerminationCode::ProtocolViolation);
-    }
-
-    let mut is_active = false;
-    if let Some(sub) = sub.upgrade() {
-      let sub = sub.read().await;
-      is_active = sub.is_active().await;
-    }
-
-    if !is_active {
-      warn!(
-        "subscription is not active for track: {:?} subscriber: {}",
-        switch_from_track.full_track_name, context.connection_id
-      );
-      return Err(TerminationCode::ProtocolViolation);
-    }
-  } else {
-    warn!(
-      "no subscription found for track: {:?} subscriber: {}",
-      switch_from_track.full_track_name, context.connection_id
-    );
-    return Err(TerminationCode::ProtocolViolation);
-  }
-
-  let mut switch_params: Vec<MessageParameter> = switch_message
-    .subscribe_parameters
-    .iter()
-    .filter_map(|kvp| MessageParameter::deserialize(kvp).ok())
-    .collect();
-
-  switch_params.set_param(MessageParameter::new_forward(true)); // forward always true for switch
-
-  let subscribe = Subscribe::new_latest_object(
-    switch_message.request_id,
-    switch_message.track_namespace.clone(),
-    switch_message.track_name.clone(),
-    switch_params,
-  );
-
-  let new_full_track_name = subscribe.get_full_track_name();
-
-  if let Err(e) = handle_subscribe_message(
-    client.clone(),
-    stream_handler,
-    subscribe,
-    context.clone(),
-    true, // is_switch
-  )
-  .await
-  {
-    error!("error handling switch subscribe message: {:?}", e);
-    Err(e)
-  } else {
-    info!("switch subscribe message handled successfully");
-
-    // update the switch context
-    client
-      .switch_context
-      .add_or_update_switch_item(new_full_track_name, SwitchStatus::Next)
-      .await;
-
-    let switch_from_track_name = switch_from_track.full_track_name.clone();
-
-    client
-      .switch_context
-      .add_or_update_switch_item(switch_from_track_name, SwitchStatus::Current)
-      .await;
-
-    Ok(())
-  }
-}
-
 pub async fn handle(
   client: Arc<MOQTClient>,
   stream_handler: &mut ControlStreamHandler,
@@ -1241,7 +1112,6 @@ pub async fn handle(
       };
       handle_request_update(client, stream_handler, *m, context, target_request_id).await
     }
-    ControlMessage::Switch(m) => handle_switch_message(client, stream_handler, *m, context).await,
     _ => {
       // no-op
       Ok(())

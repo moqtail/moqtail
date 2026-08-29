@@ -22,7 +22,7 @@ use super::{
   publish_blocked::PublishBlocked, publish_done::PublishDone, publish_namespace::PublishNamespace,
   request_error::RequestError, request_ok::RequestOk, request_update::RequestUpdate, setup::Setup,
   subscribe::Subscribe, subscribe_namespace::SubscribeNamespace, subscribe_ok::SubscribeOk,
-  subscribe_tracks::SubscribeTracks, switch::Switch, track_status::TrackStatus,
+  subscribe_tracks::SubscribeTracks, track_status::TrackStatus,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -45,7 +45,6 @@ pub enum ControlMessage {
   SubscribeTracks(Box<SubscribeTracks>),
   RequestError(Box<RequestError>),
   PublishBlocked(Box<PublishBlocked>),
-  Switch(Box<Switch>),
 }
 
 pub trait ControlMessageTrait: std::fmt::Debug {
@@ -133,7 +132,6 @@ impl ControlMessage {
       ControlMessageType::PublishBlocked => {
         PublishBlocked::parse_payload(&mut payload).map(ControlMessage::PublishBlocked)
       }
-      ControlMessageType::Switch => Switch::parse_payload(&mut payload).map(ControlMessage::Switch),
     }
     .map_err(|err| ParseError::ProtocolViolation {
       context: "ControlMessage::deserialize(payload)",
@@ -172,7 +170,6 @@ impl ControlMessage {
       ControlMessage::SubscribeNamespace(msg) => msg.serialize(),
       ControlMessage::SubscribeTracks(msg) => msg.serialize(),
       ControlMessage::PublishBlocked(msg) => msg.serialize(),
-      ControlMessage::Switch(msg) => msg.serialize(),
     }
   }
 
@@ -197,7 +194,6 @@ impl ControlMessage {
       ControlMessage::SubscribeNamespace(_) => ControlMessageType::SubscribeNamespace,
       ControlMessage::SubscribeTracks(_) => ControlMessageType::SubscribeTracks,
       ControlMessage::PublishBlocked(_) => ControlMessageType::PublishBlocked,
-      ControlMessage::Switch(_) => ControlMessageType::Switch,
     }
   }
 }

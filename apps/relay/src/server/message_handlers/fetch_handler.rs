@@ -16,10 +16,10 @@ use crate::server::client::MOQTClient;
 use crate::server::message_handlers::parameters;
 use crate::server::session_context::{PendingRequest, SessionContext, UpstreamFetchEvent};
 use crate::server::stream_id::StreamId;
-use crate::server::utils::build_stream_id;
 use core::result::Result::{Err, Ok};
 use moqtail::model::common::location::Location;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
+use moqtail::model::control::constant::GroupOrder;
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::fetch::Fetch;
 use moqtail::model::control::fetch_ok::FetchOk;
@@ -29,7 +29,7 @@ use moqtail::model::error::RequestErrorCode;
 use moqtail::model::error::StreamResetCode;
 use moqtail::model::error::TerminationCode;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
-use moqtail::transport::data_stream_handler::{FetchRequest, HeaderInfo};
+use moqtail::transport::data_stream_handler::FetchRequest;
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, error, info, warn};
@@ -226,8 +226,8 @@ pub async fn handle(
 
       let full_track_name = fetch.get_full_track_name();
       let track = context.track_manager.get_track(&full_track_name).await;
-      let start_location = Some(fetch.start_location.clone());
-      let end_location = Some(fetch.end_location.clone());
+      let start_location = fetch.start_location.clone();
+      let requested_end = fetch.end_location.clone();
 
       // TODO: send fetch message to the publisher
       if track.is_none() {
@@ -245,8 +245,7 @@ pub async fn handle(
 
       info!(
         "handle_fetch_messages | Fetching objects from {:?} to {:?}",
-        start_location.clone().unwrap(),
-        end_location.clone().unwrap()
+        start_location, requested_end
       );
 
       let track = track.unwrap();
@@ -270,8 +269,8 @@ pub async fn handle(
       let mut pending_upstream: Option<PendingUpstreamFetch> = None;
 
       let end_location = {
-        let start = start_location.clone().unwrap();
-        let requested_end = end_location.clone().unwrap();
+        let start = start_location.clone();
+        let requested_end = requested_end.clone();
         let mut largest = track.read().await.largest_object().await;
 
         // A relay must not answer until it knows the End Location. Where the request
@@ -293,7 +292,7 @@ pub async fn handle(
         }
         match resolve_standalone_fetch_range(start.clone(), requested_end.clone(), largest.clone())
         {
-          Ok(clamped) => Some(clamped),
+          Ok(clamped) => clamped,
           Err(FetchRangeError::ProtocolViolation) => {
             warn!(
               "FETCH request {}: End {:?} precedes Start {:?}; closing session (PROTOCOL_VIOLATION)",
@@ -305,7 +304,7 @@ pub async fn handle(
             // Only authoritative when there is no upstream publisher that could
             // still serve the range; otherwise fall through to upstream fetch.
             if has_upstream_publisher(&context, &track).await {
-              end_location
+              requested_end.clone()
             } else {
               warn!(
                 "FETCH request {}: INVALID_RANGE (start {:?}, end {:?}, largest {:?})",
@@ -326,370 +325,29 @@ pub async fn handle(
 
       // Send FetchOk on the request stream before delivering objects.
       {
-        let fetch_ok = FetchOk::new(false, end_location.clone().unwrap(), vec![], vec![]);
+        let fetch_ok = FetchOk::new(false, end_location.clone(), vec![], vec![]);
         stream_handler
           .send(&ControlMessage::FetchOk(Box::new(fetch_ok)))
           .await?;
       }
 
       // Register a cancel channel for this fetch request
-      let (cancel_tx, mut cancel_rx) = watch::channel(FetchStop::Running);
+      let (cancel_tx, cancel_rx) = watch::channel(FetchStop::Running);
       {
         let mut senders = client.fetch_cancel_senders.write().await;
         senders.insert(request_id, cancel_tx);
       }
 
+      let delivery = FetchDelivery {
+        request_id,
+        start_location,
+        end_location,
+        group_order: fetch.group_order(),
+        pending_upstream,
+      };
+
       tokio::spawn(async move {
-        let track_read = track.read().await;
-        let start_location = start_location.unwrap();
-        let end_location = end_location.unwrap();
-
-        let fetch_header = FetchHeader::new(request_id);
-        let header_info = HeaderInfo::Fetch {
-          header: fetch_header,
-          fetch_request: fetch.clone(),
-        };
-
-        let stream_id = build_stream_id(track_read.relay_track_id, &header_info);
-
-        let stream_fn = async move |client: Arc<MOQTClient>, stream_id: &StreamId| {
-          let stream_result = client
-            .open_stream(stream_id, fetch_header.serialize().unwrap(), 0)
-            .await;
-
-          match stream_result {
-            Ok(send_stream) => Some(send_stream),
-            Err(e) => {
-              error!("handle_fetch_messages | Error opening stream: {:?}", e);
-              None
-            }
-          }
-        };
-
-        let mut object_count = 0;
-        let mut upstream_gap_count: u64 = 0;
-        let mut send_stream = None;
-        let mut stop_reason = FetchStop::Running;
-        let mut fetch_prev_ctx: Option<moqtail::model::data::fetch_object::FetchObjectContext> =
-          None;
-        let group_order = fetch.group_order();
-        let mut group_id = start_location.group;
-
-        while group_id <= end_location.group {
-          let reason = *cancel_rx.borrow();
-          if reason != FetchStop::Running {
-            info!(
-              "handle_fetch_messages | Fetch stopped ({:?}) for request_id: {}",
-              reason, request_id
-            );
-            stop_reason = reason;
-            break;
-          }
-
-          // A fetch already issued to learn the End Location covers this whole range and
-          // its Objects are on their way, so the cache is not consulted for it: reading
-          // both would deliver some of them twice.
-          let cached = if pending_upstream.is_some() {
-            None
-          } else {
-            track_read.cache.get_group(group_id).await
-          };
-
-          if let Some(group_objects) = cached {
-            // === CACHE HIT ===
-            let objects = group_objects.read().await;
-            for object in objects.iter() {
-              if group_id == start_location.group && object.object_id < start_location.object {
-                continue;
-              }
-              if group_id == end_location.group && object.object_id >= end_location.object {
-                break;
-              }
-
-              if object_count == 0 {
-                send_stream = match stream_fn(client.clone(), &stream_id).await {
-                  Some(ss) => Some(ss),
-                  None => {
-                    client
-                      .fetch_cancel_senders
-                      .write()
-                      .await
-                      .remove(&request_id);
-                    return Err(TerminationCode::InternalError);
-                  }
-                };
-              }
-
-              let fetch_obj =
-                moqtail::model::data::fetch_object::FetchObject::Object(object.clone());
-              let serialized = fetch_obj
-                .serialize(fetch_prev_ctx.as_ref(), group_order)
-                .unwrap();
-              fetch_prev_ctx = fetch_obj.context();
-
-              if let Err(e) = client
-                .write_stream_object(
-                  &stream_id,
-                  object.object_id,
-                  serialized,
-                  send_stream.as_ref().cloned(),
-                )
-                .await
-              {
-                error!(
-                  "handle_fetch_messages | Error writing object to stream: {:?}",
-                  e
-                );
-                client
-                  .fetch_cancel_senders
-                  .write()
-                  .await
-                  .remove(&request_id);
-                return Err(TerminationCode::InternalError);
-              }
-
-              if context.server_config.enable_object_logging {
-                let sending_time = crate::server::utils::passed_time_since_start();
-                if let Ok(fetch_object) = moqtail::model::data::object::Object::try_from_fetch(
-                  object.clone(),
-                  track_read.relay_track_id,
-                ) {
-                  track_read
-                    .object_logger
-                    .log_fetch_object(
-                      track_read.relay_track_id,
-                      context.connection_id,
-                      request_id,
-                      &fetch_object,
-                      true,
-                      sending_time,
-                    )
-                    .await;
-                }
-              }
-
-              object_count += 1;
-            }
-            group_id += 1;
-          } else {
-            // === CACHE MISS ===
-            // Scan ahead to find contiguous gap [gap_start .. gap_end]
-            let gap_start: u64 = group_id;
-            let mut gap_end = group_id;
-            while gap_end < end_location.group
-              && track_read.cache.get_group(gap_end + 1).await.is_none()
-            {
-              gap_end += 1;
-            }
-
-            let max_upstream_fetch_gaps = context.server_config.max_upstream_fetch_gaps;
-            if upstream_gap_count >= max_upstream_fetch_gaps {
-              warn!(
-                "handle_fetch_delivery | Reached max upstream fetch gap limit ({}), skipping gap at group {}",
-                max_upstream_fetch_gaps, gap_start
-              );
-              group_id = gap_end + 1;
-              continue;
-            }
-            upstream_gap_count += 1;
-
-            // Reuse the fetch that was issued to learn the End Location: it already
-            // covers the rest of the range, so there is nothing more to ask for.
-            // Without one, this is an ordinary cache gap and only the gap is fetched.
-            let upstream_rx = match pending_upstream.take() {
-              Some(pending) => {
-                gap_end = end_location.group;
-                Some((pending.relay_request_id, pending.publisher, pending.rx))
-              }
-              None => {
-                send_upstream_fetch_for_range(&client, &context, &track_read, gap_start, gap_end)
-                  .await
-              }
-            };
-
-            if let Some((relay_request_id, upstream_publisher, mut rx)) = upstream_rx {
-              let timeout = context.server_config.upstream_fetch_timeout;
-              loop {
-                tokio::select! {
-                  result = tokio::time::timeout(timeout, rx.recv()) => {
-                    match result {
-                      // The downstream End Location is already settled by the time a gap
-                      // is filled, so this only gets logged.
-                      Ok(Some(UpstreamFetchEvent::Accepted { end_location })) => {
-                        debug!(
-                          "Upstream FETCH {} for groups {}..{} accepted, end location {:?}",
-                          relay_request_id, gap_start, gap_end, end_location
-                        );
-                      }
-                      Ok(Some(UpstreamFetchEvent::Object(object))) => {
-                        if object_count == 0 {
-                          send_stream = match stream_fn(client.clone(), &stream_id).await {
-                            Some(ss) => Some(ss),
-                            None => {
-                              client
-                                .fetch_cancel_senders
-                                .write()
-                                .await
-                                .remove(&request_id);
-                              return Err(TerminationCode::InternalError);
-                            }
-                          };
-                        }
-
-                        let fetch_obj =
-                          moqtail::model::data::fetch_object::FetchObject::Object(object.clone());
-                        let serialized =
-                          fetch_obj.serialize(fetch_prev_ctx.as_ref(), group_order).unwrap();
-                        fetch_prev_ctx = fetch_obj.context();
-
-                        if let Err(e) = client
-                          .write_stream_object(
-                            &stream_id,
-                            object.object_id,
-                            serialized,
-                            send_stream.as_ref().cloned(),
-                          )
-                          .await
-                        {
-                          error!(
-                            "handle_fetch_messages | Error writing upstream object to stream: {:?}",
-                            e
-                          );
-                          client
-                            .fetch_cancel_senders
-                            .write()
-                            .await
-                            .remove(&request_id);
-                          return Err(TerminationCode::InternalError);
-                        }
-
-                        if context.server_config.enable_object_logging {
-                          let sending_time = crate::server::utils::passed_time_since_start();
-                          if let Ok(fetch_object) = moqtail::model::data::object::Object::try_from_fetch(
-                            object.clone(),
-                            track_read.relay_track_id,
-                          ) {
-                            track_read
-                              .object_logger
-                              .log_fetch_object(
-                                track_read.relay_track_id,
-                                context.connection_id,
-                                request_id,
-                                &fetch_object,
-                                true,
-                                sending_time,
-                              )
-                              .await;
-                          }
-                        }
-
-                        object_count += 1;
-                      }
-                      Ok(Some(UpstreamFetchEvent::StreamClosed)) => {
-                        break;
-                      }
-                      Ok(Some(UpstreamFetchEvent::Error(e))) => {
-                        warn!(
-                          "handle_fetch_messages | Upstream fetch error for gap [{}, {}]: {}",
-                          gap_start, gap_end, e
-                        );
-                        break;
-                      }
-                      Ok(None) => {
-                        break;
-                      }
-                      Err(_) => {
-                        warn!(
-                          "handle_fetch_messages | Upstream fetch timed out for gap [{}, {}]",
-                          gap_start, gap_end
-                        );
-                        break;
-                      }
-                    }
-                  }
-                  _ = cancel_rx.changed() => {
-                    let reason = *cancel_rx.borrow();
-                    info!(
-                      "handle_fetch_messages | Fetch stopped ({:?}) during upstream fetch for request_id: {}",
-                      reason, request_id
-                    );
-                    stop_reason = reason;
-                    break;
-                  }
-                }
-              }
-
-              // Clean up upstream fetch state
-              context
-                .upstream_fetch_senders
-                .write()
-                .await
-                .remove(&relay_request_id);
-              upstream_publisher
-                .outgoing_fetch_requests
-                .write()
-                .await
-                .remove(&relay_request_id);
-            }
-
-            group_id = gap_end + 1;
-          }
-        }
-
-        if stop_reason != FetchStop::Running {
-          if let Some(the_stream) = send_stream {
-            let mut stream = the_stream.lock().await;
-            let result = match stop_reason {
-              FetchStop::UpdateFailed => stream.reset(StreamResetCode::Cancelled.to_u64()),
-              _ => stream.finish().await,
-            };
-            if let Err(e) = result {
-              error!(
-                "handle_fetch_messages | Error closing stream on stop ({:?}): {:?}",
-                stop_reason, e
-              );
-            } else {
-              info!(
-                "handle_fetch_messages | closed fetch stream on stop ({:?}): {:?}",
-                stop_reason, &stream_id
-              );
-            }
-            drop(stream);
-            client.remove_stream_by_stream_id(&stream_id).await;
-          }
-        } else if object_count == 0 {
-          // Range is valid but empty: FETCH_OK was already sent on the request
-          // stream, so just open the data stream, write the header, and FIN.
-          info!(
-            "handle_fetch_messages | Empty range for request_id: {}. Sending empty stream.",
-            request_id
-          );
-
-          if let Some(the_stream) = stream_fn(client.clone(), &stream_id).await {
-            let mut stream_lock = the_stream.lock().await;
-            if let Err(e) = stream_lock.finish().await {
-              error!(
-                "handle_fetch_messages | Error closing empty fetch stream: {:?}",
-                e
-              );
-            }
-            client.remove_stream_by_stream_id(&stream_id).await;
-          }
-        } else {
-          // close the stream instantly
-          if let Some(the_stream) = send_stream {
-            // gracefully finish the stream here
-            if let Err(e) = the_stream.lock().await.finish().await {
-              error!("handle_fetch_messages | Error closing stream: {:?}", e);
-              // return Err(TerminationCode::InternalError);
-            } else {
-              info!("finished fetch stream: {:?}", &stream_id);
-            }
-            client.remove_stream_by_stream_id(&stream_id).await;
-            info!("removed stream from the map {}", stream_id);
-          }
-        }
-
+        let result = serve_fetch_stream(client.clone(), context, track, delivery, cancel_rx).await;
         // Clean up the unified map since the fetch is done
         client.inbound_requests.write().await.remove(&request_id);
         client
@@ -704,7 +362,7 @@ pub async fn handle(
           .write()
           .await
           .remove(&request_id);
-        Ok(())
+        result
       });
 
       Ok(())
@@ -954,6 +612,378 @@ async fn send_request_error(
     .write()
     .await
     .remove(&request_id);
+}
+
+/// What to deliver on one fetch data stream, and where the Objects come from.
+pub(crate) struct FetchDelivery {
+  /// Names the stream: the FETCH_HEADER carries it and the subscriber matches it
+  /// against the request that asked for these Objects.
+  pub request_id: u64,
+  pub start_location: Location,
+  pub end_location: Location,
+  pub group_order: GroupOrder,
+  /// An upstream fetch already covering the range, whose Objects are used instead
+  /// of asking for them a second time.
+  pub pending_upstream: Option<PendingUpstreamFetch>,
+}
+
+/// Opens a unidirectional stream beginning with a FETCH_HEADER and writes the
+/// requested range onto it, serving each group from the cache and asking upstream
+/// for the ones missing. Closes the stream with a FIN once the range is delivered,
+/// or resets it when the caller stops the delivery.
+pub(crate) async fn serve_fetch_stream(
+  client: Arc<MOQTClient>,
+  context: Arc<SessionContext>,
+  track: Arc<tokio::sync::RwLock<crate::server::track::Track>>,
+  delivery: FetchDelivery,
+  mut cancel_rx: watch::Receiver<FetchStop>,
+) -> Result<(), TerminationCode> {
+  let track_read = track.read().await;
+  let FetchDelivery {
+    request_id,
+    start_location,
+    end_location,
+    group_order,
+    mut pending_upstream,
+  } = delivery;
+
+  let fetch_header = FetchHeader::new(request_id);
+  let stream_id = StreamId::new_fetch(track_read.relay_track_id, request_id);
+
+  let stream_fn = async move |client: Arc<MOQTClient>, stream_id: &StreamId| {
+    let stream_result = client
+      .open_stream(stream_id, fetch_header.serialize().unwrap(), 0)
+      .await;
+
+    match stream_result {
+      Ok(send_stream) => Some(send_stream),
+      Err(e) => {
+        error!("handle_fetch_messages | Error opening stream: {:?}", e);
+        None
+      }
+    }
+  };
+
+  let mut object_count = 0;
+  let mut upstream_gap_count: u64 = 0;
+  let mut send_stream = None;
+  let mut stop_reason = FetchStop::Running;
+  let mut fetch_prev_ctx: Option<moqtail::model::data::fetch_object::FetchObjectContext> = None;
+  let mut group_id = start_location.group;
+
+  while group_id <= end_location.group {
+    let reason = *cancel_rx.borrow();
+    if reason != FetchStop::Running {
+      info!(
+        "handle_fetch_messages | Fetch stopped ({:?}) for request_id: {}",
+        reason, request_id
+      );
+      stop_reason = reason;
+      break;
+    }
+
+    // A fetch already issued to learn the End Location covers this whole range and
+    // its Objects are on their way, so the cache is not consulted for it: reading
+    // both would deliver some of them twice.
+    let cached = if pending_upstream.is_some() {
+      None
+    } else {
+      track_read.cache.get_group(group_id).await
+    };
+
+    if let Some(group_objects) = cached {
+      // === CACHE HIT ===
+      let objects = group_objects.read().await;
+      for object in objects.iter() {
+        if group_id == start_location.group && object.object_id < start_location.object {
+          continue;
+        }
+        if group_id == end_location.group && object.object_id >= end_location.object {
+          break;
+        }
+
+        if object_count == 0 {
+          send_stream = match stream_fn(client.clone(), &stream_id).await {
+            Some(ss) => Some(ss),
+            None => {
+              client
+                .fetch_cancel_senders
+                .write()
+                .await
+                .remove(&request_id);
+              return Err(TerminationCode::InternalError);
+            }
+          };
+        }
+
+        let fetch_obj = moqtail::model::data::fetch_object::FetchObject::Object(object.clone());
+        let serialized = fetch_obj
+          .serialize(fetch_prev_ctx.as_ref(), group_order)
+          .unwrap();
+        fetch_prev_ctx = fetch_obj.context();
+
+        if let Err(e) = client
+          .write_stream_object(
+            &stream_id,
+            object.object_id,
+            serialized,
+            send_stream.as_ref().cloned(),
+          )
+          .await
+        {
+          error!(
+            "handle_fetch_messages | Error writing object to stream: {:?}",
+            e
+          );
+          client
+            .fetch_cancel_senders
+            .write()
+            .await
+            .remove(&request_id);
+          return Err(TerminationCode::InternalError);
+        }
+
+        if context.server_config.enable_object_logging {
+          let sending_time = crate::server::utils::passed_time_since_start();
+          if let Ok(fetch_object) = moqtail::model::data::object::Object::try_from_fetch(
+            object.clone(),
+            track_read.relay_track_id,
+          ) {
+            track_read
+              .object_logger
+              .log_fetch_object(
+                track_read.relay_track_id,
+                context.connection_id,
+                request_id,
+                &fetch_object,
+                true,
+                sending_time,
+              )
+              .await;
+          }
+        }
+
+        object_count += 1;
+      }
+      group_id += 1;
+    } else {
+      // === CACHE MISS ===
+      // Scan ahead to find contiguous gap [gap_start .. gap_end]
+      let gap_start: u64 = group_id;
+      let mut gap_end = group_id;
+      while gap_end < end_location.group && track_read.cache.get_group(gap_end + 1).await.is_none()
+      {
+        gap_end += 1;
+      }
+
+      let max_upstream_fetch_gaps = context.server_config.max_upstream_fetch_gaps;
+      if upstream_gap_count >= max_upstream_fetch_gaps {
+        warn!(
+          "handle_fetch_delivery | Reached max upstream fetch gap limit ({}), skipping gap at group {}",
+          max_upstream_fetch_gaps, gap_start
+        );
+        group_id = gap_end + 1;
+        continue;
+      }
+      upstream_gap_count += 1;
+
+      // Reuse the fetch that was issued to learn the End Location: it already
+      // covers the rest of the range, so there is nothing more to ask for.
+      // Without one, this is an ordinary cache gap and only the gap is fetched.
+      let upstream_rx = match pending_upstream.take() {
+        Some(pending) => {
+          gap_end = end_location.group;
+          Some((pending.relay_request_id, pending.publisher, pending.rx))
+        }
+        None => {
+          send_upstream_fetch_for_range(&client, &context, &track_read, gap_start, gap_end).await
+        }
+      };
+
+      if let Some((relay_request_id, upstream_publisher, mut rx)) = upstream_rx {
+        let timeout = context.server_config.upstream_fetch_timeout;
+        loop {
+          tokio::select! {
+            result = tokio::time::timeout(timeout, rx.recv()) => {
+              match result {
+                // The downstream End Location is already settled by the time a gap
+                // is filled, so this only gets logged.
+                Ok(Some(UpstreamFetchEvent::Accepted { end_location })) => {
+                  debug!(
+                    "Upstream FETCH {} for groups {}..{} accepted, end location {:?}",
+                    relay_request_id, gap_start, gap_end, end_location
+                  );
+                }
+                Ok(Some(UpstreamFetchEvent::Object(object))) => {
+                  if object_count == 0 {
+                    send_stream = match stream_fn(client.clone(), &stream_id).await {
+                      Some(ss) => Some(ss),
+                      None => {
+                        client
+                          .fetch_cancel_senders
+                          .write()
+                          .await
+                          .remove(&request_id);
+                        return Err(TerminationCode::InternalError);
+                      }
+                    };
+                  }
+
+                  let fetch_obj =
+                    moqtail::model::data::fetch_object::FetchObject::Object(object.clone());
+                  let serialized =
+                    fetch_obj.serialize(fetch_prev_ctx.as_ref(), group_order).unwrap();
+                  fetch_prev_ctx = fetch_obj.context();
+
+                  if let Err(e) = client
+                    .write_stream_object(
+                      &stream_id,
+                      object.object_id,
+                      serialized,
+                      send_stream.as_ref().cloned(),
+                    )
+                    .await
+                  {
+                    error!(
+                      "handle_fetch_messages | Error writing upstream object to stream: {:?}",
+                      e
+                    );
+                    client
+                      .fetch_cancel_senders
+                      .write()
+                      .await
+                      .remove(&request_id);
+                    return Err(TerminationCode::InternalError);
+                  }
+
+                  if context.server_config.enable_object_logging {
+                    let sending_time = crate::server::utils::passed_time_since_start();
+                    if let Ok(fetch_object) = moqtail::model::data::object::Object::try_from_fetch(
+                      object.clone(),
+                      track_read.relay_track_id,
+                    ) {
+                      track_read
+                        .object_logger
+                        .log_fetch_object(
+                          track_read.relay_track_id,
+                          context.connection_id,
+                          request_id,
+                          &fetch_object,
+                          true,
+                          sending_time,
+                        )
+                        .await;
+                    }
+                  }
+
+                  object_count += 1;
+                }
+                Ok(Some(UpstreamFetchEvent::StreamClosed)) => {
+                  break;
+                }
+                Ok(Some(UpstreamFetchEvent::Error(e))) => {
+                  warn!(
+                    "handle_fetch_messages | Upstream fetch error for gap [{}, {}]: {}",
+                    gap_start, gap_end, e
+                  );
+                  break;
+                }
+                Ok(None) => {
+                  break;
+                }
+                Err(_) => {
+                  warn!(
+                    "handle_fetch_messages | Upstream fetch timed out for gap [{}, {}]",
+                    gap_start, gap_end
+                  );
+                  break;
+                }
+              }
+            }
+            _ = cancel_rx.changed() => {
+              let reason = *cancel_rx.borrow();
+              info!(
+                "handle_fetch_messages | Fetch stopped ({:?}) during upstream fetch for request_id: {}",
+                reason, request_id
+              );
+              stop_reason = reason;
+              break;
+            }
+          }
+        }
+
+        // Clean up upstream fetch state
+        context
+          .upstream_fetch_senders
+          .write()
+          .await
+          .remove(&relay_request_id);
+        upstream_publisher
+          .outgoing_fetch_requests
+          .write()
+          .await
+          .remove(&relay_request_id);
+      }
+
+      group_id = gap_end + 1;
+    }
+  }
+
+  if stop_reason != FetchStop::Running {
+    if let Some(the_stream) = send_stream {
+      let mut stream = the_stream.lock().await;
+      let result = match stop_reason {
+        FetchStop::UpdateFailed => stream.reset(StreamResetCode::Cancelled.to_u64()),
+        _ => stream.finish().await,
+      };
+      if let Err(e) = result {
+        error!(
+          "handle_fetch_messages | Error closing stream on stop ({:?}): {:?}",
+          stop_reason, e
+        );
+      } else {
+        info!(
+          "handle_fetch_messages | closed fetch stream on stop ({:?}): {:?}",
+          stop_reason, &stream_id
+        );
+      }
+      drop(stream);
+      client.remove_stream_by_stream_id(&stream_id).await;
+    }
+  } else if object_count == 0 {
+    // Range is valid but empty: FETCH_OK was already sent on the request
+    // stream, so just open the data stream, write the header, and FIN.
+    info!(
+      "handle_fetch_messages | Empty range for request_id: {}. Sending empty stream.",
+      request_id
+    );
+
+    if let Some(the_stream) = stream_fn(client.clone(), &stream_id).await {
+      let mut stream_lock = the_stream.lock().await;
+      if let Err(e) = stream_lock.finish().await {
+        error!(
+          "handle_fetch_messages | Error closing empty fetch stream: {:?}",
+          e
+        );
+      }
+      client.remove_stream_by_stream_id(&stream_id).await;
+    }
+  } else {
+    // close the stream instantly
+    if let Some(the_stream) = send_stream {
+      // gracefully finish the stream here
+      if let Err(e) = the_stream.lock().await.finish().await {
+        error!("handle_fetch_messages | Error closing stream: {:?}", e);
+        // return Err(TerminationCode::InternalError);
+      } else {
+        info!("finished fetch stream: {:?}", &stream_id);
+      }
+      client.remove_stream_by_stream_id(&stream_id).await;
+      info!("removed stream from the map {}", stream_id);
+    }
+  }
+
+  Ok(())
 }
 
 #[cfg(test)]

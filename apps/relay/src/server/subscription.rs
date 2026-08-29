@@ -573,11 +573,6 @@ impl Subscription {
     self.opened_stream_count.load(Ordering::Relaxed)
   }
 
-  // Returns true if the subscription is active (not finished and forwarding objects)
-  pub async fn is_active(&self) -> bool {
-    !self.is_finished().await && self.is_forwarding().await
-  }
-
   pub fn subscriber(&self) -> Arc<MOQTClient> {
     self.subscriber.clone()
   }

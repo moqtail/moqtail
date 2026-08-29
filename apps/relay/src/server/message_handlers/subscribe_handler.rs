@@ -13,12 +13,14 @@
 // limitations under the License.
 
 use crate::server::client::MOQTClient;
+use crate::server::client::switch_context::{SwitchPlan, SwitchStatus};
 use crate::server::message_handlers::parameters;
 use crate::server::session::Session;
 use crate::server::session_context::{PendingRequest, SessionContext};
 use crate::server::track::{Track, TrackOrigin, TrackStatus};
 use core::result::Result;
 use moqtail::model::control::constant::PublishDoneStatusCode;
+use moqtail::model::control::constant::SwitchMode;
 use moqtail::model::control::publish_done::PublishDone;
 use moqtail::model::control::request_error::RequestError;
 use moqtail::model::control::request_ok::RequestOk;
@@ -27,7 +29,9 @@ use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::model::error::RequestErrorCode;
 use moqtail::model::error::StreamResetCode;
 use moqtail::model::error::TerminationCode;
-use moqtail::model::parameter::message_parameter::apply_message_parameter_update;
+use moqtail::model::parameter::message_parameter::{
+  MessageParameter, apply_message_parameter_update,
+};
 use moqtail::model::property::track_property::has_unsupported_mandatory;
 use moqtail::model::{
   common::reason_phrase::ReasonPhrase, control::control_message::ControlMessage,
@@ -350,6 +354,74 @@ async fn end_upstream_subscription(
   }
 }
 
+/// Reads and checks a SWITCH_FROM carried by a SUBSCRIBE or REQUEST_UPDATE.
+///
+/// `Ok(None)` when there is no SWITCH_FROM and this is an ordinary request.
+/// `Err` carries the REQUEST_ERROR to answer with: the switch cannot be
+/// performed, which is not grounds for closing the session.
+pub(crate) async fn plan_switch(
+  client: &Arc<MOQTClient>,
+  context: &Arc<SessionContext>,
+  activating_request_id: u64,
+  parameters: &[MessageParameter],
+) -> Result<Option<SwitchPlan>, RequestError> {
+  let Some(MessageParameter::SwitchFrom {
+    request_id,
+    mode,
+    publish_done,
+  }) = parameters
+    .iter()
+    .find(|p| matches!(p, MessageParameter::SwitchFrom { .. }))
+    .cloned()
+  else {
+    return Ok(None);
+  };
+
+  let invalid = |reason: &str| {
+    RequestError::new(
+      RequestErrorCode::InvalidSwitch,
+      0,
+      ReasonPhrase::try_new(reason.to_string()).unwrap(),
+    )
+  };
+
+  // The switch decides the activating subscription's Forward State itself.
+  if parameters
+    .iter()
+    .any(|p| matches!(p, MessageParameter::Forward { .. }))
+  {
+    return Err(invalid("SWITCH_FROM cannot be combined with FORWARD"));
+  }
+
+  if request_id == activating_request_id {
+    return Err(invalid("a subscription cannot switch away from itself"));
+  }
+
+  // Only the hard stop is implemented; anything else is refused rather than
+  // silently treated as one.
+  if mode != SwitchMode::Hard {
+    return Err(invalid("only a hard switch is supported"));
+  }
+
+  let Some((_, subscription)) = context
+    .track_manager
+    .find_subscription_by_request_id(client.connection_id, request_id)
+    .await
+  else {
+    return Err(invalid("no such subscription to switch away from"));
+  };
+
+  // A suspending subscription in Forward State 0 is not an error; there is simply
+  // less to stop.
+  let suspending = subscription.read().await.full_track_name.clone();
+
+  Ok(Some(SwitchPlan {
+    suspending,
+    mode,
+    publish_done,
+  }))
+}
+
 async fn handle_subscribe_message(
   client: Arc<MOQTClient>,
   stream_handler: &mut ControlStreamHandler,
@@ -360,6 +432,23 @@ async fn handle_subscribe_message(
   info!("received Subscribe message: {:?}", sub);
   let track_namespace = sub.track_namespace.clone();
   let full_track_name = sub.get_full_track_name();
+
+  // A SUBSCRIBE carrying SWITCH_FROM activates this subscription and suspends
+  // another. Checked first: a switch that cannot be performed is refused without
+  // creating anything.
+  let switch_plan =
+    match plan_switch(&client, &context, sub.request_id, &sub.subscribe_parameters).await {
+      Ok(plan) => plan,
+      Err(err) => {
+        info!(
+          "Rejecting SUBSCRIBE with SWITCH_FROM: {}",
+          err.reason_phrase.as_str()
+        );
+        stream_handler.send_impl(&err).await.unwrap();
+        return Ok(());
+      }
+    };
+  let is_switch = is_switch || switch_plan.is_some();
 
   // Reserved namespaces are resolved locally and never forwarded upstream.
   if let Some(reason) =
@@ -574,6 +663,27 @@ async fn handle_subscribe_message(
   // want Objects, so tell the publisher to start sending.
   if res.is_ok() {
     super::publish_handler::ensure_upstream_forwarding(&track_arc, &context).await;
+  }
+
+  if res.is_ok()
+    && let Some(plan) = switch_plan
+  {
+    info!(
+      "switch: {:?} activating, {:?} suspending on {:?}",
+      full_track_name, plan.suspending, plan.mode
+    );
+    client
+      .switch_context
+      .add_or_update_switch_item(plan.suspending.clone(), SwitchStatus::Current)
+      .await;
+    client
+      .switch_context
+      .add_or_update_switch_item(full_track_name.clone(), SwitchStatus::Next)
+      .await;
+    client
+      .switch_context
+      .set_plan(full_track_name.clone(), plan)
+      .await;
   }
 
   // Store in client's subscribe requests on success

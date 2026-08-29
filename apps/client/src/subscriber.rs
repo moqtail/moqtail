@@ -18,9 +18,8 @@ use crate::stats::ReceptionStats;
 use crate::utils::should_log;
 use anyhow::Result;
 use moqtail::model::common::tuple::{Tuple, TupleField};
-use moqtail::model::control::constant::{FetchType, GroupOrder};
+use moqtail::model::control::constant::GroupOrder;
 use moqtail::model::control::control_message::ControlMessage;
-use moqtail::model::control::fetch::Fetch;
 use moqtail::model::control::request_ok::RequestOk;
 use moqtail::model::control::request_update::RequestUpdate;
 use moqtail::model::control::subscribe::Subscribe;
@@ -94,58 +93,7 @@ pub struct SubscribeConfig {
   pub group_order: GroupOrder,
   pub extra_track: Option<(String, u8)>,
   pub forward: bool,
-  pub joining_fetch: bool,
-  pub joining_start: u64,
-  pub joining_type: FetchType,
   pub update_forward_after: u64,
-}
-
-/// Issue a Joining FETCH referencing an existing subscription and log the
-/// response (FETCH_OK when accepted, REQUEST_ERROR — e.g. INVALID_RANGE for a
-/// non-forwarding subscription — when rejected).
-async fn send_joining_fetch(
-  connection: &Arc<TransportConnection>,
-  joining_request_id: u64,
-  joining_start: u64,
-  fetch_type: FetchType,
-) -> Result<()> {
-  let request_id = 2u64;
-  let parameters = vec![MessageParameter::new_subscriber_priority(200)];
-  let fetch = Fetch::new_joining(
-    request_id,
-    fetch_type,
-    joining_request_id,
-    joining_start,
-    parameters,
-  )
-  .map_err(|e| anyhow::anyhow!("Failed to build joining FETCH: {}", e))?;
-
-  info!(
-    "Sending Joining FETCH: type={:?} joining_request_id={} joining_start={}",
-    fetch_type, joining_request_id, joining_start
-  );
-
-  let (send, recv) = connection.open_bi().await?;
-  let mut request_stream = ControlStreamHandler::new(send, recv);
-  request_stream
-    .send(&ControlMessage::Fetch(Box::new(fetch)))
-    .await
-    .map_err(|e| anyhow::anyhow!("Failed to send joining FETCH: {:?}", e))?;
-
-  match request_stream.next_message().await {
-    Ok(ControlMessage::FetchOk(m)) => {
-      info!(
-        "Joining FETCH accepted: FetchOk end_location={:?}",
-        m.end_location
-      );
-    }
-    Ok(ControlMessage::RequestError(m)) => {
-      error!("Joining FETCH rejected: RequestError {:?}", m);
-    }
-    Ok(m) => info!("Joining FETCH response: {:?}", m),
-    Err(e) => error!("Joining FETCH: error reading response: {:?}", e),
-  }
-  Ok(())
 }
 
 /// SUBSCRIBE_TRACKS for a namespace prefix: send the request on a bidi stream
@@ -266,14 +214,6 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
     });
   } else {
     request_streams.push(primary_stream);
-  }
-
-  // Issue a Joining FETCH against the primary subscription (request_id 0). Kept
-  // before the receive loop so its response is observed directly.
-  if config.joining_fetch {
-    send_joining_fetch(&connection, 0, config.joining_start, config.joining_type).await?;
-    drop(request_streams);
-    return Ok(());
   }
 
   let extra_alias = if let Some((ref extra_name, extra_priority)) = config.extra_track {

@@ -16,7 +16,7 @@
 
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
 import { Location } from '../common/location'
-import { ControlMessageType, FetchType } from './constant'
+import { ControlMessageType } from './constant'
 import { LengthExceedsMaxError } from '../error/error'
 import { FullTrackName } from '../data'
 import {
@@ -30,19 +30,10 @@ import { SubscriberPriority } from '../parameter/message/subscriber_priority'
 export class Fetch {
   constructor(
     public readonly requestId: bigint,
-    public readonly typeAndProps:
-      | {
-          readonly type: FetchType.Standalone
-          readonly props: { fullTrackName: FullTrackName; startLocation: Location; endLocation: Location }
-        }
-      | {
-          readonly type: FetchType.Relative
-          readonly props: { joiningRequestId: bigint; joiningStart: bigint }
-        }
-      | {
-          readonly type: FetchType.Absolute
-          readonly props: { joiningRequestId: bigint; joiningStart: bigint }
-        },
+    public readonly fullTrackName: FullTrackName,
+    public readonly startLocation: Location,
+    /** The last Object plus 1. An Object value of 0 means the entire group. */
+    public readonly endLocation: Location,
     public readonly parameters: MessageParameter[],
   ) {}
 
@@ -55,21 +46,9 @@ export class Fetch {
     buf.putVI(ControlMessageType.Fetch)
     const payload = new ByteBuffer()
     payload.putVI(this.requestId)
-    payload.putVI(this.typeAndProps.type)
-    switch (this.typeAndProps.type) {
-      case FetchType.Absolute:
-      case FetchType.Relative: {
-        payload.putVI(this.typeAndProps.props.joiningRequestId)
-        payload.putVI(this.typeAndProps.props.joiningStart)
-        break
-      }
-      case FetchType.Standalone: {
-        payload.putFullTrackName(this.typeAndProps.props.fullTrackName)
-        payload.putLocation(this.typeAndProps.props.startLocation)
-        payload.putLocation(this.typeAndProps.props.endLocation)
-        break
-      }
-    }
+    payload.putFullTrackName(this.fullTrackName)
+    payload.putLocation(this.startLocation)
+    payload.putLocation(this.endLocation)
     payload.putVI(this.parameters.length)
     payload.putBytes(serializeMessageParameterKvps(this.parameters.map((p) => p.toKeyValuePair())).toUint8Array())
     const payloadBytes = payload.toUint8Array()
@@ -83,58 +62,29 @@ export class Fetch {
 
   static parsePayload(buf: BaseByteBuffer): Fetch {
     const requestId = buf.getVI()
-    const fetchTypeRaw = buf.getVI()
-    const fetchType = FetchType.tryFrom(fetchTypeRaw)
-
-    let props: Fetch['typeAndProps']
-
-    switch (fetchType) {
-      case FetchType.Absolute:
-      case FetchType.Relative: {
-        const joiningRequestId = buf.getVI()
-        const joiningStart = buf.getVI()
-        props = {
-          type: fetchType,
-          props: { joiningRequestId, joiningStart },
-        }
-        break
-      }
-      case FetchType.Standalone: {
-        const fullTrackName = buf.getFullTrackName()
-        const startLocation = buf.getLocation()
-        const endLocation = buf.getLocation()
-        props = {
-          type: FetchType.Standalone,
-          props: { fullTrackName, startLocation, endLocation },
-        }
-        break
-      }
-      default:
-        throw new Error(`Unknown fetch type: ${fetchType}`)
-    }
+    const fullTrackName = buf.getFullTrackName()
+    const startLocation = buf.getLocation()
+    const endLocation = buf.getLocation()
 
     const paramCount = buf.getNumberVI()
     const rawParams = deserializeMessageParameterKvps(buf, paramCount)
     const parameters = MessageParameters.fromKeyValuePairs(rawParams)
 
-    return new Fetch(requestId, props, parameters)
+    return new Fetch(requestId, fullTrackName, startLocation, endLocation, parameters)
   }
 }
 
 if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
+
+  const sampleFetch = () =>
+    new Fetch(161803n, FullTrackName.tryNew('un/deux/trois', 'quatre'), new Location(12n, 5n), new Location(20n, 0n), [
+      new SubscriberPriority(42),
+    ])
+
   describe('Fetch', () => {
     test('roundtrip', () => {
-      const requestId = 161803n
-      const parameters = [new SubscriberPriority(42)]
-      const fetch = new Fetch(
-        requestId,
-        {
-          type: FetchType.Absolute,
-          props: { joiningRequestId: 119n, joiningStart: 73n },
-        },
-        parameters,
-      )
+      const fetch = sampleFetch()
       const serialized = fetch.serialize()
       const buf = new ByteBuffer()
       buf.putBytes(serialized.toUint8Array())
@@ -149,16 +99,7 @@ if (import.meta.vitest) {
     })
 
     test('excess roundtrip', () => {
-      const requestId = 161803n
-      const parameters = [new SubscriberPriority(42)]
-      const fetch = new Fetch(
-        requestId,
-        {
-          type: FetchType.Absolute,
-          props: { joiningRequestId: 119n, joiningStart: 73n },
-        },
-        parameters,
-      )
+      const fetch = sampleFetch()
       const serialized = fetch.serialize().toUint8Array()
       const excess = new Uint8Array([9, 1, 1])
       const buf = new ByteBuffer()
@@ -175,16 +116,7 @@ if (import.meta.vitest) {
     })
 
     test('partial message', () => {
-      const requestId = 161803n
-      const parameters = [new SubscriberPriority(42)]
-      const fetch = new Fetch(
-        requestId,
-        {
-          type: FetchType.Absolute,
-          props: { joiningRequestId: 119n, joiningStart: 73n },
-        },
-        parameters,
-      )
+      const fetch = sampleFetch()
       const serialized = fetch.serialize().toUint8Array()
       const upper = Math.floor(serialized.length / 2)
       const partial = serialized.slice(0, upper)

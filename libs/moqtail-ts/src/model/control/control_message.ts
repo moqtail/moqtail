@@ -15,7 +15,7 @@
  */
 
 import { FrozenByteBuffer } from '../common/byte_buffer'
-import { ControlMessageType, FetchType } from './constant'
+import { ControlMessageType } from './constant'
 import { PublishBlocked } from './publish_blocked'
 import { PublishNamespace } from './publish_namespace'
 import { Namespace } from './namespace'
@@ -120,6 +120,8 @@ export namespace ControlMessage {
 
 if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
+  const { FullTrackName } = await import('../data')
+  const { Location } = await import('../common/location')
 
   describe('ControlMessage', () => {
     describe('PublishNamespace', () => {
@@ -175,11 +177,15 @@ if (import.meta.vitest) {
     describe('Fetch', () => {
       function buildTestFetch(): Fetch {
         const requestId = 161803n
-        const joiningRequestId = 119n
-        const joiningStart = 73n
-        const type = FetchType.Relative
+
         const parameters = [AuthorizationToken.newUseValue(0n, new TextEncoder().encode('test-token'))]
-        return new Fetch(requestId, { type, props: { joiningRequestId, joiningStart } }, parameters)
+        return new Fetch(
+          requestId,
+          FullTrackName.tryNew('un/deux/trois', 'quatre'),
+          new Location(12n, 5n),
+          new Location(20n, 0n),
+          parameters,
+        )
       }
 
       test('should roundtrip Fetch correctly', () => {

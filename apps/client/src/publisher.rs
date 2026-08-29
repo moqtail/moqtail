@@ -343,21 +343,10 @@ async fn serve_fetch(
   config: &DataConfig,
   published: &Published,
 ) {
-  let Some(props) = fetch.standalone_fetch_props.clone() else {
-    info!("Only standalone FETCH is served; rejecting");
-    reject_fetch(
-      request_stream,
-      RequestErrorCode::NotSupported,
-      "joining fetch not served",
-    )
-    .await;
-    return;
-  };
-
   let Some(largest) = published.largest().await else {
     info!(
       "FETCH for {:?} before anything was published",
-      props.track_name
+      fetch.track_name
     );
     reject_fetch(
       request_stream,
@@ -368,10 +357,10 @@ async fn serve_fetch(
     return;
   };
 
-  if props.start_location > largest {
+  if fetch.start_location > largest {
     info!(
       "FETCH start {:?} is past the last published Object {:?}",
-      props.start_location, largest
+      fetch.start_location, largest
     );
     reject_fetch(
       request_stream,
@@ -384,21 +373,21 @@ async fn serve_fetch(
 
   // End Location is the last Object plus one, and 0 in the Object field means the whole
   // group.
-  let requested_end = if props.end_location.object == 0 {
-    Location::new(props.end_location.group, u64::MAX)
+  let requested_end = if fetch.end_location.object == 0 {
+    Location::new(fetch.end_location.group, u64::MAX)
   } else {
-    props.end_location.clone()
+    fetch.end_location.clone()
   };
   let available_end = Location::new(largest.group, largest.object + 1);
   let end_location = if requested_end > available_end {
     available_end
   } else {
-    props.end_location.clone()
+    fetch.end_location.clone()
   };
 
   info!(
     "Serving FETCH {} for {:?}: requested up to {:?}, answering up to {:?}",
-    fetch.request_id, props.track_name, props.end_location, end_location
+    fetch.request_id, fetch.track_name, fetch.end_location, end_location
   );
 
   let ok = FetchOk::new(false, end_location.clone(), vec![], vec![]);
@@ -410,7 +399,7 @@ async fn serve_fetch(
   if let Err(e) = send_fetch_objects(
     connection,
     &fetch,
-    &props.start_location,
+    &fetch.start_location,
     &end_location,
     config,
   )

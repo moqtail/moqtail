@@ -19,6 +19,7 @@ use crate::server::stream_id::StreamId;
 use crate::server::utils::build_stream_id;
 use core::result::Result::{Err, Ok};
 use moqtail::model::common::location::Location;
+use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::fetch::Fetch;
 use moqtail::model::control::fetch_ok::FetchOk;
@@ -27,7 +28,6 @@ use moqtail::model::data::fetch_header::FetchHeader;
 use moqtail::model::error::RequestErrorCode;
 use moqtail::model::error::StreamResetCode;
 use moqtail::model::error::TerminationCode;
-use moqtail::model::{common::reason_phrase::ReasonPhrase, control::constant::FetchType};
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use moqtail::transport::data_stream_handler::{FetchRequest, HeaderInfo};
 use std::sync::Arc;
@@ -209,12 +209,10 @@ pub async fn handle(
       }
 
       // Reserved namespaces are resolved locally and never forwarded upstream.
-      if let Some(props) = &fetch.standalone_fetch_props
-        && let Some(reason) = crate::server::utils::reserved_namespace_rejection(
-          &props.track_namespace,
-          &props.track_name,
-        )
-      {
+      if let Some(reason) = crate::server::utils::reserved_namespace_rejection(
+        &fetch.track_namespace,
+        &fetch.track_name,
+      ) {
         info!("Rejecting FETCH for reserved namespace: {}", reason);
         send_request_error(
           client.clone(),
@@ -226,110 +224,10 @@ pub async fn handle(
         return Ok(());
       }
 
-      // Resolves the fetch target. The bool is `rejected`: true when a
-      // REQUEST_ERROR was already sent, so the caller must stop without also
-      // sending DoesNotExist.
-      let fn_ = async {
-        if let Some(joining_fetch_props) = fetch.clone().joining_fetch_props {
-          let sub_request_id = joining_fetch_props.joining_request_id;
-
-          // Resolve the associated subscription regardless of how it was created
-          // (SUBSCRIBE, PUBLISH/PUBLISH_OK or REQUEST_UPDATE).
-          let Some((track_lock, subscription)) = context
-            .track_manager
-            .find_subscription_by_request_id(client.connection_id, sub_request_id)
-            .await
-          else {
-            error!(
-              "handle_fetch_messages | Joining fetch subscription not found: request_id={}",
-              sub_request_id
-            );
-            return (None, None, None, false);
-          };
-
-          // A Joining Fetch is only permitted when the associated subscription
-          // has Forward State 1. REQUEST_UPDATE keeps this state current, so
-          // reading it here already reflects any processed update.
-          if !subscription.read().await.is_forwarding().await {
-            warn!(
-              "handle_fetch_messages | Joining fetch on non-forwarding subscription {}; INVALID_RANGE",
-              sub_request_id
-            );
-            send_request_error(
-              client.clone(),
-              request_id,
-              RequestErrorCode::InvalidRange,
-              ReasonPhrase::try_new(String::from(
-                "Joining fetch requires a forwarding subscription",
-              ))
-              .unwrap(),
-            )
-            .await;
-            return (None, None, None, true);
-          }
-
-          let track = track_lock.read().await;
-          let largest_location = track.largest_location.read().await;
-
-          if largest_location.group < joining_fetch_props.joining_start {
-            error!(
-              "handle_fetch_messages | Joining fetch start location is larger than the track's largest location: {:?} {:?}",
-              largest_location, joining_fetch_props.joining_start
-            );
-            send_request_error(
-              client.clone(),
-              request_id,
-              RequestErrorCode::InvalidRange,
-              ReasonPhrase::try_new(String::from("Invalid range")).unwrap(),
-            )
-            .await;
-            return (None, None, None, true);
-          }
-
-          let start_group = if fetch.fetch_type == FetchType::RelativeFetch {
-            largest_location.group - joining_fetch_props.joining_start
-          } else {
-            joining_fetch_props.joining_start
-          };
-
-          let start_location = Location::new(start_group, 0);
-          let end_location = Location::new(largest_location.group, largest_location.object + 1);
-          (
-            Some(track_lock.clone()),
-            Some(start_location),
-            Some(end_location),
-            false,
-          )
-        } else {
-          // standalone fetch
-          let props = fetch.standalone_fetch_props.clone().unwrap();
-
-          // let's see whether the track is in the cache
-          let full_track_name = moqtail::model::data::full_track_name::FullTrackName {
-            namespace: props.track_namespace.clone(),
-            name: props.track_name.clone(),
-          };
-          let track = context.track_manager.get_track(&full_track_name).await;
-
-          if let Some(track) = track {
-            (
-              Some(track),
-              Some(props.start_location.clone()),
-              Some(props.end_location.clone()),
-              false,
-            )
-          } else {
-            (None, None, None, false)
-          }
-        }
-      };
-
-      let (track, start_location, end_location, rejected) = fn_.await;
-
-      // A REQUEST_ERROR was already sent during resolution; stop here.
-      if rejected {
-        return Ok(());
-      }
+      let full_track_name = fetch.get_full_track_name();
+      let track = context.track_manager.get_track(&full_track_name).await;
+      let start_location = Some(fetch.start_location.clone());
+      let end_location = Some(fetch.end_location.clone());
 
       // TODO: send fetch message to the publisher
       if track.is_none() {
@@ -365,14 +263,13 @@ pub async fn handle(
         }
       }
 
-      // Standalone FETCH: validate the requested range and clamp the FETCH_OK
-      // End Location to published data. Joining fetches
-      // resolve their own range above.
-      // Set when the End Location had to be learned from the publisher; the groups it
-      // covers are then served from it instead of being fetched again.
+      // Validate the requested range and clamp the FETCH_OK End Location to
+      // published data. Set when the End Location had to be learned from the
+      // publisher; the groups it covers are then served from it instead of being
+      // fetched again.
       let mut pending_upstream: Option<PendingUpstreamFetch> = None;
 
-      let end_location = if fetch.joining_fetch_props.is_none() {
+      let end_location = {
         let start = start_location.clone().unwrap();
         let requested_end = end_location.clone().unwrap();
         let mut largest = track.read().await.largest_object().await;
@@ -425,8 +322,6 @@ pub async fn handle(
             }
           }
         }
-      } else {
-        end_location
       };
 
       // Send FetchOk on the request stream before delivering objects.
@@ -898,15 +793,12 @@ async fn send_upstream_fetch_for_range(
   )
   .await;
 
-  let standalone_props = moqtail::model::control::fetch::StandaloneFetchProps {
-    track_namespace: track_read.full_track_name.namespace.clone(),
-    track_name: track_read.full_track_name.name.clone(),
-    start_location: Location::new(gap_start, 0),
-    end_location: Location::new(gap_end, 0),
-  };
-  let upstream_fetch = Fetch::new_standalone(
+  let upstream_fetch = Fetch::new(
     relay_request_id,
-    standalone_props,
+    track_read.full_track_name.namespace.clone(),
+    track_read.full_track_name.name.clone(),
+    Location::new(gap_start, 0),
+    Location::new(gap_end, 0),
     parameters::upstream_fetch(),
   );
 

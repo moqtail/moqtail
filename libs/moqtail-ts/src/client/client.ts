@@ -24,7 +24,6 @@ import {
   ControlMessage,
   Fetch,
   FetchOk,
-  FetchType,
   FilterType,
   GoAway,
   GroupOrder,
@@ -1404,13 +1403,10 @@ export class MOQtailClient {
    * }
    * ```
    */
-  // TODO: figure out how to handle joining fetch types
-  // Do we need an existing subscription? What happens if that subscription forwards objects?
-  // Will the subscribe objects be pushed through this FetchRequest.controller?
   async fetch(args: FetchOptions): Promise<RequestError | { requestId: bigint; stream: ReadableStream<MoqtObject> }> {
     this.#ensureActive()
     try {
-      const { priority, groupOrder, typeAndProps, parameters } = args
+      const { priority, groupOrder, fullTrackName, startLocation, endLocation, parameters } = args
       if (priority < 0 || priority > 255)
         throw new ProtocolViolationError(
           'MOQtailClient.fetch',
@@ -1421,76 +1417,20 @@ export class MOQtailClient {
         ...(groupOrder !== GroupOrder.Original ? [new GroupOrderParam(groupOrder)] : []),
         ...(parameters ?? []),
       ]
-      let msg: Fetch
-      let joiningRequest: MOQtailRequest | undefined
       // Generate unique requestId at the beginning to ensure uniqueness
       const requestId = this.#nextClientRequestId
       logger.log(
         'MOQtailClient',
         'fetch: generated requestId:',
         requestId,
-        'for fetch type:',
-        typeAndProps.type,
         'current #dontUseRequestId:',
         this.#dontUseRequestId,
       )
-      switch (typeAndProps.type) {
-        case FetchType.Standalone:
-          msg = new Fetch(requestId, { type: typeAndProps.type, props: typeAndProps.props }, params)
-          break
-
-        case FetchType.Relative:
-          joiningRequest = this.requests.get(typeAndProps.props.joiningRequestId)
-          if (!(joiningRequest instanceof SubscribeRequest))
-            throw new ProtocolViolationError(
-              'MOQtailClient.fetch',
-              `No subscribe request for the given joiningRequestId: ${typeAndProps.props.joiningRequestId}`,
-            )
-          // The peer knows the subscription by the id it was last issued under (§10.1).
-          msg = new Fetch(
-            requestId,
-            {
-              type: typeAndProps.type,
-              props: {
-                ...typeAndProps.props,
-                joiningRequestId: this.#wireRequestId(typeAndProps.props.joiningRequestId),
-              },
-            },
-            params,
-          )
-          break
-        case FetchType.Absolute:
-          joiningRequest = this.requests.get(typeAndProps.props.joiningRequestId)
-          if (!(joiningRequest instanceof SubscribeRequest))
-            throw new ProtocolViolationError(
-              'MOQtailClient.fetch',
-              `No subscribe request for the given joiningRequestId: ${typeAndProps.props.joiningRequestId}`,
-            )
-          msg = new Fetch(
-            requestId,
-            {
-              type: typeAndProps.type,
-              props: {
-                ...typeAndProps.props,
-                joiningRequestId: this.#wireRequestId(typeAndProps.props.joiningRequestId),
-              },
-            },
-            params,
-          )
-          break
-      }
+      const msg = new Fetch(requestId, fullTrackName, startLocation, endLocation, params)
       const request = new FetchRequest(msg)
-      logger.log(
-        'MOQtailClient',
-        'fetch: storing FetchRequest with requestId:',
-        msg.requestId,
-        'for fetch type:',
-        typeAndProps.type,
-      )
       logger.log('MOQtailClient', 'fetch: full fetch message:', {
         requestId: msg.requestId,
-        fetchType: typeAndProps.type,
-        joiningRequestId: typeAndProps.type !== FetchType.Standalone ? typeAndProps.props.joiningRequestId : 'N/A',
+        fullTrackName: `${fullTrackName}`,
       })
       this.requests.set(msg.requestId, request)
       logger.log('MOQtailClient', 'fetch: about to send fetch message to server')
@@ -2294,26 +2234,7 @@ export class MOQtailClient {
         // may have moved on from.
         const request = this.requests.get(this.#clientRequestId(header.requestId))
         if (request && request instanceof FetchRequest) {
-          let fullTrackName: FullTrackName
-          switch (request.message.typeAndProps.type) {
-            case FetchType.Standalone:
-              fullTrackName = request.message.typeAndProps.props.fullTrackName
-              break
-            case FetchType.Relative:
-            case FetchType.Absolute: {
-              const joiningSubscription = this.requests.get(request.message.typeAndProps.props.joiningRequestId)
-              if (joiningSubscription instanceof SubscribeRequest) {
-                fullTrackName = joiningSubscription.fullTrackName
-                break
-              }
-              throw new ProtocolViolationError(
-                '_handleRecvStreams',
-                'No active subscription for given joining request id',
-              )
-            }
-            default:
-              throw new ProtocolViolationError('_handleRecvStreams', 'Unknown fetchType')
-          }
+          const fullTrackName = request.message.fullTrackName
 
           try {
             while (true) {
@@ -2641,10 +2562,9 @@ if (import.meta.vitest) {
       const fetching = client.fetch({
         priority: 0,
         groupOrder: GroupOrder.Original,
-        typeAndProps: {
-          type: FetchType.Standalone,
-          props: { fullTrackName: ftn, startLocation: new Location(0n, 0n), endLocation: new Location(1n, 0n) },
-        },
+        fullTrackName: ftn,
+        startLocation: new Location(0n, 0n),
+        endLocation: new Location(1n, 0n),
       })
       const fetchStream = await openedStream(transport, 1)
       const fetchMsg = fetchStream.messages[0]
@@ -3045,10 +2965,9 @@ if (import.meta.vitest) {
       const fetching = client.fetch({
         priority: 0,
         groupOrder: GroupOrder.Original,
-        typeAndProps: {
-          type: FetchType.Standalone,
-          props: { fullTrackName: ftn, startLocation: new Location(0n, 0n), endLocation: new Location(1n, 0n) },
-        },
+        fullTrackName: ftn,
+        startLocation: new Location(0n, 0n),
+        endLocation: new Location(1n, 0n),
       })
       const fetchStream = await openedStream(transport, 0)
       fetchStream.respond(new FetchOk(false, new Location(1n, 0n), []))

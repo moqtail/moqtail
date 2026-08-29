@@ -20,7 +20,6 @@ use crate::server::object_logger::ObjectLogger;
 use crate::server::stream_id::StreamId;
 use crate::server::track::ActiveSubgroupHeaderMap;
 use crate::server::track::TrackEvent;
-use crate::server::track_cache::CacheConsumeEvent;
 use crate::server::track_cache::TrackCache;
 use crate::server::utils;
 use anyhow::Result;
@@ -38,7 +37,6 @@ use moqtail::model::control::request_update::RequestUpdate;
 use moqtail::model::control::subscribe::Subscribe;
 use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::model::data::object::Object;
-use moqtail::model::data::subgroup_header::SubgroupHeader;
 use moqtail::model::error::StreamResetCode;
 use moqtail::model::parameter::message_parameter::{
   MessageParameter, apply_message_parameter_update,
@@ -101,7 +99,6 @@ pub struct SubscriptionState {
   pub subscribe_parameters: Vec<MessageParameter>,
   pub last_sent_max_location: Option<Location>,
   pub last_received_object_location: Option<Location>,
-  pub is_joining: bool,
 }
 
 impl SubscriptionState {
@@ -208,7 +205,6 @@ impl From<SubscriptionOrigin> for SubscriptionState {
           subscribe_parameters: subscribe.subscribe_parameters,
           last_sent_max_location: None,
           last_received_object_location: None,
-          is_joining: false,
         }
       }
       SubscriptionOrigin::Publish(publish) => {
@@ -284,7 +280,6 @@ impl From<SubscriptionOrigin> for SubscriptionState {
           subscribe_parameters: publish.parameters,
           last_sent_max_location: None,
           last_received_object_location: None,
-          is_joining: false,
         }
       }
     }
@@ -482,117 +477,6 @@ impl Subscription {
       loop {
         if instance.is_finished().await {
           break;
-        }
-
-        // Handle joining state
-        {
-          let state = instance.subscription_state.read().await;
-          let start_location = state.start_location.clone();
-          let last_received_object_location_opt = state.last_received_object_location.clone();
-          let is_joining = state.is_joining;
-          drop(state);
-          if is_joining && start_location.is_some() {
-            let start_location = start_location.unwrap_or_default();
-            if let Some(last_received_object_location) = last_received_object_location_opt {
-              info!(
-                "Joining state - subscriber={} relay_track_id={} from location: {:?} to last received location: {:?}",
-                instance.client_connection_id,
-                relay_track_id,
-                start_location,
-                last_received_object_location
-              );
-              if last_received_object_location > start_location {
-                let mut object_receiver = cache
-                  .read_objects(start_location, last_received_object_location, false)
-                  .await;
-
-                let mut last_group: u64 = u64::MAX;
-                let mut last_stream_id: Option<StreamId> = None;
-
-                loop {
-                  match object_receiver.recv().await {
-                    Some(event) => match event {
-                      CacheConsumeEvent::NoObject => {
-                        // there is no object found
-                        break;
-                      }
-                      CacheConsumeEvent::Object(object) => {
-                        let (header_info, stream_id) = if last_group == u64::MAX
-                          || object.group_id > last_group
-                        {
-                          // create a subgroup header and send a track event
-
-                          // TODO: check this. If is_some returns true, we may not need
-                          // to check the length.
-                          let has_properties = object.properties.as_ref().is_some();
-
-                          // create a fake subgroup header using the object attributes
-                          // TODO: It think contains_end_of_group should be checked by looking at
-                          // the last object. Need to look into this.
-                          let subgroup_header = HeaderInfo::Subgroup {
-                            header: SubgroupHeader::new_with_explicit_id(
-                              relay_track_id,
-                              object.group_id,
-                              object.subgroup_id,
-                              Some(object.publisher_priority),
-                              has_properties,
-                              false,
-                              // first_object: a relay
-                              // forwarding a subgroup which begins with the subgroup's
-                              // first-ever object MUST set FIRST_OBJECT. This cache-join
-                              // path replays from `start_location`, which may be
-                              // mid-subgroup, and the first-ever object is not
-                              // necessarily object_id 0, so the cache does not tell us
-                              // whether we are at that object. We therefore always leave
-                              // FIRST_OBJECT unset here. This is a known conformance gap
-                              // for the case where we do start at the first object;
-                              // closing it is deferred to #229 / RS-14.
-                              false,
-                            ),
-                          };
-                          info!(
-                            "FROM CACHE: Joining state - subscriber={} relay_track_id={} sending subgroup header: {:?}",
-                            instance.client_connection_id, relay_track_id, subgroup_header
-                          );
-                          last_group = object.group_id;
-                          let stream_id = instance.get_stream_id(&subgroup_header);
-                          last_stream_id = Some(stream_id);
-
-                          (Some(subgroup_header), last_stream_id.clone())
-                        } else {
-                          (None, last_stream_id.clone())
-                        };
-
-                        let the_object = Object::try_from_fetch(object, relay_track_id).unwrap();
-
-                        let track_event = TrackEvent::SubgroupObject {
-                          stream_id: stream_id.unwrap(),
-                          object: the_object,
-                          header_info,
-                        };
-                        info!(
-                          "Joining state - subscriber={} relay_track_id={} sending object location: {:?}",
-                          instance.client_connection_id, relay_track_id, track_event
-                        );
-                        instance.handle_track_event(track_event).await;
-                      }
-                      CacheConsumeEvent::EndLocation => {}
-                    },
-                    None => {
-                      warn!("handle_fetch_messages | No object.");
-                      break;
-                    }
-                  }
-                }
-              }
-            }
-            let mut state = instance.subscription_state.write().await;
-            state.is_joining = false;
-            info!(
-              "Finished joining state for subscriber={} relay_track_id={}",
-              instance.client_connection_id, relay_track_id
-            );
-          }
         }
 
         tokio::select! {
@@ -1003,8 +887,6 @@ impl Subscription {
           // set forward to true and set start group the next group
           let mut state = self.subscription_state.write().await;
           state.forward = true;
-
-          state.is_joining = true;
 
           if new_start_location.is_some() {
             state.start_location = new_start_location;

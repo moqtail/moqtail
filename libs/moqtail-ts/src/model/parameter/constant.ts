@@ -54,6 +54,7 @@ export enum MessageParameterType {
   SubscriberPriority = 0x20,
   SubscriptionFilter = 0x21,
   GroupOrder = 0x22,
+  FillParameters = 0x23,
   SwitchFrom = 0x24,
   NewGroupRequest = 0x32,
   /**
@@ -89,6 +90,8 @@ export function messageParameterTypeFromNumber(value: bigint | number): MessageP
       return MessageParameterType.SubscriptionFilter
     case 0x22:
       return MessageParameterType.GroupOrder
+    case 0x23:
+      return MessageParameterType.FillParameters
     case 0x24:
       return MessageParameterType.SwitchFrom
     case 0x32:

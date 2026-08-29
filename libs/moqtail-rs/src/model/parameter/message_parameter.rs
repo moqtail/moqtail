@@ -16,7 +16,7 @@ use crate::model::common::location::Location;
 use crate::model::common::pair::KeyValuePair;
 use crate::model::common::tuple::Tuple;
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
-use crate::model::control::constant::{ControlMessageType, FilterType, GroupOrder};
+use crate::model::control::constant::{ControlMessageType, FilterType, GroupOrder, SwitchMode};
 use crate::model::error::ParseError;
 use crate::model::parameter::authorization_token::AuthorizationToken;
 use crate::model::parameter::constant::MessageParameterType;
@@ -59,6 +59,13 @@ pub enum MessageParameter {
     start_location: Option<Location>,
     end_group: Option<u64>,
   },
+  SwitchFrom {
+    /// The subscription to suspend.
+    request_id: u64,
+    mode: SwitchMode,
+    /// Whether the publisher sends PUBLISH_DONE on the suspended subscription.
+    publish_done: bool,
+  },
   NewGroupRequest {
     group: u64,
   },
@@ -66,6 +73,9 @@ pub enum MessageParameter {
     prefix: Tuple,
   },
 }
+
+/// Publish Done is the top bit of the flags byte; the rest are reserved.
+const SWITCH_FROM_PUBLISH_DONE: u8 = 0b1000_0000;
 
 impl MessageParameter {
   pub fn new_object_delivery_timeout(timeout: u64) -> Self {
@@ -120,6 +130,14 @@ impl MessageParameter {
     }
   }
 
+  pub fn new_switch_from(request_id: u64, mode: SwitchMode, publish_done: bool) -> Self {
+    Self::SwitchFrom {
+      request_id,
+      mode,
+      publish_done,
+    }
+  }
+
   pub fn new_track_namespace_prefix(prefix: Tuple) -> Self {
     Self::TrackNamespacePrefix { prefix }
   }
@@ -142,6 +160,7 @@ impl MessageParameter {
       Self::SubscriberPriority { .. } => MessageParameterType::SubscriberPriority as u64,
       Self::GroupOrder { .. } => MessageParameterType::GroupOrder as u64,
       Self::SubscriptionFilter { .. } => MessageParameterType::SubscriptionFilter as u64,
+      Self::SwitchFrom { .. } => MessageParameterType::SwitchFrom as u64,
       Self::NewGroupRequest { .. } => MessageParameterType::NewGroupRequest as u64,
       Self::TrackNamespacePrefix { .. } => MessageParameterType::TrackNamespacePrefix as u64,
     }
@@ -199,6 +218,10 @@ impl MessageParameter {
           | ControlMessageType::PublishOk
           | ControlMessageType::RequestOk
           | ControlMessageType::RequestUpdate
+      ),
+      Self::SwitchFrom { .. } => matches!(
+        msg_type,
+        ControlMessageType::Subscribe | ControlMessageType::RequestUpdate
       ),
       Self::Expires { .. } => matches!(
         msg_type,
@@ -335,6 +358,35 @@ impl MessageParameter {
             }
             Ok(Self::TrackNamespacePrefix { prefix })
           }
+          MessageParameterType::SwitchFrom => {
+            let mut payload = value.clone();
+            let request_id = payload.get_vi()?;
+            let mode = SwitchMode::try_from(payload.get_vi()?)?;
+            if !payload.has_remaining() {
+              return Err(ParseError::NotEnoughBytes {
+                context: "MessageParameter::deserialize(SwitchFrom flags)",
+                needed: 1,
+                available: 0,
+              });
+            }
+            let flags = payload.get_u8();
+            if flags & !SWITCH_FROM_PUBLISH_DONE != 0 {
+              return Err(ParseError::ProtocolViolation {
+                context: "MessageParameter::deserialize",
+                details: format!("SWITCH_FROM reserved bits must be 0, got {flags:#04x}"),
+              });
+            }
+            if payload.has_remaining() {
+              return Err(ParseError::KeyValueFormattingError {
+                context: "MessageParameter::deserialize(SwitchFrom)",
+              });
+            }
+            Ok(Self::SwitchFrom {
+              request_id,
+              mode,
+              publish_done: flags & SWITCH_FROM_PUBLISH_DONE != 0,
+            })
+          }
           MessageParameterType::SubscriptionFilter => {
             let mut payload = value.clone();
             let ft_raw = payload.get_vi()?;
@@ -457,6 +509,21 @@ impl TryInto<KeyValuePair> for MessageParameter {
         buf.put_vi(location.group)?;
         buf.put_vi(location.object)?;
         KeyValuePair::try_new_bytes(MessageParameterType::LargestObject as u64, buf.freeze())
+      }
+      Self::SwitchFrom {
+        request_id,
+        mode,
+        publish_done,
+      } => {
+        let mut buf = BytesMut::new();
+        buf.put_vi(request_id)?;
+        buf.put_vi(mode as u64)?;
+        buf.put_u8(if publish_done {
+          SWITCH_FROM_PUBLISH_DONE
+        } else {
+          0
+        });
+        KeyValuePair::new_bytes(MessageParameterType::SwitchFrom as u64, buf.freeze())
       }
       Self::SubscriptionFilter {
         filter_type,
@@ -584,7 +651,9 @@ const fn value_shape(type_value: u64) -> ValueShape {
     ValueShape::Uint8
   } else if type_value == MessageParameterType::LargestObject as u64 {
     ValueShape::BareLocation
-  } else if type_value == MessageParameterType::TrackNamespacePrefix as u64 {
+  } else if type_value == MessageParameterType::TrackNamespacePrefix as u64
+    || type_value == MessageParameterType::SwitchFrom as u64
+  {
     ValueShape::LengthPrefixedBytes
   } else if type_value.is_multiple_of(2) {
     ValueShape::VarInt
@@ -824,6 +893,94 @@ mod tests {
       MessageParameter::deserialize(&kvp),
       Err(ParseError::ProtocolViolation { .. })
     ));
+  }
+
+  #[test]
+  fn test_roundtrip_switch_from() {
+    for publish_done in [false, true] {
+      for mode in [SwitchMode::Hard, SwitchMode::Soft] {
+        let params = vec![MessageParameter::new_switch_from(9, mode, publish_done)];
+        let mut bytes = serialize_message_parameters(&params).unwrap();
+        let decoded =
+          deserialize_message_parameters(&mut bytes, 1, ControlMessageType::Subscribe).unwrap();
+        assert_eq!(decoded, params);
+      }
+    }
+  }
+
+  #[test]
+  fn test_switch_from_wire_format() {
+    let wire = Bytes::from_static(&[0x24, 0x03, 0x07, 0x00, 0x80]);
+    let params = vec![MessageParameter::new_switch_from(7, SwitchMode::Hard, true)];
+
+    assert_eq!(serialize_message_parameters(&params).unwrap(), wire);
+
+    let mut buf = wire.clone();
+    let decoded =
+      deserialize_message_parameters(&mut buf, 1, ControlMessageType::Subscribe).unwrap();
+    assert_eq!(decoded, params);
+    assert!(!buf.has_remaining());
+  }
+
+  #[test]
+  fn test_switch_from_round_trips_in_a_parameter_list() {
+    let params = vec![
+      MessageParameter::new_subscriber_priority(128),
+      MessageParameter::new_switch_from(7, SwitchMode::Hard, true),
+      MessageParameter::new_group_request(3),
+    ];
+    let count = params.len() as u64;
+    let mut bytes = serialize_message_parameters(&params).unwrap();
+    let decoded =
+      deserialize_message_parameters(&mut bytes, count, ControlMessageType::Subscribe).unwrap();
+
+    assert!(!bytes.has_remaining(), "the list left trailing bytes");
+    assert_eq!(decoded, params);
+  }
+
+  #[test]
+  fn test_switch_from_reserved_bits_must_be_zero() {
+    let mut value = BytesMut::new();
+    value.put_vi(1u64).unwrap();
+    value.put_vi(SwitchMode::Hard as u64).unwrap();
+    value.put_u8(0x01);
+    let kvp =
+      KeyValuePair::new_bytes(MessageParameterType::SwitchFrom as u64, value.freeze()).unwrap();
+    assert!(matches!(
+      MessageParameter::deserialize(&kvp),
+      Err(ParseError::ProtocolViolation { .. })
+    ));
+  }
+
+  #[test]
+  fn test_switch_from_unknown_mode_is_rejected() {
+    let mut value = BytesMut::new();
+    value.put_vi(1u64).unwrap();
+    value.put_vi(9u64).unwrap();
+    value.put_u8(0);
+    let kvp =
+      KeyValuePair::new_bytes(MessageParameterType::SwitchFrom as u64, value.freeze()).unwrap();
+    assert!(MessageParameter::deserialize(&kvp).is_err());
+  }
+
+  #[test]
+  fn test_switch_from_rejected_outside_subscribe_and_request_update() {
+    let params = vec![MessageParameter::new_switch_from(
+      1,
+      SwitchMode::Hard,
+      false,
+    )];
+    let mut bytes = serialize_message_parameters(&params).unwrap();
+    let err = deserialize_message_parameters(&mut bytes, 1, ControlMessageType::Fetch).unwrap_err();
+    assert!(matches!(err, ParseError::ProtocolViolation { .. }));
+
+    for msg_type in [
+      ControlMessageType::Subscribe,
+      ControlMessageType::RequestUpdate,
+    ] {
+      let mut bytes = serialize_message_parameters(&params).unwrap();
+      assert!(deserialize_message_parameters(&mut bytes, 1, msg_type).is_ok());
+    }
   }
 
   #[test]

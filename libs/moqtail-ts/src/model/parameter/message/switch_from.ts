@@ -40,7 +40,7 @@ export class SwitchFrom implements Parameter {
     buf.putVI(this.requestId)
     buf.putVI(this.mode)
     buf.putU8(this.publishDone ? 1 << 7 : 0)
-    return KeyValuePair.tryNewBytes(SwitchFrom.TYPE, buf.toUint8Array())
+    return KeyValuePair.newBytes(SwitchFrom.TYPE, buf.toUint8Array())
   }
 
   static fromKeyValuePair(pair: KeyValuePair): SwitchFrom | undefined {
@@ -78,7 +78,7 @@ if (import.meta.vitest) {
       buf.putVI(1n)
       buf.putVI(SwitchMode.Hard)
       buf.putU8(0x01)
-      const pair = KeyValuePair.tryNewBytes(SwitchFrom.TYPE, buf.toUint8Array())
+      const pair = KeyValuePair.newBytes(SwitchFrom.TYPE, buf.toUint8Array())
       expect(() => SwitchFrom.fromKeyValuePair(pair)).toThrow(ProtocolViolationError)
     })
   })

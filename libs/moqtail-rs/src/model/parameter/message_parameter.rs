@@ -58,6 +58,8 @@ pub enum MessageParameter {
     filter_type: FilterType,
     start_location: Option<Location>,
     end_group: Option<u64>,
+    /// How many groups back from the Largest Object a RelativeStartFill starts.
+    relative_previous: Option<u64>,
   },
   SwitchFrom {
     /// The subscription to suspend.
@@ -127,6 +129,16 @@ impl MessageParameter {
       filter_type,
       start_location,
       end_group,
+      relative_previous: None,
+    }
+  }
+
+  pub fn new_relative_start_fill(relative_previous: u64) -> Self {
+    Self::SubscriptionFilter {
+      filter_type: FilterType::RelativeStartFill,
+      start_location: None,
+      end_group: None,
+      relative_previous: Some(relative_previous),
     }
   }
 
@@ -391,12 +403,12 @@ impl MessageParameter {
             let mut payload = value.clone();
             let ft_raw = payload.get_vi()?;
             let filter_type = FilterType::try_from(ft_raw)?;
-            let (start_location, end_group) = match filter_type {
-              FilterType::AbsoluteStart => {
+            let (start_location, end_group, relative_previous) = match filter_type {
+              FilterType::AbsoluteStartFill => {
                 let loc = Location::deserialize(&mut payload)?;
-                (Some(loc), None)
+                (Some(loc), None, None)
               }
-              FilterType::AbsoluteRange => {
+              FilterType::AbsoluteRangeFill => {
                 let loc = Location::deserialize(&mut payload)?;
                 // End Group is a delta from the Start Group on the wire.
                 let delta = payload.get_vi()?;
@@ -406,16 +418,18 @@ impl MessageParameter {
                     .checked_add(delta)
                     .ok_or_else(|| ParseError::ProtocolViolation {
                       context: "MessageParameter::deserialize",
-                      details: "AbsoluteRange End Group Delta overflows u64".to_string(),
+                      details: "AbsoluteRangeFill End Group Delta overflows u64".to_string(),
                     })?;
-                (Some(loc), Some(end_group))
+                (Some(loc), Some(end_group), None)
               }
-              _ => (None, None),
+              FilterType::RelativeStartFill => (None, None, Some(payload.get_vi()?)),
+              _ => (None, None, None),
             };
             Ok(Self::SubscriptionFilter {
               filter_type,
               start_location,
               end_group,
+              relative_previous,
             })
           }
           _ => Err(ParseError::ProtocolViolation {
@@ -529,23 +543,27 @@ impl TryInto<KeyValuePair> for MessageParameter {
         filter_type,
         start_location,
         end_group,
+        relative_previous,
       } => {
         let mut buf = BytesMut::new();
         buf.put_vi(filter_type as u64)?;
         let start_group = start_location.as_ref().map(|l| l.group).unwrap_or(0);
         if matches!(
           filter_type,
-          FilterType::AbsoluteStart | FilterType::AbsoluteRange
+          FilterType::AbsoluteStartFill | FilterType::AbsoluteRangeFill
         ) && let Some(loc) = &start_location
         {
           buf.put_vi(loc.group)?;
           buf.put_vi(loc.object)?;
         }
-        if filter_type == FilterType::AbsoluteRange
+        if filter_type == FilterType::AbsoluteRangeFill
           && let Some(eg) = end_group
         {
           // End Group is encoded on the wire as a delta from the Start Group.
           buf.put_vi(eg.saturating_sub(start_group))?;
+        }
+        if filter_type == FilterType::RelativeStartFill {
+          buf.put_vi(relative_previous.unwrap_or(0))?;
         }
         KeyValuePair::try_new_bytes(
           MessageParameterType::SubscriptionFilter as u64,
@@ -828,7 +846,7 @@ mod tests {
   #[test]
   fn test_roundtrip_subscription_filter_absolute_start() {
     let orig = MessageParameter::new_subscription_filter(
-      FilterType::AbsoluteStart,
+      FilterType::AbsoluteStartFill,
       Some(Location {
         group: 3,
         object: 1,
@@ -841,7 +859,7 @@ mod tests {
   #[test]
   fn test_roundtrip_subscription_filter_absolute_range() {
     let orig = MessageParameter::new_subscription_filter(
-      FilterType::AbsoluteRange,
+      FilterType::AbsoluteRangeFill,
       Some(Location {
         group: 5,
         object: 0,
@@ -856,7 +874,7 @@ mod tests {
     // Start group 5, absolute End Group 20 must serialize End Group as the
     // delta 15, not the absolute 20.
     let orig = MessageParameter::new_subscription_filter(
-      FilterType::AbsoluteRange,
+      FilterType::AbsoluteRangeFill,
       Some(Location {
         group: 5,
         object: 0,
@@ -869,7 +887,10 @@ mod tests {
       panic!("SubscriptionFilter must be a bytes KVP");
     };
     let mut value = value;
-    assert_eq!(value.get_vi().unwrap(), FilterType::AbsoluteRange as u64);
+    assert_eq!(
+      value.get_vi().unwrap(),
+      FilterType::AbsoluteRangeFill as u64
+    );
     assert_eq!(value.get_vi().unwrap(), 5); // start group
     assert_eq!(value.get_vi().unwrap(), 0); // start object
     assert_eq!(value.get_vi().unwrap(), 15); // End Group Delta = 20 - 5
@@ -880,7 +901,7 @@ mod tests {
     // Start group u64::MAX plus a non-zero delta overflows the absolute Group ID
     // and MUST be rejected.
     let mut value = BytesMut::new();
-    value.put_vi(FilterType::AbsoluteRange as u64).unwrap();
+    value.put_vi(FilterType::AbsoluteRangeFill as u64).unwrap();
     value.put_vi(u64::MAX).unwrap(); // start group
     value.put_vi(0u64).unwrap(); // start object
     value.put_vi(1u64).unwrap(); // End Group Delta -> overflow
@@ -893,6 +914,30 @@ mod tests {
       MessageParameter::deserialize(&kvp),
       Err(ParseError::ProtocolViolation { .. })
     ));
+  }
+
+  #[test]
+  fn test_roundtrip_subscription_filter_relative_start_fill() {
+    let orig = MessageParameter::new_relative_start_fill(3);
+    assert_eq!(roundtrip(orig.clone()), orig);
+  }
+
+  #[test]
+  fn test_relative_start_fill_carries_relative_previous_on_the_wire() {
+    let mut bytes = MessageParameter::new_relative_start_fill(3)
+      .serialize()
+      .unwrap();
+    let kvp = KeyValuePair::deserialize(&mut bytes).unwrap();
+    let KeyValuePair::Bytes { value, .. } = kvp else {
+      panic!("SubscriptionFilter must be a bytes KVP");
+    };
+    let mut value = value;
+    assert_eq!(
+      value.get_vi().unwrap(),
+      FilterType::RelativeStartFill as u64
+    );
+    assert_eq!(value.get_vi().unwrap(), 3);
+    assert!(!value.has_remaining());
   }
 
   #[test]

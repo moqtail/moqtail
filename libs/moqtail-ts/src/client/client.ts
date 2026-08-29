@@ -958,9 +958,9 @@ export class MOQtailClient {
    *
    * - `forward: true` tells the relay to forward objects to this subscriber as they arrive.
    * - `forward: false` means the relay subscribes upstream but buffers objects locally, not forwarding them to you.
-   * - `filterType: AbsoluteStart` lets you specify a start position in the future; the stream waits for that object. If the start location is \< the latest object
+   * - `filterType: AbsoluteStartFill` lets you specify a start position in the future; the stream waits for that object. If the start location is \< the latest object
    * observed at the publisher then it behaves as `filterType: LatestObject`
-   * - `filterType: AbsoluteRange` lets you specify a start and end group, both of should be in the future; the stream waits for those objects. If the start location is \< the latest object
+   * - `filterType: AbsoluteRangeFill` lets you specify a start and end group, both of should be in the future; the stream waits for those objects. If the start location is \< the latest object
    * observed at the publisher then it behaves as `filterType: LatestObject`.
    *
    * The method returns either a {@link RequestError} (on refusal) or an object with the subscription `requestId` and a `ReadableStream` of {@link MoqtObject}s.
@@ -992,7 +992,7 @@ export class MOQtailClient {
    * ```ts
    * const result = await client.subscribe({
    *   fullTrackName,
-   *   filterType: FilterType.AbsoluteRange,
+   *   filterType: FilterType.AbsoluteRangeFill,
    *   startLocation: futureStart,
    *   endGroup: futureEnd,
    *   forward: true,
@@ -1028,24 +1028,24 @@ export class MOQtailClient {
         case FilterType.NextGroupStart:
           msg = Subscribe.newNextGroupStart(this.#nextClientRequestId, fullTrackName, baseParams)
           break
-        case FilterType.AbsoluteStart:
+        case FilterType.AbsoluteStartFill:
           if (!startLocation)
             throw new ProtocolViolationError(
               'MOQtailClient.subscribe',
-              'FilterType.AbsoluteStart must have a start location',
+              'FilterType.AbsoluteStartFill must have a start location',
             )
-          msg = Subscribe.newAbsoluteStart(this.#nextClientRequestId, fullTrackName, startLocation, baseParams)
+          msg = Subscribe.newAbsoluteStartFill(this.#nextClientRequestId, fullTrackName, startLocation, baseParams)
           break
-        case FilterType.AbsoluteRange:
+        case FilterType.AbsoluteRangeFill:
           if (startLocation === undefined || endGroup === undefined)
             throw new ProtocolViolationError(
               'MOQtailClient.subscribe',
-              'FilterType.AbsoluteRange must have a start location and an end group',
+              'FilterType.AbsoluteRangeFill must have a start location and an end group',
             )
           if (endGroup > 0 && startLocation.group >= endGroup)
             throw new ProtocolViolationError('MOQtailClient.subscribe', 'End group must be greater than start group')
 
-          msg = Subscribe.newAbsoluteRange(
+          msg = Subscribe.newAbsoluteRangeFill(
             this.#nextClientRequestId,
             fullTrackName,
             startLocation,
@@ -1053,6 +1053,21 @@ export class MOQtailClient {
             baseParams,
           )
           break
+        case FilterType.RelativeStartFill: {
+          const { relativePrevious } = args
+          if (relativePrevious === undefined)
+            throw new ProtocolViolationError(
+              'MOQtailClient.subscribe',
+              'FilterType.RelativeStartFill must have a relative previous',
+            )
+          msg = Subscribe.newRelativeStartFill(
+            this.#nextClientRequestId,
+            fullTrackName,
+            BigInt(relativePrevious),
+            baseParams,
+          )
+          break
+        }
       }
       const request = new SubscribeRequest(msg)
       request.manager = new Subscription(request)
@@ -1233,7 +1248,7 @@ export class MOQtailClient {
           const updateParams: MessageParameter[] = [
             new SubscriberPriority(priority),
             new Forward(forward),
-            new SubscriptionFilter(FilterType.AbsoluteRange, startLocation, endGroup),
+            new SubscriptionFilter(FilterType.AbsoluteRangeFill, startLocation, endGroup),
             ...(parameters ?? []),
           ]
           const msg = new RequestUpdate(requestId, updateParams)

@@ -100,7 +100,7 @@ if (import.meta.vitest) {
     function buildTestUpdate(): RequestUpdate {
       // Wire encoding canonicalizes parameter order ascending by type (delta-encoding requirement).
       const parameters = [
-        new SubscriptionFilter(FilterType.AbsoluteRange, new Location(81n, 81n), 25n),
+        new SubscriptionFilter(FilterType.AbsoluteRangeFill, new Location(81n, 81n), 25n),
         new Forward(true),
       ].sort((a, b) => {
         const at = a.toKeyValuePair().typeValue

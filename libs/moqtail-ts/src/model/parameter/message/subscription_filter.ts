@@ -33,18 +33,23 @@ export class SubscriptionFilter implements Parameter {
     public readonly filterType: FilterType,
     public readonly startLocation?: Location,
     public readonly endGroup?: bigint,
+    /** How many groups back from the Largest Object a RelativeStartFill starts. */
+    public readonly relativePrevious?: bigint,
   ) {}
 
   toKeyValuePair(): KeyValuePair {
     const buf = new ByteBuffer()
     buf.putVI(this.filterType)
-    if (this.filterType === FilterType.AbsoluteStart || this.filterType === FilterType.AbsoluteRange) {
+    if (this.filterType === FilterType.AbsoluteStartFill || this.filterType === FilterType.AbsoluteRangeFill) {
       if (this.startLocation) {
         buf.putLocation(this.startLocation)
       }
     }
-    if (this.filterType === FilterType.AbsoluteRange && this.endGroup != null) {
+    if (this.filterType === FilterType.AbsoluteRangeFill && this.endGroup != null) {
       buf.putVI(this.endGroup)
+    }
+    if (this.filterType === FilterType.RelativeStartFill) {
+      buf.putVI(this.relativePrevious ?? 0n)
     }
     return KeyValuePair.tryNewBytes(SubscriptionFilter.TYPE, buf.toUint8Array())
   }
@@ -56,13 +61,17 @@ export class SubscriptionFilter implements Parameter {
     const filterType = Number(buf.getVI()) as FilterType
     let startLocation: Location | undefined
     let endGroup: bigint | undefined
-    if (filterType === FilterType.AbsoluteStart || filterType === FilterType.AbsoluteRange) {
+    let relativePrevious: bigint | undefined
+    if (filterType === FilterType.AbsoluteStartFill || filterType === FilterType.AbsoluteRangeFill) {
       startLocation = buf.getLocation()
     }
-    if (filterType === FilterType.AbsoluteRange) {
+    if (filterType === FilterType.AbsoluteRangeFill) {
       endGroup = buf.getVI()
     }
-    return new SubscriptionFilter(filterType, startLocation, endGroup)
+    if (filterType === FilterType.RelativeStartFill) {
+      relativePrevious = buf.getVI()
+    }
+    return new SubscriptionFilter(filterType, startLocation, endGroup, relativePrevious)
   }
 }
 
@@ -76,21 +85,27 @@ if (import.meta.vitest) {
       const parsed = SubscriptionFilter.fromKeyValuePair(pair)
       expect(parsed?.filterType).toBe(FilterType.LatestObject)
     })
-    test('roundtrips AbsoluteStart', () => {
-      const orig = new SubscriptionFilter(FilterType.AbsoluteStart, new Location(3n, 1n))
+    test('roundtrips AbsoluteStartFill', () => {
+      const orig = new SubscriptionFilter(FilterType.AbsoluteStartFill, new Location(3n, 1n))
       const pair = orig.toKeyValuePair()
       const parsed = SubscriptionFilter.fromKeyValuePair(pair)
-      expect(parsed?.filterType).toBe(FilterType.AbsoluteStart)
+      expect(parsed?.filterType).toBe(FilterType.AbsoluteStartFill)
       expect(parsed?.startLocation?.group).toBe(3n)
       expect(parsed?.startLocation?.object).toBe(1n)
     })
-    test('roundtrips AbsoluteRange', () => {
-      const orig = new SubscriptionFilter(FilterType.AbsoluteRange, new Location(5n, 0n), 20n)
+    test('roundtrips AbsoluteRangeFill', () => {
+      const orig = new SubscriptionFilter(FilterType.AbsoluteRangeFill, new Location(5n, 0n), 20n)
       const pair = orig.toKeyValuePair()
       const parsed = SubscriptionFilter.fromKeyValuePair(pair)
-      expect(parsed?.filterType).toBe(FilterType.AbsoluteRange)
+      expect(parsed?.filterType).toBe(FilterType.AbsoluteRangeFill)
       expect(parsed?.startLocation?.group).toBe(5n)
       expect(parsed?.endGroup).toBe(20n)
+    })
+    test('roundtrips RelativeStartFill', () => {
+      const orig = new SubscriptionFilter(FilterType.RelativeStartFill, undefined, undefined, 3n)
+      const parsed = SubscriptionFilter.fromKeyValuePair(orig.toKeyValuePair())
+      expect(parsed?.filterType).toBe(FilterType.RelativeStartFill)
+      expect(parsed?.relativePrevious).toBe(3n)
     })
     test('fromKeyValuePair returns undefined for wrong type', () => {
       const pair = KeyValuePair.tryNewVarInt(MessageParameterType.ObjectDeliveryTimeout, 100n)

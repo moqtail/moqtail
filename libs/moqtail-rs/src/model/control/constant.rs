@@ -118,8 +118,21 @@ impl ControlMessageType {
 pub enum FilterType {
   NextGroupStart = 0x1,
   LatestObject = 0x2,
-  AbsoluteStart = 0x3,
-  AbsoluteRange = 0x4,
+  AbsoluteStartFill = 0x3,
+  AbsoluteRangeFill = 0x4,
+  /// Start Location is `{Largest Object.Group - Relative Previous, 0}`.
+  RelativeStartFill = 0x5,
+}
+
+impl FilterType {
+  /// Whether the publisher also delivers already-published objects on a fill
+  /// fetch stream.
+  pub fn is_fetch_fill(self) -> bool {
+    matches!(
+      self,
+      FilterType::AbsoluteStartFill | FilterType::AbsoluteRangeFill | FilterType::RelativeStartFill
+    )
+  }
 }
 
 impl TryFrom<u64> for FilterType {
@@ -129,8 +142,9 @@ impl TryFrom<u64> for FilterType {
     match value {
       0x1 => Ok(FilterType::NextGroupStart),
       0x2 => Ok(FilterType::LatestObject),
-      0x3 => Ok(FilterType::AbsoluteStart),
-      0x4 => Ok(FilterType::AbsoluteRange),
+      0x3 => Ok(FilterType::AbsoluteStartFill),
+      0x4 => Ok(FilterType::AbsoluteRangeFill),
+      0x5 => Ok(FilterType::RelativeStartFill),
       _ => Err(ParseError::InvalidType {
         context: "FilterType::try_from(u64)",
         details: format!("Invalid type, got {value}"),

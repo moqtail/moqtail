@@ -146,7 +146,7 @@ export type MOQtailClientOptions = {
  *   priority: 32,
  *   groupOrder: GroupOrder.Original,
  *   forward: true,
- *   filterType: FilterType.AbsoluteRange,
+ *   filterType: FilterType.AbsoluteRangeFill,
  *   startLocation: { group: 100n, subgroup: 0n, object: 0n },
  *   endGroup: 120n
  * })
@@ -165,10 +165,12 @@ export type SubscribeOptions = {
   filterType: FilterType
   /** Optional extension parameters appended to the SUBSCRIBE control message. */
   parameters?: MessageParameter[]
-  /** Required for {@link FilterType.AbsoluteStart} / {@link FilterType.AbsoluteRange}; earliest {@link Location} to include. */
+  /** Required for {@link FilterType.AbsoluteStartFill} / {@link FilterType.AbsoluteRangeFill}; earliest {@link Location} to include. */
   startLocation?: Location
-  /** Required for {@link FilterType.AbsoluteRange}; exclusive upper group boundary (coerced to bigint if number provided). */
+  /** Required for {@link FilterType.AbsoluteRangeFill}; exclusive upper group boundary (coerced to bigint if number provided). */
   endGroup?: bigint | number
+  /** Required for {@link FilterType.RelativeStartFill}; how many groups back from the Largest Object to start. */
+  relativePrevious?: bigint | number
   /** Per-subscription early discard policy. Overrides the client-level default set via {@link MOQtailClient.setEarlyDiscardPolicy}. */
   earlyDiscardPolicy?: EarlyDiscardPolicyConfig
 }

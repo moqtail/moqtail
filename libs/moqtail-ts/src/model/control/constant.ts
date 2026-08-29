@@ -164,8 +164,10 @@ export namespace ControlMessageType {
 export enum FilterType {
   NextGroupStart = 0x1,
   LatestObject = 0x2,
-  AbsoluteStart = 0x3,
-  AbsoluteRange = 0x4,
+  AbsoluteStartFill = 0x3,
+  AbsoluteRangeFill = 0x4,
+  /** Start Location is `{Largest Object.Group - Relative Previous, 0}`. */
+  RelativeStartFill = 0x5,
 }
 
 /**
@@ -182,12 +184,21 @@ export namespace FilterType {
       case 0x2n:
         return FilterType.LatestObject
       case 0x3n:
-        return FilterType.AbsoluteStart
+        return FilterType.AbsoluteStartFill
       case 0x4n:
-        return FilterType.AbsoluteRange
+        return FilterType.AbsoluteRangeFill
+      case 0x5n:
+        return FilterType.RelativeStartFill
       default:
         throw new InvalidEnumValue('FilterType.tryFrom', v)
     }
+  }
+
+  /** Whether the publisher also delivers already-published objects on a fill fetch stream. */
+  export function isFetchFill(v: FilterType): boolean {
+    return (
+      v === FilterType.AbsoluteStartFill || v === FilterType.AbsoluteRangeFill || v === FilterType.RelativeStartFill
+    )
   }
 }
 

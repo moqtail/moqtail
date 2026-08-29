@@ -488,7 +488,9 @@ if (import.meta.vitest) {
 
     test('RequestErrorCode matches request_error_codes.json', async () => {
       const { requestErrorCodes, assertRegistry, pascalIdent } = await fixture()
-      assertRegistry(requestErrorCodes(), pascalIdent(), (codepoint) => {
+      // This branch reuses 0x32 for the track switching it is prototyping, so the
+      // draft's name for that codepoint maps to ours until that work is settled.
+      assertRegistry(requestErrorCodes(), pascalIdent({ INVALID_JOINING_REQUEST_ID: 'InvalidSwitch' }), (codepoint) => {
         try {
           return RequestErrorCode[Number(RequestErrorCode.tryFrom(codepoint))]
         } catch {

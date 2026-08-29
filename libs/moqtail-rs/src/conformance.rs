@@ -404,11 +404,17 @@ mod enum_conformance {
 
   #[test]
   fn request_error_codes_match_fixture() {
-    assert_registry(&request_error_codes(), &[], |cp| {
-      RequestErrorCode::try_from(cp)
-        .ok()
-        .map(|c| format!("{c:?}"))
-    });
+    // This branch reuses 0x32 for the track switching it is prototyping, so the
+    // draft's name for that codepoint maps to ours until that work is settled.
+    assert_registry(
+      &request_error_codes(),
+      &[("INVALID_JOINING_REQUEST_ID", "InvalidSwitch")],
+      |cp| {
+        RequestErrorCode::try_from(cp)
+          .ok()
+          .map(|c| format!("{c:?}"))
+      },
+    );
   }
 
   #[test]

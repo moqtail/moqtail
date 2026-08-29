@@ -104,18 +104,6 @@
         "value": "0x34",
         "spec": "Section 10.2.14"
       }
-    ],
-    "local_extensions": [
-      {
-        "name": "FILL_PARAMETERS",
-        "value": "0x23",
-        "notes": "From the track-switching work that postdates draft-18 (moq-wg/moq-transport#1674). Moves into entries once that lands. Its value is a nested block of message parameters that override settings for the fill fetch stream."
-      },
-      {
-        "name": "SWITCH_FROM",
-        "value": "0x24",
-        "notes": "From the track-switching work that postdates draft-18 (moq-wg/moq-transport#1674). Moves into entries once that lands. Its Type is even but its value is a length-prefixed byte string, so it is decoded by parameter type rather than by the Key-Value-Pair parity rule."
-      }
     ]
   }
 }

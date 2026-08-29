@@ -34,6 +34,7 @@ import { NewGroupRequest } from './message/new_group_request'
 import { SubscriberPriority } from './message/subscriber_priority'
 import { SubscriptionFilter } from './message/subscription_filter'
 import { SwitchFrom } from './message/switch_from'
+import { FillParameters } from './message/fill_parameters'
 
 export type MessageParameter =
   | ObjectDeliveryTimeout
@@ -49,6 +50,7 @@ export type MessageParameter =
   | SubscriptionFilter
   | NewGroupRequest
   | SwitchFrom
+  | FillParameters
 
 export namespace MessageParameter {
   /**
@@ -70,7 +72,8 @@ export namespace MessageParameter {
       GroupOrderParam.fromKeyValuePair(pair) ??
       SubscriptionFilter.fromKeyValuePair(pair) ??
       NewGroupRequest.fromKeyValuePair(pair) ??
-      SwitchFrom.fromKeyValuePair(pair)
+      SwitchFrom.fromKeyValuePair(pair) ??
+      FillParameters.fromKeyValuePair(pair)
     )
   }
 
@@ -134,6 +137,10 @@ export namespace MessageParameter {
   export function isSwitchFrom(param: MessageParameter): param is SwitchFrom {
     return param instanceof SwitchFrom
   }
+
+  export function isFillParameters(param: MessageParameter): param is FillParameters {
+    return param instanceof FillParameters
+  }
 }
 
 /**
@@ -194,6 +201,10 @@ export class MessageParameters {
 
   addSwitchFrom(requestId: bigint | number, mode: SwitchMode, publishDone: boolean): this {
     return this.add(new SwitchFrom(BigInt(requestId), mode, publishDone))
+  }
+
+  addFillParameters(parameters: MessageParameter[]): this {
+    return this.add(new FillParameters(parameters))
   }
 
   build(): MessageParameter[] {
@@ -287,26 +298,36 @@ export function serializeMessageParameterKvps(items: KeyValuePair[]): FrozenByte
  */
 export function deserializeMessageParameterKvps(buf: BaseByteBuffer, count: number | bigint): KeyValuePair[] {
   const n = typeof count === 'bigint' ? Number(count) : count
-  const items: KeyValuePair[] = new Array(n)
+  let read = 0
+  return readMessageParameterKvps(buf, () => read++ < n)
+}
+
+/** Reads delta-encoded message-parameter KVPs until `buf` is exhausted. */
+export function deserializeMessageParameterKvpsUntilEmpty(buf: BaseByteBuffer): KeyValuePair[] {
+  return readMessageParameterKvps(buf, () => buf.remaining > 0)
+}
+
+function readMessageParameterKvps(buf: BaseByteBuffer, more: () => boolean): KeyValuePair[] {
+  const items: KeyValuePair[] = []
   let prevType = 0n
-  for (let i = 0; i < n; i++) {
+  while (more()) {
     const typeValue = prevType + buf.getVI()
     switch (valueShapeOf(typeValue)) {
       case ValueShape.Uint8:
-        items[i] = KeyValuePair.tryNewVarInt(typeValue, BigInt(buf.getU8()))
+        items.push(KeyValuePair.tryNewVarInt(typeValue, BigInt(buf.getU8())))
         break
       case ValueShape.BareLocation: {
         const loc = new ByteBuffer()
         loc.putVI(buf.getVI())
         loc.putVI(buf.getVI())
-        items[i] = KeyValuePair.newBytes(typeValue, loc.toUint8Array())
+        items.push(KeyValuePair.newBytes(typeValue, loc.toUint8Array()))
         break
       }
       case ValueShape.LengthPrefixedBytes:
-        items[i] = KeyValuePair.deserializeBytesValue(buf, typeValue)
+        items.push(KeyValuePair.deserializeBytesValue(buf, typeValue))
         break
       case ValueShape.VarInt:
-        items[i] = KeyValuePair.tryNewVarInt(typeValue, buf.getVI())
+        items.push(KeyValuePair.tryNewVarInt(typeValue, buf.getVI()))
         break
     }
     prevType = typeValue

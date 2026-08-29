@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use moqtail::model::control::constant::SwitchMode;
 use moqtail::model::data::full_track_name::FullTrackName;
 use std::collections::HashMap;
 use std::fmt;
@@ -29,16 +30,40 @@ pub enum SwitchStatus {
 
 pub type SwitchContextItems = Arc<RwLock<HashMap<FullTrackName, SwitchStatus>>>;
 
+/// What a SWITCH_FROM asked for, held until the activating track is ready to
+/// deliver and the suspending one can be stopped.
+#[derive(Debug, Clone)]
+pub struct SwitchPlan {
+  /// The subscription being suspended.
+  pub suspending: FullTrackName,
+  pub mode: SwitchMode,
+  /// Whether stopping it also sends PUBLISH_DONE.
+  pub publish_done: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct SwitchContext {
   pub items: SwitchContextItems,
+  /// Keyed by the activating track: the switch it is the target of.
+  plans: Arc<RwLock<HashMap<FullTrackName, SwitchPlan>>>,
 }
 
 impl SwitchContext {
   pub fn new() -> Self {
     Self {
       items: Arc::new(RwLock::new(HashMap::new())),
+      plans: Arc::new(RwLock::new(HashMap::new())),
     }
+  }
+
+  /// Records what to do to the suspending subscription once `activating` delivers.
+  pub async fn set_plan(&self, activating: FullTrackName, plan: SwitchPlan) {
+    self.plans.write().await.insert(activating, plan);
+  }
+
+  /// Takes the plan for `activating`, leaving none behind: a switch happens once.
+  pub async fn take_plan(&self, activating: &FullTrackName) -> Option<SwitchPlan> {
+    self.plans.write().await.remove(activating)
   }
 
   // Add or update a switch item

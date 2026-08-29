@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::server::client::MOQTClient;
-use crate::server::client::switch_context::SwitchStatus;
+use crate::server::client::switch_context::{SwitchPlan, SwitchStatus};
 use crate::server::config::AppConfig;
 use crate::server::message_handlers::fetch_handler::FetchStop;
 use crate::server::object_logger::ObjectLogger;
@@ -809,6 +809,56 @@ impl Subscription {
       .store(true, std::sync::atomic::Ordering::Relaxed);
   }
 
+  /// Stops the subscription a switch suspends, at the moment the activating one is
+  /// ready to take over.
+  ///
+  /// A hard switch cuts: Forward State 0 and every stream it still has open is
+  /// reset, fill fetch streams included. Objects already in flight can still
+  /// arrive. PUBLISH_DONE follows only if the switch asked for it.
+  async fn stop_suspending_subscription(&self, plan: &SwitchPlan) {
+    let Some(weak) = self
+      .subscriber
+      .subscriptions
+      .get_subscription(&plan.suspending)
+      .await
+    else {
+      warn!(
+        "switch: no subscription left to suspend for {:?} on subscriber {}",
+        plan.suspending, self.client_connection_id
+      );
+      return;
+    };
+    let Some(suspending) = weak.upgrade() else {
+      return;
+    };
+    let suspending = suspending.read().await;
+
+    info!(
+      "switch: suspending {:?} for subscriber {} ({:?})",
+      plan.suspending, self.client_connection_id, plan.mode
+    );
+
+    suspending.subscription_state.write().await.forward = false;
+    suspending.stop_fill_streams(FetchStop::Cancelled).await;
+    suspending
+      .reset_data_streams(StreamResetCode::Cancelled.to_u64())
+      .await;
+
+    if plan.publish_done
+      && let Err(e) = suspending
+        .send_publish_done(
+          PublishDoneStatusCode::SubscriptionEnded,
+          "switched away from",
+        )
+        .await
+    {
+      error!(
+        "switch: failed to send PUBLISH_DONE to the suspended subscription: {:?}",
+        e
+      );
+    }
+  }
+
   async fn check_switch_context(&self, object_location: &Location) -> bool {
     // if the object is after the end group, finish the subscription
     let status = self
@@ -895,12 +945,18 @@ impl Subscription {
 
           state.end_group = 0; // remove end group limit
 
+          let start_group = state.start_location.as_ref().unwrap().group;
           info!(
             "check_switch_context: Will forward objects for subscriber={} relay_track_id={} starting from group: {}",
-            self.client_connection_id,
-            self.relay_track_id,
-            state.start_location.as_ref().unwrap().group
+            self.client_connection_id, self.relay_track_id, start_group
           );
+          drop(state);
+
+          // The activating subscription is ready to publish from the Start Group,
+          // so this is the moment the suspending one stops.
+          if let Some(plan) = subscriber.switch_context.take_plan(&full_track_name).await {
+            self.stop_suspending_subscription(&plan).await;
+          }
         } else {
           // Do not forward objects for Next status until switch condition is met
           // set forward to false if it is true

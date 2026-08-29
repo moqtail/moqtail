@@ -403,7 +403,7 @@ if (import.meta.vitest) {
         .addObjectDeliveryTimeout(150n)
         .addForward(false)
         .addSubscriberPriority(42)
-        .addSubscriptionFilter(new SubscriptionFilter(FilterType.AbsoluteRange, new Location(10n, 0n), 20n))
+        .addSubscriptionFilter(new SubscriptionFilter(FilterType.AbsoluteRangeFill, new Location(10n, 0n), 20n))
         .build()
         .map((p) => p.toKeyValuePair())
 
@@ -412,7 +412,9 @@ if (import.meta.vitest) {
       expect(MessageParameter.isObjectDeliveryTimeout(parsed[0]!) && parsed[0].timeout).toBe(150n)
       expect(MessageParameter.isForward(parsed[1]!) && parsed[1].forward).toBe(false)
       expect(MessageParameter.isSubscriberPriority(parsed[2]!) && parsed[2].priority).toBe(42)
-      expect(MessageParameter.isSubscriptionFilter(parsed[3]!) && parsed[3].filterType).toBe(FilterType.AbsoluteRange)
+      expect(MessageParameter.isSubscriptionFilter(parsed[3]!) && parsed[3].filterType).toBe(
+        FilterType.AbsoluteRangeFill,
+      )
     })
 
     // §14: a greased parameter is just another unknown one -- skipped, never fatal.

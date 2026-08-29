@@ -170,6 +170,7 @@ impl From<SubscriptionOrigin> for SubscriptionState {
               filter_type,
               start_location,
               end_group,
+              ..
             } = p
             {
               Some((*filter_type, start_location.clone(), end_group.unwrap_or(0)))
@@ -237,6 +238,7 @@ impl From<SubscriptionOrigin> for SubscriptionState {
               filter_type,
               start_location,
               end_group,
+              ..
             } = p
             {
               Some((*filter_type, start_location.clone(), end_group.unwrap_or(0)))
@@ -596,6 +598,7 @@ impl Subscription {
             filter_type,
             start_location,
             end_group,
+            ..
           } = p
           {
             Some((Some(*filter_type), start_location.clone(), *end_group))

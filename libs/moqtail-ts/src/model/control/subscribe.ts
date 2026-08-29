@@ -44,7 +44,7 @@ export class Subscribe {
     return new Subscribe(requestId, fullTrackName, [...parameters, new SubscriptionFilter(FilterType.LatestObject)])
   }
 
-  static newAbsoluteStart(
+  static newAbsoluteStartFill(
     requestId: bigint,
     fullTrackName: FullTrackName,
     startLocation: Location,
@@ -52,11 +52,11 @@ export class Subscribe {
   ): Subscribe {
     return new Subscribe(requestId, fullTrackName, [
       ...parameters,
-      new SubscriptionFilter(FilterType.AbsoluteStart, startLocation),
+      new SubscriptionFilter(FilterType.AbsoluteStartFill, startLocation),
     ])
   }
 
-  static newAbsoluteRange(
+  static newAbsoluteRangeFill(
     requestId: bigint,
     fullTrackName: FullTrackName,
     startLocation: Location,
@@ -68,7 +68,19 @@ export class Subscribe {
     }
     return new Subscribe(requestId, fullTrackName, [
       ...parameters,
-      new SubscriptionFilter(FilterType.AbsoluteRange, startLocation, endGroup),
+      new SubscriptionFilter(FilterType.AbsoluteRangeFill, startLocation, endGroup),
+    ])
+  }
+
+  static newRelativeStartFill(
+    requestId: bigint,
+    fullTrackName: FullTrackName,
+    relativePrevious: bigint,
+    parameters: MessageParameter[],
+  ): Subscribe {
+    return new Subscribe(requestId, fullTrackName, [
+      ...parameters,
+      new SubscriptionFilter(FilterType.RelativeStartFill, undefined, undefined, relativePrevious),
     ])
   }
 
@@ -113,7 +125,7 @@ if (import.meta.vitest) {
   const { describe, it, expect } = import.meta.vitest
 
   function buildTestSubscribe(): Subscribe {
-    const subscribe = Subscribe.newAbsoluteRange(
+    const subscribe = Subscribe.newAbsoluteRangeFill(
       128242n,
       FullTrackName.tryNew('track/namespace', 'trackName'),
       new Location(81n, 81n),
@@ -169,8 +181,8 @@ if (import.meta.vitest) {
     })
 
     describe('Subscribe Constructors', () => {
-      it('should create a Subscribe with AbsoluteRange filter in parameters', () => {
-        const subscribe = Subscribe.newAbsoluteRange(
+      it('should create a Subscribe with AbsoluteRangeFill filter in parameters', () => {
+        const subscribe = Subscribe.newAbsoluteRangeFill(
           128242n,
           FullTrackName.tryNew('track/namespace', 'trackName'),
           new Location(81n, 81n),
@@ -179,14 +191,14 @@ if (import.meta.vitest) {
         )
 
         const filter = subscribe.parameters.find((p): p is SubscriptionFilter => p instanceof SubscriptionFilter)
-        expect(filter?.filterType).toBe(FilterType.AbsoluteRange)
+        expect(filter?.filterType).toBe(FilterType.AbsoluteRangeFill)
         expect(filter?.startLocation).toEqual(new Location(81n, 81n))
         expect(filter?.endGroup).toBe(100n)
       })
 
       it('should throw an error if EndGroup < StartGroup', () => {
         expect(() =>
-          Subscribe.newAbsoluteRange(
+          Subscribe.newAbsoluteRangeFill(
             128242n,
             FullTrackName.tryNew('track/namespace', 'trackName'),
             new Location(81n, 81n),

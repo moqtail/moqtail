@@ -765,7 +765,7 @@ mod tests {
       group: 81,
       object: 81,
     };
-    let subscribe = Subscribe::new_absolute_range(
+    let subscribe = Subscribe::new_absolute_range_fill(
       request_id,
       track_namespace,
       track_name,

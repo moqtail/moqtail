@@ -20,7 +20,6 @@ use crate::server::session_context::{PendingRequest, SessionContext};
 use crate::server::track::{Track, TrackOrigin, TrackStatus};
 use core::result::Result;
 use moqtail::model::control::constant::PublishDoneStatusCode;
-use moqtail::model::control::constant::SwitchMode;
 use moqtail::model::control::publish_done::PublishDone;
 use moqtail::model::control::request_error::RequestError;
 use moqtail::model::control::request_ok::RequestOk;
@@ -395,12 +394,6 @@ pub(crate) async fn plan_switch(
 
   if request_id == activating_request_id {
     return Err(invalid("a subscription cannot switch away from itself"));
-  }
-
-  // Only the hard stop is implemented; anything else is refused rather than
-  // silently treated as one.
-  if mode != SwitchMode::Hard {
-    return Err(invalid("only a hard switch is supported"));
   }
 
   let Some((_, subscription)) = context

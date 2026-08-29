@@ -188,36 +188,6 @@ impl From<SwitchMode> for u64 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[repr(u64)]
-pub enum FetchType {
-  Standalone = 0x1,
-  RelativeFetch = 0x2,
-  AbsoluteFetch = 0x3,
-}
-
-impl TryFrom<u64> for FetchType {
-  type Error = ParseError;
-
-  fn try_from(value: u64) -> Result<Self, Self::Error> {
-    match value {
-      0x1 => Ok(FetchType::Standalone),
-      0x2 => Ok(FetchType::RelativeFetch),
-      0x3 => Ok(FetchType::AbsoluteFetch),
-      _ => Err(ParseError::InvalidType {
-        context: "FetchType::try_from(u64)",
-        details: format!("Invalid type, got {value}"),
-      }),
-    }
-  }
-}
-
-impl From<FetchType> for u64 {
-  fn from(value: FetchType) -> Self {
-    value as u64
-  }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(u8)]
 pub enum GroupOrder {
   Original = 0x0,

@@ -19,7 +19,6 @@ import {
   GroupOrder,
   FilterType,
   MessageParameter,
-  FetchType,
   Location,
   SetupOptions,
   ControlMessage,
@@ -281,30 +280,12 @@ export type FetchOptions = {
   priority: number
   /** {@link (GroupOrder:enum)} governing sequencing. */
   groupOrder: GroupOrder
-  /**
-   * Discriminated union selecting the {@link (FetchType:enum)} mode and its specific properties:
-   * - Standalone: full explicit range on a {@link FullTrackName} with start/end {@link Location}s.
-   * - Relative / Absolute: join an existing {@link SubscribeRequest} (identified by `joiningRequestId`) with starting position `joiningStart`.
-   */
-  typeAndProps:
-    | {
-        /** Standalone historical/segment fetch for a specific {@link FullTrackName}. */
-        type: FetchType.Standalone
-        /** Properties for standalone fetch: explicit track and range. */
-        props: { fullTrackName: FullTrackName; startLocation: Location; endLocation: Location }
-      }
-    | {
-        /** Fetch a range relative to an existing {@link SubscribeRequest} identified by `joiningRequestId`. */
-        type: FetchType.Relative
-        /** Properties for relative fetch: subscription id and starting position. */
-        props: { joiningRequestId: bigint; joiningStart: bigint }
-      }
-    | {
-        /** Fetch an absolute group/object range relative to a {@link SubscribeRequest}. */
-        type: FetchType.Absolute
-        /** Properties for absolute fetch: subscription id and starting position. */
-        props: { joiningRequestId: bigint; joiningStart: bigint }
-      }
+  /** Fully qualified track identifier ({@link FullTrackName}). */
+  fullTrackName: FullTrackName
+  /** Earliest {@link Location} to retrieve. */
+  startLocation: Location
+  /** The last {@link Location} plus 1. An Object value of 0 means the entire group. */
+  endLocation: Location
   /** Optional parameters block. */
   parameters?: MessageParameter[]
 }

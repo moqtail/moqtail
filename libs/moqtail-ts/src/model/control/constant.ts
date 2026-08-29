@@ -213,37 +213,6 @@ export enum SwitchMode {
 
 /**
  * @public
- * Fetch request types for MOQT protocol.
- */
-export enum FetchType {
-  Standalone = 0x1,
-  Relative = 0x2,
-  Absolute = 0x3,
-}
-
-/**
- * Converts a bigint value to a FetchType enum.
- * @param v - The bigint value.
- * @returns The corresponding FetchType.
- * @throws InvalidEnumValue if the value is not a valid fetch type.
- */
-export namespace FetchType {
-  export function tryFrom(v: bigint): FetchType {
-    switch (v) {
-      case 0x1n:
-        return FetchType.Standalone
-      case 0x2n:
-        return FetchType.Relative
-      case 0x3n:
-        return FetchType.Absolute
-      default:
-        throw new InvalidEnumValue('FetchType.tryFrom', v)
-    }
-  }
-}
-
-/**
- * @public
  * Group ordering options for object delivery.
  */
 export enum GroupOrder {

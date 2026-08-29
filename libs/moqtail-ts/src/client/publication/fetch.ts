@@ -18,7 +18,6 @@ import {
   Fetch,
   FetchHeader,
   FetchHeaderType,
-  FetchType,
   InternalError,
   Location,
   MOQtailError,
@@ -53,38 +52,9 @@ export class FetchPublication {
     this.#requestId = fetchRequest.requestId
     this.#track = track
     this.#msg = fetchRequest
-    let joiningRequest: SubscribePublication | PublishPublication | FetchPublication | undefined
-    switch (this.#msg.typeAndProps.type) {
-      case FetchType.Standalone:
-        // TODO: Tie up fetch type and relevant props as {type: 1, props: standAlone} | {type: 2, props: joining} | {type: 3, props: joining}
-        this.#startLocation = this.#msg.typeAndProps.props.startLocation
-        this.#endLocation = this.#msg.typeAndProps.props.endLocation
-        break
-
-      case FetchType.Relative:
-        joiningRequest = client.publications.get(this.#msg.typeAndProps.props.joiningRequestId)
-        if (!(joiningRequest instanceof SubscribePublication))
-          throw new InternalError('FetchPublication.constructor', 'No subscription for the joining request id')
-        if (!joiningRequest.latestLocation)
-          throw new InternalError('FetchPublication.constructor', 'joiningRequest.largestLocation does not exist')
-        this.#startLocation = new Location(
-          joiningRequest.latestLocation.group - this.#msg.typeAndProps.props.joiningStart,
-          0n,
-        )
-        this.#endLocation = joiningRequest.latestLocation
-        break
-
-      case FetchType.Absolute:
-        joiningRequest = client.publications.get(this.#msg.typeAndProps.props.joiningRequestId)
-        if (!(joiningRequest instanceof SubscribePublication))
-          throw new InternalError('FetchPublication.constructor', 'No subscription for the joining request id')
-        if (!joiningRequest.latestLocation)
-          throw new InternalError('FetchPublication.constructor', 'joiningRequest.largestLocation does not exist')
-        this.#startLocation = new Location(this.#msg.typeAndProps.props.joiningStart, 0n)
-        this.#endLocation = joiningRequest.latestLocation
-        break
-    }
-    logger.debug('publication/fetch', `created requestId=${this.#requestId} type=${this.#msg.typeAndProps.type}`)
+    this.#startLocation = fetchRequest.startLocation
+    this.#endLocation = fetchRequest.endLocation
+    logger.debug('publication/fetch', `created requestId=${this.#requestId}`)
     this.publish()
   }
 

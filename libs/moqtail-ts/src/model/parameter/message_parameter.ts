@@ -372,9 +372,20 @@ if (import.meta.vitest) {
     })
 
     test('SWITCH_FROM is a length-prefixed byte string despite its even Type', () => {
-      // Neighbours on both sides: reading it as a varint shifts everything after.
-      const switchFrom = new SwitchFrom(7n, SwitchMode.Hard, true)
-      const params = [new SubscriberPriority(128), switchFrom, new NewGroupRequest(3n)]
+      const params = [new SwitchFrom(7n, SwitchMode.Hard, true)]
+      const wire = serializeMessageParameterKvps(params.map((p) => p.toKeyValuePair())).toUint8Array()
+
+      expect(wire).toEqual(new Uint8Array([0x24, 0x03, 0x07, 0x00, 0x80]))
+
+      const buf = new ByteBuffer()
+      buf.putBytes(wire)
+      const frozen = buf.freeze()
+      expect(MessageParameters.fromKeyValuePairs(deserializeMessageParameterKvps(frozen, 1))).toEqual(params)
+      expect(frozen.remaining).toBe(0)
+    })
+
+    test('SWITCH_FROM survives a list with neighbours on both sides', () => {
+      const params = [new SubscriberPriority(128), new SwitchFrom(7n, SwitchMode.Hard, true), new NewGroupRequest(3n)]
       const buf = new ByteBuffer()
       buf.putBytes(serializeMessageParameterKvps(params.map((p) => p.toKeyValuePair())).toUint8Array())
       const frozen = buf.freeze()

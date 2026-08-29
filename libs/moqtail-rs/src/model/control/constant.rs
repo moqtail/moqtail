@@ -145,6 +145,36 @@ impl From<FilterType> for u64 {
   }
 }
 
+/// How a switch stops delivery on the subscription it suspends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u64)]
+pub enum SwitchMode {
+  /// Forward State goes to 0 and the subscription's open streams are reset.
+  Hard = 0x0,
+  Soft = 0x1,
+}
+
+impl TryFrom<u64> for SwitchMode {
+  type Error = ParseError;
+
+  fn try_from(value: u64) -> Result<Self, Self::Error> {
+    match value {
+      0x0 => Ok(SwitchMode::Hard),
+      0x1 => Ok(SwitchMode::Soft),
+      _ => Err(ParseError::InvalidType {
+        context: "SwitchMode::try_from(u64)",
+        details: format!("Invalid mode, got {value}"),
+      }),
+    }
+  }
+}
+
+impl From<SwitchMode> for u64 {
+  fn from(value: SwitchMode) -> Self {
+    value as u64
+  }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(u64)]
 pub enum FetchType {

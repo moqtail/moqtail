@@ -37,7 +37,7 @@ pub enum RequestErrorCode {
   Uninterested = 0x20,
   PrefixOverlap = 0x30,
   NamespaceTooLarge = 0x31,
-  InvalidJoiningRequestId = 0x32,
+  InvalidSwitch = 0x32,
   UnsupportedExtension = 0x33,
   Redirect = 0x34,
 }
@@ -62,7 +62,7 @@ impl TryFrom<u64> for RequestErrorCode {
       0x20 => Ok(RequestErrorCode::Uninterested),
       0x30 => Ok(RequestErrorCode::PrefixOverlap),
       0x31 => Ok(RequestErrorCode::NamespaceTooLarge),
-      0x32 => Ok(RequestErrorCode::InvalidJoiningRequestId),
+      0x32 => Ok(RequestErrorCode::InvalidSwitch),
       0x33 => Ok(RequestErrorCode::UnsupportedExtension),
       0x34 => Ok(RequestErrorCode::Redirect),
       _ => Err(ParseError::InvalidType {

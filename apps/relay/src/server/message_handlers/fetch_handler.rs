@@ -343,6 +343,7 @@ pub async fn handle(
         start_location,
         end_location,
         group_order: fetch.group_order(),
+        stream_priority: 0,
         pending_upstream,
       };
 
@@ -622,6 +623,8 @@ pub(crate) struct FetchDelivery {
   pub start_location: Location,
   pub end_location: Location,
   pub group_order: GroupOrder,
+  /// QUIC send priority for the stream.
+  pub stream_priority: i32,
   /// An upstream fetch already covering the range, whose Objects are used instead
   /// of asking for them a second time.
   pub pending_upstream: Option<PendingUpstreamFetch>,
@@ -644,6 +647,7 @@ pub(crate) async fn serve_fetch_stream(
     start_location,
     end_location,
     group_order,
+    stream_priority,
     mut pending_upstream,
   } = delivery;
 
@@ -652,7 +656,11 @@ pub(crate) async fn serve_fetch_stream(
 
   let stream_fn = async move |client: Arc<MOQTClient>, stream_id: &StreamId| {
     let stream_result = client
-      .open_stream(stream_id, fetch_header.serialize().unwrap(), 0)
+      .open_stream(
+        stream_id,
+        fetch_header.serialize().unwrap(),
+        stream_priority,
+      )
       .await;
 
     match stream_result {

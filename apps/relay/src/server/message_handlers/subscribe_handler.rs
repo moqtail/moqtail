@@ -533,6 +533,13 @@ async fn handle_subscribe_message(
           && let Some(subscription) = track.get_subscription(client.connection_id).await
         {
           subscription.read().await.mark_alias_announced();
+          crate::server::fill::open_fill_fetch_stream(
+            context.clone(),
+            track_arc.clone(),
+            subscription,
+            sub.request_id,
+          )
+          .await;
         }
         sent
       }
@@ -734,6 +741,13 @@ async fn handle_subscribe_ok_message(
         .await
       {
         subscription.read().await.mark_alias_announced();
+        crate::server::fill::open_fill_fetch_stream(
+          context.clone(),
+          track_arc.clone(),
+          subscription,
+          sub_request.original_request_id,
+        )
+        .await;
       }
     } else {
       warn!(
@@ -780,6 +794,13 @@ async fn handle_subscribe_ok_message(
           );
         } else if let Some(subscription) = track.get_subscription(subscriber.connection_id).await {
           subscription.read().await.mark_alias_announced();
+          crate::server::fill::open_fill_fetch_stream(
+            context.clone(),
+            track_arc.clone(),
+            subscription,
+            subscriber_request_id,
+          )
+          .await;
         }
       }
     }

@@ -16,6 +16,7 @@ mod client;
 mod client_manager;
 mod config;
 mod errors;
+mod fill;
 mod message_handlers;
 mod object_logger;
 mod prefix_subscription;

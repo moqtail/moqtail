@@ -14,16 +14,12 @@
 
 use moka::future::Cache;
 use moka::notification::RemovalCause;
-use moqtail::model::common::location::Location;
 use moqtail::model::data::fetch_object::FetchObjectPayload;
 use std::sync::Arc;
 use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
-use tokio::sync::{
-  RwLock,
-  mpsc::{Receiver, channel},
-};
-use tracing::{debug, error, info, warn};
+use tokio::sync::RwLock;
+use tracing::{debug, error, info};
 
 use super::config::{AppConfig, CacheExpirationType};
 
@@ -60,13 +56,6 @@ pub struct TrackCache {
   cache: Cache<CacheKey, GroupObjects>,
   #[allow(dead_code)] // Used in eviction listener closure
   log_folder: String,
-}
-
-#[derive(Debug, Clone)]
-pub enum CacheConsumeEvent {
-  Object(FetchObjectPayload),
-  EndLocation,
-  NoObject,
 }
 
 impl TrackCache {
@@ -193,118 +182,6 @@ impl TrackCache {
         self.relay_track_id, object.group_id, object.object_id
       );
     }
-  }
-
-  pub async fn read_objects(
-    &self,
-    start: Location,
-    end: Location,
-    report_end_location: bool,
-  ) -> Receiver<CacheConsumeEvent> {
-    let (tx, rx) = channel(32); // Smaller buffer for memory efficiency
-    let cache = self.cache.clone();
-    let relay_track_id = self.relay_track_id;
-
-    // TODO: this can be done without using a task and sender-receiver pattern
-    // but I'm doing this in order to lay the foundation for the future
-    // when the cache will be filled eventually.
-    tokio::spawn(async move {
-      info!(
-        "read_objects | track: {} start: {:?}, end: {:?}",
-        relay_track_id, start, end
-      );
-
-      // TODO: compare objects as well
-      if start.group > end.group {
-        warn!("start group cannot be greater than end group");
-        return;
-      }
-
-      // Collect all groups in the range that exist in cache
-      let mut groups_in_range = Vec::new();
-
-      for group_id in start.group..=end.group {
-        let cache_key = CacheKey::new(relay_track_id, group_id);
-        if let Some(objects) = cache.get(&cache_key).await {
-          groups_in_range.push((group_id, objects));
-        }
-      }
-
-      if groups_in_range.is_empty() {
-        if let Err(err) = tx.send(CacheConsumeEvent::NoObject).await {
-          warn!("read_objects | An error occurred: {:?}", err);
-          return;
-        }
-        return;
-      }
-
-      // Send end location based on last group found
-      if report_end_location && let Some((last_group_id, last_objects)) = groups_in_range.last() {
-        let objects_guard = last_objects.read().await;
-        let end_object_id = if let Some(last_object) = objects_guard.last() {
-          if end.object > 0 {
-            std::cmp::min(last_object.object_id + 1, end.object)
-          } else {
-            // TODO: Implement the logic to find the last object in the group
-            // If End Location.Object in the FETCH request was 0 and the
-            // response covers the last Object in the Group, End Location is
-            // {Fetch.End Location.Group, 0}
-
-            last_object.object_id + 1
-          }
-        } else {
-          0
-        };
-        let end_location = Location::new(*last_group_id, end_object_id);
-        info!(
-          "read_objects | track: {} groups_found: {} end_location: {:?}",
-          relay_track_id,
-          groups_in_range.len(),
-          &end_location
-        );
-        if let Err(err) = tx.send(CacheConsumeEvent::EndLocation).await {
-          warn!("read_objects | An error occurred: {:?}", err);
-          return;
-        }
-      }
-
-      // Send objects from all groups in range
-      for (group_id, objects_arc) in groups_in_range {
-        let objects = objects_arc.read().await;
-        let mut object_counter = 0;
-        for object in objects.iter() {
-          // Apply range filtering
-          if group_id == start.group && start.object > 0 && object.object_id < start.object {
-            continue; // Skip objects before start
-          }
-          info!(
-            "read_objects | track: {} processing group_id: {} object_id: {}",
-            relay_track_id, group_id, object.object_id
-          );
-          // stop when we reach end
-          // TODO: is object.object_id > end.object correct? should it be >= ?
-          if group_id > end.group
-            || (group_id == end.group && end.object > 0 && object.object_id > end.object)
-          {
-            break; // Stop at end boundary
-          }
-
-          object_counter += 1;
-
-          if let Err(err) = tx.send(CacheConsumeEvent::Object(object.clone())).await {
-            warn!("read_objects | An error occurred: {:?}", err);
-            break; // Client disconnected
-          }
-        }
-
-        info!(
-          "read_objects | track: {} processed group_id: {} with {} objects",
-          relay_track_id, group_id, object_counter
-        );
-      }
-    });
-
-    rx
   }
 
   /// Get cache statistics (for monitoring/debugging)

@@ -1001,6 +1001,23 @@ pub async fn handle_request_update(
   context: Arc<SessionContext>,
   existing_req_id: u64,
 ) -> Result<(), TerminationCode> {
+  // An update can carry SWITCH_FROM too, activating the subscription it arrives on.
+  let asks_for_a_fill = update_msg.parameters.iter().any(
+    |p| matches!(p, MessageParameter::SubscriptionFilter { filter_type, .. } if filter_type.is_fetch_fill()),
+  );
+  let switch_plan =
+    match plan_switch(&client, &context, existing_req_id, &update_msg.parameters).await {
+      Ok(plan) => plan,
+      Err(err) => {
+        info!(
+          "Rejecting REQUEST_UPDATE with SWITCH_FROM: {}",
+          err.reason_phrase.as_str()
+        );
+        let _ = stream_handler.send_impl(&err).await;
+        return Ok(());
+      }
+    };
+
   let full_track_name = {
     let mut client_requests = client.subscribe_requests.write().await;
     match client_requests.get_mut(&existing_req_id) {
@@ -1068,6 +1085,43 @@ pub async fn handle_request_update(
       super::publish_handler::ensure_upstream_forwarding(&track_arc, &context).await;
       let ok_msg = RequestOk::new(vec![]);
       let _ = stream_handler.send_impl(&ok_msg).await;
+
+      if let Some(plan) = switch_plan {
+        info!(
+          "switch: {:?} activating by update, {:?} suspending on {:?}",
+          full_track_name, plan.suspending, plan.mode
+        );
+        client
+          .switch_context
+          .add_or_update_switch_item(plan.suspending.clone(), SwitchStatus::Current)
+          .await;
+        client
+          .switch_context
+          .add_or_update_switch_item(full_track_name.clone(), SwitchStatus::Next)
+          .await;
+        client
+          .switch_context
+          .set_plan(full_track_name.clone(), plan)
+          .await;
+      }
+
+      // An update that names a fill filter type asks for another fill, over
+      // whatever range it now specifies.
+      if asks_for_a_fill
+        && let Some(subscription) = track_arc
+          .read()
+          .await
+          .get_subscription(client.connection_id)
+          .await
+      {
+        crate::server::fill::open_fill_fetch_stream(
+          context.clone(),
+          track_arc.clone(),
+          subscription,
+          existing_req_id,
+        )
+        .await;
+      }
     }
     Some(Err(e)) => {
       error!(

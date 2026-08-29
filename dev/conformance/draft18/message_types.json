@@ -182,12 +182,5 @@
       "value": "0x09",
       "notes": "Table 5 has no 0x09. NAMESPACE_DONE (0xE) survives."
     }
-  ],
-  "local_extensions": [
-    {
-      "name": "SWITCH",
-      "value": "0x22",
-      "notes": "moqtail's own track-switching research extension. Not in the draft, and deliberately kept: draft-18 defines no registry for control message types, so there is no sanctioned range for it. Documented rather than removed. 0x22 is unassigned in Table 5 but live in neighbouring registries (GROUP_ORDER parameter, DEFAULT_PUBLISHER_GROUP_ORDER property), so it is a plausible future assignment."
-    }
   ]
 }

@@ -24,13 +24,19 @@
     { "name": "UNINTERESTED", "value": "0x20", "spec": "Section 10.6" },
     { "name": "PREFIX_OVERLAP", "value": "0x30", "spec": "Section 10.6" },
     { "name": "NAMESPACE_TOO_LARGE", "value": "0x31", "spec": "Section 10.6" },
-    { "name": "INVALID_JOINING_REQUEST_ID", "value": "0x32", "spec": "Section 10.6" },
     { "name": "UNSUPPORTED_EXTENSION", "value": "0x33", "spec": "Section 10.6" },
     {
       "name": "REDIRECT",
       "value": "0x34",
       "spec": "Section 10.6",
       "notes": "Used by GOAWAY-driven request migration."
+    }
+  ],
+  "local_extensions": [
+    {
+      "name": "INVALID_SWITCH",
+      "value": "0x32",
+      "notes": "From the track-switching work that postdates draft-18 (moq-wg/moq-transport#1674), which drops Joining Fetch and reuses this codepoint. Both stacks parse 0x32 as INVALID_SWITCH, so draft-18's INVALID_JOINING_REQUEST_ID is gone from entries above. Moves into entries once that lands."
     }
   ]
 }

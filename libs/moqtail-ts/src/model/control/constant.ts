@@ -397,7 +397,7 @@ export enum RequestErrorCode {
   Uninterested = 0x20,
   PrefixOverlap = 0x30,
   NamespaceTooLarge = 0x31,
-  InvalidJoiningRequestId = 0x32,
+  InvalidSwitch = 0x32,
   UnsupportedExtension = 0x33,
   Redirect = 0x34,
 }
@@ -442,7 +442,7 @@ export namespace RequestErrorCode {
       case 0x31n:
         return RequestErrorCode.NamespaceTooLarge
       case 0x32n:
-        return RequestErrorCode.InvalidJoiningRequestId
+        return RequestErrorCode.InvalidSwitch
       case 0x33n:
         return RequestErrorCode.UnsupportedExtension
       case 0x34n:

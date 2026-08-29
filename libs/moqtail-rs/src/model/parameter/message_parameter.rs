@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::model::common::location::Location;
-use crate::model::common::pair::{KeyValuePair, MAX_VALUE_LENGTH};
+use crate::model::common::pair::KeyValuePair;
 use crate::model::common::tuple::Tuple;
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
 use crate::model::control::constant::{ControlMessageType, FilterType, GroupOrder};
@@ -486,20 +486,10 @@ impl TryInto<KeyValuePair> for MessageParameter {
         )
       }
       // A namespace tuple: length-prefixed, even though the Type is even.
-      Self::TrackNamespacePrefix { prefix } => {
-        let value = prefix.serialize()?;
-        if value.len() > MAX_VALUE_LENGTH {
-          return Err(ParseError::LengthExceedsMax {
-            context: "MessageParameter::try_into(TrackNamespacePrefix)",
-            max: MAX_VALUE_LENGTH,
-            len: value.len(),
-          });
-        }
-        Ok(KeyValuePair::Bytes {
-          type_value: MessageParameterType::TrackNamespacePrefix as u64,
-          value,
-        })
-      }
+      Self::TrackNamespacePrefix { prefix } => KeyValuePair::new_bytes(
+        MessageParameterType::TrackNamespacePrefix as u64,
+        prefix.serialize()?,
+      ),
     }
   }
 }
@@ -530,32 +520,31 @@ pub fn deserialize_message_parameters(
         })?;
     prev_type = type_value;
 
-    let kvp = if is_uint8_message_param(type_value) {
-      // FORWARD, SUBSCRIBER_PRIORITY and GROUP_ORDER carry a single uint8, not
-      // the generic even-Type varint. These Types are even, so without this the
-      // parity rule below would read a varint and desync on any value >= 64
-      // (e.g. the default SUBSCRIBER_PRIORITY of 128 = 0x80 starts a multi-byte
-      // varint).
-      if !bytes.has_remaining() {
-        return Err(ParseError::NotEnoughBytes {
-          context: "deserialize_message_parameters(uint8 value)",
-          needed: 1,
-          available: 0,
-        });
+    let kvp = match value_shape(type_value) {
+      ValueShape::Uint8 => {
+        if !bytes.has_remaining() {
+          return Err(ParseError::NotEnoughBytes {
+            context: "deserialize_message_parameters(uint8 value)",
+            needed: 1,
+            available: 0,
+          });
+        }
+        KeyValuePair::VarInt {
+          type_value,
+          value: bytes.get_u8() as u64,
+        }
       }
-      KeyValuePair::VarInt {
+      ValueShape::BareLocation => {
+        let mut loc = BytesMut::new();
+        loc.put_vi(bytes.get_vi()?)?;
+        loc.put_vi(bytes.get_vi()?)?;
+        KeyValuePair::new_bytes(type_value, loc.freeze())?
+      }
+      ValueShape::LengthPrefixedBytes => KeyValuePair::deserialize_bytes_value(bytes, type_value)?,
+      ValueShape::VarInt => KeyValuePair::VarInt {
         type_value,
-        value: bytes.get_u8() as u64,
-      }
-    } else if is_location_message_param(type_value) {
-      let mut loc = BytesMut::new();
-      loc.put_vi(bytes.get_vi()?)?;
-      loc.put_vi(bytes.get_vi()?)?;
-      KeyValuePair::try_new_bytes(type_value, loc.freeze())?
-    } else if is_length_prefixed_message_param(type_value) {
-      KeyValuePair::deserialize_bytes_value(bytes, type_value)?
-    } else {
-      KeyValuePair::deserialize_value(bytes, type_value)?
+        value: bytes.get_vi()?,
+      },
     };
 
     let param = MessageParameter::deserialize(&kvp)?;
@@ -573,23 +562,35 @@ pub fn deserialize_message_parameters(
   Ok(params)
 }
 
-/// Parameters whose Value is a single uint8 byte rather than a varint, even
-/// though their Type is even. Reading them as varints desyncs on any value >= 64.
-const fn is_uint8_message_param(type_value: u64) -> bool {
-  type_value == MessageParameterType::Forward as u64
+/// How a message parameter's Value is laid out on the wire. The parameter Type
+/// decides this, not its parity, and reading one the wrong way desyncs the rest
+/// of the list. The same Type number means something else in the setup-option
+/// namespace, so this belongs here and not in the shared codec.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ValueShape {
+  VarInt,
+  /// A single byte: FORWARD, SUBSCRIBER_PRIORITY, GROUP_ORDER.
+  Uint8,
+  /// Two varints, no length prefix: LARGEST_OBJECT.
+  BareLocation,
+  LengthPrefixedBytes,
+}
+
+const fn value_shape(type_value: u64) -> ValueShape {
+  if type_value == MessageParameterType::Forward as u64
     || type_value == MessageParameterType::SubscriberPriority as u64
     || type_value == MessageParameterType::GroupOrder as u64
-}
-
-/// Parameters that are a bare Location -- two consecutive varints with no length
-/// prefix -- even though their Type is odd.
-const fn is_location_message_param(type_value: u64) -> bool {
-  type_value == MessageParameterType::LargestObject as u64
-}
-
-/// Parameters that are length-prefixed even though their Type is even.
-const fn is_length_prefixed_message_param(type_value: u64) -> bool {
-  type_value == MessageParameterType::TrackNamespacePrefix as u64
+  {
+    ValueShape::Uint8
+  } else if type_value == MessageParameterType::LargestObject as u64 {
+    ValueShape::BareLocation
+  } else if type_value == MessageParameterType::TrackNamespacePrefix as u64 {
+    ValueShape::LengthPrefixedBytes
+  } else if type_value.is_multiple_of(2) {
+    ValueShape::VarInt
+  } else {
+    ValueShape::LengthPrefixedBytes
+  }
 }
 
 /// Serializes a slice of MessageParameters into delta-encoded wire bytes,
@@ -615,10 +616,8 @@ pub fn serialize_message_parameters(params: &[MessageParameter]) -> Result<Bytes
           details: format!("type {type_value} is less than previous type {prev_type}"),
         })?;
     buf.put_vi(delta_type)?;
-    match kvp {
-      // FORWARD, SUBSCRIBER_PRIORITY and GROUP_ORDER are a single uint8, not the
-      // generic even-Type varint that serialize_delta would emit.
-      KeyValuePair::VarInt { value, .. } if is_uint8_message_param(type_value) => {
+    match (value_shape(type_value), kvp) {
+      (ValueShape::Uint8, KeyValuePair::VarInt { value, .. }) => {
         let byte: u8 = (*value)
           .try_into()
           .map_err(|_| ParseError::ProtocolViolation {
@@ -627,12 +626,11 @@ pub fn serialize_message_parameters(params: &[MessageParameter]) -> Result<Bytes
           })?;
         buf.put_u8(byte);
       }
-      KeyValuePair::VarInt { value, .. } => buf.put_vi(*value)?,
-      // LARGEST_OBJECT carries the Location varints directly, with no length.
-      KeyValuePair::Bytes { value, .. } if is_location_message_param(type_value) => {
+      (ValueShape::BareLocation, KeyValuePair::Bytes { value, .. }) => {
         buf.extend_from_slice(value);
       }
-      KeyValuePair::Bytes { value, .. } => {
+      (_, KeyValuePair::VarInt { value, .. }) => buf.put_vi(*value)?,
+      (_, KeyValuePair::Bytes { value, .. }) => {
         buf.put_vi(value.len() as u64)?;
         buf.extend_from_slice(value);
       }

@@ -19,6 +19,7 @@ import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buf
 import { greaseValue } from '../common/grease'
 import { ProtocolViolationError } from '../error/error'
 import { FilterType, GroupOrder, SwitchMode } from '../control/constant'
+import { MessageParameterType } from './constant'
 import { Location } from '../common'
 import { AuthorizationToken } from './common'
 import { FillTimeout } from './message/fill_timeout'
@@ -215,24 +216,34 @@ export class MessageParameters {
 }
 
 /**
- * LARGEST_OBJECT (0x09) is a bare Location -- two consecutive varints with no
- * length prefix. Its Type is odd, so the generic KVP parity rule would read a
- * length prefix and desync. This is a message-parameter encoding: the same Type
- * number in the setup-option namespace means something else, so the rule lives
- * here rather than in the shared codec.
+ * How a message parameter's Value is laid out on the wire. The parameter Type
+ * decides this, not its parity, and reading one the wrong way desyncs the rest
+ * of the list. The same Type number means something else in the setup-option
+ * namespace, so this belongs here and not in the shared codec.
  */
-function isLocationMessageParam(typeValue: bigint): boolean {
-  return typeValue === 0x09n
+enum ValueShape {
+  VarInt,
+  /** A single byte: FORWARD, SUBSCRIBER_PRIORITY, GROUP_ORDER. */
+  Uint8,
+  /** Two varints, no length prefix: LARGEST_OBJECT. */
+  BareLocation,
+  LengthPrefixedBytes,
 }
 
-/**
- * FORWARD (0x10), SUBSCRIBER_PRIORITY (0x20) and GROUP_ORDER (0x22) carry a
- * single uint8, not the generic even-Type varint. These Types are even, so
- * without this the parity rule would read a varint and desync on any value
- * >= 64 (e.g. the default SUBSCRIBER_PRIORITY of 128 = 0x80).
- */
-function isUint8MessageParam(typeValue: bigint): boolean {
-  return typeValue === 0x10n || typeValue === 0x20n || typeValue === 0x22n
+function valueShapeOf(typeValue: bigint): ValueShape {
+  switch (typeValue) {
+    case BigInt(MessageParameterType.Forward):
+    case BigInt(MessageParameterType.SubscriberPriority):
+    case BigInt(MessageParameterType.GroupOrder):
+      return ValueShape.Uint8
+    case BigInt(MessageParameterType.LargestObject):
+      return ValueShape.BareLocation
+    case BigInt(MessageParameterType.SwitchFrom):
+    case BigInt(MessageParameterType.TrackNamespacePrefix):
+      return ValueShape.LengthPrefixedBytes
+    default:
+      return typeValue % 2n === 0n ? ValueShape.VarInt : ValueShape.LengthPrefixedBytes
+  }
 }
 
 /**
@@ -245,20 +256,25 @@ export function serializeMessageParameterKvps(items: KeyValuePair[]): FrozenByte
   let prevType = 0n
   for (const kvp of sorted) {
     buf.putVI(kvp.typeValue - prevType)
-    if (isVarInt(kvp) && isUint8MessageParam(kvp.typeValue)) {
-      if (kvp.value < 0n || kvp.value > 255n) {
-        throw new ProtocolViolationError(
-          'serializeMessageParameterKvps',
-          `uint8 parameter 0x${kvp.typeValue.toString(16)} value ${kvp.value} exceeds 255`,
-        )
-      }
-      buf.putU8(Number(kvp.value))
-    } else if (isVarInt(kvp)) {
-      buf.putVI(kvp.value)
-    } else if (isBytes(kvp) && isLocationMessageParam(kvp.typeValue)) {
-      buf.putBytes(kvp.value)
-    } else if (isBytes(kvp)) {
-      buf.putLengthPrefixedBytes(kvp.value)
+    switch (valueShapeOf(kvp.typeValue)) {
+      case ValueShape.Uint8:
+        if (!isVarInt(kvp) || kvp.value < 0n || kvp.value > 255n) {
+          throw new ProtocolViolationError(
+            'serializeMessageParameterKvps',
+            `uint8 parameter 0x${kvp.typeValue.toString(16)} value ${kvp.value} exceeds 255`,
+          )
+        }
+        buf.putU8(Number(kvp.value))
+        break
+      case ValueShape.BareLocation:
+        if (isBytes(kvp)) buf.putBytes(kvp.value)
+        break
+      case ValueShape.LengthPrefixedBytes:
+        if (isBytes(kvp)) buf.putLengthPrefixedBytes(kvp.value)
+        break
+      case ValueShape.VarInt:
+        if (isVarInt(kvp)) buf.putVI(kvp.value)
+        break
     }
     prevType = kvp.typeValue
   }
@@ -275,15 +291,23 @@ export function deserializeMessageParameterKvps(buf: BaseByteBuffer, count: numb
   let prevType = 0n
   for (let i = 0; i < n; i++) {
     const typeValue = prevType + buf.getVI()
-    if (isUint8MessageParam(typeValue)) {
-      items[i] = KeyValuePair.tryNewVarInt(typeValue, BigInt(buf.getU8()))
-    } else if (isLocationMessageParam(typeValue)) {
-      const loc = new ByteBuffer()
-      loc.putVI(buf.getVI())
-      loc.putVI(buf.getVI())
-      items[i] = KeyValuePair.tryNewBytes(typeValue, loc.toUint8Array())
-    } else {
-      items[i] = KeyValuePair.deserializeValue(buf, typeValue)
+    switch (valueShapeOf(typeValue)) {
+      case ValueShape.Uint8:
+        items[i] = KeyValuePair.tryNewVarInt(typeValue, BigInt(buf.getU8()))
+        break
+      case ValueShape.BareLocation: {
+        const loc = new ByteBuffer()
+        loc.putVI(buf.getVI())
+        loc.putVI(buf.getVI())
+        items[i] = KeyValuePair.newBytes(typeValue, loc.toUint8Array())
+        break
+      }
+      case ValueShape.LengthPrefixedBytes:
+        items[i] = KeyValuePair.deserializeBytesValue(buf, typeValue)
+        break
+      case ValueShape.VarInt:
+        items[i] = KeyValuePair.tryNewVarInt(typeValue, buf.getVI())
+        break
     }
     prevType = typeValue
   }
@@ -345,6 +369,20 @@ if (import.meta.vitest) {
       buf.putBytes(wire)
       const frozen = buf.freeze()
       expect(MessageParameters.fromKeyValuePairs(deserializeMessageParameterKvps(frozen, 1))).toEqual(params)
+    })
+
+    test('SWITCH_FROM is a length-prefixed byte string despite its even Type', () => {
+      // Neighbours on both sides: reading it as a varint shifts everything after.
+      const switchFrom = new SwitchFrom(7n, SwitchMode.Hard, true)
+      const params = [new SubscriberPriority(128), switchFrom, new NewGroupRequest(3n)]
+      const buf = new ByteBuffer()
+      buf.putBytes(serializeMessageParameterKvps(params.map((p) => p.toKeyValuePair())).toUint8Array())
+      const frozen = buf.freeze()
+
+      const parsed = MessageParameters.fromKeyValuePairs(deserializeMessageParameterKvps(frozen, params.length))
+
+      expect(frozen.remaining).toBe(0)
+      expect(parsed).toEqual(params)
     })
   })
 

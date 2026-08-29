@@ -44,10 +44,16 @@ impl KeyValuePair {
         context: "KeyValuePair::try_new_bytes",
       });
     }
+    Self::new_bytes(type_value, value)
+  }
+
+  /// Builds a bytes-typed pair for a Type whose namespace defines a byte-string
+  /// value regardless of parity. Prefer [`KeyValuePair::try_new_bytes`].
+  pub fn new_bytes(type_value: u64, value: Bytes) -> Result<Self, ParseError> {
     let len = value.len();
     if len > MAX_VALUE_LENGTH {
       return Err(ParseError::LengthExceedsMax {
-        context: "KeyValuePair::try_new_bytes",
+        context: "KeyValuePair::new_bytes",
         max: MAX_VALUE_LENGTH,
         len,
       });

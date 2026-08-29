@@ -30,6 +30,7 @@ use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::control::constant::FilterType;
 use moqtail::model::control::constant::GroupOrder;
 use moqtail::model::control::constant::PublishDoneStatusCode;
+use moqtail::model::control::constant::SwitchMode;
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::publish::Publish;
 use moqtail::model::control::publish_done::PublishDone;
@@ -92,6 +93,11 @@ pub struct SubscriptionState {
   pub end_group: u64,
   /// How many groups back from the Largest Object a RelativeStartFill starts.
   pub relative_previous: Option<u64>,
+  /// Set on a subscription a soft switch is draining: it keeps delivering up to
+  /// `end_group` rather than stopping where it stands.
+  pub soft_suspended: bool,
+  /// Whether reaching the end of that drain also sends PUBLISH_DONE.
+  pub publish_done_at_end: bool,
   pub subscribe_parameters: Vec<MessageParameter>,
   pub last_sent_max_location: Option<Location>,
   pub last_received_object_location: Option<Location>,
@@ -197,6 +203,8 @@ impl From<SubscriptionOrigin> for SubscriptionState {
           start_location,
           end_group,
           relative_previous,
+          soft_suspended: false,
+          publish_done_at_end: false,
           subscribe_parameters: subscribe.subscribe_parameters,
           last_sent_max_location: None,
           last_received_object_location: None,
@@ -271,6 +279,8 @@ impl From<SubscriptionOrigin> for SubscriptionState {
           start_location,
           end_group,
           relative_previous,
+          soft_suspended: false,
+          publish_done_at_end: false,
           subscribe_parameters: publish.parameters,
           last_sent_max_location: None,
           last_received_object_location: None,
@@ -815,7 +825,12 @@ impl Subscription {
   /// A hard switch cuts: Forward State 0 and every stream it still has open is
   /// reset, fill fetch streams included. Objects already in flight can still
   /// arrive. PUBLISH_DONE follows only if the switch asked for it.
-  async fn stop_suspending_subscription(&self, plan: &SwitchPlan) {
+  ///
+  /// A soft switch instead lets it run out: its End Group becomes the group before
+  /// the activating subscription's Start Group, so the two are contiguous, and its
+  /// streams — fill fetch streams included — are left to finish. There is no group
+  /// before group 0, so a Start Group of 0 leaves nothing to drain and cuts.
+  async fn stop_suspending_subscription(&self, plan: &SwitchPlan, start_group: u64) {
     let Some(weak) = self
       .subscriber
       .subscriptions
@@ -838,6 +853,21 @@ impl Subscription {
       plan.suspending, self.client_connection_id, plan.mode
     );
 
+    // A soft switch resets nothing here: the subscription keeps its streams and any
+    // fill still running, and delivers up to the boundary. `finish_soft_drain`
+    // closes them once it gets there.
+    if plan.mode == SwitchMode::Soft && start_group > 0 {
+      let mut state = suspending.subscription_state.write().await;
+      state.soft_suspended = true;
+      state.end_group = start_group - 1;
+      state.publish_done_at_end = plan.publish_done;
+      info!(
+        "switch: draining {:?} for subscriber {} up to group {}",
+        plan.suspending, self.client_connection_id, state.end_group
+      );
+      return;
+    }
+
     suspending.subscription_state.write().await.forward = false;
     suspending.stop_fill_streams(FetchStop::Cancelled).await;
     suspending
@@ -856,6 +886,48 @@ impl Subscription {
         "switch: failed to send PUBLISH_DONE to the suspended subscription: {:?}",
         e
       );
+    }
+  }
+
+  /// Ends a soft switch's drain: the suspending subscription has delivered
+  /// everything up to its boundary, so its streams are closed and PUBLISH_DONE
+  /// goes out if the switch asked for it.
+  async fn finish_soft_drain(&self) {
+    {
+      let mut state = self.subscription_state.write().await;
+      if !state.soft_suspended {
+        return;
+      }
+      state.soft_suspended = false;
+      state.forward = false;
+    }
+
+    let publish_done = {
+      let mut state = self.subscription_state.write().await;
+      let wanted = state.publish_done_at_end;
+      state.publish_done_at_end = false;
+      wanted
+    };
+
+    info!(
+      "switch: drain complete for subscriber={} relay_track_id={}",
+      self.client_connection_id, self.relay_track_id
+    );
+
+    if publish_done {
+      if let Err(e) = self
+        .send_publish_done(
+          PublishDoneStatusCode::SubscriptionEnded,
+          "switched away from",
+        )
+        .await
+      {
+        error!(
+          "switch: failed to send PUBLISH_DONE after the drain: {:?}",
+          e
+        );
+      }
+      self.finish().await;
     }
   }
 
@@ -955,7 +1027,7 @@ impl Subscription {
           // The activating subscription is ready to publish from the Start Group,
           // so this is the moment the suspending one stops.
           if let Some(plan) = subscriber.switch_context.take_plan(&full_track_name).await {
-            self.stop_suspending_subscription(&plan).await;
+            self.stop_suspending_subscription(&plan, start_group).await;
           }
         } else {
           // Do not forward objects for Next status until switch condition is met
@@ -974,6 +1046,11 @@ impl Subscription {
       }
       SwitchStatus::Current => true,
       SwitchStatus::None => {
+        // A soft switch already told this subscription where to stop, and it keeps
+        // delivering until it gets there.
+        if self.subscription_state.read().await.soft_suspended {
+          return true;
+        }
         // set forward to false if it is true
         if self.is_forwarding().await {
           info!(
@@ -1136,6 +1213,13 @@ impl Subscription {
               "Object beyond end group for subscriber={} relay_track_id={} object location: {:?} end group: {}",
               self.client_connection_id, self.relay_track_id, object.location, state.end_group
             );
+            let drained = state.soft_suspended;
+            drop(state);
+            // An object past the boundary is how a drain ends: the group before it
+            // has nothing more to give.
+            if drained {
+              self.finish_soft_drain().await;
+            }
             return;
           }
 

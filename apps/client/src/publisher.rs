@@ -433,7 +433,7 @@ async fn send_fetch_objects(
   let stream = connection.open_uni().await?;
   let header_info = HeaderInfo::Fetch {
     header: FetchHeader::new(fetch.request_id),
-    fetch_request: fetch.clone(),
+    fetch_request: Some(fetch.clone()),
   };
   let stream = Arc::new(Mutex::new(stream));
   let mut handler = SendDataStream::new(stream.clone(), header_info).await?;

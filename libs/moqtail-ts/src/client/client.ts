@@ -209,7 +209,6 @@ export class MOQtailClient {
    * a fresh Request ID each time (§10.1). The id the caller was given stays the client's
    * key for the request; these two maps translate it to and from the id now on the wire.
    */
-  readonly #wireRequestIds: Map<bigint, bigint> = new Map()
   readonly #clientRequestIds: Map<bigint, bigint> = new Map()
 
   /**
@@ -1990,7 +1989,6 @@ export class MOQtailClient {
     const wireRequestId = this.#nextClientRequestId
     const reissued = ControlMessage.deserialize(ControlMessage.serialize(first))
     ;(reissued as { requestId: bigint }).requestId = wireRequestId
-    this.#wireRequestIds.set(requestId, wireRequestId)
     this.#clientRequestIds.set(wireRequestId, requestId)
 
     oldStream.migrated = true
@@ -1998,11 +1996,6 @@ export class MOQtailClient {
     await this.#openRequestStream(requestId, reissued)
     logger.log('MOQtailClient', `re-issued request ${requestId} as request id ${wireRequestId}`)
     return true
-  }
-
-  /** The Request ID `requestId` currently travels under, which a migration has moved on. */
-  #wireRequestId(requestId: bigint): bigint {
-    return this.#wireRequestIds.get(requestId) ?? requestId
   }
 
   /** The request a peer-supplied Request ID belongs to, undoing any migration. */
@@ -2264,6 +2257,34 @@ export class MOQtailClient {
           }
           return
         }
+
+        // A fill fetch stream: the same header, but named by the SUBSCRIBE or the
+        // REQUEST_UPDATE that asked for the fill. Its objects belong on that
+        // subscription's stream, alongside the ones arriving live.
+        if (request instanceof SubscribeRequest) {
+          // The publisher counts it in Stream Count like any stream it opened, so
+          // the subscriber has to count it too or the two never agree.
+          request.streamsAccepted++
+          try {
+            while (true) {
+              const { done, value: nextObject } = await reader.read()
+              if (done) break
+              if (!nextObject) continue
+              if (!(nextObject instanceof FetchObject)) {
+                throw new ProtocolViolationError('MOQtailClient', 'Received subgroup object after fetch header')
+              }
+              // End-of-Range markers describe gaps and carry no payload.
+              if (nextObject.kind === 'end_of_range') continue
+              const moqtObject = MoqtObject.fromFetchObject(nextObject, request.fullTrackName)
+              if (request.manager) request.manager.deliver(request, moqtObject)
+              else request.controller?.enqueue(moqtObject)
+            }
+          } finally {
+            reader.releaseLock()
+          }
+          return
+        }
+
         throw new ProtocolViolationError('MOQtailClient', 'No request for received request id')
       } else {
         const subscription = this.subscriptions.get(header.trackAlias)
@@ -2354,6 +2375,11 @@ export class MOQtailClient {
 
 if (import.meta.vitest) {
   const { describe, it, expect, afterEach, vi } = import.meta.vitest
+  const { MessageParameters } = await import('../model/parameter/message_parameter')
+  const { LargestObject } = await import('../model/parameter/message/largest_object')
+  const { Header } = await import('../model/data/header')
+  const { FetchHeaderType, ObjectForwardingPreference } = await import('../model/data/constant')
+  const { ByteBuffer } = await import('../model/common/byte_buffer')
 
   /** One bidirectional stream: what the client wrote, and a way to answer on it. */
   class MockBidiStream {
@@ -2978,6 +3004,49 @@ if (import.meta.vitest) {
 
       expect(fetchStream.messages).toHaveLength(1)
       expect(streamResetCodeOf(fetchStream.abortReason)).toBe(StreamResetCode.Cancelled)
+
+      await client.disconnect()
+    })
+
+    it('delivers a fill fetch stream onto the subscription that asked for it', async () => {
+      const { client, transport } = await connected()
+
+      const subscribing = client.subscribe({
+        fullTrackName: ftn,
+        filterType: FilterType.RelativeStartFill,
+        relativePrevious: 2n,
+        forward: true,
+        groupOrder: GroupOrder.Original,
+        priority: 0,
+      })
+      const subscribeStream = await openedStream(transport, 0)
+      const subscribeMsg = subscribeStream.messages[0] as Subscribe
+      subscribeStream.respond(
+        SubscribeOk.create(7n, new MessageParameters().add(new LargestObject(new Location(5n, 1n))).build(), []),
+      )
+      const subscribed = (await subscribing) as { requestId: bigint; stream: ReadableStream<MoqtObject> }
+
+      // The fill arrives on its own uni stream, named by the SUBSCRIBE's Request ID
+      // rather than a FETCH's, and carrying fetch objects.
+      const header = new ByteBuffer()
+      header.putBytes(Header.newFetch(FetchHeaderType.Type0x05, subscribeMsg.requestId).serialize().toUint8Array())
+      const payload = new TextEncoder().encode('filled')
+      header.putBytes(
+        FetchObject.newObject(4, 0, 0, 0, ObjectForwardingPreference.Subgroup, null, payload)
+          .serialize(undefined, GroupOrder.Ascending)
+          .toUint8Array(),
+      )
+      transport.openIncomingUniStream(header.toUint8Array())
+
+      const reader = subscribed.stream.getReader()
+      const { value } = await reader.read()
+      expect(value?.payload).toEqual(payload)
+      expect(value?.location.group).toBe(4n)
+      reader.releaseLock()
+
+      // It counts towards Stream Count the same as any stream the publisher opened.
+      const request = client.requests.get(subscribed.requestId) as SubscribeRequest
+      expect(request.streamsAccepted).toBe(1n)
 
       await client.disconnect()
     })

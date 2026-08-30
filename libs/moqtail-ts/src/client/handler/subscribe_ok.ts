@@ -19,6 +19,7 @@ import { SubscribeOk } from '../../model/control'
 import { SubscribeRequest } from '../request/subscribe'
 import { RequestStreamMessageHandler } from './handler'
 import { logger } from '../../util/logger'
+import { applySubscriptionResponse } from './subscription_response'
 
 export const handlerSubscribeOk: RequestStreamMessageHandler<SubscribeOk> = async (client, msg, _stream, requestId) => {
   logger.debug('handler/subscribe_ok', `received requestId=${requestId} trackAlias=${msg.trackAlias}`)
@@ -27,16 +28,7 @@ export const handlerSubscribeOk: RequestStreamMessageHandler<SubscribeOk> = asyn
   // SUBSCRIBE it answers (§10.1).
   const request = client.requests.get(requestId)
   if (request instanceof SubscribeRequest) {
-    if (msg.trackProperties.length > 0) {
-      logger.debug(
-        'handler/subscribe_ok',
-        `requestId=${requestId} — applying ${msg.trackProperties.length} track propert(ies)`,
-      )
-      const track = client.trackSources.get(request.fullTrackName.toString())
-      if (track !== undefined) {
-        track.trackProperties = msg.trackProperties
-      }
-    }
+    applySubscriptionResponse(client, request, msg.parameters, msg.trackProperties)
     logger.debug(
       'handler/subscribe_ok',
       `requestId=${requestId} — resolving SubscribeRequest ftn="${request.fullTrackName}"`,

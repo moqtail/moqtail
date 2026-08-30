@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use clap::{Parser, ValueEnum};
-use moqtail::model::control::constant::GroupOrder;
+use moqtail::model::control::constant::{GroupOrder, SwitchMode};
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum CliGroupOrder {
@@ -28,6 +28,39 @@ impl From<CliGroupOrder> for GroupOrder {
       CliGroupOrder::Original => GroupOrder::Original,
       CliGroupOrder::Ascending => GroupOrder::Ascending,
       CliGroupOrder::Descending => GroupOrder::Descending,
+    }
+  }
+}
+
+/// Which Subscription Filter a subscribe uses.
+#[derive(Debug, Clone, Copy, PartialEq, ValueEnum)]
+pub enum CliFilter {
+  /// Objects published from now on
+  Latest,
+  /// Objects from the start of the next group
+  NextGroup,
+  /// From an explicit Start Location, filling what is already published
+  AbsoluteStartFill,
+  /// As above, ending at Start Group plus --end-group-delta
+  AbsoluteRangeFill,
+  /// From --relative-previous groups before the Largest Object
+  RelativeStartFill,
+}
+
+/// How a switch stops the subscription it suspends.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum CliSwitchMode {
+  /// Stop it at the cutover: Forward State 0 and its streams reset
+  Hard,
+  /// Let it drain to the group before the new subscription's Start Group
+  Soft,
+}
+
+impl From<CliSwitchMode> for SwitchMode {
+  fn from(mode: CliSwitchMode) -> Self {
+    match mode {
+      CliSwitchMode::Hard => SwitchMode::Hard,
+      CliSwitchMode::Soft => SwitchMode::Soft,
     }
   }
 }
@@ -179,6 +212,42 @@ pub struct Cli {
   /// Subscription Forward State (subscribe only).
   #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
   pub forward: bool,
+
+  /// Subscription Filter to subscribe with (subscribe only)
+  #[arg(long, value_enum, default_value = "latest")]
+  pub filter: CliFilter,
+
+  /// Start group for the absolute fill filters (subscribe only)
+  #[arg(long, default_value_t = 0)]
+  pub filter_start_group: u64,
+
+  /// Start object for the absolute fill filters (subscribe only)
+  #[arg(long, default_value_t = 0)]
+  pub filter_start_object: u64,
+
+  /// Groups after the Start Group that --filter absolute-range-fill ends at
+  #[arg(long, default_value_t = 0)]
+  pub end_group_delta: u64,
+
+  /// Groups back from the Largest Object that --filter relative-start-fill starts at
+  #[arg(long, default_value_t = 0)]
+  pub relative_previous: u64,
+
+  /// Seconds after subscribing to switch to --switch-track (subscribe only, 0 = never)
+  #[arg(long, default_value_t = 0)]
+  pub switch_after: u64,
+
+  /// Track to switch to with SWITCH_FROM (subscribe + --switch-after only)
+  #[arg(long)]
+  pub switch_track: Option<String>,
+
+  /// How the switch stops the subscription it suspends
+  #[arg(long, value_enum, default_value = "hard")]
+  pub switch_mode: CliSwitchMode,
+
+  /// Whether the switch asks for PUBLISH_DONE on the suspended subscription
+  #[arg(long, default_value_t = false)]
+  pub switch_publish_done: bool,
 
   /// Seconds after subscribing to send a REQUEST_UPDATE setting Forward State 1
   /// (subscribe only, 0 = never). Use with --forward false to test that delivery

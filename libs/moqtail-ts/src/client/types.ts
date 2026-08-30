@@ -158,8 +158,8 @@ export type SubscribeOptions = {
   priority: number
   /** Desired {@link (GroupOrder:enum)} (e.g. {@link (GroupOrder:enum).Original}) specifying delivery ordering semantics. */
   groupOrder: GroupOrder
-  /** If true, deliver objects forward (ascending); if false, reverse/backward semantics (implementation dependent). */
-  forward: boolean
+  /** If present, forward parameter (0x10) is sent with the provided value */
+  forward?: boolean
   /** {@link FilterType} variant controlling starting subset (e.g. {@link FilterType.LatestObject}). */
   filterType: FilterType
   /** Optional extension parameters appended to the SUBSCRIBE control message. */

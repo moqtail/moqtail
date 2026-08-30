@@ -1015,7 +1015,7 @@ export class MOQtailClient {
       if (typeof endGroup === 'number') endGroup = BigInt(endGroup)
       const baseParams: MessageParameter[] = [
         new SubscriberPriority(priority),
-        new Forward(forward),
+        ...(forward !== undefined ? [new Forward(forward)] : []),
         ...(groupOrder !== GroupOrder.Original ? [new GroupOrderParam(groupOrder)] : []),
         ...(parameters ?? []),
       ]

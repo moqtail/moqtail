@@ -48,6 +48,13 @@ export class SubscribeRequest implements PromiseLike<SubscribeOk | RequestError>
 
   // Track Data State
   public largestLocation: Location | undefined // Updated on each received object
+  /**
+   * The publisher's Largest Object as of the last SUBSCRIBE_OK or REQUEST_UPDATE_OK,
+   * which is where a fill fetch stream stops.
+   */
+  public fillBoundary: Location | undefined
+  /** EXPIRES from the last SUBSCRIBE_OK or REQUEST_UPDATE_OK, in milliseconds. */
+  public expires: bigint | undefined
   public streamsAccepted: bigint = 0n
   public expectedStreams: bigint | undefined // Defined upon SUBSCRIBE_DONE
 

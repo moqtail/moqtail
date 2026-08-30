@@ -12,13 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cli::DeliveryMode;
+use crate::cli::{CliFilter, DeliveryMode};
 use crate::connection::MoqConnection;
 use crate::stats::ReceptionStats;
 use crate::utils::should_log;
 use anyhow::Result;
+use moqtail::model::common::location::Location;
 use moqtail::model::common::tuple::{Tuple, TupleField};
-use moqtail::model::control::constant::GroupOrder;
+use moqtail::model::control::constant::{FilterType, GroupOrder, SwitchMode};
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::request_ok::RequestOk;
 use moqtail::model::control::request_update::RequestUpdate;
@@ -37,6 +38,38 @@ use tracing::{debug, error, info};
 /// Subscribe to one track on its own bidirectional request stream. Returns the
 /// assigned track alias and the request-stream handler, which the caller keeps
 /// alive for the subscription's lifetime.
+/// The SUBSCRIPTION_FILTER a `--filter` choice asks for.
+fn subscription_filter(config: &SubscribeConfig) -> MessageParameter {
+  match config.filter {
+    CliFilter::Latest => {
+      MessageParameter::new_subscription_filter(FilterType::LatestObject, None, None)
+    }
+    CliFilter::NextGroup => {
+      MessageParameter::new_subscription_filter(FilterType::NextGroupStart, None, None)
+    }
+    CliFilter::AbsoluteStartFill => MessageParameter::new_subscription_filter(
+      FilterType::AbsoluteStartFill,
+      Some(Location::new(
+        config.filter_start_group,
+        config.filter_start_object,
+      )),
+      None,
+    ),
+    CliFilter::AbsoluteRangeFill => MessageParameter::new_subscription_filter(
+      FilterType::AbsoluteRangeFill,
+      Some(Location::new(
+        config.filter_start_group,
+        config.filter_start_object,
+      )),
+      Some(config.filter_start_group + config.end_group_delta),
+    ),
+    CliFilter::RelativeStartFill => {
+      MessageParameter::new_relative_start_fill(config.relative_previous)
+    }
+  }
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn subscribe_track(
   connection: &Arc<TransportConnection>,
   namespace: &str,
@@ -45,21 +78,29 @@ async fn subscribe_track(
   subscriber_priority: u8,
   group_order: GroupOrder,
   forward: bool,
+  filter: MessageParameter,
+  switch_from: Option<MessageParameter>,
 ) -> Result<(u64, ControlStreamHandler)> {
   let ns = Tuple::from_utf8_path(namespace);
   info!(
-    "Subscribing to track: {}/{} (request_id={}, priority={}, forward={})",
-    namespace, track_name, request_id, subscriber_priority, forward
+    "Subscribing to track: {}/{} (request_id={}, priority={}, forward={}, filter={:?})",
+    namespace, track_name, request_id, subscriber_priority, forward, filter
   );
-  let subscribe = Subscribe::new_latest_object(
+  // A switch decides the Forward State itself, so FORWARD must not go with it.
+  let mut parameters = vec![
+    MessageParameter::new_subscriber_priority(subscriber_priority),
+    MessageParameter::new_group_order(group_order),
+    filter,
+  ];
+  match switch_from {
+    Some(param) => parameters.push(param),
+    None => parameters.push(MessageParameter::new_forward(forward)),
+  }
+  let subscribe = Subscribe::new(
     request_id,
     ns,
     TupleField::from_utf8(track_name),
-    vec![
-      MessageParameter::new_subscriber_priority(subscriber_priority),
-      MessageParameter::new_group_order(group_order),
-      MessageParameter::new_forward(forward),
-    ],
+    parameters,
   );
 
   // A request opens its own bidi stream, beginning with SUBSCRIBE; the response
@@ -79,6 +120,9 @@ async fn subscribe_track(
       );
       Ok((m.track_alias, request_stream))
     }
+    Ok(ControlMessage::RequestError(m)) => {
+      anyhow::bail!("SUBSCRIBE for {} refused: {:?}", track_name, m)
+    }
     Ok(m) => anyhow::bail!("Expected SubscribeOk for {}, got {:?}", track_name, m),
     Err(e) => anyhow::bail!("Failed waiting for SubscribeOk for {}: {:?}", track_name, e),
   }
@@ -94,6 +138,15 @@ pub struct SubscribeConfig {
   pub extra_track: Option<(String, u8)>,
   pub forward: bool,
   pub update_forward_after: u64,
+  pub filter: CliFilter,
+  pub filter_start_group: u64,
+  pub filter_start_object: u64,
+  pub end_group_delta: u64,
+  pub relative_previous: u64,
+  pub switch_after: u64,
+  pub switch_track: Option<String>,
+  pub switch_mode: SwitchMode,
+  pub switch_publish_done: bool,
 }
 
 /// SUBSCRIBE_TRACKS for a namespace prefix: send the request on a bidi stream
@@ -192,6 +245,8 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
     config.subscriber_priority,
     config.group_order,
     config.forward,
+    subscription_filter(&config),
+    None,
   )
   .await?;
 
@@ -216,6 +271,54 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
     request_streams.push(primary_stream);
   }
 
+  // Switch to another track after a delay: a second SUBSCRIBE carrying SWITCH_FROM,
+  // which activates it and suspends the first.
+  if config.switch_after > 0
+    && let Some(switch_track) = config.switch_track.clone()
+  {
+    let connection = connection.clone();
+    let namespace = config.namespace.clone();
+    let delay = config.switch_after;
+    let priority = config.subscriber_priority;
+    let group_order = config.group_order;
+    let mode = config.switch_mode;
+    let publish_done = config.switch_publish_done;
+    let filter = subscription_filter(&config);
+    tokio::spawn(async move {
+      tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
+      info!("Switching to {} ({:?})", switch_track, mode);
+      match subscribe_track(
+        &connection,
+        &namespace,
+        &switch_track,
+        2,
+        priority,
+        group_order,
+        true,
+        filter,
+        Some(MessageParameter::new_switch_from(0, mode, publish_done)),
+      )
+      .await
+      {
+        Ok((alias, stream)) => {
+          info!("Switched to {} (track_alias={})", switch_track, alias);
+          // Hold the request stream open for the subscription's lifetime.
+          let mut stream = stream;
+          loop {
+            match stream.next_message().await {
+              Ok(m) => info!("switch subscription: {:?}", m),
+              Err(e) => {
+                error!("switch subscription stream ended: {:?}", e);
+                break;
+              }
+            }
+          }
+        }
+        Err(e) => error!("Switch failed: {:?}", e),
+      }
+    });
+  }
+
   let extra_alias = if let Some((ref extra_name, extra_priority)) = config.extra_track {
     let (alias, extra_stream) = subscribe_track(
       &connection,
@@ -225,6 +328,8 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
       extra_priority,
       config.group_order,
       config.forward,
+      MessageParameter::new_subscription_filter(FilterType::LatestObject, None, None),
+      None,
     )
     .await?;
     request_streams.push(extra_stream);

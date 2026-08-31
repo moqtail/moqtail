@@ -99,6 +99,7 @@ async fn main() -> Result<(), anyhow::Error> {
         switch_track: cli.switch_track,
         switch_mode: cli.switch_mode.into(),
         switch_publish_done: cli.switch_publish_done,
+        switch_start_group: cli.switch_start_group,
       };
       subscriber::run(moq_conn, config).await
     }

@@ -147,6 +147,7 @@ pub struct SubscribeConfig {
   pub switch_track: Option<String>,
   pub switch_mode: SwitchMode,
   pub switch_publish_done: bool,
+  pub switch_start_group: u64,
 }
 
 /// SUBSCRIBE_TRACKS for a namespace prefix: send the request on a bidi stream
@@ -283,7 +284,17 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
     let group_order = config.group_order;
     let mode = config.switch_mode;
     let publish_done = config.switch_publish_done;
-    let filter = subscription_filter(&config);
+    // A start group of its own makes the switch happen at that group rather than
+    // at the next one, leaving the suspended track delivering until then.
+    let filter = if config.switch_start_group > 0 {
+      MessageParameter::new_subscription_filter(
+        FilterType::AbsoluteStartFill,
+        Some(Location::new(config.switch_start_group, 0)),
+        None,
+      )
+    } else {
+      subscription_filter(&config)
+    };
     tokio::spawn(async move {
       tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
       info!("Switching to {} ({:?})", switch_track, mode);

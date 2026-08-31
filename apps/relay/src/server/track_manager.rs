@@ -31,7 +31,7 @@ use tokio::sync::Notify;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::Instant;
-use tracing::{debug, info, warn};
+use tracing::{info, trace, warn};
 
 pub type NamespacePrefix = Tuple;
 
@@ -528,7 +528,7 @@ impl TrackManager {
 
     for (full_track_name, track_arc) in tracks.iter() {
       let is_match = full_track_name.namespace.fields.starts_with(&prefix.fields);
-      debug!(
+      trace!(
         "checking track: {} against prefix.fields: {:?} is_match: {}",
         full_track_name, prefix.fields, is_match
       );

@@ -594,7 +594,7 @@ impl RecvDataStream {
       match parse_result {
         Ok((object_id, new_ctx, maybe_object)) => {
           let consumed = original_remaining - bytes_cursor.remaining();
-          debug!(
+          trace!(
             "consumed: {} Parsed payload object: {:?}",
             consumed, maybe_object
           );

@@ -40,7 +40,7 @@ use moqtail::transport::data_stream_handler::SubscribeRequest;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use tokio::sync::oneshot;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, trace, warn};
 
 async fn add_subscription(
   subscribe: Subscribe,
@@ -460,7 +460,7 @@ async fn handle_subscribe_message(
   // Every publisher of the exact Track, plus every publisher that announced a namespace
   // it falls under. A SUBSCRIBE goes to all of them, not to whichever matched first.
   let publishers = {
-    debug!("trying to get the publishers");
+    trace!("trying to get the publishers");
     context
       .client_manager
       .get_publishers_for_track(&full_track_name)
@@ -692,7 +692,7 @@ async fn handle_subscribe_message(
       PendingRequest::Subscribe(orig_req.clone()),
     );
 
-    debug!(
+    trace!(
       "inserted request into client's subscribe requests: {:?}",
       orig_req
     );
@@ -987,7 +987,7 @@ pub(crate) async fn cancel_subscription(
     let mut inbound = client.inbound_requests.write().await;
     inbound.remove(&request_id);
 
-    debug!(
+    trace!(
       "Cleaned up client subscribe request {} on cancel",
       request_id
     );

@@ -24,7 +24,7 @@ use moqtail::model::{
 };
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, trace, warn};
 
 pub async fn handle(
   stream_handler: &mut ControlStreamHandler,
@@ -60,7 +60,7 @@ pub async fn handle(
       // C. Find Upstream Publisher. One is enough: this asks for a track's status, and
       // any publisher serving it can answer, where a SUBSCRIBE must reach all of them.
       let publisher = {
-        debug!("Finding publisher for TrackStatus...");
+        trace!("Finding publisher for TrackStatus...");
         context
           .client_manager
           .get_publishers_for_track(&full_track_name)
@@ -137,7 +137,7 @@ async fn forward_track_status_upstream(
       return;
     }
     Err(_) => {
-      debug!("Upstream track-status stream closed");
+      trace!("Upstream track-status stream closed");
       return;
     }
   };

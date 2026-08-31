@@ -19,7 +19,7 @@ use std::sync::Arc;
 use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
-use tracing::{debug, error, info};
+use tracing::{error, info, trace};
 
 use super::config::{AppConfig, CacheExpirationType};
 
@@ -166,7 +166,7 @@ impl TrackCache {
       // Add object to existing group
       let mut objects = existing_objects.write().await;
       objects.push(object.clone());
-      debug!(
+      trace!(
         "track_cache::add_object | added object to existing group | track: {} group: {} object_id: {} total_objects: {}",
         self.relay_track_id,
         object.group_id,
@@ -177,7 +177,7 @@ impl TrackCache {
       // Create new group with this object
       let new_group_objects = Arc::new(RwLock::new(vec![object.clone()]));
       self.cache.insert(cache_key, new_group_objects).await;
-      debug!(
+      trace!(
         "track_cache::add_object | created new group | track: {} group: {} object_id: {}",
         self.relay_track_id, object.group_id, object.object_id
       );

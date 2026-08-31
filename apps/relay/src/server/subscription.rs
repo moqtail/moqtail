@@ -839,7 +839,18 @@ impl Subscription {
         let mut switch_at_next_group = false;
         let mut new_start_location = None;
 
-        if let Some(current_track_name) = self.subscriber.switch_context.get_current().await {
+        // The subscriber can ask to switch at a future group. Forwarding begins at the
+        // group after this object, so until that reaches the requested start group the
+        // switch is not due and the track being switched away from keeps delivering.
+        let requested_start = { self.subscription_state.read().await.start_location.clone() };
+        let before_requested_start = requested_start
+          .as_ref()
+          .is_some_and(|start| object_location.group + 1 < start.group);
+
+        if before_requested_start {
+          switch_at_next_group = false;
+        } else if let Some(current_track_name) = self.subscriber.switch_context.get_current().await
+        {
           let current_subscription_opt = self
             .subscriber
             .subscriptions
@@ -856,6 +867,8 @@ impl Subscription {
             if let Some(loc) = last_sent_max_location {
               switch_at_next_group = object_location.group >= loc.group;
               let mut loc_clone = loc.clone();
+              // We modify the start location of the subscriptions to manage the switch context
+              // that's why we always set to next in a switch because this may not be the first switch
               loc_clone.group += 1; // switch at the next group after the last sent max location of the current track
               loc_clone.object = 0; // reset object id to 0 to read from the start of the group
               new_start_location = Some(loc_clone);
@@ -888,6 +901,12 @@ impl Subscription {
           let mut state = self.subscription_state.write().await;
           state.forward = true;
 
+          // We only get here once:
+          //   suspend track's subscription's object group + 1
+          //     >= resume track's requested start group (comes in the subscribe message)
+          // so the start group set below is the requested one or later. Say the
+          // subscriber asks to start at group 20 and the suspend track is sending
+          // group 19: the resume track starts at group 20.
           if new_start_location.is_some() {
             state.start_location = new_start_location;
           } else {

@@ -249,6 +249,11 @@ pub struct Cli {
   #[arg(long, default_value_t = false)]
   pub switch_publish_done: bool,
 
+  /// Start group the switch asks to begin at, to switch at a future group
+  /// boundary rather than at the next one (0 = subscribe with --filter instead)
+  #[arg(long, default_value_t = 0)]
+  pub switch_start_group: u64,
+
   /// Seconds after subscribing to send a REQUEST_UPDATE setting Forward State 1
   /// (subscribe only, 0 = never). Use with --forward false to test that delivery
   /// resumes after Forward flips 0->1.

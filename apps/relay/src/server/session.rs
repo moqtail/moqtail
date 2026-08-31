@@ -37,7 +37,7 @@ use std::{
   sync::{Arc, atomic::AtomicU64},
 };
 use tokio::sync::RwLock;
-use tracing::{Instrument, debug, error, info, info_span, warn};
+use tracing::{Instrument, debug, error, info, info_span, trace, warn};
 use wtransport::endpoint::SessionRequest;
 use wtransport::quinn;
 
@@ -424,13 +424,13 @@ impl Session {
           };
 
           tokio::spawn(async move {
-            debug!("Received datagram from client {}", connection_id);
+            trace!("Received datagram from client {}", connection_id);
 
             // Parse the datagram
             let mut bytes = datagram_bytes;
             match Datagram::deserialize(&mut bytes) {
               Ok(datagram_obj) => {
-                debug!("Parsed datagram: track_alias={}, group_id={}, object_id={}",
+                trace!("Parsed datagram: track_alias={}, group_id={}, object_id={}",
                        datagram_obj.track_alias, datagram_obj.group_id, datagram_obj.object_id);
 
                 if let Some(track) = context_clone.track_manager.get_track_by_alias(context_clone.connection_id, datagram_obj.track_alias).await {
@@ -439,7 +439,7 @@ impl Session {
                     error!("Failed to process datagram: {:?}", e);
                   }
                 } else {
-                  debug!("Track not found for track_alias {}", datagram_obj.track_alias);
+                  trace!("Track not found for track_alias {}", datagram_obj.track_alias);
                 }
               }
               Err(e) => {
@@ -704,7 +704,7 @@ impl Session {
                 }
                 Err(_) => {
                   // FIN or RESET: the requester cancelled by closing the stream.
-                  debug!("Request bi-stream closed by peer");
+                  trace!("Request bi-stream closed by peer");
                   match request_kind {
                     RequestStreamKind::Subscribe => {
                       message_handlers::subscribe_handler::cancel_subscription(
@@ -753,7 +753,7 @@ impl Session {
   async fn handle_connection_close(context: Arc<SessionContext>) -> Result<()> {
     let track_manager_cleanup = context.track_manager.clone();
 
-    debug!(
+    trace!(
       "handle_connection_close | waiting ({})",
       context.connection_id
     );
@@ -825,7 +825,7 @@ impl Session {
     {
       context.client_manager.remove(context.connection_id).await;
     }
-    debug!(
+    trace!(
       "handle_connection_close | removed client {} from client manager",
       context.connection_id
     );
@@ -847,14 +847,14 @@ impl Session {
     context: Arc<SessionContext>,
     stream: TransportRecvStream,
   ) -> Result<()> {
-    debug!("accepted unidirectional stream");
+    trace!("accepted unidirectional stream");
     let client = context.get_client().await;
     let client = match client {
       Some(c) => c,
       None => return Err(TerminationCode::InternalError.into()),
     };
 
-    debug!("client is {}", client.connection_id);
+    trace!("client is {}", client.connection_id);
 
     let mut stream_handler = &RecvDataStream::new(stream, client.outgoing_fetch_requests.clone());
 
@@ -878,7 +878,7 @@ impl Session {
           stream_handler = handler;
 
           let header_info = if first_object {
-            // debug!("First object received, processing header info");
+            // trace!("First object received, processing header info");
             let header = handler.get_header_info().await;
             if header.is_none() {
               error!("no header info found, terminating session");
@@ -890,14 +890,14 @@ impl Session {
 
             match header_info {
               HeaderInfo::Subgroup { header } => {
-                debug!("received Subgroup header: {:?}", header);
+                trace!("received Subgroup header: {:?}", header);
                 track_alias = header.track_alias;
               }
               HeaderInfo::Fetch {
                 header,
                 fetch_request: _,
               } => {
-                debug!("received Fetch header: {:?}", header);
+                trace!("received Fetch header: {:?}", header);
                 let fetch_request_id = header.request_id;
                 track_alias = client
                   .outgoing_fetch_requests
@@ -923,7 +923,7 @@ impl Session {
             // A data stream can outrun the control message that establishes its alias,
             // so wait briefly for it. An alias that never arrives is not a session
             // error: the stream is abandoned and the session carries on.
-            debug!("looking for track with alias: {:?}", track_alias);
+            trace!("looking for track with alias: {:?}", track_alias);
             current_track = context
               .track_manager
               .resolve_track_by_alias(
@@ -981,7 +981,7 @@ impl Session {
         }
         (_, None) => {
           // error!("Failed to receive object: {:?}", e);
-          info!(
+          debug!(
             "no more objects in the stream client: {} track: {} stream_id: {:?} objects: {}",
             context.connection_id,
             track_alias,
@@ -1036,7 +1036,7 @@ impl Session {
     context: Arc<SessionContext>,
     control_stream_handler: &mut ControlStreamHandler,
   ) -> Result<Arc<MOQTClient>, TerminationCode> {
-    debug!("Negotiating with client...");
+    trace!("Negotiating with client...");
     // The client's control stream MUST begin with SETUP.
     let client_setup = match control_stream_handler.read_setup().await {
       Ok(m) => m,
@@ -1065,8 +1065,8 @@ impl Session {
 
     let server_setup = Setup::new(vec![moqt_implementation_param]);
 
-    debug!("client setup: {:?}", client_setup);
-    debug!("server setup: {:?}", server_setup);
+    trace!("client setup: {:?}", client_setup);
+    trace!("server setup: {:?}", server_setup);
 
     // Check for authorization tokens and log them if token logging is enabled
     if context.server_config.enable_token_logging {
@@ -1114,7 +1114,7 @@ impl Session {
 
     match control_stream_handler.send_impl(&server_setup).await {
       Ok(_) => {
-        debug!("Sent server setup to client");
+        trace!("Sent server setup to client");
         Ok(client)
       }
       Err(e) => {

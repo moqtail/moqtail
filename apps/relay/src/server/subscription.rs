@@ -51,9 +51,7 @@ use tokio::sync::Notify;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::watch;
-use tracing::trace;
-use tracing::warn;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, trace, warn};
 
 #[derive(Debug, Clone)]
 pub enum SubscriptionOrigin {
@@ -669,12 +667,12 @@ impl Subscription {
             );
           } else if let Ok(closed) = res {
             if closed {
-              debug!(
+              trace!(
                 "Background stream cleanup successful for subscriber={} stream_id={} relay_track_id={}",
                 connection_id, stream_id, relay_track_id
               );
             } else {
-              debug!(
+              trace!(
                 "Background stream cleanup: stream not found for subscriber={} stream_id={} relay_track_id={}",
                 connection_id, stream_id, relay_track_id
               );
@@ -969,7 +967,7 @@ impl Subscription {
   }
 
   async fn receive(&mut self) {
-    debug!(
+    trace!(
       "Receiving for subscriber: {} track: {}",
       self.client_connection_id, self.relay_track_id
     );
@@ -1056,7 +1054,7 @@ impl Subscription {
   }
 
   async fn handle_track_event(&self, event: TrackEvent) {
-    debug!(
+    trace!(
       "Event received for subscriber={} relay_track_id={} event: {:?}",
       self.client_connection_id, self.relay_track_id, event
     );
@@ -1102,7 +1100,7 @@ impl Subscription {
           if let Some(start) = &state.start_location
             && object.location < *start
           {
-            debug!(
+            trace!(
               "Object before start location for subscriber={} relay_track_id={} object location: {:?} start location: {:?}",
               self.client_connection_id, self.relay_track_id, object.location, start
             );
@@ -1110,7 +1108,7 @@ impl Subscription {
           }
 
           if state.end_group > 0 && object.location.group > state.end_group {
-            debug!(
+            trace!(
               "Object beyond end group for subscriber={} relay_track_id={} object location: {:?} end group: {}",
               self.client_connection_id, self.relay_track_id, object.location, state.end_group
             );
@@ -1145,7 +1143,7 @@ impl Subscription {
         // Handle header info if this is the first object
         let send_stream = if let Some(header) = header_info {
           if let HeaderInfo::Subgroup { header: _ } = header {
-            info!(
+            debug!(
               "Creating stream - subscriber={} relay_track_id={} now={} received time={} object: {:?} header: {:?}",
               self.client_connection_id,
               self.relay_track_id,
@@ -1160,7 +1158,7 @@ impl Subscription {
                   self.send_stream_last_object_ids.write().await;
                 send_stream_last_object_ids.insert(stream_id.clone(), None);
               }
-              info!(
+              debug!(
                 "Stream created - subscriber={} stream_id={} relay_track_id={} now={} received time={} object: {:?}",
                 self.client_connection_id,
                 stream_id,
@@ -1194,7 +1192,7 @@ impl Subscription {
                 .get(&stream_id)
                 .cloned();
               if let Some(h) = cached {
-                debug!(
+                trace!(
                   "mid-subgroup join: opening stream from cached header for subscriber={} relay_track_id={} stream_id={}",
                   self.client_connection_id, self.relay_track_id, stream_id
                 );
@@ -1220,7 +1218,7 @@ impl Subscription {
               .flatten()
           };
 
-          debug!(
+          trace!(
             "Received Object event: subscriber={} stream_id={} relay_track_id={} previous_object_id: {:?} object: {:?} now={} received time={}",
             self.client_connection_id,
             stream_id,
@@ -1298,7 +1296,7 @@ impl Subscription {
           if let Some(start) = &state.start_location
             && location < *start
           {
-            debug!(
+            trace!(
               "Datagram before start location for subscriber={} relay_track_id={} object location: {:?} start location: {:?}",
               self.client_connection_id, self.relay_track_id, location, start
             );
@@ -1306,7 +1304,7 @@ impl Subscription {
           }
 
           if state.end_group > 0 && location.group > state.end_group {
-            debug!(
+            trace!(
               "Datagram beyond end group for subscriber={} relay_track_id={} object location: {:?} end group: {}",
               self.client_connection_id, self.relay_track_id, location, state.end_group
             );
@@ -1314,7 +1312,7 @@ impl Subscription {
           }
 
           if !state.forward {
-            debug!(
+            trace!(
               "Not forwarding datagram for subscriber={} relay_track_id={}: forward state is 0",
               self.client_connection_id, self.relay_track_id
             );
@@ -1341,7 +1339,7 @@ impl Subscription {
         }
       }
       TrackEvent::StreamClosed { stream_id } => {
-        info!(
+        debug!(
           "Received StreamClosed event: subscriber={} stream_id={} relay_track_id={}",
           self.client_connection_id, stream_id, self.relay_track_id
         );
@@ -1375,12 +1373,12 @@ impl Subscription {
     header_info: HeaderInfo,
   ) -> Result<(StreamId, Arc<Mutex<TransportSendStream>>)> {
     // Handle the header information
-    debug!("Handling header: {:?}", header_info);
+    trace!("Handling header: {:?}", header_info);
     let stream_id = self.get_stream_id(&header_info);
 
     if let Ok(header_payload) = self.get_header_payload(&header_info).await {
       // hex dump the header payload
-      debug!(
+      trace!(
         "subscription::handle_object | header payload: {:?}",
         utils::bytes_to_hex(&header_payload)
       );
@@ -1412,7 +1410,7 @@ impl Subscription {
         }
       };
 
-      info!("Created stream: {}", stream_id.get_stream_id());
+      debug!("Created stream: {}", stream_id.get_stream_id());
 
       // Count every data stream opened for this subscription (PUBLISH_DONE
       // Stream Count), including subgroups that end up carrying no objects.
@@ -1440,7 +1438,7 @@ impl Subscription {
     stream_id: &StreamId,
     send_stream: Arc<Mutex<TransportSendStream>>,
   ) -> Result<()> {
-    debug!(
+    trace!(
       "Handling object relay_track_id={} location: {:?} stream_id={} diff_ms={}",
       self.relay_track_id,
       object.location,
@@ -1467,7 +1465,7 @@ impl Subscription {
 
       // uncomment to print hex dump of object bytes
       /*
-      debug!(
+      trace!(
         "subscription::handle_object | object bytes: {}",
         utils::bytes_to_hex(&object_bytes)
       );
@@ -1490,7 +1488,7 @@ impl Subscription {
           open_stream_err
         })
     } else {
-      debug!(
+      trace!(
         "Could not convert object to subgroup. stream_id: {:?} subscriber={} relay_track_id={}",
         stream_id, self.client_connection_id, self.relay_track_id
       );
@@ -1505,7 +1503,7 @@ impl Subscription {
 
   async fn handle_stream_closed(&self, stream_id: &StreamId) -> Result<()> {
     // Handle the stream closed event
-    debug!("Stream closed: {}", stream_id.get_stream_id());
+    trace!("Stream closed: {}", stream_id.get_stream_id());
 
     // remove the stream id from send_stream_last_object_ids immediately
     let mut send_stream_last_object_ids = self.send_stream_last_object_ids.write().await;
@@ -1521,7 +1519,7 @@ impl Subscription {
     let relay_track_id = self.relay_track_id;
 
     tokio::spawn(async move {
-      debug!(
+      trace!(
         "Starting graceful stream closure in background: subscriber={} stream_id={} relay_track_id={}",
         connection_id, stream_id, relay_track_id
       );
@@ -1534,12 +1532,12 @@ impl Subscription {
         );
       } else if let Ok(closed) = res {
         if closed {
-          debug!(
+          trace!(
             "handle_stream_closed | successful for subscriber={} stream_id={} relay_track_id={}",
             connection_id, stream_id, relay_track_id
           );
         } else {
-          debug!(
+          trace!(
             "handle_stream_closed | stream not found for subscriber={} stream_id={} relay_track_id={}",
             connection_id, stream_id, relay_track_id
           );

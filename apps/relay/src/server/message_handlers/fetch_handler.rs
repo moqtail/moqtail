@@ -32,7 +32,7 @@ use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use moqtail::transport::data_stream_handler::FetchRequest;
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, trace, warn};
 
 const UPSTREAM_FETCH_CHANNEL_CAPACITY: usize = 64;
 
@@ -562,7 +562,7 @@ async fn send_upstream_fetch_for_range(
         return;
       }
       Err(e) => {
-        debug!("Upstream fetch stream {} closed: {:?}", relay_request_id, e);
+        trace!("Upstream fetch stream {} closed: {:?}", relay_request_id, e);
         return;
       }
     }
@@ -817,7 +817,7 @@ pub(crate) async fn serve_fetch_stream(
                 // The downstream End Location is already settled by the time a gap
                 // is filled, so this only gets logged.
                 Ok(Some(UpstreamFetchEvent::Accepted { end_location })) => {
-                  debug!(
+                  trace!(
                     "Upstream FETCH {} for groups {}..{} accepted, end location {:?}",
                     relay_request_id, gap_start, gap_end, end_location
                   );

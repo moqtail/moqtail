@@ -45,7 +45,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::signal;
 use tokio::sync::{RwLock, mpsc, watch};
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, trace, warn};
 use tracing_subscriber::fmt::writer::MakeWriterExt;
 use tracing_subscriber::{EnvFilter, filter::LevelFilter};
 use track_manager::TrackManager;
@@ -75,7 +75,7 @@ impl Server {
 
     init_logging(&config.log_folder);
 
-    debug!("Server | App. Config.: {:?}", config);
+    trace!("Server | App. Config.: {:?}", config);
 
     Server {
       client_manager: ClientManager::new(),
@@ -212,14 +212,14 @@ impl Server {
 
     match protocol.as_deref() {
       Some(b"h3") => {
-        debug!(remote = %remote_addr, "demuxed incoming QUIC connection as WebTransport (h3)");
+        trace!(remote = %remote_addr, "demuxed incoming QUIC connection as WebTransport (h3)");
         let session_request = IncomingSessionFuture::with_quic_connecting(connecting).await?;
         Session::accept_webtransport(session_request, server)
           .await
           .map(|_| ())
       }
       Some(other) => {
-        debug!(
+        trace!(
           remote = %remote_addr,
           alpn = %String::from_utf8_lossy(other),
           "demuxed incoming QUIC connection as raw QUIC"

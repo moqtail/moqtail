@@ -106,7 +106,7 @@ export async function startAudioEncoder({
   let currentAudioGroupId = audioGroupId;
   let shouldEncode = true;
 
-  setInterval(() => {
+  const groupRolloverId = setInterval(() => {
     currentAudioGroupId += 1;
     audioObjectId = 0n;
   }, 2000);
@@ -197,6 +197,23 @@ export async function startAudioEncoder({
       if (!enabled) {
         pcmBuffer = [];
       }
+    },
+    currentGroupId: () => currentAudioGroupId,
+    stop: async () => {
+      shouldEncode = false;
+      pcmBuffer = [];
+      clearInterval(groupRolloverId);
+      audioNode.port.onmessage = null;
+      source.disconnect();
+      audioNode.disconnect();
+      if (audioEncoder && audioEncoder.state !== 'closed') {
+        try {
+          audioEncoder.close();
+        } catch {
+          // already closed
+        }
+      }
+      await audioContext.close();
     },
   };
 }
@@ -388,22 +405,29 @@ export async function startVideoEncoder({
   videoStreamController,
   publisherPriority,
   objectForwardingPreference,
+  startGroupId = 0,
 }: {
   stream: MediaStream;
   videoFullTrackName: FullTrackName;
   videoStreamController: ReadableStreamDefaultController<MoqtObject> | null;
   publisherPriority: number;
   objectForwardingPreference: ObjectForwardingPreference;
+  /**
+   * Group id to carry on from. A track outlives the encoder that feeds it -- cam off
+   * and on again is the same track -- and group ids have to keep climbing across that,
+   * so restarting at 0 would replay ids the relay and its subscribers have already seen.
+   */
+  startGroupId?: number;
 }) {
   if (!stream) {
     console.error('No stream provided to video encoder');
-    return { stop: async () => {} };
+    return { stop: async () => {}, currentGroupId: () => startGroupId };
   }
 
   let videoEncoder: VideoEncoder | null = null;
   let videoReader: ReadableStreamDefaultReader<any> | null = null;
   let encoderActive = true;
-  let videoGroupId = 0;
+  let videoGroupId = startGroupId;
   let videoObjectId = 0n;
   let isFirstKeyframeSent = false;
   let videoConfig: ArrayBuffer | null = null;
@@ -412,7 +436,6 @@ export async function startVideoEncoder({
 
   const createVideoEncoder = () => {
     isFirstKeyframeSent = false;
-    videoGroupId = 0;
     videoObjectId = 0n;
     frameCounter = 0;
     pendingVideoTimestamps.length = 0;
@@ -472,7 +495,7 @@ export async function startVideoEncoder({
   const videoTrack = stream.getVideoTracks()[0];
   if (!videoTrack) {
     console.error('No video track available in stream');
-    return { stop: async () => {} };
+    return { stop: async () => {}, currentGroupId: () => videoGroupId };
   }
 
   videoReader = new (window as any).MediaStreamTrackProcessor({
@@ -510,7 +533,7 @@ export async function startVideoEncoder({
 
   if (!videoReader) {
     console.error('Failed to create video reader');
-    return { stop: async () => {} };
+    return { stop: async () => {}, currentGroupId: () => videoGroupId };
   }
   readAndEncode(videoReader);
 
@@ -535,7 +558,7 @@ export async function startVideoEncoder({
     }
   };
 
-  return { videoEncoder, videoReader, stop };
+  return { videoEncoder, videoReader, stop, currentGroupId: () => videoGroupId };
 }
 
 const canvasWorkerMap = new WeakMap<HTMLCanvasElement, Worker>();

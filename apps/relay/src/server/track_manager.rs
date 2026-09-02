@@ -91,29 +91,6 @@ impl TrackManager {
     self.next_relay_track_id.fetch_add(1, Ordering::Relaxed)
   }
 
-  pub async fn add_track(
-    &self,
-    connection_id: usize,
-    track_alias: u64,
-    full_track_name: FullTrackName,
-    track: Track,
-  ) -> Arc<RwLock<Track>> {
-    let mut tracks = self.tracks.write().await;
-    let mut track_aliases = self.track_aliases.write().await;
-
-    let relay_track_id = track.relay_track_id;
-    let track = Arc::new(RwLock::new(track));
-    tracks.insert(full_track_name.clone(), track.clone());
-    track_aliases.insert((connection_id, track_alias), full_track_name.clone());
-
-    info!(
-      "Added track relay_track_id={} publisher_alias={}@{}: {:?}",
-      relay_track_id, track_alias, connection_id, full_track_name
-    );
-
-    track
-  }
-
   /// Updates the stored Publish message with new parameters from a RequestUpdate.
   /// This ensures that any late-joining subscribers get the correct, updated parameters.
   pub async fn update_publish_message_parameters(
@@ -187,11 +164,6 @@ impl TrackManager {
   pub async fn get_track(&self, full_track_name: &FullTrackName) -> Option<Arc<RwLock<Track>>> {
     let tracks = self.tracks.read().await;
     tracks.get(full_track_name).cloned()
-  }
-
-  pub async fn has_track(&self, full_track_name: &FullTrackName) -> bool {
-    let tracks = self.tracks.read().await;
-    tracks.contains_key(full_track_name)
   }
 
   /// Find the subscription a connection holds with the given request id, across
@@ -652,9 +624,122 @@ pub(crate) fn namespace_prefixes_overlap(a: &Tuple, b: &Tuple) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::server::config::{AppConfig, Cli};
+  use crate::server::track::{TrackOrigin, TrackStatus};
+  use clap::Parser;
 
   fn t(path: &str) -> Tuple {
     Tuple::from_utf8_path(path)
+  }
+
+  /// The relay's own defaults, leaked because Track borrows its config for 'static.
+  fn config() -> &'static AppConfig {
+    Box::leak(Box::new(AppConfig::from_cli(Cli::parse_from(["relay"]))))
+  }
+
+  fn track_name() -> FullTrackName {
+    FullTrackName::try_new("meet/room1", "video").unwrap()
+  }
+
+  /// Takes or creates the track, then registers the alias its data streams arrive
+  /// under, the way the PUBLISH handler does.
+  async fn publish(
+    manager: &TrackManager,
+    connection_id: usize,
+    track_alias: u64,
+    full_track_name: &FullTrackName,
+  ) -> (Arc<RwLock<Track>>, bool) {
+    let (track, created) = manager
+      .get_or_create_track(full_track_name, |relay_track_id| {
+        Track::new(
+          relay_track_id,
+          full_track_name.clone(),
+          config(),
+          TrackStatus::Confirmed {
+            upstream_parameters: vec![],
+          },
+          TrackOrigin::Publish,
+        )
+      })
+      .await;
+    manager
+      .add_track_alias(connection_id, track_alias, full_track_name.clone())
+      .await;
+    (track, created)
+  }
+
+  #[tokio::test]
+  async fn a_second_publisher_joins_the_track_instead_of_replacing_it() {
+    let manager = TrackManager::new();
+    let name = track_name();
+
+    let (first, first_created) = publish(&manager, 1, 10, &name).await;
+    let (second, second_created) = publish(&manager, 2, 20, &name).await;
+
+    assert!(Arc::ptr_eq(&first, &second));
+    // Only the first publisher does a first publisher's work.
+    assert!(first_created);
+    assert!(!second_created);
+    assert_eq!(manager.tracks.read().await.len(), 1);
+    // Both aliases reach that one track.
+    for (connection_id, alias) in [(1usize, 10u64), (2, 20)] {
+      let resolved = manager
+        .get_track_by_alias(connection_id, alias)
+        .await
+        .expect("alias resolves");
+      assert!(Arc::ptr_eq(&resolved, &first));
+    }
+  }
+
+  #[tokio::test]
+  async fn one_publisher_finishing_leaves_the_other_publishing() {
+    let manager = TrackManager::new();
+    let name = track_name();
+
+    let (first, _) = publish(&manager, 1, 10, &name).await;
+    first.read().await.add_publisher(1, 10).await;
+    let (second, _) = publish(&manager, 2, 20, &name).await;
+    second.read().await.add_publisher(2, 20).await;
+
+    // PUBLISH_DONE from the second publisher, resolved through the manager the way
+    // cleanup_published_track does.
+    let track = manager.get_track(&name).await.expect("track is registered");
+    if track.read().await.remove_publisher(2).await.is_some() {
+      manager.remove_publisher_alias(2, 20).await;
+    }
+    if !track.read().await.has_publishers().await {
+      manager.remove_track(&name).await;
+    }
+
+    // The first publisher is still sending.
+    assert!(manager.get_track(&name).await.is_some());
+    assert!(manager.get_track_by_alias(1, 10).await.is_some());
+    assert!(manager.get_track_by_alias(2, 20).await.is_none());
+  }
+
+  #[tokio::test]
+  async fn a_parked_data_stream_is_woken_when_its_publisher_registers() {
+    // A data stream can outrun the PUBLISH that names its alias.
+    let manager = TrackManager::new();
+    let name = track_name();
+
+    let resolver = {
+      let manager = manager.clone();
+      tokio::spawn(async move {
+        manager
+          .resolve_track_by_alias(1, 10, Duration::from_secs(30))
+          .await
+      })
+    };
+    tokio::task::yield_now().await;
+
+    publish(&manager, 1, 10, &name).await;
+
+    let resolved = tokio::time::timeout(Duration::from_secs(5), resolver)
+      .await
+      .expect("the waiter is woken by the registration, not by its timeout")
+      .expect("resolver task");
+    assert!(resolved.is_some());
   }
 
   #[test]

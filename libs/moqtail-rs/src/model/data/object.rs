@@ -92,6 +92,7 @@ impl Object {
     group_id: u64,                  // Context from SubgroupHeader
     subgroup_id: Option<u64>,       // Context from SubgroupHeader
     publisher_priority: Option<u8>, // Context from SubgroupHeader; None when using DEFAULT_PRIORITY
+    default_priority: u8,           // Used when publisher_priority is None
   ) -> Result<Self, ParseError> {
     Ok(Object {
       track_alias,
@@ -99,7 +100,7 @@ impl Object {
         group: group_id,
         object: subgroup_obj.object_id,
       },
-      publisher_priority: publisher_priority.unwrap_or(0), // Default to 0 if not specified
+      publisher_priority: publisher_priority.unwrap_or(default_priority),
       forwarding_preference: ObjectForwardingPreference::Subgroup,
       subgroup_id,
       status: subgroup_obj.object_status.unwrap_or(ObjectStatus::Normal),

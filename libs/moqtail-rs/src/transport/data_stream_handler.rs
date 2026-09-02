@@ -24,7 +24,9 @@ use tokio::time::{Instant, sleep_until};
 
 use crate::model::control::fetch::Fetch;
 use crate::model::control::subscribe::Subscribe;
-use crate::model::data::constant::{FetchHeaderType, ObjectForwardingPreference};
+use crate::model::data::constant::{
+  DEFAULT_PUBLISHER_PRIORITY, FetchHeaderType, ObjectForwardingPreference,
+};
 use crate::model::data::fetch_header::FetchHeader;
 use crate::model::data::fetch_object::{FetchObject, FetchObjectContext, FetchObjectPayload};
 use crate::model::data::object::Object;
@@ -611,6 +613,7 @@ impl RecvDataStream {
                 header.group_id,
                 header.subgroup_id,
                 header.publisher_priority,
+                DEFAULT_PUBLISHER_PRIORITY,
               )?;
               Ok((Some(object_id), None, Some(object)))
             })
@@ -859,6 +862,7 @@ mod tests {
       header.group_id,
       header.subgroup_id,
       header.publisher_priority,
+      DEFAULT_PUBLISHER_PRIORITY,
     )
     .unwrap()
   }

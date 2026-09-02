@@ -36,6 +36,13 @@ pub enum FetchHeaderType {
 ///   publisher published in the subgroup
 /// - Bit 7 (0x80): Must be 0
 ///
+/// The Publisher Priority to assume where a header omits the field, having set its
+/// DEFAULT_PRIORITY bit. A track may name its own with the DEFAULT_PUBLISHER_PRIORITY
+/// track property; this is the value for one that does not. Priority runs from 0 (most
+/// important) to 255, so a wrong default here is not a small error: 0 makes every such
+/// object outrank all others.
+pub const DEFAULT_PUBLISHER_PRIORITY: u8 = 128;
+
 /// Valid Type values are exactly the ranges 0x10-0x1F, 0x30-0x3F, 0x50-0x5F and 0x70-0x7F
 /// (bit 4 set, bit 7 clear), minus those with SUBGROUP_ID_MODE = 0b11: 0x16, 0x17, 0x1E, 0x1F,
 /// 0x36, 0x37, 0x3E, 0x3F, 0x56, 0x57, 0x5E, 0x5F, 0x76, 0x77, 0x7E, 0x7F.

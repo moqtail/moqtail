@@ -261,6 +261,16 @@ export enum SubgroupHeaderType {
 /**
  * Namespace for SubgroupHeaderType utilities and bit constants.
  */
+/**
+ * @public
+ * The Publisher Priority to assume where a header omits the field, having set its
+ * DEFAULT_PRIORITY bit. A track may name its own with the DEFAULT_PUBLISHER_PRIORITY
+ * track property; this is the value for one that does not. Priority runs from 0 (most
+ * important) to 255, so a wrong default here is not a small error: 0 makes every such
+ * object outrank all others.
+ */
+export const DEFAULT_PUBLISHER_PRIORITY = 128
+
 export namespace SubgroupHeaderType {
   /** Properties present in all objects (bit 0) */
   export const PROPERTIES = 0x01

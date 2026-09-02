@@ -18,6 +18,7 @@ import { useState, useRef, useEffect } from 'preact/hooks';
 import type { ComponentChildren } from 'preact';
 import { cn } from '@/lib/utils';
 import { LuChevronDown, LuCheck, LuLoader } from 'react-icons/lu';
+import { FilterType, GroupOrder } from 'moqtail';
 import type { Track, Status, Presets } from '@/types';
 import presets from '@/presets.json';
 import { PublisherPanel, type PublisherPanelProps } from './PublisherPanel';
@@ -315,6 +316,90 @@ function TrackGroup({
 
 type Tab = 'watch' | 'publish';
 
+export interface WireOptions {
+  catalogViaSubscribe: boolean;
+  onCatalogViaSubscribeChange: (via: boolean) => void;
+  filterType: FilterType;
+  onFilterTypeChange: (f: FilterType) => void;
+  groupOrder: GroupOrder;
+  onGroupOrderChange: (g: GroupOrder) => void;
+  logObjectProperties: boolean;
+  onLogObjectPropertiesChange: (on: boolean) => void;
+}
+
+const selectCls =
+  'w-full rounded-lg bg-neutral-900 border border-neutral-700/80 px-2 py-1.5 text-xs text-neutral-100 focus:outline-none focus:border-blue-500';
+
+/**
+ * Picks which draft-18 code paths a media session takes. Catalog retrieval in
+ * particular chooses between FETCH (delta-decoded group/object ids, TS-15) and
+ * SUBSCRIBE — the two exercise different wire changes.
+ */
+function WirePanel({ opts, disabled }: { opts: WireOptions; disabled: boolean }) {
+  return (
+    <div className="space-y-2 border-b border-white/6 p-4">
+      <span className="block text-[11px] font-semibold tracking-widest text-neutral-500 uppercase">
+        Wire options
+      </span>
+
+      <label className="flex items-center justify-between gap-2 text-xs text-neutral-300">
+        <span>Catalog via</span>
+        <select
+          disabled={disabled}
+          value={opts.catalogViaSubscribe ? 'subscribe' : 'fetch'}
+          onChange={e =>
+            opts.onCatalogViaSubscribeChange((e.target as HTMLSelectElement).value === 'subscribe')
+          }
+          className={cn(selectCls, 'w-32')}
+        >
+          <option value="subscribe">SUBSCRIBE</option>
+          <option value="fetch">FETCH</option>
+        </select>
+      </label>
+
+      <label className="flex items-center justify-between gap-2 text-xs text-neutral-300">
+        <span>Filter</span>
+        <select
+          disabled={disabled}
+          value={String(opts.filterType)}
+          onChange={e =>
+            opts.onFilterTypeChange(Number((e.target as HTMLSelectElement).value) as FilterType)
+          }
+          className={cn(selectCls, 'w-32')}
+        >
+          <option value={String(FilterType.NextGroupStart)}>NextGroupStart</option>
+          <option value={String(FilterType.LatestObject)}>LatestObject</option>
+        </select>
+      </label>
+
+      <label className="flex items-center justify-between gap-2 text-xs text-neutral-300">
+        <span>Group order</span>
+        <select
+          disabled={disabled}
+          value={String(opts.groupOrder)}
+          onChange={e =>
+            opts.onGroupOrderChange(Number((e.target as HTMLSelectElement).value) as GroupOrder)
+          }
+          className={cn(selectCls, 'w-32')}
+        >
+          <option value={String(GroupOrder.Original)}>Original</option>
+          <option value={String(GroupOrder.Ascending)}>Ascending</option>
+          <option value={String(GroupOrder.Descending)}>Descending</option>
+        </select>
+      </label>
+
+      <label className="flex cursor-pointer items-center gap-2 text-xs text-neutral-300">
+        <Checkbox
+          checked={opts.logObjectProperties}
+          disabled={disabled}
+          onChange={opts.onLogObjectPropertiesChange}
+        />
+        <span>Log Properties for every object</span>
+      </label>
+    </div>
+  );
+}
+
 function TabButton({
   active,
   onClick,
@@ -353,6 +438,8 @@ export interface SidebarProps {
   onConnect: () => void;
   onTrackChange: (track: Track, checked: boolean) => void;
   error: string | null;
+  // Wire-level knobs
+  wireOptions: WireOptions;
   // Tab
   tab: Tab;
   onTabChange: (tab: Tab) => void;
@@ -372,6 +459,7 @@ export function Sidebar({
   onConnect,
   onTrackChange,
   error,
+  wireOptions,
   tab,
   onTabChange,
   publishProps,
@@ -452,6 +540,8 @@ export function Sidebar({
               </p>
             )}
           </form>
+
+          <WirePanel opts={wireOptions} disabled={isBusy} />
 
           {/* Tracks */}
           {hasTracks && (

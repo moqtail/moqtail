@@ -21,7 +21,7 @@ use moqtail::{
   },
   transport::control_stream_handler::ControlStreamHandler,
 };
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::server::{
   client::MOQTClient,
@@ -100,12 +100,30 @@ impl MessageHandler {
         .await
       }
 
-      // A response is read on the request's own bidi stream; reaching the control
-      // stream is a disallowed action.
-      ControlMessage::RequestOk(_)
-      | ControlMessage::RequestError(_)
-      | ControlMessage::SubscribeOk(_)
-      | ControlMessage::FetchOk(_) => {
+      // A response belongs on a request's own bidi stream, never on the control
+      // stream. On a request stream it is the peer answering something the relay
+      // asked there — REQUEST_UPDATE raising a publisher's Forward State is the
+      // one that arrives here — and the request is already resolved by the time
+      // it lands, so there is nothing left to do but let the stream continue.
+      ControlMessage::RequestOk(_) | ControlMessage::RequestError(_) => match opening_request_id {
+        Some(request_id) => {
+          debug!(
+            "{:?} answering relay request {} on its own stream",
+            msg.get_type(),
+            request_id
+          );
+          Ok(())
+        }
+        None => {
+          warn!(
+            "{:?} on the control stream; closing session",
+            msg.get_type()
+          );
+          Err(TerminationCode::ProtocolViolation)
+        }
+      },
+
+      ControlMessage::SubscribeOk(_) | ControlMessage::FetchOk(_) => {
         warn!(
           "{:?} on the control stream; closing session",
           msg.get_type()

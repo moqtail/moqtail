@@ -63,8 +63,18 @@ export enum ObjectDatagramType {
  * Namespace for ObjectDatagramType utilities.
  */
 export namespace ObjectDatagramType {
+  /** Properties field present (bit 0). */
+  export const PROPERTIES = 0x01
+  /** Last object in the group (bit 1). */
+  export const END_OF_GROUP = 0x02
+  /** Object ID omitted, taken as 0 (bit 2). */
+  export const ZERO_OBJECT_ID = 0x04
+  /** Publisher Priority omitted, taken from the subscription (bit 3). */
+  export const DEFAULT_PRIORITY = 0x08
+  /** Carries an object status rather than a payload (bit 5). */
+  export const STATUS = 0x20
   /** Mask for bits that must be zero: bits 4, 6, 7 (form `0b00X0XXXX`). */
-  const INVALID_BITS_MASK = 0xd0
+  export const INVALID_BITS_MASK = 0xd0
 
   /**
    * Converts a number or bigint to ObjectDatagramType.
@@ -90,7 +100,7 @@ export namespace ObjectDatagramType {
    * @param t - The ObjectDatagramType.
    */
   export function hasProperties(t: ObjectDatagramType): boolean {
-    return (t & 0x01) !== 0
+    return (t & PROPERTIES) !== 0
   }
 
   /**
@@ -98,7 +108,7 @@ export namespace ObjectDatagramType {
    * @param t - The ObjectDatagramType.
    */
   export function isEndOfGroup(t: ObjectDatagramType): boolean {
-    return (t & 0x02) !== 0
+    return (t & END_OF_GROUP) !== 0
   }
 
   /**
@@ -107,7 +117,7 @@ export namespace ObjectDatagramType {
    * @param t - The ObjectDatagramType.
    */
   export function isZeroObjectId(t: ObjectDatagramType): boolean {
-    return (t & 0x04) !== 0
+    return (t & ZERO_OBJECT_ID) !== 0
   }
 
   /**
@@ -116,7 +126,7 @@ export namespace ObjectDatagramType {
    * @param t - The ObjectDatagramType.
    */
   export function hasDefaultPriority(t: ObjectDatagramType): boolean {
-    return (t & 0x08) !== 0
+    return (t & DEFAULT_PRIORITY) !== 0
   }
 
   /**
@@ -124,7 +134,7 @@ export namespace ObjectDatagramType {
    * @param t - The ObjectDatagramType.
    */
   export function isStatus(t: ObjectDatagramType): boolean {
-    return (t & 0x20) !== 0
+    return (t & STATUS) !== 0
   }
 
   /**
@@ -435,6 +445,81 @@ export namespace ObjectStatus {
 
 if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
+
+  // The type bytes are checked against dev/conformance/draft18/data_stream_types.json,
+  // which is shared with moqtail-rs. The bit layout and the set of accepted bytes live
+  // there, not in this file.
+  describe('data stream type conformance', () => {
+    const fixture = async () => await import('../../../test/conformance')
+
+    test('SubgroupHeaderType bits match the fixture', async () => {
+      const { dataStreamTypes, bitMask } = await fixture()
+      const t = dataStreamTypes().subgroup_header
+      expect(bitMask(t, 'PROPERTIES')).toBe(SubgroupHeaderType.PROPERTIES)
+      expect(bitMask(t, 'SUBGROUP_ID_MODE')).toBe(SubgroupHeaderType.SUBGROUP_ID_MODE_MASK)
+      expect(bitMask(t, 'END_OF_GROUP')).toBe(SubgroupHeaderType.END_OF_GROUP)
+      expect(bitMask(t, 'REQUIRED')).toBe(SubgroupHeaderType.REQUIRED_BIT)
+      expect(bitMask(t, 'DEFAULT_PRIORITY')).toBe(SubgroupHeaderType.DEFAULT_PRIORITY)
+      expect(bitMask(t, 'FIRST_OBJECT')).toBe(SubgroupHeaderType.FIRST_OBJECT)
+    })
+
+    test('SubgroupHeaderType accepts exactly the fixture bytes', async () => {
+      const { dataStreamTypes, validBytes } = await fixture()
+      const valid = validBytes(dataStreamTypes().subgroup_header)
+      for (let b = 0; b <= 0xff; b++) {
+        let accepted = true
+        try {
+          SubgroupHeaderType.tryFrom(b)
+        } catch {
+          accepted = false
+        }
+        expect([b, accepted]).toEqual([b, valid.includes(b)])
+      }
+    })
+
+    test('subgroup id modes match the fixture', async () => {
+      const { dataStreamTypes, parseHex } = await fixture()
+      const t = dataStreamTypes().subgroup_header
+      for (const mode of t.subgroup_id_modes ?? []) {
+        const bits = Number(parseHex(mode.value))
+        const byte = SubgroupHeaderType.REQUIRED_BIT | bits
+        if (mode.reserved) {
+          expect(() => SubgroupHeaderType.tryFrom(byte)).toThrow()
+          continue
+        }
+        const parsed = SubgroupHeaderType.tryFrom(byte)
+        if (mode.name === 'ZERO') expect(SubgroupHeaderType.isSubgroupIdZero(parsed)).toBe(true)
+        else if (mode.name === 'FIRST_OBJECT_ID')
+          expect(SubgroupHeaderType.isSubgroupIdFirstObjectId(parsed)).toBe(true)
+        else if (mode.name === 'EXPLICIT') expect(SubgroupHeaderType.hasExplicitSubgroupId(parsed)).toBe(true)
+        else throw new Error(`fixture names an unknown subgroup id mode ${mode.name}`)
+      }
+    })
+
+    test('ObjectDatagramType bits match the fixture', async () => {
+      const { dataStreamTypes, bitMask } = await fixture()
+      const t = dataStreamTypes().object_datagram
+      expect(bitMask(t, 'PROPERTIES')).toBe(ObjectDatagramType.PROPERTIES)
+      expect(bitMask(t, 'END_OF_GROUP')).toBe(ObjectDatagramType.END_OF_GROUP)
+      expect(bitMask(t, 'ZERO_OBJECT_ID')).toBe(ObjectDatagramType.ZERO_OBJECT_ID)
+      expect(bitMask(t, 'DEFAULT_PRIORITY')).toBe(ObjectDatagramType.DEFAULT_PRIORITY)
+      expect(bitMask(t, 'STATUS')).toBe(ObjectDatagramType.STATUS)
+    })
+
+    test('ObjectDatagramType accepts exactly the fixture bytes', async () => {
+      const { dataStreamTypes, validBytes } = await fixture()
+      const valid = validBytes(dataStreamTypes().object_datagram)
+      for (let b = 0; b <= 0xff; b++) {
+        let accepted = true
+        try {
+          ObjectDatagramType.tryFrom(b)
+        } catch {
+          accepted = false
+        }
+        expect([b, accepted]).toEqual([b, valid.includes(b)])
+      }
+    })
+  })
   describe('SubgroupHeaderType', () => {
     // Draft-18 form 0b0XX1XXXX, minus the reserved SUBGROUP_ID_MODE 0b11.
     const isValid = (b: number) => (b & 0x80) === 0 && (b & 0x10) !== 0 && (b & 0x06) !== 0x06

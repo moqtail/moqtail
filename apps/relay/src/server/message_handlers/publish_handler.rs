@@ -130,59 +130,69 @@ pub async fn handle(
         }
       }
 
-      if !context.track_manager.has_track(&full_track_name).await {
-        info!(
-          "Track not found, creating new track for publisher alias={}",
-          m.track_alias
-        );
-        let relay_track_id = context.track_manager.generate_relay_track_id();
-        let track = Track::new(
-          relay_track_id,
-          full_track_name.clone(),
-          context.server_config,
-          TrackStatus::Confirmed {
-            upstream_parameters: vec![],
-          },
-          TrackOrigin::Publish,
-        );
-        let track_arc = context
-          .track_manager
-          .add_track(
-            context.connection_id,
-            m.track_alias,
+      // Several publishers may share a track. Taking or creating it under one lock
+      // gives every one of them the same Track, and tells exactly one that it is first.
+      let (track_arc, created) = context
+        .track_manager
+        .get_or_create_track(&full_track_name, |relay_track_id| {
+          Track::new(
+            relay_track_id,
             full_track_name.clone(),
-            track,
-          )
-          .await;
-        {
-          let track = track_arc.write().await;
-          track
-            .add_publisher(context.connection_id, track_alias)
-            .await;
-          track.set_track_properties(m.track_properties.clone()).await;
-        }
-
-        client
-          .add_published_track(request_id, full_track_name.clone())
-          .await;
-
-        // register this publish message
-        context
-          .track_manager
-          .add_publish_message(full_track_name.clone(), context.connection_id, (*m).clone())
-          .await;
-
-        {
-          let mut map = client.inbound_requests.write().await;
-          map.insert(
-            request_id,
-            PendingRequest::Publish {
-              publisher_connection_id: context.connection_id,
-              original_request_id: request_id,
-              message: (*m).clone(),
+            context.server_config,
+            TrackStatus::Confirmed {
+              upstream_parameters: vec![],
             },
-          );
-        }
+            TrackOrigin::Publish,
+          )
+        })
+        .await;
+
+      // Wakes any data stream already parked waiting for this alias.
+      context
+        .track_manager
+        .add_track_alias(context.connection_id, track_alias, full_track_name.clone())
+        .await;
+
+      track_arc
+        .write()
+        .await
+        .add_publisher(context.connection_id, track_alias)
+        .await;
+
+      client
+        .add_published_track(request_id, full_track_name.clone())
+        .await;
+
+      // Raising the Forward State later needs the request id this arrived on.
+      context
+        .track_manager
+        .add_publish_message(full_track_name.clone(), context.connection_id, (*m).clone())
+        .await;
+
+      // A REQUEST_UPDATE for this publisher is resolved out of this map.
+      {
+        let mut map = client.inbound_requests.write().await;
+        map.insert(
+          request_id,
+          PendingRequest::Publish {
+            publisher_connection_id: context.connection_id,
+            original_request_id: request_id,
+            message: (*m).clone(),
+          },
+        );
+      }
+
+      if created {
+        info!(
+          "Created track for publisher alias={}: {:?}",
+          track_alias, full_track_name
+        );
+        // A track's properties come from the publisher that created it.
+        track_arc
+          .write()
+          .await
+          .set_track_properties(m.track_properties.clone())
+          .await;
 
         let subscribers = context
           .track_manager
@@ -226,36 +236,9 @@ pub async fn handle(
           .await;
         }
       } else {
-        // Another publisher for the same track with a different alias.
-        // Register their alias so their data stream can be routed to the existing track.
-        context
-          .track_manager
-          .add_track_alias(
-            context.connection_id,
-            m.track_alias,
-            full_track_name.clone(),
-          )
-          .await;
-        if let Some(track_arc) = context.track_manager.get_track(&full_track_name).await {
-          track_arc
-            .write()
-            .await
-            .add_publisher(context.connection_id, m.track_alias)
-            .await;
-        }
-        client
-          .add_published_track(request_id, full_track_name.clone())
-          .await;
-        // Store this publisher's PUBLISH too. Raising the Forward State later needs the
-        // request id it arrived on, and without it this publisher is skipped and never
-        // told to start sending.
-        context
-          .track_manager
-          .add_publish_message(full_track_name.clone(), context.connection_id, (*m).clone())
-          .await;
         info!(
           "Additional publisher for existing track {:?}/{}: registered alias {}",
-          m.track_namespace, m.track_name, m.track_alias
+          m.track_namespace, m.track_name, track_alias
         );
       }
 

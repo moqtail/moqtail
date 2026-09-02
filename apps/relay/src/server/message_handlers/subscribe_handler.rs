@@ -438,13 +438,19 @@ async fn handle_subscribe_message(
     })
     .await;
 
-  let track = track_arc.read().await;
+  // Scoped so the guard is gone before anything below reaches for this lock again.
+  // tokio's RwLock is not reentrant and hands the lock to a queued writer first, so a
+  // task that reads twice deadlocks against itself the moment a writer arrives in
+  // between -- and it stays holding the first guard, wedging the track for everyone.
+  let subscription_added = {
+    let track = track_arc.read().await;
+    add_subscription(sub.clone(), &track, client.clone(), is_switch).await
+  };
 
   // An endpoint may hold only one subscription per track in a given role. A SWITCH is
   // the exception: it deliberately reuses the existing subscription, and the failure
   // here is how it hands over.
-  if !add_subscription(sub.clone(), &track, client.clone(), is_switch).await && !is_switch {
-    drop(track);
+  if !subscription_added && !is_switch {
     info!(
       "Rejecting SUBSCRIBE from {} for {:?}: already subscribed",
       context.connection_id, &full_track_name
@@ -748,8 +754,11 @@ async fn handle_subscribe_ok_message(
 
   // Send SubscribeOk to ALL pending subscribers
   {
-    let track = track_arc.read().await;
+    // Released before the loop: the loop reads this same lock again, and a second read
+    // taken while the first is still held deadlocks against any writer queued between
+    // them.
     let pending = {
+      let track = track_arc.read().await;
       let mut pending = track.pending_subscribers.write().await;
       std::mem::take(&mut *pending)
     };
@@ -781,8 +790,14 @@ async fn handle_subscribe_ok_message(
             "no request stream for pending subscriber request {}",
             subscriber_request_id
           );
-        } else if let Some(subscription) = track.get_subscription(subscriber.connection_id).await {
-          subscription.read().await.mark_alias_announced();
+        } else {
+          let subscription = {
+            let track = track_arc.read().await;
+            track.get_subscription(subscriber.connection_id).await
+          };
+          if let Some(subscription) = subscription {
+            subscription.read().await.mark_alias_announced();
+          }
         }
       }
     }

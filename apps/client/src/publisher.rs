@@ -30,6 +30,7 @@ use moqtail::model::control::publish_namespace::PublishNamespace;
 use moqtail::model::control::request_error::RequestError;
 use moqtail::model::control::request_ok::RequestOk;
 use moqtail::model::control::subscribe_ok::SubscribeOk;
+use moqtail::model::data::constant::DEFAULT_PUBLISHER_PRIORITY;
 use moqtail::model::data::datagram::Datagram;
 use moqtail::model::data::fetch_header::FetchHeader;
 use moqtail::model::data::object::Object;
@@ -474,6 +475,7 @@ async fn send_fetch_objects(
         group_id,
         Some(group_id),
         Some(config.publisher_priority),
+        DEFAULT_PUBLISHER_PRIORITY,
       )?;
       handler.send_object(&object, None).await?;
       sent += 1;
@@ -746,8 +748,14 @@ async fn send_via_streams(
         object_status: None,
         payload: Some(Bytes::from(payload)),
       };
-      let object =
-        Object::try_from_subgroup(subgroup_obj, track_alias, group_id, Some(group_id), Some(1))?;
+      let object = Object::try_from_subgroup(
+        subgroup_obj,
+        track_alias,
+        group_id,
+        Some(group_id),
+        Some(1),
+        DEFAULT_PUBLISHER_PRIORITY,
+      )?;
 
       match handler.send_object(&object, prev_object_id).await {
         Ok(_) => {

@@ -36,6 +36,13 @@ pub enum FetchHeaderType {
 ///   publisher published in the subgroup
 /// - Bit 7 (0x80): Must be 0
 ///
+/// The Publisher Priority to assume where a header omits the field, having set its
+/// DEFAULT_PRIORITY bit. A track may name its own with the DEFAULT_PUBLISHER_PRIORITY
+/// track property; this is the value for one that does not. Priority runs from 0 (most
+/// important) to 255, so a wrong default here is not a small error: 0 makes every such
+/// object outrank all others.
+pub const DEFAULT_PUBLISHER_PRIORITY: u8 = 128;
+
 /// Valid Type values are exactly the ranges 0x10-0x1F, 0x30-0x3F, 0x50-0x5F and 0x70-0x7F
 /// (bit 4 set, bit 7 clear), minus those with SUBGROUP_ID_MODE = 0b11: 0x16, 0x17, 0x1E, 0x1F,
 /// 0x36, 0x37, 0x3E, 0x3F, 0x56, 0x57, 0x5E, 0x5F, 0x76, 0x77, 0x7E, 0x7F.
@@ -323,6 +330,115 @@ impl TryFrom<u64> for ObjectDatagramType {
 impl From<ObjectDatagramType> for u64 {
   fn from(dtype: ObjectDatagramType) -> Self {
     dtype.0 as u64
+  }
+}
+
+#[cfg(test)]
+mod data_stream_type_conformance {
+  //! The type bytes are checked against `dev/conformance/draft18/data_stream_types.json`,
+  //! which is shared with moqtail-ts. The bit layout and the set of accepted bytes live
+  //! there, not in this file.
+
+  use super::*;
+  use crate::conformance;
+
+  #[test]
+  fn subgroup_header_bits_match_the_fixture() {
+    let fixture = conformance::data_stream_types().subgroup_header;
+    assert_eq!(fixture.mask("PROPERTIES"), SubgroupHeaderType::PROPERTIES);
+    assert_eq!(
+      fixture.mask("SUBGROUP_ID_MODE"),
+      SubgroupHeaderType::SUBGROUP_ID_MODE_MASK
+    );
+    assert_eq!(
+      fixture.mask("END_OF_GROUP"),
+      SubgroupHeaderType::END_OF_GROUP
+    );
+    assert_eq!(fixture.mask("REQUIRED"), SubgroupHeaderType::REQUIRED_BIT);
+    assert_eq!(
+      fixture.mask("DEFAULT_PRIORITY"),
+      SubgroupHeaderType::DEFAULT_PRIORITY
+    );
+    assert_eq!(
+      fixture.mask("FIRST_OBJECT"),
+      SubgroupHeaderType::FIRST_OBJECT
+    );
+  }
+
+  #[test]
+  fn subgroup_header_accepts_exactly_the_fixture_bytes() {
+    let valid = conformance::data_stream_types()
+      .subgroup_header
+      .valid_bytes();
+    for byte in 0u16..=0xff {
+      let byte = byte as u8;
+      let accepted = SubgroupHeaderType::try_new(byte as u64).is_ok();
+      assert_eq!(
+        accepted,
+        valid.contains(&byte),
+        "type {byte:#04x}: accepted={accepted}, fixture lists it={}",
+        valid.contains(&byte)
+      );
+    }
+  }
+
+  #[test]
+  fn subgroup_id_modes_match_the_fixture() {
+    let fixture = conformance::data_stream_types().subgroup_header;
+    for mode in &fixture.subgroup_id_modes {
+      let bits = mode.codepoint() as u8;
+      if mode.reserved {
+        // A reserved mode has no representable type, so nothing to interrogate.
+        assert!(
+          SubgroupHeaderType::try_new((SubgroupHeaderType::REQUIRED_BIT | bits) as u64).is_err()
+        );
+        continue;
+      }
+      let t = SubgroupHeaderType::try_new((SubgroupHeaderType::REQUIRED_BIT | bits) as u64)
+        .expect("fixture mode must produce a valid type");
+      match mode.name.as_str() {
+        "ZERO" => assert!(t.subgroup_id_is_zero()),
+        "FIRST_OBJECT_ID" => assert!(t.subgroup_id_is_first_object_id()),
+        "EXPLICIT" => assert!(t.has_explicit_subgroup_id()),
+        other => panic!("fixture names an unknown subgroup id mode {other:?}"),
+      }
+    }
+  }
+
+  #[test]
+  fn object_datagram_bits_match_the_fixture() {
+    let fixture = conformance::data_stream_types().object_datagram;
+    assert_eq!(fixture.mask("PROPERTIES"), ObjectDatagramType::PROPERTIES);
+    assert_eq!(
+      fixture.mask("END_OF_GROUP"),
+      ObjectDatagramType::END_OF_GROUP
+    );
+    assert_eq!(
+      fixture.mask("ZERO_OBJECT_ID"),
+      ObjectDatagramType::ZERO_OBJECT_ID
+    );
+    assert_eq!(
+      fixture.mask("DEFAULT_PRIORITY"),
+      ObjectDatagramType::DEFAULT_PRIORITY
+    );
+    assert_eq!(fixture.mask("STATUS"), ObjectDatagramType::STATUS);
+  }
+
+  #[test]
+  fn object_datagram_accepts_exactly_the_fixture_bytes() {
+    let valid = conformance::data_stream_types()
+      .object_datagram
+      .valid_bytes();
+    for byte in 0u16..=0xff {
+      let byte = byte as u8;
+      let accepted = ObjectDatagramType::try_new(byte as u64).is_ok();
+      assert_eq!(
+        accepted,
+        valid.contains(&byte),
+        "type {byte:#04x}: accepted={accepted}, fixture lists it={}",
+        valid.contains(&byte)
+      );
+    }
   }
 }
 

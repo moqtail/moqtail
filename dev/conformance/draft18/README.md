@@ -20,6 +20,7 @@ be diffed against the draft without reading any code.
 | `stream_reset_codes.json`  | §3.3.3, §15.10.4 Table 20                                           |
 | `request_error_codes.json` | §15.10.2 Table 18                                                   |
 | `termination_codes.json`   | §15.10.1 Table 17                                                   |
+| `data_stream_types.json`   | §9.2.1, §9.2.2 — the object datagram and subgroup header type bytes |
 
 ## Conventions
 

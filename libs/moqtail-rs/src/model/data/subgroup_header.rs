@@ -201,6 +201,7 @@ impl SubgroupHeader {
 mod tests {
 
   use super::*;
+  use crate::model::data::constant::DEFAULT_PUBLISHER_PRIORITY;
   use bytes::Buf;
 
   #[test]
@@ -696,6 +697,7 @@ mod tests {
       header.group_id,
       header.subgroup_id,
       header.publisher_priority,
+      DEFAULT_PUBLISHER_PRIORITY,
     )
     .unwrap();
 
@@ -732,6 +734,7 @@ mod tests {
       header.group_id,
       header.subgroup_id,
       header.publisher_priority,
+      DEFAULT_PUBLISHER_PRIORITY,
     )
     .unwrap();
 
@@ -764,6 +767,7 @@ mod tests {
       header.group_id,
       header.subgroup_id, // This should be None, meaning subgroup_id = first object ID
       header.publisher_priority,
+      DEFAULT_PUBLISHER_PRIORITY,
     )
     .unwrap();
 

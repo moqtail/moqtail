@@ -24,7 +24,7 @@ use core::result::Result;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::control::{
   constant::GroupOrder, control_message::ControlMessage, publish::Publish,
-  request_error::RequestError, request_ok::RequestOk,
+  request_error::RequestError, request_ok::RequestOk, request_update::RequestUpdate,
 };
 use moqtail::model::error::{RequestErrorCode, TerminationCode};
 use moqtail::model::parameter::constant::MessageParameterType;
@@ -549,18 +549,32 @@ pub(crate) async fn push_track_to_subscriber(
   let subscription = track.get_subscription(subscriber.connection_id).await;
   drop(track);
 
+  // The subscription this just created is what wants Objects, so the publisher has
+  // to be told to send. Taken after the read guard above is dropped: this reaches
+  // for the same lock, and a writer queued between the two would deadlock a
+  // recursive read.
+  ensure_upstream_forwarding(track_arc, context).await;
+
   // Each PUBLISH is a request on its own bidi stream.
+  let track_arc = track_arc.clone();
+  let context = context.clone();
   tokio::spawn(async move {
-    forward_publish_downstream(subscriber, downstream, subscription).await;
+    forward_publish_downstream(subscriber, downstream, subscription, track_arc, context).await;
   });
 }
 
-/// Push a PUBLISH to a subscriber on its own bidirectional request stream and read the
-/// PUBLISH_OK (or REQUEST_ERROR) there; a rejection is logged.
+/// Push a PUBLISH to a subscriber on its own bidirectional request stream and serve
+/// that request there for as long as it lives: the PUBLISH_OK (or REQUEST_ERROR) comes
+/// back on it, and PUBLISH_DONE goes out on it at the end. The stream is registered as
+/// the request's response channel, because a PUBLISH the relay originates has no other
+/// route to its subscriber — without it the subscription's PUBLISH_DONE is dropped and
+/// the subscriber waits for an end that never arrives.
 pub(crate) async fn forward_publish_downstream(
   subscriber: Arc<MOQTClient>,
   publish: Publish,
   subscription: Option<Arc<RwLock<Subscription>>>,
+  track_arc: Arc<RwLock<Track>>,
+  context: Arc<SessionContext>,
 ) {
   let (send, recv) = match subscriber.connection.open_bi().await {
     Ok(streams) => streams,
@@ -570,39 +584,112 @@ pub(crate) async fn forward_publish_downstream(
     }
   };
   let mut stream = ControlStreamHandler::new(send, recv).with_peer_id(subscriber.connection_id);
+  let publish_request_id = publish.request_id;
+
+  // Registered before the PUBLISH goes out, so nothing sent in response to it can
+  // race ahead of the channel that carries it.
+  let (response_tx, mut response_rx) = tokio::sync::mpsc::unbounded_channel();
+  subscriber
+    .register_response_sender(publish_request_id, response_tx)
+    .await;
+
   if let Err(e) = stream
     .send(&ControlMessage::Publish(Box::new(publish)))
     .await
   {
     error!("Failed to push PUBLISH downstream: {:?}", e);
+    subscriber
+      .unregister_response_sender(publish_request_id)
+      .await;
     return;
   }
 
-  // The subscription is now live and can forward Objects; the PUBLISH_OK
-  // (or REQUEST_ERROR) is just a status message and doesn't affect the subscription.
+  // The subscription is live from here: Objects may flow before the PUBLISH_OK
+  // arrives, and the parameters it carries are applied to it when it does.
   if let Some(subscription) = &subscription {
     subscription.read().await.mark_alias_announced();
   }
 
-  match stream.next_message().await {
-    Ok(ControlMessage::RequestOk(_)) => {
-      info!(
-        "Pushed PUBLISH accepted by subscriber {}",
-        subscriber.connection_id
-      );
+  loop {
+    tokio::select! {
+      biased;
+      outgoing = response_rx.recv() => {
+        let Some(msg) = outgoing else {
+          break;
+        };
+        // PUBLISH_DONE is the last word the relay has on this request, but the
+        // stream is not torn down on the strength of that: closing it here races
+        // the subscriber's read of the message just written, and the subscriber is
+        // the one that knows when it is done with the request.
+        let ends_request = matches!(msg, ControlMessage::PublishDone(_));
+        if let Err(e) = stream.send(&msg).await {
+          warn!(
+            "Failed to write {:?} to subscriber {}: {:?}",
+            msg.get_type(),
+            subscriber.connection_id,
+            e
+          );
+          break;
+        }
+        if ends_request {
+          // FIN now so the subscriber sees the end of the request, then keep
+          // reading until it closes its half.
+          stream.finish().await;
+        }
+      }
+      incoming = stream.next_message() => {
+        match incoming {
+        Ok(ControlMessage::RequestOk(m)) => {
+          info!(
+            "Pushed PUBLISH accepted by subscriber {}",
+            subscriber.connection_id
+          );
+
+          // A PUBLISH_OK answers with the subscription the subscriber actually wants:
+          // its Forward State, priority, group order and filter. Those carry the same
+          // meaning as in REQUEST_UPDATE, so they are applied the same way. Dropping
+          // them left the subscriber on whatever the relay guessed from SUBSCRIBE_TRACKS.
+          if !m.parameters.is_empty()
+            && let Some(subscription) = &subscription
+          {
+            let update = RequestUpdate::new(publish_request_id, m.parameters.clone());
+            if let Err(e) = subscription.read().await.update_subscription(update).await {
+              warn!(
+                "Subscriber {} sent PUBLISH_OK parameters that do not apply: {:?}",
+                subscriber.connection_id, e
+              );
+            }
+          }
+
+          // The PUBLISH_OK may be what turns this subscriber's Forward State on, in
+          // which case it is the first thing wanting Objects from the track.
+          ensure_upstream_forwarding(&track_arc, &context).await;
+        }
+        Ok(ControlMessage::RequestError(m)) => {
+          warn!(
+            "Subscriber {} rejected pushed PUBLISH: {:?}",
+            subscriber.connection_id, m.error_code
+          );
+        }
+        Ok(other) => warn!(
+          "Unexpected {:?} on downstream publish stream",
+          other.get_type()
+        ),
+          Err(_) => {
+            debug!("Downstream publish stream closed");
+            break;
+          }
+        }
+      }
     }
-    Ok(ControlMessage::RequestError(m)) => {
-      warn!(
-        "Subscriber {} rejected pushed PUBLISH: {:?}",
-        subscriber.connection_id, m.error_code
-      );
-    }
-    Ok(other) => warn!(
-      "Unexpected {:?} on downstream publish stream",
-      other.get_type()
-    ),
-    Err(_) => debug!("Downstream publish stream closed"),
   }
+
+  // FIN rather than drop: anything already written is still in flight, and
+  // dropping the handler would reset the stream out from under it.
+  stream.finish().await;
+  subscriber
+    .unregister_response_sender(publish_request_id)
+    .await;
 }
 
 /// Validates if the client is authorized to publish to the given track namespace

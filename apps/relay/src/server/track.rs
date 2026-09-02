@@ -25,6 +25,7 @@ use anyhow::Result;
 use moqtail::model::common::location::Location;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::control::constant::PublishDoneStatusCode;
+use moqtail::model::data::constant::DEFAULT_PUBLISHER_PRIORITY;
 use moqtail::model::data::datagram::Datagram;
 use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::model::data::object::Object;
@@ -459,6 +460,22 @@ impl Track {
     Ok(())
   }
 
+  /// The Publisher Priority to assume for this track's objects whose header omits
+  /// the field. A publisher may name it with the DEFAULT_PUBLISHER_PRIORITY track
+  /// property; without one, the protocol's own default stands.
+  pub async fn default_publisher_priority(&self) -> u8 {
+    self
+      .track_properties
+      .read()
+      .await
+      .iter()
+      .find_map(|p| match p {
+        TrackProperty::DefaultPublisherPriority { priority } => Some(*priority),
+        _ => None,
+      })
+      .unwrap_or(DEFAULT_PUBLISHER_PRIORITY)
+  }
+
   pub async fn new_datagram(&self, datagram: &Datagram) -> Result<(), anyhow::Error> {
     debug!(
       "new_datagram: relay_track_id={} group: {:?} object_id={} diff_ms={}",
@@ -468,7 +485,7 @@ impl Track {
       utils::passed_time_since_start()
     );
 
-    match Object::try_from_datagram(datagram.clone(), 0) {
+    match Object::try_from_datagram(datagram.clone(), self.default_publisher_priority().await) {
       Ok((object, end_of_group)) => {
         if self.is_duplicate(&object.location) {
           debug!(

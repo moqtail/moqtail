@@ -17,7 +17,7 @@ use crate::server::client::switch_context::SwitchStatus;
 use crate::server::message_handlers::parameters;
 use crate::server::session::Session;
 use crate::server::session_context::{PendingRequest, SessionContext};
-use crate::server::track::{Track, TrackOrigin, TrackStatus};
+use crate::server::track::{Track, TrackOrigin, TrackStatus, await_publisher_streams};
 use core::result::Result;
 use moqtail::model::control::constant::PublishDoneStatusCode;
 use moqtail::model::control::publish_done::PublishDone;
@@ -200,14 +200,27 @@ async fn upstream_subscribe_exchange(
               m.status_code,
               m.reason_phrase.as_str()
             );
-            if let Some(track) = context.track_manager.get_track(&full_track_name).await
-              && let Err(e) = track
+            if let Some(track) = context.track_manager.get_track(&full_track_name).await {
+              // The message overtakes the data streams it accounts for, so hold it
+              // until its Stream Count of them has finished arriving. Passing it on
+              // first closes the downstream streams mid-object and understates the
+              // Stream Count the relay reports in turn.
+              await_publisher_streams(
+                &track,
+                publisher.connection_id,
+                m.stream_count,
+                context.server_config.publish_done_stream_timeout,
+              )
+              .await;
+
+              if let Err(e) = track
                 .read()
                 .await
                 .notify_publish_done(m.status_code, m.reason_phrase.as_str().to_string())
                 .await
-            {
-              error!("Failed to relay upstream PUBLISH_DONE downstream: {:?}", e);
+              {
+                error!("Failed to relay upstream PUBLISH_DONE downstream: {:?}", e);
+              }
             }
             return;
           }

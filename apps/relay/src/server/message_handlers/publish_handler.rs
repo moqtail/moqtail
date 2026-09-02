@@ -18,7 +18,7 @@ use crate::server::session::Session;
 use crate::server::session_context::PendingRequest;
 use crate::server::session_context::SessionContext;
 use crate::server::subscription::Subscription;
-use crate::server::track::{Track, TrackOrigin, TrackStatus};
+use crate::server::track::{Track, TrackOrigin, TrackStatus, await_publisher_streams};
 use crate::server::track_manager::SubscribeKind;
 use core::result::Result;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
@@ -312,6 +312,13 @@ pub async fn handle(
         "Received PublishDone message for request ID: {} with status: {:?}",
         publisher_req_id, m.status_code
       );
+
+      // PUBLISH_DONE rides the request stream, which overtakes the data streams it
+      // accounts for. Tearing the track down now would close the downstream streams
+      // out from under objects still arriving, and would hand subscribers a Stream
+      // Count for streams the relay has yet to open. Its own Stream Count says how
+      // many the publisher opened, so wait for that many to finish first.
+      wait_for_publisher_streams(&client, publisher_req_id, m.stream_count, &context).await;
 
       // Clean up the published track
       cleanup_published_track(&client, publisher_req_id, &context).await;
@@ -706,6 +713,38 @@ async fn validate_publish_authorization(
 
   // For now, allow all publishes (this should be replaced with actual auth logic)
   true
+}
+
+/// Resolves the track this PUBLISH_DONE ends, then waits for the data streams it
+/// accounts for to finish arriving.
+async fn wait_for_publisher_streams(
+  client: &Arc<MOQTClient>,
+  request_id: u64,
+  stream_count: u64,
+  context: &Arc<SessionContext>,
+) {
+  if stream_count == 0 {
+    return;
+  }
+
+  let full_track_name = {
+    let published_tracks = client.published_tracks.read().await;
+    published_tracks.get(&request_id).cloned()
+  };
+  let Some(full_track_name) = full_track_name else {
+    return;
+  };
+  let Some(track_arc) = context.track_manager.get_track(&full_track_name).await else {
+    return;
+  };
+
+  await_publisher_streams(
+    &track_arc,
+    client.connection_id,
+    stream_count,
+    context.server_config.publish_done_stream_timeout,
+  )
+  .await;
 }
 
 /// Cleans up resources associated with a published track.

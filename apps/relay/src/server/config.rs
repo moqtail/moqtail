@@ -140,6 +140,12 @@ pub struct Cli {
   /// queue meanwhile; once it elapses they are forwarded regardless.
   #[arg(long, default_value_t = 3000)]
   pub downstream_alias_timeout_ms: u64,
+  /// How long a PUBLISH_DONE waits for the data streams it accounts for to finish
+  /// arriving before the track is torn down anyway. The message rides the request
+  /// stream and overtakes them, so forwarding it straight through would cut objects
+  /// still in flight.
+  #[arg(long, default_value_t = 2000)]
+  pub publish_done_stream_timeout_ms: u64,
   /// How many recent groups of Object ids are remembered per track, to drop duplicates
   /// when several publishers serve the same Track. 0 turns duplicate detection off.
   /// Capped, because the memory this costs also scales with the size of a group
@@ -181,6 +187,10 @@ pub struct AppConfig {
   /// A subscriber cannot place a data stream until it has the track alias. Forwarding
   /// waits this long for the control message carrying it, then proceeds regardless.
   pub downstream_alias_timeout: Duration,
+  /// A publisher's PUBLISH_DONE is held until the data streams it accounts for have
+  /// finished arriving. This bounds that wait, so a stream that never ends cannot
+  /// keep the track alive forever.
+  pub publish_done_stream_timeout: Duration,
   /// Groups of Object ids retained per track for duplicate detection. Bounds what that
   /// costs; a publisher more than this many groups behind can slip a duplicate through.
   pub dedup_retained_groups: usize,
@@ -219,6 +229,7 @@ impl AppConfig {
           cli.track_alias_resolution_timeout_ms,
         ),
         downstream_alias_timeout: Duration::from_millis(cli.downstream_alias_timeout_ms),
+        publish_done_stream_timeout: Duration::from_millis(cli.publish_done_stream_timeout_ms),
         dedup_retained_groups: cli.dedup_retained_groups as usize,
       }
     })
@@ -377,6 +388,7 @@ mod tests {
       upstream_subscribe_timeout: Duration::from_secs(10),
       track_alias_resolution_timeout: Duration::from_millis(500),
       downstream_alias_timeout: Duration::from_millis(3000),
+      publish_done_stream_timeout: Duration::from_millis(2000),
       dedup_retained_groups: 30,
     }
   }

@@ -15,23 +15,32 @@
 use moqtail::model::control::constant::SwitchMode;
 use moqtail::model::data::full_track_name::FullTrackName;
 use std::collections::HashMap;
-use std::fmt;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::RwLock;
-use tracing::info;
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-#[repr(u8)]
-pub enum SwitchStatus {
-  None,
-  Current,
-  Next,
+/// Shared between the two subscriptions of one switch: the activating side sets
+/// it when it first delivers, the suspending side reads it to know its boundary
+/// is real.
+#[derive(Debug, Clone, Default)]
+pub struct SwitchActivation(Arc<AtomicBool>);
+
+impl SwitchActivation {
+  pub fn mark(&self) {
+    self.0.store(true, Ordering::Release);
+  }
+
+  pub fn is_set(&self) -> bool {
+    self.0.load(Ordering::Acquire)
+  }
 }
 
-pub type SwitchContextItems = Arc<RwLock<HashMap<FullTrackName, SwitchStatus>>>;
-
-/// What a SWITCH_FROM asked for, held until the activating track is ready to
-/// deliver and the suspending one can be stopped.
+/// What a SWITCH_FROM asked for.
+///
+/// Both subscriptions are driven from `boundary`, a group id on the shared grid
+/// that group ids form across the tracks of one content: the activating
+/// subscription delivers from it, the suspending one stops at it. Neither has to
+/// look at the other's group ids, which do not have to line up.
 #[derive(Debug, Clone)]
 pub struct SwitchPlan {
   /// The subscription being suspended.
@@ -39,11 +48,33 @@ pub struct SwitchPlan {
   pub mode: SwitchMode,
   /// Whether stopping it also sends PUBLISH_DONE.
   pub publish_done: bool,
+  /// The activating subscription's Start Group, when it asked for one. Without
+  /// it there is nothing to schedule and the boundary is instead the first group
+  /// that subscription delivers.
+  pub boundary: Option<u64>,
+  /// Set once the activating subscription has delivered something. Until then
+  /// the suspending one keeps going past its boundary, so a switch to a track
+  /// that never publishes leaves the subscriber with the track it already had
+  /// rather than with nothing.
+  pub activated: SwitchActivation,
+}
+
+impl SwitchPlan {
+  /// The boundary is left unset: it is the activating subscription that knows
+  /// its own Start Group, and it fills this in when the switch is scheduled.
+  pub fn new(suspending: FullTrackName, mode: SwitchMode, publish_done: bool) -> Self {
+    Self {
+      suspending,
+      mode,
+      publish_done,
+      boundary: None,
+      activated: SwitchActivation::default(),
+    }
+  }
 }
 
 #[derive(Debug, Clone)]
 pub struct SwitchContext {
-  pub items: SwitchContextItems,
   /// Keyed by the activating track: the switch it is the target of.
   plans: Arc<RwLock<HashMap<FullTrackName, SwitchPlan>>>,
 }
@@ -51,7 +82,6 @@ pub struct SwitchContext {
 impl SwitchContext {
   pub fn new() -> Self {
     Self {
-      items: Arc::new(RwLock::new(HashMap::new())),
       plans: Arc::new(RwLock::new(HashMap::new())),
     }
   }
@@ -65,122 +95,68 @@ impl SwitchContext {
   pub async fn take_plan(&self, activating: &FullTrackName) -> Option<SwitchPlan> {
     self.plans.write().await.remove(activating)
   }
-
-  // Add or update a switch item
-  // If the status is Current or Next, ensure no other item has that status
-  pub async fn add_or_update_switch_item(&self, track_name: FullTrackName, status: SwitchStatus) {
-    let mut items = self.items.write().await;
-    items.insert(track_name.clone(), status);
-
-    // there can be only one Current and one Next
-    if status == SwitchStatus::Current || status == SwitchStatus::Next {
-      let target_status = status;
-      for (other_track_name, other_status) in items.iter_mut() {
-        if *other_status == target_status && *other_track_name != track_name {
-          info!(
-            "Switching status of track {:?} from {:?} to None",
-            other_track_name, target_status
-          );
-          *other_status = SwitchStatus::None;
-          break;
-        }
-      }
-    }
-  }
-
-  pub async fn get_switch_status(&self, track_name: &FullTrackName) -> Option<SwitchStatus> {
-    let items = self.items.read().await;
-    items.get(track_name).copied()
-  }
-
-  pub async fn get_current(&self) -> Option<FullTrackName> {
-    let items = self.items.read().await;
-    for (track_name, status) in items.iter() {
-      if *status == SwitchStatus::Current {
-        return Some(track_name.clone());
-      }
-    }
-    None
-  }
-}
-
-impl fmt::Display for SwitchStatus {
-  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    let status_str = match self {
-      SwitchStatus::None => "None",
-      SwitchStatus::Current => "Current",
-      SwitchStatus::Next => "Next",
-    };
-    write!(f, "{}", status_str)
-  }
-}
-
-impl fmt::Display for SwitchContext {
-  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    let items = self.items.blocking_read();
-    for (track_name, status) in items.iter() {
-      writeln!(f, "{:?}: {}", track_name, status)?;
-    }
-    Ok(())
-  }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
 
-  #[tokio::test]
-  async fn add_and_update_current_ensures_unique() {
-    let context = SwitchContext::new();
-
-    let t1 = FullTrackName::try_new("ns", "t1").expect("create t1");
-    let t2 = FullTrackName::try_new("ns", "t2").expect("create t2");
-
-    // set t1 as Current
-    context
-      .add_or_update_switch_item(t1.clone(), SwitchStatus::Current)
-      .await;
-    assert_eq!(context.get_current().await.unwrap(), t1);
-    assert_eq!(
-      context.get_switch_status(&t1).await,
-      Some(SwitchStatus::Current)
-    );
-
-    // set t2 as Current -> t1 should become None
-    context
-      .add_or_update_switch_item(t2.clone(), SwitchStatus::Current)
-      .await;
-    assert_eq!(context.get_current().await.unwrap(), t2);
-    assert_eq!(
-      context.get_switch_status(&t1).await,
-      Some(SwitchStatus::None)
-    );
-  }
-
-  #[tokio::test]
-  async fn next_status_is_unique() {
-    let context = SwitchContext::new();
-
-    let a = FullTrackName::try_new("ns", "a").expect("create a");
-    let b = FullTrackName::try_new("ns", "b").expect("create b");
-
-    context
-      .add_or_update_switch_item(a.clone(), SwitchStatus::Next)
-      .await;
-
-    context
-      .add_or_update_switch_item(b.clone(), SwitchStatus::Next)
-      .await;
-    assert_eq!(
-      context.get_switch_status(&a).await,
-      Some(SwitchStatus::None)
-    );
+  fn plan(suspending: &str, mode: SwitchMode) -> SwitchPlan {
+    SwitchPlan::new(
+      FullTrackName::try_new("ns", suspending).expect("create track name"),
+      mode,
+      false,
+    )
   }
 
   #[test]
-  fn display_strings() {
-    assert_eq!(format!("{}", SwitchStatus::None), "None");
-    assert_eq!(format!("{}", SwitchStatus::Current), "Current");
-    assert_eq!(format!("{}", SwitchStatus::Next), "Next");
+  fn activation_starts_unset_and_is_shared() {
+    let plan = plan("low", SwitchMode::Soft);
+    let held_by_the_suspending_side = plan.activated.clone();
+    assert!(!held_by_the_suspending_side.is_set());
+
+    plan.activated.mark();
+    assert!(held_by_the_suspending_side.is_set());
+  }
+
+  #[test]
+  fn a_new_plan_has_no_boundary_until_the_switch_is_scheduled() {
+    assert_eq!(plan("low", SwitchMode::Hard).boundary, None);
+  }
+
+  #[tokio::test]
+  async fn a_plan_is_taken_once() {
+    let context = SwitchContext::new();
+    let activating = FullTrackName::try_new("ns", "high").expect("create track name");
+
+    context
+      .set_plan(activating.clone(), plan("low", SwitchMode::Hard))
+      .await;
+
+    assert!(context.take_plan(&activating).await.is_some());
+    assert!(context.take_plan(&activating).await.is_none());
+  }
+
+  #[tokio::test]
+  async fn plans_are_kept_per_activating_track() {
+    let context = SwitchContext::new();
+    let high = FullTrackName::try_new("ns", "high").expect("create track name");
+    let mid = FullTrackName::try_new("ns", "mid").expect("create track name");
+
+    context
+      .set_plan(high.clone(), plan("low", SwitchMode::Hard))
+      .await;
+    context
+      .set_plan(mid.clone(), plan("high", SwitchMode::Soft))
+      .await;
+
+    assert_eq!(
+      context.take_plan(&high).await.expect("plan for high").mode,
+      SwitchMode::Hard
+    );
+    assert_eq!(
+      context.take_plan(&mid).await.expect("plan for mid").mode,
+      SwitchMode::Soft
+    );
   }
 }

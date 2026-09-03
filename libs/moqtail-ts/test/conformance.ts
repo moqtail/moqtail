@@ -94,6 +94,45 @@ export interface VarintFixture {
   truncated: Section<VarintTruncated>
 }
 
+/** One named bit or bit group within a type byte. */
+export interface BitField {
+  name: string
+  /** Hex string, e.g. `"0x06"`. */
+  mask: string
+  meaning: string
+}
+
+/** One type byte: the bits it is made of and every value those rules allow. */
+export interface TypeByte {
+  source: string
+  bits: BitField[]
+  subgroup_id_modes?: Entry[]
+  rules: string[]
+  /** Exhaustive: a byte absent from this list must be rejected. */
+  valid: string[]
+}
+
+/**
+ * `data_stream_types.json`: the two data-stream type bytes. These are bitfields rather
+ * than registries, so `valid` is exhaustive and everything else is rejected.
+ */
+export interface DataStreamTypes {
+  subgroup_header: TypeByte
+  object_datagram: TypeByte
+}
+
+/** The mask of the named bit, throwing if the fixture has no such bit. */
+export function bitMask(type: TypeByte, name: string): number {
+  const bit = type.bits.find((b) => b.name === name)
+  if (!bit) throw new Error(`fixture has no bit named ${name}`)
+  return Number(parseHex(bit.mask))
+}
+
+/** Every allowed byte, as numbers. */
+export function validBytes(type: TypeByte): number[] {
+  return type.valid.map((v) => Number(parseHex(v)))
+}
+
 function load<T>(name: string): T {
   return JSON.parse(readFileSync(resolve(FIXTURE_DIR, name), 'utf8')) as T
 }
@@ -124,6 +163,7 @@ export const terminationCodes = (): Registry => load<Registry>('termination_code
 export const streamResetCodes = (): Registry => load<Registry>('stream_reset_codes.json')
 export const propertyTypes = (): PropertyTypes => load<PropertyTypes>('property_types.json')
 export const varint = (): VarintFixture => load<VarintFixture>('varint.json')
+export const dataStreamTypes = (): DataStreamTypes => load<DataStreamTypes>('data_stream_types.json')
 export const parameterTypes = (): { setup_options: Registry; message_parameters: Registry } =>
   load<{ setup_options: Registry; message_parameters: Registry }>('parameter_types.json')
 

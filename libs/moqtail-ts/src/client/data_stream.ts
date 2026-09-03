@@ -225,6 +225,10 @@ export class RecvStream {
                 SubgroupHeaderType.hasProperties(this.header.type),
                 previousObjectId,
               )
+              // The first object names the subgroup when the header type defers its
+              // ID; do it before the object is handed on, so whoever routes it sees
+              // a header that identifies the subgroup it belongs to.
+              this.header.resolveSubgroupId(object.objectId)
               previousObjectId = object.objectId
             }
             this.#internalBuffer.commit()

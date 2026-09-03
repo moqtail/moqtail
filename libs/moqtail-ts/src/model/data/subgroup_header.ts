@@ -20,7 +20,13 @@ import { SubgroupHeaderType } from './constant'
 
 // TODO: couple type and subgroup id
 export class SubgroupHeader {
-  readonly subgroupId: bigint | undefined
+  /**
+   * Absent on the wire, and still unknown here, when the type says the Subgroup ID
+   * is the first Object ID: that object has not been read yet at header time.
+   * `resolveSubgroupId` fills it in, so consumers can read this rather than each
+   * deriving it again.
+   */
+  subgroupId: bigint | undefined
   readonly trackAlias: bigint
   readonly groupId: bigint
 
@@ -83,6 +89,17 @@ export class SubgroupHeader {
       publisherPriority = buf.getU8()
     }
     return new SubgroupHeader(headerType, trackAlias, groupId, subgroupId, publisherPriority)
+  }
+
+  /**
+   * Name this subgroup from the first object read off its stream, for the header
+   * type that defers the Subgroup ID to it. Ignored for every other type, and for
+   * a header already named, so later objects on the stream cannot rename it.
+   */
+  resolveSubgroupId(firstObjectId: bigint): void {
+    if (this.subgroupId === undefined && SubgroupHeaderType.isSubgroupIdFirstObjectId(this.type)) {
+      this.subgroupId = firstObjectId
+    }
   }
 }
 

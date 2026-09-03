@@ -20,6 +20,7 @@ import { RequestError } from 'moqtail/model';
 import {
   FullTrackName,
   Tuple,
+  MoqtObject,
   ObjectForwardingPreference,
   DefaultPublisherPriorityProperty,
 } from 'moqtail/model';
@@ -41,11 +42,30 @@ type Screen = 'entrance' | 'connecting' | 'main';
 const USERNAME_MAX_LEN = 25;
 const USERNAME_REGEX = /^[a-zA-Z0-9 ]+$/;
 const NS_PREFIX = '/moqtail/demo/';
+const RELAY_SCHEME = 'moqt://';
+const SCHEME_RE = /^[a-z][a-z0-9+.-]*:\/\//i;
 
 function getDefaultRelay(): string {
-  const url = window.appSettings?.relayUrl ?? 'https://localhost:4433';
-  return url.replace(/^https?:\/\//, '');
+  const url = window.appSettings?.relayUrl ?? `${RELAY_SCHEME}localhost:4433`;
+  return url.replace(SCHEME_RE, '');
 }
+
+function toRelayUrl(input: string): string {
+  return `${RELAY_SCHEME}${input.trim().replace(SCHEME_RE, '')}`;
+}
+
+type Publication = {
+  namespace: Tuple;
+  videoFTN: FullTrackName;
+  audioFTN: FullTrackName;
+  getVideoStreamController: () => ReadableStreamDefaultController<MoqtObject> | null;
+  getAudioStreamController: () => ReadableStreamDefaultController<MoqtObject> | null;
+  videoRequestId: bigint;
+  audioRequestId: bigint;
+  /** Where the next encoder run picks its group numbering up from. */
+  videoGroupId: number;
+  audioGroupId: number;
+};
 
 function toTrackUsername(username: string): string {
   return username.trim().replace(/ /g, '-');
@@ -79,13 +99,16 @@ export default function App() {
 
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
-  const stopEncoderRef = useRef<(() => Promise<void>) | null>(null);
+  type EncoderHandle = { stop: () => Promise<void>; currentGroupId: () => number };
+  const videoEncoderRef = useRef<EncoderHandle | null>(null);
+  const audioEncoderRef = useRef<EncoderHandle | null>(null);
+  const publicationRef = useRef<Publication | null>(null);
   // Stable refs for use inside async callbacks
   const moqClientRef = useRef<MOQtailClient | null>(null);
   const trackUsernameRef = useRef<string>('');
   const sendSignalRef = useRef<((text: string) => void) | null>(null);
   const isMicOnRef = useRef(false);
-  const subscribedNsRef = useRef(new Set<string>());
+  const subscribedTracksRef = useRef(new Set<string>());
   const signalCleanupRef = useRef<(() => void) | null>(null);
   // Per-peer canvas elements, decode workers, and pending streams (queued before worker is ready)
   const peerCanvasesRef = useRef<Map<string, HTMLCanvasElement>>(new Map());
@@ -102,16 +125,15 @@ export default function App() {
     return null;
   }
 
-  async function subscribeNamespaceOnce(client: MOQtailClient, ns: Tuple) {
-    console.log('subscribeNamespaceOnce: ns: %s', ns.toUtf8Path());
+  async function subscribeTracksOnce(client: MOQtailClient, ns: Tuple) {
     const key = ns.toUtf8Path();
-    if (subscribedNsRef.current.has(key)) return;
-    subscribedNsRef.current.add(key);
-    const { response } = await client.subscribeNamespace(ns);
-    console.log('subscribeNamespaceOnce: response for ns %s: %o', ns.toUtf8Path(), response);
+    if (subscribedTracksRef.current.has(key)) return;
+    subscribedTracksRef.current.add(key);
+    const { response } = await client.subscribeTracks(ns);
+    console.log('subscribeTracksOnce: response for ns %s: %o', key, response);
     if (response instanceof RequestError) {
-      console.warn('subscribeNamespace failed for', key, ':', response);
-      subscribedNsRef.current.delete(key);
+      console.warn('subscribeTracks failed for', key, ':', response);
+      subscribedTracksRef.current.delete(key);
     }
   }
 
@@ -136,13 +158,13 @@ export default function App() {
 
     const trackUsername = toTrackUsername(usernameInput);
     const token = generateToken();
-    const relayUrl = `https://${relayInput}`;
+    const relayUrl = toRelayUrl(relayInput);
 
     trackUsernameRef.current = trackUsername;
     setDisplayUsername(usernameInput.trim());
     setError(null);
     setPeers([]);
-    subscribedNsRef.current.clear();
+    subscribedTracksRef.current.clear();
     peerCanvasesRef.current.clear();
     peerWorkersRef.current.clear();
     pendingStreamsRef.current.clear();
@@ -198,7 +220,7 @@ export default function App() {
           const peerNs = Tuple.fromUtf8Path(`${NS_PREFIX}${peerUsername}`);
           // add a random delay
           delay(Math.ceil(Math.random() * 100)).then(_ => {
-            subscribeNamespaceOnce(client, peerNs);
+            subscribeTracksOnce(client, peerNs);
           });
         },
         onOwnJoinWelcomed: peerUsername => {
@@ -206,12 +228,15 @@ export default function App() {
           addPeer(peerUsername);
           const peerNs = Tuple.fromUtf8Path(`${NS_PREFIX}${peerUsername}`);
           delay(Math.ceil(Math.random() * 100)).then(_ => {
-            subscribeNamespaceOnce(client, peerNs);
+            subscribeTracksOnce(client, peerNs);
           });
         },
         onDuplicateUser: () => {
           console.warn('Duplicate username detected, returning to entrance');
-          cleanup();
+          // Drop the whole session, not just the signalling track: otherwise this name
+          // keeps its namespace announced and its tracks published from a page that has
+          // already gone back to the entrance screen.
+          void leaveRoom();
           setError('Username already taken. Please choose a different one.');
           setScreen('entrance');
         },
@@ -226,10 +251,84 @@ export default function App() {
     }
   }
 
+  async function ensurePublication(
+    client: MOQtailClient,
+    trackUsername: string,
+  ): Promise<Publication | null> {
+    if (publicationRef.current) return publicationRef.current;
+
+    const namespace = Tuple.fromUtf8Path(`${NS_PREFIX}${trackUsername}`);
+    const videoFTN = FullTrackName.tryNew(namespace, 'video');
+    const audioFTN = FullTrackName.tryNew(namespace, 'audio');
+
+    await announceNamespaces(client, namespace);
+    const tracks = setupTracks(client, audioFTN, videoFTN);
+
+    const videoTrack = client.trackSources.get(videoFTN.toString())!;
+    const audioTrack = client.trackSources.get(audioFTN.toString())!;
+
+    const video = await client.publish(videoFTN, true, videoTrack.trackAlias!, undefined, [
+      new DefaultPublisherPriorityProperty(128),
+    ]);
+    if (video instanceof RequestError) {
+      console.error('publish rejected for the video track', video);
+      setError('The relay rejected the video track.');
+      await client.unpublishNamespace(namespace);
+      return null;
+    }
+
+    const audio = await client.publish(audioFTN, true, audioTrack.trackAlias!, undefined, [
+      new DefaultPublisherPriorityProperty(0),
+    ]);
+    if (audio instanceof RequestError) {
+      console.error('publish rejected for the audio track', audio);
+      setError('The relay rejected the audio track.');
+      // Leave nothing half-published: end the video track we just opened.
+      await client.publishDone(video.requestId);
+      await client.unpublishNamespace(namespace);
+      return null;
+    }
+
+    publicationRef.current = {
+      namespace,
+      videoFTN,
+      audioFTN,
+      getVideoStreamController: tracks.getVideoStreamController,
+      getAudioStreamController: tracks.getAudioStreamController,
+      videoRequestId: video.requestId,
+      audioRequestId: audio.requestId,
+      videoGroupId: 0,
+      audioGroupId: 0,
+    };
+    return publicationRef.current;
+  }
+
+  async function teardownPublication() {
+    const client = moqClientRef.current;
+    const publication = publicationRef.current;
+    publicationRef.current = null;
+    if (!client || !publication) return;
+    try {
+      await client.publishDone(publication.videoRequestId);
+      await client.publishDone(publication.audioRequestId);
+      await client.unpublishNamespace(publication.namespace);
+    } catch (err) {
+      console.warn('teardownPublication failed', err);
+    }
+  }
+
   async function startPublishing() {
     const client = moqClientRef.current;
     const trackUsername = trackUsernameRef.current;
     if (!client || !trackUsername) return;
+
+    setError(null);
+
+    const publication = await ensurePublication(client, trackUsername);
+    if (!publication) {
+      setIsCamOn(false);
+      return;
+    }
 
     const stream = await navigator.mediaDevices.getUserMedia({
       video: { aspectRatio: 16 / 9 },
@@ -245,47 +344,39 @@ export default function App() {
       localVideoRef.current.muted = true;
     }
 
-    const userNs = Tuple.fromUtf8Path(`${NS_PREFIX}${trackUsername}`);
-    const videoFTN = FullTrackName.tryNew(userNs, 'video');
-    const audioFTN = FullTrackName.tryNew(userNs, 'audio');
-
-    await announceNamespaces(client, userNs);
-    const tracks = setupTracks(client, audioFTN, videoFTN);
-
-    const videoTrack = client.trackSources.get(videoFTN.toString())!;
-    const audioTrack = client.trackSources.get(audioFTN.toString())!;
-
-    await client.publish(videoFTN, true, videoTrack.trackAlias!, undefined, [
-      new DefaultPublisherPriorityProperty(128),
-    ]);
-    await client.publish(audioFTN, true, audioTrack.trackAlias!, undefined, [
-      new DefaultPublisherPriorityProperty(0),
-    ]);
-
-    const videoResult = await startVideoEncoder({
+    videoEncoderRef.current = await startVideoEncoder({
       stream,
-      videoFullTrackName: videoFTN,
-      videoStreamController: tracks.getVideoStreamController(),
+      videoFullTrackName: publication.videoFTN,
+      videoStreamController: publication.getVideoStreamController(),
       publisherPriority: 1,
+      objectForwardingPreference: ObjectForwardingPreference.Subgroup,
+      startGroupId: publication.videoGroupId,
+    });
+
+    audioEncoderRef.current = await startAudioEncoder({
+      stream,
+      audioFullTrackName: publication.audioFTN,
+      audioStreamController: publication.getAudioStreamController(),
+      publisherPriority: 1,
+      audioGroupId: publication.audioGroupId,
       objectForwardingPreference: ObjectForwardingPreference.Subgroup,
     });
 
-    await startAudioEncoder({
-      stream,
-      audioFullTrackName: audioFTN,
-      audioStreamController: tracks.getAudioStreamController(),
-      publisherPriority: 1,
-      audioGroupId: 0,
-      objectForwardingPreference: ObjectForwardingPreference.Subgroup,
-    });
-
-    stopEncoderRef.current = videoResult?.stop ?? null;
     setIsPublishing(true);
   }
 
   async function stopPublishing() {
-    await stopEncoderRef.current?.();
-    stopEncoderRef.current = null;
+    const publication = publicationRef.current;
+    if (publication) {
+      publication.videoGroupId =
+        videoEncoderRef.current?.currentGroupId() ?? publication.videoGroupId;
+      publication.audioGroupId =
+        audioEncoderRef.current?.currentGroupId() ?? publication.audioGroupId;
+    }
+    await videoEncoderRef.current?.stop();
+    videoEncoderRef.current = null;
+    await audioEncoderRef.current?.stop();
+    audioEncoderRef.current = null;
     mediaStreamRef.current?.getTracks().forEach(t => t.stop());
     mediaStreamRef.current = null;
     if (localVideoRef.current) localVideoRef.current.srcObject = null;
@@ -295,12 +386,31 @@ export default function App() {
     setIsMicOn(false);
   }
 
+  /** Leaves the room: stops publishing, ends the tracks, and drops the session. */
+  async function leaveRoom() {
+    signalCleanupRef.current?.();
+    signalCleanupRef.current = null;
+    sendSignalRef.current = null;
+    await stopPublishing();
+    await teardownPublication();
+    subscribedTracksRef.current.clear();
+    const client = moqClientRef.current;
+    moqClientRef.current = null;
+    await client?.disconnect();
+  }
+
   async function toggleCam() {
     if (isCamOn) {
       await stopPublishing();
-    } else {
-      setIsCamOn(true);
+      return;
+    }
+    setIsCamOn(true);
+    try {
       await startPublishing();
+    } catch (err) {
+      console.error('startPublishing failed', err);
+      setError(err instanceof Error ? err.message : String(err));
+      setIsCamOn(false);
     }
   }
 
@@ -460,6 +570,25 @@ export default function App() {
           </a>
         </div>
       </header>
+
+      {/* Failures raised after the entrance screen -- a rejected PUBLISH, a camera that
+          would not open. Same palette as the entrance error, laid out as a strip so a
+          full sentence fits without crowding the header badges. */}
+      {error && (
+        <div
+          role="alert"
+          className="flex shrink-0 items-center justify-between gap-3 border-b border-red-500/20 bg-red-500/10 px-4 py-2 md:px-5"
+        >
+          <span className="text-xs leading-relaxed text-red-400">{error}</span>
+          <button
+            onClick={() => setError(null)}
+            aria-label="Dismiss"
+            className="shrink-0 rounded px-1.5 text-sm text-red-400/70 transition-colors hover:text-red-300"
+          >
+            ×
+          </button>
+        </div>
+      )}
 
       {/* Videos — fixed 3×2 grid: 1 local + 5 peer slots */}
       <div className="grid min-h-0 flex-1 grid-cols-3 gap-4 p-4">

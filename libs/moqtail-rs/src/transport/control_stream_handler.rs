@@ -14,7 +14,7 @@
 
 use bytes::{Buf, BufMut, BytesMut};
 use tokio::time::{Duration, Instant, sleep_until};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::model::control::control_message::{ControlMessage, ControlMessageTrait};
 use crate::model::control::setup::Setup;
@@ -99,6 +99,16 @@ impl ControlStreamHandler {
   pub fn reset(&mut self, code: u64) {
     if let Err(e) = self.send.reset(code) {
       warn!("Error resetting request stream: {:?}", e);
+    }
+  }
+
+  /// Ends this request stream cleanly: FIN on the send half, so everything already
+  /// written is delivered. Dropping the handler instead resets the send stream, and
+  /// a reset discards bytes the peer has not read yet — which loses the last message
+  /// written, PUBLISH_DONE being the one that ends a request.
+  pub async fn finish(&mut self) {
+    if let Err(e) = self.send.finish().await {
+      debug!("Error finishing request stream: {:?}", e);
     }
   }
 

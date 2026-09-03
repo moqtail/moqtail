@@ -17,7 +17,7 @@ use crate::server::client::switch_context::{SwitchPlan, SwitchStatus};
 use crate::server::message_handlers::parameters;
 use crate::server::session::Session;
 use crate::server::session_context::{PendingRequest, SessionContext};
-use crate::server::track::{Track, TrackOrigin, TrackStatus};
+use crate::server::track::{Track, TrackOrigin, TrackStatus, await_publisher_streams};
 use core::result::Result;
 use moqtail::model::control::constant::PublishDoneStatusCode;
 use moqtail::model::control::publish_done::PublishDone;
@@ -200,14 +200,27 @@ async fn upstream_subscribe_exchange(
               m.status_code,
               m.reason_phrase.as_str()
             );
-            if let Some(track) = context.track_manager.get_track(&full_track_name).await
-              && let Err(e) = track
+            if let Some(track) = context.track_manager.get_track(&full_track_name).await {
+              // The message overtakes the data streams it accounts for, so hold it
+              // until its Stream Count of them has finished arriving. Passing it on
+              // first closes the downstream streams mid-object and understates the
+              // Stream Count the relay reports in turn.
+              await_publisher_streams(
+                &track,
+                publisher.connection_id,
+                m.stream_count,
+                context.server_config.publish_done_stream_timeout,
+              )
+              .await;
+
+              if let Err(e) = track
                 .read()
                 .await
                 .notify_publish_done(m.status_code, m.reason_phrase.as_str().to_string())
                 .await
-            {
-              error!("Failed to relay upstream PUBLISH_DONE downstream: {:?}", e);
+              {
+                error!("Failed to relay upstream PUBLISH_DONE downstream: {:?}", e);
+              }
             }
             return;
           }
@@ -517,13 +530,19 @@ async fn handle_subscribe_message(
     })
     .await;
 
-  let track = track_arc.read().await;
+  // Scoped so the guard is gone before anything below reaches for this lock again.
+  // tokio's RwLock is not reentrant and hands the lock to a queued writer first, so a
+  // task that reads twice deadlocks against itself the moment a writer arrives in
+  // between -- and it stays holding the first guard, wedging the track for everyone.
+  let subscription_added = {
+    let track = track_arc.read().await;
+    add_subscription(sub.clone(), &track, client.clone(), is_switch).await
+  };
 
   // An endpoint may hold only one subscription per track in a given role. A SWITCH is
   // the exception: it deliberately reuses the existing subscription, and the failure
   // here is how it hands over.
-  if !add_subscription(sub.clone(), &track, client.clone(), is_switch).await && !is_switch {
-    drop(track);
+  if !subscription_added && !is_switch {
     info!(
       "Rejecting SUBSCRIBE from {} for {:?}: already subscribed",
       context.connection_id, &full_track_name
@@ -862,8 +881,11 @@ async fn handle_subscribe_ok_message(
 
   // Send SubscribeOk to ALL pending subscribers
   {
-    let track = track_arc.read().await;
+    // Released before the loop: the loop reads this same lock again, and a second read
+    // taken while the first is still held deadlocks against any writer queued between
+    // them.
     let pending = {
+      let track = track_arc.read().await;
       let mut pending = track.pending_subscribers.write().await;
       std::mem::take(&mut *pending)
     };
@@ -895,15 +917,21 @@ async fn handle_subscribe_ok_message(
             "no request stream for pending subscriber request {}",
             subscriber_request_id
           );
-        } else if let Some(subscription) = track.get_subscription(subscriber.connection_id).await {
-          subscription.read().await.mark_alias_announced();
-          crate::server::fill::open_fill_fetch_stream(
-            context.clone(),
-            track_arc.clone(),
-            subscription,
-            subscriber_request_id,
-          )
-          .await;
+        } else {
+          let subscription = {
+            let track = track_arc.read().await;
+            track.get_subscription(subscriber.connection_id).await
+          };
+          if let Some(subscription) = subscription {
+            subscription.read().await.mark_alias_announced();
+            crate::server::fill::open_fill_fetch_stream(
+              context.clone(),
+              track_arc.clone(),
+              subscription,
+              subscriber_request_id,
+            )
+            .await;
+          }
         }
       }
     }

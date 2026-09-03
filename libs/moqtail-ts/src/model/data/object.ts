@@ -17,7 +17,13 @@
 import { KeyValuePair } from '../common/pair'
 import { CastingError, ProtocolViolationError } from '../error/error'
 import { LOCProperties } from '../property'
-import { ObjectDatagramType, ObjectForwardingPreference, ObjectStatus, SubgroupHeaderType } from './constant'
+import {
+  DEFAULT_PUBLISHER_PRIORITY,
+  ObjectDatagramType,
+  ObjectForwardingPreference,
+  ObjectStatus,
+  SubgroupHeaderType,
+} from './constant'
 import { Datagram } from './datagram'
 import { FetchObject } from './fetch_object'
 import { FullTrackName } from './full_track_name'
@@ -212,7 +218,7 @@ export class MoqtObject {
     return new MoqtObject(
       fullTrackName,
       new Location(groupId, subgroupObject.objectId),
-      publisherPriority ?? 0,
+      publisherPriority ?? DEFAULT_PUBLISHER_PRIORITY,
       ObjectForwardingPreference.Subgroup,
       subgroupId,
       subgroupObject.objectStatus || ObjectStatus.Normal,

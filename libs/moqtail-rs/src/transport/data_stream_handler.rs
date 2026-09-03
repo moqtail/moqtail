@@ -25,13 +25,16 @@ use tokio::time::{Instant, sleep_until};
 use crate::model::control::constant::GroupOrder;
 use crate::model::control::fetch::Fetch;
 use crate::model::control::subscribe::Subscribe;
-use crate::model::data::constant::{FetchHeaderType, ObjectForwardingPreference};
+use crate::model::data::constant::{
+  DEFAULT_PUBLISHER_PRIORITY, FetchHeaderType, ObjectForwardingPreference,
+};
 use crate::model::data::fetch_header::FetchHeader;
 use crate::model::data::fetch_object::{FetchObject, FetchObjectContext, FetchObjectPayload};
 use crate::model::data::object::Object;
 use crate::model::data::subgroup_header::SubgroupHeader;
 use crate::model::data::subgroup_object::SubgroupObject;
 use crate::model::error::ParseError;
+use crate::model::property::object_property::validate_prior_gaps;
 use crate::transport::connection::{TransportReadError, TransportRecvStream, TransportSendStream};
 use tracing::{debug, error, info, trace};
 
@@ -376,10 +379,11 @@ impl RecvDataStream {
         let bytes_cursor = recv_bytes.clone().freeze();
         let mut consumed = 0;
         if !recv_bytes.is_empty() {
-          let header_info = header_info.clone().unwrap().1;
+          let mut current_header = header_info.as_ref().unwrap().1.clone();
           let (c, object_id, new_fetch_ctx) = Self::read_object(
             bytes_cursor,
-            &header_info,
+            &mut current_header,
+            &the_header_info,
             is_closed.clone(),
             objects.clone(),
             &previous_object_id,
@@ -394,6 +398,11 @@ impl RecvDataStream {
 
           // if consumed bytes is more than 0, it means we have a valid object
           if c > 0 {
+            // The first object may have named the subgroup; every later object on
+            // this stream belongs to that same one.
+            if let Some(entry) = header_info.as_mut() {
+              entry.1 = current_header;
+            }
             previous_object_id = object_id;
             if new_fetch_ctx.is_some() {
               fetch_state.prev_ctx = new_fetch_ctx;
@@ -534,9 +543,11 @@ impl RecvDataStream {
     }
   }
 
+  #[allow(clippy::too_many_arguments)]
   async fn read_object(
     mut bytes_cursor: bytes::Bytes,
-    header_info: &HeaderInfo,
+    header_info: &mut HeaderInfo,
+    the_header_info: &Arc<Mutex<Option<HeaderInfo>>>,
     is_closed: Arc<AtomicBool>,
     objects: Arc<RwLock<VecDeque<Object>>>,
     previous_object_id: &Option<u64>,
@@ -545,6 +556,16 @@ impl RecvDataStream {
   ) -> Result<(usize, Option<u64>, Option<FetchObjectContext>), ParseError> {
     if !bytes_cursor.is_empty() {
       let original_remaining = bytes_cursor.remaining();
+
+      // A Subgroup header whose type says the Subgroup ID is the first Object ID
+      // carries no Subgroup ID field, so the header alone does not identify the
+      // subgroup: the object parsed below is what names it. Left unresolved, every
+      // such subgroup in a group is indistinguishable from every other.
+      let awaiting_subgroup_id = matches!(
+        &header_info,
+        HeaderInfo::Subgroup { header, .. }
+          if header.subgroup_id.is_none() && header.header_type.subgroup_id_is_first_object_id()
+      );
 
       let parse_result: ObjectParseResult = match header_info {
         HeaderInfo::Fetch { fetch_request, .. } => {
@@ -558,7 +579,17 @@ impl RecvDataStream {
             let new_ctx = fetch_obj.context();
             match fetch_obj {
               FetchObject::Object(payload) => {
-                if let Err(e) = fetch_state.subgroup_priorities.validate(&payload) {
+                let validated = fetch_state
+                  .subgroup_priorities
+                  .validate(&payload)
+                  .and_then(|()| {
+                    validate_prior_gaps(
+                      payload.group_id,
+                      payload.object_id,
+                      payload.properties.as_deref(),
+                    )
+                  });
+                if let Err(e) = validated {
                   malformed_track.store(true, Ordering::Relaxed);
                   return Err(e);
                 }
@@ -579,12 +610,16 @@ impl RecvDataStream {
           SubgroupObject::deserialize(&mut bytes_cursor, previous_object_id, has_properties)
             .and_then(|subgroup_obj| {
               let object_id = subgroup_obj.object_id;
+              if awaiting_subgroup_id {
+                header.subgroup_id = Some(object_id);
+              }
               let object = Object::try_from_subgroup(
                 subgroup_obj,
                 header.track_alias,
                 header.group_id,
                 header.subgroup_id,
                 header.publisher_priority,
+                DEFAULT_PUBLISHER_PRIORITY,
               )?;
               Ok((Some(object_id), None, Some(object)))
             })
@@ -598,6 +633,11 @@ impl RecvDataStream {
             "consumed: {} Parsed payload object: {:?}",
             consumed, maybe_object
           );
+          // Published before the object is enqueued: a reader that takes the object
+          // asks for the header to route it, and must not see the unresolved one.
+          if awaiting_subgroup_id && consumed > 0 {
+            *the_header_info.lock().await = Some(header_info.clone());
+          }
           if let Some(object) = maybe_object {
             let mut objects = objects.write().await;
             objects.push_back(object);
@@ -825,6 +865,7 @@ mod tests {
       header.group_id,
       header.subgroup_id,
       header.publisher_priority,
+      DEFAULT_PUBLISHER_PRIORITY,
     )
     .unwrap()
   }

@@ -1,0 +1,189 @@
+{
+  "source": "draft-ietf-moq-transport-18 §9.2.1 (Object Datagram), §9.2.2 (Subgroup Header)",
+  "description": "The two data-stream type bytes. Unlike the other fixtures these are bitfields, not registries: a type is valid when its bits satisfy the rules below, so `valid` is the exhaustive set and a stack must reject every byte outside it.",
+  "subgroup_header": {
+    "source": "§9.2.2",
+    "description": "Type byte of a subgroup stream header.",
+    "bits": [
+      {
+        "name": "PROPERTIES",
+        "mask": "0x01",
+        "meaning": "Properties present in every object on the stream"
+      },
+      {
+        "name": "SUBGROUP_ID_MODE",
+        "mask": "0x06",
+        "meaning": "How the Subgroup ID is determined; see subgroup_id_modes"
+      },
+      {
+        "name": "END_OF_GROUP",
+        "mask": "0x08",
+        "meaning": "This subgroup carries the final object in the group"
+      },
+      {
+        "name": "REQUIRED",
+        "mask": "0x10",
+        "meaning": "Always set; a type with it clear is not a subgroup header"
+      },
+      {
+        "name": "DEFAULT_PRIORITY",
+        "mask": "0x20",
+        "meaning": "Publisher Priority omitted from the header, taken from the subscription"
+      },
+      {
+        "name": "FIRST_OBJECT",
+        "mask": "0x40",
+        "meaning": "First object on the stream is the first published in the subgroup"
+      },
+      {
+        "name": "INVALID",
+        "mask": "0x80",
+        "meaning": "Must be zero"
+      }
+    ],
+    "subgroup_id_modes": [
+      {
+        "name": "ZERO",
+        "value": "0x00",
+        "in_header": false,
+        "meaning": "Subgroup ID is 0"
+      },
+      {
+        "name": "FIRST_OBJECT_ID",
+        "value": "0x02",
+        "in_header": false,
+        "meaning": "Subgroup ID is the ID of the first object on the stream"
+      },
+      {
+        "name": "EXPLICIT",
+        "value": "0x04",
+        "in_header": true,
+        "meaning": "Subgroup ID is carried as a field in the header"
+      },
+      {
+        "name": "RESERVED",
+        "value": "0x06",
+        "reserved": true,
+        "meaning": "Reserved; a header using it must be rejected"
+      }
+    ],
+    "rules": [
+      "REQUIRED (0x10) must be set",
+      "INVALID (0x80) must be clear",
+      "SUBGROUP_ID_MODE must not be 0b11 (0x06)"
+    ],
+    "valid": [
+      "0x10",
+      "0x11",
+      "0x12",
+      "0x13",
+      "0x14",
+      "0x15",
+      "0x18",
+      "0x19",
+      "0x1a",
+      "0x1b",
+      "0x1c",
+      "0x1d",
+      "0x30",
+      "0x31",
+      "0x32",
+      "0x33",
+      "0x34",
+      "0x35",
+      "0x38",
+      "0x39",
+      "0x3a",
+      "0x3b",
+      "0x3c",
+      "0x3d",
+      "0x50",
+      "0x51",
+      "0x52",
+      "0x53",
+      "0x54",
+      "0x55",
+      "0x58",
+      "0x59",
+      "0x5a",
+      "0x5b",
+      "0x5c",
+      "0x5d",
+      "0x70",
+      "0x71",
+      "0x72",
+      "0x73",
+      "0x74",
+      "0x75",
+      "0x78",
+      "0x79",
+      "0x7a",
+      "0x7b",
+      "0x7c",
+      "0x7d"
+    ]
+  },
+  "object_datagram": {
+    "source": "§9.2.1",
+    "description": "Type byte of an object datagram.",
+    "bits": [
+      {
+        "name": "PROPERTIES",
+        "mask": "0x01",
+        "meaning": "Properties field present"
+      },
+      {
+        "name": "END_OF_GROUP",
+        "mask": "0x02",
+        "meaning": "Last object in the group"
+      },
+      {
+        "name": "ZERO_OBJECT_ID",
+        "mask": "0x04",
+        "meaning": "Object ID omitted, taken as 0"
+      },
+      {
+        "name": "DEFAULT_PRIORITY",
+        "mask": "0x08",
+        "meaning": "Publisher Priority omitted, taken from the subscription"
+      },
+      {
+        "name": "STATUS",
+        "mask": "0x20",
+        "meaning": "Carries an object status, not a payload"
+      },
+      {
+        "name": "INVALID",
+        "mask": "0xd0",
+        "meaning": "Bits 4, 6 and 7 must be zero"
+      }
+    ],
+    "rules": ["INVALID (0xd0) must be clear", "STATUS (0x20) and END_OF_GROUP (0x02) must not both be set"],
+    "valid": [
+      "0x00",
+      "0x01",
+      "0x02",
+      "0x03",
+      "0x04",
+      "0x05",
+      "0x06",
+      "0x07",
+      "0x08",
+      "0x09",
+      "0x0a",
+      "0x0b",
+      "0x0c",
+      "0x0d",
+      "0x0e",
+      "0x0f",
+      "0x20",
+      "0x21",
+      "0x24",
+      "0x25",
+      "0x28",
+      "0x29",
+      "0x2c",
+      "0x2d"
+    ]
+  }
+}

@@ -81,13 +81,24 @@ impl fmt::Display for StreamId {
         self.fetch_request_id.unwrap_or(0),
       ),
 
-      StreamType::Subgroup => write!(
-        f,
-        "subgroup_{}_{}_{}",
-        self.relay_track_id,
-        self.group_id.unwrap(),
-        self.subgroup_id.unwrap_or(0),
-      ),
+      // This string keys the send streams, so an absent Subgroup ID must not read
+      // as any real one: rendering it as 0 silently merged every subgroup whose
+      // header defers its ID onto the stream belonging to subgroup 0.
+      StreamType::Subgroup => match self.subgroup_id {
+        Some(subgroup_id) => write!(
+          f,
+          "subgroup_{}_{}_{}",
+          self.relay_track_id,
+          self.group_id.unwrap(),
+          subgroup_id,
+        ),
+        None => write!(
+          f,
+          "subgroup_{}_{}_unresolved",
+          self.relay_track_id,
+          self.group_id.unwrap(),
+        ),
+      },
     }
   }
 }

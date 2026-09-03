@@ -1384,10 +1384,13 @@ impl Subscription {
       );
 
       let (pub_prio, group_id) = match &header_info {
-        HeaderInfo::Subgroup { header } => {
-          (header.publisher_priority.unwrap_or(128u8), header.group_id)
-        }
-        HeaderInfo::Fetch { .. } => (128u8, 0u64),
+        HeaderInfo::Subgroup { header } => (
+          header
+            .publisher_priority
+            .unwrap_or(DEFAULT_PUBLISHER_PRIORITY),
+          header.group_id,
+        ),
+        HeaderInfo::Fetch { .. } => (DEFAULT_PUBLISHER_PRIORITY, 0u64),
       };
       let (sub_prio, group_order) = {
         let state = self.subscription_state.read().await;

@@ -388,10 +388,11 @@ impl Track {
   ) -> Result<Arc<RwLock<Subscription>>, anyhow::Error> {
     let origin_enum = origin_message.into();
     // Check if subscription already exists
-    if let Some(sub_guard) = self
+    if self
       .subscription_manager
       .get_subscription(subscriber.connection_id)
       .await
+      .is_some()
     {
       if !is_switch {
         error!(
@@ -403,9 +404,6 @@ impl Track {
           "Subscriber with connection_id: {} already exists in relay_track_id={} (switch subscription)",
           subscriber.connection_id, self.relay_track_id
         );
-        // inform the existing subscription about the switch
-        let sub = sub_guard.read().await;
-        sub.notify_switch().await;
       }
       return Err(anyhow::anyhow!(
         "A subscription already exists for this subscriber"
@@ -421,10 +419,6 @@ impl Track {
         Arc::clone(&self.active_subgroup_headers),
       )
       .await?;
-
-    if is_switch {
-      subscription.read().await.notify_switch().await;
-    }
 
     Ok(subscription)
   }

@@ -13,13 +13,13 @@
 // limitations under the License.
 
 use crate::server::client::MOQTClient;
-use crate::server::client::switch_context::{SwitchPlan, SwitchStatus};
+use crate::server::client::switch_context::SwitchPlan;
 use crate::server::message_handlers::parameters;
 use crate::server::session::Session;
 use crate::server::session_context::{PendingRequest, SessionContext};
 use crate::server::track::{Track, TrackOrigin, TrackStatus, await_publisher_streams};
 use core::result::Result;
-use moqtail::model::control::constant::PublishDoneStatusCode;
+use moqtail::model::control::constant::{FilterType, PublishDoneStatusCode};
 use moqtail::model::control::publish_done::PublishDone;
 use moqtail::model::control::request_error::RequestError;
 use moqtail::model::control::request_ok::RequestOk;
@@ -375,6 +375,7 @@ pub(crate) async fn plan_switch(
   client: &Arc<MOQTClient>,
   context: &Arc<SessionContext>,
   activating_request_id: u64,
+  activating: &FullTrackName,
   parameters: &[MessageParameter],
 ) -> Result<Option<SwitchPlan>, RequestError> {
   let Some(MessageParameter::SwitchFrom {
@@ -421,11 +422,15 @@ pub(crate) async fn plan_switch(
   // less to stop.
   let suspending = subscription.read().await.full_track_name.clone();
 
-  Ok(Some(SwitchPlan {
-    suspending,
-    mode,
-    publish_done,
-  }))
+  // One subscription per track per subscriber, so switching to the track being
+  // switched away from would have it suspend itself.
+  if suspending == *activating {
+    return Err(invalid(
+      "a subscription cannot switch away from its own track",
+    ));
+  }
+
+  Ok(Some(SwitchPlan::new(suspending, mode, publish_done)))
 }
 
 async fn handle_subscribe_message(
@@ -442,18 +447,25 @@ async fn handle_subscribe_message(
   // A SUBSCRIBE carrying SWITCH_FROM activates this subscription and suspends
   // another. Checked first: a switch that cannot be performed is refused without
   // creating anything.
-  let switch_plan =
-    match plan_switch(&client, &context, sub.request_id, &sub.subscribe_parameters).await {
-      Ok(plan) => plan,
-      Err(err) => {
-        info!(
-          "Rejecting SUBSCRIBE with SWITCH_FROM: {}",
-          err.reason_phrase.as_str()
-        );
-        stream_handler.send_impl(&err).await.unwrap();
-        return Ok(());
-      }
-    };
+  let switch_plan = match plan_switch(
+    &client,
+    &context,
+    sub.request_id,
+    &full_track_name,
+    &sub.subscribe_parameters,
+  )
+  .await
+  {
+    Ok(plan) => plan,
+    Err(err) => {
+      info!(
+        "Rejecting SUBSCRIBE with SWITCH_FROM: {}",
+        err.reason_phrase.as_str()
+      );
+      stream_handler.send_impl(&err).await.unwrap();
+      return Ok(());
+    }
+  };
   let is_switch = is_switch || switch_plan.is_some();
 
   // Reserved namespaces are resolved locally and never forwarded upstream.
@@ -680,22 +692,29 @@ async fn handle_subscribe_message(
   if res.is_ok()
     && let Some(plan) = switch_plan
   {
-    info!(
-      "switch: {:?} activating, {:?} suspending on {:?}",
-      full_track_name, plan.suspending, plan.mode
-    );
-    client
-      .switch_context
-      .add_or_update_switch_item(plan.suspending.clone(), SwitchStatus::Current)
-      .await;
-    client
-      .switch_context
-      .add_or_update_switch_item(full_track_name.clone(), SwitchStatus::Next)
-      .await;
-    client
-      .switch_context
-      .set_plan(full_track_name.clone(), plan)
-      .await;
+    // Scoped: begin_switch reaches for locks of its own, and the track guard must
+    // be gone before it does.
+    let subscription = {
+      let track = track_arc.read().await;
+      track.get_subscription(client.connection_id).await
+    };
+    if let Some(subscription) = subscription {
+      // A SUBSCRIBE describes the subscription in full, so a filter it leaves out
+      // is the default rather than whatever the reused subscription had.
+      let filter = sub
+        .subscribe_parameters
+        .iter()
+        .find(|p| matches!(p, MessageParameter::SubscriptionFilter { .. }))
+        .cloned()
+        .unwrap_or_else(|| {
+          MessageParameter::new_subscription_filter(FilterType::LatestObject, None, None)
+        });
+      subscription
+        .read()
+        .await
+        .begin_switch(plan, Some(&filter))
+        .await;
+    }
   }
 
   // Store in client's subscribe requests on success
@@ -1033,29 +1052,16 @@ pub async fn handle_request_update(
   let asks_for_a_fill = update_msg.parameters.iter().any(
     |p| matches!(p, MessageParameter::SubscriptionFilter { filter_type, .. } if filter_type.is_fetch_fill()),
   );
-  let switch_plan =
-    match plan_switch(&client, &context, existing_req_id, &update_msg.parameters).await {
-      Ok(plan) => plan,
-      Err(err) => {
-        info!(
-          "Rejecting REQUEST_UPDATE with SWITCH_FROM: {}",
-          err.reason_phrase.as_str()
-        );
-        let _ = stream_handler.send_impl(&err).await;
-        return Ok(());
-      }
-    };
+  // The update itself is handed on to the subscription, so a switch's filter is
+  // kept here rather than read back off it.
+  let update_parameters = update_msg.parameters.clone();
 
+  // Read before anything is applied: a refused switch must leave the subscription
+  // as it was.
   let full_track_name = {
-    let mut client_requests = client.subscribe_requests.write().await;
-    match client_requests.get_mut(&existing_req_id) {
-      Some(req) => {
-        apply_message_parameter_update(
-          &mut req.original_subscribe_request.subscribe_parameters,
-          update_msg.parameters.clone(),
-        );
-        req.original_subscribe_request.get_full_track_name()
-      }
+    let client_requests = client.subscribe_requests.read().await;
+    match client_requests.get(&existing_req_id) {
+      Some(req) => req.original_subscribe_request.get_full_track_name(),
       None => {
         warn!(
           "RequestUpdate existing_request_id {} is not a valid Subscribe request for this client",
@@ -1065,6 +1071,36 @@ pub async fn handle_request_update(
       }
     }
   };
+
+  let switch_plan = match plan_switch(
+    &client,
+    &context,
+    existing_req_id,
+    &full_track_name,
+    &update_msg.parameters,
+  )
+  .await
+  {
+    Ok(plan) => plan,
+    Err(err) => {
+      info!(
+        "Rejecting REQUEST_UPDATE with SWITCH_FROM: {}",
+        err.reason_phrase.as_str()
+      );
+      let _ = stream_handler.send_impl(&err).await;
+      return Ok(());
+    }
+  };
+
+  {
+    let mut client_requests = client.subscribe_requests.write().await;
+    if let Some(req) = client_requests.get_mut(&existing_req_id) {
+      apply_message_parameter_update(
+        &mut req.original_subscribe_request.subscribe_parameters,
+        update_msg.parameters.clone(),
+      );
+    }
+  }
 
   {
     let mut inbound = client.inbound_requests.write().await;
@@ -1115,22 +1151,20 @@ pub async fn handle_request_update(
       let _ = stream_handler.send_impl(&ok_msg).await;
 
       if let Some(plan) = switch_plan {
-        info!(
-          "switch: {:?} activating by update, {:?} suspending on {:?}",
-          full_track_name, plan.suspending, plan.mode
-        );
-        client
-          .switch_context
-          .add_or_update_switch_item(plan.suspending.clone(), SwitchStatus::Current)
-          .await;
-        client
-          .switch_context
-          .add_or_update_switch_item(full_track_name.clone(), SwitchStatus::Next)
-          .await;
-        client
-          .switch_context
-          .set_plan(full_track_name.clone(), plan)
-          .await;
+        // Scoped: begin_switch reaches for locks of its own, and the track guard
+        // must be gone before it does.
+        let subscription = {
+          let track = track_arc.read().await;
+          track.get_subscription(client.connection_id).await
+        };
+        if let Some(subscription) = subscription {
+          // An update changes only what it carries, so a filter it leaves out
+          // leaves the subscription's own in place.
+          let filter = update_parameters
+            .iter()
+            .find(|p| matches!(p, MessageParameter::SubscriptionFilter { .. }));
+          subscription.read().await.begin_switch(plan, filter).await;
+        }
       }
 
       // An update that names a fill filter type asks for another fill, over

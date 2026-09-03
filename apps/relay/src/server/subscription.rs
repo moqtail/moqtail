@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::server::client::MOQTClient;
-use crate::server::client::switch_context::{SwitchPlan, SwitchStatus};
+use crate::server::client::switch_context::{SwitchActivation, SwitchPlan};
 use crate::server::config::AppConfig;
 use crate::server::message_handlers::fetch_handler::FetchStop;
 use crate::server::object_logger::ObjectLogger;
@@ -94,6 +94,10 @@ pub struct SubscriptionState {
   pub soft_suspended: bool,
   /// Whether reaching the end of that drain also sends PUBLISH_DONE.
   pub publish_done_at_end: bool,
+  /// Set on a subscription a switch is suspending. Its boundary only takes
+  /// effect once this reports the activating subscription has delivered, so a
+  /// switch to a track that never publishes does not cut delivery off.
+  pub switch_activated: Option<SwitchActivation>,
   pub subscribe_parameters: Vec<MessageParameter>,
   pub last_sent_max_location: Option<Location>,
   pub last_received_object_location: Option<Location>,
@@ -111,6 +115,17 @@ impl SubscriptionState {
         self.last_sent_max_location = Some(location);
       }
     }
+  }
+
+  /// Whether a switch has given this subscription a boundary that is not in
+  /// force yet, because the subscription taking over has still delivered
+  /// nothing. Holding the boundary keeps this track running rather than leaving
+  /// the subscriber with neither.
+  pub fn awaiting_switch_activation(&self) -> bool {
+    self
+      .switch_activated
+      .as_ref()
+      .is_some_and(|activation| !activation.is_set())
   }
 
   pub fn update_last_received_object_location(&mut self, location: Location) {
@@ -200,6 +215,7 @@ impl From<SubscriptionOrigin> for SubscriptionState {
           relative_previous,
           soft_suspended: false,
           publish_done_at_end: false,
+          switch_activated: None,
           subscribe_parameters: subscribe.subscribe_parameters,
           last_sent_max_location: None,
           last_received_object_location: None,
@@ -275,6 +291,7 @@ impl From<SubscriptionOrigin> for SubscriptionState {
           relative_previous,
           soft_suspended: false,
           publish_done_at_end: false,
+          switch_activated: None,
           subscribe_parameters: publish.parameters,
           last_sent_max_location: None,
           last_received_object_location: None,
@@ -327,7 +344,9 @@ pub struct Subscription {
   client_connection_id: usize,
   object_logger: ObjectLogger,
   config: &'static AppConfig,
-  check_switch_context_on_next_object: Arc<AtomicBool>,
+  /// Set on the activating subscription of a switch, until it delivers the
+  /// object that completes it.
+  pending_switch: Arc<AtomicBool>,
   /// Subgroup header cached while forward=false. Cleared when forward becomes true (stream opened)
   /// or when a new group starts (old group ended without forward ever becoming true).
   pending_header: Arc<Mutex<Option<(StreamId, HeaderInfo)>>>,
@@ -375,7 +394,7 @@ impl Subscription {
       client_connection_id,
       object_logger: ObjectLogger::new(log_folder),
       config,
-      check_switch_context_on_next_object: Arc::new(AtomicBool::new(false)),
+      pending_switch: Arc::new(AtomicBool::new(false)),
       pending_header: Arc::new(Mutex::new(None)),
       active_subgroup_headers,
       alias_announced: Arc::new(AtomicBool::new(false)),
@@ -690,42 +709,100 @@ impl Subscription {
     }
   }
 
-  // Notify the subscription to check the switch context on the next object
-  pub async fn notify_switch(&self) {
+  /// Schedules a switch on this, the subscription it activates.
+  ///
+  /// `filter` is applied here rather than only at creation, because a switch back
+  /// to a track reuses the subscription that track already has, whose filter is
+  /// the one from last time. A SUBSCRIBE describes a subscription in full and so
+  /// always carries one; a REQUEST_UPDATE passes one only where it changes it.
+  ///
+  /// A Start Group is a boundary both sides can act on straight away: this
+  /// subscription's filter drops everything before it, and the suspending one is
+  /// told to stop there. Without one there is nothing to schedule, and the
+  /// boundary becomes the first group this subscription delivers.
+  pub async fn begin_switch(&self, mut plan: SwitchPlan, filter: Option<&MessageParameter>) {
+    {
+      let mut state = self.subscription_state.write().await;
+      if let Some(MessageParameter::SubscriptionFilter {
+        filter_type,
+        start_location,
+        end_group,
+        relative_previous,
+      }) = filter
+      {
+        state.filter_type = *filter_type;
+        state.start_location = start_location.clone();
+        state.end_group = end_group.unwrap_or(0);
+        state.relative_previous = *relative_previous;
+      }
+      // A switch activates the subscription it arrives on; SWITCH_FROM cannot be
+      // combined with FORWARD, so nothing else decides this.
+      state.forward = true;
+      // Whatever a previous switch left behind is not this one's business.
+      state.soft_suspended = false;
+      state.publish_done_at_end = false;
+      state.switch_activated = None;
+      plan.boundary = state.start_location.as_ref().map(|start| start.group);
+    }
+
     info!(
-      "Notifying subscription to check switch context on next object for subscriber={} relay_track_id={}",
-      self.client_connection_id, self.relay_track_id
+      "switch: {:?} activating for subscriber {} ({:?}, boundary {:?})",
+      self.full_track_name, self.client_connection_id, plan.mode, plan.boundary
     );
+
+    if let Some(boundary) = plan.boundary {
+      self.suspend_at(&plan, boundary).await;
+    }
+
+    // A hard switch cuts on that first delivery, and a boundary nobody supplied
+    // is discovered there too.
     self
-      .check_switch_context_on_next_object
-      .store(true, std::sync::atomic::Ordering::Relaxed);
+      .subscriber
+      .switch_context
+      .set_plan(self.full_track_name.clone(), plan)
+      .await;
+    self.pending_switch.store(true, Ordering::Relaxed);
   }
 
-  /// Stops the subscription a switch suspends, at the moment the activating one is
-  /// ready to take over.
+  /// Tells the subscription this switch suspends where to stop.
   ///
-  /// A hard switch cuts: Forward State 0 and every stream it still has open is
-  /// reset, fill fetch streams included. Objects already in flight can still
-  /// arrive. PUBLISH_DONE follows only if the switch asked for it.
-  ///
-  /// A soft switch instead lets it run out: its End Group becomes the group before
-  /// the activating subscription's Start Group, so the two are contiguous, and its
-  /// streams — fill fetch streams included — are left to finish. There is no group
-  /// before group 0, so a Start Group of 0 leaves nothing to drain and cuts.
-  async fn stop_suspending_subscription(&self, plan: &SwitchPlan, start_group: u64) {
-    let Some(weak) = self
-      .subscriber
-      .subscriptions
-      .get_subscription(&plan.suspending)
-      .await
-    else {
-      warn!(
-        "switch: no subscription left to suspend for {:?} on subscriber {}",
-        plan.suspending, self.client_connection_id
-      );
+  /// Soft leaves it delivering up to the group before the boundary, so the two
+  /// tracks meet without a hole, and leaves its streams — fill fetch streams
+  /// included — to finish. Hard is not scheduled: it is cut in
+  /// [`Self::cut_suspending`] when the activating subscription first delivers,
+  /// the earliest moment at which stopping the old track does not leave the
+  /// subscriber with nothing. There is no group before group 0, so a boundary of
+  /// 0 leaves nothing to drain and cuts as well.
+  async fn suspend_at(&self, plan: &SwitchPlan, boundary: u64) {
+    if plan.mode != SwitchMode::Soft || boundary == 0 {
+      return;
+    }
+    let Some(suspending) = self.find_suspending(plan).await else {
       return;
     };
-    let Some(suspending) = weak.upgrade() else {
+    let suspending = suspending.read().await;
+    let mut state = suspending.subscription_state.write().await;
+    state.soft_suspended = true;
+    // A switch can only bring the end forward: a subscription that already asked
+    // to stop earlier still stops there.
+    state.end_group = match state.end_group {
+      0 => boundary - 1,
+      existing => existing.min(boundary - 1),
+    };
+    state.publish_done_at_end = plan.publish_done;
+    state.switch_activated = Some(plan.activated.clone());
+    info!(
+      "switch: draining {:?} for subscriber {} up to group {}",
+      plan.suspending, self.client_connection_id, state.end_group
+    );
+  }
+
+  /// Stops the subscription a hard switch suspends: Forward State 0 and every
+  /// stream it still has open is reset, fill fetch streams included. Objects
+  /// already in flight can still arrive. PUBLISH_DONE follows only if the switch
+  /// asked for it.
+  async fn cut_suspending(&self, plan: &SwitchPlan) {
+    let Some(suspending) = self.find_suspending(plan).await else {
       return;
     };
     let suspending = suspending.read().await;
@@ -734,21 +811,6 @@ impl Subscription {
       "switch: suspending {:?} for subscriber {} ({:?})",
       plan.suspending, self.client_connection_id, plan.mode
     );
-
-    // A soft switch resets nothing here: the subscription keeps its streams and any
-    // fill still running, and delivers up to the boundary. `finish_soft_drain`
-    // closes them once it gets there.
-    if plan.mode == SwitchMode::Soft && start_group > 0 {
-      let mut state = suspending.subscription_state.write().await;
-      state.soft_suspended = true;
-      state.end_group = start_group - 1;
-      state.publish_done_at_end = plan.publish_done;
-      info!(
-        "switch: draining {:?} for subscriber {} up to group {}",
-        plan.suspending, self.client_connection_id, state.end_group
-      );
-      return;
-    }
 
     suspending.subscription_state.write().await.forward = false;
     suspending.stop_fill_streams(FetchStop::Cancelled).await;
@@ -771,21 +833,67 @@ impl Subscription {
     }
   }
 
+  async fn find_suspending(&self, plan: &SwitchPlan) -> Option<Arc<RwLock<Subscription>>> {
+    let Some(weak) = self
+      .subscriber
+      .subscriptions
+      .get_subscription(&plan.suspending)
+      .await
+    else {
+      warn!(
+        "switch: no subscription left to suspend for {:?} on subscriber {}",
+        plan.suspending, self.client_connection_id
+      );
+      return None;
+    };
+    weak.upgrade()
+  }
+
+  /// The activating subscription has delivered, so the switch has happened: the
+  /// suspending one can be stopped for good, and where no Start Group set a
+  /// boundary, the group just delivered is it.
+  async fn complete_switch(&self, delivered_group: u64) {
+    let Some(plan) = self
+      .subscriber
+      .switch_context
+      .take_plan(&self.full_track_name)
+      .await
+    else {
+      return;
+    };
+
+    // Releases the suspending subscription's boundary, which was held until the
+    // switch was known to be real.
+    plan.activated.mark();
+
+    info!(
+      "switch: {:?} delivering from group {} for subscriber {}",
+      self.full_track_name, delivered_group, self.client_connection_id
+    );
+
+    match plan.mode {
+      // Scheduled in begin_switch when a Start Group gave a boundary; otherwise
+      // this delivery is the boundary.
+      SwitchMode::Soft if plan.boundary.is_none() => {
+        self.suspend_at(&plan, delivered_group).await;
+      }
+      SwitchMode::Soft => {}
+      SwitchMode::Hard => self.cut_suspending(&plan).await,
+    }
+  }
+
   /// Ends a soft switch's drain: the suspending subscription has delivered
   /// everything up to its boundary, so its streams are closed and PUBLISH_DONE
   /// goes out if the switch asked for it.
   async fn finish_soft_drain(&self) {
-    {
+    let publish_done = {
       let mut state = self.subscription_state.write().await;
       if !state.soft_suspended {
         return;
       }
       state.soft_suspended = false;
       state.forward = false;
-    }
-
-    let publish_done = {
-      let mut state = self.subscription_state.write().await;
+      state.switch_activated = None;
       let wanted = state.publish_done_at_end;
       state.publish_done_at_end = false;
       wanted
@@ -810,159 +918,6 @@ impl Subscription {
         );
       }
       self.finish().await;
-    }
-  }
-
-  async fn check_switch_context(&self, object_location: &Location) -> bool {
-    // if the object is after the end group, finish the subscription
-    let status = self
-      .subscriber
-      .switch_context
-      .get_switch_status(&self.full_track_name)
-      .await;
-
-    if status.is_none() {
-      // not in a switch context, always forward
-      return true;
-    }
-
-    let status = status.unwrap();
-
-    match status {
-      SwitchStatus::Next => {
-        // check whether the group id of this track
-        // is equal to or greater than the one of
-        // the switch context's current track
-        // if so, set this track as current
-        let mut switch_at_next_group = false;
-        let mut new_start_location = None;
-
-        // The subscriber can ask to switch at a future group. Forwarding begins at the
-        // group after this object, so until that reaches the requested start group the
-        // switch is not due and the track being switched away from keeps delivering.
-        let requested_start = { self.subscription_state.read().await.start_location.clone() };
-        let before_requested_start = requested_start
-          .as_ref()
-          .is_some_and(|start| object_location.group + 1 < start.group);
-
-        if before_requested_start {
-          switch_at_next_group = false;
-        } else if let Some(current_track_name) = self.subscriber.switch_context.get_current().await
-        {
-          let current_subscription_opt = self
-            .subscriber
-            .subscriptions
-            .get_subscription(&current_track_name)
-            .await;
-
-          if let Some(current_subscription) = current_subscription_opt
-            && let Some(current_subscription) = current_subscription.upgrade()
-          {
-            let current_subscription = current_subscription.read().await;
-            let current_state = current_subscription.subscription_state.read().await;
-            let last_sent_max_location = current_state.last_sent_max_location.clone();
-
-            if let Some(loc) = last_sent_max_location {
-              switch_at_next_group = object_location.group >= loc.group;
-              let mut loc_clone = loc.clone();
-              // We modify the start location of the subscriptions to manage the switch context
-              // that's why we always set to next in a switch because this may not be the first switch
-              loc_clone.group += 1; // switch at the next group after the last sent max location of the current track
-              loc_clone.object = 0; // reset object id to 0 to read from the start of the group
-              new_start_location = Some(loc_clone);
-            } else {
-              // if there is no last sent location, we can switch
-              switch_at_next_group = true;
-            }
-          }
-        } else {
-          // no current track, we can switch
-          switch_at_next_group = true;
-        }
-
-        if switch_at_next_group {
-          // set this track as current
-          let subscriber = self.subscriber.clone();
-          let full_track_name = self.full_track_name.clone();
-
-          // the following method also sets the current active track's status to None if any
-          info!(
-            "check_switch_context: Setting track to Current for subscriber={} relay_track_id={} object location group: {}",
-            self.client_connection_id, self.relay_track_id, object_location.group
-          );
-          subscriber
-            .switch_context
-            .add_or_update_switch_item(full_track_name.clone(), SwitchStatus::Current)
-            .await;
-
-          // set forward to true and set start group the next group
-          let mut state = self.subscription_state.write().await;
-          state.forward = true;
-
-          // We only get here once:
-          //   suspend track's subscription's object group + 1
-          //     >= resume track's requested start group (comes in the subscribe message)
-          // so the start group set below is the requested one or later. Say the
-          // subscriber asks to start at group 20 and the suspend track is sending
-          // group 19: the resume track starts at group 20.
-          if new_start_location.is_some() {
-            state.start_location = new_start_location;
-          } else {
-            state.start_location = Some(Location {
-              object: 0,
-              group: object_location.group + 1,
-            });
-          }
-
-          state.end_group = 0; // remove end group limit
-
-          let start_group = state.start_location.as_ref().unwrap().group;
-          info!(
-            "check_switch_context: Will forward objects for subscriber={} relay_track_id={} starting from group: {}",
-            self.client_connection_id, self.relay_track_id, start_group
-          );
-          drop(state);
-
-          // The activating subscription is ready to publish from the Start Group,
-          // so this is the moment the suspending one stops.
-          if let Some(plan) = subscriber.switch_context.take_plan(&full_track_name).await {
-            self.stop_suspending_subscription(&plan, start_group).await;
-          }
-        } else {
-          // Do not forward objects for Next status until switch condition is met
-          // set forward to false if it is true
-          if self.is_forwarding().await {
-            info!(
-              "check_switch_context: Setting forward to false for Next track for subscriber={} relay_track_id={} object location group: {}",
-              self.client_connection_id, self.relay_track_id, object_location.group
-            );
-            self.subscription_state.write().await.forward = false;
-          }
-        }
-        // even if the switch_at_next_group is true,
-        // we return false here to wait for the next group to switch
-        false
-      }
-      SwitchStatus::Current => true,
-      SwitchStatus::None => {
-        // A soft switch already told this subscription where to stop, and it keeps
-        // delivering until it gets there.
-        if self.subscription_state.read().await.soft_suspended {
-          return true;
-        }
-        // set forward to false if it is true
-        if self.is_forwarding().await {
-          info!(
-            "check_switch_context: Setting end group to {} for None track for subscriber={} relay_track_id={}",
-            object_location.group, self.client_connection_id, self.relay_track_id
-          );
-          let mut state = self.subscription_state.write().await;
-          state.forward = false;
-          state.end_group = object_location.group;
-        }
-
-        false
-      }
     }
   }
 
@@ -1071,28 +1026,6 @@ impl Subscription {
           state.update_last_received_object_location(object.location.clone());
         }
 
-        // Check switch context state if needed
-        // Whether when a new header is received or when notified about a switch context change
-        let check_switch = self
-          .check_switch_context_on_next_object
-          .load(std::sync::atomic::Ordering::Relaxed);
-        if header_info.is_some() || check_switch {
-          if check_switch {
-            self
-              .check_switch_context_on_next_object
-              .store(false, std::sync::atomic::Ordering::Relaxed);
-          }
-          // Check whether this track is in a switch context and update forward state
-          if !self.check_switch_context(&object.location).await {
-            // if this returns false, do not start the stream
-            info!(
-              "Not forwarding object for subscriber={} relay_track_id={} due to switch context state",
-              self.client_connection_id, self.relay_track_id
-            );
-            return;
-          }
-        }
-
         let object_received_time = utils::passed_time_since_start();
 
         {
@@ -1107,7 +1040,10 @@ impl Subscription {
             return;
           }
 
-          if state.end_group > 0 && object.location.group > state.end_group {
+          if state.end_group > 0
+            && object.location.group > state.end_group
+            && !state.awaiting_switch_activation()
+          {
             trace!(
               "Object beyond end group for subscriber={} relay_track_id={} object location: {:?} end group: {}",
               self.client_connection_id, self.relay_track_id, object.location, state.end_group
@@ -1252,6 +1188,12 @@ impl Subscription {
               .write()
               .await
               .update_last_sent_max_location(object.location.clone());
+
+            // Delivering is what makes a switch real, so it is what stops the
+            // track being switched away from.
+            if self.pending_switch.swap(false, Ordering::Relaxed) {
+              self.complete_switch(object.location.group).await;
+            }
           }
 
           if self.config.enable_object_logging {
@@ -1303,7 +1245,10 @@ impl Subscription {
             return;
           }
 
-          if state.end_group > 0 && location.group > state.end_group {
+          if state.end_group > 0
+            && location.group > state.end_group
+            && !state.awaiting_switch_activation()
+          {
             trace!(
               "Datagram beyond end group for subscriber={} relay_track_id={} object location: {:?} end group: {}",
               self.client_connection_id, self.relay_track_id, location, state.end_group
@@ -1331,6 +1276,15 @@ impl Subscription {
               .await
             {
               error!("Failed to write datagram: {:?}", e);
+            } else {
+              self
+                .subscription_state
+                .write()
+                .await
+                .update_last_sent_max_location(location.clone());
+              if self.pending_switch.swap(false, Ordering::Relaxed) {
+                self.complete_switch(location.group).await;
+              }
             }
           }
           Err(e) => {

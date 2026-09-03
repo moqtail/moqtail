@@ -395,7 +395,12 @@ async fn receive_datagrams(
                 continue;
               }
 
-              let sequence_ok = stats.record_object(obj.group_id, obj.object_id);
+              let sequence_ok = stats.record_object(
+                obj.track_alias,
+                obj.group_id,
+                obj.object_id,
+                ReceptionStats::prior_group_gap(obj.properties.as_ref()),
+              );
 
               if should_log(stats.total_received) || !sequence_ok {
                 info!(
@@ -479,7 +484,12 @@ async fn receive_streams(
             let (next_handler, object) = handler.next_object().await;
             match object {
               Some(obj) => {
-                let sequence_ok = stats.record_object(obj.location.group, obj.location.object);
+                let sequence_ok = stats.record_object(
+                  obj.track_alias,
+                  obj.location.group,
+                  obj.location.object,
+                  ReceptionStats::prior_group_gap(obj.properties.as_ref()),
+                );
                 let label = alias_to_label
                   .get(&obj.track_alias)
                   .map(|s| s.as_str())

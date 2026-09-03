@@ -862,6 +862,9 @@ impl Session {
     let mut track_alias = 0u64;
     let mut stream_id: Option<StreamId> = None;
     let mut current_track: Option<Arc<RwLock<Track>>> = None;
+    // Only subgroup streams count toward the Stream Count a publisher reports in
+    // PUBLISH_DONE; a fetch stream answers a request of the relay's own.
+    let mut is_subgroup_stream = false;
     // Used if this stream is a response to an upstream fetch the relay issued.
     let mut upstream_sender: Option<
       tokio::sync::mpsc::Sender<super::session_context::UpstreamFetchEvent>,
@@ -892,6 +895,7 @@ impl Session {
               HeaderInfo::Subgroup { header } => {
                 trace!("received Subgroup header: {:?}", header);
                 track_alias = header.track_alias;
+                is_subgroup_stream = true;
               }
               HeaderInfo::Fetch {
                 header,
@@ -979,7 +983,7 @@ impl Session {
           object_count += 1;
           first_object = false; // reset the first object flag after processing the header
         }
-        (_, None) => {
+        (handler, None) => {
           // error!("Failed to receive object: {:?}", e);
           debug!(
             "no more objects in the stream client: {} track: {} stream_id: {:?} objects: {}",
@@ -996,13 +1000,36 @@ impl Session {
               .await;
           }
 
+          // A subgroup stream that carried no object never resolved its track above,
+          // yet its publisher still counts it. Resolve it from the header so the
+          // count a PUBLISH_DONE is waiting on can reach the number it names.
+          if current_track.is_none()
+            && let Some(HeaderInfo::Subgroup { header }) = handler.get_header_info().await
+          {
+            is_subgroup_stream = true;
+            track_alias = header.track_alias;
+            current_track = context
+              .track_manager
+              .resolve_track_by_alias(
+                context.connection_id,
+                track_alias,
+                context.server_config.track_alias_resolution_timeout,
+              )
+              .await;
+          }
+
           // Close the stream for all subscribers
           if let Some(track_lock) = &current_track {
-            return track_lock
-              .read()
-              .await
-              .stream_closed(&stream_id.unwrap())
-              .await;
+            let track = track_lock.read().await;
+            if is_subgroup_stream {
+              track
+                .publisher_stream_progress
+                .stream_closed(context.connection_id)
+                .await;
+            }
+            if let Some(stream_id) = &stream_id {
+              return track.stream_closed(stream_id).await;
+            }
           }
           break;
         }

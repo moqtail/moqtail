@@ -1,5 +1,5 @@
 window.appSettings = {
-  relayUrl: 'https://localhost:4433',
+  relayUrl: 'moqt://localhost:4433',
   videoEncoderConfig: {
     codec: 'avc1.42E01F',
     width: 640,

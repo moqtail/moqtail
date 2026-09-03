@@ -140,6 +140,12 @@ pub struct Cli {
   /// queue meanwhile; once it elapses they are forwarded regardless.
   #[arg(long, default_value_t = 3000)]
   pub downstream_alias_timeout_ms: u64,
+  /// How long a PUBLISH_DONE waits for the data streams it accounts for to finish
+  /// arriving before the track is torn down anyway. The message rides the request
+  /// stream and overtakes them, so forwarding it straight through would cut objects
+  /// still in flight.
+  #[arg(long, default_value_t = 2000)]
+  pub publish_done_stream_timeout_ms: u64,
   /// How many recent groups of Object ids are remembered per track, to drop duplicates
   /// when several publishers serve the same Track. 0 turns duplicate detection off.
   /// Capped, because the memory this costs also scales with the size of a group
@@ -181,6 +187,10 @@ pub struct AppConfig {
   /// A subscriber cannot place a data stream until it has the track alias. Forwarding
   /// waits this long for the control message carrying it, then proceeds regardless.
   pub downstream_alias_timeout: Duration,
+  /// A publisher's PUBLISH_DONE is held until the data streams it accounts for have
+  /// finished arriving. This bounds that wait, so a stream that never ends cannot
+  /// keep the track alive forever.
+  pub publish_done_stream_timeout: Duration,
   /// Groups of Object ids retained per track for duplicate detection. Bounds what that
   /// costs; a publisher more than this many groups behind can slip a duplicate through.
   pub dedup_retained_groups: usize,
@@ -189,39 +199,40 @@ pub struct AppConfig {
 impl AppConfig {
   pub fn load() -> &'static Self {
     static INSTANCE: OnceLock<AppConfig> = OnceLock::new();
-    INSTANCE.get_or_init(|| {
-      let cli = Cli::parse();
-      AppConfig {
-        port: cli.port,
-        host: cli.host,
-        cert_file: cli.cert_file,
-        key_file: cli.key_file,
-        max_idle_timeout: cli.max_idle_timeout,
-        keep_alive_interval: cli.keep_alive_interval,
-        cache_size: cli.cache_size,
-        log_folder: cli.log_folder,
-        cache_expiration_type: cli.cache_expiration_type,
-        cache_expiration_minutes: cli.cache_expiration_minutes,
-        enable_object_logging: cli.enable_object_logging,
-        enable_token_logging: cli.enable_token_logging,
-        token_log_path: cli.token_log_path,
-        io_sockets: cli.io_sockets,
-        max_request_streams: cli.max_request_streams,
-        max_active_requests: cli.max_active_requests,
-        max_subscriber_lag: cli.max_subscriber_lag,
-        max_publish_streams: cli.max_publish_streams,
-        write_kbps_limit: cli.write_kbps_limit,
-        redirect_uri: cli.redirect_uri,
-        max_upstream_fetch_gaps: cli.max_upstream_fetch_gaps,
-        upstream_fetch_timeout: Duration::from_secs(cli.upstream_fetch_timeout_secs),
-        upstream_subscribe_timeout: Duration::from_secs(cli.upstream_subscribe_timeout_secs),
-        track_alias_resolution_timeout: Duration::from_millis(
-          cli.track_alias_resolution_timeout_ms,
-        ),
-        downstream_alias_timeout: Duration::from_millis(cli.downstream_alias_timeout_ms),
-        dedup_retained_groups: cli.dedup_retained_groups as usize,
-      }
-    })
+    INSTANCE.get_or_init(|| Self::from_cli(Cli::parse()))
+  }
+
+  /// The command line, resolved into the settings the relay runs on.
+  pub fn from_cli(cli: Cli) -> Self {
+    AppConfig {
+      port: cli.port,
+      host: cli.host,
+      cert_file: cli.cert_file,
+      key_file: cli.key_file,
+      max_idle_timeout: cli.max_idle_timeout,
+      keep_alive_interval: cli.keep_alive_interval,
+      cache_size: cli.cache_size,
+      log_folder: cli.log_folder,
+      cache_expiration_type: cli.cache_expiration_type,
+      cache_expiration_minutes: cli.cache_expiration_minutes,
+      enable_object_logging: cli.enable_object_logging,
+      enable_token_logging: cli.enable_token_logging,
+      token_log_path: cli.token_log_path,
+      io_sockets: cli.io_sockets,
+      max_request_streams: cli.max_request_streams,
+      max_active_requests: cli.max_active_requests,
+      max_subscriber_lag: cli.max_subscriber_lag,
+      max_publish_streams: cli.max_publish_streams,
+      write_kbps_limit: cli.write_kbps_limit,
+      redirect_uri: cli.redirect_uri,
+      max_upstream_fetch_gaps: cli.max_upstream_fetch_gaps,
+      upstream_fetch_timeout: Duration::from_secs(cli.upstream_fetch_timeout_secs),
+      upstream_subscribe_timeout: Duration::from_secs(cli.upstream_subscribe_timeout_secs),
+      track_alias_resolution_timeout: Duration::from_millis(cli.track_alias_resolution_timeout_ms),
+      downstream_alias_timeout: Duration::from_millis(cli.downstream_alias_timeout_ms),
+      publish_done_stream_timeout: Duration::from_millis(cli.publish_done_stream_timeout_ms),
+      dedup_retained_groups: cli.dedup_retained_groups as usize,
+    }
   }
 
   /// Builds the relay's QUIC listeners. WebTransport and raw-QUIC clients share the
@@ -377,6 +388,7 @@ mod tests {
       upstream_subscribe_timeout: Duration::from_secs(10),
       track_alias_resolution_timeout: Duration::from_millis(500),
       downstream_alias_timeout: Duration::from_millis(3000),
+      publish_done_stream_timeout: Duration::from_millis(2000),
       dedup_retained_groups: 30,
     }
   }

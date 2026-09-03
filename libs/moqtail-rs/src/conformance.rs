@@ -171,6 +171,62 @@ pub fn parameter_types() -> ParameterTypes {
   parse(fixture!("parameter_types.json"), "parameter_types.json")
 }
 
+/// `data_stream_types.json`: the two data-stream type bytes. These are bitfields
+/// rather than registries, so `valid` is exhaustive and everything else is rejected.
+#[derive(Debug, Deserialize)]
+pub struct DataStreamTypes {
+  pub subgroup_header: TypeByte,
+  pub object_datagram: TypeByte,
+}
+
+/// One type byte: the bits it is made of and every value those rules allow.
+#[derive(Debug, Deserialize)]
+pub struct TypeByte {
+  pub source: String,
+  pub bits: Vec<BitField>,
+  #[serde(default)]
+  pub subgroup_id_modes: Vec<Entry>,
+  pub rules: Vec<String>,
+  /// Exhaustive: a byte absent from this list must be rejected.
+  pub valid: Vec<String>,
+}
+
+impl TypeByte {
+  /// Every allowed byte, as numbers.
+  pub fn valid_bytes(&self) -> Vec<u8> {
+    self.valid.iter().map(|v| parse_hex(v) as u8).collect()
+  }
+
+  /// The mask of the named bit, panicking if the fixture has no such bit.
+  pub fn mask(&self, name: &str) -> u8 {
+    self
+      .bits
+      .iter()
+      .find(|b| b.name == name)
+      .unwrap_or_else(|| panic!("fixture has no bit named {name:?}"))
+      .mask_value() as u8
+  }
+}
+
+/// One named bit or bit group within a type byte.
+#[derive(Debug, Deserialize)]
+pub struct BitField {
+  pub name: String,
+  /// Hex string, e.g. `"0x06"`.
+  pub mask: String,
+  pub meaning: String,
+}
+
+impl BitField {
+  pub fn mask_value(&self) -> u64 {
+    parse_hex(&self.mask)
+  }
+}
+
+pub fn data_stream_types() -> DataStreamTypes {
+  parse(fixture!("data_stream_types.json"), "data_stream_types.json")
+}
+
 pub fn varint() -> Varint {
   parse(fixture!("varint.json"), "varint.json")
 }

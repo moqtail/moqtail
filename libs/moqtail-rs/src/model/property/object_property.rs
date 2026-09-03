@@ -126,6 +126,32 @@ pub fn deserialize_object_properties(bytes: &mut Bytes) -> Result<Vec<ObjectProp
     .collect()
 }
 
+pub fn validate_prior_gaps(
+  group_id: u64,
+  object_id: u64,
+  properties: Option<&[ObjectProperty]>,
+) -> Result<(), ParseError> {
+  let Some(properties) = properties else {
+    return Ok(());
+  };
+
+  for property in properties {
+    let (gap, id, scope) = match property {
+      ObjectProperty::PriorGroupIdGap { gap } => (*gap, group_id, "Group"),
+      ObjectProperty::PriorObjectIdGap { gap } => (*gap, object_id, "Object"),
+      _ => continue,
+    };
+    if gap > id {
+      return Err(ParseError::ProtocolViolation {
+        context: "validate_prior_gaps",
+        details: format!("Prior {scope} ID Gap {gap} is larger than the {scope} ID {id}"),
+      });
+    }
+  }
+
+  Ok(())
+}
+
 fn kvp_varint_value(kvp: &KeyValuePair, context: &'static str) -> Result<u64, ParseError> {
   match kvp {
     KeyValuePair::VarInt { value, .. } => Ok(*value),
@@ -203,6 +229,17 @@ mod tests {
       ObjectProperty::deserialize(outer).unwrap_err(),
       ParseError::ProtocolViolation { .. }
     ));
+  }
+
+  #[test]
+  fn test_prior_gap_larger_than_id_is_error() {
+    let props = [ObjectProperty::PriorObjectIdGap { gap: 8 }];
+    assert!(matches!(
+      validate_prior_gaps(3, 5, Some(&props)).unwrap_err(),
+      ParseError::ProtocolViolation { .. }
+    ));
+    // A gap reaching back exactly to zero is legal.
+    assert!(validate_prior_gaps(3, 8, Some(&props)).is_ok());
   }
 
   #[test]

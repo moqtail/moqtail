@@ -16,10 +16,9 @@ use crate::server::message_handlers::fetch_handler::{
   FetchDelivery, FetchStop, serve_fetch_stream,
 };
 use crate::server::session_context::SessionContext;
-use crate::server::subscription::{
-  DEFAULT_PUBLISHER_PRIORITY, Subscription, compute_stream_priority,
-};
+use crate::server::subscription::{DEFAULT_PUBLISHER_PRIORITY, Subscription};
 use crate::server::track::Track;
+use crate::server::utils::compute_stream_priority;
 use moqtail::model::common::location::Location;
 use moqtail::model::control::constant::{FilterType, GroupOrder};
 use moqtail::model::parameter::constant::MessageParameterType;

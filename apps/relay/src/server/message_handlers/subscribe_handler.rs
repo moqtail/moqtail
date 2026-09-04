@@ -694,9 +694,12 @@ async fn handle_subscribe_message(
   {
     // Scoped: begin_switch reaches for locks of its own, and the track guard must
     // be gone before it does.
-    let subscription = {
+    let (subscription, largest) = {
       let track = track_arc.read().await;
-      track.get_subscription(client.connection_id).await
+      (
+        track.get_subscription(client.connection_id).await,
+        track.largest_object().await,
+      )
     };
     if let Some(subscription) = subscription {
       // A SUBSCRIBE describes the subscription in full, so a filter it leaves out
@@ -712,7 +715,7 @@ async fn handle_subscribe_message(
       subscription
         .read()
         .await
-        .begin_switch(plan, Some(&filter))
+        .begin_switch(plan, Some(&filter), largest)
         .await;
     }
   }
@@ -1150,20 +1153,33 @@ pub async fn handle_request_update(
       let ok_msg = RequestOk::new(vec![]);
       let _ = stream_handler.send_impl(&ok_msg).await;
 
-      if let Some(plan) = switch_plan {
-        // Scoped: begin_switch reaches for locks of its own, and the track guard
-        // must be gone before it does.
-        let subscription = {
-          let track = track_arc.read().await;
-          track.get_subscription(client.connection_id).await
-        };
-        if let Some(subscription) = subscription {
-          // An update changes only what it carries, so a filter it leaves out
-          // leaves the subscription's own in place.
-          let filter = update_parameters
-            .iter()
-            .find(|p| matches!(p, MessageParameter::SubscriptionFilter { .. }));
-          subscription.read().await.begin_switch(plan, filter).await;
+      // Scoped: what follows reaches for locks of its own, and the track guard
+      // must be gone before it does.
+      let (subscription, largest) = {
+        let track = track_arc.read().await;
+        (
+          track.get_subscription(client.connection_id).await,
+          track.largest_object().await,
+        )
+      };
+
+      // An update changes only what it carries, so a filter it leaves out leaves
+      // the subscription's own in place.
+      let filter = update_parameters
+        .iter()
+        .find(|p| matches!(p, MessageParameter::SubscriptionFilter { .. }));
+
+      if let Some(subscription) = &subscription {
+        if let Some(plan) = switch_plan {
+          subscription
+            .read()
+            .await
+            .begin_switch(plan, filter, largest)
+            .await;
+        } else if filter.is_some() {
+          // A filter the update changed starts where it now says, which for a live
+          // one is against the largest Object as of this update.
+          subscription.read().await.resolve_live_start(largest).await;
         }
       }
 

@@ -301,30 +301,34 @@ impl From<SubscriptionOrigin> for SubscriptionState {
   }
 }
 
-/// The publisher priority assumed where a stream carries no single Object's own.
-pub(crate) const DEFAULT_PUBLISHER_PRIORITY: u8 = 128;
-
-/// Compute QUIC stream priority from MOQT scheduling parameters.
+/// The Start Location a subscription filter resolves to, or `None` where the
+/// filter carries its own and keeps it.
 ///
-/// The i32 space is divided into 65536 bands (one per sub_prio × pub_prio pair).
-/// Within each band, group_id determines relative position according to group_order:
-///   Ascending / Original – lower group_id = higher priority (counts down from band_max)
-///   Descending            – higher group_id = higher priority (counts up from band_min)
-pub(crate) fn compute_stream_priority(
-  sub_prio: u8,
-  pub_prio: u8,
-  group_order: GroupOrder,
-  group_id: u64,
-) -> i32 {
-  const BAND_SIZE: i64 = 65536;
-  let priority_index = (255 - sub_prio as i64) * 256 + (255 - pub_prio as i64);
-  let band_min = i32::MIN as i64 + priority_index * BAND_SIZE;
-  let group_slot = (group_id % BAND_SIZE as u64) as i64;
-  match group_order {
-    GroupOrder::Ascending | GroupOrder::Original => (band_min + BAND_SIZE - 1 - group_slot) as i32,
-    GroupOrder::Descending => (band_min + group_slot) as i32,
+/// The two live filters are stated relative to what the track has published
+/// already: Latest Object starts at the Object after the largest, Next Group
+/// Start at the group after it. A track that has published nothing starts at
+/// `{0,0}` either way, which delivers whatever comes next.
+pub(crate) fn live_start_location(
+  filter_type: FilterType,
+  largest: Option<Location>,
+) -> Option<Location> {
+  match filter_type {
+    FilterType::LatestObject => Some(match largest {
+      Some(largest) => Location::new(largest.group, largest.object + 1),
+      None => Location::new(0, 0),
+    }),
+    FilterType::NextGroupStart => Some(match largest {
+      Some(largest) => Location::new(largest.group + 1, 0),
+      None => Location::new(0, 0),
+    }),
+    FilterType::AbsoluteStartFill
+    | FilterType::AbsoluteRangeFill
+    | FilterType::RelativeStartFill => None,
   }
 }
+
+/// The publisher priority assumed where a stream carries no single Object's own.
+pub(crate) const DEFAULT_PUBLISHER_PRIORITY: u8 = 128;
 
 #[derive(Debug, Clone)]
 pub struct Subscription {
@@ -422,6 +426,23 @@ impl Subscription {
   /// A fill fetch stream counts towards PUBLISH_DONE Stream Count like any other.
   pub fn note_fill_stream_opened(&self) {
     self.opened_stream_count.fetch_add(1, Ordering::Relaxed);
+  }
+
+  /// Pins down where a live filter starts, now that the track's largest Object is
+  /// known. Latest Object and Next Group Start say where to begin only in terms of
+  /// that, so until this runs the subscription has no start at all and delivers
+  /// whatever arrives — mid-group for Next Group Start, which is the one thing it
+  /// asks not to happen.
+  pub async fn resolve_live_start(&self, largest: Option<Location>) {
+    let filter_type = self.subscription_state.read().await.filter_type;
+    let Some(start) = live_start_location(filter_type, largest) else {
+      return;
+    };
+    debug!(
+      "Start location for subscriber={} relay_track_id={} resolved to {:?} by {:?}",
+      self.client_connection_id, self.relay_track_id, start, filter_type
+    );
+    self.subscription_state.write().await.start_location = Some(start);
   }
 
   /// Called once the subscriber has been sent its track alias, releasing forwarding.
@@ -720,7 +741,12 @@ impl Subscription {
   /// subscription's filter drops everything before it, and the suspending one is
   /// told to stop there. Without one there is nothing to schedule, and the
   /// boundary becomes the first group this subscription delivers.
-  pub async fn begin_switch(&self, mut plan: SwitchPlan, filter: Option<&MessageParameter>) {
+  pub async fn begin_switch(
+    &self,
+    mut plan: SwitchPlan,
+    filter: Option<&MessageParameter>,
+    largest: Option<Location>,
+  ) {
     {
       let mut state = self.subscription_state.write().await;
       if let Some(MessageParameter::SubscriptionFilter {
@@ -731,7 +757,10 @@ impl Subscription {
       }) = filter
       {
         state.filter_type = *filter_type;
-        state.start_location = start_location.clone();
+        // A live filter says where to start only against the largest Object, and
+        // that is the boundary the switch then happens at.
+        state.start_location =
+          live_start_location(*filter_type, largest).or_else(|| start_location.clone());
         state.end_group = end_group.unwrap_or(0);
         state.relative_previous = *relative_previous;
       }
@@ -1350,7 +1379,7 @@ impl Subscription {
         let state = self.subscription_state.read().await;
         (state.subscriber_priority, state.group_order)
       };
-      let priority = compute_stream_priority(sub_prio, pub_prio, group_order, group_id);
+      let priority = utils::compute_stream_priority(sub_prio, pub_prio, group_order, group_id);
 
       let send_stream = match self
         .subscriber
@@ -1580,86 +1609,46 @@ impl Subscription {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use moqtail::model::control::constant::GroupOrder;
 
   #[test]
-  fn test_highest_priority_near_i32_max() {
-    let p = compute_stream_priority(0, 0, GroupOrder::Ascending, 0);
-    assert!(
-      p > 2_100_000_000,
-      "highest priority should be near i32::MAX, got {p}"
+  fn latest_object_starts_after_the_largest_object() {
+    assert_eq!(
+      live_start_location(FilterType::LatestObject, Some(Location::new(7, 3))),
+      Some(Location::new(7, 4))
     );
   }
 
   #[test]
-  fn test_lowest_priority_near_i32_min() {
-    let p = compute_stream_priority(255, 255, GroupOrder::Ascending, 0);
-    assert!(
-      p < -2_100_000_000,
-      "lowest priority should be near i32::MIN, got {p}"
+  fn next_group_start_starts_at_the_group_after_the_largest() {
+    assert_eq!(
+      live_start_location(FilterType::NextGroupStart, Some(Location::new(7, 3))),
+      Some(Location::new(8, 0))
     );
   }
 
   #[test]
-  fn test_ascending_lower_group_higher_priority() {
-    let p0 = compute_stream_priority(0, 0, GroupOrder::Ascending, 0);
-    let p1 = compute_stream_priority(0, 0, GroupOrder::Ascending, 1);
-    assert!(p0 > p1, "group 0 should outrank group 1 in Ascending order");
-  }
-
-  #[test]
-  fn test_descending_higher_group_higher_priority() {
-    let p0 = compute_stream_priority(0, 0, GroupOrder::Descending, 0);
-    let p1 = compute_stream_priority(0, 0, GroupOrder::Descending, 1);
-    assert!(
-      p1 > p0,
-      "group 1 should outrank group 0 in Descending order"
-    );
-  }
-
-  #[test]
-  fn test_original_same_as_ascending() {
-    for g in [0u64, 1, 100, 65535] {
+  fn a_track_with_nothing_published_starts_at_the_beginning() {
+    for filter_type in [FilterType::LatestObject, FilterType::NextGroupStart] {
       assert_eq!(
-        compute_stream_priority(10, 20, GroupOrder::Original, g),
-        compute_stream_priority(10, 20, GroupOrder::Ascending, g),
-        "Original should behave like Ascending for group {g}"
+        live_start_location(filter_type, None),
+        Some(Location::new(0, 0)),
+        "{filter_type:?} on an empty track"
       );
     }
   }
 
   #[test]
-  fn test_subscriber_priority_dominates() {
-    // sub=0,pub=255 must outrank sub=1,pub=0 regardless of group
-    let high = compute_stream_priority(0, 255, GroupOrder::Ascending, 0);
-    let low = compute_stream_priority(1, 0, GroupOrder::Ascending, 0);
-    assert!(
-      high > low,
-      "subscriber priority must dominate publisher priority"
-    );
-  }
-
-  #[test]
-  fn test_publisher_priority_tie_break() {
-    let high = compute_stream_priority(10, 0, GroupOrder::Ascending, 0);
-    let low = compute_stream_priority(10, 1, GroupOrder::Ascending, 0);
-    assert!(high > low, "lower pub_prio number = higher priority");
-  }
-
-  #[test]
-  fn test_all_values_within_i32_range() {
-    for sub in [0u8, 128, 255] {
-      for pub_ in [0u8, 128, 255] {
-        for &order in &[
-          GroupOrder::Ascending,
-          GroupOrder::Descending,
-          GroupOrder::Original,
-        ] {
-          for group in [0u64, 1, 65534, 65535, 65536, u64::MAX] {
-            let _ = compute_stream_priority(sub, pub_, order, group); // must not panic/overflow
-          }
-        }
-      }
+  fn a_fill_filter_keeps_the_start_location_it_carries() {
+    for filter_type in [
+      FilterType::AbsoluteStartFill,
+      FilterType::AbsoluteRangeFill,
+      FilterType::RelativeStartFill,
+    ] {
+      assert_eq!(
+        live_start_location(filter_type, Some(Location::new(7, 3))),
+        None,
+        "{filter_type:?} states its own start"
+      );
     }
   }
 }

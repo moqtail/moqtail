@@ -420,6 +420,14 @@ impl Track {
       )
       .await?;
 
+    // Where a live filter starts is stated against the largest Object, which only
+    // the track knows.
+    subscription
+      .read()
+      .await
+      .resolve_live_start(self.largest_object().await)
+      .await;
+
     Ok(subscription)
   }
 

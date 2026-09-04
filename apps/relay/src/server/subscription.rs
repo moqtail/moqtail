@@ -1069,9 +1069,13 @@ impl Subscription {
             return;
           }
 
-          if state.end_group > 0
-            && object.location.group > state.end_group
-            && !state.awaiting_switch_activation()
+          if state.end_group > 0 && object.location.group > state.end_group
+          // TODO: Stall will probably happen if the resume track does not arrive
+          // That's why the following condition was added
+          //   && !state.awaiting_switch_activation()
+          // However this causes extra data to be sent from the suspend track
+          // and disrupts the switch, so it is removed for now.
+          // Think about a better way to handle this.
           {
             trace!(
               "Object beyond end group for subscriber={} relay_track_id={} object location: {:?} end group: {}",

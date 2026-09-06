@@ -95,6 +95,10 @@ impl SwitchContext {
   pub async fn take_plan(&self, activating: &FullTrackName) -> Option<SwitchPlan> {
     self.plans.write().await.remove(activating)
   }
+
+  pub async fn get_plan(&self, full_track_name: &FullTrackName) -> Option<SwitchPlan> {
+    self.plans.read().await.get(full_track_name).cloned()
+  }
 }
 
 #[cfg(test)]

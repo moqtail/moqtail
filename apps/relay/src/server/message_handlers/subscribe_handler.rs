@@ -39,8 +39,8 @@ use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use moqtail::transport::data_stream_handler::SubscribeRequest;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use tokio::sync::oneshot;
 use tokio::sync::RwLock;
+use tokio::sync::oneshot;
 use tracing::{debug, error, info, warn};
 
 async fn add_subscription(
@@ -581,8 +581,12 @@ async fn handle_subscribe_message(
 
       // The spec starts switching-set subscriptions with Forward=0; keep this
       // subscription forwarding so the Object gating can select per group.
-      if let Some(subscription) =
-        track_arc.read().await.get_subscription(client.connection_id).await {
+      if let Some(subscription) = track_arc
+        .read()
+        .await
+        .get_subscription(client.connection_id)
+        .await
+      {
         let sub = subscription.read().await;
         let mut state = sub.subscription_state.write().await;
         state.forward = true;

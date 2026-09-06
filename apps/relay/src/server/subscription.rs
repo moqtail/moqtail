@@ -1069,13 +1069,9 @@ impl Subscription {
             return;
           }
 
-          if state.end_group > 0 && object.location.group > state.end_group
-          // TODO: Stall will probably happen if the resume track does not arrive
-          // That's why the following condition was added
-          //   && !state.awaiting_switch_activation()
-          // However this causes extra data to be sent from the suspend track
-          // and disrupts the switch, so it is removed for now.
-          // Think about a better way to handle this.
+          if state.end_group > 0
+            && object.location.group > state.end_group
+            && !state.awaiting_switch_activation()
           {
             trace!(
               "Object beyond end group for subscriber={} relay_track_id={} object location: {:?} end group: {}",
@@ -1098,6 +1094,57 @@ impl Subscription {
               let mut pending = self.pending_header.lock().await;
               *pending = Some((stream_id.clone(), header.clone()));
             }
+            return;
+          }
+        }
+
+        // if there is a pending switch, check the other track's largest location
+        // if it already sent passed the boundary, then we need to start from the next group
+        if self.pending_switch.swap(false, Ordering::Relaxed)
+          && let Some(plan) = self
+            .subscriber
+            .switch_context
+            .get_plan(&self.full_track_name)
+            .await
+          && let Some(suspending) = self.find_suspending(&plan).await
+        {
+          let suspend_last_loc = suspending
+            .read()
+            .await
+            .subscription_state
+            .read()
+            .await
+            .last_sent_max_location
+            .clone();
+
+          let mut stop = false;
+
+          if let Some(sus_last_loc) = suspend_last_loc
+            && sus_last_loc >= object.location
+          {
+            // update the start because we missed the boundary, suspend track
+            // subscription has already sent data
+            // for the next group, we take over
+            self.subscription_state.write().await.start_location =
+              Some(Location::new(sus_last_loc.group + 1, 0));
+
+            // change the end boundary of the suspend track
+            suspending
+              .read()
+              .await
+              .subscription_state
+              .write()
+              .await
+              .end_group = sus_last_loc.group;
+
+            stop = true;
+          }
+
+          // we complete the switch operation here
+          // the suspend track will be served up to loc.group (including)
+          self.complete_switch(object.location.group).await;
+
+          if stop {
             return;
           }
         }
@@ -1221,12 +1268,6 @@ impl Subscription {
               .write()
               .await
               .update_last_sent_max_location(object.location.clone());
-
-            // Delivering is what makes a switch real, so it is what stops the
-            // track being switched away from.
-            if self.pending_switch.swap(false, Ordering::Relaxed) {
-              self.complete_switch(object.location.group).await;
-            }
           }
 
           if self.config.enable_object_logging {

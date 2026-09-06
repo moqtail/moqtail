@@ -23,6 +23,8 @@ export enum SetupOptionType {
   /** Raw-QUIC only. Client-only; MUST NOT be sent over WebTransport (draft-18 §10.3.1.1). */
   Authority = 0x05,
   MoqtImplementation = 0x07,
+  /** SSTS algorithms this endpoint supports (draft-wilaw-moq-moqt-ssts, Section 3.1). */
+  SstsAlgorithms = 0x09,
 }
 
 export function setupOptionTypeFromNumber(value: number): SetupOptionType {
@@ -37,6 +39,8 @@ export function setupOptionTypeFromNumber(value: number): SetupOptionType {
       return SetupOptionType.Authority
     case 0x07:
       return SetupOptionType.MoqtImplementation
+    case 0x09:
+      return SetupOptionType.SstsAlgorithms
     default:
       throw new InvalidTypeError('setupOptionTypeFromNumber', `Invalid setup option type: ${value}`)
   }
@@ -61,6 +65,8 @@ export enum MessageParameterType {
    * varint its even Type implies.
    */
   TrackNamespacePrefix = 0x34,
+  /** Assigns a subscription to an SSTS switching set (draft-wilaw-moq-moqt-ssts). */
+  SwitchingSetAssignment = 0x41,
 }
 
 export function messageParameterTypeFromNumber(value: bigint | number): MessageParameterType {
@@ -92,6 +98,8 @@ export function messageParameterTypeFromNumber(value: bigint | number): MessageP
       return MessageParameterType.NewGroupRequest
     case 0x34:
       return MessageParameterType.TrackNamespacePrefix
+    case 0x41:
+      return MessageParameterType.SwitchingSetAssignment
     default:
       throw new InvalidTypeError('messageParameterTypeFromNumber', `Unknown message parameter type: ${value}`)
   }

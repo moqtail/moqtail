@@ -32,6 +32,7 @@ import { LargestObject } from './message/largest_object'
 import { NewGroupRequest } from './message/new_group_request'
 import { SubscriberPriority } from './message/subscriber_priority'
 import { SubscriptionFilter } from './message/subscription_filter'
+import { SwitchingSetAssignment } from './message/switching_set_assignment'
 
 export type MessageParameter =
   | ObjectDeliveryTimeout
@@ -46,6 +47,7 @@ export type MessageParameter =
   | GroupOrderParam
   | SubscriptionFilter
   | NewGroupRequest
+  | SwitchingSetAssignment
 
 export namespace MessageParameter {
   /**
@@ -66,7 +68,8 @@ export namespace MessageParameter {
       SubscriberPriority.fromKeyValuePair(pair) ??
       GroupOrderParam.fromKeyValuePair(pair) ??
       SubscriptionFilter.fromKeyValuePair(pair) ??
-      NewGroupRequest.fromKeyValuePair(pair)
+      NewGroupRequest.fromKeyValuePair(pair) ??
+      SwitchingSetAssignment.fromKeyValuePair(pair)
     )
   }
 
@@ -126,6 +129,10 @@ export namespace MessageParameter {
   export function isNewGroupRequest(param: MessageParameter): param is NewGroupRequest {
     return param instanceof NewGroupRequest
   }
+
+  export function isSwitchingSetAssignment(param: MessageParameter): param is SwitchingSetAssignment {
+    return param instanceof SwitchingSetAssignment
+  }
 }
 
 /**
@@ -182,6 +189,26 @@ export class MessageParameters {
 
   addNewGroupRequest(group: bigint | number): this {
     return this.add(new NewGroupRequest(BigInt(group)))
+  }
+
+  addSwitchingSetAssignment(
+    switchingSetId: bigint | number,
+    algorithmId: bigint | number,
+    throughputThresholdKbps: bigint | number,
+    setThroughputWeight: bigint | number,
+    activateSwitching: bigint | number,
+    setRank?: number,
+  ): this {
+    return this.add(
+      new SwitchingSetAssignment(
+        BigInt(switchingSetId),
+        BigInt(algorithmId),
+        BigInt(throughputThresholdKbps),
+        BigInt(setThroughputWeight),
+        BigInt(activateSwitching),
+        setRank ?? 0,
+      ),
+    )
   }
 
   build(): MessageParameter[] {

@@ -132,8 +132,9 @@ pub struct Cli {
   #[arg(long, default_value_t = 10)]
   pub upstream_subscribe_timeout_secs: u64,
   /// How long a data stream waits for the control message that establishes its track
-  /// alias before the stream is abandoned
-  #[arg(long, default_value_t = 500)]
+  /// alias before the stream is abandoned. Giving up costs the whole subgroup, so the
+  /// wait is generous; the subscriber side of the same race waits as long.
+  #[arg(long, default_value_t = 2000)]
   pub track_alias_resolution_timeout_ms: u64,
   /// How long forwarding waits for the control message that carries a subscriber's
   /// track alias (SUBSCRIBE_OK, or PUBLISH when the relay pushes) to be sent. Objects
@@ -386,7 +387,7 @@ mod tests {
       max_upstream_fetch_gaps: 10,
       upstream_fetch_timeout: Duration::from_secs(10),
       upstream_subscribe_timeout: Duration::from_secs(10),
-      track_alias_resolution_timeout: Duration::from_millis(500),
+      track_alias_resolution_timeout: Duration::from_millis(2000),
       downstream_alias_timeout: Duration::from_millis(3000),
       publish_done_stream_timeout: Duration::from_millis(2000),
       dedup_retained_groups: 30,

@@ -1127,9 +1127,8 @@ impl Subscription {
             return;
           }
 
-          if state.end_group > 0
-            && object.location.group > state.end_group
-            && !state.awaiting_switch_activation()
+          if state.end_group > 0 && object.location.group > state.end_group
+          // && !state.awaiting_switch_activation()
           {
             trace!(
               "Object beyond end group for subscriber={} relay_track_id={} object location: {:?} end group: {}",
@@ -1156,6 +1155,7 @@ impl Subscription {
           }
         }
 
+        /*
         // This is the switch's first delivery. The track being switched away from
         // keeps sending past its boundary while it waits for exactly this, so the two
         // can now overlap, and the seam has to be decided here.
@@ -1229,6 +1229,7 @@ impl Subscription {
             return;
           }
         }
+        */
 
         // Entering forward=true: clear any stale pending header (group boundary case).
         // If forward was already true, pending_header is None and this is a no-op.

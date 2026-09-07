@@ -25,7 +25,7 @@ import {
   RequestUpdate,
   applyMessageParameterUpdate,
 } from '@/model'
-import type { EarlyDiscardPolicyConfig } from '../types'
+import { DEFAULT_SWITCH_DRAIN_TIMEOUT_MS, type EarlyDiscardPolicyConfig } from '../types'
 import { logger } from '../../util/logger'
 
 // TODO: Add timeout mechanism for unsubscribing
@@ -178,6 +178,11 @@ export class SubscribeRequest implements PromiseLike<SubscribeOk | RequestError>
  * for an unknown time after SUBSCRIBE_OK, and a second switch may be issued before the
  * first target ever delivers anything, so only the first object actually delivered by
  * the newest tracked request is the guarantee that nothing older will send again.
+ *
+ * That first delivery is the handover, not the end of the old track: a soft switch
+ * leaves it delivering up to the group the new one starts at, so the two meet without
+ * a hole. Those objects keep coming through here until the publisher says the
+ * subscription is done, or until it has been quiet long enough to say so itself.
  */
 export class Subscription {
   public readonly controller: ReadableStreamDefaultController<MoqtObject>
@@ -186,8 +191,24 @@ export class Subscription {
   /** Oldest first; the last entry is the newest switch target still racing to produce data. */
   #requests: SubscribeRequest[]
 
+  /**
+   * Requests a soft switch handed over from, still delivering the tail of what they
+   * were told to finish, each with the timer that retires it if it goes quiet.
+   */
+  #draining: Map<SubscribeRequest, ReturnType<typeof setTimeout>> = new Map()
+
+  /** Switch targets whose handover drains what it supersedes rather than cutting it. */
+  #drainsSuperseded: WeakSet<SubscribeRequest> = new WeakSet()
+
   /** Set once by `MOQtailClient.switch`; invoked with everything older on cutover. */
   public onSuperseded?: (superseded: SubscribeRequest[]) => void
+
+  /**
+   * How long a drained request may stay quiet before it is retired anyway, in
+   * milliseconds. The publisher normally ends the drain with a PUBLISH_DONE; this is
+   * what keeps a request that never gets one from being tracked forever.
+   */
+  public drainTimeoutMs: number = DEFAULT_SWITCH_DRAIN_TIMEOUT_MS
 
   constructor(initial: SubscribeRequest) {
     this.stream = initial.stream
@@ -196,9 +217,9 @@ export class Subscription {
     this.#requests = [initial]
   }
 
-  /** Requests still tracked, oldest first. */
+  /** Requests still tracked, oldest first, draining ones last. */
   public get requests(): readonly SubscribeRequest[] {
-    return this.#requests
+    return [...this.#requests, ...this.#draining.keys()]
   }
 
   /** The request most recently switched to; must deliver data to win the handover. */
@@ -206,20 +227,49 @@ export class Subscription {
     return this.#requests[this.#requests.length - 1]!
   }
 
-  /** Track a newly issued switch target alongside whatever is still delivering. */
-  public addSwitchTarget(request: SubscribeRequest): void {
+  /**
+   * Track a newly issued switch target alongside whatever is still delivering.
+   *
+   * `drainSuperseded` says what its handover does to the requests it takes over from:
+   * a soft switch leaves them delivering to the end of what the publisher was told to
+   * finish, a hard one retires them on the spot.
+   */
+  public addSwitchTarget(request: SubscribeRequest, drainSuperseded = false): void {
     request.manager = this
+    if (drainSuperseded) this.#drainsSuperseded.add(request)
     this.#requests.push(request)
   }
 
   /** Stop tracking `request` (e.g. it naturally completed without ever losing/winning a handover). */
   public drop(request: SubscribeRequest): void {
+    this.#clearDrain(request)
     this.#requests = this.#requests.filter((r) => r !== request)
   }
 
   /** Stop tracking everything (used when the whole switch chain is torn down at once). */
   public clear(): void {
+    for (const request of [...this.#draining.keys()]) this.#clearDrain(request)
     this.#requests = []
+  }
+
+  /** Starts, or on each further object restarts, the quiet period that ends a drain. */
+  #keepDraining(request: SubscribeRequest): void {
+    this.#clearDrain(request)
+    this.#draining.set(
+      request,
+      setTimeout(() => {
+        this.#draining.delete(request)
+        logger.debug('Subscription', `drain of request ${request.requestId} ended on silence`)
+        this.onSuperseded?.([request])
+      }, this.drainTimeoutMs),
+    )
+  }
+
+  #clearDrain(request: SubscribeRequest): void {
+    const timeout = this.#draining.get(request)
+    if (timeout === undefined) return
+    clearTimeout(timeout)
+    this.#draining.delete(request)
   }
 
   /**
@@ -228,6 +278,14 @@ export class Subscription {
    * more data is coming from them.
    */
   public deliver(request: SubscribeRequest, obj: MoqtObject): void {
+    if (this.#draining.has(request)) {
+      // The tail of a track handed over by a soft switch: it covers the media up to
+      // where the new one begins, so dropping it is the hole the drain exists to avoid.
+      this.#keepDraining(request)
+      this.controller.enqueue(obj)
+      return
+    }
+
     if (!this.#requests.includes(request)) {
       logger.warn('Subscription', `discarding object from superseded request ${request.requestId}`)
       return
@@ -236,7 +294,11 @@ export class Subscription {
     if (request === this.newest && this.#requests.length > 1) {
       const superseded = this.#requests.slice(0, -1)
       this.#requests = [request]
-      this.onSuperseded?.(superseded)
+      if (this.#drainsSuperseded.has(request)) {
+        for (const old of superseded) this.#keepDraining(old)
+      } else {
+        this.onSuperseded?.(superseded)
+      }
     }
 
     this.controller.enqueue(obj)

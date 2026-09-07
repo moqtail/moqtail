@@ -88,6 +88,16 @@ export type TrackAliasHolder = { requestId: bigint; fullTrackName: FullTrackName
 export const DEFAULT_TRACK_ALIAS_RESOLUTION_TIMEOUT_MS = 2000
 
 /**
+ * Default for {@link MOQtailClientOptions.switchDrainTimeoutMs}: how long a track a
+ * soft switch handed over from may stay quiet before it is retired anyway.
+ *
+ * A soft switch leaves that track delivering up to the group the new one starts at,
+ * so the two meet without a hole, and a PUBLISH_DONE normally ends it. This is the
+ * backstop for a publisher that never sends one.
+ */
+export const DEFAULT_SWITCH_DRAIN_TIMEOUT_MS = 2000
+
+/**
  * Options for {@link MOQtailClient.new} controlling connection target, protocol negotiation, timeouts,
  * and lifecycle callbacks.
  *
@@ -131,6 +141,12 @@ export type MOQtailClientOptions = {
    * {@link DEFAULT_TRACK_ALIAS_RESOLUTION_TIMEOUT_MS}.
    */
   trackAliasResolutionTimeoutMs?: number
+  /**
+   * How long a track a soft switch handed over from may stay quiet before it is
+   * retired anyway, in milliseconds. Defaults to
+   * {@link DEFAULT_SWITCH_DRAIN_TIMEOUT_MS}.
+   */
+  switchDrainTimeoutMs?: number
   /** If true, enables datagram support for the session. */
   enableDatagrams?: boolean
   /** callbacks for observability and logging purposes: */

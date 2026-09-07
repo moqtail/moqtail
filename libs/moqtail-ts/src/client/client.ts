@@ -98,6 +98,8 @@ import {
   MOQtailClientOptions,
   SwitchOptions,
   EarlyDiscardPolicyConfig,
+  TrackAliasHolder,
+  DEFAULT_TRACK_ALIAS_RESOLUTION_TIMEOUT_MS,
 } from './types'
 import { SendDatagramStream } from './datagram_stream'
 import { logger, LogLevel, setLogLevel, setLogEnabledModules } from '../util/logger'
@@ -230,6 +232,17 @@ export class MOQtailClient {
   dataStreamTimeoutMs?: number
   /** Timeout (ms) for control stream read operations; undefined =\> no explicit timeout. */
   controlStreamTimeoutMs?: number
+  /**
+   * How long (ms) an incoming data stream waits for the control message that establishes
+   * its track alias before the stream is abandoned.
+   */
+  trackAliasResolutionTimeoutMs: number = DEFAULT_TRACK_ALIAS_RESOLUTION_TIMEOUT_MS
+
+  /**
+   * Callbacks waiting for a track alias to be registered, keyed by alias. Each entry
+   * belongs to a data stream that arrived before the control message naming its alias.
+   */
+  readonly #aliasWaiters: Map<bigint, Set<() => void>> = new Map()
 
   /** Flag indicating the client has been disconnected/destroyed and cannot accept further API calls. */
   #isDestroyed = false
@@ -457,6 +470,7 @@ export class MOQtailClient {
    *   transportOptions: { congestionControl: 'default' },
    *   dataStreamTimeoutMs: 5000,
    *   controlStreamTimeoutMs: 2000,
+   *   trackAliasResolutionTimeoutMs: 2000,
    *   enableDatagrams: true,
    *   callbacks: {
    *     onMessageSent: msg => console.log('Sent:', msg),
@@ -474,6 +488,7 @@ export class MOQtailClient {
       transportOptions,
       dataStreamTimeoutMs,
       controlStreamTimeoutMs,
+      trackAliasResolutionTimeoutMs,
       enableDatagrams,
       callbacks,
     } = args
@@ -511,6 +526,8 @@ export class MOQtailClient {
 
       if (dataStreamTimeoutMs) client.dataStreamTimeoutMs = dataStreamTimeoutMs
       if (controlStreamTimeoutMs) client.controlStreamTimeoutMs = controlStreamTimeoutMs
+      if (trackAliasResolutionTimeoutMs !== undefined)
+        client.trackAliasResolutionTimeoutMs = trackAliasResolutionTimeoutMs
 
       // The control plane is a pair of uni streams. Open our send half and write
       // SETUP first so it goes out without waiting on the server's half, which the
@@ -1095,9 +1112,7 @@ export class MOQtailClient {
           'MOQtailClient',
           `subscribe: SUBSCRIBE_OK requestId=${request.requestId} trackAlias=${response.trackAlias}`,
         )
-        this.subscriptions.set(response.trackAlias, request)
-        this.subscriptionAliasMap.set(request.requestId, response.trackAlias)
-        this.aliasFullTrackNameMap.set(response.trackAlias, fullTrackName)
+        this.#claimTrackAlias(response.trackAlias, request)
         return { requestId: msg.requestId, stream: request.stream }
       }
     } catch (error) {
@@ -1325,6 +1340,51 @@ export class MOQtailClient {
   }
 
   /**
+   * Records the alias a publisher just named for `request`, releasing any data stream
+   * that arrived before the control message carrying it.
+   */
+  #claimTrackAlias(trackAlias: bigint, holder: TrackAliasHolder): void {
+    this.subscriptions.set(trackAlias, holder)
+    this.subscriptionAliasMap.set(holder.requestId, trackAlias)
+    this.aliasFullTrackNameMap.set(trackAlias, holder.fullTrackName)
+
+    const waiters = this.#aliasWaiters.get(trackAlias)
+    if (!waiters) return
+    this.#aliasWaiters.delete(trackAlias)
+    for (const waiter of waiters) waiter()
+  }
+
+  /**
+   * Waits out the race between a subscription's data streams and the control message
+   * that names their track alias. The two travel on separate streams, so nothing
+   * orders them and the data can arrive first; giving up on it immediately would drop
+   * a whole subgroup, which is a visible gap in the media.
+   *
+   * Returns once the alias is claimed, or once
+   * {@link MOQtailClient.trackAliasResolutionTimeoutMs} elapses with it still unclaimed.
+   */
+  async #waitForTrackAlias(trackAlias: bigint): Promise<void> {
+    logger.debug('MOQtailClient', `data stream waiting for the track alias ${trackAlias} to be named`)
+    return new Promise<void>((resolve) => {
+      let waiters = this.#aliasWaiters.get(trackAlias)
+      if (!waiters) {
+        waiters = new Set()
+        this.#aliasWaiters.set(trackAlias, waiters)
+      }
+      const claimed = () => {
+        clearTimeout(timeoutId)
+        resolve()
+      }
+      const timeoutId = setTimeout(() => {
+        waiters.delete(claimed)
+        if (waiters.size === 0) this.#aliasWaiters.delete(trackAlias)
+        resolve()
+      }, this.trackAliasResolutionTimeoutMs)
+      waiters.add(claimed)
+    })
+  }
+
+  /**
    * Drops `request`'s hold on its track alias.
    *
    * An alias names a track, not a subscription, so two requests for the same track
@@ -1333,11 +1393,11 @@ export class MOQtailClient {
    * request that holds the alias now, so the other one clears its own row and leaves
    * theirs alone.
    */
-  #releaseTrackAlias(request: SubscribeRequest): void {
-    const trackAlias = this.subscriptionAliasMap.get(request.requestId)
-    this.subscriptionAliasMap.delete(request.requestId)
+  #releaseTrackAlias(holder: TrackAliasHolder): void {
+    const trackAlias = this.subscriptionAliasMap.get(holder.requestId)
+    this.subscriptionAliasMap.delete(holder.requestId)
     if (trackAlias === undefined) return
-    if (this.subscriptions.get(trackAlias) !== request) return
+    if (this.subscriptions.get(trackAlias) !== holder) return
     this.subscriptions.delete(trackAlias)
     this.aliasFullTrackNameMap.delete(trackAlias)
   }
@@ -1618,22 +1678,18 @@ export class MOQtailClient {
     // 1. Map the request ID to the full track name so the parser knows what track this is
     this.requestIdMap.addMapping(msg.requestId, msg.fullTrackName)
 
-    // 2. Map the request ID to the alias
-    this.subscriptionAliasMap.set(msg.requestId, msg.trackAlias)
-
-    this.aliasFullTrackNameMap.set(msg.trackAlias, msg.fullTrackName)
-
-    // 3. Create a pseudo-subscription object that mimics a SubscribeRequest
+    // 2. Create a pseudo-subscription object that mimics a SubscribeRequest
     // This perfectly matches the shape #handleRecvStreams expects
     const receiver = {
       requestId: msg.requestId,
+      fullTrackName: msg.fullTrackName,
       streamsAccepted: 0,
       largestLocation: undefined,
       controller: streamController,
     }
 
-    // 4. Register the receiver in the main routing table using the publisher's alias
-    this.subscriptions.set(msg.trackAlias, receiver)
+    // 3. Register the receiver in the main routing table using the publisher's alias
+    this.#claimTrackAlias(msg.trackAlias, receiver)
 
     return stream
   }
@@ -2295,7 +2351,17 @@ export class MOQtailClient {
 
         throw new ProtocolViolationError('MOQtailClient', 'No request for received request id')
       } else {
-        const subscription = this.subscriptions.get(header.trackAlias)
+        // A publisher opens a subscription's data streams as soon as it has written the
+        // control message naming their alias, and the two are separate streams with
+        // nothing ordering them: the data can arrive first.
+        // The holder is read back from the table rather than handed over by the wait:
+        // a SubscribeRequest is itself a thenable, so a promise resolved with one
+        // adopts it and yields its SUBSCRIBE_OK instead.
+        let subscription = this.subscriptions.get(header.trackAlias)
+        if (!subscription) {
+          await this.#waitForTrackAlias(header.trackAlias)
+          subscription = this.subscriptions.get(header.trackAlias)
+        }
 
         if (subscription) {
           subscription.streamsAccepted++
@@ -2387,7 +2453,8 @@ if (import.meta.vitest) {
   const { MessageParameters } = await import('../model/parameter/message_parameter')
   const { LargestObject } = await import('../model/parameter/message/largest_object')
   const { Header } = await import('../model/data/header')
-  const { FetchHeaderType, ObjectForwardingPreference } = await import('../model/data/constant')
+  const { FetchHeaderType, ObjectForwardingPreference, SubgroupHeaderType } = await import('../model/data/constant')
+  const { SubgroupObject } = await import('../model/data/subgroup_object')
   const { ByteBuffer } = await import('../model/common/byte_buffer')
 
   /** One bidirectional stream: what the client wrote, and a way to answer on it. */
@@ -3100,6 +3167,74 @@ if (import.meta.vitest) {
       // It counts towards Stream Count the same as any stream the publisher opened.
       const request = client.requests.get(subscribed.requestId) as SubscribeRequest
       expect(request.streamsAccepted).toBe(1n)
+
+      await client.disconnect()
+    })
+
+    it('holds a data stream that outran the control message naming its track alias', async () => {
+      const { client, transport } = await connected()
+
+      const subscribing = client.subscribe({
+        fullTrackName: ftn,
+        filterType: FilterType.LatestObject,
+        forward: true,
+        groupOrder: GroupOrder.Original,
+        priority: 0,
+      })
+      const subscribeStream = await openedStream(transport, 0)
+
+      // The subgroup and the SUBSCRIBE_OK travel on separate streams, so the data can
+      // land first. Dropping it would cost the whole subgroup.
+      const bytes = new ByteBuffer()
+      bytes.putBytes(Header.newSubgroup(SubgroupHeaderType.Type0x10, 7n, 4n, undefined, 0).serialize().toUint8Array())
+      const payload = new TextEncoder().encode('early')
+      bytes.putBytes(SubgroupObject.newWithPayload(0, null, payload).serialize(undefined).toUint8Array())
+      transport.openIncomingUniStream(bytes.toUint8Array())
+
+      subscribeStream.respond(SubscribeOk.create(7n, [], []))
+      const subscribed = (await subscribing) as { requestId: bigint; stream: ReadableStream<MoqtObject> }
+
+      const reader = subscribed.stream.getReader()
+      const { value } = await reader.read()
+      expect(value?.payload).toEqual(payload)
+      expect(value?.location.group).toBe(4n)
+      expect(value?.fullTrackName.toString()).toBe(ftn.toString())
+      reader.releaseLock()
+
+      await client.disconnect()
+    })
+
+    it('abandons a data stream whose track alias is never named', async () => {
+      const { client, transport } = await connected()
+      client.trackAliasResolutionTimeoutMs = 10
+
+      const bytes = new ByteBuffer()
+      bytes.putBytes(Header.newSubgroup(SubgroupHeaderType.Type0x10, 9n, 4n, undefined, 0).serialize().toUint8Array())
+      bytes.putBytes(
+        SubgroupObject.newWithPayload(0, null, new TextEncoder().encode('orphan')).serialize(undefined).toUint8Array(),
+      )
+      transport.openIncomingUniStream(bytes.toUint8Array())
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      // The wait is over well before the alias is named, so the stream is gone and
+      // the subscription that eventually claims 9 never sees what it carried.
+      const subscribing = client.subscribe({
+        fullTrackName: ftn,
+        filterType: FilterType.LatestObject,
+        forward: true,
+        groupOrder: GroupOrder.Original,
+        priority: 0,
+      })
+      ;(await openedStream(transport, 0)).respond(SubscribeOk.create(9n, [], []))
+      const subscribed = (await subscribing) as { requestId: bigint; stream: ReadableStream<MoqtObject> }
+
+      const reader = subscribed.stream.getReader()
+      const delivered = await Promise.race([
+        reader.read().then(() => 'delivered'),
+        new Promise((resolve) => setTimeout(() => resolve('nothing'), 50)),
+      ])
+      expect(delivered).toBe('nothing')
+      reader.releaseLock()
 
       await client.disconnect()
     })

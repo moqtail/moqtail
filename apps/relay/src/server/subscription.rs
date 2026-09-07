@@ -1098,8 +1098,9 @@ impl Subscription {
           }
         }
 
-        // if there is a pending switch, check the other track's largest location
-        // if it already sent passed the boundary, then we need to start from the next group
+        // This is the switch's first delivery. The track being switched away from
+        // keeps sending past its boundary while it waits for exactly this, so the
+        // two can now overlap, and the seam has to be decided here.
         if self.pending_switch.swap(false, Ordering::Relaxed)
           && let Some(plan) = self
             .subscriber
@@ -1117,36 +1118,36 @@ impl Subscription {
             .last_sent_max_location
             .clone();
 
-          let mut stop = false;
-
+          // The seam goes to this group, and the suspending track stops before it.
+          // Yielding instead would cost a whole group of the activating track: it can
+          // only start at one of its own group boundaries, and the next one is a full
+          // GOP away -- seconds of nothing on a coarse track, while the suspending
+          // track has already been told where to stop. Whatever the suspending track
+          // sent of this group is sent twice, which the subscriber can drop.
           if let Some(sus_last_loc) = suspend_last_loc
             && sus_last_loc >= object.location
+            && object.location.group > 0
           {
-            // update the start because we missed the boundary, suspend track
-            // subscription has already sent data
-            // for the next group, we take over
-            self.subscription_state.write().await.start_location =
-              Some(Location::new(sus_last_loc.group + 1, 0));
-
-            // change the end boundary of the suspend track
+            info!(
+              "switch: {:?} takes the seam at group {} for subscriber {}; {:?} had reached {:?}",
+              self.full_track_name,
+              object.location.group,
+              self.client_connection_id,
+              plan.suspending,
+              sus_last_loc
+            );
             suspending
               .read()
               .await
               .subscription_state
               .write()
               .await
-              .end_group = sus_last_loc.group;
-
-            stop = true;
+              .end_group = object.location.group - 1;
           }
 
-          // we complete the switch operation here
-          // the suspend track will be served up to loc.group (including)
+          // The switch has happened: this releases the suspending track's boundary,
+          // which was held until there was something to switch to.
           self.complete_switch(object.location.group).await;
-
-          if stop {
-            return;
-          }
         }
 
         // Entering forward=true: clear any stale pending header (group boundary case).

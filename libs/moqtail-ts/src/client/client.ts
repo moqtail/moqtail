@@ -1355,6 +1355,35 @@ export class MOQtailClient {
   }
 
   /**
+   * Ends a subscription whose publisher has said how many streams it opened and has
+   * now delivered all of them, and reports whether that happened.
+   *
+   * Both halves of that arrive on their own: a PUBLISH_DONE carries the count, and
+   * the streams finish whenever they finish. Either can be last, so this is checked
+   * from both -- a drained switch target has usually finished its streams well
+   * before the PUBLISH_DONE that ends it.
+   */
+  completeSubscription(request: SubscribeRequest): boolean {
+    if (!request.expectedStreams || request.streamsAccepted < request.expectedStreams) return false
+
+    const owner = request.manager
+    if (owner) {
+      owner.drop(request)
+      if (owner.requests.length === 0) owner.controller.close()
+    } else {
+      request.controller?.close()
+    }
+    this.#releaseTrackAlias(request)
+    this.requests.delete(request.requestId)
+    this.requestIdMap.removeMappingByRequestId(request.requestId)
+    // The publisher is done with it, so nothing is being cancelled: close the stream
+    // it ran on rather than resetting it.
+    void this.#closeRequestStream(request.requestId)
+    logger.debug('MOQtailClient', `subscription for request ${request.requestId} completed`)
+    return true
+  }
+
+  /**
    * Records the alias a publisher just named for `request`, releasing any data stream
    * that arrived before the control message carrying it.
    */
@@ -2439,18 +2468,7 @@ export class MOQtailClient {
             if (subgroupTimeoutId !== undefined) clearTimeout(subgroupTimeoutId)
           }
 
-          // Subscribe Cleanup
-          if (subscription.expectedStreams && subscription.expectedStreams === subscription.streamsAccepted) {
-            const owner = subscription.manager
-            if (owner) {
-              owner.drop(subscription)
-              if (owner.requests.length === 0) owner.controller.close()
-            } else {
-              subscription.controller?.close()
-            }
-            this.#releaseTrackAlias(subscription)
-            this.requests.delete(subscription.requestId)
-          }
+          this.completeSubscription(subscription)
           return
         }
 
@@ -3234,6 +3252,45 @@ if (import.meta.vitest) {
       // Silence ends the drain, and the request is retired then.
       await vi.waitFor(() => expect(client.requests.has(firstId)).toBe(false))
       expect(streamResetCodeOf(firstStream.abortReason)).toBe(StreamResetCode.Cancelled)
+
+      await client.disconnect()
+    })
+
+    it('ends a drain on the PUBLISH_DONE that accounts for its streams', async () => {
+      const { client, transport } = await connected()
+      // Long enough that the backstop cannot be what ends this.
+      client.switchDrainTimeoutMs = 60_000
+      const other = FullTrackName.tryNew('room/alice', 'video-low')
+      const options = {
+        filterType: FilterType.LatestObject,
+        forward: true,
+        groupOrder: GroupOrder.Original,
+        priority: 0,
+      } as const
+
+      const first = client.subscribe({ ...options, fullTrackName: ftn })
+      const firstStream = await openedStream(transport, 0)
+      firstStream.respond(SubscribeOk.create(7n, [], []))
+      const firstId = ((await first) as { requestId: bigint }).requestId
+
+      const switching = client.switch({
+        switchFromRequestId: firstId,
+        switchMode: SwitchMode.Soft,
+        newSubscribeOptions: { ...options, fullTrackName: other },
+      })
+      ;(await openedStream(transport, 1)).respond(SubscribeOk.create(8n, [], []))
+      const target = client.requests.get(((await switching) as { requestId: bigint }).requestId) as SubscribeRequest
+      const old = client.requests.get(firstId) as SubscribeRequest
+
+      target.manager!.deliver(target, {} as MoqtObject)
+      // Its streams are already done when the count arrives, which is the ordinary
+      // way round for a drain: the publisher stops, then says how much it sent.
+      old.streamsAccepted = 2n
+      firstStream.respond(new PublishDone(PublishDoneStatusCode.SubscriptionEnded, 2n, new ReasonPhrase('')))
+
+      await vi.waitFor(() => expect(client.requests.has(firstId)).toBe(false))
+      expect(firstStream.isClosed).toBe(true)
+      expect(firstStream.abortReason).toBeUndefined()
 
       await client.disconnect()
     })

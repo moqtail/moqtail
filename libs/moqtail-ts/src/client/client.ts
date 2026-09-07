@@ -100,6 +100,7 @@ import {
   EarlyDiscardPolicyConfig,
   TrackAliasHolder,
   DEFAULT_TRACK_ALIAS_RESOLUTION_TIMEOUT_MS,
+  DEFAULT_SWITCH_DRAIN_TIMEOUT_MS,
 } from './types'
 import { SendDatagramStream } from './datagram_stream'
 import { logger, LogLevel, setLogLevel, setLogEnabledModules } from '../util/logger'
@@ -237,6 +238,11 @@ export class MOQtailClient {
    * its track alias before the stream is abandoned.
    */
   trackAliasResolutionTimeoutMs: number = DEFAULT_TRACK_ALIAS_RESOLUTION_TIMEOUT_MS
+  /**
+   * How long (ms) a track a soft switch handed over from may stay quiet before it is
+   * retired anyway, if no PUBLISH_DONE ends its drain first.
+   */
+  switchDrainTimeoutMs: number = DEFAULT_SWITCH_DRAIN_TIMEOUT_MS
 
   /**
    * Callbacks waiting for a track alias to be registered, keyed by alias. Each entry
@@ -489,6 +495,7 @@ export class MOQtailClient {
       dataStreamTimeoutMs,
       controlStreamTimeoutMs,
       trackAliasResolutionTimeoutMs,
+      switchDrainTimeoutMs,
       enableDatagrams,
       callbacks,
     } = args
@@ -528,6 +535,7 @@ export class MOQtailClient {
       if (controlStreamTimeoutMs) client.controlStreamTimeoutMs = controlStreamTimeoutMs
       if (trackAliasResolutionTimeoutMs !== undefined)
         client.trackAliasResolutionTimeoutMs = trackAliasResolutionTimeoutMs
+      if (switchDrainTimeoutMs !== undefined) client.switchDrainTimeoutMs = switchDrainTimeoutMs
 
       // The control plane is a pair of uni streams. Open our send half and write
       // SETUP first so it goes out without waiting on the server's half, which the
@@ -1311,6 +1319,13 @@ export class MOQtailClient {
       subscription.onSuperseded ??= (superseded) => {
         for (const request of superseded) void this.#retireSwitchedRequest(request)
       }
+      subscription.drainTimeoutMs = this.switchDrainTimeoutMs
+
+      // A soft switch leaves the track it switches away from delivering up to the group
+      // this one starts at, so the two meet without a hole. Asking for its PUBLISH_DONE
+      // is what says the drain is over: without one there is nothing on the wire that
+      // distinguishes a track still finishing from one that has stopped.
+      const drains = switchMode === SwitchMode.Soft
 
       const existingSwitchFrom = newSubscribeOptions.parameters?.find(MessageParameter.isSwitchFrom)
       if (existingSwitchFrom)
@@ -1320,7 +1335,7 @@ export class MOQtailClient {
         )
       const parameters = [
         ...(newSubscribeOptions.parameters?.filter((p) => !MessageParameter.isSwitchFrom(p)) ?? []),
-        new SwitchFrom(switchFromRequestId, switchMode, false),
+        new SwitchFrom(switchFromRequestId, switchMode, drains),
       ]
 
       // subscribe() gives the new request its own stream/controller, but nothing ever
@@ -1329,7 +1344,7 @@ export class MOQtailClient {
       if (result instanceof RequestError) return result
 
       const newRequest = this.requests.get(result.requestId) as SubscribeRequest
-      subscription.addSwitchTarget(newRequest)
+      subscription.addSwitchTarget(newRequest, drains)
       return { requestId: result.requestId, stream: subscription.stream }
     } catch (error) {
       await this.disconnect(
@@ -2767,6 +2782,7 @@ if (import.meta.vitest) {
 
     it('keeps the alias of a switch back to a track whose earlier request is still retiring', async () => {
       const { client, transport } = await connected()
+      client.switchDrainTimeoutMs = 10
       const other = FullTrackName.tryNew('room/alice', 'video-low')
       const options = {
         filterType: FilterType.LatestObject,
@@ -2797,13 +2813,17 @@ if (import.meta.vitest) {
       ;(await openedStream(transport, 2)).respond(SubscribeOk.create(7n, [], []))
       const backId = ((await back) as { requestId: bigint }).requestId
 
-      // Delivering retires both older requests, and the first of them holds alias 7 too.
+      // Delivering hands over from both older requests, and the first of them was
+      // subscribed to this same track, so it holds alias 7 too.
       const newest = client.requests.get(backId) as SubscribeRequest
       newest.manager!.deliver(newest, {} as MoqtObject)
+      expect(client.subscriptions.get(7n)).toBe(newest)
 
+      // They drain rather than being cut, and retiring them at the end of that must
+      // not take the alias the newest request is using with them.
+      await vi.waitFor(() => expect(client.subscriptionAliasMap.get(firstId)).toBeUndefined())
       expect(client.subscriptions.get(7n)).toBe(newest)
       expect(client.aliasFullTrackNameMap.get(7n)?.toString()).toBe(ftn.toString())
-      expect(client.subscriptionAliasMap.get(firstId)).toBeUndefined()
       expect(client.subscriptions.has(8n)).toBe(false)
 
       await client.disconnect()
@@ -3167,6 +3187,53 @@ if (import.meta.vitest) {
       // It counts towards Stream Count the same as any stream the publisher opened.
       const request = client.requests.get(subscribed.requestId) as SubscribeRequest
       expect(request.streamsAccepted).toBe(1n)
+
+      await client.disconnect()
+    })
+
+    it('keeps delivering the track a soft switch handed over from until it goes quiet', async () => {
+      const { client, transport } = await connected()
+      client.switchDrainTimeoutMs = 40
+      const other = FullTrackName.tryNew('room/alice', 'video-low')
+      const options = {
+        filterType: FilterType.LatestObject,
+        forward: true,
+        groupOrder: GroupOrder.Original,
+        priority: 0,
+      } as const
+
+      const first = client.subscribe({ ...options, fullTrackName: ftn })
+      const firstStream = await openedStream(transport, 0)
+      firstStream.respond(SubscribeOk.create(7n, [], []))
+      const firstId = ((await first) as { requestId: bigint }).requestId
+
+      const switching = client.switch({
+        switchFromRequestId: firstId,
+        switchMode: SwitchMode.Soft,
+        newSubscribeOptions: { ...options, fullTrackName: other },
+      })
+      const switchStream = await openedStream(transport, 1)
+      // A soft switch asks for the PUBLISH_DONE that ends the drain it leaves behind.
+      const switchFrom = (switchStream.messages[0] as Subscribe).parameters.find(MessageParameter.isSwitchFrom)
+      expect(switchFrom?.publishDone).toBe(true)
+      switchStream.respond(SubscribeOk.create(8n, [], []))
+      const target = client.requests.get(((await switching) as { requestId: bigint }).requestId) as SubscribeRequest
+
+      const manager = target.manager!
+      const outgoing = manager.stream.getReader()
+      const old = client.requests.get(firstId) as SubscribeRequest
+
+      // The handover, then the tail of the track being switched away from: it covers
+      // the media up to where the new one starts, so it still belongs on the stream.
+      manager.deliver(target, 'from-target' as unknown as MoqtObject)
+      manager.deliver(old, 'from-drain' as unknown as MoqtObject)
+      expect((await outgoing.read()).value).toBe('from-target')
+      expect((await outgoing.read()).value).toBe('from-drain')
+      outgoing.releaseLock()
+
+      // Silence ends the drain, and the request is retired then.
+      await vi.waitFor(() => expect(client.requests.has(firstId)).toBe(false))
+      expect(streamResetCodeOf(firstStream.abortReason)).toBe(StreamResetCode.Cancelled)
 
       await client.disconnect()
     })

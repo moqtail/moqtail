@@ -388,26 +388,42 @@ impl Track {
   ) -> Result<Arc<RwLock<Subscription>>, anyhow::Error> {
     let origin_enum = origin_message.into();
     // Check if subscription already exists
-    if self
+    if let Some(existing) = self
       .subscription_manager
       .get_subscription(subscriber.connection_id)
       .await
-      .is_some()
     {
-      if !is_switch {
-        error!(
-          "Subscriber with connection_id: {} already exists in relay_track_id={}",
-          subscriber.connection_id, self.relay_track_id
-        );
-      } else {
+      // One that has finished is not one: its receive loop has exited, so nothing can
+      // reach the subscriber on it again. It stays registered until the subscriber's
+      // own cancellation arrives, and a switch back to this track can beat that
+      // easily -- a drain ends the moment the boundary passes, the switch back comes
+      // whenever the ladder says. Reusing it there hands the subscriber a
+      // subscription that can only ever be silent, so replace it instead.
+      if existing.read().await.is_finished().await {
         info!(
-          "Subscriber with connection_id: {} already exists in relay_track_id={} (switch subscription)",
+          "Subscriber with connection_id: {} has a finished subscription in relay_track_id={}; replacing it",
           subscriber.connection_id, self.relay_track_id
         );
+        self
+          .subscription_manager
+          .remove_subscription(subscriber.connection_id)
+          .await;
+      } else {
+        if !is_switch {
+          error!(
+            "Subscriber with connection_id: {} already exists in relay_track_id={}",
+            subscriber.connection_id, self.relay_track_id
+          );
+        } else {
+          info!(
+            "Subscriber with connection_id: {} already exists in relay_track_id={} (switch subscription)",
+            subscriber.connection_id, self.relay_track_id
+          );
+        }
+        return Err(anyhow::anyhow!(
+          "A subscription already exists for this subscriber"
+        ));
       }
-      return Err(anyhow::anyhow!(
-        "A subscription already exists for this subscriber"
-      ));
     }
 
     let subscription = self

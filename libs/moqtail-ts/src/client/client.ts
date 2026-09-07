@@ -1173,14 +1173,9 @@ export class MOQtailClient {
       throw error
     } finally {
       for (const target of targets) {
-        const trackAlias = this.subscriptionAliasMap.get(target.requestId)
         this.requests.delete(target.requestId)
         this.requestIdMap.removeMappingByRequestId(target.requestId)
-        this.subscriptionAliasMap.delete(target.requestId)
-        if (trackAlias !== undefined) {
-          this.subscriptions.delete(trackAlias)
-          this.aliasFullTrackNameMap.delete(trackAlias)
-        }
+        this.#releaseTrackAlias(target)
       }
       owner?.clear()
     }
@@ -1329,16 +1324,29 @@ export class MOQtailClient {
     }
   }
 
+  /**
+   * Drops `request`'s hold on its track alias.
+   *
+   * An alias names a track, not a subscription, so two requests for the same track
+   * carry the same one -- a switch back to a track whose earlier request has not
+   * been retired yet is exactly that. The alias-keyed maps can only describe the
+   * request that holds the alias now, so the other one clears its own row and leaves
+   * theirs alone.
+   */
+  #releaseTrackAlias(request: SubscribeRequest): void {
+    const trackAlias = this.subscriptionAliasMap.get(request.requestId)
+    this.subscriptionAliasMap.delete(request.requestId)
+    if (trackAlias === undefined) return
+    if (this.subscriptions.get(trackAlias) !== request) return
+    this.subscriptions.delete(trackAlias)
+    this.aliasFullTrackNameMap.delete(trackAlias)
+  }
+
   /** Tears down a switch target that lost the handover race to a newer one. */
   async #retireSwitchedRequest(request: SubscribeRequest): Promise<void> {
-    const trackAlias = this.subscriptionAliasMap.get(request.requestId)
     this.requests.delete(request.requestId)
     this.requestIdMap.removeMappingByRequestId(request.requestId)
-    this.subscriptionAliasMap.delete(request.requestId)
-    if (trackAlias !== undefined) {
-      this.subscriptions.delete(trackAlias)
-      this.aliasFullTrackNameMap.delete(trackAlias)
-    }
+    this.#releaseTrackAlias(request)
     await this.#resetRequestStream(request.requestId, StreamResetCode.Cancelled)
   }
 
@@ -2359,7 +2367,7 @@ export class MOQtailClient {
             } else {
               subscription.controller?.close()
             }
-            this.subscriptions.delete(header.trackAlias)
+            this.#releaseTrackAlias(subscription)
             this.requests.delete(subscription.requestId)
           }
           return
@@ -2686,6 +2694,50 @@ if (import.meta.vitest) {
       expect(blocked[0]!.prefix.equals(prefix)).toBe(true)
       expect(blocked[0]!.msg.trackNamespaceSuffix.toUtf8Path()).toBe('/alice')
       expect(new TextDecoder().decode(blocked[0]!.msg.trackName)).toBe('video')
+
+      await client.disconnect()
+    })
+
+    it('keeps the alias of a switch back to a track whose earlier request is still retiring', async () => {
+      const { client, transport } = await connected()
+      const other = FullTrackName.tryNew('room/alice', 'video-low')
+      const options = {
+        filterType: FilterType.LatestObject,
+        forward: true,
+        groupOrder: GroupOrder.Original,
+        priority: 0,
+      } as const
+
+      const first = client.subscribe({ ...options, fullTrackName: ftn })
+      ;(await openedStream(transport, 0)).respond(SubscribeOk.create(7n, [], []))
+      const firstId = ((await first) as { requestId: bigint }).requestId
+
+      // Away to another track, then straight back: the relay names a track, so the
+      // return trip is handed the same alias while the first request still holds it.
+      const away = client.switch({
+        switchFromRequestId: firstId,
+        switchMode: SwitchMode.Soft,
+        newSubscribeOptions: { ...options, fullTrackName: other },
+      })
+      ;(await openedStream(transport, 1)).respond(SubscribeOk.create(8n, [], []))
+      const awayId = ((await away) as { requestId: bigint }).requestId
+
+      const back = client.switch({
+        switchFromRequestId: awayId,
+        switchMode: SwitchMode.Soft,
+        newSubscribeOptions: { ...options, fullTrackName: ftn },
+      })
+      ;(await openedStream(transport, 2)).respond(SubscribeOk.create(7n, [], []))
+      const backId = ((await back) as { requestId: bigint }).requestId
+
+      // Delivering retires both older requests, and the first of them holds alias 7 too.
+      const newest = client.requests.get(backId) as SubscribeRequest
+      newest.manager!.deliver(newest, {} as MoqtObject)
+
+      expect(client.subscriptions.get(7n)).toBe(newest)
+      expect(client.aliasFullTrackNameMap.get(7n)?.toString()).toBe(ftn.toString())
+      expect(client.subscriptionAliasMap.get(firstId)).toBeUndefined()
+      expect(client.subscriptions.has(8n)).toBe(false)
 
       await client.disconnect()
     })

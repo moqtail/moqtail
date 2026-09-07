@@ -702,6 +702,22 @@ async fn handle_subscribe_message(
       )
     };
     if let Some(subscription) = subscription {
+      // A switch to a track the subscriber already holds reuses that subscription
+      // instead of creating a second one, so say which request drives it now: this
+      // SUBSCRIBE is what carries its updates from here, and what cancels it. The
+      // one it replaces can still be reset afterwards, and must not take this
+      // subscription with it.
+      {
+        let mut writable = subscription.write().await;
+        if writable.request_id != sub.request_id {
+          info!(
+            "switch: subscription for {:?} handed from request {} to {}",
+            full_track_name, writable.request_id, sub.request_id
+          );
+          writable.request_id = sub.request_id;
+        }
+      }
+
       // A SUBSCRIBE describes the subscription in full, so a filter it leaves out
       // is the default rather than whatever the reused subscription had.
       let filter = sub
@@ -988,6 +1004,33 @@ pub(crate) async fn cancel_subscription(
   let track_option = context.track_manager.get_track(&full_track_name).await;
 
   if let Some(track_lock) = track_option {
+    // One subscription per track per subscriber, and a switch to a track the
+    // subscriber already holds hands the existing one to the SUBSCRIBE that switched
+    // to it. Resetting the request it replaced arrives here naming the same track, so
+    // cancel only what this request still owns -- otherwise the live subscription goes
+    // with it and the subscriber starves on a track it is still subscribed to.
+    let owned = match track_lock
+      .read()
+      .await
+      .get_subscription(context.connection_id)
+      .await
+    {
+      Some(subscription) => subscription.read().await.request_id == request_id,
+      None => false,
+    };
+
+    if !owned {
+      info!(
+        "Subscription cancel: request {} no longer owns the subscription for {:?}; leaving it",
+        request_id, full_track_name
+      );
+      let mut requests = client.subscribe_requests.write().await;
+      requests.remove(&request_id);
+      let mut inbound = client.inbound_requests.write().await;
+      inbound.remove(&request_id);
+      return;
+    }
+
     let (is_last_subscriber, origin) = {
       let track = track_lock.read().await;
       track.remove_subscription(context.connection_id).await;

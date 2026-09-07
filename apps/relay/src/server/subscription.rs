@@ -100,7 +100,13 @@ pub struct SubscriptionState {
   pub switch_activated: Option<SwitchActivation>,
   pub subscribe_parameters: Vec<MessageParameter>,
   pub last_sent_max_location: Option<Location>,
+  /// The group sent before the one `last_sent_max_location` names, so the distance
+  /// between a track's groups can be read off the two. See [`Self::sent_group_gap`].
+  pub prior_sent_group: Option<u64>,
   pub last_received_object_location: Option<Location>,
+  /// The group received before the one `last_received_object_location` names. Its
+  /// counterpart for a track that has yet to send anything to this subscriber.
+  pub prior_received_group: Option<u64>,
 }
 
 impl SubscriptionState {
@@ -108,6 +114,9 @@ impl SubscriptionState {
     match &self.last_sent_max_location {
       Some(current_max) => {
         if location > *current_max {
+          if location.group > current_max.group {
+            self.prior_sent_group = Some(current_max.group);
+          }
           self.last_sent_max_location = Some(location);
         }
       }
@@ -115,6 +124,32 @@ impl SubscriptionState {
         self.last_sent_max_location = Some(location);
       }
     }
+  }
+
+  /// How far apart this track's group ids run, measured from the last two groups
+  /// it sent, or `None` before it has sent two.
+  ///
+  /// Group ids are not dense on every track: where several tracks of one content
+  /// share an id space, a track whose groups are longer than the shortest carries
+  /// only every second, fourth, twelfth id. The group it is sending therefore
+  /// covers everything up to the next id it will use, and the only guide to where
+  /// that is is how far apart the last two were.
+  pub fn sent_group_gap(&self) -> Option<u64> {
+    let last = self.last_sent_max_location.as_ref()?.group;
+    let prior = self.prior_sent_group?;
+    last.checked_sub(prior).filter(|gap| *gap > 0)
+  }
+
+  /// How far apart this track's group ids run, measured from the last two groups
+  /// that reached the relay for it, or `None` before two have.
+  ///
+  /// The same distance [`Self::sent_group_gap`] reports, for a subscription that
+  /// has not sent anything yet: a track being switched to has to resume at one of
+  /// its own group ids, and this is what says where the next one is.
+  pub fn received_group_gap(&self) -> Option<u64> {
+    let last = self.last_received_object_location.as_ref()?.group;
+    let prior = self.prior_received_group?;
+    last.checked_sub(prior).filter(|gap| *gap > 0)
   }
 
   /// Whether a switch has given this subscription a boundary that is not in
@@ -132,6 +167,9 @@ impl SubscriptionState {
     match &self.last_received_object_location {
       Some(current_max) => {
         if location > *current_max {
+          if location.group > current_max.group {
+            self.prior_received_group = Some(current_max.group);
+          }
           self.last_received_object_location = Some(location);
         }
       }
@@ -218,7 +256,9 @@ impl From<SubscriptionOrigin> for SubscriptionState {
           switch_activated: None,
           subscribe_parameters: subscribe.subscribe_parameters,
           last_sent_max_location: None,
+          prior_sent_group: None,
           last_received_object_location: None,
+          prior_received_group: None,
         }
       }
       SubscriptionOrigin::Publish(publish) => {
@@ -294,10 +334,28 @@ impl From<SubscriptionOrigin> for SubscriptionState {
           switch_activated: None,
           subscribe_parameters: publish.parameters,
           last_sent_max_location: None,
+          prior_sent_group: None,
           last_received_object_location: None,
+          prior_received_group: None,
         }
       }
     }
+  }
+}
+
+/// The first group of the track being switched to that the track being switched
+/// away from no longer covers.
+///
+/// `resume_group` is the group the activating track has just started delivering,
+/// `covered_to` the id where the suspending track's media runs out, and
+/// `resume_gap` how far apart the activating track's own group ids run. A track
+/// can only resume at one of its own groups, so this steps by that distance
+/// rather than landing on an id it has no group at.
+fn takeover_group(resume_group: u64, covered_to: u64, resume_gap: u64) -> u64 {
+  let resume_gap = resume_gap.max(1);
+  match covered_to.checked_sub(resume_group) {
+    Some(ahead) if ahead > 0 => resume_group + resume_gap * ahead.div_ceil(resume_gap),
+    _ => resume_group,
   }
 }
 
@@ -1099,8 +1157,8 @@ impl Subscription {
         }
 
         // This is the switch's first delivery. The track being switched away from
-        // keeps sending past its boundary while it waits for exactly this, so the
-        // two can now overlap, and the seam has to be decided here.
+        // keeps sending past its boundary while it waits for exactly this, so the two
+        // can now overlap, and the seam has to be decided here.
         if self.pending_switch.swap(false, Ordering::Relaxed)
           && let Some(plan) = self
             .subscriber
@@ -1109,45 +1167,67 @@ impl Subscription {
             .await
           && let Some(suspending) = self.find_suspending(&plan).await
         {
-          let suspend_last_loc = suspending
-            .read()
-            .await
-            .subscription_state
-            .read()
-            .await
-            .last_sent_max_location
-            .clone();
+          let (suspend_last_loc, suspend_group_gap) = {
+            let state = suspending.read().await;
+            let state = state.subscription_state.read().await;
+            (state.last_sent_max_location.clone(), state.sent_group_gap())
+          };
 
-          // The seam goes to this group, and the suspending track stops before it.
-          // Yielding instead would cost a whole group of the activating track: it can
-          // only start at one of its own group boundaries, and the next one is a full
-          // GOP away -- seconds of nothing on a coarse track, while the suspending
-          // track has already been told where to stop. Whatever the suspending track
-          // sent of this group is sent twice, which the subscriber can drop.
+          let mut stop = false;
+
           if let Some(sus_last_loc) = suspend_last_loc
             && sus_last_loc >= object.location
-            && object.location.group > 0
           {
+            // The suspending track got there first, so it keeps the seam and this one
+            // takes over after it. Two distances decide where: what the suspending
+            // track has covered runs to the next id it would use, not to the one
+            // after the id it reached, and this track can only resume at one of its
+            // own group ids. So the takeover is the first group of this track that
+            // the suspending one no longer covers -- and whatever lies between the
+            // two stays with the suspending track, which is the one with groups
+            // there to fill it.
+            let suspend_gap = suspend_group_gap.unwrap_or(1);
+            let resume_gap = self
+              .subscription_state
+              .read()
+              .await
+              .received_group_gap()
+              .unwrap_or(1);
+            let covered_to = sus_last_loc.group + suspend_gap;
+            let takeover = takeover_group(object.location.group, covered_to, resume_gap);
+
             info!(
-              "switch: {:?} takes the seam at group {} for subscriber {}; {:?} had reached {:?}",
+              "switch: {:?} takes over from {:?} at group {} for subscriber {}; it had reached {:?} covering to {} ({} apart), resuming {} apart",
               self.full_track_name,
-              object.location.group,
-              self.client_connection_id,
               plan.suspending,
-              sus_last_loc
+              takeover,
+              self.client_connection_id,
+              sus_last_loc,
+              covered_to,
+              suspend_gap,
+              resume_gap
             );
+
+            self.subscription_state.write().await.start_location = Some(Location::new(takeover, 0));
+
             suspending
               .read()
               .await
               .subscription_state
               .write()
               .await
-              .end_group = object.location.group - 1;
+              .end_group = takeover - 1;
+
+            stop = true;
           }
 
           // The switch has happened: this releases the suspending track's boundary,
           // which was held until there was something to switch to.
           self.complete_switch(object.location.group).await;
+
+          if stop {
+            return;
+          }
         }
 
         // Entering forward=true: clear any stale pending header (group boundary case).
@@ -1681,6 +1761,80 @@ mod tests {
         "{filter_type:?} on an empty track"
       );
     }
+  }
+
+  fn sent(locations: &[(u64, u64)]) -> SubscriptionState {
+    let mut state = SubscriptionState {
+      filter_type: FilterType::LatestObject,
+      start_location: None,
+      end_group: 0,
+      relative_previous: None,
+      forward: true,
+      subscriber_priority: DEFAULT_PUBLISHER_PRIORITY,
+      group_order: GroupOrder::Original,
+      soft_suspended: false,
+      publish_done_at_end: false,
+      switch_activated: None,
+      subscribe_parameters: vec![],
+      last_sent_max_location: None,
+      prior_sent_group: None,
+      last_received_object_location: None,
+      prior_received_group: None,
+    };
+    for (group, object) in locations {
+      state.update_last_sent_max_location(Location::new(*group, *object));
+      state.update_last_received_object_location(Location::new(*group, *object));
+    }
+    state
+  }
+
+  #[test]
+  fn a_track_whose_group_ids_step_reports_the_step() {
+    // Twelve ids per group: what it is sending covers everything up to the next.
+    assert_eq!(
+      sent(&[(288, 0), (288, 5), (300, 0)]).sent_group_gap(),
+      Some(12)
+    );
+  }
+
+  #[test]
+  fn a_track_whose_group_ids_are_dense_reports_one() {
+    assert_eq!(sent(&[(292, 0), (293, 0)]).sent_group_gap(), Some(1));
+  }
+
+  #[test]
+  fn a_track_that_has_sent_one_group_cannot_say_how_far_the_next_is() {
+    assert_eq!(sent(&[(292, 0), (292, 3)]).sent_group_gap(), None);
+    assert_eq!(sent(&[]).sent_group_gap(), None);
+  }
+
+  #[test]
+  fn a_track_reports_the_step_of_what_reached_it_before_it_sends() {
+    assert_eq!(sent(&[(288, 0), (300, 0)]).received_group_gap(), Some(12));
+    assert_eq!(sent(&[(288, 0), (288, 4)]).received_group_gap(), None);
+  }
+
+  #[test]
+  fn a_dense_track_resumes_where_the_other_stops() {
+    // 500ms groups on both sides: the next id is the takeover.
+    assert_eq!(takeover_group(293, 294, 1), 294);
+    // A long group on the track being left covers to 300, and this one has an id there.
+    assert_eq!(takeover_group(293, 300, 1), 300);
+  }
+
+  #[test]
+  fn a_track_with_longer_groups_resumes_at_one_of_its_own() {
+    // 2s groups, four ids apart: 294 is not one of them, 297 is. The 1.5s between
+    // stays with the track being switched away from, which has groups there.
+    assert_eq!(takeover_group(293, 294, 4), 297);
+    // Already aligned: the group after this one is exactly where the other stops.
+    assert_eq!(takeover_group(292, 296, 4), 296);
+  }
+
+  #[test]
+  fn a_track_the_other_never_caught_up_with_keeps_the_group_it_started() {
+    assert_eq!(takeover_group(300, 300, 4), 300);
+    assert_eq!(takeover_group(300, 296, 4), 300);
   }
 
   #[test]

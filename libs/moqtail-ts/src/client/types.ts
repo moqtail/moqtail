@@ -71,6 +71,23 @@ export type MOQtailRequest =
   | TrackStatusRequest
 
 /**
+ * Whatever holds a track alias in the client's routing table: a {@link SubscribeRequest},
+ * or the receiver {@link MOQtailClient.acceptPushedTrack} stands up for a track the peer
+ * pushes. Incoming objects are named after the holder of the alias their stream carries.
+ */
+export type TrackAliasHolder = { requestId: bigint; fullTrackName: FullTrackName }
+
+/**
+ * Default for {@link MOQtailClientOptions.trackAliasResolutionTimeoutMs}: how long a
+ * data stream waits for the control message that establishes its track alias.
+ *
+ * A subscription's data streams and the SUBSCRIBE_OK naming their alias travel on
+ * separate streams, so nothing orders them; the data can arrive first. Waiting costs
+ * a stalled reader, giving up costs the whole subgroup, so the wait is generous.
+ */
+export const DEFAULT_TRACK_ALIAS_RESOLUTION_TIMEOUT_MS = 2000
+
+/**
  * Options for {@link MOQtailClient.new} controlling connection target, protocol negotiation, timeouts,
  * and lifecycle callbacks.
  *
@@ -108,6 +125,12 @@ export type MOQtailClientOptions = {
   dataStreamTimeoutMs?: number
   /** Control stream read timeout in milliseconds. */
   controlStreamTimeoutMs?: number
+  /**
+   * How long a data stream waits for the control message that establishes its track
+   * alias before the stream is abandoned, in milliseconds. Defaults to
+   * {@link DEFAULT_TRACK_ALIAS_RESOLUTION_TIMEOUT_MS}.
+   */
+  trackAliasResolutionTimeoutMs?: number
   /** If true, enables datagram support for the session. */
   enableDatagrams?: boolean
   /** callbacks for observability and logging purposes: */

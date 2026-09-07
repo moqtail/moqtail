@@ -2291,6 +2291,12 @@ export class MOQtailClient {
 
         if (subscription) {
           subscription.streamsAccepted++
+          // The request that owns this stream names the track it carries. Resolving the
+          // alias per object instead would break the moment the alias mapping is torn
+          // down -- a switch retires the request it switched away from while that
+          // request's subgroup streams are still draining, and a long group can drain
+          // for seconds.
+          const fullTrackName: FullTrackName = subscription.fullTrackName
           let firstObjectId: bigint | null = null
 
           let subgroupTimeoutId: ReturnType<typeof setTimeout> | undefined
@@ -2320,11 +2326,6 @@ export class MOQtailClient {
                     subgroupId = firstObjectId ?? null
                   } else if (SubgroupHeaderType.hasExplicitSubgroupId(header.type)) {
                     subgroupId = header.subgroupId ?? null
-                  }
-
-                  const fullTrackName = this.aliasFullTrackNameMap.get(header.trackAlias)
-                  if (!fullTrackName) {
-                    throw new ProtocolViolationError('MOQtailClient', 'No full track name for received track alias')
                   }
 
                   const moqtObject = MoqtObject.fromSubgroupObject(

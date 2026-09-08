@@ -1128,6 +1128,12 @@ impl Subscription {
           }
 
           if state.end_group > 0 && object.location.group > state.end_group
+          // TODO: The following code is commented out. The suspend track is stopped at the
+          // end group. However, if the SUBSCRIBE comes late (after the group boundary)
+          // the first object (keyframe) would have been sent out and then the relay
+          // stops sending this group. In that case awaiting switch activation seems
+          // like a good idea but then it also does not work well.
+          // For now, we commented it out and will figure out a new approach in the future.
           // && !state.awaiting_switch_activation()
           {
             trace!(
@@ -1155,7 +1161,8 @@ impl Subscription {
           }
         }
 
-        /*
+        /* TODO: Look at the comment about awaiting_switch_activation.
+        // The following code block is commented out with the same reason.
         // This is the switch's first delivery. The track being switched away from
         // keeps sending past its boundary while it waits for exactly this, so the two
         // can now overlap, and the seam has to be decided here.

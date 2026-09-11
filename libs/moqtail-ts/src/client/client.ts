@@ -2390,6 +2390,9 @@ export class MOQtailClient {
           } finally {
             reader.releaseLock()
           }
+          // It counts towards the subscription's streams like any other, so it can
+          // equally be the one that completes it.
+          this.completeSubscription(request)
           return
         }
 

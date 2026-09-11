@@ -467,6 +467,10 @@ async fn handle_subscribe_message(
     }
   };
   let is_switch = is_switch || switch_plan.is_some();
+  // A switch applies its filter and Forward State in begin_switch, well after the
+  // SUBSCRIBE_OK goes out; anything measured against the subscription's filter has to
+  // wait for that.
+  let switching = switch_plan.is_some();
 
   // Reserved namespaces are resolved locally and never forwarded upstream.
   if let Some(reason) =
@@ -646,13 +650,17 @@ async fn handle_subscribe_message(
           && let Some(subscription) = track.get_subscription(client.connection_id).await
         {
           subscription.read().await.mark_alias_announced();
-          crate::server::fill::open_fill_fetch_stream(
-            context.clone(),
-            track_arc.clone(),
-            subscription,
-            sub.request_id,
-          )
-          .await;
+          // A switch decides the filter this fill is measured against, and it has not
+          // been applied yet: the fill for one is opened once begin_switch has run.
+          if !switching {
+            crate::server::fill::open_fill_fetch_stream(
+              context.clone(),
+              track_arc.clone(),
+              subscription,
+              sub.request_id,
+            )
+            .await;
+          }
         }
         sent
       }
@@ -733,6 +741,18 @@ async fn handle_subscribe_message(
         .await
         .begin_switch(plan, Some(&filter), largest)
         .await;
+
+      // Now that the switch has said where this subscription starts and that it is
+      // forwarding, the fill can be measured: everything already published from the
+      // group it joins, so the subscriber has the group from its start rather than
+      // from wherever it happens to arrive.
+      crate::server::fill::open_fill_fetch_stream(
+        context.clone(),
+        track_arc.clone(),
+        subscription,
+        sub.request_id,
+      )
+      .await;
     }
   }
 

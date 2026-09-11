@@ -186,9 +186,14 @@ pub(crate) async fn open_fill_fetch_stream(
 
   let subscription_for_task = subscription.clone();
   tokio::spawn(async move {
-    let _ = serve_fetch_stream(client, context, track, delivery, cancel_rx).await;
+    let opened = serve_fetch_stream(client, context, track, delivery, cancel_rx).await;
     let sub = subscription_for_task.read().await;
-    sub.note_fill_stream_opened();
+    // Counted only if the subscriber actually got a stream: PUBLISH_DONE's Stream
+    // Count is what the subscriber checks its own tally against, and a fill stopped
+    // before its first object -- which is what suspending a switch does -- opens none.
+    if opened.unwrap_or(false) {
+      sub.note_fill_stream_opened();
+    }
     sub.unregister_fill_stream(request_id).await;
   });
 }

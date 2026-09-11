@@ -634,13 +634,16 @@ pub(crate) struct FetchDelivery {
 /// requested range onto it, serving each group from the cache and asking upstream
 /// for the ones missing. Closes the stream with a FIN once the range is delivered,
 /// or resets it when the caller stops the delivery.
+///
+/// Reports whether a data stream reached the subscriber at all: an empty range still
+/// opens one and FINs it, but a delivery stopped before its first object opens none.
 pub(crate) async fn serve_fetch_stream(
   client: Arc<MOQTClient>,
   context: Arc<SessionContext>,
   track: Arc<tokio::sync::RwLock<crate::server::track::Track>>,
   delivery: FetchDelivery,
   mut cancel_rx: watch::Receiver<FetchStop>,
-) -> Result<(), TerminationCode> {
+) -> Result<bool, TerminationCode> {
   let track_read = track.read().await;
   let FetchDelivery {
     request_id,
@@ -937,8 +940,15 @@ pub(crate) async fn serve_fetch_stream(
     }
   }
 
+  // Whether a data stream ever reached the subscriber. A fill is counted towards the
+  // subscription's PUBLISH_DONE Stream Count, and the subscriber counts what arrives:
+  // a fill cancelled before its first object opens nothing, and counting it there
+  // would leave the two disagreeing forever.
+  let mut opened = false;
+
   if stop_reason != FetchStop::Running {
     if let Some(the_stream) = send_stream {
+      opened = true;
       let mut stream = the_stream.lock().await;
       let result = match stop_reason {
         FetchStop::UpdateFailed => stream.reset(StreamResetCode::Cancelled.to_u64()),
@@ -967,6 +977,7 @@ pub(crate) async fn serve_fetch_stream(
     );
 
     if let Some(the_stream) = stream_fn(client.clone(), &stream_id).await {
+      opened = true;
       let mut stream_lock = the_stream.lock().await;
       if let Err(e) = stream_lock.finish().await {
         error!(
@@ -979,6 +990,7 @@ pub(crate) async fn serve_fetch_stream(
   } else {
     // close the stream instantly
     if let Some(the_stream) = send_stream {
+      opened = true;
       // gracefully finish the stream here
       if let Err(e) = the_stream.lock().await.finish().await {
         error!("handle_fetch_messages | Error closing stream: {:?}", e);
@@ -991,7 +1003,7 @@ pub(crate) async fn serve_fetch_stream(
     }
   }
 
-  Ok(())
+  Ok(opened)
 }
 
 #[cfg(test)]

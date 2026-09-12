@@ -1303,13 +1303,14 @@ export class MOQtailClient {
    * await client.switch({
    *   switchFromRequestId,
    *   switchMode: SwitchMode.Soft,
-   *   newSubscribeOptions: { fullTrackName: newTrackName, priority: 0, groupOrder: GroupOrder.Original, forward: true, filterType: FilterType.LatestObject }
+   *   newSubscribeOptions: { fullTrackName: newTrackName, priority: 0, groupOrder: GroupOrder.Original, forward: true, filterType: FilterType.LatestObject },
+   *   onDrainDecision: (request) => true
    * });
    * ```
    */
-  async switch(args: SwitchOptions): Promise<RequestError | { requestId: bigint; stream: ReadableStream<MoqtObject> }> {
+  async switch(args: SwitchOptions) {
     this.#ensureActive()
-    const { switchFromRequestId, switchMode, newSubscribeOptions } = args
+    const { switchFromRequestId, switchMode, newSubscribeOptions, onDrainDecision } = args
     try {
       const fromRequest = this.requests.get(switchFromRequestId)
       if (!(fromRequest instanceof SubscribeRequest) || !fromRequest.manager)
@@ -1320,6 +1321,7 @@ export class MOQtailClient {
         for (const request of superseded) void this.#retireSwitchedRequest(request)
       }
       subscription.drainTimeoutMs = this.switchDrainTimeoutMs
+      if (onDrainDecision) subscription.onDrainDecision = onDrainDecision
 
       // A soft switch leaves the track it switches away from delivering up to the group
       // this one starts at, so the two meet without a hole. Asking for its PUBLISH_DONE
@@ -1363,8 +1365,10 @@ export class MOQtailClient {
    * from both -- a drained switch target has usually finished its streams well
    * before the PUBLISH_DONE that ends it.
    */
-  completeSubscription(request: SubscribeRequest): boolean {
-    if (!request.expectedStreams || request.streamsAccepted < request.expectedStreams) return false
+  completeSubscription(request: SubscribeRequest, force = false): boolean {
+    if (!force && (!request.expectedStreams || request.streamsAccepted < request.expectedStreams)) {
+      return false
+    }
 
     const owner = request.manager
     if (owner) {
@@ -2329,6 +2333,7 @@ export class MOQtailClient {
       )
       const header = recvStream.header
       const reader = recvStream.stream.getReader()
+      let forceComplete = false
 
       if (header instanceof FetchHeader) {
         // The header names the fetch by the id it was issued under, which a migration
@@ -2384,15 +2389,21 @@ export class MOQtailClient {
               // End-of-Range markers describe gaps and carry no payload.
               if (nextObject.kind === 'end_of_range') continue
               const moqtObject = MoqtObject.fromFetchObject(nextObject, request.fullTrackName)
-              if (request.manager) request.manager.deliver(request, moqtObject)
-              else request.controller?.enqueue(moqtObject)
+              if (request.manager) {
+                const shouldContinue = request.manager.deliver(request, moqtObject)
+                if (!shouldContinue) {
+                  await recvStream.stopSending(StreamResetCode.Cancelled)
+                  forceComplete = true
+                  break
+                }
+              } else request.controller?.enqueue(moqtObject)
             }
           } finally {
             reader.releaseLock()
           }
           // It counts towards the subscription's streams like any other, so it can
           // equally be the one that completes it.
-          this.completeSubscription(request)
+          this.completeSubscription(request, forceComplete)
           return
         }
 
@@ -2460,8 +2471,14 @@ export class MOQtailClient {
                   if (subscription.largestLocation.compare(moqtObject.location) == -1)
                     subscription.largestLocation = moqtObject.location
 
-                  if (subscription.manager) subscription.manager.deliver(subscription, moqtObject)
-                  else subscription.controller?.enqueue(moqtObject)
+                  if (subscription.manager) {
+                    const shouldContinue = subscription.manager.deliver(subscription, moqtObject)
+                    if (!shouldContinue) {
+                      forceComplete = true
+                      await recvStream.stopSending(StreamResetCode.Cancelled)
+                      break
+                    }
+                  } else subscription.controller?.enqueue(moqtObject)
                   continue
                 }
                 throw new ProtocolViolationError('MOQtailClient', 'Received fetch object after subgroup header')
@@ -2471,7 +2488,7 @@ export class MOQtailClient {
             if (subgroupTimeoutId !== undefined) clearTimeout(subgroupTimeoutId)
           }
 
-          this.completeSubscription(subscription)
+          this.completeSubscription(subscription, forceComplete)
           return
         }
 

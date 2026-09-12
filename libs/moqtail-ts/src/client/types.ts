@@ -269,6 +269,8 @@ export type SwitchOptions = {
   switchMode: SwitchMode
   /** New subscription options to switch to. */
   newSubscribeOptions: SubscribeOptions
+  /** Callback to determine whether to continue draining the superseded subscription. Returning true will reset the relevant stream. */
+  onDrainDecision?: (request: SubscribeRequest) => boolean
 }
 
 /**

@@ -203,6 +203,9 @@ export class Subscription {
   /** Set once by `MOQtailClient.switch`; invoked with everything older on cutover. */
   public onSuperseded?: (superseded: SubscribeRequest[]) => void
 
+  /** Set by the client to decide whether draining a request should continue. */
+  public onDrainDecision: (request: SubscribeRequest) => boolean = () => true
+
   /**
    * How long a drained request may stay quiet before it is retired anyway, in
    * milliseconds. The publisher normally ends the drain with a PUBLISH_DONE; this is
@@ -276,19 +279,25 @@ export class Subscription {
    * Delivers an object received for `request`. The first object delivered by the
    * newest tracked request retires everything older — only then is it guaranteed no
    * more data is coming from them.
+   *
+   * Returns `true` if the object was delivered to the caller,
+   * `false` if it was not consumed, and client should cancel the stream.
    */
-  public deliver(request: SubscribeRequest, obj: MoqtObject): void {
+  public deliver(request: SubscribeRequest, obj: MoqtObject): boolean {
     if (this.#draining.has(request)) {
       // The tail of a track handed over by a soft switch: it covers the media up to
       // where the new one begins, so dropping it is the hole the drain exists to avoid.
-      this.#keepDraining(request)
-      this.controller.enqueue(obj)
-      return
+      if (this.onDrainDecision?.(request)) {
+        this.#keepDraining(request)
+        this.controller.enqueue(obj)
+        return true
+      }
+      return false
     }
 
     if (!this.#requests.includes(request)) {
       logger.warn('Subscription', `discarding object from superseded request ${request.requestId}`)
-      return
+      return false
     }
 
     if (request === this.newest && this.#requests.length > 1) {
@@ -302,5 +311,6 @@ export class Subscription {
     }
 
     this.controller.enqueue(obj)
+    return true
   }
 }

@@ -87,7 +87,7 @@ export class TrackStatus {
     )
   }
 
-  static newAbsoluteStart(
+  static newAbsoluteStartFill(
     requestId: bigint,
     trackAlias: bigint,
     fullTrackName: FullTrackName,
@@ -104,14 +104,14 @@ export class TrackStatus {
       subscriberPriority,
       groupOrder,
       forward,
-      FilterType.AbsoluteStart,
+      FilterType.AbsoluteStartFill,
       startLocation,
       undefined,
       subscribeParameters,
     )
   }
 
-  static newAbsoluteRange(
+  static newAbsoluteRangeFill(
     requestId: bigint,
     trackAlias: bigint,
     fullTrackName: FullTrackName,
@@ -132,7 +132,7 @@ export class TrackStatus {
       subscriberPriority,
       groupOrder,
       forward,
-      FilterType.AbsoluteRange,
+      FilterType.AbsoluteRangeFill,
       startLocation,
       endGroup,
       subscribeParameters,
@@ -156,16 +156,16 @@ export class TrackStatus {
     payload.putU8(this.forward ? 1 : 0)
     payload.putVI(this.filterType)
 
-    if (this.filterType === FilterType.AbsoluteStart || this.filterType === FilterType.AbsoluteRange) {
+    if (this.filterType === FilterType.AbsoluteStartFill || this.filterType === FilterType.AbsoluteRangeFill) {
       if (!this.startLocation) {
         throw new Error('StartLocation required for selected filterType')
       }
       payload.putLocation(this.startLocation)
     }
 
-    if (this.filterType === FilterType.AbsoluteRange) {
+    if (this.filterType === FilterType.AbsoluteRangeFill) {
       if (this.endGroup == null) {
-        throw new Error('EndGroup required for AbsoluteRange')
+        throw new Error('EndGroup required for AbsoluteRangeFill')
       }
       payload.putVI(this.endGroup)
     }
@@ -194,10 +194,10 @@ export class TrackStatus {
     let startLocation: Location | undefined = undefined
     let endGroup: bigint | undefined = undefined
 
-    if (filterType === FilterType.AbsoluteStart || filterType === FilterType.AbsoluteRange) {
+    if (filterType === FilterType.AbsoluteStartFill || filterType === FilterType.AbsoluteRangeFill) {
       startLocation = buf.getLocation()
     }
-    if (filterType === FilterType.AbsoluteRange) {
+    if (filterType === FilterType.AbsoluteRangeFill) {
       endGroup = buf.getVI()
     }
 
@@ -224,7 +224,7 @@ if (import.meta.vitest) {
   const { describe, it, expect } = import.meta.vitest
 
   function buildTestTrackStatus(): TrackStatus {
-    return TrackStatus.newAbsoluteRange(
+    return TrackStatus.newAbsoluteRangeFill(
       128242n,
       999n,
       FullTrackName.tryNew('track/namespace', 'trackName'),
@@ -277,8 +277,8 @@ if (import.meta.vitest) {
     })
 
     describe('TrackStatus Constructors', () => {
-      it('should create a TrackStatus with AbsoluteRange filter', () => {
-        const subscribe = TrackStatus.newAbsoluteRange(
+      it('should create a TrackStatus with AbsoluteRangeFill filter', () => {
+        const subscribe = TrackStatus.newAbsoluteRangeFill(
           128242n,
           999n,
           FullTrackName.tryNew('track/namespace', 'trackName'),
@@ -290,14 +290,14 @@ if (import.meta.vitest) {
           [],
         )
 
-        expect(subscribe.filterType).toBe(FilterType.AbsoluteRange)
+        expect(subscribe.filterType).toBe(FilterType.AbsoluteRangeFill)
         expect(subscribe.startLocation).toEqual(new Location(81n, 81n))
         expect(subscribe.endGroup).toBe(100n)
       })
 
       it('should throw an error if EndGroup < StartGroup', () => {
         expect(() =>
-          TrackStatus.newAbsoluteRange(
+          TrackStatus.newAbsoluteRangeFill(
             128242n,
             999n,
             FullTrackName.tryNew('track/namespace', 'trackName'),

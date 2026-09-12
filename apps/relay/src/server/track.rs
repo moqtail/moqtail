@@ -38,7 +38,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::{Mutex, Notify, RwLock, oneshot};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 pub type ActiveSubgroupHeaderMap = Arc<RwLock<HashMap<StreamId, HeaderInfo>>>;
 
@@ -388,28 +388,42 @@ impl Track {
   ) -> Result<Arc<RwLock<Subscription>>, anyhow::Error> {
     let origin_enum = origin_message.into();
     // Check if subscription already exists
-    if let Some(sub_guard) = self
+    if let Some(existing) = self
       .subscription_manager
       .get_subscription(subscriber.connection_id)
       .await
     {
-      if !is_switch {
-        error!(
-          "Subscriber with connection_id: {} already exists in relay_track_id={}",
-          subscriber.connection_id, self.relay_track_id
-        );
-      } else {
+      // One that has finished is not one: its receive loop has exited, so nothing can
+      // reach the subscriber on it again. It stays registered until the subscriber's
+      // own cancellation arrives, and a switch back to this track can beat that
+      // easily -- a drain ends the moment the boundary passes, the switch back comes
+      // whenever the ladder says. Reusing it there hands the subscriber a
+      // subscription that can only ever be silent, so replace it instead.
+      if existing.read().await.is_finished().await {
         info!(
-          "Subscriber with connection_id: {} already exists in relay_track_id={} (switch subscription)",
+          "Subscriber with connection_id: {} has a finished subscription in relay_track_id={}; replacing it",
           subscriber.connection_id, self.relay_track_id
         );
-        // inform the existing subscription about the switch
-        let sub = sub_guard.read().await;
-        sub.notify_switch().await;
+        self
+          .subscription_manager
+          .remove_subscription(subscriber.connection_id)
+          .await;
+      } else {
+        if !is_switch {
+          error!(
+            "Subscriber with connection_id: {} already exists in relay_track_id={}",
+            subscriber.connection_id, self.relay_track_id
+          );
+        } else {
+          info!(
+            "Subscriber with connection_id: {} already exists in relay_track_id={} (switch subscription)",
+            subscriber.connection_id, self.relay_track_id
+          );
+        }
+        return Err(anyhow::anyhow!(
+          "A subscription already exists for this subscriber"
+        ));
       }
-      return Err(anyhow::anyhow!(
-        "A subscription already exists for this subscriber"
-      ));
     }
 
     let subscription = self
@@ -422,9 +436,13 @@ impl Track {
       )
       .await?;
 
-    if is_switch {
-      subscription.read().await.notify_switch().await;
-    }
+    // Where a live filter starts is stated against the largest Object, which only
+    // the track knows.
+    subscription
+      .read()
+      .await
+      .resolve_live_start(self.largest_object().await)
+      .await;
 
     Ok(subscription)
   }
@@ -455,7 +473,7 @@ impl Track {
     object: &Object,
     header_info: Option<&HeaderInfo>,
   ) -> Result<(), anyhow::Error> {
-    debug!(
+    trace!(
       "new_subgroup_object: relay_track_id={} location: {:?} stream_id={} diff_ms={}",
       self.relay_track_id,
       object.location,
@@ -464,7 +482,7 @@ impl Track {
     );
 
     if self.is_duplicate(&object.location) {
-      debug!(
+      trace!(
         "new_subgroup_object: dropping duplicate | relay_track_id={} location: {:?}",
         self.relay_track_id, object.location
       );
@@ -472,7 +490,7 @@ impl Track {
     }
 
     if let Some(h) = header_info {
-      info!(
+      debug!(
         "new group: relay_track_id={} location: {:?} stream_id={} time={}",
         self.relay_track_id,
         object.location,
@@ -501,15 +519,16 @@ impl Track {
     if let Ok(fetch_object) = object.clone().try_into_fetch() {
       self.cache.add_object(fetch_object).await;
     } else {
-      warn!(
-        "new_subgroup_object: object cannot be cached | relay_track_id: {} track_alias: {} location: {:?} stream_id: {} diff_ms: {} object: {:?}",
-        self.relay_track_id,
-        object.track_alias,
-        object.location,
-        stream_id,
-        utils::passed_time_since_start(),
-        object
-      );
+      // TODO: End of Group objects should be cached
+      // warn!(
+      //   "new_subgroup_object: object cannot be cached | relay_track_id: {} track_alias: {} location: {:?} stream_id: {} diff_ms: {} object: {:?}",
+      //   self.relay_track_id,
+      //   object.track_alias,
+      //   object.location,
+      //   stream_id,
+      //   utils::passed_time_since_start(),
+      //   object
+      // );
     }
 
     // Track-level logging - log every object arrival if enabled
@@ -553,7 +572,7 @@ impl Track {
   }
 
   pub async fn new_datagram(&self, datagram: &Datagram) -> Result<(), anyhow::Error> {
-    debug!(
+    trace!(
       "new_datagram: relay_track_id={} group: {:?} object_id={} diff_ms={}",
       self.relay_track_id,
       datagram.group_id,
@@ -564,7 +583,7 @@ impl Track {
     match Object::try_from_datagram(datagram.clone(), self.default_publisher_priority().await) {
       Ok((object, end_of_group)) => {
         if self.is_duplicate(&object.location) {
-          debug!(
+          trace!(
             "new_datagram: dropping duplicate | relay_track_id={} location: {:?}",
             self.relay_track_id, object.location
           );
@@ -572,7 +591,7 @@ impl Track {
         }
 
         if end_of_group {
-          debug!(
+          trace!(
             "new_datagram: end_of_group received for track: {:?} group: {:?} object_id: {}",
             datagram.track_alias, datagram.group_id, datagram.object_id
           );

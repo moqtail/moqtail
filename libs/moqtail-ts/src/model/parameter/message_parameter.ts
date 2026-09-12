@@ -18,7 +18,8 @@ import { KeyValuePair, deserializeKvpList, isBytes, isVarInt, serializeKvpList }
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
 import { greaseValue } from '../common/grease'
 import { ProtocolViolationError } from '../error/error'
-import { FilterType, GroupOrder } from '../control/constant'
+import { FilterType, GroupOrder, SwitchMode } from '../control/constant'
+import { MessageParameterType } from './constant'
 import { Location } from '../common'
 import { AuthorizationToken } from './common'
 import { FillTimeout } from './message/fill_timeout'
@@ -32,6 +33,8 @@ import { LargestObject } from './message/largest_object'
 import { NewGroupRequest } from './message/new_group_request'
 import { SubscriberPriority } from './message/subscriber_priority'
 import { SubscriptionFilter } from './message/subscription_filter'
+import { SwitchFrom } from './message/switch_from'
+import { FillParameters } from './message/fill_parameters'
 
 export type MessageParameter =
   | ObjectDeliveryTimeout
@@ -46,6 +49,8 @@ export type MessageParameter =
   | GroupOrderParam
   | SubscriptionFilter
   | NewGroupRequest
+  | SwitchFrom
+  | FillParameters
 
 export namespace MessageParameter {
   /**
@@ -66,7 +71,9 @@ export namespace MessageParameter {
       SubscriberPriority.fromKeyValuePair(pair) ??
       GroupOrderParam.fromKeyValuePair(pair) ??
       SubscriptionFilter.fromKeyValuePair(pair) ??
-      NewGroupRequest.fromKeyValuePair(pair)
+      NewGroupRequest.fromKeyValuePair(pair) ??
+      SwitchFrom.fromKeyValuePair(pair) ??
+      FillParameters.fromKeyValuePair(pair)
     )
   }
 
@@ -126,6 +133,14 @@ export namespace MessageParameter {
   export function isNewGroupRequest(param: MessageParameter): param is NewGroupRequest {
     return param instanceof NewGroupRequest
   }
+
+  export function isSwitchFrom(param: MessageParameter): param is SwitchFrom {
+    return param instanceof SwitchFrom
+  }
+
+  export function isFillParameters(param: MessageParameter): param is FillParameters {
+    return param instanceof FillParameters
+  }
 }
 
 /**
@@ -184,6 +199,14 @@ export class MessageParameters {
     return this.add(new NewGroupRequest(BigInt(group)))
   }
 
+  addSwitchFrom(requestId: bigint | number, mode: SwitchMode, publishDone: boolean): this {
+    return this.add(new SwitchFrom(BigInt(requestId), mode, publishDone))
+  }
+
+  addFillParameters(parameters: MessageParameter[]): this {
+    return this.add(new FillParameters(parameters))
+  }
+
   build(): MessageParameter[] {
     return [...this.params]
   }
@@ -204,24 +227,34 @@ export class MessageParameters {
 }
 
 /**
- * LARGEST_OBJECT (0x09) is a bare Location -- two consecutive varints with no
- * length prefix. Its Type is odd, so the generic KVP parity rule would read a
- * length prefix and desync. This is a message-parameter encoding: the same Type
- * number in the setup-option namespace means something else, so the rule lives
- * here rather than in the shared codec.
+ * How a message parameter's Value is laid out on the wire. The parameter Type
+ * decides this, not its parity, and reading one the wrong way desyncs the rest
+ * of the list. The same Type number means something else in the setup-option
+ * namespace, so this belongs here and not in the shared codec.
  */
-function isLocationMessageParam(typeValue: bigint): boolean {
-  return typeValue === 0x09n
+enum ValueShape {
+  VarInt,
+  /** A single byte: FORWARD, SUBSCRIBER_PRIORITY, GROUP_ORDER. */
+  Uint8,
+  /** Two varints, no length prefix: LARGEST_OBJECT. */
+  BareLocation,
+  LengthPrefixedBytes,
 }
 
-/**
- * FORWARD (0x10), SUBSCRIBER_PRIORITY (0x20) and GROUP_ORDER (0x22) carry a
- * single uint8, not the generic even-Type varint. These Types are even, so
- * without this the parity rule would read a varint and desync on any value
- * >= 64 (e.g. the default SUBSCRIBER_PRIORITY of 128 = 0x80).
- */
-function isUint8MessageParam(typeValue: bigint): boolean {
-  return typeValue === 0x10n || typeValue === 0x20n || typeValue === 0x22n
+function valueShapeOf(typeValue: bigint): ValueShape {
+  switch (typeValue) {
+    case BigInt(MessageParameterType.Forward):
+    case BigInt(MessageParameterType.SubscriberPriority):
+    case BigInt(MessageParameterType.GroupOrder):
+      return ValueShape.Uint8
+    case BigInt(MessageParameterType.LargestObject):
+      return ValueShape.BareLocation
+    case BigInt(MessageParameterType.SwitchFrom):
+    case BigInt(MessageParameterType.TrackNamespacePrefix):
+      return ValueShape.LengthPrefixedBytes
+    default:
+      return typeValue % 2n === 0n ? ValueShape.VarInt : ValueShape.LengthPrefixedBytes
+  }
 }
 
 /**
@@ -234,20 +267,25 @@ export function serializeMessageParameterKvps(items: KeyValuePair[]): FrozenByte
   let prevType = 0n
   for (const kvp of sorted) {
     buf.putVI(kvp.typeValue - prevType)
-    if (isVarInt(kvp) && isUint8MessageParam(kvp.typeValue)) {
-      if (kvp.value < 0n || kvp.value > 255n) {
-        throw new ProtocolViolationError(
-          'serializeMessageParameterKvps',
-          `uint8 parameter 0x${kvp.typeValue.toString(16)} value ${kvp.value} exceeds 255`,
-        )
-      }
-      buf.putU8(Number(kvp.value))
-    } else if (isVarInt(kvp)) {
-      buf.putVI(kvp.value)
-    } else if (isBytes(kvp) && isLocationMessageParam(kvp.typeValue)) {
-      buf.putBytes(kvp.value)
-    } else if (isBytes(kvp)) {
-      buf.putLengthPrefixedBytes(kvp.value)
+    switch (valueShapeOf(kvp.typeValue)) {
+      case ValueShape.Uint8:
+        if (!isVarInt(kvp) || kvp.value < 0n || kvp.value > 255n) {
+          throw new ProtocolViolationError(
+            'serializeMessageParameterKvps',
+            `uint8 parameter 0x${kvp.typeValue.toString(16)} value ${kvp.value} exceeds 255`,
+          )
+        }
+        buf.putU8(Number(kvp.value))
+        break
+      case ValueShape.BareLocation:
+        if (isBytes(kvp)) buf.putBytes(kvp.value)
+        break
+      case ValueShape.LengthPrefixedBytes:
+        if (isBytes(kvp)) buf.putLengthPrefixedBytes(kvp.value)
+        break
+      case ValueShape.VarInt:
+        if (isVarInt(kvp)) buf.putVI(kvp.value)
+        break
     }
     prevType = kvp.typeValue
   }
@@ -260,19 +298,37 @@ export function serializeMessageParameterKvps(items: KeyValuePair[]): FrozenByte
  */
 export function deserializeMessageParameterKvps(buf: BaseByteBuffer, count: number | bigint): KeyValuePair[] {
   const n = typeof count === 'bigint' ? Number(count) : count
-  const items: KeyValuePair[] = new Array(n)
+  let read = 0
+  return readMessageParameterKvps(buf, () => read++ < n)
+}
+
+/** Reads delta-encoded message-parameter KVPs until `buf` is exhausted. */
+export function deserializeMessageParameterKvpsUntilEmpty(buf: BaseByteBuffer): KeyValuePair[] {
+  return readMessageParameterKvps(buf, () => buf.remaining > 0)
+}
+
+function readMessageParameterKvps(buf: BaseByteBuffer, more: () => boolean): KeyValuePair[] {
+  const items: KeyValuePair[] = []
   let prevType = 0n
-  for (let i = 0; i < n; i++) {
+  while (more()) {
     const typeValue = prevType + buf.getVI()
-    if (isUint8MessageParam(typeValue)) {
-      items[i] = KeyValuePair.tryNewVarInt(typeValue, BigInt(buf.getU8()))
-    } else if (isLocationMessageParam(typeValue)) {
-      const loc = new ByteBuffer()
-      loc.putVI(buf.getVI())
-      loc.putVI(buf.getVI())
-      items[i] = KeyValuePair.tryNewBytes(typeValue, loc.toUint8Array())
-    } else {
-      items[i] = KeyValuePair.deserializeValue(buf, typeValue)
+    switch (valueShapeOf(typeValue)) {
+      case ValueShape.Uint8:
+        items.push(KeyValuePair.tryNewVarInt(typeValue, BigInt(buf.getU8())))
+        break
+      case ValueShape.BareLocation: {
+        const loc = new ByteBuffer()
+        loc.putVI(buf.getVI())
+        loc.putVI(buf.getVI())
+        items.push(KeyValuePair.newBytes(typeValue, loc.toUint8Array()))
+        break
+      }
+      case ValueShape.LengthPrefixedBytes:
+        items.push(KeyValuePair.deserializeBytesValue(buf, typeValue))
+        break
+      case ValueShape.VarInt:
+        items.push(KeyValuePair.tryNewVarInt(typeValue, buf.getVI()))
+        break
     }
     prevType = typeValue
   }
@@ -335,6 +391,31 @@ if (import.meta.vitest) {
       const frozen = buf.freeze()
       expect(MessageParameters.fromKeyValuePairs(deserializeMessageParameterKvps(frozen, 1))).toEqual(params)
     })
+
+    test('SWITCH_FROM is a length-prefixed byte string despite its even Type', () => {
+      const params = [new SwitchFrom(7n, SwitchMode.Hard, true)]
+      const wire = serializeMessageParameterKvps(params.map((p) => p.toKeyValuePair())).toUint8Array()
+
+      expect(wire).toEqual(new Uint8Array([0x24, 0x03, 0x07, 0x00, 0x80]))
+
+      const buf = new ByteBuffer()
+      buf.putBytes(wire)
+      const frozen = buf.freeze()
+      expect(MessageParameters.fromKeyValuePairs(deserializeMessageParameterKvps(frozen, 1))).toEqual(params)
+      expect(frozen.remaining).toBe(0)
+    })
+
+    test('SWITCH_FROM survives a list with neighbours on both sides', () => {
+      const params = [new SubscriberPriority(128), new SwitchFrom(7n, SwitchMode.Hard, true), new NewGroupRequest(3n)]
+      const buf = new ByteBuffer()
+      buf.putBytes(serializeMessageParameterKvps(params.map((p) => p.toKeyValuePair())).toUint8Array())
+      const frozen = buf.freeze()
+
+      const parsed = MessageParameters.fromKeyValuePairs(deserializeMessageParameterKvps(frozen, params.length))
+
+      expect(frozen.remaining).toBe(0)
+      expect(parsed).toEqual(params)
+    })
   })
 
   describe('MessageParameters builder', () => {
@@ -343,7 +424,7 @@ if (import.meta.vitest) {
         .addObjectDeliveryTimeout(150n)
         .addForward(false)
         .addSubscriberPriority(42)
-        .addSubscriptionFilter(new SubscriptionFilter(FilterType.AbsoluteRange, new Location(10n, 0n), 20n))
+        .addSubscriptionFilter(new SubscriptionFilter(FilterType.AbsoluteRangeFill, new Location(10n, 0n), 20n))
         .build()
         .map((p) => p.toKeyValuePair())
 
@@ -352,7 +433,9 @@ if (import.meta.vitest) {
       expect(MessageParameter.isObjectDeliveryTimeout(parsed[0]!) && parsed[0].timeout).toBe(150n)
       expect(MessageParameter.isForward(parsed[1]!) && parsed[1].forward).toBe(false)
       expect(MessageParameter.isSubscriberPriority(parsed[2]!) && parsed[2].priority).toBe(42)
-      expect(MessageParameter.isSubscriptionFilter(parsed[3]!) && parsed[3].filterType).toBe(FilterType.AbsoluteRange)
+      expect(MessageParameter.isSubscriptionFilter(parsed[3]!) && parsed[3].filterType).toBe(
+        FilterType.AbsoluteRangeFill,
+      )
     })
 
     // §14: a greased parameter is just another unknown one -- skipped, never fatal.

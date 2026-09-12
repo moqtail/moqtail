@@ -166,9 +166,9 @@ if (import.meta.vitest) {
       expect(payload.remaining).toBe(0)
     })
 
-    test('roundtrip with AbsoluteRange subscription filter', () => {
+    test('roundtrip with AbsoluteRangeFill subscription filter', () => {
       const parameters: MessageParameter[] = [
-        new SubscriptionFilter(FilterType.AbsoluteRange, new Location(5n, 10n), 20n),
+        new SubscriptionFilter(FilterType.AbsoluteRangeFill, new Location(5n, 10n), 20n),
         new ObjectDeliveryTimeout(5000n),
       ]
       const msg = new RequestOk(parameters)

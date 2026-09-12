@@ -35,7 +35,7 @@ use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use tokio::sync::RwLock;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, trace, warn};
 
 pub async fn handle(
   client: Arc<MOQTClient>,
@@ -310,7 +310,7 @@ pub async fn handle(
       {
         let mut map = client.inbound_requests.write().await;
         map.remove(&publisher_req_id);
-        debug!(
+        trace!(
           "Removed terminated PUBLISH request {} from pending requests map",
           publisher_req_id
         );
@@ -666,7 +666,7 @@ pub(crate) async fn forward_publish_downstream(
           other.get_type()
         ),
           Err(_) => {
-            debug!("Downstream publish stream closed");
+            trace!("Downstream publish stream closed");
             break;
           }
         }

@@ -17,7 +17,7 @@ use anyhow::Result;
 use moqtail::model::common::location::Location;
 use moqtail::model::common::tuple::{Tuple, TupleField};
 use moqtail::model::control::control_message::ControlMessage;
-use moqtail::model::control::fetch::{Fetch, StandaloneFetchProps};
+use moqtail::model::control::fetch::Fetch;
 use moqtail::model::error::StreamResetCode;
 use moqtail::model::parameter::message_parameter::MessageParameter;
 use moqtail::model::property::object_property::ObjectProperty;
@@ -74,16 +74,16 @@ pub async fn run(moq: MoqConnection, config: FetchConfig) -> Result<()> {
   // Send Fetch request
   let request_id = 0u64;
   let ns = Tuple::from_utf8_path(&config.namespace);
-  let standalone_fetch_props = StandaloneFetchProps {
-    track_namespace: ns,
-    track_name: TupleField::from_utf8(&config.track_name),
-    start_location: Location::new(config.start_group, config.start_object),
-    end_location: Location::new(config.end_group, config.end_object),
-  };
-
   let parameters = vec![MessageParameter::new_subscriber_priority(200)];
 
-  let fetch = Fetch::new_standalone(request_id, standalone_fetch_props, parameters);
+  let fetch = Fetch::new(
+    request_id,
+    ns,
+    TupleField::from_utf8(&config.track_name),
+    Location::new(config.start_group, config.start_object),
+    Location::new(config.end_group, config.end_object),
+    parameters,
+  );
 
   info!(
     "Sending Fetch: groups {}:{} to {}:{}",

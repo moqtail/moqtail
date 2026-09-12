@@ -65,7 +65,7 @@ impl MessageHandler {
         warn!("SUBSCRIBE_NAMESPACE received on control stream — must use a dedicated bi-stream");
         Err(TerminationCode::ProtocolViolation)
       }
-      ControlMessage::Subscribe(_) | ControlMessage::Switch(_) => {
+      ControlMessage::Subscribe(_) => {
         subscribe_handler::handle(
           client.clone(),
           stream_handler,

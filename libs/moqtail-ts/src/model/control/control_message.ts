@@ -15,7 +15,7 @@
  */
 
 import { FrozenByteBuffer } from '../common/byte_buffer'
-import { ControlMessageType, FetchType } from './constant'
+import { ControlMessageType } from './constant'
 import { PublishBlocked } from './publish_blocked'
 import { PublishNamespace } from './publish_namespace'
 import { Namespace } from './namespace'
@@ -32,7 +32,6 @@ import { RequestUpdate } from './request_update'
 import { TrackStatus } from './track_status'
 import { SubscribeNamespace } from './subscribe_namespace'
 import { SubscribeTracks } from './subscribe_tracks'
-import { Switch } from './switch'
 import { NotEnoughBytesError } from '../error/error'
 import { Tuple } from '../common'
 import { AuthorizationToken } from '../parameter/common/authorization_token'
@@ -58,9 +57,6 @@ export type ControlMessage =
   | SubscribeNamespace
   | SubscribeTracks
   | RequestOk
-  // moqtail-local extension (0x22), not a draft-18 type: it is sent but never parsed,
-  // so `deserialize` below has no case for it and `tryFrom` rejects the codepoint.
-  | Switch
 
 export namespace ControlMessage {
   export function deserialize(buf: FrozenByteBuffer): ControlMessage {
@@ -124,6 +120,8 @@ export namespace ControlMessage {
 
 if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
+  const { FullTrackName } = await import('../data')
+  const { Location } = await import('../common/location')
 
   describe('ControlMessage', () => {
     describe('PublishNamespace', () => {
@@ -179,11 +177,15 @@ if (import.meta.vitest) {
     describe('Fetch', () => {
       function buildTestFetch(): Fetch {
         const requestId = 161803n
-        const joiningRequestId = 119n
-        const joiningStart = 73n
-        const type = FetchType.Relative
+
         const parameters = [AuthorizationToken.newUseValue(0n, new TextEncoder().encode('test-token'))]
-        return new Fetch(requestId, { type, props: { joiningRequestId, joiningStart } }, parameters)
+        return new Fetch(
+          requestId,
+          FullTrackName.tryNew('un/deux/trois', 'quatre'),
+          new Location(12n, 5n),
+          new Location(20n, 0n),
+          parameters,
+        )
       }
 
       test('should roundtrip Fetch correctly', () => {

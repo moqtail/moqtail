@@ -89,10 +89,17 @@ async fn main() -> Result<(), anyhow::Error> {
           Some((name.to_string(), priority))
         }),
         forward: cli.forward,
-        joining_fetch: cli.joining_fetch,
-        joining_start: cli.joining_start,
-        joining_type: cli.joining_type.into(),
         update_forward_after: cli.update_forward_after,
+        filter: cli.filter,
+        filter_start_group: cli.filter_start_group,
+        filter_start_object: cli.filter_start_object,
+        end_group_delta: cli.end_group_delta,
+        relative_previous: cli.relative_previous,
+        switch_after: cli.switch_after,
+        switch_track: cli.switch_track,
+        switch_mode: cli.switch_mode.into(),
+        switch_publish_done: cli.switch_publish_done,
+        switch_start_group: cli.switch_start_group,
       };
       subscriber::run(moq_conn, config).await
     }

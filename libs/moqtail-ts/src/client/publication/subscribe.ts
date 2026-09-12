@@ -55,7 +55,7 @@ export class SubscribePublication {
   #startLocation: Location
 
   /**
-   * The end group for AbsoluteRange subscriptions, if specified.
+   * The end group for AbsoluteRangeFill subscriptions, if specified.
    */
   #endGroup: bigint | undefined
 
@@ -163,10 +163,10 @@ export class SubscribePublication {
           this.#startLocation = new Location(0n, 0n)
         }
         break
-      case FilterType.AbsoluteStart:
+      case FilterType.AbsoluteStartFill:
         this.#startLocation = filter?.startLocation ?? new Location(0n, 0n)
         break
-      case FilterType.AbsoluteRange:
+      case FilterType.AbsoluteRangeFill:
         this.#startLocation = filter?.startLocation ?? new Location(0n, 0n)
         this.#endGroup = filter?.endGroup
         break
@@ -293,7 +293,7 @@ export class SubscribePublication {
           await sendStream.write(obj.tryIntoSubgroupObject())
           await this.#lock.release()
 
-          // If this is the last object in the group (for AbsoluteRange/endGroup), close the stream
+          // If this is the last object in the group (for AbsoluteRangeFill/endGroup), close the stream
           if (this.#endGroup && obj.location.group === this.#endGroup) {
             try {
               await this.#lock.acquire()

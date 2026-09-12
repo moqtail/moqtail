@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use clap::{Parser, ValueEnum};
-use moqtail::model::control::constant::{FetchType, GroupOrder};
+use moqtail::model::control::constant::{GroupOrder, SwitchMode};
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum CliGroupOrder {
@@ -32,19 +32,35 @@ impl From<CliGroupOrder> for GroupOrder {
   }
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub enum CliJoiningType {
-  /// Joining Fetch relative to the Largest group (start = largest - joining_start)
-  Relative,
-  /// Absolute Joining Fetch (start = joining_start)
-  Absolute,
+/// Which Subscription Filter a subscribe uses.
+#[derive(Debug, Clone, Copy, PartialEq, ValueEnum)]
+pub enum CliFilter {
+  /// Objects published from now on
+  Latest,
+  /// Objects from the start of the next group
+  NextGroup,
+  /// From an explicit Start Location, filling what is already published
+  AbsoluteStartFill,
+  /// As above, ending at Start Group plus --end-group-delta
+  AbsoluteRangeFill,
+  /// From --relative-previous groups before the Largest Object
+  RelativeStartFill,
 }
 
-impl From<CliJoiningType> for FetchType {
-  fn from(t: CliJoiningType) -> Self {
-    match t {
-      CliJoiningType::Relative => FetchType::RelativeFetch,
-      CliJoiningType::Absolute => FetchType::AbsoluteFetch,
+/// How a switch stops the subscription it suspends.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum CliSwitchMode {
+  /// Stop it at the cutover: Forward State 0 and its streams reset
+  Hard,
+  /// Let it drain to the group before the new subscription's Start Group
+  Soft,
+}
+
+impl From<CliSwitchMode> for SwitchMode {
+  fn from(mode: CliSwitchMode) -> Self {
+    match mode {
+      CliSwitchMode::Hard => SwitchMode::Hard,
+      CliSwitchMode::Soft => SwitchMode::Soft,
     }
   }
 }
@@ -193,27 +209,54 @@ pub struct Cli {
   #[arg(long)]
   pub extra_track: Option<String>,
 
-  /// Subscription Forward State (subscribe only). Set false to test that a
-  /// joining FETCH against a non-forwarding subscription is rejected.
+  /// Subscription Forward State (subscribe only).
   #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
   pub forward: bool,
+
+  /// Subscription Filter to subscribe with (subscribe only)
+  #[arg(long, value_enum, default_value = "latest")]
+  pub filter: CliFilter,
+
+  /// Start group for the absolute fill filters (subscribe only)
+  #[arg(long, default_value_t = 0)]
+  pub filter_start_group: u64,
+
+  /// Start object for the absolute fill filters (subscribe only)
+  #[arg(long, default_value_t = 0)]
+  pub filter_start_object: u64,
+
+  /// Groups after the Start Group that --filter absolute-range-fill ends at
+  #[arg(long, default_value_t = 0)]
+  pub end_group_delta: u64,
+
+  /// Groups back from the Largest Object that --filter relative-start-fill starts at
+  #[arg(long, default_value_t = 0)]
+  pub relative_previous: u64,
+
+  /// Seconds after subscribing to switch to --switch-track (subscribe only, 0 = never)
+  #[arg(long, default_value_t = 0)]
+  pub switch_after: u64,
+
+  /// Track to switch to with SWITCH_FROM (subscribe + --switch-after only)
+  #[arg(long)]
+  pub switch_track: Option<String>,
+
+  /// How the switch stops the subscription it suspends
+  #[arg(long, value_enum, default_value = "hard")]
+  pub switch_mode: CliSwitchMode,
+
+  /// Whether the switch asks for PUBLISH_DONE on the suspended subscription
+  #[arg(long, default_value_t = false)]
+  pub switch_publish_done: bool,
+
+  /// Start group the switch asks to begin at, to switch at a future group
+  /// boundary rather than at the next one (0 = subscribe with --filter instead)
+  #[arg(long, default_value_t = 0)]
+  pub switch_start_group: u64,
 
   /// Seconds after subscribing to send a REQUEST_UPDATE setting Forward State 1
   /// (subscribe only, 0 = never). Use with --forward false to test that delivery
   /// resumes after Forward flips 0->1.
   #[arg(long, default_value_t = 0)]
   pub update_forward_after: u64,
-
-  /// After subscribing, issue a Joining FETCH referencing the subscription
-  /// (subscribe only).
-  #[arg(long, default_value_t = false)]
-  pub joining_fetch: bool,
-
-  /// Joining FETCH start group (subscribe + --joining-fetch only)
-  #[arg(long, default_value_t = 0)]
-  pub joining_start: u64,
-
-  /// Joining FETCH type (subscribe + --joining-fetch only)
-  #[arg(long, value_enum, default_value = "relative")]
-  pub joining_type: CliJoiningType,
 }

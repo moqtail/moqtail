@@ -24,7 +24,7 @@ use moqtail::model::data::full_track_name::FullTrackName;
 use std::{collections::BTreeMap, collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
 use tokio::sync::mpsc::UnboundedSender;
-use tracing::{debug, error, info};
+use tracing::{error, info, trace};
 
 /// Number of partitions for subscriber senders management to reduce lock contention.
 /// Each partition contains a separate HashMap protected by its own RwLock.
@@ -146,7 +146,7 @@ impl SubscriptionManager {
   // return the subscription for the client
   // subscriber_id is the connection id of the client
   pub async fn get_subscription(&self, subscriber_id: usize) -> Option<Arc<RwLock<Subscription>>> {
-    debug!(
+    trace!(
       "Getting subscription for subscriber_id={} from relay_track_id={}",
       subscriber_id, self.relay_track_id
     );
@@ -224,7 +224,7 @@ impl SubscriptionManager {
         self.relay_track_id
       );
     } else if total_subscribers > 0 {
-      debug!(
+      trace!(
         "{:?} event sent successfully to {} subscribers for relay_track_id={}",
         event, total_subscribers, self.relay_track_id
       );

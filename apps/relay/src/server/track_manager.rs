@@ -31,7 +31,7 @@ use tokio::sync::Notify;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::Instant;
-use tracing::{debug, info, warn};
+use tracing::{info, trace, warn};
 
 pub type NamespacePrefix = Tuple;
 
@@ -166,9 +166,14 @@ impl TrackManager {
     tracks.get(full_track_name).cloned()
   }
 
-  /// Find the subscription a connection holds with the given request id, across
-  /// all tracks, regardless of how it was created (SUBSCRIBE, PUBLISH/PUBLISH_OK
-  /// or REQUEST_UPDATE). Used to resolve the subscription a Joining FETCH targets.
+  pub async fn has_track(&self, full_track_name: &FullTrackName) -> bool {
+    let tracks = self.tracks.read().await;
+    tracks.contains_key(full_track_name)
+  }
+
+  /// Find the subscription a connection holds under the given request id, across
+  /// all tracks and however it was created. Resolves the subscription a
+  /// SWITCH_FROM names.
   pub async fn find_subscription_by_request_id(
     &self,
     connection_id: usize,
@@ -500,7 +505,7 @@ impl TrackManager {
 
     for (full_track_name, track_arc) in tracks.iter() {
       let is_match = full_track_name.namespace.fields.starts_with(&prefix.fields);
-      debug!(
+      trace!(
         "checking track: {} against prefix.fields: {:?} is_match: {}",
         full_track_name, prefix.fields, is_match
       );

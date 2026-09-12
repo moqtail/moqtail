@@ -92,7 +92,7 @@ mod tests {
     let request_update = RequestUpdate::new(
       120205,
       vec![MessageParameter::new_subscription_filter(
-        FilterType::AbsoluteRange,
+        FilterType::AbsoluteRangeFill,
         Some(Location {
           group: 81,
           object: 81,
@@ -116,7 +116,7 @@ mod tests {
     let request_update = RequestUpdate::new(
       120205,
       vec![MessageParameter::new_subscription_filter(
-        FilterType::AbsoluteRange,
+        FilterType::AbsoluteRangeFill,
         Some(Location {
           group: 81,
           object: 81,
@@ -146,7 +146,7 @@ mod tests {
     let request_update = RequestUpdate::new(
       120205,
       vec![MessageParameter::new_subscription_filter(
-        FilterType::AbsoluteRange,
+        FilterType::AbsoluteRangeFill,
         Some(Location {
           group: 81,
           object: 81,

@@ -159,6 +159,20 @@ mod tests {
   }
 
   #[test]
+  fn an_upstream_subscribe_carries_no_switch_or_fill_parameters() {
+    // A relay performs the switch itself; the publisher upstream is subscribed to
+    // as if nothing had happened, and fills are served from the relay's own cache
+    // and fetches.
+    let params = upstream_subscribe();
+    assert!(params.get_param(MessageParameterType::SwitchFrom).is_none());
+    assert!(
+      params
+        .get_param(MessageParameterType::FillParameters)
+        .is_none()
+    );
+  }
+
+  #[test]
   fn largest_object_takes_the_larger_of_the_two() {
     let earlier = loc(4, 2);
     let later = loc(4, 9);

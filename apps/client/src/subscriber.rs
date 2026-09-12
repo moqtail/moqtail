@@ -12,15 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::cli::DeliveryMode;
+use crate::cli::{CliFilter, DeliveryMode};
 use crate::connection::MoqConnection;
 use crate::stats::ReceptionStats;
 use crate::utils::should_log;
 use anyhow::Result;
+use moqtail::model::common::location::Location;
 use moqtail::model::common::tuple::{Tuple, TupleField};
-use moqtail::model::control::constant::{FetchType, GroupOrder};
+use moqtail::model::control::constant::{FilterType, GroupOrder, SwitchMode};
 use moqtail::model::control::control_message::ControlMessage;
-use moqtail::model::control::fetch::Fetch;
 use moqtail::model::control::request_ok::RequestOk;
 use moqtail::model::control::request_update::RequestUpdate;
 use moqtail::model::control::subscribe::Subscribe;
@@ -38,6 +38,38 @@ use tracing::{debug, error, info};
 /// Subscribe to one track on its own bidirectional request stream. Returns the
 /// assigned track alias and the request-stream handler, which the caller keeps
 /// alive for the subscription's lifetime.
+/// The SUBSCRIPTION_FILTER a `--filter` choice asks for.
+fn subscription_filter(config: &SubscribeConfig) -> MessageParameter {
+  match config.filter {
+    CliFilter::Latest => {
+      MessageParameter::new_subscription_filter(FilterType::LatestObject, None, None)
+    }
+    CliFilter::NextGroup => {
+      MessageParameter::new_subscription_filter(FilterType::NextGroupStart, None, None)
+    }
+    CliFilter::AbsoluteStartFill => MessageParameter::new_subscription_filter(
+      FilterType::AbsoluteStartFill,
+      Some(Location::new(
+        config.filter_start_group,
+        config.filter_start_object,
+      )),
+      None,
+    ),
+    CliFilter::AbsoluteRangeFill => MessageParameter::new_subscription_filter(
+      FilterType::AbsoluteRangeFill,
+      Some(Location::new(
+        config.filter_start_group,
+        config.filter_start_object,
+      )),
+      Some(config.filter_start_group + config.end_group_delta),
+    ),
+    CliFilter::RelativeStartFill => {
+      MessageParameter::new_relative_start_fill(config.relative_previous)
+    }
+  }
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn subscribe_track(
   connection: &Arc<TransportConnection>,
   namespace: &str,
@@ -46,21 +78,29 @@ async fn subscribe_track(
   subscriber_priority: u8,
   group_order: GroupOrder,
   forward: bool,
+  filter: MessageParameter,
+  switch_from: Option<MessageParameter>,
 ) -> Result<(u64, ControlStreamHandler)> {
   let ns = Tuple::from_utf8_path(namespace);
   info!(
-    "Subscribing to track: {}/{} (request_id={}, priority={}, forward={})",
-    namespace, track_name, request_id, subscriber_priority, forward
+    "Subscribing to track: {}/{} (request_id={}, priority={}, forward={}, filter={:?})",
+    namespace, track_name, request_id, subscriber_priority, forward, filter
   );
-  let subscribe = Subscribe::new_latest_object(
+  // A switch decides the Forward State itself, so FORWARD must not go with it.
+  let mut parameters = vec![
+    MessageParameter::new_subscriber_priority(subscriber_priority),
+    MessageParameter::new_group_order(group_order),
+    filter,
+  ];
+  match switch_from {
+    Some(param) => parameters.push(param),
+    None => parameters.push(MessageParameter::new_forward(forward)),
+  }
+  let subscribe = Subscribe::new(
     request_id,
     ns,
     TupleField::from_utf8(track_name),
-    vec![
-      MessageParameter::new_subscriber_priority(subscriber_priority),
-      MessageParameter::new_group_order(group_order),
-      MessageParameter::new_forward(forward),
-    ],
+    parameters,
   );
 
   // A request opens its own bidi stream, beginning with SUBSCRIBE; the response
@@ -80,6 +120,9 @@ async fn subscribe_track(
       );
       Ok((m.track_alias, request_stream))
     }
+    Ok(ControlMessage::RequestError(m)) => {
+      anyhow::bail!("SUBSCRIBE for {} refused: {:?}", track_name, m)
+    }
     Ok(m) => anyhow::bail!("Expected SubscribeOk for {}, got {:?}", track_name, m),
     Err(e) => anyhow::bail!("Failed waiting for SubscribeOk for {}: {:?}", track_name, e),
   }
@@ -94,58 +137,17 @@ pub struct SubscribeConfig {
   pub group_order: GroupOrder,
   pub extra_track: Option<(String, u8)>,
   pub forward: bool,
-  pub joining_fetch: bool,
-  pub joining_start: u64,
-  pub joining_type: FetchType,
   pub update_forward_after: u64,
-}
-
-/// Issue a Joining FETCH referencing an existing subscription and log the
-/// response (FETCH_OK when accepted, REQUEST_ERROR — e.g. INVALID_RANGE for a
-/// non-forwarding subscription — when rejected).
-async fn send_joining_fetch(
-  connection: &Arc<TransportConnection>,
-  joining_request_id: u64,
-  joining_start: u64,
-  fetch_type: FetchType,
-) -> Result<()> {
-  let request_id = 2u64;
-  let parameters = vec![MessageParameter::new_subscriber_priority(200)];
-  let fetch = Fetch::new_joining(
-    request_id,
-    fetch_type,
-    joining_request_id,
-    joining_start,
-    parameters,
-  )
-  .map_err(|e| anyhow::anyhow!("Failed to build joining FETCH: {}", e))?;
-
-  info!(
-    "Sending Joining FETCH: type={:?} joining_request_id={} joining_start={}",
-    fetch_type, joining_request_id, joining_start
-  );
-
-  let (send, recv) = connection.open_bi().await?;
-  let mut request_stream = ControlStreamHandler::new(send, recv);
-  request_stream
-    .send(&ControlMessage::Fetch(Box::new(fetch)))
-    .await
-    .map_err(|e| anyhow::anyhow!("Failed to send joining FETCH: {:?}", e))?;
-
-  match request_stream.next_message().await {
-    Ok(ControlMessage::FetchOk(m)) => {
-      info!(
-        "Joining FETCH accepted: FetchOk end_location={:?}",
-        m.end_location
-      );
-    }
-    Ok(ControlMessage::RequestError(m)) => {
-      error!("Joining FETCH rejected: RequestError {:?}", m);
-    }
-    Ok(m) => info!("Joining FETCH response: {:?}", m),
-    Err(e) => error!("Joining FETCH: error reading response: {:?}", e),
-  }
-  Ok(())
+  pub filter: CliFilter,
+  pub filter_start_group: u64,
+  pub filter_start_object: u64,
+  pub end_group_delta: u64,
+  pub relative_previous: u64,
+  pub switch_after: u64,
+  pub switch_track: Option<String>,
+  pub switch_mode: SwitchMode,
+  pub switch_publish_done: bool,
+  pub switch_start_group: u64,
 }
 
 /// SUBSCRIBE_TRACKS for a namespace prefix: send the request on a bidi stream
@@ -244,6 +246,8 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
     config.subscriber_priority,
     config.group_order,
     config.forward,
+    subscription_filter(&config),
+    None,
   )
   .await?;
 
@@ -268,12 +272,62 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
     request_streams.push(primary_stream);
   }
 
-  // Issue a Joining FETCH against the primary subscription (request_id 0). Kept
-  // before the receive loop so its response is observed directly.
-  if config.joining_fetch {
-    send_joining_fetch(&connection, 0, config.joining_start, config.joining_type).await?;
-    drop(request_streams);
-    return Ok(());
+  // Switch to another track after a delay: a second SUBSCRIBE carrying SWITCH_FROM,
+  // which activates it and suspends the first.
+  if config.switch_after > 0
+    && let Some(switch_track) = config.switch_track.clone()
+  {
+    let connection = connection.clone();
+    let namespace = config.namespace.clone();
+    let delay = config.switch_after;
+    let priority = config.subscriber_priority;
+    let group_order = config.group_order;
+    let mode = config.switch_mode;
+    let publish_done = config.switch_publish_done;
+    // A start group of its own makes the switch happen at that group rather than
+    // at the next one, leaving the suspended track delivering until then.
+    let filter = if config.switch_start_group > 0 {
+      MessageParameter::new_subscription_filter(
+        FilterType::AbsoluteStartFill,
+        Some(Location::new(config.switch_start_group, 0)),
+        None,
+      )
+    } else {
+      subscription_filter(&config)
+    };
+    tokio::spawn(async move {
+      tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
+      info!("Switching to {} ({:?})", switch_track, mode);
+      match subscribe_track(
+        &connection,
+        &namespace,
+        &switch_track,
+        2,
+        priority,
+        group_order,
+        true,
+        filter,
+        Some(MessageParameter::new_switch_from(0, mode, publish_done)),
+      )
+      .await
+      {
+        Ok((alias, stream)) => {
+          info!("Switched to {} (track_alias={})", switch_track, alias);
+          // Hold the request stream open for the subscription's lifetime.
+          let mut stream = stream;
+          loop {
+            match stream.next_message().await {
+              Ok(m) => info!("switch subscription: {:?}", m),
+              Err(e) => {
+                error!("switch subscription stream ended: {:?}", e);
+                break;
+              }
+            }
+          }
+        }
+        Err(e) => error!("Switch failed: {:?}", e),
+      }
+    });
   }
 
   let extra_alias = if let Some((ref extra_name, extra_priority)) = config.extra_track {
@@ -285,6 +339,8 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
       extra_priority,
       config.group_order,
       config.forward,
+      MessageParameter::new_subscription_filter(FilterType::LatestObject, None, None),
+      None,
     )
     .await?;
     request_streams.push(extra_stream);
@@ -339,7 +395,12 @@ async fn receive_datagrams(
                 continue;
               }
 
-              let sequence_ok = stats.record_object(obj.group_id, obj.object_id);
+              let sequence_ok = stats.record_object(
+                obj.track_alias,
+                obj.group_id,
+                obj.object_id,
+                ReceptionStats::prior_group_gap(obj.properties.as_ref()),
+              );
 
               if should_log(stats.total_received) || !sequence_ok {
                 info!(
@@ -423,7 +484,12 @@ async fn receive_streams(
             let (next_handler, object) = handler.next_object().await;
             match object {
               Some(obj) => {
-                let sequence_ok = stats.record_object(obj.location.group, obj.location.object);
+                let sequence_ok = stats.record_object(
+                  obj.track_alias,
+                  obj.location.group,
+                  obj.location.object,
+                  ReceptionStats::prior_group_gap(obj.properties.as_ref()),
+                );
                 let label = alias_to_label
                   .get(&obj.track_alias)
                   .map(|s| s.as_str())

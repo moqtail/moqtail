@@ -12,8 +12,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use moqtail::model::property::object_property::ObjectProperty;
+use std::collections::HashMap;
 use std::time::Instant;
 use tracing::info;
+
+/// Where one track has got to. A soft switch has two tracks delivering at once,
+/// their objects interleaved on separate streams, so each is followed on its own.
+struct TrackSequence {
+  last_group: u64,
+  last_object: u64,
+  /// How many group ids the group being received spans. One for an ordinary
+  /// track; four for a track whose groups are four times as long as the grid its
+  /// ids are numbered on. Zero where it is not known yet, which is the case for
+  /// the group a subscriber joins part way through: the Prior Group ID Gap that
+  /// would have said rides on the object starting it, which was never received.
+  last_group_span: u64,
+}
 
 pub struct ReceptionStats {
   pub total_received: u64,
@@ -21,6 +36,7 @@ pub struct ReceptionStats {
   pub sequence_gaps: u64,
   last_group: u64,
   last_object: u64,
+  tracks: HashMap<u64, TrackSequence>,
   start_time: Instant,
 }
 
@@ -32,34 +48,79 @@ impl ReceptionStats {
       sequence_gaps: 0,
       last_group: 0,
       last_object: 0,
+      tracks: HashMap::new(),
       start_time: Instant::now(),
     }
   }
 
-  /// Record a received object and validate sequence ordering.
+  /// The Prior Group ID Gap an object carries, or 0 where it carries none.
+  pub fn prior_group_gap(properties: Option<&Vec<ObjectProperty>>) -> u64 {
+    properties
+      .into_iter()
+      .flatten()
+      .find_map(|property| match property {
+        ObjectProperty::PriorGroupIdGap { gap } => Some(*gap),
+        _ => None,
+      })
+      .unwrap_or(0)
+  }
+
+  /// Record a received object and validate sequence ordering within its track.
   /// Returns true if the sequence is valid, false if a gap was detected.
-  pub fn record_object(&mut self, group_id: u64, object_id: u64) -> bool {
+  ///
+  /// `prior_group_gap` is the Prior Group ID Gap the object carries: how many
+  /// group ids its publisher skipped before it. A track whose groups are longer
+  /// than the grid its ids are numbered on skips ids by design, and what it skips
+  /// is not missing data.
+  ///
+  /// The next group is expected where the one before it ended, so the span used
+  /// is that of the group just left rather than of the one arriving.
+  pub fn record_object(
+    &mut self,
+    track_alias: u64,
+    group_id: u64,
+    object_id: u64,
+    prior_group_gap: u64,
+  ) -> bool {
     self.total_received += 1;
-
-    if self.total_received == 1 {
-      // First object, no sequence check needed
-      self.last_group = group_id;
-      self.last_object = object_id;
-      return true;
-    }
-
-    let expected_next = (group_id == self.last_group && object_id == self.last_object + 1)
-      || (group_id == self.last_group + 1 && object_id == 0);
-
-    let sequence_ok = if expected_next {
-      true
-    } else {
-      self.sequence_gaps += 1;
-      false
-    };
-
     self.last_group = group_id;
     self.last_object = object_id;
+
+    let Some(track) = self.tracks.get_mut(&track_alias) else {
+      // First object of this track, nothing to check it against.
+      self.tracks.insert(
+        track_alias,
+        TrackSequence {
+          last_group: group_id,
+          last_object: object_id,
+          last_group_span: if object_id == 0 {
+            prior_group_gap + 1
+          } else {
+            0
+          },
+        },
+      );
+      return true;
+    };
+
+    let sequence_ok = if group_id == track.last_group {
+      object_id == track.last_object + 1
+    } else {
+      // A new group starts at object 0, where the last one ended -- unless where
+      // the last one ended is exactly what was never learnt.
+      object_id == 0
+        && (track.last_group_span == 0 || group_id == track.last_group + track.last_group_span)
+    };
+
+    if group_id != track.last_group {
+      track.last_group_span = prior_group_gap + 1;
+    }
+    track.last_group = group_id;
+    track.last_object = object_id;
+
+    if !sequence_ok {
+      self.sequence_gaps += 1;
+    }
     sequence_ok
   }
 

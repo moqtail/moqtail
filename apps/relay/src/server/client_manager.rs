@@ -16,7 +16,7 @@ use super::client::MOQTClient;
 use moqtail::model::data::full_track_name::FullTrackName;
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::RwLock;
-use tracing::{debug, info};
+use tracing::{info, trace};
 
 #[derive(Clone)]
 pub(crate) struct ClientManager {
@@ -63,7 +63,7 @@ impl ClientManager {
     let mut matched = Vec::new();
 
     for (connection_id, client) in clients.iter() {
-      debug!("checking client: {:?}", connection_id);
+      trace!("checking client: {:?}", connection_id);
 
       let publishes_track = client
         .published_tracks
@@ -74,7 +74,7 @@ impl ClientManager {
 
       let announced_namespace = !publishes_track && {
         let announced = client.announced_track_namespaces.read().await;
-        debug!(
+        trace!(
           "client announced track namespaces: {:?} track namespace: {:?}",
           announced, full_track_name.namespace
         );

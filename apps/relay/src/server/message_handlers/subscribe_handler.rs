@@ -13,13 +13,13 @@
 // limitations under the License.
 
 use crate::server::client::MOQTClient;
-use crate::server::client::switch_context::SwitchStatus;
+use crate::server::client::switch_context::SwitchPlan;
 use crate::server::message_handlers::parameters;
 use crate::server::session::Session;
 use crate::server::session_context::{PendingRequest, SessionContext};
 use crate::server::track::{Track, TrackOrigin, TrackStatus, await_publisher_streams};
 use core::result::Result;
-use moqtail::model::control::constant::PublishDoneStatusCode;
+use moqtail::model::control::constant::{FilterType, PublishDoneStatusCode};
 use moqtail::model::control::publish_done::PublishDone;
 use moqtail::model::control::request_error::RequestError;
 use moqtail::model::control::request_ok::RequestOk;
@@ -29,7 +29,7 @@ use moqtail::model::error::RequestErrorCode;
 use moqtail::model::error::StreamResetCode;
 use moqtail::model::error::TerminationCode;
 use moqtail::model::parameter::message_parameter::{
-  MessageParameter, MessageParameterVecExt, apply_message_parameter_update,
+  MessageParameter, apply_message_parameter_update,
 };
 use moqtail::model::property::track_property::has_unsupported_mandatory;
 use moqtail::model::{
@@ -40,7 +40,7 @@ use moqtail::transport::data_stream_handler::SubscribeRequest;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use tokio::sync::oneshot;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, trace, warn};
 
 async fn add_subscription(
   subscribe: Subscribe,
@@ -366,6 +366,73 @@ async fn end_upstream_subscription(
   }
 }
 
+/// Reads and checks a SWITCH_FROM carried by a SUBSCRIBE or REQUEST_UPDATE.
+///
+/// `Ok(None)` when there is no SWITCH_FROM and this is an ordinary request.
+/// `Err` carries the REQUEST_ERROR to answer with: the switch cannot be
+/// performed, which is not grounds for closing the session.
+pub(crate) async fn plan_switch(
+  client: &Arc<MOQTClient>,
+  context: &Arc<SessionContext>,
+  activating_request_id: u64,
+  activating: &FullTrackName,
+  parameters: &[MessageParameter],
+) -> Result<Option<SwitchPlan>, RequestError> {
+  let Some(MessageParameter::SwitchFrom {
+    request_id,
+    mode,
+    publish_done,
+  }) = parameters
+    .iter()
+    .find(|p| matches!(p, MessageParameter::SwitchFrom { .. }))
+    .cloned()
+  else {
+    return Ok(None);
+  };
+
+  let invalid = |reason: &str| {
+    RequestError::new(
+      RequestErrorCode::InvalidSwitch,
+      0,
+      ReasonPhrase::try_new(reason.to_string()).unwrap(),
+    )
+  };
+
+  // The switch decides the activating subscription's Forward State itself.
+  if parameters
+    .iter()
+    .any(|p| matches!(p, MessageParameter::Forward { .. }))
+  {
+    return Err(invalid("SWITCH_FROM cannot be combined with FORWARD"));
+  }
+
+  if request_id == activating_request_id {
+    return Err(invalid("a subscription cannot switch away from itself"));
+  }
+
+  let Some((_, subscription)) = context
+    .track_manager
+    .find_subscription_by_request_id(client.connection_id, request_id)
+    .await
+  else {
+    return Err(invalid("no such subscription to switch away from"));
+  };
+
+  // A suspending subscription in Forward State 0 is not an error; there is simply
+  // less to stop.
+  let suspending = subscription.read().await.full_track_name.clone();
+
+  // One subscription per track per subscriber, so switching to the track being
+  // switched away from would have it suspend itself.
+  if suspending == *activating {
+    return Err(invalid(
+      "a subscription cannot switch away from its own track",
+    ));
+  }
+
+  Ok(Some(SwitchPlan::new(suspending, mode, publish_done)))
+}
+
 async fn handle_subscribe_message(
   client: Arc<MOQTClient>,
   stream_handler: &mut ControlStreamHandler,
@@ -376,6 +443,34 @@ async fn handle_subscribe_message(
   info!("received Subscribe message: {:?}", sub);
   let track_namespace = sub.track_namespace.clone();
   let full_track_name = sub.get_full_track_name();
+
+  // A SUBSCRIBE carrying SWITCH_FROM activates this subscription and suspends
+  // another. Checked first: a switch that cannot be performed is refused without
+  // creating anything.
+  let switch_plan = match plan_switch(
+    &client,
+    &context,
+    sub.request_id,
+    &full_track_name,
+    &sub.subscribe_parameters,
+  )
+  .await
+  {
+    Ok(plan) => plan,
+    Err(err) => {
+      info!(
+        "Rejecting SUBSCRIBE with SWITCH_FROM: {}",
+        err.reason_phrase.as_str()
+      );
+      stream_handler.send_impl(&err).await.unwrap();
+      return Ok(());
+    }
+  };
+  let is_switch = is_switch || switch_plan.is_some();
+  // A switch applies its filter and Forward State in begin_switch, well after the
+  // SUBSCRIBE_OK goes out; anything measured against the subscription's filter has to
+  // wait for that.
+  let switching = switch_plan.is_some();
 
   // Reserved namespaces are resolved locally and never forwarded upstream.
   if let Some(reason) =
@@ -394,7 +489,7 @@ async fn handle_subscribe_message(
   // Every publisher of the exact Track, plus every publisher that announced a namespace
   // it falls under. A SUBSCRIBE goes to all of them, not to whichever matched first.
   let publishers = {
-    debug!("trying to get the publishers");
+    trace!("trying to get the publishers");
     context
       .client_manager
       .get_publishers_for_track(&full_track_name)
@@ -555,6 +650,17 @@ async fn handle_subscribe_message(
           && let Some(subscription) = track.get_subscription(client.connection_id).await
         {
           subscription.read().await.mark_alias_announced();
+          // A switch decides the filter this fill is measured against, and it has not
+          // been applied yet: the fill for one is opened once begin_switch has run.
+          if !switching {
+            crate::server::fill::open_fill_fetch_stream(
+              context.clone(),
+              track_arc.clone(),
+              subscription,
+              sub.request_id,
+            )
+            .await;
+          }
         }
         sent
       }
@@ -591,6 +697,65 @@ async fn handle_subscribe_message(
     super::publish_handler::ensure_upstream_forwarding(&track_arc, &context).await;
   }
 
+  if res.is_ok()
+    && let Some(plan) = switch_plan
+  {
+    // Scoped: begin_switch reaches for locks of its own, and the track guard must
+    // be gone before it does.
+    let (subscription, largest) = {
+      let track = track_arc.read().await;
+      (
+        track.get_subscription(client.connection_id).await,
+        track.largest_object().await,
+      )
+    };
+    if let Some(subscription) = subscription {
+      // A switch to a track the subscriber already holds reuses that subscription
+      // instead of creating a second one, so say which request drives it now: this
+      // SUBSCRIBE is what carries its updates from here, and what cancels it. The
+      // one it replaces can still be reset afterwards, and must not take this
+      // subscription with it.
+      {
+        let mut writable = subscription.write().await;
+        if writable.request_id != sub.request_id {
+          info!(
+            "switch: subscription for {:?} handed from request {} to {}",
+            full_track_name, writable.request_id, sub.request_id
+          );
+          writable.request_id = sub.request_id;
+        }
+      }
+
+      // A SUBSCRIBE describes the subscription in full, so a filter it leaves out
+      // is the default rather than whatever the reused subscription had.
+      let filter = sub
+        .subscribe_parameters
+        .iter()
+        .find(|p| matches!(p, MessageParameter::SubscriptionFilter { .. }))
+        .cloned()
+        .unwrap_or_else(|| {
+          MessageParameter::new_subscription_filter(FilterType::LatestObject, None, None)
+        });
+      subscription
+        .read()
+        .await
+        .begin_switch(plan, Some(&filter), largest)
+        .await;
+
+      // Now that the switch has said where this subscription starts and that it is
+      // forwarding, the fill can be measured: everything already published from the
+      // group it joins, so the subscriber has the group from its start rather than
+      // from wherever it happens to arrive.
+      crate::server::fill::open_fill_fetch_stream(
+        context.clone(),
+        track_arc.clone(),
+        subscription,
+        sub.request_id,
+      )
+      .await;
+    }
+  }
+
   // Store in client's subscribe requests on success
   if res.is_ok() {
     let mut requests = client.subscribe_requests.write().await;
@@ -604,7 +769,7 @@ async fn handle_subscribe_message(
       PendingRequest::Subscribe(orig_req.clone()),
     );
 
-    debug!(
+    trace!(
       "inserted request into client's subscribe requests: {:?}",
       orig_req
     );
@@ -756,6 +921,13 @@ async fn handle_subscribe_ok_message(
         .await
       {
         subscription.read().await.mark_alias_announced();
+        crate::server::fill::open_fill_fetch_stream(
+          context.clone(),
+          track_arc.clone(),
+          subscription,
+          sub_request.original_request_id,
+        )
+        .await;
       }
     } else {
       warn!(
@@ -810,6 +982,13 @@ async fn handle_subscribe_ok_message(
           };
           if let Some(subscription) = subscription {
             subscription.read().await.mark_alias_announced();
+            crate::server::fill::open_fill_fetch_stream(
+              context.clone(),
+              track_arc.clone(),
+              subscription,
+              subscriber_request_id,
+            )
+            .await;
           }
         }
       }
@@ -845,6 +1024,33 @@ pub(crate) async fn cancel_subscription(
   let track_option = context.track_manager.get_track(&full_track_name).await;
 
   if let Some(track_lock) = track_option {
+    // One subscription per track per subscriber, and a switch to a track the
+    // subscriber already holds hands the existing one to the SUBSCRIBE that switched
+    // to it. Resetting the request it replaced arrives here naming the same track, so
+    // cancel only what this request still owns -- otherwise the live subscription goes
+    // with it and the subscriber starves on a track it is still subscribed to.
+    let owned = match track_lock
+      .read()
+      .await
+      .get_subscription(context.connection_id)
+      .await
+    {
+      Some(subscription) => subscription.read().await.request_id == request_id,
+      None => false,
+    };
+
+    if !owned {
+      info!(
+        "Subscription cancel: request {} no longer owns the subscription for {:?}; leaving it",
+        request_id, full_track_name
+      );
+      let mut requests = client.subscribe_requests.write().await;
+      requests.remove(&request_id);
+      let mut inbound = client.inbound_requests.write().await;
+      inbound.remove(&request_id);
+      return;
+    }
+
     let (is_last_subscriber, origin) = {
       let track = track_lock.read().await;
       track.remove_subscription(context.connection_id).await;
@@ -894,7 +1100,7 @@ pub(crate) async fn cancel_subscription(
     let mut inbound = client.inbound_requests.write().await;
     inbound.remove(&request_id);
 
-    debug!(
+    trace!(
       "Cleaned up client subscribe request {} on cancel",
       request_id
     );
@@ -908,16 +1114,20 @@ pub async fn handle_request_update(
   context: Arc<SessionContext>,
   existing_req_id: u64,
 ) -> Result<(), TerminationCode> {
+  // An update can carry SWITCH_FROM too, activating the subscription it arrives on.
+  let asks_for_a_fill = update_msg.parameters.iter().any(
+    |p| matches!(p, MessageParameter::SubscriptionFilter { filter_type, .. } if filter_type.is_fetch_fill()),
+  );
+  // The update itself is handed on to the subscription, so a switch's filter is
+  // kept here rather than read back off it.
+  let update_parameters = update_msg.parameters.clone();
+
+  // Read before anything is applied: a refused switch must leave the subscription
+  // as it was.
   let full_track_name = {
-    let mut client_requests = client.subscribe_requests.write().await;
-    match client_requests.get_mut(&existing_req_id) {
-      Some(req) => {
-        apply_message_parameter_update(
-          &mut req.original_subscribe_request.subscribe_parameters,
-          update_msg.parameters.clone(),
-        );
-        req.original_subscribe_request.get_full_track_name()
-      }
+    let client_requests = client.subscribe_requests.read().await;
+    match client_requests.get(&existing_req_id) {
+      Some(req) => req.original_subscribe_request.get_full_track_name(),
       None => {
         warn!(
           "RequestUpdate existing_request_id {} is not a valid Subscribe request for this client",
@@ -927,6 +1137,36 @@ pub async fn handle_request_update(
       }
     }
   };
+
+  let switch_plan = match plan_switch(
+    &client,
+    &context,
+    existing_req_id,
+    &full_track_name,
+    &update_msg.parameters,
+  )
+  .await
+  {
+    Ok(plan) => plan,
+    Err(err) => {
+      info!(
+        "Rejecting REQUEST_UPDATE with SWITCH_FROM: {}",
+        err.reason_phrase.as_str()
+      );
+      let _ = stream_handler.send_impl(&err).await;
+      return Ok(());
+    }
+  };
+
+  {
+    let mut client_requests = client.subscribe_requests.write().await;
+    if let Some(req) = client_requests.get_mut(&existing_req_id) {
+      apply_message_parameter_update(
+        &mut req.original_subscribe_request.subscribe_parameters,
+        update_msg.parameters.clone(),
+      );
+    }
+  }
 
   {
     let mut inbound = client.inbound_requests.write().await;
@@ -975,6 +1215,54 @@ pub async fn handle_request_update(
       super::publish_handler::ensure_upstream_forwarding(&track_arc, &context).await;
       let ok_msg = RequestOk::new(vec![]);
       let _ = stream_handler.send_impl(&ok_msg).await;
+
+      // Scoped: what follows reaches for locks of its own, and the track guard
+      // must be gone before it does.
+      let (subscription, largest) = {
+        let track = track_arc.read().await;
+        (
+          track.get_subscription(client.connection_id).await,
+          track.largest_object().await,
+        )
+      };
+
+      // An update changes only what it carries, so a filter it leaves out leaves
+      // the subscription's own in place.
+      let filter = update_parameters
+        .iter()
+        .find(|p| matches!(p, MessageParameter::SubscriptionFilter { .. }));
+
+      if let Some(subscription) = &subscription {
+        if let Some(plan) = switch_plan {
+          subscription
+            .read()
+            .await
+            .begin_switch(plan, filter, largest)
+            .await;
+        } else if filter.is_some() {
+          // A filter the update changed starts where it now says, which for a live
+          // one is against the largest Object as of this update.
+          subscription.read().await.resolve_live_start(largest).await;
+        }
+      }
+
+      // An update that names a fill filter type asks for another fill, over
+      // whatever range it now specifies.
+      if asks_for_a_fill
+        && let Some(subscription) = track_arc
+          .read()
+          .await
+          .get_subscription(client.connection_id)
+          .await
+      {
+        crate::server::fill::open_fill_fetch_stream(
+          context.clone(),
+          track_arc.clone(),
+          subscription,
+          existing_req_id,
+        )
+        .await;
+      }
     }
     Some(Err(e)) => {
       error!(
@@ -1126,132 +1414,6 @@ async fn handle_subscribe_error_message(
   Ok(())
 }
 
-async fn handle_switch_message(
-  client: Arc<MOQTClient>,
-  stream_handler: &mut ControlStreamHandler,
-  switch_message: moqtail::model::control::switch::Switch,
-  context: Arc<SessionContext>,
-) -> Result<(), TerminationCode> {
-  info!("received Switch message: {:?}", switch_message);
-
-  // now different from a normal subscribe, we need to
-  // check whether there is a related track to switch from
-  let switch_from_track = {
-    let requests = client.subscribe_requests.read().await;
-
-    let req = requests.get(&switch_message.subscription_request_id);
-    match req {
-      Some(req) => {
-        let track_name = req.original_subscribe_request.get_full_track_name();
-        if let Some(track) = context.track_manager.get_track(&track_name).await {
-          info!(
-            "found old track request, original request id: {:?}",
-            req.original_request_id
-          );
-          Some(track.clone())
-        } else {
-          warn!("old track not found for track name: {:?}", track_name);
-          None
-        }
-      }
-      None => None,
-    }
-  };
-
-  if switch_from_track.is_none() {
-    warn!(
-      "no existing track found for switch subscription request id: {:?}",
-      switch_message.subscription_request_id
-    );
-    return Err(TerminationCode::ProtocolViolation);
-  }
-
-  let switch_from_track_guard = switch_from_track.unwrap();
-
-  let switch_from_track = switch_from_track_guard.read().await;
-
-  if let Some(sub) = client
-    .subscriptions
-    .get_subscription(&switch_from_track.full_track_name)
-    .await
-  {
-    if sub.upgrade().is_none() {
-      warn!(
-        "subscription weak reference is dead for track: {:?} subscriber: {}",
-        switch_from_track.full_track_name, context.connection_id
-      );
-      return Err(TerminationCode::ProtocolViolation);
-    }
-
-    let mut is_active = false;
-    if let Some(sub) = sub.upgrade() {
-      let sub = sub.read().await;
-      is_active = sub.is_active().await;
-    }
-
-    if !is_active {
-      warn!(
-        "subscription is not active for track: {:?} subscriber: {}",
-        switch_from_track.full_track_name, context.connection_id
-      );
-      return Err(TerminationCode::ProtocolViolation);
-    }
-  } else {
-    warn!(
-      "no subscription found for track: {:?} subscriber: {}",
-      switch_from_track.full_track_name, context.connection_id
-    );
-    return Err(TerminationCode::ProtocolViolation);
-  }
-
-  let mut switch_params: Vec<MessageParameter> = switch_message
-    .subscribe_parameters
-    .iter()
-    .filter_map(|kvp| MessageParameter::deserialize(kvp).ok())
-    .collect();
-
-  switch_params.set_param(MessageParameter::new_forward(true)); // forward always true for switch
-
-  let subscribe = Subscribe::new_latest_object(
-    switch_message.request_id,
-    switch_message.track_namespace.clone(),
-    switch_message.track_name.clone(),
-    switch_params,
-  );
-
-  let new_full_track_name = subscribe.get_full_track_name();
-
-  if let Err(e) = handle_subscribe_message(
-    client.clone(),
-    stream_handler,
-    subscribe,
-    context.clone(),
-    true, // is_switch
-  )
-  .await
-  {
-    error!("error handling switch subscribe message: {:?}", e);
-    Err(e)
-  } else {
-    info!("switch subscribe message handled successfully");
-
-    // update the switch context
-    client
-      .switch_context
-      .add_or_update_switch_item(new_full_track_name, SwitchStatus::Next)
-      .await;
-
-    let switch_from_track_name = switch_from_track.full_track_name.clone();
-
-    client
-      .switch_context
-      .add_or_update_switch_item(switch_from_track_name, SwitchStatus::Current)
-      .await;
-
-    Ok(())
-  }
-}
-
 pub async fn handle(
   client: Arc<MOQTClient>,
   stream_handler: &mut ControlStreamHandler,
@@ -1269,7 +1431,6 @@ pub async fn handle(
       };
       handle_request_update(client, stream_handler, *m, context, target_request_id).await
     }
-    ControlMessage::Switch(m) => handle_switch_message(client, stream_handler, *m, context).await,
     _ => {
       // no-op
       Ok(())

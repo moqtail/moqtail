@@ -13,10 +13,10 @@
 // limitations under the License.
 
 use crate::model::common::location::Location;
-use crate::model::common::pair::{KeyValuePair, MAX_VALUE_LENGTH};
+use crate::model::common::pair::KeyValuePair;
 use crate::model::common::tuple::Tuple;
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
-use crate::model::control::constant::{ControlMessageType, FilterType, GroupOrder};
+use crate::model::control::constant::{ControlMessageType, FilterType, GroupOrder, SwitchMode};
 use crate::model::error::ParseError;
 use crate::model::parameter::authorization_token::AuthorizationToken;
 use crate::model::parameter::constant::MessageParameterType;
@@ -58,6 +58,20 @@ pub enum MessageParameter {
     filter_type: FilterType,
     start_location: Option<Location>,
     end_group: Option<u64>,
+    /// How many groups back from the Largest Object a RelativeStartFill starts.
+    relative_previous: Option<u64>,
+  },
+  SwitchFrom {
+    /// The subscription to suspend.
+    request_id: u64,
+    mode: SwitchMode,
+    /// Whether the publisher sends PUBLISH_DONE on the suspended subscription.
+    publish_done: bool,
+  },
+  /// Overrides for the fill fetch stream. An omitted parameter keeps the value it
+  /// has for the live subscription. Ignored without a fill filter type.
+  FillParameters {
+    parameters: Vec<MessageParameter>,
   },
   NewGroupRequest {
     group: u64,
@@ -66,6 +80,9 @@ pub enum MessageParameter {
     prefix: Tuple,
   },
 }
+
+/// Publish Done is the top bit of the flags byte; the rest are reserved.
+const SWITCH_FROM_PUBLISH_DONE: u8 = 0b1000_0000;
 
 impl MessageParameter {
   pub fn new_object_delivery_timeout(timeout: u64) -> Self {
@@ -117,6 +134,28 @@ impl MessageParameter {
       filter_type,
       start_location,
       end_group,
+      relative_previous: None,
+    }
+  }
+
+  pub fn new_relative_start_fill(relative_previous: u64) -> Self {
+    Self::SubscriptionFilter {
+      filter_type: FilterType::RelativeStartFill,
+      start_location: None,
+      end_group: None,
+      relative_previous: Some(relative_previous),
+    }
+  }
+
+  pub fn new_fill_parameters(parameters: Vec<MessageParameter>) -> Self {
+    Self::FillParameters { parameters }
+  }
+
+  pub fn new_switch_from(request_id: u64, mode: SwitchMode, publish_done: bool) -> Self {
+    Self::SwitchFrom {
+      request_id,
+      mode,
+      publish_done,
     }
   }
 
@@ -142,6 +181,8 @@ impl MessageParameter {
       Self::SubscriberPriority { .. } => MessageParameterType::SubscriberPriority as u64,
       Self::GroupOrder { .. } => MessageParameterType::GroupOrder as u64,
       Self::SubscriptionFilter { .. } => MessageParameterType::SubscriptionFilter as u64,
+      Self::FillParameters { .. } => MessageParameterType::FillParameters as u64,
+      Self::SwitchFrom { .. } => MessageParameterType::SwitchFrom as u64,
       Self::NewGroupRequest { .. } => MessageParameterType::NewGroupRequest as u64,
       Self::TrackNamespacePrefix { .. } => MessageParameterType::TrackNamespacePrefix as u64,
     }
@@ -199,6 +240,10 @@ impl MessageParameter {
           | ControlMessageType::PublishOk
           | ControlMessageType::RequestOk
           | ControlMessageType::RequestUpdate
+      ),
+      Self::SwitchFrom { .. } | Self::FillParameters { .. } => matches!(
+        msg_type,
+        ControlMessageType::Subscribe | ControlMessageType::RequestUpdate
       ),
       Self::Expires { .. } => matches!(
         msg_type,
@@ -335,16 +380,74 @@ impl MessageParameter {
             }
             Ok(Self::TrackNamespacePrefix { prefix })
           }
+          MessageParameterType::FillParameters => {
+            let mut payload = value.clone();
+            let mut parameters = Vec::new();
+            let mut prev_type = 0u64;
+            while payload.has_remaining() {
+              let delta_type = payload.get_vi()?;
+              let type_value =
+                prev_type
+                  .checked_add(delta_type)
+                  .ok_or_else(|| ParseError::ProtocolViolation {
+                    context: "MessageParameter::deserialize(FillParameters)",
+                    details: format!(
+                      "previous type {prev_type} plus delta type {delta_type} exceeds 2^64 - 1"
+                    ),
+                  })?;
+              prev_type = type_value;
+              if !is_valid_fill_parameter(type_value) {
+                return Err(ParseError::ProtocolViolation {
+                  context: "MessageParameter::deserialize(FillParameters)",
+                  details: format!(
+                    "parameter type 0x{type_value:02X} is not allowed inside FILL_PARAMETERS"
+                  ),
+                });
+              }
+              let kvp = read_message_parameter_value(&mut payload, type_value)?;
+              parameters.push(MessageParameter::deserialize(&kvp)?);
+            }
+            Ok(Self::FillParameters { parameters })
+          }
+          MessageParameterType::SwitchFrom => {
+            let mut payload = value.clone();
+            let request_id = payload.get_vi()?;
+            let mode = SwitchMode::try_from(payload.get_vi()?)?;
+            if !payload.has_remaining() {
+              return Err(ParseError::NotEnoughBytes {
+                context: "MessageParameter::deserialize(SwitchFrom flags)",
+                needed: 1,
+                available: 0,
+              });
+            }
+            let flags = payload.get_u8();
+            if flags & !SWITCH_FROM_PUBLISH_DONE != 0 {
+              return Err(ParseError::ProtocolViolation {
+                context: "MessageParameter::deserialize",
+                details: format!("SWITCH_FROM reserved bits must be 0, got {flags:#04x}"),
+              });
+            }
+            if payload.has_remaining() {
+              return Err(ParseError::KeyValueFormattingError {
+                context: "MessageParameter::deserialize(SwitchFrom)",
+              });
+            }
+            Ok(Self::SwitchFrom {
+              request_id,
+              mode,
+              publish_done: flags & SWITCH_FROM_PUBLISH_DONE != 0,
+            })
+          }
           MessageParameterType::SubscriptionFilter => {
             let mut payload = value.clone();
             let ft_raw = payload.get_vi()?;
             let filter_type = FilterType::try_from(ft_raw)?;
-            let (start_location, end_group) = match filter_type {
-              FilterType::AbsoluteStart => {
+            let (start_location, end_group, relative_previous) = match filter_type {
+              FilterType::AbsoluteStartFill => {
                 let loc = Location::deserialize(&mut payload)?;
-                (Some(loc), None)
+                (Some(loc), None, None)
               }
-              FilterType::AbsoluteRange => {
+              FilterType::AbsoluteRangeFill => {
                 let loc = Location::deserialize(&mut payload)?;
                 // End Group is a delta from the Start Group on the wire.
                 let delta = payload.get_vi()?;
@@ -354,16 +457,18 @@ impl MessageParameter {
                     .checked_add(delta)
                     .ok_or_else(|| ParseError::ProtocolViolation {
                       context: "MessageParameter::deserialize",
-                      details: "AbsoluteRange End Group Delta overflows u64".to_string(),
+                      details: "AbsoluteRangeFill End Group Delta overflows u64".to_string(),
                     })?;
-                (Some(loc), Some(end_group))
+                (Some(loc), Some(end_group), None)
               }
-              _ => (None, None),
+              FilterType::RelativeStartFill => (None, None, Some(payload.get_vi()?)),
+              _ => (None, None, None),
             };
             Ok(Self::SubscriptionFilter {
               filter_type,
               start_location,
               end_group,
+              relative_previous,
             })
           }
           _ => Err(ParseError::ProtocolViolation {
@@ -458,27 +563,63 @@ impl TryInto<KeyValuePair> for MessageParameter {
         buf.put_vi(location.object)?;
         KeyValuePair::try_new_bytes(MessageParameterType::LargestObject as u64, buf.freeze())
       }
+      Self::FillParameters { parameters } => {
+        for param in &parameters {
+          if !is_valid_fill_parameter(param.type_value()) {
+            return Err(ParseError::ProtocolViolation {
+              context: "MessageParameter::try_into(FillParameters)",
+              details: format!(
+                "parameter type 0x{:02X} is not allowed inside FILL_PARAMETERS",
+                param.type_value()
+              ),
+            });
+          }
+        }
+        KeyValuePair::try_new_bytes(
+          MessageParameterType::FillParameters as u64,
+          serialize_message_parameters(&parameters)?,
+        )
+      }
+      Self::SwitchFrom {
+        request_id,
+        mode,
+        publish_done,
+      } => {
+        let mut buf = BytesMut::new();
+        buf.put_vi(request_id)?;
+        buf.put_vi(mode as u64)?;
+        buf.put_u8(if publish_done {
+          SWITCH_FROM_PUBLISH_DONE
+        } else {
+          0
+        });
+        KeyValuePair::new_bytes(MessageParameterType::SwitchFrom as u64, buf.freeze())
+      }
       Self::SubscriptionFilter {
         filter_type,
         start_location,
         end_group,
+        relative_previous,
       } => {
         let mut buf = BytesMut::new();
         buf.put_vi(filter_type as u64)?;
         let start_group = start_location.as_ref().map(|l| l.group).unwrap_or(0);
         if matches!(
           filter_type,
-          FilterType::AbsoluteStart | FilterType::AbsoluteRange
+          FilterType::AbsoluteStartFill | FilterType::AbsoluteRangeFill
         ) && let Some(loc) = &start_location
         {
           buf.put_vi(loc.group)?;
           buf.put_vi(loc.object)?;
         }
-        if filter_type == FilterType::AbsoluteRange
+        if filter_type == FilterType::AbsoluteRangeFill
           && let Some(eg) = end_group
         {
           // End Group is encoded on the wire as a delta from the Start Group.
           buf.put_vi(eg.saturating_sub(start_group))?;
+        }
+        if filter_type == FilterType::RelativeStartFill {
+          buf.put_vi(relative_previous.unwrap_or(0))?;
         }
         KeyValuePair::try_new_bytes(
           MessageParameterType::SubscriptionFilter as u64,
@@ -486,20 +627,10 @@ impl TryInto<KeyValuePair> for MessageParameter {
         )
       }
       // A namespace tuple: length-prefixed, even though the Type is even.
-      Self::TrackNamespacePrefix { prefix } => {
-        let value = prefix.serialize()?;
-        if value.len() > MAX_VALUE_LENGTH {
-          return Err(ParseError::LengthExceedsMax {
-            context: "MessageParameter::try_into(TrackNamespacePrefix)",
-            max: MAX_VALUE_LENGTH,
-            len: value.len(),
-          });
-        }
-        Ok(KeyValuePair::Bytes {
-          type_value: MessageParameterType::TrackNamespacePrefix as u64,
-          value,
-        })
-      }
+      Self::TrackNamespacePrefix { prefix } => KeyValuePair::new_bytes(
+        MessageParameterType::TrackNamespacePrefix as u64,
+        prefix.serialize()?,
+      ),
     }
   }
 }
@@ -530,33 +661,7 @@ pub fn deserialize_message_parameters(
         })?;
     prev_type = type_value;
 
-    let kvp = if is_uint8_message_param(type_value) {
-      // FORWARD, SUBSCRIBER_PRIORITY and GROUP_ORDER carry a single uint8, not
-      // the generic even-Type varint. These Types are even, so without this the
-      // parity rule below would read a varint and desync on any value >= 64
-      // (e.g. the default SUBSCRIBER_PRIORITY of 128 = 0x80 starts a multi-byte
-      // varint).
-      if !bytes.has_remaining() {
-        return Err(ParseError::NotEnoughBytes {
-          context: "deserialize_message_parameters(uint8 value)",
-          needed: 1,
-          available: 0,
-        });
-      }
-      KeyValuePair::VarInt {
-        type_value,
-        value: bytes.get_u8() as u64,
-      }
-    } else if is_location_message_param(type_value) {
-      let mut loc = BytesMut::new();
-      loc.put_vi(bytes.get_vi()?)?;
-      loc.put_vi(bytes.get_vi()?)?;
-      KeyValuePair::try_new_bytes(type_value, loc.freeze())?
-    } else if is_length_prefixed_message_param(type_value) {
-      KeyValuePair::deserialize_bytes_value(bytes, type_value)?
-    } else {
-      KeyValuePair::deserialize_value(bytes, type_value)?
-    };
+    let kvp = read_message_parameter_value(bytes, type_value)?;
 
     let param = MessageParameter::deserialize(&kvp)?;
     if !param.is_valid_for(msg_type) {
@@ -573,23 +678,77 @@ pub fn deserialize_message_parameters(
   Ok(params)
 }
 
-/// Parameters whose Value is a single uint8 byte rather than a varint, even
-/// though their Type is even. Reading them as varints desyncs on any value >= 64.
-const fn is_uint8_message_param(type_value: u64) -> bool {
-  type_value == MessageParameterType::Forward as u64
+/// How a message parameter's Value is laid out on the wire. The parameter Type
+/// decides this, not its parity, and reading one the wrong way desyncs the rest
+/// of the list. The same Type number means something else in the setup-option
+/// namespace, so this belongs here and not in the shared codec.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ValueShape {
+  VarInt,
+  /// A single byte: FORWARD, SUBSCRIBER_PRIORITY, GROUP_ORDER.
+  Uint8,
+  /// Two varints, no length prefix: LARGEST_OBJECT.
+  BareLocation,
+  LengthPrefixedBytes,
+}
+
+/// The only parameters that may override anything for the fill fetch stream.
+const fn is_valid_fill_parameter(type_value: u64) -> bool {
+  type_value == MessageParameterType::FillTimeout as u64
     || type_value == MessageParameterType::SubscriberPriority as u64
     || type_value == MessageParameterType::GroupOrder as u64
 }
 
-/// Parameters that are a bare Location -- two consecutive varints with no length
-/// prefix -- even though their Type is odd.
-const fn is_location_message_param(type_value: u64) -> bool {
-  type_value == MessageParameterType::LargestObject as u64
+/// Reads one parameter Value whose Type has already been decoded.
+fn read_message_parameter_value(
+  bytes: &mut Bytes,
+  type_value: u64,
+) -> Result<KeyValuePair, ParseError> {
+  match value_shape(type_value) {
+    ValueShape::Uint8 => {
+      if !bytes.has_remaining() {
+        return Err(ParseError::NotEnoughBytes {
+          context: "read_message_parameter_value(uint8)",
+          needed: 1,
+          available: 0,
+        });
+      }
+      Ok(KeyValuePair::VarInt {
+        type_value,
+        value: bytes.get_u8() as u64,
+      })
+    }
+    ValueShape::BareLocation => {
+      let mut loc = BytesMut::new();
+      loc.put_vi(bytes.get_vi()?)?;
+      loc.put_vi(bytes.get_vi()?)?;
+      KeyValuePair::new_bytes(type_value, loc.freeze())
+    }
+    ValueShape::LengthPrefixedBytes => KeyValuePair::deserialize_bytes_value(bytes, type_value),
+    ValueShape::VarInt => Ok(KeyValuePair::VarInt {
+      type_value,
+      value: bytes.get_vi()?,
+    }),
+  }
 }
 
-/// Parameters that are length-prefixed even though their Type is even.
-const fn is_length_prefixed_message_param(type_value: u64) -> bool {
-  type_value == MessageParameterType::TrackNamespacePrefix as u64
+const fn value_shape(type_value: u64) -> ValueShape {
+  if type_value == MessageParameterType::Forward as u64
+    || type_value == MessageParameterType::SubscriberPriority as u64
+    || type_value == MessageParameterType::GroupOrder as u64
+  {
+    ValueShape::Uint8
+  } else if type_value == MessageParameterType::LargestObject as u64 {
+    ValueShape::BareLocation
+  } else if type_value == MessageParameterType::TrackNamespacePrefix as u64
+    || type_value == MessageParameterType::SwitchFrom as u64
+  {
+    ValueShape::LengthPrefixedBytes
+  } else if type_value.is_multiple_of(2) {
+    ValueShape::VarInt
+  } else {
+    ValueShape::LengthPrefixedBytes
+  }
 }
 
 /// Serializes a slice of MessageParameters into delta-encoded wire bytes,
@@ -615,10 +774,8 @@ pub fn serialize_message_parameters(params: &[MessageParameter]) -> Result<Bytes
           details: format!("type {type_value} is less than previous type {prev_type}"),
         })?;
     buf.put_vi(delta_type)?;
-    match kvp {
-      // FORWARD, SUBSCRIBER_PRIORITY and GROUP_ORDER are a single uint8, not the
-      // generic even-Type varint that serialize_delta would emit.
-      KeyValuePair::VarInt { value, .. } if is_uint8_message_param(type_value) => {
+    match (value_shape(type_value), kvp) {
+      (ValueShape::Uint8, KeyValuePair::VarInt { value, .. }) => {
         let byte: u8 = (*value)
           .try_into()
           .map_err(|_| ParseError::ProtocolViolation {
@@ -627,12 +784,11 @@ pub fn serialize_message_parameters(params: &[MessageParameter]) -> Result<Bytes
           })?;
         buf.put_u8(byte);
       }
-      KeyValuePair::VarInt { value, .. } => buf.put_vi(*value)?,
-      // LARGEST_OBJECT carries the Location varints directly, with no length.
-      KeyValuePair::Bytes { value, .. } if is_location_message_param(type_value) => {
+      (ValueShape::BareLocation, KeyValuePair::Bytes { value, .. }) => {
         buf.extend_from_slice(value);
       }
-      KeyValuePair::Bytes { value, .. } => {
+      (_, KeyValuePair::VarInt { value, .. }) => buf.put_vi(*value)?,
+      (_, KeyValuePair::Bytes { value, .. }) => {
         buf.put_vi(value.len() as u64)?;
         buf.extend_from_slice(value);
       }
@@ -761,7 +917,7 @@ mod tests {
   #[test]
   fn test_roundtrip_subscription_filter_absolute_start() {
     let orig = MessageParameter::new_subscription_filter(
-      FilterType::AbsoluteStart,
+      FilterType::AbsoluteStartFill,
       Some(Location {
         group: 3,
         object: 1,
@@ -774,7 +930,7 @@ mod tests {
   #[test]
   fn test_roundtrip_subscription_filter_absolute_range() {
     let orig = MessageParameter::new_subscription_filter(
-      FilterType::AbsoluteRange,
+      FilterType::AbsoluteRangeFill,
       Some(Location {
         group: 5,
         object: 0,
@@ -789,7 +945,7 @@ mod tests {
     // Start group 5, absolute End Group 20 must serialize End Group as the
     // delta 15, not the absolute 20.
     let orig = MessageParameter::new_subscription_filter(
-      FilterType::AbsoluteRange,
+      FilterType::AbsoluteRangeFill,
       Some(Location {
         group: 5,
         object: 0,
@@ -802,7 +958,10 @@ mod tests {
       panic!("SubscriptionFilter must be a bytes KVP");
     };
     let mut value = value;
-    assert_eq!(value.get_vi().unwrap(), FilterType::AbsoluteRange as u64);
+    assert_eq!(
+      value.get_vi().unwrap(),
+      FilterType::AbsoluteRangeFill as u64
+    );
     assert_eq!(value.get_vi().unwrap(), 5); // start group
     assert_eq!(value.get_vi().unwrap(), 0); // start object
     assert_eq!(value.get_vi().unwrap(), 15); // End Group Delta = 20 - 5
@@ -813,7 +972,7 @@ mod tests {
     // Start group u64::MAX plus a non-zero delta overflows the absolute Group ID
     // and MUST be rejected.
     let mut value = BytesMut::new();
-    value.put_vi(FilterType::AbsoluteRange as u64).unwrap();
+    value.put_vi(FilterType::AbsoluteRangeFill as u64).unwrap();
     value.put_vi(u64::MAX).unwrap(); // start group
     value.put_vi(0u64).unwrap(); // start object
     value.put_vi(1u64).unwrap(); // End Group Delta -> overflow
@@ -826,6 +985,184 @@ mod tests {
       MessageParameter::deserialize(&kvp),
       Err(ParseError::ProtocolViolation { .. })
     ));
+  }
+
+  #[test]
+  fn test_roundtrip_subscription_filter_relative_start_fill() {
+    let orig = MessageParameter::new_relative_start_fill(3);
+    assert_eq!(roundtrip(orig.clone()), orig);
+  }
+
+  #[test]
+  fn test_relative_start_fill_carries_relative_previous_on_the_wire() {
+    let mut bytes = MessageParameter::new_relative_start_fill(3)
+      .serialize()
+      .unwrap();
+    let kvp = KeyValuePair::deserialize(&mut bytes).unwrap();
+    let KeyValuePair::Bytes { value, .. } = kvp else {
+      panic!("SubscriptionFilter must be a bytes KVP");
+    };
+    let mut value = value;
+    assert_eq!(
+      value.get_vi().unwrap(),
+      FilterType::RelativeStartFill as u64
+    );
+    assert_eq!(value.get_vi().unwrap(), 3);
+    assert!(!value.has_remaining());
+  }
+
+  #[test]
+  fn test_roundtrip_fill_parameters() {
+    let params = vec![MessageParameter::new_fill_parameters(vec![
+      MessageParameter::new_fill_timeout(3000),
+      MessageParameter::new_subscriber_priority(10),
+      MessageParameter::new_group_order(GroupOrder::Descending),
+    ])];
+    let mut bytes = serialize_message_parameters(&params).unwrap();
+    let decoded =
+      deserialize_message_parameters(&mut bytes, 1, ControlMessageType::Subscribe).unwrap();
+    assert_eq!(decoded, params);
+    assert!(!bytes.has_remaining());
+  }
+
+  #[test]
+  fn test_fill_parameters_wire_format() {
+    let wire = Bytes::from_static(&[0x23, 0x03, 0x0A, 0x8B, 0xB8]);
+    let params = vec![MessageParameter::new_fill_parameters(vec![
+      MessageParameter::new_fill_timeout(3000),
+    ])];
+
+    assert_eq!(serialize_message_parameters(&params).unwrap(), wire);
+
+    let mut buf = wire.clone();
+    let decoded =
+      deserialize_message_parameters(&mut buf, 1, ControlMessageType::Subscribe).unwrap();
+    assert_eq!(decoded, params);
+    assert!(!buf.has_remaining());
+  }
+
+  #[test]
+  fn test_fill_parameters_rejects_a_parameter_it_cannot_override() {
+    // FORWARD belongs to the subscription, not to its fill.
+    let params = vec![MessageParameter::new_fill_parameters(vec![
+      MessageParameter::new_forward(true),
+    ])];
+    assert!(matches!(
+      serialize_message_parameters(&params),
+      Err(ParseError::ProtocolViolation { .. })
+    ));
+
+    // And the same on the way in, where a peer sent it anyway.
+    let inner = {
+      let mut buf = BytesMut::new();
+      buf.put_vi(MessageParameterType::Forward as u64).unwrap();
+      buf.put_u8(1);
+      buf.freeze()
+    };
+    let kvp =
+      KeyValuePair::try_new_bytes(MessageParameterType::FillParameters as u64, inner).unwrap();
+    assert!(matches!(
+      MessageParameter::deserialize(&kvp),
+      Err(ParseError::ProtocolViolation { .. })
+    ));
+  }
+
+  #[test]
+  fn test_fill_parameters_rejected_outside_subscribe_and_request_update() {
+    let params = vec![MessageParameter::new_fill_parameters(vec![
+      MessageParameter::new_fill_timeout(1000),
+    ])];
+    let mut bytes = serialize_message_parameters(&params).unwrap();
+    let err = deserialize_message_parameters(&mut bytes, 1, ControlMessageType::Fetch).unwrap_err();
+    assert!(matches!(err, ParseError::ProtocolViolation { .. }));
+  }
+
+  #[test]
+  fn test_roundtrip_switch_from() {
+    for publish_done in [false, true] {
+      for mode in [SwitchMode::Hard, SwitchMode::Soft] {
+        let params = vec![MessageParameter::new_switch_from(9, mode, publish_done)];
+        let mut bytes = serialize_message_parameters(&params).unwrap();
+        let decoded =
+          deserialize_message_parameters(&mut bytes, 1, ControlMessageType::Subscribe).unwrap();
+        assert_eq!(decoded, params);
+      }
+    }
+  }
+
+  #[test]
+  fn test_switch_from_wire_format() {
+    let wire = Bytes::from_static(&[0x24, 0x03, 0x07, 0x00, 0x80]);
+    let params = vec![MessageParameter::new_switch_from(7, SwitchMode::Hard, true)];
+
+    assert_eq!(serialize_message_parameters(&params).unwrap(), wire);
+
+    let mut buf = wire.clone();
+    let decoded =
+      deserialize_message_parameters(&mut buf, 1, ControlMessageType::Subscribe).unwrap();
+    assert_eq!(decoded, params);
+    assert!(!buf.has_remaining());
+  }
+
+  #[test]
+  fn test_switch_from_round_trips_in_a_parameter_list() {
+    let params = vec![
+      MessageParameter::new_subscriber_priority(128),
+      MessageParameter::new_switch_from(7, SwitchMode::Hard, true),
+      MessageParameter::new_group_request(3),
+    ];
+    let count = params.len() as u64;
+    let mut bytes = serialize_message_parameters(&params).unwrap();
+    let decoded =
+      deserialize_message_parameters(&mut bytes, count, ControlMessageType::Subscribe).unwrap();
+
+    assert!(!bytes.has_remaining(), "the list left trailing bytes");
+    assert_eq!(decoded, params);
+  }
+
+  #[test]
+  fn test_switch_from_reserved_bits_must_be_zero() {
+    let mut value = BytesMut::new();
+    value.put_vi(1u64).unwrap();
+    value.put_vi(SwitchMode::Hard as u64).unwrap();
+    value.put_u8(0x01);
+    let kvp =
+      KeyValuePair::new_bytes(MessageParameterType::SwitchFrom as u64, value.freeze()).unwrap();
+    assert!(matches!(
+      MessageParameter::deserialize(&kvp),
+      Err(ParseError::ProtocolViolation { .. })
+    ));
+  }
+
+  #[test]
+  fn test_switch_from_unknown_mode_is_rejected() {
+    let mut value = BytesMut::new();
+    value.put_vi(1u64).unwrap();
+    value.put_vi(9u64).unwrap();
+    value.put_u8(0);
+    let kvp =
+      KeyValuePair::new_bytes(MessageParameterType::SwitchFrom as u64, value.freeze()).unwrap();
+    assert!(MessageParameter::deserialize(&kvp).is_err());
+  }
+
+  #[test]
+  fn test_switch_from_rejected_outside_subscribe_and_request_update() {
+    let params = vec![MessageParameter::new_switch_from(
+      1,
+      SwitchMode::Hard,
+      false,
+    )];
+    let mut bytes = serialize_message_parameters(&params).unwrap();
+    let err = deserialize_message_parameters(&mut bytes, 1, ControlMessageType::Fetch).unwrap_err();
+    assert!(matches!(err, ParseError::ProtocolViolation { .. }));
+
+    for msg_type in [
+      ControlMessageType::Subscribe,
+      ControlMessageType::RequestUpdate,
+    ] {
+      let mut bytes = serialize_message_parameters(&params).unwrap();
+      assert!(deserialize_message_parameters(&mut bytes, 1, msg_type).is_ok());
+    }
   }
 
   #[test]

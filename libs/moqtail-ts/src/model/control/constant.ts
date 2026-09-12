@@ -61,7 +61,6 @@ export enum ControlMessageType {
   Publish = 0x1d, // Request, First
   PublishOk = 0x1e, // Request; an alias of RequestOk (§10.5), not its own body
   PublishBlocked = 0x0f, // Request
-  Switch = 0x22, // not in draft-18; moqtail-local extension
 }
 
 /**
@@ -165,8 +164,10 @@ export namespace ControlMessageType {
 export enum FilterType {
   NextGroupStart = 0x1,
   LatestObject = 0x2,
-  AbsoluteStart = 0x3,
-  AbsoluteRange = 0x4,
+  AbsoluteStartFill = 0x3,
+  AbsoluteRangeFill = 0x4,
+  /** Start Location is `{Largest Object.Group - Relative Previous, 0}`. */
+  RelativeStartFill = 0x5,
 }
 
 /**
@@ -183,44 +184,31 @@ export namespace FilterType {
       case 0x2n:
         return FilterType.LatestObject
       case 0x3n:
-        return FilterType.AbsoluteStart
+        return FilterType.AbsoluteStartFill
       case 0x4n:
-        return FilterType.AbsoluteRange
+        return FilterType.AbsoluteRangeFill
+      case 0x5n:
+        return FilterType.RelativeStartFill
       default:
         throw new InvalidEnumValue('FilterType.tryFrom', v)
     }
+  }
+
+  /** Whether the publisher also delivers already-published objects on a fill fetch stream. */
+  export function isFetchFill(v: FilterType): boolean {
+    return (
+      v === FilterType.AbsoluteStartFill || v === FilterType.AbsoluteRangeFill || v === FilterType.RelativeStartFill
+    )
   }
 }
 
 /**
  * @public
- * Fetch request types for MOQT protocol.
+ * Switch modes for subscription switching requests.
  */
-export enum FetchType {
-  Standalone = 0x1,
-  Relative = 0x2,
-  Absolute = 0x3,
-}
-
-/**
- * Converts a bigint value to a FetchType enum.
- * @param v - The bigint value.
- * @returns The corresponding FetchType.
- * @throws InvalidEnumValue if the value is not a valid fetch type.
- */
-export namespace FetchType {
-  export function tryFrom(v: bigint): FetchType {
-    switch (v) {
-      case 0x1n:
-        return FetchType.Standalone
-      case 0x2n:
-        return FetchType.Relative
-      case 0x3n:
-        return FetchType.Absolute
-      default:
-        throw new InvalidEnumValue('FetchType.tryFrom', v)
-    }
-  }
+export enum SwitchMode {
+  Hard = 0x0,
+  Soft = 0x1,
 }
 
 /**
@@ -378,7 +366,7 @@ export enum RequestErrorCode {
   Uninterested = 0x20,
   PrefixOverlap = 0x30,
   NamespaceTooLarge = 0x31,
-  InvalidJoiningRequestId = 0x32,
+  InvalidSwitch = 0x32,
   UnsupportedExtension = 0x33,
   Redirect = 0x34,
 }
@@ -423,7 +411,7 @@ export namespace RequestErrorCode {
       case 0x31n:
         return RequestErrorCode.NamespaceTooLarge
       case 0x32n:
-        return RequestErrorCode.InvalidJoiningRequestId
+        return RequestErrorCode.InvalidSwitch
       case 0x33n:
         return RequestErrorCode.UnsupportedExtension
       case 0x34n:
@@ -469,7 +457,9 @@ if (import.meta.vitest) {
 
     test('RequestErrorCode matches request_error_codes.json', async () => {
       const { requestErrorCodes, assertRegistry, pascalIdent } = await fixture()
-      assertRegistry(requestErrorCodes(), pascalIdent(), (codepoint) => {
+      // This branch reuses 0x32 for the track switching it is prototyping, so the
+      // draft's name for that codepoint maps to ours until that work is settled.
+      assertRegistry(requestErrorCodes(), pascalIdent({ INVALID_JOINING_REQUEST_ID: 'InvalidSwitch' }), (codepoint) => {
         try {
           return RequestErrorCode[Number(RequestErrorCode.tryFrom(codepoint))]
         } catch {

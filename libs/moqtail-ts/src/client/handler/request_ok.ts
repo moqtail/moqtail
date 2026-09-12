@@ -23,6 +23,8 @@ import { PublishNamespaceRequest } from '../request/publish_namespace'
 import { SubscribeNamespaceRequest } from '../request/subscribe_namespace'
 import { TrackStatusRequest } from '../request/track_status'
 import { PublishPublication } from '../publication/publish'
+import { SubscribeRequest } from '../request/subscribe'
+import { applySubscriptionResponse } from './subscription_response'
 
 export const handlerRequestOk: RequestStreamMessageHandler<RequestOk> = async (client, msg, _stream, requestId) => {
   logger.log('handler/request_ok', 'received RequestOk for requestId:', requestId)
@@ -54,6 +56,14 @@ export const handlerRequestOk: RequestStreamMessageHandler<RequestOk> = async (c
     }
 
     client.publications.set(requestId, new PublishPublication(client, track, request.message))
+    return
+  }
+
+  // A REQUEST_UPDATE on a live subscription is answered with REQUEST_OK on that
+  // subscription's own stream. The subscription carries on; what the response adds
+  // is where a fill it asked for stops, and how long the subscription is good for.
+  if (request instanceof SubscribeRequest) {
+    applySubscriptionResponse(client, request, msg.parameters, msg.trackProperties)
     return
   }
 

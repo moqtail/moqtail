@@ -77,7 +77,7 @@ impl Subscribe {
     Self::new(request_id, track_namespace, track_name, params)
   }
 
-  pub fn new_absolute_start(
+  pub fn new_absolute_start_fill(
     request_id: u64,
     track_namespace: Tuple,
     track_name: TupleField,
@@ -86,14 +86,14 @@ impl Subscribe {
   ) -> Self {
     let mut params = subscribe_parameters;
     params.push(MessageParameter::new_subscription_filter(
-      FilterType::AbsoluteStart,
+      FilterType::AbsoluteStartFill,
       Some(start_location),
       None,
     ));
     Self::new(request_id, track_namespace, track_name, params)
   }
 
-  pub fn new_absolute_range(
+  pub fn new_absolute_range_fill(
     request_id: u64,
     track_namespace: Tuple,
     track_name: TupleField,
@@ -107,10 +107,22 @@ impl Subscribe {
     );
     let mut params = subscribe_parameters;
     params.push(MessageParameter::new_subscription_filter(
-      FilterType::AbsoluteRange,
+      FilterType::AbsoluteRangeFill,
       Some(start_location),
       Some(end_group),
     ));
+    Self::new(request_id, track_namespace, track_name, params)
+  }
+
+  pub fn new_relative_start_fill(
+    request_id: u64,
+    track_namespace: Tuple,
+    track_name: TupleField,
+    relative_previous: u64,
+    subscribe_parameters: Vec<MessageParameter>,
+  ) -> Self {
+    let mut params = subscribe_parameters;
+    params.push(MessageParameter::new_relative_start_fill(relative_previous));
     Self::new(request_id, track_namespace, track_name, params)
   }
 
@@ -122,19 +134,11 @@ impl Subscribe {
   }
 
   /// Returns the SubscriptionFilter parameter if present.
-  pub fn get_subscription_filter(&self) -> Option<(FilterType, Option<Location>, Option<u64>)> {
-    self.subscribe_parameters.iter().find_map(|p| {
-      if let MessageParameter::SubscriptionFilter {
-        filter_type,
-        start_location,
-        end_group,
-      } = p
-      {
-        Some((*filter_type, start_location.clone(), *end_group))
-      } else {
-        None
-      }
-    })
+  pub fn get_subscription_filter(&self) -> Option<&MessageParameter> {
+    self
+      .subscribe_parameters
+      .iter()
+      .find(|p| matches!(p, MessageParameter::SubscriptionFilter { .. }))
   }
 }
 
@@ -216,7 +220,7 @@ mod tests {
 
   #[test]
   fn test_roundtrip() {
-    let mut subscribe = Subscribe::new_absolute_range(
+    let mut subscribe = Subscribe::new_absolute_range_fill(
       128242,
       Tuple::from_utf8_path("nein/nein/nein"),
       TupleField::from_utf8("${Name}"),
@@ -247,7 +251,7 @@ mod tests {
 
   #[test]
   fn test_excess_roundtrip() {
-    let mut subscribe = Subscribe::new_absolute_range(
+    let mut subscribe = Subscribe::new_absolute_range_fill(
       128242,
       Tuple::from_utf8_path("nein/nein/nein"),
       TupleField::from_utf8("${Name}"),
@@ -332,7 +336,11 @@ mod tests {
     );
     assert_eq!(
       sub.get_subscription_filter(),
-      Some((FilterType::LatestObject, None, None)),
+      Some(&MessageParameter::new_subscription_filter(
+        FilterType::LatestObject,
+        None,
+        None
+      )),
     );
 
     // Re-serialize: the params are already in ascending Type order on the wire,
@@ -344,7 +352,7 @@ mod tests {
 
   #[test]
   fn test_partial_message() {
-    let subscribe = Subscribe::new_absolute_range(
+    let subscribe = Subscribe::new_absolute_range_fill(
       128242,
       Tuple::from_utf8_path("nein/nein/nein"),
       TupleField::from_utf8("${Name}"),

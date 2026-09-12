@@ -15,7 +15,7 @@
  */
 
 import { ProtocolViolationError } from '@/model/error'
-import { FetchOk, FetchType } from '../../model/control'
+import { FetchOk } from '../../model/control'
 import { FetchRequest } from '../request/fetch'
 import { SubscribeRequest } from '../request/subscribe'
 import { RequestStreamMessageHandler } from './handler'
@@ -28,19 +28,9 @@ export const handlerFetchOk: RequestStreamMessageHandler<FetchOk> = async (clien
   const request = client.requests.get(requestId)
   if (request instanceof FetchRequest) {
     if (msg.trackProperties.length > 0) {
-      const fetchMsg = request.message
-      let fullTrackName =
-        fetchMsg.typeAndProps.type === FetchType.Standalone
-          ? fetchMsg.typeAndProps.props.fullTrackName
-          : (() => {
-              const joiningReq = client.requests.get(fetchMsg.typeAndProps.props.joiningRequestId)
-              return joiningReq instanceof SubscribeRequest ? joiningReq.fullTrackName : undefined
-            })()
-      if (fullTrackName !== undefined) {
-        const track = client.trackSources.get(fullTrackName.toString())
-        if (track !== undefined) {
-          track.trackProperties = msg.trackProperties
-        }
+      const track = client.trackSources.get(request.message.fullTrackName.toString())
+      if (track !== undefined) {
+        track.trackProperties = msg.trackProperties
       }
     }
     request.resolve(msg)

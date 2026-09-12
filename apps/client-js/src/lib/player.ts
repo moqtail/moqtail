@@ -14,15 +14,7 @@
  * limitations under the License.
  */
 
-import {
-  FetchType,
-  FilterType,
-  FullTrackName,
-  GroupOrder,
-  Location,
-  MoqtObject,
-  Tuple,
-} from 'moqtail';
+import { FilterType, FullTrackName, GroupOrder, Location, MoqtObject, Tuple } from 'moqtail';
 import { MOQtailClient } from 'moqtail/client';
 import { CMSFCatalog, RequestError } from 'moqtail/model';
 import { logger } from '@/lib/logger';
@@ -455,14 +447,9 @@ export class Player {
       const result = await this.client.fetch({
         groupOrder: GroupOrder.Original,
         priority: 0,
-        typeAndProps: {
-          type: FetchType.Standalone,
-          props: {
-            fullTrackName: getFullTrackName(this.#options.namespace, 'catalog'),
-            startLocation: startLoc,
-            endLocation: endLoc,
-          },
-        },
+        fullTrackName: getFullTrackName(this.#options.namespace, 'catalog'),
+        startLocation: startLoc,
+        endLocation: endLoc,
       });
       if (result instanceof RequestError) {
         logger.error(

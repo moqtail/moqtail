@@ -65,6 +65,21 @@ pub enum MessageParameter {
   TrackNamespacePrefix {
     prefix: Tuple,
   },
+  /// Assigns a subscription to an SSTS switching set
+  /// (draft-wilaw-moq-moqt-ssts). Id 0 is the default algorithm of Section
+  /// 6.3.1; other ids select implementation-specific algorithms.
+  SwitchingSetAssignment {
+    switching_set_id: u64,
+    algorithm_id: u64,
+    throughput_threshold_kbps: u64,
+    /// Relative bandwidth weight among same-rank sets; 1 <= N <= 10.
+    set_throughput_weight: u64,
+    /// 0 pauses SSTS for the set; switching activates once the number of
+    /// assigned tracks is >= this value.
+    activate_switching: u64,
+    /// Degradation priority; lower values are protected first. Default 0.
+    set_rank: u8,
+  },
 }
 
 impl MessageParameter {
@@ -128,6 +143,24 @@ impl MessageParameter {
     Self::NewGroupRequest { group }
   }
 
+  pub fn new_switching_set_assignment(
+    switching_set_id: u64,
+    algorithm_id: u64,
+    throughput_threshold_kbps: u64,
+    set_throughput_weight: u64,
+    activate_switching: u64,
+    set_rank: u8,
+  ) -> Self {
+    Self::SwitchingSetAssignment {
+      switching_set_id,
+      algorithm_id,
+      throughput_threshold_kbps,
+      set_throughput_weight,
+      activate_switching,
+      set_rank,
+    }
+  }
+
   /// Returns the raw wire type value for this parameter.
   pub fn type_value(&self) -> u64 {
     match self {
@@ -144,6 +177,7 @@ impl MessageParameter {
       Self::SubscriptionFilter { .. } => MessageParameterType::SubscriptionFilter as u64,
       Self::NewGroupRequest { .. } => MessageParameterType::NewGroupRequest as u64,
       Self::TrackNamespacePrefix { .. } => MessageParameterType::TrackNamespacePrefix as u64,
+      Self::SwitchingSetAssignment { .. } => MessageParameterType::SwitchingSetAssignment as u64,
     }
   }
 
@@ -232,6 +266,16 @@ impl MessageParameter {
           | ControlMessageType::RequestUpdate
       ),
       Self::TrackNamespacePrefix { .. } => matches!(msg_type, ControlMessageType::RequestUpdate),
+      // The parameter MAY appear in a SUBSCRIBE, REQUEST_UPDATE, or PUBLISH_OK
+      // message (draft-wilaw-moq-moqt-ssts, Section 5). PUBLISH_OK is carried
+      // as REQUEST_OK in this draft.
+      Self::SwitchingSetAssignment { .. } => matches!(
+        msg_type,
+        ControlMessageType::PublishOk
+          | ControlMessageType::RequestOk
+          | ControlMessageType::Subscribe
+          | ControlMessageType::RequestUpdate
+      ),
     }
   }
 
@@ -334,6 +378,43 @@ impl MessageParameter {
               });
             }
             Ok(Self::TrackNamespacePrefix { prefix })
+          }
+          MessageParameterType::SwitchingSetAssignment => {
+            let mut payload = value.clone();
+            let switching_set_id = payload.get_vi()?;
+            let algorithm_id = payload.get_vi()?;
+            let throughput_threshold_kbps = payload.get_vi()?;
+            let set_throughput_weight = payload.get_vi()?;
+            if !(1..=10).contains(&set_throughput_weight) {
+              return Err(ParseError::ProtocolViolation {
+                context: "MessageParameter::deserialize",
+                details: format!(
+                  "SET THROUGHPUT WEIGHT must be 1-10, got {}",
+                  set_throughput_weight
+                ),
+              });
+            }
+            let activate_switching = payload.get_vi()?;
+            let set_rank = if payload.has_remaining() {
+              payload.get_u8()
+            } else {
+              0 // Default
+            };
+            if payload.has_remaining() {
+              return Err(ParseError::ProtocolViolation {
+                context: "MessageParameter::deserialize",
+                details: "Excess bytes in SWITCHING_SET_ASSIGNMENT parameter".to_string(),
+              });
+            }
+
+            Ok(Self::SwitchingSetAssignment {
+              switching_set_id,
+              algorithm_id,
+              throughput_threshold_kbps,
+              set_throughput_weight,
+              activate_switching,
+              set_rank,
+            })
           }
           MessageParameterType::SubscriptionFilter => {
             let mut payload = value.clone();
@@ -457,6 +538,27 @@ impl TryInto<KeyValuePair> for MessageParameter {
         buf.put_vi(location.group)?;
         buf.put_vi(location.object)?;
         KeyValuePair::try_new_bytes(MessageParameterType::LargestObject as u64, buf.freeze())
+      }
+      Self::SwitchingSetAssignment {
+        switching_set_id,
+        algorithm_id,
+        throughput_threshold_kbps,
+        set_throughput_weight,
+        activate_switching,
+        set_rank,
+      } => {
+        let mut buf = BytesMut::new();
+        buf.put_vi(switching_set_id)?;
+        buf.put_vi(algorithm_id)?;
+        buf.put_vi(throughput_threshold_kbps)?;
+        buf.put_vi(set_throughput_weight)?;
+        buf.put_vi(activate_switching)?;
+        buf.put_u8(set_rank);
+
+        KeyValuePair::try_new_bytes(
+          MessageParameterType::SwitchingSetAssignment as u64,
+          buf.freeze(),
+        )
       }
       Self::SubscriptionFilter {
         filter_type,
@@ -733,6 +835,15 @@ mod tests {
   #[test]
   fn test_roundtrip_new_group_request() {
     let orig = MessageParameter::new_group_request(7);
+    assert_eq!(roundtrip(orig.clone()), orig);
+  }
+
+  #[test]
+  fn test_roundtrip_switching_set_assignment() {
+    let orig = MessageParameter::new_switching_set_assignment(7, 0, 2000, 5, 2, 2);
+    assert_eq!(roundtrip(orig.clone()), orig);
+
+    let orig = MessageParameter::new_switching_set_assignment(0, 0, 0, 1, 0, 0);
     assert_eq!(roundtrip(orig.clone()), orig);
   }
 

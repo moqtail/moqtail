@@ -16,12 +16,18 @@
 
 import { KeyValuePair } from '../common/pair'
 import { greaseValue } from '../common/grease'
-import { Path, MaxAuthTokenCacheSize, Authority, MoqtImplementation } from './setup'
+import { Path, MaxAuthTokenCacheSize, Authority, MoqtImplementation, SstsAlgorithms } from './setup'
 import { AuthorizationToken } from './common'
 import { SetupOptionType, TokenAliasType } from './constant'
 import { ProtocolViolationError } from '../error/error'
 
-export type SetupOption = Path | MaxAuthTokenCacheSize | AuthorizationToken | Authority | MoqtImplementation
+export type SetupOption =
+  | Path
+  | MaxAuthTokenCacheSize
+  | AuthorizationToken
+  | Authority
+  | MoqtImplementation
+  | SstsAlgorithms
 export namespace SetupOption {
   export function fromKeyValuePair(pair: KeyValuePair): SetupOption | undefined {
     return (
@@ -29,7 +35,8 @@ export namespace SetupOption {
       MaxAuthTokenCacheSize.fromKeyValuePair(pair) ||
       AuthorizationToken.fromKeyValuePair(pair) ||
       Authority.fromKeyValuePair(pair) ||
-      MoqtImplementation.fromKeyValuePair(pair)
+      MoqtImplementation.fromKeyValuePair(pair) ||
+      SstsAlgorithms.fromKeyValuePair(pair)
     )
   }
   export function toKeyValuePair(param: SetupOption): KeyValuePair {
@@ -49,6 +56,9 @@ export namespace SetupOption {
   }
   export function isMoqtImplementation(param: SetupOption): param is MoqtImplementation {
     return param instanceof MoqtImplementation
+  }
+  export function isSstsAlgorithms(param: SetupOption): param is SstsAlgorithms {
+    return param instanceof SstsAlgorithms
   }
 }
 
@@ -85,6 +95,11 @@ export class SetupOptions {
     return this
   }
 
+  addSstsAlgorithms(algorithms: readonly (bigint | number)[]): this {
+    this.kvps.push(new SstsAlgorithms(algorithms.map((a) => BigInt(a))).toKeyValuePair())
+    return this
+  }
+
   addRaw(pair: KeyValuePair): this {
     this.kvps.push(pair)
     return this
@@ -102,7 +117,8 @@ export class SetupOptions {
         MaxAuthTokenCacheSize.fromKeyValuePair(kvp) ||
         AuthorizationToken.fromKeyValuePair(kvp) ||
         Authority.fromKeyValuePair(kvp) ||
-        MoqtImplementation.fromKeyValuePair(kvp)
+        MoqtImplementation.fromKeyValuePair(kvp) ||
+        SstsAlgorithms.fromKeyValuePair(kvp)
       if (parsed) result.push(parsed)
     }
     return result

@@ -10,13 +10,14 @@ cargo run --bin client -- --command <COMMAND> [OPTIONS]
 
 ## Commands
 
-| Command             | Description                                        |
-| ------------------- | -------------------------------------------------- |
-| `publish`           | Publish objects to a track                         |
-| `publish-namespace` | Publish a namespace and auto-respond to subscribes |
-| `subscribe`         | Subscribe to a track and receive objects           |
-| `subscribe-tracks`  | Subscribe to all tracks under a namespace prefix   |
-| `fetch`             | Fetch specific object ranges from a track          |
+| Command               | Description                                        |
+| --------------------- | -------------------------------------------------- |
+| `publish`             | Publish objects to a track                         |
+| `publish-namespace`   | Publish a namespace and auto-respond to subscribes |
+| `subscribe`           | Subscribe to a track and receive objects           |
+| `subscribe-namespace` | Discover the namespaces under a prefix             |
+| `subscribe-tracks`    | Subscribe to all tracks under a namespace prefix   |
+| `fetch`               | Fetch specific object ranges from a track          |
 
 ## Global Options
 
@@ -134,13 +135,43 @@ the relay reopens the subgroup and delivery resumes:
 cargo run --bin client -- -c subscribe --forward false --update-forward-after 3 --duration 8
 ```
 
+Discover the namespaces under a prefix (SUBSCRIBE_NAMESPACE). The relay answers
+`REQUEST_OK`, then a `NAMESPACE` for each namespace already announced under the
+prefix and for each one announced later, and a `NAMESPACE_DONE` when one is
+withdrawn:
+
+```
+cargo run --bin client -- -c subscribe-namespace -n test/ns --duration 5
+```
+
 Subscribe to every track under a namespace prefix (SUBSCRIBE_TRACKS). The relay
-answers `REQUEST_OK`, forwards a `PUBLISH` for each matching track, and sends
+answers `REQUEST_OK`, forwards a `PUBLISH` for each matching track — which the
+client accepts, then receives and counts that track's objects — and sends
 `PUBLISH_BLOCKED` if it runs out of streams (start the relay with
 `--max-publish-streams N` to cap it):
 
 ```
 cargo run --bin client -- -c subscribe-tracks -n test/ns --duration 5
+```
+
+Both prefix subscriptions live for exactly as long as their request stream, so
+`--duration` ends one by resetting that stream: the relay drops the subscription
+and frees the prefix while the session stays open. With `--duration 0` the run
+lasts until the relay closes the stream.
+
+`--overlap` issues a second prefix subscription on the same prefix and session
+once the first is live, which is what shows whether the two are allowed to share
+a prefix. The kinds keep separate spaces, so a `SUBSCRIBE_TRACKS` and a
+`SUBSCRIBE_NAMESPACE` both succeed:
+
+```
+cargo run --bin client -- -c subscribe-tracks -n test/ns --overlap namespace --duration 5
+```
+
+while a second subscription of the same kind is refused with `PREFIX_OVERLAP`:
+
+```
+cargo run --bin client -- -c subscribe-tracks -n test/ns --overlap tracks --duration 5
 ```
 
 Connect to a remote server with certificate validation disabled:

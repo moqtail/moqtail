@@ -999,15 +999,18 @@ impl Subscription {
           if let Some(set_id) = my_set_id {
             let group_id = object.location.group;
 
-            let notified = self.subscriber.ssts.decision_notify.notified();
-            tokio::pin!(notified);
-
             loop {
+              // A `Notified` future completes once and then stays completed,
+              // so it is created inside the loop: one future reused across
+              // iterations would return immediately from the second wait on,
+              // turning this into a spin.
+              let notified = self.subscriber.ssts.decision_notify.notified();
+              tokio::pin!(notified);
+
               // Arm the future before reading the decision map: a decision
-              // recorded between the read and the registration would
-              // otherwise be missed and this object would wait for the next
-              // decision on an idle track, or up to a full group interval on
-              // a live one.
+              // recorded between the read and the registration would otherwise
+              // be missed, and this Object would wait for a decision that has
+              // already been made.
               notified.as_mut().enable();
 
               let decision = {
@@ -1031,6 +1034,18 @@ impl Subscription {
                   return;
                 }
                 None => {
+                  // The set can be torn down while this Object waits (a
+                  // SUBSCRIBE_UPDATE removes the last of its tracks), and then
+                  // no decision for it will ever arrive. SSTS no longer
+                  // applies to this track, so forward it.
+                  let still_gated = {
+                    let manager = self.subscriber.ssts.switching_sets.read().await;
+                    manager.get_set_for_track(&self.full_track_name).is_some()
+                  };
+                  if !still_gated {
+                    break;
+                  }
+
                   // No decision yet for this group+set: wake the ABR and wait.
                   if let Err(e) = self
                     .subscriber

@@ -19,4 +19,5 @@
 //! and what it does badly. Nothing here may depend on the host: the contract in
 //! the crate root is the only input.
 
+pub mod backpressure;
 pub mod default;

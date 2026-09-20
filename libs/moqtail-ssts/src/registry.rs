@@ -20,6 +20,7 @@
 
 use std::sync::{Arc, OnceLock};
 
+use crate::algorithms::backpressure::BackpressureAlgorithmFactory;
 use crate::algorithms::default::DefaultAlgorithmFactory;
 use crate::{AbrAlgorithm, AbrAlgorithmFactory};
 
@@ -42,7 +43,13 @@ pub struct Registry {
 impl Registry {
   fn new() -> Self {
     Self {
-      factories: vec![Arc::new(DefaultAlgorithmFactory)],
+      factories: vec![
+        // The default allocation, id 0, which every implementation must run.
+        Arc::new(DefaultAlgorithmFactory),
+        // MOQtail's own tier selector, at the first private id. Opt-in: it is
+        // only advertised when --ssts-algorithms asks for it.
+        Arc::new(BackpressureAlgorithmFactory),
+      ],
     }
   }
 

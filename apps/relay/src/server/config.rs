@@ -41,6 +41,31 @@ const MAX_IO_SOCKETS: usize = 256;
 /// and nothing bounds the second factor, so the first is bounded here.
 const MAX_DEDUP_RETAINED_GROUPS: u64 = 1000;
 
+/// Parse one `--ssts-algorithms` value, accepting decimal or `0x` hex (the
+/// private algorithm ids are easier to read in hex, and that is how they appear
+/// in the logs and on the wire).
+///
+/// Rejecting an id the relay does not run here means clap reports it with the
+/// usage message and a non-zero exit, the same way it treats any other bad
+/// option, instead of the relay starting up and then failing every subscription
+/// that names it.
+fn parse_ssts_algorithm_id(value: &str) -> Result<u64, String> {
+  let trimmed = value.trim();
+  let parsed = match trimmed.strip_prefix("0x").or(trimmed.strip_prefix("0X")) {
+    Some(hex) => u64::from_str_radix(hex, 16),
+    None => trimmed.parse::<u64>(),
+  };
+  let id = parsed.map_err(|_| format!("'{value}' is not an algorithm id"))?;
+  if moqtail_ssts::registry::registry().get(id).is_some() {
+    Ok(id)
+  } else {
+    Err(format!(
+      "unknown SSTS algorithm id '{value}'; this relay runs {:?}",
+      moqtail_ssts::registry::registry().ids()
+    ))
+  }
+}
+
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 pub struct Cli {
@@ -158,9 +183,21 @@ pub struct Cli {
   #[arg(long, default_value_t = false)]
   pub enable_ssts: bool,
 
-  /// Which SSTS algorithm ids to advertise in SETUP, from the ids the relay
-  /// implements. Empty means all of them. Ignored unless --enable-ssts is set.
-  #[arg(long, num_args = 1..)]
+  /// Which SSTS algorithm ids to run and advertise in SETUP, comma separated,
+  /// decimal or 0x hex. Defaults to the default allocation (0) alone: SSTS is a
+  /// new mechanism, and any id beyond that first one is an experimental
+  /// algorithm of this implementation's, so the relay does not volunteer it.
+  /// An id the relay does not implement is a startup error rather than a
+  /// warning, because advertising an algorithm this relay cannot run only
+  /// produces subscriptions that are rejected one by one.
+  /// Ignored unless --enable-ssts is set.
+  #[arg(
+    long,
+    num_args = 1..,
+    value_delimiter = ',',
+    default_value = "0",
+    value_parser = parse_ssts_algorithm_id
+  )]
   pub ssts_algorithms: Vec<u64>,
 
   /// How long an SSTS client's subgroup stream waits for a graceful finish
@@ -262,23 +299,12 @@ impl AppConfig {
       enable_ssts: cli.enable_ssts,
       // When the feature is off the advertised list stays empty, so a client can
       // never negotiate SSTS on this relay however much it wants it.
+      // The registry decided at parse time which ids are runnable; the feature
+      // flag decides whether any of them go on the wire.
       ssts_algorithms: if cli.enable_ssts {
-        // The registry, not a list kept here, decides which ids this relay runs.
-        let supported = moqtail_ssts::registry::registry().ids();
-        let configured = if cli.ssts_algorithms.is_empty() {
-          supported.clone()
-        } else {
-          cli.ssts_algorithms.clone()
-        };
-        for id in configured.iter().filter(|id| !supported.contains(id)) {
-          warn!(
-            "SSTS: configured algorithm {id} is not implemented by this relay; not advertising it"
-          );
-        }
-        configured
-          .into_iter()
-          .filter(|id| supported.contains(id))
-          .collect()
+        let mut ids = cli.ssts_algorithms.clone();
+        ids.dedup();
+        ids
       } else {
         Vec::new()
       },
@@ -490,5 +516,45 @@ mod tests {
     // A value above the QUIC VarInt maximum is clamped rather than rejected.
     let clamped = test_config(u64::MAX);
     assert_eq!(clamped.max_request_stream_limit(), quinn::VarInt::MAX);
+  }
+  fn ssts_algorithms_for(args: &[&str]) -> Vec<u64> {
+    let mut argv = vec!["relay"];
+    argv.extend_from_slice(args);
+    AppConfig::from_cli(Cli::try_parse_from(argv).unwrap()).ssts_algorithms
+  }
+
+  #[test]
+  fn ssts_advertises_nothing_unless_the_feature_is_on() {
+    assert_eq!(ssts_algorithms_for(&[]), Vec::<u64>::new());
+    // Asking for algorithms without --enable-ssts stays silent: the relay must
+    // never put a provisional option on the wire unless it was told to.
+    assert_eq!(
+      ssts_algorithms_for(&["--ssts-algorithms", "0"]),
+      Vec::<u64>::new()
+    );
+  }
+
+  #[test]
+  fn enabling_ssts_runs_the_default_algorithm_alone() {
+    assert_eq!(ssts_algorithms_for(&["--enable-ssts"]), vec![0]);
+  }
+
+  #[test]
+  fn private_algorithm_ids_are_accepted_in_hex() {
+    let requested = format!("0,{:#x}", moqtail_ssts::registry::PRIVATE_ALGORITHM_ID_BASE);
+    assert_eq!(
+      ssts_algorithms_for(&["--enable-ssts", "--ssts-algorithms", &requested]),
+      vec![0, moqtail_ssts::registry::PRIVATE_ALGORITHM_ID_BASE]
+    );
+  }
+
+  #[test]
+  fn an_unknown_algorithm_id_is_rejected_before_startup() {
+    // An algorithm this relay cannot run must not be advertised: a publisher
+    // would build switching sets on it and have every subscription rejected.
+    assert!(Cli::try_parse_from(["relay", "--enable-ssts", "--ssts-algorithms", "7"]).is_err());
+    assert!(
+      Cli::try_parse_from(["relay", "--enable-ssts", "--ssts-algorithms", "banana"]).is_err()
+    );
   }
 }

@@ -26,10 +26,7 @@ pub mod switching_set;
 
 use moqtail::model::control::setup::Setup;
 use std::collections::HashMap;
-use std::sync::{
-  Arc,
-  atomic::{AtomicU64, Ordering},
-};
+use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 
 use moqtail_ssts::SetSnapshot;
@@ -63,10 +60,6 @@ pub struct SstsState {
   /// SSTS decisions (see `GroupDecisions`).
   pub group_decisions: Arc<RwLock<GroupDecisions>>,
   pub decision_notify: Arc<tokio::sync::Notify>,
-  /// Live forwarding streams per switching set (set id -> counter), handed to
-  /// the algorithms as `AbrInput::open_streams_per_set`. Maintained by the
-  /// stream open and close paths.
-  pub open_streams_per_set: Arc<RwLock<HashMap<u64, Arc<AtomicU64>>>>,
 }
 
 /// The SSTS algorithms the client's SETUP advertises; an empty list (or the
@@ -103,7 +96,6 @@ impl SstsState {
       abr_rx: Arc::new(Mutex::new(Some(abr_rx))),
       group_decisions: Arc::new(RwLock::new(HashMap::new())),
       decision_notify: Arc::new(tokio::sync::Notify::new()),
-      open_streams_per_set: Arc::new(RwLock::new(HashMap::new())),
     }
   }
 
@@ -132,60 +124,40 @@ impl SstsState {
   }
 
   /// The algorithms' view of this connection at decision time: every switching
-  /// set as a snapshot, plus the live forwarding-stream count of each set.
+  /// set as a snapshot, plus how many forwarding streams are live on each.
   ///
-  /// The snapshots are copies, so no algorithm runs while a lock is held, and
-  /// both reads happen here rather than in the algorithms, so a set cannot
-  /// appear between them.
+  /// Both come from one read of the manager, so a set cannot appear between the
+  /// two reads and show up without its counter. They are copies: no algorithm
+  /// runs while a lock is held.
   pub async fn decision_snapshot(&self) -> (Vec<SetSnapshot>, HashMap<u64, u64>) {
-    let sets: Vec<SetSnapshot> = {
-      let manager = self.switching_sets.read().await;
-      manager.sets.values().map(SetSnapshot::from).collect()
-    };
-    let open_streams_per_set: HashMap<u64, u64> = {
-      let counters = self.open_streams_per_set.read().await;
-      counters
-        .iter()
-        .map(|(set_id, counter)| (*set_id, counter.load(Ordering::SeqCst)))
-        .collect()
-    };
-    (sets, open_streams_per_set)
+    let manager = self.switching_sets.read().await;
+    (
+      manager.sets.values().map(SetSnapshot::from).collect(),
+      manager.open_streams(),
+    )
   }
 
-  /// Increment the open-stream counter of the switching set this
-  /// relay_track_id belongs to. No-op if the track is not in any set.
+  /// A forwarding stream started for this relay track. No-op when the track is
+  /// not in a switching set, so non-SSTS traffic pays nothing.
+  ///
+  /// Every path that drops a stream from the send-stream map must call
+  /// `on_stream_closed` for it as well, or the set's depth never comes back
+  /// down and the algorithms read a queue that no longer exists.
   pub async fn on_stream_opened(&self, relay_track_id: u64) {
-    let set_id = {
-      let sets = self.switching_sets.read().await;
-      sets.get_set_id_for_relay_track(relay_track_id)
-    };
-    if let Some(set_id) = set_id {
-      let counter = {
-        let mut map = self.open_streams_per_set.write().await;
-        map
-          .entry(set_id)
-          .or_insert_with(|| Arc::new(AtomicU64::new(0)))
-          .clone()
-      };
-      counter.fetch_add(1, Ordering::SeqCst);
-    }
+    self
+      .switching_sets
+      .write()
+      .await
+      .note_stream_opened(relay_track_id);
   }
 
-  /// Decrement the open-stream counter of the switching set this
-  /// relay_track_id belongs to (no-op if unknown or already zero).
+  /// A forwarding stream of this relay track ended: finished, reset, or
+  /// stopped by the peer.
   pub async fn on_stream_closed(&self, relay_track_id: u64) {
-    let set_id = {
-      let sets = self.switching_sets.read().await;
-      sets.get_set_id_for_relay_track(relay_track_id)
-    };
-    if let Some(set_id) = set_id
-      && let Some(counter) = { self.open_streams_per_set.read().await.get(&set_id).cloned() }
-    {
-      // Atomic check-and-subtract to prevent underflow from concurrent
-      // decrements.
-      let _ = counter.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |x| {
-        if x > 0 { Some(x - 1) } else { None }
-      });
-    }
+    self
+      .switching_sets
+      .write()
+      .await
+      .note_stream_closed(relay_track_id);
   }
 }

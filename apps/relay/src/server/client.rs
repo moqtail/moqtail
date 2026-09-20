@@ -482,7 +482,12 @@ impl MOQTClient {
   }
 
   // Just remove the stream from the stream_map
-  // The caller finishes the stream and calls this to remove it from the map
+  // The caller finishes the stream and calls this to remove it from the map.
+  //
+  // This does NOT release the switching-set stream slot: `close_stream` wants
+  // the stream counted until it has actually finished, so every caller that
+  // takes a stream out of the map without going through `close_stream` calls
+  // `ssts.on_stream_closed` itself.
   pub async fn remove_stream_by_stream_id(
     &self,
     stream_id: &StreamId,
@@ -492,10 +497,25 @@ impl MOQTClient {
     send_streams.remove(stream_id.get_stream_id().as_str())
   }
 
+  /// Take a stream out of the map once the caller has finished or reset it,
+  /// and release the switching-set stream slot it held.
+  ///
+  /// The slot is released only when a stream was actually in the map, so a
+  /// second removal cannot borrow the count of another stream of the same set.
+  pub async fn release_stream(&self, stream_id: &StreamId) {
+    if self.remove_stream_by_stream_id(stream_id).await.is_some() {
+      self.ssts.on_stream_closed(stream_id.relay_track_id).await;
+    }
+  }
+
   /// Reset a data stream with an application error code (QUIC RESET_STREAM) and
-  /// drop it from the send-stream map.
+  /// drop it from the send-stream map, releasing its switching-set stream slot.
   pub async fn reset_stream(&self, stream_id: &StreamId, code: u64) {
-    if let Some(stream) = self.remove_stream_by_stream_id(stream_id).await
+    let removed = self.remove_stream_by_stream_id(stream_id).await;
+    if removed.is_some() {
+      self.ssts.on_stream_closed(stream_id.relay_track_id).await;
+    }
+    if let Some(stream) = removed
       && let Err(e) = stream.lock().await.reset(code)
     {
       warn!("Error resetting data stream {}: {:?}", stream_id, e);
@@ -547,7 +567,14 @@ impl MOQTClient {
             // remove this from the streams
             let stream_map = self.get_stream_map(stream_id);
             let mut send_streams = stream_map.write().await;
-            send_streams.remove(stream_id.get_stream_id().as_str());
+            if send_streams
+              .remove(stream_id.get_stream_id().as_str())
+              .is_some()
+            {
+              // The peer stopped the stream, so it is gone even if a close for
+              // it arrives later: release its switching-set slot now.
+              self.ssts.on_stream_closed(stream_id.relay_track_id).await;
+            }
           }
         }
       };

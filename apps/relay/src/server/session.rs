@@ -1090,16 +1090,23 @@ impl Session {
       .try_into()
       .unwrap();
 
-    // Advertise the SSTS algorithms the relay implements
-    // (draft-wilaw-moq-moqt-ssts, Section 3).
-    let ssts_algorithms_param =
-      moqtail::model::parameter::setup_option::SetupOption::new_ssts_algorithms(
-        super::abr::SUPPORTED_SSTS_ALGORITHMS.to_vec(),
-      )
-      .try_into()
-      .unwrap();
+    // SSTS is advertised only when the relay has it enabled: its setup option
+    // and message parameter are provisional on an unadopted draft, so a relay
+    // that never opts in never puts them on the wire.
+    let mut setup_options = vec![moqt_implementation_param];
+    if context.server_config.enable_ssts {
+      // Advertising an empty list is the protocol's way of saying "no SSTS":
+      // it can happen when every configured algorithm id was rejected above.
+      setup_options.push(
+        moqtail::model::parameter::setup_option::SetupOption::new_ssts_algorithms(
+          context.server_config.ssts_algorithms.clone(),
+        )
+        .try_into()
+        .unwrap(),
+      );
+    }
 
-    let server_setup = Setup::new(vec![moqt_implementation_param, ssts_algorithms_param]);
+    let server_setup = Setup::new(setup_options);
 
     debug!("client setup: {:?}", client_setup);
     debug!("server setup: {:?}", server_setup);
@@ -1146,7 +1153,11 @@ impl Session {
       Arc::new(client_setup),
     );
     let client = Arc::new(client);
-    client.clone().start_abr_controller();
+    // The controller is a no-op without SSTS: without it there are no switching
+    // sets, no decisions and no stream-timeout evidence to act on.
+    if client.ssts_enabled() {
+      client.clone().start_abr_controller();
+    }
     context.client_manager.add(client.clone()).await;
 
     match control_stream_handler.send_impl(&server_setup).await {

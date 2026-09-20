@@ -169,8 +169,10 @@ impl SwitchingSetManager {
     Ok(())
   }
 
-  /// Remove a track (unsubscribed or PUBLISH_DONE); decrement `activate`
-  /// (floor zero) and delete the set once its last track leaves.
+  /// Remove a track (unsubscribed or PUBLISH_DONE) and delete the set once its
+  /// last track leaves. `activate` is a configured threshold, not a counter,
+  /// so it is left alone: `is_active` re-evaluates against the new member
+  /// count on its own.
   pub fn remove(&mut self, full_track_name: &FullTrackName) {
     let Some(set_id) = self.track_to_set.remove(full_track_name) else {
       return;
@@ -186,7 +188,6 @@ impl SwitchingSetManager {
     set
       .members
       .retain(|m| m.full_track_name != *full_track_name);
-    set.activate = set.activate.saturating_sub(1);
     if let Some(relay_track_id) = relay_track_id {
       self.relay_track_to_set.remove(&relay_track_id);
     }
@@ -291,12 +292,13 @@ mod tests {
 
     let set = manager.get_set_for_track(&track2).unwrap();
     assert_eq!(set.members.len(), 1);
-    // activate is decremented by one on removal (2 -> 1).
-    assert_eq!(set.activate, 1);
+    // `activate` is a configured threshold, not a counter: removing a member
+    // must not change it.
+    assert_eq!(set.activate, 2);
   }
 
   #[test]
-  fn test_activate_decrement_floors_at_zero_and_set_deletion() {
+  fn test_remove_deletes_emptied_set() {
     let mut manager = SwitchingSetManager::new();
     let track = make_track("ns", "t");
     assign(&mut manager, &track, 1, 7, 100);

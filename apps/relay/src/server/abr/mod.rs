@@ -21,7 +21,6 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
@@ -33,10 +32,6 @@ pub const SUPPORTED_SSTS_ALGORITHMS: &[u64] = &[0, 1];
 /// Periodic re-evaluation interval: bandwidth estimates and stream depth
 /// drift between groups.
 const TICK_MS: u64 = 100;
-
-/// close_stream gives up on a graceful finish after this long and resets
-/// the stream, so an abandoned group stops occupying a stream slot.
-const DISCARD_TIMEOUT_MS: u64 = 1600;
 
 const DECISION_WINDOW: u64 = 5;
 
@@ -79,15 +74,27 @@ fn algorithm_registry() -> Vec<Arc<dyn AbrAlgorithm>> {
   ]
 }
 
+/// The single validation a SWITCHING_SET_ASSIGNMENT gets, shared by both entry
+/// points (SUBSCRIBE and the PUBLISH_OK of a pushed track) so they cannot drift
+/// apart. SSTS is unusable unless the client negotiated it in SETUP, and only
+/// with an algorithm both sides actually run.
+pub(crate) fn validate_assignment(client: &MOQTClient, algorithm_id: u64) -> Result<(), String> {
+  if client.negotiated_algorithms.is_empty() {
+    return Err("SSTS was not negotiated in SETUP".to_string());
+  }
+  if !SUPPORTED_SSTS_ALGORITHMS.contains(&algorithm_id)
+    || !client.negotiated_algorithms.contains(&algorithm_id)
+  {
+    return Err(format!("unsupported SSTS algorithm {algorithm_id}"));
+  }
+  Ok(())
+}
+
 pub(crate) fn start_abr_controller(client: Arc<MOQTClient>) {
   let client_id = client.connection_id as u64;
   let algorithms = algorithm_registry();
   tokio::spawn(async move {
     let mut abr_rx = client.abr_rx.lock().await.take().expect("ABR started once");
-
-    client
-      .discard_timeout_ms
-      .store(DISCARD_TIMEOUT_MS, Ordering::Relaxed);
 
     let mut tick = tokio::time::interval(Duration::from_millis(TICK_MS));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);

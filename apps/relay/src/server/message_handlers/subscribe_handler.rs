@@ -501,58 +501,37 @@ async fn handle_subscribe_message(
 
   // Sender-side track switching (draft-wilaw-moq-moqt-ssts): register this
   // track in its switching set.
-  if let Some(p) = sub
+  if let Some(MessageParameter::SwitchingSetAssignment {
+    switching_set_id,
+    algorithm_id,
+    throughput_threshold_kbps,
+    set_throughput_weight,
+    activate_switching,
+    set_rank,
+  }) = sub
     .subscribe_parameters
     .iter()
     .find(|p| matches!(p, MessageParameter::SwitchingSetAssignment { .. }))
   {
-    // The absence of the SSTS_ALGORITHMS setup option (or an empty list)
-    // prohibits the use of SSTS (Section 3).
-    if !client.ssts_enabled {
-      warn!(
-        "Rejecting SUBSCRIBE from {}: SSTS was not negotiated in SETUP",
-        context.connection_id
-      );
+    // Read before taking the set manager's lock: removing a track takes the
+    // other way around (subscription -> set manager), so holding one lock
+    // while grabbing the other would deadlock.
+    let relay_track_id = track_arc.read().await.relay_track_id;
+
+    if let Err(e) = crate::server::abr::validate_assignment(&client, *algorithm_id) {
+      warn!("Rejecting SUBSCRIBE from {}: {}", context.connection_id, e);
       reject_subscription(&track_arc, client.connection_id, is_switch).await;
       let err = RequestError::new(
         RequestErrorCode::UnsupportedExtension,
         0,
-        ReasonPhrase::try_new("SSTS not negotiated".to_string()).unwrap(),
+        ReasonPhrase::try_new(e).unwrap(),
       );
       stream_handler.send_impl(&err).await.unwrap();
       return Ok(());
     }
 
-    if let MessageParameter::SwitchingSetAssignment {
-      switching_set_id,
-      algorithm_id,
-      throughput_threshold_kbps,
-      set_throughput_weight,
-      activate_switching,
-      set_rank,
-    } = p
     {
-      // Only the algorithms both the relay supports and the client
-      // advertised in SETUP may be used.
-      if !crate::server::abr::SUPPORTED_SSTS_ALGORITHMS.contains(algorithm_id)
-        || !client.ssts_algorithms.contains(algorithm_id)
-      {
-        warn!(
-          "Rejecting SUBSCRIBE from {}: unsupported SSTS algorithm {}",
-          context.connection_id, algorithm_id
-        );
-        reject_subscription(&track_arc, client.connection_id, is_switch).await;
-        let err = RequestError::new(
-          RequestErrorCode::UnsupportedExtension,
-          0,
-          ReasonPhrase::try_new(format!("unsupported SSTS algorithm {algorithm_id}")).unwrap(),
-        );
-        stream_handler.send_impl(&err).await.unwrap();
-        return Ok(());
-      }
-
       let mut manager = client.switching_sets.write().await;
-      let relay_track_id = track_arc.read().await.relay_track_id;
       if let Err(e) = manager.assign(
         full_track_name.clone(),
         relay_track_id,
@@ -564,11 +543,11 @@ async fn handle_subscribe_message(
         *activate_switching,
         *set_rank,
       ) {
-        drop(manager);
+        warn!("Rejecting SUBSCRIBE from {}: {}", context.connection_id, e);
         // A track MUST only be assigned to one switching set at a time; the
         // subscription is rejected (spec: Parameter Error; the draft-18
         // REQUEST_ERROR codes have no dedicated parameter code).
-        warn!("Rejecting SUBSCRIBE from {}: {}", context.connection_id, e);
+        drop(manager);
         reject_subscription(&track_arc, client.connection_id, is_switch).await;
         let err = RequestError::new(
           RequestErrorCode::UnsupportedExtension,
@@ -578,19 +557,19 @@ async fn handle_subscribe_message(
         stream_handler.send_impl(&err).await.unwrap();
         return Ok(());
       }
+    }
 
-      // The spec starts switching-set subscriptions with Forward=0; keep this
-      // subscription forwarding so the Object gating can select per group.
-      if let Some(subscription) = track_arc
-        .read()
-        .await
-        .get_subscription(client.connection_id)
-        .await
-      {
-        let sub = subscription.read().await;
-        let mut state = sub.subscription_state.write().await;
-        state.forward = true;
-      }
+    // The spec starts switching-set subscriptions with Forward=0; keep this
+    // subscription forwarding so the Object gating can select per group.
+    if let Some(subscription) = track_arc
+      .read()
+      .await
+      .get_subscription(client.connection_id)
+      .await
+    {
+      let sub = subscription.read().await;
+      let mut state = sub.subscription_state.write().await;
+      state.forward = true;
     }
   }
 

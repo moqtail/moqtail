@@ -712,16 +712,6 @@ async fn register_ssts_assignment_from_publish_ok(
     return;
   };
 
-  // The absence of the SSTS_ALGORITHMS setup option (or an empty list)
-  // prohibits the use of SSTS (Section 3).
-  if !subscriber.ssts_enabled {
-    warn!(
-      "Ignoring SWITCHING_SET_ASSIGNMENT in PUBLISH_OK from {}: SSTS was not negotiated in SETUP",
-      subscriber.connection_id
-    );
-    return;
-  }
-
   let Ok(full_track_name) =
     FullTrackName::new(publish.track_namespace.clone(), publish.track_name.clone())
   else {
@@ -740,23 +730,35 @@ async fn register_ssts_assignment_from_publish_ok(
     set_rank,
   } = p
   {
-    let mut manager = subscriber.switching_sets.write().await;
-    if let Err(e) = manager.assign(
-      full_track_name.clone(),
-      relay_track_id,
-      publish.request_id,
-      *switching_set_id,
-      *algorithm_id,
-      *throughput_threshold_kbps,
-      *set_throughput_weight,
-      *activate_switching,
-      *set_rank,
-    ) {
+    // The same validation as the SUBSCRIBE path; a PUBLISH_OK cannot be
+    // rejected, so an invalid assignment is ignored instead.
+    if let Err(e) = crate::server::abr::validate_assignment(&subscriber, *algorithm_id) {
       warn!(
         "Ignoring SWITCHING_SET_ASSIGNMENT in PUBLISH_OK from {}: {}",
         subscriber.connection_id, e
       );
       return;
+    }
+
+    {
+      let mut manager = subscriber.switching_sets.write().await;
+      if let Err(e) = manager.assign(
+        full_track_name.clone(),
+        relay_track_id,
+        publish.request_id,
+        *switching_set_id,
+        *algorithm_id,
+        *throughput_threshold_kbps,
+        *set_throughput_weight,
+        *activate_switching,
+        *set_rank,
+      ) {
+        warn!(
+          "Ignoring SWITCHING_SET_ASSIGNMENT in PUBLISH_OK from {}: {}",
+          subscriber.connection_id, e
+        );
+        return;
+      }
     }
 
     // Same forward-state reasoning as the SUBSCRIBE path: the gating in the

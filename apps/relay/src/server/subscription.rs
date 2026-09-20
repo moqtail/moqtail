@@ -986,49 +986,62 @@ impl Subscription {
 
         // SSTS: if this track is in a switching set, only forward Objects on
         // the track the ABR selected for this group; `None` means the set
-        // sends nothing this group.
-        let my_set_id = {
-          let manager = self.subscriber.switching_sets.read().await;
-          manager
-            .get_set_for_track(&self.full_track_name)
-            .map(|s| s.id)
-        };
+        // sends nothing this group. Without SSTS nothing is in a set, so the
+        // gate is a plain early-out.
+        if self.subscriber.ssts_enabled() {
+          let my_set_id = {
+            let manager = self.subscriber.switching_sets.read().await;
+            manager
+              .get_set_for_track(&self.full_track_name)
+              .map(|s| s.id)
+          };
 
-        if let Some(set_id) = my_set_id {
-          let group_id = object.location.group;
+          if let Some(set_id) = my_set_id {
+            let group_id = object.location.group;
 
-          loop {
-            let decision = {
-              let decisions = self.subscriber.group_decisions.read().await;
-              decisions
-                .get(&group_id)
-                .and_then(|m| m.get(&set_id))
-                .copied()
-            };
+            let notified = self.subscriber.decision_notify.notified();
+            tokio::pin!(notified);
 
-            match decision {
-              Some(Some(chosen)) => {
-                if self.relay_track_id != chosen {
-                  // Not the selected track – drop this object.
+            loop {
+              // Arm the future before reading the decision map: a decision
+              // recorded between the read and the registration would
+              // otherwise be missed and this object would wait for the next
+              // decision on an idle track, or up to a full group interval on
+              // a live one.
+              notified.as_mut().enable();
+
+              let decision = {
+                let decisions = self.subscriber.group_decisions.read().await;
+                decisions
+                  .get(&group_id)
+                  .and_then(|m| m.get(&set_id))
+                  .copied()
+              };
+
+              match decision {
+                Some(Some(chosen)) => {
+                  if self.relay_track_id != chosen {
+                    // Not the selected track – drop this object.
+                    return;
+                  }
+                  break; // We are the selected track, proceed with forwarding.
+                }
+                Some(None) => {
+                  // The set is not forwarded for this group – drop this object.
                   return;
                 }
-                break; // We are the selected track, proceed with forwarding.
-              }
-              Some(None) => {
-                // The set is not forwarded for this group – drop this object.
-                return;
-              }
-              None => {
-                // No decision yet for this group+set: wake the ABR and wait.
-                if let Err(e) = self
-                  .subscriber
-                  .abr_tx
-                  .send(AbrMessage::NewGroup(group_id))
-                  .await
-                {
-                  warn!("Failed to send NewGroup to ABR: {:?}", e);
+                None => {
+                  // No decision yet for this group+set: wake the ABR and wait.
+                  if let Err(e) = self
+                    .subscriber
+                    .abr_tx
+                    .send(AbrMessage::NewGroup(group_id))
+                    .await
+                  {
+                    warn!("Failed to send NewGroup to ABR: {:?}", e);
+                  }
+                  notified.as_mut().await;
                 }
-                self.subscriber.decision_notify.notified().await;
               }
             }
           }

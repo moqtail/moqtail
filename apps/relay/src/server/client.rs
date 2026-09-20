@@ -183,19 +183,21 @@ pub(crate) struct MOQTClient {
   /// SSTS decisions (see `GroupDecisions`).
   pub group_decisions: Arc<RwLock<GroupDecisions>>,
   pub decision_notify: Arc<tokio::sync::Notify>,
-  pub discard_timeout_ms: Arc<AtomicU64>,
   /// SSTS backpressure: open forwarding streams per switching set
   /// (set id -> counter), maintained by the open/close stream paths.
   pub active_streams_per_set: Arc<RwLock<HashMap<u64, Arc<AtomicU64>>>>,
-  /// Whether SSTS is enabled: the client's SETUP advertised a non-empty
-  /// SSTS_ALGORITHMS list.
-  pub ssts_enabled: bool,
-  /// The SSTS algorithm ids the client's SETUP advertised; a subscription
-  /// may only select one of these.
-  pub ssts_algorithms: Vec<u64>,
+  /// The SSTS algorithms negotiated for this connection: the client's SETUP
+  /// advertisement intersected with the list this relay runs. Empty means SSTS
+  /// is unavailable, for any reason.
+  pub negotiated_algorithms: Vec<u64>,
 }
 
 impl MOQTClient {
+  /// SSTS was negotiated for this connection (see `negotiated_algorithms`).
+  pub fn ssts_enabled(&self) -> bool {
+    !self.negotiated_algorithms.is_empty()
+  }
+
   pub(crate) fn new(
     connection_id: usize,
     connection: Arc<TransportConnection>,
@@ -215,8 +217,14 @@ impl MOQTClient {
 
     let (abr_tx, abr_rx) = tokio::sync::mpsc::channel(100);
 
-    let ssts_algorithms = advertised_ssts_algorithms(&client_setup);
-    let ssts_enabled = !ssts_algorithms.is_empty();
+    // SSTS is usable only if both sides named the same algorithms: the client's
+    // SETUP list intersected with what this relay actually runs (which is empty
+    // when the relay has the feature off, even if the client asked for it).
+    let config = crate::server::config::AppConfig::load();
+    let negotiated_algorithms = advertised_ssts_algorithms(&client_setup)
+      .into_iter()
+      .filter(|id| config.ssts_algorithms.contains(id))
+      .collect();
 
     MOQTClient {
       connection_id,
@@ -248,10 +256,8 @@ impl MOQTClient {
       abr_rx: Arc::new(Mutex::new(Some(abr_rx))),
       group_decisions: Arc::new(RwLock::new(HashMap::new())),
       decision_notify: Arc::new(tokio::sync::Notify::new()),
-      discard_timeout_ms: Arc::new(AtomicU64::new(0)),
       active_streams_per_set: Arc::new(RwLock::new(HashMap::new())),
-      ssts_enabled,
-      ssts_algorithms,
+      negotiated_algorithms,
     }
   }
 
@@ -517,7 +523,14 @@ impl MOQTClient {
 
     if let Some(send_stream) = stream {
       let mut stream = send_stream.lock().await;
-      let timeout_ms = self.discard_timeout_ms.load(Ordering::Relaxed);
+      // Only SSTS clients use a discard timeout: a connection that never
+      // negotiated the feature always closes gracefully, so in-flight data is
+      // never discarded for traffic that never opted in.
+      let timeout_ms = if self.ssts_enabled() {
+        crate::server::config::AppConfig::load().ssts_discard_timeout_ms
+      } else {
+        0
+      };
 
       if timeout_ms == 0 {
         // No discard timeout: always close gracefully.

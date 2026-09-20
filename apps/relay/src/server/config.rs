@@ -151,6 +151,23 @@ pub struct Cli {
   /// Capped, because the memory this costs also scales with the size of a group
   #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(0..=MAX_DEDUP_RETAINED_GROUPS))]
   pub dedup_retained_groups: u64,
+
+  /// Enable sender-side track switching (SSTS). Off by default: the setup option
+  /// and message parameter it relies on are provisional on an unadopted draft, so
+  /// relays that never turn the feature on never put them on the wire.
+  #[arg(long, default_value_t = false)]
+  pub enable_ssts: bool,
+
+  /// Which SSTS algorithm ids to advertise in SETUP, from the ids the relay
+  /// implements. Empty means all of them. Ignored unless --enable-ssts is set.
+  #[arg(long, num_args = 1..)]
+  pub ssts_algorithms: Vec<u64>,
+
+  /// How long an SSTS client's subgroup stream waits for a graceful finish
+  /// before it is reset and its stream slot is freed again. Only applies to
+  /// connections that negotiated SSTS; 0 always closes gracefully.
+  #[arg(long, default_value_t = 1600)]
+  pub ssts_discard_timeout_ms: u64,
 }
 #[derive(Debug, Clone)]
 pub struct AppConfig {
@@ -194,6 +211,16 @@ pub struct AppConfig {
   /// Groups of Object ids retained per track for duplicate detection. Bounds what that
   /// costs; a publisher more than this many groups behind can slip a duplicate through.
   pub dedup_retained_groups: usize,
+  /// SSTS is available on this relay: the setup option is advertised and
+  /// SWITCHING_SET_ASSIGNMENT is accepted. A client can never enable it on a relay
+  /// that has it off, because the advertised list stays empty.
+  pub enable_ssts: bool,
+  /// The SSTS algorithm ids advertised in SETUP. Empty means SSTS is off, which is
+  /// also what clients negotiate to.
+  pub ssts_algorithms: Vec<u64>,
+  /// Subgroup streams of SSTS clients that do not finish gracefully within this
+  /// window are reset, so an abandoned group frees its stream slot again.
+  pub ssts_discard_timeout_ms: u64,
 }
 
 impl AppConfig {
@@ -232,6 +259,29 @@ impl AppConfig {
       downstream_alias_timeout: Duration::from_millis(cli.downstream_alias_timeout_ms),
       publish_done_stream_timeout: Duration::from_millis(cli.publish_done_stream_timeout_ms),
       dedup_retained_groups: cli.dedup_retained_groups as usize,
+      enable_ssts: cli.enable_ssts,
+      // When the feature is off the advertised list stays empty, so a client can
+      // never negotiate SSTS on this relay however much it wants it.
+      ssts_algorithms: if cli.enable_ssts {
+        let configured = if cli.ssts_algorithms.is_empty() {
+          super::abr::SUPPORTED_SSTS_ALGORITHMS.to_vec()
+        } else {
+          cli.ssts_algorithms.clone()
+        };
+        let supported = super::abr::SUPPORTED_SSTS_ALGORITHMS;
+        for id in configured.iter().filter(|id| !supported.contains(id)) {
+          warn!(
+            "SSTS: configured algorithm {id} is not implemented by this relay; not advertising it"
+          );
+        }
+        configured
+          .into_iter()
+          .filter(|id| supported.contains(id))
+          .collect()
+      } else {
+        Vec::new()
+      },
+      ssts_discard_timeout_ms: cli.ssts_discard_timeout_ms,
     }
   }
 
@@ -390,6 +440,9 @@ mod tests {
       downstream_alias_timeout: Duration::from_millis(3000),
       publish_done_stream_timeout: Duration::from_millis(2000),
       dedup_retained_groups: 30,
+      enable_ssts: false,
+      ssts_algorithms: Vec::new(),
+      ssts_discard_timeout_ms: 1600,
     }
   }
 

@@ -32,6 +32,7 @@ use std::sync::{
 };
 use tokio::sync::{Mutex, RwLock};
 
+use moqtail_ssts::SetSnapshot;
 use switching_set::SwitchingSetManager;
 
 /// SSTS per-group allocation decisions: group -> set -> selected relay
@@ -39,10 +40,13 @@ use switching_set::SwitchingSetManager;
 pub type GroupDecisions = HashMap<u64, HashMap<u64, Option<u64>>>;
 
 pub(crate) enum AbrMessage {
-  /// An Object arrived on a group larger than the previously largest group:
-  /// run the bandwidth allocation for that group.
+  /// An Object arrived for a group this connection has no decision for. The
+  /// gate sends this for any group it cannot answer, not only for a new
+  /// largest one: the first Object of a group is not necessarily the one that
+  /// triggers the decision.
   NewGroup(u64),
-  /// A forwarding stream timed out on close and was reset.
+  /// A forwarding stream was reset for delivery timeout: congestion evidence
+  /// for the next allocation.
   StreamTimeout { group_id: u64 },
 }
 
@@ -59,8 +63,9 @@ pub struct SstsState {
   /// SSTS decisions (see `GroupDecisions`).
   pub group_decisions: Arc<RwLock<GroupDecisions>>,
   pub decision_notify: Arc<tokio::sync::Notify>,
-  /// Open forwarding streams per switching set (set id -> counter),
-  /// maintained by the open/close stream paths.
+  /// Live forwarding streams per switching set (set id -> counter), handed to
+  /// the algorithms as `AbrInput::open_streams_per_set`. Maintained by the
+  /// stream open and close paths.
   pub open_streams_per_set: Arc<RwLock<HashMap<u64, Arc<AtomicU64>>>>,
 }
 
@@ -109,18 +114,42 @@ impl SstsState {
 
   /// The single validation a SWITCHING_SET_ASSIGNMENT gets, shared by both
   /// entry points (SUBSCRIBE and the PUBLISH_OK of a pushed track) so they
-  /// cannot drift apart. SSTS is unusable unless the client negotiated it in
-  /// SETUP, and only with an algorithm both sides actually run.
+  /// cannot drift apart.
+  ///
+  /// `negotiated_algorithms` is already the intersection of what the client
+  /// advertised and what this relay runs, so one containment test covers both
+  /// sides.
   pub fn validate_assignment(&self, algorithm_id: u64) -> Result<(), String> {
     if self.negotiated_algorithms.is_empty() {
       return Err("SSTS was not negotiated in SETUP".to_string());
     }
-    if !super::abr::SUPPORTED_SSTS_ALGORITHMS.contains(&algorithm_id)
-      || !self.negotiated_algorithms.contains(&algorithm_id)
-    {
-      return Err(format!("unsupported SSTS algorithm {algorithm_id}"));
+    if !self.negotiated_algorithms.contains(&algorithm_id) {
+      return Err(format!(
+        "SSTS algorithm {algorithm_id} was not negotiated for this connection"
+      ));
     }
     Ok(())
+  }
+
+  /// The algorithms' view of this connection at decision time: every switching
+  /// set as a snapshot, plus the live forwarding-stream count of each set.
+  ///
+  /// The snapshots are copies, so no algorithm runs while a lock is held, and
+  /// both reads happen here rather than in the algorithms, so a set cannot
+  /// appear between them.
+  pub async fn decision_snapshot(&self) -> (Vec<SetSnapshot>, HashMap<u64, u64>) {
+    let sets: Vec<SetSnapshot> = {
+      let manager = self.switching_sets.read().await;
+      manager.sets.values().map(SetSnapshot::from).collect()
+    };
+    let open_streams_per_set: HashMap<u64, u64> = {
+      let counters = self.open_streams_per_set.read().await;
+      counters
+        .iter()
+        .map(|(set_id, counter)| (*set_id, counter.load(Ordering::SeqCst)))
+        .collect()
+    };
+    (sets, open_streams_per_set)
   }
 
   /// Increment the open-stream counter of the switching set this

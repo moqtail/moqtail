@@ -1,7 +1,7 @@
 // Copyright 2026 The MOQtail Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use it except in compliance with the License.
+// you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
@@ -12,129 +12,178 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! The SSTS controller: one task per client that negotiated SSTS.
+//! The per-connection decision loop: collect the input, run the algorithms
+//! this connection negotiated, validate what came back, publish it for the
+//! forward gate.
 //!
-//! It is the only place that runs the bandwidth allocation algorithms: it
-//! collects the signals, builds the per-decision snapshot, hands it to one
-//! algorithm instance per set's algorithm, validates what comes back, caches
-//! the result per group, and wakes the forward gate.
+//! This is the mechanism side of SSTS. The decisions themselves live in
+//! `moqtail-ssts`; what happens here is the translation between the two: the
+//! relay's state becomes an [`AbrInput`], and an algorithm's [`Selection`]
+//! becomes a per-group decision the gate in `subscription.rs` can act on.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{debug, info, warn};
 
-use crate::server::abr::{AbrAlgorithm, SetSnapshot};
+use moqtail_ssts::registry::registry;
+use moqtail_ssts::{AbrAlgorithm, AbrInput, Selection, SetSnapshot};
+use tokio::select;
+use tracing::warn;
+
 use crate::server::client::MOQTClient;
-use crate::server::ssts::AbrMessage;
+use crate::server::config::AppConfig;
 
-/// Periodic re-evaluation interval: bandwidth estimates and stream depth
-/// drift between groups.
-const TICK_MS: u64 = 100;
+use super::AbrMessage;
 
+/// How often the decision is re-evaluated without a new group, so a bandwidth
+/// change reaches the group currently being served.
+const DECISION_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Number of groups of decisions to keep behind the live edge, so a publisher
+/// running behind still gets a decision instead of forwarding unselected.
 const DECISION_WINDOW: u64 = 5;
 
+/// An algorithm this connection runs, with the identity it was created from so
+/// that a bad decision can be attributed in the log.
+struct Running {
+  id: u64,
+  name: &'static str,
+  algorithm: Box<dyn AbrAlgorithm>,
+}
+
+/// Spawn the SSTS decision loop for a connection that has switching sets.
 pub(crate) fn start(client: Arc<MOQTClient>) {
-  let client_id = client.connection_id as u64;
-  let algorithms = crate::server::abr::algorithm_registry();
   tokio::spawn(async move {
-    let mut abr_rx = client
-      .ssts
-      .abr_rx
-      .lock()
-      .await
-      .take()
-      .expect("ABR started once");
+    // Claiming the receiver is what makes starting twice a no-op: the second
+    // task finds nothing to read from and leaves.
+    let Some(mut rx) = client.ssts.abr_rx.lock().await.take() else {
+      return;
+    };
 
-    let mut tick = tokio::time::interval(Duration::from_millis(TICK_MS));
-    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let client_id = client.connection_id as u64;
+    let mut running: Vec<Running> = Vec::new();
+    for id in &client.ssts.negotiated_algorithms {
+      match registry().get(*id) {
+        Some(factory) => running.push(Running {
+          id: *id,
+          name: factory.name(),
+          algorithm: factory.create(),
+        }),
+        None => warn!(
+          client_id,
+          algorithm_id = id,
+          "SSTS: negotiated algorithm is not registered; its sets will forward nothing"
+        ),
+      }
+    }
+    if running.is_empty() {
+      return;
+    }
 
+    let mut ticker = tokio::time::interval(DECISION_INTERVAL);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // The group the periodic re-evaluation runs for.
     let mut last_group: Option<u64> = None;
+    // The largest group ever seen. Decisions are pruned against this rather
+    // than against the group being decided, so an Object that arrives late on
+    // an old group cannot prune the decisions of the live edge.
+    let mut largest_group: u64 = 0;
+    // Streams reset for delivery timeout since the previous decision: the
+    // congestion evidence the algorithms ask for. It is read only by this
+    // connection's algorithms, so it lives here instead of in shared state.
+    let mut stream_timeouts: u64 = 0;
 
     loop {
-      tokio::select! {
-          msg = abr_rx.recv() => {
-              match msg {
-                  Some(AbrMessage::NewGroup(group_id)) => {
-                      last_group = Some(group_id);
-                      decide(&client, &algorithms, group_id).await;
-                  }
-                  Some(AbrMessage::StreamTimeout { group_id }) => {
-                      debug!(
-                          client_id,
-                          group_id,
-                          "ABR: stream timeout on close — forwarding to algorithms"
-                      );
-                      for alg in &algorithms {
-                          alg.on_stream_timeout(client_id);
-                      }
-                  }
-                  None => break,
-              }
-          }
-
-          _ = tick.tick() => {
+      select! {
+        msg = rx.recv() => {
+          match msg {
+            Some(AbrMessage::NewGroup(group_id)) => {
+              last_group = Some(group_id.max(last_group.unwrap_or(0)));
+              largest_group = largest_group.max(group_id);
+              decide(&mut running, &client, group_id, largest_group, &mut stream_timeouts).await;
+            }
+            Some(AbrMessage::StreamTimeout { group_id }) => {
+              largest_group = largest_group.max(group_id);
+              stream_timeouts += 1;
               if let Some(group_id) = last_group {
-                  decide(&client, &algorithms, group_id).await;
+                decide(&mut running, &client, group_id, largest_group, &mut stream_timeouts).await;
               }
+            }
+            None => return,
           }
-
-          _ = client.connection.closed() => {
-              info!(client_id, "ABR controller shutting down: connection physically closed");
-              break;
+        }
+        _ = ticker.tick() => {
+          if let Some(group_id) = last_group {
+            decide(&mut running, &client, group_id, largest_group, &mut stream_timeouts).await;
           }
+        }
+        _ = client.connection.closed() => {
+          return;
+        }
       }
     }
   });
 }
 
-async fn decide(client: &Arc<MOQTClient>, algorithms: &[Arc<dyn AbrAlgorithm>], group_id: u64) {
-  let sets: Vec<SetSnapshot> = {
-    let manager = client.ssts.switching_sets.read().await;
-    manager
-      .sets
-      .values()
-      .map(|s| SetSnapshot {
-        id: s.id,
-        algorithm_id: s.algorithm_id,
-        rank: s.rank,
-        weight: s.weight,
-        active: s.is_active(),
-        members: s
-          .members
-          .iter()
-          .map(|m| (m.throughput_threshold_kbps, m.relay_track_id))
-          .collect(),
-      })
-      .collect()
-  };
-
+/// Run every algorithm over the sets assigned to it, for `group_id`.
+async fn decide(
+  running: &mut [Running],
+  client: &Arc<MOQTClient>,
+  group_id: u64,
+  largest_group: u64,
+  stream_timeouts: &mut u64,
+) {
+  let (sets, open_streams_per_set) = client.ssts.decision_snapshot().await;
   if sets.is_empty() {
     return;
   }
 
-  let mut by_algorithm: HashMap<u64, Vec<SetSnapshot>> = HashMap::new();
-  for set in sets {
-    by_algorithm.entry(set.algorithm_id).or_default().push(set);
-  }
+  let bandwidth_estimate_kbps = client.connection.bandwidth_estimate_kbps();
+  let configured_cap_kbps = AppConfig::load().write_kbps_limit;
+  // Taken once and handed to every algorithm: they all decide at this moment,
+  // so they all see the same evidence.
+  let timeouts = std::mem::take(stream_timeouts);
 
   let mut decisions: HashMap<u64, Option<u64>> = HashMap::new();
-  for (algorithm_id, alg_sets) in &by_algorithm {
-    match algorithms.iter().find(|a| a.id() == *algorithm_id) {
-      Some(alg) => {
-        decisions.extend(alg.decide(client, group_id, alg_sets).await);
-      }
-      None => {
-        // Defensive: subscribe time already rejects unsupported algorithms.
-        warn!(
-          algorithm_id,
-          "SSTS: unsupported algorithm; forwarding nothing"
-        );
-        for set in alg_sets {
-          decisions.insert(set.id, None);
-        }
-      }
+  for algorithm in running.iter_mut() {
+    let algorithm_sets: Vec<SetSnapshot> = sets
+      .iter()
+      .filter(|set| set.algorithm_id == algorithm.id)
+      .cloned()
+      .collect();
+    if algorithm_sets.is_empty() {
+      continue;
     }
+
+    let input = AbrInput {
+      client_id: client.connection_id as u64,
+      group_id,
+      bandwidth_estimate_kbps,
+      configured_cap_kbps,
+      sets: &algorithm_sets,
+      open_streams_per_set: &open_streams_per_set,
+      stream_timeouts_since_last_decision: timeouts,
+    };
+    decisions.extend(validate(
+      algorithm.name,
+      algorithm.algorithm.decide(&input),
+      &algorithm_sets,
+    ));
+  }
+
+  // A set no running algorithm owns gets an explicit "forward nothing".
+  // Leaving it out of the map would stall the gate on that group instead.
+  let unowned: Vec<&SetSnapshot> = sets
+    .iter()
+    .filter(|set| !decisions.contains_key(&set.id))
+    .collect();
+  for set in unowned {
+    warn!(
+      algorithm_id = set.algorithm_id,
+      set_id = set.id,
+      "SSTS: no running algorithm owns this set; forwarding nothing"
+    );
+    decisions.insert(set.id, None);
   }
 
   let changed = {
@@ -142,35 +191,64 @@ async fn decide(client: &Arc<MOQTClient>, algorithms: &[Arc<dyn AbrAlgorithm>], 
     let changed = group_decisions.get(&group_id) != Some(&decisions);
     if changed {
       group_decisions.insert(group_id, decisions.clone());
-      group_decisions.retain(|&k, _| k >= group_id.saturating_sub(DECISION_WINDOW));
+      group_decisions.retain(|&group, _| group >= largest_group.saturating_sub(DECISION_WINDOW));
     }
     changed
   };
 
   if changed {
-    info!(
-      group_id,
-      selections = %format_selections(&decisions),
-      "SSTS: bandwidth allocation"
-    );
     client.ssts.decision_notify.notify_waiters();
   }
 }
 
-fn format_selections(decisions: &HashMap<u64, Option<u64>>) -> String {
-  let mut pairs: Vec<(&u64, &Option<u64>)> = decisions.iter().collect();
-  pairs.sort();
-  pairs
-    .iter()
-    .map(|(set, track)| {
-      format!(
-        "set {} -> {}",
-        set,
-        track
-          .map(|t| format!("{t}"))
-          .unwrap_or_else(|| "none".to_string())
-      )
-    })
-    .collect::<Vec<_>>()
-    .join(", ")
+/// Check an algorithm's answer against the sets it was shown, so a buggy or
+/// hostile algorithm degrades visibly instead of silently blackholing a track.
+///
+/// Every set in `sets` gets an entry in the result: the gate waits for a
+/// decision per set, so an omitted one would block that group forever.
+fn validate(algorithm: &str, selection: Selection, sets: &[SetSnapshot]) -> Selection {
+  let mut validated = Selection::with_capacity(sets.len());
+
+  for set in sets {
+    match selection.get(&set.id) {
+      Some(Some(track_id)) if set.has_track(*track_id) => {
+        validated.insert(set.id, Some(*track_id));
+      }
+      Some(Some(track_id)) => {
+        warn!(
+          algorithm,
+          set_id = set.id,
+          relay_track_id = track_id,
+          "SSTS: algorithm selected a track that is not a member of the set; forwarding nothing"
+        );
+        validated.insert(set.id, None);
+      }
+      Some(None) => {
+        validated.insert(set.id, None);
+      }
+      None => {
+        warn!(
+          algorithm,
+          set_id = set.id,
+          "SSTS: algorithm returned no decision for a set; forwarding nothing"
+        );
+        validated.insert(set.id, None);
+      }
+    }
+  }
+
+  let invented: Vec<u64> = selection
+    .keys()
+    .filter(|set_id| !sets.iter().any(|set| set.id == **set_id))
+    .copied()
+    .collect();
+  if !invented.is_empty() {
+    warn!(
+      algorithm,
+      ?invented,
+      "SSTS: algorithm returned sets it was not given; ignored"
+    );
+  }
+
+  validated
 }

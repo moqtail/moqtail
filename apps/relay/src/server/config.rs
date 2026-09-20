@@ -263,12 +263,13 @@ impl AppConfig {
       // When the feature is off the advertised list stays empty, so a client can
       // never negotiate SSTS on this relay however much it wants it.
       ssts_algorithms: if cli.enable_ssts {
+        // The registry, not a list kept here, decides which ids this relay runs.
+        let supported = moqtail_ssts::registry::registry().ids();
         let configured = if cli.ssts_algorithms.is_empty() {
-          super::abr::SUPPORTED_SSTS_ALGORITHMS.to_vec()
+          supported.clone()
         } else {
           cli.ssts_algorithms.clone()
         };
-        let supported = super::abr::SUPPORTED_SSTS_ALGORITHMS;
         for id in configured.iter().filter(|id| !supported.contains(id)) {
           warn!(
             "SSTS: configured algorithm {id} is not implemented by this relay; not advertising it"

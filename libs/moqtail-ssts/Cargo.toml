@@ -1,0 +1,13 @@
+[package]
+name = "moqtail-ssts"
+description = "Sender-side track switching for MoQ: the bandwidth allocation contract and the algorithms that ship with it."
+keywords = ["moq", "abr", "bandwidth", "streaming"]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+# TODO: Enable doctest
+[lib]
+doctest = false
+
+[dependencies]

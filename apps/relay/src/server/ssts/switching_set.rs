@@ -22,8 +22,28 @@
 //! received message wins.
 
 use moqtail::model::data::full_track_name::FullTrackName;
+use moqtail_ssts::SetSnapshot;
 use std::collections::HashMap;
 use std::fmt;
+
+/// The one place mechanism state becomes algorithm state: everything, and only
+/// everything, an algorithm is allowed to know about a set.
+impl From<&SwitchingSet> for SetSnapshot {
+  fn from(set: &SwitchingSet) -> Self {
+    Self {
+      id: set.id,
+      algorithm_id: set.algorithm_id,
+      rank: set.rank,
+      weight: set.weight,
+      active: set.is_active(),
+      members: set
+        .members
+        .iter()
+        .map(|m| (m.throughput_threshold_kbps, m.relay_track_id))
+        .collect(),
+    }
+  }
+}
 
 #[derive(Debug, Clone)]
 pub enum SwitchingSetError {

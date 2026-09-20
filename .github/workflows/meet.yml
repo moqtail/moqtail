@@ -3,7 +3,7 @@ name: Meet
 on:
   push:
     branches:
-      - draft-16
+      - main
     paths:
       - apps/meet/**
       - libs/moqtail-ts/**

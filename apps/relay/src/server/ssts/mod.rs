@@ -78,15 +78,18 @@ fn advertised_algorithms(setup: &Setup) -> Vec<u64> {
 
 impl SstsState {
   /// SSTS for one connection: what the client advertised, intersected with
-  /// what this relay actually runs (which is empty when the relay has the
-  /// feature off, even if the client asked for it).
-  pub fn new(client_setup: &Setup) -> Self {
+  /// what this relay runs (`relay_algorithms`, which is empty when the feature
+  /// is off, even if the client asked for it).
+  ///
+  /// The relay's list is a parameter rather than a config read, because this
+  /// intersection is the whole of the negotiation and has to be testable
+  /// without a process-wide configuration.
+  pub fn new(client_setup: &Setup, relay_algorithms: &[u64]) -> Self {
     let (abr_tx, abr_rx) = tokio::sync::mpsc::channel(100);
 
-    let config = crate::server::config::AppConfig::load();
     let negotiated_algorithms = advertised_algorithms(client_setup)
       .into_iter()
-      .filter(|id| config.ssts_algorithms.contains(id))
+      .filter(|id| relay_algorithms.contains(id))
       .collect();
 
     Self {
@@ -159,5 +162,105 @@ impl SstsState {
       .write()
       .await
       .note_stream_closed(relay_track_id);
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use moqtail::model::parameter::setup_option::SetupOption;
+
+  fn setup_advertising(algorithms: Option<&[u64]>) -> Setup {
+    let options: Vec<moqtail::model::common::pair::KeyValuePair> = match algorithms {
+      Some(ids) => vec![
+        SetupOption::new_ssts_algorithms(ids.to_vec())
+          .try_into()
+          .unwrap(),
+      ],
+      None => vec![],
+    };
+    Setup::new(options)
+  }
+
+  #[test]
+  fn negotiation_keeps_only_what_both_sides_offer() {
+    let private = moqtail_ssts::registry::PRIVATE_ALGORITHM_ID_BASE;
+    let client = setup_advertising(Some(&[0, private]));
+    let state = SstsState::new(&client, &[0]);
+    assert_eq!(state.negotiated_algorithms, vec![0]);
+    assert!(state.enabled());
+
+    // The other way round: a client that only offers the default, on a relay
+    // that also runs the experimental one, gets the default.
+    let client = setup_advertising(Some(&[0]));
+    let state = SstsState::new(&client, &[0, private]);
+    assert_eq!(state.negotiated_algorithms, vec![0]);
+  }
+
+  #[test]
+  fn a_client_that_offers_nothing_negotiates_nothing() {
+    // Both the empty list and the absent option mean the same thing to the
+    // protocol, and both have to leave SSTS off.
+    for setup in [setup_advertising(Some(&[])), setup_advertising(None)] {
+      let state = SstsState::new(&setup, &[0]);
+      assert!(state.negotiated_algorithms.is_empty());
+      assert!(!state.enabled());
+      assert!(state.validate_assignment(0).is_err());
+    }
+  }
+
+  #[test]
+  fn a_relay_with_the_feature_off_negotiates_nothing() {
+    // The client wanting it is not enough; that is what --enable-ssts is for.
+    let client = setup_advertising(Some(&[0]));
+    let state = SstsState::new(&client, &[]);
+    assert!(state.negotiated_algorithms.is_empty());
+    assert!(!state.enabled());
+  }
+
+  #[test]
+  fn validate_assignment_follows_the_negotiated_list() {
+    let private = moqtail_ssts::registry::PRIVATE_ALGORITHM_ID_BASE;
+    let client = setup_advertising(Some(&[0, private]));
+    let state = SstsState::new(&client, &[0]);
+
+    state.validate_assignment(0).unwrap();
+    // Advertised by the client but not run here: the relay must not take a
+    // switching set assignment for an algorithm it cannot evaluate.
+    let error = state.validate_assignment(private).unwrap_err();
+    assert!(error.contains("not negotiated"), "got {error}");
+  }
+
+  #[tokio::test]
+  async fn decision_snapshot_covers_every_set_with_its_stream_count() {
+    let client = setup_advertising(Some(&[0]));
+    let state = SstsState::new(&client, &[0]);
+
+    let (sets, streams) = state.decision_snapshot().await;
+    assert!(sets.is_empty() && streams.is_empty());
+
+    let track = moqtail::model::data::full_track_name::FullTrackName::new(
+      moqtail::model::common::tuple::Tuple::from_utf8_path("ns"),
+      moqtail::model::common::tuple::TupleField::from_utf8("t"),
+    )
+    .unwrap();
+    state
+      .switching_sets
+      .write()
+      .await
+      .assign(track, 42, 1, 7, 0, 1000, 5, 1, 0)
+      .unwrap();
+    state.on_stream_opened(42).await;
+
+    let (sets, streams) = state.decision_snapshot().await;
+    assert_eq!(sets.len(), 1);
+    assert_eq!(sets[0].id, 7);
+    assert_eq!(sets[0].members, vec![(1000, 42)]);
+    assert!(sets[0].active, "one member with activate = 1");
+    assert_eq!(streams.get(&7), Some(&1));
+
+    state.on_stream_closed(42).await;
+    let (_, streams) = state.decision_snapshot().await;
+    assert!(streams.is_empty(), "a drained set reports no streams");
   }
 }

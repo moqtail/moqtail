@@ -177,7 +177,10 @@ impl MOQTClient {
     };
 
     // SSTS for this connection.
-    let ssts = Arc::new(ssts::SstsState::new(client_setup.as_ref()));
+    let ssts = Arc::new(ssts::SstsState::new(
+      client_setup.as_ref(),
+      &crate::server::config::AppConfig::load().ssts_algorithms,
+    ));
 
     MOQTClient {
       connection_id,

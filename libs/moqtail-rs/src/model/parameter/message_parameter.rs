@@ -847,6 +847,84 @@ mod tests {
     assert_eq!(roundtrip(orig.clone()), orig);
   }
 
+  /// SWITCHING_SET_ASSIGNMENT comes from an unadopted draft, so nothing else in
+  /// the stack constrains its fields: a relay that accepted a weight outside
+  /// 1-10 would carry a set property that no allocation can honour.
+  #[test]
+  fn switching_set_assignment_weight_must_be_one_to_ten() {
+    for weight in [0u64, 11, 1000] {
+      let payload = assignment_payload(&[7, 0, 100, weight, 2, 0]);
+      let error = MessageParameter::deserialize(&payload)
+        .err()
+        .unwrap_or_else(|| panic!("weight {weight} must be rejected"));
+      assert!(
+        error.to_string().contains("SET THROUGHPUT WEIGHT"),
+        "the rejection should say which field was wrong, got {error}"
+      );
+    }
+    // The ends of the range are inclusive.
+    for weight in [1u64, 10] {
+      let payload = assignment_payload(&[7, 0, 100, weight, 2, 0]);
+      MessageParameter::deserialize(&payload).unwrap_or_else(|e| panic!("weight {weight}: {e}"));
+    }
+  }
+
+  /// SET RANK is optional on the wire; a peer that leaves it out means the
+  /// highest priority tier, and must not be treated as a protocol error.
+  #[test]
+  fn switching_set_assignment_rank_defaults_when_omitted() {
+    let payload = assignment_payload(&[7, 0, 100, 5, 2]);
+    assert_eq!(
+      MessageParameter::deserialize(&payload).unwrap(),
+      MessageParameter::new_switching_set_assignment(7, 0, 100, 5, 2, 0)
+    );
+  }
+
+  #[test]
+  fn switching_set_assignment_rejects_trailing_bytes() {
+    // A parameter longer than its fields means the peer and the relay
+    // disagree about the format; guessing would silently mis-assign a set.
+    let payload = assignment_payload(&[7, 0, 100, 5, 2, 1, 0xAA]);
+    let error = MessageParameter::deserialize(&payload).unwrap_err();
+    assert!(error.to_string().contains("Excess bytes"), "got {error}");
+  }
+
+  #[test]
+  fn switching_set_assignment_only_appears_where_the_draft_allows_it() {
+    let param = MessageParameter::new_switching_set_assignment(7, 0, 100, 5, 2, 0);
+    for msg_type in [
+      ControlMessageType::Subscribe,
+      ControlMessageType::RequestUpdate,
+      ControlMessageType::PublishOk,
+      ControlMessageType::RequestOk,
+    ] {
+      assert!(param.is_valid_for(msg_type), "{msg_type:?} allows it");
+    }
+    for msg_type in [
+      ControlMessageType::Publish,
+      ControlMessageType::PublishDone,
+      ControlMessageType::SubscribeOk,
+      ControlMessageType::GoAway,
+    ] {
+      assert!(!param.is_valid_for(msg_type), "{msg_type:?} must not");
+    }
+  }
+
+  /// Build a parameter's KeyValuePair straight from bytes, so a test can put a
+  /// field sequence on the wire that this crate's own serializer would never
+  /// produce.
+  fn assignment_payload(fields: &[u64]) -> KeyValuePair {
+    let mut payload = BytesMut::new();
+    for field in fields {
+      payload.put_vi(*field).unwrap();
+    }
+    KeyValuePair::try_new_bytes(
+      MessageParameterType::SwitchingSetAssignment as u64,
+      payload.freeze(),
+    )
+    .unwrap()
+  }
+
   #[test]
   fn test_roundtrip_authorization_token() {
     let token = AuthorizationToken::new_use_alias(42);

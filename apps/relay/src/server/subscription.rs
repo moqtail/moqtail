@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::server::client::AbrMessage;
 use crate::server::client::MOQTClient;
 use crate::server::client::switch_context::SwitchStatus;
 use crate::server::config::AppConfig;
 use crate::server::object_logger::ObjectLogger;
+use crate::server::ssts::AbrMessage;
 use crate::server::stream_id::StreamId;
 use crate::server::track::ActiveSubgroupHeaderMap;
 use crate::server::track::TrackEvent;
@@ -990,7 +990,7 @@ impl Subscription {
         // gate is a plain early-out.
         if self.subscriber.ssts_enabled() {
           let my_set_id = {
-            let manager = self.subscriber.switching_sets.read().await;
+            let manager = self.subscriber.ssts.switching_sets.read().await;
             manager
               .get_set_for_track(&self.full_track_name)
               .map(|s| s.id)
@@ -999,7 +999,7 @@ impl Subscription {
           if let Some(set_id) = my_set_id {
             let group_id = object.location.group;
 
-            let notified = self.subscriber.decision_notify.notified();
+            let notified = self.subscriber.ssts.decision_notify.notified();
             tokio::pin!(notified);
 
             loop {
@@ -1011,7 +1011,7 @@ impl Subscription {
               notified.as_mut().enable();
 
               let decision = {
-                let decisions = self.subscriber.group_decisions.read().await;
+                let decisions = self.subscriber.ssts.group_decisions.read().await;
                 decisions
                   .get(&group_id)
                   .and_then(|m| m.get(&set_id))
@@ -1034,6 +1034,7 @@ impl Subscription {
                   // No decision yet for this group+set: wake the ABR and wait.
                   if let Err(e) = self
                     .subscriber
+                    .ssts
                     .abr_tx
                     .send(AbrMessage::NewGroup(group_id))
                     .await

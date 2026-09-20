@@ -123,7 +123,7 @@ impl AbrAlgorithm for BackpressureAlgorithm {
       // Depth: open forwarding streams of this algorithm's active sets,
       // plus streams that timed out since the last decision.
       let live_depth: u64 = {
-        let counters = client.active_streams_per_set.read().await;
+        let counters = client.ssts.open_streams_per_set.read().await;
         sets
           .iter()
           .filter(|s| s.active)

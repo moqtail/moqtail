@@ -212,12 +212,13 @@ pub struct Track {
 // its lifetime should be same as the server's lifetime
 impl Track {
   /// SSTS: remove this track from the switching sets of all its subscribers
-  /// (decrementing `activate`, deleting emptied sets).
+  /// (deleting emptied sets).
   pub async fn remove_from_subscriber_switching_sets(&self) {
     let subscriptions = self.subscription_manager.get_all_subscriptions().await;
     for sub in &subscriptions {
       let subscriber = sub.read().await.subscriber().clone();
       subscriber
+        .ssts
         .switching_sets
         .write()
         .await

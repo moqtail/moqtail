@@ -732,7 +732,7 @@ async fn register_ssts_assignment_from_publish_ok(
   {
     // The same validation as the SUBSCRIBE path; a PUBLISH_OK cannot be
     // rejected, so an invalid assignment is ignored instead.
-    if let Err(e) = crate::server::abr::validate_assignment(&subscriber, *algorithm_id) {
+    if let Err(e) = subscriber.ssts.validate_assignment(*algorithm_id) {
       warn!(
         "Ignoring SWITCHING_SET_ASSIGNMENT in PUBLISH_OK from {}: {}",
         subscriber.connection_id, e
@@ -741,7 +741,7 @@ async fn register_ssts_assignment_from_publish_ok(
     }
 
     {
-      let mut manager = subscriber.switching_sets.write().await;
+      let mut manager = subscriber.ssts.switching_sets.write().await;
       if let Err(e) = manager.assign(
         full_track_name.clone(),
         relay_track_id,

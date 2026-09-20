@@ -518,7 +518,7 @@ async fn handle_subscribe_message(
     // while grabbing the other would deadlock.
     let relay_track_id = track_arc.read().await.relay_track_id;
 
-    if let Err(e) = crate::server::abr::validate_assignment(&client, *algorithm_id) {
+    if let Err(e) = client.ssts.validate_assignment(*algorithm_id) {
       warn!("Rejecting SUBSCRIBE from {}: {}", context.connection_id, e);
       reject_subscription(&track_arc, client.connection_id, is_switch).await;
       let err = RequestError::new(
@@ -531,7 +531,7 @@ async fn handle_subscribe_message(
     }
 
     {
-      let mut manager = client.switching_sets.write().await;
+      let mut manager = client.ssts.switching_sets.write().await;
       if let Err(e) = manager.assign(
         full_track_name.clone(),
         relay_track_id,
@@ -939,7 +939,7 @@ pub(crate) async fn cancel_subscription(
 
   // Sender-side track switching: remove the track from its switching set.
   {
-    let mut manager = client.switching_sets.write().await;
+    let mut manager = client.ssts.switching_sets.write().await;
     manager.remove(&full_track_name);
   }
 
@@ -1034,7 +1034,7 @@ pub async fn handle_request_update(
             ..
           } = p
         {
-          let mut manager = client.switching_sets.write().await;
+          let mut manager = client.ssts.switching_sets.write().await;
           let _ = manager.update_assignment(
             &track_name,
             Some(*set_throughput_weight),

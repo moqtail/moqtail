@@ -15,13 +15,14 @@
 mod cli;
 mod connection;
 mod fetcher;
+mod prefix_subscriber;
 mod publisher;
 mod stats;
 mod subscriber;
 mod utils;
 
 use clap::Parser;
-use cli::{Cli, Command};
+use cli::{Cli, Command, PrefixKind};
 use connection::MoqConnection;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
@@ -96,8 +97,17 @@ async fn main() -> Result<(), anyhow::Error> {
       };
       subscriber::run(moq_conn, config).await
     }
-    Command::SubscribeTracks => {
-      subscriber::run_subscribe_tracks(moq_conn, cli.namespace, cli.duration).await
+    Command::SubscribeNamespace | Command::SubscribeTracks => {
+      let config = prefix_subscriber::PrefixSubscribeConfig {
+        namespace: cli.namespace,
+        duration: cli.duration,
+        kind: match cli.command {
+          Command::SubscribeNamespace => PrefixKind::Namespace,
+          _ => PrefixKind::Tracks,
+        },
+        overlap: cli.overlap,
+      };
+      prefix_subscriber::run(moq_conn, config).await
     }
     Command::Fetch => {
       let config = fetcher::FetchConfig {

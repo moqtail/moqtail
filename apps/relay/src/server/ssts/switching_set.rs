@@ -73,9 +73,9 @@ pub struct SwitchingSetMember {
   /// Minimum throughput (kbps) required to select this track. Property of
   /// the subscription.
   pub throughput_threshold_kbps: u64,
-  /// Bookkeeping: the request id that established this track's subscription
-  /// (SUBSCRIBE request id, or the PUBLISH request id for pushed tracks).
-  #[allow(dead_code)]
+  /// The request that established this track's subscription (SUBSCRIBE request
+  /// id, or the PUBLISH request id for pushed tracks). Kept so a later
+  /// SWITCHING_SET_ASSIGNMENT that contradicts it can name who set the value.
   pub request_id: u64,
 }
 
@@ -101,12 +101,6 @@ impl SwitchingSet {
   /// Whether the allocation runs for this set: enabled and enough tracks.
   pub fn is_active(&self) -> bool {
     self.activate > 0 && self.members.len() as u64 >= self.activate
-  }
-
-  /// The highest-throughput track in the set, if any.
-  #[allow(dead_code)]
-  pub fn top_member(&self) -> Option<&SwitchingSetMember> {
-    self.members.last()
   }
 }
 
@@ -260,16 +254,26 @@ impl SwitchingSetManager {
     }
   }
 
-  /// Apply a SWITCHING_SET_ASSIGNMENT update (REQUEST_UPDATE) to the set the
-  /// track belongs to. Only the provided values override the set properties
-  /// (last write wins).
+  /// Apply a SWITCHING_SET_ASSIGNMENT that arrives as an update to an existing
+  /// subscription (REQUEST_UPDATE).
+  ///
+  /// `weight`, `activate` and `rank` are set properties and the most recently
+  /// received message wins. `throughput_threshold_kbps` belongs to the member,
+  /// so it moves that one track and re-sorts the ladder. `algorithm_id` cannot
+  /// be honoured: the sets already have decisions keyed to the algorithm that
+  /// was agreed when they were created, and re-keying them mid-flight would
+  /// leave those decisions referring to a different algorithm. It is reported
+  /// rather than dropped in silence, which is what the returned warnings are
+  /// for.
   pub fn update_assignment(
     &mut self,
     full_track_name: &FullTrackName,
+    algorithm_id: Option<u64>,
+    throughput_threshold_kbps: Option<u64>,
     weight: Option<u64>,
     activate: Option<u64>,
     rank: Option<u8>,
-  ) -> Result<(), SwitchingSetError> {
+  ) -> Result<Vec<String>, SwitchingSetError> {
     let set_id = self
       .track_to_set
       .get(full_track_name)
@@ -279,16 +283,46 @@ impl SwitchingSetManager {
     let Some(set) = self.sets.get_mut(&set_id) else {
       return Err(SwitchingSetError::TrackNotInSet);
     };
-    if let Some(w) = weight {
-      set.weight = w;
+
+    let mut warnings = Vec::new();
+    if let Some(algorithm_id) = algorithm_id
+      && algorithm_id != set.algorithm_id
+    {
+      let established_by = set
+        .members
+        .iter()
+        .find(|m| m.full_track_name == *full_track_name)
+        .map(|m| m.request_id);
+      warnings.push(format!(
+        "switching set {} runs algorithm {}; the update asking for {algorithm_id} was ignored{}",
+        set.id,
+        set.algorithm_id,
+        match established_by {
+          Some(request_id) => format!(" (set by request {request_id})"),
+          None => String::new(),
+        }
+      ));
     }
-    if let Some(a) = activate {
-      set.activate = a;
+    if let Some(weight) = weight {
+      set.weight = weight;
     }
-    if let Some(r) = rank {
-      set.rank = r;
+    if let Some(activate) = activate {
+      set.activate = activate;
     }
-    Ok(())
+    if let Some(rank) = rank {
+      set.rank = rank;
+    }
+    if let Some(threshold) = throughput_threshold_kbps
+      && let Some(member) = set
+        .members
+        .iter_mut()
+        .find(|m| m.full_track_name == *full_track_name)
+      && member.throughput_threshold_kbps != threshold
+    {
+      member.throughput_threshold_kbps = threshold;
+      set.members.sort_by_key(|m| m.throughput_threshold_kbps);
+    }
+    Ok(warnings)
   }
 
   pub fn get_set_for_track(&self, full_track_name: &FullTrackName) -> Option<&SwitchingSet> {
@@ -392,9 +426,13 @@ mod tests {
     let track = make_track("ns", "t");
     assign(&mut manager, &track, 1, 3, 100);
 
-    manager
-      .update_assignment(&track, Some(9), Some(0), Some(4))
+    let warnings = manager
+      .update_assignment(&track, Some(0), None, Some(9), Some(0), Some(4))
       .unwrap();
+    assert!(
+      warnings.is_empty(),
+      "an update of the set's own properties is not a warning: {warnings:?}"
+    );
     let set = manager.get_set_for_track(&track).unwrap();
     assert_eq!(set.weight, 9);
     assert_eq!(set.activate, 0);
@@ -404,7 +442,7 @@ mod tests {
 
     // None fields keep the previous values.
     manager
-      .update_assignment(&track, None, None, Some(1))
+      .update_assignment(&track, None, None, None, None, Some(1))
       .unwrap();
     let set = manager.get_set_for_track(&track).unwrap();
     assert_eq!(set.weight, 9);
@@ -428,9 +466,72 @@ mod tests {
     let mut manager = SwitchingSetManager::new();
     let track = make_track("ns", "t");
     assert!(matches!(
-      manager.update_assignment(&track, Some(1), None, None),
+      manager.update_assignment(&track, None, None, None, None, None),
       Err(SwitchingSetError::TrackNotInSet)
     ));
+  }
+
+  #[test]
+  fn test_update_assignment_moves_the_member_in_the_ladder() {
+    // The throughput threshold is a member property, so an update to it moves
+    // that track and re-sorts the ladder the algorithms read.
+    let mut manager = SwitchingSetManager::new();
+    let low = make_track("ns", "low");
+    let high = make_track("ns", "high");
+    assign(&mut manager, &low, 1, 3, 500);
+    assign(&mut manager, &high, 2, 3, 2000);
+    assert_eq!(
+      manager
+        .get_set_for_track(&low)
+        .unwrap()
+        .members
+        .iter()
+        .map(|m| m.relay_track_id)
+        .collect::<Vec<_>>(),
+      vec![1, 2]
+    );
+
+    manager
+      .update_assignment(&low, None, Some(3000), None, None, None)
+      .unwrap();
+    assert_eq!(
+      manager
+        .get_set_for_track(&low)
+        .unwrap()
+        .members
+        .iter()
+        .map(|m| m.relay_track_id)
+        .collect::<Vec<_>>(),
+      vec![2, 1],
+      "the track that asked for more bandwidth is now the top of the ladder"
+    );
+  }
+
+  #[test]
+  fn test_update_assignment_warns_about_an_algorithm_change() {
+    // Switching a live set to another algorithm would leave the decisions
+    // already made for it pointing at the old one, so the request is ignored
+    // and reported rather than silently dropped.
+    let mut manager = SwitchingSetManager::new();
+    let track = make_track("ns", "t");
+    assign(&mut manager, &track, 1, 3, 500);
+
+    let warnings = manager
+      .update_assignment(&track, Some(9), None, None, None, None)
+      .unwrap();
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0].contains("algorithm 0"));
+    assert!(warnings[0].contains("asking for 9"));
+    // The set keeps the algorithm it was built with.
+    assert_eq!(manager.get_set_for_track(&track).unwrap().algorithm_id, 0);
+
+    // Asking for the same algorithm is not a warning.
+    assert!(
+      manager
+        .update_assignment(&track, Some(0), None, None, None, None)
+        .unwrap()
+        .is_empty()
+    );
   }
   #[test]
   fn test_reassigned_track_does_not_leave_a_stale_mapping() {

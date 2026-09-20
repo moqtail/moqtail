@@ -1095,8 +1095,6 @@ impl Session {
     // that never opts in never puts them on the wire.
     let mut setup_options = vec![moqt_implementation_param];
     if context.server_config.enable_ssts {
-      // Advertising an empty list is the protocol's way of saying "no SSTS":
-      // it can happen when every configured algorithm id was rejected above.
       setup_options.push(
         moqtail::model::parameter::setup_option::SetupOption::new_ssts_algorithms(
           context.server_config.ssts_algorithms.clone(),

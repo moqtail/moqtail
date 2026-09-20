@@ -1028,6 +1028,8 @@ pub async fn handle_request_update(
           .iter()
           .find(|p| matches!(p, MessageParameter::SwitchingSetAssignment { .. }))
           && let MessageParameter::SwitchingSetAssignment {
+            algorithm_id,
+            throughput_threshold_kbps,
             set_throughput_weight,
             activate_switching,
             set_rank,
@@ -1035,12 +1037,23 @@ pub async fn handle_request_update(
           } = p
         {
           let mut manager = client.ssts.switching_sets.write().await;
-          let _ = manager.update_assignment(
+          match manager.update_assignment(
             &track_name,
+            Some(*algorithm_id),
+            Some(*throughput_threshold_kbps),
             Some(*set_throughput_weight),
             Some(*activate_switching),
             Some(*set_rank),
-          );
+          ) {
+            Ok(warnings) => {
+              for warning in warnings {
+                warn!("SSTS REQUEST_UPDATE for {track_name}: {warning}");
+              }
+            }
+            // The rest of the update still applies; only the switching set
+            // part could not be, and it is the track that is not in a set.
+            Err(e) => warn!("SSTS REQUEST_UPDATE for {track_name}: {e}"),
+          }
         }
 
         track_name

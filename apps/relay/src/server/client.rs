@@ -31,6 +31,7 @@ use moqtail::{
     common::tuple::Tuple,
     control::{control_message::ControlMessage, setup::Setup},
     data::full_track_name::FullTrackName,
+    error::StreamResetCode,
   },
   transport::{
     connection::{TransportConnection, TransportKind, TransportSendStream, TransportWriteError},
@@ -463,7 +464,10 @@ impl MOQTClient {
                 "Stream timeout on close — resetting"
             );
             self.ssts.on_stream_closed(stream_id.relay_track_id).await;
-            let _ = stream.reset(2);
+            // The stream was discarded because it did not finish in time,
+            // which is what this code is for: the peer must be able to tell a
+            // late delivery apart from a cancelled or failed one.
+            let _ = stream.reset(StreamResetCode::DeliveryTimeout.to_u64());
             let _ = self.ssts.abr_tx.try_send(ssts::AbrMessage::StreamTimeout {
                 group_id,
             });

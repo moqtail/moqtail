@@ -27,7 +27,7 @@ export const handlerPublishDone: RequestStreamMessageHandler<PublishDone> = asyn
   openingRequestId,
 ) => {
   if (client.onPeerPublishDone) {
-    client.onPeerPublishDone(msg)
+    client.onPeerPublishDone(msg, openingRequestId)
   }
   //TODO: Check for all kinds of subscriptions, not jus tthe ones initiated with subscribe messages
   const request = client.requests.get(openingRequestId)

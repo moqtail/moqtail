@@ -324,8 +324,13 @@ export class MOQtailClient {
   /** Fired when an inbound PUBLISH control message is received. */
   onPeerPublish?: (msg: Publish, stream: ReadableStream<MoqtObject>) => void
 
-  /** Fired when an inbound PUBLISH_DONE control message is received. */
-  onPeerPublishDone?: (msg: PublishDone) => void
+  /**
+   * Fired when an inbound PUBLISH_DONE control message is received. The message names
+   * no request of its own, so `requestId` is the request the stream it arrived on
+   * opened: for a track the peer pushed, the `requestId` of the {@link Publish} handed
+   * to {@link MOQtailClient.onPeerPublish}. It is what says which track just ended.
+   */
+  onPeerPublishDone?: (msg: PublishDone, requestId: bigint) => void
 
   /**
    * Fired when the peer moves the Forward State of a track this side is publishing,

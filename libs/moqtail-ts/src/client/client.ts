@@ -327,6 +327,17 @@ export class MOQtailClient {
   /** Fired when an inbound PUBLISH_DONE control message is received. */
   onPeerPublishDone?: (msg: PublishDone) => void
 
+  /**
+   * Fired when the peer moves the Forward State of a track this side is publishing,
+   * either in its PUBLISH_OK or in a later REQUEST_UPDATE. `requestId` is the one
+   * {@link MOQtailClient.publish} returned.
+   *
+   * A publication that declared FORWARD=0 sends nothing until this reports `true`, so
+   * this is where the work behind the track starts and stops -- leaving a camera and
+   * an encoder running for a track nobody is taking costs the same as publishing it.
+   */
+  onForwardStateChange?: (requestId: bigint, forward: boolean) => void
+
   /** Fired when an inbound SUBSCRIBE_NAMESPACE control message is received. */
   onPeerSubscribeNamespace?: (msg: SubscribeNamespace) => void
 
@@ -2685,6 +2696,44 @@ if (import.meta.vitest) {
       expect(transport.biStreams).toHaveLength(7)
       expect(transport.sentChunks).toHaveLength(1)
       expect(ControlMessage.deserialize(new FrozenByteBuffer(transport.sentChunks[0]!))).toBeInstanceOf(Setup)
+
+      await client.disconnect()
+    })
+
+    it('answers a REQUEST_UPDATE on its own PUBLISH stream and keeps the publication', async () => {
+      const { client, transport } = await connected()
+      const moves: { requestId: bigint; forward: boolean }[] = []
+      client.onForwardStateChange = (requestId, forward) => moves.push({ requestId, forward })
+
+      client.addOrUpdateTrack({
+        fullTrackName: ftn,
+        trackSource: { live: new LiveTrackSource(new ReadableStream<MoqtObject>()) },
+        publisherPriority: 0,
+        trackAlias: 9n,
+      })
+
+      // FORWARD=0: nothing is sent until the peer has someone to send it to.
+      const publishing = client.publish(ftn, false, 9n)
+      const publishStream = await openedStream(transport, 0)
+      expect(publishStream.messages[0]).toBeInstanceOf(Publish)
+      publishStream.respond(new RequestOk())
+      const { requestId } = (await publishing) as { requestId: bigint }
+
+      const publication = client.publications.get(requestId)
+      expect(publication).toBeInstanceOf(PublishPublication)
+      expect((publication as PublishPublication).forwarding).toBe(false)
+
+      // A subscriber turned up, so the peer raises the Forward State on the request
+      // stream the PUBLISH opened.
+      publishStream.respond(new RequestUpdate(1n, [new Forward(true)]))
+
+      await vi.waitFor(() => expect(publishStream.messages).toHaveLength(2))
+      expect(publishStream.messages[1]).toBeInstanceOf(RequestOk)
+      // The update is not a reason to end the publication: it is still the one
+      // registered, and it is sending now.
+      expect(client.publications.get(requestId)).toBe(publication)
+      expect((publication as PublishPublication).forwarding).toBe(true)
+      expect(moves).toEqual([{ requestId, forward: true }])
 
       await client.disconnect()
     })

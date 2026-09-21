@@ -22,6 +22,7 @@
 pub mod backpressure;
 pub mod bnb;
 pub mod default;
+pub mod eeasd;
 pub mod enhanced_bp;
 
 use crate::{AbrInput, Selection};

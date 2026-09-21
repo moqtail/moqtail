@@ -638,6 +638,29 @@ mod tests {
     );
   }
 
+  /// What the experiments actually run: every controller this implementation
+  /// has, on one command line, mixing decimal and hex because the standard id is
+  /// written one way and the private ones the other.
+  #[test]
+  fn the_whole_experimental_set_starts_together() {
+    let base = moqtail_ssts::registry::PRIVATE_ALGORITHM_ID_BASE;
+    let requested = format!(
+      "0,{:#x},{:#x},{:#x},{:#x}",
+      base,
+      base + 1,
+      base + 2,
+      base + 3
+    );
+    let running = ssts_algorithms_for(&["--enable-ssts", "--ssts-algorithms", &requested]);
+    let mut expected = vec![0, base, base + 1, base + 2, base + 3];
+    expected.sort_unstable();
+    expected.dedup();
+    assert_eq!(
+      running, expected,
+      "every registered controller is startable at once, and each is advertised"
+    );
+  }
+
   #[test]
   fn an_unknown_algorithm_id_is_rejected_before_startup() {
     // An algorithm this relay cannot run must not be advertised: a publisher

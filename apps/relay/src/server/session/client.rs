@@ -651,9 +651,14 @@ impl MOQTClient {
             if stream.reset(code).is_ok() {
               self.record_stream_end(quic_stream_id, true, StreamEnd::Reset(code));
             }
-            let _ = self.ssts.abr_tx.try_send(ssts::AbrMessage::StreamTimeout {
-                group_id,
-            });
+            let set_id = self
+              .ssts
+              .set_id_of_relay_track(stream_key.stream_id.relay_track_id)
+              .await;
+            let _ = self
+              .ssts
+              .abr_tx
+              .try_send(ssts::AbrMessage::StreamTimeout { set_id, group_id });
             Ok(true)
         }
       }

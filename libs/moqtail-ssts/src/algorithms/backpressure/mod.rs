@@ -32,7 +32,7 @@
 
 pub(crate) mod state;
 
-use crate::{AbrAlgorithm, AbrAlgorithmFactory, AbrInput, Selection};
+use crate::{AbrAlgorithm, AbrAlgorithmFactory, AbrInput, Selection, Tuning};
 
 #[cfg(test)]
 mod tests;
@@ -57,7 +57,7 @@ impl AbrAlgorithmFactory for BackpressureAlgorithmFactory {
     "backpressure"
   }
 
-  fn create(&self) -> Box<dyn AbrAlgorithm> {
+  fn create(&self, _tuning: &Tuning) -> Box<dyn AbrAlgorithm> {
     Box::new(BackpressureAlgorithm::new())
   }
 }
@@ -87,7 +87,7 @@ impl AbrAlgorithm for BackpressureAlgorithm {
   fn decide(&mut self, input: &AbrInput) -> Selection {
     let observation = Observation::new(
       input.active_stream_depth(),
-      input.stream_timeouts_since_last_decision,
+      input.total_stream_timeouts_since_last_decision(),
     );
 
     match self.state.observe(observation) {

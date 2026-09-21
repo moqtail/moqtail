@@ -15,6 +15,8 @@
 //! Tests for the default allocation: the budget merge, and how a budget is
 //! split across ranks, weights and saturation.
 
+use std::collections::HashMap;
+
 use super::*;
 use crate::{DecisionReason, SetSnapshot, StreamSnapshot};
 
@@ -35,6 +37,7 @@ fn set(id: u64, rank: u8, weight: u64, active: bool, members: &[(u64, u64)]) -> 
 #[test]
 fn budget_is_the_stricter_of_estimate_and_cap() {
   let no_streams: Vec<StreamSnapshot> = Vec::new();
+  let no_timeouts = HashMap::new();
   let input = |estimate, cap| AbrInput {
     client_id: 0,
     group_id: 0,
@@ -44,7 +47,7 @@ fn budget_is_the_stricter_of_estimate_and_cap() {
     now_ms: 0,
     sets: &[],
     streams: &no_streams,
-    stream_timeouts_since_last_decision: 0,
+    stream_timeouts_since_last_decision: &no_timeouts,
   };
 
   assert_eq!(input(1000, 500).budget_kbps(), 500);

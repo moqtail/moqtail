@@ -71,7 +71,12 @@ pub(crate) enum AbrMessage {
   NewGroup(u64),
   /// A forwarding stream was reset for delivery timeout: congestion evidence
   /// for the next allocation.
-  StreamTimeout { group_id: u64 },
+  ///
+  /// `set_id` is the set that lost the stream, or `None` when the track belongs
+  /// to no set. The evidence is keyed by set because a timeout on one ladder is
+  /// not evidence about another; a timeout with no set has no switching
+  /// decision to inform and is dropped.
+  StreamTimeout { set_id: Option<u64>, group_id: u64 },
 }
 
 /// All the SSTS state a connection carries, behind one handle.
@@ -259,6 +264,13 @@ impl SstsState {
   /// it has somewhere to put late media; without that the operator's setting
   /// stays the answer, so turning the feature on cannot silently start
   /// discarding data for a subscriber that never asked for switching.
+  /// The switching set carrying this relay track, if any.
+  pub(crate) async fn set_id_of_relay_track(&self, relay_track_id: u64) -> Option<u64> {
+    let sets = self.switching_sets.read().await;
+    let set = sets.set_of_relay_track(relay_track_id)?;
+    Some(set.id)
+  }
+
   pub(crate) async fn negotiated_discard_timeout_ms(&self, relay_track_id: u64) -> Option<u64> {
     let sets = self.switching_sets.read().await;
     sets

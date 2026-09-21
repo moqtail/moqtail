@@ -16,6 +16,8 @@
 //! surprising on purpose: summed depth across sets, and the fact that a tier
 //! can be recovered as soon as the streams that caused the downshift are gone.
 
+use std::collections::HashMap;
+
 use crate::algorithms::backpressure::{BackpressureAlgorithm, BackpressureAlgorithmFactory};
 use crate::{
   AbrAlgorithm, AbrAlgorithmFactory, AbrInput, DecisionReason, SetSnapshot, StreamSnapshot,
@@ -39,6 +41,15 @@ fn set(id: u64, active: bool) -> SetSnapshot {
 /// A stream table with `count` live streams on each listed set, on distinct
 /// groups and at the set's lowest member, so they read as separate deliveries
 /// of one quality.
+/// The timeout evidence, all of it on set 1 (the tests use one set).
+fn timeout_evidence(count: u64) -> HashMap<u64, u64> {
+  if count == 0 {
+    HashMap::new()
+  } else {
+    [(1, count)].into_iter().collect()
+  }
+}
+
 fn streams(entries: &[(u64, u64)]) -> Vec<StreamSnapshot> {
   let mut table = Vec::new();
   for (set_id, count) in entries {
@@ -83,7 +94,7 @@ fn decide(
     now_ms: 0,
     sets,
     streams: open,
-    stream_timeouts_since_last_decision: timeouts,
+    stream_timeouts_since_last_decision: &timeout_evidence(timeouts),
   };
   algorithm.decide(&input)
 }
@@ -271,7 +282,7 @@ fn an_inactive_set_forwards_nothing() {
     now_ms: 0,
     sets: &sets,
     streams: &streams(&[(1, 4)]),
-    stream_timeouts_since_last_decision: 0,
+    stream_timeouts_since_last_decision: &HashMap::new(),
   };
   let selection = algorithm.decide(&input);
   assert_eq!(selection[&1], None);
@@ -345,8 +356,8 @@ fn instances_do_not_share_state() {
   // usable from a single-threaded decision loop without a lock.
   let sets = [set(1, true)];
   let factory = BackpressureAlgorithmFactory;
-  let mut first = factory.create();
-  let mut second = factory.create();
+  let mut first = factory.create(&crate::Tuning::empty());
+  let mut second = factory.create(&crate::Tuning::empty());
 
   let clear = streams(&[(1, 1)]);
   let input = AbrInput {
@@ -358,7 +369,7 @@ fn instances_do_not_share_state() {
     now_ms: 0,
     sets: &sets,
     streams: &clear,
-    stream_timeouts_since_last_decision: 0,
+    stream_timeouts_since_last_decision: &HashMap::new(),
   };
   for _ in 0..20 {
     first.decide(&input);

@@ -162,9 +162,17 @@ pub struct AbrInput<'a> {
   /// [`AbrInput`]. Empty on a connection that has forwarded nothing yet.
   pub streams: &'a [StreamSnapshot],
   /// Streams reset for delivery timeout since this instance's previous
-  /// decision. Congestion evidence: the transport dropped objects it had
-  /// already committed to, which is how an algorithm learns it overran.
-  pub stream_timeouts_since_last_decision: u64,
+  /// decision, per switching set. Congestion evidence: the transport dropped
+  /// objects it had already committed to, which is how an algorithm learns it
+  /// overran.
+  ///
+  /// Keyed by set because the evidence belongs to the set that lost the stream:
+  /// a timeout on a subscriber's audio ladder says nothing about whether its
+  /// video ladder should climb. A timeout on a stream whose track belongs to no
+  /// set is not reported, because there is no switching decision for it to be
+  /// evidence about. See [`AbrInput::stream_timeouts`] and
+  /// [`AbrInput::total_stream_timeouts_since_last_decision`].
+  pub stream_timeouts_since_last_decision: &'a HashMap<u64, u64>,
 }
 
 /// One live forwarding stream, as the host saw it open.
@@ -271,6 +279,22 @@ impl AbrInput<'_> {
     groups
   }
 
+  /// Streams reset for delivery timeout on one set since the previous decision.
+  pub fn stream_timeouts(&self, set_id: u64) -> u64 {
+    self
+      .stream_timeouts_since_last_decision
+      .get(&set_id)
+      .copied()
+      .unwrap_or(0)
+  }
+
+  /// Every timeout this connection has taken since the previous decision,
+  /// whichever set it landed on: the evidence for an algorithm that holds one
+  /// tier for the whole connection.
+  pub fn total_stream_timeouts_since_last_decision(&self) -> u64 {
+    self.stream_timeouts_since_last_decision.values().sum()
+  }
+
   /// The observed span of a set's groups in ms, or 0 until the host has seen
   /// two consecutive groups go by. A healthy group's stream lives about one
   /// group span, so an age beyond the span is the part that piled up rather
@@ -317,6 +341,72 @@ pub trait AbrAlgorithm: Send {
   fn decide(&mut self, input: &AbrInput) -> Selection;
 }
 
+/// The tuning values a host passes to the algorithms it runs.
+///
+/// A flat map of namespaced keys rather than a field per knob: the crate must
+/// not know which algorithms a given relay runs, and a `Tuning` with a field
+/// for each algorithm would put that knowledge back into the contract. A
+/// parameter is therefore named by the algorithm that reads it
+/// (`"bnb.safe_factor"`) and read with the algorithm's own default, so a relay
+/// that sets nothing gets the behaviour the algorithm was written with.
+///
+/// The host decides where the values come from — command line, environment,
+/// a config file — and an algorithm never goes looking for them itself. That
+/// is what keeps a decision a function of [`AbrInput`] plus the parameters it
+/// was built with, and lets a test construct any parameter set it wants.
+#[derive(Debug, Clone, Default)]
+pub struct Tuning {
+  values: HashMap<String, String>,
+}
+
+impl Tuning {
+  /// The defaults every algorithm was written with.
+  pub fn empty() -> Self {
+    Self::default()
+  }
+
+  /// From `key=value` strings, as a command line flag or an environment
+  /// variable delivers them. An entry without `=` is dropped: it is a
+  /// mistyped flag, and the host that parsed it is the right place to complain.
+  pub fn from_pairs(pairs: impl IntoIterator<Item = impl AsRef<str>>) -> Self {
+    let mut values = HashMap::new();
+    for pair in pairs {
+      let pair = pair.as_ref();
+      if let Some((key, value)) = pair.split_once('=') {
+        let key = key.trim();
+        if !key.is_empty() {
+          values.insert(key.to_string(), value.trim().to_string());
+        }
+      }
+    }
+    Self { values }
+  }
+
+  /// A value read as `f64`, or `default` when unset or unparsable.
+  pub fn f64(&self, key: &str, default: f64) -> f64 {
+    self
+      .values
+      .get(key)
+      .and_then(|value| value.parse().ok())
+      .unwrap_or(default)
+  }
+
+  /// A value read as `usize`, or `default` when unset or unparsable.
+  pub fn usize(&self, key: &str, default: usize) -> usize {
+    self
+      .values
+      .get(key)
+      .and_then(|value| value.parse().ok())
+      .unwrap_or(default)
+  }
+
+  /// Whether the host named this key at all, for an algorithm that wants to
+  /// report a knob it was handed but cannot use.
+  pub fn is_set(&self, key: &str) -> bool {
+    self.values.contains_key(key)
+  }
+}
+
 /// Creates the per-connection instances of one algorithm.
 ///
 /// The factory is the process-wide half (registered once, shared across
@@ -331,8 +421,9 @@ pub trait AbrAlgorithmFactory: Send + Sync {
   /// Name for logs and diagnostics.
   fn name(&self) -> &'static str;
 
-  /// A fresh instance with no history, for one connection.
-  fn create(&self) -> Box<dyn AbrAlgorithm>;
+  /// A fresh instance with no history, for one connection, tuned as the host
+  /// asked. An algorithm with no knobs ignores `tuning`.
+  fn create(&self, tuning: &Tuning) -> Box<dyn AbrAlgorithm>;
 }
 
 #[cfg(test)]
@@ -359,8 +450,41 @@ mod tests {
       now_ms: 1000,
       sets,
       streams,
-      stream_timeouts_since_last_decision: 0,
+      stream_timeouts_since_last_decision: no_timeouts(),
     }
+  }
+
+  #[test]
+  fn tuning_falls_back_to_the_algorithm_default() {
+    let tuning = Tuning::from_pairs([
+      "bnb.safe_factor=0.4",
+      "bnb.up_streak=7",
+      "bnb.down_streak=three",
+    ]);
+    assert_eq!(tuning.f64("bnb.safe_factor", 0.2), 0.4);
+    assert_eq!(tuning.usize("bnb.up_streak", 3), 7);
+    // Unset, and set-but-unparsable, both land on the value the algorithm was
+    // written with: a typo in a deployment must not silently become a
+    // different number than the one the algorithm was tested against.
+    assert_eq!(tuning.f64("bnb.danger_factor", 0.7), 0.7);
+    assert_eq!(tuning.usize("bnb.down_streak", 1), 1);
+    // Unparsable is still "set", which is what lets an algorithm report the
+    // knob it was handed and could not read.
+    assert!(tuning.is_set("bnb.down_streak"));
+    assert!(!tuning.is_set("bnb.danger_factor"));
+  }
+
+  #[test]
+  fn tuning_survives_a_malformed_entry_without_losing_the_others() {
+    let tuning = Tuning::from_pairs(["oops", " bnb.safe_factor = 0.5 ", "empty="]);
+    assert_eq!(tuning.f64("bnb.safe_factor", 0.2), 0.5);
+    assert_eq!(tuning.values.len(), 2, "the keyless entry is dropped");
+  }
+
+  /// An empty timeout map with a life long enough to hand to an `AbrInput`.
+  fn no_timeouts() -> &'static HashMap<u64, u64> {
+    static NONE: std::sync::OnceLock<HashMap<u64, u64>> = std::sync::OnceLock::new();
+    NONE.get_or_init(HashMap::new)
   }
 
   fn set(id: u64, group_span_ms: u64) -> SetSnapshot {

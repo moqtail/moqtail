@@ -250,6 +250,12 @@ pub struct AppConfig {
   #[default(vec![0])]
   #[validate(custom(function = "super::ssts::check_algorithm_ids"))]
   pub ssts_algorithms: Vec<u64>,
+  /// `key=value` tuning handed to the SSTS algorithms when their instances are
+  /// created, for example `bnb.safe_factor=0.3`. A key belongs to the algorithm
+  /// that reads it; the relay only carries the values, so an unknown key is
+  /// inert rather than a startup error.
+  #[default(vec![])]
+  pub ssts_algorithm_params: Vec<String>,
   /// How long an SSTS client's subgroup stream waits for a graceful finish
   /// before it is reset and its stream slot is freed again. Only applies to
   /// connections that negotiated SSTS; 0s always closes gracefully.

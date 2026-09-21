@@ -27,7 +27,7 @@ use std::time::Duration;
 
 use moqtail_ssts::registry::registry;
 use moqtail_ssts::{
-  AbrAlgorithm, AbrInput, DecisionReason, Selection, SetSnapshot, StreamSnapshot,
+  AbrAlgorithm, AbrInput, DecisionReason, Selection, SetSnapshot, StreamSnapshot, Tuning,
 };
 use tokio::select;
 use tracing::warn;
@@ -63,13 +63,17 @@ pub(crate) fn start(client: Arc<MOQTClient>) {
     };
 
     let client_id = client.connection_id as u64;
+    // The host's tuning, read once per connection: an algorithm is built with
+    // the values it will keep for its lifetime, and never goes looking for a
+    // value of its own while it decides.
+    let tuning = Tuning::from_pairs(&AppConfig::load().ssts_algorithm_params);
     let mut running: Vec<Running> = Vec::new();
     for id in &client.ssts.negotiated_algorithms {
       match registry().get(*id) {
         Some(factory) => running.push(Running {
           id: *id,
           name: factory.name(),
-          algorithm: factory.create(),
+          algorithm: factory.create(&tuning),
         }),
         None => warn!(
           client_id,
@@ -90,10 +94,12 @@ pub(crate) fn start(client: Arc<MOQTClient>) {
     // than against the group being decided, so an Object that arrives late on
     // an old group cannot prune the decisions of the live edge.
     let mut largest_group: u64 = 0;
-    // Streams reset for delivery timeout since the previous decision: the
-    // congestion evidence the algorithms ask for. It is read only by this
-    // connection's algorithms, so it lives here instead of in shared state.
-    let mut stream_timeouts: u64 = 0;
+    // Streams reset for delivery timeout since the previous decision, keyed by
+    // the set that lost them: the evidence belongs to the set whose delivery
+    // overran, and an algorithm that holds one tier for the connection adds the
+    // numbers up itself. Read only by this connection's algorithms, so it lives
+    // here instead of in shared state.
+    let mut stream_timeouts: HashMap<u64, u64> = HashMap::new();
 
     loop {
       select! {
@@ -118,9 +124,11 @@ pub(crate) fn start(client: Arc<MOQTClient>) {
               )
               .await;
             }
-            Some(AbrMessage::StreamTimeout { group_id }) => {
+            Some(AbrMessage::StreamTimeout { set_id, group_id }) => {
               largest_group = largest_group.max(group_id);
-              stream_timeouts += 1;
+              if let Some(set_id) = set_id {
+                *stream_timeouts.entry(set_id).or_default() += 1;
+              }
               if let Some(group_id) = last_group {
                 decide(
                   &mut running,
@@ -167,7 +175,7 @@ async fn decide(
   client: &Arc<MOQTClient>,
   group_id: u64,
   largest_group: u64,
-  stream_timeouts: &mut u64,
+  stream_timeouts: &mut HashMap<u64, u64>,
   reason: DecisionReason,
 ) {
   let now_ms = client.ssts.now_ms();
@@ -203,7 +211,7 @@ async fn decide(
       now_ms,
       sets: &algorithm_sets,
       streams: &streams,
-      stream_timeouts_since_last_decision: timeouts,
+      stream_timeouts_since_last_decision: &timeouts,
     };
     decisions.extend(validate(
       algorithm.name,

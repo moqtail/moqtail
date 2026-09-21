@@ -15,6 +15,8 @@
 //! Tests for the exploration phase: what makes it fast, what ends it, and the
 //! fact that it ends for good.
 
+use std::collections::HashMap;
+
 use crate::AbrAlgorithm;
 use crate::AbrInput;
 use crate::DecisionReason;
@@ -42,6 +44,15 @@ fn set(id: u64, active: bool) -> SetSnapshot {
     subscriber_buffer_ms: 0,
     algorithm_params: vec![],
     group_span_ms: 0,
+  }
+}
+
+/// The timeout evidence, all of it on set 1 (the tests use one set).
+fn timeout_evidence(count: u64) -> HashMap<u64, u64> {
+  if count == 0 {
+    HashMap::new()
+  } else {
+    [(1, count)].into_iter().collect()
   }
 }
 
@@ -80,7 +91,7 @@ fn group(
     now_ms: group_id * 1000,
     sets,
     streams: &live,
-    stream_timeouts_since_last_decision: timeouts,
+    stream_timeouts_since_last_decision: &timeout_evidence(timeouts),
   };
   algorithm.decide(&input)[&sets[0].id]
 }
@@ -245,7 +256,7 @@ fn one_index_serves_sets_of_different_heights() {
       now_ms: 0,
       sets: &sets,
       streams: &live,
-      stream_timeouts_since_last_decision: 0,
+      stream_timeouts_since_last_decision: &HashMap::new(),
     };
     let selection = algorithm.decide(&input);
     assert_eq!(

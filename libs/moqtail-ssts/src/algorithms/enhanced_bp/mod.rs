@@ -39,6 +39,7 @@ use crate::AbrAlgorithm;
 use crate::AbrAlgorithmFactory;
 use crate::AbrInput;
 use crate::Selection;
+use crate::Tuning;
 use crate::algorithms::backpressure::state::DOWNSHIFT_DEPTH;
 use crate::algorithms::backpressure::state::Event;
 use crate::algorithms::backpressure::state::Observation;
@@ -67,7 +68,7 @@ impl AbrAlgorithmFactory for EnhancedBackpressureAlgorithmFactory {
     "enhanced_bp"
   }
 
-  fn create(&self) -> Box<dyn AbrAlgorithm> {
+  fn create(&self, _tuning: &Tuning) -> Box<dyn AbrAlgorithm> {
     Box::new(EnhancedBackpressureAlgorithm::new())
   }
 }
@@ -105,7 +106,7 @@ impl AbrAlgorithm for EnhancedBackpressureAlgorithm {
   fn decide(&mut self, input: &AbrInput) -> Selection {
     let observation = Observation::new(
       input.active_stream_depth(),
-      input.stream_timeouts_since_last_decision,
+      input.total_stream_timeouts_since_last_decision(),
     );
 
     // Congestion ends the exploration whether or not the tier had anywhere to

@@ -23,7 +23,7 @@ use std::sync::{Arc, OnceLock};
 use crate::algorithms::backpressure::BackpressureAlgorithmFactory;
 use crate::algorithms::default::DefaultAlgorithmFactory;
 use crate::algorithms::enhanced_bp::EnhancedBackpressureAlgorithmFactory;
-use crate::{AbrAlgorithm, AbrAlgorithmFactory};
+use crate::{AbrAlgorithm, AbrAlgorithmFactory, Tuning};
 
 /// First algorithm id an implementation may use for its own experiments.
 ///
@@ -72,8 +72,8 @@ impl Registry {
   }
 
   /// A fresh, stateless-history instance of `id` for one connection.
-  pub fn create(&self, id: u64) -> Option<Box<dyn AbrAlgorithm>> {
-    self.get(id).map(|f| f.create())
+  pub fn create(&self, id: u64, tuning: &Tuning) -> Option<Box<dyn AbrAlgorithm>> {
+    self.get(id).map(|f| f.create(tuning))
   }
 }
 
@@ -112,7 +112,7 @@ mod tests {
   #[test]
   fn the_default_algorithm_is_always_available() {
     assert!(registry().get(0).is_some(), "algorithm 0 is mandatory");
-    assert!(registry().create(0).is_some());
+    assert!(registry().create(0, &Tuning::empty()).is_some());
   }
 
   #[test]
@@ -126,6 +126,6 @@ mod tests {
   #[test]
   fn unknown_ids_are_rejected() {
     assert!(registry().get(12345).is_none());
-    assert!(registry().create(12345).is_none());
+    assert!(registry().create(12345, &Tuning::empty()).is_none());
   }
 }

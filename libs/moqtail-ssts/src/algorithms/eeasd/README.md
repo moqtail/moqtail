@@ -11,6 +11,11 @@ already late. And they all read the connection's whole queue as its congestion,
 which makes the recovery from a downshift look like the problem the downshift was
 meant to fix.
 
+The decisions behind the retroactive downshift - what was settled, on what
+grounds, and what is deliberately still open - are kept in
+[mental-note.md](mental-note.md), along with where each piece of the mechanism
+lives.
+
 ## What it measures
 
 The depth is the number of live forwarding streams carrying, for each active set,

@@ -32,6 +32,14 @@ use moqtail_ssts::{
 use tokio::select;
 use tracing::warn;
 
+use moqtail::model::error::StreamResetCode;
+use moqtail_ssts::registry::registry;
+use moqtail_ssts::{
+  AbrAlgorithm, AbrInput, DecisionReason, Selection, SetSnapshot, StreamSnapshot, Tuning,
+};
+use tokio::select;
+use tracing::warn;
+
 use crate::server::config::AppConfig;
 use crate::server::session::client::MOQTClient;
 
@@ -191,7 +199,7 @@ async fn decide(
   // so they all see the same evidence.
   let timeouts = std::mem::take(stream_timeouts);
 
-  let mut decisions: HashMap<u64, Option<u64>> = HashMap::new();
+  let mut decisions = Selection::with_capacity(sets.len());
   for algorithm in running.iter_mut() {
     let algorithm_sets: Vec<SetSnapshot> = sets
       .iter()
@@ -213,18 +221,21 @@ async fn decide(
       streams: &streams,
       stream_timeouts_since_last_decision: &timeouts,
     };
-    decisions.extend(validate(
-      algorithm.name,
-      algorithm.algorithm.decide(&input),
-      &algorithm_sets,
-    ));
+    merge(
+      &mut decisions,
+      validate(
+        algorithm.name,
+        algorithm.algorithm.decide(&input),
+        &algorithm_sets,
+      ),
+    );
   }
 
   // A set no running algorithm owns gets an explicit "forward nothing".
   // Leaving it out of the map would stall the gate on that group instead.
   let unowned: Vec<&SetSnapshot> = sets
     .iter()
-    .filter(|set| !decisions.contains_key(&set.id))
+    .filter(|set| !decisions.contains_key(set.id))
     .collect();
   for set in unowned {
     warn!(
@@ -235,12 +246,30 @@ async fn decide(
     decisions.insert(set.id, None);
   }
 
-  // A group already being delivered keeps its answer: recording is insert-if-absent
+  // A group already being delivered keeps its answer: recording is
+  // insert-if-absent. A changed answer for the group in flight is spent here;
+  // the algorithms have still run, and an algorithm that means to move the
+  // in-flight groups of a set says so through `Selection::supersede` below.
+  // Resolve the supersede requests before the selection moves into the record.
+  // The request belongs to this cycle only; the per-group map records what to
+  // forward, never what was overtaken.
+  let overtakes: Vec<(u64, u64)> = decisions
+    .supersede
+    .iter()
+    .filter_map(|set_id| {
+      decisions
+        .tracks
+        .get(set_id)
+        .and_then(|track| *track)
+        .map(|track_id| (*set_id, track_id))
+    })
+    .collect();
+
   let recorded = client
     .ssts
     .record_group_decision(
       group_id,
-      decisions,
+      decisions.tracks,
       largest_group.saturating_sub(DECISION_WINDOW),
     )
     .await;
@@ -249,6 +278,84 @@ async fn decide(
     // No epoch bump: answers are final, so recording one makes no cached
     // verdict stale; waiters wake on the notify.
     client.ssts.decision_notify.notify_waiters();
+  }
+
+  for (set_id, track_id) in overtakes {
+    supersede_overtaken(client, set_id, track_id).await;
+  }
+}
+
+/// Deal with the groups a decision overtook.
+///
+/// Each one gets three changes at once: its decision is flipped to the member
+/// the algorithm just chose, so the objects of that group that have not arrived
+/// yet come from the new member; its remaining old-member streams are reset, so
+/// the subscriber stops receiving a delivery the relay has already abandoned;
+/// and the group is marked as re-sent, so the streams the subscriber now causes
+/// to be opened are reported to the algorithms as a consequence of the decision
+/// rather than as new congestion.
+///
+/// The relay's own abandoned streams are deliberately not fed to the timeout
+/// evidence. They are the algorithm's doing, not the transport's, and reporting
+/// them would let every downshift manufacture the evidence for the next one.
+async fn supersede_overtaken(client: &Arc<MOQTClient>, set_id: u64, track_id: u64) {
+  let overtaken = client.ssts.overtaken_streams(set_id, track_id).await;
+  if overtaken.is_empty() {
+    return;
+  }
+
+  let mut flipped = 0usize;
+  {
+    let mut group_decisions = client.ssts.group_decisions.write().await;
+    for (group_id, _) in &overtaken {
+      if let Some(decision) = group_decisions.get_mut(group_id) {
+        decision.insert(set_id, Some(track_id));
+        flipped += 1;
+      }
+    }
+  }
+
+  let mut groups: Vec<u64> = overtaken.iter().map(|(group_id, _)| *group_id).collect();
+  groups.sort_unstable();
+  groups.dedup();
+  for group_id in &groups {
+    client.ssts.mark_group_resent(set_id, *group_id).await;
+  }
+
+  for (_, stream_id) in &overtaken {
+    // The delivery was cancelled by a decision, not by a failure or a timeout,
+    // and the code on the wire should say so.
+    client
+      .reset_stream(stream_id, StreamResetCode::Cancelled.to_u64())
+      .await;
+  }
+
+  tracing::debug!(
+    client_id = client.connection_id,
+    set_id,
+    relay_track_id = track_id,
+    groups = groups.len(),
+    streams = overtaken.len(),
+    decisions_flipped = flipped,
+    "SSTS: overtook the groups in flight for this set"
+  );
+
+  if flipped > 0 {
+    // The one writer allowed past `record_group_decision`: a flipped group
+    // must also move the epoch, or gates keep forwarding the old member from
+    // cache and the re-send never replaces the delivery it means to.
+    client.ssts.bump_epoch();
+    client.ssts.decision_notify.notify_waiters();
+  }
+}
+
+/// Fold one algorithm's validated answer into the connection's decision.
+fn merge(into: &mut Selection, from: Selection) {
+  for (set_id, track) in from.tracks {
+    into.insert(set_id, track);
+  }
+  for set_id in from.supersede {
+    into.supersede(set_id);
   }
 }
 
@@ -261,7 +368,7 @@ fn validate(algorithm: &str, selection: Selection, sets: &[SetSnapshot]) -> Sele
   let mut validated = Selection::with_capacity(sets.len());
 
   for set in sets {
-    match selection.get(&set.id) {
+    match selection.get(set.id) {
       Some(Some(track_id)) if set.has_track(*track_id) => {
         validated.insert(set.id, Some(*track_id));
       }
@@ -289,6 +396,7 @@ fn validate(algorithm: &str, selection: Selection, sets: &[SetSnapshot]) -> Sele
   }
 
   let invented: Vec<u64> = selection
+    .tracks
     .keys()
     .filter(|set_id| !sets.iter().any(|set| set.id == **set_id))
     .copied()
@@ -301,5 +409,110 @@ fn validate(algorithm: &str, selection: Selection, sets: &[SetSnapshot]) -> Sele
     );
   }
 
+  // A request to overtake a set is only meaningful for a set the algorithm was
+  // shown and gave a real answer to: overtaking while forwarding nothing would
+  // cancel a delivery in order to replace it with no delivery.
+  for set_id in &selection.supersede {
+    let owned = sets.iter().any(|set| set.id == *set_id);
+    let answered = matches!(selection.get(*set_id), Some(Some(_)));
+    if owned && answered {
+      validated.supersede(*set_id);
+    } else if owned {
+      warn!(
+        algorithm,
+        set_id, "SSTS: algorithm asked to overtake a set it forwarded nothing for; ignored"
+      );
+    }
+  }
+
   validated
+}
+
+#[cfg(test)]
+mod tests {
+  use super::validate;
+  use moqtail_ssts::Selection;
+  use moqtail_ssts::SetSnapshot;
+
+  fn set(id: u64, tracks: &[u64]) -> SetSnapshot {
+    SetSnapshot {
+      id,
+      algorithm_id: 0,
+      rank: 0,
+      weight: 1,
+      active: true,
+      members: tracks.iter().map(|track| (500 + *track, *track)).collect(),
+      subscriber_buffer_ms: 0,
+      algorithm_params: vec![],
+      group_span_ms: 0,
+    }
+  }
+
+  /// The gate waits for a decision per set, so an algorithm that answers some
+  /// sets and not others must not be able to stall a group.
+  #[test]
+  fn every_set_gets_an_answer() {
+    let sets = [set(1, &[10, 11]), set(2, &[20])];
+    let mut answered = Selection::new();
+    answered.insert(1, 11u64);
+
+    let validated = validate("test", answered, &sets);
+    assert_eq!(validated.tracks[&1], Some(11));
+    assert_eq!(
+      validated.tracks[&2], None,
+      "an unanswered set forwards nothing rather than blocking"
+    );
+  }
+
+  #[test]
+  fn a_track_from_the_wrong_set_is_not_forwarded() {
+    let sets = [set(1, &[10, 11]), set(2, &[20])];
+    let mut answered = Selection::new();
+    answered.insert(1, 20u64);
+    answered.insert(2, None);
+
+    let validated = validate("test", answered, &sets);
+    assert_eq!(
+      validated.tracks[&1], None,
+      "a track that is not a member cannot be forwarded"
+    );
+  }
+
+  #[test]
+  fn sets_the_algorithm_was_never_shown_are_dropped() {
+    let sets = [set(1, &[10])];
+    let mut answered = Selection::new();
+    answered.insert(1, 10u64);
+    answered.insert(99, 77u64);
+
+    let validated = validate("test", answered, &sets);
+    assert!(!validated.tracks.contains_key(&99));
+    assert!(!validated.supersede.contains(&99));
+  }
+
+  /// Overtaking a delivery is the one thing in a decision that destroys work in
+  /// progress, so it is honoured only where the algorithm has the standing for
+  /// it: a set it was shown, and one it is actually forwarding something.
+  #[test]
+  fn a_supersede_request_needs_a_set_and_a_track() {
+    let sets = [set(1, &[10, 11]), set(2, &[20, 21])];
+
+    let mut answered = Selection::new();
+    answered.insert(1, 10u64);
+    answered.supersede(1);
+    answered.insert(2, None);
+    answered.supersede(2);
+    answered.supersede(99);
+
+    let validated = validate("test", answered, &sets);
+    assert!(validated.supersede.contains(&1));
+    assert!(
+      !validated.supersede.contains(&2),
+      "overtaking in order to forward nothing is not a switching decision"
+    );
+    assert!(
+      !validated.supersede.contains(&99),
+      "a set the algorithm never saw cannot be overtaken"
+    );
+  }
 }

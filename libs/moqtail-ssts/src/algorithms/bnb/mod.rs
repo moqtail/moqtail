@@ -165,7 +165,7 @@ impl AbrAlgorithm for BnbAlgorithm {
         state.timeout_streak_for_log(),
       );
 
-      selection.insert(set.id, set.members[to].1.into());
+      selection.insert(set.id, set.members[to].1);
     }
 
     // A set that is gone takes its streaks with it: a publisher that reuses the

@@ -125,7 +125,7 @@ fn a_set_without_a_subscriber_forwards_nothing() {
   let scenario = Scenario::new(vec![set(1, 1000, 3, false)]);
   let mut algorithm = BnbAlgorithm::new();
   assert_eq!(
-    algorithm.decide(&scenario.input(0, 0))[&1],
+    algorithm.decide(&scenario.input(0, 0)).tracks[&1],
     None,
     "nobody is watching, so nothing goes"
   );
@@ -155,7 +155,9 @@ fn a_growing_queue_vetoes_the_climb() {
   // veto on climbing (and, past the safe line, the trigger to drop).
   for group in 0..9 {
     let scenario = Scenario::new(vec![set(1, 1000, 4, true)]).with_streams(1, group + 1, 0);
-    let served = algorithm.decide(&scenario.input(group, group * 4000))[&1];
+    let served = algorithm
+      .decide(&scenario.input(group, group * 4000))
+      .tracks[&1];
     assert_eq!(
       served,
       Some(100),
@@ -399,7 +401,7 @@ fn a_set_that_disappears_takes_its_state_with_it() {
 
   let served = algorithm.decide(&healthy.input(1, 200_000));
   assert_eq!(
-    served[&1],
+    served.tracks[&1],
     Some(100),
     "the set was rebuilt from scratch rather than resuming a stale climb"
   );

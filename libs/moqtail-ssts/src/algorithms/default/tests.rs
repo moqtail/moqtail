@@ -152,9 +152,9 @@ fn every_set_gets_an_answer() {
   ];
   let decisions = allocate(10_000, &sets);
   assert_eq!(decisions.len(), 3);
-  assert!(decisions.contains_key(&1));
-  assert!(decisions.contains_key(&2));
-  assert!(decisions.contains_key(&3));
+  assert!(decisions.contains_key(1));
+  assert!(decisions.contains_key(2));
+  assert!(decisions.contains_key(3));
 }
 
 #[test]

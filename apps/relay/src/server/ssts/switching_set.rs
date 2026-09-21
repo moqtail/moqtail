@@ -25,7 +25,7 @@ use crate::server::stream_id::StreamId;
 use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail_ssts::{SetSnapshot, StreamSnapshot};
 use std::cmp::Reverse;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -165,6 +165,11 @@ pub struct SwitchingSetManager {
   /// gate caches its verdict against this counter, which it reads without
   /// taking this lock, so a change here invalidates what the gate cached.
   epoch: Arc<AtomicU64>,
+  /// The groups whose delivery an algorithm overtook: the new streams opened for
+  /// them re-send media that was already partly delivered at another quality,
+  /// so they are marked and an algorithm that measures congestion can leave them
+  /// out. Pruned with the group's last stream.
+  resent_groups: HashSet<(u64, u64)>,
 }
 
 /// One live forwarding stream of a switching set.
@@ -237,6 +242,7 @@ impl SwitchingSetManager {
     let Some(group_id) = stream_id.group_id else {
       return;
     };
+    let resent = self.resent_groups.contains(&(set_id, group_id));
     self.open_streams.insert(
       stream_id.clone(),
       OpenStream {
@@ -244,7 +250,7 @@ impl SwitchingSetManager {
         relay_track_id: stream_id.relay_track_id,
         group_id,
         opened_at_ms: now_ms,
-        resent: false,
+        resent,
       },
     );
 
@@ -269,7 +275,58 @@ impl SwitchingSetManager {
   /// A forwarding stream ended, by finishing, being reset or being stopped by
   /// the peer.
   pub fn note_stream_closed(&mut self, stream_id: &StreamId) {
-    self.open_streams.remove(stream_id);
+    let Some(live) = self.open_streams.remove(stream_id) else {
+      return;
+    };
+    // Once nothing is live for the group, the re-send is over and the mark has
+    // said everything it has to say.
+    if !self
+      .open_streams
+      .values()
+      .any(|other| other.set_id == live.set_id && other.group_id == live.group_id)
+    {
+      self.resent_groups.remove(&(live.set_id, live.group_id));
+    }
+  }
+
+  /// Say that this group's delivery was overtaken by a decision, so the streams
+  /// opened for it from now on re-send rather than deliver.
+  pub fn mark_group_resent(&mut self, set_id: u64, group_id: u64) {
+    self.resent_groups.insert((set_id, group_id));
+  }
+
+  /// The live streams carrying one group of one set on a member other than
+  /// `keep`, which is what an overtaken delivery is made of.
+  pub fn streams_above(&self, set_id: u64, keep_track: u64) -> Vec<(u64, StreamId)> {
+    let ladder = match self.sets.get(&set_id) {
+      Some(set) => set,
+      None => return Vec::new(),
+    };
+    let keep_at = match ladder
+      .members
+      .iter()
+      .position(|m| m.relay_track_id == keep_track)
+    {
+      Some(at) => at,
+      None => return Vec::new(),
+    };
+    let rung_of = |track: u64| {
+      ladder
+        .members
+        .iter()
+        .position(|m| m.relay_track_id == track)
+    };
+
+    let mut overtaken: Vec<(u64, StreamId)> = self
+      .open_streams
+      .iter()
+      .filter(|(_, live)| {
+        live.set_id == set_id && rung_of(live.relay_track_id).is_some_and(|at| at > keep_at)
+      })
+      .map(|(stream_id, live)| (live.group_id, stream_id.clone()))
+      .collect();
+    overtaken.sort_by_key(|(group_id, _)| *group_id);
+    overtaken
   }
 
   /// The live streams of every set that still exists, as the algorithms see
@@ -435,6 +492,7 @@ impl SwitchingSetManager {
       // The set is gone, and with it the meaning of its streams and cadence.
       self.open_streams.retain(|_, live| live.set_id != set_id);
       self.group_spans.remove(&set_id);
+      self.resent_groups.retain(|(other, _)| *other != set_id);
     }
   }
 
@@ -1002,8 +1060,93 @@ mod tests {
     assign(&mut manager, &track, 42, 7, 100);
 
     let before = epoch.load(Ordering::Acquire);
-    manager.note_stream_opened(42);
-    manager.note_stream_closed(42);
+    let stream = StreamId::new_subgroup(42, 1, Some(0));
+    manager.note_stream_opened(&stream, 1000);
+    manager.note_stream_closed(&stream);
     assert_eq!(epoch.load(Ordering::Acquire), before);
+  }
+
+  /// An overtaken delivery is only what the ladder says it is: the streams on a
+  /// member *above* the one the decision landed on. Streams at or below the new
+  /// rung carry media the decision did not reject, and resetting them would
+  /// destroy a delivery the algorithm still stands behind.
+  #[test]
+  fn overtaken_streams_follow_the_ladder_not_the_track_id() {
+    let mut manager = SwitchingSetManager::new();
+    // Deliberately assigned out of ladder order, with track ids that run the
+    // other way, so a comparison of ids could not pass this test.
+    let high = make_track("ns", "high");
+    let mid = make_track("ns", "mid");
+    let low = make_track("ns", "low");
+    assign(&mut manager, &high, 10, 7, 3000);
+    assign(&mut manager, &mid, 20, 7, 1000);
+    assign(&mut manager, &low, 30, 7, 300);
+
+    let high_stream = StreamId::new_subgroup(10, 5, Some(0));
+    let mid_stream = StreamId::new_subgroup(20, 6, Some(0));
+    let low_stream = StreamId::new_subgroup(30, 7, Some(0));
+    for stream in [&high_stream, &mid_stream, &low_stream] {
+      manager.note_stream_opened(stream, 1000);
+    }
+
+    // Land on the middle rung: only the high-quality delivery was overtaken.
+    let overtaken = manager.streams_above(7, 20);
+    assert_eq!(
+      overtaken
+        .iter()
+        .map(|(group, _)| *group)
+        .collect::<Vec<_>>(),
+      vec![5],
+      "the high rung is above the new choice, the low rung is not"
+    );
+
+    // Land on the bottom rung: both deliveries above it were overtaken, oldest
+    // group first, so the mechanism deals with them in media order.
+    let overtaken = manager.streams_above(7, 30);
+    assert_eq!(
+      overtaken
+        .iter()
+        .map(|(group, _)| *group)
+        .collect::<Vec<_>>(),
+      vec![5, 6]
+    );
+
+    // A track the set does not contain is not a rung, and nothing is overtaken
+    // on the strength of a ladder the set does not have.
+    assert!(manager.streams_above(7, 999).is_empty());
+    assert!(manager.streams_above(1234, 20).is_empty());
+  }
+
+  /// A re-send mark lives for as long as the group it describes is being
+  /// re-sent, and no longer: it is a note about live media, not history.
+  #[test]
+  fn a_resent_group_is_marked_until_its_last_stream_closes() {
+    let mut manager = SwitchingSetManager::new();
+    let track = make_track("ns", "t");
+    assign(&mut manager, &track, 42, 7, 100);
+
+    let first = StreamId::new_subgroup(42, 3, Some(0));
+    manager.note_stream_opened(&first, 1000);
+    assert!(
+      !manager.stream_table(1100)[0].resent,
+      "an ordinary delivery is not a re-send"
+    );
+    manager.note_stream_closed(&first);
+
+    manager.mark_group_resent(7, 3);
+    let again = StreamId::new_subgroup(42, 3, Some(1));
+    manager.note_stream_opened(&again, 2000);
+    assert!(
+      manager.stream_table(2100)[0].resent,
+      "a stream opened for an overtaken group re-sends media"
+    );
+
+    manager.note_stream_closed(&again);
+    let third = StreamId::new_subgroup(42, 4, Some(0));
+    manager.note_stream_opened(&third, 3000);
+    assert!(
+      !manager.stream_table(3100)[0].resent,
+      "the next group is new media, not a re-send"
+    );
   }
 }

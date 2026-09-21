@@ -171,6 +171,15 @@ impl SstsState {
     self.group_decisions.read().await.contains_key(&group_id)
   }
 
+  /// Invalidate the gate's cached verdicts. Set membership moves this by
+  /// itself; this exists for the one other writer allowed past
+  /// `record_group_decision`: a deliberate supersede, which moves a decided
+  /// group's answer together with the reset and re-send choreography, and so
+  /// must invalidate what the gate cached about it.
+  pub fn bump_epoch(&self) {
+    self.epoch.fetch_add(1, Ordering::Release);
+  }
+
   /// Record the allocation for `group_id`, only if the group has
   /// no answer yet. A group's decision is final once recorded.
   pub async fn record_group_decision(
@@ -264,6 +273,29 @@ impl SstsState {
   /// it has somewhere to put late media; without that the operator's setting
   /// stays the answer, so turning the feature on cannot silently start
   /// discarding data for a subscriber that never asked for switching.
+  /// The live streams of `set_id` that carry a member other than `keep`, i.e.
+  /// the deliveries an algorithm overtook when it selected `keep`. Group id
+  /// first, ascending.
+  pub(crate) async fn overtaken_streams(
+    &self,
+    set_id: u64,
+    keep_track: u64,
+  ) -> Vec<(u64, StreamId)> {
+    let sets = self.switching_sets.read().await;
+    sets.streams_above(set_id, keep_track)
+  }
+
+  /// Record that a group's delivery was overtaken, so the streams opened for it
+  /// from now on are reported to the algorithms as re-sends rather than as new
+  /// congestion.
+  pub(crate) async fn mark_group_resent(&self, set_id: u64, group_id: u64) {
+    self
+      .switching_sets
+      .write()
+      .await
+      .mark_group_resent(set_id, group_id);
+  }
+
   /// The switching set carrying this relay track, if any.
   pub(crate) async fn set_id_of_relay_track(&self, relay_track_id: u64) -> Option<u64> {
     let sets = self.switching_sets.read().await;

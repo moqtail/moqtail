@@ -41,13 +41,89 @@ pub mod registry;
 
 use std::collections::HashMap;
 
-/// What an algorithm decided: switching set id -> the `relay_track_id` of the
-/// member to forward for this group, or `None` when the set forwards nothing.
+/// What an algorithm decided, per switching set: which member to forward for
+/// this group, and what to do with the groups already in flight.
 ///
-/// Every set handed to [`AbrAlgorithm::decide`] must appear in the map. A set
-/// the selection leaves out is treated as `None` by the host and reported,
+/// Every set handed to [`AbrAlgorithm::decide`] must appear in [`Selection::tracks`].
+/// A set the selection leaves out is treated as `None` by the host and reported,
 /// never waited on forever.
-pub type Selection = HashMap<u64, Option<u64>>;
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Selection {
+  /// Switching set id -> the `relay_track_id` of the member to forward for this
+  /// group, or `None` when the set forwards nothing.
+  pub tracks: HashMap<u64, Option<u64>>,
+  /// The sets whose groups are already in flight at a member above the one just
+  /// selected, and were therefore overtaken by the decision.
+  ///
+  /// This is a request, not an action: the algorithm names the sets, and the
+  /// host decides what its own state allows. An algorithm cannot reset a stream,
+  /// re-send an object or reach a cache through this contract, and it should not
+  /// have to: what it knows is that the delivery it just downgraded is no longer
+  /// the one it would have chosen. What the host does about it — cancel and
+  /// re-send, finish the old delivery and switch at the next group, or ignore the
+  /// request because the group is already closed — is mechanism, and differs
+  /// between relays.
+  pub supersede: std::collections::HashSet<u64>,
+}
+
+impl Selection {
+  /// An empty selection: nothing answered yet.
+  pub fn new() -> Self {
+    Self::default()
+  }
+
+  /// The capacity form, for an algorithm that answers every set it was shown.
+  pub fn with_capacity(sets: usize) -> Self {
+    Self {
+      tracks: HashMap::with_capacity(sets),
+      supersede: std::collections::HashSet::new(),
+    }
+  }
+
+  /// Answer for one set.
+  pub fn insert(&mut self, set_id: u64, track: impl Into<Option<u64>>) {
+    self.tracks.insert(set_id, track.into());
+  }
+
+  /// The answer for one set, or `None` if the algorithm did not answer it.
+  pub fn get(&self, set_id: u64) -> Option<&Option<u64>> {
+    self.tracks.get(&set_id)
+  }
+
+  /// Whether the algorithm answered this set at all, which is not the same as
+  /// answering it with `None`: a set left out is a bug in the algorithm, a set
+  /// answered with `None` is a decision to forward nothing.
+  pub fn contains_key(&self, set_id: u64) -> bool {
+    self.tracks.contains_key(&set_id)
+  }
+
+  /// Ask the host to deal with the groups this decision overtook.
+  pub fn supersede(&mut self, set_id: u64) {
+    self.supersede.insert(set_id);
+  }
+
+  /// Whether every set was answered; the host reports the ones that were not.
+  pub fn len(&self) -> usize {
+    self.tracks.len()
+  }
+
+  /// Whether nothing was answered.
+  pub fn is_empty(&self) -> bool {
+    self.tracks.is_empty()
+  }
+}
+
+/// Reading one set's answer, for tests and for callers that treat a selection as
+/// a lookup. A set the algorithm never answered reads as `None`, which is what
+/// the host does with it as well: forward nothing, and say so.
+impl std::ops::Index<&u64> for Selection {
+  type Output = Option<u64>;
+
+  fn index(&self, set_id: &u64) -> &Self::Output {
+    static NOTHING: Option<u64> = None;
+    self.tracks.get(set_id).unwrap_or(&NOTHING)
+  }
+}
 
 /// One switching set, copied out of the host at decision time.
 ///

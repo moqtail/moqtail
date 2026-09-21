@@ -74,7 +74,7 @@ fn decide_once(
   timeouts: u64,
   group: u64,
 ) -> Option<u64> {
-  decide(&mut *algorithm, sets, open, timeouts, group)[&sets[0].id]
+  decide(&mut *algorithm, sets, open, timeouts, group).tracks[&sets[0].id]
 }
 
 /// Run one group through the algorithm and return the whole selection.
@@ -285,8 +285,8 @@ fn an_inactive_set_forwards_nothing() {
     stream_timeouts_since_last_decision: &HashMap::new(),
   };
   let selection = algorithm.decide(&input);
-  assert_eq!(selection[&1], None);
-  assert_eq!(selection[&2], Some(20));
+  assert_eq!(selection.tracks[&1], None);
+  assert_eq!(selection.tracks[&2], Some(20));
 }
 
 #[test]
@@ -303,8 +303,8 @@ fn every_active_set_moves_to_the_same_tier() {
   }
   let selection = decide(&mut algorithm, &sets, &clear, 0, 5);
   // Both sets have the same ladder, so the same tier means the same rung.
-  assert_eq!(selection[&1], Some(11));
-  assert_eq!(selection[&2], Some(21));
+  assert_eq!(selection.tracks[&1], Some(11));
+  assert_eq!(selection.tracks[&2], Some(21));
 }
 
 #[test]

@@ -35,19 +35,17 @@ use crate::{AbrInput, Selection};
 /// set switches and the short one has nothing to switch to, rather than
 /// forwarding a member it does not have.
 pub(crate) fn serve_tier(input: &AbrInput, tier: usize) -> Selection {
-  input
-    .sets
-    .iter()
-    .map(|set| {
-      let selected = if set.active && !set.members.is_empty() {
-        set
-          .members
-          .get(tier.min(set.members.len() - 1))
-          .map(|(_, track_id)| *track_id)
-      } else {
-        None
-      };
-      (set.id, selected)
-    })
-    .collect()
+  let mut selection = Selection::with_capacity(input.sets.len());
+  for set in input.sets {
+    let selected = if set.active && !set.members.is_empty() {
+      set
+        .members
+        .get(tier.min(set.members.len() - 1))
+        .map(|(_, track_id)| *track_id)
+    } else {
+      None
+    };
+    selection.insert(set.id, selected);
+  }
+  selection
 }

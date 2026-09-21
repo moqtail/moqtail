@@ -93,7 +93,7 @@ fn group(
     streams: &live,
     stream_timeouts_since_last_decision: &timeout_evidence(timeouts),
   };
-  algorithm.decide(&input)[&sets[0].id]
+  algorithm.decide(&input).tracks[&sets[0].id]
 }
 
 #[test]
@@ -260,7 +260,7 @@ fn one_index_serves_sets_of_different_heights() {
     };
     let selection = algorithm.decide(&input);
     assert_eq!(
-      selection[&2],
+      selection.tracks[&2],
       Some(99),
       "the short set serves its only member whatever the index says"
     );

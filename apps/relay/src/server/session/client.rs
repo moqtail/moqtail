@@ -531,7 +531,7 @@ impl MOQTClient {
     // release on every path that drops the stream from the map.
     self
       .ssts
-      .on_stream_opened(stream_key.stream_id.relay_track_id)
+      .on_stream_opened(&stream_key.stream_id)
       .await;
 
     trace!(
@@ -565,7 +565,7 @@ impl MOQTClient {
         send_streams.remove(stream_key);
         self
           .ssts
-          .on_stream_closed(stream_key.stream_id.relay_track_id)
+          .on_stream_closed(&stream_key.stream_id)
           .await;
 
         return Err(anyhow::anyhow!(
@@ -622,14 +622,14 @@ impl MOQTClient {
         self.record_stream_end(quic_stream_id, true, StreamEnd::Fin);
         self
           .ssts
-          .on_stream_closed(stream_key.stream_id.relay_track_id)
+          .on_stream_closed(&stream_key.stream_id)
           .await;
         return Ok(true);
       }
 
       tokio::select! {
         finish_result = stream.finish() => {
-            self.ssts.on_stream_closed(stream_key.stream_id.relay_track_id).await;
+            self.ssts.on_stream_closed(&stream_key.stream_id).await;
             if finish_result.is_ok() {
               self.record_stream_end(quic_stream_id, true, StreamEnd::Fin);
             }
@@ -643,7 +643,7 @@ impl MOQTClient {
                 group_id = %group_id,
                 "Stream timeout on close — resetting"
             );
-            self.ssts.on_stream_closed(stream_key.stream_id.relay_track_id).await;
+            self.ssts.on_stream_closed(&stream_key.stream_id).await;
             // The stream was discarded because it did not finish in time,
             // which is what this code is for: the peer must be able to tell a
             // late delivery apart from a cancelled or failed one.
@@ -704,7 +704,7 @@ impl MOQTClient {
     if removed.is_some() {
       self
         .ssts
-        .on_stream_closed(stream_key.stream_id.relay_track_id)
+        .on_stream_closed(&stream_key.stream_id)
         .await;
     }
     removed

@@ -21,8 +21,10 @@
 //! subscriptions in the same set specify different values, the most recently
 //! received message wins.
 
+use crate::server::stream_id::StreamId;
 use moqtail::model::data::full_track_name::FullTrackName;
-use moqtail_ssts::SetSnapshot;
+use moqtail_ssts::{SetSnapshot, StreamSnapshot};
+use std::cmp::Reverse;
 use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 use std::sync::Arc;
@@ -45,6 +47,9 @@ impl From<&SwitchingSet> for SetSnapshot {
         .collect(),
       subscriber_buffer_ms: set.subscriber_buffer_ms,
       algorithm_params: set.algorithm_params.clone(),
+      // Measured against the stream history rather than stored on the set, so
+      // the manager fills this in when it builds a snapshot.
+      group_span_ms: 0,
     }
   }
 }
@@ -144,16 +149,57 @@ pub struct SwitchingSetManager {
   /// Relay track id -> switching set id, so a forwarding stream can be
   /// attributed to the set it carries.
   pub relay_track_to_set: HashMap<u64, u64>,
-  /// Live forwarding streams per set. Owned here, next to the sets, because
-  /// the counter only means something while the set exists: a set that is
-  /// torn down takes its count with it, so a publisher that later reuses the
+  /// The live forwarding streams, keyed by stream, and owned here next to the
+  /// sets because they only mean something while the set exists: a set that is
+  /// torn down takes its streams with it, so a publisher that later reuses the
   /// id does not inherit a queue depth it never created.
-  open_streams: HashMap<u64, u64>,
+  ///
+  /// Streams rather than a count per set, because the questions an algorithm
+  /// asks are about streams: how long the oldest one has been waiting, which
+  /// groups are in flight, which quality each is carrying.
+  open_streams: HashMap<StreamId, OpenStream>,
+  /// Observed group cadence per set, so an algorithm can tell a stream that is
+  /// merely in flight from one that is behind.
+  group_spans: HashMap<u64, GroupSpan>,
   /// Bumped on every change to set membership or set properties. The forward
   /// gate caches its verdict against this counter, which it reads without
   /// taking this lock, so a change here invalidates what the gate cached.
   epoch: Arc<AtomicU64>,
 }
+
+/// One live forwarding stream of a switching set.
+#[derive(Debug, Clone)]
+pub struct OpenStream {
+  pub set_id: u64,
+  pub relay_track_id: u64,
+  pub group_id: u64,
+  /// `now_ms` as the host counted it when the stream opened.
+  pub opened_at_ms: u64,
+  /// Opened to re-send a group an earlier decision overtook, rather than to
+  /// carry new media.
+  pub resent: bool,
+}
+
+/// The cadence a set's groups are arriving at, in ms.
+///
+/// A group's forwarding stream lives about one group span under normal
+/// pacing, so an age of one span is a healthy pipeline and only the excess
+/// over it is a backlog. Without this, a long group period looks like
+/// congestion to an algorithm that reads stream ages.
+#[derive(Debug, Default, Clone)]
+struct GroupSpan {
+  last_group: u64,
+  last_open_ms: u64,
+  span_ms: f64,
+  /// Whether `span_ms` holds a measurement; the first gap has nothing to be
+  /// averaged with, and guessing would report a cadence the host never saw.
+  measured: bool,
+}
+
+/// Weight of the newest gap in the cadence average. Small enough that a few
+/// irregular groups do not move the answer, large enough that a real change of
+/// group period is followed within a couple of groups.
+const SPAN_SMOOTHING: f64 = 0.3;
 
 impl SwitchingSetManager {
   pub fn new() -> Self {
@@ -181,31 +227,81 @@ impl SwitchingSetManager {
     self.epoch.fetch_add(1, Ordering::Release);
   }
 
-  /// A forwarding stream opened for the set this relay track belongs to.
-  pub fn note_stream_opened(&mut self, relay_track_id: u64) {
-    if let Some(set_id) = self.relay_track_to_set.get(&relay_track_id) {
-      *self.open_streams.entry(*set_id).or_default() += 1;
-    }
-  }
-
-  /// A forwarding stream of this relay track ended, by finishing, being reset
-  /// or being stopped by the peer.
-  pub fn note_stream_closed(&mut self, relay_track_id: u64) {
-    let Some(set_id) = self.relay_track_to_set.get(&relay_track_id).copied() else {
+  /// A forwarding stream opened for the set this relay track belongs to, at
+  /// `now_ms` on the host's monotonic clock. A track in no set is not tracked:
+  /// there is no switching decision for it to be evidence about.
+  pub fn note_stream_opened(&mut self, stream_id: &StreamId, now_ms: u64) {
+    let Some(&set_id) = self.relay_track_to_set.get(&stream_id.relay_track_id) else {
       return;
     };
-    if let Some(count) = self.open_streams.get_mut(&set_id) {
-      *count = count.saturating_sub(1);
-      if *count == 0 {
-        self.open_streams.remove(&set_id);
-      }
+    let Some(group_id) = stream_id.group_id else {
+      return;
+    };
+    self.open_streams.insert(
+      stream_id.clone(),
+      OpenStream {
+        set_id,
+        relay_track_id: stream_id.relay_track_id,
+        group_id,
+        opened_at_ms: now_ms,
+        resent: false,
+      },
+    );
+
+    let span = self.group_spans.entry(set_id).or_default();
+    // Only consecutive groups bracket one group period. A gap in the group
+    // numbers, or the first group of a set, says nothing about cadence.
+    if span.measured && span.last_group + 1 == group_id {
+      let gap = now_ms.saturating_sub(span.last_open_ms) as f64;
+      // The first gap is the seed rather than an average with zero, which
+      // would report a cadence a third of the one observed.
+      span.span_ms = if span.span_ms > 0.0 {
+        (1.0 - SPAN_SMOOTHING) * span.span_ms + SPAN_SMOOTHING * gap
+      } else {
+        gap
+      };
     }
+    span.last_group = group_id;
+    span.last_open_ms = now_ms;
+    span.measured = true;
   }
 
-  /// Live forwarding streams per set, for the algorithms' input. A set with no
-  /// entry has no streams.
-  pub fn open_streams(&self) -> HashMap<u64, u64> {
-    self.open_streams.clone()
+  /// A forwarding stream ended, by finishing, being reset or being stopped by
+  /// the peer.
+  pub fn note_stream_closed(&mut self, stream_id: &StreamId) {
+    self.open_streams.remove(stream_id);
+  }
+
+  /// The live streams of every set that still exists, as the algorithms see
+  /// them, with ages measured against `now_ms`.
+  pub fn stream_table(&self, now_ms: u64) -> Vec<StreamSnapshot> {
+    let mut table: Vec<StreamSnapshot> = self
+      .open_streams
+      .values()
+      .filter(|stream| self.sets.contains_key(&stream.set_id))
+      .map(|stream| StreamSnapshot {
+        set_id: stream.set_id,
+        relay_track_id: stream.relay_track_id,
+        group_id: stream.group_id,
+        age_ms: now_ms.saturating_sub(stream.opened_at_ms),
+        resent: stream.resent,
+      })
+      .collect();
+    // Oldest first: the table is short, and a stable order makes a logged
+    // decision reproducible.
+    table.sort_by_key(|stream| (stream.set_id, Reverse(stream.age_ms)));
+    table
+  }
+
+  /// The observed group cadence of a set in ms, 0 until two consecutive
+  /// groups have been seen.
+  pub fn group_span_ms(&self, set_id: u64) -> u64 {
+    self
+      .group_spans
+      .get(&set_id)
+      .filter(|span| span.measured)
+      .map(|span| span.span_ms as u64)
+      .unwrap_or(0)
   }
 
   #[allow(clippy::too_many_arguments)]
@@ -336,8 +432,9 @@ impl SwitchingSetManager {
     }
     if set.members.is_empty() {
       self.sets.remove(&set_id);
-      // The set is gone, and with it the meaning of its stream count.
-      self.open_streams.remove(&set_id);
+      // The set is gone, and with it the meaning of its streams and cadence.
+      self.open_streams.retain(|_, live| live.set_id != set_id);
+      self.group_spans.remove(&set_id);
     }
   }
 
@@ -757,39 +854,108 @@ mod tests {
   }
 
   #[test]
-  fn test_stream_counts_follow_the_set() {
+  fn a_stream_is_tracked_from_open_to_close() {
     let mut manager = SwitchingSetManager::new();
     let track = make_track("ns", "t");
     assign(&mut manager, &track, 42, 7, 100);
 
-    manager.note_stream_opened(42);
-    manager.note_stream_opened(42);
-    assert_eq!(manager.open_streams().get(&7), Some(&2));
+    let first = StreamId::new_subgroup(42, 1, Some(0));
+    let second = StreamId::new_subgroup(42, 2, Some(0));
+    manager.note_stream_opened(&first, 1000);
+    manager.note_stream_opened(&second, 1100);
 
-    manager.note_stream_closed(42);
-    assert_eq!(manager.open_streams().get(&7), Some(&1));
+    let table = manager.stream_table(1500);
+    assert_eq!(table.len(), 2);
+    // Oldest first, and the age is how long the stream has been open rather
+    // than the moment it opened: the algorithms compare ages, and the host's
+    // epoch must not leak into their arithmetic.
+    assert_eq!(
+      table
+        .iter()
+        .map(|s| (s.group_id, s.age_ms))
+        .collect::<Vec<_>>(),
+      vec![(1, 500), (2, 400)]
+    );
+    assert_eq!(table[0].set_id, 7);
+    assert_eq!(table[0].relay_track_id, 42);
 
-    // More closes than opens cannot make the count negative.
-    manager.note_stream_closed(42);
-    manager.note_stream_closed(42);
-    assert_eq!(manager.open_streams().get(&7), None);
+    manager.note_stream_closed(&first);
+    assert_eq!(manager.stream_table(1600).len(), 1);
+    // Closing twice is what a stream that finished and was then reset looks
+    // like from two paths; it cannot invent a negative stream.
+    manager.note_stream_closed(&first);
+    assert_eq!(manager.stream_table(1600).len(), 1);
+
+    manager.note_stream_closed(&second);
+    assert!(manager.stream_table(1600).is_empty());
   }
 
   #[test]
-  fn test_removing_a_set_clears_its_stream_count() {
-    // The count of a set that no longer exists has no meaning, and a publisher
-    // that reuses the id must not inherit it.
+  fn a_stream_of_a_track_in_no_set_is_not_tracked() {
+    let mut manager = SwitchingSetManager::new();
+    let stream = StreamId::new_subgroup(99, 1, Some(0));
+    manager.note_stream_opened(&stream, 0);
+    assert!(manager.stream_table(1000).is_empty());
+  }
+
+  #[test]
+  fn removing_a_set_takes_its_streams_with_it() {
+    // The streams of a set that no longer exists have no meaning, and a
+    // publisher that reuses the id must not inherit them.
     let mut manager = SwitchingSetManager::new();
     let track = make_track("ns", "t");
     assign(&mut manager, &track, 42, 7, 100);
-    manager.note_stream_opened(42);
-    assert_eq!(manager.open_streams().get(&7), Some(&1));
+    let stream = StreamId::new_subgroup(42, 1, Some(0));
+    manager.note_stream_opened(&stream, 0);
+    assert_eq!(manager.stream_table(0).len(), 1);
 
     manager.remove(&track);
-    assert_eq!(manager.open_streams().get(&7), None);
+    assert!(manager.stream_table(0).is_empty());
 
     assign(&mut manager, &track, 42, 7, 100);
-    assert_eq!(manager.open_streams().get(&7), None);
+    assert!(
+      manager.stream_table(0).is_empty(),
+      "a reused set id starts with the depth it actually has"
+    );
+  }
+
+  /// A group's forwarding stream lives about one group period under normal
+  /// pacing, so an algorithm that reads stream ages needs the period to tell a
+  /// backlog from a healthy pipeline.
+  #[test]
+  fn the_group_cadence_needs_two_consecutive_groups() {
+    let mut manager = SwitchingSetManager::new();
+    let track = make_track("ns", "t");
+    assign(&mut manager, &track, 42, 7, 100);
+
+    // One group: nothing to compare it with, so no cadence.
+    manager.note_stream_opened(&StreamId::new_subgroup(42, 4, Some(0)), 0);
+    assert_eq!(manager.group_span_ms(7), 0);
+
+    // Consecutive groups 100 ms apart: the cadence is that gap.
+    manager.note_stream_opened(&StreamId::new_subgroup(42, 5, Some(0)), 100);
+    assert_eq!(manager.group_span_ms(7), 100);
+
+    // A gap in the group numbers is not a group period: the publisher was
+    // away, not pacing.
+    manager.note_stream_opened(&StreamId::new_subgroup(42, 9, Some(0)), 5000);
+    assert_eq!(
+      manager.group_span_ms(7),
+      100,
+      "a skipped run of groups is ignored"
+    );
+
+    // The next consecutive group moves it, and only partway: the point of the
+    // average is that one odd group does not redefine the cadence.
+    manager.note_stream_opened(&StreamId::new_subgroup(42, 10, Some(0)), 5200);
+    let span = manager.group_span_ms(7);
+    assert!(
+      span > 100 && span < 200,
+      "expected a damped move, got {span}"
+    );
+
+    // A set nobody measured reads as zero rather than as a guess.
+    assert_eq!(manager.group_span_ms(1234), 0);
   }
 
   #[test]

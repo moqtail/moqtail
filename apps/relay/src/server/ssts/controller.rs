@@ -26,7 +26,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use moqtail_ssts::registry::registry;
-use moqtail_ssts::{AbrAlgorithm, AbrInput, Selection, SetSnapshot};
+use moqtail_ssts::{
+  AbrAlgorithm, AbrInput, DecisionReason, Selection, SetSnapshot, StreamSnapshot,
+};
 use tokio::select;
 use tracing::warn;
 
@@ -106,21 +108,49 @@ pub(crate) fn start(client: Arc<MOQTClient>) {
                 client.ssts.decision_notify.notify_waiters();
                 continue;
               }
-              decide(&mut running, &client, group_id, largest_group, &mut stream_timeouts).await;
+              decide(
+                &mut running,
+                &client,
+                group_id,
+                largest_group,
+                &mut stream_timeouts,
+                DecisionReason::GroupBoundary,
+              )
+              .await;
             }
             Some(AbrMessage::StreamTimeout { group_id }) => {
               largest_group = largest_group.max(group_id);
               stream_timeouts += 1;
               if let Some(group_id) = last_group {
-                decide(&mut running, &client, group_id, largest_group, &mut stream_timeouts).await;
+                decide(
+                  &mut running,
+                  &client,
+                  group_id,
+                  largest_group,
+                  &mut stream_timeouts,
+                  DecisionReason::StreamTimeout,
+                )
+                .await;
               }
             }
             None => return,
           }
         }
+        // The group in flight is re-evaluated on a clock as well, because the
+        // bandwidth changes between groups. An algorithm that only reads the
+        // evidence at a boundary can ignore the difference; one that watches
+        // the state inside a group takes these as its samples.
         _ = ticker.tick() => {
           if let Some(group_id) = last_group {
-            decide(&mut running, &client, group_id, largest_group, &mut stream_timeouts).await;
+            decide(
+              &mut running,
+              &client,
+              group_id,
+              largest_group,
+              &mut stream_timeouts,
+              DecisionReason::PeriodicSample,
+            )
+            .await;
           }
         }
         _ = client.connection.closed() => {
@@ -138,8 +168,11 @@ async fn decide(
   group_id: u64,
   largest_group: u64,
   stream_timeouts: &mut u64,
+  reason: DecisionReason,
 ) {
-  let (sets, open_streams_per_set) = client.ssts.decision_snapshot().await;
+  let now_ms = client.ssts.now_ms();
+  let (sets, streams): (Vec<SetSnapshot>, Vec<StreamSnapshot>) =
+    client.ssts.decision_snapshot(now_ms).await;
   if sets.is_empty() {
     return;
   }
@@ -166,8 +199,10 @@ async fn decide(
       group_id,
       bandwidth_estimate_kbps,
       configured_cap_kbps,
+      reason,
+      now_ms,
       sets: &algorithm_sets,
-      open_streams_per_set: &open_streams_per_set,
+      streams: &streams,
       stream_timeouts_since_last_decision: timeouts,
     };
     decisions.extend(validate(

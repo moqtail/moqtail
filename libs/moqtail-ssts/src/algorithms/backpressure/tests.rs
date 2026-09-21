@@ -16,10 +16,10 @@
 //! surprising on purpose: summed depth across sets, and the fact that a tier
 //! can be recovered as soon as the streams that caused the downshift are gone.
 
-use std::collections::HashMap;
-
 use crate::algorithms::backpressure::{BackpressureAlgorithm, BackpressureAlgorithmFactory};
-use crate::{AbrAlgorithm, AbrAlgorithmFactory, AbrInput, SetSnapshot};
+use crate::{
+  AbrAlgorithm, AbrAlgorithmFactory, AbrInput, DecisionReason, SetSnapshot, StreamSnapshot,
+};
 
 /// A set with a three-rung ladder: 500, 1000 and 2000 kbps.
 fn set(id: u64, active: bool) -> SetSnapshot {
@@ -31,19 +31,35 @@ fn set(id: u64, active: bool) -> SetSnapshot {
     active,
     subscriber_buffer_ms: 0,
     algorithm_params: vec![],
+    group_span_ms: 0,
     members: vec![(500, id * 10), (1000, id * 10 + 1), (2000, id * 10 + 2)],
   }
 }
 
-fn streams(entries: &[(u64, u64)]) -> HashMap<u64, u64> {
-  entries.iter().copied().collect()
+/// A stream table with `count` live streams on each listed set, on distinct
+/// groups and at the set's lowest member, so they read as separate deliveries
+/// of one quality.
+fn streams(entries: &[(u64, u64)]) -> Vec<StreamSnapshot> {
+  let mut table = Vec::new();
+  for (set_id, count) in entries {
+    for index in 0..*count {
+      table.push(StreamSnapshot {
+        set_id: *set_id,
+        relay_track_id: set_id * 10,
+        group_id: index,
+        age_ms: 0,
+        resent: false,
+      });
+    }
+  }
+  table
 }
 
 /// Run one group through the algorithm and return what the first set forwards.
 fn decide_once(
   algorithm: &mut BackpressureAlgorithm,
   sets: &[SetSnapshot],
-  open: &HashMap<u64, u64>,
+  open: &[StreamSnapshot],
   timeouts: u64,
   group: u64,
 ) -> Option<u64> {
@@ -54,7 +70,7 @@ fn decide_once(
 fn decide(
   algorithm: &mut dyn AbrAlgorithm,
   sets: &[SetSnapshot],
-  open: &HashMap<u64, u64>,
+  open: &[StreamSnapshot],
   timeouts: u64,
   group: u64,
 ) -> crate::Selection {
@@ -63,8 +79,10 @@ fn decide(
     group_id: group,
     bandwidth_estimate_kbps: 0,
     configured_cap_kbps: 0,
+    reason: DecisionReason::GroupBoundary,
+    now_ms: 0,
     sets,
-    open_streams_per_set: open,
+    streams: open,
     stream_timeouts_since_last_decision: timeouts,
   };
   algorithm.decide(&input)
@@ -249,8 +267,10 @@ fn an_inactive_set_forwards_nothing() {
     group_id: 0,
     bandwidth_estimate_kbps: 0,
     configured_cap_kbps: 0,
+    reason: DecisionReason::GroupBoundary,
+    now_ms: 0,
     sets: &sets,
-    open_streams_per_set: &streams(&[(1, 4)]),
+    streams: &streams(&[(1, 4)]),
     stream_timeouts_since_last_decision: 0,
   };
   let selection = algorithm.decide(&input);
@@ -334,8 +354,10 @@ fn instances_do_not_share_state() {
     group_id: 0,
     bandwidth_estimate_kbps: 0,
     configured_cap_kbps: 0,
+    reason: DecisionReason::GroupBoundary,
+    now_ms: 0,
     sets: &sets,
-    open_streams_per_set: &clear,
+    streams: &clear,
     stream_timeouts_since_last_decision: 0,
   };
   for _ in 0..20 {

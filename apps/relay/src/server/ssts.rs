@@ -32,8 +32,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::{Mutex, RwLock};
 
-use moqtail_ssts::SetSnapshot;
+use crate::server::stream_id::StreamId;
 use moqtail_ssts::registry::registry;
+use moqtail_ssts::{SetSnapshot, StreamSnapshot};
 use switching_set::SwitchingSetManager;
 
 /// SSTS per-group allocation decisions: group -> set -> selected relay
@@ -86,9 +87,14 @@ pub struct SstsState {
   /// SSTS decisions (see `GroupDecisions`).
   pub group_decisions: Arc<RwLock<GroupDecisions>>,
   pub decision_notify: Arc<tokio::sync::Notify>,
-  /// Bumped when set membership changes.
-  /// A deliberate supersede must bump it too when it lands.
+  /// Bumped when set membership changes. A deliberate supersede must bump it
+  /// too when it lands.
   epoch: Arc<AtomicU64>,
+  /// The moment this connection's SSTS state was created, on the monotonic
+  /// clock the algorithms are handed. Stream ages and the elapsed time between
+  /// decisions are differences against it, so the epoch itself never means
+  /// anything and a test can start one at zero.
+  started_at: std::time::Instant,
 }
 
 /// The SSTS algorithms the client's SETUP advertises; an empty list (or the
@@ -134,7 +140,15 @@ impl SstsState {
       group_decisions: Arc::new(RwLock::new(HashMap::new())),
       decision_notify: Arc::new(tokio::sync::Notify::new()),
       epoch,
+      started_at: std::time::Instant::now(),
     }
+  }
+
+  /// This connection's monotonic clock in ms, which is the only clock an
+  /// algorithm is allowed to know: it is passed in as a number, so a test can
+  /// move time forward instead of waiting for it.
+  pub fn now_ms(&self) -> u64 {
+    self.started_at.elapsed().as_millis() as u64
   }
 
   /// SSTS was negotiated for this connection (see `negotiated_algorithms`).
@@ -191,17 +205,24 @@ impl SstsState {
   }
 
   /// The algorithms' view of this connection at decision time: every switching
-  /// set as a snapshot, plus how many forwarding streams are live on each.
+  /// set as a snapshot, plus the live forwarding streams of the whole
+  /// connection.
   ///
   /// Both come from one read of the manager, so a set cannot appear between the
-  /// two reads and show up without its counter. They are copies: no algorithm
+  /// two reads and show up without its streams. They are copies: no algorithm
   /// runs while a lock is held.
-  pub async fn decision_snapshot(&self) -> (Vec<SetSnapshot>, HashMap<u64, u64>) {
+  pub async fn decision_snapshot(&self, now_ms: u64) -> (Vec<SetSnapshot>, Vec<StreamSnapshot>) {
     let manager = self.switching_sets.read().await;
-    (
-      manager.sets.values().map(SetSnapshot::from).collect(),
-      manager.open_streams(),
-    )
+    let sets: Vec<SetSnapshot> = manager
+      .sets
+      .values()
+      .map(|set| {
+        let mut snapshot = SetSnapshot::from(set);
+        snapshot.group_span_ms = manager.group_span_ms(set.id);
+        snapshot
+      })
+      .collect();
+    (sets, manager.stream_table(now_ms))
   }
 
   /// A forwarding stream started for this relay track. No-op when the track is
@@ -210,22 +231,23 @@ impl SstsState {
   /// Every path that drops a stream from the send-stream map must call
   /// `on_stream_closed` for it as well, or the set's depth never comes back
   /// down and the algorithms read a queue that no longer exists.
-  pub async fn on_stream_opened(&self, relay_track_id: u64) {
+  pub async fn on_stream_opened(&self, stream_id: &StreamId) {
+    let now_ms = self.now_ms();
     self
       .switching_sets
       .write()
       .await
-      .note_stream_opened(relay_track_id);
+      .note_stream_opened(stream_id, now_ms);
   }
 
   /// A forwarding stream of this relay track ended: finished, reset, or
   /// stopped by the peer.
-  pub async fn on_stream_closed(&self, relay_track_id: u64) {
+  pub async fn on_stream_closed(&self, stream_id: &StreamId) {
     self
       .switching_sets
       .write()
       .await
-      .note_stream_closed(relay_track_id);
+      .note_stream_closed(stream_id);
   }
 
   /// How long a forwarding stream of this relay track may linger after its
@@ -312,11 +334,11 @@ mod tests {
   }
 
   #[tokio::test]
-  async fn decision_snapshot_covers_every_set_with_its_stream_count() {
+  async fn decision_snapshot_covers_every_set_with_its_streams() {
     let client = setup_advertising(Some(&[0]));
     let state = SstsState::new(&client, &[0]);
 
-    let (sets, streams) = state.decision_snapshot().await;
+    let (sets, streams) = state.decision_snapshot(state.now_ms()).await;
     assert!(sets.is_empty() && streams.is_empty());
 
     let track = moqtail::model::data::full_track_name::FullTrackName::new(
@@ -330,17 +352,21 @@ mod tests {
       .await
       .assign(track, 42, 1, 7, 0, 1000, 5, 1, 0, 0, vec![])
       .unwrap();
-    state.on_stream_opened(42).await;
+    let stream = crate::server::stream_id::StreamId::new_subgroup(42, 3, Some(0));
+    state.on_stream_opened(&stream).await;
 
-    let (sets, streams) = state.decision_snapshot().await;
+    let (sets, streams) = state.decision_snapshot(state.now_ms()).await;
     assert_eq!(sets.len(), 1);
     assert_eq!(sets[0].id, 7);
     assert_eq!(sets[0].members, vec![(1000, 42)]);
     assert!(sets[0].active, "one member with activate = 1");
-    assert_eq!(streams.get(&7), Some(&1));
+    assert_eq!(streams.len(), 1);
+    assert_eq!(streams[0].set_id, 7);
+    assert_eq!(streams[0].group_id, 3);
+    assert!(!streams[0].resent, "an ordinary delivery is not a re-send");
 
-    state.on_stream_closed(42).await;
-    let (_, streams) = state.decision_snapshot().await;
+    state.on_stream_closed(&stream).await;
+    let (_, streams) = state.decision_snapshot(state.now_ms()).await;
     assert!(streams.is_empty(), "a drained set reports no streams");
   }
 

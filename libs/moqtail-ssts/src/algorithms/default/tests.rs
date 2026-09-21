@@ -16,7 +16,7 @@
 //! split across ranks, weights and saturation.
 
 use super::*;
-use crate::SetSnapshot;
+use crate::{DecisionReason, SetSnapshot, StreamSnapshot};
 
 fn set(id: u64, rank: u8, weight: u64, active: bool, members: &[(u64, u64)]) -> SetSnapshot {
   SetSnapshot {
@@ -28,19 +28,22 @@ fn set(id: u64, rank: u8, weight: u64, active: bool, members: &[(u64, u64)]) -> 
     members: members.to_vec(),
     subscriber_buffer_ms: 0,
     algorithm_params: vec![],
+    group_span_ms: 0,
   }
 }
 
 #[test]
 fn budget_is_the_stricter_of_estimate_and_cap() {
-  let no_streams = std::collections::HashMap::new();
+  let no_streams: Vec<StreamSnapshot> = Vec::new();
   let input = |estimate, cap| AbrInput {
     client_id: 0,
     group_id: 0,
     bandwidth_estimate_kbps: estimate,
     configured_cap_kbps: cap,
+    reason: DecisionReason::GroupBoundary,
+    now_ms: 0,
     sets: &[],
-    open_streams_per_set: &no_streams,
+    streams: &no_streams,
     stream_timeouts_since_last_decision: 0,
   };
 

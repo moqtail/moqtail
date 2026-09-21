@@ -75,6 +75,9 @@ pub struct SetSnapshot {
   /// discard it. `0` means no latency budget, and an algorithm that switches
   /// against a deadline has nothing to switch against.
   pub subscriber_buffer_ms: u64,
+  /// How long the host has seen this set's consecutive groups arriving
+  /// a fixed distance apart, in ms, or 0 until it has two to compare.
+  pub group_span_ms: u64,
   /// The set's own negotiated knobs, handed over exactly as the subscriber
   /// sent them and in the order the algorithm defined. The host never reads
   /// them, which is what lets an algorithm add a knob without a change here:
@@ -142,14 +145,61 @@ pub struct AbrInput<'a> {
   /// The sets assigned to this algorithm, in the order the host holds them.
   /// Empty means the connection currently has no switching sets.
   pub sets: &'a [SetSnapshot],
-  /// Live forwarding streams per switching set, including streams still
-  /// draining their last Object. A set the host has no counter for is absent
-  /// and reads as zero; see [`AbrInput::open_streams`].
-  pub open_streams_per_set: &'a HashMap<u64, u64>,
+  /// Why the host is asking. A periodic sample of the same group is not a new
+  /// group: an algorithm that reacts to the state inside a group takes its
+  /// evidence differently for the two, and one that does not care can ignore
+  /// this field entirely.
+  pub reason: DecisionReason,
+  /// A monotonic clock in milliseconds, on an epoch of the host's choosing.
+  /// Only differences are meaningful, and an algorithm that needs to know how
+  /// long something took takes the difference between two decisions. It is an
+  /// input rather than a call to the clock so that a test can hand the
+  /// algorithm the elapsed time it wants to exercise a timeout.
+  pub now_ms: u64,
+  /// The live forwarding streams of every set this connection has, one entry
+  /// per stream. The count of a set's streams, the age of its oldest, and
+  /// which groups are in flight are all read from here; see the helpers on
+  /// [`AbrInput`]. Empty on a connection that has forwarded nothing yet.
+  pub streams: &'a [StreamSnapshot],
   /// Streams reset for delivery timeout since this instance's previous
   /// decision. Congestion evidence: the transport dropped objects it had
   /// already committed to, which is how an algorithm learns it overran.
   pub stream_timeouts_since_last_decision: u64,
+}
+
+/// One live forwarding stream, as the host saw it open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreamSnapshot {
+  /// The set the stream carries, resolved by the host from its relay track.
+  /// A stream whose track belongs to no set is not reported at all.
+  pub set_id: u64,
+  /// The member being forwarded.
+  pub relay_track_id: u64,
+  /// The media group being carried.
+  pub group_id: u64,
+  /// How long the stream has been open, in ms: `now_ms - when it opened`.
+  /// A stream that finished and is only draining its last Object is still
+  /// open in this sense, which is the point: it still occupies the pipeline.
+  pub age_ms: u64,
+  /// The stream was opened to re-send a group an earlier decision overtook,
+  /// not to carry new media. Such a stream is the consequence of a downshift,
+  /// so a depth that counted it would let the downshift report itself as new
+  /// congestion and downshift again.
+  pub resent: bool,
+}
+
+/// Why [`AbrAlgorithm::decide`] is being called.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecisionReason {
+  /// A new media group started, and this is the decision for it.
+  GroupBoundary,
+  /// The host is re-evaluating while the same group is being served, because
+  /// bandwidth moves faster than groups. `group_id` is the group in flight.
+  PeriodicSample,
+  /// A stream was reset for delivery timeout, which is evidence that the
+  /// current choice is not sustainable, and the host wants a decision on the
+  /// group in flight now rather than at the next boundary.
+  StreamTimeout,
 }
 
 impl AbrInput<'_> {
@@ -171,9 +221,67 @@ impl AbrInput<'_> {
     }
   }
 
-  /// Live forwarding streams on one set.
+  /// Live forwarding streams on one set, including one still draining its
+  /// last Object and any opened to re-send an overtaken group.
   pub fn open_streams(&self, set_id: u64) -> u64 {
-    self.open_streams_per_set.get(&set_id).copied().unwrap_or(0)
+    self
+      .streams
+      .iter()
+      .filter(|stream| stream.set_id == set_id)
+      .count() as u64
+  }
+
+  /// Live streams carrying `relay_track_id` on `set_id`: how much of the
+  /// pipeline is occupied at one particular quality. A stream opened to
+  /// re-send an overtaken group does not count, because that delivery is what
+  /// a decision caused, not what the network is doing.
+  pub fn open_streams_at_track(&self, set_id: u64, relay_track_id: u64) -> u64 {
+    self
+      .streams
+      .iter()
+      .filter(|stream| {
+        stream.set_id == set_id && stream.relay_track_id == relay_track_id && !stream.resent
+      })
+      .count() as u64
+  }
+
+  /// Age in ms of the oldest live stream of a set, 0 when it has none: how
+  /// far the set's delivery has fallen behind the moment it was asked for.
+  pub fn oldest_stream_age_ms(&self, set_id: u64) -> u64 {
+    self
+      .streams
+      .iter()
+      .filter(|stream| stream.set_id == set_id)
+      .map(|stream| stream.age_ms)
+      .max()
+      .unwrap_or(0)
+  }
+
+  /// The groups of a set that have a live stream: the deliveries the
+  /// algorithm could decide to overtake.
+  pub fn open_groups(&self, set_id: u64) -> Vec<u64> {
+    let mut groups: Vec<u64> = self
+      .streams
+      .iter()
+      .filter(|stream| stream.set_id == set_id)
+      .map(|stream| stream.group_id)
+      .collect();
+    groups.sort_unstable();
+    groups.dedup();
+    groups
+  }
+
+  /// The observed span of a set's groups in ms, or 0 until the host has seen
+  /// two consecutive groups go by. A healthy group's stream lives about one
+  /// group span, so an age beyond the span is the part that piled up rather
+  /// than the part that is simply in flight.
+  pub fn group_span_ms(&self, set_id: u64) -> u64 {
+    self
+      .sets
+      .iter()
+      .find(|set| set.id == set_id)
+      .map(|set| set.group_span_ms)
+      .unwrap_or(0)
   }
 
   /// Live forwarding streams across the sets that have a subscriber: the
@@ -225,4 +333,110 @@ pub trait AbrAlgorithmFactory: Send + Sync {
 
   /// A fresh instance with no history, for one connection.
   fn create(&self) -> Box<dyn AbrAlgorithm>;
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn stream(set_id: u64, relay_track_id: u64, group_id: u64, age_ms: u64) -> StreamSnapshot {
+    StreamSnapshot {
+      set_id,
+      relay_track_id,
+      group_id,
+      age_ms,
+      resent: false,
+    }
+  }
+
+  fn input_with<'a>(streams: &'a [StreamSnapshot], sets: &'a [SetSnapshot]) -> AbrInput<'a> {
+    AbrInput {
+      client_id: 1,
+      group_id: 9,
+      bandwidth_estimate_kbps: 0,
+      configured_cap_kbps: 0,
+      reason: DecisionReason::GroupBoundary,
+      now_ms: 1000,
+      sets,
+      streams,
+      stream_timeouts_since_last_decision: 0,
+    }
+  }
+
+  fn set(id: u64, group_span_ms: u64) -> SetSnapshot {
+    SetSnapshot {
+      id,
+      algorithm_id: 0,
+      rank: 0,
+      weight: 1,
+      active: true,
+      members: vec![(500, 10), (1000, 11)],
+      subscriber_buffer_ms: 0,
+      algorithm_params: vec![],
+      group_span_ms,
+    }
+  }
+
+  /// A re-sent stream still occupies the pipeline, so the raw depth counts it;
+  /// only the per-quality question leaves it out.
+  #[test]
+  fn depth_counts_every_live_stream_and_quality_counts_only_new_delivery() {
+    let resent = StreamSnapshot {
+      resent: true,
+      ..stream(1, 11, 7, 10)
+    };
+    let streams = [stream(1, 10, 8, 20), resent, stream(2, 20, 8, 5)];
+    let sets = [set(1, 0), set(2, 0)];
+    let input = input_with(&streams, &sets);
+
+    assert_eq!(input.open_streams(1), 2);
+    assert_eq!(input.open_streams(2), 1);
+    assert_eq!(input.open_streams(3), 0, "an unknown set has no streams");
+
+    assert_eq!(input.open_streams_at_track(1, 11), 0);
+    assert_eq!(input.open_streams_at_track(1, 10), 1);
+  }
+
+  #[test]
+  fn the_oldest_stream_and_the_open_groups_of_a_set() {
+    let streams = [stream(1, 10, 8, 20), stream(1, 11, 9, 240)];
+    let sets = [set(1, 0)];
+    let input = input_with(&streams, &sets);
+
+    assert_eq!(input.oldest_stream_age_ms(1), 240);
+    assert_eq!(input.oldest_stream_age_ms(2), 0, "no streams, no age");
+    assert_eq!(input.open_groups(1), vec![8, 9]);
+  }
+
+  #[test]
+  fn depth_over_the_active_sets_only() {
+    let streams = [
+      stream(1, 10, 8, 0),
+      stream(2, 20, 8, 0),
+      stream(3, 30, 8, 0),
+    ];
+    let paused = SetSnapshot {
+      active: false,
+      ..set(2, 0)
+    };
+    let sets = [set(1, 0), paused];
+    let input = input_with(&streams, &sets);
+
+    assert_eq!(
+      input.active_stream_depth(),
+      1,
+      "a set with no subscriber and a set nobody is watching are not congestion here"
+    );
+  }
+
+  /// The cadence is a per-set measurement; a set the host has not measured
+  /// reads as 0 rather than as some other set's number.
+  #[test]
+  fn each_set_carries_its_own_group_cadence() {
+    let sets = [set(1, 1000), set(2, 0)];
+    let input = input_with(&[], &sets);
+    assert_eq!(input.group_span_ms(1), 1000);
+    assert_eq!(input.group_span_ms(2), 0);
+    assert_eq!(input.group_span_ms(77), 0);
+  }
 }

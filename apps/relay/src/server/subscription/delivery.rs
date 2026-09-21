@@ -25,6 +25,7 @@ use crate::server::utils;
 use moqtail::model::common::location::Location;
 use moqtail::model::control::constant::PublishDoneStatusCode;
 use moqtail::model::data::datagram::Datagram;
+use moqtail::model::data::fetch_object::FetchObjectPayload;
 use moqtail::model::data::object::Object;
 use moqtail::model::error::StreamResetCode;
 use moqtail::model::parameter::combined_filter::ObjectFields;
@@ -355,6 +356,34 @@ impl Subscription {
     }
     */
 
+    // SSTS: a group whose delivery this relay overtook is being re-sent at a
+    // lower rung, and the subscriber is joining it somewhere in the middle. A
+    // subgroup stream that starts at object N is not something the subscriber
+    // can decode, so the head of the subgroup (objects 0..N-1) goes on the
+    // wire first, on a stream of its own, from the track cache.
+    //
+    // Nothing here waits on the publisher: the cache holds what has already
+    // arrived, and when it does not hold this head - evicted, or this member's
+    // copy of the group simply started later - the re-send does not happen.
+    // The switch stands either way; what is lost is the chance to deliver the
+    // part of the group that was already in the building.
+    if object.location.object > 0
+      && header_info.is_none()
+      && self.subscriber.ssts_enabled()
+      && self
+        .subscriber
+        .ssts
+        .is_resent_group(self.relay_track_id, object.location.group)
+        .await
+      && self
+        .subscriber
+        .get_stream(&self.new_send_stream_key(&stream_id))
+        .await
+        .is_none()
+    {
+      self.replay_cached_head(&stream_id, &object.location).await;
+    }
+
     // Entering forward=true: clear any stale pending header (group boundary case).
     // If forward was already true, pending_header is None and this is a no-op.
     {
@@ -512,6 +541,108 @@ impl Subscription {
     }
   }
 
+  /// Put a re-sent subgroup's head on the wire, ahead of the live object that
+  /// revealed the re-send.
+  ///
+  /// The stream is new and belongs to the member the decision landed on: the
+  /// delivery that was overtaken was reset, and a re-send does not reuse a stream
+  /// it reset. Because the head begins at the subgroup's first object, the
+  /// publisher's own header describes it exactly, `FIRST_OBJECT` included - which
+  /// is why that header is required rather than synthesized.
+  ///
+  /// Returns how many objects were replayed, which is 0 for every reason that
+  /// stops the replay before it starts: nothing cached, nothing before the live
+  /// object, no header to open the subgroup with, no stream to write it to.
+  async fn replay_cached_head(&self, stream_id: &StreamId, loc: &Location) -> usize {
+    let Some(group_objects) = self.cache.get_group(loc.group).await else {
+      return 0;
+    };
+    let head = cached_head(
+      &group_objects.read().await,
+      stream_id.subgroup_id,
+      loc.object,
+    );
+    if head.is_empty() {
+      return 0;
+    }
+
+    let Some(header_info) = self
+      .active_subgroup_headers
+      .read()
+      .await
+      .get(stream_id)
+      .cloned()
+    else {
+      return 0;
+    };
+
+    let Ok((replay_stream_id, send_stream)) = self.handle_header(header_info).await else {
+      return 0;
+    };
+    // The new stream's own bookkeeping, not the overtaken one's: the head starts
+    // at no previous object, because it starts at the subgroup's first one.
+    self
+      .send_stream_last_object_ids
+      .write()
+      .await
+      .insert(replay_stream_id.clone(), None);
+
+    let mut replayed = 0usize;
+    for cached in head {
+      let previous_object_id = {
+        let ids = self.send_stream_last_object_ids.read().await;
+        ids.get(&replay_stream_id).copied().flatten()
+      };
+      let Ok(object) = Object::try_from_fetch(cached, self.relay_track_id) else {
+        continue;
+      };
+      let location = object.location.clone();
+      if self
+        .handle_object(
+          &object,
+          previous_object_id,
+          &replay_stream_id,
+          send_stream.clone(),
+        )
+        .await
+        .is_err()
+      {
+        // The stream is gone or the subscriber stopped reading. What went out
+        // went out; the live object that follows is the next problem, not this
+        // one's, and it is forwarded by the caller on the stream left standing.
+        break;
+      }
+      self
+        .send_stream_last_object_ids
+        .write()
+        .await
+        .insert(replay_stream_id.clone(), Some(location.object));
+      // A max updater, so replaying older objects cannot move the location the
+      // switch context reads. A re-send is the one case where media deliberately
+      // travels back to a point the subscriber has been past, and this is the
+      // place where that is not allowed to become a lie somewhere else.
+      self
+        .subscription_state
+        .write()
+        .await
+        .update_last_sent_max_location(location);
+      replayed += 1;
+    }
+
+    if replayed > 0 {
+      info!(
+        "SSTS: replayed an overtaken group's head - subscriber={} relay_track_id={} group={} subgroup={:?} objects={} ahead of object {}",
+        self.client_connection_id,
+        self.relay_track_id,
+        loc.group,
+        stream_id.subgroup_id,
+        replayed,
+        loc.object
+      );
+    }
+    replayed
+  }
+
   async fn on_datagram(&self, times: EventTimes, picked: Option<Instant>, object: Arc<Datagram>) {
     // Handle datagram - serialize full MOQT datagram format
     // Must include type, track_alias, group_id, object_id, publisher_priority, and payload
@@ -604,5 +735,108 @@ impl Subscription {
         error!("Failed to serialize datagram: {:?}", e);
       }
     }
+  }
+}
+
+/// The cached objects that make up one re-sent subgroup's head: what the relay
+/// has for that subgroup before the live object, oldest first.
+///
+/// Per subgroup and not per group, because the subgroup is the unit the subscriber
+/// reassembles: another subgroup's head would go on a stream the live object never
+/// joins. The live object itself is excluded - the caller forwards it on this same
+/// stream, right behind the head - and so is everything after it, which the live
+/// path is already carrying.
+fn cached_head(
+  objects: &[FetchObjectPayload],
+  subgroup: Option<u64>,
+  before: u64,
+) -> Vec<FetchObjectPayload> {
+  let mut head: Vec<FetchObjectPayload> = objects
+    .iter()
+    .filter(|object| {
+      object.object_id < before && subgroup.is_none_or(|subgroup| object.subgroup_id == subgroup)
+    })
+    .cloned()
+    .collect();
+  head.sort_by_key(|object| object.object_id);
+  head
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use moqtail::model::data::constant::ObjectForwardingPreference;
+
+  /// A cached object of one subgroup, for the head-selection tests.
+  fn cached(group: u64, subgroup: u64, object: u64) -> FetchObjectPayload {
+    FetchObjectPayload {
+      group_id: group,
+      subgroup_id: subgroup,
+      object_id: object,
+      publisher_priority: 0,
+      forwarding_preference: ObjectForwardingPreference::Subgroup,
+      properties: None,
+      payload: bytes::Bytes::new(),
+    }
+  }
+
+  fn ids(objects: &[FetchObjectPayload]) -> Vec<u64> {
+    objects.iter().map(|object| object.object_id).collect()
+  }
+
+  /// The head is everything the relay has for the subgroup before the live
+  /// object, and the live object is not part of it: the caller forwards that
+  /// itself, right behind the head, on the same stream.
+  #[test]
+  fn the_head_is_everything_before_the_live_object_in_order() {
+    // Deliberately out of arrival order: the cache is a map, and a stream that
+    // replayed objects in the order they happened to be stored would break the
+    // subgroup's object-id ordering.
+    let objects = [
+      cached(7, 0, 3),
+      cached(7, 0, 0),
+      cached(7, 0, 1),
+      cached(7, 0, 5),
+    ];
+    assert_eq!(ids(&cached_head(&objects, Some(0), 4)), vec![0, 1, 3]);
+    assert!(
+      cached_head(&objects, Some(0), 0).is_empty(),
+      "joining at the first object needs no head at all"
+    );
+    assert_eq!(ids(&cached_head(&objects, Some(0), 6)), vec![0, 1, 3, 5]);
+    assert!(
+      cached_head(&[], Some(0), 9).is_empty(),
+      "nothing cached, nothing re-sent"
+    );
+  }
+
+  /// A subgroup is the unit the subscriber reassembles, so the head belongs to
+  /// one subgroup. Objects of a sibling subgroup would go on a stream the live
+  /// object never joins, and would arrive as media nobody asked for.
+  #[test]
+  fn the_head_belongs_to_one_subgroup() {
+    let objects = [
+      cached(7, 0, 0),
+      cached(7, 1, 0),
+      cached(7, 0, 1),
+      cached(7, 1, 1),
+      cached(7, 2, 0),
+    ];
+    assert_eq!(ids(&cached_head(&objects, Some(1), 2)), vec![0, 1]);
+    assert_eq!(ids(&cached_head(&objects, Some(2), 5)), vec![0]);
+
+    // A stream that names no subgroup (a fetch, or a header that carried none)
+    // is not a filter: there is no second subgroup to keep out of it.
+    assert_eq!(ids(&cached_head(&objects, None, 1)), vec![0, 0, 0]);
+  }
+
+  /// The head is replayed as stored, payload and priority included: a re-sent
+  /// group has to be the same media the publisher sent, not a reconstruction of
+  /// it.
+  #[test]
+  fn the_head_carries_the_objects_themselves() {
+    let objects = [cached(7, 0, 0), cached(7, 0, 1)];
+    let head = cached_head(&objects, Some(0), 2);
+    assert_eq!(head, objects.to_vec());
   }
 }

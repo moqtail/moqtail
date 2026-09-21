@@ -56,36 +56,30 @@ it is clamped to 1 rather than 0.
 
 ## What this is not, and where the rest of the experiment went
 
-Two pieces of the research version live in the relay, not the algorithm, and are
-**not implemented here**. Both were left out deliberately rather than
-half-ported, and the algorithm's behaviour differs accordingly.
+Two pieces of the research version live in the relay, not in this crate, because
+this crate has no mechanism in it: no streams, no cache, no clock of its own.
+They are described here so that what the algorithm's decisions _mean_ on this
+relay is legible from the algorithm's directory.
 
-**The full-group re-send from the cache.** The research version replayed an
-overtaken group from its first object at the new quality, so the subscriber got a
-decodable group instead of a tail. Here the overtaken delivery is cancelled and
-the new member's own objects resume from wherever that group had got to, which
-means the subscriber can receive a group that starts mid-way and may not decode
-until the next one. That is a real cost, and it is the reason this algorithm is
-opt-in on a private id and not a default.
+**The replay is in the relay's forwarding path.** A group this algorithm
+overtook is re-sent in full: the relay notices that the first object it forwards
+for that group is not the subgroup's first, opens a new stream on the member the
+decision landed on, puts the cached head (objects `0..N-1` of that subgroup) on it
+from the track cache, and lets the live objects continue behind. Nothing is
+waited for: a head that is not in the cache — evicted, or a member whose copy of
+the group started later — means no re-send, and the switch stands on its own. The
+old delivery is reset rather than reused, and the new stream carries the
+publisher's own header for that subgroup, which is what makes `FIRST_OBJECT`
+correct: a re-send starts where a subgroup starts. See
+`apps/relay/src/server/subscription.rs`.
 
-The replay belongs in `apps/relay/src/server/subscription.rs`, in the branch that
-already opens a stream from a cached subgroup header for a subscriber that joined
-mid-subgroup — the mechanism exists, and what is missing is a trigger keyed on the
-group being a re-send. It has consequences that are not this algorithm's to
-settle: the `FIRST_OBJECT` flag on a stream that does not start at the subgroup's
-first object (already a documented conformance gap on the cache-join path), and
-what a replayed object does to the per-subscription "last delivered location"
-that STATUS reporting reads.
-
-**The halved discard timeout is implemented.** A group this algorithm causes to
-be re-sent gets half the buffer its subscriber negotiated for the set, carried in
-the request (`Selection::supersede_with_deadline`) and applied by the host to the
-streams of that group alone. It is part of what selecting this algorithm means:
-the relay is finding out whether the lighter delivery makes a deadline, not
-whether the heavy one did. A set that negotiated no buffer has granted no
-permission to discard, and gets no deadline — `None`, which leaves the relay's
-rule of never discarding in charge. Half of 1 ms would be 0, and 0 means never, so
-the floor is 1.
+**Best effort, by decision.** A re-send costs the bytes of a group that was
+already partly sent, on a connection that is congested by definition, and it
+delivers media the subscriber may already have given up on. It is bounded by the
+deadline above and by the cache, and by nothing else: there is no cutoff on how
+much of a group has already been sent, and no estimate consulted before
+committing the bytes. On a link that is congested rather than merely busy, that
+shows up as a group that arrives twice and still gets discarded.
 
 **The extension's `umin` and `rho` slots.** The research version read a third
 extension slot as a timeout and stored two others unused. Nothing here reads

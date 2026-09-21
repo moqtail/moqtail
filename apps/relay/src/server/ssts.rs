@@ -301,6 +301,16 @@ impl SstsState {
       .mark_group_resent(set_id, group_id, deadline_ms);
   }
 
+  /// Whether this track's copy of `group_id` is a re-send of an overtaken
+  /// delivery, which is what entitles it to have its cached head replayed.
+  pub(crate) async fn is_resent_group(&self, relay_track_id: u64, group_id: u64) -> bool {
+    let sets = self.switching_sets.read().await;
+    match sets.set_of_relay_track(relay_track_id) {
+      Some(set) => sets.is_resent_group(set.id, group_id),
+      None => false,
+    }
+  }
+
   /// The deadline a decision asked for on the re-send of this track's copy of
   /// `group_id`, or `None` when the set's negotiated buffer stays in charge.
   pub(crate) async fn resent_deadline_ms(&self, relay_track_id: u64, group_id: u64) -> Option<u64> {

@@ -297,6 +297,12 @@ impl SwitchingSetManager {
     self.resent_groups.insert((set_id, group_id), deadline_ms);
   }
 
+  /// Whether this group's delivery was overtaken, so the streams opened for it
+  /// now re-send media rather than deliver new media.
+  pub fn is_resent_group(&self, set_id: u64, group_id: u64) -> bool {
+    self.resent_groups.contains_key(&(set_id, group_id))
+  }
+
   /// The deadline the decision asked for on this re-sent group's streams, or
   /// `None` when the group is not a re-send or the request left the deadline
   /// alone.

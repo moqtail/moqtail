@@ -30,7 +30,7 @@
 //!
 //! See the README in this directory for the two things this gets wrong.
 
-mod state;
+pub(crate) mod state;
 
 use crate::{AbrAlgorithm, AbrAlgorithmFactory, AbrInput, Selection};
 
@@ -128,20 +128,6 @@ impl AbrAlgorithm for BackpressureAlgorithm {
       .saturating_sub(1);
     self.state.clamp_to(max_index);
 
-    input
-      .sets
-      .iter()
-      .map(|set| {
-        let selected = if set.active && !set.members.is_empty() {
-          set
-            .members
-            .get(self.state.tier().min(set.members.len() - 1))
-            .map(|(_, track_id)| *track_id)
-        } else {
-          None
-        };
-        (set.id, selected)
-      })
-      .collect()
+    crate::algorithms::serve_tier(input, self.state.tier())
   }
 }

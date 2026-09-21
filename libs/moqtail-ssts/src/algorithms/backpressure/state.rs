@@ -21,15 +21,15 @@
 //! touches the transport or the host.
 
 /// Depth at or below which the connection is considered uncongested.
-const DEPTH_TARGET: u64 = 1;
+pub(crate) const DEPTH_TARGET: u64 = 1;
 
 /// Depth at or above which the connection is congested and the tier drops
 /// immediately, without waiting for a streak.
-const DOWNSHIFT_DEPTH: u64 = 2;
+pub(crate) const DOWNSHIFT_DEPTH: u64 = 2;
 
 /// Consecutive uncongested groups required before raising the tier. One group
 /// of slack is a fluctuation; five is a trend.
-const UPSHIFT_GOP_STREAK: u64 = 5;
+pub(crate) const UPSHIFT_GOP_STREAK: u64 = 5;
 
 /// Consecutive congested groups during cooldown, each deeper than the last,
 /// before dropping the tier again.
@@ -86,7 +86,7 @@ pub(crate) enum Event {
 }
 
 /// The connection's position on the quality ladder.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct TierState {
   /// Index into the ascending tier ladder; `0` is the lowest quality.
   current_index: usize,
@@ -96,12 +96,42 @@ pub(crate) struct TierState {
   post_downshift_depth: Option<u64>,
   /// Consecutive cooldown groups that were deeper than their predecessor.
   cooldown_high_streak: u64,
+  /// How many uncongested groups raise the tier.
+  upshift_streak: u64,
+}
+
+impl Default for TierState {
+  fn default() -> Self {
+    Self::new()
+  }
 }
 
 impl TierState {
+  /// A machine at the lowest tier, waiting for `UPSHIFT_GOP_STREAK`
+  /// uncongested groups before it starts climbing.
+  pub(crate) fn new() -> Self {
+    Self {
+      current_index: 0,
+      clear_streak: 0,
+      post_downshift_depth: None,
+      cooldown_high_streak: 0,
+      upshift_streak: UPSHIFT_GOP_STREAK,
+    }
+  }
+
   /// The tier to serve, as an index into a ladder sorted low to high.
   pub(crate) fn tier(&self) -> usize {
     self.current_index
+  }
+
+  /// Change how many uncongested groups raise the tier.
+  ///
+  /// The walk is the same walk; how fast the ladder is explored at the start is
+  /// the one thing an algorithm built on top of this wants to differ about.
+  /// Zero is clamped to one, because a streak of zero would move the tier on
+  /// every group and never settle.
+  pub(crate) fn set_upshift_streak(&mut self, groups: u64) {
+    self.upshift_streak = groups.max(1);
   }
 
   /// Whether the machine is in the settle-down period after a downshift.
@@ -136,7 +166,7 @@ impl TierState {
       self.cooldown_high_streak = 0;
     }
     self.clear_streak += 1;
-    if self.clear_streak < UPSHIFT_GOP_STREAK {
+    if self.clear_streak < self.upshift_streak {
       return if exited {
         Event::CooldownExit
       } else {

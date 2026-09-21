@@ -22,6 +22,7 @@ use std::sync::{Arc, OnceLock};
 
 use crate::algorithms::backpressure::BackpressureAlgorithmFactory;
 use crate::algorithms::default::DefaultAlgorithmFactory;
+use crate::algorithms::enhanced_bp::EnhancedBackpressureAlgorithmFactory;
 use crate::{AbrAlgorithm, AbrAlgorithmFactory};
 
 /// First algorithm id an implementation may use for its own experiments.
@@ -49,6 +50,9 @@ impl Registry {
         // MOQtail's own tier selector, at the first private id. Opt-in: it is
         // only advertised when `ssts_algorithms` asks for it.
         Arc::new(BackpressureAlgorithmFactory),
+        // The same signal with an exploration phase at the start, at the next
+        // private id. Also opt-in.
+        Arc::new(EnhancedBackpressureAlgorithmFactory),
       ],
     }
   }

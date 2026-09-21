@@ -21,3 +21,32 @@
 
 pub mod backpressure;
 pub mod default;
+pub mod enhanced_bp;
+
+use crate::{AbrInput, Selection};
+
+/// The selection the tier-walking algorithms share: every set with a subscriber
+/// serves the member at `tier`, clamped to its own ladder, and a set without
+/// one forwards nothing.
+///
+/// A set shorter than the tier serves its own top track. That is what makes one
+/// index shared across sets of different heights safe to reason about: the tall
+/// set switches and the short one has nothing to switch to, rather than
+/// forwarding a member it does not have.
+pub(crate) fn serve_tier(input: &AbrInput, tier: usize) -> Selection {
+  input
+    .sets
+    .iter()
+    .map(|set| {
+      let selected = if set.active && !set.members.is_empty() {
+        set
+          .members
+          .get(tier.min(set.members.len() - 1))
+          .map(|(_, track_id)| *track_id)
+      } else {
+        None
+      };
+      (set.id, selected)
+    })
+    .collect()
+}

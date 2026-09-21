@@ -20,6 +20,7 @@
 //! the crate root is the only input.
 
 pub mod backpressure;
+pub mod bnb;
 pub mod default;
 pub mod enhanced_bp;
 

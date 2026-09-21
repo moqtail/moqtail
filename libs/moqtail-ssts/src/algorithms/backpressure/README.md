@@ -53,3 +53,11 @@ Per connection, one `TierState`: the tier index, the clear streak, the depth
 recorded at the last downshift (which also means "in cooldown"), and the rising
 depth streak. It lives in the algorithm instance the connection owns, so it is
 freed with the connection.
+
+## Identity
+
+Wire id `0xff01` (`PRIVATE_ALGORITHM_ID_BASE`). The research branch this came
+from ran it as algorithm `1`, a value the specification reserves for future IETF
+allocation; MOQtail's own algorithms live in the private range at the top of the
+id space so a later standard allocation cannot collide with them. The mapping is
+`1 → 0xff01`, `2 → 0xff02`, `3 → 0xff03`, `4 → 0xff04`.

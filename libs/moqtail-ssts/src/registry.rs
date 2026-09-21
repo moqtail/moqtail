@@ -21,6 +21,7 @@
 use std::sync::{Arc, OnceLock};
 
 use crate::algorithms::backpressure::BackpressureAlgorithmFactory;
+use crate::algorithms::bnb::BnbAlgorithmFactory;
 use crate::algorithms::default::DefaultAlgorithmFactory;
 use crate::algorithms::enhanced_bp::EnhancedBackpressureAlgorithmFactory;
 use crate::{AbrAlgorithm, AbrAlgorithmFactory, Tuning};
@@ -53,6 +54,9 @@ impl Registry {
         // The same signal with an exploration phase at the start, at the next
         // private id. Also opt-in.
         Arc::new(EnhancedBackpressureAlgorithmFactory),
+        // Budget-negotiated backpressure: the per-set rung index that reads the
+        // subscriber's own buffer as its deadline. Also opt-in.
+        Arc::new(BnbAlgorithmFactory),
       ],
     }
   }

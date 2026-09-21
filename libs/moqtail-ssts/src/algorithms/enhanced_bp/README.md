@@ -56,3 +56,13 @@ it goes — there is nothing above the top rung to serve — but it means the
 algorithm cannot report "the path is much better than anything I can send",
 which is the measurement an operator wants when deciding whether to publish more
 rungs.
+
+## State
+
+Per connection, backpressure's `TierState` plus one flag: whether the connection
+is still exploring. The flag is one-way.
+
+## Identity
+
+Wire id `0xff02` (`PRIVATE_ALGORITHM_ID_BASE + 1`); `2` on the research branch.
+See [`../backpressure/README.md`](../backpressure/README.md) for the mapping.

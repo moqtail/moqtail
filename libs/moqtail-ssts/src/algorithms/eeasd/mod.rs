@@ -67,6 +67,7 @@ use crate::AbrAlgorithmFactory;
 use crate::AbrInput;
 use crate::DecisionReason;
 use crate::Selection;
+use crate::SetSnapshot;
 use crate::Tuning;
 use crate::algorithms::eeasd::state::LadderState;
 use crate::algorithms::eeasd::state::Monitor;
@@ -241,20 +242,45 @@ impl AbrAlgorithm for EeasdAlgorithm {
     let mut selection = crate::algorithms::serve_tier(input, after);
 
     // The groups still in flight above the new rung were overtaken by this
-    // decision. Naming the sets is all the algorithm can do; the host decides
-    // what its own state allows.
+    // decision. Naming the sets is all the algorithm can do; the host works out
+    // which groups of that set are affected and what its own state allows.
     if after < before {
       for set in input
         .sets
         .iter()
         .filter(|set| set.active && !set.members.is_empty())
       {
-        selection.supersede(set.id);
+        match resend_deadline_ms(set) {
+          Some(deadline) => selection.supersede_with_deadline(set.id, deadline),
+          None => selection.supersede(set.id),
+        }
       }
     }
 
     selection
   }
+}
+
+/// A re-sent group gets half the buffer the subscriber negotiated for the set.
+///
+/// This is part of what choosing this algorithm means, and it is what makes the
+/// re-send worth its bytes: the relay is finding out whether the lighter
+/// delivery makes a deadline, not whether the heavy one did, and a group that
+/// misses a deadline it was already late for is a group the subscriber was going
+/// to discard anyway. Half, because a re-send starts behind the live stream it
+/// replaced and has no way to catch up; if it cannot make the deadline at half,
+/// it could not have made it at full either, and the subscriber is better off
+/// with the gap and the next group at the new quality.
+///
+/// A set that negotiated no buffer has granted no permission to shorten, so
+/// `None` leaves the relay's rule of never discarding in charge. The floor of one
+/// is an edge rather than a policy: 0 means "never" in this contract, so halving
+/// a 1 ms buffer must not turn a very short deadline into an infinite one.
+fn resend_deadline_ms(set: &SetSnapshot) -> Option<u64> {
+  if set.subscriber_buffer_ms == 0 {
+    return None;
+  }
+  Some((set.subscriber_buffer_ms / 2).max(1))
 }
 
 /// Whether there is anything for a mid-group decision to act on: a connection

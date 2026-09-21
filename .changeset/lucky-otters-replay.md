@@ -14,9 +14,11 @@ forwards, and which sets' in-flight deliveries the decision overtook. The second
 is a request. Algorithms still cannot reset a stream, reach a cache or re-send an
 object; the host implements the request as it sees fit, and this relay cancels.
 
-Two pieces of the research version are deliberately absent, and both are named in
-the algorithm's README with what is missing and where it would go: the replay of
-an overtaken group's cached head, without which a switched group can reach the
-subscriber starting mid-way, and the halved discard timeout for re-sent groups,
-which would spend a permission the subscriber negotiated for the set and not for
-one group.
+A re-sent group gets half the discard deadline its subscriber negotiated for the
+set, which is part of what selecting the algorithm means; a set that negotiated
+no buffer gets no deadline, because there is no permission there to shorten.
+
+The one piece of the research version still absent is the replay of an overtaken
+group's cached head, named in the algorithm's README with what is missing and
+where it would go: without it a switched group can reach the subscriber starting
+mid-way.

@@ -63,7 +63,29 @@ pub struct Selection {
   /// re-send, finish the old delivery and switch at the next group, or ignore the
   /// request because the group is already closed — is mechanism, and differs
   /// between relays.
-  pub supersede: std::collections::HashSet<u64>,
+  pub supersede: HashMap<u64, Supersede>,
+}
+
+/// What a decision asks the host to do about the deliveries it overtook.
+///
+/// The request is per set, because the algorithm decides per set; it is the
+/// host that works out which groups of that set are still in flight above the
+/// rung the decision landed on.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Supersede {
+  /// The deadline, in ms, for the groups this decision causes to be re-sent.
+  ///
+  /// `None` leaves whatever the set negotiated in charge. An algorithm that
+  /// defines a tighter deadline for a re-send — because it is about to find out
+  /// whether the lighter delivery makes it, not whether the heavy one did —
+  /// says so here, and the host applies it to the streams it opens for those
+  /// groups and to nothing else.
+  ///
+  /// `Some(0)` means never discard. That is also what a set with no negotiated
+  /// buffer means, and it is not something a deadline can grant: an algorithm
+  /// that wants a shorter deadline than "never" has to have been given a buffer
+  /// to shorten, and returns `None` when there was none.
+  pub resend_deadline_ms: Option<u64>,
 }
 
 impl Selection {
@@ -76,7 +98,7 @@ impl Selection {
   pub fn with_capacity(sets: usize) -> Self {
     Self {
       tracks: HashMap::with_capacity(sets),
-      supersede: std::collections::HashSet::new(),
+      supersede: HashMap::new(),
     }
   }
 
@@ -97,9 +119,30 @@ impl Selection {
     self.tracks.contains_key(&set_id)
   }
 
-  /// Ask the host to deal with the groups this decision overtook.
+  /// Ask the host to deal with the groups this decision overtook, leaving the
+  /// deadline those groups were negotiated with in charge.
   pub fn supersede(&mut self, set_id: u64) {
-    self.supersede.insert(set_id);
+    self.supersede.insert(set_id, Supersede::default());
+  }
+
+  /// Ask the host to deal with the groups this decision overtook, and give the
+  /// re-sent ones a deadline of their own.
+  pub fn supersede_with_deadline(&mut self, set_id: u64, resend_deadline_ms: u64) {
+    self.supersede.insert(
+      set_id,
+      Supersede {
+        resend_deadline_ms: Some(resend_deadline_ms),
+      },
+    );
+  }
+
+  /// The deadline requested for a set's re-sent groups, or `None` when the
+  /// request said nothing about deadlines.
+  pub fn resend_deadline_ms(&self, set_id: u64) -> Option<u64> {
+    self
+      .supersede
+      .get(&set_id)
+      .and_then(|request| request.resend_deadline_ms)
   }
 
   /// Whether every set was answered; the host reports the ones that were not.

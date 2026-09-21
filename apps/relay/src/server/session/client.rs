@@ -596,12 +596,26 @@ impl MOQTClient {
       // negotiated the feature always closes gracefully, so in-flight data is
       // never discarded for traffic that never opted in.
       let timeout = if self.ssts_enabled() {
-        match self
+        // A decision that overtook this group may have asked the re-send to meet
+        // a deadline of its own. It replaces the set's negotiated buffer for the
+        // streams of that group and for nothing else: the same set's other
+        // groups, and the delivery that was overtaken, keep what the subscriber
+        // negotiated. `Some(0)` means never discard, like the negotiated value.
+        let deadline_ms = match self
           .ssts
-          .negotiated_discard_timeout_ms(stream_key.stream_id.relay_track_id)
+          .resent_deadline_ms(stream_key.stream_id.relay_track_id, group_id)
           .await
         {
-          Some(negotiated_ms) => std::time::Duration::from_millis(negotiated_ms),
+          Some(deadline) => Some(deadline),
+          None => {
+            self
+              .ssts
+              .negotiated_discard_timeout_ms(stream_key.stream_id.relay_track_id)
+              .await
+          }
+        };
+        match deadline_ms {
+          Some(ms) => std::time::Duration::from_millis(ms),
           None => self.config.ssts_discard_timeout,
         }
       } else {

@@ -287,13 +287,28 @@ impl SstsState {
 
   /// Record that a group's delivery was overtaken, so the streams opened for it
   /// from now on are reported to the algorithms as re-sends rather than as new
-  /// congestion.
-  pub(crate) async fn mark_group_resent(&self, set_id: u64, group_id: u64) {
+  /// congestion, and carry the deadline the decision asked the re-send to meet.
+  pub(crate) async fn mark_group_resent(
+    &self,
+    set_id: u64,
+    group_id: u64,
+    deadline_ms: Option<u64>,
+  ) {
     self
       .switching_sets
       .write()
       .await
-      .mark_group_resent(set_id, group_id);
+      .mark_group_resent(set_id, group_id, deadline_ms);
+  }
+
+  /// The deadline a decision asked for on the re-send of this track's copy of
+  /// `group_id`, or `None` when the set's negotiated buffer stays in charge.
+  pub(crate) async fn resent_deadline_ms(&self, relay_track_id: u64, group_id: u64) -> Option<u64> {
+    let sets = self.switching_sets.read().await;
+    match sets.set_of_relay_track(relay_track_id) {
+      Some(set) => sets.resent_deadline_ms(set.id, group_id),
+      None => None,
+    }
   }
 
   /// The switching set carrying this relay track, if any.

@@ -168,8 +168,10 @@ pub struct SwitchingSetManager {
   /// The groups whose delivery an algorithm overtook: the new streams opened for
   /// them re-send media that was already partly delivered at another quality,
   /// so they are marked and an algorithm that measures congestion can leave them
-  /// out. Pruned with the group's last stream.
-  resent_groups: HashSet<(u64, u64)>,
+  /// out. The value is the deadline the decision asked for on the re-send, or
+  /// `None` when the request said nothing about deadlines and the set's
+  /// negotiated buffer stays in charge. Pruned with the group's last stream.
+  resent_groups: HashMap<(u64, u64), Option<u64>>,
 }
 
 /// One live forwarding stream of a switching set.
@@ -242,7 +244,7 @@ impl SwitchingSetManager {
     let Some(group_id) = stream_id.group_id else {
       return;
     };
-    let resent = self.resent_groups.contains(&(set_id, group_id));
+    let resent = self.resent_groups.contains_key(&(set_id, group_id));
     self.open_streams.insert(
       stream_id.clone(),
       OpenStream {
@@ -291,8 +293,19 @@ impl SwitchingSetManager {
 
   /// Say that this group's delivery was overtaken by a decision, so the streams
   /// opened for it from now on re-send rather than deliver.
-  pub fn mark_group_resent(&mut self, set_id: u64, group_id: u64) {
-    self.resent_groups.insert((set_id, group_id));
+  pub fn mark_group_resent(&mut self, set_id: u64, group_id: u64, deadline_ms: Option<u64>) {
+    self.resent_groups.insert((set_id, group_id), deadline_ms);
+  }
+
+  /// The deadline the decision asked for on this re-sent group's streams, or
+  /// `None` when the group is not a re-send or the request left the deadline
+  /// alone.
+  pub fn resent_deadline_ms(&self, set_id: u64, group_id: u64) -> Option<u64> {
+    self
+      .resent_groups
+      .get(&(set_id, group_id))
+      .copied()
+      .flatten()
   }
 
   /// The live streams carrying one group of one set on a member other than
@@ -492,7 +505,7 @@ impl SwitchingSetManager {
       // The set is gone, and with it the meaning of its streams and cadence.
       self.open_streams.retain(|_, live| live.set_id != set_id);
       self.group_spans.remove(&set_id);
-      self.resent_groups.retain(|(other, _)| *other != set_id);
+      self.resent_groups.retain(|(set, _), _| *set != set_id);
     }
   }
 
@@ -1133,7 +1146,7 @@ mod tests {
     );
     manager.note_stream_closed(&first);
 
-    manager.mark_group_resent(7, 3);
+    manager.mark_group_resent(7, 3, None);
     let again = StreamId::new_subgroup(42, 3, Some(1));
     manager.note_stream_opened(&again, 2000);
     assert!(
@@ -1148,5 +1161,38 @@ mod tests {
       !manager.stream_table(3100)[0].resent,
       "the next group is new media, not a re-send"
     );
+  }
+
+  /// The deadline travels with the mark, because it belongs to the group the
+  /// decision overtook and not to the set: the same ladder's other groups keep
+  /// the buffer their subscriber negotiated.
+  #[test]
+  fn a_resent_group_remembers_the_deadline_it_was_given() {
+    let mut manager = SwitchingSetManager::new();
+    let track = make_track("ns", "t");
+    assign_with(&mut manager, &track, 42, 7, 0, 100, 800, vec![]);
+
+    // Nothing was overtaken, so nothing was asked.
+    assert_eq!(manager.resent_deadline_ms(7, 3), None);
+
+    manager.mark_group_resent(7, 3, Some(400));
+    assert_eq!(manager.resent_deadline_ms(7, 3), Some(400));
+    assert_eq!(
+      manager.resent_deadline_ms(7, 4),
+      None,
+      "the neighbouring group is not part of the re-send"
+    );
+
+    // A request that said nothing about deadlines leaves the negotiated buffer
+    // in charge, which is a different thing from a deadline of zero.
+    manager.mark_group_resent(7, 5, None);
+    assert_eq!(manager.resent_deadline_ms(7, 5), None);
+
+    // The mark is about live media, so it goes when the group's last stream
+    // does: a publisher that later reuses the group id starts clean.
+    let stream = StreamId::new_subgroup(42, 3, Some(0));
+    manager.note_stream_opened(&stream, 1000);
+    manager.note_stream_closed(&stream);
+    assert_eq!(manager.resent_deadline_ms(7, 3), None);
   }
 }

@@ -46,6 +46,15 @@ fn set(id: u64, active: bool) -> SetSnapshot {
   }
 }
 
+/// The same set with the subscriber's reorder buffer filled in, which is what
+/// eeasd halves for a group it causes to be re-sent.
+fn set_with_buffer(id: u64, subscriber_buffer_ms: u64) -> SetSnapshot {
+  SetSnapshot {
+    subscriber_buffer_ms,
+    ..set(id, true)
+  }
+}
+
 /// The track a set serves at `tier`.
 fn track_at(set_id: u64, tier: usize) -> u64 {
   set_id * 10 + tier as u64
@@ -201,11 +210,11 @@ fn a_downshift_asks_to_overtake_the_sets_it_moved_down() {
   let congested = [stream(1, track_at(1, 2), 4), stream(1, track_at(1, 2), 5)];
   let selection = algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 40));
   assert!(
-    selection.supersede.contains(&1),
+    selection.supersede.contains_key(&1),
     "the groups still in flight above the new rung were overtaken"
   );
   assert!(
-    !selection.supersede.contains(&2),
+    !selection.supersede.contains_key(&2),
     "a set with no subscriber has no delivery to overtake"
   );
 }
@@ -270,7 +279,7 @@ fn one_deep_reading_inside_a_group_is_not_enough() {
     "two of them, one after another, are"
   );
   assert!(
-    selection.supersede.contains(&1),
+    selection.supersede.contains_key(&1),
     "and the groups it overtook are named, as on a boundary downshift"
   );
 }
@@ -328,7 +337,7 @@ fn the_monitor_never_interrupts_the_exploration() {
   // than the path, and from there the monitor is armed.
   let selection = algorithm.decide(&input(&sets, &inside, DecisionReason::GroupBoundary, 11));
   assert_eq!(tier_of(&selection, 1), 0);
-  assert!(selection.supersede.contains(&1));
+  assert!(selection.supersede.contains_key(&1));
 }
 
 /// A stream the transport gave up on is a consequence of a decision the
@@ -390,4 +399,61 @@ fn the_cautious_streak_returns_after_the_exploration_is_over() {
   }
   let selection = algorithm.decide(&input(&sets, &clear, DecisionReason::GroupBoundary, 36));
   assert_eq!(tier_of(&selection, 1), 3);
+}
+
+/// A re-sent group gets half the buffer the subscriber negotiated for the set.
+/// It starts behind the delivery it replaced, so the deadline it is measured
+/// against is the one it can still make, and choosing this algorithm is how the
+/// subscriber agreed to it.
+#[test]
+fn a_downshift_asks_for_half_the_negotiated_buffer_on_the_re_send() {
+  let sets = [set_with_buffer(1, 800)];
+  let mut algorithm = EeasdAlgorithm::new();
+  climb(&mut algorithm, &sets, 2);
+
+  let congested = [stream(1, track_at(1, 2), 7), stream(1, track_at(1, 2), 8)];
+  let selection = algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 20));
+  assert_eq!(tier_of(&selection, 1), 1, "the tier fell");
+  assert_eq!(
+    selection.resend_deadline_ms(1),
+    Some(400),
+    "the re-send is to be done with by half the buffer"
+  );
+}
+
+/// A set that negotiated no buffer granted no permission to discard its media,
+/// and there is nothing to halve. Asking for no deadline leaves the relay's rule
+/// of never discarding in charge; inventing a short one would spend a budget the
+/// subscriber never offered, and 0 in this contract means never, not immediately.
+#[test]
+fn a_set_that_negotiated_no_buffer_asks_for_no_deadline() {
+  let sets = [set_with_buffer(1, 0)];
+  let mut algorithm = EeasdAlgorithm::new();
+  climb(&mut algorithm, &sets, 2);
+
+  let congested = [stream(1, track_at(1, 2), 7), stream(1, track_at(1, 2), 8)];
+  let selection = algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 20));
+  assert!(
+    selection.supersede.contains_key(&1),
+    "the overtaken groups are still named"
+  );
+  assert_eq!(
+    selection.resend_deadline_ms(1),
+    None,
+    "and nothing is asked of their deadlines"
+  );
+}
+
+/// Half of 1 ms is 0, and 0 means never. A buffer that short is a rounding
+/// error rather than a policy, but the deadline must not become infinite
+/// because the arithmetic ran out of room.
+#[test]
+fn halving_a_buffer_of_one_millisecond_does_not_mean_never() {
+  let sets = [set_with_buffer(1, 1)];
+  let mut algorithm = EeasdAlgorithm::new();
+  climb(&mut algorithm, &sets, 2);
+
+  let congested = [stream(1, track_at(1, 2), 7), stream(1, track_at(1, 2), 8)];
+  let selection = algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 20));
+  assert_eq!(selection.resend_deadline_ms(1), Some(1));
 }

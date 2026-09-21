@@ -261,19 +261,20 @@ async fn decide(
   // A group already being delivered keeps its answer: recording is
   // insert-if-absent. A changed answer for the group in flight is spent here;
   // the algorithms have still run, and an algorithm that means to move the
-  // in-flight groups of a set says so through `Selection::supersede` below.
-  // Resolve the supersede requests before the selection moves into the record.
-  // The request belongs to this cycle only; the per-group map records what to
-  // forward, never what was overtaken.
-  let overtakes: Vec<(u64, u64)> = decisions
+  // in-flight groups of a set says so through `Selection::supersede`.
+  //
+  // Resolve those requests before the selection moves into the record. They
+  // belong to this cycle only; the per-group map records what to forward,
+  // never what was overtaken.
+  let overtakes: Vec<(u64, u64, Option<u64>)> = decisions
     .supersede
     .iter()
-    .filter_map(|set_id| {
+    .filter_map(|(set_id, request)| {
       decisions
         .tracks
         .get(set_id)
         .and_then(|track| *track)
-        .map(|track_id| (*set_id, track_id))
+        .map(|track_id| (*set_id, track_id, request.resend_deadline_ms))
     })
     .collect();
 
@@ -292,8 +293,8 @@ async fn decide(
     client.ssts.decision_notify.notify_waiters();
   }
 
-  for (set_id, track_id) in overtakes {
-    supersede_overtaken(client, set_id, track_id).await;
+  for (set_id, track_id, resend_deadline_ms) in overtakes {
+    supersede_overtaken(client, set_id, track_id, resend_deadline_ms).await;
   }
 }
 
@@ -310,7 +311,12 @@ async fn decide(
 /// The relay's own abandoned streams are deliberately not fed to the timeout
 /// evidence. They are the algorithm's doing, not the transport's, and reporting
 /// them would let every downshift manufacture the evidence for the next one.
-async fn supersede_overtaken(client: &Arc<MOQTClient>, set_id: u64, track_id: u64) {
+async fn supersede_overtaken(
+  client: &Arc<MOQTClient>,
+  set_id: u64,
+  track_id: u64,
+  resend_deadline_ms: Option<u64>,
+) {
   let overtaken = client.ssts.overtaken_streams(set_id, track_id).await;
   if overtaken.is_empty() {
     return;
@@ -331,7 +337,10 @@ async fn supersede_overtaken(client: &Arc<MOQTClient>, set_id: u64, track_id: u6
   groups.sort_unstable();
   groups.dedup();
   for group_id in &groups {
-    client.ssts.mark_group_resent(set_id, *group_id).await;
+    client
+      .ssts
+      .mark_group_resent(set_id, *group_id, resend_deadline_ms)
+      .await;
   }
 
   for (_, stream_id) in &overtaken {
@@ -366,8 +375,8 @@ fn merge(into: &mut Selection, from: Selection) {
   for (set_id, track) in from.tracks {
     into.insert(set_id, track);
   }
-  for set_id in from.supersede {
-    into.supersede(set_id);
+  for (set_id, request) in from.supersede {
+    into.supersede.insert(set_id, request);
   }
 }
 
@@ -424,11 +433,11 @@ fn validate(algorithm: &str, selection: Selection, sets: &[SetSnapshot]) -> Sele
   // A request to overtake a set is only meaningful for a set the algorithm was
   // shown and gave a real answer to: overtaking while forwarding nothing would
   // cancel a delivery in order to replace it with no delivery.
-  for set_id in &selection.supersede {
+  for (set_id, request) in &selection.supersede {
     let owned = sets.iter().any(|set| set.id == *set_id);
     let answered = matches!(selection.get(*set_id), Some(Some(_)));
     if owned && answered {
-      validated.supersede(*set_id);
+      validated.supersede.insert(*set_id, *request);
     } else if owned {
       warn!(
         algorithm,
@@ -442,6 +451,7 @@ fn validate(algorithm: &str, selection: Selection, sets: &[SetSnapshot]) -> Sele
 
 #[cfg(test)]
 mod tests {
+  use super::merge;
   use super::validate;
   use moqtail_ssts::Selection;
   use moqtail_ssts::SetSnapshot;
@@ -499,7 +509,7 @@ mod tests {
 
     let validated = validate("test", answered, &sets);
     assert!(!validated.tracks.contains_key(&99));
-    assert!(!validated.supersede.contains(&99));
+    assert!(!validated.supersede.contains_key(&99));
   }
 
   /// Overtaking a delivery is the one thing in a decision that destroys work in
@@ -517,14 +527,50 @@ mod tests {
     answered.supersede(99);
 
     let validated = validate("test", answered, &sets);
-    assert!(validated.supersede.contains(&1));
+    assert!(validated.supersede.contains_key(&1));
     assert!(
-      !validated.supersede.contains(&2),
+      !validated.supersede.contains_key(&2),
       "overtaking in order to forward nothing is not a switching decision"
     );
     assert!(
-      !validated.supersede.contains(&99),
+      !validated.supersede.contains_key(&99),
       "a set the algorithm never saw cannot be overtaken"
     );
+  }
+
+  /// The deadline is the part of the request the algorithm owns, so validation
+  /// carries it through untouched for the requests it honours, and drops it with
+  /// the ones it does not. Two algorithms answering for disjoint sets each bring
+  /// their own, and folding their answers together keeps both.
+  #[test]
+  fn a_deadline_travels_with_the_request_that_carries_it() {
+    let sets = [set(1, &[10, 11]), set(2, &[20, 21])];
+
+    let mut answered = Selection::new();
+    answered.insert(1, 10u64);
+    answered.supersede_with_deadline(1, 400);
+    answered.insert(2, None);
+    answered.supersede_with_deadline(2, 300);
+    answered.supersede_with_deadline(99, 200);
+
+    let validated = validate("test", answered, &sets);
+    assert_eq!(validated.resend_deadline_ms(1), Some(400));
+    assert_eq!(
+      validated.resend_deadline_ms(2),
+      None,
+      "a dropped request cannot keep its deadline either"
+    );
+    assert_eq!(validated.resend_deadline_ms(99), None);
+
+    let mut into = Selection::new();
+    into.insert(3, 30u64);
+    into.supersede_with_deadline(3, 120);
+    merge(&mut into, validated);
+    assert_eq!(
+      into.resend_deadline_ms(3),
+      Some(120),
+      "an answer that did not mention a set leaves that set alone"
+    );
+    assert_eq!(into.resend_deadline_ms(1), Some(400));
   }
 }

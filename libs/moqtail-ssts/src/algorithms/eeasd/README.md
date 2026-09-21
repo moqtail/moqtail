@@ -77,11 +77,15 @@ first object (already a documented conformance gap on the cache-join path), and
 what a replayed object does to the per-subscription "last delivered location"
 that STATUS reporting reads.
 
-**The halved discard timeout.** The research version gave a re-sent group half
-the negotiated discard timeout, so the tail it did send would not linger. Not
-done: the timeout is the subscriber's permission to have its media discarded,
-negotiated per set in the assignment, and an algorithm spending a budget it did
-not negotiate is exactly the kind of thing this contract keeps out of algorithms.
+**The halved discard timeout is implemented.** A group this algorithm causes to
+be re-sent gets half the buffer its subscriber negotiated for the set, carried in
+the request (`Selection::supersede_with_deadline`) and applied by the host to the
+streams of that group alone. It is part of what selecting this algorithm means:
+the relay is finding out whether the lighter delivery makes a deadline, not
+whether the heavy one did. A set that negotiated no buffer has granted no
+permission to discard, and gets no deadline — `None`, which leaves the relay's
+rule of never discarding in charge. Half of 1 ms would be 0, and 0 means never, so
+the floor is 1.
 
 **The extension's `umin` and `rho` slots.** The research version read a third
 extension slot as a timeout and stored two others unused. Nothing here reads

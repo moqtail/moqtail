@@ -195,6 +195,18 @@ async fn decide(
 
   let bandwidth_estimate_kbps = client.connection.bandwidth_estimate_kbps();
   let configured_cap_kbps = AppConfig::load().write_kbps_limit;
+  // The estimate every algorithm is being handed, on one line, whether or not
+  // the algorithm reads it: an algorithm that switches on stream depth says
+  // nothing about the estimate, and the first question asked of a decision is
+  // still what the transport thought the path was worth at that moment.
+  tracing::debug!(
+    client_id = client.connection_id,
+    group_id,
+    ?reason,
+    bandwidth_estimate_kbps,
+    configured_cap_kbps,
+    "SSTS: transport estimate for this decision"
+  );
   // Taken once and handed to every algorithm: they all decide at this moment,
   // so they all see the same evidence.
   let timeouts = std::mem::take(stream_timeouts);

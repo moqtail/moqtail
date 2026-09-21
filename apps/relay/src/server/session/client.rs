@@ -596,7 +596,14 @@ impl MOQTClient {
       // negotiated the feature always closes gracefully, so in-flight data is
       // never discarded for traffic that never opted in.
       let timeout = if self.ssts_enabled() {
-        self.config.ssts_discard_timeout
+        match self
+          .ssts
+          .negotiated_discard_timeout_ms(stream_key.stream_id.relay_track_id)
+          .await
+        {
+          Some(negotiated_ms) => std::time::Duration::from_millis(negotiated_ms),
+          None => self.config.ssts_discard_timeout,
+        }
       } else {
         std::time::Duration::ZERO
       };

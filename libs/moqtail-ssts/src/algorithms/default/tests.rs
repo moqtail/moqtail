@@ -26,6 +26,8 @@ fn set(id: u64, rank: u8, weight: u64, active: bool, members: &[(u64, u64)]) -> 
     weight,
     active,
     members: members.to_vec(),
+    subscriber_buffer_ms: 0,
+    algorithm_params: vec![],
   }
 }
 

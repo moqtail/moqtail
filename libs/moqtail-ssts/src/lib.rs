@@ -70,6 +70,17 @@ pub struct SetSnapshot {
   pub active: bool,
   /// `(throughput threshold kbps, relay track id)`, ascending by threshold.
   pub members: Vec<(u64, u64)>,
+  /// The subscriber's reorder buffer in ms, negotiated for this set: how long
+  /// the subscriber is willing to hold a group stream before the relay may
+  /// discard it. `0` means no latency budget, and an algorithm that switches
+  /// against a deadline has nothing to switch against.
+  pub subscriber_buffer_ms: u64,
+  /// The set's own negotiated knobs, handed over exactly as the subscriber
+  /// sent them and in the order the algorithm defined. The host never reads
+  /// them, which is what lets an algorithm add a knob without a change here:
+  /// `params[0]` means whatever the algorithm with this id says it means.
+  /// Shorter lists are allowed; a subscriber that offered nothing sends none.
+  pub algorithm_params: Vec<u64>,
 }
 
 impl SetSnapshot {

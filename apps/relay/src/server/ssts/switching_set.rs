@@ -43,6 +43,8 @@ impl From<&SwitchingSet> for SetSnapshot {
         .iter()
         .map(|m| (m.throughput_threshold_kbps, m.relay_track_id))
         .collect(),
+      subscriber_buffer_ms: set.subscriber_buffer_ms,
+      algorithm_params: set.algorithm_params.clone(),
     }
   }
 }
@@ -99,12 +101,38 @@ pub struct SwitchingSet {
   pub activate: u64,
   /// Degradation priority; lower values are protected first.
   pub rank: u8,
+  /// The subscriber's reorder buffer in ms, from the assignment's extension;
+  /// 0 means the subscriber offered no latency budget and the relay must not
+  /// discard anything.
+  pub subscriber_buffer_ms: u64,
+  /// The non-default algorithm's own negotiated knobs, carried verbatim from
+  /// the assignment's extension. The mechanism hands these to the algorithm
+  /// and never interprets them.
+  pub algorithm_params: Vec<u64>,
 }
 
 impl SwitchingSet {
   /// Whether the allocation runs for this set: enabled and enough tracks.
   pub fn is_active(&self) -> bool {
     self.activate > 0 && self.members.len() as u64 >= self.activate
+  }
+
+  /// How long a forwarding stream of this set may linger after its group
+  /// ended before the relay resets it, in ms; 0 closes every stream
+  /// gracefully.
+  ///
+  /// The default algorithm gets 0 whatever a peer claims, because the draft
+  /// gives it no discard behaviour and a stream reset is visible to the
+  /// subscriber as lost data. For every other algorithm the negotiated
+  /// subscriber buffer is the whole answer: a subscriber that buffers 250 ms
+  /// of media has told the relay how long it is willing to wait, and one that
+  /// negotiated nothing has told it not to discard at all.
+  pub fn negotiated_discard_timeout_ms(&self) -> Option<u64> {
+    if self.algorithm_id != 0 && self.subscriber_buffer_ms > 0 {
+      Some(self.subscriber_buffer_ms)
+    } else {
+      None
+    }
   }
 }
 
@@ -130,6 +158,14 @@ pub struct SwitchingSetManager {
 impl SwitchingSetManager {
   pub fn new() -> Self {
     Self::default()
+  }
+
+  /// The set carrying this relay track, if any.
+  pub fn set_of_relay_track(&self, relay_track_id: u64) -> Option<&SwitchingSet> {
+    self
+      .relay_track_to_set
+      .get(&relay_track_id)
+      .and_then(|set_id| self.sets.get(set_id))
   }
 
   /// A handle on the membership counter, for the gate to read without taking
@@ -184,6 +220,8 @@ impl SwitchingSetManager {
     weight: u64,
     activate: u64,
     rank: u8,
+    subscriber_buffer_ms: u64,
+    algorithm_params: Vec<u64>,
   ) -> Result<(), SwitchingSetError> {
     if let Some(&existing_set_id) = self.track_to_set.get(&full_track_name)
       && existing_set_id != switching_set_id
@@ -209,6 +247,8 @@ impl SwitchingSetManager {
         weight,
         activate,
         rank,
+        subscriber_buffer_ms,
+        algorithm_params: algorithm_params.clone(),
       });
 
     // Set properties: the most recently received message wins.
@@ -216,6 +256,8 @@ impl SwitchingSetManager {
     set.weight = weight;
     set.activate = activate;
     set.rank = rank;
+    set.subscriber_buffer_ms = subscriber_buffer_ms;
+    set.algorithm_params = algorithm_params;
 
     // Replace or insert the member.
     let mut previous_relay_track_id = None;
@@ -398,19 +440,103 @@ mod tests {
     set_id: u64,
     threshold: u64,
   ) {
+    assign_with(
+      manager,
+      track,
+      relay_track_id,
+      set_id,
+      0,
+      threshold,
+      0,
+      vec![],
+    );
+  }
+
+  #[allow(clippy::too_many_arguments)]
+  fn assign_with(
+    manager: &mut SwitchingSetManager,
+    track: &FullTrackName,
+    relay_track_id: u64,
+    set_id: u64,
+    algorithm_id: u64,
+    threshold: u64,
+    subscriber_buffer_ms: u64,
+    algorithm_params: Vec<u64>,
+  ) {
     manager
       .assign(
         track.clone(),
         relay_track_id,
         relay_track_id,
         set_id,
-        0,
+        algorithm_id,
         threshold,
         5,
         2,
         0,
+        subscriber_buffer_ms,
+        algorithm_params,
       )
       .unwrap();
+  }
+
+  /// The negotiated buffer is the subscriber's permission to discard its own
+  /// media; nothing else may grant it. A set on the default algorithm, a set
+  /// that negotiated nothing, and a track outside every set all leave the
+  /// relay's configured timeout in charge.
+  #[test]
+  fn only_a_non_default_set_can_authorize_discarding() {
+    let private = 0xff01;
+    let buffer = make_track("ns", "buf");
+    let unbuffered = make_track("ns", "nobuf");
+    let default_algo = make_track("ns", "default");
+    let outside = make_track("ns", "outside");
+
+    let mut manager = SwitchingSetManager::new();
+    assign_with(&mut manager, &buffer, 11, 1, private, 100, 250, vec![3, 70]);
+    assign_with(&mut manager, &unbuffered, 12, 2, private, 100, 0, vec![]);
+    assign_with(&mut manager, &default_algo, 13, 3, 0, 100, 900, vec![]);
+
+    assert_eq!(
+      manager
+        .set_of_relay_track(11)
+        .unwrap()
+        .negotiated_discard_timeout_ms(),
+      Some(250)
+    );
+    assert_eq!(
+      manager
+        .set_of_relay_track(12)
+        .unwrap()
+        .negotiated_discard_timeout_ms(),
+      None,
+      "a zero buffer means never discard, not 'fall back to the default'"
+    );
+    assert_eq!(
+      manager
+        .set_of_relay_track(13)
+        .unwrap()
+        .negotiated_discard_timeout_ms(),
+      None,
+      "algorithm 0 has no discard behaviour in the draft"
+    );
+    assert!(manager.set_of_relay_track(99).is_none());
+    let _ = outside;
+  }
+
+  /// The snapshot must hand the algorithm the same knobs the subscriber sent,
+  /// in order: the algorithm interprets them, and a reordering here would be
+  /// silently wrong.
+  #[test]
+  fn the_snapshot_carries_the_negotiated_knobs_in_order() {
+    let mut manager = SwitchingSetManager::new();
+    let track = make_track("ns", "k");
+    assign_with(&mut manager, &track, 21, 5, 0xff01, 100, 300, vec![1, 2, 3]);
+
+    let set = manager.get_set_for_track(&track).unwrap();
+    let snapshot = SetSnapshot::from(set);
+    assert_eq!(snapshot.subscriber_buffer_ms, 300);
+    assert_eq!(snapshot.algorithm_params, vec![1, 2, 3]);
   }
 
   #[test]
@@ -424,7 +550,7 @@ mod tests {
 
     // Assigning the same track to a different set must fail.
     assert!(matches!(
-      manager.assign(track1.clone(), 10, 1, 2, 0, 3000, 5, 2, 0),
+      manager.assign(track1.clone(), 10, 1, 2, 0, 3000, 5, 2, 0, 0, vec![]),
       Err(SwitchingSetError::TrackInDifferentSet)
     ));
 
@@ -492,12 +618,12 @@ mod tests {
 
     // activate = 2, only one track assigned: not active yet.
     manager
-      .assign(track1.clone(), 1, 1, 1, 0, 100, 5, 2, 0)
+      .assign(track1.clone(), 1, 1, 1, 0, 100, 5, 2, 0, 0, vec![])
       .unwrap();
     assert!(!manager.get_set_for_track(&track1).unwrap().is_active());
 
     manager
-      .assign(track2.clone(), 2, 2, 1, 0, 200, 5, 2, 0)
+      .assign(track2.clone(), 2, 2, 1, 0, 200, 5, 2, 0, 0, vec![])
       .unwrap();
     assert!(manager.get_set_for_track(&track2).unwrap().is_active());
   }
@@ -624,7 +750,7 @@ mod tests {
     assign(&mut manager, &track, 42, 7, 100);
 
     manager
-      .assign(track.clone(), 43, 2, 7, 0, 100, 5, 2, 0)
+      .assign(track.clone(), 43, 2, 7, 0, 100, 5, 2, 0, 0, vec![])
       .unwrap();
     assert_eq!(manager.relay_track_to_set.get(&43), Some(&7));
     assert_eq!(manager.relay_track_to_set.get(&42), None);

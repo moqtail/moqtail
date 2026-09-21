@@ -227,6 +227,22 @@ impl SstsState {
       .await
       .note_stream_closed(relay_track_id);
   }
+
+  /// How long a forwarding stream of this relay track may linger after its
+  /// group ended, when the subscriber negotiated a buffer for its set.
+  ///
+  /// `None` means the track is not in a switching set, its set runs the
+  /// default algorithm, or no buffer was negotiated, and the caller's
+  /// configured timeout applies. Negotiating a buffer is how a subscriber says
+  /// it has somewhere to put late media; without that the operator's setting
+  /// stays the answer, so turning the feature on cannot silently start
+  /// discarding data for a subscriber that never asked for switching.
+  pub(crate) async fn negotiated_discard_timeout_ms(&self, relay_track_id: u64) -> Option<u64> {
+    let sets = self.switching_sets.read().await;
+    sets
+      .set_of_relay_track(relay_track_id)
+      .and_then(|set| set.negotiated_discard_timeout_ms())
+  }
 }
 
 #[cfg(test)]
@@ -312,7 +328,7 @@ mod tests {
       .switching_sets
       .write()
       .await
-      .assign(track, 42, 1, 7, 0, 1000, 5, 1, 0)
+      .assign(track, 42, 1, 7, 0, 1000, 5, 1, 0, 0, vec![])
       .unwrap();
     state.on_stream_opened(42).await;
 

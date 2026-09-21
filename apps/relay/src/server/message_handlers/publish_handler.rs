@@ -1014,6 +1014,8 @@ async fn register_ssts_assignment_from_publish_ok(
     set_throughput_weight,
     activate_switching,
     set_rank,
+    subscriber_buffer_ms,
+    algorithm_params,
   } = p
   {
     // The same validation as the SUBSCRIBE path; a PUBLISH_OK cannot be
@@ -1038,6 +1040,8 @@ async fn register_ssts_assignment_from_publish_ok(
         *set_throughput_weight,
         *activate_switching,
         *set_rank,
+        *subscriber_buffer_ms,
+        algorithm_params.clone(),
       ) {
         warn!(
           "Ignoring SWITCHING_SET_ASSIGNMENT in PUBLISH_OK from {}: {}",

@@ -1,5 +1,11 @@
 # client-js
 
+## 0.1.1
+
+### Patch Changes
+
+- [`d377edc`](https://github.com/moqtail/moqtail/commit/d377edc495f2bf54e6816bffaceb39db9c296a00) Thanks [@DenizUgur](https://github.com/DenizUgur)! - rename warp to cmsf and make catalog version string
+
 ## 0.1.0
 
 ### Minor Changes

@@ -1,5 +1,11 @@
 # relay
 
+## 0.14.2
+
+### Patch Changes
+
+- [#385](https://github.com/moqtail/moqtail/pull/385) [`c2a56c1`](https://github.com/moqtail/moqtail/commit/c2a56c1bcee26fb0ef2c2d325ee711c3f06c1c83) Thanks [@sharmafb](https://github.com/sharmafb)! - Report stream closed for empty FETCHes
+
 ## 0.14.1
 
 ### Patch Changes

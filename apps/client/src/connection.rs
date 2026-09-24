@@ -369,11 +369,11 @@ mod tests {
 
   #[test]
   fn fragment_is_parsed_and_stripped_from_https_and_path() {
-    let url = MoqtUrl::parse("moqt://host/app?q=1#warp:abc").unwrap();
+    let url = MoqtUrl::parse("moqt://host/app?q=1#msf:abc").unwrap();
     assert_eq!(
       url.fragment,
       Some(MoqtFragment {
-        kind: "warp".to_string(),
+        kind: "msf".to_string(),
         value: "abc".to_string(),
       })
     );
@@ -407,6 +407,6 @@ mod tests {
     // Empty type.
     assert!(MoqtUrl::parse("moqt://host#:value").is_err());
     // Invalid type characters (uppercase).
-    assert!(MoqtUrl::parse("moqt://host#Warp:abc").is_err());
+    assert!(MoqtUrl::parse("moqt://host#MSF:abc").is_err());
   }
 }

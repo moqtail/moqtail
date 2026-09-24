@@ -55,7 +55,7 @@
       "parent": "Protocol Libraries",
       "page_notes": [
         {
-          "content": "Start from libs/moqtail-rs/README.md (linked directly from the root README). The crate exposes four public modules: client, model, relay, transport. The model module contains sub-modules for catalog (WARP format), common (location, varint, tuple, pair), control (all MOQT control message types), data (subgroup/object/datagram types), error (parse/termination), extension_header (LOC, audio_level, video_config), and parameter (setup/message/authorization). The transport module contains control_stream_handler and data_stream_handler. Cross-link to the Control Stream Handler and Data Stream Handler pages."
+          "content": "Start from libs/moqtail-rs/README.md (linked directly from the root README). The crate exposes four public modules: client, model, relay, transport. The model module contains sub-modules for catalog (CMSF format), common (location, varint, tuple, pair), control (all MOQT control message types), data (subgroup/object/datagram types), error (parse/termination), extension_header (LOC, audio_level, video_config), and parameter (setup/message/authorization). The transport module contains control_stream_handler and data_stream_handler. Cross-link to the Control Stream Handler and Data Stream Handler pages."
         }
       ]
     },

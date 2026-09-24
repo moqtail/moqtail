@@ -13,17 +13,15 @@
 // limitations under the License.
 
 /*
-WARP Streaming Format Draft, Section 4
-https://datatracker.ietf.org/doc/draft-ietf-moq-warp/00/
-
-This now only supports: 4.4.2. Simulcast video tracks - 3 alternate qualities along with audio
+MOQT Streaming Format Draft, Section 4
+https://datatracker.ietf.org/doc/draft-ietf-moq-msf/01/
 */
 
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Catalog {
-  pub version: u8,
+  pub version: String,
   #[serde(default)]
   pub supports_delta_updates: bool,
   pub tracks: Vec<Track>,
@@ -64,14 +62,14 @@ mod tests {
   #[test]
   fn test_empty_catalog_serialization() {
     let catalog = Catalog {
-      version: 1,
+      version: "draft-01".to_string(),
       supports_delta_updates: false,
       tracks: vec![],
     };
 
     let serialized = serde_json::to_string(&catalog).unwrap();
 
-    assert!(serialized.contains("\"version\":1"));
+    assert!(serialized.contains("\"version\":\"draft-01\""));
     assert!(serialized.contains("\"supports_delta_updates\":false"));
     assert!(serialized.contains("\"tracks\":[]"));
   }
@@ -110,7 +108,7 @@ mod tests {
   #[test]
   fn test_catalog_with_mixed_tracks() {
     let catalog = Catalog {
-      version: 2,
+      version: "draft-01".to_string(),
       supports_delta_updates: true,
       tracks: vec![
         Track {
@@ -144,7 +142,7 @@ mod tests {
 
     let serialized = serde_json::to_string(&catalog).unwrap();
 
-    assert!(serialized.contains("\"version\":2"));
+    assert!(serialized.contains("\"version\":\"draft-01\""));
     assert!(serialized.contains("\"supports_delta_updates\":true"));
     assert!(serialized.contains("\"name\":\"Video Track\""));
     assert!(serialized.contains("\"codec\":\"h265\""));
@@ -162,7 +160,7 @@ mod tests {
   fn test_invalid_catalog_deserialization() {
     let invalid_json_data = r#"
       {
-        "version": "invalid_version",
+        "version": 1,
         "supports_delta_updates": true,
         "tracks": []
       }
@@ -202,7 +200,7 @@ mod tests {
   #[test]
   fn test_catalog_serialization() {
     let catalog = Catalog {
-      version: 1,
+      version: "draft-01".to_string(),
       supports_delta_updates: true,
       tracks: vec![
         Track {
@@ -236,7 +234,7 @@ mod tests {
 
     let serialized = serde_json::to_string(&catalog).unwrap();
 
-    assert!(serialized.contains("\"version\":1"));
+    assert!(serialized.contains("\"version\":\"draft-01\""));
     assert!(serialized.contains("\"supports_delta_updates\":true"));
     assert!(serialized.contains("\"name\":\"Track 1\""));
     assert!(serialized.contains("\"codec\":\"h264\""));
@@ -246,7 +244,7 @@ mod tests {
   fn test_catalog_deserialization() {
     let json_data = r#"
       {
-        "version": 1,
+        "version": "draft-01",
         "supports_delta_updates": true,
         "tracks": [
           {
@@ -275,7 +273,7 @@ mod tests {
 
     let catalog: Catalog = serde_json::from_str(json_data).unwrap();
 
-    assert_eq!(catalog.version, 1);
+    assert_eq!(catalog.version, "draft-01");
     assert!(catalog.supports_delta_updates);
     assert_eq!(catalog.tracks.len(), 2);
 

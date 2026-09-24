@@ -897,7 +897,7 @@ export class MOQtailClient {
    * const stream = await navigator.mediaDevices.getUserMedia({ video: true });
    * const videoTrack = stream.getVideoTracks()[0];
    *
-   * // Convert video frames to MoqtObject instances using your chosen scheme (e.g. WARP, CMAF, etc.)
+   * // Convert video frames to MoqtObject instances using your chosen scheme (e.g. MSF, CMAF, etc.)
    * // This part is application-specific and not provided by MOQtail:
    * const liveReadableStream: ReadableStream<MoqtObject> = ...
    *

@@ -30,7 +30,7 @@ export interface CMSFTrack {
 }
 
 export interface CMSF {
-  version: number
+  version: string
   tracks: CMSFTrack[]
 }
 
@@ -191,15 +191,15 @@ function validateCMSF(obj: unknown): CMSF {
 
   const o = obj as Record<string, unknown>
 
-  if (!isNumber(o['version'])) {
-    throw new Error('CMSF.version must be a number')
+  if (!isString(o['version'])) {
+    throw new Error('CMSF.version must be a string')
   }
 
   if (!Array.isArray(o['tracks'])) {
     throw new Error('CMSF.tracks must be an array')
   }
 
-  const version = o['version'] as number
+  const version = o['version'] as string
   const tracksArray = o['tracks'] as unknown[]
   const tracks = tracksArray.map(validateTrack)
 

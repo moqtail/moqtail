@@ -328,7 +328,7 @@ impl MOQTClient {
     header_payload: Bytes,
     priority: i32, // Priority for the stream
   ) -> Result<Arc<Mutex<TransportSendStream>>> {
-    let send_stream = {
+    let (send_stream, newly_created) = {
       let send_stream_map = self.get_stream_map(stream_id);
       let mut send_streams = send_stream_map.write().await;
       match send_streams.entry(stream_id.get_stream_id().to_string()) {
@@ -346,17 +346,23 @@ impl MOQTClient {
             "open_stream | added send_stream to send streams ({}) connection_id: {}",
             stream_id, self.connection_id
           );
-          s
+          (s, true)
         }
         std::collections::hash_map::Entry::Occupied(s) => {
           debug!(
             "open_stream | Send stream for {} already exists connection_id: {}",
             stream_id, self.connection_id
           );
-          s.get().clone()
+          (s.get().clone(), false)
         }
       }
     };
+
+    // A subgroup header belongs at the beginning of a stream and must be
+    // written exactly once. A concurrent caller reuses the existing stream.
+    if !newly_created {
+      return Ok(send_stream);
+    }
 
     debug!(
       "open_stream |  writing to stream ({}) connection_id: {}",

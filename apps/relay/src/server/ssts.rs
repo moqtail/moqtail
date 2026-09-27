@@ -285,6 +285,13 @@ impl SstsState {
     sets.streams_above(set_id, keep_track)
   }
 
+  /// The member one rung below `track_id` in `set_id`'s ladder, for the
+  /// groups an age-staged re-send runs one rung down.
+  pub(crate) async fn member_one_rung_below(&self, set_id: u64, track_id: u64) -> Option<u64> {
+    let sets = self.switching_sets.read().await;
+    sets.member_one_rung_below(set_id, track_id)
+  }
+
   /// Record that a group's delivery was overtaken, so the streams opened for it
   /// from now on are reported to the algorithms as re-sends rather than as new
   /// congestion, and carry the deadline the decision asked the re-send to meet.

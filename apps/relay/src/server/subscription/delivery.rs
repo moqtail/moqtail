@@ -362,6 +362,15 @@ impl Subscription {
     // can decode, so the head of the subgroup (objects 0..N-1) goes on the
     // wire first, on a stream of its own, from the track cache.
     //
+    // The trigger is the first object we forward for this group on this track,
+    // not the absence of its stream: the mid-subgroup join already opened that
+    // stream when forward flipped (from the cached publisher header), before a
+    // single object of the re-send has left the building. Asking whether the
+    // stream exists would therefore always say no, and every mid-group re-send
+    // would hand the subscriber a tail without a head. What the replay must not
+    // repeat is a head that has already been delivered, so it is gated on
+    // having forwarded an object of this group on this track.
+    //
     // Nothing here waits on the publisher: the cache holds what has already
     // arrived, and when it does not hold this head - evicted, or this member's
     // copy of the group simply started later - the re-send does not happen.
@@ -375,11 +384,16 @@ impl Subscription {
         .ssts
         .is_resent_group(self.relay_track_id, object.location.group)
         .await
-      && self
-        .subscriber
-        .get_stream(&self.new_send_stream_key(&stream_id))
+      && !self
+        .send_stream_last_object_ids
+        .read()
         .await
-        .is_none()
+        .iter()
+        .any(|(stream, last)| {
+          stream.group_id == Some(object.location.group)
+            && stream.relay_track_id == self.relay_track_id
+            && last.is_some()
+        })
     {
       self.replay_cached_head(&stream_id, &object.location).await;
     }

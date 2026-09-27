@@ -214,6 +214,10 @@ fn a_downshift_asks_to_overtake_the_sets_it_moved_down() {
     "the groups still in flight above the new rung were overtaken"
   );
   assert!(
+    selection.supersede[&1].age_staged,
+    "the re-send is staged by age: the newest overtaken group at the new rung, the older ones one below"
+  );
+  assert!(
     !selection.supersede.contains_key(&2),
     "a set with no subscriber has no delivery to overtake"
   );
@@ -281,6 +285,10 @@ fn one_deep_reading_inside_a_group_is_not_enough() {
   assert!(
     selection.supersede.contains_key(&1),
     "and the groups it overtook are named, as on a boundary downshift"
+  );
+  assert!(
+    selection.supersede[&1].age_staged,
+    "and staged by age, as on a boundary downshift"
   );
 }
 
@@ -419,6 +427,7 @@ fn a_downshift_asks_for_half_the_negotiated_buffer_on_the_re_send() {
     Some(400),
     "the re-send is to be done with by half the buffer"
   );
+  assert!(selection.supersede[&1].age_staged, "and the staging does not depend on the deadline");
 }
 
 /// A set that negotiated no buffer granted no permission to discard its media,
@@ -441,6 +450,10 @@ fn a_set_that_negotiated_no_buffer_asks_for_no_deadline() {
     selection.resend_deadline_ms(1),
     None,
     "and nothing is asked of their deadlines"
+  );
+  assert!(
+    selection.supersede[&1].age_staged,
+    "the staging stands on its own: no buffer, no deadline, but the older groups still go one rung below"
   );
 }
 

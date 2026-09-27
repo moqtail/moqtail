@@ -280,12 +280,23 @@ impl SwitchingSetManager {
     let Some(live) = self.open_streams.remove(stream_id) else {
       return;
     };
-    // Once nothing is live for the group, the re-send is over and the mark has
-    // said everything it has to say.
-    if !self
-      .open_streams
-      .values()
-      .any(|other| other.set_id == live.set_id && other.group_id == live.group_id)
+    // The mark is wiped by the close of its last re-send stream, and only then.
+    // An overtaken delivery closing must not wipe it: the re-send's own stream
+    // is usually not open yet at that moment - the decision resets the old
+    // delivery and the new one opens a tick later - and a group with no live
+    // stream at that instant is not "re-send over", it is "re-send not
+    // started". Wiping then would leave the re-send's stream opening without
+    // the mark: no head replay for the subscriber, and the algorithm reading a
+    // fresh delivery where one was ordered.
+    if live.resent
+      && !self
+        .open_streams
+        .values()
+        .any(|other| {
+          other.set_id == live.set_id
+            && other.group_id == live.group_id
+            && other.resent
+        })
     {
       self.resent_groups.remove(&(live.set_id, live.group_id));
     }
@@ -303,6 +314,7 @@ impl SwitchingSetManager {
     self.resent_groups.contains_key(&(set_id, group_id))
   }
 
+
   /// The deadline the decision asked for on this re-sent group's streams, or
   /// `None` when the group is not a re-send or the request left the deadline
   /// alone.
@@ -316,8 +328,22 @@ impl SwitchingSetManager {
 
   /// The live streams carrying one group of one set on a member other than
   /// `keep`, which is what an overtaken delivery is made of.
-  pub fn streams_above(&self, set_id: u64, keep_track: u64) -> Vec<(u64, StreamId)> {
-    let ladder = match self.sets.get(&set_id) {
+  /// The member one rung below `track_id` in `set_id`'s ladder — the rung an
+  /// age-staged re-send gives to the groups older than the newest one it
+  /// overtook. One rung below the ladder's bottom is the bottom itself, which
+  /// is the floor staging can fall to.
+  pub fn member_one_rung_below(&self, set_id: u64, track_id: u64) -> Option<u64> {
+    let set = self.sets.get(&set_id)?;
+    let index = set
+      .members
+      .iter()
+      .position(|member| member.relay_track_id == track_id)?;
+    set.members
+      .get(index.saturating_sub(1))
+      .map(|member| member.relay_track_id)
+  }
+
+  pub fn streams_above(&self, set_id: u64, keep_track: u64) -> Vec<(u64, StreamId)> {    let ladder = match self.sets.get(&set_id) {
       Some(set) => set,
       None => return Vec::new(),
     };
@@ -1169,6 +1195,45 @@ mod tests {
     );
   }
 
+  /// The close of an overtaken delivery must not clear a re-send mark whose
+  /// re-send has not started yet: the decision resets the old delivery and the
+  /// re-send's stream opens a tick later, and a group with no live stream at
+  /// that instant is "re-send not started", not "re-send over". Clearing the
+  /// mark there would leave the re-send opening unmarked: no head replay for
+  /// the subscriber, and the algorithm reading a fresh delivery where one was
+  /// ordered.
+  #[test]
+  fn closing_an_overtaken_delivery_does_not_clear_the_unstarted_re_send() {
+    let mut manager = SwitchingSetManager::new();
+    let low = make_track("ns", "low");
+    let high = make_track("ns", "high");
+    assign(&mut manager, &low, 1, 3, 500);
+    assign(&mut manager, &high, 2, 3, 2000);
+
+    // Group 5 is being delivered at the top rung when a decision overtakes it
+    // for the lower one: the mark goes down, the old delivery is reset.
+    let overtaken = StreamId::new_subgroup(2, 5, Some(0));
+    manager.note_stream_opened(&overtaken, 1000);
+    manager.mark_group_resent(3, 5, None);
+    manager.note_stream_closed(&overtaken);
+    assert!(
+      manager.is_resent_group(3, 5),
+      "the re-send has not started, so closing the overtaken delivery keeps the mark"
+    );
+
+    // The re-send opens on the lower rung and snapshots the mark...
+    let resent = StreamId::new_subgroup(1, 5, Some(0));
+    manager.note_stream_opened(&resent, 2000);
+    assert!(
+      manager.stream_table(2100)[0].resent,
+      "the re-send's stream is reported as a re-send"
+    );
+
+    // ...and its close, as the last re-send stream, is what ends the mark.
+    manager.note_stream_closed(&resent);
+    assert!(!manager.is_resent_group(3, 5), "the finished re-send leaves no mark");
+  }
+
   /// The deadline travels with the mark, because it belongs to the group the
   /// decision overtook and not to the set: the same ladder's other groups keep
   /// the buffer their subscriber negotiated.
@@ -1200,5 +1265,29 @@ mod tests {
     manager.note_stream_opened(&stream, 1000);
     manager.note_stream_closed(&stream);
     assert_eq!(manager.resent_deadline_ms(7, 3), None);
+  }
+
+  /// The rung an age-staged re-send gives to the older groups: one below the
+  /// member the decision selected, the ladder's bottom being the floor. A
+  /// track that is not in the set has no rung at all.
+  #[test]
+  fn one_rung_below_walks_down_the_ladder_and_floors_at_the_bottom() {
+    let mut manager = SwitchingSetManager::new();
+    let low = make_track("ns", "low");
+    let mid = make_track("ns", "mid");
+    let high = make_track("ns", "high");
+    assign(&mut manager, &low, 40, 7, 100);
+    assign(&mut manager, &mid, 41, 7, 200);
+    assign(&mut manager, &high, 42, 7, 300);
+
+    assert_eq!(manager.member_one_rung_below(7, 42), Some(41));
+    assert_eq!(manager.member_one_rung_below(7, 41), Some(40));
+    assert_eq!(
+      manager.member_one_rung_below(7, 40),
+      Some(40),
+      "one rung below the bottom is the bottom: the floor, not a hole"
+    );
+    assert_eq!(manager.member_one_rung_below(7, 99), None);
+    assert_eq!(manager.member_one_rung_below(8, 42), None);
   }
 }

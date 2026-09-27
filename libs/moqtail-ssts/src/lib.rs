@@ -86,6 +86,18 @@ pub struct Supersede {
   /// that wants a shorter deadline than "never" has to have been given a buffer
   /// to shorten, and returns `None` when there was none.
   pub resend_deadline_ms: Option<u64>,
+  /// Stage the re-send by the age of the overtaken group: the newest of them
+  /// is re-sent at the member this decision selected, every older one one rung
+  /// below that, the ladder's bottom being the floor.
+  ///
+  /// The reason is the clock, not the quality: an older group started earlier,
+  /// so less of its delivery window remains, and the re-send has to finish
+  /// inside what is left; fewer bits per second is how a re-send gets done
+  /// sooner. The newest group still has the full window, so it keeps the rung
+  /// the decision landed on. A host that does not re-send at all is free to
+  /// ignore the flag: it asks how the re-send is laid out, not whether one
+  /// happens.
+  pub age_staged: bool,
 }
 
 impl Selection {
@@ -132,6 +144,25 @@ impl Selection {
       set_id,
       Supersede {
         resend_deadline_ms: Some(resend_deadline_ms),
+        ..Default::default()
+      },
+    );
+  }
+
+  /// The same, with the re-send staged by the age of the overtaken group: the
+  /// newest at the member this decision selected, the older ones one rung
+  /// below it.
+  pub fn supersede_age_staged(&mut self, set_id: u64) {
+    self.supersede.insert(set_id, Supersede { age_staged: true, ..Default::default() });
+  }
+
+  /// Age-staged, and with the re-send's own deadline.
+  pub fn supersede_age_staged_with_deadline(&mut self, set_id: u64, resend_deadline_ms: u64) {
+    self.supersede.insert(
+      set_id,
+      Supersede {
+        resend_deadline_ms: Some(resend_deadline_ms),
+        age_staged: true,
       },
     );
   }

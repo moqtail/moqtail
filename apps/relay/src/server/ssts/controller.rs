@@ -27,7 +27,8 @@ use std::time::Duration;
 
 use moqtail_ssts::registry::registry;
 use moqtail_ssts::{
-  AbrAlgorithm, AbrInput, DecisionReason, Selection, SetSnapshot, StreamSnapshot, Tuning,
+  AbrAlgorithm, AbrInput, DecisionReason, Selection, SetSnapshot, StreamSnapshot, Supersede,
+  Tuning,
 };
 use tokio::select;
 use tracing::warn;
@@ -266,7 +267,7 @@ async fn decide(
   // Resolve those requests before the selection moves into the record. They
   // belong to this cycle only; the per-group map records what to forward,
   // never what was overtaken.
-  let overtakes: Vec<(u64, u64, Option<u64>)> = decisions
+  let overtakes: Vec<(u64, u64, Supersede)> = decisions
     .supersede
     .iter()
     .filter_map(|(set_id, request)| {
@@ -274,7 +275,7 @@ async fn decide(
         .tracks
         .get(set_id)
         .and_then(|track| *track)
-        .map(|track_id| (*set_id, track_id, request.resend_deadline_ms))
+        .map(|track_id| (*set_id, track_id, *request))
     })
     .collect();
 
@@ -293,20 +294,26 @@ async fn decide(
     client.ssts.decision_notify.notify_waiters();
   }
 
-  for (set_id, track_id, resend_deadline_ms) in overtakes {
-    supersede_overtaken(client, set_id, track_id, resend_deadline_ms).await;
+  for (set_id, track_id, request) in &overtakes {
+    supersede_overtaken(client, *set_id, *track_id, request).await;
   }
 }
 
 /// Deal with the groups a decision overtook.
 ///
 /// Each one gets three changes at once: its decision is flipped to the member
-/// the algorithm just chose, so the objects of that group that have not arrived
-/// yet come from the new member; its remaining old-member streams are reset, so
+/// the algorithm asked for, so the objects of that group that have not arrived
+/// yet come from that member; its remaining old-member streams are reset, so
 /// the subscriber stops receiving a delivery the relay has already abandoned;
 /// and the group is marked as re-sent, so the streams the subscriber now causes
 /// to be opened are reported to the algorithms as a consequence of the decision
 /// rather than as new congestion.
+///
+/// When the request stages the re-send by age, the newest of the overtaken
+/// groups keeps the member the decision selected and every older one is
+/// re-sent one rung below it: the older a group is, the earlier it started,
+/// and the less of its delivery window the re-send has to finish inside. One
+/// rung below the ladder's bottom is the bottom itself.
 ///
 /// The relay's own abandoned streams are deliberately not fed to the timeout
 /// evidence. They are the algorithm's doing, not the transport's, and reporting
@@ -315,31 +322,64 @@ async fn supersede_overtaken(
   client: &Arc<MOQTClient>,
   set_id: u64,
   track_id: u64,
-  resend_deadline_ms: Option<u64>,
+  request: &Supersede,
 ) {
   let overtaken = client.ssts.overtaken_streams(set_id, track_id).await;
   if overtaken.is_empty() {
     return;
   }
 
+  let mut groups: Vec<u64> = overtaken.iter().map(|(group_id, _)| *group_id).collect();
+  groups.sort_unstable();
+  groups.dedup();
+  let newest = *groups.last().unwrap();
+  let staged_below = if request.age_staged {
+    client.ssts.member_one_rung_below(set_id, track_id).await
+  } else {
+    None
+  };
+  // (group, the member its re-send runs on)
+  let staged: Vec<(u64, u64)> = groups
+    .iter()
+    .map(|group_id| {
+      let track = if request.age_staged && *group_id != newest {
+        staged_below.unwrap_or(track_id)
+      } else {
+        track_id
+      };
+      (*group_id, track)
+    })
+    .collect();
+
   let mut flipped = 0usize;
   {
     let mut group_decisions = client.ssts.group_decisions.write().await;
-    for (group_id, _) in &overtaken {
+    for (group_id, track) in &staged {
       if let Some(decision) = group_decisions.get_mut(group_id) {
-        decision.insert(set_id, Some(track_id));
+        decision.insert(set_id, Some(*track));
         flipped += 1;
       }
     }
   }
 
-  let mut groups: Vec<u64> = overtaken.iter().map(|(group_id, _)| *group_id).collect();
-  groups.sort_unstable();
-  groups.dedup();
-  for group_id in &groups {
+  for (group_id, track) in &staged {
+    // One line per re-sent group, not just the set-level summary below, so
+    // the operator (and the run's dashboard) can see which groups a
+    // decision overtook and at which member they are re-sent: the summary
+    // only carries a count, and a group re-sent on this path never shows
+    // up anywhere else in the log.
+    tracing::debug!(
+      client_id = client.connection_id,
+      set_id,
+      relay_track_id = track,
+      group = group_id,
+      staged = request.age_staged,
+      deadline_ms = request.resend_deadline_ms,
+      "SSTS: re-sent an overtaken group"
+    );
     client
       .ssts
-      .mark_group_resent(set_id, *group_id, resend_deadline_ms)
+      .mark_group_resent(set_id, *group_id, request.resend_deadline_ms)
       .await;
   }
 
@@ -356,6 +396,7 @@ async fn supersede_overtaken(
     set_id,
     relay_track_id = track_id,
     groups = groups.len(),
+    staged = request.age_staged,
     streams = overtaken.len(),
     decisions_flipped = flipped,
     "SSTS: overtook the groups in flight for this set"

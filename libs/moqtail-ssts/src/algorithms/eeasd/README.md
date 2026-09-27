@@ -42,12 +42,23 @@ before the climb resumes.
 
 ## What a downshift does to the groups it overtook
 
-The selection names the sets whose in-flight deliveries it passed (`supersede`).
-This relay's mechanism answers by flipping those groups to the new member, so the
-objects that have not arrived yet come from it, resetting the streams still
-carrying the old one with `Cancelled`, and marking the groups as re-sent. The
-reset stream tells the subscriber that the tail is gone rather than merely late,
-which is the difference between a subscriber that waits and one that moves on.
+The selection names the sets whose in-flight deliveries it passed (`supersede`),
+as staged by age: the newest of those groups is re-sent at the member this
+decision selected, and every older one one rung below it (the ladder's bottom
+being the floor). This relay's mechanism answers by flipping each group to the
+member the request laid out for it, so the objects that have not arrived yet
+come from that member, resetting the streams still carrying the old one with
+`Cancelled`, and marking the groups as re-sent. The reset stream tells the
+subscriber that the tail is gone rather than merely late, which is the
+difference between a subscriber that waits and one that moves on.
+
+The staging exists because the clock, not the quality, is the constraint. An
+older group started earlier, so less of its delivery window — the buffer its
+subscriber negotiated — remains, and the re-send has to finish inside what is
+left; one rung lower is how it finishes sooner. The newest group still has the
+full window, so it keeps the rung the decision landed on. A host that does not
+re-send at all may ignore the flag: it is a request about how a re-send is laid
+out, not about whether one happens.
 
 ## Knobs
 
@@ -69,8 +80,10 @@ relay is legible from the algorithm's directory.
 **The replay is in the relay's forwarding path.** A group this algorithm
 overtook is re-sent in full: the relay notices that the first object it forwards
 for that group is not the subgroup's first, opens a new stream on the member the
-decision landed on, puts the cached head (objects `0..N-1` of that subgroup) on it
-from the track cache, and lets the live objects continue behind. Nothing is
+re-send runs on — the decision's own rung for the newest overtaken group, one
+rung below for each older one — puts the cached head (objects `0..N-1` of that
+subgroup) on it from the track cache, and lets the live objects continue behind.
+Nothing is
 waited for: a head that is not in the cache — evicted, or a member whose copy of
 the group started later — means no re-send, and the switch stands on its own. The
 old delivery is reset rather than reused, and the new stream carries the

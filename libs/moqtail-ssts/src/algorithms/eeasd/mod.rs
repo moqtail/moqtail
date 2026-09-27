@@ -219,16 +219,29 @@ impl AbrAlgorithm for EeasdAlgorithm {
           ),
         }
       }
-      DecisionReason::PeriodicSample => match self.ladder.on_tick(depth, any_active(input)) {
-        Monitor::Held => {}
-        Monitor::Downshift { from, to } => tracing::debug!(
+      DecisionReason::PeriodicSample => {
+        // The monitor's 100 ms reading of the delivered tier. The algorithm's
+        // whole state is this one number, and a tier change is the rare
+        // outcome: every reading goes to the log (the run's dashboard is
+        // built from these lines), the changes log on top of them with more.
+        tracing::debug!(
           client_id = input.client_id,
           group_id = input.group_id,
-          from,
-          to,
+          tier = self.ladder.tier(),
           depth,
-          "SSTS eeasd: DOWNSHIFT (mid-transmission)"
-        ),
+          "SSTS eeasd: depth reading"
+        );
+        match self.ladder.on_tick(depth, any_active(input)) {
+          Monitor::Held => {}
+          Monitor::Downshift { from, to } => tracing::debug!(
+            client_id = input.client_id,
+            group_id = input.group_id,
+            from,
+            to,
+            depth,
+            "SSTS eeasd: DOWNSHIFT (mid-transmission)"
+          ),
+        }
       },
       // A reset stream is a consequence of a decision this algorithm already
       // made, not an independent reading of the path, and eeasd is the
@@ -244,6 +257,10 @@ impl AbrAlgorithm for EeasdAlgorithm {
     // The groups still in flight above the new rung were overtaken by this
     // decision. Naming the sets is all the algorithm can do; the host works out
     // which groups of that set are affected and what its own state allows.
+    // The re-send is asked age-staged: the newest overtaken group keeps the
+    // rung this decision landed on, every older one goes one rung below it,
+    // because the older a group is, the less of its delivery window the re-send
+    // has to finish inside.
     if after < before {
       for set in input
         .sets
@@ -251,8 +268,10 @@ impl AbrAlgorithm for EeasdAlgorithm {
         .filter(|set| set.active && !set.members.is_empty())
       {
         match resend_deadline_ms(set) {
-          Some(deadline) => selection.supersede_with_deadline(set.id, deadline),
-          None => selection.supersede(set.id),
+          Some(deadline) => {
+            selection.supersede_age_staged_with_deadline(set.id, deadline)
+          }
+          None => selection.supersede_age_staged(set.id),
         }
       }
     }

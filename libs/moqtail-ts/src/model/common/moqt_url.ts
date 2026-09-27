@@ -141,10 +141,10 @@ if (import.meta.vitest) {
     })
 
     test('fragment is parsed and kept out of the path', () => {
-      const url = MoqtUrl.parse('moqt://host/app?q=1#warp:abc')
+      const url = MoqtUrl.parse('moqt://host/app?q=1#msf:abc')
       expect(url.path).toBe('/app')
       expect(url.query).toBe('q=1')
-      expect(url.fragment).toEqual({ kind: 'warp', value: 'abc' })
+      expect(url.fragment).toEqual({ kind: 'msf', value: 'abc' })
       // The fragment is local-only, so it must not survive into the transport URL.
       expect(url.toHttps()).toBe('https://host/app?q=1')
     })

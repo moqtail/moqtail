@@ -343,7 +343,8 @@ impl SwitchingSetManager {
       .map(|member| member.relay_track_id)
   }
 
-  pub fn streams_above(&self, set_id: u64, keep_track: u64) -> Vec<(u64, StreamId)> {    let ladder = match self.sets.get(&set_id) {
+  pub fn streams_above(&self, set_id: u64, keep_track: u64) -> Vec<(u64, StreamId)> {
+    let ladder = match self.sets.get(&set_id) {
       Some(set) => set,
       None => return Vec::new(),
     };

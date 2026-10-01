@@ -186,6 +186,7 @@ async fn resolve_range_upstream(
 pub enum FetchStop {
   Running,
   Cancelled,
+  MalformedTrack,
   UpdateFailed,
 }
 
@@ -705,6 +706,14 @@ pub async fn handle(
 
                         object_count += 1;
                       }
+                      Ok(Some(UpstreamFetchEvent::MalformedTrack)) => {
+                        warn!(
+                          "handle_fetch_messages | Malformed upstream FETCH for gap [{}, {}]",
+                          gap_start, gap_end
+                        );
+                        stop_reason = FetchStop::MalformedTrack;
+                        break;
+                      }
                       Ok(Some(UpstreamFetchEvent::StreamClosed)) => {
                         break;
                       }
@@ -752,15 +761,24 @@ pub async fn handle(
                 .remove(&relay_request_id);
             }
 
+            if stop_reason != FetchStop::Running {
+              break;
+            }
+
             group_id = gap_end + 1;
           }
         }
 
         if stop_reason != FetchStop::Running {
+          if stop_reason == FetchStop::MalformedTrack && send_stream.is_none() {
+            send_stream = stream_fn(client.clone(), &stream_id).await;
+          }
+
           if let Some(the_stream) = send_stream {
             let mut stream = the_stream.lock().await;
             let result = match stop_reason {
               FetchStop::UpdateFailed => stream.reset(StreamResetCode::Cancelled.to_u64()),
+              FetchStop::MalformedTrack => stream.reset(StreamResetCode::MalformedTrack.to_u64()),
               _ => stream.finish().await,
             };
             if let Err(e) = result {

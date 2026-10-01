@@ -27,8 +27,7 @@ use std::time::Duration;
 
 use moqtail_ssts::registry::registry;
 use moqtail_ssts::{
-  AbrAlgorithm, AbrInput, DecisionReason, Selection, SetSnapshot, StreamSnapshot, Supersede,
-  Tuning,
+  AbrAlgorithm, AbrInput, DecisionReason, Selection, SetSnapshot, StreamSnapshot, Supersede, Tuning,
 };
 use tokio::select;
 use tracing::warn;
@@ -117,7 +116,10 @@ pub(crate) fn start(client: Arc<MOQTClient>) {
             Some(AbrMessage::NewGroup(group_id)) => {
               last_group = Some(group_id.max(last_group.unwrap_or(0)));
               largest_group = largest_group.max(group_id);
-              // One boundary per group.
+              // One boundary per group: every member of a set asks when the
+              // group's first Object reaches its gate, and a stateful
+              // algorithm must see one boundary per group, not one per ask.
+              // A pruned group falls through and decides again.
               if client.ssts.has_group_decision(group_id).await {
                 // The answer already exists; wake anyone waiting on it
                 client.ssts.decision_notify.notify_waiters();

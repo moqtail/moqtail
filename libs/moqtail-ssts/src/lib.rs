@@ -153,7 +153,13 @@ impl Selection {
   /// newest at the member this decision selected, the older ones one rung
   /// below it.
   pub fn supersede_age_staged(&mut self, set_id: u64) {
-    self.supersede.insert(set_id, Supersede { age_staged: true, ..Default::default() });
+    self.supersede.insert(
+      set_id,
+      Supersede {
+        age_staged: true,
+        ..Default::default()
+      },
+    );
   }
 
   /// Age-staged, and with the re-send's own deadline.
@@ -349,7 +355,10 @@ pub struct StreamSnapshot {
 /// Why [`AbrAlgorithm::decide`] is being called.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecisionReason {
-  /// A new media group started, and this is the decision for it.
+  /// A new media group started, and this is the decision for it. The
+  /// mechanism runs this reason at most once per group: an algorithm may
+  /// walk its state on every call and must see exactly one call per group
+  /// boundary, or a duplicate boundary moves it twice for one group.
   GroupBoundary,
   /// The host is re-evaluating while the same group is being served, because
   /// bandwidth moves faster than groups. `group_id` is the group in flight.

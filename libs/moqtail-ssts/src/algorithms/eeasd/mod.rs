@@ -242,7 +242,7 @@ impl AbrAlgorithm for EeasdAlgorithm {
             "SSTS eeasd: DOWNSHIFT (mid-transmission)"
           ),
         }
-      },
+      }
       // A reset stream is a consequence of a decision this algorithm already
       // made, not an independent reading of the path, and eeasd is the
       // algorithm that says so: the depth already reflects the stream leaving.
@@ -268,9 +268,7 @@ impl AbrAlgorithm for EeasdAlgorithm {
         .filter(|set| set.active && !set.members.is_empty())
       {
         match resend_deadline_ms(set) {
-          Some(deadline) => {
-            selection.supersede_age_staged_with_deadline(set.id, deadline)
-          }
+          Some(deadline) => selection.supersede_age_staged_with_deadline(set.id, deadline),
           None => selection.supersede_age_staged(set.id),
         }
       }

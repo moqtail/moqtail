@@ -427,7 +427,10 @@ fn a_downshift_asks_for_half_the_negotiated_buffer_on_the_re_send() {
     Some(400),
     "the re-send is to be done with by half the buffer"
   );
-  assert!(selection.supersede[&1].age_staged, "and the staging does not depend on the deadline");
+  assert!(
+    selection.supersede[&1].age_staged,
+    "and the staging does not depend on the deadline"
+  );
 }
 
 /// A set that negotiated no buffer granted no permission to discard its media,

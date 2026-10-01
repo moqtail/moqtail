@@ -651,7 +651,7 @@ mod tests {
       base + 2,
       base + 3
     );
-    let running = ssts_algorithms_for(&["--enable-ssts", "--ssts-algorithms", &requested]);
+    let running = ssts_algorithms_for(&["--ssts-enable", "--ssts-algorithms", &requested]);
     let mut expected = vec![0, base, base + 1, base + 2, base + 3];
     expected.sort_unstable();
     expected.dedup();

@@ -292,11 +292,7 @@ impl SwitchingSetManager {
       && !self
         .open_streams
         .values()
-        .any(|other| {
-          other.set_id == live.set_id
-            && other.group_id == live.group_id
-            && other.resent
-        })
+        .any(|other| other.set_id == live.set_id && other.group_id == live.group_id && other.resent)
     {
       self.resent_groups.remove(&(live.set_id, live.group_id));
     }
@@ -313,7 +309,6 @@ impl SwitchingSetManager {
   pub fn is_resent_group(&self, set_id: u64, group_id: u64) -> bool {
     self.resent_groups.contains_key(&(set_id, group_id))
   }
-
 
   /// The deadline the decision asked for on this re-sent group's streams, or
   /// `None` when the group is not a re-send or the request left the deadline
@@ -338,7 +333,8 @@ impl SwitchingSetManager {
       .members
       .iter()
       .position(|member| member.relay_track_id == track_id)?;
-    set.members
+    set
+      .members
       .get(index.saturating_sub(1))
       .map(|member| member.relay_track_id)
   }
@@ -1232,7 +1228,10 @@ mod tests {
 
     // ...and its close, as the last re-send stream, is what ends the mark.
     manager.note_stream_closed(&resent);
-    assert!(!manager.is_resent_group(3, 5), "the finished re-send leaves no mark");
+    assert!(
+      !manager.is_resent_group(3, 5),
+      "the finished re-send leaves no mark"
+    );
   }
 
   /// The deadline travels with the mark, because it belongs to the group the

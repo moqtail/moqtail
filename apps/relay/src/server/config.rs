@@ -41,31 +41,6 @@ const MAX_IO_SOCKETS: usize = 256;
 /// and nothing bounds the second factor, so the first is bounded here.
 const MAX_DEDUP_RETAINED_GROUPS: u64 = 1000;
 
-/// Parse one `--ssts-algorithms` value, accepting decimal or `0x` hex (the
-/// private algorithm ids are easier to read in hex, and that is how they appear
-/// in the logs and on the wire).
-///
-/// Rejecting an id the relay does not run here means clap reports it with the
-/// usage message and a non-zero exit, the same way it treats any other bad
-/// option, instead of the relay starting up and then failing every subscription
-/// that names it.
-fn parse_ssts_algorithm_id(value: &str) -> Result<u64, String> {
-  let trimmed = value.trim();
-  let parsed = match trimmed.strip_prefix("0x").or(trimmed.strip_prefix("0X")) {
-    Some(hex) => u64::from_str_radix(hex, 16),
-    None => trimmed.parse::<u64>(),
-  };
-  let id = parsed.map_err(|_| format!("'{value}' is not an algorithm id"))?;
-  if moqtail_ssts::registry::registry().get(id).is_some() {
-    Ok(id)
-  } else {
-    Err(format!(
-      "unknown SSTS algorithm id '{value}'; this relay runs {:?}",
-      moqtail_ssts::registry::registry().ids()
-    ))
-  }
-}
-
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 pub struct Cli {
@@ -196,7 +171,7 @@ pub struct Cli {
     num_args = 1..,
     value_delimiter = ',',
     default_value = "0",
-    value_parser = parse_ssts_algorithm_id
+    value_parser = super::ssts::parse_algorithm_id
   )]
   pub ssts_algorithms: Vec<u64>,
 

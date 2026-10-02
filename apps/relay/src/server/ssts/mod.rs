@@ -31,11 +31,38 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::{Mutex, RwLock};
 
 use moqtail_ssts::SetSnapshot;
+use moqtail_ssts::registry::registry;
 use switching_set::SwitchingSetManager;
 
 /// SSTS per-group allocation decisions: group -> set -> selected relay
 /// track id, or `None` when nothing from the set is forwarded.
 pub type GroupDecisions = HashMap<u64, HashMap<u64, Option<u64>>>;
+
+/// Parse one algorithm id from the command line, accepting decimal or `0x`
+/// hex: the private ids are easier to read in hex, and that is how they appear
+/// in the logs and on the wire.
+///
+/// Which ids exist is this module's business rather than the configuration's,
+/// so the check against the registry lives here. Rejecting an unknown id at
+/// parse time means the relay reports it with the usage message and a non-zero
+/// exit, the way any other bad option is reported, instead of starting up and
+/// then failing every subscription that names it.
+pub fn parse_algorithm_id(value: &str) -> Result<u64, String> {
+  let trimmed = value.trim();
+  let parsed = match trimmed.strip_prefix("0x").or(trimmed.strip_prefix("0X")) {
+    Some(hex) => u64::from_str_radix(hex, 16),
+    None => trimmed.parse::<u64>(),
+  };
+  let id = parsed.map_err(|_| format!("'{value}' is not an algorithm id"))?;
+  if registry().get(id).is_some() {
+    Ok(id)
+  } else {
+    Err(format!(
+      "unknown SSTS algorithm id '{value}'; this relay runs {:?}",
+      registry().ids()
+    ))
+  }
+}
 
 pub(crate) enum AbrMessage {
   /// An Object arrived for a group this connection has no decision for. The

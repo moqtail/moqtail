@@ -229,7 +229,7 @@ async fn upstream_subscribe_exchange(
               .await;
 
               // SSTS: the track is no longer available upstream; remove it
-              // from the switching sets of its subscribers (Section 6.3).
+              // from the switching sets of its subscribers.
               track.read().await.remove_from_subscriber_switching_sets().await;
               if let Err(e) = track
                 .read()
@@ -377,7 +377,7 @@ async fn end_upstream_subscription(
   {
     let track = track.read().await;
     // SSTS: the track is no longer available upstream; remove it from the
-    // switching sets of its subscribers (Section 6.3).
+    // switching sets of its subscribers.
     track.remove_from_subscriber_switching_sets().await;
     if let Err(e) = track
       .notify_publish_done(status_code, error.reason_phrase.as_str().to_string())
@@ -499,8 +499,7 @@ async fn handle_subscribe_message(
     return Ok(());
   }
 
-  // Sender-side track switching (draft-wilaw-moq-moqt-ssts): register this
-  // track in its switching set.
+  // Sender-side track switching: register this track in its switching set.
   if let Some(MessageParameter::SwitchingSetAssignment {
     switching_set_id,
     algorithm_id,
@@ -545,8 +544,8 @@ async fn handle_subscribe_message(
       ) {
         warn!("Rejecting SUBSCRIBE from {}: {}", context.connection_id, e);
         // A track MUST only be assigned to one switching set at a time; the
-        // subscription is rejected (spec: Parameter Error; the draft-18
-        // REQUEST_ERROR codes have no dedicated parameter code).
+        // subscription is rejected. There is no dedicated parameter-error
+        // code to return, so the unsupported-extension one carries it.
         drop(manager);
         reject_subscription(&track_arc, client.connection_id, is_switch).await;
         let err = RequestError::new(

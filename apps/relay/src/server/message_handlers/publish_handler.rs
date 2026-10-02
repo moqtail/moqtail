@@ -653,9 +653,8 @@ pub(crate) async fn forward_publish_downstream(
           }
 
           // The subscriber may assign this track to one of its own SSTS
-          // switching sets in the PUBLISH_OK (draft-wilaw-moq-moqt-ssts,
-          // Section 4); this may set the subscription's Forward State, which
-          // the next step relies on.
+          // switching sets in the PUBLISH_OK; this may set the subscription's
+          // Forward State, which the next step relies on.
           register_ssts_assignment_from_publish_ok(
             subscriber.clone(),
             &publish,
@@ -696,8 +695,7 @@ pub(crate) async fn forward_publish_downstream(
 }
 
 /// The subscriber may assign a track to an SSTS switching set by appending
-/// SWITCHING_SET_ASSIGNMENT to the PUBLISH_OK that accepts a pushed PUBLISH
-/// (draft-wilaw-moq-moqt-ssts, Section 4).
+/// SWITCHING_SET_ASSIGNMENT to the PUBLISH_OK that accepts a pushed PUBLISH.
 async fn register_ssts_assignment_from_publish_ok(
   subscriber: Arc<MOQTClient>,
   publish: &Publish,
@@ -855,7 +853,7 @@ async fn cleanup_published_track(
   };
 
   // SSTS: the upstream track is going away (PUBLISH_DONE); remove it from the
-  // switching sets of all downstream subscribers (Section 6.3). Done before
+  // switching sets of all downstream subscribers. Done before
   // the track may be dropped below.
   track_arc
     .read()

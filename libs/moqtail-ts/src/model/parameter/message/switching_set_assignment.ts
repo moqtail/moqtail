@@ -22,14 +22,13 @@ import { Parameter } from '../parameter'
 
 /**
  * Assigns a subscription to an SSTS (sender-side track switching) switching
- * set (draft-wilaw-moq-moqt-ssts, Section 5). Carried on SUBSCRIBE and on the
- * PUBLISH_OK of a pushed track.
+ * set. Carried on SUBSCRIBE and on the PUBLISH_OK of a pushed track.
  *
- * PROVISIONAL: this parameter comes from an unadopted draft and has no
- * codepoint in the adopted draft-18 registry (`dev/conformance/draft18`), so
- * it is never asserted against that fixture. Id 0 is the draft's default
- * algorithm (Section 6.3.1); other ids select implementation-specific
- * algorithms.
+ * PROVISIONAL: sender-side track switching is not an adopted extension, so
+ * this parameter has no codepoint in the registry the conformance fixture
+ * tracks (`dev/conformance/draft18`) and is never asserted against it. Id 0 is
+ * the default allocation every implementation runs; other ids select an
+ * algorithm specific to one implementation.
  */
 export class SwitchingSetAssignment implements Parameter {
   static readonly TYPE = MessageParameterType.SwitchingSetAssignment

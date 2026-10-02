@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! SSTS switching sets (draft-wilaw-moq-moqt-ssts).
+//! SSTS switching sets.
 //!
 //! A switching set is a collection of tracks representing the same content
 //! at different throughput levels; the ABR selects exactly one track per

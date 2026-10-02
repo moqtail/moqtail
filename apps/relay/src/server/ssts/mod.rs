@@ -262,7 +262,7 @@ mod tests {
 
   #[test]
   fn a_relay_with_the_feature_off_negotiates_nothing() {
-    // The client wanting it is not enough; that is what --enable-ssts is for.
+    // The client wanting it is not enough; that is what --ssts-enable is for.
     let client = setup_advertising(Some(&[0]));
     let state = SstsState::new(&client, &[]);
     assert!(state.negotiated_algorithms.is_empty());

@@ -1093,7 +1093,7 @@ impl Session {
     // The setup option and message parameter SSTS relies on are provisional,
     // so a relay that has not opted in never puts them on the wire.
     let mut setup_options = vec![moqt_implementation_param];
-    if context.server_config.enable_ssts {
+    if context.server_config.ssts_enable {
       setup_options.push(
         moqtail::model::parameter::setup_option::SetupOption::new_ssts_algorithms(
           context.server_config.ssts_algorithms.clone(),

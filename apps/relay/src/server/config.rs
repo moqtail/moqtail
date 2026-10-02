@@ -156,7 +156,7 @@ pub struct Cli {
   /// and message parameter it relies on are provisional on an unadopted draft, so
   /// relays that never turn the feature on never put them on the wire.
   #[arg(long, default_value_t = false)]
-  pub enable_ssts: bool,
+  pub ssts_enable: bool,
 
   /// Which SSTS algorithm ids to run and advertise in SETUP, comma separated,
   /// decimal or 0x hex. Defaults to the default allocation (0) alone: SSTS is a
@@ -165,7 +165,7 @@ pub struct Cli {
   /// An id the relay does not implement is a startup error rather than a
   /// warning, because advertising an algorithm this relay cannot run only
   /// produces subscriptions that are rejected one by one.
-  /// Ignored unless --enable-ssts is set.
+  /// Ignored unless --ssts-enable is set.
   #[arg(
     long,
     num_args = 1..,
@@ -226,7 +226,7 @@ pub struct AppConfig {
   /// SSTS is available on this relay: the setup option is advertised and
   /// SWITCHING_SET_ASSIGNMENT is accepted. A client can never enable it on a relay
   /// that has it off, because the advertised list stays empty.
-  pub enable_ssts: bool,
+  pub ssts_enable: bool,
   /// The SSTS algorithm ids advertised in SETUP. Empty means SSTS is off, which is
   /// also what clients negotiate to.
   pub ssts_algorithms: Vec<u64>,
@@ -271,12 +271,12 @@ impl AppConfig {
       downstream_alias_timeout: Duration::from_millis(cli.downstream_alias_timeout_ms),
       publish_done_stream_timeout: Duration::from_millis(cli.publish_done_stream_timeout_ms),
       dedup_retained_groups: cli.dedup_retained_groups as usize,
-      enable_ssts: cli.enable_ssts,
+      ssts_enable: cli.ssts_enable,
       // When the feature is off the advertised list stays empty, so a client can
       // never negotiate SSTS on this relay however much it wants it.
       // The registry decided at parse time which ids are runnable; the feature
       // flag decides whether any of them go on the wire.
-      ssts_algorithms: if cli.enable_ssts {
+      ssts_algorithms: if cli.ssts_enable {
         let mut ids = cli.ssts_algorithms.clone();
         ids.dedup();
         ids
@@ -442,7 +442,7 @@ mod tests {
       downstream_alias_timeout: Duration::from_millis(3000),
       publish_done_stream_timeout: Duration::from_millis(2000),
       dedup_retained_groups: 30,
-      enable_ssts: false,
+      ssts_enable: false,
       ssts_algorithms: Vec::new(),
       ssts_discard_timeout_ms: 1600,
     }
@@ -501,7 +501,7 @@ mod tests {
   #[test]
   fn ssts_advertises_nothing_unless_the_feature_is_on() {
     assert_eq!(ssts_algorithms_for(&[]), Vec::<u64>::new());
-    // Asking for algorithms without --enable-ssts stays silent: the relay must
+    // Asking for algorithms without --ssts-enable stays silent: the relay must
     // never put a provisional option on the wire unless it was told to.
     assert_eq!(
       ssts_algorithms_for(&["--ssts-algorithms", "0"]),
@@ -511,14 +511,14 @@ mod tests {
 
   #[test]
   fn enabling_ssts_runs_the_default_algorithm_alone() {
-    assert_eq!(ssts_algorithms_for(&["--enable-ssts"]), vec![0]);
+    assert_eq!(ssts_algorithms_for(&["--ssts-enable"]), vec![0]);
   }
 
   #[test]
   fn private_algorithm_ids_are_accepted_in_hex() {
     let requested = format!("0,{:#x}", moqtail_ssts::registry::PRIVATE_ALGORITHM_ID_BASE);
     assert_eq!(
-      ssts_algorithms_for(&["--enable-ssts", "--ssts-algorithms", &requested]),
+      ssts_algorithms_for(&["--ssts-enable", "--ssts-algorithms", &requested]),
       vec![0, moqtail_ssts::registry::PRIVATE_ALGORITHM_ID_BASE]
     );
   }
@@ -527,9 +527,9 @@ mod tests {
   fn an_unknown_algorithm_id_is_rejected_before_startup() {
     // An algorithm this relay cannot run must not be advertised: a publisher
     // would build switching sets on it and have every subscription rejected.
-    assert!(Cli::try_parse_from(["relay", "--enable-ssts", "--ssts-algorithms", "7"]).is_err());
+    assert!(Cli::try_parse_from(["relay", "--ssts-enable", "--ssts-algorithms", "7"]).is_err());
     assert!(
-      Cli::try_parse_from(["relay", "--enable-ssts", "--ssts-algorithms", "banana"]).is_err()
+      Cli::try_parse_from(["relay", "--ssts-enable", "--ssts-algorithms", "banana"]).is_err()
     );
   }
 }

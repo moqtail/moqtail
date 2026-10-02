@@ -20,13 +20,12 @@ import { SetupOptionType } from '../constant'
 import { Parameter } from '../parameter'
 
 /**
- * The sender-side track switching (SSTS) algorithms this endpoint supports
- * (draft-wilaw-moq-moqt-ssts, Section 3.1).
+ * The sender-side track switching (SSTS) algorithms this endpoint supports.
  *
- * PROVISIONAL: this option comes from an unadopted draft and has no codepoint
- * in the adopted draft-18 registry (`dev/conformance/draft18`), so it is
- * never asserted against that fixture. An empty list — or the absence of the
- * option — prohibits the use of SSTS.
+ * PROVISIONAL: sender-side track switching is not an adopted extension, so
+ * this option has no codepoint in the registry the conformance fixture tracks
+ * (`dev/conformance/draft18`) and is never asserted against it. An empty list
+ * — or the absence of the option — prohibits the use of SSTS.
  */
 export class SstsAlgorithms implements Parameter {
   static readonly TYPE = SetupOptionType.SstsAlgorithms

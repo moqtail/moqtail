@@ -22,7 +22,8 @@ pub enum SetupOptionType {
   MaxAuthTokenCacheSize = 0x04,
   Authority = 0x05, // MQOtail does not use this (WebTransport)
   MoqtImplementation = 0x07,
-  SstsAlgorithms = 0x09, // Sender-Side Track Switching (draft-wilaw-moq-moqt-ssts)
+  // Provisional: sender-side track switching is not in the adopted registry.
+  SstsAlgorithms = 0x09,
 }
 
 impl TryFrom<u64> for SetupOptionType {

@@ -24,8 +24,9 @@ export enum SetupOptionType {
   Authority = 0x05,
   MoqtImplementation = 0x07,
   /**
-   * PROVISIONAL: from the unadopted SSTS draft (draft-wilaw-moq-moqt-ssts, §3.1), which
-   * leaves 0x07-0x7F of this space free. Not part of the adopted draft-18 registry.
+   * PROVISIONAL: sender-side track switching is not an adopted extension, so this
+   * codepoint is absent from the registry the conformance fixture tracks. It sits in the
+   * 0x07-0x7F range of this space, which that registry leaves free.
    */
   SstsAlgorithms = 0x09,
 }
@@ -69,8 +70,9 @@ export enum MessageParameterType {
    */
   TrackNamespacePrefix = 0x34,
   /**
-   * PROVISIONAL: from the unadopted SSTS draft (draft-wilaw-moq-moqt-ssts, §5). Not part
-   * of the adopted draft-18 registry; see the fixture's `local_extensions`.
+   * PROVISIONAL: sender-side track switching is not an adopted extension, so this
+   * codepoint is absent from the registry the conformance fixture tracks; see its
+   * `local_extensions`.
    */
   SwitchingSetAssignment = 0x41,
 }

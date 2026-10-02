@@ -65,9 +65,9 @@ pub enum MessageParameter {
   TrackNamespacePrefix {
     prefix: Tuple,
   },
-  /// Assigns a subscription to an SSTS switching set
-  /// (draft-wilaw-moq-moqt-ssts). Id 0 is the default algorithm of Section
-  /// 6.3.1; other ids select implementation-specific algorithms.
+  /// Assigns a subscription to an SSTS switching set. Id 0 is the default
+  /// allocation every implementation runs; other ids select an algorithm
+  /// specific to one implementation.
   SwitchingSetAssignment {
     switching_set_id: u64,
     algorithm_id: u64,
@@ -266,9 +266,10 @@ impl MessageParameter {
           | ControlMessageType::RequestUpdate
       ),
       Self::TrackNamespacePrefix { .. } => matches!(msg_type, ControlMessageType::RequestUpdate),
-      // The parameter MAY appear in a SUBSCRIBE, REQUEST_UPDATE, or PUBLISH_OK
-      // message (draft-wilaw-moq-moqt-ssts, Section 5). PUBLISH_OK is carried
-      // as REQUEST_OK in this draft.
+      // A switching set is joined when the subscription is created and
+      // re-tuned afterwards, so the parameter rides SUBSCRIBE, REQUEST_UPDATE
+      // and the PUBLISH_OK that accepts a pushed track — which arrives here as
+      // REQUEST_OK.
       Self::SwitchingSetAssignment { .. } => matches!(
         msg_type,
         ControlMessageType::PublishOk

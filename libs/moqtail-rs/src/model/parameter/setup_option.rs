@@ -36,8 +36,8 @@ pub enum SetupOption {
   MoqtImplementation {
     info: String,
   },
-  /// SSTS algorithms this endpoint supports (draft-wilaw-moq-moqt-ssts, Section 3.1).
-  /// An empty list — or the absence of this option — prohibits the use of SSTS.
+  /// The sender-side track switching algorithms this endpoint supports. An
+  /// empty list — or the absence of this option — prohibits the use of SSTS.
   SstsAlgorithms {
     algorithms: Vec<u64>,
   },

@@ -424,7 +424,10 @@ impl MOQTClient {
   // Remove the stream from the map and finish it
   // if the stream is found, return true, else false
   pub async fn close_stream(&self, stream_id: &StreamId) -> Result<bool> {
-    let stream = self.remove_stream_by_stream_id(stream_id).await;
+    // Taken without releasing the slot: the stream stays counted against its
+    // switching set until it has actually finished or been reset below, so the
+    // set's depth reflects the bandwidth the stream is still occupying.
+    let stream = self.take_stream(stream_id).await;
     let group_id = stream_id.group_id.unwrap_or(0);
 
     if let Some(send_stream) = stream {
@@ -488,41 +491,37 @@ impl MOQTClient {
     }
   }
 
-  // Just remove the stream from the stream_map
-  // The caller finishes the stream and calls this to remove it from the map.
-  //
-  // This does NOT release the switching-set stream slot: `close_stream` wants
-  // the stream counted until it has actually finished, so every caller that
-  // takes a stream out of the map without going through `close_stream` calls
-  // `ssts.on_stream_closed` itself.
-  pub async fn remove_stream_by_stream_id(
-    &self,
-    stream_id: &StreamId,
-  ) -> Option<Arc<Mutex<TransportSendStream>>> {
+  /// Take a stream out of the map without releasing its switching-set stream
+  /// slot. Private because leaving the slot held is only correct for
+  /// `close_stream`, which keeps the stream counted until it has actually
+  /// finished; everything else goes through `release_stream`.
+  async fn take_stream(&self, stream_id: &StreamId) -> Option<Arc<Mutex<TransportSendStream>>> {
     let send_stream_map = self.get_stream_map(stream_id);
     let mut send_streams = send_stream_map.write().await;
     send_streams.remove(stream_id.get_stream_id().as_str())
   }
 
   /// Take a stream out of the map once the caller has finished or reset it,
-  /// and release the switching-set stream slot it held.
+  /// and release the switching-set stream slot it held. Returns the stream so
+  /// the caller can still act on it.
   ///
   /// The slot is released only when a stream was actually in the map, so a
   /// second removal cannot borrow the count of another stream of the same set.
-  pub async fn release_stream(&self, stream_id: &StreamId) {
-    if self.remove_stream_by_stream_id(stream_id).await.is_some() {
+  pub async fn release_stream(
+    &self,
+    stream_id: &StreamId,
+  ) -> Option<Arc<Mutex<TransportSendStream>>> {
+    let removed = self.take_stream(stream_id).await;
+    if removed.is_some() {
       self.ssts.on_stream_closed(stream_id.relay_track_id).await;
     }
+    removed
   }
 
   /// Reset a data stream with an application error code (QUIC RESET_STREAM) and
   /// drop it from the send-stream map, releasing its switching-set stream slot.
   pub async fn reset_stream(&self, stream_id: &StreamId, code: u64) {
-    let removed = self.remove_stream_by_stream_id(stream_id).await;
-    if removed.is_some() {
-      self.ssts.on_stream_closed(stream_id.relay_track_id).await;
-    }
-    if let Some(stream) = removed
+    if let Some(stream) = self.release_stream(stream_id).await
       && let Err(e) = stream.lock().await.reset(code)
     {
       warn!("Error resetting data stream {}: {:?}", stream_id, e);
@@ -571,17 +570,10 @@ impl MOQTClient {
               stream_id.get_stream_id()
             );
             drop(stream);
-            // remove this from the streams
-            let stream_map = self.get_stream_map(stream_id);
-            let mut send_streams = stream_map.write().await;
-            if send_streams
-              .remove(stream_id.get_stream_id().as_str())
-              .is_some()
-            {
-              // The peer stopped the stream, so it is gone even if a close for
-              // it arrives later: release its switching-set slot now.
-              self.ssts.on_stream_closed(stream_id.relay_track_id).await;
-            }
+            // The peer stopped the stream, so it is gone even if a close for
+            // it arrives later: drop it from the map and release its
+            // switching-set slot now.
+            self.release_stream(stream_id).await;
           }
         }
       };

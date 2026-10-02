@@ -1090,9 +1090,8 @@ impl Session {
       .try_into()
       .unwrap();
 
-    // SSTS is advertised only when the relay has it enabled: its setup option
-    // and message parameter are provisional on an unadopted draft, so a relay
-    // that never opts in never puts them on the wire.
+    // The setup option and message parameter SSTS relies on are provisional,
+    // so a relay that has not opted in never puts them on the wire.
     let mut setup_options = vec![moqt_implementation_param];
     if context.server_config.enable_ssts {
       setup_options.push(
@@ -1149,10 +1148,9 @@ impl Session {
       context.connection_id,
       Arc::new(context.connection.clone()),
       Arc::new(client_setup),
+      context.server_config,
     );
     let client = Arc::new(client);
-    // The controller is a no-op without SSTS: without it there are no switching
-    // sets, no decisions and no stream-timeout evidence to act on.
     if client.ssts_enabled() {
       client.clone().start_abr_controller();
     }

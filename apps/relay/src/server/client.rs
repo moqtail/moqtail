@@ -17,6 +17,7 @@ pub(crate) mod track_subscription_map;
 
 use crate::server::{
   client::track_subscription_map::TrackSubscriptionMap,
+  config::AppConfig,
   message_handlers::fetch_handler::FetchStop,
   session_context::PendingRequest,
   ssts,
@@ -151,25 +152,25 @@ pub(crate) struct MOQTClient {
   /// Sender-side track switching: the negotiation, switching sets, ABR
   /// controller channel and decision cache, behind one handle.
   pub ssts: Arc<ssts::SstsState>,
+
+  /// The settings this relay started with, handed in the way `Track` and
+  /// `Subscription` take theirs, rather than reached for through the global.
+  config: &'static AppConfig,
 }
 
 impl MOQTClient {
-  /// SSTS was negotiated for this connection.
-  pub fn ssts_enabled(&self) -> bool {
-    self.ssts.enabled()
-  }
-
   pub(crate) fn new(
     connection_id: usize,
     connection: Arc<TransportConnection>,
     client_setup: Arc<Setup>,
+    config: &'static AppConfig,
   ) -> Self {
     let mut send_streams = Vec::with_capacity(SEND_STREAM_PARTITION_COUNT);
     for _ in 0..SEND_STREAM_PARTITION_COUNT {
       send_streams.push(Arc::new(RwLock::new(HashMap::new())));
     }
 
-    let kbps = crate::server::config::AppConfig::load().write_kbps_limit;
+    let kbps = config.write_kbps_limit;
     let rate_limiter = if kbps > 0 {
       Some(Arc::new(Mutex::new(TokenBucket::new(kbps))))
     } else {
@@ -179,7 +180,7 @@ impl MOQTClient {
     // SSTS for this connection.
     let ssts = Arc::new(ssts::SstsState::new(
       client_setup.as_ref(),
-      &crate::server::config::AppConfig::load().ssts_algorithms,
+      &config.ssts_algorithms,
     ));
 
     MOQTClient {
@@ -208,11 +209,8 @@ impl MOQTClient {
       switch_context: SwitchContext::new(),
       rate_limiter,
       ssts,
+      config,
     }
-  }
-
-  pub fn start_abr_controller(self: Arc<Self>) {
-    ssts::controller::start(self);
   }
 
   pub(crate) async fn add_announced_track_namespace(&self, track_namespace: Tuple) {
@@ -436,7 +434,7 @@ impl MOQTClient {
       // negotiated the feature always closes gracefully, so in-flight data is
       // never discarded for traffic that never opted in.
       let timeout_ms = if self.ssts_enabled() {
-        crate::server::config::AppConfig::load().ssts_discard_timeout_ms
+        self.config.ssts_discard_timeout_ms
       } else {
         0
       };
@@ -598,6 +596,15 @@ impl MOQTClient {
     // Write the object payload directly to the connection as a datagram
     self.connection.send_datagram(object)?;
     Ok(())
+  }
+
+  /// SSTS was negotiated for this connection.
+  pub fn ssts_enabled(&self) -> bool {
+    self.ssts.enabled()
+  }
+
+  pub fn start_abr_controller(self: Arc<Self>) {
+    ssts::controller::start(self);
   }
 }
 

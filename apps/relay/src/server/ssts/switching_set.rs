@@ -25,6 +25,8 @@ use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail_ssts::SetSnapshot;
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The one place mechanism state becomes algorithm state: everything, and only
 /// everything, an algorithm is allowed to know about a set.
@@ -117,11 +119,28 @@ pub struct SwitchingSetManager {
   /// torn down takes its count with it, so a publisher that later reuses the
   /// id does not inherit a queue depth it never created.
   open_streams: HashMap<u64, u64>,
+  /// Bumped on every change to set membership or set properties. The forward
+  /// gate caches its verdict against this counter, which it reads without
+  /// taking this lock, so a change here invalidates what the gate cached.
+  epoch: Arc<AtomicU64>,
 }
 
 impl SwitchingSetManager {
   pub fn new() -> Self {
     Self::default()
+  }
+
+  /// A handle on the membership counter, for the gate to read without taking
+  /// this lock. Held by `SstsState` alongside the manager itself.
+  pub fn epoch_handle(&self) -> Arc<AtomicU64> {
+    self.epoch.clone()
+  }
+
+  /// Invalidate whatever the forward gate cached about this connection's sets.
+  /// Called by every mutation that can change which set a track belongs to, or
+  /// whether its set is active.
+  fn bump_epoch(&self) {
+    self.epoch.fetch_add(1, Ordering::Release);
   }
 
   /// A forwarding stream opened for the set this relay track belongs to.
@@ -222,6 +241,7 @@ impl SwitchingSetManager {
     self
       .relay_track_to_set
       .insert(relay_track_id, switching_set_id);
+    self.bump_epoch();
     Ok(())
   }
 
@@ -233,6 +253,9 @@ impl SwitchingSetManager {
     let Some(set_id) = self.track_to_set.remove(full_track_name) else {
       return;
     };
+    // The track is out of `track_to_set` from here on, whatever follows, so
+    // the gate's cached membership is already stale.
+    self.bump_epoch();
     let Some(set) = self.sets.get_mut(&set_id) else {
       return;
     };
@@ -322,6 +345,9 @@ impl SwitchingSetManager {
       member.throughput_threshold_kbps = threshold;
       set.members.sort_by_key(|m| m.throughput_threshold_kbps);
     }
+    // `activate` can flip the set between dormant and active, so the gate's
+    // cached verdict no longer follows from what it saw.
+    self.bump_epoch();
     Ok(warnings)
   }
 
@@ -582,5 +608,54 @@ mod tests {
 
     assign(&mut manager, &track, 42, 7, 100);
     assert_eq!(manager.open_streams().get(&7), None);
+  }
+
+  #[test]
+  fn test_every_membership_change_moves_the_epoch() {
+    // The forward gate holds its verdict for a group until this counter moves,
+    // so a mutation that does not move it would leave the gate forwarding on a
+    // track that is no longer selected.
+    let mut manager = SwitchingSetManager::new();
+    let epoch = manager.epoch_handle();
+    let read = || epoch.load(Ordering::Acquire);
+    let track = make_track("ns", "t");
+
+    let before = read();
+    assign(&mut manager, &track, 42, 7, 100);
+    assert!(read() > before, "assign must move the epoch");
+
+    let before = read();
+    manager
+      .update_assignment(&track, None, None, None, Some(0), None)
+      .expect("track is in a set");
+    assert!(
+      read() > before,
+      "an update that pauses the set must move the epoch"
+    );
+
+    let before = read();
+    manager.remove(&track);
+    assert!(read() > before, "remove must move the epoch");
+
+    // A removal that matches no track changes nothing, so it need not move it.
+    let before = read();
+    manager.remove(&make_track("ns", "absent"));
+    assert_eq!(read(), before);
+  }
+
+  #[test]
+  fn test_stream_accounting_does_not_move_the_epoch() {
+    // Opening and closing forwarding streams happens per group per track and
+    // changes neither membership nor activation, so it must not invalidate the
+    // gate's cache.
+    let mut manager = SwitchingSetManager::new();
+    let epoch = manager.epoch_handle();
+    let track = make_track("ns", "t");
+    assign(&mut manager, &track, 42, 7, 100);
+
+    let before = epoch.load(Ordering::Acquire);
+    manager.note_stream_opened(42);
+    manager.note_stream_closed(42);
+    assert_eq!(epoch.load(Ordering::Acquire), before);
   }
 }

@@ -27,6 +27,7 @@ pub mod switching_set;
 use moqtail::model::control::setup::Setup;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::{Mutex, RwLock};
 
 use moqtail_ssts::SetSnapshot;
@@ -60,6 +61,12 @@ pub struct SstsState {
   /// SSTS decisions (see `GroupDecisions`).
   pub group_decisions: Arc<RwLock<GroupDecisions>>,
   pub decision_notify: Arc<tokio::sync::Notify>,
+  /// Bumped whenever set membership or a group decision changes. The forward
+  /// gate keeps its verdict for the group it is forwarding and re-reads the
+  /// shared state only when this moves, which turns the common case — every
+  /// Object of a group after the one that triggered the decision — into a
+  /// pair of atomic loads instead of two lock acquisitions and a hash.
+  epoch: Arc<AtomicU64>,
 }
 
 /// The SSTS algorithms the client's SETUP advertises; an empty list (or the
@@ -92,19 +99,36 @@ impl SstsState {
       .filter(|id| relay_algorithms.contains(id))
       .collect();
 
+    // The manager owns the counter and bumps it on every membership change,
+    // so no caller has to remember to; this is the read handle for the gate.
+    let switching_sets = SwitchingSetManager::new();
+    let epoch = switching_sets.epoch_handle();
+
     Self {
       negotiated_algorithms,
-      switching_sets: Arc::new(RwLock::new(SwitchingSetManager::new())),
+      switching_sets: Arc::new(RwLock::new(switching_sets)),
       abr_tx,
       abr_rx: Arc::new(Mutex::new(Some(abr_rx))),
       group_decisions: Arc::new(RwLock::new(HashMap::new())),
       decision_notify: Arc::new(tokio::sync::Notify::new()),
+      epoch,
     }
   }
 
   /// SSTS was negotiated for this connection (see `negotiated_algorithms`).
   pub fn enabled(&self) -> bool {
     !self.negotiated_algorithms.is_empty()
+  }
+
+  /// The current membership-and-decision epoch (see the field).
+  pub fn epoch(&self) -> u64 {
+    self.epoch.load(Ordering::Acquire)
+  }
+
+  /// Invalidate the gate's cached verdicts. The manager does this for itself
+  /// on membership changes; the controller calls it when it records a decision.
+  pub fn bump_epoch(&self) {
+    self.epoch.fetch_add(1, Ordering::Release);
   }
 
   /// The single validation a SWITCHING_SET_ASSIGNMENT gets, shared by both

@@ -197,6 +197,9 @@ async fn decide(
   };
 
   if changed {
+    // Order matters: the epoch moves before the wake, so a gate that is woken
+    // re-reads rather than trusting what it cached for this group.
+    client.ssts.bump_epoch();
     client.ssts.decision_notify.notify_waiters();
   }
 }

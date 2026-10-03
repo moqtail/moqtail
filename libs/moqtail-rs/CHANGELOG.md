@@ -1,5 +1,17 @@
 # moqtail-rs
 
+## 0.14.2
+
+### Patch Changes
+
+- [#214](https://github.com/moqtail/moqtail/pull/214) [`fbdbc75`](https://github.com/moqtail/moqtail/commit/fbdbc752fdf6c83b976539cc904bed476236d49c) Thanks [@sharmafb](https://github.com/sharmafb)! - handle malformed FETCH track on end client
+
+- [#214](https://github.com/moqtail/moqtail/pull/214) [`fbdbc75`](https://github.com/moqtail/moqtail/commit/fbdbc752fdf6c83b976539cc904bed476236d49c) Thanks [@sharmafb](https://github.com/sharmafb)! - helper function to validate subgroup priority in FETCH
+
+- [`d377edc`](https://github.com/moqtail/moqtail/commit/d377edc495f2bf54e6816bffaceb39db9c296a00) Thanks [@DenizUgur](https://github.com/DenizUgur)! - rename warp to cmsf and make catalog version string
+
+- [#377](https://github.com/moqtail/moqtail/pull/377) [`3f4c8a2`](https://github.com/moqtail/moqtail/commit/3f4c8a27921555c9b8f4778076d750da3402eb75) Thanks [@sharmafb](https://github.com/sharmafb)! - Check prior id gaps for malformed track
+
 ## 0.14.0
 
 ### Minor Changes

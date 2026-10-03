@@ -1,5 +1,15 @@
 # client
 
+## 0.14.2
+
+### Patch Changes
+
+- [#214](https://github.com/moqtail/moqtail/pull/214) [`fbdbc75`](https://github.com/moqtail/moqtail/commit/fbdbc752fdf6c83b976539cc904bed476236d49c) Thanks [@sharmafb](https://github.com/sharmafb)! - handle malformed FETCH track on end client
+
+- [#289](https://github.com/moqtail/moqtail/pull/289) [`7daccb6`](https://github.com/moqtail/moqtail/commit/7daccb61603cd2d50826011bea7f79ac94d7615e) Thanks [@kerembkmz](https://github.com/kerembkmz)! - fix(moqtail-ts): stop TerminationCode.tryFrom throwing on five valid enum values
+
+- [#390](https://github.com/moqtail/moqtail/pull/390) [`5711a63`](https://github.com/moqtail/moqtail/commit/5711a63936d31af9f644a712c0fef40fcd30c120) Thanks [@zafergurel](https://github.com/zafergurel)! - Add a subscribe-namespace command, receive objects for the tracks SUBSCRIBE_TRACKS is handed, cancel a prefix subscription by resetting its request stream, and report REQUEST_ERROR with its code and reason
+
 ## 0.14.0
 
 ### Minor Changes

@@ -1,5 +1,19 @@
 # moqtail-ts
 
+## 0.13.0
+
+### Minor Changes
+
+- [#389](https://github.com/moqtail/moqtail/pull/389) [`c0968f5`](https://github.com/moqtail/moqtail/commit/c0968f5ce14196083a57cbc07869bf5415ea479c) Thanks [@zafergurel](https://github.com/zafergurel)! - keep a publication alive when the peer moves its Forward State, and report the move through onForwardStateChange
+
+### Patch Changes
+
+- [`d377edc`](https://github.com/moqtail/moqtail/commit/d377edc495f2bf54e6816bffaceb39db9c296a00) Thanks [@DenizUgur](https://github.com/DenizUgur)! - rename warp to cmsf and make catalog version string
+
+- [`04d0df2`](https://github.com/moqtail/moqtail/commit/04d0df27467e067fe0968c35fbaabf0488b4f48a) Thanks [@acbegen](https://github.com/acbegen)! - refactor enums to use tryFrom for cleaner API
+
+- [#389](https://github.com/moqtail/moqtail/pull/389) [`c0968f5`](https://github.com/moqtail/moqtail/commit/c0968f5ce14196083a57cbc07869bf5415ea479c) Thanks [@zafergurel](https://github.com/zafergurel)! - tell onPeerPublishDone which request the PUBLISH_DONE ended
+
 ## 0.12.1
 
 ### Patch Changes

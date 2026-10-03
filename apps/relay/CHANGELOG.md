@@ -1,5 +1,15 @@
 # relay
 
+## 0.14.2
+
+### Patch Changes
+
+- [#394](https://github.com/moqtail/moqtail/pull/394) [`09a65c4`](https://github.com/moqtail/moqtail/commit/09a65c46ed3888a5baec92c4569e5fca60e8f91a) Thanks [@sharmafb](https://github.com/sharmafb)! - reset downstream FETCH on malformed upstream track
+
+- [#392](https://github.com/moqtail/moqtail/pull/392) [`753bd98`](https://github.com/moqtail/moqtail/commit/753bd98539a41bc8d93865ee8eeaf40e61e1e71b) Thanks [@sharmafb](https://github.com/sharmafb)! - Handle objects received before FETCH_OK
+
+- [#385](https://github.com/moqtail/moqtail/pull/385) [`c2a56c1`](https://github.com/moqtail/moqtail/commit/c2a56c1bcee26fb0ef2c2d325ee711c3f06c1c83) Thanks [@sharmafb](https://github.com/sharmafb)! - Report stream closed for empty FETCHes
+
 ## 0.14.1
 
 ### Patch Changes

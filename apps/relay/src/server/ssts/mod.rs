@@ -26,6 +26,7 @@ pub mod switching_set;
 
 use moqtail::model::control::setup::Setup;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::{Mutex, RwLock};
@@ -88,11 +89,8 @@ pub struct SstsState {
   /// SSTS decisions (see `GroupDecisions`).
   pub group_decisions: Arc<RwLock<GroupDecisions>>,
   pub decision_notify: Arc<tokio::sync::Notify>,
-  /// Bumped whenever set membership or a group decision changes. The forward
-  /// gate keeps its verdict for the group it is forwarding and re-reads the
-  /// shared state only when this moves, which turns the common case — every
-  /// Object of a group after the one that triggered the decision — into a
-  /// pair of atomic loads instead of two lock acquisitions and a hash.
+  /// Bumped when set membership changes.
+  /// A deliberate supersede must bump it too when it lands.
   epoch: Arc<AtomicU64>,
 }
 
@@ -147,15 +145,33 @@ impl SstsState {
     !self.negotiated_algorithms.is_empty()
   }
 
-  /// The current membership-and-decision epoch (see the field).
+  /// The current membership epoch (see the field).
   pub fn epoch(&self) -> u64 {
     self.epoch.load(Ordering::Acquire)
   }
 
-  /// Invalidate the gate's cached verdicts. The manager does this for itself
-  /// on membership changes; the controller calls it when it records a decision.
-  pub fn bump_epoch(&self) {
-    self.epoch.fetch_add(1, Ordering::Release);
+  /// Whether a decision has already been recorded for `group_id`.
+  pub async fn has_group_decision(&self, group_id: u64) -> bool {
+    self.group_decisions.read().await.contains_key(&group_id)
+  }
+
+  /// Record the allocation for `group_id`, only if the group has
+  /// no answer yet. A group's decision is final once recorded.
+  pub async fn record_group_decision(
+    &self,
+    group_id: u64,
+    decision: HashMap<u64, Option<u64>>,
+    oldest_kept: u64,
+  ) -> bool {
+    let mut decisions = self.group_decisions.write().await;
+    match decisions.entry(group_id) {
+      Entry::Vacant(slot) => {
+        slot.insert(decision);
+        decisions.retain(|&group, _| group >= oldest_kept || group == group_id);
+        true
+      }
+      Entry::Occupied(_) => false,
+    }
   }
 
   /// The single validation a SWITCHING_SET_ASSIGNMENT gets, shared by both
@@ -313,5 +329,45 @@ mod tests {
     state.on_stream_closed(42).await;
     let (_, streams) = state.decision_snapshot().await;
     assert!(streams.is_empty(), "a drained set reports no streams");
+  }
+
+  fn allocation(track: u64) -> HashMap<u64, Option<u64>> {
+    HashMap::from([(7, Some(track))])
+  }
+
+  #[tokio::test]
+  async fn a_group_decided_once_ignores_later_answers() {
+    let state = SstsState::new(&setup_advertising(Some(&[0])), &[0]);
+    assert!(state.record_group_decision(7, allocation(12), 0).await);
+    // A re-evaluation of the same group with a different answer cannot move
+    // it: applying it mid-delivery would splice the group across renditions.
+    assert!(!state.record_group_decision(7, allocation(10), 0).await);
+    assert_eq!(
+      state.group_decisions.read().await.get(&7),
+      Some(&allocation(12)),
+      "the recorded answer survives a changed re-evaluation"
+    );
+    assert!(state.has_group_decision(7).await);
+  }
+
+  #[tokio::test]
+  async fn decisions_prune_behind_the_live_edge_and_a_pruned_group_decides_again() {
+    let state = SstsState::new(&setup_advertising(Some(&[0])), &[0]);
+    assert!(state.record_group_decision(10, allocation(11), 0).await);
+    // The live edge moves to 14, keeping back to 12: group 10 falls out.
+    assert!(state.record_group_decision(14, allocation(11), 12).await);
+    {
+      let recorded = state.group_decisions.read().await;
+      assert!(!recorded.contains_key(&10), "pruned behind the live edge");
+      assert!(recorded.contains_key(&14));
+    }
+
+    assert!(!state.has_group_decision(10).await);
+    assert!(state.record_group_decision(10, allocation(9), 12).await);
+    assert!(state.has_group_decision(10).await);
+
+    // It is pruned by the next decision, not by its own.
+    assert!(state.record_group_decision(20, allocation(9), 18).await);
+    assert!(!state.has_group_decision(10).await);
   }
 }

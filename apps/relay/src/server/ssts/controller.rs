@@ -35,8 +35,8 @@ use crate::server::config::AppConfig;
 
 use super::AbrMessage;
 
-/// How often the decision is re-evaluated without a new group, so a bandwidth
-/// change reaches the group currently being served.
+/// How often the decision is re-evaluated without a new group. The answer for
+/// the group in flight cannot change.
 const DECISION_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Number of groups of decisions to keep behind the live edge, so a publisher
@@ -100,6 +100,12 @@ pub(crate) fn start(client: Arc<MOQTClient>) {
             Some(AbrMessage::NewGroup(group_id)) => {
               last_group = Some(group_id.max(last_group.unwrap_or(0)));
               largest_group = largest_group.max(group_id);
+              // One boundary per group.
+              if client.ssts.has_group_decision(group_id).await {
+                // The answer already exists; wake anyone waiting on it
+                client.ssts.decision_notify.notify_waiters();
+                continue;
+              }
               decide(&mut running, &client, group_id, largest_group, &mut stream_timeouts).await;
             }
             Some(AbrMessage::StreamTimeout { group_id }) => {
@@ -186,20 +192,19 @@ async fn decide(
     decisions.insert(set.id, None);
   }
 
-  let changed = {
-    let mut group_decisions = client.ssts.group_decisions.write().await;
-    let changed = group_decisions.get(&group_id) != Some(&decisions);
-    if changed {
-      group_decisions.insert(group_id, decisions.clone());
-      group_decisions.retain(|&group, _| group >= largest_group.saturating_sub(DECISION_WINDOW));
-    }
-    changed
-  };
+  // A group already being delivered keeps its answer: recording is insert-if-absent
+  let recorded = client
+    .ssts
+    .record_group_decision(
+      group_id,
+      decisions,
+      largest_group.saturating_sub(DECISION_WINDOW),
+    )
+    .await;
 
-  if changed {
-    // Order matters: the epoch moves before the wake, so a gate that is woken
-    // re-reads rather than trusting what it cached for this group.
-    client.ssts.bump_epoch();
+  if recorded {
+    // No epoch bump: answers are final, so recording one stale no cached
+    // verdict; waiters wake on the notify.
     client.ssts.decision_notify.notify_waiters();
   }
 }

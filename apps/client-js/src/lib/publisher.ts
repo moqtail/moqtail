@@ -100,7 +100,7 @@ export class Publisher {
   private videoProcessors: Array<{ processor: any; stop: () => void }> = [];
   private stopped = false;
 
-  private cmsf: CMSF = { version: 1, tracks: [] };
+  private cmsf: CMSF = { version: 'draft-01', tracks: [] };
   private startTimestamp = 0;
 
   constructor(private config: PublisherConfig) {}

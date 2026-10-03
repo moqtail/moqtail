@@ -17,8 +17,10 @@ pub(crate) mod track_subscription_map;
 
 use crate::server::{
   client::track_subscription_map::TrackSubscriptionMap,
+  config::AppConfig,
   message_handlers::fetch_handler::FetchStop,
   session_context::PendingRequest,
+  ssts,
   stream_id::{StreamId, StreamType},
   utils,
 };
@@ -30,6 +32,7 @@ use moqtail::{
     common::tuple::Tuple,
     control::{control_message::ControlMessage, setup::Setup},
     data::full_track_name::FullTrackName,
+    error::StreamResetCode,
   },
   transport::{
     connection::{TransportConnection, TransportKind, TransportSendStream, TransportWriteError},
@@ -145,6 +148,14 @@ pub(crate) struct MOQTClient {
   // Optional per-connection write rate limiter. All streams of this client share
   // the same bucket so they compete for bandwidth, exercising QUIC stream priority.
   rate_limiter: Option<Arc<Mutex<TokenBucket>>>,
+
+  /// Sender-side track switching: the negotiation, switching sets, ABR
+  /// controller channel and decision cache, behind one handle.
+  pub ssts: Arc<ssts::SstsState>,
+
+  /// The settings this relay started with, handed in the way `Track` and
+  /// `Subscription` take theirs, rather than reached for through the global.
+  config: &'static AppConfig,
 }
 
 impl MOQTClient {
@@ -152,18 +163,25 @@ impl MOQTClient {
     connection_id: usize,
     connection: Arc<TransportConnection>,
     client_setup: Arc<Setup>,
+    config: &'static AppConfig,
   ) -> Self {
     let mut send_streams = Vec::with_capacity(SEND_STREAM_PARTITION_COUNT);
     for _ in 0..SEND_STREAM_PARTITION_COUNT {
       send_streams.push(Arc::new(RwLock::new(HashMap::new())));
     }
 
-    let kbps = crate::server::config::AppConfig::load().write_kbps_limit;
+    let kbps = config.write_kbps_limit;
     let rate_limiter = if kbps > 0 {
       Some(Arc::new(Mutex::new(TokenBucket::new(kbps))))
     } else {
       None
     };
+
+    // SSTS for this connection.
+    let ssts = Arc::new(ssts::SstsState::new(
+      client_setup.as_ref(),
+      &config.ssts_algorithms,
+    ));
 
     MOQTClient {
       connection_id,
@@ -190,6 +208,8 @@ impl MOQTClient {
       subscriptions: TrackSubscriptionMap::new(),
       switch_context: SwitchContext::new(),
       rate_limiter,
+      ssts,
+      config,
     }
   }
 
@@ -364,6 +384,10 @@ impl MOQTClient {
       return Ok(send_stream);
     }
 
+    // Only the creator counts against the switching set, mirroring the
+    // release on every path that drops the stream from the map.
+    self.ssts.on_stream_opened(stream_id.relay_track_id).await;
+
     debug!(
       "open_stream |  writing to stream ({}) connection_id: {}",
       stream_id, self.connection_id
@@ -387,6 +411,7 @@ impl MOQTClient {
         let send_stream_map = self.get_stream_map(stream_id);
         let mut send_streams = send_stream_map.write().await;
         send_streams.remove(&stream_id.get_stream_id().to_string());
+        self.ssts.on_stream_closed(stream_id.relay_track_id).await;
 
         return Err(anyhow::anyhow!(
           "Failed to write header payload to send stream ({}): {:?} connection_id: {}",
@@ -403,26 +428,62 @@ impl MOQTClient {
   // Remove the stream from the map and finish it
   // if the stream is found, return true, else false
   pub async fn close_stream(&self, stream_id: &StreamId) -> Result<bool> {
-    let stream = self.remove_stream_by_stream_id(stream_id).await;
+    // Taken without releasing the slot: the stream stays counted against its
+    // switching set until it has actually finished or been reset below, so the
+    // set's depth reflects the bandwidth the stream is still occupying.
+    let stream = self.take_stream(stream_id).await;
+    let group_id = stream_id.group_id.unwrap_or(0);
 
     if let Some(send_stream) = stream {
-      // gracefully close the stream
       let mut stream = send_stream.lock().await;
+      // Only SSTS clients use a discard timeout: a connection that never
+      // negotiated the feature always closes gracefully, so in-flight data is
+      // never discarded for traffic that never opted in.
+      let timeout_ms = if self.ssts_enabled() {
+        self.config.ssts_discard_timeout_ms
+      } else {
+        0
+      };
 
-      // gracefully close the stream
-      // No new data may be written after calling this method.
-      // Completes when the peer has acknowledged all sent data, retransmitting data as needed.
-      stream
-        .finish()
-        .await
-        .map_err(|e| {
+      if timeout_ms == 0 {
+        // No discard timeout: always close gracefully.
+        // No new data may be written after calling this method.
+        // Completes when the peer has acknowledged all sent data, retransmitting data as needed.
+        stream.finish().await.map_err(|e| {
           error!(
             "close_stream | Failed to finish send stream ({}): {:?} connection_id: {}",
             stream_id, e, self.connection_id
           );
           anyhow::anyhow!("Failed to finish send stream ({}): {:?}", stream_id, e)
-        })
-        .map(|_| true)
+        })?;
+        self.ssts.on_stream_closed(stream_id.relay_track_id).await;
+        return Ok(true);
+      }
+
+      tokio::select! {
+        finish_result = stream.finish() => {
+            self.ssts.on_stream_closed(stream_id.relay_track_id).await;
+            finish_result.map_err(|e| anyhow::anyhow!(
+                "close_stream | Failed to finish ({}): {:?}", stream_id, e
+            )).map(|_| true)
+        }
+        _ = tokio::time::sleep(std::time::Duration::from_millis(timeout_ms)) => {
+            warn!(
+                connection_id = %self.connection_id,
+                group_id = %group_id,
+                "Stream timeout on close — resetting"
+            );
+            self.ssts.on_stream_closed(stream_id.relay_track_id).await;
+            // The stream was discarded because it did not finish in time,
+            // which is what this code is for: the peer must be able to tell a
+            // late delivery apart from a cancelled or failed one.
+            let _ = stream.reset(StreamResetCode::DeliveryTimeout.to_u64());
+            let _ = self.ssts.abr_tx.try_send(ssts::AbrMessage::StreamTimeout {
+                group_id,
+            });
+            Ok(true)
+        }
+      }
     } else {
       // it is possible that no stream was created for this stream id
       // because the subscription can be in no forwarding state
@@ -434,21 +495,37 @@ impl MOQTClient {
     }
   }
 
-  // Just remove the stream from the stream_map
-  // The caller finishes the stream and calls this to remove it from the map
-  pub async fn remove_stream_by_stream_id(
-    &self,
-    stream_id: &StreamId,
-  ) -> Option<Arc<Mutex<TransportSendStream>>> {
+  /// Take a stream out of the map without releasing its switching-set stream
+  /// slot. Private because leaving the slot held is only correct for
+  /// `close_stream`, which keeps the stream counted until it has actually
+  /// finished; everything else goes through `release_stream`.
+  async fn take_stream(&self, stream_id: &StreamId) -> Option<Arc<Mutex<TransportSendStream>>> {
     let send_stream_map = self.get_stream_map(stream_id);
     let mut send_streams = send_stream_map.write().await;
     send_streams.remove(stream_id.get_stream_id().as_str())
   }
 
+  /// Take a stream out of the map once the caller has finished or reset it,
+  /// and release the switching-set stream slot it held. Returns the stream so
+  /// the caller can still act on it.
+  ///
+  /// The slot is released only when a stream was actually in the map, so a
+  /// second removal cannot borrow the count of another stream of the same set.
+  pub async fn release_stream(
+    &self,
+    stream_id: &StreamId,
+  ) -> Option<Arc<Mutex<TransportSendStream>>> {
+    let removed = self.take_stream(stream_id).await;
+    if removed.is_some() {
+      self.ssts.on_stream_closed(stream_id.relay_track_id).await;
+    }
+    removed
+  }
+
   /// Reset a data stream with an application error code (QUIC RESET_STREAM) and
-  /// drop it from the send-stream map.
+  /// drop it from the send-stream map, releasing its switching-set stream slot.
   pub async fn reset_stream(&self, stream_id: &StreamId, code: u64) {
-    if let Some(stream) = self.remove_stream_by_stream_id(stream_id).await
+    if let Some(stream) = self.release_stream(stream_id).await
       && let Err(e) = stream.lock().await.reset(code)
     {
       warn!("Error resetting data stream {}: {:?}", stream_id, e);
@@ -497,10 +574,10 @@ impl MOQTClient {
               stream_id.get_stream_id()
             );
             drop(stream);
-            // remove this from the streams
-            let stream_map = self.get_stream_map(stream_id);
-            let mut send_streams = stream_map.write().await;
-            send_streams.remove(stream_id.get_stream_id().as_str());
+            // The peer stopped the stream, so it is gone even if a close for
+            // it arrives later: drop it from the map and release its
+            // switching-set slot now.
+            self.release_stream(stream_id).await;
           }
         }
       };
@@ -525,6 +602,15 @@ impl MOQTClient {
     // Write the object payload directly to the connection as a datagram
     self.connection.send_datagram(object)?;
     Ok(())
+  }
+
+  /// SSTS was negotiated for this connection.
+  pub fn ssts_enabled(&self) -> bool {
+    self.ssts.enabled()
+  }
+
+  pub fn start_abr_controller(self: Arc<Self>) {
+    ssts::controller::start(self);
   }
 }
 

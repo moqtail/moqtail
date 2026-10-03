@@ -30,6 +30,7 @@ import { Forward } from './message/forward'
 import { GroupOrderParam } from './message/group_order_param'
 import { LargestObject } from './message/largest_object'
 import { NewGroupRequest } from './message/new_group_request'
+import { SwitchingSetAssignment } from './message/switching_set_assignment'
 import { SubscriberPriority } from './message/subscriber_priority'
 import { SubscriptionFilter } from './message/subscription_filter'
 
@@ -46,6 +47,7 @@ export type MessageParameter =
   | GroupOrderParam
   | SubscriptionFilter
   | NewGroupRequest
+  | SwitchingSetAssignment
 
 export namespace MessageParameter {
   /**
@@ -66,7 +68,8 @@ export namespace MessageParameter {
       SubscriberPriority.fromKeyValuePair(pair) ??
       GroupOrderParam.fromKeyValuePair(pair) ??
       SubscriptionFilter.fromKeyValuePair(pair) ??
-      NewGroupRequest.fromKeyValuePair(pair)
+      NewGroupRequest.fromKeyValuePair(pair) ??
+      SwitchingSetAssignment.fromKeyValuePair(pair)
     )
   }
 
@@ -112,6 +115,10 @@ export namespace MessageParameter {
 
   export function isGroupOrderParam(param: MessageParameter): param is GroupOrderParam {
     return param instanceof GroupOrderParam
+  }
+
+  export function isSwitchingSetAssignment(param: MessageParameter): param is SwitchingSetAssignment {
+    return param instanceof SwitchingSetAssignment
   }
 
   /** The negotiated Group Order, or {@link (GroupOrder:enum).Original} when unparameterized. */

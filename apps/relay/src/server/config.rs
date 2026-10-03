@@ -151,6 +151,35 @@ pub struct Cli {
   /// Capped, because the memory this costs also scales with the size of a group
   #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(0..=MAX_DEDUP_RETAINED_GROUPS))]
   pub dedup_retained_groups: u64,
+
+  /// Enable sender-side track switching (SSTS). Off by default: the setup option
+  /// and message parameter it relies on are provisional on an unadopted draft, so
+  /// relays that never turn the feature on never put them on the wire.
+  #[arg(long, default_value_t = false)]
+  pub ssts_enable: bool,
+
+  /// Which SSTS algorithm ids to run and advertise in SETUP, comma separated,
+  /// decimal or 0x hex. Defaults to the default allocation (0) alone: SSTS is a
+  /// new mechanism, and any id beyond that first one is an experimental
+  /// algorithm of this implementation's, so the relay does not volunteer it.
+  /// An id the relay does not implement is a startup error rather than a
+  /// warning, because advertising an algorithm this relay cannot run only
+  /// produces subscriptions that are rejected one by one.
+  /// Ignored unless --ssts-enable is set.
+  #[arg(
+    long,
+    num_args = 1..,
+    value_delimiter = ',',
+    default_value = "0",
+    value_parser = super::ssts::parse_algorithm_id
+  )]
+  pub ssts_algorithms: Vec<u64>,
+
+  /// How long an SSTS client's subgroup stream waits for a graceful finish
+  /// before it is reset and its stream slot is freed again. Only applies to
+  /// connections that negotiated SSTS; 0 always closes gracefully.
+  #[arg(long, default_value_t = 1600)]
+  pub ssts_discard_timeout_ms: u64,
 }
 #[derive(Debug, Clone)]
 pub struct AppConfig {
@@ -194,6 +223,16 @@ pub struct AppConfig {
   /// Groups of Object ids retained per track for duplicate detection. Bounds what that
   /// costs; a publisher more than this many groups behind can slip a duplicate through.
   pub dedup_retained_groups: usize,
+  /// SSTS is available on this relay: the setup option is advertised and
+  /// SWITCHING_SET_ASSIGNMENT is accepted. A client can never enable it on a relay
+  /// that has it off, because the advertised list stays empty.
+  pub ssts_enable: bool,
+  /// The SSTS algorithm ids advertised in SETUP. Empty means SSTS is off, which is
+  /// also what clients negotiate to.
+  pub ssts_algorithms: Vec<u64>,
+  /// Subgroup streams of SSTS clients that do not finish gracefully within this
+  /// window are reset, so an abandoned group frees its stream slot again.
+  pub ssts_discard_timeout_ms: u64,
 }
 
 impl AppConfig {
@@ -232,6 +271,19 @@ impl AppConfig {
       downstream_alias_timeout: Duration::from_millis(cli.downstream_alias_timeout_ms),
       publish_done_stream_timeout: Duration::from_millis(cli.publish_done_stream_timeout_ms),
       dedup_retained_groups: cli.dedup_retained_groups as usize,
+      ssts_enable: cli.ssts_enable,
+      // When the feature is off the advertised list stays empty, so a client can
+      // never negotiate SSTS on this relay however much it wants it.
+      // The registry decided at parse time which ids are runnable; the feature
+      // flag decides whether any of them go on the wire.
+      ssts_algorithms: if cli.ssts_enable {
+        let mut ids = cli.ssts_algorithms.clone();
+        ids.dedup();
+        ids
+      } else {
+        Vec::new()
+      },
+      ssts_discard_timeout_ms: cli.ssts_discard_timeout_ms,
     }
   }
 
@@ -390,6 +442,9 @@ mod tests {
       downstream_alias_timeout: Duration::from_millis(3000),
       publish_done_stream_timeout: Duration::from_millis(2000),
       dedup_retained_groups: 30,
+      ssts_enable: false,
+      ssts_algorithms: Vec::new(),
+      ssts_discard_timeout_ms: 1600,
     }
   }
 
@@ -436,5 +491,45 @@ mod tests {
     // A value above the QUIC VarInt maximum is clamped rather than rejected.
     let clamped = test_config(u64::MAX);
     assert_eq!(clamped.max_request_stream_limit(), quinn::VarInt::MAX);
+  }
+  fn ssts_algorithms_for(args: &[&str]) -> Vec<u64> {
+    let mut argv = vec!["relay"];
+    argv.extend_from_slice(args);
+    AppConfig::from_cli(Cli::try_parse_from(argv).unwrap()).ssts_algorithms
+  }
+
+  #[test]
+  fn ssts_advertises_nothing_unless_the_feature_is_on() {
+    assert_eq!(ssts_algorithms_for(&[]), Vec::<u64>::new());
+    // Asking for algorithms without --ssts-enable stays silent: the relay must
+    // never put a provisional option on the wire unless it was told to.
+    assert_eq!(
+      ssts_algorithms_for(&["--ssts-algorithms", "0"]),
+      Vec::<u64>::new()
+    );
+  }
+
+  #[test]
+  fn enabling_ssts_runs_the_default_algorithm_alone() {
+    assert_eq!(ssts_algorithms_for(&["--ssts-enable"]), vec![0]);
+  }
+
+  #[test]
+  fn private_algorithm_ids_are_accepted_in_hex() {
+    let requested = format!("0,{:#x}", moqtail_ssts::registry::PRIVATE_ALGORITHM_ID_BASE);
+    assert_eq!(
+      ssts_algorithms_for(&["--ssts-enable", "--ssts-algorithms", &requested]),
+      vec![0, moqtail_ssts::registry::PRIVATE_ALGORITHM_ID_BASE]
+    );
+  }
+
+  #[test]
+  fn an_unknown_algorithm_id_is_rejected_before_startup() {
+    // An algorithm this relay cannot run must not be advertised: a publisher
+    // would build switching sets on it and have every subscription rejected.
+    assert!(Cli::try_parse_from(["relay", "--ssts-enable", "--ssts-algorithms", "7"]).is_err());
+    assert!(
+      Cli::try_parse_from(["relay", "--ssts-enable", "--ssts-algorithms", "banana"]).is_err()
+    );
   }
 }

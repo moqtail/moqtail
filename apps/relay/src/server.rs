@@ -22,6 +22,7 @@ mod prefix_subscription;
 mod seen_objects;
 mod session;
 mod session_context;
+mod ssts;
 mod stream_id;
 mod subscription;
 mod subscription_manager;

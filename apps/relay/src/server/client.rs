@@ -348,7 +348,7 @@ impl MOQTClient {
     header_payload: Bytes,
     priority: i32, // Priority for the stream
   ) -> Result<Arc<Mutex<TransportSendStream>>> {
-    let (send_stream, is_new) = {
+    let (send_stream, newly_created) = {
       let send_stream_map = self.get_stream_map(stream_id);
       let mut send_streams = send_stream_map.write().await;
       match send_streams.entry(stream_id.get_stream_id().to_string()) {
@@ -378,9 +378,15 @@ impl MOQTClient {
       }
     };
 
-    if is_new {
-      self.ssts.on_stream_opened(stream_id.relay_track_id).await;
+    // A subgroup header belongs at the beginning of a stream and must be
+    // written exactly once. A concurrent caller reuses the existing stream.
+    if !newly_created {
+      return Ok(send_stream);
     }
+
+    // Only the creator counts against the switching set, mirroring the
+    // release on every path that drops the stream from the map.
+    self.ssts.on_stream_opened(stream_id.relay_track_id).await;
 
     debug!(
       "open_stream |  writing to stream ({}) connection_id: {}",

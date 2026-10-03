@@ -68,6 +68,15 @@ export const handlerRequestUpdate: RequestStreamMessageHandler<RequestUpdate> = 
     return
   }
 
+  // A PUBLISH this side is making: the update moves its Forward State, parking or
+  // resuming the push. It is answered on this stream like any other update, and the
+  // publication carries on either way.
+  if (publication instanceof PublishPublication) {
+    publication.update(msg)
+    await stream.send(new RequestOk())
+    return
+  }
+
   // A FETCH, a PUBLISH-established subscription and a namespace request all lack the
   // state to update here, so the update fails and takes the request with it.
   logger.warn('handler/request_update', `no updatable request for requestId=${requestId}`)

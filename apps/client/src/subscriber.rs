@@ -21,10 +21,8 @@ use moqtail::model::common::tuple::{Tuple, TupleField};
 use moqtail::model::control::constant::{FetchType, GroupOrder};
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::fetch::Fetch;
-use moqtail::model::control::request_ok::RequestOk;
 use moqtail::model::control::request_update::RequestUpdate;
 use moqtail::model::control::subscribe::Subscribe;
-use moqtail::model::control::subscribe_tracks::SubscribeTracks;
 use moqtail::model::data::datagram::Datagram;
 use moqtail::model::parameter::message_parameter::MessageParameter;
 use moqtail::transport::connection::TransportConnection;
@@ -145,85 +143,6 @@ async fn send_joining_fetch(
     Ok(m) => info!("Joining FETCH response: {:?}", m),
     Err(e) => error!("Joining FETCH: error reading response: {:?}", e),
   }
-  Ok(())
-}
-
-/// SUBSCRIBE_TRACKS for a namespace prefix: send the request on a bidi stream
-/// and log the response-stream messages (REQUEST_OK, and PUBLISH_BLOCKED when
-/// the relay runs out of streams). Forwarded PUBLISH messages arrive on the
-/// control stream and are observed via the relay logs.
-pub async fn run_subscribe_tracks(
-  moq: MoqConnection,
-  namespace: String,
-  duration: u64,
-) -> Result<()> {
-  let connection = moq.connection.clone();
-  let prefix = Tuple::from_utf8_path(&namespace);
-  info!("SUBSCRIBE_TRACKS for namespace prefix: {}", namespace);
-
-  let (send, recv) = connection.open_bi().await?;
-  let mut request_stream = ControlStreamHandler::new(send, recv);
-  let sub_tracks = SubscribeTracks::new(0, prefix, vec![]);
-  request_stream
-    .send(&ControlMessage::SubscribeTracks(Box::new(sub_tracks)))
-    .await
-    .map_err(|e| anyhow::anyhow!("Failed to send SUBSCRIBE_TRACKS: {:?}", e))?;
-
-  let reader = tokio::spawn(async move {
-    loop {
-      match request_stream.next_message().await {
-        Ok(ControlMessage::RequestOk(_)) => info!("SUBSCRIBE_TRACKS: received RequestOk"),
-        Ok(ControlMessage::PublishBlocked(m)) => info!(
-          "SUBSCRIBE_TRACKS: received PUBLISH_BLOCKED for namespace_suffix={:?} track_name={:?}",
-          m.track_namespace_suffix, m.track_name
-        ),
-        Ok(other) => info!("SUBSCRIBE_TRACKS: received {:?}", other.get_type()),
-        Err(e) => {
-          info!("SUBSCRIBE_TRACKS response stream ended: {:?}", e);
-          break;
-        }
-      }
-    }
-  });
-
-  // Each forwarded track arrives as a PUBLISH on its own bidi stream; log it and
-  // answer REQUEST_OK.
-  let conn = connection.clone();
-  tokio::spawn(async move {
-    loop {
-      match conn.accept_bi().await {
-        Ok((send, recv)) => {
-          tokio::spawn(async move {
-            let mut handler = ControlStreamHandler::new(send, recv);
-            match handler.next_message().await {
-              Ok(ControlMessage::Publish(m)) => {
-                info!(
-                  "SUBSCRIBE_TRACKS: received PUBLISH for {:?}/{:?}",
-                  m.track_namespace, m.track_name
-                );
-                let _ = handler
-                  .send(&ControlMessage::RequestOk(Box::new(RequestOk::new(vec![]))))
-                  .await;
-              }
-              Ok(other) => info!("SUBSCRIBE_TRACKS: bidi stream got {:?}", other.get_type()),
-              Err(e) => info!("SUBSCRIBE_TRACKS: bidi stream ended: {:?}", e),
-            }
-          });
-        }
-        Err(e) => {
-          info!("SUBSCRIBE_TRACKS: accept_bi ended: {:?}", e);
-          break;
-        }
-      }
-    }
-  });
-
-  if duration > 0 {
-    tokio::time::sleep(tokio::time::Duration::from_secs(duration)).await;
-  } else {
-    let _ = reader.await;
-  }
-  info!("SUBSCRIBE_TRACKS complete");
   Ok(())
 }
 

@@ -992,6 +992,19 @@ impl Session {
             stream_id.clone(),
             object_count
           );
+
+          // Resolve an empty FETCH stream's sender from its parsed header.
+          if upstream_sender.is_none()
+            && let Some(HeaderInfo::Fetch { header, .. }) = handler.get_header_info().await
+          {
+            upstream_sender = context
+              .upstream_fetch_senders
+              .read()
+              .await
+              .get(&header.request_id)
+              .cloned();
+          }
+
           // A relay-initiated fetch ends when its stream does. Without this the loop
           // waiting on those Objects has nothing to end it but its own timeout.
           if let Some(ref sender) = upstream_sender {

@@ -203,8 +203,8 @@ async fn decide(
     .await;
 
   if recorded {
-    // No epoch bump: answers are final, so recording one stale no cached
-    // verdict; waiters wake on the notify.
+    // No epoch bump: answers are final, so recording one makes no cached
+    // verdict stale; waiters wake on the notify.
     client.ssts.decision_notify.notify_waiters();
   }
 }

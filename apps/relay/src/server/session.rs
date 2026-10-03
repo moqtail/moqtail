@@ -1008,9 +1008,12 @@ impl Session {
           // A relay-initiated fetch ends when its stream does. Without this the loop
           // waiting on those Objects has nothing to end it but its own timeout.
           if let Some(ref sender) = upstream_sender {
-            let _ = sender
-              .send(super::session_context::UpstreamFetchEvent::StreamClosed)
-              .await;
+            let event = if handler.is_malformed_track() {
+              super::session_context::UpstreamFetchEvent::MalformedTrack
+            } else {
+              super::session_context::UpstreamFetchEvent::StreamClosed
+            };
+            let _ = sender.send(event).await;
           }
 
           // A subgroup stream that carried no object never resolved its track above,

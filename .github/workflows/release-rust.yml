@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - 'moqtail-rs@*'
+  workflow_dispatch:
 
 permissions:
   contents: read

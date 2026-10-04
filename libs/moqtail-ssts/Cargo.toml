@@ -2,7 +2,7 @@
 name = "moqtail-ssts"
 description = "Sender-side track switching for MOQT"
 keywords = ["moq", "moqt", "abr", "bandwidth", "streaming"]
-version = "0.1.0"
+version = "0.15.0"
 edition = "2024"
 license = "Apache-2.0"
 readme = "README.md"

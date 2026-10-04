@@ -704,10 +704,22 @@ mod tests {
     // PUBLISH_DONE from the second publisher, resolved through the manager the way
     // cleanup_published_track does.
     let track = manager.get_track(&name).await.expect("track is registered");
-    if track.read().await.remove_publisher(2).await.is_some() {
-      manager.remove_publisher_alias(2, 20).await;
-    }
-    if !track.read().await.has_publishers().await {
+    let removal = track
+      .read()
+      .await
+      .remove_publisher(2)
+      .await
+      .expect("publisher 2 was registered");
+    manager.remove_publisher_alias(2, removal.alias).await;
+    // What the caller branches on: the track is thinner, not finished. Everything
+    // keyed to the track outliving this PUBLISH_DONE hangs off this flag --
+    // dropping it from its subscribers' switching sets among them, which would
+    // stop it being gated and let every rendition of its set forward at once.
+    assert!(
+      !removal.was_last,
+      "publisher 1 still serves the track, so this was not the last"
+    );
+    if removal.was_last {
       manager.remove_track(&name).await;
     }
 
@@ -715,6 +727,15 @@ mod tests {
     assert!(manager.get_track(&name).await.is_some());
     assert!(manager.get_track_by_alias(1, 10).await.is_some());
     assert!(manager.get_track_by_alias(2, 20).await.is_none());
+
+    // And when the last one goes, the removal says so.
+    let removal = track
+      .read()
+      .await
+      .remove_publisher(1)
+      .await
+      .expect("publisher 1 was registered");
+    assert!(removal.was_last, "no publishers remain");
   }
 
   #[tokio::test]

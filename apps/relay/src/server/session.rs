@@ -780,11 +780,11 @@ impl Session {
       let tracks = track_manager_cleanup.tracks.read().await;
       for (full_track_name, track_lock) in tracks.iter() {
         let track = track_lock.read().await;
-        if let Some(alias) = track.remove_publisher(context.connection_id).await {
+        if let Some(removal) = track.remove_publisher(context.connection_id).await {
           track_manager_cleanup
-            .remove_publisher_alias(context.connection_id, alias)
+            .remove_publisher_alias(context.connection_id, removal.alias)
             .await;
-          if !track.has_publishers().await {
+          if removal.was_last {
             tracks_with_no_publishers.push(full_track_name.clone());
           }
         }

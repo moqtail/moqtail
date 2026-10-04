@@ -42,6 +42,22 @@ use tracing::{debug, error, info, warn};
 
 pub type ActiveSubgroupHeaderMap = Arc<RwLock<HashMap<StreamId, HeaderInfo>>>;
 
+/// What removing one of a track's publishers left behind.
+///
+/// `was_last` is the question callers actually have to answer: a track several
+/// publishers serve is only finished when the last of them goes, and until
+/// then it is merely thinner. `remove_publisher` already works this out to
+/// decide whether to notify the subscribers, so it reports it rather than
+/// leaving each caller to ask again — and the callers that forgot to ask are
+/// how a track still being published ended up looking finished.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PublisherRemoval {
+  /// The track alias the removed publisher was using.
+  pub alias: u64,
+  /// No publishers remain, so the track itself is over.
+  pub was_last: bool,
+}
+
 /// How many data streams each publisher has finished sending for one track.
 ///
 /// A PUBLISH_DONE carries the number of data streams its sender opened, and it
@@ -282,36 +298,34 @@ impl Track {
     );
   }
 
-  /// Remove a publisher by connection_id. Returns the removed alias if found.
+  /// Remove a publisher by connection_id, reporting its alias and whether it
+  /// was the last one, or `None` when it was not publishing this track.
   /// If no publishers remain after removal, sends PublisherDisconnected to all subscribers.
-  pub async fn remove_publisher(&self, connection_id: usize) -> Option<u64> {
+  pub async fn remove_publisher(&self, connection_id: usize) -> Option<PublisherRemoval> {
     let removed_alias = {
       let mut aliases = self.publisher_aliases.write().await;
       aliases.remove(&connection_id)
     };
 
-    if let Some(alias) = removed_alias {
-      self.publisher_stream_progress.forget(connection_id).await;
-      let has_publishers = !self.publisher_aliases.read().await.is_empty();
-      info!(
-        "Removed publisher {}@alias={} from relay_track_id={} | publishers_remaining={}",
-        connection_id, alias, self.relay_track_id, has_publishers
-      );
+    let alias = removed_alias?;
+    self.publisher_stream_progress.forget(connection_id).await;
+    let has_publishers = !self.publisher_aliases.read().await.is_empty();
+    info!(
+      "Removed publisher {}@alias={} from relay_track_id={} | publishers_remaining={}",
+      connection_id, alias, self.relay_track_id, has_publishers
+    );
 
-      if !has_publishers && let Err(e) = self.notify_publisher_disconnected().await {
-        error!(
-          "Failed to notify subscribers after last publisher removed for relay_track_id={}: {:?}",
-          self.relay_track_id, e
-        );
-      }
+    if !has_publishers && let Err(e) = self.notify_publisher_disconnected().await {
+      error!(
+        "Failed to notify subscribers after last publisher removed for relay_track_id={}: {:?}",
+        self.relay_track_id, e
+      );
     }
 
-    removed_alias
-  }
-
-  /// Returns true if there is at least one active publisher for this track.
-  pub async fn has_publishers(&self) -> bool {
-    !self.publisher_aliases.read().await.is_empty()
+    Some(PublisherRemoval {
+      alias,
+      was_last: !has_publishers,
+    })
   }
 
   /// Whether the given connection is one of this track's publishers.

@@ -852,22 +852,18 @@ async fn cleanup_published_track(
     }
   };
 
-  // SSTS: the upstream track is going away (PUBLISH_DONE); remove it from the
-  // switching sets of all downstream subscribers. Done before
-  // the track may be dropped below.
-  track_arc
-    .read()
-    .await
-    .remove_from_subscriber_switching_sets()
-    .await;
-
   let track = track_arc.read().await;
-  if let Some(alias) = track.remove_publisher(client.connection_id).await {
+  if let Some(removal) = track.remove_publisher(client.connection_id).await {
     context
       .track_manager
-      .remove_publisher_alias(client.connection_id, alias)
+      .remove_publisher_alias(client.connection_id, removal.alias)
       .await;
-    if !track.has_publishers().await {
+    if removal.was_last {
+      // SSTS: the track is over, so it leaves the switching sets of its
+      // subscribers. While another publisher still serves it, the sets stay as
+      // they are: dropping the track from them would stop it being gated and
+      // let every rendition of its set forward at once.
+      track.remove_from_subscriber_switching_sets().await;
       drop(track);
       context.track_manager.remove_track(&full_track_name).await;
       info!(

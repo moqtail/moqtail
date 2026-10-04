@@ -858,7 +858,7 @@ async fn cleanup_published_track(
       .track_manager
       .remove_publisher_alias(client.connection_id, removal.alias)
       .await;
-    if removal.was_last {
+    if !removal.still_served {
       // SSTS: the track is over, so it leaves the switching sets of its
       // subscribers. While another publisher still serves it, the sets stay as
       // they are: dropping the track from them would stop it being gated and

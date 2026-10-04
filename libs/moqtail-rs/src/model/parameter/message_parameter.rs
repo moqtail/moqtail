@@ -65,6 +65,21 @@ pub enum MessageParameter {
   TrackNamespacePrefix {
     prefix: Tuple,
   },
+  /// Assigns a subscription to an SSTS switching set. Id 0 is the default
+  /// allocation every implementation runs; other ids select an algorithm
+  /// specific to one implementation.
+  SwitchingSetAssignment {
+    switching_set_id: u64,
+    algorithm_id: u64,
+    throughput_threshold_kbps: u64,
+    /// Relative bandwidth weight among same-rank sets; 1 <= N <= 10.
+    set_throughput_weight: u64,
+    /// 0 pauses SSTS for the set; switching activates once the number of
+    /// assigned tracks is >= this value.
+    activate_switching: u64,
+    /// Degradation priority; lower values are protected first. Default 0.
+    set_rank: u8,
+  },
 }
 
 impl MessageParameter {
@@ -128,6 +143,24 @@ impl MessageParameter {
     Self::NewGroupRequest { group }
   }
 
+  pub fn new_switching_set_assignment(
+    switching_set_id: u64,
+    algorithm_id: u64,
+    throughput_threshold_kbps: u64,
+    set_throughput_weight: u64,
+    activate_switching: u64,
+    set_rank: u8,
+  ) -> Self {
+    Self::SwitchingSetAssignment {
+      switching_set_id,
+      algorithm_id,
+      throughput_threshold_kbps,
+      set_throughput_weight,
+      activate_switching,
+      set_rank,
+    }
+  }
+
   /// Returns the raw wire type value for this parameter.
   pub fn type_value(&self) -> u64 {
     match self {
@@ -144,6 +177,7 @@ impl MessageParameter {
       Self::SubscriptionFilter { .. } => MessageParameterType::SubscriptionFilter as u64,
       Self::NewGroupRequest { .. } => MessageParameterType::NewGroupRequest as u64,
       Self::TrackNamespacePrefix { .. } => MessageParameterType::TrackNamespacePrefix as u64,
+      Self::SwitchingSetAssignment { .. } => MessageParameterType::SwitchingSetAssignment as u64,
     }
   }
 
@@ -232,6 +266,17 @@ impl MessageParameter {
           | ControlMessageType::RequestUpdate
       ),
       Self::TrackNamespacePrefix { .. } => matches!(msg_type, ControlMessageType::RequestUpdate),
+      // A switching set is joined when the subscription is created and
+      // re-tuned afterwards, so the parameter rides SUBSCRIBE, REQUEST_UPDATE
+      // and the PUBLISH_OK that accepts a pushed track — which arrives here as
+      // REQUEST_OK.
+      Self::SwitchingSetAssignment { .. } => matches!(
+        msg_type,
+        ControlMessageType::PublishOk
+          | ControlMessageType::RequestOk
+          | ControlMessageType::Subscribe
+          | ControlMessageType::RequestUpdate
+      ),
     }
   }
 
@@ -334,6 +379,43 @@ impl MessageParameter {
               });
             }
             Ok(Self::TrackNamespacePrefix { prefix })
+          }
+          MessageParameterType::SwitchingSetAssignment => {
+            let mut payload = value.clone();
+            let switching_set_id = payload.get_vi()?;
+            let algorithm_id = payload.get_vi()?;
+            let throughput_threshold_kbps = payload.get_vi()?;
+            let set_throughput_weight = payload.get_vi()?;
+            if !(1..=10).contains(&set_throughput_weight) {
+              return Err(ParseError::ProtocolViolation {
+                context: "MessageParameter::deserialize",
+                details: format!(
+                  "SET THROUGHPUT WEIGHT must be 1-10, got {}",
+                  set_throughput_weight
+                ),
+              });
+            }
+            let activate_switching = payload.get_vi()?;
+            let set_rank = if payload.has_remaining() {
+              payload.get_u8()
+            } else {
+              0 // Default
+            };
+            if payload.has_remaining() {
+              return Err(ParseError::ProtocolViolation {
+                context: "MessageParameter::deserialize",
+                details: "Excess bytes in SWITCHING_SET_ASSIGNMENT parameter".to_string(),
+              });
+            }
+
+            Ok(Self::SwitchingSetAssignment {
+              switching_set_id,
+              algorithm_id,
+              throughput_threshold_kbps,
+              set_throughput_weight,
+              activate_switching,
+              set_rank,
+            })
           }
           MessageParameterType::SubscriptionFilter => {
             let mut payload = value.clone();
@@ -457,6 +539,27 @@ impl TryInto<KeyValuePair> for MessageParameter {
         buf.put_vi(location.group)?;
         buf.put_vi(location.object)?;
         KeyValuePair::try_new_bytes(MessageParameterType::LargestObject as u64, buf.freeze())
+      }
+      Self::SwitchingSetAssignment {
+        switching_set_id,
+        algorithm_id,
+        throughput_threshold_kbps,
+        set_throughput_weight,
+        activate_switching,
+        set_rank,
+      } => {
+        let mut buf = BytesMut::new();
+        buf.put_vi(switching_set_id)?;
+        buf.put_vi(algorithm_id)?;
+        buf.put_vi(throughput_threshold_kbps)?;
+        buf.put_vi(set_throughput_weight)?;
+        buf.put_vi(activate_switching)?;
+        buf.put_u8(set_rank);
+
+        KeyValuePair::try_new_bytes(
+          MessageParameterType::SwitchingSetAssignment as u64,
+          buf.freeze(),
+        )
       }
       Self::SubscriptionFilter {
         filter_type,
@@ -734,6 +837,93 @@ mod tests {
   fn test_roundtrip_new_group_request() {
     let orig = MessageParameter::new_group_request(7);
     assert_eq!(roundtrip(orig.clone()), orig);
+  }
+
+  #[test]
+  fn test_roundtrip_switching_set_assignment() {
+    let orig = MessageParameter::new_switching_set_assignment(7, 0, 2000, 5, 2, 2);
+    assert_eq!(roundtrip(orig.clone()), orig);
+
+    let orig = MessageParameter::new_switching_set_assignment(0, 0, 0, 1, 0, 0);
+    assert_eq!(roundtrip(orig.clone()), orig);
+  }
+
+  /// SWITCHING_SET_ASSIGNMENT comes from an unadopted draft, so nothing else in
+  /// the stack constrains its fields: a relay that accepted a weight outside
+  /// 1-10 would carry a set property that no allocation can honour.
+  #[test]
+  fn switching_set_assignment_weight_must_be_one_to_ten() {
+    for weight in [0u64, 11, 1000] {
+      let payload = assignment_payload(&[7, 0, 100, weight, 2, 0]);
+      let error = MessageParameter::deserialize(&payload)
+        .err()
+        .unwrap_or_else(|| panic!("weight {weight} must be rejected"));
+      assert!(
+        error.to_string().contains("SET THROUGHPUT WEIGHT"),
+        "the rejection should say which field was wrong, got {error}"
+      );
+    }
+    // The ends of the range are inclusive.
+    for weight in [1u64, 10] {
+      let payload = assignment_payload(&[7, 0, 100, weight, 2, 0]);
+      MessageParameter::deserialize(&payload).unwrap_or_else(|e| panic!("weight {weight}: {e}"));
+    }
+  }
+
+  /// SET RANK is optional on the wire; a peer that leaves it out means the
+  /// highest priority tier, and must not be treated as a protocol error.
+  #[test]
+  fn switching_set_assignment_rank_defaults_when_omitted() {
+    let payload = assignment_payload(&[7, 0, 100, 5, 2]);
+    assert_eq!(
+      MessageParameter::deserialize(&payload).unwrap(),
+      MessageParameter::new_switching_set_assignment(7, 0, 100, 5, 2, 0)
+    );
+  }
+
+  #[test]
+  fn switching_set_assignment_rejects_trailing_bytes() {
+    // A parameter longer than its fields means the peer and the relay
+    // disagree about the format; guessing would silently mis-assign a set.
+    let payload = assignment_payload(&[7, 0, 100, 5, 2, 1, 0xAA]);
+    let error = MessageParameter::deserialize(&payload).unwrap_err();
+    assert!(error.to_string().contains("Excess bytes"), "got {error}");
+  }
+
+  #[test]
+  fn switching_set_assignment_only_appears_where_the_draft_allows_it() {
+    let param = MessageParameter::new_switching_set_assignment(7, 0, 100, 5, 2, 0);
+    for msg_type in [
+      ControlMessageType::Subscribe,
+      ControlMessageType::RequestUpdate,
+      ControlMessageType::PublishOk,
+      ControlMessageType::RequestOk,
+    ] {
+      assert!(param.is_valid_for(msg_type), "{msg_type:?} allows it");
+    }
+    for msg_type in [
+      ControlMessageType::Publish,
+      ControlMessageType::PublishDone,
+      ControlMessageType::SubscribeOk,
+      ControlMessageType::GoAway,
+    ] {
+      assert!(!param.is_valid_for(msg_type), "{msg_type:?} must not");
+    }
+  }
+
+  /// Build a parameter's KeyValuePair straight from bytes, so a test can put a
+  /// field sequence on the wire that this crate's own serializer would never
+  /// produce.
+  fn assignment_payload(fields: &[u64]) -> KeyValuePair {
+    let mut payload = BytesMut::new();
+    for field in fields {
+      payload.put_vi(*field).unwrap();
+    }
+    KeyValuePair::try_new_bytes(
+      MessageParameterType::SwitchingSetAssignment as u64,
+      payload.freeze(),
+    )
+    .unwrap()
   }
 
   #[test]

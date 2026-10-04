@@ -42,6 +42,22 @@ use tracing::{debug, error, info, warn};
 
 pub type ActiveSubgroupHeaderMap = Arc<RwLock<HashMap<StreamId, HeaderInfo>>>;
 
+/// What removing one of a track's publishers left behind.
+///
+/// `still_served` is the question callers actually have to answer: a track
+/// several publishers serve is only finished when the last of them goes, and
+/// until then it is merely thinner. `remove_publisher` already works this out
+/// to decide whether to notify the subscribers, so it reports it rather than
+/// leaving each caller to ask again — and the callers that forgot to ask are
+/// how a track still being published ended up looking finished.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PublisherRemoval {
+  /// The track alias the removed publisher was using.
+  pub alias: u64,
+  /// Another publisher is still serving the track, so it is not over.
+  pub still_served: bool,
+}
+
 /// How many data streams each publisher has finished sending for one track.
 ///
 /// A PUBLISH_DONE carries the number of data streams its sender opened, and it
@@ -211,6 +227,28 @@ pub struct Track {
 // TODO: this track implementation should be static? At least
 // its lifetime should be same as the server's lifetime
 impl Track {
+  /// SSTS: remove this track from the switching sets of all its subscribers
+  /// (deleting emptied sets).
+  pub async fn remove_from_subscriber_switching_sets(&self) {
+    let subscriptions = self.subscription_manager.get_all_subscriptions().await;
+    for sub in &subscriptions {
+      let subscriber = sub.read().await.subscriber().clone();
+      // A connection that never negotiated SSTS holds no switching sets, so
+      // there is nothing here to take this track out of. Checking costs a
+      // length comparison, where the removal it skips costs a write lock, so a
+      // relay with the feature off takes no locks here at all.
+      if !subscriber.ssts_enabled() {
+        continue;
+      }
+      subscriber
+        .ssts
+        .switching_sets
+        .write()
+        .await
+        .remove(&self.full_track_name);
+    }
+  }
+
   pub fn new(
     relay_track_id: u64,
     full_track_name: FullTrackName,
@@ -267,36 +305,68 @@ impl Track {
     );
   }
 
-  /// Remove a publisher by connection_id. Returns the removed alias if found.
-  /// If no publishers remain after removal, sends PublisherDisconnected to all subscribers.
-  pub async fn remove_publisher(&self, connection_id: usize) -> Option<u64> {
-    let removed_alias = {
-      let mut aliases = self.publisher_aliases.write().await;
-      aliases.remove(&connection_id)
-    };
-
-    if let Some(alias) = removed_alias {
-      self.publisher_stream_progress.forget(connection_id).await;
-      let has_publishers = !self.publisher_aliases.read().await.is_empty();
-      info!(
-        "Removed publisher {}@alias={} from relay_track_id={} | publishers_remaining={}",
-        connection_id, alias, self.relay_track_id, has_publishers
-      );
-
-      if !has_publishers && let Err(e) = self.notify_publisher_disconnected().await {
-        error!(
-          "Failed to notify subscribers after last publisher removed for relay_track_id={}: {:?}",
-          self.relay_track_id, e
-        );
-      }
-    }
-
-    removed_alias
+  /// Take `connection_id` out of this track's publishers, reporting the alias
+  /// it held when it was one of them, and whether any publisher still serves
+  /// the track.
+  ///
+  /// Both answers come from one acquisition of the lock, so they cannot
+  /// disagree: a publisher arriving or leaving between two reads would
+  /// otherwise let a removal report the track as finished while someone else
+  /// was already serving it.
+  async fn take_publisher(&self, connection_id: usize) -> (Option<u64>, bool) {
+    let mut aliases = self.publisher_aliases.write().await;
+    let alias = aliases.remove(&connection_id);
+    (alias, !aliases.is_empty())
   }
 
-  /// Returns true if there is at least one active publisher for this track.
-  pub async fn has_publishers(&self) -> bool {
-    !self.publisher_aliases.read().await.is_empty()
+  /// Remove a publisher by connection_id, reporting its alias and whether the
+  /// track is still served, or `None` when it was not publishing this track.
+  /// If no publishers remain after removal, sends PublisherDisconnected to all subscribers.
+  pub async fn remove_publisher(&self, connection_id: usize) -> Option<PublisherRemoval> {
+    let (alias, still_served) = self.take_publisher(connection_id).await;
+    let alias = alias?;
+
+    self.publisher_stream_progress.forget(connection_id).await;
+    info!(
+      "Removed publisher {}@alias={} from relay_track_id={} | still_served={}",
+      connection_id, alias, self.relay_track_id, still_served
+    );
+
+    if !still_served && let Err(e) = self.notify_publisher_disconnected().await {
+      error!(
+        "Failed to notify subscribers after last publisher removed for relay_track_id={}: {:?}",
+        self.relay_track_id, e
+      );
+    }
+
+    Some(PublisherRemoval {
+      alias,
+      still_served,
+    })
+  }
+
+  /// Take `connection_id` out of this track's publishers without telling the
+  /// subscribers anything, and report whether any publisher still serves it.
+  ///
+  /// The caller owns the downstream message, which is the whole difference from
+  /// `remove_publisher`: a PUBLISH_DONE carries its own status and reason, and
+  /// the generic "track ended" that `remove_publisher` sends would either
+  /// replace it or arrive alongside it.
+  ///
+  /// The answer is about the track rather than about this removal, so a
+  /// connection that was never one of its publishers still learns truthfully
+  /// whether the others are there.
+  ///
+  /// Deliberately leaves `publisher_stream_progress` alone: a caller that goes
+  /// on to wait for this publisher's Stream Count still needs the closures
+  /// already recorded for it.
+  pub async fn remove_publisher_quietly(&self, connection_id: usize) -> bool {
+    let (_, still_served) = self.take_publisher(connection_id).await;
+    info!(
+      "Removed publisher {} of relay_track_id={} quietly | still_served={}",
+      connection_id, self.relay_track_id, still_served
+    );
+    still_served
   }
 
   /// Whether the given connection is one of this track's publishers.

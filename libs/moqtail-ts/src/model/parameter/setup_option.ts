@@ -16,12 +16,13 @@
 
 import { KeyValuePair } from '../common/pair'
 import { greaseValue } from '../common/grease'
-import { Path, MaxAuthTokenCacheSize, Authority, MoqtImplementation } from './setup'
+import { Path, MaxAuthTokenCacheSize, Authority, MoqtImplementation, SstsAlgorithms } from './setup'
 import { AuthorizationToken } from './common'
 import { SetupOptionType, TokenAliasType } from './constant'
 import { ProtocolViolationError } from '../error/error'
 
-export type SetupOption = Path | MaxAuthTokenCacheSize | AuthorizationToken | Authority | MoqtImplementation
+export type SetupOption =
+  Path | MaxAuthTokenCacheSize | AuthorizationToken | Authority | MoqtImplementation | SstsAlgorithms
 export namespace SetupOption {
   export function fromKeyValuePair(pair: KeyValuePair): SetupOption | undefined {
     return (
@@ -29,7 +30,8 @@ export namespace SetupOption {
       MaxAuthTokenCacheSize.fromKeyValuePair(pair) ||
       AuthorizationToken.fromKeyValuePair(pair) ||
       Authority.fromKeyValuePair(pair) ||
-      MoqtImplementation.fromKeyValuePair(pair)
+      MoqtImplementation.fromKeyValuePair(pair) ||
+      SstsAlgorithms.fromKeyValuePair(pair)
     )
   }
   export function toKeyValuePair(param: SetupOption): KeyValuePair {
@@ -49,6 +51,9 @@ export namespace SetupOption {
   }
   export function isMoqtImplementation(param: SetupOption): param is MoqtImplementation {
     return param instanceof MoqtImplementation
+  }
+  export function isSstsAlgorithms(param: SetupOption): param is SstsAlgorithms {
+    return param instanceof SstsAlgorithms
   }
 }
 
@@ -85,6 +90,11 @@ export class SetupOptions {
     return this
   }
 
+  addSstsAlgorithms(algorithms: (bigint | number)[]): this {
+    this.kvps.push(new SstsAlgorithms(algorithms.map((a) => BigInt(a))).toKeyValuePair())
+    return this
+  }
+
   addRaw(pair: KeyValuePair): this {
     this.kvps.push(pair)
     return this
@@ -102,7 +112,8 @@ export class SetupOptions {
         MaxAuthTokenCacheSize.fromKeyValuePair(kvp) ||
         AuthorizationToken.fromKeyValuePair(kvp) ||
         Authority.fromKeyValuePair(kvp) ||
-        MoqtImplementation.fromKeyValuePair(kvp)
+        MoqtImplementation.fromKeyValuePair(kvp) ||
+        SstsAlgorithms.fromKeyValuePair(kvp)
       if (parsed) result.push(parsed)
     }
     return result
@@ -120,9 +131,10 @@ if (import.meta.vitest) {
         .addAuthorizationToken(AuthorizationToken.newUseAlias(1n))
         .addRaw(new Authority('example.com').toKeyValuePair())
         .addMoqtImplementation('moqtail-ts/0.1')
+        .addSstsAlgorithms([0n, 0xff00n])
         .build()
       const parsed = SetupOptions.fromKeyValuePairs(kvps)
-      expect(parsed.length).toBe(5)
+      expect(parsed.length).toBe(6)
       expect(parsed[0] && SetupOption.isPath(parsed[0]) && parsed[0].moqtPath === 'abc').toBe(true)
       expect(parsed[1] && SetupOption.isMaxAuthTokenCacheSize(parsed[1]) && parsed[1].maxSize === 123n).toBe(true)
       expect(
@@ -132,6 +144,7 @@ if (import.meta.vitest) {
       ).toBe(true)
       expect(parsed[3] && SetupOption.isAuthority(parsed[3]) && parsed[3].authority === 'example.com').toBe(true)
       expect(parsed[4] && SetupOption.isMoqtImplementation(parsed[4]) && parsed[4].info === 'moqtail-ts/0.1').toBe(true)
+      expect(parsed[5] && SetupOption.isSstsAlgorithms(parsed[5]) && parsed[5].algorithms.length === 2).toBe(true)
     })
     test('fromKeyValuePairs skips unknown parameter', () => {
       const unknown = KeyValuePair.tryNewVarInt(998, 1n)

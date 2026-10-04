@@ -16,6 +16,7 @@ use crate::server::client::MOQTClient;
 use crate::server::client::switch_context::SwitchStatus;
 use crate::server::config::AppConfig;
 use crate::server::object_logger::ObjectLogger;
+use crate::server::ssts::AbrMessage;
 use crate::server::stream_id::StreamId;
 use crate::server::track::ActiveSubgroupHeaderMap;
 use crate::server::track::TrackEvent;
@@ -318,7 +319,22 @@ pub struct Subscription {
   /// Forwarding waits for this, and the queued Objects follow in order.
   alias_announced: Arc<AtomicBool>,
   alias_announced_notify: Arc<Notify>,
+  /// The SSTS forward gate's answer for one group, so the rest of that group's
+  /// Objects do not re-derive it. A video track runs tens of Objects per
+  /// group, and the answer cannot change while `gate_epoch` still matches the
+  /// connection's: `SstsState::epoch` moves on any membership change and on
+  /// every recorded decision.
+  ///
+  /// Only this subscription's own event task reads or writes these, so the
+  /// three are never observed mid-update and `Relaxed` is enough.
+  gate_epoch: Arc<AtomicU64>,
+  gate_group: Arc<AtomicU64>,
+  gate_forward: Arc<AtomicBool>,
 }
+
+/// `gate_group` value meaning "nothing cached". Group ids are varints, so the
+/// top of the u64 range is not a reachable group.
+const GATE_GROUP_NONE: u64 = u64::MAX;
 
 #[allow(clippy::too_many_arguments)]
 impl Subscription {
@@ -354,6 +370,9 @@ impl Subscription {
       active_subgroup_headers,
       alias_announced: Arc::new(AtomicBool::new(false)),
       alias_announced_notify: Arc::new(Notify::new()),
+      gate_epoch: Arc::new(AtomicU64::new(0)),
+      gate_group: Arc::new(AtomicU64::new(GATE_GROUP_NONE)),
+      gate_forward: Arc::new(AtomicBool::new(false)),
     }
   }
 
@@ -970,6 +989,90 @@ impl Subscription {
     self.finish().await;
   }
 
+  /// The SSTS forward gate: whether this subscription's track carries
+  /// `group_id`.
+  ///
+  /// Answered from the cache while the connection's epoch is unchanged, so
+  /// every Object of a group after the one that triggered the decision costs
+  /// three atomic loads. On a miss it resolves against the switching sets and
+  /// the decision map, waiting for a decision if the group has none yet.
+  async fn gate_allows(&self, group_id: u64) -> bool {
+    if self.gate_group.load(Ordering::Relaxed) == group_id
+      && self.gate_epoch.load(Ordering::Relaxed) == self.subscriber.ssts.epoch()
+    {
+      return self.gate_forward.load(Ordering::Relaxed);
+    }
+
+    let (epoch, forward) = self.resolve_gate(group_id).await;
+
+    // Stamped with the epoch `resolve_gate` sampled before its reads, not the
+    // one current now: anything that moved while it was resolving has already
+    // advanced the counter past this, so the next Object resolves again rather
+    // than trusting an answer that was overtaken.
+    self.gate_forward.store(forward, Ordering::Relaxed);
+    self.gate_group.store(group_id, Ordering::Relaxed);
+    self.gate_epoch.store(epoch, Ordering::Relaxed);
+    forward
+  }
+
+  /// Resolve the gate for `group_id` from scratch, returning the epoch the
+  /// answer was read at along with the answer.
+  async fn resolve_gate(&self, group_id: u64) -> (u64, bool) {
+    loop {
+      // Created before the reads below and never polled on the path that
+      // finds a decision, so it costs an atomic load and nothing else. Only
+      // creating it matters: tokio guarantees a `Notified` observes any
+      // `notify_waiters` from the moment it exists, which is what keeps a
+      // decision recorded between the reads and the wait from being missed.
+      let notified = self.subscriber.ssts.decision_notify.notified();
+
+      // Sampled before the reads, so a change racing with them leaves the
+      // caller's cache stamped with a superseded epoch.
+      let epoch = self.subscriber.ssts.epoch();
+
+      let set_id = {
+        let manager = self.subscriber.ssts.switching_sets.read().await;
+        manager
+          .get_set_for_track(&self.full_track_name)
+          .map(|set| set.id)
+      };
+
+      // Not in a switching set, or no longer in one: SSTS does not apply to
+      // this track, so the Object is forwarded. This also covers the set being
+      // torn down while an Object of it waited for a decision that will now
+      // never arrive.
+      let Some(set_id) = set_id else {
+        return (epoch, true);
+      };
+
+      let decision = {
+        let decisions = self.subscriber.ssts.group_decisions.read().await;
+        decisions
+          .get(&group_id)
+          .and_then(|sets| sets.get(&set_id))
+          .copied()
+      };
+
+      match decision {
+        // The selected track carries the group. `None` selects no track at
+        // all, so nothing from the set is forwarded for this group.
+        Some(chosen) => return (epoch, chosen == Some(self.relay_track_id)),
+        None => {
+          if let Err(e) = self
+            .subscriber
+            .ssts
+            .abr_tx
+            .send(AbrMessage::NewGroup(group_id))
+            .await
+          {
+            warn!("Failed to send NewGroup to ABR: {:?}", e);
+          }
+          notified.await;
+        }
+      }
+    }
+  }
+
   async fn handle_track_event(&self, event: TrackEvent) {
     debug!(
       "Event received for subscriber={} relay_track_id={} event: {:?}",
@@ -982,6 +1085,16 @@ impl Subscription {
         header_info,
       } => {
         object.track_alias = self.relay_track_id;
+
+        // SSTS: when this track belongs to a switching set, only the track
+        // the allocation picked for this group is forwarded. The answer holds
+        // for the whole group, so the gate caches it and reads the shared
+        // state once per group instead of once per Object. A connection
+        // without SSTS pays one `Vec::is_empty`.
+        if self.subscriber.ssts_enabled() && !self.gate_allows(object.location.group).await {
+          return;
+        }
+
         // update last received object location
         {
           let mut state = self.subscription_state.write().await;

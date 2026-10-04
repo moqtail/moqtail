@@ -704,10 +704,22 @@ mod tests {
     // PUBLISH_DONE from the second publisher, resolved through the manager the way
     // cleanup_published_track does.
     let track = manager.get_track(&name).await.expect("track is registered");
-    if track.read().await.remove_publisher(2).await.is_some() {
-      manager.remove_publisher_alias(2, 20).await;
-    }
-    if !track.read().await.has_publishers().await {
+    let removal = track
+      .read()
+      .await
+      .remove_publisher(2)
+      .await
+      .expect("publisher 2 was registered");
+    manager.remove_publisher_alias(2, removal.alias).await;
+    // What the caller branches on: the track is thinner, not finished. Everything
+    // keyed to the track outliving this PUBLISH_DONE hangs off this flag --
+    // dropping it from its subscribers' switching sets among them, which would
+    // stop it being gated and let every rendition of its set forward at once.
+    assert!(
+      removal.still_served,
+      "publisher 1 is still serving, so the track is not over"
+    );
+    if !removal.still_served {
       manager.remove_track(&name).await;
     }
 
@@ -715,6 +727,58 @@ mod tests {
     assert!(manager.get_track(&name).await.is_some());
     assert!(manager.get_track_by_alias(1, 10).await.is_some());
     assert!(manager.get_track_by_alias(2, 20).await.is_none());
+
+    // And when the last one goes, the removal says so.
+    let removal = track
+      .read()
+      .await
+      .remove_publisher(1)
+      .await
+      .expect("publisher 1 was registered");
+    assert!(!removal.still_served, "no publishers remain");
+  }
+
+  #[tokio::test]
+  async fn one_publishers_publish_done_does_not_end_a_track_another_still_serves() {
+    // A PUBLISH_DONE says its sender stopped, for whatever reason of its own.
+    // While another publisher serves the track the subscribers must not be told
+    // it ended, so the upstream PUBLISH_DONE path asks this before relaying it.
+    let manager = TrackManager::new();
+    let name = track_name();
+
+    let (first, _) = publish(&manager, 1, 10, &name).await;
+    first.read().await.add_publisher(1, 10).await;
+    let (second, _) = publish(&manager, 2, 20, &name).await;
+    second.read().await.add_publisher(2, 20).await;
+
+    let track = manager.get_track(&name).await.expect("track is registered");
+
+    assert!(
+      track.read().await.remove_publisher_quietly(2).await,
+      "publisher 1 still serves the track"
+    );
+    assert!(
+      !track.read().await.remove_publisher_quietly(1).await,
+      "the last publisher leaving ends the track"
+    );
+  }
+
+  #[tokio::test]
+  async fn removing_an_unregistered_publisher_still_answers_for_the_others() {
+    // Only the PUBLISH path registers a publisher, so a relay that subscribed
+    // upstream may hold no alias for the connection sending PUBLISH_DONE. The
+    // answer has to be about the track rather than about the removal.
+    let manager = TrackManager::new();
+    let name = track_name();
+
+    let (first, _) = publish(&manager, 1, 10, &name).await;
+    first.read().await.add_publisher(1, 10).await;
+
+    let track = manager.get_track(&name).await.expect("track is registered");
+    assert!(
+      track.read().await.remove_publisher_quietly(99).await,
+      "publisher 1 serves the track, whatever connection 99 was"
+    );
   }
 
   #[tokio::test]

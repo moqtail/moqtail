@@ -34,6 +34,14 @@
         "value": "0x07",
         "spec": "Section 10.3.1.5"
       }
+    ],
+    "local_extensions": [
+      {
+        "name": "SSTS_ALGORITHMS",
+        "value": "0x09",
+        "spec": "draft-wilaw-moq-moqt-ssts, Section 3.1",
+        "notes": "SSTS algorithms this endpoint supports; provisional, from an unadopted draft."
+      }
     ]
   },
   "message_parameters": {
@@ -103,6 +111,14 @@
         "name": "TRACK_NAMESPACE_PREFIX",
         "value": "0x34",
         "spec": "Section 10.2.14"
+      }
+    ],
+    "local_extensions": [
+      {
+        "name": "SWITCHING_SET_ASSIGNMENT",
+        "value": "0x41",
+        "spec": "draft-wilaw-moq-moqt-ssts, Section 5",
+        "notes": "Assigns a subscription to an SSTS switching set; provisional, from an unadopted draft."
       }
     ]
   }

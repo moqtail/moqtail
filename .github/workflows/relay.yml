@@ -9,6 +9,7 @@ on:
     paths:
       - 'apps/relay/**'
       - 'libs/moqtail-rs/**'
+      - 'libs/moqtail-ssts/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/relay.yml'

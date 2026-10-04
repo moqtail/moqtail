@@ -780,11 +780,11 @@ impl Session {
       let tracks = track_manager_cleanup.tracks.read().await;
       for (full_track_name, track_lock) in tracks.iter() {
         let track = track_lock.read().await;
-        if let Some(alias) = track.remove_publisher(context.connection_id).await {
+        if let Some(removal) = track.remove_publisher(context.connection_id).await {
           track_manager_cleanup
-            .remove_publisher_alias(context.connection_id, alias)
+            .remove_publisher_alias(context.connection_id, removal.alias)
             .await;
-          if !track.has_publishers().await {
+          if !removal.still_served {
             tracks_with_no_publishers.push(full_track_name.clone());
           }
         }
@@ -1008,9 +1008,12 @@ impl Session {
           // A relay-initiated fetch ends when its stream does. Without this the loop
           // waiting on those Objects has nothing to end it but its own timeout.
           if let Some(ref sender) = upstream_sender {
-            let _ = sender
-              .send(super::session_context::UpstreamFetchEvent::StreamClosed)
-              .await;
+            let event = if handler.is_malformed_track() {
+              super::session_context::UpstreamFetchEvent::MalformedTrack
+            } else {
+              super::session_context::UpstreamFetchEvent::StreamClosed
+            };
+            let _ = sender.send(event).await;
           }
 
           // A subgroup stream that carried no object never resolved its track above,
@@ -1103,7 +1106,20 @@ impl Session {
       .try_into()
       .unwrap();
 
-    let server_setup = Setup::new(vec![moqt_implementation_param]);
+    // The setup option and message parameter SSTS relies on are provisional,
+    // so a relay that has not opted in never puts them on the wire.
+    let mut setup_options = vec![moqt_implementation_param];
+    if context.server_config.ssts_enable {
+      setup_options.push(
+        moqtail::model::parameter::setup_option::SetupOption::new_ssts_algorithms(
+          context.server_config.ssts_algorithms.clone(),
+        )
+        .try_into()
+        .unwrap(),
+      );
+    }
+
+    let server_setup = Setup::new(setup_options);
 
     debug!("client setup: {:?}", client_setup);
     debug!("server setup: {:?}", server_setup);
@@ -1148,8 +1164,12 @@ impl Session {
       context.connection_id,
       Arc::new(context.connection.clone()),
       Arc::new(client_setup),
+      context.server_config,
     );
     let client = Arc::new(client);
+    if client.ssts_enabled() {
+      client.clone().start_abr_controller();
+    }
     context.client_manager.add(client.clone()).await;
 
     match control_stream_handler.send_impl(&server_setup).await {

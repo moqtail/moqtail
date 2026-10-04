@@ -77,6 +77,7 @@ pub(crate) enum UpstreamFetchEvent {
     end_location: Location,
   },
   Object(FetchObjectPayload),
+  MalformedTrack,
   StreamClosed,
   Error(String),
 }

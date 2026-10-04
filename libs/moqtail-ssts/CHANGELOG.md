@@ -1,6 +1,6 @@
-# meet
+# moqtail-ssts
 
-## 0.2.0
+## 0.15.0
 
 ### Minor Changes
 
@@ -18,9 +18,3 @@
   - Relay: reset downstream FETCH on malformed upstream track
   - Relay: handle objects received before FETCH_OK
   - Relay: report stream closed for empty FETCHes
-
-## 0.1.0
-
-### Minor Changes
-
-- [#145](https://github.com/moqtail/moqtail/pull/145) [`1b855cf`](https://github.com/moqtail/moqtail/commit/1b855cfece77cbade63f8263f485b8b5c7839134) Thanks [@zafergurel](https://github.com/zafergurel)! - Initial version of meet video conferencing demo app

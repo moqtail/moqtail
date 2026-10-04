@@ -13,11 +13,11 @@ license = "Apache-2.0"
 doctest = false
 
 [dependencies]
-bytes = "1.10.1"
-tokio = { version = "1.0", features = ["full"] }
-thiserror = "2.0.12"
+bytes = "1.12.1"
+tokio = { version = "1.53", features = ["full"] }
+thiserror = "2.0.21"
 wtransport = { workspace = true }
-serde = { version = "1.0.219", features = ["derive"] }
-serde_json = "1.0.140"
-tracing = "0.1.41"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tracing = "0.1.44"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

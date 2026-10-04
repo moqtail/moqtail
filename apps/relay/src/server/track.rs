@@ -233,6 +233,13 @@ impl Track {
     let subscriptions = self.subscription_manager.get_all_subscriptions().await;
     for sub in &subscriptions {
       let subscriber = sub.read().await.subscriber().clone();
+      // A connection that never negotiated SSTS holds no switching sets, so
+      // there is nothing here to take this track out of. Checking costs a
+      // length comparison, where the removal it skips costs a write lock, so a
+      // relay with the feature off takes no locks here at all.
+      if !subscriber.ssts_enabled() {
+        continue;
+      }
       subscriber
         .ssts
         .switching_sets

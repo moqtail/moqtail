@@ -216,6 +216,24 @@ async fn upstream_subscribe_exchange(
               m.reason_phrase.as_str()
             );
             if let Some(track) = context.track_manager.get_track(&full_track_name).await {
+              // This publisher is done with the track, which is not the same as
+              // the track being over: a PUBLISH_DONE can carry any reason this
+              // one publisher stopped. While another still serves the track the
+              // subscribers keep receiving it, so they are told nothing and the
+              // switching sets are left alone.
+              let still_served = track
+                .read()
+                .await
+                .remove_publisher_quietly(publisher.connection_id)
+                .await;
+              if still_served {
+                info!(
+                  "Upstream PUBLISH_DONE for {:?} from publisher {}; other publishers still serve it",
+                  full_track_name, publisher.connection_id
+                );
+                return;
+              }
+
               // The message overtakes the data streams it accounts for, so hold it
               // until its Stream Count of them has finished arriving. Passing it on
               // first closes the downstream streams mid-object and understates the
@@ -355,12 +373,11 @@ async fn end_upstream_subscription(
   let Some(track) = track else {
     return;
   };
-  let still_served = {
-    let track = track.read().await;
-    let mut aliases = track.publisher_aliases.write().await;
-    aliases.remove(&publisher_connection_id);
-    !aliases.is_empty()
-  };
+  let still_served = track
+    .read()
+    .await
+    .remove_publisher_quietly(publisher_connection_id)
+    .await;
 
   if still_served {
     info!(

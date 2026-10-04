@@ -739,6 +739,49 @@ mod tests {
   }
 
   #[tokio::test]
+  async fn one_publishers_publish_done_does_not_end_a_track_another_still_serves() {
+    // A PUBLISH_DONE says its sender stopped, for whatever reason of its own.
+    // While another publisher serves the track the subscribers must not be told
+    // it ended, so the upstream PUBLISH_DONE path asks this before relaying it.
+    let manager = TrackManager::new();
+    let name = track_name();
+
+    let (first, _) = publish(&manager, 1, 10, &name).await;
+    first.read().await.add_publisher(1, 10).await;
+    let (second, _) = publish(&manager, 2, 20, &name).await;
+    second.read().await.add_publisher(2, 20).await;
+
+    let track = manager.get_track(&name).await.expect("track is registered");
+
+    assert!(
+      track.read().await.remove_publisher_quietly(2).await,
+      "publisher 1 still serves the track"
+    );
+    assert!(
+      !track.read().await.remove_publisher_quietly(1).await,
+      "the last publisher leaving ends the track"
+    );
+  }
+
+  #[tokio::test]
+  async fn removing_an_unregistered_publisher_still_answers_for_the_others() {
+    // Only the PUBLISH path registers a publisher, so a relay that subscribed
+    // upstream may hold no alias for the connection sending PUBLISH_DONE. The
+    // answer has to be about the track rather than about the removal.
+    let manager = TrackManager::new();
+    let name = track_name();
+
+    let (first, _) = publish(&manager, 1, 10, &name).await;
+    first.read().await.add_publisher(1, 10).await;
+
+    let track = manager.get_track(&name).await.expect("track is registered");
+    assert!(
+      track.read().await.remove_publisher_quietly(99).await,
+      "publisher 1 serves the track, whatever connection 99 was"
+    );
+  }
+
+  #[tokio::test]
   async fn a_parked_data_stream_is_woken_when_its_publisher_registers() {
     // A data stream can outrun the PUBLISH that names its alias.
     let manager = TrackManager::new();

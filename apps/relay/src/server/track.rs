@@ -328,6 +328,34 @@ impl Track {
     })
   }
 
+  /// Take `connection_id` out of this track's publishers without telling the
+  /// subscribers anything, and report whether any publisher still serves it.
+  ///
+  /// The caller owns the downstream message, which is the whole difference from
+  /// `remove_publisher`: a PUBLISH_DONE carries its own status and reason, and
+  /// the generic "track ended" that `remove_publisher` sends would either
+  /// replace it or arrive alongside it.
+  ///
+  /// The answer is about the track rather than about this removal, so a
+  /// connection that was never one of its publishers still learns truthfully
+  /// whether the others are there.
+  ///
+  /// Deliberately leaves `publisher_stream_progress` alone: a caller that goes
+  /// on to wait for this publisher's Stream Count still needs the closures
+  /// already recorded for it.
+  pub async fn remove_publisher_quietly(&self, connection_id: usize) -> bool {
+    let still_served = {
+      let mut aliases = self.publisher_aliases.write().await;
+      aliases.remove(&connection_id);
+      !aliases.is_empty()
+    };
+    info!(
+      "Removed publisher {} of relay_track_id={} quietly | still_served={}",
+      connection_id, self.relay_track_id, still_served
+    );
+    still_served
+  }
+
   /// Whether the given connection is one of this track's publishers.
   pub async fn is_published_by(&self, connection_id: usize) -> bool {
     self

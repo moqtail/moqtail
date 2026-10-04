@@ -784,7 +784,7 @@ impl Session {
           track_manager_cleanup
             .remove_publisher_alias(context.connection_id, removal.alias)
             .await;
-          if removal.was_last {
+          if !removal.still_served {
             tracks_with_no_publishers.push(full_track_name.clone());
           }
         }

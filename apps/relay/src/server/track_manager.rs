@@ -716,10 +716,10 @@ mod tests {
     // dropping it from its subscribers' switching sets among them, which would
     // stop it being gated and let every rendition of its set forward at once.
     assert!(
-      !removal.was_last,
-      "publisher 1 still serves the track, so this was not the last"
+      removal.still_served,
+      "publisher 1 is still serving, so the track is not over"
     );
-    if removal.was_last {
+    if !removal.still_served {
       manager.remove_track(&name).await;
     }
 
@@ -735,7 +735,7 @@ mod tests {
       .remove_publisher(1)
       .await
       .expect("publisher 1 was registered");
-    assert!(removal.was_last, "no publishers remain");
+    assert!(!removal.still_served, "no publishers remain");
   }
 
   #[tokio::test]

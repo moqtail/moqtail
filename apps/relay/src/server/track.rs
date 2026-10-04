@@ -44,18 +44,18 @@ pub type ActiveSubgroupHeaderMap = Arc<RwLock<HashMap<StreamId, HeaderInfo>>>;
 
 /// What removing one of a track's publishers left behind.
 ///
-/// `was_last` is the question callers actually have to answer: a track several
-/// publishers serve is only finished when the last of them goes, and until
-/// then it is merely thinner. `remove_publisher` already works this out to
-/// decide whether to notify the subscribers, so it reports it rather than
+/// `still_served` is the question callers actually have to answer: a track
+/// several publishers serve is only finished when the last of them goes, and
+/// until then it is merely thinner. `remove_publisher` already works this out
+/// to decide whether to notify the subscribers, so it reports it rather than
 /// leaving each caller to ask again — and the callers that forgot to ask are
 /// how a track still being published ended up looking finished.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PublisherRemoval {
   /// The track alias the removed publisher was using.
   pub alias: u64,
-  /// No publishers remain, so the track itself is over.
-  pub was_last: bool,
+  /// Another publisher is still serving the track, so it is not over.
+  pub still_served: bool,
 }
 
 /// How many data streams each publisher has finished sending for one track.
@@ -298,24 +298,34 @@ impl Track {
     );
   }
 
-  /// Remove a publisher by connection_id, reporting its alias and whether it
-  /// was the last one, or `None` when it was not publishing this track.
+  /// Take `connection_id` out of this track's publishers, reporting the alias
+  /// it held when it was one of them, and whether any publisher still serves
+  /// the track.
+  ///
+  /// Both answers come from one acquisition of the lock, so they cannot
+  /// disagree: a publisher arriving or leaving between two reads would
+  /// otherwise let a removal report the track as finished while someone else
+  /// was already serving it.
+  async fn take_publisher(&self, connection_id: usize) -> (Option<u64>, bool) {
+    let mut aliases = self.publisher_aliases.write().await;
+    let alias = aliases.remove(&connection_id);
+    (alias, !aliases.is_empty())
+  }
+
+  /// Remove a publisher by connection_id, reporting its alias and whether the
+  /// track is still served, or `None` when it was not publishing this track.
   /// If no publishers remain after removal, sends PublisherDisconnected to all subscribers.
   pub async fn remove_publisher(&self, connection_id: usize) -> Option<PublisherRemoval> {
-    let removed_alias = {
-      let mut aliases = self.publisher_aliases.write().await;
-      aliases.remove(&connection_id)
-    };
+    let (alias, still_served) = self.take_publisher(connection_id).await;
+    let alias = alias?;
 
-    let alias = removed_alias?;
     self.publisher_stream_progress.forget(connection_id).await;
-    let has_publishers = !self.publisher_aliases.read().await.is_empty();
     info!(
-      "Removed publisher {}@alias={} from relay_track_id={} | publishers_remaining={}",
-      connection_id, alias, self.relay_track_id, has_publishers
+      "Removed publisher {}@alias={} from relay_track_id={} | still_served={}",
+      connection_id, alias, self.relay_track_id, still_served
     );
 
-    if !has_publishers && let Err(e) = self.notify_publisher_disconnected().await {
+    if !still_served && let Err(e) = self.notify_publisher_disconnected().await {
       error!(
         "Failed to notify subscribers after last publisher removed for relay_track_id={}: {:?}",
         self.relay_track_id, e
@@ -324,7 +334,7 @@ impl Track {
 
     Some(PublisherRemoval {
       alias,
-      was_last: !has_publishers,
+      still_served,
     })
   }
 
@@ -344,11 +354,7 @@ impl Track {
   /// on to wait for this publisher's Stream Count still needs the closures
   /// already recorded for it.
   pub async fn remove_publisher_quietly(&self, connection_id: usize) -> bool {
-    let still_served = {
-      let mut aliases = self.publisher_aliases.write().await;
-      aliases.remove(&connection_id);
-      !aliases.is_empty()
-    };
+    let (_, still_served) = self.take_publisher(connection_id).await;
     info!(
       "Removed publisher {} of relay_track_id={} quietly | still_served={}",
       connection_id, self.relay_track_id, still_served

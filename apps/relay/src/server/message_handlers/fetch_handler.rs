@@ -793,7 +793,7 @@ pub async fn handle(
               );
             }
             drop(stream);
-            client.remove_stream_by_stream_id(&stream_id).await;
+            let _ = client.release_stream(&stream_id).await;
           }
         } else if object_count == 0 {
           // Range is valid but empty: FETCH_OK was already sent on the request
@@ -811,7 +811,7 @@ pub async fn handle(
                 e
               );
             }
-            client.remove_stream_by_stream_id(&stream_id).await;
+            let _ = client.release_stream(&stream_id).await;
           }
         } else {
           // close the stream instantly
@@ -823,7 +823,7 @@ pub async fn handle(
             } else {
               info!("finished fetch stream: {:?}", &stream_id);
             }
-            client.remove_stream_by_stream_id(&stream_id).await;
+            let _ = client.release_stream(&stream_id).await;
             info!("removed stream from the map {}", stream_id);
           }
         }

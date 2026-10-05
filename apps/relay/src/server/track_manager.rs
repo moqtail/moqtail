@@ -595,27 +595,38 @@ impl TrackManager {
     connection_id: usize,
     request_id: u64,
   ) -> Option<FullTrackName> {
-    let publishes = self.publishes.read().await;
-    let tracks = self.tracks.read().await;
+    // 1. Find the tracks that were published with this specific Request ID. The
+    // lock order puts tracks before publishes, and a track's own lock before
+    // both, so the maps are released before any track is locked below.
+    let candidates: Vec<(FullTrackName, Arc<RwLock<Track>>)> = {
+      let tracks = self.tracks.read().await;
+      let publishes = self.publishes.read().await;
+      publishes
+        .iter()
+        .filter(|(_, by_connection)| {
+          by_connection
+            .get(&connection_id)
+            .is_some_and(|publish_msg| publish_msg.request_id == request_id)
+        })
+        .filter_map(|(track_name, _)| {
+          tracks
+            .get(track_name)
+            .map(|track_arc| (track_name.clone(), track_arc.clone()))
+        })
+        .collect()
+    };
 
-    for (track_name, publishes) in publishes.iter() {
-      // 1. Find the track that was published with this specific Request ID
-      if let Some(publish_msg) = publishes.get(&connection_id)
-        && publish_msg.request_id == request_id
+    for (track_name, track_arc) in candidates {
+      // 2. Verify that the client sending the REQUEST_UPDATE is actually the owner!
+      // TODO: do we really need this check? Look at this later.
+      let track = track_arc.read().await;
+      if track
+        .publisher_aliases
+        .read()
+        .await
+        .contains_key(&connection_id)
       {
-        // 2. Verify that the client sending PublishDone is actually the owner!
-        // TODO: do we really need this check? Look at this later.
-        if let Some(track_arc) = tracks.get(track_name) {
-          let track = track_arc.read().await;
-          if track
-            .publisher_aliases
-            .read()
-            .await
-            .contains_key(&connection_id)
-          {
-            return Some(track_name.clone());
-          }
-        }
+        return Some(track_name);
       }
     }
     None
@@ -913,6 +924,95 @@ mod tests {
     .expect("tasks");
     assert!(found.is_some());
     assert!(!manager.has_track_alias(1, &10).await);
+  }
+
+  #[tokio::test]
+  async fn a_publisher_lookup_does_not_deadlock_with_a_track_removal() {
+    // remove_track clears the removed track's publishes while it still holds the
+    // tracks map; finding a publisher's track must not hold the publishes while it
+    // waits for that map. The lookup takes the publishes even when nothing matches.
+    let manager = TrackManager::new();
+    let name = track_name();
+    let (track, _) = publish(&manager, 1, 10, &name).await;
+
+    // Parks remove_track on the track's lock, after it has taken the tracks map.
+    let parked = track.write().await;
+    let remover = spawn_remove_track(&manager, &name).await;
+    let lookup = {
+      let manager = manager.clone();
+      tokio::spawn(async move { manager.get_track_name_by_publisher(2, 0).await })
+    };
+    settle().await;
+    assert!(!lookup.is_finished(), "the lookup waits for a lock");
+    drop(parked);
+
+    let ((), found) = tokio::time::timeout(Duration::from_secs(1), async {
+      tokio::try_join!(remover, lookup)
+    })
+    .await
+    .expect("the removal and the lookup both finish")
+    .expect("tasks");
+    assert!(found.is_none());
+  }
+
+  #[tokio::test]
+  async fn a_publisher_lookup_does_not_deadlock_with_a_closing_session() {
+    // A closing session holds a track's read lock while it clears its publishes
+    // entry, and a PUBLISH or SUBSCRIBE_OK may be waiting to write that track. A
+    // REQUEST_UPDATE that looked for its track while holding the publishes would
+    // wait behind that writer and close the cycle.
+    let manager = TrackManager::new();
+    let name = track_name();
+    let (track, _) = publish(&manager, 1, 10, &name).await;
+    track.read().await.add_publisher(1, 10).await;
+    publish(&manager, 2, 20, &name).await;
+    track.read().await.add_publisher(2, 20).await;
+    let request = Publish::new(
+      7,
+      name.namespace.clone(),
+      name.name.clone(),
+      20,
+      vec![],
+      vec![],
+    );
+    manager.add_publish_message(name.clone(), 2, request).await;
+
+    // Publisher 1's session closes, holding the track as handle_connection_close does.
+    let closing = track.read().await;
+    let writer = {
+      let track = track.clone();
+      tokio::spawn(async move {
+        drop(track.write().await);
+      })
+    };
+    settle().await;
+    assert!(track.try_read().is_err(), "a writer waits for the track");
+    let lookup = {
+      let manager = manager.clone();
+      tokio::spawn(async move { manager.get_track_name_by_publisher(2, 7).await })
+    };
+    settle().await;
+    assert!(!lookup.is_finished(), "the lookup waits for the track");
+
+    let removal = closing
+      .remove_publisher(1)
+      .await
+      .expect("publisher 1 was registered");
+    tokio::time::timeout(
+      Duration::from_secs(1),
+      manager.remove_publisher_alias(removal),
+    )
+    .await
+    .expect("clearing the publishes entry does not wait for the lookup");
+    drop(closing);
+
+    let ((), found) = tokio::time::timeout(Duration::from_secs(1), async {
+      tokio::try_join!(writer, lookup)
+    })
+    .await
+    .expect("the writer and the lookup both finish")
+    .expect("tasks");
+    assert_eq!(found, Some(name));
   }
 
   #[test]

@@ -123,12 +123,13 @@ impl TrackManager {
     connection_id: usize,
     track_alias: u64,
   ) -> Option<Arc<RwLock<Track>>> {
+    // Tracks first, as the lock order says. Holding both, the lookup sees a
+    // concurrent remove_track, which clears the track's aliases while it holds
+    // the tracks map, either completely or not at all.
+    let tracks = self.tracks.read().await;
     let track_aliases = self.track_aliases.read().await;
-    if let Some(full_track_name) = track_aliases.get(&(connection_id, track_alias)) {
-      let tracks = self.tracks.read().await;
-      return tracks.get(full_track_name).cloned();
-    }
-    None
+    let full_track_name = track_aliases.get(&(connection_id, track_alias))?;
+    tracks.get(full_track_name).cloned()
   }
 
   pub async fn remove_track(&self, full_track_name: &FullTrackName) {
@@ -878,6 +879,40 @@ mod tests {
       .await
       .expect("the other removal proceeds once the walk is done")
       .expect("remover task");
+  }
+
+  #[tokio::test]
+  async fn an_alias_lookup_does_not_deadlock_with_a_track_removal() {
+    // remove_track clears the removed track's aliases while it still holds the
+    // tracks map; a lookup by alias must not hold the aliases while it waits for
+    // that map.
+    let manager = TrackManager::new();
+    let name = track_name();
+    let other = FullTrackName::try_new("meet/room2", "video").unwrap();
+    let (track, _) = publish(&manager, 1, 10, &name).await;
+    // remove_track takes track_aliases only for a track with publisher aliases.
+    track.read().await.add_publisher(1, 10).await;
+    publish(&manager, 2, 20, &other).await;
+
+    // Parks remove_track on the track's lock, after it has taken the tracks map.
+    let parked = track.write().await;
+    let remover = spawn_remove_track(&manager, &name).await;
+    let lookup = {
+      let manager = manager.clone();
+      tokio::spawn(async move { manager.get_track_by_alias(2, 20).await })
+    };
+    settle().await;
+    assert!(!lookup.is_finished(), "the lookup waits for a lock");
+    drop(parked);
+
+    let ((), found) = tokio::time::timeout(Duration::from_secs(1), async {
+      tokio::try_join!(remover, lookup)
+    })
+    .await
+    .expect("the removal and the lookup both finish")
+    .expect("tasks");
+    assert!(found.is_some());
+    assert!(!manager.has_track_alias(1, &10).await);
   }
 
   #[test]

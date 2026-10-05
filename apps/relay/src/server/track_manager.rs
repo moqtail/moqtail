@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use super::subscription::Subscription;
-use super::track::Track;
+use super::track::{PublisherRemoval, Track};
 use crate::server::client::MOQTClient;
 use moqtail::model::common::tuple::Tuple;
 use moqtail::model::control::control_message::ControlMessage;
@@ -57,6 +57,13 @@ pub type NamespaceSubscriber = (
 );
 pub type AnnouncementSubscriber = (Arc<MOQTClient>, PublishNamespace);
 
+/// The relay's tracks and what indexes them.
+///
+/// Lock order: take `tracks`, then a track's own lock, then that track's inner
+/// locks (such as `publisher_aliases`), then `track_aliases`, then `publishes`,
+/// skipping those you do not need. Never take a lock that you, or your caller,
+/// already hold, even for reading: tokio's `RwLock` queues new readers behind a
+/// waiting writer, so a second read deadlocks once a writer queues in between.
 #[derive(Clone)]
 pub struct TrackManager {
   pub tracks: Arc<RwLock<HashMap<FullTrackName, Arc<RwLock<Track>>>>>,
@@ -197,12 +204,18 @@ impl TrackManager {
     track_aliases.contains_key(&(connection_id, *track_alias))
   }
 
-  /// Remove a single publisher alias without removing the full track entry.
-  /// Used when a publisher sends PublishDone or when only one of several publishers disconnects.
-  pub async fn remove_publisher_alias(&self, connection_id: usize, track_alias: u64) {
+  /// Clears the alias and the `publishes` entry of a publisher that
+  /// `Track::remove_publisher` has already taken out of its track, as `removal`
+  /// shows, without removing the track itself. Used on every PUBLISH_DONE and
+  /// when a publishing session closes.
+  ///
+  /// Both callers still hold the track's read lock, and `handle_connection_close`
+  /// also holds `tracks`, so this takes neither again.
+  pub async fn remove_publisher_alias(&self, removal: PublisherRemoval) {
+    let connection_id = removal.connection_id();
+    let track_alias = removal.alias();
     let mut track_aliases = self.track_aliases.write().await;
-    let track_name_opt = track_aliases.remove(&(connection_id, track_alias));
-    if let Some(track_name) = track_name_opt {
+    if let Some(track_name) = track_aliases.remove(&(connection_id, track_alias)) {
       info!(
         "Removed publisher alias {}@{} from track_aliases, track: {}",
         track_alias, connection_id, track_name
@@ -212,12 +225,6 @@ impl TrackManager {
       let mut publishes = self.publishes.write().await;
       if let Some(map) = publishes.get_mut(&track_name) {
         map.remove(&connection_id);
-      }
-
-      // remove the track alias from the track as well
-      if let Some(track_guard) = self.get_track(&track_name).await {
-        let track = track_guard.read().await;
-        track.remove_publisher(connection_id).await;
       }
     }
   }
@@ -710,16 +717,17 @@ mod tests {
       .remove_publisher(2)
       .await
       .expect("publisher 2 was registered");
-    manager.remove_publisher_alias(2, removal.alias).await;
+    let still_served = removal.still_served();
+    manager.remove_publisher_alias(removal).await;
     // What the caller branches on: the track is thinner, not finished. Everything
     // keyed to the track outliving this PUBLISH_DONE hangs off this flag --
     // dropping it from its subscribers' switching sets among them, which would
     // stop it being gated and let every rendition of its set forward at once.
     assert!(
-      removal.still_served,
+      still_served,
       "publisher 1 is still serving, so the track is not over"
     );
-    if !removal.still_served {
+    if !still_served {
       manager.remove_track(&name).await;
     }
 
@@ -735,7 +743,7 @@ mod tests {
       .remove_publisher(1)
       .await
       .expect("publisher 1 was registered");
-    assert!(!removal.still_served, "no publishers remain");
+    assert!(!removal.still_served(), "no publishers remain");
   }
 
   #[tokio::test]
@@ -804,6 +812,72 @@ mod tests {
       .expect("the waiter is woken by the registration, not by its timeout")
       .expect("resolver task");
     assert!(resolved.is_some());
+  }
+
+  /// Yields enough times for every spawned task to reach its first wait. This
+  /// orders the tasks only on tokio's single-thread test runtime, which these
+  /// tests use.
+  async fn settle() {
+    for _ in 0..10 {
+      tokio::task::yield_now().await;
+    }
+  }
+
+  /// Spawns `remove_track(name)` and lets it run until it holds, or waits for,
+  /// the tracks map for writing.
+  async fn spawn_remove_track(
+    manager: &TrackManager,
+    name: &FullTrackName,
+  ) -> tokio::task::JoinHandle<()> {
+    let remover = {
+      let manager = manager.clone();
+      let name = name.clone();
+      tokio::spawn(async move { manager.remove_track(&name).await })
+    };
+    settle().await;
+    assert!(
+      manager.tracks.try_read().is_err(),
+      "remove_track holds or waits for the tracks map"
+    );
+    remover
+  }
+
+  #[tokio::test]
+  async fn a_publisher_alias_is_removed_under_the_tracks_lock_while_a_writer_waits() {
+    // A closing session walks the tracks map under a read guard and removes its
+    // aliases as it goes, while another closing session may be waiting to remove a
+    // track. The waiting writer blocks new readers, so taking the tracks lock again
+    // inside would deadlock both sessions.
+    let manager = TrackManager::new();
+    let name = track_name();
+    let other = FullTrackName::try_new("meet/room2", "video").unwrap();
+    let (track, _) = publish(&manager, 1, 10, &name).await;
+    track.read().await.add_publisher(1, 10).await;
+    publish(&manager, 2, 20, &other).await;
+
+    // The locks handle_connection_close holds while it removes an alias.
+    let tracks = manager.tracks.read().await;
+    let track_guard = track.read().await;
+    let remover = spawn_remove_track(&manager, &other).await;
+
+    let removal = track_guard
+      .remove_publisher(1)
+      .await
+      .expect("publisher 1 was registered");
+    tokio::time::timeout(
+      Duration::from_secs(1),
+      manager.remove_publisher_alias(removal),
+    )
+    .await
+    .expect("removing the alias takes neither the tracks map nor the track again");
+    assert!(!manager.has_track_alias(1, &10).await);
+
+    drop(track_guard);
+    drop(tracks);
+    tokio::time::timeout(Duration::from_secs(1), remover)
+      .await
+      .expect("the other removal proceeds once the walk is done")
+      .expect("remover task");
   }
 
   #[test]

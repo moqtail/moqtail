@@ -33,6 +33,8 @@ const MAX_U64 = 2n ** 64n - 1n
  * - If `typeValue` is **odd**, the value is a binary blob (`Uint8Array`) with a maximum length of 65535 bytes.
  *
  * Use {@link KeyValuePair.tryNewVarInt} for varint pairs and {@link KeyValuePair.tryNewBytes} for blob pairs.
+ * A Type whose own namespace fixes the value encoding overrides the parity rule; see
+ * {@link KeyValuePair.newBytes}.
  */
 export class KeyValuePair {
   /**
@@ -89,9 +91,21 @@ export class KeyValuePair {
     if (tv % 2n === 0n) {
       throw new KeyValueFormattingError('KeyValuePair.tryNewBytes')
     }
+    return KeyValuePair.newBytes(tv, value)
+  }
+
+  /**
+   * Creates a blob KeyValuePair for a Type whose namespace defines a byte-string
+   * value regardless of parity. Prefer {@link KeyValuePair.tryNewBytes}.
+   * @param typeValue - The key/type identifier; parity is not checked.
+   * @param value - The binary blob value.
+   * @throws LengthExceedsMaxError if value length exceeds 65535 bytes.
+   */
+  static newBytes(typeValue: bigint | number, value: Uint8Array): KeyValuePair {
+    const tv = typeof typeValue === 'number' ? BigInt(typeValue) : typeValue
     const len = value.length
     if (len > MAX_VALUE_LENGTH) {
-      throw new LengthExceedsMaxError('KeyValuePair.tryNewBytes', MAX_VALUE_LENGTH, len)
+      throw new LengthExceedsMaxError('KeyValuePair.newBytes', MAX_VALUE_LENGTH, len)
     }
     return new KeyValuePair(tv, value)
   }
@@ -173,14 +187,23 @@ export class KeyValuePair {
     if (typeValue % 2n === 0n) {
       const value = buf.getVI()
       return new KeyValuePair(typeValue, value)
-    } else {
-      const len = buf.getNumberVI()
-      if (len > MAX_VALUE_LENGTH) {
-        throw new LengthExceedsMaxError('KeyValuePair.deserialize', MAX_VALUE_LENGTH, len)
-      }
-      const value = buf.getBytes(len)
-      return new KeyValuePair(typeValue, value)
     }
+    return KeyValuePair.deserializeBytesValue(buf, typeValue)
+  }
+
+  /**
+   * Reads a length-prefixed byte-string Value, independent of Type parity.
+   * @param buf - The buffer to read from.
+   * @param typeValue - The already-decoded Type.
+   * @throws LengthExceedsMaxError if the length exceeds 65535 bytes.
+   */
+  static deserializeBytesValue(buf: BaseByteBuffer, typeValue: bigint): KeyValuePair {
+    const len = buf.getNumberVI()
+    if (len > MAX_VALUE_LENGTH) {
+      throw new LengthExceedsMaxError('KeyValuePair.deserializeBytesValue', MAX_VALUE_LENGTH, len)
+    }
+    const value = buf.getBytes(len)
+    return new KeyValuePair(typeValue, value)
   }
 
   /**
@@ -252,21 +275,21 @@ export function deserializeKvpListUntilEmpty(buf: BaseByteBuffer): KeyValuePair[
 }
 
 /**
- * Checks if the KeyValuePair is a varint pair (even typeValue).
+ * Checks if the KeyValuePair carries a varint value.
  * @param pair - The KeyValuePair to check.
  * @returns True if value is a varint.
  */
 export function isVarInt(pair: KeyValuePair): pair is KeyValuePair & { value: bigint } {
-  return pair.typeValue % 2n === 0n
+  return typeof pair.value === 'bigint'
 }
 
 /**
- * Checks if the KeyValuePair is a blob pair (odd typeValue).
+ * Checks if the KeyValuePair carries a blob value.
  * @param pair - The KeyValuePair to check.
  * @returns True if value is a Uint8Array.
  */
 export function isBytes(pair: KeyValuePair): pair is KeyValuePair & { value: Uint8Array } {
-  return pair.typeValue % 2n !== 0n
+  return pair.value instanceof Uint8Array
 }
 
 if (import.meta.vitest) {

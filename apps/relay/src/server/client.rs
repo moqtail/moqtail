@@ -49,7 +49,7 @@ use std::{
 use tokio::sync::Notify;
 use tokio::sync::{Mutex, RwLock, mpsc, watch};
 use tokio::time::Instant;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, trace, warn};
 
 /// Token-bucket rate limiter. All streams of one subscriber share a single
 /// bucket so they compete for bandwidth — the QUIC scheduler then drains
@@ -328,7 +328,7 @@ impl MOQTClient {
     stream_id: &StreamId,
   ) -> Arc<RwLock<HashMap<String, Arc<Mutex<TransportSendStream>>>>> {
     let partition_index = self.get_partition_index(stream_id);
-    debug!(
+    trace!(
       "get_stream_map | stream_id: {} partition_index: {}",
       stream_id, partition_index
     );
@@ -362,14 +362,14 @@ impl MOQTClient {
           send_stream.set_priority(priority);
           let s = Arc::new(Mutex::new(send_stream));
           entry.insert(s.clone());
-          info!(
+          debug!(
             "open_stream | added send_stream to send streams ({}) connection_id: {}",
             stream_id, self.connection_id
           );
           (s, true)
         }
         std::collections::hash_map::Entry::Occupied(s) => {
-          debug!(
+          trace!(
             "open_stream | Send stream for {} already exists connection_id: {}",
             stream_id, self.connection_id
           );
@@ -388,7 +388,7 @@ impl MOQTClient {
     // release on every path that drops the stream from the map.
     self.ssts.on_stream_opened(stream_id.relay_track_id).await;
 
-    debug!(
+    trace!(
       "open_stream |  writing to stream ({}) connection_id: {}",
       stream_id, self.connection_id
     );
@@ -396,7 +396,7 @@ impl MOQTClient {
     // Write the header payload to the stream
     match send_stream.lock().await.write_all(&header_payload).await {
       Ok(..) => {
-        debug!(
+        trace!(
           "open_stream |  wrote to stream ({}) connection_id: {}",
           stream_id, self.connection_id
         );
@@ -487,7 +487,7 @@ impl MOQTClient {
     } else {
       // it is possible that no stream was created for this stream id
       // because the subscription can be in no forwarding state
-      debug!(
+      trace!(
         "close_stream | Send stream not found for {} connection_id: {}",
         stream_id, self.connection_id
       );
@@ -539,7 +539,7 @@ impl MOQTClient {
     object: Bytes,
     the_stream: Option<Arc<Mutex<TransportSendStream>>>,
   ) -> Result<(), anyhow::Error> {
-    debug!(
+    trace!(
       "write_stream_object | Writing object to stream ({} - {}) connection_id: {}",
       object_id, stream_id, self.connection_id
     );
@@ -594,7 +594,7 @@ impl MOQTClient {
   }
 
   pub async fn write_datagram_object(&self, object: Bytes) -> Result<(), anyhow::Error> {
-    debug!(
+    trace!(
       "write_datagram_object | Writing datagram object connection_id: {}",
       self.connection_id
     );

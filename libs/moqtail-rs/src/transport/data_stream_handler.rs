@@ -22,6 +22,7 @@ use tokio::sync::{Mutex, Notify, RwLock};
 use tokio::task::yield_now;
 use tokio::time::{Instant, sleep_until};
 
+use crate::model::control::constant::GroupOrder;
 use crate::model::control::fetch::Fetch;
 use crate::model::control::subscribe::Subscribe;
 use crate::model::data::constant::{
@@ -86,11 +87,23 @@ impl FetchSubgroupPriorityState {
 }
 
 // Stores the context derived from the initial header message
+/// The Group Order the objects on a fetch stream are encoded with.
+///
+/// A fill fetch stream has no FETCH behind it, so the order is the one a FETCH
+/// defaults to when it says nothing. A publisher that fills in Descending order
+/// would need the subscription's own Group Order, which this layer does not see.
+fn fetch_group_order(fetch_request: Option<&Fetch>) -> GroupOrder {
+  fetch_request.map_or(GroupOrder::Ascending, |fetch| fetch.group_order())
+}
+
 #[derive(Debug, Clone)]
 pub enum HeaderInfo {
   Fetch {
     header: FetchHeader,
-    fetch_request: Fetch, // Store the original request for context
+    /// The FETCH this stream answers, when the Request ID names one. A fill fetch
+    /// stream carries the same header but names the SUBSCRIBE or REQUEST_UPDATE
+    /// that asked for the fill, so there is no FETCH to point at.
+    fetch_request: Option<Fetch>,
   },
   Subgroup {
     header: SubgroupHeader,
@@ -211,7 +224,7 @@ impl SendDataStream {
 
     match &self.header_info {
       HeaderInfo::Fetch { fetch_request, .. } => {
-        let group_order = fetch_request.group_order();
+        let group_order = fetch_group_order(fetch_request.as_ref());
         let payload = object.try_into_fetch()?;
         let fetch_obj = FetchObject::Object(payload);
         buf.extend_from_slice(&fetch_obj.serialize(self.fetch_prev_ctx.as_ref(), group_order)?);
@@ -475,32 +488,25 @@ impl RecvDataStream {
     if is_fetch {
       match FetchHeader::deserialize(&mut bytes_cursor) {
         Ok(fetch_header) => {
-          let pending_fetches = pending_fetches.read().await;
-          if let Some(fetch_request) = pending_fetches.get(&fetch_header.request_id) {
-            let consumed = original_remaining - bytes_cursor.remaining();
+          // A Request ID with no FETCH behind it is not an error: a fill fetch
+          // stream is named by the SUBSCRIBE or REQUEST_UPDATE that asked for the
+          // fill, which this map knows nothing about.
+          let fetch_request = pending_fetches
+            .read()
+            .await
+            .get(&fetch_header.request_id)
+            .map(|pending| pending.fetch_request.clone());
+          let consumed = original_remaining - bytes_cursor.remaining();
 
-            let header_info = HeaderInfo::Fetch {
-              header: fetch_header,
-              fetch_request: fetch_request.fetch_request.clone(),
-            };
-            debug!(
-              "RecvDataStream::read_header() Parsed FetchHeader: {:?}",
-              header_info
-            );
-            Ok(Some((consumed, header_info)))
-          } else {
-            // Drop the immutable borrow before calling the async method
-            drop(pending_fetches);
-            // self.close_stream().await;
-            is_closed.store(true, Ordering::Relaxed);
-            Err(ParseError::ProtocolViolation {
-              context: "RecvDataStream::new(FetchHeader validation)",
-              details: format!(
-                "Received FetchHeader for unknown request_id: {}",
-                fetch_header.request_id
-              ),
-            })
-          }
+          let header_info = HeaderInfo::Fetch {
+            header: fetch_header,
+            fetch_request,
+          };
+          debug!(
+            "RecvDataStream::read_header() Parsed FetchHeader: {:?}",
+            header_info
+          );
+          Ok(Some((consumed, header_info)))
         }
         Err(ParseError::NotEnoughBytes { .. }) => {
           Ok(None) // Not enough bytes to parse the header, wait for more data
@@ -563,7 +569,7 @@ impl RecvDataStream {
 
       let parse_result: ObjectParseResult = match header_info {
         HeaderInfo::Fetch { fetch_request, .. } => {
-          let group_order = fetch_request.group_order();
+          let group_order = fetch_group_order(fetch_request.as_ref());
           FetchObject::deserialize(
             &mut bytes_cursor,
             fetch_state.prev_ctx.as_ref(),
@@ -623,7 +629,7 @@ impl RecvDataStream {
       match parse_result {
         Ok((object_id, new_ctx, maybe_object)) => {
           let consumed = original_remaining - bytes_cursor.remaining();
-          debug!(
+          trace!(
             "consumed: {} Parsed payload object: {:?}",
             consumed, maybe_object
           );
@@ -731,8 +737,7 @@ mod tests {
   use crate::model::common::location::Location;
   use crate::model::common::pair::KeyValuePair;
   use crate::model::common::tuple::{Tuple, TupleField};
-  use crate::model::control::constant::{FetchType, GroupOrder};
-  use crate::model::control::fetch::JoiningFetchProps;
+  use crate::model::control::constant::GroupOrder;
   use crate::model::control::{fetch::Fetch, subscribe::Subscribe};
   use crate::model::data::constant::SubgroupHeaderType;
   use crate::model::parameter::authorization_token::AuthorizationToken;
@@ -749,12 +754,10 @@ mod tests {
   fn make_fetch_header_and_request() -> (FetchHeader, Fetch) {
     let fetch = Fetch {
       request_id: 161803,
-      fetch_type: FetchType::AbsoluteFetch,
-      standalone_fetch_props: None,
-      joining_fetch_props: Some(JoiningFetchProps {
-        joining_request_id: 119,
-        joining_start: 73,
-      }),
+      track_namespace: Tuple::from_utf8_path("un/deux/trois"),
+      track_name: TupleField::from_utf8("quatre"),
+      start_location: Location::new(12, 5),
+      end_location: Location::new(20, 0),
       parameters: vec![
         MessageParameter::new_authorization_token(AuthorizationToken::new_use_value(
           0,
@@ -805,7 +808,7 @@ mod tests {
       group: 81,
       object: 81,
     };
-    let subscribe = Subscribe::new_absolute_range(
+    let subscribe = Subscribe::new_absolute_range_fill(
       request_id,
       track_namespace,
       track_name,
@@ -1000,7 +1003,7 @@ mod tests {
       Arc::new(Mutex::new(send)),
       HeaderInfo::Fetch {
         header: fetch_header,
-        fetch_request: fetch_req.clone(),
+        fetch_request: Some(fetch_req.clone()),
       },
     )
     .await
@@ -1082,7 +1085,7 @@ mod tests {
       FetchRequest {
         request_id: fetch_req.request_id,
         requested_by: 1,
-        fetch_request: fetch_req.clone(),
+        fetch_request: Some(fetch_req.clone()),
         track_alias: 1,
       },
     );
@@ -1092,7 +1095,7 @@ mod tests {
       Arc::new(Mutex::new(send)),
       HeaderInfo::Fetch {
         header: fetch_header.clone(),
-        fetch_request: fetch_req.clone(),
+        fetch_request: Some(fetch_req.clone()),
       },
     )
     .await
@@ -1131,7 +1134,7 @@ mod tests {
       Arc::new(Mutex::new(TransportSendStream::WebTransport(send))),
       HeaderInfo::Fetch {
         header: fetch_header,
-        fetch_request: fetch_req.clone(),
+        fetch_request: Some(fetch_req.clone()),
       },
     )
     .await

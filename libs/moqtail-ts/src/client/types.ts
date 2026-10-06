@@ -19,11 +19,11 @@ import {
   GroupOrder,
   FilterType,
   MessageParameter,
-  FetchType,
   Location,
   SetupOptions,
   ControlMessage,
   Datagram,
+  SwitchMode,
 } from '@/model'
 import { PublishNamespaceRequest } from './request/publish_namespace'
 import { FetchRequest } from './request/fetch'
@@ -71,6 +71,33 @@ export type MOQtailRequest =
   | TrackStatusRequest
 
 /**
+ * Whatever holds a track alias in the client's routing table: a {@link SubscribeRequest},
+ * or the receiver {@link MOQtailClient.acceptPushedTrack} stands up for a track the peer
+ * pushes. Incoming objects are named after the holder of the alias their stream carries.
+ */
+export type TrackAliasHolder = { requestId: bigint; fullTrackName: FullTrackName }
+
+/**
+ * Default for {@link MOQtailClientOptions.trackAliasResolutionTimeoutMs}: how long a
+ * data stream waits for the control message that establishes its track alias.
+ *
+ * A subscription's data streams and the SUBSCRIBE_OK naming their alias travel on
+ * separate streams, so nothing orders them; the data can arrive first. Waiting costs
+ * a stalled reader, giving up costs the whole subgroup, so the wait is generous.
+ */
+export const DEFAULT_TRACK_ALIAS_RESOLUTION_TIMEOUT_MS = 2000
+
+/**
+ * Default for {@link MOQtailClientOptions.switchDrainTimeoutMs}: how long a track a
+ * soft switch handed over from may stay quiet before it is retired anyway.
+ *
+ * A soft switch leaves that track delivering up to the group the new one starts at,
+ * so the two meet without a hole, and a PUBLISH_DONE normally ends it. This is the
+ * backstop for a publisher that never sends one.
+ */
+export const DEFAULT_SWITCH_DRAIN_TIMEOUT_MS = 2000
+
+/**
  * Options for {@link MOQtailClient.new} controlling connection target, protocol negotiation, timeouts,
  * and lifecycle callbacks.
  *
@@ -108,6 +135,18 @@ export type MOQtailClientOptions = {
   dataStreamTimeoutMs?: number
   /** Control stream read timeout in milliseconds. */
   controlStreamTimeoutMs?: number
+  /**
+   * How long a data stream waits for the control message that establishes its track
+   * alias before the stream is abandoned, in milliseconds. Defaults to
+   * {@link DEFAULT_TRACK_ALIAS_RESOLUTION_TIMEOUT_MS}.
+   */
+  trackAliasResolutionTimeoutMs?: number
+  /**
+   * How long a track a soft switch handed over from may stay quiet before it is
+   * retired anyway, in milliseconds. Defaults to
+   * {@link DEFAULT_SWITCH_DRAIN_TIMEOUT_MS}.
+   */
+  switchDrainTimeoutMs?: number
   /** If true, enables datagram support for the session. */
   enableDatagrams?: boolean
   /** callbacks for observability and logging purposes: */
@@ -145,7 +184,7 @@ export type MOQtailClientOptions = {
  *   priority: 32,
  *   groupOrder: GroupOrder.Original,
  *   forward: true,
- *   filterType: FilterType.AbsoluteRange,
+ *   filterType: FilterType.AbsoluteRangeFill,
  *   startLocation: { group: 100n, subgroup: 0n, object: 0n },
  *   endGroup: 120n
  * })
@@ -158,16 +197,18 @@ export type SubscribeOptions = {
   priority: number
   /** Desired {@link (GroupOrder:enum)} (e.g. {@link (GroupOrder:enum).Original}) specifying delivery ordering semantics. */
   groupOrder: GroupOrder
-  /** If true, deliver objects forward (ascending); if false, reverse/backward semantics (implementation dependent). */
-  forward: boolean
+  /** If present, forward parameter (0x10) is sent with the provided value */
+  forward?: boolean
   /** {@link FilterType} variant controlling starting subset (e.g. {@link FilterType.LatestObject}). */
   filterType: FilterType
   /** Optional extension parameters appended to the SUBSCRIBE control message. */
   parameters?: MessageParameter[]
-  /** Required for {@link FilterType.AbsoluteStart} / {@link FilterType.AbsoluteRange}; earliest {@link Location} to include. */
+  /** Required for {@link FilterType.AbsoluteStartFill} / {@link FilterType.AbsoluteRangeFill}; earliest {@link Location} to include. */
   startLocation?: Location
-  /** Required for {@link FilterType.AbsoluteRange}; exclusive upper group boundary (coerced to bigint if number provided). */
+  /** Required for {@link FilterType.AbsoluteRangeFill}; exclusive upper group boundary (coerced to bigint if number provided). */
   endGroup?: bigint | number
+  /** Required for {@link FilterType.RelativeStartFill}; how many groups back from the Largest Object to start. */
+  relativePrevious?: bigint | number
   /** Per-subscription early discard policy. Overrides the client-level default set via {@link MOQtailClient.setEarlyDiscardPolicy}. */
   earlyDiscardPolicy?: EarlyDiscardPolicyConfig
 }
@@ -206,21 +247,30 @@ export type SubscribeUpdateOptions = {
 /**
  * Parameters for {@link MOQtailClient.switch | switching} an existing SUBSCRIBE to a new track.
  *
- * @example Switching subscription to a new track
+ * @example Switching a subscription to a new track
  * ```ts
  * await client.switch({
- *   fullTrackName: newFullTrackName,
- *   subscriptionRequestId
+ *   switchFromRequestId,
+ *   switchMode: SwitchMode.Soft,
+ *   newSubscribeOptions: {
+ *     fullTrackName: newFullTrackName,
+ *     priority: 0,
+ *     groupOrder: GroupOrder.Original,
+ *     forward: true,
+ *     filterType: FilterType.LatestObject
+ *   }
  * })
  * ```
  */
 export type SwitchOptions = {
-  /** Fully qualified track identifier to switch to ({@link FullTrackName}). */
-  fullTrackName: FullTrackName
-  /** The original SUBSCRIBE request id (bigint) being updated. */
-  subscriptionRequestId: bigint
-  /** Optional additional parameters; existing parameters persist if omitted. */
-  parameters?: MessageParameter[]
+  /** The original SUBSCRIBE request id (bigint) being switched from. */
+  switchFromRequestId: bigint
+  /** {@link SwitchMode} controlling how the switch is applied. */
+  switchMode: SwitchMode
+  /** New subscription options to switch to. */
+  newSubscribeOptions: SubscribeOptions
+  /** Callback to determine whether to continue draining the superseded subscription. Returning true will reset the relevant stream. */
+  onDrainDecision?: (request: SubscribeRequest) => boolean
 }
 
 /**
@@ -271,30 +321,12 @@ export type FetchOptions = {
   priority: number
   /** {@link (GroupOrder:enum)} governing sequencing. */
   groupOrder: GroupOrder
-  /**
-   * Discriminated union selecting the {@link (FetchType:enum)} mode and its specific properties:
-   * - Standalone: full explicit range on a {@link FullTrackName} with start/end {@link Location}s.
-   * - Relative / Absolute: join an existing {@link SubscribeRequest} (identified by `joiningRequestId`) with starting position `joiningStart`.
-   */
-  typeAndProps:
-    | {
-        /** Standalone historical/segment fetch for a specific {@link FullTrackName}. */
-        type: FetchType.Standalone
-        /** Properties for standalone fetch: explicit track and range. */
-        props: { fullTrackName: FullTrackName; startLocation: Location; endLocation: Location }
-      }
-    | {
-        /** Fetch a range relative to an existing {@link SubscribeRequest} identified by `joiningRequestId`. */
-        type: FetchType.Relative
-        /** Properties for relative fetch: subscription id and starting position. */
-        props: { joiningRequestId: bigint; joiningStart: bigint }
-      }
-    | {
-        /** Fetch an absolute group/object range relative to a {@link SubscribeRequest}. */
-        type: FetchType.Absolute
-        /** Properties for absolute fetch: subscription id and starting position. */
-        props: { joiningRequestId: bigint; joiningStart: bigint }
-      }
+  /** Fully qualified track identifier ({@link FullTrackName}). */
+  fullTrackName: FullTrackName
+  /** Earliest {@link Location} to retrieve. */
+  startLocation: Location
+  /** The last {@link Location} plus 1. An Object value of 0 means the entire group. */
+  endLocation: Location
   /** Optional parameters block. */
   parameters?: MessageParameter[]
 }

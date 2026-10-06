@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-import { FullTrackName, InternalError, Location, ReasonPhrase } from '@/model'
-import { Fetch, FetchOk, FetchType, RequestError, RequestErrorCode } from '../../model/control'
+import { InternalError, Location, ReasonPhrase } from '@/model'
+import { Fetch, FetchOk, RequestError, RequestErrorCode } from '../../model/control'
 import { RequestStreamMessageHandler } from './handler'
 import { SubscribePublication } from '../publication/subscribe'
 import { FetchPublication } from '../publication/fetch'
@@ -23,23 +23,9 @@ import { PublishPublication } from '../publication'
 import { logger } from '../../util/logger'
 
 export const handlerFetch: RequestStreamMessageHandler<Fetch> = async (client, msg, stream) => {
-  logger.log('handler/fetch', 'requestId, type', msg.requestId, msg.typeAndProps.type)
+  logger.log('handler/fetch', 'requestId', msg.requestId)
   // TODO: Use fetch parameters and handle authorization
-  let fullTrackName: FullTrackName | undefined
-  let joiningRequest: SubscribePublication | FetchPublication | PublishPublication | undefined
-  switch (msg.typeAndProps.type) {
-    case FetchType.Standalone:
-      fullTrackName = msg.typeAndProps.props.fullTrackName
-      break
-
-    case FetchType.Relative:
-    case FetchType.Absolute:
-      joiningRequest = client.publications.get(msg.typeAndProps.props.joiningRequestId)
-      if (!(joiningRequest instanceof SubscribePublication))
-        throw new InternalError('handlerFetch', 'No subscription for the joining request id')
-      fullTrackName = joiningRequest.track.fullTrackName
-      break
-  }
+  const fullTrackName = msg.fullTrackName
   const track = client.trackSources.get(fullTrackName.toString())
   if (!track) {
     const response = new RequestError(RequestErrorCode.DoesNotExist, 0n, new ReasonPhrase('Track does not exists'))

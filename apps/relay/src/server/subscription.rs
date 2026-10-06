@@ -13,14 +13,14 @@
 // limitations under the License.
 
 use crate::server::client::MOQTClient;
-use crate::server::client::switch_context::SwitchStatus;
+use crate::server::client::switch_context::{SwitchActivation, SwitchPlan};
 use crate::server::config::AppConfig;
+use crate::server::message_handlers::fetch_handler::FetchStop;
 use crate::server::object_logger::ObjectLogger;
 use crate::server::ssts::AbrMessage;
 use crate::server::stream_id::StreamId;
 use crate::server::track::ActiveSubgroupHeaderMap;
 use crate::server::track::TrackEvent;
-use crate::server::track_cache::CacheConsumeEvent;
 use crate::server::track_cache::TrackCache;
 use crate::server::utils;
 use anyhow::Result;
@@ -30,15 +30,14 @@ use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::control::constant::FilterType;
 use moqtail::model::control::constant::GroupOrder;
 use moqtail::model::control::constant::PublishDoneStatusCode;
+use moqtail::model::control::constant::SwitchMode;
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::publish::Publish;
 use moqtail::model::control::publish_done::PublishDone;
 use moqtail::model::control::request_update::RequestUpdate;
 use moqtail::model::control::subscribe::Subscribe;
-use moqtail::model::data::constant::DEFAULT_PUBLISHER_PRIORITY;
 use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::model::data::object::Object;
-use moqtail::model::data::subgroup_header::SubgroupHeader;
 use moqtail::model::error::StreamResetCode;
 use moqtail::model::parameter::message_parameter::{
   MessageParameter, apply_message_parameter_update,
@@ -52,9 +51,8 @@ use tokio::sync::Mutex;
 use tokio::sync::Notify;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc::UnboundedReceiver;
-use tracing::trace;
-use tracing::warn;
-use tracing::{debug, error, info};
+use tokio::sync::watch;
+use tracing::{debug, error, info, trace, warn};
 
 #[derive(Debug, Clone)]
 pub enum SubscriptionOrigin {
@@ -90,10 +88,26 @@ pub struct SubscriptionState {
   pub filter_type: FilterType,
   pub start_location: Option<Location>,
   pub end_group: u64,
+  /// How many groups back from the Largest Object a RelativeStartFill starts.
+  pub relative_previous: Option<u64>,
+  /// Set on a subscription a soft switch is draining: it keeps delivering up to
+  /// `end_group` rather than stopping where it stands.
+  pub soft_suspended: bool,
+  /// Whether reaching the end of that drain also sends PUBLISH_DONE.
+  pub publish_done_at_end: bool,
+  /// Set on a subscription a switch is suspending. Its boundary only takes
+  /// effect once this reports the activating subscription has delivered, so a
+  /// switch to a track that never publishes does not cut delivery off.
+  pub switch_activated: Option<SwitchActivation>,
   pub subscribe_parameters: Vec<MessageParameter>,
   pub last_sent_max_location: Option<Location>,
+  /// The group sent before the one `last_sent_max_location` names, so the distance
+  /// between a track's groups can be read off the two. See [`Self::sent_group_gap`].
+  pub prior_sent_group: Option<u64>,
   pub last_received_object_location: Option<Location>,
-  pub is_joining: bool,
+  /// The group received before the one `last_received_object_location` names. Its
+  /// counterpart for a track that has yet to send anything to this subscriber.
+  pub prior_received_group: Option<u64>,
 }
 
 impl SubscriptionState {
@@ -101,6 +115,9 @@ impl SubscriptionState {
     match &self.last_sent_max_location {
       Some(current_max) => {
         if location > *current_max {
+          if location.group > current_max.group {
+            self.prior_sent_group = Some(current_max.group);
+          }
           self.last_sent_max_location = Some(location);
         }
       }
@@ -110,10 +127,54 @@ impl SubscriptionState {
     }
   }
 
+  /// How far apart this track's group ids run, measured from the last two groups
+  /// it sent, or `None` before it has sent two.
+  ///
+  /// Group ids are not dense on every track: where several tracks of one content
+  /// share an id space, a track whose groups are longer than the shortest carries
+  /// only every second, fourth, twelfth id. The group it is sending therefore
+  /// covers everything up to the next id it will use, and the only guide to where
+  /// that is is how far apart the last two were.
+  // TODO: Until switch trigger in subscription.rs solvedthis is dead code.
+  #[allow(dead_code)]
+  pub fn sent_group_gap(&self) -> Option<u64> {
+    let last = self.last_sent_max_location.as_ref()?.group;
+    let prior = self.prior_sent_group?;
+    last.checked_sub(prior).filter(|gap| *gap > 0)
+  }
+
+  /// How far apart this track's group ids run, measured from the last two groups
+  /// that reached the relay for it, or `None` before two have.
+  ///
+  /// The same distance [`Self::sent_group_gap`] reports, for a subscription that
+  /// has not sent anything yet: a track being switched to has to resume at one of
+  /// its own group ids, and this is what says where the next one is.
+  // TODO: Until switch trigger in subscription.rs solvedthis is dead code.
+  #[allow(dead_code)]
+  pub fn received_group_gap(&self) -> Option<u64> {
+    let last = self.last_received_object_location.as_ref()?.group;
+    let prior = self.prior_received_group?;
+    last.checked_sub(prior).filter(|gap| *gap > 0)
+  }
+
+  /// Whether a switch has given this subscription a boundary that is not in
+  /// force yet, because the subscription taking over has still delivered
+  /// nothing. Holding the boundary keeps this track running rather than leaving
+  /// the subscriber with neither.
+  pub fn awaiting_switch_activation(&self) -> bool {
+    self
+      .switch_activated
+      .as_ref()
+      .is_some_and(|activation| !activation.is_set())
+  }
+
   pub fn update_last_received_object_location(&mut self, location: Location) {
     match &self.last_received_object_location {
       Some(current_max) => {
         if location > *current_max {
+          if location.group > current_max.group {
+            self.prior_received_group = Some(current_max.group);
+          }
           self.last_received_object_location = Some(location);
         }
       }
@@ -164,7 +225,7 @@ impl From<SubscriptionOrigin> for SubscriptionState {
           })
           .unwrap_or(true);
 
-        let (filter_type, start_location, end_group) = subscribe
+        let (filter_type, start_location, end_group, relative_previous) = subscribe
           .subscribe_parameters
           .iter()
           .find_map(|p| {
@@ -172,14 +233,20 @@ impl From<SubscriptionOrigin> for SubscriptionState {
               filter_type,
               start_location,
               end_group,
+              relative_previous,
             } = p
             {
-              Some((*filter_type, start_location.clone(), end_group.unwrap_or(0)))
+              Some((
+                *filter_type,
+                start_location.clone(),
+                end_group.unwrap_or(0),
+                *relative_previous,
+              ))
             } else {
               None
             }
           })
-          .unwrap_or((FilterType::LatestObject, None, 0));
+          .unwrap_or((FilterType::LatestObject, None, 0, None));
 
         Self {
           subscriber_priority,
@@ -188,10 +255,15 @@ impl From<SubscriptionOrigin> for SubscriptionState {
           filter_type,
           start_location,
           end_group,
+          relative_previous,
+          soft_suspended: false,
+          publish_done_at_end: false,
+          switch_activated: None,
           subscribe_parameters: subscribe.subscribe_parameters,
           last_sent_max_location: None,
+          prior_sent_group: None,
           last_received_object_location: None,
-          is_joining: false,
+          prior_received_group: None,
         }
       }
       SubscriptionOrigin::Publish(publish) => {
@@ -231,7 +303,7 @@ impl From<SubscriptionOrigin> for SubscriptionState {
           })
           .unwrap_or(true);
 
-        let (filter_type, start_location, end_group) = publish
+        let (filter_type, start_location, end_group, relative_previous) = publish
           .parameters
           .iter()
           .find_map(|p| {
@@ -239,14 +311,20 @@ impl From<SubscriptionOrigin> for SubscriptionState {
               filter_type,
               start_location,
               end_group,
+              relative_previous,
             } = p
             {
-              Some((*filter_type, start_location.clone(), end_group.unwrap_or(0)))
+              Some((
+                *filter_type,
+                start_location.clone(),
+                end_group.unwrap_or(0),
+                *relative_previous,
+              ))
             } else {
               None
             }
           })
-          .unwrap_or((FilterType::LatestObject, None, 0));
+          .unwrap_or((FilterType::LatestObject, None, 0, None));
 
         Self {
           subscriber_priority,
@@ -255,37 +333,67 @@ impl From<SubscriptionOrigin> for SubscriptionState {
           filter_type,
           start_location,
           end_group,
+          relative_previous,
+          soft_suspended: false,
+          publish_done_at_end: false,
+          switch_activated: None,
           subscribe_parameters: publish.parameters,
           last_sent_max_location: None,
+          prior_sent_group: None,
           last_received_object_location: None,
-          is_joining: false,
+          prior_received_group: None,
         }
       }
     }
   }
 }
 
-/// Compute QUIC stream priority from MOQT scheduling parameters.
+/// The first group of the track being switched to that the track being switched
+/// away from no longer covers.
 ///
-/// The i32 space is divided into 65536 bands (one per sub_prio × pub_prio pair).
-/// Within each band, group_id determines relative position according to group_order:
-///   Ascending / Original – lower group_id = higher priority (counts down from band_max)
-///   Descending            – higher group_id = higher priority (counts up from band_min)
-fn compute_stream_priority(
-  sub_prio: u8,
-  pub_prio: u8,
-  group_order: GroupOrder,
-  group_id: u64,
-) -> i32 {
-  const BAND_SIZE: i64 = 65536;
-  let priority_index = (255 - sub_prio as i64) * 256 + (255 - pub_prio as i64);
-  let band_min = i32::MIN as i64 + priority_index * BAND_SIZE;
-  let group_slot = (group_id % BAND_SIZE as u64) as i64;
-  match group_order {
-    GroupOrder::Ascending | GroupOrder::Original => (band_min + BAND_SIZE - 1 - group_slot) as i32,
-    GroupOrder::Descending => (band_min + group_slot) as i32,
+/// `resume_group` is the group the activating track has just started delivering,
+/// `covered_to` the id where the suspending track's media runs out, and
+/// `resume_gap` how far apart the activating track's own group ids run. A track
+/// can only resume at one of its own groups, so this steps by that distance
+/// rather than landing on an id it has no group at.
+// TODO: Until switch trigger in subscription.rs solvedthis is dead code.
+#[allow(dead_code)]
+fn takeover_group(resume_group: u64, covered_to: u64, resume_gap: u64) -> u64 {
+  let resume_gap = resume_gap.max(1);
+  match covered_to.checked_sub(resume_group) {
+    Some(ahead) if ahead > 0 => resume_group + resume_gap * ahead.div_ceil(resume_gap),
+    _ => resume_group,
   }
 }
+
+/// The Start Location a subscription filter resolves to, or `None` where the
+/// filter carries its own and keeps it.
+///
+/// The two live filters are stated relative to what the track has published
+/// already: Latest Object starts at the Object after the largest, Next Group
+/// Start at the group after it. A track that has published nothing starts at
+/// `{0,0}` either way, which delivers whatever comes next.
+pub(crate) fn live_start_location(
+  filter_type: FilterType,
+  largest: Option<Location>,
+) -> Option<Location> {
+  match filter_type {
+    FilterType::LatestObject => Some(match largest {
+      Some(largest) => Location::new(largest.group, largest.object + 1),
+      None => Location::new(0, 0),
+    }),
+    FilterType::NextGroupStart => Some(match largest {
+      Some(largest) => Location::new(largest.group + 1, 0),
+      None => Location::new(0, 0),
+    }),
+    FilterType::AbsoluteStartFill
+    | FilterType::AbsoluteRangeFill
+    | FilterType::RelativeStartFill => None,
+  }
+}
+
+/// The publisher priority assumed where a stream carries no single Object's own.
+pub(crate) const DEFAULT_PUBLISHER_PRIORITY: u8 = 128;
 
 #[derive(Debug, Clone)]
 pub struct Subscription {
@@ -305,7 +413,9 @@ pub struct Subscription {
   client_connection_id: usize,
   object_logger: ObjectLogger,
   config: &'static AppConfig,
-  check_switch_context_on_next_object: Arc<AtomicBool>,
+  /// Set on the activating subscription of a switch, until it delivers the
+  /// object that completes it.
+  pending_switch: Arc<AtomicBool>,
   /// Subgroup header cached while forward=false. Cleared when forward becomes true (stream opened)
   /// or when a new group starts (old group ended without forward ever becoming true).
   pending_header: Arc<Mutex<Option<(StreamId, HeaderInfo)>>>,
@@ -319,22 +429,25 @@ pub struct Subscription {
   /// Forwarding waits for this, and the queued Objects follow in order.
   alias_announced: Arc<AtomicBool>,
   alias_announced_notify: Arc<Notify>,
+  /// Fill fetch streams still delivering, keyed by the request that asked for the
+  /// fill. Held so Forward State 0 and cancellation can stop them.
+  fill_streams: Arc<RwLock<HashMap<u64, watch::Sender<FetchStop>>>>,
   /// The SSTS forward gate's answer for one group, so the rest of that group's
   /// Objects do not re-derive it. A video track runs tens of Objects per
-  /// group, and the answer cannot change while `gate_epoch` still matches the
+  /// group, and the answer cannot change while `ssts_gate_epoch` still matches the
   /// connection's: `SstsState::epoch` moves on any membership change and on
   /// every recorded decision.
   ///
   /// Only this subscription's own event task reads or writes these, so the
   /// three are never observed mid-update and `Relaxed` is enough.
-  gate_epoch: Arc<AtomicU64>,
-  gate_group: Arc<AtomicU64>,
-  gate_forward: Arc<AtomicBool>,
+  ssts_gate_epoch: Arc<AtomicU64>,
+  ssts_gate_group: Arc<AtomicU64>,
+  ssts_gate_forward: Arc<AtomicBool>,
 }
 
-/// `gate_group` value meaning "nothing cached". Group ids are varints, so the
+/// `ssts_gate_group` value meaning "nothing cached". Group ids are varints, so the
 /// top of the u64 range is not a reachable group.
-const GATE_GROUP_NONE: u64 = u64::MAX;
+const SSTS_GATE_GROUP_NONE: u64 = u64::MAX;
 
 #[allow(clippy::too_many_arguments)]
 impl Subscription {
@@ -365,15 +478,54 @@ impl Subscription {
       client_connection_id,
       object_logger: ObjectLogger::new(log_folder),
       config,
-      check_switch_context_on_next_object: Arc::new(AtomicBool::new(false)),
+      pending_switch: Arc::new(AtomicBool::new(false)),
       pending_header: Arc::new(Mutex::new(None)),
       active_subgroup_headers,
       alias_announced: Arc::new(AtomicBool::new(false)),
       alias_announced_notify: Arc::new(Notify::new()),
-      gate_epoch: Arc::new(AtomicU64::new(0)),
-      gate_group: Arc::new(AtomicU64::new(GATE_GROUP_NONE)),
-      gate_forward: Arc::new(AtomicBool::new(false)),
+      fill_streams: Arc::new(RwLock::new(HashMap::new())),
+      ssts_gate_epoch: Arc::new(AtomicU64::new(0)),
+      ssts_gate_group: Arc::new(AtomicU64::new(SSTS_GATE_GROUP_NONE)),
+      ssts_gate_forward: Arc::new(AtomicBool::new(false)),
     }
+  }
+
+  /// Tracks a fill fetch stream that has started delivering.
+  pub async fn register_fill_stream(&self, request_id: u64, cancel: watch::Sender<FetchStop>) {
+    self.fill_streams.write().await.insert(request_id, cancel);
+  }
+
+  pub async fn unregister_fill_stream(&self, request_id: u64) {
+    self.fill_streams.write().await.remove(&request_id);
+  }
+
+  /// Stops every fill fetch stream still delivering for this subscription.
+  pub async fn stop_fill_streams(&self, reason: FetchStop) {
+    for (_, cancel) in self.fill_streams.write().await.drain() {
+      let _ = cancel.send(reason);
+    }
+  }
+
+  /// A fill fetch stream counts towards PUBLISH_DONE Stream Count like any other.
+  pub fn note_fill_stream_opened(&self) {
+    self.opened_stream_count.fetch_add(1, Ordering::Relaxed);
+  }
+
+  /// Pins down where a live filter starts, now that the track's largest Object is
+  /// known. Latest Object and Next Group Start say where to begin only in terms of
+  /// that, so until this runs the subscription has no start at all and delivers
+  /// whatever arrives — mid-group for Next Group Start, which is the one thing it
+  /// asks not to happen.
+  pub async fn resolve_live_start(&self, largest: Option<Location>) {
+    let filter_type = self.subscription_state.read().await.filter_type;
+    let Some(start) = live_start_location(filter_type, largest) else {
+      return;
+    };
+    debug!(
+      "Start location for subscriber={} relay_track_id={} resolved to {:?} by {:?}",
+      self.client_connection_id, self.relay_track_id, start, filter_type
+    );
+    self.subscription_state.write().await.start_location = Some(start);
   }
 
   /// Called once the subscriber has been sent its track alias, releasing forwarding.
@@ -448,117 +600,6 @@ impl Subscription {
           break;
         }
 
-        // Handle joining state
-        {
-          let state = instance.subscription_state.read().await;
-          let start_location = state.start_location.clone();
-          let last_received_object_location_opt = state.last_received_object_location.clone();
-          let is_joining = state.is_joining;
-          drop(state);
-          if is_joining && start_location.is_some() {
-            let start_location = start_location.unwrap_or_default();
-            if let Some(last_received_object_location) = last_received_object_location_opt {
-              info!(
-                "Joining state - subscriber={} relay_track_id={} from location: {:?} to last received location: {:?}",
-                instance.client_connection_id,
-                relay_track_id,
-                start_location,
-                last_received_object_location
-              );
-              if last_received_object_location > start_location {
-                let mut object_receiver = cache
-                  .read_objects(start_location, last_received_object_location, false)
-                  .await;
-
-                let mut last_group: u64 = u64::MAX;
-                let mut last_stream_id: Option<StreamId> = None;
-
-                loop {
-                  match object_receiver.recv().await {
-                    Some(event) => match event {
-                      CacheConsumeEvent::NoObject => {
-                        // there is no object found
-                        break;
-                      }
-                      CacheConsumeEvent::Object(object) => {
-                        let (header_info, stream_id) = if last_group == u64::MAX
-                          || object.group_id > last_group
-                        {
-                          // create a subgroup header and send a track event
-
-                          // TODO: check this. If is_some returns true, we may not need
-                          // to check the length.
-                          let has_properties = object.properties.as_ref().is_some();
-
-                          // create a fake subgroup header using the object attributes
-                          // TODO: It think contains_end_of_group should be checked by looking at
-                          // the last object. Need to look into this.
-                          let subgroup_header = HeaderInfo::Subgroup {
-                            header: SubgroupHeader::new_with_explicit_id(
-                              relay_track_id,
-                              object.group_id,
-                              object.subgroup_id,
-                              Some(object.publisher_priority),
-                              has_properties,
-                              false,
-                              // first_object: a relay
-                              // forwarding a subgroup which begins with the subgroup's
-                              // first-ever object MUST set FIRST_OBJECT. This cache-join
-                              // path replays from `start_location`, which may be
-                              // mid-subgroup, and the first-ever object is not
-                              // necessarily object_id 0, so the cache does not tell us
-                              // whether we are at that object. We therefore always leave
-                              // FIRST_OBJECT unset here. This is a known conformance gap
-                              // for the case where we do start at the first object;
-                              // closing it is deferred to #229 / RS-14.
-                              false,
-                            ),
-                          };
-                          info!(
-                            "FROM CACHE: Joining state - subscriber={} relay_track_id={} sending subgroup header: {:?}",
-                            instance.client_connection_id, relay_track_id, subgroup_header
-                          );
-                          last_group = object.group_id;
-                          let stream_id = instance.get_stream_id(&subgroup_header);
-                          last_stream_id = Some(stream_id);
-
-                          (Some(subgroup_header), last_stream_id.clone())
-                        } else {
-                          (None, last_stream_id.clone())
-                        };
-
-                        let the_object = Object::try_from_fetch(object, relay_track_id).unwrap();
-
-                        let track_event = TrackEvent::SubgroupObject {
-                          stream_id: stream_id.unwrap(),
-                          object: the_object,
-                          header_info,
-                        };
-                        info!(
-                          "Joining state - subscriber={} relay_track_id={} sending object location: {:?}",
-                          instance.client_connection_id, relay_track_id, track_event
-                        );
-                        instance.handle_track_event(track_event).await;
-                      }
-                      CacheConsumeEvent::EndLocation => {}
-                    },
-                    None => {
-                      warn!("handle_fetch_messages | No object.");
-                      break;
-                    }
-                  }
-                }
-              }
-            }
-            let mut state = instance.subscription_state.write().await;
-            state.is_joining = false;
-            info!(
-              "Finished joining state for subscriber={} relay_track_id={}",
-              instance.client_connection_id, relay_track_id
-            );
-          }
-        }
-
         tokio::select! {
           biased;
           _ = instance.receive() => {
@@ -591,11 +632,6 @@ impl Subscription {
     self.opened_stream_count.load(Ordering::Relaxed)
   }
 
-  // Returns true if the subscription is active (not finished and forwarding objects)
-  pub async fn is_active(&self) -> bool {
-    !self.is_finished().await && self.is_forwarding().await
-  }
-
   pub fn subscriber(&self) -> Arc<MOQTClient> {
     self.subscriber.clone()
   }
@@ -604,7 +640,7 @@ impl Subscription {
   // Returns Ok if the update is successful
   // Returns error if the update is invalid
   pub async fn update_subscription(&self, request_update: RequestUpdate) -> Result<()> {
-    let forward_becoming_true = {
+    let (forward_becoming_true, forward_becoming_false) = {
       let mut state = self.subscription_state.write().await;
 
       // Extract filter_type, start_location and end_group from SubscriptionFilter parameter
@@ -616,6 +652,7 @@ impl Subscription {
             filter_type,
             start_location,
             end_group,
+            ..
           } = p
           {
             Some((Some(*filter_type), start_location.clone(), *end_group))
@@ -630,8 +667,10 @@ impl Subscription {
       }
 
       // Update explicit subscription state fields if they are present in the parameters.
-      // Track whether forward transitions false to true so we can flush pending_header below.
+      // Track which way forward transitioned: false to true flushes pending_header
+      // below, true to false stops anything still filling.
       let mut transition = false;
+      let mut forward_becoming_false = false;
       for param in &request_update.parameters {
         match param {
           MessageParameter::SubscriberPriority { priority } => {
@@ -640,6 +679,9 @@ impl Subscription {
           MessageParameter::Forward { forward } => {
             if *forward && !state.forward {
               transition = true;
+            }
+            if !*forward && state.forward {
+              forward_becoming_false = true;
             }
             state.forward = *forward;
           }
@@ -664,9 +706,14 @@ impl Subscription {
         self.relay_track_id, state
       );
 
-      transition
+      (transition, forward_becoming_false)
       // write lock on subscription_state is dropped here
     };
+
+    // Forward State 0 ends any fill in progress along with live delivery.
+    if forward_becoming_false {
+      self.stop_fill_streams(FetchStop::Cancelled).await;
+    }
 
     // If forward just became true, open the stream for the current mid-group header
     // that was cached while forward=false.
@@ -743,12 +790,12 @@ impl Subscription {
             );
           } else if let Ok(closed) = res {
             if closed {
-              debug!(
+              trace!(
                 "Background stream cleanup successful for subscriber={} stream_id={} relay_track_id={}",
                 connection_id, stream_id, relay_track_id
               );
             } else {
-              debug!(
+              trace!(
                 "Background stream cleanup: stream not found for subscriber={} stream_id={} relay_track_id={}",
                 connection_id, stream_id, relay_track_id
               );
@@ -766,144 +813,228 @@ impl Subscription {
     }
   }
 
-  // Notify the subscription to check the switch context on the next object
-  pub async fn notify_switch(&self) {
-    info!(
-      "Notifying subscription to check switch context on next object for subscriber={} relay_track_id={}",
-      self.client_connection_id, self.relay_track_id
-    );
-    self
-      .check_switch_context_on_next_object
-      .store(true, std::sync::atomic::Ordering::Relaxed);
-  }
-
-  async fn check_switch_context(&self, object_location: &Location) -> bool {
-    // if the object is after the end group, finish the subscription
-    let status = self
-      .subscriber
-      .switch_context
-      .get_switch_status(&self.full_track_name)
-      .await;
-
-    if status.is_none() {
-      // not in a switch context, always forward
-      return true;
+  /// Schedules a switch on this, the subscription it activates.
+  ///
+  /// `filter` is applied here rather than only at creation, because a switch back
+  /// to a track reuses the subscription that track already has, whose filter is
+  /// the one from last time. A SUBSCRIBE describes a subscription in full and so
+  /// always carries one; a REQUEST_UPDATE passes one only where it changes it.
+  ///
+  /// A Start Group is a boundary both sides can act on straight away: this
+  /// subscription's filter drops everything before it, and the suspending one is
+  /// told to stop there. Without one there is nothing to schedule, and the
+  /// boundary becomes the first group this subscription delivers.
+  pub async fn begin_switch(
+    &self,
+    mut plan: SwitchPlan,
+    filter: Option<&MessageParameter>,
+    largest: Option<Location>,
+  ) {
+    {
+      let mut state = self.subscription_state.write().await;
+      if let Some(MessageParameter::SubscriptionFilter {
+        filter_type,
+        start_location,
+        end_group,
+        relative_previous,
+      }) = filter
+      {
+        state.filter_type = *filter_type;
+        // A live filter says where to start only against the largest Object, and
+        // that is the boundary the switch then happens at.
+        state.start_location =
+          live_start_location(*filter_type, largest).or_else(|| start_location.clone());
+        state.end_group = end_group.unwrap_or(0);
+        state.relative_previous = *relative_previous;
+      }
+      // A switch activates the subscription it arrives on; SWITCH_FROM cannot be
+      // combined with FORWARD, so nothing else decides this.
+      state.forward = true;
+      // Whatever a previous switch left behind is not this one's business.
+      state.soft_suspended = false;
+      state.publish_done_at_end = false;
+      state.switch_activated = None;
+      plan.boundary = state.start_location.as_ref().map(|start| start.group);
     }
 
-    let status = status.unwrap();
+    info!(
+      "switch: {:?} activating for subscriber {} ({:?}, boundary {:?})",
+      self.full_track_name, self.client_connection_id, plan.mode, plan.boundary
+    );
 
-    match status {
-      SwitchStatus::Next => {
-        // check whether the group id of this track
-        // is equal to or greater than the one of
-        // the switch context's current track
-        // if so, set this track as current
-        let mut switch_at_next_group = false;
-        let mut new_start_location = None;
+    if let Some(boundary) = plan.boundary {
+      self.suspend_at(&plan, boundary).await;
+    }
 
-        if let Some(current_track_name) = self.subscriber.switch_context.get_current().await {
-          let current_subscription_opt = self
-            .subscriber
-            .subscriptions
-            .get_subscription(&current_track_name)
-            .await;
+    // A hard switch cuts on that first delivery, and a boundary nobody supplied
+    // is discovered there too.
+    self
+      .subscriber
+      .switch_context
+      .set_plan(self.full_track_name.clone(), plan)
+      .await;
+    self.pending_switch.store(true, Ordering::Relaxed);
+  }
 
-          if let Some(current_subscription) = current_subscription_opt
-            && let Some(current_subscription) = current_subscription.upgrade()
-          {
-            let current_subscription = current_subscription.read().await;
-            let current_state = current_subscription.subscription_state.read().await;
-            let last_sent_max_location = current_state.last_sent_max_location.clone();
+  /// Tells the subscription this switch suspends where to stop.
+  ///
+  /// Soft leaves it delivering up to the group before the boundary, so the two
+  /// tracks meet without a hole, and leaves its streams — fill fetch streams
+  /// included — to finish. Hard is not scheduled: it is cut in
+  /// [`Self::cut_suspending`] when the activating subscription first delivers,
+  /// the earliest moment at which stopping the old track does not leave the
+  /// subscriber with nothing. There is no group before group 0, so a boundary of
+  /// 0 leaves nothing to drain and cuts as well.
+  async fn suspend_at(&self, plan: &SwitchPlan, boundary: u64) {
+    if plan.mode != SwitchMode::Soft || boundary == 0 {
+      return;
+    }
+    let Some(suspending) = self.find_suspending(plan).await else {
+      return;
+    };
+    let suspending = suspending.read().await;
+    let mut state = suspending.subscription_state.write().await;
+    state.soft_suspended = true;
+    // A switch can only bring the end forward: a subscription that already asked
+    // to stop earlier still stops there.
+    state.end_group = match state.end_group {
+      0 => boundary - 1,
+      existing => existing.min(boundary - 1),
+    };
+    state.publish_done_at_end = plan.publish_done;
+    state.switch_activated = Some(plan.activated.clone());
+    info!(
+      "switch: draining {:?} for subscriber {} up to group {}",
+      plan.suspending, self.client_connection_id, state.end_group
+    );
+  }
 
-            if let Some(loc) = last_sent_max_location {
-              switch_at_next_group = object_location.group >= loc.group;
-              let mut loc_clone = loc.clone();
-              loc_clone.group += 1; // switch at the next group after the last sent max location of the current track
-              loc_clone.object = 0; // reset object id to 0 to read from the start of the group
-              new_start_location = Some(loc_clone);
-            } else {
-              // if there is no last sent location, we can switch
-              switch_at_next_group = true;
-            }
-          }
-        } else {
-          // no current track, we can switch
-          switch_at_next_group = true;
-        }
+  /// Stops the subscription a hard switch suspends: Forward State 0 and every
+  /// stream it still has open is reset, fill fetch streams included. Objects
+  /// already in flight can still arrive. PUBLISH_DONE follows only if the switch
+  /// asked for it.
+  async fn cut_suspending(&self, plan: &SwitchPlan) {
+    let Some(suspending) = self.find_suspending(plan).await else {
+      return;
+    };
+    let suspending = suspending.read().await;
 
-        if switch_at_next_group {
-          // set this track as current
-          let subscriber = self.subscriber.clone();
-          let full_track_name = self.full_track_name.clone();
+    info!(
+      "switch: suspending {:?} for subscriber {} ({:?})",
+      plan.suspending, self.client_connection_id, plan.mode
+    );
 
-          // the following method also sets the current active track's status to None if any
-          info!(
-            "check_switch_context: Setting track to Current for subscriber={} relay_track_id={} object location group: {}",
-            self.client_connection_id, self.relay_track_id, object_location.group
-          );
-          subscriber
-            .switch_context
-            .add_or_update_switch_item(full_track_name.clone(), SwitchStatus::Current)
-            .await;
+    suspending.subscription_state.write().await.forward = false;
+    suspending.stop_fill_streams(FetchStop::Cancelled).await;
+    suspending
+      .reset_data_streams(StreamResetCode::Cancelled.to_u64())
+      .await;
 
-          // set forward to true and set start group the next group
-          let mut state = self.subscription_state.write().await;
-          state.forward = true;
+    if plan.publish_done
+      && let Err(e) = suspending
+        .send_publish_done(
+          PublishDoneStatusCode::SubscriptionEnded,
+          "switched away from",
+        )
+        .await
+    {
+      error!(
+        "switch: failed to send PUBLISH_DONE to the suspended subscription: {:?}",
+        e
+      );
+    }
+  }
 
-          state.is_joining = true;
+  async fn find_suspending(&self, plan: &SwitchPlan) -> Option<Arc<RwLock<Subscription>>> {
+    let Some(weak) = self
+      .subscriber
+      .subscriptions
+      .get_subscription(&plan.suspending)
+      .await
+    else {
+      warn!(
+        "switch: no subscription left to suspend for {:?} on subscriber {}",
+        plan.suspending, self.client_connection_id
+      );
+      return None;
+    };
+    weak.upgrade()
+  }
 
-          if new_start_location.is_some() {
-            state.start_location = new_start_location;
-          } else {
-            state.start_location = Some(Location {
-              object: 0,
-              group: object_location.group + 1,
-            });
-          }
+  /// The activating subscription has delivered, so the switch has happened: the
+  /// suspending one can be stopped for good, and where no Start Group set a
+  /// boundary, the group just delivered is it.
+  async fn complete_switch(&self, delivered_group: u64) {
+    let Some(plan) = self
+      .subscriber
+      .switch_context
+      .take_plan(&self.full_track_name)
+      .await
+    else {
+      return;
+    };
 
-          state.end_group = 0; // remove end group limit
+    // Releases the suspending subscription's boundary, which was held until the
+    // switch was known to be real.
+    plan.activated.mark();
 
-          info!(
-            "check_switch_context: Will forward objects for subscriber={} relay_track_id={} starting from group: {}",
-            self.client_connection_id,
-            self.relay_track_id,
-            state.start_location.as_ref().unwrap().group
-          );
-        } else {
-          // Do not forward objects for Next status until switch condition is met
-          // set forward to false if it is true
-          if self.is_forwarding().await {
-            info!(
-              "check_switch_context: Setting forward to false for Next track for subscriber={} relay_track_id={} object location group: {}",
-              self.client_connection_id, self.relay_track_id, object_location.group
-            );
-            self.subscription_state.write().await.forward = false;
-          }
-        }
-        // even if the switch_at_next_group is true,
-        // we return false here to wait for the next group to switch
-        false
+    info!(
+      "switch: {:?} delivering from group {} for subscriber {}",
+      self.full_track_name, delivered_group, self.client_connection_id
+    );
+
+    match plan.mode {
+      // Scheduled in begin_switch when a Start Group gave a boundary; otherwise
+      // this delivery is the boundary.
+      SwitchMode::Soft if plan.boundary.is_none() => {
+        self.suspend_at(&plan, delivered_group).await;
       }
-      SwitchStatus::Current => true,
-      SwitchStatus::None => {
-        // set forward to false if it is true
-        if self.is_forwarding().await {
-          info!(
-            "check_switch_context: Setting end group to {} for None track for subscriber={} relay_track_id={}",
-            object_location.group, self.client_connection_id, self.relay_track_id
-          );
-          let mut state = self.subscription_state.write().await;
-          state.forward = false;
-          state.end_group = object_location.group;
-        }
+      SwitchMode::Soft => {}
+      SwitchMode::Hard => self.cut_suspending(&plan).await,
+    }
+  }
 
-        false
+  /// Ends a soft switch's drain: the suspending subscription has delivered
+  /// everything up to its boundary, so its streams are closed and PUBLISH_DONE
+  /// goes out if the switch asked for it.
+  async fn finish_soft_drain(&self) {
+    let publish_done = {
+      let mut state = self.subscription_state.write().await;
+      if !state.soft_suspended {
+        return;
       }
+      state.soft_suspended = false;
+      state.forward = false;
+      state.switch_activated = None;
+      let wanted = state.publish_done_at_end;
+      state.publish_done_at_end = false;
+      wanted
+    };
+
+    info!(
+      "switch: drain complete for subscriber={} relay_track_id={}",
+      self.client_connection_id, self.relay_track_id
+    );
+
+    if publish_done {
+      if let Err(e) = self
+        .send_publish_done(
+          PublishDoneStatusCode::SubscriptionEnded,
+          "switched away from",
+        )
+        .await
+      {
+        error!(
+          "switch: failed to send PUBLISH_DONE after the drain: {:?}",
+          e
+        );
+      }
+      self.finish().await;
     }
   }
 
   async fn receive(&mut self) {
-    debug!(
+    trace!(
       "Receiving for subscriber: {} track: {}",
       self.client_connection_id, self.relay_track_id
     );
@@ -996,28 +1127,28 @@ impl Subscription {
   /// every Object of a group after the one that triggered the decision costs
   /// three atomic loads. On a miss it resolves against the switching sets and
   /// the decision map, waiting for a decision if the group has none yet.
-  async fn gate_allows(&self, group_id: u64) -> bool {
-    if self.gate_group.load(Ordering::Relaxed) == group_id
-      && self.gate_epoch.load(Ordering::Relaxed) == self.subscriber.ssts.epoch()
+  async fn ssts_gate_allows(&self, group_id: u64) -> bool {
+    if self.ssts_gate_group.load(Ordering::Relaxed) == group_id
+      && self.ssts_gate_epoch.load(Ordering::Relaxed) == self.subscriber.ssts.epoch()
     {
-      return self.gate_forward.load(Ordering::Relaxed);
+      return self.ssts_gate_forward.load(Ordering::Relaxed);
     }
 
-    let (epoch, forward) = self.resolve_gate(group_id).await;
+    let (epoch, forward) = self.resolve_ssts_gate(group_id).await;
 
-    // Stamped with the epoch `resolve_gate` sampled before its reads, not the
+    // Stamped with the epoch `resolve_ssts_gate` sampled before its reads, not the
     // one current now: anything that moved while it was resolving has already
     // advanced the counter past this, so the next Object resolves again rather
     // than trusting an answer that was overtaken.
-    self.gate_forward.store(forward, Ordering::Relaxed);
-    self.gate_group.store(group_id, Ordering::Relaxed);
-    self.gate_epoch.store(epoch, Ordering::Relaxed);
+    self.ssts_gate_forward.store(forward, Ordering::Relaxed);
+    self.ssts_gate_group.store(group_id, Ordering::Relaxed);
+    self.ssts_gate_epoch.store(epoch, Ordering::Relaxed);
     forward
   }
 
   /// Resolve the gate for `group_id` from scratch, returning the epoch the
   /// answer was read at along with the answer.
-  async fn resolve_gate(&self, group_id: u64) -> (u64, bool) {
+  async fn resolve_ssts_gate(&self, group_id: u64) -> (u64, bool) {
     loop {
       // Created before the reads below and never polled on the path that
       // finds a decision, so it costs an atomic load and nothing else. Only
@@ -1074,7 +1205,7 @@ impl Subscription {
   }
 
   async fn handle_track_event(&self, event: TrackEvent) {
-    debug!(
+    trace!(
       "Event received for subscriber={} relay_track_id={} event: {:?}",
       self.client_connection_id, self.relay_track_id, event
     );
@@ -1091,7 +1222,19 @@ impl Subscription {
         // for the whole group, so the gate caches it and reads the shared
         // state once per group instead of once per Object. A connection
         // without SSTS pays one `Vec::is_empty`.
-        if self.subscriber.ssts_enabled() && !self.gate_allows(object.location.group).await {
+        //
+        // The gate assumes a subscriber drives switching one way or the other,
+        // never both: SSTS picks the track here, or the subscriber asks for a
+        // SWITCH_FROM. The two do not compose as written. A dropped Object is
+        // invisible to the checks below, so a soft drain waiting for the Object
+        // past its end group never sees one the gate swallowed and never
+        // finishes.
+        //
+        // TODO: decide how the two should interact before enabling SSTS on a
+        // connection that also switches with SWITCH_FROM. Likely the drain has
+        // to end on something other than an Object arriving, so that it does
+        // not depend on objects the gate may drop.
+        if self.subscriber.ssts_enabled() && !self.ssts_gate_allows(object.location.group).await {
           return;
         }
 
@@ -1101,28 +1244,6 @@ impl Subscription {
           state.update_last_received_object_location(object.location.clone());
         }
 
-        // Check switch context state if needed
-        // Whether when a new header is received or when notified about a switch context change
-        let check_switch = self
-          .check_switch_context_on_next_object
-          .load(std::sync::atomic::Ordering::Relaxed);
-        if header_info.is_some() || check_switch {
-          if check_switch {
-            self
-              .check_switch_context_on_next_object
-              .store(false, std::sync::atomic::Ordering::Relaxed);
-          }
-          // Check whether this track is in a switch context and update forward state
-          if !self.check_switch_context(&object.location).await {
-            // if this returns false, do not start the stream
-            info!(
-              "Not forwarding object for subscriber={} relay_track_id={} due to switch context state",
-              self.client_connection_id, self.relay_track_id
-            );
-            return;
-          }
-        }
-
         let object_received_time = utils::passed_time_since_start();
 
         {
@@ -1130,18 +1251,33 @@ impl Subscription {
           if let Some(start) = &state.start_location
             && object.location < *start
           {
-            debug!(
+            trace!(
               "Object before start location for subscriber={} relay_track_id={} object location: {:?} start location: {:?}",
               self.client_connection_id, self.relay_track_id, object.location, start
             );
             return;
           }
 
-          if state.end_group > 0 && object.location.group > state.end_group {
-            debug!(
+          if state.end_group > 0 && object.location.group > state.end_group
+          // TODO: The following code is commented out. The suspend track is stopped at the
+          // end group. However, if the SUBSCRIBE comes late (after the group boundary)
+          // the first object (keyframe) would have been sent out and then the relay
+          // stops sending this group. In that case awaiting switch activation seems
+          // like a good idea but then it also does not work well.
+          // For now, we commented it out and will figure out a new approach in the future.
+          // && !state.awaiting_switch_activation()
+          {
+            trace!(
               "Object beyond end group for subscriber={} relay_track_id={} object location: {:?} end group: {}",
               self.client_connection_id, self.relay_track_id, object.location, state.end_group
             );
+            let drained = state.soft_suspended;
+            drop(state);
+            // An object past the boundary is how a drain ends: the group before it
+            // has nothing more to give.
+            if drained {
+              self.finish_soft_drain().await;
+            }
             return;
           }
 
@@ -1156,6 +1292,83 @@ impl Subscription {
           }
         }
 
+        /* TODO: Look at the comment about awaiting_switch_activation.
+        // The following code block is commented out with the same reason.
+        // This is the switch's first delivery. The track being switched away from
+        // keeps sending past its boundary while it waits for exactly this, so the two
+        // can now overlap, and the seam has to be decided here.
+        if self.pending_switch.swap(false, Ordering::Relaxed)
+          && let Some(plan) = self
+            .subscriber
+            .switch_context
+            .get_plan(&self.full_track_name)
+            .await
+          && let Some(suspending) = self.find_suspending(&plan).await
+        {
+          let (suspend_last_loc, suspend_group_gap) = {
+            let state = suspending.read().await;
+            let state = state.subscription_state.read().await;
+            (state.last_sent_max_location.clone(), state.sent_group_gap())
+          };
+
+          let mut stop = false;
+
+          if let Some(sus_last_loc) = suspend_last_loc
+            && sus_last_loc >= object.location
+          {
+            // The suspending track got there first, so it keeps the seam and this one
+            // takes over after it. Two distances decide where: what the suspending
+            // track has covered runs to the next id it would use, not to the one
+            // after the id it reached, and this track can only resume at one of its
+            // own group ids. So the takeover is the first group of this track that
+            // the suspending one no longer covers -- and whatever lies between the
+            // two stays with the suspending track, which is the one with groups
+            // there to fill it.
+            let suspend_gap = suspend_group_gap.unwrap_or(1);
+            let resume_gap = self
+              .subscription_state
+              .read()
+              .await
+              .received_group_gap()
+              .unwrap_or(1);
+            let covered_to = sus_last_loc.group + suspend_gap;
+            let takeover = takeover_group(object.location.group, covered_to, resume_gap);
+
+            info!(
+              "switch: {:?} takes over from {:?} at group {} for subscriber {}; it had reached {:?} covering to {} ({} apart), resuming {} apart",
+              self.full_track_name,
+              plan.suspending,
+              takeover,
+              self.client_connection_id,
+              sus_last_loc,
+              covered_to,
+              suspend_gap,
+              resume_gap
+            );
+
+            self.subscription_state.write().await.start_location = Some(Location::new(takeover, 0));
+
+            suspending
+              .read()
+              .await
+              .subscription_state
+              .write()
+              .await
+              .end_group = takeover - 1;
+
+            stop = true;
+          }
+
+          // The switch has happened: this releases the suspending track's boundary,
+          // which was held until there was something to switch to.
+          self.complete_switch(object.location.group).await;
+
+          if stop {
+            return;
+          }
+        }
+        */
+
         // Entering forward=true: clear any stale pending header (group boundary case).
         // If forward was already true, pending_header is None and this is a no-op.
         {
@@ -1166,7 +1379,7 @@ impl Subscription {
         // Handle header info if this is the first object
         let send_stream = if let Some(header) = header_info {
           if let HeaderInfo::Subgroup { header: _ } = header {
-            info!(
+            debug!(
               "Creating stream - subscriber={} relay_track_id={} now={} received time={} object: {:?} header: {:?}",
               self.client_connection_id,
               self.relay_track_id,
@@ -1181,7 +1394,7 @@ impl Subscription {
                   self.send_stream_last_object_ids.write().await;
                 send_stream_last_object_ids.insert(stream_id.clone(), None);
               }
-              info!(
+              debug!(
                 "Stream created - subscriber={} stream_id={} relay_track_id={} now={} received time={} object: {:?}",
                 self.client_connection_id,
                 stream_id,
@@ -1215,7 +1428,7 @@ impl Subscription {
                 .get(&stream_id)
                 .cloned();
               if let Some(h) = cached {
-                debug!(
+                trace!(
                   "mid-subgroup join: opening stream from cached header for subscriber={} relay_track_id={} stream_id={}",
                   self.client_connection_id, self.relay_track_id, stream_id
                 );
@@ -1241,7 +1454,7 @@ impl Subscription {
               .flatten()
           };
 
-          debug!(
+          trace!(
             "Received Object event: subscriber={} stream_id={} relay_track_id={} previous_object_id: {:?} object: {:?} now={} received time={}",
             self.client_connection_id,
             stream_id,
@@ -1319,15 +1532,18 @@ impl Subscription {
           if let Some(start) = &state.start_location
             && location < *start
           {
-            debug!(
+            trace!(
               "Datagram before start location for subscriber={} relay_track_id={} object location: {:?} start location: {:?}",
               self.client_connection_id, self.relay_track_id, location, start
             );
             return;
           }
 
-          if state.end_group > 0 && location.group > state.end_group {
-            debug!(
+          if state.end_group > 0
+            && location.group > state.end_group
+            && !state.awaiting_switch_activation()
+          {
+            trace!(
               "Datagram beyond end group for subscriber={} relay_track_id={} object location: {:?} end group: {}",
               self.client_connection_id, self.relay_track_id, location, state.end_group
             );
@@ -1335,7 +1551,7 @@ impl Subscription {
           }
 
           if !state.forward {
-            debug!(
+            trace!(
               "Not forwarding datagram for subscriber={} relay_track_id={}: forward state is 0",
               self.client_connection_id, self.relay_track_id
             );
@@ -1354,6 +1570,15 @@ impl Subscription {
               .await
             {
               error!("Failed to write datagram: {:?}", e);
+            } else {
+              self
+                .subscription_state
+                .write()
+                .await
+                .update_last_sent_max_location(location.clone());
+              if self.pending_switch.swap(false, Ordering::Relaxed) {
+                self.complete_switch(location.group).await;
+              }
             }
           }
           Err(e) => {
@@ -1362,7 +1587,7 @@ impl Subscription {
         }
       }
       TrackEvent::StreamClosed { stream_id } => {
-        info!(
+        debug!(
           "Received StreamClosed event: subscriber={} stream_id={} relay_track_id={}",
           self.client_connection_id, stream_id, self.relay_track_id
         );
@@ -1396,12 +1621,12 @@ impl Subscription {
     header_info: HeaderInfo,
   ) -> Result<(StreamId, Arc<Mutex<TransportSendStream>>)> {
     // Handle the header information
-    debug!("Handling header: {:?}", header_info);
+    trace!("Handling header: {:?}", header_info);
     let stream_id = self.get_stream_id(&header_info);
 
     if let Ok(header_payload) = self.get_header_payload(&header_info).await {
       // hex dump the header payload
-      debug!(
+      trace!(
         "subscription::handle_object | header payload: {:?}",
         utils::bytes_to_hex(&header_payload)
       );
@@ -1419,7 +1644,7 @@ impl Subscription {
         let state = self.subscription_state.read().await;
         (state.subscriber_priority, state.group_order)
       };
-      let priority = compute_stream_priority(sub_prio, pub_prio, group_order, group_id);
+      let priority = utils::compute_stream_priority(sub_prio, pub_prio, group_order, group_id);
 
       let send_stream = match self
         .subscriber
@@ -1436,7 +1661,7 @@ impl Subscription {
         }
       };
 
-      info!("Created stream: {}", stream_id.get_stream_id());
+      debug!("Created stream: {}", stream_id.get_stream_id());
 
       // Count every data stream opened for this subscription (PUBLISH_DONE
       // Stream Count), including subgroups that end up carrying no objects.
@@ -1464,7 +1689,7 @@ impl Subscription {
     stream_id: &StreamId,
     send_stream: Arc<Mutex<TransportSendStream>>,
   ) -> Result<()> {
-    debug!(
+    trace!(
       "Handling object relay_track_id={} location: {:?} stream_id={} diff_ms={}",
       self.relay_track_id,
       object.location,
@@ -1491,7 +1716,7 @@ impl Subscription {
 
       // uncomment to print hex dump of object bytes
       /*
-      debug!(
+      trace!(
         "subscription::handle_object | object bytes: {}",
         utils::bytes_to_hex(&object_bytes)
       );
@@ -1514,7 +1739,7 @@ impl Subscription {
           open_stream_err
         })
     } else {
-      debug!(
+      trace!(
         "Could not convert object to subgroup. stream_id: {:?} subscriber={} relay_track_id={}",
         stream_id, self.client_connection_id, self.relay_track_id
       );
@@ -1529,7 +1754,7 @@ impl Subscription {
 
   async fn handle_stream_closed(&self, stream_id: &StreamId) -> Result<()> {
     // Handle the stream closed event
-    debug!("Stream closed: {}", stream_id.get_stream_id());
+    trace!("Stream closed: {}", stream_id.get_stream_id());
 
     // remove the stream id from send_stream_last_object_ids immediately
     let mut send_stream_last_object_ids = self.send_stream_last_object_ids.write().await;
@@ -1545,7 +1770,7 @@ impl Subscription {
     let relay_track_id = self.relay_track_id;
 
     tokio::spawn(async move {
-      debug!(
+      trace!(
         "Starting graceful stream closure in background: subscriber={} stream_id={} relay_track_id={}",
         connection_id, stream_id, relay_track_id
       );
@@ -1558,12 +1783,12 @@ impl Subscription {
         );
       } else if let Ok(closed) = res {
         if closed {
-          debug!(
+          trace!(
             "handle_stream_closed | successful for subscriber={} stream_id={} relay_track_id={}",
             connection_id, stream_id, relay_track_id
           );
         } else {
-          debug!(
+          trace!(
             "handle_stream_closed | stream not found for subscriber={} stream_id={} relay_track_id={}",
             connection_id, stream_id, relay_track_id
           );
@@ -1649,86 +1874,120 @@ impl Subscription {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use moqtail::model::control::constant::GroupOrder;
 
   #[test]
-  fn test_highest_priority_near_i32_max() {
-    let p = compute_stream_priority(0, 0, GroupOrder::Ascending, 0);
-    assert!(
-      p > 2_100_000_000,
-      "highest priority should be near i32::MAX, got {p}"
+  fn latest_object_starts_after_the_largest_object() {
+    assert_eq!(
+      live_start_location(FilterType::LatestObject, Some(Location::new(7, 3))),
+      Some(Location::new(7, 4))
     );
   }
 
   #[test]
-  fn test_lowest_priority_near_i32_min() {
-    let p = compute_stream_priority(255, 255, GroupOrder::Ascending, 0);
-    assert!(
-      p < -2_100_000_000,
-      "lowest priority should be near i32::MIN, got {p}"
+  fn next_group_start_starts_at_the_group_after_the_largest() {
+    assert_eq!(
+      live_start_location(FilterType::NextGroupStart, Some(Location::new(7, 3))),
+      Some(Location::new(8, 0))
     );
   }
 
   #[test]
-  fn test_ascending_lower_group_higher_priority() {
-    let p0 = compute_stream_priority(0, 0, GroupOrder::Ascending, 0);
-    let p1 = compute_stream_priority(0, 0, GroupOrder::Ascending, 1);
-    assert!(p0 > p1, "group 0 should outrank group 1 in Ascending order");
-  }
-
-  #[test]
-  fn test_descending_higher_group_higher_priority() {
-    let p0 = compute_stream_priority(0, 0, GroupOrder::Descending, 0);
-    let p1 = compute_stream_priority(0, 0, GroupOrder::Descending, 1);
-    assert!(
-      p1 > p0,
-      "group 1 should outrank group 0 in Descending order"
-    );
-  }
-
-  #[test]
-  fn test_original_same_as_ascending() {
-    for g in [0u64, 1, 100, 65535] {
+  fn a_track_with_nothing_published_starts_at_the_beginning() {
+    for filter_type in [FilterType::LatestObject, FilterType::NextGroupStart] {
       assert_eq!(
-        compute_stream_priority(10, 20, GroupOrder::Original, g),
-        compute_stream_priority(10, 20, GroupOrder::Ascending, g),
-        "Original should behave like Ascending for group {g}"
+        live_start_location(filter_type, None),
+        Some(Location::new(0, 0)),
+        "{filter_type:?} on an empty track"
       );
     }
   }
 
+  fn sent(locations: &[(u64, u64)]) -> SubscriptionState {
+    let mut state = SubscriptionState {
+      filter_type: FilterType::LatestObject,
+      start_location: None,
+      end_group: 0,
+      relative_previous: None,
+      forward: true,
+      subscriber_priority: DEFAULT_PUBLISHER_PRIORITY,
+      group_order: GroupOrder::Original,
+      soft_suspended: false,
+      publish_done_at_end: false,
+      switch_activated: None,
+      subscribe_parameters: vec![],
+      last_sent_max_location: None,
+      prior_sent_group: None,
+      last_received_object_location: None,
+      prior_received_group: None,
+    };
+    for (group, object) in locations {
+      state.update_last_sent_max_location(Location::new(*group, *object));
+      state.update_last_received_object_location(Location::new(*group, *object));
+    }
+    state
+  }
+
   #[test]
-  fn test_subscriber_priority_dominates() {
-    // sub=0,pub=255 must outrank sub=1,pub=0 regardless of group
-    let high = compute_stream_priority(0, 255, GroupOrder::Ascending, 0);
-    let low = compute_stream_priority(1, 0, GroupOrder::Ascending, 0);
-    assert!(
-      high > low,
-      "subscriber priority must dominate publisher priority"
+  fn a_track_whose_group_ids_step_reports_the_step() {
+    // Twelve ids per group: what it is sending covers everything up to the next.
+    assert_eq!(
+      sent(&[(288, 0), (288, 5), (300, 0)]).sent_group_gap(),
+      Some(12)
     );
   }
 
   #[test]
-  fn test_publisher_priority_tie_break() {
-    let high = compute_stream_priority(10, 0, GroupOrder::Ascending, 0);
-    let low = compute_stream_priority(10, 1, GroupOrder::Ascending, 0);
-    assert!(high > low, "lower pub_prio number = higher priority");
+  fn a_track_whose_group_ids_are_dense_reports_one() {
+    assert_eq!(sent(&[(292, 0), (293, 0)]).sent_group_gap(), Some(1));
   }
 
   #[test]
-  fn test_all_values_within_i32_range() {
-    for sub in [0u8, 128, 255] {
-      for pub_ in [0u8, 128, 255] {
-        for &order in &[
-          GroupOrder::Ascending,
-          GroupOrder::Descending,
-          GroupOrder::Original,
-        ] {
-          for group in [0u64, 1, 65534, 65535, 65536, u64::MAX] {
-            let _ = compute_stream_priority(sub, pub_, order, group); // must not panic/overflow
-          }
-        }
-      }
+  fn a_track_that_has_sent_one_group_cannot_say_how_far_the_next_is() {
+    assert_eq!(sent(&[(292, 0), (292, 3)]).sent_group_gap(), None);
+    assert_eq!(sent(&[]).sent_group_gap(), None);
+  }
+
+  #[test]
+  fn a_track_reports_the_step_of_what_reached_it_before_it_sends() {
+    assert_eq!(sent(&[(288, 0), (300, 0)]).received_group_gap(), Some(12));
+    assert_eq!(sent(&[(288, 0), (288, 4)]).received_group_gap(), None);
+  }
+
+  #[test]
+  fn a_dense_track_resumes_where_the_other_stops() {
+    // 500ms groups on both sides: the next id is the takeover.
+    assert_eq!(takeover_group(293, 294, 1), 294);
+    // A long group on the track being left covers to 300, and this one has an id there.
+    assert_eq!(takeover_group(293, 300, 1), 300);
+  }
+
+  #[test]
+  fn a_track_with_longer_groups_resumes_at_one_of_its_own() {
+    // 2s groups, four ids apart: 294 is not one of them, 297 is. The 1.5s between
+    // stays with the track being switched away from, which has groups there.
+    assert_eq!(takeover_group(293, 294, 4), 297);
+    // Already aligned: the group after this one is exactly where the other stops.
+    assert_eq!(takeover_group(292, 296, 4), 296);
+  }
+
+  #[test]
+  fn a_track_the_other_never_caught_up_with_keeps_the_group_it_started() {
+    assert_eq!(takeover_group(300, 300, 4), 300);
+    assert_eq!(takeover_group(300, 296, 4), 300);
+  }
+
+  #[test]
+  fn a_fill_filter_keeps_the_start_location_it_carries() {
+    for filter_type in [
+      FilterType::AbsoluteStartFill,
+      FilterType::AbsoluteRangeFill,
+      FilterType::RelativeStartFill,
+    ] {
+      assert_eq!(
+        live_start_location(filter_type, Some(Location::new(7, 3))),
+        None,
+        "{filter_type:?} states its own start"
+      );
     }
   }
 }

@@ -33,6 +33,9 @@ export const handlerPublishDone: RequestStreamMessageHandler<PublishDone> = asyn
   const request = client.requests.get(openingRequestId)
   if (request instanceof SubscribeRequest) {
     request.expectedStreams = msg.streamCount
+    // The streams it accounts for may all have arrived already, in which case this
+    // message is the last thing the subscription was waiting for.
+    client.completeSubscription(request)
   } else {
     // TODO: Throw this error when the check is fixed. For now it crashes valid cases
     // throw new ProtocolViolationError('handlerPublishDone', 'No publish request was found with the given request id')

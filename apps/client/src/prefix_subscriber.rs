@@ -399,9 +399,12 @@ fn receive_objects(connection: Arc<TransportConnection>, tracks: Tracks) {
             let state = tracks
               .entry(obj.track_alias)
               .or_insert_with(|| TrackState::new(format!("alias={}", obj.track_alias)));
-            let sequence_ok = state
-              .stats
-              .record_object(obj.location.group, obj.location.object);
+            let sequence_ok = state.stats.record_object(
+              obj.track_alias,
+              obj.location.group,
+              obj.location.object,
+              ReceptionStats::prior_group_gap(obj.properties.as_ref()),
+            );
             (state.name.clone(), state.stats.total_received, sequence_ok)
           };
 

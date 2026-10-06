@@ -166,11 +166,6 @@ impl TrackManager {
     tracks.get(full_track_name).cloned()
   }
 
-  pub async fn has_track(&self, full_track_name: &FullTrackName) -> bool {
-    let tracks = self.tracks.read().await;
-    tracks.contains_key(full_track_name)
-  }
-
   /// Find the subscription a connection holds under the given request id, across
   /// all tracks and however it was created. Resolves the subscription a
   /// SWITCH_FROM names.

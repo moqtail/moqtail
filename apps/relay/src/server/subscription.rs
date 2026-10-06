@@ -135,6 +135,8 @@ impl SubscriptionState {
   /// only every second, fourth, twelfth id. The group it is sending therefore
   /// covers everything up to the next id it will use, and the only guide to where
   /// that is is how far apart the last two were.
+  // TODO: Until switch trigger in subscription.rs solvedthis is dead code.
+  #[allow(dead_code)]
   pub fn sent_group_gap(&self) -> Option<u64> {
     let last = self.last_sent_max_location.as_ref()?.group;
     let prior = self.prior_sent_group?;
@@ -147,6 +149,8 @@ impl SubscriptionState {
   /// The same distance [`Self::sent_group_gap`] reports, for a subscription that
   /// has not sent anything yet: a track being switched to has to resume at one of
   /// its own group ids, and this is what says where the next one is.
+  // TODO: Until switch trigger in subscription.rs solvedthis is dead code.
+  #[allow(dead_code)]
   pub fn received_group_gap(&self) -> Option<u64> {
     let last = self.last_received_object_location.as_ref()?.group;
     let prior = self.prior_received_group?;
@@ -352,6 +356,8 @@ impl From<SubscriptionOrigin> for SubscriptionState {
 /// `resume_gap` how far apart the activating track's own group ids run. A track
 /// can only resume at one of its own groups, so this steps by that distance
 /// rather than landing on an id it has no group at.
+// TODO: Until switch trigger in subscription.rs solvedthis is dead code.
+#[allow(dead_code)]
 fn takeover_group(resume_group: u64, covered_to: u64, resume_gap: u64) -> u64 {
   let resume_gap = resume_gap.max(1);
   match covered_to.checked_sub(resume_group) {

@@ -96,6 +96,8 @@ impl SwitchContext {
     self.plans.write().await.remove(activating)
   }
 
+  // TODO: Until switch trigger in subscription.rs solvedthis is dead code.
+  #[allow(dead_code)]
   pub async fn get_plan(&self, full_track_name: &FullTrackName) -> Option<SwitchPlan> {
     self.plans.read().await.get(full_track_name).cloned()
   }

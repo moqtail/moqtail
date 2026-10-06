@@ -31,7 +31,7 @@ use moqtail::model::error::TerminationCode;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use moqtail::transport::data_stream_handler::FetchRequest;
 use std::sync::Arc;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 use tracing::{error, info, trace, warn};
 
 const UPSTREAM_FETCH_CHANNEL_CAPACITY: usize = 64;
@@ -98,6 +98,18 @@ pub(crate) struct PendingUpstreamFetch {
   pub rx: mpsc::Receiver<UpstreamFetchEvent>,
 }
 
+enum UpstreamFetchResponse {
+  Accepted { end_location: Location },
+  Error(String),
+}
+
+type UpstreamFetch = (
+  u64,
+  Arc<MOQTClient>,
+  mpsc::Receiver<UpstreamFetchEvent>,
+  oneshot::Receiver<UpstreamFetchResponse>,
+);
+
 /// Whether the relay can answer a standalone FETCH's End Location from what it holds.
 ///
 /// It can when the request ends at or before what it has seen: the clamp cannot bind,
@@ -125,16 +137,26 @@ async fn resolve_range_upstream(
   end_group: u64,
   largest: &mut Option<Location>,
 ) -> Option<PendingUpstreamFetch> {
-  let (relay_request_id, publisher, mut rx) = {
+  let (relay_request_id, publisher, rx, response_rx) = {
     let track_read = track.read().await;
     send_upstream_fetch_for_range(client, context, &track_read, start_group, end_group).await?
   };
 
-  let accepted =
-    tokio::time::timeout(context.server_config.upstream_fetch_timeout, rx.recv()).await;
+  let response =
+    match tokio::time::timeout(context.server_config.upstream_fetch_timeout, response_rx).await {
+      Ok(Ok(response)) => response,
+      Ok(Err(_)) => {
+        warn!("Upstream FETCH {relay_request_id} ended before answering with FETCH_OK");
+        return None;
+      }
+      Err(_) => {
+        warn!("Upstream FETCH {relay_request_id} was not answered in time");
+        return None;
+      }
+    };
 
-  match accepted {
-    Ok(Some(UpstreamFetchEvent::Accepted { end_location })) => {
+  match response {
+    UpstreamFetchResponse::Accepted { end_location } => {
       // FETCH_OK's End Location is the last Object plus one, where Largest Object is
       // the last Object itself.
       let upstream_largest =
@@ -151,16 +173,8 @@ async fn resolve_range_upstream(
         rx,
       })
     }
-    Ok(Some(UpstreamFetchEvent::Error(e))) => {
+    UpstreamFetchResponse::Error(e) => {
       warn!("Upstream FETCH {relay_request_id} rejected while resolving the range: {e}");
-      None
-    }
-    Ok(Some(_)) | Ok(None) => {
-      warn!("Upstream FETCH {relay_request_id} ended before answering with FETCH_OK");
-      None
-    }
-    Err(_) => {
-      warn!("Upstream FETCH {relay_request_id} was not answered in time");
       None
     }
   }
@@ -172,6 +186,7 @@ async fn resolve_range_upstream(
 pub enum FetchStop {
   Running,
   Cancelled,
+  MalformedTrack,
   UpdateFailed,
 }
 
@@ -417,15 +432,15 @@ pub(crate) async fn cancel_fetch(client: Arc<MOQTClient>, request_id: u64) {
 }
 
 /// Send an upstream Fetch to the publisher for a cache gap [gap_start, gap_end].
-/// Returns the relay request ID, the publisher client, and an mpsc::Receiver through which
-/// upstream objects will be forwarded.
+/// Returns the upstream request state, including separate channels for the control
+/// response and Object events.
 async fn send_upstream_fetch_for_range(
   client: &Arc<MOQTClient>,
   context: &Arc<SessionContext>,
   track_read: &crate::server::track::Track,
   gap_start: u64,
   gap_end: u64,
-) -> Option<(u64, Arc<MOQTClient>, mpsc::Receiver<UpstreamFetchEvent>)> {
+) -> Option<UpstreamFetch> {
   // A FETCH goes to one publisher, unlike a SUBSCRIBE: any of the matching ones may
   // serve the range, so the first will do.
   let publisher = {
@@ -462,6 +477,7 @@ async fn send_upstream_fetch_for_range(
   );
 
   let (upstream_tx, upstream_rx) = mpsc::channel(UPSTREAM_FETCH_CHANNEL_CAPACITY);
+  let (response_tx, response_rx) = oneshot::channel();
 
   // FETCH is Request, First: it opens its own bidirectional stream. Open it before
   // registering the request so a failure here leaves no state behind.
@@ -528,7 +544,7 @@ async fn send_upstream_fetch_for_range(
   // The response can come at any time relative to object delivery, so it is read on a
   // task. Holding the handler keeps the request stream open for the fetch's lifetime —
   // dropping it would reach the publisher as a cancellation.
-  let response_tx = upstream_tx;
+  let response_event_tx = upstream_tx;
   tokio::spawn(async move {
     match upstream.next_message().await {
       Ok(ControlMessage::FetchOk(ok)) => {
@@ -536,20 +552,24 @@ async fn send_upstream_fetch_for_range(
           "Upstream FETCH {} accepted, end location {:?}",
           relay_request_id, ok.end_location
         );
-        // The caller may be holding its own FETCH_OK until it learns this.
-        let _ = response_tx
-          .send(UpstreamFetchEvent::Accepted {
-            end_location: ok.end_location.clone(),
-          })
+        let end_location = ok.end_location.clone();
+        // Signal range resolution before writing to the potentially full event queue.
+        let _ = response_tx.send(UpstreamFetchResponse::Accepted {
+          end_location: end_location.clone(),
+        });
+        let _ = response_event_tx
+          .send(UpstreamFetchEvent::Accepted { end_location })
           .await;
       }
       Ok(ControlMessage::RequestError(err)) => {
+        let error = format!(
+          "upstream FETCH {} rejected: {:?}",
+          relay_request_id, err.error_code
+        );
+        let _ = response_tx.send(UpstreamFetchResponse::Error(error.clone()));
         // Tell the waiting gap loop now instead of letting it sit until its timeout.
-        let _ = response_tx
-          .send(UpstreamFetchEvent::Error(format!(
-            "upstream FETCH {} rejected: {:?}",
-            relay_request_id, err.error_code
-          )))
+        let _ = response_event_tx
+          .send(UpstreamFetchEvent::Error(error))
           .await;
         return;
       }
@@ -570,7 +590,7 @@ async fn send_upstream_fetch_for_range(
     let _ = upstream.next_message().await;
   });
 
-  Some((relay_request_id, publisher, upstream_rx))
+  Some((relay_request_id, publisher, upstream_rx, response_rx))
 }
 
 /// Whether a connected publisher could still serve Objects for this track, as
@@ -806,9 +826,9 @@ pub(crate) async fn serve_fetch_stream(
           gap_end = end_location.group;
           Some((pending.relay_request_id, pending.publisher, pending.rx))
         }
-        None => {
-          send_upstream_fetch_for_range(&client, &context, &track_read, gap_start, gap_end).await
-        }
+        None => send_upstream_fetch_for_range(&client, &context, &track_read, gap_start, gap_end)
+          .await
+          .map(|(request_id, publisher, rx, _)| (request_id, publisher, rx)),
       };
 
       if let Some((relay_request_id, upstream_publisher, mut rx)) = upstream_rx {
@@ -889,6 +909,14 @@ pub(crate) async fn serve_fetch_stream(
 
                   object_count += 1;
                 }
+                Ok(Some(UpstreamFetchEvent::MalformedTrack)) => {
+                  warn!(
+                    "handle_fetch_messages | Malformed upstream FETCH for gap [{}, {}]",
+                    gap_start, gap_end
+                  );
+                  stop_reason = FetchStop::MalformedTrack;
+                  break;
+                }
                 Ok(Some(UpstreamFetchEvent::StreamClosed)) => {
                   break;
                 }
@@ -936,6 +964,10 @@ pub(crate) async fn serve_fetch_stream(
           .remove(&relay_request_id);
       }
 
+      if stop_reason != FetchStop::Running {
+        break;
+      }
+
       group_id = gap_end + 1;
     }
   }
@@ -947,11 +979,18 @@ pub(crate) async fn serve_fetch_stream(
   let mut opened = false;
 
   if stop_reason != FetchStop::Running {
+    // The reset is how the subscriber learns the track is malformed, so a stop that
+    // arrived before the first Object still opens the stream to carry it.
+    if stop_reason == FetchStop::MalformedTrack && send_stream.is_none() {
+      send_stream = stream_fn(client.clone(), &stream_id).await;
+    }
+
     if let Some(the_stream) = send_stream {
       opened = true;
       let mut stream = the_stream.lock().await;
       let result = match stop_reason {
         FetchStop::UpdateFailed => stream.reset(StreamResetCode::Cancelled.to_u64()),
+        FetchStop::MalformedTrack => stream.reset(StreamResetCode::MalformedTrack.to_u64()),
         _ => stream.finish().await,
       };
       if let Err(e) = result {
@@ -966,7 +1005,7 @@ pub(crate) async fn serve_fetch_stream(
         );
       }
       drop(stream);
-      client.remove_stream_by_stream_id(&stream_id).await;
+      let _ = client.release_stream(&stream_id).await;
     }
   } else if object_count == 0 {
     // Range is valid but empty: FETCH_OK was already sent on the request
@@ -985,7 +1024,7 @@ pub(crate) async fn serve_fetch_stream(
           e
         );
       }
-      client.remove_stream_by_stream_id(&stream_id).await;
+      let _ = client.release_stream(&stream_id).await;
     }
   } else {
     // close the stream instantly
@@ -998,7 +1037,7 @@ pub(crate) async fn serve_fetch_stream(
       } else {
         info!("finished fetch stream: {:?}", &stream_id);
       }
-      client.remove_stream_by_stream_id(&stream_id).await;
+      let _ = client.release_stream(&stream_id).await;
       info!("removed stream from the map {}", stream_id);
     }
   }

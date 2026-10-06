@@ -7,7 +7,7 @@
 
 set -euo pipefail
 
-DEFAULT_SERVER="https://127.0.0.1:4433"
+DEFAULT_SERVER="moqt://127.0.0.1:4433"
 SERVER="${SERVER:-$DEFAULT_SERVER}"
 NAMESPACE="moqtail"
 TRACK="demo"
@@ -154,7 +154,7 @@ MOQtail Client Test Commands
 
 Usage: ./scripts/test-client.sh <subcommand> [--server <url>]
 
-Environment: SERVER=<url>  (default: https://127.0.0.1:4433)
+Environment: SERVER=<url>  (default: moqt://127.0.0.1:4433)
 
 Publish:
   publish-subgroup      Publish via subgroup streams (default settings)

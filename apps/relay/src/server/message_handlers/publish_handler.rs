@@ -26,6 +26,7 @@ use moqtail::model::control::{
   constant::GroupOrder, control_message::ControlMessage, publish::Publish,
   request_error::RequestError, request_ok::RequestOk, request_update::RequestUpdate,
 };
+use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::model::error::{RequestErrorCode, TerminationCode};
 use moqtail::model::parameter::constant::MessageParameterType;
 use moqtail::model::parameter::message_parameter::apply_message_parameter_update;
@@ -584,7 +585,7 @@ pub(crate) async fn forward_publish_downstream(
     .await;
 
   if let Err(e) = stream
-    .send(&ControlMessage::Publish(Box::new(publish)))
+    .send(&ControlMessage::Publish(Box::new(publish.clone())))
     .await
   {
     error!("Failed to push PUBLISH downstream: {:?}", e);
@@ -651,6 +652,17 @@ pub(crate) async fn forward_publish_downstream(
             }
           }
 
+          // The subscriber may assign this track to one of its own SSTS
+          // switching sets in the PUBLISH_OK; this may set the subscription's
+          // Forward State, which the next step relies on.
+          register_ssts_assignment_from_publish_ok(
+            subscriber.clone(),
+            &publish,
+            m.as_ref().clone(),
+            subscription.as_ref(),
+          )
+          .await;
+
           // The PUBLISH_OK may be what turns this subscriber's Forward State on, in
           // which case it is the first thing wanting Objects from the track.
           ensure_upstream_forwarding(&track_arc, &context).await;
@@ -680,6 +692,81 @@ pub(crate) async fn forward_publish_downstream(
   subscriber
     .unregister_response_sender(publish_request_id)
     .await;
+}
+
+/// The subscriber may assign a track to an SSTS switching set by appending
+/// SWITCHING_SET_ASSIGNMENT to the PUBLISH_OK that accepts a pushed PUBLISH.
+async fn register_ssts_assignment_from_publish_ok(
+  subscriber: Arc<MOQTClient>,
+  publish: &Publish,
+  ok: RequestOk,
+  subscription: Option<&Arc<RwLock<Subscription>>>,
+) {
+  let Some(p) = ok
+    .parameters
+    .iter()
+    .find(|p| matches!(p, MessageParameter::SwitchingSetAssignment { .. }))
+  else {
+    return;
+  };
+
+  let Ok(full_track_name) =
+    FullTrackName::new(publish.track_namespace.clone(), publish.track_name.clone())
+  else {
+    return;
+  };
+
+  // The pushed PUBLISH's track alias is the relay track id.
+  let relay_track_id = publish.track_alias;
+
+  if let MessageParameter::SwitchingSetAssignment {
+    switching_set_id,
+    algorithm_id,
+    throughput_threshold_kbps,
+    set_throughput_weight,
+    activate_switching,
+    set_rank,
+  } = p
+  {
+    // The same validation as the SUBSCRIBE path; a PUBLISH_OK cannot be
+    // rejected, so an invalid assignment is ignored instead.
+    if let Err(e) = subscriber.ssts.validate_assignment(*algorithm_id) {
+      warn!(
+        "Ignoring SWITCHING_SET_ASSIGNMENT in PUBLISH_OK from {}: {}",
+        subscriber.connection_id, e
+      );
+      return;
+    }
+
+    {
+      let mut manager = subscriber.ssts.switching_sets.write().await;
+      if let Err(e) = manager.assign(
+        full_track_name.clone(),
+        relay_track_id,
+        publish.request_id,
+        *switching_set_id,
+        *algorithm_id,
+        *throughput_threshold_kbps,
+        *set_throughput_weight,
+        *activate_switching,
+        *set_rank,
+      ) {
+        warn!(
+          "Ignoring SWITCHING_SET_ASSIGNMENT in PUBLISH_OK from {}: {}",
+          subscriber.connection_id, e
+        );
+        return;
+      }
+    }
+
+    // Same forward-state reasoning as the SUBSCRIBE path: the gating in the
+    // subscription implements the spec's per-group forward selection.
+    if let Some(subscription) = subscription {
+      let sub = subscription.read().await;
+      let mut state = sub.subscription_state.write().await;
+      state.forward = true;
+    }
+  }
 }
 
 /// Validates if the client is authorized to publish to the given track namespace
@@ -766,12 +853,17 @@ async fn cleanup_published_track(
   };
 
   let track = track_arc.read().await;
-  if let Some(alias) = track.remove_publisher(client.connection_id).await {
+  if let Some(removal) = track.remove_publisher(client.connection_id).await {
     context
       .track_manager
-      .remove_publisher_alias(client.connection_id, alias)
+      .remove_publisher_alias(client.connection_id, removal.alias)
       .await;
-    if !track.has_publishers().await {
+    if !removal.still_served {
+      // SSTS: the track is over, so it leaves the switching sets of its
+      // subscribers. While another publisher still serves it, the sets stay as
+      // they are: dropping the track from them would stop it being gated and
+      // let every rendition of its set forward at once.
+      track.remove_from_subscriber_switching_sets().await;
       drop(track);
       context.track_manager.remove_track(&full_track_name).await;
       info!(

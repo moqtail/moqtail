@@ -65,6 +65,15 @@ impl From<CliSwitchMode> for SwitchMode {
   }
 }
 
+/// Which of the two prefix subscriptions a request is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum PrefixKind {
+  /// Namespace discovery: NAMESPACE and NAMESPACE_DONE come back on the stream
+  Namespace,
+  /// Track delivery: a PUBLISH per matching track comes back on its own stream
+  Tracks,
+}
+
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum DeliveryMode {
   /// Send/receive objects via unidirectional streams with subgroup headers
@@ -89,6 +98,8 @@ pub enum Command {
   PublishNamespace,
   /// Subscribe to a track and receive objects
   Subscribe,
+  /// Discover the namespaces under a prefix (SUBSCRIBE_NAMESPACE)
+  SubscribeNamespace,
   /// Subscribe to all tracks under a namespace prefix (SUBSCRIBE_TRACKS)
   SubscribeTracks,
   /// Fetch specific object ranges from a track
@@ -103,7 +114,8 @@ pub enum Command {
   about = "MOQtail test client"
 )]
 pub struct Cli {
-  /// Command to run (publish, publish-namespace, subscribe, or fetch)
+  /// Command to run (publish, publish-namespace, subscribe, subscribe-namespace,
+  /// subscribe-tracks, or fetch)
   #[arg(long, short, value_enum)]
   pub command: Command,
 
@@ -168,7 +180,9 @@ pub struct Cli {
   #[arg(long, default_value_t = 0)]
   pub withdraw_after: u64,
 
-  /// Duration to listen in seconds, 0 = indefinite (subscribe only)
+  /// Duration to listen in seconds, 0 = indefinite (subscribe and the prefix
+  /// subscriptions). A prefix subscription cancels itself when it elapses, by
+  /// resetting its request stream while the session stays open.
   #[arg(long, short, default_value_t = 0)]
   pub duration: u64,
 
@@ -259,4 +273,13 @@ pub struct Cli {
   /// resumes after Forward flips 0->1.
   #[arg(long, default_value_t = 0)]
   pub update_forward_after: u64,
+
+  /// Once the prefix subscription is live, issue a second one of this kind on the
+  /// same prefix and the same session, and log what comes back (subscribe-namespace
+  /// and subscribe-tracks only). Overlap is judged per session, so this is what
+  /// shows whether two prefix subscriptions are allowed to share a prefix: the two
+  /// kinds keep separate spaces and both succeed, while a second of the same kind
+  /// is refused with PREFIX_OVERLAP.
+  #[arg(long, value_enum)]
+  pub overlap: Option<PrefixKind>,
 }

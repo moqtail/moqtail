@@ -113,7 +113,10 @@ impl Datagram {
   pub fn serialize(&self) -> Result<Bytes, ParseError> {
     let mut buf = BytesMut::new();
 
-    let has_properties = self.properties.is_some();
+    // An empty list is the same as carrying none: setting the PROPERTIES bit for
+    // one writes a zero length, which a reader must reject, so the datagram would
+    // never survive its own round trip.
+    let has_properties = self.properties.as_deref().is_some_and(|p| !p.is_empty());
     let object_id_is_zero = self.object_id == 0;
     let default_priority = self.publisher_priority.is_none();
     let is_status = self.object_status.is_some();
@@ -142,8 +145,8 @@ impl Datagram {
     }
 
     // Write properties if present
-    if let Some(ext_headers) = &self.properties {
-      let payload_buf = serialize_object_properties(ext_headers)?;
+    if has_properties {
+      let payload_buf = serialize_object_properties(self.properties.as_deref().unwrap_or(&[]))?;
       buf.put_vi(payload_buf.len())?;
       buf.extend_from_slice(&payload_buf);
     }
@@ -314,6 +317,33 @@ mod tests {
 
     let deserialized = Datagram::deserialize(&mut buf).unwrap();
     assert_eq!(deserialized, datagram);
+    assert!(!buf.has_remaining());
+  }
+
+  #[test]
+  fn an_empty_property_list_is_encoded_as_no_properties() {
+    // A caller that builds its properties into a Vec and hands it over without
+    // checking leaves an empty one here. The PROPERTIES bit must stay clear, or
+    // the datagram carries a zero-length properties field that a reader rejects.
+    let datagram = Datagram::new_payload(
+      144,
+      9,
+      10,
+      Some(128),
+      Some(vec![]),
+      Bytes::from_static(b"payload"),
+      false,
+    );
+
+    let mut buf = datagram.serialize().unwrap();
+    // Type 0x00, same as passing None: PROPERTIES clear.
+    assert_eq!(buf[0], 0x00);
+
+    let deserialized = Datagram::deserialize(&mut buf).unwrap();
+    assert_eq!(deserialized.properties, None);
+    assert_eq!(deserialized.payload, datagram.payload);
+    assert_eq!(deserialized.group_id, datagram.group_id);
+    assert_eq!(deserialized.object_id, datagram.object_id);
     assert!(!buf.has_remaining());
   }
 

@@ -1,6 +1,6 @@
 {
   "name": "moqtail",
-  "version": "0.12.1",
+  "version": "0.13.0",
   "description": "Media Over QUIC Transport client implementation",
   "type": "module",
   "license": "Apache-2.0",
@@ -90,6 +90,6 @@
     "tsdown": "^0.22.3",
     "typedoc": "^0.28.20",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.10"
+    "vitest": "^5.0.3"
   }
 }

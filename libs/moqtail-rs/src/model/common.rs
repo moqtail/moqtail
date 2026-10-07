@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+pub mod fec_source_info;
 pub mod grease;
 pub mod location;
 pub mod pair;

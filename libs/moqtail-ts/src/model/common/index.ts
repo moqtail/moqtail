@@ -17,6 +17,7 @@
 export * from './byte_buffer'
 export * from './grease'
 export * from './pair'
+export * from './fec_source_info'
 export * from './location'
 export * from './moqt_url'
 export * from './tuple'

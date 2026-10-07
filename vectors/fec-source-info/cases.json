@@ -1,0 +1,20 @@
+{
+  "format": "blockcast-fec-source-info-vectors",
+  "version": 2,
+  "extensionType": 17,
+  "extensionTypeHex": "0x11",
+  "note": "Hand-authored from the specification. Do NOT regenerate these bytes by round-tripping an implementation under test; that proves self-consistency, not wire compatibility.",
+  "valueLayout": "SS_ID(u32 BE)",
+  "valueLength": 4,
+  "cases": [
+    { "name": "zero", "ssId": 0, "value": "00000000" },
+    { "name": "one", "ssId": 1, "value": "00000001" },
+    { "name": "small", "ssId": 1234, "value": "000004d2" },
+    { "name": "byte-boundary", "ssId": 255, "value": "000000ff" },
+    { "name": "two-byte-boundary", "ssId": 65535, "value": "0000ffff" },
+    { "name": "high-bit-set", "ssId": 2147483648, "value": "80000000" },
+    { "name": "max", "ssId": 4294967295, "value": "ffffffff" }
+  ],
+  "invalidValueLengths": [0, 1, 2, 3, 5, 7, 8, 12, 16],
+  "invalidValueLengthsNote": "8 and 12 were the SBN/ESI[/ObjectLength] widths of format version 1. They must be refused, not decoded: there is no compatibility shim."
+}

@@ -183,7 +183,6 @@ mod tests {
     assert!(TrackStatus::parse_payload(&mut partial).is_err());
   }
 
-  /// The body is a SUBSCRIBE body: the delivery fields draft-16 carried inline are gone.
   #[test]
   fn body_matches_subscribe() {
     use super::super::subscribe::Subscribe;

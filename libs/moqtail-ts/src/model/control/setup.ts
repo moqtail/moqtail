@@ -101,8 +101,7 @@ if (import.meta.vitest) {
       expect(deserialized.setupOptions).toEqual([])
     })
 
-    // §10.3: Setup Options are bounded by Length, not preceded by a count, unlike the
-    // draft-16 CLIENT_SETUP / SERVER_SETUP payloads this replaces.
+    // Setup Options are bounded by Length, not preceded by a count.
     test('payload carries no option count', () => {
       const setupOptions = [KeyValuePair.tryNewVarInt(0, 10)]
       const setup = new Setup(setupOptions)

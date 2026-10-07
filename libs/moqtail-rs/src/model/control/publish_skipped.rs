@@ -19,17 +19,16 @@ use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
 use crate::model::error::ParseError;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
-/// PUBLISH_BLOCKED (0xF): a publisher tells the peer it cannot send a PUBLISH to
-/// start a subscription for a track under a SUBSCRIBE_TRACKS namespace because it
-/// is blocked by the peer's bidirectional stream limit. Since it always answers a
-/// SUBSCRIBE_TRACKS, only the namespace suffix after the prefix is carried.
+/// PUBLISH_SKIPPED (0xF): a publisher tells the peer it cannot send a PUBLISH to
+/// start a subscription for a track under a SUBSCRIBE_TRACKS namespace.
+/// Since it always answers a SUBSCRIBE_TRACKS, only the namespace suffix after the prefix is carried.
 #[derive(Debug, PartialEq, Clone)]
-pub struct PublishBlocked {
+pub struct PublishSkipped {
   pub track_namespace_suffix: Tuple,
   pub track_name: TupleField,
 }
 
-impl PublishBlocked {
+impl PublishSkipped {
   pub fn new(track_namespace_suffix: Tuple, track_name: TupleField) -> Self {
     Self {
       track_namespace_suffix,
@@ -38,10 +37,10 @@ impl PublishBlocked {
   }
 }
 
-impl ControlMessageTrait for PublishBlocked {
+impl ControlMessageTrait for PublishSkipped {
   fn serialize(&self) -> Result<Bytes, ParseError> {
     let mut buf = BytesMut::new();
-    buf.put_vi(ControlMessageType::PublishBlocked)?;
+    buf.put_vi(ControlMessageType::PublishSkipped)?;
 
     let mut payload = BytesMut::new();
     payload.extend_from_slice(&self.track_namespace_suffix.serialize()?);
@@ -52,7 +51,7 @@ impl ControlMessageTrait for PublishBlocked {
       .len()
       .try_into()
       .map_err(|e: std::num::TryFromIntError| ParseError::CastingError {
-        context: "PublishBlocked::serialize(payload_length)",
+        context: "PublishSkipped::serialize(payload_length)",
         from_type: "usize",
         to_type: "u16",
         details: e.to_string(),
@@ -68,21 +67,21 @@ impl ControlMessageTrait for PublishBlocked {
     let name_len = payload.get_vi()? as usize;
     if payload.remaining() < name_len {
       return Err(ParseError::NotEnoughBytes {
-        context: "PublishBlocked::parse_payload(track_name)",
+        context: "PublishSkipped::parse_payload(track_name)",
         needed: name_len,
         available: payload.remaining(),
       });
     }
     let track_name = TupleField::new(payload.copy_to_bytes(name_len));
 
-    Ok(Box::new(PublishBlocked {
+    Ok(Box::new(PublishSkipped {
       track_namespace_suffix,
       track_name,
     }))
   }
 
   fn get_type(&self) -> ControlMessageType {
-    ControlMessageType::PublishBlocked
+    ControlMessageType::PublishSkipped
   }
 }
 
@@ -90,8 +89,8 @@ impl ControlMessageTrait for PublishBlocked {
 mod tests {
   use super::*;
 
-  fn sample() -> PublishBlocked {
-    PublishBlocked::new(
+  fn sample() -> PublishSkipped {
+    PublishSkipped::new(
       Tuple::from_utf8_path("room1/audio"),
       TupleField::from_utf8("track-42"),
     )
@@ -102,10 +101,10 @@ mod tests {
     let msg = sample();
     let mut buf = msg.serialize().unwrap();
     let msg_type = buf.get_vi().unwrap();
-    assert_eq!(msg_type, ControlMessageType::PublishBlocked as u64);
+    assert_eq!(msg_type, ControlMessageType::PublishSkipped as u64);
     let msg_length = buf.get_u16();
     assert_eq!(msg_length as usize, buf.remaining());
-    let deserialized = PublishBlocked::parse_payload(&mut buf).unwrap();
+    let deserialized = PublishSkipped::parse_payload(&mut buf).unwrap();
     assert_eq!(*deserialized, msg);
     assert!(!buf.has_remaining());
   }
@@ -119,10 +118,10 @@ mod tests {
     excess.extend_from_slice(&[9u8, 1u8, 1u8]);
     let mut buf = excess.freeze();
     let msg_type = buf.get_vi().unwrap();
-    assert_eq!(msg_type, ControlMessageType::PublishBlocked as u64);
+    assert_eq!(msg_type, ControlMessageType::PublishSkipped as u64);
     let msg_length = buf.get_u16();
     assert_eq!(msg_length as usize, buf.remaining() - 3);
-    let deserialized = PublishBlocked::parse_payload(&mut buf).unwrap();
+    let deserialized = PublishSkipped::parse_payload(&mut buf).unwrap();
     assert_eq!(*deserialized, msg);
     assert_eq!(buf.chunk(), &[9u8, 1u8, 1u8]);
   }
@@ -135,6 +134,6 @@ mod tests {
     let _ = buf.get_u16();
     let upper = buf.remaining() / 2;
     let mut partial = buf.slice(..upper);
-    assert!(PublishBlocked::parse_payload(&mut partial).is_err());
+    assert!(PublishSkipped::parse_payload(&mut partial).is_err());
   }
 }

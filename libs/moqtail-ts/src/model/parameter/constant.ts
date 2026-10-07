@@ -140,3 +140,27 @@ export function tokenAliasTypeFromNumber(value: number): TokenAliasType {
       throw new InvalidTypeError('tokenAliasTypeFromNumber', `Invalid token alias type: ${value}`)
   }
 }
+
+if (import.meta.vitest) {
+  const { describe, test } = import.meta.vitest
+
+  // Asserted against dev/conformance/draft22/, which is shared with moqtail-rs. These
+  // enums have no tryFrom, so the lookup uses the enum's own reverse mapping.
+  describe('draft-22 conformance', () => {
+    const fixture = async () => await import('../../../test/conformance')
+
+    test('SetupOptionType matches parameter_types.json', async () => {
+      const { parameterTypes, assertRegistry, pascalIdent } = await fixture()
+      assertRegistry(parameterTypes().setup_options, pascalIdent(), (codepoint) => SetupOptionType[Number(codepoint)])
+    })
+
+    test('MessageParameterType matches parameter_types.json', async () => {
+      const { parameterTypes, assertRegistry, pascalIdent } = await fixture()
+      assertRegistry(
+        parameterTypes().message_parameters,
+        pascalIdent(),
+        (codepoint) => MessageParameterType[Number(codepoint)],
+      )
+    })
+  })
+}

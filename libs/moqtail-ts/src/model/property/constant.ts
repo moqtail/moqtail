@@ -100,6 +100,40 @@ export function isApplicationSpecificProperty(typeValue: bigint | number): boole
 if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
 
+  // Asserted against dev/conformance/draft22/, which is shared with moqtail-rs.
+  describe('draft-22 conformance', () => {
+    const fixture = async () => await import('../../../test/conformance')
+
+    test('TrackPropertyType matches property_types.json', async () => {
+      const { propertyTypes, assertRegistry, pascalIdent } = await fixture()
+      assertRegistry(propertyTypes(), pascalIdent(), (codepoint) => TrackPropertyType[Number(codepoint)])
+    })
+
+    // The LOC properties are registered in the same number space as the draft's own
+    // table (§15.8 Table 15), so they are held to it too.
+    test('LOCPropertyId matches the provisional LOC registry', async () => {
+      const { propertyTypes, assertRegistry, pascalIdent } = await fixture()
+      assertRegistry(propertyTypes().provisional, pascalIdent(), (codepoint) => {
+        try {
+          return LOCPropertyId[locPropertyIdFromNumber(Number(codepoint))]
+        } catch {
+          return undefined
+        }
+      })
+    })
+
+    // The ranges, in order, including the open-ended First Come First Served one.
+    test('PropertyRanges matches the ranges in property_types.json', async () => {
+      const { propertyTypes, parseHex } = await fixture()
+      const actual = Object.values(PropertyRanges).map((r) => [r.from, 'to' in r ? r.to : undefined])
+      const expected = propertyTypes().ranges.entries.map((e) => [
+        parseHex(e.from),
+        e.to === null ? undefined : parseHex(e.to),
+      ])
+      expect(actual).toEqual(expected)
+    })
+  })
+
   describe('application-specific property ranges', () => {
     test('covers both encoding widths and nothing either side of them', () => {
       for (const v of [0x78n, 0x7fn, 0x3800n, 0x3fffn]) {

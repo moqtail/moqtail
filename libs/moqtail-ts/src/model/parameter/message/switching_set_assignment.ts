@@ -26,7 +26,7 @@ import { Parameter } from '../parameter'
  *
  * PROVISIONAL: sender-side track switching is not an adopted extension, so
  * this parameter has no codepoint in the registry the conformance fixture
- * tracks (`dev/conformance/draft18`) and is never asserted against it. Id 0 is
+ * tracks (`dev/conformance/draft22`) and is never asserted against it. Id 0 is
  * the default allocation every implementation runs; other ids select an
  * algorithm specific to one implementation.
  */

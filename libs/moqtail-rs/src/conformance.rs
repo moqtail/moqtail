@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Loads the shared conformance fixtures in `dev/conformance/draft18/`.
+//! Loads the shared conformance fixtures in `dev/conformance/draft22/`.
 //!
 //! The fixtures are normative for both this crate and `moqtail-ts`; see the README
 //! there. This module is the Rust half of "codepoints live in one place": the values
@@ -30,7 +30,7 @@ macro_rules! fixture {
   ($name:literal) => {
     include_str!(concat!(
       env!("CARGO_MANIFEST_DIR"),
-      "/../../dev/conformance/draft18/",
+      "/../../dev/conformance/draft22/",
       $name
     ))
   };

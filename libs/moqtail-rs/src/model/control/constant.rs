@@ -16,21 +16,9 @@ use core::convert::From;
 
 use crate::model::error::ParseError;
 
-pub const SUPPORTED_VERSIONS: &str = "moqt-18";
+pub const SUPPORTED_VERSIONS: &str = "moqt-22";
 
 /// Control message types.
-///
-/// The comment on each variant is the Stream column: `Control` is the control stream,
-/// `Request` a bidirectional request stream, and `First` means the message MUST
-/// be the first on a new request stream.
-///
-/// Earlier protocol versions also reserve `0x01` (SETUP for version 00), `0x40`/`0x41`
-/// (CLIENT_SETUP / SERVER_SETUP for version <= 10) and `0x20`/`0x21` (CLIENT_SETUP /
-/// SERVER_SETUP in version <= 16). Reserved codepoints are deliberately absent from this
-/// enum: `TryFrom` rejects them — an endpoint receiving an
-/// unknown message type MUST close the session.
-///
-/// The values here are asserted against `dev/conformance/draft18/message_types.json`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u64)]
 pub enum ControlMessageType {
@@ -52,7 +40,7 @@ pub enum ControlMessageType {
   Publish = 0x1D,            // Request, First
   PublishDone = 0x0B,        // Request
   PublishOk = 0x1E,          // Request; an alias of RequestOk, not its own body
-  PublishBlocked = 0x0F,     // Request
+  PublishSkipped = 0x0F,     // Request
 }
 
 impl TryFrom<u64> for ControlMessageType {
@@ -78,7 +66,7 @@ impl TryFrom<u64> for ControlMessageType {
       0x51 => Ok(ControlMessageType::SubscribeTracks),
       0x1D => Ok(ControlMessageType::Publish),
       0x1E => Ok(ControlMessageType::PublishOk),
-      0x0F => Ok(ControlMessageType::PublishBlocked),
+      0x0F => Ok(ControlMessageType::PublishSkipped),
       _ => Err(ParseError::InvalidType {
         context: " ControlMessageType::try_from(u64)",
         details: format!("Invalid type, got {value}"),

@@ -275,8 +275,8 @@ fn log_response(label: &str, msg: ControlMessage) {
       "{label}: NAMESPACE_DONE suffix={}",
       m.track_namespace_suffix.to_utf8_path()
     ),
-    ControlMessage::PublishBlocked(m) => info!(
-      "{label}: PUBLISH_BLOCKED namespace_suffix={} track_name={}",
+    ControlMessage::PublishSkipped(m) => info!(
+      "{label}: PUBLISH_SKIPPED namespace_suffix={} track_name={}",
       m.track_namespace_suffix.to_utf8_path(),
       m.track_name.as_str()
     ),

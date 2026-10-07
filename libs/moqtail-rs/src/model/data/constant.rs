@@ -215,7 +215,7 @@ impl From<ObjectStatus> for u64 {
   }
 }
 
-/// Draft-16 Object Datagram Type (bitmask newtype).
+/// Object Datagram Type (bitmask newtype).
 ///
 /// Type bit layout (form `0b00X0XXXX`):
 /// - Bit 0 (0x01): PROPERTIES — Properties field present
@@ -335,7 +335,7 @@ impl From<ObjectDatagramType> for u64 {
 
 #[cfg(test)]
 mod data_stream_type_conformance {
-  //! The type bytes are checked against `dev/conformance/draft18/data_stream_types.json`,
+  //! The type bytes are checked against `dev/conformance/draft22/data_stream_types.json`,
   //! which is shared with moqtail-ts. The bit layout and the set of accepted bytes live
   //! there, not in this file.
 

@@ -15,7 +15,7 @@
  */
 
 /**
- * Loads the shared conformance fixtures in `dev/conformance/draft18/`.
+ * Loads the shared conformance fixtures in `dev/conformance/draft22/`.
  *
  * The fixtures are normative for both this package and `moqtail-rs`; see the README
  * there. This module is the TypeScript half of "codepoints live in one place": the
@@ -34,7 +34,7 @@ import { fileURLToPath } from 'node:url'
 /** The key this package is listed under in a fixture's `pending` markers. */
 export const LANG = 'ts'
 
-const FIXTURE_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../../../dev/conformance/draft18')
+const FIXTURE_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../../../dev/conformance/draft22')
 
 /** One codepoint in a fixture: a name, a value, and whether a stack is exempt yet. */
 export interface Entry {

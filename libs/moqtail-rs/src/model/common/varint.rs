@@ -122,7 +122,7 @@ fn minimal_vi_length(v: u64) -> usize {
 
 #[cfg(test)]
 mod tests {
-  //! Every vector here comes from `dev/conformance/draft18/varint.json`, which is
+  //! Every vector here comes from `dev/conformance/draft22/varint.json`, which is
   //! shared with moqtail-ts. Table 1 (the length/range summary) and Table 2 (the
   //! example encodings) live there, not in this file.
 

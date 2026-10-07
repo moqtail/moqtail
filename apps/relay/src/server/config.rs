@@ -106,7 +106,7 @@ pub struct Cli {
   pub max_subscriber_lag: u64,
 
   /// Max PUBLISH streams the relay initiates for one SUBSCRIBE_TRACKS before it
-  /// runs out of streams and emits PUBLISH_BLOCKED. 0 = unlimited.
+  /// runs out of streams and emits PUBLISH_SKIPPED. 0 = unlimited.
   #[arg(long, default_value_t = 0)]
   pub max_publish_streams: u64,
 

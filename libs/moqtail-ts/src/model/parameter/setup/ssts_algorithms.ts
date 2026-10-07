@@ -24,7 +24,7 @@ import { Parameter } from '../parameter'
  *
  * PROVISIONAL: sender-side track switching is not an adopted extension, so
  * this option has no codepoint in the registry the conformance fixture tracks
- * (`dev/conformance/draft18`) and is never asserted against it. An empty list
+ * (`dev/conformance/draft22`) and is never asserted against it. An empty list
  * — or the absence of the option — prohibits the use of SSTS.
  */
 export class SstsAlgorithms implements Parameter {

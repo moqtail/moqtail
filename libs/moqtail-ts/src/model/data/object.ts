@@ -146,7 +146,7 @@ export class MoqtObject {
   }
 
   /**
-   * Create a MoqtObject from a Datagram (Draft-16).
+   * Create a MoqtObject from a Datagram.
    * @param datagram - The received Datagram.
    * @param fullTrackName - The resolved full track name.
    * @param defaultPriority - The default publisher priority from the control message (used when DEFAULT_PRIORITY bit is set).
@@ -227,7 +227,7 @@ export class MoqtObject {
     )
   }
   /**
-   * Convert to Datagram for wire transmission (Draft-16).
+   * Convert to Datagram for wire transmission.
    * Automatically creates a payload or status Datagram based on the object's state.
    * @param trackAlias - The track alias to use.
    * @param endOfGroup - Whether this is the last object in the group (only for payload datagrams).
@@ -268,7 +268,7 @@ export class MoqtObject {
     }
   }
   tryIntoFetchObject(): FetchObject {
-    // Draft-16 §10.4.4 FETCH objects carry no status; non-Normal status must be
+    // ETCH objects carry no status; non-Normal status must be
     // surfaced as an EndOfRange marker by the caller instead.
     if (this.objectStatus !== ObjectStatus.Normal) {
       throw new CastingError(
@@ -381,7 +381,7 @@ if (import.meta.vitest) {
       expect(obj.hasStatus()).toBe(true)
     })
 
-    test('convert from/to Datagram payload (Draft-16)', () => {
+    test('convert from/to Datagram payload', () => {
       const payload = new TextEncoder().encode('datagram payload')
       const fullTrackName = FullTrackName.tryNew('test/demo', 'track3')
       const datagram = Datagram.newPayload(42n, 100n, 10n, 128, null, payload, false)
@@ -399,7 +399,7 @@ if (import.meta.vitest) {
       expect(backToDatagram.payload).toEqual(payload)
     })
 
-    test('convert from/to Datagram with endOfGroup (Draft-16)', () => {
+    test('convert from/to Datagram with endOfGroup', () => {
       const payload = new TextEncoder().encode('last in group')
       const fullTrackName = FullTrackName.tryNew('test/demo', 'track3')
       const datagram = Datagram.newPayload(42n, 100n, 10n, 128, null, payload, true)
@@ -411,7 +411,7 @@ if (import.meta.vitest) {
       expect(backToDatagram.endOfGroup).toBe(true)
     })
 
-    test('convert from/to Datagram status (Draft-16)', () => {
+    test('convert from/to Datagram status', () => {
       const fullTrackName = FullTrackName.tryNew('test/demo', 'track3')
       const datagram = Datagram.newStatus(42n, 100n, 10n, 128, null, ObjectStatus.EndOfGroup)
 
@@ -424,7 +424,7 @@ if (import.meta.vitest) {
       expect(backToDatagram.payload).toBeNull()
     })
 
-    test('convert Datagram with DEFAULT_PRIORITY (Draft-16)', () => {
+    test('convert Datagram with DEFAULT_PRIORITY', () => {
       const payload = new TextEncoder().encode('default prio')
       const fullTrackName = FullTrackName.tryNew('test/demo', 'track3')
       const datagram = Datagram.newPayload(42n, 100n, 10n, null, null, payload, false)

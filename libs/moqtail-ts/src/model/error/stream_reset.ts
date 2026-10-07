@@ -88,4 +88,19 @@ if (import.meta.vitest) {
       expect(() => StreamResetCode.tryFrom(0x11)).toThrow(InvalidEnumValue)
     })
   })
+
+  describe('draft-22 conformance', () => {
+    const fixture = async () => await import('../../../test/conformance')
+
+    test('StreamResetCode matches stream_reset_codes.json', async () => {
+      const { streamResetCodes, assertRegistry, pascalIdent } = await fixture()
+      assertRegistry(streamResetCodes(), pascalIdent(), (codepoint) => {
+        try {
+          return StreamResetCode[StreamResetCode.tryFrom(Number(codepoint))]
+        } catch {
+          return undefined
+        }
+      })
+    })
+  })
 }

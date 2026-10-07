@@ -2362,7 +2362,7 @@ export class MOQtailClient {
               if (nextObject) {
                 if (nextObject instanceof FetchObject) {
                   if (nextObject.kind === 'end_of_range') {
-                    // Draft-16 §10.4.4.2: End-of-Range markers describe gaps in the
+                    // End-of-Range markers describe gaps in the
                     // response and do not carry application payloads. Skip for now.
                     continue
                   }

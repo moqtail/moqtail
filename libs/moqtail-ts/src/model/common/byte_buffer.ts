@@ -569,7 +569,7 @@ if (import.meta.vitest) {
       })
     })
 
-    // Every vector here comes from dev/conformance/draft18/varint.json, which is shared
+    // Every vector here comes from dev/conformance/draft22/varint.json, which is shared
     // with moqtail-rs. Table 1 (the length/range summary) and Table 2 (the example
     // encodings) live there, not in this file. The loader is imported dynamically so it
     // stays out of the published bundle: this whole block is dead code once

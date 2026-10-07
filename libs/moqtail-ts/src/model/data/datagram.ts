@@ -20,7 +20,7 @@ import { ObjectDatagramType, ObjectStatus } from './constant'
 import { Location } from '../common/location'
 
 /**
- * Represents a unified OBJECT_DATAGRAM message (Draft-16).
+ * Represents a unified OBJECT_DATAGRAM message.
  *
  * Type bit layout (form 0b00X0XXXX):
  * - Bit 0 (0x01): PROPERTIES
@@ -201,7 +201,7 @@ export class Datagram {
 
 if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
-  describe('Datagram (Draft-16)', () => {
+  describe('Datagram', () => {
     test('roundtrip payload with properties and explicit objectId', () => {
       const trackAlias = 500n
       const groupId = 9n

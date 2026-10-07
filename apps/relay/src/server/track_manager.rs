@@ -57,6 +57,13 @@ pub type NamespaceSubscriber = (
 );
 pub type AnnouncementSubscriber = (Arc<MOQTClient>, PublishNamespace);
 
+/// The relay's tracks and what indexes them.
+///
+/// Lock order: take `tracks`, then a track's own lock, then that track's inner
+/// locks (such as `publisher_aliases`), then `track_aliases`, then `publishes`,
+/// skipping those you do not need. Never take a lock that you, or your caller,
+/// already hold, even for reading: tokio's `RwLock` queues new readers behind a
+/// waiting writer, so a second read deadlocks once a writer queues in between.
 #[derive(Clone)]
 pub struct TrackManager {
   pub tracks: Arc<RwLock<HashMap<FullTrackName, Arc<RwLock<Track>>>>>,
@@ -116,12 +123,13 @@ impl TrackManager {
     connection_id: usize,
     track_alias: u64,
   ) -> Option<Arc<RwLock<Track>>> {
+    // Tracks first, as the lock order says. Holding both, the lookup sees a
+    // concurrent remove_track, which clears the track's aliases while it holds
+    // the tracks map, either completely or not at all.
+    let tracks = self.tracks.read().await;
     let track_aliases = self.track_aliases.read().await;
-    if let Some(full_track_name) = track_aliases.get(&(connection_id, track_alias)) {
-      let tracks = self.tracks.read().await;
-      return tracks.get(full_track_name).cloned();
-    }
-    None
+    let full_track_name = track_aliases.get(&(connection_id, track_alias))?;
+    tracks.get(full_track_name).cloned()
   }
 
   pub async fn remove_track(&self, full_track_name: &FullTrackName) {
@@ -197,8 +205,13 @@ impl TrackManager {
     track_aliases.contains_key(&(connection_id, *track_alias))
   }
 
-  /// Remove a single publisher alias without removing the full track entry.
-  /// Used when a publisher sends PublishDone or when only one of several publishers disconnects.
+  /// Clears the alias and the `publishes` entry of a publisher, without removing
+  /// the track itself. Used on every PUBLISH_DONE and when a publishing session
+  /// closes. The caller must already have taken the publisher out of its track
+  /// with `Track::remove_publisher`, which returns the alias to pass here.
+  ///
+  /// Both callers still hold the track's read lock, and `handle_connection_close`
+  /// also holds `tracks`, so this takes neither again.
   pub async fn remove_publisher_alias(&self, connection_id: usize, track_alias: u64) {
     let mut track_aliases = self.track_aliases.write().await;
     let track_name_opt = track_aliases.remove(&(connection_id, track_alias));
@@ -212,12 +225,6 @@ impl TrackManager {
       let mut publishes = self.publishes.write().await;
       if let Some(map) = publishes.get_mut(&track_name) {
         map.remove(&connection_id);
-      }
-
-      // remove the track alias from the track as well
-      if let Some(track_guard) = self.get_track(&track_name).await {
-        let track = track_guard.read().await;
-        track.remove_publisher(connection_id).await;
       }
     }
   }
@@ -587,27 +594,38 @@ impl TrackManager {
     connection_id: usize,
     request_id: u64,
   ) -> Option<FullTrackName> {
-    let publishes = self.publishes.read().await;
-    let tracks = self.tracks.read().await;
+    // 1. Find the tracks that were published with this specific Request ID. The
+    // lock order puts tracks before publishes, and a track's own lock before
+    // both, so the maps are released before any track is locked below.
+    let candidates: Vec<(FullTrackName, Arc<RwLock<Track>>)> = {
+      let tracks = self.tracks.read().await;
+      let publishes = self.publishes.read().await;
+      publishes
+        .iter()
+        .filter(|(_, by_connection)| {
+          by_connection
+            .get(&connection_id)
+            .is_some_and(|publish_msg| publish_msg.request_id == request_id)
+        })
+        .filter_map(|(track_name, _)| {
+          tracks
+            .get(track_name)
+            .map(|track_arc| (track_name.clone(), track_arc.clone()))
+        })
+        .collect()
+    };
 
-    for (track_name, publishes) in publishes.iter() {
-      // 1. Find the track that was published with this specific Request ID
-      if let Some(publish_msg) = publishes.get(&connection_id)
-        && publish_msg.request_id == request_id
+    for (track_name, track_arc) in candidates {
+      // 2. Verify that the client sending the REQUEST_UPDATE is actually the owner!
+      // TODO: do we really need this check? Look at this later.
+      let track = track_arc.read().await;
+      if track
+        .publisher_aliases
+        .read()
+        .await
+        .contains_key(&connection_id)
       {
-        // 2. Verify that the client sending PublishDone is actually the owner!
-        // TODO: do we really need this check? Look at this later.
-        if let Some(track_arc) = tracks.get(track_name) {
-          let track = track_arc.read().await;
-          if track
-            .publisher_aliases
-            .read()
-            .await
-            .contains_key(&connection_id)
-          {
-            return Some(track_name.clone());
-          }
-        }
+        return Some(track_name);
       }
     }
     None
@@ -804,6 +822,195 @@ mod tests {
       .expect("the waiter is woken by the registration, not by its timeout")
       .expect("resolver task");
     assert!(resolved.is_some());
+  }
+
+  /// Yields enough times for every spawned task to reach its first wait. This
+  /// orders the tasks only on tokio's single-thread test runtime, which these
+  /// tests use.
+  async fn settle() {
+    for _ in 0..10 {
+      tokio::task::yield_now().await;
+    }
+  }
+
+  /// Spawns `remove_track(name)` and lets it run until it holds, or waits for,
+  /// the tracks map for writing.
+  async fn spawn_remove_track(
+    manager: &TrackManager,
+    name: &FullTrackName,
+  ) -> tokio::task::JoinHandle<()> {
+    let remover = {
+      let manager = manager.clone();
+      let name = name.clone();
+      tokio::spawn(async move { manager.remove_track(&name).await })
+    };
+    settle().await;
+    assert!(
+      manager.tracks.try_read().is_err(),
+      "remove_track holds or waits for the tracks map"
+    );
+    remover
+  }
+
+  #[tokio::test]
+  async fn a_publisher_alias_is_removed_under_the_tracks_lock_while_a_writer_waits() {
+    // A closing session walks the tracks map under a read guard and removes its
+    // aliases as it goes, while another closing session may be waiting to remove a
+    // track. The waiting writer blocks new readers, so taking the tracks lock again
+    // inside would deadlock both sessions.
+    let manager = TrackManager::new();
+    let name = track_name();
+    let other = FullTrackName::try_new("meet/room2", "video").unwrap();
+    let (track, _) = publish(&manager, 1, 10, &name).await;
+    track.read().await.add_publisher(1, 10).await;
+    publish(&manager, 2, 20, &other).await;
+
+    // The locks handle_connection_close holds while it removes an alias.
+    let tracks = manager.tracks.read().await;
+    let track_guard = track.read().await;
+    let remover = spawn_remove_track(&manager, &other).await;
+
+    let removal = track_guard
+      .remove_publisher(1)
+      .await
+      .expect("publisher 1 was registered");
+    tokio::time::timeout(
+      Duration::from_secs(1),
+      manager.remove_publisher_alias(1, removal.alias),
+    )
+    .await
+    .expect("removing the alias takes neither the tracks map nor the track again");
+    assert!(!manager.has_track_alias(1, &10).await);
+
+    drop(track_guard);
+    drop(tracks);
+    tokio::time::timeout(Duration::from_secs(1), remover)
+      .await
+      .expect("the other removal proceeds once the walk is done")
+      .expect("remover task");
+  }
+
+  #[tokio::test]
+  async fn an_alias_lookup_does_not_deadlock_with_a_track_removal() {
+    // remove_track clears the removed track's aliases while it still holds the
+    // tracks map; a lookup by alias must not hold the aliases while it waits for
+    // that map.
+    let manager = TrackManager::new();
+    let name = track_name();
+    let other = FullTrackName::try_new("meet/room2", "video").unwrap();
+    let (track, _) = publish(&manager, 1, 10, &name).await;
+    // remove_track takes track_aliases only for a track with publisher aliases.
+    track.read().await.add_publisher(1, 10).await;
+    publish(&manager, 2, 20, &other).await;
+
+    // Parks remove_track on the track's lock, after it has taken the tracks map.
+    let parked = track.write().await;
+    let remover = spawn_remove_track(&manager, &name).await;
+    let lookup = {
+      let manager = manager.clone();
+      tokio::spawn(async move { manager.get_track_by_alias(2, 20).await })
+    };
+    settle().await;
+    assert!(!lookup.is_finished(), "the lookup waits for a lock");
+    drop(parked);
+
+    let ((), found) = tokio::time::timeout(Duration::from_secs(1), async {
+      tokio::try_join!(remover, lookup)
+    })
+    .await
+    .expect("the removal and the lookup both finish")
+    .expect("tasks");
+    assert!(found.is_some());
+    assert!(!manager.has_track_alias(1, &10).await);
+  }
+
+  #[tokio::test]
+  async fn a_publisher_lookup_does_not_deadlock_with_a_track_removal() {
+    // remove_track clears the removed track's publishes while it still holds the
+    // tracks map; finding a publisher's track must not hold the publishes while it
+    // waits for that map. The lookup takes the publishes even when nothing matches.
+    let manager = TrackManager::new();
+    let name = track_name();
+    let (track, _) = publish(&manager, 1, 10, &name).await;
+
+    // Parks remove_track on the track's lock, after it has taken the tracks map.
+    let parked = track.write().await;
+    let remover = spawn_remove_track(&manager, &name).await;
+    let lookup = {
+      let manager = manager.clone();
+      tokio::spawn(async move { manager.get_track_name_by_publisher(2, 0).await })
+    };
+    settle().await;
+    assert!(!lookup.is_finished(), "the lookup waits for a lock");
+    drop(parked);
+
+    let ((), found) = tokio::time::timeout(Duration::from_secs(1), async {
+      tokio::try_join!(remover, lookup)
+    })
+    .await
+    .expect("the removal and the lookup both finish")
+    .expect("tasks");
+    assert!(found.is_none());
+  }
+
+  #[tokio::test]
+  async fn a_publisher_lookup_does_not_deadlock_with_a_closing_session() {
+    // A closing session holds a track's read lock while it clears its publishes
+    // entry, and a PUBLISH or SUBSCRIBE_OK may be waiting to write that track. A
+    // REQUEST_UPDATE that looked for its track while holding the publishes would
+    // wait behind that writer and close the cycle.
+    let manager = TrackManager::new();
+    let name = track_name();
+    let (track, _) = publish(&manager, 1, 10, &name).await;
+    track.read().await.add_publisher(1, 10).await;
+    publish(&manager, 2, 20, &name).await;
+    track.read().await.add_publisher(2, 20).await;
+    let request = Publish::new(
+      7,
+      name.namespace.clone(),
+      name.name.clone(),
+      20,
+      vec![],
+      vec![],
+    );
+    manager.add_publish_message(name.clone(), 2, request).await;
+
+    // Publisher 1's session closes, holding the track as handle_connection_close does.
+    let closing = track.read().await;
+    let writer = {
+      let track = track.clone();
+      tokio::spawn(async move {
+        drop(track.write().await);
+      })
+    };
+    settle().await;
+    assert!(track.try_read().is_err(), "a writer waits for the track");
+    let lookup = {
+      let manager = manager.clone();
+      tokio::spawn(async move { manager.get_track_name_by_publisher(2, 7).await })
+    };
+    settle().await;
+    assert!(!lookup.is_finished(), "the lookup waits for the track");
+
+    let removal = closing
+      .remove_publisher(1)
+      .await
+      .expect("publisher 1 was registered");
+    tokio::time::timeout(
+      Duration::from_secs(1),
+      manager.remove_publisher_alias(1, removal.alias),
+    )
+    .await
+    .expect("clearing the publishes entry does not wait for the lookup");
+    drop(closing);
+
+    let ((), found) = tokio::time::timeout(Duration::from_secs(1), async {
+      tokio::try_join!(writer, lookup)
+    })
+    .await
+    .expect("the writer and the lookup both finish")
+    .expect("tasks");
+    assert_eq!(found, Some(name));
   }
 
   #[test]

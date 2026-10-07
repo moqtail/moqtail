@@ -322,6 +322,7 @@ impl Track {
   /// Remove a publisher by connection_id, reporting its alias and whether the
   /// track is still served, or `None` when it was not publishing this track.
   /// If no publishers remain after removal, sends PublisherDisconnected to all subscribers.
+  #[must_use = "clear the alias with TrackManager::remove_publisher_alias"]
   pub async fn remove_publisher(&self, connection_id: usize) -> Option<PublisherRemoval> {
     let (alias, still_served) = self.take_publisher(connection_id).await;
     let alias = alias?;

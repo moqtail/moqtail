@@ -25,7 +25,7 @@ export const MAX_FULL_TRACK_NAME_LENGTH = 4096
  * Fully-qualified track identifier = hierarchical namespace (tuple) + leaf name bytes.
  *
  * Constraints enforced (throws {@link TrackNameError}):
- * - Namespace tuple field count: 0 .. {@link MAX_NAMESPACE_TUPLE_COUNT} (draft-18 §2.4.1; an empty namespace is legal).
+ * - Namespace tuple field count: 0 .. {@link MAX_NAMESPACE_TUPLE_COUNT} (an empty namespace is legal).
  * - Total serialized length (namespace tuple + raw name bytes) less than or equals {@link MAX_FULL_TRACK_NAME_LENGTH} bytes.
  *
  * Namespace input may be:

@@ -20,7 +20,7 @@ import { Parameter } from '../parameter'
 
 /**
  * Raw-QUIC only: the authority component of the `moqt://` URI, carried in SETUP because
- * there is no HTTP CONNECT to carry it (draft-18 §10.3.1.1).
+ * there is no HTTP CONNECT to carry it.
  *
  * Client-only; MUST NOT be sent by a server or over WebTransport. moqtail-ts always
  * connects over WebTransport, so its own handshake never sends this — see

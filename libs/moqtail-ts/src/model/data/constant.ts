@@ -521,7 +521,7 @@ if (import.meta.vitest) {
     })
   })
   describe('SubgroupHeaderType', () => {
-    // Draft-18 form 0b0XX1XXXX, minus the reserved SUBGROUP_ID_MODE 0b11.
+    // 0b0XX1XXXX, minus the reserved SUBGROUP_ID_MODE 0b11.
     const isValid = (b: number) => (b & 0x80) === 0 && (b & 0x10) !== 0 && (b & 0x06) !== 0x06
 
     test('classifies all 256 type bytes', () => {

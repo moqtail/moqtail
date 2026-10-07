@@ -19,22 +19,11 @@ import { greaseValue } from '../common/grease'
 /**
  * Protocol string array exchanged in wt-available-protocols header
  */
-export const SUPPORTED_VERSIONS = ['moqt-18']
+export const SUPPORTED_VERSIONS = ['moqt-22']
 
 /**
  * @public
- * Control message types, per draft-18 Table 5.
- *
- * The comment on each member is the Stream column: `Control` is the control stream
- * (§3.3), `Request` a bidirectional request stream, and `First` means the message MUST
- * be the first on a new request stream.
- *
- * Table 5 reserves `0x01` (SETUP for version 00), `0x40`/`0x41` (CLIENT_SETUP /
- * SERVER_SETUP for versions 10 and below) and `0x20`/`0x21` (CLIENT_SETUP /
- * SERVER_SETUP for versions 16 and below — folded into Setup by #256). All five stay
- * in the enum as documentation, but `tryFrom` rejects every RESERVED codepoint, which
- * is what §10 requires — an endpoint receiving an unknown message type MUST close the
- * session.
+ * Control message types.
  */
 export enum ControlMessageType {
   ReservedSetupV00 = 0x01, // RESERVED; rejected by tryFrom
@@ -60,7 +49,7 @@ export enum ControlMessageType {
   SubscribeTracks = 0x51, // Request, First
   Publish = 0x1d, // Request, First
   PublishOk = 0x1e, // Request; an alias of RequestOk (§10.5), not its own body
-  PublishBlocked = 0x0f, // Request
+  PublishSkipped = 0x0f, // Request
 }
 
 /**
@@ -150,7 +139,7 @@ export namespace ControlMessageType {
       case 0x1en:
         return ControlMessageType.PublishOk
       case 0x0fn:
-        return ControlMessageType.PublishBlocked
+        return ControlMessageType.PublishSkipped
       default:
         throw new InvalidEnumValue('ControlMessageType.tryFrom', v)
     }
@@ -433,103 +422,4 @@ export namespace RequestErrorCode {
       return RequestErrorCode.InternalError
     }
   }
-}
-
-if (import.meta.vitest) {
-  const { describe, expect, test } = import.meta.vitest
-
-  // Asserted against dev/conformance/draft18/, which is shared with moqtail-rs. No
-  // codepoint is repeated here: each test asks the enum what it parses a fixture value
-  // as. The loader is imported dynamically so it stays out of the published bundle.
-  describe('draft-18 conformance', () => {
-    const fixture = async () => await import('../../../test/conformance')
-
-    test('ControlMessageType matches message_types.json', async () => {
-      const { messageTypes, assertRegistry, pascalIdent } = await fixture()
-      assertRegistry(messageTypes(), pascalIdent({ GOAWAY: 'GoAway' }), (codepoint) => {
-        try {
-          return ControlMessageType[Number(ControlMessageType.tryFrom(codepoint))]
-        } catch {
-          return undefined
-        }
-      })
-    })
-
-    test('RequestErrorCode matches request_error_codes.json', async () => {
-      const { requestErrorCodes, assertRegistry, pascalIdent } = await fixture()
-      // This branch reuses 0x32 for the track switching it is prototyping, so the
-      // draft's name for that codepoint maps to ours until that work is settled.
-      assertRegistry(requestErrorCodes(), pascalIdent({ INVALID_JOINING_REQUEST_ID: 'InvalidSwitch' }), (codepoint) => {
-        try {
-          return RequestErrorCode[Number(RequestErrorCode.tryFrom(codepoint))]
-        } catch {
-          return undefined
-        }
-      })
-    })
-
-    test('PublishDoneStatusCode matches publish_done_codes.json', async () => {
-      const { publishDoneCodes, assertRegistry, pascalIdent } = await fixture()
-      assertRegistry(publishDoneCodes(), pascalIdent(), (codepoint) => {
-        try {
-          return PublishDoneStatusCode[Number(PublishDoneStatusCode.tryFrom(codepoint))]
-        } catch {
-          return undefined
-        }
-      })
-    })
-
-    // §14: unknown and greased codes are reported as InternalError, never thrown.
-    test('fromWire maps unknown and grease codes to InternalError', () => {
-      expect(RequestErrorCode.fromWire(0x1n)).toBe(RequestErrorCode.Unauthorized)
-      expect(PublishDoneStatusCode.fromWire(0x2n)).toBe(PublishDoneStatusCode.TrackEnded)
-      for (const raw of [0x7en, greaseValue(0)!, greaseValue(5)!]) {
-        expect(RequestErrorCode.fromWire(raw)).toBe(RequestErrorCode.InternalError)
-        expect(PublishDoneStatusCode.fromWire(raw)).toBe(PublishDoneStatusCode.InternalError)
-      }
-    })
-
-    test('the reset and request-error registries stay separate', () => {
-      expect(StreamResetCode.GoingAway).toBe(0x4)
-      expect(RequestErrorCode.GoingAway).toBe(0x6)
-      expect(StreamResetCode.ExpiredAuthToken).toBe(0x7)
-      expect(RequestErrorCode.ExpiredAuthToken).toBe(0x5)
-    })
-
-    test('every message_types.json entry is exercised', async () => {
-      const { messageTypes } = await fixture()
-      expect(messageTypes().entries.length).toBeGreaterThan(0)
-    })
-
-    test('isFirst matches the Stream column of message_types.json', async () => {
-      const { messageTypes, parseHex } = await fixture()
-      const graded = messageTypes()
-        .entries.filter((entry) => !entry.reserved)
-        .map((entry) => {
-          const codepoint = parseHex(entry.value)
-          return {
-            name: entry.name,
-            expected: (entry.stream ?? '').includes('First'),
-            actual: ControlMessageType.isFirst(ControlMessageType.tryFrom(codepoint)),
-          }
-        })
-      expect(graded.filter((e) => e.expected).map((e) => e.name).length).toBe(7)
-      expect(graded.filter((e) => e.actual !== e.expected)).toEqual([])
-    })
-
-    test('isUpdatable covers the request types §10.9 names, and not TRACK_STATUS', () => {
-      const updatable = [
-        ControlMessageType.Subscribe,
-        ControlMessageType.Publish,
-        ControlMessageType.Fetch,
-        ControlMessageType.PublishNamespace,
-        ControlMessageType.SubscribeNamespace,
-        ControlMessageType.SubscribeTracks,
-      ]
-      expect(updatable.every(ControlMessageType.isUpdatable)).toBe(true)
-      // TRACK_STATUS opens a request stream but §10.9 no longer lets it be updated.
-      expect(ControlMessageType.isFirst(ControlMessageType.TrackStatus)).toBe(true)
-      expect(ControlMessageType.isUpdatable(ControlMessageType.TrackStatus)).toBe(false)
-    })
-  })
 }

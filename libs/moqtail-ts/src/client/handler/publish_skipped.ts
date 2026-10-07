@@ -15,28 +15,26 @@
  */
 
 import { ProtocolViolationError } from '@/model/error'
-import { PublishBlocked, SubscribeTracks } from '../../model/control'
+import { PublishSkipped, SubscribeTracks } from '../../model/control'
 import { RequestStreamMessageHandler } from './handler'
 import { logger } from '../../util/logger'
 
-export const handlerPublishBlocked: RequestStreamMessageHandler<PublishBlocked> = async (client, msg, stream) => {
-  // §10.20: PUBLISH_BLOCKED answers a SUBSCRIBE_TRACKS, and its suffix is only
-  // meaningful next to the prefix that stream was opened with.
+export const handlerPublishSkipped: RequestStreamMessageHandler<PublishSkipped> = async (client, msg, stream) => {
   const first = stream.first
   if (!(first instanceof SubscribeTracks)) {
     throw new ProtocolViolationError(
-      'handlerPublishBlocked',
-      'PUBLISH_BLOCKED on a stream this side did not open with SUBSCRIBE_TRACKS',
+      'handlerPublishSkipped',
+      'PUBLISH_SKIPPED on a stream this side did not open with SUBSCRIBE_TRACKS',
     )
   }
 
   logger.log(
-    'handler/publish_blocked',
+    'handler/publish_skipped',
     'prefix',
     first.trackNamespacePrefix.toUtf8Path(),
     'suffix',
     msg.trackNamespaceSuffix.toUtf8Path(),
   )
 
-  client.onPeerPublishBlocked?.(first.trackNamespacePrefix, msg)
+  client.onPeerPublishSkipped?.(first.trackNamespacePrefix, msg)
 }

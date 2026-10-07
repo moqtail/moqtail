@@ -21,61 +21,59 @@ import { LengthExceedsMaxError } from '../error/error'
 
 /**
  * @public
- * PUBLISH_BLOCKED (0xF): a publisher tells the peer it cannot send the PUBLISH that
- * would start a subscription to a track under a SUBSCRIBE_TRACKS namespace, because it
- * is blocked by the peer's bidirectional stream limit. It MUST NOT send PUBLISH for
- * that track until the limit lifts (§10.20).
+ * PUBLISH_SKIPPED (0xF): a publisher tells the peer it cannot send the PUBLISH that
+ * would start a subscription to a track under a SUBSCRIBE_TRACKS namespace.
  *
  * Sent on the SUBSCRIBE_TRACKS response stream, so only the namespace suffix after that
  * subscription's prefix is carried.
  */
-export class PublishBlocked {
+export class PublishSkipped {
   constructor(
     public readonly trackNamespaceSuffix: Tuple,
     public readonly trackName: Uint8Array,
   ) {}
 
   getType(): ControlMessageType {
-    return ControlMessageType.PublishBlocked
+    return ControlMessageType.PublishSkipped
   }
 
   serialize(): FrozenByteBuffer {
     const buf = new ByteBuffer()
-    buf.putVI(ControlMessageType.PublishBlocked)
+    buf.putVI(ControlMessageType.PublishSkipped)
     const payload = new ByteBuffer()
     payload.putTuple(this.trackNamespaceSuffix)
     payload.putLengthPrefixedBytes(this.trackName)
     const payloadBytes = payload.toUint8Array()
     if (payloadBytes.length > 0xffff) {
-      throw new LengthExceedsMaxError('PublishBlocked::serialize(payloadBytes.length)', 0xffff, payloadBytes.length)
+      throw new LengthExceedsMaxError('PublishSkipped::serialize(payloadBytes.length)', 0xffff, payloadBytes.length)
     }
     buf.putU16(payloadBytes.length)
     buf.putBytes(payloadBytes)
     return buf.freeze()
   }
 
-  static parsePayload(buf: BaseByteBuffer): PublishBlocked {
+  static parsePayload(buf: BaseByteBuffer): PublishSkipped {
     const trackNamespaceSuffix = buf.getTuple()
     const trackName = buf.getLengthPrefixedBytes()
-    return new PublishBlocked(trackNamespaceSuffix, trackName)
+    return new PublishSkipped(trackNamespaceSuffix, trackName)
   }
 }
 
 if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
 
-  describe('PublishBlocked', () => {
-    const sample = () => new PublishBlocked(Tuple.fromUtf8Path('room1/audio'), new TextEncoder().encode('track-42'))
+  describe('PublishSkipped', () => {
+    const sample = () => new PublishSkipped(Tuple.fromUtf8Path('room1/audio'), new TextEncoder().encode('track-42'))
 
     test('roundtrip', () => {
       const msg = sample()
       const frozen = msg.serialize()
       const msgType = frozen.getVI()
-      expect(msgType).toBe(BigInt(ControlMessageType.PublishBlocked))
+      expect(msgType).toBe(BigInt(ControlMessageType.PublishSkipped))
       expect(msgType).toBe(0x0fn)
       const msgLength = frozen.getU16()
       expect(msgLength).toBe(frozen.remaining)
-      const deserialized = PublishBlocked.parsePayload(frozen)
+      const deserialized = PublishSkipped.parsePayload(frozen)
       expect(deserialized.trackNamespaceSuffix.equals(msg.trackNamespaceSuffix)).toBe(true)
       expect(deserialized.trackName).toEqual(msg.trackName)
       expect(frozen.remaining).toBe(0)
@@ -87,10 +85,10 @@ if (import.meta.vitest) {
       buf.putBytes(msg.serialize().toUint8Array())
       buf.putBytes(new Uint8Array([9, 1, 1]))
       const frozen = buf.freeze()
-      expect(frozen.getVI()).toBe(BigInt(ControlMessageType.PublishBlocked))
+      expect(frozen.getVI()).toBe(BigInt(ControlMessageType.PublishSkipped))
       const msgLength = frozen.getU16()
       expect(msgLength).toBe(frozen.remaining - 3)
-      const deserialized = PublishBlocked.parsePayload(frozen)
+      const deserialized = PublishSkipped.parsePayload(frozen)
       expect(deserialized.trackNamespaceSuffix.equals(msg.trackNamespaceSuffix)).toBe(true)
       expect(deserialized.trackName).toEqual(msg.trackName)
       expect(Array.from(frozen.getBytes(3))).toEqual([9, 1, 1])
@@ -102,16 +100,16 @@ if (import.meta.vitest) {
       expect(() => {
         frozen.getVI()
         frozen.getU16()
-        PublishBlocked.parsePayload(frozen)
+        PublishSkipped.parsePayload(frozen)
       }).toThrow()
     })
 
     test('a zero-element suffix round-trips', () => {
-      const msg = new PublishBlocked(new Tuple(), new TextEncoder().encode('track-42'))
+      const msg = new PublishSkipped(new Tuple(), new TextEncoder().encode('track-42'))
       const frozen = msg.serialize()
       frozen.getVI()
       frozen.getU16()
-      const deserialized = PublishBlocked.parsePayload(frozen)
+      const deserialized = PublishSkipped.parsePayload(frozen)
       expect(deserialized.trackNamespaceSuffix.fields.length).toBe(0)
       expect(deserialized.trackName).toEqual(msg.trackName)
     })

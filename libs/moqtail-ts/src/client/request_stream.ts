@@ -114,8 +114,7 @@ export class RequestStream {
   }
 
   /**
-   * Cancels the request by resetting its stream with `code` (§3.3.2), which is how
-   * draft-18 cancels a request now that the dedicated cancel messages are gone.
+   * Cancels the request by resetting its stream with `code`.
    */
   async reset(code: StreamResetCode): Promise<void> {
     logger.debug('request_stream', `reset code=${code}`)

@@ -28,13 +28,13 @@ import {
   handlerGoAway,
   handlerGoAwayOnRequestStream,
   handlerPublish,
-  handlerPublishBlocked,
+  handlerPublishSkipped,
   handlerSubscribeNamespace,
   handlerSubscribeTracks,
 } from '.'
 import {
   Publish,
-  PublishBlocked,
+  PublishSkipped,
   PublishNamespace,
   Fetch,
   FetchOk,
@@ -70,7 +70,7 @@ export type RequestStreamMessageHandler<T> = (
 ) => Promise<void>
 
 /**
- * Draft-18 §3.3: the control stream carries SETUP and GOAWAY, nothing else. SETUP is
+ * The control stream carries SETUP and GOAWAY, nothing else. SETUP is
  * consumed by the handshake in {@link MOQtailClient.new}, so GOAWAY is all that reaches
  * the read loop. Every request type has moved to its own bidi stream — see
  * {@link getHandlerForRequestStreamMessage}.
@@ -102,12 +102,9 @@ export function getHandlerForRequestStreamMessage(msg: ControlMessage): RequestS
   if (msg instanceof RequestOk) return handlerRequestOk
   if (msg instanceof RequestError) return handlerRequestError
   // Follow-ups on an open request stream.
-  // GOAWAY is Control *and* Request in Table 5: here it migrates this one request.
   if (msg instanceof GoAway) return handlerGoAwayOnRequestStream
   if (msg instanceof RequestUpdate) return handlerRequestUpdate
   if (msg instanceof PublishDone) return handlerPublishDone
-  // The publisher's answer when the peer's bidi stream limit leaves it no stream to
-  // send a track's PUBLISH on (§10.20). It travels on the SUBSCRIBE_TRACKS stream.
-  if (msg instanceof PublishBlocked) return handlerPublishBlocked
+  if (msg instanceof PublishSkipped) return handlerPublishSkipped
   return undefined
 }

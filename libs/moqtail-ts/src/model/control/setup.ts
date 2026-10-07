@@ -21,11 +21,10 @@ import { greaseValue } from '../common/grease'
 import { LengthExceedsMaxError } from '../error/error'
 
 /**
- * The first message each endpoint sends on its control stream (draft-18 §10.3).
+ * The first message each endpoint sends on its control stream.
  *
  * Both peers send the same message; there are no separate client and server forms and
- * no version fields, since version negotiation happens over ALPN (§3.1). Replaces
- * CLIENT_SETUP / SERVER_SETUP.
+ * no version fields, since version negotiation happens over ALPN.
  *
  * Some options are client-only (see {@link SetupOptionType}); whether a peer is
  * allowed to send a given option depends on which side it is and on the transport,

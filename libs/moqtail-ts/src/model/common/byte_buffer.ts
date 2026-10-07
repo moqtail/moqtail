@@ -234,8 +234,7 @@ export class ByteBuffer extends BaseByteBuffer {
 
   /**
   /**
-  * Encode a MOQT draft-18 varint using the minimal length.
-  * See section 1.4.1 https://datatracker.ietf.org/doc/draft-ietf-moq-transport/
+  * Encode a MOQT varint using the minimal length.
   */
   putVI(v: bigint | number): void {
     const value = typeof v === 'number' ? BigInt(v) : v

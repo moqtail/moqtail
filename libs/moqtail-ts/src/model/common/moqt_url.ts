@@ -28,7 +28,7 @@ export interface MoqtFragment {
 
 /**
  * @public
- * A parsed `moqt://authority/path[?query][#fragment]` URI (draft-18 §3.1).
+ * A parsed `moqt://authority/path[?query][#fragment]` URI.
  *
  * `moqt-URI = "moqt" "://" authority path-abempty [ "?" query ]`, with an optional
  * local-only fragment. `authority` is `host[:port]`; `path` keeps its leading `/`

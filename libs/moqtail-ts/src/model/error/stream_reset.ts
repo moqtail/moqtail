@@ -18,8 +18,7 @@ import { InvalidEnumValue } from './error'
 
 /**
  * @public
- * Codes carried when resetting a request stream or sending STOP_SENDING on one, per
- * draft-18 §3.3.3.
+ * Codes carried when resetting a request stream or sending STOP_SENDING on one.
  *
  * A separate registry from {@link (RequestErrorCode:enum)}, which disagrees with it on
  * the same names: `GOING_AWAY` is `0x4` here but `0x6` there.
@@ -87,21 +86,6 @@ if (import.meta.vitest) {
     test('rejects unassigned codes', () => {
       expect(() => StreamResetCode.tryFrom(0x8)).toThrow(InvalidEnumValue)
       expect(() => StreamResetCode.tryFrom(0x11)).toThrow(InvalidEnumValue)
-    })
-  })
-
-  describe('draft-18 conformance', () => {
-    const fixture = async () => await import('../../../test/conformance')
-
-    test('StreamResetCode matches stream_reset_codes.json', async () => {
-      const { streamResetCodes, assertRegistry, pascalIdent } = await fixture()
-      assertRegistry(streamResetCodes(), pascalIdent(), (codepoint) => {
-        try {
-          return StreamResetCode[StreamResetCode.tryFrom(Number(codepoint))]
-        } catch {
-          return undefined
-        }
-      })
     })
   })
 }

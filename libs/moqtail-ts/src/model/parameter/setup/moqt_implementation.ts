@@ -19,8 +19,8 @@ import { SetupOptionType } from '../constant'
 import { Parameter } from '../parameter'
 
 /**
- * Free-form implementation identification string, e.g. for logging and debugging
- * (draft-18 §10.3.1.5). Either peer may send it.
+ * Free-form implementation identification string, e.g. for logging and debugging.
+ * Either peer may send it.
  */
 export class MoqtImplementation implements Parameter {
   static readonly TYPE = SetupOptionType.MoqtImplementation

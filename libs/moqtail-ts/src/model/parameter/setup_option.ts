@@ -62,7 +62,7 @@ export function assertNoAuthorityOverWebTransport(params: KeyValuePair[]): void 
   if (params.some((p) => Number(p.typeValue) === SetupOptionType.Authority)) {
     throw new ProtocolViolationError(
       'assertNoAuthorityOverWebTransport',
-      'AUTHORITY setup option MUST NOT be sent over WebTransport (draft-18 §10.3.1.1)',
+      'AUTHORITY setup option MUST NOT be sent over WebTransport',
     )
   }
 }

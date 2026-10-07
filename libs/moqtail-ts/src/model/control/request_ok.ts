@@ -39,13 +39,12 @@ import { ObjectDeliveryTimeout } from '../parameter/message/object_delivery_time
  * names (PUBLISH_OK, TRACK_STATUS_OK, ...) are shorthands for logging, not distinct
  * messages. SUBSCRIBE_OK (0x4) and FETCH_OK (0x18) do keep bodies of their own.
  *
- * It carries no Request ID: the request stream it arrives on identifies the request
- * (§10.1).
+ * It carries no Request ID: the request stream it arrives on identifies the request.
  */
 export class RequestOk {
   public readonly parameters: MessageParameter[]
   /**
-   * Draft-18 Track Properties, which the trailing bytes of the payload carry with no
+   * Track Properties, which the trailing bytes of the payload carry with no
    * count of their own. Populated only in TRACK_STATUS_OK; empty for every other request
    * type — see {@link RequestOk.validateTrackProperties}.
    */

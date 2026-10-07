@@ -267,8 +267,6 @@ if (import.meta.vitest) {
       expect((result as SubgroupDeliveryTimeoutProperty).timeoutMs).toBe(2500n)
     })
 
-    // §8: draft-16 rejected 0; draft-18 reads it as "no timeout", matching the
-    // parameter side.
     test('a delivery timeout of 0 means no timeout', () => {
       const kvp = KeyValuePair.tryNewVarInt(TrackPropertyType.ObjectDeliveryTimeout, 0)
       expect(ObjectDeliveryTimeoutProperty.fromKeyValuePair(kvp)?.timeoutMs).toBe(0n)

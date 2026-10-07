@@ -283,10 +283,7 @@ export class RecvStream {
     } catch (error) {
       const peerReset = streamResetCodeOf(error)
       if (peerReset !== undefined) {
-        // The peer reset the stream. That is an ordinary way for one to end in
-        // draft-18, which replaced UNSUBSCRIBE and FETCH_CANCEL with resets, so it is
-        // not an error here -- and there is nothing to cancel back on a stream the
-        // peer has already torn down.
+        // The peer reset the stream. That is an ordinary way for one to end.
         logger.debug('data_stream', `RecvStream reset by peer code=${StreamResetCode[peerReset]}`)
       } else {
         logger.error('data_stream', 'RecvStream ingest loop error', error)

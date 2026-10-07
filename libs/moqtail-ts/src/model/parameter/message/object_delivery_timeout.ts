@@ -54,7 +54,6 @@ if (import.meta.vitest) {
       const pair = KeyValuePair.tryNewVarInt(MessageParameterType.Expires, 100n)
       expect(ObjectDeliveryTimeout.fromKeyValuePair(pair)).toBeUndefined()
     })
-    // §8: draft-16 rejected 0; draft-18 reads it as "no timeout".
     test('a value of 0 means no timeout', () => {
       const pair = KeyValuePair.tryNewVarInt(MessageParameterType.ObjectDeliveryTimeout, 0n)
       expect(ObjectDeliveryTimeout.fromKeyValuePair(pair)?.timeout).toBe(0n)

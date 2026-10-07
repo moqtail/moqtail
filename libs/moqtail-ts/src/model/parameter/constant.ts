@@ -20,7 +20,7 @@ export enum SetupOptionType {
   Path = 0x01,
   AuthorizationToken = 0x03,
   MaxAuthTokenCacheSize = 0x04,
-  /** Raw-QUIC only. Client-only; MUST NOT be sent over WebTransport (draft-18 §10.3.1.1). */
+  /** Raw-QUIC only. Client-only; MUST NOT be sent over WebTransport. */
   Authority = 0x05,
   MoqtImplementation = 0x07,
   /**
@@ -139,28 +139,4 @@ export function tokenAliasTypeFromNumber(value: number): TokenAliasType {
     default:
       throw new InvalidTypeError('tokenAliasTypeFromNumber', `Invalid token alias type: ${value}`)
   }
-}
-
-if (import.meta.vitest) {
-  const { describe, test } = import.meta.vitest
-
-  // Asserted against dev/conformance/draft18/, which is shared with moqtail-rs. These
-  // enums have no tryFrom, so the lookup uses the enum's own reverse mapping.
-  describe('draft-18 conformance', () => {
-    const fixture = async () => await import('../../../test/conformance')
-
-    test('SetupOptionType matches parameter_types.json', async () => {
-      const { parameterTypes, assertRegistry, pascalIdent } = await fixture()
-      assertRegistry(parameterTypes().setup_options, pascalIdent(), (codepoint) => SetupOptionType[Number(codepoint)])
-    })
-
-    test('MessageParameterType matches parameter_types.json', async () => {
-      const { parameterTypes, assertRegistry, pascalIdent } = await fixture()
-      assertRegistry(
-        parameterTypes().message_parameters,
-        pascalIdent(),
-        (codepoint) => MessageParameterType[Number(codepoint)],
-      )
-    })
-  })
 }

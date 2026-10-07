@@ -16,7 +16,7 @@
 
 import { FrozenByteBuffer } from '../common/byte_buffer'
 import { ControlMessageType } from './constant'
-import { PublishBlocked } from './publish_blocked'
+import { PublishSkipped } from './publish_skipped'
 import { PublishNamespace } from './publish_namespace'
 import { Namespace } from './namespace'
 import { NamespaceDone } from './namespace_done'
@@ -40,7 +40,7 @@ import { RequestError } from './request_error'
 
 export type ControlMessage =
   | Publish
-  | PublishBlocked
+  | PublishSkipped
   | PublishDone
   | PublishNamespace
   | Namespace
@@ -106,8 +106,8 @@ export namespace ControlMessage {
         return SubscribeTracks.parsePayload(payload)
       case ControlMessageType.Setup:
         return Setup.parsePayload(payload)
-      case ControlMessageType.PublishBlocked:
-        return PublishBlocked.parsePayload(payload)
+      case ControlMessageType.PublishSkipped:
+        return PublishSkipped.parsePayload(payload)
       default:
         throw new Error(`Unknown or unhandled ControlMessageType: ${messageType}`)
     }

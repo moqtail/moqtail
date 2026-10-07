@@ -39,7 +39,7 @@ import {
   TrackStatus,
   ControlMessageType,
   SUPPORTED_VERSIONS,
-  PublishBlocked,
+  PublishSkipped,
   PublishDone,
   PublishDoneStatusCode,
 } from '../model/control'
@@ -201,7 +201,7 @@ export class MOQtailClient {
 
   /**
    * The bidirectional request stream each locally issued request runs on, keyed by the
-   * requestId of the message that opened it (draft-18 §3.3.2). The stream stays open for
+   * requestId of the message that opened it. The stream stays open for
    * the request's lifetime: responses and follow-ups arrive on it, updates are written to
    * it, and closing it is how the request is cancelled.
    */
@@ -363,12 +363,12 @@ export class MOQtailClient {
   onPeerSubscribeTracks?: (msg: SubscribeTracks) => void
 
   /**
-   * Fired when a PUBLISH_BLOCKED arrives on a {@link MOQtailClient.subscribeTracks}
+   * Fired when a PUBLISH_SKIPPED arrives on a {@link MOQtailClient.subscribeTracks}
    * stream: the peer has a matching track but no bidi stream to send its PUBLISH on
    * until its stream limit lifts (§10.20). `prefix` is the prefix this side subscribed
    * with, which is what the message's suffix hangs off.
    */
-  onPeerPublishBlocked?: (prefix: Tuple, msg: PublishBlocked) => void
+  onPeerPublishSkipped?: (prefix: Tuple, msg: PublishSkipped) => void
 
   /** Fired when a NAMESPACE message arrives on a SUBSCRIBE_NAMESPACE bi-stream (prefix + suffix). */
   onPeerNamespace?: (prefix: Tuple, suffix: Tuple) => void
@@ -1198,7 +1198,7 @@ export class MOQtailClient {
 
     try {
       for (const target of targets) {
-        // Draft-18 §3.3.2: there is no UNSUBSCRIBE. Resetting the subscription's
+        // There is no UNSUBSCRIBE. Resetting the subscription's
         // request stream is what tells the publisher to stop, and the code it reads
         // back off that reset is CANCELLED.
         await this.#resetRequestStream(target.requestId, StreamResetCode.Cancelled)
@@ -1624,7 +1624,7 @@ export class MOQtailClient {
       if (typeof requestId === 'number') requestId = BigInt(requestId)
       const request = this.requests.get(requestId)
       if (request instanceof FetchRequest) {
-        // Draft-18 §3.3.2: there is no FETCH_CANCEL. Resetting the fetch's request
+        // There is no FETCH_CANCEL. Resetting the fetch's request
         // stream with CANCELLED is the cancellation. The FetchRequest stays in
         // `requests` so the objects already in flight still resolve their track name.
         // TODO: mark the fetch's data streams for closure.
@@ -1870,7 +1870,7 @@ export class MOQtailClient {
     this.#ensureActive()
     try {
       this.publishedNamespaces.delete(trackNamespace)
-      // Draft-18 §3.3.2: there is no PUBLISH_NAMESPACE_DONE. Closing the stream the
+      // There is no PUBLISH_NAMESPACE_DONE. Closing the stream the
       // PUBLISH_NAMESPACE opened withdraws the announcement.
       await this.#closeNamespaceRequestStream(trackNamespace)
     } catch (err) {
@@ -2009,7 +2009,7 @@ export class MOQtailClient {
   async unsubscribeNamespace(trackNamespacePrefix: Tuple) {
     this.#ensureActive()
     try {
-      // Draft-18 §3.3.2: there is no UNSUBSCRIBE_NAMESPACE. Closing the stream the
+      // There is no UNSUBSCRIBE_NAMESPACE. Closing the stream the
       // SUBSCRIBE_NAMESPACE opened ends the prefix subscription.
       this.subscribedNamespaces.delete(trackNamespacePrefix)
       await this.#closeNamespaceRequestStream(trackNamespacePrefix)
@@ -2194,8 +2194,6 @@ export class MOQtailClient {
 
   /**
    * Resets the request stream filed under `requestId` with `code`, if it is still open.
-   * §3.3.2: this is how draft-18 cancels a request now that the cancel messages are
-   * gone — the peer reads the code back off the RESET_STREAM.
    */
   async #resetRequestStream(requestId: bigint, code: StreamResetCode): Promise<void> {
     const requestStream = this.#requestStreams.get(requestId)
@@ -2214,9 +2212,7 @@ export class MOQtailClient {
   }
 
   /**
-   * Reads the shared control stream, which after draft-18 §3.3 carries only SETUP and
-   * GOAWAY. SETUP is consumed by the handshake, so GOAWAY is all that is handled here;
-   * every request type has its own bidi stream.
+   * Reads the shared control stream, every request type has its own bidi stream.
    */
   async #handleIncomingControlMessages(): Promise<void> {
     this.#ensureActive()
@@ -2228,12 +2224,9 @@ export class MOQtailClient {
         const handler = getHandlerForControlMessage(msg)
         if (!handler) {
           // Strictly a PROTOCOL_VIOLATION, but the relay still pushes a few messages
-          // here (PUBLISH_DONE, REQUEST_UPDATE fan-out) that draft-18 puts on request
-          // streams. Warn rather than tear the session down until that is cleaned up.
-          logger.warn(
-            'MOQtailClient',
-            `${msg.constructor.name} on the control stream; draft-18 allows only SETUP and GOAWAY there`,
-          )
+          // here (PUBLISH_DONE, REQUEST_UPDATE fan-out).
+          // Warn rather than tear the session down until that is cleaned up.
+          logger.warn('MOQtailClient', `${msg.constructor.name} on the control stream`)
           continue
         }
         await handler(this, msg)
@@ -2847,11 +2840,11 @@ if (import.meta.vitest) {
       await client.disconnect()
     })
 
-    it('surfaces PUBLISH_BLOCKED on the SUBSCRIBE_TRACKS response stream', async () => {
+    it('surfaces PUBLISH_SKIPPED on the SUBSCRIBE_TRACKS response stream', async () => {
       const { client, transport } = await connected()
       const prefix = Tuple.fromUtf8Path('room')
-      const blocked: { prefix: Tuple; msg: PublishBlocked }[] = []
-      client.onPeerPublishBlocked = (subscribedPrefix, msg) => {
+      const blocked: { prefix: Tuple; msg: PublishSkipped }[] = []
+      client.onPeerPublishSkipped = (subscribedPrefix, msg) => {
         blocked.push({ prefix: subscribedPrefix, msg })
       }
 
@@ -2860,7 +2853,7 @@ if (import.meta.vitest) {
       tracksStream.respond(new RequestOk())
       expect((await subscribingTracks).response).toBeInstanceOf(RequestOk)
 
-      tracksStream.respond(new PublishBlocked(Tuple.fromUtf8Path('alice'), new TextEncoder().encode('video')))
+      tracksStream.respond(new PublishSkipped(Tuple.fromUtf8Path('alice'), new TextEncoder().encode('video')))
 
       await vi.waitFor(() => expect(blocked).toHaveLength(1))
       // The message carries the suffix only; the prefix comes from the stream it

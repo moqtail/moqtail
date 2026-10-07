@@ -78,11 +78,6 @@
       "spec": "Section 3.5"
     },
     {
-      "name": "VERSION_NEGOTIATION_FAILED",
-      "value": "0x15",
-      "spec": "Section 3.5"
-    },
-    {
       "name": "MALFORMED_AUTH_TOKEN",
       "value": "0x16",
       "spec": "Section 3.5"

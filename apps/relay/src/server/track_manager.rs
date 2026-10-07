@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use super::subscription::Subscription;
-use super::track::{PublisherRemoval, Track};
+use super::track::Track;
 use crate::server::client::MOQTClient;
 use moqtail::model::common::tuple::Tuple;
 use moqtail::model::control::control_message::ControlMessage;
@@ -205,18 +205,17 @@ impl TrackManager {
     track_aliases.contains_key(&(connection_id, *track_alias))
   }
 
-  /// Clears the alias and the `publishes` entry of a publisher that
-  /// `Track::remove_publisher` has already taken out of its track, as `removal`
-  /// shows, without removing the track itself. Used on every PUBLISH_DONE and
-  /// when a publishing session closes.
+  /// Clears the alias and the `publishes` entry of a publisher, without removing
+  /// the track itself. Used on every PUBLISH_DONE and when a publishing session
+  /// closes. The caller must already have taken the publisher out of its track
+  /// with `Track::remove_publisher`, which returns the alias to pass here.
   ///
   /// Both callers still hold the track's read lock, and `handle_connection_close`
   /// also holds `tracks`, so this takes neither again.
-  pub async fn remove_publisher_alias(&self, removal: PublisherRemoval) {
-    let connection_id = removal.connection_id();
-    let track_alias = removal.alias();
+  pub async fn remove_publisher_alias(&self, connection_id: usize, track_alias: u64) {
     let mut track_aliases = self.track_aliases.write().await;
-    if let Some(track_name) = track_aliases.remove(&(connection_id, track_alias)) {
+    let track_name_opt = track_aliases.remove(&(connection_id, track_alias));
+    if let Some(track_name) = track_name_opt {
       info!(
         "Removed publisher alias {}@{} from track_aliases, track: {}",
         track_alias, connection_id, track_name
@@ -729,17 +728,16 @@ mod tests {
       .remove_publisher(2)
       .await
       .expect("publisher 2 was registered");
-    let still_served = removal.still_served();
-    manager.remove_publisher_alias(removal).await;
+    manager.remove_publisher_alias(2, removal.alias).await;
     // What the caller branches on: the track is thinner, not finished. Everything
     // keyed to the track outliving this PUBLISH_DONE hangs off this flag --
     // dropping it from its subscribers' switching sets among them, which would
     // stop it being gated and let every rendition of its set forward at once.
     assert!(
-      still_served,
+      removal.still_served,
       "publisher 1 is still serving, so the track is not over"
     );
-    if !still_served {
+    if !removal.still_served {
       manager.remove_track(&name).await;
     }
 
@@ -755,7 +753,7 @@ mod tests {
       .remove_publisher(1)
       .await
       .expect("publisher 1 was registered");
-    assert!(!removal.still_served(), "no publishers remain");
+    assert!(!removal.still_served, "no publishers remain");
   }
 
   #[tokio::test]
@@ -878,7 +876,7 @@ mod tests {
       .expect("publisher 1 was registered");
     tokio::time::timeout(
       Duration::from_secs(1),
-      manager.remove_publisher_alias(removal),
+      manager.remove_publisher_alias(1, removal.alias),
     )
     .await
     .expect("removing the alias takes neither the tracks map nor the track again");
@@ -1000,7 +998,7 @@ mod tests {
       .expect("publisher 1 was registered");
     tokio::time::timeout(
       Duration::from_secs(1),
-      manager.remove_publisher_alias(removal),
+      manager.remove_publisher_alias(1, removal.alias),
     )
     .await
     .expect("clearing the publishes entry does not wait for the lookup");

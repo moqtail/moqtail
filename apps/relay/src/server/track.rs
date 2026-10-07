@@ -44,38 +44,18 @@ pub type ActiveSubgroupHeaderMap = Arc<RwLock<HashMap<StreamId, HeaderInfo>>>;
 
 /// What removing one of a track's publishers left behind.
 ///
-/// `still_served()` is the question callers actually have to answer: a track
+/// `still_served` is the question callers actually have to answer: a track
 /// several publishers serve is only finished when the last of them goes, and
 /// until then it is merely thinner. `remove_publisher` already works this out
 /// to decide whether to notify the subscribers, so it reports it rather than
 /// leaving each caller to ask again — and the callers that forgot to ask are
 /// how a track still being published ended up looking finished.
-///
-/// Only `Track::remove_publisher` makes one, for the connection it took out of
-/// the track; `TrackManager::remove_publisher_alias` takes it by value, so each
-/// removal clears that connection's alias once.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PublisherRemoval {
-  connection_id: usize,
-  alias: u64,
-  still_served: bool,
-}
-
-impl PublisherRemoval {
-  /// The connection that was removed.
-  pub fn connection_id(&self) -> usize {
-    self.connection_id
-  }
-
   /// The track alias the removed publisher was using.
-  pub fn alias(&self) -> u64 {
-    self.alias
-  }
-
+  pub alias: u64,
   /// Another publisher is still serving the track, so it is not over.
-  pub fn still_served(&self) -> bool {
-    self.still_served
-  }
+  pub still_served: bool,
 }
 
 /// How many data streams each publisher has finished sending for one track.
@@ -342,7 +322,7 @@ impl Track {
   /// Remove a publisher by connection_id, reporting its alias and whether the
   /// track is still served, or `None` when it was not publishing this track.
   /// If no publishers remain after removal, sends PublisherDisconnected to all subscribers.
-  #[must_use = "pass the removal to TrackManager::remove_publisher_alias"]
+  #[must_use = "clear the alias with TrackManager::remove_publisher_alias"]
   pub async fn remove_publisher(&self, connection_id: usize) -> Option<PublisherRemoval> {
     let (alias, still_served) = self.take_publisher(connection_id).await;
     let alias = alias?;
@@ -361,7 +341,6 @@ impl Track {
     }
 
     Some(PublisherRemoval {
-      connection_id,
       alias,
       still_served,
     })

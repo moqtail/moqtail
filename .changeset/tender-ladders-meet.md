@@ -3,13 +3,15 @@
 'relay': patch
 ---
 
-Add the experimental tier controllers: `enhanced_bp` (0xff02), which explores
+Add the experimental tier controllers: `asd_v11` — ASD v1.1, landed as
+`enhanced_bp` and renamed at the naming pass (0xff02) — which explores
 the quality ladder one rung per clean group until the top or the first
-congestion, then behaves like the backpressure selector; and `bnb` (0xff03),
+congestion, then behaves like the ASD selector; and `bnb` (0xff03),
 which gives each switching set its own rung and reads the subscriber's
-negotiated buffer as the deadline a group has to beat.
+negotiated buffer as the deadline a group has to beat. (BNB is since
+parked: see the rename changeset.)
 
-Both are opt-in on private ids, like the backpressure selector before them:
+Both are opt-in on private ids, like the ASD selector before them:
 `--ssts-algorithms 0,0xff02` to run them. The ids, not the algorithms, are
 negotiated, so a subscriber that asks for one this relay does not run is answered
 with the ids it does.

@@ -12,16 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! The tier state machine behind eeasd, and the readings that move it.
+//! The tier state machine behind wasd, and the readings that move it.
 //!
 //! Pure again: `(state, reading) -> event`, no clock, no transport. The two
 //! readings are the two questions the algorithm asks — what the depth was at
 //! the last group boundary, and what it is right now in the middle of one — and
 //! they are separate types because they are allowed to do different things.
 
-use crate::algorithms::backpressure::state::DEPTH_TARGET;
-use crate::algorithms::backpressure::state::DOWNSHIFT_DEPTH;
-use crate::algorithms::backpressure::state::UPSHIFT_GOP_STREAK;
+use crate::algorithms::asd::state::DEPTH_TARGET;
+use crate::algorithms::asd::state::DOWNSHIFT_DEPTH;
+use crate::algorithms::asd::state::UPSHIFT_GOP_STREAK;
 
 /// Slow start: one uncongested group is enough to try the next tier.
 pub(crate) const SLOW_START_UPSHIFT_STREAK: u64 = 1;

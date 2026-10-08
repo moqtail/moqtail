@@ -18,7 +18,7 @@
 
 use std::collections::HashMap;
 
-use crate::algorithms::backpressure::{BackpressureAlgorithm, BackpressureAlgorithmFactory};
+use crate::algorithms::asd::{AsdAlgorithm, AsdAlgorithmFactory};
 use crate::{
   AbrAlgorithm, AbrAlgorithmFactory, AbrInput, DecisionReason, SetSnapshot, StreamSnapshot,
 };
@@ -27,7 +27,7 @@ use crate::{
 fn set(id: u64, active: bool) -> SetSnapshot {
   SetSnapshot {
     id,
-    algorithm_id: crate::algorithms::backpressure::BACKPRESSURE_ALGORITHM_ID,
+    algorithm_id: crate::algorithms::asd::ASD_ALGORITHM_ID,
     rank: 0,
     weight: 1,
     active,
@@ -68,7 +68,7 @@ fn streams(entries: &[(u64, u64)]) -> Vec<StreamSnapshot> {
 
 /// Run one group through the algorithm and return what the first set forwards.
 fn decide_once(
-  algorithm: &mut BackpressureAlgorithm,
+  algorithm: &mut AsdAlgorithm,
   sets: &[SetSnapshot],
   open: &[StreamSnapshot],
   timeouts: u64,
@@ -99,7 +99,7 @@ fn decide(
   algorithm.decide(&input)
 }
 
-fn climb(algorithm: &mut BackpressureAlgorithm, sets: &[SetSnapshot], groups: usize) {
+fn climb(algorithm: &mut AsdAlgorithm, sets: &[SetSnapshot], groups: usize) {
   let open = streams(&[(1, 1)]);
   for group in 0..groups {
     decide_once(algorithm, sets, &open, 0, group as u64);
@@ -109,7 +109,7 @@ fn climb(algorithm: &mut BackpressureAlgorithm, sets: &[SetSnapshot], groups: us
 #[test]
 fn starts_at_the_lowest_tier() {
   let sets = [set(1, true)];
-  let mut algorithm = BackpressureAlgorithm::new();
+  let mut algorithm = AsdAlgorithm::new();
   // Depth one is the target, so nothing moves: the connection stays where it
   // started until it has shown it can hold a higher tier.
   assert_eq!(
@@ -121,7 +121,7 @@ fn starts_at_the_lowest_tier() {
 #[test]
 fn rises_one_tier_per_five_clear_groups() {
   let sets = [set(1, true)];
-  let mut algorithm = BackpressureAlgorithm::new();
+  let mut algorithm = AsdAlgorithm::new();
   let clear = streams(&[(1, 1)]);
 
   for group in 0..4 {
@@ -146,7 +146,7 @@ fn rises_one_tier_per_five_clear_groups() {
 #[test]
 fn falls_one_tier_at_the_downshift_depth() {
   let sets = [set(1, true)];
-  let mut algorithm = BackpressureAlgorithm::new();
+  let mut algorithm = AsdAlgorithm::new();
   climb(&mut algorithm, &sets, 10);
   assert_eq!(
     decide_once(&mut algorithm, &sets, &streams(&[(1, 1)]), 0, 10),
@@ -167,7 +167,7 @@ fn recovers_as_soon_as_the_streams_that_caused_the_drop_are_gone() {
   // connection that drained its queue can climb again immediately, instead of
   // carrying the memory of a closed stream forever.
   let sets = [set(1, true)];
-  let mut algorithm = BackpressureAlgorithm::new();
+  let mut algorithm = AsdAlgorithm::new();
   climb(&mut algorithm, &sets, 5);
   assert_eq!(
     decide_once(&mut algorithm, &sets, &streams(&[(1, 1)]), 0, 5),
@@ -198,7 +198,7 @@ fn recovers_as_soon_as_the_streams_that_caused_the_drop_are_gone() {
 #[test]
 fn a_timeout_during_cooldown_drops_the_tier_again() {
   let sets = [set(1, true)];
-  let mut algorithm = BackpressureAlgorithm::new();
+  let mut algorithm = AsdAlgorithm::new();
   climb(&mut algorithm, &sets, 15);
   assert_eq!(
     decide_once(&mut algorithm, &sets, &streams(&[(1, 1)]), 0, 15),
@@ -219,7 +219,7 @@ fn a_timeout_during_cooldown_drops_the_tier_again() {
 #[test]
 fn rising_depth_during_cooldown_drops_the_tier_after_two_groups() {
   let sets = [set(1, true)];
-  let mut algorithm = BackpressureAlgorithm::new();
+  let mut algorithm = AsdAlgorithm::new();
   climb(&mut algorithm, &sets, 15);
   assert_eq!(
     decide_once(&mut algorithm, &sets, &streams(&[(1, 1)]), 0, 15),
@@ -244,7 +244,7 @@ fn rising_depth_during_cooldown_drops_the_tier_after_two_groups() {
 #[test]
 fn steady_depth_during_cooldown_never_drops_further() {
   let sets = [set(1, true)];
-  let mut algorithm = BackpressureAlgorithm::new();
+  let mut algorithm = AsdAlgorithm::new();
   climb(&mut algorithm, &sets, 15);
   decide_once(&mut algorithm, &sets, &streams(&[(1, 2)]), 0, 15);
   for group in 16..25 {
@@ -259,7 +259,7 @@ fn steady_depth_during_cooldown_never_drops_further() {
 #[test]
 fn never_drops_below_the_lowest_tier() {
   let sets = [set(1, true)];
-  let mut algorithm = BackpressureAlgorithm::new();
+  let mut algorithm = AsdAlgorithm::new();
   for group in 0..20 {
     assert_eq!(
       decide_once(&mut algorithm, &sets, &streams(&[(1, 9)]), group * 3, group),
@@ -272,7 +272,7 @@ fn never_drops_below_the_lowest_tier() {
 #[test]
 fn an_inactive_set_forwards_nothing() {
   let sets = [set(1, false), set(2, true)];
-  let mut algorithm = BackpressureAlgorithm::new();
+  let mut algorithm = AsdAlgorithm::new();
   let input = AbrInput {
     client_id: 7,
     group_id: 0,
@@ -294,7 +294,7 @@ fn every_active_set_moves_to_the_same_tier() {
   // One index for the whole connection: both sets change quality together,
   // which is what a subscriber with two tracks in two sets should perceive.
   let sets = [set(1, true), set(2, true)];
-  let mut algorithm = BackpressureAlgorithm::new();
+  let mut algorithm = AsdAlgorithm::new();
   // Only set 1 has a stream in flight, so the summed depth stays at the target
   // and the tier can climb.
   let clear = streams(&[(1, 1)]);
@@ -320,7 +320,7 @@ fn two_active_sets_are_pinned_to_the_lowest_tier() {
   // for a single set; the fix is to scale them with the number of active sets.
   // Recorded as a test so the behaviour cannot be mistaken for a regression.
   let sets = [set(1, true), set(2, true)];
-  let mut algorithm = BackpressureAlgorithm::new();
+  let mut algorithm = AsdAlgorithm::new();
   let one_each = streams(&[(1, 1), (2, 1)]);
   for group in 0..30 {
     assert_eq!(
@@ -334,7 +334,7 @@ fn two_active_sets_are_pinned_to_the_lowest_tier() {
 #[test]
 fn the_tier_is_capped_by_the_longest_ladder() {
   let sets = [set(1, true)];
-  let mut algorithm = BackpressureAlgorithm::new();
+  let mut algorithm = AsdAlgorithm::new();
   // Far more clear groups than the ladder has rungs.
   climb(&mut algorithm, &sets, 40);
   assert_eq!(
@@ -355,7 +355,7 @@ fn instances_do_not_share_state() {
   // map; instances must now be independent, which is what makes the contract
   // usable from a single-threaded decision loop without a lock.
   let sets = [set(1, true)];
-  let factory = BackpressureAlgorithmFactory;
+  let factory = AsdAlgorithmFactory;
   let mut first = factory.create(&crate::Tuning::empty());
   let mut second = factory.create(&crate::Tuning::empty());
 

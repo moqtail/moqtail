@@ -20,11 +20,10 @@
 
 use std::sync::{Arc, OnceLock};
 
-use crate::algorithms::backpressure::BackpressureAlgorithmFactory;
-use crate::algorithms::bnb::BnbAlgorithmFactory;
+use crate::algorithms::asd::AsdAlgorithmFactory;
+use crate::algorithms::asd_v11::AsdV11AlgorithmFactory;
 use crate::algorithms::default::DefaultAlgorithmFactory;
-use crate::algorithms::eeasd::EeasdAlgorithmFactory;
-use crate::algorithms::enhanced_bp::EnhancedBackpressureAlgorithmFactory;
+use crate::algorithms::wasd::WasdAlgorithmFactory;
 use crate::{AbrAlgorithm, AbrAlgorithmFactory, Tuning};
 
 /// First algorithm id an implementation may use for its own experiments.
@@ -49,18 +48,29 @@ impl Registry {
       factories: vec![
         // The default allocation, id 0, which every implementation must run.
         Arc::new(DefaultAlgorithmFactory),
-        // MOQtail's own tier selector, at the first private id. Opt-in: it is
-        // only advertised when `ssts_algorithms` asks for it.
-        Arc::new(BackpressureAlgorithmFactory),
-        // The same signal with an exploration phase at the start, at the next
-        // private id. Also opt-in.
-        Arc::new(EnhancedBackpressureAlgorithmFactory),
-        // Budget-negotiated backpressure: the per-set rung index that reads the
-        // subscriber's own buffer as its deadline. Also opt-in.
-        Arc::new(BnbAlgorithmFactory),
-        // The depth read at the tier being delivered, sampled inside the group,
-        // with a downshift that reaches back into the groups it overtook.
-        Arc::new(EeasdAlgorithmFactory),
+        // ASD (Active Stream Depth): the tier walk driven by the count of open
+        // forwarding streams, at the first private id. Opt-in: it is only
+        // advertised when --ssts-algorithms asks for it.
+        Arc::new(AsdAlgorithmFactory),
+        // ASD v1.1: the same signal with an exploration phase at the start, at
+        // the next private id. Also opt-in.
+        Arc::new(AsdV11AlgorithmFactory),
+        // Id 0xff03 (BNB, budget-negotiated backpressure) is deliberately left
+        // unregistered: the algorithm lives on, unadvertised, under
+        // `algorithms::experimental`, and its id stays unused so nothing else
+        // claims it by accident.
+        // WASD (Within-tier Active Stream Depth): the depth read at the tier
+        // being delivered, sampled inside the group. Three versions share that
+        // state machine and differ only in how far a downshift reaches back
+        // into the groups it overtook.
+        // The classic: a downshift is forward-looking only.
+        Arc::new(WasdAlgorithmFactory::CLASSIC),
+        // v2: the downshift also cancels the newest group it overtook and has
+        // it re-sent at the new rung.
+        Arc::new(WasdAlgorithmFactory::V2),
+        // v3: everything older is cancelled too and re-sent a rung below the
+        // new rung — the retroactive double downshift.
+        Arc::new(WasdAlgorithmFactory::V3),
       ],
     }
   }

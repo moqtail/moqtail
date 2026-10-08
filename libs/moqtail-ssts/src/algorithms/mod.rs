@@ -19,11 +19,12 @@
 //! and what it does badly. Nothing here may depend on the host: the contract in
 //! the crate root is the only input.
 
-pub mod backpressure;
-pub mod bnb;
+pub mod asd;
+pub mod asd_v11;
 pub mod default;
-pub mod eeasd;
-pub mod enhanced_bp;
+/// Algorithms parked deliberately: still built and tested, not offered.
+pub mod experimental;
+pub mod wasd;
 
 use crate::{AbrInput, Selection};
 

@@ -1,5 +1,10 @@
 # Budget-negotiated backpressure (BNB)
 
+> **Parked.** BNB is the experimental step *between* the depth signal and the
+> comparison: it keeps the code alive (compiled, tested) but is not registered,
+> so it cannot be advertised or negotiated, and its id `0xff03` is left unused.
+> See [`../mod.rs`](../mod.rs) and the note in the crate registry.
+
 The depth algorithms count streams, which is a quantity without a unit. BNB puts
 a unit on it: the subscriber's own reorder buffer, negotiated in the
 SWITCHING_SET_ASSIGNMENT extension, is how long that subscriber is willing to
@@ -18,7 +23,7 @@ backlog <  safe_factor    * budget   -> climb a rung after a flat-queue streak
 Each **switching set has its own rung index, its own streaks and its own budget**,
 so a subscriber with an audio ladder and three video ladders sees each of them
 move on its own evidence — which is the main difference from
-[`../backpressure`](../backpressure), whose single index moves all of them
+[`../../asd`](../../asd), whose single index moves all of them
 together.
 
 Timeouts are a separate channel rather than an addition to the queue count: a
@@ -75,7 +80,7 @@ trust directly.
 
 **The drain window is a fixed hold, not a condition.** For 1.5 s after a change
 the rung will not move for anything except sustained timeouts — including a real
-collapse that happens the moment after the change. A backpressure-style depth
+collapse that happens the moment after the change. An ASD-style depth signal
 signal would catch it sooner, which is why BNB's behaviour during a window looks
 indifferent if you plot it at 10 Hz.
 
@@ -104,7 +109,7 @@ The research branch this came from read the same five knobs from
 `SSTS_BNB_DOWN_STREAK` and `SSTS_BNB_TO_STREAK`, from inside the algorithm. The
 equivalent now is
 `--ssts-algorithm-params bnb.safe_factor=…,bnb.danger_factor=…`, and the reason
-for the move is in [`../../../README.md`](../../../README.md) under tuning.
+for the move is in [`../../../../README.md`](../../../../README.md) under tuning.
 
 ## Identity
 

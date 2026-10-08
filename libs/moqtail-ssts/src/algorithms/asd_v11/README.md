@@ -1,6 +1,6 @@
-# Backpressure with slow start
+# ASD v1.1 — backpressure with slow start
 
-The depth signal of [`../backpressure`](../backpressure), reached faster at the
+The depth signal of [`../asd`](../asd) (Active Stream Depth), reached faster at the
 start of a connection.
 
 A connection begins on the lowest rung and, while it is exploring, climbs one
@@ -28,7 +28,7 @@ both algorithms are offered and the operator picks per relay.
 ## What it does badly
 
 Everything the base algorithm does badly, which is documented in
-[`../backpressure/README.md`](../backpressure/README.md) and not repeated there
+[`../asd/README.md`](../asd/README.md) and not repeated there
 by reference: summed depth across sets, timeouts counted as queue depth, one
 index for all of a connection's sets.
 
@@ -59,10 +59,12 @@ rungs.
 
 ## State
 
-Per connection, backpressure's `TierState` plus one flag: whether the connection
+Per connection, ASD's `TierState` plus one flag: whether the connection
 is still exploring. The flag is one-way.
 
 ## Identity
 
-Wire id `0xff02` (`PRIVATE_ALGORITHM_ID_BASE + 1`); `2` on the research branch.
-See [`../backpressure/README.md`](../backpressure/README.md) for the mapping.
+Name: **ASD v1.1**, wire id `0xff02` (`PRIVATE_ALGORITHM_ID_BASE + 1`); `2` on
+the research branch, where it was called *enhanced backpressure* (tree name
+`enhanced_bp`, since this directory's `asd_v11`).
+See [`../asd/README.md`](../asd/README.md) for the mapping.

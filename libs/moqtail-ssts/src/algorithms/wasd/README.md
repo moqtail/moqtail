@@ -1,20 +1,43 @@
-# eeasd — depth at the tier, decided inside the group
+# WASD — within-tier ASD, decided inside the group
 
-The third experimental algorithm: [`../enhanced_bp`](../enhanced_bp)'s depth
+**WASD** is *Within-tier Active Stream Depth*: ASD's depth signal counted only
+at the rung actually being delivered. It was named `eeasd` in the tree until
+the rename. Three versions are advertised; they are one state machine and
+differ only in how far a downshift reaches back into the groups it overtook.
+
+The third of the compared algorithms: [`../asd_v11`](../asd_v11)'s depth
 signal, measured only at the quality being delivered, read again while a group is
-still in flight, with a downshift that reaches back into the groups it overtook.
+still in flight, with a downshift that reaches back into the groups it overtook
+(the reach is what the versions tune).
 
-It exists because the other three share an assumption: that a group is the unit
-of time. Groups are the unit the _media_ offers, but the path changes faster than
-25 groups a second, and by the time a group boundary arrives the decision is
-already late. And they all read the connection's whole queue as its congestion,
-which makes the recovery from a downshift look like the problem the downshift was
-meant to fix.
+It exists because the earlier algorithms share an assumption: that a group is
+the unit of time. Groups are the unit the _media_ offers, but the path changes
+faster than 25 groups a second, and by the time a group boundary arrives the
+decision is already late. And they all read the connection's whole queue as its
+congestion, which makes the recovery from a downshift look like the problem the
+downshift was meant to fix.
 
-The decisions behind the retroactive downshift - what was settled, on what
-grounds, and what is deliberately still open - are kept in
-[mental-note.md](mental-note.md), along with where each piece of the mechanism
-lives.
+## The versions
+
+All three walk the same ladder from the same readings — same depth read at
+the delivered tier, same mid-group monitor, same exploration and cautious
+streaks, same `wasd.reads` knob — so the comparison measures exactly one
+thing. On a downshift from 1080p to 720p at group 4, with groups 1–3 still in
+flight at 1080p:
+
+| Name | Wire id | What the downshift does with the groups it overtook |
+| --- | --- | --- |
+| `wasd` (classic) | `0xff04` | Nothing retroactive: group 4 goes out at 720p and groups 1–3 finish at 1080p. |
+| `wasd-v2` | `0xff05` | Cancels the **newest** overtaken group — group 3 — and has it re-sent at 720p. Groups 1 and 2 finish where they are. |
+| `wasd-v3` | `0xff06` | v2 plus one step back: group 3 re-sent at 720p, and the older groups (1, 2) cancelled and re-sent **two rungs below where they were** — 480p after a 1080p→720p drop, floored at the bottom rung. The older a group is, the less of its delivery window the re-send has left to finish inside. |
+
+`wasd-v3` under id `0xff04` is what the tree ran before the versions were
+split out; the staged behaviour now lives at `0xff06` and `0xff04` is the
+classic.
+
+The rationale for reaching back at all, what was settled on the way and what
+is deliberately still open, are kept in [mental-note.md](mental-note.md),
+along with where each piece of the mechanism lives.
 
 ## What it measures
 
@@ -42,6 +65,10 @@ before the climb resumes.
 
 ## What a downshift does to the groups it overtook
 
+(How far this goes is the version: the classic asks for nothing, v2 for the
+newest overtaken group alone at the new rung, v3 for every one of them,
+age-staged as below.)
+
 The selection names the sets whose in-flight deliveries it passed (`supersede`),
 as staged by age: the newest of those groups is re-sent at the member this
 decision selected, and every older one one rung below it (the ladder's bottom
@@ -62,7 +89,7 @@ out, not about whether one happens.
 
 ## Knobs
 
-`eeasd.reads` (default 2): how many consecutive mid-group readings the monitor
+`wasd.reads` (default 2): how many consecutive mid-group readings the monitor
 waits for. It is the only one, and it is the one worth moving, because it is a
 statement about media pacing: on a 25 fps stream with 100 ms groups the default
 filters a normal group tail, and on media whose groups are seconds long the
@@ -108,7 +135,7 @@ them in the order the algorithm defines.
 
 ## What it does badly
 
-**It has no cooldown, which is a claim, not an omission.** eeasd says a
+**It has no cooldown, which is a claim, not an omission.** wasd says a
 downshift drains its own signal, because the streams that were congested are no
 longer at the tier being measured. That is true when the downshift works. When it
 does not — when the depth comes from a subscriber that is simply slow, or from a
@@ -123,6 +150,6 @@ by preferring whichever came last, which is a policy rather than a truth.
 **One tier for the whole connection, still.** Every set the algorithm owns moves
 together, so a connection carrying a 4K ladder and an audio ladder degrades both
 to hear the audio better. This is the assumption that
-[`../bnb`](../bnb) exists to break; eeasd kept it because the research version
+[`../experimental/bnb`](../experimental/bnb) exists to break; wasd kept it because the research version
 compared the depth _signal_, and a per-set index would have changed two things at
 once.

@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Tests for the three things eeasd changes: where the depth is measured, when
-//! it is read, and what a downshift asks the host to do about the groups it
-//! overtook.
+//! Tests for the three things wasd changes: where the depth is measured, when
+//! it is read, and — the one thing the versions differ in — how far a downshift
+//! reaches back into the groups it overtook.
 
 use std::collections::HashMap;
 
@@ -23,14 +23,14 @@ use crate::AbrInput;
 use crate::DecisionReason;
 use crate::SetSnapshot;
 use crate::StreamSnapshot;
-use crate::algorithms::eeasd::EeasdAlgorithm;
+use crate::algorithms::wasd::WasdAlgorithm;
 
 /// A set with a four-rung ladder. The rungs are addressed by index, so tier
 /// `n` of set `id` is track `id * 10 + n`.
 fn set(id: u64, active: bool) -> SetSnapshot {
   SetSnapshot {
     id,
-    algorithm_id: super::EEASD_ALGORITHM_ID,
+    algorithm_id: super::WASD_ALGORITHM_ID,
     rank: 0,
     weight: 1,
     active,
@@ -47,7 +47,7 @@ fn set(id: u64, active: bool) -> SetSnapshot {
 }
 
 /// The same set with the subscriber's reorder buffer filled in, which is what
-/// eeasd halves for a group it causes to be re-sent.
+/// wasd halves for a group it causes to be re-sent.
 fn set_with_buffer(id: u64, subscriber_buffer_ms: u64) -> SetSnapshot {
   SetSnapshot {
     subscriber_buffer_ms,
@@ -113,7 +113,7 @@ fn tier_of(selection: &crate::Selection, set_id: u64) -> usize {
 }
 
 /// `groups` clean boundary readings: the exploration climbs one tier per group.
-fn climb(algorithm: &mut EeasdAlgorithm, sets: &[SetSnapshot], groups: u64) -> usize {
+fn climb(algorithm: &mut WasdAlgorithm, sets: &[SetSnapshot], groups: u64) -> usize {
   let mut tier = 0;
   for group in 0..groups {
     let empty: Vec<StreamSnapshot> = Vec::new();
@@ -126,7 +126,7 @@ fn climb(algorithm: &mut EeasdAlgorithm, sets: &[SetSnapshot], groups: u64) -> u
 #[test]
 fn the_exploration_climbs_one_tier_per_clean_group() {
   let sets = [set(1, true)];
-  let mut algorithm = EeasdAlgorithm::new();
+  let mut algorithm = WasdAlgorithm::new();
 
   for expected in 1usize..=3 {
     let empty: Vec<StreamSnapshot> = Vec::new();
@@ -145,7 +145,7 @@ fn the_exploration_climbs_one_tier_per_clean_group() {
 #[test]
 fn the_depth_counts_only_the_streams_at_the_current_tier() {
   let sets = [set(1, true)];
-  let mut algorithm = EeasdAlgorithm::new();
+  let mut algorithm = WasdAlgorithm::new();
   // Two clean groups: the tier is 2, and six streams are in flight at other
   // rungs of the same set.
   climb(&mut algorithm, &sets, 2);
@@ -177,7 +177,7 @@ fn the_depth_counts_only_the_streams_at_the_current_tier() {
 #[test]
 fn a_resent_stream_is_not_depth() {
   let sets = [set(1, true)];
-  let mut algorithm = EeasdAlgorithm::new();
+  let mut algorithm = WasdAlgorithm::new();
   climb(&mut algorithm, &sets, 2);
   let tier = 2;
 
@@ -202,9 +202,9 @@ fn a_resent_stream_is_not_depth() {
 }
 
 #[test]
-fn a_downshift_asks_to_overtake_the_sets_it_moved_down() {
+fn a_v3_downshift_asks_to_overtake_the_sets_it_moved_down() {
   let sets = [set(1, true), set(2, false)];
-  let mut algorithm = EeasdAlgorithm::new();
+  let mut algorithm = WasdAlgorithm::v3();
   climb(&mut algorithm, &sets, 2);
 
   let congested = [stream(1, track_at(1, 2), 4), stream(1, track_at(1, 2), 5)];
@@ -218,15 +218,103 @@ fn a_downshift_asks_to_overtake_the_sets_it_moved_down() {
     "the re-send is staged by age: the newest overtaken group at the new rung, the older ones one below"
   );
   assert!(
+    !selection.supersede[&1].newest_only,
+    "and it reaches every overtaken group, not just the newest"
+  );
+  assert!(
     !selection.supersede.contains_key(&2),
     "a set with no subscriber has no delivery to overtake"
   );
 }
 
+/// The one thing v2 is: the request stops at the newest overtaken group.
+#[test]
+fn a_v2_downshift_reaches_only_the_newest_overtaken_group() {
+  let sets = [set_with_buffer(1, 800)];
+  let mut algorithm = WasdAlgorithm::v2();
+  climb(&mut algorithm, &sets, 2);
+
+  let congested = [stream(1, track_at(1, 2), 4), stream(1, track_at(1, 2), 5)];
+  let selection = algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 40));
+  assert_eq!(
+    tier_of(&selection, 1),
+    1,
+    "the tier fell, as in every version"
+  );
+  assert!(
+    selection.supersede.contains_key(&1),
+    "the newest overtaken group is named"
+  );
+  assert!(
+    selection.supersede[&1].newest_only,
+    "and the older ones are left to finish where they are"
+  );
+  assert!(
+    !selection.supersede[&1].age_staged,
+    "there is no age to stage when one group is reached"
+  );
+  assert_eq!(
+    selection.resend_deadline_ms(1),
+    Some(400),
+    "the re-send's deadline is halved here too: reach is the only thing v2 changes"
+  );
+}
+
+/// And the one thing classic is: it asks for nothing.
+#[test]
+fn a_classic_downshift_asks_for_nothing() {
+  let sets = [set_with_buffer(1, 800)];
+  let mut algorithm = WasdAlgorithm::new();
+  climb(&mut algorithm, &sets, 2);
+
+  let congested = [stream(1, track_at(1, 2), 4), stream(1, track_at(1, 2), 5)];
+  let selection = algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 40));
+  assert_eq!(
+    tier_of(&selection, 1),
+    1,
+    "the downshift itself is the same walk as in every version"
+  );
+  assert!(
+    selection.supersede.is_empty(),
+    "and the groups already in flight keep delivering the member they were carrying"
+  );
+}
+
+/// The comparison is only worth running if the three versions walk the same:
+/// same readings, same tier, version after version — they differ in one
+/// request, not in the decision.
+#[test]
+fn the_versions_pick_the_same_tiers_from_the_same_readings() {
+  let sets = [set(1, true)];
+  let mut classic = WasdAlgorithm::new();
+  let mut v2 = WasdAlgorithm::v2();
+  let mut v3 = WasdAlgorithm::v3();
+
+  let events = [
+    (DecisionReason::GroupBoundary, Vec::new()),
+    (DecisionReason::GroupBoundary, Vec::from(deep_at(1))),
+    (DecisionReason::GroupBoundary, Vec::new()),
+    (DecisionReason::GroupBoundary, Vec::new()),
+    (DecisionReason::GroupBoundary, Vec::new()),
+    (DecisionReason::GroupBoundary, Vec::new()),
+    (DecisionReason::GroupBoundary, Vec::new()),
+    (DecisionReason::PeriodicSample, Vec::from(deep_at(1))),
+    (DecisionReason::PeriodicSample, Vec::from(deep_at(1))),
+  ];
+  for (group, (reason, streams)) in events.iter().enumerate() {
+    let input = input(&sets, streams, *reason, group as u64);
+    let a = classic.decide(&input);
+    let b = v2.decide(&input);
+    let c = v3.decide(&input);
+    assert_eq!(a.tracks, b.tracks, "classic and v2 chose different tiers");
+    assert_eq!(a.tracks, c.tracks, "classic and v3 chose different tiers");
+  }
+}
+
 #[test]
 fn an_upshift_asks_for_nothing() {
   let sets = [set(1, true)];
-  let mut algorithm = EeasdAlgorithm::new();
+  let mut algorithm = WasdAlgorithm::v3();
   let empty: Vec<StreamSnapshot> = Vec::new();
   let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 1));
   assert_eq!(tier_of(&selection, 1), 1);
@@ -249,7 +337,7 @@ fn deep_at(tier: usize) -> [StreamSnapshot; 2] {
 /// It climbs one rung, meets congestion at that rung — which is what ends the
 /// exploration and drops it to the bottom — and then sees `clean_groups`
 /// uncongested boundaries, five of which buy one rung on the cautious streak.
-fn settle(algorithm: &mut EeasdAlgorithm, sets: &[SetSnapshot], clean_groups: u64) {
+fn settle(algorithm: &mut WasdAlgorithm, sets: &[SetSnapshot], clean_groups: u64) {
   climb(algorithm, sets, 1);
   let congested = deep_at(1);
   algorithm.decide(&input(sets, &congested, DecisionReason::GroupBoundary, 10));
@@ -265,7 +353,7 @@ fn settle(algorithm: &mut EeasdAlgorithm, sets: &[SetSnapshot], clean_groups: u6
 #[test]
 fn one_deep_reading_inside_a_group_is_not_enough() {
   let sets = [set(1, true)];
-  let mut algorithm = EeasdAlgorithm::new();
+  let mut algorithm = WasdAlgorithm::v3();
   settle(&mut algorithm, &sets, 5);
 
   let inside = deep_at(1);
@@ -295,7 +383,7 @@ fn one_deep_reading_inside_a_group_is_not_enough() {
 #[test]
 fn the_monitor_rearms_after_it_fires() {
   let sets = [set(1, true)];
-  let mut algorithm = EeasdAlgorithm::new();
+  let mut algorithm = WasdAlgorithm::new();
   settle(&mut algorithm, &sets, 10);
 
   // Two readings at the tier being served, and the monitor steps down.
@@ -327,7 +415,7 @@ fn the_monitor_rearms_after_it_fires() {
 #[test]
 fn the_monitor_never_interrupts_the_exploration() {
   let sets = [set(1, true)];
-  let mut algorithm = EeasdAlgorithm::new();
+  let mut algorithm = WasdAlgorithm::v3();
   climb(&mut algorithm, &sets, 1);
 
   let inside = [stream(1, track_at(1, 1), 9), stream(1, track_at(1, 1), 10)];
@@ -354,7 +442,7 @@ fn the_monitor_never_interrupts_the_exploration() {
 #[test]
 fn a_stream_timeout_is_not_a_reading() {
   let sets = [set(1, true)];
-  let mut algorithm = EeasdAlgorithm::new();
+  let mut algorithm = WasdAlgorithm::v3();
   climb(&mut algorithm, &sets, 2);
 
   let timeouts = [(1u64, 3u64)].into_iter().collect::<HashMap<u64, u64>>();
@@ -385,7 +473,7 @@ fn a_stream_timeout_is_not_a_reading() {
 #[test]
 fn the_cautious_streak_returns_after_the_exploration_is_over() {
   let sets = [set(1, true)];
-  let mut algorithm = EeasdAlgorithm::new();
+  let mut algorithm = WasdAlgorithm::new();
   // Four clean groups reach the top of a four-rung ladder and end the
   // exploration there.
   let top = climb(&mut algorithm, &sets, 4);
@@ -416,7 +504,7 @@ fn the_cautious_streak_returns_after_the_exploration_is_over() {
 #[test]
 fn a_downshift_asks_for_half_the_negotiated_buffer_on_the_re_send() {
   let sets = [set_with_buffer(1, 800)];
-  let mut algorithm = EeasdAlgorithm::new();
+  let mut algorithm = WasdAlgorithm::v3();
   climb(&mut algorithm, &sets, 2);
 
   let congested = [stream(1, track_at(1, 2), 7), stream(1, track_at(1, 2), 8)];
@@ -440,7 +528,7 @@ fn a_downshift_asks_for_half_the_negotiated_buffer_on_the_re_send() {
 #[test]
 fn a_set_that_negotiated_no_buffer_asks_for_no_deadline() {
   let sets = [set_with_buffer(1, 0)];
-  let mut algorithm = EeasdAlgorithm::new();
+  let mut algorithm = WasdAlgorithm::v3();
   climb(&mut algorithm, &sets, 2);
 
   let congested = [stream(1, track_at(1, 2), 7), stream(1, track_at(1, 2), 8)];
@@ -466,7 +554,7 @@ fn a_set_that_negotiated_no_buffer_asks_for_no_deadline() {
 #[test]
 fn halving_a_buffer_of_one_millisecond_does_not_mean_never() {
   let sets = [set_with_buffer(1, 1)];
-  let mut algorithm = EeasdAlgorithm::new();
+  let mut algorithm = WasdAlgorithm::v3();
   climb(&mut algorithm, &sets, 2);
 
   let congested = [stream(1, track_at(1, 2), 7), stream(1, track_at(1, 2), 8)];

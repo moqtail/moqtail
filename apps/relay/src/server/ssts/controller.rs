@@ -311,7 +311,13 @@ async fn decide(
 /// to be opened are reported to the algorithms as a consequence of the decision
 /// rather than as new congestion.
 ///
-/// When the request stages the re-send by age, the newest of the overtaken
+/// How far back the request reaches is what the newest-only flag says. Without
+/// it every overtaken group is dealt with; with it, only the newest one is, and
+/// the older groups keep being delivered on the member they were already
+/// carrying — no flip, no reset, no re-send mark.
+///
+/// When the request stages the re-send by age — which only means anything for
+/// the reach that takes more than one group — the newest of the overtaken
 /// groups keeps the member the decision selected and every older one is
 /// re-sent one rung below it: the older a group is, the earlier it started,
 /// and the less of its delivery window the re-send has to finish inside. One
@@ -335,7 +341,12 @@ async fn supersede_overtaken(
   groups.sort_unstable();
   groups.dedup();
   let newest = *groups.last().unwrap();
-  let staged_below = if request.age_staged {
+  // A newest-only request reaches no further: every older group keeps the
+  // delivery it is on, and nothing below touches it.
+  if request.newest_only {
+    groups.retain(|group_id| *group_id == newest);
+  }
+  let staged_below = if request.age_staged && !request.newest_only {
     client.ssts.member_one_rung_below(set_id, track_id).await
   } else {
     None
@@ -376,6 +387,7 @@ async fn supersede_overtaken(
       relay_track_id = track,
       group = group_id,
       staged = request.age_staged,
+      newest_only = request.newest_only,
       deadline_ms = request.resend_deadline_ms,
       "SSTS: re-sent an overtaken group"
     );
@@ -385,7 +397,13 @@ async fn supersede_overtaken(
       .await;
   }
 
-  for (_, stream_id) in &overtaken {
+  for (group_id, stream_id) in &overtaken {
+    if !staged.iter().any(|(affected, _)| affected == group_id) {
+      // A group this request does not reach keeps its delivery; resetting
+      // its stream would cancel the very thing newest-only asked to leave
+      // alone.
+      continue;
+    }
     // The delivery was cancelled by a decision, not by a failure or a timeout,
     // and the code on the wire should say so.
     client
@@ -399,6 +417,7 @@ async fn supersede_overtaken(
     relay_track_id = track_id,
     groups = groups.len(),
     staged = request.age_staged,
+    newest_only = request.newest_only,
     streams = overtaken.len(),
     decisions_flipped = flipped,
     "SSTS: overtook the groups in flight for this set"

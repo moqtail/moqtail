@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! The tier state machine behind the backpressure algorithm, with the
+//! The tier state machine behind the ASD algorithm, with the
 //! constants that define its response.
 //!
 //! It is deliberately a pure function of `(state, observation)`: the whole

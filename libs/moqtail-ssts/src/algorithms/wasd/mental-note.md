@@ -1,0 +1,116 @@
+# Mental note — what was decided, and what is still mine to decide
+
+Notes to self about the retroactive downshift: the choices that were made on
+purpose, the ones that were made because they matched what the media actually
+does, and the ones that were left open on purpose. Written so that a future me,
+six weeks and one bad capture from now, does not "fix" a decision by
+re-deriving it from scratch — or mistake an open question for an oversight.
+
+## Decided, and why
+
+**The re-send gets half the negotiated buffer.** Not a fraction, not a knob, half
+— and it is part of what selecting this algorithm _means_: a subscriber that names
+this id has agreed that a group it is already late for gets half the window it
+asked for, once, in exchange for a chance to arrive at all instead of being
+discarded at the end of the full one. The reasoning: the relay is finding out
+whether the _lighter_ delivery makes a deadline, not whether the heavy one did.
+Measured against the deadline the heavy delivery already missed, the answer is
+known before the re-send starts, and it is always the same.
+
+**No buffer, no deadline.** A set that negotiated nothing granted no permission to
+discard its media, and there is nothing to halve. The request carries no deadline
+and the relay's rule of never discarding stays in charge. The floor of 1 ms is an
+edge, not a policy: `0` means _never_ in this contract, so halving a 1 ms buffer
+must not fall through the arithmetic into an infinite deadline.
+
+**The deadline applies to the re-sent group's streams and to nothing else.** Not
+to the delivery that was overtaken, not to the set's other groups.
+
+**Cache miss means no re-send, and that is the whole fallback.** Nothing waits on
+the publisher. If the head is gone — evicted, or this member's copy of the group
+started later — the relay cancels the old delivery and switches on the objects
+that follow. Losing the chance to re-deliver media that was already in the building
+is not a reason to stall a live stream.
+
+**No synthesized subgroup headers.** The replay needs the publisher's own header
+for that subgroup, and without it there is no replay. A synthesized header would
+describe a subgroup whose first object is not the first object being sent, which is
+the one thing the wire format has no answer for; the cache-join path already
+carries that gap knowingly and this path is not going to add a second one. "We
+could not re-send" is a visible, honest outcome.
+
+**Re-send on a new stream, never the reset one.** The overtaken stream was reset;
+a stream that was reset does not become a new delivery.
+
+**Per subgroup, not per group.** The subscriber reassembles subgroups. A sibling
+subgroup's head would be written to a stream the live object never joins — media
+nobody asked for, on a connection that is congested by definition.
+
+**No cutoff on how much of the group was already sent.** This was measured, not
+assumed: the groups that get re-sent are always less than half sent, so a cutoff
+would filter nothing and would only hide the cases where the assumption stops
+holding. If it stops holding (much longer GOPs, much larger groups), the fix is a
+cutoff rule — see the open list.
+
+**Bandwidth duplication is accepted.** A re-send costs a group's bytes twice, on a
+congested link, and may still be discarded. A client that wants ultra-low latency
+gets half-re-sent groups and gaps. That is the nature of streaming, and the
+alternative — never switching mid-group — is the thing this algorithm exists to
+avoid.
+
+**Location bookkeeping is left alone.** Both trackers are max updaters, so
+replaying older objects cannot drag the position the switch context reads
+backwards. A re-send is the one case where media deliberately travels to a point
+the subscriber has been past, and the new stream's own last-object bookkeeping
+starts empty rather than inheriting the overtaken stream's, so the object-id deltas
+on the wire stay correct.
+
+**The replay is triggered by the re-send mark, not by "object > 0 and no
+stream".** Ordinary mid-group joins must not get a replay they did not ask for. The
+mark is set only when a decision overtook the group.
+
+## Still mine to decide
+
+1. **The cutoff**, if the "always less than half sent" observation stops holding —
+   a group that is 95 % delivered should not be re-sent whole. Decide the rule
+   (fraction of the group? remaining bytes vs. the remaining deadline?) when the
+   media changes, not before.
+2. **Streams parked in `finish()` when the downshift fires.** They are not cancelled
+   by the reset — they finish gracefully, and since their group is now marked as a
+   re-send, they close under the _halved_ deadline. That is defensible and it is
+   what happens today. The research branch had a cancel-notify path for them. Decide
+   whether the tail they finish sending is worth the machinery, once it shows up in
+   a capture.
+3. **`wasd.reads` is the only knob.** Whether the half is worth exposing (it should
+   probably stay fixed — it is semantics, not tuning), and whether the monitor's
+   depth thresholds deserve knobs before someone asks for them.
+4. **The dropped `umin` / `rho` extension slots.** They were stored and unused in the
+   research version; here they are gone rather than reserved, because reserving an
+   id space in an unadopted draft is a promise nobody can keep. If the next
+   iteration wants per-set thresholds from the subscriber, they come back as
+   `algorithm_params` — and then the question is what happens to a peer that sends
+   fewer of them than the algorithm expects.
+5. **No end-to-end test of the replay.** The head selection is unit-tested
+   (`cached_head`); the write path — new stream, header, head objects, live objects
+   continuing behind — needs a two-hop harness that does not exist yet. Decide
+   whether to build it before this is offered anywhere as more than an experiment.
+6. **Re-sent bytes and reporting.** They count toward the PUBLISH_DONE stream count
+   (they are real streams) and toward nothing that distinguishes them from fresh
+   media. If REPORTING/STATUS ever needs to explain a duplicate group to a
+   subscriber, that marker has to be invented, and it belongs to the mechanism.
+7. **Multi-subgroup media for real.** The per-subgroup rule is right in principle; it
+   has only been exercised with one subgroup per group, which is what the encoder
+   setup produces. If a publisher ever uses several, watch what happens when only
+   one sibling was in flight at the moment of the downshift.
+
+## Where the pieces live
+
+| Behaviour                                           | Place                                                       |
+| --------------------------------------------------- | ----------------------------------------------------------- |
+| "this group was overtaken" mark, its deadline       | `SwitchingSetManager::resent_groups`, `mark_group_resent`   |
+| which streams the downshift overtook (ladder order) | `SwitchingSetManager::streams_above`                        |
+| cancel, flip the decision, mark re-sent             | `ssts::controller::supersede_overtaken`                     |
+| the deadline on close                               | `MOQTClient::close_stream`, `SstsState::resent_deadline_ms` |
+| the replay itself                                   | `Subscription::replay_cached_head`, `cached_head`           |
+| the head's streams excluded from depth              | `StreamSnapshot::resent`, `AbrInput::open_streams_at_track` |
+| halving, and "no buffer, no deadline"               | `algorithms::wasd::resend_deadline_ms`                     |

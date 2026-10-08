@@ -98,6 +98,20 @@ pub struct Supersede {
   /// ignore the flag: it asks how the re-send is laid out, not whether one
   /// happens.
   pub age_staged: bool,
+  /// Reach only the newest of the overtaken groups.
+  ///
+  /// Without this flag the request covers every group the decision overtook;
+  /// with it, only the newest one is dealt with, and every older group keeps
+  /// being delivered on the member it was already carrying. It is the shape of
+  /// the request an algorithm makes when one retroactive correction is all it
+  /// believes in: the group closest to the decision is the one whose fresh
+  /// objects are still a small share of the delivery, and reaching further
+  /// back spends bytes the subscriber may already have given up on.
+  ///
+  /// There is no age to stage when one group is affected, so a host applies
+  /// `age_staged` only when it is set alongside this flag and nothing requires
+  /// the two to be set together.
+  pub newest_only: bool,
 }
 
 impl Selection {
@@ -162,6 +176,30 @@ impl Selection {
     );
   }
 
+  /// Ask the host to reach back into the newest overtaken group only, leaving
+  /// the older ones to finish on the member they were already carrying.
+  pub fn supersede_newest(&mut self, set_id: u64) {
+    self.supersede.insert(
+      set_id,
+      Supersede {
+        newest_only: true,
+        ..Default::default()
+      },
+    );
+  }
+
+  /// Newest-overtaken-only, and with the re-send's own deadline.
+  pub fn supersede_newest_with_deadline(&mut self, set_id: u64, resend_deadline_ms: u64) {
+    self.supersede.insert(
+      set_id,
+      Supersede {
+        resend_deadline_ms: Some(resend_deadline_ms),
+        newest_only: true,
+        ..Default::default()
+      },
+    );
+  }
+
   /// Age-staged, and with the re-send's own deadline.
   pub fn supersede_age_staged_with_deadline(&mut self, set_id: u64, resend_deadline_ms: u64) {
     self.supersede.insert(
@@ -169,6 +207,7 @@ impl Selection {
       Supersede {
         resend_deadline_ms: Some(resend_deadline_ms),
         age_staged: true,
+        ..Default::default()
       },
     );
   }
@@ -506,7 +545,7 @@ pub trait AbrAlgorithm: Send {
 /// not know which algorithms a given relay runs, and a `Tuning` with a field
 /// for each algorithm would put that knowledge back into the contract. A
 /// parameter is therefore named by the algorithm that reads it
-/// (`"bnb.safe_factor"`) and read with the algorithm's own default, so a relay
+/// (`"wasd.reads"`) and read with the algorithm's own default, so a relay
 /// that sets nothing gets the behaviour the algorithm was written with.
 ///
 /// The host decides where the values come from — command line, environment,
@@ -615,28 +654,24 @@ mod tests {
 
   #[test]
   fn tuning_falls_back_to_the_algorithm_default() {
-    let tuning = Tuning::from_pairs([
-      "bnb.safe_factor=0.4",
-      "bnb.up_streak=7",
-      "bnb.down_streak=three",
-    ]);
-    assert_eq!(tuning.f64("bnb.safe_factor", 0.2), 0.4);
-    assert_eq!(tuning.usize("bnb.up_streak", 3), 7);
+    let tuning = Tuning::from_pairs(["wasd.reads=4", "asd.up_streak=7", "asd.down_streak=three"]);
+    assert_eq!(tuning.usize("wasd.reads", 2), 4);
+    assert_eq!(tuning.usize("asd.up_streak", 3), 7);
     // Unset, and set-but-unparsable, both land on the value the algorithm was
     // written with: a typo in a deployment must not silently become a
     // different number than the one the algorithm was tested against.
-    assert_eq!(tuning.f64("bnb.danger_factor", 0.7), 0.7);
-    assert_eq!(tuning.usize("bnb.down_streak", 1), 1);
+    assert_eq!(tuning.f64("asd.safe_factor", 0.2), 0.2);
+    assert_eq!(tuning.usize("asd.down_streak", 1), 1);
     // Unparsable is still "set", which is what lets an algorithm report the
     // knob it was handed and could not read.
-    assert!(tuning.is_set("bnb.down_streak"));
-    assert!(!tuning.is_set("bnb.danger_factor"));
+    assert!(tuning.is_set("asd.down_streak"));
+    assert!(!tuning.is_set("asd.safe_factor"));
   }
 
   #[test]
   fn tuning_survives_a_malformed_entry_without_losing_the_others() {
-    let tuning = Tuning::from_pairs(["oops", " bnb.safe_factor = 0.5 ", "empty="]);
-    assert_eq!(tuning.f64("bnb.safe_factor", 0.2), 0.5);
+    let tuning = Tuning::from_pairs(["oops", " wasd.reads = 3 ", "empty="]);
+    assert_eq!(tuning.usize("wasd.reads", 2), 3);
     assert_eq!(tuning.values.len(), 2, "the keyless entry is dropped");
   }
 

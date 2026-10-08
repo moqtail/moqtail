@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Backpressure-driven tier selection: how many streams are still in flight,
-//! rather than how much bandwidth is estimated to be available.
+//! ASD (Active Stream Depth) tier selection: how many streams are still in
+//! flight, rather than how much bandwidth is estimated to be available.
 //!
 //! The connection holds one tier index, shared by all its sets. Every active
 //! set forwards the member at that index, clamped to its own ladder, so the
@@ -39,35 +39,35 @@ mod tests;
 
 use state::{Event, Observation, TierState};
 
-/// MOQtail's own tier selector. This is not a registered id: it is the first
-/// value in the range the specification leaves to implementations, so
+/// MOQtail's ASD (Active Stream Depth). This is not a registered id: it is the
+/// first value in the range the specification leaves to implementations, so
 /// experimenting with it cannot collide with a future allocation. See
 /// [`crate::registry::PRIVATE_ALGORITHM_ID_BASE`].
-pub const BACKPRESSURE_ALGORITHM_ID: u64 = crate::registry::PRIVATE_ALGORITHM_ID_BASE;
+pub const ASD_ALGORITHM_ID: u64 = crate::registry::PRIVATE_ALGORITHM_ID_BASE;
 
-/// Factory for [`BackpressureAlgorithm`]: one instance per connection.
-pub struct BackpressureAlgorithmFactory;
+/// Factory for [`AsdAlgorithm`]: one instance per connection.
+pub struct AsdAlgorithmFactory;
 
-impl AbrAlgorithmFactory for BackpressureAlgorithmFactory {
+impl AbrAlgorithmFactory for AsdAlgorithmFactory {
   fn id(&self) -> u64 {
-    BACKPRESSURE_ALGORITHM_ID
+    ASD_ALGORITHM_ID
   }
 
   fn name(&self) -> &'static str {
-    "backpressure"
+    "asd"
   }
 
   fn create(&self, _tuning: &Tuning) -> Box<dyn AbrAlgorithm> {
-    Box::new(BackpressureAlgorithm::new())
+    Box::new(AsdAlgorithm::new())
   }
 }
 
 /// Walks one tier index up and down in response to stream backpressure.
-pub struct BackpressureAlgorithm {
+pub struct AsdAlgorithm {
   state: TierState,
 }
 
-impl BackpressureAlgorithm {
+impl AsdAlgorithm {
   /// A selector that starts at the lowest tier, so a connection has to earn
   /// its way up.
   pub fn new() -> Self {
@@ -77,13 +77,13 @@ impl BackpressureAlgorithm {
   }
 }
 
-impl Default for BackpressureAlgorithm {
+impl Default for AsdAlgorithm {
   fn default() -> Self {
     Self::new()
   }
 }
 
-impl AbrAlgorithm for BackpressureAlgorithm {
+impl AbrAlgorithm for AsdAlgorithm {
   fn decide(&mut self, input: &AbrInput) -> Selection {
     let observation = Observation::new(
       input.active_stream_depth(),
@@ -96,14 +96,14 @@ impl AbrAlgorithm for BackpressureAlgorithm {
         client_id = input.client_id,
         group_id = input.group_id,
         depth = observation.depth,
-        "SSTS backpressure: depth back at target, leaving cooldown"
+        "SSTS asd: depth back at target, leaving cooldown"
       ),
       Event::Upshift { from, to } => tracing::debug!(
         client_id = input.client_id,
         group_id = input.group_id,
         from,
         to,
-        "SSTS backpressure: UPSHIFT"
+        "SSTS asd: UPSHIFT"
       ),
       Event::Downshift { from, to, cause } => tracing::debug!(
         client_id = input.client_id,
@@ -112,7 +112,7 @@ impl AbrAlgorithm for BackpressureAlgorithm {
         to,
         depth = observation.depth,
         ?cause,
-        "SSTS backpressure: DOWNSHIFT"
+        "SSTS asd: DOWNSHIFT"
       ),
     }
 

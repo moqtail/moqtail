@@ -22,15 +22,15 @@ use crate::AbrInput;
 use crate::DecisionReason;
 use crate::SetSnapshot;
 use crate::StreamSnapshot;
-use crate::algorithms::backpressure::BackpressureAlgorithm;
-use crate::algorithms::enhanced_bp::EnhancedBackpressureAlgorithm;
+use crate::algorithms::asd::AsdAlgorithm;
+use crate::algorithms::asd_v11::AsdV11Algorithm;
 
 /// A set with a five-rung ladder. The tests count groups against it, so the
 /// rungs are named by index: tier 0 is track `id*10`, tier 4 is `id*10+4`.
 fn set(id: u64, active: bool) -> SetSnapshot {
   SetSnapshot {
     id,
-    algorithm_id: super::ENHANCED_BACKPRESSURE_ALGORITHM_ID,
+    algorithm_id: super::ASD_V11_ALGORITHM_ID,
     rank: 0,
     weight: 1,
     active,
@@ -99,7 +99,7 @@ fn group(
 #[test]
 fn exploration_climbs_one_tier_per_clean_group() {
   let sets = [set(1, true)];
-  let mut algorithm = EnhancedBackpressureAlgorithm::new();
+  let mut algorithm = AsdV11Algorithm::new();
 
   // The first clean group already moves: a connection with bandwidth it is not
   // using has no reason to wait five groups to start finding out.
@@ -111,10 +111,10 @@ fn exploration_climbs_one_tier_per_clean_group() {
 /// The point of the algorithm, stated against the thing it was built from: the
 /// same evidence, four times the climbing speed at the start.
 #[test]
-fn the_same_clean_run_climbs_faster_than_plain_backpressure() {
+fn the_same_clean_run_climbs_faster_than_plain_asd() {
   let sets = [set(1, true)];
-  let mut exploring = EnhancedBackpressureAlgorithm::new();
-  let mut cautious = BackpressureAlgorithm::new();
+  let mut exploring = AsdV11Algorithm::new();
+  let mut cautious = AsdAlgorithm::new();
 
   for group_id in 0..4 {
     group(&mut exploring, &sets, 1, 0, group_id);
@@ -124,14 +124,14 @@ fn the_same_clean_run_climbs_faster_than_plain_backpressure() {
   assert_eq!(
     group(&mut cautious, &sets, 1, 0, 4),
     Some(11),
-    "plain backpressure has completed one five-group streak"
+    "plain ASD has completed one five-group streak"
   );
 }
 
 #[test]
 fn congestion_ends_the_exploration_and_the_cautious_streak_takes_over() {
   let sets = [set(1, true)];
-  let mut algorithm = EnhancedBackpressureAlgorithm::new();
+  let mut algorithm = AsdV11Algorithm::new();
 
   group(&mut algorithm, &sets, 1, 0, 0);
   group(&mut algorithm, &sets, 1, 0, 1);
@@ -157,7 +157,7 @@ fn congestion_ends_the_exploration_and_the_cautious_streak_takes_over() {
 #[test]
 fn reaching_the_top_ends_the_exploration_without_overshooting() {
   let sets = [set(1, true)];
-  let mut algorithm = EnhancedBackpressureAlgorithm::new();
+  let mut algorithm = AsdV11Algorithm::new();
 
   for group_id in 0..4 {
     group(&mut algorithm, &sets, 1, 0, group_id);
@@ -182,7 +182,7 @@ fn reaching_the_top_ends_the_exploration_without_overshooting() {
 #[test]
 fn an_inactive_set_ends_neither_the_exploration_nor_the_selection() {
   let paused = [set(1, false)];
-  let mut algorithm = EnhancedBackpressureAlgorithm::new();
+  let mut algorithm = AsdV11Algorithm::new();
 
   for group_id in 0..5 {
     assert_eq!(
@@ -205,7 +205,7 @@ fn an_inactive_set_ends_neither_the_exploration_nor_the_selection() {
 #[test]
 fn the_exploration_does_not_restart() {
   let sets = [set(1, true)];
-  let mut algorithm = EnhancedBackpressureAlgorithm::new();
+  let mut algorithm = AsdV11Algorithm::new();
 
   // Congest it straight away: the exploration ends before it has climbed.
   assert_eq!(group(&mut algorithm, &sets, 3, 0, 0), Some(10));
@@ -226,7 +226,7 @@ fn the_exploration_does_not_restart() {
 #[test]
 fn a_stream_timeout_ends_the_exploration() {
   let sets = [set(1, true)];
-  let mut algorithm = EnhancedBackpressureAlgorithm::new();
+  let mut algorithm = AsdV11Algorithm::new();
 
   group(&mut algorithm, &sets, 1, 0, 0);
   // Depth one plus one stream the transport gave up on: two, which is the
@@ -243,7 +243,7 @@ fn one_index_serves_sets_of_different_heights() {
     ..set(2, true)
   };
   let sets = [set(1, true), short];
-  let mut algorithm = EnhancedBackpressureAlgorithm::new();
+  let mut algorithm = AsdV11Algorithm::new();
 
   for group_id in 0..3 {
     let live = streams(&[(1, 1)]);

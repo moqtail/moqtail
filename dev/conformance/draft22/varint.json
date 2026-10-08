@@ -1,9 +1,9 @@
 {
-  "source": "draft-ietf-moq-transport-18 §1.4.1 (Table 1, Table 2)",
+  "source": "draft-ietf-moq-transport-22 §8.1 (Table 3, Table 4)",
   "description": "Variable-length integer encoding. The number of leading 1 bits of the first byte gives length - 1. Values are decimal strings; encodings are lowercase hex without a 0x prefix.",
 
   "lengths": {
-    "description": "Table 1. Summary of integer encodings.",
+    "description": "Table 3. Summary of integer encodings.",
     "entries": [
       { "leading_bits": "0", "length": 1, "usable_bits": 7, "max": "127" },
       { "leading_bits": "10", "length": 2, "usable_bits": 14, "max": "16383" },
@@ -18,7 +18,7 @@
   },
 
   "vectors": {
-    "description": "Table 2. Example integer encodings, verbatim. Entries with minimal=false are non-minimal: they must decode to the value, but encoding the value produces a shorter form.",
+    "description": "Table 4. Example integer encodings, verbatim. Entries with minimal=false are non-minimal: they must decode to the value, but encoding the value produces a shorter form.",
     "entries": [
       { "encoding": "25", "value": "37", "minimal": true },
       { "encoding": "8025", "value": "37", "minimal": false },

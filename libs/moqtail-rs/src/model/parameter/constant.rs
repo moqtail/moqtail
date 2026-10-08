@@ -21,7 +21,9 @@ pub enum SetupOptionType {
   AuthorizationToken = 0x03,
   MaxAuthTokenCacheSize = 0x04,
   Authority = 0x05, // MQOtail does not use this (WebTransport)
+  MaxFilterRanges = 0x06,
   MoqtImplementation = 0x07,
+  MaxRequestUpdates = 0x08,
   // Provisional: sender-side track switching is not in the adopted registry.
   SstsAlgorithms = 0x09,
 }
@@ -35,7 +37,9 @@ impl TryFrom<u64> for SetupOptionType {
       0x03 => Ok(SetupOptionType::AuthorizationToken),
       0x04 => Ok(SetupOptionType::MaxAuthTokenCacheSize),
       0x05 => Ok(SetupOptionType::Authority),
+      0x06 => Ok(SetupOptionType::MaxFilterRanges),
       0x07 => Ok(SetupOptionType::MoqtImplementation),
+      0x08 => Ok(SetupOptionType::MaxRequestUpdates),
       0x09 => Ok(SetupOptionType::SstsAlgorithms),
       _ => Err(ParseError::InvalidType {
         context: "SetupOptionType::try_from(u64)",

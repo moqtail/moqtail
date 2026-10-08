@@ -1,8 +1,8 @@
 {
-  "source": "draft-ietf-moq-transport-18 §9.2.1 (Object Datagram), §9.2.2 (Subgroup Header)",
+  "source": "draft-ietf-moq-transport-22 §11.2.1 (Object Datagram), §11.3.1 (Subgroup Header)",
   "description": "The two data-stream type bytes. Unlike the other fixtures these are bitfields, not registries: a type is valid when its bits satisfy the rules below, so `valid` is the exhaustive set and a stack must reject every byte outside it.",
   "subgroup_header": {
-    "source": "§9.2.2",
+    "source": "§11.3.1",
     "description": "Type byte of a subgroup stream header.",
     "bits": [
       {
@@ -124,7 +124,7 @@
     ]
   },
   "object_datagram": {
-    "source": "§9.2.1",
+    "source": "§11.2.1",
     "description": "Type byte of an object datagram.",
     "bits": [
       {

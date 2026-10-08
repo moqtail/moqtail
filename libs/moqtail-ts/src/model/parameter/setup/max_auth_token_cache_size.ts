@@ -43,9 +43,7 @@ if (import.meta.vitest) {
       expect(param?.maxSize).toBe(123n)
     })
     test('fromKeyValuePair returns undefined for wrong type', () => {
-      // 0x04 is the only varint-valued Setup Option left, so the foil is an unknown even
-      // type value — odd ones cannot carry a varint (§15.4.1).
-      const pair = KeyValuePair.tryNewVarInt(0x06, 123n)
+      const pair = KeyValuePair.tryNewVarInt(SetupOptionType.MaxFilterRanges, 123n)
       const param = MaxAuthTokenCacheSize.fromKeyValuePair(pair)
       expect(param).toBeUndefined()
     })

@@ -1,9 +1,9 @@
 {
-  "source": "draft-ietf-moq-transport-18 §15.8 Table 14, Table 15",
+  "source": "draft-ietf-moq-transport-22 §16.8 Table 15, Table 16",
   "description": "Property types. Scope is Track, Object, or both. Endpoints MUST ignore unknown Property types, skipping them using the length field. Even type values use VarInt KVP encoding; odd type values use Bytes KVP encoding.",
   "greasing": {
     "formula": "0x7f * N + 0x9D",
-    "spec": "Section 14",
+    "spec": "Section 13",
     "scope": "Any"
   },
   "ranges": {
@@ -32,7 +32,7 @@
       {
         "from": "0x4000",
         "to": "0x7FFF",
-        "policy": "Reserved for Mandatory Track Properties (§2.5.1). Properties registered in this range MUST have Track scope; Object scope properties MUST NOT be registered in this range."
+        "policy": "Reserved for Mandatory Track Properties (§3.7). Properties registered in this range MUST have Track scope; Object scope properties MUST NOT be registered in this range."
       },
       {
         "from": "0x8000",
@@ -46,59 +46,59 @@
       "name": "OBJECT_DELIVERY_TIMEOUT",
       "value": "0x02",
       "scope": "Track",
-      "spec": "Section 12.2"
+      "spec": "Section 10.2"
     },
     {
       "name": "MAX_CACHE_DURATION",
       "value": "0x04",
       "scope": "Track",
-      "spec": "Section 12.3"
+      "spec": "Section 10.3"
     },
     {
       "name": "SUBGROUP_DELIVERY_TIMEOUT",
       "value": "0x06",
       "scope": "Track",
-      "spec": "Section 12.1"
+      "spec": "Section 10.1"
     },
     {
       "name": "IMMUTABLE_PROPERTIES",
       "value": "0x0B",
       "scope": "Track, Object",
-      "spec": "Section 12.7"
+      "spec": "Section 10.7"
     },
     {
       "name": "DEFAULT_PUBLISHER_PRIORITY",
       "value": "0x0E",
       "scope": "Track",
-      "spec": "Section 12.4"
+      "spec": "Section 10.4"
     },
     {
       "name": "DEFAULT_PUBLISHER_GROUP_ORDER",
       "value": "0x22",
       "scope": "Track",
-      "spec": "Section 12.5"
+      "spec": "Section 10.5"
     },
     {
       "name": "DYNAMIC_GROUPS",
       "value": "0x30",
       "scope": "Track",
-      "spec": "Section 12.6"
+      "spec": "Section 10.6"
     },
     {
       "name": "PRIOR_GROUP_ID_GAP",
       "value": "0x3C",
       "scope": "Object",
-      "spec": "Section 12.8"
+      "spec": "Section 10.8"
     },
     {
       "name": "PRIOR_OBJECT_ID_GAP",
       "value": "0x3E",
       "scope": "Object",
-      "spec": "Section 12.9"
+      "spec": "Section 10.9"
     }
   ],
   "provisional": {
-    "source": "§15.8 Table 15",
+    "source": "§16.8 Table 16",
     "description": "Provisional registrations for other active drafts in the moq working group. These share the same Property Type space as the entries above, so they are not a private namespace and must not collide with it. Both stacks carry ids from an older revision of draft-ietf-moq-loc.",
     "entries": [
       {

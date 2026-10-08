@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use anyhow::Result;
+use moqtail::model::parameter::setup_option::SetupOption;
 use moqtail::model::{
   common::reason_phrase::ReasonPhrase,
   control::{
@@ -1100,15 +1101,23 @@ impl Session {
     utils::print_msg_bytes(&client_setup);
 
     let moqt_implementation_param =
-      moqtail::model::parameter::setup_option::SetupOption::new_moqt_implementation(
-        env!("MOQTAIL_VERSION").to_string(),
-      )
+      SetupOption::new_moqt_implementation(env!("MOQTAIL_VERSION").to_string())
+        .try_into()
+        .unwrap();
+
+    // TODO: get these from the config when the relay enforces them.
+    // MAX_FILTER_RANGES 0 forbids the peer from sending Range filters, which the
+    // relay does not support yet. MAX_REQUEST_UPDATES 0 means no limit.
+    let max_filter_ranges = SetupOption::new_max_filter_ranges(0u64).try_into().unwrap();
+    let max_request_updates_param = SetupOption::new_max_request_updates(0u64)
       .try_into()
       .unwrap();
 
-    // The setup option and message parameter SSTS relies on are provisional,
-    // so a relay that has not opted in never puts them on the wire.
-    let mut setup_options = vec![moqt_implementation_param];
+    let mut setup_options = vec![
+      max_filter_ranges,
+      moqt_implementation_param,
+      max_request_updates_param,
+    ];
     if context.server_config.ssts_enable {
       setup_options.push(
         moqtail::model::parameter::setup_option::SetupOption::new_ssts_algorithms(

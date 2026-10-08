@@ -22,7 +22,9 @@ export enum SetupOptionType {
   MaxAuthTokenCacheSize = 0x04,
   /** Raw-QUIC only. Client-only; MUST NOT be sent over WebTransport. */
   Authority = 0x05,
+  MaxFilterRanges = 0x06,
   MoqtImplementation = 0x07,
+  MaxRequestUpdates = 0x08,
   /**
    * PROVISIONAL: sender-side track switching is not an adopted extension, so this
    * codepoint is absent from the registry the conformance fixture tracks. It sits in the
@@ -41,8 +43,12 @@ export function setupOptionTypeFromNumber(value: number): SetupOptionType {
       return SetupOptionType.MaxAuthTokenCacheSize
     case 0x05:
       return SetupOptionType.Authority
+    case 0x06:
+      return SetupOptionType.MaxFilterRanges
     case 0x07:
       return SetupOptionType.MoqtImplementation
+    case 0x08:
+      return SetupOptionType.MaxRequestUpdates
     case 0x09:
       return SetupOptionType.SstsAlgorithms
     default:

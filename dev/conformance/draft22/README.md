@@ -11,16 +11,16 @@ be diffed against the draft without reading any code.
 
 ## Files
 
-| File                       | Source                                                              |
-| -------------------------- | ------------------------------------------------------------------- |
-| `varint.json`              | §1.4.1 Table 1 and Table 2, plus non-minimal and boundary cases     |
-| `message_types.json`       | §10 Table 5 — control message types and the Stream column           |
-| `parameter_types.json`     | §15.4 Table 10 (Setup Options), §15.7 Table 13 (Message Parameters) |
-| `property_types.json`      | §15.8 Table 14, Table 15 (provisional), and the range policy        |
-| `stream_reset_codes.json`  | §3.3.3, §15.10.4 Table 20                                           |
-| `request_error_codes.json` | §15.10.2 Table 18                                                   |
-| `termination_codes.json`   | §15.10.1 Table 17                                                   |
-| `data_stream_types.json`   | §9.2.1, §9.2.2 — the object datagram and subgroup header type bytes |
+| File                       | Source                                                                |
+| -------------------------- | --------------------------------------------------------------------- |
+| `varint.json`              | §8.1 Table 3 and Table 4, plus non-minimal and boundary cases         |
+| `message_types.json`       | §9 Table 5 — control message types and the Stream column              |
+| `parameter_types.json`     | §16.4 Table 11 (Setup Options), §16.7 Table 14 (Message Parameters)   |
+| `property_types.json`      | §16.8 Table 15, Table 16 (provisional), and the range policy          |
+| `stream_reset_codes.json`  | §12.5, §16.11.4 Table 22                                              |
+| `request_error_codes.json` | §16.11.2 Table 20                                                     |
+| `termination_codes.json`   | §16.11.1 Table 19                                                     |
+| `data_stream_types.json`   | §11.2.1, §11.3.1 — the object datagram and subgroup header type bytes |
 
 ## Conventions
 

@@ -37,6 +37,7 @@ pub enum TerminationCode {
   ExpiredAuthToken = 0x18,
   InvalidAuthority = 0x19,
   MalformedAuthority = 0x1A,
+  TooManyRequestUpdates = 0x1B,
 }
 
 impl TerminationCode {

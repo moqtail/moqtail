@@ -16,13 +16,28 @@
 
 import { KeyValuePair } from '../common/pair'
 import { greaseValue } from '../common/grease'
-import { Path, MaxAuthTokenCacheSize, Authority, MoqtImplementation, SstsAlgorithms } from './setup'
+import {
+  Path,
+  MaxAuthTokenCacheSize,
+  Authority,
+  MaxFilterRanges,
+  MoqtImplementation,
+  MaxRequestUpdates,
+  SstsAlgorithms,
+} from './setup'
 import { AuthorizationToken } from './common'
 import { SetupOptionType, TokenAliasType } from './constant'
 import { ProtocolViolationError } from '../error/error'
 
 export type SetupOption =
-  Path | MaxAuthTokenCacheSize | AuthorizationToken | Authority | MoqtImplementation | SstsAlgorithms
+  | Path
+  | MaxAuthTokenCacheSize
+  | AuthorizationToken
+  | Authority
+  | MaxFilterRanges
+  | MoqtImplementation
+  | MaxRequestUpdates
+  | SstsAlgorithms
 export namespace SetupOption {
   export function fromKeyValuePair(pair: KeyValuePair): SetupOption | undefined {
     return (
@@ -30,7 +45,9 @@ export namespace SetupOption {
       MaxAuthTokenCacheSize.fromKeyValuePair(pair) ||
       AuthorizationToken.fromKeyValuePair(pair) ||
       Authority.fromKeyValuePair(pair) ||
+      MaxFilterRanges.fromKeyValuePair(pair) ||
       MoqtImplementation.fromKeyValuePair(pair) ||
+      MaxRequestUpdates.fromKeyValuePair(pair) ||
       SstsAlgorithms.fromKeyValuePair(pair)
     )
   }
@@ -48,6 +65,12 @@ export namespace SetupOption {
   }
   export function isAuthority(param: SetupOption): param is Authority {
     return param instanceof Authority
+  }
+  export function isMaxFilterRanges(param: SetupOption): param is MaxFilterRanges {
+    return param instanceof MaxFilterRanges
+  }
+  export function isMaxRequestUpdates(param: SetupOption): param is MaxRequestUpdates {
+    return param instanceof MaxRequestUpdates
   }
   export function isMoqtImplementation(param: SetupOption): param is MoqtImplementation {
     return param instanceof MoqtImplementation
@@ -85,6 +108,16 @@ export class SetupOptions {
     return this
   }
 
+  addMaxFilterRanges(value: bigint | number): this {
+    this.kvps.push(new MaxFilterRanges(BigInt(value)).toKeyValuePair())
+    return this
+  }
+
+  addMaxRequestUpdates(value: bigint | number): this {
+    this.kvps.push(new MaxRequestUpdates(BigInt(value)).toKeyValuePair())
+    return this
+  }
+
   addMoqtImplementation(info: string): this {
     this.kvps.push(new MoqtImplementation(info).toKeyValuePair())
     return this
@@ -112,7 +145,9 @@ export class SetupOptions {
         MaxAuthTokenCacheSize.fromKeyValuePair(kvp) ||
         AuthorizationToken.fromKeyValuePair(kvp) ||
         Authority.fromKeyValuePair(kvp) ||
+        MaxFilterRanges.fromKeyValuePair(kvp) ||
         MoqtImplementation.fromKeyValuePair(kvp) ||
+        MaxRequestUpdates.fromKeyValuePair(kvp) ||
         SstsAlgorithms.fromKeyValuePair(kvp)
       if (parsed) result.push(parsed)
     }
@@ -132,9 +167,11 @@ if (import.meta.vitest) {
         .addRaw(new Authority('example.com').toKeyValuePair())
         .addMoqtImplementation('moqtail-ts/0.1')
         .addSstsAlgorithms([0n, 0xff00n])
+        .addMaxFilterRanges(4)
+        .addMaxRequestUpdates(0n)
         .build()
       const parsed = SetupOptions.fromKeyValuePairs(kvps)
-      expect(parsed.length).toBe(6)
+      expect(parsed.length).toBe(8)
       expect(parsed[0] && SetupOption.isPath(parsed[0]) && parsed[0].moqtPath === 'abc').toBe(true)
       expect(parsed[1] && SetupOption.isMaxAuthTokenCacheSize(parsed[1]) && parsed[1].maxSize === 123n).toBe(true)
       expect(
@@ -145,6 +182,8 @@ if (import.meta.vitest) {
       expect(parsed[3] && SetupOption.isAuthority(parsed[3]) && parsed[3].authority === 'example.com').toBe(true)
       expect(parsed[4] && SetupOption.isMoqtImplementation(parsed[4]) && parsed[4].info === 'moqtail-ts/0.1').toBe(true)
       expect(parsed[5] && SetupOption.isSstsAlgorithms(parsed[5]) && parsed[5].algorithms.length === 2).toBe(true)
+      expect(parsed[6] && SetupOption.isMaxFilterRanges(parsed[6]) && parsed[6].value === 4n).toBe(true)
+      expect(parsed[7] && SetupOption.isMaxRequestUpdates(parsed[7]) && parsed[7].value === 0n).toBe(true)
     })
     test('fromKeyValuePairs skips unknown parameter', () => {
       const unknown = KeyValuePair.tryNewVarInt(998, 1n)

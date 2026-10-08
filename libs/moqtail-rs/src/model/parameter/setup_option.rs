@@ -33,8 +33,14 @@ pub enum SetupOption {
   Authority {
     authority: String,
   },
+  MaxFilterRanges {
+    value: u64,
+  },
   MoqtImplementation {
     info: String,
+  },
+  MaxRequestUpdates {
+    value: u64,
   },
   /// The sender-side track switching algorithms this endpoint supports. An
   /// empty list — or the absence of this option — prohibits the use of SSTS.
@@ -61,8 +67,16 @@ impl SetupOption {
     SetupOption::MaxAuthTokenCacheSize { max_size }
   }
 
+  pub fn new_max_filter_ranges(value: u64) -> Self {
+    SetupOption::MaxFilterRanges { value }
+  }
+
   pub fn new_moqt_implementation(info: String) -> Self {
     SetupOption::MoqtImplementation { info }
+  }
+
+  pub fn new_max_request_updates(value: u64) -> Self {
+    SetupOption::MaxRequestUpdates { value }
   }
 
   pub fn new_ssts_algorithms(algorithms: Vec<u64>) -> Self {
@@ -99,12 +113,22 @@ impl SetupOption {
         let slice = kvp.serialize()?;
         bytes.extend_from_slice(&slice);
       }
+      Self::MaxFilterRanges { value } => {
+        let kvp = KeyValuePair::try_new_varint(SetupOptionType::MaxFilterRanges as u64, *value)?;
+        let slice = kvp.serialize()?;
+        bytes.extend_from_slice(&slice);
+      }
       Self::MoqtImplementation { info } => {
         let data = info.as_bytes();
         let kvp = KeyValuePair::try_new_bytes(
           SetupOptionType::MoqtImplementation as u64,
           Bytes::copy_from_slice(data),
         )?;
+        let slice = kvp.serialize()?;
+        bytes.extend_from_slice(&slice);
+      }
+      Self::MaxRequestUpdates { value } => {
+        let kvp = KeyValuePair::try_new_varint(SetupOptionType::MaxRequestUpdates as u64, *value)?;
         let slice = kvp.serialize()?;
         bytes.extend_from_slice(&slice);
       }
@@ -137,6 +161,10 @@ impl SetupOption {
         match type_value {
           SetupOptionType::MaxAuthTokenCacheSize => {
             Ok(SetupOption::MaxAuthTokenCacheSize { max_size: *value })
+          }
+          SetupOptionType::MaxFilterRanges => Ok(SetupOption::MaxFilterRanges { value: *value }),
+          SetupOptionType::MaxRequestUpdates => {
+            Ok(SetupOption::MaxRequestUpdates { value: *value })
           }
           _ => Err(ParseError::KeyValueFormattingError {
             context: "SetupOption::deserialize",
@@ -205,10 +233,16 @@ impl TryInto<KeyValuePair> for SetupOption {
       SetupOption::MaxAuthTokenCacheSize { max_size } => {
         KeyValuePair::try_new_varint(SetupOptionType::MaxAuthTokenCacheSize as u64, max_size)
       }
+      SetupOption::MaxFilterRanges { value } => {
+        KeyValuePair::try_new_varint(SetupOptionType::MaxFilterRanges as u64, value)
+      }
       SetupOption::MoqtImplementation { info } => KeyValuePair::try_new_bytes(
         SetupOptionType::MoqtImplementation as u64,
         Bytes::copy_from_slice(info.as_bytes()),
       ),
+      SetupOption::MaxRequestUpdates { value } => {
+        KeyValuePair::try_new_varint(SetupOptionType::MaxRequestUpdates as u64, value)
+      }
       SetupOption::Authority { authority } => KeyValuePair::try_new_bytes(
         SetupOptionType::Authority as u64,
         Bytes::copy_from_slice(authority.as_bytes()),
@@ -262,6 +296,24 @@ mod tests {
     let kvp = KeyValuePair::deserialize(&mut buf).unwrap();
     let got = SetupOption::deserialize(&kvp).unwrap();
     assert_eq!(orig, got);
+    assert_eq!(buf.remaining(), 0);
+  }
+
+  #[test]
+  fn test_roundtrip_max_filter_ranges() {
+    let orig = SetupOption::new_max_filter_ranges(5);
+    let mut buf = orig.serialize().unwrap();
+    let kvp = KeyValuePair::deserialize(&mut buf).unwrap();
+    assert_eq!(SetupOption::deserialize(&kvp).unwrap(), orig);
+    assert_eq!(buf.remaining(), 0);
+  }
+
+  #[test]
+  fn test_roundtrip_max_request_updates() {
+    let orig = SetupOption::new_max_request_updates(9);
+    let mut buf = orig.serialize().unwrap();
+    let kvp = KeyValuePair::deserialize(&mut buf).unwrap();
+    assert_eq!(SetupOption::deserialize(&kvp).unwrap(), orig);
     assert_eq!(buf.remaining(), 0);
   }
 

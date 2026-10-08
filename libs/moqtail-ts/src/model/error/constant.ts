@@ -36,6 +36,7 @@ export enum TerminationCode {
   EXPIRED_AUTH_TOKEN = 0x18,
   INVALID_AUTHORITY = 0x19,
   MALFORMED_AUTHORITY = 0x1a,
+  TOO_MANY_REQUEST_UPDATES = 0x1b,
 }
 
 export namespace TerminationCode {
@@ -85,6 +86,8 @@ export namespace TerminationCode {
         return TerminationCode.INVALID_AUTHORITY
       case TerminationCode.MALFORMED_AUTHORITY:
         return TerminationCode.MALFORMED_AUTHORITY
+      case TerminationCode.TOO_MANY_REQUEST_UPDATES:
+        return TerminationCode.TOO_MANY_REQUEST_UPDATES
       default:
         throw new InvalidTypeError('TerminationCode.tryFrom', `Unknown termination code: ${code}`)
     }
@@ -103,7 +106,7 @@ if (import.meta.vitest) {
     })
 
     test('throws on a code outside the enum', () => {
-      expect(() => TerminationCode.tryFrom(0x1b)).toThrow(InvalidTypeError)
+      expect(() => TerminationCode.tryFrom(0x1c)).toThrow(InvalidTypeError)
     })
   })
 }

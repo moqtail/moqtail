@@ -20,7 +20,7 @@ import { ControlMessageHandler, RequestStreamMessageHandler } from './handler'
 import { logger } from '../../util/logger'
 
 export const handlerGoAway: ControlMessageHandler<GoAway> = async (client, msg) => {
-  logger.log('handler/goaway', 'newSessionUri', msg.newSessionUri, 'timeout', msg.timeout, 'requestId', msg.requestId)
+  logger.log('handler/goaway', 'newSessionUri', msg.newSessionUri, 'timeout', msg.timeout)
   if (client.goawayReceived) {
     await client.disconnect(
       new ProtocolViolationError('handler/goaway', 'A second GOAWAY arrived on the control stream'),

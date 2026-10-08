@@ -23,7 +23,7 @@ export const MAX_NEW_SESSION_URI_LENGTH = 8192
 
 /**
  * GOAWAY (0x10) winds down a session, or — on a request stream — migrates that one
- * request (§10.4).
+ * request.
  */
 export class GoAway {
   newSessionUri?: string | undefined
@@ -33,20 +33,14 @@ export class GoAway {
    * on a request stream it resets the stream with `GOING_AWAY`.
    */
   readonly timeout: bigint
-  /**
-   * The smallest peer Request ID that was not or might not have been processed. Present
-   * only on the control stream, so a GOAWAY migrating a single request omits it.
-   */
-  readonly requestId?: bigint | undefined
 
-  constructor(newSessionUri?: string, timeout: bigint = 0n, requestId?: bigint) {
+  constructor(newSessionUri?: string, timeout: bigint = 0n) {
     if (newSessionUri && newSessionUri.length === 0) {
       this.newSessionUri = undefined
     } else {
       this.newSessionUri = newSessionUri
     }
     this.timeout = timeout
-    this.requestId = requestId
   }
 
   getType(): ControlMessageType {
@@ -73,7 +67,7 @@ export class GoAway {
       payload.putVI(0)
     }
     payload.putVI(this.timeout)
-    if (this.requestId !== undefined) payload.putVI(this.requestId)
+
     const payloadBytes = payload.toUint8Array()
     if (payloadBytes.length > 0xffff) {
       throw new LengthExceedsMaxError('GoAway::serialize(payloadBytes.length)', 0xffff, payloadBytes.length)
@@ -109,48 +103,16 @@ export class GoAway {
     }
 
     const timeout = buf.getVI()
-    // Request ID is present only on the control stream, so it is optional and trailing.
-    // The outer Length field is what bounds it.
-    const requestId = buf.remaining > 0 ? buf.getVI() : undefined
 
-    return new GoAway(newSessionUri, timeout, requestId)
+    return new GoAway(newSessionUri, timeout)
   }
 }
 
 if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
   describe('GoAway', () => {
-    test('roundtrip with a request id, as sent on the control stream', () => {
-      const goAway = new GoAway('Begone wreched monster', 5000n, 12n)
-      const serialized = goAway.serialize()
-      const buf = new ByteBuffer()
-      buf.putBytes(serialized.toUint8Array())
-      const frozen = buf.freeze()
-      const msgType = frozen.getVI()
-      expect(msgType).toBe(BigInt(ControlMessageType.GoAway))
-      const msgLength = frozen.getU16()
-      expect(msgLength).toBe(frozen.remaining)
-      const deserialized = GoAway.parsePayload(frozen)
-      expect(deserialized.newSessionUri).toBe(goAway.newSessionUri)
-      expect(deserialized.timeout).toBe(5000n)
-      expect(deserialized.requestId).toBe(12n)
-      expect(frozen.remaining).toBe(0)
-    })
-
-    test('roundtrip without a request id, as sent on a request stream', () => {
-      const goAway = new GoAway(undefined, 250n)
-      const frozen = goAway.serialize()
-      frozen.getVI()
-      frozen.getU16()
-      const deserialized = GoAway.parsePayload(frozen)
-      expect(deserialized.newSessionUri).toBeUndefined()
-      expect(deserialized.timeout).toBe(250n)
-      expect(deserialized.requestId).toBeUndefined()
-      expect(frozen.remaining).toBe(0)
-    })
-
-    test('excess roundtrip', () => {
-      const goAway = new GoAway('Begone wreched monster', 0n, 4n)
+    test('roundtrip', () => {
+      const goAway = new GoAway('Begone wreched monster', 0n)
       const serialized = goAway.serialize().toUint8Array()
       const excess = new Uint8Array(serialized.length + 3)
       excess.set(serialized, 0)
@@ -167,7 +129,6 @@ if (import.meta.vitest) {
       const payload = new FrozenByteBuffer(frozen.getBytes(msgLength))
       const deserialized = GoAway.parsePayload(payload)
       expect(deserialized.newSessionUri).toBe(goAway.newSessionUri)
-      expect(deserialized.requestId).toBe(4n)
       expect(Array.from(frozen.getBytes(3))).toEqual([9, 1, 1])
     })
 

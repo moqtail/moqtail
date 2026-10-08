@@ -208,7 +208,7 @@ export class MOQtailClient {
   readonly #requestStreams: Map<bigint, RequestStream> = new Map()
 
   /**
-   * Request ids of requests re-issued after a per-request GOAWAY (§10.4), which consumes
+   * Request ids of requests re-issued after a per-request GOAWAY, which consumes
    * a fresh Request ID each time (§10.1). The id the caller was given stays the client's
    * key for the request; these two maps translate it to and from the id now on the wire.
    */
@@ -274,7 +274,7 @@ export class MOQtailClient {
 
   /**
    * Whether the peer has sent a GOAWAY on the control stream. Once it has, this side
-   * should not start new requests (§10.4); a second one closes the session with
+   * should not start new requests; a second one closes the session with
    * PROTOCOL_VIOLATION.
    */
   goawayReceived = false
@@ -3137,7 +3137,7 @@ if (import.meta.vitest) {
       const subscribingTracks = client.subscribeTracks(Tuple.fromUtf8Path('room'))
       const tracksStream = await openedStream(transport, 1)
 
-      // §10.4: a GOAWAY on a request stream migrates that request and nothing else. No
+      // A GOAWAY on a request stream migrates that request and nothing else. No
       // URI, so it is re-issued on this same session.
       subscribeStream.respond(new GoAway(undefined, 250n))
 
@@ -3171,15 +3171,14 @@ if (import.meta.vitest) {
       client.onGoaway = (msg) => seen.push(msg)
       client.onSessionTerminated = (reason) => terminated.push(reason)
 
-      control.enqueue(new GoAway('https://elsewhere.example', 5000n, 4n).serialize().toUint8Array())
+      control.enqueue(new GoAway('https://elsewhere.example', 5000n).serialize().toUint8Array())
       await vi.waitFor(() => expect(seen).toHaveLength(1))
       expect(seen[0]!.newSessionUri).toBe('https://elsewhere.example')
       expect(seen[0]!.timeout).toBe(5000n)
-      expect(seen[0]!.requestId).toBe(4n)
       expect(client.goawayReceived).toBe(true)
 
       // §10.4: more than one GOAWAY on the control stream is a protocol violation.
-      control.enqueue(new GoAway(undefined, 0n, 6n).serialize().toUint8Array())
+      control.enqueue(new GoAway(undefined, 0n).serialize().toUint8Array())
       await vi.waitFor(() => expect(terminated).toHaveLength(1))
       expect(seen).toHaveLength(1)
     })

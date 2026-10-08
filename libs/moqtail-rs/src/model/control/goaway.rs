@@ -28,18 +28,14 @@ pub struct GoAway {
   pub new_session_uri: Option<String>,
   /// Milliseconds the sender waits for graceful closure (0 = no specific timeout).
   pub timeout: u64,
-  /// The smallest peer Request ID not necessarily processed. Present only when
-  /// the GOAWAY is sent on the control stream.
-  pub request_id: Option<u64>,
 }
 
 impl GoAway {
-  pub fn new(new_session_uri: Option<String>, timeout: u64, request_id: Option<u64>) -> Self {
+  pub fn new(new_session_uri: Option<String>, timeout: u64) -> Self {
     let new_session_uri = new_session_uri.filter(|uri| !uri.is_empty());
     Self {
       new_session_uri,
       timeout,
-      request_id,
     }
   }
 }
@@ -60,9 +56,6 @@ impl ControlMessageTrait for GoAway {
       }
     }
     payload.put_vi(self.timeout)?;
-    if let Some(request_id) = self.request_id {
-      payload.put_vi(request_id)?;
-    }
 
     let payload_len: u16 = payload
       .len()
@@ -119,18 +112,9 @@ impl ControlMessageTrait for GoAway {
 
     let timeout = payload.get_vi()?;
 
-    // Request ID is present only when the GOAWAY is sent on the control stream,
-    // so it is optional and trailing (bounded by the outer Length field).
-    let request_id = if payload.has_remaining() {
-      Some(payload.get_vi()?)
-    } else {
-      None
-    };
-
     Ok(Box::new(GoAway {
       new_session_uri,
       timeout,
-      request_id,
     }))
   }
   fn get_type(&self) -> ControlMessageType {
@@ -156,32 +140,24 @@ mod tests {
 
   #[test]
   fn roundtrip_without_request_id() {
-    roundtrip(GoAway::new(
-      Some("moqt://new.example".to_string()),
-      5000,
-      None,
-    ));
+    roundtrip(GoAway::new(Some("moqt://new.example".to_string()), 5000));
   }
 
   #[test]
   fn roundtrip_with_request_id() {
-    roundtrip(GoAway::new(
-      Some("moqt://new.example".to_string()),
-      5000,
-      Some(42),
-    ));
+    roundtrip(GoAway::new(Some("moqt://new.example".to_string()), 5000));
   }
 
   #[test]
   fn roundtrip_empty_uri_reuses_current() {
-    let go_away = GoAway::new(Some(String::new()), 0, Some(7));
+    let go_away = GoAway::new(Some(String::new()), 0);
     assert_eq!(go_away.new_session_uri, None);
     roundtrip(go_away);
   }
 
   #[test]
   fn test_excess_roundtrip() {
-    let go_away = GoAway::new(Some("moqt://new.example".to_string()), 5000, Some(42));
+    let go_away = GoAway::new(Some("moqt://new.example".to_string()), 5000);
 
     let serialized = go_away.serialize().unwrap();
     let mut excess = BytesMut::new();
@@ -201,7 +177,7 @@ mod tests {
 
   #[test]
   fn test_partial_message() {
-    let go_away = GoAway::new(Some("moqt://new.example".to_string()), 5000, Some(42));
+    let go_away = GoAway::new(Some("moqt://new.example".to_string()), 5000);
     let mut buf = go_away.serialize().unwrap();
     let _ = buf.get_vi().unwrap();
     let msg_length = buf.get_u16();

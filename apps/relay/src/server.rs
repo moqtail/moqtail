@@ -190,7 +190,7 @@ impl Server {
       clients.len()
     );
     for client in clients {
-      let goaway = GoAway::new(redirect_uri.clone(), timeout_ms, Some(0));
+      let goaway = GoAway::new(redirect_uri.clone(), timeout_ms);
       client
         .queue_message(ControlMessage::Goaway(Box::new(goaway)))
         .await;

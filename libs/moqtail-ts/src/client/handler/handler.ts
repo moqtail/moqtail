@@ -97,8 +97,8 @@ export function getHandlerForRequestStreamMessage(msg: ControlMessage): RequestS
   // Responses, correlated by the stream they arrive on.
   if (msg instanceof SubscribeOk) return handlerSubscribeOk
   if (msg instanceof FetchOk) return handlerFetchOk
-  // RequestOk also answers PUBLISH: PUBLISH_OK (0x1E) is an alias of REQUEST_OK, so
-  // both codepoints arrive here as a RequestOk.
+  // RequestOk also answers PUBLISH: draft-20 reserves 0x1E and keeps PUBLISH_OK only
+  // as prose shorthand for the REQUEST_OK that answers one (§10.5).
   if (msg instanceof RequestOk) return handlerRequestOk
   if (msg instanceof RequestError) return handlerRequestError
   // Follow-ups on an open request stream.
@@ -106,8 +106,8 @@ export function getHandlerForRequestStreamMessage(msg: ControlMessage): RequestS
   if (msg instanceof GoAway) return handlerGoAwayOnRequestStream
   if (msg instanceof RequestUpdate) return handlerRequestUpdate
   if (msg instanceof PublishDone) return handlerPublishDone
-  // The publisher's answer when the peer's bidi stream limit leaves it no stream to
-  // send a track's PUBLISH on (§10.20). It travels on the SUBSCRIBE_TRACKS stream.
+  // The publisher saying it will not send a track's PUBLISH, for a stream limit or
+  // any other reason (§10.21). It travels on the SUBSCRIBE_TRACKS stream.
   if (msg instanceof PublishSkipped) return handlerPublishSkipped
   return undefined
 }

@@ -20,8 +20,9 @@ use super::{
   constant::ControlMessageType, fetch::Fetch, fetch_ok::FetchOk, goaway::GoAway,
   namespace::Namespace, namespace_done::NamespaceDone, publish::Publish, publish_done::PublishDone,
   publish_namespace::PublishNamespace, publish_skipped::PublishSkipped,
-  request_error::RequestError, request_ok::RequestOk, request_update::RequestUpdate, setup::Setup,
-  subscribe::Subscribe, subscribe_namespace::SubscribeNamespace, subscribe_ok::SubscribeOk,
+  publish_state_notify::PublishStateNotify, request_error::RequestError, request_ok::RequestOk,
+  request_update::RequestUpdate, setup::Setup, subscribe::Subscribe,
+  subscribe_namespace::SubscribeNamespace, subscribe_ok::SubscribeOk,
   subscribe_tracks::SubscribeTracks, track_status::TrackStatus,
 };
 
@@ -45,6 +46,7 @@ pub enum ControlMessage {
   SubscribeTracks(Box<SubscribeTracks>),
   RequestError(Box<RequestError>),
   PublishSkipped(Box<PublishSkipped>),
+  PublishStateNotify(Box<PublishStateNotify>),
 }
 
 pub trait ControlMessageTrait: std::fmt::Debug {
@@ -127,6 +129,9 @@ impl ControlMessage {
       ControlMessageType::PublishSkipped => {
         PublishSkipped::parse_payload(&mut payload).map(ControlMessage::PublishSkipped)
       }
+      ControlMessageType::PublishStateNotify => {
+        PublishStateNotify::parse_payload(&mut payload).map(ControlMessage::PublishStateNotify)
+      }
     }
     .map_err(|err| ParseError::ProtocolViolation {
       context: "ControlMessage::deserialize(payload)",
@@ -165,6 +170,7 @@ impl ControlMessage {
       ControlMessage::SubscribeNamespace(msg) => msg.serialize(),
       ControlMessage::SubscribeTracks(msg) => msg.serialize(),
       ControlMessage::PublishSkipped(msg) => msg.serialize(),
+      ControlMessage::PublishStateNotify(msg) => msg.serialize(),
     }
   }
 
@@ -189,6 +195,7 @@ impl ControlMessage {
       ControlMessage::SubscribeNamespace(_) => ControlMessageType::SubscribeNamespace,
       ControlMessage::SubscribeTracks(_) => ControlMessageType::SubscribeTracks,
       ControlMessage::PublishSkipped(_) => ControlMessageType::PublishSkipped,
+      ControlMessage::PublishStateNotify(_) => ControlMessageType::PublishStateNotify,
     }
   }
 }

@@ -159,11 +159,7 @@
       "name": "PUBLISH_STATE_NOTIFY",
       "value": "0x22",
       "stream": "Request",
-      "spec": "Section 10.10",
-      "pending": {
-        "rs": 40676,
-        "ts": 40676
-      }
+      "spec": "Section 10.10"
     }
   ],
   "not_in_draft": [

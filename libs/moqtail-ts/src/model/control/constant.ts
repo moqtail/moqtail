@@ -61,6 +61,7 @@ export enum ControlMessageType {
   SubscribeTracks = 0x51, // Request, First
   Publish = 0x1d, // Request, First
   PublishSkipped = 0x0f, // Request
+  PublishStateNotify = 0x22, // Request
 }
 
 /**
@@ -149,6 +150,8 @@ export namespace ControlMessageType {
         return ControlMessageType.Publish
       case 0x0fn:
         return ControlMessageType.PublishSkipped
+      case 0x22n:
+        return ControlMessageType.PublishStateNotify
       default:
         throw new InvalidEnumValue('ControlMessageType.tryFrom', v)
     }

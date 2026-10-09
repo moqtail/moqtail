@@ -17,6 +17,7 @@
 import { FrozenByteBuffer } from '../common/byte_buffer'
 import { ControlMessageType } from './constant'
 import { PublishSkipped } from './publish_skipped'
+import { PublishStateNotify } from './publish_state_notify'
 import { PublishNamespace } from './publish_namespace'
 import { Namespace } from './namespace'
 import { NamespaceDone } from './namespace_done'
@@ -41,6 +42,7 @@ import { RequestError } from './request_error'
 export type ControlMessage =
   | Publish
   | PublishSkipped
+  | PublishStateNotify
   | PublishDone
   | PublishNamespace
   | Namespace
@@ -104,6 +106,8 @@ export namespace ControlMessage {
         return Setup.parsePayload(payload)
       case ControlMessageType.PublishSkipped:
         return PublishSkipped.parsePayload(payload)
+      case ControlMessageType.PublishStateNotify:
+        return PublishStateNotify.parsePayload(payload)
       default:
         throw new Error(`Unknown or unhandled ControlMessageType: ${messageType}`)
     }

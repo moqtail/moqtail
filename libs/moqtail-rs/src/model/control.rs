@@ -23,6 +23,7 @@ pub mod publish;
 pub mod publish_done;
 pub mod publish_namespace;
 pub mod publish_skipped;
+pub mod publish_state_notify;
 pub mod request_error;
 pub mod request_ok;
 pub mod request_update;

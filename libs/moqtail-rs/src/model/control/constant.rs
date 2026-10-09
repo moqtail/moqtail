@@ -56,6 +56,7 @@ pub enum ControlMessageType {
   Publish = 0x1D,            // Request, First
   PublishDone = 0x0B,        // Request
   PublishSkipped = 0x0F,     // Request
+  PublishStateNotify = 0x22, // Request
 }
 
 impl TryFrom<u64> for ControlMessageType {
@@ -81,6 +82,7 @@ impl TryFrom<u64> for ControlMessageType {
       0x51 => Ok(ControlMessageType::SubscribeTracks),
       0x1D => Ok(ControlMessageType::Publish),
       0x0F => Ok(ControlMessageType::PublishSkipped),
+      0x22 => Ok(ControlMessageType::PublishStateNotify),
       _ => Err(ParseError::InvalidType {
         context: " ControlMessageType::try_from(u64)",
         details: format!("Invalid type, got {value}"),

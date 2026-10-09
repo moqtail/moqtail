@@ -20,6 +20,7 @@ use core::result::Result::{Err, Ok};
 use moqtail::model::common::location::Location;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::control::constant::GroupOrder;
+use moqtail::model::control::constant::PublishDoneStatusCode;
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::fetch::Fetch;
 use moqtail::model::control::fetch_ok::FetchOk;
@@ -914,6 +915,16 @@ pub(crate) async fn serve_fetch_stream(
                     "handle_fetch_messages | Malformed upstream FETCH for gap [{}, {}]",
                     gap_start, gap_end
                   );
+                  track_read.remove_from_subscriber_switching_sets().await;
+                  if let Err(e) = track_read
+                    .notify_publish_done(
+                      PublishDoneStatusCode::MalformedTrack,
+                      "Malformed track".to_string(),
+                    )
+                    .await
+                  {
+                    error!("Failed to end subscriptions for malformed track: {e:?}");
+                  }
                   stop_reason = FetchStop::MalformedTrack;
                   break;
                 }

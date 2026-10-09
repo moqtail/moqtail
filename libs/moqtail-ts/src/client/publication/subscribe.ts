@@ -14,7 +14,8 @@
  * limitations under the License.
  */
 
-import { FilterType, Subscribe, PublishDone, PublishDoneStatusCode, RequestUpdate } from '@/model/control'
+import { Subscribe, PublishDone, PublishDoneStatusCode, RequestUpdate } from '@/model/control'
+import { LocationFilter } from '@/model/parameter/message/location_filter'
 import { MOQtailClient } from '../client'
 import { Track } from '../track/track'
 import {
@@ -141,36 +142,18 @@ export class SubscribePublication {
     this.#publisherPriority = track.publisherPriority
     const subPriority = subscribeMsg.parameters.find(MessageParameter.isSubscriberPriority)
     const fwd = subscribeMsg.parameters.find(MessageParameter.isForward)
-    const filter = subscribeMsg.parameters.find(MessageParameter.isSubscriptionFilter)
+    const filter = subscribeMsg.parameters.find(MessageParameter.isLocationFilter)
     this.#subscriberPriority = subPriority?.priority ?? 128
     this.#forward = fwd?.forward ?? true
     this.#parameters = [...subscribeMsg.parameters]
     this.#startLocation = new Location(0n, 0n)
 
-    const filterType = filter?.filterType ?? FilterType.LatestObject
-    switch (filterType) {
-      case FilterType.LatestObject:
-        if (largestLocation) {
-          this.#startLocation = new Location(largestLocation.group, largestLocation.object + 1n)
-        } else {
-          this.#startLocation = new Location(0n, 0n)
-        }
-        break
-      case FilterType.NextGroupStart:
-        if (largestLocation) {
-          this.#startLocation = new Location(largestLocation.group + 1n, 0n)
-        } else {
-          this.#startLocation = new Location(0n, 0n)
-        }
-        break
-      case FilterType.AbsoluteStartFill:
-        this.#startLocation = filter?.startLocation ?? new Location(0n, 0n)
-        break
-      case FilterType.AbsoluteRangeFill:
-        this.#startLocation = filter?.startLocation ?? new Location(0n, 0n)
-        this.#endGroup = filter?.endGroup
-        break
-    }
+    // A filter the subscriber omitted is unfiltered (§10.2.9), which starts at the
+    // Next Object. Relative or absolute, where the range actually begins is one
+    // question with one answer, and LocationFilter.resolve owns it.
+    const range = (filter ?? LocationFilter.nextObject()).resolve(largestLocation)
+    this.#startLocation = range.start
+    this.#endGroup = range.endGroup
     this.publish()
   }
 
@@ -210,7 +193,7 @@ export class SubscribePublication {
    * @param msg - The update message containing new request details.
    */
   update(msg: RequestUpdate): void {
-    const filter = msg.parameters.find(MessageParameter.isSubscriptionFilter) as any
+    const filter = msg.parameters.find(MessageParameter.isLocationFilter) as any
     if (filter?.startLocation !== undefined) this.#startLocation = filter.startLocation
     if (filter?.endGroup !== undefined) this.#endGroup = filter.endGroup
 

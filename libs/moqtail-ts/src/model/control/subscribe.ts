@@ -18,14 +18,14 @@ import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buf
 import { Location } from '../common/location'
 import { Tuple } from '../common/tuple'
 
-import { ControlMessageType, FilterType, GroupOrder } from '../control/constant'
+import { ControlMessageType, GroupOrder } from '../control/constant'
 import { FullTrackName } from '../data'
 import {
   MessageParameter,
   deserializeMessageParameterKvps,
   serializeMessageParameterKvps,
 } from '../parameter/message_parameter'
-import { SubscriptionFilter } from '../parameter/message/subscription_filter'
+import { LocationFilter } from '../parameter/message/location_filter'
 import { Forward } from '../parameter/message/forward'
 import { GroupOrderParam } from '../parameter/message/group_order_param'
 
@@ -37,11 +37,11 @@ export class Subscribe {
   ) {}
 
   static newNextGroupStart(requestId: bigint, fullTrackName: FullTrackName, parameters: MessageParameter[]): Subscribe {
-    return new Subscribe(requestId, fullTrackName, [...parameters, new SubscriptionFilter(FilterType.NextGroupStart)])
+    return new Subscribe(requestId, fullTrackName, [...parameters, LocationFilter.nextGroup()])
   }
 
   static newLatestObject(requestId: bigint, fullTrackName: FullTrackName, parameters: MessageParameter[]): Subscribe {
-    return new Subscribe(requestId, fullTrackName, [...parameters, new SubscriptionFilter(FilterType.LatestObject)])
+    return new Subscribe(requestId, fullTrackName, [...parameters, LocationFilter.nextObject()])
   }
 
   static newAbsoluteStartFill(
@@ -50,10 +50,7 @@ export class Subscribe {
     startLocation: Location,
     parameters: MessageParameter[],
   ): Subscribe {
-    return new Subscribe(requestId, fullTrackName, [
-      ...parameters,
-      new SubscriptionFilter(FilterType.AbsoluteStartFill, startLocation),
-    ])
+    return new Subscribe(requestId, fullTrackName, [...parameters, LocationFilter.absoluteStart(startLocation)])
   }
 
   static newAbsoluteRangeFill(
@@ -68,7 +65,7 @@ export class Subscribe {
     }
     return new Subscribe(requestId, fullTrackName, [
       ...parameters,
-      new SubscriptionFilter(FilterType.AbsoluteRangeFill, startLocation, endGroup),
+      LocationFilter.absoluteRange(startLocation, endGroup),
     ])
   }
 
@@ -78,10 +75,7 @@ export class Subscribe {
     relativePrevious: bigint,
     parameters: MessageParameter[],
   ): Subscribe {
-    return new Subscribe(requestId, fullTrackName, [
-      ...parameters,
-      new SubscriptionFilter(FilterType.RelativeStartFill, undefined, undefined, relativePrevious),
-    ])
+    return new Subscribe(requestId, fullTrackName, [...parameters, LocationFilter.relativeGroups(relativePrevious)])
   }
 
   getType(): ControlMessageType {
@@ -190,10 +184,10 @@ if (import.meta.vitest) {
           [],
         )
 
-        const filter = subscribe.parameters.find((p): p is SubscriptionFilter => p instanceof SubscriptionFilter)
-        expect(filter?.filterType).toBe(FilterType.AbsoluteRangeFill)
-        expect(filter?.startLocation).toEqual(new Location(81n, 81n))
-        expect(filter?.endGroup).toBe(100n)
+        const filter = subscribe.parameters.find((p): p is LocationFilter => p instanceof LocationFilter)
+        // Three fields, so the start is absolute and the end group is delta-coded.
+        expect(filter?.fieldCount).toBe(3)
+        expect(filter?.resolve()).toEqual({ start: new Location(81n, 81n), endGroup: 100n, endObject: undefined })
       })
 
       it('should throw an error if EndGroup < StartGroup', () => {

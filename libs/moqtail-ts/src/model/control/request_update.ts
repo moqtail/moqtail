@@ -17,14 +17,14 @@
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
 import { Location } from '../common/location'
 
-import { ControlMessageType, FilterType } from './constant'
+import { ControlMessageType } from './constant'
 import { CastingError, LengthExceedsMaxError } from '../error/error'
 import {
   MessageParameter,
   deserializeMessageParameterKvps,
   serializeMessageParameterKvps,
 } from '../parameter/message_parameter'
-import { SubscriptionFilter } from '../parameter/message/subscription_filter'
+import { LocationFilter } from '../parameter/message/location_filter'
 import { Forward } from '../parameter/message/forward'
 
 export class RequestUpdate {
@@ -99,14 +99,13 @@ if (import.meta.vitest) {
   describe('RequestUpdate', () => {
     function buildTestUpdate(): RequestUpdate {
       // Wire encoding canonicalizes parameter order ascending by type (delta-encoding requirement).
-      const parameters = [
-        new SubscriptionFilter(FilterType.AbsoluteRangeFill, new Location(81n, 81n), 25n),
-        new Forward(true),
-      ].sort((a, b) => {
-        const at = a.toKeyValuePair().typeValue
-        const bt = b.toKeyValuePair().typeValue
-        return at < bt ? -1 : at > bt ? 1 : 0
-      })
+      const parameters = [LocationFilter.absoluteRange(new Location(81n, 81n), 125n), new Forward(true)].sort(
+        (a, b) => {
+          const at = a.toKeyValuePair().typeValue
+          const bt = b.toKeyValuePair().typeValue
+          return at < bt ? -1 : at > bt ? 1 : 0
+        },
+      )
       return new RequestUpdate(120205n, parameters)
     }
 

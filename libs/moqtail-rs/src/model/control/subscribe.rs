@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::constant::{ControlMessageType, FilterType};
+use super::constant::ControlMessageType;
 use super::control_message::ControlMessageTrait;
 use crate::model::common::location::Location;
 use crate::model::common::tuple::{Tuple, TupleField};
@@ -54,11 +54,7 @@ impl Subscribe {
     subscribe_parameters: Vec<MessageParameter>,
   ) -> Self {
     let mut params = subscribe_parameters;
-    params.push(MessageParameter::new_subscription_filter(
-      FilterType::NextGroupStart,
-      None,
-      None,
-    ));
+    params.push(MessageParameter::new_location_filter_next_group());
     Self::new(request_id, track_namespace, track_name, params)
   }
 
@@ -69,11 +65,7 @@ impl Subscribe {
     subscribe_parameters: Vec<MessageParameter>,
   ) -> Self {
     let mut params = subscribe_parameters;
-    params.push(MessageParameter::new_subscription_filter(
-      FilterType::LatestObject,
-      None,
-      None,
-    ));
+    params.push(MessageParameter::new_location_filter_next_object());
     Self::new(request_id, track_namespace, track_name, params)
   }
 
@@ -85,10 +77,8 @@ impl Subscribe {
     subscribe_parameters: Vec<MessageParameter>,
   ) -> Self {
     let mut params = subscribe_parameters;
-    params.push(MessageParameter::new_subscription_filter(
-      FilterType::AbsoluteStartFill,
-      Some(start_location),
-      None,
+    params.push(MessageParameter::new_location_filter_absolute_start(
+      start_location,
     ));
     Self::new(request_id, track_namespace, track_name, params)
   }
@@ -101,15 +91,11 @@ impl Subscribe {
     end_group: u64,
     subscribe_parameters: Vec<MessageParameter>,
   ) -> Self {
-    assert!(
-      end_group >= start_location.group,
-      "End Group must be >= Start Group"
-    );
     let mut params = subscribe_parameters;
-    params.push(MessageParameter::new_subscription_filter(
-      FilterType::AbsoluteRangeFill,
-      Some(start_location),
-      Some(end_group),
+    params.push(MessageParameter::new_location_filter_absolute_range(
+      start_location,
+      end_group,
+      None,
     ));
     Self::new(request_id, track_namespace, track_name, params)
   }
@@ -122,7 +108,9 @@ impl Subscribe {
     subscribe_parameters: Vec<MessageParameter>,
   ) -> Self {
     let mut params = subscribe_parameters;
-    params.push(MessageParameter::new_relative_start_fill(relative_previous));
+    params.push(MessageParameter::new_location_filter_relative_groups(
+      relative_previous,
+    ));
     Self::new(request_id, track_namespace, track_name, params)
   }
 
@@ -133,12 +121,12 @@ impl Subscribe {
     }
   }
 
-  /// Returns the SubscriptionFilter parameter if present.
-  pub fn get_subscription_filter(&self) -> Option<&MessageParameter> {
+  /// Returns the LocationFilter parameter if present.
+  pub fn get_location_filter(&self) -> Option<&MessageParameter> {
     self
       .subscribe_parameters
       .iter()
-      .find(|p| matches!(p, MessageParameter::SubscriptionFilter { .. }))
+      .find(|p| matches!(p, MessageParameter::LocationFilter { .. }))
   }
 }
 
@@ -291,8 +279,8 @@ mod tests {
   fn test_parse_wire_subscribe_with_uint8_priority() {
     // Real SUBSCRIBE captured from an interop peer:
     //   03 00 14 00 01 03 61 62 63 03 64 65 66 04 10 01 10 80 01 01 02 01 01
-    // Params are FORWARD=1, SUBSCRIBER_PRIORITY=128, SUBSCRIPTION_FILTER
-    // (LargestObject), GROUP_ORDER=Ascending. The FORWARD (0x10),
+    // Params are FORWARD=1, SUBSCRIBER_PRIORITY=128, the 0x21 filter,
+    // GROUP_ORDER=Ascending. The FORWARD (0x10),
     // SUBSCRIBER_PRIORITY (0x20) and GROUP_ORDER (0x22) values
     // are a single uint8, NOT the generic even-key varint. SUBSCRIBER_PRIORITY
     // here is 0x80 (128); read as a QUIC varint that byte starts a 4-byte
@@ -334,13 +322,15 @@ mod tests {
         .get_param(MessageParameterType::GroupOrder),
       Some(&MessageParameter::new_group_order(GroupOrder::Ascending)),
     );
+    // The capture predates draft-20, and its single filter byte 0x02 is the clearest
+    // illustration of why that matters: as a draft-18 SUBSCRIPTION_FILTER it was the
+    // Filter Type LatestObject, and as a draft-20 LOCATION_FILTER the same byte is a
+    // one-field filter with StartGroup = 2, i.e. start one group before the current
+    // one. Same bytes, different subscription. Re-serialization stays byte-identical
+    // either way, because one field in is one field out.
     assert_eq!(
-      sub.get_subscription_filter(),
-      Some(&MessageParameter::new_subscription_filter(
-        FilterType::LatestObject,
-        None,
-        None
-      )),
+      sub.get_location_filter(),
+      Some(&MessageParameter::new_location_filter_relative_groups(1)),
     );
 
     // Re-serialize: the params are already in ascending Type order on the wire,

@@ -74,9 +74,11 @@ export class SubscribeRequest implements PromiseLike<SubscribeOk | RequestError>
     this.requestId = msg.requestId
     this.fullTrackName = msg.fullTrackName
 
-    const filter = msg.parameters.find(MessageParameter.isSubscriptionFilter)
-    this.startLocation = filter?.startLocation
-    this.endGroup = filter?.endGroup
+    // What the subscriber asked for. A relative start is not knowable here -- it
+    // resolves against the publisher's Largest Object -- so it stays undefined.
+    const filter = msg.parameters.find(MessageParameter.isLocationFilter)
+    this.startLocation = filter?.statedStart
+    this.endGroup = filter?.statedEndGroup
 
     const subPriority = msg.parameters.find(MessageParameter.isSubscriberPriority)
     this.priority = subPriority?.priority ?? 128
@@ -107,9 +109,9 @@ export class SubscribeRequest implements PromiseLike<SubscribeOk | RequestError>
    * Updates subscription parameters in-place when a `RequestUpdate` message is received.
    */
   public update(msg: RequestUpdate): void {
-    const filter = msg.parameters.find(MessageParameter.isSubscriptionFilter)
-    if (filter?.startLocation !== undefined) this.startLocation = filter.startLocation
-    if (filter?.endGroup !== undefined) this.endGroup = filter.endGroup
+    const filter = msg.parameters.find(MessageParameter.isLocationFilter)
+    if (filter?.statedStart !== undefined) this.startLocation = filter.statedStart
+    if (filter?.statedEndGroup !== undefined) this.endGroup = filter.statedEndGroup
 
     for (const param of msg.parameters) {
       if (MessageParameter.isSubscriberPriority?.(param)) {

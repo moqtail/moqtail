@@ -113,11 +113,7 @@
       {
         "name": "LOCATION_FILTER",
         "value": "0x21",
-        "spec": "Section 10.2.9",
-        "pending": {
-          "rs": 40676,
-          "ts": 40676
-        }
+        "spec": "Section 10.2.9"
       },
       {
         "name": "GROUP_ORDER",

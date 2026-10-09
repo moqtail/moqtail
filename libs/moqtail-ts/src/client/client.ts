@@ -70,7 +70,7 @@ import {
   Forward,
   SubscriberPriority,
   GroupOrderParam,
-  SubscriptionFilter,
+  LocationFilter,
   StreamResetCode,
   resolveTransportUrl,
   SwitchFrom,
@@ -1280,7 +1280,7 @@ export class MOQtailClient {
           const updateParams: MessageParameter[] = [
             new SubscriberPriority(priority),
             new Forward(forward),
-            new SubscriptionFilter(FilterType.AbsoluteRangeFill, startLocation, endGroup),
+            LocationFilter.absoluteRange(startLocation, endGroup),
             ...(parameters ?? []),
           ]
           const msg = new RequestUpdate(requestId, updateParams)

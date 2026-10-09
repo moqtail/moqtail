@@ -60,7 +60,7 @@ export enum MessageParameterType {
   FillTimeout = 0x0a,
   Forward = 0x10,
   SubscriberPriority = 0x20,
-  SubscriptionFilter = 0x21,
+  LocationFilter = 0x21,
   GroupOrder = 0x22,
   FillParameters = 0x23,
   SwitchFrom = 0x24,
@@ -101,7 +101,7 @@ export function messageParameterTypeFromNumber(value: bigint | number): MessageP
     case 0x20:
       return MessageParameterType.SubscriberPriority
     case 0x21:
-      return MessageParameterType.SubscriptionFilter
+      return MessageParameterType.LocationFilter
     case 0x22:
       return MessageParameterType.GroupOrder
     case 0x23:

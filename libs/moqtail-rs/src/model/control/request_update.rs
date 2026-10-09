@@ -84,20 +84,19 @@ impl ControlMessageTrait for RequestUpdate {
 mod tests {
   use super::*;
   use crate::model::common::location::Location;
-  use crate::model::control::constant::FilterType;
   use bytes::Buf;
 
   #[test]
   fn test_roundtrip() {
     let request_update = RequestUpdate::new(
       120205,
-      vec![MessageParameter::new_subscription_filter(
-        FilterType::AbsoluteRangeFill,
-        Some(Location {
+      vec![MessageParameter::new_location_filter_absolute_range(
+        Location {
           group: 81,
           object: 81,
-        }),
-        Some(106),
+        },
+        106,
+        None,
       )],
     );
 
@@ -115,13 +114,13 @@ mod tests {
   fn test_excess_roundtrip() {
     let request_update = RequestUpdate::new(
       120205,
-      vec![MessageParameter::new_subscription_filter(
-        FilterType::AbsoluteRangeFill,
-        Some(Location {
+      vec![MessageParameter::new_location_filter_absolute_range(
+        Location {
           group: 81,
           object: 81,
-        }),
-        Some(106),
+        },
+        106,
+        None,
       )],
     );
 
@@ -145,13 +144,13 @@ mod tests {
   fn test_partial_message() {
     let request_update = RequestUpdate::new(
       120205,
-      vec![MessageParameter::new_subscription_filter(
-        FilterType::AbsoluteRangeFill,
-        Some(Location {
+      vec![MessageParameter::new_location_filter_absolute_range(
+        Location {
           group: 81,
           object: 81,
-        }),
-        Some(106),
+        },
+        106,
+        None,
       )],
     );
 

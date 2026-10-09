@@ -33,7 +33,7 @@ import { LargestObject } from './message/largest_object'
 import { NewGroupRequest } from './message/new_group_request'
 import { SwitchingSetAssignment } from './message/switching_set_assignment'
 import { SubscriberPriority } from './message/subscriber_priority'
-import { SubscriptionFilter } from './message/subscription_filter'
+import { LocationFilter } from './message/location_filter'
 import { SwitchFrom } from './message/switch_from'
 import { FillParameters } from './message/fill_parameters'
 
@@ -48,7 +48,7 @@ export type MessageParameter =
   | Forward
   | SubscriberPriority
   | GroupOrderParam
-  | SubscriptionFilter
+  | LocationFilter
   | NewGroupRequest
   | SwitchFrom
   | FillParameters
@@ -72,7 +72,7 @@ export namespace MessageParameter {
       Forward.fromKeyValuePair(pair) ??
       SubscriberPriority.fromKeyValuePair(pair) ??
       GroupOrderParam.fromKeyValuePair(pair) ??
-      SubscriptionFilter.fromKeyValuePair(pair) ??
+      LocationFilter.fromKeyValuePair(pair) ??
       NewGroupRequest.fromKeyValuePair(pair) ??
       SwitchFrom.fromKeyValuePair(pair) ??
       FillParameters.fromKeyValuePair(pair) ??
@@ -133,8 +133,8 @@ export namespace MessageParameter {
     return params.find(isGroupOrderParam)?.order ?? GroupOrder.Original
   }
 
-  export function isSubscriptionFilter(param: MessageParameter): param is SubscriptionFilter {
-    return param instanceof SubscriptionFilter
+  export function isLocationFilter(param: MessageParameter): param is LocationFilter {
+    return param instanceof LocationFilter
   }
 
   export function isNewGroupRequest(param: MessageParameter): param is NewGroupRequest {
@@ -198,7 +198,7 @@ export class MessageParameters {
     return this.add(new GroupOrderParam(order))
   }
 
-  addSubscriptionFilter(filter: SubscriptionFilter): this {
+  addLocationFilter(filter: LocationFilter): this {
     return this.add(filter)
   }
 
@@ -431,7 +431,7 @@ if (import.meta.vitest) {
         .addObjectDeliveryTimeout(150n)
         .addForward(false)
         .addSubscriberPriority(42)
-        .addSubscriptionFilter(new SubscriptionFilter(FilterType.AbsoluteRangeFill, new Location(10n, 0n), 20n))
+        .addLocationFilter(LocationFilter.absoluteRange(new Location(10n, 0n), 20n))
         .build()
         .map((p) => p.toKeyValuePair())
 
@@ -440,9 +440,11 @@ if (import.meta.vitest) {
       expect(MessageParameter.isObjectDeliveryTimeout(parsed[0]!) && parsed[0].timeout).toBe(150n)
       expect(MessageParameter.isForward(parsed[1]!) && parsed[1].forward).toBe(false)
       expect(MessageParameter.isSubscriberPriority(parsed[2]!) && parsed[2].priority).toBe(42)
-      expect(MessageParameter.isSubscriptionFilter(parsed[3]!) && parsed[3].filterType).toBe(
-        FilterType.AbsoluteRangeFill,
-      )
+      expect(MessageParameter.isLocationFilter(parsed[3]!) && parsed[3].resolve()).toEqual({
+        start: new Location(10n, 0n),
+        endGroup: 20n,
+        endObject: undefined,
+      })
     })
 
     // §14: a greased parameter is just another unknown one -- skipped, never fatal.
@@ -475,15 +477,11 @@ if (import.meta.vitest) {
   describe('delta-encoding regression', () => {
     test('bug report wire format is delta-encoded', () => {
       // Regression for the reported interop bug: SUBSCRIBER_PRIORITY (0x20),
-      // FORWARD (0x10) and SUBSCRIPTION_FILTER (0x21), built in non-ascending
+      // FORWARD (0x10) and LOCATION_FILTER (0x21), built in non-ascending
       // insertion order. A spec-compliant v16 peer decodes Type as a delta
       // from the previous Type in the list; encoding them "as-is" (absolute)
       // made a correct delta-decoder compute the wrong types.
-      const params: MessageParameter[] = [
-        new SubscriberPriority(0),
-        new Forward(true),
-        new SubscriptionFilter(FilterType.LatestObject),
-      ]
+      const params: MessageParameter[] = [new SubscriberPriority(0), new Forward(true), LocationFilter.nextObject()]
       const frozen = serializeKvpList(params.map((p) => p.toKeyValuePair()))
 
       // Decode independently of deserializeKvpList, using raw delta
@@ -496,7 +494,7 @@ if (import.meta.vitest) {
         prevType = kvp.typeValue
         types.push(prevType)
       }
-      expect(types).toEqual([Forward.TYPE, SubscriberPriority.TYPE, SubscriptionFilter.TYPE].map(BigInt))
+      expect(types).toEqual([Forward.TYPE, SubscriberPriority.TYPE, LocationFilter.TYPE].map(BigInt))
     })
 
     test('decodes a delta-encoded peer stream', () => {

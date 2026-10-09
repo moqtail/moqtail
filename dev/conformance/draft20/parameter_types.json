@@ -125,7 +125,8 @@
       {
         "name": "OBJECTID_FILTER",
         "value": "0x26",
-        "spec": "Section 10.2.11"
+        "spec": "Section 10.2.11",
+        "notes": "Length-prefixed on an even Type, which contradicts the §1.4.3 parity rule (even Type = a single varint). §5.1.4's figure gives it an explicit Length and that is what a peer sends, so both stacks carry the exception in value_shape / valueShapeOf. Raise upstream alongside the FEC Source Info codepoint, which moved to an odd value for the same reason."
       },
       {
         "name": "PRIORITY_FILTER",
@@ -135,7 +136,8 @@
       {
         "name": "OBJECT_PROPERTY_FILTER",
         "value": "0x28",
-        "spec": "Section 10.2.13"
+        "spec": "Section 10.2.13",
+        "notes": "Length-prefixed on an even Type, which contradicts the §1.4.3 parity rule (even Type = a single varint). §5.1.4's figure gives it an explicit Length and that is what a peer sends, so both stacks carry the exception in value_shape / valueShapeOf. Raise upstream alongside the FEC Source Info codepoint, which moved to an odd value for the same reason."
       },
       {
         "name": "TRACK_PROPERTY_FILTER",

@@ -4,6 +4,8 @@
 at the rung actually being delivered. It was named `eeasd` in the tree until
 the rename. Three versions are advertised; they are one state machine and
 differ only in how far a downshift reaches back into the groups it overtook.
+Each version is declared, with its own documentation, in its own file:
+[`classic.rs`](classic.rs), [`v2.rs`](v2.rs), [`v3.rs`](v3.rs).
 
 The third of the compared algorithms: [`../asd_v11`](../asd_v11)'s depth
 signal, measured only at the quality being delivered, read again while a group is
@@ -135,12 +137,31 @@ them in the order the algorithm defines.
 
 ## What it does badly
 
-**It has no cooldown, which is a claim, not an omission.** wasd says a
-downshift drains its own signal, because the streams that were congested are no
-longer at the tier being measured. That is true when the downshift works. When it
-does not — when the depth comes from a subscriber that is simply slow, or from a
-path that cannot carry even the bottom rung — there is nothing to stop the
-ladder, and the only thing that halts it is the bottom.
+**The retroactive versions fall two rungs for a dip that lasts one: a
+measured shortcoming, accepted.** On `PROFILE_JITTER` (a 500 ms dip to
+2 Mbps) v2 and v3 correctly fall one rung, then fall a second one about a
+second later — for a path that has already recovered. The mechanism is the
+drain: the dip leaves its bytes in the shaper, the downshift's own re-send
+bytes join that queue, the next group's stream stays open into the one
+after it, and two live streams at the delivered tier — the shape of a
+drain — read as a second congestion to the depth. The classic does not
+cascade, because it neither spends repair bytes nor resets the deliveries
+that were draining. Two families of fix were built and measured on the
+same profile and both were dropped: raising the downshift bar for a while
+(a cooldown, ended either when the re-sends concluded or when the tier next
+read at or below target) failed because the overlap is *preceded by clean
+readings* — any cooldown that ends on evidence ends before the overlap
+starts; counting only streams older than a group period (an age-filtered
+depth) suppressed the cascade but charged a group of seeing to genuine
+congestion, delaying the ladder's real responses. The comparison therefore
+ships the shortcoming visible: reaching back costs an overreaction on
+short dips, and v2/v3 are measured against the classic with it in place.
+
+**A downshift that does not work has nothing to stop it.** The depth at the
+delivered tier drains when the downshift works; when it does not — when the
+depth comes from a subscriber that is simply slow, or from a path that
+cannot carry even the bottom rung — there is nothing to stop the ladder,
+and the only thing that halts it is the bottom.
 
 **The mid-group monitor is a second decision path, and the two can argue.** A
 boundary reading and a mid-group reading of the same group are taken at different

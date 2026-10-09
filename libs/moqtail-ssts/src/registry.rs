@@ -23,7 +23,6 @@ use std::sync::{Arc, OnceLock};
 use crate::algorithms::asd::AsdAlgorithmFactory;
 use crate::algorithms::asd_v11::AsdV11AlgorithmFactory;
 use crate::algorithms::default::DefaultAlgorithmFactory;
-use crate::algorithms::wasd::WasdAlgorithmFactory;
 use crate::{AbrAlgorithm, AbrAlgorithmFactory, Tuning};
 
 /// First algorithm id an implementation may use for its own experiments.
@@ -64,13 +63,13 @@ impl Registry {
         // state machine and differ only in how far a downshift reaches back
         // into the groups it overtook.
         // The classic: a downshift is forward-looking only.
-        Arc::new(WasdAlgorithmFactory::CLASSIC),
+        Arc::new(crate::algorithms::wasd::classic::FACTORY),
         // v2: the downshift also cancels the newest group it overtook and has
         // it re-sent at the new rung.
-        Arc::new(WasdAlgorithmFactory::V2),
+        Arc::new(crate::algorithms::wasd::v2::FACTORY),
         // v3: everything older is cancelled too and re-sent a rung below the
         // new rung — the retroactive double downshift.
-        Arc::new(WasdAlgorithmFactory::V3),
+        Arc::new(crate::algorithms::wasd::v3::FACTORY),
       ],
     }
   }

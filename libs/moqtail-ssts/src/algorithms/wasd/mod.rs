@@ -21,8 +21,10 @@
 //! (`wasd`, the classic), [`WASD_V2_ALGORITHM_ID`] (`wasd-v2`) and
 //! [`WASD_V3_ALGORITHM_ID`] (`wasd-v3`) — that differ only in
 //! [`Reach`]: how far a downshift reaches back into the groups it overtook.
-//! Everything below is the behaviour all three versions share unless a
-//! sentence says otherwise; [`WasdAlgorithmFactory`] documents each reach.
+//! Each version is declared, with its own documentation, in its own file:
+//! [`classic`], [`v2`], [`v3`]. Everything below is the behaviour all three
+//! versions share unless a sentence says otherwise;
+//! [`WasdAlgorithmFactory`] documents each reach.
 //!
 //! Three changes over [`crate::algorithms::asd_v11`], and they belong
 //! together because each one is what makes the next one survivable.
@@ -33,9 +35,12 @@
 //! and 720p current — the depth is one, not three. Everything else in flight
 //! belongs to a quality the algorithm has already given up on, and counting it
 //! makes the recovery from a downshift look like the congestion it was meant to
-//! fix. It also removes the need for a cooldown: a successful downshift drains
-//! the signal by itself, because the streams that were producing it are no
-//! longer at the tier being measured.
+//! fix. What it drains is the signal the decision itself produced — the
+//! rejected streams are no longer at the tier being measured. What it cannot
+//! drain is the queue a short dip leaves behind: the overlap that queue
+//! causes at the next group boundary still reads as congestion at the new
+//! tier, which is the retroactive versions' measured shortcoming the
+//! README keeps under its own heading.
 //!
 //! **A monitor inside the group.** Groups are the algorithm's clock but not the
 //! path's: bandwidth moves faster than 25 groups a second. The same depth is
@@ -85,6 +90,10 @@ use crate::algorithms::wasd::state::Step;
 
 #[cfg(test)]
 mod tests;
+
+pub mod classic;
+pub mod v2;
+pub mod v3;
 
 mod state;
 
@@ -147,27 +156,12 @@ impl Reach {
 ///   new one (1080p down to 720p: the newest overtaken group goes 720p,
 ///   everything older goes 480p), because the older a group is, the less of
 ///   its delivery window is left to a re-send.
+///
+/// Each version's own declaration, with its id, is in its file:
+/// [`classic::FACTORY`], [`v2::FACTORY`], [`v3::FACTORY`].
 pub struct WasdAlgorithmFactory {
   id: u64,
   reach: Reach,
-}
-
-impl WasdAlgorithmFactory {
-  /// The classic: downshift on depth, retroactive nothing.
-  pub const CLASSIC: Self = Self {
-    id: WASD_ALGORITHM_ID,
-    reach: Reach::Nothing,
-  };
-  /// The retroactive downshift of the newest overtaken group.
-  pub const V2: Self = Self {
-    id: WASD_V2_ALGORITHM_ID,
-    reach: Reach::Newest,
-  };
-  /// The retroactive double downshift.
-  pub const V3: Self = Self {
-    id: WASD_V3_ALGORITHM_ID,
-    reach: Reach::AllStaged,
-  };
 }
 
 impl AbrAlgorithmFactory for WasdAlgorithmFactory {

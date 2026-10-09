@@ -69,6 +69,25 @@ on the wire stay correct.
 stream".** Ordinary mid-group joins must not get a replay they did not ask for. The
 mark is set only when a decision overtook the group.
 
+**The short-dip double downshift is accepted, not patched.** Measured on
+`PROFILE_JITTER`: a 500 ms dip makes v2 and v3 fall one rung correctly and then a
+second one ~1 s later, because the drain — the dip's bytes in the shaper plus the
+repair bytes the downshift ordered — keeps the next group's stream open into the
+one after it, and the overlap reads as congestion at the delivered tier. Two fixes
+were built, tested on the profile, and removed. (1) A cooldown: raise the
+downshift bar by one stream after a downshift; ended when the re-sends concluded
+— the drain outlives the repairs by a reading or two — or ended at the first clean
+reading — the overlap is *preceded* by clean readings (the supersede resets the
+tier to empty, then one normal group streams at target), so any evidence-based
+end closes before the overlap starts. Both variants: 3/3 double drops, same as
+no cooldown. (2) An age-filtered depth: count only streams at least one group
+period old; it suppressed the cascade (0/3 double drops, the dips cost no tier
+change at all, zero deadline misses) but charged a group of seeing — and, for
+shallow congestion, the time for a queue to grow — to every genuine response.
+The comparison is stronger shipping the shortcoming visible: reaching back costs
+an overreaction on short dips, and that is a property of the design, not a knob
+setting. The numbers are in the README's "What it does badly".
+
 ## Still mine to decide
 
 1. **The cutoff**, if the "always less than half sent" observation stops holding —

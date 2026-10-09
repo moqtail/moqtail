@@ -14,7 +14,6 @@
 
 use crate::cli::Transport;
 use anyhow::Result;
-use moqtail::model::control::constant::SUPPORTED_VERSIONS;
 use moqtail::model::control::control_message::ControlMessageTrait;
 use moqtail::model::error::TerminationCode;
 use moqtail::model::{
@@ -107,9 +106,10 @@ impl MoqConnection {
     let recv_stream = connection.accept_uni().await?;
     let mut control_stream = ControlStreamHandler::new(send_stream, recv_stream);
 
-    // Receive the server's SETUP, which must be the first message. If the server
-    // does not support the requested version, the connection is terminated with
-    // VersionNegotiationFailed rather than a SETUP arriving.
+    // Receive the server's SETUP, which must be the first message. A version
+    // mismatch never reaches here: since draft-15 the version is negotiated by
+    // ALPN, so an unsupported one fails the transport handshake above and there is
+    // no session to carry a SETUP, or an error about one.
     info!("Waiting for SETUP...");
     match control_stream.read_setup().await {
       Ok(m) => {
@@ -120,12 +120,6 @@ impl MoqConnection {
           anyhow::bail!("Server sent a client-only setup option: {:?}", code);
         }
         info!("SETUP received: {:?}", m);
-      }
-      Err(TerminationCode::VersionNegotiationFailed) => {
-        anyhow::bail!(
-          "Version negotiation failed: server does not support versions: {}",
-          SUPPORTED_VERSIONS
-        );
       }
       Err(TerminationCode::ProtocolViolation) => {
         anyhow::bail!("Server control stream did not begin with SETUP");

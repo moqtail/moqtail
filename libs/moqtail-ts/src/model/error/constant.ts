@@ -31,7 +31,6 @@ export enum TerminationCode {
   DATA_STREAM_TIMEOUT = 0x12,
   AUTH_TOKEN_CACHE_OVERFLOW = 0x13,
   DUPLICATE_AUTH_TOKEN_ALIAS = 0x14,
-  VERSION_NEGOTIATION_FAILED = 0x15,
   MALFORMED_AUTH_TOKEN = 0x16,
   UNKNOWN_AUTH_TOKEN_ALIAS = 0x17,
   EXPIRED_AUTH_TOKEN = 0x18,
@@ -76,8 +75,6 @@ export namespace TerminationCode {
         return TerminationCode.AUTH_TOKEN_CACHE_OVERFLOW
       case TerminationCode.DUPLICATE_AUTH_TOKEN_ALIAS:
         return TerminationCode.DUPLICATE_AUTH_TOKEN_ALIAS
-      case TerminationCode.VERSION_NEGOTIATION_FAILED:
-        return TerminationCode.VERSION_NEGOTIATION_FAILED
       case TerminationCode.MALFORMED_AUTH_TOKEN:
         return TerminationCode.MALFORMED_AUTH_TOKEN
       case TerminationCode.UNKNOWN_AUTH_TOKEN_ALIAS:

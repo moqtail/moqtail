@@ -111,5 +111,12 @@
         "ts": 40676
       }
     }
+  ],
+  "not_in_draft": [
+    {
+      "name": "VERSION_NEGOTIATION_FAILED",
+      "value": "0x15",
+      "notes": "Session error in version <= 18, removed in -20 (A.1, #1867). Since draft-15 the version is negotiated by ALPN, so a mismatch fails the transport handshake and there is no session left to carry a session error."
+    }
   ]
 }

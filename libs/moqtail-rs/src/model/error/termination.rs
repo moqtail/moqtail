@@ -31,7 +31,6 @@ pub enum TerminationCode {
   DataStreamTimeout = 0x12,
   AuthTokenCacheOverflow = 0x13,
   DuplicateAuthTokenAlias = 0x14,
-  VersionNegotiationFailed = 0x15,
   MalformedAuthToken = 0x16,
   UnknownAuthTokenAlias = 0x17,
   ExpiredAuthToken = 0x18,

@@ -28,13 +28,13 @@ import {
   handlerGoAway,
   handlerGoAwayOnRequestStream,
   handlerPublish,
-  handlerPublishBlocked,
+  handlerPublishSkipped,
   handlerSubscribeNamespace,
   handlerSubscribeTracks,
 } from '.'
 import {
   Publish,
-  PublishBlocked,
+  PublishSkipped,
   PublishNamespace,
   Fetch,
   FetchOk,
@@ -108,6 +108,6 @@ export function getHandlerForRequestStreamMessage(msg: ControlMessage): RequestS
   if (msg instanceof PublishDone) return handlerPublishDone
   // The publisher's answer when the peer's bidi stream limit leaves it no stream to
   // send a track's PUBLISH on (§10.20). It travels on the SUBSCRIBE_TRACKS stream.
-  if (msg instanceof PublishBlocked) return handlerPublishBlocked
+  if (msg instanceof PublishSkipped) return handlerPublishSkipped
   return undefined
 }

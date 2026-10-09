@@ -277,11 +277,10 @@ impl MessageParameter {
           | ControlMessageType::TrackStatus
           | ControlMessageType::Fetch
       ),
-      // PUBLISH_OK, SUBSCRIBE, or REQUEST_UPDATE.
+      // PUBLISH_OK (a REQUEST_OK answering a PUBLISH), SUBSCRIBE, or REQUEST_UPDATE.
       Self::ObjectDeliveryTimeout { .. } | Self::SubgroupDeliveryTimeout { .. } => matches!(
         msg_type,
-        ControlMessageType::PublishOk
-          | ControlMessageType::RequestOk
+        ControlMessageType::RequestOk
           | ControlMessageType::Subscribe
           | ControlMessageType::RequestUpdate
       ),
@@ -294,13 +293,11 @@ impl MessageParameter {
         ControlMessageType::Subscribe
           | ControlMessageType::Fetch
           | ControlMessageType::RequestUpdate
-          | ControlMessageType::PublishOk
           | ControlMessageType::RequestOk
       ),
       Self::GroupOrder { .. } => matches!(
         msg_type,
         ControlMessageType::Subscribe
-          | ControlMessageType::PublishOk
           | ControlMessageType::Fetch
           | ControlMessageType::SubscribeOk
           | ControlMessageType::FetchOk
@@ -310,7 +307,6 @@ impl MessageParameter {
       Self::LocationFilter { .. } => matches!(
         msg_type,
         ControlMessageType::Subscribe
-          | ControlMessageType::PublishOk
           | ControlMessageType::RequestOk
           | ControlMessageType::RequestUpdate
       ),
@@ -322,7 +318,6 @@ impl MessageParameter {
         msg_type,
         ControlMessageType::SubscribeOk
           | ControlMessageType::Publish
-          | ControlMessageType::PublishOk
           | ControlMessageType::RequestOk
       ),
       Self::LargestObject { .. } => matches!(
@@ -337,15 +332,13 @@ impl MessageParameter {
         ControlMessageType::Subscribe
           | ControlMessageType::RequestUpdate
           | ControlMessageType::Publish
-          | ControlMessageType::PublishOk
           | ControlMessageType::RequestOk
           | ControlMessageType::SubscribeNamespace
           | ControlMessageType::SubscribeTracks
       ),
       Self::NewGroupRequest { .. } => matches!(
         msg_type,
-        ControlMessageType::PublishOk
-          | ControlMessageType::RequestOk
+        ControlMessageType::RequestOk
           | ControlMessageType::Subscribe
           | ControlMessageType::RequestUpdate
       ),
@@ -356,8 +349,7 @@ impl MessageParameter {
       // REQUEST_OK.
       Self::SwitchingSetAssignment { .. } => matches!(
         msg_type,
-        ControlMessageType::PublishOk
-          | ControlMessageType::RequestOk
+        ControlMessageType::RequestOk
           | ControlMessageType::Subscribe
           | ControlMessageType::RequestUpdate
       ),
@@ -1086,7 +1078,6 @@ mod tests {
     for msg_type in [
       ControlMessageType::Subscribe,
       ControlMessageType::RequestUpdate,
-      ControlMessageType::PublishOk,
       ControlMessageType::RequestOk,
     ] {
       assert!(param.is_valid_for(msg_type), "{msg_type:?} allows it");
@@ -1556,7 +1547,9 @@ mod tests {
   fn test_is_valid_for() {
     let timeout = MessageParameter::new_object_delivery_timeout(100);
     assert!(timeout.is_valid_for(ControlMessageType::Subscribe));
-    assert!(timeout.is_valid_for(ControlMessageType::PublishOk));
+    // The PUBLISH_OK this parameter also rides is a REQUEST_OK answering a PUBLISH:
+    // draft-20 reserves 0x1E and keeps PUBLISH_OK only as prose shorthand (§10.5).
+    assert!(timeout.is_valid_for(ControlMessageType::RequestOk));
     assert!(!timeout.is_valid_for(ControlMessageType::Fetch));
   }
 

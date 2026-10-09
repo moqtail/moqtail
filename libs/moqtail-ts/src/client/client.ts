@@ -39,7 +39,7 @@ import {
   TrackStatus,
   ControlMessageType,
   SUPPORTED_VERSIONS,
-  PublishBlocked,
+  PublishSkipped,
   PublishDone,
   PublishDoneStatusCode,
 } from '../model/control'
@@ -363,12 +363,16 @@ export class MOQtailClient {
   onPeerSubscribeTracks?: (msg: SubscribeTracks) => void
 
   /**
-   * Fired when a PUBLISH_BLOCKED arrives on a {@link MOQtailClient.subscribeTracks}
-   * stream: the peer has a matching track but no bidi stream to send its PUBLISH on
-   * until its stream limit lifts (§10.20). `prefix` is the prefix this side subscribed
-   * with, which is what the message's suffix hangs off.
+   * Fired when a PUBLISH_SKIPPED arrives on a {@link MOQtailClient.subscribeTracks}
+   * stream: the peer has a matching track and will not send a PUBLISH for it, for any
+   * reason it likes — a bidi stream limit is only the example the draft gives (§10.21).
+   * It is a decision, not backpressure, so do not wait for it to lift. `prefix` is the
+   * prefix this side subscribed with, which is what the message's suffix hangs off.
+   *
+   * It binds this SUBSCRIBE_TRACKS and one PUBLISH only: the peer may publish the same
+   * track again later, e.g. after a reconnect, and a SUBSCRIBE for it is still allowed.
    */
-  onPeerPublishBlocked?: (prefix: Tuple, msg: PublishBlocked) => void
+  onPeerPublishSkipped?: (prefix: Tuple, msg: PublishSkipped) => void
 
   /** Fired when a NAMESPACE message arrives on a SUBSCRIBE_NAMESPACE bi-stream (prefix + suffix). */
   onPeerNamespace?: (prefix: Tuple, suffix: Tuple) => void
@@ -2847,12 +2851,12 @@ if (import.meta.vitest) {
       await client.disconnect()
     })
 
-    it('surfaces PUBLISH_BLOCKED on the SUBSCRIBE_TRACKS response stream', async () => {
+    it('surfaces PUBLISH_SKIPPED on the SUBSCRIBE_TRACKS response stream', async () => {
       const { client, transport } = await connected()
       const prefix = Tuple.fromUtf8Path('room')
-      const blocked: { prefix: Tuple; msg: PublishBlocked }[] = []
-      client.onPeerPublishBlocked = (subscribedPrefix, msg) => {
-        blocked.push({ prefix: subscribedPrefix, msg })
+      const skipped: { prefix: Tuple; msg: PublishSkipped }[] = []
+      client.onPeerPublishSkipped = (subscribedPrefix, msg) => {
+        skipped.push({ prefix: subscribedPrefix, msg })
       }
 
       const subscribingTracks = client.subscribeTracks(prefix)
@@ -2860,14 +2864,14 @@ if (import.meta.vitest) {
       tracksStream.respond(new RequestOk())
       expect((await subscribingTracks).response).toBeInstanceOf(RequestOk)
 
-      tracksStream.respond(new PublishBlocked(Tuple.fromUtf8Path('alice'), new TextEncoder().encode('video')))
+      tracksStream.respond(new PublishSkipped(Tuple.fromUtf8Path('alice'), new TextEncoder().encode('video')))
 
-      await vi.waitFor(() => expect(blocked).toHaveLength(1))
+      await vi.waitFor(() => expect(skipped).toHaveLength(1))
       // The message carries the suffix only; the prefix comes from the stream it
       // arrived on, so the blocked track is room/alice:video.
-      expect(blocked[0]!.prefix.equals(prefix)).toBe(true)
-      expect(blocked[0]!.msg.trackNamespaceSuffix.toUtf8Path()).toBe('/alice')
-      expect(new TextDecoder().decode(blocked[0]!.msg.trackName)).toBe('video')
+      expect(skipped[0]!.prefix.equals(prefix)).toBe(true)
+      expect(skipped[0]!.msg.trackNamespaceSuffix.toUtf8Path()).toBe('/alice')
+      expect(new TextDecoder().decode(skipped[0]!.msg.trackName)).toBe('video')
 
       await client.disconnect()
     })

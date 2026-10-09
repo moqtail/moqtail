@@ -18,8 +18,8 @@ use bytes::{Buf, Bytes};
 
 use super::{
   constant::ControlMessageType, fetch::Fetch, fetch_ok::FetchOk, goaway::GoAway,
-  namespace::Namespace, namespace_done::NamespaceDone, publish::Publish,
-  publish_blocked::PublishBlocked, publish_done::PublishDone, publish_namespace::PublishNamespace,
+  namespace::Namespace, namespace_done::NamespaceDone, publish::Publish, publish_done::PublishDone,
+  publish_namespace::PublishNamespace, publish_skipped::PublishSkipped,
   request_error::RequestError, request_ok::RequestOk, request_update::RequestUpdate, setup::Setup,
   subscribe::Subscribe, subscribe_namespace::SubscribeNamespace, subscribe_ok::SubscribeOk,
   subscribe_tracks::SubscribeTracks, track_status::TrackStatus,
@@ -44,7 +44,7 @@ pub enum ControlMessage {
   SubscribeNamespace(Box<SubscribeNamespace>),
   SubscribeTracks(Box<SubscribeTracks>),
   RequestError(Box<RequestError>),
-  PublishBlocked(Box<PublishBlocked>),
+  PublishSkipped(Box<PublishSkipped>),
 }
 
 pub trait ControlMessageTrait: std::fmt::Debug {
@@ -97,11 +97,6 @@ impl ControlMessage {
       ControlMessageType::Publish => {
         Publish::parse_payload(&mut payload).map(ControlMessage::Publish)
       }
-      // PUBLISH_OK (0x1E) is a REQUEST_OK alias with no body of its own: PUBLISH is
-      // answered by REQUEST_OK. Parse its body as REQUEST_OK.
-      ControlMessageType::PublishOk => {
-        RequestOk::parse_payload(&mut payload).map(ControlMessage::RequestOk)
-      }
       ControlMessageType::PublishDone => {
         PublishDone::parse_payload(&mut payload).map(ControlMessage::PublishDone)
       }
@@ -129,8 +124,8 @@ impl ControlMessage {
       ControlMessageType::SubscribeTracks => {
         SubscribeTracks::parse_payload(&mut payload).map(ControlMessage::SubscribeTracks)
       }
-      ControlMessageType::PublishBlocked => {
-        PublishBlocked::parse_payload(&mut payload).map(ControlMessage::PublishBlocked)
+      ControlMessageType::PublishSkipped => {
+        PublishSkipped::parse_payload(&mut payload).map(ControlMessage::PublishSkipped)
       }
     }
     .map_err(|err| ParseError::ProtocolViolation {
@@ -169,7 +164,7 @@ impl ControlMessage {
       ControlMessage::TrackStatus(msg) => msg.serialize(),
       ControlMessage::SubscribeNamespace(msg) => msg.serialize(),
       ControlMessage::SubscribeTracks(msg) => msg.serialize(),
-      ControlMessage::PublishBlocked(msg) => msg.serialize(),
+      ControlMessage::PublishSkipped(msg) => msg.serialize(),
     }
   }
 
@@ -193,7 +188,7 @@ impl ControlMessage {
       ControlMessage::TrackStatus(_) => ControlMessageType::TrackStatus,
       ControlMessage::SubscribeNamespace(_) => ControlMessageType::SubscribeNamespace,
       ControlMessage::SubscribeTracks(_) => ControlMessageType::SubscribeTracks,
-      ControlMessage::PublishBlocked(_) => ControlMessageType::PublishBlocked,
+      ControlMessage::PublishSkipped(_) => ControlMessageType::PublishSkipped,
     }
   }
 }

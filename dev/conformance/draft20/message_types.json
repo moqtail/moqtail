@@ -73,11 +73,7 @@
       "value": "0x1E",
       "spec": "Section 10.5",
       "notes": "PUBLISH_OK in version <= 17.",
-      "reserved": true,
-      "pending": {
-        "rs": 40676,
-        "ts": 40676
-      }
+      "reserved": true
     },
     {
       "name": "PUBLISH_DONE",
@@ -139,11 +135,7 @@
       "name": "PUBLISH_SKIPPED",
       "value": "0xF",
       "stream": "Request",
-      "spec": "Section 10.21",
-      "pending": {
-        "rs": 40676,
-        "ts": 40676
-      }
+      "spec": "Section 10.21"
     },
     {
       "name": "REQUEST_UPDATE",

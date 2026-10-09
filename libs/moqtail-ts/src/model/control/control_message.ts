@@ -16,7 +16,7 @@
 
 import { FrozenByteBuffer } from '../common/byte_buffer'
 import { ControlMessageType } from './constant'
-import { PublishBlocked } from './publish_blocked'
+import { PublishSkipped } from './publish_skipped'
 import { PublishNamespace } from './publish_namespace'
 import { Namespace } from './namespace'
 import { NamespaceDone } from './namespace_done'
@@ -32,7 +32,7 @@ import { RequestUpdate } from './request_update'
 import { TrackStatus } from './track_status'
 import { SubscribeNamespace } from './subscribe_namespace'
 import { SubscribeTracks } from './subscribe_tracks'
-import { NotEnoughBytesError } from '../error/error'
+import { NotEnoughBytesError, InvalidEnumValue } from '../error/error'
 import { Tuple } from '../common'
 import { AuthorizationToken } from '../parameter/common/authorization_token'
 import { RequestOk } from './request_ok'
@@ -40,7 +40,7 @@ import { RequestError } from './request_error'
 
 export type ControlMessage =
   | Publish
-  | PublishBlocked
+  | PublishSkipped
   | PublishDone
   | PublishNamespace
   | Namespace
@@ -70,10 +70,6 @@ export namespace ControlMessage {
     switch (messageType) {
       case ControlMessageType.Publish:
         return Publish.parsePayload(payload)
-      // PUBLISH_OK (0x1E) is a REQUEST_OK alias with no body of its own: PUBLISH is
-      // answered by REQUEST_OK. Parse its body as REQUEST_OK.
-      case ControlMessageType.PublishOk:
-        return RequestOk.parsePayload(payload)
       case ControlMessageType.PublishDone:
         return PublishDone.parsePayload(payload)
       case ControlMessageType.PublishNamespace:
@@ -106,8 +102,8 @@ export namespace ControlMessage {
         return SubscribeTracks.parsePayload(payload)
       case ControlMessageType.Setup:
         return Setup.parsePayload(payload)
-      case ControlMessageType.PublishBlocked:
-        return PublishBlocked.parsePayload(payload)
+      case ControlMessageType.PublishSkipped:
+        return PublishSkipped.parsePayload(payload)
       default:
         throw new Error(`Unknown or unhandled ControlMessageType: ${messageType}`)
     }
@@ -162,15 +158,15 @@ if (import.meta.vitest) {
     })
 
     describe('RequestOk', () => {
-      test('PUBLISH_OK (0x1E) parses as RequestOk', () => {
+      test('0x1E is reserved and no longer parses as RequestOk', () => {
         const requestOk = new RequestOk()
         const bytes = ControlMessage.serialize(requestOk).toUint8Array()
-        // Table 5 keeps 0x1E but points it at §10.5, REQUEST_OK. Both codepoints are
-        // one-byte varints, so retyping the message is a single-byte edit.
-        bytes[0] = ControlMessageType.PublishOk
-        const deserialized = ControlMessage.deserialize(new FrozenByteBuffer(bytes))
-        expect(deserialized).toBeInstanceOf(RequestOk)
-        expect(deserialized).toEqual(requestOk)
+        // Draft-18 pointed 0x1E at §10.5 so this retyped message parsed as REQUEST_OK;
+        // -20 reserves it. Both codepoints are one-byte varints, so a peer still on
+        // <= 17 produces exactly this byte and must now be refused rather than read as
+        // a REQUEST_OK that happens to have the same body.
+        bytes[0] = 0x1e
+        expect(() => ControlMessage.deserialize(new FrozenByteBuffer(bytes))).toThrow(InvalidEnumValue)
       })
     })
 

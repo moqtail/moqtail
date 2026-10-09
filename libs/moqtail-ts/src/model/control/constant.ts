@@ -42,6 +42,7 @@ export enum ControlMessageType {
   ReservedServerSetupV10 = 0x41, // RESERVED; rejected by tryFrom
   ReservedClientSetupV16 = 0x20, // RESERVED; rejected by tryFrom
   ReservedServerSetupV16 = 0x21, // RESERVED; rejected by tryFrom
+  ReservedPublishOkV17 = 0x1e, // RESERVED; rejected by tryFrom
   Setup = 0x2f00, // Control
   GoAway = 0x10, // Control, Request
   Subscribe = 0x03, // Request, First
@@ -59,8 +60,7 @@ export enum ControlMessageType {
   SubscribeNamespace = 0x50, // Request, First
   SubscribeTracks = 0x51, // Request, First
   Publish = 0x1d, // Request, First
-  PublishOk = 0x1e, // Request; an alias of RequestOk (§10.5), not its own body
-  PublishBlocked = 0x0f, // Request
+  PublishSkipped = 0x0f, // Request
 }
 
 /**
@@ -147,10 +147,8 @@ export namespace ControlMessageType {
         return ControlMessageType.SubscribeTracks
       case 0x1dn:
         return ControlMessageType.Publish
-      case 0x1en:
-        return ControlMessageType.PublishOk
       case 0x0fn:
-        return ControlMessageType.PublishBlocked
+        return ControlMessageType.PublishSkipped
       default:
         throw new InvalidEnumValue('ControlMessageType.tryFrom', v)
     }
@@ -533,6 +531,25 @@ if (import.meta.vitest) {
       // TRACK_STATUS opens a request stream but §10.9 no longer lets it be updated.
       expect(ControlMessageType.isFirst(ControlMessageType.TrackStatus)).toBe(true)
       expect(ControlMessageType.isUpdatable(ControlMessageType.TrackStatus)).toBe(false)
+    })
+
+    // Draft-20 Table 5 lists 0x1E as RESERVED (PUBLISH_OK in <= 17), so it must be
+    // rejected rather than parsed as the REQUEST_OK alias draft-18 made it. A peer
+    // still speaking <= 17 that sends one gets a closed session, which is the point:
+    // silently accepting it would let a draft-17 PUBLISH_OK pass for a -20 REQUEST_OK.
+    test('0x1E is reserved and rejected', () => {
+      expect(() => ControlMessageType.tryFrom(0x1en)).toThrow(InvalidEnumValue)
+      // The name survives only as prose shorthand for the REQUEST_OK that answers a
+      // PUBLISH (§10.5), and that codepoint still parses.
+      expect(ControlMessageType.tryFrom(0x07n)).toBe(ControlMessageType.RequestOk)
+    })
+
+    test('PUBLISH_SKIPPED keeps the PUBLISH_BLOCKED codepoint', () => {
+      // -20 renames the message and widens its meaning but leaves 0xF alone, so the
+      // rename is invisible on the wire and a version mismatch shows up as behaviour,
+      // never as a parse error.
+      expect(ControlMessageType.tryFrom(0x0fn)).toBe(ControlMessageType.PublishSkipped)
+      expect(ControlMessageType.PublishSkipped).toBe(0x0f)
     })
   })
 }

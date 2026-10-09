@@ -15,7 +15,7 @@
  */
 
 export * from './publish'
-export * from './publish_blocked'
+export * from './publish_skipped'
 export * from './publish_namespace'
 export * from './fetch'
 export * from './fetch_ok'

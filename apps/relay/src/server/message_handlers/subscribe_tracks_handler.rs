@@ -20,7 +20,7 @@ use crate::server::track_manager::SubscribeKind;
 use core::result::Result;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::control::control_message::ControlMessage;
-use moqtail::model::control::publish_blocked::PublishBlocked;
+use moqtail::model::control::publish_skipped::PublishSkipped;
 use moqtail::model::control::request_error::RequestError;
 use moqtail::model::control::request_ok::RequestOk;
 use moqtail::model::control::subscribe_tracks::SubscribeTracks;
@@ -134,20 +134,23 @@ pub async fn handle_subscribe_tracks(
     }
 
     if let Some(original_publish_message) = original_publish_message_opt {
-      // Out of streams to initiate this subscription: send PUBLISH_BLOCKED on
-      // the response stream and stop (no PUBLISH may follow it).
+      // Out of streams to initiate this subscription: say so with PUBLISH_SKIPPED on
+      // the response stream and stop. The draft's MUST NOT binds only this track on
+      // this SUBSCRIBE_TRACKS, and only the one PUBLISH (§5.6); we stop entirely
+      // because the next track would need a stream we also do not have. A later
+      // PUBLISH for the same track, after a reconnect, stays allowed.
       if max_publish_streams > 0 && published >= max_publish_streams {
         let suffix = full_track_name
           .namespace
           .suffix(&sub_tracks.track_namespace_prefix)
           .unwrap_or_else(|| full_track_name.namespace.clone());
         warn!(
-          "SUBSCRIBE_TRACKS out of streams ({} sent, max {}); PUBLISH_BLOCKED for {full_track_name:?}",
+          "SUBSCRIBE_TRACKS out of streams ({} sent, max {}); PUBLISH_SKIPPED for {full_track_name:?}",
           published, max_publish_streams
         );
-        let blocked = PublishBlocked::new(suffix, full_track_name.name.clone());
+        let skipped = PublishSkipped::new(suffix, full_track_name.name.clone());
         stream_handler
-          .send(&ControlMessage::PublishBlocked(Box::new(blocked)))
+          .send(&ControlMessage::PublishSkipped(Box::new(skipped)))
           .await?;
         break;
       }

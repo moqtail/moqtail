@@ -147,7 +147,7 @@ cargo run --bin client -- -c subscribe-namespace -n test/ns --duration 5
 Subscribe to every track under a namespace prefix (SUBSCRIBE_TRACKS). The relay
 answers `REQUEST_OK`, forwards a `PUBLISH` for each matching track — which the
 client accepts, then receives and counts that track's objects — and sends
-`PUBLISH_BLOCKED` if it runs out of streams (start the relay with
+`PUBLISH_SKIPPED` if it runs out of streams (start the relay with
 `--max-publish-streams N` to cap it):
 
 ```

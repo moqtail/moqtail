@@ -25,10 +25,14 @@ pub const SUPPORTED_VERSIONS: &str = "moqt-18";
 /// be the first on a new request stream.
 ///
 /// Earlier protocol versions also reserve `0x01` (SETUP for version 00), `0x40`/`0x41`
-/// (CLIENT_SETUP / SERVER_SETUP for version <= 10) and `0x20`/`0x21` (CLIENT_SETUP /
-/// SERVER_SETUP in version <= 16). Reserved codepoints are deliberately absent from this
-/// enum: `TryFrom` rejects them — an endpoint receiving an
-/// unknown message type MUST close the session.
+/// (CLIENT_SETUP / SERVER_SETUP for version <= 10), `0x20`/`0x21` (CLIENT_SETUP /
+/// SERVER_SETUP in version <= 16) and `0x1E` (PUBLISH_OK in version <= 17). Reserved
+/// codepoints are deliberately absent from this enum: `TryFrom` rejects them — an
+/// endpoint receiving an unknown message type MUST close the session.
+///
+/// `PUBLISH_OK` survives in draft-20 only as prose shorthand for the REQUEST_OK sent in
+/// answer to a PUBLISH (§10.5), so it names no codepoint of its own and is spelled
+/// `RequestOk` here.
 ///
 /// The values here are asserted against `dev/conformance/draft20/message_types.json`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,8 +55,7 @@ pub enum ControlMessageType {
   SubscribeTracks = 0x51,    // Request, First
   Publish = 0x1D,            // Request, First
   PublishDone = 0x0B,        // Request
-  PublishOk = 0x1E,          // Request; an alias of RequestOk, not its own body
-  PublishBlocked = 0x0F,     // Request
+  PublishSkipped = 0x0F,     // Request
 }
 
 impl TryFrom<u64> for ControlMessageType {
@@ -77,8 +80,7 @@ impl TryFrom<u64> for ControlMessageType {
       0x50 => Ok(ControlMessageType::SubscribeNamespace),
       0x51 => Ok(ControlMessageType::SubscribeTracks),
       0x1D => Ok(ControlMessageType::Publish),
-      0x1E => Ok(ControlMessageType::PublishOk),
-      0x0F => Ok(ControlMessageType::PublishBlocked),
+      0x0F => Ok(ControlMessageType::PublishSkipped),
       _ => Err(ParseError::InvalidType {
         context: " ControlMessageType::try_from(u64)",
         details: format!("Invalid type, got {value}"),
@@ -387,5 +389,32 @@ mod tests {
         PublishDoneStatusCode::InternalError
       );
     }
+  }
+
+  /// Draft-20 Table 5 lists `0x1E` as RESERVED (PUBLISH_OK in <= 17), so it must be
+  /// rejected rather than parsed as the REQUEST_OK alias draft-18 made it. A peer
+  /// still speaking <= 17 that sends one gets a closed session, which is the point:
+  /// silently accepting it would let a draft-17 PUBLISH_OK pass for a -20 REQUEST_OK.
+  #[test]
+  fn reserved_publish_ok_v17_is_rejected() {
+    assert!(ControlMessageType::try_from(0x1Eu64).is_err());
+    // The name survives only as prose shorthand for the REQUEST_OK that answers a
+    // PUBLISH (§10.5), and that codepoint still parses.
+    assert_eq!(
+      ControlMessageType::try_from(0x07u64).unwrap(),
+      ControlMessageType::RequestOk
+    );
+  }
+
+  #[test]
+  fn publish_skipped_keeps_the_publish_blocked_codepoint() {
+    // -20 renames the message and widens its meaning but leaves 0xF alone, so the
+    // rename is invisible on the wire and a version mismatch shows up as behaviour,
+    // never as a parse error.
+    assert_eq!(
+      ControlMessageType::try_from(0x0Fu64).unwrap(),
+      ControlMessageType::PublishSkipped
+    );
+    assert_eq!(ControlMessageType::PublishSkipped as u64, 0x0F);
   }
 }

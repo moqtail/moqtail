@@ -36,6 +36,9 @@ pub enum TerminationCode {
   ExpiredAuthToken = 0x18,
   InvalidAuthority = 0x19,
   MalformedAuthority = 0x1A,
+  /// §3.5, §10.3.1.7: a REQUEST_UPDATE arrived on a request stream that already
+  /// had MAX_REQUEST_UPDATES outstanding.
+  TooManyRequestUpdates = 0x1B,
 }
 
 impl TerminationCode {

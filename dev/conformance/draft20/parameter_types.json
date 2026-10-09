@@ -42,11 +42,7 @@
       {
         "name": "MAX_REQUEST_UPDATES",
         "value": "0x08",
-        "spec": "Section 10.3.1.7",
-        "pending": {
-          "rs": 40676,
-          "ts": 40676
-        }
+        "spec": "Section 10.3.1.7"
       }
     ],
     "local_extensions": [

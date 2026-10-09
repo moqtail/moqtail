@@ -16,19 +16,35 @@
 
 import { KeyValuePair } from '../common/pair'
 import { greaseValue } from '../common/grease'
-import { Path, MaxAuthTokenCacheSize, MaxFilterRanges, Authority, MoqtImplementation, SstsAlgorithms } from './setup'
+import {
+  Path,
+  MaxAuthTokenCacheSize,
+  MaxFilterRanges,
+  MaxRequestUpdates,
+  Authority,
+  MoqtImplementation,
+  SstsAlgorithms,
+} from './setup'
 import { AuthorizationToken } from './common'
 import { SetupOptionType, TokenAliasType } from './constant'
 import { ProtocolViolationError } from '../error/error'
 
 export type SetupOption =
-  Path | MaxAuthTokenCacheSize | MaxFilterRanges | AuthorizationToken | Authority | MoqtImplementation | SstsAlgorithms
+  | Path
+  | MaxAuthTokenCacheSize
+  | MaxFilterRanges
+  | MaxRequestUpdates
+  | AuthorizationToken
+  | Authority
+  | MoqtImplementation
+  | SstsAlgorithms
 export namespace SetupOption {
   export function fromKeyValuePair(pair: KeyValuePair): SetupOption | undefined {
     return (
       Path.fromKeyValuePair(pair) ||
       MaxAuthTokenCacheSize.fromKeyValuePair(pair) ||
       MaxFilterRanges.fromKeyValuePair(pair) ||
+      MaxRequestUpdates.fromKeyValuePair(pair) ||
       AuthorizationToken.fromKeyValuePair(pair) ||
       Authority.fromKeyValuePair(pair) ||
       MoqtImplementation.fromKeyValuePair(pair) ||
@@ -47,6 +63,10 @@ export namespace SetupOption {
 
   export function isMaxFilterRanges(param: SetupOption): param is MaxFilterRanges {
     return param instanceof MaxFilterRanges
+  }
+
+  export function isMaxRequestUpdates(param: SetupOption): param is MaxRequestUpdates {
+    return param instanceof MaxRequestUpdates
   }
   export function isAuthorizationToken(param: SetupOption): param is AuthorizationToken {
     return param instanceof AuthorizationToken
@@ -82,6 +102,11 @@ export class SetupOptions {
 
   addMaxFilterRanges(maxRanges: bigint | number): this {
     this.kvps.push(new MaxFilterRanges(BigInt(maxRanges)).toKeyValuePair())
+    return this
+  }
+
+  addMaxRequestUpdates(maxUpdates: bigint | number): this {
+    this.kvps.push(new MaxRequestUpdates(BigInt(maxUpdates)).toKeyValuePair())
     return this
   }
 
@@ -121,6 +146,7 @@ export class SetupOptions {
         Path.fromKeyValuePair(kvp) ||
         MaxAuthTokenCacheSize.fromKeyValuePair(kvp) ||
         MaxFilterRanges.fromKeyValuePair(kvp) ||
+        MaxRequestUpdates.fromKeyValuePair(kvp) ||
         AuthorizationToken.fromKeyValuePair(kvp) ||
         Authority.fromKeyValuePair(kvp) ||
         MoqtImplementation.fromKeyValuePair(kvp) ||

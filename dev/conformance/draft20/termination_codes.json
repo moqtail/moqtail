@@ -105,11 +105,7 @@
     {
       "name": "TOO_MANY_REQUEST_UPDATES",
       "value": "0x1B",
-      "spec": "Section 3.5",
-      "pending": {
-        "rs": 40676,
-        "ts": 40676
-      }
+      "spec": "Section 3.5"
     }
   ],
   "not_in_draft": [

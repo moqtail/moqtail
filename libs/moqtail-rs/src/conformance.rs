@@ -582,6 +582,7 @@ mod enum_conformance {
       TerminationCode::ExpiredAuthToken,
       TerminationCode::InvalidAuthority,
       TerminationCode::MalformedAuthority,
+      TerminationCode::TooManyRequestUpdates,
     ];
 
     assert_registry(

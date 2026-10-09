@@ -36,6 +36,11 @@ export enum TerminationCode {
   EXPIRED_AUTH_TOKEN = 0x18,
   INVALID_AUTHORITY = 0x19,
   MALFORMED_AUTHORITY = 0x1a,
+  /**
+   * §3.5, §10.3.1.7: a REQUEST_UPDATE arrived on a request stream that already had
+   * MAX_REQUEST_UPDATES outstanding.
+   */
+  TOO_MANY_REQUEST_UPDATES = 0x1b,
 }
 
 export namespace TerminationCode {
@@ -85,6 +90,8 @@ export namespace TerminationCode {
         return TerminationCode.INVALID_AUTHORITY
       case TerminationCode.MALFORMED_AUTHORITY:
         return TerminationCode.MALFORMED_AUTHORITY
+      case TerminationCode.TOO_MANY_REQUEST_UPDATES:
+        return TerminationCode.TOO_MANY_REQUEST_UPDATES
       default:
         throw new InvalidTypeError('TerminationCode.tryFrom', `Unknown termination code: ${code}`)
     }
@@ -103,7 +110,10 @@ if (import.meta.vitest) {
     })
 
     test('throws on a code outside the enum', () => {
-      expect(() => TerminationCode.tryFrom(0x1b)).toThrow(InvalidTypeError)
+      // 0x07 is unassigned in §15.11.1 Table 21 and sits between two assigned
+      // codes, so it stays a foil as the table grows at its end -- 0x1b did not,
+      // and became TOO_MANY_REQUEST_UPDATES.
+      expect(() => TerminationCode.tryFrom(0x07)).toThrow(InvalidTypeError)
     })
   })
 

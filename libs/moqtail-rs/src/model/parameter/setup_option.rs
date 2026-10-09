@@ -42,6 +42,16 @@ pub enum SetupOption {
   MaxFilterRanges {
     max_ranges: u64,
   },
+  /// §10.3.1.7. How many REQUEST_UPDATEs the peer may leave outstanding on a
+  /// single request stream -- outstanding meaning sent and not yet answered by a
+  /// REQUEST_OK or REQUEST_ERROR, each of which restores one credit.
+  ///
+  /// 0 is the default and means no limit, which is the reverse of
+  /// `MaxFilterRanges`. Exceeding the limit closes the session with
+  /// TOO_MANY_REQUEST_UPDATES.
+  MaxRequestUpdates {
+    max_updates: u64,
+  },
   /// The sender-side track switching algorithms this endpoint supports. An
   /// empty list — or the absence of this option — prohibits the use of SSTS.
   SstsAlgorithms {
@@ -69,6 +79,10 @@ impl SetupOption {
 
   pub fn new_max_filter_ranges(max_ranges: u64) -> Self {
     SetupOption::MaxFilterRanges { max_ranges }
+  }
+
+  pub fn new_max_request_updates(max_updates: u64) -> Self {
+    SetupOption::MaxRequestUpdates { max_updates }
   }
 
   pub fn new_moqt_implementation(info: String) -> Self {
@@ -115,6 +129,12 @@ impl SetupOption {
         let slice = kvp.serialize()?;
         bytes.extend_from_slice(&slice);
       }
+      Self::MaxRequestUpdates { max_updates } => {
+        let kvp =
+          KeyValuePair::try_new_varint(SetupOptionType::MaxRequestUpdates as u64, *max_updates)?;
+        let slice = kvp.serialize()?;
+        bytes.extend_from_slice(&slice);
+      }
       Self::MoqtImplementation { info } => {
         let data = info.as_bytes();
         let kvp = KeyValuePair::try_new_bytes(
@@ -157,6 +177,9 @@ impl SetupOption {
           SetupOptionType::MaxFilterRanges => {
             Ok(SetupOption::MaxFilterRanges { max_ranges: *value })
           }
+          SetupOptionType::MaxRequestUpdates => Ok(SetupOption::MaxRequestUpdates {
+            max_updates: *value,
+          }),
           _ => Err(ParseError::KeyValueFormattingError {
             context: "SetupOption::deserialize",
           }),
@@ -226,6 +249,9 @@ impl TryInto<KeyValuePair> for SetupOption {
       }
       SetupOption::MaxFilterRanges { max_ranges } => {
         KeyValuePair::try_new_varint(SetupOptionType::MaxFilterRanges as u64, max_ranges)
+      }
+      SetupOption::MaxRequestUpdates { max_updates } => {
+        KeyValuePair::try_new_varint(SetupOptionType::MaxRequestUpdates as u64, max_updates)
       }
       SetupOption::MoqtImplementation { info } => KeyValuePair::try_new_bytes(
         SetupOptionType::MoqtImplementation as u64,

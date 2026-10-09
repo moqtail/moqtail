@@ -26,6 +26,10 @@ pub enum SetupOptionType {
   /// Range Filters outright rather than meaning unlimited.
   MaxFilterRanges = 0x06,
   MoqtImplementation = 0x07,
+  /// §10.3.1.7. How many REQUEST_UPDATEs the peer may leave unanswered on one
+  /// request stream. 0 -- the default -- means no limit, the opposite of
+  /// `MaxFilterRanges`'s 0.
+  MaxRequestUpdates = 0x08,
   // Provisional: sender-side track switching is not in the adopted registry.
   SstsAlgorithms = 0x09,
 }
@@ -41,6 +45,7 @@ impl TryFrom<u64> for SetupOptionType {
       0x05 => Ok(SetupOptionType::Authority),
       0x06 => Ok(SetupOptionType::MaxFilterRanges),
       0x07 => Ok(SetupOptionType::MoqtImplementation),
+      0x08 => Ok(SetupOptionType::MaxRequestUpdates),
       0x09 => Ok(SetupOptionType::SstsAlgorithms),
       _ => Err(ParseError::InvalidType {
         context: "SetupOptionType::try_from(u64)",

@@ -30,6 +30,11 @@ export enum SetupOptionType {
   MaxFilterRanges = 0x06,
   MoqtImplementation = 0x07,
   /**
+   * §10.3.1.7. How many REQUEST_UPDATEs the peer may leave unanswered on one request
+   * stream. 0 -- the default -- means no limit, the opposite of `MaxFilterRanges`'s 0.
+   */
+  MaxRequestUpdates = 0x08,
+  /**
    * PROVISIONAL: sender-side track switching is not an adopted extension, so this
    * codepoint is absent from the registry the conformance fixture tracks. It sits in the
    * 0x07-0x7F range of this space, which that registry leaves free.
@@ -51,6 +56,8 @@ export function setupOptionTypeFromNumber(value: number): SetupOptionType {
       return SetupOptionType.MaxFilterRanges
     case 0x07:
       return SetupOptionType.MoqtImplementation
+    case 0x08:
+      return SetupOptionType.MaxRequestUpdates
     case 0x09:
       return SetupOptionType.SstsAlgorithms
     default:
@@ -173,14 +180,28 @@ export function tokenAliasTypeFromNumber(value: number): TokenAliasType {
 if (import.meta.vitest) {
   const { describe, test } = import.meta.vitest
 
-  // Asserted against dev/conformance/draft20/, which is shared with moqtail-rs. These
-  // enums have no tryFrom, so the lookup uses the enum's own reverse mapping.
+  // Asserted against dev/conformance/draft20/, which is shared with moqtail-rs.
+  //
+  // The lookup goes through the *FromNumber functions, not the enums' own reverse
+  // mappings, because the reverse mapping answers from the enum alone: a member
+  // declared and then left out of its switch would read as conforming here while
+  // rejecting that codepoint on the wire. moqtail-rs asserts through `try_from` for
+  // the same reason.
   describe('draft-20 conformance', () => {
     const fixture = async () => await import('../../../test/conformance')
+    const nameVia =
+      <T extends number>(from: (value: number) => T, names: Record<number, string>) =>
+      (codepoint: bigint): string | undefined => {
+        try {
+          return names[from(Number(codepoint))]
+        } catch {
+          return undefined
+        }
+      }
 
     test('SetupOptionType matches parameter_types.json', async () => {
       const { parameterTypes, assertRegistry, pascalIdent } = await fixture()
-      assertRegistry(parameterTypes().setup_options, pascalIdent(), (codepoint) => SetupOptionType[Number(codepoint)])
+      assertRegistry(parameterTypes().setup_options, pascalIdent(), nameVia(setupOptionTypeFromNumber, SetupOptionType))
     })
 
     test('MessageParameterType matches parameter_types.json', async () => {
@@ -190,7 +211,7 @@ if (import.meta.vitest) {
       assertRegistry(
         parameterTypes().message_parameters,
         pascalIdent({ OBJECTID_FILTER: 'ObjectIdFilter' }),
-        (codepoint) => MessageParameterType[Number(codepoint)],
+        nameVia(messageParameterTypeFromNumber, MessageParameterType),
       )
     })
   })

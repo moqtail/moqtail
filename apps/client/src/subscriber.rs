@@ -19,7 +19,7 @@ use crate::utils::should_log;
 use anyhow::Result;
 use moqtail::model::common::location::Location;
 use moqtail::model::common::tuple::{Tuple, TupleField};
-use moqtail::model::control::constant::{FilterType, GroupOrder, SwitchMode};
+use moqtail::model::control::constant::{GroupOrder, SwitchMode};
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::request_update::RequestUpdate;
 use moqtail::model::control::subscribe::Subscribe;
@@ -36,33 +36,28 @@ use tracing::{debug, error, info};
 /// Subscribe to one track on its own bidirectional request stream. Returns the
 /// assigned track alias and the request-stream handler, which the caller keeps
 /// alive for the subscription's lifetime.
-/// The SUBSCRIPTION_FILTER a `--filter` choice asks for.
+/// The LOCATION_FILTER a `--filter` choice asks for.
+///
+/// The CLI still names draft-18's filter types because they are the vocabulary a
+/// user picking `--filter` has. Draft-20 took the Filter Type off the wire (§5.1.2),
+/// so this is the one place that mapping is made: how many fields are present is
+/// what now selects the meaning.
 fn subscription_filter(config: &SubscribeConfig) -> MessageParameter {
   match config.filter {
-    CliFilter::Latest => {
-      MessageParameter::new_subscription_filter(FilterType::LatestObject, None, None)
-    }
-    CliFilter::NextGroup => {
-      MessageParameter::new_subscription_filter(FilterType::NextGroupStart, None, None)
-    }
-    CliFilter::AbsoluteStartFill => MessageParameter::new_subscription_filter(
-      FilterType::AbsoluteStartFill,
-      Some(Location::new(
-        config.filter_start_group,
-        config.filter_start_object,
-      )),
+    // Next Object: two zeroed fields. Two-field only — with an end bound the same
+    // zeroes would be the absolute origin instead.
+    CliFilter::Latest => MessageParameter::new_location_filter_next_object(),
+    CliFilter::NextGroup => MessageParameter::new_location_filter_next_group(),
+    CliFilter::AbsoluteStartFill => MessageParameter::new_location_filter_absolute_start(
+      Location::new(config.filter_start_group, config.filter_start_object),
+    ),
+    CliFilter::AbsoluteRangeFill => MessageParameter::new_location_filter_absolute_range(
+      Location::new(config.filter_start_group, config.filter_start_object),
+      config.filter_start_group + config.end_group_delta,
       None,
     ),
-    CliFilter::AbsoluteRangeFill => MessageParameter::new_subscription_filter(
-      FilterType::AbsoluteRangeFill,
-      Some(Location::new(
-        config.filter_start_group,
-        config.filter_start_object,
-      )),
-      Some(config.filter_start_group + config.end_group_delta),
-    ),
     CliFilter::RelativeStartFill => {
-      MessageParameter::new_relative_start_fill(config.relative_previous)
+      MessageParameter::new_location_filter_relative_groups(config.relative_previous)
     }
   }
 }
@@ -206,11 +201,10 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
     // A start group of its own makes the switch happen at that group rather than
     // at the next one, leaving the suspended track delivering until then.
     let filter = if config.switch_start_group > 0 {
-      MessageParameter::new_subscription_filter(
-        FilterType::AbsoluteStartFill,
-        Some(Location::new(config.switch_start_group, 0)),
-        None,
-      )
+      MessageParameter::new_location_filter_absolute_start(Location::new(
+        config.switch_start_group,
+        0,
+      ))
     } else {
       subscription_filter(&config)
     };
@@ -258,7 +252,7 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
       extra_priority,
       config.group_order,
       config.forward,
-      MessageParameter::new_subscription_filter(FilterType::LatestObject, None, None),
+      MessageParameter::new_location_filter_next_object(),
       None,
     )
     .await?;

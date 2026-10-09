@@ -22,6 +22,18 @@ use crate::model::parameter::authorization_token::AuthorizationToken;
 use crate::model::parameter::constant::MessageParameterType;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
+/// The absolute range a LOCATION_FILTER denotes once the Largest Object is known.
+///
+/// `end_group` absent is open-ended on a subscription and Largest Object on a Fetch;
+/// `end_object` absent includes the whole end group. The range is inclusive at both
+/// ends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedLocationFilter {
+  pub start: Location,
+  pub end_group: Option<u64>,
+  pub end_object: Option<u64>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum MessageParameter {
   ObjectDeliveryTimeout {
@@ -203,6 +215,134 @@ impl MessageParameter {
 
   pub fn new_fill_parameters(parameters: Vec<MessageParameter>) -> Self {
     Self::FillParameters { parameters }
+  }
+
+  /// The four LOCATION_FILTER fields in wire order, or `None` for any other
+  /// parameter. They are a prefix, so the array is read left to right.
+  fn location_filter_parts(&self) -> Option<[Option<u64>; 4]> {
+    match self {
+      Self::LocationFilter {
+        start_group,
+        start_object,
+        end_group_delta,
+        end_object,
+      } => Some([*start_group, *start_object, *end_group_delta, *end_object]),
+      _ => None,
+    }
+  }
+
+  /// How many of the four optional fields are on the wire; 0..=4.
+  pub fn location_filter_field_count(&self) -> Option<usize> {
+    Some(
+      self
+        .location_filter_parts()?
+        .iter()
+        .filter(|f| f.is_some())
+        .count(),
+    )
+  }
+
+  /// A zero-length filter: no filter at all, and how REQUEST_UPDATE removes one.
+  pub fn location_filter_is_empty(&self) -> Option<bool> {
+    Some(self.location_filter_field_count()? == 0)
+  }
+
+  /// Whether the start is stated relative to the Largest Object, and so is not
+  /// knowable without the publisher's view: the one-field form, and the
+  /// two-zeroed-field Next Object form. With an end bound present the same zeroes are
+  /// the absolute origin.
+  pub fn location_filter_is_relative_start(&self) -> Option<bool> {
+    let [sg, so, ..] = self.location_filter_parts()?;
+    Some(match self.location_filter_field_count()? {
+      1 => true,
+      2 => sg == Some(0) && so == Some(0),
+      _ => false,
+    })
+  }
+
+  /// The start Location when the filter states one outright, and `None` when it is
+  /// relative or absent. For a subscriber recording what it asked for; a publisher
+  /// deciding what to send wants [`resolve_location_filter`], which takes the Largest
+  /// Object.
+  ///
+  /// [`resolve_location_filter`]: MessageParameter::resolve_location_filter
+  pub fn location_filter_stated_start(&self) -> Option<Location> {
+    let [sg, so, ..] = self.location_filter_parts()?;
+    if self.location_filter_is_empty()? || self.location_filter_is_relative_start()? {
+      return None;
+    }
+    Some(Location::new(sg?, so?))
+  }
+
+  /// The absolute end group, when the filter bounds one.
+  pub fn location_filter_stated_end_group(&self) -> Option<u64> {
+    let [sg, _, egd, _] = self.location_filter_parts()?;
+    Some(sg?.saturating_add(egd?))
+  }
+
+  /// The absolute range this LOCATION_FILTER denotes, given the publisher's Largest
+  /// Object. `None` for any other parameter.
+  ///
+  /// This is the one place the relative-versus-absolute distinction is interpreted, so
+  /// a caller never counts fields itself. `largest` is `None` when nothing has been
+  /// delivered yet, which §5.1.2 names for the Next Object form and which the relative
+  /// form reaches through the same "next group is 0" reading plus its clamp.
+  ///
+  /// An absent `end_group` is open-ended on a subscription; on a Fetch the caller
+  /// substitutes Largest Object. An absent `end_object` includes the whole end group.
+  pub fn resolve_location_filter(
+    &self,
+    largest: Option<Location>,
+  ) -> Option<ResolvedLocationFilter> {
+    let [sg, so, egd, eo] = self.location_filter_parts()?;
+    let count = self.location_filter_field_count()?;
+
+    if count == 0 {
+      return Some(ResolvedLocationFilter {
+        start: Location::new(0, 0),
+        end_group: None,
+        end_object: None,
+      });
+    }
+
+    let next_group = largest.as_ref().map_or(0, |l| l.group.saturating_add(1));
+
+    if count == 1 {
+      // Relative: a start computing below zero clamps to zero.
+      return Some(ResolvedLocationFilter {
+        start: Location::new(next_group.saturating_sub(sg?), 0),
+        end_group: None,
+        end_object: None,
+      });
+    }
+
+    // Only the two-field form spells Next Object; with an end bound present, {0, 0} is
+    // the absolute origin and nothing else.
+    if self.location_filter_is_relative_start()? {
+      let start = match largest {
+        Some(l) => Location::new(l.group, l.object.saturating_add(1)),
+        None => Location::new(0, 0),
+      };
+      return Some(ResolvedLocationFilter {
+        start,
+        end_group: None,
+        end_object: None,
+      });
+    }
+
+    let start = Location::new(sg?, so?);
+    if egd.is_none() {
+      return Some(ResolvedLocationFilter {
+        start,
+        end_group: None,
+        end_object: None,
+      });
+    }
+    Some(ResolvedLocationFilter {
+      start,
+      end_group: self.location_filter_stated_end_group(),
+      end_object: eo,
+    })
   }
 
   pub fn new_switch_from(request_id: u64, mode: SwitchMode, publish_done: bool) -> Self {
@@ -1624,5 +1764,139 @@ mod tests {
         MessageParameter::new_subscriber_priority(5),
       ]
     );
+  }
+
+  // Resolution cases mirror moqtail-ts's LocationFilter suite one for one, so the two
+  // stacks are pinned to the same answers rather than to the same prose.
+  mod location_filter_resolution {
+    use super::*;
+
+    fn largest() -> Option<Location> {
+      Some(Location::new(10, 5))
+    }
+
+    #[test]
+    fn one_field_is_relative_to_the_group_after_the_largest() {
+      let start = |sg: u64| {
+        MessageParameter::LocationFilter {
+          start_group: Some(sg),
+          start_object: None,
+          end_group_delta: None,
+          end_object: None,
+        }
+        .resolve_location_filter(largest())
+        .unwrap()
+        .start
+      };
+      // 0 is the next group, 1 the current one, N is N-1 groups prior.
+      assert_eq!(start(0), Location::new(11, 0));
+      assert_eq!(start(1), Location::new(10, 0));
+      assert_eq!(start(2), Location::new(9, 0));
+      assert_eq!(
+        MessageParameter::new_location_filter_next_group()
+          .resolve_location_filter(largest())
+          .unwrap()
+          .start,
+        Location::new(11, 0)
+      );
+      assert_eq!(
+        MessageParameter::new_location_filter_relative_groups(2)
+          .resolve_location_filter(largest())
+          .unwrap()
+          .start,
+        Location::new(8, 0)
+      );
+    }
+
+    #[test]
+    fn a_relative_start_before_the_track_clamps_to_zero() {
+      assert_eq!(start_of(&relative(99), largest()), Location::new(0, 0));
+    }
+
+    #[test]
+    fn two_zeroed_fields_are_next_object_and_only_without_an_end_bound() {
+      let next_object = MessageParameter::new_location_filter_next_object();
+      assert_eq!(start_of(&next_object, largest()), Location::new(10, 6));
+      // Nothing delivered yet: both relative forms start the track at {0,0}.
+      assert_eq!(start_of(&next_object, None), Location::new(0, 0));
+
+      // The same zeroes with an end bound are the absolute origin, not the live edge.
+      // This is the distinction worth a test: identical leading bytes, opposite intent.
+      let ranged = MessageParameter::LocationFilter {
+        start_group: Some(0),
+        start_object: Some(0),
+        end_group_delta: Some(3),
+        end_object: None,
+      };
+      let resolved = ranged.resolve_location_filter(largest()).unwrap();
+      assert_eq!(resolved.start, Location::new(0, 0));
+      assert_eq!(resolved.end_group, Some(3));
+      assert!(!ranged.location_filter_is_relative_start().unwrap());
+    }
+
+    #[test]
+    fn two_or_more_fields_are_absolute() {
+      let open = MessageParameter::new_location_filter_absolute_start(Location::new(5, 2));
+      let resolved = open.resolve_location_filter(largest()).unwrap();
+      assert_eq!(resolved.start, Location::new(5, 2));
+      assert_eq!(resolved.end_group, None);
+
+      let ranged =
+        MessageParameter::new_location_filter_absolute_range(Location::new(5, 2), 20, Some(7));
+      let resolved = ranged.resolve_location_filter(largest()).unwrap();
+      assert_eq!(resolved.start, Location::new(5, 2));
+      // End Group is delta-coded on the wire and absolute here.
+      assert_eq!(resolved.end_group, Some(20));
+      assert_eq!(resolved.end_object, Some(7));
+    }
+
+    #[test]
+    fn a_zero_length_filter_is_the_whole_track() {
+      let empty = MessageParameter::LocationFilter {
+        start_group: None,
+        start_object: None,
+        end_group_delta: None,
+        end_object: None,
+      };
+      assert!(empty.location_filter_is_empty().unwrap());
+      let resolved = empty.resolve_location_filter(largest()).unwrap();
+      assert_eq!(resolved.start, Location::new(0, 0));
+      assert_eq!(resolved.end_group, None);
+    }
+
+    #[test]
+    fn stated_start_is_absent_exactly_when_the_start_needs_the_publishers_view() {
+      assert_eq!(relative(1).location_filter_stated_start(), None);
+      assert_eq!(
+        MessageParameter::new_location_filter_next_object().location_filter_stated_start(),
+        None
+      );
+      assert_eq!(
+        MessageParameter::new_location_filter_absolute_start(Location::new(5, 2))
+          .location_filter_stated_start(),
+        Some(Location::new(5, 2))
+      );
+    }
+
+    #[test]
+    fn resolve_answers_none_for_any_other_parameter() {
+      assert_eq!(
+        MessageParameter::new_forward(true).resolve_location_filter(largest()),
+        None
+      );
+    }
+
+    fn relative(start_group: u64) -> MessageParameter {
+      MessageParameter::LocationFilter {
+        start_group: Some(start_group),
+        start_object: None,
+        end_group_delta: None,
+        end_object: None,
+      }
+    }
+
+    fn start_of(param: &MessageParameter, largest: Option<Location>) -> Location {
+      param.resolve_location_filter(largest).unwrap().start
+    }
   }
 }

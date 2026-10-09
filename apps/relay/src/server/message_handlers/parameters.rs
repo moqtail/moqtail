@@ -27,7 +27,7 @@
 //! relay's upstream session.
 
 use moqtail::model::common::location::Location;
-use moqtail::model::control::constant::{FilterType, GroupOrder};
+use moqtail::model::control::constant::GroupOrder;
 use moqtail::model::parameter::constant::MessageParameterType;
 use moqtail::model::parameter::message_parameter::MessageParameter;
 
@@ -56,7 +56,7 @@ pub fn upstream_subscribe() -> Vec<MessageParameter> {
   vec![
     MessageParameter::new_forward(true),
     MessageParameter::new_group_order(GroupOrder::Ascending),
-    MessageParameter::new_subscription_filter(FilterType::LatestObject, None, None),
+    MessageParameter::new_location_filter_next_object(),
   ]
 }
 
@@ -145,10 +145,14 @@ mod tests {
     ));
     // Stated, not omitted: omitted would ask for the track from {0,0}.
     assert!(matches!(
-      params.get_param(MessageParameterType::SubscriptionFilter),
-      Some(MessageParameter::SubscriptionFilter {
-        filter_type: FilterType::LatestObject,
-        ..
+      params.get_param(MessageParameterType::LocationFilter),
+      // Next Object: two zeroed fields and no end bound. With an end bound the same
+      // zeroes would be the absolute origin, i.e. the whole-history ask above.
+      Some(MessageParameter::LocationFilter {
+        start_group: Some(0),
+        start_object: Some(0),
+        end_group_delta: None,
+        end_object: None,
       })
     ));
     assert!(

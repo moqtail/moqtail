@@ -19,7 +19,7 @@ use crate::server::session::Session;
 use crate::server::session_context::{PendingRequest, SessionContext};
 use crate::server::track::{Track, TrackOrigin, TrackStatus, await_publisher_streams};
 use core::result::Result;
-use moqtail::model::control::constant::{FilterType, PublishDoneStatusCode};
+use moqtail::model::control::constant::PublishDoneStatusCode;
 use moqtail::model::control::publish_done::PublishDone;
 use moqtail::model::control::request_error::RequestError;
 use moqtail::model::control::request_ok::RequestOk;
@@ -843,11 +843,9 @@ async fn handle_subscribe_message(
       let filter = sub
         .subscribe_parameters
         .iter()
-        .find(|p| matches!(p, MessageParameter::SubscriptionFilter { .. }))
+        .find(|p| matches!(p, MessageParameter::LocationFilter { .. }))
         .cloned()
-        .unwrap_or_else(|| {
-          MessageParameter::new_subscription_filter(FilterType::LatestObject, None, None)
-        });
+        .unwrap_or_else(MessageParameter::new_location_filter_next_object);
       subscription
         .read()
         .await
@@ -1233,9 +1231,9 @@ pub async fn handle_request_update(
   existing_req_id: u64,
 ) -> Result<(), TerminationCode> {
   // An update can carry SWITCH_FROM too, activating the subscription it arrives on.
-  let asks_for_a_fill = update_msg.parameters.iter().any(
-    |p| matches!(p, MessageParameter::SubscriptionFilter { filter_type, .. } if filter_type.is_fetch_fill()),
-  );
+  // Draft-20 asks for a fill with FILL_PARAMETERS rather than with a fill Filter
+  // Type, which is off the wire (§5.1.3).
+  let asks_for_a_fill = crate::server::fill::fill_range_filter(&update_msg.parameters).is_some();
   // The update itself is handed on to the subscription, so a switch's filter is
   // kept here rather than read back off it.
   let update_parameters = update_msg.parameters.clone();
@@ -1385,7 +1383,7 @@ pub async fn handle_request_update(
       // the subscription's own in place.
       let filter = update_parameters
         .iter()
-        .find(|p| matches!(p, MessageParameter::SubscriptionFilter { .. }));
+        .find(|p| matches!(p, MessageParameter::LocationFilter { .. }));
 
       if let Some(subscription) = &subscription {
         if let Some(plan) = switch_plan {

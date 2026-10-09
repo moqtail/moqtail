@@ -1,6 +1,6 @@
 {
-  "source": "draft-ietf-moq-transport-18 \u00a715.10.1 Table 17",
-  "description": "Session termination error codes (\u00a73.5).",
+  "source": "draft-ietf-moq-transport-20 §15.11.1 Table 21",
+  "description": "Session termination error codes (§3.5).",
   "greasing": {
     "formula": "0x7f * N + 0x9D",
     "spec": "Section 14",
@@ -78,11 +78,6 @@
       "spec": "Section 3.5"
     },
     {
-      "name": "VERSION_NEGOTIATION_FAILED",
-      "value": "0x15",
-      "spec": "Section 3.5"
-    },
-    {
       "name": "MALFORMED_AUTH_TOKEN",
       "value": "0x16",
       "spec": "Section 3.5"
@@ -106,6 +101,15 @@
       "name": "MALFORMED_AUTHORITY",
       "value": "0x1A",
       "spec": "Section 3.5"
+    },
+    {
+      "name": "TOO_MANY_REQUEST_UPDATES",
+      "value": "0x1B",
+      "spec": "Section 3.5",
+      "pending": {
+        "rs": 40676,
+        "ts": 40676
+      }
     }
   ]
 }

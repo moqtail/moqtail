@@ -11,16 +11,16 @@ be diffed against the draft without reading any code.
 
 ## Files
 
-| File                       | Source                                                              |
-| -------------------------- | ------------------------------------------------------------------- |
-| `varint.json`              | §1.4.1 Table 1 and Table 2, plus non-minimal and boundary cases     |
-| `message_types.json`       | §10 Table 5 — control message types and the Stream column           |
-| `parameter_types.json`     | §15.4 Table 10 (Setup Options), §15.7 Table 13 (Message Parameters) |
-| `property_types.json`      | §15.8 Table 14, Table 15 (provisional), and the range policy        |
-| `stream_reset_codes.json`  | §3.3.3, §15.10.4 Table 20                                           |
-| `request_error_codes.json` | §15.10.2 Table 18                                                   |
-| `termination_codes.json`   | §15.10.1 Table 17                                                   |
-| `data_stream_types.json`   | §9.2.1, §9.2.2 — the object datagram and subgroup header type bytes |
+| File                       | Source                                                                |
+| -------------------------- | --------------------------------------------------------------------- |
+| `varint.json`              | §1.4.1 Table 1 and Table 2, plus non-minimal and boundary cases       |
+| `message_types.json`       | §10 Table 5 — control message types and the Stream column             |
+| `parameter_types.json`     | §15.4 Table 10 (Setup Options), §15.7 Table 13 (Message Parameters)   |
+| `property_types.json`      | §15.8 Table 14, Table 15 (provisional), and the range policy          |
+| `stream_reset_codes.json`  | §3.3.4, §15.11.4 Table 24                                             |
+| `request_error_codes.json` | §15.11.2 Table 22                                                     |
+| `termination_codes.json`   | §15.11.1 Table 21                                                     |
+| `data_stream_types.json`   | §11.3.1, §11.4.2 — the object datagram and subgroup header type bytes |
 
 ## Conventions
 
@@ -63,7 +63,12 @@ An entry a stack does not implement yet carries a marker naming the issue that w
 ```
 
 That reads: _this entry is normative, but moqtail-rs will not conform until issue 1234, and
-moqtail-ts not until issue 5678._ A stack named in `pending` is exempt from the assertion; a
+moqtail-ts not until issue 5678._
+
+Every marker currently in this directory names one number, the row tracking the draft-20
+work as a whole, because the per-item upstream issues do not exist yet. Split them as the
+items are filed; what matters for the mechanism is that a marker is present and removed
+when the work lands. A stack named in `pending` is exempt from the assertion; a
 stack not named must match exactly or its suite fails. An entry with no `pending` key binds
 both stacks.
 

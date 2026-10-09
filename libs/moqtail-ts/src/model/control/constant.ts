@@ -438,10 +438,10 @@ export namespace RequestErrorCode {
 if (import.meta.vitest) {
   const { describe, expect, test } = import.meta.vitest
 
-  // Asserted against dev/conformance/draft18/, which is shared with moqtail-rs. No
+  // Asserted against dev/conformance/draft20/, which is shared with moqtail-rs. No
   // codepoint is repeated here: each test asks the enum what it parses a fixture value
   // as. The loader is imported dynamically so it stays out of the published bundle.
-  describe('draft-18 conformance', () => {
+  describe('draft-20 conformance', () => {
     const fixture = async () => await import('../../../test/conformance')
 
     test('ControlMessageType matches message_types.json', async () => {
@@ -502,9 +502,12 @@ if (import.meta.vitest) {
     })
 
     test('isFirst matches the Stream column of message_types.json', async () => {
-      const { messageTypes, parseHex } = await fixture()
+      const { messageTypes, parseHex, pendingIssue } = await fixture()
       const graded = messageTypes()
-        .entries.filter((entry) => !entry.reserved)
+        // A pending entry is one this stack does not parse yet, so asking tryFrom
+        // about it would throw rather than disagree. assertRegistry exempts the same
+        // set; this test has to, or a pending codepoint fails here instead.
+        .entries.filter((entry) => !entry.reserved && pendingIssue(entry) === undefined)
         .map((entry) => {
           const codepoint = parseHex(entry.value)
           return {

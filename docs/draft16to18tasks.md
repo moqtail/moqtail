@@ -280,7 +280,7 @@ still responsible for `cargo build --workspace` / `npm run build` staying green.
 
 ### C-1 — Lock the varint vectors into a shared fixture; add the constants tables
 
-- **Deliverable:** `dev/conformance/draft18/` — `varint.json` (the Table 2 vectors + the
+- **Deliverable:** `dev/conformance/draft20/` — `varint.json` (the Table 2 vectors + the
   non-minimal cases both suites already test, now defined once), `message_types.json`
   (Table 5), `parameter_types.json` (§15.7), `property_types.json` (§15.8),
   `stream_reset_codes.json` (§3.3.3), `request_error_codes.json`, `termination_codes.json`.
@@ -870,7 +870,7 @@ the library cannot.
 
 Mirrors the RS tasks; changelog citations are identical to the Rust twin. Each TS task depends
 on its RS twin (for the reference codepoints) but **not** on the CL-2 interop gate. Since C-1
-the two stacks assert against the same normative fixtures in `dev/conformance/draft18/`, so a
+the two stacks assert against the same normative fixtures in `dev/conformance/draft20/`, so a
 TS task can be built and unit-tested in parallel with the Rust phase — drift is caught by the
 fixture tests, not only by live interop. End-to-end interop against the known-good relay is
 verified once, at the JS interop gate (JS-2), rather than being a per-task blocker. This lets a

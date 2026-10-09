@@ -1,5 +1,5 @@
 {
-  "source": "draft-ietf-moq-transport-18 §15.8 Table 14, Table 15",
+  "source": "draft-ietf-moq-transport-20 §15.8 Table 14, Table 15",
   "description": "Property types. Scope is Track, Object, or both. Endpoints MUST ignore unknown Property types, skipping them using the length field. Even type values use VarInt KVP encoding; odd type values use Bytes KVP encoding.",
   "greasing": {
     "formula": "0x7f * N + 0x9D",
@@ -45,7 +45,7 @@
     {
       "name": "OBJECT_DELIVERY_TIMEOUT",
       "value": "0x02",
-      "scope": "Track",
+      "scope": "Track, Object",
       "spec": "Section 12.2"
     },
     {
@@ -57,7 +57,7 @@
     {
       "name": "SUBGROUP_DELIVERY_TIMEOUT",
       "value": "0x06",
-      "scope": "Track",
+      "scope": "Track, Object",
       "spec": "Section 12.1"
     },
     {

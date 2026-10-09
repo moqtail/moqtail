@@ -103,8 +103,8 @@ export function isApplicationSpecificProperty(typeValue: bigint | number): boole
 if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
 
-  // Asserted against dev/conformance/draft18/, which is shared with moqtail-rs.
-  describe('draft-18 conformance', () => {
+  // Asserted against dev/conformance/draft20/, which is shared with moqtail-rs.
+  describe('draft-20 conformance', () => {
     const fixture = async () => await import('../../../test/conformance')
 
     test('TrackPropertyType matches property_types.json', async () => {

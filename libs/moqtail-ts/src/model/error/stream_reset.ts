@@ -90,7 +90,7 @@ if (import.meta.vitest) {
     })
   })
 
-  describe('draft-18 conformance', () => {
+  describe('draft-20 conformance', () => {
     const fixture = async () => await import('../../../test/conformance')
 
     test('StreamResetCode matches stream_reset_codes.json', async () => {

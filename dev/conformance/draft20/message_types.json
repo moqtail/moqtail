@@ -1,5 +1,5 @@
 {
-  "source": "draft-ietf-moq-transport-18 §10 Table 5",
+  "source": "draft-ietf-moq-transport-20 §10 Table 5",
   "description": "Control message types. The stream field records which stream a message is sent on: \"Control\" is the control stream (§3.3), \"Request\" a bidirectional request stream. \"First\" means the message MUST be the first on a new request stream. Reserved codepoints carry no stream and MUST be rejected.",
   "entries": [
     {
@@ -69,11 +69,15 @@
       "spec": "Section 10.10"
     },
     {
-      "name": "PUBLISH_OK",
+      "name": "RESERVED_PUBLISH_OK_V17",
       "value": "0x1E",
-      "stream": "Request",
       "spec": "Section 10.5",
-      "notes": "Table 5 keeps this codepoint but points it at Section 10.5, REQUEST_OK: it is an alias, not a message with its own body."
+      "notes": "PUBLISH_OK in version <= 17.",
+      "reserved": true,
+      "pending": {
+        "rs": 40676,
+        "ts": 40676
+      }
     },
     {
       "name": "PUBLISH_DONE",
@@ -132,10 +136,14 @@
       "spec": "Section 10.17"
     },
     {
-      "name": "PUBLISH_BLOCKED",
+      "name": "PUBLISH_SKIPPED",
       "value": "0xF",
       "stream": "Request",
-      "spec": "Section 10.20"
+      "spec": "Section 10.21",
+      "pending": {
+        "rs": 40676,
+        "ts": 40676
+      }
     },
     {
       "name": "REQUEST_UPDATE",
@@ -154,6 +162,16 @@
       "value": "0x5",
       "stream": "Request",
       "spec": "Section 10.6"
+    },
+    {
+      "name": "PUBLISH_STATE_NOTIFY",
+      "value": "0x22",
+      "stream": "Request",
+      "spec": "Section 10.10",
+      "pending": {
+        "rs": 40676,
+        "ts": 40676
+      }
     }
   ],
   "not_in_draft": [

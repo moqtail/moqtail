@@ -1,5 +1,5 @@
 {
-  "source": "draft-ietf-moq-transport-18 §15.10.2 Table 18",
+  "source": "draft-ietf-moq-transport-20 §15.11.2 Table 22",
   "description": "Error codes carried by REQUEST_ERROR (§10.6).",
 
   "greasing": {
@@ -20,17 +20,17 @@
     { "name": "DOES_NOT_EXIST", "value": "0x10", "spec": "Section 10.6" },
     { "name": "INVALID_RANGE", "value": "0x11", "spec": "Section 10.6" },
     { "name": "MALFORMED_TRACK", "value": "0x12", "spec": "Section 10.6" },
-    { "name": "DUPLICATE_SUBSCRIPTION", "value": "0x19", "spec": "Section 10.6" },
     { "name": "UNINTERESTED", "value": "0x20", "spec": "Section 10.6" },
     { "name": "PREFIX_OVERLAP", "value": "0x30", "spec": "Section 10.6" },
     { "name": "NAMESPACE_TOO_LARGE", "value": "0x31", "spec": "Section 10.6" },
-    { "name": "INVALID_JOINING_REQUEST_ID", "value": "0x32", "spec": "Section 10.6" },
     { "name": "UNSUPPORTED_EXTENSION", "value": "0x33", "spec": "Section 10.6" },
     {
       "name": "REDIRECT",
       "value": "0x34",
       "spec": "Section 10.6",
       "notes": "Used by GOAWAY-driven request migration."
-    }
+    },
+    { "name": "CONFLICTING_FILTERS", "value": "0x35", "spec": "Section 10.6", "pending": { "rs": 40676, "ts": 40676 } },
+    { "name": "INVALID_FILTER", "value": "0x36", "spec": "Section 10.6", "pending": { "rs": 40676, "ts": 40676 } }
   ]
 }

@@ -1,13 +1,11 @@
 {
-  "source": "draft-ietf-moq-transport-18 §3.3.3, §15.10.4 Table 20",
+  "source": "draft-ietf-moq-transport-20 §3.3.4, §15.11.4 Table 24",
   "description": "Error codes used when resetting a stream or sending STOP_SENDING. \"The application SHOULD use a relevant error code when resetting or sending STOP_SENDING on any stream.\" Distinct from REQUEST_ERROR codes; the two disagree on shared names.",
-
   "greasing": {
     "formula": "0x7f * N + 0x9D",
     "spec": "Section 14",
     "notes": "Reserved for greasing. Not a single codepoint; excluded from the entries below."
   },
-
   "entries": [
     {
       "name": "INTERNAL_ERROR",

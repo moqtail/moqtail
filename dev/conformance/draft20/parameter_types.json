@@ -1,5 +1,5 @@
 {
-  "source": "draft-ietf-moq-transport-18 §15.4 Table 10, §15.7 Table 13",
+  "source": "draft-ietf-moq-transport-20 §15.4 Table 10, §15.7 Table 13",
   "description": "Two distinct registries. Setup Options appear in SETUP (§10.3); Message Parameters appear in request and response messages (§10.2). They share no number space.",
   "setup_options": {
     "source": "§15.4 Table 10",
@@ -30,9 +30,27 @@
         "spec": "Section 10.3.1.1"
       },
       {
+        "name": "MAX_FILTER_RANGES",
+        "value": "0x06",
+        "spec": "Section 10.3.1.6",
+        "pending": {
+          "rs": 40676,
+          "ts": 40676
+        }
+      },
+      {
         "name": "MOQT_IMPLEMENTATION",
         "value": "0x07",
         "spec": "Section 10.3.1.5"
+      },
+      {
+        "name": "MAX_REQUEST_UPDATES",
+        "value": "0x08",
+        "spec": "Section 10.3.1.7",
+        "pending": {
+          "rs": 40676,
+          "ts": 40676
+        }
       }
     ],
     "local_extensions": [
@@ -70,12 +88,12 @@
       {
         "name": "EXPIRES",
         "value": "0x08",
-        "spec": "Section 10.2.10"
+        "spec": "Section 10.2.16"
       },
       {
         "name": "LARGEST_OBJECT",
         "value": "0x09",
-        "spec": "Section 10.2.11"
+        "spec": "Section 10.2.17"
       },
       {
         "name": "FILL_TIMEOUT",
@@ -85,7 +103,7 @@
       {
         "name": "FORWARD",
         "value": "0x10",
-        "spec": "Section 10.2.12"
+        "spec": "Section 10.2.18"
       },
       {
         "name": "SUBSCRIBER_PRIORITY",
@@ -93,9 +111,13 @@
         "spec": "Section 10.2.7"
       },
       {
-        "name": "SUBSCRIPTION_FILTER",
+        "name": "LOCATION_FILTER",
         "value": "0x21",
-        "spec": "Section 10.2.9"
+        "spec": "Section 10.2.9",
+        "pending": {
+          "rs": 40676,
+          "ts": 40676
+        }
       },
       {
         "name": "GROUP_ORDER",
@@ -103,14 +125,73 @@
         "spec": "Section 10.2.8"
       },
       {
+        "name": "FILL_PARAMETERS",
+        "value": "0x23",
+        "spec": "Section 10.2.15"
+      },
+      {
+        "name": "SUBGROUP_FILTER",
+        "value": "0x25",
+        "spec": "Section 10.2.10",
+        "pending": {
+          "rs": 40676,
+          "ts": 40676
+        }
+      },
+      {
+        "name": "OBJECTID_FILTER",
+        "value": "0x26",
+        "spec": "Section 10.2.11",
+        "pending": {
+          "rs": 40676,
+          "ts": 40676
+        }
+      },
+      {
+        "name": "PRIORITY_FILTER",
+        "value": "0x27",
+        "spec": "Section 10.2.12",
+        "pending": {
+          "rs": 40676,
+          "ts": 40676
+        }
+      },
+      {
+        "name": "OBJECT_PROPERTY_FILTER",
+        "value": "0x28",
+        "spec": "Section 10.2.13",
+        "pending": {
+          "rs": 40676,
+          "ts": 40676
+        }
+      },
+      {
+        "name": "TRACK_PROPERTY_FILTER",
+        "value": "0x29",
+        "spec": "Section 10.2.14",
+        "pending": {
+          "rs": 40676,
+          "ts": 40676
+        }
+      },
+      {
         "name": "NEW_GROUP_REQUEST",
         "value": "0x32",
-        "spec": "Section 10.2.13"
+        "spec": "Section 10.2.19"
       },
       {
         "name": "TRACK_NAMESPACE_PREFIX",
         "value": "0x34",
-        "spec": "Section 10.2.14"
+        "spec": "Section 10.2.20"
+      },
+      {
+        "name": "INCLUDE_PROPERTIES",
+        "value": "0x35",
+        "spec": "Section 10.2.21",
+        "pending": {
+          "rs": 40676,
+          "ts": 40676
+        }
       }
     ],
     "local_extensions": [
@@ -119,6 +200,12 @@
         "value": "0x41",
         "spec": "draft-wilaw-moq-moqt-ssts, Section 5",
         "notes": "Assigns a subscription to an SSTS switching set; provisional, from an unadopted draft."
+      },
+      {
+        "name": "SWITCH_FROM",
+        "value": "0x24",
+        "spec": "moqtail/moqtail#386",
+        "notes": "Sender-side track switching. Shipped upstream but absent from Table 13, so it is divergence by choice rather than work outstanding."
       }
     ]
   }

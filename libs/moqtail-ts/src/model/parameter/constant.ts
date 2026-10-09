@@ -144,9 +144,9 @@ export function tokenAliasTypeFromNumber(value: number): TokenAliasType {
 if (import.meta.vitest) {
   const { describe, test } = import.meta.vitest
 
-  // Asserted against dev/conformance/draft18/, which is shared with moqtail-rs. These
+  // Asserted against dev/conformance/draft20/, which is shared with moqtail-rs. These
   // enums have no tryFrom, so the lookup uses the enum's own reverse mapping.
-  describe('draft-18 conformance', () => {
+  describe('draft-20 conformance', () => {
     const fixture = async () => await import('../../../test/conformance')
 
     test('SetupOptionType matches parameter_types.json', async () => {

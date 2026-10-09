@@ -335,7 +335,7 @@ impl From<ObjectDatagramType> for u64 {
 
 #[cfg(test)]
 mod data_stream_type_conformance {
-  //! The type bytes are checked against `dev/conformance/draft18/data_stream_types.json`,
+  //! The type bytes are checked against `dev/conformance/draft20/data_stream_types.json`,
   //! which is shared with moqtail-ts. The bit layout and the set of accepted bytes live
   //! there, not in this file.
 

@@ -30,7 +30,7 @@ pub const SUPPORTED_VERSIONS: &str = "moqt-18";
 /// enum: `TryFrom` rejects them — an endpoint receiving an
 /// unknown message type MUST close the session.
 ///
-/// The values here are asserted against `dev/conformance/draft18/message_types.json`.
+/// The values here are asserted against `dev/conformance/draft20/message_types.json`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u64)]
 pub enum ControlMessageType {

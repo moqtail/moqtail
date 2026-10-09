@@ -446,7 +446,7 @@ export namespace ObjectStatus {
 if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
 
-  // The type bytes are checked against dev/conformance/draft18/data_stream_types.json,
+  // The type bytes are checked against dev/conformance/draft20/data_stream_types.json,
   // which is shared with moqtail-rs. The bit layout and the set of accepted bytes live
   // there, not in this file.
   describe('data stream type conformance', () => {

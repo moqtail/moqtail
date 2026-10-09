@@ -30,7 +30,7 @@
       "spec": "Section 10.6",
       "notes": "Used by GOAWAY-driven request migration."
     },
-    { "name": "CONFLICTING_FILTERS", "value": "0x35", "spec": "Section 10.6", "pending": { "rs": 40676, "ts": 40676 } },
-    { "name": "INVALID_FILTER", "value": "0x36", "spec": "Section 10.6", "pending": { "rs": 40676, "ts": 40676 } }
+    { "name": "CONFLICTING_FILTERS", "value": "0x35", "spec": "Section 10.6" },
+    { "name": "INVALID_FILTER", "value": "0x36", "spec": "Section 10.6" }
   ]
 }

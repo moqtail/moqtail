@@ -223,6 +223,23 @@ pub async fn handle(
           .insert(request_id, PendingRequest::Fetch(req));
       }
 
+      // Refused before anything is forwarded: this relay advertises no
+      // MAX_FILTER_RANGES, so a Range Filter it accepted would never be applied
+      // (§5.1.4).
+      if let Some(err) =
+        crate::server::message_handlers::parameters::range_filter_rejection(&fetch.parameters)
+      {
+        warn!("FETCH carries a Range Filter: {:?}", err.reason_phrase);
+        send_request_error(
+          client.clone(),
+          request_id,
+          err.error_code,
+          err.reason_phrase,
+        )
+        .await;
+        return Ok(());
+      }
+
       // Reserved namespaces are resolved locally and never forwarded upstream.
       if let Some(reason) = crate::server::utils::reserved_namespace_rejection(
         &fetch.track_namespace,

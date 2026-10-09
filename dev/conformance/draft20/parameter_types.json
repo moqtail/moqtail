@@ -32,11 +32,7 @@
       {
         "name": "MAX_FILTER_RANGES",
         "value": "0x06",
-        "spec": "Section 10.3.1.6",
-        "pending": {
-          "rs": 40676,
-          "ts": 40676
-        }
+        "spec": "Section 10.3.1.6"
       },
       {
         "name": "MOQT_IMPLEMENTATION",
@@ -128,47 +124,27 @@
       {
         "name": "SUBGROUP_FILTER",
         "value": "0x25",
-        "spec": "Section 10.2.10",
-        "pending": {
-          "rs": 40676,
-          "ts": 40676
-        }
+        "spec": "Section 10.2.10"
       },
       {
         "name": "OBJECTID_FILTER",
         "value": "0x26",
-        "spec": "Section 10.2.11",
-        "pending": {
-          "rs": 40676,
-          "ts": 40676
-        }
+        "spec": "Section 10.2.11"
       },
       {
         "name": "PRIORITY_FILTER",
         "value": "0x27",
-        "spec": "Section 10.2.12",
-        "pending": {
-          "rs": 40676,
-          "ts": 40676
-        }
+        "spec": "Section 10.2.12"
       },
       {
         "name": "OBJECT_PROPERTY_FILTER",
         "value": "0x28",
-        "spec": "Section 10.2.13",
-        "pending": {
-          "rs": 40676,
-          "ts": 40676
-        }
+        "spec": "Section 10.2.13"
       },
       {
         "name": "TRACK_PROPERTY_FILTER",
         "value": "0x29",
-        "spec": "Section 10.2.14",
-        "pending": {
-          "rs": 40676,
-          "ts": 40676
-        }
+        "spec": "Section 10.2.14"
       },
       {
         "name": "NEW_GROUP_REQUEST",

@@ -27,9 +27,13 @@
 //! relay's upstream session.
 
 use moqtail::model::common::location::Location;
+use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::control::constant::GroupOrder;
+use moqtail::model::control::request_error::RequestError;
+use moqtail::model::error::RequestErrorCode;
 use moqtail::model::parameter::constant::MessageParameterType;
 use moqtail::model::parameter::message_parameter::MessageParameter;
+use moqtail::model::parameter::range_filter::validate_range_filters;
 
 /// The ergonomic lookup lives on `Vec`, but everything here reads a borrowed list.
 fn find(
@@ -281,5 +285,66 @@ mod tests {
       params.get_param(MessageParameterType::LargestObject),
       Some(&MessageParameter::new_largest_object(loc(2, 9)))
     );
+  }
+}
+
+/// The MAX_FILTER_RANGES this relay advertises (§10.3.1.6).
+///
+/// The relay does not evaluate Range Filters (§5.1.4) against Objects, and 0 is
+/// the option's default, so it sends the option not at all and must refuse every
+/// Range Filter it is handed: a filter accepted and not applied delivers exactly
+/// the Objects the subscriber asked not to receive, and does it silently.
+/// Refusing the request is the honest answer until there is an evaluator.
+///
+/// Raising this means writing that evaluator, not just the number.
+pub const ADVERTISED_MAX_FILTER_RANGES: u64 = 0;
+
+/// The REQUEST_ERROR a request's Range Filters have earned, if any.
+///
+/// `None` means every §5.1.4 rule this endpoint can decide is satisfied.
+pub fn range_filter_rejection(params: &[MessageParameter]) -> Option<RequestError> {
+  let reason = validate_range_filters(params, ADVERTISED_MAX_FILTER_RANGES)
+    .err()?
+    .0;
+  let phrase = ReasonPhrase::try_new(reason)
+    .unwrap_or_else(|_| ReasonPhrase::try_new("Invalid filter".to_string()).unwrap());
+  Some(RequestError::new(
+    RequestErrorCode::InvalidFilter,
+    0,
+    phrase,
+  ))
+}
+
+#[cfg(test)]
+mod range_filter_tests {
+  use super::*;
+  use moqtail::model::parameter::range_filter::{Range, RangeFilter, RangeFilterKind};
+
+  #[test]
+  fn a_range_filter_is_refused_while_the_relay_advertises_none() {
+    let params = vec![MessageParameter::RangeFilter(
+      RangeFilter::new(RangeFilterKind::Subgroup, 0, vec![Range::new(1, 2)]).unwrap(),
+    )];
+    let err = range_filter_rejection(&params).expect("a filter the relay cannot apply is refused");
+    assert_eq!(err.error_code, RequestErrorCode::InvalidFilter);
+    // Not retryable as sent: the limit is a property of this relay, not of the moment.
+    assert_eq!(err.retry_interval, 0);
+  }
+
+  /// The constant the rejection rests on is 0, and it stays 0 until someone
+  /// writes the evaluator. Raising it without one turns every rejection into
+  /// silent non-enforcement, which is the outcome the rejection exists to avoid.
+  #[test]
+  fn the_relay_advertises_no_filter_ranges_while_it_cannot_apply_them() {
+    assert_eq!(
+      ADVERTISED_MAX_FILTER_RANGES, 0,
+      "raise this only together with a Range Filter evaluator on the Object path"
+    );
+  }
+
+  #[test]
+  fn a_request_carrying_no_range_filter_is_untouched() {
+    assert!(range_filter_rejection(&[]).is_none());
+    assert!(range_filter_rejection(&[MessageParameter::new_forward(true)]).is_none());
   }
 }

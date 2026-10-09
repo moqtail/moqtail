@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::server::client::MOQTClient;
+use crate::server::message_handlers::parameters;
 use crate::server::message_handlers::publish_handler;
 use crate::server::prefix_subscription::{MAX_NAMESPACE_PREFIX_FIELDS, oversized_namespace_error};
 use crate::server::session_context::{PendingRequest, SessionContext};
@@ -44,6 +45,19 @@ pub async fn handle_subscribe_tracks(
     "Received SubscribeTracks message: {:?}",
     sub_tracks.track_namespace_prefix
   );
+
+  // Refused before anything is created: this relay advertises no MAX_FILTER_RANGES,
+  // so a Range Filter it accepted would never be applied (§5.1.4).
+  if let Some(err) = parameters::range_filter_rejection(&sub_tracks.parameters) {
+    warn!(
+      "SUBSCRIBE_TRACKS carries a Range Filter: {:?}",
+      err.reason_phrase
+    );
+    stream_handler
+      .send(&ControlMessage::RequestError(Box::new(err)))
+      .await?;
+    return Ok(());
+  }
 
   if let Some(err) = oversized_namespace_error(&sub_tracks.track_namespace_prefix) {
     warn!(

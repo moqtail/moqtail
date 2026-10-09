@@ -20,6 +20,7 @@ use crate::model::control::constant::{ControlMessageType, GroupOrder, SwitchMode
 use crate::model::error::ParseError;
 use crate::model::parameter::authorization_token::AuthorizationToken;
 use crate::model::parameter::constant::MessageParameterType;
+use crate::model::parameter::range_filter::{RangeFilter, RangeFilterKind};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 /// The absolute range a LOCATION_FILTER denotes once the Largest Object is known.
@@ -77,6 +78,9 @@ pub enum MessageParameter {
     end_group_delta: Option<u64>,
     end_object: Option<u64>,
   },
+  /// One of the five Range Filters, 0x25-0x29 (§5.1.4). They share a body, so
+  /// they share a variant and carry which they are inside.
+  RangeFilter(RangeFilter),
   SwitchFrom {
     /// The subscription to suspend.
     request_id: u64,
@@ -393,6 +397,7 @@ impl MessageParameter {
       Self::SubscriberPriority { .. } => MessageParameterType::SubscriberPriority as u64,
       Self::GroupOrder { .. } => MessageParameterType::GroupOrder as u64,
       Self::LocationFilter { .. } => MessageParameterType::LocationFilter as u64,
+      Self::RangeFilter(filter) => filter.kind.type_value(),
       Self::FillParameters { .. } => MessageParameterType::FillParameters as u64,
       Self::SwitchFrom { .. } => MessageParameterType::SwitchFrom as u64,
       Self::NewGroupRequest { .. } => MessageParameterType::NewGroupRequest as u64,
@@ -453,6 +458,21 @@ impl MessageParameter {
           | ControlMessageType::RequestUpdate
           | ControlMessageType::PublishStateNotify
       ),
+      // §5.1.4. The Track Property Filter selects whole PUBLISH messages, so it
+      // rides only the request that asks for them; the rest filter Objects.
+      Self::RangeFilter(filter) => match filter.kind {
+        RangeFilterKind::TrackProperty => matches!(
+          msg_type,
+          ControlMessageType::SubscribeTracks | ControlMessageType::RequestUpdate
+        ),
+        _ => matches!(
+          msg_type,
+          ControlMessageType::Fetch
+            | ControlMessageType::Subscribe
+            | ControlMessageType::SubscribeTracks
+            | ControlMessageType::RequestUpdate
+        ),
+      },
       Self::SwitchFrom { .. } | Self::FillParameters { .. } => matches!(
         msg_type,
         ControlMessageType::Subscribe | ControlMessageType::RequestUpdate
@@ -700,6 +720,19 @@ impl MessageParameter {
               set_rank,
             })
           }
+          MessageParameterType::SubgroupFilter
+          | MessageParameterType::ObjectIdFilter
+          | MessageParameterType::PriorityFilter
+          | MessageParameterType::ObjectPropertyFilter
+          | MessageParameterType::TrackPropertyFilter => {
+            let kind = RangeFilterKind::from_type_value(*type_value).ok_or(
+              ParseError::ProtocolViolation {
+                context: "MessageParameter::deserialize",
+                details: "Range Filter type is not one of 0x25-0x29".to_string(),
+              },
+            )?;
+            Ok(Self::RangeFilter(RangeFilter::parse_value(kind, value)?))
+          }
           MessageParameterType::LocationFilter => {
             // Length, not a count, decides how many fields are present, so read to
             // exhaustion rather than to a stated arity (§5.1.2).
@@ -878,6 +911,12 @@ impl TryInto<KeyValuePair> for MessageParameter {
           buf.freeze(),
         )
       }
+      Self::RangeFilter(filter) => {
+        // `new_bytes`, not `try_new_bytes`: 0x26 and 0x28 are byte-valued on an
+        // even Type, which §1.4.3's parity rule rejects. Same exception as
+        // TRACK_NAMESPACE_PREFIX below.
+        KeyValuePair::new_bytes(filter.kind.type_value(), filter.serialize_value()?)
+      }
       Self::LocationFilter {
         start_group,
         start_object,
@@ -1020,6 +1059,11 @@ const fn value_shape(type_value: u64) -> ValueShape {
     ValueShape::BareLocation
   } else if type_value == MessageParameterType::TrackNamespacePrefix as u64
     || type_value == MessageParameterType::SwitchFrom as u64
+    // §5.1.4 gives every Range Filter an explicit Length, including these two
+    // even Types, which §1.4.3's parity rule would otherwise read as a single
+    // varint. The figures decide: they are what a peer puts on the wire.
+    || type_value == MessageParameterType::ObjectIdFilter as u64
+    || type_value == MessageParameterType::ObjectPropertyFilter as u64
   {
     ValueShape::LengthPrefixedBytes
   } else if type_value.is_multiple_of(2) {
@@ -1700,6 +1744,62 @@ mod tests {
     // draft-20 reserves 0x1E and keeps PUBLISH_OK only as prose shorthand (§10.5).
     assert!(timeout.is_valid_for(ControlMessageType::RequestOk));
     assert!(!timeout.is_valid_for(ControlMessageType::Fetch));
+  }
+
+  // The even Range Filter Types are the trap: §1.4.3 says an even Type is a single
+  // varint, §5.1.4 gives 0x26 and 0x28 an explicit Length. Reading one as a varint
+  // consumes the wrong byte count and desyncs every later parameter in the list,
+  // so this goes through the whole list codec rather than the parameter alone.
+  #[test]
+  fn range_filters_survive_a_parameter_list_round_trip() {
+    use crate::model::parameter::range_filter::{Range, RangeFilter, RangeFilterKind};
+
+    let params = vec![
+      MessageParameter::RangeFilter(
+        RangeFilter::new(
+          RangeFilterKind::ObjectId,
+          3,
+          vec![Range::new(3, 5), Range::new(10, 15)],
+        )
+        .unwrap(),
+      ),
+      MessageParameter::RangeFilter(
+        RangeFilter::new_property(RangeFilterKind::ObjectProperty, 3, 4, vec![Range::open(9)])
+          .unwrap(),
+      ),
+      // A later parameter that only decodes correctly if the two above consumed
+      // exactly their stated Lengths.
+      MessageParameter::new_group_request(7),
+    ];
+    let mut bytes = serialize_message_parameters(&params).unwrap();
+    let decoded = deserialize_message_parameters(
+      &mut bytes,
+      params.len() as u64,
+      ControlMessageType::Subscribe,
+    )
+    .unwrap();
+    assert_eq!(decoded, params);
+    assert!(!bytes.has_remaining(), "the list left unread bytes behind");
+  }
+
+  #[test]
+  fn a_track_property_filter_rides_only_the_request_that_asks_for_publishes() {
+    use crate::model::parameter::range_filter::{RangeFilter, RangeFilterKind};
+
+    let track = MessageParameter::RangeFilter(
+      RangeFilter::new_property(RangeFilterKind::TrackProperty, 0, 2, vec![]).unwrap(),
+    );
+    assert!(track.is_valid_for(ControlMessageType::SubscribeTracks));
+    assert!(track.is_valid_for(ControlMessageType::RequestUpdate));
+    assert!(!track.is_valid_for(ControlMessageType::Subscribe));
+    assert!(!track.is_valid_for(ControlMessageType::Fetch));
+
+    let subgroup = MessageParameter::RangeFilter(
+      RangeFilter::new(RangeFilterKind::Subgroup, 0, vec![]).unwrap(),
+    );
+    assert!(subgroup.is_valid_for(ControlMessageType::Subscribe));
+    assert!(subgroup.is_valid_for(ControlMessageType::Fetch));
+    assert!(!subgroup.is_valid_for(ControlMessageType::Publish));
   }
 
   #[test]

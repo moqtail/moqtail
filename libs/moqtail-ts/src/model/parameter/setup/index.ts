@@ -16,6 +16,7 @@
 
 export * from './path'
 export * from './max_auth_token_cache_size'
+export * from './max_filter_ranges'
 export * from './authority'
 export * from './moqt_implementation'
 export * from './ssts_algorithms'

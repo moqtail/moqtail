@@ -36,6 +36,12 @@ pub enum SetupOption {
   MoqtImplementation {
     info: String,
   },
+  /// §10.3.1.6. The total number of Ranges the peer may send across all Range
+  /// Filter parameters of one subscription or fetch. Omitting this option is the
+  /// same as sending 0, and 0 prohibits Range Filters outright.
+  MaxFilterRanges {
+    max_ranges: u64,
+  },
   /// The sender-side track switching algorithms this endpoint supports. An
   /// empty list — or the absence of this option — prohibits the use of SSTS.
   SstsAlgorithms {
@@ -59,6 +65,10 @@ impl SetupOption {
 
   pub fn new_max_auth_token_cache_size(max_size: u64) -> Self {
     SetupOption::MaxAuthTokenCacheSize { max_size }
+  }
+
+  pub fn new_max_filter_ranges(max_ranges: u64) -> Self {
+    SetupOption::MaxFilterRanges { max_ranges }
   }
 
   pub fn new_moqt_implementation(info: String) -> Self {
@@ -96,6 +106,12 @@ impl SetupOption {
       Self::MaxAuthTokenCacheSize { max_size } => {
         let kvp =
           KeyValuePair::try_new_varint(SetupOptionType::MaxAuthTokenCacheSize as u64, *max_size)?;
+        let slice = kvp.serialize()?;
+        bytes.extend_from_slice(&slice);
+      }
+      Self::MaxFilterRanges { max_ranges } => {
+        let kvp =
+          KeyValuePair::try_new_varint(SetupOptionType::MaxFilterRanges as u64, *max_ranges)?;
         let slice = kvp.serialize()?;
         bytes.extend_from_slice(&slice);
       }
@@ -137,6 +153,9 @@ impl SetupOption {
         match type_value {
           SetupOptionType::MaxAuthTokenCacheSize => {
             Ok(SetupOption::MaxAuthTokenCacheSize { max_size: *value })
+          }
+          SetupOptionType::MaxFilterRanges => {
+            Ok(SetupOption::MaxFilterRanges { max_ranges: *value })
           }
           _ => Err(ParseError::KeyValueFormattingError {
             context: "SetupOption::deserialize",
@@ -204,6 +223,9 @@ impl TryInto<KeyValuePair> for SetupOption {
       ),
       SetupOption::MaxAuthTokenCacheSize { max_size } => {
         KeyValuePair::try_new_varint(SetupOptionType::MaxAuthTokenCacheSize as u64, max_size)
+      }
+      SetupOption::MaxFilterRanges { max_ranges } => {
+        KeyValuePair::try_new_varint(SetupOptionType::MaxFilterRanges as u64, max_ranges)
       }
       SetupOption::MoqtImplementation { info } => KeyValuePair::try_new_bytes(
         SetupOptionType::MoqtImplementation as u64,

@@ -480,6 +480,17 @@ async fn handle_subscribe_message(
   is_switch: bool,
 ) -> Result<(), TerminationCode> {
   info!("received Subscribe message: {:?}", sub);
+
+  // Refused before anything is created: this relay advertises no MAX_FILTER_RANGES,
+  // so a Range Filter it accepted would never be applied (§5.1.4).
+  if let Some(err) = parameters::range_filter_rejection(&sub.subscribe_parameters) {
+    warn!("SUBSCRIBE carries a Range Filter: {:?}", err.reason_phrase);
+    stream_handler
+      .send(&ControlMessage::RequestError(Box::new(err)))
+      .await?;
+    return Ok(());
+  }
+
   let track_namespace = sub.track_namespace.clone();
   let full_track_name = sub.get_full_track_name();
 

@@ -34,6 +34,7 @@ import { NewGroupRequest } from './message/new_group_request'
 import { SwitchingSetAssignment } from './message/switching_set_assignment'
 import { SubscriberPriority } from './message/subscriber_priority'
 import { LocationFilter } from './message/location_filter'
+import { Range, RangeFilter, RangeFilterKind } from './message/range_filter'
 import { SwitchFrom } from './message/switch_from'
 import { FillParameters } from './message/fill_parameters'
 
@@ -49,6 +50,7 @@ export type MessageParameter =
   | SubscriberPriority
   | GroupOrderParam
   | LocationFilter
+  | RangeFilter
   | NewGroupRequest
   | SwitchFrom
   | FillParameters
@@ -73,6 +75,7 @@ export namespace MessageParameter {
       SubscriberPriority.fromKeyValuePair(pair) ??
       GroupOrderParam.fromKeyValuePair(pair) ??
       LocationFilter.fromKeyValuePair(pair) ??
+      RangeFilter.fromKeyValuePair(pair) ??
       NewGroupRequest.fromKeyValuePair(pair) ??
       SwitchFrom.fromKeyValuePair(pair) ??
       FillParameters.fromKeyValuePair(pair) ??
@@ -135,6 +138,10 @@ export namespace MessageParameter {
 
   export function isLocationFilter(param: MessageParameter): param is LocationFilter {
     return param instanceof LocationFilter
+  }
+
+  export function isRangeFilter(param: MessageParameter): param is RangeFilter {
+    return param instanceof RangeFilter
   }
 
   export function isNewGroupRequest(param: MessageParameter): param is NewGroupRequest {
@@ -202,6 +209,11 @@ export class MessageParameters {
     return this.add(filter)
   }
 
+  /** Range Filters may repeat, so this appends rather than replacing (§5.1.4). */
+  addRangeFilter(filter: RangeFilter): this {
+    return this.add(filter)
+  }
+
   addNewGroupRequest(group: bigint | number): this {
     return this.add(new NewGroupRequest(BigInt(group)))
   }
@@ -258,6 +270,11 @@ function valueShapeOf(typeValue: bigint): ValueShape {
       return ValueShape.BareLocation
     case BigInt(MessageParameterType.SwitchFrom):
     case BigInt(MessageParameterType.TrackNamespacePrefix):
+    // §5.1.4 gives every Range Filter an explicit Length, including these two even
+    // Types, which §1.4.3's parity rule would otherwise read as a single varint. The
+    // figures decide: they are what a peer puts on the wire.
+    case BigInt(MessageParameterType.ObjectIdFilter):
+    case BigInt(MessageParameterType.ObjectPropertyFilter):
       return ValueShape.LengthPrefixedBytes
     default:
       return typeValue % 2n === 0n ? ValueShape.VarInt : ValueShape.LengthPrefixedBytes
@@ -410,6 +427,27 @@ if (import.meta.vitest) {
       const frozen = buf.freeze()
       expect(MessageParameters.fromKeyValuePairs(deserializeMessageParameterKvps(frozen, 1))).toEqual(params)
       expect(frozen.remaining).toBe(0)
+    })
+
+    // The even Range Filter Types are the trap: §1.4.3 says an even Type is a single
+    // varint, §5.1.4 gives 0x26 and 0x28 an explicit Length. Reading one as a varint
+    // consumes the wrong byte count and desyncs every later parameter, so this goes
+    // through the whole list codec rather than the parameter alone.
+    test('Range Filters survive a parameter list round trip, even Types included', () => {
+      const params = [
+        RangeFilter.create(RangeFilterKind.ObjectId, 3, [new Range(3n, 5n), new Range(10n, 15n)]),
+        RangeFilter.createProperty(RangeFilterKind.ObjectProperty, 3, 4n, [Range.open(9n)]),
+        // Only decodes correctly if the two above consumed exactly their stated Lengths.
+        new NewGroupRequest(7n),
+      ]
+      const buf = new ByteBuffer()
+      buf.putBytes(serializeMessageParameterKvps(params.map((p) => p.toKeyValuePair())).toUint8Array())
+      const frozen = buf.freeze()
+
+      const parsed = MessageParameters.fromKeyValuePairs(deserializeMessageParameterKvps(frozen, params.length))
+
+      expect(frozen.remaining).toBe(0)
+      expect(parsed).toEqual(params)
     })
 
     test('SWITCH_FROM survives a list with neighbours on both sides', () => {

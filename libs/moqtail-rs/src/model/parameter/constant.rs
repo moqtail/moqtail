@@ -21,6 +21,10 @@ pub enum SetupOptionType {
   AuthorizationToken = 0x03,
   MaxAuthTokenCacheSize = 0x04,
   Authority = 0x05, // MQOtail does not use this (WebTransport)
+  /// §10.3.1.6. How many Ranges the peer may send across all Range Filter
+  /// parameters of one subscription or fetch. The default is 0, and 0 prohibits
+  /// Range Filters outright rather than meaning unlimited.
+  MaxFilterRanges = 0x06,
   MoqtImplementation = 0x07,
   // Provisional: sender-side track switching is not in the adopted registry.
   SstsAlgorithms = 0x09,
@@ -35,6 +39,7 @@ impl TryFrom<u64> for SetupOptionType {
       0x03 => Ok(SetupOptionType::AuthorizationToken),
       0x04 => Ok(SetupOptionType::MaxAuthTokenCacheSize),
       0x05 => Ok(SetupOptionType::Authority),
+      0x06 => Ok(SetupOptionType::MaxFilterRanges),
       0x07 => Ok(SetupOptionType::MoqtImplementation),
       0x09 => Ok(SetupOptionType::SstsAlgorithms),
       _ => Err(ParseError::InvalidType {
@@ -67,6 +72,15 @@ pub enum MessageParameterType {
   GroupOrder = 0x22,
   FillParameters = 0x23,
   SwitchFrom = 0x24,
+  // The five Range Filters (§5.1.4). 0x26 and 0x28 are length-prefixed despite
+  // being even, which §1.4.3's parity rule says they cannot be; §5.1.4's own
+  // figures give both an explicit Length. The figures win here because they are
+  // what a peer will put on the wire, and `value_shape` carries the exception.
+  SubgroupFilter = 0x25,
+  ObjectIdFilter = 0x26,
+  PriorityFilter = 0x27,
+  ObjectPropertyFilter = 0x28,
+  TrackPropertyFilter = 0x29,
   NewGroupRequest = 0x32,
   TrackNamespacePrefix = 0x34,
   SwitchingSetAssignment = 0x41,
@@ -90,6 +104,11 @@ impl TryFrom<u64> for MessageParameterType {
       0x22 => Ok(MessageParameterType::GroupOrder),
       0x23 => Ok(MessageParameterType::FillParameters),
       0x24 => Ok(MessageParameterType::SwitchFrom),
+      0x25 => Ok(MessageParameterType::SubgroupFilter),
+      0x26 => Ok(MessageParameterType::ObjectIdFilter),
+      0x27 => Ok(MessageParameterType::PriorityFilter),
+      0x28 => Ok(MessageParameterType::ObjectPropertyFilter),
+      0x29 => Ok(MessageParameterType::TrackPropertyFilter),
       0x32 => Ok(MessageParameterType::NewGroupRequest),
       0x34 => Ok(MessageParameterType::TrackNamespacePrefix),
       0x41 => Ok(MessageParameterType::SwitchingSetAssignment),

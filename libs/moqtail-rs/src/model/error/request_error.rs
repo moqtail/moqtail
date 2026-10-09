@@ -40,6 +40,14 @@ pub enum RequestErrorCode {
   InvalidSwitch = 0x32,
   UnsupportedExtension = 0x33,
   Redirect = 0x34,
+  /// §10.6, SUBSCRIBE_TRACKS only: the subscribers' filter parameters conflict
+  /// among too many of them to aggregate upstream. A capacity judgement the
+  /// relay makes, so nothing in the codec produces it.
+  ConflictingFilters = 0x35,
+  /// §10.6: a filter parameter is invalid. See
+  /// `model::parameter::range_filter::validate_range_filters`, which decides
+  /// every §5.1.4 case of it.
+  InvalidFilter = 0x36,
 }
 
 impl TryFrom<u64> for RequestErrorCode {
@@ -65,6 +73,8 @@ impl TryFrom<u64> for RequestErrorCode {
       0x32 => Ok(RequestErrorCode::InvalidSwitch),
       0x33 => Ok(RequestErrorCode::UnsupportedExtension),
       0x34 => Ok(RequestErrorCode::Redirect),
+      0x35 => Ok(RequestErrorCode::ConflictingFilters),
+      0x36 => Ok(RequestErrorCode::InvalidFilter),
       _ => Err(ParseError::InvalidType {
         context: "RequestErrorCode::try_from(u64)",
         details: format!("Invalid type, got {value}"),

@@ -15,4 +15,5 @@
 pub mod authorization_token;
 pub mod constant;
 pub mod message_parameter;
+pub mod range_filter;
 pub mod setup_option;

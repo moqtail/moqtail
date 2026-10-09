@@ -22,6 +22,12 @@ export enum SetupOptionType {
   MaxAuthTokenCacheSize = 0x04,
   /** Raw-QUIC only. Client-only; MUST NOT be sent over WebTransport (draft-18 §10.3.1.1). */
   Authority = 0x05,
+  /**
+   * §10.3.1.6. How many Ranges the peer may send across all Range Filter parameters of
+   * one subscription or fetch. The default is 0, and 0 prohibits Range Filters outright
+   * rather than meaning unlimited.
+   */
+  MaxFilterRanges = 0x06,
   MoqtImplementation = 0x07,
   /**
    * PROVISIONAL: sender-side track switching is not an adopted extension, so this
@@ -41,6 +47,8 @@ export function setupOptionTypeFromNumber(value: number): SetupOptionType {
       return SetupOptionType.MaxAuthTokenCacheSize
     case 0x05:
       return SetupOptionType.Authority
+    case 0x06:
+      return SetupOptionType.MaxFilterRanges
     case 0x07:
       return SetupOptionType.MoqtImplementation
     case 0x09:
@@ -64,6 +72,17 @@ export enum MessageParameterType {
   GroupOrder = 0x22,
   FillParameters = 0x23,
   SwitchFrom = 0x24,
+  /**
+   * The five Range Filters (§5.1.4). 0x26 and 0x28 are length-prefixed despite being
+   * even, which §1.4.3's parity rule says they cannot be; §5.1.4's own figures give both
+   * an explicit Length. The figures win here because they are what a peer puts on the
+   * wire, and `valueShapeOf` carries the exception.
+   */
+  SubgroupFilter = 0x25,
+  ObjectIdFilter = 0x26,
+  PriorityFilter = 0x27,
+  ObjectPropertyFilter = 0x28,
+  TrackPropertyFilter = 0x29,
   NewGroupRequest = 0x32,
   /**
    * Registered codepoint with no typed parameter yet: its consumer is REQUEST_UPDATE for
@@ -108,6 +127,16 @@ export function messageParameterTypeFromNumber(value: bigint | number): MessageP
       return MessageParameterType.FillParameters
     case 0x24:
       return MessageParameterType.SwitchFrom
+    case 0x25:
+      return MessageParameterType.SubgroupFilter
+    case 0x26:
+      return MessageParameterType.ObjectIdFilter
+    case 0x27:
+      return MessageParameterType.PriorityFilter
+    case 0x28:
+      return MessageParameterType.ObjectPropertyFilter
+    case 0x29:
+      return MessageParameterType.TrackPropertyFilter
     case 0x32:
       return MessageParameterType.NewGroupRequest
     case 0x34:
@@ -156,9 +185,11 @@ if (import.meta.vitest) {
 
     test('MessageParameterType matches parameter_types.json', async () => {
       const { parameterTypes, assertRegistry, pascalIdent } = await fixture()
+      // The draft writes OBJECTID_FILTER as one word; this package spells that id
+      // `ObjectId` everywhere else, so the identifier keeps the package's spelling.
       assertRegistry(
         parameterTypes().message_parameters,
-        pascalIdent(),
+        pascalIdent({ OBJECTID_FILTER: 'ObjectIdFilter' }),
         (codepoint) => MessageParameterType[Number(codepoint)],
       )
     })

@@ -57,7 +57,7 @@ export class SubgroupObject {
     // the first object's object id is encoded as is
     // for the subsequent objects, the object id is encoded
     // as the delta to the previous object id
-    let objectIdDelta = previousObjectId ? this.objectId - previousObjectId - BigInt(1) : this.objectId
+    let objectIdDelta = previousObjectId !== undefined ? this.objectId - previousObjectId - BigInt(1) : this.objectId
 
     const buf = new ByteBuffer()
     buf.putVI(objectIdDelta)
@@ -123,6 +123,33 @@ if (import.meta.vitest) {
       const withEmptyHeaders = SubgroupObject.newWithPayload(objectId, [], payload).serialize(undefined).toUint8Array()
 
       expect(Array.from(withEmptyHeaders)).toEqual(Array.from(withNoHeaders))
+    })
+    test('encodes the Object ID Delta of sequential objects as 0', () => {
+      const payload = new Uint8Array([0xab])
+      const previousObjectIds = [undefined, 0n, 1n]
+      const deltas = previousObjectIds.map((previousObjectId, objectId) =>
+        SubgroupObject.newWithPayload(objectId, null, payload).serialize(previousObjectId).getVI(),
+      )
+      expect(deltas).toEqual([0n, 0n, 0n])
+    })
+    test('roundtrip of a subgroup stream', () => {
+      const objectIds = [0n, 1n, 5n]
+      const payload = new Uint8Array([0xab])
+      const buf = new ByteBuffer()
+      let previousObjectId: bigint | undefined = undefined
+      for (const objectId of objectIds) {
+        buf.putBytes(SubgroupObject.newWithPayload(objectId, null, payload).serialize(previousObjectId).toUint8Array())
+        previousObjectId = objectId
+      }
+      const frozen = buf.freeze()
+      const parsedIds: bigint[] = []
+      previousObjectId = undefined
+      for (let i = 0; i < objectIds.length; i++) {
+        previousObjectId = SubgroupObject.deserialize(frozen, false, previousObjectId).objectId
+        parsedIds.push(previousObjectId)
+      }
+      expect(parsedIds).toEqual(objectIds)
+      expect(frozen.remaining).toBe(0)
     })
     test('excess roundtrip', () => {
       const objectId = 10n

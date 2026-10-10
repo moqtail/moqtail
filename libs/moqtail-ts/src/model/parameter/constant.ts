@@ -98,6 +98,12 @@ export enum MessageParameterType {
    */
   TrackNamespacePrefix = 0x34,
   /**
+   * Whether the response carries Track Properties (§10.2.21). A uint8, so the odd
+   * Type's Length is exactly 1 -- any other length is a KEY_VALUE_FORMATTING_ERROR,
+   * while a length-1 value outside 0..1 is a PROTOCOL_VIOLATION.
+   */
+  IncludeProperties = 0x35,
+  /**
    * PROVISIONAL: sender-side track switching is not an adopted extension, so this
    * codepoint is absent from the registry the conformance fixture tracks; see its
    * `local_extensions`.
@@ -148,6 +154,8 @@ export function messageParameterTypeFromNumber(value: bigint | number): MessageP
       return MessageParameterType.NewGroupRequest
     case 0x34:
       return MessageParameterType.TrackNamespacePrefix
+    case 0x35:
+      return MessageParameterType.IncludeProperties
     case 0x41:
       return MessageParameterType.SwitchingSetAssignment
     default:

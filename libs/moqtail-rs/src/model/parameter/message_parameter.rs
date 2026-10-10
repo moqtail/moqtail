@@ -99,6 +99,12 @@ pub enum MessageParameter {
   TrackNamespacePrefix {
     prefix: Tuple,
   },
+  /// Whether the response carries Track Properties (§10.2.21). Absent means 1,
+  /// so a receiver that never sees this parameter sends Properties; 0 keeps the
+  /// Properties field present but empty.
+  IncludeProperties {
+    include: bool,
+  },
   /// Assigns a subscription to an SSTS switching set. Id 0 is the default
   /// allocation every implementation runs; other ids select an algorithm
   /// specific to one implementation.
@@ -361,6 +367,10 @@ impl MessageParameter {
     Self::TrackNamespacePrefix { prefix }
   }
 
+  pub fn new_include_properties(include: bool) -> Self {
+    Self::IncludeProperties { include }
+  }
+
   pub fn new_group_request(group: u64) -> Self {
     Self::NewGroupRequest { group }
   }
@@ -402,6 +412,7 @@ impl MessageParameter {
       Self::SwitchFrom { .. } => MessageParameterType::SwitchFrom as u64,
       Self::NewGroupRequest { .. } => MessageParameterType::NewGroupRequest as u64,
       Self::TrackNamespacePrefix { .. } => MessageParameterType::TrackNamespacePrefix as u64,
+      Self::IncludeProperties { .. } => MessageParameterType::IncludeProperties as u64,
       Self::SwitchingSetAssignment { .. } => MessageParameterType::SwitchingSetAssignment as u64,
     }
   }
@@ -512,6 +523,15 @@ impl MessageParameter {
           | ControlMessageType::RequestUpdate
       ),
       Self::TrackNamespacePrefix { .. } => matches!(msg_type, ControlMessageType::RequestUpdate),
+      // §10.2.21 names the four requests that can ask for Properties back. It is
+      // a question, so it rides the request only -- never the OK that answers it.
+      Self::IncludeProperties { .. } => matches!(
+        msg_type,
+        ControlMessageType::Subscribe
+          | ControlMessageType::TrackStatus
+          | ControlMessageType::Fetch
+          | ControlMessageType::SubscribeTracks
+      ),
       // A switching set is joined when the subscription is created and
       // re-tuned afterwards, so the parameter rides SUBSCRIBE, REQUEST_UPDATE
       // and the PUBLISH_OK that accepts a pushed track — which arrives here as
@@ -624,6 +644,26 @@ impl MessageParameter {
               });
             }
             Ok(Self::TrackNamespacePrefix { prefix })
+          }
+          MessageParameterType::IncludeProperties => {
+            // Two different malformations with two different error codes, and
+            // collapsing them loses a distinction the draft draws. A Length other
+            // than 1 is "the Value does not match the serialization defined by that
+            // Type" (§1.4.3) -> KEY_VALUE_FORMATTING_ERROR. A one-byte value outside
+            // 0..=1 is §10.2.21's own rule -> PROTOCOL_VIOLATION.
+            if value.len() != 1 {
+              return Err(ParseError::KeyValueFormattingError {
+                context: "MessageParameter::deserialize(IncludeProperties)",
+              });
+            }
+            match value[0] {
+              0 => Ok(Self::IncludeProperties { include: false }),
+              1 => Ok(Self::IncludeProperties { include: true }),
+              other => Err(ParseError::ProtocolViolation {
+                context: "MessageParameter::deserialize",
+                details: format!("INCLUDE_PROPERTIES must be 0 or 1, got {other}"),
+              }),
+            }
           }
           MessageParameterType::FillParameters => {
             let mut payload = value.clone();
@@ -947,6 +987,13 @@ impl TryInto<KeyValuePair> for MessageParameter {
       Self::TrackNamespacePrefix { prefix } => KeyValuePair::new_bytes(
         MessageParameterType::TrackNamespacePrefix as u64,
         prefix.serialize()?,
+      ),
+      // `try_new_bytes`, not `new_bytes`: 0x35 is odd, so the parity rule already
+      // wants a Length here and no exception is needed. §10.2.21 makes the value a
+      // uint8, which is one byte -- not a varint that happens to be small.
+      Self::IncludeProperties { include } => KeyValuePair::try_new_bytes(
+        MessageParameterType::IncludeProperties as u64,
+        Bytes::from_static(if include { &[1u8] } else { &[0u8] }),
       ),
     }
   }
@@ -1800,6 +1847,103 @@ mod tests {
     assert!(subgroup.is_valid_for(ControlMessageType::Subscribe));
     assert!(subgroup.is_valid_for(ControlMessageType::Fetch));
     assert!(!subgroup.is_valid_for(ControlMessageType::Publish));
+  }
+
+  // §10.2.21's value is a uint8, carried under an odd Type, so the wire is
+  // Length=1 plus one byte. Going through the list codec (with a later parameter
+  // behind it) is what catches a reader that takes the odd Type for a varint and
+  // desyncs everything after it.
+  #[test]
+  fn include_properties_survives_a_parameter_list_round_trip() {
+    for include in [true, false] {
+      let params = vec![
+        MessageParameter::new_include_properties(include),
+        // 0x41 sorts after 0x35, so it only decodes if the value above consumed
+        // exactly its stated Length.
+        MessageParameter::new_switching_set_assignment(1, 0, 2500, 3, 1, 4),
+      ];
+      let mut bytes = serialize_message_parameters(&params).unwrap();
+      let decoded = deserialize_message_parameters(
+        &mut bytes,
+        params.len() as u64,
+        ControlMessageType::Subscribe,
+      )
+      .unwrap();
+      assert_eq!(decoded, params, "include={include}");
+      assert!(!bytes.has_remaining(), "the list left unread bytes behind");
+    }
+  }
+
+  #[test]
+  fn include_properties_is_one_length_prefixed_byte_on_the_wire() {
+    let bytes = MessageParameter::new_include_properties(true)
+      .serialize()
+      .unwrap();
+    // Delta Type 0x35, Length 1, value 1. All three are one-byte varints here.
+    assert_eq!(&bytes[..], &[0x35, 0x01, 0x01]);
+    let off = MessageParameter::new_include_properties(false)
+      .serialize()
+      .unwrap();
+    assert_eq!(&off[..], &[0x35, 0x01, 0x00]);
+  }
+
+  // Two malformations, two error codes, and the draft draws the line between
+  // them: a wrong Length is §1.4.3's "Value does not match the serialization
+  // defined by that Type", a wrong value is §10.2.21's own 0-or-1 rule.
+  #[test]
+  fn include_properties_rejects_a_length_that_is_not_one() {
+    for value in [Bytes::new(), Bytes::from_static(&[1u8, 0u8])] {
+      let len = value.len();
+      let pair =
+        KeyValuePair::try_new_bytes(MessageParameterType::IncludeProperties as u64, value).unwrap();
+      assert!(
+        matches!(
+          MessageParameter::deserialize(&pair),
+          Err(ParseError::KeyValueFormattingError { .. })
+        ),
+        "length {len} should be a KEY_VALUE_FORMATTING_ERROR"
+      );
+    }
+  }
+
+  #[test]
+  fn include_properties_rejects_a_value_outside_zero_or_one() {
+    let pair = KeyValuePair::try_new_bytes(
+      MessageParameterType::IncludeProperties as u64,
+      Bytes::from_static(&[2u8]),
+    )
+    .unwrap();
+    assert!(matches!(
+      MessageParameter::deserialize(&pair),
+      Err(ParseError::ProtocolViolation { .. })
+    ));
+  }
+
+  #[test]
+  fn include_properties_rides_only_the_four_requests_that_can_ask_for_properties() {
+    let param = MessageParameter::new_include_properties(true);
+    for allowed in [
+      ControlMessageType::Subscribe,
+      ControlMessageType::TrackStatus,
+      ControlMessageType::Fetch,
+      ControlMessageType::SubscribeTracks,
+    ] {
+      assert!(param.is_valid_for(allowed), "{allowed:?} should be allowed");
+    }
+    // It asks a question; the answer carries Properties or not, and never repeats
+    // the question back.
+    for refused in [
+      ControlMessageType::RequestOk,
+      ControlMessageType::SubscribeOk,
+      ControlMessageType::FetchOk,
+      ControlMessageType::RequestUpdate,
+      ControlMessageType::Publish,
+    ] {
+      assert!(
+        !param.is_valid_for(refused),
+        "{refused:?} should be refused"
+      );
+    }
   }
 
   #[test]

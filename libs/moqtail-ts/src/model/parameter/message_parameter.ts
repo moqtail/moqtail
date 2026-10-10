@@ -37,6 +37,7 @@ import { LocationFilter } from './message/location_filter'
 import { Range, RangeFilter, RangeFilterKind } from './message/range_filter'
 import { SwitchFrom } from './message/switch_from'
 import { FillParameters } from './message/fill_parameters'
+import { IncludeProperties } from './message/include_properties'
 
 export type MessageParameter =
   | ObjectDeliveryTimeout
@@ -54,6 +55,7 @@ export type MessageParameter =
   | NewGroupRequest
   | SwitchFrom
   | FillParameters
+  | IncludeProperties
   | SwitchingSetAssignment
 
 export namespace MessageParameter {
@@ -79,6 +81,7 @@ export namespace MessageParameter {
       NewGroupRequest.fromKeyValuePair(pair) ??
       SwitchFrom.fromKeyValuePair(pair) ??
       FillParameters.fromKeyValuePair(pair) ??
+      IncludeProperties.fromKeyValuePair(pair) ??
       SwitchingSetAssignment.fromKeyValuePair(pair)
     )
   }
@@ -155,6 +158,10 @@ export namespace MessageParameter {
   export function isFillParameters(param: MessageParameter): param is FillParameters {
     return param instanceof FillParameters
   }
+
+  export function isIncludeProperties(param: MessageParameter): param is IncludeProperties {
+    return param instanceof IncludeProperties
+  }
 }
 
 /**
@@ -224,6 +231,10 @@ export class MessageParameters {
 
   addFillParameters(parameters: MessageParameter[]): this {
     return this.add(new FillParameters(parameters))
+  }
+
+  addIncludeProperties(include: boolean): this {
+    return this.add(new IncludeProperties(include))
   }
 
   build(): MessageParameter[] {
@@ -456,6 +467,25 @@ if (import.meta.vitest) {
       buf.putBytes(serializeMessageParameterKvps(params.map((p) => p.toKeyValuePair())).toUint8Array())
       const frozen = buf.freeze()
 
+      const parsed = MessageParameters.fromKeyValuePairs(deserializeMessageParameterKvps(frozen, params.length))
+
+      expect(frozen.remaining).toBe(0)
+      expect(parsed).toEqual(params)
+    })
+
+    // §10.2.21 is a uint8 under an odd Type, so Length=1 plus one byte. A reader
+    // that takes it for a varint consumes one byte too few and desyncs the rest,
+    // which only the list codec can see.
+    test.each([true, false])('INCLUDE_PROPERTIES=%s survives a list with a neighbour behind it', (include) => {
+      const params = [new IncludeProperties(include), new SwitchingSetAssignment(1n, 0n, 2500n, 3n, 1n, 4)]
+      const wire = serializeMessageParameterKvps(params.map((p) => p.toKeyValuePair())).toUint8Array()
+
+      // Type Delta 0x35, Length 1, then the value byte.
+      expect(wire.slice(0, 3)).toEqual(new Uint8Array([0x35, 0x01, include ? 1 : 0]))
+
+      const buf = new ByteBuffer()
+      buf.putBytes(wire)
+      const frozen = buf.freeze()
       const parsed = MessageParameters.fromKeyValuePairs(deserializeMessageParameterKvps(frozen, params.length))
 
       expect(frozen.remaining).toBe(0)

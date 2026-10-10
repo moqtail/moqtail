@@ -157,11 +157,7 @@
       {
         "name": "INCLUDE_PROPERTIES",
         "value": "0x35",
-        "spec": "Section 10.2.21",
-        "pending": {
-          "rs": 40676,
-          "ts": 40676
-        }
+        "spec": "Section 10.2.21"
       }
     ],
     "local_extensions": [

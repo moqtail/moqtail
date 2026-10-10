@@ -88,6 +88,11 @@ pub enum MessageParameterType {
   TrackPropertyFilter = 0x29,
   NewGroupRequest = 0x32,
   TrackNamespacePrefix = 0x34,
+  /// Whether the OK (or, for SUBSCRIBE_TRACKS, the resulting PUBLISH messages)
+  /// carries Track Properties (§10.2.21). A uint8, so the odd Type's Length is
+  /// exactly 1 -- any other length is a KEY_VALUE_FORMATTING_ERROR, while a
+  /// length-1 value outside 0..=1 is a PROTOCOL_VIOLATION.
+  IncludeProperties = 0x35,
   SwitchingSetAssignment = 0x41,
 }
 
@@ -116,6 +121,7 @@ impl TryFrom<u64> for MessageParameterType {
       0x29 => Ok(MessageParameterType::TrackPropertyFilter),
       0x32 => Ok(MessageParameterType::NewGroupRequest),
       0x34 => Ok(MessageParameterType::TrackNamespacePrefix),
+      0x35 => Ok(MessageParameterType::IncludeProperties),
       0x41 => Ok(MessageParameterType::SwitchingSetAssignment),
       _ => Err(ParseError::InvalidType {
         context: "MessageParameterType::try_from(u64)",

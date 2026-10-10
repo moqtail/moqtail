@@ -351,7 +351,6 @@ export enum RequestErrorCode {
   DoesNotExist = 0x10,
   InvalidRange = 0x11,
   MalformedTrack = 0x12,
-  DuplicateSubscription = 0x19,
   Uninterested = 0x20,
   PrefixOverlap = 0x30,
   NamespaceTooLarge = 0x31,
@@ -391,8 +390,6 @@ export namespace RequestErrorCode {
         return RequestErrorCode.InvalidRange
       case 0x12n:
         return RequestErrorCode.MalformedTrack
-      case 0x19n:
-        return RequestErrorCode.DuplicateSubscription
       case 0x20n:
         return RequestErrorCode.Uninterested
       case 0x30n:

@@ -18,7 +18,7 @@ use crate::server::config::AppConfig;
 use crate::server::object_logger::ObjectLogger;
 use crate::server::stream_id::StreamId;
 use crate::server::subscription::Subscription;
-use crate::server::subscription_manager::SubscriptionManager;
+use crate::server::subscription_manager::{SubscriptionId, SubscriptionManager};
 use crate::server::utils;
 use crate::server::{client::MOQTClient, subscription::SubscriptionOrigin};
 use anyhow::Result;
@@ -458,10 +458,11 @@ impl Track {
     is_switch: bool,
   ) -> Result<Arc<RwLock<Subscription>>, anyhow::Error> {
     let origin_enum = origin_message.into();
+    let subscription_id = (subscriber.connection_id, origin_enum.request_id());
     // Check if subscription already exists
     if let Some(existing) = self
       .subscription_manager
-      .get_subscription(subscriber.connection_id)
+      .get_subscription(&subscription_id)
       .await
     {
       // One that has finished is not one: its receive loop has exited, so nothing can
@@ -477,18 +478,18 @@ impl Track {
         );
         self
           .subscription_manager
-          .remove_subscription(subscriber.connection_id)
+          .remove_subscription(&subscription_id)
           .await;
       } else {
         if !is_switch {
           error!(
-            "Subscriber with connection_id: {} already exists in relay_track_id={}",
-            subscriber.connection_id, self.relay_track_id
+            "Subscription {:?} already exists in relay_track_id={}",
+            subscription_id, self.relay_track_id
           );
         } else {
           info!(
-            "Subscriber with connection_id: {} already exists in relay_track_id={} (switch subscription)",
-            subscriber.connection_id, self.relay_track_id
+            "Subscription {:?} already exists in relay_track_id={} (switch subscription)",
+            subscription_id, self.relay_track_id
           );
         }
         return Err(anyhow::anyhow!(
@@ -518,19 +519,40 @@ impl Track {
     Ok(subscription)
   }
 
-  // return the subscription for the client
-  // subscriber_id is the connection id of the client
-  pub async fn get_subscription(&self, subscriber_id: usize) -> Option<Arc<RwLock<Subscription>>> {
+  pub async fn has_any_subscription(&self, subscriber_id: usize) -> bool {
     self
       .subscription_manager
-      .get_subscription(subscriber_id)
+      .has_any_subscription(subscriber_id)
       .await
   }
 
-  pub async fn remove_subscription(&self, subscriber_id: usize) {
+  pub async fn has_subscription(&self, subscription_id: &SubscriptionId) -> bool {
+    self.subscription_manager.exists(subscription_id).await
+  }
+
+  // return the subscription for the client
+  // subscriber_id is the connection id of the client
+  pub async fn get_subscription(
+    &self,
+    subscription_id: &SubscriptionId,
+  ) -> Option<Arc<RwLock<Subscription>>> {
     self
       .subscription_manager
-      .remove_subscription(subscriber_id)
+      .get_subscription(subscription_id)
+      .await
+  }
+
+  pub async fn remove_subscription(&self, subscription_id: &SubscriptionId) {
+    self
+      .subscription_manager
+      .remove_subscription(subscription_id)
+      .await
+  }
+
+  pub async fn remove_subscriptions(&self, subscriber_id: usize) {
+    self
+      .subscription_manager
+      .remove_subscriptions(subscriber_id)
       .await
   }
 

@@ -215,9 +215,8 @@ pub async fn handle(
             || track_arc
               .read()
               .await
-              .get_subscription(subscriber.connection_id)
+              .has_any_subscription(subscriber.connection_id)
               .await
-              .is_some()
           {
             continue;
           }
@@ -537,7 +536,9 @@ pub(crate) async fn push_track_to_subscriber(
       subscriber.connection_id, e
     );
   }
-  let subscription = track.get_subscription(subscriber.connection_id).await;
+  let subscription = track
+    .get_subscription(&(subscriber.connection_id, downstream.request_id))
+    .await;
   drop(track);
 
   // The subscription this just created is what wants Objects, so the publisher has

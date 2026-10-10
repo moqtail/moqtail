@@ -189,11 +189,9 @@ impl TrackManager {
     for track_arc in track_arcs {
       let sub_opt = {
         let track = track_arc.read().await;
-        track.get_subscription(connection_id).await
+        track.get_subscription(&(connection_id, request_id)).await
       };
-      if let Some(sub) = sub_opt
-        && sub.read().await.request_id == request_id
-      {
+      if let Some(sub) = sub_opt {
         return Some((track_arc, sub));
       }
     }

@@ -1133,10 +1133,11 @@ pub(crate) async fn cancel_subscription(
       .get_full_track_name()
   }; // read lock dropped here
 
-  // Sender-side track switching: remove the track from its switching set.
+  // Sender-side track switching: this subscription no longer holds the track in
+  // its switching set. Another subscription to the same track may still.
   {
     let mut manager = client.ssts.switching_sets.write().await;
-    manager.remove(&full_track_name);
+    manager.release(&full_track_name, request_id);
   }
 
   // remove the subscription from the track

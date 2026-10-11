@@ -23,7 +23,7 @@
 
 use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail_ssts::SetSnapshot;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -79,6 +79,8 @@ pub struct SwitchingSetMember {
   /// id, or the PUBLISH request id for pushed tracks). Kept so a later
   /// SWITCHING_SET_ASSIGNMENT that contradicts it can name who set the value.
   pub request_id: u64,
+  /// Every subscription that assigned this track (request ids).
+  pub holders: BTreeSet<u64>,
 }
 
 /// A switching set: tracks representing the same content at different
@@ -189,11 +191,12 @@ impl SwitchingSetManager {
       return Err(SwitchingSetError::TrackInDifferentSet);
     }
 
-    let member = SwitchingSetMember {
+    let mut member = SwitchingSetMember {
       full_track_name: full_track_name.clone(),
       relay_track_id,
       throughput_threshold_kbps,
       request_id,
+      holders: BTreeSet::from([request_id]),
     };
 
     let set = self
@@ -222,6 +225,7 @@ impl SwitchingSetManager {
       .find(|m| m.full_track_name == full_track_name)
     {
       previous_relay_track_id = Some(existing.relay_track_id);
+      member.holders.append(&mut existing.holders);
       *existing = member;
     } else {
       set.members.push(member);
@@ -245,7 +249,25 @@ impl SwitchingSetManager {
     Ok(())
   }
 
-  /// Remove a track (unsubscribed or PUBLISH_DONE) and delete the set once its
+  /// Release happens when a subscription that assigned this track has ended
+  pub fn release(&mut self, full_track_name: &FullTrackName, request_id: u64) {
+    let Some(set_id) = self.track_to_set.get(full_track_name) else {
+      return;
+    };
+    let Some(member) = self.sets.get_mut(set_id).and_then(|set| {
+      set
+        .members
+        .iter_mut()
+        .find(|m| m.full_track_name == *full_track_name)
+    }) else {
+      return;
+    };
+    if member.holders.remove(&request_id) && member.holders.is_empty() {
+      self.remove(full_track_name);
+    }
+  }
+
+  /// Remove a track (its last subscription went, or PUBLISH_DONE) and delete the set once its
   /// last track leaves. `activate` is a configured threshold, not a counter,
   /// so it is left alone: `is_active` re-evaluates against the new member
   /// count on its own.
@@ -426,6 +448,40 @@ mod tests {
     // The last member removed the set entirely.
     assert!(!manager.sets.contains_key(&7));
     assert!(manager.get_set_for_track(&track).is_none());
+  }
+
+  #[test]
+  fn test_a_track_stays_while_another_subscription_holds_it() {
+    let mut manager = SwitchingSetManager::new();
+    let track = make_track("ns", "t");
+    // Two subscriptions to the same track, both assigning it to set 7.
+    manager
+      .assign(track.clone(), 42, 2, 7, 0, 100, 5, 2, 0)
+      .unwrap();
+    manager
+      .assign(track.clone(), 42, 4, 7, 0, 100, 5, 2, 0)
+      .unwrap();
+
+    manager.release(&track, 2);
+    assert!(manager.get_set_for_track(&track).is_some());
+    assert_eq!(manager.relay_track_to_set.get(&42), Some(&7));
+
+    manager.release(&track, 4);
+    assert!(manager.get_set_for_track(&track).is_none());
+    assert!(!manager.sets.contains_key(&7));
+  }
+
+  #[test]
+  fn test_a_subscription_that_never_assigned_the_track_releases_nothing() {
+    let mut manager = SwitchingSetManager::new();
+    let track = make_track("ns", "t");
+    manager
+      .assign(track.clone(), 42, 2, 7, 0, 100, 5, 2, 0)
+      .unwrap();
+
+    // A second subscription to the track, without an assignment, ends.
+    manager.release(&track, 4);
+    assert!(manager.get_set_for_track(&track).is_some());
   }
 
   #[test]

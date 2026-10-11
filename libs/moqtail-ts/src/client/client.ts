@@ -805,19 +805,11 @@ export class MOQtailClient {
   }
 
   /**
-   * Resolve track alias to full track name using client's request ID map.
-   * Falls back to a placeholder if not found.
+   * Resolve track alias to the full track name it was claimed for.
+   * Falls back to a placeholder if no request holds the alias.
    */
   #resolveTrackAlias(trackAlias: bigint): FullTrackName {
-    try {
-      const requestId = this.subscriptionAliasMap.get(trackAlias)
-      if (requestId !== undefined) {
-        return this.requestIdMap.getNameByRequestId(requestId)
-      }
-      return FullTrackName.tryNew('unknown', `track-${trackAlias}`)
-    } catch {
-      return FullTrackName.tryNew('unknown', `track-${trackAlias}`)
-    }
+    return this.aliasFullTrackNameMap.get(trackAlias) ?? FullTrackName.tryNew('unknown', `track-${trackAlias}`)
   }
 
   /**
@@ -2502,6 +2494,20 @@ if (import.meta.vitest) {
     readonly incomingUnidirectionalStreams: ReadableStream<ReadableStream<Uint8Array>>
     #incoming!: ReadableStreamDefaultController<ReadableStream<Uint8Array>>
     #incomingBi!: ReadableStreamDefaultController<WebTransportBidirectionalStream>
+    #incomingDatagrams!: ReadableStreamDefaultController<Uint8Array>
+    readonly datagrams = {
+      readable: new ReadableStream<Uint8Array>({
+        start: (controller) => {
+          this.#incomingDatagrams = controller
+        },
+      }),
+      writable: new WritableStream<Uint8Array>(),
+    }
+
+    /** Delivers a datagram to the client, as the peer would. */
+    receiveDatagram(bytes: Uint8Array): void {
+      this.#incomingDatagrams.enqueue(bytes)
+    }
 
     async createBidirectionalStream(): Promise<WebTransportBidirectionalStream> {
       const biStream = new MockBidiStream()
@@ -2850,6 +2856,35 @@ if (import.meta.vitest) {
       expect(client.subscriptions.get(8n).fullTrackName.toString()).toBe(otherFtn.toString())
       expect(client.subscriptionAliasMap.get(aliceId)).toBe(7n)
       expect(client.subscriptionAliasMap.get(bobId)).toBe(8n)
+
+      await client.disconnect()
+    })
+
+    it('names a received datagram after the track its alias was claimed for', async () => {
+      const { client, transport } = await connected()
+
+      const subscribing = client.subscribe({
+        fullTrackName: ftn,
+        filterType: FilterType.LatestObject,
+        forward: true,
+        groupOrder: GroupOrder.Original,
+        priority: 0,
+      })
+      const stream = await openedStream(transport, 0)
+      stream.respond(SubscribeOk.create(7n, [], []))
+      await subscribing
+
+      await client.startDatagrams()
+      const received: MoqtObject[] = []
+      client.subscribeToTrackDatagrams(7n, (obj) => received.push(obj))
+      transport.receiveDatagram(
+        Datagram.newPayload(7n, 0n, 0n, null, null, new Uint8Array([1]))
+          .serialize()
+          .toUint8Array(),
+      )
+
+      await vi.waitFor(() => expect(received).toHaveLength(1))
+      expect(received[0]!.fullTrackName.toString()).toBe(ftn.toString())
 
       await client.disconnect()
     })

@@ -908,7 +908,8 @@ export class MOQtailClient {
     this.#namespaceRequestIds.clear()
     await Promise.allSettled(openStreams.map((requestStream) => requestStream.close()))
 
-    if (!this.webTransport.closed) this.webTransport.close()
+    // close() does nothing on a session that is already closed or failed.
+    this.webTransport.close()
     if (this.onSessionTerminated)
       this.onSessionTerminated(
         new InternalError('MOQtailClient.disconnect', reason instanceof Error ? reason.message : String(reason)),
@@ -2638,7 +2639,12 @@ if (import.meta.vitest) {
       return streamController
     }
 
-    close(): void {}
+    /** How many times the client called `close()`. */
+    closeCount = 0
+
+    close(): void {
+      this.closeCount++
+    }
   }
 
   describe('MOQtailClient control plane', () => {
@@ -3181,6 +3187,15 @@ if (import.meta.vitest) {
       control.enqueue(new GoAway(undefined, 0n).serialize().toUint8Array())
       await vi.waitFor(() => expect(terminated).toHaveLength(1))
       expect(seen).toHaveLength(1)
+    })
+
+    it('closes the WebTransport session on disconnect, once', async () => {
+      const { client, transport } = await connected()
+
+      await client.disconnect()
+      await client.disconnect()
+
+      expect(transport.closeCount).toBe(1)
     })
 
     it('unsubscribes by resetting the SUBSCRIBE stream with CANCELLED', async () => {

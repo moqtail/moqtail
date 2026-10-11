@@ -58,7 +58,9 @@ async fn add_subscription(
         .await;
       true
     }
-    Err(_) => false, // error already logged in add_subscription and it means that subscription already exists
+    // Only a Request ID already in use on this track is refused, and the subscription
+    // manager has logged it.
+    Err(_) => false,
   }
 }
 
@@ -585,10 +587,24 @@ async fn handle_subscribe_message(
     })
     .await;
 
-  let _ = {
+  let subscription_added = {
     let track = track_arc.read().await;
     add_subscription(sub.clone(), &track, client.clone()).await
   };
+
+  if !subscription_added {
+    warn!(
+      "Rejecting SUBSCRIBE from {} for {:?}: request {} already has a subscription",
+      context.connection_id, &full_track_name, sub.request_id
+    );
+    let err = RequestError::new(
+      RequestErrorCode::InternalError,
+      0,
+      ReasonPhrase::try_new("could not add the subscription".to_string()).unwrap(),
+    );
+    stream_handler.send_impl(&err).await.unwrap();
+    return Ok(());
+  }
 
   // Sender-side track switching: register this track in its switching set.
   if let Some(MessageParameter::SwitchingSetAssignment {

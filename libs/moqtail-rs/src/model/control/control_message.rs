@@ -196,6 +196,22 @@ impl ControlMessage {
       ControlMessage::PublishSkipped(_) => ControlMessageType::PublishSkipped,
     }
   }
+
+  /// The Request ID a request message consumes, or `None` for a message that is not
+  /// a request. Responses carry none: they travel on their request's own stream.
+  pub fn request_id(&self) -> Option<u64> {
+    match self {
+      ControlMessage::Subscribe(m) => Some(m.request_id),
+      ControlMessage::Publish(m) => Some(m.request_id),
+      ControlMessage::Fetch(m) => Some(m.request_id),
+      ControlMessage::SubscribeNamespace(m) => Some(m.request_id),
+      ControlMessage::SubscribeTracks(m) => Some(m.request_id),
+      ControlMessage::PublishNamespace(m) => Some(m.request_id),
+      ControlMessage::RequestUpdate(m) => Some(m.request_id),
+      ControlMessage::TrackStatus(m) => Some(m.request_id),
+      _ => None,
+    }
+  }
 }
 
 #[cfg(test)]
@@ -206,6 +222,18 @@ mod tests {
   };
 
   use super::*;
+
+  #[test]
+  fn a_request_reports_its_request_id() {
+    let update = ControlMessage::RequestUpdate(Box::new(RequestUpdate::new(42, vec![])));
+    assert_eq!(update.request_id(), Some(42));
+  }
+
+  #[test]
+  fn a_message_that_is_not_a_request_has_no_request_id() {
+    let goaway = ControlMessage::Goaway(Box::new(GoAway::new(None, 0)));
+    assert_eq!(goaway.request_id(), None);
+  }
 
   #[test]
   fn test_announce_roundtrip() {

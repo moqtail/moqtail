@@ -20,6 +20,7 @@ mod fill;
 mod message_handlers;
 mod object_logger;
 mod prefix_subscription;
+mod request_stream;
 mod seen_objects;
 mod session;
 mod session_context;

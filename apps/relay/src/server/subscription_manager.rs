@@ -79,12 +79,11 @@ impl SubscriptionManager {
   /// across multiple buckets to improve performance and reduce contention.
   fn get_subscriber_partition_index(&self, subscription_id: &SubscriptionId) -> usize {
     // Convert to bytes for fnv_hash function
-    // let subscriber id be 1
-    // for request ids 1, 2, 3, and 4, the values are 0, 3, 2, 5
-    // for subscriber id 2 and same request ids
-    // values: 3, 0, 1, 6
-    // it seems the distribution works.
-    let value_bytes = (subscription_id.0 as u64 & subscription_id.1).to_le_bytes();
+    let value_bytes = [
+      (subscription_id.0 as u64).to_le_bytes(),
+      subscription_id.1.to_le_bytes(),
+    ]
+    .concat();
     (utils::fnv_hash(&value_bytes) % SUBSCRIBER_PARTITION_COUNT as u64) as usize
   }
 
@@ -208,10 +207,9 @@ impl SubscriptionManager {
 
     let mut sub_req_ids = self.subscriber_request_ids.write().await;
     if let Some(s) = sub_req_ids.get_mut(&subscription_id.0) {
+      s.remove(&subscription_id.1);
       if s.is_empty() {
         sub_req_ids.remove(&subscription_id.0);
-      } else {
-        s.remove(&subscription_id.1);
       }
     }
 
@@ -237,21 +235,21 @@ impl SubscriptionManager {
     drop(senders);
   }
 
+  /// Removes every subscription the subscriber holds.
   pub async fn remove_subscriptions(&self, subscriber_id: usize) {
-    if let Some(request_ids) = {
-      let guard = self.subscriber_request_ids.write().await;
-      guard.get(&subscriber_id).cloned()
-    } {
-      for request_id in request_ids {
-        self.remove_subscription(&(subscriber_id, request_id)).await;
-      }
-    }
-    // remove from the map
-    self
+    info!(
+      "Removing all subscriptions for subscriber_id={} from relay_track_id={}",
+      subscriber_id, self.relay_track_id
+    );
+    let request_ids = self
       .subscriber_request_ids
-      .write()
+      .read()
       .await
-      .remove(&subscriber_id);
+      .get(&subscriber_id)
+      .cloned();
+    for request_id in request_ids.into_iter().flatten() {
+      self.remove_subscription(&(subscriber_id, request_id)).await;
+    }
   }
 
   pub async fn subscriber_count(&self) -> usize {

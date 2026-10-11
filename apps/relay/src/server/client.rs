@@ -25,7 +25,6 @@ use crate::server::{
   utils,
 };
 use anyhow::Result;
-#[allow(dead_code)]
 use bytes::Bytes;
 use moqtail::{
   model::{
@@ -43,7 +42,7 @@ use switch_context::SwitchContext;
 
 use std::{
   collections::{BTreeMap, HashMap, VecDeque},
-  sync::Arc,
+  sync::{Arc, atomic::AtomicU64},
   time::Duration,
 };
 use tokio::sync::Notify;
@@ -135,6 +134,9 @@ pub(crate) struct MOQTClient {
   // The key value is the original request id.
   pub subscribe_requests: Arc<RwLock<BTreeMap<u64, SubscribeRequest>>>,
 
+  // Keeps the last incoming request id
+  pub last_request_id: Arc<AtomicU64>,
+
   pub inbound_requests: Arc<RwLock<BTreeMap<u64, PendingRequest>>>,
 
   // Senders for cancelling active fetch tasks, keyed by request_id.
@@ -203,6 +205,7 @@ impl MOQTClient {
       incoming_fetch_requests: Arc::new(RwLock::new(BTreeMap::new())),
       outgoing_fetch_requests: Arc::new(RwLock::new(BTreeMap::new())),
       subscribe_requests: Arc::new(RwLock::new(BTreeMap::new())),
+      last_request_id: Arc::new(AtomicU64::new(0)),
       inbound_requests: Arc::new(RwLock::new(BTreeMap::new())),
       fetch_cancel_senders: Arc::new(RwLock::new(HashMap::new())),
       subscriptions: RequestSubscriptionMap::new(),

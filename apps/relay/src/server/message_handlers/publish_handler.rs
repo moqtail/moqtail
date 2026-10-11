@@ -528,7 +528,7 @@ pub(crate) async fn push_track_to_subscriber(
 
   let track = track_arc.read().await;
   if let Err(e) = track
-    .add_subscription(subscriber.clone(), downstream.clone(), false)
+    .add_subscription(subscriber.clone(), downstream.clone())
     .await
   {
     warn!(

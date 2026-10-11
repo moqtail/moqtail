@@ -48,13 +48,9 @@ async fn add_subscription(
   subscribe: Subscribe,
   track: &Track,
   subscriber: Arc<MOQTClient>,
-  is_switch: bool,
 ) -> bool {
   let request_id = subscribe.request_id;
-  match track
-    .add_subscription(subscriber.clone(), subscribe, is_switch)
-    .await
-  {
+  match track.add_subscription(subscriber.clone(), subscribe).await {
     Ok(subscription) => {
       subscriber
         .subscriptions
@@ -67,17 +63,17 @@ async fn add_subscription(
 }
 
 /// Drop a subscription that must be rejected after `add_subscription` already
-/// registered it. A SWITCH reuses the pre-existing subscription, so only a
-/// fresh one is removed.
+/// registered it, on the track and on the client.
 async fn reject_subscription(
   track_arc: &Arc<RwLock<Track>>,
+  client: &MOQTClient,
   subscription_id: &SubscriptionId,
-  is_switch: bool,
 ) {
-  if !is_switch {
+  {
     let track = track_arc.read().await;
     track.remove_subscription(subscription_id).await;
   }
+  client.subscriptions.remove(subscription_id.1).await;
 }
 
 /// Forward a SUBSCRIBE to the upstream publisher on its own bidirectional request
@@ -483,7 +479,6 @@ async fn handle_subscribe_message(
   stream_handler: &mut ControlStreamHandler,
   sub: Subscribe,
   context: Arc<SessionContext>,
-  is_switch: bool,
 ) -> Result<(), TerminationCode> {
   info!("received Subscribe message: {:?}", sub);
   let track_namespace = sub.track_namespace.clone();
@@ -511,7 +506,6 @@ async fn handle_subscribe_message(
       return Ok(());
     }
   };
-  let is_switch = is_switch || switch_plan.is_some();
   // A switch applies its filter and Forward State in begin_switch, well after the
   // SUBSCRIBE_OK goes out; anything measured against the subscription's filter has to
   // wait for that.
@@ -593,7 +587,7 @@ async fn handle_subscribe_message(
 
   let _ = {
     let track = track_arc.read().await;
-    add_subscription(sub.clone(), &track, client.clone(), is_switch).await
+    add_subscription(sub.clone(), &track, client.clone()).await
   };
 
   // Sender-side track switching: register this track in its switching set.
@@ -616,12 +610,7 @@ async fn handle_subscribe_message(
 
     if let Err(e) = client.ssts.validate_assignment(*algorithm_id) {
       warn!("Rejecting SUBSCRIBE from {}: {}", context.connection_id, e);
-      reject_subscription(
-        &track_arc,
-        &(client.connection_id, sub.request_id),
-        is_switch,
-      )
-      .await;
+      reject_subscription(&track_arc, &client, &(client.connection_id, sub.request_id)).await;
       let err = RequestError::new(
         RequestErrorCode::UnsupportedExtension,
         0,
@@ -649,12 +638,7 @@ async fn handle_subscribe_message(
         // subscription is rejected. There is no dedicated parameter-error
         // code to return, so the unsupported-extension one carries it.
         drop(manager);
-        reject_subscription(
-          &track_arc,
-          &(client.connection_id, sub.request_id),
-          is_switch,
-        )
-        .await;
+        reject_subscription(&track_arc, &client, &(client.connection_id, sub.request_id)).await;
         let err = RequestError::new(
           RequestErrorCode::UnsupportedExtension,
           0,
@@ -1573,7 +1557,7 @@ pub async fn handle(
 ) -> Result<(), TerminationCode> {
   match msg {
     ControlMessage::Subscribe(m) => {
-      handle_subscribe_message(client, stream_handler, *m, context, false).await
+      handle_subscribe_message(client, stream_handler, *m, context).await
     }
     ControlMessage::RequestUpdate(m) => {
       let Some(target_request_id) = opening_request_id else {

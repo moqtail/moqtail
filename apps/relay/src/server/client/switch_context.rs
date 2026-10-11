@@ -43,8 +43,11 @@ impl SwitchActivation {
 /// look at the other's group ids, which do not have to line up.
 #[derive(Debug, Clone)]
 pub struct SwitchPlan {
-  /// The subscription being suspended.
+  /// The Track of the subscription being suspended.
   pub suspending: FullTrackName,
+  /// The Request ID of the subscription being suspended. A subscriber can hold
+  /// several subscriptions to `suspending`; this is the one the switch names.
+  pub suspending_request_id: u64,
   pub mode: SwitchMode,
   /// Whether stopping it also sends PUBLISH_DONE.
   pub publish_done: bool,
@@ -62,9 +65,15 @@ pub struct SwitchPlan {
 impl SwitchPlan {
   /// The boundary is left unset: it is the activating subscription that knows
   /// its own Start Group, and it fills this in when the switch is scheduled.
-  pub fn new(suspending: FullTrackName, mode: SwitchMode, publish_done: bool) -> Self {
+  pub fn new(
+    suspending: FullTrackName,
+    suspending_request_id: u64,
+    mode: SwitchMode,
+    publish_done: bool,
+  ) -> Self {
     Self {
       suspending,
+      suspending_request_id,
       mode,
       publish_done,
       boundary: None,
@@ -75,8 +84,9 @@ impl SwitchPlan {
 
 #[derive(Debug, Clone)]
 pub struct SwitchContext {
-  /// Keyed by the activating track: the switch it is the target of.
-  plans: Arc<RwLock<HashMap<FullTrackName, SwitchPlan>>>,
+  /// Keyed by the activating subscription's Request ID: the switch it is the
+  /// target of. Two subscriptions to the same Track can each be a target.
+  plans: Arc<RwLock<HashMap<u64, SwitchPlan>>>,
 }
 
 impl SwitchContext {
@@ -87,19 +97,19 @@ impl SwitchContext {
   }
 
   /// Records what to do to the suspending subscription once `activating` delivers.
-  pub async fn set_plan(&self, activating: FullTrackName, plan: SwitchPlan) {
+  pub async fn set_plan(&self, activating: u64, plan: SwitchPlan) {
     self.plans.write().await.insert(activating, plan);
   }
 
   /// Takes the plan for `activating`, leaving none behind: a switch happens once.
-  pub async fn take_plan(&self, activating: &FullTrackName) -> Option<SwitchPlan> {
-    self.plans.write().await.remove(activating)
+  pub async fn take_plan(&self, activating: u64) -> Option<SwitchPlan> {
+    self.plans.write().await.remove(&activating)
   }
 
   // TODO: Until switch trigger in subscription.rs solvedthis is dead code.
   #[allow(dead_code)]
-  pub async fn get_plan(&self, full_track_name: &FullTrackName) -> Option<SwitchPlan> {
-    self.plans.read().await.get(full_track_name).cloned()
+  pub async fn get_plan(&self, activating: u64) -> Option<SwitchPlan> {
+    self.plans.read().await.get(&activating).cloned()
   }
 }
 
@@ -110,6 +120,7 @@ mod tests {
   fn plan(suspending: &str, mode: SwitchMode) -> SwitchPlan {
     SwitchPlan::new(
       FullTrackName::try_new("ns", suspending).expect("create track name"),
+      0,
       mode,
       false,
     )
@@ -133,35 +144,38 @@ mod tests {
   #[tokio::test]
   async fn a_plan_is_taken_once() {
     let context = SwitchContext::new();
-    let activating = FullTrackName::try_new("ns", "high").expect("create track name");
+    let activating = 2;
 
     context
-      .set_plan(activating.clone(), plan("low", SwitchMode::Hard))
+      .set_plan(activating, plan("low", SwitchMode::Hard))
       .await;
 
-    assert!(context.take_plan(&activating).await.is_some());
-    assert!(context.take_plan(&activating).await.is_none());
+    assert!(context.take_plan(activating).await.is_some());
+    assert!(context.take_plan(activating).await.is_none());
   }
 
   #[tokio::test]
-  async fn plans_are_kept_per_activating_track() {
+  async fn plans_are_kept_per_activating_subscription() {
     let context = SwitchContext::new();
-    let high = FullTrackName::try_new("ns", "high").expect("create track name");
-    let mid = FullTrackName::try_new("ns", "mid").expect("create track name");
+    // Two subscriptions to the same Track, each the target of its own switch.
+    let first = 2;
+    let second = 4;
 
+    context.set_plan(first, plan("low", SwitchMode::Hard)).await;
     context
-      .set_plan(high.clone(), plan("low", SwitchMode::Hard))
-      .await;
-    context
-      .set_plan(mid.clone(), plan("high", SwitchMode::Soft))
+      .set_plan(second, plan("mid", SwitchMode::Soft))
       .await;
 
     assert_eq!(
-      context.take_plan(&high).await.expect("plan for high").mode,
+      context.take_plan(first).await.expect("plan for first").mode,
       SwitchMode::Hard
     );
     assert_eq!(
-      context.take_plan(&mid).await.expect("plan for mid").mode,
+      context
+        .take_plan(second)
+        .await
+        .expect("plan for second")
+        .mode,
       SwitchMode::Soft
     );
   }

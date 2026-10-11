@@ -871,7 +871,7 @@ impl Subscription {
     self
       .subscriber
       .switch_context
-      .set_plan(self.full_track_name.clone(), plan)
+      .set_plan(self.request_id, plan)
       .await;
     self.pending_switch.store(true, Ordering::Relaxed);
   }
@@ -949,12 +949,12 @@ impl Subscription {
     let Some(weak) = self
       .subscriber
       .subscriptions
-      .get_subscription(&plan.suspending)
+      .get(plan.suspending_request_id)
       .await
     else {
       warn!(
-        "switch: no subscription left to suspend for {:?} on subscriber {}",
-        plan.suspending, self.client_connection_id
+        "switch: no subscription left to suspend for {:?} (request {}) on subscriber {}",
+        plan.suspending, plan.suspending_request_id, self.client_connection_id
       );
       return None;
     };
@@ -968,7 +968,7 @@ impl Subscription {
     let Some(plan) = self
       .subscriber
       .switch_context
-      .take_plan(&self.full_track_name)
+      .take_plan(self.request_id)
       .await
     else {
       return;
@@ -1301,7 +1301,7 @@ impl Subscription {
           && let Some(plan) = self
             .subscriber
             .switch_context
-            .get_plan(&self.full_track_name)
+            .get_plan(self.request_id)
             .await
           && let Some(suspending) = self.find_suspending(&plan).await
         {

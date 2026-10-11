@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+pub(crate) mod request_subscription_map;
 pub(crate) mod switch_context;
-pub(crate) mod track_subscription_map;
 
 use crate::server::{
-  client::track_subscription_map::TrackSubscriptionMap,
+  client::request_subscription_map::RequestSubscriptionMap,
   config::AppConfig,
   message_handlers::fetch_handler::FetchStop,
   session_context::PendingRequest,
@@ -141,7 +141,7 @@ pub(crate) struct MOQTClient {
   pub fetch_cancel_senders: Arc<RwLock<HashMap<u64, watch::Sender<FetchStop>>>>,
 
   // this contains the subscriptions made by the client
-  pub subscriptions: TrackSubscriptionMap,
+  pub subscriptions: RequestSubscriptionMap,
 
   pub switch_context: SwitchContext,
 
@@ -205,7 +205,7 @@ impl MOQTClient {
       subscribe_requests: Arc::new(RwLock::new(BTreeMap::new())),
       inbound_requests: Arc::new(RwLock::new(BTreeMap::new())),
       fetch_cancel_senders: Arc::new(RwLock::new(HashMap::new())),
-      subscriptions: TrackSubscriptionMap::new(),
+      subscriptions: RequestSubscriptionMap::new(),
       switch_context: SwitchContext::new(),
       rate_limiter,
       ssts,

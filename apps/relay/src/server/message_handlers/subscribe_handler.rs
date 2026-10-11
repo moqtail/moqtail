@@ -50,6 +50,7 @@ async fn add_subscription(
   subscriber: Arc<MOQTClient>,
   is_switch: bool,
 ) -> bool {
+  let request_id = subscribe.request_id;
   match track
     .add_subscription(subscriber.clone(), subscribe, is_switch)
     .await
@@ -57,7 +58,7 @@ async fn add_subscription(
     Ok(subscription) => {
       subscriber
         .subscriptions
-        .add_subscription(track.full_track_name.clone(), Arc::downgrade(&subscription))
+        .add(request_id, Arc::downgrade(&subscription))
         .await;
       true
     }
@@ -462,15 +463,19 @@ pub(crate) async fn plan_switch(
   // less to stop.
   let suspending = subscription.read().await.full_track_name.clone();
 
-  // One subscription per track per subscriber, so switching to the track being
-  // switched away from would have it suspend itself.
+  // Both subscriptions would deliver the same Objects, so there is no switch to make.
   if suspending == *activating {
     return Err(invalid(
       "a subscription cannot switch away from its own track",
     ));
   }
 
-  Ok(Some(SwitchPlan::new(suspending, mode, publish_done)))
+  Ok(Some(SwitchPlan::new(
+    suspending,
+    request_id,
+    mode,
+    publish_done,
+  )))
 }
 
 async fn handle_subscribe_message(
@@ -1138,11 +1143,8 @@ pub(crate) async fn cancel_subscription(
   let track_option = context.track_manager.get_track(&full_track_name).await;
 
   if let Some(track_lock) = track_option {
-    // One subscription per track per subscriber, and a switch to a track the
-    // subscriber already holds hands the existing one to the SUBSCRIBE that switched
-    // to it. Resetting the request it replaced arrives here naming the same track, so
-    // cancel only what this request still owns -- otherwise the live subscription goes
-    // with it and the subscriber starves on a track it is still subscribed to.
+    // The subscriber may hold other subscriptions to this track under other request
+    // ids. Cancel only the one this request owns, and only if it is still there.
     let owned = track_lock
       .read()
       .await
@@ -1199,10 +1201,7 @@ pub(crate) async fn cancel_subscription(
   }
 
   // remove the subscription from the client
-  client
-    .subscriptions
-    .remove_subscription(&full_track_name)
-    .await;
+  client.subscriptions.remove(request_id).await;
 
   // Remove the request from the client's request map so it doesn't leak
   {
@@ -1454,10 +1453,7 @@ pub async fn handle_request_update(
         .await
         .remove_subscription(&(client.connection_id, existing_req_id))
         .await;
-      client
-        .subscriptions
-        .remove_subscription(&full_track_name)
-        .await;
+      client.subscriptions.remove(existing_req_id).await;
     }
     None => {
       warn!(

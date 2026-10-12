@@ -129,6 +129,10 @@ async fn forward_track_status_upstream(
   let response = match upstream.next_message().await {
     Ok(m @ ControlMessage::RequestOk(_)) => m,
     Ok(m @ ControlMessage::RequestError(_)) => m,
+    Ok(ControlMessage::RequestUpdate(_)) => {
+      super::close_on_unexpected_request_update(&publisher, "TRACK_STATUS");
+      return;
+    }
     Ok(other) => {
       warn!(
         "Unexpected {:?} on upstream track-status stream",

@@ -41,6 +41,20 @@ use super::utils;
 
 pub struct MessageHandler {}
 
+/// Closes the session of a publisher that sent REQUEST_UPDATE on a request stream the
+/// relay opened to it. Only the sender of a request may update it, and on these
+/// streams that is the relay.
+pub(crate) fn close_on_unexpected_request_update(publisher: &MOQTClient, request: &str) {
+  warn!(
+    "REQUEST_UPDATE from publisher {} on an upstream {} stream; closing its session",
+    publisher.connection_id, request
+  );
+  publisher.connection.close(
+    TerminationCode::ProtocolViolation.to_u32(),
+    b"Unexpected REQUEST_UPDATE on request bi-stream",
+  );
+}
+
 impl MessageHandler {
   pub async fn handle(
     client: Arc<MOQTClient>,

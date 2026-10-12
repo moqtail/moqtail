@@ -26,11 +26,9 @@ import {
 import { TrackProperty } from '../property/track_property'
 
 import { Location } from '../common/location'
-import { GroupOrder } from './constant'
 import { ObjectDeliveryTimeoutProperty } from '../property/track_property'
 import { Expires } from '../parameter/message/expires'
 import { LargestObject } from '../parameter/message/largest_object'
-import { GroupOrderParam } from '../parameter/message/group_order_param'
 import { ObjectDeliveryTimeout } from '../parameter/message/object_delivery_timeout'
 
 /**
@@ -96,12 +94,7 @@ if (import.meta.vitest) {
     test('roundtrip', () => {
       const trackAlias = 999n
       const largestLocation = new Location(34n, 0n)
-      const parameters = [
-        new Expires(16n),
-        new GroupOrderParam(GroupOrder.Ascending),
-        new LargestObject(largestLocation),
-        new ObjectDeliveryTimeout(100n),
-      ]
+      const parameters = [new Expires(16n), new LargestObject(largestLocation), new ObjectDeliveryTimeout(100n)]
       const subscribeOk = SubscribeOk.create(trackAlias, parameters)
       const frozen = subscribeOk.serialize()
       const msgType = frozen.getVI()
@@ -110,7 +103,7 @@ if (import.meta.vitest) {
       expect(msgLength).toBe(frozen.remaining)
       const deserialized = SubscribeOk.parsePayload(frozen)
       expect(deserialized.trackAlias).toBe(subscribeOk.trackAlias)
-      expect(deserialized.parameters.length).toBe(4)
+      expect(deserialized.parameters.length).toBe(parameters.length)
       expect(deserialized.trackProperties.length).toBe(0)
       expect(frozen.remaining).toBe(0)
     })

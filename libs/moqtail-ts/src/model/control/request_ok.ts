@@ -16,7 +16,7 @@
 
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
 
-import { ControlMessageType, FilterType, GroupOrder } from './constant'
+import { ControlMessageType, FilterType } from './constant'
 import { CastingError, LengthExceedsMaxError, ProtocolViolationError } from '../error/error'
 import {
   MessageParameter,
@@ -28,7 +28,6 @@ import { TrackProperty, ObjectDeliveryTimeoutProperty, MaxCacheDurationProperty 
 import { Location } from '../common/location'
 import { Forward } from '../parameter/message/forward'
 import { SubscriberPriority } from '../parameter/message/subscriber_priority'
-import { GroupOrderParam } from '../parameter/message/group_order_param'
 import { SubscriptionFilter } from '../parameter/message/subscription_filter'
 import { ObjectDeliveryTimeout } from '../parameter/message/object_delivery_timeout'
 
@@ -155,7 +154,6 @@ if (import.meta.vitest) {
       const parameters: MessageParameter[] = [
         new Forward(true),
         new SubscriberPriority(100),
-        new GroupOrderParam(GroupOrder.Ascending),
         new SubscriptionFilter(FilterType.LatestObject, undefined, undefined),
       ]
       const msg = new RequestOk(parameters)

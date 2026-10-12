@@ -81,9 +81,20 @@ pub fn downstream_subscribe_ok(
 /// The relay's PUBLISH to a subscriber, given the upstream PUBLISH being passed on and
 /// the SUBSCRIBE_TRACKS that asked for it.
 ///
-/// FORWARD comes from that SUBSCRIBE_TRACKS, not from the publisher: a subscriber that
-/// asked for tracks without forwarding must be offered them the same way. Absent or 1
-/// there means forwarding, so only an explicit 0 turns it off.
+/// The subscription this PUBLISH opens is built from its parameters, so each one says
+/// how this subscriber will be served, not what the publisher upstream asked for:
+///
+/// - FORWARD comes from the SUBSCRIBE_TRACKS, never the publisher. Absent or 1 there
+///   means forwarding, so only an explicit 0 turns it off. Always stated.
+/// - GROUP_ORDER comes from the SUBSCRIBE_TRACKS when it has one, else the publisher's
+///   is passed on; with neither it is omitted.
+/// - LARGEST_OBJECT is the larger of what the publisher reported and what the relay has
+///   since seen, omitted when there is neither — an absent parameter means no Objects,
+///   where `{0,0}` would claim one.
+///
+/// Nothing else crosses the hop. AUTHORIZATION_TOKEN was addressed to the relay, and
+/// EXPIRES is the publisher's promise about when it ends the subscription, which the
+/// relay does not make on its own behalf.
 pub fn downstream_publish(
   upstream: &[MessageParameter],
   subscribe_tracks: &[MessageParameter],
@@ -95,6 +106,11 @@ pub fn downstream_publish(
   );
 
   let mut params = vec![MessageParameter::new_forward(forward)];
+  if let Some(order) = find(subscribe_tracks, MessageParameterType::GroupOrder)
+    .or_else(|| find(upstream, MessageParameterType::GroupOrder))
+  {
+    params.push(order.clone());
+  }
   if let Some(largest) = largest_object(upstream, observed) {
     params.push(MessageParameter::new_largest_object(largest));
   }
@@ -265,6 +281,32 @@ mod tests {
     assert!(
       off
         .get_param(MessageParameterType::AuthorizationToken)
+        .is_none()
+    );
+  }
+
+  #[test]
+  fn a_pushed_publish_takes_group_order_from_subscribe_tracks_else_the_publisher() {
+    let upstream = vec![MessageParameter::new_group_order(GroupOrder::Ascending)];
+    let descending = MessageParameter::new_group_order(GroupOrder::Descending);
+
+    let asked = downstream_publish(&upstream, std::slice::from_ref(&descending), None);
+    assert_eq!(
+      asked.get_param(MessageParameterType::GroupOrder),
+      Some(&descending)
+    );
+
+    let unasked = downstream_publish(&upstream, &[], None);
+    assert_eq!(
+      unasked.get_param(MessageParameterType::GroupOrder),
+      Some(&MessageParameter::new_group_order(GroupOrder::Ascending))
+    );
+
+    // Neither side stated one: the PUBLISH says nothing either.
+    let neither = downstream_publish(&[], &[], None);
+    assert!(
+      neither
+        .get_param(MessageParameterType::GroupOrder)
         .is_none()
     );
   }

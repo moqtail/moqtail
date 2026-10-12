@@ -468,14 +468,12 @@ mod tests {
   }
 
   fn create_test_subscribe_ok() -> SubscribeOk {
-    use crate::model::control::constant::GroupOrder;
     use crate::model::parameter::message_parameter::MessageParameter;
     use crate::model::property::track_property::TrackProperty;
     let mut subscribe_ok = SubscribeOk::new(
       999,
       vec![
         MessageParameter::new_expires(16),
-        MessageParameter::new_group_order(GroupOrder::Ascending),
         MessageParameter::new_largest_object(Location {
           group: 34,
           object: 0,

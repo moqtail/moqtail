@@ -261,12 +261,9 @@ impl MessageParameter {
       Self::GroupOrder { .. } => matches!(
         msg_type,
         ControlMessageType::Subscribe
-          | ControlMessageType::PublishOk
+          | ControlMessageType::SubscribeTracks
           | ControlMessageType::Fetch
-          | ControlMessageType::SubscribeOk
-          | ControlMessageType::FetchOk
           | ControlMessageType::Publish
-          | ControlMessageType::RequestOk
       ),
       Self::SubscriptionFilter { .. } => matches!(
         msg_type,
@@ -1487,6 +1484,30 @@ mod tests {
     assert!(timeout.is_valid_for(ControlMessageType::Subscribe));
     assert!(timeout.is_valid_for(ControlMessageType::PublishOk));
     assert!(!timeout.is_valid_for(ControlMessageType::Fetch));
+  }
+
+  #[test]
+  fn group_order_is_only_asked_for_never_answered() {
+    // The order is the requester's to state, in the message that asks for the
+    // Objects. A response has nothing to add: the subscriber already chose, and
+    // an omitted order already means the publisher's own.
+    let order = MessageParameter::new_group_order(GroupOrder::Descending);
+    for msg_type in [
+      ControlMessageType::Subscribe,
+      ControlMessageType::SubscribeTracks,
+      ControlMessageType::Publish,
+      ControlMessageType::Fetch,
+    ] {
+      assert!(order.is_valid_for(msg_type), "{msg_type:?} allows it");
+    }
+    for msg_type in [
+      ControlMessageType::PublishOk,
+      ControlMessageType::RequestOk,
+      ControlMessageType::SubscribeOk,
+      ControlMessageType::FetchOk,
+    ] {
+      assert!(!order.is_valid_for(msg_type), "{msg_type:?} must not");
+    }
   }
 
   #[test]

@@ -148,7 +148,8 @@ mod tests {
   }
 
   #[test]
-  fn test_roundtrip_with_group_order_param() {
+  fn test_group_order_param_is_rejected() {
+    // The order a FETCH is served in is the one the FETCH asked for.
     let fetch_ok = FetchOk {
       end_of_track: true,
       end_location: Location {
@@ -159,13 +160,9 @@ mod tests {
       track_properties: vec![],
     };
     let mut buf = fetch_ok.serialize().unwrap();
-    let msg_type = buf.get_vi().unwrap();
-    assert_eq!(msg_type, ControlMessageType::FetchOk as u64);
-    let msg_length = buf.get_u16();
-    assert_eq!(msg_length as usize, buf.remaining());
-    let deserialized = FetchOk::parse_payload(&mut buf).unwrap();
-    assert_eq!(*deserialized, fetch_ok);
-    assert!(!buf.has_remaining());
+    buf.get_vi().unwrap();
+    buf.get_u16();
+    assert!(FetchOk::parse_payload(&mut buf).is_err());
   }
 
   #[test]

@@ -30,6 +30,8 @@
       "value": "0x34",
       "spec": "Section 12.3",
       "notes": "Used by GOAWAY-driven request migration."
-    }
+    },
+    { "name": "CONFLICTING_FILTERS", "value": "0x35", "spec": "Section 12.3" },
+    { "name": "INVALID_FILTER", "value": "0x36", "spec": "Section 12.3" }
   ]
 }

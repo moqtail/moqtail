@@ -113,6 +113,36 @@
         "spec": "Section 9.20.8"
       },
       {
+        "name": "FILL_PARAMETERS",
+        "value": "0x23",
+        "spec": "Section 9.20.15"
+      },
+      {
+        "name": "SUBGROUP_FILTER",
+        "value": "0x25",
+        "spec": "Section 9.20.10"
+      },
+      {
+        "name": "OBJECTID_FILTER",
+        "value": "0x26",
+        "spec": "Section 9.20.11"
+      },
+      {
+        "name": "PRIORITY_FILTER",
+        "value": "0x27",
+        "spec": "Section 9.20.12"
+      },
+      {
+        "name": "OBJECT_PROPERTY_FILTER",
+        "value": "0x28",
+        "spec": "Section 9.20.13"
+      },
+      {
+        "name": "TRACK_PROPERTY_FILTER",
+        "value": "0x29",
+        "spec": "Section 9.20.14"
+      },
+      {
         "name": "NEW_GROUP_REQUEST",
         "value": "0x32",
         "spec": "Section 9.20.19"

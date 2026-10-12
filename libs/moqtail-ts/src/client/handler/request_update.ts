@@ -33,6 +33,7 @@ import { FetchPublication } from '../publication/fetch'
 import { PublishPublication } from '../publication/publish'
 import { SubscribePublication } from '../publication/subscribe'
 import { logger } from '../../util/logger'
+import { rangeFilterRejection } from '../util/validators'
 
 /**
  * A REQUEST_UPDATE modifies the request whose stream it arrived on, and §10.9 requires
@@ -55,6 +56,12 @@ export const handlerRequestUpdate: RequestStreamMessageHandler<RequestUpdate> = 
         `Unexpected REQUEST_UPDATE on a ${stream.first ? 'locally' : 'peer'} opened ${describe(stream.openingType)} stream`,
       ),
     )
+    return
+  }
+
+  if (rangeFilterRejection(msg.parameters)) {
+    logger.warn('handler/request_update', `requestId=${requestId} carries range filters this client does not allow`)
+    await failUpdate(client, stream, requestId, RequestErrorCode.InvalidFilter, 'Range filters are not supported')
     return
   }
 

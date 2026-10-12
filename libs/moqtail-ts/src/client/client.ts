@@ -2462,6 +2462,7 @@ if (import.meta.vitest) {
   const { FetchHeaderType, ObjectForwardingPreference, SubgroupHeaderType } = await import('../model/data/constant')
   const { SubgroupObject } = await import('../model/data/subgroup_object')
   const { ByteBuffer } = await import('../model/common/byte_buffer')
+  const { RangeFilter, RangeFilterKind, encodeRanges } = await import('../model/parameter/message/range_filter')
 
   /** One bidirectional stream: what the client wrote, and a way to answer on it. */
   class MockBidiStream {
@@ -3206,6 +3207,20 @@ if (import.meta.vitest) {
         expect(written).toBe(1 + 2)
         await client.disconnect()
       })
+    })
+
+    it('refuses a SUBSCRIBE carrying a range filter with INVALID_FILTER', async () => {
+      // This client advertises no MAX_FILTER_RANGES, so the peer may send none.
+      const { client, transport } = await connected()
+
+      const incoming = transport.openIncomingBiStream()
+      const filter = new RangeFilter(RangeFilterKind.ObjectId, 0, undefined, encodeRanges([{ start: 0n, end: 0n }]))
+      incoming.respond(new Subscribe(4n, ftn, [filter]))
+      await vi.waitFor(() => expect(incoming.messages).toHaveLength(1))
+      expect((incoming.messages[0] as RequestError).errorCode).toBe(RequestErrorCode.InvalidFilter)
+      expect(client.publications.has(4n)).toBe(false)
+
+      await client.disconnect()
     })
 
     it('ends a subscription whose REQUEST_UPDATE fails with PUBLISH_DONE(UPDATE_FAILED)', async () => {

@@ -248,6 +248,7 @@ impl MessageParameter {
       Self::LocationFilter { .. } => matches!(
         msg_type,
         ControlMessageType::Subscribe
+          | ControlMessageType::Publish
           | ControlMessageType::PublishOk
           | ControlMessageType::RequestOk
           | ControlMessageType::RequestUpdate
@@ -302,9 +303,10 @@ impl MessageParameter {
     }
   }
 
+  /// Encodes this parameter as it appears on the wire on its own: its Type, then
+  /// its Value in the encoding the Type defines.
   pub fn serialize(&self) -> Result<Bytes, ParseError> {
-    let kvp: KeyValuePair = self.clone().try_into()?;
-    kvp.serialize()
+    serialize_message_parameters(std::slice::from_ref(self))
   }
 
   /// Deserializes a single MessageParameter from a KeyValuePair.
@@ -893,9 +895,9 @@ mod tests {
   use bytes::{Buf, BytesMut};
 
   fn roundtrip(param: MessageParameter) -> MessageParameter {
-    let serialized = param.serialize().unwrap();
-    let mut bytes = serialized;
-    let kvp = KeyValuePair::deserialize(&mut bytes).unwrap();
+    let mut bytes = param.serialize().unwrap();
+    let type_value = bytes.get_vi().unwrap();
+    let kvp = read_message_parameter_value(&mut bytes, type_value).unwrap();
     let result = MessageParameter::deserialize(&kvp).unwrap();
     assert_eq!(bytes.remaining(), 0);
     result
@@ -1156,6 +1158,36 @@ mod tests {
     // Absolute Start needs StartGroup and StartObject; only one follows.
     let mut buf = Bytes::from_static(&[0x21, 0x02, 0x05]);
     assert!(deserialize_message_parameters(&mut buf, 1, ControlMessageType::Subscribe).is_err());
+  }
+
+  #[test]
+  fn test_a_single_parameter_serializes_in_its_wire_encoding() {
+    // Not the generic key-value encoding, which would length-prefix the filter
+    // and write the priority as a two-byte varint.
+    assert_eq!(
+      MessageParameter::new_location_filter(LocationFilter::NextObject)
+        .serialize()
+        .unwrap()
+        .as_ref(),
+      &[0x21, 0x05]
+    );
+    assert_eq!(
+      MessageParameter::new_subscriber_priority(128)
+        .serialize()
+        .unwrap()
+        .as_ref(),
+      &[0x20, 0x80]
+    );
+  }
+
+  #[test]
+  fn test_location_filter_may_ride_a_publish() {
+    wire_roundtrip(
+      &[MessageParameter::new_location_filter(
+        LocationFilter::NextObject,
+      )],
+      ControlMessageType::Publish,
+    );
   }
 
   #[test]

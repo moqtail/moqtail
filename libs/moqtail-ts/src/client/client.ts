@@ -3082,6 +3082,90 @@ if (import.meta.vitest) {
       await client.disconnect()
     })
 
+    describe('stops at the end of the Location Filter without ending the subscription', () => {
+      async function serve(filter: LocationFilter, groups: number, objectsPerGroup: number) {
+        const { client, transport } = await connected()
+        let source!: ReadableStreamDefaultController<MoqtObject>
+        client.addOrUpdateTrack({
+          fullTrackName: ftn,
+          trackSource: {
+            live: new LiveTrackSource(new ReadableStream<MoqtObject>({ start: (c) => (source = c) })),
+          },
+          publisherPriority: 0,
+          trackAlias: 7n,
+        })
+        const incoming = transport.openIncomingBiStream()
+        incoming.respond(new Subscribe(4n, ftn, [filter]))
+        await vi.waitFor(() => expect(incoming.messages).toHaveLength(1))
+
+        const before = transport.sentChunks.length
+        const streamsBefore = transport.uniStreamOptions.length
+        for (let g = 0n; g < BigInt(groups); g++) {
+          for (let o = 0n; o < BigInt(objectsPerGroup); o++) {
+            source.enqueue(
+              MoqtObject.newWithPayload(
+                ftn,
+                new Location(g, o),
+                0,
+                ObjectForwardingPreference.Subgroup,
+                0,
+                null,
+                new Uint8Array([1]),
+              ),
+            )
+          }
+        }
+        await new Promise((resolve) => setTimeout(resolve, 20))
+        return {
+          client,
+          incoming,
+          opened: transport.uniStreamOptions.length - streamsBefore,
+          written: transport.sentChunks.length - before,
+        }
+      }
+
+      it('delivers the whole of a Group End and nothing after it', async () => {
+        const { client, incoming, opened, written } = await serve(
+          new LocationFilter(LocationFilterType.AbsoluteStartGroupEnd, 1n, 0n, 2n),
+          4,
+          3,
+        )
+        // Groups 1 and 2: a stream each, and all three objects of both.
+        expect(opened).toBe(2)
+        expect(written).toBe(2 + 6)
+        // No PUBLISH_DONE: the subscription outlives its filter.
+        expect(incoming.messages).toHaveLength(1)
+        expect((client.publications.get(4n) as SubscribePublication | undefined)?.latestLocation).toEqual(
+          new Location(2n, 2n),
+        )
+        await client.disconnect()
+      })
+
+      it('stops after the End Object of an Absolute Range', async () => {
+        const { client, incoming, opened, written } = await serve(
+          new LocationFilter(LocationFilterType.AbsoluteRange, 0n, 0n, 1n, 1n),
+          3,
+          3,
+        )
+        expect(opened).toBe(2)
+        // 0/0..0/2 and 1/0..1/1.
+        expect(written).toBe(2 + 5)
+        expect(incoming.messages).toHaveLength(1)
+        await client.disconnect()
+      })
+
+      it('treats an end in group 0 as an end', async () => {
+        const { client, opened, written } = await serve(
+          new LocationFilter(LocationFilterType.AbsoluteStartGroupEnd, 0n, 0n, 0n),
+          3,
+          2,
+        )
+        expect(opened).toBe(1)
+        expect(written).toBe(1 + 2)
+        await client.disconnect()
+      })
+    })
+
     it('ends a subscription whose REQUEST_UPDATE fails with PUBLISH_DONE(UPDATE_FAILED)', async () => {
       const { client, transport } = await connected()
 

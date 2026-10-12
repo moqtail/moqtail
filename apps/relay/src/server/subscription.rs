@@ -88,8 +88,8 @@ pub struct SubscriptionState {
   pub location_filter: LocationFilter,
   /// Where `location_filter` starts, once resolved against the track.
   pub start_location: Option<Location>,
-  /// The last group delivered, 0 for none.
-  pub end_group: u64,
+  /// The last group delivered, `None` when open-ended.
+  pub end_group: Option<u64>,
   /// The last Object of `end_group` delivered, `None` for the whole group.
   pub end_object: Option<u64>,
   /// Set on a subscription a soft switch is draining: it keeps delivering up to
@@ -174,7 +174,7 @@ impl SubscriptionState {
   pub fn set_location_filter(&mut self, filter: LocationFilter, largest: Option<Location>) {
     self.start_location = filter.start_location(largest);
     let end = filter.end_location();
-    self.end_group = end.as_ref().map_or(0, |end| end.group);
+    self.end_group = end.as_ref().map(|end| end.group);
     self.end_object = end
       .map(|end| end.object)
       .filter(|object| *object != u64::MAX);
@@ -183,12 +183,13 @@ impl SubscriptionState {
 
   /// Whether `location` lies beyond where this subscription stops delivering.
   pub fn is_past_end(&self, location: &Location) -> bool {
-    self.end_group > 0
-      && (location.group > self.end_group
-        || (location.group == self.end_group
+    self.end_group.is_some_and(|end_group| {
+      location.group > end_group
+        || (location.group == end_group
           && self
             .end_object
-            .is_some_and(|object| location.object > object)))
+            .is_some_and(|object| location.object > object))
+    })
   }
 
   pub fn update_last_received_object_location(&mut self, location: Location) {
@@ -254,7 +255,7 @@ impl From<SubscriptionOrigin> for SubscriptionState {
           forward,
           location_filter: LocationFilter::None,
           start_location: None,
-          end_group: 0,
+          end_group: None,
           end_object: None,
           soft_suspended: false,
           publish_done_at_end: false,
@@ -314,7 +315,7 @@ impl From<SubscriptionOrigin> for SubscriptionState {
           forward,
           location_filter: LocationFilter::None,
           start_location: None,
-          end_group: 0,
+          end_group: None,
           end_object: None,
           soft_suspended: false,
           publish_done_at_end: false,
@@ -872,19 +873,19 @@ impl Subscription {
     // A switch can only bring the end forward: a subscription that already asked
     // to stop earlier still stops there.
     let end_group = match state.end_group {
-      0 => boundary - 1,
-      existing => existing.min(boundary - 1),
+      None => boundary - 1,
+      Some(existing) => existing.min(boundary - 1),
     };
     // An End Object belongs to the group the filter named, not to an earlier one.
-    if end_group != state.end_group {
+    if Some(end_group) != state.end_group {
       state.end_object = None;
     }
-    state.end_group = end_group;
+    state.end_group = Some(end_group);
     state.publish_done_at_end = plan.publish_done;
     state.switch_activated = Some(plan.activated.clone());
     info!(
       "switch: draining {:?} for subscriber {} up to group {}",
-      plan.suspending, self.client_connection_id, state.end_group
+      plan.suspending, self.client_connection_id, end_group
     );
   }
 
@@ -1250,7 +1251,7 @@ impl Subscription {
           // && !state.awaiting_switch_activation()
           {
             trace!(
-              "Object beyond end group for subscriber={} relay_track_id={} object location: {:?} end group: {}",
+              "Object beyond end group for subscriber={} relay_track_id={} object location: {:?} end group: {:?}",
               self.client_connection_id, self.relay_track_id, object.location, state.end_group
             );
             let drained = state.soft_suspended;
@@ -1333,7 +1334,7 @@ impl Subscription {
             {
               let suspending = suspending.read().await;
               let mut state = suspending.subscription_state.write().await;
-              state.end_group = takeover - 1;
+              state.end_group = Some(takeover - 1);
               state.end_object = None;
             }
 
@@ -1532,7 +1533,7 @@ impl Subscription {
 
           if state.is_past_end(&location) && !state.awaiting_switch_activation() {
             trace!(
-              "Datagram beyond end group for subscriber={} relay_track_id={} object location: {:?} end group: {}",
+              "Datagram beyond end group for subscriber={} relay_track_id={} object location: {:?} end group: {:?}",
               self.client_connection_id, self.relay_track_id, location, state.end_group
             );
             return;
@@ -1910,7 +1911,7 @@ mod tests {
     let mut state = SubscriptionState {
       location_filter: LocationFilter::None,
       start_location: None,
-      end_group: 0,
+      end_group: None,
       end_object: None,
       forward: true,
       subscriber_priority: DEFAULT_PUBLISHER_PRIORITY,
@@ -2032,6 +2033,21 @@ mod tests {
     assert!(!state.is_past_end(&Location::new(4, 6)));
     assert!(state.is_past_end(&Location::new(4, 7)));
     assert!(state.is_past_end(&Location::new(5, 0)));
+  }
+
+  #[test]
+  fn a_filter_can_end_in_group_zero() {
+    let mut state = sent(&[]);
+    state.set_location_filter(
+      LocationFilter::AbsoluteRange {
+        start: Location::new(0, 0),
+        end: Location::new(0, 5),
+      },
+      None,
+    );
+    assert!(!state.is_past_end(&Location::new(0, 5)));
+    assert!(state.is_past_end(&Location::new(0, 6)));
+    assert!(state.is_past_end(&Location::new(1, 0)));
   }
 
   #[test]

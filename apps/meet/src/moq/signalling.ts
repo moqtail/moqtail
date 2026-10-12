@@ -21,7 +21,8 @@ import {
   MoqtObject,
   Location,
   ObjectForwardingPreference,
-  FilterType,
+  LocationFilter,
+  LocationFilterType,
   GroupOrder,
   RequestError,
 } from 'moqtail/model';
@@ -122,7 +123,7 @@ export async function setupSignalling(
   const subResponse = await moqClient.subscribe({
     fullTrackName: signalFTN,
     groupOrder: GroupOrder.Original,
-    filterType: FilterType.LatestObject,
+    locationFilter: new LocationFilter(LocationFilterType.NextObject),
     forward: true,
     priority: 1,
   });

@@ -17,7 +17,7 @@
 import {
   FullTrackName,
   GroupOrder,
-  FilterType,
+  LocationFilter,
   MessageParameter,
   Location,
   SetupOptions,
@@ -167,26 +167,34 @@ export type MOQtailClientOptions = {
 /**
  * Parameters for {@link MOQtailClient.subscribe | subscribing} to a track's live objects.
  *
- * @example Latest object
+ * @example From the next object
  * ```ts
  * await client.subscribe({
  *   fullTrackName,
  *   priority: 0,
  *   groupOrder: GroupOrder.Original,
  *   forward: true,
- *   filterType: FilterType.LatestObject
+ *   locationFilter: new LocationFilter(LocationFilterType.NextObject)
  * })
  * ```
- * @example Absolute range
+ * @example Groups 100 through 120
  * ```ts
  * await client.subscribe({
  *   fullTrackName,
  *   priority: 32,
  *   groupOrder: GroupOrder.Original,
  *   forward: true,
- *   filterType: FilterType.AbsoluteRangeFill,
- *   startLocation: { group: 100n, subgroup: 0n, object: 0n },
- *   endGroup: 120n
+ *   locationFilter: new LocationFilter(LocationFilterType.AbsoluteStartGroupEnd, 100n, 0n, 120n)
+ * })
+ * ```
+ * @example From the next object, filling the current group from its start
+ * ```ts
+ * await client.subscribe({
+ *   fullTrackName,
+ *   priority: 0,
+ *   groupOrder: GroupOrder.Original,
+ *   locationFilter: new LocationFilter(LocationFilterType.NextObject),
+ *   parameters: [new FillParameters([new LocationFilter(LocationFilterType.RelativeStart, 1n)])]
  * })
  * ```
  */
@@ -199,31 +207,25 @@ export type SubscribeOptions = {
   groupOrder: GroupOrder
   /** If present, forward parameter (0x10) is sent with the provided value */
   forward?: boolean
-  /** {@link FilterType} variant controlling starting subset (e.g. {@link FilterType.LatestObject}). */
-  filterType: FilterType
-  /** Optional extension parameters appended to the SUBSCRIBE control message. */
+  /** The {@link LocationFilter} selecting which Objects to deliver. Omitted, the subscription is unfiltered. */
+  locationFilter?: LocationFilter
+  /**
+   * Optional extension parameters appended to the SUBSCRIBE control message. A
+   * FILL_PARAMETERS here also retrieves already-published Objects on a fill fetch stream.
+   */
   parameters?: MessageParameter[]
-  /** Required for {@link FilterType.AbsoluteStartFill} / {@link FilterType.AbsoluteRangeFill}; earliest {@link Location} to include. */
-  startLocation?: Location
-  /** Required for {@link FilterType.AbsoluteRangeFill}; exclusive upper group boundary (coerced to bigint if number provided). */
-  endGroup?: bigint | number
-  /** Required for {@link FilterType.RelativeStartFill}; how many groups back from the Largest Object to start. */
-  relativePrevious?: bigint | number
   /** Per-subscription early discard policy. Overrides the client-level default set via {@link MOQtailClient.setEarlyDiscardPolicy}. */
   earlyDiscardPolicy?: EarlyDiscardPolicyConfig
 }
 
 /**
- * Narrowing update constraints applied to an existing SUBSCRIBE via {@link MOQtailClient.subscribeUpdate}.
+ * Changes applied to an existing SUBSCRIBE via {@link MOQtailClient.subscribeUpdate}.
  *
- * Rules: start can only move forward (increase) and endGroup can only move backward (decrease) narrowing the window.
- *
- * @example Narrowing a live window
+ * @example Narrowing a live window to groups 200 through 210
  * ```ts
  * await client.subscribeUpdate({
- *   requestId,
- *   startLocation: { group: 200n, subgroup: 0n, object: 0n },
- *   endGroup: 210n,
+ *   subscriptionRequestId,
+ *   locationFilter: new LocationFilter(LocationFilterType.AbsoluteStartGroupEnd, 200n, 0n, 210n),
  *   priority: 16,
  *   forward: true
  * })
@@ -232,10 +234,8 @@ export type SubscribeOptions = {
 export type SubscribeUpdateOptions = {
   /** The original SUBSCRIBE request id (bigint) being updated. */
   subscriptionRequestId: bigint
-  /** New narrowed {@link Location} start. */
-  startLocation: Location
-  /** New narrowed end group (inclusive / protocol defined) must be \> start group. */
-  endGroup: bigint
+  /** The new {@link LocationFilter}. Omitted, the subscription keeps its own. */
+  locationFilter?: LocationFilter
   /** Updated subscriber priority (same constraints as initial subscribe). 0 is highest, 255 is lowest. */
   priority: number
   /** Updated direction flag. */
@@ -257,7 +257,7 @@ export type SubscribeUpdateOptions = {
  *     priority: 0,
  *     groupOrder: GroupOrder.Original,
  *     forward: true,
- *     filterType: FilterType.LatestObject
+ *     locationFilter: new LocationFilter(LocationFilterType.NextObject)
  *   }
  * })
  * ```
@@ -294,7 +294,7 @@ export type SwitchOptions = {
  *   priority: 0,
  *   groupOrder: GroupOrder.Original,
  *   forward: true,
- *   filterType: FilterType.LatestObject
+ *   locationFilter: new LocationFilter(LocationFilterType.NextObject)
  * })
  * const fetchRes = await client.fetch({
  *   priority: 32,

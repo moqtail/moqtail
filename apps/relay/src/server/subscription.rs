@@ -27,7 +27,6 @@ use anyhow::Result;
 use bytes::Bytes;
 use moqtail::model::common::location::Location;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
-use moqtail::model::control::constant::FilterType;
 use moqtail::model::control::constant::GroupOrder;
 use moqtail::model::control::constant::PublishDoneStatusCode;
 use moqtail::model::control::constant::SwitchMode;
@@ -39,6 +38,7 @@ use moqtail::model::control::subscribe::Subscribe;
 use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::model::data::object::Object;
 use moqtail::model::error::StreamResetCode;
+use moqtail::model::parameter::location_filter::LocationFilter;
 use moqtail::model::parameter::message_parameter::{
   MessageParameter, apply_message_parameter_update,
 };
@@ -85,11 +85,13 @@ pub struct SubscriptionState {
   pub subscriber_priority: u8,
   pub group_order: GroupOrder,
   pub forward: bool,
-  pub filter_type: FilterType,
+  pub location_filter: LocationFilter,
+  /// Where `location_filter` starts, once resolved against the track.
   pub start_location: Option<Location>,
+  /// The last group delivered, 0 for none.
   pub end_group: u64,
-  /// How many groups back from the Largest Object a RelativeStartFill starts.
-  pub relative_previous: Option<u64>,
+  /// The last Object of `end_group` delivered, `None` for the whole group.
+  pub end_object: Option<u64>,
   /// Set on a subscription a soft switch is draining: it keeps delivering up to
   /// `end_group` rather than stopping where it stands.
   pub soft_suspended: bool,
@@ -168,6 +170,27 @@ impl SubscriptionState {
       .is_some_and(|activation| !activation.is_set())
   }
 
+  /// Adopts `filter`, resolving where it starts against `largest`.
+  pub fn set_location_filter(&mut self, filter: LocationFilter, largest: Option<Location>) {
+    self.start_location = filter.start_location(largest);
+    let end = filter.end_location();
+    self.end_group = end.as_ref().map_or(0, |end| end.group);
+    self.end_object = end
+      .map(|end| end.object)
+      .filter(|object| *object != u64::MAX);
+    self.location_filter = filter;
+  }
+
+  /// Whether `location` lies beyond where this subscription stops delivering.
+  pub fn is_past_end(&self, location: &Location) -> bool {
+    self.end_group > 0
+      && (location.group > self.end_group
+        || (location.group == self.end_group
+          && self
+            .end_object
+            .is_some_and(|object| location.object > object)))
+  }
+
   pub fn update_last_received_object_location(&mut self, location: Location) {
     match &self.last_received_object_location {
       Some(current_max) => {
@@ -225,46 +248,28 @@ impl From<SubscriptionOrigin> for SubscriptionState {
           })
           .unwrap_or(true);
 
-        let (filter_type, start_location, end_group, relative_previous) = subscribe
-          .subscribe_parameters
-          .iter()
-          .find_map(|p| {
-            if let MessageParameter::SubscriptionFilter {
-              filter_type,
-              start_location,
-              end_group,
-              relative_previous,
-            } = p
-            {
-              Some((
-                *filter_type,
-                start_location.clone(),
-                end_group.unwrap_or(0),
-                *relative_previous,
-              ))
-            } else {
-              None
-            }
-          })
-          .unwrap_or((FilterType::LatestObject, None, 0, None));
-
-        Self {
+        let mut state = Self {
           subscriber_priority,
           group_order,
           forward,
-          filter_type,
-          start_location,
-          end_group,
-          relative_previous,
+          location_filter: LocationFilter::None,
+          start_location: None,
+          end_group: 0,
+          end_object: None,
           soft_suspended: false,
           publish_done_at_end: false,
           switch_activated: None,
-          subscribe_parameters: subscribe.subscribe_parameters,
+          subscribe_parameters: Vec::new(),
           last_sent_max_location: None,
           prior_sent_group: None,
           last_received_object_location: None,
           prior_received_group: None,
-        }
+        };
+        // An omitted filter is no filter. A relative one is resolved against the
+        // track once its Largest Object is known; see `resolve_live_start`.
+        state.set_location_filter(location_filter_of(&subscribe.subscribe_parameters), None);
+        state.subscribe_parameters = subscribe.subscribe_parameters;
+        state
       }
       SubscriptionOrigin::Publish(publish) => {
         let subscriber_priority = publish
@@ -303,46 +308,28 @@ impl From<SubscriptionOrigin> for SubscriptionState {
           })
           .unwrap_or(true);
 
-        let (filter_type, start_location, end_group, relative_previous) = publish
-          .parameters
-          .iter()
-          .find_map(|p| {
-            if let MessageParameter::SubscriptionFilter {
-              filter_type,
-              start_location,
-              end_group,
-              relative_previous,
-            } = p
-            {
-              Some((
-                *filter_type,
-                start_location.clone(),
-                end_group.unwrap_or(0),
-                *relative_previous,
-              ))
-            } else {
-              None
-            }
-          })
-          .unwrap_or((FilterType::LatestObject, None, 0, None));
-
-        Self {
+        let mut state = Self {
           subscriber_priority,
           group_order,
           forward,
-          filter_type,
-          start_location,
-          end_group,
-          relative_previous,
+          location_filter: LocationFilter::None,
+          start_location: None,
+          end_group: 0,
+          end_object: None,
           soft_suspended: false,
           publish_done_at_end: false,
           switch_activated: None,
-          subscribe_parameters: publish.parameters,
+          subscribe_parameters: Vec::new(),
           last_sent_max_location: None,
           prior_sent_group: None,
           last_received_object_location: None,
           prior_received_group: None,
-        }
+        };
+        // An omitted filter is no filter. A relative one is resolved against the
+        // track once its Largest Object is known; see `resolve_live_start`.
+        state.set_location_filter(location_filter_of(&publish.parameters), None);
+        state.subscribe_parameters = publish.parameters;
+        state
       }
     }
   }
@@ -366,29 +353,37 @@ fn takeover_group(resume_group: u64, covered_to: u64, resume_gap: u64) -> u64 {
   }
 }
 
-/// The Start Location a subscription filter resolves to, or `None` where the
-/// filter carries its own and keeps it.
+/// The Location Filter in `params`, or no filter when it carries none.
+pub(crate) fn location_filter_of(params: &[MessageParameter]) -> LocationFilter {
+  params
+    .iter()
+    .find_map(|p| match p {
+      MessageParameter::LocationFilter { filter } => Some(filter.clone()),
+      _ => None,
+    })
+    .unwrap_or(LocationFilter::None)
+}
+
+/// The Start Location a live filter resolves to, or `None` where the filter
+/// carries its own start, or has none, and keeps it.
 ///
-/// The two live filters are stated relative to what the track has published
-/// already: Latest Object starts at the Object after the largest, Next Group
-/// Start at the group after it. A track that has published nothing starts at
-/// `{0,0}` either way, which delivers whatever comes next.
+/// The live filters are stated relative to what the track has published
+/// already: Next Object starts at the Object after the largest, Relative Start
+/// some number of groups back from the group after it. A track that has
+/// published nothing starts at `{0,0}` either way, which delivers whatever comes
+/// next.
 pub(crate) fn live_start_location(
-  filter_type: FilterType,
+  filter: &LocationFilter,
   largest: Option<Location>,
 ) -> Option<Location> {
-  match filter_type {
-    FilterType::LatestObject => Some(match largest {
-      Some(largest) => Location::new(largest.group, largest.object + 1),
-      None => Location::new(0, 0),
-    }),
-    FilterType::NextGroupStart => Some(match largest {
-      Some(largest) => Location::new(largest.group + 1, 0),
-      None => Location::new(0, 0),
-    }),
-    FilterType::AbsoluteStartFill
-    | FilterType::AbsoluteRangeFill
-    | FilterType::RelativeStartFill => None,
+  match filter {
+    LocationFilter::NextObject | LocationFilter::RelativeStart { .. } => {
+      filter.start_location(largest)
+    }
+    LocationFilter::None
+    | LocationFilter::AbsoluteStart { .. }
+    | LocationFilter::AbsoluteStartGroupEnd { .. }
+    | LocationFilter::AbsoluteRange { .. } => None,
   }
 }
 
@@ -518,18 +513,18 @@ impl Subscription {
   }
 
   /// Pins down where a live filter starts, now that the track's largest Object is
-  /// known. Latest Object and Next Group Start say where to begin only in terms of
-  /// that, so until this runs the subscription has no start at all and delivers
-  /// whatever arrives — mid-group for Next Group Start, which is the one thing it
-  /// asks not to happen.
+  /// known. Next Object and Relative Start say where to begin only in terms of
+  /// that, so until this runs the subscription starts at `{0,0}` and delivers
+  /// whatever arrives — mid-group for a start at the Next Group, which is the one
+  /// thing it asks not to happen.
   pub async fn resolve_live_start(&self, largest: Option<Location>) {
-    let filter_type = self.subscription_state.read().await.filter_type;
-    let Some(start) = live_start_location(filter_type, largest) else {
+    let filter = self.subscription_state.read().await.location_filter.clone();
+    let Some(start) = live_start_location(&filter, largest) else {
       return;
     };
     debug!(
       "Start location for subscriber={} relay_track_id={} resolved to {:?} by {:?}",
-      self.client_connection_id, self.relay_track_id, start, filter_type
+      self.client_connection_id, self.relay_track_id, start, filter
     );
     self.subscription_state.write().await.start_location = Some(start);
   }
@@ -651,27 +646,15 @@ impl Subscription {
     let (forward_becoming_true, forward_becoming_false) = {
       let mut state = self.subscription_state.write().await;
 
-      // Extract filter_type, start_location and end_group from SubscriptionFilter parameter
-      let (new_filter_type, new_start_location, new_end_group) = request_update
+      // An update changes the filter only when it carries one. A relative filter
+      // is resolved against the track by the caller, which knows its Largest
+      // Object.
+      if let Some(MessageParameter::LocationFilter { filter }) = request_update
         .parameters
         .iter()
-        .find_map(|p| {
-          if let MessageParameter::SubscriptionFilter {
-            filter_type,
-            start_location,
-            end_group,
-            ..
-          } = p
-          {
-            Some((Some(*filter_type), start_location.clone(), *end_group))
-          } else {
-            None
-          }
-        })
-        .unwrap_or((None, None, None));
-
-      if let Some(ref new_loc) = new_start_location {
-        state.start_location = Some(new_loc.clone());
+        .find(|p| matches!(p, MessageParameter::LocationFilter { .. }))
+      {
+        state.set_location_filter(filter.clone(), None);
       }
 
       // Update explicit subscription state fields if they are present in the parameters.
@@ -695,13 +678,6 @@ impl Subscription {
           }
           _ => {}
         }
-      }
-
-      if let Some(ft) = new_filter_type {
-        state.filter_type = ft;
-      }
-      if let Some(eg) = new_end_group {
-        state.end_group = eg;
       }
 
       // Update parameters. If a parameter included in SUBSCRIBE is not present in
@@ -835,25 +811,15 @@ impl Subscription {
   pub async fn begin_switch(
     &self,
     mut plan: SwitchPlan,
-    filter: Option<&MessageParameter>,
+    filter: Option<&LocationFilter>,
     largest: Option<Location>,
   ) {
     {
       let mut state = self.subscription_state.write().await;
-      if let Some(MessageParameter::SubscriptionFilter {
-        filter_type,
-        start_location,
-        end_group,
-        relative_previous,
-      }) = filter
-      {
-        state.filter_type = *filter_type;
+      if let Some(filter) = filter {
         // A live filter says where to start only against the largest Object, and
         // that is the boundary the switch then happens at.
-        state.start_location =
-          live_start_location(*filter_type, largest).or_else(|| start_location.clone());
-        state.end_group = end_group.unwrap_or(0);
-        state.relative_previous = *relative_previous;
+        state.set_location_filter(filter.clone(), largest);
       }
       // A switch activates the subscription it arrives on; SWITCH_FROM cannot be
       // combined with FORWARD, so nothing else decides this.
@@ -905,10 +871,15 @@ impl Subscription {
     state.soft_suspended = true;
     // A switch can only bring the end forward: a subscription that already asked
     // to stop earlier still stops there.
-    state.end_group = match state.end_group {
+    let end_group = match state.end_group {
       0 => boundary - 1,
       existing => existing.min(boundary - 1),
     };
+    // An End Object belongs to the group the filter named, not to an earlier one.
+    if end_group != state.end_group {
+      state.end_object = None;
+    }
+    state.end_group = end_group;
     state.publish_done_at_end = plan.publish_done;
     state.switch_activated = Some(plan.activated.clone());
     info!(
@@ -1269,7 +1240,7 @@ impl Subscription {
             return;
           }
 
-          if state.end_group > 0 && object.location.group > state.end_group
+          if state.is_past_end(&object.location)
           // TODO: The following code is commented out. The suspend track is stopped at the
           // end group. However, if the SUBSCRIBE comes late (after the group boundary)
           // the first object (keyframe) would have been sent out and then the relay
@@ -1359,13 +1330,12 @@ impl Subscription {
 
             self.subscription_state.write().await.start_location = Some(Location::new(takeover, 0));
 
-            suspending
-              .read()
-              .await
-              .subscription_state
-              .write()
-              .await
-              .end_group = takeover - 1;
+            {
+              let suspending = suspending.read().await;
+              let mut state = suspending.subscription_state.write().await;
+              state.end_group = takeover - 1;
+              state.end_object = None;
+            }
 
             stop = true;
           }
@@ -1503,6 +1473,12 @@ impl Subscription {
               .write()
               .await
               .update_last_sent_max_location(object.location.clone());
+
+            // The switch's first delivery: the switch has happened, so a hard one
+            // cuts the subscription it suspends.
+            if self.pending_switch.swap(false, Ordering::Relaxed) {
+              self.complete_switch(object.location.group).await;
+            }
           }
 
           if self.config.enable_object_logging {
@@ -1554,10 +1530,7 @@ impl Subscription {
             return;
           }
 
-          if state.end_group > 0
-            && location.group > state.end_group
-            && !state.awaiting_switch_activation()
-          {
+          if state.is_past_end(&location) && !state.awaiting_switch_activation() {
             trace!(
               "Datagram beyond end group for subscriber={} relay_track_id={} object location: {:?} end group: {}",
               self.client_connection_id, self.relay_track_id, location, state.end_group
@@ -1901,38 +1874,44 @@ mod tests {
   use super::*;
 
   #[test]
-  fn latest_object_starts_after_the_largest_object() {
+  fn next_object_starts_after_the_largest_object() {
     assert_eq!(
-      live_start_location(FilterType::LatestObject, Some(Location::new(7, 3))),
+      live_start_location(&LocationFilter::NextObject, Some(Location::new(7, 3))),
       Some(Location::new(7, 4))
     );
   }
 
   #[test]
-  fn next_group_start_starts_at_the_group_after_the_largest() {
+  fn a_relative_start_of_zero_starts_at_the_group_after_the_largest() {
     assert_eq!(
-      live_start_location(FilterType::NextGroupStart, Some(Location::new(7, 3))),
+      live_start_location(
+        &LocationFilter::RelativeStart { start_group: 0 },
+        Some(Location::new(7, 3))
+      ),
       Some(Location::new(8, 0))
     );
   }
 
   #[test]
   fn a_track_with_nothing_published_starts_at_the_beginning() {
-    for filter_type in [FilterType::LatestObject, FilterType::NextGroupStart] {
+    for filter in [
+      LocationFilter::NextObject,
+      LocationFilter::RelativeStart { start_group: 0 },
+    ] {
       assert_eq!(
-        live_start_location(filter_type, None),
+        live_start_location(&filter, None),
         Some(Location::new(0, 0)),
-        "{filter_type:?} on an empty track"
+        "{filter:?} on an empty track"
       );
     }
   }
 
   fn sent(locations: &[(u64, u64)]) -> SubscriptionState {
     let mut state = SubscriptionState {
-      filter_type: FilterType::LatestObject,
+      location_filter: LocationFilter::None,
       start_location: None,
       end_group: 0,
-      relative_previous: None,
+      end_object: None,
       forward: true,
       subscriber_priority: DEFAULT_PUBLISHER_PRIORITY,
       group_order: GroupOrder::Original,
@@ -2002,17 +1981,75 @@ mod tests {
   }
 
   #[test]
-  fn a_fill_filter_keeps_the_start_location_it_carries() {
-    for filter_type in [
-      FilterType::AbsoluteStartFill,
-      FilterType::AbsoluteRangeFill,
-      FilterType::RelativeStartFill,
+  fn an_absolute_filter_keeps_the_start_location_it_carries() {
+    for filter in [
+      LocationFilter::None,
+      LocationFilter::AbsoluteStart {
+        start: Location::new(2, 0),
+      },
+      LocationFilter::AbsoluteStartGroupEnd {
+        start: Location::new(2, 0),
+        end_group: 4,
+      },
+      LocationFilter::AbsoluteRange {
+        start: Location::new(2, 0),
+        end: Location::new(4, 1),
+      },
     ] {
       assert_eq!(
-        live_start_location(filter_type, Some(Location::new(7, 3))),
+        live_start_location(&filter, Some(Location::new(7, 3))),
         None,
-        "{filter_type:?} states its own start"
+        "{filter:?} states its own start, or none"
       );
     }
+  }
+
+  #[test]
+  fn a_group_end_delivers_the_whole_of_its_last_group() {
+    let mut state = sent(&[]);
+    state.set_location_filter(
+      LocationFilter::AbsoluteStartGroupEnd {
+        start: Location::new(2, 0),
+        end_group: 4,
+      },
+      None,
+    );
+    assert_eq!(state.start_location, Some(Location::new(2, 0)));
+    assert!(!state.is_past_end(&Location::new(4, 1000)));
+    assert!(state.is_past_end(&Location::new(5, 0)));
+  }
+
+  #[test]
+  fn an_absolute_range_stops_after_its_end_object() {
+    let mut state = sent(&[]);
+    state.set_location_filter(
+      LocationFilter::AbsoluteRange {
+        start: Location::new(2, 0),
+        end: Location::new(4, 6),
+      },
+      None,
+    );
+    assert!(!state.is_past_end(&Location::new(4, 6)));
+    assert!(state.is_past_end(&Location::new(4, 7)));
+    assert!(state.is_past_end(&Location::new(5, 0)));
+  }
+
+  #[test]
+  fn an_open_ended_filter_has_no_end() {
+    let mut state = sent(&[]);
+    state.set_location_filter(LocationFilter::NextObject, Some(Location::new(7, 3)));
+    assert_eq!(state.start_location, Some(Location::new(7, 4)));
+    assert!(!state.is_past_end(&Location::new(u64::MAX, 0)));
+  }
+
+  #[test]
+  fn no_filter_in_the_parameters_is_no_filter() {
+    assert_eq!(location_filter_of(&[]), LocationFilter::None);
+    assert_eq!(
+      location_filter_of(&[MessageParameter::new_location_filter(
+        LocationFilter::NextObject
+      )]),
+      LocationFilter::NextObject
+    );
   }
 }

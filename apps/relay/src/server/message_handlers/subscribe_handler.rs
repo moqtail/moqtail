@@ -21,7 +21,7 @@ use crate::server::subscription::Subscription;
 use crate::server::subscription_manager::SubscriptionId;
 use crate::server::track::{Track, TrackOrigin, TrackStatus, await_publisher_streams};
 use anyhow::Result;
-use moqtail::model::control::constant::{FilterType, PublishDoneStatusCode};
+use moqtail::model::control::constant::PublishDoneStatusCode;
 use moqtail::model::control::publish_done::PublishDone;
 use moqtail::model::control::request_error::RequestError;
 use moqtail::model::control::request_ok::RequestOk;
@@ -804,15 +804,8 @@ async fn handle_subscribe_message(
     let largest = track_arc.read().await.largest_object().await;
     {
       // A SUBSCRIBE describes the subscription in full, so a filter it leaves out
-      // is the default.
-      let filter = sub
-        .subscribe_parameters
-        .iter()
-        .find(|p| matches!(p, MessageParameter::SubscriptionFilter { .. }))
-        .cloned()
-        .unwrap_or_else(|| {
-          MessageParameter::new_subscription_filter(FilterType::LatestObject, None, None)
-        });
+      // is no filter.
+      let filter = crate::server::subscription::location_filter_of(&sub.subscribe_parameters);
       subscription
         .read()
         .await
@@ -1208,9 +1201,10 @@ pub async fn handle_request_update(
   existing_req_id: u64,
 ) -> Result<(), TerminationCode> {
   // An update can carry SWITCH_FROM too, activating the subscription it arrives on.
-  let asks_for_a_fill = update_msg.parameters.iter().any(
-    |p| matches!(p, MessageParameter::SubscriptionFilter { filter_type, .. } if filter_type.is_fetch_fill()),
-  );
+  let asks_for_a_fill = update_msg
+    .parameters
+    .iter()
+    .any(|p| matches!(p, MessageParameter::FillParameters { .. }));
   // The update itself is handed on to the subscription, so a switch's filter is
   // kept here rather than read back off it.
   let update_parameters = update_msg.parameters.clone();
@@ -1363,9 +1357,10 @@ pub async fn handle_request_update(
 
       // An update changes only what it carries, so a filter it leaves out leaves
       // the subscription's own in place.
-      let filter = update_parameters
-        .iter()
-        .find(|p| matches!(p, MessageParameter::SubscriptionFilter { .. }));
+      let filter = update_parameters.iter().find_map(|p| match p {
+        MessageParameter::LocationFilter { filter } => Some(filter),
+        _ => None,
+      });
 
       if let Some(subscription) = &subscription {
         if let Some(plan) = switch_plan {
@@ -1381,7 +1376,7 @@ pub async fn handle_request_update(
         }
       }
 
-      // An update that names a fill filter type asks for another fill, over
+      // An update that carries FILL_PARAMETERS asks for another fill, over
       // whatever range it now specifies.
       if asks_for_a_fill
         && let Some(subscription) = track_arc

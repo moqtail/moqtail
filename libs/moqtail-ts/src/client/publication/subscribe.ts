@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { FilterType, Subscribe, PublishDone, PublishDoneStatusCode, RequestUpdate } from '@/model/control'
+import { Subscribe, PublishDone, PublishDoneStatusCode, RequestUpdate } from '@/model/control'
 import { MOQtailClient } from '../client'
 import { Track } from '../track/track'
 import {
@@ -55,7 +55,7 @@ export class SubscribePublication {
   #startLocation: Location
 
   /**
-   * The end group for AbsoluteRangeFill subscriptions, if specified.
+   * The last group delivered, when the Location Filter has an end.
    */
   #endGroup: bigint | undefined
 
@@ -141,36 +141,13 @@ export class SubscribePublication {
     this.#publisherPriority = track.publisherPriority
     const subPriority = subscribeMsg.parameters.find(MessageParameter.isSubscriberPriority)
     const fwd = subscribeMsg.parameters.find(MessageParameter.isForward)
-    const filter = subscribeMsg.parameters.find(MessageParameter.isSubscriptionFilter)
+    const filter = subscribeMsg.parameters.find(MessageParameter.isLocationFilter)
     this.#subscriberPriority = subPriority?.priority ?? 128
     this.#forward = fwd?.forward ?? true
     this.#parameters = [...subscribeMsg.parameters]
-    this.#startLocation = new Location(0n, 0n)
-
-    const filterType = filter?.filterType ?? FilterType.LatestObject
-    switch (filterType) {
-      case FilterType.LatestObject:
-        if (largestLocation) {
-          this.#startLocation = new Location(largestLocation.group, largestLocation.object + 1n)
-        } else {
-          this.#startLocation = new Location(0n, 0n)
-        }
-        break
-      case FilterType.NextGroupStart:
-        if (largestLocation) {
-          this.#startLocation = new Location(largestLocation.group + 1n, 0n)
-        } else {
-          this.#startLocation = new Location(0n, 0n)
-        }
-        break
-      case FilterType.AbsoluteStartFill:
-        this.#startLocation = filter?.startLocation ?? new Location(0n, 0n)
-        break
-      case FilterType.AbsoluteRangeFill:
-        this.#startLocation = filter?.startLocation ?? new Location(0n, 0n)
-        this.#endGroup = filter?.endGroup
-        break
-    }
+    // No filter starts at the beginning and never ends.
+    this.#startLocation = filter?.startLocation(largestLocation) ?? new Location(0n, 0n)
+    this.#endGroup = filter?.endLocation()?.group
     this.publish()
   }
 
@@ -210,9 +187,12 @@ export class SubscribePublication {
    * @param msg - The update message containing new request details.
    */
   update(msg: RequestUpdate): void {
-    const filter = msg.parameters.find(MessageParameter.isSubscriptionFilter) as any
-    if (filter?.startLocation !== undefined) this.#startLocation = filter.startLocation
-    if (filter?.endGroup !== undefined) this.#endGroup = filter.endGroup
+    // An update changes the filter only when it carries one.
+    const filter = msg.parameters.find(MessageParameter.isLocationFilter)
+    if (filter) {
+      this.#startLocation = filter.startLocation(this.latestLocation) ?? new Location(0n, 0n)
+      this.#endGroup = filter.endLocation()?.group
+    }
 
     for (const param of msg.parameters) {
       if (MessageParameter.isSubscriberPriority?.(param)) {
@@ -293,7 +273,7 @@ export class SubscribePublication {
           await sendStream.write(obj.tryIntoSubgroupObject())
           await this.#lock.release()
 
-          // If this is the last object in the group (for AbsoluteRangeFill/endGroup), close the stream
+          // If this is the end group of a filter that has one, close the stream
           if (this.#endGroup && obj.location.group === this.#endGroup) {
             try {
               await this.#lock.acquire()

@@ -14,5 +14,6 @@
 
 pub mod authorization_token;
 pub mod constant;
+pub mod location_filter;
 pub mod message_parameter;
 pub mod setup_option;

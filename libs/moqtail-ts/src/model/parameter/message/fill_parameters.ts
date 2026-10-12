@@ -30,12 +30,14 @@ import {
 const ALLOWED: readonly MessageParameterType[] = [
   MessageParameterType.FillTimeout,
   MessageParameterType.SubscriberPriority,
+  MessageParameterType.LocationFilter,
   MessageParameterType.GroupOrder,
 ]
 
 /**
- * Overrides for the fill fetch stream. An omitted parameter keeps the value it
- * has for the live subscription. Ignored without a fill filter type.
+ * Requests a fill fetch stream, and overrides for it. An omitted parameter keeps
+ * the value it has for the live subscription; an omitted LOCATION_FILTER fills
+ * over the subscription's own.
  */
 export class FillParameters implements Parameter {
   static readonly TYPE = MessageParameterType.FillParameters

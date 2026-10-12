@@ -12,13 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::constant::{ControlMessageType, FilterType};
+use super::constant::ControlMessageType;
 use super::control_message::ControlMessageTrait;
-use crate::model::common::location::Location;
 use crate::model::common::tuple::{Tuple, TupleField};
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
 use crate::model::data::full_track_name::FullTrackName;
 use crate::model::error::ParseError;
+use crate::model::parameter::location_filter::LocationFilter;
 use crate::model::parameter::message_parameter::{
   MessageParameter, deserialize_message_parameters, serialize_message_parameters,
 };
@@ -47,82 +47,16 @@ impl Subscribe {
     }
   }
 
-  pub fn new_next_group_start(
+  /// A SUBSCRIBE carrying `filter` in a LOCATION_FILTER parameter.
+  pub fn new_with_location_filter(
     request_id: u64,
     track_namespace: Tuple,
     track_name: TupleField,
+    filter: LocationFilter,
     subscribe_parameters: Vec<MessageParameter>,
   ) -> Self {
     let mut params = subscribe_parameters;
-    params.push(MessageParameter::new_subscription_filter(
-      FilterType::NextGroupStart,
-      None,
-      None,
-    ));
-    Self::new(request_id, track_namespace, track_name, params)
-  }
-
-  pub fn new_latest_object(
-    request_id: u64,
-    track_namespace: Tuple,
-    track_name: TupleField,
-    subscribe_parameters: Vec<MessageParameter>,
-  ) -> Self {
-    let mut params = subscribe_parameters;
-    params.push(MessageParameter::new_subscription_filter(
-      FilterType::LatestObject,
-      None,
-      None,
-    ));
-    Self::new(request_id, track_namespace, track_name, params)
-  }
-
-  pub fn new_absolute_start_fill(
-    request_id: u64,
-    track_namespace: Tuple,
-    track_name: TupleField,
-    start_location: Location,
-    subscribe_parameters: Vec<MessageParameter>,
-  ) -> Self {
-    let mut params = subscribe_parameters;
-    params.push(MessageParameter::new_subscription_filter(
-      FilterType::AbsoluteStartFill,
-      Some(start_location),
-      None,
-    ));
-    Self::new(request_id, track_namespace, track_name, params)
-  }
-
-  pub fn new_absolute_range_fill(
-    request_id: u64,
-    track_namespace: Tuple,
-    track_name: TupleField,
-    start_location: Location,
-    end_group: u64,
-    subscribe_parameters: Vec<MessageParameter>,
-  ) -> Self {
-    assert!(
-      end_group >= start_location.group,
-      "End Group must be >= Start Group"
-    );
-    let mut params = subscribe_parameters;
-    params.push(MessageParameter::new_subscription_filter(
-      FilterType::AbsoluteRangeFill,
-      Some(start_location),
-      Some(end_group),
-    ));
-    Self::new(request_id, track_namespace, track_name, params)
-  }
-
-  pub fn new_relative_start_fill(
-    request_id: u64,
-    track_namespace: Tuple,
-    track_name: TupleField,
-    relative_previous: u64,
-    subscribe_parameters: Vec<MessageParameter>,
-  ) -> Self {
-    let mut params = subscribe_parameters;
-    params.push(MessageParameter::new_relative_start_fill(relative_previous));
+    params.push(MessageParameter::new_location_filter(filter));
     Self::new(request_id, track_namespace, track_name, params)
   }
 
@@ -133,12 +67,12 @@ impl Subscribe {
     }
   }
 
-  /// Returns the SubscriptionFilter parameter if present.
-  pub fn get_subscription_filter(&self) -> Option<&MessageParameter> {
-    self
-      .subscribe_parameters
-      .iter()
-      .find(|p| matches!(p, MessageParameter::SubscriptionFilter { .. }))
+  /// Returns the Location Filter if one is present.
+  pub fn get_location_filter(&self) -> Option<&LocationFilter> {
+    self.subscribe_parameters.iter().find_map(|p| match p {
+      MessageParameter::LocationFilter { filter } => Some(filter),
+      _ => None,
+    })
   }
 }
 
@@ -215,20 +149,23 @@ impl ControlMessageTrait for Subscribe {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::model::common::location::Location;
   use crate::model::control::constant::GroupOrder;
   use bytes::Buf;
 
   #[test]
   fn test_roundtrip() {
-    let mut subscribe = Subscribe::new_absolute_range_fill(
+    let mut subscribe = Subscribe::new_with_location_filter(
       128242,
       Tuple::from_utf8_path("nein/nein/nein"),
       TupleField::from_utf8("${Name}"),
-      Location {
-        group: 81,
-        object: 81,
+      LocationFilter::AbsoluteStartGroupEnd {
+        start: Location {
+          group: 81,
+          object: 81,
+        },
+        end_group: 100,
       },
-      100,
       vec![
         MessageParameter::new_subscriber_priority(31),
         MessageParameter::new_forward(false),
@@ -251,15 +188,17 @@ mod tests {
 
   #[test]
   fn test_excess_roundtrip() {
-    let mut subscribe = Subscribe::new_absolute_range_fill(
+    let mut subscribe = Subscribe::new_with_location_filter(
       128242,
       Tuple::from_utf8_path("nein/nein/nein"),
       TupleField::from_utf8("${Name}"),
-      Location {
-        group: 81,
-        object: 81,
+      LocationFilter::AbsoluteStartGroupEnd {
+        start: Location {
+          group: 81,
+          object: 81,
+        },
+        end_group: 100,
       },
-      100,
       vec![
         MessageParameter::new_subscriber_priority(31),
         MessageParameter::new_group_order(GroupOrder::Ascending),
@@ -289,17 +228,18 @@ mod tests {
 
   #[test]
   fn test_parse_wire_subscribe_with_uint8_priority() {
-    // Real SUBSCRIBE captured from an interop peer:
-    //   03 00 14 00 01 03 61 62 63 03 64 65 66 04 10 01 10 80 01 01 02 01 01
-    // Params are FORWARD=1, SUBSCRIBER_PRIORITY=128, SUBSCRIPTION_FILTER
-    // (LargestObject), GROUP_ORDER=Ascending. The FORWARD (0x10),
+    // A SUBSCRIBE captured from an interop peer, its filter re-encoded as a
+    // LOCATION_FILTER:
+    //   03 00 13 00 01 03 61 62 63 03 64 65 66 04 10 01 10 80 01 05 01 01
+    // Params are FORWARD=1, SUBSCRIBER_PRIORITY=128, LOCATION_FILTER
+    // (Next Object), GROUP_ORDER=Ascending. The FORWARD (0x10),
     // SUBSCRIBER_PRIORITY (0x20) and GROUP_ORDER (0x22) values
     // are a single uint8, NOT the generic even-key varint. SUBSCRIBER_PRIORITY
     // here is 0x80 (128); read as a QUIC varint that byte starts a 4-byte
     // sequence, which desyncs the whole parameter block.
     let frame: &[u8] = &[
-      0x03, 0x00, 0x14, 0x00, 0x01, 0x03, 0x61, 0x62, 0x63, 0x03, 0x64, 0x65, 0x66, 0x04, 0x10,
-      0x01, 0x10, 0x80, 0x01, 0x01, 0x02, 0x01, 0x01,
+      0x03, 0x00, 0x13, 0x00, 0x01, 0x03, 0x61, 0x62, 0x63, 0x03, 0x64, 0x65, 0x66, 0x04, 0x10,
+      0x01, 0x10, 0x80, 0x01, 0x05, 0x01, 0x01,
     ];
     let mut buf = Bytes::copy_from_slice(frame);
     let msg_type = buf.get_vi().unwrap();
@@ -334,14 +274,7 @@ mod tests {
         .get_param(MessageParameterType::GroupOrder),
       Some(&MessageParameter::new_group_order(GroupOrder::Ascending)),
     );
-    assert_eq!(
-      sub.get_subscription_filter(),
-      Some(&MessageParameter::new_subscription_filter(
-        FilterType::LatestObject,
-        None,
-        None
-      )),
-    );
+    assert_eq!(sub.get_location_filter(), Some(&LocationFilter::NextObject));
 
     // Re-serialize: the params are already in ascending Type order on the wire,
     // so the output must be byte-identical to the captured frame. This also
@@ -352,15 +285,17 @@ mod tests {
 
   #[test]
   fn test_partial_message() {
-    let subscribe = Subscribe::new_absolute_range_fill(
+    let subscribe = Subscribe::new_with_location_filter(
       128242,
       Tuple::from_utf8_path("nein/nein/nein"),
       TupleField::from_utf8("${Name}"),
-      Location {
-        group: 81,
-        object: 81,
+      LocationFilter::AbsoluteStartGroupEnd {
+        start: Location {
+          group: 81,
+          object: 81,
+        },
+        end_group: 100,
       },
-      100,
       vec![
         MessageParameter::new_subscriber_priority(31),
         MessageParameter::new_group_order(GroupOrder::Ascending),

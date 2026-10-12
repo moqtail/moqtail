@@ -20,72 +20,64 @@ use crate::server::subscription::{DEFAULT_PUBLISHER_PRIORITY, Subscription};
 use crate::server::track::Track;
 use crate::server::utils::compute_stream_priority;
 use moqtail::model::common::location::Location;
-use moqtail::model::control::constant::{FilterType, GroupOrder};
+use moqtail::model::control::constant::GroupOrder;
 use moqtail::model::parameter::constant::MessageParameterType;
+use moqtail::model::parameter::location_filter::LocationFilter;
 use moqtail::model::parameter::message_parameter::MessageParameter;
 use std::sync::Arc;
 use tokio::sync::{RwLock, watch};
 use tracing::info;
 
-/// The Objects a fill fetch stream carries: everything from the filter's Start
-/// Location up to the fill boundary, which is the Largest Object or the End Group
-/// when one is set and it ends earlier.
+/// The Objects a fill fetch stream carries: what `filter` selects under the
+/// rules for a Fetch, which never reach past the Largest Object.
 ///
 /// `None` when there is nothing to fill — no Objects published yet, or a Start
 /// Location already past the Largest Object — in which case no stream is opened
 /// and the subscription runs live-only.
 ///
 /// The End Location returned is the last Object plus one, the encoding
-/// [`serve_fetch_stream`] expects.
+/// [`serve_fetch_stream`] expects. A filter that ends with a whole group keeps
+/// `u64::MAX` as its Object, which already means all of it.
 pub(crate) fn fill_fetch_range(
-  filter_type: FilterType,
-  start_location: Option<&Location>,
-  end_group: Option<u64>,
-  relative_previous: Option<u64>,
+  filter: &LocationFilter,
   largest: Option<Location>,
 ) -> Option<(Location, Location)> {
-  if !filter_type.is_fetch_fill() {
-    return None;
-  }
-  let largest = largest?;
-
-  let start = match filter_type {
-    FilterType::RelativeStartFill => {
-      let back = relative_previous.unwrap_or(0);
-      Location::new(largest.group.saturating_sub(back), 0)
-    }
-    _ => start_location.cloned().unwrap_or(Location::new(0, 0)),
+  let (start, last) = filter.fetch_range(largest)?;
+  let end = match last.object {
+    u64::MAX => last,
+    object => Location::new(last.group, object + 1),
   };
-
-  if start > largest {
-    return None;
-  }
-
-  // u64::MAX for the Object means the whole of that group: an End Group names a
-  // group, not an Object within it.
-  let end = match end_group {
-    Some(eg) if eg < largest.group => Location::new(eg, u64::MAX),
-    _ => Location::new(largest.group, largest.object + 1),
-  };
-
   Some((start, end))
+}
+
+/// The FILL_PARAMETERS in `parameters`, whose presence is what asks for a fill.
+fn fill_parameters(parameters: &[MessageParameter]) -> Option<&[MessageParameter]> {
+  match parameters
+    .iter()
+    .find(|p| p.type_value() == MessageParameterType::FillParameters as u64)
+  {
+    Some(MessageParameter::FillParameters { parameters }) => Some(parameters),
+    _ => None,
+  }
+}
+
+/// The range a fill covers: the Location Filter inside FILL_PARAMETERS, else the
+/// subscription's own.
+fn fill_filter(fill: &[MessageParameter], subscription_filter: &LocationFilter) -> LocationFilter {
+  fill
+    .iter()
+    .find_map(|p| match p {
+      MessageParameter::LocationFilter { filter } => Some(filter.clone()),
+      _ => None,
+    })
+    .unwrap_or_else(|| subscription_filter.clone())
 }
 
 /// The subscriber priority and group order the fill fetch stream runs at: the
 /// subscription's own, unless FILL_PARAMETERS overrides them.
-fn fill_overrides(
-  parameters: &[MessageParameter],
-  priority: u8,
-  order: GroupOrder,
-) -> (u8, GroupOrder) {
-  let Some(MessageParameter::FillParameters { parameters }) = parameters
-    .iter()
-    .find(|p| p.type_value() == MessageParameterType::FillParameters as u64)
-  else {
-    return (priority, order);
-  };
+fn fill_overrides(fill: &[MessageParameter], priority: u8, order: GroupOrder) -> (u8, GroupOrder) {
   let mut overridden = (priority, order);
-  for param in parameters {
+  for param in fill {
     match param {
       MessageParameter::SubscriberPriority { priority } => overridden.0 = *priority,
       MessageParameter::GroupOrder { order } => overridden.1 = *order,
@@ -95,7 +87,7 @@ fn fill_overrides(
   overridden
 }
 
-/// Opens the fill fetch stream a fill filter type asks for, if it has anything to
+/// Opens the fill fetch stream FILL_PARAMETERS asks for, if it has anything to
 /// carry. The stream is named by `request_id` — the SUBSCRIBE or REQUEST_UPDATE
 /// that asked for the fill — and is counted towards the subscription's
 /// PUBLISH_DONE Stream Count.
@@ -105,52 +97,31 @@ pub(crate) async fn open_fill_fetch_stream(
   subscription: Arc<RwLock<Subscription>>,
   request_id: u64,
 ) {
-  let (
-    client,
-    filter_type,
-    start_location,
-    end_group,
-    relative_previous,
-    priority,
-    group_order,
-    forwarding,
-  ) = {
+  let (client, filter, priority, group_order, forwarding) = {
     let sub = subscription.read().await;
     let state = sub.subscription_state.read().await;
-    let (priority, group_order) = fill_overrides(
-      &state.subscribe_parameters,
-      state.subscriber_priority,
-      state.group_order,
-    );
+    // A subscription with no FILL_PARAMETERS opens no fill fetch stream.
+    let Some(fill) = fill_parameters(&state.subscribe_parameters) else {
+      return;
+    };
+    let (priority, group_order) =
+      fill_overrides(fill, state.subscriber_priority, state.group_order);
     (
       sub.subscriber(),
-      state.filter_type,
-      state.start_location.clone(),
-      if state.end_group > 0 {
-        Some(state.end_group)
-      } else {
-        None
-      },
-      state.relative_previous,
+      fill_filter(fill, &state.location_filter),
       priority,
       group_order,
       state.forward,
     )
   };
 
-  // A fill filter specified while Forward State is 0 opens no fill fetch stream.
+  // FILL_PARAMETERS carried while Forward State is 0 opens no fill fetch stream.
   if !forwarding {
     return;
   }
 
   let largest = track.read().await.largest_object().await;
-  let Some((start, end)) = fill_fetch_range(
-    filter_type,
-    start_location.as_ref(),
-    end_group,
-    relative_previous,
-    largest,
-  ) else {
+  let Some((start, end)) = fill_fetch_range(&filter, largest) else {
     info!(
       "fill: nothing to fill for request {} on subscriber {}; live only",
       request_id, client.connection_id
@@ -207,35 +178,27 @@ mod tests {
   }
 
   #[test]
-  fn a_non_fill_filter_fills_nothing() {
-    assert_eq!(
-      fill_fetch_range(FilterType::LatestObject, None, None, None, Some(loc(5, 2))),
-      None
-    );
-  }
-
-  #[test]
   fn nothing_published_fills_nothing() {
+    assert_eq!(fill_fetch_range(&LocationFilter::None, None), None);
     assert_eq!(
-      fill_fetch_range(
-        FilterType::AbsoluteStartFill,
-        Some(&loc(0, 0)),
-        None,
-        None,
-        None
-      ),
+      fill_fetch_range(&LocationFilter::AbsoluteStart { start: loc(0, 0) }, None),
       None
     );
   }
 
   #[test]
-  fn absolute_start_fill_runs_to_the_largest_object() {
+  fn no_filter_fills_the_whole_track() {
+    assert_eq!(
+      fill_fetch_range(&LocationFilter::None, Some(loc(5, 3))),
+      Some((loc(0, 0), loc(5, 4)))
+    );
+  }
+
+  #[test]
+  fn absolute_start_runs_to_the_largest_object() {
     assert_eq!(
       fill_fetch_range(
-        FilterType::AbsoluteStartFill,
-        Some(&loc(2, 0)),
-        None,
-        None,
+        &LocationFilter::AbsoluteStart { start: loc(2, 0) },
         Some(loc(5, 3))
       ),
       Some((loc(2, 0), loc(5, 4)))
@@ -246,12 +209,17 @@ mod tests {
   fn a_start_past_the_largest_object_fills_nothing() {
     assert_eq!(
       fill_fetch_range(
-        FilterType::AbsoluteStartFill,
-        Some(&loc(9, 0)),
-        None,
-        None,
+        &LocationFilter::AbsoluteStart { start: loc(9, 0) },
         Some(loc(5, 3))
       ),
+      None
+    );
+  }
+
+  #[test]
+  fn next_object_fills_nothing() {
+    assert_eq!(
+      fill_fetch_range(&LocationFilter::NextObject, Some(loc(5, 3))),
       None
     );
   }
@@ -260,10 +228,10 @@ mod tests {
   fn an_end_group_before_the_largest_object_ends_the_fill_early() {
     assert_eq!(
       fill_fetch_range(
-        FilterType::AbsoluteRangeFill,
-        Some(&loc(2, 0)),
-        Some(4),
-        None,
+        &LocationFilter::AbsoluteStartGroupEnd {
+          start: loc(2, 0),
+          end_group: 4,
+        },
         Some(loc(9, 1))
       ),
       Some((loc(2, 0), loc(4, u64::MAX)))
@@ -271,13 +239,27 @@ mod tests {
   }
 
   #[test]
+  fn an_end_object_ends_the_fill_after_it() {
+    assert_eq!(
+      fill_fetch_range(
+        &LocationFilter::AbsoluteRange {
+          start: loc(2, 0),
+          end: loc(4, 6),
+        },
+        Some(loc(9, 1))
+      ),
+      Some((loc(2, 0), loc(4, 7)))
+    );
+  }
+
+  #[test]
   fn an_end_group_beyond_the_largest_object_does_not_extend_the_fill() {
     assert_eq!(
       fill_fetch_range(
-        FilterType::AbsoluteRangeFill,
-        Some(&loc(2, 0)),
-        Some(20),
-        None,
+        &LocationFilter::AbsoluteStartGroupEnd {
+          start: loc(2, 0),
+          end_group: 20,
+        },
         Some(loc(9, 1))
       ),
       Some((loc(2, 0), loc(9, 2)))
@@ -285,13 +267,11 @@ mod tests {
   }
 
   #[test]
-  fn relative_start_fill_counts_back_from_the_largest_group() {
+  fn relative_start_counts_back_from_the_next_group() {
+    // StartGroup 3 is two groups before the current one.
     assert_eq!(
       fill_fetch_range(
-        FilterType::RelativeStartFill,
-        None,
-        None,
-        Some(2),
+        &LocationFilter::RelativeStart { start_group: 3 },
         Some(loc(9, 1))
       ),
       Some((loc(7, 0), loc(9, 2)))
@@ -299,13 +279,10 @@ mod tests {
   }
 
   #[test]
-  fn relative_start_fill_of_zero_starts_at_the_current_group() {
+  fn relative_start_of_one_fills_the_current_group() {
     assert_eq!(
       fill_fetch_range(
-        FilterType::RelativeStartFill,
-        None,
-        None,
-        Some(0),
+        &LocationFilter::RelativeStart { start_group: 1 },
         Some(loc(9, 1))
       ),
       Some((loc(9, 0), loc(9, 2)))
@@ -313,16 +290,52 @@ mod tests {
   }
 
   #[test]
-  fn relative_start_fill_past_the_first_group_starts_at_zero() {
+  fn relative_start_of_zero_fills_nothing() {
+    // The Next Group has nothing published yet.
     assert_eq!(
       fill_fetch_range(
-        FilterType::RelativeStartFill,
-        None,
-        None,
-        Some(50),
+        &LocationFilter::RelativeStart { start_group: 0 },
+        Some(loc(9, 1))
+      ),
+      None
+    );
+  }
+
+  #[test]
+  fn relative_start_past_the_first_group_starts_at_zero() {
+    assert_eq!(
+      fill_fetch_range(
+        &LocationFilter::RelativeStart { start_group: 50 },
         Some(loc(3, 1))
       ),
       Some((loc(0, 0), loc(3, 2)))
+    );
+  }
+
+  #[test]
+  fn no_fill_parameters_asks_for_no_fill() {
+    assert!(
+      fill_parameters(&[MessageParameter::new_location_filter(
+        LocationFilter::AbsoluteStart { start: loc(0, 0) }
+      )])
+      .is_none()
+    );
+    assert!(fill_parameters(&[MessageParameter::new_fill_parameters(vec![])]).is_some());
+  }
+
+  #[test]
+  fn a_filter_inside_fill_parameters_overrides_the_subscriptions() {
+    let inner = LocationFilter::RelativeStart { start_group: 1 };
+    assert_eq!(
+      fill_filter(
+        &[MessageParameter::new_location_filter(inner.clone())],
+        &LocationFilter::NextObject
+      ),
+      inner
+    );
+    assert_eq!(
+      fill_filter(&[], &LocationFilter::NextObject),
+      LocationFilter::NextObject
     );
   }
 }

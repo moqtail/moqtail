@@ -21,62 +21,69 @@
 //! object once however many copies of it arrive.
 
 use moqtail::model::common::location::Location;
-use moqtail::model::control::constant::FilterType;
+use moqtail::model::parameter::location_filter::LocationFilter;
 use moqtail::model::parameter::message_parameter::MessageParameter;
 use std::collections::HashSet;
 
-/// What a subscription delivers: from `start` on, up to and including
-/// `end_group` when it has one.
+/// What a subscription delivers: from `start` on, up to and including `end`
+/// when it has one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Window {
   pub start: Location,
-  pub end_group: Option<u64>,
+  pub end: Option<Location>,
 }
 
 impl Window {
-  /// The window a SUBSCRIPTION_FILTER asks for, given the Largest Object the
-  /// publisher reported in SUBSCRIBE_OK. A track with nothing published yet
-  /// starts at the beginning.
-  pub fn from_filter(filter: &MessageParameter, largest: Option<&Location>) -> Self {
-    let MessageParameter::SubscriptionFilter {
-      filter_type,
-      start_location,
-      end_group,
-      relative_previous,
-    } = filter
-    else {
-      return Self::everything();
-    };
-    let start = match filter_type {
-      FilterType::LatestObject => largest.map_or(Location::new(0, 0), |l| {
-        Location::new(l.group, l.object + 1)
-      }),
-      FilterType::NextGroupStart => {
-        largest.map_or(Location::new(0, 0), |l| Location::new(l.group + 1, 0))
-      }
-      FilterType::AbsoluteStartFill | FilterType::AbsoluteRangeFill => {
-        start_location.clone().unwrap_or_default()
-      }
-      FilterType::RelativeStartFill => largest.map_or(Location::new(0, 0), |l| {
-        Location::new(l.group.saturating_sub(relative_previous.unwrap_or(0)), 0)
-      }),
-    };
-    let end_group = match filter_type {
-      FilterType::AbsoluteRangeFill => *end_group,
+  /// The window a subscription's LOCATION_FILTER and FILL_PARAMETERS ask for,
+  /// given the Largest Object the publisher reported in SUBSCRIBE_OK. A fill
+  /// widens it back to where the fill starts. No filter, or a track with nothing
+  /// published yet, starts at the beginning.
+  pub fn from_parameters(params: &[MessageParameter], largest: Option<&Location>) -> Self {
+    let filter = params
+      .iter()
+      .find_map(|p| match p {
+        MessageParameter::LocationFilter { filter } => Some(filter.clone()),
+        _ => None,
+      })
+      .unwrap_or(LocationFilter::None);
+    let largest = largest.cloned();
+    let mut start = filter.start_location(largest.clone()).unwrap_or_default();
+
+    let fill = params.iter().find_map(|p| match p {
+      MessageParameter::FillParameters { parameters } => Some(parameters),
       _ => None,
-    };
-    Self { start, end_group }
+    });
+    if let Some(fill) = fill {
+      let fill_filter = fill
+        .iter()
+        .find_map(|p| match p {
+          MessageParameter::LocationFilter { filter } => Some(filter.clone()),
+          _ => None,
+        })
+        .unwrap_or_else(|| filter.clone());
+      if let Some((fill_start, _)) = fill_filter.fetch_range(largest)
+        && fill_start < start
+      {
+        start = fill_start;
+      }
+    }
+
+    Self {
+      start,
+      end: filter.end_location(),
+    }
   }
 
-  pub fn everything() -> Self {
+  #[cfg(test)]
+  fn everything() -> Self {
     Self {
       start: Location::new(0, 0),
-      end_group: None,
+      end: None,
     }
   }
 
   fn contains(&self, location: &Location) -> bool {
-    *location >= self.start && self.end_group.is_none_or(|end| location.group <= end)
+    *location >= self.start && self.end.as_ref().is_none_or(|end| location <= end)
   }
 }
 
@@ -164,14 +171,14 @@ mod tests {
   fn from(group: u64) -> Window {
     Window {
       start: Location::new(group, 0),
-      end_group: None,
+      end: None,
     }
   }
 
   fn range(start: u64, end: u64) -> Window {
     Window {
       start: Location::new(start, 0),
-      end_group: Some(end),
+      end: Some(Location::new(end, u64::MAX)),
     }
   }
 
@@ -227,21 +234,67 @@ mod tests {
     assert_eq!(router.route(8, &Location::new(0, 0)), Route::default());
   }
 
-  #[test]
-  fn latest_object_starts_after_the_largest() {
-    let filter = MessageParameter::new_subscription_filter(FilterType::LatestObject, None, None);
-    let window = Window::from_filter(&filter, Some(&Location::new(3, 4)));
-    assert_eq!(window.start, Location::new(3, 5));
-    assert_eq!(window.end_group, None);
+  fn filter(filter: LocationFilter) -> MessageParameter {
+    MessageParameter::new_location_filter(filter)
   }
 
   #[test]
-  fn absolute_range_keeps_its_end() {
-    let filter = MessageParameter::new_subscription_filter(
-      FilterType::AbsoluteRangeFill,
-      Some(Location::new(2, 0)),
-      Some(5),
+  fn next_object_starts_after_the_largest() {
+    let params = [filter(LocationFilter::NextObject)];
+    let window = Window::from_parameters(&params, Some(&Location::new(3, 4)));
+    assert_eq!(window.start, Location::new(3, 5));
+    assert_eq!(window.end, None);
+  }
+
+  #[test]
+  fn a_group_end_keeps_its_end() {
+    let params = [filter(LocationFilter::AbsoluteStartGroupEnd {
+      start: Location::new(2, 0),
+      end_group: 5,
+    })];
+    assert_eq!(Window::from_parameters(&params, None), range(2, 5));
+  }
+
+  #[test]
+  fn an_absolute_range_ends_with_its_end_object() {
+    let params = [filter(LocationFilter::AbsoluteRange {
+      start: Location::new(2, 0),
+      end: Location::new(5, 3),
+    })];
+    let window = Window::from_parameters(&params, None);
+    assert!(window.contains(&Location::new(5, 3)));
+    assert!(!window.contains(&Location::new(5, 4)));
+  }
+
+  #[test]
+  fn no_filter_is_everything() {
+    assert_eq!(
+      Window::from_parameters(&[], Some(&Location::new(3, 4))),
+      Window::everything()
     );
-    assert_eq!(Window::from_filter(&filter, None), range(2, 5));
+  }
+
+  #[test]
+  fn a_fill_widens_the_window_back_to_where_it_starts() {
+    let params = [
+      filter(LocationFilter::NextObject),
+      MessageParameter::new_fill_parameters(vec![filter(LocationFilter::RelativeStart {
+        start_group: 1,
+      })]),
+    ];
+    let window = Window::from_parameters(&params, Some(&Location::new(3, 4)));
+    assert_eq!(window.start, Location::new(3, 0));
+  }
+
+  #[test]
+  fn a_fill_without_a_filter_of_its_own_covers_the_subscriptions() {
+    let params = [
+      filter(LocationFilter::AbsoluteStart {
+        start: Location::new(1, 2),
+      }),
+      MessageParameter::new_fill_parameters(vec![]),
+    ];
+    let window = Window::from_parameters(&params, Some(&Location::new(3, 4)));
+    assert_eq!(window.start, Location::new(1, 2));
   }
 }

@@ -301,6 +301,7 @@ mod tests {
   use crate::model::control::subscribe::Subscribe;
   use crate::model::control::subscribe_ok::SubscribeOk;
   use crate::model::parameter::authorization_token::AuthorizationToken;
+  use crate::model::parameter::location_filter::LocationFilter;
   use crate::model::parameter::message_parameter::MessageParameter;
   use bytes::Bytes;
   use std::error::Error;
@@ -448,12 +449,14 @@ mod tests {
       group: 81,
       object: 81,
     };
-    let mut subscribe = Subscribe::new_absolute_range_fill(
+    let mut subscribe = Subscribe::new_with_location_filter(
       request_id,
       track_namespace,
       track_name,
-      start_location,
-      100,
+      LocationFilter::AbsoluteStartGroupEnd {
+        start: start_location,
+        end_group: 100,
+      },
       vec![
         MessageParameter::new_subscriber_priority(31),
         MessageParameter::new_group_order(GroupOrder::Original),

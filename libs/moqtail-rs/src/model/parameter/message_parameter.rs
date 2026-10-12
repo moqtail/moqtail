@@ -16,10 +16,11 @@ use crate::model::common::location::Location;
 use crate::model::common::pair::KeyValuePair;
 use crate::model::common::tuple::Tuple;
 use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
-use crate::model::control::constant::{ControlMessageType, FilterType, GroupOrder, SwitchMode};
+use crate::model::control::constant::{ControlMessageType, GroupOrder, SwitchMode};
 use crate::model::error::ParseError;
 use crate::model::parameter::authorization_token::AuthorizationToken;
 use crate::model::parameter::constant::MessageParameterType;
+use crate::model::parameter::location_filter::LocationFilter;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -54,12 +55,8 @@ pub enum MessageParameter {
   GroupOrder {
     order: GroupOrder,
   },
-  SubscriptionFilter {
-    filter_type: FilterType,
-    start_location: Option<Location>,
-    end_group: Option<u64>,
-    /// How many groups back from the Largest Object a RelativeStartFill starts.
-    relative_previous: Option<u64>,
+  LocationFilter {
+    filter: LocationFilter,
   },
   SwitchFrom {
     /// The subscription to suspend.
@@ -68,8 +65,9 @@ pub enum MessageParameter {
     /// Whether the publisher sends PUBLISH_DONE on the suspended subscription.
     publish_done: bool,
   },
-  /// Overrides for the fill fetch stream. An omitted parameter keeps the value it
-  /// has for the live subscription. Ignored without a fill filter type.
+  /// Requests a fill fetch stream, and overrides for it. An omitted parameter
+  /// keeps the value it has for the live subscription; an omitted LOCATION_FILTER
+  /// fills over the subscription's own.
   FillParameters {
     parameters: Vec<MessageParameter>,
   },
@@ -140,26 +138,8 @@ impl MessageParameter {
     Self::GroupOrder { order }
   }
 
-  pub fn new_subscription_filter(
-    filter_type: FilterType,
-    start_location: Option<Location>,
-    end_group: Option<u64>,
-  ) -> Self {
-    Self::SubscriptionFilter {
-      filter_type,
-      start_location,
-      end_group,
-      relative_previous: None,
-    }
-  }
-
-  pub fn new_relative_start_fill(relative_previous: u64) -> Self {
-    Self::SubscriptionFilter {
-      filter_type: FilterType::RelativeStartFill,
-      start_location: None,
-      end_group: None,
-      relative_previous: Some(relative_previous),
-    }
+  pub fn new_location_filter(filter: LocationFilter) -> Self {
+    Self::LocationFilter { filter }
   }
 
   pub fn new_fill_parameters(parameters: Vec<MessageParameter>) -> Self {
@@ -213,7 +193,7 @@ impl MessageParameter {
       Self::Forward { .. } => MessageParameterType::Forward as u64,
       Self::SubscriberPriority { .. } => MessageParameterType::SubscriberPriority as u64,
       Self::GroupOrder { .. } => MessageParameterType::GroupOrder as u64,
-      Self::SubscriptionFilter { .. } => MessageParameterType::SubscriptionFilter as u64,
+      Self::LocationFilter { .. } => MessageParameterType::LocationFilter as u64,
       Self::FillParameters { .. } => MessageParameterType::FillParameters as u64,
       Self::SwitchFrom { .. } => MessageParameterType::SwitchFrom as u64,
       Self::NewGroupRequest { .. } => MessageParameterType::NewGroupRequest as u64,
@@ -265,7 +245,7 @@ impl MessageParameter {
           | ControlMessageType::Fetch
           | ControlMessageType::Publish
       ),
-      Self::SubscriptionFilter { .. } => matches!(
+      Self::LocationFilter { .. } => matches!(
         msg_type,
         ControlMessageType::Subscribe
           | ControlMessageType::PublishOk
@@ -517,38 +497,15 @@ impl MessageParameter {
               set_rank,
             })
           }
-          MessageParameterType::SubscriptionFilter => {
+          MessageParameterType::LocationFilter => {
             let mut payload = value.clone();
-            let ft_raw = payload.get_vi()?;
-            let filter_type = FilterType::try_from(ft_raw)?;
-            let (start_location, end_group, relative_previous) = match filter_type {
-              FilterType::AbsoluteStartFill => {
-                let loc = Location::deserialize(&mut payload)?;
-                (Some(loc), None, None)
-              }
-              FilterType::AbsoluteRangeFill => {
-                let loc = Location::deserialize(&mut payload)?;
-                // End Group is a delta from the Start Group on the wire.
-                let delta = payload.get_vi()?;
-                let end_group =
-                  loc
-                    .group
-                    .checked_add(delta)
-                    .ok_or_else(|| ParseError::ProtocolViolation {
-                      context: "MessageParameter::deserialize",
-                      details: "AbsoluteRangeFill End Group Delta overflows u64".to_string(),
-                    })?;
-                (Some(loc), Some(end_group), None)
-              }
-              FilterType::RelativeStartFill => (None, None, Some(payload.get_vi()?)),
-              _ => (None, None, None),
-            };
-            Ok(Self::SubscriptionFilter {
-              filter_type,
-              start_location,
-              end_group,
-              relative_previous,
-            })
+            let filter = LocationFilter::deserialize(&mut payload)?;
+            if payload.has_remaining() {
+              return Err(ParseError::KeyValueFormattingError {
+                context: "MessageParameter::deserialize(LocationFilter)",
+              });
+            }
+            Ok(Self::LocationFilter { filter })
           }
           _ => Err(ParseError::ProtocolViolation {
             context: "MessageParameter::deserialize",
@@ -695,37 +652,11 @@ impl TryInto<KeyValuePair> for MessageParameter {
           buf.freeze(),
         )
       }
-      Self::SubscriptionFilter {
-        filter_type,
-        start_location,
-        end_group,
-        relative_previous,
-      } => {
-        let mut buf = BytesMut::new();
-        buf.put_vi(filter_type as u64)?;
-        let start_group = start_location.as_ref().map(|l| l.group).unwrap_or(0);
-        if matches!(
-          filter_type,
-          FilterType::AbsoluteStartFill | FilterType::AbsoluteRangeFill
-        ) && let Some(loc) = &start_location
-        {
-          buf.put_vi(loc.group)?;
-          buf.put_vi(loc.object)?;
-        }
-        if filter_type == FilterType::AbsoluteRangeFill
-          && let Some(eg) = end_group
-        {
-          // End Group is encoded on the wire as a delta from the Start Group.
-          buf.put_vi(eg.saturating_sub(start_group))?;
-        }
-        if filter_type == FilterType::RelativeStartFill {
-          buf.put_vi(relative_previous.unwrap_or(0))?;
-        }
-        KeyValuePair::try_new_bytes(
-          MessageParameterType::SubscriptionFilter as u64,
-          buf.freeze(),
-        )
-      }
+      // Not length-prefixed: the Location Filter Type says how many fields follow.
+      Self::LocationFilter { filter } => KeyValuePair::new_bytes(
+        MessageParameterType::LocationFilter as u64,
+        filter.serialize()?,
+      ),
       // A namespace tuple: length-prefixed, even though the Type is even.
       Self::TrackNamespacePrefix { prefix } => KeyValuePair::new_bytes(
         MessageParameterType::TrackNamespacePrefix as u64,
@@ -789,6 +720,8 @@ enum ValueShape {
   Uint8,
   /// Two varints, no length prefix: LARGEST_OBJECT.
   BareLocation,
+  /// A Location Filter Type and the varints it calls for, no length prefix.
+  LocationFilter,
   LengthPrefixedBytes,
 }
 
@@ -796,6 +729,7 @@ enum ValueShape {
 const fn is_valid_fill_parameter(type_value: u64) -> bool {
   type_value == MessageParameterType::FillTimeout as u64
     || type_value == MessageParameterType::SubscriberPriority as u64
+    || type_value == MessageParameterType::LocationFilter as u64
     || type_value == MessageParameterType::GroupOrder as u64
 }
 
@@ -824,6 +758,11 @@ fn read_message_parameter_value(
       loc.put_vi(bytes.get_vi()?)?;
       KeyValuePair::new_bytes(type_value, loc.freeze())
     }
+    // Decoded here because nothing else knows where it ends, and re-encoded so the
+    // parameter is decoded the same way as one built locally.
+    ValueShape::LocationFilter => {
+      KeyValuePair::new_bytes(type_value, LocationFilter::deserialize(bytes)?.serialize()?)
+    }
     ValueShape::LengthPrefixedBytes => KeyValuePair::deserialize_bytes_value(bytes, type_value),
     ValueShape::VarInt => Ok(KeyValuePair::VarInt {
       type_value,
@@ -840,6 +779,8 @@ const fn value_shape(type_value: u64) -> ValueShape {
     ValueShape::Uint8
   } else if type_value == MessageParameterType::LargestObject as u64 {
     ValueShape::BareLocation
+  } else if type_value == MessageParameterType::LocationFilter as u64 {
+    ValueShape::LocationFilter
   } else if type_value == MessageParameterType::TrackNamespacePrefix as u64
     || type_value == MessageParameterType::SwitchFrom as u64
   {
@@ -884,7 +825,10 @@ pub fn serialize_message_parameters(params: &[MessageParameter]) -> Result<Bytes
           })?;
         buf.put_u8(byte);
       }
-      (ValueShape::BareLocation, KeyValuePair::Bytes { value, .. }) => {
+      (
+        ValueShape::BareLocation | ValueShape::LocationFilter,
+        KeyValuePair::Bytes { value, .. },
+      ) => {
         buf.extend_from_slice(value);
       }
       (_, KeyValuePair::VarInt { value, .. }) => buf.put_vi(*value)?,
@@ -919,6 +863,7 @@ pub fn apply_message_parameter_update(
 mod tests {
   use super::*;
   use crate::model::common::tuple::TupleField;
+  use crate::model::control::constant::LocationFilterType;
 
   /// LARGEST_OBJECT is a bare Location: Type Delta 0x09 followed by the Group
   /// and Object varints, with no length prefix. These are the bytes another
@@ -1095,79 +1040,111 @@ mod tests {
     assert_eq!(roundtrip(orig.clone()), orig);
   }
 
-  #[test]
-  fn test_roundtrip_subscription_filter_latest_object() {
-    let orig = MessageParameter::new_subscription_filter(FilterType::LatestObject, None, None);
-    assert_eq!(roundtrip(orig.clone()), orig);
+  /// Encodes `params` the way a control message carries them and decodes them
+  /// back, checking nothing is left over.
+  fn wire_roundtrip(params: &[MessageParameter], msg_type: ControlMessageType) {
+    let mut bytes = serialize_message_parameters(params).unwrap();
+    let decoded =
+      deserialize_message_parameters(&mut bytes, params.len() as u64, msg_type).unwrap();
+    assert_eq!(decoded, params);
+    assert!(!bytes.has_remaining(), "the list left trailing bytes");
   }
 
   #[test]
-  fn test_roundtrip_subscription_filter_absolute_start() {
-    let orig = MessageParameter::new_subscription_filter(
-      FilterType::AbsoluteStartFill,
-      Some(Location {
-        group: 3,
-        object: 1,
-      }),
-      None,
-    );
-    assert_eq!(roundtrip(orig.clone()), orig);
+  fn test_roundtrip_location_filter_every_type() {
+    for filter in [
+      LocationFilter::None,
+      LocationFilter::RelativeStart { start_group: 2 },
+      LocationFilter::AbsoluteStart {
+        start: Location::new(3, 1),
+      },
+      LocationFilter::AbsoluteStartGroupEnd {
+        start: Location::new(5, 0),
+        end_group: 20,
+      },
+      LocationFilter::AbsoluteRange {
+        start: Location::new(5, 0),
+        end: Location::new(20, 9),
+      },
+      LocationFilter::NextObject,
+    ] {
+      wire_roundtrip(
+        &[MessageParameter::new_location_filter(filter)],
+        ControlMessageType::Subscribe,
+      );
+    }
   }
 
   #[test]
-  fn test_roundtrip_subscription_filter_absolute_range() {
-    let orig = MessageParameter::new_subscription_filter(
-      FilterType::AbsoluteRangeFill,
-      Some(Location {
-        group: 5,
-        object: 0,
-      }),
-      Some(20),
-    );
-    assert_eq!(roundtrip(orig.clone()), orig);
+  fn test_location_filter_wire_format_has_no_length() {
+    // Parameter Type 0x21, then the Location Filter Type and its fields only.
+    let cases: [(LocationFilter, &[u8]); 3] = [
+      (LocationFilter::NextObject, &[0x21, 0x05]),
+      (
+        LocationFilter::RelativeStart { start_group: 1 },
+        &[0x21, 0x01, 0x01],
+      ),
+      (
+        LocationFilter::AbsoluteRange {
+          start: Location::new(5, 0),
+          end: Location::new(20, 3),
+        },
+        // End Group 20 travels as the delta 15 from Start Group 5.
+        &[0x21, 0x04, 0x05, 0x00, 0x0F, 0x03],
+      ),
+    ];
+    for (filter, wire) in cases {
+      let params = vec![MessageParameter::new_location_filter(filter)];
+      assert_eq!(
+        serialize_message_parameters(&params).unwrap().as_ref(),
+        wire
+      );
+
+      let mut buf = Bytes::copy_from_slice(wire);
+      let decoded =
+        deserialize_message_parameters(&mut buf, 1, ControlMessageType::Subscribe).unwrap();
+      assert_eq!(decoded, params);
+      assert!(!buf.has_remaining());
+    }
   }
 
   #[test]
-  fn test_absolute_range_end_group_is_delta_on_wire() {
-    // Start group 5, absolute End Group 20 must serialize End Group as the
-    // delta 15, not the absolute 20.
-    let orig = MessageParameter::new_subscription_filter(
-      FilterType::AbsoluteRangeFill,
-      Some(Location {
-        group: 5,
-        object: 0,
-      }),
-      Some(20),
-    );
-    let mut bytes = orig.serialize().unwrap();
-    let kvp = KeyValuePair::deserialize(&mut bytes).unwrap();
-    let KeyValuePair::Bytes { value, .. } = kvp else {
-      panic!("SubscriptionFilter must be a bytes KVP");
-    };
-    let mut value = value;
+  fn test_location_filter_ends_where_its_type_says_in_a_list() {
+    // A field-less filter type followed by another parameter: the decoder must
+    // not mistake the next parameter's Type Delta for a length or a field.
+    let params = vec![
+      MessageParameter::new_subscriber_priority(7),
+      MessageParameter::new_location_filter(LocationFilter::NextObject),
+      MessageParameter::new_group_order(GroupOrder::Descending),
+    ];
+    let wire: &[u8] = &[0x20, 0x07, 0x01, 0x05, 0x01, 0x02];
     assert_eq!(
-      value.get_vi().unwrap(),
-      FilterType::AbsoluteRangeFill as u64
+      serialize_message_parameters(&params).unwrap().as_ref(),
+      wire
     );
-    assert_eq!(value.get_vi().unwrap(), 5); // start group
-    assert_eq!(value.get_vi().unwrap(), 0); // start object
-    assert_eq!(value.get_vi().unwrap(), 15); // End Group Delta = 20 - 5
+    wire_roundtrip(&params, ControlMessageType::Subscribe);
   }
 
   #[test]
-  fn test_absolute_range_end_group_delta_overflow_is_protocol_violation() {
-    // Start group u64::MAX plus a non-zero delta overflows the absolute Group ID
-    // and MUST be rejected.
+  fn test_location_filter_unknown_type_is_protocol_violation() {
+    let mut buf = Bytes::from_static(&[0x21, 0x06]);
+    assert!(matches!(
+      deserialize_message_parameters(&mut buf, 1, ControlMessageType::Subscribe),
+      Err(ParseError::ProtocolViolation { .. })
+    ));
+  }
+
+  #[test]
+  fn test_location_filter_end_group_overflow_is_protocol_violation() {
     let mut value = BytesMut::new();
-    value.put_vi(FilterType::AbsoluteRangeFill as u64).unwrap();
+    value
+      .put_vi(LocationFilterType::AbsoluteStartGroupEnd as u64)
+      .unwrap();
     value.put_vi(u64::MAX).unwrap(); // start group
     value.put_vi(0u64).unwrap(); // start object
-    value.put_vi(1u64).unwrap(); // End Group Delta -> overflow
-    let kvp = KeyValuePair::try_new_bytes(
-      MessageParameterType::SubscriptionFilter as u64,
-      value.freeze(),
-    )
-    .unwrap();
+    value.put_vi(1u64).unwrap(); // EndGroupDelta -> overflow
+    let kvp =
+      KeyValuePair::new_bytes(MessageParameterType::LocationFilter as u64, value.freeze()).unwrap();
     assert!(matches!(
       MessageParameter::deserialize(&kvp),
       Err(ParseError::ProtocolViolation { .. })
@@ -1175,27 +1152,24 @@ mod tests {
   }
 
   #[test]
-  fn test_roundtrip_subscription_filter_relative_start_fill() {
-    let orig = MessageParameter::new_relative_start_fill(3);
-    assert_eq!(roundtrip(orig.clone()), orig);
+  fn test_location_filter_truncated_is_an_error() {
+    // Absolute Start needs StartGroup and StartObject; only one follows.
+    let mut buf = Bytes::from_static(&[0x21, 0x02, 0x05]);
+    assert!(deserialize_message_parameters(&mut buf, 1, ControlMessageType::Subscribe).is_err());
   }
 
   #[test]
-  fn test_relative_start_fill_carries_relative_previous_on_the_wire() {
-    let mut bytes = MessageParameter::new_relative_start_fill(3)
-      .serialize()
-      .unwrap();
-    let kvp = KeyValuePair::deserialize(&mut bytes).unwrap();
-    let KeyValuePair::Bytes { value, .. } = kvp else {
-      panic!("SubscriptionFilter must be a bytes KVP");
-    };
-    let mut value = value;
+  fn test_location_filter_is_allowed_inside_fill_parameters() {
+    let params = vec![MessageParameter::new_fill_parameters(vec![
+      MessageParameter::new_location_filter(LocationFilter::RelativeStart { start_group: 1 }),
+    ])];
+    // FILL_PARAMETERS 0x23, length 3, then LOCATION_FILTER 0x21 type 1 StartGroup 1.
+    let wire: &[u8] = &[0x23, 0x03, 0x21, 0x01, 0x01];
     assert_eq!(
-      value.get_vi().unwrap(),
-      FilterType::RelativeStartFill as u64
+      serialize_message_parameters(&params).unwrap().as_ref(),
+      wire
     );
-    assert_eq!(value.get_vi().unwrap(), 3);
-    assert!(!value.has_remaining());
+    wire_roundtrip(&params, ControlMessageType::Subscribe);
   }
 
   #[test]
@@ -1525,33 +1499,26 @@ mod tests {
   #[test]
   fn test_bug_report_wire_format_is_delta_encoded() {
     // Regression for the reported interop bug: SUBSCRIBER_PRIORITY (0x20),
-    // FORWARD (0x10) and SUBSCRIPTION_FILTER (0x21), built in non-ascending
+    // FORWARD (0x10) and LOCATION_FILTER (0x21), built in non-ascending
     // insertion order. A spec-compliant v16 peer decodes Type as a delta from
     // the previous Type in the list; encoding them "as-is" (absolute) made a
     // correct delta-decoder compute types 48 and 81 instead.
     let params = vec![
       MessageParameter::new_subscriber_priority(0),
       MessageParameter::new_forward(true),
-      MessageParameter::new_subscription_filter(FilterType::LatestObject, None, None),
+      MessageParameter::new_location_filter(LocationFilter::NextObject),
     ];
-    let mut bytes = serialize_message_parameters(&params).unwrap();
+    let bytes = serialize_message_parameters(&params).unwrap();
 
-    // Decode independently of deserialize_message_parameters, using raw delta
-    // semantics, to prove the wire bytes are genuinely delta-encoded and not
-    // just self-consistent with our own (potentially still-buggy) decoder.
-    let mut prev_type = 0u64;
-    let mut types = Vec::new();
-    while bytes.has_remaining() {
-      let kvp = KeyValuePair::deserialize_delta(&mut bytes, prev_type).unwrap();
-      prev_type = kvp.get_type();
-      types.push(prev_type);
-    }
+    // Checked against the bytes themselves rather than our own decoder, to prove
+    // the Types are genuinely delta-encoded and not just self-consistent with a
+    // (potentially still-buggy) decoder.
     assert_eq!(
-      types,
-      vec![
-        MessageParameterType::Forward as u64,
-        MessageParameterType::SubscriberPriority as u64,
-        MessageParameterType::SubscriptionFilter as u64,
+      bytes.as_ref(),
+      &[
+        0x10, 0x01, // FORWARD (delta 0x10) = 1
+        0x10, 0x00, // SUBSCRIBER_PRIORITY (delta 0x10 -> 0x20) = 0
+        0x01, 0x05, // LOCATION_FILTER (delta 0x01 -> 0x21), Next Object
       ]
     );
   }

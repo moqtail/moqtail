@@ -16,7 +16,7 @@
 
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
 
-import { ControlMessageType, FilterType } from './constant'
+import { ControlMessageType, LocationFilterType } from './constant'
 import { CastingError, LengthExceedsMaxError, ProtocolViolationError } from '../error/error'
 import {
   MessageParameter,
@@ -28,7 +28,7 @@ import { TrackProperty, ObjectDeliveryTimeoutProperty, MaxCacheDurationProperty 
 import { Location } from '../common/location'
 import { Forward } from '../parameter/message/forward'
 import { SubscriberPriority } from '../parameter/message/subscriber_priority'
-import { SubscriptionFilter } from '../parameter/message/subscription_filter'
+import { LocationFilter } from '../parameter/message/location_filter'
 import { ObjectDeliveryTimeout } from '../parameter/message/object_delivery_timeout'
 
 /**
@@ -154,7 +154,7 @@ if (import.meta.vitest) {
       const parameters: MessageParameter[] = [
         new Forward(true),
         new SubscriberPriority(100),
-        new SubscriptionFilter(FilterType.LatestObject, undefined, undefined),
+        new LocationFilter(LocationFilterType.NextObject),
       ]
       const msg = new RequestOk(parameters)
       const payload = payloadOf(msg)
@@ -163,9 +163,9 @@ if (import.meta.vitest) {
       expect(payload.remaining).toBe(0)
     })
 
-    test('roundtrip with AbsoluteRangeFill subscription filter', () => {
+    test('roundtrip with an AbsoluteRange location filter', () => {
       const parameters: MessageParameter[] = [
-        new SubscriptionFilter(FilterType.AbsoluteRangeFill, new Location(5n, 10n), 20n),
+        new LocationFilter(LocationFilterType.AbsoluteRange, 5n, 10n, 20n, 3n),
         new ObjectDeliveryTimeout(5000n),
       ]
       const msg = new RequestOk(parameters)

@@ -32,19 +32,21 @@ impl From<CliGroupOrder> for GroupOrder {
   }
 }
 
-/// Which Subscription Filter a subscribe uses.
+/// Which Location Filter a subscribe uses.
 #[derive(Debug, Clone, Copy, PartialEq, ValueEnum)]
 pub enum CliFilter {
+  /// No filter: every Object
+  None,
+  /// From --filter-start-group groups before the next group (0 = the next group, 1 = the current one)
+  RelativeStart,
+  /// From --filter-start-group/--filter-start-object
+  AbsoluteStart,
+  /// As above, ending with group Start Group plus --end-group-delta
+  AbsoluteStartGroupEnd,
+  /// As above, ending with Object --filter-end-object of that group
+  AbsoluteRange,
   /// Objects published from now on
-  Latest,
-  /// Objects from the start of the next group
-  NextGroup,
-  /// From an explicit Start Location, filling what is already published
-  AbsoluteStartFill,
-  /// As above, ending at Start Group plus --end-group-delta
-  AbsoluteRangeFill,
-  /// From --relative-previous groups before the Largest Object
-  RelativeStartFill,
+  NextObject,
 }
 
 /// How a switch stops the subscription it suspends.
@@ -227,25 +229,36 @@ pub struct Cli {
   #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
   pub forward: bool,
 
-  /// Subscription Filter to subscribe with (subscribe only)
-  #[arg(long, value_enum, default_value = "latest")]
+  /// Location Filter to subscribe with (subscribe only)
+  #[arg(long, value_enum, default_value = "next-object")]
   pub filter: CliFilter,
 
-  /// Start group for the absolute fill filters (subscribe only)
+  /// Start group for the absolute filters, or groups back from the next group for
+  /// --filter relative-start (subscribe only)
   #[arg(long, default_value_t = 0)]
   pub filter_start_group: u64,
 
-  /// Start object for the absolute fill filters (subscribe only)
+  /// Start object for the absolute filters (subscribe only)
   #[arg(long, default_value_t = 0)]
   pub filter_start_object: u64,
 
-  /// Groups after the Start Group that --filter absolute-range-fill ends at
+  /// Groups after the Start Group that the absolute filters with an end end at
   #[arg(long, default_value_t = 0)]
   pub end_group_delta: u64,
 
-  /// Groups back from the Largest Object that --filter relative-start-fill starts at
+  /// Last Object of the End Group for --filter absolute-range
   #[arg(long, default_value_t = 0)]
-  pub relative_previous: u64,
+  pub filter_end_object: u64,
+
+  /// Also retrieve what is already published over --filter's range, on a fill
+  /// fetch stream (subscribe only)
+  #[arg(long, default_value_t = false)]
+  pub fill: bool,
+
+  /// Fill from this many groups before the next group instead of over --filter's
+  /// range (1 = the current group); implies --fill (subscribe only)
+  #[arg(long)]
+  pub fill_start_group: Option<u64>,
 
   /// Seconds after subscribing to switch to --switch-track (subscribe only, 0 = never)
   #[arg(long, default_value_t = 0)]

@@ -24,8 +24,8 @@ import {
   ControlMessage,
   Fetch,
   FetchOk,
-  FilterType,
   GoAway,
+  LocationFilterType,
   GroupOrder,
   Subscribe,
   SubscribeNamespace,
@@ -70,7 +70,8 @@ import {
   Forward,
   SubscriberPriority,
   GroupOrderParam,
-  SubscriptionFilter,
+  LocationFilter,
+  FillParameters,
   StreamResetCode,
   resolveTransportUrl,
   SwitchFrom,
@@ -122,7 +123,7 @@ import { logger, LogLevel, setLogLevel, setLogEnabledModules } from '../util/log
  * const client = await MOQtailClient.new({ url });
  * const result = await client.subscribe({
  *   fullTrackName,
- *   filterType: FilterType.LatestObject,
+ *   locationFilter: new LocationFilter(LocationFilterType.NextObject),
  *   forward: true,
  *   groupOrder: GroupOrder.Original,
  *   priority: 0
@@ -990,10 +991,9 @@ export class MOQtailClient {
    *
    * - `forward: true` tells the relay to forward objects to this subscriber as they arrive.
    * - `forward: false` means the relay subscribes upstream but buffers objects locally, not forwarding them to you.
-   * - `filterType: AbsoluteStartFill` lets you specify a start position in the future; the stream waits for that object. If the start location is \< the latest object
-   * observed at the publisher then it behaves as `filterType: LatestObject`
-   * - `filterType: AbsoluteRangeFill` lets you specify a start and end group, both of should be in the future; the stream waits for those objects. If the start location is \< the latest object
-   * observed at the publisher then it behaves as `filterType: LatestObject`.
+   * - `locationFilter` selects which Objects are delivered; omitted, the subscription is unfiltered. An absolute start in the
+   * future waits for that object.
+   * - A {@link FillParameters} in `parameters` also retrieves Objects already published, on a fill fetch stream.
    *
    * The method returns either a {@link RequestError} (on refusal) or an object with the subscription `requestId` and a `ReadableStream` of {@link MoqtObject}s.
    * Use the `requestId` for {@link MOQtailClient.unsubscribe} or {@link MOQtailClient.subscribeUpdate}. Use the `stream` to decode and display objects.
@@ -1008,7 +1008,7 @@ export class MOQtailClient {
    * ```ts
    * const result = await client.subscribe({
    *   fullTrackName,
-   *   filterType: FilterType.LatestObject,
+   *   locationFilter: new LocationFilter(LocationFilterType.NextObject),
    *   forward: true,
    *   groupOrder: GroupOrder.Original,
    *   priority: 32
@@ -1020,13 +1020,11 @@ export class MOQtailClient {
    * }
    * ```
    *
-   * @example Subscribe to a future range (waits for those objects to arrive)
+   * @example Subscribe to a future range of groups (waits for those objects to arrive)
    * ```ts
    * const result = await client.subscribe({
    *   fullTrackName,
-   *   filterType: FilterType.AbsoluteRangeFill,
-   *   startLocation: futureStart,
-   *   endGroup: futureEnd,
+   *   locationFilter: new LocationFilter(LocationFilterType.AbsoluteStartGroupEnd, startGroup, 0n, endGroup),
    *   forward: true,
    *   groupOrder: GroupOrder.Original,
    *   priority: 128
@@ -1038,69 +1036,20 @@ export class MOQtailClient {
   ): Promise<RequestError | { requestId: bigint; stream: ReadableStream<MoqtObject> }> {
     this.#ensureActive()
     try {
-      let { fullTrackName, priority, groupOrder, forward, filterType, parameters, startLocation, endGroup } = args
+      const { fullTrackName, priority, groupOrder, forward, locationFilter, parameters } = args
 
       logger.debug(
         'MOQtailClient',
-        `subscribe: ftn="${fullTrackName}" filterType=${filterType} priority=${priority} forward=${forward} groupOrder=${groupOrder}`,
+        `subscribe: ftn="${fullTrackName}" locationFilter=${locationFilter?.filterType} priority=${priority} forward=${forward} groupOrder=${groupOrder}`,
       )
 
-      let msg: Subscribe
-      if (typeof endGroup === 'number') endGroup = BigInt(endGroup)
-      const baseParams: MessageParameter[] = [
+      const msg = new Subscribe(this.#nextClientRequestId, fullTrackName, [
         new SubscriberPriority(priority),
         ...(forward !== undefined ? [new Forward(forward)] : []),
         ...(groupOrder !== GroupOrder.Original ? [new GroupOrderParam(groupOrder)] : []),
+        ...(locationFilter ? [locationFilter] : []),
         ...(parameters ?? []),
-      ]
-      switch (filterType) {
-        case FilterType.LatestObject:
-          msg = Subscribe.newLatestObject(this.#nextClientRequestId, fullTrackName, baseParams)
-          break
-        case FilterType.NextGroupStart:
-          msg = Subscribe.newNextGroupStart(this.#nextClientRequestId, fullTrackName, baseParams)
-          break
-        case FilterType.AbsoluteStartFill:
-          if (!startLocation)
-            throw new ProtocolViolationError(
-              'MOQtailClient.subscribe',
-              'FilterType.AbsoluteStartFill must have a start location',
-            )
-          msg = Subscribe.newAbsoluteStartFill(this.#nextClientRequestId, fullTrackName, startLocation, baseParams)
-          break
-        case FilterType.AbsoluteRangeFill:
-          if (startLocation === undefined || endGroup === undefined)
-            throw new ProtocolViolationError(
-              'MOQtailClient.subscribe',
-              'FilterType.AbsoluteRangeFill must have a start location and an end group',
-            )
-          if (endGroup > 0 && startLocation.group >= endGroup)
-            throw new ProtocolViolationError('MOQtailClient.subscribe', 'End group must be greater than start group')
-
-          msg = Subscribe.newAbsoluteRangeFill(
-            this.#nextClientRequestId,
-            fullTrackName,
-            startLocation,
-            endGroup,
-            baseParams,
-          )
-          break
-        case FilterType.RelativeStartFill: {
-          const { relativePrevious } = args
-          if (relativePrevious === undefined)
-            throw new ProtocolViolationError(
-              'MOQtailClient.subscribe',
-              'FilterType.RelativeStartFill must have a relative previous',
-            )
-          msg = Subscribe.newRelativeStartFill(
-            this.#nextClientRequestId,
-            fullTrackName,
-            BigInt(relativePrevious),
-            baseParams,
-          )
-          break
-        }
-      }
+      ])
       const request = new SubscribeRequest(msg)
       request.manager = new Subscription(request)
       request.earlyDiscardPolicy = args.earlyDiscardPolicy
@@ -1164,7 +1113,7 @@ export class MOQtailClient {
    *
    * @example Subscribe and later unsubscribe
    * ```ts
-   * const sub = await client.subscribe({ fullTrackName, filterType: FilterType.LatestObject, forward: true, groupOrder: GroupOrder.Original, priority: 0 });
+   * const sub = await client.subscribe({ fullTrackName, locationFilter: new LocationFilter(LocationFilterType.NextObject), forward: true, groupOrder: GroupOrder.Original, priority: 0 });
    * if (!(sub instanceof RequestError)) {
    *   // ...consume objects...
    *   await client.unsubscribe(sub.requestId);
@@ -1239,24 +1188,22 @@ export class MOQtailClient {
    *
    * @example Trim start forward
    * ```ts
-   * await client.subscribeUpdate({ requestId, startLocation: laterLoc, endGroup, forward: true, priority });
+   * await client.subscribeUpdate({ subscriptionRequestId, locationFilter: new LocationFilter(LocationFilterType.AbsoluteStart, laterGroup, 0n), forward: true, priority });
    * ```
    *
    * @example Convert tailing subscription into bounded slice
    * ```ts
-   * await client.subscribeUpdate({ requestId, startLocation: origStart, endGroup: cutoffGroup, forward: false, priority });
+   * await client.subscribeUpdate({ subscriptionRequestId, locationFilter: new LocationFilter(LocationFilterType.AbsoluteStartGroupEnd, startGroup, 0n, cutoffGroup), forward: false, priority });
    * ```
    *
    * @example Lower priority only
    * ```ts
-   * await client.subscribeUpdate({ requestId, startLocation: currentStart, endGroup: currentEnd, forward: true, priority: 200 });
+   * await client.subscribeUpdate({ subscriptionRequestId, forward: true, priority: 200 });
    * ```
    */
   async subscribeUpdate(args: SubscribeUpdateOptions): Promise<void> {
     this.#ensureActive()
-    let { subscriptionRequestId, priority, forward, parameters, startLocation, endGroup } = args
-    if (endGroup && startLocation.group >= endGroup)
-      throw new ProtocolViolationError('MOQtailClient.subscribeUpdate', 'End group must be greater than start group')
+    const { subscriptionRequestId, priority, forward, parameters, locationFilter } = args
     try {
       if (this.requests.has(subscriptionRequestId)) {
         const request = this.requests.get(subscriptionRequestId)!
@@ -1273,7 +1220,7 @@ export class MOQtailClient {
           const updateParams: MessageParameter[] = [
             new SubscriberPriority(priority),
             new Forward(forward),
-            new SubscriptionFilter(FilterType.AbsoluteRangeFill, startLocation, endGroup),
+            ...(locationFilter ? [locationFilter] : []),
             ...(parameters ?? []),
           ]
           const msg = new RequestUpdate(requestId, updateParams)
@@ -1312,7 +1259,7 @@ export class MOQtailClient {
    * await client.switch({
    *   switchFromRequestId,
    *   switchMode: SwitchMode.Soft,
-   *   newSubscribeOptions: { fullTrackName: newTrackName, priority: 0, groupOrder: GroupOrder.Original, forward: true, filterType: FilterType.LatestObject },
+   *   newSubscribeOptions: { fullTrackName: newTrackName, priority: 0, groupOrder: GroupOrder.Original, forward: true, locationFilter: new LocationFilter(LocationFilterType.NextObject) },
    *   onDrainDecision: (request) => true
    * });
    * ```
@@ -1517,7 +1464,7 @@ export class MOQtailClient {
    *
    * @example Relative to live subscription (e.g. last 5 groups)
    * ```ts
-   * const sub = await client.subscribe({ fullTrackName, filterType: FilterType.LatestObject, forward: true, groupOrder: GroupOrder.Original, priority: 0 })
+   * const sub = await client.subscribe({ fullTrackName, locationFilter: new LocationFilter(LocationFilterType.NextObject), forward: true, groupOrder: GroupOrder.Original, priority: 0 })
    * if (!(sub instanceof RequestError)) {
    *   const slice = await client.fetch({
    *     priority: 32,
@@ -2040,13 +1987,14 @@ export class MOQtailClient {
   ): Promise<RequestOk | RequestError> {
     this.#ensureActive()
     try {
-      const msg = TrackStatus.newLatestObject(
+      const msg = new TrackStatus(
         this.#nextClientRequestId,
         trackAlias,
         fullTrackName,
         128,
         GroupOrder.Original,
         false,
+        new LocationFilter(LocationFilterType.NextObject),
         parameters ?? [],
       )
       const request = new TrackStatusRequest(msg)
@@ -2724,7 +2672,7 @@ if (import.meta.vitest) {
 
       const subscribing = client.subscribe({
         fullTrackName: ftn,
-        filterType: FilterType.LatestObject,
+        locationFilter: new LocationFilter(LocationFilterType.NextObject),
         forward: true,
         groupOrder: GroupOrder.Original,
         priority: 0,
@@ -2882,7 +2830,7 @@ if (import.meta.vitest) {
       client.switchDrainTimeoutMs = 10
       const other = FullTrackName.tryNew('room/alice', 'video-low')
       const options = {
-        filterType: FilterType.LatestObject,
+        locationFilter: new LocationFilter(LocationFilterType.NextObject),
         forward: true,
         groupOrder: GroupOrder.Original,
         priority: 0,
@@ -2953,7 +2901,7 @@ if (import.meta.vitest) {
 
       const subscribingAlice = client.subscribe({
         fullTrackName: ftn,
-        filterType: FilterType.LatestObject,
+        locationFilter: new LocationFilter(LocationFilterType.NextObject),
         forward: true,
         groupOrder: GroupOrder.Original,
         priority: 0,
@@ -2961,7 +2909,7 @@ if (import.meta.vitest) {
       const aliceStream = await openedStream(transport, 0)
       const subscribingBob = client.subscribe({
         fullTrackName: otherFtn,
-        filterType: FilterType.LatestObject,
+        locationFilter: new LocationFilter(LocationFilterType.NextObject),
         forward: true,
         groupOrder: GroupOrder.Original,
         priority: 0,
@@ -2994,7 +2942,7 @@ if (import.meta.vitest) {
 
       const subscribing = client.subscribe({
         fullTrackName: ftn,
-        filterType: FilterType.LatestObject,
+        locationFilter: new LocationFilter(LocationFilterType.NextObject),
         forward: true,
         groupOrder: GroupOrder.Original,
         priority: 0,
@@ -3023,7 +2971,7 @@ if (import.meta.vitest) {
 
       const subscribing = client.subscribe({
         fullTrackName: ftn,
-        filterType: FilterType.LatestObject,
+        locationFilter: new LocationFilter(LocationFilterType.NextObject),
         forward: true,
         groupOrder: GroupOrder.Original,
         priority: 0,
@@ -3035,8 +2983,7 @@ if (import.meta.vitest) {
 
       await client.subscribeUpdate({
         subscriptionRequestId: requestId,
-        startLocation: new Location(1n, 0n),
-        endGroup: 5n,
+        locationFilter: new LocationFilter(LocationFilterType.AbsoluteStartGroupEnd, 1n, 0n, 5n),
         forward: false,
         priority: 200,
       })
@@ -3070,7 +3017,7 @@ if (import.meta.vitest) {
       const { client, transport } = await connected()
 
       const incoming = transport.openIncomingBiStream()
-      const subscribe = Subscribe.newLatestObject(4n, ftn, [])
+      const subscribe = new Subscribe(4n, ftn, [new LocationFilter(LocationFilterType.NextObject)])
       incoming.respond(subscribe)
 
       // No such track is registered, so the refusal comes back here rather than on the
@@ -3086,7 +3033,18 @@ if (import.meta.vitest) {
       const { client, transport } = await connected()
 
       const incoming = transport.openIncomingBiStream()
-      incoming.respond(TrackStatus.newLatestObject(4n, 11n, ftn, 128, GroupOrder.Original, false, []))
+      incoming.respond(
+        new TrackStatus(
+          4n,
+          11n,
+          ftn,
+          128,
+          GroupOrder.Original,
+          false,
+          new LocationFilter(LocationFilterType.NextObject),
+          [],
+        ),
+      )
       await vi.waitFor(() => expect(incoming.messages).toHaveLength(1))
       expect(incoming.messages[0]).toBeInstanceOf(RequestOk)
 
@@ -3112,7 +3070,7 @@ if (import.meta.vitest) {
       })
 
       const incoming = transport.openIncomingBiStream()
-      incoming.respond(Subscribe.newLatestObject(4n, ftn, []))
+      incoming.respond(new Subscribe(4n, ftn, [new LocationFilter(LocationFilterType.NextObject)]))
       await vi.waitFor(() => expect(incoming.messages).toHaveLength(1))
       expect(incoming.messages[0]).toBeInstanceOf(SubscribeOk)
 
@@ -3129,7 +3087,7 @@ if (import.meta.vitest) {
 
       const incoming = transport.openIncomingBiStream()
       // No such track, so the SUBSCRIBE is refused and leaves no subscription to update.
-      incoming.respond(Subscribe.newLatestObject(4n, ftn, []))
+      incoming.respond(new Subscribe(4n, ftn, [new LocationFilter(LocationFilterType.NextObject)]))
       await vi.waitFor(() => expect(incoming.messages).toHaveLength(1))
       expect(incoming.messages[0]).toBeInstanceOf(RequestError)
 
@@ -3167,7 +3125,7 @@ if (import.meta.vitest) {
 
       const subscribing = client.subscribe({
         fullTrackName: ftn,
-        filterType: FilterType.LatestObject,
+        locationFilter: new LocationFilter(LocationFilterType.NextObject),
         forward: true,
         groupOrder: GroupOrder.Original,
         priority: 0,
@@ -3238,7 +3196,7 @@ if (import.meta.vitest) {
 
       const subscribing = client.subscribe({
         fullTrackName: ftn,
-        filterType: FilterType.LatestObject,
+        locationFilter: new LocationFilter(LocationFilterType.NextObject),
         forward: true,
         groupOrder: GroupOrder.Original,
         priority: 0,
@@ -3287,8 +3245,8 @@ if (import.meta.vitest) {
 
       const subscribing = client.subscribe({
         fullTrackName: ftn,
-        filterType: FilterType.RelativeStartFill,
-        relativePrevious: 2n,
+        locationFilter: new LocationFilter(LocationFilterType.NextObject),
+        parameters: [new FillParameters([new LocationFilter(LocationFilterType.RelativeStart, 3n)])],
         forward: true,
         groupOrder: GroupOrder.Original,
         priority: 0,
@@ -3330,7 +3288,7 @@ if (import.meta.vitest) {
       client.switchDrainTimeoutMs = 40
       const other = FullTrackName.tryNew('room/alice', 'video-low')
       const options = {
-        filterType: FilterType.LatestObject,
+        locationFilter: new LocationFilter(LocationFilterType.NextObject),
         forward: true,
         groupOrder: GroupOrder.Original,
         priority: 0,
@@ -3378,7 +3336,7 @@ if (import.meta.vitest) {
       client.switchDrainTimeoutMs = 60_000
       const other = FullTrackName.tryNew('room/alice', 'video-low')
       const options = {
-        filterType: FilterType.LatestObject,
+        locationFilter: new LocationFilter(LocationFilterType.NextObject),
         forward: true,
         groupOrder: GroupOrder.Original,
         priority: 0,
@@ -3416,7 +3374,7 @@ if (import.meta.vitest) {
 
       const subscribing = client.subscribe({
         fullTrackName: ftn,
-        filterType: FilterType.LatestObject,
+        locationFilter: new LocationFilter(LocationFilterType.NextObject),
         forward: true,
         groupOrder: GroupOrder.Original,
         priority: 0,
@@ -3460,7 +3418,7 @@ if (import.meta.vitest) {
       // the subscription that eventually claims 9 never sees what it carried.
       const subscribing = client.subscribe({
         fullTrackName: ftn,
-        filterType: FilterType.LatestObject,
+        locationFilter: new LocationFilter(LocationFilterType.NextObject),
         forward: true,
         groupOrder: GroupOrder.Original,
         priority: 0,

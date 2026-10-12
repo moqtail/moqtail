@@ -266,7 +266,7 @@ pub async fn handle(
       // PUBLISH is answered by REQUEST_OK; no Track Properties.
       // SUBSCRIBER_PRIORITY is omitted so the publisher uses the default of 128;
       // the relay has no reason to rank a pushed track above everything else.
-      // SUBSCRIPTION_FILTER is omitted so the subscription is unfiltered: a relay
+      // LOCATION_FILTER is omitted so the subscription is unfiltered: a relay
       // wants every Object, both to serve downstream filters and to fill its
       // cache for FETCH.
       // GROUP_ORDER has no place here: the relay applies each subscriber's order

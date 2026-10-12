@@ -399,6 +399,10 @@ pub(crate) const DEFAULT_PUBLISHER_PRIORITY: u8 = 128;
 pub struct Subscription {
   pub request_id: u64,
   relay_track_id: u64,
+  /// The Track Alias this subscriber knows the track by on this subscription. It is
+  /// the track's relay id or one of the subscription's own, as `--track-alias-mode`
+  /// decides; `relay_track_id` stays the relay's internal name for the track.
+  pub track_alias: u64,
   pub full_track_name: FullTrackName,
   pub subscription_state: Arc<RwLock<SubscriptionState>>,
   subscriber: Arc<MOQTClient>,
@@ -453,6 +457,7 @@ const SSTS_GATE_GROUP_NONE: u64 = u64::MAX;
 impl Subscription {
   fn create_instance(
     relay_track_id: u64,
+    track_alias: u64,
     full_track_name: FullTrackName,
     request_id: u64,
     origin_message: SubscriptionOrigin,
@@ -466,6 +471,7 @@ impl Subscription {
   ) -> Self {
     Self {
       relay_track_id,
+      track_alias,
       full_track_name,
       request_id,
       subscription_state: Arc::new(RwLock::new(origin_message.into())),
@@ -559,6 +565,7 @@ impl Subscription {
 
   pub fn new(
     relay_track_id: u64,
+    track_alias: u64,
     full_track_name: FullTrackName,
     origin_message: SubscriptionOrigin,
     subscriber: Arc<MOQTClient>,
@@ -572,6 +579,7 @@ impl Subscription {
     let event_rx = Arc::new(Mutex::new(Some(event_rx)));
     let sub = Self::create_instance(
       relay_track_id,
+      track_alias,
       full_track_name,
       origin_message.request_id(),
       origin_message,
@@ -1218,7 +1226,7 @@ impl Subscription {
         stream_id,
         header_info,
       } => {
-        object.track_alias = self.relay_track_id;
+        object.track_alias = self.track_alias;
 
         // SSTS: when this track belongs to a switching set, only the track
         // the allocation picked for this group is forwarded. The answer holds
@@ -1567,7 +1575,7 @@ impl Subscription {
         }
 
         let mut norm_object = object.clone();
-        norm_object.track_alias = self.relay_track_id;
+        norm_object.track_alias = self.track_alias;
 
         match norm_object.serialize() {
           Ok(serialized_bytes) => {
@@ -1814,7 +1822,7 @@ impl Subscription {
   async fn get_header_payload(&self, header_info: &HeaderInfo) -> Result<Bytes> {
     let connection_id = self.client_connection_id;
     match header_info {
-      HeaderInfo::Subgroup { header } => header.serialize(Some(self.relay_track_id)).map_err(|e| {
+      HeaderInfo::Subgroup { header } => header.serialize(Some(self.track_alias)).map_err(|e| {
         error!(
           "Error serializing subgroup header: {:?} subscriber={} relay_track_id={}",
           e, connection_id, self.relay_track_id

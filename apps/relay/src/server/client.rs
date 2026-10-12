@@ -17,7 +17,7 @@ pub(crate) mod switch_context;
 
 use crate::server::{
   client::request_subscription_map::RequestSubscriptionMap,
-  config::AppConfig,
+  config::{AppConfig, TrackAliasMode},
   message_handlers::fetch_handler::FetchStop,
   session_context::PendingRequest,
   ssts,
@@ -42,7 +42,10 @@ use switch_context::SwitchContext;
 
 use std::{
   collections::{BTreeMap, HashMap, VecDeque},
-  sync::Arc,
+  sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+  },
   time::Duration,
 };
 use tokio::sync::Notify;
@@ -155,6 +158,18 @@ pub(crate) struct MOQTClient {
   /// The settings this relay started with, handed in the way `Track` and
   /// `Subscription` take theirs, rather than reached for through the global.
   config: &'static AppConfig,
+
+  /// The next Track Alias handed out under `per-subscription`.
+  next_track_alias: Arc<AtomicU64>,
+}
+
+/// The Track Alias `mode` gives a new subscription to the track the relay knows as
+/// `relay_track_id`, drawing fresh ones from `next`.
+fn pick_track_alias(mode: TrackAliasMode, relay_track_id: u64, next: &AtomicU64) -> u64 {
+  match mode {
+    TrackAliasMode::PerTrack => relay_track_id,
+    TrackAliasMode::PerSubscription => next.fetch_add(1, Ordering::Relaxed),
+  }
 }
 
 impl MOQTClient {
@@ -209,6 +224,7 @@ impl MOQTClient {
       rate_limiter,
       ssts,
       config,
+      next_track_alias: Arc::new(AtomicU64::new(0)),
     }
   }
 
@@ -221,6 +237,18 @@ impl MOQTClient {
   pub(crate) async fn remove_announced_track_namespace(&self, track_namespace: &Tuple) {
     let mut announced_track_namespaces = self.announced_track_namespaces.write().await;
     announced_track_namespaces.retain(|ns| ns != track_namespace);
+  }
+
+  /// The Track Alias to give this subscriber for a new subscription to the track
+  /// the relay knows as `relay_track_id`: that id itself under `per-track`, or a
+  /// fresh one under `per-subscription`. Fresh ones come from a counter of this
+  /// connection's own, so no two are alike within its session.
+  pub(crate) fn assign_track_alias(&self, relay_track_id: u64) -> u64 {
+    pick_track_alias(
+      self.config.track_alias_mode,
+      relay_track_id,
+      &self.next_track_alias,
+    )
   }
 
   pub(crate) async fn add_subscriber(&self, subscriber_id: usize) {
@@ -633,6 +661,21 @@ impl MOQTClient {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn per_track_gives_every_subscription_the_tracks_alias() {
+    let next = AtomicU64::new(0);
+    assert_eq!(pick_track_alias(TrackAliasMode::PerTrack, 7, &next), 7);
+    assert_eq!(pick_track_alias(TrackAliasMode::PerTrack, 7, &next), 7);
+  }
+
+  #[test]
+  fn per_subscription_gives_each_subscription_its_own_alias() {
+    let next = AtomicU64::new(0);
+    let first = pick_track_alias(TrackAliasMode::PerSubscription, 7, &next);
+    let second = pick_track_alias(TrackAliasMode::PerSubscription, 7, &next);
+    assert_ne!(first, second);
+  }
   use crate::server::stream_id::{StreamId, StreamType};
 
   /// Test helper struct that exposes the partition logic for testing

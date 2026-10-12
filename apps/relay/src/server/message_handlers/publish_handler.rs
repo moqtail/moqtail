@@ -518,7 +518,7 @@ pub(crate) async fn push_track_to_subscriber(
   downstream.request_id = relay_request_id;
   {
     let track = track_arc.read().await;
-    downstream.track_alias = track.relay_track_id;
+    downstream.track_alias = subscriber.assign_track_alias(track.relay_track_id);
     downstream.parameters = parameters::downstream_publish(
       &publish.parameters,
       subscribe_tracks_params,

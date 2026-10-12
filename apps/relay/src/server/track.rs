@@ -455,7 +455,7 @@ impl Track {
     &self,
     subscriber: Arc<MOQTClient>,
     origin_message: impl Into<SubscriptionOrigin>,
-  ) -> Result<Arc<RwLock<Subscription>>, anyhow::Error> {
+  ) -> Result<Arc<RwLock<Subscription>>> {
     let origin_enum = origin_message.into();
     let subscription = self
       .subscription_manager
@@ -524,7 +524,7 @@ impl Track {
     stream_id: &StreamId,
     object: &Object,
     header_info: Option<&HeaderInfo>,
-  ) -> Result<(), anyhow::Error> {
+  ) -> Result<()> {
     trace!(
       "new_subgroup_object: relay_track_id={} location: {:?} stream_id={} diff_ms={}",
       self.relay_track_id,
@@ -623,7 +623,7 @@ impl Track {
       .unwrap_or(DEFAULT_PUBLISHER_PRIORITY)
   }
 
-  pub async fn new_datagram(&self, datagram: &Datagram) -> Result<(), anyhow::Error> {
+  pub async fn new_datagram(&self, datagram: &Datagram) -> Result<()> {
     trace!(
       "new_datagram: relay_track_id={} group: {:?} object_id={} diff_ms={}",
       self.relay_track_id,
@@ -704,7 +704,7 @@ impl Track {
     Ok(())
   }
 
-  pub async fn stream_closed(&self, stream_id: &StreamId) -> Result<(), anyhow::Error> {
+  pub async fn stream_closed(&self, stream_id: &StreamId) -> Result<()> {
     self.active_subgroup_headers.write().await.remove(stream_id);
 
     let event = TrackEvent::StreamClosed {
@@ -721,7 +721,7 @@ impl Track {
 
   /// Send PublisherDisconnected event to all subscribers.
   /// Called internally by remove_publisher() when the last publisher leaves.
-  pub async fn notify_publisher_disconnected(&self) -> Result<(), anyhow::Error> {
+  pub async fn notify_publisher_disconnected(&self) -> Result<()> {
     info!(
       "All publishers gone for relay_track_id={} - notifying all subscribers",
       self.relay_track_id
@@ -743,7 +743,7 @@ impl Track {
     &self,
     status_code: PublishDoneStatusCode,
     reason: String,
-  ) -> Result<(), anyhow::Error> {
+  ) -> Result<()> {
     let event = TrackEvent::PublisherDisconnected {
       status_code,
       reason,

@@ -119,8 +119,15 @@ impl SubscriptionManager {
     // Create a separate unbounded channel for this subscriber
     let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<TrackEvent>();
 
+    // A pushed track's alias is the one its PUBLISH already gave the subscriber.
+    let track_alias = match &origin_message {
+      SubscriptionOrigin::Publish(publish) => publish.track_alias,
+      SubscriptionOrigin::Subscribe(_) => subscriber.assign_track_alias(self.relay_track_id),
+    };
+
     let subscription = Subscription::new(
       self.relay_track_id,
+      track_alias,
       self.full_track_name.clone(),
       origin_message.clone(),
       subscriber.clone(),

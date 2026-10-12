@@ -89,7 +89,9 @@ import { SubscribePublication } from './publication/subscribe'
 import { FetchPublication } from './publication/fetch'
 import { PublishPublication } from './publication/publish'
 import { random60bitId } from './util/random_id'
-import { isValidTrackAlias } from './util/validators'
+import { assertWithinFilterRangeLimit, isValidTrackAlias } from './util/validators'
+import { MaxFilterRanges } from '../model/parameter/setup/max_filter_ranges'
+import { applyMessageParameterUpdate } from '../model/parameter/message_parameter'
 import { PeerStreamResetError, streamResetCodeOf, streamResetReason } from './util/stream_reset'
 import {
   MOQtailRequest,
@@ -425,6 +427,18 @@ export class MOQtailClient {
    */
   get serverSetup(): Setup {
     return this.#serverSetup
+  }
+
+  /**
+   * How many filter ranges the server allows in one request: its MAX_FILTER_RANGES,
+   * or 0 when it sent none, which allows no Range Filter at all.
+   */
+  get peerMaxFilterRanges(): bigint {
+    for (const pair of this.#serverSetup?.setupOptions ?? []) {
+      const option = MaxFilterRanges.fromKeyValuePair(pair)
+      if (option) return option.value
+    }
+    return 0n
   }
 
   /**
@@ -1002,6 +1016,7 @@ export class MOQtailClient {
    * @returns Either a {@link RequestError} or `{ requestId, stream }` for consuming objects.
    * @throws : {@link MOQtailError} If the client is destroyed.
    * @throws : {@link ProtocolViolationError} If required fields are missing or inconsistent.
+   * @throws : {@link InvalidFilterError} If the Range Filters exceed the server's MAX_FILTER_RANGES; nothing is sent.
    * @throws : {@link InternalError} On transport/protocol failure (disconnect is triggered before rethrow).
    *
    * @example Subscribe to the latest object and receive future objects as they arrive
@@ -1035,6 +1050,8 @@ export class MOQtailClient {
     args: SubscribeOptions,
   ): Promise<RequestError | { requestId: bigint; stream: ReadableStream<MoqtObject> }> {
     this.#ensureActive()
+    // Checked before the try: a request the caller got wrong is not a broken session.
+    assertWithinFilterRangeLimit(args.parameters ?? [], this.peerMaxFilterRanges, 'MOQtailClient.subscribe')
     try {
       const { fullTrackName, priority, groupOrder, forward, locationFilter, parameters } = args
 
@@ -1204,6 +1221,16 @@ export class MOQtailClient {
   async subscribeUpdate(args: SubscribeUpdateOptions): Promise<void> {
     this.#ensureActive()
     const { subscriptionRequestId, priority, forward, parameters, locationFilter } = args
+    // The limit holds for the update itself and for the filters the subscription is
+    // left with once it applies.
+    const limit = this.peerMaxFilterRanges
+    assertWithinFilterRangeLimit(parameters ?? [], limit, 'MOQtailClient.subscribeUpdate')
+    const current = this.requests.get(subscriptionRequestId)
+    if (current instanceof SubscribeRequest) {
+      const resulting = [...current.subscribeParameters]
+      applyMessageParameterUpdate(resulting, parameters ?? [])
+      assertWithinFilterRangeLimit(resulting, limit, 'MOQtailClient.subscribeUpdate')
+    }
     try {
       if (this.requests.has(subscriptionRequestId)) {
         const request = this.requests.get(subscriptionRequestId)!
@@ -1267,6 +1294,7 @@ export class MOQtailClient {
   async switch(args: SwitchOptions) {
     this.#ensureActive()
     const { switchFromRequestId, switchMode, newSubscribeOptions, onDrainDecision } = args
+    assertWithinFilterRangeLimit(newSubscribeOptions.parameters ?? [], this.peerMaxFilterRanges, 'MOQtailClient.switch')
     try {
       const fromRequest = this.requests.get(switchFromRequestId)
       if (!(fromRequest instanceof SubscribeRequest) || !fromRequest.manager)
@@ -1476,6 +1504,7 @@ export class MOQtailClient {
    */
   async fetch(args: FetchOptions): Promise<RequestError | { requestId: bigint; stream: ReadableStream<MoqtObject> }> {
     this.#ensureActive()
+    assertWithinFilterRangeLimit(args.parameters ?? [], this.peerMaxFilterRanges, 'MOQtailClient.fetch')
     try {
       const { priority, groupOrder, fullTrackName, startLocation, endLocation, parameters } = args
       if (priority < 0 || priority > 255)
@@ -1892,6 +1921,7 @@ export class MOQtailClient {
     parameters?: MessageParameter[],
   ): Promise<{ response: RequestOk | RequestError; cancel: () => Promise<void> }> {
     this.#ensureActive()
+    assertWithinFilterRangeLimit(parameters ?? [], this.peerMaxFilterRanges, 'MOQtailClient.subscribeTracks')
     try {
       const msg = new SubscribeTracks(this.#nextClientRequestId, trackNamespacePrefix, parameters ?? [])
       const requestStream = await RequestStream.open(this.webTransport, msg)
@@ -2462,7 +2492,8 @@ if (import.meta.vitest) {
   const { FetchHeaderType, ObjectForwardingPreference, SubgroupHeaderType } = await import('../model/data/constant')
   const { SubgroupObject } = await import('../model/data/subgroup_object')
   const { ByteBuffer } = await import('../model/common/byte_buffer')
-  const { RangeFilter, RangeFilterKind, encodeRanges } = await import('../model/parameter/message/range_filter')
+  const { RangeFilter, RangeFilterKind, encodeRanges, InvalidFilterError } =
+    await import('../model/parameter/message/range_filter')
 
   /** One bidirectional stream: what the client wrote, and a way to answer on it. */
   class MockBidiStream {
@@ -2649,7 +2680,7 @@ if (import.meta.vitest) {
     })
 
     /** A connected client whose handshake is already done, plus its peer control stream. */
-    async function connected(): Promise<{
+    async function connected(serverOptions = new SetupOptions()): Promise<{
       client: MOQtailClient
       transport: MockWebTransport
       control: ReadableStreamDefaultController<Uint8Array>
@@ -2658,7 +2689,7 @@ if (import.meta.vitest) {
       const connecting = MOQtailClient.new({ url: 'https://relay.example/moq' })
       const transport = MockWebTransport.last
       await vi.waitFor(() => expect(transport.sentChunks).toHaveLength(1))
-      const control = transport.openIncomingUniStream(new Setup(new SetupOptions().build()).serialize().toUint8Array())
+      const control = transport.openIncomingUniStream(new Setup(serverOptions.build()).serialize().toUint8Array())
       return { client: await connecting, transport, control }
     }
 
@@ -3205,6 +3236,98 @@ if (import.meta.vitest) {
         )
         expect(opened).toBe(1)
         expect(written).toBe(1 + 2)
+        await client.disconnect()
+      })
+    })
+
+    describe("the server's MAX_FILTER_RANGES", () => {
+      const twoRanges = () =>
+        new RangeFilter(RangeFilterKind.ObjectId, 0, undefined, encodeRanges([{ start: 0n, end: 0n }, { start: 4n }]))
+      const subscribeWith = (client: MOQtailClient, parameters: MessageParameter[]) =>
+        client.subscribe({
+          fullTrackName: ftn,
+          locationFilter: new LocationFilter(LocationFilterType.NextObject),
+          forward: true,
+          groupOrder: GroupOrder.Original,
+          priority: 0,
+          parameters,
+        })
+
+      it('defaults to 0 when the server sends none', async () => {
+        const { client } = await connected()
+        expect(client.peerMaxFilterRanges).toBe(0n)
+        await client.disconnect()
+      })
+
+      it('keeps a filter the server allows none of from being sent, without ending the session', async () => {
+        const { client, transport } = await connected()
+        await expect(subscribeWith(client, [twoRanges()])).rejects.toThrow(InvalidFilterError)
+        await expect(
+          client.fetch({
+            priority: 0,
+            groupOrder: GroupOrder.Original,
+            fullTrackName: ftn,
+            startLocation: new Location(0n, 0n),
+            endLocation: new Location(1n, 0n),
+            parameters: [twoRanges()],
+          }),
+        ).rejects.toThrow(InvalidFilterError)
+        await expect(client.subscribeTracks(Tuple.fromUtf8Path('room'), [twoRanges()])).rejects.toThrow(
+          InvalidFilterError,
+        )
+        expect(transport.biStreams).toHaveLength(0)
+
+        // The session carries on: a request without filters still goes out.
+        // Left unanswered; the disconnect below rejects it.
+        subscribeWith(client, []).catch(() => {})
+        expect((await openedStream(transport, 0)).messages[0]).toBeInstanceOf(Subscribe)
+        await client.disconnect()
+      })
+
+      it('sends filters within the limit and refuses those beyond it', async () => {
+        const { client, transport } = await connected(new SetupOptions().addMaxFilterRanges(2))
+        expect(client.peerMaxFilterRanges).toBe(2n)
+
+        await expect(
+          subscribeWith(client, [
+            twoRanges(),
+            new RangeFilter(RangeFilterKind.Subgroup, 0, undefined, encodeRanges([{ start: 0n, end: 0n }])),
+          ]),
+        ).rejects.toThrow(InvalidFilterError)
+        expect(transport.biStreams).toHaveLength(0)
+
+        subscribeWith(client, [twoRanges()]).catch(() => {})
+        const sent = (await openedStream(transport, 0)).messages[0] as Subscribe
+        expect(sent.parameters).toContainEqual(twoRanges())
+        await client.disconnect()
+      })
+
+      it('holds an update to the filters the subscription is left with', async () => {
+        const { client, transport } = await connected(new SetupOptions().addMaxFilterRanges(2))
+        const subscribing = subscribeWith(client, [twoRanges()])
+        const stream = await openedStream(transport, 0)
+        stream.respond(SubscribeOk.create(7n, [], []))
+        const { requestId } = (await subscribing) as { requestId: bigint }
+
+        // Another kind adds to the two ranges already held.
+        const subgroup = new RangeFilter(RangeFilterKind.Subgroup, 0, undefined, encodeRanges([{ start: 0n, end: 0n }]))
+        await expect(
+          client.subscribeUpdate({
+            subscriptionRequestId: requestId,
+            priority: 0,
+            forward: true,
+            parameters: [subgroup],
+          }),
+        ).rejects.toThrow(InvalidFilterError)
+
+        // Replacing the kind already held does not.
+        const narrower = new RangeFilter(RangeFilterKind.ObjectId, 0, undefined, encodeRanges([{ start: 1n, end: 1n }]))
+        await client.subscribeUpdate({
+          subscriptionRequestId: requestId,
+          priority: 0,
+          forward: true,
+          parameters: [narrower],
+        })
         await client.disconnect()
       })
     })

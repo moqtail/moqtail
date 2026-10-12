@@ -22,7 +22,7 @@ use crate::model::property::object_property::{
 
 use super::constant::{ObjectDatagramType, ObjectStatus};
 
-/// Unified Object Datagram.
+/// Unified Object Datagram (Draft-20).
 ///
 /// Type bit layout (form 0b00X0XXXX):
 /// - Bit 0 (0x01): PROPERTIES - Properties field present
@@ -120,6 +120,13 @@ impl Datagram {
     let object_id_is_zero = self.object_id == 0;
     let default_priority = self.publisher_priority.is_none();
     let is_status = self.object_status.is_some();
+
+    if has_properties && is_status && self.object_status != Some(ObjectStatus::Normal) {
+      return Err(ParseError::ProtocolViolation {
+        context: "Datagram::serialize",
+        details: "STATUS datagram with non-Normal status cannot carry Properties".to_string(),
+      });
+    }
 
     let dtype = ObjectDatagramType::from_properties(
       has_properties,
@@ -505,6 +512,8 @@ mod tests {
   fn test_invalid_type_is_error() {
     let result = ObjectDatagramType::try_from(0x10u64);
     assert!(result.is_err());
+
+    assert!(ObjectDatagramType::try_from(0x100u64).is_err());
   }
 
   #[test]
@@ -521,7 +530,40 @@ mod tests {
       }]),
       ObjectStatus::EndOfGroup,
     );
-    let mut buf = datagram.serialize().unwrap();
+    assert!(matches!(
+      datagram.serialize(),
+      Err(ParseError::ProtocolViolation { .. })
+    ));
+
+    // A peer can still send the malformed wire form; the decoder must reject it
+    // independently of the local serializer's guard.
+    let mut buf = BytesMut::new();
+    buf.put_vi(0x21u64).unwrap(); // STATUS + PROPERTIES
+    buf.put_vi(144u64).unwrap();
+    buf.put_vi(9u64).unwrap();
+    buf.put_vi(10u64).unwrap();
+    buf.put_u8(255);
+    buf.put_vi(2u64).unwrap(); // type 0, value 10
+    buf.put_vi(0u64).unwrap();
+    buf.put_vi(10u64).unwrap();
+    buf.put_vi(u64::from(ObjectStatus::EndOfGroup)).unwrap();
+    let mut buf = buf.freeze();
+    assert!(matches!(
+      Datagram::deserialize(&mut buf),
+      Err(ParseError::ProtocolViolation { .. })
+    ));
+  }
+
+  #[test]
+  fn test_zero_length_properties_is_error() {
+    let mut buf = BytesMut::new();
+    buf.put_vi(0x01u64).unwrap(); // PROPERTIES
+    buf.put_vi(1u64).unwrap();
+    buf.put_vi(1u64).unwrap();
+    buf.put_vi(1u64).unwrap();
+    buf.put_u8(0);
+    buf.put_vi(0u64).unwrap(); // Properties Length
+    let mut buf = buf.freeze();
     assert!(matches!(
       Datagram::deserialize(&mut buf),
       Err(ParseError::ProtocolViolation { .. })

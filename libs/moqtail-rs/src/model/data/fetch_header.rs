@@ -36,7 +36,8 @@ impl FetchHeader {
   }
 
   pub fn deserialize(bytes: &mut Bytes) -> Result<Self, ParseError> {
-    let _ = bytes.get_vi();
+    let type_value = bytes.get_vi()?;
+    FetchHeaderType::try_from(type_value)?;
     let request_id = bytes.get_vi()?;
     Ok(FetchHeader { request_id })
   }
@@ -84,5 +85,18 @@ mod tests {
     let mut partial = buf.slice(..upper);
     let deserialized = FetchHeader::deserialize(&mut partial);
     assert!(deserialized.is_err());
+  }
+
+  #[test]
+  fn test_unknown_type_is_protocol_violation() {
+    let mut buf = bytes::BytesMut::new();
+    buf.put_vi(0x06).unwrap();
+    buf.put_vi(144).unwrap();
+    let mut buf = buf.freeze();
+
+    assert!(matches!(
+      FetchHeader::deserialize(&mut buf),
+      Err(ParseError::ProtocolViolation { .. })
+    ));
   }
 }

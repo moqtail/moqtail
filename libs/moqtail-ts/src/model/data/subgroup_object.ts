@@ -17,6 +17,7 @@
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
 import { KeyValuePair, deserializeKvpListUntilEmpty, serializeKvpList } from '../common/pair'
 import { ObjectStatus } from './constant'
+import { ProtocolViolationError } from '../error'
 
 function normalizeProperties(properties: KeyValuePair[] | null): KeyValuePair[] | null {
   if (properties === null || properties.length === 0) {
@@ -53,7 +54,7 @@ export class SubgroupObject {
     return new SubgroupObject(objectId, normalizeProperties(properties), null, payload)
   }
 
-  serialize(previousObjectId: bigint | undefined): FrozenByteBuffer {
+  serialize(previousObjectId: bigint | undefined, hasProperties = this.properties !== null): FrozenByteBuffer {
     // the first object's object id is encoded as is
     // for the subsequent objects, the object id is encoded
     // as the delta to the previous object id
@@ -61,8 +62,16 @@ export class SubgroupObject {
 
     const buf = new ByteBuffer()
     buf.putVI(objectIdDelta)
-    if (this.properties !== null) {
-      buf.putLengthPrefixedBytes(serializeKvpList(this.properties).toUint8Array())
+
+    if (!hasProperties && this.properties !== null) {
+      throw new ProtocolViolationError(
+        'SubgroupObject.serialize(properties)',
+        'properties are present but the subgroup header has no PROPERTIES flag',
+      )
+    }
+    if (hasProperties) {
+      const propertyBytes = this.properties ? serializeKvpList(this.properties).toUint8Array() : new Uint8Array(0)
+      buf.putLengthPrefixedBytes(propertyBytes)
     }
     if (this.payload) {
       buf.putLengthPrefixedBytes(this.payload)
@@ -123,6 +132,25 @@ if (import.meta.vitest) {
       const withEmptyHeaders = SubgroupObject.newWithPayload(objectId, [], payload).serialize(undefined).toUint8Array()
 
       expect(Array.from(withEmptyHeaders)).toEqual(Array.from(withNoHeaders))
+    })
+    test('writes an empty properties field when the header flag is set', () => {
+      const objectId = 10n
+      const payload = new Uint8Array([0xab])
+      const serialized = SubgroupObject.newWithPayload(objectId, null, payload)
+        .serialize(undefined, true)
+        .toUint8Array()
+
+      expect(Array.from(serialized)).toEqual([0x0a, 0x00, 0x01, 0xab])
+      const parsed = SubgroupObject.deserialize(new FrozenByteBuffer(serialized), true, undefined)
+      expect(parsed.objectId).toBe(objectId)
+      expect(parsed.properties).toBeNull()
+      expect(parsed.payload).toEqual(payload)
+    })
+    test('rejects properties when the header flag is clear', () => {
+      const properties = [KeyValuePair.tryNewVarInt(0, 1)]
+      expect(() =>
+        SubgroupObject.newWithPayload(10n, properties, new Uint8Array([0xab])).serialize(undefined, false),
+      ).toThrow(ProtocolViolationError)
     })
     test('excess roundtrip', () => {
       const objectId = 10n

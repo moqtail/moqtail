@@ -15,6 +15,7 @@
  */
 
 import { ByteBuffer, FrozenByteBuffer, BaseByteBuffer } from '../common/byte_buffer'
+import { ProtocolViolationError } from '../error'
 import { FetchHeaderType } from './constant'
 
 export class FetchHeader {
@@ -83,6 +84,13 @@ if (import.meta.vitest) {
         frozen.getVI()
         FetchHeader.deserialize(frozen)
       }).toThrow()
+    })
+
+    test('unknown type is a protocol violation', () => {
+      const buf = new ByteBuffer()
+      buf.putVI(0x06)
+      buf.putVI(144)
+      expect(() => FetchHeader.deserialize(buf.freeze())).toThrow(ProtocolViolationError)
     })
   })
 }

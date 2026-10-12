@@ -80,7 +80,12 @@ export class SendStream {
             `Attempted to write objectId=${object.objectId}, but lastObjectId=${this.#lastObjectId}.`,
         )
       }
-      serializedObject = object.serialize(this.#lastObjectId).toUint8Array()
+      serializedObject = object
+        .serialize(
+          this.#lastObjectId,
+          Header.isSubgroup(this.header) && SubgroupHeaderType.hasProperties(this.header.type),
+        )
+        .toUint8Array()
       this.#lastObjectId = object.objectId
     }
 
@@ -386,6 +391,25 @@ if (import.meta.vitest) {
         const { value: receivedObject } = await receivePromise
         expect(receivedObject).toEqual(fetchObject)
         reader.releaseLock()
+      })
+
+      test('PROPERTIES header writes an empty properties field for objects without properties', async () => {
+        const header = Header.newSubgroup(SubgroupHeaderType.fromProperties(true, 0, false), 0n, 0n, 0, 0)
+        const transport = new TransformStream<Uint8Array, Uint8Array>()
+        const senderPromise = SendStream.new(transport.writable, header)
+        const receiverPromise = RecvStream.new(transport.readable)
+        const sender = await senderPromise
+        const receiver = await receiverPromise
+        const object = SubgroupObject.newWithPayload(1, null, new Uint8Array([1, 2, 3]))
+        const reader = receiver.stream.getReader()
+        const receivePromise = reader.read()
+
+        await sender.write(object)
+        const { value: receivedObject } = await receivePromise
+        expect(receivedObject).toEqual(object)
+
+        reader.releaseLock()
+        await sender.close()
       })
     })
   })

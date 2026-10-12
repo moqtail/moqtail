@@ -16,8 +16,8 @@
 
 import { FetchHeader } from './fetch_header'
 import { SubgroupHeader } from './subgroup_header'
-import { FrozenByteBuffer, BaseByteBuffer } from '../common/byte_buffer'
-import { InvalidTypeError } from '../error'
+import { ByteBuffer, FrozenByteBuffer, BaseByteBuffer } from '../common/byte_buffer'
+import { ProtocolViolationError } from '../error'
 import { SubgroupHeaderType } from './constant'
 
 export type Header = FetchHeader | SubgroupHeader
@@ -47,7 +47,22 @@ export namespace Header {
     } else if ((type & SubgroupHeaderType.REQUIRED_BIT) !== 0 && (type & SubgroupHeaderType.INVALID_BITS_MASK) === 0) {
       return SubgroupHeader.deserialize(buf)
     } else {
-      throw new InvalidTypeError('Header::deserialize(type)', `Unknown header type: ${type}`)
+      throw new ProtocolViolationError(
+        'Header::deserialize(type)',
+        `unknown data stream header type 0x${type.toString(16)}`,
+      )
     }
   }
+}
+
+if (import.meta.vitest) {
+  const { describe, test, expect } = import.meta.vitest
+
+  describe('Header', () => {
+    test('rejects an unknown data stream header type as a protocol violation', () => {
+      const buf = new ByteBuffer()
+      buf.putVI(0x06)
+      expect(() => Header.deserialize(buf.freeze())).toThrow(ProtocolViolationError)
+    })
+  })
 }

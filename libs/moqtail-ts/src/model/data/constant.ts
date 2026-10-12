@@ -14,11 +14,11 @@
  * limitations under the License.
  */
 
-import { InvalidTypeError, ProtocolViolationError } from '../error'
+import { ProtocolViolationError } from '../error'
 
 /**
  * @public
- * Object datagram types for MOQT objects (Draft-16).
+ * Object datagram types for MOQT objects (Draft-20).
  *
  * Type bit layout (form 0b00X0XXXX):
  * - Bit 0 (0x01): PROPERTIES - Properties field present
@@ -82,15 +82,21 @@ export namespace ObjectDatagramType {
    * and STATUS + END_OF_GROUP cannot both be set.
    * @param value - The value to convert.
    * @returns The corresponding ObjectDatagramType.
-   * @throws Error if the value is not valid.
+   * @throws ProtocolViolationError if the value is not a valid wire type.
    */
   export function tryFrom(value: number | bigint): ObjectDatagramType {
     const v = typeof value === 'bigint' ? Number(value) : value
-    if ((v & INVALID_BITS_MASK) !== 0) {
-      throw new Error(`Invalid ObjectDatagramType: ${value}, must match form 0b00X0XXXX`)
+    // Type Flags are vi64 on the wire, but every defined value is a single
+    // byte. Check the numeric domain before using JS bitwise operators, which
+    // truncate their operands to signed 32-bit integers (e.g. 0x100 -> 0).
+    if (!Number.isInteger(v) || v < 0 || v > 0xff || (v & INVALID_BITS_MASK) !== 0) {
+      throw new ProtocolViolationError(
+        'ObjectDatagramType.tryFrom',
+        `invalid bits set, got 0x${v.toString(16)}; expected form 0b00X0XXXX`,
+      )
     }
     if ((v & 0x22) === 0x22) {
-      throw new Error(`Invalid ObjectDatagramType: ${value}, STATUS and END_OF_GROUP cannot both be set`)
+      throw new ProtocolViolationError('ObjectDatagramType.tryFrom', 'STATUS and END_OF_GROUP cannot both be set')
     }
     return v as ObjectDatagramType
   }
@@ -144,7 +150,7 @@ export namespace ObjectDatagramType {
    * @param objectIdIsZero - Whether the objectId is 0.
    * @param defaultPriority - Whether publisher priority is inherited (omitted).
    * @param isStatus - Whether the datagram carries status instead of payload.
-   * @throws Error if STATUS and END_OF_GROUP are both true (PROTOCOL_VIOLATION).
+   * @throws ProtocolViolationError if STATUS and END_OF_GROUP are both true.
    */
   export function fromProperties(
     hasProperties: boolean,
@@ -154,7 +160,10 @@ export namespace ObjectDatagramType {
     isStatus: boolean,
   ): ObjectDatagramType {
     if (isStatus && endOfGroup) {
-      throw new Error('PROTOCOL_VIOLATION: STATUS and END_OF_GROUP cannot both be set')
+      throw new ProtocolViolationError(
+        'ObjectDatagramType.fromProperties',
+        'STATUS and END_OF_GROUP cannot both be set',
+      )
     }
     let type = 0
     if (hasProperties) type |= 0x01
@@ -182,7 +191,7 @@ export namespace FetchHeaderType {
    * Converts a number or bigint to FetchHeaderType.
    * @param value - The value to convert.
    * @returns The corresponding FetchHeaderType.
-   * @throws Error if the value is not valid.
+   * @throws ProtocolViolationError if the value is not a valid wire type.
    */
   export function tryFrom(value: number | bigint): FetchHeaderType {
     const v = typeof value === 'bigint' ? Number(value) : value
@@ -190,7 +199,7 @@ export namespace FetchHeaderType {
       case 0x05:
         return FetchHeaderType.Type0x05
       default:
-        throw new Error(`Invalid FetchHeaderType: ${value}`)
+        throw new ProtocolViolationError('FetchHeaderType.tryFrom', `unknown FETCH header type 0x${v.toString(16)}`)
     }
   }
 }
@@ -334,12 +343,12 @@ export namespace SubgroupHeaderType {
   export function tryFrom(value: number | bigint): SubgroupHeaderType {
     const v = typeof value === 'bigint' ? Number(value) : value
 
-    if (v < 0 || v > 0xff || (v & INVALID_BITS_MASK) !== 0) {
-      throw new InvalidTypeError('SubgroupHeaderType.tryFrom', `invalid bits set, got 0x${v.toString(16)}`)
+    if (!Number.isInteger(v) || v < 0 || v > 0xff || (v & INVALID_BITS_MASK) !== 0) {
+      throw new ProtocolViolationError('SubgroupHeaderType.tryFrom', `invalid bits set, got 0x${v.toString(16)}`)
     }
 
     if ((v & REQUIRED_BIT) === 0) {
-      throw new InvalidTypeError('SubgroupHeaderType.tryFrom', `bit 4 not set, got 0x${v.toString(16)}`)
+      throw new ProtocolViolationError('SubgroupHeaderType.tryFrom', `bit 4 not set, got 0x${v.toString(16)}`)
     }
 
     if ((v & SUBGROUP_ID_MODE_MASK) === RESERVED_SUBGROUP_MODE) {
@@ -426,7 +435,7 @@ export namespace ObjectStatus {
    * Converts a number or bigint to ObjectStatus.
    * @param value - The value to convert.
    * @returns The corresponding ObjectStatus.
-   * @throws Error if the value is not valid.
+   * @throws ProtocolViolationError if the value is not a valid wire status.
    */
   export function tryFrom(value: number | bigint): ObjectStatus {
     const v = typeof value === 'bigint' ? Number(value) : value
@@ -438,7 +447,7 @@ export namespace ObjectStatus {
       case 0x4:
         return ObjectStatus.EndOfTrack
       default:
-        throw new Error(`Invalid ObjectStatus: ${value}`)
+        throw new ProtocolViolationError('ObjectStatus.tryFrom', `unknown object status 0x${v.toString(16)}`)
     }
   }
 }
@@ -521,7 +530,7 @@ if (import.meta.vitest) {
     })
   })
   describe('SubgroupHeaderType', () => {
-    // Draft-18 form 0b0XX1XXXX, minus the reserved SUBGROUP_ID_MODE 0b11.
+    // Draft-20 form 0b0XX1XXXX, minus the reserved SUBGROUP_ID_MODE 0b11.
     const isValid = (b: number) => (b & 0x80) === 0 && (b & 0x10) !== 0 && (b & 0x06) !== 0x06
 
     test('classifies all 256 type bytes', () => {
@@ -546,6 +555,22 @@ if (import.meta.vitest) {
     test('rejects reserved SUBGROUP_ID_MODE with a protocol violation', () => {
       for (const b of [0x16, 0x17, 0x1e, 0x1f, 0x36, 0x37, 0x3e, 0x3f, 0x56, 0x57, 0x5e, 0x5f, 0x76, 0x77, 0x7e, 0x7f])
         expect(() => SubgroupHeaderType.tryFrom(b)).toThrow(ProtocolViolationError)
+    })
+
+    test('rejects non-integer type flags', () => {
+      expect(() => SubgroupHeaderType.tryFrom(16.5)).toThrow(ProtocolViolationError)
+      expect(() => ObjectDatagramType.tryFrom(0.5)).toThrow(ProtocolViolationError)
+    })
+
+    test('rejects all reserved wire flags with protocol violations', () => {
+      for (const value of [0xd0, 0x100n]) {
+        expect(() => ObjectDatagramType.tryFrom(value)).toThrow(ProtocolViolationError)
+      }
+      for (const value of [0x00, 0x80, 0x16]) {
+        expect(() => SubgroupHeaderType.tryFrom(value)).toThrow(ProtocolViolationError)
+      }
+      expect(() => FetchHeaderType.tryFrom(0x06)).toThrow(ProtocolViolationError)
+      expect(() => ObjectStatus.tryFrom(0x01)).toThrow(ProtocolViolationError)
     })
 
     test('bit accessors agree with the type byte', () => {

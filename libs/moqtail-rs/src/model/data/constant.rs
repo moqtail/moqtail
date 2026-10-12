@@ -20,6 +20,20 @@ pub enum FetchHeaderType {
   Type0x05 = 0x05,
 }
 
+impl TryFrom<u64> for FetchHeaderType {
+  type Error = ParseError;
+
+  fn try_from(value: u64) -> Result<Self, Self::Error> {
+    match value {
+      0x05 => Ok(Self::Type0x05),
+      _ => Err(ParseError::ProtocolViolation {
+        context: "FetchHeaderType::try_from",
+        details: format!("unknown FETCH header type {value:#x}"),
+      }),
+    }
+  }
+}
+
 /// Subgroup Header Type.
 ///
 /// Type bit layout (form `0b0XX1XXXX`):
@@ -70,20 +84,20 @@ impl SubgroupHeaderType {
   /// Validate and create from a raw value.
   pub fn try_new(value: u64) -> Result<Self, ParseError> {
     if value > u8::MAX as u64 || (value as u8) & Self::INVALID_BITS_MASK != 0 {
-      return Err(ParseError::InvalidType {
+      return Err(ParseError::ProtocolViolation {
         context: "SubgroupHeaderType::try_new",
         details: format!("invalid bits set, got {value:#x}"),
       });
     }
     let v = value as u8;
     if v & Self::REQUIRED_BIT == 0 {
-      return Err(ParseError::InvalidType {
+      return Err(ParseError::ProtocolViolation {
         context: "SubgroupHeaderType::try_new",
         details: format!("bit 4 not set, got {value:#x}"),
       });
     }
     if v & Self::SUBGROUP_ID_MODE_MASK == Self::RESERVED_SUBGROUP_MODE {
-      return Err(ParseError::InvalidType {
+      return Err(ParseError::ProtocolViolation {
         context: "SubgroupHeaderType::try_new",
         details: format!("reserved SUBGROUP_ID_MODE 0b11, got {value:#x}"),
       });
@@ -201,7 +215,7 @@ impl TryFrom<u64> for ObjectStatus {
       0x0 => Ok(ObjectStatus::Normal),
       0x3 => Ok(ObjectStatus::EndOfGroup),
       0x4 => Ok(ObjectStatus::EndOfTrack),
-      _ => Err(ParseError::InvalidType {
+      _ => Err(ParseError::ProtocolViolation {
         context: "ObjectStatus::try_from(u8)",
         details: format!("Invalid status, got {value}"),
       }),
@@ -215,7 +229,7 @@ impl From<ObjectStatus> for u64 {
   }
 }
 
-/// Draft-16 Object Datagram Type (bitmask newtype).
+/// Draft-20 Object Datagram Type (bitmask newtype).
 ///
 /// Type bit layout (form `0b00X0XXXX`):
 /// - Bit 0 (0x01): PROPERTIES — Properties field present
@@ -243,7 +257,7 @@ impl ObjectDatagramType {
   /// Validate and create from a raw value.
   pub fn try_new(value: u64) -> Result<Self, ParseError> {
     if value > u8::MAX as u64 || (value as u8) & Self::INVALID_BITS_MASK != 0 {
-      return Err(ParseError::InvalidType {
+      return Err(ParseError::ProtocolViolation {
         context: "ObjectDatagramType::try_new",
         details: format!("Invalid datagram type {value:#x}, must match form 0b00X0XXXX"),
       });
@@ -439,6 +453,32 @@ mod data_stream_type_conformance {
         valid.contains(&byte)
       );
     }
+  }
+
+  #[test]
+  fn reserved_wire_flags_are_protocol_violations() {
+    for value in [0xd0, 0x100] {
+      assert!(matches!(
+        ObjectDatagramType::try_new(value),
+        Err(ParseError::ProtocolViolation { .. })
+      ));
+    }
+    for value in [0x00, 0x80, 0x16] {
+      assert!(matches!(
+        SubgroupHeaderType::try_new(value),
+        Err(ParseError::ProtocolViolation { .. })
+      ));
+    }
+    for value in [0x00, 0x06] {
+      assert!(matches!(
+        FetchHeaderType::try_from(value),
+        Err(ParseError::ProtocolViolation { .. })
+      ));
+    }
+    assert!(matches!(
+      ObjectStatus::try_from(0x01),
+      Err(ParseError::ProtocolViolation { .. })
+    ));
   }
 }
 

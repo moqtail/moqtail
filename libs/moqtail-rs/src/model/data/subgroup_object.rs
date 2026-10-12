@@ -237,6 +237,44 @@ mod tests {
   }
 
   #[test]
+  fn test_writes_empty_properties_when_header_requires_them() {
+    let subgroup_object = SubgroupObject {
+      object_id: 10,
+      properties: None,
+      object_status: None,
+      payload: Some(Bytes::from_static(&[0xab])),
+    };
+
+    let encoded = subgroup_object.serialize(None, true).unwrap();
+    assert_eq!(encoded, Bytes::from_static(&[0x0a, 0x00, 0x01, 0xab]));
+
+    let mut buf = encoded;
+    let parsed = SubgroupObject::deserialize(&mut buf, &None, true).unwrap();
+    assert_eq!(parsed.object_id, subgroup_object.object_id);
+    assert_eq!(parsed.properties, Some(vec![]));
+    assert_eq!(parsed.object_status, subgroup_object.object_status);
+    assert_eq!(parsed.payload, subgroup_object.payload);
+    assert!(!buf.has_remaining());
+  }
+
+  #[test]
+  fn test_rejects_properties_when_header_flag_is_clear() {
+    let subgroup_object = SubgroupObject {
+      object_id: 10,
+      properties: Some(vec![ObjectProperty::Unknown {
+        kvp: KeyValuePair::try_new_varint(0, 1).unwrap(),
+      }]),
+      object_status: None,
+      payload: Some(Bytes::from_static(&[0xab])),
+    };
+
+    assert!(matches!(
+      subgroup_object.serialize(None, false),
+      Err(ParseError::ProtocolViolation { .. })
+    ));
+  }
+
+  #[test]
   fn test_excess_roundtrip() {
     let object_id: u64 = 10;
     let prev_object_id = 9;

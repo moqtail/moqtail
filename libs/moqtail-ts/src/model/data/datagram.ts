@@ -18,9 +18,10 @@ import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buf
 import { KeyValuePair, deserializeKvpListUntilEmpty, serializeKvpList } from '../common/pair'
 import { ObjectDatagramType, ObjectStatus } from './constant'
 import { Location } from '../common/location'
+import { ProtocolViolationError } from '../error'
 
 /**
- * Represents a unified OBJECT_DATAGRAM message (Draft-16).
+ * Represents a unified OBJECT_DATAGRAM message (Draft-20).
  *
  * Type bit layout (form 0b00X0XXXX):
  * - Bit 0 (0x01): PROPERTIES
@@ -114,6 +115,17 @@ export class Datagram {
   }
 
   serialize(): FrozenByteBuffer {
+    if (
+      ObjectDatagramType.isStatus(this.type) &&
+      ObjectDatagramType.hasProperties(this.type) &&
+      this.objectStatus !== ObjectStatus.Normal
+    ) {
+      throw new ProtocolViolationError(
+        'Datagram.serialize',
+        'STATUS datagram with non-Normal status cannot carry Properties',
+      )
+    }
+
     const buf = new ByteBuffer()
     buf.putVI(this.type)
     buf.putVI(this.trackAlias)
@@ -171,6 +183,12 @@ export class Datagram {
     let properties: KeyValuePair[] | null = null
     if (ObjectDatagramType.hasProperties(msgType)) {
       const extBytes = buf.getLengthPrefixedBytes()
+      if (extBytes.length === 0) {
+        throw new ProtocolViolationError(
+          'Datagram.deserialize(properties_length)',
+          'Properties present but length is 0',
+        )
+      }
       const headerBytes = new FrozenByteBuffer(extBytes)
       properties = deserializeKvpListUntilEmpty(headerBytes)
     }
@@ -180,6 +198,12 @@ export class Datagram {
     let objectStatus: ObjectStatus | null = null
     if (ObjectDatagramType.isStatus(msgType)) {
       objectStatus = ObjectStatus.tryFrom(buf.getVI())
+      if (properties !== null && objectStatus !== ObjectStatus.Normal) {
+        throw new ProtocolViolationError(
+          'Datagram.deserialize',
+          'STATUS datagram with non-Normal status carries Properties',
+        )
+      }
     } else {
       payload = buf.getBytes(buf.remaining)
     }
@@ -201,7 +225,7 @@ export class Datagram {
 
 if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
-  describe('Datagram (Draft-16)', () => {
+  describe('Datagram (Draft-20)', () => {
     test('roundtrip payload with properties and explicit objectId', () => {
       const trackAlias = 500n
       const groupId = 9n
@@ -330,7 +354,7 @@ if (import.meta.vitest) {
         KeyValuePair.tryNewVarInt(0, 10),
         KeyValuePair.tryNewBytes(1, new TextEncoder().encode('wololoo')),
       ]
-      const datagram = Datagram.newStatus(trackAlias, 9n, 10n, 255, properties, ObjectStatus.EndOfTrack)
+      const datagram = Datagram.newStatus(trackAlias, 9n, 10n, 255, properties, ObjectStatus.Normal)
       expect(datagram.type).toBe(ObjectDatagramType.Type0x21) // Status, with properties, has objectId, no default priority
       const frozen = datagram.serialize()
       const parsed = Datagram.deserialize(frozen)
@@ -339,7 +363,7 @@ if (import.meta.vitest) {
       expect(parsed.objectId).toBe(10n)
       expect(parsed.publisherPriority).toBe(255)
       expect(parsed.properties).toEqual(properties)
-      expect(parsed.objectStatus).toBe(ObjectStatus.EndOfTrack)
+      expect(parsed.objectStatus).toBe(ObjectStatus.Normal)
     })
 
     test('roundtrip status with ZERO_OBJECT_ID and DEFAULT_PRIORITY', () => {
@@ -357,16 +381,45 @@ if (import.meta.vitest) {
     test('STATUS + END_OF_GROUP throws', () => {
       expect(() => {
         ObjectDatagramType.fromProperties(false, true, false, false, true)
-      }).toThrow('PROTOCOL_VIOLATION')
+      }).toThrow(ProtocolViolationError)
     })
 
     test('invalid type value throws', () => {
       expect(() => {
         ObjectDatagramType.tryFrom(0x22) // STATUS + END_OF_GROUP
-      }).toThrow('Invalid ObjectDatagramType')
+      }).toThrow(ProtocolViolationError)
       expect(() => {
         ObjectDatagramType.tryFrom(0x10) // Bit 4 set — subgroup header range
-      }).toThrow('Invalid ObjectDatagramType')
+      }).toThrow(ProtocolViolationError)
+      expect(() => ObjectDatagramType.tryFrom(0x100n)).toThrow(ProtocolViolationError)
+      expect(() => ObjectDatagramType.tryFrom(0.5)).toThrow(ProtocolViolationError)
+    })
+
+    test('rejects zero-length properties', () => {
+      const wire = new ByteBuffer()
+      wire.putVI(ObjectDatagramType.Type0x01)
+      wire.putVI(1n) // Track Alias
+      wire.putVI(1n) // Group ID
+      wire.putVI(1n) // Object ID
+      wire.putU8(0) // Publisher Priority
+      wire.putVI(0) // Properties Length
+
+      expect(() => Datagram.deserialize(wire.freeze())).toThrow(ProtocolViolationError)
+    })
+
+    test('rejects non-Normal status with properties', () => {
+      const propertyBytes = KeyValuePair.tryNewVarInt(0, 1).serialize().toUint8Array()
+      const wire = new ByteBuffer()
+      wire.putVI(ObjectDatagramType.Type0x21)
+      wire.putVI(1n) // Track Alias
+      wire.putVI(1n) // Group ID
+      wire.putVI(1n) // Object ID
+      wire.putU8(0) // Publisher Priority
+      wire.putVI(propertyBytes.length)
+      wire.putBytes(propertyBytes)
+      wire.putVI(ObjectStatus.EndOfTrack)
+
+      expect(() => Datagram.deserialize(wire.freeze())).toThrow(ProtocolViolationError)
     })
   })
 }

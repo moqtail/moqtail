@@ -23,8 +23,8 @@ use crate::server::track_manager::SubscribeKind;
 use core::result::Result;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::control::{
-  constant::GroupOrder, control_message::ControlMessage, publish::Publish,
-  request_error::RequestError, request_ok::RequestOk, request_update::RequestUpdate,
+  control_message::ControlMessage, publish::Publish, request_error::RequestError,
+  request_ok::RequestOk, request_update::RequestUpdate,
 };
 use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::model::error::{RequestErrorCode, TerminationCode};
@@ -269,10 +269,11 @@ pub async fn handle(
       // SUBSCRIPTION_FILTER is omitted so the subscription is unfiltered: a relay
       // wants every Object, both to serve downstream filters and to fill its
       // cache for FETCH.
-      let publish_ok = Box::new(RequestOk::new(vec![
-        MessageParameter::new_forward(forwarding),
-        MessageParameter::new_group_order(GroupOrder::Ascending),
-      ]));
+      // GROUP_ORDER has no place here: the relay applies each subscriber's order
+      // on the way out, and the publisher's own order is what it stated in PUBLISH.
+      let publish_ok = Box::new(RequestOk::new(vec![MessageParameter::new_forward(
+        forwarding,
+      )]));
 
       info!(
         "Accepted publish request for track: {:?} with alias: {}",
@@ -638,7 +639,7 @@ pub(crate) async fn forward_publish_downstream(
           );
 
           // A PUBLISH_OK answers with the subscription the subscriber actually wants:
-          // its Forward State, priority, group order and filter. Those carry the same
+          // its Forward State, priority and filter. Those carry the same
           // meaning as in REQUEST_UPDATE, so they are applied the same way. Dropping
           // them left the subscriber on whatever the relay guessed from SUBSCRIBE_TRACKS.
           if !m.parameters.is_empty()

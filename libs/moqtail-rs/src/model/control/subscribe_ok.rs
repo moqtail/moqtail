@@ -101,7 +101,6 @@ impl ControlMessageTrait for SubscribeOk {
 mod tests {
   use super::*;
   use crate::model::common::location::Location;
-  use crate::model::control::constant::GroupOrder;
   use crate::model::property::track_property::TrackProperty;
   use bytes::Buf;
 
@@ -111,7 +110,6 @@ mod tests {
       track_alias: 0,
       subscribe_parameters: vec![
         MessageParameter::new_expires(16),
-        MessageParameter::new_group_order(GroupOrder::Ascending),
         MessageParameter::new_largest_object(Location {
           group: 34,
           object: 0,
@@ -139,10 +137,7 @@ mod tests {
   fn test_roundtrip_with_track_properties() {
     let subscribe_ok = SubscribeOk {
       track_alias: 42,
-      subscribe_parameters: vec![
-        MessageParameter::new_expires(0),
-        MessageParameter::new_group_order(GroupOrder::Descending),
-      ],
+      subscribe_parameters: vec![MessageParameter::new_expires(0)],
       track_properties: vec![
         TrackProperty::ObjectDeliveryTimeout { timeout_ms: 500 },
         TrackProperty::DynamicGroups { enabled: true },

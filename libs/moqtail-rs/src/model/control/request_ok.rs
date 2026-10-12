@@ -120,7 +120,6 @@ impl ControlMessageTrait for RequestOk {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::model::control::constant::GroupOrder;
   use bytes::Buf;
 
   #[test]
@@ -141,7 +140,7 @@ mod tests {
   fn test_roundtrip_with_params() {
     let request_ok = RequestOk::new(vec![
       MessageParameter::new_expires(3600),
-      MessageParameter::new_group_order(GroupOrder::Ascending),
+      MessageParameter::new_forward(true),
     ]);
 
     let mut buf = request_ok.serialize().unwrap();

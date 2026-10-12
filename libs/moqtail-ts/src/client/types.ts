@@ -98,6 +98,13 @@ export const DEFAULT_TRACK_ALIAS_RESOLUTION_TIMEOUT_MS = 2000
 export const DEFAULT_SWITCH_DRAIN_TIMEOUT_MS = 2000
 
 /**
+ * @public
+ * The MAX_FILTER_RANGES a client advertises when its setup options set none: how
+ * many Range Filter ranges it applies, in total, for one subscription or fetch.
+ */
+export const DEFAULT_MAX_FILTER_RANGES = 32n
+
+/**
  * Options for {@link MOQtailClient.new} controlling connection target, protocol negotiation, timeouts,
  * and lifecycle callbacks.
  *

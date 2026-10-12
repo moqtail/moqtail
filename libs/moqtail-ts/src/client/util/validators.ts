@@ -17,6 +17,7 @@
 import { MessageParameter, ReasonPhrase } from '../../model'
 import { RequestError, RequestErrorCode } from '../../model/control'
 import { InvalidFilterError } from '../../model/parameter/message/range_filter'
+import { NetFilter } from '../../model/parameter/message/net_filter'
 
 /** Returns true when `trackAlias` is a valid (non-negative) track alias. Zero is a legal value. */
 export function isValidTrackAlias(trackAlias: bigint | undefined): trackAlias is bigint {
@@ -24,20 +25,29 @@ export function isValidTrackAlias(trackAlias: bigint | undefined): trackAlias is
 }
 
 /**
- * The REQUEST_ERROR for a request that carries a Range Filter. This client never
- * advertises MAX_FILTER_RANGES, so the peer is allowed none, and any it sends —
- * a removal or one tucked inside FILL_PARAMETERS included — is INVALID_FILTER.
+ * The REQUEST_ERROR INVALID_FILTER for a request whose Range Filters this client
+ * cannot take: more ranges than the `limit` it advertised (with a limit of 0, any
+ * filter at all), or a filter that cannot be applied. `undefined` when they are
+ * fine, which includes carrying none.
  */
-export function rangeFilterRejection(params: readonly MessageParameter[]): RequestError | undefined {
-  if (!MessageParameter.carriesRangeFilter(params)) return undefined
-  return new RequestError(RequestErrorCode.InvalidFilter, 0n, new ReasonPhrase('Range filters are not supported'))
+export function rangeFilterRejection(params: readonly MessageParameter[], limit: bigint): RequestError | undefined {
+  try {
+    assertWithinFilterRangeLimit(params, limit, 'request')
+    new NetFilter(params)
+    for (const fill of params.filter(MessageParameter.isFillParameters)) new NetFilter(fill.parameters)
+    return undefined
+  } catch (error) {
+    if (!(error instanceof InvalidFilterError)) throw error
+    return new RequestError(RequestErrorCode.InvalidFilter, 0n, new ReasonPhrase(error.details))
+  }
 }
 
 /**
- * Throws unless `params` stay within the peer's MAX_FILTER_RANGES, so a request the
- * peer would have to refuse is never sent.
+ * Throws unless `params` stay within a MAX_FILTER_RANGES of `limit`: the peer's,
+ * so a request it would have to refuse is never sent, or this client's own, for
+ * a request it received.
  *
- * A peer that advertised none allows no Range Filter parameter at all, not even a
+ * A limit of 0 allows no Range Filter parameter at all, not even a
  * zero-length removal. Otherwise the Ranges of every filter in the request count
  * against the limit together. FILL_PARAMETERS describes a separate fill fetch
  * stream, so the filters inside it count against a limit of their own.
@@ -51,10 +61,10 @@ export function assertWithinFilterRangeLimit(
 ): void {
   const filters = params.filter(MessageParameter.isRangeFilter)
   if (filters.length > 0) {
-    if (limit === 0n) throw new InvalidFilterError(context, 'the peer allows no range filters (MAX_FILTER_RANGES is 0)')
+    if (limit === 0n) throw new InvalidFilterError(context, 'no range filters are allowed (MAX_FILTER_RANGES is 0)')
     const count = BigInt(filters.reduce((sum, f) => sum + f.rangeCount, 0))
     if (count > limit) {
-      throw new InvalidFilterError(context, `${count} filter ranges exceed the peer's MAX_FILTER_RANGES of ${limit}`)
+      throw new InvalidFilterError(context, `${count} filter ranges exceed MAX_FILTER_RANGES of ${limit}`)
     }
   }
   for (const fill of params.filter(MessageParameter.isFillParameters)) {
@@ -97,16 +107,34 @@ if (import.meta.vitest) {
 
   describe('rangeFilterRejection', async () => {
     const { Forward, RangeFilter, RangeFilterKind, FillParameters } = await import('../../model/parameter/message')
-    it('lets a request without range filters through', () => {
-      expect(rangeFilterRejection([new Forward(true)])).toBeUndefined()
+    const { encodeRanges } = await import('../../model/parameter/message/range_filter')
+    const objectId = (setId: number, start: bigint, end: bigint) =>
+      new RangeFilter(RangeFilterKind.ObjectId, setId, undefined, encodeRanges([{ start, end }]))
+
+    it('lets a request without range filters through, whatever the limit', () => {
+      expect(rangeFilterRejection([new Forward(true)], 0n)).toBeUndefined()
     })
-    it('rejects any range filter with INVALID_FILTER', () => {
+    it('takes filters within the limit', () => {
+      expect(rangeFilterRejection([objectId(0, 0n, 0n), objectId(1, 4n, 4n)], 2n)).toBeUndefined()
+    })
+    it('refuses any filter with a limit of 0, removals and fills included', () => {
       for (const params of [
         [new RangeFilter(RangeFilterKind.Subgroup)],
         [new FillParameters([new RangeFilter(RangeFilterKind.ObjectId)])],
       ]) {
-        expect(rangeFilterRejection(params)?.errorCode).toBe(RequestErrorCode.InvalidFilter)
+        expect(rangeFilterRejection(params, 0n)?.errorCode).toBe(RequestErrorCode.InvalidFilter)
       }
+    })
+    it('refuses more ranges than the limit, and a filter that cannot be applied', () => {
+      expect(rangeFilterRejection([objectId(0, 0n, 0n), objectId(1, 4n, 4n)], 1n)?.errorCode).toBe(
+        RequestErrorCode.InvalidFilter,
+      )
+      expect(rangeFilterRejection([objectId(0, 0n, 0n), objectId(0, 4n, 4n)], 8n)?.errorCode).toBe(
+        RequestErrorCode.InvalidFilter,
+      )
+      expect(
+        rangeFilterRejection([new FillParameters([objectId(0, 0n, 0n), objectId(0, 1n, 1n)])], 8n)?.errorCode,
+      ).toBe(RequestErrorCode.InvalidFilter)
     })
   })
 

@@ -25,9 +25,12 @@ import { rangeFilterRejection } from '../util/validators'
 
 export const handlerFetch: RequestStreamMessageHandler<Fetch> = async (client, msg, stream) => {
   logger.log('handler/fetch', 'requestId', msg.requestId)
-  const filterRejection = rangeFilterRejection(msg.parameters)
+  const filterRejection = rangeFilterRejection(msg.parameters, client.maxFilterRanges)
   if (filterRejection) {
-    logger.warn('handler/fetch', `requestId=${msg.requestId} carries range filters this client does not allow`)
+    logger.warn(
+      'handler/fetch',
+      `requestId=${msg.requestId} has filters this client cannot take: ${filterRejection.reasonPhrase.phrase}`,
+    )
     await stream.send(filterRejection)
     return
   }

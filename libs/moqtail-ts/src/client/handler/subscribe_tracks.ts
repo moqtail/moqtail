@@ -14,20 +14,30 @@
  * limitations under the License.
  */
 
-import { SubscribeTracks, RequestOk } from '../../model/control'
+import { SubscribeTracks, RequestOk, RequestError, RequestErrorCode } from '../../model/control'
+import { MessageParameter, ReasonPhrase } from '../../model'
+import { InvalidFilterError } from '../../model/parameter/message/range_filter'
 import { RequestStreamMessageHandler } from './handler'
 import { logger } from '../../util/logger'
-import { rangeFilterRejection } from '../util/validators'
+import { assertWithinFilterRangeLimit } from '../util/validators'
 
 export const handlerSubscribeTracks: RequestStreamMessageHandler<SubscribeTracks> = async (client, msg, stream) => {
   logger.log('handler/subscribe_tracks', 'prefix', msg.trackNamespacePrefix.toUtf8Path())
-  const filterRejection = rangeFilterRejection(msg.parameters)
-  if (filterRejection) {
-    logger.warn(
-      'handler/subscribe_tracks',
-      `requestId=${msg.requestId} carries range filters this client does not allow`,
-    )
-    await stream.send(filterRejection)
+  // Which tracks match is the application's call, made in onPeerSubscribeTracks, so a
+  // filter here could not be honoured. One within the limit is refused as unsupported
+  // rather than accepted and ignored.
+  if (MessageParameter.carriesRangeFilter(msg.parameters)) {
+    let code = RequestErrorCode.NotSupported
+    let reason = 'Range filters on SUBSCRIBE_TRACKS are not supported'
+    try {
+      assertWithinFilterRangeLimit(msg.parameters, client.maxFilterRanges, 'SUBSCRIBE_TRACKS')
+    } catch (error) {
+      if (!(error instanceof InvalidFilterError)) throw error
+      code = RequestErrorCode.InvalidFilter
+      reason = error.details
+    }
+    logger.warn('handler/subscribe_tracks', `requestId=${msg.requestId} refused: ${reason}`)
+    await stream.send(new RequestError(code, 0n, new ReasonPhrase(reason)))
     return
   }
 

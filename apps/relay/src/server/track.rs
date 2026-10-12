@@ -25,6 +25,7 @@ use anyhow::Result;
 use moqtail::model::common::location::Location;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::control::constant::PublishDoneStatusCode;
+use moqtail::model::control::publish_done::PublishDone;
 use moqtail::model::data::constant::DEFAULT_PUBLISHER_PRIORITY;
 use moqtail::model::data::datagram::Datagram;
 use moqtail::model::data::full_track_name::FullTrackName;
@@ -786,7 +787,12 @@ pub async fn await_publisher_streams(
     .wait_for(publisher_connection_id, stream_count, timeout)
     .await;
 
-  if closed < stream_count {
+  if stream_count == PublishDone::UNKNOWN_STREAM_COUNT {
+    debug!(
+      "PUBLISH_DONE from publisher {} for {:?} gave no exact stream count; {} finished within {:?}",
+      publisher_connection_id, full_track_name, closed, timeout
+    );
+  } else if closed < stream_count {
     warn!(
       "PUBLISH_DONE from publisher {} for {:?} named {} streams, {} finished within {:?}; ending the subscription anyway",
       publisher_connection_id, full_track_name, stream_count, closed, timeout

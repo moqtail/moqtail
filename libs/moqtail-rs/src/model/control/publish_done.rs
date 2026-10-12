@@ -27,6 +27,10 @@ pub struct PublishDone {
 }
 
 impl PublishDone {
+  /// The Stream Count a publisher sends when it cannot name the exact number of
+  /// streams it opened. Receivers fall back on a timeout to end the subscription.
+  pub const UNKNOWN_STREAM_COUNT: u64 = u64::MAX;
+
   pub fn new(
     status_code: PublishDoneStatusCode,
     stream_count: u64,
@@ -134,6 +138,21 @@ mod tests {
     let deserialized = PublishDone::parse_payload(&mut buf).unwrap();
     assert_eq!(*deserialized, subscribe_done);
     assert_eq!(buf.chunk(), &[9u8, 1u8, 1u8]);
+  }
+
+  #[test]
+  fn test_unknown_stream_count_roundtrip() {
+    let subscribe_done = PublishDone::new(
+      PublishDoneStatusCode::SubscriptionEnded,
+      PublishDone::UNKNOWN_STREAM_COUNT,
+      ReasonPhrase::try_new("unknown".to_string()).unwrap(),
+    );
+    let mut buf = subscribe_done.serialize().unwrap();
+    buf.get_vi().unwrap();
+    buf.get_u16();
+    let deserialized = PublishDone::parse_payload(&mut buf).unwrap();
+    assert_eq!(deserialized.stream_count, u64::MAX);
+    assert!(!buf.has_remaining());
   }
 
   #[test]

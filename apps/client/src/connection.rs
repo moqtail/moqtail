@@ -32,7 +32,7 @@ use wtransport::quinn::TransportConfig;
 use wtransport::quinn::congestion::BbrConfig;
 use wtransport::{ClientConfig, Endpoint, tls};
 
-const CLIENT_SUPPORTED_VERSIONS: &str = "moqt-18";
+const CLIENT_SUPPORTED_VERSIONS: &str = "moqt-20";
 
 pub struct MoqConnection {
   pub connection: Arc<TransportConnection>,
@@ -402,5 +402,13 @@ mod tests {
     assert!(MoqtUrl::parse("moqt://host#:value").is_err());
     // Invalid type characters (uppercase).
     assert!(MoqtUrl::parse("moqt://host#MSF:abc").is_err());
+  }
+
+  #[test]
+  fn advertises_only_draft20_for_webtransport_and_quic() {
+    assert_eq!(
+      CLIENT_SUPPORTED_VERSIONS.split(',').collect::<Vec<_>>(),
+      ["moqt-20"]
+    );
   }
 }

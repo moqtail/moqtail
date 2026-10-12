@@ -19,7 +19,7 @@ import { greaseValue } from '../common/grease'
 /**
  * Protocol string array exchanged in wt-available-protocols header
  */
-export const SUPPORTED_VERSIONS = ['moqt-18']
+export const SUPPORTED_VERSIONS = ['moqt-20']
 
 /**
  * @public
@@ -459,6 +459,10 @@ if (import.meta.vitest) {
   // as. The loader is imported dynamically so it stays out of the published bundle.
   describe('draft-20 conformance', () => {
     const fixture = async () => await import('../../../test/conformance')
+
+    test('advertises only Draft-20 over WebTransport', () => {
+      expect(SUPPORTED_VERSIONS).toEqual(['moqt-20'])
+    })
 
     test('ControlMessageType matches message_types.json', async () => {
       const { messageTypes, assertRegistry, pascalIdent } = await fixture()

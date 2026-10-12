@@ -16,7 +16,7 @@ use core::convert::From;
 
 use crate::model::error::ParseError;
 
-pub const SUPPORTED_VERSIONS: &str = "moqt-18";
+pub const SUPPORTED_VERSIONS: &str = "moqt-20";
 
 /// Control message types.
 ///

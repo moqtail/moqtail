@@ -2578,6 +2578,7 @@ if (import.meta.vitest) {
 
   class MockWebTransport {
     static last: MockWebTransport
+    readonly options: unknown
     readonly ready = Promise.resolve()
     readonly closed = new Promise<void>(() => {})
     readonly sentChunks: Uint8Array[] = []
@@ -2602,7 +2603,8 @@ if (import.meta.vitest) {
       return biStream
     }
 
-    constructor() {
+    constructor(_url?: string, options?: unknown) {
+      this.options = options
       this.incomingBidirectionalStreams = new ReadableStream<WebTransportBidirectionalStream>({
         start: (controller) => {
           this.#incomingBi = controller
@@ -2669,6 +2671,7 @@ if (import.meta.vitest) {
       const transport = MockWebTransport.last
       await vi.waitFor(() => expect(transport.sentChunks).toHaveLength(1))
 
+      expect(transport.options).toEqual({ protocols: ['moqt-20'] })
       transport.openIncomingUniStream(new Setup(new SetupOptions().build()).serialize().toUint8Array())
       const client = await connecting
 

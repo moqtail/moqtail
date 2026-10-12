@@ -1184,3 +1184,17 @@ impl Session {
     }
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use super::Session;
+
+  #[test]
+  fn selects_draft20_for_webtransport_and_rejects_older_versions() {
+    assert_eq!(
+      Session::select_protocol(&["\"moqt-20\"".to_string()]),
+      Some("moqt-20")
+    );
+    assert_eq!(Session::select_protocol(&["\"moqt-18\"".to_string()]), None);
+  }
+}

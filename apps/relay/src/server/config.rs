@@ -121,8 +121,8 @@ pub struct Cli {
   #[arg(long, default_value_t = 0)]
   pub max_publish_streams: u64,
 
-  /// Track Alias given to subscribers: one per track, or one per subscription.
-  #[arg(long, value_enum, default_value = "per-track")]
+  /// Track Alias given to subscribers: one per subscription, or one per track.
+  #[arg(long, value_enum, default_value = "per-subscription")]
   pub track_alias_mode: TrackAliasMode,
 
   /// Simulate a bandwidth cap per subscriber connection (kbps). 0 = unlimited.
@@ -432,16 +432,16 @@ mod tests {
   use super::*;
 
   #[test]
-  fn track_alias_mode_defaults_to_per_track() {
+  fn track_alias_mode_defaults_to_per_subscription() {
     let config = AppConfig::from_cli(Cli::parse_from(["relay"]));
-    assert_eq!(config.track_alias_mode, TrackAliasMode::PerTrack);
+    assert_eq!(config.track_alias_mode, TrackAliasMode::PerSubscription);
 
     let config = AppConfig::from_cli(Cli::parse_from([
       "relay",
       "--track-alias-mode",
-      "per-subscription",
+      "per-track",
     ]));
-    assert_eq!(config.track_alias_mode, TrackAliasMode::PerSubscription);
+    assert_eq!(config.track_alias_mode, TrackAliasMode::PerTrack);
   }
 
   fn test_config(max_request_streams: u64) -> AppConfig {
@@ -464,7 +464,7 @@ mod tests {
       max_active_requests: 0,
       max_subscriber_lag: 0,
       max_publish_streams: 0,
-      track_alias_mode: TrackAliasMode::PerTrack,
+      track_alias_mode: TrackAliasMode::PerSubscription,
       write_kbps_limit: 0,
       redirect_uri: None,
       max_upstream_fetch_gaps: 10,

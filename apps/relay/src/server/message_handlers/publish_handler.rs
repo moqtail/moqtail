@@ -263,7 +263,7 @@ pub async fn handle(
         }
         None => publisher_forwards,
       };
-      // PUBLISH is answered by REQUEST_OK (PUBLISH_OK); no Track Properties.
+      // PUBLISH is answered by REQUEST_OK; no Track Properties.
       // SUBSCRIBER_PRIORITY is omitted so the publisher uses the default of 128;
       // the relay has no reason to rank a pushed track above everything else.
       // SUBSCRIPTION_FILTER is omitted so the subscription is unfiltered: a relay

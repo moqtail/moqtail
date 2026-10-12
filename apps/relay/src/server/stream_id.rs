@@ -102,3 +102,52 @@ impl fmt::Display for StreamId {
     }
   }
 }
+
+/// Concurrent subscriptions for the same track requires
+/// The client must use a composite key that contains the request id and stream_id
+/// to avoid stream id collisions because of concurrent subscriptions
+/// for the same track.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SendStreamKey {
+  pub request_id: u64,
+  pub stream_id: StreamId,
+}
+
+impl SendStreamKey {
+  pub fn new(request_id: u64, stream_id: StreamId) -> Self {
+    Self {
+      request_id,
+      stream_id,
+    }
+  }
+}
+
+impl fmt::Display for SendStreamKey {
+  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(f, "req_{}_{}", self.request_id, self.stream_id)
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use std::collections::HashMap;
+
+  #[test]
+  fn two_subscriptions_to_one_track_get_their_own_send_stream() {
+    let stream_id = StreamId::new_subgroup(7, 3, Some(0));
+    let mut streams = HashMap::new();
+    streams.insert(SendStreamKey::new(2, stream_id.clone()), "first");
+    streams.insert(SendStreamKey::new(4, stream_id.clone()), "second");
+
+    assert_eq!(streams.len(), 2);
+    assert_eq!(streams[&SendStreamKey::new(2, stream_id.clone())], "first");
+    assert_eq!(streams[&SendStreamKey::new(4, stream_id)], "second");
+  }
+
+  #[test]
+  fn a_send_stream_key_names_its_request() {
+    let key = SendStreamKey::new(4, StreamId::new_subgroup(7, 3, Some(0)));
+    assert_eq!(key.to_string(), "req_4_subgroup_7_3_0");
+  }
+}

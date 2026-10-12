@@ -18,7 +18,7 @@ use crate::server::config::AppConfig;
 use crate::server::message_handlers::fetch_handler::FetchStop;
 use crate::server::object_logger::ObjectLogger;
 use crate::server::ssts::AbrMessage;
-use crate::server::stream_id::StreamId;
+use crate::server::stream_id::{SendStreamKey, StreamId};
 use crate::server::track::ActiveSubgroupHeaderMap;
 use crate::server::track::TrackEvent;
 use crate::server::track_cache::TrackCache;
@@ -761,7 +761,7 @@ impl Subscription {
       let mut send_stream_last_object_ids = self.send_stream_last_object_ids.write().await;
       let ids = send_stream_last_object_ids
         .keys()
-        .cloned()
+        .map(|stream_id| self.new_send_stream_key(stream_id))
         .collect::<Vec<_>>();
       send_stream_last_object_ids.clear();
       ids
@@ -1100,7 +1100,10 @@ impl Subscription {
       map.drain().map(|(stream_id, _)| stream_id).collect()
     };
     for stream_id in stream_ids {
-      self.subscriber.reset_stream(&stream_id, code).await;
+      self
+        .subscriber
+        .reset_stream(&self.new_send_stream_key(&stream_id), code)
+        .await;
     }
   }
 
@@ -1416,7 +1419,11 @@ impl Subscription {
             None
           }
         } else {
-          match self.subscriber.get_stream(&stream_id).await {
+          match self
+            .subscriber
+            .get_stream(&self.new_send_stream_key(&stream_id))
+            .await
+          {
             Some(s) => Some(s),
             None => {
               // New subscriber joined mid-subgroup. Look up the original header
@@ -1648,7 +1655,11 @@ impl Subscription {
 
       let send_stream = match self
         .subscriber
-        .open_stream(&stream_id, header_payload, priority)
+        .open_stream(
+          &self.new_send_stream_key(&stream_id),
+          header_payload,
+          priority,
+        )
         .await
       {
         Ok(send_stream) => send_stream,
@@ -1725,7 +1736,7 @@ impl Subscription {
       self
         .subscriber
         .write_stream_object(
-          stream_id,
+          &self.new_send_stream_key(stream_id),
           sub_object.object_id,
           object_bytes,
           Some(send_stream.clone()),
@@ -1765,7 +1776,7 @@ impl Subscription {
     // the main subscription event loop. This is critical for real-time media streaming
     // where blocking operations can disrupt video flow timing (25fps = ~40ms intervals)
     let subscriber = self.subscriber.clone();
-    let stream_id = stream_id.clone();
+    let stream_id = self.new_send_stream_key(stream_id);
     let connection_id = self.client_connection_id;
     let relay_track_id = self.relay_track_id;
 
@@ -1825,6 +1836,12 @@ impl Subscription {
 
   fn get_stream_id(&self, header_info: &HeaderInfo) -> StreamId {
     utils::build_stream_id(self.relay_track_id, header_info)
+  }
+
+  /// This subscription's send streams are keyed by using request_id
+  /// and stream_id to avoid stream naming collisions in the client
+  fn new_send_stream_key(&self, stream_id: &StreamId) -> SendStreamKey {
+    SendStreamKey::new(self.request_id, stream_id.clone())
   }
 
   /// Send PublishDone message to this subscriber

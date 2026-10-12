@@ -104,6 +104,7 @@ import {
   TrackAliasHolder,
   DEFAULT_TRACK_ALIAS_RESOLUTION_TIMEOUT_MS,
   DEFAULT_SWITCH_DRAIN_TIMEOUT_MS,
+  DEFAULT_MAX_FILTER_RANGES,
 } from './types'
 import { SendDatagramStream } from './datagram_stream'
 import { logger, LogLevel, setLogLevel, setLogEnabledModules } from '../util/logger'
@@ -228,6 +229,8 @@ export class MOQtailClient {
   webTransport!: WebTransport
   /** Validated Setup message the server sent back during handshake (protocol parameters negotiated). */
   #serverSetup!: Setup
+  /** How many filter ranges this client allows the server per request, as advertised in SETUP. */
+  #maxFilterRanges: bigint = 0n
   /** Outgoing / incoming control message stream pair. */
   controlStream!: ControlStream
   /** Reader over incoming uni streams: the control recv half first, data streams after. */
@@ -433,6 +436,19 @@ export class MOQtailClient {
    * How many filter ranges the server allows in one request: its MAX_FILTER_RANGES,
    * or 0 when it sent none, which allows no Range Filter at all.
    */
+  /**
+   * How many filter ranges this client allows the server in one request: the
+   * MAX_FILTER_RANGES it advertised, {@link DEFAULT_MAX_FILTER_RANGES} unless the
+   * caller's setup options set one.
+   */
+  get maxFilterRanges(): bigint {
+    return this.#maxFilterRanges
+  }
+
+  /**
+   * How many filter ranges the server allows in one request: its MAX_FILTER_RANGES,
+   * or 0 when it sent none, which allows no Range Filter at all.
+   */
   get peerMaxFilterRanges(): bigint {
     for (const pair of this.#serverSetup?.setupOptions ?? []) {
       const option = MaxFilterRanges.fromKeyValuePair(pair)
@@ -576,6 +592,14 @@ export class MOQtailClient {
       })
       const sendHalf = new ControlSendStream(sendStream, client.onMessageSent)
       const params = setupOptions ? setupOptions.build() : new SetupOptions().build()
+      // Range filters are applied to what this client publishes, so it allows them
+      // unless the caller set a limit of its own, 0 included.
+      let maxFilterRanges = params.map((p) => MaxFilterRanges.fromKeyValuePair(p)).find((o) => o !== undefined)
+      if (!maxFilterRanges) {
+        maxFilterRanges = new MaxFilterRanges(DEFAULT_MAX_FILTER_RANGES)
+        params.push(maxFilterRanges.toKeyValuePair())
+      }
+      client.#maxFilterRanges = maxFilterRanges.value
       assertNoAuthorityOverWebTransport(params)
       await sendHalf.send(new Setup(params))
 
@@ -2494,6 +2518,7 @@ if (import.meta.vitest) {
   const { ByteBuffer } = await import('../model/common/byte_buffer')
   const { RangeFilter, RangeFilterKind, encodeRanges, InvalidFilterError } =
     await import('../model/parameter/message/range_filter')
+  const { DEFAULT_MAX_FILTER_RANGES } = await import('./types')
 
   /** One bidirectional stream: what the client wrote, and a way to answer on it. */
   class MockBidiStream {
@@ -2680,13 +2705,19 @@ if (import.meta.vitest) {
     })
 
     /** A connected client whose handshake is already done, plus its peer control stream. */
-    async function connected(serverOptions = new SetupOptions()): Promise<{
+    async function connected(
+      serverOptions = new SetupOptions(),
+      clientOptions?: SetupOptions,
+    ): Promise<{
       client: MOQtailClient
       transport: MockWebTransport
       control: ReadableStreamDefaultController<Uint8Array>
     }> {
       globalThis.WebTransport = MockWebTransport as unknown as typeof WebTransport
-      const connecting = MOQtailClient.new({ url: 'https://relay.example/moq' })
+      const connecting = MOQtailClient.new({
+        url: 'https://relay.example/moq',
+        ...(clientOptions ? { setupOptions: clientOptions } : {}),
+      })
       const transport = MockWebTransport.last
       await vi.waitFor(() => expect(transport.sentChunks).toHaveLength(1))
       const control = transport.openIncomingUniStream(new Setup(serverOptions.build()).serialize().toUint8Array())
@@ -3157,7 +3188,12 @@ if (import.meta.vitest) {
     })
 
     describe('stops at the end of the Location Filter without ending the subscription', () => {
-      async function serve(filter: LocationFilter, groups: number, objectsPerGroup: number) {
+      async function serve(
+        filter: LocationFilter,
+        groups: number,
+        objectsPerGroup: number,
+        rangeFilters: MessageParameter[] = [],
+      ) {
         const { client, transport } = await connected()
         let source!: ReadableStreamDefaultController<MoqtObject>
         client.addOrUpdateTrack({
@@ -3169,7 +3205,7 @@ if (import.meta.vitest) {
           trackAlias: 7n,
         })
         const incoming = transport.openIncomingBiStream()
-        incoming.respond(new Subscribe(4n, ftn, [filter]))
+        incoming.respond(new Subscribe(4n, ftn, [filter, ...rangeFilters]))
         await vi.waitFor(() => expect(incoming.messages).toHaveLength(1))
 
         const before = transport.sentChunks.length
@@ -3197,6 +3233,78 @@ if (import.meta.vitest) {
           written: transport.sentChunks.length - before,
         }
       }
+
+      it('delivers only the objects its range filters pass', async () => {
+        const { client, opened, written } = await serve(
+          new LocationFilter(LocationFilterType.AbsoluteStart, 0n, 0n),
+          3,
+          4,
+          [new RangeFilter(RangeFilterKind.ObjectId, 0, undefined, encodeRanges([{ start: 1n, end: 2n }]))],
+        )
+        // Objects 1 and 2 of each group; every group still gets its stream.
+        expect(opened).toBe(3)
+        expect(written).toBe(3 + 6)
+        await client.disconnect()
+      })
+
+      it('ORs its filter sets and ANDs the filters within one', async () => {
+        const { client, opened, written } = await serve(
+          new LocationFilter(LocationFilterType.AbsoluteStart, 0n, 0n),
+          3,
+          2,
+          [
+            // Set 0 passes nothing: every object has publisher priority 0.
+            new RangeFilter(RangeFilterKind.Priority, 0, undefined, encodeRanges([{ start: 1n }])),
+            // Set 1 passes object 0 of subgroup 0.
+            new RangeFilter(RangeFilterKind.ObjectId, 1, undefined, encodeRanges([{ start: 0n, end: 0n }])),
+            new RangeFilter(RangeFilterKind.Subgroup, 1, undefined, encodeRanges([{ start: 0n, end: 0n }])),
+          ],
+        )
+        expect(opened).toBe(3)
+        expect(written).toBe(3 + 3)
+        await client.disconnect()
+      })
+
+      it('opens no stream for objects that are all filtered out', async () => {
+        const { client, opened, written } = await serve(
+          new LocationFilter(LocationFilterType.AbsoluteStart, 0n, 0n),
+          3,
+          2,
+          [new RangeFilter(RangeFilterKind.ObjectId, 0, undefined, encodeRanges([{ start: 5n }]))],
+        )
+        expect(opened).toBe(0)
+        expect(written).toBe(0)
+        await client.disconnect()
+      })
+
+      it('applies the filters a REQUEST_UPDATE leaves it with', async () => {
+        const { client, incoming } = await serve(new LocationFilter(LocationFilterType.AbsoluteStart, 0n, 0n), 0, 0)
+        const priority = new RangeFilter(RangeFilterKind.Priority, 0, undefined, encodeRanges([{ start: 1n }]))
+        incoming.respond(new RequestUpdate(4n, [priority]))
+        await vi.waitFor(() => expect(incoming.messages).toHaveLength(2))
+        expect(incoming.messages[1]).toBeInstanceOf(RequestOk)
+
+        // A second kind beyond the subscription's own limit is refused, and the update
+        // ends it.
+        const one = await connected(new SetupOptions(), new SetupOptions().addMaxFilterRanges(1))
+        one.client.addOrUpdateTrack({
+          fullTrackName: ftn,
+          trackSource: { live: new LiveTrackSource(new ReadableStream<MoqtObject>()) },
+          publisherPriority: 0,
+          trackAlias: 7n,
+        })
+        const stream = one.transport.openIncomingBiStream()
+        stream.respond(new Subscribe(4n, ftn, [priority]))
+        await vi.waitFor(() => expect(stream.messages).toHaveLength(1))
+        const objectId = new RangeFilter(RangeFilterKind.ObjectId, 0, undefined, encodeRanges([{ start: 0n, end: 0n }]))
+        stream.respond(new RequestUpdate(4n, [objectId]))
+        await vi.waitFor(() => expect(stream.messages).toHaveLength(3))
+        expect((stream.messages[1] as RequestError).errorCode).toBe(RequestErrorCode.InvalidFilter)
+        expect((stream.messages[2] as PublishDone).statusCode).toBe(PublishDoneStatusCode.UpdateFailed)
+
+        await one.client.disconnect()
+        await client.disconnect()
+      })
 
       it('delivers the whole of a Group End and nothing after it', async () => {
         const { client, incoming, opened, written } = await serve(
@@ -3332,18 +3440,57 @@ if (import.meta.vitest) {
       })
     })
 
-    it('refuses a SUBSCRIBE carrying a range filter with INVALID_FILTER', async () => {
-      // This client advertises no MAX_FILTER_RANGES, so the peer may send none.
-      const { client, transport } = await connected()
+    describe('received range filters', () => {
+      const objectId = (setId: number, start: bigint) =>
+        new RangeFilter(RangeFilterKind.ObjectId, setId, undefined, encodeRanges([{ start, end: start }]))
+      const refused = async (client: MOQtailClient, transport: MockWebTransport, parameters: MessageParameter[]) => {
+        const incoming = transport.openIncomingBiStream()
+        incoming.respond(new Subscribe(4n, ftn, parameters))
+        await vi.waitFor(() => expect(incoming.messages).toHaveLength(1))
+        expect(client.publications.has(4n)).toBe(false)
+        return (incoming.messages[0] as RequestError).errorCode
+      }
 
-      const incoming = transport.openIncomingBiStream()
-      const filter = new RangeFilter(RangeFilterKind.ObjectId, 0, undefined, encodeRanges([{ start: 0n, end: 0n }]))
-      incoming.respond(new Subscribe(4n, ftn, [filter]))
-      await vi.waitFor(() => expect(incoming.messages).toHaveLength(1))
-      expect((incoming.messages[0] as RequestError).errorCode).toBe(RequestErrorCode.InvalidFilter)
-      expect(client.publications.has(4n)).toBe(false)
+      it('advertises DEFAULT_MAX_FILTER_RANGES unless told otherwise', async () => {
+        const { client, transport } = await connected()
+        const setup = ControlMessage.deserialize(new FrozenByteBuffer(transport.sentChunks[0]!)) as Setup
+        expect(setup.setupOptions.map((p) => MaxFilterRanges.fromKeyValuePair(p)?.value)).toContain(
+          DEFAULT_MAX_FILTER_RANGES,
+        )
+        expect(client.maxFilterRanges).toBe(DEFAULT_MAX_FILTER_RANGES)
+        await client.disconnect()
+      })
 
-      await client.disconnect()
+      it('refuses filters it cannot apply with INVALID_FILTER', async () => {
+        const { client, transport } = await connected()
+        // The same SetID twice for one filter type.
+        expect(await refused(client, transport, [objectId(0, 0n), objectId(0, 4n)])).toBe(
+          RequestErrorCode.InvalidFilter,
+        )
+        await client.disconnect()
+      })
+
+      it('refuses more ranges than it advertised, and any at all once it opts out', async () => {
+        const one = await connected(new SetupOptions(), new SetupOptions().addMaxFilterRanges(1))
+        expect(await refused(one.client, one.transport, [objectId(0, 0n), objectId(1, 4n)])).toBe(
+          RequestErrorCode.InvalidFilter,
+        )
+        await one.client.disconnect()
+
+        const none = await connected(new SetupOptions(), new SetupOptions().addMaxFilterRanges(0))
+        expect(none.client.maxFilterRanges).toBe(0n)
+        expect(await refused(none.client, none.transport, [objectId(0, 0n)])).toBe(RequestErrorCode.InvalidFilter)
+        await none.client.disconnect()
+      })
+
+      it('refuses filters on SUBSCRIBE_TRACKS as unsupported', async () => {
+        const { client, transport } = await connected()
+        const incoming = transport.openIncomingBiStream()
+        incoming.respond(new SubscribeTracks(4n, Tuple.fromUtf8Path('room'), [objectId(0, 0n)]))
+        await vi.waitFor(() => expect(incoming.messages).toHaveLength(1))
+        expect((incoming.messages[0] as RequestError).errorCode).toBe(RequestErrorCode.NotSupported)
+        await client.disconnect()
+      })
     })
 
     it('ends a subscription whose REQUEST_UPDATE fails with PUBLISH_DONE(UPDATE_FAILED)', async () => {

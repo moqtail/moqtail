@@ -357,6 +357,8 @@ export enum RequestErrorCode {
   InvalidSwitch = 0x32,
   UnsupportedExtension = 0x33,
   Redirect = 0x34,
+  ConflictingFilters = 0x35,
+  InvalidFilter = 0x36,
 }
 
 /**
@@ -402,6 +404,10 @@ export namespace RequestErrorCode {
         return RequestErrorCode.UnsupportedExtension
       case 0x34n:
         return RequestErrorCode.Redirect
+      case 0x35n:
+        return RequestErrorCode.ConflictingFilters
+      case 0x36n:
+        return RequestErrorCode.InvalidFilter
       default:
         throw new InvalidEnumValue('RequestErrorCode.tryFrom', v)
     }

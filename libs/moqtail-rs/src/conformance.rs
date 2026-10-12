@@ -491,11 +491,15 @@ mod enum_conformance {
 
   #[test]
   fn message_parameters_match_fixture() {
-    assert_registry(&parameter_types().message_parameters, &[], |cp| {
-      MessageParameterType::try_from(cp)
-        .ok()
-        .map(|p| format!("{p:?}"))
-    });
+    assert_registry(
+      &parameter_types().message_parameters,
+      &[("OBJECTID_FILTER", "ObjectIdFilter")],
+      |cp| {
+        MessageParameterType::try_from(cp)
+          .ok()
+          .map(|p| format!("{p:?}"))
+      },
+    );
   }
 
   #[test]

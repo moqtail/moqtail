@@ -17,9 +17,20 @@
 import { SubscribeTracks, RequestOk } from '../../model/control'
 import { RequestStreamMessageHandler } from './handler'
 import { logger } from '../../util/logger'
+import { rangeFilterRejection } from '../util/validators'
 
 export const handlerSubscribeTracks: RequestStreamMessageHandler<SubscribeTracks> = async (client, msg, stream) => {
   logger.log('handler/subscribe_tracks', 'prefix', msg.trackNamespacePrefix.toUtf8Path())
+  const filterRejection = rangeFilterRejection(msg.parameters)
+  if (filterRejection) {
+    logger.warn(
+      'handler/subscribe_tracks',
+      `requestId=${msg.requestId} carries range filters this client does not allow`,
+    )
+    await stream.send(filterRejection)
+    return
+  }
+
   if (client.onPeerSubscribeTracks) {
     client.onPeerSubscribeTracks(msg)
   }

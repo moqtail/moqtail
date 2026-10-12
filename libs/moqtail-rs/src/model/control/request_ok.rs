@@ -120,6 +120,7 @@ impl ControlMessageTrait for RequestOk {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::model::common::location::Location;
   use bytes::Buf;
 
   #[test]
@@ -140,7 +141,7 @@ mod tests {
   fn test_roundtrip_with_params() {
     let request_ok = RequestOk::new(vec![
       MessageParameter::new_expires(3600),
-      MessageParameter::new_forward(true),
+      MessageParameter::new_largest_object(Location::new(4, 2)),
     ]);
 
     let mut buf = request_ok.serialize().unwrap();

@@ -181,6 +181,16 @@ impl SubscriptionState {
     self.location_filter = filter;
   }
 
+  /// Adopts the filter a subscription is created with. A live filter has no start
+  /// until [`Subscription::resolve_live_start`] measures it against the track, and
+  /// until then the subscription delivers whatever arrives.
+  fn set_initial_location_filter(&mut self, filter: LocationFilter) {
+    self.set_location_filter(filter, None);
+    if live_start_location(&self.location_filter, None).is_some() {
+      self.start_location = None;
+    }
+  }
+
   /// Whether `location` lies beyond where this subscription stops delivering.
   pub fn is_past_end(&self, location: &Location) -> bool {
     self.end_group.is_some_and(|end_group| {
@@ -266,9 +276,8 @@ impl From<SubscriptionOrigin> for SubscriptionState {
           last_received_object_location: None,
           prior_received_group: None,
         };
-        // An omitted filter is no filter. A relative one is resolved against the
-        // track once its Largest Object is known; see `resolve_live_start`.
-        state.set_location_filter(location_filter_of(&subscribe.subscribe_parameters), None);
+        // An omitted filter is no filter.
+        state.set_initial_location_filter(location_filter_of(&subscribe.subscribe_parameters));
         state.subscribe_parameters = subscribe.subscribe_parameters;
         state
       }
@@ -326,9 +335,8 @@ impl From<SubscriptionOrigin> for SubscriptionState {
           last_received_object_location: None,
           prior_received_group: None,
         };
-        // An omitted filter is no filter. A relative one is resolved against the
-        // track once its Largest Object is known; see `resolve_live_start`.
-        state.set_location_filter(location_filter_of(&publish.parameters), None);
+        // An omitted filter is no filter.
+        state.set_initial_location_filter(location_filter_of(&publish.parameters));
         state.subscribe_parameters = publish.parameters;
         state
       }
@@ -2048,6 +2056,17 @@ mod tests {
     assert!(!state.is_past_end(&Location::new(0, 5)));
     assert!(state.is_past_end(&Location::new(0, 6)));
     assert!(state.is_past_end(&Location::new(1, 0)));
+  }
+
+  #[test]
+  fn a_live_filter_starts_unresolved() {
+    let mut state = sent(&[]);
+    state.set_initial_location_filter(LocationFilter::NextObject);
+    assert_eq!(state.start_location, None);
+    state.set_initial_location_filter(LocationFilter::AbsoluteStart {
+      start: Location::new(3, 1),
+    });
+    assert_eq!(state.start_location, Some(Location::new(3, 1)));
   }
 
   #[test]

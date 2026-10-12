@@ -218,13 +218,11 @@ impl MessageParameter {
           | ControlMessageType::TrackStatus
           | ControlMessageType::Fetch
       ),
-      // PUBLISH_OK, SUBSCRIBE, or REQUEST_UPDATE.
+      // Subscription parameters ride the request that sets up or changes a
+      // subscription, never the PUBLISH_OK (REQUEST_OK) that accepts one.
       Self::ObjectDeliveryTimeout { .. } | Self::SubgroupDeliveryTimeout { .. } => matches!(
         msg_type,
-        ControlMessageType::PublishOk
-          | ControlMessageType::RequestOk
-          | ControlMessageType::Subscribe
-          | ControlMessageType::RequestUpdate
+        ControlMessageType::Subscribe | ControlMessageType::RequestUpdate
       ),
       // SUBSCRIBE only.
       Self::RendezvousTimeout { .. } => matches!(msg_type, ControlMessageType::Subscribe),
@@ -235,8 +233,6 @@ impl MessageParameter {
         ControlMessageType::Subscribe
           | ControlMessageType::Fetch
           | ControlMessageType::RequestUpdate
-          | ControlMessageType::PublishOk
-          | ControlMessageType::RequestOk
       ),
       Self::GroupOrder { .. } => matches!(
         msg_type,
@@ -249,8 +245,6 @@ impl MessageParameter {
         msg_type,
         ControlMessageType::Subscribe
           | ControlMessageType::Publish
-          | ControlMessageType::PublishOk
-          | ControlMessageType::RequestOk
           | ControlMessageType::RequestUpdate
       ),
       Self::SwitchFrom { .. } | Self::FillParameters { .. } => matches!(
@@ -276,17 +270,12 @@ impl MessageParameter {
         ControlMessageType::Subscribe
           | ControlMessageType::RequestUpdate
           | ControlMessageType::Publish
-          | ControlMessageType::PublishOk
-          | ControlMessageType::RequestOk
           | ControlMessageType::SubscribeNamespace
           | ControlMessageType::SubscribeTracks
       ),
       Self::NewGroupRequest { .. } => matches!(
         msg_type,
-        ControlMessageType::PublishOk
-          | ControlMessageType::RequestOk
-          | ControlMessageType::Subscribe
-          | ControlMessageType::RequestUpdate
+        ControlMessageType::Subscribe | ControlMessageType::RequestUpdate
       ),
       Self::TrackNamespacePrefix { .. } => matches!(msg_type, ControlMessageType::RequestUpdate),
       // A switching set is joined when the subscription is created and
@@ -1488,8 +1477,43 @@ mod tests {
   fn test_is_valid_for() {
     let timeout = MessageParameter::new_object_delivery_timeout(100);
     assert!(timeout.is_valid_for(ControlMessageType::Subscribe));
-    assert!(timeout.is_valid_for(ControlMessageType::PublishOk));
+    assert!(timeout.is_valid_for(ControlMessageType::RequestUpdate));
     assert!(!timeout.is_valid_for(ControlMessageType::Fetch));
+  }
+
+  #[test]
+  fn subscription_parameters_ride_request_update_not_publish_ok() {
+    for param in [
+      MessageParameter::new_object_delivery_timeout(100),
+      MessageParameter::new_subgroup_delivery_timeout(100),
+      MessageParameter::new_subscriber_priority(7),
+      MessageParameter::new_location_filter(LocationFilter::NextObject),
+      MessageParameter::new_forward(false),
+      MessageParameter::new_group_request(3),
+    ] {
+      assert!(
+        param.is_valid_for(ControlMessageType::RequestUpdate),
+        "{param:?}"
+      );
+      for msg_type in [ControlMessageType::PublishOk, ControlMessageType::RequestOk] {
+        assert!(!param.is_valid_for(msg_type), "{param:?} in {msg_type:?}");
+      }
+    }
+    // What a PUBLISH_OK or REQUEST_UPDATE_OK may still carry.
+    assert!(MessageParameter::new_expires(10).is_valid_for(ControlMessageType::RequestOk));
+    assert!(
+      MessageParameter::new_largest_object(Location::new(1, 2))
+        .is_valid_for(ControlMessageType::RequestOk)
+    );
+  }
+
+  #[test]
+  fn a_publish_ok_carrying_forward_is_a_protocol_violation() {
+    let mut bytes = serialize_message_parameters(&[MessageParameter::new_forward(true)]).unwrap();
+    assert!(matches!(
+      deserialize_message_parameters(&mut bytes, 1, ControlMessageType::RequestOk),
+      Err(ParseError::ProtocolViolation { .. })
+    ));
   }
 
   #[test]

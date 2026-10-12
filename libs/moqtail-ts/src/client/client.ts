@@ -2777,6 +2777,26 @@ if (import.meta.vitest) {
       await client.disconnect()
     })
 
+    it('leaves the Forward State to a REQUEST_UPDATE, not the PUBLISH_OK', async () => {
+      const { client, transport } = await connected()
+      client.addOrUpdateTrack({
+        fullTrackName: ftn,
+        trackSource: { live: new LiveTrackSource(new ReadableStream<MoqtObject>()) },
+        publisherPriority: 0,
+        trackAlias: 9n,
+      })
+
+      const publishing = client.publish(ftn, false, 9n)
+      const publishStream = await openedStream(transport, 0)
+      // A PUBLISH_OK has no subscription parameters to give; one that carries FORWARD
+      // anyway does not move the publication.
+      publishStream.respond(new RequestOk([new Forward(true)]))
+      const { requestId } = (await publishing) as { requestId: bigint }
+
+      expect((client.publications.get(requestId) as PublishPublication).forwarding).toBe(false)
+      await client.disconnect()
+    })
+
     it('holds one prefix under both SUBSCRIBE_NAMESPACE and SUBSCRIBE_TRACKS', async () => {
       const { client, transport } = await connected()
       const prefix = Tuple.fromUtf8Path('room')

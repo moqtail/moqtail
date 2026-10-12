@@ -161,6 +161,12 @@ pub(crate) struct MOQTClient {
   /// controller channel and decision cache, behind one handle.
   pub ssts: Arc<ssts::SstsState>,
 
+  /// Bytes written to each live send stream, keyed like the send-stream map. A
+  /// reset turns them into bandwidth spent on data the subscriber will never
+  /// use; the finish paths clear the entry, because a completed delivery wasted
+  /// nothing.
+  sent_bytes: Arc<RwLock<HashMap<SendStreamKey, u64>>>,
+
   /// The settings this relay started with, handed in the way `Track` and
   /// `Subscription` take theirs, rather than reached for through the global.
   config: &'static AppConfig,
@@ -247,6 +253,7 @@ impl MOQTClient {
       switch_context: SwitchContext::new(),
       rate_limiter,
       ssts,
+      sent_bytes: Arc::new(RwLock::new(HashMap::new())),
       peer_hop_id,
       peer_relay_cost,
       cluster_adverts: Arc::new(Mutex::new(HashMap::new())),
@@ -634,6 +641,7 @@ impl MOQTClient {
           anyhow::anyhow!("Failed to finish send stream ({}): {:?}", stream_key, e)
         })?;
         self.record_stream_end(quic_stream_id, true, StreamEnd::Fin);
+        self.take_sent_bytes(stream_key).await;
         self
           .ssts
           .on_stream_closed(&stream_key.stream_id)
@@ -643,6 +651,7 @@ impl MOQTClient {
 
       tokio::select! {
         finish_result = stream.finish() => {
+            self.take_sent_bytes(stream_key).await;
             self.ssts.on_stream_closed(&stream_key.stream_id).await;
             if finish_result.is_ok() {
               self.record_stream_end(quic_stream_id, true, StreamEnd::Fin);
@@ -661,10 +670,12 @@ impl MOQTClient {
             // The stream was discarded because it did not finish in time,
             // which is what this code is for: the peer must be able to tell a
             // late delivery apart from a cancelled or failed one.
+            let wasted = self.take_sent_bytes(stream_key).await;
             let code = StreamResetCode::DeliveryTimeout.to_u64();
             if stream.reset(code).is_ok() {
               self.record_stream_end(quic_stream_id, true, StreamEnd::Reset(code));
             }
+            self.log_reset_waste(stream_key, "delivery-timeout", wasted);
             let set_id = self
               .ssts
               .set_id_of_relay_track(stream_key.stream_id.relay_track_id)
@@ -721,6 +732,7 @@ impl MOQTClient {
   ) -> Option<Arc<Mutex<TransportSendStream>>> {
     let removed = self.take_stream(stream_key).await;
     if removed.is_some() {
+      self.take_sent_bytes(stream_key).await;
       self
         .ssts
         .on_stream_closed(&stream_key.stream_id)
@@ -732,13 +744,58 @@ impl MOQTClient {
   /// Reset a data stream with an application error code (QUIC RESET_STREAM) and
   /// drop it from the send-stream map, releasing its switching-set stream slot.
   pub async fn reset_stream(&self, stream_key: &SendStreamKey, code: u64) {
+    // Read the ledger before releasing: the reset is the moment everything
+    // already written on this stream becomes data the subscriber will never
+    // use. `release_stream` clears the entry, so this is the last chance to
+    // see it.
+    let wasted = self.peek_sent_bytes(stream_key).await;
     if let Some(stream) = self.release_stream(stream_key).await {
       let mut stream = stream.lock().await;
       match stream.reset(code) {
-        Ok(()) => self.record_stream_end(stream.id(), true, StreamEnd::Reset(code)),
+        Ok(()) => {
+          self.record_stream_end(stream.id(), true, StreamEnd::Reset(code));
+          self.log_reset_waste(stream_key, reset_reason(code), wasted);
+        }
         Err(e) => warn!("Error resetting data stream {}: {:?}", stream_key, e),
       }
     }
+  }
+
+  /// The bytes written to a live stream so far: what a reset of that stream
+  /// turns into waste.
+  async fn peek_sent_bytes(&self, stream_key: &SendStreamKey) -> u64 {
+    self
+      .sent_bytes
+      .read()
+      .await
+      .get(stream_key)
+      .copied()
+      .unwrap_or(0)
+  }
+
+  /// Read the ledger and drop the entry: for the paths where the stream is
+  /// gone and the number is either reported or no longer interesting.
+  async fn take_sent_bytes(&self, stream_key: &SendStreamKey) -> u64 {
+    self
+      .sent_bytes
+      .write()
+      .await
+      .remove(stream_key)
+      .unwrap_or(0)
+  }
+
+  /// One line per reset, in the shape the testbed sums: the bytes already sent
+  /// on a stream that was cancelled mid-delivery are bandwidth spent on data
+  /// the subscriber will never use.
+  fn log_reset_waste(&self, stream_key: &SendStreamKey, reason: &'static str, wasted: u64) {
+    tracing::info!(
+      connection_id = %self.connection_id,
+      relay_track_id = stream_key.stream_id.relay_track_id,
+      group_id = stream_key.stream_id.group_id.unwrap_or(0),
+      reason,
+      wasted_bytes = wasted,
+      "SSTS: reset a stream mid-delivery — bytes already sent are wasted"
+    );
   }
 
   pub async fn write_stream_object(
@@ -774,9 +831,20 @@ impl MOQTClient {
     }
 
     if let Some(s) = send_stream {
+      let written: u64 = chunks.iter().map(|chunk| chunk.len() as u64).sum();
       let mut stream = s.lock().await;
       match stream.write_all_chunks(&mut chunks).await {
-        Ok(..) => {}
+        Ok(..) => {
+          // Count what the stream carried, so a later reset can say what it
+          // wasted. These are the serialized bytes handed to the transport;
+          // QUIC framing is not counted.
+          *self
+            .sent_bytes
+            .write()
+            .await
+            .entry(stream_key.clone())
+            .or_default() += written;
+        }
         Err(e) => {
           if let TransportWriteError::Stopped(code) = &e {
             self.record_stream_end(stream.id(), false, StreamEnd::StopSending(*code));
@@ -827,6 +895,20 @@ impl MOQTClient {
 
   pub fn start_abr_controller(self: Arc<Self>) {
     ssts::controller::start(self);
+  }
+}
+
+/// The reason a reset code names, in the words the waste log reports:
+/// `cancelled` is a decision or a teardown overtaking a delivery - the
+/// retroactive downshift's own waste - `delivery-timeout` is the discard
+/// timer, and anything else is a teardown code the testbed can still sum.
+fn reset_reason(code: u64) -> &'static str {
+  if code == StreamResetCode::Cancelled.to_u64() {
+    "cancelled"
+  } else if code == StreamResetCode::DeliveryTimeout.to_u64() {
+    "delivery-timeout"
+  } else {
+    "other"
   }
 }
 

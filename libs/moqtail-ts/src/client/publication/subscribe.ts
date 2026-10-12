@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { FilterType, Subscribe, PublishDone, PublishDoneStatusCode, RequestUpdate } from '@/model/control'
+import { Subscribe, PublishDone, PublishDoneStatusCode, RequestUpdate } from '@/model/control'
 import { MOQtailClient } from '../client'
 import { Track } from '../track/track'
 import {
@@ -55,9 +55,9 @@ export class SubscribePublication {
   #startLocation: Location
 
   /**
-   * The end group for AbsoluteRangeFill subscriptions, if specified.
+   * The last Location delivered, inclusive, when the Location Filter has an end.
    */
-  #endGroup: bigint | undefined
+  #endLocation: Location | undefined
 
   /**
    * The priority of the subscriber.
@@ -141,36 +141,13 @@ export class SubscribePublication {
     this.#publisherPriority = track.publisherPriority
     const subPriority = subscribeMsg.parameters.find(MessageParameter.isSubscriberPriority)
     const fwd = subscribeMsg.parameters.find(MessageParameter.isForward)
-    const filter = subscribeMsg.parameters.find(MessageParameter.isSubscriptionFilter)
+    const filter = subscribeMsg.parameters.find(MessageParameter.isLocationFilter)
     this.#subscriberPriority = subPriority?.priority ?? 128
     this.#forward = fwd?.forward ?? true
     this.#parameters = [...subscribeMsg.parameters]
-    this.#startLocation = new Location(0n, 0n)
-
-    const filterType = filter?.filterType ?? FilterType.LatestObject
-    switch (filterType) {
-      case FilterType.LatestObject:
-        if (largestLocation) {
-          this.#startLocation = new Location(largestLocation.group, largestLocation.object + 1n)
-        } else {
-          this.#startLocation = new Location(0n, 0n)
-        }
-        break
-      case FilterType.NextGroupStart:
-        if (largestLocation) {
-          this.#startLocation = new Location(largestLocation.group + 1n, 0n)
-        } else {
-          this.#startLocation = new Location(0n, 0n)
-        }
-        break
-      case FilterType.AbsoluteStartFill:
-        this.#startLocation = filter?.startLocation ?? new Location(0n, 0n)
-        break
-      case FilterType.AbsoluteRangeFill:
-        this.#startLocation = filter?.startLocation ?? new Location(0n, 0n)
-        this.#endGroup = filter?.endGroup
-        break
-    }
+    // No filter starts at the beginning and never ends.
+    this.#startLocation = filter?.startLocation(largestLocation) ?? new Location(0n, 0n)
+    this.#endLocation = filter?.endLocation()
     this.publish()
   }
 
@@ -210,9 +187,12 @@ export class SubscribePublication {
    * @param msg - The update message containing new request details.
    */
   update(msg: RequestUpdate): void {
-    const filter = msg.parameters.find(MessageParameter.isSubscriptionFilter) as any
-    if (filter?.startLocation !== undefined) this.#startLocation = filter.startLocation
-    if (filter?.endGroup !== undefined) this.#endGroup = filter.endGroup
+    // An update changes the filter only when it carries one.
+    const filter = msg.parameters.find(MessageParameter.isLocationFilter)
+    if (filter) {
+      this.#startLocation = filter.startLocation(this.latestLocation) ?? new Location(0n, 0n)
+      this.#endLocation = filter.endLocation()
+    }
 
     for (const param of msg.parameters) {
       if (MessageParameter.isSubscriberPriority?.(param)) {
@@ -223,6 +203,24 @@ export class SubscribePublication {
     }
 
     applyMessageParameterUpdate(this.#parameters, msg.parameters)
+  }
+
+  /**
+   * Closes the stream carrying `group`, if one is open.
+   */
+  async #closeGroupStream(group: bigint): Promise<void> {
+    await this.#lock.acquire()
+    try {
+      const stream = this.#streams.get(group)
+      if (stream) {
+        this.#streams.delete(group)
+        await stream.close()
+      }
+    } catch (err) {
+      logger.warn('publication/subscribe', 'error in closing stream: id, group, err', this.#id, group, err)
+    } finally {
+      await this.#lock.release()
+    }
   }
 
   #markGroupSeen(group: bigint): void {
@@ -259,6 +257,13 @@ export class SubscribePublication {
         this.#isStarted = true
       }
       if (!this.#isStarted) this.#markGroupSeen(obj.location.group)
+      // Past the end of the filter nothing more is delivered, but the subscription stays:
+      // a REQUEST_UPDATE can still move the filter.
+      if (this.#isStarted && this.#endLocation && obj.location.compare(this.#endLocation) > 0) {
+        this.#markGroupSeen(obj.location.group)
+        if (this.latestLocation) await this.#closeGroupStream(this.latestLocation.group)
+        return
+      }
       if (this.#isStarted) {
         try {
           if (!this.#streams.has(obj.location.group)) {
@@ -293,51 +298,13 @@ export class SubscribePublication {
           await sendStream.write(obj.tryIntoSubgroupObject())
           await this.#lock.release()
 
-          // If this is the last object in the group (for AbsoluteRangeFill/endGroup), close the stream
-          if (this.#endGroup && obj.location.group === this.#endGroup) {
-            try {
-              await this.#lock.acquire()
-              if (this.#streams.has(obj.location.group)) {
-                await sendStream.close()
-                this.#streams.delete(obj.location.group)
-              }
-              await this.#lock.release()
-            } catch (err) {
-              logger.warn(
-                'publication/subscribe',
-                'error in closing stream: id, endGroup, err',
-                this.#id,
-                this.#endGroup,
-                err,
-              )
-            }
-            await this.done(PublishDoneStatusCode.SubscriptionEnded)
-            this.cancel()
+          if (this.#endLocation && obj.location.equals(this.#endLocation)) {
+            // The filter's last Object: nothing follows on this stream.
+            await this.#closeGroupStream(obj.location.group)
           } else if (this.latestLocation && this.latestLocation.group !== obj.location.group) {
             // TODO: Maybe don't close the previous stream, discuss
             // If group changed, close previous group's stream
-            const prevGroup = this.latestLocation.group
-            try {
-              await this.#lock.acquire()
-              const prevStream = this.#streams.get(prevGroup)
-              if (prevStream) {
-                try {
-                  await prevStream.close()
-                } catch (err) {
-                  logger.warn('publication/subscribe', 'error in closing stream', prevGroup, err)
-                }
-                this.#streams.delete(prevGroup)
-              }
-              await this.#lock.release()
-            } catch (err) {
-              logger.warn(
-                'publication/subscribe',
-                'error in closing stream: id, latestLocation.group, err',
-                this.#id,
-                this.latestLocation.group,
-                err,
-              )
-            }
+            await this.#closeGroupStream(this.latestLocation.group)
           }
           await this.#lock.acquire()
           this.latestLocation = obj.location

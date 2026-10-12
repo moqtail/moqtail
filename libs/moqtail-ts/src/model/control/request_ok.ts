@@ -16,7 +16,7 @@
 
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
 
-import { ControlMessageType, FilterType } from './constant'
+import { ControlMessageType } from './constant'
 import { CastingError, LengthExceedsMaxError, ProtocolViolationError } from '../error/error'
 import {
   MessageParameter,
@@ -26,10 +26,8 @@ import {
 import { TrackProperty, ObjectDeliveryTimeoutProperty, MaxCacheDurationProperty } from '../property/track_property'
 
 import { Location } from '../common/location'
-import { Forward } from '../parameter/message/forward'
-import { SubscriberPriority } from '../parameter/message/subscriber_priority'
-import { SubscriptionFilter } from '../parameter/message/subscription_filter'
-import { ObjectDeliveryTimeout } from '../parameter/message/object_delivery_timeout'
+import { Expires } from '../parameter/message/expires'
+import { LargestObject } from '../parameter/message/largest_object'
 
 /**
  * @public
@@ -148,14 +146,10 @@ if (import.meta.vitest) {
       expect(payload.remaining).toBe(0)
     })
 
-    // PUBLISH is answered by REQUEST_OK, so the parameters a PUBLISH_OK used to carry
-    // travel here now.
+    // A REQUEST_OK carries EXPIRES or LARGEST_OBJECT at most; subscription
+    // parameters go in a REQUEST_UPDATE instead.
     test('roundtrip with parameters', () => {
-      const parameters: MessageParameter[] = [
-        new Forward(true),
-        new SubscriberPriority(100),
-        new SubscriptionFilter(FilterType.LatestObject, undefined, undefined),
-      ]
+      const parameters: MessageParameter[] = [new Expires(3600n), new LargestObject(new Location(4n, 2n))]
       const msg = new RequestOk(parameters)
       const payload = payloadOf(msg)
       const deserialized = RequestOk.parsePayload(payload)
@@ -163,21 +157,9 @@ if (import.meta.vitest) {
       expect(payload.remaining).toBe(0)
     })
 
-    test('roundtrip with AbsoluteRangeFill subscription filter', () => {
-      const parameters: MessageParameter[] = [
-        new SubscriptionFilter(FilterType.AbsoluteRangeFill, new Location(5n, 10n), 20n),
-        new ObjectDeliveryTimeout(5000n),
-      ]
-      const msg = new RequestOk(parameters)
-      const payload = payloadOf(msg)
-      const deserialized = RequestOk.parsePayload(payload)
-      expect(deserialized.parameters.length).toBe(2)
-      expect(payload.remaining).toBe(0)
-    })
-
     test('roundtrip with track properties (TRACK_STATUS_OK)', () => {
       const msg = new RequestOk(
-        [new ObjectDeliveryTimeout(100n)],
+        [new Expires(100n)],
         [new ObjectDeliveryTimeoutProperty(5000n), new MaxCacheDurationProperty(60000n)],
       )
       const payload = payloadOf(msg)
@@ -204,7 +186,7 @@ if (import.meta.vitest) {
     })
 
     test('excess roundtrip', () => {
-      const msg = new RequestOk([new ObjectDeliveryTimeout(5000n)])
+      const msg = new RequestOk([new Expires(5000n)])
       const serialized = msg.serialize().toUint8Array()
       const excess = new Uint8Array([9, 1, 1])
       const buf = new ByteBuffer()
@@ -224,7 +206,7 @@ if (import.meta.vitest) {
     })
 
     test('partial message', () => {
-      const msg = new RequestOk([new ObjectDeliveryTimeout(5000n)])
+      const msg = new RequestOk([new Expires(5000n)])
       const serialized = msg.serialize().toUint8Array()
       const upper = Math.floor(serialized.length / 2)
       const partial = serialized.slice(0, upper)

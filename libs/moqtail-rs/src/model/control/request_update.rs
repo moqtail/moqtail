@@ -84,20 +84,24 @@ impl ControlMessageTrait for RequestUpdate {
 mod tests {
   use super::*;
   use crate::model::common::location::Location;
-  use crate::model::control::constant::FilterType;
+  use crate::model::parameter::location_filter::LocationFilter;
   use bytes::Buf;
 
   #[test]
   fn test_roundtrip() {
     let request_update = RequestUpdate::new(
       120205,
-      vec![MessageParameter::new_subscription_filter(
-        FilterType::AbsoluteRangeFill,
-        Some(Location {
-          group: 81,
-          object: 81,
-        }),
-        Some(106),
+      vec![MessageParameter::new_location_filter(
+        LocationFilter::AbsoluteRange {
+          start: Location {
+            group: 81,
+            object: 81,
+          },
+          end: Location {
+            group: 106,
+            object: 4,
+          },
+        },
       )],
     );
 
@@ -115,13 +119,17 @@ mod tests {
   fn test_excess_roundtrip() {
     let request_update = RequestUpdate::new(
       120205,
-      vec![MessageParameter::new_subscription_filter(
-        FilterType::AbsoluteRangeFill,
-        Some(Location {
-          group: 81,
-          object: 81,
-        }),
-        Some(106),
+      vec![MessageParameter::new_location_filter(
+        LocationFilter::AbsoluteRange {
+          start: Location {
+            group: 81,
+            object: 81,
+          },
+          end: Location {
+            group: 106,
+            object: 4,
+          },
+        },
       )],
     );
 
@@ -145,13 +153,17 @@ mod tests {
   fn test_partial_message() {
     let request_update = RequestUpdate::new(
       120205,
-      vec![MessageParameter::new_subscription_filter(
-        FilterType::AbsoluteRangeFill,
-        Some(Location {
-          group: 81,
-          object: 81,
-        }),
-        Some(106),
+      vec![MessageParameter::new_location_filter(
+        LocationFilter::AbsoluteRange {
+          start: Location {
+            group: 81,
+            object: 81,
+          },
+          end: Location {
+            group: 106,
+            object: 4,
+          },
+        },
       )],
     );
 

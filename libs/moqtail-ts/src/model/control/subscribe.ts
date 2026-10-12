@@ -18,71 +18,23 @@ import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buf
 import { Location } from '../common/location'
 import { Tuple } from '../common/tuple'
 
-import { ControlMessageType, FilterType, GroupOrder } from '../control/constant'
+import { ControlMessageType, GroupOrder, LocationFilterType } from '../control/constant'
 import { FullTrackName } from '../data'
 import {
   MessageParameter,
   deserializeMessageParameterKvps,
   serializeMessageParameterKvps,
 } from '../parameter/message_parameter'
-import { SubscriptionFilter } from '../parameter/message/subscription_filter'
+import { LocationFilter } from '../parameter/message/location_filter'
 import { Forward } from '../parameter/message/forward'
 import { GroupOrderParam } from '../parameter/message/group_order_param'
 
 export class Subscribe {
-  private constructor(
+  constructor(
     public requestId: bigint,
     public fullTrackName: FullTrackName,
     public parameters: MessageParameter[],
   ) {}
-
-  static newNextGroupStart(requestId: bigint, fullTrackName: FullTrackName, parameters: MessageParameter[]): Subscribe {
-    return new Subscribe(requestId, fullTrackName, [...parameters, new SubscriptionFilter(FilterType.NextGroupStart)])
-  }
-
-  static newLatestObject(requestId: bigint, fullTrackName: FullTrackName, parameters: MessageParameter[]): Subscribe {
-    return new Subscribe(requestId, fullTrackName, [...parameters, new SubscriptionFilter(FilterType.LatestObject)])
-  }
-
-  static newAbsoluteStartFill(
-    requestId: bigint,
-    fullTrackName: FullTrackName,
-    startLocation: Location,
-    parameters: MessageParameter[],
-  ): Subscribe {
-    return new Subscribe(requestId, fullTrackName, [
-      ...parameters,
-      new SubscriptionFilter(FilterType.AbsoluteStartFill, startLocation),
-    ])
-  }
-
-  static newAbsoluteRangeFill(
-    requestId: bigint,
-    fullTrackName: FullTrackName,
-    startLocation: Location,
-    endGroup: bigint,
-    parameters: MessageParameter[],
-  ): Subscribe {
-    if (endGroup < startLocation.group) {
-      throw new Error('End Group must be >= Start Group')
-    }
-    return new Subscribe(requestId, fullTrackName, [
-      ...parameters,
-      new SubscriptionFilter(FilterType.AbsoluteRangeFill, startLocation, endGroup),
-    ])
-  }
-
-  static newRelativeStartFill(
-    requestId: bigint,
-    fullTrackName: FullTrackName,
-    relativePrevious: bigint,
-    parameters: MessageParameter[],
-  ): Subscribe {
-    return new Subscribe(requestId, fullTrackName, [
-      ...parameters,
-      new SubscriptionFilter(FilterType.RelativeStartFill, undefined, undefined, relativePrevious),
-    ])
-  }
 
   getType(): ControlMessageType {
     return ControlMessageType.Subscribe
@@ -125,13 +77,11 @@ if (import.meta.vitest) {
   const { describe, it, expect } = import.meta.vitest
 
   function buildTestSubscribe(): Subscribe {
-    const subscribe = Subscribe.newAbsoluteRangeFill(
-      128242n,
-      FullTrackName.tryNew('track/namespace', 'trackName'),
-      new Location(81n, 81n),
-      100n,
-      [new Forward(true), new GroupOrderParam(GroupOrder.Ascending)],
-    )
+    const subscribe = new Subscribe(128242n, FullTrackName.tryNew('track/namespace', 'trackName'), [
+      new Forward(true),
+      new GroupOrderParam(GroupOrder.Ascending),
+      new LocationFilter(LocationFilterType.AbsoluteStartGroupEnd, 81n, 81n, 100n),
+    ])
     // Wire encoding canonicalizes parameter order ascending by type (delta-encoding requirement).
     subscribe.parameters.sort((a, b) => {
       const at = a.toKeyValuePair().typeValue
@@ -180,37 +130,16 @@ if (import.meta.vitest) {
       expect(Array.from(trailing)).toEqual([9, 1, 1])
     })
 
-    describe('Subscribe Constructors', () => {
-      it('should create a Subscribe with AbsoluteRangeFill filter in parameters', () => {
-        const subscribe = Subscribe.newAbsoluteRangeFill(
-          128242n,
-          FullTrackName.tryNew('track/namespace', 'trackName'),
-          new Location(81n, 81n),
-          100n,
-          [],
-        )
-
-        const filter = subscribe.parameters.find((p): p is SubscriptionFilter => p instanceof SubscriptionFilter)
-        expect(filter?.filterType).toBe(FilterType.AbsoluteRangeFill)
-        expect(filter?.startLocation).toEqual(new Location(81n, 81n))
-        expect(filter?.endGroup).toBe(100n)
-      })
-
-      it('should throw an error if EndGroup < StartGroup', () => {
-        expect(() =>
-          Subscribe.newAbsoluteRangeFill(
-            128242n,
-            FullTrackName.tryNew('track/namespace', 'trackName'),
-            new Location(81n, 81n),
-            80n,
-            [],
-          ),
-        ).toThrow('End Group must be >= Start Group')
-      })
+    it('carries its Location Filter in parameters', () => {
+      const subscribe = buildTestSubscribe()
+      const filter = subscribe.parameters.find((p): p is LocationFilter => p instanceof LocationFilter)
+      expect(filter?.filterType).toBe(LocationFilterType.AbsoluteStartGroupEnd)
+      expect(filter?.startLocation()).toEqual(new Location(81n, 81n))
+      expect(filter?.endGroup).toBe(100n)
     })
 
     it('should handle empty parameters', () => {
-      const subscribe = Subscribe.newLatestObject(128242n, FullTrackName.tryNew('track/namespace', 'trackName'), [])
+      const subscribe = new Subscribe(128242n, FullTrackName.tryNew('track/namespace', 'trackName'), [])
 
       const serialized = subscribe.serialize()
       const buf = new ByteBuffer()

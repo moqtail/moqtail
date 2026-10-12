@@ -148,46 +148,46 @@ export namespace ControlMessageType {
 
 /**
  * @public
- * Filter types for subscription requests.
+ * Which fields of a LOCATION_FILTER follow its type, and how they are read.
  */
-export enum FilterType {
-  NextGroupStart = 0x1,
-  LatestObject = 0x2,
-  AbsoluteStartFill = 0x3,
-  AbsoluteRangeFill = 0x4,
-  /** Start Location is `{Largest Object.Group - Relative Previous, 0}`. */
-  RelativeStartFill = 0x5,
+export enum LocationFilterType {
+  /** No filter: every Object passes. */
+  None = 0x0,
+  /** Starts StartGroup groups before the Next Group. */
+  RelativeStart = 0x1,
+  AbsoluteStart = 0x2,
+  /** Ends with the last Object of the End Group. */
+  AbsoluteStartGroupEnd = 0x3,
+  /** Ends with End Object of the End Group. */
+  AbsoluteRange = 0x4,
+  /** Starts at the Object after the Largest Object. */
+  NextObject = 0x5,
 }
 
 /**
- * Converts a bigint value to a FilterType enum.
+ * Converts a bigint value to a LocationFilterType enum.
  * @param v - The bigint value.
- * @returns The corresponding FilterType.
- * @throws InvalidEnumValue if the value is not a valid filter type.
+ * @returns The corresponding LocationFilterType.
+ * @throws InvalidEnumValue if the value is not a valid Location Filter Type.
  */
-export namespace FilterType {
-  export function tryFrom(v: bigint): FilterType {
+export namespace LocationFilterType {
+  export function tryFrom(v: bigint): LocationFilterType {
     switch (v) {
+      case 0x0n:
+        return LocationFilterType.None
       case 0x1n:
-        return FilterType.NextGroupStart
+        return LocationFilterType.RelativeStart
       case 0x2n:
-        return FilterType.LatestObject
+        return LocationFilterType.AbsoluteStart
       case 0x3n:
-        return FilterType.AbsoluteStartFill
+        return LocationFilterType.AbsoluteStartGroupEnd
       case 0x4n:
-        return FilterType.AbsoluteRangeFill
+        return LocationFilterType.AbsoluteRange
       case 0x5n:
-        return FilterType.RelativeStartFill
+        return LocationFilterType.NextObject
       default:
-        throw new InvalidEnumValue('FilterType.tryFrom', v)
+        throw new InvalidEnumValue('LocationFilterType.tryFrom', v)
     }
-  }
-
-  /** Whether the publisher also delivers already-published objects on a fill fetch stream. */
-  export function isFetchFill(v: FilterType): boolean {
-    return (
-      v === FilterType.AbsoluteStartFill || v === FilterType.AbsoluteRangeFill || v === FilterType.RelativeStartFill
-    )
   }
 }
 

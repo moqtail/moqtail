@@ -1,6 +1,6 @@
 # MOQtail Test Client
 
-A unified test client for the MOQtail relay, supporting publish, subscribe, and fetch operations over MoQ Transport (draft-18). Supports both subgroup (unidirectional streams) and datagram object forwarding preferences.
+A unified test client for the MOQtail relay, supporting publish, subscribe, and fetch operations over MoQ Transport (draft-22). Supports both subgroup (unidirectional streams) and datagram object forwarding preferences.
 
 ## Usage
 
@@ -46,17 +46,26 @@ cargo run --bin client -- --command <COMMAND> [OPTIONS]
 
 ## Subscribe Options
 
-| Option                   | Short | Default     | Description                                                                |
-| ------------------------ | ----- | ----------- | -------------------------------------------------------------------------- |
-| `--duration`             | `-d`  | `0`         | Duration to listen in seconds (0 = indefinite)                             |
-| `--subscriber-priority`  |       | `128`       | Subscriber priority 0 (highest) – 255 (lowest)                             |
-| `--group-order`          |       | `ascending` | Group delivery order (`original`, `ascending`, `descending`)               |
-| `--extra-track`          |       | _(none)_    | Second track subscription for priority testing: `name:priority`            |
-| `--forward`              |       | `true`      | Subscription Forward State; set `false` to suppress object delivery        |
-| `--update-forward-after` |       | `0`         | Seconds after subscribing to REQUEST_UPDATE Forward State to 1 (0 = never) |
-| `--joining-fetch`        |       | `false`     | After subscribing, issue a Joining FETCH against the subscription          |
-| `--joining-start`        |       | `0`         | Joining FETCH start group (with `--joining-fetch`)                         |
-| `--joining-type`         |       | `relative`  | Joining FETCH type (`relative` or `absolute`)                              |
+| Option                   | Short | Default       | Description                                                                                                                     |
+| ------------------------ | ----- | ------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `--duration`             | `-d`  | `0`           | Duration to listen in seconds (0 = indefinite)                                                                                  |
+| `--subscriber-priority`  |       | `128`         | Subscriber priority 0 (highest) – 255 (lowest)                                                                                  |
+| `--group-order`          |       | `ascending`   | Group delivery order (`original`, `ascending`, `descending`)                                                                    |
+| `--extra-track`          |       | _(none)_      | Second track subscription for priority testing: `name:priority`                                                                 |
+| `--forward`              |       | `true`        | Subscription Forward State; set `false` to suppress object delivery                                                             |
+| `--update-forward-after` |       | `0`           | Seconds after subscribing to REQUEST_UPDATE Forward State to 1 (0 = never)                                                      |
+| `--filter`               |       | `next-object` | Location Filter: `none`, `relative-start`, `absolute-start`, `absolute-start-group-end`, `absolute-range`, `next-object`        |
+| `--filter-start-group`   |       | `0`           | Start Group for the absolute filters; for `relative-start`, groups before the next group (0 = next, 1 = current)                |
+| `--filter-start-object`  |       | `0`           | Start Object for the absolute filters                                                                                           |
+| `--end-group-delta`      |       | `0`           | End Group as groups after the Start Group (`absolute-start-group-end`, `absolute-range`)                                        |
+| `--filter-end-object`    |       | `0`           | Last Object of the End Group (`absolute-range`)                                                                                 |
+| `--fill`                 |       | `false`       | Also retrieve what is already published over `--filter`'s range, on a fill fetch stream (FILL_PARAMETERS)                       |
+| `--fill-start-group`     |       | _(none)_      | Fill from this many groups before the next group instead (1 = the current group); implies `--fill`                              |
+| `--switch-after`         |       | `0`           | Seconds after subscribing to switch to `--switch-track` with SWITCH_FROM (0 = never)                                            |
+| `--switch-track`         |       | _(none)_      | Track to switch to                                                                                                              |
+| `--switch-mode`          |       | `hard`        | `hard` stops the old subscription at the cutover; `soft` lets it drain to the group before the new one's start                  |
+| `--switch-publish-done`  |       | `false`       | Ask for PUBLISH_DONE on the suspended subscription                                                                              |
+| `--switch-start-group`   |       | `0`           | Switch at this future group instead of where `--filter` starts (0 = use `--filter`); also fills what is already published of it |
 
 ## Fetch Options
 
@@ -114,18 +123,39 @@ cargo run --bin client -- -c publish --group-id-step 2 --objects-per-group 2
 cargo run --bin client -- -c fetch --start-group 0 --end-group 7
 ```
 
-Subscribe, then issue a Joining FETCH for the last 2 groups (a Joining FETCH is
-only accepted when the subscription is forwarding):
+Subscribe from the next group, rather than mid-group from the next object:
 
 ```
-cargo run --bin client -- -c subscribe --joining-fetch --joining-start 2
+cargo run --bin client -- -c subscribe --filter relative-start --filter-start-group 0
 ```
 
-Same, but with a non-forwarding subscription — the relay rejects the Joining
-FETCH with `REQUEST_ERROR` / `INVALID_RANGE`:
+Subscribe from the next object and fill the current group from its start. The
+fill arrives on a fill fetch stream (a stream beginning with a FETCH_HEADER named
+by the SUBSCRIBE), so the subscriber has the whole group without waiting for the
+next one:
 
 ```
-cargo run --bin client -- -c subscribe --forward false --joining-fetch --joining-start 2
+cargo run --bin client -- -c subscribe --fill-start-group 1
+```
+
+Subscribe to groups 10 through 12 only, filling whatever of them is already
+published (a filter with an end stops delivery there, but the subscription stays
+open):
+
+```
+cargo run --bin client -- -c subscribe --filter absolute-start-group-end \
+  --filter-start-group 10 --end-group-delta 2 --fill
+```
+
+Switch from track `demo` to `demo2` after 5 seconds. A hard switch stops `demo`
+as soon as `demo2` delivers; a soft one lets `demo` drain to the group before the
+one `demo2` starts at. `--switch-start-group` picks that group, so the two meet
+on a group boundary:
+
+```
+cargo run --bin client -- -c subscribe -T demo --switch-after 5 --switch-track demo2
+cargo run --bin client -- -c subscribe -T demo --switch-after 5 --switch-track demo2 \
+  --switch-mode soft --switch-start-group 40 --switch-publish-done
 ```
 
 Subscribe with Forward State 0 (no objects), then flip it to 1 after 3 seconds —
@@ -147,7 +177,7 @@ cargo run --bin client -- -c subscribe-namespace -n test/ns --duration 5
 Subscribe to every track under a namespace prefix (SUBSCRIBE_TRACKS). The relay
 answers `REQUEST_OK`, forwards a `PUBLISH` for each matching track — which the
 client accepts, then receives and counts that track's objects — and sends
-`PUBLISH_BLOCKED` if it runs out of streams (start the relay with
+`PUBLISH_SKIPPED` if it runs out of streams (start the relay with
 `--max-publish-streams N` to cap it):
 
 ```

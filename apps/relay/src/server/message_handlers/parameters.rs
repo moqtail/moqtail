@@ -27,8 +27,9 @@
 //! relay's upstream session.
 
 use moqtail::model::common::location::Location;
-use moqtail::model::control::constant::{FilterType, GroupOrder};
+use moqtail::model::control::constant::GroupOrder;
 use moqtail::model::parameter::constant::MessageParameterType;
+use moqtail::model::parameter::location_filter::LocationFilter;
 use moqtail::model::parameter::message_parameter::MessageParameter;
 
 /// The ergonomic lookup lives on `Vec`, but everything here reads a borrowed list.
@@ -49,14 +50,14 @@ fn find(
 ///
 /// The filter is stated rather than omitted. An omitted filter means unfiltered, which
 /// starts at `{0,0}` — a demand for the track's entire history, which is not what a
-/// relay joining a live track wants and not what it would do with the result. Largest
+/// relay joining a live track wants and not what it would do with the result. Next
 /// Object starts it at the present; earlier Objects reach a subscriber through FETCH,
 /// which has its own upstream path.
 pub fn upstream_subscribe() -> Vec<MessageParameter> {
   vec![
     MessageParameter::new_forward(true),
     MessageParameter::new_group_order(GroupOrder::Ascending),
-    MessageParameter::new_subscription_filter(FilterType::LatestObject, None, None),
+    MessageParameter::new_location_filter(LocationFilter::NextObject),
   ]
 }
 
@@ -160,13 +161,12 @@ mod tests {
       Some(MessageParameter::Forward { forward: true })
     ));
     // Stated, not omitted: omitted would ask for the track from {0,0}.
-    assert!(matches!(
-      params.get_param(MessageParameterType::SubscriptionFilter),
-      Some(MessageParameter::SubscriptionFilter {
-        filter_type: FilterType::LatestObject,
-        ..
-      })
-    ));
+    assert_eq!(
+      params.get_param(MessageParameterType::LocationFilter),
+      Some(&MessageParameter::new_location_filter(
+        LocationFilter::NextObject
+      ))
+    );
     assert!(
       params
         .get_param(MessageParameterType::AuthorizationToken)

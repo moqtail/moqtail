@@ -74,9 +74,9 @@ export class SubscribeRequest implements PromiseLike<SubscribeOk | RequestError>
     this.requestId = msg.requestId
     this.fullTrackName = msg.fullTrackName
 
-    const filter = msg.parameters.find(MessageParameter.isSubscriptionFilter)
-    this.startLocation = filter?.startLocation
-    this.endGroup = filter?.endGroup
+    const filter = msg.parameters.find(MessageParameter.isLocationFilter)
+    this.startLocation = filter?.absoluteStart
+    this.endGroup = filter?.endLocation()?.group
 
     const subPriority = msg.parameters.find(MessageParameter.isSubscriberPriority)
     this.priority = subPriority?.priority ?? 128
@@ -107,9 +107,12 @@ export class SubscribeRequest implements PromiseLike<SubscribeOk | RequestError>
    * Updates subscription parameters in-place when a `RequestUpdate` message is received.
    */
   public update(msg: RequestUpdate): void {
-    const filter = msg.parameters.find(MessageParameter.isSubscriptionFilter)
-    if (filter?.startLocation !== undefined) this.startLocation = filter.startLocation
-    if (filter?.endGroup !== undefined) this.endGroup = filter.endGroup
+    // An update changes the filter only when it carries one.
+    const filter = msg.parameters.find(MessageParameter.isLocationFilter)
+    if (filter) {
+      this.startLocation = filter.absoluteStart
+      this.endGroup = filter.endLocation()?.group
+    }
 
     for (const param of msg.parameters) {
       if (MessageParameter.isSubscriberPriority?.(param)) {

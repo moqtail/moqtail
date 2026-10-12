@@ -103,9 +103,9 @@
         "spec": "Section 9.20.7"
       },
       {
-        "name": "SUBSCRIPTION_FILTER",
+        "name": "LOCATION_FILTER",
         "value": "0x21",
-        "spec": "Section 10.2.9"
+        "spec": "Section 9.20.9"
       },
       {
         "name": "GROUP_ORDER",

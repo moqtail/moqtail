@@ -14,7 +14,15 @@
  * limitations under the License.
  */
 
-import { FilterType, FullTrackName, GroupOrder, Location, MoqtObject, Tuple } from 'moqtail';
+import {
+  FullTrackName,
+  GroupOrder,
+  Location,
+  LocationFilter,
+  LocationFilterType,
+  MoqtObject,
+  Tuple,
+} from 'moqtail';
 import { MOQtailClient } from 'moqtail/client';
 import { CMSFCatalog, RequestError } from 'moqtail/model';
 import { logger } from '@/lib/logger';
@@ -521,7 +529,8 @@ export class Player {
     const result = await this.client.subscribe({
       fullTrackName: ftn,
       groupOrder: GroupOrder.Original,
-      filterType: FilterType.NextGroupStart,
+      // StartGroup 0 is the next group.
+      locationFilter: new LocationFilter(LocationFilterType.RelativeStart, 0n),
       forward: true,
       priority: params.priority ?? 0,
     });

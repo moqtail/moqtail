@@ -20,11 +20,12 @@ use crate::utils::should_log;
 use anyhow::Result;
 use moqtail::model::common::location::Location;
 use moqtail::model::common::tuple::{Tuple, TupleField};
-use moqtail::model::control::constant::{FilterType, GroupOrder, SwitchMode};
+use moqtail::model::control::constant::{GroupOrder, SwitchMode};
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::request_update::RequestUpdate;
 use moqtail::model::control::subscribe::Subscribe;
 use moqtail::model::data::datagram::Datagram;
+use moqtail::model::parameter::location_filter::LocationFilter;
 use moqtail::model::parameter::message_parameter::MessageParameter;
 use moqtail::transport::connection::TransportConnection;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
@@ -34,35 +35,43 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::RwLock;
 use tracing::{debug, error, info};
 
-/// The SUBSCRIPTION_FILTER a `--filter` choice asks for.
-fn subscription_filter(config: &SubscribeConfig) -> MessageParameter {
+/// The Location Filter a `--filter` choice asks for.
+fn location_filter(config: &SubscribeConfig) -> LocationFilter {
+  let start = Location::new(config.filter_start_group, config.filter_start_object);
+  let end_group = config.filter_start_group + config.end_group_delta;
   match config.filter {
-    CliFilter::Latest => {
-      MessageParameter::new_subscription_filter(FilterType::LatestObject, None, None)
-    }
-    CliFilter::NextGroup => {
-      MessageParameter::new_subscription_filter(FilterType::NextGroupStart, None, None)
-    }
-    CliFilter::AbsoluteStartFill => MessageParameter::new_subscription_filter(
-      FilterType::AbsoluteStartFill,
-      Some(Location::new(
-        config.filter_start_group,
-        config.filter_start_object,
-      )),
-      None,
-    ),
-    CliFilter::AbsoluteRangeFill => MessageParameter::new_subscription_filter(
-      FilterType::AbsoluteRangeFill,
-      Some(Location::new(
-        config.filter_start_group,
-        config.filter_start_object,
-      )),
-      Some(config.filter_start_group + config.end_group_delta),
-    ),
-    CliFilter::RelativeStartFill => {
-      MessageParameter::new_relative_start_fill(config.relative_previous)
-    }
+    CliFilter::None => LocationFilter::None,
+    CliFilter::RelativeStart => LocationFilter::RelativeStart {
+      start_group: config.filter_start_group,
+    },
+    CliFilter::AbsoluteStart => LocationFilter::AbsoluteStart { start },
+    CliFilter::AbsoluteStartGroupEnd => LocationFilter::AbsoluteStartGroupEnd { start, end_group },
+    CliFilter::AbsoluteRange => LocationFilter::AbsoluteRange {
+      start,
+      end: Location::new(end_group, config.filter_end_object),
+    },
+    CliFilter::NextObject => LocationFilter::NextObject,
   }
+}
+
+/// The filter parameters a subscribe carries: LOCATION_FILTER, and
+/// FILL_PARAMETERS when `--fill` asks for what is already published as well.
+fn filter_parameters(config: &SubscribeConfig) -> Vec<MessageParameter> {
+  let mut params = vec![MessageParameter::new_location_filter(location_filter(
+    config,
+  ))];
+  if config.fill {
+    // Without a filter of its own the fill covers the subscription's.
+    let fill = config
+      .fill_start_group
+      .map(|start_group| {
+        MessageParameter::new_location_filter(LocationFilter::RelativeStart { start_group })
+      })
+      .into_iter()
+      .collect();
+    params.push(MessageParameter::new_fill_parameters(fill));
+  }
+  params
 }
 
 /// Subscribe to one track on its own bidirectional request stream. Returns the
@@ -78,20 +87,20 @@ async fn subscribe_track(
   subscriber_priority: u8,
   group_order: GroupOrder,
   forward: bool,
-  filter: MessageParameter,
+  filters: Vec<MessageParameter>,
   switch_from: Option<MessageParameter>,
 ) -> Result<(u64, Option<Location>, ControlStreamHandler)> {
   let ns = Tuple::from_utf8_path(namespace);
   info!(
-    "Subscribing to track: {}/{} (request_id={}, priority={}, forward={}, filter={:?})",
-    namespace, track_name, request_id, subscriber_priority, forward, filter
+    "Subscribing to track: {}/{} (request_id={}, priority={}, forward={}, filters={:?})",
+    namespace, track_name, request_id, subscriber_priority, forward, filters
   );
   // A switch decides the Forward State itself, so FORWARD must not go with it.
   let mut parameters = vec![
     MessageParameter::new_subscriber_priority(subscriber_priority),
     MessageParameter::new_group_order(group_order),
-    filter,
   ];
+  parameters.extend(filters);
   match switch_from {
     Some(param) => parameters.push(param),
     None => parameters.push(MessageParameter::new_forward(forward)),
@@ -146,7 +155,9 @@ pub struct SubscribeConfig {
   pub filter_start_group: u64,
   pub filter_start_object: u64,
   pub end_group_delta: u64,
-  pub relative_previous: u64,
+  pub filter_end_object: u64,
+  pub fill: bool,
+  pub fill_start_group: Option<u64>,
   pub switch_after: u64,
   pub switch_track: Option<String>,
   pub switch_mode: SwitchMode,
@@ -168,7 +179,7 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
   let router = Arc::new(Mutex::new(Router::new()));
 
   // Request IDs a client sends are even.
-  let primary_filter = subscription_filter(&config);
+  let primary_filters = filter_parameters(&config);
   let (track_alias, largest, primary_stream) = subscribe_track(
     &connection,
     &config.namespace,
@@ -177,7 +188,7 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
     config.subscriber_priority,
     config.group_order,
     config.forward,
-    primary_filter.clone(),
+    primary_filters.clone(),
     None,
   )
   .await?;
@@ -185,7 +196,7 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
     0,
     format!("req=0({})", config.track_name),
     track_alias,
-    Window::from_filter(&primary_filter, largest.as_ref()),
+    Window::from_parameters(&primary_filters, largest.as_ref()),
   );
 
   // Optionally flip Forward State 0->1 after a delay by sending a REQUEST_UPDATE
@@ -222,15 +233,17 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
     let mode = config.switch_mode;
     let publish_done = config.switch_publish_done;
     // A start group of its own makes the switch happen at that group rather than
-    // at the next one, leaving the suspended track delivering until then.
-    let filter = if config.switch_start_group > 0 {
-      MessageParameter::new_subscription_filter(
-        FilterType::AbsoluteStartFill,
-        Some(Location::new(config.switch_start_group, 0)),
-        None,
-      )
+    // at the next one, leaving the suspended track delivering until then, and
+    // fills whatever of it is already published.
+    let filters = if config.switch_start_group > 0 {
+      vec![
+        MessageParameter::new_location_filter(LocationFilter::AbsoluteStart {
+          start: Location::new(config.switch_start_group, 0),
+        }),
+        MessageParameter::new_fill_parameters(vec![]),
+      ]
     } else {
-      subscription_filter(&config)
+      filter_parameters(&config)
     };
     let router = router.clone();
     tokio::spawn(async move {
@@ -244,7 +257,7 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
         priority,
         group_order,
         true,
-        filter.clone(),
+        filters.clone(),
         Some(MessageParameter::new_switch_from(0, mode, publish_done)),
       )
       .await
@@ -255,7 +268,7 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
             2,
             format!("req=2({switch_track})"),
             alias,
-            Window::from_filter(&filter, largest.as_ref()),
+            Window::from_parameters(&filters, largest.as_ref()),
           );
           // Hold the request stream open for the subscription's lifetime.
           let mut stream = stream;
@@ -275,8 +288,9 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
   }
 
   if let Some((ref extra_name, extra_priority)) = config.extra_track {
-    let extra_filter =
-      MessageParameter::new_subscription_filter(FilterType::LatestObject, None, None);
+    let extra_filters = vec![MessageParameter::new_location_filter(
+      LocationFilter::NextObject,
+    )];
     let (alias, largest, extra_stream) = subscribe_track(
       &connection,
       &config.namespace,
@@ -285,7 +299,7 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
       extra_priority,
       config.group_order,
       config.forward,
-      extra_filter.clone(),
+      extra_filters.clone(),
       None,
     )
     .await?;
@@ -294,7 +308,7 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
       4,
       format!("req=4({extra_name})"),
       alias,
-      Window::from_filter(&extra_filter, largest.as_ref()),
+      Window::from_parameters(&extra_filters, largest.as_ref()),
     );
   }
 

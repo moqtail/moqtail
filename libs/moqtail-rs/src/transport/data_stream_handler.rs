@@ -741,6 +741,7 @@ mod tests {
   use crate::model::control::{fetch::Fetch, subscribe::Subscribe};
   use crate::model::data::constant::SubgroupHeaderType;
   use crate::model::parameter::authorization_token::AuthorizationToken;
+  use crate::model::parameter::location_filter::LocationFilter;
   use crate::model::parameter::message_parameter::MessageParameter;
   use crate::model::property::object_property::ObjectProperty;
   use bytes::Bytes;
@@ -808,12 +809,14 @@ mod tests {
       group: 81,
       object: 81,
     };
-    let subscribe = Subscribe::new_absolute_range_fill(
+    let subscribe = Subscribe::new_with_location_filter(
       request_id,
       track_namespace,
       track_name,
-      start_location,
-      25,
+      LocationFilter::AbsoluteStartGroupEnd {
+        start: start_location,
+        end_group: 25,
+      },
       vec![
         MessageParameter::new_subscriber_priority(31),
         MessageParameter::new_group_order(GroupOrder::Original),

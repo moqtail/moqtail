@@ -17,7 +17,8 @@
 import {
   LOCProperties,
   ObjectForwardingPreference,
-  FilterType,
+  LocationFilter,
+  LocationFilterType,
   GroupOrder,
   RequestError,
   Tuple,
@@ -737,7 +738,7 @@ export function subscribeOnlyVideo(moqClient: MOQtailClient, videoFullTrackName:
       const response = await moqClient.subscribe({
         fullTrackName: videoFullTrackName,
         groupOrder: GroupOrder.Original,
-        filterType: FilterType.LatestObject,
+        locationFilter: new LocationFilter(LocationFilterType.NextObject),
         forward: true,
         priority: 0,
       });
@@ -876,7 +877,7 @@ export function useVideoAndAudioSubscriber(
       {
         fullTrackName: audioFullTrackName,
         groupOrder: GroupOrder.Original,
-        filterType: FilterType.LatestObject,
+        locationFilter: new LocationFilter(LocationFilterType.NextObject),
         forward: true,
         priority: 0,
       },
@@ -890,7 +891,7 @@ export function useVideoAndAudioSubscriber(
       {
         fullTrackName: videoFullTrackName,
         groupOrder: GroupOrder.Original,
-        filterType: FilterType.LatestObject,
+        locationFilter: new LocationFilter(LocationFilterType.NextObject),
         forward: true,
         priority: 0,
       },
@@ -945,7 +946,7 @@ export function onlyUseVideoSubscriber(
       {
         fullTrackName: videoFullTrackName,
         groupOrder: GroupOrder.Original,
-        filterType: FilterType.LatestObject,
+        locationFilter: new LocationFilter(LocationFilterType.NextObject),
         forward: true,
         priority: 0,
       },
@@ -1003,7 +1004,7 @@ export function onlyUseAudioSubscriber(
       {
         fullTrackName: audioFullTrackName,
         groupOrder: GroupOrder.Original,
-        filterType: FilterType.LatestObject,
+        locationFilter: new LocationFilter(LocationFilterType.NextObject),
         forward: true,
         priority: 0,
       },

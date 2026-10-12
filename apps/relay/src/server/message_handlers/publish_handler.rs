@@ -245,8 +245,7 @@ pub async fn handle(
       let m_clone = m.clone();
       // FORWARD in PUBLISH is the publisher declaring its own behaviour: 0 means
       // it sends nothing until we raise the state, omitted or 1 means it sends
-      // immediately. That declaration is the initial Forward State, but the reply
-      // must be 1 whenever a downstream subscriber already wants Objects.
+      // immediately. That declaration is the initial Forward State.
       let publisher_forwards = matches!(
         m_clone.parameters.get_param_or(
           MessageParameterType::Forward,
@@ -254,26 +253,21 @@ pub async fn handle(
         ),
         MessageParameter::Forward { forward: true }
       );
-      let forwarding = match context.track_manager.get_track(&full_track_name).await {
-        Some(track_arc) => {
-          let track = track_arc.read().await;
-          let forwarding = publisher_forwards || track.has_forwarding_subscriber().await;
-          track.upstream_forward.store(forwarding, Ordering::Relaxed);
-          forwarding
-        }
-        None => publisher_forwards,
-      };
-      // PUBLISH is answered by REQUEST_OK; no Track Properties.
-      // SUBSCRIBER_PRIORITY is omitted so the publisher uses the default of 128;
-      // the relay has no reason to rank a pushed track above everything else.
-      // SUBSCRIPTION_FILTER is omitted so the subscription is unfiltered: a relay
-      // wants every Object, both to serve downstream filters and to fill its
-      // cache for FETCH.
-      // GROUP_ORDER has no place here: the relay applies each subscriber's order
-      // on the way out, and the publisher's own order is what it stated in PUBLISH.
-      let publish_ok = Box::new(RequestOk::new(vec![MessageParameter::new_forward(
-        forwarding,
-      )]));
+      let track_arc = context.track_manager.get_track(&full_track_name).await;
+      if let Some(track_arc) = &track_arc {
+        track_arc
+          .read()
+          .await
+          .upstream_forward
+          .store(publisher_forwards, Ordering::Relaxed);
+      }
+      // PUBLISH is answered by REQUEST_OK, which carries no subscription
+      // parameters and no Track Properties. The relay leaves its subscription at
+      // the defaults: SUBSCRIBER_PRIORITY 128, since it has no reason to rank a
+      // pushed track above everything else, and no LOCATION_FILTER, since a relay
+      // wants every Object, both to serve downstream filters and to fill its cache
+      // for FETCH. GROUP_ORDER is applied per subscriber on the way out.
+      let publish_ok = Box::new(RequestOk::new(vec![]));
 
       info!(
         "Accepted publish request for track: {:?} with alias: {}",
@@ -282,7 +276,15 @@ pub async fn handle(
 
       stream_handler
         .send(&ControlMessage::RequestOk(publish_ok))
-        .await
+        .await?;
+
+      // A publisher that declared FORWARD=0 is told to send by a REQUEST_UPDATE
+      // when a downstream subscriber already wants Objects, which can only follow
+      // the PUBLISH_OK.
+      if let Some(track_arc) = &track_arc {
+        ensure_upstream_forwarding(track_arc, &context).await;
+      }
+      Ok(())
     }
 
     ControlMessage::PublishDone(m) => {
@@ -638,22 +640,6 @@ pub(crate) async fn forward_publish_downstream(
             subscriber.connection_id
           );
 
-          // A PUBLISH_OK answers with the subscription the subscriber actually wants:
-          // its Forward State, priority and filter. Those carry the same
-          // meaning as in REQUEST_UPDATE, so they are applied the same way. Dropping
-          // them left the subscriber on whatever the relay guessed from SUBSCRIBE_TRACKS.
-          if !m.parameters.is_empty()
-            && let Some(subscription) = &subscription
-          {
-            let update = RequestUpdate::new(publish_request_id, m.parameters.clone());
-            if let Err(e) = subscription.read().await.update_subscription(update).await {
-              warn!(
-                "Subscriber {} sent PUBLISH_OK parameters that do not apply: {:?}",
-                subscriber.connection_id, e
-              );
-            }
-          }
-
           // The subscriber may assign this track to one of its own SSTS
           // switching sets in the PUBLISH_OK; this may set the subscription's
           // Forward State, which the next step relies on.
@@ -668,6 +654,19 @@ pub(crate) async fn forward_publish_downstream(
           // The PUBLISH_OK may be what turns this subscriber's Forward State on, in
           // which case it is the first thing wanting Objects from the track.
           ensure_upstream_forwarding(&track_arc, &context).await;
+        }
+        // A PUBLISH_OK carries no subscription parameters: the subscription the
+        // subscriber actually wants follows it in a REQUEST_UPDATE on this stream.
+        Ok(ControlMessage::RequestUpdate(update)) => {
+          apply_pushed_update(
+            &mut stream,
+            *update,
+            subscription.as_ref(),
+            &track_arc,
+            &context,
+            publish_request_id,
+          )
+          .await;
         }
         Ok(ControlMessage::RequestError(m)) => {
           warn!(
@@ -694,6 +693,69 @@ pub(crate) async fn forward_publish_downstream(
   subscriber
     .unregister_response_sender(publish_request_id)
     .await;
+}
+
+/// Applies a subscriber's REQUEST_UPDATE to the subscription a pushed PUBLISH
+/// opened, and answers it on the PUBLISH's stream.
+async fn apply_pushed_update(
+  stream: &mut ControlStreamHandler,
+  update: RequestUpdate,
+  subscription: Option<&Arc<RwLock<Subscription>>>,
+  track_arc: &Arc<RwLock<Track>>,
+  context: &Arc<SessionContext>,
+  publish_request_id: u64,
+) {
+  let changes_filter = update
+    .parameters
+    .iter()
+    .any(|p| matches!(p, MessageParameter::LocationFilter { .. }));
+  let asks_for_a_fill = update
+    .parameters
+    .iter()
+    .any(|p| matches!(p, MessageParameter::FillParameters { .. }));
+
+  let result = match subscription {
+    Some(subscription) => subscription.read().await.update_subscription(update).await,
+    None => Err(anyhow::anyhow!("no subscription for this PUBLISH")),
+  };
+  if let Err(e) = result {
+    warn!("REQUEST_UPDATE on a pushed PUBLISH failed: {:?}", e);
+    let error = RequestError::new(
+      RequestErrorCode::InternalError,
+      0,
+      ReasonPhrase::try_new("Update failed".to_string()).unwrap(),
+    );
+    let _ = stream
+      .send(&ControlMessage::RequestError(Box::new(error)))
+      .await;
+    return;
+  }
+  let Some(subscription) = subscription else {
+    return;
+  };
+
+  // The update may be what turns this subscriber's Forward State on, in which
+  // case it is the first thing wanting Objects from the track.
+  ensure_upstream_forwarding(track_arc, context).await;
+  let _ = stream
+    .send(&ControlMessage::RequestOk(Box::new(RequestOk::new(vec![]))))
+    .await;
+
+  // A filter the update changed starts where it now says, which for a live one
+  // is against the largest Object as of this update.
+  if changes_filter {
+    let largest = track_arc.read().await.largest_object().await;
+    subscription.read().await.resolve_live_start(largest).await;
+  }
+  if asks_for_a_fill {
+    crate::server::fill::open_fill_fetch_stream(
+      context.clone(),
+      track_arc.clone(),
+      subscription.clone(),
+      publish_request_id,
+    )
+    .await;
+  }
 }
 
 /// The subscriber may assign a track to an SSTS switching set by appending

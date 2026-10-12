@@ -17,7 +17,7 @@
 import { RequestOk } from '../../model/control'
 import { RequestStreamMessageHandler } from './handler'
 import { logger } from '../../util/logger'
-import { MessageParameter, ProtocolViolationError } from '@/model'
+import { ProtocolViolationError } from '@/model'
 import { PublishRequest } from '../request/publish'
 import { PublishNamespaceRequest } from '../request/publish_namespace'
 import { SubscribeNamespaceRequest } from '../request/subscribe_namespace'
@@ -55,14 +55,9 @@ export const handlerRequestOk: RequestStreamMessageHandler<RequestOk> = async (c
       return
     }
 
-    const publication = new PublishPublication(client, track, request.message)
-    client.publications.set(requestId, publication)
-
-    // The peer answers with the Forward State it actually wants, which need not be the
-    // one the PUBLISH asked for: a relay with a subscriber already waiting raises a
-    // publication that declared FORWARD=0, and nothing else would tell it to start.
-    const forward = msg.parameters.find(MessageParameter.isForward)
-    if (forward) publication.setForwardState(forward.forward)
+    // The publication starts at the Forward State the PUBLISH declared. A peer that
+    // wants something else says so in a REQUEST_UPDATE after this PUBLISH_OK.
+    client.publications.set(requestId, new PublishPublication(client, track, request.message))
     return
   }
 

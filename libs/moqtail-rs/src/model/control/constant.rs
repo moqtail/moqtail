@@ -99,48 +99,39 @@ impl ControlMessageType {
   }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// Which fields of a LOCATION_FILTER follow its type, and how they are read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u64)]
-pub enum FilterType {
-  NextGroupStart = 0x1,
-  LatestObject = 0x2,
-  AbsoluteStartFill = 0x3,
-  AbsoluteRangeFill = 0x4,
-  /// Start Location is `{Largest Object.Group - Relative Previous, 0}`.
-  RelativeStartFill = 0x5,
+pub enum LocationFilterType {
+  None = 0x0,
+  RelativeStart = 0x1,
+  AbsoluteStart = 0x2,
+  AbsoluteStartGroupEnd = 0x3,
+  AbsoluteRange = 0x4,
+  NextObject = 0x5,
 }
 
-impl FilterType {
-  /// Whether the publisher also delivers already-published objects on a fill
-  /// fetch stream.
-  pub fn is_fetch_fill(self) -> bool {
-    matches!(
-      self,
-      FilterType::AbsoluteStartFill | FilterType::AbsoluteRangeFill | FilterType::RelativeStartFill
-    )
-  }
-}
-
-impl TryFrom<u64> for FilterType {
+impl TryFrom<u64> for LocationFilterType {
   type Error = ParseError;
 
   fn try_from(value: u64) -> Result<Self, Self::Error> {
     match value {
-      0x1 => Ok(FilterType::NextGroupStart),
-      0x2 => Ok(FilterType::LatestObject),
-      0x3 => Ok(FilterType::AbsoluteStartFill),
-      0x4 => Ok(FilterType::AbsoluteRangeFill),
-      0x5 => Ok(FilterType::RelativeStartFill),
+      0x0 => Ok(LocationFilterType::None),
+      0x1 => Ok(LocationFilterType::RelativeStart),
+      0x2 => Ok(LocationFilterType::AbsoluteStart),
+      0x3 => Ok(LocationFilterType::AbsoluteStartGroupEnd),
+      0x4 => Ok(LocationFilterType::AbsoluteRange),
+      0x5 => Ok(LocationFilterType::NextObject),
       _ => Err(ParseError::InvalidType {
-        context: "FilterType::try_from(u64)",
+        context: "LocationFilterType::try_from(u64)",
         details: format!("Invalid type, got {value}"),
       }),
     }
   }
 }
 
-impl From<FilterType> for u64 {
-  fn from(value: FilterType) -> Self {
+impl From<LocationFilterType> for u64 {
+  fn from(value: LocationFilterType) -> Self {
     value as u64
   }
 }

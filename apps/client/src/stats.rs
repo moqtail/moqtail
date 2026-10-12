@@ -17,9 +17,12 @@ use std::collections::HashMap;
 use std::time::Instant;
 use tracing::info;
 
-/// Where one track has got to. A soft switch has two tracks delivering at once,
-/// their objects interleaved on separate streams, so each is followed on its own.
+/// Where one subscription has got to. A soft switch has two tracks delivering at
+/// once, and two subscriptions to one track each get their own copy, their objects
+/// interleaved on separate streams, so each is followed on its own.
 struct TrackSequence {
+  received: u64,
+  gaps: u64,
   last_group: u64,
   last_object: u64,
   /// How many group ids the group being received spans. One for an ordinary
@@ -34,6 +37,8 @@ pub struct ReceptionStats {
   pub total_received: u64,
   pub parse_errors: u64,
   pub sequence_gaps: u64,
+  /// Copies of an object a subscription already had.
+  pub duplicates: u64,
   last_group: u64,
   last_object: u64,
   tracks: HashMap<u64, TrackSequence>,
@@ -46,6 +51,7 @@ impl ReceptionStats {
       total_received: 0,
       parse_errors: 0,
       sequence_gaps: 0,
+      duplicates: 0,
       last_group: 0,
       last_object: 0,
       tracks: HashMap::new(),
@@ -65,7 +71,8 @@ impl ReceptionStats {
       .unwrap_or(0)
   }
 
-  /// Record a received object and validate sequence ordering within its track.
+  /// Record a received object and validate sequence ordering within the
+  /// subscription it belongs to, which `track` names.
   /// Returns true if the sequence is valid, false if a gap was detected.
   ///
   /// `prior_group_gap` is the Prior Group ID Gap the object carries: how many
@@ -77,7 +84,7 @@ impl ReceptionStats {
   /// is that of the group just left rather than of the one arriving.
   pub fn record_object(
     &mut self,
-    track_alias: u64,
+    track: u64,
     group_id: u64,
     object_id: u64,
     prior_group_gap: u64,
@@ -86,11 +93,13 @@ impl ReceptionStats {
     self.last_group = group_id;
     self.last_object = object_id;
 
-    let Some(track) = self.tracks.get_mut(&track_alias) else {
+    let Some(track) = self.tracks.get_mut(&track) else {
       // First object of this track, nothing to check it against.
       self.tracks.insert(
-        track_alias,
+        track,
         TrackSequence {
+          received: 1,
+          gaps: 0,
           last_group: group_id,
           last_object: object_id,
           last_group_span: if object_id == 0 {
@@ -112,6 +121,10 @@ impl ReceptionStats {
         && (track.last_group_span == 0 || group_id == track.last_group + track.last_group_span)
     };
 
+    track.received += 1;
+    if !sequence_ok {
+      track.gaps += 1;
+    }
     if group_id != track.last_group {
       track.last_group_span = prior_group_gap + 1;
     }
@@ -124,6 +137,21 @@ impl ReceptionStats {
     sequence_ok
   }
 
+  pub fn record_duplicates(&mut self, count: usize) {
+    self.duplicates += count as u64;
+  }
+
+  /// Objects received and sequence gaps seen, per subscription.
+  pub fn per_track(&self) -> Vec<(u64, u64, u64)> {
+    let mut tracks: Vec<_> = self
+      .tracks
+      .iter()
+      .map(|(track, sequence)| (*track, sequence.received, sequence.gaps))
+      .collect();
+    tracks.sort();
+    tracks
+  }
+
   pub fn record_parse_error(&mut self) {
     self.parse_errors += 1;
   }
@@ -134,12 +162,13 @@ impl ReceptionStats {
 
   pub fn report(&self) {
     info!(
-      "Reception stats: total={}, last=group:{}/object:{}, errors={}, gaps={}, elapsed={}ms",
+      "Reception stats: total={}, last=group:{}/object:{}, errors={}, gaps={}, duplicates={}, elapsed={}ms",
       self.total_received,
       self.last_group,
       self.last_object,
       self.parse_errors,
       self.sequence_gaps,
+      self.duplicates,
       self.elapsed_ms()
     );
 

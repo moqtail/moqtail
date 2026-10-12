@@ -14,6 +14,7 @@
 
 use crate::cli::{CliFilter, DeliveryMode};
 use crate::connection::MoqConnection;
+use crate::routing::{Router, Window};
 use crate::stats::ReceptionStats;
 use crate::utils::should_log;
 use anyhow::Result;
@@ -29,13 +30,10 @@ use moqtail::transport::connection::TransportConnection;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use moqtail::transport::data_stream_handler::RecvDataStream;
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::sync::RwLock;
 use tracing::{debug, error, info};
 
-/// Subscribe to one track on its own bidirectional request stream. Returns the
-/// assigned track alias and the request-stream handler, which the caller keeps
-/// alive for the subscription's lifetime.
 /// The SUBSCRIPTION_FILTER a `--filter` choice asks for.
 fn subscription_filter(config: &SubscribeConfig) -> MessageParameter {
   match config.filter {
@@ -67,6 +65,10 @@ fn subscription_filter(config: &SubscribeConfig) -> MessageParameter {
   }
 }
 
+/// Subscribe to one track on its own bidirectional request stream. Returns the
+/// assigned track alias, the Largest Object the publisher reported, and the
+/// request-stream handler, which the caller keeps alive for the subscription's
+/// lifetime.
 #[allow(clippy::too_many_arguments)]
 async fn subscribe_track(
   connection: &Arc<TransportConnection>,
@@ -78,7 +80,7 @@ async fn subscribe_track(
   forward: bool,
   filter: MessageParameter,
   switch_from: Option<MessageParameter>,
-) -> Result<(u64, ControlStreamHandler)> {
+) -> Result<(u64, Option<Location>, ControlStreamHandler)> {
   let ns = Tuple::from_utf8_path(namespace);
   info!(
     "Subscribing to track: {}/{} (request_id={}, priority={}, forward={}, filter={:?})",
@@ -116,7 +118,11 @@ async fn subscribe_track(
         "Subscribed: track={} track_alias={}",
         track_name, m.track_alias
       );
-      Ok((m.track_alias, request_stream))
+      let largest = m.subscribe_parameters.iter().find_map(|p| match p {
+        MessageParameter::LargestObject { location } => Some(location.clone()),
+        _ => None,
+      });
+      Ok((m.track_alias, largest, request_stream))
     }
     Ok(ControlMessage::RequestError(m)) => {
       anyhow::bail!("SUBSCRIBE for {} refused: {:?}", track_name, m)
@@ -157,7 +163,13 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
   // Each subscription's request stream is held open for its lifetime.
   let mut request_streams = Vec::new();
 
-  let (track_alias, primary_stream) = subscribe_track(
+  // Which subscription each object belongs to: the alias alone cannot say when a
+  // publisher gives two subscriptions to one track the same one.
+  let router = Arc::new(Mutex::new(Router::new()));
+
+  // Request IDs a client sends are even.
+  let primary_filter = subscription_filter(&config);
+  let (track_alias, largest, primary_stream) = subscribe_track(
     &connection,
     &config.namespace,
     &config.track_name,
@@ -165,10 +177,16 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
     config.subscriber_priority,
     config.group_order,
     config.forward,
-    subscription_filter(&config),
+    primary_filter.clone(),
     None,
   )
   .await?;
+  router.lock().unwrap().add(
+    0,
+    format!("req=0({})", config.track_name),
+    track_alias,
+    Window::from_filter(&primary_filter, largest.as_ref()),
+  );
 
   // Optionally flip Forward State 0->1 after a delay by sending a REQUEST_UPDATE
   // on the subscription's request stream, then hold the stream open.
@@ -214,6 +232,7 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
     } else {
       subscription_filter(&config)
     };
+    let router = router.clone();
     tokio::spawn(async move {
       tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
       info!("Switching to {} ({:?})", switch_track, mode);
@@ -225,13 +244,19 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
         priority,
         group_order,
         true,
-        filter,
+        filter.clone(),
         Some(MessageParameter::new_switch_from(0, mode, publish_done)),
       )
       .await
       {
-        Ok((alias, stream)) => {
+        Ok((alias, largest, stream)) => {
           info!("Switched to {} (track_alias={})", switch_track, alias);
+          router.lock().unwrap().add(
+            2,
+            format!("req=2({switch_track})"),
+            alias,
+            Window::from_filter(&filter, largest.as_ref()),
+          );
           // Hold the request stream open for the subscription's lifetime.
           let mut stream = stream;
           loop {
@@ -249,30 +274,33 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
     });
   }
 
-  let extra_alias = if let Some((ref extra_name, extra_priority)) = config.extra_track {
-    let (alias, extra_stream) = subscribe_track(
+  if let Some((ref extra_name, extra_priority)) = config.extra_track {
+    let extra_filter =
+      MessageParameter::new_subscription_filter(FilterType::LatestObject, None, None);
+    let (alias, largest, extra_stream) = subscribe_track(
       &connection,
       &config.namespace,
       extra_name,
-      1,
+      4,
       extra_priority,
       config.group_order,
       config.forward,
-      MessageParameter::new_subscription_filter(FilterType::LatestObject, None, None),
+      extra_filter.clone(),
       None,
     )
     .await?;
     request_streams.push(extra_stream);
-    Some((extra_name.clone(), alias))
-  } else {
-    None
-  };
+    router.lock().unwrap().add(
+      4,
+      format!("req=4({extra_name})"),
+      alias,
+      Window::from_filter(&extra_filter, largest.as_ref()),
+    );
+  }
 
   let result = match config.delivery_mode {
-    DeliveryMode::Datagram => receive_datagrams(&connection, track_alias, config.duration).await,
-    DeliveryMode::Subgroup => {
-      receive_streams(&connection, track_alias, extra_alias, config.duration).await
-    }
+    DeliveryMode::Datagram => receive_datagrams(&connection, router, config.duration).await,
+    DeliveryMode::Subgroup => receive_streams(&connection, router, config.duration).await,
   };
   drop(request_streams);
   result
@@ -280,13 +308,15 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
 
 async fn receive_datagrams(
   connection: &Arc<TransportConnection>,
-  track_alias: u64,
+  router: Arc<Mutex<Router>>,
   duration: u64,
 ) -> Result<()> {
   info!("Listening for datagrams...");
 
   let connection_clone = connection.clone();
+  let task_router = router.clone();
   let datagram_task = tokio::spawn(async move {
+    let router = task_router;
     let mut stats = ReceptionStats::new();
 
     loop {
@@ -296,14 +326,6 @@ async fn receive_datagrams(
 
           match Datagram::deserialize(&mut bytes_mut) {
             Ok(obj) => {
-              if obj.track_alias != track_alias {
-                debug!(
-                  "Ignoring datagram for different track_alias: {}",
-                  obj.track_alias
-                );
-                continue;
-              }
-
               // Sanity check
               if obj.group_id >= 10000 || obj.object_id >= 10000 {
                 error!(
@@ -314,28 +336,42 @@ async fn receive_datagrams(
                 continue;
               }
 
-              let sequence_ok = stats.record_object(
-                obj.track_alias,
-                obj.group_id,
-                obj.object_id,
-                ReceptionStats::prior_group_gap(obj.properties.as_ref()),
-              );
+              let location = Location::new(obj.group_id, obj.object_id);
+              let (route, labels) = route_object(&router, obj.track_alias, &location);
+              if route.owners.is_empty() && route.duplicates == 0 {
+                debug!(
+                  "Ignoring datagram for unknown track_alias: {}",
+                  obj.track_alias
+                );
+                continue;
+              }
+              stats.record_duplicates(route.duplicates);
 
-              if should_log(stats.total_received) || !sequence_ok {
-                info!(
-                  "Received datagram {}: group={}, object={}, size={} bytes, elapsed={}ms, seq={}",
-                  stats.total_received,
+              for (owner, label) in route.owners.iter().zip(labels) {
+                let sequence_ok = stats.record_object(
+                  *owner,
                   obj.group_id,
                   obj.object_id,
-                  obj.payload.as_ref().map_or(0, |p| p.len()),
-                  stats.elapsed_ms(),
-                  if sequence_ok { "OK" } else { "GAP" }
+                  ReceptionStats::prior_group_gap(obj.properties.as_ref()),
                 );
-              } else {
-                debug!(
-                  "Received datagram {}: group={}, object={}, seq=OK",
-                  stats.total_received, obj.group_id, obj.object_id
-                );
+
+                if should_log(stats.total_received) || !sequence_ok {
+                  info!(
+                    "Received datagram {}: subscription={} group={}, object={}, size={} bytes, elapsed={}ms, seq={}",
+                    stats.total_received,
+                    label,
+                    obj.group_id,
+                    obj.object_id,
+                    obj.payload.as_ref().map_or(0, |p| p.len()),
+                    stats.elapsed_ms(),
+                    if sequence_ok { "OK" } else { "GAP" }
+                  );
+                } else {
+                  debug!(
+                    "Received datagram {}: subscription={} group={}, object={}, seq=OK",
+                    stats.total_received, label, obj.group_id, obj.object_id
+                  );
+                }
               }
             }
             Err(e) => {
@@ -362,35 +398,25 @@ async fn receive_datagrams(
   }
 
   let stats = datagram_task.await?;
-  info!(
-    "Subscriber finished: received={}, errors={}, gaps={}",
-    stats.total_received, stats.parse_errors, stats.sequence_gaps
-  );
+  report_subscriptions(&stats, &router);
 
   Ok(())
 }
 
 async fn receive_streams(
   connection: &Arc<TransportConnection>,
-  primary_alias: u64,
-  extra_alias: Option<(String, u64)>,
+  router: Arc<Mutex<Router>>,
   duration: u64,
 ) -> Result<()> {
   info!("Listening for incoming streams...");
-
-  // Build a map from track_alias → label for log output
-  let mut alias_to_label = std::collections::HashMap::new();
-  alias_to_label.insert(primary_alias, format!("alias={primary_alias}(primary)"));
-  if let Some((ref name, alias)) = extra_alias {
-    alias_to_label.insert(alias, format!("alias={alias}({name})"));
-  }
-  let alias_to_label = Arc::new(alias_to_label);
 
   let pending_fetches = Arc::new(RwLock::new(BTreeMap::new()));
   let conn = connection.clone();
   let pending_fetches_clone = pending_fetches.clone();
 
+  let task_router = router.clone();
   let stream_task = tokio::spawn(async move {
+    let router = task_router;
     let mut stats = ReceptionStats::new();
 
     loop {
@@ -403,31 +429,38 @@ async fn receive_streams(
             let (next_handler, object) = handler.next_object().await;
             match object {
               Some(obj) => {
-                let sequence_ok = stats.record_object(
-                  obj.track_alias,
-                  obj.location.group,
-                  obj.location.object,
-                  ReceptionStats::prior_group_gap(obj.properties.as_ref()),
-                );
-                let label = alias_to_label
-                  .get(&obj.track_alias)
-                  .map(|s| s.as_str())
-                  .unwrap_or("unknown");
+                let (route, labels) = route_object(&router, obj.track_alias, &obj.location);
+                if route.owners.is_empty() && route.duplicates == 0 {
+                  debug!(
+                    "Ignoring object for unknown track_alias: {}",
+                    obj.track_alias
+                  );
+                }
+                stats.record_duplicates(route.duplicates);
 
-                if should_log(stats.total_received) || !sequence_ok {
-                  info!(
-                    "Received object {}: track={} group={}, object={}, seq={}",
-                    stats.total_received,
-                    label,
+                for (owner, label) in route.owners.iter().zip(labels) {
+                  let sequence_ok = stats.record_object(
+                    *owner,
                     obj.location.group,
                     obj.location.object,
-                    if sequence_ok { "OK" } else { "GAP" }
+                    ReceptionStats::prior_group_gap(obj.properties.as_ref()),
                   );
-                } else {
-                  debug!(
-                    "Received object {}: track={} group={}, object={}",
-                    stats.total_received, label, obj.location.group, obj.location.object
-                  );
+
+                  if should_log(stats.total_received) || !sequence_ok {
+                    info!(
+                      "Received object {}: subscription={} group={}, object={}, seq={}",
+                      stats.total_received,
+                      label,
+                      obj.location.group,
+                      obj.location.object,
+                      if sequence_ok { "OK" } else { "GAP" }
+                    );
+                  } else {
+                    debug!(
+                      "Received object {}: subscription={} group={}, object={}",
+                      stats.total_received, label, obj.location.group, obj.location.object
+                    );
+                  }
                 }
                 handler = next_handler;
               }
@@ -456,10 +489,40 @@ async fn receive_streams(
   }
 
   let stats = stream_task.await?;
-  info!(
-    "Subscriber finished: received={}, errors={}, gaps={}",
-    stats.total_received, stats.parse_errors, stats.sequence_gaps
-  );
+  report_subscriptions(&stats, &router);
 
   Ok(())
+}
+
+/// Routes an object, and names the subscriptions that took it for the log.
+fn route_object(
+  router: &Mutex<Router>,
+  track_alias: u64,
+  location: &Location,
+) -> (crate::routing::Route, Vec<String>) {
+  let mut router = router.lock().unwrap();
+  let route = router.route(track_alias, location);
+  let labels = route
+    .owners
+    .iter()
+    .map(|owner| router.label(*owner).to_string())
+    .collect();
+  (route, labels)
+}
+
+/// One line per subscription, then the totals.
+fn report_subscriptions(stats: &ReceptionStats, router: &Mutex<Router>) {
+  let router = router.lock().unwrap();
+  for (request_id, received, gaps) in stats.per_track() {
+    info!(
+      "Subscription {}: received={}, gaps={}",
+      router.label(request_id),
+      received,
+      gaps
+    );
+  }
+  info!(
+    "Subscriber finished: received={}, errors={}, gaps={}, duplicates={}",
+    stats.total_received, stats.parse_errors, stats.sequence_gaps, stats.duplicates
+  );
 }

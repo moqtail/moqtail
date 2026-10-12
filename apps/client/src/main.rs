@@ -17,6 +17,7 @@ mod connection;
 mod fetcher;
 mod prefix_subscriber;
 mod publisher;
+mod routing;
 mod stats;
 mod subscriber;
 mod utils;

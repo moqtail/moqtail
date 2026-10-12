@@ -16,6 +16,7 @@
 
 import { MessageParameter, ReasonPhrase } from '../../model'
 import { RequestError, RequestErrorCode } from '../../model/control'
+import { InvalidFilterError } from '../../model/parameter/message/range_filter'
 
 /** Returns true when `trackAlias` is a valid (non-negative) track alias. Zero is a legal value. */
 export function isValidTrackAlias(trackAlias: bigint | undefined): trackAlias is bigint {
@@ -32,8 +33,68 @@ export function rangeFilterRejection(params: readonly MessageParameter[]): Reque
   return new RequestError(RequestErrorCode.InvalidFilter, 0n, new ReasonPhrase('Range filters are not supported'))
 }
 
+/**
+ * Throws unless `params` stay within the peer's MAX_FILTER_RANGES, so a request the
+ * peer would have to refuse is never sent.
+ *
+ * A peer that advertised none allows no Range Filter parameter at all, not even a
+ * zero-length removal. Otherwise the Ranges of every filter in the request count
+ * against the limit together. FILL_PARAMETERS describes a separate fill fetch
+ * stream, so the filters inside it count against a limit of their own.
+ *
+ * @throws :{@link InvalidFilterError} When the limit is exceeded.
+ */
+export function assertWithinFilterRangeLimit(
+  params: readonly MessageParameter[],
+  limit: bigint,
+  context: string,
+): void {
+  const filters = params.filter(MessageParameter.isRangeFilter)
+  if (filters.length > 0) {
+    if (limit === 0n) throw new InvalidFilterError(context, 'the peer allows no range filters (MAX_FILTER_RANGES is 0)')
+    const count = BigInt(filters.reduce((sum, f) => sum + f.rangeCount, 0))
+    if (count > limit) {
+      throw new InvalidFilterError(context, `${count} filter ranges exceed the peer's MAX_FILTER_RANGES of ${limit}`)
+    }
+  }
+  for (const fill of params.filter(MessageParameter.isFillParameters)) {
+    assertWithinFilterRangeLimit(fill.parameters, limit, `${context} (FILL_PARAMETERS)`)
+  }
+}
+
 if (import.meta.vitest) {
   const { describe, it, expect } = import.meta.vitest
+  describe('assertWithinFilterRangeLimit', async () => {
+    const { Forward, RangeFilter, RangeFilterKind, FillParameters, encodeRanges } =
+      await import('../../model/parameter/message')
+    const twoRanges = new RangeFilter(
+      RangeFilterKind.ObjectId,
+      0,
+      undefined,
+      encodeRanges([{ start: 0n, end: 0n }, { start: 5n }]),
+    )
+    const oneRange = new RangeFilter(RangeFilterKind.Subgroup, 0, undefined, encodeRanges([{ start: 1n, end: 1n }]))
+    const check = (params: MessageParameter[], limit: bigint) => () =>
+      assertWithinFilterRangeLimit(params, limit, 'test')
+
+    it('allows any request without filters, whatever the limit', () => {
+      expect(check([new Forward(true)], 0n)).not.toThrow()
+    })
+    it('allows no filter at all, not even a removal, when the peer advertised none', () => {
+      expect(check([twoRanges], 0n)).toThrow(InvalidFilterError)
+      expect(check([new RangeFilter(RangeFilterKind.Priority)], 0n)).toThrow(InvalidFilterError)
+    })
+    it('counts the ranges of every filter in the request together', () => {
+      expect(check([twoRanges, oneRange], 3n)).not.toThrow()
+      expect(check([twoRanges, oneRange], 2n)).toThrow(InvalidFilterError)
+    })
+    it('counts the filters inside FILL_PARAMETERS against a limit of their own', () => {
+      expect(check([twoRanges, new FillParameters([twoRanges])], 2n)).not.toThrow()
+      expect(check([new FillParameters([twoRanges, oneRange])], 2n)).toThrow(InvalidFilterError)
+      expect(check([new FillParameters([oneRange])], 0n)).toThrow(InvalidFilterError)
+    })
+  })
+
   describe('rangeFilterRejection', async () => {
     const { Forward, RangeFilter, RangeFilterKind, FillParameters } = await import('../../model/parameter/message')
     it('lets a request without range filters through', () => {

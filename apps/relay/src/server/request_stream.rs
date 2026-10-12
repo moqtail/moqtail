@@ -46,8 +46,10 @@ enum RequestStreamKind {
   PublishNamespace,
   /// SUBSCRIBE_NAMESPACE or SUBSCRIBE_TRACKS.
   PrefixSubscription,
-  /// PUBLISH and TRACK_STATUS: closing the stream leaves nothing to cancel.
-  Other,
+  /// Closing the stream leaves nothing to cancel.
+  Publish,
+  /// Closing the stream leaves nothing to cancel, and nothing on it can be updated.
+  TrackStatus,
 }
 
 impl RequestStreamKind {
@@ -60,7 +62,8 @@ impl RequestStreamKind {
       ControlMessage::SubscribeNamespace(_) | ControlMessage::SubscribeTracks(_) => {
         Some(Self::PrefixSubscription)
       }
-      ControlMessage::Publish(_) | ControlMessage::TrackStatus(_) => Some(Self::Other),
+      ControlMessage::Publish(_) => Some(Self::Publish),
+      ControlMessage::TrackStatus(_) => Some(Self::TrackStatus),
       _ => None,
     }
   }
@@ -325,18 +328,9 @@ async fn handle_follow_up(
   request_id: u64,
   context: &Arc<SessionContext>,
 ) -> Result<(), (TerminationCode, &'static str)> {
-  // A REQUEST_UPDATE is the only thing that follows a prefix subscription.
-  if kind == RequestStreamKind::PrefixSubscription
-    && !matches!(msg, ControlMessage::RequestUpdate(_))
-  {
-    warn!(
-      "Unexpected message {:?} on request bi-stream",
-      msg.get_type()
-    );
-    return Err((
-      TerminationCode::ProtocolViolation,
-      "Unexpected message on request bi-stream",
-    ));
+  if let Some(reason) = rejected_follow_up(kind, &msg) {
+    warn!("{} ({:?})", reason, msg.get_type());
+    return Err((TerminationCode::ProtocolViolation, reason));
   }
 
   MessageHandler::handle(
@@ -348,6 +342,23 @@ async fn handle_follow_up(
   )
   .await
   .map_err(|e| (e, "Error handling request stream follow-up"))
+}
+
+/// Why `msg` may not follow the request that opened a `kind` stream, if it may not.
+/// The peer opened the stream, so it sent the request and may update it, unless the
+/// request is one that cannot be updated at all.
+fn rejected_follow_up(kind: RequestStreamKind, msg: &ControlMessage) -> Option<&'static str> {
+  let is_update = matches!(msg, ControlMessage::RequestUpdate(_));
+  match kind {
+    // A REQUEST_UPDATE is the only thing that follows a prefix subscription.
+    RequestStreamKind::PrefixSubscription if !is_update => {
+      Some("Unexpected message on request bi-stream")
+    }
+    RequestStreamKind::TrackStatus if is_update => {
+      Some("Unexpected REQUEST_UPDATE on request bi-stream")
+    }
+    _ => None,
+  }
 }
 
 /// Cancels what the request still holds once its stream has closed under it.
@@ -370,6 +381,41 @@ async fn cancel(
     RequestStreamKind::PrefixSubscription => {
       prefix_subscription::cancel(client, request_id, context).await;
     }
-    RequestStreamKind::Other => {}
+    RequestStreamKind::Publish | RequestStreamKind::TrackStatus => {}
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use moqtail::model::control::{request_ok::RequestOk, request_update::RequestUpdate};
+
+  fn update() -> ControlMessage {
+    ControlMessage::RequestUpdate(Box::new(RequestUpdate::new(0, vec![])))
+  }
+
+  #[test]
+  fn request_update_follows_every_updatable_request() {
+    for kind in [
+      RequestStreamKind::Subscribe,
+      RequestStreamKind::Fetch,
+      RequestStreamKind::PublishNamespace,
+      RequestStreamKind::PrefixSubscription,
+      RequestStreamKind::Publish,
+    ] {
+      assert_eq!(rejected_follow_up(kind, &update()), None, "{kind:?}");
+    }
+  }
+
+  #[test]
+  fn request_update_on_track_status_is_rejected() {
+    assert!(rejected_follow_up(RequestStreamKind::TrackStatus, &update()).is_some());
+  }
+
+  #[test]
+  fn only_request_update_follows_a_prefix_subscription() {
+    let ok = ControlMessage::RequestOk(Box::new(RequestOk::new(vec![])));
+    assert!(rejected_follow_up(RequestStreamKind::PrefixSubscription, &ok).is_some());
+    assert_eq!(rejected_follow_up(RequestStreamKind::Subscribe, &ok), None);
   }
 }

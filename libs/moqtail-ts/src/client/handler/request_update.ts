@@ -25,6 +25,7 @@ import {
   RequestUpdate,
 } from '../../model/control'
 import { StreamResetCode } from '../../model/error/stream_reset'
+import { ProtocolViolationError } from '../../model/error/error'
 import { RequestStreamMessageHandler } from './handler'
 import { RequestStream } from '../request_stream'
 import { MOQtailClient } from '../client'
@@ -35,8 +36,9 @@ import { logger } from '../../util/logger'
 
 /**
  * A REQUEST_UPDATE modifies the request whose stream it arrived on, and §10.9 requires
- * exactly one REQUEST_OK or REQUEST_ERROR back on that stream. TRACK_STATUS is no longer
- * one of the updatable request types, so an update naming one is refused.
+ * exactly one REQUEST_OK or REQUEST_ERROR back on that stream. Only the sender of a
+ * request may update it, plus a subscriber on a PUBLISH it was offered. An update
+ * arriving anywhere else, a TRACK_STATUS among them, closes the session.
  */
 export const handlerRequestUpdate: RequestStreamMessageHandler<RequestUpdate> = async (
   client,
@@ -46,11 +48,12 @@ export const handlerRequestUpdate: RequestStreamMessageHandler<RequestUpdate> = 
 ) => {
   logger.log('handler/request_update', 'requestId', requestId)
 
-  const openingType = stream.openingType
-  if (openingType !== undefined && !ControlMessageType.isUpdatable(openingType)) {
-    // Refused, not failed: the request it named carries on untouched.
-    await stream.send(
-      new RequestError(RequestErrorCode.NotSupported, 0n, new ReasonPhrase('request does not support REQUEST_UPDATE')),
+  if (!isExpectedUpdate(stream)) {
+    await client.disconnect(
+      new ProtocolViolationError(
+        'handler/request_update',
+        `Unexpected REQUEST_UPDATE on a ${stream.first ? 'locally' : 'peer'} opened ${describe(stream.openingType)} stream`,
+      ),
     )
     return
   }
@@ -81,6 +84,22 @@ export const handlerRequestUpdate: RequestStreamMessageHandler<RequestUpdate> = 
   // state to update here, so the update fails and takes the request with it.
   logger.warn('handler/request_update', `no updatable request for requestId=${requestId}`)
   await failUpdate(client, stream, requestId, RequestErrorCode.NotSupported, 'REQUEST_UPDATE cannot be applied')
+}
+
+/**
+ * Whether the peer may send a REQUEST_UPDATE on this stream. On a stream the peer
+ * opened, it is the requester and may update any of the updatable request types. On a
+ * stream this side opened, it may only update a PUBLISH, as that PUBLISH's subscriber.
+ */
+function isExpectedUpdate(stream: RequestStream): boolean {
+  const openingType = stream.openingType
+  if (openingType === undefined) return false
+  if (stream.first) return openingType === ControlMessageType.Publish
+  return ControlMessageType.isUpdatable(openingType)
+}
+
+function describe(openingType: ControlMessageType | undefined): string {
+  return openingType === undefined ? 'unknown' : ControlMessageType[openingType]
 }
 
 /**

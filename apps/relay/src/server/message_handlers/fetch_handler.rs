@@ -545,6 +545,7 @@ async fn send_upstream_fetch_for_range(
   // task. Holding the handler keeps the request stream open for the fetch's lifetime —
   // dropping it would reach the publisher as a cancellation.
   let response_event_tx = upstream_tx;
+  let upstream_publisher = publisher.clone();
   tokio::spawn(async move {
     match upstream.next_message().await {
       Ok(ControlMessage::FetchOk(ok)) => {
@@ -573,6 +574,18 @@ async fn send_upstream_fetch_for_range(
           .await;
         return;
       }
+      Ok(ControlMessage::RequestUpdate(_)) => {
+        super::close_on_unexpected_request_update(&upstream_publisher, "FETCH");
+        let error = format!(
+          "upstream FETCH {} failed: publisher sent REQUEST_UPDATE",
+          relay_request_id
+        );
+        let _ = response_tx.send(UpstreamFetchResponse::Error(error.clone()));
+        let _ = response_event_tx
+          .send(UpstreamFetchEvent::Error(error))
+          .await;
+        return;
+      }
       Ok(other) => {
         warn!(
           "Unexpected {:?} on upstream fetch stream {}",
@@ -586,8 +599,11 @@ async fn send_upstream_fetch_for_range(
         return;
       }
     }
-    // Stays parked until the publisher closes the request stream.
-    let _ = upstream.next_message().await;
+    // Stays parked until the publisher closes the request stream. The relay sent
+    // this FETCH, so the publisher has no business updating it.
+    if let Ok(ControlMessage::RequestUpdate(_)) = upstream.next_message().await {
+      super::close_on_unexpected_request_update(&upstream_publisher, "FETCH");
+    }
   });
 
   Some((relay_request_id, publisher, upstream_rx, response_rx))

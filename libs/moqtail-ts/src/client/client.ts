@@ -3082,24 +3082,43 @@ if (import.meta.vitest) {
       await client.disconnect()
     })
 
-    it('refuses a REQUEST_UPDATE on a TRACK_STATUS stream', async () => {
+    it('closes the session on a REQUEST_UPDATE on a TRACK_STATUS stream', async () => {
       const { client, transport } = await connected()
+      const terminated: unknown[] = []
+      client.onSessionTerminated = (reason) => terminated.push(reason)
 
       const incoming = transport.openIncomingBiStream()
       incoming.respond(TrackStatus.newLatestObject(4n, 11n, ftn, 128, GroupOrder.Original, false, []))
       await vi.waitFor(() => expect(incoming.messages).toHaveLength(1))
       expect(incoming.messages[0]).toBeInstanceOf(RequestOk)
 
-      // §10.9 dropped TRACK_STATUS from the request types an update may modify.
+      // TRACK_STATUS is not a request an update may modify, so this is a protocol
+      // violation rather than something to refuse on the stream.
       incoming.respond(new RequestUpdate(4n, [new SubscriberPriority(200)]))
-      await vi.waitFor(() => expect(incoming.messages).toHaveLength(2))
-      const refusal = incoming.messages[1]
-      expect(refusal).toBeInstanceOf(RequestError)
-      expect((refusal as RequestError).errorCode).toBe(RequestErrorCode.NotSupported)
-      // Refused, not failed: the TRACK_STATUS itself is left alone.
-      expect(incoming.isClosed).toBe(false)
+      await vi.waitFor(() => expect(terminated).toHaveLength(1))
+      expect(incoming.messages).toHaveLength(1)
+    })
 
-      await client.disconnect()
+    it('closes the session on a REQUEST_UPDATE on a SUBSCRIBE this side sent', async () => {
+      const { client, transport } = await connected()
+      const terminated: unknown[] = []
+      client.onSessionTerminated = (reason) => terminated.push(reason)
+
+      const subscribing = client.subscribe({
+        fullTrackName: ftn,
+        filterType: FilterType.LatestObject,
+        forward: true,
+        groupOrder: GroupOrder.Original,
+        priority: 0,
+      })
+      const subscribeStream = await openedStream(transport, 0)
+      subscribeStream.respond(SubscribeOk.create(7n, [], []))
+      await subscribing
+
+      // Only the subscriber may update a SUBSCRIBE; the publisher answering it may not.
+      subscribeStream.respond(new RequestUpdate(0n, [new SubscriberPriority(200)]))
+      await vi.waitFor(() => expect(terminated).toHaveLength(1))
+      expect(subscribeStream.messages).toHaveLength(1)
     })
 
     it('applies a REQUEST_UPDATE on a SUBSCRIBE stream', async () => {

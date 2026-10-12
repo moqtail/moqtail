@@ -261,6 +261,25 @@ async fn upstream_subscribe_exchange(
             }
             return;
           }
+          Ok(ControlMessage::RequestUpdate(_)) => {
+            super::close_on_unexpected_request_update(&publisher, "SUBSCRIBE");
+            let err = RequestError::new(
+              RequestErrorCode::InternalError,
+              0,
+              ReasonPhrase::try_new("Upstream subscription failed".to_string()).unwrap(),
+            );
+            // The publisher's session is gone, and the track with it.
+            end_upstream_subscription(
+              relay_request_id,
+              publisher.connection_id,
+              &full_track_name,
+              err,
+              PublishDoneStatusCode::TrackEnded,
+              context.clone(),
+            )
+            .await;
+            return;
+          }
           Ok(other) => {
             warn!("Unexpected {:?} on upstream subscribe stream", other.get_type());
             let err = RequestError::new(

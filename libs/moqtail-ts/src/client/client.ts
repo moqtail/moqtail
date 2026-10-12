@@ -1691,9 +1691,12 @@ export class MOQtailClient {
     try {
       if (typeof publishRequestId === 'number') publishRequestId = BigInt(publishRequestId)
 
-      // Create the PublishDone message. (StreamCount is set to 0n as a default)
       // It carries no request id: the stream it is sent on names the request it ends.
-      const msg = new PublishDone(statusCode, 0n, new ReasonPhrase(reasonPhrase))
+      // Without a publication counting its streams the exact count is unknown.
+      const publication = this.publications.get(publishRequestId)
+      const streamCount =
+        publication instanceof PublishPublication ? publication.streamsOpened : PublishDone.UNKNOWN_STREAM_COUNT
+      const msg = new PublishDone(statusCode, streamCount, new ReasonPhrase(reasonPhrase))
 
       // PUBLISH_DONE is the last message on the PUBLISH request's own stream.
       const requestStream = this.#requestStreams.get(publishRequestId)

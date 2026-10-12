@@ -20,6 +20,12 @@ import { LengthExceedsMaxError } from '../error/error'
 import { ControlMessageType, PublishDoneStatusCode } from './constant'
 
 export class PublishDone {
+  /**
+   * The Stream Count a publisher sends when it cannot name the exact number of streams
+   * it opened. Receivers fall back on a timeout to end the subscription.
+   */
+  static readonly UNKNOWN_STREAM_COUNT = 2n ** 64n - 1n
+
   constructor(
     public readonly statusCode: PublishDoneStatusCode,
     public readonly streamCount: bigint,
@@ -102,6 +108,20 @@ if (import.meta.vitest) {
       expect(deserialized.errorReason.phrase).toBe(publishDone.errorReason.phrase)
       expect(frozen.remaining).toBe(3)
       expect(Array.from(frozen.getBytes(3))).toEqual([9, 1, 1])
+    })
+
+    test('unknown stream count roundtrip', () => {
+      const publishDone = new PublishDone(
+        PublishDoneStatusCode.SubscriptionEnded,
+        PublishDone.UNKNOWN_STREAM_COUNT,
+        new ReasonPhrase('unknown'),
+      )
+      const frozen = publishDone.serialize()
+      frozen.getVI()
+      frozen.getU16()
+      const deserialized = PublishDone.parsePayload(frozen)
+      expect(deserialized.streamCount).toBe(2n ** 64n - 1n)
+      expect(frozen.remaining).toBe(0)
     })
 
     test('partial message', () => {

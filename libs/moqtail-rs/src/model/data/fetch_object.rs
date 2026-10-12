@@ -38,6 +38,7 @@ const SUBGROUP_MODE_PRESENT: u8 = 0b11;
 /// Special Serialization Flag varint values for End-of-Range markers.
 const END_OF_NON_EXISTENT_RANGE: u64 = 0x8C;
 const END_OF_UNKNOWN_RANGE: u64 = 0x10C;
+const END_OF_TIMED_OUT_RANGE: u64 = 0x20C;
 
 /// Prior-object state threaded across successive Fetch Objects on the same stream.
 /// Used by both `serialize` and `deserialize` to compute / resolve inherited fields.
@@ -56,6 +57,8 @@ pub enum EndOfRangeKind {
   NonExistent,
   /// Serialization Flags = 0x10C: the range is cache-unknown.
   Unknown,
+  /// Serialization Flags = 0x20C: the range was abandoned after Fill Timeout.
+  TimedOut,
 }
 
 impl EndOfRangeKind {
@@ -63,6 +66,7 @@ impl EndOfRangeKind {
     match self {
       EndOfRangeKind::NonExistent => END_OF_NON_EXISTENT_RANGE,
       EndOfRangeKind::Unknown => END_OF_UNKNOWN_RANGE,
+      EndOfRangeKind::TimedOut => END_OF_TIMED_OUT_RANGE,
     }
   }
 }
@@ -139,6 +143,7 @@ impl FetchObject {
       let kind = match flags_raw {
         END_OF_NON_EXISTENT_RANGE => EndOfRangeKind::NonExistent,
         END_OF_UNKNOWN_RANGE => EndOfRangeKind::Unknown,
+        END_OF_TIMED_OUT_RANGE => EndOfRangeKind::TimedOut,
         other => {
           return Err(ParseError::ProtocolViolation {
             context: "FetchObject::deserialize",
@@ -755,6 +760,22 @@ mod tests {
     let mut buf = obj.serialize(None, ASC).unwrap();
     let parsed = FetchObject::deserialize(&mut buf, None, ASC).unwrap();
     assert_eq!(parsed, obj);
+  }
+
+  #[test]
+  fn roundtrip_end_of_timed_out_range_with_the_draft20_flag() {
+    let obj = FetchObject::EndOfRange {
+      kind: EndOfRangeKind::TimedOut,
+      group_id: 7,
+      object_id: 42,
+    };
+    let buf = obj.serialize(None, ASC).unwrap();
+    assert_eq!(buf.as_ref(), &[0x82, 0x0c, 0x07, 0x2a]);
+
+    let mut wire = buf;
+    let parsed = FetchObject::deserialize(&mut wire, None, ASC).unwrap();
+    assert_eq!(parsed, obj);
+    assert_eq!(parsed.context(), None);
   }
 
   #[test]

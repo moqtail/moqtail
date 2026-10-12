@@ -21,7 +21,7 @@ import { GroupOrder } from '../control/constant'
 import { ObjectForwardingPreference } from './constant'
 import { ProtocolViolationError } from '../error/error'
 
-// §11.5 Serialization Flags bit layout.
+// §11.4.4 Serialization Flags bit layout.
 const FLAG_SUBGROUP_MODE_MASK = 0x03
 const FLAG_OBJECT_ID_PRESENT = 0x04
 const FLAG_GROUP_ID_PRESENT = 0x08
@@ -37,6 +37,7 @@ const SUBGROUP_MODE_PRESENT = 0b11
 // Special Serialization Flag varint values for End-of-Range markers.
 const END_OF_NON_EXISTENT_RANGE = 0x8cn
 const END_OF_UNKNOWN_RANGE = 0x10cn
+const END_OF_TIMED_OUT_RANGE = 0x20cn
 
 const MAX_VARINT = 2n ** 64n - 1n
 
@@ -51,15 +52,16 @@ export type FetchObjectContext = {
 }
 
 /**
- * Kind discriminator for End-of-Range markers (§11.5).
+ * Kind discriminator for End-of-Range markers (§11.4.4).
  */
 export enum EndOfRangeKind {
   NonExistent = 0x8c,
   Unknown = 0x10c,
+  TimedOut = 0x20c,
 }
 
 /**
- * Payload-bearing fetch object (§11.5, non-End-of-Range form).
+ * Payload-bearing fetch object (§11.4.4, non-End-of-Range form).
  *
  * FETCH objects carry no Object Status field; a zero-length payload
  * signals a zero-length Normal object.
@@ -140,7 +142,19 @@ export class FetchObject {
   serialize(prev?: FetchObjectContext, groupOrder: GroupOrder = GroupOrder.Original): FrozenByteBuffer {
     const buf = new ByteBuffer()
     if (this.kind === 'end_of_range') {
-      buf.putVI(this.endOfRange === EndOfRangeKind.NonExistent ? END_OF_NON_EXISTENT_RANGE : END_OF_UNKNOWN_RANGE)
+      switch (this.endOfRange) {
+        case EndOfRangeKind.NonExistent:
+          buf.putVI(END_OF_NON_EXISTENT_RANGE)
+          break
+        case EndOfRangeKind.Unknown:
+          buf.putVI(END_OF_UNKNOWN_RANGE)
+          break
+        case EndOfRangeKind.TimedOut:
+          buf.putVI(END_OF_TIMED_OUT_RANGE)
+          break
+        default:
+          throw new ProtocolViolationError('FetchObject.serialize', 'end-of-range object has no range kind')
+      }
       buf.putVI(this.groupId)
       buf.putVI(this.objectId)
       return buf.freeze()
@@ -232,6 +246,8 @@ export class FetchObject {
         kind = EndOfRangeKind.NonExistent
       } else if (flagsRaw === END_OF_UNKNOWN_RANGE) {
         kind = EndOfRangeKind.Unknown
+      } else if (flagsRaw === END_OF_TIMED_OUT_RANGE) {
+        kind = EndOfRangeKind.TimedOut
       } else {
         throw new ProtocolViolationError(
           'FetchObject.deserialize',
@@ -566,6 +582,19 @@ if (import.meta.vitest) {
       const parsed = FetchObject.deserialize(frozen)
       expect(parsed.kind).toBe('end_of_range')
       expect(parsed.endOfRange).toBe(EndOfRangeKind.Unknown)
+    })
+
+    test('roundtrip end of timed-out range with the draft-20 flag', () => {
+      const obj = FetchObject.newEndOfRange(EndOfRangeKind.TimedOut, 7n, 42n)
+      const wire = obj.serialize().toUint8Array()
+      expect(Array.from(wire)).toEqual([0x82, 0x0c, 0x07, 0x2a])
+
+      const parsed = FetchObject.deserialize(new FrozenByteBuffer(wire))
+      expect(parsed.kind).toBe('end_of_range')
+      expect(parsed.endOfRange).toBe(EndOfRangeKind.TimedOut)
+      expect(parsed.groupId).toBe(7n)
+      expect(parsed.objectId).toBe(42n)
+      expect(parsed.toContext()).toBeNull()
     })
 
     test('reject reserved high flag value', () => {

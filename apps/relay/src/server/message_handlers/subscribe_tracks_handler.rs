@@ -127,7 +127,7 @@ pub async fn handle_subscribe_tracks(
     let already_served = {
       let track = track_arc.read().await;
       track.is_published_by(client.connection_id).await
-        || track.get_subscription(client.connection_id).await.is_some()
+        || track.has_any_subscription(client.connection_id).await
     };
     if already_served {
       continue;

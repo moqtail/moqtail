@@ -17,8 +17,10 @@ use crate::server::client::switch_context::SwitchPlan;
 use crate::server::message_handlers::parameters;
 use crate::server::session::Session;
 use crate::server::session_context::{PendingRequest, SessionContext};
+use crate::server::subscription::Subscription;
+use crate::server::subscription_manager::SubscriptionId;
 use crate::server::track::{Track, TrackOrigin, TrackStatus, await_publisher_streams};
-use core::result::Result;
+use anyhow::Result;
 use moqtail::model::control::constant::{FilterType, PublishDoneStatusCode};
 use moqtail::model::control::publish_done::PublishDone;
 use moqtail::model::control::request_error::RequestError;
@@ -47,35 +49,34 @@ async fn add_subscription(
   subscribe: Subscribe,
   track: &Track,
   subscriber: Arc<MOQTClient>,
-  is_switch: bool,
-) -> bool {
-  match track
-    .add_subscription(subscriber.clone(), subscribe, is_switch)
-    .await
-  {
+) -> Option<Arc<RwLock<Subscription>>> {
+  let request_id = subscribe.request_id;
+  match track.add_subscription(subscriber.clone(), subscribe).await {
     Ok(subscription) => {
       subscriber
         .subscriptions
-        .add_subscription(track.full_track_name.clone(), Arc::downgrade(&subscription))
+        .add(request_id, Arc::downgrade(&subscription))
         .await;
-      true
+      Some(subscription)
     }
-    Err(_) => false, // error already logged in add_subscription and it means that subscription already exists
+    // Only a Request ID already in use on this track is refused, and the subscription
+    // manager has logged it.
+    Err(_) => None,
   }
 }
 
 /// Drop a subscription that must be rejected after `add_subscription` already
-/// registered it. A SWITCH reuses the pre-existing subscription, so only a
-/// fresh one is removed.
+/// registered it, on the track and on the client.
 async fn reject_subscription(
   track_arc: &Arc<RwLock<Track>>,
-  subscriber_id: usize,
-  is_switch: bool,
+  client: &MOQTClient,
+  subscription_id: &SubscriptionId,
 ) {
-  if !is_switch {
+  {
     let track = track_arc.read().await;
-    track.remove_subscription(subscriber_id).await;
+    track.remove_subscription(subscription_id).await;
   }
+  client.subscriptions.remove(subscription_id.1).await;
 }
 
 /// Forward a SUBSCRIBE to the upstream publisher on its own bidirectional request
@@ -461,15 +462,19 @@ pub(crate) async fn plan_switch(
   // less to stop.
   let suspending = subscription.read().await.full_track_name.clone();
 
-  // One subscription per track per subscriber, so switching to the track being
-  // switched away from would have it suspend itself.
+  // Both subscriptions would deliver the same Objects, so there is no switch to make.
   if suspending == *activating {
     return Err(invalid(
       "a subscription cannot switch away from its own track",
     ));
   }
 
-  Ok(Some(SwitchPlan::new(suspending, mode, publish_done)))
+  Ok(Some(SwitchPlan::new(
+    suspending,
+    request_id,
+    mode,
+    publish_done,
+  )))
 }
 
 async fn handle_subscribe_message(
@@ -477,7 +482,6 @@ async fn handle_subscribe_message(
   stream_handler: &mut ControlStreamHandler,
   sub: Subscribe,
   context: Arc<SessionContext>,
-  is_switch: bool,
 ) -> Result<(), TerminationCode> {
   info!("received Subscribe message: {:?}", sub);
   let track_namespace = sub.track_namespace.clone();
@@ -505,7 +509,6 @@ async fn handle_subscribe_message(
       return Ok(());
     }
   };
-  let is_switch = is_switch || switch_plan.is_some();
   // A switch applies its filter and Forward State in begin_switch, well after the
   // SUBSCRIBE_OK goes out; anything measured against the subscription's filter has to
   // wait for that.
@@ -585,31 +588,24 @@ async fn handle_subscribe_message(
     })
     .await;
 
-  // Scoped so the guard is gone before anything below reaches for this lock again.
-  // tokio's RwLock is not reentrant and hands the lock to a queued writer first, so a
-  // task that reads twice deadlocks against itself the moment a writer arrives in
-  // between -- and it stays holding the first guard, wedging the track for everyone.
-  let subscription_added = {
+  // Scoped so the track guard is gone before anything below reaches for it again.
+  let subscription = {
     let track = track_arc.read().await;
-    add_subscription(sub.clone(), &track, client.clone(), is_switch).await
+    add_subscription(sub.clone(), &track, client.clone()).await
   };
-
-  // An endpoint may hold only one subscription per track in a given role. A SWITCH is
-  // the exception: it deliberately reuses the existing subscription, and the failure
-  // here is how it hands over.
-  if !subscription_added && !is_switch {
-    info!(
-      "Rejecting SUBSCRIBE from {} for {:?}: already subscribed",
-      context.connection_id, &full_track_name
+  let Some(subscription) = subscription else {
+    warn!(
+      "Rejecting SUBSCRIBE from {} for {:?}: request {} already has a subscription",
+      context.connection_id, &full_track_name, sub.request_id
     );
     let err = RequestError::new(
-      RequestErrorCode::DuplicateSubscription,
+      RequestErrorCode::InternalError,
       0,
-      ReasonPhrase::try_new("already subscribed to this track".to_string()).unwrap(),
+      ReasonPhrase::try_new("could not add the subscription".to_string()).unwrap(),
     );
     stream_handler.send_impl(&err).await.unwrap();
     return Ok(());
-  }
+  };
 
   // Sender-side track switching: register this track in its switching set.
   if let Some(MessageParameter::SwitchingSetAssignment {
@@ -631,7 +627,7 @@ async fn handle_subscribe_message(
 
     if let Err(e) = client.ssts.validate_assignment(*algorithm_id) {
       warn!("Rejecting SUBSCRIBE from {}: {}", context.connection_id, e);
-      reject_subscription(&track_arc, client.connection_id, is_switch).await;
+      reject_subscription(&track_arc, &client, &(client.connection_id, sub.request_id)).await;
       let err = RequestError::new(
         RequestErrorCode::UnsupportedExtension,
         0,
@@ -659,7 +655,7 @@ async fn handle_subscribe_message(
         // subscription is rejected. There is no dedicated parameter-error
         // code to return, so the unsupported-extension one carries it.
         drop(manager);
-        reject_subscription(&track_arc, client.connection_id, is_switch).await;
+        reject_subscription(&track_arc, &client, &(client.connection_id, sub.request_id)).await;
         let err = RequestError::new(
           RequestErrorCode::UnsupportedExtension,
           0,
@@ -672,16 +668,9 @@ async fn handle_subscribe_message(
 
     // The spec starts switching-set subscriptions with Forward=0; keep this
     // subscription forwarding so the Object gating can select per group.
-    if let Some(subscription) = track_arc
-      .read()
-      .await
-      .get_subscription(client.connection_id)
-      .await
-    {
-      let sub = subscription.read().await;
-      let mut state = sub.subscription_state.write().await;
-      state.forward = true;
-    }
+    let sub = subscription.read().await;
+    let mut state = sub.subscription_state.write().await;
+    state.forward = true;
   }
 
   let res: Result<(), TerminationCode> = if is_creator {
@@ -753,14 +742,12 @@ async fn handle_subscribe_message(
         let params =
           parameters::downstream_subscribe_ok(&upstream_parameters, track.largest_object().await);
         let subscribe_ok = moqtail::model::control::subscribe_ok::SubscribeOk::new(
-          track.relay_track_id,
+          subscription.read().await.track_alias,
           params,
           cached_properties,
         );
         let sent = stream_handler.send_impl(&subscribe_ok).await;
-        if sent.is_ok()
-          && let Some(subscription) = track.get_subscription(client.connection_id).await
-        {
+        if sent.is_ok() {
           subscription.read().await.mark_alias_announced();
           // A switch decides the filter this fill is measured against, and it has not
           // been applied yet: the fill for one is opened once begin_switch has run.
@@ -768,7 +755,7 @@ async fn handle_subscribe_message(
             crate::server::fill::open_fill_fetch_stream(
               context.clone(),
               track_arc.clone(),
-              subscription,
+              subscription.clone(),
               sub.request_id,
             )
             .await;
@@ -814,32 +801,10 @@ async fn handle_subscribe_message(
   {
     // Scoped: begin_switch reaches for locks of its own, and the track guard must
     // be gone before it does.
-    let (subscription, largest) = {
-      let track = track_arc.read().await;
-      (
-        track.get_subscription(client.connection_id).await,
-        track.largest_object().await,
-      )
-    };
-    if let Some(subscription) = subscription {
-      // A switch to a track the subscriber already holds reuses that subscription
-      // instead of creating a second one, so say which request drives it now: this
-      // SUBSCRIBE is what carries its updates from here, and what cancels it. The
-      // one it replaces can still be reset afterwards, and must not take this
-      // subscription with it.
-      {
-        let mut writable = subscription.write().await;
-        if writable.request_id != sub.request_id {
-          info!(
-            "switch: subscription for {:?} handed from request {} to {}",
-            full_track_name, writable.request_id, sub.request_id
-          );
-          writable.request_id = sub.request_id;
-        }
-      }
-
+    let largest = track_arc.read().await.largest_object().await;
+    {
       // A SUBSCRIBE describes the subscription in full, so a filter it leaves out
-      // is the default rather than whatever the reused subscription had.
+      // is the default.
       let filter = sub
         .subscribe_parameters
         .iter()
@@ -950,8 +915,8 @@ async fn handle_subscribe_ok_message(
     }
   };
 
-  // Confirm the track with publisher's metadata; capture relay_track_id for SubscribeOk messages
-  let (relay_track_id, confirmed_now) = {
+  // Confirm the track with publisher's metadata
+  let confirmed_now = {
     let mut track = track_arc.write().await;
     let confirmed_now = track
       .confirm(
@@ -965,7 +930,7 @@ async fn handle_subscribe_ok_message(
     track
       .pending_upstream_subscribe_count
       .fetch_sub(1, Ordering::SeqCst);
-    (track.relay_track_id, confirmed_now)
+    confirmed_now
   };
 
   // Register the publisher's alias for data stream routing. Every accepting publisher
@@ -1002,44 +967,53 @@ async fn handle_subscribe_ok_message(
   {
     let subscriber = { context.client_manager.get(sub_request.requested_by).await };
     if let Some(subscriber) = subscriber {
-      let cached_properties = {
+      let (cached_properties, subscription) = {
         let track = track_arc.read().await;
-        track.track_properties.read().await.clone()
-      };
-      let subscribe_ok = moqtail::model::control::subscribe_ok::SubscribeOk::new(
-        relay_track_id,
-        downstream_params.clone(),
-        cached_properties,
-      );
-      info!(
-        "sending SubscribeOk to creator subscriber: {:?}",
-        subscriber.connection_id
-      );
-      let delivered = subscriber
-        .send_response(
-          sub_request.original_request_id,
-          ControlMessage::SubscribeOk(Box::new(subscribe_ok)),
+        (
+          track.track_properties.read().await.clone(),
+          track
+            .get_subscription(&(subscriber.connection_id, sub_request.original_request_id))
+            .await,
         )
-        .await;
-      if !delivered {
-        warn!(
-          "no request stream for creator subscriber request {}",
+      };
+      // The subscriber can cancel while the publisher is still answering; then
+      // there is no one left to tell.
+      if let Some(subscription) = subscription {
+        let subscribe_ok = moqtail::model::control::subscribe_ok::SubscribeOk::new(
+          subscription.read().await.track_alias,
+          downstream_params.clone(),
+          cached_properties,
+        );
+        info!(
+          "sending SubscribeOk to creator subscriber: {:?}",
+          subscriber.connection_id
+        );
+        let delivered = subscriber
+          .send_response(
+            sub_request.original_request_id,
+            ControlMessage::SubscribeOk(Box::new(subscribe_ok)),
+          )
+          .await;
+        if !delivered {
+          warn!(
+            "no request stream for creator subscriber request {}",
+            sub_request.original_request_id
+          );
+        } else {
+          subscription.read().await.mark_alias_announced();
+          crate::server::fill::open_fill_fetch_stream(
+            context.clone(),
+            track_arc.clone(),
+            subscription,
+            sub_request.original_request_id,
+          )
+          .await;
+        }
+      } else {
+        info!(
+          "creator subscriber request {} cancelled before the publisher answered",
           sub_request.original_request_id
         );
-      } else if let Some(subscription) = track_arc
-        .read()
-        .await
-        .get_subscription(subscriber.connection_id)
-        .await
-      {
-        subscription.read().await.mark_alias_announced();
-        crate::server::fill::open_fill_fetch_stream(
-          context.clone(),
-          track_arc.clone(),
-          subscription,
-          sub_request.original_request_id,
-        )
-        .await;
       }
     } else {
       warn!(
@@ -1063,12 +1037,26 @@ async fn handle_subscribe_ok_message(
     for (subscriber_request_id, subscriber_connection_id) in pending {
       let subscriber = { context.client_manager.get(subscriber_connection_id).await };
       if let Some(subscriber) = subscriber {
-        let cached_properties = {
+        let (cached_properties, subscription) = {
           let track = track_arc.read().await;
-          track.track_properties.read().await.clone()
+          (
+            track.track_properties.read().await.clone(),
+            track
+              .get_subscription(&(subscriber.connection_id, subscriber_request_id))
+              .await,
+          )
+        };
+        // The subscriber can cancel while the publisher is still answering; then
+        // there is no one left to tell.
+        let Some(subscription) = subscription else {
+          info!(
+            "pending subscriber request {} cancelled before the publisher answered",
+            subscriber_request_id
+          );
+          continue;
         };
         let subscribe_ok = moqtail::model::control::subscribe_ok::SubscribeOk::new(
-          relay_track_id,
+          subscription.read().await.track_alias,
           downstream_params.clone(),
           cached_properties,
         );
@@ -1088,20 +1076,14 @@ async fn handle_subscribe_ok_message(
             subscriber_request_id
           );
         } else {
-          let subscription = {
-            let track = track_arc.read().await;
-            track.get_subscription(subscriber.connection_id).await
-          };
-          if let Some(subscription) = subscription {
-            subscription.read().await.mark_alias_announced();
-            crate::server::fill::open_fill_fetch_stream(
-              context.clone(),
-              track_arc.clone(),
-              subscription,
-              subscriber_request_id,
-            )
-            .await;
-          }
+          subscription.read().await.mark_alias_announced();
+          crate::server::fill::open_fill_fetch_stream(
+            context.clone(),
+            track_arc.clone(),
+            subscription,
+            subscriber_request_id,
+          )
+          .await;
         }
       }
     }
@@ -1132,30 +1114,24 @@ pub(crate) async fn cancel_subscription(
       .get_full_track_name()
   }; // read lock dropped here
 
-  // Sender-side track switching: remove the track from its switching set.
+  // Sender-side track switching: this subscription no longer holds the track in
+  // its switching set. Another subscription to the same track may still.
   {
     let mut manager = client.ssts.switching_sets.write().await;
-    manager.remove(&full_track_name);
+    manager.release(&full_track_name, request_id);
   }
 
   // remove the subscription from the track
   let track_option = context.track_manager.get_track(&full_track_name).await;
 
   if let Some(track_lock) = track_option {
-    // One subscription per track per subscriber, and a switch to a track the
-    // subscriber already holds hands the existing one to the SUBSCRIBE that switched
-    // to it. Resetting the request it replaced arrives here naming the same track, so
-    // cancel only what this request still owns -- otherwise the live subscription goes
-    // with it and the subscriber starves on a track it is still subscribed to.
-    let owned = match track_lock
+    // The subscriber may hold other subscriptions to this track under other request
+    // ids. Cancel only the one this request owns, and only if it is still there.
+    let owned = track_lock
       .read()
       .await
-      .get_subscription(context.connection_id)
-      .await
-    {
-      Some(subscription) => subscription.read().await.request_id == request_id,
-      None => false,
-    };
+      .has_subscription(&(context.connection_id, request_id))
+      .await;
 
     if !owned {
       info!(
@@ -1171,7 +1147,9 @@ pub(crate) async fn cancel_subscription(
 
     let (is_last_subscriber, origin) = {
       let track = track_lock.read().await;
-      track.remove_subscription(context.connection_id).await;
+      track
+        .remove_subscription(&(context.connection_id, request_id))
+        .await;
       // When the last subscriber goes away, reset the upstream subscribe streams so
       // the publishers observe the cancellation. One per publisher serving the track.
       let last = if track.subscriber_count().await == 0 {
@@ -1205,10 +1183,7 @@ pub(crate) async fn cancel_subscription(
   }
 
   // remove the subscription from the client
-  client
-    .subscriptions
-    .remove_subscription(&full_track_name)
-    .await;
+  client.subscriptions.remove(request_id).await;
 
   // Remove the request from the client's request map so it doesn't leak
   {
@@ -1347,7 +1322,10 @@ pub async fn handle_request_update(
   // terminating so termination can take the track write lock.
   let update_result = {
     let track_guard = track_arc.read().await;
-    match track_guard.get_subscription(client.connection_id).await {
+    match track_guard
+      .get_subscription(&(client.connection_id, existing_req_id))
+      .await
+    {
       Some(subscription) => Some(
         subscription
           .read()
@@ -1376,7 +1354,9 @@ pub async fn handle_request_update(
       let (subscription, largest) = {
         let track = track_arc.read().await;
         (
-          track.get_subscription(client.connection_id).await,
+          track
+            .get_subscription(&(client.connection_id, existing_req_id))
+            .await,
           track.largest_object().await,
         )
       };
@@ -1407,7 +1387,7 @@ pub async fn handle_request_update(
         && let Some(subscription) = track_arc
           .read()
           .await
-          .get_subscription(client.connection_id)
+          .get_subscription(&(client.connection_id, existing_req_id))
           .await
       {
         crate::server::fill::open_fill_fetch_stream(
@@ -1437,7 +1417,7 @@ pub async fn handle_request_update(
       let stream_count = match track_arc
         .read()
         .await
-        .get_subscription(client.connection_id)
+        .get_subscription(&(client.connection_id, existing_req_id))
         .await
       {
         Some(sub) => sub.read().await.opened_stream_count(),
@@ -1453,12 +1433,9 @@ pub async fn handle_request_update(
       track_arc
         .write()
         .await
-        .remove_subscription(client.connection_id)
+        .remove_subscription(&(client.connection_id, existing_req_id))
         .await;
-      client
-        .subscriptions
-        .remove_subscription(&full_track_name)
-        .await;
+      client.subscriptions.remove(existing_req_id).await;
     }
     None => {
       warn!(
@@ -1578,7 +1555,7 @@ pub async fn handle(
 ) -> Result<(), TerminationCode> {
   match msg {
     ControlMessage::Subscribe(m) => {
-      handle_subscribe_message(client, stream_handler, *m, context, false).await
+      handle_subscribe_message(client, stream_handler, *m, context).await
     }
     ControlMessage::RequestUpdate(m) => {
       let Some(target_request_id) = opening_request_id else {

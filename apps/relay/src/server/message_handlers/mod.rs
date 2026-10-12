@@ -28,6 +28,7 @@ use crate::server::{
   session_context::{PendingRequest, SessionContext},
 };
 use std::sync::Arc;
+use tokio::sync::mpsc::UnboundedSender;
 pub(crate) mod fetch_handler;
 pub(crate) mod parameters;
 mod publish_handler;
@@ -248,6 +249,44 @@ impl MessageHandler {
       Err(termination_code)
     } else {
       Ok(())
+    }
+  }
+
+  /// Opens a prefix subscription: SUBSCRIBE_NAMESPACE or SUBSCRIBE_TRACKS. What it
+  /// matches from then on goes out through `namespace_tx`, which the request stream
+  /// drains for as long as the subscription lives.
+  pub async fn handle_prefix_subscription(
+    client: Arc<MOQTClient>,
+    stream_handler: &mut ControlStreamHandler,
+    msg: ControlMessage,
+    context: Arc<SessionContext>,
+    namespace_tx: UnboundedSender<ControlMessage>,
+  ) -> Result<(), TerminationCode> {
+    match msg {
+      ControlMessage::SubscribeNamespace(sub_ns) => {
+        subscribe_namespace_handler::handle_subscribe_namespace(
+          client,
+          stream_handler,
+          sub_ns,
+          context,
+          namespace_tx,
+        )
+        .await
+      }
+      ControlMessage::SubscribeTracks(sub_tracks) => {
+        subscribe_tracks_handler::handle_subscribe_tracks(
+          client,
+          stream_handler,
+          sub_tracks,
+          context,
+          namespace_tx,
+        )
+        .await
+      }
+      other => {
+        warn!("{:?} is not a prefix subscription", other.get_type());
+        Err(TerminationCode::ProtocolViolation)
+      }
     }
   }
 }

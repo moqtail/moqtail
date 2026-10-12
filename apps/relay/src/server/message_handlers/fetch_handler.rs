@@ -15,7 +15,7 @@
 use crate::server::client::MOQTClient;
 use crate::server::message_handlers::parameters;
 use crate::server::session_context::{PendingRequest, SessionContext, UpstreamFetchEvent};
-use crate::server::stream_id::StreamId;
+use crate::server::stream_id::{SendStreamKey, StreamId};
 use core::result::Result::{Err, Ok};
 use moqtail::model::common::location::Location;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
@@ -675,12 +675,15 @@ pub(crate) async fn serve_fetch_stream(
   } = delivery;
 
   let fetch_header = FetchHeader::new(request_id);
-  let stream_id = StreamId::new_fetch(track_read.relay_track_id, request_id);
+  let stream_id = SendStreamKey::new(
+    request_id,
+    StreamId::new_fetch(track_read.relay_track_id, request_id),
+  );
 
-  let stream_fn = async move |client: Arc<MOQTClient>, stream_id: &StreamId| {
+  let stream_fn = async move |client: Arc<MOQTClient>, stream_key: &SendStreamKey| {
     let stream_result = client
       .open_stream(
-        stream_id,
+        stream_key,
         fetch_header.serialize().unwrap(),
         stream_priority,
       )

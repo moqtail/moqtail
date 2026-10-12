@@ -18,7 +18,7 @@ use crate::server::config::AppConfig;
 use crate::server::object_logger::ObjectLogger;
 use crate::server::stream_id::StreamId;
 use crate::server::subscription::Subscription;
-use crate::server::subscription_manager::SubscriptionManager;
+use crate::server::subscription_manager::{SubscriptionId, SubscriptionManager};
 use crate::server::utils;
 use crate::server::{client::MOQTClient, subscription::SubscriptionOrigin};
 use anyhow::Result;
@@ -455,48 +455,8 @@ impl Track {
     &self,
     subscriber: Arc<MOQTClient>,
     origin_message: impl Into<SubscriptionOrigin>,
-    is_switch: bool,
-  ) -> Result<Arc<RwLock<Subscription>>, anyhow::Error> {
+  ) -> Result<Arc<RwLock<Subscription>>> {
     let origin_enum = origin_message.into();
-    // Check if subscription already exists
-    if let Some(existing) = self
-      .subscription_manager
-      .get_subscription(subscriber.connection_id)
-      .await
-    {
-      // One that has finished is not one: its receive loop has exited, so nothing can
-      // reach the subscriber on it again. It stays registered until the subscriber's
-      // own cancellation arrives, and a switch back to this track can beat that
-      // easily -- a drain ends the moment the boundary passes, the switch back comes
-      // whenever the ladder says. Reusing it there hands the subscriber a
-      // subscription that can only ever be silent, so replace it instead.
-      if existing.read().await.is_finished().await {
-        info!(
-          "Subscriber with connection_id: {} has a finished subscription in relay_track_id={}; replacing it",
-          subscriber.connection_id, self.relay_track_id
-        );
-        self
-          .subscription_manager
-          .remove_subscription(subscriber.connection_id)
-          .await;
-      } else {
-        if !is_switch {
-          error!(
-            "Subscriber with connection_id: {} already exists in relay_track_id={}",
-            subscriber.connection_id, self.relay_track_id
-          );
-        } else {
-          info!(
-            "Subscriber with connection_id: {} already exists in relay_track_id={} (switch subscription)",
-            subscriber.connection_id, self.relay_track_id
-          );
-        }
-        return Err(anyhow::anyhow!(
-          "A subscription already exists for this subscriber"
-        ));
-      }
-    }
-
     let subscription = self
       .subscription_manager
       .add_subscription(
@@ -518,19 +478,40 @@ impl Track {
     Ok(subscription)
   }
 
-  // return the subscription for the client
-  // subscriber_id is the connection id of the client
-  pub async fn get_subscription(&self, subscriber_id: usize) -> Option<Arc<RwLock<Subscription>>> {
+  pub async fn has_any_subscription(&self, subscriber_id: usize) -> bool {
     self
       .subscription_manager
-      .get_subscription(subscriber_id)
+      .has_any_subscription(subscriber_id)
       .await
   }
 
-  pub async fn remove_subscription(&self, subscriber_id: usize) {
+  pub async fn has_subscription(&self, subscription_id: &SubscriptionId) -> bool {
+    self.subscription_manager.exists(subscription_id).await
+  }
+
+  // return the subscription for the client
+  // subscriber_id is the connection id of the client
+  pub async fn get_subscription(
+    &self,
+    subscription_id: &SubscriptionId,
+  ) -> Option<Arc<RwLock<Subscription>>> {
     self
       .subscription_manager
-      .remove_subscription(subscriber_id)
+      .get_subscription(subscription_id)
+      .await
+  }
+
+  pub async fn remove_subscription(&self, subscription_id: &SubscriptionId) {
+    self
+      .subscription_manager
+      .remove_subscription(subscription_id)
+      .await
+  }
+
+  pub async fn remove_subscriptions(&self, subscriber_id: usize) {
+    self
+      .subscription_manager
+      .remove_subscriptions(subscriber_id)
       .await
   }
 
@@ -543,7 +524,7 @@ impl Track {
     stream_id: &StreamId,
     object: &Object,
     header_info: Option<&HeaderInfo>,
-  ) -> Result<(), anyhow::Error> {
+  ) -> Result<()> {
     trace!(
       "new_subgroup_object: relay_track_id={} location: {:?} stream_id={} diff_ms={}",
       self.relay_track_id,
@@ -642,7 +623,7 @@ impl Track {
       .unwrap_or(DEFAULT_PUBLISHER_PRIORITY)
   }
 
-  pub async fn new_datagram(&self, datagram: &Datagram) -> Result<(), anyhow::Error> {
+  pub async fn new_datagram(&self, datagram: &Datagram) -> Result<()> {
     trace!(
       "new_datagram: relay_track_id={} group: {:?} object_id={} diff_ms={}",
       self.relay_track_id,
@@ -723,7 +704,7 @@ impl Track {
     Ok(())
   }
 
-  pub async fn stream_closed(&self, stream_id: &StreamId) -> Result<(), anyhow::Error> {
+  pub async fn stream_closed(&self, stream_id: &StreamId) -> Result<()> {
     self.active_subgroup_headers.write().await.remove(stream_id);
 
     let event = TrackEvent::StreamClosed {
@@ -740,7 +721,7 @@ impl Track {
 
   /// Send PublisherDisconnected event to all subscribers.
   /// Called internally by remove_publisher() when the last publisher leaves.
-  pub async fn notify_publisher_disconnected(&self) -> Result<(), anyhow::Error> {
+  pub async fn notify_publisher_disconnected(&self) -> Result<()> {
     info!(
       "All publishers gone for relay_track_id={} - notifying all subscribers",
       self.relay_track_id
@@ -762,7 +743,7 @@ impl Track {
     &self,
     status_code: PublishDoneStatusCode,
     reason: String,
-  ) -> Result<(), anyhow::Error> {
+  ) -> Result<()> {
     let event = TrackEvent::PublisherDisconnected {
       status_code,
       reason,

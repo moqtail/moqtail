@@ -15,16 +15,14 @@
 use anyhow::Result;
 use moqtail::model::parameter::setup_option::SetupOption;
 use moqtail::model::{
-  common::reason_phrase::ReasonPhrase,
   control::{
     constant::SUPPORTED_VERSIONS,
     control_message::ControlMessage,
     namespace_done::NamespaceDone,
-    request_error::RequestError,
     setup::{Setup, SetupSender},
   },
   data::datagram::Datagram,
-  error::{RequestErrorCode, StreamResetCode, TerminationCode},
+  error::TerminationCode,
 };
 use moqtail::transport::{
   connection::{
@@ -46,19 +44,11 @@ use crate::server::{Server, stream_id::StreamId};
 
 use super::{
   client::MOQTClient,
-  message_handlers, prefix_subscription,
+  message_handlers, request_stream,
   session_context::{RequestMaps, SessionContext},
   track::Track,
   utils,
 };
-
-/// Which cleanup to run when a request stream is reset or closed by the peer.
-enum RequestStreamKind {
-  Subscribe,
-  Fetch,
-  PublishNamespace,
-  Other,
-}
 
 pub struct Session {}
 
@@ -349,7 +339,11 @@ impl Session {
     } // end of loop
   }
 
-  fn close_session(context: Arc<SessionContext>, error_code: TerminationCode, msg: &str) {
+  pub(crate) fn close_session(
+    context: Arc<SessionContext>,
+    error_code: TerminationCode,
+    msg: &str,
+  ) {
     context
       .connection
       .close(error_code.to_u32(), msg.as_bytes());
@@ -379,7 +373,7 @@ impl Session {
             Ok((send, recv)) => {
               let ctx = context.clone();
               tokio::spawn(async move {
-                Self::handle_request_stream(ctx, send, recv).await;
+                request_stream::accept(ctx, send, recv).await;
               });
             }
             Err(e) => {
@@ -449,304 +443,6 @@ impl Session {
             }
           });
         }
-      }
-    }
-  }
-
-  async fn handle_request_stream(
-    context: Arc<SessionContext>,
-    send_stream: TransportSendStream,
-    recv_stream: TransportRecvStream,
-  ) {
-    let client = match context.get_client().await {
-      Some(c) => c,
-      None => return,
-    };
-    let mut stream_handler =
-      ControlStreamHandler::new(send_stream, recv_stream).with_peer_id(context.connection_id);
-
-    let msg = match stream_handler.next_message().await {
-      Ok(m) => m,
-      Err(e) => {
-        error!("Failed to read first message on request bi-stream: {:?}", e);
-        return;
-      }
-    };
-
-    // A request stream MUST begin with a First-marked type; anything else is a
-    // protocol violation and closes the session.
-    if !msg.get_type().is_first() {
-      warn!(
-        "Request bi-stream opened with non-First message {:?}",
-        msg.get_type()
-      );
-      Self::close_session(
-        context,
-        TerminationCode::ProtocolViolation,
-        "Request stream must begin with a First-marked message",
-      );
-      return;
-    }
-
-    use std::sync::atomic::Ordering;
-
-    // While draining, reject new requests with GOING_AWAY.
-    if context.draining.load(Ordering::Relaxed) {
-      warn!(
-        "Rejecting new request {:?} while draining (GOING_AWAY)",
-        msg.get_type()
-      );
-      let err = RequestError::new(
-        RequestErrorCode::GoingAway,
-        0,
-        ReasonPhrase::try_new("Relay is draining".to_string()).unwrap(),
-      );
-      let _ = stream_handler
-        .send(&ControlMessage::RequestError(Box::new(err)))
-        .await;
-      return;
-    }
-
-    // Load shedding: once the relay is serving its configured maximum of request
-    // streams, reset new ones with EXCESSIVE_LOAD instead of serving them.
-    let max_active = context.server_config.max_active_requests;
-    if max_active > 0 && context.active_request_streams.load(Ordering::Relaxed) >= max_active {
-      warn!(
-        "Load shedding request stream {:?}: {} active >= max {}",
-        msg.get_type(),
-        context.active_request_streams.load(Ordering::Relaxed),
-        max_active
-      );
-      stream_handler.reset(StreamResetCode::ExcessiveLoad.to_u64());
-      return;
-    }
-
-    context
-      .active_request_streams
-      .fetch_add(1, Ordering::Relaxed);
-    Self::dispatch_request_stream_message(client, stream_handler, msg, context.clone()).await;
-    context
-      .active_request_streams
-      .fetch_sub(1, Ordering::Relaxed);
-  }
-
-  async fn dispatch_request_stream_message(
-    client: Arc<MOQTClient>,
-    mut stream_handler: ControlStreamHandler,
-    msg: ControlMessage,
-    context: Arc<SessionContext>,
-  ) {
-    match msg {
-      first @ (ControlMessage::SubscribeNamespace(_) | ControlMessage::SubscribeTracks(_)) => {
-        let request_id = match &first {
-          ControlMessage::SubscribeNamespace(m) => m.request_id,
-          ControlMessage::SubscribeTracks(m) => m.request_id,
-          _ => unreachable!("matched above"),
-        };
-
-        let (namespace_tx, mut namespace_rx) =
-          tokio::sync::mpsc::unbounded_channel::<ControlMessage>();
-
-        let result = match first {
-          ControlMessage::SubscribeNamespace(sub_ns) => {
-            message_handlers::subscribe_namespace_handler::handle_subscribe_namespace(
-              client.clone(),
-              &mut stream_handler,
-              sub_ns,
-              context.clone(),
-              namespace_tx,
-            )
-            .await
-          }
-          ControlMessage::SubscribeTracks(sub_tracks) => {
-            message_handlers::subscribe_tracks_handler::handle_subscribe_tracks(
-              client.clone(),
-              &mut stream_handler,
-              sub_tracks,
-              context.clone(),
-              namespace_tx,
-            )
-            .await
-          }
-          _ => unreachable!("matched above"),
-        };
-
-        if let Err(e) = result {
-          error!("prefix subscription handler error: {:?}", e);
-          return;
-        }
-
-        // Long-lived loop: forward NAMESPACE/PUBLISH messages to the bi-stream, or cancel on close.
-        loop {
-          tokio::select! {
-            biased;
-            msg_opt = namespace_rx.recv() => {
-              match msg_opt {
-                Some(ns_msg) => {
-                  if let Err(e) = stream_handler.send(&ns_msg).await {
-                    warn!("Error writing NAMESPACE to bi-stream: {:?}", e);
-                    prefix_subscription::cancel(client, request_id, &context).await;
-                    return;
-                  }
-                }
-                None => return, // channel dropped, subscription ended
-              }
-            }
-            result = stream_handler.next_message() => {
-              match result {
-                // A REQUEST_UPDATE travels on the stream of the request it updates,
-                // so this is where one for a prefix subscription arrives.
-                Ok(update @ ControlMessage::RequestUpdate(_)) => {
-                  if let Err(e) = message_handlers::MessageHandler::handle(
-                    client.clone(),
-                    &mut stream_handler,
-                    update,
-                    context.clone(),
-                    Some(request_id),
-                  )
-                  .await
-                  {
-                    Self::close_session(context, e, "Error handling prefix subscription update");
-                    return;
-                  }
-                }
-                Ok(extra) => {
-                  warn!("Unexpected message {:?} on request bi-stream", extra.get_type());
-                  Self::close_session(context, TerminationCode::ProtocolViolation, "Unexpected message on request bi-stream");
-                  return;
-                }
-                Err(_) => {
-                  // FIN or RESET — subscriber cancelled
-                  prefix_subscription::cancel(client, request_id, &context).await;
-                  return;
-                }
-              }
-            }
-          }
-        }
-      }
-      // Request/response request types: the handler writes its immediate response
-      // on this bi-stream. A response channel registered under the request id lets
-      // deferred responses (e.g. a SUBSCRIBE_OK fan-out produced elsewhere) land on
-      // this stream too. The loop then also forwards follow-ups (UNSUBSCRIBE,
-      // REQUEST_UPDATE, FETCH_CANCEL) until the peer closes the stream.
-      first @ (ControlMessage::Subscribe(_)
-      | ControlMessage::Publish(_)
-      | ControlMessage::Fetch(_)
-      | ControlMessage::PublishNamespace(_)
-      | ControlMessage::TrackStatus(_)) => {
-        let request_id = match &first {
-          ControlMessage::Subscribe(m) => m.request_id,
-          ControlMessage::Publish(m) => m.request_id,
-          ControlMessage::Fetch(m) => m.request_id,
-          ControlMessage::PublishNamespace(m) => m.request_id,
-          ControlMessage::TrackStatus(m) => m.request_id,
-          _ => unreachable!("matched above"),
-        };
-
-        // A request is cancelled by resetting/closing its stream, so remember the
-        // kind to run the right cleanup when the peer closes it.
-        let request_kind = match &first {
-          ControlMessage::Subscribe(_) => RequestStreamKind::Subscribe,
-          ControlMessage::Fetch(_) => RequestStreamKind::Fetch,
-          ControlMessage::PublishNamespace(_) => RequestStreamKind::PublishNamespace,
-          _ => RequestStreamKind::Other,
-        };
-
-        let (response_tx, mut response_rx) = tokio::sync::mpsc::unbounded_channel();
-        client
-          .register_response_sender(request_id, response_tx)
-          .await;
-
-        if let Err(e) = message_handlers::MessageHandler::handle(
-          client.clone(),
-          &mut stream_handler,
-          first,
-          context.clone(),
-          Some(request_id),
-        )
-        .await
-        {
-          client.unregister_response_sender(request_id).await;
-          Self::close_session(context, e, "Error handling request stream message");
-          return;
-        }
-
-        loop {
-          tokio::select! {
-            biased;
-            deferred = response_rx.recv() => {
-              match deferred {
-                Some(msg) => {
-                  if let Err(e) = stream_handler.send(&msg).await {
-                    warn!("Error writing response to request bi-stream: {:?}", e);
-                    break;
-                  }
-                }
-                None => break, // response channel closed
-              }
-            }
-            incoming = stream_handler.next_message() => {
-              match incoming {
-                Ok(follow_up) => {
-                  if let Err(e) = message_handlers::MessageHandler::handle(
-                    client.clone(),
-                    &mut stream_handler,
-                    follow_up,
-                    context.clone(),
-                    Some(request_id),
-                  )
-                  .await
-                  {
-                    client.unregister_response_sender(request_id).await;
-                    Self::close_session(context, e, "Error handling request stream follow-up");
-                    return;
-                  }
-                }
-                Err(_) => {
-                  // FIN or RESET: the requester cancelled by closing the stream.
-                  trace!("Request bi-stream closed by peer");
-                  match request_kind {
-                    RequestStreamKind::Subscribe => {
-                      message_handlers::subscribe_handler::cancel_subscription(
-                        client.clone(),
-                        request_id,
-                        &context,
-                      )
-                      .await;
-                    }
-                    RequestStreamKind::Fetch => {
-                      message_handlers::fetch_handler::cancel_fetch(client.clone(), request_id)
-                        .await;
-                    }
-                    RequestStreamKind::PublishNamespace => {
-                      message_handlers::publish_namespace_handler::cancel(
-                        client.clone(),
-                        request_id,
-                        &context,
-                      )
-                      .await;
-                    }
-                    RequestStreamKind::Other => {}
-                  }
-                  break;
-                }
-              }
-            }
-          }
-        }
-        client.unregister_response_sender(request_id).await;
-      }
-      _ => {
-        warn!(
-          "Unsupported message type {:?} on request bi-stream",
-          msg.get_type()
-        );
-        Self::close_session(
-          context,
-          TerminationCode::ProtocolViolation,
-          "Unsupported message type on request bi-stream",
-        );
       }
     }
   }
@@ -834,7 +530,7 @@ impl Session {
     // Remove client from all remaining tracks (as a subscriber)
     for track_lock in track_manager_cleanup.tracks.read().await.values() {
       let track = track_lock.read().await;
-      track.remove_subscription(context.connection_id).await;
+      track.remove_subscriptions(context.connection_id).await;
     }
 
     info!(

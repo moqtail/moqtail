@@ -33,6 +33,17 @@ pub enum CacheExpirationType {
   Tti,
 }
 
+/// How the relay picks the Track Alias it gives a subscriber. Either is allowed: a
+/// publisher may give concurrent subscriptions to one track the same alias or
+/// different ones, and subscribers have to handle both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum TrackAliasMode {
+  /// One alias per track: every subscription to it gets the track's relay id.
+  PerTrack,
+  /// A fresh alias for every subscription, unique within the subscriber's session.
+  PerSubscription,
+}
+
 /// Upper bound on `--io-sockets`. Past the core count extra sockets only add
 /// accept loops with nothing to do.
 const MAX_IO_SOCKETS: usize = 256;
@@ -109,6 +120,10 @@ pub struct Cli {
   /// runs out of streams and emits PUBLISH_SKIPPED. 0 = unlimited.
   #[arg(long, default_value_t = 0)]
   pub max_publish_streams: u64,
+
+  /// Track Alias given to subscribers: one per subscription, or one per track.
+  #[arg(long, value_enum, default_value = "per-subscription")]
+  pub track_alias_mode: TrackAliasMode,
 
   /// Simulate a bandwidth cap per subscriber connection (kbps). 0 = unlimited.
   /// Useful for testing QUIC stream priority scheduling without OS-level throttling.
@@ -202,6 +217,7 @@ pub struct AppConfig {
   pub max_active_requests: u64,
   pub max_subscriber_lag: u64,
   pub max_publish_streams: u64,
+  pub track_alias_mode: TrackAliasMode,
   /// 0 = unlimited. Non-zero caps relay writes to this many kbps per subscriber connection.
   pub write_kbps_limit: u64,
   /// Default GOAWAY redirect URI; the runtime value lives on `Server`.
@@ -263,6 +279,7 @@ impl AppConfig {
       max_active_requests: cli.max_active_requests,
       max_subscriber_lag: cli.max_subscriber_lag,
       max_publish_streams: cli.max_publish_streams,
+      track_alias_mode: cli.track_alias_mode,
       write_kbps_limit: cli.write_kbps_limit,
       redirect_uri: cli.redirect_uri,
       max_upstream_fetch_gaps: cli.max_upstream_fetch_gaps,
@@ -414,6 +431,19 @@ fn bind_dual_stack_udp_socket(port: u16, reuse_port: bool) -> Result<UdpSocket> 
 mod tests {
   use super::*;
 
+  #[test]
+  fn track_alias_mode_defaults_to_per_subscription() {
+    let config = AppConfig::from_cli(Cli::parse_from(["relay"]));
+    assert_eq!(config.track_alias_mode, TrackAliasMode::PerSubscription);
+
+    let config = AppConfig::from_cli(Cli::parse_from([
+      "relay",
+      "--track-alias-mode",
+      "per-track",
+    ]));
+    assert_eq!(config.track_alias_mode, TrackAliasMode::PerTrack);
+  }
+
   fn test_config(max_request_streams: u64) -> AppConfig {
     AppConfig {
       port: 4433,
@@ -434,6 +464,7 @@ mod tests {
       max_active_requests: 0,
       max_subscriber_lag: 0,
       max_publish_streams: 0,
+      track_alias_mode: TrackAliasMode::PerSubscription,
       write_kbps_limit: 0,
       redirect_uri: None,
       max_upstream_fetch_gaps: 10,

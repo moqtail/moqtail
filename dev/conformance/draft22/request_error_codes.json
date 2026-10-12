@@ -20,7 +20,6 @@
     { "name": "DOES_NOT_EXIST", "value": "0x10", "spec": "Section 12.3" },
     { "name": "INVALID_RANGE", "value": "0x11", "spec": "Section 12.3" },
     { "name": "MALFORMED_TRACK", "value": "0x12", "spec": "Section 12.3" },
-    { "name": "DUPLICATE_SUBSCRIPTION", "value": "0x19", "spec": "Section 10.6" },
     { "name": "UNINTERESTED", "value": "0x20", "spec": "Section 12.3" },
     { "name": "PREFIX_OVERLAP", "value": "0x30", "spec": "Section 12.3" },
     { "name": "NAMESPACE_TOO_LARGE", "value": "0x31", "spec": "Section 12.3" },

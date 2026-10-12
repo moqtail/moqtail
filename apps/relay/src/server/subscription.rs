@@ -18,7 +18,7 @@ use crate::server::config::AppConfig;
 use crate::server::message_handlers::fetch_handler::FetchStop;
 use crate::server::object_logger::ObjectLogger;
 use crate::server::ssts::AbrMessage;
-use crate::server::stream_id::StreamId;
+use crate::server::stream_id::{SendStreamKey, StreamId};
 use crate::server::track::ActiveSubgroupHeaderMap;
 use crate::server::track::TrackEvent;
 use crate::server::track_cache::TrackCache;
@@ -399,6 +399,10 @@ pub(crate) const DEFAULT_PUBLISHER_PRIORITY: u8 = 128;
 pub struct Subscription {
   pub request_id: u64,
   relay_track_id: u64,
+  /// The Track Alias this subscriber knows the track by on this subscription. It is
+  /// the track's relay id or one of the subscription's own, as `--track-alias-mode`
+  /// decides; `relay_track_id` stays the relay's internal name for the track.
+  pub track_alias: u64,
   pub full_track_name: FullTrackName,
   pub subscription_state: Arc<RwLock<SubscriptionState>>,
   subscriber: Arc<MOQTClient>,
@@ -453,6 +457,7 @@ const SSTS_GATE_GROUP_NONE: u64 = u64::MAX;
 impl Subscription {
   fn create_instance(
     relay_track_id: u64,
+    track_alias: u64,
     full_track_name: FullTrackName,
     request_id: u64,
     origin_message: SubscriptionOrigin,
@@ -466,6 +471,7 @@ impl Subscription {
   ) -> Self {
     Self {
       relay_track_id,
+      track_alias,
       full_track_name,
       request_id,
       subscription_state: Arc::new(RwLock::new(origin_message.into())),
@@ -559,6 +565,7 @@ impl Subscription {
 
   pub fn new(
     relay_track_id: u64,
+    track_alias: u64,
     full_track_name: FullTrackName,
     origin_message: SubscriptionOrigin,
     subscriber: Arc<MOQTClient>,
@@ -572,6 +579,7 @@ impl Subscription {
     let event_rx = Arc::new(Mutex::new(Some(event_rx)));
     let sub = Self::create_instance(
       relay_track_id,
+      track_alias,
       full_track_name,
       origin_message.request_id(),
       origin_message,
@@ -761,7 +769,7 @@ impl Subscription {
       let mut send_stream_last_object_ids = self.send_stream_last_object_ids.write().await;
       let ids = send_stream_last_object_ids
         .keys()
-        .cloned()
+        .map(|stream_id| self.new_send_stream_key(stream_id))
         .collect::<Vec<_>>();
       send_stream_last_object_ids.clear();
       ids
@@ -871,7 +879,7 @@ impl Subscription {
     self
       .subscriber
       .switch_context
-      .set_plan(self.full_track_name.clone(), plan)
+      .set_plan(self.request_id, plan)
       .await;
     self.pending_switch.store(true, Ordering::Relaxed);
   }
@@ -949,12 +957,12 @@ impl Subscription {
     let Some(weak) = self
       .subscriber
       .subscriptions
-      .get_subscription(&plan.suspending)
+      .get(plan.suspending_request_id)
       .await
     else {
       warn!(
-        "switch: no subscription left to suspend for {:?} on subscriber {}",
-        plan.suspending, self.client_connection_id
+        "switch: no subscription left to suspend for {:?} (request {}) on subscriber {}",
+        plan.suspending, plan.suspending_request_id, self.client_connection_id
       );
       return None;
     };
@@ -968,7 +976,7 @@ impl Subscription {
     let Some(plan) = self
       .subscriber
       .switch_context
-      .take_plan(&self.full_track_name)
+      .take_plan(self.request_id)
       .await
     else {
       return;
@@ -1100,7 +1108,10 @@ impl Subscription {
       map.drain().map(|(stream_id, _)| stream_id).collect()
     };
     for stream_id in stream_ids {
-      self.subscriber.reset_stream(&stream_id, code).await;
+      self
+        .subscriber
+        .reset_stream(&self.new_send_stream_key(&stream_id), code)
+        .await;
     }
   }
 
@@ -1215,7 +1226,7 @@ impl Subscription {
         stream_id,
         header_info,
       } => {
-        object.track_alias = self.relay_track_id;
+        object.track_alias = self.track_alias;
 
         // SSTS: when this track belongs to a switching set, only the track
         // the allocation picked for this group is forwarded. The answer holds
@@ -1301,7 +1312,7 @@ impl Subscription {
           && let Some(plan) = self
             .subscriber
             .switch_context
-            .get_plan(&self.full_track_name)
+            .get_plan(self.request_id)
             .await
           && let Some(suspending) = self.find_suspending(&plan).await
         {
@@ -1416,7 +1427,11 @@ impl Subscription {
             None
           }
         } else {
-          match self.subscriber.get_stream(&stream_id).await {
+          match self
+            .subscriber
+            .get_stream(&self.new_send_stream_key(&stream_id))
+            .await
+          {
             Some(s) => Some(s),
             None => {
               // New subscriber joined mid-subgroup. Look up the original header
@@ -1560,7 +1575,7 @@ impl Subscription {
         }
 
         let mut norm_object = object.clone();
-        norm_object.track_alias = self.relay_track_id;
+        norm_object.track_alias = self.track_alias;
 
         match norm_object.serialize() {
           Ok(serialized_bytes) => {
@@ -1648,7 +1663,11 @@ impl Subscription {
 
       let send_stream = match self
         .subscriber
-        .open_stream(&stream_id, header_payload, priority)
+        .open_stream(
+          &self.new_send_stream_key(&stream_id),
+          header_payload,
+          priority,
+        )
         .await
       {
         Ok(send_stream) => send_stream,
@@ -1725,7 +1744,7 @@ impl Subscription {
       self
         .subscriber
         .write_stream_object(
-          stream_id,
+          &self.new_send_stream_key(stream_id),
           sub_object.object_id,
           object_bytes,
           Some(send_stream.clone()),
@@ -1765,7 +1784,7 @@ impl Subscription {
     // the main subscription event loop. This is critical for real-time media streaming
     // where blocking operations can disrupt video flow timing (25fps = ~40ms intervals)
     let subscriber = self.subscriber.clone();
-    let stream_id = stream_id.clone();
+    let stream_id = self.new_send_stream_key(stream_id);
     let connection_id = self.client_connection_id;
     let relay_track_id = self.relay_track_id;
 
@@ -1803,7 +1822,7 @@ impl Subscription {
   async fn get_header_payload(&self, header_info: &HeaderInfo) -> Result<Bytes> {
     let connection_id = self.client_connection_id;
     match header_info {
-      HeaderInfo::Subgroup { header } => header.serialize(Some(self.relay_track_id)).map_err(|e| {
+      HeaderInfo::Subgroup { header } => header.serialize(Some(self.track_alias)).map_err(|e| {
         error!(
           "Error serializing subgroup header: {:?} subscriber={} relay_track_id={}",
           e, connection_id, self.relay_track_id
@@ -1825,6 +1844,12 @@ impl Subscription {
 
   fn get_stream_id(&self, header_info: &HeaderInfo) -> StreamId {
     utils::build_stream_id(self.relay_track_id, header_info)
+  }
+
+  /// This subscription's send streams are keyed by using request_id
+  /// and stream_id to avoid stream naming collisions in the client
+  fn new_send_stream_key(&self, stream_id: &StreamId) -> SendStreamKey {
+    SendStreamKey::new(self.request_id, stream_id.clone())
   }
 
   /// Send PublishDone message to this subscriber

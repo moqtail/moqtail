@@ -215,9 +215,8 @@ pub async fn handle(
             || track_arc
               .read()
               .await
-              .get_subscription(subscriber.connection_id)
+              .has_any_subscription(subscriber.connection_id)
               .await
-              .is_some()
           {
             continue;
           }
@@ -264,7 +263,7 @@ pub async fn handle(
         }
         None => publisher_forwards,
       };
-      // PUBLISH is answered by REQUEST_OK (PUBLISH_OK); no Track Properties.
+      // PUBLISH is answered by REQUEST_OK; no Track Properties.
       // SUBSCRIBER_PRIORITY is omitted so the publisher uses the default of 128;
       // the relay has no reason to rank a pushed track above everything else.
       // SUBSCRIPTION_FILTER is omitted so the subscription is unfiltered: a relay
@@ -519,7 +518,7 @@ pub(crate) async fn push_track_to_subscriber(
   downstream.request_id = relay_request_id;
   {
     let track = track_arc.read().await;
-    downstream.track_alias = track.relay_track_id;
+    downstream.track_alias = subscriber.assign_track_alias(track.relay_track_id);
     downstream.parameters = parameters::downstream_publish(
       &publish.parameters,
       subscribe_tracks_params,
@@ -529,7 +528,7 @@ pub(crate) async fn push_track_to_subscriber(
 
   let track = track_arc.read().await;
   if let Err(e) = track
-    .add_subscription(subscriber.clone(), downstream.clone(), false)
+    .add_subscription(subscriber.clone(), downstream.clone())
     .await
   {
     warn!(
@@ -537,7 +536,9 @@ pub(crate) async fn push_track_to_subscriber(
       subscriber.connection_id, e
     );
   }
-  let subscription = track.get_subscription(subscriber.connection_id).await;
+  let subscription = track
+    .get_subscription(&(subscriber.connection_id, downstream.request_id))
+    .await;
   drop(track);
 
   // The subscription this just created is what wants Objects, so the publisher has

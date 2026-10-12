@@ -111,6 +111,31 @@ impl SubgroupHeader {
     }
   }
 
+  /// The header for a stream carrying this subgroup from some object after its first,
+  /// e.g. a relay opening a downstream stream mid-subgroup. Such a stream cannot claim
+  /// FIRST_OBJECT, and a Subgroup ID taken from the first Object ID would be read from
+  /// the wrong object, so a resolved ID is stated explicitly instead. All other bits are
+  /// kept. A first-object-ID header whose ID is not yet resolved keeps its mode.
+  pub fn without_first_object(&self) -> Self {
+    let header_type = self.header_type;
+    let subgroup_id_mode =
+      if header_type.subgroup_id_is_first_object_id() && self.subgroup_id.is_some() {
+        2
+      } else {
+        (header_type.value() & SubgroupHeaderType::SUBGROUP_ID_MODE_MASK) >> 1
+      };
+    Self {
+      header_type: SubgroupHeaderType::from_properties(
+        header_type.has_properties(),
+        subgroup_id_mode,
+        header_type.contains_end_of_group(),
+        header_type.has_default_priority(),
+        false,
+      ),
+      ..*self
+    }
+  }
+
   pub fn serialize(&self, track_alias: Option<u64>) -> Result<Bytes, ParseError> {
     let mut buf = BytesMut::new();
 
@@ -225,6 +250,62 @@ mod tests {
         .header_type
         .is_first_object()
     );
+  }
+
+  #[test]
+  fn without_first_object_clears_the_bit_in_each_mode() {
+    // (header, expected type after) for every SUBGROUP_ID_MODE, with all other bits set.
+    let cases = [
+      (
+        SubgroupHeader::new_fixed_zero_id(87, 9, None, true, true, true),
+        0x39,
+      ),
+      (
+        SubgroupHeader::new_with_explicit_id(87, 9, 11, None, true, true, true),
+        0x3D,
+      ),
+    ];
+    for (header, expected) in cases {
+      let mid = header.without_first_object();
+      assert_eq!(mid.header_type.value(), expected);
+      assert_eq!(mid.subgroup_id, header.subgroup_id);
+      assert_eq!(mid.publisher_priority, header.publisher_priority);
+      let mut buf = mid.serialize(None).unwrap();
+      assert_eq!(SubgroupHeader::deserialize(&mut buf).unwrap(), mid);
+    }
+  }
+
+  #[test]
+  fn without_first_object_states_a_resolved_first_object_id() {
+    // As the receiving side leaves it: mode first-object-ID, ID resolved from object 5.
+    let mut header = SubgroupHeader::new_first_object_id(87, 9, Some(7), true, true, true);
+    header.subgroup_id = Some(5);
+    assert_eq!(header.header_type.value(), 0x5B);
+
+    let mid = header.without_first_object();
+    assert_eq!(mid.header_type.value(), 0x1D);
+    assert!(mid.header_type.has_explicit_subgroup_id());
+    assert!(!mid.header_type.is_first_object());
+    assert_eq!(mid.subgroup_id, Some(5));
+    assert_eq!(mid.publisher_priority, Some(7));
+    let mut buf = mid.serialize(Some(3)).unwrap();
+    let parsed = SubgroupHeader::deserialize(&mut buf).unwrap();
+    assert_eq!(parsed.subgroup_id, Some(5));
+    assert_eq!(parsed.track_alias, 3);
+    assert!(!buf.has_remaining());
+
+    // Default priority and no properties carry through the mode change too.
+    let mut header = SubgroupHeader::new_first_object_id(87, 9, None, false, false, false);
+    header.subgroup_id = Some(0);
+    assert_eq!(header.without_first_object().header_type.value(), 0x34);
+  }
+
+  #[test]
+  fn without_first_object_keeps_an_unresolved_first_object_id_mode() {
+    let header = SubgroupHeader::new_first_object_id(87, 9, Some(7), false, false, true);
+    let mid = header.without_first_object();
+    assert_eq!(mid.header_type.value(), 0x12);
+    assert_eq!(mid.subgroup_id, None);
   }
 
   #[test]

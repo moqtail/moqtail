@@ -79,6 +79,11 @@ struct TrackState {
   /// What the Range Filters let through for this track, once its PUBLISH has said
   /// what its Track Properties are. Empty when there are no filters.
   filter: CombinedFilter,
+  /// The Request ID of the PUBLISH that pushed it, which names its fill stream.
+  request_id: Option<u64>,
+  /// Objects its fill delivered, kept out of `stats`: they interleave with the
+  /// live ones, which would read as gaps.
+  fill_received: u64,
 }
 
 impl TrackState {
@@ -87,6 +92,8 @@ impl TrackState {
       name,
       stats: ReceptionStats::new(),
       filter: CombinedFilter::default(),
+      request_id: None,
+      fill_received: 0,
     }
   }
 }
@@ -198,9 +205,10 @@ pub async fn run(moq: MoqConnection, config: PrefixSubscribeConfig) -> Result<()
     }
     for state in tracks.values() {
       info!(
-        "{label}: {} objects received={}, gaps={}, filter_violations={}",
+        "{label}: {} objects received={}, fill={}, gaps={}, filter_violations={}",
         state.name,
         state.stats.total_received,
+        state.fill_received,
         state.stats.sequence_gaps,
         state.stats.filter_violations
       );
@@ -414,6 +422,7 @@ fn accept_pushed_publishes(
                 .or_insert_with(|| TrackState::new(name.clone()));
               state.name = name.clone();
               state.filter = filter;
+              state.request_id = Some(m.request_id);
             }
             if refuse {
               let reason = ReasonPhrase::try_new("not interested".to_string())
@@ -506,14 +515,30 @@ fn receive_objects(connection: Arc<TransportConnection>, tracks: Tracks) {
             return;
           };
 
-          // A fill's objects carry no track alias, so they are logged on their own
-          // rather than counted into a track's stats.
+          // A fill's objects carry no track alias: the stream is named by the
+          // Request ID of the PUBLISH that pushed the track.
           if let Some(HeaderInfo::Fetch { header, .. }) = stream_handler.get_header_info().await {
             fill_objects += 1;
-            info!(
-              "SUBSCRIBE_TRACKS: fill object {fill_objects} for PUBLISH request {}: group={}, object={}",
-              header.request_id, obj.location.group, obj.location.object
-            );
+            let name = {
+              let mut tracks = tracks.lock().unwrap();
+              tracks
+                .values_mut()
+                .find(|state| state.request_id == Some(header.request_id))
+                .map(|state| {
+                  state.fill_received += 1;
+                  state.name.clone()
+                })
+            };
+            match name {
+              Some(name) => info!(
+                "SUBSCRIBE_TRACKS: fill object {fill_objects}: track={name} group={}, object={}",
+                obj.location.group, obj.location.object
+              ),
+              None => info!(
+                "SUBSCRIBE_TRACKS: fill object {fill_objects} for unknown PUBLISH request {}: group={}, object={}",
+                header.request_id, obj.location.group, obj.location.object
+              ),
+            }
             handler = next_handler;
             continue;
           }

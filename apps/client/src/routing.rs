@@ -24,7 +24,7 @@ use moqtail::model::common::location::Location;
 use moqtail::model::parameter::combined_filter::{CombinedFilter, ObjectFields};
 use moqtail::model::parameter::location_filter::LocationFilter;
 use moqtail::model::parameter::message_parameter::MessageParameter;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 /// How long the filter a REQUEST_UPDATE replaced still counts. Objects already in
@@ -117,6 +117,9 @@ pub struct Route {
 #[derive(Default)]
 pub struct Router {
   subscriptions: Vec<Subscription>,
+  /// The subscription each REQUEST_UPDATE sent on it belongs to, by the update's
+  /// Request ID: a fill an update asks for arrives named by that ID.
+  updates: HashMap<u64, u64>,
 }
 
 impl Router {
@@ -134,6 +137,12 @@ impl Router {
       filter: CombinedFilter::default(),
       replaced: Vec::new(),
     });
+  }
+
+  /// Records that `update_request_id` names a REQUEST_UPDATE of the subscription
+  /// `request_id`.
+  pub fn add_update(&mut self, update_request_id: u64, request_id: u64) {
+    self.updates.insert(update_request_id, request_id);
   }
 
   fn subscription_mut(&mut self, request_id: u64) -> Option<&mut Subscription> {
@@ -223,6 +232,23 @@ impl Router {
     }
     route
   }
+
+  /// Hands an object from a fill fetch stream to the subscription that asked for
+  /// the fill. The stream is named by the Request ID of the SUBSCRIBE or
+  /// REQUEST_UPDATE that asked, and its objects carry no Track Alias, so the alias
+  /// the publisher chose for the subscription plays no part.
+  pub fn route_fill(&mut self, request_id: u64, location: &Location) -> Route {
+    let owner = self.updates.get(&request_id).copied().unwrap_or(request_id);
+    let mut route = Route::default();
+    if let Some(subscription) = self.subscription_mut(owner) {
+      if subscription.seen.insert((location.group, location.object)) {
+        route.owners.push(subscription.request_id);
+      } else {
+        route.duplicates += 1;
+      }
+    }
+    route
+  }
 }
 
 #[cfg(test)]
@@ -293,6 +319,27 @@ mod tests {
     router.add(0, "a".into(), 7, from(0));
 
     assert_eq!(router.route(8, &Location::new(0, 0)), Route::default());
+  }
+
+  #[test]
+  fn a_fill_routes_by_request_id_whatever_the_alias() {
+    let mut router = Router::new();
+    router.add(0, "a".into(), 79, from(3));
+    router.add(2, "b".into(), 80, from(0));
+    router.add_update(10, 0);
+
+    // Fill objects come out of the stream reader with no alias of their own.
+    assert_eq!(router.route(0, &Location::new(1, 0)), Route::default());
+    assert_eq!(router.route_fill(0, &Location::new(1, 0)).owners, vec![0]);
+    assert_eq!(router.route_fill(10, &Location::new(1, 1)).owners, vec![0]);
+    assert_eq!(router.route_fill(2, &Location::new(1, 0)).owners, vec![2]);
+
+    // The live copy of an object the fill delivered is a duplicate.
+    let live = router.route(79, &Location::new(1, 0));
+    assert!(live.owners.is_empty());
+    assert_eq!(live.duplicates, 1);
+
+    assert_eq!(router.route_fill(4, &Location::new(1, 0)), Route::default());
   }
 
   fn filter(filter: LocationFilter) -> MessageParameter {

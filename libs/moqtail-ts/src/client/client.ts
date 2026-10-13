@@ -1497,15 +1497,13 @@ export class MOQtailClient {
    * - Result stream is finite; reader close occurs automatically when last object delivered.
    * - Use {@link MOQtailClient.fetchCancel} only for early termination (not yet fully implemented: see TODO in code).
    *
-   * @example Standalone window
+   * @example Groups 10 through 12, inclusive
    * ```ts
    * const r = await client.fetch({
+   *   fullTrackName,
    *   priority: 64,
    *   groupOrder: GroupOrder.Original,
-   *   typeAndProps: {
-   *     type: FetchType.Standalone,
-   *     props: { fullTrackName, startLocation, endLocation }
-   *   }
+   *   locationFilter: new LocationFilter(LocationFilterType.AbsoluteStartGroupEnd, 10n, 0n, 12n)
    * })
    * if (!(r instanceof RequestError)) {
    *   for await (const obj of r.stream as any) {
@@ -1514,23 +1512,21 @@ export class MOQtailClient {
    * }
    * ```
    *
-   * @example Relative to live subscription (e.g. last 5 groups)
+   * @example The last 5 groups, counting the current one
    * ```ts
-   * const sub = await client.subscribe({ fullTrackName, locationFilter: new LocationFilter(LocationFilterType.NextObject), forward: true, groupOrder: GroupOrder.Original, priority: 0 })
-   * if (!(sub instanceof RequestError)) {
-   *   const slice = await client.fetch({
-   *     priority: 32,
-   *     groupOrder: GroupOrder.Original,
-   *     typeAndProps: { type: FetchType.Relative, props: { joiningRequestId: sub.requestId, joiningStart: 0n } }
-   *   })
-   * }
+   * const slice = await client.fetch({
+   *   fullTrackName,
+   *   priority: 32,
+   *   groupOrder: GroupOrder.Original,
+   *   locationFilter: new LocationFilter(LocationFilterType.RelativeStart, 5n)
+   * })
    * ```
    */
   async fetch(args: FetchOptions): Promise<RequestError | { requestId: bigint; stream: ReadableStream<MoqtObject> }> {
     this.#ensureActive()
     assertWithinFilterRangeLimit(args.parameters ?? [], this.peerMaxFilterRanges, 'MOQtailClient.fetch')
     try {
-      const { priority, groupOrder, fullTrackName, startLocation, endLocation, parameters } = args
+      const { priority, groupOrder, fullTrackName, locationFilter, parameters } = args
       if (priority < 0 || priority > 255)
         throw new ProtocolViolationError(
           'MOQtailClient.fetch',
@@ -1538,6 +1534,7 @@ export class MOQtailClient {
         )
       const params: MessageParameter[] = [
         new SubscriberPriority(priority),
+        ...(locationFilter ? [locationFilter] : []),
         ...(groupOrder !== GroupOrder.Original ? [new GroupOrderParam(groupOrder)] : []),
         ...(parameters ?? []),
       ]
@@ -1550,7 +1547,7 @@ export class MOQtailClient {
         'current #dontUseRequestId:',
         this.#dontUseRequestId,
       )
-      const msg = new Fetch(requestId, fullTrackName, startLocation, endLocation, params)
+      const msg = new Fetch(requestId, fullTrackName, params)
       const request = new FetchRequest(msg)
       logger.log('MOQtailClient', 'fetch: full fetch message:', {
         requestId: msg.requestId,
@@ -1598,7 +1595,7 @@ export class MOQtailClient {
    *
    * @example Cancel shortly after starting
    * ```ts
-   * const r = await client.fetch({ priority: 32, groupOrder: GroupOrder.Original, typeAndProps: { type: FetchType.Standalone, props: { fullTrackName, startLocation, endLocation } } })
+   * const r = await client.fetch({ fullTrackName, priority: 32, groupOrder: GroupOrder.Original, locationFilter })
    * if (!(r instanceof RequestError)) {
    *   // user navigated away
    *   await client.fetchCancel(r.requestId)
@@ -2753,12 +2750,14 @@ if (import.meta.vitest) {
         priority: 0,
         groupOrder: GroupOrder.Original,
         fullTrackName: ftn,
-        startLocation: new Location(0n, 0n),
-        endLocation: new Location(1n, 0n),
+        locationFilter: new LocationFilter(LocationFilterType.AbsoluteStartGroupEnd, 0n, 0n, 1n),
       })
       const fetchStream = await openedStream(transport, 1)
       const fetchMsg = fetchStream.messages[0]
       expect(fetchMsg).toBeInstanceOf(Fetch)
+      expect((fetchMsg as Fetch).locationFilter).toEqual(
+        new LocationFilter(LocationFilterType.AbsoluteStartGroupEnd, 0n, 0n, 1n),
+      )
       fetchStream.respond(new FetchOk(false, new Location(1n, 0n), []))
       expect(await fetching).toMatchObject({ requestId: (fetchMsg as Fetch).requestId })
 
@@ -3375,8 +3374,7 @@ if (import.meta.vitest) {
             priority: 0,
             groupOrder: GroupOrder.Original,
             fullTrackName: ftn,
-            startLocation: new Location(0n, 0n),
-            endLocation: new Location(1n, 0n),
+            locationFilter: new LocationFilter(LocationFilterType.AbsoluteStartGroupEnd, 0n, 0n, 1n),
             parameters: [twoRanges()],
           }),
         ).rejects.toThrow(InvalidFilterError)
@@ -3635,8 +3633,7 @@ if (import.meta.vitest) {
         priority: 0,
         groupOrder: GroupOrder.Original,
         fullTrackName: ftn,
-        startLocation: new Location(0n, 0n),
-        endLocation: new Location(1n, 0n),
+        locationFilter: new LocationFilter(LocationFilterType.AbsoluteStartGroupEnd, 0n, 0n, 1n),
       })
       const fetchStream = await openedStream(transport, 0)
       fetchStream.respond(new FetchOk(false, new Location(1n, 0n), []))

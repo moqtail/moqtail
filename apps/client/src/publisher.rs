@@ -431,56 +431,29 @@ async fn serve_fetch(
   config: &DataConfig,
   published: &Published,
 ) {
-  let Some(largest) = published.largest().await else {
+  let filter = fetch.get_location_filter();
+  let Some((start, end)) = filter.fetch_range(published.largest().await) else {
     info!(
-      "FETCH for {:?} before anything was published",
-      fetch.track_name
+      "FETCH {} for {:?} selects nothing published: {:?}",
+      fetch.request_id, fetch.track_name, filter
     );
     reject_fetch(
       request_stream,
       RequestErrorCode::InvalidRange,
-      "nothing published yet",
+      "nothing published in the requested range",
     )
     .await;
     return;
-  };
-
-  if fetch.start_location > largest {
-    info!(
-      "FETCH start {:?} is past the last published Object {:?}",
-      fetch.start_location, largest
-    );
-    reject_fetch(
-      request_stream,
-      RequestErrorCode::InvalidRange,
-      "start beyond published data",
-    )
-    .await;
-    return;
-  }
-
-  // End Location is the last Object plus one, and 0 in the Object field means the whole
-  // group.
-  let requested_end = if fetch.end_location.object == 0 {
-    Location::new(fetch.end_location.group, u64::MAX)
-  } else {
-    fetch.end_location.clone()
-  };
-  let available_end = Location::new(largest.group, largest.object + 1);
-  let end_location = if requested_end > available_end {
-    available_end
-  } else {
-    fetch.end_location.clone()
   };
 
   info!(
-    "Serving FETCH {} for {:?}: requested up to {:?}, answering up to {:?}",
-    fetch.request_id, fetch.track_name, fetch.end_location, end_location
+    "Serving FETCH {} for {:?}: {:?} answered as {:?} through {:?}",
+    fetch.request_id, fetch.track_name, filter, start, end
   );
 
   let ok = FetchOk::new(
     false,
-    end_location.clone(),
+    end.clone(),
     vec![],
     config.content.track_properties.clone(),
   );
@@ -489,15 +462,7 @@ async fn serve_fetch(
     return;
   }
 
-  if let Err(e) = send_fetch_objects(
-    connection,
-    &fetch,
-    &fetch.start_location,
-    &end_location,
-    config,
-  )
-  .await
-  {
+  if let Err(e) = send_fetch_objects(connection, &fetch, &start, &end, config).await {
     error!("Failed to serve FETCH objects: {:?}", e);
   }
 }
@@ -532,7 +497,7 @@ async fn reject_fetch(
   }
 }
 
-/// Regenerates the Objects in `[start, end)` onto a fetch stream. The payloads are
+/// Regenerates the Objects in `[start, end]` onto a fetch stream. The payloads are
 /// synthetic and reproducible, so a fetch returns the same bytes the live delivery did.
 async fn send_fetch_objects(
   connection: &Arc<TransportConnection>,
@@ -558,7 +523,7 @@ async fn send_fetch_objects(
     for i in 0..config.objects_per_group {
       let object_id = i * config.object_id_step;
       let location = Location::new(group_id, object_id);
-      if location < *start || location >= *end {
+      if location < *start || location > *end {
         continue;
       }
 

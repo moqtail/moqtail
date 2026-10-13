@@ -78,12 +78,14 @@ cargo run --bin client -- --command <COMMAND> [OPTIONS]
 
 ## Fetch Options
 
+The range is sent as an `absolute-range` Location Filter.
+
 | Option           | Default | Description                                          |
 | ---------------- | ------- | ---------------------------------------------------- |
 | `--start-group`  | `1`     | Start group ID                                       |
 | `--start-object` | `0`     | Start object ID                                      |
 | `--end-group`    | `5`     | End group ID                                         |
-| `--end-object`   | `3`     | End object ID                                        |
+| `--end-object`   | `3`     | Last object ID of the end group, inclusive           |
 | `--cancel-after` | `0`     | Cancel the fetch after receiving N objects (0 = off) |
 
 ## Examples

@@ -31,6 +31,7 @@ use moqtail::model::error::RequestErrorCode;
 use moqtail::model::error::StreamResetCode;
 use moqtail::model::error::TerminationCode;
 use moqtail::model::parameter::combined_filter::{CombinedFilter, ObjectFields};
+use moqtail::model::parameter::location_filter::LocationFilter;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use moqtail::transport::data_stream_handler::FetchRequest;
 use std::sync::Arc;
@@ -39,7 +40,7 @@ use tracing::{error, info, trace, warn};
 
 const UPSTREAM_FETCH_CHANNEL_CAPACITY: usize = 64;
 
-/// Why a standalone FETCH range cannot be served as requested.
+/// Why a FETCH range cannot be served as requested.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FetchRangeError {
   /// No Objects published, or Start Location beyond the Largest Object.
@@ -48,48 +49,41 @@ pub(crate) enum FetchRangeError {
   ProtocolViolation,
 }
 
-/// Resolve a standalone FETCH's requested range against the track's Largest
-/// Object (`largest` is None when the track has no published Objects). Returns
-/// the End Location to advertise in FETCH_OK, clamped to published data when the
-/// request overruns it.
+/// Resolve a FETCH's Location Filter against the track's Largest Object (`largest`
+/// is None when the track has no published Objects). Returns the first and last
+/// Locations to send; the last is also the End Location for FETCH_OK.
 ///
-/// End Location uses the FETCH encoding: the last Object plus 1, or 0 to mean
-/// the entire Group.
-pub(crate) fn resolve_standalone_fetch_range(
-  start: Location,
-  requested_end: Location,
+/// A relative start counts back from the Largest Object. Without a filter the
+/// range starts at {0, 0}, and a filter without an end stops at the Largest Object.
+/// A Group End is all of that group, so its Object is `u64::MAX`.
+pub(crate) fn resolve_fetch_range(
+  filter: &LocationFilter,
   largest: Option<Location>,
-) -> Result<Location, FetchRangeError> {
-  // 0 in the Object field means "the entire group", i.e. the largest possible
-  // end within that group.
-  let effective_end = if requested_end.object == 0 {
-    Location::new(requested_end.group, u64::MAX)
-  } else {
-    requested_end.clone()
-  };
-
-  // End Location MUST be the same or larger than Start Location.
-  if effective_end < start {
+) -> Result<(Location, Location), FetchRangeError> {
+  // Only the absolute filters have an end, and their start does not depend on the
+  // Largest Object, so a filter that ends before it starts is caught here even when
+  // nothing is known about the track.
+  if let (Some(start), Some(end)) = (filter.start_location(None), filter.end_location())
+    && end < start
+  {
     return Err(FetchRangeError::ProtocolViolation);
   }
+  // Empty when nothing is published or the start is past the Largest Object.
+  filter
+    .fetch_range(largest)
+    .ok_or(FetchRangeError::InvalidRange)
+}
 
-  // No Objects published, or Start beyond the Largest Object: INVALID_RANGE.
-  let Some(largest) = largest else {
-    return Err(FetchRangeError::InvalidRange);
-  };
-  if start > largest {
-    return Err(FetchRangeError::InvalidRange);
+/// The range to serve when the Largest Object is unknown (the relay holds nothing
+/// and the publisher did not answer) but a publisher could still deliver Objects:
+/// exactly what was asked for. That is only possible when the filter gives both a
+/// start and an end; any other filter needs the Largest Object to mean anything.
+fn unresolved_fetch_range(filter: &LocationFilter) -> Option<(Location, Location)> {
+  match filter {
+    LocationFilter::AbsoluteStartGroupEnd { start, .. }
+    | LocationFilter::AbsoluteRange { start, .. } => Some((start.clone(), filter.end_location()?)),
+    _ => None,
   }
-
-  // Clamp End Location to {Largest.Group, Largest.Object + 1} when the request
-  // extends beyond published data.
-  let clamped_end = Location::new(largest.group, largest.object + 1);
-  let end_location = if effective_end > clamped_end {
-    clamped_end
-  } else {
-    requested_end
-  };
-  Ok(end_location)
 }
 
 /// An upstream FETCH issued before FETCH_OK to learn the End Location. It covers the
@@ -113,22 +107,22 @@ type UpstreamFetch = (
   oneshot::Receiver<UpstreamFetchResponse>,
 );
 
-/// Whether the relay can answer a standalone FETCH's End Location from what it holds.
+/// Whether the relay can answer a FETCH's End Location from what it holds.
 ///
-/// It can when the request ends at or before what it has seen: the clamp cannot bind,
-/// so anything the publisher knows beyond that cannot change the answer. Past that
-/// point local state would understate the range whenever the relay is behind, and a
-/// relay must withhold FETCH_OK until it knows rather than answer early and short.
+/// It can when the request ends at or before what it has seen: the end cannot be cut
+/// back, so anything the publisher knows beyond that cannot change the answer. Past
+/// that point local state would understate the range whenever the relay is behind, and
+/// a relay must withhold FETCH_OK until it knows rather than answer early and short.
 pub(crate) fn local_state_answers(known: &Option<Location>, requested_end: &Location) -> bool {
-  match known {
-    Some(known) => requested_end <= &Location::new(known.group, known.object + 1),
-    None => false,
-  }
+  known.as_ref().is_some_and(|known| requested_end <= known)
 }
 
 /// Issues the upstream FETCH for the requested range and waits for its FETCH_OK, so the
-/// relay learns the End Location before answering. Updates `largest` from the answer and
-/// returns the fetch for the delivery loop to read the Objects from.
+/// relay learns the End Location before answering. Updates `largest` from the answer
+/// and returns the fetch for the delivery loop to read the Objects from.
+///
+/// The downstream filter is sent upstream unchanged, so a relative start or a missing
+/// end is resolved against the publisher's Largest Object, not the relay's.
 ///
 /// `None` when there is no publisher to ask, or it declines or stays silent; the caller
 /// then answers from local state, which is all the relay can honestly claim.
@@ -136,13 +130,12 @@ async fn resolve_range_upstream(
   client: &Arc<MOQTClient>,
   context: &Arc<SessionContext>,
   track: &Arc<tokio::sync::RwLock<crate::server::track::Track>>,
-  start_group: u64,
-  end_group: u64,
+  filter: LocationFilter,
   largest: &mut Option<Location>,
 ) -> Option<PendingUpstreamFetch> {
   let (relay_request_id, publisher, rx, response_rx) = {
     let track_read = track.read().await;
-    send_upstream_fetch_for_range(client, context, &track_read, start_group, end_group).await?
+    send_upstream_fetch_for_range(client, context, &track_read, filter).await?
   };
 
   let response =
@@ -160,15 +153,10 @@ async fn resolve_range_upstream(
 
   match response {
     UpstreamFetchResponse::Accepted { end_location } => {
-      // FETCH_OK's End Location is the last Object plus one, where Largest Object is
-      // the last Object itself.
-      let upstream_largest =
-        Location::new(end_location.group, end_location.object.saturating_sub(1));
-      if largest
-        .as_ref()
-        .is_none_or(|known| *known < upstream_largest)
-      {
-        *largest = Some(upstream_largest);
+      // The publisher will send up to its End Location, so the track reaches at least
+      // that far.
+      if largest.as_ref().is_none_or(|known| *known < end_location) {
+        *largest = Some(end_location);
       }
       Some(PendingUpstreamFetch {
         relay_request_id,
@@ -265,8 +253,8 @@ pub async fn handle(
 
       let full_track_name = fetch.get_full_track_name();
       let track = context.track_manager.get_track(&full_track_name).await;
-      let start_location = fetch.start_location.clone();
-      let requested_end = fetch.end_location.clone();
+      let location_filter = fetch.get_location_filter().clone();
+      let requested_end = location_filter.end_location();
 
       // TODO: send fetch message to the publisher
       if track.is_none() {
@@ -283,8 +271,8 @@ pub async fn handle(
       }
 
       info!(
-        "handle_fetch_messages | Fetching objects from {:?} to {:?}",
-        start_location, requested_end
+        "handle_fetch_messages | Fetching objects for {:?}",
+        location_filter
       );
 
       let track = track.unwrap();
@@ -307,47 +295,51 @@ pub async fn handle(
       // fetched again.
       let mut pending_upstream: Option<PendingUpstreamFetch> = None;
 
-      let end_location = {
-        let start = start_location.clone();
-        let requested_end = requested_end.clone();
+      let (start_location, end_location) = {
         let mut largest = track.read().await.largest_object().await;
 
-        // A relay must not answer until it knows the End Location. Where the request
-        // runs past what the relay has seen, the publisher is asked -- with the upstream
-        // FETCH the missing groups need anyway, whose FETCH_OK carries the range it
-        // will really serve.
-        if !local_state_answers(&largest, &requested_end)
+        // A relay must not answer until it knows the End Location. It can answer on its
+        // own only when the request has an end the relay has already seen. Otherwise
+        // the request ends past what the relay holds, or has no end, or starts relative
+        // to the Largest Object, and the relay may be behind the publisher on all of
+        // these. Then the publisher is asked, with the upstream FETCH the missing
+        // groups need anyway; its FETCH_OK says how far the range really goes.
+        let answered_locally = requested_end
+          .as_ref()
+          .is_some_and(|end| local_state_answers(&largest, end));
+        if !answered_locally
           && let Some(pending) = resolve_range_upstream(
             &client,
             &context,
             &track,
-            start.group,
-            requested_end.group,
+            location_filter.clone(),
             &mut largest,
           )
           .await
         {
           pending_upstream = Some(pending);
         }
-        match resolve_standalone_fetch_range(start.clone(), requested_end.clone(), largest.clone())
-        {
-          Ok(clamped) => clamped,
+        match resolve_fetch_range(&location_filter, largest.clone()) {
+          Ok(range) => range,
           Err(FetchRangeError::ProtocolViolation) => {
             warn!(
-              "FETCH request {}: End {:?} precedes Start {:?}; closing session (PROTOCOL_VIOLATION)",
-              request_id, requested_end, start
+              "FETCH request {}: End precedes Start in {:?}; closing session (PROTOCOL_VIOLATION)",
+              request_id, location_filter
             );
             return Err(TerminationCode::ProtocolViolation);
           }
           Err(FetchRangeError::InvalidRange) => {
             // Only authoritative when there is no upstream publisher that could
             // still serve the range; otherwise fall through to upstream fetch.
-            if has_upstream_publisher(&context, &track).await {
-              requested_end.clone()
+            let fallback = unresolved_fetch_range(&location_filter);
+            if let Some(range) = fallback
+              && has_upstream_publisher(&context, &track).await
+            {
+              range
             } else {
               warn!(
-                "FETCH request {}: INVALID_RANGE (start {:?}, end {:?}, largest {:?})",
-                request_id, start, requested_end, largest
+                "FETCH request {}: INVALID_RANGE ({:?}, largest {:?})",
+                request_id, location_filter, largest
               );
               send_request_error(
                 client.clone(),
@@ -456,15 +448,14 @@ pub(crate) async fn cancel_fetch(client: Arc<MOQTClient>, request_id: u64) {
   }
 }
 
-/// Send an upstream Fetch to the publisher for a cache gap [gap_start, gap_end].
+/// Send an upstream Fetch to the publisher for the range `filter` selects.
 /// Returns the upstream request state, including separate channels for the control
 /// response and Object events.
 async fn send_upstream_fetch_for_range(
   client: &Arc<MOQTClient>,
   context: &Arc<SessionContext>,
   track_read: &crate::server::track::Track,
-  gap_start: u64,
-  gap_end: u64,
+  filter: LocationFilter,
 ) -> Option<UpstreamFetch> {
   // A FETCH goes to one publisher, unlike a SUBSCRIBE: any of the matching ones may
   // serve the range, so the first will do.
@@ -492,12 +483,11 @@ async fn send_upstream_fetch_for_range(
   )
   .await;
 
-  let upstream_fetch = Fetch::new(
+  let upstream_fetch = Fetch::new_with_location_filter(
     relay_request_id,
     track_read.full_track_name.namespace.clone(),
     track_read.full_track_name.name.clone(),
-    Location::new(gap_start, 0),
-    Location::new(gap_end, 0),
+    filter,
     parameters::upstream_fetch(),
   );
 
@@ -682,6 +672,7 @@ pub(crate) struct FetchDelivery {
   /// against the request that asked for these Objects.
   pub request_id: u64,
   pub start_location: Location,
+  /// The last Location to send. Object `u64::MAX` is all of that group.
   pub end_location: Location,
   pub group_order: GroupOrder,
   /// QUIC send priority for the stream.
@@ -788,7 +779,7 @@ pub(crate) async fn serve_fetch_stream(
         if group_id == start_location.group && object.object_id < start_location.object {
           continue;
         }
-        if group_id == end_location.group && object.object_id >= end_location.object {
+        if group_id == end_location.group && object.object_id > end_location.object {
           break;
         }
         // Skipped before the stream opens or the delta context moves on: the next
@@ -890,9 +881,16 @@ pub(crate) async fn serve_fetch_stream(
           gap_end = end_location.group;
           Some((pending.relay_request_id, pending.publisher, pending.rx))
         }
-        None => send_upstream_fetch_for_range(&client, &context, &track_read, gap_start, gap_end)
-          .await
-          .map(|(request_id, publisher, rx, _)| (request_id, publisher, rx)),
+        None => {
+          // The relay holds nothing of the groups in the gap, so ask for all of them.
+          let gap = LocationFilter::AbsoluteStartGroupEnd {
+            start: Location::new(gap_start, 0),
+            end_group: gap_end,
+          };
+          send_upstream_fetch_for_range(&client, &context, &track_read, gap)
+            .await
+            .map(|(request_id, publisher, rx, _)| (request_id, publisher, rx))
+        }
       };
 
       if let Some((relay_request_id, upstream_publisher, mut rx)) = upstream_rx {
@@ -1114,81 +1112,152 @@ pub(crate) async fn serve_fetch_stream(
 
 #[cfg(test)]
 mod tests {
-  use super::{FetchRangeError, local_state_answers, resolve_standalone_fetch_range};
+  use super::{FetchRangeError, local_state_answers, resolve_fetch_range, unresolved_fetch_range};
   use moqtail::model::common::location::Location;
+  use moqtail::model::parameter::location_filter::LocationFilter;
 
   fn loc(group: u64, object: u64) -> Location {
     Location::new(group, object)
+  }
+
+  fn range(start: Location, end: Location) -> LocationFilter {
+    LocationFilter::AbsoluteRange { start, end }
   }
 
   #[test]
   fn empty_track_is_invalid_range() {
     // A track with no published Objects (largest = None) -> INVALID_RANGE.
     assert_eq!(
-      resolve_standalone_fetch_range(loc(0, 0), loc(5, 0), None),
+      resolve_fetch_range(&range(loc(0, 0), loc(5, 0)), None),
       Err(FetchRangeError::InvalidRange)
     );
   }
 
   #[test]
   fn start_beyond_largest_is_invalid_range() {
-    // Start Location past the Largest Object -> INVALID_RANGE.
     assert_eq!(
-      resolve_standalone_fetch_range(loc(10, 0), loc(12, 1), Some(loc(4, 2))),
+      resolve_fetch_range(&range(loc(10, 0), loc(12, 1)), Some(loc(4, 2))),
       Err(FetchRangeError::InvalidRange)
     );
   }
 
   #[test]
-  fn end_before_start_is_protocol_violation() {
-    // End Location earlier than Start Location -> PROTOCOL_VIOLATION.
+  fn a_filter_ending_before_it_starts_is_a_protocol_violation() {
+    // Rejected even with no Largest Object: the filter alone is invalid.
     assert_eq!(
-      resolve_standalone_fetch_range(loc(5, 3), loc(5, 1), Some(loc(9, 0))),
+      resolve_fetch_range(&range(loc(5, 3), loc(5, 1)), None),
       Err(FetchRangeError::ProtocolViolation)
     );
   }
 
   #[test]
-  fn end_beyond_largest_is_clamped() {
-    // Requested end overruns published data -> clamp to {Largest.Group, Largest.Object + 1}.
+  fn no_filter_fetches_the_whole_track() {
     assert_eq!(
-      resolve_standalone_fetch_range(loc(0, 0), loc(100, 0), Some(loc(4, 2))),
-      Ok(loc(4, 3))
+      resolve_fetch_range(&LocationFilter::None, Some(loc(4, 2))),
+      Ok((loc(0, 0), loc(4, 2)))
     );
   }
 
   #[test]
-  fn end_within_published_data_is_unchanged() {
-    // Requested end within published data is echoed back verbatim.
+  fn a_filter_without_an_end_stops_at_the_largest_object() {
     assert_eq!(
-      resolve_standalone_fetch_range(loc(0, 0), loc(3, 1), Some(loc(4, 2))),
-      Ok(loc(3, 1))
+      resolve_fetch_range(
+        &LocationFilter::AbsoluteStart { start: loc(2, 1) },
+        Some(loc(4, 2))
+      ),
+      Ok((loc(2, 1), loc(4, 2)))
     );
+  }
+
+  #[test]
+  fn a_relative_start_counts_back_from_the_largest_object() {
+    assert_eq!(
+      resolve_fetch_range(
+        &LocationFilter::RelativeStart { start_group: 2 },
+        Some(loc(4, 2))
+      ),
+      Ok((loc(3, 0), loc(4, 2)))
+    );
+  }
+
+  #[test]
+  fn next_object_has_nothing_to_fetch() {
+    assert_eq!(
+      resolve_fetch_range(&LocationFilter::NextObject, Some(loc(4, 2))),
+      Err(FetchRangeError::InvalidRange)
+    );
+  }
+
+  #[test]
+  fn an_end_within_published_data_is_kept() {
+    assert_eq!(
+      resolve_fetch_range(&range(loc(1, 0), loc(3, 1)), Some(loc(4, 2))),
+      Ok((loc(1, 0), loc(3, 1)))
+    );
+    assert_eq!(
+      resolve_fetch_range(
+        &LocationFilter::AbsoluteStartGroupEnd {
+          start: loc(1, 0),
+          end_group: 3,
+        },
+        Some(loc(4, 2))
+      ),
+      Ok((loc(1, 0), loc(3, u64::MAX))),
+      "a Group End is all of that group"
+    );
+  }
+
+  #[test]
+  fn an_end_past_the_largest_object_is_cut_back_to_it() {
+    assert_eq!(
+      resolve_fetch_range(&range(loc(0, 0), loc(100, 0)), Some(loc(4, 2))),
+      Ok((loc(0, 0), loc(4, 2)))
+    );
+    assert_eq!(
+      resolve_fetch_range(
+        &LocationFilter::AbsoluteStartGroupEnd {
+          start: loc(0, 0),
+          end_group: 4,
+        },
+        Some(loc(4, 2))
+      ),
+      Ok((loc(0, 0), loc(4, 2))),
+      "the current group may still grow, so it ends at the Largest Object"
+    );
+  }
+
+  #[test]
+  fn only_a_filter_with_both_ends_can_be_served_unresolved() {
+    assert_eq!(
+      unresolved_fetch_range(&range(loc(1, 0), loc(3, 1))),
+      Some((loc(1, 0), loc(3, 1)))
+    );
+    assert_eq!(
+      unresolved_fetch_range(&LocationFilter::AbsoluteStart { start: loc(1, 0) }),
+      None
+    );
+    assert_eq!(unresolved_fetch_range(&LocationFilter::None), None);
   }
 
   #[test]
   fn a_request_within_what_is_held_is_answered_locally() {
-    // The clamp cannot bind, so whatever the publisher knows past this is irrelevant.
+    // The end cannot be cut back, so whatever the publisher knows past this is irrelevant.
     assert!(local_state_answers(&Some(loc(4, 2)), &loc(3, 1)));
-    assert!(local_state_answers(&Some(loc(4, 2)), &loc(4, 0)));
-  }
-
-  #[test]
-  fn a_request_ending_exactly_at_the_clamp_is_answered_locally() {
-    // End Location is the last Object plus one, so {4,3} is precisely "all of {4,2}"
-    // and needs nothing from the publisher.
-    assert!(local_state_answers(&Some(loc(4, 2)), &loc(4, 3)));
+    assert!(local_state_answers(&Some(loc(4, 2)), &loc(3, u64::MAX)));
+    assert!(local_state_answers(&Some(loc(4, 2)), &loc(4, 2)));
   }
 
   #[test]
   fn a_request_past_what_is_held_needs_the_publisher() {
     // One object further is already past it: answering locally would understate.
-    assert!(!local_state_answers(&Some(loc(4, 2)), &loc(4, 4)));
+    assert!(!local_state_answers(&Some(loc(4, 2)), &loc(4, 3)));
     assert!(!local_state_answers(&Some(loc(4, 2)), &loc(5, 0)));
+    // All of the current group: it may still be growing at the publisher.
+    assert!(!local_state_answers(&Some(loc(4, 2)), &loc(4, u64::MAX)));
   }
 
   #[test]
   fn holding_nothing_always_needs_the_publisher() {
-    assert!(!local_state_answers(&None, &loc(0, 1)));
+    assert!(!local_state_answers(&None, &loc(0, 0)));
   }
 }

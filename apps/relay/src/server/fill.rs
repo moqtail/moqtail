@@ -35,19 +35,13 @@ use tracing::info;
 /// Location already past the Largest Object — in which case no stream is opened
 /// and the subscription runs live-only.
 ///
-/// The End Location returned is the last Object plus one, the encoding
-/// [`serve_fetch_stream`] expects. A filter that ends with a whole group keeps
-/// `u64::MAX` as its Object, which already means all of it.
+/// Both Locations are inclusive. A filter that ends with a whole group has
+/// `u64::MAX` as its last Object, which means all of it.
 pub(crate) fn fill_fetch_range(
   filter: &LocationFilter,
   largest: Option<Location>,
 ) -> Option<(Location, Location)> {
-  let (start, last) = filter.fetch_range(largest)?;
-  let end = match last.object {
-    u64::MAX => last,
-    object => Location::new(last.group, object + 1),
-  };
-  Some((start, end))
+  filter.fetch_range(largest)
 }
 
 /// The FILL_PARAMETERS in `parameters`, whose presence is what asks for a fill.
@@ -192,7 +186,7 @@ mod tests {
   fn no_filter_fills_the_whole_track() {
     assert_eq!(
       fill_fetch_range(&LocationFilter::None, Some(loc(5, 3))),
-      Some((loc(0, 0), loc(5, 4)))
+      Some((loc(0, 0), loc(5, 3)))
     );
   }
 
@@ -203,7 +197,7 @@ mod tests {
         &LocationFilter::AbsoluteStart { start: loc(2, 0) },
         Some(loc(5, 3))
       ),
-      Some((loc(2, 0), loc(5, 4)))
+      Some((loc(2, 0), loc(5, 3)))
     );
   }
 
@@ -241,7 +235,7 @@ mod tests {
   }
 
   #[test]
-  fn an_end_object_ends_the_fill_after_it() {
+  fn an_end_object_is_the_last_one_filled() {
     assert_eq!(
       fill_fetch_range(
         &LocationFilter::AbsoluteRange {
@@ -250,7 +244,7 @@ mod tests {
         },
         Some(loc(9, 1))
       ),
-      Some((loc(2, 0), loc(4, 7)))
+      Some((loc(2, 0), loc(4, 6)))
     );
   }
 
@@ -264,7 +258,7 @@ mod tests {
         },
         Some(loc(9, 1))
       ),
-      Some((loc(2, 0), loc(9, 2)))
+      Some((loc(2, 0), loc(9, 1)))
     );
   }
 
@@ -276,7 +270,7 @@ mod tests {
         &LocationFilter::RelativeStart { start_group: 3 },
         Some(loc(9, 1))
       ),
-      Some((loc(7, 0), loc(9, 2)))
+      Some((loc(7, 0), loc(9, 1)))
     );
   }
 
@@ -287,7 +281,7 @@ mod tests {
         &LocationFilter::RelativeStart { start_group: 1 },
         Some(loc(9, 1))
       ),
-      Some((loc(9, 0), loc(9, 2)))
+      Some((loc(9, 0), loc(9, 1)))
     );
   }
 
@@ -310,7 +304,7 @@ mod tests {
         &LocationFilter::RelativeStart { start_group: 50 },
         Some(loc(3, 1))
       ),
-      Some((loc(0, 0), loc(3, 2)))
+      Some((loc(0, 0), loc(3, 1)))
     );
   }
 

@@ -757,9 +757,11 @@ mod tests {
       request_id: 161803,
       track_namespace: Tuple::from_utf8_path("un/deux/trois"),
       track_name: TupleField::from_utf8("quatre"),
-      start_location: Location::new(12, 5),
-      end_location: Location::new(20, 0),
       parameters: vec![
+        MessageParameter::new_location_filter(LocationFilter::AbsoluteRange {
+          start: Location::new(12, 5),
+          end: Location::new(20, 3),
+        }),
         MessageParameter::new_authorization_token(AuthorizationToken::new_use_value(
           0,
           Bytes::from_static(b"test-token"),

@@ -265,6 +265,7 @@ impl MessageParameter {
       Self::LocationFilter { .. } => matches!(
         msg_type,
         ControlMessageType::Subscribe
+          | ControlMessageType::Fetch
           | ControlMessageType::Publish
           | ControlMessageType::RequestUpdate
       ),

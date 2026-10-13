@@ -35,8 +35,21 @@ struct TrackSequence {
   last_group_span: u64,
 }
 
+/// What one subscription received, as `ReceptionStats::per_track` reports it.
+#[derive(Debug, PartialEq, Eq)]
+pub struct TrackReport {
+  pub track: u64,
+  pub received: u64,
+  /// Of `received`, the objects a fill delivered.
+  pub fill: u64,
+  pub gaps: u64,
+  pub violations: u64,
+}
+
 pub struct ReceptionStats {
   pub total_received: u64,
+  /// Of `total_received`, the objects a fill delivered.
+  pub fill_received: u64,
   pub parse_errors: u64,
   pub sequence_gaps: u64,
   /// Copies of an object a subscription already had.
@@ -46,6 +59,9 @@ pub struct ReceptionStats {
   last_group: u64,
   last_object: u64,
   tracks: HashMap<u64, TrackSequence>,
+  /// Fill objects per subscription, kept out of its sequence: a fill and the live
+  /// objects arrive on separate streams and interleave, which would read as gaps.
+  fills: HashMap<u64, u64>,
   start_time: Instant,
 }
 
@@ -53,6 +69,7 @@ impl ReceptionStats {
   pub fn new() -> Self {
     Self {
       total_received: 0,
+      fill_received: 0,
       parse_errors: 0,
       sequence_gaps: 0,
       duplicates: 0,
@@ -60,6 +77,7 @@ impl ReceptionStats {
       last_group: 0,
       last_object: 0,
       tracks: HashMap::new(),
+      fills: HashMap::new(),
       start_time: Instant::now(),
     }
   }
@@ -177,22 +195,41 @@ impl ReceptionStats {
     self.duplicates += count as u64;
   }
 
-  /// Objects received, sequence gaps and filter violations seen, per subscription.
-  pub fn per_track(&self) -> Vec<(u64, u64, u64, u64)> {
-    let mut tracks: Vec<_> = self
+  /// Record an object a fill delivered to the subscription `track` names. It is
+  /// counted, but not checked against the sequence or the Range Filters: the fill
+  /// covers what was published before the subscription started, under filters of
+  /// its own.
+  pub fn record_fill_object(&mut self, track: u64) {
+    self.total_received += 1;
+    self.fill_received += 1;
+    *self.fills.entry(track).or_default() += 1;
+  }
+
+  /// Per subscription: objects received, how many of them a fill delivered, and
+  /// the sequence gaps and filter violations seen.
+  pub fn per_track(&self) -> Vec<TrackReport> {
+    let mut tracks: Vec<u64> = self
       .tracks
-      .iter()
-      .map(|(track, sequence)| {
-        (
-          *track,
-          sequence.received,
-          sequence.gaps,
-          sequence.violations,
-        )
-      })
+      .keys()
+      .chain(self.fills.keys())
+      .copied()
       .collect();
     tracks.sort();
+    tracks.dedup();
     tracks
+      .into_iter()
+      .map(|track| {
+        let fill = self.fills.get(&track).copied().unwrap_or(0);
+        let sequence = self.tracks.get(&track);
+        TrackReport {
+          track,
+          received: sequence.map_or(0, |s| s.received) + fill,
+          fill,
+          gaps: sequence.map_or(0, |s| s.gaps),
+          violations: sequence.map_or(0, |s| s.violations),
+        }
+      })
+      .collect()
   }
 
   pub fn record_parse_error(&mut self) {
@@ -205,8 +242,9 @@ impl ReceptionStats {
 
   pub fn report(&self) {
     info!(
-      "Reception stats: total={}, last=group:{}/object:{}, errors={}, gaps={}, duplicates={}, filter_violations={}, elapsed={}ms",
+      "Reception stats: total={}, fill={}, last=group:{}/object:{}, errors={}, gaps={}, duplicates={}, filter_violations={}, elapsed={}ms",
       self.total_received,
+      self.fill_received,
       self.last_group,
       self.last_object,
       self.parse_errors,
@@ -224,5 +262,45 @@ impl ReceptionStats {
         self.parse_errors, self.sequence_gaps, self.filter_violations
       );
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn fill_objects_are_counted_outside_the_sequence() {
+    let mut stats = ReceptionStats::new();
+    // The live objects start at group 3 while the fill is still delivering
+    // groups 1 and 2: interleaved, they would read as gaps.
+    stats.record_fill_object(0);
+    assert!(stats.record_object(0, 3, 0, 0));
+    stats.record_fill_object(0);
+    assert!(stats.record_object(0, 3, 1, 0));
+    stats.record_fill_object(2);
+
+    assert_eq!(stats.total_received, 5);
+    assert_eq!(stats.fill_received, 3);
+    assert_eq!(stats.sequence_gaps, 0);
+    assert_eq!(
+      stats.per_track(),
+      vec![
+        TrackReport {
+          track: 0,
+          received: 4,
+          fill: 2,
+          gaps: 0,
+          violations: 0,
+        },
+        TrackReport {
+          track: 2,
+          received: 1,
+          fill: 1,
+          gaps: 0,
+          violations: 0,
+        },
+      ]
+    );
   }
 }

@@ -593,7 +593,12 @@ impl RecvDataStream {
                   malformed_track.store(true, Ordering::Relaxed);
                   return Err(e);
                 }
-                // TODO: Get track alias from fetch_request
+                // A fetch stream carries no Track Alias. The 0 here is a placeholder
+                // that may well collide with a real subscription's alias, so
+                // callers route these objects by the FETCH_HEADER's Request ID
+                // instead: a FETCH's when `fetch_request` is set, and otherwise
+                // that of the SUBSCRIBE or REQUEST_UPDATE whose fill this stream
+                // delivers, which only the caller can map to a subscription.
                 let object = Object::try_from_fetch(payload, 0)?;
                 Ok((None, new_ctx, Some(object)))
               }

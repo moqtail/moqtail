@@ -81,9 +81,6 @@ struct TrackState {
   filter: CombinedFilter,
   /// The Request ID of the PUBLISH that pushed it, which names its fill stream.
   request_id: Option<u64>,
-  /// Objects its fill delivered, kept out of `stats`: they interleave with the
-  /// live ones, which would read as gaps.
-  fill_received: u64,
 }
 
 impl TrackState {
@@ -93,7 +90,6 @@ impl TrackState {
       stats: ReceptionStats::new(),
       filter: CombinedFilter::default(),
       request_id: None,
-      fill_received: 0,
     }
   }
 }
@@ -208,7 +204,7 @@ pub async fn run(moq: MoqConnection, config: PrefixSubscribeConfig) -> Result<()
         "{label}: {} objects received={}, fill={}, gaps={}, filter_violations={}",
         state.name,
         state.stats.total_received,
-        state.fill_received,
+        state.stats.fill_received,
         state.stats.sequence_gaps,
         state.stats.filter_violations
       );
@@ -522,10 +518,10 @@ fn receive_objects(connection: Arc<TransportConnection>, tracks: Tracks) {
             let name = {
               let mut tracks = tracks.lock().unwrap();
               tracks
-                .values_mut()
-                .find(|state| state.request_id == Some(header.request_id))
-                .map(|state| {
-                  state.fill_received += 1;
+                .iter_mut()
+                .find(|(_, state)| state.request_id == Some(header.request_id))
+                .map(|(alias, state)| {
+                  state.stats.record_fill_object(*alias);
                   state.name.clone()
                 })
             };

@@ -446,6 +446,7 @@ async fn receive_datagrams(
                   &mut stats,
                   &router,
                   *owner,
+                  false,
                   &location,
                   fields,
                   ReceptionStats::prior_group_gap(obj.properties.as_ref()),
@@ -563,11 +564,12 @@ async fn receive_streams(
                     &mut stats,
                     &router,
                     *owner,
+                    fill_request.flatten().is_some(),
                     &obj.location,
                     ObjectFields::from(&obj),
                     ReceptionStats::prior_group_gap(obj.properties.as_ref()),
                   );
-                  let sequence_ok = status == "OK";
+                  let sequence_ok = matches!(status, "OK" | "FILL");
 
                   if should_log(stats.total_received) || !sequence_ok {
                     info!(
@@ -668,18 +670,23 @@ fn send_updates(
   });
 }
 
-/// Counts an object into the subscription that took it: against its Range Filters
-/// when it has them, and its sequence otherwise. Returns what to log it as.
+/// Counts an object into the subscription that took it: on its own when a fill
+/// delivered it, against its Range Filters when it has them, and its sequence
+/// otherwise. Returns what to log it as.
 fn record(
   stats: &mut ReceptionStats,
   router: &Mutex<Router>,
   owner: u64,
+  fill: bool,
   location: &Location,
   fields: ObjectFields<'_>,
   prior_group_gap: u64,
 ) -> &'static str {
   let mut router = router.lock().unwrap();
-  if router.is_filtered(owner) {
+  if fill {
+    stats.record_fill_object(owner);
+    "FILL"
+  } else if router.is_filtered(owner) {
     let passed = router.passes(owner, fields);
     stats.record_filtered_object(owner, location.group, location.object, passed);
     if passed { "OK" } else { "FILTER_VIOLATION" }
@@ -714,18 +721,20 @@ fn route_object(
 /// One line per subscription, then the totals.
 fn report_subscriptions(stats: &ReceptionStats, router: &Mutex<Router>) {
   let router = router.lock().unwrap();
-  for (request_id, received, gaps, violations) in stats.per_track() {
+  for report in stats.per_track() {
     info!(
-      "Subscription {}: received={}, gaps={}, filter_violations={}",
-      router.label(request_id),
-      received,
-      gaps,
-      violations
+      "Subscription {}: received={}, fill={}, gaps={}, filter_violations={}",
+      router.label(report.track),
+      report.received,
+      report.fill,
+      report.gaps,
+      report.violations
     );
   }
   info!(
-    "Subscriber finished: received={}, errors={}, gaps={}, duplicates={}, filter_violations={}",
+    "Subscriber finished: received={}, fill={}, errors={}, gaps={}, duplicates={}, filter_violations={}",
     stats.total_received,
+    stats.fill_received,
     stats.parse_errors,
     stats.sequence_gaps,
     stats.duplicates,

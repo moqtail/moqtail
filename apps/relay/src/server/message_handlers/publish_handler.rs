@@ -577,6 +577,23 @@ pub(crate) async fn push_track_to_subscriber(
     state.subscribe_parameters.extend(range_filters);
   }
 
+  // A fill the SUBSCRIBE_TRACKS asked for is kept with the subscription too: a PUBLISH
+  // cannot carry FILL_PARAMETERS, so the relay opens the fill itself once the PUBLISH
+  // is out.
+  if let Some(subscription) = &subscription
+    && let Some(fill) = subscribe_tracks_params
+      .iter()
+      .find(|p| matches!(p, MessageParameter::FillParameters { .. }))
+  {
+    let sub = subscription.read().await;
+    sub
+      .subscription_state
+      .write()
+      .await
+      .subscribe_parameters
+      .push(fill.clone());
+  }
+
   // The subscription this just created is what wants Objects, so the publisher has
   // to be told to send. Taken after the read guard above is dropped: this reaches
   // for the same lock, and a writer queued between the two would deadlock a
@@ -637,6 +654,19 @@ pub(crate) async fn forward_publish_downstream(
   // arrives, and the parameters it carries are applied to it when it does.
   if let Some(subscription) = &subscription {
     subscription.read().await.mark_alias_announced();
+
+    // So may a fill the SUBSCRIBE_TRACKS asked for. Its range is measured against the
+    // Largest Object when it opens, and the live subscription's start was measured when
+    // the subscription was made; waiting a round trip for the PUBLISH_OK would let a new
+    // group begin in between, and the Objects of the group before it would be in
+    // neither. Without FILL_PARAMETERS, or while Forward State is 0, this opens nothing.
+    crate::server::fill::open_fill_fetch_stream(
+      context.clone(),
+      track_arc.clone(),
+      subscription.clone(),
+      publish_request_id,
+    )
+    .await;
   }
 
   loop {

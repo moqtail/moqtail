@@ -252,7 +252,7 @@ pub struct Cli {
   #[arg(long)]
   pub extra_track: Option<String>,
 
-  /// Subscription Forward State (subscribe only).
+  /// Subscription Forward State (subscribe, and each track subscribe-tracks brings).
   #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
   pub forward: bool,
 
@@ -261,16 +261,17 @@ pub struct Cli {
   #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
   pub include_properties: bool,
 
-  /// Location Filter to subscribe with (subscribe only)
-  #[arg(long, value_enum, default_value = "next-object")]
-  pub filter: CliFilter,
+  /// Location Filter to subscribe with (subscribe: defaults to next-object;
+  /// subscribe-tracks: sent only when given, as where each pushed track starts)
+  #[arg(long, value_enum)]
+  pub filter: Option<CliFilter>,
 
   /// Start group for the absolute filters, or groups back from the next group for
-  /// --filter relative-start (subscribe only)
+  /// --filter relative-start (subscribe and subscribe-tracks)
   #[arg(long, default_value_t = 0)]
   pub filter_start_group: u64,
 
-  /// Start object for the absolute filters (subscribe only)
+  /// Start object for the absolute filters (subscribe and subscribe-tracks)
   #[arg(long, default_value_t = 0)]
   pub filter_start_object: u64,
 
@@ -283,12 +284,12 @@ pub struct Cli {
   pub filter_end_object: u64,
 
   /// Also retrieve what is already published over --filter's range, on a fill
-  /// fetch stream (subscribe only)
+  /// fetch stream (subscribe, and each track subscribe-tracks brings)
   #[arg(long, default_value_t = false)]
   pub fill: bool,
 
   /// Fill from this many groups before the next group instead of over --filter's
-  /// range (1 = the current group); implies --fill (subscribe only)
+  /// range (1 = the current group); implies --fill (subscribe and subscribe-tracks)
   #[arg(long)]
   pub fill_start_group: Option<u64>,
 
@@ -326,7 +327,7 @@ pub struct Cli {
   pub range_filter: Vec<MessageParameter>,
 
   /// A Range Filter for the fill fetch stream, inside FILL_PARAMETERS; repeatable.
-  /// Implies --fill (subscribe only)
+  /// Implies --fill (subscribe and subscribe-tracks)
   #[arg(long, value_parser = parse_range_filter)]
   pub fill_range_filter: Vec<MessageParameter>,
 

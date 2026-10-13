@@ -40,23 +40,54 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::RwLock;
 use tracing::{debug, error, info};
 
-/// The Location Filter a `--filter` choice asks for.
-fn location_filter(config: &SubscribeConfig) -> LocationFilter {
-  let start = Location::new(config.filter_start_group, config.filter_start_object);
-  let end_group = config.filter_start_group + config.end_group_delta;
-  match config.filter {
+/// The Location Filter a `--filter` choice asks for, given the `--filter-*` and
+/// `--end-group-delta` values.
+pub fn cli_location_filter(
+  filter: CliFilter,
+  start_group: u64,
+  start_object: u64,
+  end_group_delta: u64,
+  end_object: u64,
+) -> LocationFilter {
+  let start = Location::new(start_group, start_object);
+  let end_group = start_group + end_group_delta;
+  match filter {
     CliFilter::None => LocationFilter::None,
-    CliFilter::RelativeStart => LocationFilter::RelativeStart {
-      start_group: config.filter_start_group,
-    },
+    CliFilter::RelativeStart => LocationFilter::RelativeStart { start_group },
     CliFilter::AbsoluteStart => LocationFilter::AbsoluteStart { start },
     CliFilter::AbsoluteStartGroupEnd => LocationFilter::AbsoluteStartGroupEnd { start, end_group },
     CliFilter::AbsoluteRange => LocationFilter::AbsoluteRange {
       start,
-      end: Location::new(end_group, config.filter_end_object),
+      end: Location::new(end_group, end_object),
     },
     CliFilter::NextObject => LocationFilter::NextObject,
   }
+}
+
+fn location_filter(config: &SubscribeConfig) -> LocationFilter {
+  cli_location_filter(
+    config.filter,
+    config.filter_start_group,
+    config.filter_start_object,
+    config.end_group_delta,
+    config.filter_end_object,
+  )
+}
+
+/// The FILL_PARAMETERS `--fill` asks for. Without `--fill-start-group` the fill
+/// covers the subscription's own filter.
+pub fn fill_parameter(
+  fill_start_group: Option<u64>,
+  fill_range_filters: &[MessageParameter],
+) -> MessageParameter {
+  let mut fill: Vec<_> = fill_start_group
+    .map(|start_group| {
+      MessageParameter::new_location_filter(LocationFilter::RelativeStart { start_group })
+    })
+    .into_iter()
+    .collect();
+  fill.extend(fill_range_filters.iter().cloned());
+  MessageParameter::new_fill_parameters(fill)
 }
 
 /// The filter parameters a subscribe carries: LOCATION_FILTER, any Range
@@ -68,16 +99,10 @@ fn filter_parameters(config: &SubscribeConfig) -> Vec<MessageParameter> {
   ))];
   params.extend(config.range_filters.iter().cloned());
   if config.fill {
-    // Without a filter of its own the fill covers the subscription's.
-    let mut fill: Vec<_> = config
-      .fill_start_group
-      .map(|start_group| {
-        MessageParameter::new_location_filter(LocationFilter::RelativeStart { start_group })
-      })
-      .into_iter()
-      .collect();
-    fill.extend(config.fill_range_filters.iter().cloned());
-    params.push(MessageParameter::new_fill_parameters(fill));
+    params.push(fill_parameter(
+      config.fill_start_group,
+      &config.fill_range_filters,
+    ));
   }
   params
 }

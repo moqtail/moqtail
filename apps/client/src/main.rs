@@ -24,8 +24,9 @@ mod subscriber;
 mod utils;
 
 use clap::Parser;
-use cli::{Cli, Command, PrefixKind};
+use cli::{Cli, CliFilter, Command, PrefixKind};
 use connection::MoqConnection;
+use moqtail::model::parameter::message_parameter::MessageParameter;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::filter::LevelFilter;
@@ -103,7 +104,7 @@ async fn main() -> Result<(), anyhow::Error> {
         forward: cli.forward,
         include_properties: cli.include_properties,
         update_forward_after: cli.update_forward_after,
-        filter: cli.filter,
+        filter: cli.filter.unwrap_or(CliFilter::NextObject),
         filter_start_group: cli.filter_start_group,
         filter_start_object: cli.filter_start_object,
         end_group_delta: cli.end_group_delta,
@@ -133,6 +134,32 @@ async fn main() -> Result<(), anyhow::Error> {
         },
         overlap: cli.overlap,
         include_properties: cli.include_properties,
+        pushed_track_parameters: {
+          // Each pushed track's Forward State, where it starts, and a fill of what it
+          // already has.
+          let mut params = Vec::new();
+          if !cli.forward {
+            params.push(MessageParameter::new_forward(false));
+          }
+          if let Some(filter) = cli.filter {
+            params.push(MessageParameter::new_location_filter(
+              subscriber::cli_location_filter(
+                filter,
+                cli.filter_start_group,
+                cli.filter_start_object,
+                cli.end_group_delta,
+                cli.filter_end_object,
+              ),
+            ));
+          }
+          if cli.fill || cli.fill_start_group.is_some() || !cli.fill_range_filter.is_empty() {
+            params.push(subscriber::fill_parameter(
+              cli.fill_start_group,
+              &cli.fill_range_filter,
+            ));
+          }
+          params
+        },
         range_filters: cli.range_filter,
         ignore_filter_limit: cli.ignore_filter_limit,
       };

@@ -76,12 +76,18 @@ pub(crate) fn updated_filter(
 }
 
 /// Checks the filters a SUBSCRIBE_TRACKS carries, where track filters choose which
-/// tracks are pushed and the rest filter the Objects of those that are.
+/// tracks are pushed and the rest filter the Objects of those that are. Those in its
+/// FILL_PARAMETERS filter the fills of the pushed tracks.
 pub(crate) fn tracks_filter(
   params: &[MessageParameter],
   limit: u64,
 ) -> Result<CombinedFilter, RangeFilterError> {
   check_filter_range_limit(params, limit)?;
+  for param in params {
+    if let MessageParameter::FillParameters { parameters } = param {
+      CombinedFilter::for_objects(parameters)?;
+    }
+  }
   CombinedFilter::new(params)
 }
 

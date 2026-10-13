@@ -35,6 +35,7 @@ import { ObjectDeliveryTimeout } from '../parameter/message/object_delivery_time
 export class FetchOk {
   constructor(
     public readonly endOfTrack: boolean,
+    /** The last Location the response covers, inclusive. Object 2^64-1 is all of that group. */
     public readonly endLocation: Location,
     public readonly parameters: MessageParameter[],
     public readonly trackProperties: TrackProperty[] = [],

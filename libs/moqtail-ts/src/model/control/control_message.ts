@@ -179,13 +179,7 @@ if (import.meta.vitest) {
         const requestId = 161803n
 
         const parameters = [AuthorizationToken.newUseValue(0n, new TextEncoder().encode('test-token'))]
-        return new Fetch(
-          requestId,
-          FullTrackName.tryNew('un/deux/trois', 'quatre'),
-          new Location(12n, 5n),
-          new Location(20n, 0n),
-          parameters,
-        )
+        return new Fetch(requestId, FullTrackName.tryNew('un/deux/trois', 'quatre'), parameters)
       }
 
       test('should roundtrip Fetch correctly', () => {

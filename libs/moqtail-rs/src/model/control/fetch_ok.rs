@@ -28,6 +28,8 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 #[derive(Debug, PartialEq, Clone)]
 pub struct FetchOk {
   pub end_of_track: bool,
+  /// The last Location the response covers, inclusive. Object `u64::MAX` is all of
+  /// that group.
   pub end_location: Location,
   pub subscribe_parameters: Vec<MessageParameter>,
   pub track_properties: Vec<TrackProperty>,

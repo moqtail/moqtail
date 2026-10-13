@@ -227,7 +227,7 @@ pub struct Cli {
   #[arg(long, default_value_t = 5)]
   pub end_group: u64,
 
-  /// End object ID (fetch only)
+  /// Last object ID of the end group, inclusive (fetch only)
   #[arg(long, default_value_t = 3)]
   pub end_object: u64,
 

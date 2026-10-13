@@ -15,8 +15,7 @@
  */
 
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
-import { Location } from '../common/location'
-import { ControlMessageType } from './constant'
+import { ControlMessageType, LocationFilterType } from './constant'
 import { LengthExceedsMaxError } from '../error/error'
 import { FullTrackName } from '../data'
 import {
@@ -26,16 +25,22 @@ import {
   serializeMessageParameterKvps,
 } from '../parameter/message_parameter'
 import { SubscriberPriority } from '../parameter/message/subscriber_priority'
+import { LocationFilter } from '../parameter/message/location_filter'
 
 export class Fetch {
   constructor(
     public readonly requestId: bigint,
     public readonly fullTrackName: FullTrackName,
-    public readonly startLocation: Location,
-    /** The last Object plus 1. An Object value of 0 means the entire group. */
-    public readonly endLocation: Location,
     public readonly parameters: MessageParameter[],
   ) {}
+
+  /**
+   * The requested range. A FETCH without a LOCATION_FILTER parameter asks for the
+   * whole track up to the Largest Object, the same as a {@link (LocationFilterType:enum).None} filter.
+   */
+  get locationFilter(): LocationFilter {
+    return this.parameters.find(MessageParameter.isLocationFilter) ?? new LocationFilter(LocationFilterType.None)
+  }
 
   getType(): ControlMessageType {
     return ControlMessageType.Fetch
@@ -47,8 +52,6 @@ export class Fetch {
     const payload = new ByteBuffer()
     payload.putVI(this.requestId)
     payload.putFullTrackName(this.fullTrackName)
-    payload.putLocation(this.startLocation)
-    payload.putLocation(this.endLocation)
     payload.putVI(this.parameters.length)
     payload.putBytes(serializeMessageParameterKvps(this.parameters.map((p) => p.toKeyValuePair())).toUint8Array())
     const payloadBytes = payload.toUint8Array()
@@ -63,23 +66,24 @@ export class Fetch {
   static parsePayload(buf: BaseByteBuffer): Fetch {
     const requestId = buf.getVI()
     const fullTrackName = buf.getFullTrackName()
-    const startLocation = buf.getLocation()
-    const endLocation = buf.getLocation()
 
     const paramCount = buf.getNumberVI()
     const rawParams = deserializeMessageParameterKvps(buf, paramCount)
     const parameters = MessageParameters.fromKeyValuePairs(rawParams)
 
-    return new Fetch(requestId, fullTrackName, startLocation, endLocation, parameters)
+    return new Fetch(requestId, fullTrackName, parameters)
   }
 }
 
 if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
 
+  // Parameters are serialized sorted by type and parse back in that order, so they
+  // are listed sorted here for the roundtrip comparison to hold.
   const sampleFetch = () =>
-    new Fetch(161803n, FullTrackName.tryNew('un/deux/trois', 'quatre'), new Location(12n, 5n), new Location(20n, 0n), [
+    new Fetch(161803n, FullTrackName.tryNew('un/deux/trois', 'quatre'), [
       new SubscriberPriority(42),
+      new LocationFilter(LocationFilterType.AbsoluteRange, 12n, 5n, 20n, 3n),
     ])
 
   describe('Fetch', () => {
@@ -113,6 +117,23 @@ if (import.meta.vitest) {
       const deserialized = Fetch.parsePayload(frozen)
       expect(deserialized).toEqual(fetch)
       expect(Array.from(frozen.getBytes(3))).toEqual([9, 1, 1])
+    })
+
+    test('the range is carried in the location filter, not in message fields', () => {
+      const fetch = sampleFetch()
+      expect(fetch.locationFilter).toEqual(new LocationFilter(LocationFilterType.AbsoluteRange, 12n, 5n, 20n, 3n))
+
+      const frozen = fetch.serialize()
+      frozen.getVI()
+      frozen.getU16()
+      frozen.getVI()
+      frozen.getFullTrackName()
+      expect(frozen.getNumberVI()).toBe(fetch.parameters.length)
+    })
+
+    test('no location filter is the whole track', () => {
+      const fetch = new Fetch(1n, FullTrackName.tryNew('ns', 'track'), [])
+      expect(fetch.locationFilter.filterType).toBe(LocationFilterType.None)
     })
 
     test('partial message', () => {

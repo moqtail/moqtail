@@ -20,6 +20,7 @@ use moqtail::model::common::tuple::{Tuple, TupleField};
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::fetch::Fetch;
 use moqtail::model::error::StreamResetCode;
+use moqtail::model::parameter::location_filter::LocationFilter;
 use moqtail::model::parameter::message_parameter::MessageParameter;
 use moqtail::model::property::object_property::ObjectProperty;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
@@ -87,17 +88,20 @@ pub async fn run(moq: MoqConnection, config: FetchConfig) -> Result<()> {
   let filter = object_filter(&parameters);
   let filtered = !filter.is_empty();
 
-  let fetch = Fetch::new(
+  let location_filter = LocationFilter::AbsoluteRange {
+    start: Location::new(config.start_group, config.start_object),
+    end: Location::new(config.end_group, config.end_object),
+  };
+  let fetch = Fetch::new_with_location_filter(
     request_id,
     ns,
     TupleField::from_utf8(&config.track_name),
-    Location::new(config.start_group, config.start_object),
-    Location::new(config.end_group, config.end_object),
+    location_filter,
     parameters,
   );
 
   info!(
-    "Sending Fetch: groups {}:{} to {}:{}",
+    "Sending Fetch: {}:{} through {}:{}",
     config.start_group, config.start_object, config.end_group, config.end_object
   );
 

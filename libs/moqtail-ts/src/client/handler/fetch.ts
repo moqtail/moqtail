@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { InternalError, Location, ReasonPhrase } from '@/model'
+import { InternalError, ReasonPhrase } from '@/model'
 import { Fetch, FetchOk, RequestError, RequestErrorCode } from '../../model/control'
 import { RequestStreamMessageHandler } from './handler'
 import { SubscribePublication } from '../publication/subscribe'
@@ -53,11 +53,24 @@ export const handlerFetch: RequestStreamMessageHandler<Fetch> = async (client, m
     await stream.send(response)
     return
   }
+  const largest = track.trackSource.live?.largestLocation ?? (await track.trackSource.past.getRange()).at(-1)?.location
+  const range = msg.locationFilter.fetchRange(largest)
+  if (!range) {
+    logger.warn('handler/fetch', `requestId=${msg.requestId} selects nothing published (largest=${largest})`)
+    const response = new RequestError(
+      RequestErrorCode.InvalidRange,
+      0n,
+      new ReasonPhrase('Nothing published in the requested range'),
+    )
+    await stream.send(response)
+    return
+  }
+
   // TODO: Add support for descending group order
   // TODO: Handle parameter checking and parameter selection.
-  // TODO: Figure out what to do with endOfTrack and end location
-  const publication = new FetchPublication(client, track, msg)
+  // TODO: Figure out what to do with endOfTrack
+  const publication = new FetchPublication(client, track, msg, range.start, range.end)
   client.publications.set(msg.requestId, publication)
-  const response = new FetchOk(false, new Location(0n, 0n), msg.parameters, track.trackProperties ?? [])
+  const response = new FetchOk(false, range.end, msg.parameters, track.trackProperties ?? [])
   await stream.send(response)
 }

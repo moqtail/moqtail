@@ -281,39 +281,6 @@ export type SwitchOptions = {
 }
 
 /**
- * Options for {@link MOQtailClient.fetch | performing a FETCH} operation for historical or relative object ranges.
- *
- * @example Standalone fetch
- * ```ts
- * const { requestId, stream } = await client.fetch({
- *   priority: 64,
- *   groupOrder: GroupOrder.Original,
- *   typeAndProps: {
- *     type: FetchType.Standalone,
- *     props: { fullTrackName, startLocation, endLocation }
- *   }
- * })
- * ```
- * @example Relative fetch joining a subscription
- * ```ts
- * const { requestId: subId } = await client.subscribe({
- *   fullTrackName,
- *   priority: 0,
- *   groupOrder: GroupOrder.Original,
- *   forward: true,
- *   locationFilter: new LocationFilter(LocationFilterType.NextObject)
- * })
- * const fetchRes = await client.fetch({
- *   priority: 32,
- *   groupOrder: GroupOrder.Original,
- *   typeAndProps: {
- *     type: FetchType.Relative,
- *     props: { joiningRequestId: subId, joiningStart: 0n }
- *   }
- * })
- * ```
- */
-/**
  * Configuration for the early discard policy applied to incoming subgroup streams.
  */
 export type EarlyDiscardPolicyConfig = {
@@ -321,8 +288,28 @@ export type EarlyDiscardPolicyConfig = {
   subgroupReceiveTimeout: number
 }
 
-// TODO: Define BaseOptions and extend it with StandAloneOptions, RelativeOptions etc.
-// Move the type to top level
+/**
+ * Options for {@link MOQtailClient.fetch | performing a FETCH} of Objects already published.
+ *
+ * @example Groups 10 through 12, inclusive
+ * ```ts
+ * const { requestId, stream } = await client.fetch({
+ *   fullTrackName,
+ *   priority: 64,
+ *   groupOrder: GroupOrder.Original,
+ *   locationFilter: new LocationFilter(LocationFilterType.AbsoluteStartGroupEnd, 10n, 0n, 12n)
+ * })
+ * ```
+ * @example The current group and the one before it
+ * ```ts
+ * await client.fetch({
+ *   fullTrackName,
+ *   priority: 32,
+ *   groupOrder: GroupOrder.Original,
+ *   locationFilter: new LocationFilter(LocationFilterType.RelativeStart, 2n)
+ * })
+ * ```
+ */
 export type FetchOptions = {
   /** Request priority (0 = highest, 255 = lowest). Rounded & clamped. */
   priority: number
@@ -330,10 +317,12 @@ export type FetchOptions = {
   groupOrder: GroupOrder
   /** Fully qualified track identifier ({@link FullTrackName}). */
   fullTrackName: FullTrackName
-  /** Earliest {@link Location} to retrieve. */
-  startLocation: Location
-  /** The last {@link Location} plus 1. An Object value of 0 means the entire group. */
-  endLocation: Location
+  /**
+   * Which Objects to fetch; the end, when the filter has one, is the last Object
+   * sent. Without a filter the whole track up to the Largest Object is fetched, and
+   * a filter without an end also stops at the Largest Object.
+   */
+  locationFilter?: LocationFilter
   /** Optional parameters block. */
   parameters?: MessageParameter[]
 }

@@ -44,8 +44,8 @@ const FIELD_COUNT: Record<LocationFilterType, number> = {
  * as a delta from the Start Group; that is undone on the way in and redone on
  * the way out.
  *
- * If omitted from SUBSCRIBE, the subscription is unfiltered. If omitted from
- * REQUEST_UPDATE, the value is unchanged.
+ * If omitted from SUBSCRIBE or FETCH, the subscription or fetch is unfiltered.
+ * If omitted from REQUEST_UPDATE, the value is unchanged.
  */
 export class LocationFilter implements Parameter {
   static readonly TYPE = MessageParameterType.LocationFilter
@@ -126,6 +126,23 @@ export class LocationFilter implements Parameter {
       default:
         return undefined
     }
+  }
+
+  /**
+   * The inclusive range the filter selects under the rules for a Fetch, which
+   * never reach past the Largest Object: an open end is the Largest Object, and
+   * no filter at all is the whole track up to it.
+   *
+   * `undefined` when that range is empty, which includes a track with nothing
+   * published yet and a Next Object filter, whose start is always past the
+   * Largest Object.
+   */
+  fetchRange(largest?: Location): { start: Location; end: Location } | undefined {
+    if (!largest) return undefined
+    const start = this.startLocation(largest) ?? new Location(0n, 0n)
+    const filterEnd = this.endLocation()
+    const end = filterEnd && filterEnd.compare(largest) < 0 ? filterEnd : largest
+    return start.compare(end) <= 0 ? { start, end } : undefined
   }
 
   /** The Location Filter Type and its fields, without the Parameter Type. */
@@ -298,6 +315,46 @@ if (import.meta.vitest) {
       expect(new LocationFilter(LocationFilterType.AbsoluteRange, 2n, 0n, 4n, 6n).endLocation()).toEqual(
         new Location(4n, 6n),
       )
+    })
+
+    test('a fetch range ends at the largest object when open-ended', () => {
+      const largest = new Location(7n, 3n)
+      expect(new LocationFilter(LocationFilterType.None).fetchRange(largest)).toEqual({
+        start: new Location(0n, 0n),
+        end: largest,
+      })
+      expect(new LocationFilter(LocationFilterType.AbsoluteStart, 5n, 1n).fetchRange(largest)).toEqual({
+        start: new Location(5n, 1n),
+        end: largest,
+      })
+      expect(new LocationFilter(LocationFilterType.RelativeStart, 1n).fetchRange(largest)).toEqual({
+        start: new Location(7n, 0n),
+        end: largest,
+      })
+    })
+
+    test('a fetch range keeps an end before the largest object and cuts one past it', () => {
+      const largest = new Location(7n, 3n)
+      expect(new LocationFilter(LocationFilterType.AbsoluteStartGroupEnd, 2n, 0n, 4n).fetchRange(largest)).toEqual({
+        start: new Location(2n, 0n),
+        end: new Location(4n, MAX_U64),
+      })
+      expect(new LocationFilter(LocationFilterType.AbsoluteRange, 2n, 0n, 4n, 6n).fetchRange(largest)).toEqual({
+        start: new Location(2n, 0n),
+        end: new Location(4n, 6n),
+      })
+      expect(new LocationFilter(LocationFilterType.AbsoluteRange, 2n, 0n, 9n, 0n).fetchRange(largest)).toEqual({
+        start: new Location(2n, 0n),
+        end: largest,
+      })
+    })
+
+    test('a fetch range is empty when nothing precedes it', () => {
+      const largest = new Location(7n, 3n)
+      expect(new LocationFilter(LocationFilterType.NextObject).fetchRange(largest)).toBeUndefined()
+      expect(new LocationFilter(LocationFilterType.RelativeStart, 0n).fetchRange(largest)).toBeUndefined()
+      expect(new LocationFilter(LocationFilterType.AbsoluteStart, 8n, 0n).fetchRange(largest)).toBeUndefined()
+      expect(new LocationFilter(LocationFilterType.None).fetchRange()).toBeUndefined()
     })
 
     test('fromKeyValuePair returns undefined for wrong type', () => {

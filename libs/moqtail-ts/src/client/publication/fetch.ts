@@ -41,6 +41,7 @@ export class FetchPublication {
   readonly #requestId: bigint
   readonly #track: Track
   readonly #startLocation: Location
+  /** The last Location to send, inclusive. */
   readonly #endLocation: Location
   readonly #msg: Fetch
   readonly #client: MOQtailClient
@@ -51,13 +52,14 @@ export class FetchPublication {
   #objects: MoqtObject[] | undefined
   #isCanceled = false
 
-  constructor(client: MOQtailClient, track: Track, fetchRequest: Fetch) {
+  /** `start` and `end` are the FETCH's range resolved against the Largest Object, inclusive. */
+  constructor(client: MOQtailClient, track: Track, fetchRequest: Fetch, start: Location, end: Location) {
     this.#client = client
     this.#requestId = fetchRequest.requestId
     this.#track = track
     this.#msg = fetchRequest
-    this.#startLocation = fetchRequest.startLocation
-    this.#endLocation = fetchRequest.endLocation
+    this.#startLocation = start
+    this.#endLocation = end
     // The handler has already refused a FETCH with filters that cannot be applied.
     this.#filter = new CombinedFilter(fetchRequest.parameters)
     logger.debug('publication/fetch', `created requestId=${this.#requestId}`)
@@ -87,7 +89,10 @@ export class FetchPublication {
       `publishing requestId=${this.#requestId} start=${this.#startLocation} end=${this.#endLocation}`,
     )
     try {
-      this.#objects = await this.#track.trackSource.past.getRange(this.#startLocation, this.#endLocation)
+      // getRange stops before its end, and #endLocation is the last Object to send, so
+      // the end is applied here.
+      const objects = await this.#track.trackSource.past.getRange(this.#startLocation)
+      this.#objects = objects.filter((obj) => obj.location.compare(this.#endLocation) <= 0)
       // TODO: Calculate and use stream priority from subscriber priority from the msg + publisher priority from the track
       this.#stream = await this.#client.webTransport.createUnidirectionalStream()
       this.#writer = this.#stream.getWriter()

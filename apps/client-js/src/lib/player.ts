@@ -49,7 +49,7 @@ export interface PlayerOptions {
   namespace: Tuple;
   /** Whether to receive the catalog via SUBSCRIBE message. */
   receiveCatalogViaSubscribe?: boolean;
-  /** Catalog location (default: group 0, object 1) */
+  /** First and last catalog Objects to fetch, inclusive (default: group 0, object 0) */
   catalogLocation?: [Location, Location];
 }
 
@@ -57,7 +57,7 @@ const DefaultOptions: Required<PlayerOptions> = {
   relayUrl: 'moqt://relay.moqtail.dev',
   namespace: Tuple.fromUtf8Path('/moqtail'),
   receiveCatalogViaSubscribe: false,
-  catalogLocation: [new Location(0n, 0n), new Location(0n, 1n)],
+  catalogLocation: [new Location(0n, 0n), new Location(0n, 0n)],
 };
 
 export class Player {
@@ -456,8 +456,13 @@ export class Player {
         groupOrder: GroupOrder.Original,
         priority: 0,
         fullTrackName: getFullTrackName(this.#options.namespace, 'catalog'),
-        startLocation: startLoc,
-        endLocation: endLoc,
+        locationFilter: new LocationFilter(
+          LocationFilterType.AbsoluteRange,
+          startLoc.group,
+          startLoc.object,
+          endLoc.group,
+          endLoc.object,
+        ),
       });
       if (result instanceof RequestError) {
         logger.error(

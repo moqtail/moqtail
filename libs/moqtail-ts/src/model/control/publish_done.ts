@@ -70,7 +70,7 @@ if (import.meta.vitest) {
 
   describe('PublishDone', () => {
     test('roundtrip', () => {
-      const statusCode = PublishDoneStatusCode.SubscriptionEnded
+      const statusCode = PublishDoneStatusCode.TrackEnded
       const streamCount = 123n
       const errorReason = new ReasonPhrase('Lorem ipsum dolor sit amet')
       const publishDone = PublishDone.new(statusCode, streamCount, errorReason)
@@ -110,9 +110,16 @@ if (import.meta.vitest) {
       expect(Array.from(frozen.getBytes(3))).toEqual([9, 1, 1])
     })
 
+    test('the removed SUBSCRIPTION_ENDED code reads as internal error', () => {
+      // 0x3 was SUBSCRIPTION_ENDED. A peer that still sends it gets the same treatment
+      // as any other code this side does not know.
+      expect(() => PublishDoneStatusCode.tryFrom(0x3n)).toThrow()
+      expect(PublishDoneStatusCode.fromWire(0x3n)).toBe(PublishDoneStatusCode.InternalError)
+    })
+
     test('unknown stream count roundtrip', () => {
       const publishDone = new PublishDone(
-        PublishDoneStatusCode.SubscriptionEnded,
+        PublishDoneStatusCode.TrackEnded,
         PublishDone.UNKNOWN_STREAM_COUNT,
         new ReasonPhrase('unknown'),
       )

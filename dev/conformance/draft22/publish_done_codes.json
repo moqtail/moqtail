@@ -12,7 +12,6 @@
     { "name": "INTERNAL_ERROR", "value": "0x0", "spec": "Section 12.4" },
     { "name": "UNAUTHORIZED", "value": "0x1", "spec": "Section 12.4" },
     { "name": "TRACK_ENDED", "value": "0x2", "spec": "Section 12.4" },
-    { "name": "SUBSCRIPTION_ENDED", "value": "0x3", "spec": "Section 10.11" },
     { "name": "GOING_AWAY", "value": "0x4", "spec": "Section 12.4" },
     { "name": "TOO_FAR_BEHIND", "value": "0x5", "spec": "Section 12.4" },
     { "name": "EXPIRED", "value": "0x6", "spec": "Section 12.4" },

@@ -96,8 +96,24 @@ pub(crate) struct PendingUpstreamFetch {
 }
 
 enum UpstreamFetchResponse {
-  Accepted { end_location: Location },
-  Error(String),
+  Accepted {
+    end_location: Location,
+  },
+  /// The publisher answered with REQUEST_ERROR.
+  Rejected(Box<RequestError>),
+  /// The request failed without an answer from the publisher.
+  Failed(String),
+}
+
+/// What asking the publisher settled about a FETCH's range.
+enum UpstreamRange {
+  /// The publisher accepted, and its FETCH_OK gave the End Location.
+  Resolved(PendingUpstreamFetch),
+  /// The publisher refused the range. Its answer is authoritative.
+  Rejected(Box<RequestError>),
+  /// Nobody could say: no publisher to ask, no answer in time, or a REDIRECT, which
+  /// the relay does not follow.
+  Unanswered,
 }
 
 type UpstreamFetch = (
@@ -118,24 +134,24 @@ pub(crate) fn local_state_answers(known: &Option<Location>, requested_end: &Loca
 }
 
 /// Issues the upstream FETCH for the requested range and waits for its FETCH_OK, so the
-/// relay learns the End Location before answering. Updates `largest` from the answer
-/// and returns the fetch for the delivery loop to read the Objects from.
+/// relay learns the End Location before answering. On success, updates `largest` from
+/// the answer and returns the fetch for the delivery loop to read the Objects from.
 ///
 /// The downstream filter is sent upstream unchanged, so a relative start or a missing
 /// end is resolved against the publisher's Largest Object, not the relay's.
-///
-/// `None` when there is no publisher to ask, or it declines or stays silent; the caller
-/// then answers from local state, which is all the relay can honestly claim.
 async fn resolve_range_upstream(
   client: &Arc<MOQTClient>,
   context: &Arc<SessionContext>,
   track: &Arc<tokio::sync::RwLock<crate::server::track::Track>>,
   filter: LocationFilter,
   largest: &mut Option<Location>,
-) -> Option<PendingUpstreamFetch> {
-  let (relay_request_id, publisher, rx, response_rx) = {
+) -> UpstreamRange {
+  let sent = {
     let track_read = track.read().await;
-    send_upstream_fetch_for_range(client, context, &track_read, filter).await?
+    send_upstream_fetch_for_range(client, context, &track_read, filter).await
+  };
+  let Some((relay_request_id, publisher, rx, response_rx)) = sent else {
+    return UpstreamRange::Unanswered;
   };
 
   let response =
@@ -143,11 +159,11 @@ async fn resolve_range_upstream(
       Ok(Ok(response)) => response,
       Ok(Err(_)) => {
         warn!("Upstream FETCH {relay_request_id} ended before answering with FETCH_OK");
-        return None;
+        return UpstreamRange::Unanswered;
       }
       Err(_) => {
         warn!("Upstream FETCH {relay_request_id} was not answered in time");
-        return None;
+        return UpstreamRange::Unanswered;
       }
     };
 
@@ -158,16 +174,50 @@ async fn resolve_range_upstream(
       if largest.as_ref().is_none_or(|known| *known < end_location) {
         *largest = Some(end_location);
       }
-      Some(PendingUpstreamFetch {
+      UpstreamRange::Resolved(PendingUpstreamFetch {
         relay_request_id,
         publisher,
         rx,
       })
     }
-    UpstreamFetchResponse::Error(e) => {
-      warn!("Upstream FETCH {relay_request_id} rejected while resolving the range: {e}");
-      None
+    UpstreamFetchResponse::Rejected(err) => {
+      warn!(
+        "Upstream FETCH {relay_request_id} rejected while resolving the range: {:?}",
+        err.error_code
+      );
+      if err.error_code == RequestErrorCode::Redirect {
+        UpstreamRange::Unanswered
+      } else {
+        UpstreamRange::Rejected(err)
+      }
     }
+    UpstreamFetchResponse::Failed(e) => {
+      warn!("Upstream FETCH {relay_request_id} failed while resolving the range: {e}");
+      UpstreamRange::Unanswered
+    }
+  }
+}
+
+/// What to do with a FETCH whose range came out empty against the Largest Object the
+/// relay knows: the range to serve anyway, or the error to answer with.
+///
+/// A publisher that refused the range has said what the track holds, so its error is
+/// passed on. Only when nobody could say, and a publisher might still deliver, is the
+/// request served as written; a filter without both ends cannot be.
+fn empty_range_outcome(
+  filter: &LocationFilter,
+  upstream_rejection: Option<&RequestError>,
+  has_upstream_publisher: bool,
+) -> Result<(Location, Location), (RequestErrorCode, ReasonPhrase)> {
+  if let Some(err) = upstream_rejection {
+    return Err((err.error_code, err.reason_phrase.clone()));
+  }
+  match unresolved_fetch_range(filter) {
+    Some(range) if has_upstream_publisher => Ok(range),
+    _ => Err((
+      RequestErrorCode::InvalidRange,
+      ReasonPhrase::try_new(String::from("Invalid range")).unwrap(),
+    )),
   }
 }
 
@@ -307,8 +357,9 @@ pub async fn handle(
         let answered_locally = requested_end
           .as_ref()
           .is_some_and(|end| local_state_answers(&largest, end));
-        if !answered_locally
-          && let Some(pending) = resolve_range_upstream(
+        let mut upstream_rejection = None;
+        if !answered_locally {
+          match resolve_range_upstream(
             &client,
             &context,
             &track,
@@ -316,8 +367,11 @@ pub async fn handle(
             &mut largest,
           )
           .await
-        {
-          pending_upstream = Some(pending);
+          {
+            UpstreamRange::Resolved(pending) => pending_upstream = Some(pending),
+            UpstreamRange::Rejected(err) => upstream_rejection = Some(err),
+            UpstreamRange::Unanswered => {}
+          }
         }
         match resolve_fetch_range(&location_filter, largest.clone()) {
           Ok(range) => range,
@@ -329,26 +383,22 @@ pub async fn handle(
             return Err(TerminationCode::ProtocolViolation);
           }
           Err(FetchRangeError::InvalidRange) => {
-            // Only authoritative when there is no upstream publisher that could
-            // still serve the range; otherwise fall through to upstream fetch.
-            let fallback = unresolved_fetch_range(&location_filter);
-            if let Some(range) = fallback
-              && has_upstream_publisher(&context, &track).await
-            {
-              range
-            } else {
-              warn!(
-                "FETCH request {}: INVALID_RANGE ({:?}, largest {:?})",
-                request_id, location_filter, largest
-              );
-              send_request_error(
-                client.clone(),
-                request_id,
-                RequestErrorCode::InvalidRange,
-                ReasonPhrase::try_new(String::from("Invalid range")).unwrap(),
-              )
-              .await;
-              return Ok(());
+            let has_publisher =
+              upstream_rejection.is_none() && has_upstream_publisher(&context, &track).await;
+            match empty_range_outcome(
+              &location_filter,
+              upstream_rejection.as_deref(),
+              has_publisher,
+            ) {
+              Ok(range) => range,
+              Err((error_code, reason_phrase)) => {
+                warn!(
+                  "FETCH request {}: {:?} ({:?}, largest {:?})",
+                  request_id, error_code, location_filter, largest
+                );
+                send_request_error(client.clone(), request_id, error_code, reason_phrase).await;
+                return Ok(());
+              }
             }
           }
         }
@@ -582,7 +632,7 @@ async fn send_upstream_fetch_for_range(
           "upstream FETCH {} rejected: {:?}",
           relay_request_id, err.error_code
         );
-        let _ = response_tx.send(UpstreamFetchResponse::Error(error.clone()));
+        let _ = response_tx.send(UpstreamFetchResponse::Rejected(err));
         // Tell the waiting gap loop now instead of letting it sit until its timeout.
         let _ = response_event_tx
           .send(UpstreamFetchEvent::Error(error))
@@ -595,7 +645,7 @@ async fn send_upstream_fetch_for_range(
           "upstream FETCH {} failed: publisher sent REQUEST_UPDATE",
           relay_request_id
         );
-        let _ = response_tx.send(UpstreamFetchResponse::Error(error.clone()));
+        let _ = response_tx.send(UpstreamFetchResponse::Failed(error.clone()));
         let _ = response_event_tx
           .send(UpstreamFetchEvent::Error(error))
           .await;
@@ -1112,8 +1162,14 @@ pub(crate) async fn serve_fetch_stream(
 
 #[cfg(test)]
 mod tests {
-  use super::{FetchRangeError, local_state_answers, resolve_fetch_range, unresolved_fetch_range};
+  use super::{
+    FetchRangeError, empty_range_outcome, local_state_answers, resolve_fetch_range,
+    unresolved_fetch_range,
+  };
   use moqtail::model::common::location::Location;
+  use moqtail::model::common::reason_phrase::ReasonPhrase;
+  use moqtail::model::control::request_error::RequestError;
+  use moqtail::model::error::RequestErrorCode;
   use moqtail::model::parameter::location_filter::LocationFilter;
 
   fn loc(group: u64, object: u64) -> Location {
@@ -1237,6 +1293,66 @@ mod tests {
       None
     );
     assert_eq!(unresolved_fetch_range(&LocationFilter::None), None);
+  }
+
+  #[test]
+  fn a_publishers_refusal_is_passed_on() {
+    let refusal = RequestError::new(
+      RequestErrorCode::InvalidRange,
+      0,
+      ReasonPhrase::try_new("nothing there".to_string()).unwrap(),
+    );
+    let (code, reason) =
+      empty_range_outcome(&range(loc(950, 0), loc(960, 0)), Some(&refusal), true).unwrap_err();
+    assert_eq!(code, RequestErrorCode::InvalidRange);
+    assert_eq!(reason, refusal.reason_phrase);
+  }
+
+  #[test]
+  fn a_refusal_keeps_the_publishers_error_code() {
+    let refusal = RequestError::new(
+      RequestErrorCode::DoesNotExist,
+      0,
+      ReasonPhrase::try_new("gone".to_string()).unwrap(),
+    );
+    assert_eq!(
+      empty_range_outcome(&range(loc(1, 0), loc(2, 0)), Some(&refusal), true)
+        .unwrap_err()
+        .0,
+      RequestErrorCode::DoesNotExist
+    );
+  }
+
+  #[test]
+  fn with_no_answer_a_publisher_may_still_serve_a_range_with_both_ends() {
+    assert_eq!(
+      empty_range_outcome(&range(loc(1, 0), loc(2, 3)), None, true),
+      Ok((loc(1, 0), loc(2, 3)))
+    );
+  }
+
+  #[test]
+  fn with_no_answer_and_no_publisher_the_range_is_invalid() {
+    assert_eq!(
+      empty_range_outcome(&range(loc(1, 0), loc(2, 3)), None, false)
+        .unwrap_err()
+        .0,
+      RequestErrorCode::InvalidRange
+    );
+  }
+
+  #[test]
+  fn with_no_answer_a_range_without_an_end_is_invalid() {
+    assert_eq!(
+      empty_range_outcome(
+        &LocationFilter::AbsoluteStart { start: loc(1, 0) },
+        None,
+        true
+      )
+      .unwrap_err()
+      .0,
+      RequestErrorCode::InvalidRange
+    );
   }
 
   #[test]

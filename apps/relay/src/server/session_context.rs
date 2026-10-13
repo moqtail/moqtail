@@ -14,9 +14,10 @@
 
 use std::{
   collections::BTreeMap,
+  hash::{BuildHasher, Hasher, RandomState},
   sync::{
-    Arc,
-    atomic::{AtomicBool, AtomicU64},
+    Arc, LazyLock,
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
   },
 };
 use tokio::sync::{RwLock, mpsc};
@@ -108,6 +109,15 @@ pub struct SessionContext {
   pub(crate) draining: Arc<AtomicBool>,
 }
 
+static NEXT_CONNECTION_ID: LazyLock<AtomicUsize> = LazyLock::new(|| {
+  let seed = RandomState::new().build_hasher().finish() as u32;
+  AtomicUsize::new(seed as usize)
+});
+
+fn next_connection_id() -> usize {
+  NEXT_CONNECTION_ID.fetch_add(1, Ordering::Relaxed)
+}
+
 impl SessionContext {
   #[allow(clippy::too_many_arguments)]
   pub fn new(
@@ -124,7 +134,7 @@ impl SessionContext {
       client_manager,
       track_manager,
       relay_pending_requests: request_maps.relay_pending_requests,
-      connection_id: connection.stable_id(),
+      connection_id: next_connection_id(),
       transport_kind: connection.kind(),
       client: Arc::new(RwLock::new(None)), // initially no client is set
       connection,
@@ -144,5 +154,21 @@ impl SessionContext {
 
   pub async fn get_client(&self) -> Option<Arc<MOQTClient>> {
     self.client.read().await.clone()
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::next_connection_id;
+
+  // The only test that draws ids: another one running in parallel would take ids
+  // in between and throw off the difference.
+  #[test]
+  fn connection_ids_incrementing() {
+    let first = next_connection_id();
+    next_connection_id();
+    next_connection_id();
+    let last = next_connection_id();
+    assert_eq!(last.wrapping_sub(first), 3);
   }
 }

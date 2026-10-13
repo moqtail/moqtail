@@ -3772,7 +3772,7 @@ if (import.meta.vitest) {
       // Its streams are already done when the count arrives, which is the ordinary
       // way round for a drain: the publisher stops, then says how much it sent.
       old.streamsAccepted = 2n
-      firstStream.respond(new PublishDone(PublishDoneStatusCode.SubscriptionEnded, 2n, new ReasonPhrase('')))
+      firstStream.respond(new PublishDone(PublishDoneStatusCode.TrackEnded, 2n, new ReasonPhrase('')))
 
       await vi.waitFor(() => expect(client.requests.has(firstId)).toBe(false))
       expect(firstStream.isClosed).toBe(true)

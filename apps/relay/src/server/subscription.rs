@@ -960,12 +960,7 @@ impl Subscription {
       .await;
 
     if plan.publish_done
-      && let Err(e) = suspending
-        .send_publish_done(
-          PublishDoneStatusCode::SubscriptionEnded,
-          "switched away from",
-        )
-        .await
+      && let Err(e) = suspending.send_switched_away().await
     {
       error!(
         "switch: failed to send PUBLISH_DONE to the suspended subscription: {:?}",
@@ -1046,13 +1041,7 @@ impl Subscription {
     );
 
     if publish_done {
-      if let Err(e) = self
-        .send_publish_done(
-          PublishDoneStatusCode::SubscriptionEnded,
-          "switched away from",
-        )
-        .await
-      {
+      if let Err(e) = self.send_switched_away().await {
         error!(
           "switch: failed to send PUBLISH_DONE after the drain: {:?}",
           e
@@ -1910,6 +1899,13 @@ impl Subscription {
   /// and stream_id to avoid stream naming collisions in the client
   fn new_send_stream_key(&self, stream_id: &StreamId) -> SendStreamKey {
     SendStreamKey::new(self.request_id, stream_id.clone())
+  }
+
+  /// The PUBLISH_DONE a switch sends on the subscription it suspends.
+  async fn send_switched_away(&self) -> Result<(), anyhow::Error> {
+    self
+      .send_publish_done(PublishDoneStatusCode::TrackEnded, "switched away from")
+      .await
   }
 
   /// Send PublishDone message to this subscriber

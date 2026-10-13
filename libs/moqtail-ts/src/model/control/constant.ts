@@ -276,7 +276,6 @@ export enum PublishDoneStatusCode {
   InternalError = 0x0,
   Unauthorized = 0x1,
   TrackEnded = 0x2,
-  SubscriptionEnded = 0x3,
   GoingAway = 0x4,
   TooFarBehind = 0x5,
   Expired = 0x6,
@@ -300,8 +299,6 @@ export namespace PublishDoneStatusCode {
         return PublishDoneStatusCode.Unauthorized
       case 0x2n:
         return PublishDoneStatusCode.TrackEnded
-      case 0x3n:
-        return PublishDoneStatusCode.SubscriptionEnded
       case 0x4n:
         return PublishDoneStatusCode.GoingAway
       case 0x5n:

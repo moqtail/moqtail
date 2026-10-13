@@ -96,7 +96,7 @@ mod tests {
 
   #[test]
   fn test_roundtrip() {
-    let status_code = PublishDoneStatusCode::SubscriptionEnded;
+    let status_code = PublishDoneStatusCode::TrackEnded;
     let stream_count = 9;
     let reason_phrase = ReasonPhrase::try_new("It's not you, it's me.".to_string()).unwrap();
     let subscribe_done = PublishDone {
@@ -116,7 +116,7 @@ mod tests {
 
   #[test]
   fn test_excess_roundtrip() {
-    let status_code = PublishDoneStatusCode::SubscriptionEnded;
+    let status_code = PublishDoneStatusCode::TrackEnded;
     let stream_count = 9;
     let reason_phrase = ReasonPhrase::try_new("It's not you, it's me.".to_string()).unwrap();
     let subscribe_done = PublishDone {
@@ -143,7 +143,7 @@ mod tests {
   #[test]
   fn test_unknown_stream_count_roundtrip() {
     let subscribe_done = PublishDone::new(
-      PublishDoneStatusCode::SubscriptionEnded,
+      PublishDoneStatusCode::TrackEnded,
       PublishDone::UNKNOWN_STREAM_COUNT,
       ReasonPhrase::try_new("unknown".to_string()).unwrap(),
     );
@@ -156,8 +156,19 @@ mod tests {
   }
 
   #[test]
+  fn the_removed_subscription_ended_code_reads_as_internal_error() {
+    // 0x3 was SUBSCRIPTION_ENDED. A peer that still sends it gets the same treatment
+    // as any other code this side does not know.
+    assert!(PublishDoneStatusCode::try_from(0x3).is_err());
+    assert_eq!(
+      PublishDoneStatusCode::from_wire(0x3),
+      PublishDoneStatusCode::InternalError
+    );
+  }
+
+  #[test]
   fn test_partial_message() {
-    let status_code = PublishDoneStatusCode::SubscriptionEnded;
+    let status_code = PublishDoneStatusCode::TrackEnded;
     let stream_count = 9;
     let reason_phrase = ReasonPhrase::try_new("It's not you, it's me.".to_string()).unwrap();
     let subscribe_done = PublishDone {

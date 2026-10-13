@@ -232,48 +232,10 @@ impl From<TrackStatusCode> for u64 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u64)]
-pub enum SubscribeDoneStatusCode {
-  InternalError = 0x0,
-  Unauthorized = 0x1,
-  TrackEnded = 0x2,
-  SubscriptionEnded = 0x3,
-  GoingAway = 0x4,
-  Expired = 0x5,
-  TooFarBehind = 0x6,
-}
-impl TryFrom<u64> for SubscribeDoneStatusCode {
-  type Error = ParseError;
-
-  fn try_from(value: u64) -> Result<Self, Self::Error> {
-    match value {
-      0x0 => Ok(SubscribeDoneStatusCode::InternalError),
-      0x1 => Ok(SubscribeDoneStatusCode::Unauthorized),
-      0x2 => Ok(SubscribeDoneStatusCode::TrackEnded),
-      0x3 => Ok(SubscribeDoneStatusCode::SubscriptionEnded),
-      0x4 => Ok(SubscribeDoneStatusCode::GoingAway),
-      0x5 => Ok(SubscribeDoneStatusCode::Expired),
-      0x6 => Ok(SubscribeDoneStatusCode::TooFarBehind),
-      _ => Err(ParseError::InvalidType {
-        context: "SubscribeDoneStatusCode::try_from(u64)",
-        details: format!("Invalid type, got {value}"),
-      }),
-    }
-  }
-}
-
-impl From<SubscribeDoneStatusCode> for u64 {
-  fn from(value: SubscribeDoneStatusCode) -> Self {
-    value as u64
-  }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u64)]
 pub enum PublishDoneStatusCode {
   InternalError = 0x0,
   Unauthorized = 0x1,
   TrackEnded = 0x2,
-  SubscriptionEnded = 0x3,
   GoingAway = 0x4,
   TooFarBehind = 0x5,
   Expired = 0x6,
@@ -290,7 +252,6 @@ impl TryFrom<u64> for PublishDoneStatusCode {
       0x0 => Ok(PublishDoneStatusCode::InternalError),
       0x1 => Ok(PublishDoneStatusCode::Unauthorized),
       0x2 => Ok(PublishDoneStatusCode::TrackEnded),
-      0x3 => Ok(PublishDoneStatusCode::SubscriptionEnded),
       0x4 => Ok(PublishDoneStatusCode::GoingAway),
       0x5 => Ok(PublishDoneStatusCode::TooFarBehind),
       0x6 => Ok(PublishDoneStatusCode::Expired),

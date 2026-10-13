@@ -135,9 +135,10 @@ pub fn downstream_publish(
 ///
 /// The range is not among these: the caller adds it as LOCATION_FILTER. That is either
 /// the groups the relay is missing, or the downstream FETCH's own filter when only the
-/// publisher knows how far it reaches. No other downstream parameter crosses the hop.
-pub fn upstream_fetch() -> Vec<MessageParameter> {
-  vec![MessageParameter::new_group_order(GroupOrder::Ascending)]
+/// publisher knows how far it reaches. Besides the range, only the group order crosses
+/// the hop: the relay writes the Objects downstream in the order they arrive.
+pub fn upstream_fetch(group_order: GroupOrder) -> Vec<MessageParameter> {
+  vec![MessageParameter::new_group_order(group_order)]
 }
 
 /// The larger of what an upstream told the relay and what the relay has seen itself.

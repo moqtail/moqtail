@@ -452,6 +452,12 @@ pub struct Subscription {
   /// Used to open a QUIC send stream for a new mid-group subscriber with the exact
   /// original header rather than a synthesized one.
   active_subgroup_headers: ActiveSubgroupHeaderMap,
+  /// Headers of upstream streams whose first Object this subscription skipped, held
+  /// until a later Object of the stream passes and opens it here, or the stream ends.
+  /// `active_subgroup_headers` cannot serve this: the track drops a stream's entry
+  /// as soon as the stream ends, while this subscription may still have that
+  /// stream's Objects queued.
+  skipped_stream_headers: Arc<Mutex<HashMap<StreamId, HeaderInfo>>>,
   /// Set once the control message carrying this subscriber's track alias has gone out
   /// (SUBSCRIBE_OK, or PUBLISH when the relay pushes). Data streams carry only the
   /// alias, so a subscriber that gets one first cannot place it and drops the objects.
@@ -512,6 +518,7 @@ impl Subscription {
       pending_switch: Arc::new(AtomicBool::new(false)),
       pending_header: Arc::new(Mutex::new(None)),
       active_subgroup_headers,
+      skipped_stream_headers: Arc::new(Mutex::new(HashMap::new())),
       alias_announced: Arc::new(AtomicBool::new(false)),
       alias_announced_notify: Arc::new(Notify::new()),
       fill_streams: Arc::new(RwLock::new(HashMap::new())),
@@ -1278,6 +1285,8 @@ impl Subscription {
               "Object before start location for subscriber={} relay_track_id={} object location: {:?} start location: {:?}",
               self.client_connection_id, self.relay_track_id, object.location, start
             );
+            // A start location inside this subgroup lets a later Object through.
+            self.hold_skipped_header(&stream_id, header_info).await;
             return;
           }
 
@@ -1316,10 +1325,10 @@ impl Subscription {
 
           // Checked last, so a drain still sees the Object past its boundary. A
           // filtered Object opens no stream: if a later one in the subgroup passes,
-          // the stream opens then, from the cached header, restated for a stream
-          // that starts mid-subgroup. An Object ID is encoded against the previous
-          // Object on the same stream, and the relay records the last one it wrote
-          // to each stream, so a skipped Object leaves the encoding intact. A Prior
+          // the stream opens then, from the header held for it, restated for a
+          // stream that starts mid-subgroup. An Object ID is encoded against the
+          // previous Object on the same stream, and the relay records the last one it
+          // wrote to each stream, so a skipped Object leaves the encoding intact. A Prior
           // Object ID Gap passes through unchanged: it only ever counts IDs that do
           // not exist, never ones filtered out.
           if !state.range_filter.matches_object(&object) {
@@ -1331,6 +1340,7 @@ impl Subscription {
               object.subgroup_id,
               object.publisher_priority
             );
+            self.hold_skipped_header(&stream_id, header_info).await;
             return;
           }
         }
@@ -1465,14 +1475,19 @@ impl Subscription {
           {
             Some(s) => Some(s),
             None => {
-              // New subscriber joined mid-subgroup. Look up the original header
-              // from the track-level cache and open a QUIC send stream with it.
-              let cached = self
-                .active_subgroup_headers
-                .read()
-                .await
-                .get(&stream_id)
-                .cloned();
+              // The stream's first Object was skipped here, or this subscriber
+              // joined mid-subgroup: open the send stream from the original header,
+              // held by this subscription or else in the track-level cache.
+              let held = self.skipped_stream_headers.lock().await.remove(&stream_id);
+              let cached = match held {
+                Some(h) => Some(h),
+                None => self
+                  .active_subgroup_headers
+                  .read()
+                  .await
+                  .get(&stream_id)
+                  .cloned(),
+              };
               if let Some(h) = cached {
                 trace!(
                   "mid-subgroup join: opening stream from cached header for subscriber={} relay_track_id={} stream_id={}",
@@ -1682,6 +1697,18 @@ impl Subscription {
     }
   }
 
+  /// Holds the header that came with a skipped Object, which is the first of its
+  /// stream, so that a later Object of the stream that passes can open it.
+  async fn hold_skipped_header(&self, stream_id: &StreamId, header_info: Option<HeaderInfo>) {
+    if let Some(header) = header_info {
+      self
+        .skipped_stream_headers
+        .lock()
+        .await
+        .insert(stream_id.clone(), header);
+    }
+  }
+
   async fn handle_header(
     &self,
     header_info: HeaderInfo,
@@ -1830,6 +1857,9 @@ impl Subscription {
     let mut send_stream_last_object_ids = self.send_stream_last_object_ids.write().await;
     send_stream_last_object_ids.remove(stream_id);
     drop(send_stream_last_object_ids); // Release the lock immediately
+
+    // A header still held belongs to a stream none of whose Objects passed.
+    self.skipped_stream_headers.lock().await.remove(stream_id);
 
     // Perform graceful stream closure in a separate task to avoid blocking
     // the main subscription event loop. This is critical for real-time media streaming

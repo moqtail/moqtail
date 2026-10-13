@@ -166,8 +166,13 @@ impl TrackCache {
       .get_with(cache_key, async { Arc::new(RwLock::new(Vec::new())) })
       .await;
 
+    // Subgroups of a group arrive on separate streams and interleave, but a FETCH
+    // serializes Object IDs as ascending deltas, so the group is kept sorted.
     let mut objects = group_objects.write().await;
-    objects.push(object);
+    match objects.binary_search_by_key(&object.object_id, |o| o.object_id) {
+      Ok(_) => return,
+      Err(pos) => objects.insert(pos, object),
+    }
     trace!(
       "track_cache::add_object | added object to group | track: {} group: {} total_objects: {}",
       self.relay_track_id,
@@ -225,6 +230,23 @@ mod tests {
   }
 
   const SUBGROUPS: u64 = 8;
+
+  #[tokio::test]
+  async fn interleaved_subgroups_are_stored_in_object_order() {
+    let config = AppConfig::from_cli(Cli::parse_from(["relay"]));
+    let cache = TrackCache::new(1, 10_000, &config);
+
+    // Subgroup 1 runs ahead of subgroup 0, and one object is delivered twice.
+    for (subgroup_id, object_id) in [(1, 3), (1, 4), (0, 0), (0, 1), (1, 4), (0, 2)] {
+      let mut o = object(0, subgroup_id);
+      o.object_id = object_id;
+      cache.add_object(o).await;
+    }
+
+    let group = cache.get_group(0).await.unwrap();
+    let ids: Vec<u64> = group.read().await.iter().map(|o| o.object_id).collect();
+    assert_eq!(ids, vec![0, 1, 2, 3, 4]);
+  }
 
   #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
   async fn first_objects_of_concurrent_subgroups_all_land_in_the_group() {

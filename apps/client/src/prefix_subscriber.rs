@@ -30,8 +30,8 @@ use moqtail::model::control::request_ok::RequestOk;
 use moqtail::model::control::subscribe_namespace::SubscribeNamespace;
 use moqtail::model::control::subscribe_tracks::SubscribeTracks;
 use moqtail::model::error::{StreamResetCode, TerminationCode};
+use moqtail::model::parameter::combined_filter::{CombinedFilter, ObjectFields};
 use moqtail::model::parameter::message_parameter::MessageParameter;
-use moqtail::model::parameter::net_filter::{NetFilter, ObjectFields};
 use moqtail::transport::connection::TransportConnection;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use moqtail::transport::data_stream_handler::RecvDataStream;
@@ -69,7 +69,7 @@ struct TrackState {
   stats: ReceptionStats,
   /// What the Range Filters let through for this track, once its PUBLISH has said
   /// what its Track Properties are. Empty when there are no filters.
-  filter: NetFilter,
+  filter: CombinedFilter,
 }
 
 impl TrackState {
@@ -77,7 +77,7 @@ impl TrackState {
     Self {
       name,
       stats: ReceptionStats::new(),
-      filter: NetFilter::default(),
+      filter: CombinedFilter::default(),
     }
   }
 }
@@ -90,7 +90,7 @@ type Tracks = Arc<Mutex<HashMap<u64, TrackState>>>;
 /// should have kept back.
 #[derive(Clone, Default)]
 struct TrackFilter {
-  filter: NetFilter,
+  filter: CombinedFilter,
   excluded_pushes: Arc<Mutex<Vec<String>>>,
 }
 
@@ -113,9 +113,9 @@ pub async fn run(moq: MoqConnection, config: PrefixSubscribeConfig) -> Result<()
     vec![]
   };
   let track_filter = TrackFilter {
-    filter: NetFilter::new(&parameters).unwrap_or_else(|e| {
+    filter: CombinedFilter::new(&parameters).unwrap_or_else(|e| {
       warn!("Requesting range filters the server has to refuse ({e})");
-      NetFilter::default()
+      CombinedFilter::default()
     }),
     ..Default::default()
   };
@@ -380,7 +380,7 @@ fn accept_pushed_publishes(
                   .lock()
                   .unwrap()
                   .push(name.clone());
-                NetFilter::default()
+                CombinedFilter::default()
               }
             };
             // An object can beat its PUBLISH here, so the entry may already exist

@@ -59,12 +59,12 @@ impl<'a> From<&'a Object> for ObjectFields<'a> {
 /// Ranges within one filter are OR'd, filters sharing a SetID are AND'd, and the
 /// SetIDs are OR'd with each other. No filter at all passes everything.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct NetFilter {
+pub struct CombinedFilter {
   sets: BTreeMap<u8, FilterSet>,
   range_count: u64,
 }
 
-impl NetFilter {
+impl CombinedFilter {
   /// Builds the filter from every Range Filter in `params`, track filters
   /// included; anything else, and a zero-length removal, is ignored.
   ///
@@ -143,7 +143,7 @@ impl NetFilter {
   /// The object filter a track with `properties` is subscribed with: the sets whose
   /// track criteria it passes, with those criteria dropped. `None` when no set
   /// passes it, so the track is not to be offered at all.
-  pub fn narrow_for_track(&self, properties: &[TrackProperty]) -> Option<NetFilter> {
+  pub fn narrow_for_track(&self, properties: &[TrackProperty]) -> Option<CombinedFilter> {
     if self.is_empty() {
       return Some(Self::default());
     }
@@ -323,7 +323,7 @@ mod tests {
 
   #[test]
   fn no_filter_passes_everything() {
-    let net = NetFilter::new(&[
+    let net = CombinedFilter::new(&[
       MessageParameter::new_forward(true),
       MessageParameter::new_range_filter_removal(RangeFilterKind::ObjectId),
     ])
@@ -334,7 +334,7 @@ mod tests {
 
   #[test]
   fn ranges_within_one_filter_are_ored() {
-    let net = NetFilter::new(&[filter(
+    let net = CombinedFilter::new(&[filter(
       RangeFilterKind::ObjectId,
       0,
       &[Range::new(0, 1), Range::new(5, 5)],
@@ -350,7 +350,7 @@ mod tests {
 
   #[test]
   fn filters_sharing_a_set_are_anded_and_sets_are_ored() {
-    let net = NetFilter::new(&[
+    let net = CombinedFilter::new(&[
       filter(RangeFilterKind::ObjectId, 0, &[Range::new(0, 0)]),
       filter(RangeFilterKind::Priority, 0, &[Range::new(0, 63)]),
       filter(RangeFilterKind::Subgroup, 1, &[Range::new(3, 3)]),
@@ -364,14 +364,15 @@ mod tests {
 
   #[test]
   fn a_subgroup_filter_passes_no_datagram() {
-    let net = NetFilter::new(&[filter(RangeFilterKind::Subgroup, 0, &[Range::open(0)])]).unwrap();
+    let net =
+      CombinedFilter::new(&[filter(RangeFilterKind::Subgroup, 0, &[Range::open(0)])]).unwrap();
     assert!(net.matches(fields(Some(0), 0, 0)));
     assert!(!net.matches(fields(None, 0, 0)));
   }
 
   #[test]
   fn a_property_filter_needs_the_property_and_looks_inside_immutable_properties() {
-    let net = NetFilter::new(&[filter(
+    let net = CombinedFilter::new(&[filter(
       RangeFilterKind::ObjectProperty,
       0,
       &[Range::new(10, 20)],
@@ -394,7 +395,7 @@ mod tests {
 
   #[test]
   fn a_repeated_type_set_and_property_is_invalid() {
-    let err = NetFilter::new(&[
+    let err = CombinedFilter::new(&[
       filter(RangeFilterKind::ObjectId, 0, &[Range::new(0, 0)]),
       filter(RangeFilterKind::ObjectId, 0, &[Range::new(4, 4)]),
     ])
@@ -406,7 +407,7 @@ mod tests {
       RangeFilter::new(0, Some(0x3E), &[Range::open(0)]).unwrap(),
     );
     assert!(
-      NetFilter::new(&[
+      CombinedFilter::new(&[
         filter(RangeFilterKind::ObjectProperty, 0, &[Range::open(0)]),
         other_property,
       ])
@@ -417,9 +418,9 @@ mod tests {
   #[test]
   fn a_track_filter_has_no_place_where_objects_are_chosen() {
     let params = [filter(RangeFilterKind::TrackProperty, 0, &[Range::open(0)])];
-    assert!(NetFilter::new(&params).is_ok());
+    assert!(CombinedFilter::new(&params).is_ok());
     assert_eq!(
-      NetFilter::for_objects(&params),
+      CombinedFilter::for_objects(&params),
       Err(RangeFilterError::TrackFilterOnObjects)
     );
   }
@@ -431,7 +432,7 @@ mod tests {
         kvp: KeyValuePair::try_new_varint(0x3C, value).unwrap(),
       }]
     };
-    let net = NetFilter::new(&[
+    let net = CombinedFilter::new(&[
       // Set 0: tracks with property 0x3C in 1-1, object 0 only.
       filter(RangeFilterKind::TrackProperty, 0, &[Range::new(1, 1)]),
       filter(RangeFilterKind::ObjectId, 0, &[Range::new(0, 0)]),
@@ -452,8 +453,8 @@ mod tests {
     assert_eq!(net.narrow_for_track(&track(3)), None);
     assert_eq!(net.narrow_for_track(&[]), None);
     assert_eq!(
-      NetFilter::default().narrow_for_track(&[]),
-      Some(NetFilter::default())
+      CombinedFilter::default().narrow_for_track(&[]),
+      Some(CombinedFilter::default())
     );
   }
 

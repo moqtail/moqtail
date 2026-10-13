@@ -28,10 +28,10 @@ use moqtail::model::control::{
 };
 use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::model::error::{RequestErrorCode, TerminationCode};
+use moqtail::model::parameter::combined_filter::CombinedFilter;
 use moqtail::model::parameter::constant::MessageParameterType;
 use moqtail::model::parameter::message_parameter::apply_message_parameter_update;
 use moqtail::model::parameter::message_parameter::{MessageParameter, MessageParameterVecExt};
-use moqtail::model::parameter::net_filter::NetFilter;
 use moqtail::model::property::track_property::has_unsupported_mandatory;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
@@ -565,7 +565,7 @@ pub(crate) async fn push_track_to_subscriber(
   {
     let sub = subscription.read().await;
     let mut state = sub.subscription_state.write().await;
-    state.range_filter = NetFilter::for_objects(&range_filters).unwrap_or_default();
+    state.range_filter = CombinedFilter::for_objects(&range_filters).unwrap_or_default();
     state.subscribe_parameters.extend(range_filters);
   }
 

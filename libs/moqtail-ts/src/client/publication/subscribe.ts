@@ -18,7 +18,7 @@ import { Subscribe, PublishDone, PublishDoneStatusCode, RequestUpdate } from '@/
 import { MOQtailClient } from '../client'
 import { Track } from '../track/track'
 import { InternalError, Location, ReasonPhrase, MessageParameter, applyMessageParameterUpdate } from '@/model'
-import { NetFilter } from '@/model/parameter/message/net_filter'
+import { CombinedFilter } from '@/model/parameter/message/combined_filter'
 import { SendStream } from '../data_stream'
 import { RequestStream } from '../request_stream'
 import { MoqtObject } from '@/model/data/object'
@@ -77,7 +77,7 @@ export class SubscribePublication {
   /**
    * What the subscription's Range Filters let through.
    */
-  #filter: NetFilter
+  #filter: CombinedFilter
 
   /**
    * The Subgroup ID of each Object, which the filter and the stream header need.
@@ -151,7 +151,7 @@ export class SubscribePublication {
     this.#forward = fwd?.forward ?? true
     this.#parameters = [...subscribeMsg.parameters]
     // The handler has already refused a SUBSCRIBE with filters that cannot be applied.
-    this.#filter = new NetFilter(this.#parameters)
+    this.#filter = new CombinedFilter(this.#parameters)
     // No filter starts at the beginning and never ends.
     this.#startLocation = filter?.startLocation(largestLocation) ?? new Location(0n, 0n)
     this.#endLocation = filter?.endLocation()
@@ -201,7 +201,7 @@ export class SubscribePublication {
     const parameters = [...this.#parameters]
     applyMessageParameterUpdate(parameters, msg.parameters)
     assertWithinFilterRangeLimit(parameters, this.client.maxFilterRanges, 'REQUEST_UPDATE')
-    this.#filter = new NetFilter(parameters)
+    this.#filter = new CombinedFilter(parameters)
 
     // An update changes the filter only when it carries one.
     const filter = msg.parameters.find(MessageParameter.isLocationFilter)

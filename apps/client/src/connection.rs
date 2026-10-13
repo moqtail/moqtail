@@ -42,6 +42,9 @@ pub struct MoqConnection {
   // otherwise unused after SETUP.
   #[allow(dead_code)]
   pub control_stream: ControlStreamHandler,
+  /// How many filter ranges the server allows in one request: its
+  /// MAX_FILTER_RANGES, or 0 when it sent none, which allows no Range Filter.
+  pub peer_max_filter_ranges: u64,
 }
 
 impl MoqConnection {
@@ -111,7 +114,7 @@ impl MoqConnection {
     // does not support the requested version, the connection is terminated with
     // VersionNegotiationFailed rather than a SETUP arriving.
     info!("Waiting for SETUP...");
-    match control_stream.read_setup().await {
+    let server_setup = match control_stream.read_setup().await {
       Ok(m) => {
         // AUTHORITY and PATH are client-only; a server sending either closes the
         // session.
@@ -120,6 +123,7 @@ impl MoqConnection {
           anyhow::bail!("Server sent a client-only setup option: {:?}", code);
         }
         info!("SETUP received: {:?}", m);
+        m
       }
       Err(TerminationCode::VersionNegotiationFailed) => {
         anyhow::bail!(
@@ -136,9 +140,20 @@ impl MoqConnection {
       }
     };
 
+    let peer_max_filter_ranges = server_setup
+      .setup_options
+      .iter()
+      .find_map(|kvp| match SetupOption::deserialize(kvp) {
+        Ok(SetupOption::MaxFilterRanges { value }) => Some(value),
+        _ => None,
+      })
+      .unwrap_or(0);
+    info!("Server allows {peer_max_filter_ranges} filter ranges per request");
+
     Ok(MoqConnection {
       connection,
       control_stream,
+      peer_max_filter_ranges,
     })
   }
 

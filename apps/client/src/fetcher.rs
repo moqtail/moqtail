@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::connection::MoqConnection;
+use crate::filter_spec::{check_limit, object_filter};
 use anyhow::Result;
 use moqtail::model::common::location::Location;
 use moqtail::model::common::tuple::{Tuple, TupleField};
@@ -61,6 +62,8 @@ pub struct FetchConfig {
   pub end_group: u64,
   pub end_object: u64,
   pub cancel_after: u64,
+  pub range_filters: Vec<MessageParameter>,
+  pub ignore_filter_limit: bool,
 }
 
 pub async fn run(moq: MoqConnection, config: FetchConfig) -> Result<()> {
@@ -74,7 +77,15 @@ pub async fn run(moq: MoqConnection, config: FetchConfig) -> Result<()> {
   // Send Fetch request
   let request_id = 0u64;
   let ns = Tuple::from_utf8_path(&config.namespace);
-  let parameters = vec![MessageParameter::new_subscriber_priority(200)];
+  let mut parameters = vec![MessageParameter::new_subscriber_priority(200)];
+  parameters.extend(config.range_filters.iter().cloned());
+  check_limit(
+    &parameters,
+    moq.peer_max_filter_ranges,
+    config.ignore_filter_limit,
+  )?;
+  let filter = object_filter(&parameters);
+  let filtered = !filter.is_empty();
 
   let fetch = Fetch::new(
     request_id,
@@ -117,6 +128,7 @@ pub async fn run(moq: MoqConnection, config: FetchConfig) -> Result<()> {
   let cancel_after = config.cancel_after;
   let receive_task = tokio::spawn(async move {
     let mut total_objects = 0u64;
+    let mut violations = 0u64;
     loop {
       match conn.accept_uni().await {
         Ok(stream) => {
@@ -128,11 +140,18 @@ pub async fn run(moq: MoqConnection, config: FetchConfig) -> Result<()> {
             let (next_handler, object) = handler.next_object().await;
             match object {
               Some(obj) => {
+                let passed = !filtered || filter.matches_object(&obj);
+                if !passed {
+                  violations += 1;
+                }
                 info!(
-                  "Fetched object: group={}, object={}{}",
+                  "Fetched object: group={}, object={}, subgroup={:?}, priority={}{}{}",
                   obj.location.group,
                   obj.location.object,
-                  format_prior_gaps(&obj.properties)
+                  obj.subgroup_id,
+                  obj.publisher_priority,
+                  format_prior_gaps(&obj.properties),
+                  if passed { "" } else { " FILTER_VIOLATION" }
                 );
                 total_objects += 1;
                 handler = next_handler;
@@ -141,14 +160,14 @@ pub async fn run(moq: MoqConnection, config: FetchConfig) -> Result<()> {
                 if cancel_after > 0 && total_objects >= cancel_after {
                   info!("Received {} objects, signaling FETCH_CANCEL", total_objects);
                   let _ = signal_tx.send(FetchReceiveSignal::CancelAfter);
-                  return;
+                  return (total_objects, violations);
                 }
               }
               None => {
                 if stream_handler.is_malformed_track() {
                   error!("Fetch response is malformed; signaling FETCH_CANCEL");
                   let _ = signal_tx.send(FetchReceiveSignal::MalformedTrack);
-                  return;
+                  return (total_objects, violations);
                 }
                 info!("Fetch stream closed");
                 break;
@@ -162,6 +181,7 @@ pub async fn run(moq: MoqConnection, config: FetchConfig) -> Result<()> {
         }
       }
     }
+    (total_objects, violations)
   });
 
   // Wait for the fetch response on the request stream (FetchOk / RequestError).
@@ -211,8 +231,11 @@ pub async fn run(moq: MoqConnection, config: FetchConfig) -> Result<()> {
   info!("Closing connection...");
   connection.close(0u32, b"Done");
 
-  let _ = receive_task.await;
-  info!("Fetch complete");
+  if let Ok((received, violations)) = receive_task.await {
+    info!("Fetch complete: received={received}, filter_violations={violations}");
+  } else {
+    info!("Fetch complete");
+  }
 
   Ok(())
 }

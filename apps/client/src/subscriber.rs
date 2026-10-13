@@ -14,6 +14,7 @@
 
 use crate::cli::{CliFilter, DeliveryMode};
 use crate::connection::MoqConnection;
+use crate::filter_spec::{check_limit, object_filter};
 use crate::routing::{Router, Window};
 use crate::stats::ReceptionStats;
 use crate::utils::should_log;
@@ -24,9 +25,13 @@ use moqtail::model::control::constant::{GroupOrder, SwitchMode};
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::request_update::RequestUpdate;
 use moqtail::model::control::subscribe::Subscribe;
+use moqtail::model::data::constant::DEFAULT_PUBLISHER_PRIORITY;
 use moqtail::model::data::datagram::Datagram;
 use moqtail::model::parameter::location_filter::LocationFilter;
-use moqtail::model::parameter::message_parameter::MessageParameter;
+use moqtail::model::parameter::message_parameter::{
+  MessageParameter, apply_message_parameter_update,
+};
+use moqtail::model::parameter::net_filter::ObjectFields;
 use moqtail::transport::connection::TransportConnection;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use moqtail::transport::data_stream_handler::RecvDataStream;
@@ -54,21 +59,24 @@ fn location_filter(config: &SubscribeConfig) -> LocationFilter {
   }
 }
 
-/// The filter parameters a subscribe carries: LOCATION_FILTER, and
-/// FILL_PARAMETERS when `--fill` asks for what is already published as well.
+/// The filter parameters a subscribe carries: LOCATION_FILTER, any Range
+/// Filters, and FILL_PARAMETERS when `--fill` asks for what is already published
+/// as well.
 fn filter_parameters(config: &SubscribeConfig) -> Vec<MessageParameter> {
   let mut params = vec![MessageParameter::new_location_filter(location_filter(
     config,
   ))];
+  params.extend(config.range_filters.iter().cloned());
   if config.fill {
     // Without a filter of its own the fill covers the subscription's.
-    let fill = config
+    let mut fill: Vec<_> = config
       .fill_start_group
       .map(|start_group| {
         MessageParameter::new_location_filter(LocationFilter::RelativeStart { start_group })
       })
       .into_iter()
       .collect();
+    fill.extend(config.fill_range_filters.iter().cloned());
     params.push(MessageParameter::new_fill_parameters(fill));
   }
   params
@@ -163,6 +171,11 @@ pub struct SubscribeConfig {
   pub switch_mode: SwitchMode,
   pub switch_publish_done: bool,
   pub switch_start_group: u64,
+  pub range_filters: Vec<MessageParameter>,
+  pub fill_range_filters: Vec<MessageParameter>,
+  pub update_filters_after: u64,
+  pub update_range_filters: Vec<MessageParameter>,
+  pub ignore_filter_limit: bool,
 }
 
 pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
@@ -180,6 +193,8 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
 
   // Request IDs a client sends are even.
   let primary_filters = filter_parameters(&config);
+  let limit = moq.peer_max_filter_ranges;
+  check_limit(&primary_filters, limit, config.ignore_filter_limit)?;
   let (track_alias, largest, primary_stream) = subscribe_track(
     &connection,
     &config.namespace,
@@ -192,32 +207,49 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
     None,
   )
   .await?;
-  router.lock().unwrap().add(
-    0,
-    format!("req=0({})", config.track_name),
-    track_alias,
-    Window::from_parameters(&primary_filters, largest.as_ref()),
-  );
+  {
+    let mut router = router.lock().unwrap();
+    router.add(
+      0,
+      format!("req=0({})", config.track_name),
+      track_alias,
+      Window::from_parameters(&primary_filters, largest.as_ref()),
+    );
+    router.set_filter(0, object_filter(&primary_filters));
+  }
 
-  // Optionally flip Forward State 0->1 after a delay by sending a REQUEST_UPDATE
-  // on the subscription's request stream, then hold the stream open.
+  // Optionally send REQUEST_UPDATEs on the subscription's request stream after a
+  // delay -- flipping Forward State 0->1, or moving the Range Filters -- then hold
+  // the stream open, logging what comes back on it.
+  let mut updates = Vec::new();
   if config.update_forward_after > 0 {
-    let delay = config.update_forward_after;
-    let mut stream = primary_stream;
-    tokio::spawn(async move {
-      tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
-      info!("Sending REQUEST_UPDATE to set Forward State 1");
-      let update = RequestUpdate::new(10, vec![MessageParameter::new_forward(true)]);
-      if let Err(e) = stream
-        .send(&ControlMessage::RequestUpdate(Box::new(update)))
-        .await
-      {
-        error!("Failed to send REQUEST_UPDATE: {:?}", e);
-      }
-      std::future::pending::<()>().await;
+    updates.push(ScheduledUpdate {
+      after: config.update_forward_after,
+      request_id: 10,
+      parameters: vec![MessageParameter::new_forward(true)],
     });
-  } else {
+  }
+  if config.update_filters_after > 0 {
+    let parameters = config.update_range_filters.clone();
+    let mut resulting = primary_filters.clone();
+    apply_message_parameter_update(&mut resulting, parameters.clone());
+    check_limit(&parameters, limit, config.ignore_filter_limit)?;
+    check_limit(&resulting, limit, config.ignore_filter_limit)?;
+    updates.push(ScheduledUpdate {
+      after: config.update_filters_after,
+      request_id: 12,
+      parameters,
+    });
+  }
+  if updates.is_empty() {
     request_streams.push(primary_stream);
+  } else {
+    send_updates(
+      primary_stream,
+      updates,
+      primary_filters.clone(),
+      router.clone(),
+    );
   }
 
   // Switch to another track after a delay: a second SUBSCRIBE carrying SWITCH_FROM,
@@ -264,12 +296,16 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
       {
         Ok((alias, largest, stream)) => {
           info!("Switched to {} (track_alias={})", switch_track, alias);
-          router.lock().unwrap().add(
-            2,
-            format!("req=2({switch_track})"),
-            alias,
-            Window::from_parameters(&filters, largest.as_ref()),
-          );
+          {
+            let mut router = router.lock().unwrap();
+            router.add(
+              2,
+              format!("req=2({switch_track})"),
+              alias,
+              Window::from_parameters(&filters, largest.as_ref()),
+            );
+            router.set_filter(2, object_filter(&filters));
+          }
           // Hold the request stream open for the subscription's lifetime.
           let mut stream = stream;
           loop {
@@ -288,6 +324,7 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
   }
 
   if let Some((ref extra_name, extra_priority)) = config.extra_track {
+    // The extra track is for priority testing and carries no Range Filters.
     let extra_filters = vec![MessageParameter::new_location_filter(
       LocationFilter::NextObject,
     )];
@@ -361,13 +398,22 @@ async fn receive_datagrams(
               }
               stats.record_duplicates(route.duplicates);
 
+              let fields = ObjectFields {
+                subgroup_id: None,
+                object_id: obj.object_id,
+                publisher_priority: obj.publisher_priority.unwrap_or(DEFAULT_PUBLISHER_PRIORITY),
+                properties: obj.properties.as_deref(),
+              };
               for (owner, label) in route.owners.iter().zip(labels) {
-                let sequence_ok = stats.record_object(
+                let status = record(
+                  &mut stats,
+                  &router,
                   *owner,
-                  obj.group_id,
-                  obj.object_id,
+                  &location,
+                  fields,
                   ReceptionStats::prior_group_gap(obj.properties.as_ref()),
                 );
+                let sequence_ok = status == "OK";
 
                 if should_log(stats.total_received) || !sequence_ok {
                   info!(
@@ -378,7 +424,7 @@ async fn receive_datagrams(
                     obj.object_id,
                     obj.payload.as_ref().map_or(0, |p| p.len()),
                     stats.elapsed_ms(),
-                    if sequence_ok { "OK" } else { "GAP" }
+                    status
                   );
                 } else {
                   debug!(
@@ -453,21 +499,26 @@ async fn receive_streams(
                 stats.record_duplicates(route.duplicates);
 
                 for (owner, label) in route.owners.iter().zip(labels) {
-                  let sequence_ok = stats.record_object(
+                  let status = record(
+                    &mut stats,
+                    &router,
                     *owner,
-                    obj.location.group,
-                    obj.location.object,
+                    &obj.location,
+                    ObjectFields::from(&obj),
                     ReceptionStats::prior_group_gap(obj.properties.as_ref()),
                   );
+                  let sequence_ok = status == "OK";
 
                   if should_log(stats.total_received) || !sequence_ok {
                     info!(
-                      "Received object {}: subscription={} group={}, object={}, seq={}",
+                      "Received object {}: subscription={} group={}, object={}, subgroup={:?}, priority={}, seq={}",
                       stats.total_received,
                       label,
                       obj.location.group,
                       obj.location.object,
-                      if sequence_ok { "OK" } else { "GAP" }
+                      obj.subgroup_id,
+                      obj.publisher_priority,
+                      status
                     );
                   } else {
                     debug!(
@@ -508,6 +559,77 @@ async fn receive_streams(
   Ok(())
 }
 
+/// A REQUEST_UPDATE to send some seconds after subscribing.
+struct ScheduledUpdate {
+  after: u64,
+  request_id: u64,
+  parameters: Vec<MessageParameter>,
+}
+
+/// Sends `updates` on the primary subscription's request stream in time order,
+/// moving the Range Filters its objects are checked against as each goes out, and
+/// then logs whatever comes back on the stream for as long as it lives.
+fn send_updates(
+  mut stream: ControlStreamHandler,
+  mut updates: Vec<ScheduledUpdate>,
+  mut parameters: Vec<MessageParameter>,
+  router: Arc<Mutex<Router>>,
+) {
+  updates.sort_by_key(|u| u.after);
+  tokio::spawn(async move {
+    let started = tokio::time::Instant::now();
+    for update in updates {
+      tokio::time::sleep_until(started + tokio::time::Duration::from_secs(update.after)).await;
+      info!("Sending REQUEST_UPDATE: {:?}", update.parameters);
+      apply_message_parameter_update(&mut parameters, update.parameters.clone());
+      let message = RequestUpdate::new(update.request_id, update.parameters);
+      if let Err(e) = stream
+        .send(&ControlMessage::RequestUpdate(Box::new(message)))
+        .await
+      {
+        error!("Failed to send REQUEST_UPDATE: {:?}", e);
+        continue;
+      }
+      router
+        .lock()
+        .unwrap()
+        .update_filter(0, object_filter(&parameters));
+    }
+    loop {
+      match stream.next_message().await {
+        Ok(ControlMessage::RequestError(m)) => error!("Subscription update refused: {:?}", m),
+        Ok(m) => info!("Subscription: {:?}", m),
+        Err(e) => {
+          debug!("Subscription request stream ended: {:?}", e);
+          return;
+        }
+      }
+    }
+  });
+}
+
+/// Counts an object into the subscription that took it: against its Range Filters
+/// when it has them, and its sequence otherwise. Returns what to log it as.
+fn record(
+  stats: &mut ReceptionStats,
+  router: &Mutex<Router>,
+  owner: u64,
+  location: &Location,
+  fields: ObjectFields<'_>,
+  prior_group_gap: u64,
+) -> &'static str {
+  let mut router = router.lock().unwrap();
+  if router.is_filtered(owner) {
+    let passed = router.passes(owner, fields);
+    stats.record_filtered_object(owner, location.group, location.object, passed);
+    if passed { "OK" } else { "FILTER_VIOLATION" }
+  } else if stats.record_object(owner, location.group, location.object, prior_group_gap) {
+    "OK"
+  } else {
+    "GAP"
+  }
+}
+
 /// Routes an object, and names the subscriptions that took it for the log.
 fn route_object(
   router: &Mutex<Router>,
@@ -527,16 +649,21 @@ fn route_object(
 /// One line per subscription, then the totals.
 fn report_subscriptions(stats: &ReceptionStats, router: &Mutex<Router>) {
   let router = router.lock().unwrap();
-  for (request_id, received, gaps) in stats.per_track() {
+  for (request_id, received, gaps, violations) in stats.per_track() {
     info!(
-      "Subscription {}: received={}, gaps={}",
+      "Subscription {}: received={}, gaps={}, filter_violations={}",
       router.label(request_id),
       received,
-      gaps
+      gaps,
+      violations
     );
   }
   info!(
-    "Subscriber finished: received={}, errors={}, gaps={}, duplicates={}",
-    stats.total_received, stats.parse_errors, stats.sequence_gaps, stats.duplicates
+    "Subscriber finished: received={}, errors={}, gaps={}, duplicates={}, filter_violations={}",
+    stats.total_received,
+    stats.parse_errors,
+    stats.sequence_gaps,
+    stats.duplicates,
+    stats.filter_violations
   );
 }

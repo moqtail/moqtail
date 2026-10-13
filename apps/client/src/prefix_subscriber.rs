@@ -20,6 +20,7 @@
 
 use crate::cli::PrefixKind;
 use crate::connection::MoqConnection;
+use crate::filter_spec::check_limit;
 use crate::stats::ReceptionStats;
 use crate::utils::should_log;
 use anyhow::Result;
@@ -29,6 +30,8 @@ use moqtail::model::control::request_ok::RequestOk;
 use moqtail::model::control::subscribe_namespace::SubscribeNamespace;
 use moqtail::model::control::subscribe_tracks::SubscribeTracks;
 use moqtail::model::error::{StreamResetCode, TerminationCode};
+use moqtail::model::parameter::message_parameter::MessageParameter;
+use moqtail::model::parameter::net_filter::{NetFilter, ObjectFields};
 use moqtail::transport::connection::TransportConnection;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use moqtail::transport::data_stream_handler::RecvDataStream;
@@ -43,6 +46,9 @@ pub struct PrefixSubscribeConfig {
   pub duration: u64,
   pub kind: PrefixKind,
   pub overlap: Option<PrefixKind>,
+  /// Range Filters for SUBSCRIBE_TRACKS, track filters included.
+  pub range_filters: Vec<MessageParameter>,
+  pub ignore_filter_limit: bool,
 }
 
 /// What a prefix subscription is called in the log, so two of them in one run
@@ -61,6 +67,9 @@ struct TrackState {
   /// subscription receives many at once, whose objects interleave. Counting them
   /// together would report every switch between two tracks as a gap.
   stats: ReceptionStats,
+  /// What the Range Filters let through for this track, once its PUBLISH has said
+  /// what its Track Properties are. Empty when there are no filters.
+  filter: NetFilter,
 }
 
 impl TrackState {
@@ -68,6 +77,7 @@ impl TrackState {
     Self {
       name,
       stats: ReceptionStats::new(),
+      filter: NetFilter::default(),
     }
   }
 }
@@ -75,6 +85,14 @@ impl TrackState {
 /// The pushed tracks by the track alias their objects carry, so an object
 /// arriving on a uni stream finds the track it belongs to.
 type Tracks = Arc<Mutex<HashMap<u64, TrackState>>>;
+
+/// The Range Filters SUBSCRIBE_TRACKS asked for, and the pushed tracks they
+/// should have kept back.
+#[derive(Clone, Default)]
+struct TrackFilter {
+  filter: NetFilter,
+  excluded_pushes: Arc<Mutex<Vec<String>>>,
+}
 
 pub async fn run(moq: MoqConnection, config: PrefixSubscribeConfig) -> Result<()> {
   // Keep `moq` alive for the whole run: the session's control stream carries only
@@ -84,14 +102,32 @@ pub async fn run(moq: MoqConnection, config: PrefixSubscribeConfig) -> Result<()
   let prefix = Tuple::from_utf8_path(&config.namespace);
   info!("{label} for namespace prefix: {}", config.namespace);
 
-  let mut request_stream = send_request(&connection, config.kind, prefix.clone(), 0).await?;
+  let parameters = if config.kind == PrefixKind::Tracks {
+    check_limit(
+      &config.range_filters,
+      moq.peer_max_filter_ranges,
+      config.ignore_filter_limit,
+    )?;
+    config.range_filters.clone()
+  } else {
+    vec![]
+  };
+  let track_filter = TrackFilter {
+    filter: NetFilter::new(&parameters).unwrap_or_else(|e| {
+      warn!("Requesting range filters the server has to refuse ({e})");
+      NetFilter::default()
+    }),
+    ..Default::default()
+  };
+  let mut request_stream =
+    send_request(&connection, config.kind, prefix.clone(), 0, parameters).await?;
 
   // Tracks are pushed as soon as the request is registered, so the receivers are
   // in place before the first response is read. A discovery subscription is
   // answered entirely on its own stream and needs neither.
   let tracks = if config.kind == PrefixKind::Tracks {
     let tracks: Tracks = Arc::new(Mutex::new(HashMap::new()));
-    accept_pushed_publishes(connection.clone(), tracks.clone());
+    accept_pushed_publishes(connection.clone(), tracks.clone(), track_filter.clone());
     receive_objects(connection.clone(), tracks.clone());
     Some(tracks)
   } else {
@@ -107,7 +143,7 @@ pub async fn run(moq: MoqConnection, config: PrefixSubscribeConfig) -> Result<()
     Some(kind) if alive => {
       let overlap_label = label_overlap(kind);
       info!("{overlap_label} on the same prefix and session, to test overlap");
-      let mut stream = send_request(&connection, kind, prefix, 2).await?;
+      let mut stream = send_request(&connection, kind, prefix, 2, vec![]).await?;
       read_one(&mut stream, overlap_label).await;
       Some(stream)
     }
@@ -141,8 +177,19 @@ pub async fn run(moq: MoqConnection, config: PrefixSubscribeConfig) -> Result<()
     }
     for state in tracks.values() {
       info!(
-        "{label}: {} objects received={}, gaps={}",
-        state.name, state.stats.total_received, state.stats.sequence_gaps
+        "{label}: {} objects received={}, gaps={}, filter_violations={}",
+        state.name,
+        state.stats.total_received,
+        state.stats.sequence_gaps,
+        state.stats.filter_violations
+      );
+    }
+    let excluded = track_filter.excluded_pushes.lock().unwrap();
+    if !excluded.is_empty() {
+      warn!(
+        "{label}: {} tracks pushed that the track filter excludes: {:?}",
+        excluded.len(),
+        *excluded
       );
     }
   }
@@ -165,16 +212,16 @@ async fn send_request(
   kind: PrefixKind,
   prefix: Tuple,
   request_id: u64,
+  parameters: Vec<MessageParameter>,
 ) -> Result<ControlStreamHandler> {
-  let request =
-    match kind {
-      PrefixKind::Namespace => ControlMessage::SubscribeNamespace(Box::new(
-        SubscribeNamespace::new(request_id, prefix, vec![]),
-      )),
-      PrefixKind::Tracks => {
-        ControlMessage::SubscribeTracks(Box::new(SubscribeTracks::new(request_id, prefix, vec![])))
-      }
-    };
+  let request = match kind {
+    PrefixKind::Namespace => ControlMessage::SubscribeNamespace(Box::new(SubscribeNamespace::new(
+      request_id, prefix, parameters,
+    ))),
+    PrefixKind::Tracks => ControlMessage::SubscribeTracks(Box::new(SubscribeTracks::new(
+      request_id, prefix, parameters,
+    ))),
+  };
 
   let (send, recv) = connection.open_bi().await?;
   let mut request_stream = ControlStreamHandler::new(send, recv);
@@ -289,7 +336,11 @@ fn log_response(label: &str, msg: ControlMessage) {
 /// PUBLISH carries is recorded, so `receive_objects` can name the track an object
 /// belongs to; the stream is then held open, since PUBLISH_DONE ends the request
 /// there.
-fn accept_pushed_publishes(connection: Arc<TransportConnection>, tracks: Tracks) {
+fn accept_pushed_publishes(
+  connection: Arc<TransportConnection>,
+  tracks: Tracks,
+  track_filter: TrackFilter,
+) {
   tokio::spawn(async move {
     loop {
       let (send, recv) = match connection.accept_bi().await {
@@ -301,6 +352,7 @@ fn accept_pushed_publishes(connection: Arc<TransportConnection>, tracks: Tracks)
       };
 
       let tracks = tracks.clone();
+      let track_filter = track_filter.clone();
       tokio::spawn(async move {
         let mut handler = ControlStreamHandler::new(send, recv);
         let name = match handler.next_message().await {
@@ -314,14 +366,33 @@ fn accept_pushed_publishes(connection: Arc<TransportConnection>, tracks: Tracks)
               "SUBSCRIBE_TRACKS: PUBLISH for {name} (track_alias={})",
               m.track_alias
             );
+            // The track filter decides whether this track should have been pushed,
+            // and which of its objects then should be.
+            let filter = match track_filter.filter.narrow_for_track(&m.track_properties) {
+              Some(filter) => filter,
+              None => {
+                warn!(
+                  "SUBSCRIBE_TRACKS: {name} was pushed, but its Track Properties {:?} pass no track filter",
+                  m.track_properties
+                );
+                track_filter
+                  .excluded_pushes
+                  .lock()
+                  .unwrap()
+                  .push(name.clone());
+                NetFilter::default()
+              }
+            };
             // An object can beat its PUBLISH here, so the entry may already exist
             // with a placeholder name and a sequence worth keeping.
-            tracks
-              .lock()
-              .unwrap()
-              .entry(m.track_alias)
-              .or_insert_with(|| TrackState::new(name.clone()))
-              .name = name.clone();
+            {
+              let mut tracks = tracks.lock().unwrap();
+              let state = tracks
+                .entry(m.track_alias)
+                .or_insert_with(|| TrackState::new(name.clone()));
+              state.name = name.clone();
+              state.filter = filter;
+            }
             // An empty parameter list accepts the subscription as the relay
             // proposed it, which forwards by default.
             if let Err(e) = handler
@@ -394,26 +465,37 @@ fn receive_objects(connection: Arc<TransportConnection>, tracks: Tracks) {
             return;
           };
 
-          let (name, total, sequence_ok) = {
+          let (name, total, status) = {
             let mut tracks = tracks.lock().unwrap();
             let state = tracks
               .entry(obj.track_alias)
               .or_insert_with(|| TrackState::new(format!("alias={}", obj.track_alias)));
-            let sequence_ok = state.stats.record_object(
-              obj.track_alias,
-              obj.location.group,
-              obj.location.object,
-              ReceptionStats::prior_group_gap(obj.properties.as_ref()),
-            );
-            (state.name.clone(), state.stats.total_received, sequence_ok)
+            let status = if state.filter.is_empty() {
+              let ok = state.stats.record_object(
+                obj.track_alias,
+                obj.location.group,
+                obj.location.object,
+                ReceptionStats::prior_group_gap(obj.properties.as_ref()),
+              );
+              if ok { "OK" } else { "GAP" }
+            } else {
+              let passed = state.filter.matches(ObjectFields::from(&obj));
+              state.stats.record_filtered_object(
+                obj.track_alias,
+                obj.location.group,
+                obj.location.object,
+                passed,
+              );
+              if passed { "OK" } else { "FILTER_VIOLATION" }
+            };
+            (state.name.clone(), state.stats.total_received, status)
           };
+          let sequence_ok = status == "OK";
 
           if should_log(total) || !sequence_ok {
             info!(
-              "SUBSCRIBE_TRACKS: object {total}: track={name} group={}, object={}, seq={}",
-              obj.location.group,
-              obj.location.object,
-              if sequence_ok { "OK" } else { "GAP" }
+              "SUBSCRIBE_TRACKS: object {total}: track={name} group={}, object={}, seq={status}",
+              obj.location.group, obj.location.object,
             );
           } else {
             debug!(

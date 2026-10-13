@@ -23,6 +23,8 @@ use tracing::info;
 struct TrackSequence {
   received: u64,
   gaps: u64,
+  /// Objects that should not have been delivered, by the subscription's Range Filters.
+  violations: u64,
   last_group: u64,
   last_object: u64,
   /// How many group ids the group being received spans. One for an ordinary
@@ -39,6 +41,8 @@ pub struct ReceptionStats {
   pub sequence_gaps: u64,
   /// Copies of an object a subscription already had.
   pub duplicates: u64,
+  /// Objects a subscription's Range Filters do not pass.
+  pub filter_violations: u64,
   last_group: u64,
   last_object: u64,
   tracks: HashMap<u64, TrackSequence>,
@@ -52,6 +56,7 @@ impl ReceptionStats {
       parse_errors: 0,
       sequence_gaps: 0,
       duplicates: 0,
+      filter_violations: 0,
       last_group: 0,
       last_object: 0,
       tracks: HashMap::new(),
@@ -100,6 +105,7 @@ impl ReceptionStats {
         TrackSequence {
           received: 1,
           gaps: 0,
+          violations: 0,
           last_group: group_id,
           last_object: object_id,
           last_group_span: if object_id == 0 {
@@ -137,16 +143,53 @@ impl ReceptionStats {
     sequence_ok
   }
 
+  /// Record an object for a subscription with Range Filters, whose sequence has
+  /// gaps by design, and whether it passed them. Returns `passed`.
+  pub fn record_filtered_object(
+    &mut self,
+    track: u64,
+    group_id: u64,
+    object_id: u64,
+    passed: bool,
+  ) -> bool {
+    self.total_received += 1;
+    self.last_group = group_id;
+    self.last_object = object_id;
+    let sequence = self.tracks.entry(track).or_insert(TrackSequence {
+      received: 0,
+      gaps: 0,
+      violations: 0,
+      last_group: group_id,
+      last_object: object_id,
+      last_group_span: 0,
+    });
+    sequence.received += 1;
+    sequence.last_group = group_id;
+    sequence.last_object = object_id;
+    if !passed {
+      sequence.violations += 1;
+      self.filter_violations += 1;
+    }
+    passed
+  }
+
   pub fn record_duplicates(&mut self, count: usize) {
     self.duplicates += count as u64;
   }
 
-  /// Objects received and sequence gaps seen, per subscription.
-  pub fn per_track(&self) -> Vec<(u64, u64, u64)> {
+  /// Objects received, sequence gaps and filter violations seen, per subscription.
+  pub fn per_track(&self) -> Vec<(u64, u64, u64, u64)> {
     let mut tracks: Vec<_> = self
       .tracks
       .iter()
-      .map(|(track, sequence)| (*track, sequence.received, sequence.gaps))
+      .map(|(track, sequence)| {
+        (
+          *track,
+          sequence.received,
+          sequence.gaps,
+          sequence.violations,
+        )
+      })
       .collect();
     tracks.sort();
     tracks
@@ -162,22 +205,23 @@ impl ReceptionStats {
 
   pub fn report(&self) {
     info!(
-      "Reception stats: total={}, last=group:{}/object:{}, errors={}, gaps={}, duplicates={}, elapsed={}ms",
+      "Reception stats: total={}, last=group:{}/object:{}, errors={}, gaps={}, duplicates={}, filter_violations={}, elapsed={}ms",
       self.total_received,
       self.last_group,
       self.last_object,
       self.parse_errors,
       self.sequence_gaps,
       self.duplicates,
+      self.filter_violations,
       self.elapsed_ms()
     );
 
-    if self.parse_errors == 0 && self.sequence_gaps == 0 {
+    if self.parse_errors == 0 && self.sequence_gaps == 0 && self.filter_violations == 0 {
       info!("All objects received with correct sequence");
     } else {
       info!(
-        "Found {} parse errors and {} sequence gaps",
-        self.parse_errors, self.sequence_gaps
+        "Found {} parse errors, {} sequence gaps and {} filter violations",
+        self.parse_errors, self.sequence_gaps, self.filter_violations
       );
     }
   }

@@ -12,8 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::filter_spec::{
+  ObjectPropertySpec, parse_object_property, parse_range_filter, parse_track_property,
+};
 use clap::{Parser, ValueEnum};
 use moqtail::model::control::constant::{GroupOrder, SwitchMode};
+use moqtail::model::parameter::message_parameter::MessageParameter;
+use moqtail::model::property::track_property::TrackProperty;
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum CliGroupOrder {
@@ -173,6 +178,28 @@ pub struct Cli {
   #[arg(long, default_value_t = 1200)]
   pub payload_size: usize,
 
+  /// Subgroups each group is split into, Object i going to subgroup i mod N, each
+  /// on its own stream (publish only)
+  #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u64).range(1..))]
+  pub subgroups_per_group: u64,
+
+  /// Publisher priority of each subgroup in turn, cycling: 0,64,128 gives subgroup 0
+  /// priority 0, subgroup 1 priority 64 and so on; a datagram takes the one for the
+  /// subgroup it would have gone to (publish only; default --publisher-priority)
+  #[arg(long, value_delimiter = ',')]
+  pub priorities: Vec<u8>,
+
+  /// An Object Property to set on every Object, as TYPE=SOURCE; repeatable (publish
+  /// only). TYPE is even; SOURCE is group, object, subgroup, mod:M (the Object ID
+  /// modulo M) or a number. Example: 0x3c=mod:3
+  #[arg(long, value_parser = parse_object_property)]
+  pub object_property: Vec<ObjectPropertySpec>,
+
+  /// A Track Property to advertise in PUBLISH, SUBSCRIBE_OK and FETCH_OK, as
+  /// TYPE=VALUE with TYPE even; repeatable (publish only). Example: 0x3c=1
+  #[arg(long, value_parser = parse_track_property)]
+  pub track_property: Vec<TrackProperty>,
+
   /// Track alias (publish only, random if not specified)
   #[arg(long)]
   pub track_alias: Option<u64>,
@@ -280,6 +307,39 @@ pub struct Cli {
   /// boundary rather than at the next one (0 = subscribe with --filter instead)
   #[arg(long, default_value_t = 0)]
   pub switch_start_group: u64,
+
+  /// A Range Filter to request with; repeatable (subscribe, fetch and
+  /// subscribe-tracks). Every object received is checked against the filters, and
+  /// one that does not pass is reported as a filter violation.
+  ///
+  /// KIND:SET[:PROPERTY]:RANGES, or KIND:clear. KIND is subgroup, object, priority,
+  /// object-property or track-property; SET is the SetID (0-255); PROPERTY is the
+  /// Property Type, for the two property kinds only; RANGES is a comma-separated
+  /// list of A-B, A- (open-ended, last only) or A, in decimal or 0x hex. Examples:
+  /// object:0:0-2,5-  object-property:1:0x3c:10-20  priority:clear
+  #[arg(long, value_parser = parse_range_filter)]
+  pub range_filter: Vec<MessageParameter>,
+
+  /// A Range Filter for the fill fetch stream, inside FILL_PARAMETERS; repeatable.
+  /// Implies --fill (subscribe only)
+  #[arg(long, value_parser = parse_range_filter)]
+  pub fill_range_filter: Vec<MessageParameter>,
+
+  /// Seconds after subscribing to send a REQUEST_UPDATE carrying
+  /// --update-range-filter (subscribe only, 0 = never)
+  #[arg(long, default_value_t = 0)]
+  pub update_filters_after: u64,
+
+  /// A Range Filter for that REQUEST_UPDATE; repeatable. KIND:clear removes a kind
+  /// (subscribe only)
+  #[arg(long, value_parser = parse_range_filter)]
+  pub update_range_filter: Vec<MessageParameter>,
+
+  /// Send Range Filters even past the server's MAX_FILTER_RANGES (0 when it sent
+  /// none), to test that the server refuses them. Without this the client refuses
+  /// to send them.
+  #[arg(long, default_value_t = false)]
+  pub ignore_filter_limit: bool,
 
   /// Seconds after subscribing to send a REQUEST_UPDATE setting Forward State 1
   /// (subscribe only, 0 = never). Use with --forward false to test that delivery

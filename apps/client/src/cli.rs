@@ -261,6 +261,10 @@ pub struct Cli {
   #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
   pub include_properties: bool,
 
+  /// Refuse every pushed PUBLISH with UNINTERESTED (subscribe-tracks only)
+  #[arg(long, default_value_t = false)]
+  pub refuse_publish: bool,
+
   /// Location Filter to subscribe with (subscribe: defaults to next-object;
   /// subscribe-tracks: sent only when given, as where each pushed track starts)
   #[arg(long, value_enum)]

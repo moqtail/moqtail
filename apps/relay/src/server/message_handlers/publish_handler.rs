@@ -737,13 +737,17 @@ pub(crate) async fn forward_publish_downstream(
             "Subscriber {} rejected pushed PUBLISH: {:?}",
             subscriber.connection_id, m.error_code
           );
+          end_pushed_subscription(&subscriber, &track_arc, publish_request_id).await;
+          break;
         }
         Ok(other) => warn!(
           "Unexpected {:?} on downstream publish stream",
           other.get_type()
         ),
           Err(_) => {
+            // FIN or RESET: the subscriber cancelled, or is done after PUBLISH_DONE.
             trace!("Downstream publish stream closed");
+            end_pushed_subscription(&subscriber, &track_arc, publish_request_id).await;
             break;
           }
         }
@@ -757,6 +761,31 @@ pub(crate) async fn forward_publish_downstream(
   subscriber
     .unregister_response_sender(publish_request_id)
     .await;
+}
+
+/// Ends the subscription a pushed PUBLISH opened, once the subscriber has refused the
+/// PUBLISH or closed its stream. Objects stop on its data and fill streams, the track
+/// drops it, and it leaves any switching set its PUBLISH_OK put it in. A subscription
+/// already gone, as after PUBLISH_DONE, is left alone.
+async fn end_pushed_subscription(
+  subscriber: &Arc<MOQTClient>,
+  track_arc: &Arc<RwLock<Track>>,
+  request_id: u64,
+) {
+  let full_track_name = {
+    let track = track_arc.read().await;
+    track
+      .remove_subscription(&(subscriber.connection_id, request_id))
+      .await;
+    track.full_track_name.clone()
+  };
+  subscriber
+    .ssts
+    .switching_sets
+    .write()
+    .await
+    .release(&full_track_name, request_id);
+  subscriber.subscriptions.remove(request_id).await;
 }
 
 /// Applies a subscriber's REQUEST_UPDATE to the subscription a pushed PUBLISH

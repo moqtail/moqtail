@@ -160,6 +160,7 @@ async fn main() -> Result<(), anyhow::Error> {
           }
           params
         },
+        refuse_publish: cli.refuse_publish,
         range_filters: cli.range_filter,
         ignore_filter_limit: cli.ignore_filter_limit,
       };

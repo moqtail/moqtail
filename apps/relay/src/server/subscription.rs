@@ -1129,7 +1129,8 @@ impl Subscription {
   ///
   /// A cancelled subscription's streams are reset, not finished. A finish is a FIN,
   /// which asks the peer to take delivery of everything already written — data the
-  /// subscriber has just said it no longer wants.
+  /// subscriber has just said it no longer wants. Its fills stop too, as a cancelled
+  /// fetch does.
   pub async fn cancel(&self) {
     info!(
       "Cancelling subscription for subscriber={} relay_track_id={}",
@@ -1138,6 +1139,7 @@ impl Subscription {
     self
       .reset_data_streams(StreamResetCode::Cancelled.to_u64())
       .await;
+    self.stop_fill_streams(FetchStop::Cancelled).await;
     self.finish().await;
   }
 

@@ -24,12 +24,14 @@ use crate::filter_spec::check_limit;
 use crate::stats::ReceptionStats;
 use crate::utils::should_log;
 use anyhow::Result;
+use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::common::tuple::Tuple;
 use moqtail::model::control::control_message::ControlMessage;
+use moqtail::model::control::request_error::RequestError;
 use moqtail::model::control::request_ok::RequestOk;
 use moqtail::model::control::subscribe_namespace::SubscribeNamespace;
 use moqtail::model::control::subscribe_tracks::SubscribeTracks;
-use moqtail::model::error::{StreamResetCode, TerminationCode};
+use moqtail::model::error::{RequestErrorCode, StreamResetCode, TerminationCode};
 use moqtail::model::parameter::combined_filter::{CombinedFilter, ObjectFields};
 use moqtail::model::parameter::message_parameter::MessageParameter;
 use moqtail::transport::connection::TransportConnection;
@@ -51,6 +53,8 @@ pub struct PrefixSubscribeConfig {
   /// FORWARD, LOCATION_FILTER and FILL_PARAMETERS for each pushed track's
   /// subscription (SUBSCRIBE_TRACKS only).
   pub pushed_track_parameters: Vec<MessageParameter>,
+  /// Refuse every pushed PUBLISH with UNINTERESTED (SUBSCRIBE_TRACKS only).
+  pub refuse_publish: bool,
   /// Range Filters for SUBSCRIBE_TRACKS, track filters included.
   pub range_filters: Vec<MessageParameter>,
   pub ignore_filter_limit: bool,
@@ -139,7 +143,12 @@ pub async fn run(moq: MoqConnection, config: PrefixSubscribeConfig) -> Result<()
   // answered entirely on its own stream and needs neither.
   let tracks = if config.kind == PrefixKind::Tracks {
     let tracks: Tracks = Arc::new(Mutex::new(HashMap::new()));
-    accept_pushed_publishes(connection.clone(), tracks.clone(), track_filter.clone());
+    accept_pushed_publishes(
+      connection.clone(),
+      tracks.clone(),
+      track_filter.clone(),
+      config.refuse_publish,
+    );
     receive_objects(connection.clone(), tracks.clone());
     Some(tracks)
   } else {
@@ -352,6 +361,7 @@ fn accept_pushed_publishes(
   connection: Arc<TransportConnection>,
   tracks: Tracks,
   track_filter: TrackFilter,
+  refuse: bool,
 ) {
   tokio::spawn(async move {
     loop {
@@ -404,6 +414,20 @@ fn accept_pushed_publishes(
                 .or_insert_with(|| TrackState::new(name.clone()));
               state.name = name.clone();
               state.filter = filter;
+            }
+            if refuse {
+              let reason = ReasonPhrase::try_new("not interested".to_string())
+                .expect("reason within length limit");
+              let err = RequestError::new(RequestErrorCode::Uninterested, 0, reason);
+              if let Err(e) = handler
+                .send(&ControlMessage::RequestError(Box::new(err)))
+                .await
+              {
+                warn!("SUBSCRIBE_TRACKS: failed to refuse PUBLISH for {name}: {e:?}");
+              }
+              handler.finish().await;
+              info!("SUBSCRIBE_TRACKS: refused PUBLISH for {name}");
+              return;
             }
             // An empty parameter list accepts the subscription as the relay
             // proposed it, which forwards by default.

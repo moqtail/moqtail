@@ -63,6 +63,8 @@ pub struct FetchConfig {
   pub end_group: u64,
   pub end_object: u64,
   pub cancel_after: u64,
+  /// False asks for the FETCH_OK without Track Properties.
+  pub include_properties: bool,
   pub range_filters: Vec<MessageParameter>,
   pub ignore_filter_limit: bool,
 }
@@ -80,6 +82,9 @@ pub async fn run(moq: MoqConnection, config: FetchConfig) -> Result<()> {
   let ns = Tuple::from_utf8_path(&config.namespace);
   let mut parameters = vec![MessageParameter::new_subscriber_priority(200)];
   parameters.extend(config.range_filters.iter().cloned());
+  if !config.include_properties {
+    parameters.push(MessageParameter::new_include_properties(false));
+  }
   check_limit(
     &parameters,
     moq.peer_max_filter_ranges,

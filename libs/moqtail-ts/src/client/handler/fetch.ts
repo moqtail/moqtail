@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { InternalError, ReasonPhrase } from '@/model'
+import { InternalError, MessageParameter, ReasonPhrase } from '@/model'
 import { Fetch, FetchOk, RequestError, RequestErrorCode } from '../../model/control'
 import { RequestStreamMessageHandler } from './handler'
 import { SubscribePublication } from '../publication/subscribe'
@@ -71,6 +71,8 @@ export const handlerFetch: RequestStreamMessageHandler<Fetch> = async (client, m
   // TODO: Figure out what to do with endOfTrack
   const publication = new FetchPublication(client, track, msg, range.start, range.end)
   client.publications.set(msg.requestId, publication)
-  const response = new FetchOk(false, range.end, msg.parameters, track.trackProperties ?? [])
+  // No parameters are defined for FETCH_OK, so the request's are not echoed.
+  const trackProperties = MessageParameter.includesProperties(msg.parameters) ? (track.trackProperties ?? []) : []
+  const response = new FetchOk(false, range.end, [], trackProperties)
   await stream.send(response)
 }

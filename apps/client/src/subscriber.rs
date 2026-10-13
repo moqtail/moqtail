@@ -132,8 +132,8 @@ async fn subscribe_track(
   match request_stream.next_message().await {
     Ok(ControlMessage::SubscribeOk(m)) => {
       info!(
-        "Subscribed: track={} track_alias={}",
-        track_name, m.track_alias
+        "Subscribed: track={} track_alias={} track_properties={:?}",
+        track_name, m.track_alias, m.track_properties
       );
       let largest = m.subscribe_parameters.iter().find_map(|p| match p {
         MessageParameter::LargestObject { location } => Some(location.clone()),
@@ -158,6 +158,8 @@ pub struct SubscribeConfig {
   pub group_order: GroupOrder,
   pub extra_track: Option<(String, u8)>,
   pub forward: bool,
+  /// False asks for the SUBSCRIBE_OK without Track Properties.
+  pub include_properties: bool,
   pub update_forward_after: u64,
   pub filter: CliFilter,
   pub filter_start_group: u64,
@@ -195,6 +197,10 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
   let primary_filters = filter_parameters(&config);
   let limit = moq.peer_max_filter_ranges;
   check_limit(&primary_filters, limit, config.ignore_filter_limit)?;
+  let mut primary_parameters = primary_filters.clone();
+  if !config.include_properties {
+    primary_parameters.push(MessageParameter::new_include_properties(false));
+  }
   let (track_alias, largest, primary_stream) = subscribe_track(
     &connection,
     &config.namespace,
@@ -203,7 +209,7 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
     config.subscriber_priority,
     config.group_order,
     config.forward,
-    primary_filters.clone(),
+    primary_parameters,
     None,
   )
   .await?;

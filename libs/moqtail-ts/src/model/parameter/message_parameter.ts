@@ -28,6 +28,7 @@ import { RendezvousTimeout } from './message/rendezvous_timeout'
 import { SubgroupDeliveryTimeout } from './message/subgroup_delivery_timeout'
 import { Expires } from './message/expires'
 import { Forward } from './message/forward'
+import { IncludeProperties } from './message/include_properties'
 import { GroupOrderParam } from './message/group_order_param'
 import { LargestObject } from './message/largest_object'
 import { NewGroupRequest } from './message/new_group_request'
@@ -54,6 +55,7 @@ export type MessageParameter =
   | SwitchFrom
   | FillParameters
   | RangeFilter
+  | IncludeProperties
   | SwitchingSetAssignment
 
 export namespace MessageParameter {
@@ -79,6 +81,7 @@ export namespace MessageParameter {
       SwitchFrom.fromKeyValuePair(pair) ??
       FillParameters.fromKeyValuePair(pair) ??
       RangeFilter.fromKeyValuePair(pair) ??
+      IncludeProperties.fromKeyValuePair(pair) ??
       SwitchingSetAssignment.fromKeyValuePair(pair)
     )
   }
@@ -163,6 +166,18 @@ export namespace MessageParameter {
   export function carriesRangeFilter(params: readonly MessageParameter[]): boolean {
     return params.some((p) => isRangeFilter(p) || (isFillParameters(p) && carriesRangeFilter(p.parameters)))
   }
+
+  export function isIncludeProperties(param: MessageParameter): param is IncludeProperties {
+    return param instanceof IncludeProperties
+  }
+
+  /**
+   * Whether a request's response should carry Track Properties: false only when it
+   * has INCLUDE_PROPERTIES set to 0.
+   */
+  export function includesProperties(params: readonly MessageParameter[]): boolean {
+    return !params.some((p) => isIncludeProperties(p) && !p.include)
+  }
 }
 
 /**
@@ -203,6 +218,10 @@ export class MessageParameters {
 
   addForward(forward: boolean): this {
     return this.add(new Forward(forward))
+  }
+
+  addIncludeProperties(include: boolean): this {
+    return this.add(new IncludeProperties(include))
   }
 
   addSubscriberPriority(priority: number): this {
@@ -260,7 +279,7 @@ export class MessageParameters {
  */
 enum ValueShape {
   VarInt,
-  /** A single byte: FORWARD, SUBSCRIBER_PRIORITY, GROUP_ORDER. */
+  /** A single byte: FORWARD, SUBSCRIBER_PRIORITY, GROUP_ORDER, INCLUDE_PROPERTIES. */
   Uint8,
   /** Two varints, no length prefix: LARGEST_OBJECT. */
   BareLocation,
@@ -274,6 +293,7 @@ function valueShapeOf(typeValue: bigint): ValueShape {
     case BigInt(MessageParameterType.Forward):
     case BigInt(MessageParameterType.SubscriberPriority):
     case BigInt(MessageParameterType.GroupOrder):
+    case BigInt(MessageParameterType.IncludeProperties):
       return ValueShape.Uint8
     case BigInt(MessageParameterType.LargestObject):
       return ValueShape.BareLocation
@@ -350,7 +370,7 @@ function readMessageParameterKvps(buf: BaseByteBuffer, more: () => boolean): Key
     const typeValue = prevType + buf.getVI()
     switch (valueShapeOf(typeValue)) {
       case ValueShape.Uint8:
-        items.push(KeyValuePair.tryNewVarInt(typeValue, BigInt(buf.getU8())))
+        items.push(KeyValuePair.newVarInt(typeValue, BigInt(buf.getU8())))
         break
       case ValueShape.BareLocation: {
         const loc = new ByteBuffer()
@@ -454,6 +474,35 @@ if (import.meta.vitest) {
 
       expect(frozen.remaining).toBe(0)
       expect(parsed).toEqual(params)
+    })
+  })
+
+  describe('INCLUDE_PROPERTIES wire encoding', () => {
+    test('is a single byte on its odd Type', () => {
+      const wire = serializeMessageParameterKvps([new IncludeProperties(false).toKeyValuePair()]).toUint8Array()
+      expect(wire).toEqual(new Uint8Array([0x35, 0x00]))
+      const buf = new ByteBuffer()
+      buf.putBytes(wire)
+      const frozen = buf.freeze()
+      expect(MessageParameters.fromKeyValuePairs(deserializeMessageParameterKvps(frozen, 1))).toEqual([
+        new IncludeProperties(false),
+      ])
+      expect(frozen.remaining).toBe(0)
+    })
+
+    test('a value other than 0 or 1 is a protocol violation', () => {
+      const buf = new ByteBuffer()
+      buf.putBytes(new Uint8Array([0x35, 0x02]))
+      const frozen = buf.freeze()
+      expect(() => MessageParameters.fromKeyValuePairs(deserializeMessageParameterKvps(frozen, 1))).toThrow(
+        ProtocolViolationError,
+      )
+    })
+
+    test('properties are included unless asked not to be', () => {
+      expect(MessageParameter.includesProperties([])).toBe(true)
+      expect(MessageParameter.includesProperties([new IncludeProperties(true)])).toBe(true)
+      expect(MessageParameter.includesProperties([new IncludeProperties(false)])).toBe(false)
     })
   })
 

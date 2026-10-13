@@ -78,6 +78,7 @@ pub enum MessageParameterType {
   TrackPropertyFilter = 0x29,
   NewGroupRequest = 0x32,
   TrackNamespacePrefix = 0x34,
+  IncludeProperties = 0x35,
   SwitchingSetAssignment = 0x41,
 }
 
@@ -106,6 +107,7 @@ impl TryFrom<u64> for MessageParameterType {
       0x29 => Ok(MessageParameterType::TrackPropertyFilter),
       0x32 => Ok(MessageParameterType::NewGroupRequest),
       0x34 => Ok(MessageParameterType::TrackNamespacePrefix),
+      0x35 => Ok(MessageParameterType::IncludeProperties),
       0x41 => Ok(MessageParameterType::SwitchingSetAssignment),
       _ => Err(ParseError::InvalidType {
         context: "MessageParameterType::try_from(u64)",

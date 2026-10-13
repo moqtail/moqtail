@@ -39,7 +39,7 @@ use moqtail::model::data::object::Object;
 use moqtail::model::data::subgroup_header::SubgroupHeader;
 use moqtail::model::data::subgroup_object::SubgroupObject;
 use moqtail::model::error::{RequestErrorCode, StreamResetCode};
-use moqtail::model::parameter::message_parameter::MessageParameter;
+use moqtail::model::parameter::message_parameter::{MessageParameter, include_properties};
 use moqtail::model::property::object_property::ObjectProperty;
 use moqtail::model::property::track_property::TrackProperty;
 use moqtail::transport::connection::TransportConnection;
@@ -186,7 +186,11 @@ async fn serve_request_streams(
             refuse_filters(&mut request_stream, "SUBSCRIBE").await;
             return;
           }
-          let ok = SubscribeOk::new(track_alias, vec![], dc.content.track_properties.clone());
+          let ok = SubscribeOk::new(
+            track_alias,
+            vec![],
+            properties_for(&m.subscribe_parameters, &dc.content.track_properties),
+          );
           if let Err(e) = request_stream.send_impl(&ok).await {
             error!("Failed to send SubscribeOk: {:?}", e);
             return;
@@ -218,7 +222,10 @@ async fn serve_request_streams(
             "Received TrackStatus on request stream for track={:?}",
             m.track_name
           );
-          let ok = RequestOk::new(vec![]);
+          let ok = RequestOk::new_track_status(
+            vec![],
+            properties_for(&m.subscribe_parameters, &dc.content.track_properties),
+          );
           if let Err(e) = request_stream.send_impl(&ok).await {
             error!("Failed to send TrackStatus RequestOk: {:?}", e);
           }
@@ -455,7 +462,7 @@ async fn serve_fetch(
     false,
     end.clone(),
     vec![],
-    config.content.track_properties.clone(),
+    properties_for(&fetch.parameters, &config.content.track_properties),
   );
   if let Err(e) = request_stream.send_impl(&ok).await {
     error!("Failed to send FetchOk: {:?}", e);
@@ -464,6 +471,19 @@ async fn serve_fetch(
 
   if let Err(e) = send_fetch_objects(connection, &fetch, &start, &end, config).await {
     error!("Failed to serve FETCH objects: {:?}", e);
+  }
+}
+
+/// The Track Properties a response carries: all of them, or none when the request set
+/// INCLUDE_PROPERTIES to 0.
+fn properties_for(
+  request: &[MessageParameter],
+  properties: &[TrackProperty],
+) -> Vec<TrackProperty> {
+  if include_properties(request) {
+    properties.to_vec()
+  } else {
+    Vec::new()
   }
 }
 

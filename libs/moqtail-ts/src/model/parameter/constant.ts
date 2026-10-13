@@ -82,6 +82,7 @@ export enum MessageParameterType {
    * varint its even Type implies.
    */
   TrackNamespacePrefix = 0x34,
+  IncludeProperties = 0x35,
   /**
    * PROVISIONAL: sender-side track switching is not an adopted extension, so this
    * codepoint is absent from the registry the conformance fixture tracks; see its
@@ -133,6 +134,8 @@ export function messageParameterTypeFromNumber(value: bigint | number): MessageP
       return MessageParameterType.NewGroupRequest
     case 0x34:
       return MessageParameterType.TrackNamespacePrefix
+    case 0x35:
+      return MessageParameterType.IncludeProperties
     case 0x41:
       return MessageParameterType.SwitchingSetAssignment
     default:

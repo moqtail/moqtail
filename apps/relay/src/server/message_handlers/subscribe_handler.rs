@@ -775,10 +775,15 @@ async fn handle_subscribe_message(
         let cached_properties = { track.track_properties.read().await.clone() };
         let params =
           parameters::downstream_subscribe_ok(&upstream_parameters, track.largest_object().await);
+        let properties = subscription
+          .read()
+          .await
+          .properties_for_ok(cached_properties)
+          .await;
         let subscribe_ok = moqtail::model::control::subscribe_ok::SubscribeOk::new(
           subscription.read().await.track_alias,
           params,
-          cached_properties,
+          properties,
         );
         let sent = stream_handler.send_impl(&subscribe_ok).await;
         if sent.is_ok() {
@@ -1006,10 +1011,15 @@ async fn handle_subscribe_ok_message(
       // The subscriber can cancel while the publisher is still answering; then
       // there is no one left to tell.
       if let Some(subscription) = subscription {
+        let properties = subscription
+          .read()
+          .await
+          .properties_for_ok(cached_properties)
+          .await;
         let subscribe_ok = moqtail::model::control::subscribe_ok::SubscribeOk::new(
           subscription.read().await.track_alias,
           downstream_params.clone(),
-          cached_properties,
+          properties,
         );
         info!(
           "sending SubscribeOk to creator subscriber: {:?}",
@@ -1082,10 +1092,15 @@ async fn handle_subscribe_ok_message(
           );
           continue;
         };
+        let properties = subscription
+          .read()
+          .await
+          .properties_for_ok(cached_properties)
+          .await;
         let subscribe_ok = moqtail::model::control::subscribe_ok::SubscribeOk::new(
           subscription.read().await.track_alias,
           downstream_params.clone(),
-          cached_properties,
+          properties,
         );
         info!(
           "sending SubscribeOk to pending subscriber: {:?}",

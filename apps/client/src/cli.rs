@@ -256,6 +256,11 @@ pub struct Cli {
   #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
   pub forward: bool,
 
+  /// Whether the response should carry Track Properties; false sends
+  /// INCLUDE_PROPERTIES=0 (subscribe, subscribe-tracks and fetch)
+  #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+  pub include_properties: bool,
+
   /// Location Filter to subscribe with (subscribe only)
   #[arg(long, value_enum, default_value = "next-object")]
   pub filter: CliFilter,

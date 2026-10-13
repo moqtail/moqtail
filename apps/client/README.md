@@ -46,7 +46,7 @@ cargo run --bin client -- --command <COMMAND> [OPTIONS]
 | `--subgroups-per-group` |       | `1`        | Split each group over N subgroups, Object _i_ going to subgroup _i_ mod N, each on its own stream            |
 | `--priorities`          |       | _(none)_   | Publisher priority of each subgroup in turn, e.g. `10,200`; a datagram takes its would-be subgroup's         |
 | `--object-property`     |       | _(none)_   | `TYPE=SOURCE` set on every Object (repeatable); SOURCE is `group`, `object`, `subgroup`, `mod:M` or a number |
-| `--track-property`      |       | _(none)_   | `TYPE=VALUE` advertised in PUBLISH, SUBSCRIBE_OK and FETCH_OK (repeatable)                                   |
+| `--track-property`      |       | _(none)_   | `TYPE=VALUE` advertised in PUBLISH, SUBSCRIBE_OK, FETCH_OK and TRACK_STATUS_OK (repeatable)                  |
 
 ## Subscribe Options
 
@@ -57,6 +57,7 @@ cargo run --bin client -- --command <COMMAND> [OPTIONS]
 | `--group-order`          |       | `ascending`   | Group delivery order (`original`, `ascending`, `descending`)                                                                    |
 | `--extra-track`          |       | _(none)_      | Second track subscription for priority testing: `name:priority`                                                                 |
 | `--forward`              |       | `true`        | Subscription Forward State; set `false` to suppress object delivery                                                             |
+| `--include-properties`   |       | `true`        | `false` sends INCLUDE_PROPERTIES=0: no Track Properties in the SUBSCRIBE_OK, FETCH_OK or pushed PUBLISH                         |
 | `--update-forward-after` |       | `0`           | Seconds after subscribing to REQUEST_UPDATE Forward State to 1 (0 = never)                                                      |
 | `--filter`               |       | `next-object` | Location Filter: `none`, `relative-start`, `absolute-start`, `absolute-start-group-end`, `absolute-range`, `next-object`        |
 | `--filter-start-group`   |       | `0`           | Start Group for the absolute filters; for `relative-start`, groups before the next group (0 = next, 1 = current)                |

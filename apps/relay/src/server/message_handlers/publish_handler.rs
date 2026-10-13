@@ -30,8 +30,10 @@ use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::model::error::{RequestErrorCode, TerminationCode};
 use moqtail::model::parameter::combined_filter::CombinedFilter;
 use moqtail::model::parameter::constant::MessageParameterType;
-use moqtail::model::parameter::message_parameter::apply_message_parameter_update;
 use moqtail::model::parameter::message_parameter::{MessageParameter, MessageParameterVecExt};
+use moqtail::model::parameter::message_parameter::{
+  apply_message_parameter_update, include_properties,
+};
 use moqtail::model::property::track_property::has_unsupported_mandatory;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
@@ -533,6 +535,12 @@ pub(crate) async fn push_track_to_subscriber(
 
   let mut downstream = publish.clone();
   downstream.request_id = relay_request_id;
+  // INCLUDE_PROPERTIES=0 asks for the PUBLISH without Track Properties. Only this
+  // subscriber's copy is emptied: the track filter check above has already run against
+  // the publisher's properties.
+  if !include_properties(subscribe_tracks_params) {
+    downstream.track_properties.clear();
+  }
   {
     let track = track_arc.read().await;
     downstream.track_alias = subscriber.assign_track_alias(track.relay_track_id);

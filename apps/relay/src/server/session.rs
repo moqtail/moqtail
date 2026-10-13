@@ -801,8 +801,6 @@ impl Session {
         .try_into()
         .unwrap();
 
-    // TODO: get MAX_REQUEST_UPDATES from the config when the relay enforces it; 0
-    // means no limit.
     let max_filter_ranges =
       SetupOption::new_max_filter_ranges(context.server_config.max_filter_ranges)
         .try_into()

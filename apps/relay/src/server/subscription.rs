@@ -1313,8 +1313,11 @@ impl Subscription {
           // Checked last, so a drain still sees the Object past its boundary. A
           // filtered Object opens no stream: if a later one in the subgroup passes,
           // the stream opens then, from the cached header, restated for a stream
-          // that starts mid-subgroup. The Object ID delta is taken from the last
-          // Object written, so skipping one leaves the encoding intact.
+          // that starts mid-subgroup. An Object ID is encoded against the previous
+          // Object on the same stream, and the relay records the last one it wrote
+          // to each stream, so a skipped Object leaves the encoding intact. A Prior
+          // Object ID Gap passes through unchanged: it only ever counts IDs that do
+          // not exist, never ones filtered out.
           if !state.range_filter.matches_object(&object) {
             trace!(
               "Object filtered out for subscriber={} relay_track_id={} location: {:?} subgroup: {:?} priority: {}",

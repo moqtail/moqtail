@@ -75,6 +75,39 @@ pub(crate) fn resolve_fetch_range(
     .ok_or(FetchRangeError::InvalidRange)
 }
 
+/// FETCH_OK must name a real last Object, so an end of `{group, u64::MAX}` (all of
+/// the group) is replaced with the group's last Object: the publisher's End Location
+/// if it was asked, otherwise the last Object the relay has cached. If neither is
+/// known, the end is returned unchanged.
+pub(crate) fn concrete_end_location(
+  end: Location,
+  upstream_end: Option<&Location>,
+  cached_last: Option<u64>,
+) -> Location {
+  if end.object != u64::MAX {
+    return end;
+  }
+  if let Some(upstream_end) = upstream_end
+    && *upstream_end < end
+  {
+    return upstream_end.clone();
+  }
+  match cached_last {
+    Some(object) => Location::new(end.group, object),
+    None => end,
+  }
+}
+
+/// The highest Object ID the relay holds for `group`, if it holds any of it.
+async fn last_cached_object_id(
+  track: &Arc<tokio::sync::RwLock<crate::server::track::Track>>,
+  group: u64,
+) -> Option<u64> {
+  let objects = track.read().await.cache.get_group(group).await?;
+  let objects = objects.read().await;
+  objects.iter().map(|object| object.object_id).max()
+}
+
 /// The range to serve when the Largest Object is unknown (the relay holds nothing
 /// and the publisher did not answer) but a publisher could still deliver Objects:
 /// exactly what was asked for. That is only possible when the filter gives both a
@@ -109,7 +142,10 @@ enum UpstreamFetchResponse {
 /// What asking the publisher settled about a FETCH's range.
 enum UpstreamRange {
   /// The publisher accepted, and its FETCH_OK gave the End Location.
-  Resolved(PendingUpstreamFetch),
+  Resolved {
+    pending: PendingUpstreamFetch,
+    end_location: Location,
+  },
   /// The publisher refused the range. Its answer is authoritative.
   Rejected(Box<RequestError>),
   /// Nobody could say: no publisher to ask, no answer in time, or a REDIRECT, which
@@ -173,13 +209,16 @@ async fn resolve_range_upstream(
       // The publisher will send up to its End Location, so the track reaches at least
       // that far.
       if largest.as_ref().is_none_or(|known| *known < end_location) {
-        *largest = Some(end_location);
+        *largest = Some(end_location.clone());
       }
-      UpstreamRange::Resolved(PendingUpstreamFetch {
-        relay_request_id,
-        publisher,
-        rx,
-      })
+      UpstreamRange::Resolved {
+        pending: PendingUpstreamFetch {
+          relay_request_id,
+          publisher,
+          rx,
+        },
+        end_location,
+      }
     }
     UpstreamFetchResponse::Rejected(err) => {
       warn!(
@@ -359,6 +398,7 @@ pub async fn handle(
           .as_ref()
           .is_some_and(|end| local_state_answers(&largest, end));
         let mut upstream_rejection = None;
+        let mut upstream_end = None;
         if !answered_locally {
           match resolve_range_upstream(
             &client,
@@ -369,13 +409,29 @@ pub async fn handle(
           )
           .await
           {
-            UpstreamRange::Resolved(pending) => pending_upstream = Some(pending),
+            UpstreamRange::Resolved {
+              pending,
+              end_location,
+            } => {
+              pending_upstream = Some(pending);
+              upstream_end = Some(end_location);
+            }
             UpstreamRange::Rejected(err) => upstream_rejection = Some(err),
             UpstreamRange::Unanswered => {}
           }
         }
         match resolve_fetch_range(&location_filter, largest.clone()) {
-          Ok(range) => range,
+          Ok((start, end)) => {
+            let cached_last = if end.object == u64::MAX && upstream_end.is_none() {
+              last_cached_object_id(&track, end.group).await
+            } else {
+              None
+            };
+            (
+              start,
+              concrete_end_location(end, upstream_end.as_ref(), cached_last),
+            )
+          }
           Err(FetchRangeError::ProtocolViolation) => {
             warn!(
               "FETCH request {}: End precedes Start in {:?}; closing session (PROTOCOL_VIOLATION)",
@@ -1169,8 +1225,8 @@ pub(crate) async fn serve_fetch_stream(
 #[cfg(test)]
 mod tests {
   use super::{
-    FetchRangeError, empty_range_outcome, local_state_answers, resolve_fetch_range,
-    unresolved_fetch_range,
+    FetchRangeError, concrete_end_location, empty_range_outcome, local_state_answers,
+    resolve_fetch_range, unresolved_fetch_range,
   };
   use moqtail::model::common::location::Location;
   use moqtail::model::common::reason_phrase::ReasonPhrase;
@@ -1381,5 +1437,37 @@ mod tests {
   #[test]
   fn holding_nothing_always_needs_the_publisher() {
     assert!(!local_state_answers(&None, &loc(0, 0)));
+  }
+
+  #[test]
+  fn a_concrete_end_is_kept() {
+    assert_eq!(
+      concrete_end_location(loc(3, 4), Some(&loc(3, 2)), Some(9)),
+      loc(3, 4)
+    );
+  }
+
+  #[test]
+  fn a_completed_group_ends_at_its_last_cached_object() {
+    assert_eq!(
+      concrete_end_location(loc(0, u64::MAX), None, Some(2)),
+      loc(0, 2)
+    );
+  }
+
+  #[test]
+  fn the_publishers_end_location_wins_over_the_cache() {
+    assert_eq!(
+      concrete_end_location(loc(0, u64::MAX), Some(&loc(0, 5)), Some(2)),
+      loc(0, 5)
+    );
+  }
+
+  #[test]
+  fn with_nothing_known_about_the_group_the_end_stays_open() {
+    assert_eq!(
+      concrete_end_location(loc(0, u64::MAX), None, None),
+      loc(0, u64::MAX)
+    );
   }
 }

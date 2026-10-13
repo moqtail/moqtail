@@ -34,7 +34,7 @@ use moqtail::model::parameter::message_parameter::{
 };
 use moqtail::transport::connection::TransportConnection;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
-use moqtail::transport::data_stream_handler::RecvDataStream;
+use moqtail::transport::data_stream_handler::{HeaderInfo, RecvDataStream};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::RwLock;
@@ -275,6 +275,12 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
   if updates.is_empty() {
     request_streams.push(primary_stream);
   } else {
+    {
+      let mut router = router.lock().unwrap();
+      for update in &updates {
+        router.add_update(update.request_id, 0);
+      }
+    }
     send_updates(
       primary_stream,
       updates,
@@ -419,7 +425,7 @@ async fn receive_datagrams(
               }
 
               let location = Location::new(obj.group_id, obj.object_id);
-              let (route, labels) = route_object(&router, obj.track_alias, &location);
+              let (route, labels) = route_object(&router, None, obj.track_alias, &location);
               if route.owners.is_empty() && route.duplicates == 0 {
                 debug!(
                   "Ignoring datagram for unknown track_alias: {}",
@@ -440,6 +446,7 @@ async fn receive_datagrams(
                   &mut stats,
                   &router,
                   *owner,
+                  false,
                   &location,
                   fields,
                   ReceptionStats::prior_group_gap(obj.properties.as_ref()),
@@ -515,17 +522,40 @@ async fn receive_streams(
         Ok(stream) => {
           let stream_handler = RecvDataStream::new(stream, pending_fetches_clone.clone());
           let mut handler = &stream_handler;
+          let mut fill_request: Option<Option<u64>> = None;
 
           loop {
             let (next_handler, object) = handler.next_object().await;
             match object {
               Some(obj) => {
-                let (route, labels) = route_object(&router, obj.track_alias, &obj.location);
+                // A fill stream answers no FETCH of ours: its Request ID names the
+                // SUBSCRIBE or REQUEST_UPDATE that asked for the fill.
+                if fill_request.is_none() {
+                  fill_request = Some(match stream_handler.get_header_info().await {
+                    Some(HeaderInfo::Fetch {
+                      header,
+                      fetch_request: None,
+                    }) => Some(header.request_id),
+                    _ => None,
+                  });
+                }
+                let (route, labels) = route_object(
+                  &router,
+                  fill_request.flatten(),
+                  obj.track_alias,
+                  &obj.location,
+                );
                 if route.owners.is_empty() && route.duplicates == 0 {
-                  debug!(
-                    "Ignoring object for unknown track_alias: {}",
-                    obj.track_alias
-                  );
+                  match fill_request.flatten() {
+                    Some(request_id) => debug!(
+                      "Ignoring fill object for unknown request_id: {}",
+                      request_id
+                    ),
+                    None => debug!(
+                      "Ignoring object for unknown track_alias: {}",
+                      obj.track_alias
+                    ),
+                  }
                 }
                 stats.record_duplicates(route.duplicates);
 
@@ -534,11 +564,12 @@ async fn receive_streams(
                     &mut stats,
                     &router,
                     *owner,
+                    fill_request.flatten().is_some(),
                     &obj.location,
                     ObjectFields::from(&obj),
                     ReceptionStats::prior_group_gap(obj.properties.as_ref()),
                   );
-                  let sequence_ok = status == "OK";
+                  let sequence_ok = matches!(status, "OK" | "FILL");
 
                   if should_log(stats.total_received) || !sequence_ok {
                     info!(
@@ -639,18 +670,23 @@ fn send_updates(
   });
 }
 
-/// Counts an object into the subscription that took it: against its Range Filters
-/// when it has them, and its sequence otherwise. Returns what to log it as.
+/// Counts an object into the subscription that took it: on its own when a fill
+/// delivered it, against its Range Filters when it has them, and its sequence
+/// otherwise. Returns what to log it as.
 fn record(
   stats: &mut ReceptionStats,
   router: &Mutex<Router>,
   owner: u64,
+  fill: bool,
   location: &Location,
   fields: ObjectFields<'_>,
   prior_group_gap: u64,
 ) -> &'static str {
   let mut router = router.lock().unwrap();
-  if router.is_filtered(owner) {
+  if fill {
+    stats.record_fill_object(owner);
+    "FILL"
+  } else if router.is_filtered(owner) {
     let passed = router.passes(owner, fields);
     stats.record_filtered_object(owner, location.group, location.object, passed);
     if passed { "OK" } else { "FILTER_VIOLATION" }
@@ -661,14 +697,19 @@ fn record(
   }
 }
 
-/// Routes an object, and names the subscriptions that took it for the log.
+/// Routes an object, and names the subscriptions that took it for the log. A
+/// fill stream's objects go by the Request ID that named the stream.
 fn route_object(
   router: &Mutex<Router>,
+  fill_request: Option<u64>,
   track_alias: u64,
   location: &Location,
 ) -> (crate::routing::Route, Vec<String>) {
   let mut router = router.lock().unwrap();
-  let route = router.route(track_alias, location);
+  let route = match fill_request {
+    Some(request_id) => router.route_fill(request_id, location),
+    None => router.route(track_alias, location),
+  };
   let labels = route
     .owners
     .iter()
@@ -680,18 +721,20 @@ fn route_object(
 /// One line per subscription, then the totals.
 fn report_subscriptions(stats: &ReceptionStats, router: &Mutex<Router>) {
   let router = router.lock().unwrap();
-  for (request_id, received, gaps, violations) in stats.per_track() {
+  for report in stats.per_track() {
     info!(
-      "Subscription {}: received={}, gaps={}, filter_violations={}",
-      router.label(request_id),
-      received,
-      gaps,
-      violations
+      "Subscription {}: received={}, fill={}, gaps={}, filter_violations={}",
+      router.label(report.track),
+      report.received,
+      report.fill,
+      report.gaps,
+      report.violations
     );
   }
   info!(
-    "Subscriber finished: received={}, errors={}, gaps={}, duplicates={}, filter_violations={}",
+    "Subscriber finished: received={}, fill={}, errors={}, gaps={}, duplicates={}, filter_violations={}",
     stats.total_received,
+    stats.fill_received,
     stats.parse_errors,
     stats.sequence_gaps,
     stats.duplicates,

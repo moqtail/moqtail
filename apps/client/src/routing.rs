@@ -21,9 +21,9 @@
 //! object once however many copies of it arrive.
 
 use moqtail::model::common::location::Location;
+use moqtail::model::parameter::combined_filter::{CombinedFilter, ObjectFields};
 use moqtail::model::parameter::location_filter::LocationFilter;
 use moqtail::model::parameter::message_parameter::MessageParameter;
-use moqtail::model::parameter::net_filter::{NetFilter, ObjectFields};
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
@@ -101,8 +101,8 @@ struct Subscription {
   seen: HashSet<(u64, u64)>,
   /// The Range Filters in force, and those an update replaced until their grace
   /// runs out.
-  filter: NetFilter,
-  replaced: Vec<(NetFilter, Instant)>,
+  filter: CombinedFilter,
+  replaced: Vec<(CombinedFilter, Instant)>,
 }
 
 /// Where a received object went.
@@ -131,7 +131,7 @@ impl Router {
       track_alias,
       window,
       seen: HashSet::new(),
-      filter: NetFilter::default(),
+      filter: CombinedFilter::default(),
       replaced: Vec::new(),
     });
   }
@@ -144,7 +144,7 @@ impl Router {
   }
 
   /// Sets the Range Filters a subscription asked for.
-  pub fn set_filter(&mut self, request_id: u64, filter: NetFilter) {
+  pub fn set_filter(&mut self, request_id: u64, filter: CombinedFilter) {
     if let Some(subscription) = self.subscription_mut(request_id) {
       subscription.filter = filter;
     }
@@ -152,7 +152,7 @@ impl Router {
 
   /// Moves a subscription to new Range Filters. The ones they replace still count
   /// for a little while, for the objects sent before the update arrived.
-  pub fn update_filter(&mut self, request_id: u64, filter: NetFilter) {
+  pub fn update_filter(&mut self, request_id: u64, filter: CombinedFilter) {
     if let Some(subscription) = self.subscription_mut(request_id) {
       let old = std::mem::replace(&mut subscription.filter, filter);
       subscription
@@ -359,9 +359,9 @@ mod tests {
     assert_eq!(window.start, Location::new(1, 2));
   }
 
-  fn object_id(start: u64, end: u64) -> NetFilter {
+  fn object_id(start: u64, end: u64) -> CombinedFilter {
     use moqtail::model::parameter::range_filter::{Range, RangeFilter, RangeFilterKind};
-    NetFilter::new(&[MessageParameter::new_range_filter(
+    CombinedFilter::new(&[MessageParameter::new_range_filter(
       RangeFilterKind::ObjectId,
       RangeFilter::new(0, None, &[Range::new(start, end)]).unwrap(),
     )])

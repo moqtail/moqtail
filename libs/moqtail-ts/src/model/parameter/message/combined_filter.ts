@@ -38,7 +38,7 @@ const within = (ranges: readonly Range[], value: bigint): boolean =>
  * Ranges within one filter are OR'd, filters sharing a SetID are AND'd, and the
  * SetIDs are OR'd with each other. No filter at all passes every Object.
  */
-export class NetFilter {
+export class CombinedFilter {
   readonly #sets = new Map<number, FilterSet>()
 
   /** How many Ranges the filters hold, which is what a range limit counts. */
@@ -60,12 +60,12 @@ export class NetFilter {
       if (!(param instanceof RangeFilter) || param.isRemoval) continue
       const filter = param
       if (filter.kind === RangeFilterKind.TrackProperty) {
-        throw new InvalidFilterError('NetFilter', 'a track property filter selects tracks, not Objects')
+        throw new InvalidFilterError('CombinedFilter', 'a track property filter selects tracks, not Objects')
       }
       const key = `${filter.kind}/${filter.setId}/${filter.propertyType ?? ''}`
       if (seen.has(key)) {
         throw new InvalidFilterError(
-          'NetFilter',
+          'CombinedFilter',
           `${RangeFilterKind[filter.kind]} filter repeats SetID ${filter.setId}` +
             (filter.propertyType !== undefined ? ` for property 0x${filter.propertyType.toString(16)}` : ''),
         )
@@ -170,15 +170,15 @@ if (import.meta.vitest) {
   const filter = (kind: RangeFilterKind, setId: number, ranges: Range[], propertyType?: bigint) =>
     new RangeFilter(kind, setId, propertyType, encodeRanges(ranges))
 
-  describe('NetFilter', () => {
+  describe('CombinedFilter', () => {
     test('no filter passes everything', () => {
-      const net = new NetFilter([new Forward(true), new RangeFilter(RangeFilterKind.ObjectId)])
+      const net = new CombinedFilter([new Forward(true), new RangeFilter(RangeFilterKind.ObjectId)])
       expect(net.isEmpty).toBe(true)
       expect(net.matches(object(0n, 9n))).toBe(true)
     })
 
     test('ranges within one filter are ORed', () => {
-      const net = new NetFilter([
+      const net = new CombinedFilter([
         filter(RangeFilterKind.ObjectId, 0, [
           { start: 0n, end: 1n },
           { start: 5n, end: 5n },
@@ -189,7 +189,7 @@ if (import.meta.vitest) {
     })
 
     test('filters sharing a SetID are ANDed, and SetIDs are ORed', () => {
-      const net = new NetFilter([
+      const net = new CombinedFilter([
         // Set 0: object 0 at high priority (low value).
         filter(RangeFilterKind.ObjectId, 0, [{ start: 0n, end: 0n }]),
         filter(RangeFilterKind.Priority, 0, [{ start: 0n, end: 63n }]),
@@ -203,13 +203,13 @@ if (import.meta.vitest) {
     })
 
     test('a subgroup filter passes no datagram', () => {
-      const net = new NetFilter([filter(RangeFilterKind.Subgroup, 0, [{ start: 0n }])])
+      const net = new CombinedFilter([filter(RangeFilterKind.Subgroup, 0, [{ start: 0n }])])
       expect(net.matches(object(0n, 0n), 0n)).toBe(true)
       expect(net.matches(object(0n, 0n), null)).toBe(false)
     })
 
     test('a property filter needs the property, and looks inside ImmutableProperties', () => {
-      const net = new NetFilter([filter(RangeFilterKind.ObjectProperty, 0, [{ start: 10n, end: 20n }], 0x3cn)])
+      const net = new CombinedFilter([filter(RangeFilterKind.ObjectProperty, 0, [{ start: 10n, end: 20n }], 0x3cn)])
       const prop = (value: bigint) => KeyValuePair.tryNewVarInt(0x3cn, value)
       expect(net.matches(object(0n, 0n, 128, [prop(15n)]))).toBe(true)
       expect(net.matches(object(0n, 0n, 128, [prop(25n)]))).toBe(false)
@@ -221,7 +221,7 @@ if (import.meta.vitest) {
     test('a repeated Type, SetID and Property Type is invalid', () => {
       expect(
         () =>
-          new NetFilter([
+          new CombinedFilter([
             filter(RangeFilterKind.ObjectId, 0, [{ start: 0n, end: 0n }]),
             filter(RangeFilterKind.ObjectId, 0, [{ start: 4n, end: 4n }]),
           ]),
@@ -229,7 +229,7 @@ if (import.meta.vitest) {
       // A different Property Type under the same SetID is a separate filter.
       expect(
         () =>
-          new NetFilter([
+          new CombinedFilter([
             filter(RangeFilterKind.ObjectProperty, 0, [{ start: 0n }], 0x3cn),
             filter(RangeFilterKind.ObjectProperty, 0, [{ start: 0n }], 0x3en),
           ]),
@@ -237,21 +237,21 @@ if (import.meta.vitest) {
     })
 
     test('a filter that cannot be applied is invalid', () => {
-      expect(() => new NetFilter([filter(RangeFilterKind.Priority, 0, [{ start: 0n, end: 300n }])])).toThrow(
+      expect(() => new CombinedFilter([filter(RangeFilterKind.Priority, 0, [{ start: 0n, end: 300n }])])).toThrow(
         InvalidFilterError,
       )
-      expect(() => new NetFilter([filter(RangeFilterKind.TrackProperty, 0, [{ start: 0n }], 0x3cn)])).toThrow(
+      expect(() => new CombinedFilter([filter(RangeFilterKind.TrackProperty, 0, [{ start: 0n }], 0x3cn)])).toThrow(
         InvalidFilterError,
       )
     })
 
     test('a filter set with no ranges passes nothing', () => {
-      const net = new NetFilter([filter(RangeFilterKind.ObjectId, 0, [])])
+      const net = new CombinedFilter([filter(RangeFilterKind.ObjectId, 0, [])])
       expect(net.matches(object(0n, 0n))).toBe(false)
     })
 
     test('an end-of-group status object is filtered like any other', () => {
-      const net = new NetFilter([filter(RangeFilterKind.ObjectId, 0, [{ start: 0n, end: 0n }])])
+      const net = new CombinedFilter([filter(RangeFilterKind.ObjectId, 0, [{ start: 0n, end: 0n }])])
       const end = MoqtObject.newWithStatus(
         ftn,
         new Location(0n, 3n),

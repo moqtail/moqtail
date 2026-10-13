@@ -17,7 +17,7 @@
 import { MessageParameter, ReasonPhrase } from '../../model'
 import { RequestError, RequestErrorCode } from '../../model/control'
 import { InvalidFilterError } from '../../model/parameter/message/range_filter'
-import { NetFilter } from '../../model/parameter/message/net_filter'
+import { CombinedFilter } from '../../model/parameter/message/combined_filter'
 
 /** Returns true when `trackAlias` is a valid (non-negative) track alias. Zero is a legal value. */
 export function isValidTrackAlias(trackAlias: bigint | undefined): trackAlias is bigint {
@@ -33,8 +33,8 @@ export function isValidTrackAlias(trackAlias: bigint | undefined): trackAlias is
 export function rangeFilterRejection(params: readonly MessageParameter[], limit: bigint): RequestError | undefined {
   try {
     assertWithinFilterRangeLimit(params, limit, 'request')
-    new NetFilter(params)
-    for (const fill of params.filter(MessageParameter.isFillParameters)) new NetFilter(fill.parameters)
+    new CombinedFilter(params)
+    for (const fill of params.filter(MessageParameter.isFillParameters)) new CombinedFilter(fill.parameters)
     return undefined
   } catch (error) {
     if (!(error instanceof InvalidFilterError)) throw error

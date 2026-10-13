@@ -35,10 +35,10 @@ use moqtail::model::control::request_error::RequestError;
 use moqtail::model::control::request_ok::RequestOk;
 use moqtail::model::error::TerminationCode;
 use moqtail::model::error::{RequestErrorCode, StreamResetCode};
+use moqtail::model::parameter::combined_filter::check_filter_range_limit;
 use moqtail::model::parameter::message_parameter::{
   MessageParameter, apply_message_parameter_update,
 };
-use moqtail::model::parameter::net_filter::check_filter_range_limit;
 use moqtail::model::parameter::range_filter::RangeFilterError;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;

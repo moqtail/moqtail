@@ -20,8 +20,8 @@
 //! SetID twice -- goes out as given, so a relay's refusal can be tested.
 
 use moqtail::model::common::pair::KeyValuePair;
+use moqtail::model::parameter::combined_filter::{CombinedFilter, check_filter_range_limit};
 use moqtail::model::parameter::message_parameter::MessageParameter;
-use moqtail::model::parameter::net_filter::{NetFilter, check_filter_range_limit};
 use moqtail::model::parameter::range_filter::{Range, RangeFilter, RangeFilterKind};
 use moqtail::model::property::track_property::TrackProperty;
 use tracing::warn;
@@ -105,10 +105,10 @@ pub fn check_limit(
 
 /// The filter the objects of a request are checked against. One the server has to
 /// refuse checks nothing: the request should not get as far as delivering.
-pub fn object_filter(params: &[MessageParameter]) -> NetFilter {
-  NetFilter::for_objects(params).unwrap_or_else(|e| {
+pub fn object_filter(params: &[MessageParameter]) -> CombinedFilter {
+  CombinedFilter::for_objects(params).unwrap_or_else(|e| {
     warn!("Requesting range filters the server has to refuse ({e})");
-    NetFilter::default()
+    CombinedFilter::default()
   })
 }
 

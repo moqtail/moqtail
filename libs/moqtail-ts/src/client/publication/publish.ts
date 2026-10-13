@@ -18,7 +18,7 @@ import { Publish, RequestUpdate } from '@/model/control'
 import { MOQtailClient } from '../client'
 import { Track } from '../track/track'
 import { InternalError, Location, MessageParameter, applyMessageParameterUpdate } from '@/model'
-import { NetFilter } from '@/model/parameter/message/net_filter'
+import { CombinedFilter } from '@/model/parameter/message/combined_filter'
 import { SendStream } from '../data_stream'
 import { MoqtObject } from '@/model/data/object'
 import { SubgroupIds, subgroupHeaderFor } from './subgroup'
@@ -95,7 +95,7 @@ export class PublishPublication {
    * What the subscriber's Range Filters let through. A PUBLISH carries none, so this
    * passes everything until a REQUEST_UPDATE says otherwise.
    */
-  #filter: NetFilter = new NetFilter([])
+  #filter: CombinedFilter = new CombinedFilter([])
 
   /**
    * The Subgroup ID of each Object, which the filter and the stream header need.
@@ -170,7 +170,7 @@ export class PublishPublication {
     const parameters = [...this.#parameters]
     applyMessageParameterUpdate(parameters, msg.parameters)
     assertWithinFilterRangeLimit(parameters, this.client.maxFilterRanges, 'REQUEST_UPDATE')
-    this.#filter = new NetFilter(parameters)
+    this.#filter = new CombinedFilter(parameters)
     this.#parameters = parameters
 
     const forward = msg.parameters.find(MessageParameter.isForward)

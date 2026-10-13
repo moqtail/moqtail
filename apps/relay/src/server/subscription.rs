@@ -38,11 +38,11 @@ use moqtail::model::control::subscribe::Subscribe;
 use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::model::data::object::Object;
 use moqtail::model::error::StreamResetCode;
+use moqtail::model::parameter::combined_filter::{CombinedFilter, ObjectFields};
 use moqtail::model::parameter::location_filter::LocationFilter;
 use moqtail::model::parameter::message_parameter::{
   MessageParameter, apply_message_parameter_update,
 };
-use moqtail::model::parameter::net_filter::{NetFilter, ObjectFields};
 use moqtail::transport::connection::TransportSendStream;
 use moqtail::transport::data_stream_handler::HeaderInfo;
 use std::collections::HashMap;
@@ -104,7 +104,7 @@ pub struct SubscriptionState {
   pub switch_activated: Option<SwitchActivation>,
   pub subscribe_parameters: Vec<MessageParameter>,
   /// What the subscriber's Range Filters let through, from `subscribe_parameters`.
-  pub range_filter: NetFilter,
+  pub range_filter: CombinedFilter,
   pub last_sent_max_location: Option<Location>,
   /// The group sent before the one `last_sent_max_location` names, so the distance
   /// between a track's groups can be read off the two. See [`Self::sent_group_gap`].
@@ -274,7 +274,7 @@ impl From<SubscriptionOrigin> for SubscriptionState {
           publish_done_at_end: false,
           switch_activated: None,
           subscribe_parameters: Vec::new(),
-          range_filter: NetFilter::default(),
+          range_filter: CombinedFilter::default(),
           last_sent_max_location: None,
           prior_sent_group: None,
           last_received_object_location: None,
@@ -285,7 +285,7 @@ impl From<SubscriptionOrigin> for SubscriptionState {
         state.subscribe_parameters = subscribe.subscribe_parameters;
         // The handler refused the SUBSCRIBE if its filters could not be applied.
         state.range_filter =
-          NetFilter::for_objects(&state.subscribe_parameters).unwrap_or_default();
+          CombinedFilter::for_objects(&state.subscribe_parameters).unwrap_or_default();
         state
       }
       SubscriptionOrigin::Publish(publish) => {
@@ -337,7 +337,7 @@ impl From<SubscriptionOrigin> for SubscriptionState {
           publish_done_at_end: false,
           switch_activated: None,
           subscribe_parameters: Vec::new(),
-          range_filter: NetFilter::default(),
+          range_filter: CombinedFilter::default(),
           last_sent_max_location: None,
           prior_sent_group: None,
           last_received_object_location: None,
@@ -714,7 +714,8 @@ impl Subscription {
       // to remove a parameter from a request.
       apply_message_parameter_update(&mut state.subscribe_parameters, request_update.parameters);
       // The handler refused the update if the filters it leaves could not be applied.
-      state.range_filter = NetFilter::for_objects(&state.subscribe_parameters).unwrap_or_default();
+      state.range_filter =
+        CombinedFilter::for_objects(&state.subscribe_parameters).unwrap_or_default();
 
       info!(
         "update_subscription | new subscription state for relay_track_id={}: {:?}",
@@ -2016,7 +2017,7 @@ mod tests {
       publish_done_at_end: false,
       switch_activated: None,
       subscribe_parameters: vec![],
-      range_filter: NetFilter::default(),
+      range_filter: CombinedFilter::default(),
       last_sent_max_location: None,
       prior_sent_group: None,
       last_received_object_location: None,

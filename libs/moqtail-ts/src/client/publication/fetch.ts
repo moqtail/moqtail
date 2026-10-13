@@ -25,7 +25,7 @@ import {
   MoqtObject,
 } from '@/model'
 import { FetchObjectContext } from '@/model/data/fetch_object'
-import { NetFilter } from '@/model/parameter/message/net_filter'
+import { CombinedFilter } from '@/model/parameter/message/combined_filter'
 import { StreamResetCode } from '@/model/error/stream_reset'
 import { streamResetReason } from '../util/stream_reset'
 import { MOQtailClient } from '../client'
@@ -45,7 +45,7 @@ export class FetchPublication {
   readonly #msg: Fetch
   readonly #client: MOQtailClient
   /** What the FETCH's Range Filters let through. */
-  readonly #filter: NetFilter
+  readonly #filter: CombinedFilter
   #stream: WritableStream | undefined
   #writer: WritableStreamDefaultWriter | undefined
   #objects: MoqtObject[] | undefined
@@ -59,7 +59,7 @@ export class FetchPublication {
     this.#startLocation = fetchRequest.startLocation
     this.#endLocation = fetchRequest.endLocation
     // The handler has already refused a FETCH with filters that cannot be applied.
-    this.#filter = new NetFilter(fetchRequest.parameters)
+    this.#filter = new CombinedFilter(fetchRequest.parameters)
     logger.debug('publication/fetch', `created requestId=${this.#requestId}`)
     this.publish()
   }

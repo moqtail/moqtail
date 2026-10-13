@@ -13,9 +13,9 @@
 // limitations under the License.
 
 pub mod authorization_token;
+pub mod combined_filter;
 pub mod constant;
 pub mod location_filter;
 pub mod message_parameter;
-pub mod net_filter;
 pub mod range_filter;
 pub mod setup_option;

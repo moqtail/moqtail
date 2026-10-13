@@ -27,10 +27,10 @@
 use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::control::request_error::RequestError;
 use moqtail::model::error::RequestErrorCode;
+use moqtail::model::parameter::combined_filter::{CombinedFilter, check_filter_range_limit};
 use moqtail::model::parameter::message_parameter::{
   MessageParameter, apply_message_parameter_update,
 };
-use moqtail::model::parameter::net_filter::{NetFilter, check_filter_range_limit};
 use moqtail::model::parameter::range_filter::{RangeFilterError, RangeFilterKind};
 use moqtail::model::property::track_property::TrackProperty;
 use std::collections::BTreeMap;
@@ -48,14 +48,14 @@ pub(crate) fn invalid_filter(error: &RangeFilterError) -> RequestError {
 pub(crate) fn object_filter(
   params: &[MessageParameter],
   limit: u64,
-) -> Result<NetFilter, RangeFilterError> {
+) -> Result<CombinedFilter, RangeFilterError> {
   check_filter_range_limit(params, limit)?;
   for param in params {
     if let MessageParameter::FillParameters { parameters } = param {
-      NetFilter::for_objects(parameters)?;
+      CombinedFilter::for_objects(parameters)?;
     }
   }
-  NetFilter::for_objects(params)
+  CombinedFilter::for_objects(params)
 }
 
 /// Checks a REQUEST_UPDATE to a subscription whose parameters are `current`, and
@@ -68,7 +68,7 @@ pub(crate) fn updated_filter(
   current: &[MessageParameter],
   update: &[MessageParameter],
   limit: u64,
-) -> Result<NetFilter, RangeFilterError> {
+) -> Result<CombinedFilter, RangeFilterError> {
   check_filter_range_limit(update, limit)?;
   let mut resulting = current.to_vec();
   apply_message_parameter_update(&mut resulting, update.to_vec());
@@ -80,9 +80,9 @@ pub(crate) fn updated_filter(
 pub(crate) fn tracks_filter(
   params: &[MessageParameter],
   limit: u64,
-) -> Result<NetFilter, RangeFilterError> {
+) -> Result<CombinedFilter, RangeFilterError> {
   check_filter_range_limit(params, limit)?;
-  NetFilter::new(params)
+  CombinedFilter::new(params)
 }
 
 /// Checks a REQUEST_UPDATE to a SUBSCRIBE_TRACKS whose parameters are `current`.
@@ -91,7 +91,7 @@ pub(crate) fn updated_tracks_filter(
   current: &[MessageParameter],
   update: &[MessageParameter],
   limit: u64,
-) -> Result<NetFilter, RangeFilterError> {
+) -> Result<CombinedFilter, RangeFilterError> {
   check_filter_range_limit(update, limit)?;
   let mut resulting = current.to_vec();
   apply_message_parameter_update(&mut resulting, update.to_vec());
@@ -139,7 +139,7 @@ pub(crate) fn filters_for_track(
       .filter(|p| is_track_filter(p))
       .map(|p| (*p).clone())
       .collect();
-    let passes = NetFilter::new(&track)
+    let passes = CombinedFilter::new(&track)
       .ok()
       .and_then(|net| net.narrow_for_track(track_properties))
       .is_some();
@@ -166,7 +166,7 @@ pub(crate) fn filters_for_track(
 pub(crate) fn fill_range_filter(
   subscription: &[MessageParameter],
   fill: &[MessageParameter],
-) -> NetFilter {
+) -> CombinedFilter {
   let is_range_filter = |p: &&MessageParameter| matches!(p, MessageParameter::RangeFilter { .. });
   let mut params: Vec<_> = subscription
     .iter()
@@ -178,7 +178,7 @@ pub(crate) fn fill_range_filter(
     fill.iter().filter(is_range_filter).cloned().collect(),
   );
   // Both were checked when the request carrying them arrived.
-  NetFilter::for_objects(&params).unwrap_or_default()
+  CombinedFilter::for_objects(&params).unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -278,7 +278,7 @@ mod tests {
     ];
     let fill = [filter(RangeFilterKind::ObjectId, 0, &[Range::new(4, 9)])];
     let net = fill_range_filter(&subscription, &fill);
-    let fields = |object, priority| moqtail::model::parameter::net_filter::ObjectFields {
+    let fields = |object, priority| moqtail::model::parameter::combined_filter::ObjectFields {
       subgroup_id: Some(0),
       object_id: object,
       publisher_priority: priority,

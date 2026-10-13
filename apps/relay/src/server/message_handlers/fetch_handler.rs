@@ -30,7 +30,7 @@ use moqtail::model::data::fetch_object::FetchObjectPayload;
 use moqtail::model::error::RequestErrorCode;
 use moqtail::model::error::StreamResetCode;
 use moqtail::model::error::TerminationCode;
-use moqtail::model::parameter::net_filter::{NetFilter, ObjectFields};
+use moqtail::model::parameter::combined_filter::{CombinedFilter, ObjectFields};
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use moqtail::transport::data_stream_handler::FetchRequest;
 use std::sync::Arc;
@@ -691,7 +691,7 @@ pub(crate) struct FetchDelivery {
   pub pending_upstream: Option<PendingUpstreamFetch>,
   /// What the requester's Range Filters let through. Upstream is asked for the whole
   /// range regardless: the filtering is the relay's to do.
-  pub filter: NetFilter,
+  pub filter: CombinedFilter,
 }
 
 /// What a cached or fetched Object is filtered on. A datagram has no subgroup.

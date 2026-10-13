@@ -17,6 +17,7 @@ use crate::filter_spec::{check_limit, object_filter};
 use anyhow::Result;
 use moqtail::model::common::location::Location;
 use moqtail::model::common::tuple::{Tuple, TupleField};
+use moqtail::model::control::constant::GroupOrder;
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::fetch::Fetch;
 use moqtail::model::error::StreamResetCode;
@@ -62,6 +63,7 @@ pub struct FetchConfig {
   pub start_object: u64,
   pub end_group: u64,
   pub end_object: u64,
+  pub group_order: GroupOrder,
   pub cancel_after: u64,
   /// False asks for the FETCH_OK without Track Properties.
   pub include_properties: bool,
@@ -80,7 +82,10 @@ pub async fn run(moq: MoqConnection, config: FetchConfig) -> Result<()> {
   // Send Fetch request
   let request_id = 0u64;
   let ns = Tuple::from_utf8_path(&config.namespace);
-  let mut parameters = vec![MessageParameter::new_subscriber_priority(200)];
+  let mut parameters = vec![
+    MessageParameter::new_subscriber_priority(200),
+    MessageParameter::new_group_order(config.group_order),
+  ];
   parameters.extend(config.range_filters.iter().cloned());
   if !config.include_properties {
     parameters.push(MessageParameter::new_include_properties(false));

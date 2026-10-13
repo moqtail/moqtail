@@ -915,9 +915,18 @@ pub(crate) async fn serve_fetch_stream(
         }
 
         let fetch_obj = moqtail::model::data::fetch_object::FetchObject::Object(object.clone());
-        let serialized = fetch_obj
-          .serialize(fetch_prev_ctx.as_ref(), group_order)
-          .unwrap();
+        let serialized = match fetch_obj.serialize(fetch_prev_ctx.as_ref(), group_order) {
+          Ok(bytes) => bytes,
+          Err(e) => {
+            error!("handle_fetch_messages | Error serializing object: {:?}", e);
+            client
+              .fetch_cancel_senders
+              .write()
+              .await
+              .remove(&request_id);
+            return Err(TerminationCode::InternalError);
+          }
+        };
         fetch_prev_ctx = fetch_obj.context();
 
         if let Err(e) = client
@@ -1040,7 +1049,21 @@ pub(crate) async fn serve_fetch_stream(
                   let fetch_obj =
                     moqtail::model::data::fetch_object::FetchObject::Object(object.clone());
                   let serialized =
-                    fetch_obj.serialize(fetch_prev_ctx.as_ref(), group_order).unwrap();
+                    match fetch_obj.serialize(fetch_prev_ctx.as_ref(), group_order) {
+                      Ok(bytes) => bytes,
+                      Err(e) => {
+                        error!(
+                          "handle_fetch_messages | Error serializing upstream object: {:?}",
+                          e
+                        );
+                        client
+                          .fetch_cancel_senders
+                          .write()
+                          .await
+                          .remove(&request_id);
+                        return Err(TerminationCode::InternalError);
+                      }
+                    };
                   fetch_prev_ctx = fetch_obj.context();
 
                   if let Err(e) = client

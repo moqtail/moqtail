@@ -174,6 +174,7 @@ async fn main() -> Result<(), anyhow::Error> {
         start_object: cli.start_object,
         end_group: cli.end_group,
         end_object: cli.end_object,
+        group_order: cli.group_order.into(),
         cancel_after: cli.cancel_after,
         include_properties: cli.include_properties,
         range_filters: cli.range_filter,

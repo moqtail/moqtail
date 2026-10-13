@@ -181,11 +181,12 @@ async fn resolve_range_upstream(
   context: &Arc<SessionContext>,
   track: &Arc<tokio::sync::RwLock<crate::server::track::Track>>,
   filter: LocationFilter,
+  group_order: GroupOrder,
   largest: &mut Option<Location>,
 ) -> UpstreamRange {
   let sent = {
     let track_read = track.read().await;
-    send_upstream_fetch_for_range(client, context, &track_read, filter).await
+    send_upstream_fetch_for_range(client, context, &track_read, filter, group_order).await
   };
   let Some((relay_request_id, publisher, rx, response_rx)) = sent else {
     return UpstreamRange::Unanswered;
@@ -405,6 +406,7 @@ pub async fn handle(
             &context,
             &track,
             location_filter.clone(),
+            fetch.group_order(),
             &mut largest,
           )
           .await
@@ -560,7 +562,8 @@ pub(crate) async fn cancel_fetch(client: Arc<MOQTClient>, request_id: u64) {
   }
 }
 
-/// Send an upstream Fetch to the publisher for the range `filter` selects.
+/// Send an upstream Fetch to the publisher for the range `filter` selects, asking for
+/// the groups in `group_order` so they arrive in the order they are written downstream.
 /// Returns the upstream request state, including separate channels for the control
 /// response and Object events.
 async fn send_upstream_fetch_for_range(
@@ -568,6 +571,7 @@ async fn send_upstream_fetch_for_range(
   context: &Arc<SessionContext>,
   track_read: &crate::server::track::Track,
   filter: LocationFilter,
+  group_order: GroupOrder,
 ) -> Option<UpstreamFetch> {
   // A FETCH goes to one publisher, unlike a SUBSCRIBE: any of the matching ones may
   // serve the range, so the first will do.
@@ -595,12 +599,17 @@ async fn send_upstream_fetch_for_range(
   )
   .await;
 
+  // Delivery treats anything but Descending as Ascending, so upstream is asked the same.
+  let group_order = match group_order {
+    GroupOrder::Descending => GroupOrder::Descending,
+    GroupOrder::Ascending | GroupOrder::Original => GroupOrder::Ascending,
+  };
   let upstream_fetch = Fetch::new_with_location_filter(
     relay_request_id,
     track_read.full_track_name.namespace.clone(),
     track_read.full_track_name.name.clone(),
     filter,
-    parameters::upstream_fetch(),
+    parameters::upstream_fetch(group_order),
   );
 
   let (upstream_tx, upstream_rx) = mpsc::channel(UPSTREAM_FETCH_CHANNEL_CAPACITY);
@@ -862,9 +871,25 @@ pub(crate) async fn serve_fetch_stream(
   let mut send_stream = None;
   let mut stop_reason = FetchStop::Running;
   let mut fetch_prev_ctx: Option<moqtail::model::data::fetch_object::FetchObjectContext> = None;
-  let mut group_id = start_location.group;
+  // Groups are written in the requested order, and the Objects within each group in
+  // ascending order either way. The delta encoding of each Object against the one
+  // before it depends on that order, so walking the range the other way fails.
+  let descending = group_order == GroupOrder::Descending;
+  // The group to serve after the groups `lo..=hi`, or None once the range is done.
+  let next_after = |lo: u64, hi: u64| -> Option<u64> {
+    if descending {
+      (lo > start_location.group).then(|| lo - 1)
+    } else {
+      (hi < end_location.group).then(|| hi + 1)
+    }
+  };
+  let mut next_group = Some(if descending {
+    end_location.group
+  } else {
+    start_location.group
+  });
 
-  while group_id <= end_location.group {
+  while let Some(group_id) = next_group {
     let reason = *cancel_rx.borrow();
     if reason != FetchStop::Running {
       info!(
@@ -972,24 +997,34 @@ pub(crate) async fn serve_fetch_stream(
 
         object_count += 1;
       }
-      group_id += 1;
+      next_group = next_after(group_id, group_id);
     } else {
       // === CACHE MISS ===
-      // Scan ahead to find contiguous gap [gap_start .. gap_end]
-      let gap_start: u64 = group_id;
+      // Scan ahead, in the direction of delivery, for the contiguous gap
+      // [gap_start .. gap_end]
+      let mut gap_start = group_id;
       let mut gap_end = group_id;
-      while gap_end < end_location.group && track_read.cache.get_group(gap_end + 1).await.is_none()
-      {
-        gap_end += 1;
+      if descending {
+        while gap_start > start_location.group
+          && track_read.cache.get_group(gap_start - 1).await.is_none()
+        {
+          gap_start -= 1;
+        }
+      } else {
+        while gap_end < end_location.group
+          && track_read.cache.get_group(gap_end + 1).await.is_none()
+        {
+          gap_end += 1;
+        }
       }
 
       let max_upstream_fetch_gaps = context.server_config.max_upstream_fetch_gaps;
       if upstream_gap_count >= max_upstream_fetch_gaps {
         warn!(
           "handle_fetch_delivery | Reached max upstream fetch gap limit ({}), skipping gap at group {}",
-          max_upstream_fetch_gaps, gap_start
+          max_upstream_fetch_gaps, group_id
         );
-        group_id = gap_end + 1;
+        next_group = next_after(gap_start, gap_end);
         continue;
       }
       upstream_gap_count += 1;
@@ -999,6 +1034,7 @@ pub(crate) async fn serve_fetch_stream(
       // Without one, this is an ordinary cache gap and only the gap is fetched.
       let upstream_rx = match pending_upstream.take() {
         Some(pending) => {
+          gap_start = start_location.group;
           gap_end = end_location.group;
           Some((pending.relay_request_id, pending.publisher, pending.rx))
         }
@@ -1008,7 +1044,7 @@ pub(crate) async fn serve_fetch_stream(
             start: Location::new(gap_start, 0),
             end_group: gap_end,
           };
-          send_upstream_fetch_for_range(&client, &context, &track_read, gap)
+          send_upstream_fetch_for_range(&client, &context, &track_read, gap, group_order)
             .await
             .map(|(request_id, publisher, rx, _)| (request_id, publisher, rx))
         }
@@ -1168,7 +1204,7 @@ pub(crate) async fn serve_fetch_stream(
         break;
       }
 
-      group_id = gap_end + 1;
+      next_group = next_after(gap_start, gap_end);
     }
   }
 

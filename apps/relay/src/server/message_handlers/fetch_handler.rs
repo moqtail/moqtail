@@ -24,10 +24,13 @@ use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::fetch::Fetch;
 use moqtail::model::control::fetch_ok::FetchOk;
 use moqtail::model::control::request_error::RequestError;
+use moqtail::model::data::constant::ObjectForwardingPreference;
 use moqtail::model::data::fetch_header::FetchHeader;
+use moqtail::model::data::fetch_object::FetchObjectPayload;
 use moqtail::model::error::RequestErrorCode;
 use moqtail::model::error::StreamResetCode;
 use moqtail::model::error::TerminationCode;
+use moqtail::model::parameter::net_filter::{NetFilter, ObjectFields};
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use moqtail::transport::data_stream_handler::FetchRequest;
 use std::sync::Arc;
@@ -239,6 +242,27 @@ pub async fn handle(
         return Ok(());
       }
 
+      // The relay applies Range Filters itself, so ones it cannot honour are refused
+      // rather than dropped.
+      let filter = match crate::server::filter_constructor::object_filter(
+        &fetch.parameters,
+        context.server_config.max_filter_ranges,
+      ) {
+        Ok(filter) => filter,
+        Err(e) => {
+          info!("Rejecting FETCH {request_id}: {e}");
+          let error = crate::server::filter_constructor::invalid_filter(&e);
+          send_request_error(
+            client.clone(),
+            request_id,
+            error.error_code,
+            error.reason_phrase,
+          )
+          .await;
+          return Ok(());
+        }
+      };
+
       let full_track_name = fetch.get_full_track_name();
       let track = context.track_manager.get_track(&full_track_name).await;
       let start_location = fetch.start_location.clone();
@@ -360,6 +384,7 @@ pub async fn handle(
         group_order: fetch.group_order(),
         stream_priority: 0,
         pending_upstream,
+        filter,
       };
 
       tokio::spawn(async move {
@@ -664,6 +689,20 @@ pub(crate) struct FetchDelivery {
   /// An upstream fetch already covering the range, whose Objects are used instead
   /// of asking for them a second time.
   pub pending_upstream: Option<PendingUpstreamFetch>,
+  /// What the requester's Range Filters let through. Upstream is asked for the whole
+  /// range regardless: the filtering is the relay's to do.
+  pub filter: NetFilter,
+}
+
+/// What a cached or fetched Object is filtered on. A datagram has no subgroup.
+fn filter_fields(object: &FetchObjectPayload) -> ObjectFields<'_> {
+  ObjectFields {
+    subgroup_id: (object.forwarding_preference != ObjectForwardingPreference::Datagram)
+      .then_some(object.subgroup_id),
+    object_id: object.object_id,
+    publisher_priority: object.publisher_priority,
+    properties: object.properties.as_deref(),
+  }
 }
 
 /// Opens a unidirectional stream beginning with a FETCH_HEADER and writes the
@@ -688,6 +727,7 @@ pub(crate) async fn serve_fetch_stream(
     group_order,
     stream_priority,
     mut pending_upstream,
+    filter,
   } = delivery;
 
   let fetch_header = FetchHeader::new(request_id);
@@ -750,6 +790,11 @@ pub(crate) async fn serve_fetch_stream(
         }
         if group_id == end_location.group && object.object_id >= end_location.object {
           break;
+        }
+        // Skipped before the stream opens or the delta context moves on: the next
+        // Object written is encoded against the last one written.
+        if !filter.matches(filter_fields(object)) {
+          continue;
         }
 
         if object_count == 0 {
@@ -865,6 +910,9 @@ pub(crate) async fn serve_fetch_stream(
                   );
                 }
                 Ok(Some(UpstreamFetchEvent::Object(object))) => {
+                  if !filter.matches(filter_fields(&object)) {
+                    continue;
+                  }
                   if object_count == 0 {
                     send_stream = match stream_fn(client.clone(), &stream_id).await {
                       Some(ss) => Some(ss),

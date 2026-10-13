@@ -14,6 +14,7 @@
 
 use crate::server::client::MOQTClient;
 use crate::server::client::switch_context::SwitchPlan;
+use crate::server::filter_constructor;
 use crate::server::message_handlers::parameters;
 use crate::server::session::Session;
 use crate::server::session_context::{PendingRequest, SessionContext};
@@ -505,6 +506,20 @@ async fn handle_subscribe_message(
   info!("received Subscribe message: {:?}", sub);
   let track_namespace = sub.track_namespace.clone();
   let full_track_name = sub.get_full_track_name();
+
+  // The relay applies Range Filters itself, so ones it cannot honour are refused
+  // before anything is created rather than dropped.
+  if let Err(e) = filter_constructor::object_filter(
+    &sub.subscribe_parameters,
+    context.server_config.max_filter_ranges,
+  ) {
+    info!("Rejecting SUBSCRIBE: {e}");
+    stream_handler
+      .send_impl(&filter_constructor::invalid_filter(&e))
+      .await
+      .unwrap();
+    return Ok(());
+  }
 
   // A SUBSCRIBE carrying SWITCH_FROM activates this subscription and suspends
   // another. Checked first: a switch that cannot be performed is refused without
@@ -1230,10 +1245,13 @@ pub async fn handle_request_update(
 
   // Read before anything is applied: a refused switch must leave the subscription
   // as it was.
-  let full_track_name = {
+  let (full_track_name, current_parameters) = {
     let client_requests = client.subscribe_requests.read().await;
     match client_requests.get(&existing_req_id) {
-      Some(req) => req.original_subscribe_request.get_full_track_name(),
+      Some(req) => (
+        req.original_subscribe_request.get_full_track_name(),
+        req.original_subscribe_request.subscribe_parameters.clone(),
+      ),
       None => {
         warn!(
           "RequestUpdate existing_request_id {} is not a valid Subscribe request for this client",
@@ -1243,6 +1261,26 @@ pub async fn handle_request_update(
       }
     }
   };
+
+  // Filters the subscription would be left with but that cannot be honoured fail
+  // the update before any of it is applied.
+  if let Err(e) = filter_constructor::updated_filter(
+    &current_parameters,
+    &update_msg.parameters,
+    context.server_config.max_filter_ranges,
+  ) {
+    info!("Refusing REQUEST_UPDATE for {:?}: {e}", full_track_name);
+    fail_update(
+      &client,
+      stream_handler,
+      &context,
+      &full_track_name,
+      existing_req_id,
+      filter_constructor::invalid_filter(&e),
+    )
+    .await;
+    return Ok(());
+  }
 
   let switch_plan = match plan_switch(
     &client,
@@ -1425,31 +1463,15 @@ pub async fn handle_request_update(
         ReasonPhrase::try_new(format!("Update failed: {:?}", e))
           .unwrap_or_else(|_| ReasonPhrase::try_new("Update failed".to_string()).unwrap()),
       );
-      let _ = stream_handler.send_impl(&err_msg).await;
-
-      // A failed update terminates the subscription with PUBLISH_DONE(UPDATE_FAILED).
-      let stream_count = match track_arc
-        .read()
-        .await
-        .get_subscription(&(client.connection_id, existing_req_id))
-        .await
-      {
-        Some(sub) => sub.read().await.opened_stream_count(),
-        None => 0,
-      };
-      let done = PublishDone::new(
-        PublishDoneStatusCode::UpdateFailed,
-        stream_count,
-        ReasonPhrase::try_new("REQUEST_UPDATE failed".to_string()).unwrap(),
-      );
-      let _ = stream_handler.send_impl(&done).await;
-
-      track_arc
-        .write()
-        .await
-        .remove_subscription(&(client.connection_id, existing_req_id))
-        .await;
-      client.subscriptions.remove(existing_req_id).await;
+      fail_update(
+        &client,
+        stream_handler,
+        &context,
+        &full_track_name,
+        existing_req_id,
+        err_msg,
+      )
+      .await;
     }
     None => {
       warn!(
@@ -1468,6 +1490,48 @@ pub async fn handle_request_update(
 
   Ok(())
 }
+/// Refuses a REQUEST_UPDATE with `error`, then ends the subscription it was for with
+/// PUBLISH_DONE(UPDATE_FAILED), which is what a failed update does to a subscription.
+async fn fail_update(
+  client: &Arc<MOQTClient>,
+  stream_handler: &mut ControlStreamHandler,
+  context: &Arc<SessionContext>,
+  full_track_name: &FullTrackName,
+  request_id: u64,
+  error: RequestError,
+) {
+  let _ = stream_handler.send_impl(&error).await;
+
+  let track_arc = context.track_manager.get_track(full_track_name).await;
+  let stream_count = match &track_arc {
+    Some(track) => match track
+      .read()
+      .await
+      .get_subscription(&(client.connection_id, request_id))
+      .await
+    {
+      Some(sub) => sub.read().await.opened_stream_count(),
+      None => 0,
+    },
+    None => 0,
+  };
+  let done = PublishDone::new(
+    PublishDoneStatusCode::UpdateFailed,
+    stream_count,
+    ReasonPhrase::try_new("REQUEST_UPDATE failed".to_string()).unwrap(),
+  );
+  let _ = stream_handler.send_impl(&done).await;
+
+  if let Some(track) = track_arc {
+    track
+      .write()
+      .await
+      .remove_subscription(&(client.connection_id, request_id))
+      .await;
+  }
+  client.subscriptions.remove(request_id).await;
+}
+
 async fn handle_subscribe_error_message(
   // The relay request id we sent upstream; this stream identifies the request.
   request_id: u64,

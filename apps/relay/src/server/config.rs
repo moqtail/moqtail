@@ -168,6 +168,12 @@ pub struct Cli {
   #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(0..=MAX_DEDUP_RETAINED_GROUPS))]
   pub dedup_retained_groups: u64,
 
+  /// How many Range Filter ranges a subscriber may ask for, in total, for one
+  /// subscription or fetch, advertised as MAX_FILTER_RANGES. The filters inside
+  /// FILL_PARAMETERS count against a limit of their own. 0 allows no Range Filters.
+  #[arg(long, default_value_t = 32)]
+  pub max_filter_ranges: u64,
+
   /// Enable sender-side track switching (SSTS). Off by default: the setup option
   /// and message parameter it relies on are provisional on an unadopted draft, so
   /// relays that never turn the feature on never put them on the wire.
@@ -240,6 +246,9 @@ pub struct AppConfig {
   /// Groups of Object ids retained per track for duplicate detection. Bounds what that
   /// costs; a publisher more than this many groups behind can slip a duplicate through.
   pub dedup_retained_groups: usize,
+  /// How many Range Filter ranges a subscriber may ask for in one request,
+  /// advertised as MAX_FILTER_RANGES. 0 allows none.
+  pub max_filter_ranges: u64,
   /// SSTS is available on this relay: the setup option is advertised and
   /// SWITCHING_SET_ASSIGNMENT is accepted. A client can never enable it on a relay
   /// that has it off, because the advertised list stays empty.
@@ -289,6 +298,7 @@ impl AppConfig {
       downstream_alias_timeout: Duration::from_millis(cli.downstream_alias_timeout_ms),
       publish_done_stream_timeout: Duration::from_millis(cli.publish_done_stream_timeout_ms),
       dedup_retained_groups: cli.dedup_retained_groups as usize,
+      max_filter_ranges: cli.max_filter_ranges,
       ssts_enable: cli.ssts_enable,
       // When the feature is off the advertised list stays empty, so a client can
       // never negotiate SSTS on this relay however much it wants it.
@@ -474,6 +484,7 @@ mod tests {
       downstream_alias_timeout: Duration::from_millis(3000),
       publish_done_stream_timeout: Duration::from_millis(2000),
       dedup_retained_groups: 30,
+      max_filter_ranges: 32,
       ssts_enable: false,
       ssts_algorithms: Vec::new(),
       ssts_discard_timeout_ms: 1600,

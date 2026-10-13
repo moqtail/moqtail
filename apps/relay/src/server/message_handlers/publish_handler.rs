@@ -31,6 +31,7 @@ use moqtail::model::error::{RequestErrorCode, TerminationCode};
 use moqtail::model::parameter::constant::MessageParameterType;
 use moqtail::model::parameter::message_parameter::apply_message_parameter_update;
 use moqtail::model::parameter::message_parameter::{MessageParameter, MessageParameterVecExt};
+use moqtail::model::parameter::net_filter::NetFilter;
 use moqtail::model::property::track_property::has_unsupported_mandatory;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
@@ -507,13 +508,26 @@ pub(crate) async fn ensure_upstream_forwarding(
 /// rather than forwards.
 ///
 /// The caller decides whether this subscriber should be served, and owns any push limit.
+/// The SUBSCRIBE_TRACKS track filters have the last word: a track whose Track Properties
+/// pass none of them is not pushed, and `false` says so.
 pub(crate) async fn push_track_to_subscriber(
   context: &Arc<SessionContext>,
   subscriber: Arc<MOQTClient>,
   track_arc: &Arc<RwLock<Track>>,
   publish: &Publish,
   subscribe_tracks_params: &[MessageParameter],
-) {
+) -> bool {
+  let Some(range_filters) = crate::server::filter_constructor::filters_for_track(
+    subscribe_tracks_params,
+    &publish.track_properties,
+  ) else {
+    info!(
+      "Not pushing {:?}/{:?} to subscriber {}: its Track Properties pass no track filter",
+      publish.track_namespace, publish.track_name, subscriber.connection_id
+    );
+    return false;
+  };
+
   let relay_request_id =
     Session::get_next_relay_request_id(context.relay_next_request_id.clone()).await;
 
@@ -544,6 +558,17 @@ pub(crate) async fn push_track_to_subscriber(
     .await;
   drop(track);
 
+  // The subscription starts with the Object filters of the SetIDs the track passed.
+  // They are kept with its parameters, so an update measures against them.
+  if let Some(subscription) = &subscription
+    && !range_filters.is_empty()
+  {
+    let sub = subscription.read().await;
+    let mut state = sub.subscription_state.write().await;
+    state.range_filter = NetFilter::for_objects(&range_filters).unwrap_or_default();
+    state.subscribe_parameters.extend(range_filters);
+  }
+
   // The subscription this just created is what wants Objects, so the publisher has
   // to be told to send. Taken after the read guard above is dropped: this reaches
   // for the same lock, and a writer queued between the two would deadlock a
@@ -556,6 +581,7 @@ pub(crate) async fn push_track_to_subscriber(
   tokio::spawn(async move {
     forward_publish_downstream(subscriber, downstream, subscription, track_arc, context).await;
   });
+  true
 }
 
 /// Push a PUBLISH to a subscriber on its own bidirectional request stream and serve
@@ -713,6 +739,32 @@ async fn apply_pushed_update(
     .parameters
     .iter()
     .any(|p| matches!(p, MessageParameter::FillParameters { .. }));
+
+  // Filters the subscription would be left with but that cannot be honoured refuse
+  // the update before any of it is applied.
+  if let Some(subscription) = subscription {
+    let current = {
+      let sub = subscription.read().await;
+      sub
+        .subscription_state
+        .read()
+        .await
+        .subscribe_parameters
+        .clone()
+    };
+    if let Err(e) = crate::server::filter_constructor::updated_filter(
+      &current,
+      &update.parameters,
+      context.server_config.max_filter_ranges,
+    ) {
+      info!("Refusing REQUEST_UPDATE on a pushed PUBLISH: {e}");
+      let error = crate::server::filter_constructor::invalid_filter(&e);
+      let _ = stream
+        .send(&ControlMessage::RequestError(Box::new(error)))
+        .await;
+      return;
+    }
+  }
 
   let result = match subscription {
     Some(subscription) => subscription.read().await.update_subscription(update).await,

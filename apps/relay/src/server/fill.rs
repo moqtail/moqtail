@@ -97,7 +97,7 @@ pub(crate) async fn open_fill_fetch_stream(
   subscription: Arc<RwLock<Subscription>>,
   request_id: u64,
 ) {
-  let (client, filter, priority, group_order, forwarding) = {
+  let (client, filter, range_filter, priority, group_order, forwarding) = {
     let sub = subscription.read().await;
     let state = sub.subscription_state.read().await;
     // A subscription with no FILL_PARAMETERS opens no fill fetch stream.
@@ -109,6 +109,7 @@ pub(crate) async fn open_fill_fetch_stream(
     (
       sub.subscriber(),
       fill_filter(fill, &state.location_filter),
+      crate::server::filter_constructor::fill_range_filter(&state.subscribe_parameters, fill),
       priority,
       group_order,
       state.forward,
@@ -153,6 +154,7 @@ pub(crate) async fn open_fill_fetch_stream(
       start.group,
     ),
     pending_upstream: None,
+    filter: range_filter,
   };
 
   let subscription_for_task = subscription.clone();

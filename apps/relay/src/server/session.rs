@@ -801,10 +801,12 @@ impl Session {
         .try_into()
         .unwrap();
 
-    // TODO: get these from the config when the relay enforces them.
-    // MAX_FILTER_RANGES 0 forbids the peer from sending Range filters, which the
-    // relay does not support yet. MAX_REQUEST_UPDATES 0 means no limit.
-    let max_filter_ranges = SetupOption::new_max_filter_ranges(0u64).try_into().unwrap();
+    // TODO: get MAX_REQUEST_UPDATES from the config when the relay enforces it; 0
+    // means no limit.
+    let max_filter_ranges =
+      SetupOption::new_max_filter_ranges(context.server_config.max_filter_ranges)
+        .try_into()
+        .unwrap();
     let max_request_updates_param = SetupOption::new_max_request_updates(0u64)
       .try_into()
       .unwrap();

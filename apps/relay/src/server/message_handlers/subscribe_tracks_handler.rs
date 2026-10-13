@@ -57,6 +57,20 @@ pub async fn handle_subscribe_tracks(
     return Ok(());
   }
 
+  // The relay chooses the tracks and filters their Objects itself, so filters it
+  // cannot honour are refused rather than dropped.
+  if let Err(e) = crate::server::filter_constructor::tracks_filter(
+    &sub_tracks.parameters,
+    context.server_config.max_filter_ranges,
+  ) {
+    info!("Rejecting SUBSCRIBE_TRACKS: {e}");
+    let err = crate::server::filter_constructor::invalid_filter(&e);
+    stream_handler
+      .send(&ControlMessage::RequestError(Box::new(err)))
+      .await?;
+    return Ok(());
+  }
+
   // Independent overlap space: only other SUBSCRIBE_TRACKS prefixes conflict.
   if let Some(existing_prefix) = context
     .track_manager
@@ -154,15 +168,18 @@ pub async fn handle_subscribe_tracks(
 
       info!("Forwarding existing track to SUBSCRIBE_TRACKS subscriber: {full_track_name:?}");
 
-      publish_handler::push_track_to_subscriber(
+      // A track its filters exclude is not pushed, and uses no stream.
+      if publish_handler::push_track_to_subscriber(
         &context,
         client.clone(),
         &track_arc,
         &original_publish_message,
         &sub_tracks.parameters,
       )
-      .await;
-      published += 1;
+      .await
+      {
+        published += 1;
+      }
     } else {
       warn!("The track has no associated publish message, track: {full_track_name:?}");
     }

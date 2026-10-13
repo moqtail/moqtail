@@ -38,6 +38,8 @@ use moqtail::model::error::{RequestErrorCode, StreamResetCode};
 use moqtail::model::parameter::message_parameter::{
   MessageParameter, apply_message_parameter_update,
 };
+use moqtail::model::parameter::net_filter::check_filter_range_limit;
+use moqtail::model::parameter::range_filter::RangeFilterError;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
 use tracing::{info, warn};
@@ -202,6 +204,28 @@ async fn apply_subscription_update(
   }
 }
 
+/// Checks the Range Filters a prefix subscription's REQUEST_UPDATE would leave it with.
+/// SUBSCRIBE_NAMESPACE takes none, so any there is refused.
+async fn update_filters_rejection(
+  client: &Arc<MOQTClient>,
+  context: &Arc<SessionContext>,
+  request_id: u64,
+  kind: SubscribeKind,
+  update: &[MessageParameter],
+) -> Result<(), RangeFilterError> {
+  let limit = context.server_config.max_filter_ranges;
+  match kind {
+    SubscribeKind::Tracks => {
+      let current = match client.inbound_requests.read().await.get(&request_id) {
+        Some(PendingRequest::SubscribeTracks { message, .. }) => message.parameters.clone(),
+        _ => Vec::new(),
+      };
+      crate::server::filter_constructor::updated_tracks_filter(&current, update, limit).map(|_| ())
+    }
+    _ => check_filter_range_limit(update, 0),
+  }
+}
+
 /// Handle a REQUEST_UPDATE arriving on a prefix subscription's own request stream.
 pub async fn handle(
   client: Arc<MOQTClient>,
@@ -232,6 +256,25 @@ pub async fn handle(
         && let Some(err) =
           prefix_move_rejection(&client, &context, &current_prefix, new_prefix, kind).await
       {
+        handler
+          .send(&ControlMessage::RequestError(Box::new(err)))
+          .await?;
+        return Ok(());
+      }
+
+      // Range Filters only mean something on SUBSCRIBE_TRACKS, where the ones the
+      // update leaves choose and filter the tracks pushed from then on.
+      if let Err(e) = update_filters_rejection(
+        &client,
+        &context,
+        existing_req_id,
+        kind,
+        &update_msg.parameters,
+      )
+      .await
+      {
+        info!("Refusing {kind:?} REQUEST_UPDATE for prefix {current_prefix:?}: {e}");
+        let err = crate::server::filter_constructor::invalid_filter(&e);
         handler
           .send(&ControlMessage::RequestError(Box::new(err)))
           .await?;

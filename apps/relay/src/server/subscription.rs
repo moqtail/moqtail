@@ -42,6 +42,7 @@ use moqtail::model::parameter::location_filter::LocationFilter;
 use moqtail::model::parameter::message_parameter::{
   MessageParameter, apply_message_parameter_update,
 };
+use moqtail::model::parameter::net_filter::{NetFilter, ObjectFields};
 use moqtail::transport::connection::TransportSendStream;
 use moqtail::transport::data_stream_handler::HeaderInfo;
 use std::collections::HashMap;
@@ -102,6 +103,8 @@ pub struct SubscriptionState {
   /// switch to a track that never publishes does not cut delivery off.
   pub switch_activated: Option<SwitchActivation>,
   pub subscribe_parameters: Vec<MessageParameter>,
+  /// What the subscriber's Range Filters let through, from `subscribe_parameters`.
+  pub range_filter: NetFilter,
   pub last_sent_max_location: Option<Location>,
   /// The group sent before the one `last_sent_max_location` names, so the distance
   /// between a track's groups can be read off the two. See [`Self::sent_group_gap`].
@@ -271,6 +274,7 @@ impl From<SubscriptionOrigin> for SubscriptionState {
           publish_done_at_end: false,
           switch_activated: None,
           subscribe_parameters: Vec::new(),
+          range_filter: NetFilter::default(),
           last_sent_max_location: None,
           prior_sent_group: None,
           last_received_object_location: None,
@@ -279,6 +283,9 @@ impl From<SubscriptionOrigin> for SubscriptionState {
         // An omitted filter is no filter.
         state.set_initial_location_filter(location_filter_of(&subscribe.subscribe_parameters));
         state.subscribe_parameters = subscribe.subscribe_parameters;
+        // The handler refused the SUBSCRIBE if its filters could not be applied.
+        state.range_filter =
+          NetFilter::for_objects(&state.subscribe_parameters).unwrap_or_default();
         state
       }
       SubscriptionOrigin::Publish(publish) => {
@@ -330,6 +337,7 @@ impl From<SubscriptionOrigin> for SubscriptionState {
           publish_done_at_end: false,
           switch_activated: None,
           subscribe_parameters: Vec::new(),
+          range_filter: NetFilter::default(),
           last_sent_max_location: None,
           prior_sent_group: None,
           last_received_object_location: None,
@@ -705,6 +713,8 @@ impl Subscription {
       // REQUEST_UPDATE, its value remains unchanged. There is no mechanism
       // to remove a parameter from a request.
       apply_message_parameter_update(&mut state.subscribe_parameters, request_update.parameters);
+      // The handler refused the update if the filters it leaves could not be applied.
+      state.range_filter = NetFilter::for_objects(&state.subscribe_parameters).unwrap_or_default();
 
       info!(
         "update_subscription | new subscription state for relay_track_id={}: {:?}",
@@ -1299,6 +1309,23 @@ impl Subscription {
             }
             return;
           }
+
+          // Checked last, so a drain still sees the Object past its boundary. A
+          // filtered Object opens no stream: if a later one in the subgroup passes,
+          // the stream opens then, from the cached header, restated for a stream
+          // that starts mid-subgroup. The Object ID delta is taken from the last
+          // Object written, so skipping one leaves the encoding intact.
+          if !state.range_filter.matches_object(&object) {
+            trace!(
+              "Object filtered out for subscriber={} relay_track_id={} location: {:?} subgroup: {:?} priority: {}",
+              self.client_connection_id,
+              self.relay_track_id,
+              object.location,
+              object.subgroup_id,
+              object.publisher_priority
+            );
+            return;
+          }
         }
 
         /* TODO: Look at the comment about awaiting_switch_activation.
@@ -1569,6 +1596,23 @@ impl Subscription {
             trace!(
               "Not forwarding datagram for subscriber={} relay_track_id={}: forward state is 0",
               self.client_connection_id, self.relay_track_id
+            );
+            return;
+          }
+
+          // A datagram has no subgroup, so it passes no subgroup filter.
+          let fields = ObjectFields {
+            subgroup_id: None,
+            object_id: object.object_id,
+            publisher_priority: object
+              .publisher_priority
+              .unwrap_or(DEFAULT_PUBLISHER_PRIORITY),
+            properties: object.properties.as_deref(),
+          };
+          if !state.range_filter.matches(fields) {
+            trace!(
+              "Datagram filtered out for subscriber={} relay_track_id={} location: {:?}",
+              self.client_connection_id, self.relay_track_id, location
             );
             return;
           }
@@ -1969,6 +2013,7 @@ mod tests {
       publish_done_at_end: false,
       switch_activated: None,
       subscribe_parameters: vec![],
+      range_filter: NetFilter::default(),
       last_sent_max_location: None,
       prior_sent_group: None,
       last_received_object_location: None,

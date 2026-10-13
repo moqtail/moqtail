@@ -18,9 +18,12 @@ use crate::server::session_context::SessionContext;
 use core::result::Result;
 use moqtail::model::error::{RequestErrorCode, TerminationCode};
 use moqtail::model::{
-  common::reason_phrase::ReasonPhrase, control::control_message::ControlMessage,
-  control::request_error::RequestError, control::request_ok::RequestOk,
-  control::track_status::TrackStatus, parameter::message_parameter::MessageParameter,
+  common::reason_phrase::ReasonPhrase,
+  control::control_message::ControlMessage,
+  control::request_error::RequestError,
+  control::request_ok::RequestOk,
+  control::track_status::TrackStatus,
+  parameter::message_parameter::{MessageParameter, include_properties},
 };
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
@@ -48,8 +51,13 @@ pub async fn handle(
         let params = vec![MessageParameter::new_largest_object(
           largest_location.clone(),
         )];
+        let track_properties = if include_properties(&status_req.subscribe_parameters) {
+          track.track_properties.read().await.clone()
+        } else {
+          Vec::new()
+        };
 
-        let ok_msg = RequestOk::new(params);
+        let ok_msg = RequestOk::new_track_status(params, track_properties);
         stream_handler
           .send(&ControlMessage::RequestOk(Box::new(ok_msg)))
           .await

@@ -46,6 +46,8 @@ pub struct PrefixSubscribeConfig {
   pub duration: u64,
   pub kind: PrefixKind,
   pub overlap: Option<PrefixKind>,
+  /// False asks for each PUBLISH without Track Properties (SUBSCRIBE_TRACKS only).
+  pub include_properties: bool,
   /// Range Filters for SUBSCRIBE_TRACKS, track filters included.
   pub range_filters: Vec<MessageParameter>,
   pub ignore_filter_limit: bool,
@@ -119,6 +121,10 @@ pub async fn run(moq: MoqConnection, config: PrefixSubscribeConfig) -> Result<()
     }),
     ..Default::default()
   };
+  let mut parameters = parameters;
+  if config.kind == PrefixKind::Tracks && !config.include_properties {
+    parameters.push(MessageParameter::new_include_properties(false));
+  }
   let mut request_stream =
     send_request(&connection, config.kind, prefix.clone(), 0, parameters).await?;
 
@@ -363,8 +369,8 @@ fn accept_pushed_publishes(
               m.track_name.as_str()
             );
             info!(
-              "SUBSCRIBE_TRACKS: PUBLISH for {name} (track_alias={})",
-              m.track_alias
+              "SUBSCRIBE_TRACKS: PUBLISH for {name} (track_alias={}, track_properties={:?})",
+              m.track_alias, m.track_properties
             );
             // The track filter decides whether this track should have been pushed,
             // and which of its objects then should be.

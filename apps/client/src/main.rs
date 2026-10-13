@@ -101,6 +101,7 @@ async fn main() -> Result<(), anyhow::Error> {
           Some((name.to_string(), priority))
         }),
         forward: cli.forward,
+        include_properties: cli.include_properties,
         update_forward_after: cli.update_forward_after,
         filter: cli.filter,
         filter_start_group: cli.filter_start_group,
@@ -131,6 +132,7 @@ async fn main() -> Result<(), anyhow::Error> {
           _ => PrefixKind::Tracks,
         },
         overlap: cli.overlap,
+        include_properties: cli.include_properties,
         range_filters: cli.range_filter,
         ignore_filter_limit: cli.ignore_filter_limit,
       };
@@ -145,6 +147,7 @@ async fn main() -> Result<(), anyhow::Error> {
         end_group: cli.end_group,
         end_object: cli.end_object,
         cancel_after: cli.cancel_after,
+        include_properties: cli.include_properties,
         range_filters: cli.range_filter,
         ignore_filter_limit: cli.ignore_filter_limit,
       };

@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { ReasonPhrase } from '@/model'
+import { MessageParameter, ReasonPhrase } from '@/model'
 import { Subscribe, RequestError, RequestErrorCode, SubscribeOk } from '../../model/control'
 import { RequestStreamMessageHandler } from './handler'
 import { SubscribePublication } from '../publication/subscribe'
@@ -61,17 +61,17 @@ export const handlerSubscribe: RequestStreamMessageHandler<Subscribe> = async (c
 
   if (!isValidTrackAlias(track.trackAlias)) throw new Error('Expected track alias to be set')
 
+  // The request's own parameters are not echoed: SUBSCRIBE_OK carries only what the
+  // publisher has to say, and a request parameter is not allowed in it.
   const largestLocation = track.trackSource.live.largestLocation
-  const parameters = [...msg.parameters]
-  if (largestLocation) {
-    parameters.push(new LargestObject(largestLocation))
-  }
+  const parameters = largestLocation ? [new LargestObject(largestLocation)] : []
+  const trackProperties = MessageParameter.includesProperties(msg.parameters) ? (track.trackProperties ?? []) : []
 
   logger.debug(
     'handler/subscribe',
     `requestId=${msg.requestId} ftn="${msg.fullTrackName}" trackAlias=${track.trackAlias} largestLocation=${largestLocation ? `${largestLocation.group}:${largestLocation.object}` : 'none'} — sending SUBSCRIBE_OK`,
   )
-  const subscribeOk = SubscribeOk.create(track.trackAlias, parameters, track.trackProperties ?? [])
+  const subscribeOk = SubscribeOk.create(track.trackAlias, parameters, trackProperties)
   // The publication keeps the stream: PUBLISH_DONE and any later response for this
   // subscription must go back on the stream the SUBSCRIBE arrived on.
   const publication = new SubscribePublication(client, track, msg, stream, largestLocation)

@@ -151,6 +151,11 @@
         "name": "TRACK_NAMESPACE_PREFIX",
         "value": "0x34",
         "spec": "Section 9.20.20"
+      },
+      {
+        "name": "INCLUDE_PROPERTIES",
+        "value": "0x35",
+        "spec": "Section 9.20.21"
       }
     ],
     "local_extensions": [

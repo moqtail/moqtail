@@ -32,6 +32,7 @@ use moqtail::model::error::StreamResetCode;
 use moqtail::model::error::TerminationCode;
 use moqtail::model::parameter::combined_filter::{CombinedFilter, ObjectFields};
 use moqtail::model::parameter::location_filter::LocationFilter;
+use moqtail::model::parameter::message_parameter::include_properties;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use moqtail::transport::data_stream_handler::FetchRequest;
 use std::sync::Arc;
@@ -406,7 +407,12 @@ pub async fn handle(
 
       // Send FetchOk on the request stream before delivering objects.
       {
-        let fetch_ok = FetchOk::new(false, end_location.clone(), vec![], vec![]);
+        let track_properties = if include_properties(&fetch.parameters) {
+          track.read().await.track_properties.read().await.clone()
+        } else {
+          Vec::new()
+        };
+        let fetch_ok = FetchOk::new(false, end_location.clone(), vec![], track_properties);
         stream_handler
           .send(&ControlMessage::FetchOk(Box::new(fetch_ok)))
           .await?;

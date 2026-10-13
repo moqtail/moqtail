@@ -79,6 +79,18 @@ export class KeyValuePair {
   }
 
   /**
+   * Creates a varint KeyValuePair for a Type whose namespace defines a numeric value
+   * regardless of parity. Prefer {@link KeyValuePair.tryNewVarInt}.
+   * @param typeValue - The key/type identifier; parity is not checked.
+   * @param value - The varint value.
+   */
+  static newVarInt(typeValue: bigint | number, value: bigint | number): KeyValuePair {
+    const tv = typeof typeValue === 'number' ? BigInt(typeValue) : typeValue
+    const v = typeof value === 'number' ? BigInt(value) : value
+    return new KeyValuePair(tv, v)
+  }
+
+  /**
    * Creates a new blob KeyValuePair.
    * @param typeValue - Must be odd.
    * @param value - The binary blob value.

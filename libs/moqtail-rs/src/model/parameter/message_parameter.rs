@@ -85,6 +85,12 @@ pub enum MessageParameter {
   TrackNamespacePrefix {
     prefix: Tuple,
   },
+  /// Whether the response carries Track Properties: the OK answering a SUBSCRIBE,
+  /// TRACK_STATUS or FETCH, or each PUBLISH a SUBSCRIBE_TRACKS brings. Omitted means
+  /// they are included.
+  IncludeProperties {
+    include: bool,
+  },
   /// Assigns a subscription to an SSTS switching set. Id 0 is the default
   /// allocation every implementation runs; other ids select an algorithm
   /// specific to one implementation.
@@ -136,6 +142,10 @@ impl MessageParameter {
 
   pub fn new_forward(forward: bool) -> Self {
     Self::Forward { forward }
+  }
+
+  pub fn new_include_properties(include: bool) -> Self {
+    Self::IncludeProperties { include }
   }
 
   pub fn new_subscriber_priority(priority: u8) -> Self {
@@ -219,6 +229,7 @@ impl MessageParameter {
       Self::RangeFilter { kind, .. } => kind.parameter_type() as u64,
       Self::NewGroupRequest { .. } => MessageParameterType::NewGroupRequest as u64,
       Self::TrackNamespacePrefix { .. } => MessageParameterType::TrackNamespacePrefix as u64,
+      Self::IncludeProperties { .. } => MessageParameterType::IncludeProperties as u64,
       Self::SwitchingSetAssignment { .. } => MessageParameterType::SwitchingSetAssignment as u64,
     }
   }
@@ -299,6 +310,13 @@ impl MessageParameter {
         msg_type,
         ControlMessageType::Subscribe | ControlMessageType::RequestUpdate
       ),
+      Self::IncludeProperties { .. } => matches!(
+        msg_type,
+        ControlMessageType::Subscribe
+          | ControlMessageType::TrackStatus
+          | ControlMessageType::Fetch
+          | ControlMessageType::SubscribeTracks
+      ),
       // Only a subscriber sends filters, and a track filter only means something
       // where tracks are being chosen.
       Self::RangeFilter {
@@ -366,6 +384,14 @@ impl MessageParameter {
             _ => Err(ParseError::ProtocolViolation {
               context: "MessageParameter::deserialize",
               details: format!("FORWARD must be 0 or 1, got {value}"),
+            }),
+          },
+          MessageParameterType::IncludeProperties => match *value {
+            0 => Ok(Self::IncludeProperties { include: false }),
+            1 => Ok(Self::IncludeProperties { include: true }),
+            _ => Err(ParseError::ProtocolViolation {
+              context: "MessageParameter::deserialize",
+              details: format!("INCLUDE_PROPERTIES must be 0 or 1, got {value}"),
             }),
           },
           MessageParameterType::SubscriberPriority => {
@@ -622,6 +648,12 @@ impl TryInto<KeyValuePair> for MessageParameter {
         MessageParameterType::Forward as u64,
         if forward { 1 } else { 0 },
       ),
+      // A uint8 on an odd Type, which the even/odd rule of try_new_varint would refuse;
+      // its value shape is what decides the encoding.
+      Self::IncludeProperties { include } => Ok(KeyValuePair::VarInt {
+        type_value: MessageParameterType::IncludeProperties as u64,
+        value: if include { 1 } else { 0 },
+      }),
       Self::SubscriberPriority { priority } => KeyValuePair::try_new_varint(
         MessageParameterType::SubscriberPriority as u64,
         priority as u64,
@@ -733,6 +765,14 @@ impl TryInto<KeyValuePair> for MessageParameter {
 ///
 /// A parameter appearing in a message type it is not defined for MUST close the
 /// session with PROTOCOL_VIOLATION.
+/// Whether a request's response should carry Track Properties: false only when it
+/// has INCLUDE_PROPERTIES set to 0.
+pub fn include_properties(params: &[MessageParameter]) -> bool {
+  !params
+    .iter()
+    .any(|p| matches!(p, MessageParameter::IncludeProperties { include: false }))
+}
+
 pub fn deserialize_message_parameters(
   bytes: &mut Bytes,
   count: u64,
@@ -845,6 +885,7 @@ const fn value_shape(type_value: u64) -> ValueShape {
   if type_value == MessageParameterType::Forward as u64
     || type_value == MessageParameterType::SubscriberPriority as u64
     || type_value == MessageParameterType::GroupOrder as u64
+    || type_value == MessageParameterType::IncludeProperties as u64
   {
     ValueShape::Uint8
   } else if type_value == MessageParameterType::LargestObject as u64 {
@@ -1598,6 +1639,62 @@ mod tests {
       deserialize_message_parameters(&mut bytes, 1, ControlMessageType::RequestOk),
       Err(ParseError::ProtocolViolation { .. })
     ));
+  }
+
+  #[test]
+  fn test_roundtrip_include_properties() {
+    for include in [false, true] {
+      let orig = MessageParameter::new_include_properties(include);
+      assert_eq!(roundtrip(orig.clone()), orig);
+    }
+  }
+
+  #[test]
+  fn include_properties_is_a_single_byte() {
+    let bytes =
+      serialize_message_parameters(&[MessageParameter::new_include_properties(false)]).unwrap();
+    assert_eq!(bytes.as_ref(), &[0x35, 0x00]);
+  }
+
+  #[test]
+  fn include_properties_other_than_0_or_1_is_a_protocol_violation() {
+    let mut bytes = Bytes::from_static(&[0x35, 0x02]);
+    assert!(matches!(
+      deserialize_message_parameters(&mut bytes, 1, ControlMessageType::Subscribe),
+      Err(ParseError::ProtocolViolation { .. })
+    ));
+  }
+
+  #[test]
+  fn include_properties_rides_the_requests_whose_response_carries_properties() {
+    let param = MessageParameter::new_include_properties(false);
+    for msg_type in [
+      ControlMessageType::Subscribe,
+      ControlMessageType::TrackStatus,
+      ControlMessageType::Fetch,
+      ControlMessageType::SubscribeTracks,
+    ] {
+      assert!(param.is_valid_for(msg_type), "{msg_type:?} allows it");
+    }
+    for msg_type in [
+      ControlMessageType::RequestUpdate,
+      ControlMessageType::Publish,
+      ControlMessageType::SubscribeOk,
+      ControlMessageType::RequestOk,
+    ] {
+      assert!(!param.is_valid_for(msg_type), "{msg_type:?} must not");
+    }
+  }
+
+  #[test]
+  fn properties_are_included_unless_asked_not_to_be() {
+    assert!(include_properties(&[]));
+    assert!(include_properties(&[
+      MessageParameter::new_include_properties(true)
+    ]));
+    assert!(!include_properties(&[
+      MessageParameter::new_include_properties(false)
+    ]));
   }
 
   #[test]

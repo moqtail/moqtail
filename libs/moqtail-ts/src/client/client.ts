@@ -365,7 +365,11 @@ export class MOQtailClient {
   /** Fired when an inbound SUBSCRIBE_NAMESPACE control message is received. */
   onPeerSubscribeNamespace?: (msg: SubscribeNamespace) => void
 
-  /** Fired when an inbound SUBSCRIBE_TRACKS control message is received. */
+  /**
+   * Fired when an inbound SUBSCRIBE_TRACKS control message is received. The PUBLISH
+   * sent for each matching track goes without Track Properties when
+   * `MessageParameter.includesProperties(msg.parameters)` is false.
+   */
   onPeerSubscribeTracks?: (msg: SubscribeTracks) => void
 
   /**

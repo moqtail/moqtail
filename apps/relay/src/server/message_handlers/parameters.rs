@@ -118,10 +118,12 @@ pub fn downstream_publish(
   params
 }
 
-/// The relay's FETCH to an upstream publisher, filling a gap it cannot serve itself.
+/// The relay's FETCH to an upstream publisher, filling a gap it cannot serve itself or
+/// settling a range it cannot answer alone.
 ///
-/// The range is what the relay is missing and travels in the message body; nothing the
-/// downstream FETCH carried as a parameter describes it.
+/// The range is not among these: the caller adds it as LOCATION_FILTER. That is either
+/// the groups the relay is missing, or the downstream FETCH's own filter when only the
+/// publisher knows how far it reaches. No other downstream parameter crosses the hop.
 pub fn upstream_fetch() -> Vec<MessageParameter> {
   vec![MessageParameter::new_group_order(GroupOrder::Ascending)]
 }

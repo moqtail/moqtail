@@ -41,8 +41,9 @@ use moqtail::model::error::StreamResetCode;
 use moqtail::model::parameter::combined_filter::{CombinedFilter, ObjectFields};
 use moqtail::model::parameter::location_filter::LocationFilter;
 use moqtail::model::parameter::message_parameter::{
-  MessageParameter, apply_message_parameter_update,
+  MessageParameter, apply_message_parameter_update, include_properties,
 };
+use moqtail::model::property::track_property::TrackProperty;
 use moqtail::transport::connection::TransportSendStream;
 use moqtail::transport::data_stream_handler::HeaderInfo;
 use std::collections::HashMap;
@@ -666,6 +667,17 @@ impl Subscription {
 
   pub fn subscriber(&self) -> Arc<MOQTClient> {
     self.subscriber.clone()
+  }
+
+  /// The Track Properties to put in the SUBSCRIBE_OK: `properties`, or none when the
+  /// SUBSCRIBE set INCLUDE_PROPERTIES to 0.
+  pub async fn properties_for_ok(&self, properties: Vec<TrackProperty>) -> Vec<TrackProperty> {
+    let state = self.subscription_state.read().await;
+    if include_properties(&state.subscribe_parameters) {
+      properties
+    } else {
+      Vec::new()
+    }
   }
 
   // This method updates the subscribe message with the new request update

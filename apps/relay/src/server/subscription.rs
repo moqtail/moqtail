@@ -365,10 +365,10 @@ fn takeover_group(resume_group: u64, covered_to: u64, resume_gap: u64) -> u64 {
 /// The header for a downstream stream that opens after the subgroup's first object
 /// has gone by, from the header that arrived with that object. Upstream set its bits
 /// for the object it came with, which this stream does not start with.
-fn starting_mid_subgroup(header_info: HeaderInfo) -> HeaderInfo {
+fn for_mid_subgroup_stream(header_info: HeaderInfo) -> HeaderInfo {
   match header_info {
     HeaderInfo::Subgroup { header } => HeaderInfo::Subgroup {
-      header: header.without_first_object(),
+      header: header.for_mid_subgroup_stream(),
     },
     other => other,
   }
@@ -732,7 +732,7 @@ impl Subscription {
         // The cached header came with an object that was not forwarded, so this
         // stream starts after the subgroup's first object.
         if self
-          .handle_header(starting_mid_subgroup(pending_header_info))
+          .handle_header(for_mid_subgroup_stream(pending_header_info))
           .await
           .is_ok()
         {
@@ -1445,7 +1445,7 @@ impl Subscription {
                   self.client_connection_id, self.relay_track_id, stream_id
                 );
                 self
-                  .handle_header(starting_mid_subgroup(h))
+                  .handle_header(for_mid_subgroup_stream(h))
                   .await
                   .ok()
                   .map(|(_, send_stream)| send_stream)
@@ -1908,7 +1908,7 @@ mod tests {
     upstream.subgroup_id = Some(5);
 
     let HeaderInfo::Subgroup { header } =
-      starting_mid_subgroup(HeaderInfo::Subgroup { header: upstream })
+      for_mid_subgroup_stream(HeaderInfo::Subgroup { header: upstream })
     else {
       panic!("a subgroup header stays a subgroup header");
     };

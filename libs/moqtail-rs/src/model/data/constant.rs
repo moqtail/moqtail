@@ -43,6 +43,18 @@ pub enum FetchHeaderType {
 /// object outrank all others.
 pub const DEFAULT_PUBLISHER_PRIORITY: u8 = 128;
 
+/// How a subgroup header gives the Subgroup ID (bits 1-2 of the type). The fourth
+/// value, 0b11, is reserved and has no variant, so a type built from one is always valid.
+#[derive(Debug, PartialEq, Clone, Copy, Eq)]
+pub enum SubgroupIdMode {
+  /// Subgroup ID is 0; the header has no Subgroup ID field.
+  Zero = 0b00,
+  /// Subgroup ID is the first Object ID on the stream; the header has no Subgroup ID field.
+  FirstObjectId = 0b01,
+  /// Subgroup ID is in the header.
+  Explicit = 0b10,
+}
+
 /// Valid Type values are exactly the ranges 0x10-0x1F, 0x30-0x3F, 0x50-0x5F and 0x70-0x7F
 /// (bit 4 set, bit 7 clear), minus those with SUBGROUP_ID_MODE = 0b11: 0x16, 0x17, 0x1E, 0x1F,
 /// 0x36, 0x37, 0x3E, 0x3F, 0x56, 0x57, 0x5E, 0x5F, 0x76, 0x77, 0x7E, 0x7F.
@@ -101,19 +113,29 @@ impl SubgroupHeaderType {
     self.0 & Self::PROPERTIES != 0
   }
 
+  /// How this header gives the Subgroup ID (bits 1-2).
+  pub fn subgroup_id_mode(&self) -> SubgroupIdMode {
+    match (self.0 & Self::SUBGROUP_ID_MODE_MASK) >> 1 {
+      0b00 => SubgroupIdMode::Zero,
+      0b01 => SubgroupIdMode::FirstObjectId,
+      // try_new rejects 0b11 and from_properties cannot produce it.
+      _ => SubgroupIdMode::Explicit,
+    }
+  }
+
   /// Check if subgroup ID is explicit in header (SUBGROUP_ID_MODE = 0b10)
   pub fn has_explicit_subgroup_id(&self) -> bool {
-    self.0 & Self::SUBGROUP_ID_MODE_MASK == 0x04
+    self.subgroup_id_mode() == SubgroupIdMode::Explicit
   }
 
   /// Check if subgroup ID = 0 (SUBGROUP_ID_MODE = 0b00)
   pub fn subgroup_id_is_zero(&self) -> bool {
-    self.0 & Self::SUBGROUP_ID_MODE_MASK == 0x00
+    self.subgroup_id_mode() == SubgroupIdMode::Zero
   }
 
   /// Check if subgroup ID = first Object ID (SUBGROUP_ID_MODE = 0b01)
   pub fn subgroup_id_is_first_object_id(&self) -> bool {
-    self.0 & Self::SUBGROUP_ID_MODE_MASK == 0x02
+    self.subgroup_id_mode() == SubgroupIdMode::FirstObjectId
   }
 
   /// Check if this subgroup contains end of group (bit 3 set)
@@ -134,10 +156,9 @@ impl SubgroupHeaderType {
   }
 
   /// Create type from property flags.
-  /// subgroup_id_mode: 0=zero, 1=firstObjId, 2=explicit
   pub fn from_properties(
     has_properties: bool,
-    subgroup_id_mode: u8,
+    subgroup_id_mode: SubgroupIdMode,
     contains_end_of_group: bool,
     has_default_priority: bool,
     first_object: bool,
@@ -146,7 +167,7 @@ impl SubgroupHeaderType {
     if has_properties {
       v |= Self::PROPERTIES;
     }
-    v |= (subgroup_id_mode & 0x03) << 1; // bits 1-2
+    v |= (subgroup_id_mode as u8) << 1; // bits 1-2
     if contains_end_of_group {
       v |= Self::END_OF_GROUP;
     }
@@ -484,8 +505,23 @@ mod tests {
   }
 
   #[test]
+  fn subgroup_id_mode_round_trips_through_the_type() {
+    for (mode, bits) in [
+      (SubgroupIdMode::Zero, 0x00),
+      (SubgroupIdMode::FirstObjectId, 0x02),
+      (SubgroupIdMode::Explicit, 0x04),
+    ] {
+      let t = SubgroupHeaderType::from_properties(true, mode, true, true, true);
+      assert_eq!(t.value() & SubgroupHeaderType::SUBGROUP_ID_MODE_MASK, bits);
+      assert_eq!(t.subgroup_id_mode(), mode);
+      assert_eq!(SubgroupHeaderType::try_new(t.value() as u64).unwrap(), t);
+    }
+  }
+
+  #[test]
   fn first_object_bit_round_trips() {
-    let with = SubgroupHeaderType::from_properties(false, 2, false, false, true);
+    let with =
+      SubgroupHeaderType::from_properties(false, SubgroupIdMode::Explicit, false, false, true);
     assert!(with.is_first_object());
     assert_eq!(with.value() & SubgroupHeaderType::FIRST_OBJECT, 0x40);
     assert_eq!(
@@ -493,7 +529,8 @@ mod tests {
       with
     );
 
-    let without = SubgroupHeaderType::from_properties(false, 2, false, false, false);
+    let without =
+      SubgroupHeaderType::from_properties(false, SubgroupIdMode::Explicit, false, false, false);
     assert!(!without.is_first_object());
   }
 

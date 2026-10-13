@@ -16,7 +16,7 @@ use crate::model::common::varint::{BufMutVarIntExt, BufVarIntExt};
 use crate::model::error::ParseError;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
-use super::constant::SubgroupHeaderType;
+use super::constant::{SubgroupHeaderType, SubgroupIdMode};
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub struct SubgroupHeader {
@@ -41,7 +41,7 @@ impl SubgroupHeader {
     let has_default_priority = publisher_priority.is_none();
     let header_type = SubgroupHeaderType::from_properties(
       has_properties,
-      0,
+      SubgroupIdMode::Zero,
       contains_end_of_group,
       has_default_priority,
       first_object,
@@ -68,7 +68,7 @@ impl SubgroupHeader {
     let has_default_priority = publisher_priority.is_none();
     let header_type = SubgroupHeaderType::from_properties(
       has_properties,
-      1,
+      SubgroupIdMode::FirstObjectId,
       contains_end_of_group,
       has_default_priority,
       first_object,
@@ -96,7 +96,7 @@ impl SubgroupHeader {
     let has_default_priority = publisher_priority.is_none();
     let header_type = SubgroupHeaderType::from_properties(
       has_properties,
-      2,
+      SubgroupIdMode::Explicit,
       contains_end_of_group,
       has_default_priority,
       first_object,
@@ -116,14 +116,12 @@ impl SubgroupHeader {
   /// FIRST_OBJECT, and a Subgroup ID taken from the first Object ID would be read from
   /// the wrong object, so a resolved ID is stated explicitly instead. All other bits are
   /// kept. A first-object-ID header whose ID is not yet resolved keeps its mode.
-  pub fn without_first_object(&self) -> Self {
+  pub fn for_mid_subgroup_stream(&self) -> Self {
     let header_type = self.header_type;
-    let subgroup_id_mode =
-      if header_type.subgroup_id_is_first_object_id() && self.subgroup_id.is_some() {
-        2
-      } else {
-        (header_type.value() & SubgroupHeaderType::SUBGROUP_ID_MODE_MASK) >> 1
-      };
+    let subgroup_id_mode = match header_type.subgroup_id_mode() {
+      SubgroupIdMode::FirstObjectId if self.subgroup_id.is_some() => SubgroupIdMode::Explicit,
+      mode => mode,
+    };
     Self {
       header_type: SubgroupHeaderType::from_properties(
         header_type.has_properties(),
@@ -253,7 +251,7 @@ mod tests {
   }
 
   #[test]
-  fn without_first_object_clears_the_bit_in_each_mode() {
+  fn for_mid_subgroup_stream_clears_the_bit_in_each_mode() {
     // (header, expected type after) for every SUBGROUP_ID_MODE, with all other bits set.
     let cases = [
       (
@@ -266,7 +264,7 @@ mod tests {
       ),
     ];
     for (header, expected) in cases {
-      let mid = header.without_first_object();
+      let mid = header.for_mid_subgroup_stream();
       assert_eq!(mid.header_type.value(), expected);
       assert_eq!(mid.subgroup_id, header.subgroup_id);
       assert_eq!(mid.publisher_priority, header.publisher_priority);
@@ -276,13 +274,13 @@ mod tests {
   }
 
   #[test]
-  fn without_first_object_states_a_resolved_first_object_id() {
+  fn for_mid_subgroup_stream_states_a_resolved_first_object_id() {
     // As the receiving side leaves it: mode first-object-ID, ID resolved from object 5.
     let mut header = SubgroupHeader::new_first_object_id(87, 9, Some(7), true, true, true);
     header.subgroup_id = Some(5);
     assert_eq!(header.header_type.value(), 0x5B);
 
-    let mid = header.without_first_object();
+    let mid = header.for_mid_subgroup_stream();
     assert_eq!(mid.header_type.value(), 0x1D);
     assert!(mid.header_type.has_explicit_subgroup_id());
     assert!(!mid.header_type.is_first_object());
@@ -297,13 +295,13 @@ mod tests {
     // Default priority and no properties carry through the mode change too.
     let mut header = SubgroupHeader::new_first_object_id(87, 9, None, false, false, false);
     header.subgroup_id = Some(0);
-    assert_eq!(header.without_first_object().header_type.value(), 0x34);
+    assert_eq!(header.for_mid_subgroup_stream().header_type.value(), 0x34);
   }
 
   #[test]
-  fn without_first_object_keeps_an_unresolved_first_object_id_mode() {
+  fn for_mid_subgroup_stream_keeps_an_unresolved_first_object_id_mode() {
     let header = SubgroupHeader::new_first_object_id(87, 9, Some(7), false, false, true);
-    let mid = header.without_first_object();
+    let mid = header.for_mid_subgroup_stream();
     assert_eq!(mid.header_type.value(), 0x12);
     assert_eq!(mid.subgroup_id, None);
   }

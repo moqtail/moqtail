@@ -250,11 +250,14 @@ impl MessageParameter {
           | ControlMessageType::TrackStatus
           | ControlMessageType::Fetch
       ),
-      // Subscription parameters ride the request that sets up or changes a
-      // subscription, never the PUBLISH_OK (REQUEST_OK) that accepts one.
+      // Subscription parameters ride the message that sets up a subscription, or
+      // the REQUEST_UPDATE that changes one, never the PUBLISH_OK (REQUEST_OK) that
+      // accepts one. In a PUBLISH they are the publisher's initial settings.
       Self::ObjectDeliveryTimeout { .. } | Self::SubgroupDeliveryTimeout { .. } => matches!(
         msg_type,
-        ControlMessageType::Subscribe | ControlMessageType::RequestUpdate
+        ControlMessageType::Subscribe
+          | ControlMessageType::Publish
+          | ControlMessageType::RequestUpdate
       ),
       // SUBSCRIBE only.
       Self::RendezvousTimeout { .. } => matches!(msg_type, ControlMessageType::Subscribe),
@@ -263,6 +266,7 @@ impl MessageParameter {
       Self::SubscriberPriority { .. } => matches!(
         msg_type,
         ControlMessageType::Subscribe
+          | ControlMessageType::Publish
           | ControlMessageType::Fetch
           | ControlMessageType::RequestUpdate
       ),
@@ -273,14 +277,24 @@ impl MessageParameter {
           | ControlMessageType::Fetch
           | ControlMessageType::Publish
       ),
+      // LOCATION_FILTER and FILL_PARAMETERS also ride a SUBSCRIBE_TRACKS, to join the
+      // tracks it brings partway: each pushed subscription starts from the filter, and
+      // the fill gives it what the track has already published.
       Self::LocationFilter { .. } => matches!(
         msg_type,
         ControlMessageType::Subscribe
           | ControlMessageType::Fetch
           | ControlMessageType::Publish
+          | ControlMessageType::SubscribeTracks
           | ControlMessageType::RequestUpdate
       ),
-      Self::SwitchFrom { .. } | Self::FillParameters { .. } => matches!(
+      Self::FillParameters { .. } => matches!(
+        msg_type,
+        ControlMessageType::Subscribe
+          | ControlMessageType::SubscribeTracks
+          | ControlMessageType::RequestUpdate
+      ),
+      Self::SwitchFrom { .. } => matches!(
         msg_type,
         ControlMessageType::Subscribe | ControlMessageType::RequestUpdate
       ),
@@ -1630,6 +1644,74 @@ mod tests {
       MessageParameter::new_largest_object(Location::new(1, 2))
         .is_valid_for(ControlMessageType::RequestOk)
     );
+  }
+
+  #[test]
+  fn subscribe_tracks_carries_a_location_filter_and_a_fill_to_join_its_tracks() {
+    for param in [
+      MessageParameter::new_location_filter(LocationFilter::RelativeStart { start_group: 1 }),
+      MessageParameter::new_fill_parameters(vec![]),
+    ] {
+      assert!(
+        param.is_valid_for(ControlMessageType::SubscribeTracks),
+        "{param:?}"
+      );
+    }
+    // Not the other subscription parameters.
+    for param in [
+      MessageParameter::new_subscriber_priority(7),
+      MessageParameter::new_object_delivery_timeout(100),
+      MessageParameter::new_subgroup_delivery_timeout(100),
+    ] {
+      assert!(
+        !param.is_valid_for(ControlMessageType::SubscribeTracks),
+        "{param:?}"
+      );
+    }
+  }
+
+  #[test]
+  fn publish_carries_the_publishers_initial_subscription_parameters() {
+    let allowed = [
+      MessageParameter::new_object_delivery_timeout(100),
+      MessageParameter::new_authorization_token(AuthorizationToken::new_use_value(
+        0,
+        Bytes::from_static(b"t"),
+      )),
+      MessageParameter::new_subgroup_delivery_timeout(100),
+      MessageParameter::new_expires(10),
+      MessageParameter::new_largest_object(Location::new(1, 2)),
+      MessageParameter::new_forward(true),
+      MessageParameter::new_subscriber_priority(7),
+      MessageParameter::new_location_filter(LocationFilter::NextObject),
+      MessageParameter::new_group_order(GroupOrder::Descending),
+    ];
+    for param in &allowed {
+      assert!(param.is_valid_for(ControlMessageType::Publish), "{param:?}");
+    }
+    let not_allowed = [
+      MessageParameter::new_rendezvous_timeout(100),
+      MessageParameter::new_fill_timeout(100),
+      MessageParameter::new_group_request(3),
+      MessageParameter::new_fill_parameters(vec![]),
+      MessageParameter::new_include_properties(false),
+    ];
+    for param in &not_allowed {
+      assert!(
+        !param.is_valid_for(ControlMessageType::Publish),
+        "{param:?}"
+      );
+    }
+
+    // And they parse there, sorted as they go on the wire.
+    let mut bytes = serialize_message_parameters(&allowed).unwrap();
+    let parsed = deserialize_message_parameters(
+      &mut bytes,
+      allowed.len() as u64,
+      ControlMessageType::Publish,
+    )
+    .unwrap();
+    assert_eq!(parsed.len(), allowed.len());
   }
 
   #[test]

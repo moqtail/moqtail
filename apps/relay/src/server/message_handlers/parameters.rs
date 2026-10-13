@@ -89,13 +89,22 @@ pub fn downstream_subscribe_ok(
 ///   means forwarding, so only an explicit 0 turns it off. Always stated.
 /// - GROUP_ORDER comes from the SUBSCRIBE_TRACKS when it has one, else the publisher's
 ///   is passed on; with neither it is omitted.
+/// - LOCATION_FILTER comes from the SUBSCRIBE_TRACKS when it has one, which is how a
+///   subscriber joins the pushed tracks partway; omitted otherwise. A relative start is
+///   passed on as it is, and LARGEST_OBJECT says what it is relative to.
 /// - LARGEST_OBJECT is the larger of what the publisher reported and what the relay has
 ///   since seen, omitted when there is neither — an absent parameter means no Objects,
 ///   where `{0,0}` would claim one.
 ///
-/// Nothing else crosses the hop. AUTHORIZATION_TOKEN was addressed to the relay, and
-/// EXPIRES is the publisher's promise about when it ends the subscription, which the
-/// relay does not make on its own behalf.
+/// The SUBSCRIBE_TRACKS settings that PUBLISH can carry are stated here, since they
+/// are this subscription's initial settings; the others it carries (Range Filters,
+/// FILL_PARAMETERS, INCLUDE_PROPERTIES) are applied by the relay instead.
+///
+/// Nothing else crosses the hop. AUTHORIZATION_TOKEN was addressed to the relay, from
+/// either side. EXPIRES is the publisher's promise about when it ends the subscription,
+/// which the relay does not make on its own behalf. The publisher's SUBSCRIBER_PRIORITY,
+/// delivery timeouts and LOCATION_FILTER were its settings for the relay's own
+/// subscription, not this one.
 pub fn downstream_publish(
   upstream: &[MessageParameter],
   subscribe_tracks: &[MessageParameter],
@@ -111,6 +120,9 @@ pub fn downstream_publish(
     .or_else(|| find(upstream, MessageParameterType::GroupOrder))
   {
     params.push(order.clone());
+  }
+  if let Some(filter) = find(subscribe_tracks, MessageParameterType::LocationFilter) {
+    params.push(filter.clone());
   }
   if let Some(largest) = largest_object(upstream, observed) {
     params.push(MessageParameter::new_largest_object(largest));
@@ -309,6 +321,44 @@ mod tests {
     assert!(
       neither
         .get_param(MessageParameterType::GroupOrder)
+        .is_none()
+    );
+  }
+
+  #[test]
+  fn a_pushed_publish_states_the_subscribe_tracks_settings_and_nothing_else() {
+    use moqtail::model::parameter::location_filter::LocationFilter;
+
+    // The publisher's own initial settings were for the relay's subscription, not this one.
+    let upstream = vec![
+      MessageParameter::new_subscriber_priority(7),
+      MessageParameter::new_object_delivery_timeout(100),
+      MessageParameter::new_subgroup_delivery_timeout(100),
+      MessageParameter::new_location_filter(LocationFilter::NextObject),
+    ];
+    // The SUBSCRIBE_TRACKS token authorized the request to the relay; it is never copied.
+    let subscribe_tracks = vec![token(), MessageParameter::new_forward(false)];
+
+    let params = downstream_publish(&upstream, &subscribe_tracks, None);
+    assert_eq!(params, vec![MessageParameter::new_forward(false)]);
+  }
+
+  #[test]
+  fn a_pushed_publish_starts_where_subscribe_tracks_asked() {
+    use moqtail::model::parameter::location_filter::LocationFilter;
+
+    let join =
+      MessageParameter::new_location_filter(LocationFilter::RelativeStart { start_group: 1 });
+    let fill = MessageParameter::new_fill_parameters(vec![]);
+    let params = downstream_publish(&[], &[join.clone(), fill], None);
+    assert_eq!(
+      params.get_param(MessageParameterType::LocationFilter),
+      Some(&join)
+    );
+    // The fill is the relay's to serve; a PUBLISH cannot carry it.
+    assert!(
+      params
+        .get_param(MessageParameterType::FillParameters)
         .is_none()
     );
   }

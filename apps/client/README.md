@@ -196,6 +196,16 @@ client accepts, then receives and counts that track's objects — and sends
 cargo run --bin client -- -c subscribe-tracks -n test/ns --duration 5
 ```
 
+To join each pushed track partway, give `--filter` (stated in its `PUBLISH` as
+where the subscription starts) and `--fill` (a fill fetch stream of what is
+already published, opened as soon as the `PUBLISH` is sent). This starts every
+track at its current group and fills that group in; `--forward false` pushes the
+tracks paused, with no fill:
+
+```
+cargo run --bin client -- -c subscribe-tracks -n test/ns --filter relative-start --filter-start-group 1 --fill --duration 5
+```
+
 Both prefix subscriptions live for exactly as long as their request stream, so
 `--duration` ends one by resetting that stream: the relay drops the subscription
 and frees the prefix while the session stays open. With `--duration 0` the run

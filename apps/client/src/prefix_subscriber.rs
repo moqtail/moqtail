@@ -34,7 +34,7 @@ use moqtail::model::parameter::combined_filter::{CombinedFilter, ObjectFields};
 use moqtail::model::parameter::message_parameter::MessageParameter;
 use moqtail::transport::connection::TransportConnection;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
-use moqtail::transport::data_stream_handler::RecvDataStream;
+use moqtail::transport::data_stream_handler::{HeaderInfo, RecvDataStream};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use tokio::sync::RwLock;
@@ -48,6 +48,9 @@ pub struct PrefixSubscribeConfig {
   pub overlap: Option<PrefixKind>,
   /// False asks for each PUBLISH without Track Properties (SUBSCRIBE_TRACKS only).
   pub include_properties: bool,
+  /// FORWARD, LOCATION_FILTER and FILL_PARAMETERS for each pushed track's
+  /// subscription (SUBSCRIBE_TRACKS only).
+  pub pushed_track_parameters: Vec<MessageParameter>,
   /// Range Filters for SUBSCRIBE_TRACKS, track filters included.
   pub range_filters: Vec<MessageParameter>,
   pub ignore_filter_limit: bool,
@@ -122,8 +125,11 @@ pub async fn run(moq: MoqConnection, config: PrefixSubscribeConfig) -> Result<()
     ..Default::default()
   };
   let mut parameters = parameters;
-  if config.kind == PrefixKind::Tracks && !config.include_properties {
-    parameters.push(MessageParameter::new_include_properties(false));
+  if config.kind == PrefixKind::Tracks {
+    if !config.include_properties {
+      parameters.push(MessageParameter::new_include_properties(false));
+    }
+    parameters.extend(config.pushed_track_parameters.iter().cloned());
   }
   let mut request_stream =
     send_request(&connection, config.kind, prefix.clone(), 0, parameters).await?;
@@ -369,8 +375,8 @@ fn accept_pushed_publishes(
               m.track_name.as_str()
             );
             info!(
-              "SUBSCRIBE_TRACKS: PUBLISH for {name} (track_alias={}, track_properties={:?})",
-              m.track_alias, m.track_properties
+              "SUBSCRIBE_TRACKS: PUBLISH for {name} (track_alias={}, parameters={:?}, track_properties={:?})",
+              m.track_alias, m.parameters, m.track_properties
             );
             // The track filter decides whether this track should have been pushed,
             // and which of its objects then should be.
@@ -447,7 +453,8 @@ fn accept_pushed_publishes(
 fn receive_objects(connection: Arc<TransportConnection>, tracks: Tracks) {
   tokio::spawn(async move {
     // SUBSCRIBE_TRACKS issues no FETCH, so nothing is ever waiting in here; the
-    // stream reader takes it to tell a fetch's objects from a subscription's.
+    // stream reader takes it to tell a fetch's objects from a subscription's. A fill
+    // fetch stream needs no entry: it is named by the pushed PUBLISH's Request ID.
     let pending_fetches = Arc::new(RwLock::new(BTreeMap::new()));
 
     loop {
@@ -464,12 +471,28 @@ fn receive_objects(connection: Arc<TransportConnection>, tracks: Tracks) {
       tokio::spawn(async move {
         let stream_handler = RecvDataStream::new(stream, pending_fetches);
         let mut handler = &stream_handler;
+        let mut fill_objects = 0u64;
         loop {
           let (next_handler, object) = handler.next_object().await;
           let Some(obj) = object else {
+            if fill_objects > 0 {
+              info!("SUBSCRIBE_TRACKS: fill stream closed after {fill_objects} objects");
+            }
             debug!("SUBSCRIBE_TRACKS: object stream closed");
             return;
           };
+
+          // A fill's objects carry no track alias, so they are logged on their own
+          // rather than counted into a track's stats.
+          if let Some(HeaderInfo::Fetch { header, .. }) = stream_handler.get_header_info().await {
+            fill_objects += 1;
+            info!(
+              "SUBSCRIBE_TRACKS: fill object {fill_objects} for PUBLISH request {}: group={}, object={}",
+              header.request_id, obj.location.group, obj.location.object
+            );
+            handler = next_handler;
+            continue;
+          }
 
           let (name, total, status) = {
             let mut tracks = tracks.lock().unwrap();

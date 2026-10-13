@@ -172,6 +172,17 @@ export namespace MessageParameter {
   }
 
   /**
+   * The parameters a PUBLISH answering a SUBSCRIBE_TRACKS states: the request's
+   * settings that a PUBLISH can carry (FORWARD, GROUP_ORDER, LOCATION_FILTER), which
+   * are the new subscription's initial settings. AUTHORIZATION_TOKEN is never copied.
+   * The Range Filters, FILL_PARAMETERS and INCLUDE_PROPERTIES cannot go in a PUBLISH;
+   * they are the publisher's to apply.
+   */
+  export function publishParametersFor(subscribeTracks: readonly MessageParameter[]): MessageParameter[] {
+    return subscribeTracks.filter((p) => isForward(p) || isGroupOrderParam(p) || isLocationFilter(p))
+  }
+
+  /**
    * Whether a request's response should carry Track Properties: false only when it
    * has INCLUDE_PROPERTIES set to 0.
    */
@@ -497,6 +508,22 @@ if (import.meta.vitest) {
       expect(() => MessageParameters.fromKeyValuePairs(deserializeMessageParameterKvps(frozen, 1))).toThrow(
         ProtocolViolationError,
       )
+    })
+
+    test('a PUBLISH for SUBSCRIBE_TRACKS states its settings but never its token', () => {
+      const request: MessageParameter[] = [
+        AuthorizationToken.newUseValue(0n, new TextEncoder().encode('t')),
+        new Forward(false),
+        new LocationFilter(LocationFilterType.RelativeStart, 1n),
+        new GroupOrderParam(GroupOrder.Descending),
+        new FillParameters([]),
+        new IncludeProperties(false),
+      ]
+      expect(MessageParameter.publishParametersFor(request)).toEqual([
+        new Forward(false),
+        new LocationFilter(LocationFilterType.RelativeStart, 1n),
+        new GroupOrderParam(GroupOrder.Descending),
+      ])
     })
 
     test('properties are included unless asked not to be', () => {

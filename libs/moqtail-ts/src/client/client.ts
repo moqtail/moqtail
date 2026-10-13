@@ -367,8 +367,17 @@ export class MOQtailClient {
 
   /**
    * Fired when an inbound SUBSCRIBE_TRACKS control message is received. The PUBLISH
-   * sent for each matching track goes without Track Properties when
-   * `MessageParameter.includesProperties(msg.parameters)` is false.
+   * sent for each matching track:
+   * - states the request's settings as its parameters, from
+   *   `MessageParameter.publishParametersFor(msg.parameters)`: FORWARD, GROUP_ORDER and
+   *   the LOCATION_FILTER the subscription starts from, but never the request's
+   *   AUTHORIZATION_TOKEN;
+   * - goes without Track Properties when
+   *   `MessageParameter.includesProperties(msg.parameters)` is false.
+   *
+   * A request carrying FILL_PARAMETERS also asks for a fill of what each track has
+   * already published. This client cannot open a fill for a pushed track, so such a
+   * subscriber gets only the live Objects.
    */
   onPeerSubscribeTracks?: (msg: SubscribeTracks) => void
 

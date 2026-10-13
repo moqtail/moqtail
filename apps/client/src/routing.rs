@@ -23,7 +23,13 @@
 use moqtail::model::common::location::Location;
 use moqtail::model::parameter::location_filter::LocationFilter;
 use moqtail::model::parameter::message_parameter::MessageParameter;
+use moqtail::model::parameter::net_filter::{NetFilter, ObjectFields};
 use std::collections::HashSet;
+use std::time::{Duration, Instant};
+
+/// How long the filter a REQUEST_UPDATE replaced still counts. Objects already in
+/// flight when the update lands were sent under it, which is not a violation.
+const FILTER_UPDATE_GRACE: Duration = Duration::from_secs(2);
 
 /// What a subscription delivers: from `start` on, up to and including `end`
 /// when it has one.
@@ -93,6 +99,10 @@ struct Subscription {
   track_alias: u64,
   window: Window,
   seen: HashSet<(u64, u64)>,
+  /// The Range Filters in force, and those an update replaced until their grace
+  /// runs out.
+  filter: NetFilter,
+  replaced: Vec<(NetFilter, Instant)>,
 }
 
 /// Where a received object went.
@@ -121,7 +131,58 @@ impl Router {
       track_alias,
       window,
       seen: HashSet::new(),
+      filter: NetFilter::default(),
+      replaced: Vec::new(),
     });
+  }
+
+  fn subscription_mut(&mut self, request_id: u64) -> Option<&mut Subscription> {
+    self
+      .subscriptions
+      .iter_mut()
+      .find(|s| s.request_id == request_id)
+  }
+
+  /// Sets the Range Filters a subscription asked for.
+  pub fn set_filter(&mut self, request_id: u64, filter: NetFilter) {
+    if let Some(subscription) = self.subscription_mut(request_id) {
+      subscription.filter = filter;
+    }
+  }
+
+  /// Moves a subscription to new Range Filters. The ones they replace still count
+  /// for a little while, for the objects sent before the update arrived.
+  pub fn update_filter(&mut self, request_id: u64, filter: NetFilter) {
+    if let Some(subscription) = self.subscription_mut(request_id) {
+      let old = std::mem::replace(&mut subscription.filter, filter);
+      subscription
+        .replaced
+        .push((old, Instant::now() + FILTER_UPDATE_GRACE));
+    }
+  }
+
+  /// Whether a subscription has had Range Filters, which leave gaps in its
+  /// sequence by design.
+  pub fn is_filtered(&self, request_id: u64) -> bool {
+    self
+      .subscriptions
+      .iter()
+      .find(|s| s.request_id == request_id)
+      .is_some_and(|s| !s.filter.is_empty() || !s.replaced.is_empty())
+  }
+
+  /// Whether an object passes a subscription's Range Filters.
+  pub fn passes(&mut self, request_id: u64, fields: ObjectFields<'_>) -> bool {
+    let Some(subscription) = self.subscription_mut(request_id) else {
+      return true;
+    };
+    let now = Instant::now();
+    subscription.replaced.retain(|(_, until)| *until > now);
+    subscription.filter.matches(fields)
+      || subscription
+        .replaced
+        .iter()
+        .any(|(filter, _)| filter.matches(fields))
   }
 
   pub fn label(&self, request_id: u64) -> &str {
@@ -296,5 +357,53 @@ mod tests {
     ];
     let window = Window::from_parameters(&params, Some(&Location::new(3, 4)));
     assert_eq!(window.start, Location::new(1, 2));
+  }
+
+  fn object_id(start: u64, end: u64) -> NetFilter {
+    use moqtail::model::parameter::range_filter::{Range, RangeFilter, RangeFilterKind};
+    NetFilter::new(&[MessageParameter::new_range_filter(
+      RangeFilterKind::ObjectId,
+      RangeFilter::new(0, None, &[Range::new(start, end)]).unwrap(),
+    )])
+    .unwrap()
+  }
+
+  fn object(id: u64) -> ObjectFields<'static> {
+    ObjectFields {
+      subgroup_id: Some(0),
+      object_id: id,
+      publisher_priority: 0,
+      properties: None,
+    }
+  }
+
+  #[test]
+  fn an_unfiltered_subscription_passes_everything() {
+    let mut router = Router::new();
+    router.add(0, "a".into(), 7, from(0));
+    assert!(!router.is_filtered(0));
+    assert!(router.passes(0, object(9)));
+  }
+
+  #[test]
+  fn a_filtered_subscription_passes_what_its_filters_do() {
+    let mut router = Router::new();
+    router.add(0, "a".into(), 7, from(0));
+    router.set_filter(0, object_id(0, 1));
+    assert!(router.is_filtered(0));
+    assert!(router.passes(0, object(1)));
+    assert!(!router.passes(0, object(2)));
+  }
+
+  #[test]
+  fn the_filters_an_update_replaced_still_count_for_a_while() {
+    let mut router = Router::new();
+    router.add(0, "a".into(), 7, from(0));
+    router.set_filter(0, object_id(0, 1));
+    router.update_filter(0, object_id(5, 5));
+    // Sent before the update arrived, under the filters it replaced.
+    assert!(router.passes(0, object(1)));
+    assert!(router.passes(0, object(5)));
+    assert!(!router.passes(0, object(3)));
   }
 }

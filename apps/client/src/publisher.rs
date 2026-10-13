@@ -14,10 +14,12 @@
 
 use crate::cli::DeliveryMode;
 use crate::connection::MoqConnection;
+use crate::filter_spec::ObjectPropertySpec;
 use crate::utils::should_log;
 use anyhow::Result;
 use bytes::Bytes;
 use moqtail::model::common::location::Location;
+use moqtail::model::common::pair::KeyValuePair;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::common::tuple::{Tuple, TupleField};
 use moqtail::model::control::constant::PublishDoneStatusCode;
@@ -39,6 +41,7 @@ use moqtail::model::data::subgroup_object::SubgroupObject;
 use moqtail::model::error::{RequestErrorCode, StreamResetCode};
 use moqtail::model::parameter::message_parameter::MessageParameter;
 use moqtail::model::property::object_property::ObjectProperty;
+use moqtail::model::property::track_property::TrackProperty;
 use moqtail::transport::connection::TransportConnection;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use moqtail::transport::data_stream_handler::{HeaderInfo, SendDataStream};
@@ -59,6 +62,20 @@ pub struct PublishConfig {
   pub payload_size: usize,
   pub track_alias: u64,
   pub publisher_priority: u8,
+  pub content: Content,
+}
+
+/// How the test content varies, so that Range Filters have something to select on.
+#[derive(Clone, Debug, Default)]
+pub struct Content {
+  /// Each group's Objects are dealt out over this many subgroups in turn, each on
+  /// its own stream.
+  pub subgroups_per_group: u64,
+  /// The Publisher Priority of each subgroup in turn; empty means every one takes
+  /// the publisher priority.
+  pub priorities: Vec<u8>,
+  pub object_properties: Vec<ObjectPropertySpec>,
+  pub track_properties: Vec<TrackProperty>,
 }
 
 pub struct PublishNamespaceConfig {
@@ -72,6 +89,7 @@ pub struct PublishNamespaceConfig {
   pub group_id_step: u64,
   pub payload_size: usize,
   pub publisher_priority: u8,
+  pub content: Content,
 }
 
 pub async fn run_namespace(moq: MoqConnection, config: PublishNamespaceConfig) -> Result<()> {
@@ -106,6 +124,7 @@ pub async fn run_namespace(moq: MoqConnection, config: PublishNamespaceConfig) -
     group_id_step: config.group_id_step,
     payload_size: config.payload_size,
     publisher_priority: config.publisher_priority,
+    content: config.content,
   };
 
   // Step 2: the relay sends each request on its own bidirectional stream.
@@ -161,7 +180,13 @@ async fn serve_request_streams(
             m.request_id, m.track_name, track_alias
           );
 
-          let ok = SubscribeOk::new(track_alias, vec![], vec![]);
+          // This client allows no Range Filters (it sends no MAX_FILTER_RANGES), so a
+          // request carrying one is refused rather than served unfiltered.
+          if carries_range_filter(&m.subscribe_parameters) {
+            refuse_filters(&mut request_stream, "SUBSCRIBE").await;
+            return;
+          }
+          let ok = SubscribeOk::new(track_alias, vec![], dc.content.track_properties.clone());
           if let Err(e) = request_stream.send_impl(&ok).await {
             error!("Failed to send SubscribeOk: {:?}", e);
             return;
@@ -200,6 +225,10 @@ async fn serve_request_streams(
           drop(request_stream);
         }
         Ok(ControlMessage::Fetch(m)) => {
+          if carries_range_filter(&m.parameters) {
+            refuse_filters(&mut request_stream, "FETCH").await;
+            return;
+          }
           serve_fetch(&conn, &mut request_stream, *m, &dc, &pub_state).await;
           drop(request_stream);
         }
@@ -238,6 +267,7 @@ pub async fn run(moq: MoqConnection, config: PublishConfig) -> Result<()> {
     group_id_step: config.group_id_step,
     payload_size: config.payload_size,
     publisher_priority: config.publisher_priority,
+    content: config.content,
   };
 
   // A relay may FETCH a track it was pushed, so the request streams are served
@@ -309,6 +339,63 @@ struct DataConfig {
   group_id_step: u64,
   payload_size: usize,
   publisher_priority: u8,
+  content: Content,
+}
+
+impl DataConfig {
+  /// The subgroup the `i`th Object of a group goes to.
+  fn subgroup_of(&self, i: u64) -> u64 {
+    i % self.content.subgroups_per_group.max(1)
+  }
+
+  /// How many subgroups a group has Objects in.
+  fn subgroups_used(&self) -> u64 {
+    self
+      .content
+      .subgroups_per_group
+      .max(1)
+      .min(self.objects_per_group.max(1))
+  }
+
+  fn priority_of(&self, subgroup: u64) -> u8 {
+    let priorities = &self.content.priorities;
+    if priorities.is_empty() {
+      self.publisher_priority
+    } else {
+      priorities[(subgroup % priorities.len() as u64) as usize]
+    }
+  }
+
+  /// The Properties the `i`th Object of group `g` carries: its Prior Group and
+  /// Object ID Gaps, when the IDs skip, and those --object-property asks for.
+  fn object_properties(&self, g: u64, i: u64) -> Vec<ObjectProperty> {
+    let group_id = g * self.group_id_step;
+    let object_id = i * self.object_id_step;
+    let mut properties = Vec::new();
+    if g > 0 && i == 0 && self.group_id_step > 1 {
+      properties.push(ObjectProperty::PriorGroupIdGap {
+        gap: self.group_id_step - 1,
+      });
+    }
+    if i > 0 && self.object_id_step > 1 {
+      properties.push(ObjectProperty::PriorObjectIdGap {
+        gap: self.object_id_step - 1,
+      });
+    }
+    for spec in &self.content.object_properties {
+      let value = spec.source.value(group_id, object_id, self.subgroup_of(i));
+      let property = KeyValuePair::try_new_varint(spec.property_type, value)
+        .and_then(ObjectProperty::deserialize);
+      match property {
+        Ok(property) => properties.push(property),
+        Err(e) => error!(
+          "Cannot set Object Property {:#x}: {e:?}",
+          spec.property_type
+        ),
+      }
+    }
+    properties
+  }
 }
 
 /// The largest Location actually sent so far, shared with whatever is answering a
@@ -391,7 +478,12 @@ async fn serve_fetch(
     fetch.request_id, fetch.track_name, fetch.end_location, end_location
   );
 
-  let ok = FetchOk::new(false, end_location.clone(), vec![], vec![]);
+  let ok = FetchOk::new(
+    false,
+    end_location.clone(),
+    vec![],
+    config.content.track_properties.clone(),
+  );
   if let Err(e) = request_stream.send_impl(&ok).await {
     error!("Failed to send FetchOk: {:?}", e);
     return;
@@ -407,6 +499,24 @@ async fn serve_fetch(
   .await
   {
     error!("Failed to serve FETCH objects: {:?}", e);
+  }
+}
+
+fn carries_range_filter(parameters: &[MessageParameter]) -> bool {
+  parameters.iter().any(|p| match p {
+    MessageParameter::RangeFilter { .. } => true,
+    MessageParameter::FillParameters { parameters } => carries_range_filter(parameters),
+    _ => false,
+  })
+}
+
+async fn refuse_filters(request_stream: &mut ControlStreamHandler, request: &str) {
+  info!("Refusing a {request} with Range Filters: this client allows none");
+  let reason = ReasonPhrase::try_new("range filters are not allowed".to_string())
+    .expect("reason within length limit");
+  let err = RequestError::new(RequestErrorCode::InvalidFilter, 0, reason);
+  if let Err(e) = request_stream.send_impl(&err).await {
+    error!("Failed to send RequestError: {:?}", e);
   }
 }
 
@@ -452,9 +562,10 @@ async fn send_fetch_objects(
         continue;
       }
 
+      let subgroup = config.subgroup_of(i);
       let subgroup_obj = SubgroupObject {
         object_id,
-        properties: None,
+        properties: Some(config.object_properties(g, i)),
         object_status: None,
         payload: Some(Bytes::from(generate_payload(config.payload_size))),
       };
@@ -462,8 +573,8 @@ async fn send_fetch_objects(
         subgroup_obj,
         fetch.request_id,
         group_id,
-        Some(group_id),
-        Some(config.publisher_priority),
+        Some(subgroup),
+        Some(config.priority_of(subgroup)),
         DEFAULT_PUBLISHER_PRIORITY,
       )?;
       handler.send_object(&object, None).await?;
@@ -510,7 +621,7 @@ async fn publish_track(
     TupleField::from_utf8(track_name),
     track_alias,
     vec![MessageParameter::Forward { forward: true }],
-    vec![],
+    data_config.content.track_properties.clone(),
   );
 
   // PUBLISH opens its own bidi request stream; the response returns on it.
@@ -549,7 +660,7 @@ async fn publish_track(
 /// Number of subgroup streams a run opens (one per group); datagram mode opens none.
 fn stream_count(config: &DataConfig) -> u64 {
   match config.delivery_mode {
-    DeliveryMode::Subgroup => config.group_count,
+    DeliveryMode::Subgroup => config.group_count * config.subgroups_used(),
     DeliveryMode::Datagram => 0,
   }
 }
@@ -561,83 +672,42 @@ async fn send_data(
   published: &Published,
 ) -> Result<()> {
   match config.delivery_mode {
-    DeliveryMode::Datagram => {
-      send_datagrams(
-        connection,
-        track_alias,
-        config.group_count,
-        config.interval,
-        config.objects_per_group,
-        config.object_id_step,
-        config.group_id_step,
-        config.payload_size,
-        config.publisher_priority,
-        published,
-      )
-      .await
-    }
-    DeliveryMode::Subgroup => {
-      send_via_streams(
-        connection,
-        track_alias,
-        config.group_count,
-        config.interval,
-        config.objects_per_group,
-        config.object_id_step,
-        config.group_id_step,
-        config.payload_size,
-        config.publisher_priority,
-        published,
-      )
-      .await
-    }
+    DeliveryMode::Datagram => send_datagrams(connection, track_alias, config, published).await,
+    DeliveryMode::Subgroup => send_via_streams(connection, track_alias, config, published).await,
   }
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn send_datagrams(
   connection: &TransportConnection,
   track_alias: u64,
-  group_count: u64,
-  interval_ms: u64,
-  objects_per_group: u64,
-  object_id_step: u64,
-  group_id_step: u64,
-  payload_size: usize,
-  publisher_priority: u8,
+  config: &DataConfig,
   published: &Published,
 ) -> Result<()> {
-  let interval = Duration::from_millis(interval_ms);
+  let interval = Duration::from_millis(config.interval);
   info!(
     "Sending datagrams: {} groups, {} objects/group, object-id step {}, group-id step {}, {} byte payloads",
-    group_count, objects_per_group, object_id_step, group_id_step, payload_size
+    config.group_count,
+    config.objects_per_group,
+    config.object_id_step,
+    config.group_id_step,
+    config.payload_size
   );
 
-  for g in 0..group_count {
-    let group_id = g * group_id_step;
-    for i in 0..objects_per_group {
-      let object_id = i * object_id_step;
-      let payload = generate_payload(payload_size);
-
-      // Communicate the ID gaps explicitly.
-      let mut properties = Vec::new();
-      if g > 0 && i == 0 && group_id_step > 1 {
-        properties.push(ObjectProperty::PriorGroupIdGap {
-          gap: group_id_step - 1,
-        });
-      }
-      if i > 0 && object_id_step > 1 {
-        properties.push(ObjectProperty::PriorObjectIdGap {
-          gap: object_id_step - 1,
-        });
-      }
+  for g in 0..config.group_count {
+    let group_id = g * config.group_id_step;
+    for i in 0..config.objects_per_group {
+      let object_id = i * config.object_id_step;
+      let payload = generate_payload(config.payload_size);
+      // A datagram has no subgroup; it takes the priority of the one it would
+      // have gone to.
+      let priority = config.priority_of(config.subgroup_of(i));
 
       let datagram_obj = Datagram::new_payload(
         track_alias,
         group_id,
         object_id,
-        Some(publisher_priority),
-        Some(properties),
+        Some(priority),
+        Some(config.object_properties(g, i)),
         Bytes::from(payload),
         false, // end_of_group
       );
@@ -647,11 +717,11 @@ async fn send_datagrams(
       match connection.send_datagram(serialized) {
         Ok(_) => {
           published.record(group_id, object_id).await;
-          let total = g * objects_per_group + i;
+          let total = g * config.objects_per_group + i;
           if should_log(total) {
             info!(
-              "Sent datagram: group={}, object={}, size={} bytes",
-              group_id, object_id, payload_size
+              "Sent datagram: group={}, object={}, priority={}, size={} bytes",
+              group_id, object_id, priority, config.payload_size
             );
           } else {
             debug!("Sent datagram: group={}, object={}", group_id, object_id);
@@ -673,90 +743,104 @@ async fn send_datagrams(
   Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+/// One subgroup's stream within a group, and the last Object ID written to it,
+/// which the next Object's ID is encoded against.
+struct SubgroupStream {
+  handler: SendDataStream,
+  prev_object_id: Option<u64>,
+}
+
 async fn send_via_streams(
   connection: &TransportConnection,
   track_alias: u64,
-  group_count: u64,
-  interval_ms: u64,
-  objects_per_group: u64,
-  object_id_step: u64,
-  group_id_step: u64,
-  payload_size: usize,
-  publisher_priority: u8,
+  config: &DataConfig,
   published: &Published,
 ) -> Result<()> {
-  let interval = Duration::from_millis(interval_ms);
+  let interval = Duration::from_millis(config.interval);
   info!(
-    "Sending via streams: {} groups, {} objects/group, object-id step {}, group-id step {}, {} byte payloads",
-    group_count, objects_per_group, object_id_step, group_id_step, payload_size
+    "Sending via streams: {} groups, {} objects/group in {} subgroups, object-id step {}, group-id step {}, {} byte payloads",
+    config.group_count,
+    config.objects_per_group,
+    config.subgroups_used(),
+    config.object_id_step,
+    config.group_id_step,
+    config.payload_size
   );
+  // The last Object of a group is in this subgroup, whose stream is the one that
+  // contains the end of the group.
+  let last_subgroup = config.subgroup_of(config.objects_per_group.saturating_sub(1));
 
-  for g in 0..group_count {
-    let group_id = g * group_id_step;
-    info!("Opening stream for group {}", group_id);
-    let stream = connection.open_uni().await?;
+  for g in 0..config.group_count {
+    let group_id = g * config.group_id_step;
+    // Each subgroup's stream opens with its first Object.
+    let mut streams: Vec<Option<SubgroupStream>> =
+      (0..config.subgroups_used()).map(|_| None).collect();
 
-    let sub_header = SubgroupHeader::new_with_explicit_id(
-      track_alias,
-      group_id,
-      1u64,
-      Some(publisher_priority),
-      true,
-      true,
-      true, // first_object: a fresh stream is opened per group, so its first object is
-            // the first the publisher produced in this subgroup
-    );
-    let header_info = HeaderInfo::Subgroup { header: sub_header };
-    let stream = Arc::new(Mutex::new(stream));
-    let mut handler = SendDataStream::new(stream, header_info).await?;
+    for i in 0..config.objects_per_group {
+      let object_id = i * config.object_id_step;
+      let subgroup = config.subgroup_of(i);
+      let priority = config.priority_of(subgroup);
 
-    let mut prev_object_id = None;
-    for i in 0..objects_per_group {
-      let object_id = i * object_id_step;
-      let payload = generate_payload(payload_size);
-
-      // Communicate the ID gaps explicitly: the first object
-      // of a skipped group carries Prior Group ID Gap; every skipped object
-      // carries Prior Object ID Gap.
-      let mut properties = Vec::new();
-      if g > 0 && i == 0 && group_id_step > 1 {
-        properties.push(ObjectProperty::PriorGroupIdGap {
-          gap: group_id_step - 1,
+      let slot = &mut streams[subgroup as usize];
+      if slot.is_none() {
+        info!(
+          "Opening stream for group {} subgroup {} (priority {})",
+          group_id, subgroup, priority
+        );
+        let stream = connection.open_uni().await?;
+        let sub_header = SubgroupHeader::new_with_explicit_id(
+          track_alias,
+          group_id,
+          subgroup,
+          Some(priority),
+          true,
+          subgroup == last_subgroup,
+          // A fresh stream is opened per subgroup, so its first object is the first
+          // the publisher produced in it.
+          true,
+        );
+        let header_info = HeaderInfo::Subgroup { header: sub_header };
+        let handler = SendDataStream::new(Arc::new(Mutex::new(stream)), header_info).await?;
+        *slot = Some(SubgroupStream {
+          handler,
+          prev_object_id: None,
         });
       }
-      if i > 0 && object_id_step > 1 {
-        properties.push(ObjectProperty::PriorObjectIdGap {
-          gap: object_id_step - 1,
-        });
-      }
+      let stream = slot.as_mut().expect("opened above");
 
       let subgroup_obj = SubgroupObject {
         object_id,
-        properties: Some(properties),
+        properties: Some(config.object_properties(g, i)),
         object_status: None,
-        payload: Some(Bytes::from(payload)),
+        payload: Some(Bytes::from(generate_payload(config.payload_size))),
       };
       let object = Object::try_from_subgroup(
         subgroup_obj,
         track_alias,
         group_id,
-        Some(group_id),
-        Some(1),
+        Some(subgroup),
+        Some(priority),
         DEFAULT_PUBLISHER_PRIORITY,
       )?;
 
-      match handler.send_object(&object, prev_object_id).await {
+      match stream
+        .handler
+        .send_object(&object, stream.prev_object_id)
+        .await
+      {
         Ok(_) => {
           published.record(group_id, object_id).await;
-          let total = g * objects_per_group + i;
+          let total = g * config.objects_per_group + i;
           if should_log(total) {
             info!(
-              "Sent object: group={}, object={}, size={} bytes",
-              group_id, object_id, payload_size
+              "Sent object: group={}, subgroup={}, object={}, size={} bytes",
+              group_id, subgroup, object_id, config.payload_size
             );
           } else {
-            debug!("Sent object: group={}, object={}", group_id, object_id);
+            debug!(
+              "Sent object: group={}, subgroup={}, object={}",
+              group_id, subgroup, object_id
+            );
           }
         }
         Err(e) => {
@@ -766,12 +850,15 @@ async fn send_via_streams(
           );
         }
       }
-      prev_object_id = Some(object_id);
+      stream.prev_object_id = Some(object_id);
       tokio::time::sleep(interval).await;
     }
 
-    handler.flush().await?;
-    info!("Stream flushed for group {}", group_id);
+    for stream in streams.into_iter().flatten() {
+      let mut handler = stream.handler;
+      handler.flush().await?;
+    }
+    info!("Streams flushed for group {}", group_id);
   }
 
   info!("All streams sent");

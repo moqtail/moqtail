@@ -33,16 +33,20 @@ cargo run --bin client -- --command <COMMAND> [OPTIONS]
 
 ## Publish Options
 
-| Option                 | Short | Default    | Description                                                           |
-| ---------------------- | ----- | ---------- | --------------------------------------------------------------------- |
-| `--group-count`        |       | `100`      | Number of groups to send                                              |
-| `--interval`           | `-i`  | `1000`     | Interval between objects in milliseconds                              |
-| `--objects-per-group`  |       | `10`       | Number of objects per group                                           |
-| `--object-id-step`     |       | `1`        | Stride between object IDs (`2` → 0, 2, 4 …); sets Prior Object ID Gap |
-| `--group-id-step`      |       | `1`        | Stride between group IDs (`2` → 0, 2, 4 …); sets Prior Group ID Gap   |
-| `--payload-size`       |       | `1200`     | Payload size in bytes                                                 |
-| `--track-alias`        |       | _(random)_ | Track alias (random if not specified)                                 |
-| `--publisher-priority` |       | `128`      | Publisher priority 0 (highest) – 255 (lowest)                         |
+| Option                  | Short | Default    | Description                                                                                                  |
+| ----------------------- | ----- | ---------- | ------------------------------------------------------------------------------------------------------------ |
+| `--group-count`         |       | `100`      | Number of groups to send                                                                                     |
+| `--interval`            | `-i`  | `1000`     | Interval between objects in milliseconds                                                                     |
+| `--objects-per-group`   |       | `10`       | Number of objects per group                                                                                  |
+| `--object-id-step`      |       | `1`        | Stride between object IDs (`2` → 0, 2, 4 …); sets Prior Object ID Gap                                        |
+| `--group-id-step`       |       | `1`        | Stride between group IDs (`2` → 0, 2, 4 …); sets Prior Group ID Gap                                          |
+| `--payload-size`        |       | `1200`     | Payload size in bytes                                                                                        |
+| `--track-alias`         |       | _(random)_ | Track alias (random if not specified)                                                                        |
+| `--publisher-priority`  |       | `128`      | Publisher priority 0 (highest) – 255 (lowest)                                                                |
+| `--subgroups-per-group` |       | `1`        | Split each group over N subgroups, Object _i_ going to subgroup _i_ mod N, each on its own stream            |
+| `--priorities`          |       | _(none)_   | Publisher priority of each subgroup in turn, e.g. `10,200`; a datagram takes its would-be subgroup's         |
+| `--object-property`     |       | _(none)_   | `TYPE=SOURCE` set on every Object (repeatable); SOURCE is `group`, `object`, `subgroup`, `mod:M` or a number |
+| `--track-property`      |       | _(none)_   | `TYPE=VALUE` advertised in PUBLISH, SUBSCRIBE_OK and FETCH_OK (repeatable)                                   |
 
 ## Subscribe Options
 
@@ -66,6 +70,11 @@ cargo run --bin client -- --command <COMMAND> [OPTIONS]
 | `--switch-mode`          |       | `hard`        | `hard` stops the old subscription at the cutover; `soft` lets it drain to the group before the new one's start                  |
 | `--switch-publish-done`  |       | `false`       | Ask for PUBLISH_DONE on the suspended subscription                                                                              |
 | `--switch-start-group`   |       | `0`           | Switch at this future group instead of where `--filter` starts (0 = use `--filter`); also fills what is already published of it |
+| `--range-filter`         |       | _(none)_      | A Range Filter (repeatable; also for `fetch` and `subscribe-tracks`). See [Range Filters](#range-filters)                       |
+| `--fill-range-filter`    |       | _(none)_      | A Range Filter for the fill fetch stream, inside FILL_PARAMETERS (repeatable); implies `--fill`                                 |
+| `--update-filters-after` |       | `0`           | Seconds after subscribing to send a REQUEST_UPDATE carrying `--update-range-filter` (0 = never)                                 |
+| `--update-range-filter`  |       | _(none)_      | A Range Filter for that REQUEST_UPDATE (repeatable); `KIND:clear` removes a kind                                                |
+| `--ignore-filter-limit`  |       | `false`       | Send Range Filters past the server's MAX_FILTER_RANGES, to test that it refuses them                                            |
 
 ## Fetch Options
 
@@ -214,6 +223,66 @@ Connect over raw QUIC instead of WebTransport:
 
 ```
 cargo run --bin client -- -c subscribe --server moqt://relay.example.com:4433 --transport quic
+```
+
+## Range Filters
+
+`--range-filter` takes `KIND:SET[:PROPERTY]:RANGES`, or `KIND:clear` for the zero-length
+form that removes a kind in a REQUEST_UPDATE:
+
+- `KIND` is `subgroup`, `object`, `priority`, `object-property` or `track-property`
+  (the last for `subscribe-tracks` only).
+- `SET` is the SetID, 0–255. Filters sharing a SetID are ANDed; SetIDs are ORed.
+- `PROPERTY` is the Property Type, for the two property kinds only.
+- `RANGES` is a comma-separated list of `A-B`, `A` or `A-` (open-ended, last only), in
+  decimal or `0x` hex. Ranges within one filter are ORed.
+
+The client reads the server's MAX_FILTER_RANGES from SETUP (0 when it sends none) and
+refuses to send more ranges than that, unless `--ignore-filter-limit` is given to test
+that the server refuses them. A filter only has to be encodable to be sent: an odd
+Property Type, a priority above 255 or a repeated SetID go out as given, for the server
+to refuse with INVALID_FILTER.
+
+Every object received is checked against the filters it was requested with. One that
+does not pass is logged as `FILTER_VIOLATION` and counted as `filter_violations` in the
+summary; a filtered subscription skips the sequence-gap check, since its gaps are by
+design. After a REQUEST_UPDATE the filters it replaced still count for two seconds, for
+the objects already in flight. For `subscribe-tracks`, a pushed PUBLISH whose Track
+Properties pass no track filter is reported, and its objects are then checked against
+the object filters of the sets it does pass.
+
+Publish a track with something to filter on: two subgroups per group at priorities 10
+and 200, the Object ID mod 3 as Object Property `0x3c`, and Track Property `0x3c=1`:
+
+```
+cargo run --bin client -- -c publish -T rf --subgroups-per-group 2 --priorities 10,200 \
+  --object-property 0x3c=mod:3 --track-property 0x3c=1 --interval 100
+```
+
+Ask for objects 0–1 of each group, or anything in subgroup 1 at high priority:
+
+```
+cargo run --bin client -- -c subscribe -T rf --range-filter object:0:0-1 \
+  --range-filter subgroup:1:1 --range-filter priority:1:0-63 --duration 10
+```
+
+Ask for Object Property `0x3c` in 0–1, then drop the filter after five seconds:
+
+```
+cargo run --bin client -- -c subscribe -T rf --range-filter object-property:0:0x3c:0-1 \
+  --update-filters-after 5 --update-range-filter object-property:clear --duration 10
+```
+
+Only tracks whose Track Property `0x3c` is 2 (the track above should not be pushed):
+
+```
+cargo run --bin client -- -c subscribe-tracks -n moqtail --range-filter track-property:0:0x3c:2 --duration 10
+```
+
+Fetch only the high-priority objects:
+
+```
+cargo run --bin client -- -c fetch -T rf --start-group 0 --end-group 3 --range-filter priority:0:0-63
 ```
 
 ## Testing QUIC Stream Priority Scheduling

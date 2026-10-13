@@ -102,6 +102,16 @@ pub enum RangeFilterError {
   /// Ranges must ascend, and only the last may be open-ended, or the deltas
   /// that carry them cannot be written.
   Unordered,
+  /// The same Type, SetID and Property Type appear twice in one request.
+  Duplicate {
+    kind: RangeFilterKind,
+    set_id: u8,
+    property_type: Option<u64>,
+  },
+  /// A track filter where Objects are being chosen.
+  TrackFilterOnObjects,
+  /// More Ranges than the limit the receiver advertised.
+  TooManyRanges { count: u64, limit: u64 },
 }
 
 impl fmt::Display for RangeFilterError {
@@ -118,6 +128,30 @@ impl fmt::Display for RangeFilterError {
         write!(f, "{kind:?} filter has the wrong Property Type presence")
       }
       Self::Unordered => write!(f, "ranges are not ascending"),
+      Self::Duplicate {
+        kind,
+        set_id,
+        property_type,
+      } => match property_type {
+        Some(property_type) => write!(
+          f,
+          "{kind:?} filter repeats SetID {set_id} for property {property_type:#x}"
+        ),
+        None => write!(f, "{kind:?} filter repeats SetID {set_id}"),
+      },
+      Self::TrackFilterOnObjects => {
+        write!(f, "a track property filter selects tracks, not Objects")
+      }
+      Self::TooManyRanges { count, limit } => {
+        if *limit == 0 {
+          write!(f, "no range filters are allowed (MAX_FILTER_RANGES is 0)")
+        } else {
+          write!(
+            f,
+            "{count} filter ranges exceed MAX_FILTER_RANGES of {limit}"
+          )
+        }
+      }
     }
   }
 }

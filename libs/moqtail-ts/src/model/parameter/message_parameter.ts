@@ -36,6 +36,7 @@ import { SubscriberPriority } from './message/subscriber_priority'
 import { LocationFilter } from './message/location_filter'
 import { SwitchFrom } from './message/switch_from'
 import { FillParameters } from './message/fill_parameters'
+import { RangeFilter, RangeFilterKind, encodeRanges } from './message/range_filter'
 
 export type MessageParameter =
   | ObjectDeliveryTimeout
@@ -52,6 +53,7 @@ export type MessageParameter =
   | NewGroupRequest
   | SwitchFrom
   | FillParameters
+  | RangeFilter
   | SwitchingSetAssignment
 
 export namespace MessageParameter {
@@ -76,6 +78,7 @@ export namespace MessageParameter {
       NewGroupRequest.fromKeyValuePair(pair) ??
       SwitchFrom.fromKeyValuePair(pair) ??
       FillParameters.fromKeyValuePair(pair) ??
+      RangeFilter.fromKeyValuePair(pair) ??
       SwitchingSetAssignment.fromKeyValuePair(pair)
     )
   }
@@ -148,6 +151,18 @@ export namespace MessageParameter {
   export function isFillParameters(param: MessageParameter): param is FillParameters {
     return param instanceof FillParameters
   }
+
+  export function isRangeFilter(param: MessageParameter): param is RangeFilter {
+    return param instanceof RangeFilter
+  }
+
+  /**
+   * Whether `params` carry a Range Filter, either directly or inside FILL_PARAMETERS,
+   * removals included. An endpoint that allows no filter ranges rejects any of them.
+   */
+  export function carriesRangeFilter(params: readonly MessageParameter[]): boolean {
+    return params.some((p) => isRangeFilter(p) || (isFillParameters(p) && carriesRangeFilter(p.parameters)))
+  }
 }
 
 /**
@@ -214,6 +229,10 @@ export class MessageParameters {
     return this.add(new FillParameters(parameters))
   }
 
+  addRangeFilter(filter: RangeFilter): this {
+    return this.add(filter)
+  }
+
   build(): MessageParameter[] {
     return [...this.params]
   }
@@ -262,6 +281,11 @@ function valueShapeOf(typeValue: bigint): ValueShape {
       return ValueShape.LocationFilter
     case BigInt(MessageParameterType.SwitchFrom):
     case BigInt(MessageParameterType.TrackNamespacePrefix):
+    case BigInt(MessageParameterType.SubgroupFilter):
+    case BigInt(MessageParameterType.ObjectIdFilter):
+    case BigInt(MessageParameterType.PriorityFilter):
+    case BigInt(MessageParameterType.ObjectPropertyFilter):
+    case BigInt(MessageParameterType.TrackPropertyFilter):
       return ValueShape.LengthPrefixedBytes
     default:
       return typeValue % 2n === 0n ? ValueShape.VarInt : ValueShape.LengthPrefixedBytes
@@ -353,19 +377,18 @@ function readMessageParameterKvps(buf: BaseByteBuffer, more: () => boolean): Key
 
 /**
  * Applies a set of parameter updates to an existing parameter list.
- * For each update, replaces the matching parameter (by wire type value) or appends it.
- * Per spec: "If omitted from REQUEST_UPDATE/SUBSCRIBE_UPDATE, the value is unchanged."
+ *
+ * A Type the update leaves out keeps its value. A Type it carries is replaced
+ * outright, every instance of it: a Range Filter can repeat, and an update that
+ * names a filter kind states the whole of that kind, so one left over from before
+ * would quietly widen or narrow what the subscriber asked for. A zero-length Range
+ * Filter replaces its kind with nothing.
  */
 export function applyMessageParameterUpdate(current: MessageParameter[], updates: MessageParameter[]): void {
-  for (const update of updates) {
-    const updateType = update.toKeyValuePair().typeValue
-    const idx = current.findIndex((p) => p.toKeyValuePair().typeValue === updateType)
-    if (idx >= 0) {
-      current[idx] = update
-    } else {
-      current.push(update)
-    }
-  }
+  const typeOf = (p: MessageParameter) => p.toKeyValuePair().typeValue
+  const updated = new Set(updates.map(typeOf))
+  const kept = current.filter((p) => !updated.has(typeOf(p)))
+  current.splice(0, current.length, ...kept, ...updates.filter((u) => !(u instanceof RangeFilter && u.isRemoval)))
 }
 
 if (import.meta.vitest) {
@@ -569,6 +592,110 @@ if (import.meta.vitest) {
       const kvps = deserializeKvpList(frozen, 2)
       const params = MessageParameters.fromKeyValuePairs(kvps)
       expect(params).toEqual([new Forward(true), new SubscriberPriority(5)])
+    })
+  })
+
+  describe('Range Filters', () => {
+    const filter = (kind: RangeFilterKind, setId: number, start: bigint, end?: bigint) =>
+      new RangeFilter(
+        kind,
+        setId,
+        RangeFilterKind.hasPropertyType(kind) ? 0x3cn : undefined,
+        encodeRanges([end === undefined ? { start } : { start, end }]),
+      )
+    const decode = (wire: Uint8Array, count: number) => {
+      const buf = new ByteBuffer()
+      buf.putBytes(wire)
+      const frozen = buf.freeze()
+      const params = MessageParameters.fromKeyValuePairs(deserializeMessageParameterKvps(frozen, count))
+      expect(frozen.remaining).toBe(0)
+      return params
+    }
+    const encode = (params: MessageParameter[]) =>
+      serializeMessageParameterKvps(params.map((p) => p.toKeyValuePair())).toUint8Array()
+
+    test('an even-typed range filter is length-prefixed', () => {
+      // OBJECTID_FILTER (0x26) is even, yet length-prefixed. Read as a varint, its
+      // Length would be taken for the Value and the rest of the list would desync.
+      const params = [filter(RangeFilterKind.ObjectId, 0, 3n, 5n), new NewGroupRequest(9n)]
+      const wire = encode(params)
+      expect(wire).toEqual(new Uint8Array([0x26, 0x03, 0x00, 0x03, 0x02, 0x0c, 0x09]))
+      expect(decode(wire, 2)).toEqual(params)
+    })
+
+    test('range filters repeat in one message', () => {
+      const params = [
+        filter(RangeFilterKind.Subgroup, 0, 0n, 1n),
+        filter(RangeFilterKind.Subgroup, 1, 4n),
+        filter(RangeFilterKind.ObjectId, 0, 0n, 0n),
+        filter(RangeFilterKind.Priority, 1, 0n, 127n),
+        filter(RangeFilterKind.ObjectProperty, 0, 10n, 20n),
+        filter(RangeFilterKind.ObjectProperty, 1, 30n, 40n),
+      ]
+      expect(decode(encode(params), params.length)).toEqual(params)
+    })
+
+    test('a zero-length range filter roundtrips as a removal', () => {
+      for (const kind of [
+        RangeFilterKind.Subgroup,
+        RangeFilterKind.ObjectId,
+        RangeFilterKind.Priority,
+        RangeFilterKind.ObjectProperty,
+        RangeFilterKind.TrackProperty,
+      ]) {
+        const wire = encode([new RangeFilter(kind)])
+        expect(wire).toEqual(new Uint8Array([kind, 0x00]))
+        expect(decode(wire, 1)).toEqual([new RangeFilter(kind)])
+      }
+    })
+
+    test('fill parameters carry object filters', () => {
+      const params = [
+        new FillParameters([
+          filter(RangeFilterKind.Subgroup, 0, 0n, 0n),
+          filter(RangeFilterKind.ObjectId, 0, 0n, 3n),
+          filter(RangeFilterKind.Priority, 0, 0n, 64n),
+          filter(RangeFilterKind.ObjectProperty, 0, 1n, 1n),
+        ]),
+      ]
+      expect(decode(encode(params), 1)).toEqual(params)
+      expect(() => new FillParameters([filter(RangeFilterKind.TrackProperty, 0, 1n, 1n)]).toKeyValuePair()).toThrow(
+        ProtocolViolationError,
+      )
+    })
+
+    test('carriesRangeFilter looks inside fill parameters', () => {
+      expect(MessageParameter.carriesRangeFilter([new Forward(true)])).toBe(false)
+      expect(MessageParameter.carriesRangeFilter([new RangeFilter(RangeFilterKind.Priority)])).toBe(true)
+      expect(
+        MessageParameter.carriesRangeFilter([new FillParameters([filter(RangeFilterKind.ObjectId, 0, 0n, 0n)])]),
+      ).toBe(true)
+    })
+
+    test('an update replaces every filter of a kind it names', () => {
+      const current: MessageParameter[] = [
+        filter(RangeFilterKind.Subgroup, 0, 0n, 0n),
+        filter(RangeFilterKind.Subgroup, 1, 5n, 5n),
+        filter(RangeFilterKind.ObjectId, 0, 0n, 3n),
+        new Forward(true),
+      ]
+      const replacement = filter(RangeFilterKind.Subgroup, 2, 9n, 9n)
+      applyMessageParameterUpdate(current, [replacement])
+      expect(current.filter((p) => p instanceof RangeFilter && p.kind === RangeFilterKind.Subgroup)).toEqual([
+        replacement,
+      ])
+      expect(current).toContainEqual(filter(RangeFilterKind.ObjectId, 0, 0n, 3n))
+      expect(current).toContainEqual(new Forward(true))
+    })
+
+    test('a zero-length update removes the kind', () => {
+      const current: MessageParameter[] = [
+        filter(RangeFilterKind.Priority, 0, 0n, 10n),
+        filter(RangeFilterKind.Priority, 1, 20n, 30n),
+        filter(RangeFilterKind.ObjectId, 0, 0n, 3n),
+      ]
+      applyMessageParameterUpdate(current, [new RangeFilter(RangeFilterKind.Priority)])
+      expect(current).toEqual([filter(RangeFilterKind.ObjectId, 0, 0n, 3n)])
     })
   })
 }

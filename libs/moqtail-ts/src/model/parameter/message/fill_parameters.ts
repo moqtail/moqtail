@@ -32,6 +32,11 @@ const ALLOWED: readonly MessageParameterType[] = [
   MessageParameterType.SubscriberPriority,
   MessageParameterType.LocationFilter,
   MessageParameterType.GroupOrder,
+  // A track filter is not among them: the fill is for a track already chosen.
+  MessageParameterType.SubgroupFilter,
+  MessageParameterType.ObjectIdFilter,
+  MessageParameterType.PriorityFilter,
+  MessageParameterType.ObjectPropertyFilter,
 ]
 
 /**

@@ -25,6 +25,7 @@ import {
   MoqtObject,
 } from '@/model'
 import { FetchObjectContext } from '@/model/data/fetch_object'
+import { NetFilter } from '@/model/parameter/message/net_filter'
 import { StreamResetCode } from '@/model/error/stream_reset'
 import { streamResetReason } from '../util/stream_reset'
 import { MOQtailClient } from '../client'
@@ -32,6 +33,7 @@ import { Track } from '../track/track'
 import { SubscribePublication } from './subscribe'
 import { PublishPublication } from './publish'
 import { logger } from '../../util/logger'
+import { SubgroupIds } from './subgroup'
 
 // TODO: Use group order
 // TODO: Use fetch parameters
@@ -42,6 +44,8 @@ export class FetchPublication {
   readonly #endLocation: Location
   readonly #msg: Fetch
   readonly #client: MOQtailClient
+  /** What the FETCH's Range Filters let through. */
+  readonly #filter: NetFilter
   #stream: WritableStream | undefined
   #writer: WritableStreamDefaultWriter | undefined
   #objects: MoqtObject[] | undefined
@@ -54,6 +58,8 @@ export class FetchPublication {
     this.#msg = fetchRequest
     this.#startLocation = fetchRequest.startLocation
     this.#endLocation = fetchRequest.endLocation
+    // The handler has already refused a FETCH with filters that cannot be applied.
+    this.#filter = new NetFilter(fetchRequest.parameters)
     logger.debug('publication/fetch', `created requestId=${this.#requestId}`)
     this.publish()
   }
@@ -91,7 +97,13 @@ export class FetchPublication {
       // (see the TODO above), so a Descending request is rejected by the encoder.
       const groupOrder = MessageParameter.groupOrderOf(this.#msg.parameters)
       let fetchPrevCtx: FetchObjectContext | undefined = undefined
+      const subgroupIds = new SubgroupIds()
+      let sent = 0
       for (const obj of this.#objects) {
+        subgroupIds.note(obj)
+        // A filtered Object is skipped without moving the delta context on: the next
+        // one written is encoded against the last one written.
+        if (!this.#filter.matches(obj, subgroupIds.of(obj))) continue
         if (this.#isCanceled) {
           logger.debug('publication/fetch', `aborted during publish requestId=${this.#requestId}`)
           await this.#writer.abort(streamResetReason(StreamResetCode.Cancelled))
@@ -102,9 +114,13 @@ export class FetchPublication {
         await this.#writer.write(fetchObj.serialize(fetchPrevCtx, groupOrder).toUint8Array())
         const newCtx = fetchObj.toContext()
         if (newCtx) fetchPrevCtx = newCtx
+        sent++
       }
       await this.#writer.close()
-      logger.debug('publication/fetch', `published requestId=${this.#requestId} objects=${this.#objects.length}`)
+      logger.debug(
+        'publication/fetch',
+        `published requestId=${this.#requestId} objects=${sent} of ${this.#objects.length}`,
+      )
       this.#client.publications.delete(this.#requestId)
     } catch (error: unknown) {
       // A write that fails because the stream was reset on purpose is not a failure.

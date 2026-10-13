@@ -21,9 +21,20 @@ import { SubscribePublication } from '../publication/subscribe'
 import { FetchPublication } from '../publication/fetch'
 import { PublishPublication } from '../publication'
 import { logger } from '../../util/logger'
+import { rangeFilterRejection } from '../util/validators'
 
 export const handlerFetch: RequestStreamMessageHandler<Fetch> = async (client, msg, stream) => {
   logger.log('handler/fetch', 'requestId', msg.requestId)
+  const filterRejection = rangeFilterRejection(msg.parameters, client.maxFilterRanges)
+  if (filterRejection) {
+    logger.warn(
+      'handler/fetch',
+      `requestId=${msg.requestId} has filters this client cannot take: ${filterRejection.reasonPhrase.phrase}`,
+    )
+    await stream.send(filterRejection)
+    return
+  }
+
   // TODO: Use fetch parameters and handle authorization
   const fullTrackName = msg.fullTrackName
   const track = client.trackSources.get(fullTrackName.toString())

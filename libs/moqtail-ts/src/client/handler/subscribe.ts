@@ -20,10 +20,20 @@ import { RequestStreamMessageHandler } from './handler'
 import { SubscribePublication } from '../publication/subscribe'
 import { logger } from '../../util/logger'
 import { LargestObject } from '../../model/parameter/message/largest_object'
-import { isValidTrackAlias } from '../util/validators'
+import { isValidTrackAlias, rangeFilterRejection } from '../util/validators'
 
 export const handlerSubscribe: RequestStreamMessageHandler<Subscribe> = async (client, msg, stream) => {
   logger.debug('handler/subscribe', `received requestId=${msg.requestId} ftn="${msg.fullTrackName}"`)
+
+  const filterRejection = rangeFilterRejection(msg.parameters, client.maxFilterRanges)
+  if (filterRejection) {
+    logger.warn(
+      'handler/subscribe',
+      `requestId=${msg.requestId} has filters this client cannot take: ${filterRejection.reasonPhrase.phrase}`,
+    )
+    await stream.send(filterRejection)
+    return
+  }
 
   const track = client.trackSources.get(msg.fullTrackName.toString())
   if (!track) {

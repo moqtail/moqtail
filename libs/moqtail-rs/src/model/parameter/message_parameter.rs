@@ -21,6 +21,7 @@ use crate::model::error::ParseError;
 use crate::model::parameter::authorization_token::AuthorizationToken;
 use crate::model::parameter::constant::MessageParameterType;
 use crate::model::parameter::location_filter::LocationFilter;
+use crate::model::parameter::range_filter::{RangeFilter, RangeFilterKind};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -70,6 +71,13 @@ pub enum MessageParameter {
   /// fills over the subscription's own.
   FillParameters {
     parameters: Vec<MessageParameter>,
+  },
+  /// One Range Filter. Unlike other parameters it may repeat in a message, once
+  /// per SetID (and Property Type). `None` is the zero-length form, which in
+  /// REQUEST_UPDATE removes the filters of that kind.
+  RangeFilter {
+    kind: RangeFilterKind,
+    filter: Option<RangeFilter>,
   },
   NewGroupRequest {
     group: u64,
@@ -146,6 +154,18 @@ impl MessageParameter {
     Self::FillParameters { parameters }
   }
 
+  pub fn new_range_filter(kind: RangeFilterKind, filter: RangeFilter) -> Self {
+    Self::RangeFilter {
+      kind,
+      filter: Some(filter),
+    }
+  }
+
+  /// The zero-length form, which removes the filters of `kind`.
+  pub fn new_range_filter_removal(kind: RangeFilterKind) -> Self {
+    Self::RangeFilter { kind, filter: None }
+  }
+
   pub fn new_switch_from(request_id: u64, mode: SwitchMode, publish_done: bool) -> Self {
     Self::SwitchFrom {
       request_id,
@@ -196,6 +216,7 @@ impl MessageParameter {
       Self::LocationFilter { .. } => MessageParameterType::LocationFilter as u64,
       Self::FillParameters { .. } => MessageParameterType::FillParameters as u64,
       Self::SwitchFrom { .. } => MessageParameterType::SwitchFrom as u64,
+      Self::RangeFilter { kind, .. } => kind.parameter_type() as u64,
       Self::NewGroupRequest { .. } => MessageParameterType::NewGroupRequest as u64,
       Self::TrackNamespacePrefix { .. } => MessageParameterType::TrackNamespacePrefix as u64,
       Self::SwitchingSetAssignment { .. } => MessageParameterType::SwitchingSetAssignment as u64,
@@ -276,6 +297,22 @@ impl MessageParameter {
       Self::NewGroupRequest { .. } => matches!(
         msg_type,
         ControlMessageType::Subscribe | ControlMessageType::RequestUpdate
+      ),
+      // Only a subscriber sends filters, and a track filter only means something
+      // where tracks are being chosen.
+      Self::RangeFilter {
+        kind: RangeFilterKind::TrackProperty,
+        ..
+      } => matches!(
+        msg_type,
+        ControlMessageType::SubscribeTracks | ControlMessageType::RequestUpdate
+      ),
+      Self::RangeFilter { .. } => matches!(
+        msg_type,
+        ControlMessageType::Subscribe
+          | ControlMessageType::Fetch
+          | ControlMessageType::SubscribeTracks
+          | ControlMessageType::RequestUpdate
       ),
       Self::TrackNamespacePrefix { .. } => matches!(msg_type, ControlMessageType::RequestUpdate),
       // A switching set is joined when the subscription is created and
@@ -488,6 +525,20 @@ impl MessageParameter {
               set_rank,
             })
           }
+          MessageParameterType::SubgroupFilter
+          | MessageParameterType::ObjectIdFilter
+          | MessageParameterType::PriorityFilter
+          | MessageParameterType::ObjectPropertyFilter
+          | MessageParameterType::TrackPropertyFilter => {
+            let kind = RangeFilterKind::from_parameter_type(param_type)
+              .expect("every range filter parameter type has a kind");
+            let filter = if value.is_empty() {
+              None
+            } else {
+              Some(RangeFilter::deserialize(kind, &mut value.clone())?)
+            };
+            Ok(Self::RangeFilter { kind, filter })
+          }
           MessageParameterType::LocationFilter => {
             let mut payload = value.clone();
             let filter = LocationFilter::deserialize(&mut payload)?;
@@ -648,6 +699,24 @@ impl TryInto<KeyValuePair> for MessageParameter {
         MessageParameterType::LocationFilter as u64,
         filter.serialize()?,
       ),
+      // Length-prefixed whatever the Type's parity; an empty Value removes.
+      Self::RangeFilter { kind, filter } => {
+        let value = match filter {
+          Some(filter) => {
+            // A Property Type where the kind has none, or none where it has one,
+            // would be read back as a Range.
+            if kind.has_property_type() != filter.property_type.is_some() {
+              return Err(ParseError::ProtocolViolation {
+                context: "MessageParameter::try_into(RangeFilter)",
+                details: format!("{kind:?} filter has the wrong Property Type presence"),
+              });
+            }
+            filter.serialize()?
+          }
+          None => Bytes::new(),
+        };
+        KeyValuePair::new_bytes(kind.parameter_type() as u64, value)
+      }
       // A namespace tuple: length-prefixed, even though the Type is even.
       Self::TrackNamespacePrefix { prefix } => KeyValuePair::new_bytes(
         MessageParameterType::TrackNamespacePrefix as u64,
@@ -717,11 +786,20 @@ enum ValueShape {
 }
 
 /// The only parameters that may override anything for the fill fetch stream.
+/// A track filter is not among them: the fill is for a track already chosen.
 const fn is_valid_fill_parameter(type_value: u64) -> bool {
   type_value == MessageParameterType::FillTimeout as u64
     || type_value == MessageParameterType::SubscriberPriority as u64
     || type_value == MessageParameterType::LocationFilter as u64
     || type_value == MessageParameterType::GroupOrder as u64
+    || is_object_range_filter(type_value)
+}
+
+const fn is_object_range_filter(type_value: u64) -> bool {
+  type_value == MessageParameterType::SubgroupFilter as u64
+    || type_value == MessageParameterType::ObjectIdFilter as u64
+    || type_value == MessageParameterType::PriorityFilter as u64
+    || type_value == MessageParameterType::ObjectPropertyFilter as u64
 }
 
 /// Reads one parameter Value whose Type has already been decoded.
@@ -774,6 +852,8 @@ const fn value_shape(type_value: u64) -> ValueShape {
     ValueShape::LocationFilter
   } else if type_value == MessageParameterType::TrackNamespacePrefix as u64
     || type_value == MessageParameterType::SwitchFrom as u64
+    || is_object_range_filter(type_value)
+    || type_value == MessageParameterType::TrackPropertyFilter as u64
   {
     ValueShape::LengthPrefixedBytes
   } else if type_value.is_multiple_of(2) {
@@ -834,20 +914,22 @@ pub fn serialize_message_parameters(params: &[MessageParameter]) -> Result<Bytes
 }
 
 /// Applies a set of parameter updates to an existing parameter list.
-/// For each update, replaces the matching parameter (by type value) or appends it.
-/// Per spec: "If omitted from REQUEST_UPDATE/SUBSCRIBE_UPDATE, the value is unchanged."
+///
+/// A Type the update leaves out keeps its value. A Type it carries is replaced
+/// outright, every instance of it: a Range Filter can repeat, and an update that
+/// names a filter kind states the whole of that kind, so one left over from
+/// before would quietly widen or narrow what the subscriber asked for. A
+/// zero-length Range Filter replaces its kind with nothing.
 pub fn apply_message_parameter_update(
   current: &mut Vec<MessageParameter>,
   updates: Vec<MessageParameter>,
 ) {
-  for update in updates {
-    let update_type = update.type_value();
-    if let Some(existing) = current.iter_mut().find(|p| p.type_value() == update_type) {
-      *existing = update;
-    } else {
-      current.push(update);
-    }
-  }
+  current.retain(|p| !updates.iter().any(|u| u.type_value() == p.type_value()));
+  current.extend(
+    updates
+      .into_iter()
+      .filter(|u| !matches!(u, MessageParameter::RangeFilter { filter: None, .. })),
+  );
 }
 
 #[cfg(test)]
@@ -855,6 +937,7 @@ mod tests {
   use super::*;
   use crate::model::common::tuple::TupleField;
   use crate::model::control::constant::LocationFilterType;
+  use crate::model::parameter::range_filter::Range;
 
   /// LARGEST_OBJECT is a bare Location: Type Delta 0x09 followed by the Group
   /// and Object varints, with no length prefix. These are the bytes another
@@ -1603,6 +1686,199 @@ mod tests {
         MessageParameter::new_forward(true),
         MessageParameter::new_subscriber_priority(5),
       ]
+    );
+  }
+
+  fn range_filter(kind: RangeFilterKind, set_id: u8, ranges: &[Range]) -> MessageParameter {
+    let property_type = kind.has_property_type().then_some(0x3C);
+    MessageParameter::new_range_filter(
+      kind,
+      RangeFilter::new(set_id, property_type, ranges).unwrap(),
+    )
+  }
+
+  #[test]
+  fn an_even_typed_range_filter_is_length_prefixed() {
+    // OBJECTID_FILTER (0x26) is even, yet length-prefixed. Read as a varint, its
+    // Length would be taken for the Value and the rest of the list would desync.
+    let params = vec![
+      range_filter(RangeFilterKind::ObjectId, 0, &[Range::new(3, 5)]),
+      MessageParameter::new_group_request(9),
+    ];
+    let wire = serialize_message_parameters(&params).unwrap();
+    assert_eq!(
+      wire.as_ref(),
+      &[
+        0x26, 0x03, 0x00, 0x03, 0x02, // OBJECTID_FILTER, Length 3, SetID 0, 3-5
+        0x0C, 0x09, // NEW_GROUP_REQUEST (delta 0x0C -> 0x32) = 9
+      ]
+    );
+    let mut buf = wire.clone();
+    let decoded =
+      deserialize_message_parameters(&mut buf, 2, ControlMessageType::Subscribe).unwrap();
+    assert_eq!(decoded, params);
+    assert!(!buf.has_remaining());
+  }
+
+  #[test]
+  fn range_filters_repeat_in_one_message() {
+    let params = vec![
+      range_filter(RangeFilterKind::Subgroup, 0, &[Range::new(0, 1)]),
+      range_filter(RangeFilterKind::Subgroup, 1, &[Range::open(4)]),
+      range_filter(RangeFilterKind::ObjectId, 0, &[Range::new(0, 0)]),
+      range_filter(RangeFilterKind::Priority, 1, &[Range::new(0, 127)]),
+      range_filter(RangeFilterKind::ObjectProperty, 0, &[Range::new(10, 20)]),
+      range_filter(RangeFilterKind::ObjectProperty, 1, &[Range::new(30, 40)]),
+    ];
+    let mut wire = serialize_message_parameters(&params).unwrap();
+    let decoded = deserialize_message_parameters(
+      &mut wire,
+      params.len() as u64,
+      ControlMessageType::Subscribe,
+    )
+    .unwrap();
+    assert_eq!(decoded, params);
+  }
+
+  #[test]
+  fn a_zero_length_range_filter_roundtrips_as_a_removal() {
+    for kind in RangeFilterKind::ALL {
+      let param = MessageParameter::new_range_filter_removal(kind);
+      let mut wire = serialize_message_parameters(std::slice::from_ref(&param)).unwrap();
+      assert_eq!(wire.as_ref(), &[kind.parameter_type() as u8, 0x00]);
+      let decoded =
+        deserialize_message_parameters(&mut wire, 1, ControlMessageType::RequestUpdate).unwrap();
+      assert_eq!(decoded, vec![param]);
+    }
+  }
+
+  #[test]
+  fn a_property_type_must_be_present_exactly_for_property_filters() {
+    let missing = MessageParameter::new_range_filter(
+      RangeFilterKind::ObjectProperty,
+      RangeFilter::new(0, None, &[Range::new(1, 1)]).unwrap(),
+    );
+    let stray = MessageParameter::new_range_filter(
+      RangeFilterKind::Subgroup,
+      RangeFilter::new(0, Some(0x3C), &[Range::new(1, 1)]).unwrap(),
+    );
+    for param in [missing, stray] {
+      assert!(serialize_message_parameters(&[param]).is_err());
+    }
+  }
+
+  #[test]
+  fn object_filters_ride_requests_from_a_subscriber() {
+    for kind in [
+      RangeFilterKind::Subgroup,
+      RangeFilterKind::ObjectId,
+      RangeFilterKind::Priority,
+      RangeFilterKind::ObjectProperty,
+    ] {
+      let param = MessageParameter::new_range_filter_removal(kind);
+      for msg in [
+        ControlMessageType::Subscribe,
+        ControlMessageType::Fetch,
+        ControlMessageType::SubscribeTracks,
+        ControlMessageType::RequestUpdate,
+      ] {
+        assert!(param.is_valid_for(msg), "{kind:?} in {msg:?}");
+      }
+      for msg in [
+        ControlMessageType::Publish,
+        ControlMessageType::SubscribeOk,
+        ControlMessageType::RequestOk,
+        ControlMessageType::TrackStatus,
+      ] {
+        assert!(!param.is_valid_for(msg), "{kind:?} in {msg:?}");
+      }
+    }
+  }
+
+  #[test]
+  fn a_track_filter_only_rides_subscribe_tracks() {
+    let param = MessageParameter::new_range_filter_removal(RangeFilterKind::TrackProperty);
+    assert!(param.is_valid_for(ControlMessageType::SubscribeTracks));
+    assert!(param.is_valid_for(ControlMessageType::RequestUpdate));
+    assert!(!param.is_valid_for(ControlMessageType::Subscribe));
+    assert!(!param.is_valid_for(ControlMessageType::Fetch));
+
+    let mut wire = serialize_message_parameters(&[param]).unwrap();
+    assert!(matches!(
+      deserialize_message_parameters(&mut wire, 1, ControlMessageType::Subscribe),
+      Err(ParseError::ProtocolViolation { .. })
+    ));
+  }
+
+  #[test]
+  fn fill_parameters_carry_object_filters_but_not_a_track_filter() {
+    let fill = MessageParameter::new_fill_parameters(vec![
+      range_filter(RangeFilterKind::Subgroup, 0, &[Range::new(0, 0)]),
+      range_filter(RangeFilterKind::ObjectId, 0, &[Range::new(0, 3)]),
+      range_filter(RangeFilterKind::Priority, 0, &[Range::new(0, 64)]),
+      range_filter(RangeFilterKind::ObjectProperty, 0, &[Range::new(1, 1)]),
+    ]);
+    let mut wire = serialize_message_parameters(std::slice::from_ref(&fill)).unwrap();
+    let decoded =
+      deserialize_message_parameters(&mut wire, 1, ControlMessageType::Subscribe).unwrap();
+    assert_eq!(decoded, vec![fill]);
+
+    let track = MessageParameter::new_fill_parameters(vec![range_filter(
+      RangeFilterKind::TrackProperty,
+      0,
+      &[Range::new(1, 1)],
+    )]);
+    assert!(matches!(
+      serialize_message_parameters(&[track]),
+      Err(ParseError::ProtocolViolation { .. })
+    ));
+  }
+
+  #[test]
+  fn an_update_replaces_every_filter_of_a_kind_it_names() {
+    let mut current = vec![
+      range_filter(RangeFilterKind::Subgroup, 0, &[Range::new(0, 0)]),
+      range_filter(RangeFilterKind::Subgroup, 1, &[Range::new(5, 5)]),
+      range_filter(RangeFilterKind::ObjectId, 0, &[Range::new(0, 3)]),
+      MessageParameter::new_forward(true),
+    ];
+    let replacement = range_filter(RangeFilterKind::Subgroup, 2, &[Range::new(9, 9)]);
+    apply_message_parameter_update(&mut current, vec![replacement.clone()]);
+
+    let subgroup: Vec<_> = current
+      .iter()
+      .filter(|p| p.type_value() == MessageParameterType::SubgroupFilter as u64)
+      .collect();
+    assert_eq!(subgroup, vec![&replacement]);
+    // Kinds the update did not name are untouched.
+    assert!(
+      current
+        .iter()
+        .any(|p| p.type_value() == MessageParameterType::ObjectIdFilter as u64)
+    );
+    assert!(current.contains(&MessageParameter::new_forward(true)));
+  }
+
+  #[test]
+  fn a_zero_length_update_removes_the_kind() {
+    let mut current = vec![
+      range_filter(RangeFilterKind::Priority, 0, &[Range::new(0, 10)]),
+      range_filter(RangeFilterKind::Priority, 1, &[Range::new(20, 30)]),
+      range_filter(RangeFilterKind::ObjectId, 0, &[Range::new(0, 3)]),
+    ];
+    apply_message_parameter_update(
+      &mut current,
+      vec![MessageParameter::new_range_filter_removal(
+        RangeFilterKind::Priority,
+      )],
+    );
+    assert_eq!(
+      current,
+      vec![range_filter(
+        RangeFilterKind::ObjectId,
+        0,
+        &[Range::new(0, 3)]
+      )]
     );
   }
 }

@@ -33,6 +33,8 @@ import { FetchPublication } from '../publication/fetch'
 import { PublishPublication } from '../publication/publish'
 import { SubscribePublication } from '../publication/subscribe'
 import { logger } from '../../util/logger'
+import { rangeFilterRejection } from '../util/validators'
+import { InvalidFilterError } from '../../model/parameter/message/range_filter'
 
 /**
  * A REQUEST_UPDATE modifies the request whose stream it arrived on, and §10.9 requires
@@ -58,24 +60,33 @@ export const handlerRequestUpdate: RequestStreamMessageHandler<RequestUpdate> = 
     return
   }
 
-  const publication = client.publications.get(requestId)
-  if (publication instanceof SubscribePublication) {
-    try {
-      publication.update(msg)
-    } catch (error) {
-      logger.error('handler/request_update', `update failed for requestId=${requestId}`, error)
-      await failUpdate(client, stream, requestId, RequestErrorCode.InternalError, 'REQUEST_UPDATE failed')
-      return
-    }
-    await stream.send(new RequestOk())
+  const filterRejection = rangeFilterRejection(msg.parameters, client.maxFilterRanges)
+  if (filterRejection) {
+    const reason = filterRejection.reasonPhrase.phrase
+    logger.warn('handler/request_update', `requestId=${requestId} has filters this client cannot take: ${reason}`)
+    await failUpdate(client, stream, requestId, RequestErrorCode.InvalidFilter, reason)
     return
   }
 
-  // A PUBLISH this side is making: the update moves its Forward State, parking or
-  // resuming the push. It is answered on this stream like any other update, and the
-  // publication carries on either way.
-  if (publication instanceof PublishPublication) {
-    publication.update(msg)
+  // A subscription, or a PUBLISH this side is making. The update moves its filters
+  // and Forward State, which for a PUBLISH parks or resumes the push. A publication
+  // checks the filters it would be left with before taking any of it.
+  const publication = client.publications.get(requestId)
+  if (publication instanceof SubscribePublication || publication instanceof PublishPublication) {
+    try {
+      publication.update(msg)
+    } catch (error) {
+      const invalid = error instanceof InvalidFilterError
+      logger.error('handler/request_update', `update failed for requestId=${requestId}`, error)
+      await failUpdate(
+        client,
+        stream,
+        requestId,
+        invalid ? RequestErrorCode.InvalidFilter : RequestErrorCode.InternalError,
+        invalid ? error.details : 'REQUEST_UPDATE failed',
+      )
+      return
+    }
     await stream.send(new RequestOk())
     return
   }

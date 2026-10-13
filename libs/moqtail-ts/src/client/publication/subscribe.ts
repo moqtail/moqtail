@@ -17,18 +17,13 @@
 import { Subscribe, PublishDone, PublishDoneStatusCode, RequestUpdate } from '@/model/control'
 import { MOQtailClient } from '../client'
 import { Track } from '../track/track'
-import {
-  InternalError,
-  Location,
-  ReasonPhrase,
-  SubgroupHeaderType,
-  MessageParameter,
-  applyMessageParameterUpdate,
-} from '@/model'
+import { InternalError, Location, ReasonPhrase, MessageParameter, applyMessageParameterUpdate } from '@/model'
+import { NetFilter } from '@/model/parameter/message/net_filter'
 import { SendStream } from '../data_stream'
 import { RequestStream } from '../request_stream'
-import { SubgroupHeader } from '@/model/data/subgroup_header'
 import { MoqtObject } from '@/model/data/object'
+import { SubgroupIds, subgroupHeaderFor } from './subgroup'
+import { assertWithinFilterRangeLimit } from '../util/validators'
 import { SimpleLock } from '../../util/simple_lock'
 import { getTransportPriority } from '../util/priority'
 import { logger } from '../../util/logger'
@@ -78,6 +73,16 @@ export class SubscribePublication {
    * The subscription parameters for this publication.
    */
   #parameters: MessageParameter[]
+
+  /**
+   * What the subscription's Range Filters let through.
+   */
+  #filter: NetFilter
+
+  /**
+   * The Subgroup ID of each Object, which the filter and the stream header need.
+   */
+  #subgroupIds = new SubgroupIds()
 
   /**
    * The number of streams opened for this subscription.
@@ -145,6 +150,8 @@ export class SubscribePublication {
     this.#subscriberPriority = subPriority?.priority ?? 128
     this.#forward = fwd?.forward ?? true
     this.#parameters = [...subscribeMsg.parameters]
+    // The handler has already refused a SUBSCRIBE with filters that cannot be applied.
+    this.#filter = new NetFilter(this.#parameters)
     // No filter starts at the beginning and never ends.
     this.#startLocation = filter?.startLocation(largestLocation) ?? new Location(0n, 0n)
     this.#endLocation = filter?.endLocation()
@@ -185,8 +192,17 @@ export class SubscribePublication {
   /**
    * Updates the subscription parameters and locations based on a RequestUpdate message.
    * @param msg - The update message containing new request details.
+   * @throws :{@link InvalidFilterError} If the Range Filters the subscription would be
+   * left with cannot be applied; nothing is updated.
    */
   update(msg: RequestUpdate): void {
+    // The filters are checked as they would stand afterwards, before any of the update
+    // is taken: a refused update leaves the subscription as it was.
+    const parameters = [...this.#parameters]
+    applyMessageParameterUpdate(parameters, msg.parameters)
+    assertWithinFilterRangeLimit(parameters, this.client.maxFilterRanges, 'REQUEST_UPDATE')
+    this.#filter = new NetFilter(parameters)
+
     // An update changes the filter only when it carries one.
     const filter = msg.parameters.find(MessageParameter.isLocationFilter)
     if (filter) {
@@ -202,7 +218,7 @@ export class SubscribePublication {
       }
     }
 
-    applyMessageParameterUpdate(this.#parameters, msg.parameters)
+    this.#parameters = parameters
   }
 
   /**
@@ -249,6 +265,7 @@ export class SubscribePublication {
 
     this.#cancelPublishing = this.track.trackSource.live.onNewObject(async (obj: MoqtObject) => {
       if (this.#isCompleted) return
+      this.#subgroupIds.note(obj)
       if (!this.#forward) {
         this.#markGroupSeen(obj.location.group)
         return
@@ -264,55 +281,60 @@ export class SubscribePublication {
         if (this.latestLocation) await this.#closeGroupStream(this.latestLocation.group)
         return
       }
-      if (this.#isStarted) {
-        try {
-          if (!this.#streams.has(obj.location.group)) {
-            await this.#lock.acquire()
-            if (!this.#streams.has(obj.location.group)) {
-              // New group or first object
-              const writeStream = await this.client.webTransport.createUnidirectionalStream({
-                sendOrder: this.#streamPriority,
-              })
-              const firstObject = this.#highestGroupSeen === undefined || obj.location.group > this.#highestGroupSeen
-              const headerType = obj.getSubgroupHeaderType(true, false, firstObject)
-
-              let subgroupId: bigint | undefined
-              if (SubgroupHeaderType.hasExplicitSubgroupId(headerType)) subgroupId = obj.subgroupId!
-              const header = new SubgroupHeader(
-                headerType,
-                this.#trackAlias,
-                obj.location.group,
-                subgroupId,
-                this.#publisherPriority,
-              )
-              const sendStream = await SendStream.new(writeStream, header)
-              this.#streams.set(obj.location.group, sendStream)
-              this.#streamsOpened++
-              this.#markGroupSeen(obj.location.group)
-            }
-            await this.#lock.release()
-          }
-
-          const sendStream = this.#streams.get(obj.location.group)!
-          await this.#lock.acquire()
-          await sendStream.write(obj.tryIntoSubgroupObject())
-          await this.#lock.release()
-
-          if (this.#endLocation && obj.location.equals(this.#endLocation)) {
-            // The filter's last Object: nothing follows on this stream.
-            await this.#closeGroupStream(obj.location.group)
-          } else if (this.latestLocation && this.latestLocation.group !== obj.location.group) {
-            // TODO: Maybe don't close the previous stream, discuss
-            // If group changed, close previous group's stream
-            await this.#closeGroupStream(this.latestLocation.group)
-          }
-          await this.#lock.acquire()
-          this.latestLocation = obj.location
-          await this.#lock.release()
-        } catch (err) {
-          this.cancel()
-          throw err
+      if (!this.#isStarted) return
+      const subgroupId = this.#subgroupIds.of(obj)
+      if (!this.#filter.matches(obj, subgroupId)) {
+        // Marked seen, so a stream opened for this group later does not claim its first
+        // Object. A group that has moved on still ends the stream of the one before.
+        this.#markGroupSeen(obj.location.group)
+        if (this.latestLocation && this.latestLocation.group !== obj.location.group) {
+          await this.#closeGroupStream(this.latestLocation.group)
         }
+        return
+      }
+      try {
+        if (!this.#streams.has(obj.location.group)) {
+          await this.#lock.acquire()
+          if (!this.#streams.has(obj.location.group)) {
+            // New group or first object
+            const writeStream = await this.client.webTransport.createUnidirectionalStream({
+              sendOrder: this.#streamPriority,
+            })
+            const firstObject = this.#highestGroupSeen === undefined || obj.location.group > this.#highestGroupSeen
+            const header = subgroupHeaderFor(
+              obj,
+              subgroupId ?? obj.location.object,
+              this.#trackAlias,
+              this.#publisherPriority,
+              firstObject,
+            )
+            const sendStream = await SendStream.new(writeStream, header)
+            this.#streams.set(obj.location.group, sendStream)
+            this.#streamsOpened++
+            this.#markGroupSeen(obj.location.group)
+          }
+          await this.#lock.release()
+        }
+
+        const sendStream = this.#streams.get(obj.location.group)!
+        await this.#lock.acquire()
+        await sendStream.write(obj.tryIntoSubgroupObject())
+        await this.#lock.release()
+
+        if (this.#endLocation && obj.location.equals(this.#endLocation)) {
+          // The filter's last Object: nothing follows on this stream.
+          await this.#closeGroupStream(obj.location.group)
+        } else if (this.latestLocation && this.latestLocation.group !== obj.location.group) {
+          // TODO: Maybe don't close the previous stream, discuss
+          // If group changed, close previous group's stream
+          await this.#closeGroupStream(this.latestLocation.group)
+        }
+        await this.#lock.acquire()
+        this.latestLocation = obj.location
+        await this.#lock.release()
+      } catch (err) {
+        this.cancel()
+        throw err
       }
     })
   }

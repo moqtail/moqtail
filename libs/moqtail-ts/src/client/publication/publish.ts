@@ -17,10 +17,12 @@
 import { Publish, RequestUpdate } from '@/model/control'
 import { MOQtailClient } from '../client'
 import { Track } from '../track/track'
-import { InternalError, Location, MessageParameter, SubgroupHeaderType, applyMessageParameterUpdate } from '@/model'
+import { InternalError, Location, MessageParameter, applyMessageParameterUpdate } from '@/model'
+import { NetFilter } from '@/model/parameter/message/net_filter'
 import { SendStream } from '../data_stream'
-import { SubgroupHeader } from '@/model/data/subgroup_header'
 import { MoqtObject } from '@/model/data/object'
+import { SubgroupIds, subgroupHeaderFor } from './subgroup'
+import { assertWithinFilterRangeLimit } from '../util/validators'
 import { SimpleLock } from '../../util/simple_lock'
 import { getTransportPriority } from '../util/priority'
 import { logger } from '../../util/logger'
@@ -90,6 +92,17 @@ export class PublishPublication {
   #parameters: MessageParameter[]
 
   /**
+   * What the subscriber's Range Filters let through. A PUBLISH carries none, so this
+   * passes everything until a REQUEST_UPDATE says otherwise.
+   */
+  #filter: NetFilter = new NetFilter([])
+
+  /**
+   * The Subgroup ID of each Object, which the filter and the stream header need.
+   */
+  #subgroupIds = new SubgroupIds()
+
+  /**
    * Highest group this publication has already opened a stream for or skipped objects of.
    * A stream for a group at or below it reopens a subgroup, so it cannot claim FIRST_OBJECT.
    */
@@ -147,14 +160,21 @@ export class PublishPublication {
   }
 
   /**
-   * Applies a REQUEST_UPDATE the peer sent on this publication's request stream. The
-   * Forward State is the one thing it can move; what a publisher sends, and when,
-   * is otherwise its own to decide.
+   * Applies a REQUEST_UPDATE the peer sent on this publication's request stream. It
+   * can move the Forward State and the Range Filters; what a publisher sends, and
+   * when, is otherwise its own to decide.
+   * @throws :{@link InvalidFilterError} If the Range Filters the publication would be
+   * left with cannot be applied; nothing is updated.
    */
   update(msg: RequestUpdate): void {
+    const parameters = [...this.#parameters]
+    applyMessageParameterUpdate(parameters, msg.parameters)
+    assertWithinFilterRangeLimit(parameters, this.client.maxFilterRanges, 'REQUEST_UPDATE')
+    this.#filter = new NetFilter(parameters)
+    this.#parameters = parameters
+
     const forward = msg.parameters.find(MessageParameter.isForward)
     if (forward) this.setForwardState(forward.forward)
-    applyMessageParameterUpdate(this.#parameters, msg.parameters)
   }
 
   /**
@@ -213,12 +233,21 @@ export class PublishPublication {
 
     this.#cancelPublishing = this.track.trackSource.live.onNewObject(async (obj: MoqtObject) => {
       if (this.#isCompleted) return
+      this.#subgroupIds.note(obj)
 
       // Parked at FORWARD=0: Objects are dropped rather than queued, because a live
       // track that resumes wants what is happening then, not a backlog. The group is
       // still marked seen, so a stream opened for it later cannot claim to start at
       // its first Object.
       if (!this.#forward) {
+        this.#markGroupSeen(obj.location.group)
+        return
+      }
+
+      // Filtered out: marked seen, so a stream opened for this group later does not
+      // claim its first Object.
+      const subgroupId = this.#subgroupIds.of(obj)
+      if (!this.#filter.matches(obj, subgroupId)) {
         this.#markGroupSeen(obj.location.group)
         return
       }
@@ -234,17 +263,12 @@ export class PublishPublication {
             })
 
             const firstObject = this.#highestGroupSeen === undefined || obj.location.group > this.#highestGroupSeen
-            const headerType = obj.getSubgroupHeaderType(true, false, firstObject)
-
-            let subgroupId: bigint | undefined
-            if (SubgroupHeaderType.hasExplicitSubgroupId(headerType)) subgroupId = obj.subgroupId!
-
-            const header = new SubgroupHeader(
-              headerType,
+            const header = subgroupHeaderFor(
+              obj,
+              subgroupId ?? obj.location.object,
               this.#trackAlias,
-              obj.location.group,
-              subgroupId,
               this.#publisherPriority,
+              firstObject,
             )
 
             const sendStream = await SendStream.new(writeStream, header)
@@ -299,7 +323,7 @@ export class PublishPublication {
 
 if (import.meta.vitest) {
   const { describe, test, expect, vi } = import.meta.vitest
-  const { FullTrackName, Forward, ObjectForwardingPreference } = await import('@/model')
+  const { FullTrackName, Forward, ObjectForwardingPreference, SubgroupHeaderType } = await import('@/model')
   const { RequestUpdate } = await import('@/model/control')
   const { LiveTrackSource } = await import('../track/content_source')
   const { SubgroupHeader: Header } = await import('@/model/data/subgroup_header')

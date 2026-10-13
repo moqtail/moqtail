@@ -39,6 +39,8 @@ pub enum RequestErrorCode {
   InvalidSwitch = 0x32,
   UnsupportedExtension = 0x33,
   Redirect = 0x34,
+  ConflictingFilters = 0x35,
+  InvalidFilter = 0x36,
 }
 
 impl TryFrom<u64> for RequestErrorCode {
@@ -63,6 +65,8 @@ impl TryFrom<u64> for RequestErrorCode {
       0x32 => Ok(RequestErrorCode::InvalidSwitch),
       0x33 => Ok(RequestErrorCode::UnsupportedExtension),
       0x34 => Ok(RequestErrorCode::Redirect),
+      0x35 => Ok(RequestErrorCode::ConflictingFilters),
+      0x36 => Ok(RequestErrorCode::InvalidFilter),
       _ => Err(ParseError::InvalidType {
         context: "RequestErrorCode::try_from(u64)",
         details: format!("Invalid type, got {value}"),

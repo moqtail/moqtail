@@ -362,6 +362,18 @@ fn takeover_group(resume_group: u64, covered_to: u64, resume_gap: u64) -> u64 {
   }
 }
 
+/// The header for a downstream stream that opens after the subgroup's first object
+/// has gone by, from the header that arrived with that object. Upstream set its bits
+/// for the object it came with, which this stream does not start with.
+fn for_mid_subgroup_stream(header_info: HeaderInfo) -> HeaderInfo {
+  match header_info {
+    HeaderInfo::Subgroup { header } => HeaderInfo::Subgroup {
+      header: header.for_mid_subgroup_stream(),
+    },
+    other => other,
+  }
+}
+
 /// The Location Filter in `params`, or no filter when it carries none.
 pub(crate) fn location_filter_of(params: &[MessageParameter]) -> LocationFilter {
   params
@@ -717,7 +729,13 @@ impl Subscription {
           "update_subscription | forward became true, opening pending stream {} for subscriber={} relay_track_id={}",
           pending_stream_id, self.client_connection_id, self.relay_track_id
         );
-        if self.handle_header(pending_header_info).await.is_ok() {
+        // The cached header came with an object that was not forwarded, so this
+        // stream starts after the subgroup's first object.
+        if self
+          .handle_header(for_mid_subgroup_stream(pending_header_info))
+          .await
+          .is_ok()
+        {
           self
             .send_stream_last_object_ids
             .write()
@@ -1427,7 +1445,7 @@ impl Subscription {
                   self.client_connection_id, self.relay_track_id, stream_id
                 );
                 self
-                  .handle_header(h)
+                  .handle_header(for_mid_subgroup_stream(h))
                   .await
                   .ok()
                   .map(|(_, send_stream)| send_stream)
@@ -1881,6 +1899,29 @@ impl Subscription {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use moqtail::model::data::subgroup_header::SubgroupHeader;
+
+  #[test]
+  fn a_stream_opened_mid_subgroup_states_the_subgroup_id_and_drops_first_object() {
+    // What upstream sent with object 5: ID taken from that object, FIRST_OBJECT set.
+    let mut upstream = SubgroupHeader::new_first_object_id(1, 9, Some(7), false, false, true);
+    upstream.subgroup_id = Some(5);
+
+    let HeaderInfo::Subgroup { header } =
+      for_mid_subgroup_stream(HeaderInfo::Subgroup { header: upstream })
+    else {
+      panic!("a subgroup header stays a subgroup header");
+    };
+    assert!(!header.header_type.is_first_object());
+    assert!(header.header_type.has_explicit_subgroup_id());
+
+    // The downstream reader sees subgroup 5 although its first object is, say, 8.
+    let mut buf = header.serialize(None).unwrap();
+    assert_eq!(
+      SubgroupHeader::deserialize(&mut buf).unwrap().subgroup_id,
+      Some(5)
+    );
+  }
 
   #[test]
   fn next_object_starts_after_the_largest_object() {

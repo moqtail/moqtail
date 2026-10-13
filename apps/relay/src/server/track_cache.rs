@@ -161,27 +161,19 @@ impl TrackCache {
   pub async fn add_object(&self, object: FetchObjectPayload) {
     let cache_key = CacheKey::new(self.relay_track_id, object.group_id);
 
-    // Check if group already exists in cache
-    if let Some(existing_objects) = self.cache.get(&cache_key).await {
-      // Add object to existing group
-      let mut objects = existing_objects.write().await;
-      objects.push(object.clone());
-      trace!(
-        "track_cache::add_object | added object to existing group | track: {} group: {} object_id: {} total_objects: {}",
-        self.relay_track_id,
-        object.group_id,
-        object.object_id,
-        objects.len()
-      );
-    } else {
-      // Create new group with this object
-      let new_group_objects = Arc::new(RwLock::new(vec![object.clone()]));
-      self.cache.insert(cache_key, new_group_objects).await;
-      trace!(
-        "track_cache::add_object | created new group | track: {} group: {} object_id: {}",
-        self.relay_track_id, object.group_id, object.object_id
-      );
-    }
+    let group_objects = self
+      .cache
+      .get_with(cache_key, async { Arc::new(RwLock::new(Vec::new())) })
+      .await;
+
+    let mut objects = group_objects.write().await;
+    objects.push(object);
+    trace!(
+      "track_cache::add_object | added object to group | track: {} group: {} total_objects: {}",
+      self.relay_track_id,
+      cache_key.group_id,
+      objects.len()
+    );
   }
 
   /// Get cache statistics (for monitoring/debugging)
@@ -208,5 +200,59 @@ impl TrackCache {
   pub async fn contains_group(&self, group_id: u64) -> bool {
     let cache_key = CacheKey::new(self.relay_track_id, group_id);
     self.cache.contains_key(&cache_key)
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::server::config::Cli;
+  use bytes::Bytes;
+  use clap::Parser;
+  use moqtail::model::data::constant::ObjectForwardingPreference;
+  use tokio::sync::Barrier;
+
+  fn object(group_id: u64, subgroup_id: u64) -> FetchObjectPayload {
+    FetchObjectPayload {
+      group_id,
+      subgroup_id,
+      object_id: subgroup_id,
+      publisher_priority: 0,
+      forwarding_preference: ObjectForwardingPreference::Subgroup,
+      properties: None,
+      payload: Bytes::from_static(b"x"),
+    }
+  }
+
+  const SUBGROUPS: u64 = 8;
+
+  #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+  async fn first_objects_of_concurrent_subgroups_all_land_in_the_group() {
+    let config = AppConfig::from_cli(Cli::parse_from(["relay"]));
+    let cache = TrackCache::new(1, 10_000, &config);
+
+    for group_id in 0..1000 {
+      let barrier = Arc::new(Barrier::new(SUBGROUPS as usize));
+      let tasks: Vec<_> = (0..SUBGROUPS)
+        .map(|subgroup_id| {
+          let cache = cache.clone();
+          let barrier = barrier.clone();
+          tokio::spawn(async move {
+            barrier.wait().await;
+            cache.add_object(object(group_id, subgroup_id)).await;
+          })
+        })
+        .collect();
+      for task in tasks {
+        task.await.unwrap();
+      }
+
+      let group = cache.get_group(group_id).await.unwrap();
+      assert_eq!(
+        group.read().await.len(),
+        SUBGROUPS as usize,
+        "group {group_id} lost an object"
+      );
+    }
   }
 }

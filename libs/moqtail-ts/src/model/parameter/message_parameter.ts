@@ -369,11 +369,6 @@ export function deserializeMessageParameterKvps(buf: BaseByteBuffer, count: numb
   return readMessageParameterKvps(buf, () => read++ < n)
 }
 
-/** Reads delta-encoded message-parameter KVPs until `buf` is exhausted. */
-export function deserializeMessageParameterKvpsUntilEmpty(buf: BaseByteBuffer): KeyValuePair[] {
-  return readMessageParameterKvps(buf, () => buf.remaining > 0)
-}
-
 function readMessageParameterKvps(buf: BaseByteBuffer, more: () => boolean): KeyValuePair[] {
   const items: KeyValuePair[] = []
   let prevType = 0n
@@ -577,8 +572,9 @@ if (import.meta.vitest) {
 
     test('may appear inside FILL_PARAMETERS', () => {
       const params = [new FillParameters([new LocationFilter(LocationFilterType.RelativeStart, 1n)])]
-      // FILL_PARAMETERS 0x23, length 3, then LOCATION_FILTER 0x21 type 1 StartGroup 1.
-      const wire = new Uint8Array([0x23, 0x03, 0x21, 0x01, 0x01])
+      // FILL_PARAMETERS 0x23, length 4, one parameter, then LOCATION_FILTER 0x21
+      // type 1 StartGroup 1.
+      const wire = new Uint8Array([0x23, 0x04, 0x01, 0x21, 0x01, 0x01])
       expect(encodeList(params)).toEqual(wire)
       expect(decodeList(wire, 1)).toEqual(params)
     })

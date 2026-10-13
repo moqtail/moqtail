@@ -473,9 +473,10 @@ impl MessageParameter {
           }
           MessageParameterType::FillParameters => {
             let mut payload = value.clone();
+            let count = payload.get_vi()?;
             let mut parameters = Vec::new();
             let mut prev_type = 0u64;
-            while payload.has_remaining() {
+            for _ in 0..count {
               let delta_type = payload.get_vi()?;
               let type_value =
                 prev_type
@@ -497,6 +498,15 @@ impl MessageParameter {
               }
               let kvp = read_message_parameter_value(&mut payload, type_value)?;
               parameters.push(MessageParameter::deserialize(&kvp)?);
+            }
+            if payload.has_remaining() {
+              return Err(ParseError::ProtocolViolation {
+                context: "MessageParameter::deserialize(FillParameters)",
+                details: format!(
+                  "{} bytes left after {count} parameters",
+                  payload.remaining()
+                ),
+              });
             }
             Ok(Self::FillParameters { parameters })
           }
@@ -700,10 +710,10 @@ impl TryInto<KeyValuePair> for MessageParameter {
             });
           }
         }
-        KeyValuePair::try_new_bytes(
-          MessageParameterType::FillParameters as u64,
-          serialize_message_parameters(&parameters)?,
-        )
+        let mut value = BytesMut::new();
+        value.put_vi(parameters.len() as u64)?;
+        value.extend_from_slice(&serialize_message_parameters(&parameters)?);
+        KeyValuePair::try_new_bytes(MessageParameterType::FillParameters as u64, value.freeze())
       }
       Self::SwitchFrom {
         request_id,
@@ -1323,8 +1333,9 @@ mod tests {
     let params = vec![MessageParameter::new_fill_parameters(vec![
       MessageParameter::new_location_filter(LocationFilter::RelativeStart { start_group: 1 }),
     ])];
-    // FILL_PARAMETERS 0x23, length 3, then LOCATION_FILTER 0x21 type 1 StartGroup 1.
-    let wire: &[u8] = &[0x23, 0x03, 0x21, 0x01, 0x01];
+    // FILL_PARAMETERS 0x23, length 4, one parameter, then LOCATION_FILTER 0x21
+    // type 1 StartGroup 1.
+    let wire: &[u8] = &[0x23, 0x04, 0x01, 0x21, 0x01, 0x01];
     assert_eq!(
       serialize_message_parameters(&params).unwrap().as_ref(),
       wire
@@ -1348,7 +1359,7 @@ mod tests {
 
   #[test]
   fn test_fill_parameters_wire_format() {
-    let wire = Bytes::from_static(&[0x23, 0x03, 0x0A, 0x8B, 0xB8]);
+    let wire = Bytes::from_static(&[0x23, 0x04, 0x01, 0x0A, 0x8B, 0xB8]);
     let params = vec![MessageParameter::new_fill_parameters(vec![
       MessageParameter::new_fill_timeout(3000),
     ])];
@@ -1376,12 +1387,39 @@ mod tests {
     // And the same on the way in, where a peer sent it anyway.
     let inner = {
       let mut buf = BytesMut::new();
+      buf.put_vi(1).unwrap();
       buf.put_vi(MessageParameterType::Forward as u64).unwrap();
       buf.put_u8(1);
       buf.freeze()
     };
     let kvp =
       KeyValuePair::try_new_bytes(MessageParameterType::FillParameters as u64, inner).unwrap();
+    assert!(matches!(
+      MessageParameter::deserialize(&kvp),
+      Err(ParseError::ProtocolViolation { .. })
+    ));
+  }
+
+  #[test]
+  fn test_fill_parameters_without_a_count_is_rejected() {
+    // A parameter list with no count: the LOCATION_FILTER's type, 0x21, is read
+    // as a count of 33 parameters, which the value cannot hold.
+    let kvp = KeyValuePair::try_new_bytes(
+      MessageParameterType::FillParameters as u64,
+      Bytes::from_static(&[0x21, 0x01, 0x01]),
+    )
+    .unwrap();
+    assert!(MessageParameter::deserialize(&kvp).is_err());
+  }
+
+  #[test]
+  fn test_fill_parameters_rejects_bytes_past_its_count() {
+    // One FILL_TIMEOUT counted, a second one trailing.
+    let kvp = KeyValuePair::try_new_bytes(
+      MessageParameterType::FillParameters as u64,
+      Bytes::from_static(&[0x01, 0x0A, 0x01, 0x00, 0x01]),
+    )
+    .unwrap();
     assert!(matches!(
       MessageParameter::deserialize(&kvp),
       Err(ParseError::ProtocolViolation { .. })

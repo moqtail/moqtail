@@ -20,11 +20,7 @@ import { ProtocolViolationError } from '../../error/error'
 import { MessageParameterType } from '../constant'
 import { Parameter } from '../parameter'
 import type { MessageParameter } from '../message_parameter'
-import {
-  MessageParameters,
-  deserializeMessageParameterKvpsUntilEmpty,
-  serializeMessageParameterKvps,
-} from '../message_parameter'
+import { MessageParameters, deserializeMessageParameterKvps, serializeMessageParameterKvps } from '../message_parameter'
 
 /** The only parameters that may override anything for the fill fetch stream. */
 const ALLOWED: readonly MessageParameterType[] = [
@@ -59,7 +55,11 @@ export class FillParameters implements Parameter {
         )
       }
     }
-    return KeyValuePair.tryNewBytes(FillParameters.TYPE, serializeMessageParameterKvps(pairs).toUint8Array())
+    // The value is laid out like a message's parameters: a count, then the parameters.
+    const value = new ByteBuffer()
+    value.putVI(pairs.length)
+    value.putBytes(serializeMessageParameterKvps(pairs).toUint8Array())
+    return KeyValuePair.tryNewBytes(FillParameters.TYPE, value.toUint8Array())
   }
 
   static fromKeyValuePair(pair: KeyValuePair): FillParameters | undefined {
@@ -67,7 +67,15 @@ export class FillParameters implements Parameter {
 
     const buf = new ByteBuffer()
     buf.putBytes(pair.value)
-    const pairs = deserializeMessageParameterKvpsUntilEmpty(buf.freeze())
+    const frozen = buf.freeze()
+    const count = frozen.getVI()
+    const pairs = deserializeMessageParameterKvps(frozen, count)
+    if (frozen.remaining > 0) {
+      throw new ProtocolViolationError(
+        'FillParameters.fromKeyValuePair',
+        `${frozen.remaining} bytes left after ${count} parameters`,
+      )
+    }
     for (const inner of pairs) {
       if (!ALLOWED.includes(Number(inner.typeValue))) {
         throw new ProtocolViolationError(
@@ -99,12 +107,18 @@ if (import.meta.vitest) {
       expect(parsed).toEqual(orig)
     })
 
-    test('nests a delta-encoded parameter block in its value', async () => {
+    test('nests a counted, delta-encoded parameter block in its value', async () => {
       const { serializeMessageParameterKvps } = await import('../message_parameter')
       const params = [new FillParameters([new FillTimeout(3000n)])]
       const wire = serializeMessageParameterKvps(params.map((p) => p.toKeyValuePair())).toUint8Array()
 
-      expect(wire).toEqual(new Uint8Array([0x23, 0x03, 0x0a, 0x8b, 0xb8]))
+      expect(wire).toEqual(new Uint8Array([0x23, 0x04, 0x01, 0x0a, 0x8b, 0xb8]))
+    })
+
+    test('rejects bytes past its count', () => {
+      // One FILL_TIMEOUT counted, a second one trailing.
+      const pair = KeyValuePair.tryNewBytes(FillParameters.TYPE, new Uint8Array([0x01, 0x0a, 0x01, 0x00, 0x01]))
+      expect(() => FillParameters.fromKeyValuePair(pair)).toThrow(ProtocolViolationError)
     })
 
     test('rejects a parameter it cannot override', () => {

@@ -608,7 +608,6 @@ async fn handle_subscribe_message(
 
   let original_request_id = sub.request_id;
 
-  // Atomic get-or-create: first subscriber creates, subsequent ones find existing
   let (track_arc, is_creator) = context
     .track_manager
     .get_or_create_track(&full_track_name, |relay_track_id| {

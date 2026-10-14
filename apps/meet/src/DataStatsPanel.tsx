@@ -118,7 +118,7 @@ function Stat({ label, value, warn }: { label: string; value: string | number; w
 function TrackCard({ track }: { track: TrackStats }) {
   const [isExpanded, setIsExpanded] = useState(true);
   return (
-    <div className="rounded-lg border border-white/6 bg-neutral-900/60">
+    <div className="shrink-0 rounded-lg border border-white/6 bg-neutral-900/60">
       <button
         onClick={() => setIsExpanded(open => !open)}
         aria-expanded={isExpanded}
@@ -177,7 +177,7 @@ function Section({ title, tracks }: { title: 'Incoming' | 'Outgoing'; tracks: Tr
   );
   const Icon = title === 'Incoming' ? ArrowDownLeft : ArrowUpRight;
   return (
-    <section className="flex flex-col gap-2">
+    <section className="flex shrink-0 flex-col gap-2">
       <div className="flex items-center gap-1.5 font-sans text-xs">
         <Icon
           className={`h-3.5 w-3.5 ${title === 'Incoming' ? 'text-emerald-400' : 'text-blue-400'}`}
@@ -210,7 +210,7 @@ export function DataStatsPanel({ stats, isActive }: DataStatsPanelProps) {
   }, [stats, isActive]);
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-3 font-mono text-[11px]">
+    <div className="pane-scroll flex min-h-0 flex-1 flex-col gap-4 p-3 font-mono text-[11px]">
       <Section title="Incoming" tracks={tracks.filter(t => t.direction === 'in')} />
       <Section title="Outgoing" tracks={tracks.filter(t => t.direction === 'out')} />
     </div>

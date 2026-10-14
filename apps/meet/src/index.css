@@ -21,3 +21,28 @@ body {
   height: 100%;
   width: 100%;
 }
+
+/* A scrollbar that stays visible, which macOS overlay scrollbars do not, styled for the
+   dark panes. Chrome and Safari use the ::-webkit-scrollbar rules; Firefox the standard ones. */
+.pane-scroll {
+  overflow-y: scroll;
+}
+.pane-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+.pane-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.pane-scroll::-webkit-scrollbar-thumb {
+  border-radius: 4px;
+  background: rgb(255 255 255 / 0.15);
+}
+.pane-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgb(255 255 255 / 0.3);
+}
+@supports not selector(::-webkit-scrollbar) {
+  .pane-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(255 255 255 / 0.15) transparent;
+  }
+}

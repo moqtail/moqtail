@@ -15,7 +15,8 @@
  */
 
 import { ControlRecvStream, ControlSendStream, ControlStream } from './control_stream'
-import { RequestStream } from './request_stream'
+import { RequestStream, RequestStreamHooks } from './request_stream'
+import { DataEventObserver, DataStreamObserver } from './data_event'
 import {
   PublishNamespace,
   Namespace,
@@ -328,6 +329,14 @@ export class MOQtailClient {
   onDataSent?: (data: SubgroupObject | SubgroupHeader | FetchObject | FetchHeader) => void
 
   /**
+   * Invoked for every data stream this client opens or accepts: once for its header, once
+   * per object (identity and payload length only), and once when the stream ends.
+   * Use for counters and diagnostics.
+   * Informational event.
+   */
+  onDataEvent?: DataEventObserver
+
+  /**
    * General-purpose error callback for surfaced exceptions not thrown to caller synchronously.
    * Use to log or display errors.
    * Error handler.
@@ -590,6 +599,7 @@ export class MOQtailClient {
       if (callbacks?.onSessionTerminated) client.onSessionTerminated = callbacks.onSessionTerminated
       if (callbacks?.onDatagramReceived) client.onDatagramReceived = callbacks.onDatagramReceived
       if (callbacks?.onDatagramSent) client.onDatagramSent = callbacks.onDatagramSent
+      if (callbacks?.onDataEvent) client.onDataEvent = callbacks.onDataEvent
 
       if (dataStreamTimeoutMs) client.dataStreamTimeoutMs = dataStreamTimeoutMs
       if (controlStreamTimeoutMs) client.controlStreamTimeoutMs = controlStreamTimeoutMs
@@ -1904,7 +1914,7 @@ export class MOQtailClient {
       // No #openRequestStream here: NAMESPACE / NAMESPACE_DONE carry only a suffix, so
       // they are only meaningful next to the prefix that opened this stream. The generic
       // pump has no prefix to hand them, hence the bespoke drain below.
-      const requestStream = await RequestStream.open(this.webTransport, msg)
+      const requestStream = await RequestStream.open(this.webTransport, msg, this.#requestStreamHooks)
       this.#requestStreams.set(msg.requestId, requestStream)
 
       logger.log(
@@ -1958,7 +1968,7 @@ export class MOQtailClient {
     assertWithinFilterRangeLimit(parameters ?? [], this.peerMaxFilterRanges, 'MOQtailClient.subscribeTracks')
     try {
       const msg = new SubscribeTracks(this.#nextClientRequestId, trackNamespacePrefix, parameters ?? [])
-      const requestStream = await RequestStream.open(this.webTransport, msg)
+      const requestStream = await RequestStream.open(this.webTransport, msg, this.#requestStreamHooks)
       this.#requestStreams.set(msg.requestId, requestStream)
 
       const response = await requestStream.next()
@@ -2084,8 +2094,30 @@ export class MOQtailClient {
    *
    * @param requestId - The requestId carried by `first`; the key the stream is filed under.
    */
+  /**
+   * Hands a data stream {@link MOQtailClient.onDataEvent}, read at call time so an observer assigned
+   * after connecting still sees streams that are already open.
+   *
+   * @internal
+   */
+  dataStreamObserver(fullTrackNameOf?: DataStreamObserver['fullTrackNameOf']): DataStreamObserver {
+    return {
+      onDataEvent: (event) => this.onDataEvent?.(event),
+      ...(fullTrackNameOf && { fullTrackNameOf }),
+    }
+  }
+
+  /**
+   * Forwards request-stream traffic to {@link onMessageSent} and {@link onMessageReceived},
+   * read at call time so callbacks assigned after connecting still see it.
+   */
+  readonly #requestStreamHooks: RequestStreamHooks = {
+    onMessageSent: (msg) => this.onMessageSent?.(msg),
+    onMessageReceived: (msg) => this.onMessageReceived?.(msg),
+  }
+
   async #openRequestStream(requestId: bigint, first: ControlMessage): Promise<RequestStream> {
-    const requestStream = await RequestStream.open(this.webTransport, first)
+    const requestStream = await RequestStream.open(this.webTransport, first, this.#requestStreamHooks)
     this.#requestStreams.set(requestId, requestStream)
     void this.#pumpRequestStream(requestId, requestStream)
     return requestStream
@@ -2280,7 +2312,7 @@ export class MOQtailClient {
       while (true) {
         const { value: biStream, done } = await reader.read()
         if (done) break
-        void this.#dispatchIncomingRequestStream(new RequestStream(biStream))
+        void this.#dispatchIncomingRequestStream(new RequestStream(biStream, this.#requestStreamHooks))
       }
     })()
   }
@@ -2347,6 +2379,9 @@ export class MOQtailClient {
           if (!(request instanceof FetchRequest)) return GroupOrder.Original
           return MessageParameter.groupOrderOf(request.message.parameters)
         },
+        this.dataStreamObserver((header) =>
+          header instanceof SubgroupHeader ? this.aliasFullTrackNameMap.get(header.trackAlias) : undefined,
+        ),
       )
       const header = recvStream.header
       const reader = recvStream.stream.getReader()

@@ -308,7 +308,13 @@ export class SubscribePublication {
               this.#publisherPriority,
               firstObject,
             )
-            const sendStream = await SendStream.new(writeStream, header)
+            const sendStream = await SendStream.new(
+              writeStream,
+              header,
+              this.client.onDataSent,
+              undefined,
+              this.client.dataStreamObserver(() => this.track.fullTrackName),
+            )
             this.#streams.set(obj.location.group, sendStream)
             this.#streamsOpened++
             this.#markGroupSeen(obj.location.group)

@@ -417,6 +417,49 @@ if (result instanceof RequestError) {
 }
 ```
 
+#### Observing Control Messages
+
+`onMessageSent` and `onMessageReceived` report every control message the client sends or receives, which is useful for logging, debugging, or building a message inspector. They cover both the control stream (SETUP, GOAWAY) and the bidirectional request streams that carry SUBSCRIBE, PUBLISH, FETCH, the namespace messages, and their replies.
+
+Pass them when connecting so the SETUP exchange is reported as well:
+
+```typescript
+const client = await MOQtailClient.new({
+  url: 'moqt://relay.example.com:4433',
+  callbacks: {
+    onMessageSent: (msg) => console.log('→', ControlMessageType[msg.getType()], msg),
+    onMessageReceived: (msg) => console.log('←', ControlMessageType[msg.getType()], msg),
+  },
+})
+```
+
+The callbacks can also be assigned to `client.onMessageSent` and `client.onMessageReceived` after connecting. Request streams pick up the change straight away, but the control stream keeps the callbacks it was given at connect time.
+
+A message is reported once it has been written to its stream, or once it has been fully decoded on arrival.
+
+#### Observing Data Streams
+
+`onDataEvent` reports every data stream the client opens (`direction: 'out'`) or accepts (`direction: 'in'`) as small records, which is enough to count streams, groups, subgroups, objects and bytes without touching payloads:
+
+- `header`: once per stream when it opens. Subgroup streams carry the track alias and group and subgroup IDs; fetch streams carry the request ID. Both include the track name when the client knows it.
+- `object`: once per object, with its group, subgroup and object IDs, its payload length, its status if it has one, and its LOC Timestamp property (`locTimestamp`) if it carries one.
+- `end`: once per stream, with `reason` set to `'fin'`, `'reset'` (plus `resetCode`) or `'error'`.
+
+Every record carries a `streamId`, so objects can be tied back to the header of the stream they arrived on, and `at`, the local time it was written or read as `performance.now()`. Differences in `at` give interarrival times and jitter; comparing `performance.timeOrigin + at` with a sender's `locTimestamp` gives latency, provided both ends agree on the timestamp's unit and their clocks are in sync.
+
+```typescript
+const client = await MOQtailClient.new({
+  url: 'moqt://relay.example.com:4433',
+  callbacks: {
+    onDataEvent: (event) => {
+      if (event.kind === 'object') bytesByDirection[event.direction] += event.payloadLength
+    },
+  },
+})
+```
+
+The callback runs for every object, so keep it cheap: update counters there and render them on a timer.
+
 ## Utilities
 
 The MOQtail library provides several utility classes to help with common streaming scenarios:

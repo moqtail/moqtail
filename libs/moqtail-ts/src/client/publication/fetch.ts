@@ -24,10 +24,9 @@ import {
   MessageParameter,
   MoqtObject,
 } from '@/model'
-import { FetchObjectContext } from '@/model/data/fetch_object'
 import { CombinedFilter } from '@/model/parameter/message/combined_filter'
 import { StreamResetCode } from '@/model/error/stream_reset'
-import { streamResetReason } from '../util/stream_reset'
+import { SendStream } from '../data_stream'
 import { MOQtailClient } from '../client'
 import { Track } from '../track/track'
 import { SubscribePublication } from './subscribe'
@@ -47,8 +46,7 @@ export class FetchPublication {
   readonly #client: MOQtailClient
   /** What the FETCH's Range Filters let through. */
   readonly #filter: CombinedFilter
-  #stream: WritableStream | undefined
-  #writer: WritableStreamDefaultWriter | undefined
+  #sendStream: SendStream | undefined
   #objects: MoqtObject[] | undefined
   #isCanceled = false
 
@@ -78,7 +76,7 @@ export class FetchPublication {
   async resetDataStream(code: StreamResetCode): Promise<void> {
     logger.debug('publication/fetch', `reset data stream requestId=${this.#requestId} code=${code}`)
     this.#isCanceled = true
-    await this.#writer?.abort(streamResetReason(code)).catch(() => {})
+    await this.#sendStream?.reset(code)
   }
 
   async publish(): Promise<void> {
@@ -94,34 +92,35 @@ export class FetchPublication {
       const objects = await this.#track.trackSource.past.getRange(this.#startLocation)
       this.#objects = objects.filter((obj) => obj.location.compare(this.#endLocation) <= 0)
       // TODO: Calculate and use stream priority from subscriber priority from the msg + publisher priority from the track
-      this.#stream = await this.#client.webTransport.createUnidirectionalStream()
-      this.#writer = this.#stream.getWriter()
+      const writeStream = await this.#client.webTransport.createUnidirectionalStream()
       const header = new FetchHeader(FetchHeaderType.Type0x05, this.#requestId)
-      await this.#writer.write(header)
-      // Signs the Group ID deltas below. Note the objects are not yet reordered to match
-      // (see the TODO above), so a Descending request is rejected by the encoder.
-      const groupOrder = MessageParameter.groupOrderOf(this.#msg.parameters)
-      let fetchPrevCtx: FetchObjectContext | undefined = undefined
+      // The Group Order signs the Group ID deltas SendStream writes. Note the objects are
+      // not yet reordered to match (see the TODO above), so a Descending request is
+      // rejected by the encoder.
+      this.#sendStream = await SendStream.new(
+        writeStream,
+        header,
+        this.#client.onDataSent,
+        MessageParameter.groupOrderOf(this.#msg.parameters),
+        this.#client.dataStreamObserver(() => this.#track.fullTrackName),
+      )
       const subgroupIds = new SubgroupIds()
       let sent = 0
       for (const obj of this.#objects) {
         subgroupIds.note(obj)
-        // A filtered Object is skipped without moving the delta context on: the next
-        // one written is encoded against the last one written.
+        // A filtered Object is skipped without reaching SendStream, so the next one
+        // written is delta-encoded against the last one written.
         if (!this.#filter.matches(obj, subgroupIds.of(obj))) continue
         if (this.#isCanceled) {
           logger.debug('publication/fetch', `aborted during publish requestId=${this.#requestId}`)
-          await this.#writer.abort(streamResetReason(StreamResetCode.Cancelled))
+          await this.#sendStream.reset(StreamResetCode.Cancelled)
           this.#client.publications.delete(this.#requestId)
           return
         }
-        const fetchObj = obj.tryIntoFetchObject()
-        await this.#writer.write(fetchObj.serialize(fetchPrevCtx, groupOrder).toUint8Array())
-        const newCtx = fetchObj.toContext()
-        if (newCtx) fetchPrevCtx = newCtx
+        await this.#sendStream.write(obj.tryIntoFetchObject())
         sent++
       }
-      await this.#writer.close()
+      await this.#sendStream.close()
       logger.debug(
         'publication/fetch',
         `published requestId=${this.#requestId} objects=${sent} of ${this.#objects.length}`,
@@ -130,7 +129,7 @@ export class FetchPublication {
     } catch (error: unknown) {
       // A write that fails because the stream was reset on purpose is not a failure.
       if (this.#isCanceled) return
-      await this.#writer?.abort(streamResetReason(StreamResetCode.InternalError))
+      await this.#sendStream?.reset(StreamResetCode.InternalError)
       const message = error instanceof Error ? error.message : String(error)
       logger.error('publication/fetch', `publish failed requestId=${this.#requestId}`, message)
       throw new InternalError('FetchPublication.publish', `Failed to publish: ${message}`)

@@ -15,7 +15,7 @@
  */
 
 import { useRef, useState } from 'react';
-import { Mic, MicOff, PhoneOff, Settings, Video, VideoOff } from 'lucide-react';
+import { Mic, MicOff, PhoneOff, ScrollText, Settings, Video, VideoOff } from 'lucide-react';
 import { MOQtailClient } from 'moqtail/client';
 import { RequestError } from 'moqtail/model';
 import {
@@ -27,6 +27,10 @@ import {
 } from 'moqtail/model';
 import { createMOQtailClient } from './moq/client';
 import { SettingsPane } from './SettingsPane';
+import { MessageLogPane } from './MessageLogPane';
+import { LogEntry, MessageDirection, toLogEntry, toSignalEntry } from './moq/describe';
+import { ControlMessage, Publish } from 'moqtail/model';
+import { DataStats } from './moq/dataStats';
 import { setupSignalling } from './moq/signalling';
 import {
   announceNamespaces,
@@ -48,6 +52,8 @@ const RELAY_SCHEME = 'moqt://';
 const SCHEME_RE = /^[a-z][a-z0-9+.-]*:\/\//i;
 
 const RELAY_STORAGE_KEY = 'meet.relay';
+/** Oldest message-log entries are dropped past this many. */
+const MESSAGE_LOG_LIMIT = 2000;
 
 /** The relay from appsettings.js, without its scheme. */
 function getDefaultRelay(): string {
@@ -120,6 +126,10 @@ export default function App() {
   const [isPublishing, setIsPublishing] = useState(false);
   const [isReceiving, setIsReceiving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [messageLog, setMessageLog] = useState<LogEntry[]>([]);
+  const [isMessageLogOpen, setIsMessageLogOpen] = useState(false);
+  // Mutated on every data event and read by the Data tab on a timer, so it never re-renders App.
+  const [dataStats] = useState(() => new DataStats());
 
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -161,6 +171,19 @@ export default function App() {
     }
   }
 
+  function appendToMessageLog(entry: LogEntry) {
+    setMessageLog(prev =>
+      prev.length < MESSAGE_LOG_LIMIT ? [...prev, entry] : [...prev.slice(1), entry],
+    );
+  }
+
+  function logControlMessage(msg: ControlMessage, direction: MessageDirection) {
+    appendToMessageLog(toLogEntry(msg, direction));
+    // A PUBLISH names the alias its data streams will carry, in the direction it went.
+    if (msg instanceof Publish)
+      dataStats.nameAlias(direction === 'sent' ? 'out' : 'in', msg.trackAlias, msg.fullTrackName);
+  }
+
   function addPeer(peerUsername: string) {
     setPeers(prev => (prev.includes(peerUsername) ? prev : [...prev, peerUsername]));
   }
@@ -192,10 +215,16 @@ export default function App() {
     peerCanvasesRef.current.clear();
     peerWorkersRef.current.clear();
     pendingStreamsRef.current.clear();
+    setMessageLog([]);
+    dataStats.reset();
     setScreen('connecting');
 
     try {
-      const client = await createMOQtailClient(relayUrl);
+      const client = await createMOQtailClient(relayUrl, {
+        onMessageSent: msg => logControlMessage(msg, 'sent'),
+        onMessageReceived: msg => logControlMessage(msg, 'received'),
+        onDataEvent: event => dataStats.add(event),
+      });
       moqClientRef.current = client;
 
       // Route incoming publish streams to the correct peer's decode worker
@@ -264,6 +293,10 @@ export default function App() {
           setError('Username already taken. Please choose a different one.');
           setScreen('entrance');
         },
+        onSignal: (text, direction, group) =>
+          appendToMessageLog(
+            toSignalEntry(text, direction, group, { username: trackUsername, token }),
+          ),
       });
 
       sendSignalRef.current = sendSignal;
@@ -603,6 +636,19 @@ export default function App() {
               Receiving
             </span>
           )}
+          <button
+            onClick={() => setIsMessageLogOpen(open => !open)}
+            aria-label="Messages"
+            aria-pressed={isMessageLogOpen}
+            title="Messages"
+            className={`rounded-md p-1.5 transition-colors ${
+              isMessageLogOpen
+                ? 'bg-white/10 text-neutral-100'
+                : 'text-neutral-400 hover:bg-white/5 hover:text-neutral-100'
+            }`}
+          >
+            <ScrollText className="h-4 w-4" />
+          </button>
           <a
             href={`https://github.com/${GITHUB_REPO}`}
             target="_blank"
@@ -634,60 +680,76 @@ export default function App() {
         </div>
       )}
 
-      {/* Videos — fixed 3×2 grid: 1 local + 5 peer slots */}
-      <div className="grid min-h-0 flex-1 grid-cols-3 gap-4 p-4">
-        {/* Local */}
-        <div className="flex min-w-0 flex-col gap-2 rounded-xl border border-white/6 bg-neutral-900/60 p-3">
-          <span className="text-center text-[11px] font-semibold tracking-widest text-neutral-500 uppercase select-none">
-            {displayUsername} (You)
-          </span>
-          <video
-            ref={localVideoRef}
-            autoPlay
-            playsInline
-            muted
-            className="w-full rounded-lg bg-black"
-            style={{ aspectRatio: '16/9' }}
-          />
+      <div className="flex min-h-0 flex-1">
+        {/* Videos — fixed 3×2 grid: 1 local + 5 peer slots */}
+        <div className="grid min-h-0 min-w-0 flex-1 grid-cols-3 gap-4 overflow-y-auto p-4">
+          {/* Local */}
+          <div className="flex min-w-0 flex-col gap-2 rounded-xl border border-white/6 bg-neutral-900/60 p-3">
+            <span className="text-center text-[11px] font-semibold tracking-widest text-neutral-500 uppercase select-none">
+              {displayUsername} (You)
+            </span>
+            <video
+              ref={localVideoRef}
+              autoPlay
+              playsInline
+              muted
+              className="w-full rounded-lg bg-black"
+              style={{ aspectRatio: '16/9' }}
+            />
+          </div>
+
+          {/* 5 peer slots */}
+          {peerSlots.map((peerUsername, i) => (
+            <div
+              key={peerUsername ?? `empty-${i}`}
+              className="flex min-w-0 flex-col gap-2 rounded-xl border border-white/6 bg-neutral-900/60 p-3"
+            >
+              {peerUsername ? (
+                <>
+                  <span className="text-center text-[11px] font-semibold tracking-widest text-neutral-500 uppercase select-none">
+                    {peerUsername}
+                  </span>
+                  <canvas
+                    ref={el => {
+                      if (!el || peerCanvasesRef.current.has(peerUsername)) return;
+                      peerCanvasesRef.current.set(peerUsername, el);
+                      prepareReceiverForCanvas({ current: el }).then(w => {
+                        if (!w) return;
+                        peerWorkersRef.current.set(peerUsername, w);
+                        // Drain any streams that arrived before the worker was ready
+                        pendingStreamsRef.current.get(peerUsername)?.forEach(fn => fn(w));
+                        pendingStreamsRef.current.delete(peerUsername);
+                      });
+                    }}
+                    className="w-full rounded-lg bg-black"
+                    style={{ aspectRatio: '16/9' }}
+                  />
+                </>
+              ) : (
+                <div
+                  className="flex flex-1 items-center justify-center rounded-lg border border-dashed border-white/10"
+                  style={{ aspectRatio: '16/9' }}
+                >
+                  <span className="text-[11px] text-neutral-700 select-none">Waiting…</span>
+                </div>
+              )}
+            </div>
+          ))}
         </div>
 
-        {/* 5 peer slots */}
-        {peerSlots.map((peerUsername, i) => (
-          <div
-            key={peerUsername ?? `empty-${i}`}
-            className="flex min-w-0 flex-col gap-2 rounded-xl border border-white/6 bg-neutral-900/60 p-3"
-          >
-            {peerUsername ? (
-              <>
-                <span className="text-center text-[11px] font-semibold tracking-widest text-neutral-500 uppercase select-none">
-                  {peerUsername}
-                </span>
-                <canvas
-                  ref={el => {
-                    if (!el || peerCanvasesRef.current.has(peerUsername)) return;
-                    peerCanvasesRef.current.set(peerUsername, el);
-                    prepareReceiverForCanvas({ current: el }).then(w => {
-                      if (!w) return;
-                      peerWorkersRef.current.set(peerUsername, w);
-                      // Drain any streams that arrived before the worker was ready
-                      pendingStreamsRef.current.get(peerUsername)?.forEach(fn => fn(w));
-                      pendingStreamsRef.current.delete(peerUsername);
-                    });
-                  }}
-                  className="w-full rounded-lg bg-black"
-                  style={{ aspectRatio: '16/9' }}
-                />
-              </>
-            ) : (
-              <div
-                className="flex flex-1 items-center justify-center rounded-lg border border-dashed border-white/10"
-                style={{ aspectRatio: '16/9' }}
-              >
-                <span className="text-[11px] text-neutral-700 select-none">Waiting…</span>
-              </div>
-            )}
-          </div>
-        ))}
+        <MessageLogPane
+          isOpen={isMessageLogOpen}
+
+          entries={messageLog}
+
+          dataStats={dataStats}
+
+          onResetData={() => dataStats.reset()}
+
+          onClear={() => setMessageLog([])}
+
+          onClose={() => setIsMessageLogOpen(false)}
+        />
       </div>
 
       {/* Controls */}

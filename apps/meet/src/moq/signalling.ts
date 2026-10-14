@@ -45,6 +45,8 @@ export type SignalCallbacks = {
   onPeerJoin: (peerUsername: string) => void;
   onOwnJoinWelcomed: (peerUsername: string) => void;
   onDuplicateUser: () => void;
+  /** Sees every signal this session sends or receives, its own echoes included. */
+  onSignal?: (text: string, direction: 'sent' | 'received', group: bigint) => void;
 };
 
 export async function setupSignalling(
@@ -87,6 +89,7 @@ export async function setupSignalling(
     const payload = new TextEncoder().encode(text);
 
     console.log('sendSignal', text, groupId);
+    callbacks.onSignal?.(text, 'sent', groupId);
 
     signalController.enqueue(
       MoqtObject.newWithPayload(
@@ -141,6 +144,7 @@ export async function setupSignalling(
           if (done || !value) break;
           if (!value.payload) continue;
           const text = new TextDecoder().decode(value.payload);
+          callbacks.onSignal?.(text, 'received', value.location.group);
           // Formats:
           //   join:          {sender}:{senderToken}:join
           //   welcome:       {sender}:{receiver}:{receiverToken}:welcome

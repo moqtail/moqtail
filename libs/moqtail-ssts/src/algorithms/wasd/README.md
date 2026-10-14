@@ -57,13 +57,19 @@ itself to the bottom rung on a healthy link.
 
 ## When it decides
 
-At every group boundary, as the others do — and also on the host's periodic
-sample of the group in progress. A single deep mid-group reading is ignored:
-the tail of a perfectly healthy group produces exactly one, because the next
-group's stream opens before the previous one has drained. Two in a row, at the
-downshift depth or above, step down one rung without waiting for the boundary.
+On every sample the host takes — the group boundary and the periodic sample of
+the group in progress alike. One depth, one persistence counter: a single deep
+reading is ignored, because the tail of a perfectly healthy group produces
+exactly one (the next group's stream opens before the previous one has
+drained), and two in a row at the downshift depth or above step down one rung
+wherever they land. The boundary has no monopoly on acting, and no veto.
 The streak re-arms when it fires, and the dip costs a full fresh clean streak
 before the climb resumes.
+
+Upshifts are the asymmetric half, and the relay's gate is why: they are
+evaluated only on the first sample of a new group — the moment the forward gate
+is waiting to record that group's track decision — so the tier never moves
+mid-group, and `current_index` never disagrees with what is on the wire.
 
 ## What a downshift does to the groups it overtook
 
@@ -91,8 +97,9 @@ out, not about whether one happens.
 
 ## Knobs
 
-`wasd.reads` (default 2): how many consecutive mid-group readings the monitor
-waits for. It is the only one, and it is the one worth moving, because it is a
+`wasd.reads` (default 2): how many consecutive congested readings — boundary
+or mid-group, one counter — the monitor waits for. It is the only one, and it
+is the one worth moving, because it is a
 statement about media pacing: on a 25 fps stream with 100 ms groups the default
 filters a normal group tail, and on media whose groups are seconds long the
 window it takes to see real congestion inside one is much longer. Setting it to
@@ -163,10 +170,14 @@ depth comes from a subscriber that is simply slow, or from a path that
 cannot carry even the bottom rung — there is nothing to stop the ladder,
 and the only thing that halts it is the bottom.
 
-**The mid-group monitor is a second decision path, and the two can argue.** A
-boundary reading and a mid-group reading of the same group are taken at different
-distances into it and can disagree about the tier. The state machine resolves that
-by preferring whichever came last, which is a policy rather than a truth.
+**A downshift can act mid-group; an upshift never does.** The asymmetry is
+deliberate and it belongs to the relay's gate, not to the algorithm's taste: a
+mid-group upshift would move the tier for a group whose member the gate has
+already recorded, so it could only ever take effect at the next group anyway.
+The state machine therefore evaluates upshifts only on the first sample of a
+new group, which keeps the tier in sync with the wire — at the price of a
+recovered path waiting, on average, half a group longer than it strictly has
+to.
 
 **One tier for the whole connection, still.** Every set the algorithm owns moves
 together, so a connection carrying a 4K ladder and an audio ladder degrades both

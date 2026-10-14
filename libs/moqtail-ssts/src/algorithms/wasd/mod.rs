@@ -42,18 +42,22 @@
 //! tier, which is the retroactive versions' measured shortcoming the
 //! README keeps under its own heading.
 //!
-//! **A monitor inside the group.** Groups are the algorithm's clock but not the
+//! **One clock, one monitor.** Groups are the algorithm's clock but not the
 //! path's: bandwidth moves faster than 25 groups a second. The same depth is
-//! therefore read again on every periodic sample the host takes mid-group, and
-//! a reading that stays at the downshift depth for
-//! `DOWNSHIFT_SUBGROUP_READS` consecutive samples in a row downshifts without
-//! waiting for the next boundary. Requiring the streak rather than the last
-//! reading is what makes this safe: the tail of a healthy group produces a
+//! therefore read on every sample the host takes — at the group boundary and
+//! mid-group alike — and one persistence counter feeds both: readings that stay
+//! at the downshift depth for
+//! `DOWNSHIFT_SUBGROUP_READS` consecutive samples downshift wherever they
+//! land, boundary included. Requiring the streak rather than the last reading
+//! is what makes this safe: the tail of a healthy group produces a
 //! single deep reading, because the next group's stream opens before the
 //! previous one has drained, and real congestion produces it until something is
 //! done. The streak re-arms when it fires, so one burst cannot walk the ladder
 //! tick by tick, and a dip costs a full fresh clean streak before the climb
-//! resumes.
+//! resumes. Upshifts are the asymmetric half, and the relay's forward gate is
+//! why: they are evaluated only on the first sample of a new group — the
+//! moment the gate is waiting to record that group's track — so the tier never
+//! moves mid-group and never disagrees with what is on the wire.
 //!
 //! **A downshift that reaches back.** When the tier falls, the groups still in
 //! flight at the higher member were overtaken by a decision they are still
@@ -85,7 +89,6 @@ use crate::Selection;
 use crate::SetSnapshot;
 use crate::Tuning;
 use crate::algorithms::wasd::state::LadderState;
-use crate::algorithms::wasd::state::Monitor;
 use crate::algorithms::wasd::state::Step;
 
 #[cfg(test)]
@@ -289,55 +292,16 @@ impl AbrAlgorithm for WasdAlgorithm {
       .saturating_sub(1);
 
     match input.reason {
-      DecisionReason::GroupBoundary => {
-        // The exploration is walked in whole groups, and it is a group boundary
-        // that tells the algorithm the ladder is taller than the path. A deep
-        // reading inside a group does not end it, and does not act either: see
-        // the periodic arm below.
-        if self.ladder.note_congestion(depth) {
-          tracing::debug!(
-            client_id = input.client_id,
-            group_id = input.group_id,
-            depth,
-            "SSTS wasd: exploration over (congestion)"
-          );
-        }
-        match self.ladder.on_group(depth) {
-          Step::Held => {}
-          Step::Upshift { from, to } => {
-            tracing::debug!(
-              client_id = input.client_id,
-              group_id = input.group_id,
-              from,
-              to,
-              depth,
-              exploring = self.ladder.exploring(),
-              "SSTS wasd: UPSHIFT"
-            );
-            if self.ladder.note_top_of_ladder(max_index, any_active(input)) {
-              tracing::debug!(
-                client_id = input.client_id,
-                group_id = input.group_id,
-                tier = to,
-                "SSTS wasd: exploration over (top of the ladder)"
-              );
-            }
-          }
-          Step::Downshift { from, to } => tracing::debug!(
-            client_id = input.client_id,
-            group_id = input.group_id,
-            from,
-            to,
-            depth,
-            "SSTS wasd: DOWNSHIFT (group boundary)"
-          ),
-        }
-      }
-      DecisionReason::PeriodicSample => {
-        // The monitor's 100 ms reading of the delivered tier. The algorithm's
-        // whole state is this one number, and a tier change is the rare
-        // outcome: every reading goes to the log (the run's dashboard is
-        // built from these lines), the changes log on top of them with more.
+      DecisionReason::GroupBoundary | DecisionReason::PeriodicSample => {
+        // One reading, one clock: the same depth feeds the same persistence
+        // counter whether the host took it at a group boundary or mid-group.
+        // The algorithm's whole state is this one number, and a tier change is
+        // the rare outcome: every reading goes to the log (the run's dashboard
+        // is built from these lines), the changes log on top of them with more.
+        // What the reading is allowed to do is the state machine's business:
+        // downshifts fire wherever the streak fills, upshifts only on the
+        // first sample of a new group — the moment the relay's forward gate is
+        // waiting to record that group's track.
         tracing::debug!(
           client_id = input.client_id,
           group_id = input.group_id,
@@ -345,15 +309,27 @@ impl AbrAlgorithm for WasdAlgorithm {
           depth,
           "SSTS wasd: depth reading"
         );
-        match self.ladder.on_tick(depth, any_active(input)) {
-          Monitor::Held => {}
-          Monitor::Downshift { from, to } => tracing::debug!(
+        match self
+          .ladder
+          .on_sample(depth, input.group_id, any_active(input), max_index)
+        {
+          Step::Held => {}
+          Step::Upshift { from, to } => tracing::debug!(
             client_id = input.client_id,
             group_id = input.group_id,
             from,
             to,
             depth,
-            "SSTS wasd: DOWNSHIFT (mid-transmission)"
+            exploring = self.ladder.exploring(),
+            "SSTS wasd: UPSHIFT"
+          ),
+          Step::Downshift { from, to } => tracing::debug!(
+            client_id = input.client_id,
+            group_id = input.group_id,
+            from,
+            to,
+            depth,
+            "SSTS wasd: DOWNSHIFT"
           ),
         }
       }

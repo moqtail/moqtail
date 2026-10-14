@@ -173,9 +173,12 @@ fn the_depth_counts_only_the_streams_at_the_current_tier() {
     "six streams at qualities the algorithm has already rejected are not depth"
   );
 
-  // The same count at the tier being delivered is congestion, and the tier falls.
+  // The same count at the tier being delivered is congestion, and the tier
+  // falls once the monitor's streak is full: one reading is a tail, two are a
+  // verdict, at a boundary or anywhere else.
   let here = [stream(1, track_at(1, 3), 13), stream(1, track_at(1, 3), 14)];
-  let selection = algorithm.decide(&input(&sets, &here, DecisionReason::GroupBoundary, 21));
+  algorithm.decide(&input(&sets, &here, DecisionReason::GroupBoundary, 21));
+  let selection = algorithm.decide(&input(&sets, &here, DecisionReason::GroupBoundary, 22));
   assert_eq!(tier_of(&selection, 1), 2);
 }
 
@@ -201,7 +204,8 @@ fn a_resent_stream_is_not_depth() {
   );
 
   let fresh = [stream(1, track_at(1, 3), 5), stream(1, track_at(1, 3), 6)];
-  let selection = algorithm.decide(&input(&sets, &fresh, DecisionReason::GroupBoundary, 31));
+  algorithm.decide(&input(&sets, &fresh, DecisionReason::GroupBoundary, 31));
+  let selection = algorithm.decide(&input(&sets, &fresh, DecisionReason::GroupBoundary, 32));
   assert_eq!(
     tier_of(&selection, 1),
     2,
@@ -216,7 +220,8 @@ fn a_v3_downshift_asks_to_overtake_the_sets_it_moved_down() {
   climb(&mut algorithm, &sets, 2);
 
   let congested = [stream(1, track_at(1, 2), 4), stream(1, track_at(1, 2), 5)];
-  let selection = algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 40));
+  algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 40));
+  let selection = algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 41));
   assert!(
     selection.supersede.contains_key(&1),
     "the groups still in flight above the new rung were overtaken"
@@ -246,7 +251,8 @@ fn a_v2_downshift_reaches_only_the_newest_overtaken_group() {
     stream_with_age(1, track_at(1, 2), 4, 500),
     stream_with_age(1, track_at(1, 2), 5, 250),
   ];
-  let selection = algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 40));
+  algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 40));
+  let selection = algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 41));
   assert_eq!(
     tier_of(&selection, 1),
     1,
@@ -279,7 +285,8 @@ fn a_classic_downshift_asks_for_nothing() {
   climb(&mut algorithm, &sets, 2);
 
   let congested = [stream(1, track_at(1, 2), 4), stream(1, track_at(1, 2), 5)];
-  let selection = algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 40));
+  algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 40));
+  let selection = algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 41));
   assert_eq!(
     tier_of(&selection, 1),
     1,
@@ -345,13 +352,15 @@ fn deep_at(tier: usize) -> [StreamSnapshot; 2] {
 
 /// A connection past its exploration, with room to fall.
 ///
-/// It climbs one rung, meets congestion at that rung — which is what ends the
-/// exploration and drops it to the bottom — and then sees `clean_groups`
-/// uncongested boundaries, five of which buy one rung on the cautious streak.
+/// It climbs one rung, meets congestion at that rung — two readings, because
+/// every downshift is the monitor's now, and the second ends the exploration
+/// and drops it to the bottom — and then sees `clean_groups` uncongested
+/// boundaries, five of which buy one rung on the cautious streak.
 fn settle(algorithm: &mut WasdAlgorithm, sets: &[SetSnapshot], clean_groups: u64) {
   climb(algorithm, sets, 1);
   let congested = deep_at(1);
   algorithm.decide(&input(sets, &congested, DecisionReason::GroupBoundary, 10));
+  algorithm.decide(&input(sets, &congested, DecisionReason::GroupBoundary, 11));
   let clear: Vec<StreamSnapshot> = Vec::new();
   for group in 20..20 + clean_groups {
     algorithm.decide(&input(sets, &clear, DecisionReason::GroupBoundary, group));
@@ -420,31 +429,35 @@ fn the_monitor_rearms_after_it_fires() {
   );
 }
 
-/// The exploration walks the ladder one group at a time, and a reading taken
-/// inside a group is not a group. Mid-transmission downshifts begin once the
-/// connection has seen the ladder's height.
+/// The unified monitor: one persistence counter for every sample, so the
+/// exploration is no longer shielded from mid-group readings. Two consecutive
+/// congested samples end the exploration and step down, boundary or not.
 #[test]
-fn the_monitor_never_interrupts_the_exploration() {
+fn the_monitor_ends_the_exploration_when_it_fires() {
   let sets = [set(1, true)];
   let mut algorithm = WasdAlgorithm::v3();
   climb(&mut algorithm, &sets, 1);
 
   let inside = [stream(1, track_at(1, 1), 9), stream(1, track_at(1, 1), 10)];
-  for _ in 0..5 {
-    let selection = algorithm.decide(&input(&sets, &inside, DecisionReason::PeriodicSample, 9));
-    assert_eq!(
-      tier_of(&selection, 1),
-      1,
-      "the exploration is walked in whole groups"
-    );
-    assert!(selection.supersede.is_empty());
-  }
+  let selection = algorithm.decide(&input(&sets, &inside, DecisionReason::PeriodicSample, 9));
+  assert_eq!(
+    tier_of(&selection, 1),
+    1,
+    "one reading is not yet the monitor's, exploring or not"
+  );
+  assert!(selection.supersede.is_empty());
 
-  // The boundary reading is where the exploration learns the ladder is taller
-  // than the path, and from there the monitor is armed.
-  let selection = algorithm.decide(&input(&sets, &inside, DecisionReason::GroupBoundary, 11));
-  assert_eq!(tier_of(&selection, 1), 0);
-  assert!(selection.supersede.contains_key(&1));
+  let selection = algorithm.decide(&input(&sets, &inside, DecisionReason::PeriodicSample, 9));
+  assert_eq!(
+    tier_of(&selection, 1),
+    0,
+    "the second ends the exploration and steps down: sustained congestion is
+     narrower than the ladder wherever the sample lands"
+  );
+  assert!(
+    selection.supersede.contains_key(&1),
+    "and the downshift reaches back like any other"
+  );
 }
 
 /// A stream the transport gave up on is a consequence of a decision the
@@ -490,18 +503,19 @@ fn the_cautious_streak_returns_after_the_exploration_is_over() {
   let top = climb(&mut algorithm, &sets, 4);
   assert_eq!(top, 3);
 
-  // Fall one rung.
+  // Fall one rung: the monitor's two readings, wherever they land.
   let congested = [stream(1, track_at(1, 3), 20), stream(1, track_at(1, 3), 21)];
-  let selection = algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 30));
+  algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 30));
+  let selection = algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 31));
   assert_eq!(tier_of(&selection, 1), 2);
 
   // One clean group does not climb back: the second climb is the cautious one.
   let clear: Vec<StreamSnapshot> = Vec::new();
-  let selection = algorithm.decide(&input(&sets, &clear, DecisionReason::GroupBoundary, 31));
+  let selection = algorithm.decide(&input(&sets, &clear, DecisionReason::GroupBoundary, 32));
   assert_eq!(tier_of(&selection, 1), 2);
 
   // Five are.
-  for group in 32..36 {
+  for group in 33..36 {
     algorithm.decide(&input(&sets, &clear, DecisionReason::GroupBoundary, group));
   }
   let selection = algorithm.decide(&input(&sets, &clear, DecisionReason::GroupBoundary, 36));
@@ -522,7 +536,8 @@ fn a_downshift_inherits_the_remaining_buffer_of_the_newest_overtaken_stream() {
     stream_with_age(1, track_at(1, 2), 7, 500),
     stream_with_age(1, track_at(1, 2), 8, 300),
   ];
-  let selection = algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 20));
+  algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 20));
+  let selection = algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 21));
   assert_eq!(tier_of(&selection, 1), 1, "the tier fell");
   assert_eq!(
     selection.resend_deadline_ms(1),
@@ -546,7 +561,8 @@ fn a_set_that_negotiated_no_buffer_asks_for_no_deadline() {
   climb(&mut algorithm, &sets, 2);
 
   let congested = [stream(1, track_at(1, 2), 7), stream(1, track_at(1, 2), 8)];
-  let selection = algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 20));
+  algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 20));
+  let selection = algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 21));
   assert!(
     selection.supersede.contains_key(&1),
     "the overtaken groups are still named"
@@ -576,6 +592,56 @@ fn exhausted_remaining_buffer_clamps_to_one_millisecond_not_never() {
     stream_with_age(1, track_at(1, 2), 7, 850),
     stream_with_age(1, track_at(1, 2), 8, 850),
   ];
-  let selection = algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 20));
+  algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 20));
+  let selection = algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 21));
   assert_eq!(selection.resend_deadline_ms(1), Some(1));
+}
+
+/// The unified path prices the whole group: an upshift recorded at the start
+/// of group N and the congestion found at the end of that same group are two
+/// readings of one clock. The downshift acts on the group in flight — the
+/// supersede names it — and the climb starts over from zero, so the next
+/// group does not bounce straight back up.
+#[test]
+fn a_downshift_inside_a_group_undoes_the_upshift_recorded_at_its_start() {
+  let sets = [set_with_buffer(1, 800)];
+  let mut algorithm = WasdAlgorithm::v2();
+  settle(&mut algorithm, &sets, 5);
+
+  // The cautious streak buys one rung: group 34 opens clean and is served one
+  // tier up.
+  let clear: Vec<StreamSnapshot> = Vec::new();
+  let mut selection = None;
+  for group in 30..35 {
+    selection = Some(algorithm.decide(&input(&sets, &clear, DecisionReason::GroupBoundary, group)));
+  }
+  assert_eq!(
+    tier_of(&selection.unwrap(), 1),
+    2,
+    "group 34 was recorded one rung up"
+  );
+
+  // Congestion at the end of the same group: the monitor's two readings, and
+  // the downshift lands on group 34 itself.
+  let inside = deep_at(2);
+  algorithm.decide(&input(&sets, &inside, DecisionReason::PeriodicSample, 34));
+  let selection = algorithm.decide(&input(&sets, &inside, DecisionReason::PeriodicSample, 34));
+  assert_eq!(
+    tier_of(&selection, 1),
+    1,
+    "the tier falls back down inside the group it was raised in"
+  );
+  assert!(
+    selection.supersede.contains_key(&1) && selection.supersede[&1].newest_only,
+    "and the upshifted group in flight is overtaken like any other"
+  );
+
+  // The dip has to earn a full fresh clean streak before the ladder climbs
+  // back: the next group stays at the downshifted tier.
+  let selection = algorithm.decide(&input(&sets, &clear, DecisionReason::GroupBoundary, 35));
+  assert_eq!(
+    tier_of(&selection, 1),
+    1,
+    "clear_streak was zeroed by the congestion: one clean group does not undo the fall"
+  );
 }

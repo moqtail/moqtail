@@ -12,12 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! The tier state machine behind wasd, and the readings that move it.
+//! The tier state machine behind wasd, and the reading that moves it.
 //!
-//! Pure again: `(state, reading) -> event`, no clock, no transport. The two
-//! readings are the two questions the algorithm asks — what the depth was at
-//! the last group boundary, and what it is right now in the middle of one — and
-//! they are separate types because they are allowed to do different things.
+//! Pure again: `(state, sample) -> event`, no clock, no transport. There is
+//! one reading now — the depth at the tier being delivered — fed by every
+//! sample the host takes, at a group boundary or mid-group alike. What a
+//! sample is allowed to do depends on one fact the state itself tracks:
+//! whether it is the first reading of a new group, which is the only moment
+//! an upshift can land before the relay's forward gate records that group's
+//! track decision.
 
 use crate::algorithms::asd::state::DEPTH_TARGET;
 use crate::algorithms::asd::state::DOWNSHIFT_DEPTH;
@@ -26,25 +29,15 @@ use crate::algorithms::asd::state::UPSHIFT_GOP_STREAK;
 /// Slow start: one uncongested group is enough to try the next tier.
 pub(crate) const SLOW_START_UPSHIFT_STREAK: u64 = 1;
 
-/// Consecutive depth readings inside one group, at the downshift depth or
-/// above, before the monitor acts. A healthy group's tail shows one such
-/// reading, because the next group's stream opens before the previous one has
-/// finished draining; congestion shows it on every reading until it is dealt
-/// with. The streak re-arms when it fires, so one burst cannot chain.
+/// Consecutive depth samples, at the downshift depth or above, before the
+/// monitor acts — boundary or mid-group, one counter for both. A healthy
+/// group's tail shows one such reading, because the next group's stream opens
+/// before the previous one has finished draining; congestion shows it on every
+/// reading until it is dealt with. The streak re-arms when it fires, so one
+/// burst cannot chain.
 pub(crate) const DOWNSHIFT_SUBGROUP_READS: u32 = 2;
 
-/// What a mid-transmission reading did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Monitor {
-  /// Nothing: the readings have not been bad long enough, or the machine is not
-  /// in a state where acting on them is allowed.
-  Held,
-  /// The depth inside the group stayed high long enough to stop waiting for the
-  /// next group boundary.
-  Downshift { from: usize, to: usize },
-}
-
-/// What a boundary reading did.
+/// What one depth sample did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Step {
   /// Nothing.
@@ -64,16 +57,17 @@ pub(crate) enum Step {
 pub(crate) struct LadderState {
   /// Index into the ascending tier ladder; `0` is the lowest quality.
   current_index: usize,
-  /// Consecutive boundary readings at or below `DEPTH_TARGET`.
+  /// Consecutive uncongested group boundaries at or below `DEPTH_TARGET`.
   clear_streak: u64,
-  /// Consecutive mid-transmission readings at or above `DOWNSHIFT_DEPTH`.
+  /// Consecutive samples (boundary or mid-group) at or above `DOWNSHIFT_DEPTH`.
   monitor_streak: u32,
-  /// How many of them the monitor waits for. `DOWNSHIFT_SUBGROUP_READS` is the
-  /// default; an operator whose media paces differently than the sample the
-  /// default was tuned on can move it without moving the algorithm.
+  /// How many consecutive congested samples the monitor waits for before acting.
   monitor_reads: u32,
-  /// Until the ladder's top or the first congestion, whichever comes first.
+  /// Until the ladder's top or the first sustained congestion, whichever comes first.
   exploring: bool,
+  /// The group_id of the previous sample, ensuring upshifts are only evaluated
+  /// when a new group is being decided before `record_group_decision` locks it.
+  last_group_id: Option<u64>,
 }
 
 impl LadderState {
@@ -85,6 +79,7 @@ impl LadderState {
       monitor_streak: 0,
       monitor_reads: DOWNSHIFT_SUBGROUP_READS,
       exploring: true,
+      last_group_id: None,
     }
   }
 
@@ -113,98 +108,81 @@ impl LadderState {
     self.current_index = self.current_index.min(max_index);
   }
 
-  /// Congestion ends the exploration, whether or not a downshift was possible:
-  /// a connection already at the bottom tier has still learned that the path is
-  /// narrower than the ladder.
-  pub(crate) fn note_congestion(&mut self, depth: u64) -> bool {
-    if self.exploring && depth >= DOWNSHIFT_DEPTH {
-      self.exploring = false;
-      // Whatever the monitor had been counting belongs to the exploration. The
-      // arm it just unlocked counts from here.
-      self.monitor_streak = 0;
-      return true;
-    }
-    false
-  }
+  /// Evaluate one depth sample for `group_id`.
+  ///
+  /// Every sample (whether at the start of a new group or mid-group) feeds the
+  /// same congestion persistence counter (`monitor_streak`). Any reading above
+  /// `DEPTH_TARGET` immediately zeroes `clear_streak`, and `monitor_reads`
+  /// consecutive readings at or above `DOWNSHIFT_DEPTH` end exploration and
+  /// step down one rung.
+  ///
+  /// Upshifts are evaluated only on the first sample of a new `group_id`
+  /// (`is_new_group`), which is the moment the relay's forward gate is waiting
+  /// to record that group's track decision. This keeps `current_index` strictly
+  /// in sync with the tier actually being delivered on the wire.
+  pub(crate) fn on_sample(
+    &mut self,
+    depth: u64,
+    group_id: u64,
+    may_act: bool,
+    max_index: usize,
+  ) -> Step {
+    let is_new_group = self.last_group_id != Some(group_id);
+    self.last_group_id = Some(group_id);
 
-  /// The exploration ends at the top of the ladder too, and only once a set has
-  /// a subscriber: while tracks are still being assigned the ladder itself is
-  /// still growing, and calling that the top would end the exploration on a
-  /// connection that has barely started.
-  pub(crate) fn note_top_of_ladder(&mut self, max_index: usize, any_active: bool) -> bool {
-    if self.exploring && self.current_index >= max_index && any_active {
-      self.exploring = false;
-      return true;
+    if depth >= DOWNSHIFT_DEPTH {
+      self.clear_streak = 0;
+      self.monitor_streak = self.monitor_streak.saturating_add(1);
+      if self.monitor_streak >= self.monitor_reads && may_act {
+        // Sustained congestion ends the exploration whether or not a downshift
+        // was possible: a connection already at the bottom tier has still
+        // learned that the path is narrower than the ladder.
+        self.exploring = false;
+        self.monitor_streak = 0;
+        if self.current_index > 0 {
+          let from = self.current_index;
+          self.current_index -= 1;
+          return Step::Downshift {
+            from,
+            to: self.current_index,
+          };
+        }
+      }
+      return Step::Held;
     }
-    false
-  }
 
-  /// One group boundary: the walk the other tier algorithms know, with the
-  /// exploration streak swapped in while the connection is exploring.
-  pub(crate) fn on_group(&mut self, depth: u64) -> Step {
-    if depth <= DEPTH_TARGET {
+    self.monitor_streak = 0;
+
+    if depth > DEPTH_TARGET {
+      self.clear_streak = 0;
+      return Step::Held;
+    }
+
+    if is_new_group {
       self.clear_streak += 1;
       let needed = if self.exploring {
         SLOW_START_UPSHIFT_STREAK
       } else {
         UPSHIFT_GOP_STREAK
       };
-      if self.clear_streak < needed {
-        return Step::Held;
+      if self.clear_streak >= needed {
+        let from = self.current_index;
+        let to = (from + 1).min(max_index);
+        self.current_index = to;
+        self.clear_streak = 0;
+        // The exploration ends at the top of the ladder too, and only once a
+        // set has a subscriber: while tracks are still being assigned the
+        // ladder itself is still growing, and calling that the top would end
+        // the exploration on a connection that has barely started.
+        if self.exploring && self.current_index >= max_index && may_act {
+          self.exploring = false;
+        }
+        if to > from {
+          return Step::Upshift { from, to };
+        }
       }
-      let from = self.current_index;
-      self.current_index = from + 1;
-      self.clear_streak = 0;
-      return Step::Upshift {
-        from,
-        to: self.current_index,
-      };
     }
 
-    // Congested: the climb starts over, and a dip is answered by falling one
-    // rung only when there is a rung to fall to.
-    self.clear_streak = 0;
-    self.monitor_streak = 0;
-    if depth < DOWNSHIFT_DEPTH || self.current_index == 0 {
-      return Step::Held;
-    }
-    let from = self.current_index;
-    self.current_index = from - 1;
-    Step::Downshift {
-      from,
-      to: self.current_index,
-    }
-  }
-
-  /// One reading taken while a group is still being served.
-  ///
-  /// `may_act` is the host's answer to "is there anything to act on": the
-  /// monitor does not fire on a connection whose sets are idle, and never
-  /// interrupts the exploration, which needs whole groups to walk the ladder.
-  pub(crate) fn on_tick(&mut self, depth: u64, may_act: bool) -> Monitor {
-    self.monitor_streak = if depth >= DOWNSHIFT_DEPTH {
-      self.monitor_streak.saturating_add(1)
-    } else {
-      0
-    };
-
-    if !self.exploring
-      && self.current_index > 0
-      && self.monitor_streak >= self.monitor_reads
-      && may_act
-    {
-      let from = self.current_index;
-      self.current_index -= 1;
-      self.monitor_streak = 0;
-      // The same hygiene the boundary path applies: a dip has to earn a full
-      // fresh clean streak before the ladder can be climbed back, instead of
-      // bouncing on a streak carried over from before the dip.
-      self.clear_streak = 0;
-      return Monitor::Downshift {
-        from,
-        to: self.current_index,
-      };
-    }
-    Monitor::Held
+    Step::Held
   }
 }

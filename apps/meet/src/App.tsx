@@ -140,7 +140,9 @@ export default function App() {
   const mediaStreamRef = useRef<MediaStream | null>(null);
   type EncoderHandle = { stop: () => Promise<void>; currentGroupId: () => number };
   const videoEncoderRef = useRef<EncoderHandle | null>(null);
-  const audioEncoderRef = useRef<EncoderHandle | null>(null);
+  const audioEncoderRef = useRef<
+    (EncoderHandle & { setEncoding: (enabled: boolean) => void }) | null
+  >(null);
   const publicationRef = useRef<Publication | null>(null);
   // Stable refs for use inside async callbacks
   const moqClientRef = useRef<MOQtailClient | null>(null);
@@ -442,6 +444,9 @@ export default function App() {
       audioGroupId: publication.audioGroupId,
       objectForwardingPreference: ObjectForwardingPreference.Subgroup,
     });
+    // A muted track still yields silence, which would be encoded and sent: encode only
+    // while the mic is on.
+    audioEncoderRef.current.setEncoding(isMicOnRef.current);
 
     setIsPublishing(true);
   }
@@ -513,6 +518,7 @@ export default function App() {
         t.enabled = next;
       });
     }
+    audioEncoderRef.current?.setEncoding(next);
   }
 
   // ── Entrance screen ────────────────────────────────────────────────────────

@@ -151,11 +151,15 @@ pub async fn handle(
         })
         .await;
 
-      // Wakes any data stream already parked waiting for this alias.
-      context
+      // Wakes any data stream already parked waiting for this alias. The check above
+      // can race a PUBLISH for another track that claims the alias first.
+      if !context
         .track_manager
         .add_track_alias(context.connection_id, track_alias, full_track_name.clone())
-        .await;
+        .await
+      {
+        return Err(TerminationCode::DuplicateTrackAlias);
+      }
 
       track_arc
         .write()

@@ -47,7 +47,10 @@ type Screen = 'entrance' | 'connecting' | 'main';
 
 const USERNAME_MAX_LEN = 25;
 const USERNAME_REGEX = /^[a-zA-Z0-9 ]+$/;
-const NS_PREFIX = '/moqtail/demo/';
+const ROOM_MAX_LEN = 25;
+const ROOM_REGEX = /^[a-zA-Z0-9]+$/;
+/** Each room is a namespace under this one; its users' namespaces sit under the room's. */
+const NS_ROOT = '/moqtail/demo';
 const RELAY_SCHEME = 'moqt://';
 const SCHEME_RE = /^[a-z][a-z0-9+.-]*:\/\//i;
 
@@ -117,6 +120,8 @@ const GITHUB_REPO = 'moqtail/moqtail';
 export default function App() {
   const [screen, setScreen] = useState<Screen>('entrance');
   const [usernameInput, setUsernameInput] = useState('');
+  const [roomInput, setRoomInput] = useState('');
+  const [displayRoom, setDisplayRoom] = useState('');
   const [relayInput, setRelayInput] = useState(getSavedRelay);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [displayUsername, setDisplayUsername] = useState('');
@@ -140,6 +145,8 @@ export default function App() {
   // Stable refs for use inside async callbacks
   const moqClientRef = useRef<MOQtailClient | null>(null);
   const trackUsernameRef = useRef<string>('');
+  /** `/moqtail/demo/<room>/`, which every user namespace in the room starts with. */
+  const nsPrefixRef = useRef<string>('');
   const sendSignalRef = useRef<((text: string) => void) | null>(null);
   const isMicOnRef = useRef(false);
   const subscribedTracksRef = useRef(new Set<string>());
@@ -156,6 +163,13 @@ export default function App() {
     if (!value.trim()) return 'Username is required';
     if (!USERNAME_REGEX.test(value)) return 'Only letters, numbers, and spaces allowed';
     if (value.length > USERNAME_MAX_LEN) return `Max ${USERNAME_MAX_LEN} characters`;
+    return null;
+  }
+
+  function validateRoomInput(value: string): string | null {
+    if (!value) return 'Room name is required';
+    if (!ROOM_REGEX.test(value)) return 'Room name: only letters and numbers allowed';
+    if (value.length > ROOM_MAX_LEN) return `Room name: max ${ROOM_MAX_LEN} characters`;
     return null;
   }
 
@@ -197,18 +211,22 @@ export default function App() {
   }
 
   async function handleEnter() {
-    const validationError = validateUsernameInput(usernameInput);
+    const validationError = validateRoomInput(roomInput) ?? validateUsernameInput(usernameInput);
     if (validationError) {
       setError(validationError);
       return;
     }
 
     const trackUsername = toTrackUsername(usernameInput);
+    const roomNamespace = `${NS_ROOT}/${roomInput}`;
+    const nsPrefix = `${roomNamespace}/`;
+    nsPrefixRef.current = nsPrefix;
     const token = generateToken();
     const relayUrl = toRelayUrl(relayInput);
 
     trackUsernameRef.current = trackUsername;
     setDisplayUsername(usernameInput.trim());
+    setDisplayRoom(roomInput);
     setError(null);
     setPeers([]);
     subscribedTracksRef.current.clear();
@@ -230,7 +248,7 @@ export default function App() {
       // Route incoming publish streams to the correct peer's decode worker
       client.onPeerPublish = (msg, stream) => {
         const nsPath = msg.fullTrackName.namespace.toUtf8Path();
-        const peerUsername = nsPath.startsWith(NS_PREFIX) ? nsPath.slice(NS_PREFIX.length) : null;
+        const peerUsername = nsPath.startsWith(nsPrefix) ? nsPath.slice(nsPrefix.length) : null;
         console.log('onPeerPublish | peerUsername: %s', peerUsername, nsPath);
         if (!peerUsername) return;
 
@@ -266,38 +284,44 @@ export default function App() {
 
       setScreen('main');
 
-      const { sendSignal, cleanup } = await setupSignalling(client, trackUsername, token, {
-        onPeerJoin: peerUsername => {
-          console.log('onPeerJoin peerUsername: %s', peerUsername);
-          addPeer(peerUsername);
-          const peerNs = Tuple.fromUtf8Path(`${NS_PREFIX}${peerUsername}`);
-          // add a random delay
-          delay(Math.ceil(Math.random() * 100)).then(_ => {
-            subscribeTracksOnce(client, peerNs);
-          });
+      const { sendSignal, cleanup } = await setupSignalling(
+        client,
+        roomNamespace,
+        trackUsername,
+        token,
+        {
+          onPeerJoin: peerUsername => {
+            console.log('onPeerJoin peerUsername: %s', peerUsername);
+            addPeer(peerUsername);
+            const peerNs = Tuple.fromUtf8Path(`${nsPrefix}${peerUsername}`);
+            // add a random delay
+            delay(Math.ceil(Math.random() * 100)).then(_ => {
+              subscribeTracksOnce(client, peerNs);
+            });
+          },
+          onOwnJoinWelcomed: peerUsername => {
+            console.log('onOwnJoinWelcomed: welcomed by %s', peerUsername);
+            addPeer(peerUsername);
+            const peerNs = Tuple.fromUtf8Path(`${nsPrefix}${peerUsername}`);
+            delay(Math.ceil(Math.random() * 100)).then(_ => {
+              subscribeTracksOnce(client, peerNs);
+            });
+          },
+          onDuplicateUser: () => {
+            console.warn('Duplicate username detected, returning to entrance');
+            // Drop the whole session, not just the signalling track: otherwise this name
+            // keeps its namespace announced and its tracks published from a page that has
+            // already gone back to the entrance screen.
+            void leaveRoom();
+            setError('Username already taken. Please choose a different one.');
+            setScreen('entrance');
+          },
+          onSignal: (text, direction, group) =>
+            appendToMessageLog(
+              toSignalEntry(text, direction, group, { username: trackUsername, token }),
+            ),
         },
-        onOwnJoinWelcomed: peerUsername => {
-          console.log('onOwnJoinWelcomed: welcomed by %s', peerUsername);
-          addPeer(peerUsername);
-          const peerNs = Tuple.fromUtf8Path(`${NS_PREFIX}${peerUsername}`);
-          delay(Math.ceil(Math.random() * 100)).then(_ => {
-            subscribeTracksOnce(client, peerNs);
-          });
-        },
-        onDuplicateUser: () => {
-          console.warn('Duplicate username detected, returning to entrance');
-          // Drop the whole session, not just the signalling track: otherwise this name
-          // keeps its namespace announced and its tracks published from a page that has
-          // already gone back to the entrance screen.
-          void leaveRoom();
-          setError('Username already taken. Please choose a different one.');
-          setScreen('entrance');
-        },
-        onSignal: (text, direction, group) =>
-          appendToMessageLog(
-            toSignalEntry(text, direction, group, { username: trackUsername, token }),
-          ),
-      });
+      );
 
       sendSignalRef.current = sendSignal;
       signalCleanupRef.current = cleanup;
@@ -314,7 +338,7 @@ export default function App() {
   ): Promise<Publication | null> {
     if (publicationRef.current) return publicationRef.current;
 
-    const namespace = Tuple.fromUtf8Path(`${NS_PREFIX}${trackUsername}`);
+    const namespace = Tuple.fromUtf8Path(`${nsPrefixRef.current}${trackUsername}`);
     const videoFTN = FullTrackName.tryNew(namespace, 'video');
     const audioFTN = FullTrackName.tryNew(namespace, 'audio');
 
@@ -493,6 +517,8 @@ export default function App() {
 
   // ── Entrance screen ────────────────────────────────────────────────────────
   if (screen === 'entrance') {
+    const isRoomInvalid =
+      roomInput.length > 0 && (roomInput.length > ROOM_MAX_LEN || !ROOM_REGEX.test(roomInput));
     const isUsernameInvalid =
       usernameInput.length > 0 &&
       (usernameInput.length > USERNAME_MAX_LEN || !USERNAME_REGEX.test(usernameInput));
@@ -518,6 +544,49 @@ export default function App() {
 
           <div className="flex w-full flex-col gap-3">
             <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium text-neutral-400" htmlFor="room">
+                Room
+              </label>
+              <input
+                id="room"
+                type="text"
+                value={roomInput}
+                maxLength={ROOM_MAX_LEN}
+                placeholder="Room name"
+                autoFocus
+                spellCheck={false}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') handleEnter();
+                }}
+                onChange={e => {
+                  setRoomInput(e.target.value);
+                  setError(null);
+                }}
+                className={`w-full rounded-lg border bg-neutral-800/60 px-3 py-2 text-sm text-neutral-100 placeholder-neutral-600 transition-colors outline-none focus:ring-1 ${
+                  isRoomInvalid
+                    ? 'border-red-500/40 focus:border-red-500/60 focus:ring-red-500/30'
+                    : 'border-white/8 focus:border-white/20 focus:ring-white/10'
+                }`}
+              />
+              <div className="flex items-center justify-between">
+                {isRoomInvalid ? (
+                  <span className="text-[11px] text-red-400">
+                    {!ROOM_REGEX.test(roomInput)
+                      ? 'Only letters and numbers'
+                      : `Max ${ROOM_MAX_LEN} characters`}
+                  </span>
+                ) : (
+                  <span />
+                )}
+                <span
+                  className={`ml-auto text-[11px] ${roomInput.length > ROOM_MAX_LEN ? 'text-red-400' : 'text-neutral-600'}`}
+                >
+                  {roomInput.length}/{ROOM_MAX_LEN}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-1.5">
               <label className="text-xs font-medium text-neutral-400" htmlFor="username">
                 Username
               </label>
@@ -527,7 +596,6 @@ export default function App() {
                 value={usernameInput}
                 maxLength={USERNAME_MAX_LEN}
                 placeholder="Your name"
-                autoFocus
                 onKeyDown={e => {
                   if (e.key === 'Enter') handleEnter();
                 }}
@@ -562,7 +630,7 @@ export default function App() {
 
           <button
             onClick={handleEnter}
-            disabled={isUsernameInvalid || !usernameInput.trim()}
+            disabled={isRoomInvalid || !roomInput || isUsernameInvalid || !usernameInput.trim()}
             className="w-full rounded-lg bg-blue-600 px-8 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-blue-500 active:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40"
           >
             Enter
@@ -622,6 +690,8 @@ export default function App() {
         <div className="flex items-center gap-2.5">
           <img src="/favicon.svg" alt="MOQtail logo" className="h-5 w-5" />
           <span className="text-sm font-semibold tracking-tight">Meet by MOQtail</span>
+          <span className="text-neutral-700 select-none">·</span>
+          <span className="text-xs text-neutral-300 select-none">{displayRoom}</span>
           <span className="text-neutral-700 select-none">·</span>
           <span className="text-xs text-neutral-400 select-none">{displayUsername}</span>
         </div>

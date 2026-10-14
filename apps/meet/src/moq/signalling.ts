@@ -27,7 +27,6 @@ import {
   RequestError,
 } from 'moqtail/model';
 
-const MOQTAIL_DEMO_NS = 'moqtail/demo';
 const SIGNALLING_TRACK_NAME = 'signalling';
 const PUBLISH_TO_SUBSCRIBE_DELAY_MS = 500;
 const SUBSCRIBE_TO_JOIN_DELAY_MS = 500;
@@ -51,12 +50,13 @@ export type SignalCallbacks = {
 
 export async function setupSignalling(
   moqClient: MOQtailClient,
+  /** The room's namespace; its signalling track is shared by everyone in the room. */
+  roomNamespace: string,
   username: string,
   token: string,
   callbacks: SignalCallbacks,
 ): Promise<{ sendSignal: (text: string) => void; cleanup: () => void }> {
-  const demoNs = Tuple.fromUtf8Path(MOQTAIL_DEMO_NS);
-  const signalFTN = FullTrackName.tryNew(demoNs, SIGNALLING_TRACK_NAME);
+  const signalFTN = FullTrackName.tryNew(Tuple.fromUtf8Path(roomNamespace), SIGNALLING_TRACK_NAME);
 
   // 1. Register the shared signalling track locally
   let lastGroupId = BASE_GROUP_ID;

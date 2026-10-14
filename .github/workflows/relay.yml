@@ -2,8 +2,9 @@ name: Relay Image
 
 on:
   push:
-    branches:
-      - '**'
+    branches-ignore:
+      - 'dependabot/**'
+      - 'changeset-release/**'
     tags:
       - 'relay@*'
     paths:

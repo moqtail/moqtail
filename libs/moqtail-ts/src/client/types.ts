@@ -32,6 +32,7 @@ import { SubscribeNamespaceRequest } from './request/subscribe_namespace'
 import { MOQtailClient } from './client'
 import { PublishRequest } from './request/publish'
 import { TrackStatusRequest } from './request/track_status'
+import { DataEventObserver } from './data_event'
 /**
  * Discriminated union of every in‑flight MOQ‑tail control request tracked by the {@link MOQtailClient}.
  *
@@ -168,6 +169,8 @@ export type MOQtailClientOptions = {
     onDatagramReceived?: (data: Datagram) => void
     /** Invoked after enqueuing each outbound datagram object/status. */
     onDatagramSent?: (data: Datagram) => void
+    /** Invoked for each data stream's header, each of its objects, and its end. See {@link MOQtailClient.onDataEvent}. */
+    onDataEvent?: DataEventObserver
   }
 }
 

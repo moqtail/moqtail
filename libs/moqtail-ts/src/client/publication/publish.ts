@@ -271,7 +271,13 @@ export class PublishPublication {
               firstObject,
             )
 
-            const sendStream = await SendStream.new(writeStream, header)
+            const sendStream = await SendStream.new(
+              writeStream,
+              header,
+              this.client.onDataSent,
+              undefined,
+              this.client.dataStreamObserver(() => this.track.fullTrackName),
+            )
             this.#streams.set(obj.location.group, sendStream)
             this.#streamsOpened++
             this.#markGroupSeen(obj.location.group)
@@ -356,7 +362,11 @@ if (import.meta.vitest) {
         publisherPriority: 0,
         trackAlias: 1n,
       }
-      const client = { webTransport, publications: new Map() } as unknown as MOQtailClient
+      const client = {
+        webTransport,
+        publications: new Map(),
+        dataStreamObserver: () => undefined,
+      } as unknown as MOQtailClient
       new PublishPublication(client, track, { requestId: 0n, parameters: [] } as unknown as Publish)
 
       const push = (group: number, object: number) =>
@@ -424,7 +434,11 @@ if (import.meta.vitest) {
       source.enqueue(object(3, 0))
       await vi.waitFor(() => expect(live.largestLocation?.group).toBe(3n))
 
-      const client = { webTransport, publications: new Map() } as unknown as MOQtailClient
+      const client = {
+        webTransport,
+        publications: new Map(),
+        dataStreamObserver: () => undefined,
+      } as unknown as MOQtailClient
       new PublishPublication(
         client,
         { fullTrackName: ftn, trackSource: { live }, publisherPriority: 0, trackAlias: 1n },
@@ -468,6 +482,7 @@ if (import.meta.vitest) {
       const client = {
         webTransport,
         publications: new Map(),
+        dataStreamObserver: () => undefined,
         onForwardStateChange: (requestId: bigint, forward: boolean) => moves.push({ requestId, forward }),
       } as unknown as MOQtailClient
       const publication = new PublishPublication(client, track, {

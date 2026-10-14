@@ -261,6 +261,10 @@ pub struct Cli {
   #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
   pub include_properties: bool,
 
+  /// Milliseconds the relay may wait for a publisher to appear; 0 sends none (subscribe only)
+  #[arg(long, default_value_t = 0)]
+  pub rendezvous_timeout: u64,
+
   /// Refuse every pushed PUBLISH with UNINTERESTED (subscribe-tracks only)
   #[arg(long, default_value_t = false)]
   pub refuse_publish: bool,

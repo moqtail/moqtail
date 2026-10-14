@@ -170,6 +170,7 @@ pub async fn handle(
       client
         .add_published_track(request_id, full_track_name.clone())
         .await;
+      context.client_manager.publishers_changed();
 
       // Raising the Forward State later needs the request id this arrived on.
       context

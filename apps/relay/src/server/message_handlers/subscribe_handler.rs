@@ -42,6 +42,7 @@ use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use moqtail::transport::data_stream_handler::SubscribeRequest;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio::sync::oneshot;
 use tracing::{error, info, trace, warn};
@@ -519,6 +520,17 @@ pub(crate) async fn plan_switch(
   )))
 }
 
+/// The subscriber's RENDEZVOUS_TIMEOUT capped at `max`; zero when absent.
+fn rendezvous_timeout(parameters: &[MessageParameter], max: Duration) -> Duration {
+  parameters
+    .iter()
+    .find_map(|p| match p {
+      MessageParameter::RendezvousTimeout { timeout } => Some(Duration::from_millis(*timeout)),
+      _ => None,
+    })
+    .map_or(Duration::ZERO, |requested| requested.min(max))
+}
+
 async fn handle_subscribe_message(
   client: Arc<MOQTClient>,
   stream_handler: &mut ControlStreamHandler,
@@ -584,13 +596,18 @@ async fn handle_subscribe_message(
     return Ok(());
   }
 
+  let rendezvous = rendezvous_timeout(
+    &sub.subscribe_parameters,
+    context.server_config.max_rendezvous_timeout,
+  );
+
   // Every publisher of the exact Track, plus every publisher that announced a namespace
   // it falls under. A SUBSCRIBE goes to all of them, not to whichever matched first.
   let publishers = {
     trace!("trying to get the publishers");
     context
       .client_manager
-      .get_publishers_for_track(&full_track_name)
+      .wait_for_publishers(&full_track_name, rendezvous)
       .await
   };
 
@@ -599,6 +616,12 @@ async fn handle_subscribe_message(
       "no publisher found for track namespace: {:?}",
       track_namespace
     );
+    // TIMEOUT only when the subscriber asked to wait.
+    let (code, reason) = if rendezvous.is_zero() {
+      (RequestErrorCode::DoesNotExist, "Unknown track namespace")
+    } else {
+      (RequestErrorCode::Timeout, "No publisher appeared in time")
+    };
     // Dump what the relay actually had registered at the miss, so the sent
     // full track name / namespace can be compared against live registrations.
     info!(
@@ -609,11 +632,14 @@ async fn handle_subscribe_message(
     );
     // send RequestError
     let subscribe_error = RequestError::new(
-      RequestErrorCode::DoesNotExist,
+      code,
       0, //TODO: Maybe decide on another retry interval?
-      ReasonPhrase::try_new("Unknown track namespace".to_string()).unwrap(),
+      ReasonPhrase::try_new(reason.to_string()).unwrap(),
     );
-    stream_handler.send_impl(&subscribe_error).await.unwrap();
+    // The subscriber may have given up while it waited.
+    if let Err(e) = stream_handler.send_impl(&subscribe_error).await {
+      info!("Could not answer an unmatched SUBSCRIBE: {:?}", e);
+    }
     return Ok(());
   };
 
@@ -1688,6 +1714,27 @@ pub async fn handle(
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn rendezvous_timeout_defaults_to_zero_and_is_capped() {
+    let max = Duration::from_millis(1000);
+    assert_eq!(rendezvous_timeout(&[], max), Duration::ZERO);
+    assert_eq!(
+      rendezvous_timeout(&[MessageParameter::new_rendezvous_timeout(500)], max),
+      Duration::from_millis(500)
+    );
+    assert_eq!(
+      rendezvous_timeout(&[MessageParameter::new_rendezvous_timeout(5000)], max),
+      max
+    );
+    assert_eq!(
+      rendezvous_timeout(
+        &[MessageParameter::new_rendezvous_timeout(500)],
+        Duration::ZERO
+      ),
+      Duration::ZERO
+    );
+  }
 
   #[test]
   fn upstream_errors_map_to_a_publish_done_status() {

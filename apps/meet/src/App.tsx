@@ -25,6 +25,7 @@ import {
   DefaultPublisherPriorityProperty,
 } from 'moqtail/model';
 import { createMOQtailClient } from './moq/client';
+import { GearIcon, SettingsPane } from './SettingsPane';
 import { setupSignalling } from './moq/signalling';
 import {
   announceNamespaces,
@@ -45,9 +46,30 @@ const NS_PREFIX = '/moqtail/demo/';
 const RELAY_SCHEME = 'moqt://';
 const SCHEME_RE = /^[a-z][a-z0-9+.-]*:\/\//i;
 
+const RELAY_STORAGE_KEY = 'meet.relay';
+
+/** The relay from appsettings.js, without its scheme. */
 function getDefaultRelay(): string {
   const url = window.appSettings?.relayUrl ?? `${RELAY_SCHEME}localhost:4433`;
   return url.replace(SCHEME_RE, '');
+}
+
+/** The relay picked in the settings pane, falling back to the default. */
+function getSavedRelay(): string {
+  try {
+    return localStorage.getItem(RELAY_STORAGE_KEY) || getDefaultRelay();
+  } catch {
+    return getDefaultRelay();
+  }
+}
+
+function saveRelay(relay: string) {
+  try {
+    if (relay === getDefaultRelay()) localStorage.removeItem(RELAY_STORAGE_KEY);
+    else localStorage.setItem(RELAY_STORAGE_KEY, relay);
+  } catch {
+    // Storage blocked: the choice still holds for this page load.
+  }
 }
 
 function toRelayUrl(input: string): string {
@@ -88,7 +110,8 @@ const GITHUB_REPO = 'moqtail/moqtail';
 export default function App() {
   const [screen, setScreen] = useState<Screen>('entrance');
   const [usernameInput, setUsernameInput] = useState('');
-  const [relayInput, setRelayInput] = useState(getDefaultRelay);
+  const [relayInput, setRelayInput] = useState(getSavedRelay);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [displayUsername, setDisplayUsername] = useState('');
   const [peers, setPeers] = useState<string[]>([]);
   const [isCamOn, setIsCamOn] = useState(false);
@@ -433,7 +456,16 @@ export default function App() {
 
     return (
       <div className="flex min-h-dvh items-center justify-center bg-neutral-950 font-sans antialiased">
-        <div className="flex min-w-80 flex-col items-center gap-5 rounded-xl border border-white/6 bg-neutral-900/60 px-10 py-8 backdrop-blur-sm">
+        <div className="relative flex min-w-80 flex-col items-center gap-5 rounded-xl border border-white/6 bg-neutral-900/60 px-10 py-8 backdrop-blur-sm">
+          <button
+            onClick={() => setIsSettingsOpen(true)}
+            aria-label="Settings"
+            title="Settings"
+            className="absolute top-3 right-3 rounded-md p-1.5 text-neutral-500 transition-colors hover:bg-white/5 hover:text-neutral-200"
+          >
+            <GearIcon />
+          </button>
+
           <div className="flex items-center gap-2.5">
             <img src="/favicon.svg" alt="MOQtail logo" className="h-5 w-5" />
             <span className="text-sm font-semibold tracking-tight text-neutral-100">
@@ -483,25 +515,6 @@ export default function App() {
                 </span>
               </div>
             </div>
-
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-medium text-neutral-400" htmlFor="relay">
-                Relay
-              </label>
-              <input
-                id="relay"
-                type="text"
-                value={relayInput}
-                onKeyDown={e => {
-                  if (e.key === 'Enter') handleEnter();
-                }}
-                onChange={e => {
-                  setRelayInput(e.target.value);
-                  setError(null);
-                }}
-                className="w-full rounded-lg border border-white/8 bg-neutral-800/60 px-3 py-2 text-sm text-neutral-100 placeholder-neutral-600 transition-colors outline-none focus:border-white/20 focus:ring-1 focus:ring-white/10"
-              />
-            </div>
           </div>
 
           <button
@@ -512,12 +525,33 @@ export default function App() {
             Enter
           </button>
 
+          <button
+            onClick={() => setIsSettingsOpen(true)}
+            className="-mt-2 max-w-full truncate text-[11px] text-neutral-600 transition-colors hover:text-neutral-400"
+          >
+            Relay: {relayInput}
+          </button>
+
           {error && (
             <p className="w-full rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-center text-xs leading-relaxed text-red-400">
               {error}
             </p>
           )}
         </div>
+
+        {isSettingsOpen && (
+          <SettingsPane
+            relay={relayInput}
+            defaultRelay={getDefaultRelay()}
+            onSave={relay => {
+              setRelayInput(relay);
+              saveRelay(relay);
+              setError(null);
+              setIsSettingsOpen(false);
+            }}
+            onClose={() => setIsSettingsOpen(false)}
+          />
+        )}
       </div>
     );
   }

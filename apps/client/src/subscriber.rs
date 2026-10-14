@@ -185,6 +185,8 @@ pub struct SubscribeConfig {
   pub forward: bool,
   /// False asks for the SUBSCRIBE_OK without Track Properties.
   pub include_properties: bool,
+  /// Milliseconds the relay may wait for a publisher; 0 sends none.
+  pub rendezvous_timeout: u64,
   pub update_forward_after: u64,
   pub filter: CliFilter,
   pub filter_start_group: u64,
@@ -225,6 +227,11 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
   let mut primary_parameters = primary_filters.clone();
   if !config.include_properties {
     primary_parameters.push(MessageParameter::new_include_properties(false));
+  }
+  if config.rendezvous_timeout > 0 {
+    primary_parameters.push(MessageParameter::new_rendezvous_timeout(
+      config.rendezvous_timeout,
+    ));
   }
   let (track_alias, largest, primary_stream) = subscribe_track(
     &connection,

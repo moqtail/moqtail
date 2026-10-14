@@ -121,6 +121,7 @@ pub async fn handle(
       client
         .add_announced_track_namespace(m.track_namespace.clone())
         .await;
+      context.client_manager.publishers_changed();
 
       // save the namespace among announcements
       // so we can forward it to clients who later come in with subscribe_namespace

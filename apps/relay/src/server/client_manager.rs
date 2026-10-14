@@ -14,19 +14,52 @@
 
 use super::client::MOQTClient;
 use moqtail::model::data::full_track_name::FullTrackName;
-use std::{collections::BTreeMap, sync::Arc};
-use tokio::sync::RwLock;
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use tokio::sync::{RwLock, watch};
 use tracing::{info, trace};
 
 #[derive(Clone)]
 pub(crate) struct ClientManager {
   pub clients: Arc<RwLock<BTreeMap<usize, Arc<MOQTClient>>>>,
+  /// Bumped when a publisher registers, waking SUBSCRIBEs waiting for one.
+  registrations: Arc<watch::Sender<u64>>,
 }
 
 impl ClientManager {
   pub(crate) fn new() -> Self {
     ClientManager {
       clients: Arc::new(RwLock::new(BTreeMap::new())),
+      registrations: Arc::new(watch::channel(0).0),
+    }
+  }
+
+  /// Call after a client publishes a Track or announces a namespace.
+  pub(crate) fn publishers_changed(&self) {
+    self.registrations.send_modify(|n| *n = n.wrapping_add(1));
+  }
+
+  /// The Track's publishers, waiting up to `timeout` for one to appear. Empty on timeout.
+  pub(crate) async fn wait_for_publishers(
+    &self,
+    full_track_name: &FullTrackName,
+    timeout: Duration,
+  ) -> Vec<Arc<MOQTClient>> {
+    // Subscribe before looking, so a registration in between is not missed.
+    let mut changes = self.registrations.subscribe();
+    let now = tokio::time::Instant::now();
+    let deadline = now
+      .checked_add(timeout)
+      .unwrap_or(now + Duration::from_secs(86400));
+    loop {
+      let publishers = self.get_publishers_for_track(full_track_name).await;
+      if !publishers.is_empty() {
+        return publishers;
+      }
+      match tokio::time::timeout_at(deadline, changes.changed()).await {
+        Ok(Ok(())) => continue,
+        // Timed out, or the manager is gone.
+        _ => return Vec::new(),
+      }
     }
   }
 

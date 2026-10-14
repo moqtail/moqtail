@@ -103,6 +103,7 @@ async fn main() -> Result<(), anyhow::Error> {
         }),
         forward: cli.forward,
         include_properties: cli.include_properties,
+        rendezvous_timeout: cli.rendezvous_timeout,
         update_forward_after: cli.update_forward_after,
         filter: cli.filter.unwrap_or(CliFilter::NextObject),
         filter_start_group: cli.filter_start_group,

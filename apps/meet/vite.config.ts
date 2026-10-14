@@ -25,6 +25,9 @@ export default defineConfig({
     alias: {
       '@': path.resolve(__dirname, 'src'),
     },
+    // Hoisted deps such as lucide-react would otherwise pick up the workspace root's
+    // React 18 (pulled in by client-js) instead of this app's React 19.
+    dedupe: ['react', 'react-dom'],
   },
   server: {
     port: 5173,

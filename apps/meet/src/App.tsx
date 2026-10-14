@@ -15,6 +15,7 @@
  */
 
 import { useRef, useState } from 'react';
+import { Mic, MicOff, PhoneOff, Settings, Video, VideoOff } from 'lucide-react';
 import { MOQtailClient } from 'moqtail/client';
 import { RequestError } from 'moqtail/model';
 import {
@@ -25,7 +26,7 @@ import {
   DefaultPublisherPriorityProperty,
 } from 'moqtail/model';
 import { createMOQtailClient } from './moq/client';
-import { GearIcon, SettingsPane } from './SettingsPane';
+import { SettingsPane } from './SettingsPane';
 import { setupSignalling } from './moq/signalling';
 import {
   announceNamespaces,
@@ -422,6 +423,15 @@ export default function App() {
     await client?.disconnect();
   }
 
+  async function handleLeave() {
+    await leaveRoom();
+    peerWorkersRef.current.forEach(w => w.terminate());
+    setPeers([]);
+    setIsReceiving(false);
+    setError(null);
+    setScreen('entrance');
+  }
+
   async function toggleCam() {
     if (isCamOn) {
       await stopPublishing();
@@ -463,7 +473,7 @@ export default function App() {
             title="Settings"
             className="absolute top-3 right-3 rounded-md p-1.5 text-neutral-500 transition-colors hover:bg-white/5 hover:text-neutral-200"
           >
-            <GearIcon />
+            <Settings className="h-4 w-4" />
           </button>
 
           <div className="flex items-center gap-2.5">
@@ -681,27 +691,35 @@ export default function App() {
       </div>
 
       {/* Controls */}
-      <div className="flex shrink-0 items-center justify-center gap-3 border-t border-white/6 px-4 py-3">
-        <button
-          onClick={toggleCam}
-          className={`rounded-lg px-8 py-2 text-sm font-medium transition-colors ${
-            isCamOn
-              ? 'bg-blue-600 text-white hover:bg-blue-500 active:bg-blue-700'
-              : 'bg-neutral-800 text-neutral-300 hover:bg-neutral-700 active:bg-neutral-900'
-          }`}
-        >
-          {isCamOn ? 'Cam On' : 'Cam Off'}
-        </button>
+      <div className="flex shrink-0 items-center justify-center gap-4 border-t border-white/6 px-6 py-4">
         <button
           onClick={toggleMic}
           disabled={!isCamOn}
-          className={`rounded-lg px-8 py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
-            isMicOn
-              ? 'bg-blue-600 text-white hover:bg-blue-500 active:bg-blue-700'
-              : 'bg-neutral-800 text-neutral-300 hover:bg-neutral-700 active:bg-neutral-900'
+          aria-label={isMicOn ? 'Turn microphone off' : 'Turn microphone on'}
+          title={isMicOn ? 'Turn microphone off' : 'Turn microphone on'}
+          className={`rounded-full p-3 text-white transition-all duration-200 disabled:cursor-not-allowed disabled:opacity-40 ${
+            isMicOn ? 'bg-neutral-700 hover:bg-neutral-600' : 'bg-red-600 hover:bg-red-700'
           }`}
         >
-          {isMicOn ? 'Mic On' : 'Mic Off'}
+          {isMicOn ? <Mic className="h-5 w-5" /> : <MicOff className="h-5 w-5" />}
+        </button>
+        <button
+          onClick={toggleCam}
+          aria-label={isCamOn ? 'Turn camera off' : 'Turn camera on'}
+          title={isCamOn ? 'Turn camera off' : 'Turn camera on'}
+          className={`rounded-full p-3 text-white transition-all duration-200 ${
+            isCamOn ? 'bg-neutral-700 hover:bg-neutral-600' : 'bg-red-600 hover:bg-red-700'
+          }`}
+        >
+          {isCamOn ? <Video className="h-5 w-5" /> : <VideoOff className="h-5 w-5" />}
+        </button>
+        <button
+          onClick={handleLeave}
+          aria-label="Leave"
+          title="Leave"
+          className="ml-8 rounded-full bg-red-600 p-3 text-white transition-all duration-200 hover:bg-red-700"
+        >
+          <PhoneOff className="h-5 w-5 rotate-135" />
         </button>
       </div>
     </div>

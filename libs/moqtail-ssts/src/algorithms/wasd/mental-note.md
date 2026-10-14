@@ -8,14 +8,18 @@ re-deriving it from scratch — or mistake an open question for an oversight.
 
 ## Decided, and why
 
-**The re-send gets half the negotiated buffer.** Not a fraction, not a knob, half
-— and it is part of what selecting this algorithm _means_: a subscriber that names
-this id has agreed that a group it is already late for gets half the window it
-asked for, once, in exchange for a chance to arrive at all instead of being
-discarded at the end of the full one. The reasoning: the relay is finding out
-whether the _lighter_ delivery makes a deadline, not whether the heavy one did.
-Measured against the deadline the heavy delivery already missed, the answer is
-known before the re-send starts, and it is always the same.
+**The re-send inherits the remaining buffer of the stream it replaces.** The
+old rule was half the negotiated buffer — a guess at how much of the window a
+re-send could still make. The measurement was available the whole time: the
+overtaken stream carries `age_ms`, so `subscriber_buffer_ms - age_ms` is exactly
+what the subscriber's window has left, and the replacement stream has precisely
+that much left too. The newest overtaken group donates, because it is the group
+the re-send replaces in the delivery order; v3's staging already prices the
+older groups one rung lower for having less. No buffer, no deadline: a set that
+negotiated nothing granted no permission to discard, and `None` leaves the
+relay's never-discard rule in charge. The 1 ms floor is an edge, not a policy:
+an overtaken stream already past the buffer leaves a re-send expired on
+arrival, and 0 in this contract means *never*, which is the opposite.
 
 **No buffer, no deadline.** A set that negotiated nothing granted no permission to
 discard its media, and there is nothing to halve. The request carries no deadline
@@ -100,9 +104,10 @@ setting. The numbers are in the README's "What it does badly".
    what happens today. The research branch had a cancel-notify path for them. Decide
    whether the tail they finish sending is worth the machinery, once it shows up in
    a capture.
-3. **`wasd.reads` is the only knob.** Whether the half is worth exposing (it should
-   probably stay fixed — it is semantics, not tuning), and whether the monitor's
-   depth thresholds deserve knobs before someone asks for them.
+3. **`wasd.reads` is the only knob.** Whether the inherited deadline is worth
+   exposing (it should probably stay fixed — it is semantics, not tuning), and
+   whether the monitor's depth thresholds deserve knobs before someone asks for
+   them.
 4. **The dropped `umin` / `rho` extension slots.** They were stored and unused in the
    research version; here they are gone rather than reserved, because reserving an
    id space in an unadopted draft is a promise nobody can keep. If the next

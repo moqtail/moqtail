@@ -383,7 +383,7 @@ impl AbrAlgorithm for WasdAlgorithm {
         .iter()
         .filter(|set| set.active && !set.members.is_empty())
       {
-        match (self.reach, resend_deadline_ms(set)) {
+        match (self.reach, resend_deadline_ms(input, set, after)) {
           (Reach::Nothing, _) => {}
           (Reach::Newest, Some(deadline)) => {
             selection.supersede_newest_with_deadline(set.id, deadline)
@@ -401,26 +401,56 @@ impl AbrAlgorithm for WasdAlgorithm {
   }
 }
 
-/// A re-sent group gets half the buffer the subscriber negotiated for the set.
+/// A re-sent group inherits the remaining buffer budget of the overtaken
+/// stream it replaces (`subscriber_buffer_ms - age_ms`).
 ///
 /// This is part of what choosing this algorithm means, and it is what makes the
 /// re-send worth its bytes: the relay is finding out whether the lighter
-/// delivery makes a deadline, not whether the heavy one did, and a group that
-/// misses a deadline it was already late for is a group the subscriber was going
-/// to discard anyway. Half, because a re-send starts behind the live stream it
-/// replaced and has no way to catch up; if it cannot make the deadline at half,
-/// it could not have made it at full either, and the subscriber is better off
-/// with the gap and the next group at the new quality.
+/// delivery makes a deadline, not whether the heavy one did. The budget is not
+/// invented at the decision but inherited: the overtaken stream has already
+/// spent part of the subscriber's window on the wire, and what it has left is
+/// exactly what its replacement has left too. Half the buffer was a guess at
+/// that number; this is the measurement.
 ///
-/// A set that negotiated no buffer has granted no permission to shorten, so
-/// `None` leaves the relay's rule of never discarding in charge. The floor of one
-/// is an edge rather than a policy: 0 means "never" in this contract, so halving
-/// a 1 ms buffer must not turn a very short deadline into an infinite one.
-fn resend_deadline_ms(set: &SetSnapshot) -> Option<u64> {
+/// The newest overtaken group donates its remaining time, because it is the
+/// group the re-send replaces in the delivery order — older overtaken groups
+/// have less of the window left, and v3's staging already prices them one rung
+/// lower for it. A re-send of a group whose stream had barely started inherits
+/// nearly the whole buffer, which is right: it has nearly the whole window.
+///
+/// A set that negotiated no buffer (`subscriber_buffer_ms == 0`) has granted
+/// no permission to discard media, so `None` leaves the relay's rule of never
+/// discarding in charge. The floor of 1 ms ensures that an overtaken stream
+/// whose age already meets or exceeds the buffer expires immediately rather
+/// than falling through to 0 (which means "never" in the relay contract).
+fn resend_deadline_ms(input: &AbrInput, set: &SetSnapshot, new_tier: usize) -> Option<u64> {
   if set.subscriber_buffer_ms == 0 {
     return None;
   }
-  Some((set.subscriber_buffer_ms / 2).max(1))
+
+  let rung = new_tier.min(set.members.len().saturating_sub(1));
+  let newest_overtaken_age_ms = input
+    .streams
+    .iter()
+    .filter(|s| {
+      s.set_id == set.id
+        && !s.resent
+        && set
+          .members
+          .iter()
+          .skip(rung + 1)
+          .any(|&(_, track_id)| track_id == s.relay_track_id)
+    })
+    .max_by_key(|s| s.group_id)
+    .map(|s| s.age_ms)
+    .unwrap_or(0);
+
+  Some(
+    set
+      .subscriber_buffer_ms
+      .saturating_sub(newest_overtaken_age_ms)
+      .max(1),
+  )
 }
 
 /// Whether there is anything for a mid-group decision to act on: a connection

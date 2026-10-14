@@ -46,8 +46,8 @@ fn set(id: u64, active: bool) -> SetSnapshot {
   }
 }
 
-/// The same set with the subscriber's reorder buffer filled in, which is what
-/// wasd halves for a group it causes to be re-sent.
+/// The same set with the subscriber's reorder buffer filled in, which is the
+/// budget a re-send inherits the remainder of.
 fn set_with_buffer(id: u64, subscriber_buffer_ms: u64) -> SetSnapshot {
   SetSnapshot {
     subscriber_buffer_ms,
@@ -68,6 +68,14 @@ fn stream(set_id: u64, track: u64, group: u64) -> StreamSnapshot {
     group_id: group,
     age_ms: 0,
     resent: false,
+  }
+}
+
+/// A live stream of `set_id` carrying `track`, `age_ms` into its delivery.
+fn stream_with_age(set_id: u64, track: u64, group: u64, age_ms: u64) -> StreamSnapshot {
+  StreamSnapshot {
+    age_ms,
+    ..stream(set_id, track, group)
   }
 }
 
@@ -234,7 +242,10 @@ fn a_v2_downshift_reaches_only_the_newest_overtaken_group() {
   let mut algorithm = WasdAlgorithm::v2();
   climb(&mut algorithm, &sets, 2);
 
-  let congested = [stream(1, track_at(1, 2), 4), stream(1, track_at(1, 2), 5)];
+  let congested = [
+    stream_with_age(1, track_at(1, 2), 4, 500),
+    stream_with_age(1, track_at(1, 2), 5, 250),
+  ];
   let selection = algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 40));
   assert_eq!(
     tier_of(&selection, 1),
@@ -255,8 +266,8 @@ fn a_v2_downshift_reaches_only_the_newest_overtaken_group() {
   );
   assert_eq!(
     selection.resend_deadline_ms(1),
-    Some(400),
-    "the re-send's deadline is halved here too: reach is the only thing v2 changes"
+    Some(550),
+    "the re-send inherits the remaining budget of the newest overtaken group: 800 - 250"
   );
 }
 
@@ -497,23 +508,26 @@ fn the_cautious_streak_returns_after_the_exploration_is_over() {
   assert_eq!(tier_of(&selection, 1), 3);
 }
 
-/// A re-sent group gets half the buffer the subscriber negotiated for the set.
-/// It starts behind the delivery it replaced, so the deadline it is measured
-/// against is the one it can still make, and choosing this algorithm is how the
-/// subscriber agreed to it.
+/// A re-sent group inherits the remaining buffer budget of the overtaken
+/// stream it replaces. The overtaken stream has already spent part of the
+/// subscriber's window on the wire; what it has left is exactly what its
+/// replacement has left, so the newest overtaken group donates its remainder.
 #[test]
-fn a_downshift_asks_for_half_the_negotiated_buffer_on_the_re_send() {
+fn a_downshift_inherits_the_remaining_buffer_of_the_newest_overtaken_stream() {
   let sets = [set_with_buffer(1, 800)];
   let mut algorithm = WasdAlgorithm::v3();
   climb(&mut algorithm, &sets, 2);
 
-  let congested = [stream(1, track_at(1, 2), 7), stream(1, track_at(1, 2), 8)];
+  let congested = [
+    stream_with_age(1, track_at(1, 2), 7, 500),
+    stream_with_age(1, track_at(1, 2), 8, 300),
+  ];
   let selection = algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 20));
   assert_eq!(tier_of(&selection, 1), 1, "the tier fell");
   assert_eq!(
     selection.resend_deadline_ms(1),
-    Some(400),
-    "the re-send is to be done with by half the buffer"
+    Some(500),
+    "the re-send's deadline is the newest overtaken group's remainder: 800 - 300"
   );
   assert!(
     selection.supersede[&1].age_staged,
@@ -548,16 +562,20 @@ fn a_set_that_negotiated_no_buffer_asks_for_no_deadline() {
   );
 }
 
-/// Half of 1 ms is 0, and 0 means never. A buffer that short is a rounding
-/// error rather than a policy, but the deadline must not become infinite
-/// because the arithmetic ran out of room.
+/// An overtaken stream whose age already meets or exceeds the buffer has no
+/// remaining budget to donate, and the re-send must expire immediately rather
+/// than fall through to 0 — 0 means "never" in this contract, so running out
+/// of arithmetic room must not turn an expired deadline into an infinite one.
 #[test]
-fn halving_a_buffer_of_one_millisecond_does_not_mean_never() {
-  let sets = [set_with_buffer(1, 1)];
+fn exhausted_remaining_buffer_clamps_to_one_millisecond_not_never() {
+  let sets = [set_with_buffer(1, 800)];
   let mut algorithm = WasdAlgorithm::v3();
   climb(&mut algorithm, &sets, 2);
 
-  let congested = [stream(1, track_at(1, 2), 7), stream(1, track_at(1, 2), 8)];
+  let congested = [
+    stream_with_age(1, track_at(1, 2), 7, 850),
+    stream_with_age(1, track_at(1, 2), 8, 850),
+  ];
   let selection = algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 20));
   assert_eq!(selection.resend_deadline_ms(1), Some(1));
 }

@@ -24,6 +24,7 @@ use moqtail::model::parameter::message_parameter::{
   MessageParameter, apply_message_parameter_update,
 };
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -260,21 +261,38 @@ impl TrackManager {
 
   /// Register a track alias mapping. Called when the publisher's SubscribeOk
   /// reveals the actual track_alias, or when a publisher registers via Publish.
+  #[must_use]
   pub async fn add_track_alias(
     &self,
     connection_id: usize,
     track_alias: u64,
     full_track_name: FullTrackName,
-  ) {
+  ) -> bool {
     {
       let mut track_aliases = self.track_aliases.write().await;
-      track_aliases.insert((connection_id, track_alias), full_track_name.clone());
+      match track_aliases.entry((connection_id, track_alias)) {
+        Entry::Occupied(existing) if *existing.get() != full_track_name => {
+          warn!(
+            "Track alias {}@{} already maps to {:?}; refusing {:?}",
+            track_alias,
+            connection_id,
+            existing.get(),
+            full_track_name
+          );
+          return false;
+        }
+        Entry::Occupied(_) => {}
+        Entry::Vacant(slot) => {
+          slot.insert(full_track_name.clone());
+        }
+      }
     }
     self.alias_registered.notify_waiters();
     info!(
       "Registered track alias {}@{} -> {:?}",
       track_alias, connection_id, full_track_name
     );
+    true
   }
 
   /// Resolves an alias to its track, waiting up to `timeout` for the control message
@@ -678,9 +696,11 @@ mod tests {
         )
       })
       .await;
-    manager
-      .add_track_alias(connection_id, track_alias, full_track_name.clone())
-      .await;
+    assert!(
+      manager
+        .add_track_alias(connection_id, track_alias, full_track_name.clone())
+        .await
+    );
     (track, created)
   }
 
@@ -1048,5 +1068,38 @@ mod tests {
     // An empty tuple is a prefix of any tuple, so it overlaps with all.
     assert!(namespace_prefixes_overlap(&t(""), &t("meet/room1")));
     assert!(namespace_prefixes_overlap(&t("meet/room1"), &t("")));
+  }
+
+  #[tokio::test]
+  async fn an_alias_already_used_for_another_track_is_refused() {
+    let manager = TrackManager::new();
+    let a = FullTrackName::try_new("meet/room1", "a").unwrap();
+    let b = FullTrackName::try_new("meet/room1", "b").unwrap();
+
+    assert!(manager.add_track_alias(1, 7, a.clone()).await);
+    assert!(!manager.add_track_alias(1, 7, b).await);
+
+    // The first track keeps the alias.
+    assert_eq!(manager.track_aliases.read().await.get(&(1, 7)), Some(&a));
+  }
+
+  #[tokio::test]
+  async fn an_alias_may_be_registered_again_for_the_same_track() {
+    let manager = TrackManager::new();
+    let name = track_name();
+
+    assert!(manager.add_track_alias(1, 7, name.clone()).await);
+    assert!(manager.add_track_alias(1, 7, name).await);
+  }
+
+  #[tokio::test]
+  async fn the_same_alias_from_different_publishers_does_not_collide() {
+    let manager = TrackManager::new();
+    let a = FullTrackName::try_new("meet/room1", "a").unwrap();
+    let b = FullTrackName::try_new("meet/room1", "b").unwrap();
+
+    // Aliases are scoped to the session that chose them.
+    assert!(manager.add_track_alias(1, 7, a).await);
+    assert!(manager.add_track_alias(2, 7, b).await);
   }
 }

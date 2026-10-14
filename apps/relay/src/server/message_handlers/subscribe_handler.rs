@@ -186,11 +186,33 @@ async fn upstream_subscribe_exchange(
         answered = true;
         match msg {
           Ok(ControlMessage::SubscribeOk(m)) => {
-            if let Err(e) =
+            if let Err(code) =
               handle_subscribe_ok_message(publisher.clone(), relay_request_id, *m, context.clone())
                 .await
             {
-              error!("Error handling upstream SubscribeOk: {:?}", e);
+              warn!(
+                "Unacceptable SubscribeOk from publisher {} for {:?}; closing its session: {:?}",
+                publisher.connection_id, full_track_name, code
+              );
+              // The publisher has answered, so the subscriber is owed a response
+              // as surely as if it had declined.
+              let err = RequestError::new(
+                RequestErrorCode::InternalError,
+                0,
+                ReasonPhrase::try_new("Upstream subscription failed".to_string()).unwrap(),
+              );
+              end_upstream_subscription(
+                relay_request_id,
+                publisher.connection_id,
+                &full_track_name,
+                err,
+                PublishDoneStatusCode::InternalError,
+                context.clone(),
+              )
+              .await;
+              publisher
+                .connection
+                .close(code.to_u32(), b"Unacceptable SUBSCRIBE_OK");
               return;
             }
           }
@@ -946,6 +968,19 @@ async fn handle_subscribe_ok_message(
     }
   };
 
+  // Register the publisher's alias for data stream routing.
+  if !context
+    .track_manager
+    .add_track_alias(
+      publisher.connection_id,
+      msg.track_alias,
+      full_track_name.clone(),
+    )
+    .await
+  {
+    return Err(TerminationCode::DuplicateTrackAlias);
+  }
+
   // Confirm the track with publisher's metadata
   let confirmed_now = {
     let mut track = track_arc.write().await;
@@ -963,18 +998,6 @@ async fn handle_subscribe_ok_message(
       .fetch_sub(1, Ordering::SeqCst);
     confirmed_now
   };
-
-  // Register the publisher's alias for data stream routing. Every accepting publisher
-  // needs this, whether or not it was the one that confirmed the track, or its Objects
-  // arrive on a stream the relay cannot route.
-  context
-    .track_manager
-    .add_track_alias(
-      publisher.connection_id,
-      msg.track_alias,
-      full_track_name.clone(),
-    )
-    .await;
 
   // Only the publisher that confirmed the track answers downstream. The others are now
   // serving it too, but the subscribers were told once already and their request

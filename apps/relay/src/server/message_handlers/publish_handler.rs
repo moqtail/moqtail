@@ -458,7 +458,7 @@ pub(crate) async fn ensure_upstream_forwarding(
 ) {
   let (origin, full_track_name) = {
     let track = track_arc.read().await;
-    (track.origin(), track.full_track_name.clone())
+    (track.origin, track.full_track_name.clone())
   };
   if origin != TrackOrigin::Publish {
     return;
@@ -1056,9 +1056,9 @@ async fn cleanup_published_track(
       // let every rendition of its set forward at once.
       track.remove_from_subscriber_switching_sets().await;
       drop(track);
-      context.track_manager.retire_track(&full_track_name).await;
+      context.track_manager.remove_track(&full_track_name).await;
       info!(
-        "cleanup_published_track: no publishers left for {:?} request_id={}",
+        "cleanup_published_track: removed track {:?} (no publishers left) request_id={}",
         full_track_name, request_id
       );
     }

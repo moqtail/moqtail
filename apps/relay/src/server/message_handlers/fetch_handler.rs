@@ -630,23 +630,15 @@ async fn send_upstream_fetch_for_range(
   let mut upstream = ControlStreamHandler::new(send, recv).with_peer_id(publisher.connection_id);
 
   {
-    // Use the publisher's track alias so handle_uni_stream can resolve the track on the response.
-    let publisher_alias = match track_read
+    // The response stream finds its track by the Full Track Name of this request, so a
+    // publisher that has given the relay no alias for the track can still serve it.
+    let publisher_alias = track_read
       .publisher_aliases
       .read()
       .await
       .get(&publisher.connection_id)
       .copied()
-    {
-      Some(alias) => alias,
-      None => {
-        warn!(
-          "send_upstream_fetch_for_range | No publisher alias found for connection {}",
-          publisher.connection_id
-        );
-        return None;
-      }
-    };
+      .unwrap_or_default();
     let req = FetchRequest {
       original_request_id: relay_request_id,
       requested_by: client.connection_id,

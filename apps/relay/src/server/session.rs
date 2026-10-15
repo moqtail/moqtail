@@ -557,6 +557,8 @@ impl Session {
 
     let mut first_object = true;
     let mut track_alias = 0u64;
+    // Set when this stream answers an upstream FETCH, which names its track.
+    let mut fetch_track_name: Option<moqtail::model::data::full_track_name::FullTrackName> = None;
     let mut stream_id: Option<StreamId> = None;
     let mut current_track: Option<Arc<RwLock<Track>>> = None;
     // Only subgroup streams count toward the Stream Count a publisher reports in
@@ -600,12 +602,18 @@ impl Session {
               } => {
                 trace!("received Fetch header: {:?}", header);
                 let fetch_request_id = header.request_id;
-                track_alias = client
+                // A fetch answers a request the relay made, which names the track.
+                // The publisher may have no alias for it: the relay can fetch a track
+                // nothing subscribes to.
+                if let Some(req) = client
                   .outgoing_fetch_requests
                   .read()
                   .await
                   .get(&fetch_request_id)
-                  .map_or(0, |r| r.track_alias);
+                {
+                  track_alias = req.track_alias;
+                  fetch_track_name = Some(req.fetch_request.get_full_track_name());
+                }
 
                 // Check if this stream is a response to a relay-initiated
                 // upstream fetch. If so, grab the sender to forward objects.
@@ -624,15 +632,20 @@ impl Session {
             // A data stream can outrun the control message that establishes its alias,
             // so wait briefly for it. An alias that never arrives is not a session
             // error: the stream is abandoned and the session carries on.
-            trace!("looking for track with alias: {:?}", track_alias);
-            current_track = context
-              .track_manager
-              .resolve_track_by_alias(
-                client.connection_id,
-                track_alias,
-                context.server_config.track_alias_resolution_timeout,
-              )
-              .await;
+            current_track = match fetch_track_name.take() {
+              Some(full_track_name) => context.track_manager.get_track(&full_track_name).await,
+              None => {
+                trace!("looking for track with alias: {:?}", track_alias);
+                context
+                  .track_manager
+                  .resolve_track_by_alias(
+                    client.connection_id,
+                    track_alias,
+                    context.server_config.track_alias_resolution_timeout,
+                  )
+                  .await
+              }
+            };
 
             let relay_track_id = match current_track.as_ref() {
               Some(t) => t.read().await.relay_track_id,

@@ -488,11 +488,11 @@ impl Session {
       }
     }
 
-    // Remove tracks that have no publishers left
+    // Tracks no publisher serves any more stay only if they hold cached Objects.
     for full_track_name in &tracks_with_no_publishers {
-      track_manager_cleanup.remove_track(full_track_name).await;
+      track_manager_cleanup.retire_track(full_track_name).await;
       info!(
-        "Removed track {:?} after publisher {} disconnect",
+        "No publishers left for {:?} after publisher {} disconnect",
         full_track_name, context.connection_id
       );
     }

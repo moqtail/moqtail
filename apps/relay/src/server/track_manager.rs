@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use super::subscription::Subscription;
-use super::track::Track;
+use super::track::{Release, Track};
 use crate::server::client::MOQTClient;
 use moqtail::model::common::tuple::Tuple;
 use moqtail::model::control::control_message::ControlMessage;
@@ -168,6 +168,35 @@ impl TrackManager {
         full_track_name
       );
     }
+  }
+
+  /// Carries out what became of a track whose upstream went away: a track that kept
+  /// its cache has the aliases it let go of cleared, and one holding nothing is removed.
+  pub async fn settle(&self, full_track_name: &FullTrackName, release: Release) {
+    match release {
+      Release::InUse => {}
+      Release::Kept(aliases) => {
+        for (connection_id, track_alias) in aliases {
+          self
+            .remove_publisher_alias(connection_id, track_alias)
+            .await;
+        }
+        info!(
+          "Kept track {:?} for what it has cached; nothing feeds it upstream",
+          full_track_name
+        );
+      }
+      Release::Empty => self.remove_track(full_track_name).await,
+    }
+  }
+
+  /// Lets go of a track nothing upstream serves any more (see `Track::retire`).
+  pub async fn retire_track(&self, full_track_name: &FullTrackName) {
+    let Some(track) = self.get_track(full_track_name).await else {
+      return;
+    };
+    let release = track.read().await.retire().await;
+    self.settle(full_track_name, release).await;
   }
 
   pub async fn get_track(&self, full_track_name: &FullTrackName) -> Option<Arc<RwLock<Track>>> {

@@ -745,6 +745,21 @@ async fn send_upstream_fetch_for_range(
   Some((relay_request_id, publisher, upstream_rx, response_rx))
 }
 
+/// The Object IDs of `group` that the range `start..=end` covers.
+fn group_bounds(group: u64, start: &Location, end: &Location) -> (u64, u64) {
+  let lo = if group == start.group {
+    start.object
+  } else {
+    0
+  };
+  let hi = if group == end.group {
+    end.object
+  } else {
+    u64::MAX
+  };
+  (lo, hi)
+}
+
 /// Whether a connected publisher could still serve Objects for this track, as
 /// its origin or via an announced namespace. Used to decide whether an empty
 /// local range is authoritative (INVALID_RANGE) or should be fetched upstream.
@@ -1039,10 +1054,23 @@ pub(crate) async fn serve_fetch_stream(
           Some((pending.relay_request_id, pending.publisher, pending.rx))
         }
         None => {
-          // The relay holds nothing of the groups in the gap, so ask for all of them.
-          let gap = LocationFilter::AbsoluteStartGroupEnd {
-            start: Location::new(gap_start, 0),
-            end_group: gap_end,
+          // The relay holds nothing of the groups in the gap. They are asked for only
+          // as far as the range reaches into the first and the last of them: what
+          // comes back is written downstream as it arrives, so anything outside the
+          // range would reach the subscriber.
+          let (lo, _) = group_bounds(gap_start, &start_location, &end_location);
+          let (_, hi) = group_bounds(gap_end, &start_location, &end_location);
+          let start = Location::new(gap_start, lo);
+          let gap = if hi == u64::MAX {
+            LocationFilter::AbsoluteStartGroupEnd {
+              start,
+              end_group: gap_end,
+            }
+          } else {
+            LocationFilter::AbsoluteRange {
+              start,
+              end: Location::new(gap_end, hi),
+            }
           };
           send_upstream_fetch_for_range(&client, &context, &track_read, gap, group_order)
             .await
@@ -1284,7 +1312,7 @@ pub(crate) async fn serve_fetch_stream(
 #[cfg(test)]
 mod tests {
   use super::{
-    FetchRangeError, concrete_end_location, empty_range_outcome, local_state_answers,
+    FetchRangeError, concrete_end_location, empty_range_outcome, group_bounds, local_state_answers,
     resolve_fetch_range, unresolved_fetch_range,
   };
   use moqtail::model::common::location::Location;
@@ -1528,5 +1556,14 @@ mod tests {
       concrete_end_location(loc(0, u64::MAX), None, None),
       loc(0, u64::MAX)
     );
+  }
+
+  #[test]
+  fn a_range_reaches_into_its_first_and_last_groups_only_as_far_as_it_says() {
+    let (start, end) = (loc(3, 4), loc(5, 2));
+    assert_eq!(group_bounds(3, &start, &end), (4, u64::MAX));
+    assert_eq!(group_bounds(4, &start, &end), (0, u64::MAX));
+    assert_eq!(group_bounds(5, &start, &end), (0, 2));
+    assert_eq!(group_bounds(3, &start, &loc(3, 9)), (4, 9));
   }
 }

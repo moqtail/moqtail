@@ -746,6 +746,30 @@ async fn send_upstream_fetch_for_range(
   Some((relay_request_id, publisher, upstream_rx, response_rx))
 }
 
+/// What to ask upstream for to fill the groups `first..=last`, which the cache does
+/// not hold, for a request of `start..=end`. Whatever comes back is forwarded as it
+/// arrives, so it must not reach outside the request.
+///
+/// Every group the request covers is whole except its own first and last, so the
+/// gap's whole groups are clipped to the request. For a request {5,3}..{9,2}: a gap of
+/// group 5 is {5,3} to the end of group 5, a gap of group 7 is all of group 7, a gap
+/// of group 9 is {9,0}..{9,2}, and a gap of all of them is the request itself.
+fn gap_filter(first: u64, last: u64, start: &Location, end: &Location) -> LocationFilter {
+  let gap_start = Location::new(first, 0).max(start.clone());
+  let gap_end = Location::new(last, u64::MAX).min(end.clone());
+  if gap_end.object == u64::MAX {
+    LocationFilter::AbsoluteStartGroupEnd {
+      start: gap_start,
+      end_group: last,
+    }
+  } else {
+    LocationFilter::AbsoluteRange {
+      start: gap_start,
+      end: gap_end,
+    }
+  }
+}
+
 /// Whether a connected publisher could still serve Objects for this track, as
 /// its origin or via an announced namespace. Used to decide whether an empty
 /// local range is authoritative (INVALID_RANGE) or should be fetched upstream.
@@ -1040,11 +1064,7 @@ pub(crate) async fn serve_fetch_stream(
           Some((pending.relay_request_id, pending.publisher, pending.rx))
         }
         None => {
-          // The relay holds nothing of the groups in the gap, so ask for all of them.
-          let gap = LocationFilter::AbsoluteStartGroupEnd {
-            start: Location::new(gap_start, 0),
-            end_group: gap_end,
-          };
+          let gap = gap_filter(gap_start, gap_end, &start_location, &end_location);
           send_upstream_fetch_for_range(&client, &context, &track_read, gap, group_order)
             .await
             .map(|(request_id, publisher, rx, _)| (request_id, publisher, rx))
@@ -1295,7 +1315,7 @@ pub(crate) async fn serve_fetch_stream(
 #[cfg(test)]
 mod tests {
   use super::{
-    FetchRangeError, concrete_end_location, empty_range_outcome, local_state_answers,
+    FetchRangeError, concrete_end_location, empty_range_outcome, gap_filter, local_state_answers,
     resolve_fetch_range, unresolved_fetch_range,
   };
   use moqtail::model::common::location::Location;
@@ -1538,6 +1558,27 @@ mod tests {
     assert_eq!(
       concrete_end_location(loc(0, u64::MAX), None, None),
       loc(0, u64::MAX)
+    );
+  }
+
+  #[test]
+  fn a_gap_is_asked_for_only_as_far_as_the_request_reaches() {
+    let (start, end) = (loc(5, 3), loc(9, 2));
+    let to_group_end =
+      |start: Location, end_group: u64| LocationFilter::AbsoluteStartGroupEnd { start, end_group };
+
+    // The request's first group starts at its Start Location.
+    assert_eq!(gap_filter(5, 5, &start, &end), to_group_end(loc(5, 3), 5));
+    // A group inside the request is whole.
+    assert_eq!(gap_filter(7, 7, &start, &end), to_group_end(loc(7, 0), 7));
+    // The request's last group stops at its End Location.
+    assert_eq!(gap_filter(9, 9, &start, &end), range(loc(9, 0), loc(9, 2)));
+    // A gap across the whole request is the request.
+    assert_eq!(gap_filter(5, 9, &start, &end), range(loc(5, 3), loc(9, 2)));
+    // A request that ends at the end of its last group asks for whole groups.
+    assert_eq!(
+      gap_filter(7, 9, &start, &loc(9, u64::MAX)),
+      to_group_end(loc(7, 0), 9)
     );
   }
 }

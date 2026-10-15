@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use bytes::{Buf, BufMut, BytesMut};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use tokio::sync::{Mutex, Notify, RwLock};
 use tokio::task::yield_now;
 use tokio::time::{Instant, sleep_until};
@@ -304,8 +304,14 @@ pub struct RecvDataStream {
   is_closed: Arc<AtomicBool>,
   malformed_track: Arc<AtomicBool>,
   started_read_task: Arc<AtomicBool>,
+  /// How the read task ended: `READ_RUNNING` until it does.
+  read_outcome: Arc<AtomicU8>,
   notify: Arc<Notify>,
 }
+
+const READ_RUNNING: u8 = 0;
+const READ_FINISHED: u8 = 1;
+const READ_ABORTED: u8 = 2;
 
 impl RecvDataStream {
   pub fn new(
@@ -320,12 +326,20 @@ impl RecvDataStream {
       is_closed: Arc::new(AtomicBool::new(false)),
       malformed_track: Arc::new(AtomicBool::new(false)),
       started_read_task: Arc::new(AtomicBool::new(false)),
+      read_outcome: Arc::new(AtomicU8::new(READ_RUNNING)),
       notify: Arc::new(Notify::new()),
     }
   }
 
   pub fn is_malformed_track(&self) -> bool {
     self.malformed_track.load(Ordering::Relaxed)
+  }
+
+  /// Whether the stream ended without a clean FIN: reset by the peer, idle past the
+  /// timeout, or unparseable. Objects it was still to carry never arrived. Settled
+  /// once `next_object` has returned `None`.
+  pub fn was_aborted(&self) -> bool {
+    self.read_outcome.load(Ordering::Acquire) == READ_ABORTED
   }
 
   pub async fn get_header_info(&self) -> Option<HeaderInfo> {
@@ -681,6 +695,7 @@ impl RecvDataStream {
       let objects = self.objects.clone();
       let header_info = self.header_info.clone();
       let notify = self.notify.clone();
+      let read_outcome = self.read_outcome.clone();
 
       // Spawn the read task that will continuously read from the stream
       // and insert parsed objects into the objects vector
@@ -696,8 +711,12 @@ impl RecvDataStream {
         )
         .await
         {
-          Ok(_) => debug!("RecvDataStream read task completed successfully"),
+          Ok(_) => {
+            read_outcome.store(READ_FINISHED, Ordering::Release);
+            debug!("RecvDataStream read task completed successfully")
+          }
           Err(e) => {
+            read_outcome.store(READ_ABORTED, Ordering::Release);
             error!("RecvDataStream read task encountered an error: {:?}", e);
             notify.notify_waiters();
             // if not connected error, do nothing and return, let the caller handle it
@@ -722,6 +741,12 @@ impl RecvDataStream {
 
       if self.is_closed.load(Ordering::Relaxed) {
         if self.objects.read().await.is_empty() {
+          // The read task closes the stream just before it ends; wait for it, so how
+          // it ended is known by the time the caller sees the end.
+          if self.read_outcome.load(Ordering::Acquire) == READ_RUNNING {
+            yield_now().await;
+            continue;
+          }
           debug!("Stream is closed, returning EOF");
           return (self, None);
         } else {
@@ -1125,6 +1150,62 @@ mod tests {
     }
   }
   */
+  /// Opens a fetch stream, writes one Object on it, then ends it with `end`. Returns
+  /// whether the reader saw the stream aborted once it reported the end.
+  async fn end_fetch_stream(end: impl AsyncFnOnce(&mut TransportSendStream)) -> bool {
+    let (send, recv) = setup_stream_pair().await;
+    let (fetch_header, fetch_req) = make_fetch_header_and_request();
+    let sender = SendDataStream::new(
+      Arc::new(Mutex::new(TransportSendStream::WebTransport(send))),
+      HeaderInfo::Fetch {
+        header: fetch_header,
+        fetch_request: Some(fetch_req.clone()),
+      },
+    )
+    .await
+    .unwrap();
+    let receiver = RecvDataStream::new(
+      TransportRecvStream::WebTransport(recv),
+      Arc::new(RwLock::new(BTreeMap::new())),
+    );
+
+    let bytes = FetchObject::Object(make_fetch_object())
+      .serialize(None, fetch_req.group_order())
+      .unwrap();
+    {
+      let mut stream = sender.send_stream.lock().await;
+      stream.write_all(&bytes).await.unwrap();
+      end(&mut stream).await;
+    }
+
+    let mut objects = 0;
+    while receiver.next_object().await.1.is_some() {
+      objects += 1;
+    }
+    assert!(objects <= 1);
+    receiver.was_aborted()
+  }
+
+  #[tokio::test]
+  async fn a_stream_ended_with_its_fin_is_not_aborted() {
+    let aborted = end_fetch_stream(async |stream: &mut TransportSendStream| {
+      stream.finish().await.unwrap();
+    })
+    .await;
+    assert!(!aborted);
+  }
+
+  #[tokio::test]
+  async fn a_reset_stream_is_aborted() {
+    let aborted = end_fetch_stream(async |stream: &mut TransportSendStream| {
+      // Give the Object time to leave before the reset discards what is unsent.
+      sleep(Duration::from_millis(50)).await;
+      stream.reset(0).unwrap();
+    })
+    .await;
+    assert!(aborted);
+  }
+
   #[tokio::test]
   async fn test_partial_object_completion() {
     let (send, recv) = setup_stream_pair().await;

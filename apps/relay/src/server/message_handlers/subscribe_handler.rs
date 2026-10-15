@@ -668,6 +668,14 @@ async fn handle_subscribe_message(
       )
     })
     .await;
+  // A track a FETCH created has no upstream subscription, so the SUBSCRIBE that takes
+  // it over forwards upstream as if it had created it.
+  let is_creator = is_creator
+    || track_arc
+      .read()
+      .await
+      .adopt(TrackOrigin::Subscribe, TrackStatus::Pending)
+      .await;
 
   // Scoped so the track guard is gone before anything below reaches for it again.
   let subscription = {
@@ -1250,7 +1258,7 @@ pub(crate) async fn cancel_subscription(
       } else {
         false
       };
-      (last, track.origin)
+      (last, track.origin())
     }; // track read lock dropped here
 
     // Only a SUBSCRIBE-created track is removed here: its upstream subscription

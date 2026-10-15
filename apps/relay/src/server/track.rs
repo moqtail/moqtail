@@ -36,7 +36,7 @@ use moqtail::model::property::track_property::TrackProperty;
 use moqtail::transport::data_stream_handler::HeaderInfo;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::{Mutex, Notify, RwLock, oneshot};
 use tracing::{debug, error, info, trace, warn};
@@ -131,6 +131,7 @@ impl PublisherStreamProgress {
 
 /// What created a track. Decides whether it survives its last subscriber.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
 pub enum TrackOrigin {
   /// Created by a downstream SUBSCRIBE. The relay owns the upstream
   /// subscription; with no subscribers left it is cancelled and the track goes
@@ -139,6 +140,21 @@ pub enum TrackOrigin {
   /// Created by an upstream PUBLISH. The publisher keeps pushing regardless of
   /// subscriber count, so the track outlives them.
   Publish,
+  /// Created by a downstream FETCH for a track nothing subscribes to or publishes.
+  /// It has no upstream subscription and no publisher, so nothing removes it: it
+  /// stays to hold what fetches bring in, and the cache evicts by its own rules.
+  /// The first SUBSCRIBE or PUBLISH to reach it takes it over (`adopt`).
+  Fetch,
+}
+
+impl TrackOrigin {
+  fn from_u8(value: u8) -> Self {
+    match value {
+      0 => Self::Subscribe,
+      1 => Self::Publish,
+      _ => Self::Fetch,
+    }
+  }
 }
 
 /// Lifecycle status of a track on the relay.
@@ -184,7 +200,9 @@ pub struct Track {
   /// Stable relay-assigned track identifier, independent of publisher aliases.
   pub relay_track_id: u64,
   pub full_track_name: FullTrackName,
-  pub origin: TrackOrigin,
+  /// A `TrackOrigin`. It changes when a FETCH-created track is taken over, which
+  /// must not wait on the track's lock: a fetch holds that for as long as it delivers.
+  origin: Arc<AtomicU8>,
   pub subscription_manager: SubscriptionManager,
   /// Maps publisher_connection_id -> publisher_track_alias for all active publishers.
   pub publisher_aliases: Arc<RwLock<BTreeMap<usize, u64>>>,
@@ -260,7 +278,7 @@ impl Track {
     Track {
       relay_track_id,
       full_track_name: full_track_name.clone(),
-      origin,
+      origin: Arc::new(AtomicU8::new(origin as u8)),
       subscription_manager: SubscriptionManager::new(
         relay_track_id,
         full_track_name,
@@ -284,6 +302,29 @@ impl Track {
       pending_upstream_subscribe_count: Arc::new(AtomicUsize::new(0)),
       upstream_forward: Arc::new(AtomicBool::new(false)),
     }
+  }
+
+  pub fn origin(&self) -> TrackOrigin {
+    TrackOrigin::from_u8(self.origin.load(Ordering::Acquire))
+  }
+
+  /// Hands a FETCH-created track over to a SUBSCRIBE or PUBLISH, keeping what is
+  /// cached. Returns true only for the caller that took it, which must then do what
+  /// creating the track would have: nothing upstream has been asked for it yet.
+  pub async fn adopt(&self, origin: TrackOrigin, status: TrackStatus) -> bool {
+    let taken = self
+      .origin
+      .compare_exchange(
+        TrackOrigin::Fetch as u8,
+        origin as u8,
+        Ordering::AcqRel,
+        Ordering::Acquire,
+      )
+      .is_ok();
+    if taken {
+      *self.status.write().await = status;
+    }
+    taken
   }
 
   /// Whether any subscription on this track currently wants Objects forwarded.

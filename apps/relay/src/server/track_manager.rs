@@ -1102,4 +1102,94 @@ mod tests {
     assert!(manager.add_track_alias(1, 7, a).await);
     assert!(manager.add_track_alias(2, 7, b).await);
   }
+
+  /// Takes or creates the track the way the FETCH handler does.
+  async fn fetch(manager: &TrackManager, full_track_name: &FullTrackName) -> Arc<RwLock<Track>> {
+    let (track, _) = manager
+      .get_or_create_track(full_track_name, |relay_track_id| {
+        Track::new(
+          relay_track_id,
+          full_track_name.clone(),
+          config(),
+          TrackStatus::Pending,
+          TrackOrigin::Fetch,
+        )
+      })
+      .await;
+    track
+  }
+
+  #[tokio::test]
+  async fn the_first_subscribe_takes_over_a_fetched_track() {
+    let manager = TrackManager::new();
+    let name = track_name();
+    let fetched = fetch(&manager, &name).await;
+
+    // Only the first one takes it, and so only it forwards the SUBSCRIBE upstream.
+    for (n, expected) in [(1, true), (2, false)] {
+      let (track, created) = manager
+        .get_or_create_track(&name, |_| unreachable!("the track exists"))
+        .await;
+      assert!(!created);
+      let adopted = track
+        .read()
+        .await
+        .adopt(TrackOrigin::Subscribe, TrackStatus::Pending)
+        .await;
+      assert_eq!(adopted, expected, "subscribe {n}");
+    }
+
+    let track = fetched.read().await;
+    assert_eq!(track.origin(), TrackOrigin::Subscribe);
+    assert!(matches!(track.get_status().await, TrackStatus::Pending));
+  }
+
+  #[tokio::test]
+  async fn a_publish_takes_over_a_fetched_track_and_confirms_it() {
+    let manager = TrackManager::new();
+    let name = track_name();
+    let fetched = fetch(&manager, &name).await;
+
+    let (track, created) = publish(&manager, 1, 7, &name).await;
+    assert!(!created);
+    assert!(
+      Arc::ptr_eq(&track, &fetched),
+      "the cache comes with the track"
+    );
+    assert!(
+      track
+        .read()
+        .await
+        .adopt(
+          TrackOrigin::Publish,
+          TrackStatus::Confirmed {
+            upstream_parameters: vec![],
+          },
+        )
+        .await
+    );
+
+    let track = track.read().await;
+    assert_eq!(track.origin(), TrackOrigin::Publish);
+    assert!(matches!(
+      track.get_status().await,
+      TrackStatus::Confirmed { .. }
+    ));
+  }
+
+  #[tokio::test]
+  async fn a_track_not_created_by_a_fetch_is_never_adopted() {
+    let manager = TrackManager::new();
+    let name = track_name();
+    let (track, _) = publish(&manager, 1, 7, &name).await;
+
+    assert!(
+      !track
+        .read()
+        .await
+        .adopt(TrackOrigin::Subscribe, TrackStatus::Pending)
+        .await
+    );
+    assert_eq!(track.read().await.origin(), TrackOrigin::Publish);
+  }
 }

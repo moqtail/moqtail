@@ -520,6 +520,31 @@ impl Track {
     self.subscription_manager.subscriber_count().await
   }
 
+  /// Caches an Object an upstream FETCH brought in. It is not handed to subscribers,
+  /// which get the live feed, nor checked against the Objects already seen: a group
+  /// evicted from the cache has to be fetchable into it again.
+  pub async fn cache_fetched_object(&self, object: &Object) {
+    if let Ok(fetch_object) = object.clone().try_into_fetch() {
+      self.cache.add_object(fetch_object).await;
+    }
+
+    if self.config.enable_object_logging {
+      let object_received_time = utils::passed_time_since_start();
+      self
+        .object_logger
+        .log_track_object(self.relay_track_id, object, object_received_time)
+        .await;
+    }
+
+    {
+      let mut largest_location = self.largest_location.write().await;
+      if object.location > *largest_location {
+        *largest_location = object.location.clone();
+      }
+    }
+    self.has_objects.store(true, Ordering::Relaxed);
+  }
+
   pub async fn new_subgroup_object(
     &self,
     stream_id: &StreamId,

@@ -665,7 +665,11 @@ impl Session {
 
           let track = current_track.as_ref().unwrap().read().await;
 
-          if let Err(e) = track
+          // What a fetch brings in is history, for the cache alone: subscribers get the
+          // live feed.
+          if !is_subgroup_stream {
+            track.cache_fetched_object(&object).await;
+          } else if let Err(e) = track
             .new_subgroup_object(
               &stream_id.clone().unwrap().clone(),
               &object,

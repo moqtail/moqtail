@@ -1068,9 +1068,9 @@ async fn cleanup_published_track(
       // let every rendition of its set forward at once.
       track.remove_from_subscriber_switching_sets().await;
       drop(track);
-      context.track_manager.remove_track(&full_track_name).await;
+      context.track_manager.retire_track(&full_track_name).await;
       info!(
-        "cleanup_published_track: removed track {:?} (no publishers left) request_id={}",
+        "cleanup_published_track: no publishers left for {:?} request_id={}",
         full_track_name, request_id
       );
     }

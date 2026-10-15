@@ -150,6 +150,18 @@ pub async fn handle(
           )
         })
         .await;
+      // A track a FETCH created becomes this publisher's, as if it had created it.
+      let created = created
+        || track_arc
+          .read()
+          .await
+          .adopt(
+            TrackOrigin::Publish,
+            TrackStatus::Confirmed {
+              upstream_parameters: vec![],
+            },
+          )
+          .await;
 
       // Wakes any data stream already parked waiting for this alias. The check above
       // can race a PUBLISH for another track that claims the alias first.
@@ -458,7 +470,7 @@ pub(crate) async fn ensure_upstream_forwarding(
 ) {
   let (origin, full_track_name) = {
     let track = track_arc.read().await;
-    (track.origin, track.full_track_name.clone())
+    (track.origin(), track.full_track_name.clone())
   };
   if origin != TrackOrigin::Publish {
     return;

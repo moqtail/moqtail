@@ -16,6 +16,7 @@ use crate::server::client::MOQTClient;
 use crate::server::message_handlers::parameters;
 use crate::server::session_context::{PendingRequest, SessionContext, UpstreamFetchEvent};
 use crate::server::stream_id::{SendStreamKey, StreamId};
+use crate::server::track::{Track, TrackOrigin, TrackStatus};
 use core::result::Result::{Err, Ok};
 use moqtail::model::common::location::Location;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
@@ -344,30 +345,49 @@ pub async fn handle(
       };
 
       let full_track_name = fetch.get_full_track_name();
-      let track = context.track_manager.get_track(&full_track_name).await;
       let location_filter = fetch.get_location_filter().clone();
       let requested_end = location_filter.end_location();
 
-      // TODO: send fetch message to the publisher
-      if track.is_none() {
-        // TODO: send fetch message to the possible publishers
-        // for now just return REQUEST_ERROR
-        send_request_error(
-          client.clone(),
-          request_id,
-          RequestErrorCode::DoesNotExist,
-          ReasonPhrase::try_new(String::from("Track does not exist")).unwrap(),
-        )
-        .await;
-        return Ok(());
-      }
+      // A track the relay does not have yet is created when a publisher can serve it,
+      // so the Objects the upstream FETCH brings in are cached for later fetches.
+      let track = match context.track_manager.get_track(&full_track_name).await {
+        Some(track) => track,
+        None => {
+          if context
+            .client_manager
+            .get_publishers_for_track(&full_track_name)
+            .await
+            .is_empty()
+          {
+            send_request_error(
+              client.clone(),
+              request_id,
+              RequestErrorCode::DoesNotExist,
+              ReasonPhrase::try_new(String::from("Track does not exist")).unwrap(),
+            )
+            .await;
+            return Ok(());
+          }
+          let (track, _) = context
+            .track_manager
+            .get_or_create_track(&full_track_name, |relay_track_id| {
+              Track::new(
+                relay_track_id,
+                full_track_name.clone(),
+                context.server_config,
+                TrackStatus::Pending,
+                TrackOrigin::Fetch,
+              )
+            })
+            .await;
+          track
+        }
+      };
 
       info!(
         "handle_fetch_messages | Fetching objects for {:?}",
         location_filter
       );
-
-      let track = track.unwrap();
       {
         let track_read = track.read().await;
 

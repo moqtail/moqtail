@@ -350,7 +350,7 @@ export default function App() {
     const videoTrack = client.trackSources.get(videoFTN.toString())!;
     const audioTrack = client.trackSources.get(audioFTN.toString())!;
 
-    const video = await client.publish(videoFTN, true, videoTrack.trackAlias!, undefined, [
+    const video = await client.publish(videoFTN, false, videoTrack.trackAlias!, undefined, [
       new DefaultPublisherPriorityProperty(128),
     ]);
     if (video instanceof RequestError) {
@@ -360,7 +360,7 @@ export default function App() {
       return null;
     }
 
-    const audio = await client.publish(audioFTN, true, audioTrack.trackAlias!, undefined, [
+    const audio = await client.publish(audioFTN, false, audioTrack.trackAlias!, undefined, [
       new DefaultPublisherPriorityProperty(0),
     ]);
     if (audio instanceof RequestError) {

@@ -191,6 +191,27 @@ pub async fn handle(
         );
       }
 
+      let m_clone = m.clone();
+      // FORWARD in PUBLISH is the publisher declaring its own behaviour: 0 means
+      // it sends nothing until we raise the state, omitted or 1 means it sends
+      // immediately. That declaration is the initial Forward State.
+      let publisher_forwards = matches!(
+        m_clone.parameters.get_param_or(
+          MessageParameterType::Forward,
+          MessageParameter::new_forward(true),
+        ),
+        MessageParameter::Forward { forward: true }
+      );
+
+      // if the forward parameter is true, set the track property
+      if publisher_forwards {
+        track_arc
+          .read()
+          .await
+          .upstream_forward
+          .store(publisher_forwards, Ordering::SeqCst);
+      }
+
       if created {
         info!(
           "Created track for publisher alias={}: {:?}",
@@ -250,37 +271,18 @@ pub async fn handle(
         );
       }
 
-      let m_clone = m.clone();
-      // FORWARD in PUBLISH is the publisher declaring its own behaviour: 0 means
-      // it sends nothing until we raise the state, omitted or 1 means it sends
-      // immediately. That declaration is the initial Forward State.
-      let publisher_forwards = matches!(
-        m_clone.parameters.get_param_or(
-          MessageParameterType::Forward,
-          MessageParameter::new_forward(true),
-        ),
-        MessageParameter::Forward { forward: true }
-      );
-      let track_arc = context.track_manager.get_track(&full_track_name).await;
-      if let Some(track_arc) = &track_arc {
-        track_arc
-          .read()
-          .await
-          .upstream_forward
-          .store(publisher_forwards, Ordering::Relaxed);
-      }
       // PUBLISH is answered by REQUEST_OK, which carries no subscription
       // parameters and no Track Properties. The relay leaves its subscription at
       // the defaults: SUBSCRIBER_PRIORITY 128, since it has no reason to rank a
       // pushed track above everything else, and no LOCATION_FILTER, since a relay
       // wants every Object, both to serve downstream filters and to fill its cache
       // for FETCH. GROUP_ORDER is applied per subscriber on the way out.
-      let publish_ok = Box::new(RequestOk::new(vec![]));
-
       info!(
-        "Accepted publish request for track: {:?} with alias: {}",
-        m_clone.track_name, m_clone.track_alias
+        "Accepted publish request for track: {:?} with alias: {}, forward: {}",
+        m_clone.track_name, m_clone.track_alias, publisher_forwards
       );
+
+      let publish_ok = Box::new(RequestOk::new(vec![]));
 
       stream_handler
         .send(&ControlMessage::RequestOk(publish_ok))
@@ -289,9 +291,9 @@ pub async fn handle(
       // A publisher that declared FORWARD=0 is told to send by a REQUEST_UPDATE
       // when a downstream subscriber already wants Objects, which can only follow
       // the PUBLISH_OK.
-      if let Some(track_arc) = &track_arc {
-        ensure_upstream_forwarding(track_arc, &context).await;
-      }
+
+      ensure_upstream_forwarding(&track_arc, &context).await;
+
       Ok(())
     }
 
@@ -456,7 +458,7 @@ pub(crate) async fn ensure_upstream_forwarding(
 ) {
   let (origin, full_track_name) = {
     let track = track_arc.read().await;
-    (track.origin, track.full_track_name.clone())
+    (track.origin(), track.full_track_name.clone())
   };
   if origin != TrackOrigin::Publish {
     return;
@@ -467,9 +469,10 @@ pub(crate) async fn ensure_upstream_forwarding(
     if !track.has_forwarding_subscriber().await {
       return;
     }
+
     // swap returns the previous value, so false means this call is the one that
     // set the flag and therefore owns the update; true means someone beat us.
-    if track.upstream_forward.swap(true, Ordering::Relaxed) {
+    if track.upstream_forward.swap(true, Ordering::SeqCst) {
       return;
     }
     let aliases = track.publisher_aliases.read().await;
@@ -1053,9 +1056,9 @@ async fn cleanup_published_track(
       // let every rendition of its set forward at once.
       track.remove_from_subscriber_switching_sets().await;
       drop(track);
-      context.track_manager.remove_track(&full_track_name).await;
+      context.track_manager.retire_track(&full_track_name).await;
       info!(
-        "cleanup_published_track: removed track {:?} (no publishers left) request_id={}",
+        "cleanup_published_track: no publishers left for {:?} request_id={}",
         full_track_name, request_id
       );
     }

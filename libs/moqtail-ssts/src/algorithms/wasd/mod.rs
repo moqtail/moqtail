@@ -93,6 +93,7 @@ use crate::Selection;
 use crate::SetSnapshot;
 use crate::Tuning;
 use crate::algorithms::wasd::state::LadderState;
+use crate::algorithms::wasd::state::SLOW_START_UPSHIFT_STREAK;
 use crate::algorithms::wasd::state::Step;
 
 #[cfg(test)]
@@ -314,13 +315,18 @@ impl AbrAlgorithm for WasdAlgorithm {
       .unwrap_or(1)
       .saturating_sub(1);
 
-    // The cautious streak the next step would need: the subscriber's own
-    // clock (buffer over cadence) floored against the step's relative bitrate
-    // jump, priced by the probing risk tolerance.
-    let upshift_streak = upshift_streak_needed(input, before, self.rho);
-
     match input.reason {
       DecisionReason::GroupBoundary | DecisionReason::PeriodicSample => {
+        // The cautious streak the next step would need: the subscriber's own
+        // clock (buffer over cadence) floored against the step's relative
+        // bitrate jump, priced by the probing risk tolerance. Computed inside
+        // the arm because a stream timeout is not a reading and never needs it.
+        let upshift_streak = upshift_streak_needed(input, before, self.rho);
+        // Whether the climb was still exploring when this reading arrived:
+        // that is what decides the streak an upshift here actually waited, and
+        // the log reports the waited number, not the computed U(k).
+        let exploring_before = self.ladder.exploring();
+
         // One reading, one method: what a sample may conclude is the state
         // machine's business. The boundary's reading is certain — two streams
         // of the delivered tier still open when a group's first Object
@@ -353,7 +359,11 @@ impl AbrAlgorithm for WasdAlgorithm {
             from,
             to,
             depth,
-            upshift_streak,
+            upshift_streak = if exploring_before {
+              SLOW_START_UPSHIFT_STREAK
+            } else {
+              upshift_streak.max(1)
+            },
             exploring = self.ladder.exploring(),
             "SSTS wasd: UPSHIFT"
           ),
@@ -412,7 +422,9 @@ impl AbrAlgorithm for WasdAlgorithm {
 }
 
 /// The number of consecutive uncongested groups `U(k)` required to step from
-/// `current_tier` (`k`) to `current_tier + 1`:
+/// `current_tier` (`k`) to `current_tier + 1`, taken as the maximum over the
+/// connection's active sets (one tier serves them all, so the climb answers
+/// to the most demanding ladder):
 ///
 /// ```text
 /// U_min = ceil(B / G)
@@ -435,13 +447,24 @@ impl AbrAlgorithm for WasdAlgorithm {
 fn upshift_streak_needed(input: &AbrInput, current_tier: usize, default_rho: f64) -> u64 {
   use crate::algorithms::asd::state::UPSHIFT_GOP_STREAK;
 
-  let Some(set) = input
+  // wasd serves one tier across every set on the connection, so the climb must
+  // be as cautious as the most demanding ladder it carries: take the largest
+  // U(k) any active set prices for this step. A connection with no active set
+  // has nothing to price and falls back to the written default.
+  input
     .sets
     .iter()
-    .find(|set| set.active && !set.members.is_empty())
-  else {
-    return UPSHIFT_GOP_STREAK;
-  };
+    .filter(|set| set.active && !set.members.is_empty())
+    .map(|set| set_upshift_streak(set, current_tier, default_rho))
+    .max()
+    .unwrap_or(UPSHIFT_GOP_STREAK)
+}
+
+/// The `U(k)` one set prices for the step out of `current_tier`: its own
+/// buffer-depth floor against its own relative bitrate jump, under its own
+/// signalled risk tolerance where it signalled one, else the operator's.
+fn set_upshift_streak(set: &SetSnapshot, current_tier: usize, default_rho: f64) -> u64 {
+  use crate::algorithms::asd::state::UPSHIFT_GOP_STREAK;
 
   // U_min: one buffer-depth of clean groups, or the written default when
   // either clock is unknown.

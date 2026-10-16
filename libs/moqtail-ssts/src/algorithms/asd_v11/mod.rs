@@ -40,6 +40,7 @@
 use crate::AbrAlgorithm;
 use crate::AbrAlgorithmFactory;
 use crate::AbrInput;
+use crate::DecisionReason;
 use crate::Selection;
 use crate::Tuning;
 use crate::algorithms::asd::state::DOWNSHIFT_DEPTH;
@@ -106,6 +107,26 @@ impl Default for AsdV11Algorithm {
 
 impl AbrAlgorithm for AsdV11Algorithm {
   fn decide(&mut self, input: &AbrInput) -> Selection {
+    // The index is shared by the connection's sets, so it cannot be higher than
+    // the longest ladder among them.
+    let max_index = input
+      .sets
+      .iter()
+      .map(|set| set.members.len())
+      .max()
+      .unwrap_or(1)
+      .saturating_sub(1);
+
+    // A per-object sample re-evaluates the group in flight but is not a new
+    // group: the slow-start and cautious streaks count uncongested groups, so
+    // the state machine is walked only at a group boundary or on a stream
+    // timeout (immediate congestion evidence). The tier in hand still serves
+    // the group in flight.
+    if input.reason == DecisionReason::PeriodicSample {
+      self.tier.clamp_to(max_index);
+      return crate::algorithms::serve_tier(input, self.tier.tier());
+    }
+
     let observation = Observation::new(
       input.active_stream_depth(),
       input.total_stream_timeouts_since_last_decision(),
@@ -129,16 +150,6 @@ impl AbrAlgorithm for AsdV11Algorithm {
     } else {
       UPSHIFT_GOP_STREAK
     });
-
-    // The index is shared by the connection's sets, so it cannot be higher than
-    // the longest ladder among them.
-    let max_index = input
-      .sets
-      .iter()
-      .map(|set| set.members.len())
-      .max()
-      .unwrap_or(1)
-      .saturating_sub(1);
 
     let event = self.tier.observe(observation);
     log_event(input, observation.depth, self.exploring, &event);

@@ -32,7 +32,7 @@
 
 pub(crate) mod state;
 
-use crate::{AbrAlgorithm, AbrAlgorithmFactory, AbrInput, Selection, Tuning};
+use crate::{AbrAlgorithm, AbrAlgorithmFactory, AbrInput, DecisionReason, Selection, Tuning};
 
 #[cfg(test)]
 mod tests;
@@ -85,35 +85,43 @@ impl Default for AsdAlgorithm {
 
 impl AbrAlgorithm for AsdAlgorithm {
   fn decide(&mut self, input: &AbrInput) -> Selection {
-    let observation = Observation::new(
-      input.active_stream_depth(),
-      input.total_stream_timeouts_since_last_decision(),
-    );
+    // A per-object sample re-evaluates the group in flight but is not a new
+    // group: ASD's streaks count uncongested groups, so the state machine is
+    // walked only at a group boundary or on a stream timeout (immediate
+    // congestion evidence). Feeding it the object-paced samples would fill a
+    // five-group streak several times inside one group and climb several rungs
+    // at once.
+    if input.reason != DecisionReason::PeriodicSample {
+      let observation = Observation::new(
+        input.active_stream_depth(),
+        input.total_stream_timeouts_since_last_decision(),
+      );
 
-    match self.state.observe(observation) {
-      Event::Held => {}
-      Event::CooldownExit => tracing::debug!(
-        client_id = input.client_id,
-        group_id = input.group_id,
-        depth = observation.depth,
-        "SSTS asd: depth back at target, leaving cooldown"
-      ),
-      Event::Upshift { from, to } => tracing::debug!(
-        client_id = input.client_id,
-        group_id = input.group_id,
-        from,
-        to,
-        "SSTS asd: UPSHIFT"
-      ),
-      Event::Downshift { from, to, cause } => tracing::debug!(
-        client_id = input.client_id,
-        group_id = input.group_id,
-        from,
-        to,
-        depth = observation.depth,
-        ?cause,
-        "SSTS asd: DOWNSHIFT"
-      ),
+      match self.state.observe(observation) {
+        Event::Held => {}
+        Event::CooldownExit => tracing::debug!(
+          client_id = input.client_id,
+          group_id = input.group_id,
+          depth = observation.depth,
+          "SSTS asd: depth back at target, leaving cooldown"
+        ),
+        Event::Upshift { from, to } => tracing::debug!(
+          client_id = input.client_id,
+          group_id = input.group_id,
+          from,
+          to,
+          "SSTS asd: UPSHIFT"
+        ),
+        Event::Downshift { from, to, cause } => tracing::debug!(
+          client_id = input.client_id,
+          group_id = input.group_id,
+          from,
+          to,
+          depth = observation.depth,
+          ?cause,
+          "SSTS asd: DOWNSHIFT"
+        ),
+      }
     }
 
     // The index is shared by the connection's sets, so it cannot be higher

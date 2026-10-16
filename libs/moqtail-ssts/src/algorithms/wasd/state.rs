@@ -133,6 +133,10 @@ impl LadderState {
       // At the group boundary (before the new group's stream opens), a depth
       // <= DEPTH_TARGET means the previous group drained on time.
       if depth <= DEPTH_TARGET {
+        // A clean boundary also clears any stale mid-group reading, so a lone
+        // deep sample before the boundary can never carry across it — or
+        // across the end of exploration — into a spurious monitor fire.
+        self.monitor_streak = 0;
         self.clear_streak += 1;
         let needed = if self.exploring {
           SLOW_START_UPSHIFT_STREAK

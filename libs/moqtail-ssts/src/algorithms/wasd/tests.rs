@@ -590,7 +590,8 @@ fn u_min_scales_with_subscriber_buffer_and_group_span() {
   let congested = [stream(1, track_at(1, 1), 1), stream(1, track_at(1, 1), 2)];
   algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 1));
 
-  // U(0) = max(4, ceil(0.944 / 1.0)) = 4: three clean groups are not enough.
+  // U(0) = max(4, ceil((1800 - 850) / 850 / 1.0)) = max(4, ceil(1.118)) =
+  // max(4, 2) = 4: the floor governs, so three clean groups are not enough.
   for group in 2..5 {
     let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, group));
     assert_eq!(tier_of(&selection, 1), 0, "U_min = 4, not fewer");
@@ -633,6 +634,42 @@ fn smaller_rho_increases_upshift_streak_for_large_bitrate_jumps() {
       tier_of(&selection, 1),
       0,
       "rho = 0.15 prices this step at 8"
+    );
+  }
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 8));
+  assert_eq!(
+    tier_of(&selection, 1),
+    1,
+    "the eighth clean group buys the jump"
+  );
+}
+
+/// The subscriber's own signalled tolerance overrides the operator's default
+/// for its own set: a trailing `algorithm_params` percentage (`1..=100`)
+/// becomes rho. Here the algorithm is built at the default rho = 1.0, but the
+/// set carries `15`, so the 850 -> 1800 jump is priced at rho = 0.15 - eight
+/// clean groups - not the four the default would allow.
+#[test]
+fn a_signalled_algorithm_param_overrides_rho() {
+  let sets = [SetSnapshot {
+    algorithm_params: vec![15],
+    ..ladder_set(1, &[850, 1800, 3500, 6000], 1600, 500)
+  }];
+  let mut algorithm = WasdAlgorithm::new();
+  let empty: Vec<StreamSnapshot> = Vec::new();
+
+  // Congestion at the bottom tier ends the exploration without a fall.
+  let congested = [stream(1, track_at(1, 0), 0), stream(1, track_at(1, 0), 1)];
+  algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 0));
+
+  // At the default rho = 1.0 this step would cost max(4, ceil(1.118)) = 4; the
+  // signalled 15 drives it to rho = 0.15, so seven clean groups are not enough.
+  for group in 1..8 {
+    let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, group));
+    assert_eq!(
+      tier_of(&selection, 1),
+      0,
+      "the signalled rho = 0.15 prices this step at 8, not the default 4"
     );
   }
   let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 8));

@@ -43,8 +43,7 @@ use moqtail::transport::data_stream_handler::SubscribeRequest;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
-use tokio::sync::RwLock;
-use tokio::sync::oneshot;
+use tokio::sync::{Notify, RwLock, oneshot};
 use tracing::{error, info, trace, warn};
 
 async fn add_subscription(
@@ -119,25 +118,27 @@ async fn upstream_subscribe_exchange(
   let relay_request_id = new_sub.request_id;
   let full_track_name = new_sub.get_full_track_name();
   let mut upstream = ControlStreamHandler::new(send, recv).with_peer_id(publisher.connection_id);
+  // Register a cancel signal on the track so the last downstream unsubscribe
+  // resets this upstream stream and the publisher observes CANCELLED.
+  let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
+  let malformed_cancel = Arc::new(Notify::new());
+  if let Some(track) = context.track_manager.get_track(&full_track_name).await {
+    let track = track.read().await;
+    track
+      .upstream_subscribe_cancellers
+      .lock()
+      .await
+      .push(cancel_tx);
+    track
+      .register_upstream_request(publisher.connection_id, &malformed_cancel)
+      .await;
+  }
   if let Err(e) = upstream
     .send(&ControlMessage::Subscribe(Box::new(new_sub)))
     .await
   {
     error!("Failed to send upstream SUBSCRIBE: {:?}", e);
     return;
-  }
-
-  // Register a cancel signal on the track so the last downstream unsubscribe
-  // resets this upstream stream and the publisher observes CANCELLED.
-  let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
-  if let Some(track) = context.track_manager.get_track(&full_track_name).await {
-    track
-      .read()
-      .await
-      .upstream_subscribe_cancellers
-      .lock()
-      .await
-      .push(cancel_tx);
   }
 
   // A publisher owes exactly one SUBSCRIBE_OK or REQUEST_ERROR. One that stays
@@ -160,6 +161,10 @@ async fn upstream_subscribe_exchange(
         // recv half with the same CANCELLED code, so the publisher sees a
         // coherent cancellation on both halves rather than a STOP_SENDING(0)
         // (InternalError) emitted when the handler is dropped.
+        break;
+      }
+      _ = malformed_cancel.notified() => {
+        info!("Malformed track; resetting upstream subscribe stream (CANCELLED)");
         break;
       }
       _ = &mut answer_deadline, if !answered => {

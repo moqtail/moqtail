@@ -4,7 +4,7 @@ description = "Draft 18-compliant Media-over-QUIC (MoQ) protocol library."
 keywords = ["moq", "quic", "media", "protocol"]
 repository = "https://github.com/moqtail/moqtail"
 homepage = "https://moqtail.dev"
-version = "0.15.0"
+version = "0.16.0"
 edition = "2024"
 license = "Apache-2.0"
 

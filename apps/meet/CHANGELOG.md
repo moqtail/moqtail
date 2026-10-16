@@ -1,5 +1,17 @@
 # meet
 
+## 0.3.0
+
+### Minor Changes
+
+- [#440](https://github.com/moqtail/moqtail/pull/440) [`55eaa12`](https://github.com/moqtail/moqtail/commit/55eaa1234fd394c13ae0c2ea0f50e60e66605578) Thanks [@zafergurel](https://github.com/zafergurel)! - Add a settings pane for the relay address, timetravel-style call controls with a leave button, and a pane that lists the control and signalling messages sent and received with timestamps, filterable by kind and type, and a Data tab with per-track counters for streams, groups, subgroups, objects, bytes, rates, interarrival time, jitter and latency in each direction
+
+- [#440](https://github.com/moqtail/moqtail/pull/440) [`55eaa12`](https://github.com/moqtail/moqtail/commit/55eaa1234fd394c13ae0c2ea0f50e60e66605578) Thanks [@zafergurel](https://github.com/zafergurel)! - Ask for a room name when joining. Each room gets its own namespace, `moqtail/demo/<room>`, with its own signalling track and its users' namespaces under it, so only people in the same room see each other
+
+### Patch Changes
+
+- [#440](https://github.com/moqtail/moqtail/pull/440) [`55eaa12`](https://github.com/moqtail/moqtail/commit/55eaa1234fd394c13ae0c2ea0f50e60e66605578) Thanks [@zafergurel](https://github.com/zafergurel)! - Stop sending audio objects while the mic is muted: a muted track still yields silence, which was encoded and sent
+
 ## 0.2.0
 
 ### Minor Changes

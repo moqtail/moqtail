@@ -58,18 +58,28 @@ itself to the bottom rung on a healthy link.
 ## When it decides
 
 On every sample the host takes — the group boundary and the periodic sample of
-the group in progress alike. One depth, one persistence counter: a single deep
-reading is ignored, because the tail of a perfectly healthy group produces
-exactly one (the next group's stream opens before the previous one has
-drained), and two in a row at the downshift depth or above step down one rung
-wherever they land. The boundary has no monopoly on acting, and no veto.
-The streak re-arms when it fires, and the dip costs a full fresh clean streak
-before the climb resumes.
+the group in progress alike — through one state machine. What the two samples
+may conclude differs by what they can see.
 
-Upshifts are the asymmetric half, and the relay's gate is why: they are
-evaluated only on the first sample of a new group — the moment the forward gate
-is waiting to record that group's track decision — so the tier never moves
-mid-group, and `current_index` never disagrees with what is on the wire.
+The boundary's reading is certain, and acts alone: when a group's first Object
+arrives and two streams of the delivered tier are still open, the delivery is
+two groups behind — the new group's stream has not opened yet, so the handoff
+overlap cannot fake it. One such reading steps down one rung and ends the
+exploration.
+
+The mid-group reading is not certain, and waits: a single deep sample is the
+normal handoff overlap — the new group's stream open while the previous one's
+FIN-ACK is still in flight — so the monitor acts only on two consecutive
+congested samples (`wasd.reads`). A reading that does not fire touches
+nothing, least of all the clean streak the climb counts on; a downshift that
+does fire costs a full fresh clean streak before the climb resumes, and the
+streak re-arms so one burst cannot walk the ladder tick by tick. The relay
+hands the mid-group arm its first sample a full decision interval after the
+boundary, never sooner.
+
+Upshifts belong to the boundary alone — the moment the forward gate is waiting
+to record that group's track — so the tier never moves mid-group, and
+`current_index` never disagrees with what is on the wire.
 
 ## What a downshift does to the groups it overtook
 
@@ -97,9 +107,8 @@ out, not about whether one happens.
 
 ## Knobs
 
-`wasd.reads` (default 2): how many consecutive congested readings — boundary
-or mid-group, one counter — the monitor waits for. It is the only one, and it
-is the one worth moving, because it is a
+`wasd.reads` (default 2): how many consecutive congested mid-group readings
+the monitor waits for. It is the only one, and it is the one worth moving, because it is a
 statement about media pacing: on a 25 fps stream with 100 ms groups the default
 filters a normal group tail, and on media whose groups are seconds long the
 window it takes to see real congestion inside one is much longer. Setting it to

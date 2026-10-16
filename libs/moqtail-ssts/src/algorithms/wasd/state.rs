@@ -29,12 +29,11 @@ use crate::algorithms::asd::state::UPSHIFT_GOP_STREAK;
 /// Slow start: one uncongested group is enough to try the next tier.
 pub(crate) const SLOW_START_UPSHIFT_STREAK: u64 = 1;
 
-/// Consecutive depth samples, at the downshift depth or above, before the
-/// monitor acts — boundary or mid-group, one counter for both. A healthy
-/// group's tail shows one such reading, because the next group's stream opens
-/// before the previous one has finished draining; congestion shows it on every
-/// reading until it is dealt with. The streak re-arms when it fires, so one
-/// burst cannot chain.
+/// Consecutive mid-group depth samples, at the downshift depth or above,
+/// before the monitor acts. A single such reading is normal right after a new
+/// group's stream opens, while the previous group's FIN-ACK is still in
+/// flight; congestion shows it on every reading until it is dealt with. The
+/// streak re-arms when it fires, so one burst cannot chain.
 pub(crate) const DOWNSHIFT_SUBGROUP_READS: u32 = 2;
 
 /// What one depth sample did.
@@ -59,9 +58,10 @@ pub(crate) struct LadderState {
   current_index: usize,
   /// Consecutive uncongested group boundaries at or below `DEPTH_TARGET`.
   clear_streak: u64,
-  /// Consecutive samples (boundary or mid-group) at or above `DOWNSHIFT_DEPTH`.
+  /// Consecutive mid-group samples at or above `DOWNSHIFT_DEPTH`.
   monitor_streak: u32,
-  /// How many consecutive congested samples the monitor waits for before acting.
+  /// How many consecutive congested mid-group samples the monitor waits for
+  /// before acting.
   monitor_reads: u32,
   /// Until the ladder's top or the first sustained congestion, whichever comes first.
   exploring: bool,
@@ -110,16 +110,10 @@ impl LadderState {
 
   /// Evaluate one depth sample for `group_id`.
   ///
-  /// Every sample (whether at the start of a new group or mid-group) feeds the
-  /// same congestion persistence counter (`monitor_streak`). Any reading above
-  /// `DEPTH_TARGET` immediately zeroes `clear_streak`, and `monitor_reads`
-  /// consecutive readings at or above `DOWNSHIFT_DEPTH` end exploration and
-  /// step down one rung.
-  ///
-  /// Upshifts are evaluated only on the first sample of a new `group_id`
-  /// (`is_new_group`), which is the moment the relay's forward gate is waiting
-  /// to record that group's track decision. This keeps `current_index` strictly
-  /// in sync with the tier actually being delivered on the wire.
+  /// The first sample for a new `group_id` (`is_new_group`) arrives when the
+  /// forward gate requests a decision before opening the new group's stream.
+  /// Subsequent samples for the same `group_id` arrive while the group is in
+  /// flight.
   pub(crate) fn on_sample(
     &mut self,
     depth: u64,
@@ -130,57 +124,76 @@ impl LadderState {
     let is_new_group = self.last_group_id != Some(group_id);
     self.last_group_id = Some(group_id);
 
-    if depth >= DOWNSHIFT_DEPTH {
-      self.clear_streak = 0;
-      self.monitor_streak = self.monitor_streak.saturating_add(1);
-      if self.monitor_streak >= self.monitor_reads && may_act {
-        // Sustained congestion ends the exploration whether or not a downshift
-        // was possible: a connection already at the bottom tier has still
-        // learned that the path is narrower than the ladder.
-        self.exploring = false;
-        self.monitor_streak = 0;
-        if self.current_index > 0 {
-          let from = self.current_index;
-          self.current_index -= 1;
-          return Step::Downshift {
-            from,
-            to: self.current_index,
-          };
-        }
-      }
-      return Step::Held;
-    }
-
-    self.monitor_streak = 0;
-
-    if depth > DEPTH_TARGET {
-      self.clear_streak = 0;
-      return Step::Held;
-    }
-
     if is_new_group {
-      self.clear_streak += 1;
-      let needed = if self.exploring {
-        SLOW_START_UPSHIFT_STREAK
-      } else {
-        UPSHIFT_GOP_STREAK
-      };
-      if self.clear_streak >= needed {
-        let from = self.current_index;
-        let to = (from + 1).min(max_index);
-        self.current_index = to;
-        self.clear_streak = 0;
-        // The exploration ends at the top of the ladder too, and only once a
-        // set has a subscriber: while tracks are still being assigned the
-        // ladder itself is still growing, and calling that the top would end
-        // the exploration on a connection that has barely started.
-        if self.exploring && self.current_index >= max_index && may_act {
-          self.exploring = false;
+      // At the group boundary (before the new group's stream opens), a depth
+      // <= DEPTH_TARGET means the previous group drained on time.
+      if depth <= DEPTH_TARGET {
+        self.clear_streak += 1;
+        let needed = if self.exploring {
+          SLOW_START_UPSHIFT_STREAK
+        } else {
+          UPSHIFT_GOP_STREAK
+        };
+        if self.clear_streak >= needed {
+          let from = self.current_index;
+          let to = (from + 1).min(max_index);
+          self.current_index = to;
+          self.clear_streak = 0;
+          if self.exploring && self.current_index >= max_index && may_act {
+            self.exploring = false;
+          }
+          if to > from {
+            return Step::Upshift { from, to };
+          }
         }
-        if to > from {
-          return Step::Upshift { from, to };
-        }
+        return Step::Held;
       }
+
+      // Congested at the group boundary: reset streaks and end exploration.
+      // Two streams of the delivered tier still open when a group's first
+      // Object arrives means two groups behind — the handoff overlap cannot
+      // produce that, because the new group's stream has not opened yet — so
+      // the boundary needs no streak to be certain.
+      self.clear_streak = 0;
+      self.monitor_streak = 0;
+      if self.exploring && depth >= DOWNSHIFT_DEPTH {
+        self.exploring = false;
+      }
+      if depth >= DOWNSHIFT_DEPTH && self.current_index > 0 {
+        let from = self.current_index;
+        self.current_index -= 1;
+        return Step::Downshift {
+          from,
+          to: self.current_index,
+        };
+      }
+      return Step::Held;
+    }
+
+    // Intra-group sample (`!is_new_group`):
+    // A single reading of `depth >= DOWNSHIFT_DEPTH` is normal right after the
+    // new group's stream opens while the previous group's FIN-ACK is still in
+    // flight. Only sustained congestion across `monitor_reads` consecutive
+    // samples resets `clear_streak` and triggers a mid-group downshift.
+    self.monitor_streak = if depth >= DOWNSHIFT_DEPTH {
+      self.monitor_streak.saturating_add(1)
+    } else {
+      0
+    };
+
+    if !self.exploring
+      && self.current_index > 0
+      && self.monitor_streak >= self.monitor_reads
+      && may_act
+    {
+      let from = self.current_index;
+      self.current_index -= 1;
+      self.monitor_streak = 0;
+      self.clear_streak = 0;
+      return Step::Downshift {
+        from,
+        to: self.current_index,
+      };
     }
 
     Step::Held

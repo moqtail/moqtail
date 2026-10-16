@@ -42,22 +42,26 @@
 //! tier, which is the retroactive versions' measured shortcoming the
 //! README keeps under its own heading.
 //!
-//! **One clock, one monitor.** Groups are the algorithm's clock but not the
-//! path's: bandwidth moves faster than 25 groups a second. The same depth is
-//! therefore read on every sample the host takes — at the group boundary and
-//! mid-group alike — and one persistence counter feeds both: readings that stay
-//! at the downshift depth for
-//! `DOWNSHIFT_SUBGROUP_READS` consecutive samples downshift wherever they
-//! land, boundary included. Requiring the streak rather than the last reading
-//! is what makes this safe: the tail of a healthy group produces a
-//! single deep reading, because the next group's stream opens before the
-//! previous one has drained, and real congestion produces it until something is
-//! done. The streak re-arms when it fires, so one burst cannot walk the ladder
-//! tick by tick, and a dip costs a full fresh clean streak before the climb
-//! resumes. Upshifts are the asymmetric half, and the relay's forward gate is
-//! why: they are evaluated only on the first sample of a new group — the
-//! moment the gate is waiting to record that group's track — so the tier never
-//! moves mid-group and never disagrees with what is on the wire.
+//! **One clock, two certainties.** Groups are the algorithm's clock but not
+//! the path's: bandwidth moves faster than 25 groups a second, so the same
+//! depth is read on every sample the host takes — at the group boundary and
+//! mid-group alike — through one state-machine method. What the two samples
+//! may conclude differs by how much they can see. The boundary's reading is
+//! certain: two streams of the delivered tier still open when a group's first
+//! Object arrives means the delivery is two groups behind, because the new
+//! group's stream has not opened yet — so one congested boundary reading
+//! downshifts alone and ends the exploration. The mid-group reading is not:
+//! a single deep sample is the normal handoff overlap, the new group's stream
+//! open while the previous one's FIN-ACK is still in flight, so the monitor
+//! waits for
+//! `DOWNSHIFT_SUBGROUP_READS` consecutive congested samples — and a reading
+//! that does not fire touches nothing, least of all the clean streak the
+//! climb counts on. The streak re-arms when it fires, so one burst cannot
+//! walk the ladder tick by tick, and a fired downshift costs a full fresh
+//! clean streak before the climb resumes. Upshifts belong to the boundary
+//! alone — the moment the relay's forward gate is waiting to record that
+//! group's track — so the tier never moves mid-group and never disagrees with
+//! what is on the wire.
 //!
 //! **A downshift that reaches back.** When the tier falls, the groups still in
 //! flight at the higher member were overtaken by a decision they are still
@@ -293,15 +297,17 @@ impl AbrAlgorithm for WasdAlgorithm {
 
     match input.reason {
       DecisionReason::GroupBoundary | DecisionReason::PeriodicSample => {
-        // One reading, one clock: the same depth feeds the same persistence
-        // counter whether the host took it at a group boundary or mid-group.
-        // The algorithm's whole state is this one number, and a tier change is
-        // the rare outcome: every reading goes to the log (the run's dashboard
-        // is built from these lines), the changes log on top of them with more.
-        // What the reading is allowed to do is the state machine's business:
-        // downshifts fire wherever the streak fills, upshifts only on the
-        // first sample of a new group — the moment the relay's forward gate is
-        // waiting to record that group's track.
+        // One reading, one method: what a sample may conclude is the state
+        // machine's business. The boundary's reading is certain — two streams
+        // of the delivered tier still open when a group's first Object
+        // arrives is two groups behind — and acts alone; the mid-group
+        // reading needs the monitor's streak, because the handoff overlap
+        // produces its depth all by itself. Upshifts belong to the boundary
+        // alone: the moment the relay's forward gate is waiting to record
+        // that group's track. The algorithm's whole state is this one number,
+        // and a tier change is the rare outcome: every reading goes to the
+        // log (the run's dashboard is built from these lines), the changes
+        // log on top of them with more.
         tracing::debug!(
           client_id = input.client_id,
           group_id = input.group_id,

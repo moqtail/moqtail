@@ -16,6 +16,7 @@ use crate::server::client::MOQTClient;
 use crate::server::message_handlers::parameters;
 use crate::server::session_context::{PendingRequest, SessionContext, UpstreamFetchEvent};
 use crate::server::stream_id::{SendStreamKey, StreamId};
+use crate::server::track::{Track, TrackOrigin, TrackStatus};
 use core::result::Result::{Err, Ok};
 use moqtail::model::common::location::Location;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
@@ -344,30 +345,49 @@ pub async fn handle(
       };
 
       let full_track_name = fetch.get_full_track_name();
-      let track = context.track_manager.get_track(&full_track_name).await;
       let location_filter = fetch.get_location_filter().clone();
       let requested_end = location_filter.end_location();
 
-      // TODO: send fetch message to the publisher
-      if track.is_none() {
-        // TODO: send fetch message to the possible publishers
-        // for now just return REQUEST_ERROR
-        send_request_error(
-          client.clone(),
-          request_id,
-          RequestErrorCode::DoesNotExist,
-          ReasonPhrase::try_new(String::from("Track does not exist")).unwrap(),
-        )
-        .await;
-        return Ok(());
-      }
+      // A track the relay does not have yet is created when a publisher can serve it,
+      // so the Objects the upstream FETCH brings in are cached for later fetches.
+      let track = match context.track_manager.get_track(&full_track_name).await {
+        Some(track) => track,
+        None => {
+          if context
+            .client_manager
+            .get_publishers_for_track(&full_track_name)
+            .await
+            .is_empty()
+          {
+            send_request_error(
+              client.clone(),
+              request_id,
+              RequestErrorCode::DoesNotExist,
+              ReasonPhrase::try_new(String::from("Track does not exist")).unwrap(),
+            )
+            .await;
+            return Ok(());
+          }
+          let (track, _) = context
+            .track_manager
+            .get_or_create_track(&full_track_name, |relay_track_id| {
+              Track::new(
+                relay_track_id,
+                full_track_name.clone(),
+                context.server_config,
+                TrackStatus::Pending,
+                TrackOrigin::Fetch,
+              )
+            })
+            .await;
+          track
+        }
+      };
 
       info!(
         "handle_fetch_messages | Fetching objects for {:?}",
         location_filter
       );
-
-      let track = track.unwrap();
       {
         let track_read = track.read().await;
 
@@ -631,23 +651,15 @@ async fn send_upstream_fetch_for_range(
   let mut upstream = ControlStreamHandler::new(send, recv).with_peer_id(publisher.connection_id);
 
   {
-    // Use the publisher's track alias so handle_uni_stream can resolve the track on the response.
-    let publisher_alias = match track_read
+    // The response stream finds its track by the Full Track Name of this request, so a
+    // publisher that has given the relay no alias for the track can still serve it.
+    let publisher_alias = track_read
       .publisher_aliases
       .read()
       .await
       .get(&publisher.connection_id)
       .copied()
-    {
-      Some(alias) => alias,
-      None => {
-        warn!(
-          "send_upstream_fetch_for_range | No publisher alias found for connection {}",
-          publisher.connection_id
-        );
-        return None;
-      }
-    };
+      .unwrap_or_default();
     let req = FetchRequest {
       original_request_id: relay_request_id,
       requested_by: client.connection_id,
@@ -744,6 +756,21 @@ async fn send_upstream_fetch_for_range(
   });
 
   Some((relay_request_id, publisher, upstream_rx, response_rx))
+}
+
+/// The Object IDs of `group` that the range `start..=end` covers.
+fn group_bounds(group: u64, start: &Location, end: &Location) -> (u64, u64) {
+  let lo = if group == start.group {
+    start.object
+  } else {
+    0
+  };
+  let hi = if group == end.group {
+    end.object
+  } else {
+    u64::MAX
+  };
+  (lo, hi)
 }
 
 /// Whether a connected publisher could still serve Objects for this track, as
@@ -1040,10 +1067,23 @@ pub(crate) async fn serve_fetch_stream(
           Some((pending.relay_request_id, pending.publisher, pending.rx))
         }
         None => {
-          // The relay holds nothing of the groups in the gap, so ask for all of them.
-          let gap = LocationFilter::AbsoluteStartGroupEnd {
-            start: Location::new(gap_start, 0),
-            end_group: gap_end,
+          // The relay holds nothing of the groups in the gap. They are asked for only
+          // as far as the range reaches into the first and the last of them: what
+          // comes back is written downstream as it arrives, so anything outside the
+          // range would reach the subscriber.
+          let (lo, _) = group_bounds(gap_start, &start_location, &end_location);
+          let (_, hi) = group_bounds(gap_end, &start_location, &end_location);
+          let start = Location::new(gap_start, lo);
+          let gap = if hi == u64::MAX {
+            LocationFilter::AbsoluteStartGroupEnd {
+              start,
+              end_group: gap_end,
+            }
+          } else {
+            LocationFilter::AbsoluteRange {
+              start,
+              end: Location::new(gap_end, hi),
+            }
           };
           send_upstream_fetch_for_range(&client, &context, &track_read, gap, group_order)
             .await
@@ -1295,7 +1335,7 @@ pub(crate) async fn serve_fetch_stream(
 #[cfg(test)]
 mod tests {
   use super::{
-    FetchRangeError, concrete_end_location, empty_range_outcome, local_state_answers,
+    FetchRangeError, concrete_end_location, empty_range_outcome, group_bounds, local_state_answers,
     resolve_fetch_range, unresolved_fetch_range,
   };
   use moqtail::model::common::location::Location;
@@ -1539,5 +1579,14 @@ mod tests {
       concrete_end_location(loc(0, u64::MAX), None, None),
       loc(0, u64::MAX)
     );
+  }
+
+  #[test]
+  fn a_range_reaches_into_its_first_and_last_groups_only_as_far_as_it_says() {
+    let (start, end) = (loc(3, 4), loc(5, 2));
+    assert_eq!(group_bounds(3, &start, &end), (4, u64::MAX));
+    assert_eq!(group_bounds(4, &start, &end), (0, u64::MAX));
+    assert_eq!(group_bounds(5, &start, &end), (0, 2));
+    assert_eq!(group_bounds(3, &start, &loc(3, 9)), (4, 9));
   }
 }

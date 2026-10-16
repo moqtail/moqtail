@@ -193,6 +193,14 @@ impl TrackCache {
     self.cache.run_pending_tasks().await;
   }
 
+  /// Whether the cache holds no Object of the track. A group is only ever created
+  /// by an Object going into it, so no group means no Object. Expired and evicted
+  /// groups are swept out first, since the count lags behind them.
+  pub async fn is_empty(&self) -> bool {
+    self.cache.run_pending_tasks().await;
+    self.cache.entry_count() == 0
+  }
+
   /// Get a specific group if it exists
   #[allow(dead_code)]
   pub async fn get_group(&self, group_id: u64) -> Option<GroupObjects> {

@@ -73,9 +73,7 @@ FIN-ACK is still in flight — so the monitor acts only on two consecutive
 congested samples (`wasd.reads`). A reading that does not fire touches
 nothing, least of all the clean streak the climb counts on; a downshift that
 does fire costs a full fresh clean streak before the climb resumes, and the
-streak re-arms so one burst cannot walk the ladder tick by tick. The relay
-hands the mid-group arm its first sample a full decision interval after the
-boundary, never sooner.
+streak re-arms so one burst cannot walk the ladder tick by tick.
 
 Upshifts belong to the boundary alone — the moment the forward gate is waiting
 to record that group's track — so the tier never moves mid-group, and

@@ -1,6 +1,5 @@
 ---
 'moqtail-ssts': minor
-'relay': patch
 ---
 
 Stop the handoff overlap from costing the climb. A mid-group depth sample
@@ -11,6 +10,4 @@ streak the upshift counts on, and no longer ends the exploration. Only a
 fired mid-group downshift costs a fresh streak. The boundary's reading
 keeps its certainty: two streams of the delivered tier still open when a
 group's first Object arrives is two groups behind, and one such reading
-downshifts alone. The relay also resets its 100 ms decision ticker on a
-group boundary, so the first mid-group sample never lands microseconds
-after the boundary decision — one reading counted twice.
+downshifts alone.

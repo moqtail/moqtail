@@ -134,12 +134,6 @@ pub(crate) fn start(client: Arc<MOQTClient>) {
                 DecisionReason::GroupBoundary,
               )
               .await;
-              // The boundary just took a reading, so the periodic arm waits a
-              // full interval before its first mid-group sample: without the
-              // reset, a tick landing microseconds after the boundary decision
-              // hands the algorithm a second reading of the same instant,
-              // which is one reading counted twice.
-              ticker.reset();
             }
             Some(AbrMessage::StreamTimeout { set_id, group_id }) => {
               largest_group = largest_group.max(group_id);

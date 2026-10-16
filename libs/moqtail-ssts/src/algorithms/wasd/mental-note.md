@@ -104,16 +104,17 @@ setting. The numbers are in the README's "What it does badly".
    what happens today. The research branch had a cancel-notify path for them. Decide
    whether the tail they finish sending is worth the machinery, once it shows up in
    a capture.
-3. **`wasd.reads` is the only knob.** Whether the inherited deadline is worth
-   exposing (it should probably stay fixed — it is semantics, not tuning), and
-   whether the monitor's depth thresholds deserve knobs before someone asks for
-   them.
-4. **The dropped `umin` / `rho` extension slots.** They were stored and unused in the
-   research version; here they are gone rather than reserved, because reserving an
-   id space in an unadopted draft is a promise nobody can keep. If the next
-   iteration wants per-set thresholds from the subscriber, they come back as
-   `algorithm_params` — and then the question is what happens to a peer that sends
-   fewer of them than the algorithm expects.
+3. **Two knobs: `wasd.reads` and `wasd.rho`.** Whether the inherited deadline
+   is worth exposing (it should probably stay fixed — it is semantics, not
+   tuning), and whether the monitor's depth thresholds deserve more knobs
+   before someone asks for them.
+4. **The `umin` / `rho` extension slots.** `rho` is a knob again — read from a
+   trailing percentage in `algorithm_params`, overriding the operator's for
+   that subscriber's sets. `umin` is not a slot but a computation:
+   `ceil(B / G)` from the subscriber's own buffer and observed cadence, so
+   the floor arrives with the connection instead of being signalled. The
+   percentage convention (1..=100) is the open surface: a float on the wire
+   would need a different encoding, and the vec is `u64`.
 5. **No end-to-end test of the replay.** The head selection is unit-tested
    (`cached_head`); the write path — new stream, header, head objects, live objects
    continuing behind — needs a two-hop harness that does not exist yet. Decide

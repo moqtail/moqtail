@@ -24,7 +24,6 @@
 
 use crate::algorithms::asd::state::DEPTH_TARGET;
 use crate::algorithms::asd::state::DOWNSHIFT_DEPTH;
-use crate::algorithms::asd::state::UPSHIFT_GOP_STREAK;
 
 /// Slow start: one uncongested group is enough to try the next tier.
 pub(crate) const SLOW_START_UPSHIFT_STREAK: u64 = 1;
@@ -114,12 +113,18 @@ impl LadderState {
   /// forward gate requests a decision before opening the new group's stream.
   /// Subsequent samples for the same `group_id` arrive while the group is in
   /// flight.
+  ///
+  /// `upshift_streak_needed` is the dynamic threshold `U(k)` the host
+  /// computed for this step - the subscriber's buffer-depth floored against
+  /// the step's relative bitrate jump - and the cautious climb counts on it
+  /// instead of a constant.
   pub(crate) fn on_sample(
     &mut self,
     depth: u64,
     group_id: u64,
     may_act: bool,
     max_index: usize,
+    upshift_streak_needed: u64,
   ) -> Step {
     let is_new_group = self.last_group_id != Some(group_id);
     self.last_group_id = Some(group_id);
@@ -132,7 +137,7 @@ impl LadderState {
         let needed = if self.exploring {
           SLOW_START_UPSHIFT_STREAK
         } else {
-          UPSHIFT_GOP_STREAK
+          upshift_streak_needed.max(1)
         };
         if self.clear_streak >= needed {
           let from = self.current_index;

@@ -24,6 +24,7 @@ use crate::DecisionReason;
 use crate::SetSnapshot;
 use crate::StreamSnapshot;
 use crate::algorithms::wasd::WasdAlgorithm;
+use crate::algorithms::wasd::WasdParams;
 
 /// A set with a four-rung ladder. The rungs are addressed by index, so tier
 /// `n` of set `id` is track `id * 10 + n`.
@@ -52,6 +53,31 @@ fn set_with_buffer(id: u64, subscriber_buffer_ms: u64) -> SetSnapshot {
   SetSnapshot {
     subscriber_buffer_ms,
     ..set(id, true)
+  }
+}
+
+/// A set with a chosen ladder, buffer and group cadence: the three numbers
+/// the dynamic upshift threshold `U(k)` reads.
+fn ladder_set(
+  id: u64,
+  bitrates: &[u64],
+  subscriber_buffer_ms: u64,
+  group_span_ms: u64,
+) -> SetSnapshot {
+  SetSnapshot {
+    id,
+    algorithm_id: super::WASD_ALGORITHM_ID,
+    rank: 0,
+    weight: 1,
+    active: true,
+    members: bitrates
+      .iter()
+      .enumerate()
+      .map(|(k, &b)| (b, id * 10 + k as u64))
+      .collect(),
+    subscriber_buffer_ms,
+    algorithm_params: vec![],
+    group_span_ms,
   }
 }
 
@@ -546,6 +572,109 @@ fn the_cautious_streak_returns_after_the_exploration_is_over() {
   }
   let selection = algorithm.decide(&input(&sets, &clear, DecisionReason::GroupBoundary, 36));
   assert_eq!(tier_of(&selection, 1), 3);
+}
+
+/// U_min = ceil(B / G) is the floor of the cautious streak: the testbed's
+/// 1600 ms buffer over a 500 ms cadence gives 4, and at rho = 1.0 it
+/// dominates every step of a ladder whose relative bitrate jumps are all
+/// smaller than one.
+#[test]
+fn u_min_scales_with_subscriber_buffer_and_group_span() {
+  let sets = [ladder_set(1, &[850, 1800, 3500, 6000], 1600, 500)];
+  let mut algorithm = WasdAlgorithm::new();
+  let empty: Vec<StreamSnapshot> = Vec::new();
+
+  // One clean group climbs to tier 1 while exploring; a congested boundary
+  // there ends the exploration and falls back to tier 0.
+  algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 0));
+  let congested = [stream(1, track_at(1, 1), 1), stream(1, track_at(1, 1), 2)];
+  algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 1));
+
+  // U(0) = max(4, ceil(0.944 / 1.0)) = 4: three clean groups are not enough.
+  for group in 2..5 {
+    let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, group));
+    assert_eq!(tier_of(&selection, 1), 0, "U_min = 4, not fewer");
+  }
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 5));
+  assert_eq!(tier_of(&selection, 1), 1, "the fourth clean group climbs");
+
+  // U(1) = max(4, ceil(0.944 / 1.0)) = 4 as well: the floor, not the step.
+  for group in 6..9 {
+    let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, group));
+    assert_eq!(tier_of(&selection, 1), 1);
+  }
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 9));
+  assert_eq!(
+    tier_of(&selection, 1),
+    2,
+    "and the next step waits four too"
+  );
+}
+
+/// A smaller rho pays for its caution in groups: the step 850 -> 1800 is a
+/// 112% jump, and at rho = 0.15 it costs ceil(1.1176 / 0.15) = 8 clean
+/// groups - the step term ruling above the U_min floor of 4.
+#[test]
+fn smaller_rho_increases_upshift_streak_for_large_bitrate_jumps() {
+  let sets = [ladder_set(1, &[850, 1800, 3500, 6000], 1600, 500)];
+  let mut algorithm = WasdAlgorithm::with_params(WasdParams {
+    monitor_reads: 2,
+    rho: 0.15,
+  });
+  let empty: Vec<StreamSnapshot> = Vec::new();
+
+  // Congestion at the bottom tier ends the exploration without a fall.
+  let congested = [stream(1, track_at(1, 0), 0), stream(1, track_at(1, 0), 1)];
+  algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 0));
+
+  for group in 1..8 {
+    let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, group));
+    assert_eq!(
+      tier_of(&selection, 1),
+      0,
+      "rho = 0.15 prices this step at 8"
+    );
+  }
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 8));
+  assert_eq!(
+    tier_of(&selection, 1),
+    1,
+    "the eighth clean group buys the jump"
+  );
+}
+
+/// The same connection pays per step, not per ladder: a 3x jump costs eight
+/// clean groups at rho = 0.25 while the 1.2x step right behind it costs only
+/// the U_min floor of two.
+#[test]
+fn non_uniform_ladder_requires_more_groups_for_larger_relative_jumps() {
+  let sets = [ladder_set(1, &[500, 1500, 1800], 1000, 500)];
+  let mut algorithm = WasdAlgorithm::with_params(WasdParams {
+    monitor_reads: 2,
+    rho: 0.25,
+  });
+  let empty: Vec<StreamSnapshot> = Vec::new();
+
+  let congested = [stream(1, track_at(1, 0), 0), stream(1, track_at(1, 0), 1)];
+  algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 0));
+
+  // U(0) = max(2, ceil(2.0 / 0.25)) = 8 for the 500 -> 1500 step.
+  for group in 1..8 {
+    let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, group));
+    assert_eq!(tier_of(&selection, 1), 0);
+  }
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 8));
+  assert_eq!(tier_of(&selection, 1), 1, "the 3x jump costs eight");
+
+  // U(1) = max(2, ceil(0.8)) = 2 for the 1500 -> 1800 step.
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 9));
+  assert_eq!(
+    tier_of(&selection, 1),
+    1,
+    "the small step starts on the floor"
+  );
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 10));
+  assert_eq!(tier_of(&selection, 1), 2, "and takes only two");
 }
 
 /// A re-sent group inherits the remaining buffer budget of the overtaken

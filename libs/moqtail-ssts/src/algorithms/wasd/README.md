@@ -77,7 +77,10 @@ streak re-arms so one burst cannot walk the ladder tick by tick.
 
 Upshifts belong to the boundary alone — the moment the forward gate is waiting
 to record that group's track — so the tier never moves mid-group, and
-`current_index` never disagrees with what is on the wire.
+`current_index` never disagrees with what is on the wire. The cautious streak
+a climb waits for is the subscriber's own, not a constant: at least one
+buffer-depth of clean groups, and more across ladder rungs whose bitrates are
+far apart (`wasd.rho`, below).
 
 ## What a downshift does to the groups it overtook
 
@@ -106,12 +109,27 @@ out, not about whether one happens.
 ## Knobs
 
 `wasd.reads` (default 2): how many consecutive congested mid-group readings
-the monitor waits for. It is the only one, and it is the one worth moving, because it is a
-statement about media pacing: on a 25 fps stream with 100 ms groups the default
-filters a normal group tail, and on media whose groups are seconds long the
-window it takes to see real congestion inside one is much longer. Setting it to
-1 turns the monitor into a reaction to a single sample, which is not a monitor;
-it is clamped to 1 rather than 0.
+the monitor waits for. It is worth moving when the media paces differently
+than the sample the default was tuned on: on a 25 fps stream with 100 ms
+groups the default filters a normal group tail, and on media whose groups
+are seconds long the window it takes to see real congestion inside one is
+much longer. Setting it to 1 turns the monitor into a reaction to a single
+sample, which is not a monitor; it is clamped to 1 rather than 0.
+
+`wasd.rho` (default 1.0, in `(0, 1]`): the probing risk tolerance. The
+steady climb waits
+
+```text
+U(k) = max( ceil(B / G),  ceil( ((R_{k+1} - R_k) / R_k) / rho ) )
+```
+
+clean groups: at least one buffer-depth of them — `B` the subscriber's
+negotiated buffer, `G` the observed group cadence — and more across rungs
+that are far apart in bitrate, because a 3x jump is a 3x bigger bet than a
+1.2x one. Lower is more cautious; 1.0 climbs on the floor alone whenever
+the ladder's relative steps are smaller than one buffer-depth. A subscriber
+may also signal its own tolerance as a trailing percentage (1..=100) in the
+set's algorithm parameters, which overrides the operator's for its sets.
 
 ## What this is not, and where the rest of the experiment went
 

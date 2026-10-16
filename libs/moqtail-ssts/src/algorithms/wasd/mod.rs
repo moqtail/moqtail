@@ -194,22 +194,35 @@ pub struct WasdParams {
   /// Consecutive mid-group readings at the downshift depth before the monitor
   /// acts. One is a reaction to a single sample; the default asks for the pattern.
   pub monitor_reads: u32,
+  /// Probing risk tolerance in `(0.0, 1.0]`: the price of a climb in clean
+  /// groups per unit of relative bitrate step. Higher climbs more eagerly;
+  /// lower demands more evidence before stepping across a large jump.
+  pub rho: f64,
+}
+
+impl WasdParams {
+  /// The tolerance the algorithm was written with: a step is worth one clean
+  /// group per unit of relative jump, and the buffer floor decides the rest.
+  pub const DEFAULT_RHO: f64 = 1.0;
 }
 
 impl Default for WasdParams {
   fn default() -> Self {
     Self {
       monitor_reads: state::DOWNSHIFT_SUBGROUP_READS,
+      rho: Self::DEFAULT_RHO,
     }
   }
 }
 
 impl WasdParams {
-  /// From the operator's `key=value` pairs, with `wasd.reads` the only knob.
+  /// From the operator's `key=value` pairs: `wasd.reads` for the monitor's
+  /// patience, `wasd.rho` for the probing risk tolerance.
   pub fn from_tuning(tuning: &Tuning) -> Self {
     let defaults = Self::default();
     Self {
       monitor_reads: tuning.usize("wasd.reads", defaults.monitor_reads as usize) as u32,
+      rho: tuning.f64("wasd.rho", defaults.rho),
     }
   }
 }
@@ -219,6 +232,8 @@ impl WasdParams {
 pub struct WasdAlgorithm {
   ladder: LadderState,
   reach: Reach,
+  /// The probing risk tolerance this instance climbs on.
+  rho: f64,
 }
 
 impl WasdAlgorithm {
@@ -228,6 +243,7 @@ impl WasdAlgorithm {
     Self {
       ladder: LadderState::new(),
       reach: Reach::Nothing,
+      rho: WasdParams::DEFAULT_RHO,
     }
   }
 
@@ -253,14 +269,17 @@ impl WasdAlgorithm {
     Self {
       ladder: LadderState::new(),
       reach,
+      rho: WasdParams::DEFAULT_RHO,
     }
   }
 
-  /// Any version, with the monitor's patience set by the operator.
+  /// Any version, with the monitor's patience and the probing risk tolerance
+  /// set by the operator.
   pub fn with_reach_and_params(reach: Reach, params: WasdParams) -> Self {
     Self {
       ladder: LadderState::new_with_reads(params.monitor_reads),
       reach,
+      rho: params.rho,
     }
   }
 
@@ -295,6 +314,11 @@ impl AbrAlgorithm for WasdAlgorithm {
       .unwrap_or(1)
       .saturating_sub(1);
 
+    // The cautious streak the next step would need: the subscriber's own
+    // clock (buffer over cadence) floored against the step's relative bitrate
+    // jump, priced by the probing risk tolerance.
+    let upshift_streak = upshift_streak_needed(input, before, self.rho);
+
     match input.reason {
       DecisionReason::GroupBoundary | DecisionReason::PeriodicSample => {
         // One reading, one method: what a sample may conclude is the state
@@ -315,10 +339,13 @@ impl AbrAlgorithm for WasdAlgorithm {
           depth,
           "SSTS wasd: depth reading"
         );
-        match self
-          .ladder
-          .on_sample(depth, input.group_id, any_active(input), max_index)
-        {
+        match self.ladder.on_sample(
+          depth,
+          input.group_id,
+          any_active(input),
+          max_index,
+          upshift_streak,
+        ) {
           Step::Held => {}
           Step::Upshift { from, to } => tracing::debug!(
             client_id = input.client_id,
@@ -326,6 +353,7 @@ impl AbrAlgorithm for WasdAlgorithm {
             from,
             to,
             depth,
+            upshift_streak,
             exploring = self.ladder.exploring(),
             "SSTS wasd: UPSHIFT"
           ),
@@ -381,6 +409,77 @@ impl AbrAlgorithm for WasdAlgorithm {
 
     selection
   }
+}
+
+/// The number of consecutive uncongested groups `U(k)` required to step from
+/// `current_tier` (`k`) to `current_tier + 1`:
+///
+/// ```text
+/// U_min = ceil(B / G)
+/// U(k)  = max(U_min, ceil(((R_{k+1} - R_k) / R_k) / rho))
+/// ```
+///
+/// `B` is the subscriber's buffer (`subscriber_buffer_ms`) and `G` the
+/// observed group cadence (`group_span_ms`): the floor says a climb should
+/// wait roughly one buffer-depth of clean groups, so it scales with the
+/// client's latency budget and the media's GoP instead of a constant. The
+/// step term prices the jump itself: a ladder whose next rung is 3x the
+/// current one is a 3x bigger bet than one 20% up, and `rho` is how much
+/// risk the operator is willing to bet per clean group.
+///
+/// Falls back to `UPSHIFT_GOP_STREAK` for `U_min` when the buffer or the
+/// cadence is unknown (0): an unbuffered connection granted no window to
+/// reason about, and a set whose first group has not closed yet has no
+/// cadence. A subscriber that signalled `algorithm_params` with a trailing
+/// percentage (`1..=100`) overrides `rho` for its own sets.
+fn upshift_streak_needed(input: &AbrInput, current_tier: usize, default_rho: f64) -> u64 {
+  use crate::algorithms::asd::state::UPSHIFT_GOP_STREAK;
+
+  let Some(set) = input
+    .sets
+    .iter()
+    .find(|set| set.active && !set.members.is_empty())
+  else {
+    return UPSHIFT_GOP_STREAK;
+  };
+
+  // U_min: one buffer-depth of clean groups, or the written default when
+  // either clock is unknown.
+  let u_min = if set.subscriber_buffer_ms > 0 && set.group_span_ms > 0 {
+    set.subscriber_buffer_ms.div_ceil(set.group_span_ms)
+  } else {
+    UPSHIFT_GOP_STREAK
+  };
+
+  // rho: the subscriber's own signalled percentage wins over the operator's.
+  let rho = set
+    .algorithm_params
+    .last()
+    .copied()
+    .filter(|&v| (1..=100).contains(&v))
+    .map(|pct| (pct as f64 / 100.0).clamp(0.01, 1.0))
+    .unwrap_or_else(|| default_rho.clamp(0.01, 1.0));
+
+  // The relative bitrate step of the rung this connection stands on.
+  let max_rung = set.members.len().saturating_sub(1);
+  let k = current_tier.min(max_rung);
+  let next = (k + 1).min(max_rung);
+
+  if next <= k {
+    // The top rung: nothing to price, the floor alone governs.
+    return u_min.max(1);
+  }
+
+  let r_k = set.members[k].0 as f64;
+  let r_next = set.members[next].0 as f64;
+
+  let step_term = if r_k > 0.0 && r_next > r_k {
+    (((r_next - r_k) / r_k) / rho).ceil() as u64
+  } else {
+    0
+  };
+
+  u_min.max(step_term).max(1)
 }
 
 /// A re-sent group inherits the remaining buffer budget of the overtaken

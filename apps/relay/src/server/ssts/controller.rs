@@ -23,7 +23,6 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 
 use moqtail_ssts::registry::registry;
 use moqtail_ssts::{
@@ -44,10 +43,6 @@ use crate::server::config::AppConfig;
 use crate::server::session::client::MOQTClient;
 
 use super::AbrMessage;
-
-/// How often the decision is re-evaluated without a new group. The answer for
-/// the group in flight cannot change.
-const DECISION_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Number of groups of decisions to keep behind the live edge, so a publisher
 /// running behind still gets a decision instead of forwarding unselected.
@@ -94,9 +89,7 @@ pub(crate) fn start(client: Arc<MOQTClient>) {
       return;
     }
 
-    let mut ticker = tokio::time::interval(DECISION_INTERVAL);
-    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    // The group the periodic re-evaluation runs for.
+    // The group the mid-group re-evaluation runs for.
     let mut last_group: Option<u64> = None;
     // The largest group ever seen. Decisions are pruned against this rather
     // than against the group being decided, so an Object that arrives late on
@@ -152,24 +145,26 @@ pub(crate) fn start(client: Arc<MOQTClient>) {
                 .await;
               }
             }
+            Some(AbrMessage::ObjectSent) => {
+              // The mid-group sample clock is the delivery itself: one
+              // reading per Object written, so samples thin out as the path
+              // slows and stop when it stops. An algorithm that only reads
+              // the evidence at a boundary can ignore the difference; one
+              // that watches the state inside a group takes these as its
+              // samples.
+              if let Some(group_id) = last_group {
+                decide(
+                  &mut running,
+                  &client,
+                  group_id,
+                  largest_group,
+                  &mut stream_timeouts,
+                  DecisionReason::PeriodicSample,
+                )
+                .await;
+              }
+            }
             None => return,
-          }
-        }
-        // The group in flight is re-evaluated on a clock as well, because the
-        // bandwidth changes between groups. An algorithm that only reads the
-        // evidence at a boundary can ignore the difference; one that watches
-        // the state inside a group takes these as its samples.
-        _ = ticker.tick() => {
-          if let Some(group_id) = last_group {
-            decide(
-              &mut running,
-              &client,
-              group_id,
-              largest_group,
-              &mut stream_timeouts,
-              DecisionReason::PeriodicSample,
-            )
-            .await;
           }
         }
         _ = client.connection.closed() => {

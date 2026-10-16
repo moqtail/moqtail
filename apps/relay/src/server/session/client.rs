@@ -844,6 +844,10 @@ impl MOQTClient {
             .await
             .entry(stream_key.clone())
             .or_default() += written;
+          // The delivery advanced by one Object, and that is the mid-group
+          // sample's clock. Best effort: a controller busy enough to miss a
+          // sample takes the next one a delivery later.
+          let _ = self.ssts.abr_tx.try_send(ssts::AbrMessage::ObjectSent);
         }
         Err(e) => {
           if let TransportWriteError::Stopped(code) = &e {

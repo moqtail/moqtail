@@ -35,8 +35,8 @@ use moqtail::model::parameter::message_parameter::MessageParameter;
 use moqtail::model::property::track_property::TrackProperty;
 use moqtail::transport::data_stream_handler::HeaderInfo;
 use std::collections::{BTreeMap, HashMap};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 use tokio::sync::{Mutex, Notify, RwLock, oneshot};
 use tracing::{debug, error, info, trace, warn};
@@ -216,6 +216,8 @@ pub struct Track {
   /// a PUBLISH-created track leaves it empty and a subscriber leaving never cancels
   /// the publisher.
   pub upstream_subscribe_cancellers: Arc<Mutex<Vec<oneshot::Sender<()>>>>,
+  /// Active upstream requests, grouped by publisher for malformed-track cancellation.
+  upstream_request_cancellers: Arc<Mutex<Vec<(usize, Weak<Notify>)>>>,
   /// Upstream SUBSCRIBEs still awaiting a SUBSCRIBE_OK or REQUEST_ERROR.
   pub pending_upstream_subscribe_count: Arc<AtomicUsize>,
   /// Forward State the relay last gave the upstream publisher of a
@@ -281,9 +283,35 @@ impl Track {
       active_subgroup_headers: Arc::new(RwLock::new(HashMap::new())),
       publisher_stream_progress: Arc::new(PublisherStreamProgress::default()),
       upstream_subscribe_cancellers: Arc::new(Mutex::new(Vec::new())),
+      upstream_request_cancellers: Arc::new(Mutex::new(Vec::new())),
       pending_upstream_subscribe_count: Arc::new(AtomicUsize::new(0)),
       upstream_forward: Arc::new(AtomicBool::new(false)),
     }
+  }
+
+  pub(crate) async fn register_upstream_request(
+    &self,
+    publisher_connection_id: usize,
+    cancel: &Arc<Notify>,
+  ) {
+    let mut cancellers = self.upstream_request_cancellers.lock().await;
+    cancellers.retain(|(_, cancel)| cancel.strong_count() > 0);
+    cancellers.push((publisher_connection_id, Arc::downgrade(cancel)));
+  }
+
+  pub(crate) async fn cancel_upstream_requests(&self, publisher_connection_id: usize) {
+    self
+      .upstream_request_cancellers
+      .lock()
+      .await
+      .retain(|(publisher, cancel)| match cancel.upgrade() {
+        Some(cancel) if *publisher == publisher_connection_id => {
+          cancel.notify_one();
+          false
+        }
+        Some(_) => true,
+        None => false,
+      });
   }
 
   /// Whether any subscription on this track currently wants Objects forwarded.

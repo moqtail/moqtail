@@ -37,7 +37,7 @@ use moqtail::model::parameter::message_parameter::include_properties;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use moqtail::transport::data_stream_handler::FetchRequest;
 use std::sync::Arc;
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{Notify, mpsc, oneshot, watch};
 use tracing::{error, info, trace, warn};
 
 const UPSTREAM_FETCH_CHANNEL_CAPACITY: usize = 64;
@@ -666,6 +666,11 @@ async fn send_upstream_fetch_for_range(
       .insert(relay_request_id, upstream_tx.clone());
   }
 
+  let cancel = Arc::new(Notify::new());
+  track_read
+    .register_upstream_request(publisher.connection_id, &cancel)
+    .await;
+
   // Sent only once the sender is registered, so Objects arriving first are not dropped.
   if let Err(e) = upstream
     .send(&ControlMessage::Fetch(Box::new(upstream_fetch)))
@@ -684,7 +689,16 @@ async fn send_upstream_fetch_for_range(
   let response_event_tx = upstream_tx;
   let upstream_publisher = publisher.clone();
   tokio::spawn(async move {
-    match upstream.next_message().await {
+    let response = tokio::select! {
+      response = upstream.next_message() => Some(response),
+      _ = cancel.notified() => None,
+    };
+    let Some(response) = response else {
+      upstream.reset_and_stop(StreamResetCode::Cancelled.to_u64());
+      return;
+    };
+
+    match response {
       Ok(ControlMessage::FetchOk(ok)) => {
         info!(
           "Upstream FETCH {} accepted, end location {:?}",
@@ -736,10 +750,20 @@ async fn send_upstream_fetch_for_range(
         return;
       }
     }
+
     // Stays parked until the publisher closes the request stream. The relay sent
     // this FETCH, so the publisher has no business updating it.
-    if let Ok(ControlMessage::RequestUpdate(_)) = upstream.next_message().await {
-      super::close_on_unexpected_request_update(&upstream_publisher, "FETCH");
+    let cancelled = tokio::select! {
+      response = upstream.next_message() => {
+        if let Ok(ControlMessage::RequestUpdate(_)) = response {
+          super::close_on_unexpected_request_update(&upstream_publisher, "FETCH");
+        }
+        false
+      }
+      _ = cancel.notified() => true,
+    };
+    if cancelled {
+      upstream.reset_and_stop(StreamResetCode::Cancelled.to_u64());
     }
   });
 
@@ -1151,6 +1175,9 @@ pub(crate) async fn serve_fetch_stream(
                     "handle_fetch_messages | Malformed upstream FETCH for gap [{}, {}]",
                     gap_start, gap_end
                   );
+                  track_read
+                    .cancel_upstream_requests(upstream_publisher.connection_id)
+                    .await;
                   track_read.remove_from_subscriber_switching_sets().await;
                   if let Err(e) = track_read
                     .notify_publish_done(

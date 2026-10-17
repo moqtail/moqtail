@@ -6,8 +6,7 @@ WORKDIR /workspace
 
 COPY Cargo.toml ./
 COPY Cargo.lock ./
-COPY apps ./apps
-COPY libs ./libs
+COPY rs ./rs
 COPY .git ./.git
 
 RUN cargo build -p relay --release \

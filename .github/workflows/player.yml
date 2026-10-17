@@ -5,8 +5,8 @@ on:
     branches:
       - draft-18
     paths:
-      - apps/client-js/**
-      - libs/moqtail-ts/**
+      - ts/client-js/**
+      - ts/moqtail/**
       - .github/workflows/player.yml
   workflow_dispatch:
 
@@ -56,4 +56,4 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           gitHubToken: ${{ secrets.GITHUB_TOKEN }}
-          command: deploy --name player --assets apps/client-js/dist --compatibility-date 2026-07-13
+          command: deploy --name player --assets ts/client-js/dist --compatibility-date 2026-07-13

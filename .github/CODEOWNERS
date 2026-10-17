@@ -1,2 +1,6 @@
 # Require review from admins for everything
 * @zafergurel @DenizUgur
+
+# Require review from specific owners for different directories
+rs/ @zafergurel
+ts/ @DenizUgur

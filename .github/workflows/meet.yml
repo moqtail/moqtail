@@ -5,8 +5,8 @@ on:
     branches:
       - draft-18
     paths:
-      - apps/meet/**
-      - libs/moqtail-ts/**
+      - ts/meet/**
+      - ts/moqtail/**
       - .github/workflows/meet.yml
   workflow_dispatch:
 
@@ -50,7 +50,7 @@ jobs:
         run: npm run build
 
       - name: Update app settings
-        working-directory: apps/meet/dist
+        working-directory: ts/meet/dist
         run: |
           sed -i "s|relayUrl:.*|relayUrl: 'https://relay.n1.fra.moqtail.dev',|g" appsettings.js
 
@@ -61,4 +61,4 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           gitHubToken: ${{ secrets.GITHUB_TOKEN }}
-          command: deploy --name meet --assets apps/meet/dist --compatibility-date 2026-07-13
+          command: deploy --name meet --assets ts/meet/dist --compatibility-date 2026-07-13

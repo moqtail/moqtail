@@ -1,0 +1,23 @@
+[package]
+name = "relay"
+version = "0.15.0"
+edition = "2024"
+build="build.rs"
+
+[dependencies]
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+wtransport.workspace = true
+tokio.workspace = true
+serde_json.workspace = true
+bytes.workspace = true
+moqtail.workspace = true
+moqtail-ssts.workspace = true
+clap.workspace = true
+tracing-appender.workspace = true
+once_cell.workspace = true
+moka.workspace = true
+fnv.workspace = true
+hex.workspace = true
+socket2.workspace = true

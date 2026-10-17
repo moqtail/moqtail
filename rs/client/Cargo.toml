@@ -1,0 +1,15 @@
+[package]
+name = "client"
+version = "0.15.0"
+edition = "2024"
+
+[dependencies]
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+wtransport = { workspace = true, features = ["dangerous-configuration"] }
+tokio.workspace = true
+bytes.workspace = true
+moqtail.workspace = true
+clap.workspace = true
+rand.workspace = true

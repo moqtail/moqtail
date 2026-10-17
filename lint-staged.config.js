@@ -3,9 +3,9 @@
  * @type {import('lint-staged').Configuration}
  */
 export default {
-  '(apps|libs)/**/*.{rs,toml}': (files) => {
+  'rs/**/*.{rs,toml}': (files) => {
     const projects = files.reduce((acc, file) => {
-      const match = file.match(/^((apps|libs)\/[^/]+)/)
+      const match = file.match(/^(rs\/[^/]+)/)
       if (match) {
         const project = match[1]
         if (!acc.includes(project)) acc.push(project)
@@ -31,7 +31,7 @@ export default {
   },
 
   // Run build/test for all changed projects (at once)
-  '(apps|libs)/**/*.ts*': () => [
+  'ts/**/*.ts*': () => [
     'npm run build', // The order of builds matter
     'npm run test',
   ],

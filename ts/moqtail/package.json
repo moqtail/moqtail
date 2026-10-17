@@ -1,0 +1,95 @@
+{
+  "name": "moqtail",
+  "version": "0.13.0",
+  "description": "Media Over QUIC Transport client implementation",
+  "type": "module",
+  "license": "Apache-2.0",
+  "keywords": [
+    "moqtail",
+    "moq",
+    "media",
+    "quic",
+    "transport",
+    "streaming"
+  ],
+  "homepage": "https://moqtail.dev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/moqtail/moqtail.git",
+    "directory": "ts/moqtail"
+  },
+  "bugs": {
+    "url": "https://github.com/moqtail/moqtail/issues"
+  },
+  "author": {
+    "name": "Streaming University",
+    "email": "info@moqtail.dev",
+    "url": "https://moqtail.dev"
+  },
+  "files": [
+    "dist"
+  ],
+  "main": "dist/index.cjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.mts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.mts",
+        "default": "./dist/index.mjs"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./client": {
+      "import": {
+        "types": "./dist/client.d.mts",
+        "default": "./dist/client.mjs"
+      },
+      "require": {
+        "types": "./dist/client.d.cts",
+        "default": "./dist/client.cjs"
+      }
+    },
+    "./model": {
+      "import": {
+        "types": "./dist/model.d.mts",
+        "default": "./dist/model.mjs"
+      },
+      "require": {
+        "types": "./dist/model.d.cts",
+        "default": "./dist/model.cjs"
+      }
+    },
+    "./util": {
+      "import": {
+        "types": "./dist/util.d.mts",
+        "default": "./dist/util.mjs"
+      },
+      "require": {
+        "types": "./dist/util.d.cts",
+        "default": "./dist/util.cjs"
+      }
+    }
+  },
+  "scripts": {
+    "prepare": "npm run transpile",
+    "transpile": "tsdown",
+    "build": "tsc --noEmit && npm run transpile && api-extractor run",
+    "test": "vitest",
+    "format": "prettier --check .",
+    "test:run": "vitest run",
+    "docs": "typedoc"
+  },
+  "devDependencies": {
+    "@microsoft/api-extractor": "^7.58.9",
+    "@tsconfig/strictest": "^2.0.8",
+    "tslib": "^2.8.1",
+    "tsdown": "^0.22.3",
+    "typedoc": "^0.28.20",
+    "typescript": "^6.0.3",
+    "vitest": "^5.0.3"
+  }
+}

@@ -4,12 +4,15 @@ Thank you for your interest in contributing to MOQtail! This project welcomes co
 
 ## Project Structure
 
-MOQtail is a monorepo with Rust and TypeScript libraries and applications:
+MOQtail is a monorepo with Rust and TypeScript workspaces:
 
-- `libs/moqtail-ts/`: TypeScript MoQ protocol library
-- `libs/moqtail-rs/`: Rust MoQ protocol library
-- `apps/`: Example applications (client, relay)
-- `scripts/`: Project automation scripts
+- `rs/moqtail/`: Rust MoQ protocol library
+- `rs/moqtail-ssts/`: Rust support for Sender-Side Track Switching
+- `rs/client/`: Rust command-line client
+- `rs/relay/`: Rust relay application
+- `ts/moqtail/`: TypeScript MoQ protocol library
+- `ts/client-js/` and `ts/meet/`: TypeScript example applications
+- `scripts/`: Project automation and test scripts
 
 ## Development Guidelines
 

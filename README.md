@@ -39,7 +39,7 @@ MOQtail is a draft 18-compliant MOQT toolkit for building publisher, subscriber,
 
 ## Components
 
-### moqtail-ts
+### TypeScript library (`ts/moqtail/`)
 
 The TypeScript library targets browser and WebTransport-based MoQ applications.
 
@@ -49,13 +49,15 @@ Highlights:
 - WebTransport integration
 - Client-side development workflow with the demo app
 
-Library documentation: [libs/moqtail-ts/README.md](libs/moqtail-ts/README.md)
+Library documentation: [ts/moqtail/README.md](ts/moqtail/README.md)
 
-### moqtail-rs
+### Rust library (`rs/moqtail/`)
 
 The Rust library provides the core protocol implementation and utilities used by the relay and other Rust applications in this workspace.
 
-Library documentation: [libs/moqtail-rs/README.md](libs/moqtail-rs/README.md)
+Library documentation: [rs/moqtail/README.md](rs/moqtail/README.md)
+
+The Rust workspace also includes the [client](rs/client/), [relay](rs/relay/), and [moqtail-ssts](rs/moqtail-ssts/) crate.
 
 ### Relay
 
@@ -64,7 +66,7 @@ The relay is the deployable Rust service that forwards MoQ messages between publ
 Local run:
 
 ```bash
-cargo run -p relay -- --port 4433 --cert-file apps/relay/cert/cert.pem --key-file apps/relay/cert/key.pem
+cargo run -p relay -- --port 4433 --cert-file rs/relay/cert/cert.pem --key-file rs/relay/cert/key.pem
 ```
 
 Container image:
@@ -72,8 +74,8 @@ Container image:
 ```bash
 docker run --rm \
 	-p 4433:4433/udp \
-	-v "$PWD/apps/relay/cert/cert.pem:/certs/cert.pem:ro" \
-	-v "$PWD/apps/relay/cert/key.pem:/certs/key.pem:ro" \
+	-v "$PWD/rs/relay/cert/cert.pem:/certs/cert.pem:ro" \
+	-v "$PWD/rs/relay/cert/key.pem:/certs/key.pem:ro" \
 	ghcr.io/moqtail/relay:latest
 ```
 
@@ -82,16 +84,16 @@ Release images are published to `ghcr.io/moqtail/relay` with `latest` and versio
 To build the image locally from the workspace root:
 
 ```bash
-docker build -f apps/relay/Dockerfile -t moqtail-relay .
+docker build -f rs/relay/Dockerfile -t moqtail-relay .
 ```
 
-For local certificate generation and browser trust setup, see [apps/relay/cert/README.md](apps/relay/cert/README.md).
+For local certificate generation and browser trust setup, see [rs/relay/cert/README.md](rs/relay/cert/README.md).
 
 #### Transports: WebTransport and raw QUIC
 
-The relay and the Rust test client (`apps/client`) support two transports on the same port:
+The relay and the Rust test client (`rs/client/`) support two transports on the same port:
 
-- **WebTransport** — connect with an `https://` server URL (e.g. `https://127.0.0.1:4433`). Used by browser clients and `moqtail-ts`.
+- **WebTransport** — connect with an `https://` server URL (e.g. `https://127.0.0.1:4433`). Used by browser clients and the TypeScript library (`ts/moqtail/`).
 - **Raw QUIC** — connect with a `moqt://` server URL (e.g. `moqt://127.0.0.1:4433/path`). Since raw QUIC has no HTTP CONNECT to carry the authority/path, the client sends them as CLIENT_SETUP parameters instead.
 
 ```bash

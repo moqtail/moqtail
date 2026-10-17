@@ -31,7 +31,7 @@
 #   --port N              Local relay port (default: 4433)
 #   -l, --relay-log SPEC  RUST_LOG spec for the local relay (default: info)
 #   --cert PATH / --key PATH
-#                         Relay TLS cert/key (default: apps/relay/cert/*.pem)
+#                         Relay TLS cert/key (default: rs/relay/cert/*.pem)
 #
 # Exits non-zero if any case fails.  Logs and the suite's own report go to
 # /tmp/moqtail-conformance-<timestamp>/.
@@ -76,8 +76,8 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-CERT_FILE="${CERT_FILE:-$REPO/apps/relay/cert/cert.pem}"
-KEY_FILE="${KEY_FILE:-$REPO/apps/relay/cert/key.pem}"
+CERT_FILE="${CERT_FILE:-$REPO/rs/relay/cert/cert.pem}"
+KEY_FILE="${KEY_FILE:-$REPO/rs/relay/cert/key.pem}"
 MOQTEST_SERVER="$MOQBIN/moqtest_server"
 MOQTEST_CLIENT="$MOQBIN/moqtest_client"
 

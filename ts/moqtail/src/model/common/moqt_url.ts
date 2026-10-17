@@ -34,7 +34,7 @@ export interface MoqtFragment {
  * local-only fragment. `authority` is `host[:port]`; `path` keeps its leading `/`
  * (empty when absent); `query` excludes the `?`.
  *
- * This is the TypeScript twin of `MoqtUrl` in `apps/client/src/connection.rs`; the two
+ * This is the TypeScript twin of `MoqtUrl` in `rs/client/src/connection.rs`; the two
  * must agree on what a given URL means.
  */
 export class MoqtUrl {

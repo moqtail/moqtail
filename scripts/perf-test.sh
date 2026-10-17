@@ -25,7 +25,7 @@
 #                          Anything at info level logs per control message and
 #                          will itself dominate the measurement.
 #   --cert PATH / --key PATH
-#                          Relay TLS cert/key (default: apps/relay/cert/*.pem)
+#                          Relay TLS cert/key (default: rs/relay/cert/*.pem)
 #   --relay-args ARGS      Extra flags appended to the relay invocation
 #                          e.g. --relay-args "--max-subscriber-lag 1000"
 #   --client-args ARGS     Extra flags appended to moqperf_test_client
@@ -130,8 +130,8 @@ done
 if [[ -z "$MOQBIN" ]]; then
   echo "ERROR: set --moqbin (or MOQBIN) to the moxygen bin directory" >&2; exit 1
 fi
-CERT_FILE="${CERT_FILE:-$REPO/apps/relay/cert/cert.pem}"
-KEY_FILE="${KEY_FILE:-$REPO/apps/relay/cert/key.pem}"
+CERT_FILE="${CERT_FILE:-$REPO/rs/relay/cert/cert.pem}"
+KEY_FILE="${KEY_FILE:-$REPO/rs/relay/cert/key.pem}"
 MOQTEST_SERVER="$MOQBIN/moqtest_server"
 MOQPERF_CLIENT="$MOQBIN/moqperf_test_client"
 
@@ -272,7 +272,7 @@ if [[ -n "$REMOTE_RELAY_HOST" ]]; then
   # so all three are synced rather than leaning on whatever the remote already has.
   # Trailing slashes on both sides matter: without them rsync would nest the source
   # directory's basename under the destination.
-  for member in apps/relay apps/client libs/moqtail-rs; do
+  for member in rs/client rs/moqtail rs/moqtail-ssts rs/relay; do
     rsync -az --exclude target "$REPO/$member/" "$REMOTE_RELAY_HOST:$REMOTE_PATH/$member/" \
       || { echo "ERROR: rsync of $member to $REMOTE_RELAY_HOST failed" >&2; exit 1; }
   done
@@ -322,8 +322,8 @@ if [[ -n "$REMOTE_RELAY_HOST" ]]; then
     RUST_LOG='$RELAY_LOG_SPEC' nohup ./target/release/relay \
       --port $RELAY_PORT \
       --host 0.0.0.0 \
-      --cert-file '$REMOTE_PATH/apps/relay/cert/cert.pem' \
-      --key-file '$REMOTE_PATH/apps/relay/cert/key.pem' \
+      --cert-file '$REMOTE_PATH/rs/relay/cert/cert.pem' \
+      --key-file '$REMOTE_PATH/rs/relay/cert/key.pem' \
       --log-folder '$REMOTE_LOG_DIR' \
       ${RELAY_EXTRA_ARGS[*]-} \
       > '$REMOTE_LOG_DIR/stdout.log' 2>&1 &

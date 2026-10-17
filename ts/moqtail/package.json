@@ -16,7 +16,7 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/moqtail/moqtail.git",
-    "directory": "libs/moqtail-ts"
+    "directory": "ts/moqtail"
   },
   "bugs": {
     "url": "https://github.com/moqtail/moqtail/issues"

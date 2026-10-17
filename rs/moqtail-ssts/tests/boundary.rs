@@ -51,12 +51,12 @@ fn source_files(dir: &Path) -> Vec<PathBuf> {
 /// would read connection state directly instead of through `AbrInput`.
 #[test]
 fn the_host_implements_no_algorithms() {
-  // <workspace>/libs/moqtail-ssts -> <workspace>
+  // <workspace>/rs/moqtail-ssts -> <workspace>
   let relay_src = Path::new(env!("CARGO_MANIFEST_DIR"))
     .parent()
     .and_then(Path::parent)
     .expect("workspace root")
-    .join("apps/relay/src");
+    .join("rs/relay/src");
   let offenders: Vec<PathBuf> = source_files(&relay_src)
     .into_iter()
     .filter(|path| {

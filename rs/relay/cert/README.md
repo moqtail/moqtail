@@ -12,7 +12,7 @@ Sample script:
 # Install local CA
 mkcert -install
 
-# Run from `apps/relay/cert` or manually move the *.pem under `cert/`
+# Run from `rs/relay/cert` or manually move the *.pem under `cert/`
 mkcert -key-file key.pem -cert-file cert.pem localhost 127.0.0.1 ::1
 ```
 

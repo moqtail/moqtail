@@ -466,8 +466,8 @@ mod tests {
     AppConfig {
       port: 4433,
       host: "localhost".to_string(),
-      cert_file: "apps/relay/cert/cert.pem".to_string(),
-      key_file: "apps/relay/cert/key.pem".to_string(),
+      cert_file: "rs/relay/cert/cert.pem".to_string(),
+      key_file: "rs/relay/cert/key.pem".to_string(),
       max_idle_timeout: 7,
       keep_alive_interval: 3,
       cache_size: 1000,

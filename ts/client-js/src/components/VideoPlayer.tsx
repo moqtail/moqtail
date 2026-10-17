@@ -110,12 +110,12 @@ function WatchIdleCard() {
           </a>
           . The source for this player lives in{' '}
           <a
-            href={`https://github.com/${GITHUB_REPO}/tree/main/apps/client-js`}
+            href={`https://github.com/${GITHUB_REPO}/tree/main/ts/client-js`}
             target="_blank"
             rel="noreferrer"
             className="font-mono text-[11px] text-neutral-300 underline decoration-neutral-600 underline-offset-2 transition-colors hover:text-white"
           >
-            /apps/client-js
+            /ts/client-js
           </a>{' '}
           in the MOQtail repository.
         </p>

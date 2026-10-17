@@ -1,7 +1,7 @@
 # Conformance fixtures
 
 Language-agnostic JSON fixtures for the MOQT draft this directory is named after. Both
-`libs/moqtail-rs` and `libs/moqtail-ts` load these files and assert their constants against
+`rs/moqtail` and `ts/moqtail` load these files and assert their constants against
 them.
 
 **These fixtures are normative for both stacks.** A codepoint is changed here first, and never

@@ -85,7 +85,10 @@ export class UnknownObjectProperty {
 }
 
 export type ObjectProperty =
-  ImmutablePropertiesObjectProperty | PriorGroupIdGapProperty | PriorObjectIdGapProperty | UnknownObjectProperty
+  | ImmutablePropertiesObjectProperty
+  | PriorGroupIdGapProperty
+  | PriorObjectIdGapProperty
+  | UnknownObjectProperty
 
 export namespace ObjectProperty {
   export function fromKeyValuePair(pair: KeyValuePair): ObjectProperty {

@@ -815,15 +815,10 @@ export default function App() {
 
         <MessageLogPane
           isOpen={isMessageLogOpen}
-
           entries={messageLog}
-
           dataStats={dataStats}
-
           onResetData={() => dataStats.reset()}
-
           onClear={() => setMessageLog([])}
-
           onClose={() => setIsMessageLogOpen(false)}
         />
       </div>

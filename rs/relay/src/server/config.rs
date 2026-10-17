@@ -62,10 +62,10 @@ pub struct Cli {
   #[arg(long, default_value = "localhost")]
   pub host: String,
   /// Certificate PEM file
-  #[arg(long, default_value = "apps/relay/cert/cert.pem")]
+  #[arg(long, default_value = "rs/relay/cert/cert.pem")]
   pub cert_file: String,
   /// Private key PEM file
-  #[arg(long, default_value = "apps/relay/cert/key.pem")]
+  #[arg(long, default_value = "rs/relay/cert/key.pem")]
   pub key_file: String,
   /// Number of cached subgroups/fetches per track
   #[arg(long, default_value_t = 1000)]

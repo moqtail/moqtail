@@ -13,43 +13,52 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 import { BaseByteBuffer, ByteBuffer, FrozenByteBuffer } from '../common/byte_buffer'
-import { Location } from '../common/location'
 import { Tuple } from '../common/tuple'
-
-import { ControlMessageType, GroupOrder, LocationFilterType } from '../control/constant'
+import { ControlMessageType, GroupOrder, LocationFilterType } from './constant'
 import { FullTrackName } from '../data'
 import {
   MessageParameter,
+  MessageParameters,
   deserializeMessageParameterKvps,
   serializeMessageParameterKvps,
 } from '../parameter/message_parameter'
+import { AuthorizationToken } from '../parameter/common/authorization_token'
 import { LocationFilter } from '../parameter/message/location_filter'
-import { Forward } from '../parameter/message/forward'
-import { GroupOrderParam } from '../parameter/message/group_order_param'
 
-export class Subscribe {
+export class TrackStatus {
   constructor(
     public requestId: bigint,
+    public trackAlias: bigint,
     public fullTrackName: FullTrackName,
-    public parameters: MessageParameter[],
+    public subscriberPriority: number,
+    public groupOrder: GroupOrder,
+    public forward: boolean,
+    public locationFilter: LocationFilter,
+    public subscribeParameters: MessageParameter[],
   ) {}
 
   getType(): ControlMessageType {
-    return ControlMessageType.Subscribe
+    return ControlMessageType.TrackStatus
   }
 
   serialize(): FrozenByteBuffer {
     const buf = new ByteBuffer()
-    buf.putVI(ControlMessageType.Subscribe)
+    buf.putVI(ControlMessageType.TrackStatus)
 
     const payload = new ByteBuffer()
     payload.putVI(this.requestId)
+    payload.putVI(this.trackAlias)
     payload.putBytes(this.fullTrackName.serialize().toUint8Array())
+    payload.putU8(this.subscriberPriority)
+    payload.putU8(this.groupOrder)
+    payload.putU8(this.forward ? 1 : 0)
+    payload.putBytes(this.locationFilter.serializeValue())
 
-    payload.putVI(this.parameters.length)
-    payload.putBytes(serializeMessageParameterKvps(this.parameters.map((p) => p.toKeyValuePair())).toUint8Array())
+    payload.putVI(this.subscribeParameters.length)
+    payload.putBytes(
+      serializeMessageParameterKvps(this.subscribeParameters.map((p) => p.toKeyValuePair())).toUint8Array(),
+    )
 
     const payloadBytes = payload.toUint8Array()
     buf.putU16(payloadBytes.length)
@@ -58,59 +67,68 @@ export class Subscribe {
     return buf.freeze()
   }
 
-  static parsePayload(buf: BaseByteBuffer): Subscribe {
+  static parsePayload(buf: BaseByteBuffer): TrackStatus {
     const requestId = buf.getVI()
+    const trackAlias = buf.getVI()
     const fullTrackName = buf.getFullTrackName()
+    const subscriberPriority = buf.getU8()
+    const groupOrder = buf.getU8()
+    const forward = buf.getU8() === 1
+    const locationFilter = LocationFilter.deserializeValue(buf)
 
     const paramCount = Number(buf.getVI())
-    const parameters: MessageParameter[] = []
-    for (const kvp of deserializeMessageParameterKvps(buf, paramCount)) {
-      const param = MessageParameter.fromKeyValuePair(kvp)
-      if (param !== undefined) parameters.push(param)
-    }
+    const rawParams = deserializeMessageParameterKvps(buf, paramCount)
+    const subscribeParameters = MessageParameters.fromKeyValuePairs(rawParams)
 
-    return new Subscribe(requestId, fullTrackName, parameters)
+    return new TrackStatus(
+      requestId,
+      trackAlias,
+      fullTrackName,
+      subscriberPriority,
+      groupOrder,
+      forward,
+      locationFilter,
+      subscribeParameters,
+    )
   }
 }
 
 if (import.meta.vitest) {
   const { describe, it, expect } = import.meta.vitest
 
-  function buildTestSubscribe(): Subscribe {
-    const subscribe = new Subscribe(128242n, FullTrackName.tryNew('track/namespace', 'trackName'), [
-      new Forward(true),
-      new GroupOrderParam(GroupOrder.Ascending),
+  function buildTestTrackStatus(): TrackStatus {
+    return new TrackStatus(
+      128242n,
+      999n,
+      FullTrackName.tryNew('track/namespace', 'trackName'),
+      31,
+      GroupOrder.Original,
+      true,
       new LocationFilter(LocationFilterType.AbsoluteStartGroupEnd, 81n, 81n, 100n),
-    ])
-    // Wire encoding canonicalizes parameter order ascending by type (delta-encoding requirement).
-    subscribe.parameters.sort((a, b) => {
-      const at = a.toKeyValuePair().typeValue
-      const bt = b.toKeyValuePair().typeValue
-      return at < bt ? -1 : at > bt ? 1 : 0
-    })
-    return subscribe
+      [AuthorizationToken.newUseValue(0n, new TextEncoder().encode('test-token'))],
+    )
   }
 
-  describe('Subscribe', () => {
+  describe('TrackStatus', () => {
     it('should roundtrip correctly', () => {
-      const subscribe = buildTestSubscribe()
+      const subscribe = buildTestTrackStatus()
       const serialized = subscribe.serialize()
 
       const buf = new ByteBuffer()
       buf.putBytes(serialized.toUint8Array())
       const msgType = buf.getVI()
-      expect(msgType).toBe(BigInt(ControlMessageType.Subscribe))
+      expect(msgType).toBe(BigInt(ControlMessageType.TrackStatus))
 
       const msgLength = buf.getU16()
       expect(msgLength).toBe(buf.remaining)
 
-      const deserialized = Subscribe.parsePayload(buf)
+      const deserialized = TrackStatus.parsePayload(buf)
       expect(deserialized).toEqual(subscribe)
       expect(buf.remaining).toBe(0)
     })
 
     it('should roundtrip with excess trailing bytes', () => {
-      const subscribe = buildTestSubscribe()
+      const subscribe = buildTestTrackStatus()
       const serialized = subscribe.serialize()
       const extra = new Uint8Array([...serialized.toUint8Array(), 9, 1, 1])
 
@@ -118,44 +136,60 @@ if (import.meta.vitest) {
       buf.putBytes(extra)
 
       const msgType = buf.getVI()
-      expect(msgType).toBe(BigInt(ControlMessageType.Subscribe))
+      expect(msgType).toBe(BigInt(ControlMessageType.TrackStatus))
 
       const msgLength = buf.getU16()
       expect(msgLength).toBe(buf.remaining - 3)
 
-      const deserialized = Subscribe.parsePayload(buf)
+      const deserialized = TrackStatus.parsePayload(buf)
       expect(deserialized).toEqual(subscribe)
 
       const trailing = buf.toUint8Array().slice(buf.offset)
       expect(Array.from(trailing)).toEqual([9, 1, 1])
     })
 
-    it('carries its Location Filter in parameters', () => {
-      const subscribe = buildTestSubscribe()
-      const filter = subscribe.parameters.find((p): p is LocationFilter => p instanceof LocationFilter)
-      expect(filter?.filterType).toBe(LocationFilterType.AbsoluteStartGroupEnd)
-      expect(filter?.startLocation()).toEqual(new Location(81n, 81n))
-      expect(filter?.endGroup).toBe(100n)
-    })
+    it('should throw on invalid filterType', () => {
+      const buf = new ByteBuffer()
+      buf.putVI(ControlMessageType.TrackStatus)
+      buf.putVI(128242n)
+      buf.putVI(999n)
+      buf.putTuple(Tuple.fromUtf8Path('invalid/filter'))
+      buf.putVI(10)
+      buf.putBytes(new TextEncoder().encode('InvalidTest'))
+      buf.putU8(31)
+      buf.putU8(GroupOrder.Original)
+      buf.putU8(1)
+      buf.putVI(9999)
 
-    it('should handle empty parameters', () => {
-      const subscribe = new Subscribe(128242n, FullTrackName.tryNew('track/namespace', 'trackName'), [])
+      expect(() => TrackStatus.parsePayload(buf)).toThrow()
+    })
+    it('should handle empty subscribeParameters', () => {
+      const subscribe = new TrackStatus(
+        128242n,
+        999n,
+        FullTrackName.tryNew('track/namespace', 'trackName'),
+        31,
+        GroupOrder.Original,
+        true,
+        new LocationFilter(LocationFilterType.NextObject),
+        [],
+      )
 
       const serialized = subscribe.serialize()
       const buf = new ByteBuffer()
       buf.putBytes(serialized.toUint8Array())
 
       const msgType = buf.getVI()
-      expect(msgType).toBe(BigInt(ControlMessageType.Subscribe))
+      expect(msgType).toBe(BigInt(ControlMessageType.TrackStatus))
       buf.getU16()
 
-      const deserialized = Subscribe.parsePayload(buf)
+      const deserialized = TrackStatus.parsePayload(buf)
       expect(deserialized).toEqual(subscribe)
       expect(buf.remaining).toBe(0)
     })
 
     it('should throw on partial message', () => {
-      const subscribe = buildTestSubscribe()
+      const subscribe = buildTestTrackStatus()
       const serialized = subscribe.serialize()
       const serializedBytes = serialized.toUint8Array()
 
@@ -167,7 +201,7 @@ if (import.meta.vitest) {
         buf.getVI()
         buf.getU16()
 
-        expect(() => Subscribe.parsePayload(buf)).toThrow()
+        expect(() => TrackStatus.parsePayload(buf)).toThrow()
       } catch (err) {
         expect(err).toBeInstanceOf(Error)
       }

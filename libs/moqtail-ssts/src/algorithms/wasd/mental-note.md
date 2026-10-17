@@ -100,20 +100,24 @@ setting. The numbers are in the README's "What it does badly".
    media changes, not before.
 2. **Streams parked in `finish()` when the downshift fires.** They are not cancelled
    by the reset — they finish gracefully, and since their group is now marked as a
-   re-send, they close under the _halved_ deadline. That is defensible and it is
+   re-send, they close under the _inherited_ deadline
+   (`subscriber_buffer_ms - age_ms`). That is defensible and it is
    what happens today. The research branch had a cancel-notify path for them. Decide
    whether the tail they finish sending is worth the machinery, once it shows up in
    a capture.
-3. **Two knobs: `wasd.reads` and `wasd.rho`.** Whether the inherited deadline
+3. **Three knobs: `wasd.reads`, `wasd.rho` and `wasd.umin`.** Whether the inherited deadline
    is worth exposing (it should probably stay fixed — it is semantics, not
    tuning), and whether the monitor's depth thresholds deserve more knobs
    before someone asks for them.
-4. **The `umin` / `rho` extension slots.** `rho` is a knob again — read from a
+4. **The `umin` / `rho` extension slots.** Both are live. `rho` is read from a
    trailing percentage in `algorithm_params`, overriding the operator's for
-   that subscriber's sets. `umin` is not a slot but a computation:
-   `ceil(B / G)` from the subscriber's own buffer and observed cadence, so
-   the floor arrives with the connection instead of being signalled. The
-   percentage convention (1..=100) is the open surface: a float on the wire
+   that subscriber's sets. `umin` is signalled the same way — slot 0 of the
+   two-slot layout, a count of media groups — and a zero or an unsignalled
+   slot keeps the automatic default — the operator's `wasd.umin`, else
+   `ceil(B / G)` from the subscriber's own buffer and observed cadence — so
+   the floor arrives with the connection instead of being signalled whenever
+   the client does not insist. The positional convention (one slot = rho
+   alone; two slots = umin, rho) is the open surface: a float on the wire
    would need a different encoding, and the vec is `u64`.
 5. **No end-to-end test of the replay.** The head selection is unit-tested
    (`cached_head`); the write path — new stream, header, head objects, live objects

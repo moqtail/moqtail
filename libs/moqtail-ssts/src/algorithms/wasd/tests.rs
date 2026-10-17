@@ -621,6 +621,7 @@ fn smaller_rho_increases_upshift_streak_for_large_bitrate_jumps() {
   let mut algorithm = WasdAlgorithm::with_params(WasdParams {
     monitor_reads: 2,
     rho: 0.15,
+    ..WasdParams::default()
   });
   let empty: Vec<StreamSnapshot> = Vec::new();
 
@@ -680,6 +681,199 @@ fn a_signalled_algorithm_param_overrides_rho() {
   );
 }
 
+/// A subscriber that sends the two-slot layout signals `U_min` in slot 0, in
+/// units of media groups: the signalled 6 rules over the derived
+/// `ceil(1600 / 500) = 4` floor, so the climb waits six clean groups where
+/// the clock alone would have allowed four. (The step's own price, at the
+/// signalled rho = 100 % giving ceil(1.118 / 1.0) = 2, stays under both.)
+#[test]
+fn a_signalled_u_min_overrides_the_buffer_floor() {
+  let sets = [SetSnapshot {
+    algorithm_params: vec![6, 100],
+    ..ladder_set(1, &[850, 1800, 3500, 6000], 1600, 500)
+  }];
+  let mut algorithm = WasdAlgorithm::new();
+  let empty: Vec<StreamSnapshot> = Vec::new();
+
+  // Congestion at the bottom tier ends the exploration without a fall.
+  let congested = [stream(1, track_at(1, 0), 0), stream(1, track_at(1, 0), 1)];
+  algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 0));
+
+  for group in 1..6 {
+    let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, group));
+    assert_eq!(
+      tier_of(&selection, 1),
+      0,
+      "the signalled U_min = 6, not the derived 4"
+    );
+  }
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 6));
+  assert_eq!(
+    tier_of(&selection, 1),
+    1,
+    "the sixth clean group buys the jump"
+  );
+}
+
+/// A zero in the `U_min` slot means "not signalled": the derived floor
+/// `ceil(B / G) = 4` stands. And when no one signalled and a clock is
+/// unknown - here a set whose first group has not closed, so no cadence -
+/// the written default of five governs.
+#[test]
+fn an_unsignalled_u_min_falls_back_to_the_clock_then_the_default() {
+  let empty: Vec<StreamSnapshot> = Vec::new();
+  let congested = [stream(1, track_at(1, 0), 0), stream(1, track_at(1, 0), 1)];
+
+  // Slot 0 zero: not signalled, so the clock answers: max(4, 2) = 4.
+  let sets = [SetSnapshot {
+    algorithm_params: vec![0, 100],
+    ..ladder_set(1, &[850, 1800, 3500, 6000], 1600, 500)
+  }];
+  let mut algorithm = WasdAlgorithm::new();
+  algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 0));
+  for group in 1..4 {
+    let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, group));
+    assert_eq!(tier_of(&selection, 1), 0, "the derived 4, not fewer");
+  }
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 4));
+  assert_eq!(
+    tier_of(&selection, 1),
+    1,
+    "ceil(1600 / 500) = 4 buys the jump"
+  );
+
+  // No cadence and no signal: the written UPSHIFT_GOP_STREAK of five.
+  let sets = [SetSnapshot {
+    algorithm_params: vec![0, 100],
+    ..ladder_set(1, &[850, 1800, 3500, 6000], 1600, 0)
+  }];
+  let mut algorithm = WasdAlgorithm::new();
+  algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 0));
+  for group in 1..5 {
+    let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, group));
+    assert_eq!(tier_of(&selection, 1), 0, "the written 5, not fewer");
+  }
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 5));
+  assert_eq!(
+    tier_of(&selection, 1),
+    1,
+    "the unknown clock falls back to UPSHIFT_GOP_STREAK"
+  );
+}
+
+/// With both slots signalled, slot 0 is the floor and the trailing one is
+/// the tolerance, and `U(k)` is the max of the floor and the step's price:
+/// at rho = 0.15 the 850 -> 1800 jump costs ceil(1.118 / 0.15) = 8, so
+/// `vec![10, 15]` waits the signalled 10 and `vec![3, 15]` waits the step's 8.
+#[test]
+fn u_min_and_rho_signalled_together_take_the_max() {
+  let empty: Vec<StreamSnapshot> = Vec::new();
+  let congested = [stream(1, track_at(1, 0), 0), stream(1, track_at(1, 0), 1)];
+
+  // The floor rules the step: max(10, 8) = 10.
+  let sets = [SetSnapshot {
+    algorithm_params: vec![10, 15],
+    ..ladder_set(1, &[850, 1800, 3500, 6000], 1600, 500)
+  }];
+  let mut algorithm = WasdAlgorithm::new();
+  algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 0));
+  for group in 1..10 {
+    let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, group));
+    assert_eq!(
+      tier_of(&selection, 1),
+      0,
+      "the signalled floor of 10 rules the step's 8"
+    );
+  }
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 10));
+  assert_eq!(tier_of(&selection, 1), 1, "the tenth clean group buys it");
+
+  // The step rules the floor: max(3, 8) = 8.
+  let sets = [SetSnapshot {
+    algorithm_params: vec![3, 15],
+    ..ladder_set(1, &[850, 1800, 3500, 6000], 1600, 500)
+  }];
+  let mut algorithm = WasdAlgorithm::new();
+  algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 0));
+  for group in 1..8 {
+    let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, group));
+    assert_eq!(
+      tier_of(&selection, 1),
+      0,
+      "the step's 8 rules the signalled 3"
+    );
+  }
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 8));
+  assert_eq!(tier_of(&selection, 1), 1, "the eighth clean group buys it");
+}
+
+/// The operator's `wasd.umin` parses through the tuning: zero is unset and a
+/// positive count is the floor.
+#[test]
+fn the_operator_tuning_parses_the_u_min_floor() {
+  let tuned = crate::Tuning::from_pairs(["wasd.umin=6"]);
+  assert_eq!(WasdParams::from_tuning(&tuned).u_min, Some(6));
+
+  let unset = crate::Tuning::from_pairs(["wasd.umin=0"]);
+  assert_eq!(WasdParams::from_tuning(&unset).u_min, None);
+
+  let untouched = crate::Tuning::from_pairs(std::iter::empty::<&str>());
+  assert_eq!(
+    WasdParams::from_tuning(&untouched).u_min,
+    None,
+    "an untouched key keeps the derived horizon"
+  );
+}
+
+/// The operator's `wasd.umin` replaces the derived horizon for a subscriber
+/// that signals none — and loses to one that does: the same ladder climbs
+/// after six clean groups under the operator's floor of 6, and after three
+/// under the signalled `vec![3, 100]`.
+#[test]
+fn the_operator_u_min_replaces_the_clock_but_loses_to_the_subscriber() {
+  let empty: Vec<StreamSnapshot> = Vec::new();
+  let congested = [stream(1, track_at(1, 0), 0), stream(1, track_at(1, 0), 1)];
+
+  // Operator floor 6, subscriber silent: max(6, 2) = 6, not the derived 4.
+  let sets = [ladder_set(1, &[850, 1800, 3500, 6000], 1600, 500)];
+  let mut algorithm = WasdAlgorithm::with_params(WasdParams {
+    u_min: Some(6),
+    ..WasdParams::default()
+  });
+  algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 0));
+  for group in 1..6 {
+    let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, group));
+    assert_eq!(
+      tier_of(&selection, 1),
+      0,
+      "the operator's floor of 6, not the derived 4"
+    );
+  }
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 6));
+  assert_eq!(tier_of(&selection, 1), 1, "the sixth clean group buys it");
+
+  // The subscriber's signalled 3 outranks the operator's 6: max(3, 2) = 3.
+  let sets = [SetSnapshot {
+    algorithm_params: vec![3, 100],
+    ..ladder_set(1, &[850, 1800, 3500, 6000], 1600, 500)
+  }];
+  let mut algorithm = WasdAlgorithm::with_params(WasdParams {
+    u_min: Some(6),
+    ..WasdParams::default()
+  });
+  algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 0));
+  for group in 1..3 {
+    let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, group));
+    assert_eq!(
+      tier_of(&selection, 1),
+      0,
+      "the signalled 3 outranks the operator's 6"
+    );
+  }
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 3));
+  assert_eq!(tier_of(&selection, 1), 1, "the third clean group buys it");
+}
+
 /// The same connection pays per step, not per ladder: a 3x jump costs eight
 /// clean groups at rho = 0.25 while the 1.2x step right behind it costs only
 /// the U_min floor of two.
@@ -689,6 +883,7 @@ fn non_uniform_ladder_requires_more_groups_for_larger_relative_jumps() {
   let mut algorithm = WasdAlgorithm::with_params(WasdParams {
     monitor_reads: 2,
     rho: 0.25,
+    ..WasdParams::default()
   });
   let empty: Vec<StreamSnapshot> = Vec::new();
 

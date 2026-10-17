@@ -120,16 +120,29 @@ sample, which is not a monitor; it is clamped to 1 rather than 0.
 steady climb waits
 
 ```text
-U(k) = max( ceil(B / G),  ceil( ((R_{k+1} - R_k) / R_k) / rho ) )
+U(k) = max( U_min,  ceil( ((R_{k+1} - R_k) / R_k) / rho ) )
 ```
 
-clean groups: at least one buffer-depth of them — `B` the subscriber's
-negotiated buffer, `G` the observed group cadence — and more across rungs
-that are far apart in bitrate, because a 3x jump is a 3x bigger bet than a
-1.2x one. Lower is more cautious; 1.0 climbs on the floor alone whenever
-the ladder's relative steps are smaller than one buffer-depth. A subscriber
-may also signal its own tolerance as a trailing percentage (1..=100) in the
-set's algorithm parameters, which overrides the operator's for its sets.
+clean groups: at least `U_min` of them — one buffer-depth, `ceil(B / G)`
+from `B` the subscriber's negotiated buffer and `G` the observed group
+cadence, unless a signalled or operator floor replaces it — and more across
+rungs that are far apart in bitrate, because a 3x jump is a 3x bigger bet
+than a 1.2x one. Lower is more cautious; 1.0 climbs on the floor alone
+whenever the ladder's relative steps are smaller than one buffer-depth.
+
+`wasd.umin` (default unset): an operator's floor for `U_min`, in clean
+groups, used in place of the derived `ceil(B / G)` when set. Unset, the
+floor is that recommended buffer-drainage horizon, and the written five
+still answers when neither clock is known.
+
+**Subscriber signalling.** The set's algorithm parameters carry the same
+two numbers per connection, and signalled values override the operator's
+for that subscriber's sets. With one parameter it is the tolerance: a
+percentage (`1..=100`) for `rho`. With two or more, slot 0 is `U_min` — a
+count of media groups, `0` meaning "not signalled" — and the trailing
+parameter is the `rho` percentage. An unsignalled (or zero) `U_min` leaves
+the derived `ceil(B / G)` in place, unless the operator set `wasd.umin`:
+the floor arrives with the connection instead of being signalled.
 
 ## What this is not, and where the rest of the experiment went
 
@@ -161,11 +174,15 @@ committing the bytes. On a link that is congested rather than merely busy, that
 shows up as a group that arrives twice and still gets discarded.
 
 **The extension's `umin` and `rho` slots.** The research version read a third
-extension slot as a timeout and stored two others unused. Nothing here reads
-`algorithm_params`: the timeout they carried is now `subscriber_buffer_ms`, which
-is the field with mechanism meaning, and the two unused slots were dropped rather
-than reserved. An algorithm that needs a knob can take one; the subscriber sends
-them in the order the algorithm defines.
+extension slot as a timeout and stored two others unused. The timeout is now
+`subscriber_buffer_ms`, which is the field with mechanism meaning; the two
+dormant slots are live here. A subscriber signals its probing risk tolerance
+`rho` as a percentage (`1..=100`) in the trailing `algorithm_params` slot, and
+its minimum upshift stability threshold `U_min` — a count of media groups — in
+slot 0 of the two-slot layout; a zero, or a one-slot vec, means unsignalled,
+and the floor then derives itself from the subscriber's own buffer and
+observed cadence, `ceil(B / G)`. The subscriber sends them in the order the
+algorithm defines.
 
 ## What it does badly
 

@@ -199,6 +199,10 @@ pub struct WasdParams {
   /// groups per unit of relative bitrate step. Higher climbs more eagerly;
   /// lower demands more evidence before stepping across a large jump.
   pub rho: f64,
+  /// Operator's floor for `U_min`, in clean groups, used in place of the
+  /// derived `ceil(B / G)` when set. `None` keeps the derived horizon; a
+  /// subscriber that signals `U_min` in `algorithm_params` outranks either.
+  pub u_min: Option<u64>,
 }
 
 impl WasdParams {
@@ -212,18 +216,25 @@ impl Default for WasdParams {
     Self {
       monitor_reads: state::DOWNSHIFT_SUBGROUP_READS,
       rho: Self::DEFAULT_RHO,
+      u_min: None,
     }
   }
 }
 
 impl WasdParams {
   /// From the operator's `key=value` pairs: `wasd.reads` for the monitor's
-  /// patience, `wasd.rho` for the probing risk tolerance.
+  /// patience, `wasd.rho` for the probing risk tolerance, and `wasd.umin`
+  /// (a group count, `0` meaning unset) for a floor to use in place of the
+  /// derived `ceil(B / G)`.
   pub fn from_tuning(tuning: &Tuning) -> Self {
     let defaults = Self::default();
     Self {
       monitor_reads: tuning.usize("wasd.reads", defaults.monitor_reads as usize) as u32,
       rho: tuning.f64("wasd.rho", defaults.rho),
+      u_min: match tuning.usize("wasd.umin", 0) {
+        0 => None,
+        v => Some(v as u64),
+      },
     }
   }
 }
@@ -235,6 +246,8 @@ pub struct WasdAlgorithm {
   reach: Reach,
   /// The probing risk tolerance this instance climbs on.
   rho: f64,
+  /// The operator's `U_min` floor, used when the subscriber signals none.
+  u_min: Option<u64>,
 }
 
 impl WasdAlgorithm {
@@ -245,6 +258,7 @@ impl WasdAlgorithm {
       ladder: LadderState::new(),
       reach: Reach::Nothing,
       rho: WasdParams::DEFAULT_RHO,
+      u_min: None,
     }
   }
 
@@ -271,16 +285,18 @@ impl WasdAlgorithm {
       ladder: LadderState::new(),
       reach,
       rho: WasdParams::DEFAULT_RHO,
+      u_min: None,
     }
   }
 
-  /// Any version, with the monitor's patience and the probing risk tolerance
-  /// set by the operator.
+  /// Any version, with the monitor's patience, the probing risk tolerance and
+  /// the `U_min` floor set by the operator.
   pub fn with_reach_and_params(reach: Reach, params: WasdParams) -> Self {
     Self {
       ladder: LadderState::new_with_reads(params.monitor_reads),
       reach,
       rho: params.rho,
+      u_min: params.u_min,
     }
   }
 
@@ -321,7 +337,7 @@ impl AbrAlgorithm for WasdAlgorithm {
         // clock (buffer over cadence) floored against the step's relative
         // bitrate jump, priced by the probing risk tolerance. Computed inside
         // the arm because a stream timeout is not a reading and never needs it.
-        let upshift_streak = upshift_streak_needed(input, before, self.rho);
+        let upshift_streak = upshift_streak_needed(input, before, self.rho, self.u_min);
         // Whether the climb was still exploring when this reading arrived:
         // that is what decides the streak an upshift here actually waited, and
         // the log reports the waited number, not the computed U(k).
@@ -427,24 +443,34 @@ impl AbrAlgorithm for WasdAlgorithm {
 /// to the most demanding ladder):
 ///
 /// ```text
-/// U_min = ceil(B / G)
+/// U_min = signalled count, else wasd.umin, else ceil(B / G), else UPSHIFT_GOP_STREAK
 /// U(k)  = max(U_min, ceil(((R_{k+1} - R_k) / R_k) / rho))
 /// ```
 ///
-/// `B` is the subscriber's buffer (`subscriber_buffer_ms`) and `G` the
-/// observed group cadence (`group_span_ms`): the floor says a climb should
-/// wait roughly one buffer-depth of clean groups, so it scales with the
-/// client's latency budget and the media's GoP instead of a constant. The
-/// step term prices the jump itself: a ladder whose next rung is 3x the
-/// current one is a 3x bigger bet than one 20% up, and `rho` is how much
-/// risk the operator is willing to bet per clean group.
+/// `U_min` is the minimum upshift stability threshold, in clean groups. A
+/// subscriber may signal it explicitly in `algorithm_params` (slot 0 of the
+/// two-slot layout, in units of media groups); when it signals none, the
+/// operator's `wasd.umin` floor answers, and without one the recommended
+/// default derives it as one buffer-drainage horizon, `ceil(B / G)`, from the
+/// subscriber's own clocks — `B` the negotiated buffer
+/// (`subscriber_buffer_ms`) and `G` the observed group cadence
+/// (`group_span_ms`) — so the floor scales with the client's latency budget
+/// and the media's GoP instead of a constant.
+/// The step term prices the jump itself: a ladder whose next rung is 3x the
+/// current one is a 3x bigger bet than one 20% up, and `rho` is how much risk
+/// to bet per clean group — the subscriber's signalled percentage
+/// (`1..=100`, trailing slot) where it signalled one, else the operator's.
 ///
-/// Falls back to `UPSHIFT_GOP_STREAK` for `U_min` when the buffer or the
-/// cadence is unknown (0): an unbuffered connection granted no window to
-/// reason about, and a set whose first group has not closed yet has no
-/// cadence. A subscriber that signalled `algorithm_params` with a trailing
-/// percentage (`1..=100`) overrides `rho` for its own sets.
-fn upshift_streak_needed(input: &AbrInput, current_tier: usize, default_rho: f64) -> u64 {
+/// Falls back to `UPSHIFT_GOP_STREAK` for `U_min` when neither the subscriber
+/// nor the operator spoke and the buffer or the cadence is unknown (0): an
+/// unbuffered connection granted no window to reason about, and a set whose
+/// first group has not closed yet has no cadence.
+fn upshift_streak_needed(
+  input: &AbrInput,
+  current_tier: usize,
+  default_rho: f64,
+  default_u_min: Option<u64>,
+) -> u64 {
   use crate::algorithms::asd::state::UPSHIFT_GOP_STREAK;
 
   // wasd serves one tier across every set on the connection, so the climb must
@@ -455,24 +481,34 @@ fn upshift_streak_needed(input: &AbrInput, current_tier: usize, default_rho: f64
     .sets
     .iter()
     .filter(|set| set.active && !set.members.is_empty())
-    .map(|set| set_upshift_streak(set, current_tier, default_rho))
+    .map(|set| set_upshift_streak(set, current_tier, default_rho, default_u_min))
     .max()
     .unwrap_or(UPSHIFT_GOP_STREAK)
 }
 
 /// The `U(k)` one set prices for the step out of `current_tier`: its own
-/// buffer-depth floor against its own relative bitrate jump, under its own
-/// signalled risk tolerance where it signalled one, else the operator's.
-fn set_upshift_streak(set: &SetSnapshot, current_tier: usize, default_rho: f64) -> u64 {
+/// floor — the count it signalled, else the operator's, else its own
+/// buffer-drainage horizon `ceil(B / G)` — against its own relative bitrate
+/// jump, under its own signalled risk tolerance where it signalled one, else
+/// the operator's.
+fn set_upshift_streak(
+  set: &SetSnapshot,
+  current_tier: usize,
+  default_rho: f64,
+  default_u_min: Option<u64>,
+) -> u64 {
   use crate::algorithms::asd::state::UPSHIFT_GOP_STREAK;
 
-  // U_min: one buffer-depth of clean groups, or the written default when
-  // either clock is unknown.
-  let u_min = if set.subscriber_buffer_ms > 0 && set.group_span_ms > 0 {
-    set.subscriber_buffer_ms.div_ceil(set.group_span_ms)
-  } else {
-    UPSHIFT_GOP_STREAK
-  };
+  // U_min: the count the subscriber signalled for its own set wins, then the
+  // operator's floor, then the recommended buffer-drainage horizon
+  // ceil(B / G), then the written default when neither clock is known.
+  let u_min = signaled_u_min(set).or(default_u_min).unwrap_or_else(|| {
+    if set.subscriber_buffer_ms > 0 && set.group_span_ms > 0 {
+      set.subscriber_buffer_ms.div_ceil(set.group_span_ms)
+    } else {
+      UPSHIFT_GOP_STREAK
+    }
+  });
 
   // rho: the subscriber's own signalled percentage wins over the operator's.
   let rho = set
@@ -503,6 +539,19 @@ fn set_upshift_streak(set: &SetSnapshot, current_tier: usize, default_rho: f64) 
   };
 
   u_min.max(step_term).max(1)
+}
+
+/// The minimum upshift stability threshold the subscriber signalled for its
+/// own set, in units of media groups: slot 0 of `algorithm_params` when the
+/// subscriber sent the two-slot layout and the slot is non-zero. A one-slot
+/// vec is the older shape that signals `rho` alone, and a zero means "not
+/// signalled" - the derived `ceil(B / G)` default stands.
+fn signaled_u_min(set: &SetSnapshot) -> Option<u64> {
+  if set.algorithm_params.len() >= 2 {
+    set.algorithm_params.first().copied().filter(|&v| v > 0)
+  } else {
+    None
+  }
 }
 
 /// A re-sent group inherits the remaining buffer budget of the overtaken

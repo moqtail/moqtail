@@ -4,12 +4,12 @@ version = "0.15.0"
 edition = "2024"
 
 [dependencies]
-anyhow = "1.0.104"
-tracing = "0.1.44"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
 wtransport = { workspace = true, features = ["dangerous-configuration"] }
-tokio = { version = "1.53", features = ["full"] }
-bytes = "1.12.1"
-moqtail = { version = "*", path = "../moqtail" }
-clap = { version = "4.6", features = ["derive"] }
-rand = "0.10"
+tokio.workspace = true
+bytes.workspace = true
+moqtail.workspace = true
+clap.workspace = true
+rand.workspace = true

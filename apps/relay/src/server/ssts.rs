@@ -69,11 +69,18 @@ pub(crate) enum AbrMessage {
   /// largest one: the first Object of a group is not necessarily the one that
   /// triggers the decision.
   NewGroup(u64),
-  /// An Object was written to one of this connection's send streams: the
+  /// An Object was handed to one of this connection's send streams: the
   /// delivery advanced, and the mid-group reading is taken again. The sample
   /// clock is the delivery itself — objects sent pace it, thinning as the
-  /// path slows and stopping when it stops.
-  ObjectSent,
+  /// path slows and stopping when it stops. The tick fires when the write
+  /// starts, not when it completes, so a sample is never held up by the
+  /// backpressure it exists to measure.
+  ///
+  /// The message names the group and track the Object went out on, because
+  /// not every byte is progress: tail Objects draining on a group the gate
+  /// has overtaken, and the replay of a re-sent group, are filtered by the
+  /// controller against the newest group and the re-send marks.
+  ObjectSent { group_id: u64, relay_track_id: u64 },
   /// A forwarding stream was reset for delivery timeout: congestion evidence
   /// for the next allocation.
   ///

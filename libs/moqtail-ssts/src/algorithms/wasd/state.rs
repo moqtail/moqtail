@@ -64,8 +64,9 @@ pub(crate) struct LadderState {
   monitor_reads: u32,
   /// Until the ladder's top or the first sustained congestion, whichever comes first.
   exploring: bool,
-  /// The group_id of the previous sample, ensuring upshifts are only evaluated
-  /// when a new group is being decided before `record_group_decision` locks it.
+  /// The newest group_id any sample has named, strictly monotonic: a late
+  /// reading from a draining tail names an older group and must not open a
+  /// boundary or move this back.
   last_group_id: Option<u64>,
 }
 
@@ -109,10 +110,12 @@ impl LadderState {
 
   /// Evaluate one depth sample for `group_id`.
   ///
-  /// The first sample for a new `group_id` (`is_new_group`) arrives when the
-  /// forward gate requests a decision before opening the new group's stream.
-  /// Subsequent samples for the same `group_id` arrive while the group is in
-  /// flight.
+  /// The first sample for a group newer than any seen (`is_new_group`) arrives
+  /// when the forward gate requests a decision before opening the new group's
+  /// stream. Subsequent samples for the same or an older `group_id` arrive
+  /// while groups are in flight: a sample naming an older group is a draining
+  /// tail, judged as a mid-group reading, and the boundary clock never moves
+  /// back to it.
   ///
   /// `upshift_streak_needed` is the dynamic threshold `U(k)` the host
   /// computed for this step - the subscriber's buffer-depth floored against
@@ -126,8 +129,14 @@ impl LadderState {
     max_index: usize,
     upshift_streak_needed: u64,
   ) -> Step {
-    let is_new_group = self.last_group_id != Some(group_id);
-    self.last_group_id = Some(group_id);
+    // Strictly monotonic boundary detection: only a group newer than the
+    // newest one seen opens a boundary. An older group's tail object is a
+    // mid-group reading, and it cannot rewind the clock so that a later
+    // sample of the newest group would masquerade as a second boundary.
+    let is_new_group = self.last_group_id.is_none_or(|last| group_id > last);
+    if is_new_group {
+      self.last_group_id = Some(group_id);
+    }
 
     if is_new_group {
       // At the group boundary (before the new group's stream opens), a depth

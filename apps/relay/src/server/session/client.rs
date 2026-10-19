@@ -798,6 +798,16 @@ impl MOQTClient {
     );
   }
 
+  /// Whether the stream is still in the send map. A reset or a graceful
+  /// close takes it out, so absence means the delivery it carried is over
+  /// and nothing more may be written on it — the caller's Arc outlives the
+  /// entry, the map does not lie.
+  async fn stream_live(&self, stream_key: &SendStreamKey) -> bool {
+    let stream_map = self.get_stream_map(stream_key);
+    let send_streams = stream_map.read().await;
+    send_streams.contains_key(stream_key)
+  }
+
   pub async fn write_stream_object(
     &self,
     stream_key: &SendStreamKey,
@@ -832,6 +842,31 @@ impl MOQTClient {
 
     if let Some(s) = send_stream {
       let written: u64 = chunks.iter().map(|chunk| chunk.len() as u64).sum();
+      // A decision can cancel this delivery between objects: a supersede
+      // resets the stream and takes it out of the map while this loop still
+      // holds the Arc it opened with. The next object belongs to a tier that
+      // no longer exists, so it is dropped here rather than written into the
+      // just-cancelled stream.
+      if !self.stream_live(stream_key).await {
+        debug!(
+          "write_stream_object | Stream {} was cancelled mid-delivery; dropping object {}",
+          stream_key, object_id
+        );
+        return Ok(());
+      }
+
+      // The mid-group sample's clock: one reading per Object the delivery
+      // starts, fired before awaiting the write so a sample is never held up
+      // by the very backpressure it exists to measure. Best effort: a
+      // controller busy enough to miss a sample takes the next one an Object
+      // later. Draining tails and re-sent replays name their group; the
+      // controller filters them against the newest one.
+      if let Some(group_id) = stream_key.stream_id.group_id {
+        let _ = self.ssts.abr_tx.try_send(ssts::AbrMessage::ObjectSent {
+          group_id,
+          relay_track_id: stream_key.stream_id.relay_track_id,
+        });
+      }
       let mut stream = s.lock().await;
       match stream.write_all_chunks(&mut chunks).await {
         Ok(..) => {
@@ -844,10 +879,6 @@ impl MOQTClient {
             .await
             .entry(stream_key.clone())
             .or_default() += written;
-          // The delivery advanced by one Object, and that is the mid-group
-          // sample's clock. Best effort: a controller busy enough to miss a
-          // sample takes the next one a delivery later.
-          let _ = self.ssts.abr_tx.try_send(ssts::AbrMessage::ObjectSent);
         }
         Err(e) => {
           if let TransportWriteError::Stopped(code) = &e {

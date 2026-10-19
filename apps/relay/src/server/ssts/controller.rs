@@ -145,14 +145,17 @@ pub(crate) fn start(client: Arc<MOQTClient>) {
                 .await;
               }
             }
-            Some(AbrMessage::ObjectSent) => {
+            Some(AbrMessage::ObjectSent { group_id, relay_track_id }) => {
               // The mid-group sample clock is the delivery itself: one
-              // reading per Object written, so samples thin out as the path
-              // slows and stop when it stops. An algorithm that only reads
-              // the evidence at a boundary can ignore the difference; one
-              // that watches the state inside a group takes these as its
-              // samples.
-              if let Some(group_id) = last_group {
+              // reading per Object the delivery starts, so samples thin out
+              // as the path slows and stop when it stops. Not every byte is
+              // progress though: tail Objects draining on a group the gate
+              // has already overtaken, and the replay of a re-sent group -
+              // whose ladder moved on when it was overtaken - tick for the
+              // newest group's fresh delivery only.
+              if last_group == Some(group_id)
+                && !client.ssts.is_resent_group(relay_track_id, group_id).await
+              {
                 decide(
                   &mut running,
                   &client,

@@ -454,6 +454,64 @@ fn a_transient_mid_group_overlap_does_not_cost_the_climb_streak() {
   );
 }
 
+/// Boundary detection is strictly monotonic: a late reading naming an
+/// older group — a tail object still draining after the gate moved on — is
+/// a mid-group reading, not a second boundary, and it never moves the
+/// boundary clock back.
+#[test]
+fn an_old_group_reading_is_never_a_boundary() {
+  let sets = [set(1, true)];
+  let mut algorithm = WasdAlgorithm::new();
+  // Exploration climbs to tier 1 at group 0; a congested boundary at group
+  // 10 falls back to tier 0; four clean boundaries (20..=23) and this
+  // fifth (24) climb back to tier 1 with the streak reset.
+  settle(&mut algorithm, &sets, 4);
+  let clear: Vec<StreamSnapshot> = Vec::new();
+  let selection = algorithm.decide(&input(&sets, &clear, DecisionReason::GroupBoundary, 24));
+  assert_eq!(tier_of(&selection, 1), 1, "the fifth clean boundary climbs");
+
+  // A tail object of the old group 4, deep at the delivered tier, while
+  // the newest group decided was 24. Taken for a boundary this is a
+  // congested one — a downshift. It is a mid-group reading, one short of
+  // the monitor's streak, and nothing fires.
+  let overlap = deep_at(1);
+  let selection = algorithm.decide(&input(&sets, &overlap, DecisionReason::PeriodicSample, 4));
+  assert_eq!(
+    tier_of(&selection, 1),
+    1,
+    "an older group's reading cannot open a congested boundary"
+  );
+
+  // And the clock did not move back to 4: a clean reading for the newest
+  // group is still mid-group, so it is not a fifth-plus-one clean
+  // boundary either.
+  let selection = algorithm.decide(&input(&sets, &clear, DecisionReason::PeriodicSample, 24));
+  assert_eq!(
+    tier_of(&selection, 1),
+    1,
+    "the newest group is still judged against the newest group"
+  );
+
+  // The next climb waits the full cautious five from where the upshift
+  // left it: the old reading and the mid-group clean one are not clean
+  // boundaries, so four are not enough...
+  for group in 25..29 {
+    let selection = algorithm.decide(&input(&sets, &clear, DecisionReason::GroupBoundary, group));
+    assert_eq!(
+      tier_of(&selection, 1),
+      1,
+      "tails do not count as clean groups"
+    );
+  }
+  // ...and the fifth is.
+  let selection = algorithm.decide(&input(&sets, &clear, DecisionReason::GroupBoundary, 29));
+  assert_eq!(
+    tier_of(&selection, 1),
+    2,
+    "the clock never moved back to the draining tail"
+  );
+}
+
 #[test]
 fn the_monitor_rearms_after_it_fires() {
   let sets = [set(1, true)];

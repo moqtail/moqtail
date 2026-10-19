@@ -569,7 +569,10 @@ fn signaled_u_min(set: &SetSnapshot) -> Option<u64> {
 /// group the re-send replaces in the delivery order — older overtaken groups
 /// have less of the window left, and v3's staging already prices them one rung
 /// lower for it. A re-send of a group whose stream had barely started inherits
-/// nearly the whole buffer, which is right: it has nearly the whole window.
+/// nearly the whole buffer, which is right: it has nearly the whole window. A
+/// stream that is itself a re-send donates too: its age runs from the moment
+/// the repair started, which is exactly what a second repair of the same group
+/// has left of the same window.
 ///
 /// A set that negotiated no buffer (`subscriber_buffer_ms == 0`) has granted
 /// no permission to discard media, so `None` leaves the relay's rule of never
@@ -587,7 +590,6 @@ fn resend_deadline_ms(input: &AbrInput, set: &SetSnapshot, new_tier: usize) -> O
     .iter()
     .filter(|s| {
       s.set_id == set.id
-        && !s.resent
         && set
           .members
           .iter()
@@ -622,7 +624,10 @@ fn any_active(input: &AbrInput) -> bool {
 /// A re-sent stream is the relay's own reaction to the previous downshift. That
 /// is the whole reason the depth is measured at one rung: if the streams the
 /// downshift itself caused counted, every downshift would report the congestion
-/// it was meant to relieve.
+/// it was meant to relieve. Measured, not theorised: with the re-sends in the
+/// depth, a 500 ms dip on `PROFILE_JITTER` cost three rungs (3 to 0) instead of
+/// one, each repair overlapping the next group manufacturing the evidence for
+/// the next step down.
 fn depth_at_current_tier(input: &AbrInput, tier: usize) -> u64 {
   input
     .sets

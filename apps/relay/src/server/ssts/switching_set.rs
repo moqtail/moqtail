@@ -1159,6 +1159,42 @@ mod tests {
     assert!(manager.streams_above(1234, 20).is_empty());
   }
 
+  /// A second step down reaches the first step's repair: a group already
+  /// marked as re-sent is still a delivery in flight, and a stream above the
+  /// new choice is overtaken whoever opened it. The re-mark updates the
+  /// deadline the second repair inherits.
+  #[test]
+  fn a_re_sent_group_can_be_overtaken_again() {
+    let mut manager = SwitchingSetManager::new();
+    let high = make_track("ns", "high");
+    let mid = make_track("ns", "mid");
+    let low = make_track("ns", "low");
+    assign(&mut manager, &high, 10, 7, 3000);
+    assign(&mut manager, &mid, 20, 7, 1000);
+    assign(&mut manager, &low, 30, 7, 300);
+
+    // Group 6 was overtaken once and is being re-sent at the middle rung.
+    manager.mark_group_resent(7, 6, Some(400));
+    let repair = StreamId::new_subgroup(20, 6, Some(0));
+    manager.note_stream_opened(&repair, 2000);
+
+    // Step down again, to the bottom rung: the repair is above it, so it is
+    // overtaken a second time - the re-send mark does not shield the group.
+    let overtaken = manager.streams_above(7, 30);
+    assert_eq!(
+      overtaken
+        .iter()
+        .map(|(group, stream)| (*group, stream.relay_track_id))
+        .collect::<Vec<_>>(),
+      vec![(6, 20)],
+      "the re-sent delivery is overtaken like any other above the new rung"
+    );
+
+    // And the second supersede updates the inherited deadline.
+    manager.mark_group_resent(7, 6, Some(200));
+    assert_eq!(manager.resent_deadline_ms(7, 6), Some(200));
+  }
+
   /// A re-send mark lives for as long as the group it describes is being
   /// re-sent, and no longer: it is a note about live media, not history.
   #[test]

@@ -238,6 +238,35 @@ fn a_resent_stream_is_not_depth() {
   );
 }
 
+/// The descent waits for real congestion, not for its own repair: after a
+/// step from tier 2 to tier 1, the re-sent group still open at the tier now
+/// served is the downshift's own doing. Counting it walked the ladder one
+/// rung further per repair - three rungs for a half-second dip on the
+/// measured profile - so the second step must come from fresh streams, or
+/// not come at all.
+#[test]
+fn a_repair_in_flight_is_not_a_second_congestion() {
+  let sets = [set(1, true)];
+  let mut algorithm = WasdAlgorithm::new();
+  climb(&mut algorithm, &sets, 2);
+
+  // Step one: a congested boundary at tier 2 falls to tier 1.
+  let congested = [stream(1, track_at(1, 2), 30), stream(1, track_at(1, 2), 31)];
+  let selection = algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 32));
+  assert_eq!(tier_of(&selection, 1), 1, "the first step");
+
+  // The repair: group 31 re-sent at tier 1, still open when group 33's
+  // boundary is read next to group 32's fresh stream at the same tier.
+  // Only the fresh stream is depth: one group in flight is on target.
+  let in_flight = [resent(1, track_at(1, 1), 31), stream(1, track_at(1, 1), 32)];
+  let selection = algorithm.decide(&input(&sets, &in_flight, DecisionReason::GroupBoundary, 33));
+  assert_eq!(
+    tier_of(&selection, 1),
+    1,
+    "the repair does not call for the next step"
+  );
+}
+
 #[test]
 fn a_v3_downshift_asks_to_overtake_the_sets_it_moved_down() {
   let sets = [set(1, true), set(2, false)];
@@ -991,6 +1020,39 @@ fn a_downshift_inherits_the_remaining_buffer_of_the_newest_overtaken_stream() {
   assert!(
     selection.supersede[&1].age_staged,
     "and the staging does not depend on the deadline"
+  );
+}
+
+/// A stream that is itself a re-send donates a deadline too: its age runs
+/// from the moment the repair started, which is exactly what a second
+/// repair of the same group has left of the subscriber's window. The depth
+/// exclusion does not apply here - the depth asks what the network is
+/// doing, the deadline asks what the delivery has left - so the filter
+/// that keeps the re-send out of the depth must not reach this one.
+#[test]
+fn a_re_sent_stream_donates_its_remaining_buffer_to_the_next_repair() {
+  let sets = [set_with_buffer(1, 800)];
+  let mut algorithm = WasdAlgorithm::v3();
+  climb(&mut algorithm, &sets, 2);
+
+  // Two fresh streams at tier 2 make the depth that steps the ladder. The
+  // newest stream above the new rung is then a re-send from an earlier
+  // step, 200 ms into its delivery: newest group, so it donates - the
+  // depth exclusion must not reach here.
+  let congested = [
+    stream_with_age(1, track_at(1, 2), 7, 500),
+    stream_with_age(1, track_at(1, 2), 8, 100),
+    StreamSnapshot {
+      age_ms: 200,
+      ..resent(1, track_at(1, 2), 9)
+    },
+  ];
+  let selection = algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 20));
+  assert_eq!(tier_of(&selection, 1), 1, "the tier fell");
+  assert_eq!(
+    selection.resend_deadline_ms(1),
+    Some(600),
+    "the newest overtaken group is the re-send: 800 - 200, not the fresh 700"
   );
 }
 

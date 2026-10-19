@@ -104,7 +104,11 @@ subscriber negotiated — remains, and the re-send has to finish inside what is
 left; one rung lower is how it finishes sooner. The newest group still has the
 full window, so it keeps the rung the decision landed on. A host that does not
 re-send at all may ignore the flag: it is a request about how a re-send is laid
-out, not about whether one happens.
+out, not about whether one happens. A repair is not immune to the next decision
+either: a second step down overtakes a re-send still in flight above the new
+rung, cancels it and re-sends it at the lower one, and the repair's own elapsed
+time — measured from when the repair started, not when the group did — donates
+the second re-send's deadline.
 
 ## Knobs
 

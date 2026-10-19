@@ -141,5 +141,6 @@ setting. The numbers are in the README's "What it does badly".
 | cancel, flip the decision, mark re-sent             | `ssts::controller::supersede_overtaken`                     |
 | the deadline on close                               | `MOQTClient::close_stream`, `SstsState::resent_deadline_ms` |
 | the replay itself                                   | `Subscription::replay_cached_head`, `cached_head`           |
-| the head's streams excluded from depth              | `StreamSnapshot::resent`, `AbrInput::open_streams_at_track` |
-| halving, and "no buffer, no deadline"               | `algorithms::wasd::resend_deadline_ms`                     |
+| re-sent streams excluded from depth                 | `StreamSnapshot::resent`, `AbrInput::open_streams_at_track` |
+| re-overtaking a repair, the deadline it donates     | `streams_above`, `mark_group_resent`, `resend_deadline_ms`  |
+| the inherited deadline, "no buffer, no deadline"    | `algorithms::wasd::resend_deadline_ms`                     |

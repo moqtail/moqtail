@@ -41,7 +41,7 @@ use moqtail::{
 use switch_context::SwitchContext;
 
 use std::{
-  collections::{BTreeMap, HashMap, VecDeque},
+  collections::{BTreeMap, HashMap, HashSet, VecDeque},
   sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -116,6 +116,7 @@ pub(crate) struct MOQTClient {
   pub announced_track_namespaces: Arc<RwLock<Vec<Tuple>>>, // the track namespaces the publisher announced
   pub outbound_announcements: Arc<RwLock<HashMap<Tuple, u64>>>, //Maps a Namespace to the outbound request_id we used to announce it to the client
   pub published_tracks: Arc<RwLock<HashMap<u64, FullTrackName>>>, // request_id -> track the client is publishing
+  malformed_tracks: Arc<RwLock<HashSet<FullTrackName>>>,
   pub subscribers: Arc<RwLock<Vec<usize>>>, // the subscribers the client is subscribed to
 
   pub message_queue: Arc<RwLock<VecDeque<ControlMessage>>>, // the control messages the client has sent
@@ -205,6 +206,7 @@ impl MOQTClient {
       announced_track_namespaces: Arc::new(RwLock::new(Vec::new())),
       outbound_announcements: Arc::new(RwLock::new(HashMap::new())),
       published_tracks: Arc::new(RwLock::new(HashMap::new())),
+      malformed_tracks: Arc::new(RwLock::new(HashSet::new())),
       subscribers: Arc::new(RwLock::new(Vec::new())),
       message_queue: Arc::new(RwLock::new(VecDeque::new())),
       message_notify: Arc::new(Notify::default()),
@@ -231,6 +233,14 @@ impl MOQTClient {
   pub(crate) async fn add_announced_track_namespace(&self, track_namespace: Tuple) {
     let mut announced_track_namespaces = self.announced_track_namespaces.write().await;
     announced_track_namespaces.push(track_namespace);
+  }
+
+  pub(crate) async fn mark_track_malformed(&self, full_track_name: FullTrackName) {
+    self.malformed_tracks.write().await.insert(full_track_name);
+  }
+
+  pub(crate) async fn is_track_malformed(&self, full_track_name: &FullTrackName) -> bool {
+    self.malformed_tracks.read().await.contains(full_track_name)
   }
 
   /// Leaving a withdrawn namespace here would keep routing subscriptions to this client.

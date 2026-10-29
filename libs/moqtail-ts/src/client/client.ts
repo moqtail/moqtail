@@ -1056,11 +1056,11 @@ export class MOQtailClient {
    * future waits for that object.
    * - A {@link FillParameters} in `parameters` also retrieves Objects already published, on a fill fetch stream.
    *
-   * The method returns either a {@link RequestError} (on refusal) or an object with the subscription `requestId` and a `ReadableStream` of {@link MoqtObject}s.
+   * The method returns either a {@link RequestError} (on refusal) or an object with the subscription `requestId`, the `trackAlias` and a `ReadableStream` of {@link MoqtObject}s.
    * Use the `requestId` for {@link MOQtailClient.unsubscribe} or {@link MOQtailClient.subscribeUpdate}. Use the `stream` to decode and display objects.
    *
    * @param args - {@link SubscribeOptions} describing the subscription window and relay forwarding behavior.
-   * @returns Either a {@link RequestError} or `{ requestId, stream }` for consuming objects.
+   * @returns Either a {@link RequestError} or `{ requestId, trackAlias, stream }` for consuming objects.
    * @throws : {@link MOQtailError} If the client is destroyed.
    * @throws : {@link ProtocolViolationError} If required fields are missing or inconsistent.
    * @throws : {@link InvalidFilterError} If the Range Filters exceed the server's MAX_FILTER_RANGES; nothing is sent.
@@ -1095,7 +1095,7 @@ export class MOQtailClient {
    */
   async subscribe(
     args: SubscribeOptions,
-  ): Promise<RequestError | { requestId: bigint; stream: ReadableStream<MoqtObject> }> {
+  ): Promise<RequestError | { requestId: bigint; trackAlias: bigint; stream: ReadableStream<MoqtObject> }> {
     this.#ensureActive()
     // Checked before the try: a request the caller got wrong is not a broken session.
     assertWithinFilterRangeLimit(args.parameters ?? [], this.peerMaxFilterRanges, 'MOQtailClient.subscribe')
@@ -1143,7 +1143,7 @@ export class MOQtailClient {
           `subscribe: SUBSCRIBE_OK requestId=${request.requestId} trackAlias=${response.trackAlias}`,
         )
         this.#claimTrackAlias(response.trackAlias, request)
-        return { requestId: msg.requestId, stream: request.stream }
+        return { requestId: msg.requestId, trackAlias: response.trackAlias, stream: request.stream }
       }
     } catch (error) {
       logger.error(

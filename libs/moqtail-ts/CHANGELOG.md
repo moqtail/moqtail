@@ -1,5 +1,38 @@
 # moqtail-ts
 
+## 0.14.0
+
+### Minor Changes
+
+- [#386](https://github.com/moqtail/moqtail/pull/386) [`d642d33`](https://github.com/moqtail/moqtail/commit/d642d335d1f0b0bc4d2020dc47416eaeb2b4a550) Thanks [@zafergurel](https://github.com/zafergurel)! - Switch tracks with the SWITCH_FROM parameter
+
+  A SUBSCRIBE or REQUEST_UPDATE carrying SWITCH_FROM activates its own
+  subscription and suspends the one it names, in place of the SWITCH message,
+  which is gone. A hard switch stops the suspended subscription at the cutover; a
+  soft switch lets it drain to the group before the new subscription's start, so
+  the two are contiguous.
+
+  The fill filter types — AbsoluteStartFill, AbsoluteRangeFill and the new
+  RelativeStartFill — ask the publisher for the objects already published, which
+  arrive on a fill fetch stream: a unidirectional stream beginning with a
+  FETCH_HEADER that names the request which asked for the fill. FILL_PARAMETERS
+  overrides the subscriber priority and group order that stream runs at.
+
+  FETCH is a single message now. Fetch Type and Joining Fetch are gone, along with
+  INVALID_JOINING_REQUEST_ID, whose codepoint INVALID_SWITCH takes over.
+
+- [#440](https://github.com/moqtail/moqtail/pull/440) [`55eaa12`](https://github.com/moqtail/moqtail/commit/55eaa1234fd394c13ae0c2ea0f50e60e66605578) Thanks [@zafergurel](https://github.com/zafergurel)! - Add `onDataEvent`, which reports every data stream as lightweight records: its header when it opens, each object's IDs and payload length, and how it ended (fin, reset with its code, or error). Each record carries the local time it happened, and object records carry the LOC Timestamp property when present, for interarrival, jitter and latency measurements. Payloads are never handed over. It can be passed in `MOQtailClient.new({ callbacks })`.
+
+### Patch Changes
+
+- [#409](https://github.com/moqtail/moqtail/pull/409) [`1fbc397`](https://github.com/moqtail/moqtail/commit/1fbc39744e1802bbcaa9d9e6208218c43bec0c23) Thanks [@burak-kara](https://github.com/burak-kara)! - Close the WebTransport session in `disconnect()`: the guard tested the `closed` Promise, so `close()` was never called and the session stayed open at the relay
+
+- [#440](https://github.com/moqtail/moqtail/pull/440) [`55eaa12`](https://github.com/moqtail/moqtail/commit/55eaa1234fd394c13ae0c2ea0f50e60e66605578) Thanks [@zafergurel](https://github.com/zafergurel)! - Report request-stream traffic through `onMessageSent` and `onMessageReceived`: only the control stream fired them, so SUBSCRIBE, PUBLISH, FETCH, the namespace messages and their replies went unreported
+
+- [#407](https://github.com/moqtail/moqtail/pull/407) [`9d278d4`](https://github.com/moqtail/moqtail/commit/9d278d49157ec6f48292b0b36fff41dd46cbf8c0) Thanks [@burak-kara](https://github.com/burak-kara)! - Fix the Object ID Delta of the object after Object ID 0 in a subgroup: Object ID 1 was sent with delta 1, so receivers read it as 2
+
+- [#440](https://github.com/moqtail/moqtail/pull/440) [`55eaa12`](https://github.com/moqtail/moqtail/commit/55eaa1234fd394c13ae0c2ea0f50e60e66605578) Thanks [@zafergurel](https://github.com/zafergurel)! - Serialize the FETCH header on outgoing fetch streams, which was written as an object instead of bytes; report outgoing data through `onDataSent`, which was never wired; and stop reporting each incoming data stream header twice through `onDataReceived`
+
 ## 0.13.0
 
 ### Minor Changes

@@ -21,6 +21,8 @@ import { InvalidUTF8Error, LengthExceedsMaxError, NotEnoughBytesError, ProtocolV
 /** §10.4: a longer New Session URI is a protocol violation. */
 export const MAX_NEW_SESSION_URI_LENGTH = 8192
 
+export type GoAwayScope = 'control' | 'request'
+
 /**
  * GOAWAY (0x10) winds down a session, or — on a request stream — migrates that one
  * request (§10.4).
@@ -83,7 +85,7 @@ export class GoAway {
     return buf.freeze()
   }
 
-  static parsePayload(buf: BaseByteBuffer): GoAway {
+  static parsePayload(buf: BaseByteBuffer, scope: GoAwayScope = 'control'): GoAway {
     const uriLength = buf.getNumberVI()
     if (uriLength > MAX_NEW_SESSION_URI_LENGTH) {
       throw new ProtocolViolationError(
@@ -109,9 +111,16 @@ export class GoAway {
     }
 
     const timeout = buf.getVI()
-    // Request ID is present only on the control stream, so it is optional and trailing.
+    if (scope === 'request' && buf.remaining > 0) {
+      throw new ProtocolViolationError(
+        'GoAway::parsePayload(request)',
+        `Request-stream GOAWAY has ${buf.remaining} trailing byte(s); Request ID is control-stream only`,
+      )
+    }
+
+    // Request ID is present only on the control stream, so it is optional there.
     // The outer Length field is what bounds it.
-    const requestId = buf.remaining > 0 ? buf.getVI() : undefined
+    const requestId = scope === 'control' && buf.remaining > 0 ? buf.getVI() : undefined
 
     return new GoAway(newSessionUri, timeout, requestId)
   }
@@ -137,12 +146,20 @@ if (import.meta.vitest) {
       expect(frozen.remaining).toBe(0)
     })
 
+    test('rejects a Request ID on a request-stream GOAWAY', () => {
+      const serialized = new GoAway(undefined, 250n, 12n).serialize()
+      const frozen = new FrozenByteBuffer(serialized.toUint8Array())
+      frozen.getVI()
+      frozen.getU16()
+      expect(() => GoAway.parsePayload(frozen, 'request')).toThrow(ProtocolViolationError)
+    })
+
     test('roundtrip without a request id, as sent on a request stream', () => {
       const goAway = new GoAway(undefined, 250n)
       const frozen = goAway.serialize()
       frozen.getVI()
       frozen.getU16()
-      const deserialized = GoAway.parsePayload(frozen)
+      const deserialized = GoAway.parsePayload(frozen, 'request')
       expect(deserialized.newSessionUri).toBeUndefined()
       expect(deserialized.timeout).toBe(250n)
       expect(deserialized.requestId).toBeUndefined()

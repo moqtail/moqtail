@@ -17,7 +17,7 @@
 // Type definitions
 export interface CMSFTrack {
   name: string
-  packaging: 'cmaf' | 'chunk-per-object' | 'timeline'
+  packaging: 'cmaf' | 'chunk-per-object' | 'timeline' | 'mmtp'
   codec?: string
   role: 'video' | 'audio' | 'timeline'
   depends?: string[]
@@ -47,8 +47,8 @@ function isStringArray(v: unknown): v is string[] {
   return Array.isArray(v) && v.every((item) => isString(item))
 }
 
-function isValidPackaging(v: unknown): v is 'cmaf' | 'chunk-per-object' | 'timeline' {
-  return v === 'cmaf' || v === 'chunk-per-object' || v === 'timeline'
+function isValidPackaging(v: unknown): v is CMSFTrack['packaging'] {
+  return v === 'cmaf' || v === 'chunk-per-object' || v === 'timeline' || v === 'mmtp'
 }
 
 function isValidRole(v: unknown): v is 'video' | 'audio' | 'timeline' {
@@ -75,14 +75,14 @@ function validateTrack(track: unknown): CMSFTrack {
     throw new Error('Track.name must be a string')
   }
   if (!isValidPackaging(t['packaging'])) {
-    throw new Error("Track.packaging must be 'cmaf', 'chunk-per-object', or 'timeline'")
+    throw new Error("Track.packaging must be 'cmaf', 'chunk-per-object', 'timeline', or 'mmtp'")
   }
   if (!isValidRole(t['role'])) {
     throw new Error("Track.role must be 'video', 'audio', or 'timeline'")
   }
 
   const name = t['name'] as string
-  const packaging = t['packaging'] as 'cmaf' | 'chunk-per-object' | 'timeline'
+  const packaging = t['packaging'] as CMSFTrack['packaging']
   const role = t['role'] as 'video' | 'audio' | 'timeline'
 
   // Validate optional fields
@@ -156,6 +156,16 @@ function validateTrack(track: unknown): CMSFTrack {
   // Custom validation rules
   if (packaging === 'cmaf' && (!codec || codec.length === 0)) {
     throw new Error("codec is required when packaging is 'cmaf'")
+  }
+
+  // Each object of an `mmtp` track is one MMTP packet (draft-ramadan-moq-mmt).
+  // MMTP timestamps are in the track timescale, so it cannot be omitted.
+  if (packaging === 'mmtp' && (!codec || codec.length === 0)) {
+    throw new Error("codec is required when packaging is 'mmtp'")
+  }
+
+  if (packaging === 'mmtp' && (timescale === undefined || !Number.isSafeInteger(timescale) || timescale <= 0)) {
+    throw new Error("timescale must be a positive integer when packaging is 'mmtp'")
   }
 
   if (packaging === 'timeline' && mimeType !== 'text/csv') {
@@ -274,6 +284,10 @@ class CMSFCatalog {
     return packaging === 'cmaf' || packaging === 'chunk-per-object'
   }
 
+  isMMTP(trackName: string) {
+    return this.getPackaging(trackName) === 'mmtp'
+  }
+
   getTimescale(trackName: string) {
     const track = this.#catalog.tracks.find((track) => track.name === this.extractTrackName(trackName))
     return track?.timescale
@@ -297,3 +311,33 @@ class CMSFCatalog {
 }
 
 export { CMSFCatalog }
+
+if (import.meta.vitest) {
+  const { describe, test, expect } = import.meta.vitest
+  const encode = (tracks: unknown[]) => new TextEncoder().encode(JSON.stringify({ version: '1', tracks })).buffer
+  const mmtp = { name: 'video', packaging: 'mmtp', role: 'video', codec: 'avc1.64001f', timescale: 90000 }
+
+  describe('CMSFCatalog mmtp packaging', () => {
+    test('accepts an mmtp track and reports it', () => {
+      const catalog = CMSFCatalog.from(encode([mmtp]))
+      expect(catalog.isMMTP('video')).toBe(true)
+      expect(catalog.isCMAF('video')).toBe(false)
+      expect(catalog.getTimescale('video')).toBe(90000)
+    })
+
+    test('rejects an mmtp track without a codec', () => {
+      const { codec: _, ...noCodec } = mmtp
+      expect(() => CMSFCatalog.from(encode([noCodec]))).toThrow("codec is required when packaging is 'mmtp'")
+    })
+
+    test.each([undefined, 0, -1, 1.5])('rejects an mmtp track with timescale %s', (timescale) => {
+      expect(() => CMSFCatalog.from(encode([{ ...mmtp, timescale }]))).toThrow(
+        "timescale must be a positive integer when packaging is 'mmtp'",
+      )
+    })
+
+    test('still rejects an unknown packaging', () => {
+      expect(() => CMSFCatalog.from(encode([{ ...mmtp, packaging: 'mmtp-v2' }]))).toThrow('Track.packaging must be')
+    })
+  })
+}

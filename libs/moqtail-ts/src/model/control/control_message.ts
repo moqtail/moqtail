@@ -23,7 +23,7 @@ import { NamespaceDone } from './namespace_done'
 import { Setup } from './setup'
 import { Fetch } from './fetch'
 import { FetchOk } from './fetch_ok'
-import { GoAway } from './goaway'
+import { GoAway, type GoAwayScope } from './goaway'
 import { Subscribe } from './subscribe'
 import { PublishDone } from './publish_done'
 import { Publish } from './publish'
@@ -33,7 +33,7 @@ import { TrackStatus } from './track_status'
 import { SubscribeNamespace } from './subscribe_namespace'
 import { SubscribeTracks } from './subscribe_tracks'
 import { Switch } from './switch'
-import { NotEnoughBytesError } from '../error/error'
+import { NotEnoughBytesError, ProtocolViolationError } from '../error/error'
 import { Tuple } from '../common'
 import { AuthorizationToken } from '../parameter/common/authorization_token'
 import { RequestOk } from './request_ok'
@@ -63,7 +63,7 @@ export type ControlMessage =
   | Switch
 
 export namespace ControlMessage {
-  export function deserialize(buf: FrozenByteBuffer): ControlMessage {
+  export function deserialize(buf: FrozenByteBuffer, scope: GoAwayScope = 'control'): ControlMessage {
     const messageTypeRaw = buf.getVI()
     const messageType = ControlMessageType.tryFrom(messageTypeRaw)
     const payloadLength = buf.getU16()
@@ -71,50 +71,60 @@ export namespace ControlMessage {
       throw new NotEnoughBytesError('ControlMessage.deserialize(payload_bytes)', payloadLength, buf.remaining)
     const payloadBytes = buf.getBytes(payloadLength)
     const payload = new FrozenByteBuffer(payloadBytes)
-    switch (messageType) {
-      case ControlMessageType.Publish:
-        return Publish.parsePayload(payload)
-      // PUBLISH_OK (0x1E) is a REQUEST_OK alias with no body of its own: PUBLISH is
-      // answered by REQUEST_OK. Parse its body as REQUEST_OK.
-      case ControlMessageType.PublishOk:
-        return RequestOk.parsePayload(payload)
-      case ControlMessageType.PublishDone:
-        return PublishDone.parsePayload(payload)
-      case ControlMessageType.PublishNamespace:
-        return PublishNamespace.parsePayload(payload)
-      case ControlMessageType.Namespace:
-        return Namespace.parsePayload(payload)
-      case ControlMessageType.NamespaceDone:
-        return NamespaceDone.parsePayload(payload)
-      case ControlMessageType.RequestOk:
-        return RequestOk.parsePayload(payload)
-      case ControlMessageType.RequestError:
-        return RequestError.parsePayload(payload)
-      case ControlMessageType.Fetch:
-        return Fetch.parsePayload(payload)
-      case ControlMessageType.FetchOk:
-        return FetchOk.parsePayload(payload)
-      case ControlMessageType.GoAway:
-        return GoAway.parsePayload(payload)
-      case ControlMessageType.Subscribe:
-        return Subscribe.parsePayload(payload)
-      case ControlMessageType.SubscribeOk:
-        return SubscribeOk.parsePayload(payload)
-      case ControlMessageType.RequestUpdate:
-        return RequestUpdate.parsePayload(payload)
-      case ControlMessageType.TrackStatus:
-        return TrackStatus.parsePayload(payload)
-      case ControlMessageType.SubscribeNamespace:
-        return SubscribeNamespace.parsePayload(payload)
-      case ControlMessageType.SubscribeTracks:
-        return SubscribeTracks.parsePayload(payload)
-      case ControlMessageType.Setup:
-        return Setup.parsePayload(payload)
-      case ControlMessageType.PublishBlocked:
-        return PublishBlocked.parsePayload(payload)
-      default:
-        throw new Error(`Unknown or unhandled ControlMessageType: ${messageType}`)
+    const message = (() => {
+      switch (messageType) {
+        case ControlMessageType.Publish:
+          return Publish.parsePayload(payload)
+        // PUBLISH_OK (0x1E) is a REQUEST_OK alias with no body of its own: PUBLISH is
+        // answered by REQUEST_OK. Parse its body as REQUEST_OK.
+        case ControlMessageType.PublishOk:
+          return RequestOk.parsePayload(payload)
+        case ControlMessageType.PublishDone:
+          return PublishDone.parsePayload(payload)
+        case ControlMessageType.PublishNamespace:
+          return PublishNamespace.parsePayload(payload)
+        case ControlMessageType.Namespace:
+          return Namespace.parsePayload(payload)
+        case ControlMessageType.NamespaceDone:
+          return NamespaceDone.parsePayload(payload)
+        case ControlMessageType.RequestOk:
+          return RequestOk.parsePayload(payload)
+        case ControlMessageType.RequestError:
+          return RequestError.parsePayload(payload)
+        case ControlMessageType.Fetch:
+          return Fetch.parsePayload(payload)
+        case ControlMessageType.FetchOk:
+          return FetchOk.parsePayload(payload)
+        case ControlMessageType.GoAway:
+          return GoAway.parsePayload(payload, scope)
+        case ControlMessageType.Subscribe:
+          return Subscribe.parsePayload(payload)
+        case ControlMessageType.SubscribeOk:
+          return SubscribeOk.parsePayload(payload)
+        case ControlMessageType.RequestUpdate:
+          return RequestUpdate.parsePayload(payload)
+        case ControlMessageType.TrackStatus:
+          return TrackStatus.parsePayload(payload)
+        case ControlMessageType.SubscribeNamespace:
+          return SubscribeNamespace.parsePayload(payload)
+        case ControlMessageType.SubscribeTracks:
+          return SubscribeTracks.parsePayload(payload)
+        case ControlMessageType.Setup:
+          return Setup.parsePayload(payload)
+        case ControlMessageType.PublishBlocked:
+          return PublishBlocked.parsePayload(payload)
+        default:
+          throw new Error(`Unknown or unhandled ControlMessageType: ${messageType}`)
+      }
+    })()
+
+    if (payload.remaining !== 0) {
+      throw new ProtocolViolationError(
+        'ControlMessage.deserialize(payload)',
+        `${message.constructor.name} left ${payload.remaining} trailing byte(s) in its declared payload`,
+      )
     }
+    return message
   }
 
   export function serialize(msg: ControlMessage): FrozenByteBuffer {
@@ -213,6 +223,19 @@ if (import.meta.vitest) {
         const partial = serialized.slice(0, Math.floor(serialized.length / 2))
         const buf = new FrozenByteBuffer(partial)
         expect(() => ControlMessage.deserialize(buf)).toThrow(NotEnoughBytesError)
+      })
+
+      test('rejects bytes inside the declared payload length', () => {
+        const fetchMsg = buildTestFetch()
+        const serialized = ControlMessage.serialize(fetchMsg).toUint8Array()
+        const payloadLength = (serialized[1]! << 8) | serialized[2]!
+        const malformed = new Uint8Array(serialized.length + 1)
+        malformed.set(serialized)
+        malformed[1] = (payloadLength + 1) >> 8
+        malformed[2] = (payloadLength + 1) & 0xff
+        malformed[serialized.length] = 0xff
+
+        expect(() => ControlMessage.deserialize(new FrozenByteBuffer(malformed))).toThrow(ProtocolViolationError)
       })
     })
   })

@@ -41,9 +41,16 @@ export const handlerGoAway: ControlMessageHandler<GoAway> = async (client, msg) 
 export const handlerGoAwayOnRequestStream: RequestStreamMessageHandler<GoAway> = async (
   client,
   msg,
-  _stream,
+  stream,
   requestId,
 ) => {
+  if (stream.goawayReceived) {
+    await client.disconnect(
+      new ProtocolViolationError('handler/goaway', `A second GOAWAY arrived on request stream ${requestId}`),
+    )
+    return
+  }
+  stream.goawayReceived = true
   logger.log('handler/goaway', `GOAWAY migrating request ${requestId}`, 'timeout', msg.timeout)
   await client.migrateRequest(requestId, msg)
 }

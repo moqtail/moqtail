@@ -1143,7 +1143,7 @@ export class MOQtailClient {
           `subscribe: SUBSCRIBE_OK requestId=${request.requestId} trackAlias=${response.trackAlias}`,
         )
         this.#claimTrackAlias(response.trackAlias, request)
-        return { requestId: msg.requestId, response.trackAlias, stream: request.stream }
+        return { requestId: msg.requestId, trackAlias: response.trackAlias, stream: request.stream }
       }
     } catch (error) {
       logger.error(

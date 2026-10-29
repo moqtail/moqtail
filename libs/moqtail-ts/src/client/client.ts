@@ -1060,7 +1060,7 @@ export class MOQtailClient {
    * Use the `requestId` for {@link MOQtailClient.unsubscribe} or {@link MOQtailClient.subscribeUpdate}. Use the `stream` to decode and display objects.
    *
    * @param args - {@link SubscribeOptions} describing the subscription window and relay forwarding behavior.
-   * @returns Either a {@link RequestError} or `{ requestId, stream }` for consuming objects.
+   * @returns Either a {@link RequestError} or `{ requestId, trackAlias, stream }` for consuming objects.
    * @throws : {@link MOQtailError} If the client is destroyed.
    * @throws : {@link ProtocolViolationError} If required fields are missing or inconsistent.
    * @throws : {@link InvalidFilterError} If the Range Filters exceed the server's MAX_FILTER_RANGES; nothing is sent.
@@ -1095,7 +1095,7 @@ export class MOQtailClient {
    */
   async subscribe(
     args: SubscribeOptions,
-  ): Promise<RequestError | { requestId: bigint; stream: ReadableStream<MoqtObject> }> {
+  ): Promise<RequestError | { requestId: bigint; trackAlias: bigint; stream: ReadableStream<MoqtObject> }> {
     this.#ensureActive()
     // Checked before the try: a request the caller got wrong is not a broken session.
     assertWithinFilterRangeLimit(args.parameters ?? [], this.peerMaxFilterRanges, 'MOQtailClient.subscribe')

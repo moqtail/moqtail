@@ -1,6 +1,6 @@
 [package]
 name = "moqtail"
-description = "Draft 18-compliant Media-over-QUIC (MoQ) protocol library."
+description = "Draft 22-compliant Media-over-QUIC (MoQ) protocol library."
 keywords = ["moq", "quic", "media", "protocol"]
 repository = "https://github.com/moqtail/moqtail"
 homepage = "https://moqtail.dev"

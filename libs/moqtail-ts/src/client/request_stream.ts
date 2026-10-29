@@ -20,7 +20,7 @@ import { FrozenByteBuffer, ByteBuffer } from '../model/common/byte_buffer'
 import { NotEnoughBytesError, ProtocolViolationError, TerminationError } from '../model/error/error'
 import { TerminationCode } from '../model/error/constant'
 import { StreamResetCode } from '../model/error/stream_reset'
-import { asStreamResetError, streamResetReason } from './util/stream_reset'
+import { asStreamResetError, PeerStreamResetError, streamResetReason } from './util/stream_reset'
 import { logger } from '../util/logger'
 
 /**
@@ -44,6 +44,8 @@ export class RequestStream {
   openingType?: ControlMessageType
   /** Set when the request this stream carried has been re-issued on a new stream. */
   migrated = false
+  /** A request stream may carry at most one GOAWAY (§10.4). */
+  goawayReceived = false
   readonly #reader: ReadableStreamDefaultReader<Uint8Array>
   readonly #writer: WritableStreamDefaultWriter<Uint8Array>
   #receiveBuffer: ByteBuffer
@@ -102,7 +104,9 @@ export class RequestStream {
       logger.debug('request_stream', `sent ${message.constructor.name}`)
     } catch (error: any) {
       await this.close()
-      const msg = error instanceof Error ? error.message : String(error)
+      const streamError = asStreamResetError('RequestStream', error)
+      if (streamError instanceof PeerStreamResetError) throw streamError
+      const msg = streamError instanceof Error ? streamError.message : String(streamError)
       logger.error('request_stream', `send failed: ${msg}`)
       throw new TerminationError(`RequestStream.send: Failed to write message: ${msg}`, TerminationCode.INTERNAL_ERROR)
     }
@@ -143,7 +147,7 @@ export class RequestStream {
           if (this.#receiveBuffer.length >= totalMessageSize) {
             const messageBytes = this.#receiveBuffer.getBytes(totalMessageSize)
             this.#receiveBuffer.commit()
-            const msg = ControlMessage.deserialize(new FrozenByteBuffer(messageBytes))
+            const msg = ControlMessage.deserialize(new FrozenByteBuffer(messageBytes), 'request')
             controller.enqueue(msg)
             continue
           }

@@ -129,7 +129,7 @@ export class ControlRecvStream {
             const messageBytes = this.#receiveBuffer.getBytes(totalMessageSize)
             this.#receiveBuffer.commit()
             this.#expectedPayloadLength = null
-            const msg = ControlMessage.deserialize(new FrozenByteBuffer(messageBytes))
+            const msg = ControlMessage.deserialize(new FrozenByteBuffer(messageBytes), 'control')
             logger.debug('control_stream', `ingestLoop: deserialized ${msg.constructor.name} (${totalMessageSize}B)`)
             controller.enqueue(msg)
             if (this.onMessageReceived) this.onMessageReceived(msg)

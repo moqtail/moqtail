@@ -417,6 +417,27 @@ if (result instanceof RequestError) {
 }
 ```
 
+## MMTP tracks
+
+A track whose catalog `packaging` is `mmtp` carries one MMTP packet per object. `moqtail/mmtp`
+reassembles its MFUs; it needs the optional peer dependency `@blockcast/mmt-container` and is
+ESM-only.
+
+```ts
+import { MmtpTrackReceiver } from 'moqtail/mmtp'
+
+const receiver = new MmtpTrackReceiver({ onReject: (error) => console.warn(error) })
+const subscription = await client.subscribe(/* ... */)
+if (!(subscription instanceof RequestError)) {
+  for await (const mfu of subscription.stream.pipeThrough(receiver.transform())) {
+    // mfu.data, mfu.mpuSequenceNumber, mfu.rapFlag, mfu.timestamp
+  }
+}
+```
+
+Malformed packets are dropped, counted in `receiver.stats.rejected` and reported to `onReject`;
+the track keeps playing. Reassembly is clock-free because MoQ delivery is reliable.
+
 ## Utilities
 
 The MOQtail library provides several utility classes to help with common streaming scenarios:

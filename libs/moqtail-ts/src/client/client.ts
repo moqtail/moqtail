@@ -2164,20 +2164,16 @@ export class MOQtailClient {
         if (done) throw new MOQtailError('WebTransport session is terminated')
         const handler = getHandlerForControlMessage(msg)
         if (!handler) {
-          // Strictly a PROTOCOL_VIOLATION, but the relay still pushes a few messages
-          // here (PUBLISH_DONE, REQUEST_UPDATE fan-out) that draft-18 puts on request
-          // streams. Warn rather than tear the session down until that is cleaned up.
-          logger.warn(
+          throw new ProtocolViolationError(
             'MOQtailClient',
             `${msg.constructor.name} on the control stream; draft-18 allows only SETUP and GOAWAY there`,
           )
-          continue
         }
         await handler(this, msg)
       }
     } catch (error) {
-      this.disconnect()
-      throw error
+      logger.error('MOQtailClient', 'control stream failed', error)
+      await this.disconnect(error)
     }
   }
 
@@ -2228,20 +2224,37 @@ export class MOQtailClient {
    * the first message started.
    */
   async #dispatchIncomingRequestStream(requestStream: RequestStream): Promise<void> {
-    const first = await requestStream.next()
+    let first: ControlMessage | undefined
+    try {
+      first = await requestStream.next()
+    } catch (error) {
+      if (error instanceof PeerStreamResetError) {
+        logger.debug('MOQtailClient', `incoming request stream reset before its first message: ${error.message}`)
+      } else {
+        logger.error('MOQtailClient', 'incoming request stream failed before its first message', error)
+        await this.disconnect(error)
+      }
+      await requestStream.close()
+      return
+    }
     if (!first) return
 
     if (!ControlMessageType.isFirst(first.getType())) {
+      const error = new ProtocolViolationError(
+        'MOQtailClient',
+        `${first.constructor.name} may not open a request stream; the first message must be First-marked`,
+      )
       logger.warn('MOQtailClient', `${first.constructor.name} may not open a request stream; resetting it`)
       await requestStream.reset(StreamResetCode.InternalError)
+      await this.disconnect(error)
       return
     }
 
-    // The first message names the request; everything later on this stream belongs to it.
-    const openingRequestId = (first as { requestId: bigint }).requestId
-    requestStream.openingType = first.getType()
-
     try {
+      // The first message names the request; everything later on this stream belongs to it.
+      const openingRequestId = (first as { requestId: bigint }).requestId
+      requestStream.openingType = first.getType()
+
       let msg: ControlMessage | undefined = first
       while (msg) {
         const handler = getHandlerForRequestStreamMessage(msg)
@@ -2255,7 +2268,12 @@ export class MOQtailClient {
         msg = await requestStream.next()
       }
     } catch (error) {
-      logger.error('MOQtailClient', 'incoming request stream failed', error)
+      if (error instanceof PeerStreamResetError) {
+        logger.debug('MOQtailClient', `incoming request stream reset by peer: ${error.message}`)
+      } else {
+        logger.error('MOQtailClient', 'incoming request stream failed', error)
+        await this.disconnect(error)
+      }
     } finally {
       // The peer closed or reset the stream: cancel whatever it was serving. Every
       // First-marked type carries a request id, but the union as a whole does not.
@@ -2443,6 +2461,7 @@ if (import.meta.vitest) {
     readonly readable: ReadableStream<Uint8Array>
     readonly writable: WritableStream<Uint8Array>
     isClosed = false
+    #peerWriteError: unknown
     /** The reason the client aborted the send side with, if it did. */
     abortReason: unknown
     /** The reason the client cancelled the receive side with, if it did. */
@@ -2460,6 +2479,10 @@ if (import.meta.vitest) {
       })
       this.writable = new WritableStream<Uint8Array>({
         write: (chunk) => {
+          if (this.#peerWriteError !== undefined) {
+            this.isClosed = true
+            throw this.#peerWriteError
+          }
           this.sentChunks.push(chunk)
         },
         close: () => {
@@ -2475,6 +2498,16 @@ if (import.meta.vitest) {
     /** Delivers `msg` to the client on this stream, as the peer would. */
     respond(msg: ControlMessage): void {
       this.#peer.enqueue(ControlMessage.serialize(msg).toUint8Array())
+    }
+
+    /** Resets this stream from the peer side. */
+    resetFromPeer(code: StreamResetCode): void {
+      this.#peer.error(streamResetReason(code))
+    }
+
+    /** Makes the peer reset this stream's send side. */
+    resetWritesFromPeer(code: StreamResetCode): void {
+      this.#peerWriteError = streamResetReason(code)
     }
 
     /** Everything the client has written to this stream so far. */
@@ -3082,6 +3115,31 @@ if (import.meta.vitest) {
       await client.disconnect()
     })
 
+    it('closes the session on a second GOAWAY on one request stream', async () => {
+      const { client, transport } = await connected()
+      const terminated: unknown[] = []
+      client.onSessionTerminated = (reason) => terminated.push(reason)
+
+      const subscribing = client.subscribe({
+        fullTrackName: ftn,
+        filterType: FilterType.LatestObject,
+        forward: true,
+        groupOrder: GroupOrder.Original,
+        priority: 0,
+      })
+      const subscribingSettled = subscribing.then(
+        () => undefined,
+        (error) => error,
+      )
+      const subscribeStream = await openedStream(transport, 0)
+      subscribeStream.respond(new GoAway(undefined, 250n))
+      subscribeStream.respond(new GoAway(undefined, 250n))
+
+      await vi.waitFor(() => expect(terminated).toHaveLength(1))
+      expect(transport.closeCount).toBe(1)
+      expect(await subscribingSettled).toBeInstanceOf(Error)
+    })
+
     it('closes the session on a second GOAWAY on the control stream', async () => {
       const { client, control } = await connected()
       const seen: GoAway[] = []
@@ -3100,6 +3158,17 @@ if (import.meta.vitest) {
       control.enqueue(new GoAway(undefined, 0n, 6n).serialize().toUint8Array())
       await vi.waitFor(() => expect(terminated).toHaveLength(1))
       expect(seen).toHaveLength(1)
+    })
+
+    it('closes the session when a request message arrives on the control stream', async () => {
+      const { client, transport, control } = await connected()
+      const terminated: unknown[] = []
+      client.onSessionTerminated = (reason) => terminated.push(reason)
+
+      control.enqueue(new RequestOk().serialize().toUint8Array())
+
+      await vi.waitFor(() => expect(terminated).toHaveLength(1))
+      expect(transport.closeCount).toBe(1)
     })
 
     it('closes the WebTransport session on disconnect, once', async () => {
@@ -3171,6 +3240,55 @@ if (import.meta.vitest) {
       expect(incoming.messages).toHaveLength(0)
       expect(streamResetCodeOf(incoming.abortReason)).toBe(StreamResetCode.InternalError)
       expect(streamResetCodeOf(incoming.cancelReason)).toBe(StreamResetCode.InternalError)
+
+      await client.disconnect()
+    })
+
+    it('keeps the session alive when a peer request stream resets before its first message', async () => {
+      const { client, transport } = await connected()
+
+      const reset = transport.openIncomingBiStream()
+      reset.resetFromPeer(StreamResetCode.Cancelled)
+
+      const incoming = transport.openIncomingBiStream()
+      incoming.respond(new SubscribeNamespace(4n, Tuple.fromUtf8Path('room'), []))
+      await vi.waitFor(() => expect(incoming.messages).toHaveLength(1))
+      expect(incoming.messages[0]).toBeInstanceOf(RequestOk)
+      expect(transport.closeCount).toBe(0)
+
+      await client.disconnect()
+    })
+
+    it('keeps the session alive when a peer resets an active request stream', async () => {
+      const { client, transport } = await connected()
+
+      const reset = transport.openIncomingBiStream()
+      reset.respond(new SubscribeNamespace(4n, Tuple.fromUtf8Path('room'), []))
+      await vi.waitFor(() => expect(reset.messages).toHaveLength(1))
+      reset.resetFromPeer(StreamResetCode.Cancelled)
+
+      const incoming = transport.openIncomingBiStream()
+      incoming.respond(new SubscribeNamespace(5n, Tuple.fromUtf8Path('room'), []))
+      await vi.waitFor(() => expect(incoming.messages).toHaveLength(1))
+      expect(incoming.messages[0]).toBeInstanceOf(RequestOk)
+      expect(transport.closeCount).toBe(0)
+
+      await client.disconnect()
+    })
+
+    it('keeps the session alive when a peer resets the send side during a response', async () => {
+      const { client, transport } = await connected()
+
+      const reset = transport.openIncomingBiStream()
+      reset.resetWritesFromPeer(StreamResetCode.Cancelled)
+      reset.respond(new SubscribeNamespace(4n, Tuple.fromUtf8Path('room'), []))
+      await vi.waitFor(() => expect(reset.isClosed).toBe(true))
+
+      const incoming = transport.openIncomingBiStream()
+      incoming.respond(new SubscribeNamespace(5n, Tuple.fromUtf8Path('room'), []))
+      await vi.waitFor(() => expect(incoming.messages).toHaveLength(1))
+      expect(incoming.messages[0]).toBeInstanceOf(RequestOk)
+      expect(transport.closeCount).toBe(0)
 
       await client.disconnect()
     })

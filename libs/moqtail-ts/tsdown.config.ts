@@ -16,21 +16,35 @@
 
 import { defineConfig } from 'tsdown'
 
-export default defineConfig({
-  entry: {
-    index: 'src/index.ts',
-    client: 'src/client/index.ts',
-    model: 'src/model/index.ts',
-    util: 'src/util/index.ts',
-  },
-  format: ['cjs', 'esm'],
+const shared = {
   dts: true,
   outDir: 'dist',
   sourcemap: false,
-  clean: true,
   treeshake: true,
   define: {
     'import.meta.vitest': 'undefined',
   },
   target: false,
-})
+} as const
+
+export default defineConfig([
+  {
+    ...shared,
+    entry: {
+      index: 'src/index.ts',
+      client: 'src/client/index.ts',
+      model: 'src/model/index.ts',
+      util: 'src/util/index.ts',
+    },
+    format: ['cjs', 'esm'],
+    clean: true,
+  },
+  // `moqtail/mmtp` is ESM-only: its optional peer `@blockcast/mmt-container`
+  // ships ESM only, so a CJS build of this entry could never load it.
+  {
+    ...shared,
+    entry: { mmtp: 'src/mmtp/index.ts' },
+    format: ['esm'],
+    clean: false,
+  },
+])

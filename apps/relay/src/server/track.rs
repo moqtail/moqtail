@@ -129,6 +129,83 @@ impl PublisherStreamProgress {
   }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UpstreamRequestKind {
+  Subscribe,
+  Fetch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UpstreamRequestCancellation {
+  Cancelled,
+  MalformedTrack,
+}
+
+#[derive(Debug)]
+struct UpstreamRequest {
+  request_id: u64,
+  publisher_connection_id: usize,
+  kind: UpstreamRequestKind,
+  cancel: oneshot::Sender<UpstreamRequestCancellation>,
+}
+
+#[derive(Debug, Default)]
+struct UpstreamRequests(Vec<UpstreamRequest>);
+
+impl UpstreamRequests {
+  fn register(
+    &mut self,
+    request_id: u64,
+    publisher_connection_id: usize,
+    kind: UpstreamRequestKind,
+  ) -> oneshot::Receiver<UpstreamRequestCancellation> {
+    self.0.retain(|request| !request.cancel.is_closed());
+    self.unregister(request_id);
+    let (cancel, receiver) = oneshot::channel();
+    self.0.push(UpstreamRequest {
+      request_id,
+      publisher_connection_id,
+      kind,
+      cancel,
+    });
+    receiver
+  }
+
+  fn unregister(&mut self, request_id: u64) {
+    self.0.retain(|request| request.request_id != request_id);
+  }
+
+  fn cancel_matching(
+    &mut self,
+    mut matches: impl FnMut(&UpstreamRequest) -> bool,
+    reason: UpstreamRequestCancellation,
+  ) {
+    let mut remaining = Vec::with_capacity(self.0.len());
+    for request in self.0.drain(..) {
+      if request.cancel.is_closed() {
+        continue;
+      } else if matches(&request) {
+        let _ = request.cancel.send(reason);
+      } else {
+        remaining.push(request);
+      }
+    }
+    self.0 = remaining;
+  }
+
+  fn cancel_for_malformed_publisher(&mut self, publisher_connection_id: usize) {
+    self.cancel_matching(
+      |request| request.publisher_connection_id == publisher_connection_id,
+      UpstreamRequestCancellation::MalformedTrack,
+    );
+    self.cancel_matching(
+      |request| request.kind == UpstreamRequestKind::Fetch,
+      UpstreamRequestCancellation::MalformedTrack,
+    );
+    self.cancel_matching(|_| true, UpstreamRequestCancellation::Cancelled);
+  }
+}
+
 /// What created a track. Decides whether it survives its last subscriber.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrackOrigin {
@@ -211,11 +288,8 @@ pub struct Track {
   /// Data streams each publisher has finished sending, so a PUBLISH_DONE can be
   /// held until the streams it accounts for have been taken in.
   pub publisher_stream_progress: Arc<PublisherStreamProgress>,
-  /// One per publisher; firing it resets that relay-owned upstream SUBSCRIBE stream
-  /// when the last downstream subscriber goes away. Only the pull path fills this, so
-  /// a PUBLISH-created track leaves it empty and a subscriber leaving never cancels
-  /// the publisher.
-  pub upstream_subscribe_cancellers: Arc<Mutex<Vec<oneshot::Sender<()>>>>,
+  /// Relay-owned request streams that may need to be cancelled as a group.
+  upstream_requests: Arc<Mutex<UpstreamRequests>>,
   /// Upstream SUBSCRIBEs still awaiting a SUBSCRIBE_OK or REQUEST_ERROR.
   pub pending_upstream_subscribe_count: Arc<AtomicUsize>,
   /// Forward State the relay last gave the upstream publisher of a
@@ -280,10 +354,59 @@ impl Track {
       track_properties: Arc::new(RwLock::new(Vec::new())),
       active_subgroup_headers: Arc::new(RwLock::new(HashMap::new())),
       publisher_stream_progress: Arc::new(PublisherStreamProgress::default()),
-      upstream_subscribe_cancellers: Arc::new(Mutex::new(Vec::new())),
+      upstream_requests: Arc::new(Mutex::new(UpstreamRequests::default())),
       pending_upstream_subscribe_count: Arc::new(AtomicUsize::new(0)),
       upstream_forward: Arc::new(AtomicBool::new(false)),
     }
+  }
+
+  pub(crate) async fn register_upstream_request(
+    &self,
+    request_id: u64,
+    publisher_connection_id: usize,
+    kind: UpstreamRequestKind,
+  ) -> oneshot::Receiver<UpstreamRequestCancellation> {
+    self
+      .upstream_requests
+      .lock()
+      .await
+      .register(request_id, publisher_connection_id, kind)
+  }
+
+  pub(crate) async fn unregister_upstream_request(&self, request_id: u64) {
+    self.upstream_requests.lock().await.unregister(request_id);
+  }
+
+  pub(crate) async fn cancel_upstream_request(
+    &self,
+    request_id: u64,
+    reason: UpstreamRequestCancellation,
+  ) {
+    self
+      .upstream_requests
+      .lock()
+      .await
+      .cancel_matching(|request| request.request_id == request_id, reason);
+  }
+
+  pub(crate) async fn cancel_for_malformed_publisher(&self, publisher_connection_id: usize) {
+    self
+      .upstream_requests
+      .lock()
+      .await
+      .cancel_for_malformed_publisher(publisher_connection_id);
+  }
+
+  pub(crate) async fn cancel_upstream_requests_of_kind(
+    &self,
+    kind: UpstreamRequestKind,
+    reason: UpstreamRequestCancellation,
+  ) {
+    self
+      .upstream_requests
+      .lock()
+      .await
+      .cancel_matching(|request| request.kind == kind, reason);
   }
 
   /// Whether any subscription on this track currently wants Objects forwarded.
@@ -881,5 +1004,38 @@ mod tests {
     progress.forget(PUBLISHER).await;
 
     assert_eq!(progress.closed_count(PUBLISHER).await, 0);
+  }
+
+  #[tokio::test]
+  async fn upstream_request_cancellation_is_scoped_and_unregisters() {
+    let mut requests = UpstreamRequests::default();
+    let bad_subscribe = requests.register(1, PUBLISHER, UpstreamRequestKind::Subscribe);
+    let bad_fetch = requests.register(3, PUBLISHER, UpstreamRequestKind::Fetch);
+    let other_subscribe = requests.register(5, OTHER_PUBLISHER, UpstreamRequestKind::Subscribe);
+    let other_fetch = requests.register(7, OTHER_PUBLISHER, UpstreamRequestKind::Fetch);
+
+    requests.cancel_for_malformed_publisher(PUBLISHER);
+    assert_eq!(
+      bad_subscribe.await,
+      Ok(UpstreamRequestCancellation::MalformedTrack)
+    );
+    assert_eq!(
+      bad_fetch.await,
+      Ok(UpstreamRequestCancellation::MalformedTrack)
+    );
+    assert_eq!(
+      other_subscribe.await,
+      Ok(UpstreamRequestCancellation::Cancelled)
+    );
+    assert_eq!(
+      other_fetch.await,
+      Ok(UpstreamRequestCancellation::MalformedTrack)
+    );
+
+    drop(requests.register(9, PUBLISHER, UpstreamRequestKind::Fetch));
+    let live = requests.register(11, PUBLISHER, UpstreamRequestKind::Fetch);
+    assert_eq!(requests.0.len(), 1);
+    requests.unregister(11);
+    assert!(live.await.is_err());
   }
 }

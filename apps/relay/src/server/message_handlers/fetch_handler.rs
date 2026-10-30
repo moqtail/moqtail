@@ -16,6 +16,7 @@ use crate::server::client::MOQTClient;
 use crate::server::message_handlers::parameters;
 use crate::server::session_context::{PendingRequest, SessionContext, UpstreamFetchEvent};
 use crate::server::stream_id::{SendStreamKey, StreamId};
+use crate::server::track::{TrackOrigin, UpstreamRequestCancellation, UpstreamRequestKind};
 use core::result::Result::{Err, Ok};
 use moqtail::model::common::location::Location;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
@@ -28,6 +29,7 @@ use moqtail::model::control::request_error::RequestError;
 use moqtail::model::data::constant::ObjectForwardingPreference;
 use moqtail::model::data::fetch_header::FetchHeader;
 use moqtail::model::data::fetch_object::FetchObjectPayload;
+use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::model::error::RequestErrorCode;
 use moqtail::model::error::StreamResetCode;
 use moqtail::model::error::TerminationCode;
@@ -138,6 +140,7 @@ enum UpstreamFetchResponse {
   Rejected(Box<RequestError>),
   /// The request failed without an answer from the publisher.
   Failed(String),
+  MalformedTrack,
 }
 
 /// What asking the publisher settled about a FETCH's range.
@@ -152,6 +155,7 @@ enum UpstreamRange {
   /// Nobody could say: no publisher to ask, no answer in time, or a REDIRECT, which
   /// the relay does not follow.
   Unanswered,
+  MalformedTrack,
 }
 
 type UpstreamFetch = (
@@ -198,10 +202,17 @@ async fn resolve_range_upstream(
       Ok(Ok(response)) => response,
       Ok(Err(_)) => {
         warn!("Upstream FETCH {relay_request_id} ended before answering with FETCH_OK");
+        cleanup_upstream_fetch(context, &publisher, relay_request_id).await;
         return UpstreamRange::Unanswered;
       }
       Err(_) => {
         warn!("Upstream FETCH {relay_request_id} was not answered in time");
+        track
+          .read()
+          .await
+          .cancel_upstream_request(relay_request_id, UpstreamRequestCancellation::Cancelled)
+          .await;
+        cleanup_upstream_fetch(context, &publisher, relay_request_id).await;
         return UpstreamRange::Unanswered;
       }
     };
@@ -223,6 +234,7 @@ async fn resolve_range_upstream(
       }
     }
     UpstreamFetchResponse::Rejected(err) => {
+      cleanup_upstream_fetch(context, &publisher, relay_request_id).await;
       warn!(
         "Upstream FETCH {relay_request_id} rejected while resolving the range: {:?}",
         err.error_code
@@ -234,8 +246,13 @@ async fn resolve_range_upstream(
       }
     }
     UpstreamFetchResponse::Failed(e) => {
+      cleanup_upstream_fetch(context, &publisher, relay_request_id).await;
       warn!("Upstream FETCH {relay_request_id} failed while resolving the range: {e}");
       UpstreamRange::Unanswered
+    }
+    UpstreamFetchResponse::MalformedTrack => {
+      cleanup_upstream_fetch(context, &publisher, relay_request_id).await;
+      UpstreamRange::MalformedTrack
     }
   }
 }
@@ -421,6 +438,16 @@ pub async fn handle(
             }
             UpstreamRange::Rejected(err) => upstream_rejection = Some(err),
             UpstreamRange::Unanswered => {}
+            UpstreamRange::MalformedTrack => {
+              send_request_error(
+                client.clone(),
+                request_id,
+                RequestErrorCode::MalformedTrack,
+                ReasonPhrase::try_new("Malformed track".to_string()).unwrap(),
+              )
+              .await;
+              return Ok(());
+            }
           }
         }
         match resolve_fetch_range(&location_filter, largest.clone()) {
@@ -567,6 +594,52 @@ pub(crate) async fn cancel_fetch(client: Arc<MOQTClient>, request_id: u64) {
 /// the groups in `group_order` so they arrive in the order they are written downstream.
 /// Returns the upstream request state, including separate channels for the control
 /// response and Object events.
+async fn cleanup_upstream_fetch(context: &SessionContext, publisher: &MOQTClient, request_id: u64) {
+  context
+    .upstream_fetch_senders
+    .write()
+    .await
+    .remove(&request_id);
+  publisher
+    .outgoing_fetch_requests
+    .write()
+    .await
+    .remove(&request_id);
+}
+
+async fn cancel_downstream_fetches(context: &SessionContext, full_track_name: &FullTrackName) {
+  let clients = context
+    .client_manager
+    .clients
+    .read()
+    .await
+    .values()
+    .cloned()
+    .collect::<Vec<_>>();
+
+  for client in clients {
+    let request_ids = client
+      .incoming_fetch_requests
+      .read()
+      .await
+      .iter()
+      .filter(|(_, request)| {
+        request
+          .fetch_request
+          .get_full_track_name()
+          .eq(full_track_name)
+      })
+      .map(|(request_id, _)| *request_id)
+      .collect::<Vec<_>>();
+    let senders = client.fetch_cancel_senders.read().await;
+    for request_id in request_ids {
+      if let Some(sender) = senders.get(&request_id) {
+        let _ = sender.send(FetchStop::MalformedTrack);
+      }
+    }
+  }
+}
+
 async fn send_upstream_fetch_for_range(
   client: &Arc<MOQTClient>,
   context: &Arc<SessionContext>,
@@ -666,6 +739,28 @@ async fn send_upstream_fetch_for_range(
       .insert(relay_request_id, upstream_tx.clone());
   }
 
+  let mut cancel_rx = track_read
+    .register_upstream_request(
+      relay_request_id,
+      publisher.connection_id,
+      UpstreamRequestKind::Fetch,
+    )
+    .await;
+
+  if publisher
+    .is_track_malformed(&track_read.full_track_name)
+    .await
+  {
+    track_read
+      .unregister_upstream_request(relay_request_id)
+      .await;
+    cleanup_upstream_fetch(context, &publisher, relay_request_id).await;
+    upstream.reset_and_stop(StreamResetCode::Cancelled.to_u64());
+    let _ = response_tx.send(UpstreamFetchResponse::MalformedTrack);
+    let _ = upstream_tx.send(UpstreamFetchEvent::MalformedTrack).await;
+    return Some((relay_request_id, publisher, upstream_rx, response_rx));
+  }
+
   // Sent only once the sender is registered, so Objects arriving first are not dropped.
   if let Err(e) = upstream
     .send(&ControlMessage::Fetch(Box::new(upstream_fetch)))
@@ -675,6 +770,10 @@ async fn send_upstream_fetch_for_range(
       "send_upstream_fetch_for_range | Failed to send upstream FETCH: {:?}",
       e
     );
+    track_read
+      .unregister_upstream_request(relay_request_id)
+      .await;
+    cleanup_upstream_fetch(context, &publisher, relay_request_id).await;
     return None;
   }
 
@@ -684,7 +783,31 @@ async fn send_upstream_fetch_for_range(
   let response_event_tx = upstream_tx;
   let upstream_publisher = publisher.clone();
   tokio::spawn(async move {
-    match upstream.next_message().await {
+    let response = tokio::select! {
+      response = upstream.next_message() => Ok(response),
+      reason = &mut cancel_rx => Err(reason.unwrap_or(UpstreamRequestCancellation::Cancelled)),
+    };
+    let response = match response {
+      Ok(response) => response,
+      Err(reason) => {
+        match reason {
+          UpstreamRequestCancellation::MalformedTrack => {
+            let _ = response_tx.send(UpstreamFetchResponse::MalformedTrack);
+          }
+          UpstreamRequestCancellation::Cancelled => {
+            let error = format!("upstream FETCH {relay_request_id} cancelled");
+            let _ = response_tx.send(UpstreamFetchResponse::Failed(error.clone()));
+            let _ = response_event_tx
+              .send(UpstreamFetchEvent::Error(error))
+              .await;
+          }
+        }
+        upstream.reset_and_stop(StreamResetCode::Cancelled.to_u64());
+        return;
+      }
+    };
+
+    match response {
       Ok(ControlMessage::FetchOk(ok)) => {
         info!(
           "Upstream FETCH {} accepted, end location {:?}",
@@ -705,7 +828,6 @@ async fn send_upstream_fetch_for_range(
           relay_request_id, err.error_code
         );
         let _ = response_tx.send(UpstreamFetchResponse::Rejected(err));
-        // Tell the waiting gap loop now instead of letting it sit until its timeout.
         let _ = response_event_tx
           .send(UpstreamFetchEvent::Error(error))
           .await;
@@ -736,10 +858,20 @@ async fn send_upstream_fetch_for_range(
         return;
       }
     }
+
     // Stays parked until the publisher closes the request stream. The relay sent
     // this FETCH, so the publisher has no business updating it.
-    if let Ok(ControlMessage::RequestUpdate(_)) = upstream.next_message().await {
-      super::close_on_unexpected_request_update(&upstream_publisher, "FETCH");
+    let cancelled = tokio::select! {
+      response = upstream.next_message() => {
+        if let Ok(ControlMessage::RequestUpdate(_)) = response {
+          super::close_on_unexpected_request_update(&upstream_publisher, "FETCH");
+        }
+        false
+      }
+      _ = &mut cancel_rx => true,
+    };
+    if cancelled {
+      upstream.reset_and_stop(StreamResetCode::Cancelled.to_u64());
     }
   });
 
@@ -871,6 +1003,7 @@ pub(crate) async fn serve_fetch_stream(
   let mut upstream_gap_count: u64 = 0;
   let mut send_stream = None;
   let mut stop_reason = FetchStop::Running;
+  let mut remove_malformed_track = false;
   let mut fetch_prev_ctx: Option<moqtail::model::data::fetch_object::FetchObjectContext> = None;
   // Groups are written in the requested order, and the Objects within each group in
   // ascending order either way. The delta encoding of each Object against the one
@@ -914,6 +1047,11 @@ pub(crate) async fn serve_fetch_stream(
       // === CACHE HIT ===
       let objects = group_objects.read().await;
       for object in objects.iter() {
+        let cancellation = *cancel_rx.borrow();
+        if cancellation != FetchStop::Running {
+          stop_reason = cancellation;
+          break;
+        }
         if group_id == start_location.group && object.object_id < start_location.object {
           continue;
         }
@@ -1151,6 +1289,22 @@ pub(crate) async fn serve_fetch_stream(
                     "handle_fetch_messages | Malformed upstream FETCH for gap [{}, {}]",
                     gap_start, gap_end
                   );
+                  upstream_publisher
+                    .mark_track_malformed(track_read.full_track_name.clone())
+                    .await;
+                  cancel_downstream_fetches(&context, &track_read.full_track_name).await;
+
+                  track_read
+                    .cancel_for_malformed_publisher(upstream_publisher.connection_id)
+                    .await;
+
+                  let still_served = super::subscribe_handler::remove_upstream_publisher(
+                    &track_read,
+                    upstream_publisher.connection_id,
+                    &context,
+                  )
+                  .await;
+
                   track_read.remove_from_subscriber_switching_sets().await;
                   if let Err(e) = track_read
                     .notify_publish_done(
@@ -1161,6 +1315,12 @@ pub(crate) async fn serve_fetch_stream(
                   {
                     error!("Failed to end subscriptions for malformed track: {e:?}");
                   }
+                  track_read
+                    .subscription_manager
+                    .detach_all_subscriptions()
+                    .await;
+                  remove_malformed_track =
+                    track_read.origin == TrackOrigin::Subscribe || !still_served;
                   stop_reason = FetchStop::MalformedTrack;
                   break;
                 }
@@ -1199,16 +1359,11 @@ pub(crate) async fn serve_fetch_stream(
         }
 
         // Clean up upstream fetch state
-        context
-          .upstream_fetch_senders
-          .write()
-          .await
-          .remove(&relay_request_id);
-        upstream_publisher
-          .outgoing_fetch_requests
-          .write()
-          .await
-          .remove(&relay_request_id);
+        cleanup_upstream_fetch(&context, &upstream_publisher, relay_request_id).await;
+        let cancellation = *cancel_rx.borrow();
+        if cancellation != FetchStop::Running {
+          stop_reason = cancellation;
+        }
       }
 
       if stop_reason != FetchStop::Running {
@@ -1287,6 +1442,12 @@ pub(crate) async fn serve_fetch_stream(
       let _ = client.release_stream(&stream_id).await;
       info!("removed stream from the map {}", stream_id);
     }
+  }
+
+  let malformed_track_name = remove_malformed_track.then(|| track_read.full_track_name.clone());
+  drop(track_read);
+  if let Some(full_track_name) = malformed_track_name {
+    context.track_manager.remove_track(&full_track_name).await;
   }
 
   Ok(opened)

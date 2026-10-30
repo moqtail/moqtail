@@ -1694,6 +1694,10 @@ impl Subscription {
           );
         }
 
+        if status_code == PublishDoneStatusCode::MalformedTrack {
+          self.stop_fill_streams(FetchStop::MalformedTrack).await;
+        }
+
         // Finish the subscription since the publisher is gone
         self.finish().await;
       }

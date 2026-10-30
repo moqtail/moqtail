@@ -259,6 +259,29 @@ impl SubscriptionManager {
     }
   }
 
+  /// Forget subscriptions after their terminal event has already been queued.
+  pub async fn detach_all_subscriptions(&self) {
+    let subscriptions = std::mem::take(&mut *self.subscriptions.write().await);
+    self.subscriber_request_ids.write().await.clear();
+    for partition in self.subscriber_senders.iter() {
+      partition.write().await.clear();
+    }
+    for ((_, request_id), subscription) in subscriptions {
+      let subscriber = subscription.read().await.subscriber();
+      subscriber.subscriptions.remove(request_id).await;
+      subscriber
+        .subscribe_requests
+        .write()
+        .await
+        .remove(&request_id);
+      subscriber
+        .inbound_requests
+        .write()
+        .await
+        .remove(&request_id);
+    }
+  }
+
   pub async fn subscriber_count(&self) -> usize {
     self.subscriptions.read().await.len()
   }

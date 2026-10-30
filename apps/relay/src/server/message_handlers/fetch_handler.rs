@@ -287,26 +287,6 @@ pub async fn handle(
       let fetch = *m;
       let request_id = fetch.clone().request_id;
 
-      {
-        let req = FetchRequest {
-          original_request_id: request_id,
-          requested_by: client.connection_id,
-          fetch_request: fetch.clone(),
-          track_alias: 0,
-        };
-
-        client
-          .incoming_fetch_requests
-          .write()
-          .await
-          .insert(request_id, req.clone());
-        client
-          .inbound_requests
-          .write()
-          .await
-          .insert(request_id, PendingRequest::Fetch(req));
-      }
-
       // Reserved namespaces are resolved locally and never forwarded upstream.
       if let Some(reason) = crate::server::utils::reserved_namespace_rejection(
         &fetch.track_namespace,
@@ -388,17 +368,20 @@ pub async fn handle(
         "handle_fetch_messages | Fetching objects for {:?}",
         location_filter
       );
-      {
-        let track_read = track.read().await;
 
-        let mut inbound = client.inbound_requests.write().await;
-        if let Some(PendingRequest::Fetch(req)) = inbound.get_mut(&request_id) {
-          req.track_alias = track_read.relay_track_id;
-        }
-        let mut fetches = client.incoming_fetch_requests.write().await;
-        if let Some(req) = fetches.get_mut(&request_id) {
-          req.track_alias = track_read.relay_track_id;
-        }
+      {
+        let req = FetchRequest {
+          original_request_id: request_id,
+          requested_by: client.connection_id,
+          fetch_request: fetch.clone(),
+          track_alias: track.read().await.relay_track_id,
+        };
+
+        client
+          .inbound_requests
+          .write()
+          .await
+          .insert(request_id, PendingRequest::Fetch(req));
       }
 
       // Validate the requested range and clamp the FETCH_OK End Location to
@@ -410,12 +393,9 @@ pub async fn handle(
       let (start_location, end_location) = {
         let mut largest = track.read().await.largest_object().await;
 
-        // A relay must not answer until it knows the End Location. It can answer on its
-        // own only when the request has an end the relay has already seen. Otherwise
-        // the request ends past what the relay holds, or has no end, or starts relative
-        // to the Largest Object, and the relay may be behind the publisher on all of
-        // these. Then the publisher is asked, with the upstream FETCH the missing
-        // groups need anyway; its FETCH_OK says how far the range really goes.
+        // The relay answers on its own only when the requested end is one it has
+        // already seen. Otherwise it may be behind the publisher, so it asks upstream
+        // and takes the End Location from the publisher's FETCH_OK.
         let answered_locally = requested_end
           .as_ref()
           .is_some_and(|end| local_state_answers(&largest, end));
@@ -518,11 +498,6 @@ pub async fn handle(
         let result = serve_fetch_stream(client.clone(), context, track, delivery, cancel_rx).await;
         // Clean up the unified map since the fetch is done
         client.inbound_requests.write().await.remove(&request_id);
-        client
-          .incoming_fetch_requests
-          .write()
-          .await
-          .remove(&request_id);
 
         // Clean up cancel sender
         client
@@ -570,11 +545,6 @@ pub(crate) async fn cancel_fetch(client: Arc<MOQTClient>, request_id: u64) {
 
   {
     client.inbound_requests.write().await.remove(&request_id);
-    client
-      .incoming_fetch_requests
-      .write()
-      .await
-      .remove(&request_id);
   }
 
   if let Some(tx) = cancel_tx {
@@ -817,11 +787,6 @@ async fn send_request_error(
     .await;
   // Remove the request from the client maps on error
   client.inbound_requests.write().await.remove(&request_id);
-  client
-    .incoming_fetch_requests
-    .write()
-    .await
-    .remove(&request_id);
 }
 
 /// What to deliver on one fetch data stream, and where the Objects come from.

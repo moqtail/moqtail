@@ -429,22 +429,30 @@ async fn supersede_overtaken(
     // the cache now. A Group whose last cached Object was already written is
     // left alone by the repair itself.
     if let Some(subscription) = subscription_for(client, *target_track).await {
-      let replayed = subscription
-        .read()
-        .await
-        .repair_group_from_cache(*group_id, stream_id.subgroup_id, last_sent)
-        .await;
-      if replayed > 0 {
-        tracing::debug!(
-          client_id = client.connection_id,
-          set_id,
-          relay_track_id = target_track,
-          group = group_id,
-          subgroup = ?stream_id.subgroup_id,
-          objects = replayed,
-          "SSTS: repaired an overtaken group from the cache"
-        );
-      }
+      // The replay writes Objects on the wire; keep it off the decision loop,
+      // which must keep sampling the path while the repair drains.
+      let group_id = *group_id;
+      let subgroup_id = stream_id.subgroup_id;
+      let target_track = *target_track;
+      let client_id = client.connection_id;
+      tokio::spawn(async move {
+        let replayed = subscription
+          .read()
+          .await
+          .repair_group_from_cache(group_id, subgroup_id, last_sent)
+          .await;
+        if replayed > 0 {
+          tracing::debug!(
+            client_id,
+            set_id,
+            relay_track_id = target_track,
+            group = group_id,
+            subgroup = ?subgroup_id,
+            objects = replayed,
+            "SSTS: repaired an overtaken group from the cache"
+          );
+        }
+      });
     }
   }
 

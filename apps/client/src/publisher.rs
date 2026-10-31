@@ -79,6 +79,8 @@ pub struct Content {
   pub track_properties: Vec<TrackProperty>,
   /// Spans a FETCH response marks with an End of Range marker instead of sending.
   pub fetch_markers: Vec<FetchMarkerSpec>,
+  /// Reset a FETCH response's stream after this many Objects; 0 never.
+  pub fetch_reset_after: u64,
   /// Close each group with an End of Group object.
   pub end_of_group_objects: bool,
   /// Close the track with an End of Track object after the last group.
@@ -671,6 +673,18 @@ async fn send_fetch_objects(
       )?;
       handler.send_object(&object, None).await?;
       sent += 1;
+      if sent == config.content.fetch_reset_after {
+        info!(
+          "Resetting the stream of FETCH {} after {} objects",
+          fetch.request_id, sent
+        );
+        // A reset drops whatever is still unsent, so the Objects get a moment to
+        // leave first: the point is a response cut short, not one never sent.
+        handler.flush().await?;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        stream.lock().await.reset(0)?;
+        return Ok(());
+      }
     }
   }
 

@@ -236,6 +236,12 @@ pub struct Cli {
   #[arg(long, default_value_t = false)]
   pub end_of_track_object: bool,
 
+  /// Reset each FETCH response's stream after this many Objects, cutting it short;
+  /// they are given a moment to leave first (publish and publish-namespace; 0 =
+  /// never).
+  #[arg(long, default_value_t = 0)]
+  pub fetch_reset_after: u64,
+
   /// A span the publisher's FETCH responses mark with an End of Range marker instead
   /// of sending its Objects, as KIND:G.O-G.O with KIND non-existent, unknown or
   /// timed-out; repeatable (publish and publish-namespace). The Objects after a

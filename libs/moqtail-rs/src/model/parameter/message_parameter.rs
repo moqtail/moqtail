@@ -118,6 +118,9 @@ pub enum MessageParameter {
     /// knob is which belongs to the algorithm that asked for them, and
     /// inventing a field here for every algorithm would put that knowledge
     /// in the transport. An empty list means the sender offered nothing.
+    ///
+    /// The draft backpressure algorithm fixes this order as
+    /// `[rho_pct, U_min, U_max]`, immediately after `subscriber_buffer_ms`.
     algorithm_params: Vec<u64>,
   },
   /// Cluster extension: the Hop IDs an advertisement passed through, original
@@ -1345,9 +1348,33 @@ mod tests {
       1,
       0,
       250,
-      vec![3, 70, 1600],
+      vec![25, 2, 0],
     );
     assert_eq!(roundtrip(orig.clone()), orig);
+  }
+
+  /// The draft fixes the extension order as the latency budget followed by
+  /// `rho_pct`, `U_min` and `U_max`; the codec carries the varints verbatim and
+  /// must not reorder or pad them.
+  #[test]
+  fn the_backpressure_extension_fields_keep_their_wire_order() {
+    let orig = MessageParameter::new_switching_set_assignment_extended(
+      3,
+      0xff05,
+      1200,
+      7,
+      1,
+      0,
+      250,
+      vec![25, 2, 0],
+    );
+    let pair: KeyValuePair = orig.try_into().unwrap();
+    let expected = assignment_payload(&[3, 0xff05, 1200, 7, 1, 0, 250, 25, 2, 0]);
+    assert_eq!(
+      pair.serialize().unwrap(),
+      expected.serialize().unwrap(),
+      "the extension must stay B, rho_pct, U_min, U_max"
+    );
   }
 
   /// A peer that predates the extension sends the six fields for a

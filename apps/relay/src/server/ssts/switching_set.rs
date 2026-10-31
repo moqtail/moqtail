@@ -557,6 +557,8 @@ impl SwitchingSetManager {
     weight: Option<u64>,
     activate: Option<u64>,
     rank: Option<u8>,
+    subscriber_buffer_ms: Option<u64>,
+    algorithm_params: Option<Vec<u64>>,
   ) -> Result<Vec<String>, SwitchingSetError> {
     let set_id = self
       .track_to_set
@@ -595,6 +597,12 @@ impl SwitchingSetManager {
     }
     if let Some(rank) = rank {
       set.rank = rank;
+    }
+    if let Some(buffer_ms) = subscriber_buffer_ms {
+      set.subscriber_buffer_ms = buffer_ms;
+    }
+    if let Some(params) = algorithm_params {
+      set.algorithm_params = params;
     }
     if let Some(threshold) = throughput_threshold_kbps
       && let Some(member) = set
@@ -832,7 +840,7 @@ mod tests {
     assign(&mut manager, &track, 1, 3, 100);
 
     let warnings = manager
-      .update_assignment(&track, Some(0), None, Some(9), Some(0), Some(4))
+      .update_assignment(&track, Some(0), None, Some(9), Some(0), Some(4), None, None)
       .unwrap();
     assert!(
       warnings.is_empty(),
@@ -847,12 +855,40 @@ mod tests {
 
     // None fields keep the previous values.
     manager
-      .update_assignment(&track, None, None, None, None, Some(1))
+      .update_assignment(&track, None, None, None, None, Some(1), None, None)
       .unwrap();
     let set = manager.get_set_for_track(&track).unwrap();
     assert_eq!(set.weight, 9);
     assert_eq!(set.activate, 0);
     assert_eq!(set.rank, 1);
+  }
+
+  /// A REQUEST_UPDATE carries the whole assignment, so the draft's own
+  /// set-level fields move with it: the latency budget and the three
+  /// algorithm parameters are the most recently received values, like every
+  /// other set property.
+  #[test]
+  fn test_update_assignment_moves_the_latency_budget_and_algorithm_params() {
+    let mut manager = SwitchingSetManager::new();
+    let track = make_track("ns", "t");
+    assign_with(&mut manager, &track, 1, 3, 0xff05, 100, 250, vec![25, 2, 0]);
+
+    manager
+      .update_assignment(
+        &track,
+        Some(0xff05),
+        Some(100),
+        Some(5),
+        Some(2),
+        Some(0),
+        Some(900),
+        Some(vec![15, 3, 6]),
+      )
+      .unwrap();
+
+    let set = manager.get_set_for_track(&track).unwrap();
+    assert_eq!(set.subscriber_buffer_ms, 900);
+    assert_eq!(set.algorithm_params, vec![15, 3, 6]);
   }
 
   #[test]
@@ -871,7 +907,7 @@ mod tests {
     let mut manager = SwitchingSetManager::new();
     let track = make_track("ns", "t");
     assert!(matches!(
-      manager.update_assignment(&track, None, None, None, None, None),
+      manager.update_assignment(&track, None, None, None, None, None, None, None),
       Err(SwitchingSetError::TrackNotInSet)
     ));
   }
@@ -897,7 +933,7 @@ mod tests {
     );
 
     manager
-      .update_assignment(&low, None, Some(3000), None, None, None)
+      .update_assignment(&low, None, Some(3000), None, None, None, None, None)
       .unwrap();
     assert_eq!(
       manager
@@ -922,7 +958,7 @@ mod tests {
     assign(&mut manager, &track, 1, 3, 500);
 
     let warnings = manager
-      .update_assignment(&track, Some(9), None, None, None, None)
+      .update_assignment(&track, Some(9), None, None, None, None, None, None)
       .unwrap();
     assert_eq!(warnings.len(), 1);
     assert!(warnings[0].contains("algorithm 0"));
@@ -933,7 +969,7 @@ mod tests {
     // Asking for the same algorithm is not a warning.
     assert!(
       manager
-        .update_assignment(&track, Some(0), None, None, None, None)
+        .update_assignment(&track, Some(0), None, None, None, None, None, None)
         .unwrap()
         .is_empty()
     );
@@ -1074,7 +1110,7 @@ mod tests {
 
     let before = read();
     manager
-      .update_assignment(&track, None, None, None, Some(0), None)
+      .update_assignment(&track, None, None, None, Some(0), None, None, None)
       .expect("track is in a set");
     assert!(
       read() > before,

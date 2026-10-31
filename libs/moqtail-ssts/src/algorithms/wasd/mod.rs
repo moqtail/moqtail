@@ -565,19 +565,30 @@ fn set_upshift_streak(
   default_u_min: Option<u64>,
   default_u_max: Option<u64>,
 ) -> u64 {
-  // The floor: the count the subscriber signalled for its own set wins, then
-  // the operator's. `None` at the end is "no floor", and then the step term
-  // governs alone.
-  let u_min = signaled_u_min(set).or(default_u_min);
+  // The extension fields are fixed by the algorithm, in wire order:
+  // `[rho_pct, U_min, U_max]` after the subscriber's latency budget. A
+  // shorter list is a sender that offered fewer fields, not a different
+  // layout.
+  let u_min = match signaled_param(set, PARAM_U_MIN) {
+    Some(0) | None => default_u_min,
+    Some(value) => Some(value),
+  };
 
   // rho: the subscriber's own signalled percentage wins over the operator's.
-  let rho = set
-    .algorithm_params
-    .last()
-    .copied()
-    .filter(|&v| (1..=100).contains(&v))
-    .map(|pct| (pct as f64 / 100.0).clamp(0.01, 1.0))
-    .unwrap_or_else(|| default_rho.clamp(0.01, 1.0));
+  // Zero is the publisher default, and anything above 100 is clamped rather
+  // than treated as malformed.
+  let rho = match signaled_param(set, PARAM_RHO_PCT) {
+    Some(0) | None => default_rho.clamp(0.01, 1.0),
+    Some(pct) => (pct.min(100) as f64 / 100.0).clamp(0.01, 1.0),
+  };
+
+  // The cap is the subscriber's when the field was sent: zero means
+  // unbounded, which is a decision and not a fallback to the operator.
+  let u_max = match signaled_param(set, PARAM_U_MAX) {
+    Some(0) => None,
+    Some(value) => Some(value),
+    None => default_u_max,
+  };
 
   // The relative bitrate step of the rung this connection stands on.
   let max_rung = set.members.len().saturating_sub(1);
@@ -601,25 +612,23 @@ fn set_upshift_streak(
   if let Some(floor) = u_min {
     streak = streak.max(floor.max(1));
   }
-  if let Some(cap) = default_u_max {
+  if let Some(cap) = u_max {
     streak = streak.min(cap.max(1));
   }
   streak
 }
 
-/// The minimum upshift stability threshold the subscriber signalled for its
-/// own set, in units of media groups: slot 0 of `algorithm_params` when the
-/// subscriber sent the two-slot layout and the slot is non-zero. A one-slot
-/// vec is the older shape that signals `rho` alone, and a zero means "not
-/// signalled" - the operator's rails stand. (A zero-valued slot cannot express
-/// "no floor": the wire format has no way to tell that apart from "no
-/// opinion", so an operator sets `wasd.umin=0` instead.)
-fn signaled_u_min(set: &SetSnapshot) -> Option<u64> {
-  if set.algorithm_params.len() >= 2 {
-    set.algorithm_params.first().copied().filter(|&v| v > 0)
-  } else {
-    None
-  }
+/// The position of `rho_pct` in the fixed `algorithm_params` layout.
+const PARAM_RHO_PCT: usize = 0;
+/// The position of `U_min` in the fixed `algorithm_params` layout.
+const PARAM_U_MIN: usize = 1;
+/// The position of `U_max` in the fixed `algorithm_params` layout.
+const PARAM_U_MAX: usize = 2;
+
+/// One field of the fixed `[rho_pct, U_min, U_max]` extension, or `None` when
+/// the sender did not include that field.
+fn signaled_param(set: &SetSnapshot, index: usize) -> Option<u64> {
+  set.algorithm_params.get(index).copied()
 }
 
 /// A re-sent group inherits the remaining buffer budget of the overtaken

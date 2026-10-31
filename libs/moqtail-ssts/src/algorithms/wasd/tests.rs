@@ -915,7 +915,7 @@ fn a_signalled_algorithm_param_overrides_rho() {
 #[test]
 fn a_signalled_u_min_overrides_the_buffer_floor() {
   let sets = [SetSnapshot {
-    algorithm_params: vec![6, 100],
+    algorithm_params: vec![100, 6],
     ..ladder_set(1, &[850, 1800, 3500, 6000], 1600, 500)
   }];
   let mut algorithm = WasdAlgorithm::new();
@@ -951,7 +951,7 @@ fn a_zero_u_min_slot_falls_back_to_the_operator_rail() {
   let empty: Vec<StreamSnapshot> = Vec::new();
   let congested = [stream(1, track_at(1, 0), 0), stream(1, track_at(1, 0), 1)];
   let sets = [SetSnapshot {
-    algorithm_params: vec![0, 100],
+    algorithm_params: vec![100, 0],
     ..ladder_set(1, &[850, 1800, 3500, 6000], 1600, 0)
   }];
   let mut algorithm = WasdAlgorithm::new();
@@ -970,7 +970,7 @@ fn a_zero_u_min_slot_falls_back_to_the_operator_rail() {
 /// With both slots signalled, slot 0 is the floor and the trailing one is
 /// the tolerance, and `U(k)` is the max of the floor and the step's price:
 /// at rho = 0.15 the 850 -> 1800 jump costs ceil(1.118 / 0.15) = 8, so
-/// `vec![10, 15]` waits the signalled 10 and `vec![3, 15]` waits the step's 8.
+/// `vec![15, 10]` waits the signalled 10 and `vec![15, 3]` waits the step's 8.
 #[test]
 fn u_min_and_rho_signalled_together_take_the_max() {
   let empty: Vec<StreamSnapshot> = Vec::new();
@@ -978,7 +978,7 @@ fn u_min_and_rho_signalled_together_take_the_max() {
 
   // The floor rules the step: max(10, 8) = 10.
   let sets = [SetSnapshot {
-    algorithm_params: vec![10, 15],
+    algorithm_params: vec![15, 10],
     ..ladder_set(1, &[850, 1800, 3500, 6000], 1600, 500)
   }];
   let mut algorithm = WasdAlgorithm::new();
@@ -996,7 +996,7 @@ fn u_min_and_rho_signalled_together_take_the_max() {
 
   // The step rules the floor: max(3, 8) = 8.
   let sets = [SetSnapshot {
-    algorithm_params: vec![3, 15],
+    algorithm_params: vec![15, 3],
     ..ladder_set(1, &[850, 1800, 3500, 6000], 1600, 500)
   }];
   let mut algorithm = WasdAlgorithm::new();
@@ -1045,7 +1045,7 @@ fn the_operator_tuning_parses_the_rails() {
 /// The operator's `wasd.umin` replaces the derived horizon for a subscriber
 /// that signals none — and loses to one that does: the same ladder climbs
 /// after six clean groups under the operator's floor of 6, and after three
-/// under the signalled `vec![3, 100]`.
+/// under the signalled `vec![100, 3]`.
 #[test]
 fn the_operator_u_min_replaces_the_clock_but_loses_to_the_subscriber() {
   let empty: Vec<StreamSnapshot> = Vec::new();
@@ -1071,7 +1071,7 @@ fn the_operator_u_min_replaces_the_clock_but_loses_to_the_subscriber() {
 
   // The subscriber's signalled 3 outranks the operator's 6: max(3, 2) = 3.
   let sets = [SetSnapshot {
-    algorithm_params: vec![3, 100],
+    algorithm_params: vec![100, 3],
     ..ladder_set(1, &[850, 1800, 3500, 6000], 1600, 500)
   }];
   let mut algorithm = WasdAlgorithm::with_params(WasdParams {
@@ -1331,4 +1331,49 @@ fn u_max_caps_a_very_cautious_rho() {
   }
   let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 6));
   assert_eq!(tier_of(&selection, 1), 1, "the sixth clean group buys it");
+}
+
+/// The subscriber's `U_max` is the third extension field, and it outranks the
+/// operator's cap. A signalled zero is "unbounded", not "fall back to the
+/// operator": the same set climbs at three clean groups under `[5, 2, 3]`, and
+/// ignores an operator cap of two under `[50, 2, 0]` because the step alone
+/// prices at three.
+#[test]
+fn a_signalled_u_max_is_the_third_field_and_zero_means_unbounded() {
+  let empty: Vec<StreamSnapshot> = Vec::new();
+  let congested = [stream(1, track_at(1, 0), 0), stream(1, track_at(1, 0), 1)];
+
+  let sets = [SetSnapshot {
+    algorithm_params: vec![5, 2, 3],
+    ..ladder_set(1, &[850, 1800, 3500, 6000], 0, 0)
+  }];
+  let mut algorithm = WasdAlgorithm::new();
+  algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 0));
+  for group in 1..3 {
+    let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, group));
+    assert_eq!(tier_of(&selection, 1), 0, "the signalled cap is three");
+  }
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 3));
+  assert_eq!(tier_of(&selection, 1), 1, "the third clean group buys it");
+
+  // Signalled zero: unbounded, so the operator's cap of two must not apply.
+  let sets = [SetSnapshot {
+    algorithm_params: vec![50, 2, 0],
+    ..ladder_set(1, &[850, 1800, 3500, 6000], 0, 0)
+  }];
+  let mut algorithm = WasdAlgorithm::with_params(WasdParams {
+    u_max: Some(2),
+    ..WasdParams::default()
+  });
+  algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 0));
+  for group in 1..3 {
+    let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, group));
+    assert_eq!(
+      tier_of(&selection, 1),
+      0,
+      "the step prices at three, and zero removed the operator cap"
+    );
+  }
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 3));
+  assert_eq!(tier_of(&selection, 1), 1, "the third clean group buys it");
 }

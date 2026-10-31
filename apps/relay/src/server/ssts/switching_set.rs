@@ -505,9 +505,8 @@ impl SwitchingSetManager {
   }
 
   /// Remove a track (its last subscription went, or PUBLISH_DONE) and delete the set once its
-  /// last track leaves. `activate` is a configured threshold, not a counter,
-  /// so it is left alone: `is_active` re-evaluates against the new member
-  /// count on its own.
+  /// last track leaves. Removing a subscription also decrements `activate`,
+  /// as base SSTS requires; the floor is zero.
   pub fn remove(&mut self, full_track_name: &FullTrackName) {
     let Some(set_id) = self.track_to_set.remove(full_track_name) else {
       return;
@@ -529,6 +528,11 @@ impl SwitchingSetManager {
     if let Some(relay_track_id) = relay_track_id {
       self.relay_track_to_set.remove(&relay_track_id);
     }
+    // Base SSTS: removing a subscription from a set decrements the activation
+    // threshold, floor zero. The threshold is a count of tracks the subscriber
+    // promised, and one of them just left; keeping the old count would
+    // deactivate a set that still has every remaining member it expected.
+    set.activate = set.activate.saturating_sub(1);
     if set.members.is_empty() {
       self.sets.remove(&set_id);
       // The set is gone, and with it the meaning of its streams and cadence.
@@ -764,9 +768,10 @@ mod tests {
 
     let set = manager.get_set_for_track(&track2).unwrap();
     assert_eq!(set.members.len(), 1);
-    // `activate` is a configured threshold, not a counter: removing a member
-    // must not change it.
-    assert_eq!(set.activate, 2);
+    // Base SSTS: one promised track left, so the threshold follows it down and
+    // the remaining member keeps the set active.
+    assert_eq!(set.activate, 1);
+    assert!(set.is_active());
   }
 
   #[test]

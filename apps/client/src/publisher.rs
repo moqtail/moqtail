@@ -55,6 +55,7 @@ pub struct PublishConfig {
   pub track_name: String,
   pub delivery_mode: DeliveryMode,
   pub group_count: u64,
+  pub available_groups: u64,
   pub interval: u64,
   pub objects_per_group: u64,
   pub object_id_step: u64,
@@ -83,6 +84,7 @@ pub struct PublishNamespaceConfig {
   pub withdraw_after: u64,
   pub delivery_mode: DeliveryMode,
   pub group_count: u64,
+  pub available_groups: u64,
   pub interval: u64,
   pub objects_per_group: u64,
   pub object_id_step: u64,
@@ -118,6 +120,7 @@ pub async fn run_namespace(moq: MoqConnection, config: PublishNamespaceConfig) -
   let data_config = DataConfig {
     delivery_mode: config.delivery_mode,
     group_count: config.group_count,
+    available_groups: config.available_groups.min(config.group_count),
     interval: config.interval,
     objects_per_group: config.objects_per_group,
     object_id_step: config.object_id_step,
@@ -128,7 +131,7 @@ pub async fn run_namespace(moq: MoqConnection, config: PublishNamespaceConfig) -
   };
 
   // Step 2: the relay sends each request on its own bidirectional stream.
-  let published = Published::default();
+  let published = Published::starting_from(&data_config).await;
 
   info!(
     "Waiting for request streams on namespace '{}'...",
@@ -188,7 +191,7 @@ async fn serve_request_streams(
           }
           let ok = SubscribeOk::new(
             track_alias,
-            vec![],
+            largest_object(&pub_state).await.into_iter().collect(),
             properties_for(&m.subscribe_parameters, &dc.content.track_properties),
           );
           if let Err(e) = request_stream.send_impl(&ok).await {
@@ -268,6 +271,7 @@ pub async fn run(moq: MoqConnection, config: PublishConfig) -> Result<()> {
   let data_config = DataConfig {
     delivery_mode: config.delivery_mode,
     group_count: config.group_count,
+    available_groups: config.available_groups.min(config.group_count),
     interval: config.interval,
     objects_per_group: config.objects_per_group,
     object_id_step: config.object_id_step,
@@ -279,7 +283,7 @@ pub async fn run(moq: MoqConnection, config: PublishConfig) -> Result<()> {
 
   // A relay may FETCH a track it was pushed, so the request streams are served
   // alongside delivery rather than after it.
-  let published = Published::default();
+  let published = Published::starting_from(&data_config).await;
   let serving = tokio::spawn(serve_request_streams(
     connection.clone(),
     data_config.clone(),
@@ -340,6 +344,9 @@ async fn publish_namespace(
 struct DataConfig {
   delivery_mode: DeliveryMode,
   group_count: u64,
+  /// The first groups, published before the session started: live delivery starts
+  /// after them, and a FETCH can have them at once.
+  available_groups: u64,
   interval: u64,
   objects_per_group: u64,
   object_id_step: u64,
@@ -350,6 +357,17 @@ struct DataConfig {
 }
 
 impl DataConfig {
+  /// The last Object of the groups published before the session started, if any.
+  fn last_available(&self) -> Option<Location> {
+    if self.available_groups == 0 || self.objects_per_group == 0 {
+      return None;
+    }
+    Some(Location::new(
+      (self.available_groups - 1) * self.group_id_step,
+      (self.objects_per_group - 1) * self.object_id_step,
+    ))
+  }
+
   /// The subgroup the `i`th Object of a group goes to.
   fn subgroup_of(&self, i: u64) -> u64 {
     i % self.content.subgroups_per_group.max(1)
@@ -412,6 +430,16 @@ impl DataConfig {
 struct Published(Arc<Mutex<Option<Location>>>);
 
 impl Published {
+  /// What has been published before anything is sent: the groups the configuration
+  /// counts as already out.
+  async fn starting_from(config: &DataConfig) -> Self {
+    let published = Self::default();
+    if let Some(last) = config.last_available() {
+      published.record(last.group, last.object).await;
+    }
+    published
+  }
+
   async fn record(&self, group_id: u64, object_id: u64) {
     let location = Location::new(group_id, object_id);
     let mut largest = self.0.lock().await;
@@ -477,6 +505,14 @@ async fn serve_fetch(
   if let Err(e) = send_fetch_objects(connection, &fetch, &first, &last, config).await {
     error!("Failed to serve FETCH objects: {:?}", e);
   }
+}
+
+/// The LARGEST_OBJECT parameter for what has been published so far, if anything has.
+async fn largest_object(published: &Published) -> Option<MessageParameter> {
+  published
+    .largest()
+    .await
+    .map(MessageParameter::new_largest_object)
 }
 
 /// The first and last Objects a FETCH of `start..=end` sends. A descending FETCH that
@@ -630,12 +666,14 @@ async fn publish_track(
   published: &Published,
 ) -> Result<()> {
   info!("Publishing track: track_alias={}", track_alias);
+  let mut parameters = vec![MessageParameter::Forward { forward: true }];
+  parameters.extend(largest_object(published).await);
   let publish = Publish::new(
     0, // request_id
     namespace.clone(),
     TupleField::from_utf8(track_name),
     track_alias,
-    vec![MessageParameter::Forward { forward: true }],
+    parameters,
     data_config.content.track_properties.clone(),
   );
 
@@ -675,7 +713,10 @@ async fn publish_track(
 /// Number of subgroup streams a run opens (one per group); datagram mode opens none.
 fn stream_count(config: &DataConfig) -> u64 {
   match config.delivery_mode {
-    DeliveryMode::Subgroup => config.group_count * config.subgroups_used(),
+    // Only the groups delivered live open streams.
+    DeliveryMode::Subgroup => {
+      (config.group_count - config.available_groups) * config.subgroups_used()
+    }
     DeliveryMode::Datagram => 0,
   }
 }
@@ -708,7 +749,7 @@ async fn send_datagrams(
     config.payload_size
   );
 
-  for g in 0..config.group_count {
+  for g in config.available_groups..config.group_count {
     let group_id = g * config.group_id_step;
     for i in 0..config.objects_per_group {
       let object_id = i * config.object_id_step;
@@ -785,7 +826,7 @@ async fn send_via_streams(
   // contains the end of the group.
   let last_subgroup = config.subgroup_of(config.objects_per_group.saturating_sub(1));
 
-  for g in 0..config.group_count {
+  for g in config.available_groups..config.group_count {
     let group_id = g * config.group_id_step;
     // Each subgroup's stream opens with its first Object.
     let mut streams: Vec<Option<SubgroupStream>> =
@@ -895,8 +936,31 @@ fn generate_payload(size: usize) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-  use super::objects_to_send;
+  use super::{Content, DataConfig, objects_to_send};
+  use crate::cli::DeliveryMode;
   use moqtail::model::common::location::Location;
+
+  fn config(available_groups: u64) -> DataConfig {
+    DataConfig {
+      delivery_mode: DeliveryMode::Subgroup,
+      group_count: 10,
+      available_groups,
+      interval: 0,
+      objects_per_group: 4,
+      object_id_step: 2,
+      group_id_step: 3,
+      payload_size: 1,
+      publisher_priority: 128,
+      content: Content::default(),
+    }
+  }
+
+  #[test]
+  fn content_published_before_the_session_ends_at_the_last_object_of_its_last_group() {
+    assert_eq!(config(0).last_available(), None);
+    // Groups 0, 3 and 6, each with Objects 0, 2, 4 and 6.
+    assert_eq!(config(3).last_available(), Some(loc(6, 6)));
+  }
 
   fn loc(group: u64, object: u64) -> Location {
     Location::new(group, object)

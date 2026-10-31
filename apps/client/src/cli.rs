@@ -154,6 +154,12 @@ pub struct Cli {
   #[arg(long, default_value_t = 100)]
   pub group_count: u64,
 
+  /// How many of the first groups count as already published at startup (publish
+  /// and publish-namespace). They are served to a FETCH at once, and live delivery
+  /// starts after them. Capped at --group-count.
+  #[arg(long, default_value_t = 0)]
+  pub available_groups: u64,
+
   /// Interval between objects in milliseconds (publish only)
   #[arg(long, short, default_value_t = 1000)]
   pub interval: u64,

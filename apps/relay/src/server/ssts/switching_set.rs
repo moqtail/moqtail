@@ -537,12 +537,12 @@ impl SwitchingSetManager {
       .retain(|m| m.full_track_name != *full_track_name);
     if let Some(relay_track_id) = relay_track_id {
       self.relay_track_to_set.remove(&relay_track_id);
+      // Base SSTS: removing a subscription from a set decrements the activation
+      // threshold, floor zero. The threshold is a count of tracks the subscriber
+      // promised, and one of them just left; keeping the old count would
+      // deactivate a set that still has every remaining member it expected.
+      set.activate = set.activate.saturating_sub(1);
     }
-    // Base SSTS: removing a subscription from a set decrements the activation
-    // threshold, floor zero. The threshold is a count of tracks the subscriber
-    // promised, and one of them just left; keeping the old count would
-    // deactivate a set that still has every remaining member it expected.
-    set.activate = set.activate.saturating_sub(1);
     if set.members.is_empty() {
       self.sets.remove(&set_id);
       // The set is gone, and with it the meaning of its streams and cadence.

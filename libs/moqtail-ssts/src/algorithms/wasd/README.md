@@ -55,6 +55,20 @@ recovering looks congested; count the re-sends and every downshift produces the
 evidence for the next one, in a loop the operator watches as a ladder walking
 itself to the bottom rung on a healthy link.
 
+The re-send exclusion is only half the rule: a re-sent stream does not count as
+depth, but it does veto a clean boundary. While a repair is in flight the
+delivery it replaced has not resolved, so the boundary cannot buy a climb — the
+clean streak restarts once the repair is over. Without the veto the ladder
+climbs back onto the rung the repair came from: on `PROFILE_LANCSD1` it went
+900p -> 1080p at t=31.99 s, 40 ms before the same streams pushed it back down.
+
+The climb is also held while the rung above has an open stream of its own. That
+stream is not depth at the current tier and never causes a downshift, but it is
+not a clear target either: the new group's stream would be the second at that
+rung and the monitor would read the climb as congestion. Classic, which never
+resets the streams a downshift abandoned, hit this on every climb back to
+1080p (three old 1080p streams, reverted in 27-51 ms).
+
 ## When it decides
 
 On every sample the host takes — the group boundary and the periodic sample of
@@ -78,9 +92,9 @@ streak re-arms so one burst cannot walk the ladder tick by tick.
 Upshifts belong to the boundary alone — the moment the forward gate is waiting
 to record that group's track — so the tier never moves mid-group, and
 `current_index` never disagrees with what is on the wire. The cautious streak
-a climb waits for is the subscriber's own, not a constant: at least one
-buffer-depth of clean groups, and more across ladder rungs whose bitrates are
-far apart (`wasd.rho`, below).
+a climb waits for is priced by the step itself: the relative bitrate jump
+divided by the subscriber's risk tolerance, with an optional floor and cap
+(`wasd.rho`, `wasd.umin` and `wasd.umax`, below).
 
 ## What a downshift does to the groups it overtook
 
@@ -120,33 +134,53 @@ are seconds long the window it takes to see real congestion inside one is
 much longer. Setting it to 1 turns the monitor into a reaction to a single
 sample, which is not a monitor; it is clamped to 1 rather than 0.
 
-`wasd.rho` (default 1.0, in `(0, 1]`): the probing risk tolerance. The
-steady climb waits
+`wasd.rho` (default 0.4, in `(0.01, 1]`): the probing risk tolerance, and
+the mechanism the climb is priced by. The steady climb waits
 
 ```text
-U(k) = max( U_min,  ceil( ((R_{k+1} - R_k) / R_k) / rho ) )
+U(k) = clamp( ceil( ((R_{k+1} - R_k) / R_k) / rho ), u_min, u_max )   (>= 1)
 ```
 
-clean groups: at least `U_min` of them — one buffer-depth, `ceil(B / G)`
-from `B` the subscriber's negotiated buffer and `G` the observed group
-cadence, unless a signalled or operator floor replaces it — and more across
-rungs that are far apart in bitrate, because a 3x jump is a 3x bigger bet
-than a 1.2x one. Lower is more cautious; 1.0 climbs on the floor alone
-whenever the ladder's relative steps are smaller than one buffer-depth.
+clean groups. The step term prices the jump itself: a 3x rung is a 3x bigger
+bet than a 1.2x one, so the observation window scales with it. Lower is more
+cautious. 0.4 is the default because it was measured: on the
+0.60/1.18/2.89/5.75 Mbps ladder it asks 3, 4, 3 clean groups, and in the
+preliminary sweep it was the best point short of the cliff — at rho = 1.0 the
+first step prices at one clean group, i.e. probing every group, which
+collapsed the ladder on the cascade profile.
 
-`wasd.umin` (default unset): an operator's floor for `U_min`, in clean
-groups, used in place of the derived `ceil(B / G)` when set. Unset, the
-floor is that recommended buffer-drainage horizon, and the written five
-still answers when neither clock is known.
+`wasd.umin` (default 1): a floor under the priced wait, in clean groups.
+**`wasd.umin=0` removes the floor** — the step term then governs alone — and
+that is deliberately different from leaving the key out. One is the smallest
+wait the state machine can express (a climb needs at least one clean
+boundary), so the default floor is effectively "none".
+
+`wasd.umax` (default unset): a cap on the wait, in clean groups; `0` or an
+unset key is no cap. It exists to bound recovery time when `rho` is low: at
+`rho = 0.05` a steep ladder asks for tens of clean groups, which on a short
+trace means never climbing again.
+
+Both are rails, not mechanisms, and they clamp the same number: **setting
+`wasd.umin` equal to `wasd.umax` pins `U(k)` to that constant and makes `rho`
+inert** — that is the "I do not want rho" setting, with no separate switch.
+When the two conflict (`umin` greater than `umax`) the cap wins.
+
+There is no derived floor. It used to default to one buffer-depth,
+`ceil(B / G)`, computed from the subscriber's buffer and the observed group
+cadence; that made the buffer the primary control through a formula, and any
+such derivation is an arbitrary number wearing a costume. `ceil(B / G)`
+remains a good *recommended* value for an operator to set — `wasd.umin=4` for
+a 1.6 s buffer with 500 ms groups — but it is now chosen, not assumed.
 
 **Subscriber signalling.** The set's algorithm parameters carry the same
-two numbers per connection, and signalled values override the operator's
-for that subscriber's sets. With one parameter it is the tolerance: a
-percentage (`1..=100`) for `rho`. With two or more, slot 0 is `U_min` — a
-count of media groups, `0` meaning "not signalled" — and the trailing
-parameter is the `rho` percentage. An unsignalled (or zero) `U_min` leaves
-the derived `ceil(B / G)` in place, unless the operator set `wasd.umin`:
-the floor arrives with the connection instead of being signalled.
+numbers per connection, and signalled values override the operator's for that
+subscriber's sets. With one parameter it is the tolerance: a percentage
+(`1..=100`) for `rho`. With two or more, slot 0 is `U_min` — a count of media
+groups, `0` meaning "not signalled" — and the trailing parameter is the `rho`
+percentage. An unsignalled (or zero) `U_min` leaves the operator's rails in
+place: the wire format cannot tell "no floor" from "no opinion" in a
+zero-valued slot, so only the operator can remove the floor. `wasd.umax` has
+no signalling slot at all.
 
 ## What this is not, and where the rest of the experiment went
 
@@ -183,9 +217,9 @@ extension slot as a timeout and stored two others unused. The timeout is now
 dormant slots are live here. A subscriber signals its probing risk tolerance
 `rho` as a percentage (`1..=100`) in the trailing `algorithm_params` slot, and
 its minimum upshift stability threshold `U_min` — a count of media groups — in
-slot 0 of the two-slot layout; a zero, or a one-slot vec, means unsignalled,
-and the floor then derives itself from the subscriber's own buffer and
-observed cadence, `ceil(B / G)`. The subscriber sends them in the order the
+slot 0 of the two-slot layout; a zero, or a one-slot vec, means unsignalled and
+the operator's rails stand. The cap has no slot: it is an operator's guard, not
+a subscriber preference. The subscriber sends the two it has in the order the
 algorithm defines.
 
 ## What it does badly
@@ -209,6 +243,12 @@ depth) suppressed the cascade but charged a group of seeing to genuine
 congestion, delaying the ladder's real responses. The comparison therefore
 ships the shortcoming visible: reaching back costs an overreaction on
 short dips, and v2/v3 are measured against the classic with it in place.
+Measured later, and worth knowing before blaming the algorithm: the group
+delivery order the subscription negotiates amplifies this. Under the MOQT
+default (Ascending) an abandoned older group outranks the newly selected tier,
+so the new tier's stream starves and the second drop follows; requesting
+requesting Descending group order removed it on `PROFILE_JITTER` (3->2 at 10.5 s then 2->3 at
+11.7 s, instead of 3->2 then 2->1). See `ssts-docker/README.md`.
 
 **A downshift that does not work has nothing to stop it.** The depth at the
 delivered tier drains when the downshift works; when it does not — when the

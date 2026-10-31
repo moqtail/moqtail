@@ -463,6 +463,19 @@ impl AbrInput<'_> {
       .unwrap_or(0)
   }
 
+  /// Whether a re-send the previous decision ordered is still in flight.
+  ///
+  /// A repair is not congestion — [`open_streams_at_track`] leaves it out of
+  /// the depth so it cannot call for the next downshift — but it is also not
+  /// a clean read. The delivery it replaces has not resolved yet, so a
+  /// boundary that arrives while it is open has not proved that the pipeline
+  /// drained; an algorithm may read it, but should not climb on it.
+  ///
+  /// [`open_streams_at_track`]: AbrInput::open_streams_at_track
+  pub fn has_resent_in_flight(&self) -> bool {
+    self.streams.iter().any(|stream| stream.resent)
+  }
+
   /// The groups of a set that have a live stream: the deliveries the
   /// algorithm could decide to overtake.
   pub fn open_groups(&self, set_id: u64) -> Vec<u64> {
@@ -713,6 +726,16 @@ mod tests {
 
     assert_eq!(input.open_streams_at_track(1, 11), 0);
     assert_eq!(input.open_streams_at_track(1, 10), 1);
+
+    assert!(
+      input.has_resent_in_flight(),
+      "the repair is invisible to the depth but not to the climb"
+    );
+    let no_repairs = [stream(1, 10, 8, 20), stream(2, 20, 8, 5)];
+    assert!(
+      !input_with(&no_repairs, &sets).has_resent_in_flight(),
+      "no repair in flight, nothing to wait for"
+    );
   }
 
   #[test]

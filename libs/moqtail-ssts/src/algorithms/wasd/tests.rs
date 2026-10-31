@@ -23,6 +23,7 @@ use crate::AbrInput;
 use crate::DecisionReason;
 use crate::SetSnapshot;
 use crate::StreamSnapshot;
+use crate::algorithms::wasd::Reach;
 use crate::algorithms::wasd::WasdAlgorithm;
 use crate::algorithms::wasd::WasdParams;
 
@@ -157,6 +158,23 @@ fn climb(algorithm: &mut WasdAlgorithm, sets: &[SetSnapshot], groups: u64) -> us
   tier
 }
 
+/// An algorithm whose climb waits exactly `u` clean groups.
+///
+/// `u_min == u_max` pins `U(k)` to a constant and makes `rho` inert, which is
+/// what a test about the monitor or a version's reach needs: those measure
+/// something other than how the default prices a climb, so they must not move
+/// when that default changes.
+fn pinned_u(reach: Reach, u: u64) -> WasdAlgorithm {
+  WasdAlgorithm::with_reach_and_params(
+    reach,
+    WasdParams {
+      u_min: Some(u),
+      u_max: Some(u),
+      ..WasdParams::default()
+    },
+  )
+}
+
 #[test]
 fn the_exploration_climbs_one_tier_per_clean_group() {
   let sets = [set(1, true)];
@@ -184,11 +202,12 @@ fn the_depth_counts_only_the_streams_at_the_current_tier() {
   // rungs of the same set.
   climb(&mut algorithm, &sets, 2);
 
+  // Rungs below the one being served: qualities the algorithm has already
+  // rejected. They are not depth and do not downshift it. (Streams at the
+  // *next* rung are a different question - see the climb guard test below.)
   let elsewhere = [
     stream(1, track_at(1, 0), 7),
     stream(1, track_at(1, 0), 8),
-    stream(1, track_at(1, 3), 9),
-    stream(1, track_at(1, 3), 10),
     stream(1, track_at(1, 1), 11),
     stream(1, track_at(1, 1), 12),
   ];
@@ -196,7 +215,7 @@ fn the_depth_counts_only_the_streams_at_the_current_tier() {
   assert_eq!(
     tier_of(&selection, 1),
     3,
-    "six streams at qualities the algorithm has already rejected are not depth"
+    "streams at qualities the algorithm has already rejected are not depth"
   );
 
   // The same count at the tier being delivered is congestion, and the tier
@@ -208,29 +227,77 @@ fn the_depth_counts_only_the_streams_at_the_current_tier() {
   assert_eq!(tier_of(&selection, 1), 2);
 }
 
-/// A re-send is the relay's own doing. Counting it would let a downshift report
-/// the congestion it was meant to relieve, and the ladder would walk itself down
-/// on the strength of the relay's bookkeeping.
+/// The other half of a clean climb: the rung above must have no delivery of
+/// its own still open. An old stream there is not depth at the current tier,
+/// so it never calls for a downshift, but climbing beside it makes the new
+/// group's stream the second at that rung and the monitor reads the climb as
+/// congestion one sample later. Classic, which never resets the streams a
+/// downshift abandoned, hit this on every climb back to 1080p.
 #[test]
-fn a_resent_stream_is_not_depth() {
+fn a_climb_into_an_occupied_rung_is_held() {
   let sets = [set(1, true)];
   let mut algorithm = WasdAlgorithm::new();
   climb(&mut algorithm, &sets, 2);
-  let tier = 2;
 
-  let re_sends = [
-    resent(1, track_at(1, tier), 5),
-    resent(1, track_at(1, tier), 6),
-  ];
-  let selection = algorithm.decide(&input(&sets, &re_sends, DecisionReason::GroupBoundary, 30));
+  // An old delivery still open at tier 3, nothing at tier 2.
+  let stale = [stream(1, track_at(1, 3), 7)];
+  let selection = algorithm.decide(&input(&sets, &stale, DecisionReason::GroupBoundary, 30));
+  assert_eq!(
+    tier_of(&selection, 1),
+    2,
+    "the climb waits for the rung above to clear; this is not a downshift"
+  );
+
+  // It closes: the next clean boundary climbs.
+  let empty: Vec<StreamSnapshot> = Vec::new();
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 31));
   assert_eq!(
     tier_of(&selection, 1),
     3,
-    "the streams a downshift caused do not call for another one"
+    "the climb resumes when the rung above is clear"
+  );
+}
+
+/// A re-send is the relay's own doing. It is not depth — it must not call for
+/// the next downshift — and it is not a clean boundary either: the climb waits
+/// until the repair is over. The second half of this test is the rule that
+/// matters: without the veto, the boundary that arrives while the repaired
+/// group is still open buys the rung above and the ladder walks straight back
+/// into the congestion that caused the repair.
+#[test]
+fn a_resent_stream_is_not_depth_and_vetoes_the_climb() {
+  let sets = [set(1, true)];
+  let mut algorithm = WasdAlgorithm::new();
+  climb(&mut algorithm, &sets, 2);
+
+  let re_sends = [resent(1, track_at(1, 2), 5), resent(1, track_at(1, 2), 6)];
+  let selection = algorithm.decide(&input(&sets, &re_sends, DecisionReason::GroupBoundary, 30));
+  assert_eq!(
+    tier_of(&selection, 1),
+    2,
+    "the streams a downshift caused do not call for another one, and do not buy a climb"
   );
 
-  let fresh = [stream(1, track_at(1, 3), 5), stream(1, track_at(1, 3), 6)];
-  let selection = algorithm.decide(&input(&sets, &fresh, DecisionReason::GroupBoundary, 31));
+  // The same repair still open at the next boundary: still held.
+  let selection = algorithm.decide(&input(&sets, &re_sends, DecisionReason::GroupBoundary, 31));
+  assert_eq!(
+    tier_of(&selection, 1),
+    2,
+    "still repairing, still not clean"
+  );
+
+  // The repair is over: one clean boundary buys the rung (slow start).
+  let empty: Vec<StreamSnapshot> = Vec::new();
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 32));
+  assert_eq!(
+    tier_of(&selection, 1),
+    3,
+    "the climb resumes as soon as no repair is in flight"
+  );
+
+  // And the same two streams, fresh, at the tier now served, are congestion.
+  let fresh = [stream(1, track_at(1, 3), 33), stream(1, track_at(1, 3), 34)];
+  let selection = algorithm.decide(&input(&sets, &fresh, DecisionReason::GroupBoundary, 35));
   assert_eq!(
     tier_of(&selection, 1),
     2,
@@ -264,6 +331,75 @@ fn a_repair_in_flight_is_not_a_second_congestion() {
     tier_of(&selection, 1),
     1,
     "the repair does not call for the next step"
+  );
+}
+
+/// The veto is on the climb only. Real congestion at the tier still steps
+/// down while a repair is open: the repair is excluded from the depth, but it
+/// does not shield the fresh streams that are actually behind.
+#[test]
+fn a_repair_in_flight_does_not_block_a_real_downshift() {
+  let sets = [set(1, true)];
+  let mut algorithm = WasdAlgorithm::v2();
+  climb(&mut algorithm, &sets, 2);
+
+  // Congested boundary at tier 2: down to 1, and v2 requests a re-send.
+  let congested = deep_at(2);
+  let selection = algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 40));
+  assert_eq!(tier_of(&selection, 1), 1, "the first step");
+
+  // A repair still open at tier 1, next to two fresh streams at that tier.
+  // The fresh streams are depth; the repair is not.
+  let mixed = [
+    resent(1, track_at(1, 1), 41),
+    stream(1, track_at(1, 1), 42),
+    stream(1, track_at(1, 1), 43),
+  ];
+  let selection = algorithm.decide(&input(&sets, &mixed, DecisionReason::GroupBoundary, 44));
+  assert_eq!(
+    tier_of(&selection, 1),
+    0,
+    "two fresh streams behind are congestion even while a repair is open"
+  );
+}
+
+/// A repair breaks the clean streak, so the climb has to be bought again
+/// after it is over: the boundary samples that arrive while the repair is
+/// open are not evidence, and they must not be counted as though they were.
+#[test]
+fn a_repair_in_flight_breaks_the_clean_streak() {
+  let sets = [set(1, true)];
+  let mut algorithm = pinned_u(Reach::Newest, 2);
+
+  // One clean group, then congestion: tier 1 falls to 0, and the cautious
+  // climb starts from zero clean groups.
+  climb(&mut algorithm, &sets, 1);
+  let selection = algorithm.decide(&input(
+    &sets,
+    &deep_at(1),
+    DecisionReason::GroupBoundary,
+    10,
+  ));
+  assert_eq!(tier_of(&selection, 1), 0, "the exploration ends here");
+
+  let empty: Vec<StreamSnapshot> = Vec::new();
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 11));
+  assert_eq!(tier_of(&selection, 1), 0, "one clean group, U is two");
+
+  // A repair at the tier being served: not clean, so the streak restarts.
+  let repairs = [resent(1, track_at(1, 0), 12)];
+  let selection = algorithm.decide(&input(&sets, &repairs, DecisionReason::GroupBoundary, 13));
+  assert_eq!(tier_of(&selection, 1), 0, "a repair is not a clean read");
+
+  // Two clean boundaries after the repair: the first restarts the streak,
+  // the second completes it.
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 14));
+  assert_eq!(tier_of(&selection, 1), 0, "the streak restarted at one");
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 15));
+  assert_eq!(
+    tier_of(&selection, 1),
+    1,
+    "the climb resumes after the repair is over, not across it"
   );
 }
 
@@ -424,7 +560,7 @@ fn settle(algorithm: &mut WasdAlgorithm, sets: &[SetSnapshot], clean_groups: u64
 #[test]
 fn one_deep_reading_inside_a_group_is_not_enough() {
   let sets = [set(1, true)];
-  let mut algorithm = WasdAlgorithm::v3();
+  let mut algorithm = pinned_u(Reach::AllStaged, 5);
   settle(&mut algorithm, &sets, 5);
 
   let inside = deep_at(1);
@@ -459,7 +595,7 @@ fn one_deep_reading_inside_a_group_is_not_enough() {
 #[test]
 fn a_transient_mid_group_overlap_does_not_cost_the_climb_streak() {
   let sets = [set(1, true)];
-  let mut algorithm = WasdAlgorithm::v3();
+  let mut algorithm = pinned_u(Reach::AllStaged, 5);
   // Four clean boundaries after the fall: one short of the cautious five.
   settle(&mut algorithm, &sets, 4);
 
@@ -490,7 +626,7 @@ fn a_transient_mid_group_overlap_does_not_cost_the_climb_streak() {
 #[test]
 fn an_old_group_reading_is_never_a_boundary() {
   let sets = [set(1, true)];
-  let mut algorithm = WasdAlgorithm::new();
+  let mut algorithm = pinned_u(Reach::Nothing, 5);
   // Exploration climbs to tier 1 at group 0; a congested boundary at group
   // 10 falls back to tier 0; four clean boundaries (20..=23) and this
   // fifth (24) climb back to tier 1 with the streak reset.
@@ -544,7 +680,7 @@ fn an_old_group_reading_is_never_a_boundary() {
 #[test]
 fn the_monitor_rearms_after_it_fires() {
   let sets = [set(1, true)];
-  let mut algorithm = WasdAlgorithm::new();
+  let mut algorithm = pinned_u(Reach::Nothing, 5);
   settle(&mut algorithm, &sets, 10);
 
   // Two readings at the tier being served, and the monitor steps down.
@@ -661,41 +797,44 @@ fn the_cautious_streak_returns_after_the_exploration_is_over() {
   assert_eq!(tier_of(&selection, 1), 3);
 }
 
-/// U_min = ceil(B / G) is the floor of the cautious streak: the testbed's
-/// 1600 ms buffer over a 500 ms cadence gives 4, and at rho = 1.0 it
-/// dominates every step of a ladder whose relative bitrate jumps are all
-/// smaller than one.
+/// The floor is not derived from the subscriber's buffer any more. `U(k)` is
+/// the step's own price under the default rho, so a 1600 ms buffer over a
+/// 500 ms cadence grants no floor of four: at rho = 0.4 the 850 -> 1800 jump
+/// (112 %) costs ceil(1.118 / 0.4) = 3 clean groups.
 #[test]
-fn u_min_scales_with_subscriber_buffer_and_group_span() {
+fn the_default_floor_is_one_and_rho_prices_the_step() {
   let sets = [ladder_set(1, &[850, 1800, 3500, 6000], 1600, 500)];
   let mut algorithm = WasdAlgorithm::new();
   let empty: Vec<StreamSnapshot> = Vec::new();
 
-  // One clean group climbs to tier 1 while exploring; a congested boundary
-  // there ends the exploration and falls back to tier 0.
+  // Explore to tier 1, then meet congestion there: the exploration ends and
+  // the ladder falls back to tier 0.
   algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 0));
   let congested = [stream(1, track_at(1, 1), 1), stream(1, track_at(1, 1), 2)];
   algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 1));
 
-  // U(0) = max(4, ceil((1800 - 850) / 850 / 1.0)) = max(4, ceil(1.118)) =
-  // max(4, 2) = 4: the floor governs, so three clean groups are not enough.
-  for group in 2..5 {
+  // U(0) = max(1, ceil(1.118 / 0.4)) = 3: the buffer buys nothing here.
+  for group in 2..4 {
     let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, group));
-    assert_eq!(tier_of(&selection, 1), 0, "U_min = 4, not fewer");
+    assert_eq!(
+      tier_of(&selection, 1),
+      0,
+      "the step's three, not the buffer's four"
+    );
   }
-  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 5));
-  assert_eq!(tier_of(&selection, 1), 1, "the fourth clean group climbs");
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 4));
+  assert_eq!(tier_of(&selection, 1), 1, "the third clean group buys it");
 
-  // U(1) = max(4, ceil(0.944 / 1.0)) = 4 as well: the floor, not the step.
-  for group in 6..9 {
+  // U(1) = max(1, ceil(0.944 / 0.4)) = 3 as well.
+  for group in 5..7 {
     let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, group));
     assert_eq!(tier_of(&selection, 1), 1);
   }
-  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 9));
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 7));
   assert_eq!(
     tier_of(&selection, 1),
     2,
-    "and the next step waits four too"
+    "and the next step waits three too"
   );
 }
 
@@ -802,50 +941,30 @@ fn a_signalled_u_min_overrides_the_buffer_floor() {
   );
 }
 
-/// A zero in the `U_min` slot means "not signalled": the derived floor
-/// `ceil(B / G) = 4` stands. And when no one signalled and a clock is
-/// unknown - here a set whose first group has not closed, so no cadence -
-/// the written default of five governs.
+/// A zero in the `U_min` slot means "not signalled", so the operator's rail
+/// stands. There is no clock-derived fallback any more: the cadence here is
+/// unknown and it changes nothing. With the subscriber's rho signalled at
+/// 100 % the 850 -> 1800 jump costs ceil(1.118 / 1.0) = 2, and the default
+/// floor of one does not raise it.
 #[test]
-fn an_unsignalled_u_min_falls_back_to_the_clock_then_the_default() {
+fn a_zero_u_min_slot_falls_back_to_the_operator_rail() {
   let empty: Vec<StreamSnapshot> = Vec::new();
   let congested = [stream(1, track_at(1, 0), 0), stream(1, track_at(1, 0), 1)];
-
-  // Slot 0 zero: not signalled, so the clock answers: max(4, 2) = 4.
-  let sets = [SetSnapshot {
-    algorithm_params: vec![0, 100],
-    ..ladder_set(1, &[850, 1800, 3500, 6000], 1600, 500)
-  }];
-  let mut algorithm = WasdAlgorithm::new();
-  algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 0));
-  for group in 1..4 {
-    let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, group));
-    assert_eq!(tier_of(&selection, 1), 0, "the derived 4, not fewer");
-  }
-  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 4));
-  assert_eq!(
-    tier_of(&selection, 1),
-    1,
-    "ceil(1600 / 500) = 4 buys the jump"
-  );
-
-  // No cadence and no signal: the written UPSHIFT_GOP_STREAK of five.
   let sets = [SetSnapshot {
     algorithm_params: vec![0, 100],
     ..ladder_set(1, &[850, 1800, 3500, 6000], 1600, 0)
   }];
   let mut algorithm = WasdAlgorithm::new();
   algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 0));
-  for group in 1..5 {
-    let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, group));
-    assert_eq!(tier_of(&selection, 1), 0, "the written 5, not fewer");
-  }
-  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 5));
+
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 1));
   assert_eq!(
     tier_of(&selection, 1),
-    1,
-    "the unknown clock falls back to UPSHIFT_GOP_STREAK"
+    0,
+    "one clean group is not the step's two"
   );
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 2));
+  assert_eq!(tier_of(&selection, 1), 1, "the second clean group buys it");
 }
 
 /// With both slots signalled, slot 0 is the floor and the trailing one is
@@ -894,22 +1013,33 @@ fn u_min_and_rho_signalled_together_take_the_max() {
   assert_eq!(tier_of(&selection, 1), 1, "the eighth clean group buys it");
 }
 
-/// The operator's `wasd.umin` parses through the tuning: zero is unset and a
-/// positive count is the floor.
+/// The operator's rails parse through the tuning. Zero means "no rail",
+/// leaving the key out keeps the default floor of one, and `wasd.umax` is
+/// the cap (`0` or absent = uncapped).
 #[test]
-fn the_operator_tuning_parses_the_u_min_floor() {
+fn the_operator_tuning_parses_the_rails() {
   let tuned = crate::Tuning::from_pairs(["wasd.umin=6"]);
   assert_eq!(WasdParams::from_tuning(&tuned).u_min, Some(6));
 
-  let unset = crate::Tuning::from_pairs(["wasd.umin=0"]);
-  assert_eq!(WasdParams::from_tuning(&unset).u_min, None);
+  let no_floor = crate::Tuning::from_pairs(["wasd.umin=0"]);
+  assert_eq!(
+    WasdParams::from_tuning(&no_floor).u_min,
+    None,
+    "zero is no floor, not a default"
+  );
 
   let untouched = crate::Tuning::from_pairs(std::iter::empty::<&str>());
   assert_eq!(
     WasdParams::from_tuning(&untouched).u_min,
-    None,
-    "an untouched key keeps the derived horizon"
+    Some(1),
+    "an untouched key keeps the default floor"
   );
+  assert_eq!(WasdParams::from_tuning(&untouched).u_max, None);
+
+  let capped = crate::Tuning::from_pairs(["wasd.umax=8"]);
+  assert_eq!(WasdParams::from_tuning(&capped).u_max, Some(8));
+  let uncapped = crate::Tuning::from_pairs(["wasd.umax=0"]);
+  assert_eq!(WasdParams::from_tuning(&uncapped).u_max, None);
 }
 
 /// The operator's `wasd.umin` replaces the derived horizon for a subscriber
@@ -970,6 +1100,7 @@ fn non_uniform_ladder_requires_more_groups_for_larger_relative_jumps() {
   let mut algorithm = WasdAlgorithm::with_params(WasdParams {
     monitor_reads: 2,
     rho: 0.25,
+    u_min: Some(2),
     ..WasdParams::default()
   });
   let empty: Vec<StreamSnapshot> = Vec::new();
@@ -1109,7 +1240,7 @@ fn exhausted_remaining_buffer_clamps_to_one_millisecond_not_never() {
 #[test]
 fn a_downshift_inside_a_group_undoes_the_upshift_recorded_at_its_start() {
   let sets = [set_with_buffer(1, 800)];
-  let mut algorithm = WasdAlgorithm::v2();
+  let mut algorithm = pinned_u(Reach::Newest, 5);
   settle(&mut algorithm, &sets, 5);
 
   // The cautious streak buys one rung: group 34 opens clean and is served one
@@ -1148,4 +1279,56 @@ fn a_downshift_inside_a_group_undoes_the_upshift_recorded_at_its_start() {
     1,
     "clear_streak was zeroed by the congestion: one clean group does not undo the fall"
   );
+}
+
+/// `u_min == u_max` pins `U(k)` to that constant, so the climb stops
+/// depending on rho: the deliberate "no rho" setting, available without a
+/// separate switch.
+#[test]
+fn u_min_equal_to_u_max_pins_the_climb_and_makes_rho_inert() {
+  let sets = [ladder_set(1, &[850, 1800, 3500, 6000], 0, 0)];
+  let empty: Vec<StreamSnapshot> = Vec::new();
+  let congested = [stream(1, track_at(1, 0), 0), stream(1, track_at(1, 0), 1)];
+
+  for rho in [0.05_f64, 1.0] {
+    let mut algorithm = WasdAlgorithm::with_params(WasdParams {
+      rho,
+      u_min: Some(4),
+      u_max: Some(4),
+      ..WasdParams::default()
+    });
+    algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 0));
+    for group in 1..4 {
+      let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, group));
+      assert_eq!(tier_of(&selection, 1), 0, "pinned to four at rho {rho}");
+    }
+    let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 4));
+    assert_eq!(tier_of(&selection, 1), 1, "four clean groups at rho {rho}");
+  }
+}
+
+/// The cap bounds a very cautious rho: at rho = 0.05 the 850 -> 1800 jump
+/// prices at ceil(1.118 / 0.05) = 23 clean groups, which on a short trace is
+/// never; `wasd.umax` brings it back to a climbable six.
+#[test]
+fn u_max_caps_a_very_cautious_rho() {
+  let sets = [ladder_set(1, &[850, 1800, 3500, 6000], 0, 0)];
+  let empty: Vec<StreamSnapshot> = Vec::new();
+  let congested = [stream(1, track_at(1, 0), 0), stream(1, track_at(1, 0), 1)];
+  let mut algorithm = WasdAlgorithm::with_params(WasdParams {
+    rho: 0.05,
+    u_max: Some(6),
+    ..WasdParams::default()
+  });
+  algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 0));
+  for group in 1..6 {
+    let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, group));
+    assert_eq!(
+      tier_of(&selection, 1),
+      0,
+      "the cap is six, not twenty-three"
+    );
+  }
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 6));
+  assert_eq!(tier_of(&selection, 1), 1, "the sixth clean group buys it");
 }

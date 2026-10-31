@@ -121,6 +121,24 @@ impl LadderState {
   /// computed for this step - the subscriber's buffer-depth floored against
   /// the step's relative bitrate jump - and the cautious climb counts on it
   /// instead of a constant.
+  ///
+  /// `resent_in_flight` is whether a repair the previous decision ordered is
+  /// still open. It does not change the depth (the host leaves re-sent streams
+  /// out, so a repair is never congestion), but it decides whether a clean
+  /// boundary is *evidence*. A group was dumped from the rung above and has
+  /// not finished there yet; until it has, the pipeline has not proven it can
+  /// carry the tier being served, so the climb holds and the clean streak
+  /// breaks. Downshifts are unaffected: real depth still steps down at a
+  /// boundary, repair or no repair.
+  ///
+  /// `target_occupied` is whether the rung one step above still has an open
+  /// stream of its own. That stream is not depth at the current tier, so it
+  /// never calls for a downshift, but climbing while it is open puts the new
+  /// group's stream beside it, and the monitor reads the pair as congestion
+  /// one sample later. Classic, which never resets the streams a downshift
+  /// abandoned, hit this on every climb back to 1080p; the guard is common to
+  /// all versions and, like the repair veto, holds the climb and restarts the
+  /// clean streak until the rung above is clear.
   pub(crate) fn on_sample(
     &mut self,
     depth: u64,
@@ -128,6 +146,8 @@ impl LadderState {
     may_act: bool,
     max_index: usize,
     upshift_streak_needed: u64,
+    resent_in_flight: bool,
+    target_occupied: bool,
   ) -> Step {
     // Strictly monotonic boundary detection: only a group newer than the
     // newest one seen opens a boundary. An older group's tail object is a
@@ -146,6 +166,23 @@ impl LadderState {
         // deep sample before the boundary can never carry across it — or
         // across the end of exploration — into a spurious monitor fire.
         self.monitor_streak = 0;
+        // A repair is still open: the depth excludes it (so this is not
+        // congestion), but the boundary has not proved the delivery clean
+        // either. Climbing here is how the ladder walked back onto a rung
+        // whose overtaken group was still being repaired — 900 -> 1080 at
+        // t=31.99 in PROFILE_LANCSD1, 40 ms before the same two streams
+        // pushed it back down. Hold, and restart the streak: a climb has to
+        // be bought after the repair is over, not across it.
+        //
+        // The rung above is the same question from the other side: an old
+        // stream still open there is not depth, but it is not a clear climb
+        // target either. On classic this was the dominant flap — 900 -> 1080
+        // with three old 1080p streams still draining, reverted 27-51 ms
+        // later because the new stream made it four.
+        if resent_in_flight || target_occupied {
+          self.clear_streak = 0;
+          return Step::Held;
+        }
         self.clear_streak += 1;
         let needed = if self.exploring {
           SLOW_START_UPSHIFT_STREAK

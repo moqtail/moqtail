@@ -28,6 +28,7 @@ use moqtail::model::control::fetch_ok::FetchOk;
 use moqtail::model::control::request_error::RequestError;
 use moqtail::model::data::constant::ObjectForwardingPreference;
 use moqtail::model::data::fetch_header::FetchHeader;
+use moqtail::model::data::fetch_object::EndOfRangeKind;
 use moqtail::model::data::fetch_object::FetchObjectPayload;
 use moqtail::model::error::RequestErrorCode;
 use moqtail::model::error::StreamResetCode;
@@ -731,27 +732,229 @@ async fn send_upstream_fetch_for_range(
   Some((relay_request_id, publisher, upstream_rx, response_rx))
 }
 
-/// What to ask upstream for to fill the groups `first..=last`, which the cache does
-/// not hold, for a request of `start..=end`. Whatever comes back is forwarded as it
-/// arrives, so it must not reach outside the request.
+/// The part of the groups `first..=last` to ask upstream for, for a request of
+/// `start..=end`. Whatever comes back is forwarded as it arrives, so it must not reach
+/// outside the request.
 ///
 /// Every group the request covers is whole except its own first and last, so the
 /// gap's whole groups are clipped to the request. For a request {5,3}..{9,2}: a gap of
 /// group 5 is {5,3} to the end of group 5, a gap of group 7 is all of group 7, a gap
 /// of group 9 is {9,0}..{9,2}, and a gap of all of them is the request itself.
-fn gap_filter(first: u64, last: u64, start: &Location, end: &Location) -> LocationFilter {
-  let gap_start = Location::new(first, 0).max(start.clone());
-  let gap_end = Location::new(last, u64::MAX).min(end.clone());
-  if gap_end.object == u64::MAX {
+fn gap_range(first: u64, last: u64, start: &Location, end: &Location) -> (Location, Location) {
+  (
+    Location::new(first, 0).max(start.clone()),
+    Location::new(last, u64::MAX).min(end.clone()),
+  )
+}
+
+/// The Object IDs of `group` a request of `start..=end` wants, clipped the same way.
+fn objects_wanted(group: u64, start: &Location, end: &Location) -> (u64, u64) {
+  let (lo, hi) = gap_range(group, group, start, end);
+  (lo.object, hi.object)
+}
+
+/// The Location filter selecting `start..=end`.
+fn range_filter(start: &Location, end: &Location) -> LocationFilter {
+  if end.object == u64::MAX {
     LocationFilter::AbsoluteStartGroupEnd {
-      start: gap_start,
-      end_group: last,
+      start: start.clone(),
+      end_group: end.group,
     }
   } else {
     LocationFilter::AbsoluteRange {
-      start: gap_start,
-      end: gap_end,
+      start: start.clone(),
+      end: end.clone(),
     }
+  }
+}
+
+/// The Location after `location`, if there is one.
+fn after(location: &Location) -> Option<Location> {
+  match location.object.checked_add(1) {
+    Some(object) => Some(Location::new(location.group, object)),
+    None => location.group.checked_add(1).map(|g| Location::new(g, 0)),
+  }
+}
+
+/// The Location before `location`, if there is one.
+fn before(location: &Location) -> Option<Location> {
+  match location.object.checked_sub(1) {
+    Some(object) => Some(Location::new(location.group, object)),
+    None => location
+      .group
+      .checked_sub(1)
+      .map(|g| Location::new(g, u64::MAX)),
+  }
+}
+
+/// An inclusive range of Locations.
+type Span = (Location, Location);
+
+/// What an upstream FETCH response shows does not exist, worked out as its Objects
+/// and End of Range markers arrive.
+///
+/// A FETCH response carries nothing for a Location it has no Object for. So every
+/// Location it passes over is absent, unless a marker says those Locations are
+/// unknown or timed out. The Locations after the last one it carries count only once
+/// the stream has closed cleanly after FETCH_OK said where the response ends.
+///
+/// Entries come in delivery order: by Location, or, for a descending FETCH across
+/// groups, in whole groups highest first, the Object IDs in each ascending.
+struct UpstreamCoverage {
+  /// The first and last Locations the response can carry.
+  start: Location,
+  end: Location,
+  descending: bool,
+  accepted: bool,
+  /// The last Object or marker that arrived.
+  last: Option<Location>,
+}
+
+impl UpstreamCoverage {
+  fn new(start: Location, end: Location, group_order: GroupOrder) -> Self {
+    let descending = group_order == GroupOrder::Descending && start.group != end.group;
+    // A descending FETCH across groups carries each of them whole.
+    let start = if descending {
+      Location::new(start.group, 0)
+    } else {
+      start
+    };
+    Self {
+      start,
+      end,
+      descending,
+      accepted: false,
+      last: None,
+    }
+  }
+
+  /// The publisher's End Location: the response may end short of what was asked for,
+  /// at the Largest Object, whose group can still be growing.
+  fn accepted(&mut self, end_location: &Location) {
+    if *end_location < self.end {
+      self.end = end_location.clone();
+    }
+    self.accepted = true;
+  }
+
+  fn object(&mut self, location: &Location) -> Vec<Span> {
+    let spans = self.between(location);
+    self.last = Some(location.clone());
+    spans
+  }
+
+  /// A marker covers the Locations since the last entry, and its own.
+  fn marker(&mut self, kind: EndOfRangeKind, location: &Location) -> Vec<Span> {
+    let mut spans = self.between(location);
+    spans.push((location.clone(), location.clone()));
+    self.last = Some(location.clone());
+    if kind == EndOfRangeKind::NonExistent {
+      self.clip(spans)
+    } else {
+      Vec::new()
+    }
+  }
+
+  /// The Locations after the last entry, once the response is over.
+  fn finish(self, complete: bool) -> Vec<Span> {
+    if !(complete && self.accepted) {
+      return Vec::new();
+    }
+    let mut spans = Vec::new();
+    match (&self.last, self.descending) {
+      (None, _) => spans.push((self.start.clone(), self.end.clone())),
+      (Some(last), false) => {
+        if let Some(next) = after(last) {
+          spans.push((next, self.end.clone()));
+        }
+      }
+      (Some(last), true) => {
+        // The rest of the last group, then every lower group left.
+        if last.object < self.group_end(last.group) {
+          spans.push((
+            Location::new(last.group, last.object + 1),
+            Location::new(last.group, self.group_end(last.group)),
+          ));
+        }
+        if self.start.group < last.group {
+          spans.push((self.start.clone(), Location::new(last.group - 1, u64::MAX)));
+        }
+      }
+    }
+    self.clip(spans)
+  }
+
+  /// The last Object ID of `group` the response can carry.
+  fn group_end(&self, group: u64) -> u64 {
+    if group == self.end.group {
+      self.end.object
+    } else {
+      u64::MAX
+    }
+  }
+
+  /// The Locations passed over between the last entry and `to`.
+  fn between(&self, to: &Location) -> Vec<Span> {
+    let mut spans = Vec::new();
+    if !self.descending {
+      let from = match &self.last {
+        Some(last) => after(last),
+        None => Some(self.start.clone()),
+      };
+      if let (Some(from), Some(until)) = (from, before(to)) {
+        spans.push((from, until));
+      }
+      return self.clip(spans);
+    }
+
+    let head_of_to = |spans: &mut Vec<Span>| {
+      if to.object > 0 {
+        spans.push((
+          Location::new(to.group, 0),
+          Location::new(to.group, to.object - 1),
+        ));
+      }
+    };
+    match &self.last {
+      Some(last) if last.group == to.group => {
+        if let (Some(from), Some(until)) = (after(last), before(to)) {
+          spans.push((from, until));
+        }
+      }
+      Some(last) => {
+        // The rest of the last group, the groups skipped, the start of this one.
+        if last.object < self.group_end(last.group) {
+          spans.push((
+            Location::new(last.group, last.object + 1),
+            Location::new(last.group, self.group_end(last.group)),
+          ));
+        }
+        if to.group + 1 < last.group {
+          spans.push((
+            Location::new(to.group + 1, 0),
+            Location::new(last.group - 1, u64::MAX),
+          ));
+        }
+        head_of_to(&mut spans);
+      }
+      None => {
+        // The groups above this one, from the response's highest down.
+        if to.group < self.end.group {
+          spans.push((Location::new(to.group + 1, 0), self.end.clone()));
+        }
+        head_of_to(&mut spans);
+      }
+    }
+    self.clip(spans)
+  }
+
+  /// Keeps only the non-empty parts of `spans` the response can carry.
+  fn clip(&self, spans: Vec<Span>) -> Vec<Span> {
+    spans
+      .into_iter()
+      .map(|(from, to)| (from.max(self.start.clone()), to.min(self.end.clone())))
+      .filter(|(from, to)| from <= to)
+      .collect()
   }
 }
 
@@ -875,7 +1078,6 @@ pub(crate) async fn serve_fetch_stream(
     }
   };
 
-  let mut object_count = 0;
   let mut upstream_gap_count: u64 = 0;
   let mut send_stream = None;
   let mut stop_reason = FetchStop::Running;
@@ -911,30 +1113,25 @@ pub(crate) async fn serve_fetch_stream(
 
     // A fetch already issued to learn the End Location covers this whole range and
     // its Objects are on their way, so the cache is not consulted for it: reading
-    // both would deliver some of them twice.
+    // both would deliver some of them twice. Otherwise a group is served from the
+    // cache only if the cache accounts for every Location of it the range wants.
     let cached = if pending_upstream.is_some() {
       None
     } else {
-      cache.get_group(group_id).await
+      let (lo, hi) = objects_wanted(group_id, &start_location, &end_location);
+      cache.objects_if_complete(group_id, lo, hi).await
     };
 
-    if let Some(group_objects) = cached {
+    if let Some(objects) = cached {
       // === CACHE HIT ===
-      let objects = group_objects.read().await;
       for object in objects.iter() {
-        if group_id == start_location.group && object.object_id < start_location.object {
-          continue;
-        }
-        if group_id == end_location.group && object.object_id > end_location.object {
-          break;
-        }
         // Skipped before the stream opens or the delta context moves on: the next
         // Object written is encoded against the last one written.
         if !filter.matches(filter_fields(object)) {
           continue;
         }
 
-        if object_count == 0 {
+        if send_stream.is_none() {
           send_stream = match stream_fn(client.clone(), &stream_id).await {
             Some(ss) => Some(ss),
             None => {
@@ -986,22 +1183,24 @@ pub(crate) async fn serve_fetch_stream(
               .await;
           }
         }
-
-        object_count += 1;
       }
       next_group = next_after(group_id, group_id);
     } else {
       // === CACHE MISS ===
       // Scan ahead, in the direction of delivery, for the contiguous gap
-      // [gap_start .. gap_end]
+      // [gap_start .. gap_end] of groups the cache does not account for.
+      let complete = async |group: u64| {
+        let (lo, hi) = objects_wanted(group, &start_location, &end_location);
+        cache.objects_if_complete(group, lo, hi).await.is_some()
+      };
       let mut gap_start = group_id;
       let mut gap_end = group_id;
       if descending {
-        while gap_start > start_location.group && cache.get_group(gap_start - 1).await.is_none() {
+        while gap_start > start_location.group && !complete(gap_start - 1).await {
           gap_start -= 1;
         }
       } else {
-        while gap_end < end_location.group && cache.get_group(gap_end + 1).await.is_none() {
+        while gap_end < end_location.group && !complete(gap_end + 1).await {
           gap_end += 1;
         }
       }
@@ -1024,35 +1223,93 @@ pub(crate) async fn serve_fetch_stream(
         Some(pending) => {
           gap_start = start_location.group;
           gap_end = end_location.group;
-          Some((pending.relay_request_id, pending.publisher, pending.rx))
+          let coverage =
+            UpstreamCoverage::new(start_location.clone(), end_location.clone(), group_order);
+          Some((
+            pending.relay_request_id,
+            pending.publisher,
+            pending.rx,
+            coverage,
+          ))
         }
         None => {
-          let gap = gap_filter(gap_start, gap_end, &start_location, &end_location);
+          let (start, end) = gap_range(gap_start, gap_end, &start_location, &end_location);
+          let gap = range_filter(&start, &end);
           send_upstream_fetch_for_range(&client, &context, &track, gap, group_order)
             .await
-            .map(|(request_id, publisher, rx, _)| (request_id, publisher, rx))
+            .map(|(request_id, publisher, rx, _)| {
+              let coverage = UpstreamCoverage::new(start, end, group_order);
+              (request_id, publisher, rx, coverage)
+            })
         }
       };
 
-      if let Some((relay_request_id, upstream_publisher, mut rx)) = upstream_rx {
+      if let Some((relay_request_id, upstream_publisher, mut rx, mut coverage)) = upstream_rx {
         let timeout = context.server_config.upstream_fetch_timeout;
+        let mark_absent = |spans: Vec<Span>| {
+          for (from, to) in spans {
+            cache.mark_absent(from, to);
+          }
+        };
+        // Whether the publisher delivered all it said it would.
+        let mut complete = false;
         loop {
           tokio::select! {
             result = tokio::time::timeout(timeout, rx.recv()) => {
               match result {
                 // The downstream End Location is already settled by the time a gap
-                // is filled, so this only gets logged.
+                // is filled; the publisher's says how far its response reaches.
                 Ok(Some(UpstreamFetchEvent::Accepted { end_location })) => {
                   trace!(
                     "Upstream FETCH {} for groups {}..{} accepted, end location {:?}",
                     relay_request_id, gap_start, gap_end, end_location
                   );
+                  coverage.accepted(&end_location);
+                }
+                Ok(Some(UpstreamFetchEvent::EndOfRange { kind, location })) => {
+                  mark_absent(coverage.marker(kind, &location));
+                  if send_stream.is_none() {
+                    send_stream = match stream_fn(client.clone(), &stream_id).await {
+                      Some(ss) => Some(ss),
+                      None => {
+                        return Err(TerminationCode::InternalError);
+                      }
+                    };
+                  }
+                  let marker = moqtail::model::data::fetch_object::FetchObject::EndOfRange {
+                    kind,
+                    group_id: location.group,
+                    object_id: location.object,
+                  };
+                  let serialized = match marker.serialize(fetch_prev_ctx.as_ref(), group_order) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                      error!("handle_fetch_messages | Error serializing marker: {:?}", e);
+                      return Err(TerminationCode::InternalError);
+                    }
+                  };
+                  fetch_prev_ctx = Some(marker.next_context(fetch_prev_ctx.as_ref()));
+                  if let Err(e) = client
+                    .write_stream_object(
+                      &stream_id,
+                      location.object,
+                      serialized,
+                      send_stream.as_ref().cloned(),
+                    )
+                    .await
+                  {
+                    error!("handle_fetch_messages | Error writing marker to stream: {:?}", e);
+                    return Err(TerminationCode::InternalError);
+                  }
                 }
                 Ok(Some(UpstreamFetchEvent::Object(object))) => {
+                  mark_absent(
+                    coverage.object(&Location::new(object.group_id, object.object_id)),
+                  );
                   if !filter.matches(filter_fields(&object)) {
                     continue;
                   }
-                  if object_count == 0 {
+                  if send_stream.is_none() {
                     send_stream = match stream_fn(client.clone(), &stream_id).await {
                       Some(ss) => Some(ss),
                       None => {
@@ -1110,8 +1367,6 @@ pub(crate) async fn serve_fetch_stream(
                         .await;
                     }
                   }
-
-                  object_count += 1;
                 }
                 Ok(Some(UpstreamFetchEvent::MalformedTrack)) => {
                   warn!(
@@ -1133,6 +1388,7 @@ pub(crate) async fn serve_fetch_stream(
                   break;
                 }
                 Ok(Some(UpstreamFetchEvent::StreamClosed)) => {
+                  complete = true;
                   break;
                 }
                 Ok(Some(UpstreamFetchEvent::Error(e))) => {
@@ -1164,6 +1420,11 @@ pub(crate) async fn serve_fetch_stream(
               break;
             }
           }
+        }
+
+        // A malformed response is not to be believed about anything.
+        if stop_reason != FetchStop::MalformedTrack {
+          mark_absent(coverage.finish(complete));
         }
 
         // Clean up upstream fetch state
@@ -1222,7 +1483,7 @@ pub(crate) async fn serve_fetch_stream(
       drop(stream);
       let _ = client.release_stream(&stream_id).await;
     }
-  } else if object_count == 0 {
+  } else if send_stream.is_none() {
     // Range is valid but empty: FETCH_OK was already sent on the request
     // stream, so just open the data stream, write the header, and FIN.
     info!(
@@ -1263,8 +1524,8 @@ pub(crate) async fn serve_fetch_stream(
 #[cfg(test)]
 mod tests {
   use super::{
-    FetchRangeError, concrete_end_location, empty_range_outcome, gap_filter, local_state_answers,
-    resolve_fetch_range, unresolved_fetch_range,
+    FetchRangeError, concrete_end_location, empty_range_outcome, gap_range, local_state_answers,
+    range_filter, resolve_fetch_range, unresolved_fetch_range,
   };
   use moqtail::model::common::location::Location;
   use moqtail::model::common::reason_phrase::ReasonPhrase;
@@ -1512,21 +1773,115 @@ mod tests {
   #[test]
   fn a_gap_is_asked_for_only_as_far_as_the_request_reaches() {
     let (start, end) = (loc(5, 3), loc(9, 2));
-    let to_group_end =
-      |start: Location, end_group: u64| LocationFilter::AbsoluteStartGroupEnd { start, end_group };
+    let gap = |first, last| gap_range(first, last, &start, &end);
 
     // The request's first group starts at its Start Location.
-    assert_eq!(gap_filter(5, 5, &start, &end), to_group_end(loc(5, 3), 5));
+    assert_eq!(gap(5, 5), (loc(5, 3), loc(5, u64::MAX)));
     // A group inside the request is whole.
-    assert_eq!(gap_filter(7, 7, &start, &end), to_group_end(loc(7, 0), 7));
+    assert_eq!(gap(7, 7), (loc(7, 0), loc(7, u64::MAX)));
     // The request's last group stops at its End Location.
-    assert_eq!(gap_filter(9, 9, &start, &end), range(loc(9, 0), loc(9, 2)));
+    assert_eq!(gap(9, 9), (loc(9, 0), loc(9, 2)));
     // A gap across the whole request is the request.
-    assert_eq!(gap_filter(5, 9, &start, &end), range(loc(5, 3), loc(9, 2)));
-    // A request that ends at the end of its last group asks for whole groups.
+    assert_eq!(gap(5, 9), (loc(5, 3), loc(9, 2)));
+  }
+
+  #[test]
+  fn a_range_ending_with_its_last_group_is_asked_for_by_group() {
     assert_eq!(
-      gap_filter(7, 9, &start, &loc(9, u64::MAX)),
-      to_group_end(loc(7, 0), 9)
+      range_filter(&loc(7, 0), &loc(9, u64::MAX)),
+      LocationFilter::AbsoluteStartGroupEnd {
+        start: loc(7, 0),
+        end_group: 9,
+      }
     );
+    assert_eq!(
+      range_filter(&loc(9, 0), &loc(9, 2)),
+      range(loc(9, 0), loc(9, 2))
+    );
+  }
+
+  mod coverage {
+    use super::super::{EndOfRangeKind, UpstreamCoverage};
+    use super::loc;
+    use moqtail::model::control::constant::GroupOrder;
+
+    const MAX: u64 = u64::MAX;
+
+    #[test]
+    fn what_an_ascending_response_passes_over_is_absent() {
+      let mut c = UpstreamCoverage::new(loc(1, 2), loc(3, 4), GroupOrder::Ascending);
+      c.accepted(&loc(3, 4));
+      // From the start up to the first Object.
+      assert_eq!(c.object(&loc(1, 5)), [(loc(1, 2), loc(1, 4))]);
+      // Consecutive Objects leave nothing between them.
+      assert_eq!(c.object(&loc(1, 6)), []);
+      // The rest of group 1 and all of group 2.
+      assert_eq!(c.object(&loc(3, 0)), [(loc(1, 7), loc(2, MAX))]);
+      // After the last Object, up to the End Location.
+      assert_eq!(c.finish(true), [(loc(3, 1), loc(3, 4))]);
+    }
+
+    #[test]
+    fn the_end_of_a_response_counts_only_after_fetch_ok_and_a_clean_close() {
+      let mut cut = UpstreamCoverage::new(loc(0, 0), loc(2, MAX), GroupOrder::Ascending);
+      cut.accepted(&loc(2, 5));
+      cut.object(&loc(0, 0));
+      assert_eq!(cut.finish(false), []);
+
+      let mut unanswered = UpstreamCoverage::new(loc(0, 0), loc(2, MAX), GroupOrder::Ascending);
+      unanswered.object(&loc(0, 0));
+      assert_eq!(unanswered.finish(true), []);
+    }
+
+    #[test]
+    fn the_publishers_end_location_bounds_what_is_absent() {
+      let mut c = UpstreamCoverage::new(loc(0, 0), loc(5, MAX), GroupOrder::Ascending);
+      // The Largest Object is {1,3}: anything after it may still be published.
+      c.accepted(&loc(1, 3));
+      c.object(&loc(1, 0));
+      assert_eq!(c.finish(true), [(loc(1, 1), loc(1, 3))]);
+    }
+
+    #[test]
+    fn an_empty_response_shows_the_whole_range_absent() {
+      let mut c = UpstreamCoverage::new(loc(4, 1), loc(6, 2), GroupOrder::Ascending);
+      c.accepted(&loc(6, 2));
+      assert_eq!(c.finish(true), [(loc(4, 1), loc(6, 2))]);
+    }
+
+    #[test]
+    fn only_a_non_existent_marker_shows_its_range_absent() {
+      let mut c = UpstreamCoverage::new(loc(0, 0), loc(9, MAX), GroupOrder::Ascending);
+      c.object(&loc(2, 0));
+      assert_eq!(c.marker(EndOfRangeKind::Unknown, &loc(2, 5)), []);
+      // Counted from after the unknown marker, not from {2,0}.
+      assert_eq!(c.object(&loc(2, 7)), [(loc(2, 6), loc(2, 6))]);
+      assert_eq!(c.marker(EndOfRangeKind::TimedOut, &loc(3, 1)), []);
+      assert_eq!(
+        c.marker(EndOfRangeKind::NonExistent, &loc(3, 4)),
+        [(loc(3, 2), loc(3, 3)), (loc(3, 4), loc(3, 4))]
+      );
+    }
+
+    #[test]
+    fn a_descending_response_across_groups_covers_them_whole() {
+      // Asked for {1,2}..{3,1}: groups 3, 2 and 1 come whole, highest first, with
+      // group 3 only as far as the End Location.
+      let mut c = UpstreamCoverage::new(loc(1, 2), loc(3, 1), GroupOrder::Descending);
+      c.accepted(&loc(3, 1));
+      assert_eq!(c.object(&loc(3, 1)), [(loc(3, 0), loc(3, 0))]);
+      // Group 3 ends at the End Location, so nothing of it is left; group 2 is
+      // skipped entirely, and group 1 starts at its object 0.
+      assert_eq!(c.object(&loc(1, 0)), [(loc(2, 0), loc(2, MAX))]);
+      assert_eq!(c.finish(true), [(loc(1, 1), loc(1, MAX))]);
+    }
+
+    #[test]
+    fn a_descending_response_in_one_group_is_by_location() {
+      let mut c = UpstreamCoverage::new(loc(4, 2), loc(4, 6), GroupOrder::Descending);
+      c.accepted(&loc(4, 6));
+      assert_eq!(c.object(&loc(4, 4)), [(loc(4, 2), loc(4, 3))]);
+      assert_eq!(c.finish(true), [(loc(4, 5), loc(4, 6))]);
+    }
   }
 }

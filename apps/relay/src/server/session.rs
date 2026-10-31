@@ -29,7 +29,7 @@ use moqtail::transport::{
     TransportConnection, TransportConnectionError, TransportRecvStream, TransportSendStream,
   },
   control_stream_handler::ControlStreamHandler,
-  data_stream_handler::{HeaderInfo, RecvDataStream},
+  data_stream_handler::{DataStreamItem, HeaderInfo, RecvDataStream},
 };
 use std::{
   collections::HashMap,
@@ -572,10 +572,23 @@ impl Session {
     let mut object_count = 0;
 
     loop {
-      let next = stream_handler.next_object().await;
+      let next = stream_handler.next_item().await;
 
       match next {
-        (handler, Some(object)) => {
+        // Only a fetch stream carries these. The relay passes them on to whatever
+        // waits on the FETCH it sent.
+        (handler, Some(DataStreamItem::EndOfRange { kind, location })) => {
+          stream_handler = handler;
+          if upstream_sender.is_none() {
+            upstream_sender = Self::upstream_fetch_sender(&context, handler).await;
+          }
+          if let Some(ref sender) = upstream_sender {
+            let _ = sender
+              .send(super::session_context::UpstreamFetchEvent::EndOfRange { kind, location })
+              .await;
+          }
+        }
+        (handler, Some(DataStreamItem::Object(object))) => {
           // Handle the object
           stream_handler = handler;
 
@@ -708,15 +721,8 @@ impl Session {
           );
 
           // Resolve an empty FETCH stream's sender from its parsed header.
-          if upstream_sender.is_none()
-            && let Some(HeaderInfo::Fetch { header, .. }) = handler.get_header_info().await
-          {
-            upstream_sender = context
-              .upstream_fetch_senders
-              .read()
-              .await
-              .get(&header.request_id)
-              .cloned();
+          if upstream_sender.is_none() {
+            upstream_sender = Self::upstream_fetch_sender(&context, handler).await;
           }
 
           // A relay-initiated fetch ends when its stream does. Without this the loop
@@ -724,6 +730,11 @@ impl Session {
           if let Some(ref sender) = upstream_sender {
             let event = if handler.is_malformed_track() {
               super::session_context::UpstreamFetchEvent::MalformedTrack
+            } else if handler.was_aborted() {
+              // Not all of the range arrived, which must not be taken for the end of it.
+              super::session_context::UpstreamFetchEvent::Error(
+                "fetch stream ended without its FIN".to_string(),
+              )
             } else {
               super::session_context::UpstreamFetchEvent::StreamClosed
             };
@@ -767,6 +778,23 @@ impl Session {
     }
 
     Ok(())
+  }
+
+  /// The channel to whatever waits on the upstream FETCH a fetch stream answers, if
+  /// the stream is one.
+  async fn upstream_fetch_sender(
+    context: &Arc<SessionContext>,
+    handler: &RecvDataStream,
+  ) -> Option<tokio::sync::mpsc::Sender<super::session_context::UpstreamFetchEvent>> {
+    let Some(HeaderInfo::Fetch { header, .. }) = handler.get_header_info().await else {
+      return None;
+    };
+    context
+      .upstream_fetch_senders
+      .read()
+      .await
+      .get(&header.request_id)
+      .cloned()
   }
 
   pub(crate) async fn get_next_relay_request_id(relay_next_request_id: Arc<AtomicU64>) -> u64 {

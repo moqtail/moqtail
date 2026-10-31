@@ -53,6 +53,9 @@ async fn main() -> Result<(), anyhow::Error> {
     fetch_markers: cli.fetch_end_of_range.clone(),
     end_of_group_objects: cli.end_of_group_objects,
     end_of_track_object: cli.end_of_track_object,
+    reset_streams_at: cli.reset_stream_at.clone(),
+    dropped_datagrams: cli.drop_datagram.clone(),
+    gap_properties: !cli.no_gap_properties,
   };
 
   match cli.command {

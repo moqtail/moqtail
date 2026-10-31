@@ -13,10 +13,11 @@
 // limitations under the License.
 
 use crate::filter_spec::{
-  FetchMarkerSpec, ObjectPropertySpec, parse_fetch_end_of_range, parse_object_property,
-  parse_range_filter, parse_track_property,
+  FetchMarkerSpec, ObjectPropertySpec, parse_fetch_end_of_range, parse_location,
+  parse_object_property, parse_range_filter, parse_track_property,
 };
 use clap::{Parser, ValueEnum};
+use moqtail::model::common::location::Location;
 use moqtail::model::control::constant::{GroupOrder, SwitchMode};
 use moqtail::model::parameter::message_parameter::MessageParameter;
 use moqtail::model::property::track_property::TrackProperty;
@@ -206,6 +207,23 @@ pub struct Cli {
   /// TYPE=VALUE with TYPE even; repeatable (publish only). Example: 0x3c=1
   #[arg(long, value_parser = parse_track_property)]
   pub track_property: Vec<TrackProperty>,
+
+  /// Reset the stream an Object would go on when the publisher reaches it, as G.O,
+  /// so that Object and the rest of its subgroup never arrive live; repeatable
+  /// (publish and publish-namespace). A FETCH still serves them.
+  #[arg(long, value_parser = parse_location)]
+  pub reset_stream_at: Vec<Location>,
+
+  /// Do not send the datagram for this Object, as G.O; repeatable (publish and
+  /// publish-namespace). A FETCH still serves it.
+  #[arg(long, value_parser = parse_location)]
+  pub drop_datagram: Vec<Location>,
+
+  /// Leave out the Prior Group and Object ID Gap properties, so the gaps
+  /// --group-id-step and --object-id-step leave go unsignalled (publish and
+  /// publish-namespace).
+  #[arg(long, default_value_t = false)]
+  pub no_gap_properties: bool,
 
   /// Send an End of Group object after each group's last Object (publish and
   /// publish-namespace).

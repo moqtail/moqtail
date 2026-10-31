@@ -42,7 +42,7 @@ use moqtail::model::error::{RequestErrorCode, StreamResetCode};
 use moqtail::model::parameter::message_parameter::{MessageParameter, include_properties};
 use moqtail::model::property::object_property::ObjectProperty;
 use moqtail::model::property::track_property::TrackProperty;
-use moqtail::transport::connection::TransportConnection;
+use moqtail::transport::connection::{TransportConnection, TransportSendStream};
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use moqtail::transport::data_stream_handler::{HeaderInfo, SendDataStream};
 use std::sync::Arc;
@@ -83,6 +83,12 @@ pub struct Content {
   pub end_of_group_objects: bool,
   /// Close the track with an End of Track object after the last group.
   pub end_of_track_object: bool,
+  /// Objects whose stream is reset when the publisher reaches them.
+  pub reset_streams_at: Vec<Location>,
+  /// Objects whose datagram is not sent.
+  pub dropped_datagrams: Vec<Location>,
+  /// Signal the gaps the ID steps leave with Prior Group and Object ID Gap properties.
+  pub gap_properties: bool,
 }
 
 pub struct PublishNamespaceConfig {
@@ -423,12 +429,12 @@ impl DataConfig {
     let group_id = g * self.group_id_step;
     let object_id = i * self.object_id_step;
     let mut properties = Vec::new();
-    if g > 0 && i == 0 && self.group_id_step > 1 {
+    if self.content.gap_properties && g > 0 && i == 0 && self.group_id_step > 1 {
       properties.push(ObjectProperty::PriorGroupIdGap {
         gap: self.group_id_step - 1,
       });
     }
-    if i > 0 && self.object_id_step > 1 {
+    if self.content.gap_properties && i > 0 && self.object_id_step > 1 {
       properties.push(ObjectProperty::PriorObjectIdGap {
         gap: self.object_id_step - 1,
       });
@@ -804,6 +810,21 @@ async fn send_datagrams(
         i + 1 == config.objects_per_group,
       );
 
+      if config
+        .content
+        .dropped_datagrams
+        .contains(&Location::new(group_id, object_id))
+      {
+        info!(
+          "Dropping the datagram for group {} object {}",
+          group_id, object_id
+        );
+        // Recorded as published: a FETCH can still have it.
+        published.record(group_id, object_id).await;
+        tokio::time::sleep(interval).await;
+        continue;
+      }
+
       let serialized = datagram_obj.serialize()?;
 
       match connection.send_datagram(serialized) {
@@ -858,7 +879,11 @@ async fn send_datagrams(
 /// which the next Object's ID is encoded against.
 struct SubgroupStream {
   handler: SendDataStream,
+  /// Kept to reset the stream with.
+  stream: Arc<Mutex<TransportSendStream>>,
   prev_object_id: Option<u64>,
+  /// Reset: nothing more goes on it.
+  reset: bool,
 }
 
 async fn send_via_streams(
@@ -911,13 +936,36 @@ async fn send_via_streams(
           true,
         );
         let header_info = HeaderInfo::Subgroup { header: sub_header };
-        let handler = SendDataStream::new(Arc::new(Mutex::new(stream)), header_info).await?;
+        let stream = Arc::new(Mutex::new(stream));
+        let handler = SendDataStream::new(stream.clone(), header_info).await?;
         *slot = Some(SubgroupStream {
           handler,
+          stream,
           prev_object_id: None,
+          reset: false,
         });
       }
       let stream = slot.as_mut().expect("opened above");
+      if stream.reset {
+        continue;
+      }
+      if config
+        .content
+        .reset_streams_at
+        .contains(&Location::new(group_id, object_id))
+      {
+        info!(
+          "Resetting the stream of group {} subgroup {} at object {}",
+          group_id, subgroup, object_id
+        );
+        // Recorded as published: a FETCH can still have it.
+        published.record(group_id, object_id).await;
+        if let Err(e) = stream.stream.lock().await.reset(0) {
+          error!("Failed to reset the stream: {:?}", e);
+        }
+        stream.reset = true;
+        continue;
+      }
 
       let subgroup_obj = SubgroupObject {
         object_id,
@@ -967,7 +1015,9 @@ async fn send_via_streams(
 
     // The stream that carries the end of the group carries what closes it.
     if let Some(status) = config.closing_status(g)
-      && let Some(stream) = streams[last_subgroup as usize].as_mut()
+      && let Some(stream) = streams[last_subgroup as usize]
+        .as_mut()
+        .filter(|stream| !stream.reset)
     {
       let closing = SubgroupObject {
         object_id: config.closing_object_id(),
@@ -990,7 +1040,7 @@ async fn send_via_streams(
       info!("Sent {:?} for group {}", status, group_id);
     }
 
-    for stream in streams.into_iter().flatten() {
+    for stream in streams.into_iter().flatten().filter(|stream| !stream.reset) {
       let mut handler = stream.handler;
       handler.flush().await?;
     }
@@ -1033,6 +1083,21 @@ mod tests {
       publisher_priority: 128,
       content: Content::default(),
     }
+  }
+
+  #[test]
+  fn gap_properties_can_be_left_out() {
+    use moqtail::model::property::object_property::ObjectProperty;
+    let mut c = config(0);
+    c.content.gap_properties = true;
+    // Object 1 of group 1, at Object ID 2 after 0: one ID skipped.
+    assert!(
+      c.object_properties(1, 1)
+        .iter()
+        .any(|p| matches!(p, ObjectProperty::PriorObjectIdGap { gap: 1 }))
+    );
+    c.content.gap_properties = false;
+    assert!(c.object_properties(1, 1).is_empty());
   }
 
   #[test]

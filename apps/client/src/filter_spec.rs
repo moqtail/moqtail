@@ -212,17 +212,19 @@ pub fn parse_fetch_end_of_range(spec: &str) -> Result<FetchMarkerSpec, String> {
   let (from, to) = span
     .split_once('-')
     .ok_or_else(|| format!("expected {span:?} to be G.O-G.O"))?;
-  let location = |text: &str| -> Result<Location, String> {
-    let (group, object) = text
-      .split_once('.')
-      .ok_or_else(|| format!("expected {text:?} to be GROUP.OBJECT"))?;
-    Ok(Location::new(number(group)?, number(object)?))
-  };
-  let (from, to) = (location(from)?, location(to)?);
+  let (from, to) = (parse_location(from)?, parse_location(to)?);
   if to < from {
     return Err(format!("{spec:?} ends before it starts"));
   }
   Ok(FetchMarkerSpec { kind, from, to })
+}
+
+/// Parses a Location written GROUP.OBJECT.
+pub fn parse_location(text: &str) -> Result<Location, String> {
+  let (group, object) = text
+    .split_once('.')
+    .ok_or_else(|| format!("expected {text:?} to be GROUP.OBJECT"))?;
+  Ok(Location::new(number(group)?, number(object)?))
 }
 
 /// Only an even type holds a single integer.
@@ -321,6 +323,13 @@ mod tests {
     assert!(parse_fetch_end_of_range("gone:2.1-3.0").is_err());
     assert!(parse_fetch_end_of_range("unknown:3.0-2.1").is_err());
     assert!(parse_fetch_end_of_range("unknown:2-3").is_err());
+  }
+
+  #[test]
+  fn parses_locations() {
+    assert_eq!(parse_location("3.7").unwrap(), Location::new(3, 7));
+    assert!(parse_location("3").is_err());
+    assert!(parse_location("a.1").is_err());
   }
 
   #[test]

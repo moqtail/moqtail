@@ -207,6 +207,17 @@ pub struct Cli {
   #[arg(long, value_parser = parse_track_property)]
   pub track_property: Vec<TrackProperty>,
 
+  /// Send an End of Group object after each group's last Object (publish and
+  /// publish-namespace).
+  #[arg(long, default_value_t = false)]
+  pub end_of_group_objects: bool,
+
+  /// Send an End of Track object after the last group (publish and
+  /// publish-namespace). It ends that group too, so it takes the place of the
+  /// group's End of Group object.
+  #[arg(long, default_value_t = false)]
+  pub end_of_track_object: bool,
+
   /// A span the publisher's FETCH responses mark with an End of Range marker instead
   /// of sending its Objects, as KIND:G.O-G.O with KIND non-existent, unknown or
   /// timed-out; repeatable (publish and publish-namespace). The Objects after a

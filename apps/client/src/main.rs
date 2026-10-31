@@ -51,6 +51,8 @@ async fn main() -> Result<(), anyhow::Error> {
     object_properties: cli.object_property.clone(),
     track_properties: cli.track_property.clone(),
     fetch_markers: cli.fetch_end_of_range.clone(),
+    end_of_group_objects: cli.end_of_group_objects,
+    end_of_track_object: cli.end_of_track_object,
   };
 
   match cli.command {

@@ -32,7 +32,7 @@ use moqtail::model::control::publish_namespace::PublishNamespace;
 use moqtail::model::control::request_error::RequestError;
 use moqtail::model::control::request_ok::RequestOk;
 use moqtail::model::control::subscribe_ok::SubscribeOk;
-use moqtail::model::data::constant::DEFAULT_PUBLISHER_PRIORITY;
+use moqtail::model::data::constant::{DEFAULT_PUBLISHER_PRIORITY, ObjectStatus};
 use moqtail::model::data::datagram::Datagram;
 use moqtail::model::data::fetch_header::FetchHeader;
 use moqtail::model::data::object::Object;
@@ -79,6 +79,10 @@ pub struct Content {
   pub track_properties: Vec<TrackProperty>,
   /// Spans a FETCH response marks with an End of Range marker instead of sending.
   pub fetch_markers: Vec<FetchMarkerSpec>,
+  /// Close each group with an End of Group object.
+  pub end_of_group_objects: bool,
+  /// Close the track with an End of Track object after the last group.
+  pub end_of_track_object: bool,
 }
 
 pub struct PublishNamespaceConfig {
@@ -359,6 +363,26 @@ struct DataConfig {
 }
 
 impl DataConfig {
+  /// The status that closes group `g` once its last Object is out, if any: End of
+  /// Track after the last group, which ends the group as well, or End of Group.
+  fn closing_status(&self, g: u64) -> Option<ObjectStatus> {
+    if self.objects_per_group == 0 {
+      return None;
+    }
+    if self.content.end_of_track_object && g + 1 == self.group_count {
+      Some(ObjectStatus::EndOfTrack)
+    } else if self.content.end_of_group_objects {
+      Some(ObjectStatus::EndOfGroup)
+    } else {
+      None
+    }
+  }
+
+  /// The Object ID a group's closing status takes: one past its last Object.
+  fn closing_object_id(&self) -> u64 {
+    (self.objects_per_group - 1) * self.object_id_step + 1
+  }
+
   /// The last Object of the groups published before the session started, if any.
   fn last_available(&self) -> Option<Location> {
     if self.available_groups == 0 || self.objects_per_group == 0 {
@@ -776,7 +800,8 @@ async fn send_datagrams(
         Some(priority),
         Some(config.object_properties(g, i)),
         Bytes::from(payload),
-        false, // end_of_group
+        // The last Object of the group: no Object after it in the group exists.
+        i + 1 == config.objects_per_group,
       );
 
       let serialized = datagram_obj.serialize()?;
@@ -803,6 +828,25 @@ async fn send_datagrams(
       }
 
       tokio::time::sleep(interval).await;
+    }
+
+    if let Some(status) = config.closing_status(g) {
+      let priority = config.priority_of(config.subgroup_of(config.objects_per_group - 1));
+      let datagram = Datagram::new_status(
+        track_alias,
+        group_id,
+        config.closing_object_id(),
+        Some(priority),
+        None,
+        status,
+      );
+      match connection.send_datagram(datagram.serialize()?) {
+        Ok(_) => info!("Sent {:?} for group {}", status, group_id),
+        Err(e) => error!(
+          "Failed to send {:?} for group {}: {:?}",
+          status, group_id, e
+        ),
+      }
     }
   }
 
@@ -921,6 +965,31 @@ async fn send_via_streams(
       tokio::time::sleep(interval).await;
     }
 
+    // The stream that carries the end of the group carries what closes it.
+    if let Some(status) = config.closing_status(g)
+      && let Some(stream) = streams[last_subgroup as usize].as_mut()
+    {
+      let closing = SubgroupObject {
+        object_id: config.closing_object_id(),
+        properties: Some(Vec::new()),
+        object_status: Some(status),
+        payload: None,
+      };
+      let object = Object::try_from_subgroup(
+        closing,
+        track_alias,
+        group_id,
+        Some(last_subgroup),
+        Some(config.priority_of(last_subgroup)),
+        DEFAULT_PUBLISHER_PRIORITY,
+      )?;
+      stream
+        .handler
+        .send_object(&object, stream.prev_object_id)
+        .await?;
+      info!("Sent {:?} for group {}", status, group_id);
+    }
+
     for stream in streams.into_iter().flatten() {
       let mut handler = stream.handler;
       handler.flush().await?;
@@ -947,7 +1016,7 @@ fn generate_payload(size: usize) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-  use super::{Content, DataConfig, objects_to_send};
+  use super::{Content, DataConfig, ObjectStatus, objects_to_send};
   use crate::cli::DeliveryMode;
   use moqtail::model::common::location::Location;
 
@@ -964,6 +1033,20 @@ mod tests {
       publisher_priority: 128,
       content: Content::default(),
     }
+  }
+
+  #[test]
+  fn each_group_is_closed_one_past_its_last_object_and_the_track_after_the_last() {
+    let mut c = config(0);
+    assert_eq!(c.closing_status(0), None);
+
+    c.content.end_of_group_objects = true;
+    c.content.end_of_track_object = true;
+    assert_eq!(c.closing_status(0), Some(ObjectStatus::EndOfGroup));
+    // The End of Track ends the last group too.
+    assert_eq!(c.closing_status(9), Some(ObjectStatus::EndOfTrack));
+    // Objects 0, 2, 4 and 6.
+    assert_eq!(c.closing_object_id(), 7);
   }
 
   #[test]

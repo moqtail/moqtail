@@ -186,10 +186,7 @@ async fn resolve_range_upstream(
   group_order: GroupOrder,
   largest: &mut Option<Location>,
 ) -> UpstreamRange {
-  let sent = {
-    let track_read = track.read().await;
-    send_upstream_fetch_for_range(client, context, &track_read, filter, group_order).await
-  };
+  let sent = send_upstream_fetch_for_range(client, context, track, filter, group_order).await;
   let Some((relay_request_id, publisher, rx, response_rx)) = sent else {
     return UpstreamRange::Unanswered;
   };
@@ -560,16 +557,25 @@ pub(crate) async fn cancel_fetch(client: Arc<MOQTClient>, request_id: u64) {
 async fn send_upstream_fetch_for_range(
   client: &Arc<MOQTClient>,
   context: &Arc<SessionContext>,
-  track_read: &crate::server::track::Track,
+  track: &Arc<tokio::sync::RwLock<crate::server::track::Track>>,
   filter: LocationFilter,
   group_order: GroupOrder,
 ) -> Option<UpstreamFetch> {
+  // Read and let go at once: a fetch that waits on the publisher must not hold the
+  // track's lock while it does.
+  let (full_track_name, publisher_aliases) = {
+    let track = track.read().await;
+    (
+      track.full_track_name.clone(),
+      track.publisher_aliases.clone(),
+    )
+  };
   // A FETCH goes to one publisher, unlike a SUBSCRIBE: any of the matching ones may
   // serve the range, so the first will do.
   let publisher = {
     context
       .client_manager
-      .get_publishers_for_track(&track_read.full_track_name)
+      .get_publishers_for_track(&full_track_name)
       .await
       .into_iter()
       .next()
@@ -579,7 +585,7 @@ async fn send_upstream_fetch_for_range(
     None => {
       info!(
         "send_upstream_fetch_for_range | No publisher found for {:?}",
-        &track_read.full_track_name
+        &full_track_name
       );
       return None;
     }
@@ -597,8 +603,8 @@ async fn send_upstream_fetch_for_range(
   };
   let upstream_fetch = Fetch::new_with_location_filter(
     relay_request_id,
-    track_read.full_track_name.namespace.clone(),
-    track_read.full_track_name.name.clone(),
+    full_track_name.namespace.clone(),
+    full_track_name.name.clone(),
     filter,
     parameters::upstream_fetch(group_order),
   );
@@ -623,8 +629,7 @@ async fn send_upstream_fetch_for_range(
   {
     // The response stream finds its track by the Full Track Name of this request, so a
     // publisher that has given the relay no alias for the track can still serve it.
-    let publisher_alias = track_read
-      .publisher_aliases
+    let publisher_alias = publisher_aliases
       .read()
       .await
       .get(&publisher.connection_id)
@@ -833,7 +838,14 @@ pub(crate) async fn serve_fetch_stream(
   delivery: FetchDelivery,
   mut cancel_rx: watch::Receiver<FetchStop>,
 ) -> Result<bool, TerminationCode> {
-  let track_read = track.read().await;
+  let (relay_track_id, cache, object_logger) = {
+    let track = track.read().await;
+    (
+      track.relay_track_id,
+      track.cache.clone(),
+      track.object_logger.clone(),
+    )
+  };
   let FetchDelivery {
     request_id,
     start_location,
@@ -845,10 +857,7 @@ pub(crate) async fn serve_fetch_stream(
   } = delivery;
 
   let fetch_header = FetchHeader::new(request_id);
-  let stream_id = SendStreamKey::new(
-    request_id,
-    StreamId::new_fetch(track_read.relay_track_id, request_id),
-  );
+  let stream_id = SendStreamKey::new(request_id, StreamId::new_fetch(relay_track_id, request_id));
 
   let stream_fn = async move |client: Arc<MOQTClient>, stream_key: &SendStreamKey| {
     let stream_result = client
@@ -908,7 +917,7 @@ pub(crate) async fn serve_fetch_stream(
     let cached = if pending_upstream.is_some() {
       None
     } else {
-      track_read.cache.get_group(group_id).await
+      cache.get_group(group_id).await
     };
 
     if let Some(group_objects) = cached {
@@ -964,14 +973,12 @@ pub(crate) async fn serve_fetch_stream(
 
         if context.server_config.enable_object_logging {
           let sending_time = crate::server::utils::passed_time_since_start();
-          if let Ok(fetch_object) = moqtail::model::data::object::Object::try_from_fetch(
-            object.clone(),
-            track_read.relay_track_id,
-          ) {
-            track_read
-              .object_logger
+          if let Ok(fetch_object) =
+            moqtail::model::data::object::Object::try_from_fetch(object.clone(), relay_track_id)
+          {
+            object_logger
               .log_fetch_object(
-                track_read.relay_track_id,
+                relay_track_id,
                 context.connection_id,
                 request_id,
                 &fetch_object,
@@ -992,15 +999,11 @@ pub(crate) async fn serve_fetch_stream(
       let mut gap_start = group_id;
       let mut gap_end = group_id;
       if descending {
-        while gap_start > start_location.group
-          && track_read.cache.get_group(gap_start - 1).await.is_none()
-        {
+        while gap_start > start_location.group && cache.get_group(gap_start - 1).await.is_none() {
           gap_start -= 1;
         }
       } else {
-        while gap_end < end_location.group
-          && track_read.cache.get_group(gap_end + 1).await.is_none()
-        {
+        while gap_end < end_location.group && cache.get_group(gap_end + 1).await.is_none() {
           gap_end += 1;
         }
       }
@@ -1027,7 +1030,7 @@ pub(crate) async fn serve_fetch_stream(
         }
         None => {
           let gap = gap_filter(gap_start, gap_end, &start_location, &end_location);
-          send_upstream_fetch_for_range(&client, &context, &track_read, gap, group_order)
+          send_upstream_fetch_for_range(&client, &context, &track, gap, group_order)
             .await
             .map(|(request_id, publisher, rx, _)| (request_id, publisher, rx))
         }
@@ -1095,12 +1098,11 @@ pub(crate) async fn serve_fetch_stream(
                     let sending_time = crate::server::utils::passed_time_since_start();
                     if let Ok(fetch_object) = moqtail::model::data::object::Object::try_from_fetch(
                       object.clone(),
-                      track_read.relay_track_id,
+                      relay_track_id,
                     ) {
-                      track_read
-                        .object_logger
+                      object_logger
                         .log_fetch_object(
-                          track_read.relay_track_id,
+                          relay_track_id,
                           context.connection_id,
                           request_id,
                           &fetch_object,
@@ -1118,6 +1120,7 @@ pub(crate) async fn serve_fetch_stream(
                     "handle_fetch_messages | Malformed upstream FETCH for gap [{}, {}]",
                     gap_start, gap_end
                   );
+                  let track_read = track.read().await;
                   track_read.remove_from_subscriber_switching_sets().await;
                   if let Err(e) = track_read
                     .notify_publish_done(

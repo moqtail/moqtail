@@ -25,22 +25,18 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use moqtail_ssts::registry::registry;
+use moqtail::model::error::StreamResetCode;
+use moqtail_ssts::registry::registry;
 use moqtail_ssts::{
   AbrAlgorithm, AbrInput, DecisionReason, Selection, SetSnapshot, StreamSnapshot, Supersede, Tuning,
 };
 use tokio::select;
-use tracing::warn;
-
-use moqtail::model::error::StreamResetCode;
-use moqtail_ssts::registry::registry;
-use moqtail_ssts::{
-  AbrAlgorithm, AbrInput, DecisionReason, Selection, SetSnapshot, StreamSnapshot, Tuning,
-};
-use tokio::select;
+use tokio::sync::RwLock;
 use tracing::warn;
 
 use crate::server::config::AppConfig;
 use crate::server::session::client::MOQTClient;
+use crate::server::subscription::Subscription;
 
 use super::AbrMessage;
 
@@ -396,17 +392,60 @@ async fn supersede_overtaken(
   }
 
   for (group_id, stream_id) in &overtaken {
-    if !staged.iter().any(|(affected, _)| affected == group_id) {
+    let Some((_, target_track)) = staged.iter().find(|(affected, _)| affected == group_id) else {
       // A group this request does not reach keeps its delivery; resetting
       // its stream would cancel the very thing newest-only asked to leave
       // alone.
       continue;
-    }
+    };
+
+    // Read the old stream's progress before resetting it: the close path
+    // clears the ledger, and the cache-only repair needs to know whether the
+    // Group had actually been sent.
+    let subscription = subscription_for(client, stream_id.relay_track_id).await;
+    let last_sent = match &subscription {
+      Some(subscription) => {
+        subscription
+          .read()
+          .await
+          .last_object_sent_on(stream_id)
+          .await
+      }
+      None => None,
+    };
+
     // The delivery was cancelled by a decision, not by a failure or a timeout,
     // and the code on the wire should say so.
-    client
-      .reset_stream(stream_id, StreamResetCode::Cancelled.to_u64())
-      .await;
+    if let Some(subscription) = &subscription {
+      subscription
+        .read()
+        .await
+        .reset_stream(stream_id, StreamResetCode::Cancelled.to_u64())
+        .await;
+    }
+
+    // If the Group is complete at the relay but the old stream was short of
+    // it, no live Object will arrive to arm the normal re-send. Arm it from
+    // the cache now. A Group whose last cached Object was already written is
+    // left alone by the repair itself.
+    if let Some(subscription) = subscription_for(client, *target_track).await {
+      let replayed = subscription
+        .read()
+        .await
+        .repair_group_from_cache(*group_id, stream_id.subgroup_id, last_sent)
+        .await;
+      if replayed > 0 {
+        tracing::debug!(
+          client_id = client.connection_id,
+          set_id,
+          relay_track_id = target_track,
+          group = group_id,
+          subgroup = ?stream_id.subgroup_id,
+          objects = replayed,
+          "SSTS: repaired an overtaken group from the cache"
+        );
+      }
+    }
   }
 
   tracing::debug!(
@@ -507,6 +546,27 @@ fn validate(algorithm: &str, selection: Selection, sets: &[SetSnapshot]) -> Sele
   }
 
   validated
+}
+
+/// The subscription that owns a relay track, when the track is in a switching
+/// set and the subscriber still has a live subscription for it.
+async fn subscription_for(
+  client: &Arc<MOQTClient>,
+  relay_track_id: u64,
+) -> Option<Arc<RwLock<Subscription>>> {
+  let name = client
+    .ssts
+    .full_track_name_of_relay_track(relay_track_id)
+    .await?;
+  for (_, subscription) in client.subscriptions.all().await {
+    let Some(subscription) = subscription.upgrade() else {
+      continue;
+    };
+    if subscription.read().await.full_track_name == name {
+      return Some(subscription);
+    }
+  }
+  None
 }
 
 #[cfg(test)]

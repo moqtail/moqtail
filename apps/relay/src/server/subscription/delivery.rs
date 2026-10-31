@@ -27,6 +27,7 @@ use moqtail::model::control::constant::PublishDoneStatusCode;
 use moqtail::model::data::datagram::Datagram;
 use moqtail::model::data::fetch_object::FetchObjectPayload;
 use moqtail::model::data::object::Object;
+use moqtail::model::data::subgroup_header::SubgroupHeader;
 use moqtail::model::error::StreamResetCode;
 use moqtail::model::parameter::combined_filter::ObjectFields;
 use moqtail::transport::data_stream_handler::HeaderInfo;
@@ -555,6 +556,76 @@ impl Subscription {
     }
   }
 
+  /// The last Object already written on one send stream, or `None` when the
+  /// stream never forwarded one. Read before the stream is reset: the reset
+  /// itself does not own this ledger, but the close path clears it.
+  pub async fn last_object_sent_on(&self, stream_id: &StreamId) -> Option<u64> {
+    self
+      .send_stream_last_object_ids
+      .read()
+      .await
+      .get(stream_id)
+      .copied()
+      .flatten()
+  }
+
+  /// Reset one of this subscription's send streams.
+  pub async fn reset_stream(&self, stream_id: &StreamId, code: u64) {
+    self
+      .subscriber
+      .reset_stream(&self.new_send_stream_key(stream_id), code)
+      .await;
+  }
+
+  /// Re-send a Group from the cache when the live tail will never arrive.
+  ///
+  /// A downshift at a Group boundary overtakes a Group that is already complete
+  /// at the relay: every Object is in the cache, while the old stream is still
+  /// short of them. The normal re-send arm is the first live Object of the
+  /// re-sent Group on the new tier, and that Object will never come. This is
+  /// the cache-only arm.
+  ///
+  /// `last_sent` is the last Object written on the overtaken stream. When it
+  /// already covers the cached Group, the Group was sent and is not re-sent.
+  /// Returns the number of Objects replayed.
+  pub async fn repair_group_from_cache(
+    &self,
+    group_id: u64,
+    subgroup_id: Option<u64>,
+    last_sent: Option<u64>,
+  ) -> usize {
+    if self.finished.load(Ordering::Relaxed) {
+      return 0;
+    }
+    let Some(subgroup_id) = subgroup_id else {
+      return 0;
+    };
+    let Some(group_objects) = self.cache.get_group(group_id).await else {
+      return 0;
+    };
+    let needs_repair = {
+      let objects = group_objects.read().await;
+      cache_repair_needed(&objects, subgroup_id, last_sent)
+    };
+    if needs_repair.is_none() {
+      // Nothing cached, or every cached Object was already written: this is
+      // the "already sent" Group, and replacing it would spend bytes twice.
+      return 0;
+    }
+
+    let stream_id = StreamId::new_subgroup(self.relay_track_id, group_id, Some(subgroup_id));
+    if self
+      .subscriber
+      .get_stream(&self.new_send_stream_key(&stream_id))
+      .await
+      .is_some()
+    {
+      // A live tail already opened the replacement; the normal path owns it.
+      return 0;
+    }
+    self.replay_cached_objects(&stream_id, None).await
+  }
+
   /// Put a re-sent subgroup's head on the wire, ahead of the live object that
   /// revealed the re-send.
   ///
@@ -568,33 +639,67 @@ impl Subscription {
   /// stops the replay before it starts: nothing cached, nothing before the live
   /// object, no header to open the subgroup with, no stream to write it to.
   async fn replay_cached_head(&self, stream_id: &StreamId, loc: &Location) -> usize {
-    let Some(group_objects) = self.cache.get_group(loc.group).await else {
+    self
+      .replay_cached_objects(stream_id, Some(loc.object))
+      .await
+  }
+
+  /// Replay a run of cached Objects for one subgroup. `before` excludes the
+  /// live Object the caller is about to forward; `None` replays the whole
+  /// cached subgroup, which is the cache-only repair. A missing live header is
+  /// synthesized only when the run starts at the subgroup's first Object, so
+  /// `FIRST_OBJECT` is true rather than guessed.
+  async fn replay_cached_objects(
+    &self,
+    stream_id: &StreamId,
+    before: Option<u64>,
+  ) -> usize {
+    let Some(group_id) = stream_id.group_id else {
       return 0;
     };
-    let head = cached_head(
-      &group_objects.read().await,
-      stream_id.subgroup_id,
-      loc.object,
-    );
+    let Some(group_objects) = self.cache.get_group(group_id).await else {
+      return 0;
+    };
+    let head = {
+      let objects = group_objects.read().await;
+      cached_objects(&objects, stream_id.subgroup_id, before)
+    };
     if head.is_empty() {
       return 0;
     }
 
-    let Some(header_info) = self
-      .active_subgroup_headers
-      .read()
-      .await
-      .get(stream_id)
-      .cloned()
-    else {
+    let header_info = {
+      let headers = self.active_subgroup_headers.read().await;
+      headers.get(stream_id).cloned()
+    }
+    .or_else(|| {
+      let first = head.first()?;
+      // Only a run that starts at object 0 can claim the subgroup's first
+      // Object. A later start without the live header is not a subgroup head.
+      if first.object_id != 0 {
+        return None;
+      }
+      Some(HeaderInfo::Subgroup {
+        header: SubgroupHeader::new_with_explicit_id(
+          self.relay_track_id,
+          group_id,
+          first.subgroup_id,
+          Some(first.publisher_priority),
+          head.iter().all(|object| object.properties.is_some()),
+          false,
+          true,
+        ),
+      })
+    });
+    let Some(header_info) = header_info else {
       return 0;
     };
 
     let Ok((replay_stream_id, send_stream)) = self.handle_header(header_info).await else {
       return 0;
     };
-    // The new stream's own bookkeeping, not the overtaken one's: the head starts
-    // at no previous object, because it starts at the subgroup's first one.
+    // The new stream's own bookkeeping, not the overtaken one's: the replay
+    // starts at no previous object.
     self
       .send_stream_last_object_ids
       .write()
@@ -644,14 +749,18 @@ impl Subscription {
     }
 
     if replayed > 0 {
+      let ahead = match before {
+        Some(object) => format!("ahead of object {object}"),
+        None => "from the cache alone".to_string(),
+      };
       info!(
-        "SSTS: replayed an overtaken group's head - subscriber={} relay_track_id={} group={} subgroup={:?} objects={} ahead of object {}",
+        "SSTS: replayed an overtaken group - subscriber={} relay_track_id={} group={} subgroup={:?} objects={} {}",
         self.client_connection_id,
         self.relay_track_id,
-        loc.group,
+        group_id,
         stream_id.subgroup_id,
         replayed,
-        loc.object
+        ahead
       );
     }
     replayed
@@ -752,23 +861,53 @@ impl Subscription {
   }
 }
 
-/// The cached objects that make up one re-sent subgroup's head: what the relay
-/// has for that subgroup before the live object, oldest first.
+/// The last cached Object of one subgroup that still needs a re-send, or
+/// `None` when there is nothing cached or the old stream already carried all
+/// of it. `last_sent` is the last Object written on the overtaken stream.
+fn cache_repair_needed(
+  objects: &[FetchObjectPayload],
+  subgroup_id: u64,
+  last_sent: Option<u64>,
+) -> Option<u64> {
+  let last_cached = objects
+    .iter()
+    .filter(|object| object.subgroup_id == subgroup_id)
+    .map(|object| object.object_id)
+    .max()?;
+  if last_sent.is_some_and(|sent| sent >= last_cached) {
+    None
+  } else {
+    Some(last_cached)
+  }
+}
+
+#[cfg(test)]
+fn cached_head(
+  objects: &[FetchObjectPayload],
+  subgroup: Option<u64>,
+  before: u64,
+) -> Vec<FetchObjectPayload> {
+  cached_objects(objects, subgroup, Some(before))
+}
+
+/// The cached Objects of one subgroup before `before` (or all of them when
+/// `before` is `None`), oldest first.
 ///
 /// Per subgroup and not per group, because the subgroup is the unit the subscriber
 /// reassembles: another subgroup's head would go on a stream the live object never
 /// joins. The live object itself is excluded - the caller forwards it on this same
 /// stream, right behind the head - and so is everything after it, which the live
 /// path is already carrying.
-fn cached_head(
+fn cached_objects(
   objects: &[FetchObjectPayload],
   subgroup: Option<u64>,
-  before: u64,
+  before: Option<u64>,
 ) -> Vec<FetchObjectPayload> {
   let mut head: Vec<FetchObjectPayload> = objects
     .iter()
     .filter(|object| {
-      object.object_id < before && subgroup.is_none_or(|subgroup| object.subgroup_id == subgroup)
+      before.is_none_or(|before| object.object_id < before)
+        && subgroup.is_none_or(|subgroup| object.subgroup_id == subgroup)
     })
     .cloned()
     .collect();
@@ -852,5 +991,67 @@ mod tests {
     let objects = [cached(7, 0, 0), cached(7, 0, 1)];
     let head = cached_head(&objects, Some(0), 2);
     assert_eq!(head, objects.to_vec());
+  }
+
+  /// The cache-only repair fires only when the Group is cached and some of it
+  /// has not been written on the old stream. Every cached Object already sent
+  /// is the "already sent" Group and must be left alone.
+  #[test]
+  fn a_cache_only_repair_needs_an_unsent_cached_object() {
+    let objects = [
+      cached(7, 0, 0),
+      cached(7, 0, 1),
+      cached(7, 0, 2),
+      cached(7, 1, 9),
+    ];
+
+    assert_eq!(
+      cache_repair_needed(&objects, 0, None),
+      Some(2),
+      "nothing was sent, so the whole cached subgroup is owed"
+    );
+    assert_eq!(
+      cache_repair_needed(&objects, 0, Some(1)),
+      Some(2),
+      "object 2 is cached but was not written"
+    );
+    assert_eq!(
+      cache_repair_needed(&objects, 0, Some(2)),
+      None,
+      "the last cached object was already written: do not re-send"
+    );
+    assert_eq!(
+      cache_repair_needed(&objects, 0, Some(9)),
+      None,
+      "a stream ahead of the cache still does not need a re-send"
+    );
+    assert_eq!(
+      cache_repair_needed(&[], 0, None),
+      None,
+      "nothing cached, nothing to arm"
+    );
+    assert_eq!(
+      cache_repair_needed(&objects, 2, None),
+      None,
+      "a sibling subgroup is not this stream's repair"
+    );
+  }
+
+  /// A cache-only replay starts at the subgroup's first Object, so it can
+  /// replay the whole cached subgroup; the live-head path still stops before
+  /// the live Object.
+  #[test]
+  fn the_cache_only_range_is_the_whole_cached_subgroup() {
+    let objects = [
+      cached(7, 0, 2),
+      cached(7, 0, 0),
+      cached(7, 0, 1),
+      cached(7, 1, 0),
+    ];
+    assert_eq!(ids(&cached_objects(&objects, Some(0), None)), vec![0, 1, 2]);
+    assert_eq!(
+      ids(&cached_objects(&objects, Some(0), Some(2))),
+      vec![0, 1]
+    );
   }
 }

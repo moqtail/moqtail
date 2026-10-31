@@ -26,6 +26,7 @@ pub mod gate;
 pub mod switching_set;
 
 use moqtail::model::control::setup::Setup;
+use moqtail::model::data::full_track_name::FullTrackName;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::sync::Arc;
@@ -338,6 +339,19 @@ impl SstsState {
       Some(set) => sets.resent_deadline_ms(set.id, group_id),
       None => None,
     }
+  }
+
+  /// The full track name carrying this relay track, when it is in a switching
+  /// set. Used to find the subscription that will own a replacement stream.
+  pub(crate) async fn full_track_name_of_relay_track(
+    &self,
+    relay_track_id: u64,
+  ) -> Option<FullTrackName> {
+    self
+      .switching_sets
+      .read()
+      .await
+      .full_track_name_of_relay_track(relay_track_id)
   }
 
   /// The switching set carrying this relay track, if any.

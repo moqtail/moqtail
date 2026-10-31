@@ -213,6 +213,16 @@ impl SwitchingSetManager {
     Self::default()
   }
 
+  /// The full track name behind a relay track id, when it belongs to a set.
+  pub fn full_track_name_of_relay_track(&self, relay_track_id: u64) -> Option<FullTrackName> {
+    self
+      .set_of_relay_track(relay_track_id)?
+      .members
+      .iter()
+      .find(|member| member.relay_track_id == relay_track_id)
+      .map(|member| member.full_track_name.clone())
+  }
+
   /// The set carrying this relay track, if any.
   pub fn set_of_relay_track(&self, relay_track_id: u64) -> Option<&SwitchingSet> {
     self

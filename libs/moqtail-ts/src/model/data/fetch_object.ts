@@ -37,6 +37,7 @@ const SUBGROUP_MODE_PRESENT = 0b11
 // Special Serialization Flag varint values for End-of-Range markers.
 const END_OF_NON_EXISTENT_RANGE = 0x8cn
 const END_OF_UNKNOWN_RANGE = 0x10cn
+const END_OF_TIMED_OUT_RANGE = 0x20cn
 
 const MAX_VARINT = 2n ** 64n - 1n
 
@@ -54,8 +55,15 @@ export type FetchObjectContext = {
  * Kind discriminator for End-of-Range markers (§11.5).
  */
 export enum EndOfRangeKind {
+  /** Serialization Flags = 0x8C: all objects in the range are known not to exist. */
   NonExistent = 0x8c,
+  /** Serialization Flags = 0x10C: the range is cache-unknown. */
   Unknown = 0x10c,
+  /**
+   * Serialization Flags = 0x20C: the range timed out, e.g. a relay ran out of its
+   * fill budget before it could retrieve it.
+   */
+  TimedOut = 0x20c,
 }
 
 /**
@@ -140,7 +148,8 @@ export class FetchObject {
   serialize(prev?: FetchObjectContext, groupOrder: GroupOrder = GroupOrder.Original): FrozenByteBuffer {
     const buf = new ByteBuffer()
     if (this.kind === 'end_of_range') {
-      buf.putVI(this.endOfRange === EndOfRangeKind.NonExistent ? END_OF_NON_EXISTENT_RANGE : END_OF_UNKNOWN_RANGE)
+      // Each kind's value is its Serialization Flags.
+      buf.putVI(BigInt(this.endOfRange!))
       buf.putVI(this.groupId)
       buf.putVI(this.objectId)
       return buf.freeze()
@@ -232,6 +241,8 @@ export class FetchObject {
         kind = EndOfRangeKind.NonExistent
       } else if (flagsRaw === END_OF_UNKNOWN_RANGE) {
         kind = EndOfRangeKind.Unknown
+      } else if (flagsRaw === END_OF_TIMED_OUT_RANGE) {
+        kind = EndOfRangeKind.TimedOut
       } else {
         throw new ProtocolViolationError(
           'FetchObject.deserialize',
@@ -566,6 +577,21 @@ if (import.meta.vitest) {
       const parsed = FetchObject.deserialize(frozen)
       expect(parsed.kind).toBe('end_of_range')
       expect(parsed.endOfRange).toBe(EndOfRangeKind.Unknown)
+    })
+
+    test('roundtrip end of timed-out range', () => {
+      const obj = FetchObject.newEndOfRange(EndOfRangeKind.TimedOut, 3n, 9n)
+      const frozen = obj.serialize()
+      const flags = new ByteBuffer()
+      flags.putVI(0x20cn)
+      expect(Array.from(frozen.toUint8Array().subarray(0, flags.length))).toEqual(
+        Array.from(flags.freeze().toUint8Array()),
+      )
+      const parsed = FetchObject.deserialize(obj.serialize())
+      expect(parsed.kind).toBe('end_of_range')
+      expect(parsed.endOfRange).toBe(EndOfRangeKind.TimedOut)
+      expect(parsed.groupId).toBe(3n)
+      expect(parsed.objectId).toBe(9n)
     })
 
     test('reject reserved high flag value', () => {

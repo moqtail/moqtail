@@ -26,6 +26,7 @@ use crate::StreamSnapshot;
 use crate::algorithms::wasd::Reach;
 use crate::algorithms::wasd::WasdAlgorithm;
 use crate::algorithms::wasd::WasdParams;
+use super::set_upshift_streak;
 
 /// A set with a four-rung ladder. The rungs are addressed by index, so tier
 /// `n` of set `id` is track `id * 10 + n`.
@@ -574,8 +575,15 @@ fn one_deep_reading_inside_a_group_is_not_enough() {
   let selection = algorithm.decide(&input(&sets, &inside, DecisionReason::PeriodicSample, 24));
   assert_eq!(
     tier_of(&selection, 1),
+    1,
+    "two of them, one after another, are still the handoff window"
+  );
+
+  let selection = algorithm.decide(&input(&sets, &inside, DecisionReason::PeriodicSample, 24));
+  assert_eq!(
+    tier_of(&selection, 1),
     0,
-    "two of them, one after another, are"
+    "the third consecutive reading is the monitor's pattern"
   );
   assert!(
     selection.supersede.contains_key(&1),
@@ -687,19 +695,41 @@ fn the_monitor_rearms_after_it_fires() {
   // Mid-group samples repeat the group in flight: the new group id is the
   // boundary.
   let at_two = deep_at(2);
-  algorithm.decide(&input(&sets, &at_two, DecisionReason::PeriodicSample, 29));
-  let selection = algorithm.decide(&input(&sets, &at_two, DecisionReason::PeriodicSample, 29));
-  assert_eq!(tier_of(&selection, 1), 1, "the monitor fired");
+  let mut selection = None;
+  for _ in 0..3 {
+    selection = Some(algorithm.decide(&input(
+      &sets,
+      &at_two,
+      DecisionReason::PeriodicSample,
+      29,
+    )));
+  }
+  assert_eq!(
+    tier_of(&selection.unwrap(), 1),
+    1,
+    "the monitor fired"
+  );
 
   // The step drained the signal it was reading: those same streams are at a
   // rung the algorithm has now rejected. One fresh reading at the new tier must
   // not be enough, because a streak left standing at the threshold would make it
   // so, and the ladder would walk itself down tick by tick.
   let at_one = deep_at(1);
-  let selection = algorithm.decide(&input(&sets, &at_one, DecisionReason::PeriodicSample, 29));
-  assert_eq!(tier_of(&selection, 1), 1, "the streak re-armed");
+  let mut selection = None;
+  for _ in 0..2 {
+    selection = Some(algorithm.decide(&input(
+      &sets,
+      &at_one,
+      DecisionReason::PeriodicSample,
+      29,
+    )));
+  }
+  assert_eq!(
+    tier_of(&selection.unwrap(), 1),
+    1,
+    "the streak re-armed: two readings do not fire"
+  );
 
-  algorithm.decide(&input(&sets, &at_one, DecisionReason::PeriodicSample, 29));
   let selection = algorithm.decide(&input(&sets, &at_one, DecisionReason::PeriodicSample, 29));
   assert_eq!(
     tier_of(&selection, 1),
@@ -798,11 +828,12 @@ fn the_cautious_streak_returns_after_the_exploration_is_over() {
 }
 
 /// The floor is not derived from the subscriber's buffer any more. `U(k)` is
-/// the step's own price under the default rho, so a 1600 ms buffer over a
-/// 500 ms cadence grants no floor of four: at rho = 0.4 the 850 -> 1800 jump
-/// (112 %) costs ceil(1.118 / 0.4) = 3 clean groups.
+/// the step's own price under the draft defaults, so a 1600 ms buffer over a
+/// 500 ms cadence grants no floor of four: at rho = 0.25 the 850 -> 1800 jump
+/// (112 %) costs ceil(1.118 / 0.25) = 5 clean groups, and the draft's U_min
+/// floor of two sits below it.
 #[test]
-fn the_default_floor_is_one_and_rho_prices_the_step() {
+fn the_default_floor_is_two_and_rho_prices_the_step() {
   let sets = [ladder_set(1, &[850, 1800, 3500, 6000], 1600, 500)];
   let mut algorithm = WasdAlgorithm::new();
   let empty: Vec<StreamSnapshot> = Vec::new();
@@ -813,28 +844,28 @@ fn the_default_floor_is_one_and_rho_prices_the_step() {
   let congested = [stream(1, track_at(1, 1), 1), stream(1, track_at(1, 1), 2)];
   algorithm.decide(&input(&sets, &congested, DecisionReason::GroupBoundary, 1));
 
-  // U(0) = max(1, ceil(1.118 / 0.4)) = 3: the buffer buys nothing here.
-  for group in 2..4 {
+  // U(0) = max(2, ceil(1.118 / 0.25)) = 5: the buffer buys nothing here.
+  for group in 2..6 {
     let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, group));
     assert_eq!(
       tier_of(&selection, 1),
       0,
-      "the step's three, not the buffer's four"
+      "the step's five, not the buffer's four"
     );
   }
-  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 4));
-  assert_eq!(tier_of(&selection, 1), 1, "the third clean group buys it");
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 6));
+  assert_eq!(tier_of(&selection, 1), 1, "the fifth clean group buys it");
 
-  // U(1) = max(1, ceil(0.944 / 0.4)) = 3 as well.
-  for group in 5..7 {
+  // U(1) = max(2, ceil(0.944 / 0.25)) = 4.
+  for group in 7..10 {
     let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, group));
     assert_eq!(tier_of(&selection, 1), 1);
   }
-  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 7));
+  let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 10));
   assert_eq!(
     tier_of(&selection, 1),
     2,
-    "and the next step waits three too"
+    "and the next step waits four"
   );
 }
 
@@ -1013,9 +1044,10 @@ fn u_min_and_rho_signalled_together_take_the_max() {
   assert_eq!(tier_of(&selection, 1), 1, "the eighth clean group buys it");
 }
 
-/// The operator's rails parse through the tuning. Zero means "no rail",
-/// leaving the key out keeps the default floor of one, and `wasd.umax` is
-/// the cap (`0` or absent = uncapped).
+/// The operator's rails parse through the tuning. The draft floor is two
+/// clean groups, so a lower value (including zero) is raised to it; leaving
+/// the key out keeps the default floor, and `wasd.umax` is the cap (`0` or
+/// absent = uncapped).
 #[test]
 fn the_operator_tuning_parses_the_rails() {
   let tuned = crate::Tuning::from_pairs(["wasd.umin=6"]);
@@ -1024,15 +1056,15 @@ fn the_operator_tuning_parses_the_rails() {
   let no_floor = crate::Tuning::from_pairs(["wasd.umin=0"]);
   assert_eq!(
     WasdParams::from_tuning(&no_floor).u_min,
-    None,
-    "zero is no floor, not a default"
+    Some(2),
+    "zero is raised to the draft floor, not treated as no floor"
   );
 
   let untouched = crate::Tuning::from_pairs(std::iter::empty::<&str>());
   assert_eq!(
     WasdParams::from_tuning(&untouched).u_min,
-    Some(1),
-    "an untouched key keeps the default floor"
+    Some(2),
+    "an untouched key keeps the draft default floor"
   );
   assert_eq!(WasdParams::from_tuning(&untouched).u_max, None);
 
@@ -1260,6 +1292,7 @@ fn a_downshift_inside_a_group_undoes_the_upshift_recorded_at_its_start() {
   // the downshift lands on group 34 itself.
   let inside = deep_at(2);
   algorithm.decide(&input(&sets, &inside, DecisionReason::PeriodicSample, 34));
+  algorithm.decide(&input(&sets, &inside, DecisionReason::PeriodicSample, 34));
   let selection = algorithm.decide(&input(&sets, &inside, DecisionReason::PeriodicSample, 34));
   assert_eq!(
     tier_of(&selection, 1),
@@ -1376,4 +1409,35 @@ fn a_signalled_u_max_is_the_third_field_and_zero_means_unbounded() {
   }
   let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 3));
   assert_eq!(tier_of(&selection, 1), 1, "the third clean group buys it");
+}
+
+/// The draft's formula, directly: `U(i) = min(U_max, max(2, U_min,
+/// ceil(step/rho)))`, with a zero nominal rate counting as a 100 % step, the
+/// top rung fixed at two, and a cap below the floor raised to the floor.
+#[test]
+fn the_slow_climb_formula_matches_the_draft() {
+  let set = ladder_set(1, &[850, 1800, 3500, 6000], 0, 0);
+  let u = |tier| set_upshift_streak(&set, tier, 0.25, Some(2), None);
+  assert_eq!(u(0), 5, "850 -> 1800 is a 112 % step");
+  assert_eq!(u(1), 4, "1800 -> 3500 is a 94 % step");
+  assert_eq!(u(2), 3, "3500 -> 6000 is a 71 % step");
+  assert_eq!(u(3), 2, "the top rung is the draft's fixed two");
+
+  let zero = ladder_set(1, &[0, 1000, 2000, 3000], 0, 0);
+  assert_eq!(
+    set_upshift_streak(&zero, 0, 0.25, Some(2), None),
+    4,
+    "a zero nominal rate is treated as a 100 % step"
+  );
+
+  assert_eq!(
+    set_upshift_streak(&set, 0, 0.25, Some(5), Some(1)),
+    5,
+    "a cap below the floor is raised to the floor"
+  );
+  assert_eq!(
+    set_upshift_streak(&set, 0, 0.25, Some(2), Some(3)),
+    3,
+    "a cap above the floor bounds the step"
+  );
 }

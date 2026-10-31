@@ -33,7 +33,7 @@ pub(crate) const SLOW_START_UPSHIFT_STREAK: u64 = 1;
 /// group's stream opens, while the previous group's FIN-ACK is still in
 /// flight; congestion shows it on every reading until it is dealt with. The
 /// streak re-arms when it fires, so one burst cannot chain.
-pub(crate) const DOWNSHIFT_SUBGROUP_READS: u32 = 2;
+pub(crate) const DOWNSHIFT_SUBGROUP_READS: u32 = 3;
 
 /// What one depth sample did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -194,7 +194,7 @@ impl LadderState {
           let to = (from + 1).min(max_index);
           self.current_index = to;
           self.clear_streak = 0;
-          if self.exploring && self.current_index >= max_index && may_act {
+          if self.exploring && self.current_index >= max_index {
             self.exploring = false;
           }
           if to > from {

@@ -216,10 +216,9 @@ pub struct WasdParams {
   /// percentage in `algorithm_params`; that outranks the operator's value.
   pub rho: f64,
   /// Lower rail, in clean groups: the floor under whatever `rho` prices the
-  /// step at. `None` is no floor at all. The default is one group, which is
-  /// the smallest wait the state machine can express (a climb takes at least
-  /// one clean boundary). Set it higher to take direct control and let `rho`
-  /// stop deciding the minimum.
+  /// step at. The draft fixes the default at two groups and clamps anything
+  /// below it; `None` therefore reads as two. Set it higher to take direct
+  /// control and let `rho` stop deciding the minimum.
   pub u_min: Option<u64>,
   /// Upper rail, in clean groups: a cap on the wait. `None` is no cap. It
   /// exists to bound recovery time when `rho` is low — at `rho = 0.05` a
@@ -228,18 +227,20 @@ pub struct WasdParams {
   ///
   /// Both rails clamp the same number, so **`u_min == u_max` pins `U(k)` to
   /// that constant and makes `rho` inert** — the deliberate "no rho" setting
-  /// for an operator who wants a fixed dwell. When they conflict (`u_min` >
-  /// `u_max`) the cap wins.
+  /// for an operator who wants a fixed dwell. A cap below the floor is raised
+  /// to the floor, matching the draft.
   pub u_max: Option<u64>,
 }
 
 impl WasdParams {
-  /// The tolerance the algorithm was measured at: on the 0.60/1.18/2.89/5.75
-  /// Mbps ladder this prices the three rungs at 3, 4 and 3 clean groups.
-  pub const DEFAULT_RHO: f64 = 0.4;
+  /// The probing risk tolerance the draft fixes as the publisher default. On
+  /// the 0.60/1.18/2.89/5.75 Mbps ladder it prices the three rungs at
+  /// 5, 4 and 3 clean groups.
+  pub const DEFAULT_RHO: f64 = 0.25;
 
-  /// The default floor: one clean group, the smallest expressible wait.
-  pub const DEFAULT_U_MIN: u64 = 1;
+  /// The draft's floor under the priced wait, in clean groups. Values below
+  /// two are clamped up to it.
+  pub const DEFAULT_U_MIN: u64 = 2;
 }
 
 impl Default for WasdParams {
@@ -258,19 +259,19 @@ impl WasdParams {
   /// patience, `wasd.rho` for the probing risk tolerance, and `wasd.umin` /
   /// `wasd.umax` for the rails, in clean groups.
   ///
-  /// Zero means "no rail", and that is a different thing from "unset":
-  /// `wasd.umin=0` removes the floor (the step term governs alone), while
-  /// leaving `wasd.umin` out keeps the default floor of one. `wasd.umax=0`
-  /// and an unset `wasd.umax` both mean no cap.
+  /// The draft's floor is at least two clean groups, so `wasd.umin` values
+  /// below two are raised to two. `wasd.umax=0` and an unset `wasd.umax`
+  /// both mean no cap.
   pub fn from_tuning(tuning: &Tuning) -> Self {
     let defaults = Self::default();
     Self {
       monitor_reads: tuning.usize("wasd.reads", defaults.monitor_reads as usize) as u32,
       rho: tuning.f64("wasd.rho", defaults.rho),
-      u_min: match tuning.usize("wasd.umin", defaults.u_min.unwrap_or(0) as usize) {
-        0 => None,
-        v => Some(v as u64),
-      },
+      u_min: Some(
+        tuning
+          .usize("wasd.umin", defaults.u_min.unwrap_or(2) as usize)
+          .max(2) as u64,
+      ),
       u_max: match tuning.usize("wasd.umax", 0) {
         0 => None,
         v => Some(v as u64),
@@ -570,8 +571,8 @@ fn set_upshift_streak(
   // shorter list is a sender that offered fewer fields, not a different
   // layout.
   let u_min = match signaled_param(set, PARAM_U_MIN) {
-    Some(0) | None => default_u_min,
-    Some(value) => Some(value),
+    Some(0) | None => default_u_min.map(|v| v.max(2)).or(Some(2)),
+    Some(value) => Some(value.max(2)),
   };
 
   // rho: the subscriber's own signalled percentage wins over the operator's.
@@ -592,28 +593,29 @@ fn set_upshift_streak(
 
   // The relative bitrate step of the rung this connection stands on.
   let max_rung = set.members.len().saturating_sub(1);
-  let k = current_tier.min(max_rung);
-  let next = (k + 1).min(max_rung);
+  if current_tier >= max_rung {
+    // The top rung: the draft fixes U_i at two, whatever the rails say.
+    return 2;
+  }
+  let k = current_tier;
+  let r_k = set.members[k].0 as f64;
+  let r_next = set.members[k + 1].0 as f64;
 
-  let step_term = if next > k {
-    let r_k = set.members[k].0 as f64;
-    let r_next = set.members[next].0 as f64;
-    if r_k > 0.0 && r_next > r_k {
-      (((r_next - r_k) / r_k) / rho).ceil() as u64
-    } else {
-      0
-    }
+  let step_term = if r_k <= 0.0 {
+    // The draft treats a zero nominal rate as a 100 % step.
+    (1.0 / rho).ceil() as u64
+  } else if r_next > r_k {
+    (((r_next - r_k) / r_k) / rho).ceil() as u64
   } else {
-    // The top rung: nothing to price, the rails alone govern.
     0
   };
 
-  let mut streak = step_term.max(1);
-  if let Some(floor) = u_min {
-    streak = streak.max(floor.max(1));
-  }
+  let u_min = u_min.unwrap_or(2).max(2);
+  let mut streak = step_term.max(2).max(u_min);
   if let Some(cap) = u_max {
-    streak = streak.min(cap.max(1));
+    // A cap below the floor is raised to the floor: the floor cannot be
+    // undercut by a cap, which is the draft's tie-break.
+    streak = streak.min(cap.max(u_min));
   }
   streak
 }

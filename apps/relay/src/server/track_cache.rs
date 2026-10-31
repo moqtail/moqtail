@@ -202,7 +202,6 @@ impl TrackCache {
   }
 
   /// Get a specific group if it exists
-  #[allow(dead_code)]
   pub async fn get_group(&self, group_id: u64) -> Option<GroupObjects> {
     let cache_key = CacheKey::new(self.relay_track_id, group_id);
     self.cache.get(&cache_key).await

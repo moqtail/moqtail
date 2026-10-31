@@ -931,11 +931,6 @@ pub(crate) async fn serve_fetch_stream(
           send_stream = match stream_fn(client.clone(), &stream_id).await {
             Some(ss) => Some(ss),
             None => {
-              client
-                .fetch_cancel_senders
-                .write()
-                .await
-                .remove(&request_id);
               return Err(TerminationCode::InternalError);
             }
           };
@@ -946,11 +941,6 @@ pub(crate) async fn serve_fetch_stream(
           Ok(bytes) => bytes,
           Err(e) => {
             error!("handle_fetch_messages | Error serializing object: {:?}", e);
-            client
-              .fetch_cancel_senders
-              .write()
-              .await
-              .remove(&request_id);
             return Err(TerminationCode::InternalError);
           }
         };
@@ -969,11 +959,6 @@ pub(crate) async fn serve_fetch_stream(
             "handle_fetch_messages | Error writing object to stream: {:?}",
             e
           );
-          client
-            .fetch_cancel_senders
-            .write()
-            .await
-            .remove(&request_id);
           return Err(TerminationCode::InternalError);
         }
 
@@ -1070,11 +1055,6 @@ pub(crate) async fn serve_fetch_stream(
                     send_stream = match stream_fn(client.clone(), &stream_id).await {
                       Some(ss) => Some(ss),
                       None => {
-                        client
-                          .fetch_cancel_senders
-                          .write()
-                          .await
-                          .remove(&request_id);
                         return Err(TerminationCode::InternalError);
                       }
                     };
@@ -1090,11 +1070,6 @@ pub(crate) async fn serve_fetch_stream(
                           "handle_fetch_messages | Error serializing upstream object: {:?}",
                           e
                         );
-                        client
-                          .fetch_cancel_senders
-                          .write()
-                          .await
-                          .remove(&request_id);
                         return Err(TerminationCode::InternalError);
                       }
                     };
@@ -1113,11 +1088,6 @@ pub(crate) async fn serve_fetch_stream(
                       "handle_fetch_messages | Error writing upstream object to stream: {:?}",
                       e
                     );
-                    client
-                      .fetch_cancel_senders
-                      .write()
-                      .await
-                      .remove(&request_id);
                     return Err(TerminationCode::InternalError);
                   }
 

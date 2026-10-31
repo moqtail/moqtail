@@ -105,24 +105,25 @@ setting. The numbers are in the README's "What it does badly".
    what happens today. The research branch had a cancel-notify path for them. Decide
    whether the tail they finish sending is worth the machinery, once it shows up in
    a capture.
-3. **Three knobs: `wasd.reads`, `wasd.rho` and `wasd.umin`.** Whether the inherited deadline
-   is worth exposing (it should probably stay fixed — it is semantics, not
-   tuning), and whether the monitor's depth thresholds deserve more knobs
-   before someone asks for them.
-4. **The `umin` / `rho` extension slots.** Both are live. `rho` is read from a
-   trailing percentage in `algorithm_params`, overriding the operator's for
-   that subscriber's sets. `umin` is signalled the same way — slot 0 of the
-   two-slot layout, a count of media groups — and a zero or an unsignalled
-   slot keeps the automatic default — the operator's `wasd.umin`, else
-   `ceil(B / G)` from the subscriber's own buffer and observed cadence — so
-   the floor arrives with the connection instead of being signalled whenever
-   the client does not insist. The positional convention (one slot = rho
-   alone; two slots = umin, rho) is the open surface: a float on the wire
-   would need a different encoding, and the vec is `u64`.
-5. **No end-to-end test of the replay.** The head selection is unit-tested
-   (`cached_head`); the write path — new stream, header, head objects, live objects
-   continuing behind — needs a two-hop harness that does not exist yet. Decide
-   whether to build it before this is offered anywhere as more than an experiment.
+3. **Four knobs: `wasd.reads`, `wasd.rho`, `wasd.umin` and `wasd.umax`.**
+   Whether the inherited deadline is worth exposing (it should probably stay
+   fixed — it is semantics, not tuning), and whether the monitor's depth
+   thresholds deserve more knobs before someone asks for them.
+4. **The extension fields.** All three adaptation fields are live and fixed in
+   the draft's order: `[rho_pct, U_min, U_max]` after the latency budget.
+   `rho` is a percentage (`0` publisher default, `>100` clamped), `U_min` is a
+   group count raised to the draft floor of two, and `U_max` is a cap (`0`
+   unbounded). A signalled field overrides the operator's for that
+   subscriber's sets; the operator's values apply only where the subscriber
+   made no decision. The remaining open surface is the integer encoding of
+   `rho` (a float would need a different wire representation); the positions
+   themselves are no longer open.
+5. **The cache-only replay arm is unit-tested, not end-to-end.** The head and
+   cache-range selection are unit-tested, and the write path is shared with
+   the live re-send; the cache-only trigger — an overtaken Group complete at
+   the relay with no further Object — still needs a two-hop harness that does
+   not exist yet. Decide whether to build it before this is offered anywhere
+   as more than an experiment.
 6. **Re-sent bytes and reporting.** They count toward the PUBLISH_DONE stream count
    (they are real streams) and toward nothing that distinguishes them from fresh
    media. If REPORTING/STATUS ever needs to explain a duplicate group to a

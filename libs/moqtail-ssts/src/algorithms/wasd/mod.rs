@@ -550,22 +550,21 @@ impl AbrAlgorithm for WasdAlgorithm {
 /// to the most demanding ladder):
 ///
 /// ```text
-/// U(k) = clamp(ceil(((R_{k+1} - R_k) / R_k) / rho), u_min, u_max), at least 1
+/// U(k) = min(u_max, max(2, u_min, ceil(((R_{k+1} - R_k) / R_k) / rho)))
 /// ```
 ///
 /// `rho` is the mechanism. The step term prices the jump itself: a ladder
 /// whose next rung is 3x the current one is a 3x bigger bet than one 20 % up,
 /// and `rho` is how much risk to bet per clean group. A subscriber may signal
-/// its own tolerance as a percentage (`1..=100`, trailing `algorithm_params`
-/// slot); that outranks the operator's.
+/// its own tolerance as the first `algorithm_params` field (`0` default,
+/// `1..=100`, above 100 clamped); that outranks the operator's.
 ///
-/// The rails are not the mechanism. `u_min` (default one clean group, the
-/// smallest wait the state machine can express) is a floor for an operator who
-/// wants a fixed minimum dwell; `u_max` (default none) caps the wait so a low
-/// `rho` cannot ask for more clean groups than a short trace will ever
-/// produce. Because they clamp the same number, `u_min == u_max` pins `U(k)`
-/// to that constant and makes `rho` inert: that is how an operator turns
-/// `rho` off without a separate switch. When the two conflict, the cap wins.
+/// The rails are not the mechanism. `u_min` (the draft's two clean groups) is
+/// a floor; `u_max` (default none) caps the wait so a low `rho` cannot ask for
+/// more clean groups than a short trace will ever produce. Because they clamp
+/// the same number, `u_min == u_max` pins `U(k)` to that constant and makes
+/// `rho` inert: that is how an operator turns `rho` off without a separate
+/// switch. A cap below the floor is raised to the floor.
 ///
 /// Note what is deliberately absent: the floor is no longer derived from the
 /// subscriber's buffer as `ceil(B / G)`. Any such derivation was an arbitrary
@@ -731,11 +730,7 @@ fn ladder_owner<'a>(input: &'a AbrInput<'_>, last_set_id: Option<u64>) -> Option
   input
     .sets
     .iter()
-    .find(|set| {
-      set.active
-        && !set.members.is_empty()
-        && last_set_id.is_none_or(|id| set.id == id)
-    })
+    .find(|set| set.active && !set.members.is_empty() && last_set_id.is_none_or(|id| set.id == id))
     .or_else(|| {
       input
         .sets

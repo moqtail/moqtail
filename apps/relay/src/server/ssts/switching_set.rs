@@ -563,6 +563,7 @@ impl SwitchingSetManager {
   /// leave those decisions referring to a different algorithm. It is reported
   /// rather than dropped in silence, which is what the returned warnings are
   /// for.
+  #[allow(clippy::too_many_arguments)]
   pub fn update_assignment(
     &mut self,
     full_track_name: &FullTrackName,

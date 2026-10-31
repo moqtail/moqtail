@@ -18,6 +18,7 @@
 
 use std::collections::HashMap;
 
+use super::set_upshift_streak;
 use crate::AbrAlgorithm;
 use crate::AbrInput;
 use crate::DecisionReason;
@@ -26,7 +27,6 @@ use crate::StreamSnapshot;
 use crate::algorithms::wasd::Reach;
 use crate::algorithms::wasd::WasdAlgorithm;
 use crate::algorithms::wasd::WasdParams;
-use super::set_upshift_streak;
 
 /// A set with a four-rung ladder. The rungs are addressed by index, so tier
 /// `n` of set `id` is track `id * 10 + n`.
@@ -697,18 +697,9 @@ fn the_monitor_rearms_after_it_fires() {
   let at_two = deep_at(2);
   let mut selection = None;
   for _ in 0..3 {
-    selection = Some(algorithm.decide(&input(
-      &sets,
-      &at_two,
-      DecisionReason::PeriodicSample,
-      29,
-    )));
+    selection = Some(algorithm.decide(&input(&sets, &at_two, DecisionReason::PeriodicSample, 29)));
   }
-  assert_eq!(
-    tier_of(&selection.unwrap(), 1),
-    1,
-    "the monitor fired"
-  );
+  assert_eq!(tier_of(&selection.unwrap(), 1), 1, "the monitor fired");
 
   // The step drained the signal it was reading: those same streams are at a
   // rung the algorithm has now rejected. One fresh reading at the new tier must
@@ -717,12 +708,7 @@ fn the_monitor_rearms_after_it_fires() {
   let at_one = deep_at(1);
   let mut selection = None;
   for _ in 0..2 {
-    selection = Some(algorithm.decide(&input(
-      &sets,
-      &at_one,
-      DecisionReason::PeriodicSample,
-      29,
-    )));
+    selection = Some(algorithm.decide(&input(&sets, &at_one, DecisionReason::PeriodicSample, 29)));
   }
   assert_eq!(
     tier_of(&selection.unwrap(), 1),
@@ -862,11 +848,7 @@ fn the_default_floor_is_two_and_rho_prices_the_step() {
     assert_eq!(tier_of(&selection, 1), 1);
   }
   let selection = algorithm.decide(&input(&sets, &empty, DecisionReason::GroupBoundary, 10));
-  assert_eq!(
-    tier_of(&selection, 1),
-    2,
-    "and the next step waits four"
-  );
+  assert_eq!(tier_of(&selection, 1), 2, "and the next step waits four");
 }
 
 /// A smaller rho pays for its caution in groups: the step 850 -> 1800 is a
@@ -1502,5 +1484,9 @@ fn a_ladder_change_preserves_the_selected_nominal_rate() {
     DecisionReason::PeriodicSample,
     1,
   ));
-  assert_eq!(selection[&1], Some(11), "the rate walks down with the ladder");
+  assert_eq!(
+    selection[&1],
+    Some(11),
+    "the rate walks down with the ladder"
+  );
 }

@@ -126,7 +126,7 @@ the second re-send's deadline.
 
 ## Knobs
 
-`wasd.reads` (default 2): how many consecutive congested mid-group readings
+`wasd.reads` (default 3): how many consecutive congested mid-group readings
 the monitor waits for. It is worth moving when the media paces differently
 than the sample the default was tuned on: on a 25 fps stream with 100 ms
 groups the default filters a normal group tail, and on media whose groups
@@ -134,26 +134,23 @@ are seconds long the window it takes to see real congestion inside one is
 much longer. Setting it to 1 turns the monitor into a reaction to a single
 sample, which is not a monitor; it is clamped to 1 rather than 0.
 
-`wasd.rho` (default 0.4, in `(0.01, 1]`): the probing risk tolerance, and
+`wasd.rho` (default 0.25, in `(0.01, 1]`): the probing risk tolerance, and
 the mechanism the climb is priced by. The steady climb waits
 
 ```text
-U(k) = clamp( ceil( ((R_{k+1} - R_k) / R_k) / rho ), u_min, u_max )   (>= 1)
+U(k) = min( u_max, max( 2, u_min, ceil( ((R_{k+1} - R_k) / R_k) / rho ) ) )
 ```
 
 clean groups. The step term prices the jump itself: a 3x rung is a 3x bigger
 bet than a 1.2x one, so the observation window scales with it. Lower is more
-cautious. 0.4 is the default because it was measured: on the
-0.60/1.18/2.89/5.75 Mbps ladder it asks 3, 4, 3 clean groups, and in the
-preliminary sweep it was the best point short of the cliff — at rho = 1.0 the
-first step prices at one clean group, i.e. probing every group, which
-collapsed the ladder on the cascade profile.
+cautious. 0.25 is the draft's default: on the 0.60/1.18/2.89/5.75 Mbps ladder
+it asks 5, 4 and 3 clean groups. A zero nominal rate counts as a 100 % step,
+and the top rung is the draft's fixed two.
 
-`wasd.umin` (default 1): a floor under the priced wait, in clean groups.
-**`wasd.umin=0` removes the floor** — the step term then governs alone — and
-that is deliberately different from leaving the key out. One is the smallest
-wait the state machine can express (a climb needs at least one clean
-boundary), so the default floor is effectively "none".
+`wasd.umin` (default 2): a floor under the priced wait, in clean groups. The
+draft fixes the minimum at two, so a lower value — including zero — is raised
+to two rather than removing the floor. Setting it higher takes direct control
+and lets `rho` stop deciding the minimum.
 
 `wasd.umax` (default unset): a cap on the wait, in clean groups; `0` or an
 unset key is no cap. It exists to bound recovery time when `rho` is low: at
@@ -163,7 +160,7 @@ trace means never climbing again.
 Both are rails, not mechanisms, and they clamp the same number: **setting
 `wasd.umin` equal to `wasd.umax` pins `U(k)` to that constant and makes `rho`
 inert** — that is the "I do not want rho" setting, with no separate switch.
-When the two conflict (`umin` greater than `umax`) the cap wins.
+A cap below the floor is raised to the floor, so the floor is never undercut.
 
 There is no derived floor. It used to default to one buffer-depth,
 `ceil(B / G)`, computed from the subscriber's buffer and the observed group
@@ -173,14 +170,14 @@ remains a good *recommended* value for an operator to set — `wasd.umin=4` for
 a 1.6 s buffer with 500 ms groups — but it is now chosen, not assumed.
 
 **Subscriber signalling.** The set's algorithm parameters carry the same
-numbers per connection, and signalled values override the operator's for that
-subscriber's sets. With one parameter it is the tolerance: a percentage
-(`1..=100`) for `rho`. With two or more, slot 0 is `U_min` — a count of media
-groups, `0` meaning "not signalled" — and the trailing parameter is the `rho`
-percentage. An unsignalled (or zero) `U_min` leaves the operator's rails in
-place: the wire format cannot tell "no floor" from "no opinion" in a
-zero-valued slot, so only the operator can remove the floor. `wasd.umax` has
-no signalling slot at all.
+numbers per connection, in the draft's fixed extension order:
+`[rho_pct, U_min, U_max]`, after the latency budget. A signalled value
+overrides the operator's for that subscriber's sets. `rho_pct` is `1..=100`,
+with `0` meaning the publisher default (25 %) and values above 100 clamped to
+100 %. `U_min` is a count of media groups, raised to the draft floor of two;
+`0` also means the publisher default. `U_max` is the third field: non-zero
+caps the wait, and `0` means unbounded rather than falling back to the
+operator's cap.
 
 ## What this is not, and where the rest of the experiment went
 
@@ -190,18 +187,19 @@ They are described here so that what the algorithm's decisions _mean_ on this
 relay is legible from the algorithm's directory.
 
 **The replay is in the relay's forwarding path.** A group this algorithm
-overtook is re-sent in full: the relay notices that the first object it forwards
-for that group is not the subgroup's first, opens a new stream on the member the
-re-send runs on — the decision's own rung for the newest overtaken group, one
-rung below for each older one — puts the cached head (objects `0..N-1` of that
-subgroup) on it from the track cache, and lets the live objects continue behind.
-Nothing is
-waited for: a head that is not in the cache — evicted, or a member whose copy of
-the group started later — means no re-send, and the switch stands on its own. The
-old delivery is reset rather than reused, and the new stream carries the
-publisher's own header for that subgroup, which is what makes `FIRST_OBJECT`
-correct: a re-send starts where a subgroup starts. See
-`apps/relay/src/server/subscription.rs`.
+overtook is re-sent from the member the decision chose: the relay opens a new
+stream on that member, puts the cached run (from the subgroup's first object up
+to the live object, or the whole cached subgroup when no live object is coming)
+on it, and lets the live objects continue behind. The cache-only arm is what
+covers a Group already complete at the relay when a downshift overtakes it: no
+further Object will arrive to trigger the live path, so the replacement is
+armed at supersede time. A Group whose cached Objects were all already written
+is not re-sent. The old delivery is reset rather than reused. The new stream
+carries the publisher's own header when it is still open; if the publisher's
+stream has closed, the relay synthesizes a first-object header for the cached
+run, which is why that run must start at the subgroup's first Object. A cache
+that has evicted the Group means no re-send, and the switch stands on its own.
+See `apps/relay/src/server/subscription.rs`.
 
 **Best effort, by decision.** A re-send costs the bytes of a group that was
 already partly sent, on a connection that is congested by definition, and it
@@ -211,16 +209,15 @@ much of a group has already been sent, and no estimate consulted before
 committing the bytes. On a link that is congested rather than merely busy, that
 shows up as a group that arrives twice and still gets discarded.
 
-**The extension's `umin` and `rho` slots.** The research version read a third
-extension slot as a timeout and stored two others unused. The timeout is now
-`subscriber_buffer_ms`, which is the field with mechanism meaning; the two
-dormant slots are live here. A subscriber signals its probing risk tolerance
-`rho` as a percentage (`1..=100`) in the trailing `algorithm_params` slot, and
-its minimum upshift stability threshold `U_min` — a count of media groups — in
-slot 0 of the two-slot layout; a zero, or a one-slot vec, means unsignalled and
-the operator's rails stand. The cap has no slot: it is an operator's guard, not
-a subscriber preference. The subscriber sends the two it has in the order the
-algorithm defines.
+**The extension's `rho`, `U_min` and `U_max` fields.** The research version
+read a third extension slot as a timeout and stored two others unused. The
+timeout is now `subscriber_buffer_ms`, and the draft's three adaptation fields
+follow it in the fixed order `[rho_pct, U_min, U_max]`. A subscriber signals
+its probing risk tolerance as a percentage (`1..=100`; `0` default, `>100`
+clamped), its minimum upshift stability threshold as a group count (raised to
+the draft floor of two), and its cap (`0` unbounded). The operator's
+`wasd.umin` / `wasd.umax` apply only when the subscriber did not make the
+field a decision.
 
 ## What it does badly
 

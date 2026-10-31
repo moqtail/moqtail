@@ -249,7 +249,7 @@ impl SendDataStream {
         let payload = object.try_into_fetch()?;
         let fetch_obj = FetchObject::Object(payload);
         buf.extend_from_slice(&fetch_obj.serialize(self.fetch_prev_ctx.as_ref(), group_order)?);
-        self.fetch_prev_ctx = fetch_obj.context();
+        self.fetch_prev_ctx = Some(fetch_obj.next_context(self.fetch_prev_ctx.as_ref()));
       }
       HeaderInfo::Subgroup { header, .. } => {
         let has_properties = header.header_type.has_properties();
@@ -270,6 +270,41 @@ impl SendDataStream {
       })?;
 
     Ok(())
+  }
+
+  /// Writes an End of Range marker on a fetch stream: every Location after the last
+  /// Object written, if any, up to and including `location`, is of `kind`. The Object
+  /// written next is encoded against the marker's Location.
+  pub async fn send_end_of_range(
+    &mut self,
+    kind: EndOfRangeKind,
+    location: &Location,
+  ) -> Result<(), ParseError> {
+    let HeaderInfo::Fetch { .. } = &self.header_info else {
+      return Err(ParseError::Other {
+        context: "SendDataStream::send_end_of_range",
+        msg: "End of Range markers are only for fetch streams".to_string(),
+      });
+    };
+    let marker = FetchObject::EndOfRange {
+      kind,
+      group_id: location.group,
+      object_id: location.object,
+    };
+    // A marker's encoding does not depend on the Group Order.
+    let buf = marker.serialize(self.fetch_prev_ctx.as_ref(), GroupOrder::Ascending)?;
+    self.fetch_prev_ctx = Some(marker.next_context(self.fetch_prev_ctx.as_ref()));
+
+    self
+      .send_stream
+      .lock()
+      .await
+      .write_all(&buf)
+      .await
+      .map_err(|e| ParseError::Other {
+        context: "SendDataStream::send_end_of_range",
+        msg: e.to_string(),
+      })
   }
 
   pub async fn flush(&mut self) -> Result<(), ParseError> {
@@ -605,52 +640,53 @@ impl RecvDataStream {
       let parse_result: ObjectParseResult = match header_info {
         HeaderInfo::Fetch { fetch_request, .. } => {
           let group_order = fetch_group_order(fetch_request.as_ref());
-          FetchObject::deserialize(
-            &mut bytes_cursor,
-            fetch_state.prev_ctx.as_ref(),
-            group_order,
-          )
-          .and_then(|fetch_obj| {
-            let new_ctx = fetch_obj.context();
-            match fetch_obj {
-              FetchObject::Object(payload) => {
-                let validated = fetch_state
-                  .subgroup_priorities
-                  .validate(&payload)
-                  .and_then(|()| {
-                    validate_prior_gaps(
-                      payload.group_id,
-                      payload.object_id,
-                      payload.properties.as_deref(),
-                    )
-                  });
-                if let Err(e) = validated {
-                  malformed_track.store(true, Ordering::Relaxed);
-                  return Err(e);
+          let prev_ctx = fetch_state.prev_ctx;
+          FetchObject::deserialize(&mut bytes_cursor, prev_ctx.as_ref(), group_order).and_then(
+            |fetch_obj| {
+              // A marker moves the prior Location on too, so it threads a context
+              // like an Object does.
+              let new_ctx = Some(fetch_obj.next_context(prev_ctx.as_ref()));
+              match fetch_obj {
+                FetchObject::Object(payload) => {
+                  let validated =
+                    fetch_state
+                      .subgroup_priorities
+                      .validate(&payload)
+                      .and_then(|()| {
+                        validate_prior_gaps(
+                          payload.group_id,
+                          payload.object_id,
+                          payload.properties.as_deref(),
+                        )
+                      });
+                  if let Err(e) = validated {
+                    malformed_track.store(true, Ordering::Relaxed);
+                    return Err(e);
+                  }
+                  // A fetch stream carries no Track Alias. The 0 here is a placeholder
+                  // that may well collide with a real subscription's alias, so
+                  // callers route these objects by the FETCH_HEADER's Request ID
+                  // instead: a FETCH's when `fetch_request` is set, and otherwise
+                  // that of the SUBSCRIBE or REQUEST_UPDATE whose fill this stream
+                  // delivers, which only the caller can map to a subscription.
+                  let object = Object::try_from_fetch(payload, 0)?;
+                  Ok((None, new_ctx, Some(DataStreamItem::Object(object))))
                 }
-                // A fetch stream carries no Track Alias. The 0 here is a placeholder
-                // that may well collide with a real subscription's alias, so
-                // callers route these objects by the FETCH_HEADER's Request ID
-                // instead: a FETCH's when `fetch_request` is set, and otherwise
-                // that of the SUBSCRIBE or REQUEST_UPDATE whose fill this stream
-                // delivers, which only the caller can map to a subscription.
-                let object = Object::try_from_fetch(payload, 0)?;
-                Ok((None, new_ctx, Some(DataStreamItem::Object(object))))
-              }
-              FetchObject::EndOfRange {
-                kind,
-                group_id,
-                object_id,
-              } => Ok((
-                None,
-                None,
-                Some(DataStreamItem::EndOfRange {
+                FetchObject::EndOfRange {
                   kind,
-                  location: Location::new(group_id, object_id),
-                }),
-              )),
-            }
-          })
+                  group_id,
+                  object_id,
+                } => Ok((
+                  None,
+                  new_ctx,
+                  Some(DataStreamItem::EndOfRange {
+                    kind,
+                    location: Location::new(group_id, object_id),
+                  }),
+                )),
+              }
+            },
+          )
         }
         HeaderInfo::Subgroup { header, .. } => {
           let has_properties = header.header_type.has_properties();
@@ -1284,6 +1320,54 @@ mod tests {
       locations.push(object.location);
     }
     assert_eq!(locations, [Location::new(9, 10)]);
+  }
+
+  #[tokio::test]
+  async fn objects_after_a_marker_keep_their_ids() {
+    let (send, recv) = setup_stream_pair().await;
+    let (fetch_header, fetch_req) = make_fetch_header_and_request();
+    let mut sender = SendDataStream::new(
+      Arc::new(Mutex::new(TransportSendStream::WebTransport(send))),
+      HeaderInfo::Fetch {
+        header: fetch_header,
+        fetch_request: Some(fetch_req),
+      },
+    )
+    .await
+    .unwrap();
+    let receiver = RecvDataStream::new(
+      TransportRecvStream::WebTransport(recv),
+      Arc::new(RwLock::new(BTreeMap::new())),
+    );
+
+    let at = |group_id, object_id| {
+      let mut payload = make_fetch_object();
+      payload.group_id = group_id;
+      payload.object_id = object_id;
+      Object::try_from_fetch(payload, 0).unwrap()
+    };
+    sender.send_object(&at(9, 10), None).await.unwrap();
+    sender
+      .send_end_of_range(EndOfRangeKind::Unknown, &Location::new(10, 5))
+      .await
+      .unwrap();
+    // One in the marker's group, right after it, and one in the next group.
+    sender.send_object(&at(10, 6), None).await.unwrap();
+    sender.send_object(&at(11, 0), None).await.unwrap();
+    sender.send_stream.lock().await.finish().await.unwrap();
+
+    let mut locations = Vec::new();
+    while let (_, Some(object)) = receiver.next_object().await {
+      locations.push(object.location);
+    }
+    assert_eq!(
+      locations,
+      [
+        Location::new(9, 10),
+        Location::new(10, 6),
+        Location::new(11, 0)
+      ]
+    );
   }
 
   #[tokio::test]

@@ -951,7 +951,7 @@ pub(crate) async fn serve_fetch_stream(
             return Err(TerminationCode::InternalError);
           }
         };
-        fetch_prev_ctx = fetch_obj.context();
+        fetch_prev_ctx = Some(fetch_obj.next_context(fetch_prev_ctx.as_ref()));
 
         if let Err(e) = client
           .write_stream_object(
@@ -1074,7 +1074,7 @@ pub(crate) async fn serve_fetch_stream(
                         return Err(TerminationCode::InternalError);
                       }
                     };
-                  fetch_prev_ctx = fetch_obj.context();
+                  fetch_prev_ctx = Some(fetch_obj.next_context(fetch_prev_ctx.as_ref()));
 
                   if let Err(e) = client
                     .write_stream_object(

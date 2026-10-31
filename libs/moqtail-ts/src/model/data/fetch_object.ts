@@ -42,14 +42,21 @@ const END_OF_TIMED_OUT_RANGE = 0x20cn
 const MAX_VARINT = 2n ** 64n - 1n
 
 /**
- * Prior-object state threaded across successive Fetch Objects on the same stream.
+ * The prior Object a Fetch Object is encoded against: each one is written as
+ * differences from it.
  */
 export type FetchObjectContext = {
   groupId: bigint
-  /** Null when no Object has come yet, only an End of Range marker. */
+  /**
+   * Null while the stream has carried only End of Range markers and no Object yet:
+   * a marker sets the prior Group and Object IDs, but has no Subgroup ID.
+   */
   subgroupId: bigint | null
   objectId: bigint
-  /** Null when no Object has come yet, only an End of Range marker. */
+  /**
+   * Null while the stream has carried only End of Range markers and no Object yet:
+   * a marker has no priority.
+   */
   publisherPriority: number | null
 }
 
@@ -100,10 +107,12 @@ export class FetchObject {
   }
 
   /**
-   * The context to thread into the next call on this stream, given the one this was
-   * encoded against. After an End of Range marker, the prior Group and Object IDs
-   * are the marker's, while the prior Subgroup ID and priority stay those of the last
-   * Object before it, if there was one.
+   * What the entry after this one is encoded against, given what this one was
+   * encoded against (`prev`).
+   *
+   * After an Object, that is the Object itself. After an End of Range marker, it is
+   * the marker's Group and Object IDs, with the Subgroup ID and priority still those
+   * of the last Object before the marker, or none if no Object came before it.
    */
   nextContext(prev?: FetchObjectContext): FetchObjectContext {
     if (this.kind === 'end_of_range') {

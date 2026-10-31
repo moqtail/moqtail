@@ -40,15 +40,17 @@ const END_OF_NON_EXISTENT_RANGE: u64 = 0x8C;
 const END_OF_UNKNOWN_RANGE: u64 = 0x10C;
 const END_OF_TIMED_OUT_RANGE: u64 = 0x20C;
 
-/// Prior-object state threaded across successive Fetch Objects on the same stream.
-/// Used by both `serialize` and `deserialize` to compute / resolve inherited fields.
+/// The prior Object a Fetch Object is encoded against: each one is written as
+/// differences from it. Used by both `serialize` and `deserialize`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FetchObjectContext {
   pub group_id: u64,
-  /// None when no Object has come yet, only an End of Range marker.
+  /// None while the stream has carried only End of Range markers and no Object yet:
+  /// a marker sets the prior Group and Object IDs, but has no Subgroup ID.
   pub subgroup_id: Option<u64>,
   pub object_id: u64,
-  /// None when no Object has come yet, only an End of Range marker.
+  /// None while the stream has carried only End of Range markers and no Object yet:
+  /// a marker has no priority.
   pub publisher_priority: Option<u8>,
 }
 
@@ -100,10 +102,12 @@ pub enum FetchObject {
 }
 
 impl FetchObject {
-  /// The context to thread into the next call on this stream, given the one this was
-  /// encoded against. After an End of Range marker, the prior Group and Object IDs
-  /// are the marker's, while the prior Subgroup ID and priority stay those of the last
-  /// Object before it, if there was one.
+  /// What the entry after this one is encoded against, given what this one was
+  /// encoded against (`prev`).
+  ///
+  /// After an Object, that is the Object itself. After an End of Range marker, it is
+  /// the marker's Group and Object IDs, with the Subgroup ID and priority still those
+  /// of the last Object before the marker, or none if no Object came before it.
   pub fn next_context(&self, prev: Option<&FetchObjectContext>) -> FetchObjectContext {
     match self {
       FetchObject::Object(p) => FetchObjectContext {

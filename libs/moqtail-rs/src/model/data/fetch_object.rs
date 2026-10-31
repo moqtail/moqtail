@@ -38,6 +38,7 @@ const SUBGROUP_MODE_PRESENT: u8 = 0b11;
 /// Special Serialization Flag varint values for End-of-Range markers.
 const END_OF_NON_EXISTENT_RANGE: u64 = 0x8C;
 const END_OF_UNKNOWN_RANGE: u64 = 0x10C;
+const END_OF_TIMED_OUT_RANGE: u64 = 0x20C;
 
 /// Prior-object state threaded across successive Fetch Objects on the same stream.
 /// Used by both `serialize` and `deserialize` to compute / resolve inherited fields.
@@ -56,6 +57,9 @@ pub enum EndOfRangeKind {
   NonExistent,
   /// Serialization Flags = 0x10C: the range is cache-unknown.
   Unknown,
+  /// Serialization Flags = 0x20C: the range timed out, e.g. a relay ran out of its
+  /// fill budget before it could retrieve it.
+  TimedOut,
 }
 
 impl EndOfRangeKind {
@@ -63,6 +67,7 @@ impl EndOfRangeKind {
     match self {
       EndOfRangeKind::NonExistent => END_OF_NON_EXISTENT_RANGE,
       EndOfRangeKind::Unknown => END_OF_UNKNOWN_RANGE,
+      EndOfRangeKind::TimedOut => END_OF_TIMED_OUT_RANGE,
     }
   }
 }
@@ -139,6 +144,7 @@ impl FetchObject {
       let kind = match flags_raw {
         END_OF_NON_EXISTENT_RANGE => EndOfRangeKind::NonExistent,
         END_OF_UNKNOWN_RANGE => EndOfRangeKind::Unknown,
+        END_OF_TIMED_OUT_RANGE => EndOfRangeKind::TimedOut,
         other => {
           return Err(ParseError::ProtocolViolation {
             context: "FetchObject::deserialize",
@@ -758,8 +764,23 @@ mod tests {
   }
 
   #[test]
+  fn roundtrip_end_of_timed_out_range() {
+    let obj = FetchObject::EndOfRange {
+      kind: EndOfRangeKind::TimedOut,
+      group_id: 3,
+      object_id: 9,
+    };
+    let mut buf = obj.serialize(None, ASC).unwrap();
+    let mut flags = BytesMut::new();
+    flags.put_vi(0x20Cu64).unwrap();
+    assert!(buf.starts_with(&flags), "Serialization Flags 0x20C");
+    let parsed = FetchObject::deserialize(&mut buf, None, ASC).unwrap();
+    assert_eq!(parsed, obj);
+  }
+
+  #[test]
   fn reject_reserved_high_flag_value() {
-    // 0x80 is ≥ 128 but not 0x8C / 0x10C → protocol violation.
+    // 0x80 is ≥ 128 but not 0x8C / 0x10C / 0x20C → protocol violation.
     let mut buf = BytesMut::new();
     buf.put_vi(0x80u64).unwrap();
     buf.put_vi(1u64).unwrap();

@@ -1016,6 +1016,7 @@ async fn wait_for_publisher_streams(
     client.connection_id,
     stream_count,
     context.server_config.publish_done_stream_timeout,
+    context.server_config.publish_done_datagram_quiet,
   )
   .await;
 }

@@ -268,6 +268,7 @@ async fn upstream_subscribe_exchange(
                 publisher.connection_id,
                 m.stream_count,
                 context.server_config.publish_done_stream_timeout,
+                context.server_config.publish_done_datagram_quiet,
               )
               .await;
 

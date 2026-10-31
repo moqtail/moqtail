@@ -39,6 +39,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::{Mutex, MutexGuard, Notify, RwLock, oneshot};
+use tokio::time::Instant;
 use tracing::{debug, error, info, trace, warn};
 
 pub type ActiveSubgroupHeaderMap = Arc<RwLock<HashMap<StreamId, HeaderInfo>>>;
@@ -139,6 +140,36 @@ pub enum Release {
   Kept(Vec<(usize, u64)>),
   /// It holds nothing and is for the caller to remove.
   Empty,
+}
+
+/// When the last datagram for a track arrived, so a PUBLISH_DONE can wait for the
+/// datagrams it would otherwise overtake. Datagrams are not counted in its Stream
+/// Count, so the relay cannot tell when the last one is in; it waits for them to go
+/// quiet instead.
+#[derive(Debug, Default)]
+pub struct DatagramArrivals {
+  last: std::sync::Mutex<Option<Instant>>,
+}
+
+impl DatagramArrivals {
+  pub fn arrived(&self) {
+    *self.last.lock().unwrap() = Some(Instant::now());
+  }
+
+  /// Waits until no datagram has arrived for `quiet`, or until `deadline`. A track
+  /// that has had no datagram does not wait at all.
+  pub async fn wait_for_quiet(&self, quiet: Duration, deadline: Instant) {
+    loop {
+      let Some(last) = *self.last.lock().unwrap() else {
+        return;
+      };
+      let until = (last + quiet).min(deadline);
+      if Instant::now() >= until {
+        return;
+      }
+      tokio::time::sleep_until(until).await;
+    }
+  }
 }
 
 /// What created a track, and so who keeps it fed.
@@ -246,6 +277,8 @@ pub struct Track {
   /// Data streams each publisher has finished sending, so a PUBLISH_DONE can be
   /// held until the streams it accounts for have been taken in.
   pub publisher_stream_progress: Arc<PublisherStreamProgress>,
+  /// When its datagrams arrive, which a PUBLISH_DONE waits on (see DatagramArrivals).
+  pub datagram_arrivals: Arc<DatagramArrivals>,
   /// One per publisher; firing it resets that relay-owned upstream SUBSCRIBE stream
   /// when the last downstream subscriber goes away. Only the pull path fills this, so
   /// a PUBLISH-created track leaves it empty and a subscriber leaving never cancels
@@ -316,6 +349,7 @@ impl Track {
       track_properties: Arc::new(RwLock::new(Vec::new())),
       active_subgroup_headers: Arc::new(RwLock::new(HashMap::new())),
       publisher_stream_progress: Arc::new(PublisherStreamProgress::default()),
+      datagram_arrivals: Arc::new(DatagramArrivals::default()),
       upstream_subscribe_cancellers: Arc::new(Mutex::new(Vec::new())),
       pending_upstream_subscribe_count: Arc::new(AtomicUsize::new(0)),
       upstream_forward: Arc::new(AtomicBool::new(false)),
@@ -765,6 +799,7 @@ impl Track {
   }
 
   pub async fn new_datagram(&self, datagram: &Datagram) -> Result<()> {
+    self.datagram_arrivals.arrived();
     trace!(
       "new_datagram: relay_track_id={} group: {:?} object_id={} diff_ms={}",
       self.relay_track_id,
@@ -900,29 +935,50 @@ impl Track {
 }
 
 /// Holds a PUBLISH_DONE back until `stream_count` of that publisher's data streams
-/// for the track have finished arriving, or `timeout` elapses. A publisher that names
-/// more streams than it opens must not stall the subscription's end, so a short count
-/// is logged and the caller carries on.
+/// for the track have finished arriving, and, for a track that has been receiving
+/// datagrams, until none has arrived for `datagram_quiet`; all within `timeout`. A
+/// publisher that names more streams than it opens must not stall the subscription's
+/// end, so a short count is logged and the caller carries on.
 pub async fn await_publisher_streams(
   track: &Arc<RwLock<Track>>,
   publisher_connection_id: usize,
   stream_count: u64,
   timeout: Duration,
+  datagram_quiet: Duration,
 ) {
-  if stream_count == 0 {
-    return;
-  }
+  let deadline = Instant::now() + timeout;
 
   // Taken out of the track before waiting: holding the track lock for the length of
   // the wait would stall every other publisher and subscriber on it.
-  let (progress, full_track_name) = {
+  let (progress, datagrams, full_track_name) = {
     let track = track.read().await;
     (
       track.publisher_stream_progress.clone(),
+      track.datagram_arrivals.clone(),
       track.full_track_name.clone(),
     )
   };
 
+  if stream_count > 0 {
+    await_streams(
+      &progress,
+      &full_track_name,
+      publisher_connection_id,
+      stream_count,
+      timeout,
+    )
+    .await;
+  }
+  datagrams.wait_for_quiet(datagram_quiet, deadline).await;
+}
+
+async fn await_streams(
+  progress: &PublisherStreamProgress,
+  full_track_name: &FullTrackName,
+  publisher_connection_id: usize,
+  stream_count: u64,
+  timeout: Duration,
+) {
   let closed = progress
     .wait_for(publisher_connection_id, stream_count, timeout)
     .await;
@@ -951,6 +1007,59 @@ mod tests {
 
   const PUBLISHER: usize = 7;
   const OTHER_PUBLISHER: usize = 9;
+
+  #[tokio::test]
+  async fn a_track_without_datagrams_does_not_wait_for_them() {
+    let arrivals = DatagramArrivals::default();
+    let started = Instant::now();
+    arrivals
+      .wait_for_quiet(Duration::from_secs(5), started + Duration::from_secs(5))
+      .await;
+    assert!(started.elapsed() < Duration::from_millis(50));
+  }
+
+  #[tokio::test]
+  async fn datagrams_are_waited_for_until_they_go_quiet() {
+    let arrivals = Arc::new(DatagramArrivals::default());
+    arrivals.arrived();
+    let started = Instant::now();
+    // One more arrives 40 ms in, which pushes the quiet window on.
+    let late = arrivals.clone();
+    tokio::spawn(async move {
+      tokio::time::sleep(Duration::from_millis(40)).await;
+      late.arrived();
+    });
+    arrivals
+      .wait_for_quiet(Duration::from_millis(60), started + Duration::from_secs(5))
+      .await;
+    let waited = started.elapsed();
+    assert!(waited >= Duration::from_millis(100), "waited {waited:?}");
+    assert!(waited < Duration::from_secs(1), "waited {waited:?}");
+  }
+
+  #[tokio::test]
+  async fn datagrams_that_never_go_quiet_are_waited_for_only_until_the_deadline() {
+    let arrivals = Arc::new(DatagramArrivals::default());
+    arrivals.arrived();
+    let steady = arrivals.clone();
+    let feeder = tokio::spawn(async move {
+      loop {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        steady.arrived();
+      }
+    });
+    let started = Instant::now();
+    arrivals
+      .wait_for_quiet(
+        Duration::from_millis(50),
+        started + Duration::from_millis(150),
+      )
+      .await;
+    feeder.abort();
+    let waited = started.elapsed();
+    assert!(waited >= Duration::from_millis(150), "waited {waited:?}");
+    assert!(waited < Duration::from_secs(1), "waited {waited:?}");
+  }
 
   #[tokio::test]
   async fn wait_returns_at_once_when_the_streams_already_finished() {

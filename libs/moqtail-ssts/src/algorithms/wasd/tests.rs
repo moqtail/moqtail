@@ -1490,3 +1490,19 @@ fn a_ladder_change_preserves_the_selected_nominal_rate() {
     "the rate walks down with the ladder"
   );
 }
+
+/// A signalled zero is the draft's default, not the operator's override:
+/// `[0, 0, 0]` pins rho to 25 %, U_min to two and U_max to unbounded even when
+/// the operator tuned all three.
+#[test]
+fn a_signalled_zero_uses_the_draft_defaults_not_the_operator_rails() {
+  let set = SetSnapshot {
+    algorithm_params: vec![0, 0, 0],
+    ..ladder_set(1, &[850, 1800, 3500, 6000], 0, 0)
+  };
+  assert_eq!(
+    set_upshift_streak(&set, 0, 0.4, Some(6), Some(2)),
+    5,
+    "rho 0 -> 25 %, U_min 0 -> 2, U_max 0 -> unbounded"
+  );
+}

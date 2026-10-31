@@ -606,16 +606,18 @@ fn set_upshift_streak(
   // shorter list is a sender that offered fewer fields, not a different
   // layout.
   let u_min = match signaled_param(set, PARAM_U_MIN) {
-    Some(0) | None => default_u_min.map(|v| v.max(2)).or(Some(2)),
+    Some(0) => Some(WasdParams::DEFAULT_U_MIN),
     Some(value) => Some(value.max(2)),
+    None => default_u_min.map(|v| v.max(2)).or(Some(2)),
   };
 
   // rho: the subscriber's own signalled percentage wins over the operator's.
   // Zero is the publisher default, and anything above 100 is clamped rather
   // than treated as malformed.
   let rho = match signaled_param(set, PARAM_RHO_PCT) {
-    Some(0) | None => default_rho.clamp(0.01, 1.0),
+    Some(0) => WasdParams::DEFAULT_RHO,
     Some(pct) => (pct.min(100) as f64 / 100.0).clamp(0.01, 1.0),
+    None => default_rho.clamp(0.01, 1.0),
   };
 
   // The cap is the subscriber's when the field was sent: zero means

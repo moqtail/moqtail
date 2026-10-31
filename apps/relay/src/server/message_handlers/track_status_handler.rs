@@ -15,6 +15,7 @@
 use crate::server::client::MOQTClient;
 use crate::server::session::Session;
 use crate::server::session_context::SessionContext;
+use crate::server::track::TrackOrigin;
 use core::result::Result;
 use moqtail::model::error::{RequestErrorCode, TerminationCode};
 use moqtail::model::{
@@ -42,8 +43,13 @@ pub async fn handle(
       let request_id = status_req.request_id;
       let full_track_name = status_req.get_full_track_name();
 
-      // B. Check Local Track Existence
-      if let Some(track_arc) = context.track_manager.get_track(&full_track_name).await {
+      // B. Check Local Track Existence. A track only fetches have filled knows no more
+      // than they brought in, so the publisher is asked instead.
+      let local_track = match context.track_manager.get_track(&full_track_name).await {
+        Some(track_arc) if track_arc.read().await.origin() != TrackOrigin::Fetch => Some(track_arc),
+        _ => None,
+      };
+      if let Some(track_arc) = local_track {
         info!("track found: {:?}", full_track_name);
         let track = track_arc.read().await;
         let largest_location = track.largest_location.read().await;

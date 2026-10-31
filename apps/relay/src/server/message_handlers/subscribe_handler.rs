@@ -670,9 +670,20 @@ async fn handle_subscribe_message(
     .await;
 
   // Scoped so the track guard is gone before anything below reaches for it again.
-  let subscription = {
+  // A track a FETCH created, or one whose last subscriber left, has no upstream
+  // subscription, so the SUBSCRIBE that takes it over forwards upstream as if it had
+  // created it. Taken over and joined under one lock, so the track cannot let go of
+  // its upstream subscription in between.
+  let (is_creator, subscription) = {
     let track = track_arc.read().await;
-    add_subscription(sub.clone(), &track, client.clone()).await
+    let _handover = track.lock_handover().await;
+    let adopted = track
+      .adopt(TrackOrigin::Subscribe, TrackStatus::Pending)
+      .await;
+    (
+      is_creator || adopted,
+      add_subscription(sub.clone(), &track, client.clone()).await,
+    )
   };
   let Some(subscription) = subscription else {
     warn!(
@@ -994,6 +1005,16 @@ async fn handle_subscribe_ok_message(
     }
   };
 
+  // The subscription this answers was let go of when its last subscriber left; its
+  // upstream stream has been reset.
+  if track_arc.read().await.origin() == TrackOrigin::Fetch {
+    info!(
+      "SubscribeOk {} answers a subscription {:?} has let go of; ignoring",
+      request_id, full_track_name
+    );
+    return Ok(());
+  }
+
   // Register the publisher's alias for data stream routing.
   if !context
     .track_manager
@@ -1250,20 +1271,24 @@ pub(crate) async fn cancel_subscription(
       } else {
         false
       };
-      (last, track.origin)
+      (last, track.origin())
     }; // track read lock dropped here
 
-    // Only a SUBSCRIBE-created track is removed here: its upstream subscription
-    // has just been cancelled, so its cached state is stale and the next
-    // SUBSCRIBE must re-subscribe upstream rather than be answered from it. A
-    // PUBLISH-created track has a publisher still pushing to it and outlives
-    // any number of subscribers.
+    // A SUBSCRIBE-created track has just had its upstream subscription cancelled.
+    // It stays as a track only fetches use if it holds cached Objects, and is removed
+    // otherwise; either way the next SUBSCRIBE subscribes upstream afresh rather than
+    // being answered from it. A PUBLISH-created track has a publisher still pushing
+    // to it and outlives any number of subscribers.
     if is_last_subscriber && origin == TrackOrigin::Subscribe {
-      context.track_manager.remove_track(&full_track_name).await;
+      let release = track_lock.read().await.release_upstream().await;
       info!(
-        "Removed track {:?} after last subscriber left; next SUBSCRIBE will re-subscribe upstream",
-        full_track_name
+        "Last subscriber left {:?}: {:?}; next SUBSCRIBE will re-subscribe upstream",
+        full_track_name, release
       );
+      context
+        .track_manager
+        .settle(&full_track_name, release)
+        .await;
     }
   } else {
     warn!(
@@ -1625,8 +1650,18 @@ async fn handle_subscribe_error_message(
 
   let full_track_name = sub_request.original_subscribe_request.get_full_track_name();
 
-  // Mark track as Rejected (if it exists)
-  let track_arc = context.track_manager.get_track(&full_track_name).await;
+  // Mark track as Rejected (if it exists). A track that let go of its upstream
+  // subscription before this answer came keeps what it has cached.
+  let track_arc = match context.track_manager.get_track(&full_track_name).await {
+    Some(track) if track.read().await.origin() == TrackOrigin::Fetch => {
+      info!(
+        "RequestError {} answers a subscription {:?} has let go of; ignoring",
+        request_id, full_track_name
+      );
+      return Ok(());
+    }
+    track => track,
+  };
   if let Some(track_arc) = &track_arc {
     let track = track_arc.read().await;
     track
@@ -1678,10 +1713,9 @@ async fn handle_subscribe_error_message(
     }
   }
 
-  // Remove the pre-created track from TrackManager
+  // Nothing upstream serves the track: it stays only if it holds cached Objects.
   if track_arc.is_some() {
-    let mut tracks = context.track_manager.tracks.write().await;
-    tracks.remove(&full_track_name);
+    context.track_manager.retire_track(&full_track_name).await;
   }
 
   Ok(())

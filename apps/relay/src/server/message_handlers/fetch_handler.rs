@@ -16,6 +16,7 @@ use crate::server::client::MOQTClient;
 use crate::server::message_handlers::parameters;
 use crate::server::session_context::{PendingRequest, SessionContext, UpstreamFetchEvent};
 use crate::server::stream_id::{SendStreamKey, StreamId};
+use crate::server::track::{Track, TrackOrigin, TrackStatus};
 use core::result::Result::{Err, Ok};
 use moqtail::model::common::location::Location;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
@@ -286,26 +287,6 @@ pub async fn handle(
       let fetch = *m;
       let request_id = fetch.clone().request_id;
 
-      {
-        let req = FetchRequest {
-          original_request_id: request_id,
-          requested_by: client.connection_id,
-          fetch_request: fetch.clone(),
-          track_alias: 0,
-        };
-
-        client
-          .incoming_fetch_requests
-          .write()
-          .await
-          .insert(request_id, req.clone());
-        client
-          .inbound_requests
-          .write()
-          .await
-          .insert(request_id, PendingRequest::Fetch(req));
-      }
-
       // Reserved namespaces are resolved locally and never forwarded upstream.
       if let Some(reason) = crate::server::utils::reserved_namespace_rejection(
         &fetch.track_namespace,
@@ -344,41 +325,63 @@ pub async fn handle(
       };
 
       let full_track_name = fetch.get_full_track_name();
-      let track = context.track_manager.get_track(&full_track_name).await;
       let location_filter = fetch.get_location_filter().clone();
       let requested_end = location_filter.end_location();
 
-      // TODO: send fetch message to the publisher
-      if track.is_none() {
-        // TODO: send fetch message to the possible publishers
-        // for now just return REQUEST_ERROR
-        send_request_error(
-          client.clone(),
-          request_id,
-          RequestErrorCode::DoesNotExist,
-          ReasonPhrase::try_new(String::from("Track does not exist")).unwrap(),
-        )
-        .await;
-        return Ok(());
-      }
+      // A track the relay does not have yet is created when a publisher can serve it,
+      // so the Objects the upstream FETCH brings in are cached for later fetches.
+      let track = match context.track_manager.get_track(&full_track_name).await {
+        Some(track) => track,
+        None => {
+          if context
+            .client_manager
+            .get_publishers_for_track(&full_track_name)
+            .await
+            .is_empty()
+          {
+            send_request_error(
+              client.clone(),
+              request_id,
+              RequestErrorCode::DoesNotExist,
+              ReasonPhrase::try_new(String::from("Track does not exist")).unwrap(),
+            )
+            .await;
+            return Ok(());
+          }
+          let (track, _) = context
+            .track_manager
+            .get_or_create_track(&full_track_name, |relay_track_id| {
+              Track::new(
+                relay_track_id,
+                full_track_name.clone(),
+                context.server_config,
+                TrackStatus::Pending,
+                TrackOrigin::Fetch,
+              )
+            })
+            .await;
+          track
+        }
+      };
 
       info!(
         "handle_fetch_messages | Fetching objects for {:?}",
         location_filter
       );
 
-      let track = track.unwrap();
       {
-        let track_read = track.read().await;
+        let req = FetchRequest {
+          original_request_id: request_id,
+          requested_by: client.connection_id,
+          fetch_request: fetch.clone(),
+          track_alias: track.read().await.relay_track_id,
+        };
 
-        let mut inbound = client.inbound_requests.write().await;
-        if let Some(PendingRequest::Fetch(req)) = inbound.get_mut(&request_id) {
-          req.track_alias = track_read.relay_track_id;
-        }
-        let mut fetches = client.incoming_fetch_requests.write().await;
-        if let Some(req) = fetches.get_mut(&request_id) {
-          req.track_alias = track_read.relay_track_id;
-        }
+        client
+          .inbound_requests
+          .write()
+          .await
+          .insert(request_id, PendingRequest::Fetch(req));
       }
 
       // Validate the requested range and clamp the FETCH_OK End Location to
@@ -390,12 +393,9 @@ pub async fn handle(
       let (start_location, end_location) = {
         let mut largest = track.read().await.largest_object().await;
 
-        // A relay must not answer until it knows the End Location. It can answer on its
-        // own only when the request has an end the relay has already seen. Otherwise
-        // the request ends past what the relay holds, or has no end, or starts relative
-        // to the Largest Object, and the relay may be behind the publisher on all of
-        // these. Then the publisher is asked, with the upstream FETCH the missing
-        // groups need anyway; its FETCH_OK says how far the range really goes.
+        // The relay answers on its own only when the requested end is one it has
+        // already seen. Otherwise it may be behind the publisher, so it asks upstream
+        // and takes the End Location from the publisher's FETCH_OK.
         let answered_locally = requested_end
           .as_ref()
           .is_some_and(|end| local_state_answers(&largest, end));
@@ -498,11 +498,6 @@ pub async fn handle(
         let result = serve_fetch_stream(client.clone(), context, track, delivery, cancel_rx).await;
         // Clean up the unified map since the fetch is done
         client.inbound_requests.write().await.remove(&request_id);
-        client
-          .incoming_fetch_requests
-          .write()
-          .await
-          .remove(&request_id);
 
         // Clean up cancel sender
         client
@@ -550,11 +545,6 @@ pub(crate) async fn cancel_fetch(client: Arc<MOQTClient>, request_id: u64) {
 
   {
     client.inbound_requests.write().await.remove(&request_id);
-    client
-      .incoming_fetch_requests
-      .write()
-      .await
-      .remove(&request_id);
   }
 
   if let Some(tx) = cancel_tx {
@@ -631,23 +621,15 @@ async fn send_upstream_fetch_for_range(
   let mut upstream = ControlStreamHandler::new(send, recv).with_peer_id(publisher.connection_id);
 
   {
-    // Use the publisher's track alias so handle_uni_stream can resolve the track on the response.
-    let publisher_alias = match track_read
+    // The response stream finds its track by the Full Track Name of this request, so a
+    // publisher that has given the relay no alias for the track can still serve it.
+    let publisher_alias = track_read
       .publisher_aliases
       .read()
       .await
       .get(&publisher.connection_id)
       .copied()
-    {
-      Some(alias) => alias,
-      None => {
-        warn!(
-          "send_upstream_fetch_for_range | No publisher alias found for connection {}",
-          publisher.connection_id
-        );
-        return None;
-      }
-    };
+      .unwrap_or_default();
     let req = FetchRequest {
       original_request_id: relay_request_id,
       requested_by: client.connection_id,
@@ -746,6 +728,30 @@ async fn send_upstream_fetch_for_range(
   Some((relay_request_id, publisher, upstream_rx, response_rx))
 }
 
+/// What to ask upstream for to fill the groups `first..=last`, which the cache does
+/// not hold, for a request of `start..=end`. Whatever comes back is forwarded as it
+/// arrives, so it must not reach outside the request.
+///
+/// Every group the request covers is whole except its own first and last, so the
+/// gap's whole groups are clipped to the request. For a request {5,3}..{9,2}: a gap of
+/// group 5 is {5,3} to the end of group 5, a gap of group 7 is all of group 7, a gap
+/// of group 9 is {9,0}..{9,2}, and a gap of all of them is the request itself.
+fn gap_filter(first: u64, last: u64, start: &Location, end: &Location) -> LocationFilter {
+  let gap_start = Location::new(first, 0).max(start.clone());
+  let gap_end = Location::new(last, u64::MAX).min(end.clone());
+  if gap_end.object == u64::MAX {
+    LocationFilter::AbsoluteStartGroupEnd {
+      start: gap_start,
+      end_group: last,
+    }
+  } else {
+    LocationFilter::AbsoluteRange {
+      start: gap_start,
+      end: gap_end,
+    }
+  }
+}
+
 /// Whether a connected publisher could still serve Objects for this track, as
 /// its origin or via an announced namespace. Used to decide whether an empty
 /// local range is authoritative (INVALID_RANGE) or should be fetched upstream.
@@ -781,11 +787,6 @@ async fn send_request_error(
     .await;
   // Remove the request from the client maps on error
   client.inbound_requests.write().await.remove(&request_id);
-  client
-    .incoming_fetch_requests
-    .write()
-    .await
-    .remove(&request_id);
 }
 
 /// What to deliver on one fetch data stream, and where the Objects come from.
@@ -1040,11 +1041,7 @@ pub(crate) async fn serve_fetch_stream(
           Some((pending.relay_request_id, pending.publisher, pending.rx))
         }
         None => {
-          // The relay holds nothing of the groups in the gap, so ask for all of them.
-          let gap = LocationFilter::AbsoluteStartGroupEnd {
-            start: Location::new(gap_start, 0),
-            end_group: gap_end,
-          };
+          let gap = gap_filter(gap_start, gap_end, &start_location, &end_location);
           send_upstream_fetch_for_range(&client, &context, &track_read, gap, group_order)
             .await
             .map(|(request_id, publisher, rx, _)| (request_id, publisher, rx))
@@ -1295,7 +1292,7 @@ pub(crate) async fn serve_fetch_stream(
 #[cfg(test)]
 mod tests {
   use super::{
-    FetchRangeError, concrete_end_location, empty_range_outcome, local_state_answers,
+    FetchRangeError, concrete_end_location, empty_range_outcome, gap_filter, local_state_answers,
     resolve_fetch_range, unresolved_fetch_range,
   };
   use moqtail::model::common::location::Location;
@@ -1538,6 +1535,27 @@ mod tests {
     assert_eq!(
       concrete_end_location(loc(0, u64::MAX), None, None),
       loc(0, u64::MAX)
+    );
+  }
+
+  #[test]
+  fn a_gap_is_asked_for_only_as_far_as_the_request_reaches() {
+    let (start, end) = (loc(5, 3), loc(9, 2));
+    let to_group_end =
+      |start: Location, end_group: u64| LocationFilter::AbsoluteStartGroupEnd { start, end_group };
+
+    // The request's first group starts at its Start Location.
+    assert_eq!(gap_filter(5, 5, &start, &end), to_group_end(loc(5, 3), 5));
+    // A group inside the request is whole.
+    assert_eq!(gap_filter(7, 7, &start, &end), to_group_end(loc(7, 0), 7));
+    // The request's last group stops at its End Location.
+    assert_eq!(gap_filter(9, 9, &start, &end), range(loc(9, 0), loc(9, 2)));
+    // A gap across the whole request is the request.
+    assert_eq!(gap_filter(5, 9, &start, &end), range(loc(5, 3), loc(9, 2)));
+    // A request that ends at the end of its last group asks for whole groups.
+    assert_eq!(
+      gap_filter(7, 9, &start, &loc(9, u64::MAX)),
+      to_group_end(loc(7, 0), 9)
     );
   }
 }

@@ -126,14 +126,14 @@ impl SwitchingSet {
   /// ended before the relay resets it, in ms; 0 closes every stream
   /// gracefully.
   ///
-  /// The default algorithm gets 0 whatever a peer claims, because the draft
-  /// gives it no discard behaviour and a stream reset is visible to the
-  /// subscriber as lost data. For every other algorithm the negotiated
-  /// subscriber buffer is the whole answer: a subscriber that buffers 250 ms
-  /// of media has told the relay how long it is willing to wait, and one that
-  /// negotiated nothing has told it not to discard at all.
+  /// The default algorithm gets `None`, because the draft fixes its
+  /// serialization without this extension and gives it no discard behaviour.
+  /// For every other algorithm the negotiated subscriber buffer is the whole
+  /// answer, and `Some(0)` is an answer: the subscriber that sent zero asked
+  /// for no delivery timeout at all, so the relay must not substitute its own
+  /// configured timeout.
   pub fn negotiated_discard_timeout_ms(&self) -> Option<u64> {
-    if self.algorithm_id != 0 && self.subscriber_buffer_ms > 0 {
+    if self.algorithm_id != 0 {
       Some(self.subscriber_buffer_ms)
     } else {
       None
@@ -686,9 +686,9 @@ mod tests {
   }
 
   /// The negotiated buffer is the subscriber's permission to discard its own
-  /// media; nothing else may grant it. A set on the default algorithm, a set
-  /// that negotiated nothing, and a track outside every set all leave the
-  /// relay's configured timeout in charge.
+  /// media; nothing else may grant it. A set on the default algorithm and a
+  /// track outside every set leave the relay's configured timeout in charge;
+  /// a non-default set that negotiated zero explicitly disables it.
   #[test]
   fn only_a_non_default_set_can_authorize_discarding() {
     let private = 0xff01;
@@ -714,7 +714,7 @@ mod tests {
         .set_of_relay_track(12)
         .unwrap()
         .negotiated_discard_timeout_ms(),
-      None,
+      Some(0),
       "a zero buffer means never discard, not 'fall back to the default'"
     );
     assert_eq!(

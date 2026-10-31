@@ -13,7 +13,8 @@
 // limitations under the License.
 
 use crate::filter_spec::{
-  ObjectPropertySpec, parse_object_property, parse_range_filter, parse_track_property,
+  FetchMarkerSpec, ObjectPropertySpec, parse_fetch_end_of_range, parse_object_property,
+  parse_range_filter, parse_track_property,
 };
 use clap::{Parser, ValueEnum};
 use moqtail::model::control::constant::{GroupOrder, SwitchMode};
@@ -205,6 +206,14 @@ pub struct Cli {
   /// TYPE=VALUE with TYPE even; repeatable (publish only). Example: 0x3c=1
   #[arg(long, value_parser = parse_track_property)]
   pub track_property: Vec<TrackProperty>,
+
+  /// A span the publisher's FETCH responses mark with an End of Range marker instead
+  /// of sending its Objects, as KIND:G.O-G.O with KIND non-existent, unknown or
+  /// timed-out; repeatable (publish and publish-namespace). The Objects after a
+  /// marker are encoded against it. In a descending FETCH, keep a span within one
+  /// group. Example: unknown:2.1-2.2
+  #[arg(long, value_parser = parse_fetch_end_of_range)]
+  pub fetch_end_of_range: Vec<FetchMarkerSpec>,
 
   /// Track alias (publish only, random if not specified)
   #[arg(long)]

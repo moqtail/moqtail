@@ -50,6 +50,7 @@ async fn main() -> Result<(), anyhow::Error> {
     priorities: cli.priorities.clone(),
     object_properties: cli.object_property.clone(),
     track_properties: cli.track_property.clone(),
+    fetch_markers: cli.fetch_end_of_range.clone(),
   };
 
   match cli.command {

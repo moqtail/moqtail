@@ -12,14 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! The command-line forms of Range Filters and of the Properties a test publisher
-//! puts on its tracks and Objects.
+//! The command-line forms of Range Filters, of the Properties a test publisher puts
+//! on its tracks and Objects, and of the End of Range markers it puts in its FETCH
+//! responses.
 //!
 //! A filter is only checked for what it takes to put it on the wire. Anything a
 //! receiver has to refuse -- an odd Property Type, a priority above 255, the same
 //! SetID twice -- goes out as given, so a relay's refusal can be tested.
 
+use moqtail::model::common::location::Location;
 use moqtail::model::common::pair::KeyValuePair;
+use moqtail::model::data::fetch_object::EndOfRangeKind;
 use moqtail::model::parameter::combined_filter::{CombinedFilter, check_filter_range_limit};
 use moqtail::model::parameter::message_parameter::MessageParameter;
 use moqtail::model::parameter::range_filter::{Range, RangeFilter, RangeFilterKind};
@@ -176,6 +179,52 @@ pub fn parse_track_property(spec: &str) -> Result<TrackProperty, String> {
   TrackProperty::deserialize(kvp).map_err(|e| format!("{spec:?}: {e:?}"))
 }
 
+/// A span of a track a test publisher's FETCH responses mark with an End of Range
+/// marker instead of sending its Objects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchMarkerSpec {
+  pub kind: EndOfRangeKind,
+  pub from: Location,
+  pub to: Location,
+}
+
+impl FetchMarkerSpec {
+  pub fn covers(&self, location: &Location) -> bool {
+    self.from <= *location && *location <= self.to
+  }
+}
+
+/// Parses one `--fetch-end-of-range`, KIND:G.O-G.O.
+pub fn parse_fetch_end_of_range(spec: &str) -> Result<FetchMarkerSpec, String> {
+  let (kind, span) = spec
+    .split_once(':')
+    .ok_or_else(|| format!("expected {spec:?} to be KIND:G.O-G.O"))?;
+  let kind = match kind.trim() {
+    "non-existent" => EndOfRangeKind::NonExistent,
+    "unknown" => EndOfRangeKind::Unknown,
+    "timed-out" => EndOfRangeKind::TimedOut,
+    other => {
+      return Err(format!(
+        "{other:?} is not non-existent, unknown or timed-out"
+      ));
+    }
+  };
+  let (from, to) = span
+    .split_once('-')
+    .ok_or_else(|| format!("expected {span:?} to be G.O-G.O"))?;
+  let location = |text: &str| -> Result<Location, String> {
+    let (group, object) = text
+      .split_once('.')
+      .ok_or_else(|| format!("expected {text:?} to be GROUP.OBJECT"))?;
+    Ok(Location::new(number(group)?, number(object)?))
+  };
+  let (from, to) = (location(from)?, location(to)?);
+  if to < from {
+    return Err(format!("{spec:?} ends before it starts"));
+  }
+  Ok(FetchMarkerSpec { kind, from, to })
+}
+
 /// Only an even type holds a single integer.
 fn even_type(text: &str) -> Result<u64, String> {
   let property_type = number(text)?;
@@ -253,6 +302,25 @@ mod tests {
     ] {
       assert!(parse_range_filter(spec).is_err(), "{spec}");
     }
+  }
+
+  #[test]
+  fn parses_fetch_end_of_range_markers() {
+    assert_eq!(
+      parse_fetch_end_of_range("unknown:2.1-3.0").unwrap(),
+      FetchMarkerSpec {
+        kind: EndOfRangeKind::Unknown,
+        from: Location::new(2, 1),
+        to: Location::new(3, 0),
+      }
+    );
+    assert_eq!(
+      parse_fetch_end_of_range("timed-out:4.0-4.0").unwrap().kind,
+      EndOfRangeKind::TimedOut
+    );
+    assert!(parse_fetch_end_of_range("gone:2.1-3.0").is_err());
+    assert!(parse_fetch_end_of_range("unknown:3.0-2.1").is_err());
+    assert!(parse_fetch_end_of_range("unknown:2-3").is_err());
   }
 
   #[test]

@@ -14,7 +14,7 @@
 
 use crate::cli::DeliveryMode;
 use crate::connection::MoqConnection;
-use crate::filter_spec::ObjectPropertySpec;
+use crate::filter_spec::{FetchMarkerSpec, ObjectPropertySpec};
 use crate::utils::should_log;
 use anyhow::Result;
 use bytes::Bytes;
@@ -77,6 +77,8 @@ pub struct Content {
   pub priorities: Vec<u8>,
   pub object_properties: Vec<ObjectPropertySpec>,
   pub track_properties: Vec<TrackProperty>,
+  /// Spans a FETCH response marks with an End of Range marker instead of sending.
+  pub fetch_markers: Vec<FetchMarkerSpec>,
 }
 
 pub struct PublishNamespaceConfig {
@@ -601,6 +603,8 @@ async fn send_fetch_objects(
   }
 
   let mut sent = 0u64;
+  // A span's marker goes out in place of its first Object, and the rest are skipped.
+  let mut marked = vec![false; config.content.fetch_markers.len()];
   for g in groups {
     let group_id = g * config.group_id_step;
     if group_id < start.group || group_id > end.group {
@@ -610,6 +614,23 @@ async fn send_fetch_objects(
       let object_id = i * config.object_id_step;
       let location = Location::new(group_id, object_id);
       if location < *start || location > *end {
+        continue;
+      }
+      if let Some(i) = config
+        .content
+        .fetch_markers
+        .iter()
+        .position(|marker| marker.covers(&location))
+      {
+        if !marked[i] {
+          marked[i] = true;
+          let marker = &config.content.fetch_markers[i];
+          info!(
+            "FETCH {}: marking {:?}..={:?} {:?}",
+            fetch.request_id, marker.from, marker.to, marker.kind
+          );
+          handler.send_end_of_range(marker.kind, &marker.to).await?;
+        }
         continue;
       }
 

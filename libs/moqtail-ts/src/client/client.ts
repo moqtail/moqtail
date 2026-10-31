@@ -46,6 +46,7 @@ import {
 } from '../model/control'
 import {
   Datagram,
+  EndOfRangeKind,
   FetchHeader,
   FetchObject,
   FullTrackName,
@@ -56,6 +57,7 @@ import {
   RequestIdMap,
 } from '../model/data'
 import { FrozenByteBuffer } from '../model/common/byte_buffer'
+import type { FetchObjectContext } from '../model/data/fetch_object'
 import { ObjectDeliveryTimeoutProperty, TrackProperty } from '../model/property/track_property'
 import { RecvStream } from './data_stream'
 import {
@@ -1117,6 +1119,7 @@ export class MOQtailClient {
       const request = new SubscribeRequest(msg)
       request.manager = new Subscription(request)
       request.earlyDiscardPolicy = args.earlyDiscardPolicy
+      request.onEndOfRange = args.onEndOfRange
       this.requests.set(request.requestId, request)
       this.requestIdMap.addMapping(request.requestId, request.fullTrackName)
 
@@ -1572,6 +1575,7 @@ export class MOQtailClient {
       )
       const msg = new Fetch(requestId, fullTrackName, params)
       const request = new FetchRequest(msg)
+      request.onEndOfRange = args.onEndOfRange
       logger.log('MOQtailClient', 'fetch: full fetch message:', {
         requestId: msg.requestId,
         fullTrackName: `${fullTrackName}`,
@@ -2405,8 +2409,8 @@ export class MOQtailClient {
               if (nextObject) {
                 if (nextObject instanceof FetchObject) {
                   if (nextObject.kind === 'end_of_range') {
-                    // End-of-Range markers describe gaps in the
-                    // response and do not carry application payloads. Skip for now.
+                    // A marker carries no Object, only what a range of them is.
+                    request.onEndOfRange?.(nextObject.endOfRange!, nextObject.location)
                     continue
                   }
                   // TODO: validate if it's a valid fetch object, asc or desc?
@@ -2438,8 +2442,11 @@ export class MOQtailClient {
               if (!(nextObject instanceof FetchObject)) {
                 throw new ProtocolViolationError('MOQtailClient', 'Received subgroup object after fetch header')
               }
-              // End-of-Range markers describe gaps and carry no payload.
-              if (nextObject.kind === 'end_of_range') continue
+              // A marker carries no Object, only what a range of them is.
+              if (nextObject.kind === 'end_of_range') {
+                request.onEndOfRange?.(nextObject.endOfRange!, nextObject.location)
+                continue
+              }
               const moqtObject = MoqtObject.fromFetchObject(nextObject, request.fullTrackName)
               if (request.manager) {
                 const shouldContinue = request.manager.deliver(request, moqtObject)
@@ -3692,6 +3699,95 @@ if (import.meta.vitest) {
 
       expect(fetchStream.messages).toHaveLength(1)
       expect(streamResetCodeOf(fetchStream.abortReason)).toBe(StreamResetCode.Cancelled)
+
+      await client.disconnect()
+    })
+
+    /** The fetch stream bytes for `requestId` carrying `entries`, each encoded against the one before. */
+    function fetchStreamBytes(requestId: bigint, entries: FetchObject[]): Uint8Array {
+      const bytes = new ByteBuffer()
+      bytes.putBytes(Header.newFetch(FetchHeaderType.Type0x05, requestId).serialize().toUint8Array())
+      let ctx: FetchObjectContext | undefined = undefined
+      for (const entry of entries) {
+        bytes.putBytes(entry.serialize(ctx, GroupOrder.Ascending).toUint8Array())
+        ctx = entry.nextContext(ctx)
+      }
+      return bytes.toUint8Array()
+    }
+
+    const objectAt = (group: number, id: number) =>
+      FetchObject.newObject(group, 0, id, 0, ObjectForwardingPreference.Subgroup, null, new Uint8Array([id]))
+
+    it('tells the application of the End of Range markers in a FETCH response', async () => {
+      const { client, transport } = await connected()
+      const markers: [EndOfRangeKind, Location][] = []
+
+      const fetching = client.fetch({
+        priority: 0,
+        groupOrder: GroupOrder.Ascending,
+        fullTrackName: ftn,
+        locationFilter: new LocationFilter(LocationFilterType.AbsoluteStartGroupEnd, 9n, 0n, 11n),
+        onEndOfRange: (kind, location) => markers.push([kind, location]),
+      })
+      const fetchStream = await openedStream(transport, 0)
+      const fetchMsg = fetchStream.messages[0] as Fetch
+      fetchStream.respond(new FetchOk(false, new Location(11n, 0n), []))
+      const fetched = (await fetching) as { requestId: bigint; stream: ReadableStream<MoqtObject> }
+
+      // The Object after the marker is encoded against it, so it arrives as {10,6}.
+      transport.openIncomingUniStream(
+        fetchStreamBytes(fetchMsg.requestId, [
+          objectAt(9, 10),
+          FetchObject.newEndOfRange(EndOfRangeKind.Unknown, 10n, 5n),
+          objectAt(10, 6),
+        ]),
+      )
+
+      const reader = fetched.stream.getReader()
+      const first = (await reader.read()).value!
+      const second = (await reader.read()).value!
+      expect([first.location.group, first.location.object]).toEqual([9n, 10n])
+      expect([second.location.group, second.location.object]).toEqual([10n, 6n])
+      expect(markers).toHaveLength(1)
+      expect(markers[0]![0]).toBe(EndOfRangeKind.Unknown)
+      expect([markers[0]![1].group, markers[0]![1].object]).toEqual([10n, 5n])
+      reader.releaseLock()
+
+      await client.disconnect()
+    })
+
+    it('tells the application of the End of Range markers on a fill fetch stream', async () => {
+      const { client, transport } = await connected()
+      const markers: EndOfRangeKind[] = []
+
+      const subscribing = client.subscribe({
+        fullTrackName: ftn,
+        locationFilter: new LocationFilter(LocationFilterType.NextObject),
+        parameters: [new FillParameters([new LocationFilter(LocationFilterType.RelativeStart, 3n)])],
+        forward: true,
+        groupOrder: GroupOrder.Original,
+        priority: 0,
+        onEndOfRange: (kind) => markers.push(kind),
+      })
+      const subscribeStream = await openedStream(transport, 0)
+      const subscribeMsg = subscribeStream.messages[0] as Subscribe
+      subscribeStream.respond(
+        SubscribeOk.create(7n, new MessageParameters().add(new LargestObject(new Location(5n, 1n))).build(), []),
+      )
+      const subscribed = (await subscribing) as { requestId: bigint; stream: ReadableStream<MoqtObject> }
+
+      transport.openIncomingUniStream(
+        fetchStreamBytes(subscribeMsg.requestId, [
+          FetchObject.newEndOfRange(EndOfRangeKind.TimedOut, 3n, 4n),
+          objectAt(4, 0),
+        ]),
+      )
+
+      const reader = subscribed.stream.getReader()
+      const { value } = await reader.read()
+      expect(value?.location.group).toBe(4n)
+      expect(markers).toEqual([EndOfRangeKind.TimedOut])
+      reader.releaseLock()
 
       await client.disconnect()
     })

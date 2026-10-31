@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+import type { EndOfRangeHandler } from '../types'
 import {
   FullTrackName,
   Location,
@@ -45,6 +46,7 @@ export class SubscribeRequest implements PromiseLike<SubscribeOk | RequestError>
   public forward: boolean
   public subscribeParameters: MessageParameter[]
   public earlyDiscardPolicy: EarlyDiscardPolicyConfig | undefined
+  public onEndOfRange: EndOfRangeHandler | undefined
 
   // Track Data State
   public largestLocation: Location | undefined // Updated on each received object

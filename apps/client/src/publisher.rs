@@ -22,7 +22,7 @@ use moqtail::model::common::location::Location;
 use moqtail::model::common::pair::KeyValuePair;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::common::tuple::{Tuple, TupleField};
-use moqtail::model::control::constant::PublishDoneStatusCode;
+use moqtail::model::control::constant::{GroupOrder, PublishDoneStatusCode};
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::fetch::Fetch;
 use moqtail::model::control::fetch_ok::FetchOk;
@@ -439,7 +439,8 @@ async fn serve_fetch(
   published: &Published,
 ) {
   let filter = fetch.get_location_filter();
-  let Some((start, end)) = filter.fetch_range(published.largest().await) else {
+  let largest = published.largest().await;
+  let Some((start, end)) = filter.fetch_range(largest.clone()) else {
     info!(
       "FETCH {} for {:?} selects nothing published: {:?}",
       fetch.request_id, fetch.track_name, filter
@@ -469,8 +470,30 @@ async fn serve_fetch(
     return;
   }
 
-  if let Err(e) = send_fetch_objects(connection, &fetch, &start, &end, config).await {
+  let descending = fetch.group_order() == GroupOrder::Descending;
+  // fetch_range succeeded, so something has been published.
+  let largest = largest.expect("a published range");
+  let (first, last) = objects_to_send(&start, &end, &largest, descending);
+  if let Err(e) = send_fetch_objects(connection, &fetch, &first, &last, config).await {
     error!("Failed to serve FETCH objects: {:?}", e);
+  }
+}
+
+/// The first and last Objects a FETCH of `start..=end` sends. A descending FETCH that
+/// spans groups sends them whole, from the start of the end group to the end of the
+/// start group, as far as anything has been published.
+fn objects_to_send(
+  start: &Location,
+  end: &Location,
+  largest: &Location,
+  descending: bool,
+) -> (Location, Location) {
+  if descending && start.group != end.group {
+    let first = Location::new(start.group, 0);
+    let last = Location::new(end.group, u64::MAX).min(largest.clone());
+    (first, last)
+  } else {
+    (start.clone(), end.clone())
   }
 }
 
@@ -534,8 +557,15 @@ async fn send_fetch_objects(
   let stream = Arc::new(Mutex::new(stream));
   let mut handler = SendDataStream::new(stream.clone(), header_info).await?;
 
+  // Groups go out in the order the FETCH asked for; the Objects within each group
+  // ascend either way.
+  let mut groups: Vec<u64> = (0..config.group_count).collect();
+  if fetch.group_order() == GroupOrder::Descending {
+    groups.reverse();
+  }
+
   let mut sent = 0u64;
-  for g in 0..config.group_count {
+  for g in groups {
     let group_id = g * config.group_id_step;
     if group_id < start.group || group_id > end.group {
       continue;
@@ -861,4 +891,46 @@ fn generate_payload(size: usize) -> Vec<u8> {
       (seed & 0xFF) as u8
     })
     .collect()
+}
+
+#[cfg(test)]
+mod tests {
+  use super::objects_to_send;
+  use moqtail::model::common::location::Location;
+
+  fn loc(group: u64, object: u64) -> Location {
+    Location::new(group, object)
+  }
+
+  #[test]
+  fn an_ascending_fetch_sends_exactly_its_range() {
+    assert_eq!(
+      objects_to_send(&loc(5, 3), &loc(9, 2), &loc(12, 0), false),
+      (loc(5, 3), loc(9, 2))
+    );
+  }
+
+  #[test]
+  fn a_descending_fetch_across_groups_sends_them_whole() {
+    assert_eq!(
+      objects_to_send(&loc(5, 3), &loc(9, 2), &loc(12, 0), true),
+      (loc(5, 0), loc(9, u64::MAX))
+    );
+  }
+
+  #[test]
+  fn a_descending_fetch_stops_at_what_has_been_published() {
+    assert_eq!(
+      objects_to_send(&loc(5, 3), &loc(9, 2), &loc(9, 2), true),
+      (loc(5, 0), loc(9, 2))
+    );
+  }
+
+  #[test]
+  fn a_descending_fetch_within_one_group_sends_exactly_its_range() {
+    assert_eq!(
+      objects_to_send(&loc(5, 3), &loc(5, 6), &loc(12, 0), true),
+      (loc(5, 3), loc(5, 6))
+    );
+  }
 }

@@ -1441,3 +1441,66 @@ fn the_slow_climb_formula_matches_the_draft() {
     "a cap above the floor bounds the step"
   );
 }
+
+/// A membership change is not a reading: the tier follows the nominal rate
+/// that was selected, not the index it used to occupy. Inserting a rung below
+/// the selection must not silently move the delivery down, and removing the
+/// selected rung must fall to the highest rate that still fits.
+#[test]
+fn a_ladder_change_preserves_the_selected_nominal_rate() {
+  let mut algorithm = WasdAlgorithm::new();
+  let start = SetSnapshot {
+    members: vec![(300, 10), (600, 11), (1000, 12), (1500, 13)],
+    ..set(1, true)
+  };
+  assert_eq!(climb(&mut algorithm, &[start], 2), 2);
+
+  // Insert 900 below the selected 1000: the index moves from 2 to 3, the
+  // selected track stays the 1000 kbps one.
+  let inserted = SetSnapshot {
+    members: vec![(300, 10), (600, 11), (900, 14), (1000, 12), (1500, 13)],
+    ..set(1, true)
+  };
+  let empty: Vec<StreamSnapshot> = Vec::new();
+  let selection = algorithm.decide(&input(
+    &[inserted],
+    &empty,
+    DecisionReason::PeriodicSample,
+    1,
+  ));
+  assert_eq!(
+    selection[&1],
+    Some(12),
+    "the selected nominal rate is still 1000 kbps, now at index 3"
+  );
+
+  // Remove the selected 1000 rung: fall to the highest rate that fits, 900.
+  let selected_removed = SetSnapshot {
+    members: vec![(300, 10), (600, 11), (900, 14), (1500, 13)],
+    ..set(1, true)
+  };
+  let selection = algorithm.decide(&input(
+    &[selected_removed],
+    &empty,
+    DecisionReason::PeriodicSample,
+    1,
+  ));
+  assert_eq!(
+    selection[&1],
+    Some(14),
+    "the highest rung at or below the lost 1000 kbps is the 900 kbps one"
+  );
+
+  // Remove that too: the next rung down is the new selection.
+  let second_removed = SetSnapshot {
+    members: vec![(300, 10), (600, 11), (1500, 13)],
+    ..set(1, true)
+  };
+  let selection = algorithm.decide(&input(
+    &[second_removed],
+    &empty,
+    DecisionReason::PeriodicSample,
+    1,
+  ));
+  assert_eq!(selection[&1], Some(11), "the rate walks down with the ladder");
+}

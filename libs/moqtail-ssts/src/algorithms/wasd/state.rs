@@ -108,6 +108,13 @@ impl LadderState {
     self.current_index = self.current_index.min(max_index);
   }
 
+  /// Move the tier directly, used when the ladder was rebuilt and the same
+  /// nominal rate lives at a different index. Membership is not a reading, so
+  /// this does not touch the streaks.
+  pub(crate) fn set_tier(&mut self, tier: usize) {
+    self.current_index = tier;
+  }
+
   /// Evaluate one depth sample for `group_id`.
   ///
   /// The first sample for a group newer than any seen (`is_new_group`) arrives

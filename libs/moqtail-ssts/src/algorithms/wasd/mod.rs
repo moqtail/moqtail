@@ -289,8 +289,15 @@ pub struct WasdAlgorithm {
   rho: f64,
   /// The floor under the priced wait, used when the subscriber signals none.
   u_min: Option<u64>,
-  /// The cap on the priced wait. Operator-only: no signalling slot carries it.
+  /// The cap on the priced wait, signalled by the subscriber or set by the
+  /// operator.
   u_max: Option<u64>,
+  /// The set whose ladder the current tier belongs to, and the nominal rate of
+  /// the track selected last. A later membership change remaps the tier to the
+  /// highest rung at or below this rate instead of letting the index point at
+  /// a different bitrate.
+  last_set_id: Option<u64>,
+  last_selected_rate_kbps: Option<u64>,
 }
 
 impl WasdAlgorithm {
@@ -303,6 +310,8 @@ impl WasdAlgorithm {
       rho: WasdParams::DEFAULT_RHO,
       u_min: Some(WasdParams::DEFAULT_U_MIN),
       u_max: None,
+      last_set_id: None,
+      last_selected_rate_kbps: None,
     }
   }
 
@@ -331,6 +340,8 @@ impl WasdAlgorithm {
       rho: WasdParams::DEFAULT_RHO,
       u_min: Some(WasdParams::DEFAULT_U_MIN),
       u_max: None,
+      last_set_id: None,
+      last_selected_rate_kbps: None,
     }
   }
 
@@ -343,6 +354,8 @@ impl WasdAlgorithm {
       rho: params.rho,
       u_min: params.u_min,
       u_max: params.u_max,
+      last_set_id: None,
+      last_selected_rate_kbps: None,
     }
   }
 
@@ -365,6 +378,29 @@ impl Default for WasdAlgorithm {
 
 impl AbrAlgorithm for WasdAlgorithm {
   fn decide(&mut self, input: &AbrInput) -> Selection {
+    let max_index = input
+      .sets
+      .iter()
+      .map(|set| set.members.len())
+      .max()
+      .unwrap_or(1)
+      .saturating_sub(1);
+
+    // A membership change is not a reading, but it can move the selected
+    // nominal rate to another index. Preserve the rate: the highest rung at or
+    // below the one served last, clamped to the new ladder.
+    if let Some(rate) = self.last_selected_rate_kbps
+      && let Some(set) = ladder_owner(input, self.last_set_id)
+    {
+      let tier = set
+        .members
+        .iter()
+        .rposition(|(threshold, _)| *threshold <= rate)
+        .unwrap_or(0)
+        .min(max_index);
+      self.ladder.set_tier(tier);
+    }
+
     // The reading is taken at the tier the last decision landed on, which is
     // what makes a downshift self-clearing.
     let depth = depth_at_current_tier(input, self.ladder.tier());
@@ -374,13 +410,6 @@ impl AbrAlgorithm for WasdAlgorithm {
     // the repair is over.
     let resent_in_flight = input.has_resent_in_flight();
     let before = self.ladder.tier();
-    let max_index = input
-      .sets
-      .iter()
-      .map(|set| set.members.len())
-      .max()
-      .unwrap_or(1)
-      .saturating_sub(1);
     // A climb also needs the rung above it to be clear. An old delivery still
     // open there — a group an earlier downshift abandoned, or one still
     // draining — would make the new group's stream the second (or third) at
@@ -473,6 +502,13 @@ impl AbrAlgorithm for WasdAlgorithm {
 
     self.ladder.clamp_to(max_index);
     let after = self.ladder.tier();
+    if let Some(set) = ladder_owner(input, self.last_set_id) {
+      let rung = after.min(set.members.len().saturating_sub(1));
+      if let Some((rate, _)) = set.members.get(rung) {
+        self.last_set_id = Some(set.id);
+        self.last_selected_rate_kbps = Some(*rate);
+      }
+    }
     let mut selection = crate::algorithms::serve_tier(input, after);
 
     // The groups still in flight above the new rung were overtaken by this
@@ -685,6 +721,27 @@ fn resend_deadline_ms(input: &AbrInput, set: &SetSnapshot, new_tier: usize) -> O
       .saturating_sub(newest_overtaken_age_ms)
       .max(1),
   )
+}
+
+/// The set whose ladder the tier belongs to: the set that owned the last
+/// selection while it is still active, otherwise the first active set. The
+/// draft scopes this algorithm to one switching set; the fallback keeps the
+/// experimental multi-set mode sane when its owner disappears.
+fn ladder_owner<'a>(input: &'a AbrInput<'_>, last_set_id: Option<u64>) -> Option<&'a SetSnapshot> {
+  input
+    .sets
+    .iter()
+    .find(|set| {
+      set.active
+        && !set.members.is_empty()
+        && last_set_id.is_none_or(|id| set.id == id)
+    })
+    .or_else(|| {
+      input
+        .sets
+        .iter()
+        .find(|set| set.active && !set.members.is_empty())
+    })
 }
 
 /// Whether there is anything for a mid-group decision to act on: a connection

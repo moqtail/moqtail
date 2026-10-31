@@ -570,6 +570,8 @@ impl Session {
     > = None;
 
     let mut object_count = 0;
+    // The last Object a subgroup stream carried.
+    let mut last_location: Option<moqtail::model::common::location::Location> = None;
 
     loop {
       let next = stream_handler.next_item().await;
@@ -708,6 +710,7 @@ impl Session {
           }
 
           object_count += 1;
+          last_location = Some(object.location.clone());
           first_object = false; // reset the first object flag after processing the header
         }
         (handler, None) => {
@@ -767,6 +770,15 @@ impl Session {
                 .publisher_stream_progress
                 .stream_closed(context.connection_id)
                 .await;
+              // A stream holding the end of its group that closed with a FIN carried
+              // the last Object of the group.
+              if !handler.was_aborted()
+                && let Some(HeaderInfo::Subgroup { header }) = handler.get_header_info().await
+                && header.header_type.contains_end_of_group()
+                && let Some(last) = &last_location
+              {
+                track.group_ended_after(last);
+              }
             }
             if let Some(stream_id) = &stream_id {
               return track.stream_closed(stream_id).await;

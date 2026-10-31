@@ -26,12 +26,13 @@ use moqtail::model::common::location::Location;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::control::constant::PublishDoneStatusCode;
 use moqtail::model::control::publish_done::PublishDone;
-use moqtail::model::data::constant::DEFAULT_PUBLISHER_PRIORITY;
+use moqtail::model::data::constant::{DEFAULT_PUBLISHER_PRIORITY, ObjectStatus};
 use moqtail::model::data::datagram::Datagram;
 use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::model::data::object::Object;
 use moqtail::model::error::RequestErrorCode;
 use moqtail::model::parameter::message_parameter::MessageParameter;
+use moqtail::model::property::object_property::ObjectProperty;
 use moqtail::model::property::track_property::TrackProperty;
 use moqtail::transport::data_stream_handler::HeaderInfo;
 use std::collections::{BTreeMap, HashMap};
@@ -694,6 +695,56 @@ impl Track {
     self.has_objects.store(true, Ordering::Relaxed);
   }
 
+  /// Records what a live Object says does not exist, so the cache can serve a group
+  /// once it accounts for all of it: what an End of Group or End of Track status
+  /// rules out, what follows an Object that ends its group, and the IDs a Prior Group
+  /// or Object ID Gap skips.
+  fn note_absent(&self, object: &Object, ends_its_group: bool) {
+    let Location { group, object: id } = object.location.clone();
+    let group_end = Location::new(group, u64::MAX);
+    match object.status {
+      ObjectStatus::EndOfGroup => self
+        .cache
+        .mark_absent(object.location.clone(), group_end.clone()),
+      ObjectStatus::EndOfTrack => self
+        .cache
+        .mark_absent(object.location.clone(), Location::new(u64::MAX, u64::MAX)),
+      ObjectStatus::Normal => {}
+    }
+    if ends_its_group && id < u64::MAX {
+      self
+        .cache
+        .mark_absent(Location::new(group, id + 1), group_end);
+    }
+    for property in object.properties.iter().flatten() {
+      match property {
+        ObjectProperty::PriorObjectIdGap { gap } if *gap > 0 && *gap <= id => {
+          self
+            .cache
+            .mark_absent(Location::new(group, id - gap), Location::new(group, id - 1));
+        }
+        ObjectProperty::PriorGroupIdGap { gap } if *gap > 0 && *gap <= group => {
+          self.cache.mark_absent(
+            Location::new(group - gap, 0),
+            Location::new(group - 1, u64::MAX),
+          )
+        }
+        _ => {}
+      }
+    }
+  }
+
+  /// A subgroup stream that holds the end of its group closed with a FIN: nothing in
+  /// the group comes after the last Object it carried.
+  pub fn group_ended_after(&self, last: &Location) {
+    if last.object < u64::MAX {
+      self.cache.mark_absent(
+        Location::new(last.group, last.object + 1),
+        Location::new(last.group, u64::MAX),
+      );
+    }
+  }
+
   pub async fn new_subgroup_object(
     &self,
     stream_id: &StreamId,
@@ -743,20 +794,11 @@ impl Track {
       .send_event_to_subscribers(event)
       .await?;
 
+    // A status, which the cache cannot hold, is kept as what it says does not exist.
     if let Ok(fetch_object) = object.clone().try_into_fetch() {
       self.cache.add_object(fetch_object).await;
-    } else {
-      // TODO: End of Group objects should be cached
-      // warn!(
-      //   "new_subgroup_object: object cannot be cached | relay_track_id: {} track_alias: {} location: {:?} stream_id: {} diff_ms: {} object: {:?}",
-      //   self.relay_track_id,
-      //   object.track_alias,
-      //   object.location,
-      //   stream_id,
-      //   utils::passed_time_since_start(),
-      //   object
-      // );
     }
+    self.note_absent(object, false);
 
     // Track-level logging - log every object arrival if enabled
     if self.config.enable_object_logging {
@@ -825,18 +867,12 @@ impl Track {
           );
         }
 
+        // A status, which the cache cannot hold, is kept as what it says does not
+        // exist.
         if let Ok(fetch_object) = object.clone().try_into_fetch() {
           self.cache.add_object(fetch_object).await;
-        } else {
-          warn!(
-            "new_datagram: object cannot be cached | relay_track_id={} group: {:?} object_id={} diff_ms={} object: {:?}",
-            self.relay_track_id,
-            datagram.group_id,
-            datagram.object_id,
-            utils::passed_time_since_start(),
-            object
-          );
         }
+        self.note_absent(&object, end_of_group);
 
         // Track-level logging - log every object arrival if enabled
         if self.config.enable_object_logging {
@@ -1225,6 +1261,153 @@ mod tests {
           )
           .await
       );
+    }
+  }
+
+  mod live_evidence {
+    use super::super::*;
+    use crate::server::config::Cli;
+    use bytes::Bytes;
+    use clap::Parser;
+    use moqtail::model::data::constant::ObjectForwardingPreference;
+
+    fn track() -> Track {
+      let config = Box::leak(Box::new(AppConfig::from_cli(Cli::parse_from(["relay"]))));
+      Track::new(
+        1,
+        FullTrackName::try_new("meet/room1", "video").unwrap(),
+        config,
+        TrackStatus::Pending,
+        TrackOrigin::Subscribe,
+      )
+    }
+
+    fn object(
+      group: u64,
+      id: u64,
+      status: ObjectStatus,
+      properties: Vec<ObjectProperty>,
+    ) -> Object {
+      Object {
+        track_alias: 1,
+        location: Location::new(group, id),
+        publisher_priority: 128,
+        forwarding_preference: ObjectForwardingPreference::Subgroup,
+        subgroup_id: Some(0),
+        status,
+        properties: Some(properties),
+        payload: (status == ObjectStatus::Normal).then(|| Bytes::from_static(b"x")),
+      }
+    }
+
+    /// Caches a live Object and records what it says, as new_subgroup_object does.
+    async fn arrive(track: &Track, object: &Object, ends_its_group: bool) {
+      if let Ok(payload) = object.clone().try_into_fetch() {
+        track.cache.add_object(payload).await;
+      }
+      track.note_absent(object, ends_its_group);
+    }
+
+    async fn complete(track: &Track, group: u64) -> bool {
+      track
+        .cache
+        .objects_if_complete(group, 0, u64::MAX)
+        .await
+        .is_some()
+    }
+
+    #[tokio::test]
+    async fn a_group_with_every_object_and_an_end_of_group_is_complete() {
+      let track = track();
+      for id in 0..3 {
+        arrive(&track, &object(5, id, ObjectStatus::Normal, vec![]), false).await;
+      }
+      assert!(
+        !complete(&track, 5).await,
+        "where the group ends is not known yet"
+      );
+      arrive(
+        &track,
+        &object(5, 3, ObjectStatus::EndOfGroup, vec![]),
+        false,
+      )
+      .await;
+      assert!(complete(&track, 5).await);
+    }
+
+    #[tokio::test]
+    async fn a_group_missing_an_object_is_not_complete() {
+      let track = track();
+      for id in [0, 2] {
+        arrive(&track, &object(5, id, ObjectStatus::Normal, vec![]), false).await;
+      }
+      arrive(
+        &track,
+        &object(5, 3, ObjectStatus::EndOfGroup, vec![]),
+        false,
+      )
+      .await;
+      assert!(!complete(&track, 5).await, "object 1 never arrived");
+    }
+
+    #[tokio::test]
+    async fn an_object_that_ends_its_group_ends_it() {
+      let track = track();
+      arrive(&track, &object(5, 0, ObjectStatus::Normal, vec![]), false).await;
+      arrive(&track, &object(5, 1, ObjectStatus::Normal, vec![]), true).await;
+      assert!(complete(&track, 5).await);
+    }
+
+    #[tokio::test]
+    async fn a_stream_holding_the_end_of_its_group_ends_it() {
+      let track = track();
+      arrive(&track, &object(5, 0, ObjectStatus::Normal, vec![]), false).await;
+      track.group_ended_after(&Location::new(5, 0));
+      assert!(complete(&track, 5).await);
+    }
+
+    #[tokio::test]
+    async fn an_end_of_track_rules_out_everything_after_it() {
+      let track = track();
+      arrive(&track, &object(5, 0, ObjectStatus::Normal, vec![]), false).await;
+      arrive(
+        &track,
+        &object(5, 1, ObjectStatus::EndOfTrack, vec![]),
+        false,
+      )
+      .await;
+      assert!(complete(&track, 5).await);
+      assert!(
+        complete(&track, 9).await,
+        "no group after the end of the track exists"
+      );
+    }
+
+    #[tokio::test]
+    async fn gap_properties_account_for_the_ids_they_skip() {
+      let track = track();
+      arrive(&track, &object(6, 0, ObjectStatus::Normal, vec![]), false).await;
+      // Object 3 says 1 and 2 do not exist; the first object of group 6 says
+      // groups 4 and 5 do not.
+      let after_gap = object(
+        6,
+        3,
+        ObjectStatus::Normal,
+        vec![ObjectProperty::PriorObjectIdGap { gap: 2 }],
+      );
+      arrive(&track, &after_gap, true).await;
+      assert!(complete(&track, 6).await);
+
+      let first = object(
+        6,
+        0,
+        ObjectStatus::Normal,
+        vec![ObjectProperty::PriorGroupIdGap { gap: 2 }],
+      );
+      arrive(&track, &first, false).await;
+      assert!(complete(&track, 4).await);
+      assert!(complete(&track, 5).await);
+      assert!(!complete(&track, 3).await);
     }
   }
 }

@@ -633,20 +633,42 @@ impl MOQTClient {
         // No discard timeout: always close gracefully.
         // No new data may be written after calling this method.
         // Completes when the peer has acknowledged all sent data, retransmitting data as needed.
-        stream.finish().await.map_err(|e| {
-          error!(
-            "close_stream | Failed to finish send stream ({}): {:?} connection_id: {}",
-            stream_key, e, self.connection_id
-          );
-          anyhow::anyhow!("Failed to finish send stream ({}): {:?}", stream_key, e)
-        })?;
-        self.record_stream_end(quic_stream_id, true, StreamEnd::Fin);
+        let finish_result = stream.finish().await;
+        // A subscriber may stop the stream (STOP_SENDING) while this graceful
+        // close is waiting for its FIN-ACK, which makes `finish` return
+        // `ClosedOrStopped`. That is an ordinary cancellation, not a leaked
+        // stream: release the switching-set slot either way, or a re-send mark
+        // (and the set's depth) survives for the rest of the session and vetoes
+        // every later upshift.
         self.take_sent_bytes(stream_key).await;
         self
           .ssts
           .on_stream_closed(&stream_key.stream_id)
           .await;
-        return Ok(true);
+        return match finish_result {
+          Ok(()) => {
+            self.record_stream_end(quic_stream_id, true, StreamEnd::Fin);
+            Ok(true)
+          }
+          Err(TransportWriteError::ClosedOrStopped) => {
+            debug!(
+              "close_stream | Send stream ({}) was stopped by the peer; treating it as closed",
+              stream_key
+            );
+            Ok(true)
+          }
+          Err(e) => {
+            error!(
+              "close_stream | Failed to finish send stream ({}): {:?} connection_id: {}",
+              stream_key, e, self.connection_id
+            );
+            Err(anyhow::anyhow!(
+              "Failed to finish send stream ({}): {:?}",
+              stream_key,
+              e
+            ))
+          }
+        };
       }
 
       tokio::select! {

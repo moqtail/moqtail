@@ -561,8 +561,6 @@ async fn send_upstream_fetch_for_range(
   filter: LocationFilter,
   group_order: GroupOrder,
 ) -> Option<UpstreamFetch> {
-  // Read and let go at once: a fetch that waits on the publisher must not hold the
-  // track's lock while it does.
   let (full_track_name, publisher_aliases) = {
     let track = track.read().await;
     (

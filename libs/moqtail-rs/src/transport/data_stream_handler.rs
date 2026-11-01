@@ -500,6 +500,14 @@ impl RecvDataStream {
       // If it is closed, notify waiters and return
       if is_closed.load(Ordering::Relaxed) {
         notify.notify_waiters();
+        // A FIN in the middle of an Object: the rest of it, and whatever came after,
+        // never arrived.
+        if !recv_bytes.is_empty() {
+          return Err(RecvDataStreamReadError::ParseError(ParseError::Other {
+            context: "RecvDataStream::read",
+            msg: format!("stream ended {} bytes into an Object", recv_bytes.len()),
+          }));
+        }
         return Ok(());
       }
 
@@ -1223,9 +1231,10 @@ mod tests {
     }
   }
   */
-  /// Opens a fetch stream, writes one Object on it, then ends it with `end`. Returns
-  /// whether the reader saw the stream aborted once it reported the end.
-  async fn end_fetch_stream(end: impl AsyncFnOnce(&mut TransportSendStream)) -> bool {
+  /// Opens a fetch stream, writes one Object on it less its last `cut` bytes, then ends
+  /// it with `end`. Returns whether the reader saw the stream aborted once it reported
+  /// the end.
+  async fn end_fetch_stream(cut: usize, end: impl AsyncFnOnce(&mut TransportSendStream)) -> bool {
     let (send, recv) = setup_stream_pair().await;
     let (fetch_header, fetch_req) = make_fetch_header_and_request();
     let sender = SendDataStream::new(
@@ -1247,7 +1256,7 @@ mod tests {
       .unwrap();
     {
       let mut stream = sender.send_stream.lock().await;
-      stream.write_all(&bytes).await.unwrap();
+      stream.write_all(&bytes[..bytes.len() - cut]).await.unwrap();
       end(&mut stream).await;
     }
 
@@ -1372,7 +1381,7 @@ mod tests {
 
   #[tokio::test]
   async fn a_stream_ended_with_its_fin_is_not_aborted() {
-    let aborted = end_fetch_stream(async |stream: &mut TransportSendStream| {
+    let aborted = end_fetch_stream(0, async |stream: &mut TransportSendStream| {
       stream.finish().await.unwrap();
     })
     .await;
@@ -1380,8 +1389,17 @@ mod tests {
   }
 
   #[tokio::test]
+  async fn a_fin_in_the_middle_of_an_object_is_aborted() {
+    let aborted = end_fetch_stream(1, async |stream: &mut TransportSendStream| {
+      stream.finish().await.unwrap();
+    })
+    .await;
+    assert!(aborted);
+  }
+
+  #[tokio::test]
   async fn a_reset_stream_is_aborted() {
-    let aborted = end_fetch_stream(async |stream: &mut TransportSendStream| {
+    let aborted = end_fetch_stream(0, async |stream: &mut TransportSendStream| {
       // Give the Object time to leave before the reset discards what is unsent.
       sleep(Duration::from_millis(50)).await;
       stream.reset(0).unwrap();

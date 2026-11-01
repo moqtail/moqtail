@@ -61,7 +61,7 @@ export type FetchObjectContext = {
 }
 
 /**
- * Kind discriminator for End-of-Range markers (§11.5).
+ * Kind discriminator for End-of-Range markers.
  */
 export enum EndOfRangeKind {
   /** Serialization Flags = 0x8C: all objects in the range are known not to exist. */

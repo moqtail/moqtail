@@ -54,8 +54,7 @@ pub struct FetchObjectContext {
   pub publisher_priority: Option<u8>,
 }
 
-/// Kind discriminator for End-of-Range markers. New kinds can be added, so a match on
-/// one outside this crate needs a wildcard arm.
+/// Kind discriminator for End-of-Range markers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum EndOfRangeKind {

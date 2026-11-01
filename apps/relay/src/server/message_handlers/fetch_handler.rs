@@ -41,6 +41,7 @@ use moqtail::model::parameter::message_parameter::include_properties;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use moqtail::transport::data_stream_handler::FetchRequest;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{mpsc, oneshot, watch};
 use tracing::{error, info, trace, warn};
 
@@ -130,7 +131,7 @@ fn unresolved_fetch_range(filter: &LocationFilter) -> Option<(Location, Location
 /// from it rather than requested a second time.
 pub(crate) struct PendingUpstreamFetch {
   pub relay_request_id: u64,
-  pub publisher: Arc<MOQTClient>,
+  pub finished: Arc<AtomicBool>,
   pub rx: mpsc::Receiver<UpstreamFetchEvent>,
 }
 
@@ -158,9 +159,11 @@ enum UpstreamRange {
   Unanswered,
 }
 
+/// The relay's Request ID, whether the response arrived whole (set by its reader once
+/// the fetch stream ends with a FIN), its Objects and markers, and its answer.
 type UpstreamFetch = (
   u64,
-  Arc<MOQTClient>,
+  Arc<AtomicBool>,
   mpsc::Receiver<UpstreamFetchEvent>,
   oneshot::Receiver<UpstreamFetchResponse>,
 );
@@ -201,7 +204,7 @@ async fn resolve_range_upstream(
   largest: &mut Option<Location>,
 ) -> UpstreamRange {
   let sent = send_upstream_fetch_for_range(client, context, track, filter, group_order).await;
-  let Some((relay_request_id, publisher, rx, response_rx)) = sent else {
+  let Some((relay_request_id, finished, rx, response_rx)) = sent else {
     return UpstreamRange::Unanswered;
   };
 
@@ -228,7 +231,7 @@ async fn resolve_range_upstream(
       UpstreamRange::Resolved {
         pending: PendingUpstreamFetch {
           relay_request_id,
-          publisher,
+          finished,
           rx,
         },
         end_location,
@@ -712,11 +715,13 @@ async fn send_upstream_fetch_for_range(
   // The response can come at any time relative to object delivery, so it is read on a
   // task. Holding the handler keeps the request stream open for the fetch's lifetime.
   // Whoever reads the Objects is done with the fetch once it drops its receiver, on
-  // whatever path: the task then cancels the upstream FETCH if it is still running,
-  // and forgets it.
+  // whatever path: the task then closes the request stream if it is still open, with
+  // a FIN when the whole response arrived and a cancel otherwise, and forgets the fetch.
   let response_event_tx = upstream_tx;
   let upstream_publisher = publisher.clone();
   let context = context.clone();
+  let finished = Arc::new(AtomicBool::new(false));
+  let finished_by_reader = finished.clone();
   tokio::spawn(async move {
     let response = async {
       match upstream.next_message().await {
@@ -781,7 +786,16 @@ async fn send_upstream_fetch_for_range(
       _ = response => false,
       _ = response_event_tx.closed() => true,
     };
-    if reader_left {
+    if reader_left && finished_by_reader.load(Ordering::Acquire) {
+      // The whole response arrived, so the request is closed rather than cancelled. A
+      // publisher that answers by closing its side is given a moment to.
+      upstream.finish().await;
+      let _ = tokio::time::timeout(
+        context.server_config.upstream_fetch_timeout,
+        upstream.next_message(),
+      )
+      .await;
+    } else if reader_left {
       upstream.reset_and_stop(StreamResetCode::Cancelled.to_u64());
     } else {
       // The request stream may close before the fetch stream has delivered everything,
@@ -791,7 +805,7 @@ async fn send_upstream_fetch_for_range(
     forget_upstream_fetch(&context, &upstream_publisher, relay_request_id).await;
   });
 
-  Some((relay_request_id, publisher, upstream_rx, response_rx))
+  Some((relay_request_id, finished, upstream_rx, response_rx))
 }
 
 async fn forget_upstream_fetch(
@@ -1375,7 +1389,7 @@ pub(crate) async fn serve_fetch_stream(
             UpstreamCoverage::new(start_location.clone(), end_location.clone(), group_order);
           Some((
             pending.relay_request_id,
-            pending.publisher,
+            pending.finished,
             pending.rx,
             coverage,
           ))
@@ -1385,14 +1399,14 @@ pub(crate) async fn serve_fetch_stream(
           let gap = range_filter(&start, &end);
           send_upstream_fetch_for_range(&client, &context, &track, gap, group_order)
             .await
-            .map(|(request_id, publisher, rx, _)| {
+            .map(|(request_id, finished, rx, _)| {
               let coverage = UpstreamCoverage::new(start, end, group_order);
-              (request_id, publisher, rx, coverage)
+              (request_id, finished, rx, coverage)
             })
         }
       };
 
-      if let Some((relay_request_id, _, mut rx, mut coverage)) = upstream_rx {
+      if let Some((relay_request_id, finished, mut rx, mut coverage)) = upstream_rx {
         let timeout = context.server_config.upstream_fetch_timeout;
         let mark_absent = |spans: Vec<Span>| {
           for (from, to) in spans {
@@ -1465,6 +1479,7 @@ pub(crate) async fn serve_fetch_stream(
                 }
                 Ok(Some(UpstreamFetchEvent::StreamClosed)) => {
                   complete = true;
+                  finished.store(true, Ordering::Release);
                   break;
                 }
                 Ok(Some(UpstreamFetchEvent::Error(e))) => {

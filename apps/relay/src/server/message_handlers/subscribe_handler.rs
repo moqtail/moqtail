@@ -20,7 +20,7 @@ use crate::server::session::Session;
 use crate::server::session_context::{PendingRequest, SessionContext};
 use crate::server::subscription::Subscription;
 use crate::server::subscription_manager::SubscriptionId;
-use crate::server::track::{Track, TrackOrigin, TrackStatus, await_publisher_streams};
+use crate::server::track::{Release, Track, TrackOrigin, TrackStatus, await_publisher_streams};
 use anyhow::Result;
 use moqtail::model::control::constant::PublishDoneStatusCode;
 use moqtail::model::control::publish_done::PublishDone;
@@ -1257,31 +1257,17 @@ pub(crate) async fn cancel_subscription(
       return;
     }
 
-    let (is_last_subscriber, origin) = {
-      let track = track_lock.read().await;
-      track
-        .remove_subscription(&(context.connection_id, request_id))
-        .await;
-      // When the last subscriber goes away, reset the upstream subscribe streams so
-      // the publishers observe the cancellation. One per publisher serving the track.
-      let last = if track.subscriber_count().await == 0 {
-        for cancel in track.upstream_subscribe_cancellers.lock().await.drain(..) {
-          let _ = cancel.send(());
-        }
-        true
-      } else {
-        false
-      };
-      (last, track.origin())
-    }; // track read lock dropped here
-
-    // A SUBSCRIBE-created track has just had its upstream subscription cancelled.
-    // It stays as a track only fetches use if it holds cached Objects, and is removed
-    // otherwise; either way the next SUBSCRIBE subscribes upstream afresh rather than
-    // being answered from it. A PUBLISH-created track has a publisher still pushing
-    // to it and outlives any number of subscribers.
-    if is_last_subscriber && origin == TrackOrigin::Subscribe {
-      let release = track_lock.read().await.release_upstream().await;
+    // A SUBSCRIBE-created track whose last subscriber left has its upstream
+    // subscription cancelled. It stays as a track only fetches use if it holds cached
+    // Objects, and is removed otherwise; either way the next SUBSCRIBE subscribes
+    // upstream afresh rather than being answered from it. A PUBLISH-created track has a
+    // publisher still pushing to it and outlives any number of subscribers.
+    let release = track_lock
+      .read()
+      .await
+      .release_upstream(&(context.connection_id, request_id))
+      .await;
+    if release != Release::InUse {
       info!(
         "Last subscriber left {:?}: {:?}; next SUBSCRIBE will re-subscribe upstream",
         full_track_name, release

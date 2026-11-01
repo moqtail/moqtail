@@ -388,11 +388,20 @@ impl Track {
     taken
   }
 
-  /// Lets go of a track's upstream subscription once its last subscriber has left. Does
-  /// nothing while a subscriber remains, since one may have joined after the cancel.
-  pub async fn release_upstream(&self) -> Release {
+  /// Removes a subscription and, once no subscriber is left, cancels the upstream
+  /// subscriptions and lets go of them. All under `handover`, so a SUBSCRIBE cannot join
+  /// after the cancel and be left on an upstream that is gone.
+  pub async fn release_upstream(&self, leaving: &SubscriptionId) -> Release {
     let _handover = self.lock_handover().await;
-    if self.origin() != TrackOrigin::Subscribe || self.subscriber_count().await > 0 {
+    self.remove_subscription(leaving).await;
+    if self.subscriber_count().await > 0 {
+      return Release::InUse;
+    }
+    // One per publisher serving the track, so each observes the cancellation.
+    for cancel in self.upstream_subscribe_cancellers.lock().await.drain(..) {
+      let _ = cancel.send(());
+    }
+    if self.origin() != TrackOrigin::Subscribe {
       return Release::InUse;
     }
     self.keep_cached().await
@@ -1170,7 +1179,10 @@ mod tests {
       track.publisher_aliases.write().await.insert(3, 11);
       cache_an_object(&track).await;
 
-      assert_eq!(track.release_upstream().await, Release::Kept(vec![(3, 11)]));
+      assert_eq!(
+        track.release_upstream(&(0, 0)).await,
+        Release::Kept(vec![(3, 11)])
+      );
       assert_eq!(track.origin(), TrackOrigin::Fetch);
       assert!(track.publisher_aliases.read().await.is_empty());
       assert!(track.cache.get_group(4).await.is_some(), "the cache stays");
@@ -1188,7 +1200,7 @@ mod tests {
       for origin in [TrackOrigin::Publish, TrackOrigin::Fetch] {
         let track = track(origin);
         cache_an_object(&track).await;
-        assert_eq!(track.release_upstream().await, Release::InUse);
+        assert_eq!(track.release_upstream(&(0, 0)).await, Release::InUse);
         assert_eq!(track.origin(), origin);
       }
     }
@@ -1196,7 +1208,7 @@ mod tests {
     #[tokio::test]
     async fn a_track_holding_nothing_is_left_for_removal() {
       let track = track(TrackOrigin::Subscribe);
-      assert_eq!(track.release_upstream().await, Release::Empty);
+      assert_eq!(track.release_upstream(&(0, 0)).await, Release::Empty);
       assert_eq!(track.retire().await, Release::Empty);
       assert_eq!(track.origin(), TrackOrigin::Subscribe, "left as it was");
     }

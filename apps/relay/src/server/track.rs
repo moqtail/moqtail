@@ -37,7 +37,7 @@ use moqtail::model::property::track_property::TrackProperty;
 use moqtail::transport::data_stream_handler::HeaderInfo;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::{Mutex, MutexGuard, Notify, RwLock, oneshot};
 use tokio::time::Instant;
@@ -149,20 +149,23 @@ pub enum Release {
 /// quiet instead.
 #[derive(Debug, Default)]
 pub struct DatagramArrivals {
-  last: std::sync::Mutex<Option<Instant>>,
+  /// Microseconds from `utils::BASE_TIME` to the last arrival, plus one; 0 before any.
+  last: AtomicU64,
 }
 
 impl DatagramArrivals {
   pub fn arrived(&self) {
-    *self.last.lock().unwrap() = Some(Instant::now());
+    let micros = utils::BASE_TIME.elapsed().as_micros() as u64;
+    self.last.store(micros + 1, Ordering::Relaxed);
   }
 
   /// Waits until no datagram has arrived for `quiet`, or until `deadline`. A track
   /// that has had no datagram does not wait at all.
   pub async fn wait_for_quiet(&self, quiet: Duration, deadline: Instant) {
     loop {
-      let Some(last) = *self.last.lock().unwrap() else {
-        return;
+      let last = match self.last.load(Ordering::Relaxed) {
+        0 => return,
+        micros => Instant::from_std(*utils::BASE_TIME) + Duration::from_micros(micros - 1),
       };
       let until = (last + quiet).min(deadline);
       if Instant::now() >= until {
@@ -677,15 +680,21 @@ impl Track {
     if let Ok(fetch_object) = object.clone().try_into_fetch() {
       self.cache.add_object(fetch_object).await;
     }
+    self.record_arrival(object).await;
+  }
 
+  /// Logs an Object's arrival and moves the Largest Location on to it.
+  async fn record_arrival(&self, object: &Object) {
     if self.config.enable_object_logging {
-      let object_received_time = utils::passed_time_since_start();
       self
         .object_logger
-        .log_track_object(self.relay_track_id, object, object_received_time)
+        .log_track_object(
+          self.relay_track_id,
+          object,
+          utils::passed_time_since_start(),
+        )
         .await;
     }
-
     {
       let mut largest_location = self.largest_location.write().await;
       if object.location > *largest_location {
@@ -703,18 +712,14 @@ impl Track {
     let Location { group, object: id } = object.location.clone();
     let group_end = Location::new(group, u64::MAX);
     match object.status {
-      ObjectStatus::EndOfGroup => self
-        .cache
-        .mark_absent(object.location.clone(), group_end.clone()),
+      ObjectStatus::EndOfGroup => self.cache.mark_absent(object.location.clone(), group_end),
       ObjectStatus::EndOfTrack => self
         .cache
         .mark_absent(object.location.clone(), Location::new(u64::MAX, u64::MAX)),
       ObjectStatus::Normal => {}
     }
-    if ends_its_group && id < u64::MAX {
-      self
-        .cache
-        .mark_absent(Location::new(group, id + 1), group_end);
+    if ends_its_group {
+      self.group_ended_after(&object.location);
     }
     for property in object.properties.iter().flatten() {
       match property {
@@ -738,10 +743,9 @@ impl Track {
   /// the group comes after the last Object it carried.
   pub fn group_ended_after(&self, last: &Location) {
     if last.object < u64::MAX {
-      self.cache.mark_absent(
-        Location::new(last.group, last.object + 1),
-        Location::new(last.group, u64::MAX),
-      );
+      self
+        .cache
+        .mark_absent(last.next().unwrap(), Location::new(last.group, u64::MAX));
     }
   }
 
@@ -799,28 +803,7 @@ impl Track {
       self.cache.add_object(fetch_object).await;
     }
     self.note_absent(object, false);
-
-    // Track-level logging - log every object arrival if enabled
-    if self.config.enable_object_logging {
-      let object_received_time = utils::passed_time_since_start();
-      self
-        .object_logger
-        .log_track_object(self.relay_track_id, object, object_received_time)
-        .await;
-    }
-
-    // update the largest location
-    {
-      let mut largest_location = self.largest_location.write().await;
-      if object.location.group > largest_location.group
-        || (object.location.group == largest_location.group
-          && object.location.object > largest_location.object)
-      {
-        largest_location.group = object.location.group;
-        largest_location.object = object.location.object;
-      }
-    }
-    self.has_objects.store(true, Ordering::Relaxed);
+    self.record_arrival(object).await;
     Ok(())
   }
 
@@ -873,15 +856,7 @@ impl Track {
           self.cache.add_object(fetch_object).await;
         }
         self.note_absent(&object, end_of_group);
-
-        // Track-level logging - log every object arrival if enabled
-        if self.config.enable_object_logging {
-          let object_received_time = utils::passed_time_since_start();
-          self
-            .object_logger
-            .log_track_object(self.relay_track_id, &object, object_received_time)
-            .await;
-        }
+        self.record_arrival(&object).await;
       }
       Err(e) => {
         error!(
@@ -890,19 +865,6 @@ impl Track {
         );
       }
     }
-
-    // update the largest location
-    {
-      let mut largest_location = self.largest_location.write().await;
-      if datagram.group_id > largest_location.group
-        || (datagram.group_id == largest_location.group
-          && datagram.object_id > largest_location.object)
-      {
-        largest_location.group = datagram.group_id;
-        largest_location.object = datagram.object_id;
-      }
-    }
-    self.has_objects.store(true, Ordering::Relaxed);
 
     let event = TrackEvent::Datagram {
       object: datagram.clone(),
@@ -1176,7 +1138,7 @@ mod tests {
     use moqtail::model::data::constant::ObjectForwardingPreference;
     use moqtail::model::data::fetch_object::FetchObjectPayload;
 
-    fn track(origin: TrackOrigin) -> Track {
+    pub(super) fn track(origin: TrackOrigin) -> Track {
       let config = Box::leak(Box::new(AppConfig::from_cli(Cli::parse_from(["relay"]))));
       Track::new(
         1,
@@ -1266,20 +1228,11 @@ mod tests {
 
   mod live_evidence {
     use super::super::*;
-    use crate::server::config::Cli;
     use bytes::Bytes;
-    use clap::Parser;
     use moqtail::model::data::constant::ObjectForwardingPreference;
 
     fn track() -> Track {
-      let config = Box::leak(Box::new(AppConfig::from_cli(Cli::parse_from(["relay"]))));
-      Track::new(
-        1,
-        FullTrackName::try_new("meet/room1", "video").unwrap(),
-        config,
-        TrackStatus::Pending,
-        TrackOrigin::Subscribe,
-      )
+      super::release::track(TrackOrigin::Subscribe)
     }
 
     fn object(

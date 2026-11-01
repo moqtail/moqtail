@@ -148,6 +148,7 @@ pub(crate) async fn open_fill_fetch_stream(
       start.group,
     ),
     pending_upstream: None,
+    fill_claim: None,
     filter: range_filter,
   };
 

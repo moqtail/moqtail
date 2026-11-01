@@ -28,6 +28,26 @@ impl Location {
     Self { group, object }
   }
 
+  /// The Location right after this one, if there is one: the next Object ID, or the
+  /// first of the next group after the last.
+  pub fn next(&self) -> Option<Location> {
+    match self.object.checked_add(1) {
+      Some(object) => Some(Location::new(self.group, object)),
+      None => self.group.checked_add(1).map(|g| Location::new(g, 0)),
+    }
+  }
+
+  /// The Location right before this one, if there is one.
+  pub fn prev(&self) -> Option<Location> {
+    match self.object.checked_sub(1) {
+      Some(object) => Some(Location::new(self.group, object)),
+      None => self
+        .group
+        .checked_sub(1)
+        .map(|g| Location::new(g, u64::MAX)),
+    }
+  }
+
   pub fn serialize(&self) -> Result<Bytes, ParseError> {
     let mut buf = BytesMut::new();
     buf.put_vi(self.group)?;
@@ -52,6 +72,15 @@ mod tests {
     let mut bytes = original.serialize().unwrap();
     let deserialized = Location::deserialize(&mut bytes).unwrap();
     assert_eq!(original, deserialized);
+  }
+
+  #[test]
+  fn next_and_prev_cross_group_boundaries() {
+    assert_eq!(Location::new(1, 4).next(), Some(Location::new(1, 5)));
+    assert_eq!(Location::new(1, u64::MAX).next(), Some(Location::new(2, 0)));
+    assert_eq!(Location::new(u64::MAX, u64::MAX).next(), None);
+    assert_eq!(Location::new(2, 0).prev(), Some(Location::new(1, u64::MAX)));
+    assert_eq!(Location::new(0, 0).prev(), None);
   }
 
   #[test]

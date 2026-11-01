@@ -20,7 +20,7 @@ use crate::server::session::Session;
 use crate::server::session_context::{PendingRequest, SessionContext};
 use crate::server::subscription::Subscription;
 use crate::server::subscription_manager::SubscriptionId;
-use crate::server::track::{Track, TrackOrigin, TrackStatus, await_publisher_streams};
+use crate::server::track::{Cleanup, Track, TrackOrigin, TrackStatus, await_publisher_streams};
 use anyhow::Result;
 use moqtail::model::control::constant::PublishDoneStatusCode;
 use moqtail::model::control::publish_done::PublishDone;
@@ -128,16 +128,22 @@ async fn upstream_subscribe_exchange(
   }
 
   // Register a cancel signal on the track so the last downstream unsubscribe
-  // resets this upstream stream and the publisher observes CANCELLED.
+  // resets this upstream stream and the publisher observes CANCELLED. Under the
+  // hand-over lock, so a last subscriber leaving meanwhile either finds it to cancel,
+  // or has already left and it is cancelled here.
   let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
   if let Some(track) = context.track_manager.get_track(&full_track_name).await {
-    track
-      .read()
-      .await
-      .upstream_subscribe_cancellers
-      .lock()
-      .await
-      .push(cancel_tx);
+    let track = track.read().await;
+    let _handover = track.lock_handover().await;
+    if track.subscriber_count().await == 0 {
+      let _ = cancel_tx.send(());
+    } else {
+      track
+        .upstream_subscribe_cancellers
+        .lock()
+        .await
+        .push(cancel_tx);
+    }
   }
 
   // A publisher owes exactly one SUBSCRIBE_OK or REQUEST_ERROR. One that stays
@@ -268,6 +274,7 @@ async fn upstream_subscribe_exchange(
                 publisher.connection_id,
                 m.stream_count,
                 context.server_config.publish_done_stream_timeout,
+                context.server_config.publish_done_datagram_quiet,
               )
               .await;
 
@@ -670,9 +677,19 @@ async fn handle_subscribe_message(
     .await;
 
   // Scoped so the track guard is gone before anything below reaches for it again.
-  let subscription = {
+  // A cache-only track has no upstream subscription, so the SUBSCRIBE that takes it
+  // over forwards upstream as if it had created it. Taken over and joined under one
+  // lock, so the track cannot let go of its upstream subscription in between.
+  let (is_creator, subscription) = {
     let track = track_arc.read().await;
-    add_subscription(sub.clone(), &track, client.clone()).await
+    let _handover = track.lock_handover().await;
+    let taken_over = track
+      .take_over(TrackOrigin::Subscribe, TrackStatus::Pending)
+      .await;
+    (
+      is_creator || taken_over,
+      add_subscription(sub.clone(), &track, client.clone()).await,
+    )
   };
   let Some(subscription) = subscription else {
     warn!(
@@ -994,6 +1011,16 @@ async fn handle_subscribe_ok_message(
     }
   };
 
+  // The subscription this answers was let go of when its last subscriber left; its
+  // upstream stream has been reset.
+  if track_arc.read().await.origin() == TrackOrigin::CacheOnly {
+    info!(
+      "SubscribeOk {} answers a subscription {:?} has let go of; ignoring",
+      request_id, full_track_name
+    );
+    return Ok(());
+  }
+
   // Register the publisher's alias for data stream routing.
   if !context
     .track_manager
@@ -1235,35 +1262,25 @@ pub(crate) async fn cancel_subscription(
       return;
     }
 
-    let (is_last_subscriber, origin) = {
-      let track = track_lock.read().await;
-      track
-        .remove_subscription(&(context.connection_id, request_id))
-        .await;
-      // When the last subscriber goes away, reset the upstream subscribe streams so
-      // the publishers observe the cancellation. One per publisher serving the track.
-      let last = if track.subscriber_count().await == 0 {
-        for cancel in track.upstream_subscribe_cancellers.lock().await.drain(..) {
-          let _ = cancel.send(());
-        }
-        true
-      } else {
-        false
-      };
-      (last, track.origin)
-    }; // track read lock dropped here
-
-    // Only a SUBSCRIBE-created track is removed here: its upstream subscription
-    // has just been cancelled, so its cached state is stale and the next
-    // SUBSCRIBE must re-subscribe upstream rather than be answered from it. A
-    // PUBLISH-created track has a publisher still pushing to it and outlives
-    // any number of subscribers.
-    if is_last_subscriber && origin == TrackOrigin::Subscribe {
-      context.track_manager.remove_track(&full_track_name).await;
+    // A SUBSCRIBE-created track whose last subscriber left has its upstream
+    // subscription cancelled. It becomes cache-only if it holds cached Objects, and is
+    // removed otherwise; either way the next SUBSCRIBE subscribes upstream afresh
+    // rather than being answered from it. A PUBLISH-created track has a publisher still
+    // pushing to it and outlives any number of subscribers.
+    let cleanup = track_lock
+      .read()
+      .await
+      .remove_subscriber(&(context.connection_id, request_id))
+      .await;
+    if cleanup != Cleanup::Nothing {
       info!(
-        "Removed track {:?} after last subscriber left; next SUBSCRIBE will re-subscribe upstream",
-        full_track_name
+        "Last subscriber left {:?}: {:?}; next SUBSCRIBE will re-subscribe upstream",
+        full_track_name, cleanup
       );
+      context
+        .track_manager
+        .clean_up(&full_track_name, cleanup)
+        .await;
     }
   } else {
     warn!(
@@ -1625,8 +1642,18 @@ async fn handle_subscribe_error_message(
 
   let full_track_name = sub_request.original_subscribe_request.get_full_track_name();
 
-  // Mark track as Rejected (if it exists)
-  let track_arc = context.track_manager.get_track(&full_track_name).await;
+  // Mark track as Rejected (if it exists). A track that let go of its upstream
+  // subscription before this answer came keeps what it has cached.
+  let track_arc = match context.track_manager.get_track(&full_track_name).await {
+    Some(track) if track.read().await.origin() == TrackOrigin::CacheOnly => {
+      info!(
+        "RequestError {} answers a subscription {:?} has let go of; ignoring",
+        request_id, full_track_name
+      );
+      return Ok(());
+    }
+    track => track,
+  };
   if let Some(track_arc) = &track_arc {
     let track = track_arc.read().await;
     track
@@ -1678,10 +1705,9 @@ async fn handle_subscribe_error_message(
     }
   }
 
-  // Remove the pre-created track from TrackManager
+  // Nothing upstream serves the track: it stays only if it holds cached Objects.
   if track_arc.is_some() {
-    let mut tracks = context.track_manager.tracks.write().await;
-    tracks.remove(&full_track_name);
+    context.track_manager.retire_track(&full_track_name).await;
   }
 
   Ok(())

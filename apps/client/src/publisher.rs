@@ -14,7 +14,7 @@
 
 use crate::cli::DeliveryMode;
 use crate::connection::MoqConnection;
-use crate::filter_spec::ObjectPropertySpec;
+use crate::filter_spec::{FetchMarkerSpec, ObjectPropertySpec};
 use crate::utils::should_log;
 use anyhow::Result;
 use bytes::Bytes;
@@ -22,7 +22,7 @@ use moqtail::model::common::location::Location;
 use moqtail::model::common::pair::KeyValuePair;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::common::tuple::{Tuple, TupleField};
-use moqtail::model::control::constant::PublishDoneStatusCode;
+use moqtail::model::control::constant::{GroupOrder, PublishDoneStatusCode};
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::fetch::Fetch;
 use moqtail::model::control::fetch_ok::FetchOk;
@@ -32,7 +32,7 @@ use moqtail::model::control::publish_namespace::PublishNamespace;
 use moqtail::model::control::request_error::RequestError;
 use moqtail::model::control::request_ok::RequestOk;
 use moqtail::model::control::subscribe_ok::SubscribeOk;
-use moqtail::model::data::constant::DEFAULT_PUBLISHER_PRIORITY;
+use moqtail::model::data::constant::{DEFAULT_PUBLISHER_PRIORITY, ObjectStatus};
 use moqtail::model::data::datagram::Datagram;
 use moqtail::model::data::fetch_header::FetchHeader;
 use moqtail::model::data::object::Object;
@@ -42,7 +42,7 @@ use moqtail::model::error::{RequestErrorCode, StreamResetCode};
 use moqtail::model::parameter::message_parameter::{MessageParameter, include_properties};
 use moqtail::model::property::object_property::ObjectProperty;
 use moqtail::model::property::track_property::TrackProperty;
-use moqtail::transport::connection::TransportConnection;
+use moqtail::transport::connection::{TransportConnection, TransportSendStream};
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use moqtail::transport::data_stream_handler::{HeaderInfo, SendDataStream};
 use std::sync::Arc;
@@ -55,6 +55,7 @@ pub struct PublishConfig {
   pub track_name: String,
   pub delivery_mode: DeliveryMode,
   pub group_count: u64,
+  pub pre_published_groups: u64,
   pub interval: u64,
   pub objects_per_group: u64,
   pub object_id_step: u64,
@@ -76,6 +77,21 @@ pub struct Content {
   pub priorities: Vec<u8>,
   pub object_properties: Vec<ObjectPropertySpec>,
   pub track_properties: Vec<TrackProperty>,
+  /// Spans of Objects that a FETCH response replaces with an End of Range marker.
+  pub fetch_markers: Vec<FetchMarkerSpec>,
+  /// Reset a FETCH response's stream after this many Objects; 0 never.
+  pub fetch_reset_after: u64,
+  /// Close each group with an End of Group object.
+  pub end_of_group_objects: bool,
+  /// Close the track with an End of Track object after the last group.
+  pub end_of_track_object: bool,
+  /// Objects whose stream is reset when the publisher reaches them.
+  pub reset_streams_at: Vec<Location>,
+  /// Objects whose datagram is not sent.
+  pub dropped_datagrams: Vec<Location>,
+  /// Signal the gaps that the ID steps leave with Prior Group and Object ID Gap
+  /// properties.
+  pub gap_properties: bool,
 }
 
 pub struct PublishNamespaceConfig {
@@ -83,6 +99,7 @@ pub struct PublishNamespaceConfig {
   pub withdraw_after: u64,
   pub delivery_mode: DeliveryMode,
   pub group_count: u64,
+  pub pre_published_groups: u64,
   pub interval: u64,
   pub objects_per_group: u64,
   pub object_id_step: u64,
@@ -118,6 +135,7 @@ pub async fn run_namespace(moq: MoqConnection, config: PublishNamespaceConfig) -
   let data_config = DataConfig {
     delivery_mode: config.delivery_mode,
     group_count: config.group_count,
+    pre_published_groups: config.pre_published_groups.min(config.group_count),
     interval: config.interval,
     objects_per_group: config.objects_per_group,
     object_id_step: config.object_id_step,
@@ -128,7 +146,7 @@ pub async fn run_namespace(moq: MoqConnection, config: PublishNamespaceConfig) -
   };
 
   // Step 2: the relay sends each request on its own bidirectional stream.
-  let published = Published::default();
+  let published = Published::initial(&data_config).await;
 
   info!(
     "Waiting for request streams on namespace '{}'...",
@@ -188,7 +206,7 @@ async fn serve_request_streams(
           }
           let ok = SubscribeOk::new(
             track_alias,
-            vec![],
+            largest_object(&pub_state).await.into_iter().collect(),
             properties_for(&m.subscribe_parameters, &dc.content.track_properties),
           );
           if let Err(e) = request_stream.send_impl(&ok).await {
@@ -268,6 +286,7 @@ pub async fn run(moq: MoqConnection, config: PublishConfig) -> Result<()> {
   let data_config = DataConfig {
     delivery_mode: config.delivery_mode,
     group_count: config.group_count,
+    pre_published_groups: config.pre_published_groups.min(config.group_count),
     interval: config.interval,
     objects_per_group: config.objects_per_group,
     object_id_step: config.object_id_step,
@@ -279,7 +298,7 @@ pub async fn run(moq: MoqConnection, config: PublishConfig) -> Result<()> {
 
   // A relay may FETCH a track it was pushed, so the request streams are served
   // alongside delivery rather than after it.
-  let published = Published::default();
+  let published = Published::initial(&data_config).await;
   let serving = tokio::spawn(serve_request_streams(
     connection.clone(),
     data_config.clone(),
@@ -340,6 +359,9 @@ async fn publish_namespace(
 struct DataConfig {
   delivery_mode: DeliveryMode,
   group_count: u64,
+  /// The first groups, published before the session started: live delivery starts
+  /// after them, and a FETCH can have them at once.
+  pre_published_groups: u64,
   interval: u64,
   objects_per_group: u64,
   object_id_step: u64,
@@ -350,6 +372,37 @@ struct DataConfig {
 }
 
 impl DataConfig {
+  /// The status that closes group `g` once its last Object is out, if any: End of
+  /// Track after the last group, which ends the group as well, or End of Group.
+  fn closing_status(&self, g: u64) -> Option<ObjectStatus> {
+    if self.objects_per_group == 0 {
+      return None;
+    }
+    if self.content.end_of_track_object && g + 1 == self.group_count {
+      Some(ObjectStatus::EndOfTrack)
+    } else if self.content.end_of_group_objects {
+      Some(ObjectStatus::EndOfGroup)
+    } else {
+      None
+    }
+  }
+
+  /// The Object ID a group's closing status takes: one past its last Object.
+  fn closing_object_id(&self) -> u64 {
+    (self.objects_per_group - 1) * self.object_id_step + 1
+  }
+
+  /// The last Object of the groups published before the session started, if any.
+  fn last_pre_published(&self) -> Option<Location> {
+    if self.pre_published_groups == 0 || self.objects_per_group == 0 {
+      return None;
+    }
+    Some(Location::new(
+      (self.pre_published_groups - 1) * self.group_id_step,
+      (self.objects_per_group - 1) * self.object_id_step,
+    ))
+  }
+
   /// The subgroup the `i`th Object of a group goes to.
   fn subgroup_of(&self, i: u64) -> u64 {
     i % self.content.subgroups_per_group.max(1)
@@ -379,12 +432,12 @@ impl DataConfig {
     let group_id = g * self.group_id_step;
     let object_id = i * self.object_id_step;
     let mut properties = Vec::new();
-    if g > 0 && i == 0 && self.group_id_step > 1 {
+    if self.content.gap_properties && g > 0 && i == 0 && self.group_id_step > 1 {
       properties.push(ObjectProperty::PriorGroupIdGap {
         gap: self.group_id_step - 1,
       });
     }
-    if i > 0 && self.object_id_step > 1 {
+    if self.content.gap_properties && i > 0 && self.object_id_step > 1 {
       properties.push(ObjectProperty::PriorObjectIdGap {
         gap: self.object_id_step - 1,
       });
@@ -412,6 +465,16 @@ impl DataConfig {
 struct Published(Arc<Mutex<Option<Location>>>);
 
 impl Published {
+  /// What has been published before anything is sent: the groups the configuration
+  /// counts as already out.
+  async fn initial(config: &DataConfig) -> Self {
+    let published = Self::default();
+    if let Some(last) = config.last_pre_published() {
+      published.record(last.group, last.object).await;
+    }
+    published
+  }
+
   async fn record(&self, group_id: u64, object_id: u64) {
     let location = Location::new(group_id, object_id);
     let mut largest = self.0.lock().await;
@@ -469,8 +532,29 @@ async fn serve_fetch(
     return;
   }
 
-  if let Err(e) = send_fetch_objects(connection, &fetch, &start, &end, config).await {
+  let descending = fetch.group_order() == GroupOrder::Descending;
+  let (first, last) = objects_to_send(&start, &end, descending);
+  if let Err(e) = send_fetch_objects(connection, &fetch, &first, &last, config).await {
     error!("Failed to serve FETCH objects: {:?}", e);
+  }
+}
+
+/// The LARGEST_OBJECT parameter for what has been published so far, if anything has.
+async fn largest_object(published: &Published) -> Option<MessageParameter> {
+  published
+    .largest()
+    .await
+    .map(MessageParameter::new_largest_object)
+}
+
+/// The first and last Objects a FETCH of `start..=end` sends. A descending FETCH that
+/// spans groups starts each group at its first Object, the start group included; the
+/// end group still stops at the End Location.
+fn objects_to_send(start: &Location, end: &Location, descending: bool) -> (Location, Location) {
+  if descending && start.group != end.group {
+    (Location::new(start.group, 0), end.clone())
+  } else {
+    (start.clone(), end.clone())
   }
 }
 
@@ -534,8 +618,17 @@ async fn send_fetch_objects(
   let stream = Arc::new(Mutex::new(stream));
   let mut handler = SendDataStream::new(stream.clone(), header_info).await?;
 
+  // Groups go out in the order the FETCH asked for; the Objects within each group
+  // ascend either way.
+  let mut groups: Vec<u64> = (0..config.group_count).collect();
+  if fetch.group_order() == GroupOrder::Descending {
+    groups.reverse();
+  }
+
   let mut sent = 0u64;
-  for g in 0..config.group_count {
+  // A span's marker goes out in place of its first Object, and the rest are skipped.
+  let mut marked = vec![false; config.content.fetch_markers.len()];
+  for g in groups {
     let group_id = g * config.group_id_step;
     if group_id < start.group || group_id > end.group {
       continue;
@@ -544,6 +637,23 @@ async fn send_fetch_objects(
       let object_id = i * config.object_id_step;
       let location = Location::new(group_id, object_id);
       if location < *start || location > *end {
+        continue;
+      }
+      if let Some(i) = config
+        .content
+        .fetch_markers
+        .iter()
+        .position(|marker| marker.covers(&location))
+      {
+        if !marked[i] {
+          marked[i] = true;
+          let marker = &config.content.fetch_markers[i];
+          info!(
+            "FETCH {}: marking {:?}..={:?} {:?}",
+            fetch.request_id, marker.from, marker.to, marker.kind
+          );
+          handler.send_end_of_range(marker.kind, &marker.to).await?;
+        }
         continue;
       }
 
@@ -564,6 +674,18 @@ async fn send_fetch_objects(
       )?;
       handler.send_object(&object, None).await?;
       sent += 1;
+      if sent == config.content.fetch_reset_after {
+        info!(
+          "Resetting the stream of FETCH {} after {} objects",
+          fetch.request_id, sent
+        );
+        // A reset drops whatever is still unsent, so the Objects get a moment to
+        // leave first: the point is a response cut short, not one never sent.
+        handler.flush().await?;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        stream.lock().await.reset(0)?;
+        return Ok(());
+      }
     }
   }
 
@@ -600,12 +722,14 @@ async fn publish_track(
   published: &Published,
 ) -> Result<()> {
   info!("Publishing track: track_alias={}", track_alias);
+  let mut parameters = vec![MessageParameter::Forward { forward: true }];
+  parameters.extend(largest_object(published).await);
   let publish = Publish::new(
     0, // request_id
     namespace.clone(),
     TupleField::from_utf8(track_name),
     track_alias,
-    vec![MessageParameter::Forward { forward: true }],
+    parameters,
     data_config.content.track_properties.clone(),
   );
 
@@ -645,7 +769,10 @@ async fn publish_track(
 /// Number of subgroup streams a run opens (one per group); datagram mode opens none.
 fn stream_count(config: &DataConfig) -> u64 {
   match config.delivery_mode {
-    DeliveryMode::Subgroup => config.group_count * config.subgroups_used(),
+    // Only the groups delivered live open streams.
+    DeliveryMode::Subgroup => {
+      (config.group_count - config.pre_published_groups) * config.subgroups_used()
+    }
     DeliveryMode::Datagram => 0,
   }
 }
@@ -678,7 +805,7 @@ async fn send_datagrams(
     config.payload_size
   );
 
-  for g in 0..config.group_count {
+  for g in config.pre_published_groups..config.group_count {
     let group_id = g * config.group_id_step;
     for i in 0..config.objects_per_group {
       let object_id = i * config.object_id_step;
@@ -694,8 +821,24 @@ async fn send_datagrams(
         Some(priority),
         Some(config.object_properties(g, i)),
         Bytes::from(payload),
-        false, // end_of_group
+        // The last Object of the group: no Object after it in the group exists.
+        i + 1 == config.objects_per_group,
       );
+
+      if config
+        .content
+        .dropped_datagrams
+        .contains(&Location::new(group_id, object_id))
+      {
+        info!(
+          "Dropping the datagram for group {} object {}",
+          group_id, object_id
+        );
+        // Recorded as published: a FETCH can still have it.
+        published.record(group_id, object_id).await;
+        tokio::time::sleep(interval).await;
+        continue;
+      }
 
       let serialized = datagram_obj.serialize()?;
 
@@ -722,6 +865,25 @@ async fn send_datagrams(
 
       tokio::time::sleep(interval).await;
     }
+
+    if let Some(status) = config.closing_status(g) {
+      let priority = config.priority_of(config.subgroup_of(config.objects_per_group - 1));
+      let datagram = Datagram::new_status(
+        track_alias,
+        group_id,
+        config.closing_object_id(),
+        Some(priority),
+        None,
+        status,
+      );
+      match connection.send_datagram(datagram.serialize()?) {
+        Ok(_) => info!("Sent {:?} for group {}", status, group_id),
+        Err(e) => error!(
+          "Failed to send {:?} for group {}: {:?}",
+          status, group_id, e
+        ),
+      }
+    }
   }
 
   info!("All datagrams sent");
@@ -732,7 +894,11 @@ async fn send_datagrams(
 /// which the next Object's ID is encoded against.
 struct SubgroupStream {
   handler: SendDataStream,
+  /// Kept to reset the stream with.
+  stream: Arc<Mutex<TransportSendStream>>,
   prev_object_id: Option<u64>,
+  /// Reset: nothing more goes on it.
+  reset: bool,
 }
 
 async fn send_via_streams(
@@ -755,7 +921,7 @@ async fn send_via_streams(
   // contains the end of the group.
   let last_subgroup = config.subgroup_of(config.objects_per_group.saturating_sub(1));
 
-  for g in 0..config.group_count {
+  for g in config.pre_published_groups..config.group_count {
     let group_id = g * config.group_id_step;
     // Each subgroup's stream opens with its first Object.
     let mut streams: Vec<Option<SubgroupStream>> =
@@ -785,13 +951,36 @@ async fn send_via_streams(
           true,
         );
         let header_info = HeaderInfo::Subgroup { header: sub_header };
-        let handler = SendDataStream::new(Arc::new(Mutex::new(stream)), header_info).await?;
+        let stream = Arc::new(Mutex::new(stream));
+        let handler = SendDataStream::new(stream.clone(), header_info).await?;
         *slot = Some(SubgroupStream {
           handler,
+          stream,
           prev_object_id: None,
+          reset: false,
         });
       }
       let stream = slot.as_mut().expect("opened above");
+      if stream.reset {
+        continue;
+      }
+      if config
+        .content
+        .reset_streams_at
+        .contains(&Location::new(group_id, object_id))
+      {
+        info!(
+          "Resetting the stream of group {} subgroup {} at object {}",
+          group_id, subgroup, object_id
+        );
+        // Recorded as published: a FETCH can still have it.
+        published.record(group_id, object_id).await;
+        if let Err(e) = stream.stream.lock().await.reset(0) {
+          error!("Failed to reset the stream: {:?}", e);
+        }
+        stream.reset = true;
+        continue;
+      }
 
       let subgroup_obj = SubgroupObject {
         object_id,
@@ -839,7 +1028,34 @@ async fn send_via_streams(
       tokio::time::sleep(interval).await;
     }
 
-    for stream in streams.into_iter().flatten() {
+    // The group's closing status goes on the stream that carries its last Object.
+    if let Some(status) = config.closing_status(g)
+      && let Some(stream) = streams[last_subgroup as usize]
+        .as_mut()
+        .filter(|stream| !stream.reset)
+    {
+      let closing = SubgroupObject {
+        object_id: config.closing_object_id(),
+        properties: Some(Vec::new()),
+        object_status: Some(status),
+        payload: None,
+      };
+      let object = Object::try_from_subgroup(
+        closing,
+        track_alias,
+        group_id,
+        Some(last_subgroup),
+        Some(config.priority_of(last_subgroup)),
+        DEFAULT_PUBLISHER_PRIORITY,
+      )?;
+      stream
+        .handler
+        .send_object(&object, stream.prev_object_id)
+        .await?;
+      info!("Sent {:?} for group {}", status, group_id);
+    }
+
+    for stream in streams.into_iter().flatten().filter(|stream| !stream.reset) {
       let mut handler = stream.handler;
       handler.flush().await?;
     }
@@ -861,4 +1077,90 @@ fn generate_payload(size: usize) -> Vec<u8> {
       (seed & 0xFF) as u8
     })
     .collect()
+}
+
+#[cfg(test)]
+mod tests {
+  use super::{Content, DataConfig, ObjectStatus, objects_to_send};
+  use crate::cli::DeliveryMode;
+  use moqtail::model::common::location::Location;
+
+  fn config(pre_published_groups: u64) -> DataConfig {
+    DataConfig {
+      delivery_mode: DeliveryMode::Subgroup,
+      group_count: 10,
+      pre_published_groups,
+      interval: 0,
+      objects_per_group: 4,
+      object_id_step: 2,
+      group_id_step: 3,
+      payload_size: 1,
+      publisher_priority: 128,
+      content: Content::default(),
+    }
+  }
+
+  #[test]
+  fn gap_properties_can_be_left_out() {
+    use moqtail::model::property::object_property::ObjectProperty;
+    let mut c = config(0);
+    c.content.gap_properties = true;
+    // Object 1 of group 1, at Object ID 2 after 0: one ID skipped.
+    assert!(
+      c.object_properties(1, 1)
+        .iter()
+        .any(|p| matches!(p, ObjectProperty::PriorObjectIdGap { gap: 1 }))
+    );
+    c.content.gap_properties = false;
+    assert!(c.object_properties(1, 1).is_empty());
+  }
+
+  #[test]
+  fn each_group_is_closed_one_past_its_last_object_and_the_track_after_the_last() {
+    let mut c = config(0);
+    assert_eq!(c.closing_status(0), None);
+
+    c.content.end_of_group_objects = true;
+    c.content.end_of_track_object = true;
+    assert_eq!(c.closing_status(0), Some(ObjectStatus::EndOfGroup));
+    // The End of Track ends the last group too.
+    assert_eq!(c.closing_status(9), Some(ObjectStatus::EndOfTrack));
+    // Objects 0, 2, 4 and 6.
+    assert_eq!(c.closing_object_id(), 7);
+  }
+
+  #[test]
+  fn content_published_before_the_session_ends_at_the_last_object_of_its_last_group() {
+    assert_eq!(config(0).last_pre_published(), None);
+    // Groups 0, 3 and 6, each with Objects 0, 2, 4 and 6.
+    assert_eq!(config(3).last_pre_published(), Some(loc(6, 6)));
+  }
+
+  fn loc(group: u64, object: u64) -> Location {
+    Location::new(group, object)
+  }
+
+  #[test]
+  fn an_ascending_fetch_sends_exactly_its_range() {
+    assert_eq!(
+      objects_to_send(&loc(5, 3), &loc(9, 2), false),
+      (loc(5, 3), loc(9, 2))
+    );
+  }
+
+  #[test]
+  fn a_descending_fetch_across_groups_starts_each_at_its_first_object() {
+    assert_eq!(
+      objects_to_send(&loc(5, 3), &loc(9, 2), true),
+      (loc(5, 0), loc(9, 2))
+    );
+  }
+
+  #[test]
+  fn a_descending_fetch_within_one_group_sends_exactly_its_range() {
+    assert_eq!(
+      objects_to_send(&loc(5, 3), &loc(5, 6), true),
+      (loc(5, 3), loc(5, 6))
+    );
+  }
 }

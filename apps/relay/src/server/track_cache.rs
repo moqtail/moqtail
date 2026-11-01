@@ -14,11 +14,13 @@
 
 use moka::future::Cache;
 use moka::notification::RemovalCause;
+use moqtail::model::common::location::Location;
 use moqtail::model::data::fetch_object::FetchObjectPayload;
-use std::sync::Arc;
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex, RwLock as SyncRwLock};
 use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard, RwLock};
 use tracing::{error, info, trace};
 
 use super::config::{AppConfig, CacheExpirationType};
@@ -49,11 +51,86 @@ impl std::fmt::Display for CacheKey {
 // Type alias for the cached value (group objects)
 type GroupObjects = Arc<RwLock<Vec<FetchObjectPayload>>>;
 
+/// The groups upstream FETCHes are filling into the cache right now, first to last,
+/// each with a lock its filler holds until it is done.
+type Fills = Arc<Mutex<Vec<(u64, u64, Arc<AsyncMutex<()>>)>>>;
+
+/// An upstream fill in flight. Dropping it ends the fill and frees whoever waits on it.
+#[derive(Debug)]
+pub struct FillClaim {
+  fills: Fills,
+  busy: Arc<AsyncMutex<()>>,
+  _held: OwnedMutexGuard<()>,
+}
+
+impl Drop for FillClaim {
+  fn drop(&mut self) {
+    // Taken off the list before `_held` is released, so a waiter that wakes up finds
+    // it gone.
+    self
+      .fills
+      .lock()
+      .unwrap()
+      .retain(|(_, _, busy)| !Arc::ptr_eq(busy, &self.busy));
+  }
+}
+
+/// At most this many separate ranges are remembered as absent. Forgetting one only
+/// sends a later request for it upstream.
+const MAX_ABSENT_RANGES: usize = 65_536;
+
+/// Inclusive Location ranges known to hold no Object, kept sorted, disjoint and
+/// merged. That an Object does not exist never changes, so these outlive the cached
+/// Objects: once a group is evicted, what is left of it is what is known to be absent.
+#[derive(Debug, Default)]
+struct AbsentRanges {
+  /// Start to end, both inclusive.
+  ranges: BTreeMap<Location, Location>,
+}
+
+impl AbsentRanges {
+  fn insert(&mut self, from: Location, to: Location) {
+    let (mut from, mut to) = (from, to);
+    // Every range that overlaps or touches this one starts no later than the
+    // Location after its end.
+    let limit = to.next().unwrap_or_else(|| to.clone());
+    let touching: Vec<(Location, Location)> = self
+      .ranges
+      .range(..=limit)
+      .rev()
+      .take_while(|(_, end)| end.next().is_none_or(|next| next >= from))
+      .map(|(start, end)| (start.clone(), end.clone()))
+      .collect();
+    for (start, end) in touching {
+      self.ranges.remove(&start);
+      from = from.min(start);
+      to = to.max(end);
+    }
+    self.ranges.insert(from, to);
+    while self.ranges.len() > MAX_ABSENT_RANGES {
+      self.ranges.pop_first();
+    }
+  }
+
+  /// The end of the range holding `location`, if one does.
+  fn end_containing(&self, location: &Location) -> Option<Location> {
+    self
+      .ranges
+      .range(..=location.clone())
+      .next_back()
+      .filter(|(_, end)| *end >= location)
+      .map(|(_, end)| end.clone())
+  }
+}
+
 #[derive(Debug, Clone)]
 pub struct TrackCache {
   pub relay_track_id: u64,
   // Moka cache for storing groups of objects with composite keys
   cache: Cache<CacheKey, GroupObjects>,
+  /// Read on every cache check, written far less often.
+  absent: Arc<SyncRwLock<AbsentRanges>>,
+  fills: Fills,
   #[allow(dead_code)] // Used in eviction listener closure
   log_folder: String,
 }
@@ -101,6 +178,8 @@ impl TrackCache {
     Self {
       relay_track_id,
       cache,
+      absent: Arc::default(),
+      fills: Arc::default(),
       log_folder,
     }
   }
@@ -181,6 +260,78 @@ impl TrackCache {
     );
   }
 
+  /// Records that no Object exists from `from` to `to`, both inclusive.
+  pub fn mark_absent(&self, from: Location, to: Location) {
+    if from <= to {
+      self.absent.write().unwrap().insert(from, to);
+    }
+  }
+
+  /// The Objects of `group` from `lo` to `hi`, if the cache accounts for every
+  /// Location there: each one either holds an Object the cache has or is known to
+  /// hold none. Otherwise None, and the range has to be asked for upstream.
+  pub async fn objects_if_complete(
+    &self,
+    group: u64,
+    lo: u64,
+    hi: u64,
+  ) -> Option<Vec<FetchObjectPayload>> {
+    let group_objects = self.get_group(group).await;
+    let guard = match &group_objects {
+      Some(objects) => Some(objects.read().await),
+      None => None,
+    };
+    // Checked in place and copied only once complete: a FETCH scanning for a gap
+    // asks this of every group it passes, and most of those turn out incomplete.
+    let wanted: &[FetchObjectPayload] = match &guard {
+      Some(objects) => {
+        let first = objects.partition_point(|o| o.object_id < lo);
+        let last = objects.partition_point(|o| o.object_id <= hi);
+        &objects[first..last.max(first)]
+      }
+      None => &[],
+    };
+
+    let absent = self.absent.read().unwrap();
+    let mut held = wanted.iter().map(|o| o.object_id).peekable();
+    let mut cursor = lo;
+    while cursor <= hi {
+      if let Some(end) = absent.end_containing(&Location::new(group, cursor)) {
+        if end.group > group || end.object >= hi {
+          break;
+        }
+        cursor = end.object + 1;
+      } else if held.peek() == Some(&cursor) {
+        held.next();
+        match cursor.checked_add(1) {
+          Some(next) => cursor = next,
+          None => break,
+        }
+      } else {
+        return None;
+      }
+    }
+    Some(wanted.to_vec())
+  }
+
+  /// Claims groups `first..=last` for an upstream FETCH to fill. If a fill of any of
+  /// them is already in flight, that one is returned instead: its lock comes free once
+  /// it is done, and the cache is worth checking again before asking upstream.
+  pub fn claim_fill(&self, first: u64, last: u64) -> Result<FillClaim, Arc<AsyncMutex<()>>> {
+    let mut fills = self.fills.lock().unwrap();
+    if let Some((_, _, busy)) = fills.iter().find(|(lo, hi, _)| *lo <= last && first <= *hi) {
+      return Err(busy.clone());
+    }
+    let busy = Arc::new(AsyncMutex::new(()));
+    let held = busy.clone().try_lock_owned().expect("a new lock is free");
+    fills.push((first, last, busy.clone()));
+    Ok(FillClaim {
+      fills: self.fills.clone(),
+      busy,
+      _held: held,
+    })
+  }
+
   /// Get cache statistics (for monitoring/debugging)
   #[allow(dead_code)]
   pub async fn get_cache_stats(&self) -> (u64, u64) {
@@ -193,8 +344,15 @@ impl TrackCache {
     self.cache.run_pending_tasks().await;
   }
 
+  /// Whether the cache holds no Object of the track. A group is only ever created
+  /// by an Object going into it, so no group means no Object. Expired and evicted
+  /// groups are swept out first, since the count lags behind them.
+  pub async fn is_empty(&self) -> bool {
+    self.cache.run_pending_tasks().await;
+    self.cache.entry_count() == 0
+  }
+
   /// Get a specific group if it exists
-  #[allow(dead_code)]
   pub async fn get_group(&self, group_id: u64) -> Option<GroupObjects> {
     let cache_key = CacheKey::new(self.relay_track_id, group_id);
     self.cache.get(&cache_key).await
@@ -276,5 +434,109 @@ mod tests {
         "group {group_id} lost an object"
       );
     }
+  }
+
+  fn loc(group: u64, object: u64) -> Location {
+    Location::new(group, object)
+  }
+
+  #[test]
+  fn absent_ranges_merge_when_they_overlap_or_touch() {
+    let mut absent = AbsentRanges::default();
+    absent.insert(loc(1, 0), loc(1, 3));
+    absent.insert(loc(1, 8), loc(1, 9));
+    absent.insert(loc(1, 4), loc(1, 7));
+    assert_eq!(absent.ranges.len(), 1);
+    assert_eq!(absent.end_containing(&loc(1, 5)), Some(loc(1, 9)));
+
+    // The last Object ID of a group touches the first of the next.
+    absent.insert(loc(1, 10), loc(1, u64::MAX));
+    absent.insert(loc(2, 0), loc(2, 4));
+    assert_eq!(absent.ranges.len(), 1);
+    assert_eq!(absent.end_containing(&loc(1, 0)), Some(loc(2, 4)));
+    assert_eq!(absent.end_containing(&loc(2, 5)), None);
+  }
+
+  #[test]
+  fn the_oldest_absent_ranges_are_forgotten_past_the_cap() {
+    let mut absent = AbsentRanges::default();
+    for group in 0..=MAX_ABSENT_RANGES as u64 {
+      absent.insert(loc(group, 1), loc(group, 1));
+    }
+    assert_eq!(absent.ranges.len(), MAX_ABSENT_RANGES);
+    assert_eq!(absent.end_containing(&loc(0, 1)), None);
+    assert!(absent.end_containing(&loc(1, 1)).is_some());
+  }
+
+  fn object_at(group_id: u64, object_id: u64) -> FetchObjectPayload {
+    let mut o = object(group_id, 0);
+    o.object_id = object_id;
+    o
+  }
+
+  #[tokio::test]
+  async fn a_range_is_complete_only_when_every_location_is_accounted_for() {
+    let config = AppConfig::from_cli(Cli::parse_from(["relay"]));
+    let cache = TrackCache::new(1, 10_000, &config);
+    for object_id in [0, 1, 4] {
+      cache.add_object(object_at(5, object_id)).await;
+    }
+
+    // 2 and 3 are unknown.
+    assert!(cache.objects_if_complete(5, 0, 4).await.is_none());
+    assert_eq!(cache.objects_if_complete(5, 0, 1).await.unwrap().len(), 2);
+
+    cache.mark_absent(loc(5, 2), loc(5, 3));
+    let objects = cache.objects_if_complete(5, 0, 4).await.unwrap();
+    let ids: Vec<u64> = objects.iter().map(|o| o.object_id).collect();
+    assert_eq!(ids, [0, 1, 4]);
+    // Past 4 nothing is known.
+    assert!(cache.objects_if_complete(5, 0, 5).await.is_none());
+  }
+
+  #[tokio::test]
+  async fn a_group_known_to_be_empty_is_complete_with_no_objects() {
+    let config = AppConfig::from_cli(Cli::parse_from(["relay"]));
+    let cache = TrackCache::new(1, 10_000, &config);
+    cache.mark_absent(loc(6, 0), loc(8, u64::MAX));
+    assert_eq!(
+      cache.objects_if_complete(7, 0, u64::MAX).await,
+      Some(vec![])
+    );
+    assert_eq!(cache.objects_if_complete(8, 3, 9).await, Some(vec![]));
+    assert!(cache.objects_if_complete(9, 0, 0).await.is_none());
+    assert!(cache.is_empty().await, "known absence is no cached Object");
+  }
+
+  #[tokio::test]
+  async fn an_overlapping_fill_waits_for_the_one_in_flight() {
+    let config = AppConfig::from_cli(Cli::parse_from(["relay"]));
+    let cache = TrackCache::new(1, 10_000, &config);
+    let first = cache.claim_fill(3, 5).unwrap();
+    // Groups 6 and up are not being filled.
+    drop(cache.claim_fill(6, 9).unwrap());
+
+    let in_flight = cache.claim_fill(5, 7).unwrap_err();
+    assert!(in_flight.try_lock().is_err(), "held while the fill runs");
+    drop(first);
+    assert!(in_flight.try_lock().is_ok(), "free once it is done");
+    assert!(cache.claim_fill(5, 7).is_ok(), "and no longer listed");
+  }
+
+  #[tokio::test]
+  async fn what_is_absent_outlives_an_evicted_group() {
+    let config = AppConfig::from_cli(Cli::parse_from(["relay"]));
+    let cache = TrackCache::new(1, 10_000, &config);
+    cache.add_object(object_at(5, 0)).await;
+    cache.mark_absent(loc(5, 1), loc(5, u64::MAX));
+    assert!(cache.objects_if_complete(5, 0, u64::MAX).await.is_some());
+
+    cache.cache.invalidate(&CacheKey::new(1, 5)).await;
+    // Object 0 is unknown again; the rest is still known not to exist.
+    assert!(cache.objects_if_complete(5, 0, u64::MAX).await.is_none());
+    assert_eq!(
+      cache.objects_if_complete(5, 1, u64::MAX).await,
+      Some(vec![])
+    );
   }
 }

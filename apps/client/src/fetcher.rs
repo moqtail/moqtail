@@ -25,7 +25,7 @@ use moqtail::model::parameter::location_filter::LocationFilter;
 use moqtail::model::parameter::message_parameter::MessageParameter;
 use moqtail::model::property::object_property::ObjectProperty;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
-use moqtail::transport::data_stream_handler::{FetchRequest, RecvDataStream};
+use moqtail::transport::data_stream_handler::{DataStreamItem, FetchRequest, RecvDataStream};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -143,6 +143,7 @@ pub async fn run(moq: MoqConnection, config: FetchConfig) -> Result<()> {
   let receive_task = tokio::spawn(async move {
     let mut total_objects = 0u64;
     let mut violations = 0u64;
+    let mut markers = 0u64;
     loop {
       match conn.accept_uni().await {
         Ok(stream) => {
@@ -151,9 +152,17 @@ pub async fn run(moq: MoqConnection, config: FetchConfig) -> Result<()> {
           let mut handler = &stream_handler;
 
           loop {
-            let (next_handler, object) = handler.next_object().await;
-            match object {
-              Some(obj) => {
+            let (next_handler, item) = handler.next_item().await;
+            match item {
+              Some(DataStreamItem::EndOfRange { kind, location }) => {
+                info!(
+                  "Fetched End of Range: {:?} through group={}, object={}",
+                  kind, location.group, location.object
+                );
+                markers += 1;
+                handler = next_handler;
+              }
+              Some(DataStreamItem::Object(obj)) => {
                 let passed = !filtered || filter.matches_object(&obj);
                 if !passed {
                   violations += 1;
@@ -174,14 +183,14 @@ pub async fn run(moq: MoqConnection, config: FetchConfig) -> Result<()> {
                 if cancel_after > 0 && total_objects >= cancel_after {
                   info!("Received {} objects, signaling FETCH_CANCEL", total_objects);
                   let _ = signal_tx.send(FetchReceiveSignal::CancelAfter);
-                  return (total_objects, violations);
+                  return (total_objects, violations, markers);
                 }
               }
               None => {
                 if stream_handler.is_malformed_track() {
                   error!("Fetch response is malformed; signaling FETCH_CANCEL");
                   let _ = signal_tx.send(FetchReceiveSignal::MalformedTrack);
-                  return (total_objects, violations);
+                  return (total_objects, violations, markers);
                 }
                 info!("Fetch stream closed");
                 break;
@@ -195,7 +204,7 @@ pub async fn run(moq: MoqConnection, config: FetchConfig) -> Result<()> {
         }
       }
     }
-    (total_objects, violations)
+    (total_objects, violations, markers)
   });
 
   // Wait for the fetch response on the request stream (FetchOk / RequestError).
@@ -245,8 +254,10 @@ pub async fn run(moq: MoqConnection, config: FetchConfig) -> Result<()> {
   info!("Closing connection...");
   connection.close(0u32, b"Done");
 
-  if let Ok((received, violations)) = receive_task.await {
-    info!("Fetch complete: received={received}, filter_violations={violations}");
+  if let Ok((received, violations, markers)) = receive_task.await {
+    info!(
+      "Fetch complete: received={received}, filter_violations={violations}, end_of_range_markers={markers}"
+    );
   } else {
     info!("Fetch complete");
   }

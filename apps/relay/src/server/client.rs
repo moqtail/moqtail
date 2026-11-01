@@ -128,8 +128,6 @@ pub(crate) struct MOQTClient {
   // are delivered onto that stream instead of the control stream.
   pub response_senders: Arc<ResponseSenderList>,
 
-  // fetch requests that this client sent to the relay
-  pub incoming_fetch_requests: Arc<RwLock<BTreeMap<u64, FetchRequest>>>,
   // fetch requests that the relay sent to this client
   pub outgoing_fetch_requests: Arc<RwLock<BTreeMap<u64, FetchRequest>>>,
 
@@ -214,7 +212,6 @@ impl MOQTClient {
           .map(|_| Arc::new(RwLock::new(HashMap::new())))
           .collect(),
       ),
-      incoming_fetch_requests: Arc::new(RwLock::new(BTreeMap::new())),
       outgoing_fetch_requests: Arc::new(RwLock::new(BTreeMap::new())),
       subscribe_requests: Arc::new(RwLock::new(BTreeMap::new())),
       inbound_requests: Arc::new(RwLock::new(BTreeMap::new())),

@@ -75,8 +75,7 @@ export class SendStream {
     let serializedObject: Uint8Array
     if (object instanceof FetchObject) {
       serializedObject = object.serialize(this.#fetchPrevCtx, this.#groupOrder).toUint8Array()
-      const newCtx = object.toContext()
-      if (newCtx) this.#fetchPrevCtx = newCtx
+      this.#fetchPrevCtx = object.nextContext(this.#fetchPrevCtx)
     } else {
       if (this.#lastObjectId !== undefined && object.objectId <= this.#lastObjectId) {
         logger.error(
@@ -247,8 +246,9 @@ export class RecvStream {
             let object: FetchObject | SubgroupObject
             if (Header.isFetch(this.header)) {
               object = FetchObject.deserialize(this.#internalBuffer, fetchPrevCtx, this.#groupOrder)
-              const newCtx = object.toContext()
-              if (newCtx) fetchPrevCtx = newCtx
+              // A marker moves the prior Location on too, so the context is carried
+              // past it as past an Object.
+              fetchPrevCtx = object.nextContext(fetchPrevCtx)
             } else {
               object = SubgroupObject.deserialize(
                 this.#internalBuffer,

@@ -25,7 +25,7 @@ use moqtail::model::control::constant::{GroupOrder, SwitchMode};
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::request_update::RequestUpdate;
 use moqtail::model::control::subscribe::Subscribe;
-use moqtail::model::data::constant::DEFAULT_PUBLISHER_PRIORITY;
+use moqtail::model::data::constant::{DEFAULT_PUBLISHER_PRIORITY, ObjectStatus};
 use moqtail::model::data::datagram::Datagram;
 use moqtail::model::parameter::combined_filter::ObjectFields;
 use moqtail::model::parameter::location_filter::LocationFilter;
@@ -460,16 +460,19 @@ async fn receive_datagrams(
                 );
                 let sequence_ok = status == "OK";
 
-                if should_log(stats.total_received) || !sequence_ok {
+                // Where a group or the track ends is always worth seeing.
+                let signals = group_end_signals(obj.object_status, obj.end_of_group);
+                if should_log(stats.total_received) || !sequence_ok || !signals.is_empty() {
                   info!(
-                    "Received datagram {}: subscription={} group={}, object={}, size={} bytes, elapsed={}ms, seq={}",
+                    "Received datagram {}: subscription={} group={}, object={}, size={} bytes, elapsed={}ms, seq={}{}",
                     stats.total_received,
                     label,
                     obj.group_id,
                     obj.object_id,
                     obj.payload.as_ref().map_or(0, |p| p.len()),
                     stats.elapsed_ms(),
-                    status
+                    status,
+                    signals
                   );
                 } else {
                   debug!(
@@ -578,16 +581,19 @@ async fn receive_streams(
                   );
                   let sequence_ok = matches!(status, "OK" | "FILL");
 
-                  if should_log(stats.total_received) || !sequence_ok {
+                  // Where a group or the track ends is always worth seeing.
+                  let signals = group_end_signals(Some(obj.status), false);
+                  if should_log(stats.total_received) || !sequence_ok || !signals.is_empty() {
                     info!(
-                      "Received object {}: subscription={} group={}, object={}, subgroup={:?}, priority={}, seq={}",
+                      "Received object {}: subscription={} group={}, object={}, subgroup={:?}, priority={}, seq={}{}",
                       stats.total_received,
                       label,
                       obj.location.group,
                       obj.location.object,
                       obj.subgroup_id,
                       obj.publisher_priority,
-                      status
+                      status,
+                      signals
                     );
                   } else {
                     debug!(
@@ -747,4 +753,19 @@ fn report_subscriptions(stats: &ReceptionStats, router: &Mutex<Router>) {
     stats.duplicates,
     stats.filter_violations
   );
+}
+
+/// What an Object says about where its group or track ends, for the log: its status
+/// when it is not a normal Object, and a datagram's END_OF_GROUP bit.
+fn group_end_signals(status: Option<ObjectStatus>, end_of_group: bool) -> String {
+  let mut signals = String::new();
+  if let Some(status) = status
+    && status != ObjectStatus::Normal
+  {
+    signals.push_str(&format!(", status={status:?}"));
+  }
+  if end_of_group {
+    signals.push_str(", end_of_group");
+  }
+  signals
 }

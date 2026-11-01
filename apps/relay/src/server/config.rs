@@ -162,6 +162,11 @@ pub struct Cli {
   /// still in flight.
   #[arg(long, default_value_t = 2000)]
   pub publish_done_stream_timeout_ms: u64,
+  /// A PUBLISH_DONE for a track that has been receiving datagrams is held until none
+  /// has arrived for this long, within --publish-done-stream-timeout-ms. Datagrams are
+  /// not counted in its Stream Count, and the message can overtake the last of them.
+  #[arg(long, default_value_t = 100)]
+  pub publish_done_datagram_quiet_ms: u64,
   /// How many recent groups of Object ids are remembered per track, to drop duplicates
   /// when several publishers serve the same Track. 0 turns duplicate detection off.
   /// Capped, because the memory this costs also scales with the size of a group
@@ -248,6 +253,9 @@ pub struct AppConfig {
   /// finished arriving. This bounds that wait, so a stream that never ends cannot
   /// keep the track alive forever.
   pub publish_done_stream_timeout: Duration,
+  /// How long a track that has been receiving datagrams must go without one before a
+  /// PUBLISH_DONE for it is passed on.
+  pub publish_done_datagram_quiet: Duration,
   /// Groups of Object ids retained per track for duplicate detection. Bounds what that
   /// costs; a publisher more than this many groups behind can slip a duplicate through.
   pub dedup_retained_groups: usize,
@@ -304,6 +312,7 @@ impl AppConfig {
       track_alias_resolution_timeout: Duration::from_millis(cli.track_alias_resolution_timeout_ms),
       downstream_alias_timeout: Duration::from_millis(cli.downstream_alias_timeout_ms),
       publish_done_stream_timeout: Duration::from_millis(cli.publish_done_stream_timeout_ms),
+      publish_done_datagram_quiet: Duration::from_millis(cli.publish_done_datagram_quiet_ms),
       dedup_retained_groups: cli.dedup_retained_groups as usize,
       max_filter_ranges: cli.max_filter_ranges,
       max_rendezvous_timeout: Duration::from_millis(cli.max_rendezvous_timeout_ms),
@@ -491,6 +500,7 @@ mod tests {
       track_alias_resolution_timeout: Duration::from_millis(2000),
       downstream_alias_timeout: Duration::from_millis(3000),
       publish_done_stream_timeout: Duration::from_millis(2000),
+      publish_done_datagram_quiet: Duration::from_millis(100),
       dedup_retained_groups: 30,
       max_filter_ranges: 32,
       max_rendezvous_timeout: Duration::from_millis(10000),

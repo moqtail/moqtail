@@ -50,6 +50,13 @@ async fn main() -> Result<(), anyhow::Error> {
     priorities: cli.priorities.clone(),
     object_properties: cli.object_property.clone(),
     track_properties: cli.track_property.clone(),
+    fetch_markers: cli.fetch_end_of_range.clone(),
+    fetch_reset_after: cli.fetch_reset_after,
+    end_of_group_objects: cli.end_of_group_objects,
+    end_of_track_object: cli.end_of_track_object,
+    reset_streams_at: cli.reset_stream_at.clone(),
+    dropped_datagrams: cli.drop_datagram.clone(),
+    gap_properties: !cli.no_gap_properties,
   };
 
   match cli.command {
@@ -59,6 +66,7 @@ async fn main() -> Result<(), anyhow::Error> {
         track_name: cli.track_name,
         delivery_mode: cli.delivery_mode,
         group_count: cli.group_count,
+        pre_published_groups: cli.pre_published_groups,
         interval: cli.interval,
         objects_per_group: cli.objects_per_group,
         object_id_step: cli.object_id_step,
@@ -78,6 +86,7 @@ async fn main() -> Result<(), anyhow::Error> {
         withdraw_after: cli.withdraw_after,
         delivery_mode: cli.delivery_mode,
         group_count: cli.group_count,
+        pre_published_groups: cli.pre_published_groups,
         interval: cli.interval,
         objects_per_group: cli.objects_per_group,
         object_id_step: cli.object_id_step,

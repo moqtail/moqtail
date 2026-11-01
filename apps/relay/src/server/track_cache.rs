@@ -17,7 +17,7 @@ use moka::notification::RemovalCause;
 use moqtail::model::common::location::Location;
 use moqtail::model::data::fetch_object::FetchObjectPayload;
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock as SyncRwLock};
 use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard, RwLock};
@@ -128,7 +128,8 @@ pub struct TrackCache {
   pub relay_track_id: u64,
   // Moka cache for storing groups of objects with composite keys
   cache: Cache<CacheKey, GroupObjects>,
-  absent: Arc<Mutex<AbsentRanges>>,
+  /// Read on every cache check, written far less often.
+  absent: Arc<SyncRwLock<AbsentRanges>>,
   fills: Fills,
   #[allow(dead_code)] // Used in eviction listener closure
   log_folder: String,
@@ -177,7 +178,7 @@ impl TrackCache {
     Self {
       relay_track_id,
       cache,
-      absent: Arc::new(Mutex::new(AbsentRanges::default())),
+      absent: Arc::default(),
       fills: Arc::default(),
       log_folder,
     }
@@ -262,7 +263,7 @@ impl TrackCache {
   /// Records that no Object exists from `from` to `to`, both inclusive.
   pub fn mark_absent(&self, from: Location, to: Location) {
     if from <= to {
-      self.absent.lock().unwrap().insert(from, to);
+      self.absent.write().unwrap().insert(from, to);
     }
   }
 
@@ -291,7 +292,7 @@ impl TrackCache {
       None => &[],
     };
 
-    let absent = self.absent.lock().unwrap();
+    let absent = self.absent.read().unwrap();
     let mut held = wanted.iter().map(|o| o.object_id).peekable();
     let mut cursor = lo;
     while cursor <= hi {

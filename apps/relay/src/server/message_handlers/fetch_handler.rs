@@ -1272,6 +1272,13 @@ pub(crate) async fn serve_fetch_stream(
                   write_entry(marker, &mut send_stream, &mut fetch_prev_ctx).await?;
                 }
                 Ok(Some(UpstreamFetchEvent::Object(object))) => {
+                  // Cached here, into the track this FETCH holds: the track by that
+                  // name may have been removed, or replaced, since it was asked for.
+                  if let Ok(fetched) =
+                    moqtail::model::data::object::Object::try_from_fetch(object.clone(), relay_track_id)
+                  {
+                    track.read().await.cache_fetched_object(&fetched).await;
+                  }
                   mark_absent(
                     coverage.object(&Location::new(object.group_id, object.object_id)),
                   );

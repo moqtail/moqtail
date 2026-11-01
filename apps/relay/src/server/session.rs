@@ -558,7 +558,8 @@ impl Session {
 
     let mut first_object = true;
     let mut track_alias = 0u64;
-    // Set when this stream answers an upstream FETCH, which names its track.
+    // Set when this stream answers an upstream FETCH nothing waits on any more, which
+    // names its track: its Objects are still worth caching.
     let mut fetch_track_name: Option<FullTrackName> = None;
     let mut stream_id: Option<StreamId> = None;
     let mut current_track: Option<Arc<RwLock<Track>>> = None;
@@ -592,6 +593,18 @@ impl Session {
         (handler, Some(DataStreamItem::Object(object))) => {
           // Handle the object
           stream_handler = handler;
+
+          // An answer to a FETCH the relay sent goes to that FETCH, which caches it
+          // into the track it holds, so it is not looked up here.
+          if first_object && upstream_sender.is_none() {
+            upstream_sender = Self::upstream_fetch_sender(&context, handler).await;
+          }
+          if let Some(ref sender) = upstream_sender {
+            if let Ok(fetch_object) = object.try_into_fetch() {
+              let _ = sender.send(UpstreamFetchEvent::Object(fetch_object)).await;
+            }
+            continue;
+          }
 
           let header_info = if first_object {
             // trace!("First object received, processing header info");
@@ -627,18 +640,6 @@ impl Session {
                 {
                   track_alias = req.track_alias;
                   fetch_track_name = Some(req.fetch_request.get_full_track_name());
-                }
-
-                // Check if this stream is a response to a relay-initiated
-                // upstream fetch. If so, grab the sender to forward objects.
-                if let Some(sender) = context
-                  .upstream_fetch_senders
-                  .read()
-                  .await
-                  .get(&fetch_request_id)
-                  .cloned()
-                {
-                  upstream_sender = Some(sender);
                 }
               }
             }
@@ -695,13 +696,6 @@ impl Session {
               "Failed to process object track: alias: {:?} track name: {:?} error: {:?}",
               track_alias, &track.full_track_name, e
             );
-          }
-
-          // Forward object to upstream fetch channel if this is a relay-initiated fetch
-          if let Some(ref sender) = upstream_sender
-            && let Ok(fetch_object) = object.clone().try_into_fetch()
-          {
-            let _ = sender.send(UpstreamFetchEvent::Object(fetch_object)).await;
           }
 
           object_count += 1;

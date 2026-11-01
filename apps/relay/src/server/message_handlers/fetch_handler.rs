@@ -690,75 +690,110 @@ async fn send_upstream_fetch_for_range(
       "send_upstream_fetch_for_range | Failed to send upstream FETCH: {:?}",
       e
     );
+    forget_upstream_fetch(context, &publisher, relay_request_id).await;
     return None;
   }
 
   // The response can come at any time relative to object delivery, so it is read on a
-  // task. Holding the handler keeps the request stream open for the fetch's lifetime —
-  // dropping it would reach the publisher as a cancellation.
+  // task. Holding the handler keeps the request stream open for the fetch's lifetime.
+  // Whoever reads the Objects is done with the fetch once it drops its receiver, on
+  // whatever path: the task then cancels the upstream FETCH if it is still running,
+  // and forgets it.
   let response_event_tx = upstream_tx;
   let upstream_publisher = publisher.clone();
+  let context = context.clone();
   tokio::spawn(async move {
-    match upstream.next_message().await {
-      Ok(ControlMessage::FetchOk(ok)) => {
-        info!(
-          "Upstream FETCH {} accepted, end location {:?}",
-          relay_request_id, ok.end_location
-        );
-        let end_location = ok.end_location.clone();
-        // Signal range resolution before writing to the potentially full event queue.
-        let _ = response_tx.send(UpstreamFetchResponse::Accepted {
-          end_location: end_location.clone(),
-        });
-        let _ = response_event_tx
-          .send(UpstreamFetchEvent::Accepted { end_location })
-          .await;
+    let response = async {
+      match upstream.next_message().await {
+        Ok(ControlMessage::FetchOk(ok)) => {
+          info!(
+            "Upstream FETCH {} accepted, end location {:?}",
+            relay_request_id, ok.end_location
+          );
+          let end_location = ok.end_location.clone();
+          // Signal range resolution before writing to the potentially full event queue.
+          let _ = response_tx.send(UpstreamFetchResponse::Accepted {
+            end_location: end_location.clone(),
+          });
+          let _ = response_event_tx
+            .send(UpstreamFetchEvent::Accepted { end_location })
+            .await;
+        }
+        Ok(ControlMessage::RequestError(err)) => {
+          let error = format!(
+            "upstream FETCH {} rejected: {:?}",
+            relay_request_id, err.error_code
+          );
+          let _ = response_tx.send(UpstreamFetchResponse::Rejected(err));
+          // Tell the waiting gap loop now instead of letting it sit until its timeout.
+          let _ = response_event_tx
+            .send(UpstreamFetchEvent::Error(error))
+            .await;
+          return;
+        }
+        Ok(ControlMessage::RequestUpdate(_)) => {
+          super::close_on_unexpected_request_update(&upstream_publisher, "FETCH");
+          let error = format!(
+            "upstream FETCH {} failed: publisher sent REQUEST_UPDATE",
+            relay_request_id
+          );
+          let _ = response_tx.send(UpstreamFetchResponse::Failed(error.clone()));
+          let _ = response_event_tx
+            .send(UpstreamFetchEvent::Error(error))
+            .await;
+          return;
+        }
+        Ok(other) => {
+          warn!(
+            "Unexpected {:?} on upstream fetch stream {}",
+            other.get_type(),
+            relay_request_id
+          );
+          return;
+        }
+        Err(e) => {
+          trace!("Upstream fetch stream {} closed: {:?}", relay_request_id, e);
+          return;
+        }
       }
-      Ok(ControlMessage::RequestError(err)) => {
-        let error = format!(
-          "upstream FETCH {} rejected: {:?}",
-          relay_request_id, err.error_code
-        );
-        let _ = response_tx.send(UpstreamFetchResponse::Rejected(err));
-        // Tell the waiting gap loop now instead of letting it sit until its timeout.
-        let _ = response_event_tx
-          .send(UpstreamFetchEvent::Error(error))
-          .await;
-        return;
-      }
-      Ok(ControlMessage::RequestUpdate(_)) => {
+      // Stays parked until the publisher closes the request stream. The relay sent
+      // this FETCH, so the publisher has no business updating it.
+      if let Ok(ControlMessage::RequestUpdate(_)) = upstream.next_message().await {
         super::close_on_unexpected_request_update(&upstream_publisher, "FETCH");
-        let error = format!(
-          "upstream FETCH {} failed: publisher sent REQUEST_UPDATE",
-          relay_request_id
-        );
-        let _ = response_tx.send(UpstreamFetchResponse::Failed(error.clone()));
-        let _ = response_event_tx
-          .send(UpstreamFetchEvent::Error(error))
-          .await;
-        return;
       }
-      Ok(other) => {
-        warn!(
-          "Unexpected {:?} on upstream fetch stream {}",
-          other.get_type(),
-          relay_request_id
-        );
-        return;
-      }
-      Err(e) => {
-        trace!("Upstream fetch stream {} closed: {:?}", relay_request_id, e);
-        return;
-      }
+    };
+    let reader_left = tokio::select! {
+      _ = response => false,
+      _ = response_event_tx.closed() => true,
+    };
+    if reader_left {
+      upstream.reset_and_stop(StreamResetCode::Cancelled.to_u64());
+    } else {
+      // The request stream may close before the fetch stream has delivered everything,
+      // so the fetch is remembered until its reader is done.
+      response_event_tx.closed().await;
     }
-    // Stays parked until the publisher closes the request stream. The relay sent
-    // this FETCH, so the publisher has no business updating it.
-    if let Ok(ControlMessage::RequestUpdate(_)) = upstream.next_message().await {
-      super::close_on_unexpected_request_update(&upstream_publisher, "FETCH");
-    }
+    forget_upstream_fetch(&context, &upstream_publisher, relay_request_id).await;
   });
 
   Some((relay_request_id, publisher, upstream_rx, response_rx))
+}
+
+async fn forget_upstream_fetch(
+  context: &SessionContext,
+  publisher: &MOQTClient,
+  relay_request_id: u64,
+) {
+  context
+    .upstream_fetch_senders
+    .write()
+    .await
+    .remove(&relay_request_id);
+  publisher
+    .outgoing_fetch_requests
+    .write()
+    .await
+    .remove(&relay_request_id);
 }
 
 /// The part of the groups `first..=last` to ask upstream for, for a request of
@@ -1294,7 +1329,7 @@ pub(crate) async fn serve_fetch_stream(
         }
       };
 
-      if let Some((relay_request_id, upstream_publisher, mut rx, mut coverage)) = upstream_rx {
+      if let Some((relay_request_id, _, mut rx, mut coverage)) = upstream_rx {
         let timeout = context.server_config.upstream_fetch_timeout;
         let mark_absent = |spans: Vec<Span>| {
           for (from, to) in spans {
@@ -1404,18 +1439,6 @@ pub(crate) async fn serve_fetch_stream(
         if stop_reason != FetchStop::MalformedTrack {
           mark_absent(coverage.finish(complete));
         }
-
-        // Clean up upstream fetch state
-        context
-          .upstream_fetch_senders
-          .write()
-          .await
-          .remove(&relay_request_id);
-        upstream_publisher
-          .outgoing_fetch_requests
-          .write()
-          .await
-          .remove(&relay_request_id);
       }
 
       if stop_reason != FetchStop::Running {

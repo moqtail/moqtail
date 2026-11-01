@@ -328,6 +328,16 @@ pub async fn handle(
       let location_filter = fetch.get_location_filter().clone();
       let requested_end = location_filter.end_location();
 
+      // Caught before anything is created for the request or asked of a publisher,
+      // which would end the relay's session over the subscriber's error.
+      if let Err(FetchRangeError::ProtocolViolation) = resolve_fetch_range(&location_filter, None) {
+        warn!(
+          "FETCH request {}: End precedes Start in {:?}; closing session (PROTOCOL_VIOLATION)",
+          request_id, location_filter
+        );
+        return Err(TerminationCode::ProtocolViolation);
+      }
+
       // A track the relay does not have yet is created when a publisher can serve it,
       // so the Objects the upstream FETCH brings in are cached for later fetches.
       let track = match context.track_manager.get_track(&full_track_name).await {
@@ -456,11 +466,7 @@ pub async fn handle(
             )
           }
           Err(FetchRangeError::ProtocolViolation) => {
-            warn!(
-              "FETCH request {}: End precedes Start in {:?}; closing session (PROTOCOL_VIOLATION)",
-              request_id, location_filter
-            );
-            return Err(TerminationCode::ProtocolViolation);
+            unreachable!("End before Start is refused before the track is looked up")
           }
           Err(FetchRangeError::InvalidRange) => {
             let has_publisher =

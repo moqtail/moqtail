@@ -822,6 +822,28 @@ fn objects_wanted(group: u64, start: &Location, end: &Location) -> (u64, u64) {
   (lo.object, hi.object)
 }
 
+/// The last Location of the groups `first..=last` a request of `start..=end` delivers:
+/// the end of the highest group in ascending order, of the lowest in descending.
+fn last_delivered(
+  first: u64,
+  last: u64,
+  start: &Location,
+  end: &Location,
+  descending: bool,
+) -> Location {
+  let group = if descending { first } else { last };
+  gap_range(group, group, start, end).1
+}
+
+/// An End of Unknown Range marker up to `location`.
+fn unknown_up_to(location: Location) -> FetchObject {
+  FetchObject::EndOfRange {
+    kind: EndOfRangeKind::Unknown,
+    group_id: location.group,
+    object_id: location.object,
+  }
+}
+
 /// The Location filter selecting `start..=end`.
 fn range_filter(start: &Location, end: &Location) -> LocationFilter {
   if end.object == u64::MAX {
@@ -1150,6 +1172,17 @@ pub(crate) async fn serve_fetch_stream(
       (hi < end_location.group).then(|| hi + 1)
     }
   };
+  // What a fill could not bring in is marked unknown: left unmarked, the subscriber
+  // would take it for Objects that do not exist.
+  let unfilled = |first: u64, last: u64| {
+    unknown_up_to(last_delivered(
+      first,
+      last,
+      &start_location,
+      &end_location,
+      descending,
+    ))
+  };
   let mut next_group = Some(if descending {
     end_location.group
   } else {
@@ -1301,6 +1334,12 @@ pub(crate) async fn serve_fetch_stream(
           "handle_fetch_delivery | Reached max upstream fetch gap limit ({}), skipping gap at group {}",
           max_upstream_fetch_gaps, group_id
         );
+        write_entry(
+          unfilled(gap_start, gap_end),
+          &mut send_stream,
+          &mut fetch_prev_ctx,
+        )
+        .await?;
         next_group = next_after(gap_start, gap_end);
         continue;
       }
@@ -1440,10 +1479,35 @@ pub(crate) async fn serve_fetch_stream(
           }
         }
 
+        let delivered_all = complete && coverage.accepted
+          || coverage.last.as_ref()
+            == Some(&last_delivered(
+              gap_start,
+              gap_end,
+              &start_location,
+              &end_location,
+              descending,
+            ));
+        if stop_reason == FetchStop::Running && !delivered_all {
+          write_entry(
+            unfilled(gap_start, gap_end),
+            &mut send_stream,
+            &mut fetch_prev_ctx,
+          )
+          .await?;
+        }
+
         // A malformed response is not to be believed about anything.
         if stop_reason != FetchStop::MalformedTrack {
           mark_absent(coverage.finish(complete));
         }
+      } else {
+        write_entry(
+          unfilled(gap_start, gap_end),
+          &mut send_stream,
+          &mut fetch_prev_ctx,
+        )
+        .await?;
       }
 
       if stop_reason != FetchStop::Running {
@@ -1530,8 +1594,8 @@ pub(crate) async fn serve_fetch_stream(
 #[cfg(test)]
 mod tests {
   use super::{
-    FetchRangeError, concrete_end_location, empty_range_outcome, gap_range, local_state_answers,
-    range_filter, resolve_fetch_range, unresolved_fetch_range,
+    FetchRangeError, concrete_end_location, empty_range_outcome, gap_range, last_delivered,
+    local_state_answers, range_filter, resolve_fetch_range, unresolved_fetch_range,
   };
   use moqtail::model::common::location::Location;
   use moqtail::model::common::reason_phrase::ReasonPhrase;
@@ -1571,6 +1635,17 @@ mod tests {
       resolve_fetch_range(&range(loc(5, 3), loc(5, 1)), None),
       Err(FetchRangeError::ProtocolViolation)
     );
+  }
+
+  #[test]
+  fn an_unfilled_gap_is_marked_up_to_the_last_location_it_delivers() {
+    let (start, end) = (loc(5, 3), loc(9, 2));
+    // Ascending: the end of the highest group, clipped to the request.
+    assert_eq!(last_delivered(5, 7, &start, &end, false), loc(7, u64::MAX));
+    assert_eq!(last_delivered(8, 9, &start, &end, false), loc(9, 2));
+    // Descending: the end of the lowest group, which comes last.
+    assert_eq!(last_delivered(5, 7, &start, &end, true), loc(5, u64::MAX));
+    assert_eq!(last_delivered(9, 9, &start, &end, true), loc(9, 2));
   }
 
   #[test]

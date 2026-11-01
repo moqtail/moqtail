@@ -816,6 +816,18 @@ fn gap_range(first: u64, last: u64, start: &Location, end: &Location) -> (Locati
   )
 }
 
+/// The first Location a fetch stream for `start..=end` carries. A descending FETCH
+/// across groups carries each group whole, the start group included: a gap before the
+/// first Object of a group means those Objects do not exist, so leaving out the ones
+/// before the Start Location would tell the subscriber they do not.
+fn delivered_start(start: Location, end: &Location, group_order: GroupOrder) -> Location {
+  if group_order == GroupOrder::Descending && start.group != end.group {
+    Location::new(start.group, 0)
+  } else {
+    start
+  }
+}
+
 /// The Object IDs of `group` a request of `start..=end` wants, clipped the same way.
 fn objects_wanted(group: u64, start: &Location, end: &Location) -> (u64, u64) {
   let (lo, hi) = gap_range(group, group, start, end);
@@ -885,12 +897,7 @@ struct UpstreamCoverage {
 impl UpstreamCoverage {
   fn new(start: Location, end: Location, group_order: GroupOrder) -> Self {
     let descending = group_order == GroupOrder::Descending && start.group != end.group;
-    // A descending FETCH across groups carries each of them whole.
-    let start = if descending {
-      Location::new(start.group, 0)
-    } else {
-      start
-    };
+    let start = delivered_start(start, &end, group_order);
     Self {
       start,
       end,
@@ -1132,6 +1139,8 @@ pub(crate) async fn serve_fetch_stream(
     pending_fill: _pending_fill,
     filter,
   } = delivery;
+  // Served from here on, from the cache and from upstream alike.
+  let start_location = delivered_start(start_location, &end_location, group_order);
 
   let fetch_header = FetchHeader::new(request_id);
   let stream_id = SendStreamKey::new(request_id, StreamId::new_fetch(relay_track_id, request_id));
@@ -1594,8 +1603,8 @@ pub(crate) async fn serve_fetch_stream(
 #[cfg(test)]
 mod tests {
   use super::{
-    FetchRangeError, concrete_end_location, empty_range_outcome, gap_range, last_delivered,
-    local_state_answers, range_filter, resolve_fetch_range, unresolved_fetch_range,
+    FetchRangeError, concrete_end_location, delivered_start, empty_range_outcome, gap_range,
+    last_delivered, local_state_answers, range_filter, resolve_fetch_range, unresolved_fetch_range,
   };
   use moqtail::model::common::location::Location;
   use moqtail::model::common::reason_phrase::ReasonPhrase;
@@ -1634,6 +1643,24 @@ mod tests {
     assert_eq!(
       resolve_fetch_range(&range(loc(5, 3), loc(5, 1)), None),
       Err(FetchRangeError::ProtocolViolation)
+    );
+  }
+
+  #[test]
+  fn a_descending_fetch_across_groups_starts_its_start_group_at_object_0() {
+    use moqtail::model::control::constant::GroupOrder;
+    let start = || loc(5, 3);
+    assert_eq!(
+      delivered_start(start(), &loc(9, 2), GroupOrder::Descending),
+      loc(5, 0)
+    );
+    assert_eq!(
+      delivered_start(start(), &loc(5, 8), GroupOrder::Descending),
+      loc(5, 3)
+    );
+    assert_eq!(
+      delivered_start(start(), &loc(9, 2), GroupOrder::Ascending),
+      loc(5, 3)
     );
   }
 

@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use super::subscription::Subscription;
-use super::track::{Release, Track};
+use super::track::{Release, Track, TrackOrigin};
 use crate::server::client::MOQTClient;
 use moqtail::model::common::tuple::Tuple;
 use moqtail::model::control::control_message::ControlMessage;
@@ -188,6 +188,35 @@ impl TrackManager {
       }
       Release::Empty => self.remove_track(full_track_name).await,
     }
+  }
+
+  /// Removes the FETCH-created tracks whose cache holds nothing, such as one emptied by
+  /// expiry or one whose FETCH brought nothing back, and that nothing else holds: no
+  /// FETCH delivering from it, no SUBSCRIBE or PUBLISH taking it over. Returns how many.
+  pub async fn sweep_unused_fetch_tracks(&self) -> usize {
+    let mut tracks = self.tracks.write().await;
+    let mut unused = Vec::new();
+    for (name, track) in tracks.iter() {
+      // Held only here, and nobody can take it while the map is locked, so nobody
+      // holds its lock either.
+      if Arc::strong_count(track) != 1 {
+        continue;
+      }
+      let track = track.read().await;
+      if track.origin() == TrackOrigin::Fetch && track.cache.is_empty().await {
+        unused.push(name.clone());
+      }
+    }
+    // A FETCH-created track has no publisher aliases: a takeover changes its origin.
+    for name in &unused {
+      tracks.remove(name);
+    }
+    drop(tracks);
+    let mut publishes = self.publishes.write().await;
+    for name in &unused {
+      publishes.remove(name);
+    }
+    unused.len()
   }
 
   /// Lets go of a track nothing upstream serves any more (see `Track::retire`).
@@ -689,7 +718,10 @@ mod tests {
   use super::*;
   use crate::server::config::{AppConfig, Cli};
   use crate::server::track::{TrackOrigin, TrackStatus};
+  use bytes::Bytes;
   use clap::Parser;
+  use moqtail::model::data::constant::ObjectForwardingPreference;
+  use moqtail::model::data::fetch_object::FetchObjectPayload;
 
   fn t(path: &str) -> Tuple {
     Tuple::from_utf8_path(path)
@@ -1146,6 +1178,42 @@ mod tests {
       })
       .await;
     track
+  }
+
+  #[tokio::test]
+  async fn a_sweep_removes_only_empty_fetched_tracks_nothing_holds() {
+    let manager = TrackManager::new();
+    let name = |n: &str| FullTrackName::try_new("meet/room1", n).unwrap();
+
+    fetch(&manager, &name("empty")).await;
+    let held = fetch(&manager, &name("held")).await;
+    let cached = fetch(&manager, &name("cached")).await;
+    cached
+      .read()
+      .await
+      .cache
+      .add_object(FetchObjectPayload {
+        group_id: 0,
+        subgroup_id: 0,
+        object_id: 0,
+        publisher_priority: 0,
+        forwarding_preference: ObjectForwardingPreference::Subgroup,
+        properties: None,
+        payload: Bytes::from_static(b"x"),
+      })
+      .await;
+    drop(cached);
+    publish(&manager, 1, 7, &name("published")).await;
+
+    assert_eq!(manager.sweep_unused_fetch_tracks().await, 1);
+    assert!(manager.get_track(&name("empty")).await.is_none());
+    for kept in ["held", "cached", "published"] {
+      assert!(manager.get_track(&name(kept)).await.is_some(), "{kept}");
+    }
+
+    drop(held);
+    assert_eq!(manager.sweep_unused_fetch_tracks().await, 1);
+    assert!(manager.get_track(&name("held")).await.is_none());
   }
 
   #[tokio::test]

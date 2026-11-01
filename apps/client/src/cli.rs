@@ -219,8 +219,8 @@ pub struct Cli {
   #[arg(long, value_parser = parse_location)]
   pub drop_datagram: Vec<Location>,
 
-  /// Leave out the Prior Group and Object ID Gap properties, so the gaps
-  /// --group-id-step and --object-id-step leave go unsignalled (publish and
+  /// Leave out the Prior Group and Object ID Gap properties, so the gaps that
+  /// --group-id-step and --object-id-step leave are not signalled (publish and
   /// publish-namespace).
   #[arg(long, default_value_t = false)]
   pub no_gap_properties: bool,
@@ -236,17 +236,17 @@ pub struct Cli {
   #[arg(long, default_value_t = false)]
   pub end_of_track_object: bool,
 
-  /// Reset each FETCH response's stream after this many Objects, cutting it short;
-  /// they are given a moment to leave first (publish and publish-namespace; 0 =
-  /// never).
+  /// Reset each FETCH response's stream after this many Objects, cutting the response
+  /// short. The Objects already written are given a moment to leave first (publish and
+  /// publish-namespace; 0 = never).
   #[arg(long, default_value_t = 0)]
   pub fetch_reset_after: u64,
 
-  /// A span the publisher's FETCH responses mark with an End of Range marker instead
-  /// of sending its Objects, as KIND:G.O-G.O with KIND non-existent, unknown or
-  /// timed-out; repeatable (publish and publish-namespace). The Objects after a
-  /// marker are encoded against it. In a descending FETCH, keep a span within one
-  /// group. Example: unknown:2.1-2.2
+  /// A span of Objects that the publisher's FETCH responses replace with an End of
+  /// Range marker, as KIND:G.O-G.O with KIND non-existent, unknown or timed-out;
+  /// repeatable (publish and publish-namespace). The Objects after a marker are encoded
+  /// against it. In a descending FETCH, keep a span within one group. Example:
+  /// unknown:2.1-2.2
   #[arg(long, value_parser = parse_fetch_end_of_range)]
   pub fetch_end_of_range: Vec<FetchMarkerSpec>,
 

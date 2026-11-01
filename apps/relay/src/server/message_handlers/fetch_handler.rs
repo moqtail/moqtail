@@ -178,9 +178,10 @@ pub(crate) fn local_state_answers(known: &Option<Location>, requested_end: &Loca
   known.as_ref().is_some_and(|known| requested_end <= known)
 }
 
-/// The groups a FETCH claims, and waits on another FETCH's fill of, while it learns its
-/// End Location. An open-ended FETCH is never answered locally, so it neither waits nor
-/// claims: its claim would reach every later group and hold them for its whole delivery.
+/// The groups a FETCH claims while it learns its End Location, and for which it waits
+/// on a fill another FETCH already has in flight. An open-ended FETCH is never answered
+/// locally, so it neither waits nor claims: its claim would reach every later group and
+/// hold them for its whole delivery.
 fn fill_groups(filter: &LocationFilter) -> Option<(u64, u64)> {
   let end = filter.end_location()?;
   Some((
@@ -342,8 +343,9 @@ pub async fn handle(
       let location_filter = fetch.get_location_filter().clone();
       let requested_end = location_filter.end_location();
 
-      // Caught before anything is created for the request or asked of a publisher,
-      // which would end the relay's session over the subscriber's error.
+      // Refused before a track is created for the request or a publisher is asked: sent
+      // upstream, this FETCH could make the publisher close the relay's whole session
+      // over the subscriber's error.
       if let Err(FetchRangeError::ProtocolViolation) = resolve_fetch_range(&location_filter, None) {
         warn!(
           "FETCH request {}: End precedes Start in {:?}; closing session (PROTOCOL_VIOLATION)",
@@ -424,8 +426,8 @@ pub async fn handle(
         let mut answered_locally = requested_end
           .as_ref()
           .is_some_and(|end| local_state_answers(&largest, end));
-        // Another FETCH already asking upstream for these groups is waited on once:
-        // what it brings in may let the relay answer this one itself.
+        // If another FETCH is already asking upstream for these groups, wait for it
+        // once: what it brings in may let the relay answer this one itself.
         if !answered_locally
           && let (Some(end), Some((first, last))) = (&requested_end, fill_groups(&location_filter))
         {
@@ -787,8 +789,8 @@ async fn send_upstream_fetch_for_range(
       _ = response_event_tx.closed() => true,
     };
     if reader_left && finished_by_reader.load(Ordering::Acquire) {
-      // The whole response arrived, so the request is closed rather than cancelled. A
-      // publisher that answers by closing its side is given a moment to.
+      // The whole response arrived, so the request is closed rather than cancelled, and
+      // a publisher that answers by closing its own side is given a moment to do so.
       upstream.finish().await;
       let _ = tokio::time::timeout(
         context.server_config.upstream_fetch_timeout,
@@ -898,8 +900,8 @@ fn range_filter(start: &Location, end: &Location) -> LocationFilter {
 /// An inclusive range of Locations.
 type Span = (Location, Location);
 
-/// What an upstream FETCH response shows does not exist, worked out as its Objects
-/// and End of Range markers arrive.
+/// Works out which Locations an upstream FETCH response shows do not exist, as its
+/// Objects and End of Range markers arrive.
 ///
 /// A FETCH response carries nothing for a Location it has no Object for. So every
 /// Location it passes over is absent, unless a marker says those Locations are
@@ -1222,8 +1224,8 @@ pub(crate) async fn serve_fetch_stream(
     start_location.group
   });
 
-  // Writes one Object or marker, opening the stream with the first. The entry after
-  // it is encoded against it.
+  // Writes one Object or marker, opening the stream with the first. The next entry is
+  // encoded against this one.
   let write_entry = async |entry: FetchObject,
                            send_stream: &mut Option<_>,
                            prev_ctx: &mut Option<FetchObjectContext>|
@@ -1293,10 +1295,10 @@ pub(crate) async fn serve_fetch_stream(
       break;
     }
 
-    // A fetch already issued to learn the End Location covers this whole range and
-    // its Objects are on their way, so the cache is not consulted for it: reading
-    // both would deliver some of them twice. Otherwise a group is served from the
-    // cache only if the cache accounts for every Location of it the range wants.
+    // A fetch already issued to learn the End Location covers this whole range and its
+    // Objects are on their way, so the cache is not consulted for it: reading both
+    // would deliver some of them twice. Otherwise a group is served from the cache only
+    // if the cache accounts for every Location the range wants from it.
     let cached = if pending_upstream.is_some() {
       None
     } else {
@@ -1341,8 +1343,8 @@ pub(crate) async fn serve_fetch_stream(
         }
       }
 
-      // Another FETCH already filling some of these groups is waited on once, and the
-      // cache checked again, rather than asking upstream for the same Objects. What
+      // If another FETCH is already filling some of these groups, wait for it once and
+      // check the cache again, rather than ask upstream for the same Objects. Whatever
       // it leaves missing, such as an unknown range, is then asked for here.
       let _fill = match &pending_upstream {
         Some(_) => None,

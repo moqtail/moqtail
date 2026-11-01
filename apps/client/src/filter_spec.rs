@@ -179,8 +179,8 @@ pub fn parse_track_property(spec: &str) -> Result<TrackProperty, String> {
   TrackProperty::deserialize(kvp).map_err(|e| format!("{spec:?}: {e:?}"))
 }
 
-/// A span of a track a test publisher's FETCH responses mark with an End of Range
-/// marker instead of sending its Objects.
+/// A span of a track's Objects that a test publisher's FETCH responses replace with an
+/// End of Range marker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FetchMarkerSpec {
   pub kind: EndOfRangeKind,

@@ -253,8 +253,8 @@ pub struct AppConfig {
   /// finished arriving. This bounds that wait, so a stream that never ends cannot
   /// keep the track alive forever.
   pub publish_done_stream_timeout: Duration,
-  /// How long no datagram must have arrived before a PUBLISH_DONE for a track that
-  /// has been receiving them is passed on.
+  /// How long a track that has been receiving datagrams must go without one before a
+  /// PUBLISH_DONE for it is passed on.
   pub publish_done_datagram_quiet: Duration,
   /// Groups of Object ids retained per track for duplicate detection. Bounds what that
   /// costs; a publisher more than this many groups behind can slip a duplicate through.

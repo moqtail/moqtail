@@ -2419,7 +2419,7 @@ export class MOQtailClient {
               if (nextObject) {
                 if (nextObject instanceof FetchObject) {
                   if (nextObject.kind === 'end_of_range') {
-                    // A marker carries no Object, only what a range of them is.
+                    // A marker carries no Object, only the status of a range of them.
                     this.#tellEndOfRange(request.onEndOfRange, nextObject)
                     continue
                   }
@@ -2452,7 +2452,7 @@ export class MOQtailClient {
               if (!(nextObject instanceof FetchObject)) {
                 throw new ProtocolViolationError('MOQtailClient', 'Received subgroup object after fetch header')
               }
-              // A marker carries no Object, only what a range of them is.
+              // A marker carries no Object, only the status of a range of them.
               if (nextObject.kind === 'end_of_range') {
                 this.#tellEndOfRange(request.onEndOfRange, nextObject)
                 continue

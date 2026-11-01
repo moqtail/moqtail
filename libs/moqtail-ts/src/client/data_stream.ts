@@ -246,8 +246,8 @@ export class RecvStream {
             let object: FetchObject | SubgroupObject
             if (Header.isFetch(this.header)) {
               object = FetchObject.deserialize(this.#internalBuffer, fetchPrevCtx, this.#groupOrder)
-              // A marker moves the prior Location on too, so it threads a context
-              // like an Object does.
+              // A marker moves the prior Location on too, so the context is carried
+              // past it as past an Object.
               fetchPrevCtx = object.nextContext(fetchPrevCtx)
             } else {
               object = SubgroupObject.deserialize(

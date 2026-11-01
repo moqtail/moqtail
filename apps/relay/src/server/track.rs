@@ -249,12 +249,12 @@ pub struct Track {
   /// Stable relay-assigned track identifier, independent of publisher aliases.
   pub relay_track_id: u64,
   pub full_track_name: FullTrackName,
-  /// A `TrackOrigin`. It changes when a FETCH-created track is taken over or let go
-  /// of, which must not wait on the track's lock: a fetch holds that for as long as it
+  /// A `TrackOrigin`. It changes when a FETCH-created track is taken over or let go of,
+  /// and that must not wait on the track's lock, which a fetch holds for as long as it
   /// delivers.
   origin: Arc<AtomicU8>,
-  /// Held while a SUBSCRIBE takes the track over and joins it, and while the track
-  /// lets go of its upstream subscription, so neither happens in the other's middle.
+  /// Held while a SUBSCRIBE takes the track over and joins it, and while the track lets
+  /// go of its upstream subscription, so neither can run in the middle of the other.
   handover: Arc<Mutex<()>>,
   pub subscription_manager: SubscriptionManager,
   /// Maps publisher_connection_id -> publisher_track_alias for all active publishers.
@@ -750,8 +750,8 @@ impl Track {
     }
   }
 
-  /// A subgroup stream that holds the end of its group closed with a FIN: nothing in
-  /// the group comes after the last Object it carried.
+  /// Called when a subgroup stream that holds the end of its group closes with a FIN:
+  /// nothing in the group comes after the last Object it carried.
   pub fn group_ended_after(&self, last: &Location) {
     if last.object < u64::MAX {
       self
@@ -809,7 +809,8 @@ impl Track {
       .send_event_to_subscribers(event)
       .await?;
 
-    // A status, which the cache cannot hold, is kept as what it says does not exist.
+    // The cache cannot hold a status, so all that is kept of one is what it says does
+    // not exist.
     if let Ok(fetch_object) = object.clone().try_into_fetch() {
       self.cache.add_object(fetch_object).await;
     }
@@ -861,8 +862,8 @@ impl Track {
           );
         }
 
-        // A status, which the cache cannot hold, is kept as what it says does not
-        // exist.
+        // The cache cannot hold a status, so all that is kept of one is what it says
+        // does not exist.
         if let Ok(fetch_object) = object.clone().try_into_fetch() {
           self.cache.add_object(fetch_object).await;
         }

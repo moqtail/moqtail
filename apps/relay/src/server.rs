@@ -120,8 +120,8 @@ impl Server {
     // Only used to correlate log lines, so any unique value will do.
     let session_id_counter = Arc::new(AtomicU64::new(0));
 
-    // Tracks a FETCH created stay for what they cache, so the ones left holding
-    // nothing are swept up now and then.
+    // A track a FETCH created stays as long as it caches something, so the ones left
+    // holding nothing are swept up now and then.
     let track_manager = self.track_manager.clone();
     let mut shutdown = shutdown_rx.clone();
     tokio::spawn(async move {

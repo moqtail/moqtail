@@ -558,8 +558,8 @@ impl Session {
 
     let mut first_object = true;
     let mut track_alias = 0u64;
-    // Set when this stream answers an upstream FETCH nothing waits on any more, which
-    // names its track: its Objects are still worth caching.
+    // The track named by the upstream FETCH this stream answers, when nothing waits on
+    // that FETCH any more: its Objects are still worth caching.
     let mut fetch_track_name: Option<FullTrackName> = None;
     let mut stream_id: Option<StreamId> = None;
     let mut current_track: Option<Arc<RwLock<Track>>> = None;
@@ -723,7 +723,7 @@ impl Session {
             let event = if handler.is_malformed_track() {
               UpstreamFetchEvent::MalformedTrack
             } else if handler.was_aborted() {
-              // Not all of the range arrived, which must not be taken for the end of it.
+              // Not all of the range arrived, so this is not the end of it.
               UpstreamFetchEvent::Error("fetch stream ended without its FIN".to_string())
             } else {
               UpstreamFetchEvent::StreamClosed
@@ -757,8 +757,8 @@ impl Session {
                 .publisher_stream_progress
                 .stream_closed(context.connection_id)
                 .await;
-              // A stream holding the end of its group that closed with a FIN carried
-              // the last Object of the group.
+              // A FIN on a stream that holds the end of its group means it carried the
+              // group's last Object.
               if !handler.was_aborted()
                 && let Some(HeaderInfo::Subgroup { header }) = handler.get_header_info().await
                 && header.header_type.contains_end_of_group()

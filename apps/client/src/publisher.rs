@@ -77,7 +77,7 @@ pub struct Content {
   pub priorities: Vec<u8>,
   pub object_properties: Vec<ObjectPropertySpec>,
   pub track_properties: Vec<TrackProperty>,
-  /// Spans a FETCH response marks with an End of Range marker instead of sending.
+  /// Spans of Objects that a FETCH response replaces with an End of Range marker.
   pub fetch_markers: Vec<FetchMarkerSpec>,
   /// Reset a FETCH response's stream after this many Objects; 0 never.
   pub fetch_reset_after: u64,
@@ -89,7 +89,8 @@ pub struct Content {
   pub reset_streams_at: Vec<Location>,
   /// Objects whose datagram is not sent.
   pub dropped_datagrams: Vec<Location>,
-  /// Signal the gaps the ID steps leave with Prior Group and Object ID Gap properties.
+  /// Signal the gaps that the ID steps leave with Prior Group and Object ID Gap
+  /// properties.
   pub gap_properties: bool,
 }
 
@@ -1027,7 +1028,7 @@ async fn send_via_streams(
       tokio::time::sleep(interval).await;
     }
 
-    // The stream that carries the end of the group carries what closes it.
+    // The group's closing status goes on the stream that carries its last Object.
     if let Some(status) = config.closing_status(g)
       && let Some(stream) = streams[last_subgroup as usize]
         .as_mut()

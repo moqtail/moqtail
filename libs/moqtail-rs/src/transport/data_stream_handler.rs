@@ -651,8 +651,8 @@ impl RecvDataStream {
           let prev_ctx = fetch_state.prev_ctx;
           FetchObject::deserialize(&mut bytes_cursor, prev_ctx.as_ref(), group_order).and_then(
             |fetch_obj| {
-              // A marker moves the prior Location on too, so it threads a context
-              // like an Object does.
+              // A marker moves the prior Location on too, so the context is carried
+              // past it as past an Object.
               let new_ctx = Some(fetch_obj.next_context(prev_ctx.as_ref()));
               match fetch_obj {
                 FetchObject::Object(payload) => {
@@ -1401,7 +1401,8 @@ mod tests {
       .serialize(None, fetch_req.group_order())
       .unwrap();
 
-    // Written while the reader runs, which it starts doing on the first next_object.
+    // Written from another task, since the reader only starts on the first next_object:
+    // the header must reach it in two parts.
     tokio::spawn(async move {
       let mut stream = TransportSendStream::WebTransport(send);
       stream.write_all(&header[..1]).await.unwrap();

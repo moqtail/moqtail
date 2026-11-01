@@ -108,6 +108,7 @@ import {
   DEFAULT_TRACK_ALIAS_RESOLUTION_TIMEOUT_MS,
   DEFAULT_SWITCH_DRAIN_TIMEOUT_MS,
   DEFAULT_MAX_FILTER_RANGES,
+  EndOfRangeHandler,
 } from './types'
 import { SendDatagramStream } from './datagram_stream'
 import { logger, LogLevel, setLogLevel, setLogEnabledModules } from '../util/logger'
@@ -2171,6 +2172,15 @@ export class MOQtailClient {
   }
 
   /** The request a peer-supplied Request ID belongs to, undoing any migration. */
+  /** A handler that throws must not end the stream the marker arrived on. */
+  #tellEndOfRange(handler: EndOfRangeHandler | undefined, marker: FetchObject): void {
+    try {
+      handler?.(marker.endOfRange!, marker.location)
+    } catch (handlerError) {
+      logger.warn('MOQtailClient', 'End of Range handler error:', handlerError)
+    }
+  }
+
   #clientRequestId(wireRequestId: bigint): bigint {
     return this.#clientRequestIds.get(wireRequestId) ?? wireRequestId
   }
@@ -2410,7 +2420,7 @@ export class MOQtailClient {
                 if (nextObject instanceof FetchObject) {
                   if (nextObject.kind === 'end_of_range') {
                     // A marker carries no Object, only what a range of them is.
-                    request.onEndOfRange?.(nextObject.endOfRange!, nextObject.location)
+                    this.#tellEndOfRange(request.onEndOfRange, nextObject)
                     continue
                   }
                   // TODO: validate if it's a valid fetch object, asc or desc?
@@ -2444,7 +2454,7 @@ export class MOQtailClient {
               }
               // A marker carries no Object, only what a range of them is.
               if (nextObject.kind === 'end_of_range') {
-                request.onEndOfRange?.(nextObject.endOfRange!, nextObject.location)
+                this.#tellEndOfRange(request.onEndOfRange, nextObject)
                 continue
               }
               const moqtObject = MoqtObject.fromFetchObject(nextObject, request.fullTrackName)
@@ -3751,6 +3761,40 @@ if (import.meta.vitest) {
       expect(markers).toHaveLength(1)
       expect(markers[0]![0]).toBe(EndOfRangeKind.Unknown)
       expect([markers[0]![1].group, markers[0]![1].object]).toEqual([10n, 5n])
+      reader.releaseLock()
+
+      await client.disconnect()
+    })
+
+    it('keeps reading a FETCH response when the End of Range handler throws', async () => {
+      const { client, transport } = await connected()
+
+      const fetching = client.fetch({
+        priority: 0,
+        groupOrder: GroupOrder.Ascending,
+        fullTrackName: ftn,
+        locationFilter: new LocationFilter(LocationFilterType.AbsoluteStartGroupEnd, 9n, 0n, 11n),
+        onEndOfRange: () => {
+          throw new Error('handler failed')
+        },
+      })
+      const fetchStream = await openedStream(transport, 0)
+      const fetchMsg = fetchStream.messages[0] as Fetch
+      fetchStream.respond(new FetchOk(false, new Location(11n, 0n), []))
+      const fetched = (await fetching) as { requestId: bigint; stream: ReadableStream<MoqtObject> }
+
+      transport.openIncomingUniStream(
+        fetchStreamBytes(fetchMsg.requestId, [
+          objectAt(9, 10),
+          FetchObject.newEndOfRange(EndOfRangeKind.Unknown, 10n, 5n),
+          objectAt(10, 6),
+        ]),
+      )
+
+      const reader = fetched.stream.getReader()
+      expect((await reader.read()).value!.location.object).toBe(10n)
+      const afterMarker = (await reader.read()).value!
+      expect([afterMarker.location.group, afterMarker.location.object]).toEqual([10n, 6n])
       reader.releaseLock()
 
       await client.disconnect()

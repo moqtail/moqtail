@@ -17,6 +17,7 @@ use crate::server::message_handlers::parameters;
 use crate::server::session_context::{PendingRequest, SessionContext, UpstreamFetchEvent};
 use crate::server::stream_id::{SendStreamKey, StreamId};
 use crate::server::track::{Track, TrackOrigin, TrackStatus};
+use crate::server::track_cache::FillClaim;
 use core::result::Result::{Err, Ok};
 use moqtail::model::common::location::Location;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
@@ -388,6 +389,7 @@ pub async fn handle(
       // publisher; the groups it covers are then served from it instead of being
       // fetched again.
       let mut pending_upstream: Option<PendingUpstreamFetch> = None;
+      let mut pending_fill = None;
 
       let (start_location, end_location) = {
         let mut largest = track.read().await.largest_object().await;
@@ -395,9 +397,28 @@ pub async fn handle(
         // The relay answers on its own only when the requested end is one it has
         // already seen. Otherwise it may be behind the publisher, so it asks upstream
         // and takes the End Location from the publisher's FETCH_OK.
-        let answered_locally = requested_end
+        let mut answered_locally = requested_end
           .as_ref()
           .is_some_and(|end| local_state_answers(&largest, end));
+        if !answered_locally {
+          // Another FETCH already asking upstream for these groups is waited on once:
+          // what it brings in may let the relay answer this one itself.
+          let first = location_filter.start_location(None).map_or(0, |l| l.group);
+          let last = requested_end.as_ref().map_or(u64::MAX, |l| l.group);
+          let cache = track.read().await.cache.clone();
+          pending_fill = match cache.claim_fill(first, last) {
+            Ok(claim) => Some(claim),
+            Err(in_flight) => {
+              let timeout = context.server_config.upstream_fetch_timeout;
+              let _ = tokio::time::timeout(timeout, in_flight.lock()).await;
+              largest = track.read().await.largest_object().await;
+              answered_locally = requested_end
+                .as_ref()
+                .is_some_and(|end| local_state_answers(&largest, end));
+              cache.claim_fill(first, last).ok()
+            }
+          };
+        }
         let mut upstream_rejection = None;
         let mut upstream_end = None;
         if !answered_locally {
@@ -463,6 +484,12 @@ pub async fn handle(
         }
       };
 
+      // Without an upstream fetch of its own, the delivery's gap fills claim their own
+      // groups, and must not find this claim in the way.
+      if pending_upstream.is_none() {
+        pending_fill = None;
+      }
+
       // Send FetchOk on the request stream before delivering objects.
       {
         let track_properties = if include_properties(&fetch.parameters) {
@@ -490,6 +517,7 @@ pub async fn handle(
         group_order: fetch.group_order(),
         stream_priority: 0,
         pending_upstream,
+        pending_fill,
         filter,
       };
 
@@ -991,6 +1019,9 @@ pub(crate) struct FetchDelivery {
   /// An upstream fetch already covering the range, whose Objects are used instead
   /// of asking for them a second time.
   pub pending_upstream: Option<PendingUpstreamFetch>,
+  /// Marks the groups `pending_upstream` is filling, so other FETCHes wait for it
+  /// rather than ask for them too. Held until the delivery ends.
+  pub pending_fill: Option<FillClaim>,
   /// What the requester's Range Filters let through. Upstream is asked for the whole
   /// range regardless: the filtering is the relay's to do.
   pub filter: CombinedFilter,
@@ -1036,6 +1067,7 @@ pub(crate) async fn serve_fetch_stream(
     group_order,
     stream_priority,
     mut pending_upstream,
+    pending_fill: _pending_fill,
     filter,
   } = delivery;
 
@@ -1061,6 +1093,8 @@ pub(crate) async fn serve_fetch_stream(
   };
 
   let mut upstream_gap_count: u64 = 0;
+  // The group at which this delivery last waited on another FETCH's fill.
+  let mut waited_at: Option<u64> = None;
   let mut send_stream = None;
   let mut stop_reason = FetchStop::Running;
   let mut fetch_prev_ctx: Option<FetchObjectContext> = None;
@@ -1200,6 +1234,26 @@ pub(crate) async fn serve_fetch_stream(
           gap_end += 1;
         }
       }
+
+      // Another FETCH already filling some of these groups is waited on once, and the
+      // cache checked again, rather than asking upstream for the same Objects. What
+      // it leaves missing, such as an unknown range, is then asked for here.
+      let _fill = match &pending_upstream {
+        Some(_) => None,
+        None => match cache.claim_fill(gap_start, gap_end) {
+          Ok(claim) => Some(claim),
+          Err(in_flight) if waited_at != Some(group_id) => {
+            waited_at = Some(group_id);
+            let timeout = context.server_config.upstream_fetch_timeout;
+            tokio::select! {
+              _ = tokio::time::timeout(timeout, in_flight.lock()) => {}
+              _ = cancel_rx.changed() => {}
+            }
+            continue;
+          }
+          Err(_) => None,
+        },
+      };
 
       let max_upstream_fetch_gaps = context.server_config.max_upstream_fetch_gaps;
       if upstream_gap_count >= max_upstream_fetch_gaps {

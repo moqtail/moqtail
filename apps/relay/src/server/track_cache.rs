@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard, RwLock};
 use tracing::{error, info, trace};
 
 use super::config::{AppConfig, CacheExpirationType};
@@ -50,6 +50,30 @@ impl std::fmt::Display for CacheKey {
 
 // Type alias for the cached value (group objects)
 type GroupObjects = Arc<RwLock<Vec<FetchObjectPayload>>>;
+
+/// The groups upstream FETCHes are filling into the cache right now, first to last,
+/// each with a lock its filler holds until it is done.
+type Fills = Arc<Mutex<Vec<(u64, u64, Arc<AsyncMutex<()>>)>>>;
+
+/// An upstream fill in flight. Dropping it ends the fill and frees whoever waits on it.
+#[derive(Debug)]
+pub struct FillClaim {
+  fills: Fills,
+  busy: Arc<AsyncMutex<()>>,
+  _held: OwnedMutexGuard<()>,
+}
+
+impl Drop for FillClaim {
+  fn drop(&mut self) {
+    // Taken off the list before `_held` is released, so a waiter that wakes up finds
+    // it gone.
+    self
+      .fills
+      .lock()
+      .unwrap()
+      .retain(|(_, _, busy)| !Arc::ptr_eq(busy, &self.busy));
+  }
+}
 
 /// At most this many separate ranges are remembered as absent. Forgetting one only
 /// sends a later request for it upstream.
@@ -105,6 +129,7 @@ pub struct TrackCache {
   // Moka cache for storing groups of objects with composite keys
   cache: Cache<CacheKey, GroupObjects>,
   absent: Arc<Mutex<AbsentRanges>>,
+  fills: Fills,
   #[allow(dead_code)] // Used in eviction listener closure
   log_folder: String,
 }
@@ -153,6 +178,7 @@ impl TrackCache {
       relay_track_id,
       cache,
       absent: Arc::new(Mutex::new(AbsentRanges::default())),
+      fills: Arc::default(),
       log_folder,
     }
   }
@@ -285,6 +311,24 @@ impl TrackCache {
       }
     }
     Some(wanted.to_vec())
+  }
+
+  /// Claims groups `first..=last` for an upstream FETCH to fill. If a fill of any of
+  /// them is already in flight, that one is returned instead: its lock comes free once
+  /// it is done, and the cache is worth checking again before asking upstream.
+  pub fn claim_fill(&self, first: u64, last: u64) -> Result<FillClaim, Arc<AsyncMutex<()>>> {
+    let mut fills = self.fills.lock().unwrap();
+    if let Some((_, _, busy)) = fills.iter().find(|(lo, hi, _)| *lo <= last && first <= *hi) {
+      return Err(busy.clone());
+    }
+    let busy = Arc::new(AsyncMutex::new(()));
+    let held = busy.clone().try_lock_owned().expect("a new lock is free");
+    fills.push((first, last, busy.clone()));
+    Ok(FillClaim {
+      fills: self.fills.clone(),
+      busy,
+      _held: held,
+    })
   }
 
   /// Get cache statistics (for monitoring/debugging)
@@ -461,6 +505,21 @@ mod tests {
     assert_eq!(cache.objects_if_complete(8, 3, 9).await, Some(vec![]));
     assert!(cache.objects_if_complete(9, 0, 0).await.is_none());
     assert!(cache.is_empty().await, "known absence is no cached Object");
+  }
+
+  #[tokio::test]
+  async fn an_overlapping_fill_waits_for_the_one_in_flight() {
+    let config = AppConfig::from_cli(Cli::parse_from(["relay"]));
+    let cache = TrackCache::new(1, 10_000, &config);
+    let first = cache.claim_fill(3, 5).unwrap();
+    // Groups 6 and up are not being filled.
+    drop(cache.claim_fill(6, 9).unwrap());
+
+    let in_flight = cache.claim_fill(5, 7).unwrap_err();
+    assert!(in_flight.try_lock().is_err(), "held while the fill runs");
+    drop(first);
+    assert!(in_flight.try_lock().is_ok(), "free once it is done");
+    assert!(cache.claim_fill(5, 7).is_ok(), "and no longer listed");
   }
 
   #[tokio::test]

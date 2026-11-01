@@ -128,16 +128,22 @@ async fn upstream_subscribe_exchange(
   }
 
   // Register a cancel signal on the track so the last downstream unsubscribe
-  // resets this upstream stream and the publisher observes CANCELLED.
+  // resets this upstream stream and the publisher observes CANCELLED. Under the
+  // hand-over lock, so a last subscriber leaving meanwhile either finds it to cancel,
+  // or has already left and it is cancelled here.
   let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
   if let Some(track) = context.track_manager.get_track(&full_track_name).await {
-    track
-      .read()
-      .await
-      .upstream_subscribe_cancellers
-      .lock()
-      .await
-      .push(cancel_tx);
+    let track = track.read().await;
+    let _handover = track.lock_handover().await;
+    if track.subscriber_count().await == 0 {
+      let _ = cancel_tx.send(());
+    } else {
+      track
+        .upstream_subscribe_cancellers
+        .lock()
+        .await
+        .push(cancel_tx);
+    }
   }
 
   // A publisher owes exactly one SUBSCRIBE_OK or REQUEST_ERROR. One that stays

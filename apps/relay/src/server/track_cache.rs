@@ -55,17 +55,6 @@ type GroupObjects = Arc<RwLock<Vec<FetchObjectPayload>>>;
 /// sends a later request for it upstream.
 const MAX_ABSENT_RANGES: usize = 65_536;
 
-/// The Location after `location`.
-fn after(location: &Location) -> Option<Location> {
-  match location.object.checked_add(1) {
-    Some(object) => Some(Location::new(location.group, object)),
-    None => location
-      .group
-      .checked_add(1)
-      .map(|group| Location::new(group, 0)),
-  }
-}
-
 /// Inclusive Location ranges known to hold no Object, kept sorted, disjoint and
 /// merged. That an Object does not exist never changes, so these outlive the cached
 /// Objects: once a group is evicted, what is left of it is what is known to be absent.
@@ -80,12 +69,12 @@ impl AbsentRanges {
     let (mut from, mut to) = (from, to);
     // Every range that overlaps or touches this one starts no later than the
     // Location after its end.
-    let limit = after(&to).unwrap_or_else(|| to.clone());
+    let limit = to.next().unwrap_or_else(|| to.clone());
     let touching: Vec<(Location, Location)> = self
       .ranges
       .range(..=limit)
       .rev()
-      .take_while(|(_, end)| after(end).is_none_or(|next| next >= from))
+      .take_while(|(_, end)| end.next().is_none_or(|next| next >= from))
       .map(|(start, end)| (start.clone(), end.clone()))
       .collect();
     for (start, end) in touching {
@@ -260,21 +249,24 @@ impl TrackCache {
     lo: u64,
     hi: u64,
   ) -> Option<Vec<FetchObjectPayload>> {
-    let objects = match self.get_group(group).await {
+    let group_objects = self.get_group(group).await;
+    let guard = match &group_objects {
+      Some(objects) => Some(objects.read().await),
+      None => None,
+    };
+    // Checked in place and copied only once complete: a FETCH scanning for a gap
+    // asks this of every group it passes, and most of those turn out incomplete.
+    let wanted: &[FetchObjectPayload] = match &guard {
       Some(objects) => {
-        let objects = objects.read().await;
         let first = objects.partition_point(|o| o.object_id < lo);
-        objects[first..]
-          .iter()
-          .take_while(|o| o.object_id <= hi)
-          .cloned()
-          .collect()
+        let last = objects.partition_point(|o| o.object_id <= hi);
+        &objects[first..last.max(first)]
       }
-      None => Vec::new(),
+      None => &[],
     };
 
     let absent = self.absent.lock().unwrap();
-    let mut held = objects.iter().map(|o| o.object_id).peekable();
+    let mut held = wanted.iter().map(|o| o.object_id).peekable();
     let mut cursor = lo;
     while cursor <= hi {
       if let Some(end) = absent.end_containing(&Location::new(group, cursor)) {
@@ -292,7 +284,7 @@ impl TrackCache {
         return None;
       }
     }
-    Some(objects)
+    Some(wanted.to_vec())
   }
 
   /// Get cache statistics (for monitoring/debugging)

@@ -20,7 +20,7 @@ use crate::server::session::Session;
 use crate::server::session_context::{PendingRequest, SessionContext};
 use crate::server::subscription::Subscription;
 use crate::server::subscription_manager::SubscriptionId;
-use crate::server::track::{Release, Track, TrackOrigin, TrackStatus, await_publisher_streams};
+use crate::server::track::{Cleanup, Track, TrackOrigin, TrackStatus, await_publisher_streams};
 use anyhow::Result;
 use moqtail::model::control::constant::PublishDoneStatusCode;
 use moqtail::model::control::publish_done::PublishDone;
@@ -1268,19 +1268,19 @@ pub(crate) async fn cancel_subscription(
     // Objects, and is removed otherwise; either way the next SUBSCRIBE subscribes
     // upstream afresh rather than being answered from it. A PUBLISH-created track has a
     // publisher still pushing to it and outlives any number of subscribers.
-    let release = track_lock
+    let cleanup = track_lock
       .read()
       .await
       .release_upstream(&(context.connection_id, request_id))
       .await;
-    if release != Release::InUse {
+    if cleanup != Cleanup::Nothing {
       info!(
         "Last subscriber left {:?}: {:?}; next SUBSCRIBE will re-subscribe upstream",
-        full_track_name, release
+        full_track_name, cleanup
       );
       context
         .track_manager
-        .settle(&full_track_name, release)
+        .clean_up(&full_track_name, cleanup)
         .await;
     }
   } else {

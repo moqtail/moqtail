@@ -131,16 +131,17 @@ impl PublisherStreamProgress {
   }
 }
 
-/// What became of a track whose upstream went away.
+/// What a track leaves the track manager to clean up once it lets go of its upstream.
 #[derive(Debug, PartialEq, Eq)]
-pub enum Release {
-  /// It is still in use and stays as it was.
-  InUse,
-  /// It holds cached Objects and stays as a `Fetch` track. The publisher aliases it
-  /// let go of are for the caller to clear from the track manager.
-  Kept(Vec<(usize, u64)>),
-  /// It holds nothing and is for the caller to remove.
-  Empty,
+pub enum Cleanup {
+  /// Nothing: the track is still in use and unchanged.
+  Nothing,
+  /// The track stays, as a `Fetch` track serving what it has cached, but no publisher
+  /// feeds it any more. These (connection ID, track alias) pairs no longer lead to it
+  /// and are to be removed from the alias map.
+  RemoveAliases(Vec<(usize, u64)>),
+  /// The track holds nothing and is to be removed.
+  RemoveTrack,
 }
 
 /// When the last datagram for a track arrived, so a PUBLISH_DONE can wait for the
@@ -391,18 +392,18 @@ impl Track {
   /// Removes a subscription and, once no subscriber is left, cancels the upstream
   /// subscriptions and lets go of them. All under `handover`, so a SUBSCRIBE cannot join
   /// after the cancel and be left on an upstream that is gone.
-  pub async fn release_upstream(&self, leaving: &SubscriptionId) -> Release {
+  pub async fn release_upstream(&self, leaving: &SubscriptionId) -> Cleanup {
     let _handover = self.lock_handover().await;
     self.remove_subscription(leaving).await;
     if self.subscriber_count().await > 0 {
-      return Release::InUse;
+      return Cleanup::Nothing;
     }
     // One per publisher serving the track, so each observes the cancellation.
     for cancel in self.upstream_subscribe_cancellers.lock().await.drain(..) {
       let _ = cancel.send(());
     }
     if self.origin() != TrackOrigin::Subscribe {
-      return Release::InUse;
+      return Cleanup::Nothing;
     }
     self.keep_cached().await
   }
@@ -411,21 +412,22 @@ impl Track {
   /// its upstream SUBSCRIBE was refused. Its subscribers have been told the track
   /// ended and finish on their own; they are detached, so whatever takes the track
   /// over next cannot feed them.
-  pub async fn retire(&self) -> Release {
+  pub async fn retire(&self) -> Cleanup {
     let _handover = self.lock_handover().await;
-    let release = self.keep_cached().await;
-    if matches!(release, Release::Kept(_)) {
+    let cleanup = self.keep_cached().await;
+    // The track stays, so whatever takes it over next must not find these subscribers.
+    if matches!(cleanup, Cleanup::RemoveAliases(_)) {
       self.subscription_manager.detach_all().await;
     }
-    release
+    cleanup
   }
 
   /// Turns the track into a `Fetch` one if its cache holds anything, so the next
   /// SUBSCRIBE or PUBLISH starts upstream afresh. A track holding nothing is left
   /// as it is, for the caller to remove. The caller holds `handover`.
-  async fn keep_cached(&self) -> Release {
+  async fn keep_cached(&self) -> Cleanup {
     if self.cache.is_empty().await {
-      return Release::Empty;
+      return Cleanup::RemoveTrack;
     }
     *self.status.write().await = TrackStatus::Pending;
     let aliases: Vec<(usize, u64)> = std::mem::take(&mut *self.publisher_aliases.write().await)
@@ -445,7 +447,7 @@ impl Track {
     self
       .origin
       .store(TrackOrigin::Fetch as u8, Ordering::Release);
-    Release::Kept(aliases)
+    Cleanup::RemoveAliases(aliases)
   }
 
   /// Whether any subscription on this track currently wants Objects forwarded.
@@ -1139,7 +1141,7 @@ mod tests {
     assert_eq!(progress.closed_count(PUBLISHER).await, 0);
   }
 
-  mod release {
+  mod cleanup {
     use super::super::*;
     use crate::server::config::Cli;
     use bytes::Bytes;
@@ -1181,7 +1183,7 @@ mod tests {
 
       assert_eq!(
         track.release_upstream(&(0, 0)).await,
-        Release::Kept(vec![(3, 11)])
+        Cleanup::RemoveAliases(vec![(3, 11)])
       );
       assert_eq!(track.origin(), TrackOrigin::Fetch);
       assert!(track.publisher_aliases.read().await.is_empty());
@@ -1215,7 +1217,7 @@ mod tests {
       for origin in [TrackOrigin::Publish, TrackOrigin::Fetch] {
         let track = track(origin);
         cache_an_object(&track).await;
-        assert_eq!(track.release_upstream(&(0, 0)).await, Release::InUse);
+        assert_eq!(track.release_upstream(&(0, 0)).await, Cleanup::Nothing);
         assert_eq!(track.origin(), origin);
       }
     }
@@ -1223,8 +1225,8 @@ mod tests {
     #[tokio::test]
     async fn a_track_holding_nothing_is_left_for_removal() {
       let track = track(TrackOrigin::Subscribe);
-      assert_eq!(track.release_upstream(&(0, 0)).await, Release::Empty);
-      assert_eq!(track.retire().await, Release::Empty);
+      assert_eq!(track.release_upstream(&(0, 0)).await, Cleanup::RemoveTrack);
+      assert_eq!(track.retire().await, Cleanup::RemoveTrack);
       assert_eq!(track.origin(), TrackOrigin::Subscribe, "left as it was");
     }
 
@@ -1234,7 +1236,7 @@ mod tests {
       track.upstream_forward.store(true, Ordering::Relaxed);
       cache_an_object(&track).await;
 
-      assert_eq!(track.retire().await, Release::Kept(vec![]));
+      assert_eq!(track.retire().await, Cleanup::RemoveAliases(vec![]));
       assert_eq!(track.origin(), TrackOrigin::Fetch);
       assert!(
         !track.upstream_forward.load(Ordering::Relaxed),
@@ -1259,7 +1261,7 @@ mod tests {
     use moqtail::model::data::constant::ObjectForwardingPreference;
 
     fn track() -> Track {
-      super::release::track(TrackOrigin::Subscribe)
+      super::cleanup::track(TrackOrigin::Subscribe)
     }
 
     fn object(

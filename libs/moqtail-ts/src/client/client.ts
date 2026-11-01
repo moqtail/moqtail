@@ -2173,7 +2173,7 @@ export class MOQtailClient {
 
   /** The request a peer-supplied Request ID belongs to, undoing any migration. */
   /** A handler that throws must not end the stream the marker arrived on. */
-  #tellEndOfRange(handler: EndOfRangeHandler | undefined, marker: FetchObject): void {
+  #notifyEndOfRange(handler: EndOfRangeHandler | undefined, marker: FetchObject): void {
     try {
       handler?.(marker.endOfRange!, marker.location)
     } catch (handlerError) {
@@ -2420,7 +2420,7 @@ export class MOQtailClient {
                 if (nextObject instanceof FetchObject) {
                   if (nextObject.kind === 'end_of_range') {
                     // A marker carries no Object, only the status of a range of them.
-                    this.#tellEndOfRange(request.onEndOfRange, nextObject)
+                    this.#notifyEndOfRange(request.onEndOfRange, nextObject)
                     continue
                   }
                   // TODO: validate if it's a valid fetch object, asc or desc?
@@ -2454,7 +2454,7 @@ export class MOQtailClient {
               }
               // A marker carries no Object, only the status of a range of them.
               if (nextObject.kind === 'end_of_range') {
-                this.#tellEndOfRange(request.onEndOfRange, nextObject)
+                this.#notifyEndOfRange(request.onEndOfRange, nextObject)
                 continue
               }
               const moqtObject = MoqtObject.fromFetchObject(nextObject, request.fullTrackName)
@@ -3728,7 +3728,7 @@ if (import.meta.vitest) {
     const objectAt = (group: number, id: number) =>
       FetchObject.newObject(group, 0, id, 0, ObjectForwardingPreference.Subgroup, null, new Uint8Array([id]))
 
-    it('tells the application of the End of Range markers in a FETCH response', async () => {
+    it('notifies the application of the End of Range markers in a FETCH response', async () => {
       const { client, transport } = await connected()
       const markers: [EndOfRangeKind, Location][] = []
 
@@ -3800,7 +3800,7 @@ if (import.meta.vitest) {
       await client.disconnect()
     })
 
-    it('tells the application of the End of Range markers on a fill fetch stream', async () => {
+    it('notifies the application of the End of Range markers on a fill fetch stream', async () => {
       const { client, transport } = await connected()
       const markers: EndOfRangeKind[] = []
 

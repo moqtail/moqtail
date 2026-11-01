@@ -436,20 +436,20 @@ impl RecvDataStream {
           error!("Failed to parse header: {:?}", e);
           RecvDataStreamReadError::ParseError(e)
         })?;
-        let consumed = if let Some((consumed, _)) = header_info.clone() {
-          consumed
-        } else {
-          0
-        };
-        recv_bytes.advance(consumed);
-        *the_header_info.lock().await = Some(header_info.clone().unwrap().1.clone());
+        // Nothing yet when the header is split across reads: wait for the rest of it.
+        if let Some((consumed, header)) = &header_info {
+          recv_bytes.advance(*consumed);
+          *the_header_info.lock().await = Some(header.clone());
+        }
       }
 
       loop {
         let bytes_cursor = recv_bytes.clone().freeze();
         let mut consumed = 0;
-        if !recv_bytes.is_empty() {
-          let mut current_header = header_info.as_ref().unwrap().1.clone();
+        if !recv_bytes.is_empty()
+          && let Some((_, header)) = &header_info
+        {
+          let mut current_header = header.clone();
           let (c, object_id, new_fetch_ctx) = Self::read_object(
             bytes_cursor,
             &mut current_header,
@@ -1386,6 +1386,37 @@ mod tests {
     })
     .await;
     assert!(!aborted);
+  }
+
+  #[tokio::test]
+  async fn a_header_split_across_reads_is_waited_for() {
+    let (send, recv) = setup_stream_pair().await;
+    let (fetch_header, fetch_req) = make_fetch_header_and_request();
+    let receiver = RecvDataStream::new(
+      TransportRecvStream::WebTransport(recv),
+      Arc::new(RwLock::new(BTreeMap::new())),
+    );
+    let header = fetch_header.serialize().unwrap();
+    let object = FetchObject::Object(make_fetch_object())
+      .serialize(None, fetch_req.group_order())
+      .unwrap();
+
+    // Written while the reader runs, which it starts doing on the first next_object.
+    tokio::spawn(async move {
+      let mut stream = TransportSendStream::WebTransport(send);
+      stream.write_all(&header[..1]).await.unwrap();
+      sleep(Duration::from_millis(50)).await;
+      stream.write_all(&header[1..]).await.unwrap();
+      stream.write_all(&object).await.unwrap();
+      stream.finish().await.unwrap();
+    });
+
+    let first = tokio::time::timeout(Duration::from_secs(5), receiver.next_object())
+      .await
+      .expect("the reader gave up on the stream");
+    assert!(first.1.is_some());
+    assert!(receiver.next_object().await.1.is_none());
+    assert!(!receiver.was_aborted());
   }
 
   #[tokio::test]

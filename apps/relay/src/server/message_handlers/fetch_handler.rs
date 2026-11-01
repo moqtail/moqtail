@@ -410,22 +410,21 @@ pub async fn handle(
         let mut answered_locally = requested_end
           .as_ref()
           .is_some_and(|end| local_state_answers(&largest, end));
-        if !answered_locally {
-          // Another FETCH already asking upstream for these groups is waited on once:
-          // what it brings in may let the relay answer this one itself.
+        // Another FETCH already asking upstream for these groups is waited on once:
+        // what it brings in may let the relay answer this one itself. An open-ended
+        // FETCH is never answered locally, so it neither waits nor claims: its claim
+        // would reach every later group and hold them for its whole delivery.
+        if !answered_locally && let Some(end) = &requested_end {
           let first = location_filter.start_location(None).map_or(0, |l| l.group);
-          let last = requested_end.as_ref().map_or(u64::MAX, |l| l.group);
           let cache = track.read().await.cache.clone();
-          pending_fill = match cache.claim_fill(first, last) {
+          pending_fill = match cache.claim_fill(first, end.group) {
             Ok(claim) => Some(claim),
             Err(in_flight) => {
               let timeout = context.server_config.upstream_fetch_timeout;
               let _ = tokio::time::timeout(timeout, in_flight.lock()).await;
               largest = track.read().await.largest_object().await;
-              answered_locally = requested_end
-                .as_ref()
-                .is_some_and(|end| local_state_answers(&largest, end));
-              cache.claim_fill(first, last).ok()
+              answered_locally = local_state_answers(&largest, end);
+              cache.claim_fill(first, end.group).ok()
             }
           };
         }

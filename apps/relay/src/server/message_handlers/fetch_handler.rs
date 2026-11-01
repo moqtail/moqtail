@@ -175,6 +175,17 @@ pub(crate) fn local_state_answers(known: &Option<Location>, requested_end: &Loca
   known.as_ref().is_some_and(|known| requested_end <= known)
 }
 
+/// The groups a FETCH claims, and waits on another FETCH's fill of, while it learns its
+/// End Location. An open-ended FETCH is never answered locally, so it neither waits nor
+/// claims: its claim would reach every later group and hold them for its whole delivery.
+fn fill_groups(filter: &LocationFilter) -> Option<(u64, u64)> {
+  let end = filter.end_location()?;
+  Some((
+    filter.start_location(None).map_or(0, |l| l.group),
+    end.group,
+  ))
+}
+
 /// Issues the upstream FETCH for the requested range and waits for its FETCH_OK, so the
 /// relay learns the End Location before answering. On success, updates `largest` from
 /// the answer and returns the fetch for the delivery loop to read the Objects from.
@@ -411,20 +422,19 @@ pub async fn handle(
           .as_ref()
           .is_some_and(|end| local_state_answers(&largest, end));
         // Another FETCH already asking upstream for these groups is waited on once:
-        // what it brings in may let the relay answer this one itself. An open-ended
-        // FETCH is never answered locally, so it neither waits nor claims: its claim
-        // would reach every later group and hold them for its whole delivery.
-        if !answered_locally && let Some(end) = &requested_end {
-          let first = location_filter.start_location(None).map_or(0, |l| l.group);
+        // what it brings in may let the relay answer this one itself.
+        if !answered_locally
+          && let (Some(end), Some((first, last))) = (&requested_end, fill_groups(&location_filter))
+        {
           let cache = track.read().await.cache.clone();
-          pending_fill = match cache.claim_fill(first, end.group) {
+          pending_fill = match cache.claim_fill(first, last) {
             Ok(claim) => Some(claim),
             Err(in_flight) => {
               let timeout = context.server_config.upstream_fetch_timeout;
               let _ = tokio::time::timeout(timeout, in_flight.lock()).await;
               largest = track.read().await.largest_object().await;
               answered_locally = local_state_answers(&largest, end);
-              cache.claim_fill(first, end.group).ok()
+              cache.claim_fill(first, last).ok()
             }
           };
         }
@@ -1603,8 +1613,9 @@ pub(crate) async fn serve_fetch_stream(
 #[cfg(test)]
 mod tests {
   use super::{
-    FetchRangeError, concrete_end_location, delivered_start, empty_range_outcome, gap_range,
-    last_delivered, local_state_answers, range_filter, resolve_fetch_range, unresolved_fetch_range,
+    FetchRangeError, concrete_end_location, delivered_start, empty_range_outcome, fill_groups,
+    gap_range, last_delivered, local_state_answers, range_filter, resolve_fetch_range,
+    unresolved_fetch_range,
   };
   use moqtail::model::common::location::Location;
   use moqtail::model::common::reason_phrase::ReasonPhrase;
@@ -1662,6 +1673,14 @@ mod tests {
       delivered_start(start(), &loc(9, 2), GroupOrder::Ascending),
       loc(5, 3)
     );
+  }
+
+  #[test]
+  fn only_a_fetch_with_an_end_claims_its_groups() {
+    assert_eq!(fill_groups(&range(loc(5, 3), loc(9, 2))), Some((5, 9)));
+    let open_ended = LocationFilter::AbsoluteStart { start: loc(5, 3) };
+    assert_eq!(fill_groups(&open_ended), None);
+    assert_eq!(fill_groups(&LocationFilter::None), None);
   }
 
   #[test]

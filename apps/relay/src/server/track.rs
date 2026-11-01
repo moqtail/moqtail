@@ -1196,6 +1196,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_last_subscriber_leaving_cancels_the_upstream_subscriptions() {
+      for origin in [TrackOrigin::Subscribe, TrackOrigin::Publish] {
+        let track = track(origin);
+        let (cancel, cancelled) = oneshot::channel();
+        track
+          .upstream_subscribe_cancellers
+          .lock()
+          .await
+          .push(cancel);
+        track.release_upstream(&(0, 0)).await;
+        assert!(cancelled.await.is_ok(), "{origin:?}");
+      }
+    }
+
+    #[tokio::test]
     async fn only_a_subscribe_created_track_lets_go_of_its_upstream() {
       for origin in [TrackOrigin::Publish, TrackOrigin::Fetch] {
         let track = track(origin);

@@ -28,8 +28,9 @@ use moqtail::model::control::fetch_ok::FetchOk;
 use moqtail::model::control::request_error::RequestError;
 use moqtail::model::data::constant::ObjectForwardingPreference;
 use moqtail::model::data::fetch_header::FetchHeader;
-use moqtail::model::data::fetch_object::EndOfRangeKind;
-use moqtail::model::data::fetch_object::FetchObjectPayload;
+use moqtail::model::data::fetch_object::{
+  EndOfRangeKind, FetchObject, FetchObjectContext, FetchObjectPayload,
+};
 use moqtail::model::error::RequestErrorCode;
 use moqtail::model::error::StreamResetCode;
 use moqtail::model::error::TerminationCode;
@@ -768,25 +769,6 @@ fn range_filter(start: &Location, end: &Location) -> LocationFilter {
   }
 }
 
-/// The Location after `location`, if there is one.
-fn after(location: &Location) -> Option<Location> {
-  match location.object.checked_add(1) {
-    Some(object) => Some(Location::new(location.group, object)),
-    None => location.group.checked_add(1).map(|g| Location::new(g, 0)),
-  }
-}
-
-/// The Location before `location`, if there is one.
-fn before(location: &Location) -> Option<Location> {
-  match location.object.checked_sub(1) {
-    Some(object) => Some(Location::new(location.group, object)),
-    None => location
-      .group
-      .checked_sub(1)
-      .map(|g| Location::new(g, u64::MAX)),
-  }
-}
-
 /// An inclusive range of Locations.
 type Span = (Location, Location);
 
@@ -864,7 +846,7 @@ impl UpstreamCoverage {
     match (&self.last, self.descending) {
       (None, _) => spans.push((self.start.clone(), self.end.clone())),
       (Some(last), false) => {
-        if let Some(next) = after(last) {
+        if let Some(next) = last.next() {
           spans.push((next, self.end.clone()));
         }
       }
@@ -898,10 +880,10 @@ impl UpstreamCoverage {
     let mut spans = Vec::new();
     if !self.descending {
       let from = match &self.last {
-        Some(last) => after(last),
+        Some(last) => last.next(),
         None => Some(self.start.clone()),
       };
-      if let (Some(from), Some(until)) = (from, before(to)) {
+      if let (Some(from), Some(until)) = (from, to.prev()) {
         spans.push((from, until));
       }
       return self.clip(spans);
@@ -917,7 +899,7 @@ impl UpstreamCoverage {
     };
     match &self.last {
       Some(last) if last.group == to.group => {
-        if let (Some(from), Some(until)) = (after(last), before(to)) {
+        if let (Some(from), Some(until)) = (last.next(), to.prev()) {
           spans.push((from, until));
         }
       }
@@ -1081,7 +1063,7 @@ pub(crate) async fn serve_fetch_stream(
   let mut upstream_gap_count: u64 = 0;
   let mut send_stream = None;
   let mut stop_reason = FetchStop::Running;
-  let mut fetch_prev_ctx: Option<moqtail::model::data::fetch_object::FetchObjectContext> = None;
+  let mut fetch_prev_ctx: Option<FetchObjectContext> = None;
   // Groups are written in the requested order, and the Objects within each group in
   // ascending order either way. The delta encoding of each Object against the one
   // before it depends on that order, so walking the range the other way fails.
@@ -1099,6 +1081,66 @@ pub(crate) async fn serve_fetch_stream(
   } else {
     start_location.group
   });
+
+  // Writes one Object or marker, opening the stream with the first. The entry after
+  // it is encoded against it.
+  let write_entry = async |entry: FetchObject,
+                           send_stream: &mut Option<_>,
+                           prev_ctx: &mut Option<FetchObjectContext>|
+         -> Result<(), TerminationCode> {
+    if send_stream.is_none() {
+      *send_stream = Some(
+        stream_fn(client.clone(), &stream_id)
+          .await
+          .ok_or(TerminationCode::InternalError)?,
+      );
+    }
+    let serialized = entry
+      .serialize(prev_ctx.as_ref(), group_order)
+      .map_err(|e| {
+        error!(
+          "handle_fetch_messages | Error serializing fetch entry: {:?}",
+          e
+        );
+        TerminationCode::InternalError
+      })?;
+    *prev_ctx = Some(entry.next_context(prev_ctx.as_ref()));
+    let object_id = match &entry {
+      FetchObject::Object(object) => object.object_id,
+      FetchObject::EndOfRange { object_id, .. } => *object_id,
+    };
+    client
+      .write_stream_object(&stream_id, object_id, serialized, send_stream.clone())
+      .await
+      .map_err(|e| {
+        error!(
+          "handle_fetch_messages | Error writing to fetch stream: {:?}",
+          e
+        );
+        TerminationCode::InternalError
+      })?;
+
+    if let FetchObject::Object(object) = entry
+      && context.server_config.enable_object_logging
+    {
+      let sending_time = crate::server::utils::passed_time_since_start();
+      if let Ok(fetch_object) =
+        moqtail::model::data::object::Object::try_from_fetch(object, relay_track_id)
+      {
+        object_logger
+          .log_fetch_object(
+            relay_track_id,
+            context.connection_id,
+            request_id,
+            &fetch_object,
+            true,
+            sending_time,
+          )
+          .await;
+      }
+    }
+    Ok(())
+  };
 
   while let Some(group_id) = next_group {
     let reason = *cancel_rx.borrow();
@@ -1131,58 +1173,12 @@ pub(crate) async fn serve_fetch_stream(
           continue;
         }
 
-        if send_stream.is_none() {
-          send_stream = match stream_fn(client.clone(), &stream_id).await {
-            Some(ss) => Some(ss),
-            None => {
-              return Err(TerminationCode::InternalError);
-            }
-          };
-        }
-
-        let fetch_obj = moqtail::model::data::fetch_object::FetchObject::Object(object.clone());
-        let serialized = match fetch_obj.serialize(fetch_prev_ctx.as_ref(), group_order) {
-          Ok(bytes) => bytes,
-          Err(e) => {
-            error!("handle_fetch_messages | Error serializing object: {:?}", e);
-            return Err(TerminationCode::InternalError);
-          }
-        };
-        fetch_prev_ctx = Some(fetch_obj.next_context(fetch_prev_ctx.as_ref()));
-
-        if let Err(e) = client
-          .write_stream_object(
-            &stream_id,
-            object.object_id,
-            serialized,
-            send_stream.as_ref().cloned(),
-          )
-          .await
-        {
-          error!(
-            "handle_fetch_messages | Error writing object to stream: {:?}",
-            e
-          );
-          return Err(TerminationCode::InternalError);
-        }
-
-        if context.server_config.enable_object_logging {
-          let sending_time = crate::server::utils::passed_time_since_start();
-          if let Ok(fetch_object) =
-            moqtail::model::data::object::Object::try_from_fetch(object.clone(), relay_track_id)
-          {
-            object_logger
-              .log_fetch_object(
-                relay_track_id,
-                context.connection_id,
-                request_id,
-                &fetch_object,
-                true,
-                sending_time,
-              )
-              .await;
-          }
-        }
+        write_entry(
+          FetchObject::Object(object.clone()),
+          &mut send_stream,
+          &mut fetch_prev_ctx,
+        )
+        .await?;
       }
       next_group = next_after(group_id, group_id);
     } else {
@@ -1268,39 +1264,12 @@ pub(crate) async fn serve_fetch_stream(
                 }
                 Ok(Some(UpstreamFetchEvent::EndOfRange { kind, location })) => {
                   mark_absent(coverage.marker(kind, &location));
-                  if send_stream.is_none() {
-                    send_stream = match stream_fn(client.clone(), &stream_id).await {
-                      Some(ss) => Some(ss),
-                      None => {
-                        return Err(TerminationCode::InternalError);
-                      }
-                    };
-                  }
-                  let marker = moqtail::model::data::fetch_object::FetchObject::EndOfRange {
+                  let marker = FetchObject::EndOfRange {
                     kind,
                     group_id: location.group,
                     object_id: location.object,
                   };
-                  let serialized = match marker.serialize(fetch_prev_ctx.as_ref(), group_order) {
-                    Ok(bytes) => bytes,
-                    Err(e) => {
-                      error!("handle_fetch_messages | Error serializing marker: {:?}", e);
-                      return Err(TerminationCode::InternalError);
-                    }
-                  };
-                  fetch_prev_ctx = Some(marker.next_context(fetch_prev_ctx.as_ref()));
-                  if let Err(e) = client
-                    .write_stream_object(
-                      &stream_id,
-                      location.object,
-                      serialized,
-                      send_stream.as_ref().cloned(),
-                    )
-                    .await
-                  {
-                    error!("handle_fetch_messages | Error writing marker to stream: {:?}", e);
-                    return Err(TerminationCode::InternalError);
-                  }
+                  write_entry(marker, &mut send_stream, &mut fetch_prev_ctx).await?;
                 }
                 Ok(Some(UpstreamFetchEvent::Object(object))) => {
                   mark_absent(
@@ -1309,64 +1278,12 @@ pub(crate) async fn serve_fetch_stream(
                   if !filter.matches(filter_fields(&object)) {
                     continue;
                   }
-                  if send_stream.is_none() {
-                    send_stream = match stream_fn(client.clone(), &stream_id).await {
-                      Some(ss) => Some(ss),
-                      None => {
-                        return Err(TerminationCode::InternalError);
-                      }
-                    };
-                  }
-
-                  let fetch_obj =
-                    moqtail::model::data::fetch_object::FetchObject::Object(object.clone());
-                  let serialized =
-                    match fetch_obj.serialize(fetch_prev_ctx.as_ref(), group_order) {
-                      Ok(bytes) => bytes,
-                      Err(e) => {
-                        error!(
-                          "handle_fetch_messages | Error serializing upstream object: {:?}",
-                          e
-                        );
-                        return Err(TerminationCode::InternalError);
-                      }
-                    };
-                  fetch_prev_ctx = Some(fetch_obj.next_context(fetch_prev_ctx.as_ref()));
-
-                  if let Err(e) = client
-                    .write_stream_object(
-                      &stream_id,
-                      object.object_id,
-                      serialized,
-                      send_stream.as_ref().cloned(),
-                    )
-                    .await
-                  {
-                    error!(
-                      "handle_fetch_messages | Error writing upstream object to stream: {:?}",
-                      e
-                    );
-                    return Err(TerminationCode::InternalError);
-                  }
-
-                  if context.server_config.enable_object_logging {
-                    let sending_time = crate::server::utils::passed_time_since_start();
-                    if let Ok(fetch_object) = moqtail::model::data::object::Object::try_from_fetch(
-                      object.clone(),
-                      relay_track_id,
-                    ) {
-                      object_logger
-                        .log_fetch_object(
-                          relay_track_id,
-                          context.connection_id,
-                          request_id,
-                          &fetch_object,
-                          true,
-                          sending_time,
-                        )
-                        .await;
-                    }
-                  }
+                  write_entry(
+                    FetchObject::Object(object),
+                    &mut send_stream,
+                    &mut fetch_prev_ctx,
+                  )
+                  .await?;
                 }
                 Ok(Some(UpstreamFetchEvent::MalformedTrack)) => {
                   warn!(

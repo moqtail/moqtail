@@ -43,11 +43,13 @@ pub async fn handle(
       let request_id = status_req.request_id;
       let full_track_name = status_req.get_full_track_name();
 
-      // B. Check Local Track Existence. A track no publisher feeds, whose cache only
-      // FETCHes filled, may be behind the publisher's Largest Object, so a FETCH-created
-      // track does not answer: the publisher is asked instead.
+      // B. Check Local Track Existence. A cache-only track has no publisher feeding it
+      // and may be behind the publisher's Largest Object, so it does not answer: the
+      // publisher is asked instead.
       let local_track = match context.track_manager.get_track(&full_track_name).await {
-        Some(track_arc) if track_arc.read().await.origin() != TrackOrigin::Fetch => Some(track_arc),
+        Some(track_arc) if track_arc.read().await.origin() != TrackOrigin::CacheOnly => {
+          Some(track_arc)
+        }
         _ => None,
       };
       if let Some(track_arc) = local_track {

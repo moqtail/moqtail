@@ -189,10 +189,11 @@ impl TrackManager {
     }
   }
 
-  /// Removes the FETCH-created tracks whose cache holds nothing, such as one emptied by
+  /// Removes the cache-only tracks whose cache holds nothing, such as one emptied by
   /// expiry or one whose FETCH brought nothing back, and that nothing else holds: no
-  /// FETCH delivering from it, no SUBSCRIBE or PUBLISH taking it over. Returns how many.
-  pub async fn sweep_unused_fetch_tracks(&self) -> usize {
+  /// FETCH delivering from it, no SUBSCRIBE or PUBLISH taking it over. Returns how
+  /// many.
+  pub async fn sweep_empty_cache_only_tracks(&self) -> usize {
     let mut tracks = self.tracks.write().await;
     let mut unused = Vec::new();
     for (name, track) in tracks.iter() {
@@ -202,11 +203,12 @@ impl TrackManager {
         continue;
       }
       let track = track.read().await;
-      if track.origin() == TrackOrigin::Fetch && track.cache.is_empty().await {
+      if track.origin() == TrackOrigin::CacheOnly && track.cache.is_empty().await {
         unused.push(name.clone());
       }
     }
-    // A FETCH-created track has no publisher aliases: a takeover changes its origin.
+    // A cache-only track has no publisher aliases: they are cleared when it becomes
+    // one, and a takeover changes its origin.
     for name in &unused {
       tracks.remove(name);
     }
@@ -1172,7 +1174,7 @@ mod tests {
           full_track_name.clone(),
           config(),
           TrackStatus::Pending,
-          TrackOrigin::Fetch,
+          TrackOrigin::CacheOnly,
         )
       })
       .await;
@@ -1180,7 +1182,7 @@ mod tests {
   }
 
   #[tokio::test]
-  async fn a_sweep_removes_only_empty_fetched_tracks_nothing_holds() {
+  async fn a_sweep_removes_only_empty_cache_only_tracks_nothing_holds() {
     let manager = TrackManager::new();
     let name = |n: &str| FullTrackName::try_new("meet/room1", n).unwrap();
 
@@ -1204,19 +1206,19 @@ mod tests {
     drop(cached);
     publish(&manager, 1, 7, &name("published")).await;
 
-    assert_eq!(manager.sweep_unused_fetch_tracks().await, 1);
+    assert_eq!(manager.sweep_empty_cache_only_tracks().await, 1);
     assert!(manager.get_track(&name("empty")).await.is_none());
     for kept in ["held", "cached", "published"] {
       assert!(manager.get_track(&name(kept)).await.is_some(), "{kept}");
     }
 
     drop(held);
-    assert_eq!(manager.sweep_unused_fetch_tracks().await, 1);
+    assert_eq!(manager.sweep_empty_cache_only_tracks().await, 1);
     assert!(manager.get_track(&name("held")).await.is_none());
   }
 
   #[tokio::test]
-  async fn the_first_subscribe_takes_over_a_fetched_track() {
+  async fn the_first_subscribe_takes_over_a_cache_only_track() {
     let manager = TrackManager::new();
     let name = track_name();
     let fetched = fetch(&manager, &name).await;
@@ -1227,12 +1229,12 @@ mod tests {
         .get_or_create_track(&name, |_| unreachable!("the track exists"))
         .await;
       assert!(!created);
-      let adopted = track
+      let taken_over = track
         .read()
         .await
-        .adopt(TrackOrigin::Subscribe, TrackStatus::Pending)
+        .take_over(TrackOrigin::Subscribe, TrackStatus::Pending)
         .await;
-      assert_eq!(adopted, expected, "subscribe {n}");
+      assert_eq!(taken_over, expected, "subscribe {n}");
     }
 
     let track = fetched.read().await;
@@ -1256,7 +1258,7 @@ mod tests {
       track
         .read()
         .await
-        .adopt(
+        .take_over(
           TrackOrigin::Publish,
           TrackStatus::Confirmed {
             upstream_parameters: vec![],
@@ -1274,7 +1276,7 @@ mod tests {
   }
 
   #[tokio::test]
-  async fn a_track_not_created_by_a_fetch_is_never_adopted() {
+  async fn a_track_that_is_not_cache_only_is_never_taken_over() {
     let manager = TrackManager::new();
     let name = track_name();
     let (track, _) = publish(&manager, 1, 7, &name).await;
@@ -1283,7 +1285,7 @@ mod tests {
       !track
         .read()
         .await
-        .adopt(TrackOrigin::Subscribe, TrackStatus::Pending)
+        .take_over(TrackOrigin::Subscribe, TrackStatus::Pending)
         .await
     );
     assert_eq!(track.read().await.origin(), TrackOrigin::Publish);

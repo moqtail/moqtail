@@ -136,9 +136,9 @@ impl PublisherStreamProgress {
 pub enum Cleanup {
   /// Nothing: the track is still in use and unchanged.
   Nothing,
-  /// The track stays, as a `Fetch` track serving what it has cached, but no publisher
-  /// feeds it any more. These (connection ID, track alias) pairs no longer lead to it
-  /// and are to be removed from the alias map.
+  /// The track stays, as a cache-only track serving what it has cached, but no
+  /// publisher feeds it any more. These (connection ID, track alias) pairs no longer
+  /// lead to it and are to be removed from the alias map.
   RemoveAliases(Vec<(usize, u64)>),
   /// The track holds nothing and is to be removed.
   RemoveTrack,
@@ -177,23 +177,23 @@ impl DatagramArrivals {
   }
 }
 
-/// What created a track, and so who keeps it fed.
+/// What feeds a track: what created it, until its upstream goes away and it becomes
+/// `CacheOnly`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum TrackOrigin {
-  /// Created by a downstream SUBSCRIBE. The relay owns the upstream
-  /// subscription; with no subscribers left it is cancelled, and the track turns
-  /// into a `Fetch` one if it holds anything, or is removed. Either way the next
-  /// SUBSCRIBE subscribes upstream afresh.
+  /// Created by a downstream SUBSCRIBE. The relay owns the upstream subscription; with
+  /// no subscribers left it is cancelled, and the track becomes `CacheOnly` if it holds
+  /// anything, or is removed. Either way the next SUBSCRIBE subscribes upstream afresh.
   Subscribe,
   /// Created by an upstream PUBLISH. The publisher keeps pushing regardless of
   /// subscriber count, so the track outlives them.
   Publish,
-  /// Fed by nothing live: created by a downstream FETCH, or a track whose upstream
-  /// went away while it held cached Objects. It stays to hold them, and the cache
-  /// evicts by its own rules. The first SUBSCRIBE or PUBLISH to reach it takes it
-  /// over (`adopt`).
-  Fetch,
+  /// Fed by nothing live, so it only serves its cache: created by a downstream FETCH of
+  /// a track the relay did not have, or kept after its upstream went away while it held
+  /// cached Objects. The cache evicts by its own rules. The first SUBSCRIBE or PUBLISH
+  /// to reach it takes it over (`take_over`).
+  CacheOnly,
 }
 
 impl TrackOrigin {
@@ -201,7 +201,7 @@ impl TrackOrigin {
     match value {
       0 => Self::Subscribe,
       1 => Self::Publish,
-      _ => Self::Fetch,
+      _ => Self::CacheOnly,
     }
   }
 }
@@ -249,9 +249,9 @@ pub struct Track {
   /// Stable relay-assigned track identifier, independent of publisher aliases.
   pub relay_track_id: u64,
   pub full_track_name: FullTrackName,
-  /// A `TrackOrigin`. It changes when a FETCH-created track is taken over or let go of,
-  /// and that must not wait on the track's lock, which a fetch holds for as long as it
-  /// delivers.
+  /// A `TrackOrigin`. It changes when a cache-only track is taken over or a track
+  /// becomes cache-only, and that must not wait on the track's lock, which a fetch
+  /// holds for as long as it delivers.
   origin: Arc<AtomicU8>,
   /// Held while a SUBSCRIBE takes the track over and joins it, and while the track lets
   /// go of its upstream subscription, so neither can run in the middle of the other.
@@ -365,19 +365,19 @@ impl Track {
     TrackOrigin::from_u8(self.origin.load(Ordering::Acquire))
   }
 
-  /// See `handover`. A SUBSCRIBE holds it from `adopt` until it has joined.
+  /// See `handover`. A SUBSCRIBE holds it from `take_over` until it has joined.
   pub async fn lock_handover(&self) -> MutexGuard<'_, ()> {
     self.handover.lock().await
   }
 
-  /// Hands a FETCH-created track over to a SUBSCRIBE or PUBLISH, keeping what is
-  /// cached. Returns true only for the caller that took it, which must then do what
-  /// creating the track would have: nothing upstream has been asked for it yet.
-  pub async fn adopt(&self, origin: TrackOrigin, status: TrackStatus) -> bool {
+  /// Hands a cache-only track over to a SUBSCRIBE or PUBLISH, keeping what is cached.
+  /// Returns true only for the caller that took it, which must then do what creating
+  /// the track would have: nothing upstream has been asked for it yet.
+  pub async fn take_over(&self, origin: TrackOrigin, status: TrackStatus) -> bool {
     let taken = self
       .origin
       .compare_exchange(
-        TrackOrigin::Fetch as u8,
+        TrackOrigin::CacheOnly as u8,
         origin as u8,
         Ordering::AcqRel,
         Ordering::Acquire,
@@ -392,7 +392,7 @@ impl Track {
   /// Removes a subscription and, once no subscriber is left, cancels the upstream
   /// subscriptions and lets go of them. All under `handover`, so a SUBSCRIBE cannot join
   /// after the cancel and be left on an upstream that is gone.
-  pub async fn release_upstream(&self, leaving: &SubscriptionId) -> Cleanup {
+  pub async fn remove_subscriber(&self, leaving: &SubscriptionId) -> Cleanup {
     let _handover = self.lock_handover().await;
     self.remove_subscription(leaving).await;
     if self.subscriber_count().await > 0 {
@@ -405,7 +405,7 @@ impl Track {
     if self.origin() != TrackOrigin::Subscribe {
       return Cleanup::Nothing;
     }
-    self.keep_cached().await
+    self.become_cache_only().await
   }
 
   /// Lets go of a track nothing upstream serves any more: its last publisher left, or
@@ -414,7 +414,7 @@ impl Track {
   /// over next cannot feed them.
   pub async fn retire(&self) -> Cleanup {
     let _handover = self.lock_handover().await;
-    let cleanup = self.keep_cached().await;
+    let cleanup = self.become_cache_only().await;
     // The track stays, so whatever takes it over next must not find these subscribers.
     if matches!(cleanup, Cleanup::RemoveAliases(_)) {
       self.subscription_manager.detach_all().await;
@@ -422,10 +422,10 @@ impl Track {
     cleanup
   }
 
-  /// Turns the track into a `Fetch` one if its cache holds anything, so the next
-  /// SUBSCRIBE or PUBLISH starts upstream afresh. A track holding nothing is left
-  /// as it is, for the caller to remove. The caller holds `handover`.
-  async fn keep_cached(&self) -> Cleanup {
+  /// Makes the track cache-only if its cache holds anything, so the next SUBSCRIBE or
+  /// PUBLISH starts upstream afresh. A track holding nothing is left as it is, for the
+  /// caller to remove. The caller holds `handover`.
+  async fn become_cache_only(&self) -> Cleanup {
     if self.cache.is_empty().await {
       return Cleanup::RemoveTrack;
     }
@@ -446,7 +446,7 @@ impl Track {
     self.upstream_forward.store(false, Ordering::Relaxed);
     self
       .origin
-      .store(TrackOrigin::Fetch as u8, Ordering::Release);
+      .store(TrackOrigin::CacheOnly as u8, Ordering::Release);
     Cleanup::RemoveAliases(aliases)
   }
 
@@ -1183,17 +1183,17 @@ mod tests {
       cache_an_object(&track).await;
 
       assert_eq!(
-        track.release_upstream(&(0, 0)).await,
+        track.remove_subscriber(&(0, 0)).await,
         Cleanup::RemoveAliases(vec![(3, 11)])
       );
-      assert_eq!(track.origin(), TrackOrigin::Fetch);
+      assert_eq!(track.origin(), TrackOrigin::CacheOnly);
       assert!(track.publisher_aliases.read().await.is_empty());
       assert!(track.cache.get_group(4).await.is_some(), "the cache stays");
 
       // The next SUBSCRIBE takes it over and subscribes upstream afresh.
       assert!(
         track
-          .adopt(TrackOrigin::Subscribe, TrackStatus::Pending)
+          .take_over(TrackOrigin::Subscribe, TrackStatus::Pending)
           .await
       );
     }
@@ -1208,17 +1208,17 @@ mod tests {
           .lock()
           .await
           .push(cancel);
-        track.release_upstream(&(0, 0)).await;
+        track.remove_subscriber(&(0, 0)).await;
         assert!(cancelled.await.is_ok(), "{origin:?}");
       }
     }
 
     #[tokio::test]
     async fn only_a_subscribe_created_track_lets_go_of_its_upstream() {
-      for origin in [TrackOrigin::Publish, TrackOrigin::Fetch] {
+      for origin in [TrackOrigin::Publish, TrackOrigin::CacheOnly] {
         let track = track(origin);
         cache_an_object(&track).await;
-        assert_eq!(track.release_upstream(&(0, 0)).await, Cleanup::Nothing);
+        assert_eq!(track.remove_subscriber(&(0, 0)).await, Cleanup::Nothing);
         assert_eq!(track.origin(), origin);
       }
     }
@@ -1226,7 +1226,7 @@ mod tests {
     #[tokio::test]
     async fn a_track_holding_nothing_is_left_for_removal() {
       let track = track(TrackOrigin::Subscribe);
-      assert_eq!(track.release_upstream(&(0, 0)).await, Cleanup::RemoveTrack);
+      assert_eq!(track.remove_subscriber(&(0, 0)).await, Cleanup::RemoveTrack);
       assert_eq!(track.retire().await, Cleanup::RemoveTrack);
       assert_eq!(track.origin(), TrackOrigin::Subscribe, "left as it was");
     }
@@ -1238,14 +1238,14 @@ mod tests {
       cache_an_object(&track).await;
 
       assert_eq!(track.retire().await, Cleanup::RemoveAliases(vec![]));
-      assert_eq!(track.origin(), TrackOrigin::Fetch);
+      assert_eq!(track.origin(), TrackOrigin::CacheOnly);
       assert!(
         !track.upstream_forward.load(Ordering::Relaxed),
         "a new publisher starts from Forward State 0 again"
       );
       assert!(
         track
-          .adopt(
+          .take_over(
             TrackOrigin::Publish,
             TrackStatus::Confirmed {
               upstream_parameters: vec![]

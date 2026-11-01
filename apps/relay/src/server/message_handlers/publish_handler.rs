@@ -150,12 +150,12 @@ pub async fn handle(
           )
         })
         .await;
-      // A track a FETCH created becomes this publisher's, as if it had created it.
+      // A cache-only track becomes this publisher's, as if it had created it.
       let created = created
         || track_arc
           .read()
           .await
-          .adopt(
+          .take_over(
             TrackOrigin::Publish,
             TrackStatus::Confirmed {
               upstream_parameters: vec![],

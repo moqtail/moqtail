@@ -131,7 +131,7 @@ fn unresolved_fetch_range(filter: &LocationFilter) -> Option<(Location, Location
 /// from it rather than requested a second time.
 pub(crate) struct PendingUpstreamFetch {
   pub relay_request_id: u64,
-  pub finished: Arc<AtomicBool>,
+  pub closed_cleanly: Arc<AtomicBool>,
   pub rx: mpsc::Receiver<UpstreamFetchEvent>,
 }
 
@@ -182,7 +182,7 @@ pub(crate) fn local_state_answers(known: &Option<Location>, requested_end: &Loca
 /// on a fill another FETCH already has in flight. An open-ended FETCH is never answered
 /// locally, so it neither waits nor claims: its claim would reach every later group and
 /// hold them for its whole delivery.
-fn fill_groups(filter: &LocationFilter) -> Option<(u64, u64)> {
+fn groups_to_claim(filter: &LocationFilter) -> Option<(u64, u64)> {
   let end = filter.end_location()?;
   Some((
     filter.start_location(None).map_or(0, |l| l.group),
@@ -205,7 +205,7 @@ async fn resolve_range_upstream(
   largest: &mut Option<Location>,
 ) -> UpstreamRange {
   let sent = send_upstream_fetch_for_range(client, context, track, filter, group_order).await;
-  let Some((relay_request_id, finished, rx, response_rx)) = sent else {
+  let Some((relay_request_id, closed_cleanly, rx, response_rx)) = sent else {
     return UpstreamRange::Unanswered;
   };
 
@@ -232,7 +232,7 @@ async fn resolve_range_upstream(
       UpstreamRange::Resolved {
         pending: PendingUpstreamFetch {
           relay_request_id,
-          finished,
+          closed_cleanly,
           rx,
         },
         end_location,
@@ -382,7 +382,7 @@ pub async fn handle(
                 full_track_name.clone(),
                 context.server_config,
                 TrackStatus::Pending,
-                TrackOrigin::Fetch,
+                TrackOrigin::CacheOnly,
               )
             })
             .await;
@@ -415,7 +415,7 @@ pub async fn handle(
       // publisher; the groups it covers are then served from it instead of being
       // fetched again.
       let mut pending_upstream: Option<PendingUpstreamFetch> = None;
-      let mut pending_fill = None;
+      let mut fill_claim = None;
 
       let (start_location, end_location) = {
         let mut largest = track.read().await.largest_object().await;
@@ -429,10 +429,11 @@ pub async fn handle(
         // If another FETCH is already asking upstream for these groups, wait for it
         // once: what it brings in may let the relay answer this one itself.
         if !answered_locally
-          && let (Some(end), Some((first, last))) = (&requested_end, fill_groups(&location_filter))
+          && let (Some(end), Some((first, last))) =
+            (&requested_end, groups_to_claim(&location_filter))
         {
           let cache = track.read().await.cache.clone();
-          pending_fill = match cache.claim_fill(first, last) {
+          fill_claim = match cache.claim_fill(first, last) {
             Ok(claim) => Some(claim),
             Err(in_flight) => {
               let timeout = context.server_config.upstream_fetch_timeout;
@@ -507,7 +508,7 @@ pub async fn handle(
       // Without an upstream fetch of its own, the delivery's gap fills claim their own
       // groups, and must not find this claim in the way.
       if pending_upstream.is_none() {
-        pending_fill = None;
+        fill_claim = None;
       }
 
       // Send FetchOk on the request stream before delivering objects.
@@ -537,7 +538,7 @@ pub async fn handle(
         group_order: fetch.group_order(),
         stream_priority: 0,
         pending_upstream,
-        pending_fill,
+        fill_claim,
         filter,
       };
 
@@ -722,92 +723,94 @@ async fn send_upstream_fetch_for_range(
   let response_event_tx = upstream_tx;
   let upstream_publisher = publisher.clone();
   let context = context.clone();
-  let finished = Arc::new(AtomicBool::new(false));
-  let finished_by_reader = finished.clone();
-  tokio::spawn(async move {
-    let response = async {
-      match upstream.next_message().await {
-        Ok(ControlMessage::FetchOk(ok)) => {
-          info!(
-            "Upstream FETCH {} accepted, end location {:?}",
-            relay_request_id, ok.end_location
-          );
-          let end_location = ok.end_location.clone();
-          // Signal range resolution before writing to the potentially full event queue.
-          let _ = response_tx.send(UpstreamFetchResponse::Accepted {
-            end_location: end_location.clone(),
-          });
-          let _ = response_event_tx
-            .send(UpstreamFetchEvent::Accepted { end_location })
-            .await;
+  let closed_cleanly = Arc::new(AtomicBool::new(false));
+  tokio::spawn({
+    let closed_cleanly = closed_cleanly.clone();
+    async move {
+      let response = async {
+        match upstream.next_message().await {
+          Ok(ControlMessage::FetchOk(ok)) => {
+            info!(
+              "Upstream FETCH {} accepted, end location {:?}",
+              relay_request_id, ok.end_location
+            );
+            let end_location = ok.end_location.clone();
+            // Signal range resolution before writing to the potentially full event queue.
+            let _ = response_tx.send(UpstreamFetchResponse::Accepted {
+              end_location: end_location.clone(),
+            });
+            let _ = response_event_tx
+              .send(UpstreamFetchEvent::Accepted { end_location })
+              .await;
+          }
+          Ok(ControlMessage::RequestError(err)) => {
+            let error = format!(
+              "upstream FETCH {} rejected: {:?}",
+              relay_request_id, err.error_code
+            );
+            let _ = response_tx.send(UpstreamFetchResponse::Rejected(err));
+            // Tell the waiting gap loop now instead of letting it sit until its timeout.
+            let _ = response_event_tx
+              .send(UpstreamFetchEvent::Error(error))
+              .await;
+            return;
+          }
+          Ok(ControlMessage::RequestUpdate(_)) => {
+            super::close_on_unexpected_request_update(&upstream_publisher, "FETCH");
+            let error = format!(
+              "upstream FETCH {} failed: publisher sent REQUEST_UPDATE",
+              relay_request_id
+            );
+            let _ = response_tx.send(UpstreamFetchResponse::Failed(error.clone()));
+            let _ = response_event_tx
+              .send(UpstreamFetchEvent::Error(error))
+              .await;
+            return;
+          }
+          Ok(other) => {
+            warn!(
+              "Unexpected {:?} on upstream fetch stream {}",
+              other.get_type(),
+              relay_request_id
+            );
+            return;
+          }
+          Err(e) => {
+            trace!("Upstream fetch stream {} closed: {:?}", relay_request_id, e);
+            return;
+          }
         }
-        Ok(ControlMessage::RequestError(err)) => {
-          let error = format!(
-            "upstream FETCH {} rejected: {:?}",
-            relay_request_id, err.error_code
-          );
-          let _ = response_tx.send(UpstreamFetchResponse::Rejected(err));
-          // Tell the waiting gap loop now instead of letting it sit until its timeout.
-          let _ = response_event_tx
-            .send(UpstreamFetchEvent::Error(error))
-            .await;
-          return;
-        }
-        Ok(ControlMessage::RequestUpdate(_)) => {
+        // Stays parked until the publisher closes the request stream. The relay sent
+        // this FETCH, so the publisher has no business updating it.
+        if let Ok(ControlMessage::RequestUpdate(_)) = upstream.next_message().await {
           super::close_on_unexpected_request_update(&upstream_publisher, "FETCH");
-          let error = format!(
-            "upstream FETCH {} failed: publisher sent REQUEST_UPDATE",
-            relay_request_id
-          );
-          let _ = response_tx.send(UpstreamFetchResponse::Failed(error.clone()));
-          let _ = response_event_tx
-            .send(UpstreamFetchEvent::Error(error))
-            .await;
-          return;
         }
-        Ok(other) => {
-          warn!(
-            "Unexpected {:?} on upstream fetch stream {}",
-            other.get_type(),
-            relay_request_id
-          );
-          return;
-        }
-        Err(e) => {
-          trace!("Upstream fetch stream {} closed: {:?}", relay_request_id, e);
-          return;
-        }
+      };
+      let reader_left = tokio::select! {
+        _ = response => false,
+        _ = response_event_tx.closed() => true,
+      };
+      if reader_left && closed_cleanly.load(Ordering::Acquire) {
+        // The whole response arrived, so the request is closed rather than cancelled, and
+        // a publisher that answers by closing its own side is given a moment to do so.
+        upstream.finish().await;
+        let _ = tokio::time::timeout(
+          context.server_config.upstream_fetch_timeout,
+          upstream.next_message(),
+        )
+        .await;
+      } else if reader_left {
+        upstream.reset_and_stop(StreamResetCode::Cancelled.to_u64());
+      } else {
+        // The request stream may close before the fetch stream has delivered everything,
+        // so the fetch is remembered until its reader is done.
+        response_event_tx.closed().await;
       }
-      // Stays parked until the publisher closes the request stream. The relay sent
-      // this FETCH, so the publisher has no business updating it.
-      if let Ok(ControlMessage::RequestUpdate(_)) = upstream.next_message().await {
-        super::close_on_unexpected_request_update(&upstream_publisher, "FETCH");
-      }
-    };
-    let reader_left = tokio::select! {
-      _ = response => false,
-      _ = response_event_tx.closed() => true,
-    };
-    if reader_left && finished_by_reader.load(Ordering::Acquire) {
-      // The whole response arrived, so the request is closed rather than cancelled, and
-      // a publisher that answers by closing its own side is given a moment to do so.
-      upstream.finish().await;
-      let _ = tokio::time::timeout(
-        context.server_config.upstream_fetch_timeout,
-        upstream.next_message(),
-      )
-      .await;
-    } else if reader_left {
-      upstream.reset_and_stop(StreamResetCode::Cancelled.to_u64());
-    } else {
-      // The request stream may close before the fetch stream has delivered everything,
-      // so the fetch is remembered until its reader is done.
-      response_event_tx.closed().await;
+      forget_upstream_fetch(&context, &upstream_publisher, relay_request_id).await;
     }
-    forget_upstream_fetch(&context, &upstream_publisher, relay_request_id).await;
   });
 
-  Some((relay_request_id, finished, upstream_rx, response_rx))
+  Some((relay_request_id, closed_cleanly, upstream_rx, response_rx))
 }
 
 async fn forget_upstream_fetch(
@@ -835,7 +838,7 @@ async fn forget_upstream_fetch(
 /// gap's whole groups are clipped to the request. For a request {5,3}..{9,2}: a gap of
 /// group 5 is {5,3} to the end of group 5, a gap of group 7 is all of group 7, a gap
 /// of group 9 is {9,0}..{9,2}, and a gap of all of them is the request itself.
-fn gap_range(first: u64, last: u64, start: &Location, end: &Location) -> (Location, Location) {
+fn requested_part(first: u64, last: u64, start: &Location, end: &Location) -> (Location, Location) {
   (
     Location::new(first, 0).max(start.clone()),
     Location::new(last, u64::MAX).min(end.clone()),
@@ -856,7 +859,7 @@ fn delivered_start(start: Location, end: &Location, group_order: GroupOrder) -> 
 
 /// The Object IDs of `group` a request of `start..=end` wants, clipped the same way.
 fn objects_wanted(group: u64, start: &Location, end: &Location) -> (u64, u64) {
-  let (lo, hi) = gap_range(group, group, start, end);
+  let (lo, hi) = requested_part(group, group, start, end);
   (lo.object, hi.object)
 }
 
@@ -870,7 +873,7 @@ fn last_delivered(
   descending: bool,
 ) -> Location {
   let group = if descending { first } else { last };
-  gap_range(group, group, start, end).1
+  requested_part(group, group, start, end).1
 }
 
 /// An End of Unknown Range marker up to `location`.
@@ -910,17 +913,18 @@ type Span = (Location, Location);
 ///
 /// Entries come in delivery order: by Location, or, for a descending FETCH across
 /// groups, in whole groups highest first, the Object IDs in each ascending.
-struct UpstreamCoverage {
+struct ResponseAbsences {
   /// The first and last Locations the response can carry.
   start: Location,
   end: Location,
   descending: bool,
-  accepted: bool,
+  /// Whether FETCH_OK has said where the response ends.
+  fetch_ok: bool,
   /// The last Object or marker that arrived.
   last: Option<Location>,
 }
 
-impl UpstreamCoverage {
+impl ResponseAbsences {
   fn new(start: Location, end: Location, group_order: GroupOrder) -> Self {
     let descending = group_order == GroupOrder::Descending && start.group != end.group;
     let start = delivered_start(start, &end, group_order);
@@ -928,28 +932,28 @@ impl UpstreamCoverage {
       start,
       end,
       descending,
-      accepted: false,
+      fetch_ok: false,
       last: None,
     }
   }
 
   /// The publisher's End Location: the response may end short of what was asked for,
   /// at the Largest Object, whose group can still be growing.
-  fn accepted(&mut self, end_location: &Location) {
+  fn on_fetch_ok(&mut self, end_location: &Location) {
     if *end_location < self.end {
       self.end = end_location.clone();
     }
-    self.accepted = true;
+    self.fetch_ok = true;
   }
 
-  fn object(&mut self, location: &Location) -> Vec<Span> {
+  fn on_object(&mut self, location: &Location) -> Vec<Span> {
     let spans = self.between(location);
     self.last = Some(location.clone());
     spans
   }
 
   /// A marker covers the Locations since the last entry, and its own.
-  fn marker(&mut self, kind: EndOfRangeKind, location: &Location) -> Vec<Span> {
+  fn on_marker(&mut self, kind: EndOfRangeKind, location: &Location) -> Vec<Span> {
     let mut spans = self.between(location);
     spans.push((location.clone(), location.clone()));
     self.last = Some(location.clone());
@@ -961,8 +965,8 @@ impl UpstreamCoverage {
   }
 
   /// The Locations after the last entry, once the response is over.
-  fn finish(self, complete: bool) -> Vec<Span> {
-    if !(complete && self.accepted) {
+  fn on_end(self, closed_cleanly: bool) -> Vec<Span> {
+    if !(closed_cleanly && self.fetch_ok) {
       return Vec::new();
     }
     let mut spans = Vec::new();
@@ -1116,7 +1120,7 @@ pub(crate) struct FetchDelivery {
   pub pending_upstream: Option<PendingUpstreamFetch>,
   /// Marks the groups `pending_upstream` is filling, so other FETCHes wait for it
   /// rather than ask for them too. Held until the delivery ends.
-  pub pending_fill: Option<FillClaim>,
+  pub fill_claim: Option<FillClaim>,
   /// What the requester's Range Filters let through. Upstream is asked for the whole
   /// range regardless: the filtering is the relay's to do.
   pub filter: CombinedFilter,
@@ -1162,7 +1166,7 @@ pub(crate) async fn serve_fetch_stream(
     group_order,
     stream_priority,
     mut pending_upstream,
-    pending_fill: _pending_fill,
+    fill_claim: _fill_claim,
     filter,
   } = delivery;
   // Served from here on, from the cache and from upstream alike.
@@ -1191,7 +1195,7 @@ pub(crate) async fn serve_fetch_stream(
 
   let mut upstream_gap_count: u64 = 0;
   // The group at which this delivery last waited on another FETCH's fill.
-  let mut waited_at: Option<u64> = None;
+  let mut last_waited_group: Option<u64> = None;
   let mut send_stream = None;
   let mut stop_reason = FetchStop::Running;
   let mut fetch_prev_ctx: Option<FetchObjectContext> = None;
@@ -1346,12 +1350,12 @@ pub(crate) async fn serve_fetch_stream(
       // If another FETCH is already filling some of these groups, wait for it once and
       // check the cache again, rather than ask upstream for the same Objects. Whatever
       // it leaves missing, such as an unknown range, is then asked for here.
-      let _fill = match &pending_upstream {
+      let _claim = match &pending_upstream {
         Some(_) => None,
         None => match cache.claim_fill(gap_start, gap_end) {
           Ok(claim) => Some(claim),
-          Err(in_flight) if waited_at != Some(group_id) => {
-            waited_at = Some(group_id);
+          Err(in_flight) if last_waited_group != Some(group_id) => {
+            last_waited_group = Some(group_id);
             let timeout = context.server_config.upstream_fetch_timeout;
             tokio::select! {
               _ = tokio::time::timeout(timeout, in_flight.lock()) => {}
@@ -1387,36 +1391,34 @@ pub(crate) async fn serve_fetch_stream(
         Some(pending) => {
           gap_start = start_location.group;
           gap_end = end_location.group;
-          let coverage =
-            UpstreamCoverage::new(start_location.clone(), end_location.clone(), group_order);
+          let absences =
+            ResponseAbsences::new(start_location.clone(), end_location.clone(), group_order);
           Some((
             pending.relay_request_id,
-            pending.finished,
+            pending.closed_cleanly,
             pending.rx,
-            coverage,
+            absences,
           ))
         }
         None => {
-          let (start, end) = gap_range(gap_start, gap_end, &start_location, &end_location);
+          let (start, end) = requested_part(gap_start, gap_end, &start_location, &end_location);
           let gap = range_filter(&start, &end);
           send_upstream_fetch_for_range(&client, &context, &track, gap, group_order)
             .await
-            .map(|(request_id, finished, rx, _)| {
-              let coverage = UpstreamCoverage::new(start, end, group_order);
-              (request_id, finished, rx, coverage)
+            .map(|(request_id, closed_cleanly, rx, _)| {
+              let absences = ResponseAbsences::new(start, end, group_order);
+              (request_id, closed_cleanly, rx, absences)
             })
         }
       };
 
-      if let Some((relay_request_id, finished, mut rx, mut coverage)) = upstream_rx {
+      if let Some((relay_request_id, closed_cleanly, mut rx, mut absences)) = upstream_rx {
         let timeout = context.server_config.upstream_fetch_timeout;
         let mark_absent = |spans: Vec<Span>| {
           for (from, to) in spans {
             cache.mark_absent(from, to);
           }
         };
-        // Whether the publisher delivered all it said it would.
-        let mut complete = false;
         loop {
           tokio::select! {
             result = tokio::time::timeout(timeout, rx.recv()) => {
@@ -1428,10 +1430,10 @@ pub(crate) async fn serve_fetch_stream(
                     "Upstream FETCH {} for groups {}..{} accepted, end location {:?}",
                     relay_request_id, gap_start, gap_end, end_location
                   );
-                  coverage.accepted(&end_location);
+                  absences.on_fetch_ok(&end_location);
                 }
                 Ok(Some(UpstreamFetchEvent::EndOfRange { kind, location })) => {
-                  mark_absent(coverage.marker(kind, &location));
+                  mark_absent(absences.on_marker(kind, &location));
                   let marker = FetchObject::EndOfRange {
                     kind,
                     group_id: location.group,
@@ -1448,7 +1450,7 @@ pub(crate) async fn serve_fetch_stream(
                     track.read().await.cache_fetched_object(&fetched).await;
                   }
                   mark_absent(
-                    coverage.object(&Location::new(object.group_id, object.object_id)),
+                    absences.on_object(&Location::new(object.group_id, object.object_id)),
                   );
                   if !filter.matches(filter_fields(&object)) {
                     continue;
@@ -1480,8 +1482,7 @@ pub(crate) async fn serve_fetch_stream(
                   break;
                 }
                 Ok(Some(UpstreamFetchEvent::StreamClosed)) => {
-                  complete = true;
-                  finished.store(true, Ordering::Release);
+                  closed_cleanly.store(true, Ordering::Release);
                   break;
                 }
                 Ok(Some(UpstreamFetchEvent::Error(e))) => {
@@ -1515,8 +1516,8 @@ pub(crate) async fn serve_fetch_stream(
           }
         }
 
-        let delivered_all = complete && coverage.accepted
-          || coverage.last.as_ref()
+        let delivered_all = closed_cleanly.load(Ordering::Relaxed) && absences.fetch_ok
+          || absences.last.as_ref()
             == Some(&last_delivered(
               gap_start,
               gap_end,
@@ -1535,7 +1536,7 @@ pub(crate) async fn serve_fetch_stream(
 
         // A malformed response is not to be believed about anything.
         if stop_reason != FetchStop::MalformedTrack {
-          mark_absent(coverage.finish(complete));
+          mark_absent(absences.on_end(closed_cleanly.load(Ordering::Relaxed)));
         }
       } else {
         write_entry(
@@ -1630,8 +1631,8 @@ pub(crate) async fn serve_fetch_stream(
 #[cfg(test)]
 mod tests {
   use super::{
-    FetchRangeError, concrete_end_location, delivered_start, empty_range_outcome, fill_groups,
-    gap_range, last_delivered, local_state_answers, range_filter, resolve_fetch_range,
+    FetchRangeError, concrete_end_location, delivered_start, empty_range_outcome, groups_to_claim,
+    last_delivered, local_state_answers, range_filter, requested_part, resolve_fetch_range,
     unresolved_fetch_range,
   };
   use moqtail::model::common::location::Location;
@@ -1694,10 +1695,10 @@ mod tests {
 
   #[test]
   fn only_a_fetch_with_an_end_claims_its_groups() {
-    assert_eq!(fill_groups(&range(loc(5, 3), loc(9, 2))), Some((5, 9)));
+    assert_eq!(groups_to_claim(&range(loc(5, 3), loc(9, 2))), Some((5, 9)));
     let open_ended = LocationFilter::AbsoluteStart { start: loc(5, 3) };
-    assert_eq!(fill_groups(&open_ended), None);
-    assert_eq!(fill_groups(&LocationFilter::None), None);
+    assert_eq!(groups_to_claim(&open_ended), None);
+    assert_eq!(groups_to_claim(&LocationFilter::None), None);
   }
 
   #[test]
@@ -1917,7 +1918,7 @@ mod tests {
   #[test]
   fn a_gap_is_asked_for_only_as_far_as_the_request_reaches() {
     let (start, end) = (loc(5, 3), loc(9, 2));
-    let gap = |first, last| gap_range(first, last, &start, &end);
+    let gap = |first, last| requested_part(first, last, &start, &end);
 
     // The request's first group starts at its Start Location.
     assert_eq!(gap(5, 5), (loc(5, 3), loc(5, u64::MAX)));
@@ -1944,8 +1945,8 @@ mod tests {
     );
   }
 
-  mod coverage {
-    use super::super::{EndOfRangeKind, UpstreamCoverage};
+  mod response_absences {
+    use super::super::{EndOfRangeKind, ResponseAbsences};
     use super::loc;
     use moqtail::model::control::constant::GroupOrder;
 
@@ -1953,56 +1954,56 @@ mod tests {
 
     #[test]
     fn what_an_ascending_response_passes_over_is_absent() {
-      let mut c = UpstreamCoverage::new(loc(1, 2), loc(3, 4), GroupOrder::Ascending);
-      c.accepted(&loc(3, 4));
+      let mut c = ResponseAbsences::new(loc(1, 2), loc(3, 4), GroupOrder::Ascending);
+      c.on_fetch_ok(&loc(3, 4));
       // From the start up to the first Object.
-      assert_eq!(c.object(&loc(1, 5)), [(loc(1, 2), loc(1, 4))]);
+      assert_eq!(c.on_object(&loc(1, 5)), [(loc(1, 2), loc(1, 4))]);
       // Consecutive Objects leave nothing between them.
-      assert_eq!(c.object(&loc(1, 6)), []);
+      assert_eq!(c.on_object(&loc(1, 6)), []);
       // The rest of group 1 and all of group 2.
-      assert_eq!(c.object(&loc(3, 0)), [(loc(1, 7), loc(2, MAX))]);
+      assert_eq!(c.on_object(&loc(3, 0)), [(loc(1, 7), loc(2, MAX))]);
       // After the last Object, up to the End Location.
-      assert_eq!(c.finish(true), [(loc(3, 1), loc(3, 4))]);
+      assert_eq!(c.on_end(true), [(loc(3, 1), loc(3, 4))]);
     }
 
     #[test]
     fn the_end_of_a_response_counts_only_after_fetch_ok_and_a_clean_close() {
-      let mut cut = UpstreamCoverage::new(loc(0, 0), loc(2, MAX), GroupOrder::Ascending);
-      cut.accepted(&loc(2, 5));
-      cut.object(&loc(0, 0));
-      assert_eq!(cut.finish(false), []);
+      let mut cut = ResponseAbsences::new(loc(0, 0), loc(2, MAX), GroupOrder::Ascending);
+      cut.on_fetch_ok(&loc(2, 5));
+      cut.on_object(&loc(0, 0));
+      assert_eq!(cut.on_end(false), []);
 
-      let mut unanswered = UpstreamCoverage::new(loc(0, 0), loc(2, MAX), GroupOrder::Ascending);
-      unanswered.object(&loc(0, 0));
-      assert_eq!(unanswered.finish(true), []);
+      let mut unanswered = ResponseAbsences::new(loc(0, 0), loc(2, MAX), GroupOrder::Ascending);
+      unanswered.on_object(&loc(0, 0));
+      assert_eq!(unanswered.on_end(true), []);
     }
 
     #[test]
     fn the_publishers_end_location_bounds_what_is_absent() {
-      let mut c = UpstreamCoverage::new(loc(0, 0), loc(5, MAX), GroupOrder::Ascending);
+      let mut c = ResponseAbsences::new(loc(0, 0), loc(5, MAX), GroupOrder::Ascending);
       // The Largest Object is {1,3}: anything after it may still be published.
-      c.accepted(&loc(1, 3));
-      c.object(&loc(1, 0));
-      assert_eq!(c.finish(true), [(loc(1, 1), loc(1, 3))]);
+      c.on_fetch_ok(&loc(1, 3));
+      c.on_object(&loc(1, 0));
+      assert_eq!(c.on_end(true), [(loc(1, 1), loc(1, 3))]);
     }
 
     #[test]
     fn an_empty_response_shows_the_whole_range_absent() {
-      let mut c = UpstreamCoverage::new(loc(4, 1), loc(6, 2), GroupOrder::Ascending);
-      c.accepted(&loc(6, 2));
-      assert_eq!(c.finish(true), [(loc(4, 1), loc(6, 2))]);
+      let mut c = ResponseAbsences::new(loc(4, 1), loc(6, 2), GroupOrder::Ascending);
+      c.on_fetch_ok(&loc(6, 2));
+      assert_eq!(c.on_end(true), [(loc(4, 1), loc(6, 2))]);
     }
 
     #[test]
     fn only_a_non_existent_marker_shows_its_range_absent() {
-      let mut c = UpstreamCoverage::new(loc(0, 0), loc(9, MAX), GroupOrder::Ascending);
-      c.object(&loc(2, 0));
-      assert_eq!(c.marker(EndOfRangeKind::Unknown, &loc(2, 5)), []);
+      let mut c = ResponseAbsences::new(loc(0, 0), loc(9, MAX), GroupOrder::Ascending);
+      c.on_object(&loc(2, 0));
+      assert_eq!(c.on_marker(EndOfRangeKind::Unknown, &loc(2, 5)), []);
       // Counted from after the unknown marker, not from {2,0}.
-      assert_eq!(c.object(&loc(2, 7)), [(loc(2, 6), loc(2, 6))]);
-      assert_eq!(c.marker(EndOfRangeKind::TimedOut, &loc(3, 1)), []);
+      assert_eq!(c.on_object(&loc(2, 7)), [(loc(2, 6), loc(2, 6))]);
+      assert_eq!(c.on_marker(EndOfRangeKind::TimedOut, &loc(3, 1)), []);
       assert_eq!(
-        c.marker(EndOfRangeKind::NonExistent, &loc(3, 4)),
+        c.on_marker(EndOfRangeKind::NonExistent, &loc(3, 4)),
         [(loc(3, 2), loc(3, 3)), (loc(3, 4), loc(3, 4))]
       );
     }
@@ -2011,21 +2012,21 @@ mod tests {
     fn a_descending_response_across_groups_covers_them_whole() {
       // Asked for {1,2}..{3,1}: groups 3, 2 and 1 come whole, highest first, with
       // group 3 only as far as the End Location.
-      let mut c = UpstreamCoverage::new(loc(1, 2), loc(3, 1), GroupOrder::Descending);
-      c.accepted(&loc(3, 1));
-      assert_eq!(c.object(&loc(3, 1)), [(loc(3, 0), loc(3, 0))]);
+      let mut c = ResponseAbsences::new(loc(1, 2), loc(3, 1), GroupOrder::Descending);
+      c.on_fetch_ok(&loc(3, 1));
+      assert_eq!(c.on_object(&loc(3, 1)), [(loc(3, 0), loc(3, 0))]);
       // Group 3 ends at the End Location, so nothing of it is left; group 2 is
       // skipped entirely, and group 1 starts at its object 0.
-      assert_eq!(c.object(&loc(1, 0)), [(loc(2, 0), loc(2, MAX))]);
-      assert_eq!(c.finish(true), [(loc(1, 1), loc(1, MAX))]);
+      assert_eq!(c.on_object(&loc(1, 0)), [(loc(2, 0), loc(2, MAX))]);
+      assert_eq!(c.on_end(true), [(loc(1, 1), loc(1, MAX))]);
     }
 
     #[test]
     fn a_descending_response_in_one_group_is_by_location() {
-      let mut c = UpstreamCoverage::new(loc(4, 2), loc(4, 6), GroupOrder::Descending);
-      c.accepted(&loc(4, 6));
-      assert_eq!(c.object(&loc(4, 4)), [(loc(4, 2), loc(4, 3))]);
-      assert_eq!(c.finish(true), [(loc(4, 5), loc(4, 6))]);
+      let mut c = ResponseAbsences::new(loc(4, 2), loc(4, 6), GroupOrder::Descending);
+      c.on_fetch_ok(&loc(4, 6));
+      assert_eq!(c.on_object(&loc(4, 4)), [(loc(4, 2), loc(4, 3))]);
+      assert_eq!(c.on_end(true), [(loc(4, 5), loc(4, 6))]);
     }
   }
 }

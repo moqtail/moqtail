@@ -677,18 +677,17 @@ async fn handle_subscribe_message(
     .await;
 
   // Scoped so the track guard is gone before anything below reaches for it again.
-  // A track a FETCH created, or one whose last subscriber left, has no upstream
-  // subscription, so the SUBSCRIBE that takes it over forwards upstream as if it had
-  // created it. Taken over and joined under one lock, so the track cannot let go of
-  // its upstream subscription in between.
+  // A cache-only track has no upstream subscription, so the SUBSCRIBE that takes it
+  // over forwards upstream as if it had created it. Taken over and joined under one
+  // lock, so the track cannot let go of its upstream subscription in between.
   let (is_creator, subscription) = {
     let track = track_arc.read().await;
     let _handover = track.lock_handover().await;
-    let adopted = track
-      .adopt(TrackOrigin::Subscribe, TrackStatus::Pending)
+    let taken_over = track
+      .take_over(TrackOrigin::Subscribe, TrackStatus::Pending)
       .await;
     (
-      is_creator || adopted,
+      is_creator || taken_over,
       add_subscription(sub.clone(), &track, client.clone()).await,
     )
   };
@@ -1014,7 +1013,7 @@ async fn handle_subscribe_ok_message(
 
   // The subscription this answers was let go of when its last subscriber left; its
   // upstream stream has been reset.
-  if track_arc.read().await.origin() == TrackOrigin::Fetch {
+  if track_arc.read().await.origin() == TrackOrigin::CacheOnly {
     info!(
       "SubscribeOk {} answers a subscription {:?} has let go of; ignoring",
       request_id, full_track_name
@@ -1264,14 +1263,14 @@ pub(crate) async fn cancel_subscription(
     }
 
     // A SUBSCRIBE-created track whose last subscriber left has its upstream
-    // subscription cancelled. It stays as a track only fetches use if it holds cached
-    // Objects, and is removed otherwise; either way the next SUBSCRIBE subscribes
-    // upstream afresh rather than being answered from it. A PUBLISH-created track has a
-    // publisher still pushing to it and outlives any number of subscribers.
+    // subscription cancelled. It becomes cache-only if it holds cached Objects, and is
+    // removed otherwise; either way the next SUBSCRIBE subscribes upstream afresh
+    // rather than being answered from it. A PUBLISH-created track has a publisher still
+    // pushing to it and outlives any number of subscribers.
     let cleanup = track_lock
       .read()
       .await
-      .release_upstream(&(context.connection_id, request_id))
+      .remove_subscriber(&(context.connection_id, request_id))
       .await;
     if cleanup != Cleanup::Nothing {
       info!(
@@ -1646,7 +1645,7 @@ async fn handle_subscribe_error_message(
   // Mark track as Rejected (if it exists). A track that let go of its upstream
   // subscription before this answer came keeps what it has cached.
   let track_arc = match context.track_manager.get_track(&full_track_name).await {
-    Some(track) if track.read().await.origin() == TrackOrigin::Fetch => {
+    Some(track) if track.read().await.origin() == TrackOrigin::CacheOnly => {
       info!(
         "RequestError {} answers a subscription {:?} has let go of; ignoring",
         request_id, full_track_name

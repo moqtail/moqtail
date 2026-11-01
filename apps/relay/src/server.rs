@@ -55,7 +55,7 @@ use track_manager::TrackManager;
 use wtransport::endpoint::IncomingSessionFuture;
 use wtransport::quinn;
 
-const FETCH_TRACK_SWEEP_INTERVAL: Duration = Duration::from_secs(30);
+const CACHE_ONLY_TRACK_SWEEP_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
 pub(crate) struct Server {
@@ -120,19 +120,19 @@ impl Server {
     // Only used to correlate log lines, so any unique value will do.
     let session_id_counter = Arc::new(AtomicU64::new(0));
 
-    // A track a FETCH created stays as long as it caches something, so the ones left
-    // holding nothing are swept up now and then.
+    // A cache-only track stays as long as it caches something, so the ones left holding
+    // nothing are swept up now and then.
     let track_manager = self.track_manager.clone();
     let mut shutdown = shutdown_rx.clone();
     tokio::spawn(async move {
-      let mut sweep = tokio::time::interval(FETCH_TRACK_SWEEP_INTERVAL);
+      let mut sweep = tokio::time::interval(CACHE_ONLY_TRACK_SWEEP_INTERVAL);
       loop {
         tokio::select! {
           _ = shutdown.changed() => break,
           _ = sweep.tick() => {
-            let removed = track_manager.sweep_unused_fetch_tracks().await;
+            let removed = track_manager.sweep_empty_cache_only_tracks().await;
             if removed > 0 {
-              info!("Removed {removed} fetched tracks holding nothing");
+              info!("Removed {removed} cache-only tracks holding nothing");
             }
           }
         }

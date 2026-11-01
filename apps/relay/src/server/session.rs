@@ -13,6 +13,8 @@
 // limitations under the License.
 
 use anyhow::Result;
+use moqtail::model::common::location::Location;
+use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::model::parameter::setup_option::SetupOption;
 use moqtail::model::{
   control::{
@@ -45,7 +47,7 @@ use crate::server::{Server, stream_id::StreamId};
 use super::{
   client::MOQTClient,
   message_handlers, request_stream,
-  session_context::{RequestMaps, SessionContext},
+  session_context::{RequestMaps, SessionContext, UpstreamFetchEvent},
   track::Track,
   utils,
 };
@@ -471,8 +473,7 @@ impl Session {
     // Remove the disconnecting publisher from all tracks they were publishing.
     // remove_publisher() internally notifies subscribers when the last publisher leaves.
     // Collect full track names for tracks that have no publishers left.
-    let mut tracks_with_no_publishers: Vec<moqtail::model::data::full_track_name::FullTrackName> =
-      Vec::new();
+    let mut tracks_with_no_publishers: Vec<FullTrackName> = Vec::new();
     {
       let tracks = track_manager_cleanup.tracks.read().await;
       for (full_track_name, track_lock) in tracks.iter() {
@@ -558,20 +559,18 @@ impl Session {
     let mut first_object = true;
     let mut track_alias = 0u64;
     // Set when this stream answers an upstream FETCH, which names its track.
-    let mut fetch_track_name: Option<moqtail::model::data::full_track_name::FullTrackName> = None;
+    let mut fetch_track_name: Option<FullTrackName> = None;
     let mut stream_id: Option<StreamId> = None;
     let mut current_track: Option<Arc<RwLock<Track>>> = None;
     // Only subgroup streams count toward the Stream Count a publisher reports in
     // PUBLISH_DONE; a fetch stream answers a request of the relay's own.
     let mut is_subgroup_stream = false;
     // Used if this stream is a response to an upstream fetch the relay issued.
-    let mut upstream_sender: Option<
-      tokio::sync::mpsc::Sender<super::session_context::UpstreamFetchEvent>,
-    > = None;
+    let mut upstream_sender: Option<tokio::sync::mpsc::Sender<UpstreamFetchEvent>> = None;
 
     let mut object_count = 0;
     // The last Object a subgroup stream carried.
-    let mut last_location: Option<moqtail::model::common::location::Location> = None;
+    let mut last_location: Option<Location> = None;
 
     loop {
       let next = stream_handler.next_item().await;
@@ -586,7 +585,7 @@ impl Session {
           }
           if let Some(ref sender) = upstream_sender {
             let _ = sender
-              .send(super::session_context::UpstreamFetchEvent::EndOfRange { kind, location })
+              .send(UpstreamFetchEvent::EndOfRange { kind, location })
               .await;
           }
         }
@@ -702,11 +701,7 @@ impl Session {
           if let Some(ref sender) = upstream_sender
             && let Ok(fetch_object) = object.clone().try_into_fetch()
           {
-            let _ = sender
-              .send(super::session_context::UpstreamFetchEvent::Object(
-                fetch_object,
-              ))
-              .await;
+            let _ = sender.send(UpstreamFetchEvent::Object(fetch_object)).await;
           }
 
           object_count += 1;
@@ -732,14 +727,12 @@ impl Session {
           // waiting on those Objects has nothing to end it but its own timeout.
           if let Some(ref sender) = upstream_sender {
             let event = if handler.is_malformed_track() {
-              super::session_context::UpstreamFetchEvent::MalformedTrack
+              UpstreamFetchEvent::MalformedTrack
             } else if handler.was_aborted() {
               // Not all of the range arrived, which must not be taken for the end of it.
-              super::session_context::UpstreamFetchEvent::Error(
-                "fetch stream ended without its FIN".to_string(),
-              )
+              UpstreamFetchEvent::Error("fetch stream ended without its FIN".to_string())
             } else {
-              super::session_context::UpstreamFetchEvent::StreamClosed
+              UpstreamFetchEvent::StreamClosed
             };
             let _ = sender.send(event).await;
           }
@@ -797,7 +790,7 @@ impl Session {
   async fn upstream_fetch_sender(
     context: &Arc<SessionContext>,
     handler: &RecvDataStream,
-  ) -> Option<tokio::sync::mpsc::Sender<super::session_context::UpstreamFetchEvent>> {
+  ) -> Option<tokio::sync::mpsc::Sender<UpstreamFetchEvent>> {
     let Some(HeaderInfo::Fetch { header, .. }) = handler.get_header_info().await else {
       return None;
     };

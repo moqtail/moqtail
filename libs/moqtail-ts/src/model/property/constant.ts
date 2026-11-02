@@ -17,11 +17,12 @@
 import { InvalidTypeError } from '../error'
 
 export enum LOCPropertyId {
-  Timestamp = 0x06,
   Timescale = 0x08,
-  VideoFrameMarking = 0x0a,
+  VideoFrameMarking = 0x09,
   AudioLevel = 0x0c,
   VideoConfig = 0x0d,
+  AudioConfig = 0x0f,
+  Timestamp = 0x10,
 }
 
 export enum TrackPropertyType {
@@ -38,16 +39,18 @@ export enum TrackPropertyType {
 
 export function locPropertyIdFromNumber(value: number): LOCPropertyId {
   switch (value) {
-    case 0x06:
-      return LOCPropertyId.Timestamp
     case 0x08:
       return LOCPropertyId.Timescale
-    case 0x0a:
+    case 0x09:
       return LOCPropertyId.VideoFrameMarking
     case 0x0c:
       return LOCPropertyId.AudioLevel
     case 0x0d:
       return LOCPropertyId.VideoConfig
+    case 0x0f:
+      return LOCPropertyId.AudioConfig
+    case 0x10:
+      return LOCPropertyId.Timestamp
     default:
       throw new InvalidTypeError('locPropertyIdFromNumber', `Invalid LOC property id: ${value}`)
   }

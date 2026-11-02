@@ -1,5 +1,11 @@
 # client-js
 
+## 0.2.2
+
+### Patch Changes
+
+- [#459](https://github.com/moqtail/moqtail/pull/459) [`561588a`](https://github.com/moqtail/moqtail/commit/561588ae232fe7660bc69ee2812a98231d6481d0) Thanks [@zafergurel](https://github.com/zafergurel)! - Fix the LOC property ids: TIMESTAMP is 0x10 and VIDEO_FRAME_MARKING is 0x09, and AUDIO_CONFIG (0x0F) is added. Video frame marking now carries the RFC 9626 flag byte instead of a varint, so `addVideoFrameMarking` takes `isKey: boolean` and receivers check `independent` (`is_independent_frame()` in moqtail-rs). Timestamps are microseconds; meet and client-js publish them that way.
+
 ## 0.2.1
 
 ### Patch Changes

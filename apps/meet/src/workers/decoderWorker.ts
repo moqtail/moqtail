@@ -148,9 +148,9 @@ self.onmessage = async e => {
     //console.debug('[WORKER]Received the payload:', moqtObj)
     //console.debug('[WORKER]Received the properties:', properties)
     const headers = LOCProperties.fromKeyValuePairs(properties ?? []);
-    const timestamp = Number(headers.find(h => LOCProperty.isTimestamp(h))?.timestamp ?? 0n);
+    const timestamp = Number(headers.find(h => LOCProperty.isTimestamp(h))?.timestamp ?? 0n) / 1000; // µs → ms
     const configHeader = headers.find(h => LOCProperty.isVideoConfig(h));
-    const isKey = headers.some(h => LOCProperty.isVideoFrameMarking(h) && h.value === 1n);
+    const isKey = headers.some(h => LOCProperty.isVideoFrameMarking(h) && h.independent);
 
     if (frameTimeoutId) {
       clearTimeout(frameTimeoutId);
@@ -235,7 +235,7 @@ self.onmessage = async e => {
     const properties = extensions;
 
     const headers = LOCProperties.fromKeyValuePairs(properties ?? []);
-    const timestamp = Number(headers.find(h => LOCProperty.isTimestamp(h))?.timestamp ?? 0n);
+    const timestamp = Number(headers.find(h => LOCProperty.isTimestamp(h))?.timestamp ?? 0n) / 1000; // µs → ms
 
     if (!audioDecoder) {
       // console.debug('[DECODER] Creating new audio decoder at', new Date().toISOString())

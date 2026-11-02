@@ -216,7 +216,7 @@ export class DataStats {
     timing.lastAt = at;
 
     if (locTimestamp === undefined) return;
-    const senderMs = Number(locTimestamp);
+    const senderMs = Number(locTimestamp) / 1000; // LOC timestamps are µs
     const latency = performance.timeOrigin + at - senderMs;
     if (Math.abs(latency) <= MAX_PLAUSIBLE_LATENCY_MS) {
       timing.latency = accumulate(timing.latency, latency);

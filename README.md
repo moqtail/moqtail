@@ -2,19 +2,14 @@
 	<img src="https://moqtail.dev/moqtail_medal.svg" alt="MOQtail" width="240" />
 	<br>
 	<br>
-	<a href="https://github.com/moqtail/moqtail/actions/workflows/rust.yml">
-		<img src="https://github.com/moqtail/moqtail/actions/workflows/rust.yml/badge.svg" alt="Rust Checks" />
-	</a>
-	<a href="https://github.com/moqtail/moqtail/actions/workflows/js.yml">
-		<img src="https://github.com/moqtail/moqtail/actions/workflows/js.yml/badge.svg" alt="JavaScript Checks" />
-	</a>
-	<a href="https://github.com/moqtail/moqtail/blob/main/LICENSE">
-		<img src="https://img.shields.io/badge/license-Apache--2.0-0f172a" alt="License: Apache-2.0" />
-	</a>
-	<a href="https://github.com/orgs/moqtail/packages/container/package/relay">
-		<img src="https://img.shields.io/badge/ghcr-ghcr.io%2Fmoqtail%2Frelay-2496ed?logo=docker&logoColor=white" alt="GHCR Relay Image" />
-	</a>
-	<a href="https://deepwiki.com/moqtail/moqtail"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki"></a>
+	<a href="https://datatracker.ietf.org/doc/draft-ietf-moq-transport/22/"><img src="https://img.shields.io/badge/MOQT-draft--22-0f766e" alt="MOQT draft-22" /></a>
+	<a href="https://github.com/moqtail/moqtail/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-0f172a" alt="License: Apache-2.0" /></a>
+	<a href="https://doi.org/10.1145/3793853.3799817"><img src="https://img.shields.io/badge/DOI-10.1145%2F3793853.3799817-b31b1b" alt="DOI" /></a>
+	<br>
+	<a href="https://www.npmjs.com/package/moqtail"><img src="https://img.shields.io/npm/v/moqtail?logo=npm" alt="npm" /></a>
+	<a href="https://crates.io/crates/moqtail"><img src="https://img.shields.io/crates/v/moqtail?logo=rust" alt="crates.io" /></a>
+	<a href="https://github.com/orgs/moqtail/packages/container/package/relay"><img src="https://img.shields.io/badge/ghcr-ghcr.io%2Fmoqtail%2Frelay-2496ed?logo=docker&logoColor=white" alt="GHCR Relay Image" /></a>
+	<a href="https://deepwiki.com/moqtail/moqtail"><img src="https://img.shields.io/badge/Ask-DeepWiki-1f6feb" alt="Ask DeepWiki" /></a>
 	<br>
 	<br>
 	Draft 22 MOQ Transport (MOQT) libraries and relay components.<br>

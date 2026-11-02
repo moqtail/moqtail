@@ -16,6 +16,9 @@
 
 import { ProtocolViolationError } from '../error/error'
 
+/** URI schemes are case-insensitive (RFC 3986 §3.1, MSF 11.1). */
+const MOQT_SCHEME = /^moqt:\/\//i
+
 /**
  * @public
  * A `moqt://` fragment, `#<type>:<value>`. Processed locally and never sent to the
@@ -46,7 +49,7 @@ export class MoqtUrl {
   ) {}
 
   static parse(input: string): MoqtUrl {
-    if (!input.startsWith('moqt://'))
+    if (!MOQT_SCHEME.test(input))
       throw new ProtocolViolationError('MoqtUrl.parse', `URL must use the moqt:// scheme: ${input}`)
     let rest = input.slice('moqt://'.length)
 
@@ -114,7 +117,7 @@ function parseFragment(fragment: string): MoqtFragment {
  */
 export function resolveTransportUrl(url: string | URL): { transportUrl: string; moqtUrl: MoqtUrl | undefined } {
   const raw = typeof url === 'string' ? url : url.toString()
-  if (!raw.startsWith('moqt://')) return { transportUrl: raw, moqtUrl: undefined }
+  if (!MOQT_SCHEME.test(raw)) return { transportUrl: raw, moqtUrl: undefined }
   const moqtUrl = MoqtUrl.parse(raw)
   return { transportUrl: moqtUrl.toHttps(), moqtUrl }
 }
@@ -147,6 +150,12 @@ if (import.meta.vitest) {
       expect(url.fragment).toEqual({ kind: 'msf', value: 'abc' })
       // The fragment is local-only, so it must not survive into the transport URL.
       expect(url.toHttps()).toBe('https://host/app?q=1')
+    })
+
+    test('the scheme is case-insensitive', () => {
+      expect(MoqtUrl.parse('MOQT://host/a').toHttps()).toBe('https://host/a')
+      expect(MoqtUrl.parse('Moqt://host').authority).toBe('host')
+      expect(resolveTransportUrl('Moqt://host/x').transportUrl).toBe('https://host/x')
     })
 
     test('a fragment value may itself contain colons', () => {

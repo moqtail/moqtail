@@ -63,6 +63,16 @@
         "default": "./dist/model.cjs"
       }
     },
+    "./player": {
+      "import": {
+        "types": "./dist/player.d.mts",
+        "default": "./dist/player.mjs"
+      },
+      "require": {
+        "types": "./dist/player.d.cts",
+        "default": "./dist/player.cjs"
+      }
+    },
     "./util": {
       "import": {
         "types": "./dist/util.d.mts",

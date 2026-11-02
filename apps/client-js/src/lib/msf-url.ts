@@ -15,93 +15,31 @@
  */
 
 /**
- * MSF URL construction and interpretation per draft-ietf-moq-msf §11.1.
- *
- * URL shape:
- *   moqt://host[:port][/path]#msf:<ns-encoded>[--<track-encoded>]
- *
- * moqt:// syntax itself -- scheme, authority, path, and the `#<type>:<value>`
- * fragment -- is parsed by the library's MoqtUrl, so there is one parser. Only the
- * MSF-specific encoding of the fragment value is handled here.
- *
- * §11.1.2 field encoding:
- *   - [a-zA-Z0-9_] → literal
- *   - everything else → .XX  (period + 2 lowercase hex digits)
- *   - namespace tuple fields joined by single  -
- *   - namespace / track-name boundary is  --
+ * Thin adapter over `moqtail/player` that keeps the app's slash-joined namespace
+ * strings. Goes away when client-js moves to the library player.
  */
 
-import { MoqtUrl } from 'moqtail';
+import { Tuple } from 'moqtail';
+import { formatMsfUrl, parseMsfUrl as parseMsfSource } from 'moqtail/player';
 
 export interface MsfUrlParts {
-  relayUrl: string; // moqt://host[:port][/path] -- the scheme actually connected with
+  relayUrl: string; // moqt://host[:port][/path][?query] -- the scheme actually connected with
   namespace: string; // slash-separated tuple fields, e.g. "moqtail/testsrc"
   trackName?: string;
 }
 
-function encodeMsfField(s: string): string {
-  const bytes = new TextEncoder().encode(s);
-  let out = '';
-  for (const b of bytes) {
-    const c = String.fromCharCode(b);
-    if (/[a-zA-Z0-9_]/.test(c)) {
-      out += c;
-    } else {
-      out += '.' + b.toString(16).padStart(2, '0');
-    }
-  }
-  return out;
-}
-
-function decodeMsfField(s: string): string {
-  const bytes: number[] = [];
-  let i = 0;
-  while (i < s.length) {
-    if (s[i] === '.' && i + 2 < s.length) {
-      bytes.push(parseInt(s.slice(i + 1, i + 3), 16));
-      i += 3;
-    } else {
-      bytes.push(s.charCodeAt(i));
-      i += 1;
-    }
-  }
-  return new TextDecoder().decode(new Uint8Array(bytes));
-}
-
 /**
- * Parse a moqt:// MSF URL into its relay, namespace, and optional track name.
+ * Parse a moqt:// MSF URL into its relay, namespace, and track name.
  * Returns null if the input is not a valid MSF URL.
  */
 export function parseMsfUrl(url: string): MsfUrlParts | null {
-  // MoqtUrl owns moqt:// syntax and rejects anything malformed by throwing; an
-  // unparseable or non-MSF URL is not an error here, it is simply not ours.
-  let parsed: MoqtUrl;
   try {
-    parsed = MoqtUrl.parse(url);
+    const source = parseMsfSource(url);
+    const namespace = source.namespace.fields.map(f => f.toUtf8()).join('/');
+    return { relayUrl: source.url, namespace, trackName: source.track };
   } catch {
     return null;
   }
-
-  if (parsed.fragment?.kind !== 'msf') return null;
-
-  // Ignore any &parameters per §11.1.1 — only extract the track identifier.
-  const trackId = parsed.fragment.value.split('&')[0];
-
-  const sepIdx = trackId.indexOf('--');
-  const nsEncoded = sepIdx === -1 ? trackId : trackId.slice(0, sepIdx);
-  const trackEncoded = sepIdx === -1 ? undefined : trackId.slice(sepIdx + 2);
-
-  // Single bare hyphens are field separators; encoded hyphens appear as .2d.
-  const namespace = nsEncoded.split('-').map(decodeMsfField).join('/');
-
-  const trackName = trackEncoded !== undefined ? decodeMsfField(trackEncoded) : undefined;
-
-  // Kept as moqt://: the library resolves it to the WebTransport URL itself, so the
-  // scheme the user shared is the scheme actually connected with. The query rides
-  // along, as it does in MoqtUrl.toHttps().
-  const relayUrl = `moqt://${parsed.authority}${parsed.pathAndQuery()}`;
-
-  return { relayUrl, namespace, trackName };
 }
 
 /**
@@ -117,9 +55,10 @@ export function buildMsfUrl(relayUrl: string, namespace: string, trackName?: str
   }
 
   const path = parsed.pathname !== '/' ? parsed.pathname : '';
-  const nsEncoded = namespace.split('/').filter(Boolean).map(encodeMsfField).join('-');
-
-  const trackPart = trackName !== undefined ? `--${encodeMsfField(trackName)}` : '';
-
-  return `moqt://${parsed.host}${path}#msf:${nsEncoded}${trackPart}`;
+  // An MSF URL always names a track (MSF 11.1.2); the app's entry point is the catalog.
+  return formatMsfUrl(
+    `moqt://${parsed.host}${path}`,
+    Tuple.fromUtf8Path(namespace),
+    trackName ?? 'catalog',
+  );
 }

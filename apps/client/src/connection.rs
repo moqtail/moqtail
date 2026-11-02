@@ -291,8 +291,11 @@ struct MoqtUrl {
 
 impl MoqtUrl {
   fn parse(input: &str) -> Result<Self> {
+    // URI schemes are case-insensitive (RFC 3986 §3.1, MSF 11.1).
     let rest = input
-      .strip_prefix("moqt://")
+      .get(..7)
+      .filter(|scheme| scheme.eq_ignore_ascii_case("moqt://"))
+      .map(|_| &input[7..])
       .ok_or_else(|| anyhow::anyhow!("server URL must use the moqt:// scheme: {input}"))?;
 
     // The fragment is split off first; it never reaches authority/path/query.
@@ -403,6 +406,12 @@ mod tests {
     let f = url.fragment.unwrap();
     assert_eq!(f.kind, "loc");
     assert_eq!(f.value, "a:b:c");
+  }
+
+  #[test]
+  fn scheme_is_case_insensitive() {
+    assert_eq!(MoqtUrl::parse("MOQT://host/a").unwrap().path, "/a");
+    assert_eq!(MoqtUrl::parse("Moqt://host").unwrap().authority, "host");
   }
 
   #[test]

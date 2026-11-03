@@ -23,15 +23,15 @@
 import type { MOQtailClient } from '../../client/client'
 import type { Emitter } from '../../util/emitter'
 import { PlayerError } from '../error'
+import type { MOQtailPlayerOptions, PlayerEvents } from '../player'
 import type { BaseElement } from './base'
 import type { Chain } from './chain'
 import type { ElementDefinition, Identifiers, SourceElementDefinition } from './define'
 import type { CatalogReader, CatalogTrack } from './interfaces'
 import { selectSource } from './negotiation'
 
-// shortcut: stands in for MOQtailPlayer, which 3b adds; swap the type then.
-/** @public */
-export type PlayerHandle = Emitter<any>
+/** @public What elements see of the player: its events and options. */
+export type PlayerHandle = Emitter<PlayerEvents> & { readonly options: Readonly<MOQtailPlayerOptions> }
 
 /** @public Given to `init`, one per element instance. */
 export interface ElementContext {
@@ -97,6 +97,11 @@ export class InstanceContext implements ElementContext {
 
   get signal(): AbortSignal {
     return this.#abort.signal
+  }
+
+  /** The instance, once its constructor ran. */
+  get element(): BaseElement | undefined {
+    return this.#element
   }
 
   attach(element: BaseElement): void {

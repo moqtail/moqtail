@@ -16,6 +16,9 @@
 
 export { parseMsfUrl, formatMsfUrl, type MsfSource, type LocationRange, type TimeRange } from './msf_url'
 export { PlayerError, type PlayerErrorCode, type PlayerErrorCategory } from './error'
+export { MOQtailPlayer, type MOQtailPlayerOptions, type PlayerEvents } from './player'
+export type { PlayerState } from './state'
+export { defineExtension, type ExtensionDefinition } from './extension'
 export {
   defineElement,
   hasInterface,

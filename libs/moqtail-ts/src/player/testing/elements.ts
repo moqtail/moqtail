@@ -24,8 +24,9 @@ import { SinkElement, SourceElement, TransformElement } from '../element/base'
 import { Chain, type ChainHost } from '../element/chain'
 import type { ElementContext } from '../element/context'
 import { CapabilityCode, defineElement, type Capabilities, type Identifiers } from '../element/define'
-import { MEDIA_SINK, type CatalogTrack } from '../element/interfaces'
+import { MEDIA_SINK, MEDIA_SOURCE, type CatalogTrack, type MediaSinkElement } from '../element/interfaces'
 import type { Pad, PadEvent, PadItem, PadOutput } from '../element/pad'
+import type { PlayerEvents } from '../player'
 
 export const VIDEO_CMAF: Capabilities = [
   { direction: 'out', code: CapabilityCode.ROLE, value: 'video' },
@@ -60,6 +61,8 @@ export function testSource(
     name?: string
     probe?: (identifiers: Identifiers) => number
     priority?: number
+    /** Lists `MEDIA_SOURCE` in `provides`, without implementing it. */
+    media?: boolean
     script?: (source: TestSource, options: Record<string, any> | undefined) => void | Promise<void>
   } = {},
 ) {
@@ -68,6 +71,7 @@ export function testSource(
     name: options.name ?? 'test-source',
     capabilities: [],
     ...(options.priority !== undefined && { priority: options.priority }),
+    ...(options.media && { provides: [MEDIA_SOURCE] as unknown as [] }),
     probe: options.probe ?? (() => 1),
     async init(context, initOptions) {
       const source = new TestSource(context)
@@ -133,6 +137,56 @@ export function collectingSink(
   })
 }
 
+/** A media sink driven by the test: `dispatch()` fires media events, control calls are logged. */
+export class FakeMediaSink extends CollectingSink implements MediaSinkElement {
+  readonly #target = new EventTarget()
+  readonly calls: string[] = []
+  currentTime = 0
+  paused = true
+  playbackRate = 1
+  /** `[start, end]` pairs in seconds. */
+  ranges: [number, number][] = []
+  /** Replace to make `play()` reject, e.g. with a `NotAllowedError`. */
+  playResult: () => Promise<void> = () => Promise.resolve()
+  readonly addEventListener = this.#target.addEventListener.bind(this.#target)
+  readonly removeEventListener = this.#target.removeEventListener.bind(this.#target)
+  readonly dispatchEvent = this.#target.dispatchEvent.bind(this.#target)
+
+  get buffered(): TimeRanges {
+    const ranges = this.ranges
+    return { length: ranges.length, start: (i) => ranges[i]![0], end: (i) => ranges[i]![1] }
+  }
+
+  dispatch(type: string): void {
+    this.dispatchEvent(new Event(type))
+  }
+
+  setPlaybackRate(rate: number): void {
+    this.calls.push(`rate ${rate}`)
+  }
+
+  play(): Promise<void> {
+    this.calls.push('play')
+    return this.playResult()
+  }
+
+  async pause(): Promise<void> {
+    this.calls.push('pause')
+  }
+
+  async seek(mediaTime: number): Promise<void> {
+    this.calls.push(`seek ${mediaTime}`)
+  }
+}
+
+export const fakeMediaSink = defineElement({
+  type: 'sink',
+  name: 'fake-media-sink',
+  capabilities: ACCEPT_CMAF,
+  provides: [MEDIA_SINK],
+  init: async (context) => new FakeMediaSink(context),
+})
+
 /** Pass-through: one source pad per sink pad. `hook` sees each item before it's forwarded. */
 export class TestTransform extends TransformElement {
   readonly #outputs = new Map<Pad, Pad>()
@@ -155,10 +209,12 @@ export class TestTransform extends TransformElement {
   }
 }
 
+const fakePlayer = () => Object.assign(new Emitter<PlayerEvents>(), { options: {} })
+
 /** A context for elements built outside a chain (transforms given to `addTransform`). */
 export function detachedContext(): ElementContext {
   return {
-    player: new Emitter(),
+    player: fakePlayer(),
     client: {} as MOQtailClient,
     signal: new AbortController().signal,
     tracks: [],
@@ -173,7 +229,7 @@ export function testChain(definitions: ChainHost['definitions'] = () => []) {
   const warnings: Error[] = []
   const failures: Error[] = []
   const chain = new Chain({
-    player: new Emitter(),
+    player: fakePlayer(),
     client: () => ({}) as MOQtailClient,
     definitions,
     warn: (e) => warnings.push(e),

@@ -150,6 +150,16 @@ export class Chain {
     })
   }
 
+  /** The elements holding a reference to a loaded instance; empty for top-level ones. */
+  holdersOf(element: BaseElement): BaseElement[] {
+    for (const byTracks of this.shared.values()) {
+      for (const shared of byTracks.values()) {
+        if (shared.context.element === element) return [...shared.holders].flatMap((h) => h.element ?? [])
+      }
+    }
+    return []
+  }
+
   /** Adds an initialised instance to the chain's lists. */
   register(element: BaseElement): void {
     if (element instanceof SourceElement) this.#sources.push(element)

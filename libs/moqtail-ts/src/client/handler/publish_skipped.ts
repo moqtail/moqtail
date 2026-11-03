@@ -36,5 +36,5 @@ export const handlerPublishSkipped: RequestStreamMessageHandler<PublishSkipped> 
     msg.trackNamespaceSuffix.toUtf8Path(),
   )
 
-  client.onPeerPublishSkipped?.(first.trackNamespacePrefix, msg)
+  client.emit('peerpublishskipped', first.trackNamespacePrefix, msg)
 }

@@ -24,6 +24,7 @@ import {
   RequestError,
   SubscribeOk,
   RequestUpdate,
+  PublishDone,
   applyMessageParameterUpdate,
 } from '@/model'
 import { DEFAULT_SWITCH_DRAIN_TIMEOUT_MS, type EarlyDiscardPolicyConfig } from '../types'
@@ -59,6 +60,11 @@ export class SubscribeRequest implements PromiseLike<SubscribeOk | RequestError>
   public expires: bigint | undefined
   public streamsAccepted: bigint = 0n
   public expectedStreams: bigint | undefined // Defined upon SUBSCRIBE_DONE
+  /** The last PUBLISH_DONE received for this request. */
+  public publishDone: PublishDone | undefined
+  /** Resolves once this request is over, with {@link SubscribeRequest.publishDone}. Never rejects. */
+  public readonly done: Promise<PublishDone | undefined>
+  #finish!: (publishDone: PublishDone | undefined) => void
 
   /** The Subscription managing this request's output stream once switching is involved. */
   public manager?: Subscription
@@ -98,6 +104,7 @@ export class SubscribeRequest implements PromiseLike<SubscribeOk | RequestError>
       this.#resolve = resolve
       this.#reject = reject
     })
+    this.done = new Promise((resolve) => (this.#finish = resolve))
 
     logger.debug(
       'request/subscribe',
@@ -127,6 +134,11 @@ export class SubscribeRequest implements PromiseLike<SubscribeOk | RequestError>
     if (typeof applyMessageParameterUpdate === 'function') {
       applyMessageParameterUpdate(this.subscribeParameters, msg.parameters)
     }
+  }
+
+  /** Ends the request: resolves {@link SubscribeRequest.done}. Later calls do nothing. */
+  public finish(): void {
+    this.#finish(this.publishDone)
   }
 
   /**
@@ -196,6 +208,15 @@ export class Subscription {
   /** Oldest first; the last entry is the newest switch target still racing to produce data. */
   #requests: SubscribeRequest[]
 
+  /** Requests {@link Subscription.done} has yet to wait for, oldest first. */
+  #unwaited: SubscribeRequest[]
+
+  /**
+   * Resolves once every tracked request is over, with the newest one's PUBLISH_DONE, or
+   * `undefined` if it ended without one. Never rejects.
+   */
+  public readonly done: Promise<PublishDone | undefined>
+
   /**
    * Requests a soft switch handed over from, still delivering the tail of what they
    * were told to finish, each with the timer that retires it if it goes quiet.
@@ -223,6 +244,19 @@ export class Subscription {
     this.controller = initial.controller
     initial.manager = this
     this.#requests = [initial]
+    this.#unwaited = [initial]
+    this.done = this.#allDone()
+  }
+
+  async #allDone(): Promise<PublishDone | undefined> {
+    let newest = this.#unwaited[0]!
+    // A switch may add a request while earlier ones are waited for; batches keep finished ones from piling up.
+    while (this.#unwaited.length > 0) {
+      const batch = this.#unwaited.splice(0)
+      newest = batch[batch.length - 1]!
+      await Promise.all(batch.map((request) => request.done))
+    }
+    return newest.publishDone
   }
 
   /** Requests still tracked, oldest first, draining ones last. */
@@ -246,6 +280,7 @@ export class Subscription {
     request.manager = this
     if (drainSuperseded) this.#drainsSuperseded.add(request)
     this.#requests.push(request)
+    this.#unwaited.push(request)
   }
 
   /** Stop tracking `request` (e.g. it naturally completed without ever losing/winning a handover). */

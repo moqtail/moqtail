@@ -23,7 +23,7 @@ import { assertWithinFilterRangeLimit } from '../util/validators'
 
 export const handlerSubscribeTracks: RequestStreamMessageHandler<SubscribeTracks> = async (client, msg, stream) => {
   logger.log('handler/subscribe_tracks', 'prefix', msg.trackNamespacePrefix.toUtf8Path())
-  // Which tracks match is the application's call, made in onPeerSubscribeTracks, so a
+  // Which tracks match is the application's call, made in a `peersubscribetracks` listener, so a
   // filter here could not be honoured. One within the limit is refused as unsupported
   // rather than accepted and ignored.
   if (MessageParameter.carriesRangeFilter(msg.parameters)) {
@@ -41,9 +41,7 @@ export const handlerSubscribeTracks: RequestStreamMessageHandler<SubscribeTracks
     return
   }
 
-  if (client.onPeerSubscribeTracks) {
-    client.onPeerSubscribeTracks(msg)
-  }
+  client.emit('peersubscribetracks', msg)
 
   // The peer holds this stream open for the subscription's lifetime. Each matching
   // track is pushed as a PUBLISH on its own request stream, not on this one.

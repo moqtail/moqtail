@@ -35,7 +35,9 @@ import DecodeWorker from '@/workers/decoderWorker?worker';
 import PCMPlayerProcessorURL from '@/workers/pcmPlayerProcessor?url';
 
 export async function connectToRelay(url: string) {
-  return await MOQtailClient.new({ url, enableDatagrams: false });
+  const client = new MOQtailClient({ url, enableDatagrams: false });
+  await client.init();
+  return client;
 }
 
 export async function announceNamespaces(moqClient: MOQtailClient, namespace: Tuple) {

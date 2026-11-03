@@ -14,24 +14,19 @@
  * limitations under the License.
  */
 
-import { DataEventObserver, MOQtailClient } from 'moqtail/client';
-import { ControlMessage } from 'moqtail/model';
-
-export type SessionObserver = {
-  onMessageSent?: (msg: ControlMessage) => void;
-  onMessageReceived?: (msg: ControlMessage) => void;
-  onDataEvent?: DataEventObserver;
-};
+import { MOQtailClient } from 'moqtail/client';
 
 export async function createMOQtailClient(
   relayUrl?: string,
-  observer: SessionObserver = {},
+  listen?: (client: MOQtailClient) => void,
 ): Promise<MOQtailClient> {
-  return await MOQtailClient.new({
+  const client = new MOQtailClient({
     url: relayUrl ?? window.appSettings.relayUrl,
     transportOptions: {},
     enableDatagrams: false,
-    // Passed at connect time so SETUP, the first message each way, is observed too.
-    callbacks: observer,
   });
+  // Listeners attach before init() so SETUP, the first message each way, is observed too.
+  listen?.(client);
+  await client.init();
+  return client;
 }

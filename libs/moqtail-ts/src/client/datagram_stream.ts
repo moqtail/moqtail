@@ -17,6 +17,8 @@
 import { Datagram } from '../model/data'
 import { MoqtObject, FullTrackName } from '../model/data'
 import { logger } from '../util/logger'
+import type { Emitter } from '../util/emitter'
+import type { ClientEvents } from './types'
 import { FrozenByteBuffer } from '@/model'
 
 /**
@@ -32,16 +34,12 @@ import { FrozenByteBuffer } from '@/model'
 export class SendDatagramStream {
   readonly #writer: WritableStreamDefaultWriter<Uint8Array>
   readonly #trackAlias: bigint
-  readonly onDataSent?: (data: Datagram) => void
+  readonly #events: Emitter<ClientEvents> | undefined
 
-  constructor(
-    writer: WritableStreamDefaultWriter<Uint8Array>,
-    trackAlias: bigint,
-    onDataSent?: (data: Datagram) => void,
-  ) {
+  constructor(writer: WritableStreamDefaultWriter<Uint8Array>, trackAlias: bigint, events?: Emitter<ClientEvents>) {
     this.#writer = writer
     this.#trackAlias = trackAlias
-    if (onDataSent) this.onDataSent = onDataSent
+    this.#events = events
   }
 
   /**
@@ -49,16 +47,16 @@ export class SendDatagramStream {
    *
    * @param writeStream - WebTransport datagram writable stream
    * @param trackAlias - Track alias for this datagram stream
-   * @param onDataSent - Optional callback fired when datagram is sent
+   * @param events - Receives `datagramsent` for each datagram written
    * @returns SendDatagramStream instance
    */
   static async new(
     writeStream: WritableStream<Uint8Array>,
     trackAlias: bigint,
-    onDataSent?: (data: Datagram) => void,
+    events?: Emitter<ClientEvents>,
   ): Promise<SendDatagramStream> {
     const writer = writeStream.getWriter()
-    return new SendDatagramStream(writer, trackAlias, onDataSent)
+    return new SendDatagramStream(writer, trackAlias, events)
   }
 
   /**
@@ -67,15 +65,15 @@ export class SendDatagramStream {
    *
    * @param writer - Existing WritableStreamDefaultWriter
    * @param trackAlias - Track alias for this datagram stream
-   * @param onDataSent - Optional callback fired when datagram is sent
+   * @param events - Receives `datagramsent` for each datagram written
    * @returns SendDatagramStream instance
    */
   static fromWriter(
     writer: WritableStreamDefaultWriter<Uint8Array>,
     trackAlias: bigint,
-    onDataSent?: (data: Datagram) => void,
+    events?: Emitter<ClientEvents>,
   ): SendDatagramStream {
-    return new SendDatagramStream(writer, trackAlias, onDataSent)
+    return new SendDatagramStream(writer, trackAlias, events)
   }
 
   /**
@@ -91,7 +89,7 @@ export class SendDatagramStream {
       'datagram_stream',
       `Writing datagram: trackAlias=${this.#trackAlias}, group=${object.location?.group}, obj=${object.location?.object}, size=${serialized.byteLength}`,
     )
-    if (this.onDataSent) this.onDataSent(datagram)
+    this.#events?.emit('datagramsent', datagram)
 
     try {
       await this.#writer.write(serialized)
@@ -143,16 +141,16 @@ export class RecvDatagramStream {
   readonly stream: ReadableStream<MoqtObject>
   readonly #reader: ReadableStreamDefaultReader<Uint8Array>
   readonly #trackAliasResolver: (trackAlias: bigint) => FullTrackName
-  readonly onDataReceived?: (data: Datagram) => void
+  readonly #events: Emitter<ClientEvents> | undefined
 
   private constructor(
     reader: ReadableStreamDefaultReader<Uint8Array>,
     trackAliasResolver: (trackAlias: bigint) => FullTrackName,
-    onDataReceived?: (data: Datagram) => void,
+    events?: Emitter<ClientEvents>,
   ) {
     this.#reader = reader
     this.#trackAliasResolver = trackAliasResolver
-    if (onDataReceived) this.onDataReceived = onDataReceived
+    this.#events = events
 
     this.stream = new ReadableStream<MoqtObject>({
       start: (controller) => this.#ingestLoop(controller),
@@ -165,16 +163,16 @@ export class RecvDatagramStream {
    *
    * @param readStream - WebTransport datagram readable stream
    * @param trackAliasResolver - Function to resolve track alias to full track name
-   * @param onDataReceived - Optional callback fired when datagram is received
+   * @param events - Receives `datagramreceived` for each datagram read
    * @returns RecvDatagramStream instance
    */
   static async new(
     readStream: ReadableStream<Uint8Array>,
     trackAliasResolver: (trackAlias: bigint) => FullTrackName,
-    onDataReceived?: (data: Datagram) => void,
+    events?: Emitter<ClientEvents>,
   ): Promise<RecvDatagramStream> {
     const reader = readStream.getReader()
-    return new RecvDatagramStream(reader, trackAliasResolver, onDataReceived)
+    return new RecvDatagramStream(reader, trackAliasResolver, events)
   }
 
   async #ingestLoop(controller: ReadableStreamDefaultController<MoqtObject>) {
@@ -193,7 +191,7 @@ export class RecvDatagramStream {
 
         try {
           const datagram = Datagram.deserialize(new FrozenByteBuffer(datagramBytes))
-          if (this.onDataReceived) this.onDataReceived(datagram)
+          this.#events?.emit('datagramreceived', datagram)
 
           const fullTrackName = this.#trackAliasResolver(datagram.trackAlias)
           const moqtObject = MoqtObject.fromDatagram(datagram, fullTrackName)

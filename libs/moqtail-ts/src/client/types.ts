@@ -25,6 +25,21 @@ import {
   ControlMessage,
   Datagram,
   SwitchMode,
+  GoAway,
+  PublishNamespace,
+  Publish,
+  PublishDone,
+  PublishSkipped,
+  SubscribeNamespace,
+  SubscribeTracks,
+  SubscribeOk,
+  FetchOk,
+  Tuple,
+  MoqtObject,
+  SubgroupObject,
+  SubgroupHeader,
+  FetchObject,
+  FetchHeader,
 } from '@/model'
 import { PublishNamespaceRequest } from './request/publish_namespace'
 import { FetchRequest } from './request/fetch'
@@ -33,7 +48,7 @@ import { SubscribeNamespaceRequest } from './request/subscribe_namespace'
 import { MOQtailClient } from './client'
 import { PublishRequest } from './request/publish'
 import { TrackStatusRequest } from './request/track_status'
-import { DataEventObserver } from './data_event'
+import { DataEvent } from './data_event'
 /**
  * Discriminated union of every in‑flight MOQ‑tail control request tracked by the {@link MOQtailClient}.
  *
@@ -107,30 +122,19 @@ export const DEFAULT_SWITCH_DRAIN_TIMEOUT_MS = 2000
 export const DEFAULT_MAX_FILTER_RANGES = 32n
 
 /**
- * Options for {@link MOQtailClient.new} controlling connection target, protocol negotiation, timeouts,
- * and lifecycle callbacks.
+ * Options for the {@link MOQtailClient} constructor: connection target, protocol
+ * negotiation, and timeouts. Nothing happens on the network until
+ * {@link MOQtailClient.init}.
  *
- * @example Minimal
+ * @example
  * ```ts
- * const opts: MOQtailClientOptions = {
- *   url: 'https://relay.example.com/moq',
- *   supportedVersions: [0xff00000b]
- * }
- * const client = await MOQtailClient.new(opts)
- * ```
- * @example With callbacks & timeouts
- * ```ts
- * const client = await MOQtailClient.new({
+ * const client = new MOQtailClient({
  *   url: relayUrl,
- *   supportedVersions: [0xff00000b],
  *   dataStreamTimeoutMs: 5000,
  *   controlStreamTimeoutMs: 1500,
- *   callbacks: {
- *     onMessageSent: m => logOutbound(m),
- *     onMessageReceived: m => logInbound(m),
- *     onSessionTerminated: r => console.warn('terminated', r)
- *   }
  * })
+ * client.on('sessionterminated', (r) => console.warn('terminated', r))
+ * await client.init()
  * ```
  */
 export type MOQtailClientOptions = {
@@ -158,21 +162,95 @@ export type MOQtailClientOptions = {
   switchDrainTimeoutMs?: number
   /** If true, enables datagram support for the session. */
   enableDatagrams?: boolean
-  /** callbacks for observability and logging purposes: */
-  callbacks?: {
-    /** Called after a control message is successfully written to the {@link ControlStream}. */
-    onMessageSent?: (msg: ControlMessage) => void
-    /** Called for each incoming control message before protocol handling. */
-    onMessageReceived?: (msg: ControlMessage) => void
-    /** Fired once when the session ends (normal or error). Receives the reason passed to {@link MOQtailClient.disconnect | disconnect}. */
-    onSessionTerminated?: (reason?: unknown) => void
-    /** Invoked for each decoded datagram object/status arriving. */
-    onDatagramReceived?: (data: Datagram) => void
-    /** Invoked after enqueuing each outbound datagram object/status. */
-    onDatagramSent?: (data: Datagram) => void
-    /** Invoked for each data stream's header, each of its objects, and its end. See {@link MOQtailClient.onDataEvent}. */
-    onDataEvent?: DataEventObserver
-  }
+}
+
+/**
+ * @public
+ * Every event a {@link MOQtailClient} emits, keyed by name, with the listener signature
+ * each one calls. Attach with `on()`.
+ */
+export interface ClientEvents {
+  /** A GOAWAY arrived: the session is winding down, or a request is moving to a new session. */
+  goaway: (msg: GoAway) => void
+  /** The session ended, normally or on error. Fires once, with the reason given to `disconnect`. */
+  sessionterminated: (reason?: unknown) => void
+  /** A control message was written, on the control stream or a request stream. */
+  messagesent: (msg: ControlMessage) => void
+  /** A control message arrived, before it is handled. */
+  messagereceived: (msg: ControlMessage) => void
+  /** A data stream header or object was decoded. */
+  datareceived: (data: SubgroupObject | SubgroupHeader | FetchObject | FetchHeader) => void
+  /** A data stream header or object was written. */
+  datasent: (data: SubgroupObject | SubgroupHeader | FetchObject | FetchHeader) => void
+  /** A data stream opened, carried an object (identity and size only), or ended. */
+  dataevent: (event: DataEvent) => void
+  /** A datagram arrived. */
+  datagramreceived: (data: Datagram) => void
+  /** A datagram was written. */
+  datagramsent: (data: Datagram) => void
+  /** A PUBLISH_NAMESPACE arrived. */
+  namespacepublished: (msg: PublishNamespace) => void
+  /**
+   * The peer moved the Forward State of a track this side publishes, in its PUBLISH_OK
+   * or a later REQUEST_UPDATE. `requestId` is the one {@link MOQtailClient.publish}
+   * returned. A publication that declared FORWARD=0 sends nothing until this reports `true`.
+   */
+  forwardstatechange: (requestId: bigint, forward: boolean) => void
+  /**
+   * The peer pushed a track. Only one reader can lock `stream`, so listeners check the
+   * track first and only the one that wants it reads it.
+   */
+  peerpublish: (msg: Publish, stream: ReadableStream<MoqtObject>) => void
+  /**
+   * A PUBLISH_DONE arrived. `requestId` is the request its stream opened: for a pushed
+   * track, the `requestId` of the {@link Publish} from `peerpublish`.
+   */
+  peerpublishdone: (msg: PublishDone, requestId: bigint) => void
+  /**
+   * The peer has a track matching a {@link MOQtailClient.subscribeTracks} prefix but no
+   * stream to send its PUBLISH on yet (§10.20). `prefix` is the subscribed prefix.
+   */
+  peerpublishskipped: (prefix: Tuple, msg: PublishSkipped) => void
+  /** A SUBSCRIBE_NAMESPACE arrived. */
+  peersubscribenamespace: (msg: SubscribeNamespace) => void
+  /**
+   * A SUBSCRIBE_TRACKS arrived. The PUBLISH sent for each matching track states the
+   * request's settings from `MessageParameter.publishParametersFor(msg.parameters)`, and
+   * goes without Track Properties when `MessageParameter.includesProperties(msg.parameters)`
+   * is false.
+   */
+  peersubscribetracks: (msg: SubscribeTracks) => void
+  /** A NAMESPACE arrived on a SUBSCRIBE_NAMESPACE stream. */
+  peernamespace: (prefix: Tuple, suffix: Tuple) => void
+  /** A NAMESPACE_DONE arrived on a SUBSCRIBE_NAMESPACE stream. */
+  peernamespacedone: (prefix: Tuple, suffix: Tuple) => void
+}
+
+/**
+ * @public
+ * What {@link MOQtailClient.subscribe} returns when the subscription is accepted.
+ */
+export interface SubscribeResult {
+  requestId: bigint
+  /** The SUBSCRIBE_OK: track alias, parameters, and track properties. */
+  subscribeOk: SubscribeOk
+  stream: ReadableStream<MoqtObject>
+  /**
+   * Resolves once the subscription, and every subscription switched from it, is over:
+   * with the last one's PUBLISH_DONE, or `undefined` if it ended without one. Never rejects.
+   */
+  done: Promise<PublishDone | undefined>
+}
+
+/**
+ * @public
+ * What {@link MOQtailClient.fetch} returns when the fetch is accepted.
+ */
+export interface FetchResult {
+  requestId: bigint
+  /** The FETCH_OK: end of track, end location, and track properties. */
+  fetchOk: FetchOk
+  stream: ReadableStream<MoqtObject>
 }
 
 /**

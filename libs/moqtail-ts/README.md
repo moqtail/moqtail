@@ -20,7 +20,8 @@ As a publisher, the MOQtail client allows you to create, manage, and distribute 
 Publishers can add or remove tracks using the `addOrUpdateTrack()` and `removeTrack()` methods:
 
 ```typescript
-const client = await MOQtailClient.new(clientSetup, webTransport)
+const client = new MOQtailClient({ url: 'https://relay.example.com/moq' })
+await client.init()
 
 // Add a new track
 client.addOrUpdateTrack(myTrack)
@@ -142,19 +143,13 @@ Subscribe operations are designed for live streaming and can be delivered throug
 This approach ensures that subscribers always receive the most recent content with minimal latency, automatically dropping outdated frames during network congestion.
 
 ```typescript
-const subscribe = new Subscribe(
-  client.nextClientRequestId,
-  trackAlias, // Numeric alias for the track
-  fullTrackName, // Full track name
-  subscriberId, // Your subscriber ID
-  startGroup, // Starting group ID (or null for latest)
-  startObject, // Starting object ID (or null for latest)
-  endGroup, // Ending group ID (or null for ongoing)
-  endObject, // Ending object ID (or null for group end)
-  authInfo, // Authorization information
-)
-
-const result = await client.subscribe(subscribe)
+const result = await client.subscribe({
+  fullTrackName,
+  priority: 128,
+  groupOrder: GroupOrder.Original,
+  forward: true,
+  locationFilter: new LocationFilter(LocationFilterType.NextObject),
+})
 
 if (result instanceof RequestError) {
   console.error(`Subscription failed: ${result.reasonPhrase}`)
@@ -167,9 +162,10 @@ if (result instanceof RequestError) {
       console.error(`Unknown error: ${result.reasonPhrase}`)
   }
 } else {
-  // Success - result is ReadableStream<MoqtObject>
-  const objectStream = result
-  const reader = objectStream.getReader()
+  // result is { requestId, subscribeOk, stream, done }
+  const reader = result.stream.getReader()
+  // done resolves with the PUBLISH_DONE that ends the subscription, or undefined
+  result.done.then((publishDone) => console.log('Subscription ended', publishDone?.statusCode))
 
   try {
     while (true) {
@@ -188,7 +184,7 @@ if (result instanceof RequestError) {
 
 ### On-Demand Content Fetching
 
-For static or archived content, use `fetch()` which returns either a `ReadableStream<MoqtObject>` or a `RequestError`:
+For static or archived content, use `fetch()` which returns either `{ requestId, fetchOk, stream }` or a `RequestError`:
 
 #### Fetch Implementation
 
@@ -199,27 +195,19 @@ Fetch operations are optimized for reliable delivery of static content:
 - **No Cancellation**: All requested objects are delivered as they provide historical data
 
 ```typescript
-const fetch = new Fetch(
-  client.nextClientRequestId,
-  trackAlias,
+const result = await client.fetch({
   fullTrackName,
-  subscriberId,
-  startGroup, // Starting group ID
-  startObject, // Starting object ID
-  endGroup, // Ending group ID
-  endObject, // Ending object ID
-  authInfo,
-)
-
-const result = await client.fetch(fetch)
+  priority: 128,
+  groupOrder: GroupOrder.Original,
+  locationFilter: new LocationFilter(LocationFilterType.AbsoluteRange, startGroup, startObject, endGroup, endObject),
+})
 
 if (result instanceof RequestError) {
   console.error(`Fetch failed: ${result.reasonPhrase}`)
   // Handle fetch error
 } else {
-  // Success - result is ReadableStream<MoqtObject>
-  const objectStream = result
-  const reader = objectStream.getReader()
+  // result.fetchOk carries the end location and the track properties
+  const reader = result.stream.getReader()
 
   try {
     while (true) {
@@ -266,19 +254,17 @@ function processObject(object: MoqtObject) {
 #### Subscription Lifecycle
 
 ```typescript
-// Create and send subscription
-const subscribe = new Subscribe(/*...*/)
-const result = await client.subscribe(subscribe)
+const result = await client.subscribe(subscribeOptions)
 
 if (result instanceof RequestError) {
   console.error(`Subscription failed: ${result.reasonPhrase}`)
 } else {
   console.log('Subscription successful, processing stream...')
   // Process the stream as shown above
-}
 
-// Unsubscribe when done
-await client.unsubscribe(subscribeId)
+  // Unsubscribe when done
+  await client.unsubscribe(result.requestId)
+}
 ```
 
 #### Subscription Updates
@@ -306,22 +292,17 @@ import { PullPlayoutBuffer } from './util/pull_playout_buffer'
 
 async function createSubscriber() {
   // Initialize client
-  const client = await MOQtailClient.new(clientSetup, webTransport)
+  const client = new MOQtailClient({ url: 'https://relay.example.com/moq' })
+  await client.init()
 
   // Subscribe to live video
-  const subscribe = new Subscribe(
-    client.nextClientRequestId,
-    1n, // trackAlias
-    FullTrackName.tryNew('live/conference', 'video'),
-    generateSubscriberId(),
-    null,
-    null, // Latest content
-    null,
-    null, // Ongoing
-    null, // No auth
-  )
-
-  const result = await client.subscribe(subscribe)
+  const result = await client.subscribe({
+    fullTrackName: FullTrackName.tryNew('live/conference', 'video'),
+    priority: 0,
+    groupOrder: GroupOrder.Original,
+    forward: true,
+    locationFilter: new LocationFilter(LocationFilterType.NextObject),
+  })
 
   if (result instanceof RequestError) {
     console.error(`Failed to subscribe: ${result.reasonPhrase}`)
@@ -329,7 +310,7 @@ async function createSubscriber() {
   }
 
   // Set up playout buffer with the stream
-  const playoutBuffer = new PullPlayoutBuffer(result, {
+  const playoutBuffer = new PullPlayoutBuffer(result.stream, {
     bucketCapacity: 50,
     targetLatencyMs: 500,
     maxLatencyMs: 2000,
@@ -419,27 +400,24 @@ if (result instanceof RequestError) {
 
 #### Observing Control Messages
 
-`onMessageSent` and `onMessageReceived` report every control message the client sends or receives, which is useful for logging, debugging, or building a message inspector. They cover both the control stream (SETUP, GOAWAY) and the bidirectional request streams that carry SUBSCRIBE, PUBLISH, FETCH, the namespace messages, and their replies.
+The `messagesent` and `messagereceived` events report every control message the client sends or receives, which is useful for logging, debugging, or building a message inspector. They cover both the control stream (SETUP, GOAWAY) and the bidirectional request streams that carry SUBSCRIBE, PUBLISH, FETCH, the namespace messages, and their replies.
 
-Pass them when connecting so the SETUP exchange is reported as well:
+Attach listeners before `init()` so the SETUP exchange is reported as well:
 
 ```typescript
-const client = await MOQtailClient.new({
-  url: 'moqt://relay.example.com:4433',
-  callbacks: {
-    onMessageSent: (msg) => console.log('→', ControlMessageType[msg.getType()], msg),
-    onMessageReceived: (msg) => console.log('←', ControlMessageType[msg.getType()], msg),
-  },
-})
+const client = new MOQtailClient({ url: 'moqt://relay.example.com:4433' })
+client.on('messagesent', (msg) => console.log('→', ControlMessageType[msg.getType()], msg))
+client.on('messagereceived', (msg) => console.log('←', ControlMessageType[msg.getType()], msg))
+await client.init()
 ```
 
-The callbacks can also be assigned to `client.onMessageSent` and `client.onMessageReceived` after connecting. Request streams pick up the change straight away, but the control stream keeps the callbacks it was given at connect time.
+Any number of listeners can attach to an event, at any time. `client.off()` with the same function removes one.
 
 A message is reported once it has been written to its stream, or once it has been fully decoded on arrival.
 
 #### Observing Data Streams
 
-`onDataEvent` reports every data stream the client opens (`direction: 'out'`) or accepts (`direction: 'in'`) as small records, which is enough to count streams, groups, subgroups, objects and bytes without touching payloads:
+The `dataevent` event reports every data stream the client opens (`direction: 'out'`) or accepts (`direction: 'in'`) as small records, which is enough to count streams, groups, subgroups, objects and bytes without touching payloads:
 
 - `header`: once per stream when it opens. Subgroup streams carry the track alias and group and subgroup IDs; fetch streams carry the request ID. Both include the track name when the client knows it.
 - `object`: once per object, with its group, subgroup and object IDs, its payload length, its status if it has one, and its LOC Timestamp property (`locTimestamp`) if it carries one.
@@ -448,17 +426,12 @@ A message is reported once it has been written to its stream, or once it has bee
 Every record carries a `streamId`, so objects can be tied back to the header of the stream they arrived on, and `at`, the local time it was written or read as `performance.now()`. Differences in `at` give interarrival times and jitter; comparing `performance.timeOrigin + at` with a sender's `locTimestamp` gives latency, provided both ends agree on the timestamp's unit and their clocks are in sync.
 
 ```typescript
-const client = await MOQtailClient.new({
-  url: 'moqt://relay.example.com:4433',
-  callbacks: {
-    onDataEvent: (event) => {
-      if (event.kind === 'object') bytesByDirection[event.direction] += event.payloadLength
-    },
-  },
+client.on('dataevent', (event) => {
+  if (event.kind === 'object') bytesByDirection[event.direction] += event.payloadLength
 })
 ```
 
-The callback runs for every object, so keep it cheap: update counters there and render them on a timer.
+The listener runs for every object, so keep it cheap: update counters there and render them on a timer.
 
 ## Utilities
 

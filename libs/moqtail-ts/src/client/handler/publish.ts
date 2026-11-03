@@ -48,9 +48,7 @@ export const handlerPublish: RequestStreamMessageHandler<Publish> = async (clien
   client.subscriptions.set(msg.trackAlias, receiver)
 
   // 4. Bubble the event up to the application layer, passing the data stream!
-  if (client.onPeerPublish) {
-    client.onPeerPublish(msg, objects)
-  }
+  client.emit('peerpublish', msg, objects)
 
   // 5. Accept the push on the stream it arrived on. The publisher waits for this
   // before opening any data stream. PUBLISH is answered by REQUEST_OK: PUBLISH_OK is

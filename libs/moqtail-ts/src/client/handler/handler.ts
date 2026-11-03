@@ -71,7 +71,7 @@ export type RequestStreamMessageHandler<T> = (
 
 /**
  * The control stream carries SETUP and GOAWAY, nothing else. SETUP is
- * consumed by the handshake in {@link MOQtailClient.new}, so GOAWAY is all that reaches
+ * consumed by the handshake in {@link MOQtailClient.init}, so GOAWAY is all that reaches
  * the read loop. Every request type has moved to its own bidi stream — see
  * {@link getHandlerForRequestStreamMessage}.
  */

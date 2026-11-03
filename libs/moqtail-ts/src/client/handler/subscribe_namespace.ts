@@ -25,9 +25,7 @@ export const handlerSubscribeNamespace: RequestStreamMessageHandler<SubscribeNam
 ) => {
   logger.log('handler/subscribe_namespace', 'namespace', msg.trackNamespacePrefix.toUtf8Path())
   // Bubble the event up to the application layer
-  if (client.onPeerSubscribeNamespace) {
-    client.onPeerSubscribeNamespace(msg)
-  }
+  client.emit('peersubscribenamespace', msg)
 
   // The peer holds this stream open for the subscription's lifetime; NAMESPACE and
   // NAMESPACE_DONE for matching announcements are written to it.

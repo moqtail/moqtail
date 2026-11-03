@@ -28,9 +28,7 @@ export const handlerGoAway: ControlMessageHandler<GoAway> = async (client, msg) 
     return
   }
   client.goawayReceived = true
-  if (client.onGoaway) {
-    client.onGoaway(msg)
-  }
+  client.emit('goaway', msg)
 }
 
 /**

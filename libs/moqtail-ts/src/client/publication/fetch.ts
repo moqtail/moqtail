@@ -100,9 +100,9 @@ export class FetchPublication {
       this.#sendStream = await SendStream.new(
         writeStream,
         header,
-        this.#client.onDataSent,
+        this.#client,
         MessageParameter.groupOrderOf(this.#msg.parameters),
-        this.#client.dataStreamObserver(() => this.#track.fullTrackName),
+        () => this.#track.fullTrackName,
       )
       const subgroupIds = new SubgroupIds()
       let sent = 0

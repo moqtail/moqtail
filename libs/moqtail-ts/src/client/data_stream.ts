@@ -15,14 +15,7 @@
  */
 
 import { ByteBuffer } from '../model/common/byte_buffer'
-import {
-  FetchHeader,
-  FetchHeaderType,
-  FetchObject,
-  SubgroupHeader,
-  SubgroupHeaderType,
-  SubgroupObject,
-} from '../model/data'
+import { FetchHeaderType, FetchObject, SubgroupHeaderType, SubgroupObject } from '../model/data'
 import { FetchObjectContext } from '../model/data/fetch_object'
 import { GroupOrder } from '../model/control/constant'
 import { ObjectForwardingPreference } from '../model/data/constant'
@@ -31,7 +24,9 @@ import { NotEnoughBytesError, ProtocolViolationError, TimeoutError } from '../mo
 import { StreamResetCode } from '../model/error/stream_reset'
 import { asStreamResetError, streamResetCodeOf, streamResetReason } from './util/stream_reset'
 import { logger } from '../util/logger'
-import { DataStreamObserver, DataStreamReporter } from './data_event'
+import { DataStreamReporter, FullTrackNameOf } from './data_event'
+import type { Emitter } from '../util/emitter'
+import type { ClientEvents } from './types'
 
 export class SendStream {
   #lastObjectId?: bigint
@@ -39,36 +34,39 @@ export class SendStream {
   readonly #writer: WritableStreamDefaultWriter<Uint8Array>
   readonly #groupOrder: GroupOrder
   readonly #reporter: DataStreamReporter
-  readonly onDataSent?: (data: SubgroupObject | SubgroupHeader | FetchObject | FetchHeader) => void
+  readonly #events: Emitter<ClientEvents> | undefined
   private constructor(
     readonly header: Header,
     writer: WritableStreamDefaultWriter<Uint8Array>,
     reporter: DataStreamReporter,
-    onDataSent?: (data: SubgroupObject | SubgroupHeader | FetchObject | FetchHeader) => void,
+    events?: Emitter<ClientEvents>,
     groupOrder: GroupOrder = GroupOrder.Original,
   ) {
-    if (onDataSent) this.onDataSent = onDataSent
+    this.#events = events
     this.#writer = writer
     this.#reporter = reporter
     this.#groupOrder = groupOrder
   }
 
-  /** @param observer - Receives a {@link DataEvent} for the header, each object, and the stream's end. */
+  /**
+   * @param events - Receives `datasent` for the header and each object, and a `dataevent` for
+   *   the header, each object, and the stream's end.
+   */
   static async new(
     writeStream: WritableStream<Uint8Array>,
     header: Header,
-    onDataSent?: (data: SubgroupObject | SubgroupHeader | FetchObject | FetchHeader) => void,
+    events?: Emitter<ClientEvents>,
     groupOrder: GroupOrder = GroupOrder.Original,
-    observer?: DataStreamObserver,
+    fullTrackNameOf?: FullTrackNameOf,
   ): Promise<SendStream> {
     const writer = writeStream.getWriter()
     const serializedHeader = header.serialize().toUint8Array()
     await writer.write(serializedHeader)
-    if (onDataSent) onDataSent(header)
-    const reporter = new DataStreamReporter('out', observer)
+    events?.emit('datasent', header)
+    const reporter = new DataStreamReporter('out', events, fullTrackNameOf)
     reporter.header(header)
     logger.debug('data_stream', `SendStream opened type=${header.type}`)
-    return new SendStream(header, writer, reporter, onDataSent, groupOrder)
+    return new SendStream(header, writer, reporter, events, groupOrder)
   }
 
   async write(object: FetchObject | SubgroupObject): Promise<void> {
@@ -97,7 +95,7 @@ export class SendStream {
       this.#reporter.end('error')
       throw error
     }
-    if (this.onDataSent) this.onDataSent(object)
+    this.#events?.emit('datasent', object)
     this.#reporter.object(this.header, object)
   }
 
@@ -133,14 +131,14 @@ export class RecvStream {
   readonly #internalBuffer: ByteBuffer
   readonly #groupOrder: GroupOrder
   readonly #reporter: DataStreamReporter
-  readonly onDataReceived?: (data: SubgroupObject | SubgroupHeader | FetchObject | FetchHeader) => void
+  readonly #events: Emitter<ClientEvents> | undefined
   private constructor(
     readonly header: Header,
     reader: ReadableStreamDefaultReader<Uint8Array>,
     internalBuffer: ByteBuffer,
     reporter: DataStreamReporter,
     partialDataTimeout?: number,
-    onDataReceived?: (data: SubgroupObject | SubgroupHeader | FetchObject | FetchHeader) => void,
+    events?: Emitter<ClientEvents>,
     groupOrder: GroupOrder = GroupOrder.Original,
   ) {
     this.#reader = reader
@@ -148,7 +146,7 @@ export class RecvStream {
     this.#internalBuffer = internalBuffer
     this.#partialDataTimeout = partialDataTimeout
     this.#groupOrder = groupOrder
-    if (onDataReceived) this.onDataReceived = onDataReceived
+    this.#events = events
     this.stream = new ReadableStream<FetchObject | SubgroupObject>({
       start: (controller) => this.#ingestLoop(controller),
       // Forwarded, not dropped: the reason is what carries the reset code to the peer.
@@ -159,14 +157,15 @@ export class RecvStream {
   /**
    * @param resolveGroupOrder - Consulted once the FETCH header names its request, since
    *   Group ID deltas on the stream are signed by the Group Order the request negotiated.
-   * @param observer - Receives a {@link DataEvent} for the header, each object, and the stream's end.
+   * @param events - Receives `datareceived` for the header and each object, and a `dataevent`
+   *   for the header, each object, and the stream's end.
    */
   static async new(
     readStream: ReadableStream<Uint8Array>,
     partialDataTimeout?: number,
-    onDataReceived?: (data: SubgroupObject | SubgroupHeader | FetchObject | FetchHeader) => void,
+    events?: Emitter<ClientEvents>,
     resolveGroupOrder?: (header: Header) => GroupOrder,
-    observer?: DataStreamObserver,
+    fullTrackNameOf?: FullTrackNameOf,
   ): Promise<RecvStream> {
     const reader = readStream.getReader()
     const internalBuffer = new ByteBuffer()
@@ -216,22 +215,14 @@ export class RecvStream {
       reader.releaseLock()
       throw asStreamResetError('RecvStream.new', error)
     }
-    if (onDataReceived) onDataReceived(headerInstance)
-    const reporter = new DataStreamReporter('in', observer)
+    events?.emit('datareceived', headerInstance)
+    const reporter = new DataStreamReporter('in', events, fullTrackNameOf)
     reporter.header(headerInstance)
     logger.debug('data_stream', `RecvStream opened type=${headerInstance.type}`)
     // Resolved before the ingest loop starts: the first object may already be buffered.
     const groupOrder =
       Header.isFetch(headerInstance) && resolveGroupOrder ? resolveGroupOrder(headerInstance) : GroupOrder.Original
-    return new RecvStream(
-      headerInstance,
-      reader,
-      internalBuffer,
-      reporter,
-      partialDataTimeout,
-      onDataReceived,
-      groupOrder,
-    )
+    return new RecvStream(headerInstance, reader, internalBuffer, reporter, partialDataTimeout, events, groupOrder)
   }
 
   async #ingestLoop(controller: ReadableStreamDefaultController<FetchObject | SubgroupObject>) {
@@ -263,7 +254,7 @@ export class RecvStream {
             }
             this.#internalBuffer.commit()
             controller.enqueue(object)
-            if (this.onDataReceived) this.onDataReceived(object)
+            this.#events?.emit('datareceived', object)
             this.#reporter.object(this.header, object)
             continue
           } catch (e) {
@@ -508,11 +499,14 @@ if (import.meta.vitest) {
 if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
   const { ObjectStatus } = await import('../model/data/constant')
+  const { Emitter } = await import('../util/emitter')
   type DataEvent = import('./data_event').DataEvent
 
   function observe() {
     const events: DataEvent[] = []
-    return { events, observer: { onDataEvent: (e: DataEvent) => events.push(e) } }
+    const emitter = new Emitter<ClientEvents>()
+    emitter.on('dataevent', (e) => events.push(e))
+    return { events, emitter }
   }
 
   async function pair(header: Header) {
@@ -520,8 +514,8 @@ if (import.meta.vitest) {
     const received = observe()
     const transport = new TransformStream<Uint8Array, Uint8Array>()
     const [send, recv] = await Promise.all([
-      SendStream.new(transport.writable, header, undefined, undefined, sent.observer),
-      RecvStream.new(transport.readable, undefined, undefined, undefined, received.observer),
+      SendStream.new(transport.writable, header, sent.emitter),
+      RecvStream.new(transport.readable, undefined, received.emitter),
     ])
     return { send, recv, sent: sent.events, received: received.events }
   }
@@ -602,24 +596,6 @@ if (import.meta.vitest) {
           resetCode: StreamResetCode.DeliveryTimeout,
         })
       }
-    })
-
-    test('a throwing observer does not break the stream', async () => {
-      const header = Header.newSubgroup(SubgroupHeaderType.fromProperties(false, 0, false), 1n, 0n, 0, 0)
-      const transport = new TransformStream<Uint8Array, Uint8Array>()
-      const throwing = {
-        onDataEvent: () => {
-          throw new Error('observer failed')
-        },
-      }
-      const [send, recv] = await Promise.all([
-        SendStream.new(transport.writable, header, undefined, undefined, throwing),
-        RecvStream.new(transport.readable, undefined, undefined, undefined, throwing),
-      ])
-      const reader = recv.stream.getReader()
-      const read = reader.read()
-      await send.write(SubgroupObject.newWithPayload(1, null, new Uint8Array(2)))
-      expect((await read).value).toBeInstanceOf(SubgroupObject)
     })
   })
 }

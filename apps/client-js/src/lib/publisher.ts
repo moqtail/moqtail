@@ -112,7 +112,8 @@ export class Publisher {
 
     try {
       logger.info('publisher', `connecting to relay: ${relayUrl}`);
-      this.client = await MOQtailClient.new({ url: relayUrl });
+      this.client = new MOQtailClient({ url: relayUrl });
+      await this.client.init();
       logger.info('publisher', 'relay connected');
 
       const ns = Tuple.fromUtf8Path(namespace.join('/'));

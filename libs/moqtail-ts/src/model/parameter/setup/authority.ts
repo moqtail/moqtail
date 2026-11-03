@@ -24,7 +24,7 @@ import { Parameter } from '../parameter'
  *
  * Client-only; MUST NOT be sent by a server or over WebTransport. moqtail-ts always
  * connects over WebTransport, so its own handshake never sends this — see
- * `MOQtailClient.new`.
+ * `MOQtailClient.init`.
  */
 export class Authority implements Parameter {
   static readonly TYPE = SetupOptionType.Authority

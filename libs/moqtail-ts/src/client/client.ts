@@ -15,8 +15,7 @@
  */
 
 import { ControlRecvStream, ControlSendStream, ControlStream } from './control_stream'
-import { RequestStream, RequestStreamHooks } from './request_stream'
-import { DataEventObserver, DataStreamObserver } from './data_event'
+import { RequestStream } from './request_stream'
 import {
   PublishNamespace,
   Namespace,
@@ -109,25 +108,29 @@ import {
   DEFAULT_SWITCH_DRAIN_TIMEOUT_MS,
   DEFAULT_MAX_FILTER_RANGES,
   EndOfRangeHandler,
+  ClientEvents,
+  SubscribeResult,
+  FetchResult,
 } from './types'
 import { SendDatagramStream } from './datagram_stream'
 import { logger, LogLevel, setLogLevel, setLogEnabledModules } from '../util/logger'
+import { Emitter } from '../util/emitter'
 
 /**
  * @public
  * Represents a Media Over QUIC Transport (MOQT) client session.
  *
- * Use {@link MOQtailClient.new} to establish a connection and perform MOQT operations such as subscribing to tracks,
- * fetching historical data, announcing tracks for publication, and managing session lifecycle.
- *
- * Once initialized, the client provides high-level methods for MOQT requests and publishing. If a protocol violation
- * occurs, the client will terminate and must be re-initialized.
+ * Construct it, attach listeners with `on()`, then call {@link MOQtailClient.init} to open the
+ * session. Once initialized, the client provides high-level methods for MOQT requests and publishing. If a protocol
+ * violation occurs, the client terminates; a new client is needed to reconnect.
  *
  * ## Usage
  *
  * ### Connect and Subscribe to a Track
  * ```ts
- * const client = await MOQtailClient.new({ url });
+ * const client = new MOQtailClient({ url });
+ * client.on('sessionterminated', (reason) => console.warn('Session ended:', reason));
+ * await client.init();
  * const result = await client.subscribe({
  *   fullTrackName,
  *   locationFilter: new LocationFilter(LocationFilterType.NextObject),
@@ -144,7 +147,8 @@ import { logger, LogLevel, setLogLevel, setLogEnabledModules } from '../util/log
  *
  * ### Publish a namespace for Publishing
  * ```ts
- * const client = await MOQtailClient.new({ url });
+ * const client = new MOQtailClient({ url });
+ * await client.init();
  * const publishNamespaceResult = await client.publishNamespace(["camera", "main"]);
  * if (!(publishNamespaceResult instanceof RequestError)) {
  *   // Ready to publish objects under this namespace
@@ -156,7 +160,7 @@ import { logger, LogLevel, setLogLevel, setLogEnabledModules } from '../util/log
  * await client.disconnect();
  * ```
  */
-export class MOQtailClient {
+export class MOQtailClient extends Emitter<ClientEvents> {
   /**
    * Namespace prefixes (tuples) the peer has requested announce notifications for via SUBSCRIBE_NAMESPACE.
    * Used to decide which locally issued ANNOUNCE messages should be forwarded (future optimization: prefix trie).
@@ -229,7 +233,7 @@ export class MOQtailClient {
    */
   readonly #namespaceRequestIds: Map<string, bigint> = new Map()
 
-  /** Underlying WebTransport session (set after successful construction in MOQtailClient.new). */
+  /** Underlying WebTransport session (set by {@link MOQtailClient.init}). */
   webTransport!: WebTransport
   /** Validated Setup message the server sent back during handshake (protocol parameters negotiated). */
   #serverSetup!: Setup
@@ -262,25 +266,13 @@ export class MOQtailClient {
 
   /** Flag indicating the client has been disconnected/destroyed and cannot accept further API calls. */
   #isDestroyed = false
+  /** Where {@link MOQtailClient.init} is: it runs once, and only a `ready` client takes requests. */
+  #state: 'idle' | 'initializing' | 'ready' | 'failed' = 'idle'
+  readonly #options: MOQtailClientOptions
   /** Internal monotonically increasing client-assigned request id counter (even/odd parity scheme advances by 2). */
   #dontUseRequestId: bigint = 0n
   /** Active early discard policy; undefined means no per-stream deadline is applied. */
   #earlyDiscardPolicy: EarlyDiscardPolicyConfig | undefined
-
-  /**
-   * TODO: onNamespaceAnnounced may be a better name
-   * Fired when an PUBLISH_NAMESPACE control message is processed for a track namespace.
-   * Use to update UI or trigger discovery logic.
-   * Discovery event.
-   */
-  onNamespacePublished?: (msg: PublishNamespace) => void
-
-  /**
-   * Fired on GOAWAY reception signaling graceful session wind-down.
-   * Use to prepare for disconnect or cleanup.
-   * Lifecycle handler.
-   */
-  onGoaway?: (msg: GoAway) => void
 
   /**
    * Whether the peer has sent a GOAWAY on the control stream. Once it has, this side
@@ -288,124 +280,6 @@ export class MOQtailClient {
    * PROTOCOL_VIOLATION.
    */
   goawayReceived = false
-
-  /**
-   * Fired if the underlying WebTransport session fails (ready -\> closed prematurely).
-   * Use to log or alert on transport errors.
-   * Lifecycle/error handler.
-   */
-  onWebTransportFail?: () => void
-
-  /**
-   * Fired exactly once when the client transitions to terminated (disconnect).
-   * Use to clean up resources or notify user.
-   * Lifecycle handler.
-   */
-  onSessionTerminated?: (reason?: unknown) => void
-
-  /**
-   * Invoked after each outbound control message is sent.
-   * Use for logging or analytics.
-   * Informational event.
-   */
-  onMessageSent?: (msg: ControlMessage) => void
-
-  /**
-   * Invoked upon receiving each inbound control message before handling.
-   * Use for logging or debugging.
-   * Informational event.
-   */
-  onMessageReceived?: (msg: ControlMessage) => void
-
-  /**
-   * Invoked for each decoded data object/header arriving on a uni stream (fetch or subgroup).
-   * Use to process or display incoming media/data.
-   * Informational event.
-   */
-  onDataReceived?: (data: SubgroupObject | SubgroupHeader | FetchObject | FetchHeader) => void
-
-  /**
-   * Invoked after enqueuing each outbound data object/header.
-   * Reserved for future use.
-   * Informational event.
-   */
-  onDataSent?: (data: SubgroupObject | SubgroupHeader | FetchObject | FetchHeader) => void
-
-  /**
-   * Invoked for every data stream this client opens or accepts: once for its header, once
-   * per object (identity and payload length only), and once when the stream ends.
-   * Use for counters and diagnostics.
-   * Informational event.
-   */
-  onDataEvent?: DataEventObserver
-
-  /**
-   * General-purpose error callback for surfaced exceptions not thrown to caller synchronously.
-   * Use to log or display errors.
-   * Error handler.
-   */
-  onError?: (er: unknown) => void
-
-  /** Invoked for each decoded datagram object/status arriving. */
-  onDatagramReceived?: (data: Datagram) => void
-
-  /** Invoked after enqueuing each outbound datagram object/status. */
-  onDatagramSent?: (data: Datagram) => void
-
-  /** Fired when an inbound PUBLISH control message is received. */
-  onPeerPublish?: (msg: Publish, stream: ReadableStream<MoqtObject>) => void
-
-  /**
-   * Fired when an inbound PUBLISH_DONE control message is received. The message names
-   * no request of its own, so `requestId` is the request the stream it arrived on
-   * opened: for a track the peer pushed, the `requestId` of the {@link Publish} handed
-   * to {@link MOQtailClient.onPeerPublish}. It is what says which track just ended.
-   */
-  onPeerPublishDone?: (msg: PublishDone, requestId: bigint) => void
-
-  /**
-   * Fired when the peer moves the Forward State of a track this side is publishing,
-   * either in its PUBLISH_OK or in a later REQUEST_UPDATE. `requestId` is the one
-   * {@link MOQtailClient.publish} returned.
-   *
-   * A publication that declared FORWARD=0 sends nothing until this reports `true`, so
-   * this is where the work behind the track starts and stops -- leaving a camera and
-   * an encoder running for a track nobody is taking costs the same as publishing it.
-   */
-  onForwardStateChange?: (requestId: bigint, forward: boolean) => void
-
-  /** Fired when an inbound SUBSCRIBE_NAMESPACE control message is received. */
-  onPeerSubscribeNamespace?: (msg: SubscribeNamespace) => void
-
-  /**
-   * Fired when an inbound SUBSCRIBE_TRACKS control message is received. The PUBLISH
-   * sent for each matching track:
-   * - states the request's settings as its parameters, from
-   *   `MessageParameter.publishParametersFor(msg.parameters)`: FORWARD, GROUP_ORDER and
-   *   the LOCATION_FILTER the subscription starts from, but never the request's
-   *   AUTHORIZATION_TOKEN;
-   * - goes without Track Properties when
-   *   `MessageParameter.includesProperties(msg.parameters)` is false.
-   *
-   * A request carrying FILL_PARAMETERS also asks for a fill of what each track has
-   * already published. This client cannot open a fill for a pushed track, so such a
-   * subscriber gets only the live Objects.
-   */
-  onPeerSubscribeTracks?: (msg: SubscribeTracks) => void
-
-  /**
-   * Fired when a PUBLISH_SKIPPED arrives on a {@link MOQtailClient.subscribeTracks}
-   * stream: the peer has a matching track but no bidi stream to send its PUBLISH on
-   * until its stream limit lifts (§10.20). `prefix` is the prefix this side subscribed
-   * with, which is what the message's suffix hangs off.
-   */
-  onPeerPublishSkipped?: (prefix: Tuple, msg: PublishSkipped) => void
-
-  /** Fired when a NAMESPACE message arrives on a SUBSCRIBE_NAMESPACE bi-stream (prefix + suffix). */
-  onPeerNamespace?: (prefix: Tuple, suffix: Tuple) => void
-
-  /** Fired when a NAMESPACE_DONE message arrives on a SUBSCRIBE_NAMESPACE bi-stream (prefix + suffix). */
-  onPeerNamespaceDone?: (prefix: Tuple, suffix: Tuple) => void
 
   /** Datagram writer for sending datagrams. */
   #datagramWriter: WritableStreamDefaultWriter<Uint8Array> | undefined
@@ -506,15 +380,22 @@ export class MOQtailClient {
   }
 
   /**
-   * Guard that throws if the client has been destroyed (disconnect already called). Used at start of public APIs
-   * to fail fast rather than perform partial operations on a torn-down session.
-   * @throws MOQtailError when #isDestroyed is true.
+   * Guard that throws unless the client is initialized and not yet destroyed. Used at start of public APIs
+   * to fail fast rather than perform partial operations on a session that is not open.
+   * @throws MOQtailError when the client is destroyed or {@link MOQtailClient.init} has not completed.
    */
   #ensureActive() {
     if (this.#isDestroyed) throw new MOQtailError('MOQtailClient is destroyed and cannot be used.')
+    if (this.#state !== 'ready') throw new MOQtailError('MOQtailClient is not initialized. Await init() first.')
   }
 
-  private constructor() {
+  /**
+   * Stores `options`; nothing happens on the network until {@link MOQtailClient.init}, so
+   * listeners attached in between see everything, the handshake included.
+   */
+  constructor(options: MOQtailClientOptions) {
+    super()
+    this.#options = options
     // Create a stream for received datagram objects
     this.receivedDatagramObjects = new ReadableStream<MoqtObject>({
       start: (controller) => {
@@ -525,41 +406,23 @@ export class MOQtailClient {
   }
 
   /**
-   * Establishes a new {@link MOQtailClient} session over WebTransport and performs the MOQT setup handshake.
+   * Opens the WebTransport session and performs the MOQT setup handshake. Runs once: a
+   * second call throws, and a failed one leaves the client unusable, so a retry needs a
+   * new client.
    *
-   * @param args - {@link MOQtailClientOptions}
-   *
-   * @returns Promise resolving to a ready {@link MOQtailClient} instance.
-   *
+   * @throws :{@link MOQtailError} If called more than once, or after {@link MOQtailClient.disconnect}.
    * @throws :{@link ProtocolViolationError} If the server sends an unexpected or invalid message during setup.
    *
-   * @example Minimal connection
+   * @example
    * ```ts
-   * const client = await MOQtailClient.new({
-   *   url: 'https://relay.example.com/transport'
-   * });
-   * ```
-   *
-   * @example With callbacks and options
-   * ```ts
-   * const client = await MOQtailClient.new({
-   *   url,
-   *   setupOptions: new SetupOptions().addPath('/live'),
-   *   transportOptions: { congestionControl: 'default' },
-   *   dataStreamTimeoutMs: 5000,
-   *   controlStreamTimeoutMs: 2000,
-   *   trackAliasResolutionTimeoutMs: 2000,
-   *   enableDatagrams: true,
-   *   callbacks: {
-   *     onMessageSent: msg => console.log('Sent:', msg),
-   *     onMessageReceived: msg => console.log('Received:', msg),
-   *     onSessionTerminated: reason => console.warn('Session ended:', reason),
-   *     onDatagramReceived: data => console.log('Datagram:', data),
-   *   }
-   * });
+   * const client = new MOQtailClient({ url: 'https://relay.example.com/transport' })
+   * client.on('messagesent', (msg) => console.log('Sent:', msg))
+   * await client.init()
    * ```
    */
-  static async new(args: MOQtailClientOptions): Promise<MOQtailClient> {
+  async init(): Promise<void> {
+    if (this.#state !== 'idle' || this.#isDestroyed) throw new MOQtailError('MOQtailClient.init may only run once.')
+    this.#state = 'initializing'
     let {
       url,
       setupOptions,
@@ -569,10 +432,7 @@ export class MOQtailClient {
       trackAliasResolutionTimeoutMs,
       switchDrainTimeoutMs,
       enableDatagrams,
-      callbacks,
-    } = args
-    const client = new MOQtailClient()
-
+    } = this.#options
     // send supported versions
     // The protocols are sent in wt-available-protocols header
     if (!transportOptions) {
@@ -586,37 +446,33 @@ export class MOQtailClient {
 
     logger.log('MOQtailClient', 'transportOptions', transportOptions)
 
-    const { transportUrl, moqtUrl } = resolveTransportUrl(url)
-    if (moqtUrl) {
-      logger.log('MOQtailClient', `moqt:// resolved to ${transportUrl}`)
-      if (moqtUrl.fragment)
-        logger.log('MOQtailClient', `moqt:// fragment (local-only): ${moqtUrl.fragment.kind}:${moqtUrl.fragment.value}`)
-    }
-
-    client.webTransport = new WebTransport(transportUrl, transportOptions)
-
-    await client.webTransport.ready
     try {
-      if (callbacks?.onMessageSent) client.onMessageSent = callbacks.onMessageSent
-      if (callbacks?.onMessageReceived) client.onMessageReceived = callbacks.onMessageReceived
-      if (callbacks?.onSessionTerminated) client.onSessionTerminated = callbacks.onSessionTerminated
-      if (callbacks?.onDatagramReceived) client.onDatagramReceived = callbacks.onDatagramReceived
-      if (callbacks?.onDatagramSent) client.onDatagramSent = callbacks.onDatagramSent
-      if (callbacks?.onDataEvent) client.onDataEvent = callbacks.onDataEvent
+      const { transportUrl, moqtUrl } = resolveTransportUrl(url)
+      if (moqtUrl) {
+        logger.log('MOQtailClient', `moqt:// resolved to ${transportUrl}`)
+        if (moqtUrl.fragment)
+          logger.log(
+            'MOQtailClient',
+            `moqt:// fragment (local-only): ${moqtUrl.fragment.kind}:${moqtUrl.fragment.value}`,
+          )
+      }
 
-      if (dataStreamTimeoutMs) client.dataStreamTimeoutMs = dataStreamTimeoutMs
-      if (controlStreamTimeoutMs) client.controlStreamTimeoutMs = controlStreamTimeoutMs
+      this.webTransport = new WebTransport(transportUrl, transportOptions)
+      await this.webTransport.ready
+
+      if (dataStreamTimeoutMs) this.dataStreamTimeoutMs = dataStreamTimeoutMs
+      if (controlStreamTimeoutMs) this.controlStreamTimeoutMs = controlStreamTimeoutMs
       if (trackAliasResolutionTimeoutMs !== undefined)
-        client.trackAliasResolutionTimeoutMs = trackAliasResolutionTimeoutMs
-      if (switchDrainTimeoutMs !== undefined) client.switchDrainTimeoutMs = switchDrainTimeoutMs
+        this.trackAliasResolutionTimeoutMs = trackAliasResolutionTimeoutMs
+      if (switchDrainTimeoutMs !== undefined) this.switchDrainTimeoutMs = switchDrainTimeoutMs
 
       // The control plane is a pair of uni streams. Open our send half and write
       // SETUP first so it goes out without waiting on the server's half, which the
       // relay only opens after accepting ours. Control streams get the highest priority.
-      const sendStream = await client.webTransport.createUnidirectionalStream({
+      const sendStream = await this.webTransport.createUnidirectionalStream({
         sendOrder: Number.MAX_SAFE_INTEGER,
       })
-      const sendHalf = new ControlSendStream(sendStream, client.onMessageSent)
+      const sendHalf = new ControlSendStream(sendStream, this)
       const params = setupOptions ? setupOptions.build() : new SetupOptions().build()
       // Range filters are applied to what this client publishes, so it allows them
       // unless the caller set a limit of its own, 0 included.
@@ -625,41 +481,41 @@ export class MOQtailClient {
         maxFilterRanges = new MaxFilterRanges(DEFAULT_MAX_FILTER_RANGES)
         params.push(maxFilterRanges.toKeyValuePair())
       }
-      client.#maxFilterRanges = maxFilterRanges.value
+      this.#maxFilterRanges = maxFilterRanges.value
       assertNoAuthorityOverWebTransport(params)
       await sendHalf.send(new Setup(params))
 
       // The server's control stream is the first uni stream it opens; every later
       // one is a data stream, so the same reader is reused by #acceptIncomingUniStreams.
-      client.#incomingUniStreams = client.webTransport.incomingUnidirectionalStreams.getReader()
-      const { value: recvStream, done: recvStreamDone } = await client.#incomingUniStreams.read()
+      this.#incomingUniStreams = this.webTransport.incomingUnidirectionalStreams.getReader()
+      const { value: recvStream, done: recvStreamDone } = await this.#incomingUniStreams.read()
       if (recvStreamDone || !recvStream)
-        throw new ProtocolViolationError('MOQtailClient.new', 'Session closed before the server control stream')
-      const recvHalf = new ControlRecvStream(recvStream, client.controlStreamTimeoutMs, client.onMessageReceived)
-      client.controlStream = new ControlStream(sendHalf, recvHalf)
+        throw new ProtocolViolationError('MOQtailClient.init', 'Session closed before the server control stream')
+      const recvHalf = new ControlRecvStream(recvStream, this.controlStreamTimeoutMs, this)
+      this.controlStream = new ControlStream(sendHalf, recvHalf)
 
-      const reader = client.controlStream.stream.getReader()
+      const reader = this.controlStream.stream.getReader()
       const { value: response, done } = await reader.read()
-      if (done) throw new ProtocolViolationError('MOQtailClient.new', 'Stream closed after client setup')
+      if (done) throw new ProtocolViolationError('MOQtailClient.init', 'Stream closed after client setup')
       if (!(response instanceof Setup))
-        throw new ProtocolViolationError('MOQtailClient.new', 'Expected setup as the first control message')
+        throw new ProtocolViolationError('MOQtailClient.init', 'Expected setup as the first control message')
 
-      client.#serverSetup = response
+      this.#serverSetup = response
       reader.releaseLock()
+      this.#state = 'ready'
 
-      client.#handleIncomingControlMessages()
-      client.#acceptIncomingUniStreams()
-      client.#acceptIncomingBiStreams()
+      this.#handleIncomingControlMessages()
+      this.#acceptIncomingUniStreams()
+      this.#acceptIncomingBiStreams()
 
       // Optionally enable datagram support
       if (enableDatagrams) {
-        await client.startDatagrams()
+        await this.startDatagrams()
       }
-
-      return client
     } catch (error) {
-      await client.disconnect(
-        new InternalError('MOQtailClient.new', error instanceof Error ? error.message : String(error)),
+      this.#state = 'failed'
+      await this.disconnect(
+        new InternalError('MOQtailClient.init', error instanceof Error ? error.message : String(error)),
       )
       throw error
     }
@@ -780,7 +636,7 @@ export class MOQtailClient {
     }
 
     logger.log('MOQtailClient', `Creating datagram sender for trackAlias=${trackAlias}`)
-    return SendDatagramStream.fromWriter(this.#datagramWriter, trackAlias, this.onDatagramSent)
+    return SendDatagramStream.fromWriter(this.#datagramWriter, trackAlias, this)
   }
 
   /**
@@ -807,7 +663,7 @@ export class MOQtailClient {
 
     const datagram = object.tryIntoDatagram(trackAlias)
     const serialized = datagram.serialize().toUint8Array()
-    if (this.onDatagramSent) this.onDatagramSent(datagram)
+    this.emit('datagramsent', datagram)
 
     await this.#datagramWriter.write(serialized)
   }
@@ -843,9 +699,7 @@ export class MOQtailClient {
           const datagram = Datagram.deserialize(new FrozenByteBuffer(datagramBytes))
           const trackAlias = datagram.trackAlias
 
-          if (this.onDatagramReceived) {
-            this.onDatagramReceived(datagram)
-          }
+          this.emit('datagramreceived', datagram)
 
           const fullTrackName = this.#resolveTrackAlias(trackAlias)
           const moqtObject = MoqtObject.fromDatagram(datagram, fullTrackName)
@@ -923,7 +777,7 @@ export class MOQtailClient {
    * Gracefully terminates this {@link MOQtailClient} session and releases underlying {@link https://developer.mozilla.org/docs/Web/API/WebTransport | WebTransport} resources.
    *
    * @param reason - Optional application-level reason (string or error) recorded and wrapped in an {@link InternalError}
-   * passed to the {@link MOQtailClient.onSessionTerminated | onSessionTerminated} callback.
+   * passed to `sessionterminated` listeners. Before {@link MOQtailClient.init} it only marks the client destroyed.
    *
    * @returns Promise that resolves once shutdown logic completes. Subsequent calls are safe no-ops.
    *
@@ -954,6 +808,7 @@ export class MOQtailClient {
     logger.log('MOQtailClient', 'disconnect', reason)
     if (this.#isDestroyed) return
     this.#isDestroyed = true
+    if (this.#state === 'idle') return
 
     // Stop datagrams first
     await this.stopDatagrams()
@@ -965,12 +820,16 @@ export class MOQtailClient {
     this.#namespaceRequestIds.clear()
     await Promise.allSettled(openStreams.map((requestStream) => requestStream.close()))
 
-    // close() does nothing on a session that is already closed or failed.
-    this.webTransport.close()
-    if (this.onSessionTerminated)
-      this.onSessionTerminated(
-        new InternalError('MOQtailClient.disconnect', reason instanceof Error ? reason.message : String(reason)),
-      )
+    // The session is over, so every subscription still open is too.
+    for (const request of this.requests.values()) if (request instanceof SubscribeRequest) request.finish()
+
+    // close() does nothing on a session that is already closed or failed. A failed init()
+    // may not have got as far as creating one.
+    this.webTransport?.close()
+    this.emit(
+      'sessionterminated',
+      new InternalError('MOQtailClient.disconnect', reason instanceof Error ? reason.message : String(reason)),
+    )
   }
 
   /**
@@ -1059,11 +918,12 @@ export class MOQtailClient {
    * future waits for that object.
    * - A {@link FillParameters} in `parameters` also retrieves Objects already published, on a fill fetch stream.
    *
-   * The method returns either a {@link RequestError} (on refusal) or an object with the subscription `requestId`, the `trackAlias` and a `ReadableStream` of {@link MoqtObject}s.
+   * The method returns either a {@link RequestError} (on refusal) or a {@link SubscribeResult}: the subscription `requestId`, its
+   * SUBSCRIBE_OK, a `ReadableStream` of {@link MoqtObject}s, and a `done` promise carrying the PUBLISH_DONE that ends it.
    * Use the `requestId` for {@link MOQtailClient.unsubscribe} or {@link MOQtailClient.subscribeUpdate}. Use the `stream` to decode and display objects.
    *
    * @param args - {@link SubscribeOptions} describing the subscription window and relay forwarding behavior.
-   * @returns Either a {@link RequestError} or `{ requestId, trackAlias, stream }` for consuming objects.
+   * @returns Either a {@link RequestError} or `{ requestId, subscribeOk, stream, done }`.
    * @throws : {@link MOQtailError} If the client is destroyed.
    * @throws : {@link ProtocolViolationError} If required fields are missing or inconsistent.
    * @throws : {@link InvalidFilterError} If the Range Filters exceed the server's MAX_FILTER_RANGES; nothing is sent.
@@ -1096,9 +956,7 @@ export class MOQtailClient {
    * });
    * ```
    */
-  async subscribe(
-    args: SubscribeOptions,
-  ): Promise<RequestError | { requestId: bigint; trackAlias: bigint; stream: ReadableStream<MoqtObject> }> {
+  async subscribe(args: SubscribeOptions): Promise<RequestError | SubscribeResult> {
     this.#ensureActive()
     // Checked before the try: a request the caller got wrong is not a broken session.
     assertWithinFilterRangeLimit(args.parameters ?? [], this.peerMaxFilterRanges, 'MOQtailClient.subscribe')
@@ -1118,7 +976,7 @@ export class MOQtailClient {
         ...(parameters ?? []),
       ])
       const request = new SubscribeRequest(msg)
-      request.manager = new Subscription(request)
+      const subscription = new Subscription(request)
       request.earlyDiscardPolicy = args.earlyDiscardPolicy
       request.onEndOfRange = args.onEndOfRange
       this.requests.set(request.requestId, request)
@@ -1147,7 +1005,7 @@ export class MOQtailClient {
           `subscribe: SUBSCRIBE_OK requestId=${request.requestId} trackAlias=${response.trackAlias}`,
         )
         this.#claimTrackAlias(response.trackAlias, request)
-        return { requestId: msg.requestId, trackAlias: response.trackAlias, stream: request.stream }
+        return { requestId: msg.requestId, subscribeOk: response, stream: request.stream, done: subscription.done }
       }
     } catch (error) {
       logger.error(
@@ -1225,6 +1083,7 @@ export class MOQtailClient {
         this.requests.delete(target.requestId)
         this.requestIdMap.removeMappingByRequestId(target.requestId)
         this.#releaseTrackAlias(target)
+        target.finish()
       }
       owner?.clear()
     }
@@ -1418,6 +1277,7 @@ export class MOQtailClient {
     // The publisher is done with it, so nothing is being cancelled: close the stream
     // it ran on rather than resetting it.
     void this.#closeRequestStream(request.requestId)
+    request.finish()
     logger.debug('MOQtailClient', `subscription for request ${request.requestId} completed`)
     return true
   }
@@ -1490,6 +1350,7 @@ export class MOQtailClient {
     this.requests.delete(request.requestId)
     this.requestIdMap.removeMappingByRequestId(request.requestId)
     this.#releaseTrackAlias(request)
+    request.finish()
     await this.#resetRequestStream(request.requestId, StreamResetCode.Cancelled)
   }
 
@@ -1507,7 +1368,7 @@ export class MOQtailClient {
    * - typeAndProps: Discriminated union carrying parameters specific to each fetch mode (see examples).
    * - parameters: Optional version-specific extension block.
    *
-   * Returns either a {@link RequestError} (refusal / invalid request at protocol level) or `{ requestId, stream }` whose `stream`
+   * Returns either a {@link RequestError} (refusal / invalid request at protocol level) or `{ requestId, fetchOk, stream }` whose `stream`
    * ends naturally after the bounded range completes (no explicit cancel needed for normal completion).
    *
    * Use cases:
@@ -1549,7 +1410,7 @@ export class MOQtailClient {
    * })
    * ```
    */
-  async fetch(args: FetchOptions): Promise<RequestError | { requestId: bigint; stream: ReadableStream<MoqtObject> }> {
+  async fetch(args: FetchOptions): Promise<RequestError | FetchResult> {
     this.#ensureActive()
     assertWithinFilterRangeLimit(args.parameters ?? [], this.peerMaxFilterRanges, 'MOQtailClient.fetch')
     try {
@@ -1590,8 +1451,7 @@ export class MOQtailClient {
         this.requests.delete(msg.requestId)
         return response
       } else {
-        const stream = request.stream
-        return { requestId: msg.requestId, stream }
+        return { requestId: msg.requestId, fetchOk: response, stream: request.stream }
       }
     } catch (error) {
       await this.disconnect(
@@ -1919,7 +1779,7 @@ export class MOQtailClient {
       // No #openRequestStream here: NAMESPACE / NAMESPACE_DONE carry only a suffix, so
       // they are only meaningful next to the prefix that opened this stream. The generic
       // pump has no prefix to hand them, hence the bespoke drain below.
-      const requestStream = await RequestStream.open(this.webTransport, msg, this.#requestStreamHooks)
+      const requestStream = await RequestStream.open(this.webTransport, msg, this)
       this.#requestStreams.set(msg.requestId, requestStream)
 
       logger.log(
@@ -1973,7 +1833,7 @@ export class MOQtailClient {
     assertWithinFilterRangeLimit(parameters ?? [], this.peerMaxFilterRanges, 'MOQtailClient.subscribeTracks')
     try {
       const msg = new SubscribeTracks(this.#nextClientRequestId, trackNamespacePrefix, parameters ?? [])
-      const requestStream = await RequestStream.open(this.webTransport, msg, this.#requestStreamHooks)
+      const requestStream = await RequestStream.open(this.webTransport, msg, this)
       this.#requestStreams.set(msg.requestId, requestStream)
 
       const response = await requestStream.next()
@@ -2011,10 +1871,10 @@ export class MOQtailClient {
       while (true) {
         const msg = await requestStream.next()
         if (!msg) break
-        if (msg instanceof Namespace && this.onPeerNamespace) {
-          this.onPeerNamespace(prefix, msg.trackNamespaceSuffix)
-        } else if (msg instanceof NamespaceDone && this.onPeerNamespaceDone) {
-          this.onPeerNamespaceDone(prefix, msg.trackNamespaceSuffix)
+        if (msg instanceof Namespace) {
+          this.emit('peernamespace', prefix, msg.trackNamespaceSuffix)
+        } else if (msg instanceof NamespaceDone) {
+          this.emit('peernamespacedone', prefix, msg.trackNamespaceSuffix)
         }
       }
     } finally {
@@ -2099,30 +1959,8 @@ export class MOQtailClient {
    *
    * @param requestId - The requestId carried by `first`; the key the stream is filed under.
    */
-  /**
-   * Hands a data stream {@link MOQtailClient.onDataEvent}, read at call time so an observer assigned
-   * after connecting still sees streams that are already open.
-   *
-   * @internal
-   */
-  dataStreamObserver(fullTrackNameOf?: DataStreamObserver['fullTrackNameOf']): DataStreamObserver {
-    return {
-      onDataEvent: (event) => this.onDataEvent?.(event),
-      ...(fullTrackNameOf && { fullTrackNameOf }),
-    }
-  }
-
-  /**
-   * Forwards request-stream traffic to {@link onMessageSent} and {@link onMessageReceived},
-   * read at call time so callbacks assigned after connecting still see it.
-   */
-  readonly #requestStreamHooks: RequestStreamHooks = {
-    onMessageSent: (msg) => this.onMessageSent?.(msg),
-    onMessageReceived: (msg) => this.onMessageReceived?.(msg),
-  }
-
   async #openRequestStream(requestId: bigint, first: ControlMessage): Promise<RequestStream> {
-    const requestStream = await RequestStream.open(this.webTransport, first, this.#requestStreamHooks)
+    const requestStream = await RequestStream.open(this.webTransport, first, this)
     this.#requestStreams.set(requestId, requestStream)
     void this.#pumpRequestStream(requestId, requestStream)
     return requestStream
@@ -2138,8 +1976,8 @@ export class MOQtailClient {
    * the wire changes.
    *
    * @returns True if the request was re-issued here. A GOAWAY naming a new session URI
-   * is not: opening a session is the application's call, so it is surfaced through
-   * {@link MOQtailClient.onGoaway} and the request stream is closed.
+   * is not: opening a session is the application's call, so it is surfaced as a
+   * `goaway` event and the request stream is closed.
    *
    * @internal
    */
@@ -2153,7 +1991,7 @@ export class MOQtailClient {
 
     if (goAway.newSessionUri) {
       logger.log('MOQtailClient', `GOAWAY migrates request ${requestId} to ${goAway.newSessionUri}`)
-      this.onGoaway?.(goAway)
+      this.emit('goaway', goAway)
       await this.#closeRequestStream(requestId)
       return false
     }
@@ -2223,6 +2061,9 @@ export class MOQtailClient {
       logger.debug('MOQtailClient', `request stream for requestId=${requestId} closed by peer`)
     } catch (error) {
       logger.error('MOQtailClient', `request stream for requestId=${requestId} failed`, error)
+      // A subscription whose request stream breaks is over; a migrated one lives on.
+      const request = this.requests.get(requestId)
+      if (!requestStream.migrated && request instanceof SubscribeRequest) request.finish()
     } finally {
       // A migrated request lives on under the same id on its new stream, so this one
       // ending is not the request ending.
@@ -2326,7 +2167,7 @@ export class MOQtailClient {
       while (true) {
         const { value: biStream, done } = await reader.read()
         if (done) break
-        void this.#dispatchIncomingRequestStream(new RequestStream(biStream, this.#requestStreamHooks))
+        void this.#dispatchIncomingRequestStream(new RequestStream(biStream, this))
       }
     })()
   }
@@ -2386,16 +2227,14 @@ export class MOQtailClient {
       const recvStream = await RecvStream.new(
         incomingUniStream,
         this.dataStreamTimeoutMs,
-        this.onDataReceived,
+        this,
         (header) => {
           if (!(header instanceof FetchHeader)) return GroupOrder.Original
           const request = this.requests.get(this.#clientRequestId(header.requestId))
           if (!(request instanceof FetchRequest)) return GroupOrder.Original
           return MessageParameter.groupOrderOf(request.message.parameters)
         },
-        this.dataStreamObserver((header) =>
-          header instanceof SubgroupHeader ? this.aliasFullTrackNameMap.get(header.trackAlias) : undefined,
-        ),
+        (header) => (header instanceof SubgroupHeader ? this.aliasFullTrackNameMap.get(header.trackAlias) : undefined),
       )
       const header = recvStream.header
       const reader = recvStream.stream.getReader()
@@ -2581,6 +2420,8 @@ if (import.meta.vitest) {
   const { RangeFilter, RangeFilterKind, encodeRanges, InvalidFilterError } =
     await import('../model/parameter/message/range_filter')
   const { DEFAULT_MAX_FILTER_RANGES } = await import('./types')
+  const { MaxCacheDurationProperty } = await import('../model/property/track_property')
+  const { findProperty } = await import('../model/property/find')
 
   /** One bidirectional stream: what the client wrote, and a way to answer on it. */
   class MockBidiStream {
@@ -2730,10 +2571,32 @@ if (import.meta.vitest) {
       globalThis.WebTransport = originalWebTransport
     })
 
-    function connect(): Promise<MOQtailClient> {
+    function connect(client = new MOQtailClient({ url: 'https://relay.example/moq' })): Promise<MOQtailClient> {
       globalThis.WebTransport = MockWebTransport as unknown as typeof WebTransport
-      return MOQtailClient.new({ url: 'https://relay.example/moq' })
+      return client.init().then(() => client)
     }
+
+    it('does no I/O until init(), and takes no requests before it', async () => {
+      MockWebTransport.last = undefined as unknown as MockWebTransport
+      const client = new MOQtailClient({ url: 'https://relay.example/moq' })
+      expect(MockWebTransport.last).toBeUndefined()
+      await expect(client.trackStatus(FullTrackName.tryNew('room', 'video'), 1n)).rejects.toThrow('not initialized')
+    })
+
+    it('lets a listener attached before init() see the SETUP it sends, and runs init() once', async () => {
+      const client = new MOQtailClient({ url: 'https://relay.example/moq' })
+      const sent: ControlMessage[] = []
+      client.on('messagesent', (msg) => sent.push(msg))
+      const connecting = connect(client)
+      const transport = MockWebTransport.last
+      await vi.waitFor(() => expect(transport.sentChunks).toHaveLength(1))
+      transport.openIncomingUniStream(new Setup(new SetupOptions().build()).serialize().toUint8Array())
+      await connecting
+
+      expect(sent[0]).toBeInstanceOf(Setup)
+      await expect(client.init()).rejects.toThrow('only run once')
+      await client.disconnect()
+    })
 
     it('handshakes over a pair of uni streams, SETUP first in both directions', async () => {
       const connecting = connect()
@@ -2776,14 +2639,16 @@ if (import.meta.vitest) {
       control: ReadableStreamDefaultController<Uint8Array>
     }> {
       globalThis.WebTransport = MockWebTransport as unknown as typeof WebTransport
-      const connecting = MOQtailClient.new({
+      const client = new MOQtailClient({
         url: 'https://relay.example/moq',
         ...(clientOptions ? { setupOptions: clientOptions } : {}),
       })
+      const connecting = client.init()
       const transport = MockWebTransport.last
       await vi.waitFor(() => expect(transport.sentChunks).toHaveLength(1))
       const control = transport.openIncomingUniStream(new Setup(serverOptions.build()).serialize().toUint8Array())
-      return { client: await connecting, transport, control }
+      await connecting
+      return { client, transport, control }
     }
 
     /** Waits for the client to open its n-th bidi stream and write its first message. */
@@ -2872,7 +2737,7 @@ if (import.meta.vitest) {
     it('answers a REQUEST_UPDATE on its own PUBLISH stream and keeps the publication', async () => {
       const { client, transport } = await connected()
       const moves: { requestId: bigint; forward: boolean }[] = []
-      client.onForwardStateChange = (requestId, forward) => moves.push({ requestId, forward })
+      client.on('forwardstatechange', (requestId, forward) => moves.push({ requestId, forward }))
 
       client.addOrUpdateTrack({
         fullTrackName: ftn,
@@ -2954,9 +2819,9 @@ if (import.meta.vitest) {
       const { client, transport } = await connected()
       const prefix = Tuple.fromUtf8Path('room')
       const blocked: { prefix: Tuple; msg: PublishSkipped }[] = []
-      client.onPeerPublishSkipped = (subscribedPrefix, msg) => {
+      client.on('peerpublishskipped', (subscribedPrefix, msg) => {
         blocked.push({ prefix: subscribedPrefix, msg })
-      }
+      })
 
       const subscribingTracks = client.subscribeTracks(prefix)
       const tracksStream = await openedStream(transport, 0)
@@ -3182,7 +3047,7 @@ if (import.meta.vitest) {
     it('closes the session on a REQUEST_UPDATE on a TRACK_STATUS stream', async () => {
       const { client, transport } = await connected()
       const terminated: unknown[] = []
-      client.onSessionTerminated = (reason) => terminated.push(reason)
+      client.on('sessionterminated', (reason) => terminated.push(reason))
 
       const incoming = transport.openIncomingBiStream()
       incoming.respond(
@@ -3210,7 +3075,7 @@ if (import.meta.vitest) {
     it('closes the session on a REQUEST_UPDATE on a SUBSCRIBE this side sent', async () => {
       const { client, transport } = await connected()
       const terminated: unknown[] = []
-      client.onSessionTerminated = (reason) => terminated.push(reason)
+      client.on('sessionterminated', (reason) => terminated.push(reason))
 
       const subscribing = client.subscribe({
         fullTrackName: ftn,
@@ -3640,9 +3505,11 @@ if (import.meta.vitest) {
     it('closes the session on a second GOAWAY on the control stream', async () => {
       const { client, control } = await connected()
       const seen: GoAway[] = []
+      const alsoSeen: GoAway[] = []
       const terminated: unknown[] = []
-      client.onGoaway = (msg) => seen.push(msg)
-      client.onSessionTerminated = (reason) => terminated.push(reason)
+      client.on('goaway', (msg) => seen.push(msg))
+      client.on('goaway', (msg) => alsoSeen.push(msg))
+      client.on('sessionterminated', (reason) => terminated.push(reason))
 
       control.enqueue(new GoAway('https://elsewhere.example', 5000n).serialize().toUint8Array())
       await vi.waitFor(() => expect(seen).toHaveLength(1))
@@ -3654,6 +3521,7 @@ if (import.meta.vitest) {
       control.enqueue(new GoAway(undefined, 0n).serialize().toUint8Array())
       await vi.waitFor(() => expect(terminated).toHaveLength(1))
       expect(seen).toHaveLength(1)
+      expect(alsoSeen).toEqual(seen)
     })
 
     it('closes the WebTransport session on disconnect, once', async () => {
@@ -3680,7 +3548,8 @@ if (import.meta.vitest) {
       const subscribed = await subscribing
       expect(subscribed).not.toBeInstanceOf(RequestError)
 
-      await client.unsubscribe((subscribed as { requestId: bigint }).requestId)
+      await client.unsubscribe((subscribed as SubscribeResult).requestId)
+      expect(await (subscribed as SubscribeResult).done).toBeUndefined()
 
       // §3.3.2: UNSUBSCRIBE is gone. Nothing follows the SUBSCRIBE on the wire — the
       // publisher learns the subscription ended from the reset code.
@@ -3701,11 +3570,11 @@ if (import.meta.vitest) {
         locationFilter: new LocationFilter(LocationFilterType.AbsoluteStartGroupEnd, 0n, 0n, 1n),
       })
       const fetchStream = await openedStream(transport, 0)
-      fetchStream.respond(new FetchOk(false, new Location(1n, 0n), []))
-      const fetched = await fetching
-      expect(fetched).not.toBeInstanceOf(RequestError)
+      fetchStream.respond(new FetchOk(false, new Location(1n, 0n), [], [new MaxCacheDurationProperty(500n)]))
+      const fetched = (await fetching) as FetchResult
+      expect(findProperty(fetched.fetchOk.trackProperties, MaxCacheDurationProperty)?.durationMs).toBe(500n)
 
-      await client.fetchCancel((fetched as { requestId: bigint }).requestId)
+      await client.fetchCancel(fetched.requestId)
 
       expect(fetchStream.messages).toHaveLength(1)
       expect(streamResetCodeOf(fetchStream.abortReason)).toBe(StreamResetCode.Cancelled)
@@ -3941,14 +3810,17 @@ if (import.meta.vitest) {
       const first = client.subscribe({ ...options, fullTrackName: ftn })
       const firstStream = await openedStream(transport, 0)
       firstStream.respond(SubscribeOk.create(7n, [], []))
-      const firstId = ((await first) as { requestId: bigint }).requestId
+      const { requestId: firstId, done } = (await first) as SubscribeResult
+      let doneWith: PublishDone | undefined | 'pending' = 'pending'
+      void done.then((publishDone) => (doneWith = publishDone))
 
       const switching = client.switch({
         switchFromRequestId: firstId,
         switchMode: SwitchMode.Soft,
         newSubscribeOptions: { ...options, fullTrackName: other },
       })
-      ;(await openedStream(transport, 1)).respond(SubscribeOk.create(8n, [], []))
+      const switchStream = await openedStream(transport, 1)
+      switchStream.respond(SubscribeOk.create(8n, [], []))
       const target = client.requests.get(((await switching) as { requestId: bigint }).requestId) as SubscribeRequest
       const old = client.requests.get(firstId) as SubscribeRequest
 
@@ -3961,6 +3833,13 @@ if (import.meta.vitest) {
       await vi.waitFor(() => expect(client.requests.has(firstId)).toBe(false))
       expect(firstStream.isClosed).toBe(true)
       expect(firstStream.abortReason).toBeUndefined()
+
+      // The subscription is done only once the track it switched to is, with that PUBLISH_DONE.
+      await new Promise((resolve) => setTimeout(resolve))
+      expect(doneWith).toBe('pending')
+      target.streamsAccepted = 1n
+      switchStream.respond(new PublishDone(PublishDoneStatusCode.Expired, 1n, new ReasonPhrase('')))
+      expect((await done)?.statusCode).toBe(PublishDoneStatusCode.Expired)
 
       await client.disconnect()
     })

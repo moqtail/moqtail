@@ -79,14 +79,14 @@ export class Player {
 
     logger.info('player', `Connecting to relay: ${this.#options.relayUrl}`);
     try {
-      this.client = await MOQtailClient.new({
-        url: this.#options.relayUrl,
-        callbacks: {
-          onMessageSent: msg => logger.debug('player', `control →relay: ${msg.constructor.name}`),
-          onMessageReceived: msg =>
-            logger.debug('player', `control ←relay: ${msg.constructor.name}`),
-        },
-      });
+      this.client = new MOQtailClient({ url: this.#options.relayUrl });
+      this.client.on('messagesent', msg =>
+        logger.debug('player', `control →relay: ${msg.constructor.name}`),
+      );
+      this.client.on('messagereceived', msg =>
+        logger.debug('player', `control ←relay: ${msg.constructor.name}`),
+      );
+      await this.client.init();
       logger.info('player', 'Connected to relay');
     } catch (error) {
       logger.error('media', 'Failed to connect to relay', (error as Error).message);

@@ -21,7 +21,8 @@ import { Header } from '../model/data/header'
 import { KeyValuePair } from '../model/common/pair'
 import { Timestamp } from '../model/property/timestamp'
 import { StreamResetCode } from '../model/error/stream_reset'
-import { logger } from '../util/logger'
+import type { Emitter } from '../util/emitter'
+import type { ClientEvents } from './types'
 
 /** `in` for a stream the peer opened, `out` for one this client opened. */
 export type DataDirection = 'in' | 'out'
@@ -80,14 +81,8 @@ export type DataStreamEndEvent = DataEventBase & {
 
 export type DataEvent = DataHeaderEvent | DataObjectEvent | DataStreamEndEvent
 
-export type DataEventObserver = (event: DataEvent) => void
-
-/** What a data stream is handed so it can report itself. */
-export type DataStreamObserver = {
-  onDataEvent: DataEventObserver
-  /** Names the track a header belongs to, if known. */
-  fullTrackNameOf?: (header: Header) => FullTrackName | undefined
-}
+/** Names the track a data stream header belongs to, if known. */
+export type FullTrackNameOf = (header: Header) => FullTrackName | undefined
 
 let lastStreamId = 0
 
@@ -101,8 +96,8 @@ function locTimestampOf(properties: KeyValuePair[] | null): bigint | undefined {
 }
 
 /**
- * Turns one data stream's activity into {@link DataEvent}s. A throwing observer is
- * logged and otherwise ignored, so it can never break the stream it watches.
+ * Turns one data stream's activity into {@link DataEvent}s, emitted as `dataevent`.
+ * A throwing listener can't break the stream: `EventTarget` isolates it.
  */
 export class DataStreamReporter {
   readonly streamId = ++lastStreamId
@@ -110,12 +105,13 @@ export class DataStreamReporter {
 
   constructor(
     private readonly direction: DataDirection,
-    private readonly observer?: DataStreamObserver,
+    private readonly events?: Emitter<ClientEvents>,
+    private readonly fullTrackNameOf?: FullTrackNameOf,
   ) {}
 
   header(header: Header): void {
-    if (!this.observer) return
-    const fullTrackName = this.observer.fullTrackNameOf?.(header)
+    if (!this.events) return
+    const fullTrackName = this.fullTrackNameOf?.(header)
     const event: DataHeaderEvent = Header.isFetch(header)
       ? { ...this.#base('header'), stream: 'fetch', requestId: header.requestId }
       : {
@@ -131,7 +127,7 @@ export class DataStreamReporter {
 
   /** `header` is the stream's own: a subgroup object takes its group and subgroup from it. */
   object(header: Header, object: SubgroupObject | FetchObject): void {
-    if (!this.observer) return
+    if (!this.events) return
     let event: DataObjectEvent
     if (object instanceof FetchObject) {
       // An end-of-range marker is a gap in the range, not an object.
@@ -165,7 +161,7 @@ export class DataStreamReporter {
   end(reason: DataStreamEndEvent['reason'], resetCode?: StreamResetCode): void {
     if (this.#hasEnded) return
     this.#hasEnded = true
-    if (!this.observer) return
+    if (!this.events) return
     this.#emit({ ...this.#base('end'), reason, ...(resetCode !== undefined && { resetCode }) })
   }
 
@@ -174,10 +170,6 @@ export class DataStreamReporter {
   }
 
   #emit(event: DataEvent): void {
-    try {
-      this.observer!.onDataEvent(event)
-    } catch (error) {
-      logger.warn('data_event', 'onDataEvent threw', error)
-    }
+    this.events!.emit('dataevent', event)
   }
 }

@@ -39,6 +39,8 @@ import {
   type Rendition,
 } from './element/interfaces'
 import { selectSource } from './element/negotiation'
+import { MSE, checkOptions } from './elements/mse'
+import type { MSEOptions } from './elements/mse/sink'
 import { PlayerError } from './error'
 import { mergeSetupOptions, type ExtensionDefinition } from './extension'
 import { parseMsfUrl } from './msf_url'
@@ -208,11 +210,17 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
     return this
   }
 
-  // shortcut: only sink definitions until 3c's MSE sink takes video elements (`{ video }`) and a canvas sink exists.
+  /** A video element gets the `MSE` sink with `options`. A canvas sink doesn't exist yet. */
+  sink(video: HTMLVideoElement, options?: Omit<MSEOptions, 'video'>): this
+  sink(definition: SinkElementDefinition, options?: Record<string, unknown>): this
   sink(target: HTMLVideoElement | SinkElementDefinition, options: Record<string, unknown> = {}): this {
     this.#order('sink', 'sink')
-    if (!('init' in target) || target.type !== 'sink') throw new TypeError('sink() takes a sink element definition')
-    this.#chain.addSink(target, options)
+    if (typeof HTMLVideoElement !== 'undefined' && target instanceof HTMLVideoElement) {
+      const sinkOptions = { ...options, video: target }
+      checkOptions(sinkOptions)
+      this.#chain.addSink(MSE, sinkOptions)
+    } else if ('init' in target && target.type === 'sink') this.#chain.addSink(target, options)
+    else throw new TypeError('sink() takes an HTMLVideoElement or a sink element definition')
     this.#stage = 'sink'
     return this
   }

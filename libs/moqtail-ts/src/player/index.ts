@@ -19,6 +19,8 @@ export { PlayerError, type PlayerErrorCode, type PlayerErrorCategory } from './e
 export { MOQtailPlayer, type MOQtailPlayerOptions, type PlayerEvents } from './player'
 export type { PlayerState } from './state'
 export { defineExtension, type ExtensionDefinition } from './extension'
+export { MSE } from './elements/mse'
+export type { MSEOptions } from './elements/mse/sink'
 export {
   defineElement,
   hasInterface,

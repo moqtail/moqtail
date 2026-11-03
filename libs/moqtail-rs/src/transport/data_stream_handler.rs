@@ -17,11 +17,12 @@ use std::time::Duration;
 
 use bytes::{Buf, BufMut, BytesMut};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use tokio::sync::{Mutex, Notify, RwLock};
 use tokio::task::yield_now;
 use tokio::time::{Instant, sleep_until};
 
+use crate::model::common::location::Location;
 use crate::model::control::constant::GroupOrder;
 use crate::model::control::fetch::Fetch;
 use crate::model::control::subscribe::Subscribe;
@@ -29,7 +30,9 @@ use crate::model::data::constant::{
   DEFAULT_PUBLISHER_PRIORITY, FetchHeaderType, ObjectForwardingPreference,
 };
 use crate::model::data::fetch_header::FetchHeader;
-use crate::model::data::fetch_object::{FetchObject, FetchObjectContext, FetchObjectPayload};
+use crate::model::data::fetch_object::{
+  EndOfRangeKind, FetchObject, FetchObjectContext, FetchObjectPayload,
+};
 use crate::model::data::object::Object;
 use crate::model::data::subgroup_header::SubgroupHeader;
 use crate::model::data::subgroup_object::SubgroupObject;
@@ -38,8 +41,26 @@ use crate::model::property::object_property::validate_prior_gaps;
 use crate::transport::connection::{TransportReadError, TransportRecvStream, TransportSendStream};
 use tracing::{debug, error, info, trace};
 
-type ObjectParseResult =
-  Result<(Option<u64>, Option<FetchObjectContext>, Option<Object>), ParseError>;
+type ObjectParseResult = Result<
+  (
+    Option<u64>,
+    Option<FetchObjectContext>,
+    Option<DataStreamItem>,
+  ),
+  ParseError,
+>;
+
+/// What a data stream carries, in the order it carries it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DataStreamItem {
+  Object(Object),
+  /// A fetch stream's End of Range marker: every Location after the previous Object,
+  /// if any, up to and including `location`, is of the marked kind.
+  EndOfRange {
+    kind: EndOfRangeKind,
+    location: Location,
+  },
+}
 
 // Timeout for header and subsequent objects
 const DATA_STREAM_TIMEOUT: Duration = Duration::from_secs(15);
@@ -228,7 +249,7 @@ impl SendDataStream {
         let payload = object.try_into_fetch()?;
         let fetch_obj = FetchObject::Object(payload);
         buf.extend_from_slice(&fetch_obj.serialize(self.fetch_prev_ctx.as_ref(), group_order)?);
-        self.fetch_prev_ctx = fetch_obj.context();
+        self.fetch_prev_ctx = Some(fetch_obj.next_context(self.fetch_prev_ctx.as_ref()));
       }
       HeaderInfo::Subgroup { header, .. } => {
         let has_properties = header.header_type.has_properties();
@@ -249,6 +270,41 @@ impl SendDataStream {
       })?;
 
     Ok(())
+  }
+
+  /// Writes an End of Range marker on a fetch stream: every Location after the last
+  /// Object written, if any, up to and including `location`, is of `kind`. The Object
+  /// written next is encoded against the marker's Location.
+  pub async fn send_end_of_range(
+    &mut self,
+    kind: EndOfRangeKind,
+    location: &Location,
+  ) -> Result<(), ParseError> {
+    let HeaderInfo::Fetch { .. } = &self.header_info else {
+      return Err(ParseError::Other {
+        context: "SendDataStream::send_end_of_range",
+        msg: "End of Range markers are only for fetch streams".to_string(),
+      });
+    };
+    let marker = FetchObject::EndOfRange {
+      kind,
+      group_id: location.group,
+      object_id: location.object,
+    };
+    // A marker's encoding does not depend on the Group Order.
+    let buf = marker.serialize(self.fetch_prev_ctx.as_ref(), GroupOrder::Ascending)?;
+    self.fetch_prev_ctx = Some(marker.next_context(self.fetch_prev_ctx.as_ref()));
+
+    self
+      .send_stream
+      .lock()
+      .await
+      .write_all(&buf)
+      .await
+      .map_err(|e| ParseError::Other {
+        context: "SendDataStream::send_end_of_range",
+        msg: e.to_string(),
+      })
   }
 
   pub async fn flush(&mut self) -> Result<(), ParseError> {
@@ -300,12 +356,18 @@ pub struct RecvDataStream {
   recv_stream: Arc<Mutex<TransportRecvStream>>,
   header_info: Arc<Mutex<Option<HeaderInfo>>>,
   pending_fetches: Arc<RwLock<BTreeMap<u64, FetchRequest>>>, // Mutable borrow to potentially remove entry
-  objects: Arc<RwLock<VecDeque<Object>>>,                    // Buffer for parsed objects
+  items: Arc<RwLock<VecDeque<DataStreamItem>>>,              // Parsed and not yet taken
   is_closed: Arc<AtomicBool>,
   malformed_track: Arc<AtomicBool>,
   started_read_task: Arc<AtomicBool>,
+  /// How the read task ended: `READ_RUNNING` until it does.
+  read_outcome: Arc<AtomicU8>,
   notify: Arc<Notify>,
 }
+
+const READ_RUNNING: u8 = 0;
+const READ_FINISHED: u8 = 1;
+const READ_ABORTED: u8 = 2;
 
 impl RecvDataStream {
   pub fn new(
@@ -316,16 +378,24 @@ impl RecvDataStream {
       recv_stream: Arc::new(Mutex::new(recv_stream)),
       header_info: Arc::new(Mutex::new(None)), // Initially no header info
       pending_fetches,
-      objects: Arc::new(RwLock::new(VecDeque::new())), // Initialize the object buffer
+      items: Arc::new(RwLock::new(VecDeque::new())),
       is_closed: Arc::new(AtomicBool::new(false)),
       malformed_track: Arc::new(AtomicBool::new(false)),
       started_read_task: Arc::new(AtomicBool::new(false)),
+      read_outcome: Arc::new(AtomicU8::new(READ_RUNNING)),
       notify: Arc::new(Notify::new()),
     }
   }
 
   pub fn is_malformed_track(&self) -> bool {
     self.malformed_track.load(Ordering::Relaxed)
+  }
+
+  /// Whether the stream ended without a clean FIN: reset by the peer, idle past the
+  /// timeout, or unparseable. Objects it was still to carry never arrived. Settled
+  /// once `next_object` has returned `None`.
+  pub fn was_aborted(&self) -> bool {
+    self.read_outcome.load(Ordering::Acquire) == READ_ABORTED
   }
 
   pub async fn get_header_info(&self) -> Option<HeaderInfo> {
@@ -339,7 +409,7 @@ impl RecvDataStream {
     is_closed: Arc<AtomicBool>,
     the_header_info: Arc<Mutex<Option<HeaderInfo>>>,
     pending_fetches: Arc<RwLock<BTreeMap<u64, FetchRequest>>>,
-    objects: Arc<RwLock<VecDeque<Object>>>,
+    items: Arc<RwLock<VecDeque<DataStreamItem>>>,
     malformed_track: Arc<AtomicBool>,
     notify: Arc<Notify>,
   ) -> Result<(), RecvDataStreamReadError> {
@@ -366,26 +436,26 @@ impl RecvDataStream {
           error!("Failed to parse header: {:?}", e);
           RecvDataStreamReadError::ParseError(e)
         })?;
-        let consumed = if let Some((consumed, _)) = header_info.clone() {
-          consumed
-        } else {
-          0
-        };
-        recv_bytes.advance(consumed);
-        *the_header_info.lock().await = Some(header_info.clone().unwrap().1.clone());
+        // Nothing yet when the header is split across reads: wait for the rest of it.
+        if let Some((consumed, header)) = &header_info {
+          recv_bytes.advance(*consumed);
+          *the_header_info.lock().await = Some(header.clone());
+        }
       }
 
       loop {
         let bytes_cursor = recv_bytes.clone().freeze();
         let mut consumed = 0;
-        if !recv_bytes.is_empty() {
-          let mut current_header = header_info.as_ref().unwrap().1.clone();
+        if !recv_bytes.is_empty()
+          && let Some((_, header)) = &header_info
+        {
+          let mut current_header = header.clone();
           let (c, object_id, new_fetch_ctx) = Self::read_object(
             bytes_cursor,
             &mut current_header,
             &the_header_info,
             is_closed.clone(),
-            objects.clone(),
+            items.clone(),
             &previous_object_id,
             &mut fetch_state,
             malformed_track.clone(),
@@ -430,6 +500,14 @@ impl RecvDataStream {
       // If it is closed, notify waiters and return
       if is_closed.load(Ordering::Relaxed) {
         notify.notify_waiters();
+        // A FIN in the middle of an Object: the rest of it, and whatever came after,
+        // never arrived.
+        if !recv_bytes.is_empty() {
+          return Err(RecvDataStreamReadError::ParseError(ParseError::Other {
+            context: "RecvDataStream::read",
+            msg: format!("stream ended {} bytes into an Object", recv_bytes.len()),
+          }));
+        }
         return Ok(());
       }
 
@@ -549,7 +627,7 @@ impl RecvDataStream {
     header_info: &mut HeaderInfo,
     the_header_info: &Arc<Mutex<Option<HeaderInfo>>>,
     is_closed: Arc<AtomicBool>,
-    objects: Arc<RwLock<VecDeque<Object>>>,
+    items: Arc<RwLock<VecDeque<DataStreamItem>>>,
     previous_object_id: &Option<u64>,
     fetch_state: &mut FetchReadState,
     malformed_track: Arc<AtomicBool>,
@@ -570,45 +648,53 @@ impl RecvDataStream {
       let parse_result: ObjectParseResult = match header_info {
         HeaderInfo::Fetch { fetch_request, .. } => {
           let group_order = fetch_group_order(fetch_request.as_ref());
-          FetchObject::deserialize(
-            &mut bytes_cursor,
-            fetch_state.prev_ctx.as_ref(),
-            group_order,
-          )
-          .and_then(|fetch_obj| {
-            let new_ctx = fetch_obj.context();
-            match fetch_obj {
-              FetchObject::Object(payload) => {
-                let validated = fetch_state
-                  .subgroup_priorities
-                  .validate(&payload)
-                  .and_then(|()| {
-                    validate_prior_gaps(
-                      payload.group_id,
-                      payload.object_id,
-                      payload.properties.as_deref(),
-                    )
-                  });
-                if let Err(e) = validated {
-                  malformed_track.store(true, Ordering::Relaxed);
-                  return Err(e);
+          let prev_ctx = fetch_state.prev_ctx;
+          FetchObject::deserialize(&mut bytes_cursor, prev_ctx.as_ref(), group_order).and_then(
+            |fetch_obj| {
+              // A marker moves the prior Location on too, so the context is carried
+              // past it as past an Object.
+              let new_ctx = Some(fetch_obj.next_context(prev_ctx.as_ref()));
+              match fetch_obj {
+                FetchObject::Object(payload) => {
+                  let validated =
+                    fetch_state
+                      .subgroup_priorities
+                      .validate(&payload)
+                      .and_then(|()| {
+                        validate_prior_gaps(
+                          payload.group_id,
+                          payload.object_id,
+                          payload.properties.as_deref(),
+                        )
+                      });
+                  if let Err(e) = validated {
+                    malformed_track.store(true, Ordering::Relaxed);
+                    return Err(e);
+                  }
+                  // A fetch stream carries no Track Alias. The 0 here is a placeholder
+                  // that may well collide with a real subscription's alias, so
+                  // callers route these objects by the FETCH_HEADER's Request ID
+                  // instead: a FETCH's when `fetch_request` is set, and otherwise
+                  // that of the SUBSCRIBE or REQUEST_UPDATE whose fill this stream
+                  // delivers, which only the caller can map to a subscription.
+                  let object = Object::try_from_fetch(payload, 0)?;
+                  Ok((None, new_ctx, Some(DataStreamItem::Object(object))))
                 }
-                // A fetch stream carries no Track Alias. The 0 here is a placeholder
-                // that may well collide with a real subscription's alias, so
-                // callers route these objects by the FETCH_HEADER's Request ID
-                // instead: a FETCH's when `fetch_request` is set, and otherwise
-                // that of the SUBSCRIBE or REQUEST_UPDATE whose fill this stream
-                // delivers, which only the caller can map to a subscription.
-                let object = Object::try_from_fetch(payload, 0)?;
-                Ok((None, new_ctx, Some(object)))
+                FetchObject::EndOfRange {
+                  kind,
+                  group_id,
+                  object_id,
+                } => Ok((
+                  None,
+                  new_ctx,
+                  Some(DataStreamItem::EndOfRange {
+                    kind,
+                    location: Location::new(group_id, object_id),
+                  }),
+                )),
               }
-              FetchObject::EndOfRange { .. } => {
-                // Range markers advance the stream but do not enqueue an object.
-                debug!("FetchObject::EndOfRange received, skipping");
-                Ok((None, None, None))
-              }
-            }
-          })
+            },
+          )
         }
         HeaderInfo::Subgroup { header, .. } => {
           let has_properties = header.header_type.has_properties();
@@ -626,26 +712,22 @@ impl RecvDataStream {
                 header.publisher_priority,
                 DEFAULT_PUBLISHER_PRIORITY,
               )?;
-              Ok((Some(object_id), None, Some(object)))
+              Ok((Some(object_id), None, Some(DataStreamItem::Object(object))))
             })
         }
       };
 
       match parse_result {
-        Ok((object_id, new_ctx, maybe_object)) => {
+        Ok((object_id, new_ctx, maybe_item)) => {
           let consumed = original_remaining - bytes_cursor.remaining();
-          trace!(
-            "consumed: {} Parsed payload object: {:?}",
-            consumed, maybe_object
-          );
+          trace!("consumed: {} Parsed item: {:?}", consumed, maybe_item);
           // Published before the object is enqueued: a reader that takes the object
           // asks for the header to route it, and must not see the unresolved one.
           if awaiting_subgroup_id && consumed > 0 {
             *the_header_info.lock().await = Some(header_info.clone());
           }
-          if let Some(object) = maybe_object {
-            let mut objects = objects.write().await;
-            objects.push_back(object);
+          if let Some(item) = maybe_item {
+            items.write().await.push_back(item);
           }
           Ok((consumed, object_id, new_ctx))
         }
@@ -667,7 +749,20 @@ impl RecvDataStream {
     }
   }
 
+  /// The next Object, passing over a fetch stream's End of Range markers; `None` once
+  /// the stream has ended.
   pub async fn next_object(&self) -> (&Self, Option<Object>) {
+    loop {
+      match self.next_item().await.1 {
+        Some(DataStreamItem::Object(object)) => return (self, Some(object)),
+        Some(DataStreamItem::EndOfRange { .. }) => continue,
+        None => return (self, None),
+      }
+    }
+  }
+
+  /// The next Object or End of Range marker; `None` once the stream has ended.
+  pub async fn next_item(&self) -> (&Self, Option<DataStreamItem>) {
     // Start the read task only once
     if self
       .started_read_task
@@ -678,26 +773,31 @@ impl RecvDataStream {
       let is_closed = self.is_closed.clone();
       let malformed_track = self.malformed_track.clone();
       let pending_fetches = self.pending_fetches.clone();
-      let objects = self.objects.clone();
+      let items = self.items.clone();
       let header_info = self.header_info.clone();
       let notify = self.notify.clone();
+      let read_outcome = self.read_outcome.clone();
 
       // Spawn the read task that will continuously read from the stream
-      // and insert parsed objects into the objects vector
+      // and queue what it parses
       tokio::spawn(async move {
         match Self::read(
           recv_stream,
           is_closed,
           header_info,
           pending_fetches,
-          objects,
+          items,
           malformed_track,
           notify.clone(),
         )
         .await
         {
-          Ok(_) => debug!("RecvDataStream read task completed successfully"),
+          Ok(_) => {
+            read_outcome.store(READ_FINISHED, Ordering::Release);
+            debug!("RecvDataStream read task completed successfully")
+          }
           Err(e) => {
+            read_outcome.store(READ_ABORTED, Ordering::Release);
             error!("RecvDataStream read task encountered an error: {:?}", e);
             notify.notify_waiters();
             // if not connected error, do nothing and return, let the caller handle it
@@ -712,20 +812,26 @@ impl RecvDataStream {
     }
 
     loop {
-      // First, check if there are any objects available
+      // First, check if anything is queued
       {
-        let mut objects = self.objects.write().await;
-        if let Some(object) = objects.pop_front() {
-          return (self, Some(object));
+        let mut items = self.items.write().await;
+        if let Some(item) = items.pop_front() {
+          return (self, Some(item));
         }
       }
 
       if self.is_closed.load(Ordering::Relaxed) {
-        if self.objects.read().await.is_empty() {
+        if self.items.read().await.is_empty() {
+          // The read task closes the stream just before it ends; wait for it, so how
+          // it ended is known by the time the caller sees the end.
+          if self.read_outcome.load(Ordering::Acquire) == READ_RUNNING {
+            yield_now().await;
+            continue;
+          }
           debug!("Stream is closed, returning EOF");
           return (self, None);
         } else {
-          debug!("Stream is closed, but has objects still");
+          debug!("Stream is closed, but has items still");
           yield_now().await
         }
       } else {
@@ -1125,6 +1231,215 @@ mod tests {
     }
   }
   */
+  /// Opens a fetch stream, writes one Object on it less its last `cut` bytes, then ends
+  /// it with `end`. Returns whether the reader saw the stream aborted once it reported
+  /// the end.
+  async fn end_fetch_stream(cut: usize, end: impl AsyncFnOnce(&mut TransportSendStream)) -> bool {
+    let (send, recv) = setup_stream_pair().await;
+    let (fetch_header, fetch_req) = make_fetch_header_and_request();
+    let sender = SendDataStream::new(
+      Arc::new(Mutex::new(TransportSendStream::WebTransport(send))),
+      HeaderInfo::Fetch {
+        header: fetch_header,
+        fetch_request: Some(fetch_req.clone()),
+      },
+    )
+    .await
+    .unwrap();
+    let receiver = RecvDataStream::new(
+      TransportRecvStream::WebTransport(recv),
+      Arc::new(RwLock::new(BTreeMap::new())),
+    );
+
+    let bytes = FetchObject::Object(make_fetch_object())
+      .serialize(None, fetch_req.group_order())
+      .unwrap();
+    {
+      let mut stream = sender.send_stream.lock().await;
+      stream.write_all(&bytes[..bytes.len() - cut]).await.unwrap();
+      end(&mut stream).await;
+    }
+
+    let mut objects = 0;
+    while receiver.next_object().await.1.is_some() {
+      objects += 1;
+    }
+    assert!(objects <= 1);
+    receiver.was_aborted()
+  }
+
+  /// A fetch stream carrying an Object at {9,10} and an End of Unknown Range marker at
+  /// {10,5}, closed with a FIN.
+  async fn marked_fetch_stream() -> RecvDataStream {
+    let (send, recv) = setup_stream_pair().await;
+    let (fetch_header, fetch_req) = make_fetch_header_and_request();
+    let order = fetch_req.group_order();
+    let sender = SendDataStream::new(
+      Arc::new(Mutex::new(TransportSendStream::WebTransport(send))),
+      HeaderInfo::Fetch {
+        header: fetch_header,
+        fetch_request: Some(fetch_req),
+      },
+    )
+    .await
+    .unwrap();
+    let receiver = RecvDataStream::new(
+      TransportRecvStream::WebTransport(recv),
+      Arc::new(RwLock::new(BTreeMap::new())),
+    );
+
+    let marker = FetchObject::EndOfRange {
+      kind: EndOfRangeKind::Unknown,
+      group_id: 10,
+      object_id: 5,
+    };
+    let mut stream = sender.send_stream.lock().await;
+    for entry in [FetchObject::Object(make_fetch_object()), marker] {
+      stream
+        .write_all(&entry.serialize(None, order).unwrap())
+        .await
+        .unwrap();
+    }
+    stream.finish().await.unwrap();
+    receiver
+  }
+
+  #[tokio::test]
+  async fn next_item_hands_over_end_of_range_markers_in_order() {
+    let receiver = marked_fetch_stream().await;
+    let mut items = Vec::new();
+    while let (_, Some(item)) = receiver.next_item().await {
+      items.push(match item {
+        DataStreamItem::Object(object) => format!("object {:?}", object.location),
+        DataStreamItem::EndOfRange { kind, location } => format!("{kind:?} to {location:?}"),
+      });
+    }
+    let expected = [
+      format!("object {:?}", Location::new(9, 10)),
+      format!("Unknown to {:?}", Location::new(10, 5)),
+    ];
+    assert_eq!(items, expected);
+  }
+
+  #[tokio::test]
+  async fn next_object_passes_over_end_of_range_markers() {
+    let receiver = marked_fetch_stream().await;
+    let mut locations = Vec::new();
+    while let (_, Some(object)) = receiver.next_object().await {
+      locations.push(object.location);
+    }
+    assert_eq!(locations, [Location::new(9, 10)]);
+  }
+
+  #[tokio::test]
+  async fn objects_after_a_marker_keep_their_ids() {
+    let (send, recv) = setup_stream_pair().await;
+    let (fetch_header, fetch_req) = make_fetch_header_and_request();
+    let mut sender = SendDataStream::new(
+      Arc::new(Mutex::new(TransportSendStream::WebTransport(send))),
+      HeaderInfo::Fetch {
+        header: fetch_header,
+        fetch_request: Some(fetch_req),
+      },
+    )
+    .await
+    .unwrap();
+    let receiver = RecvDataStream::new(
+      TransportRecvStream::WebTransport(recv),
+      Arc::new(RwLock::new(BTreeMap::new())),
+    );
+
+    let at = |group_id, object_id| {
+      let mut payload = make_fetch_object();
+      payload.group_id = group_id;
+      payload.object_id = object_id;
+      Object::try_from_fetch(payload, 0).unwrap()
+    };
+    sender.send_object(&at(9, 10), None).await.unwrap();
+    sender
+      .send_end_of_range(EndOfRangeKind::Unknown, &Location::new(10, 5))
+      .await
+      .unwrap();
+    // One in the marker's group, right after it, and one in the next group.
+    sender.send_object(&at(10, 6), None).await.unwrap();
+    sender.send_object(&at(11, 0), None).await.unwrap();
+    sender.send_stream.lock().await.finish().await.unwrap();
+
+    let mut locations = Vec::new();
+    while let (_, Some(object)) = receiver.next_object().await {
+      locations.push(object.location);
+    }
+    assert_eq!(
+      locations,
+      [
+        Location::new(9, 10),
+        Location::new(10, 6),
+        Location::new(11, 0)
+      ]
+    );
+  }
+
+  #[tokio::test]
+  async fn a_stream_ended_with_its_fin_is_not_aborted() {
+    let aborted = end_fetch_stream(0, async |stream: &mut TransportSendStream| {
+      stream.finish().await.unwrap();
+    })
+    .await;
+    assert!(!aborted);
+  }
+
+  #[tokio::test]
+  async fn a_header_split_across_reads_is_waited_for() {
+    let (send, recv) = setup_stream_pair().await;
+    let (fetch_header, fetch_req) = make_fetch_header_and_request();
+    let receiver = RecvDataStream::new(
+      TransportRecvStream::WebTransport(recv),
+      Arc::new(RwLock::new(BTreeMap::new())),
+    );
+    let header = fetch_header.serialize().unwrap();
+    let object = FetchObject::Object(make_fetch_object())
+      .serialize(None, fetch_req.group_order())
+      .unwrap();
+
+    // Written from another task, since the reader only starts on the first next_object:
+    // the header must reach it in two parts.
+    tokio::spawn(async move {
+      let mut stream = TransportSendStream::WebTransport(send);
+      stream.write_all(&header[..1]).await.unwrap();
+      sleep(Duration::from_millis(50)).await;
+      stream.write_all(&header[1..]).await.unwrap();
+      stream.write_all(&object).await.unwrap();
+      stream.finish().await.unwrap();
+    });
+
+    let first = tokio::time::timeout(Duration::from_secs(5), receiver.next_object())
+      .await
+      .expect("the reader gave up on the stream");
+    assert!(first.1.is_some());
+    assert!(receiver.next_object().await.1.is_none());
+    assert!(!receiver.was_aborted());
+  }
+
+  #[tokio::test]
+  async fn a_fin_in_the_middle_of_an_object_is_aborted() {
+    let aborted = end_fetch_stream(1, async |stream: &mut TransportSendStream| {
+      stream.finish().await.unwrap();
+    })
+    .await;
+    assert!(aborted);
+  }
+
+  #[tokio::test]
+  async fn a_reset_stream_is_aborted() {
+    let aborted = end_fetch_stream(0, async |stream: &mut TransportSendStream| {
+      // Give the Object time to leave before the reset discards what is unsent.
+      sleep(Duration::from_millis(50)).await;
+      stream.reset(0).unwrap();
+    })
+    .await;
+    assert!(aborted);
+  }
+
   #[tokio::test]
   async fn test_partial_object_completion() {
     let (send, recv) = setup_stream_pair().await;

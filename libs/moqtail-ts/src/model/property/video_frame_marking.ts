@@ -17,17 +17,26 @@
 import { KeyValuePair } from '../common/pair'
 import { LOCPropertyId } from './constant'
 
+/** The I (independent frame) bit of the RFC 9626 flag octet. */
+const INDEPENDENT = 0x20
+
 export class VideoFrameMarking {
   static readonly TYPE = LOCPropertyId.VideoFrameMarking
-  constructor(public readonly value: bigint) {}
+  /** The RFC 9626 frame-marking octets (1 to 4), without the length prefix. */
+  constructor(public readonly value: Uint8Array) {}
+
+  /** True if the frame decodes without temporally prior frames (the I bit). */
+  get independent(): boolean {
+    return ((this.value[0] ?? 0) & INDEPENDENT) !== 0
+  }
 
   toKeyValuePair(): KeyValuePair {
-    return KeyValuePair.tryNewVarInt(VideoFrameMarking.TYPE, this.value)
+    return KeyValuePair.tryNewBytes(VideoFrameMarking.TYPE, this.value)
   }
 
   static fromKeyValuePair(pair: KeyValuePair): VideoFrameMarking | undefined {
     const type = Number(pair.typeValue)
-    if (type === VideoFrameMarking.TYPE && typeof pair.value === 'bigint') {
+    if (type === VideoFrameMarking.TYPE && pair.value instanceof Uint8Array) {
       return new VideoFrameMarking(pair.value)
     }
     return undefined
@@ -38,11 +47,17 @@ if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
   describe('VideoFrameMarkingProperty', () => {
     test('should roundtrip VideoFrameMarking', () => {
-      const value = 9876543210987654321n
+      const value = new Uint8Array([0xe0, 0x01, 0x02])
       const pair = new VideoFrameMarking(value).toKeyValuePair()
       const header = VideoFrameMarking.fromKeyValuePair(pair)
       expect(header).toBeInstanceOf(VideoFrameMarking)
-      expect(header?.value).toBe(value)
+      expect(Array.from(header!.value)).toEqual(Array.from(value))
+    })
+
+    test('independent reads only the I bit and tolerates an empty value', () => {
+      expect(new VideoFrameMarking(new Uint8Array([0x20])).independent).toBe(true)
+      expect(new VideoFrameMarking(new Uint8Array([0xdf])).independent).toBe(false)
+      expect(new VideoFrameMarking(new Uint8Array([])).independent).toBe(false)
     })
   })
 }

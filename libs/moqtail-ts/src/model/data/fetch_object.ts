@@ -37,25 +37,42 @@ const SUBGROUP_MODE_PRESENT = 0b11
 // Special Serialization Flag varint values for End-of-Range markers.
 const END_OF_NON_EXISTENT_RANGE = 0x8cn
 const END_OF_UNKNOWN_RANGE = 0x10cn
+const END_OF_TIMED_OUT_RANGE = 0x20cn
 
 const MAX_VARINT = 2n ** 64n - 1n
 
 /**
- * Prior-object state threaded across successive Fetch Objects on the same stream.
+ * The prior Object a Fetch Object is encoded against: each one is written as
+ * differences from it.
  */
 export type FetchObjectContext = {
   groupId: bigint
-  subgroupId: bigint
+  /**
+   * Null while the stream has carried only End of Range markers and no Object yet:
+   * a marker sets the prior Group and Object IDs, but has no Subgroup ID.
+   */
+  subgroupId: bigint | null
   objectId: bigint
-  publisherPriority: number
+  /**
+   * Null while the stream has carried only End of Range markers and no Object yet:
+   * a marker has no priority.
+   */
+  publisherPriority: number | null
 }
 
 /**
- * Kind discriminator for End-of-Range markers (§11.5).
+ * Kind discriminator for End-of-Range markers.
  */
 export enum EndOfRangeKind {
+  /** Serialization Flags = 0x8C: all objects in the range are known not to exist. */
   NonExistent = 0x8c,
+  /** Serialization Flags = 0x10C: the range is cache-unknown. */
   Unknown = 0x10c,
+  /**
+   * Serialization Flags = 0x20C: the range timed out, e.g. a relay ran out of its
+   * fill budget before it could retrieve it.
+   */
+  TimedOut = 0x20c,
 }
 
 /**
@@ -90,11 +107,22 @@ export class FetchObject {
   }
 
   /**
-   * Context to thread into the next call on this stream.
-   * Returns null for EndOfRange markers — they MUST NOT update prior state.
+   * What the entry after this one is encoded against, given what this one was
+   * encoded against (`prev`).
+   *
+   * After an Object, that is the Object itself. After an End of Range marker, it is
+   * the marker's Group and Object IDs, with the Subgroup ID and priority still those
+   * of the last Object before the marker, or none if no Object came before it.
    */
-  toContext(): FetchObjectContext | null {
-    if (this.kind === 'end_of_range') return null
+  nextContext(prev?: FetchObjectContext): FetchObjectContext {
+    if (this.kind === 'end_of_range') {
+      return {
+        groupId: this.groupId,
+        subgroupId: prev?.subgroupId ?? null,
+        objectId: this.objectId,
+        publisherPriority: prev?.publisherPriority ?? null,
+      }
+    }
     return {
       groupId: this.groupId,
       subgroupId: this.subgroupId,
@@ -140,7 +168,8 @@ export class FetchObject {
   serialize(prev?: FetchObjectContext, groupOrder: GroupOrder = GroupOrder.Original): FrozenByteBuffer {
     const buf = new ByteBuffer()
     if (this.kind === 'end_of_range') {
-      buf.putVI(this.endOfRange === EndOfRangeKind.NonExistent ? END_OF_NON_EXISTENT_RANGE : END_OF_UNKNOWN_RANGE)
+      // Each kind's value is its Serialization Flags.
+      buf.putVI(BigInt(this.endOfRange!))
       buf.putVI(this.groupId)
       buf.putVI(this.objectId)
       return buf.freeze()
@@ -193,7 +222,7 @@ export class FetchObject {
       subgroupMode = SUBGROUP_MODE_ZERO
     } else if (prev && prev.subgroupId === this.subgroupId) {
       subgroupMode = SUBGROUP_MODE_PRIOR
-    } else if (prev && prev.subgroupId + 1n === this.subgroupId) {
+    } else if (prev && prev.subgroupId !== null && prev.subgroupId + 1n === this.subgroupId) {
       subgroupMode = SUBGROUP_MODE_PRIOR_PLUS_ONE
     } else {
       subgroupMode = SUBGROUP_MODE_PRESENT
@@ -232,6 +261,8 @@ export class FetchObject {
         kind = EndOfRangeKind.NonExistent
       } else if (flagsRaw === END_OF_UNKNOWN_RANGE) {
         kind = EndOfRangeKind.Unknown
+      } else if (flagsRaw === END_OF_TIMED_OUT_RANGE) {
+        kind = EndOfRangeKind.TimedOut
       } else {
         throw new ProtocolViolationError(
           'FetchObject.deserialize',
@@ -293,12 +324,12 @@ export class FetchObject {
           subgroupId = 0n
           break
         case SUBGROUP_MODE_PRIOR:
-          if (!prev)
+          if (!prev || prev.subgroupId === null)
             throw new ProtocolViolationError('FetchObject.deserialize', 'subgroup_id inherited but no prior object')
           subgroupId = prev.subgroupId
           break
         case SUBGROUP_MODE_PRIOR_PLUS_ONE:
-          if (!prev)
+          if (!prev || prev.subgroupId === null)
             throw new ProtocolViolationError('FetchObject.deserialize', 'subgroup_id inherited but no prior object')
           subgroupId = prev.subgroupId + 1n
           break
@@ -339,7 +370,7 @@ export class FetchObject {
     const publisherPriority = hasPriority
       ? buf.getU8()
       : (() => {
-          if (!prev)
+          if (!prev || prev.publisherPriority === null)
             throw new ProtocolViolationError('FetchObject.deserialize', 'priority inherited but no prior object')
           return prev.publisherPriority
         })()
@@ -405,7 +436,7 @@ if (import.meta.vitest) {
       ])
 
       const second = FetchObject.newObject(2n, 0n, 1n, 0, ObjectForwardingPreference.Subgroup, null, u8('de'))
-      expect(Array.from(second.serialize(first.toContext()!).toUint8Array())).toEqual([0x00, 0x02, 0x64, 0x65])
+      expect(Array.from(second.serialize(first.nextContext()).toUint8Array())).toEqual([0x00, 0x02, 0x64, 0x65])
     })
 
     test('roundtrip first object', () => {
@@ -436,13 +467,13 @@ if (import.meta.vitest) {
 
       const wire = new ByteBuffer()
       wire.putBytes(first.serialize().toUint8Array())
-      wire.putBytes(second.serialize(first.toContext()!).toUint8Array())
+      wire.putBytes(second.serialize(first.nextContext()).toUint8Array())
       const frozen = wire.freeze()
 
       const parsed1 = FetchObject.deserialize(frozen)
       expect(parsed1.groupId).toBe(first.groupId)
       expect(parsed1.objectId).toBe(first.objectId)
-      const ctx1 = parsed1.toContext()!
+      const ctx1 = parsed1.nextContext()
       const parsed2 = FetchObject.deserialize(frozen, ctx1)
       expect(parsed2.groupId).toBe(second.groupId)
       expect(parsed2.subgroupId).toBe(second.subgroupId)
@@ -469,7 +500,7 @@ if (import.meta.vitest) {
         let ctx: FetchObjectContext | undefined = undefined
         for (const o of objs) {
           wire.putBytes(o.serialize(ctx, order).toUint8Array())
-          ctx = o.toContext() ?? ctx
+          ctx = o.nextContext(ctx)
         }
         const frozen = wire.freeze()
 
@@ -480,7 +511,7 @@ if (import.meta.vitest) {
           expect(parsed.objectId, `order=${order}`).toBe(o.objectId)
           expect(parsed.subgroupId, `order=${order}`).toBe(o.subgroupId)
           expect(parsed.payload, `order=${order}`).toEqual(o.payload)
-          ctx = parsed.toContext() ?? ctx
+          ctx = parsed.nextContext(ctx)
         }
         expect(frozen.remaining, `order=${order}`).toBe(0)
       }
@@ -566,6 +597,81 @@ if (import.meta.vitest) {
       const parsed = FetchObject.deserialize(frozen)
       expect(parsed.kind).toBe('end_of_range')
       expect(parsed.endOfRange).toBe(EndOfRangeKind.Unknown)
+    })
+
+    test('roundtrip end of timed-out range', () => {
+      const obj = FetchObject.newEndOfRange(EndOfRangeKind.TimedOut, 3n, 9n)
+      const frozen = obj.serialize()
+      const flags = new ByteBuffer()
+      flags.putVI(0x20cn)
+      expect(Array.from(frozen.toUint8Array().subarray(0, flags.length))).toEqual(
+        Array.from(flags.freeze().toUint8Array()),
+      )
+      const parsed = FetchObject.deserialize(obj.serialize())
+      expect(parsed.kind).toBe('end_of_range')
+      expect(parsed.endOfRange).toBe(EndOfRangeKind.TimedOut)
+      expect(parsed.groupId).toBe(3n)
+      expect(parsed.objectId).toBe(9n)
+    })
+
+    test('an object after a marker is encoded against the marker', () => {
+      const first = FetchObject.newObject(
+        9n,
+        144n,
+        10n,
+        255,
+        ObjectForwardingPreference.Subgroup,
+        null,
+        new Uint8Array([1]),
+      )
+      const marker = FetchObject.newEndOfRange(EndOfRangeKind.Unknown, 10n, 5n)
+      // The Object right after {10,5}, in the subgroup and priority of the first.
+      const after = FetchObject.newObject(
+        10n,
+        144n,
+        6n,
+        255,
+        ObjectForwardingPreference.Subgroup,
+        null,
+        new Uint8Array([2]),
+      )
+
+      const wire = new ByteBuffer()
+      let ctx: FetchObjectContext | undefined = undefined
+      for (const entry of [first, marker]) {
+        wire.putBytes(entry.serialize(ctx).toUint8Array())
+        ctx = entry.nextContext(ctx)
+      }
+      const afterBytes = after.serialize(ctx).toUint8Array()
+      // Everything but the payload is inherited: the Group and next Object ID from
+      // the marker, the subgroup and priority from the first Object.
+      expect(afterBytes[0]! & (FLAG_GROUP_ID_PRESENT | FLAG_OBJECT_ID_PRESENT | FLAG_PRIORITY_PRESENT)).toBe(0)
+      wire.putBytes(afterBytes)
+
+      const frozen = wire.freeze()
+      let readCtx: FetchObjectContext | undefined = undefined
+      const parsed: FetchObject[] = []
+      for (let i = 0; i < 3; i++) {
+        const entry = FetchObject.deserialize(frozen, readCtx)
+        readCtx = entry.nextContext(readCtx)
+        parsed.push(entry)
+      }
+      expect(parsed[2]!.groupId).toBe(10n)
+      expect(parsed[2]!.objectId).toBe(6n)
+      expect(parsed[2]!.subgroupId).toBe(144n)
+      expect(parsed[2]!.publisherPriority).toBe(255)
+      expect(frozen.remaining).toBe(0)
+    })
+
+    test('an object after a leading marker cannot inherit a priority', () => {
+      const ctx = FetchObject.newEndOfRange(EndOfRangeKind.NonExistent, 4n, 2n).nextContext()
+      expect(ctx.subgroupId).toBeNull()
+      expect(ctx.publisherPriority).toBeNull()
+
+      const buf = new ByteBuffer()
+      buf.putVI(SUBGROUP_MODE_ZERO) // group, object id and priority all inherited
+      buf.putVI(0) // payload length
+      expect(() => FetchObject.deserialize(buf.freeze(), ctx)).toThrow(ProtocolViolationError)
     })
 
     test('reject reserved high flag value', () => {

@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+import type { EndOfRangeHandler } from '../types'
 import { Fetch, FetchOk, MoqtObject, RequestError } from '@/model'
 import { logger } from '../../util/logger'
 
@@ -27,6 +28,7 @@ export class FetchRequest implements PromiseLike<FetchOk | RequestError> {
   private promise: Promise<FetchOk | RequestError>
   public controller?: ReadableStreamDefaultController<MoqtObject>
   public stream: ReadableStream<MoqtObject>
+  public onEndOfRange: EndOfRangeHandler | undefined
   public isActive: boolean = true
   public isResolved: boolean = false
 

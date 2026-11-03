@@ -23,7 +23,7 @@ use std::{
 use tokio::sync::{RwLock, mpsc};
 
 use moqtail::model::common::location::Location;
-use moqtail::model::data::fetch_object::FetchObjectPayload;
+use moqtail::model::data::fetch_object::{EndOfRangeKind, FetchObjectPayload};
 
 use moqtail::transport::connection::{TransportConnection, TransportKind};
 use moqtail::transport::data_stream_handler::{FetchRequest, SubscribeRequest};
@@ -78,6 +78,12 @@ pub(crate) enum UpstreamFetchEvent {
     end_location: Location,
   },
   Object(FetchObjectPayload),
+  /// Every Location after the previous Object, if any, up to and including
+  /// `location`, is of `kind`.
+  EndOfRange {
+    kind: EndOfRangeKind,
+    location: Location,
+  },
   MalformedTrack,
   StreamClosed,
   Error(String),

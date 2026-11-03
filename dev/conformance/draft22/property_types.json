@@ -99,11 +99,11 @@
   ],
   "provisional": {
     "source": "§16.8 Table 16",
-    "description": "Provisional registrations for other active drafts in the moq working group. These share the same Property Type space as the entries above, so they are not a private namespace and must not collide with it. Both stacks carry ids from an older revision of draft-ietf-moq-loc.",
+    "description": "Provisional registrations for other active drafts in the moq working group. These share the same Property Type space as the entries above, so they are not a private namespace and must not collide with it. Only the draft-ietf-moq-loc entries are listed: the stacks implement no draft-ietf-moq-secure-objects property (ENCRYPTED_LIST 0x0A, PADDING 0x32).",
     "entries": [
       {
         "name": "TIMESTAMP",
-        "value": "0x06",
+        "value": "0x10",
         "scope": "Object",
         "spec": "draft-ietf-moq-loc"
       },
@@ -115,7 +115,7 @@
       },
       {
         "name": "VIDEO_FRAME_MARKING",
-        "value": "0x0A",
+        "value": "0x09",
         "scope": "Object",
         "spec": "draft-ietf-moq-loc"
       },
@@ -128,7 +128,13 @@
       {
         "name": "VIDEO_CONFIG",
         "value": "0x0D",
-        "scope": "Object",
+        "scope": "Track, Object",
+        "spec": "draft-ietf-moq-loc"
+      },
+      {
+        "name": "AUDIO_CONFIG",
+        "value": "0x0F",
+        "scope": "Track, Object",
         "spec": "draft-ietf-moq-loc"
       }
     ]

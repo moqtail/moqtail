@@ -239,6 +239,6 @@ target/
 ### Relay Logs ###
 relay.log.*
 
-# Local settings for tools/perf-test.sh
-tools/perf-test.env
+# Local settings for scripts/perf-test.sh
+scripts/perf-test.env
 .perf-test.env

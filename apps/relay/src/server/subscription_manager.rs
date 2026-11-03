@@ -242,6 +242,36 @@ impl SubscriptionManager {
     drop(senders);
   }
 
+  /// Takes every subscription off the track without cancelling it, so one already
+  /// told the track ended still delivers what it has queued and finishes on its own,
+  /// while nothing more reaches it.
+  pub async fn detach_all(&self) {
+    let detached = std::mem::take(&mut *self.subscriptions.write().await);
+    self.subscriber_request_ids.write().await.clear();
+    for partition in self.subscriber_senders.iter() {
+      partition.write().await.clear();
+    }
+    info!(
+      "Detached {} subscription(s) from relay_track_id={}",
+      detached.len(),
+      self.relay_track_id
+    );
+    for ((_, request_id), subscription) in detached {
+      let subscriber = subscription.read().await.subscriber();
+      subscriber.subscriptions.remove(request_id).await;
+      subscriber
+        .subscribe_requests
+        .write()
+        .await
+        .remove(&request_id);
+      subscriber
+        .inbound_requests
+        .write()
+        .await
+        .remove(&request_id);
+    }
+  }
+
   /// Removes every subscription the subscriber holds.
   pub async fn remove_subscriptions(&self, subscriber_id: usize) {
     info!(
@@ -256,29 +286,6 @@ impl SubscriptionManager {
       .cloned();
     for request_id in request_ids.into_iter().flatten() {
       self.remove_subscription(&(subscriber_id, request_id)).await;
-    }
-  }
-
-  /// Forget subscriptions after their terminal event has already been queued.
-  pub async fn detach_all_subscriptions(&self) {
-    let subscriptions = std::mem::take(&mut *self.subscriptions.write().await);
-    self.subscriber_request_ids.write().await.clear();
-    for partition in self.subscriber_senders.iter() {
-      partition.write().await.clear();
-    }
-    for ((_, request_id), subscription) in subscriptions {
-      let subscriber = subscription.read().await.subscriber();
-      subscriber.subscriptions.remove(request_id).await;
-      subscriber
-        .subscribe_requests
-        .write()
-        .await
-        .remove(&request_id);
-      subscriber
-        .inbound_requests
-        .write()
-        .await
-        .remove(&request_id);
     }
   }
 

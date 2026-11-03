@@ -19,11 +19,12 @@ use crate::model::error::ParseError;
 #[repr(u64)]
 #[derive(Clone, Debug, Copy, PartialEq)]
 pub enum LOCPropertyId {
-  Timestamp = 0x06,
   Timescale = 0x08,
-  VideoFrameMarking = 0x0A,
+  VideoFrameMarking = 0x09,
   AudioLevel = 0x0C,
   VideoConfig = 0x0D,
+  AudioConfig = 0x0F,
+  Timestamp = 0x10,
 }
 
 impl TryFrom<u64> for LOCPropertyId {
@@ -31,11 +32,12 @@ impl TryFrom<u64> for LOCPropertyId {
 
   fn try_from(value: u64) -> Result<Self, Self::Error> {
     match value {
-      0x06 => Ok(LOCPropertyId::Timestamp),
       0x08 => Ok(LOCPropertyId::Timescale),
-      0x0A => Ok(LOCPropertyId::VideoFrameMarking),
+      0x09 => Ok(LOCPropertyId::VideoFrameMarking),
       0x0C => Ok(LOCPropertyId::AudioLevel),
       0x0D => Ok(LOCPropertyId::VideoConfig),
+      0x0F => Ok(LOCPropertyId::AudioConfig),
+      0x10 => Ok(LOCPropertyId::Timestamp),
       _ => Err(ParseError::InvalidType {
         context: "LOCPropertyId::try_from(u64)",
         details: format!("Invalid type, got {value}"),

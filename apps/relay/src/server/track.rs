@@ -26,19 +26,21 @@ use moqtail::model::common::location::Location;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::control::constant::PublishDoneStatusCode;
 use moqtail::model::control::publish_done::PublishDone;
-use moqtail::model::data::constant::DEFAULT_PUBLISHER_PRIORITY;
+use moqtail::model::data::constant::{DEFAULT_PUBLISHER_PRIORITY, ObjectStatus};
 use moqtail::model::data::datagram::Datagram;
 use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::model::data::object::Object;
 use moqtail::model::error::RequestErrorCode;
 use moqtail::model::parameter::message_parameter::MessageParameter;
+use moqtail::model::property::object_property::ObjectProperty;
 use moqtail::model::property::track_property::TrackProperty;
 use moqtail::transport::data_stream_handler::HeaderInfo;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
-use tokio::sync::{Mutex, Notify, RwLock, oneshot};
+use tokio::sync::{Mutex, MutexGuard, Notify, RwLock, oneshot};
+use tokio::time::Instant;
 use tracing::{debug, error, info, trace, warn};
 
 pub type ActiveSubgroupHeaderMap = Arc<RwLock<HashMap<StreamId, HeaderInfo>>>;
@@ -206,16 +208,79 @@ impl UpstreamRequests {
   }
 }
 
-/// What created a track. Decides whether it survives its last subscriber.
+/// What a track leaves the track manager to clean up once it lets go of its upstream.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Cleanup {
+  /// Nothing: the track is still in use and unchanged.
+  Nothing,
+  /// The track stays, as a cache-only track serving what it has cached, but no
+  /// publisher feeds it any more. These (connection ID, track alias) pairs no longer
+  /// lead to it and are to be removed from the alias map.
+  RemoveAliases(Vec<(usize, u64)>),
+  /// The track holds nothing and is to be removed.
+  RemoveTrack,
+}
+
+/// When the last datagram for a track arrived, so a PUBLISH_DONE can wait for the
+/// datagrams it would otherwise overtake. Datagrams are not counted in its Stream
+/// Count, so the relay cannot tell when the last one is in; it waits for them to go
+/// quiet instead.
+#[derive(Debug, Default)]
+pub struct DatagramArrivals {
+  /// Microseconds from `utils::BASE_TIME` to the last arrival, plus one; 0 before any.
+  last: AtomicU64,
+}
+
+impl DatagramArrivals {
+  pub fn arrived(&self) {
+    let micros = utils::BASE_TIME.elapsed().as_micros() as u64;
+    self.last.store(micros + 1, Ordering::Relaxed);
+  }
+
+  /// Waits until no datagram has arrived for `quiet`, or until `deadline`. A track
+  /// that has had no datagram does not wait at all.
+  pub async fn wait_for_quiet(&self, quiet: Duration, deadline: Instant) {
+    loop {
+      let last = match self.last.load(Ordering::Relaxed) {
+        0 => return,
+        micros => Instant::from_std(*utils::BASE_TIME) + Duration::from_micros(micros - 1),
+      };
+      let until = (last + quiet).min(deadline);
+      if Instant::now() >= until {
+        return;
+      }
+      tokio::time::sleep_until(until).await;
+    }
+  }
+}
+
+/// What feeds a track: what created it, until its upstream goes away and it becomes
+/// `CacheOnly`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
 pub enum TrackOrigin {
-  /// Created by a downstream SUBSCRIBE. The relay owns the upstream
-  /// subscription; with no subscribers left it is cancelled and the track goes
-  /// stale, so it must be removed to force a fresh upstream SUBSCRIBE.
+  /// Created by a downstream SUBSCRIBE. The relay owns the upstream subscription; with
+  /// no subscribers left it is cancelled, and the track becomes `CacheOnly` if it holds
+  /// anything, or is removed. Either way the next SUBSCRIBE subscribes upstream afresh.
   Subscribe,
   /// Created by an upstream PUBLISH. The publisher keeps pushing regardless of
   /// subscriber count, so the track outlives them.
   Publish,
+  /// Fed by nothing live, so it only serves its cache: created by a downstream FETCH of
+  /// a track the relay did not have, or kept after its upstream went away while it held
+  /// cached Objects. The cache evicts by its own rules. The first SUBSCRIBE or PUBLISH
+  /// to reach it takes it over (`take_over`).
+  CacheOnly,
+}
+
+impl TrackOrigin {
+  fn from_u8(value: u8) -> Self {
+    match value {
+      0 => Self::Subscribe,
+      1 => Self::Publish,
+      _ => Self::CacheOnly,
+    }
+  }
 }
 
 /// Lifecycle status of a track on the relay.
@@ -261,7 +326,13 @@ pub struct Track {
   /// Stable relay-assigned track identifier, independent of publisher aliases.
   pub relay_track_id: u64,
   pub full_track_name: FullTrackName,
-  pub origin: TrackOrigin,
+  /// A `TrackOrigin`. It changes when a cache-only track is taken over or a track
+  /// becomes cache-only, and that must not wait on the track's lock, which a fetch
+  /// holds for as long as it delivers.
+  origin: Arc<AtomicU8>,
+  /// Held while a SUBSCRIBE takes the track over and joins it, and while the track lets
+  /// go of its upstream subscription, so neither can run in the middle of the other.
+  handover: Arc<Mutex<()>>,
   pub subscription_manager: SubscriptionManager,
   /// Maps publisher_connection_id -> publisher_track_alias for all active publishers.
   pub publisher_aliases: Arc<RwLock<BTreeMap<usize, u64>>>,
@@ -288,6 +359,8 @@ pub struct Track {
   /// Data streams each publisher has finished sending, so a PUBLISH_DONE can be
   /// held until the streams it accounts for have been taken in.
   pub publisher_stream_progress: Arc<PublisherStreamProgress>,
+  /// When its datagrams arrive, which a PUBLISH_DONE waits on (see DatagramArrivals).
+  pub datagram_arrivals: Arc<DatagramArrivals>,
   /// Relay-owned request streams that may need to be cancelled as a group.
   upstream_requests: Arc<Mutex<UpstreamRequests>>,
   /// Upstream SUBSCRIBEs still awaiting a SUBSCRIBE_OK or REQUEST_ERROR.
@@ -334,7 +407,8 @@ impl Track {
     Track {
       relay_track_id,
       full_track_name: full_track_name.clone(),
-      origin,
+      origin: Arc::new(AtomicU8::new(origin as u8)),
+      handover: Arc::new(Mutex::new(())),
       subscription_manager: SubscriptionManager::new(
         relay_track_id,
         full_track_name,
@@ -354,6 +428,7 @@ impl Track {
       track_properties: Arc::new(RwLock::new(Vec::new())),
       active_subgroup_headers: Arc::new(RwLock::new(HashMap::new())),
       publisher_stream_progress: Arc::new(PublisherStreamProgress::default()),
+      datagram_arrivals: Arc::new(DatagramArrivals::default()),
       upstream_requests: Arc::new(Mutex::new(UpstreamRequests::default())),
       pending_upstream_subscribe_count: Arc::new(AtomicUsize::new(0)),
       upstream_forward: Arc::new(AtomicBool::new(false)),
@@ -371,6 +446,22 @@ impl Track {
       .lock()
       .await
       .register(request_id, publisher_connection_id, kind)
+  }
+
+  pub(crate) fn upstream_subscribe_answered(&self) -> usize {
+    let mut count = self.pending_upstream_subscribe_count.load(Ordering::SeqCst);
+    while count > 0 {
+      match self.pending_upstream_subscribe_count.compare_exchange_weak(
+        count,
+        count - 1,
+        Ordering::SeqCst,
+        Ordering::SeqCst,
+      ) {
+        Ok(_) => return count - 1,
+        Err(current) => count = current,
+      }
+    }
+    0
   }
 
   pub(crate) async fn unregister_upstream_request(&self, request_id: u64) {
@@ -407,6 +498,101 @@ impl Track {
       .lock()
       .await
       .cancel_matching(|request| request.kind == kind, reason);
+  }
+
+  pub fn origin(&self) -> TrackOrigin {
+    TrackOrigin::from_u8(self.origin.load(Ordering::Acquire))
+  }
+
+  /// See `handover`. A SUBSCRIBE holds it from `take_over` until it has joined.
+  pub async fn lock_handover(&self) -> MutexGuard<'_, ()> {
+    self.handover.lock().await
+  }
+
+  /// Hands a cache-only track over to a SUBSCRIBE or PUBLISH, keeping what is cached.
+  /// Returns true only for the caller that took it, which must then do what creating
+  /// the track would have: nothing upstream has been asked for it yet.
+  pub async fn take_over(&self, origin: TrackOrigin, status: TrackStatus) -> bool {
+    let taken = self
+      .origin
+      .compare_exchange(
+        TrackOrigin::CacheOnly as u8,
+        origin as u8,
+        Ordering::AcqRel,
+        Ordering::Acquire,
+      )
+      .is_ok();
+    if taken {
+      *self.status.write().await = status;
+    }
+    taken
+  }
+
+  /// Removes a subscription and, once no subscriber is left, cancels the upstream
+  /// subscriptions and lets go of them. All under `handover`, so a SUBSCRIBE cannot join
+  /// after the cancel and be left on an upstream that is gone.
+  pub async fn remove_subscriber(&self, leaving: &SubscriptionId) -> Cleanup {
+    let _handover = self.lock_handover().await;
+    self.remove_subscription(leaving).await;
+    if self.subscriber_count().await > 0 {
+      return Cleanup::Nothing;
+    }
+    // One per publisher serving the track, so each observes the cancellation.
+    self
+      .cancel_upstream_requests_of_kind(
+        UpstreamRequestKind::Subscribe,
+        UpstreamRequestCancellation::Cancelled,
+      )
+      .await;
+    if self.origin() != TrackOrigin::Subscribe {
+      return Cleanup::Nothing;
+    }
+    self.become_cache_only().await
+  }
+
+  /// Lets go of a track nothing upstream serves any more: its last publisher left, or
+  /// its upstream SUBSCRIBE was refused. Its subscribers have been told the track
+  /// ended and finish on their own; they are detached, so whatever takes the track
+  /// over next cannot feed them.
+  pub async fn retire(&self) -> Cleanup {
+    let _handover = self.lock_handover().await;
+    let cleanup = self.become_cache_only().await;
+    // The track stays, so whatever takes it over next must not find these subscribers.
+    if matches!(cleanup, Cleanup::RemoveAliases(_)) {
+      self.subscription_manager.detach_all().await;
+    }
+    cleanup
+  }
+
+  /// Makes the track cache-only if its cache holds anything, so the next SUBSCRIBE or
+  /// PUBLISH starts upstream afresh. A track holding nothing is left as it is, for the
+  /// caller to remove. The caller holds `handover`.
+  async fn become_cache_only(&self) -> Cleanup {
+    if self.cache.is_empty().await {
+      return Cleanup::RemoveTrack;
+    }
+    *self.status.write().await = TrackStatus::Pending;
+    let aliases: Vec<(usize, u64)> = std::mem::take(&mut *self.publisher_aliases.write().await)
+      .into_iter()
+      .collect();
+    for (connection_id, _) in &aliases {
+      self.publisher_stream_progress.forget(*connection_id).await;
+    }
+    self
+      .cancel_upstream_requests_of_kind(
+        UpstreamRequestKind::Subscribe,
+        UpstreamRequestCancellation::Cancelled,
+      )
+      .await;
+    self.active_subgroup_headers.write().await.clear();
+    self
+      .pending_upstream_subscribe_count
+      .store(0, Ordering::SeqCst);
+    self.upstream_forward.store(false, Ordering::Relaxed);
+    self
+      .origin
+      .store(TrackOrigin::CacheOnly as u8, Ordering::Release);
+    Cleanup::RemoveAliases(aliases)
   }
 
   /// Whether any subscription on this track currently wants Objects forwarded.
@@ -643,6 +829,82 @@ impl Track {
     self.subscription_manager.subscriber_count().await
   }
 
+  /// Caches an Object an upstream FETCH brought in. It is not handed to subscribers,
+  /// which get the live feed, nor checked against the Objects already seen: a group
+  /// evicted from the cache has to be fetchable into it again.
+  pub async fn cache_fetched_object(&self, object: &Object) {
+    if let Ok(fetch_object) = object.clone().try_into_fetch() {
+      self.cache.add_object(fetch_object).await;
+    }
+    self.record_arrival(object).await;
+  }
+
+  /// Logs an Object's arrival and moves the Largest Location on to it.
+  async fn record_arrival(&self, object: &Object) {
+    if self.config.enable_object_logging {
+      self
+        .object_logger
+        .log_track_object(
+          self.relay_track_id,
+          object,
+          utils::passed_time_since_start(),
+        )
+        .await;
+    }
+    {
+      let mut largest_location = self.largest_location.write().await;
+      if object.location > *largest_location {
+        *largest_location = object.location.clone();
+      }
+    }
+    self.has_objects.store(true, Ordering::Relaxed);
+  }
+
+  /// Records what a live Object says does not exist, so the cache can serve a group
+  /// once it accounts for all of it: what an End of Group or End of Track status
+  /// rules out, what follows an Object that ends its group, and the IDs a Prior Group
+  /// or Object ID Gap skips.
+  fn note_absent(&self, object: &Object, ends_its_group: bool) {
+    let Location { group, object: id } = object.location.clone();
+    let group_end = Location::new(group, u64::MAX);
+    match object.status {
+      ObjectStatus::EndOfGroup => self.cache.mark_absent(object.location.clone(), group_end),
+      ObjectStatus::EndOfTrack => self
+        .cache
+        .mark_absent(object.location.clone(), Location::new(u64::MAX, u64::MAX)),
+      ObjectStatus::Normal => {}
+    }
+    if ends_its_group {
+      self.group_ended_after(&object.location);
+    }
+    for property in object.properties.iter().flatten() {
+      match property {
+        ObjectProperty::PriorObjectIdGap { gap } if *gap > 0 && *gap <= id => {
+          self
+            .cache
+            .mark_absent(Location::new(group, id - gap), Location::new(group, id - 1));
+        }
+        ObjectProperty::PriorGroupIdGap { gap } if *gap > 0 && *gap <= group => {
+          self.cache.mark_absent(
+            Location::new(group - gap, 0),
+            Location::new(group - 1, u64::MAX),
+          )
+        }
+        _ => {}
+      }
+    }
+  }
+
+  /// Called when a subgroup stream that holds the end of its group closes with a FIN:
+  /// nothing in the group comes after the last Object it carried.
+  pub fn group_ended_after(&self, last: &Location) {
+    if last.object < u64::MAX {
+      self
+        .cache
+        .mark_absent(last.next().unwrap(), Location::new(last.group, u64::MAX));
+    }
+  }
+
   pub async fn new_subgroup_object(
     &self,
     stream_id: &StreamId,
@@ -692,42 +954,13 @@ impl Track {
       .send_event_to_subscribers(event)
       .await?;
 
+    // The cache cannot hold a status, so all that is kept of one is what it says does
+    // not exist.
     if let Ok(fetch_object) = object.clone().try_into_fetch() {
       self.cache.add_object(fetch_object).await;
-    } else {
-      // TODO: End of Group objects should be cached
-      // warn!(
-      //   "new_subgroup_object: object cannot be cached | relay_track_id: {} track_alias: {} location: {:?} stream_id: {} diff_ms: {} object: {:?}",
-      //   self.relay_track_id,
-      //   object.track_alias,
-      //   object.location,
-      //   stream_id,
-      //   utils::passed_time_since_start(),
-      //   object
-      // );
     }
-
-    // Track-level logging - log every object arrival if enabled
-    if self.config.enable_object_logging {
-      let object_received_time = utils::passed_time_since_start();
-      self
-        .object_logger
-        .log_track_object(self.relay_track_id, object, object_received_time)
-        .await;
-    }
-
-    // update the largest location
-    {
-      let mut largest_location = self.largest_location.write().await;
-      if object.location.group > largest_location.group
-        || (object.location.group == largest_location.group
-          && object.location.object > largest_location.object)
-      {
-        largest_location.group = object.location.group;
-        largest_location.object = object.location.object;
-      }
-    }
-    self.has_objects.store(true, Ordering::Relaxed);
+    self.note_absent(object, false);
+    self.record_arrival(object).await;
     Ok(())
   }
 
@@ -748,6 +981,7 @@ impl Track {
   }
 
   pub async fn new_datagram(&self, datagram: &Datagram) -> Result<()> {
+    self.datagram_arrivals.arrived();
     trace!(
       "new_datagram: relay_track_id={} group: {:?} object_id={} diff_ms={}",
       self.relay_track_id,
@@ -773,27 +1007,13 @@ impl Track {
           );
         }
 
+        // The cache cannot hold a status, so all that is kept of one is what it says
+        // does not exist.
         if let Ok(fetch_object) = object.clone().try_into_fetch() {
           self.cache.add_object(fetch_object).await;
-        } else {
-          warn!(
-            "new_datagram: object cannot be cached | relay_track_id={} group: {:?} object_id={} diff_ms={} object: {:?}",
-            self.relay_track_id,
-            datagram.group_id,
-            datagram.object_id,
-            utils::passed_time_since_start(),
-            object
-          );
         }
-
-        // Track-level logging - log every object arrival if enabled
-        if self.config.enable_object_logging {
-          let object_received_time = utils::passed_time_since_start();
-          self
-            .object_logger
-            .log_track_object(self.relay_track_id, &object, object_received_time)
-            .await;
-        }
+        self.note_absent(&object, end_of_group);
+        self.record_arrival(&object).await;
       }
       Err(e) => {
         error!(
@@ -802,19 +1022,6 @@ impl Track {
         );
       }
     }
-
-    // update the largest location
-    {
-      let mut largest_location = self.largest_location.write().await;
-      if datagram.group_id > largest_location.group
-        || (datagram.group_id == largest_location.group
-          && datagram.object_id > largest_location.object)
-      {
-        largest_location.group = datagram.group_id;
-        largest_location.object = datagram.object_id;
-      }
-    }
-    self.has_objects.store(true, Ordering::Relaxed);
 
     let event = TrackEvent::Datagram {
       object: datagram.clone(),
@@ -883,29 +1090,50 @@ impl Track {
 }
 
 /// Holds a PUBLISH_DONE back until `stream_count` of that publisher's data streams
-/// for the track have finished arriving, or `timeout` elapses. A publisher that names
-/// more streams than it opens must not stall the subscription's end, so a short count
-/// is logged and the caller carries on.
+/// for the track have finished arriving, and, for a track that has been receiving
+/// datagrams, until none has arrived for `datagram_quiet`; all within `timeout`. A
+/// publisher that names more streams than it opens must not stall the subscription's
+/// end, so a short count is logged and the caller carries on.
 pub async fn await_publisher_streams(
   track: &Arc<RwLock<Track>>,
   publisher_connection_id: usize,
   stream_count: u64,
   timeout: Duration,
+  datagram_quiet: Duration,
 ) {
-  if stream_count == 0 {
-    return;
-  }
+  let deadline = Instant::now() + timeout;
 
   // Taken out of the track before waiting: holding the track lock for the length of
   // the wait would stall every other publisher and subscriber on it.
-  let (progress, full_track_name) = {
+  let (progress, datagrams, full_track_name) = {
     let track = track.read().await;
     (
       track.publisher_stream_progress.clone(),
+      track.datagram_arrivals.clone(),
       track.full_track_name.clone(),
     )
   };
 
+  if stream_count > 0 {
+    await_streams(
+      &progress,
+      &full_track_name,
+      publisher_connection_id,
+      stream_count,
+      timeout,
+    )
+    .await;
+  }
+  datagrams.wait_for_quiet(datagram_quiet, deadline).await;
+}
+
+async fn await_streams(
+  progress: &PublisherStreamProgress,
+  full_track_name: &FullTrackName,
+  publisher_connection_id: usize,
+  stream_count: u64,
+  timeout: Duration,
+) {
   let closed = progress
     .wait_for(publisher_connection_id, stream_count, timeout)
     .await;
@@ -934,6 +1162,59 @@ mod tests {
 
   const PUBLISHER: usize = 7;
   const OTHER_PUBLISHER: usize = 9;
+
+  #[tokio::test]
+  async fn a_track_without_datagrams_does_not_wait_for_them() {
+    let arrivals = DatagramArrivals::default();
+    let started = Instant::now();
+    arrivals
+      .wait_for_quiet(Duration::from_secs(5), started + Duration::from_secs(5))
+      .await;
+    assert!(started.elapsed() < Duration::from_millis(50));
+  }
+
+  #[tokio::test]
+  async fn datagrams_are_waited_for_until_they_go_quiet() {
+    let arrivals = Arc::new(DatagramArrivals::default());
+    arrivals.arrived();
+    let started = Instant::now();
+    // One more arrives 40 ms in, which pushes the quiet window on.
+    let late = arrivals.clone();
+    tokio::spawn(async move {
+      tokio::time::sleep(Duration::from_millis(40)).await;
+      late.arrived();
+    });
+    arrivals
+      .wait_for_quiet(Duration::from_millis(60), started + Duration::from_secs(5))
+      .await;
+    let waited = started.elapsed();
+    assert!(waited >= Duration::from_millis(100), "waited {waited:?}");
+    assert!(waited < Duration::from_secs(1), "waited {waited:?}");
+  }
+
+  #[tokio::test]
+  async fn datagrams_that_never_go_quiet_are_waited_for_only_until_the_deadline() {
+    let arrivals = Arc::new(DatagramArrivals::default());
+    arrivals.arrived();
+    let steady = arrivals.clone();
+    let feeder = tokio::spawn(async move {
+      loop {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        steady.arrived();
+      }
+    });
+    let started = Instant::now();
+    arrivals
+      .wait_for_quiet(
+        Duration::from_millis(50),
+        started + Duration::from_millis(150),
+      )
+      .await;
+    feeder.abort();
+    let waited = started.elapsed();
+    assert!(waited >= Duration::from_millis(150), "waited {waited:?}");
+    assert!(waited < Duration::from_secs(1), "waited {waited:?}");
+  }
 
   #[tokio::test]
   async fn wait_returns_at_once_when_the_streams_already_finished() {
@@ -1037,5 +1318,277 @@ mod tests {
     assert_eq!(requests.0.len(), 1);
     requests.unregister(11);
     assert!(live.await.is_err());
+  }
+
+  mod cleanup {
+    use super::super::*;
+    use super::PUBLISHER;
+    use crate::server::config::Cli;
+    use bytes::Bytes;
+    use clap::Parser;
+    use moqtail::model::data::constant::ObjectForwardingPreference;
+    use moqtail::model::data::fetch_object::FetchObjectPayload;
+
+    pub(super) fn track(origin: TrackOrigin) -> Track {
+      let config = Box::leak(Box::new(AppConfig::from_cli(Cli::parse_from(["relay"]))));
+      Track::new(
+        1,
+        FullTrackName::try_new("meet/room1", "video").unwrap(),
+        config,
+        TrackStatus::Pending,
+        origin,
+      )
+    }
+
+    async fn cache_an_object(track: &Track) {
+      track
+        .cache
+        .add_object(FetchObjectPayload {
+          group_id: 4,
+          subgroup_id: 0,
+          object_id: 0,
+          publisher_priority: 0,
+          forwarding_preference: ObjectForwardingPreference::Subgroup,
+          properties: None,
+          payload: Bytes::from_static(b"x"),
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn letting_go_of_the_upstream_keeps_the_cache() {
+      let track = track(TrackOrigin::Subscribe);
+      track.publisher_aliases.write().await.insert(3, 11);
+      cache_an_object(&track).await;
+
+      assert_eq!(
+        track.remove_subscriber(&(0, 0)).await,
+        Cleanup::RemoveAliases(vec![(3, 11)])
+      );
+      assert_eq!(track.origin(), TrackOrigin::CacheOnly);
+      assert!(track.publisher_aliases.read().await.is_empty());
+      assert!(track.cache.get_group(4).await.is_some(), "the cache stays");
+
+      // The next SUBSCRIBE takes it over and subscribes upstream afresh.
+      assert!(
+        track
+          .take_over(TrackOrigin::Subscribe, TrackStatus::Pending)
+          .await
+      );
+    }
+
+    #[tokio::test]
+    async fn the_last_subscriber_leaving_cancels_the_upstream_subscriptions() {
+      for origin in [TrackOrigin::Subscribe, TrackOrigin::Publish] {
+        let track = track(origin);
+        let cancelled = track
+          .register_upstream_request(1, PUBLISHER, UpstreamRequestKind::Subscribe)
+          .await;
+        track.remove_subscriber(&(0, 0)).await;
+        assert_eq!(
+          cancelled.await,
+          Ok(UpstreamRequestCancellation::Cancelled),
+          "{origin:?}"
+        );
+      }
+    }
+
+    #[tokio::test]
+    async fn only_a_subscribe_created_track_lets_go_of_its_upstream() {
+      for origin in [TrackOrigin::Publish, TrackOrigin::CacheOnly] {
+        let track = track(origin);
+        cache_an_object(&track).await;
+        assert_eq!(track.remove_subscriber(&(0, 0)).await, Cleanup::Nothing);
+        assert_eq!(track.origin(), origin);
+      }
+    }
+
+    #[tokio::test]
+    async fn a_track_holding_nothing_is_left_for_removal() {
+      let track = track(TrackOrigin::Subscribe);
+      assert_eq!(track.remove_subscriber(&(0, 0)).await, Cleanup::RemoveTrack);
+      assert_eq!(track.retire().await, Cleanup::RemoveTrack);
+      assert_eq!(track.origin(), TrackOrigin::Subscribe, "left as it was");
+    }
+
+    #[tokio::test]
+    async fn a_track_whose_publisher_left_stays_for_what_it_cached() {
+      let track = track(TrackOrigin::Publish);
+      track.upstream_forward.store(true, Ordering::Relaxed);
+      cache_an_object(&track).await;
+
+      assert_eq!(track.retire().await, Cleanup::RemoveAliases(vec![]));
+      assert_eq!(track.origin(), TrackOrigin::CacheOnly);
+      assert!(
+        !track.upstream_forward.load(Ordering::Relaxed),
+        "a new publisher starts from Forward State 0 again"
+      );
+      assert!(
+        track
+          .take_over(
+            TrackOrigin::Publish,
+            TrackStatus::Confirmed {
+              upstream_parameters: vec![]
+            }
+          )
+          .await
+      );
+    }
+
+    #[tokio::test]
+    async fn answers_after_retirement_do_not_wrap_the_pending_count() {
+      let track = track(TrackOrigin::Subscribe);
+      track
+        .pending_upstream_subscribe_count
+        .store(2, Ordering::SeqCst);
+      assert_eq!(track.upstream_subscribe_answered(), 1);
+      cache_an_object(&track).await;
+      track.retire().await;
+      assert_eq!(track.upstream_subscribe_answered(), 0);
+      assert_eq!(
+        track
+          .pending_upstream_subscribe_count
+          .load(Ordering::SeqCst),
+        0
+      );
+    }
+  }
+
+  mod live_evidence {
+    use super::super::*;
+    use bytes::Bytes;
+    use moqtail::model::data::constant::ObjectForwardingPreference;
+
+    fn track() -> Track {
+      super::cleanup::track(TrackOrigin::Subscribe)
+    }
+
+    fn object(
+      group: u64,
+      id: u64,
+      status: ObjectStatus,
+      properties: Vec<ObjectProperty>,
+    ) -> Object {
+      Object {
+        track_alias: 1,
+        location: Location::new(group, id),
+        publisher_priority: 128,
+        forwarding_preference: ObjectForwardingPreference::Subgroup,
+        subgroup_id: Some(0),
+        status,
+        properties: Some(properties),
+        payload: (status == ObjectStatus::Normal).then(|| Bytes::from_static(b"x")),
+      }
+    }
+
+    /// Caches a live Object and records what it says, as new_subgroup_object does.
+    async fn arrive(track: &Track, object: &Object, ends_its_group: bool) {
+      if let Ok(payload) = object.clone().try_into_fetch() {
+        track.cache.add_object(payload).await;
+      }
+      track.note_absent(object, ends_its_group);
+    }
+
+    async fn complete(track: &Track, group: u64) -> bool {
+      track
+        .cache
+        .objects_if_complete(group, 0, u64::MAX)
+        .await
+        .is_some()
+    }
+
+    #[tokio::test]
+    async fn a_group_with_every_object_and_an_end_of_group_is_complete() {
+      let track = track();
+      for id in 0..3 {
+        arrive(&track, &object(5, id, ObjectStatus::Normal, vec![]), false).await;
+      }
+      assert!(
+        !complete(&track, 5).await,
+        "where the group ends is not known yet"
+      );
+      arrive(
+        &track,
+        &object(5, 3, ObjectStatus::EndOfGroup, vec![]),
+        false,
+      )
+      .await;
+      assert!(complete(&track, 5).await);
+    }
+
+    #[tokio::test]
+    async fn a_group_missing_an_object_is_not_complete() {
+      let track = track();
+      for id in [0, 2] {
+        arrive(&track, &object(5, id, ObjectStatus::Normal, vec![]), false).await;
+      }
+      arrive(
+        &track,
+        &object(5, 3, ObjectStatus::EndOfGroup, vec![]),
+        false,
+      )
+      .await;
+      assert!(!complete(&track, 5).await, "object 1 never arrived");
+    }
+
+    #[tokio::test]
+    async fn an_object_that_ends_its_group_ends_it() {
+      let track = track();
+      arrive(&track, &object(5, 0, ObjectStatus::Normal, vec![]), false).await;
+      arrive(&track, &object(5, 1, ObjectStatus::Normal, vec![]), true).await;
+      assert!(complete(&track, 5).await);
+    }
+
+    #[tokio::test]
+    async fn a_stream_holding_the_end_of_its_group_ends_it() {
+      let track = track();
+      arrive(&track, &object(5, 0, ObjectStatus::Normal, vec![]), false).await;
+      track.group_ended_after(&Location::new(5, 0));
+      assert!(complete(&track, 5).await);
+    }
+
+    #[tokio::test]
+    async fn an_end_of_track_rules_out_everything_after_it() {
+      let track = track();
+      arrive(&track, &object(5, 0, ObjectStatus::Normal, vec![]), false).await;
+      arrive(
+        &track,
+        &object(5, 1, ObjectStatus::EndOfTrack, vec![]),
+        false,
+      )
+      .await;
+      assert!(complete(&track, 5).await);
+      assert!(
+        complete(&track, 9).await,
+        "no group after the end of the track exists"
+      );
+    }
+
+    #[tokio::test]
+    async fn gap_properties_account_for_the_ids_they_skip() {
+      let track = track();
+      arrive(&track, &object(6, 0, ObjectStatus::Normal, vec![]), false).await;
+      // Object 3 says 1 and 2 do not exist; the first object of group 6 says
+      // groups 4 and 5 do not.
+      let after_gap = object(
+        6,
+        3,
+        ObjectStatus::Normal,
+        vec![ObjectProperty::PriorObjectIdGap { gap: 2 }],
+      );
+      arrive(&track, &after_gap, true).await;
+      assert!(complete(&track, 6).await);
+
+      let first = object(
+        6,
+        0,
+        ObjectStatus::Normal,
+        vec![ObjectProperty::PriorGroupIdGap { gap: 2 }],
+      );
+      arrive(&track, &first, false).await;
+      assert!(complete(&track, 4).await);
+      assert!(complete(&track, 5).await);
+      assert!(!complete(&track, 3).await);
+    }
   }
 }

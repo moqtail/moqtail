@@ -13,9 +13,11 @@
 // limitations under the License.
 
 use crate::filter_spec::{
-  ObjectPropertySpec, parse_object_property, parse_range_filter, parse_track_property,
+  FetchMarkerSpec, ObjectPropertySpec, parse_fetch_end_of_range, parse_location,
+  parse_object_property, parse_range_filter, parse_track_property,
 };
 use clap::{Parser, ValueEnum};
+use moqtail::model::common::location::Location;
 use moqtail::model::control::constant::{GroupOrder, SwitchMode};
 use moqtail::model::parameter::message_parameter::MessageParameter;
 use moqtail::model::property::track_property::TrackProperty;
@@ -154,6 +156,12 @@ pub struct Cli {
   #[arg(long, default_value_t = 100)]
   pub group_count: u64,
 
+  /// How many of the first groups are published before the session starts (publish and
+  /// publish-namespace). They are served to a FETCH at once, and live delivery starts
+  /// after them. Capped at --group-count.
+  #[arg(long, default_value_t = 0)]
+  pub pre_published_groups: u64,
+
   /// Interval between objects in milliseconds (publish only)
   #[arg(long, short, default_value_t = 1000)]
   pub interval: u64,
@@ -199,6 +207,48 @@ pub struct Cli {
   /// TYPE=VALUE with TYPE even; repeatable (publish only). Example: 0x3c=1
   #[arg(long, value_parser = parse_track_property)]
   pub track_property: Vec<TrackProperty>,
+
+  /// Reset the stream an Object would go on when the publisher reaches it, as G.O,
+  /// so that Object and the rest of its subgroup never arrive live; repeatable
+  /// (publish and publish-namespace). A FETCH still serves them.
+  #[arg(long, value_parser = parse_location)]
+  pub reset_stream_at: Vec<Location>,
+
+  /// Do not send the datagram for this Object, as G.O; repeatable (publish and
+  /// publish-namespace). A FETCH still serves it.
+  #[arg(long, value_parser = parse_location)]
+  pub drop_datagram: Vec<Location>,
+
+  /// Leave out the Prior Group and Object ID Gap properties, so the gaps that
+  /// --group-id-step and --object-id-step leave are not signalled (publish and
+  /// publish-namespace).
+  #[arg(long, default_value_t = false)]
+  pub no_gap_properties: bool,
+
+  /// Send an End of Group object after each group's last Object (publish and
+  /// publish-namespace).
+  #[arg(long, default_value_t = false)]
+  pub end_of_group_objects: bool,
+
+  /// Send an End of Track object after the last group (publish and
+  /// publish-namespace). It ends that group too, so it takes the place of the
+  /// group's End of Group object.
+  #[arg(long, default_value_t = false)]
+  pub end_of_track_object: bool,
+
+  /// Reset each FETCH response's stream after this many Objects, cutting the response
+  /// short. The Objects already written are given a moment to leave first (publish and
+  /// publish-namespace; 0 = never).
+  #[arg(long, default_value_t = 0)]
+  pub fetch_reset_after: u64,
+
+  /// A span of Objects that the publisher's FETCH responses replace with an End of
+  /// Range marker, as KIND:G.O-G.O with KIND non-existent, unknown or timed-out;
+  /// repeatable (publish and publish-namespace). The Objects after a marker are encoded
+  /// against it. In a descending FETCH, keep a span within one group. Example:
+  /// unknown:2.1-2.2
+  #[arg(long, value_parser = parse_fetch_end_of_range)]
+  pub fetch_end_of_range: Vec<FetchMarkerSpec>,
 
   /// Track alias (publish only, random if not specified)
   #[arg(long)]

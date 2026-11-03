@@ -9,7 +9,7 @@
 # MOQtail speaks only moqt-18, so the publisher and subscriber are pinned to
 # --versions=18.
 #
-# Usage: tools/perf-test.sh [options]
+# Usage: scripts/perf-test.sh [options]
 #   --relay PATH           Path to the MOQtail relay binary
 #                          (default: target/release/relay)
 #   --moqbin PATH          Path to the moxygen bin dir holding moqtest_server and
@@ -51,9 +51,9 @@
 #                          the subscribers have ramped; the report is copied back
 #                          to LOG_DIR/remote/. Linux relay only.
 #
-# Settings file: tools/perf-test.env or .perf-test.env (or $PERF_TEST_ENV) is
+# Settings file: scripts/perf-test.env or .perf-test.env (or $PERF_TEST_ENV) is
 # sourced if present, so the stable settings for a machine live there instead of on
-# every command line. See tools/perf-test.env.example. Flags override it.
+# every command line. See scripts/perf-test.env.example. Flags override it.
 
 set -euo pipefail
 
@@ -64,7 +64,7 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 # whatever else is stable for this machine need not be retyped every run. Anything
 # it sets is a default; a command-line flag still wins. First one found is used.
 for candidate in ${PERF_TEST_ENV:+"$PERF_TEST_ENV"} \
-                 "$REPO/tools/perf-test.env" \
+                 "$REPO/scripts/perf-test.env" \
                  "$REPO/.perf-test.env"; do
   if [[ -r "$candidate" ]]; then
     # shellcheck source=/dev/null

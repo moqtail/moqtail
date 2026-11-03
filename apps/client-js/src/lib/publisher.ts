@@ -352,8 +352,8 @@ export class Publisher {
       );
     }
     const headers = new LOCProperties()
-      .addTimestamp(Date.now())
-      .addVideoFrameMarking(isKey ? 1 : 0)
+      .addTimestamp(Date.now() * 1000) // LOC timestamps are µs
+      .addVideoFrameMarking(isKey)
       .build();
 
     const obj = MoqtObject.newWithPayload(

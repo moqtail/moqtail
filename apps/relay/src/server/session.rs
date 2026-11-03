@@ -13,6 +13,8 @@
 // limitations under the License.
 
 use anyhow::Result;
+use moqtail::model::common::location::Location;
+use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::model::parameter::setup_option::SetupOption;
 use moqtail::model::{
   control::{
@@ -29,7 +31,7 @@ use moqtail::transport::{
     TransportConnection, TransportConnectionError, TransportRecvStream, TransportSendStream,
   },
   control_stream_handler::ControlStreamHandler,
-  data_stream_handler::{HeaderInfo, RecvDataStream},
+  data_stream_handler::{DataStreamItem, HeaderInfo, RecvDataStream},
 };
 use std::{
   collections::HashMap,
@@ -45,7 +47,7 @@ use crate::server::{Server, stream_id::StreamId};
 use super::{
   client::MOQTClient,
   message_handlers, request_stream,
-  session_context::{RequestMaps, SessionContext},
+  session_context::{RequestMaps, SessionContext, UpstreamFetchEvent},
   track::Track,
   utils,
 };
@@ -471,8 +473,7 @@ impl Session {
     // Remove the disconnecting publisher from all tracks they were publishing.
     // remove_publisher() internally notifies subscribers when the last publisher leaves.
     // Collect full track names for tracks that have no publishers left.
-    let mut tracks_with_no_publishers: Vec<moqtail::model::data::full_track_name::FullTrackName> =
-      Vec::new();
+    let mut tracks_with_no_publishers: Vec<FullTrackName> = Vec::new();
     {
       let tracks = track_manager_cleanup.tracks.read().await;
       for (full_track_name, track_lock) in tracks.iter() {
@@ -488,11 +489,11 @@ impl Session {
       }
     }
 
-    // Remove tracks that have no publishers left
+    // Tracks no publisher serves any more stay only if they hold cached Objects.
     for full_track_name in &tracks_with_no_publishers {
-      track_manager_cleanup.remove_track(full_track_name).await;
+      track_manager_cleanup.retire_track(full_track_name).await;
       info!(
-        "Removed track {:?} after publisher {} disconnect",
+        "No publishers left for {:?} after publisher {} disconnect",
         full_track_name, context.connection_id
       );
     }
@@ -557,25 +558,53 @@ impl Session {
 
     let mut first_object = true;
     let mut track_alias = 0u64;
+    // The track named by the upstream FETCH this stream answers, when nothing waits on
+    // that FETCH any more: its Objects are still worth caching.
+    let mut fetch_track_name: Option<FullTrackName> = None;
     let mut stream_id: Option<StreamId> = None;
     let mut current_track: Option<Arc<RwLock<Track>>> = None;
     // Only subgroup streams count toward the Stream Count a publisher reports in
     // PUBLISH_DONE; a fetch stream answers a request of the relay's own.
     let mut is_subgroup_stream = false;
     // Used if this stream is a response to an upstream fetch the relay issued.
-    let mut upstream_sender: Option<
-      tokio::sync::mpsc::Sender<super::session_context::UpstreamFetchEvent>,
-    > = None;
+    let mut upstream_sender: Option<tokio::sync::mpsc::Sender<UpstreamFetchEvent>> = None;
 
     let mut object_count = 0;
+    // The last Object a subgroup stream carried.
+    let mut last_location: Option<Location> = None;
 
     loop {
-      let next = stream_handler.next_object().await;
+      let next = stream_handler.next_item().await;
 
       match next {
-        (handler, Some(object)) => {
+        // Only a fetch stream carries these. The relay passes them on to whatever
+        // waits on the FETCH it sent.
+        (handler, Some(DataStreamItem::EndOfRange { kind, location })) => {
+          stream_handler = handler;
+          if upstream_sender.is_none() {
+            upstream_sender = Self::upstream_fetch_sender(&context, handler).await;
+          }
+          if let Some(ref sender) = upstream_sender {
+            let _ = sender
+              .send(UpstreamFetchEvent::EndOfRange { kind, location })
+              .await;
+          }
+        }
+        (handler, Some(DataStreamItem::Object(object))) => {
           // Handle the object
           stream_handler = handler;
+
+          // An answer to a FETCH the relay sent goes to that FETCH, which caches it
+          // into the track it holds, so it is not looked up here.
+          if first_object && upstream_sender.is_none() {
+            upstream_sender = Self::upstream_fetch_sender(&context, handler).await;
+          }
+          if let Some(ref sender) = upstream_sender {
+            if let Ok(fetch_object) = object.try_into_fetch() {
+              let _ = sender.send(UpstreamFetchEvent::Object(fetch_object)).await;
+            }
+            continue;
+          }
 
           let header_info = if first_object {
             // trace!("First object received, processing header info");
@@ -600,23 +629,17 @@ impl Session {
               } => {
                 trace!("received Fetch header: {:?}", header);
                 let fetch_request_id = header.request_id;
-                track_alias = client
+                // A fetch answers a request the relay made, which names the track.
+                // The publisher may have no alias for it: the relay can fetch a track
+                // nothing subscribes to.
+                if let Some(req) = client
                   .outgoing_fetch_requests
                   .read()
                   .await
                   .get(&fetch_request_id)
-                  .map_or(0, |r| r.track_alias);
-
-                // Check if this stream is a response to a relay-initiated
-                // upstream fetch. If so, grab the sender to forward objects.
-                if let Some(sender) = context
-                  .upstream_fetch_senders
-                  .read()
-                  .await
-                  .get(&fetch_request_id)
-                  .cloned()
                 {
-                  upstream_sender = Some(sender);
+                  track_alias = req.track_alias;
+                  fetch_track_name = Some(req.fetch_request.get_full_track_name());
                 }
               }
             }
@@ -624,15 +647,20 @@ impl Session {
             // A data stream can outrun the control message that establishes its alias,
             // so wait briefly for it. An alias that never arrives is not a session
             // error: the stream is abandoned and the session carries on.
-            trace!("looking for track with alias: {:?}", track_alias);
-            current_track = context
-              .track_manager
-              .resolve_track_by_alias(
-                client.connection_id,
-                track_alias,
-                context.server_config.track_alias_resolution_timeout,
-              )
-              .await;
+            current_track = match fetch_track_name.take() {
+              Some(full_track_name) => context.track_manager.get_track(&full_track_name).await,
+              None => {
+                trace!("looking for track with alias: {:?}", track_alias);
+                context
+                  .track_manager
+                  .resolve_track_by_alias(
+                    client.connection_id,
+                    track_alias,
+                    context.server_config.track_alias_resolution_timeout,
+                  )
+                  .await
+              }
+            };
 
             let relay_track_id = match current_track.as_ref() {
               Some(t) => t.read().await.relay_track_id,
@@ -652,7 +680,11 @@ impl Session {
 
           let track = current_track.as_ref().unwrap().read().await;
 
-          if let Err(e) = track
+          // What a fetch brings in is history, for the cache alone: subscribers get the
+          // live feed.
+          if !is_subgroup_stream {
+            track.cache_fetched_object(&object).await;
+          } else if let Err(e) = track
             .new_subgroup_object(
               &stream_id.clone().unwrap().clone(),
               &object,
@@ -666,18 +698,8 @@ impl Session {
             );
           }
 
-          // Forward object to upstream fetch channel if this is a relay-initiated fetch
-          if let Some(ref sender) = upstream_sender
-            && let Ok(fetch_object) = object.clone().try_into_fetch()
-          {
-            let _ = sender
-              .send(super::session_context::UpstreamFetchEvent::Object(
-                fetch_object,
-              ))
-              .await;
-          }
-
           object_count += 1;
+          last_location = Some(object.location.clone());
           first_object = false; // reset the first object flag after processing the header
         }
         (handler, None) => {
@@ -691,24 +713,20 @@ impl Session {
           );
 
           // Resolve an empty FETCH stream's sender from its parsed header.
-          if upstream_sender.is_none()
-            && let Some(HeaderInfo::Fetch { header, .. }) = handler.get_header_info().await
-          {
-            upstream_sender = context
-              .upstream_fetch_senders
-              .read()
-              .await
-              .get(&header.request_id)
-              .cloned();
+          if upstream_sender.is_none() {
+            upstream_sender = Self::upstream_fetch_sender(&context, handler).await;
           }
 
           // A relay-initiated fetch ends when its stream does. Without this the loop
           // waiting on those Objects has nothing to end it but its own timeout.
           if let Some(ref sender) = upstream_sender {
             let event = if handler.is_malformed_track() {
-              super::session_context::UpstreamFetchEvent::MalformedTrack
+              UpstreamFetchEvent::MalformedTrack
+            } else if handler.was_aborted() {
+              // Not all of the range arrived, so this is not the end of it.
+              UpstreamFetchEvent::Error("fetch stream ended without its FIN".to_string())
             } else {
-              super::session_context::UpstreamFetchEvent::StreamClosed
+              UpstreamFetchEvent::StreamClosed
             };
             let _ = sender.send(event).await;
           }
@@ -739,6 +757,15 @@ impl Session {
                 .publisher_stream_progress
                 .stream_closed(context.connection_id)
                 .await;
+              // A FIN on a stream that holds the end of its group means it carried the
+              // group's last Object.
+              if !handler.was_aborted()
+                && let Some(HeaderInfo::Subgroup { header }) = handler.get_header_info().await
+                && header.header_type.contains_end_of_group()
+                && let Some(last) = &last_location
+              {
+                track.group_ended_after(last);
+              }
             }
             if let Some(stream_id) = &stream_id {
               return track.stream_closed(stream_id).await;
@@ -750,6 +777,23 @@ impl Session {
     }
 
     Ok(())
+  }
+
+  /// The channel to whatever waits on the upstream FETCH a fetch stream answers, if
+  /// the stream is one.
+  async fn upstream_fetch_sender(
+    context: &Arc<SessionContext>,
+    handler: &RecvDataStream,
+  ) -> Option<tokio::sync::mpsc::Sender<UpstreamFetchEvent>> {
+    let Some(HeaderInfo::Fetch { header, .. }) = handler.get_header_info().await else {
+      return None;
+    };
+    context
+      .upstream_fetch_senders
+      .read()
+      .await
+      .get(&header.request_id)
+      .cloned()
   }
 
   pub(crate) async fn get_next_relay_request_id(relay_next_request_id: Arc<AtomicU64>) -> u64 {

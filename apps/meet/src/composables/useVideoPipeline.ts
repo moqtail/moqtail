@@ -130,7 +130,7 @@ export async function startAudioEncoder({
         chunk.copyTo(payload);
 
         const captureTime = Math.round(Date.now());
-        const locHeaders = new LOCProperties().addTimestamp(captureTime);
+        const locHeaders = new LOCProperties().addTimestamp(captureTime * 1000); // LOC timestamps are µs
 
         // console.warn('Audio Group ID is:', currentAudioGroupId)
         const moqt = MoqtObject.newWithPayload(
@@ -262,8 +262,8 @@ export function initializeVideoEncoder({
         }
 
         const locHeaders = new LOCProperties()
-          .addTimestamp(captureTime)
-          .addVideoFrameMarking(chunk.type === 'key' ? 1 : 0);
+          .addTimestamp(captureTime * 1000) // LOC timestamps are µs
+          .addVideoFrameMarking(chunk.type === 'key');
 
         const desc = meta?.decoderConfig?.description;
         if (!isFirstKeyframeSent && desc instanceof ArrayBuffer) {
@@ -456,8 +456,8 @@ export async function startVideoEncoder({
         }
 
         const locHeaders = new LOCProperties()
-          .addTimestamp(captureTime)
-          .addVideoFrameMarking(chunk.type === 'key' ? 1 : 0);
+          .addTimestamp(captureTime * 1000) // LOC timestamps are µs
+          .addVideoFrameMarking(chunk.type === 'key');
 
         const desc = meta?.decoderConfig?.description;
         if (!isFirstKeyframeSent && desc instanceof ArrayBuffer) {

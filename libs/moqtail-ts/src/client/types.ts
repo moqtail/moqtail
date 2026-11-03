@@ -15,6 +15,7 @@
  */
 
 import {
+  EndOfRangeKind,
   FullTrackName,
   GroupOrder,
   LocationFilter,
@@ -208,6 +209,14 @@ export type MOQtailClientOptions = {
  * })
  * ```
  */
+/**
+ * Called for an End of Range marker on a fetch stream: every Location after the
+ * previous Object, if any, up to and including `location`, does not exist, is unknown,
+ * or timed out, as `kind` says. Without it, an unknown or timed-out range looks the
+ * same as one that does not exist.
+ */
+export type EndOfRangeHandler = (kind: EndOfRangeKind, location: Location) => void
+
 export type SubscribeOptions = {
   /** Fully qualified track identifier ({@link FullTrackName}). */
   fullTrackName: FullTrackName
@@ -226,6 +235,8 @@ export type SubscribeOptions = {
   parameters?: MessageParameter[]
   /** Per-subscription early discard policy. Overrides the client-level default set via {@link MOQtailClient.setEarlyDiscardPolicy}. */
   earlyDiscardPolicy?: EarlyDiscardPolicyConfig
+  /** Called for each End of Range marker on the subscription's fill fetch streams. */
+  onEndOfRange?: EndOfRangeHandler
 }
 
 /**
@@ -328,4 +339,6 @@ export type FetchOptions = {
   locationFilter?: LocationFilter
   /** Optional parameters block. */
   parameters?: MessageParameter[]
+  /** Called for each End of Range marker in the response. */
+  onEndOfRange?: EndOfRangeHandler
 }

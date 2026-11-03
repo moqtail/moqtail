@@ -1,5 +1,34 @@
 # moqtail-rs
 
+## 0.17.0
+
+### Minor Changes
+
+- [#444](https://github.com/moqtail/moqtail/pull/444) [`8c71f44`](https://github.com/moqtail/moqtail/commit/8c71f447385902e7e9d35f15cddb0f276fbc7f75) Thanks [@zafergurel](https://github.com/zafergurel)! - Serve FETCH from the relay's cache whenever the cache accounts for every Object of a group, and fetch upstream only what it does not. The relay now creates a track for a FETCH of a track it does not have yet, keeps a track for its cached Objects after its upstream goes away, records which Objects are known not to exist (from End of Group and End of Track statuses, gap properties, a group's last datagram or subgroup stream, and what an upstream FETCH response passes over), and lets concurrent FETCHes of the same range share one upstream FETCH. A PUBLISH_DONE now waits for a track's datagrams to go quiet. Both libraries parse End of Timed-Out Range markers and hand End of Range markers to the application (`RecvDataStream::next_item` in moqtail-rs, an `onEndOfRange` handler in moqtail). The test client can publish groups that already exist at startup, reset streams, drop datagrams, send End of Group and End of Track objects, and cut or mark its FETCH responses.
+
+- [#459](https://github.com/moqtail/moqtail/pull/459) [`561588a`](https://github.com/moqtail/moqtail/commit/561588ae232fe7660bc69ee2812a98231d6481d0) Thanks [@zafergurel](https://github.com/zafergurel)! - Fix the LOC property ids: TIMESTAMP is 0x10 and VIDEO_FRAME_MARKING is 0x09, and AUDIO_CONFIG (0x0F) is added. Video frame marking now carries the RFC 9626 flag byte instead of a varint, so `addVideoFrameMarking` takes `isKey: boolean` and receivers check `independent` (`is_independent_frame()` in moqtail-rs). Timestamps are microseconds; meet and client-js publish them that way.
+
+## 0.16.0
+
+### Minor Changes
+
+- [#386](https://github.com/moqtail/moqtail/pull/386) [`d642d33`](https://github.com/moqtail/moqtail/commit/d642d335d1f0b0bc4d2020dc47416eaeb2b4a550) Thanks [@zafergurel](https://github.com/zafergurel)! - Switch tracks with the SWITCH_FROM parameter
+
+  A SUBSCRIBE or REQUEST_UPDATE carrying SWITCH_FROM activates its own
+  subscription and suspends the one it names, in place of the SWITCH message,
+  which is gone. A hard switch stops the suspended subscription at the cutover; a
+  soft switch lets it drain to the group before the new subscription's start, so
+  the two are contiguous.
+
+  The fill filter types — AbsoluteStartFill, AbsoluteRangeFill and the new
+  RelativeStartFill — ask the publisher for the objects already published, which
+  arrive on a fill fetch stream: a unidirectional stream beginning with a
+  FETCH_HEADER that names the request which asked for the fill. FILL_PARAMETERS
+  overrides the subscriber priority and group order that stream runs at.
+
+  FETCH is a single message now. Fetch Type and Joining Fetch are gone, along with
+  INVALID_JOINING_REQUEST_ID, whose codepoint INVALID_SWITCH takes over.
+
 ## 0.15.0
 
 ### Minor Changes

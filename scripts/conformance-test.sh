@@ -16,7 +16,7 @@
 #
 # Prerequisites: see docs/interop-testing.md (moxygen binaries + macOS dylibs).
 #
-# Usage: tools/conformance-test.sh [options]
+# Usage: scripts/conformance-test.sh [options]
 #   -t, --transport TYPE  quic or webtransport (default: quic)
 #   --relay-url URL       Test a running relay (e.g. https://relay18.moqtail.dev/moq)
 #                         instead of starting a local one

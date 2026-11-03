@@ -109,7 +109,7 @@ export class PlayoutBuffer {
       const headers = LOCProperties.fromKeyValuePairs(object.properties);
       for (const header of headers) {
         if (LOCProperty.isTimestamp(header)) {
-          return Number(header.timestamp);
+          return Number(header.timestamp) / 1000; // µs → ms
         }
       }
     }

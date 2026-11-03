@@ -1,0 +1,137 @@
+/**
+ * Copyright 2026 The MOQtail Authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/**
+ * The optional interfaces an element can declare in `provides`, their keys, and the
+ * catalog contract sources are written against (implemented in milestone 4).
+ */
+
+import type { Location } from '../../model/common/location'
+import type { Tuple } from '../../model/common/tuple'
+import type { Emitter } from '../../util/emitter'
+
+// Symbol.for, so the keys still match when the ESM and CJS builds are both loaded.
+/** @public Key of {@link MediaSinkElement}. */
+export const MEDIA_SINK = Symbol.for('moqtail.mediaSink')
+/** @public Key of {@link MediaSourceElement}. */
+export const MEDIA_SOURCE = Symbol.for('moqtail.mediaSource')
+
+/** @public Maps each interface key to its interface. New interfaces add a line here. */
+export interface ElementInterfaces {
+  [MEDIA_SINK]: MediaSinkElement
+  [MEDIA_SOURCE]: MediaSourceElement
+}
+
+/** @public */
+export type InterfaceKey = keyof ElementInterfaces
+
+/**
+ * @public
+ * Implemented by sinks that drive a display backend. Times are in seconds.
+ * Dispatches `playing`, `pause`, `stalled`, `waiting`, and `timeupdate`.
+ */
+export interface MediaSinkElement extends EventTarget {
+  readonly currentTime: number
+  readonly buffered: TimeRanges
+  readonly paused: boolean
+  readonly playbackRate: number
+  setPlaybackRate(rate: number): void
+  play(): Promise<void>
+  pause(): Promise<void>
+  seek(mediaTime: number): Promise<void>
+}
+
+/** @public Implemented by sources that deliver media and handle a switching set. */
+export interface MediaSourceElement {
+  getRenditions(): Rendition[]
+  switch(renditionId: string): Promise<void>
+  /** Sets which renditions ABR may choose from. */
+  selectRenditions(renditionIds: string[]): Promise<void>
+  /** Called by the catalog element when an update changes this source's switching set. */
+  setTracks(tracks: readonly CatalogTrack[]): void
+}
+
+/** @public One track of a media source's switching set. */
+export interface Rendition {
+  /** Track name, with the namespace when it differs from the catalog's. */
+  id: string
+  src: string
+  bitrate: number
+  codec: string
+  width?: number
+  height?: number
+  frameRate?: number
+  /** Currently playing. */
+  active: boolean
+  /** Considered for ABR. */
+  selected: boolean
+}
+
+/**
+ * @public
+ * A catalog track. Field names follow MSF 5.2 and CMSF 3.5. Milestone 4 replaces this
+ * with the Valibot output type of the same shape.
+ */
+export interface CatalogTrack {
+  name: string
+  nameBytes: Uint8Array
+  namespace: Tuple
+  packaging: string
+  role?: string
+  isLive: boolean
+  codec?: string
+  mimeType?: string
+  bitrate?: number
+  avgBitrate?: number
+  width?: number
+  height?: number
+  framerate?: number
+  samplerate?: number
+  channelConfig?: string
+  lang?: string
+  altGroup?: number
+  renderGroup?: number
+  keyframeSpacing?: number
+  maxGrpDuration?: number
+  trackDuration?: number
+  targetLatency?: number
+  accessibleWindowTime?: number
+  timescale?: number
+  /** The media timeline template (MSF 7.3), typed by milestone 4. */
+  template?: unknown
+  depends?: (string | number)[]
+  init?: { type: 'inline'; data: Uint8Array } | { type: 'track-property' | 'object-property'; property: number }
+  [extra: string]: unknown
+}
+
+/** @public What the catalog element offers the elements it loads. */
+export interface CatalogReader extends Emitter<{ change: () => void }> {
+  /** The last good catalog. */
+  readonly tracks: readonly CatalogTrack[]
+  readonly isComplete: boolean
+  /** Loads (shared) the media timeline element for the track, or wraps its template. Undefined if neither exists. */
+  timeline(track: CatalogTrack): Promise<TimelineReader | undefined>
+}
+
+/** @public Translates between media time, wallclock time, and locations. Times in milliseconds. */
+export interface TimelineReader {
+  /** The group containing that time. */
+  timeToLocation(mediaTimeMs: number): Location | undefined
+  locationToTime(location: Location): number | undefined
+  wallclockToLocation(wallclockMs: number): Location | undefined
+  /** Media time, after `accessibleWindowTime`. */
+  readonly range: { start: number; end: number } | undefined
+}

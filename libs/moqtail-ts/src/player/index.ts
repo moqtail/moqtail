@@ -16,3 +16,40 @@
 
 export { parseMsfUrl, formatMsfUrl, type MsfSource, type LocationRange, type TimeRange } from './msf_url'
 export { PlayerError, type PlayerErrorCode, type PlayerErrorCategory } from './error'
+export {
+  defineElement,
+  hasInterface,
+  CapabilityCode,
+  DEFAULT_PRIORITY,
+  type Capability,
+  type Capabilities,
+  type CapabilityBundles,
+  type Provided,
+  type Identifiers,
+  type ElementDefinition,
+  type SourceElementDefinition,
+  type TransformElementDefinition,
+  type SinkElementDefinition,
+} from './element/define'
+export { BaseElement, SourceElement, TransformElement, SinkElement, type ElementEvents } from './element/base'
+export {
+  Pad,
+  CONNECTION_CAPACITY,
+  type PadItem,
+  type PadOutput,
+  type PadProperties,
+  type PadEvent,
+} from './element/pad'
+export type { ElementContext, ElementLoadRequest, PlayerHandle } from './element/context'
+export {
+  MEDIA_SINK,
+  MEDIA_SOURCE,
+  type ElementInterfaces,
+  type InterfaceKey,
+  type MediaSinkElement,
+  type MediaSourceElement,
+  type Rendition,
+  type CatalogTrack,
+  type CatalogReader,
+  type TimelineReader,
+} from './element/interfaces'

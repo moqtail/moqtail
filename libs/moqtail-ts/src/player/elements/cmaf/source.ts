@@ -20,48 +20,128 @@ import { SourceElement } from '../../element/base'
 import type { ElementContext } from '../../element/context'
 import type { CatalogTrack, MediaSourceElement, MediaSourceOptions, Rendition } from '../../element/interfaces'
 import type { Pad } from '../../element/pad'
+import { PlayerError } from '../../error'
 import { formatMsfUrl } from '../../msf_url'
 import { Delivery } from './delivery'
-import { Recovery } from './recovery'
+import type { Span } from './ranges'
+import { closestBitrate, Recovery } from './recovery'
+import { Switcher } from './switch'
 import { bitrateOf, cmafCapabilities, renditionId, trackKey } from './track'
+
+/** What `Cmaf.init` worked out before the source starts: the URL ranges and the set's first Group ID. */
+export interface SourcePlan {
+  spans: readonly Span[]
+  g0: bigint
+  /** The end of the last range in seconds, when known. */
+  duration?: number
+}
 
 /**
  * Plays a CMAF switching set (`context.tracks`, at least one track) from its first track:
- * live with SUBSCRIBE from the next group, VOD with FETCH from the start.
+ * live with SUBSCRIBE from the next group, VOD with FETCH from the start, or the URL ranges.
  */
 export class CmafSource extends SourceElement implements MediaSourceElement {
   readonly pad: Pad
   #tracks: readonly CatalogTrack[]
   /** Rendition ids ABR may choose from. */
   #selected: Set<string>
-  readonly #recovery: Recovery
+  readonly delivery: Delivery
+  readonly recovery: Recovery
+  readonly #switcher: Switcher
 
   constructor(
     context: ElementContext,
     readonly options: MediaSourceOptions,
+    plan: SourcePlan = { spans: [], g0: 1n },
   ) {
     super(context)
     const start = context.tracks[0]!
     this.#tracks = context.tracks
     this.#selected = new Set(context.tracks.map((t) => this.#id(t)))
     this.pad = this.createPad('src', cmafCapabilities(start.role ?? 'video'))
-    const delivery = new Delivery(this.pad, context, options.requests)
-    this.#recovery = new Recovery(
+    this.delivery = new Delivery(this.pad, context, options.requests)
+    this.delivery.duration = plan.duration
+    this.recovery = new Recovery(
       context,
-      delivery,
+      this.delivery,
       {
         candidates: () => this.#tracks.filter((t) => this.#selected.has(this.#id(t))),
         giveUp: () => this.removePad(this.pad, true),
       },
       start,
+      plan,
     )
+    const { delivery, recovery } = this
+    this.#switcher = new Switcher({ context, options, delivery, recovery, tracks: () => this.#tracks })
+    this.delivery.onTrackStart = (track, changed) => this.#trackStarted(track, changed)
+    this.pad.onEvent((event) => {
+      if (event.type !== 'seek') return false
+      this.recovery.seek(event.mediaTime)
+      return true
+    })
     this.emit('nomorepads')
-    void this.#recovery.run()
+    void this.recovery.run()
   }
 
   getRenditions(): Rendition[] {
-    const active = trackKey(this.#recovery.active)
-    return this.#tracks.map((track) => ({
+    return this.#tracks.map((track) => this.#rendition(track))
+  }
+
+  /** Switches at the next switch point; resolves once the new track's first packet is written. */
+  async switch(renditionId: string): Promise<void> {
+    const track = this.#tracks.find((t) => this.#id(t) === renditionId)
+    if (!track) throw new PlayerError('UNSUPPORTED_SOURCE', `Unknown rendition ${renditionId}`, { element: 'cmaf' })
+    return this.#switcher.switch(track)
+  }
+
+  /**
+   * Sets which renditions ABR may choose from. A deselected active rendition switches to the
+   * closest selected bitrate; an empty selection stops requesting until a later one.
+   */
+  async selectRenditions(renditionIds: string[]): Promise<void> {
+    this.#selected = new Set(renditionIds)
+    const selected = this.#tracks.filter((t) => this.#selected.has(this.#id(t)))
+    if (selected.length === 0) return this.recovery.pause()
+    this.recovery.resume()
+    const active = this.recovery.active
+    if (!this.#selected.has(this.#id(active))) await this.switch(this.#id(closestBitrate(selected, bitrateOf(active))!))
+  }
+
+  /**
+   * Replaces the switching set. New renditions start selected, unless exactly one is selected.
+   * A removed active track switches to the closest selected bitrate; an empty set removes the pad.
+   */
+  setTracks(tracks: readonly CatalogTrack[]): void {
+    const known = new Set(this.#tracks.map((t) => this.#id(t)))
+    const keepSelection = this.#selected.size === 1
+    for (const track of tracks) if (!known.has(this.#id(track)) && !keepSelection) this.#selected.add(this.#id(track))
+    this.#tracks = tracks
+    if (tracks.length === 0) {
+      this.recovery.pause()
+      if (this.pads.includes(this.pad)) this.removePad(this.pad)
+      return
+    }
+    const key = trackKey(this.recovery.active)
+    // The same track may come back with changes made in place, such as isLive turning false.
+    const active = tracks.find((t) => trackKey(t) === key)
+    if (active) {
+      this.recovery.active = active
+      return
+    }
+    const selected = tracks.filter((t) => this.#selected.has(this.#id(t)))
+    const next = closestBitrate(selected.length > 0 ? selected : tracks, bitrateOf(this.recovery.active))!
+    void this.switch(this.#id(next)).catch(() => {})
+  }
+
+  #trackStarted(track: CatalogTrack, changed: boolean): void {
+    if (trackKey(track) !== trackKey(this.recovery.active)) this.recovery.active = track
+    this.recovery.dropHandover(track)
+    this.#switcher.started(track)
+    if (changed) this.context.player.emit('renditionchange', this, this.#rendition(track))
+  }
+
+  #rendition(track: CatalogTrack): Rendition {
+    return {
       id: this.#id(track),
       src: formatMsfUrl(this.context.catalog?.url ?? '', track.namespace, track.nameBytes),
       bitrate: bitrateOf(track),
@@ -69,30 +149,9 @@ export class CmafSource extends SourceElement implements MediaSourceElement {
       ...(track.width !== undefined && { width: track.width }),
       ...(track.height !== undefined && { height: track.height }),
       ...(track.framerate !== undefined && { frameRate: track.framerate }),
-      active: trackKey(track) === active,
+      active: trackKey(track) === trackKey(this.recovery.active),
       selected: this.#selected.has(this.#id(track)),
-    }))
-  }
-
-  // shortcut: rejects until switching lands in 3e.
-  async switch(renditionId: string): Promise<void> {
-    throw new Error(`switch(${renditionId}) isn't implemented yet`)
-  }
-
-  /** Stores which renditions ABR may choose from. */
-  async selectRenditions(renditionIds: string[]): Promise<void> {
-    this.#selected = new Set(renditionIds)
-  }
-
-  /** Replaces the switching set. New renditions start selected; the active track keeps playing. */
-  setTracks(tracks: readonly CatalogTrack[]): void {
-    const known = new Set(this.#tracks.map((t) => this.#id(t)))
-    for (const track of tracks) if (!known.has(this.#id(track))) this.#selected.add(this.#id(track))
-    this.#tracks = tracks
-    const key = trackKey(this.#recovery.active)
-    // The same track may come back with changes made in place, such as isLive turning false.
-    const active = tracks.find((t) => trackKey(t) === key)
-    if (active) this.#recovery.active = active
+    }
   }
 
   #id(track: CatalogTrack): string {
@@ -136,7 +195,8 @@ if (import.meta.vitest) {
     c.source.setTracks([cmafTrack('v1', { bitrate: 900 }), cmafTrack('v3')])
     expect(c.source.getRenditions().map((r) => [r.id, r.bitrate, r.active, r.selected])).toEqual([
       ['v1', 900, true, true],
-      ['v3', 0, false, true],
+      // Exactly one rendition was selected: a new one doesn't join the selection.
+      ['v3', 0, false, false],
     ])
   })
 }

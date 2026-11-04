@@ -134,11 +134,18 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
   #starting: Promise<void> | undefined
   #destroying: Promise<void> | undefined
 
-  /** @throws PlayerError `UNSUPPORTED_ORIGIN` when two extensions set a setup parameter differently. */
+  /**
+   * @throws PlayerError `UNSUPPORTED_ORIGIN` when two extensions set a setup parameter differently,
+   * `UNSUPPORTED_SOURCE` when two extensions manage switching sets.
+   */
   constructor(options: MOQtailPlayerOptions = {}) {
     super()
     this.options = options
     const extensions = options.extensions ?? []
+    // A switching set has one parent.
+    if (extensions.filter((e) => e.switchingSetSource).length > 1) {
+      throw new PlayerError('UNSUPPORTED_SOURCE', 'Only one extension may have a switchingSetSource')
+    }
     const setupOptions = mergeSetupOptions(options.client?.setupOptions, extensions)
     this.#client = { ...options.client, ...(setupOptions && { setupOptions }) }
     this.#key = clientKey(this.#client)
@@ -587,6 +594,8 @@ if (import.meta.vitest) {
       expect(() => new MOQtailPlayer({ extensions: [ssts('one', 1), ssts('two', 2)] })).toThrow(
         code('UNSUPPORTED_ORIGIN'),
       )
+      const sets = (name: string) => defineExtension({ name, switchingSetSource: testSource({ name }) })
+      expect(() => new MOQtailPlayer({ extensions: [sets('one'), sets('two')] })).toThrow(code('UNSUPPORTED_SOURCE'))
 
       const parent = testSource({
         name: 'ssts-parent',

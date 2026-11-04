@@ -24,6 +24,7 @@ import type { Location } from '../../model/common/location'
 import type { Tuple } from '../../model/common/tuple'
 import type { Emitter } from '../../util/emitter'
 import type { MsfSource } from '../msf_url'
+import type { SourceElementDefinition } from './define'
 
 // Symbol.for, so the keys still match when the ESM and CJS builds are both loaded.
 /** @public Key of {@link MediaSinkElement}. */
@@ -154,6 +155,15 @@ export interface MediaSourceOptions {
   ranges?: Pick<MsfSource, 'locationRanges' | 'mediaTimeRanges' | 'wallclockRanges'>
   /** How a parent adds to every SUBSCRIBE and FETCH the source sends. */
   requests?: RequestHooks
+}
+
+/**
+ * @public
+ * What an extension's switching set source is loaded with: the media source options, and the
+ * definition the probe picked for the set's tracks.
+ */
+export interface SwitchingSetOptions extends MediaSourceOptions {
+  child: SourceElementDefinition
 }
 
 /**

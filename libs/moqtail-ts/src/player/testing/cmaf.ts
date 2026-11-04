@@ -24,7 +24,12 @@ import { MoqtObject } from '../../model/data/object'
 import { Emitter } from '../../util/emitter'
 import { Cmaf } from '../elements/cmaf'
 import type { CmafSource } from '../elements/cmaf/source'
-import type { CatalogReader, CatalogTrack, MediaSourceOptions } from '../element/interfaces'
+import type { SubscribeOptions, SubscribeUpdateOptions, SwitchOptions } from '../../client/types'
+import { LocationFilterType } from '../../model/control/constant'
+import { FillParameters } from '../../model/parameter/message/fill_parameters'
+import type { LocationFilter } from '../../model/parameter/message/location_filter'
+import type { CatalogReader, CatalogTrack, MediaSourceOptions, TimelineReader } from '../element/interfaces'
+import { fragment } from './bmff'
 import { FakeClient } from './client'
 import { collectingSink, testChain, testSource, track, type CollectingSink } from './elements'
 
@@ -34,13 +39,13 @@ export function cmafTrack(name: string, extra: Partial<CatalogTrack> = {}): Cata
 }
 
 /** A catalog reader the test edits; emit `change` after editing. */
-export function fakeCatalog(tracks: CatalogTrack[] = []) {
+export function fakeCatalog(tracks: CatalogTrack[] = [], timeline?: TimelineReader) {
   return Object.assign(new Emitter<{ change: () => void }>(), {
     url: 'moqt://relay.test/app',
     namespace: new Tuple([TupleField.fromUtf8('ns')]),
     tracks,
     isComplete: false,
-    timeline: async () => undefined,
+    timeline: async (): Promise<TimelineReader | undefined> => timeline,
   }) satisfies CatalogReader
 }
 
@@ -122,11 +127,67 @@ export async function cmafChain(
     },
     /** What the sink received, in short: `props <keys>`, `<group>.<object>`, `gap`, `eos`. */
     trace(): string[] {
-      return sink.items().map((item) => {
+      // The first pad's log, kept after the pad is removed.
+      return (sink.log.values().next().value ?? []).map((item) => {
         if (item.type === 'packet') return `${item.object.location.group}.${item.object.location.object}`
         if (item.type === 'properties') return `props ${Object.keys(item.properties).sort().join(',')}`
-        return item.event.type === 'discontinuity' ? item.event.reason : item.event.type
+        if (item.event.type !== 'discontinuity') return item.event.type
+        return item.event.failed ? `${item.event.reason} failed` : item.event.reason
       })
     },
+    /** Sends a `seek` upstream, as the sink does. */
+    seek(mediaTime: number) {
+      sink.pads[0]!.sendEvent({ type: 'seek', mediaTime })
+    },
+    /** The requests sent on the current client, in short. */
+    requests(): string[] {
+      return clients.at(-1)!.calls.map(describeCall)
+    },
+  }
+}
+
+/** A request in short: `subscribe v1 next`, `fetch v1 2.0-4`, `update 0 3.0-4.14`, `switch 0 v2 5.0- fill`. */
+function describeCall({ method, args }: { method: string; args: unknown }): string {
+  if (method === 'unsubscribe' || method === 'fetchCancel') return `${method} ${args}`
+  if (method === 'subscribeUpdate') {
+    const update = args as SubscribeUpdateOptions
+    return `update ${update.subscriptionRequestId} ${describeFilter(update.locationFilter)}`
+  }
+  const options = (method === 'switch' ? (args as SwitchOptions).newSubscribeOptions : args) as SubscribeOptions
+  const fill = options.parameters?.find((p): p is FillParameters => p instanceof FillParameters)
+  const filled = fill && ` fill${fill.parameters.map((f) => ` ${describeFilter(f as LocationFilter)}`).join('')}`
+  const from = method === 'switch' ? ` ${(args as SwitchOptions).switchFromRequestId}` : ''
+  return `${method}${from} ${requested(options)} ${describeFilter(options.locationFilter)}${filled ?? ''}`
+}
+
+function describeFilter(filter: LocationFilter | undefined): string {
+  if (!filter) return 'all'
+  const { filterType, startGroup: g, startObject: o, endGroup, endObject } = filter
+  if (filterType === LocationFilterType.RelativeStart) return g ? `next-${g}` : 'next'
+  if (filterType === LocationFilterType.AbsoluteStart) return `${g}.${o}-`
+  if (filterType === LocationFilterType.AbsoluteStartGroupEnd) return `${g}.${o}-${endGroup}`
+  return `${g}.${o}-${endGroup}.${endObject}`
+}
+
+/** A media object of `track` whose payload is a fragment at `time` seconds (timescale 1000). */
+export function timedObject(group: number, time: number, track = 'v1', object = 0): MoqtObject {
+  return MoqtObject.newWithPayload(
+    FullTrackName.tryNew('ns', track),
+    new Location(group, object),
+    0,
+    ObjectForwardingPreference.Subgroup,
+    0,
+    null,
+    fragment(time * 1000),
+  )
+}
+
+/** A timeline where group `1 + n` starts at `n × 2` seconds, and the live edge is at `edgeMs`. */
+export function twoSecondTimeline(edgeMs?: number): TimelineReader {
+  return {
+    timeToLocation: (ms) => new Location(1 + Math.floor(ms / 2000), 0),
+    locationToTime: (location) => Number(location.group - 1n) * 2000,
+    wallclockToLocation: (ms) => new Location(1 + Math.floor(ms / 2000), 0),
+    range: edgeMs === undefined ? undefined : { start: 0, end: edgeMs },
   }
 }

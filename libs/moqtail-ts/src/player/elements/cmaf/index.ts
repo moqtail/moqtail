@@ -18,6 +18,8 @@ import { defineElement, type Identifiers } from '../../element/define'
 import { MEDIA_SOURCE } from '../../element/interfaces'
 import { PlayerError } from '../../error'
 import type { MediaSourceOptions } from '../../element/interfaces'
+import { Location } from '../../../model/common/location'
+import { toSpans } from './ranges'
 import { CmafSource } from './source'
 import { cmafCapabilities } from './track'
 
@@ -35,7 +37,14 @@ export const Cmaf = defineElement({
     if (context.tracks.length === 0) {
       throw new PlayerError('UNSUPPORTED_SOURCE', 'The CMAF source needs at least one track', { element: 'cmaf' })
     }
-    return new CmafSource(context, options ?? {})
+    const first = context.tracks[0]!
+    const timeline = await context.catalog?.timeline(first)
+    const spans = toSpans(options?.ranges, first, timeline)
+    // shortcut: G₀ is the group at media time 0, which a template gives but a timeline may not; else moqtail-publisher's 1.
+    const g0 = timeline?.timeToLocation(0)?.group ?? 1n
+    const end = spans.at(-1)?.end
+    const endMs = end && timeline?.locationToTime(new Location(end.group + 1n, 0n))
+    return new CmafSource(context, options ?? {}, { spans, g0, ...(endMs !== undefined && { duration: endMs / 1000 }) })
   },
 })
 

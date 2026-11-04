@@ -20,6 +20,7 @@ export { MOQtailPlayer, type MOQtailPlayerOptions, type PlayerEvents } from './p
 export type { PlayerState } from './state'
 export { defineExtension, type ExtensionDefinition } from './extension'
 export { MSE } from './elements/mse'
+export { SSTS, SstsSource } from './extensions/ssts'
 export type { MSEOptions } from './elements/mse/sink'
 export {
   defineElement,
@@ -59,4 +60,5 @@ export {
   type TimelineReader,
   type RequestHooks,
   type MediaSourceOptions,
+  type SwitchingSetOptions,
 } from './element/interfaces'

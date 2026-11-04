@@ -15,15 +15,20 @@
  */
 
 /**
- * What keeps a CMAF source playing (`PLAN.md` › Lifecycle And Errors): retries with backoff,
- * falling back to another rendition, resuming after a reconnect, and holding an `eos` until
- * the catalog confirms the end (MSF 11.4).
+ * What keeps a CMAF source playing (`PLAN.md` › Lifecycle And Errors, Runtime Control): retries
+ * with backoff, falling back to another rendition, resuming after a reconnect, holding an `eos`
+ * until the catalog confirms the end (MSF 11.4), seeks, switch handovers, and URL ranges.
  */
 
+import type { MOQtailClient } from '../../../client/client'
+import type { Location } from '../../../model/common/location'
+import type { RequestError } from '../../../model/control/request_error'
 import type { ElementContext } from '../../element/context'
 import type { CatalogTrack } from '../../element/interfaces'
 import { backoffDelay, sleep } from '../../util/backoff'
-import type { Delivery } from './delivery'
+import { cancel, REPLACED, type Accepted, type Delivery, type Target } from './delivery'
+import { clamp, mapEnd, mapLocation, type End, type Span } from './ranges'
+import { locate, seekTarget } from './seek'
 import { bitrateOf, trackKey } from './track'
 
 /** What recovery needs from its source. */
@@ -34,9 +39,23 @@ export interface RecoveryHost {
   giveUp(): void
 }
 
+/** A switch's request, sent while the old track plays to its switch point. */
+interface Handover {
+  track: CatalogTrack
+  request: Promise<RequestError | Accepted>
+  client: MOQtailClient
+  start: Location
+  /** `SWITCH_FROM`: the new track arrives on the stream being read. */
+  soft: boolean
+}
+
 export class Recovery {
   /** The track being requested. */
   active: CatalogTrack
+  /** What the next request asks for. */
+  #target: Target
+  /** The set's first Group ID (MSF 6.3.2). */
+  readonly g0: bigint
   /** Renditions that were rejected, or failed too often. */
   readonly #failed = new Set<string>()
   /** Re-subscribes so far while an `eos` is held; undefined when not holding. */
@@ -44,14 +63,27 @@ export class Recovery {
   /** Aborted by a lost session, or to release a held `eos`. */
   #attempt = new AbortController()
   #reconnect: PromiseWithResolvers<void> | undefined
+  /** Set while nothing is selected; resolved by a new selection. */
+  #paused: PromiseWithResolvers<void> | undefined
+  /** The latest seek not requested yet, in seconds. */
+  #seekTo: number | undefined
+  #handover: Handover | undefined
+  /** URL ranges, against the set's first track (`#first`). */
+  readonly #spans: readonly Span[]
+  #span = 0
+  readonly #first: CatalogTrack
 
   constructor(
     readonly context: ElementContext,
     readonly delivery: Delivery,
     readonly host: RecoveryHost,
     start: CatalogTrack,
+    ranges: { spans: readonly Span[]; g0: bigint } = { spans: [], g0: 1n },
   ) {
-    this.active = start
+    this.active = this.#first = start
+    this.#spans = ranges.spans
+    this.g0 = ranges.g0
+    this.#target = this.#spans[0] ? this.#spanTarget(this.#spans[0]) : { fetch: !start.isLive }
     const { player, catalog, signal } = context
     const lost = () => {
       this.#reconnect ??= Promise.withResolvers()
@@ -72,6 +104,7 @@ export class Recovery {
       player.off('reconnected', back)
       catalog?.off('change', changed)
       back()
+      this.resume()
     })
   }
 
@@ -80,21 +113,42 @@ export class Recovery {
     const { signal } = this.context
     const maxFailures = this.context.player.options.client?.reconnectAttempts ?? 5
     let failures = 0
+    let ready: Promise<RequestError | Accepted> | undefined
     while (!signal.aborted) {
       await this.#reconnect?.promise // a lost session isn't a failure, it waits for the new one
+      await this.#paused?.promise
       if (signal.aborted) return
       if (this.#holding !== undefined && this.#isFinal()) return this.delivery.eos()
       this.#attempt = new AbortController()
       const attempt = AbortSignal.any([this.#attempt.signal, signal])
+      if (this.#seekTo !== undefined) await this.#locateSeek()
+      if (attempt.aborted) continue
       // While holding, the publisher may restart: re-subscribe with backoff, capped at 5 s.
       if (this.#holding !== undefined && !(await pause(backoffDelay(this.#holding++), attempt))) continue
 
-      const outcome = await this.delivery.play(this.active, attempt)
+      const outcome = await this.delivery.play(this.active, attempt, { ...this.#target, ...this.#end() }, ready)
+      ready = undefined
       if (this.delivery.delivered) {
         failures = 0
         this.#holding = undefined
+        this.#target = { fetch: this.#target.fetch } // a retry resumes from where delivery stands
+      }
+      const handover = this.#handover
+      if (handover) {
+        // The old track reached its switch point, or stopped early: continue on the new one.
+        this.#handover = undefined
+        this.active = handover.track
+        this.#target = { fetch: this.#target.fetch, start: handover.start }
+        if (outcome !== 'stopped' && !handover.soft) ready = handover.request
+        else void handover.request.then((late) => cancel(handover.client, late))
+        continue
       }
       if (outcome === 'stopped') continue
+      if (outcome === 'done') {
+        if (this.#spans.length === 0) continue
+        if (this.#nextSpan()) continue
+        return this.delivery.eos()
+      }
       if (outcome === 'ended') {
         if (this.#isFinal()) return this.delivery.eos()
         this.#holding ??= 0
@@ -106,8 +160,111 @@ export class Recovery {
         if (++failures < maxFailures) continue
       }
       failures = 0
+      await this.delivery.failSeeks() // a seek that couldn't be served is answered as failed
       if (!this.#fallback()) return
     }
+  }
+
+  /** Requests the group containing `mediaTime` (seconds); answered with one `discontinuity`. */
+  seek(mediaTime: number): void {
+    this.delivery.seeks++
+    this.#seekTo = mediaTime
+    // A switch during a seek resumes on the new track.
+    this.#takeHandover()
+    this.#attempt.abort(REPLACED)
+  }
+
+  /** A seek is pending: not requested, or not answered yet. */
+  get seeking(): boolean {
+    return this.#seekTo !== undefined || this.delivery.seeks > 0
+  }
+
+  /** Requests `track` from where delivery stands; nothing was delivered to hand over from. */
+  restartOn(track: CatalogTrack): void {
+    this.active = track
+    this.#attempt.abort(REPLACED)
+  }
+
+  /** Continues on `track` with `request` once the track being read reaches its stop point. */
+  handOver(track: CatalogTrack, request: Promise<RequestError | Accepted>, start: Location, soft: boolean): void {
+    this.#handover = { track, request, client: this.context.client, start, soft }
+  }
+
+  /** The track a pending handover continues on. */
+  get handingOverTo(): CatalogTrack | undefined {
+    return this.#handover?.track
+  }
+
+  /** Forgets the handover to `track`: it started, or its request was rejected. */
+  dropHandover(track: CatalogTrack): void {
+    if (this.#handover?.track === track) this.#handover = undefined
+  }
+
+  /** Stops requesting, without counting it as a failure, until `resume()`. */
+  pause(): void {
+    this.#paused ??= Promise.withResolvers()
+    this.#takeHandover()
+    this.#attempt.abort()
+  }
+
+  resume(): void {
+    this.#paused?.resolve()
+    this.#paused = undefined
+  }
+
+  /** The end of the range being played, for `track`. */
+  rangeEnd(track: CatalogTrack): End | undefined {
+    const end = this.#spans[this.#span]?.end
+    return end && mapEnd(end, this.#first, track, this.g0)
+  }
+
+  /** The range being played, if any, as an `end` for `active`. */
+  #end(): { end?: End } {
+    const end = this.rangeEnd(this.active)
+    return end ? { end } : {}
+  }
+
+  #takeHandover(): void {
+    const handover = this.#handover
+    if (!handover) return
+    this.#handover = undefined
+    this.active = handover.track
+    void handover.request.then((late) => cancel(handover.client, late))
+  }
+
+  #spanTarget(span: Span): Target {
+    const start = mapLocation(span.start, this.#first, this.active, this.g0)
+    return span.fetch ? { fetch: true, start } : { fetch: false, start, fill: true }
+  }
+
+  /** Moves to the next range, after a gap. */
+  #nextSpan(): boolean {
+    const next = this.#spans[++this.#span]
+    if (!next) return false
+    this.#target = this.#spanTarget(next)
+    this.delivery.gap = true
+    return true
+  }
+
+  /** Turns the latest seek into `target`, or answers it as failed when it can't be located. */
+  async #locateSeek(): Promise<void> {
+    const time = this.#seekTo!
+    this.#seekTo = undefined
+    const track = this.active
+    const timeline = await this.context.catalog?.timeline(track)
+    if (this.#seekTo !== undefined || track !== this.active) return // superseded meanwhile
+    const key = trackKey(track)
+    let location = locate(time, track, timeline, (t) => this.delivery.times.estimate(key, t))
+    if (!location) return this.delivery.failSeeks()
+    let fetch = !track.isLive
+    if (this.#spans.length > 0) {
+      const clamped = clamp(mapLocation(location, track, this.#first, this.g0), this.#spans)
+      this.#span = clamped.index
+      location = mapLocation(clamped.location, this.#first, track, this.g0)
+      fetch = this.#spans[clamped.index]!.fetch
+    }
+    const last = this.delivery.last
+    this.#target = seekTarget(location, fetch, last?.track === key ? last.location : undefined)
   }
 
   /** Moves to the selected rendition closest in bitrate, or gives up. */

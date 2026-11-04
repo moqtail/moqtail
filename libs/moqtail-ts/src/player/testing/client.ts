@@ -33,6 +33,7 @@ import { PublishDoneStatusCode, RequestErrorCode } from '../../model/control/con
 import { FetchOk } from '../../model/control/fetch_ok'
 import { PublishDone } from '../../model/control/publish_done'
 import { RequestError } from '../../model/control/request_error'
+import { Setup } from '../../model/control/setup'
 import { SubscribeOk } from '../../model/control/subscribe_ok'
 import { ObjectForwardingPreference } from '../../model/data/constant'
 import { FullTrackName } from '../../model/data/full_track_name'
@@ -107,6 +108,10 @@ export class FakeClient extends Emitter<ClientEvents> {
     kind: 'subscribe' | 'fetch',
     options: SubscribeOptions | FetchOptions,
   ) => FakeResponse | Promise<FakeResponse> = () => ({})
+  /** The peer's SETUP. */
+  serverSetup = new Setup([])
+  /** Decides each REQUEST_UPDATE; throw to fail it. */
+  update: (args: SubscribeUpdateOptions) => void | Promise<void> = () => {}
   #terminated = false
   #nextId = 0n
 
@@ -167,6 +172,7 @@ export class FakeClient extends Emitter<ClientEvents> {
 
   async subscribeUpdate(args: SubscribeUpdateOptions): Promise<void> {
     this.#record('subscribeUpdate', args)
+    await this.update(args)
   }
 
   async unsubscribe(requestId: bigint): Promise<void> {

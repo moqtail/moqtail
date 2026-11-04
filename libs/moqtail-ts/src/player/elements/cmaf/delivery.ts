@@ -20,26 +20,57 @@
  */
 
 import type { MOQtailClient } from '../../../client/client'
-import type { FetchOptions, FetchResult, SubscribeOptions, SubscribeResult } from '../../../client/types'
-import type { Location } from '../../../model/common/location'
+import type { FetchOptions, FetchResult, SubscribeOptions, SubscribeResult, SwitchOptions } from '../../../client/types'
+import { Location } from '../../../model/common/location'
 import { GroupOrder, LocationFilterType, PublishDoneStatusCode } from '../../../model/control/constant'
 import { RequestError } from '../../../model/control/request_error'
 import { FullTrackName } from '../../../model/data/full_track_name'
 import type { MoqtObject } from '../../../model/data/object'
+import { FillParameters } from '../../../model/parameter/message/fill_parameters'
 import { LocationFilter } from '../../../model/parameter/message/location_filter'
 import type { ElementContext } from '../../element/context'
 import type { CatalogTrack, RequestHooks } from '../../element/interfaces'
 import type { Pad, PadProperties } from '../../element/pad'
+import { trackIdentifier } from '../../msf_url'
+import { fragmentTime, mediaTimescale } from './bmff'
 import { acceptedInitData, objectInitData } from './init_data'
+import { beyond, type End } from './ranges'
+import { GroupTimes } from './seek'
 import { mimeTypeOf, renditionId, trackKey } from './track'
 
 /** Media ranks below the catalog's 0 (MSF 5); 128 is the moqt-22 default. */
 export const MEDIA_PRIORITY = 128
 
-/** How one request ended. `stopped`: destroyed, the session was lost, or the source interrupted it. */
-export type Outcome = 'ended' | 'failed' | 'rejected' | 'stopped'
+/** The abort reason of an attempt that a new request replaces: it's ended once that one is answered. */
+export const REPLACED = Symbol('replaced')
 
-type Accepted = SubscribeResult | FetchResult
+/**
+ * How one request ended. `done`: it reached its end or stop point. `stopped`: destroyed, the
+ * session was lost, or the source interrupted it.
+ */
+export type Outcome = 'ended' | 'done' | 'failed' | 'rejected' | 'stopped'
+
+export type Accepted = SubscribeResult | FetchResult
+
+/** What a request asks for. */
+export interface Target {
+  /** Undefined: live from the next group, a fetch from the last delivered location + 1. */
+  start?: Location
+  /** The last location to deliver. Undefined: to the end of the track. */
+  end?: End
+  /** FETCH: VOD, or a live range behind the live edge. */
+  fetch: boolean
+  /** Live, `start` behind the live edge: SUBSCRIBE from the next group, filled from `start`. */
+  fill?: boolean
+}
+
+/** A `switchFrom` switch in progress: objects of `track` arrive on the stream being read. */
+interface SoftSwitch {
+  track: CatalogTrack
+  /** Where the old track ends; its later objects are dropped. */
+  end: End
+  accepted: Promise<RequestError | SubscribeResult>
+}
 
 /** Sends a SUBSCRIBE through the hooks: they change the options last and hear the accepted result. */
 export async function subscribe(
@@ -67,61 +98,156 @@ export async function fetch(
   return result
 }
 
-/** Writes one source's requests to its pad, in order: properties, gaps, packets, and the `eos`. */
+/** Sends a `SWITCH_FROM` switch; its new SUBSCRIBE goes through the hooks like `subscribe`. */
+export async function switchTo(
+  client: MOQtailClient,
+  hooks: RequestHooks | undefined,
+  track: CatalogTrack,
+  options: SwitchOptions,
+): Promise<RequestError | SubscribeResult> {
+  const sent = hooks?.subscribe?.(track, options.newSubscribeOptions) ?? options.newSubscribeOptions
+  const result = await client.switch({ ...options, newSubscribeOptions: sent })
+  if (!(result instanceof RequestError)) hooks?.subscribed?.(track, result, sent)
+  return result
+}
+
+/** Writes one source's requests to its pad, in order: properties, gaps, seek answers, packets, and the `eos`. */
 export class Delivery {
   /** What the pad carries now; undefined until the first `properties` item. */
   #properties: Partial<PadProperties> | undefined
   /** The track whose init data the pad carries. */
   #initFor: string | undefined
   #last: { track: string; location: Location } | undefined
-  #gap = false
+  /** The request being read, and the client it was sent on. */
+  #current: { client: MOQtailClient; accepted: Accepted } | undefined
+  /** A subscription a new request replaces, ended once that one is answered. */
+  #retiring: { client: MOQtailClient; accepted: Accepted } | undefined
+  /** Where the request being read stops. */
+  #stop: End | undefined
+  #soft: SoftSwitch | undefined
+  /** A `track` property was written since the last packet. */
+  #announced = false
+  /** The publisher closed the stream being read, so there's nothing to cancel. */
+  #closed = false
   /** Whether the latest `play()` wrote a packet. */
   delivered = false
+  /** Writes a `discontinuity` of reason `gap` before the next packet. */
+  gap = false
+  /** Seeks to answer with a `discontinuity` before the next packet. */
+  seeks = 0
+  /** `duration` for the next `properties`, in seconds, overriding VOD's `trackDuration`. */
+  duration: number | undefined
+  /** Called after the first packet of each track the pad announces; `changed` when it differs from the previous packet's. */
+  onTrackStart: ((track: CatalogTrack, changed: boolean) => void) | undefined
+  readonly times = new GroupTimes()
 
   constructor(
     readonly pad: Pad,
     readonly context: ElementContext,
     readonly hooks: RequestHooks | undefined,
-  ) {}
+  ) {
+    context.signal.addEventListener('abort', () => this.#retire())
+  }
+
+  /** The last delivered location and its track key. */
+  get last(): { track: string; location: Location } | undefined {
+    return this.#last
+  }
+
+  /** The request being read. */
+  get current(): Accepted | undefined {
+    return this.#current?.accepted
+  }
 
   /**
-   * Requests `track` from where delivery stands, live from the next group and VOD from the
-   * last delivered location + 1, and reads it to the pad until it ends or `signal` aborts.
+   * Requests `track` for `target` (or reads `ready`, already sent) and reads it to the pad
+   * until it ends, reaches its end, or `signal` aborts.
    */
-  async play(track: CatalogTrack, signal: AbortSignal): Promise<Outcome> {
+  async play(
+    track: CatalogTrack,
+    signal: AbortSignal,
+    target: Target,
+    ready?: Promise<RequestError | Accepted>,
+  ): Promise<Outcome> {
     this.delivered = false
+    this.#stop = target.end
     // A live request after delivered data starts at a later group: the sink should expect the jump.
-    this.#gap = track.isLive && this.#last !== undefined
+    if (track.isLive && this.#last && !target.start && this.seeks === 0) this.gap = true
     const client = this.context.client
     let accepted: RequestError | Accepted | undefined
     try {
-      accepted = await untilAborted(this.#request(client, track), signal, (late) => cancel(client, late))
+      const request = ready ?? this.request(track, target)
+      accepted = await untilAborted(request, signal, (late) => cancel(client, late))
     } catch {
       return signal.aborted ? 'stopped' : 'failed'
+    } finally {
+      if (!signal.aborted) this.#retire()
     }
     if (accepted === undefined) return 'stopped'
     if (accepted instanceof RequestError) return 'rejected'
     let initData: Uint8Array | undefined
     try {
-      initData = acceptedInitData(
-        track,
-        'fetchOk' in accepted ? accepted.fetchOk.trackProperties : accepted.subscribeOk.trackProperties,
-      )
+      initData = acceptedInitData(track, trackPropertiesOf(accepted))
     } catch {
       void cancel(client, accepted)
       return 'rejected'
     }
-    await this.#setProperties({
-      track: renditionId(track, this.context.catalog),
-      mimeType: mimeTypeOf(track),
-      live: track.isLive,
-      ...(track.trackDuration !== undefined && !track.isLive && { duration: track.trackDuration / 1000 }),
-      ...(initData && { initData }),
-    })
+    await this.#setProperties(this.#trackProperties(track, initData))
     if (initData) this.#initFor = trackKey(track)
+    this.#current = { client, accepted }
+    this.#closed = false
     const outcome = await this.#read(track, accepted, signal)
-    if (outcome !== 'ended') void cancel(client, accepted)
+    const current = this.#current
+    this.#current = undefined
+    this.#soft = undefined
+    // A replaced subscription ends after its replacement is answered (moqt-22 9.5 allows both at once).
+    if (outcome === 'stopped' && signal.reason === REPLACED && 'subscribeOk' in current.accepted)
+      this.#retiring = current
+    else if (outcome !== 'ended' && !this.#closed) void cancel(current.client, current.accepted)
     return outcome
+  }
+
+  /** Sends the request for `target` through the hooks. */
+  request(track: CatalogTrack, target: Target): Promise<RequestError | Accepted> {
+    const client = this.context.client
+    if (!target.fetch) return subscribe(client, this.hooks, track, this.subscribeOptions(track, target))
+    const { group, object } = target.start ?? this.#resumeAt(track)
+    const end = target.end
+    const locationFilter = !end
+      ? new LocationFilter(LocationFilterType.AbsoluteStart, group, object)
+      : end.object === undefined
+        ? new LocationFilter(LocationFilterType.AbsoluteStartGroupEnd, group, object, end.group)
+        : new LocationFilter(LocationFilterType.AbsoluteRange, group, object, end.group, end.object)
+    return fetch(client, this.hooks, track, { ...requestCommon(track), locationFilter })
+  }
+
+  /** The SUBSCRIBE for a live `target`: from the next group, from `start`, or filled from `start`. */
+  subscribeOptions(track: CatalogTrack, target: Target): SubscribeOptions {
+    const start = target.start
+    const fill = start && target.fill
+    const locationFilter =
+      start && !fill
+        ? new LocationFilter(LocationFilterType.AbsoluteStart, start.group, start.object)
+        : new LocationFilter(LocationFilterType.RelativeStart, 0n)
+    const parameters = fill
+      ? [new FillParameters([new LocationFilter(LocationFilterType.AbsoluteStart, start.group, 0n)])]
+      : undefined
+    return { ...requestCommon(track), forward: true, locationFilter, ...(parameters && { parameters }) }
+  }
+
+  /** Stops the request being read after `end`; later objects aren't written. */
+  stopAfter(end: End | undefined): void {
+    this.#stop = end
+  }
+
+  /** Expects `track` on the stream being read, after a `SWITCH_FROM` switch; the old track's objects after `end` are dropped. */
+  expectSwitch(soft: SoftSwitch | undefined): void {
+    this.#soft = soft
+  }
+
+  /** A `SWITCH_FROM` switch hasn't seen its new track yet. */
+  get switching(): boolean {
+    return this.#soft !== undefined
   }
 
   /** The only end signal on the pad. */
@@ -129,22 +255,35 @@ export class Delivery {
     return this.pad.write({ type: 'event', event: { type: 'eos' } })
   }
 
-  #request(client: MOQtailClient, track: CatalogTrack): Promise<RequestError | Accepted> {
-    const fullTrackName = FullTrackName.tryNew(track.namespace, track.nameBytes)
-    const common = { fullTrackName, priority: MEDIA_PRIORITY, groupOrder: GroupOrder.Original }
-    if (track.isLive) {
-      const locationFilter = new LocationFilter(LocationFilterType.RelativeStart, 0n)
-      return subscribe(client, this.hooks, track, { ...common, forward: true, locationFilter })
+  /** Answers every pending seek now, the latest as failed. */
+  async failSeeks(): Promise<void> {
+    while (this.seeks > 0) {
+      const failed = --this.seeks === 0
+      await this.pad.write({
+        type: 'event',
+        event: { type: 'discontinuity', reason: 'seek', ...(failed && { failed }) },
+      })
     }
+  }
+
+  /** The same track resumes after its last object; another one at the next group boundary (MSF 4.2). */
+  #resumeAt(track: CatalogTrack): Location {
     const last = this.#last
-    // The same track resumes after its last object; another one at the next group boundary (MSF 4.2).
-    const [group, object] = !last
-      ? [0n, 0n]
-      : last.track === trackKey(track)
-        ? [last.location.group, last.location.object + 1n]
-        : [last.location.group + 1n, 0n]
-    const locationFilter = new LocationFilter(LocationFilterType.AbsoluteStart, group, object)
-    return fetch(client, this.hooks, track, { ...common, locationFilter })
+    if (!last) return new Location(0n, 0n)
+    if (last.track === trackKey(track)) return new Location(last.location.group, last.location.object + 1n)
+    return new Location(last.location.group + 1n, 0n)
+  }
+
+  #trackProperties(track: CatalogTrack, initData: Uint8Array | undefined): Partial<PadProperties> {
+    const duration =
+      this.duration ?? (!track.isLive && track.trackDuration !== undefined ? track.trackDuration / 1000 : undefined)
+    return {
+      track: renditionId(track, this.context.catalog),
+      mimeType: mimeTypeOf(track),
+      live: track.isLive,
+      ...(duration !== undefined && { duration }),
+      ...(initData && { initData }),
+    }
   }
 
   async #read(track: CatalogTrack, accepted: Accepted, signal: AbortSignal): Promise<Outcome> {
@@ -152,13 +291,29 @@ export class Delivery {
     const stop = () => void reader.cancel().catch(() => {})
     signal.addEventListener('abort', stop, { once: true })
     let endOfTrack = false
+    let current = track
+    /** The track a `SWITCH_FROM` switch left on this stream: its late objects are dropped. */
+    let retired: string | undefined
     try {
       for (;;) {
         const { done, value } = await reader.read()
+        // An abort cancels the reader too, which also reads as done.
+        if (done && !signal.aborted) this.#closed = true
         if (done || signal.aborted) break
+        const soft = this.#soft
+        const key = soft || retired ? trackOf(value) : undefined
+        if (soft && key === trackKey(soft.track)) {
+          const entered = await this.#enter(soft)
+          if (!entered) return 'rejected'
+          retired = trackKey(current)
+          current = entered
+        } else if ((retired && key === retired) || (soft && beyond(value.location, soft.end))) continue
+        const end = this.#stop
+        if (end && beyond(value.location, end)) return 'done'
         if (value.isEndOfTrack()) endOfTrack = true
         // End of group carries no media, and end of track becomes the eos.
-        if (!value.hasStatus() && value.payload) await this.#write(track, value)
+        if (!value.hasStatus() && value.payload) await this.#write(current, value)
+        if (end && reached(value, end)) return 'done'
       }
     } catch {
       if (!signal.aborted) return 'failed'
@@ -167,9 +322,30 @@ export class Delivery {
       reader.releaseLock()
     }
     if (signal.aborted) return 'stopped'
-    if ('fetchOk' in accepted) return endOfTrack || accepted.fetchOk.endOfTrack ? 'ended' : 'failed'
-    // MSF 11.4 says SUBSCRIBE_DONE; moqt-22 calls it PUBLISH_DONE, with TRACK_ENDED for the end.
-    return (await accepted.done)?.statusCode === PublishDoneStatusCode.TrackEnded ? 'ended' : 'failed'
+    const ended =
+      'fetchOk' in accepted
+        ? endOfTrack || accepted.fetchOk.endOfTrack
+        : // MSF 11.4 says SUBSCRIBE_DONE; moqt-22 calls it PUBLISH_DONE, with TRACK_ENDED for the end.
+          (await accepted.done)?.statusCode === PublishDoneStatusCode.TrackEnded
+    // A request with an end that closes early was cut there by the publisher, or an update.
+    return ended ? 'ended' : this.#stop ? 'done' : 'failed'
+  }
+
+  /** The first object of a `SWITCH_FROM` target: the pad carries its track from here. */
+  async #enter(soft: SoftSwitch): Promise<CatalogTrack | undefined> {
+    this.#soft = undefined
+    const accepted = await soft.accepted
+    if (accepted instanceof RequestError) return undefined
+    let initData: Uint8Array | undefined
+    try {
+      initData = acceptedInitData(soft.track, accepted.subscribeOk.trackProperties)
+    } catch {
+      return undefined
+    }
+    if (this.#current) this.#current.accepted = accepted
+    await this.#setProperties(this.#trackProperties(soft.track, initData))
+    if (initData) this.#initFor = trackKey(soft.track)
+    return soft.track
   }
 
   async #write(track: CatalogTrack, object: MoqtObject): Promise<void> {
@@ -177,8 +353,14 @@ export class Delivery {
     const initData = objectInitData(track, object.properties)
     // Packets of an object-property track can't be decoded before its first init data.
     if (!initData && track.init?.type === 'object-property' && this.#initFor !== key) return
-    if (this.#gap) {
-      this.#gap = false
+    if (this.seeks > 0) {
+      this.gap = false
+      while (this.seeks > 0) {
+        this.seeks--
+        await this.pad.write({ type: 'event', event: { type: 'discontinuity', reason: 'seek' } })
+      }
+    } else if (this.gap) {
+      this.gap = false
       await this.pad.write({ type: 'event', event: { type: 'discontinuity', reason: 'gap' } })
     }
     if (initData) {
@@ -186,8 +368,22 @@ export class Delivery {
       this.#initFor = key
     }
     await this.pad.write({ type: 'packet', object })
+    const previous = this.#last
     this.#last = { track: key, location: object.location }
     this.delivered = true
+    if (previous?.location.group !== object.location.group || previous.track !== key) this.#recordTime(track, object)
+    const changed = previous !== undefined && previous.track !== key
+    // Also after a `track` property, as when a failed switch target falls back to the old track.
+    if (changed || this.#announced) this.onTrackStart?.(track, changed)
+    this.#announced = false
+  }
+
+  /** The media time of a group's first delivered object. */
+  #recordTime(track: CatalogTrack, object: MoqtObject): void {
+    const init = this.#properties?.initData
+    const timescale = track.timescale ?? (init && mediaTimescale(init))
+    const time = object.payload ? fragmentTime(object.payload, timescale) : undefined
+    if (time !== undefined) this.times.record(trackKey(track), object.location.group, time)
   }
 
   /** Writes what changed; the first item carries everything. */
@@ -199,9 +395,34 @@ export class Delivery {
     }
     if (this.#properties && Object.keys(changed).length === 0) return
     this.#properties = { ...this.#properties, ...changed }
+    if (changed['track'] !== undefined) this.#announced = true
     await this.pad.write({ type: 'properties', properties: changed })
   }
+
+  #retire(): void {
+    const retiring = this.#retiring
+    this.#retiring = undefined
+    if (retiring) void cancel(retiring.client, retiring.accepted)
+  }
 }
+
+const requestCommon = (track: CatalogTrack) => ({
+  fullTrackName: FullTrackName.tryNew(track.namespace, track.nameBytes),
+  priority: MEDIA_PRIORITY,
+  groupOrder: GroupOrder.Original,
+})
+
+const trackPropertiesOf = (accepted: Accepted) =>
+  'fetchOk' in accepted ? accepted.fetchOk.trackProperties : accepted.subscribeOk.trackProperties
+
+/** The key of the track an object or a request is for. */
+export const trackOf = (named: { fullTrackName: FullTrackName }) =>
+  trackIdentifier(named.fullTrackName.namespace, named.fullTrackName.name)
+
+/** The last object of `end`, or the end of its group. */
+const reached = (object: MoqtObject, end: End) =>
+  object.location.group === end.group &&
+  (end.object === undefined ? object.isEndOfGroup() : object.location.object === end.object)
 
 function sameValue(a: unknown, b: unknown): boolean {
   if (a instanceof Uint8Array && b instanceof Uint8Array) return a.length === b.length && a.every((x, i) => x === b[i])
@@ -222,7 +443,7 @@ function untilAborted<T>(request: Promise<T>, signal: AbortSignal, late: (result
 }
 
 /** Ends a request this source no longer reads. A lost session already ended it. */
-async function cancel(client: MOQtailClient, result: RequestError | Accepted): Promise<void> {
+export async function cancel(client: MOQtailClient, result: RequestError | Accepted): Promise<void> {
   if (result instanceof RequestError) return
   try {
     await ('fetchOk' in result ? client.fetchCancel(result.requestId) : client.unsubscribe(result.requestId))

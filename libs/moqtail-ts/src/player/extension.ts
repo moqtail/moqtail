@@ -18,7 +18,8 @@
 
 import { SetupOptions } from '../model/parameter/setup_option'
 import { canonicalJson } from './client_slot'
-import type { ElementDefinition } from './element/define'
+import type { Setup } from '../model/control/setup'
+import type { ElementDefinition, SourceElementDefinition } from './element/define'
 import { PlayerError } from './error'
 
 /** @public */
@@ -28,6 +29,14 @@ export interface ExtensionDefinition {
   readonly elements?: readonly ElementDefinition[]
   /** Merged into `client.setupOptions` before the client is created. */
   readonly setupOptions?: SetupOptions
+  /**
+   * Loaded by the catalog element for each media switching set, instead of the source the probe
+   * picked, which it gets as its `child` (`SwitchingSetOptions`). Never probed. At most one
+   * listed extension may have one.
+   */
+  readonly switchingSetSource?: SourceElementDefinition
+  /** Whether the peer's SETUP accepted the extension; without it, it counts as accepted. */
+  negotiated?(serverSetup: Setup): boolean
 }
 
 /** @public Checks an extension definition and returns it. */

@@ -34,20 +34,16 @@ import {
 import { PlayerError } from '@/player/error'
 import { trackIdentifier, type MsfSource } from '@/player/msf_url'
 import { backoffDelay, sleep, within } from '@/player/util/backoff'
-import { trackKey } from '@/player/elements/cmaf/track'
+import { CATALOG_PRIORITY, DEFAULT_CATALOG_TIMEOUT_MS, DEFAULT_MAX_CATALOG_BYTES } from '@/player/constants'
+import { trackKey } from '@/player/util/track'
+import { TrackReader } from '@/player/util/track_reader'
 import { MediaTimeline } from '@/player/elements/mediatimeline'
 import { TemplateTimeline } from '@/player/elements/mediatimeline/template'
-import { DEFAULT_MAX_BYTES } from './compression'
 import { applyDelta } from './delta'
 import { diffTracks } from './diff'
 import { parseCatalog, type ParseContext, type ParseResult } from './parse'
 import { selectEventTimelines, selectMedia, withRole, type SelectedSet, type SelectionOptions } from './selection'
-import { TrackReader } from './track_reader'
 import type { Catalog as CatalogData } from './types'
-
-/** MSF 5: above every other subscription; media uses 128. */
-export const CATALOG_PRIORITY = 0
-const DEFAULT_TIMEOUT_MS = 10_000
 
 export interface CatalogOptions {
   /** Passed to the media sources: switch with `SWITCH_FROM`. */
@@ -97,7 +93,7 @@ export class Catalog extends SourceElement implements CatalogReader {
       track: { namespace: source.namespace, name: source.trackBytes },
       priority: CATALOG_PRIORITY,
       incremental: true,
-      maxBytes: context.player.options.maxCatalogBytes ?? DEFAULT_MAX_BYTES,
+      maxBytes: context.player.options.maxCatalogBytes ?? DEFAULT_MAX_CATALOG_BYTES,
       onIndependent: (payload) => this.#received(parseCatalog(payload, this.#parse)),
       onIncremental: (payload) => {
         if (!this.#catalog) throw new Error('A delta update arrived before any catalog')
@@ -190,7 +186,7 @@ export class Catalog extends SourceElement implements CatalogReader {
    * for an invalid first catalog or one with nothing playable.
    */
   async start(): Promise<void> {
-    const timeoutMs = this.context.player.options.catalogTimeoutMs ?? DEFAULT_TIMEOUT_MS
+    const timeoutMs = this.context.player.options.catalogTimeoutMs ?? DEFAULT_CATALOG_TIMEOUT_MS
     const startedAt = performance.now()
     const left = () => timeoutMs - (performance.now() - startedAt)
     const timedOut = (cause?: unknown) =>

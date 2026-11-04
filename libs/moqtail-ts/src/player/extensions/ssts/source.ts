@@ -38,7 +38,7 @@ import {
 import type { Pad, PadItem } from '@/player/element/pad'
 import { PlayerError } from '@/player/error'
 import { formatMsfUrl } from '@/player/msf_url'
-import { bitrateOf, renditionId, trackKey } from '@/player/elements/cmaf/track'
+import { bitrateOf, renditionId, trackKey } from '@/player/util/track'
 import { Forwarder, type Child } from './forward'
 import { sstsAlgorithms } from './index'
 

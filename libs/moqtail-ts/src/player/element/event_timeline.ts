@@ -25,9 +25,8 @@ import { KeyValuePair } from '@/model/common/pair'
 import { Location } from '@/model/common/location'
 import { MoqtObject } from '@/model/data/object'
 import { findProperty } from '@/model/property/find'
-import { DEFAULT_MAX_BYTES } from '@/player/elements/catalog/compression'
-import { MEDIA_PRIORITY } from '@/player/elements/cmaf/delivery'
-import { TrackReader } from '@/player/elements/catalog/track_reader'
+import { DEFAULT_MAX_CATALOG_BYTES, MEDIA_PRIORITY } from '@/player/constants'
+import { TrackReader } from '@/player/util/track_reader'
 import { PlayerError } from '@/player/error'
 import { SourceElement } from './base'
 import type { ElementContext } from './context'
@@ -125,7 +124,7 @@ export abstract class EventTimelineElement extends SourceElement {
       track: { namespace, name: nameBytes },
       priority: MEDIA_PRIORITY,
       incremental: this.incremental,
-      maxBytes: this.context.player.options.maxCatalogBytes ?? DEFAULT_MAX_BYTES,
+      maxBytes: this.context.player.options.maxCatalogBytes ?? DEFAULT_MAX_CATALOG_BYTES,
       onIndependent: (payload, _, object) => this.#received(payload, object),
       onIncremental: (payload, _, object) => this.#received(payload, object),
       onStale: (reason) => this.#warn(`Event timeline "${this.track.name}" went stale: ${reason.message}`, reason),

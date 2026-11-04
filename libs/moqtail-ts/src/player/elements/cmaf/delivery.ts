@@ -36,10 +36,9 @@ import { fragmentTime, mediaTimescale } from './bmff'
 import { acceptedInitData, objectInitData } from './init_data'
 import { beyond, type End } from './ranges'
 import { GroupTimes } from './seek'
-import { mimeTypeOf, renditionId, trackKey } from './track'
-
-/** Media ranks below the catalog's 0 (MSF 5); 128 is the moqt-22 default. */
-export const MEDIA_PRIORITY = 128
+import { MEDIA_PRIORITY } from '@/player/constants'
+import { renditionId, trackKey } from '@/player/util/track'
+import { mimeTypeOf } from './track'
 
 /** The abort reason of an attempt that a new request replaces: it's ended once that one is answered. */
 export const REPLACED = Symbol('replaced')

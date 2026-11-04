@@ -23,7 +23,7 @@ import type { FetchOptions, FetchResult, SubscribeOptions, SubscribeResult } fro
 import type { Location } from '@/model/common/location'
 import type { Tuple } from '@/model/common/tuple'
 import type { MsfSource } from '@/player/msf_url'
-import type { CatalogTrack } from '@/player/elements/catalog/types'
+import type { CatalogTrack, MediaTimelineTemplate } from '@/player/elements/catalog/types'
 import type { SourceElementDefinition } from './define'
 
 // Symbol.for, so the keys still match when the ESM and CJS builds are both loaded.
@@ -32,7 +32,7 @@ export const MEDIA_SINK = Symbol.for('moqtail.mediaSink')
 /** @public Key of {@link MediaSourceElement}. */
 export const MEDIA_SOURCE = Symbol.for('moqtail.mediaSource')
 
-export type { CatalogTrack }
+export type { CatalogTrack, MediaTimelineTemplate }
 
 /** @public Maps each interface key to its interface. New interfaces add a line here. */
 export interface ElementInterfaces {

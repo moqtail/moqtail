@@ -26,7 +26,8 @@ import { Delivery } from './delivery'
 import type { Span } from './ranges'
 import { closestBitrate, Recovery } from './recovery'
 import { Switcher } from './switch'
-import { bitrateOf, cmafCapabilities, renditionId, trackKey } from './track'
+import { bitrateOf, renditionId, trackKey } from '@/player/util/track'
+import { cmafCapabilities } from './track'
 
 /** What `Cmaf.init` worked out before the source starts: the URL ranges. */
 export interface SourcePlan {

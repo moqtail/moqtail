@@ -30,7 +30,7 @@ import { cancel, REPLACED, type Accepted, type Delivery, type Target } from './d
 import { groupDuration, groupStep, mapEnd, mapLocation } from './alignment'
 import { clamp, type End, type Span } from './ranges'
 import { locate, seekTarget } from './seek'
-import { bitrateOf, trackKey } from './track'
+import { bitrateOf, trackKey } from '@/player/util/track'
 
 /** What recovery needs from its source. */
 export interface RecoveryHost {

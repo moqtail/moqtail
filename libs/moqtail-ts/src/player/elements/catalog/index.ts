@@ -50,7 +50,7 @@ if (import.meta.vitest) {
   const { MoqtObject: Objects } = await import('@/model/data/object')
   const { FullTrackName } = await import('@/model/data/full_track_name')
   const { ObjectForwardingPreference } = await import('@/model/data/constant')
-  const { MsfCompressionObjectProperty } = await import('./compression')
+  const { MsfCompressionObjectProperty } = await import('@/player/util/compression')
   const { requested } = await import('@/player/testing/cmaf')
   type Track = import('@/player/element/interfaces').CatalogTrack
   type Options = import('@/player/player').MOQtailPlayerOptions

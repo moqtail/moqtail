@@ -23,7 +23,7 @@
 import { deepEqual } from '@/player/element/context'
 import type { CatalogTrack } from '@/player/element/interfaces'
 import { PlayerError } from '@/player/error'
-import { trackKey } from '@/player/elements/cmaf/track'
+import { trackKey } from '@/player/util/track'
 import { TRACK_FIELD_NAMES } from './schema'
 
 /** Fields a source applies in place. `isLive` only from true to false (MSF 11.4). */

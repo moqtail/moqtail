@@ -26,11 +26,8 @@ import { toLocation } from '@/player/element/event_timeline'
 import type { TimelineReader } from '@/player/element/interfaces'
 import { PlayerError } from '@/player/error'
 import { within } from '@/player/util/backoff'
-import { DEFAULT_MAX_BYTES } from '@/player/elements/catalog/compression'
-import { TrackReader } from '@/player/elements/catalog/track_reader'
-import { MEDIA_PRIORITY } from '@/player/elements/cmaf/delivery'
-
-const DEFAULT_TIMEOUT_MS = 10_000
+import { DEFAULT_CATALOG_TIMEOUT_MS, DEFAULT_MAX_CATALOG_BYTES, MEDIA_PRIORITY } from '@/player/constants'
+import { TrackReader } from '@/player/util/track_reader'
 
 /** One explicit entry (MSF 7.1.1). `wallclock` is 0 when unknown, as for VOD. */
 export interface TimelineEntry {
@@ -61,7 +58,7 @@ export class MediaTimelineElement extends SourceElement {
       track: { namespace, name: nameBytes },
       priority: MEDIA_PRIORITY,
       incremental: true,
-      maxBytes: context.player.options.maxCatalogBytes ?? DEFAULT_MAX_BYTES,
+      maxBytes: context.player.options.maxCatalogBytes ?? DEFAULT_MAX_CATALOG_BYTES,
       onIndependent: (payload) => (received(payload, []), this.#first.resolve()),
       onIncremental: (payload) => received(payload, this.#entries),
       onStale: (reason) => {
@@ -80,7 +77,7 @@ export class MediaTimelineElement extends SourceElement {
    * @throws PlayerError when the subscription is rejected or no timeline arrives in time.
    */
   async start(): Promise<void> {
-    const timeoutMs = this.context.player.options.catalogTimeoutMs ?? DEFAULT_TIMEOUT_MS
+    const timeoutMs = this.context.player.options.catalogTimeoutMs ?? DEFAULT_CATALOG_TIMEOUT_MS
     try {
       await this.#reader.start()
       await within(this.#first.promise, timeoutMs, this.context.signal, () => {

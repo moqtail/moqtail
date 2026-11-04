@@ -34,7 +34,7 @@ import { alignmentUnit, misaligned, switchDistance, switchPoint } from './alignm
 import { switchTo, trackOf, type Delivery } from './delivery'
 import type { End } from './ranges'
 import type { Recovery } from './recovery'
-import { bitrateOf, trackKey } from './track'
+import { bitrateOf, trackKey } from '@/player/util/track'
 
 /**
  * `track`'s GoP ladder in a fast switching set: the tracks that differ from it only in

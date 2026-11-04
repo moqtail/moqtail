@@ -18,7 +18,7 @@
 
 import { Location } from '@/model/common/location'
 import type { TimelineReader } from '@/player/element/interfaces'
-import type { MediaTimelineTemplate } from '@/player/elements/catalog/types'
+import type { MediaTimelineTemplate } from '@/player/element/interfaces'
 
 /**
  * Entry `n` follows the MSF 7.4.1 formulas. Lookups pick the entry at or before the value

@@ -57,9 +57,6 @@ export class MsfCompressionObjectProperty {
   }
 }
 
-/** Default limit for a decompressed catalog or timeline payload (`opts.maxCatalogBytes`). */
-export const DEFAULT_MAX_BYTES = 16 * 1024 * 1024
-
 /** The algorithms of MSF 12.1, Table 14, that {@link decompress} supports. */
 export const isSupportedCompression = (algorithm: number): boolean => algorithm === 0 || algorithm === 1
 

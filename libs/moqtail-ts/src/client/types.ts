@@ -335,10 +335,10 @@ export type SubscribeUpdateOptions = {
   subscriptionRequestId: bigint
   /** The new {@link LocationFilter}. Omitted, the subscription keeps its own. */
   locationFilter?: LocationFilter
-  /** Updated subscriber priority (same constraints as initial subscribe). 0 is highest, 255 is lowest. */
-  priority: number
-  /** Updated direction flag. */
-  forward: boolean
+  /** Updated subscriber priority (same constraints as initial subscribe). 0 is highest, 255 is lowest. Omitted, it's not sent and stays unchanged. */
+  priority?: number
+  /** Updated direction flag. Omitted, it's not sent and stays unchanged. */
+  forward?: boolean
   /** Optional additional parameters; existing parameters persist if omitted. */
   parameters?: MessageParameter[]
 }

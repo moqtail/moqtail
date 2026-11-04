@@ -73,7 +73,16 @@ export abstract class BaseElement extends Emitter<ElementEvents> {
 }
 
 /** @public Writes to its source pads from anywhere, and emits `nomorepads` once every expected pad exists. */
-export abstract class SourceElement extends BaseElement {}
+export abstract class SourceElement extends BaseElement {
+  /**
+   * Optional: whether to take a source pad of an element this one loaded. A taken pad
+   * connects to a new sink pad here instead of reaching the sinks, and its items arrive
+   * through `receive()`.
+   */
+  negotiate?(pad: Pad): boolean
+  /** Called once per item on a taken pad; the pad's next item waits for the returned promise. */
+  receive?(pad: Pad, item: PadItem): void | Promise<void>
+}
 
 /** @public Takes pads from upstream and writes its output to source pads it creates. */
 export abstract class TransformElement extends BaseElement {

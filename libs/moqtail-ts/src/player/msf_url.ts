@@ -120,8 +120,12 @@ export function parseMsfUrl(uri: string): MsfSource {
  */
 export function formatMsfUrl(url: string, namespace: Tuple, track: Uint8Array | string): string {
   const trackBytes = typeof track === 'string' ? new TextEncoder().encode(track) : track
-  const ns = namespace.fields.map((f) => encodeName(f.value)).join('-')
-  return `${url}#msf:${ns}--${encodeName(trackBytes)}`
+  return `${url}#msf:${trackIdentifier(namespace, trackBytes)}`
+}
+
+/** The `<namespace>--<track>` identifier of an MSF URL fragment (MSF 11.1.2). */
+export function trackIdentifier(namespace: Tuple, track: Uint8Array): string {
+  return `${namespace.fields.map((f) => encodeName(f.value)).join('-')}--${encodeName(track)}`
 }
 
 function unsupported(message: string): never {

@@ -57,4 +57,6 @@ export {
   type CatalogTrack,
   type CatalogReader,
   type TimelineReader,
+  type RequestHooks,
+  type MediaSourceOptions,
 } from './element/interfaces'

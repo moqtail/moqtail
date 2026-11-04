@@ -21,7 +21,7 @@
  */
 
 import type { MoqtObject } from '../../model/data/object'
-import type { BaseElement, SinkElement, TransformElement } from './base'
+import type { BaseElement } from './base'
 import type { Capabilities } from './define'
 
 /** @public What an element receives on a sink pad. */
@@ -52,7 +52,8 @@ export type PadEvent =
 /** @public Items a connection holds before `write()` waits. */
 export const CONNECTION_CAPACITY = 32
 
-type Consumer = TransformElement | SinkElement
+/** A transform, a sink, or a source taking a pad of an element it loaded. */
+export type Consumer = BaseElement & { receive(pad: Pad, item: PadItem): void | Promise<void> }
 type ErrorHandler = (error: unknown, destination: Pad) => void
 
 /** @public One end of a connection between two elements. */

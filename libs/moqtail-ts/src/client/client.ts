@@ -1155,8 +1155,8 @@ export class MOQtailClient extends Emitter<ClientEvents> {
           // There is no mechanism to remove a parameter from a subscription. We can add parameters but check for duplicate params
           const requestId = this.#nextClientRequestId
           const updateParams: MessageParameter[] = [
-            new SubscriberPriority(priority),
-            new Forward(forward),
+            ...(priority !== undefined ? [new SubscriberPriority(priority)] : []),
+            ...(forward !== undefined ? [new Forward(forward)] : []),
             ...(locationFilter ? [locationFilter] : []),
             ...(parameters ?? []),
           ]
@@ -1185,8 +1185,9 @@ export class MOQtailClient extends Emitter<ClientEvents> {
    * delivered by the newest switch target retires everything older.
    *
    * @param args - {@link SwitchOptions} referencing the subscription to switch from and the new subscription options.
-   * @returns Either a {@link RequestError} (refusal) or `{ requestId, stream }`, where `stream` is the
-   * same {@link https://developer.mozilla.org/docs/Web/API/ReadableStream | ReadableStream} object returned by the original `subscribe()` call.
+   * @returns Either a {@link RequestError} (refusal) or the new request's {@link SubscribeResult}, where `stream`
+   * is the same {@link https://developer.mozilla.org/docs/Web/API/ReadableStream | ReadableStream} object returned by the
+   * original `subscribe()` call and `done` that subscription's, which resolves once the whole switched chain is over.
    * @throws :{@link MOQtailError} If the client is destroyed.
    * @throws :{@link ProtocolViolationError} If `switchFromRequestId` does not name an active subscription.
    * @throws :{@link InternalError} On transport/control failure (disconnect is triggered before rethrow).
@@ -1201,7 +1202,7 @@ export class MOQtailClient extends Emitter<ClientEvents> {
    * });
    * ```
    */
-  async switch(args: SwitchOptions) {
+  async switch(args: SwitchOptions): Promise<RequestError | SubscribeResult> {
     this.#ensureActive()
     const { switchFromRequestId, switchMode, newSubscribeOptions, onDrainDecision } = args
     assertWithinFilterRangeLimit(newSubscribeOptions.parameters ?? [], this.peerMaxFilterRanges, 'MOQtailClient.switch')
@@ -1241,7 +1242,7 @@ export class MOQtailClient extends Emitter<ClientEvents> {
 
       const newRequest = this.requests.get(result.requestId) as SubscribeRequest
       subscription.addSwitchTarget(newRequest, drains)
-      return { requestId: result.requestId, stream: subscription.stream }
+      return { ...result, stream: subscription.stream, done: subscription.done }
     } catch (error) {
       await this.disconnect(
         new InternalError('MOQtailClient.switch', error instanceof Error ? error.message : String(error)),
@@ -2863,7 +2864,11 @@ if (import.meta.vitest) {
         newSubscribeOptions: { ...options, fullTrackName: other },
       })
       ;(await openedStream(transport, 1)).respond(SubscribeOk.create(8n, [], []))
-      const awayId = ((await away) as { requestId: bigint }).requestId
+      const switched = (await away) as SubscribeResult
+      const awayId = switched.requestId
+      // The new request's SUBSCRIBE_OK, on the original subscription's stream.
+      expect(switched.subscribeOk.trackAlias).toBe(8n)
+      expect(switched.stream).toBe((client.requests.get(firstId) as SubscribeRequest).manager!.stream)
 
       const back = client.switch({
         switchFromRequestId: awayId,
@@ -3005,9 +3010,16 @@ if (import.meta.vitest) {
       expect(subscribeStream.messages[1]).toBeInstanceOf(RequestUpdate)
       expect(transport.biStreams).toHaveLength(1)
 
+      // Without priority and forward, neither is sent: only what the update names changes.
+      await client.subscribeUpdate({ subscriptionRequestId: requestId, parameters: [new Forward(true)] })
+      const update = subscribeStream.messages[2] as RequestUpdate
+      expect(update.parameters).toEqual([new Forward(true)])
+      await client.subscribeUpdate({ subscriptionRequestId: requestId })
+      expect((subscribeStream.messages[3] as RequestUpdate).parameters).toEqual([])
+
       await client.unsubscribe(requestId)
       // No UNSUBSCRIBE message: closing the stream is the cancellation.
-      expect(subscribeStream.messages).toHaveLength(2)
+      expect(subscribeStream.messages).toHaveLength(4)
       expect(subscribeStream.isClosed).toBe(true)
 
       await client.disconnect()
@@ -3821,7 +3833,10 @@ if (import.meta.vitest) {
       })
       const switchStream = await openedStream(transport, 1)
       switchStream.respond(SubscribeOk.create(8n, [], []))
-      const target = client.requests.get(((await switching) as { requestId: bigint }).requestId) as SubscribeRequest
+      const switched = (await switching) as SubscribeResult
+      // The switch reports the chain's done, not just its own request's.
+      expect(switched.done).toBe(done)
+      const target = client.requests.get(switched.requestId) as SubscribeRequest
       const old = client.requests.get(firstId) as SubscribeRequest
 
       target.manager!.deliver(target, {} as MoqtObject)

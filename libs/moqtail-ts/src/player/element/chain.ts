@@ -22,7 +22,7 @@
 import type { MOQtailClient } from '../../client/client'
 import { PlayerError } from '../error'
 import { BaseElement, SinkElement, SourceElement, TransformElement } from './base'
-import { InstanceContext, type PlayerHandle, type Shared } from './context'
+import { InstanceContext, type Loaded, type PlayerHandle } from './context'
 import {
   CapabilityCode,
   hasInterface,
@@ -33,7 +33,7 @@ import {
 } from './define'
 import { MEDIA_SINK } from './interfaces'
 import { selectTargets } from './negotiation'
-import type { Pad, PadOutput } from './pad'
+import type { Consumer, Pad, PadOutput } from './pad'
 
 /** What the chain needs from the player that owns it. */
 export interface ChainHost {
@@ -55,7 +55,9 @@ interface Declaration {
 
 export class Chain {
   /** Instances shared through `context.load()`, by definition, then by tracks. */
-  readonly shared = new Map<ElementDefinition, Map<string, Shared>>()
+  readonly #shared = new Map<ElementDefinition, Map<string, Loaded>>()
+  /** The context of every element, for its holders. */
+  readonly #contexts = new Map<BaseElement, InstanceContext>()
   readonly #declared: Declaration[] = []
   readonly #sources: SourceElement[] = []
   readonly #transforms: TransformElement[] = []
@@ -134,6 +136,7 @@ export class Chain {
 
   /** Listens to an element's signals. Called by `context.attach()`. */
   watch(element: BaseElement, context?: InstanceContext): void {
+    if (context) this.#contexts.set(element, context)
     const onPadAdded = (pad: Pad) => this.#padAdded(pad)
     const onPadRemoved = (pad: Pad, failed: boolean) => this.#padRemoved(pad, failed)
     element.on('padadded', onPadAdded)
@@ -152,12 +155,14 @@ export class Chain {
 
   /** The elements holding a reference to a loaded instance; empty for top-level ones. */
   holdersOf(element: BaseElement): BaseElement[] {
-    for (const byTracks of this.shared.values()) {
-      for (const shared of byTracks.values()) {
-        if (shared.context.element === element) return [...shared.holders].flatMap((h) => h.element ?? [])
-      }
-    }
-    return []
+    return [...(this.#contexts.get(element)?.holders ?? [])].flatMap((h) => h.element ?? [])
+  }
+
+  /** The loaded instances of `definition` that later loads share, by tracks. */
+  sharingTable(definition: ElementDefinition): Map<string, Loaded> {
+    let table = this.#shared.get(definition)
+    if (!table) this.#shared.set(definition, (table = new Map()))
+    return table
   }
 
   /** Adds an initialised instance to the chain's lists. */
@@ -171,6 +176,7 @@ export class Chain {
   unregister(element: BaseElement): void {
     this.#unwatch.get(element)?.()
     this.#unwatch.delete(element)
+    this.#contexts.delete(element)
     for (const list of [this.#sources, this.#transforms, this.#sinks] as BaseElement[][]) {
       const index = list.indexOf(element)
       if (index !== -1) list.splice(index, 1)
@@ -188,11 +194,19 @@ export class Chain {
   }
 
   #route(pad: Pad): void {
-    const targets = selectTargets(pad, this.#transforms, this.#sinks)
+    const targets = this.#takenByHolder(pad) ?? selectTargets(pad, this.#transforms, this.#sinks)
     for (const target of targets) pad.connect(target, (error, destination) => this.#receiveFailed(error, destination))
     if (targets.length > 0 || isEventTimeline(pad)) return
     const name = nameOf(pad.element)
     this.host.warn(new PlayerError('PAD_UNLINKED', `No element accepts a pad of "${name}"`, { element: name }))
+  }
+
+  /** A loaded child's pad goes to the first element holding it that negotiates it, if any. */
+  #takenByHolder(pad: Pad): Consumer[] | undefined {
+    const parent = this.holdersOf(pad.element).find(
+      (h): h is SourceElement & Consumer => h instanceof SourceElement && !!h.receive && !!h.negotiate?.(pad),
+    )
+    return parent && [parent]
   }
 
   /** Pads lost to failures after negotiation are fatal once a media sink has none left. */
@@ -243,7 +257,7 @@ function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 
 if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
-  const { testChain, testSource, collectingSink, connected, flush, TestTransform, detachedContext } =
+  const { testChain, testSource, collectingSink, connected, flush, packet, track, TestTransform, detachedContext } =
     await import('../testing/elements')
   type Sink = import('../testing/elements').CollectingSink
   const signal = () => new AbortController().signal
@@ -269,6 +283,65 @@ if (import.meta.vitest) {
       await chain.init(signal())
       expect(sinks.map((s) => s.pads.length)).toEqual([1, 1])
       expect(warnings).toMatchObject([{ code: 'PAD_UNLINKED', element: 'test-source' }])
+    })
+
+    test('a source can take the pads of a child it loaded, or leave them to normal routing', async () => {
+      const { chain } = testChain()
+      const child = testSource({ name: 'child', script: (c) => void c.addPad() })
+      let parent: import('../testing/elements').TestSource | undefined
+      let sink: Sink | undefined
+      const received: unknown[] = []
+      chain.addSource(
+        testSource({
+          script: async (s) => {
+            parent = s
+            s.negotiate = (pad) => (pad.element as typeof s).ctx.tracks[0]?.name === 'taken'
+            s.receive = (_, item) => void received.push(item)
+            await s.ctx.load(child, { tracks: [track('taken')] })
+            await s.ctx.load(child, { tracks: [track('declined')] })
+            s.emit('nomorepads')
+          },
+        }),
+        {},
+      )
+      chain.addSink(collectingSink({ setup: (k) => (sink = k) }))
+      await chain.init(signal())
+      // Children finish init, and register, before the parent that awaits them.
+      const [taken, declined] = chain.sources as import('../testing/elements').TestSource[]
+      // The first child's pad feeds a sink pad on the parent; the second went to the sink.
+      expect(parent!.pads.map((p) => p.peers[0]!.element)).toEqual([taken])
+      expect(sink!.pads.map((p) => p.peers[0]!.element)).toEqual([declined])
+
+      const upstream: unknown[] = []
+      taken!.pads[0]!.onEvent((event) => (upstream.push(event), true))
+      await taken!.pads[0]!.write(packet(1))
+      await flush()
+      parent!.pads[0]!.sendEvent({ type: 'seek', mediaTime: 3 })
+      expect([received, upstream]).toEqual([[packet(1)], [{ type: 'seek', mediaTime: 3 }]])
+
+      taken!.dropPad(taken!.pads[0]!)
+      expect(parent!.pads).toEqual([])
+    })
+
+    test('a parent takes the pad of an unshared child it loads after negotiation', async () => {
+      const { chain } = testChain()
+      const child = testSource({ name: 'child', script: (c) => void c.addPad() })
+      let parent: import('../testing/elements').TestSource | undefined
+      chain.addSource(
+        testSource({
+          script: (s) => {
+            parent = s
+            s.negotiate = () => true
+            s.receive = () => {}
+            s.emit('nomorepads')
+          },
+        }),
+        {},
+      )
+      chain.addSink(collectingSink())
+      await chain.init(signal())
+      const loaded = await parent!.ctx.load(child, { tracks: [track('v1')], shared: false })
+      expect(parent!.pads.map((p) => p.peers[0]!.element)).toEqual([loaded])
     })
 
     test('a transform that accepts the pad takes it before the sinks', async () => {

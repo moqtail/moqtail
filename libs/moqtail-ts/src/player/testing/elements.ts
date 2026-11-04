@@ -220,17 +220,18 @@ export function detachedContext(): ElementContext {
     tracks: [],
     attach() {},
     load: () => Promise.reject(new Error('detached')),
+    release: async () => {},
     probe: () => undefined,
   }
 }
 
-/** A chain over a fake host that records warnings and failures. */
-export function testChain(definitions: ChainHost['definitions'] = () => []) {
+/** A chain over a fake host that records warnings and failures. `client` is read on each access. */
+export function testChain(definitions: ChainHost['definitions'] = () => [], client: () => unknown = () => ({})) {
   const warnings: Error[] = []
   const failures: Error[] = []
   const chain = new Chain({
     player: fakePlayer(),
-    client: () => ({}) as MOQtailClient,
+    client: () => client() as MOQtailClient,
     definitions,
     warn: (e) => warnings.push(e),
     fail: (e) => failures.push(e),

@@ -48,6 +48,8 @@ export interface ElementContext {
   attach(element: BaseElement): void
   /** Returns the existing instance when the same definition and tracks are already loaded. */
   load<E extends BaseElement>(definition: ElementDefinition<E>, request?: ElementLoadRequest): Promise<E>
+  /** Drops this element's reference to one it loaded; it's destroyed once no holder is left. */
+  release(element: BaseElement): Promise<void>
   /** The source definition the player would pick for `identifiers`, as `source()` does. */
   probe(identifiers: Identifiers): SourceElementDefinition | undefined
 }
@@ -59,15 +61,16 @@ export interface ElementLoadRequest {
   options?: Record<string, any>
   /** Defaults to the caller's catalog. */
   catalog?: CatalogReader
+  /** `false` always creates a new instance that later loads never find, so its options aren't compared. */
+  shared?: false
 }
 
-/** An instance loaded through `context.load()`, and who holds a reference to it. */
-export interface Shared {
+/** An instance loaded through `context.load()`. */
+export interface Loaded {
   readonly context: InstanceContext
   readonly element: Promise<BaseElement>
   readonly options: Record<string, any>
-  readonly holders: Set<InstanceContext>
-  /** Removes it from the chain's sharing table. */
+  /** Removes it from the chain's sharing table, if it's in it. */
   readonly unshare: () => void
 }
 
@@ -75,10 +78,12 @@ export interface Shared {
 export class InstanceContext implements ElementContext {
   readonly tracks: readonly CatalogTrack[]
   readonly catalog?: CatalogReader
+  /** The contexts holding a reference to this instance; empty for top-level ones. */
+  readonly holders = new Set<InstanceContext>()
   readonly #chain: Chain
   readonly #abort = new AbortController()
-  /** Shared instances this one holds a reference to. */
-  readonly #holding = new Set<Shared>()
+  /** Loaded instances this one holds a reference to. */
+  readonly #holding = new Set<Loaded>()
   #element: BaseElement | undefined
 
   constructor(chain: Chain, tracks: readonly CatalogTrack[] = [], catalog?: CatalogReader) {
@@ -125,31 +130,31 @@ export class InstanceContext implements ElementContext {
   async load<E extends BaseElement>(definition: ElementDefinition<E>, request: ElementLoadRequest = {}): Promise<E> {
     const tracks = request.tracks ?? []
     const options = request.options ?? {}
-    let byTracks = this.#chain.shared.get(definition)
-    if (!byTracks) this.#chain.shared.set(definition, (byTracks = new Map()))
+    const table = request.shared === false ? undefined : this.#chain.sharingTable(definition)
     const key = sharingKey(tracks)
-    let shared = byTracks.get(key)
-    if (shared && !deepEqual(shared.options, options)) {
+    let loaded = table?.get(key)
+    if (loaded && !deepEqual(loaded.options, options)) {
       throw new PlayerError('UNSUPPORTED_SOURCE', `Element "${definition.name}" is already loaded with other options`, {
         element: definition.name,
       })
     }
-    if (!shared) {
-      const table = byTracks
+    if (!loaded) {
       const context = new InstanceContext(this.#chain, tracks, request.catalog ?? this.catalog)
-      const created: Shared = {
+      // Before init runs, so pads it creates already know their holder.
+      context.holders.add(this)
+      const created: Loaded = {
         context,
         element: context.create(definition, options),
         options,
-        holders: new Set(),
-        unshare: () => table.get(key) === created && table.delete(key),
+        unshare: () => table?.get(key) === created && table.delete(key),
       }
       created.element.catch(created.unshare) // a failed init isn't shared
-      table.set(key, (shared = created))
+      table?.set(key, created)
+      loaded = created
     }
-    shared.holders.add(this)
-    this.#holding.add(shared)
-    return shared.element as Promise<E>
+    loaded.context.holders.add(this)
+    this.#holding.add(loaded)
+    return loaded.element as Promise<E>
   }
 
   /** Aborts the signal, destroys the element, then releases what it loaded. */
@@ -160,14 +165,21 @@ export class InstanceContext implements ElementContext {
       if (element) await element.destroy()
     } finally {
       if (element) this.#chain.unregister(element)
-      for (const shared of this.#holding) {
-        shared.holders.delete(this)
-        if (shared.holders.size > 0) continue
-        shared.unshare()
-        await shared.context.destroy()
-      }
-      this.#holding.clear()
+      for (const loaded of [...this.#holding]) await this.#drop(loaded)
     }
+  }
+
+  async release(element: BaseElement): Promise<void> {
+    const loaded = [...this.#holding].find((l) => l.context.element === element)
+    if (loaded) await this.#drop(loaded)
+  }
+
+  async #drop(loaded: Loaded): Promise<void> {
+    this.#holding.delete(loaded)
+    loaded.context.holders.delete(this)
+    if (loaded.context.holders.size > 0) return
+    loaded.unshare()
+    await loaded.context.destroy()
   }
 }
 
@@ -238,6 +250,32 @@ if (import.meta.vitest) {
         code: 'UNSUPPORTED_SOURCE',
         element: 'child',
       })
+    })
+
+    test('release drops one child, unless another holder keeps it', async () => {
+      const { sources } = await parents(2)
+      const [a, b] = sources as [Source, Source]
+      const v1 = await a.ctx.load(child, { tracks: [track('v1')] })
+      const v2 = await a.ctx.load(child, { tracks: [track('v2')] })
+      expect(await b.ctx.load(child, { tracks: [track('v2')] })).toBe(v2)
+
+      await a.ctx.release(v1)
+      await a.ctx.release(v2)
+      expect([v1.signal.aborted, v2.signal.aborted]).toEqual([true, false])
+      await b.ctx.release(v2)
+      expect(v2.signal.aborted).toBe(true)
+    })
+
+    test('unshared loads of one track coexist, with their own options', async () => {
+      const { sources } = await parents(1)
+      const parent = sources[0]!
+      const shared = await parent.ctx.load(child, { tracks: [track('v1')] })
+      const first = await parent.ctx.load(child, { tracks: [track('v1')], shared: false })
+      const second = await parent.ctx.load(child, { tracks: [track('v1')], options: { other: 1 }, shared: false })
+      expect(new Set([shared, first, second]).size).toBe(3)
+      expect(await parent.ctx.load(child, { tracks: [track('v1')] })).toBe(shared)
+      await parent.ctx.release(first)
+      expect([first.signal.aborted, second.signal.aborted]).toEqual([true, false])
     })
 
     test('releasing a parent releases its children recursively, except what another holder keeps', async () => {

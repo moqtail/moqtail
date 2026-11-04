@@ -19,9 +19,11 @@
  * catalog contract sources are written against (implemented in milestone 4).
  */
 
+import type { FetchOptions, FetchResult, SubscribeOptions, SubscribeResult } from '../../client/types'
 import type { Location } from '../../model/common/location'
 import type { Tuple } from '../../model/common/tuple'
 import type { Emitter } from '../../util/emitter'
+import type { MsfSource } from '../msf_url'
 
 // Symbol.for, so the keys still match when the ESM and CJS builds are both loaded.
 /** @public Key of {@link MediaSinkElement}. */
@@ -119,6 +121,10 @@ export interface CatalogTrack {
 
 /** @public What the catalog element offers the elements it loads. */
 export interface CatalogReader extends Emitter<{ change: () => void }> {
+  /** The catalog's session URL, `moqt://authority/path[?query]` without a fragment. */
+  readonly url: string
+  /** The catalog track's namespace. */
+  readonly namespace: Tuple
   /** The last good catalog. */
   readonly tracks: readonly CatalogTrack[]
   readonly isComplete: boolean
@@ -134,4 +140,32 @@ export interface TimelineReader {
   wallclockToLocation(wallclockMs: number): Location | undefined
   /** Media time, after `accessibleWindowTime`. */
   readonly range: { start: number; end: number } | undefined
+}
+
+/**
+ * @public
+ * Load options every media source takes. The catalog element, and wrapping sources such as
+ * the SSTS one, pass them to whichever source the probe picks.
+ */
+export interface MediaSourceOptions {
+  /** From the catalog source options: switch with `SWITCH_FROM`. */
+  switchFrom?: boolean
+  /** From the catalog URL. */
+  ranges?: Pick<MsfSource, 'locationRanges' | 'mediaTimeRanges' | 'wallclockRanges'>
+  /** How a parent adds to every SUBSCRIBE and FETCH the source sends. */
+  requests?: RequestHooks
+}
+
+/**
+ * @public
+ * Called for every SUBSCRIBE and FETCH a media source sends: start, retry, reconnect,
+ * seek, switch, ranges. How a parent such as an SSTS source adds to the requests. The
+ * hooks run last, after the source built its own options, and `subscribed` and `fetched`
+ * get the options that were actually sent. They aren't called for rejected requests.
+ */
+export interface RequestHooks {
+  subscribe?(track: CatalogTrack, options: SubscribeOptions): SubscribeOptions
+  subscribed?(track: CatalogTrack, result: SubscribeResult, options: SubscribeOptions): void
+  fetch?(track: CatalogTrack, options: FetchOptions): FetchOptions
+  fetched?(track: CatalogTrack, result: FetchResult, options: FetchOptions): void
 }

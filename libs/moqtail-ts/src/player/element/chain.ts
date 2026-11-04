@@ -98,8 +98,10 @@ export class Chain {
    * from every top-level source, emits `nomorepads` on the sinks, and resolves once every
    * sink emitted `ready`. A media sink left without pads rejects with `NO_MEDIA_SINK`;
    * the player reports `init()` failures, so this one isn't also sent to `host.fail`.
+   * Resolves `ended` without negotiating the sinks when no source has a pad: every source
+   * reported and has nothing to play, as with an empty `isComplete` catalog.
    */
-  async init(signal: AbortSignal): Promise<void> {
+  async init(signal: AbortSignal): Promise<'ready' | 'ended'> {
     const sources = this.#declared.filter((d) => d.definition.type === 'source')
     const sinks = this.#declared.filter((d) => d.definition.type === 'sink')
     for (const declaration of [...sources, ...sinks]) {
@@ -114,11 +116,13 @@ export class Chain {
     }
 
     await abortable(Promise.all(sources.map((d) => d.done.promise)), signal)
+    if (!this.#sources.some((s) => s.pads.some((p) => p.direction === 'src'))) return 'ended'
     const unlinked = this.#mediaSinkWithoutPads()
     if (unlinked) throw noMediaSink(unlinked)
     this.#negotiated = true
     for (const sink of this.#sinks) sink.emit('nomorepads')
     await abortable(Promise.all(sinks.map((d) => d.done.promise)), signal)
+    return 'ready'
   }
 
   /** Destroys sinks first, then transforms, then sources. Loaded elements go with their last holder. */
@@ -383,11 +387,16 @@ if (import.meta.vitest) {
       expect(heard).toBe(1)
     })
 
-    test('NO_MEDIA_SINK: at negotiation, and later only for pads lost to failures', async () => {
+    test('no source pads at all is ended; NO_MEDIA_SINK at negotiation, and later only for pads lost to failures', async () => {
       const empty = testChain()
       empty.chain.addSource(testSource({ script: (s) => s.emit('nomorepads') }), {})
       empty.chain.addSink(collectingSink({ media: true }))
-      await expect(empty.chain.init(signal())).rejects.toMatchObject({ code: 'NO_MEDIA_SINK' })
+      await expect(empty.chain.init(signal())).resolves.toBe('ended')
+
+      const unlinked = testChain()
+      unlinked.chain.addSource(testSource({ script: (s) => (s.addPad(packaging('loc')), s.emit('nomorepads')) }), {})
+      unlinked.chain.addSink(collectingSink({ media: true }))
+      await expect(unlinked.chain.init(signal())).rejects.toMatchObject({ code: 'NO_MEDIA_SINK' })
 
       const { chain, failures } = testChain()
       let source: import('@/player/testing/elements').TestSource | undefined

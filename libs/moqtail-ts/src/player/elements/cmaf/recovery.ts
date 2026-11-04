@@ -98,11 +98,11 @@ export class Recovery {
     }
     player.on('reconnecting', lost)
     player.on('reconnected', back)
-    catalog?.on('change', changed)
+    player.on('catalog', changed)
     signal.addEventListener('abort', () => {
       player.off('reconnecting', lost)
       player.off('reconnected', back)
-      catalog?.off('change', changed)
+      player.off('catalog', changed)
       back()
       this.resume()
     })
@@ -393,7 +393,7 @@ if (import.meta.vitest) {
       c.client.last.end(PublishDoneStatusCode.TrackEnded)
       await elapse()
       catalog.isComplete = true
-      catalog.emit('change')
+      c.chain.host.player.emit('catalog', catalog as never)
       await elapse()
       expect(c.trace().slice(-1)).toEqual(['eos'])
       const sent = c.client.sent('subscribe').length

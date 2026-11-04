@@ -22,7 +22,6 @@
 import type { FetchOptions, FetchResult, SubscribeOptions, SubscribeResult } from '@/client/types'
 import type { Location } from '@/model/common/location'
 import type { Tuple } from '@/model/common/tuple'
-import type { Emitter } from '@/util/emitter'
 import type { MsfSource } from '@/player/msf_url'
 import type { CatalogTrack } from '@/player/elements/catalog/types'
 import type { SourceElementDefinition } from './define'
@@ -88,8 +87,8 @@ export interface Rendition {
   selected: boolean
 }
 
-/** @public What the catalog element offers the elements it loads. */
-export interface CatalogReader extends Emitter<{ change: () => void }> {
+/** @public What the catalog element offers the elements it loads. Updates arrive with the player's `catalog` event. */
+export interface CatalogReader {
   /** The catalog's session URL, `moqt://authority/path[?query]` without a fragment. */
   readonly url: string
   /** The catalog track's namespace. */

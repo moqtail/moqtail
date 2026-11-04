@@ -30,6 +30,7 @@ export type PlayerErrorCode =
   | 'ABORTED'
   // Warnings
   | 'PAD_UNLINKED'
+  | 'TRACK_SKIPPED'
   | 'VARIABLE_SKIPPED'
   | 'INVALID_CATALOG_UPDATE'
 

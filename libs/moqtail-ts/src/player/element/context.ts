@@ -192,7 +192,7 @@ function sharingKey(tracks: readonly CatalogTrack[]): string {
 }
 
 /** Structural equality for load options: plain objects, arrays, typed arrays, primitives. */
-function deepEqual(a: unknown, b: unknown): boolean {
+export function deepEqual(a: unknown, b: unknown): boolean {
   if (Object.is(a, b)) return true
   if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false
   if (Object.getPrototypeOf(a) !== Object.getPrototypeOf(b)) return false

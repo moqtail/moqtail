@@ -1,0 +1,372 @@
+/**
+ * Copyright 2026 The MOQtail Authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/**
+ * The catalog element: keeps the catalog current from the catalog track, loads the default
+ * sources for the first catalog, and hands later updates to them (`PLAN.md` › Source
+ * Elements, Proper Catalog Parsing).
+ */
+
+import type { Tuple } from '@/model/common/tuple'
+import { SourceElement, type BaseElement } from '@/player/element/base'
+import type { ElementContext } from '@/player/element/context'
+import { hasInterface, type SourceElementDefinition } from '@/player/element/define'
+import {
+  MEDIA_SOURCE,
+  type CatalogReader,
+  type CatalogTrack,
+  type MediaSourceOptions,
+  type TimelineReader,
+} from '@/player/element/interfaces'
+import { PlayerError } from '@/player/error'
+import { trackIdentifier, type MsfSource } from '@/player/msf_url'
+import { backoffDelay, sleep } from '@/player/util/backoff'
+import { trackKey } from '@/player/elements/cmaf/track'
+import { applyDelta } from './delta'
+import { diffTracks } from './diff'
+import { parseCatalog, type ParseContext, type ParseResult } from './parse'
+import { selectEventTimelines, selectMedia, withRole, type SelectedSet, type SelectionOptions } from './selection'
+import { TrackReader } from './track_reader'
+import type { Catalog as CatalogData } from './types'
+
+/** MSF 5: above every other subscription; media uses 128. */
+export const CATALOG_PRIORITY = 0
+const DEFAULT_TIMEOUT_MS = 10_000
+const DEFAULT_MAX_BYTES = 16 * 1024 * 1024
+
+export interface CatalogOptions {
+  /** Passed to the media sources: switch with `SWITCH_FROM`. */
+  switchFrom?: boolean
+  /** The parsed catalog URL, from the player. */
+  source?: MsfSource
+}
+
+/** A source the catalog loaded, and the set it holds now. */
+interface LoadedSet {
+  element: BaseElement
+  tracks: CatalogTrack[]
+  /** The track the set was loaded with, whose grouping fields an added track must share. */
+  sample: CatalogTrack
+  /** What the probe picked; a switching set source may wrap it. */
+  definition: SourceElementDefinition
+  media: boolean
+}
+
+/** @public The catalog element, emitted with the player's `catalog` event. */
+export class Catalog extends SourceElement implements CatalogReader {
+  readonly url: string
+  readonly namespace: Tuple
+  readonly #options: CatalogOptions
+  readonly #parse: ParseContext
+  readonly #reader: TrackReader
+  #catalog: CatalogData | undefined
+  #stale = false
+  #sets: LoadedSet[] = []
+  /** The first catalog with tracks or `isComplete`, or the fatal error that came first. */
+  readonly #first = Promise.withResolvers<void>()
+  #started = false
+  /** Updates are reconciled one after another, since loading a source is async. */
+  #updates = Promise.resolve()
+
+  constructor(context: ElementContext, options: CatalogOptions & { source: MsfSource }) {
+    super(context)
+    const { source } = options
+    this.url = source.url
+    this.namespace = source.namespace
+    this.#options = options
+    this.#parse = { namespace: source.namespace, variables: source.variables }
+    this.#first.promise.catch(() => {}) // read by start(), possibly after it settled
+    this.#reader = new TrackReader(context, {
+      track: { namespace: source.namespace, name: source.trackBytes },
+      priority: CATALOG_PRIORITY,
+      incremental: true,
+      maxBytes: context.player.options.maxCatalogBytes ?? DEFAULT_MAX_BYTES,
+      onIndependent: (payload) => this.#received(parseCatalog(payload, this.#parse)),
+      onIncremental: (payload) => {
+        if (!this.#catalog) throw new Error('A delta update arrived before any catalog')
+        this.#received(applyDelta(this.#catalog, payload, this.#parse))
+      },
+      onStale: (reason) => this.#onStale(reason),
+    })
+  }
+
+  /** The last good catalog's tracks, roles inferred. */
+  get tracks(): readonly CatalogTrack[] {
+    return this.#catalog?.tracks ?? []
+  }
+
+  get publishTracks(): readonly CatalogTrack[] {
+    return this.#catalog?.publishTracks ?? []
+  }
+
+  get isComplete(): boolean {
+    return this.#catalog?.isComplete === true
+  }
+
+  /** An update was missed or rejected since the last good catalog. */
+  get stale(): boolean {
+    return this.#stale
+  }
+
+  /** Over the tracks of the loaded sources. */
+  get streamType(): 'unknown' | 'live' | 'on-demand' {
+    const selected = this.#selected()
+    if (selected.length === 0) return 'unknown'
+    return selected.some((t) => t.isLive) ? 'live' : 'on-demand'
+  }
+
+  /** Seconds: the longest `trackDuration` of the loaded sources' tracks, `Infinity` while live, `NaN` unknown. */
+  get duration(): number {
+    if (this.streamType === 'live') return Infinity
+    const durations = this.#selected().flatMap((t) => t.trackDuration ?? [])
+    return durations.length > 0 ? Math.max(...durations) / 1000 : NaN
+  }
+
+  /** A track by name bytes, in the catalog's namespace unless given (MSF 11.2.2). */
+  find(name: string | Uint8Array, namespace: Tuple = this.namespace): CatalogTrack | undefined {
+    const key = trackIdentifier(namespace, typeof name === 'string' ? new TextEncoder().encode(name) : name)
+    return this.tracks.find((t) => trackKey(t) === key)
+  }
+
+  byRole(role: string): CatalogTrack[] {
+    return this.tracks.filter((t) => t.role === role)
+  }
+
+  /** Tracks referencing other catalogs (MSF 5.6.16); loading one is up to the user. */
+  references(): CatalogTrack[] {
+    return this.tracks.filter((t) => t.packaging === 'catalog')
+  }
+
+  // shortcut: no media timeline element or template reader yet; 4c implements this.
+  async timeline(_track: CatalogTrack): Promise<TimelineReader | undefined> {
+    return undefined
+  }
+
+  /**
+   * Subscribes, waits for the first catalog with tracks or `isComplete`, loads the default
+   * sources, and emits `nomorepads`.
+   * @throws PlayerError `CATALOG_TIMEOUT` without a usable catalog in time, `UNSUPPORTED_SOURCE`
+   * for an invalid first catalog or one with nothing playable.
+   */
+  async start(): Promise<void> {
+    const timeoutMs = this.context.player.options.catalogTimeoutMs ?? DEFAULT_TIMEOUT_MS
+    const startedAt = performance.now()
+    const left = () => timeoutMs - (performance.now() - startedAt)
+    const timedOut = (cause?: unknown) =>
+      new PlayerError('CATALOG_TIMEOUT', `No catalog within ${timeoutMs} ms`, { element: 'catalog', cause })
+    try {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          await this.#reader.start()
+          break
+        } catch (cause) {
+          const wait = backoffDelay(attempt)
+          if (wait > left()) throw timedOut(cause)
+          await sleep(wait, this.context.signal)
+        }
+      }
+      await within(this.#first.promise, left(), this.context.signal, timedOut)
+      const catalog = this.#catalog!
+      this.#started = true
+      if (catalog.tracks.length > 0) {
+        const loading = this.#loadDefaults(catalog)
+        this.#updates = loading.catch(() => {})
+        await loading
+      }
+    } catch (error) {
+      await this.#reader.stop()
+      throw error
+    }
+    this.emit('nomorepads')
+  }
+
+  override async destroy(): Promise<void> {
+    await this.#reader.stop()
+    await super.destroy()
+  }
+
+  #received({ catalog, warnings }: ParseResult): void {
+    for (const warning of warnings) this.#warn(warning)
+    const previous = this.#catalog
+    const next = { ...catalog, tracks: catalog.tracks.map(withRole) }
+    this.#catalog = next
+    this.#stale = false
+    if (!this.#started) {
+      if (next.tracks.length > 0 || next.isComplete) this.#first.resolve()
+      return this.#announce()
+    }
+    this.#updates = this.#updates
+      .then(() => this.#reconcile(previous!, next))
+      .catch((error) => this.#warn(asUpdateError(error)))
+      .then(() => this.#announce())
+  }
+
+  #announce(): void {
+    this.context.player.emit('catalog', this)
+  }
+
+  #onStale(reason: Error): void {
+    this.#stale = true
+    // No good catalog yet: it's fatal.
+    if (!this.#catalog) {
+      const fatal = reason instanceof PlayerError && reason.code === 'UNSUPPORTED_SOURCE'
+      return this.#first.reject(
+        fatal
+          ? reason
+          : new PlayerError('UNSUPPORTED_SOURCE', `Unusable catalog: ${reason.message}`, { cause: reason }),
+      )
+    }
+    this.#warn(asUpdateError(reason))
+  }
+
+  #warn(warning: PlayerError): void {
+    this.context.player.emit('warning', warning)
+  }
+
+  #selection(): SelectionOptions {
+    const { preferredLanguage, eventTimelines } = this.context.player.options
+    const language = preferredLanguage ?? globalThis.navigator?.language
+    return {
+      probe: (track) => this.context.probe(track),
+      ...(language && { language }),
+      ...(eventTimelines && { eventTimelines }),
+    }
+  }
+
+  async #loadDefaults(catalog: CatalogData): Promise<void> {
+    const selection = this.#selection()
+    const media = selectMedia(catalog.tracks, selection)
+    if (media.length === 0) {
+      throw new PlayerError('UNSUPPORTED_SOURCE', 'No track in the catalog is playable', { element: 'catalog' })
+    }
+    const { sets: timelines, skipped } = selectEventTimelines(catalog.tracks, selection)
+    for (const track of skipped) {
+      const message = `No element handles event timeline "${track.name}" (${track.eventType})`
+      this.#warn(new PlayerError('TRACK_SKIPPED', message, { element: 'catalog' }))
+    }
+    await Promise.all([...media.map((s) => this.#load(s, true)), ...timelines.map((s) => this.#load(s, false))])
+  }
+
+  /** Loads a set: through the switching set source of a listed and negotiated extension, if any. */
+  async #load(set: SelectedSet, media: boolean): Promise<void> {
+    const { tracks, definition } = set
+    const parent = media
+      ? this.context.player.options.extensions?.find(
+          (e) => e.switchingSetSource && (e.negotiated?.(this.context.client.serverSetup) ?? true),
+        )?.switchingSetSource
+      : undefined
+    const options = media ? this.#mediaOptions() : {}
+    const element = parent
+      ? await this.context.load(parent, { tracks, options: { ...options, child: definition }, catalog: this })
+      : await this.context.load(definition, { tracks, options, catalog: this })
+    this.#sets.push({ element, tracks, sample: tracks[0]!, definition, media })
+  }
+
+  #mediaOptions(): MediaSourceOptions {
+    const { switchFrom, source } = this.#options
+    const { locationRanges = [], mediaTimeRanges = [], wallclockRanges = [] } = source ?? {}
+    const ranged = locationRanges.length + mediaTimeRanges.length + wallclockRanges.length > 0
+    return {
+      ...(switchFrom !== undefined && { switchFrom }),
+      ...(ranged && { ranges: { locationRanges, mediaTimeRanges, wallclockRanges } }),
+    }
+  }
+
+  /**
+   * Gives each loaded media source its new set. An `isComplete` catalog removes nothing,
+   * even with `tracks: []` (MSF 11.4). Added tracks join the set they fit; otherwise they
+   * only start a source for a role that has none.
+   */
+  async #reconcile(previous: CatalogData, next: CatalogData): Promise<void> {
+    const diff = diffTracks(previous.tracks, next.tracks)
+    for (const warning of diff.warnings) this.#warn(warning)
+    next.tracks = [...diff.tracks.values()]
+    const removed = next.isComplete ? new Set<string>() : diff.removed
+    const unplaced = [...diff.added]
+    for (const set of this.#sets) {
+      const tracks = set.tracks.flatMap((t) => (removed.has(trackKey(t)) ? [] : [diff.tracks.get(trackKey(t)) ?? t]))
+      for (const track of set.media ? [...unplaced] : []) {
+        // Kept by an isComplete catalog, which removes nothing: it's already in the set.
+        const present = tracks.some((t) => trackKey(t) === trackKey(track))
+        if (!present && !this.#fits(set, track)) continue
+        if (!present) tracks.push(track)
+        unplaced.splice(unplaced.indexOf(track), 1)
+      }
+      const changed =
+        tracks.length !== set.tracks.length ||
+        tracks.some((t, i) => {
+          const key = trackKey(t)
+          // Removed and still in the new catalog: it changed beyond what applies in place.
+          return (
+            key !== trackKey(set.tracks[i]!) || diff.updated.has(key) || (diff.removed.has(key) && diff.tracks.has(key))
+          )
+        })
+      set.tracks = tracks
+      if (changed && hasInterface(set.element, MEDIA_SOURCE)) set.element.setTracks(tracks)
+    }
+    if (unplaced.length > 0) await this.#loadMissingRoles(next)
+  }
+
+  /** Same grouping fields as the set's tracks, and the same probe result. */
+  #fits(set: LoadedSet, track: CatalogTrack): boolean {
+    const { sample } = set
+    return (
+      track.altGroup !== undefined &&
+      (['role', 'renderGroup', 'altGroup', 'lang', 'packaging'] as const).every((f) => track[f] === sample[f]) &&
+      !track.depends?.length &&
+      this.context.probe(track) === set.definition
+    )
+  }
+
+  /** A new source for each default set whose role has no source with tracks, replacing an emptied one. */
+  async #loadMissingRoles(catalog: CatalogData): Promise<void> {
+    const roleOf = (set: LoadedSet) => set.sample.role
+    const playing = new Set(this.#sets.filter((s) => s.media && s.tracks.length > 0).map(roleOf))
+    for (const set of selectMedia(catalog.tracks, this.#selection())) {
+      const role = set.tracks[0]!.role
+      if (playing.has(role)) continue
+      for (const empty of this.#sets.filter((s) => s.media && roleOf(s) === role)) {
+        this.#sets.splice(this.#sets.indexOf(empty), 1)
+        await this.context.release(empty.element)
+      }
+      await this.#load(set, true)
+    }
+  }
+
+  #selected(): CatalogTrack[] {
+    return this.#sets.flatMap((s) => s.tracks)
+  }
+}
+
+function asUpdateError(error: unknown): PlayerError {
+  if (error instanceof PlayerError && error.code === 'INVALID_CATALOG_UPDATE') return error
+  const message = `Catalog update rejected: ${error instanceof Error ? error.message : String(error)}`
+  return new PlayerError('INVALID_CATALOG_UPDATE', message, { element: 'catalog', cause: error })
+}
+
+/** `promise`, or `timedOut()` after `ms`, or the signal's reason. */
+async function within<T>(promise: Promise<T>, ms: number, signal: AbortSignal, timedOut: () => Error): Promise<T> {
+  const done = new AbortController()
+  const timer = sleep(Math.max(0, ms), AbortSignal.any([signal, done.signal])).then(() => {
+    throw timedOut()
+  })
+  try {
+    return await Promise.race([promise, timer])
+  } finally {
+    done.abort()
+    timer.catch(() => {})
+  }
+}

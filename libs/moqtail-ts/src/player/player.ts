@@ -39,6 +39,8 @@ import {
   type Rendition,
 } from './element/interfaces'
 import { selectSource } from './element/negotiation'
+import type { Catalog } from './elements/catalog/element'
+import { BUILT_IN_SOURCES } from './elements'
 import { MSE, checkOptions } from './elements/mse'
 import type { MSEOptions } from './elements/mse/sink'
 import { PlayerError } from './error'
@@ -77,8 +79,8 @@ export interface PlayerEvents {
   pause: () => void
   stalled: () => void
   ended: () => void
-  /** Emitted by the catalog element, typed by milestone 4. */
-  catalog: (catalog: unknown) => void
+  /** The catalog element, after the first catalog and every applied update. */
+  catalog: (catalog: Catalog) => void
   reconnecting: (attempt: number) => void
   reconnected: () => void
   /** Typed by milestone 4. */
@@ -109,7 +111,7 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
   readonly options: Readonly<MOQtailPlayerOptions>
   readonly #client: ClientOptions
   readonly #key: string
-  /** `registerElement` definitions, then the extensions' in listed order. Built-in sources (milestone 4) go last. */
+  /** `registerElement` definitions, then the extensions' in listed order. Built-in sources go last. */
   readonly #definitions: ElementDefinition[] = []
   readonly #extensionElements: readonly ElementDefinition[]
   readonly #chain: Chain
@@ -292,10 +294,10 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
     try {
       await acquire(this.#member, origin, this.#client)
       this.#abort.signal.throwIfAborted()
-      await this.#chain.init(this.#abort.signal)
+      const outcome = await this.#chain.init(this.#abort.signal)
       if (this.#error) throw this.#error // failed while negotiating, e.g. the session couldn't be recovered
       this.#watchSink()
-      this.#setState('ready')
+      this.#setState(outcome)
     } catch (cause) {
       const error =
         cause instanceof PlayerError
@@ -318,8 +320,9 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
     }
   }
 
+  /** Built-in sources last, so they lose probe ties. */
   #sourceDefinitions(): SourceElementDefinition[] {
-    return [...this.#definitions, ...this.#extensionElements].filter(
+    return [...this.#definitions, ...this.#extensionElements, ...BUILT_IN_SOURCES].filter(
       (d): d is SourceElementDefinition => d.type === 'source',
     )
   }
@@ -424,6 +427,7 @@ if (import.meta.vitest) {
   const { fakeClients } = await import('./testing/client')
   const { testSource, fakeMediaSink, flush } = await import('./testing/elements')
   const { defineExtension } = await import('./extension')
+  const { CapabilityCode } = await import('./element/define')
   const { SetupOptions } = await import('@/model/parameter/setup_option')
   type Sink = import('./testing/elements').FakeMediaSink
   type Source = import('./testing/elements').TestSource
@@ -450,7 +454,7 @@ if (import.meta.vitest) {
       const player = new MOQtailPlayer()
       expect(() => player.source('https://example.com')).toThrow(code('UNSUPPORTED_SOURCE'))
       expect(() => player.source(`${URL}&connection=q`)).toThrow(code('UNSUPPORTED_SOURCE'))
-      expect(() => player.source(URL)).toThrow(code('UNSUPPORTED_SOURCE')) // no element accepts it
+      expect(() => player.source('moqt://relay.example.com/app#msf:ns--video')).toThrow(code('UNSUPPORTED_SOURCE')) // no element accepts it
       player.registerElement(media).source(URL)
       expect(() => player.source('moqt://other.example.com/app#msf:ns--catalog')).toThrow(code('UNSUPPORTED_ORIGIN'))
       expect(player.state).toBe('idle')
@@ -497,7 +501,14 @@ if (import.meta.vitest) {
     })
 
     test('fatal errors reject init or move to error and pause; a lost session while ended waits for a seek', async () => {
-      const empty = new MOQtailPlayer().registerElement(testSource({ script: (s) => s.emit('nomorepads') }))
+      // Nothing to play at all, such as an empty isComplete catalog: ended, not an error.
+      const nothing = new MOQtailPlayer().registerElement(testSource({ script: (s) => s.emit('nomorepads') }))
+      await nothing.source(URL).sink(fakeMediaSink).init()
+      expect(nothing.state).toBe('ended')
+
+      const loc = [{ direction: 'out' as const, code: CapabilityCode.PACKAGING, value: 'loc' }]
+      const unlinked = testSource({ script: (s) => (s.addPad(loc), s.emit('nomorepads')) })
+      const empty = new MOQtailPlayer().registerElement(unlinked)
       const errors: PlayerError[] = []
       empty.on('error', (e) => errors.push(e))
       await expect(empty.source(URL).sink(fakeMediaSink).init()).rejects.toMatchObject({ code: 'NO_MEDIA_SINK' })
@@ -508,7 +519,7 @@ if (import.meta.vitest) {
       const source = player.sources[0] as Source
       source.dropPad(source.pads[0]!, true)
       expect([player.state, (player.mediaSink as Sink).calls]).toEqual(['error', ['pause']])
-      await Promise.all([empty.destroy(), player.destroy()])
+      await Promise.all([nothing.destroy(), empty.destroy(), player.destroy()])
 
       fakes.restore()
       fakes = fakeClients((i) => (i === 0 ? Promise.resolve() : Promise.reject(new Error('gone'))))

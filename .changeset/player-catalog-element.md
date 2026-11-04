@@ -1,0 +1,5 @@
+---
+'moqtail': minor
+---
+
+The player gets a built-in catalog source, reached through the probe for a `catalog` track. It subscribes at priority 0 with a fill of the latest group, follows independent and delta catalog updates (GZIP included, MSF 5.5), keeps the last good catalog on a bad update with an `INVALID_CATALOG_UPDATE` warning, and times out with `CATALOG_TIMEOUT`. From the first catalog it loads one video and one audio switching set (`preferredLanguage`), plus opted-in `eventTimelines`, and hands later updates to the sources through `setTracks`. The player's `catalog` event carries the element after every applied catalog, typed as the exported `CatalogElement`, with `tracks`, `isComplete`, `stale`, `streamType`, `duration`, `find()`, `byRole()`, and `references()`. `CatalogReader` no longer emits `change`: elements listen to the player's `catalog` event. When every source reports `nomorepads` without a single pad, as for an empty `isComplete` catalog, `init()` resolves and the player moves to `ended` instead of failing with `NO_MEDIA_SINK`. `TRACK_SKIPPED` is a new warning code.

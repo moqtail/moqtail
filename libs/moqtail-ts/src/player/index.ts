@@ -19,6 +19,7 @@ export { PlayerError, type PlayerErrorCode, type PlayerErrorCategory } from './e
 export { MOQtailPlayer, type MOQtailPlayerOptions, type PlayerEvents } from './player'
 export type { PlayerState } from './state'
 export type { Catalog, CatalogJson, InitData, MediaTimelineTemplate } from './elements/catalog/types'
+export type { Catalog as CatalogElement } from './elements/catalog/element'
 export { defineExtension, type ExtensionDefinition } from './extension'
 export { MSE } from './elements/mse'
 export { SSTS, SstsSource } from './extensions/ssts'

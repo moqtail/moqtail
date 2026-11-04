@@ -21,7 +21,6 @@ import { Tuple, TupleField } from '@/model/common/tuple'
 import { ObjectForwardingPreference, ObjectStatus } from '@/model/data/constant'
 import { FullTrackName } from '@/model/data/full_track_name'
 import { MoqtObject } from '@/model/data/object'
-import { Emitter } from '@/util/emitter'
 import { Cmaf } from '@/player/elements/cmaf'
 import type { CmafSource } from '@/player/elements/cmaf/source'
 import type { SubscribeOptions, SubscribeUpdateOptions, SwitchOptions } from '@/client/types'
@@ -38,15 +37,15 @@ export function cmafTrack(name: string, extra: Partial<CatalogTrack> = {}): Cata
   return { ...track(name), role: 'video', codec: 'avc1.64001f', ...extra }
 }
 
-/** A catalog reader the test edits; emit `change` after editing. */
+/** A catalog reader the test edits; emit the player's `catalog` event after editing. */
 export function fakeCatalog(tracks: CatalogTrack[] = [], timeline?: TimelineReader) {
-  return Object.assign(new Emitter<{ change: () => void }>(), {
+  return {
     url: 'moqt://relay.test/app',
     namespace: new Tuple([TupleField.fromUtf8('ns')]),
     tracks,
-    isComplete: false,
+    isComplete: false as boolean, // tests flip it
     timeline: async (): Promise<TimelineReader | undefined> => timeline,
-  }) satisfies CatalogReader
+  } satisfies CatalogReader
 }
 
 /** The track name a request was sent for. */

@@ -124,6 +124,9 @@ const TrackFields = v.looseObject({
 
 type TrackFields = v.InferOutput<typeof TrackFields>
 
+/** The track fields MSF 5.2 and CMSF 3.5.2 define; any other field is an extra field. */
+export const TRACK_FIELD_NAMES: readonly string[] = Object.keys(TrackFields.entries)
+
 /**
  * One track object (MSF 5.2). A track without a namespace inherits `catalogNamespace`.
  * `toBytes` and `splitNamespace` throw a `PlayerError` for a bad name or namespace (MSF

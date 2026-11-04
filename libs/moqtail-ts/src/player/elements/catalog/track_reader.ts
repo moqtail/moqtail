@@ -54,10 +54,10 @@ export interface TrackReaderOptions {
   incremental: boolean
   /** Limit for a decompressed payload. */
   maxBytes: number
+  /** Throwing marks the group stale. `object` still holds the compressed payload. */
+  onIndependent(payload: Uint8Array, location: Location, object: MoqtObject): void
   /** Throwing marks the group stale. */
-  onIndependent(payload: Uint8Array, location: Location): void
-  /** Throwing marks the group stale. */
-  onIncremental(payload: Uint8Array, location: Location): void
+  onIncremental(payload: Uint8Array, location: Location, object: MoqtObject): void
   /** The group went stale, or the track can't be read at all, with why. */
   onStale(reason: Error): void
 }
@@ -213,7 +213,7 @@ export class TrackReader {
     const algorithm = trackAlgorithm ?? findProperty(object.properties, MsfCompressionObjectProperty)?.algorithm ?? 0
     try {
       const payload = await decompress(object.payload!, algorithm, this.#options.maxBytes)
-      this.#options[handler](payload, object.location)
+      this.#options[handler](payload, object.location, object)
     } catch (error) {
       this.#markStale(error instanceof Error ? error : new Error(String(error)))
     }

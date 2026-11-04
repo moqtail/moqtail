@@ -97,10 +97,15 @@ export function merge(ranges: readonly { start: Location; end?: End }[]): { star
 const laterEnd = (a: End, b: End): boolean =>
   a.group !== b.group ? a.group > b.group : a.object === undefined || (b.object !== undefined && a.object > b.object)
 
-/** The earliest accessible location (MSF 5.2.46), when the track has a window and a timeline. */
+/**
+ * The earliest accessible location (MSF 5.2.46), when the track has a window and a timeline.
+ * The timeline's `range` already applies the window, by wallclock or, without wallclock
+ * values, by media time.
+ */
 export function accessibleStart(track: CatalogTrack, timeline: TimelineReader | undefined): Location | undefined {
-  if (!timeline || track.accessibleWindowTime === undefined) return undefined
-  return timeline.wallclockToLocation(Date.now() - track.accessibleWindowTime)
+  const start = timeline?.range?.start
+  if (track.accessibleWindowTime === undefined || start === undefined) return undefined
+  return timeline!.timeToLocation(start)
 }
 
 /** The span `location` falls in, or the nearest one, and the location clamped into it. */
@@ -162,13 +167,13 @@ if (import.meta.vitest) {
   })
 
   test('toSpans: the accessible window cuts ranges before it', () => {
-    const now = Date.now()
-    const track = cmafTrack('v1', { accessibleWindowTime: now - 1_010_000 }) // window start at group 6
+    const track = cmafTrack('v1', { accessibleWindowTime: 60_000 })
+    const windowed = { ...timeline(), range: { start: 10_000, end: 70_000 } } // window start at group 6
     const locationRanges = [
       { start: at(1), end: { group: 2n } },
       { start: at(4), end: { group: 9n } },
     ]
-    expect(show(toSpans({ locationRanges }, track, timeline()))).toEqual(['6.0-9.* fetch'])
+    expect(show(toSpans({ locationRanges }, track, windowed))).toEqual(['6.0-9.* fetch'])
   })
 
   test('clamp: inside a span, before the first, between two, after the last', () => {

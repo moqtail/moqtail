@@ -51,6 +51,7 @@ if (import.meta.vitest) {
   const { FullTrackName } = await import('@/model/data/full_track_name')
   const { ObjectForwardingPreference } = await import('@/model/data/constant')
   const { MsfCompressionObjectProperty } = await import('./compression')
+  const { requested } = await import('@/player/testing/cmaf')
   type Track = import('@/player/element/interfaces').CatalogTrack
   type Options = import('@/player/player').MOQtailPlayerOptions
   type Definition = import('@/player/element/define').SourceElementDefinition
@@ -255,6 +256,46 @@ if (import.meta.vitest) {
       const tracks = [track('v1', 'video'), track('v2', 'video', { codec: 'hvc1' })]
       await c.push(object(2, 0, bytes(catalog(tracks, { isComplete: true }))))
       expect(c.log).toEqual(['load v1,v2', 'v1 ← v1,v2'])
+    })
+
+    test('timeline(): the template first, else one shared media timeline that follows updates', async () => {
+      const c = await setup()
+      const history = { name: 'history', packaging: 'mediatimeline', isLive: true, depends: [1] }
+      const template = [0, 2000, [1, 0], [1, 0], 0, 0]
+      const tracks = [track('v1', 'video', { renderGroup: 1 }), track('a1', 'audio', { renderGroup: 1, template })]
+      await c.push(object(1, 0, bytes(catalog([...tracks, history]))))
+      await c.init
+      const [v1, a1] = c.catalog().tracks as [Track, Track]
+      expect((await c.catalog().timeline(a1))?.timeToLocation(4000)).toEqual(new Location(3n, 0n))
+      const first = c.catalog().timeline(v1)
+      const second = c.catalog().timeline(v1)
+      await flush()
+      const entries = (json: unknown[], id = 0) =>
+        Objects.newWithPayload(
+          FullTrackName.tryNew('ns', 'history'),
+          new Location(1n, BigInt(id)),
+          0,
+          ObjectForwardingPreference.Subgroup,
+          0,
+          null,
+          bytes(json),
+        )
+      c.client.last.push(entries([[0, [1, 0], 0]]))
+      const [reader] = await Promise.all([first, second])
+      expect(c.client.sent('subscribe')).toHaveLength(2) // the catalog, and one media timeline
+      await c.push(entries([[2000, [2, 0], 0]], 1))
+      expect([reader?.timeToLocation(2500), reader?.range]).toEqual([new Location(2n, 0n), { start: 0, end: 2000 }])
+    })
+
+    test('timeline(): a media timeline that fails is a warning once, then undefined without a new subscribe', async () => {
+      const c = await setup({}, (_, options) => (requested(options) === 'history' ? refuse() : {}))
+      const history = { name: 'history', packaging: 'mediatimeline', isLive: true, depends: ['v1'] }
+      await c.push(object(1, 0, bytes(catalog([track('v1', 'video'), history]))))
+      await c.init
+      const v1 = c.catalog().tracks[0]!
+      expect(await c.catalog().timeline(v1)).toBeUndefined()
+      expect(await c.catalog().timeline(v1)).toBeUndefined()
+      expect([c.client.sent('subscribe').length, c.warnings]).toEqual([2, ['TRACK_SKIPPED']])
     })
 
     test('a switching set source wraps media sets only when its extension is listed and negotiated', async () => {

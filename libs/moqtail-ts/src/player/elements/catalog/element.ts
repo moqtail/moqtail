@@ -33,8 +33,11 @@ import {
 } from '@/player/element/interfaces'
 import { PlayerError } from '@/player/error'
 import { trackIdentifier, type MsfSource } from '@/player/msf_url'
-import { backoffDelay, sleep } from '@/player/util/backoff'
+import { backoffDelay, sleep, within } from '@/player/util/backoff'
 import { trackKey } from '@/player/elements/cmaf/track'
+import { MediaTimeline } from '@/player/elements/mediatimeline'
+import { TemplateTimeline } from '@/player/elements/mediatimeline/template'
+import { DEFAULT_MAX_BYTES } from './compression'
 import { applyDelta } from './delta'
 import { diffTracks } from './diff'
 import { parseCatalog, type ParseContext, type ParseResult } from './parse'
@@ -45,7 +48,6 @@ import type { Catalog as CatalogData } from './types'
 /** MSF 5: above every other subscription; media uses 128. */
 export const CATALOG_PRIORITY = 0
 const DEFAULT_TIMEOUT_MS = 10_000
-const DEFAULT_MAX_BYTES = 16 * 1024 * 1024
 
 export interface CatalogOptions {
   /** Passed to the media sources: switch with `SWITCH_FROM`. */
@@ -75,6 +77,8 @@ export class Catalog extends SourceElement implements CatalogReader {
   #catalog: CatalogData | undefined
   #stale = false
   #sets: LoadedSet[] = []
+  /** Media timeline tracks that couldn't be read, by track key. */
+  readonly #unavailableTimelines = new Set<string>()
   /** The first catalog with tracks or `isComplete`, or the fatal error that came first. */
   readonly #first = Promise.withResolvers<void>()
   #started = false
@@ -150,9 +154,33 @@ export class Catalog extends SourceElement implements CatalogReader {
     return this.tracks.filter((t) => t.packaging === 'catalog')
   }
 
-  // shortcut: no media timeline element or template reader yet; 4c implements this.
-  async timeline(_track: CatalogTrack): Promise<TimelineReader | undefined> {
-    return undefined
+  /**
+   * The track's `template`, which needs no subscription; else the media timeline track whose
+   * `depends` names the track or its render group (MSF 7.2), loaded once and shared; else
+   * undefined. A media timeline that can't be read is a warning, and undefined from then on,
+   * so seeks don't wait for it again.
+   */
+  async timeline(track: CatalogTrack): Promise<TimelineReader | undefined> {
+    const window = track.accessibleWindowTime
+    if (track.template) return new TemplateTimeline(track.template, window)
+    const timeline = this.tracks.find(
+      (t) =>
+        t.packaging === 'mediatimeline' &&
+        t.namespace.equals(track.namespace) &&
+        t.depends?.some((d) => d === track.name || (track.renderGroup !== undefined && d === track.renderGroup)),
+    )
+    const key = timeline && trackKey(timeline)
+    if (!key || this.#unavailableTimelines.has(key)) return undefined
+    try {
+      return (await this.context.load(MediaTimeline, { tracks: [timeline] })).reader(window)
+    } catch (error) {
+      // Concurrent callers share the failed load: warn once.
+      if (this.#unavailableTimelines.has(key)) return undefined
+      this.#unavailableTimelines.add(key)
+      const reason = error instanceof Error ? error.message : String(error)
+      this.#warn(new PlayerError('TRACK_SKIPPED', `Media timeline unavailable: ${reason}`, { element: 'catalog' }))
+      return undefined
+    }
   }
 
   /**
@@ -355,18 +383,4 @@ function asUpdateError(error: unknown): PlayerError {
   if (error instanceof PlayerError && error.code === 'INVALID_CATALOG_UPDATE') return error
   const message = `Catalog update rejected: ${error instanceof Error ? error.message : String(error)}`
   return new PlayerError('INVALID_CATALOG_UPDATE', message, { element: 'catalog', cause: error })
-}
-
-/** `promise`, or `timedOut()` after `ms`, or the signal's reason. */
-async function within<T>(promise: Promise<T>, ms: number, signal: AbortSignal, timedOut: () => Error): Promise<T> {
-  const done = new AbortController()
-  const timer = sleep(Math.max(0, ms), AbortSignal.any([signal, done.signal])).then(() => {
-    throw timedOut()
-  })
-  try {
-    return await Promise.race([promise, timer])
-  } finally {
-    done.abort()
-    timer.catch(() => {})
-  }
 }

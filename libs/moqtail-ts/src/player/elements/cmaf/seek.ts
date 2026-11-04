@@ -109,12 +109,12 @@ if (import.meta.vitest) {
     const timeline: TimelineReader = {
       timeToLocation: (ms) => new Location(1 + Math.floor(ms / 2000), 7),
       locationToTime: () => undefined,
-      wallclockToLocation: () => new Location(10n, 0n),
-      range: undefined,
+      wallclockToLocation: () => undefined,
+      range: { start: 18_000, end: 30_000 },
     }
     const none = () => undefined
     expect(locate(4, cmafTrack('v1'), timeline, none)).toEqual(new Location(3n, 0n))
-    expect(locate(4, cmafTrack('v1', { accessibleWindowTime: 60_000 }), timeline, none)).toEqual(new Location(10n, 0n))
+    expect(locate(4, cmafTrack('v1', { accessibleWindowTime: 12_000 }), timeline, none)).toEqual(new Location(10n, 7n))
     expect(locate(4, cmafTrack('v1'), undefined, () => new Location(9n, 0n))).toEqual(new Location(9n, 0n))
     expect(locate(4, cmafTrack('v1'), undefined, none)).toBeUndefined()
   })

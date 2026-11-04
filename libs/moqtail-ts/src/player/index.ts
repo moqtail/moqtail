@@ -20,6 +20,7 @@ export { MOQtailPlayer, type MOQtailPlayerOptions, type PlayerEvents } from './p
 export type { PlayerState } from './state'
 export type { Catalog, CatalogJson, InitData, MediaTimelineTemplate } from './elements/catalog/types'
 export type { Catalog as CatalogElement } from './elements/catalog/element'
+export type { TimelineEvent, TimelineRecord } from './element/event_timeline'
 export { defineExtension, type ExtensionDefinition } from './extension'
 export { MSE } from './elements/mse'
 export { SSTS, SstsSource } from './extensions/ssts'

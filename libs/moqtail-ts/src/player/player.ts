@@ -25,6 +25,7 @@ import { logger } from '@/util/logger'
 import { acquire, check, clientKey, currentClient, release, type ClientOptions, type SlotMember } from './client_slot'
 import type { BaseElement, SinkElement, SourceElement, TransformElement } from './element/base'
 import { Chain } from './element/chain'
+import type { TimelineEvent } from './element/event_timeline'
 import {
   hasInterface,
   type ElementDefinition,
@@ -83,8 +84,8 @@ export interface PlayerEvents {
   catalog: (catalog: Catalog) => void
   reconnecting: (attempt: number) => void
   reconnected: () => void
-  /** Typed by milestone 4. */
-  timelineevent: (event: unknown) => void
+  /** A record of an opted-in event timeline, on arrival (`opts.eventTimelines`). */
+  timelineevent: (event: TimelineEvent) => void
   autoplayblocked: () => void
   /** The first packet of a new track was written to the pad. */
   renditionchange: (source: MediaSourceElement, rendition: Rendition) => void

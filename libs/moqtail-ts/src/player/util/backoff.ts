@@ -37,6 +37,25 @@ export function sleep(ms: number, signal: AbortSignal): Promise<void> {
   })
 }
 
+/** `promise`, or `timedOut()` after `ms`, or the signal's reason. */
+export async function within<T>(
+  promise: Promise<T>,
+  ms: number,
+  signal: AbortSignal,
+  timedOut: () => Error,
+): Promise<T> {
+  const done = new AbortController()
+  const timer = sleep(Math.max(0, ms), AbortSignal.any([signal, done.signal])).then(() => {
+    throw timedOut()
+  })
+  try {
+    return await Promise.race([promise, timer])
+  } finally {
+    done.abort()
+    timer.catch(() => {})
+  }
+}
+
 if (import.meta.vitest) {
   const { test, expect } = import.meta.vitest
 

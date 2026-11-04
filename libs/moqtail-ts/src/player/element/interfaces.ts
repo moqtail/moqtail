@@ -24,6 +24,7 @@ import type { Location } from '@/model/common/location'
 import type { Tuple } from '@/model/common/tuple'
 import type { Emitter } from '@/util/emitter'
 import type { MsfSource } from '@/player/msf_url'
+import type { CatalogTrack } from '@/player/elements/catalog/types'
 import type { SourceElementDefinition } from './define'
 
 // Symbol.for, so the keys still match when the ESM and CJS builds are both loaded.
@@ -31,6 +32,8 @@ import type { SourceElementDefinition } from './define'
 export const MEDIA_SINK = Symbol.for('moqtail.mediaSink')
 /** @public Key of {@link MediaSourceElement}. */
 export const MEDIA_SOURCE = Symbol.for('moqtail.mediaSource')
+
+export type { CatalogTrack }
 
 /** @public Maps each interface key to its interface. New interfaces add a line here. */
 export interface ElementInterfaces {
@@ -83,43 +86,6 @@ export interface Rendition {
   active: boolean
   /** Considered for ABR. */
   selected: boolean
-}
-
-/**
- * @public
- * A catalog track. Field names follow MSF 5.2 and CMSF 3.5. Milestone 4 replaces this
- * with the Valibot output type of the same shape.
- */
-export interface CatalogTrack {
-  name: string
-  nameBytes: Uint8Array
-  namespace: Tuple
-  packaging: string
-  role?: string
-  isLive: boolean
-  codec?: string
-  mimeType?: string
-  bitrate?: number
-  avgBitrate?: number
-  width?: number
-  height?: number
-  framerate?: number
-  samplerate?: number
-  channelConfig?: string
-  lang?: string
-  altGroup?: number
-  renderGroup?: number
-  keyframeSpacing?: number
-  maxGrpDuration?: number
-  trackDuration?: number
-  targetLatency?: number
-  accessibleWindowTime?: number
-  timescale?: number
-  /** The media timeline template (MSF 7.3), typed by milestone 4. */
-  template?: unknown
-  depends?: (string | number)[]
-  init?: { type: 'inline'; data: Uint8Array } | { type: 'track-property' | 'object-property'; property: number }
-  [extra: string]: unknown
 }
 
 /** @public What the catalog element offers the elements it loads. */

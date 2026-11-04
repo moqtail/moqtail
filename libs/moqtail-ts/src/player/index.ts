@@ -18,6 +18,7 @@ export { parseMsfUrl, formatMsfUrl, type MsfSource, type LocationRange, type Tim
 export { PlayerError, type PlayerErrorCode, type PlayerErrorCategory } from './error'
 export { MOQtailPlayer, type MOQtailPlayerOptions, type PlayerEvents } from './player'
 export type { PlayerState } from './state'
+export type { Catalog, CatalogJson, InitData, MediaTimelineTemplate } from './elements/catalog/types'
 export { defineExtension, type ExtensionDefinition } from './extension'
 export { MSE } from './elements/mse'
 export { SSTS, SstsSource } from './extensions/ssts'

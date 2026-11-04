@@ -81,7 +81,7 @@ export function liveEdge(buffered: TimeRanges, liveEdgeDelay: number): number {
 
 if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
-  const { timeRanges } = await import('../../testing/media')
+  const { timeRanges } = await import('@/player/testing/media')
 
   describe('gapJumpTarget', () => {
     const holes = timeRanges([

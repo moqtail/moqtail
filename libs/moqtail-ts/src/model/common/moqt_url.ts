@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { ProtocolViolationError } from '../error/error'
+import { ProtocolViolationError } from '@/model/error/error'
 
 /** URI schemes are case-insensitive (RFC 3986 §3.1, MSF 11.1). */
 const MOQT_SCHEME = /^moqt:\/\//i

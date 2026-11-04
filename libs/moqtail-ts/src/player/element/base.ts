@@ -19,7 +19,7 @@
  * anything media specific is an interface the element lists in `provides`.
  */
 
-import { Emitter } from '../../util/emitter'
+import { Emitter } from '@/util/emitter'
 import type { ElementContext } from './context'
 import type { Capabilities, ElementDefinition } from './define'
 import { matchesCapabilities } from './negotiation'

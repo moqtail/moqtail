@@ -16,12 +16,12 @@
 
 /** `CmafSource`: one CMAF switching set on one source pad, and its renditions. */
 
-import { SourceElement } from '../../element/base'
-import type { ElementContext } from '../../element/context'
-import type { CatalogTrack, MediaSourceElement, MediaSourceOptions, Rendition } from '../../element/interfaces'
-import type { Pad } from '../../element/pad'
-import { PlayerError } from '../../error'
-import { formatMsfUrl } from '../../msf_url'
+import { SourceElement } from '@/player/element/base'
+import type { ElementContext } from '@/player/element/context'
+import type { CatalogTrack, MediaSourceElement, MediaSourceOptions, Rendition } from '@/player/element/interfaces'
+import type { Pad } from '@/player/element/pad'
+import { PlayerError } from '@/player/error'
+import { formatMsfUrl } from '@/player/msf_url'
 import { Delivery } from './delivery'
 import type { Span } from './ranges'
 import { closestBitrate, Recovery } from './recovery'
@@ -161,8 +161,8 @@ export class CmafSource extends SourceElement implements MediaSourceElement {
 
 if (import.meta.vitest) {
   const { test, expect } = import.meta.vitest
-  const { cmafChain, cmafTrack, fakeCatalog } = await import('../../testing/cmaf')
-  const { flush, track } = await import('../../testing/elements')
+  const { cmafChain, cmafTrack, fakeCatalog } = await import('@/player/testing/cmaf')
+  const { flush, track } = await import('@/player/testing/elements')
 
   test('renditions: id, src, bitrate, and active and selected state, kept on setTracks', async () => {
     const other = {

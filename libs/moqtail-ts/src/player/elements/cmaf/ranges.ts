@@ -20,9 +20,9 @@
  * the set's first track; other tracks map through the MSF 6.3.2 frame index.
  */
 
-import { Location } from '../../../model/common/location'
-import type { CatalogTrack, MediaSourceOptions, TimelineReader } from '../../element/interfaces'
-import { PlayerError } from '../../error'
+import { Location } from '@/model/common/location'
+import type { CatalogTrack, MediaSourceOptions, TimelineReader } from '@/player/element/interfaces'
+import { PlayerError } from '@/player/error'
 
 /** Inclusive. No object: the whole group. */
 export interface End {
@@ -138,7 +138,7 @@ export function mapEnd(end: End, from: CatalogTrack, to: CatalogTrack, g0: bigin
 
 if (import.meta.vitest) {
   const { test, expect } = import.meta.vitest
-  const { cmafTrack } = await import('../../testing/cmaf')
+  const { cmafTrack } = await import('@/player/testing/cmaf')
   const at = (group: number, object = 0) => new Location(group, object)
   const show = (spans: { start: Location; end?: End; fetch?: boolean }[]) =>
     spans.map(
@@ -202,9 +202,9 @@ if (import.meta.vitest) {
     expect(clamp(at(30), spans)).toEqual({ index: 1, location: at(22, 3) })
   })
 
-  const { cmafChain, fakeCatalog, twoSecondTimeline } = await import('../../testing/cmaf')
-  const { mediaObject } = await import('../../testing/client')
-  const { flush } = await import('../../testing/elements')
+  const { cmafChain, fakeCatalog, twoSecondTimeline } = await import('@/player/testing/cmaf')
+  const { mediaObject } = await import('@/player/testing/client')
+  const { flush } = await import('@/player/testing/elements')
   const urlRanges = (r: Partial<NonNullable<MediaSourceOptions['ranges']>>) => ({
     ranges: { locationRanges: [], mediaTimeRanges: [], wallclockRanges: [], ...r },
   })

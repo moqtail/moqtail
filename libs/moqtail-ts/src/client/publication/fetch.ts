@@ -26,12 +26,12 @@ import {
 } from '@/model'
 import { CombinedFilter } from '@/model/parameter/message/combined_filter'
 import { StreamResetCode } from '@/model/error/stream_reset'
-import { SendStream } from '../data_stream'
-import { MOQtailClient } from '../client'
-import { Track } from '../track/track'
+import { SendStream } from '@/client/data_stream'
+import { MOQtailClient } from '@/client/client'
+import { Track } from '@/client/track/track'
 import { SubscribePublication } from './subscribe'
 import { PublishPublication } from './publish'
-import { logger } from '../../util/logger'
+import { logger } from '@/util/logger'
 import { SubgroupIds } from './subgroup'
 
 // TODO: Use group order

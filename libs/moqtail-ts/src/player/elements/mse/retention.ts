@@ -97,7 +97,7 @@ export function groupStart(buffer: SourceBuffer, previousEnd: number | undefined
 
 if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
-  const { FakeSourceBuffer } = await import('../../testing/media')
+  const { FakeSourceBuffer } = await import('@/player/testing/media')
   const { BufferQueue } = await import('./buffer_queue')
   const setup = (ranges: [number, number][]) => {
     const buffer = new FakeSourceBuffer()

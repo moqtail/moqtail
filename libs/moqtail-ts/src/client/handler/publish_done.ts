@@ -15,10 +15,10 @@
  */
 
 import { ProtocolViolationError } from '@/model/error'
-import { PublishDone } from '../../model/control'
+import { PublishDone } from '@/model/control'
 import { RequestStreamMessageHandler } from './handler'
-import { SubscribeRequest } from '../request/subscribe'
-import { logger } from '../../util/logger'
+import { SubscribeRequest } from '@/client/request/subscribe'
+import { logger } from '@/util/logger'
 
 export const handlerPublishDone: RequestStreamMessageHandler<PublishDone> = async (
   client,

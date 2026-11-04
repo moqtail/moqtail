@@ -14,14 +14,14 @@
  * limitations under the License.
  */
 
-import { FetchObject, SubgroupObject } from '../model/data'
-import { ObjectStatus } from '../model/data/constant'
-import { FullTrackName } from '../model/data/full_track_name'
-import { Header } from '../model/data/header'
-import { KeyValuePair } from '../model/common/pair'
-import { Timestamp } from '../model/property/timestamp'
-import { StreamResetCode } from '../model/error/stream_reset'
-import type { Emitter } from '../util/emitter'
+import { FetchObject, SubgroupObject } from '@/model/data'
+import { ObjectStatus } from '@/model/data/constant'
+import { FullTrackName } from '@/model/data/full_track_name'
+import { Header } from '@/model/data/header'
+import { KeyValuePair } from '@/model/common/pair'
+import { Timestamp } from '@/model/property/timestamp'
+import { StreamResetCode } from '@/model/error/stream_reset'
+import type { Emitter } from '@/util/emitter'
 import type { ClientEvents } from './types'
 
 /** `in` for a stream the peer opened, `out` for one this client opened. */

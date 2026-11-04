@@ -19,12 +19,12 @@
  * track property in SUBSCRIBE_OK or FETCH_OK, or an object property on the media objects.
  */
 
-import type { KeyValuePair } from '../../../model/common/pair'
-import { AudioConfig } from '../../../model/property/audio_config'
-import { findProperty, type PropertyReader } from '../../../model/property/find'
-import type { TrackProperty } from '../../../model/property/track_property'
-import { VideoConfig } from '../../../model/property/video_config'
-import type { CatalogTrack } from '../../element/interfaces'
+import type { KeyValuePair } from '@/model/common/pair'
+import { AudioConfig } from '@/model/property/audio_config'
+import { findProperty, type PropertyReader } from '@/model/property/find'
+import type { TrackProperty } from '@/model/property/track_property'
+import { VideoConfig } from '@/model/property/video_config'
+import type { CatalogTrack } from '@/player/element/interfaces'
 
 // VIDEO_CONFIG 0x0D and AUDIO_CONFIG 0x0F (moqt-22 Table 16; MSF 12.2 misspells the latter).
 const READERS = new Map<number, PropertyReader<{ config: Uint8Array }>>([

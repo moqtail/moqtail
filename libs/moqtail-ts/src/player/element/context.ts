@@ -20,10 +20,10 @@
  * instance is destroyed once its last reference is released.
  */
 
-import type { MOQtailClient } from '../../client/client'
-import type { Emitter } from '../../util/emitter'
-import { PlayerError } from '../error'
-import type { MOQtailPlayerOptions, PlayerEvents } from '../player'
+import type { MOQtailClient } from '@/client/client'
+import type { Emitter } from '@/util/emitter'
+import { PlayerError } from '@/player/error'
+import type { MOQtailPlayerOptions, PlayerEvents } from '@/player/player'
 import type { BaseElement } from './base'
 import type { Chain } from './chain'
 import type { ElementDefinition, Identifiers, SourceElementDefinition } from './define'
@@ -205,8 +205,8 @@ function deepEqual(a: unknown, b: unknown): boolean {
 
 if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
-  const { testChain, testSource, track } = await import('../testing/elements')
-  type Source = import('../testing/elements').TestSource
+  const { testChain, testSource, track } = await import('@/player/testing/elements')
+  type Source = import('@/player/testing/elements').TestSource
 
   /** A chain with `count` top-level sources, returned once initialised. */
   async function parents(count: number) {

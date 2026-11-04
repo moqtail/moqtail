@@ -19,8 +19,8 @@
  * routing pads as they appear, the `nomorepads` and `ready` handshake, and teardown.
  */
 
-import type { MOQtailClient } from '../../client/client'
-import { PlayerError } from '../error'
+import type { MOQtailClient } from '@/client/client'
+import { PlayerError } from '@/player/error'
 import { BaseElement, SinkElement, SourceElement, TransformElement } from './base'
 import { InstanceContext, type Loaded, type PlayerHandle } from './context'
 import {
@@ -258,8 +258,8 @@ function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
   const { testChain, testSource, collectingSink, connected, flush, packet, track, TestTransform, detachedContext } =
-    await import('../testing/elements')
-  type Sink = import('../testing/elements').CollectingSink
+    await import('@/player/testing/elements')
+  type Sink = import('@/player/testing/elements').CollectingSink
   const signal = () => new AbortController().signal
   const packaging = (value: string) => [{ direction: 'out' as const, code: CapabilityCode.PACKAGING, value }]
 
@@ -288,7 +288,7 @@ if (import.meta.vitest) {
     test('a source can take the pads of a child it loaded, or leave them to normal routing', async () => {
       const { chain } = testChain()
       const child = testSource({ name: 'child', script: (c) => void c.addPad() })
-      let parent: import('../testing/elements').TestSource | undefined
+      let parent: import('@/player/testing/elements').TestSource | undefined
       let sink: Sink | undefined
       const received: unknown[] = []
       chain.addSource(
@@ -307,7 +307,7 @@ if (import.meta.vitest) {
       chain.addSink(collectingSink({ setup: (k) => (sink = k) }))
       await chain.init(signal())
       // Children finish init, and register, before the parent that awaits them.
-      const [taken, declined] = chain.sources as import('../testing/elements').TestSource[]
+      const [taken, declined] = chain.sources as import('@/player/testing/elements').TestSource[]
       // The first child's pad feeds a sink pad on the parent; the second went to the sink.
       expect(parent!.pads.map((p) => p.peers[0]!.element)).toEqual([taken])
       expect(sink!.pads.map((p) => p.peers[0]!.element)).toEqual([declined])
@@ -326,7 +326,7 @@ if (import.meta.vitest) {
     test('a parent takes the pad of an unshared child it loads after negotiation', async () => {
       const { chain } = testChain()
       const child = testSource({ name: 'child', script: (c) => void c.addPad() })
-      let parent: import('../testing/elements').TestSource | undefined
+      let parent: import('@/player/testing/elements').TestSource | undefined
       chain.addSource(
         testSource({
           script: (s) => {
@@ -390,7 +390,7 @@ if (import.meta.vitest) {
       await expect(empty.chain.init(signal())).rejects.toMatchObject({ code: 'NO_MEDIA_SINK' })
 
       const { chain, failures } = testChain()
-      let source: import('../testing/elements').TestSource | undefined
+      let source: import('@/player/testing/elements').TestSource | undefined
       chain.addSource(testSource({ script: (s) => ((source = s), s.addPad(), s.addPad(), s.emit('nomorepads')) }), {})
       chain.addSink(collectingSink({ media: true }))
       await chain.init(signal())

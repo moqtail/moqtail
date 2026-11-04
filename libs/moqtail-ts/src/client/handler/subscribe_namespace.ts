@@ -14,9 +14,9 @@
  * limitations under the License.
  */
 
-import { SubscribeNamespace, RequestOk } from '../../model/control'
+import { SubscribeNamespace, RequestOk } from '@/model/control'
 import { RequestStreamMessageHandler } from './handler'
-import { logger } from '../../util/logger'
+import { logger } from '@/util/logger'
 
 export const handlerSubscribeNamespace: RequestStreamMessageHandler<SubscribeNamespace> = async (
   client,

@@ -14,9 +14,9 @@
  * limitations under the License.
  */
 
-import { KeyValuePair } from '../../common/pair'
-import { SetupOptionType } from '../constant'
-import { Parameter } from '../parameter'
+import { KeyValuePair } from '@/model/common/pair'
+import { SetupOptionType } from '@/model/parameter/constant'
+import { Parameter } from '@/model/parameter/parameter'
 
 /**
  * Raw-QUIC only: the authority component of the `moqt://` URI, carried in SETUP because

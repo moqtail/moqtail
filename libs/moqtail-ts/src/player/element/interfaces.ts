@@ -19,11 +19,11 @@
  * catalog contract sources are written against (implemented in milestone 4).
  */
 
-import type { FetchOptions, FetchResult, SubscribeOptions, SubscribeResult } from '../../client/types'
-import type { Location } from '../../model/common/location'
-import type { Tuple } from '../../model/common/tuple'
-import type { Emitter } from '../../util/emitter'
-import type { MsfSource } from '../msf_url'
+import type { FetchOptions, FetchResult, SubscribeOptions, SubscribeResult } from '@/client/types'
+import type { Location } from '@/model/common/location'
+import type { Tuple } from '@/model/common/tuple'
+import type { Emitter } from '@/util/emitter'
+import type { MsfSource } from '@/player/msf_url'
 import type { SourceElementDefinition } from './define'
 
 // Symbol.for, so the keys still match when the ESM and CJS builds are both loaded.

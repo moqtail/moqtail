@@ -56,7 +56,7 @@ export class BufferQueue {
 
 if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
-  const { FakeSourceBuffer } = await import('../../testing/media')
+  const { FakeSourceBuffer } = await import('@/player/testing/media')
 
   describe('BufferQueue', () => {
     test('runs one operation at a time, each after the previous updateend', async () => {

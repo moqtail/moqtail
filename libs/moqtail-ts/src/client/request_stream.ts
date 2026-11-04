@@ -14,15 +14,15 @@
  * limitations under the License.
  */
 
-import { ControlMessage } from '../model/control/control_message'
-import { ControlMessageType } from '../model/control/constant'
-import { FrozenByteBuffer, ByteBuffer } from '../model/common/byte_buffer'
-import { NotEnoughBytesError, ProtocolViolationError, TerminationError } from '../model/error/error'
-import { TerminationCode } from '../model/error/constant'
-import { StreamResetCode } from '../model/error/stream_reset'
+import { ControlMessage } from '@/model/control/control_message'
+import { ControlMessageType } from '@/model/control/constant'
+import { FrozenByteBuffer, ByteBuffer } from '@/model/common/byte_buffer'
+import { NotEnoughBytesError, ProtocolViolationError, TerminationError } from '@/model/error/error'
+import { TerminationCode } from '@/model/error/constant'
+import { StreamResetCode } from '@/model/error/stream_reset'
 import { asStreamResetError, streamResetReason } from './util/stream_reset'
-import { logger } from '../util/logger'
-import type { Emitter } from '../util/emitter'
+import { logger } from '@/util/logger'
+import type { Emitter } from '@/util/emitter'
 import type { ClientEvents } from './types'
 
 /**
@@ -198,8 +198,8 @@ export class RequestStream {
 
 if (import.meta.vitest) {
   const { describe, it, expect } = import.meta.vitest
-  const { RequestOk } = await import('../model/control/request_ok')
-  const { Emitter } = await import('../util/emitter')
+  const { RequestOk } = await import('@/model/control/request_ok')
+  const { Emitter } = await import('@/util/emitter')
 
   /** A bidi stream whose readable side yields `incoming` and whose writes are dropped. */
   function fakeBiStream(incoming: Uint8Array[]): WebTransportBidirectionalStream {

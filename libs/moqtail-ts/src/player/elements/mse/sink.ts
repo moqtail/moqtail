@@ -14,13 +14,13 @@
  * limitations under the License.
  */
 
-import { logger } from '../../../util/logger'
-import { SinkElement } from '../../element/base'
-import type { ElementContext } from '../../element/context'
-import { CapabilityCode } from '../../element/define'
-import type { MediaSinkElement } from '../../element/interfaces'
-import type { Pad, PadEvent, PadItem, PadProperties } from '../../element/pad'
-import { PlayerError } from '../../error'
+import { logger } from '@/util/logger'
+import { SinkElement } from '@/player/element/base'
+import type { ElementContext } from '@/player/element/context'
+import { CapabilityCode } from '@/player/element/define'
+import type { MediaSinkElement } from '@/player/element/interfaces'
+import type { Pad, PadEvent, PadItem, PadProperties } from '@/player/element/pad'
+import { PlayerError } from '@/player/error'
 import { BufferQueue } from './buffer_queue'
 import { GAP_CHECK_INTERVAL_MS, LIVE_EDGE_DELAY, gapJumpTarget, liveEdge, rangeAt } from './gaps'
 import { BACK_BUFFER, FORWARD_CAP, append, bufferedEnd, groupStart, hasRoom, removeBuffered } from './retention'

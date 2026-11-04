@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import type { EndOfRangeHandler } from '../types'
+import type { EndOfRangeHandler } from '@/client/types'
 import {
   FullTrackName,
   Location,
@@ -27,8 +27,8 @@ import {
   PublishDone,
   applyMessageParameterUpdate,
 } from '@/model'
-import { DEFAULT_SWITCH_DRAIN_TIMEOUT_MS, type EarlyDiscardPolicyConfig } from '../types'
-import { logger } from '../../util/logger'
+import { DEFAULT_SWITCH_DRAIN_TIMEOUT_MS, type EarlyDiscardPolicyConfig } from '@/client/types'
+import { logger } from '@/util/logger'
 
 // TODO: Add timeout mechanism for unsubscribing
 

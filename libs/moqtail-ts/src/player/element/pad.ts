@@ -20,7 +20,7 @@
  * destination's `receive()`, events to the destination pad's `onEvent` listeners.
  */
 
-import type { MoqtObject } from '../../model/data/object'
+import type { MoqtObject } from '@/model/data/object'
 import type { BaseElement } from './base'
 import type { Capabilities } from './define'
 
@@ -228,7 +228,7 @@ class Connection {
 if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
   const { connected, flush, packet, testChain, testSource, collectingSink, TestTransform, detachedContext } =
-    await import('../testing/elements')
+    await import('@/player/testing/elements')
   const properties: PadItem = { type: 'properties', properties: { track: 'v1' } }
   const eos: PadOutput = { type: 'event', event: { type: 'eos' } }
   /** A promise the test resolves by hand. */
@@ -283,8 +283,8 @@ if (import.meta.vitest) {
     test('events cross a transform both ways when nobody handles them', async () => {
       const { chain } = testChain()
       const transform = new TestTransform(detachedContext())
-      let source: import('../testing/elements').TestSource | undefined
-      let sink: import('../testing/elements').CollectingSink | undefined
+      let source: import('@/player/testing/elements').TestSource | undefined
+      let sink: import('@/player/testing/elements').CollectingSink | undefined
       chain.addSource(testSource({ script: (s) => ((source = s), s.addPad(), s.emit('nomorepads')) }), {})
       chain.addTransform(transform)
       chain.addSink(collectingSink({ setup: (k) => (sink = k) }))

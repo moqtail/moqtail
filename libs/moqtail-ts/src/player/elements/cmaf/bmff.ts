@@ -74,7 +74,7 @@ export function fragmentTime(fragment: Uint8Array, timescale: number | undefined
 
 if (import.meta.vitest) {
   const { test, expect } = import.meta.vitest
-  const { box, fullBox, u32, u64 } = await import('../../testing/bmff')
+  const { box, fullBox, u32, u64 } = await import('@/player/testing/bmff')
 
   test('tfdt in versions 0 and 1, after other boxes, and nothing in other payloads', () => {
     const styp = box('styp', new Uint8Array(4))

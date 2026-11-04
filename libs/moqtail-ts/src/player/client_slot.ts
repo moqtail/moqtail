@@ -19,10 +19,10 @@
  * one to leave disconnects it, and a lost session is recreated here for all of them.
  */
 
-import { MOQtailClient } from '../client/client'
-import type { MOQtailClientOptions } from '../client/types'
-import type { SetupOptions } from '../model/parameter/setup_option'
-import { logger } from '../util/logger'
+import { MOQtailClient } from '@/client/client'
+import type { MOQtailClientOptions } from '@/client/types'
+import type { SetupOptions } from '@/model/parameter/setup_option'
+import { logger } from '@/util/logger'
 import { PlayerError } from './error'
 import { backoffDelay, sleep } from './util/backoff'
 
@@ -258,7 +258,7 @@ if (import.meta.vitest) {
   const { describe, test, expect, beforeEach, afterEach, vi } = import.meta.vitest
   const { fakeClients } = await import('./testing/client')
   const { flush } = await import('./testing/elements')
-  const { SetupOptions } = await import('../model/parameter/setup_option')
+  const { SetupOptions } = await import('@/model/parameter/setup_option')
 
   const ORIGIN = 'moqt://relay.example.com/app'
   const member = () => {

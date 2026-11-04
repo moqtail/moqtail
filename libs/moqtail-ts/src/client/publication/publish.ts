@@ -15,17 +15,17 @@
  */
 
 import { Publish, RequestUpdate } from '@/model/control'
-import { MOQtailClient } from '../client'
-import { Track } from '../track/track'
+import { MOQtailClient } from '@/client/client'
+import { Track } from '@/client/track/track'
 import { InternalError, Location, MessageParameter, applyMessageParameterUpdate } from '@/model'
 import { CombinedFilter } from '@/model/parameter/message/combined_filter'
-import { SendStream } from '../data_stream'
+import { SendStream } from '@/client/data_stream'
 import { MoqtObject } from '@/model/data/object'
 import { SubgroupIds, subgroupHeaderFor } from './subgroup'
-import { assertWithinFilterRangeLimit } from '../util/validators'
-import { SimpleLock } from '../../util/simple_lock'
-import { getTransportPriority } from '../util/priority'
-import { logger } from '../../util/logger'
+import { assertWithinFilterRangeLimit } from '@/client/util/validators'
+import { SimpleLock } from '@/util/simple_lock'
+import { getTransportPriority } from '@/client/util/priority'
+import { logger } from '@/util/logger'
 
 /**
  * @public
@@ -331,7 +331,7 @@ if (import.meta.vitest) {
   const { describe, test, expect, vi } = import.meta.vitest
   const { FullTrackName, Forward, ObjectForwardingPreference, SubgroupHeaderType } = await import('@/model')
   const { RequestUpdate } = await import('@/model/control')
-  const { LiveTrackSource } = await import('../track/content_source')
+  const { LiveTrackSource } = await import('@/client/track/content_source')
   const { SubgroupHeader: Header } = await import('@/model/data/subgroup_header')
   const { FrozenByteBuffer } = await import('@/model/common/byte_buffer')
 

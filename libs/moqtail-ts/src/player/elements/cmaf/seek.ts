@@ -19,8 +19,8 @@
  * as a location and the request that serves it.
  */
 
-import { Location } from '../../../model/common/location'
-import type { CatalogTrack, TimelineReader } from '../../element/interfaces'
+import { Location } from '@/model/common/location'
+import type { CatalogTrack, TimelineReader } from '@/player/element/interfaces'
 import type { Target } from './delivery'
 import { accessibleStart } from './ranges'
 
@@ -81,7 +81,7 @@ export function seekTarget(location: Location, fetch: boolean, last: Location | 
 
 if (import.meta.vitest) {
   const { test, expect } = import.meta.vitest
-  const { cmafTrack } = await import('../../testing/cmaf')
+  const { cmafTrack } = await import('@/player/testing/cmaf')
 
   test('GroupTimes: estimates from the observed group duration, per track', () => {
     const times = new GroupTimes()
@@ -110,9 +110,9 @@ if (import.meta.vitest) {
     expect(locate(4, cmafTrack('v1'), undefined, none)).toBeUndefined()
   })
 
-  const { cmafChain, fakeCatalog, timedObject, twoSecondTimeline } = await import('../../testing/cmaf')
-  const { mediaObject, refuse } = await import('../../testing/client')
-  const { flush } = await import('../../testing/elements')
+  const { cmafChain, fakeCatalog, timedObject, twoSecondTimeline } = await import('@/player/testing/cmaf')
+  const { mediaObject, refuse } = await import('@/player/testing/client')
+  const { flush } = await import('@/player/testing/elements')
   const timeline = twoSecondTimeline()
 
   test('VOD: cancel the fetch, then FETCH from the containing group, answered right before its first packet', async () => {

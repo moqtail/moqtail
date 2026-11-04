@@ -14,13 +14,13 @@
  * limitations under the License.
  */
 
-import { ControlMessage } from '../model/control/control_message'
-import { FrozenByteBuffer, ByteBuffer } from '../model/common/byte_buffer'
-import { NotEnoughBytesError, TerminationError, TimeoutError } from '../model/error/error'
-import { TerminationCode } from '../model/error/constant'
+import { ControlMessage } from '@/model/control/control_message'
+import { FrozenByteBuffer, ByteBuffer } from '@/model/common/byte_buffer'
+import { NotEnoughBytesError, TerminationError, TimeoutError } from '@/model/error/error'
+import { TerminationCode } from '@/model/error/constant'
 import { SetupOptions, Setup } from '@/model'
-import { logger } from '../util/logger'
-import type { Emitter } from '../util/emitter'
+import { logger } from '@/util/logger'
+import type { Emitter } from '@/util/emitter'
 import type { ClientEvents } from './types'
 
 function withTimeout<T>(promise: Promise<T>, ms?: number, errorMsg?: string): Promise<T> {

@@ -14,12 +14,12 @@
  * limitations under the License.
  */
 
-import { SubscribeTracks, RequestOk, RequestError, RequestErrorCode } from '../../model/control'
-import { MessageParameter, ReasonPhrase } from '../../model'
-import { InvalidFilterError } from '../../model/parameter/message/range_filter'
+import { SubscribeTracks, RequestOk, RequestError, RequestErrorCode } from '@/model/control'
+import { MessageParameter, ReasonPhrase } from '@/model'
+import { InvalidFilterError } from '@/model/parameter/message/range_filter'
 import { RequestStreamMessageHandler } from './handler'
-import { logger } from '../../util/logger'
-import { assertWithinFilterRangeLimit } from '../util/validators'
+import { logger } from '@/util/logger'
+import { assertWithinFilterRangeLimit } from '@/client/util/validators'
 
 export const handlerSubscribeTracks: RequestStreamMessageHandler<SubscribeTracks> = async (client, msg, stream) => {
   logger.log('handler/subscribe_tracks', 'prefix', msg.trackNamespacePrefix.toUtf8Path())

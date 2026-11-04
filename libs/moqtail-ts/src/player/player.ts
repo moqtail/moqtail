@@ -19,9 +19,9 @@
  * client, follows the media sink's state, and forwards control calls to it.
  */
 
-import type { SetupOptions } from '../model/parameter/setup_option'
-import { Emitter } from '../util/emitter'
-import { logger } from '../util/logger'
+import type { SetupOptions } from '@/model/parameter/setup_option'
+import { Emitter } from '@/util/emitter'
+import { logger } from '@/util/logger'
 import { acquire, check, clientKey, currentClient, release, type ClientOptions, type SlotMember } from './client_slot'
 import type { BaseElement, SinkElement, SourceElement, TransformElement } from './element/base'
 import { Chain } from './element/chain'
@@ -414,7 +414,7 @@ if (import.meta.vitest) {
   const { fakeClients } = await import('./testing/client')
   const { testSource, fakeMediaSink, flush } = await import('./testing/elements')
   const { defineExtension } = await import('./extension')
-  const { SetupOptions } = await import('../model/parameter/setup_option')
+  const { SetupOptions } = await import('@/model/parameter/setup_option')
   type Sink = import('./testing/elements').FakeMediaSink
   type Source = import('./testing/elements').TestSource
 

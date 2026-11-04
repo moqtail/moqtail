@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { PlayerError } from '../../error'
+import { PlayerError } from '@/player/error'
 
 /**
  * Tells the media element's `seeking` events apart: the sink's own jumps (start position,

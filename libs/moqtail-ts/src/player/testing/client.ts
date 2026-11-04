@@ -16,7 +16,7 @@
 
 /** A relay-free stand-in for `MOQtailClient`. Never exported from the player entry. */
 
-import type { MOQtailClient } from '../../client/client'
+import type { MOQtailClient } from '@/client/client'
 import type {
   ClientEvents,
   FetchOptions,
@@ -26,22 +26,22 @@ import type {
   SubscribeResult,
   SubscribeUpdateOptions,
   SwitchOptions,
-} from '../../client/types'
-import { Location } from '../../model/common/location'
-import { ReasonPhrase } from '../../model/common/reason_phrase'
-import { PublishDoneStatusCode, RequestErrorCode } from '../../model/control/constant'
-import { FetchOk } from '../../model/control/fetch_ok'
-import { PublishDone } from '../../model/control/publish_done'
-import { RequestError } from '../../model/control/request_error'
-import { Setup } from '../../model/control/setup'
-import { SubscribeOk } from '../../model/control/subscribe_ok'
-import { ObjectForwardingPreference } from '../../model/data/constant'
-import { FullTrackName } from '../../model/data/full_track_name'
-import { MoqtObject } from '../../model/data/object'
-import type { KeyValuePair } from '../../model/common/pair'
-import type { TrackProperty } from '../../model/property/track_property'
-import { Emitter } from '../../util/emitter'
-import { factory } from '../client_slot'
+} from '@/client/types'
+import { Location } from '@/model/common/location'
+import { ReasonPhrase } from '@/model/common/reason_phrase'
+import { PublishDoneStatusCode, RequestErrorCode } from '@/model/control/constant'
+import { FetchOk } from '@/model/control/fetch_ok'
+import { PublishDone } from '@/model/control/publish_done'
+import { RequestError } from '@/model/control/request_error'
+import { Setup } from '@/model/control/setup'
+import { SubscribeOk } from '@/model/control/subscribe_ok'
+import { ObjectForwardingPreference } from '@/model/data/constant'
+import { FullTrackName } from '@/model/data/full_track_name'
+import { MoqtObject } from '@/model/data/object'
+import type { KeyValuePair } from '@/model/common/pair'
+import type { TrackProperty } from '@/model/property/track_property'
+import { Emitter } from '@/util/emitter'
+import { factory } from '@/player/client_slot'
 
 /** How the fake answers a SUBSCRIBE or FETCH: refuse it, or accept it with these values. */
 export type FakeResponse = RequestError | { trackProperties?: TrackProperty[]; endOfTrack?: boolean }

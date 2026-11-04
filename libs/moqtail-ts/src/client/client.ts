@@ -42,7 +42,7 @@ import {
   PublishSkipped,
   PublishDone,
   PublishDoneStatusCode,
-} from '../model/control'
+} from '@/model/control'
 import {
   Datagram,
   EndOfRangeKind,
@@ -54,10 +54,10 @@ import {
   SubgroupHeaderType,
   SubgroupObject,
   RequestIdMap,
-} from '../model/data'
-import { FrozenByteBuffer } from '../model/common/byte_buffer'
-import type { FetchObjectContext } from '../model/data/fetch_object'
-import { ObjectDeliveryTimeoutProperty, TrackProperty } from '../model/property/track_property'
+} from '@/model/data'
+import { FrozenByteBuffer } from '@/model/common/byte_buffer'
+import type { FetchObjectContext } from '@/model/data/fetch_object'
+import { ObjectDeliveryTimeoutProperty, TrackProperty } from '@/model/property/track_property'
 import { RecvStream } from './data_stream'
 import {
   InternalError,
@@ -78,7 +78,7 @@ import {
   resolveTransportUrl,
   SwitchFrom,
   SwitchMode,
-} from '../model'
+} from '@/model'
 import { Track } from './track/track'
 import { LiveTrackSource } from './track/content_source'
 import { PublishNamespaceRequest } from './request/publish_namespace'
@@ -92,8 +92,8 @@ import { FetchPublication } from './publication/fetch'
 import { PublishPublication } from './publication/publish'
 import { random60bitId } from './util/random_id'
 import { assertWithinFilterRangeLimit, isValidTrackAlias } from './util/validators'
-import { MaxFilterRanges } from '../model/parameter/setup/max_filter_ranges'
-import { applyMessageParameterUpdate } from '../model/parameter/message_parameter'
+import { MaxFilterRanges } from '@/model/parameter/setup/max_filter_ranges'
+import { applyMessageParameterUpdate } from '@/model/parameter/message_parameter'
 import { PeerStreamResetError, streamResetCodeOf, streamResetReason } from './util/stream_reset'
 import {
   MOQtailRequest,
@@ -113,8 +113,8 @@ import {
   FetchResult,
 } from './types'
 import { SendDatagramStream } from './datagram_stream'
-import { logger, LogLevel, setLogLevel, setLogEnabledModules } from '../util/logger'
-import { Emitter } from '../util/emitter'
+import { logger, LogLevel, setLogLevel, setLogEnabledModules } from '@/util/logger'
+import { Emitter } from '@/util/emitter'
 
 /**
  * @public
@@ -2412,17 +2412,17 @@ export class MOQtailClient extends Emitter<ClientEvents> {
 
 if (import.meta.vitest) {
   const { describe, it, expect, afterEach, vi } = import.meta.vitest
-  const { MessageParameters } = await import('../model/parameter/message_parameter')
-  const { LargestObject } = await import('../model/parameter/message/largest_object')
-  const { Header } = await import('../model/data/header')
-  const { FetchHeaderType, ObjectForwardingPreference, SubgroupHeaderType } = await import('../model/data/constant')
-  const { SubgroupObject } = await import('../model/data/subgroup_object')
-  const { ByteBuffer } = await import('../model/common/byte_buffer')
+  const { MessageParameters } = await import('@/model/parameter/message_parameter')
+  const { LargestObject } = await import('@/model/parameter/message/largest_object')
+  const { Header } = await import('@/model/data/header')
+  const { FetchHeaderType, ObjectForwardingPreference, SubgroupHeaderType } = await import('@/model/data/constant')
+  const { SubgroupObject } = await import('@/model/data/subgroup_object')
+  const { ByteBuffer } = await import('@/model/common/byte_buffer')
   const { RangeFilter, RangeFilterKind, encodeRanges, InvalidFilterError } =
-    await import('../model/parameter/message/range_filter')
+    await import('@/model/parameter/message/range_filter')
   const { DEFAULT_MAX_FILTER_RANGES } = await import('./types')
-  const { MaxCacheDurationProperty } = await import('../model/property/track_property')
-  const { findProperty } = await import('../model/property/find')
+  const { MaxCacheDurationProperty } = await import('@/model/property/track_property')
+  const { findProperty } = await import('@/model/property/find')
 
   /** One bidirectional stream: what the client wrote, and a way to answer on it. */
   class MockBidiStream {

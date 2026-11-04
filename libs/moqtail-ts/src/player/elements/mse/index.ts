@@ -14,9 +14,9 @@
  * limitations under the License.
  */
 
-import { CapabilityCode, defineElement } from '../../element/define'
-import { MEDIA_SINK } from '../../element/interfaces'
-import { PlayerError } from '../../error'
+import { CapabilityCode, defineElement } from '@/player/element/define'
+import { MEDIA_SINK } from '@/player/element/interfaces'
+import { PlayerError } from '@/player/error'
 import { MSESink, type MSEOptions } from './sink'
 
 const cmaf = (role: string) => [

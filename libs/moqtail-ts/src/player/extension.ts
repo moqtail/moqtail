@@ -16,9 +16,9 @@
 
 /** Extensions bundle elements and setup options, so a protocol extension is one entry in `opts.extensions`. */
 
-import { SetupOptions } from '../model/parameter/setup_option'
+import { SetupOptions } from '@/model/parameter/setup_option'
 import { canonicalJson } from './client_slot'
-import type { Setup } from '../model/control/setup'
+import type { Setup } from '@/model/control/setup'
 import type { ElementDefinition, SourceElementDefinition } from './element/define'
 import { PlayerError } from './error'
 

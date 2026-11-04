@@ -19,9 +19,9 @@
  * `MoqtUrl` parses the generic `moqt://` part; this file only reads the `msf` fragment.
  */
 
-import { Location } from '../model/common/location'
-import { MoqtUrl } from '../model/common/moqt_url'
-import { Tuple, TupleField } from '../model/common/tuple'
+import { Location } from '@/model/common/location'
+import { MoqtUrl } from '@/model/common/moqt_url'
+import { Tuple, TupleField } from '@/model/common/tuple'
 import { PlayerError } from './error'
 
 /** @public An inclusive range of MOQT Locations. */

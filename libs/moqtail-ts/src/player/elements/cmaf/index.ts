@@ -14,11 +14,11 @@
  * limitations under the License.
  */
 
-import { defineElement, type Identifiers } from '../../element/define'
-import { MEDIA_SOURCE } from '../../element/interfaces'
-import { PlayerError } from '../../error'
-import type { MediaSourceOptions } from '../../element/interfaces'
-import { Location } from '../../../model/common/location'
+import { defineElement, type Identifiers } from '@/player/element/define'
+import { MEDIA_SOURCE } from '@/player/element/interfaces'
+import { PlayerError } from '@/player/error'
+import type { MediaSourceOptions } from '@/player/element/interfaces'
+import { Location } from '@/model/common/location'
 import { toSpans } from './ranges'
 import { CmafSource } from './source'
 import { cmafCapabilities } from './track'

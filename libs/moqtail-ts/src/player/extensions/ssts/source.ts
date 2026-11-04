@@ -21,12 +21,12 @@
  * Nothing here is specific to a packaging.
  */
 
-import type { MOQtailClient } from '../../../client/client'
-import type { SubscribeOptions } from '../../../client/types'
-import { SwitchingSetAssignment } from '../../../model/parameter/message/switching_set_assignment'
-import { SourceElement, type BaseElement } from '../../element/base'
-import type { ElementContext } from '../../element/context'
-import { CapabilityCode, defineElement } from '../../element/define'
+import type { MOQtailClient } from '@/client/client'
+import type { SubscribeOptions } from '@/client/types'
+import { SwitchingSetAssignment } from '@/model/parameter/message/switching_set_assignment'
+import { SourceElement, type BaseElement } from '@/player/element/base'
+import type { ElementContext } from '@/player/element/context'
+import { CapabilityCode, defineElement } from '@/player/element/define'
 import {
   MEDIA_SOURCE,
   type CatalogTrack,
@@ -34,11 +34,11 @@ import {
   type Rendition,
   type RequestHooks,
   type SwitchingSetOptions,
-} from '../../element/interfaces'
-import type { Pad, PadItem } from '../../element/pad'
-import { PlayerError } from '../../error'
-import { formatMsfUrl } from '../../msf_url'
-import { bitrateOf, renditionId, trackKey } from '../../elements/cmaf/track'
+} from '@/player/element/interfaces'
+import type { Pad, PadItem } from '@/player/element/pad'
+import { PlayerError } from '@/player/error'
+import { formatMsfUrl } from '@/player/msf_url'
+import { bitrateOf, renditionId, trackKey } from '@/player/elements/cmaf/track'
 import { Forwarder, type Child } from './forward'
 import { sstsAlgorithms } from './index'
 
@@ -330,15 +330,15 @@ export const Ssts = defineElement({
 
 if (import.meta.vitest) {
   const { test, expect, vi, afterEach } = import.meta.vitest
-  const { Setup } = await import('../../../model/control/setup')
-  const { SetupOptions } = await import('../../../model/parameter/setup_option')
-  const { PublishDoneStatusCode } = await import('../../../model/control/constant')
-  const { Cmaf } = await import('../../elements/cmaf')
-  const { cmafTrack, fakeCatalog, requested, twoSecondTimeline } = await import('../../testing/cmaf')
-  const { FakeClient, mediaObject } = await import('../../testing/client')
-  const { collectingSink, flush, packet, testChain, testSource } = await import('../../testing/elements')
-  type Sink = import('../../testing/elements').CollectingSink
-  type UpdateOptions = import('../../../client/types').SubscribeUpdateOptions
+  const { Setup } = await import('@/model/control/setup')
+  const { SetupOptions } = await import('@/model/parameter/setup_option')
+  const { PublishDoneStatusCode } = await import('@/model/control/constant')
+  const { Cmaf } = await import('@/player/elements/cmaf')
+  const { cmafTrack, fakeCatalog, requested, twoSecondTimeline } = await import('@/player/testing/cmaf')
+  const { FakeClient, mediaObject } = await import('@/player/testing/client')
+  const { collectingSink, flush, packet, testChain, testSource } = await import('@/player/testing/elements')
+  type Sink = import('@/player/testing/elements').CollectingSink
+  type UpdateOptions = import('@/client/types').SubscribeUpdateOptions
   afterEach(() => void vi.useRealTimers())
 
   /** SSTS sources over `child` (CMAF by default), one per set, on one `FakeClient`. */

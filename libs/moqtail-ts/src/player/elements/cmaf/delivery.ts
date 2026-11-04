@@ -19,19 +19,19 @@
  * and FETCH goes through, the `properties` the pad carries, and the read loop.
  */
 
-import type { MOQtailClient } from '../../../client/client'
-import type { FetchOptions, FetchResult, SubscribeOptions, SubscribeResult, SwitchOptions } from '../../../client/types'
-import { Location } from '../../../model/common/location'
-import { GroupOrder, LocationFilterType, PublishDoneStatusCode } from '../../../model/control/constant'
-import { RequestError } from '../../../model/control/request_error'
-import { FullTrackName } from '../../../model/data/full_track_name'
-import type { MoqtObject } from '../../../model/data/object'
-import { FillParameters } from '../../../model/parameter/message/fill_parameters'
-import { LocationFilter } from '../../../model/parameter/message/location_filter'
-import type { ElementContext } from '../../element/context'
-import type { CatalogTrack, RequestHooks } from '../../element/interfaces'
-import type { Pad, PadProperties } from '../../element/pad'
-import { trackIdentifier } from '../../msf_url'
+import type { MOQtailClient } from '@/client/client'
+import type { FetchOptions, FetchResult, SubscribeOptions, SubscribeResult, SwitchOptions } from '@/client/types'
+import { Location } from '@/model/common/location'
+import { GroupOrder, LocationFilterType, PublishDoneStatusCode } from '@/model/control/constant'
+import { RequestError } from '@/model/control/request_error'
+import { FullTrackName } from '@/model/data/full_track_name'
+import type { MoqtObject } from '@/model/data/object'
+import { FillParameters } from '@/model/parameter/message/fill_parameters'
+import { LocationFilter } from '@/model/parameter/message/location_filter'
+import type { ElementContext } from '@/player/element/context'
+import type { CatalogTrack, RequestHooks } from '@/player/element/interfaces'
+import type { Pad, PadProperties } from '@/player/element/pad'
+import { trackIdentifier } from '@/player/msf_url'
 import { fragmentTime, mediaTimescale } from './bmff'
 import { acceptedInitData, objectInitData } from './init_data'
 import { beyond, type End } from './ranges'
@@ -454,11 +454,11 @@ export async function cancel(client: MOQtailClient, result: RequestError | Accep
 
 if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
-  const { cmafChain, cmafTrack, endOfTrack, fakeCatalog, requested } = await import('../../testing/cmaf')
-  const { mediaObject } = await import('../../testing/client')
-  const { flush } = await import('../../testing/elements')
-  const { UnknownTrackProperty } = await import('../../../model/property/track_property')
-  const { VideoConfig } = await import('../../../model/property/video_config')
+  const { cmafChain, cmafTrack, endOfTrack, fakeCatalog, requested } = await import('@/player/testing/cmaf')
+  const { mediaObject } = await import('@/player/testing/client')
+  const { flush } = await import('@/player/testing/elements')
+  const { UnknownTrackProperty } = await import('@/model/property/track_property')
+  const { VideoConfig } = await import('@/model/property/video_config')
   const init = (byte: number) => new VideoConfig(new Uint8Array([byte]))
 
   describe('Delivery', () => {
@@ -553,5 +553,5 @@ if (import.meta.vitest) {
     })
   })
 
-  const { Tuple, TupleField } = await import('../../../model/common/tuple')
+  const { Tuple, TupleField } = await import('@/model/common/tuple')
 }

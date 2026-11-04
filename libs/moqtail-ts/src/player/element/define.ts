@@ -19,7 +19,7 @@
  * instance exists, and `defineElement`, which checks and returns one.
  */
 
-import type { MsfSource } from '../msf_url'
+import type { MsfSource } from '@/player/msf_url'
 import type { BaseElement, SinkElement, SourceElement, TransformElement } from './base'
 import type { ElementContext } from './context'
 import type { CatalogTrack, ElementInterfaces, InterfaceKey } from './interfaces'
@@ -161,7 +161,7 @@ export function hasInterface<E extends BaseElement, K extends InterfaceKey>(
 
 if (import.meta.vitest) {
   const { describe, test, expect, expectTypeOf } = import.meta.vitest
-  const { TestSource, CollectingSink, detachedContext } = await import('../testing/elements')
+  const { TestSource, CollectingSink, detachedContext } = await import('@/player/testing/elements')
   const interfaces = await import('./interfaces')
   // Annotated, since copying a unique symbol into a new const widens it to symbol.
   const MEDIA_SINK: typeof interfaces.MEDIA_SINK = interfaces.MEDIA_SINK

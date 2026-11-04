@@ -16,9 +16,9 @@
 
 /** What a catalog track means to the CMAF source: identity, MIME type, bitrate, pad capabilities. */
 
-import { CapabilityCode, type Capabilities } from '../../element/define'
-import type { CatalogReader, CatalogTrack } from '../../element/interfaces'
-import { trackIdentifier } from '../../msf_url'
+import { CapabilityCode, type Capabilities } from '@/player/element/define'
+import type { CatalogReader, CatalogTrack } from '@/player/element/interfaces'
+import { trackIdentifier } from '@/player/msf_url'
 
 /** Namespace and name, encoded as in MSF 11.1.2, so tracks compare as bytes (MSF 11.2.2). */
 export const trackKey = (track: CatalogTrack): string => trackIdentifier(track.namespace, track.nameBytes)

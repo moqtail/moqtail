@@ -14,18 +14,18 @@
  * limitations under the License.
  */
 
-import { ByteBuffer } from '../model/common/byte_buffer'
-import { FetchHeaderType, FetchObject, SubgroupHeaderType, SubgroupObject } from '../model/data'
-import { FetchObjectContext } from '../model/data/fetch_object'
-import { GroupOrder } from '../model/control/constant'
-import { ObjectForwardingPreference } from '../model/data/constant'
-import { Header } from '../model/data/header'
-import { NotEnoughBytesError, ProtocolViolationError, TimeoutError } from '../model/error/error'
-import { StreamResetCode } from '../model/error/stream_reset'
+import { ByteBuffer } from '@/model/common/byte_buffer'
+import { FetchHeaderType, FetchObject, SubgroupHeaderType, SubgroupObject } from '@/model/data'
+import { FetchObjectContext } from '@/model/data/fetch_object'
+import { GroupOrder } from '@/model/control/constant'
+import { ObjectForwardingPreference } from '@/model/data/constant'
+import { Header } from '@/model/data/header'
+import { NotEnoughBytesError, ProtocolViolationError, TimeoutError } from '@/model/error/error'
+import { StreamResetCode } from '@/model/error/stream_reset'
 import { asStreamResetError, streamResetCodeOf, streamResetReason } from './util/stream_reset'
-import { logger } from '../util/logger'
+import { logger } from '@/util/logger'
 import { DataStreamReporter, FullTrackNameOf } from './data_event'
-import type { Emitter } from '../util/emitter'
+import type { Emitter } from '@/util/emitter'
 import type { ClientEvents } from './types'
 
 export class SendStream {
@@ -498,8 +498,8 @@ if (import.meta.vitest) {
 
 if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
-  const { ObjectStatus } = await import('../model/data/constant')
-  const { Emitter } = await import('../util/emitter')
+  const { ObjectStatus } = await import('@/model/data/constant')
+  const { Emitter } = await import('@/util/emitter')
   type DataEvent = import('./data_event').DataEvent
 
   function observe() {
@@ -554,7 +554,7 @@ if (import.meta.vitest) {
     })
 
     test('carry the LOC Timestamp and a monotonic local time', async () => {
-      const { LOCProperties } = await import('../model/property/loc')
+      const { LOCProperties } = await import('@/model/property/loc')
       const header = Header.newSubgroup(SubgroupHeaderType.fromProperties(true, 0, false), 1n, 0n, 0, 0)
       const { send, recv, sent, received } = await pair(header)
       await send.write(

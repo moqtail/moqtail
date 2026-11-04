@@ -20,12 +20,12 @@
  * until the catalog confirms the end (MSF 11.4), seeks, switch handovers, and URL ranges.
  */
 
-import type { MOQtailClient } from '../../../client/client'
-import type { Location } from '../../../model/common/location'
-import type { RequestError } from '../../../model/control/request_error'
-import type { ElementContext } from '../../element/context'
-import type { CatalogTrack } from '../../element/interfaces'
-import { backoffDelay, sleep } from '../../util/backoff'
+import type { MOQtailClient } from '@/client/client'
+import type { Location } from '@/model/common/location'
+import type { RequestError } from '@/model/control/request_error'
+import type { ElementContext } from '@/player/element/context'
+import type { CatalogTrack } from '@/player/element/interfaces'
+import { backoffDelay, sleep } from '@/player/util/backoff'
 import { cancel, REPLACED, type Accepted, type Delivery, type Target } from './delivery'
 import { clamp, mapEnd, mapLocation, type End, type Span } from './ranges'
 import { locate, seekTarget } from './seek'
@@ -308,11 +308,11 @@ const pause = (ms: number, signal: AbortSignal): Promise<boolean> =>
 
 if (import.meta.vitest) {
   const { describe, test, expect, vi, afterEach } = import.meta.vitest
-  const { cmafChain, cmafTrack, fakeCatalog, requested } = await import('../../testing/cmaf')
-  const { mediaObject, refuse } = await import('../../testing/client')
-  const { flush } = await import('../../testing/elements')
-  const { PublishDoneStatusCode } = await import('../../../model/control/constant')
-  type Sent = { fullTrackName: import('../../../model/data/full_track_name').FullTrackName; locationFilter?: any }
+  const { cmafChain, cmafTrack, fakeCatalog, requested } = await import('@/player/testing/cmaf')
+  const { mediaObject, refuse } = await import('@/player/testing/client')
+  const { flush } = await import('@/player/testing/elements')
+  const { PublishDoneStatusCode } = await import('@/model/control/constant')
+  type Sent = { fullTrackName: import('@/model/data/full_track_name').FullTrackName; locationFilter?: any }
   /** Runs every timer and what it starts; the longest backoff is 5 s. */
   const elapse = () => vi.advanceTimersByTimeAsync(6000)
   afterEach(() => void vi.useRealTimers())

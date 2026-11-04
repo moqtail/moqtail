@@ -20,10 +20,10 @@
  * `SstsSource` for each media switching set when the peer accepted it.
  */
 
-import type { Setup } from '../../../model/control/setup'
-import { SetupOptions } from '../../../model/parameter/setup_option'
-import { SstsAlgorithms } from '../../../model/parameter/setup/ssts_algorithms'
-import { defineExtension } from '../../extension'
+import type { Setup } from '@/model/control/setup'
+import { SetupOptions } from '@/model/parameter/setup_option'
+import { SstsAlgorithms } from '@/model/parameter/setup/ssts_algorithms'
+import { defineExtension } from '@/player/extension'
 import { Ssts } from './source'
 
 /** The algorithms offered at setup: 0 (the draft's default) and demo-abr's 0xff01. */
@@ -50,7 +50,7 @@ export { SstsSource } from './source'
 
 if (import.meta.vitest) {
   const { test, expect } = import.meta.vitest
-  const { Setup } = await import('../../../model/control/setup')
+  const { Setup } = await import('@/model/control/setup')
   const setup = (algorithms?: bigint[]) =>
     new Setup(algorithms ? new SetupOptions().addSstsAlgorithms(algorithms).build() : [])
 

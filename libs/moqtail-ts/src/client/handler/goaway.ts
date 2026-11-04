@@ -14,10 +14,10 @@
  * limitations under the License.
  */
 
-import { GoAway } from '../../model/control'
-import { ProtocolViolationError } from '../../model/error/error'
+import { GoAway } from '@/model/control'
+import { ProtocolViolationError } from '@/model/error/error'
 import { ControlMessageHandler, RequestStreamMessageHandler } from './handler'
-import { logger } from '../../util/logger'
+import { logger } from '@/util/logger'
 
 export const handlerGoAway: ControlMessageHandler<GoAway> = async (client, msg) => {
   logger.log('handler/goaway', 'newSessionUri', msg.newSessionUri, 'timeout', msg.timeout)

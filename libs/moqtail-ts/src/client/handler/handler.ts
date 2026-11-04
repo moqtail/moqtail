@@ -48,10 +48,10 @@ import {
   RequestError,
   SubscribeNamespace,
   SubscribeTracks,
-} from '../../model/control'
-import { MOQtailClient } from '../client'
-import { ControlMessage } from '../../model/control'
-import { RequestStream } from '../request_stream'
+} from '@/model/control'
+import { MOQtailClient } from '@/client/client'
+import { ControlMessage } from '@/model/control'
+import { RequestStream } from '@/client/request_stream'
 
 /** A message on the shared control stream. Nothing here has a stream to reply on. */
 export type ControlMessageHandler<T> = (client: MOQtailClient, msg: T) => Promise<void>

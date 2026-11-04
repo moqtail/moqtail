@@ -13,10 +13,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import { Publish, RequestOk } from '../../model/control'
+import { Publish, RequestOk } from '@/model/control'
 import { RequestStreamMessageHandler } from './handler'
-import { MoqtObject } from '../../model/data' // Make sure to import MoqtObject
-import { logger } from '../../util/logger'
+import { MoqtObject } from '@/model/data' // Make sure to import MoqtObject
+import { logger } from '@/util/logger'
 
 export const handlerPublish: RequestStreamMessageHandler<Publish> = async (client, msg, stream) => {
   logger.log('handler/publish', 'track: %s alias: %d', msg.fullTrackName.toString(), msg.trackAlias)

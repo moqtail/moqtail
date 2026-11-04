@@ -77,7 +77,7 @@ export function selectTargets(
 
 if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
-  const { testSource } = await import('../testing/elements')
+  const { testSource } = await import('@/player/testing/elements')
 
   describe('selectSource', () => {
     const scored = (name: string, score: number, priority?: number) =>

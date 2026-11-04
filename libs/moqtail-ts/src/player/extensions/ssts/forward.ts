@@ -19,14 +19,14 @@
  * `properties` when the arriving child changes, one `eos`, and one answer per seek.
  */
 
-import type { SubscribeOptions, SubscribeResult } from '../../../client/types'
-import { Location } from '../../../model/common/location'
-import type { MoqtObject } from '../../../model/data/object'
-import type { BaseElement } from '../../element/base'
-import type { ElementContext } from '../../element/context'
-import type { SourceElementDefinition } from '../../element/define'
-import type { CatalogTrack, MediaSourceElement } from '../../element/interfaces'
-import type { Pad, PadEvent, PadItem, PadProperties } from '../../element/pad'
+import type { SubscribeOptions, SubscribeResult } from '@/client/types'
+import { Location } from '@/model/common/location'
+import type { MoqtObject } from '@/model/data/object'
+import type { BaseElement } from '@/player/element/base'
+import type { ElementContext } from '@/player/element/context'
+import type { SourceElementDefinition } from '@/player/element/define'
+import type { CatalogTrack, MediaSourceElement } from '@/player/element/interfaces'
+import type { Pad, PadEvent, PadItem, PadProperties } from '@/player/element/pad'
 
 /** One track of the set, played by its own child source. */
 export interface Child {

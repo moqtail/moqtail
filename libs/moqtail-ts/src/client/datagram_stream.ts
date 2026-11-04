@@ -14,10 +14,10 @@
  * limitations under the License.
  */
 
-import { Datagram } from '../model/data'
-import { MoqtObject, FullTrackName } from '../model/data'
-import { logger } from '../util/logger'
-import type { Emitter } from '../util/emitter'
+import { Datagram } from '@/model/data'
+import { MoqtObject, FullTrackName } from '@/model/data'
+import { logger } from '@/util/logger'
+import type { Emitter } from '@/util/emitter'
 import type { ClientEvents } from './types'
 import { FrozenByteBuffer } from '@/model'
 

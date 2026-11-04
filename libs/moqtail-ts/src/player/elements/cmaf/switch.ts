@@ -20,15 +20,15 @@
  * `properties` written for the new track, and dropping the old track past its end.
  */
 
-import type { SubscribeResult, SwitchOptions } from '../../../client/types'
-import { Location } from '../../../model/common/location'
-import { LocationFilterType, SwitchMode } from '../../../model/control/constant'
-import { RequestError } from '../../../model/control/request_error'
-import { FillParameters } from '../../../model/parameter/message/fill_parameters'
-import { LocationFilter } from '../../../model/parameter/message/location_filter'
-import type { ElementContext } from '../../element/context'
-import type { CatalogTrack, MediaSourceOptions } from '../../element/interfaces'
-import { PlayerError } from '../../error'
+import type { SubscribeResult, SwitchOptions } from '@/client/types'
+import { Location } from '@/model/common/location'
+import { LocationFilterType, SwitchMode } from '@/model/control/constant'
+import { RequestError } from '@/model/control/request_error'
+import { FillParameters } from '@/model/parameter/message/fill_parameters'
+import { LocationFilter } from '@/model/parameter/message/location_filter'
+import type { ElementContext } from '@/player/element/context'
+import type { CatalogTrack, MediaSourceOptions } from '@/player/element/interfaces'
+import { PlayerError } from '@/player/error'
 import { switchTo, trackOf, type Delivery } from './delivery'
 import type { End } from './ranges'
 import type { Recovery } from './recovery'
@@ -205,7 +205,7 @@ const aborted = (message: string) => new PlayerError('ABORTED', message, { eleme
 
 if (import.meta.vitest) {
   const { test, expect, vi, afterEach } = import.meta.vitest
-  const { cmafTrack } = await import('../../testing/cmaf')
+  const { cmafTrack } = await import('@/player/testing/cmaf')
   afterEach(() => void vi.useRealTimers())
   const spaced = (name: string, keyframeSpacing: number) => cmafTrack(name, { keyframeSpacing })
   const point = (from: CatalogTrack, to: CatalogTrack, group: number, object: number, set = [from, to]) => {
@@ -228,9 +228,9 @@ if (import.meta.vitest) {
     expect(point(s15, s60, 3, 14, [s15, s60, cmafTrack('z')])).toBe('4 after 3.*')
   })
 
-  const { cmafChain } = await import('../../testing/cmaf')
-  const { mediaObject } = await import('../../testing/client')
-  const { flush } = await import('../../testing/elements')
+  const { cmafChain } = await import('@/player/testing/cmaf')
+  const { mediaObject } = await import('@/player/testing/client')
+  const { flush } = await import('@/player/testing/elements')
   const v2 = (group: number, object = 0) => mediaObject(group, object, null, 'v2')
 
   /** A chain on `set` that delivered group 1, objects 0 and 1; `renditions` hears renditionchange. */

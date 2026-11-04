@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { KeyValuePair } from '../common/pair'
+import { KeyValuePair } from '@/model/common/pair'
 
 /**
  * @public

@@ -16,17 +16,17 @@
 
 /** Minimal elements for runtime tests. Never exported from the player entry. */
 
-import type { MOQtailClient } from '../../client/client'
-import { Tuple, TupleField } from '../../model/common/tuple'
-import type { MoqtObject } from '../../model/data/object'
-import { Emitter } from '../../util/emitter'
-import { SinkElement, SourceElement, TransformElement } from '../element/base'
-import { Chain, type ChainHost } from '../element/chain'
-import type { ElementContext } from '../element/context'
-import { CapabilityCode, defineElement, type Capabilities, type Identifiers } from '../element/define'
-import { MEDIA_SINK, MEDIA_SOURCE, type CatalogTrack, type MediaSinkElement } from '../element/interfaces'
-import type { Pad, PadEvent, PadItem, PadOutput } from '../element/pad'
-import type { PlayerEvents } from '../player'
+import type { MOQtailClient } from '@/client/client'
+import { Tuple, TupleField } from '@/model/common/tuple'
+import type { MoqtObject } from '@/model/data/object'
+import { Emitter } from '@/util/emitter'
+import { SinkElement, SourceElement, TransformElement } from '@/player/element/base'
+import { Chain, type ChainHost } from '@/player/element/chain'
+import type { ElementContext } from '@/player/element/context'
+import { CapabilityCode, defineElement, type Capabilities, type Identifiers } from '@/player/element/define'
+import { MEDIA_SINK, MEDIA_SOURCE, type CatalogTrack, type MediaSinkElement } from '@/player/element/interfaces'
+import type { Pad, PadEvent, PadItem, PadOutput } from '@/player/element/pad'
+import type { PlayerEvents } from '@/player/player'
 
 export const VIDEO_CMAF: Capabilities = [
   { direction: 'out', code: CapabilityCode.ROLE, value: 'video' },

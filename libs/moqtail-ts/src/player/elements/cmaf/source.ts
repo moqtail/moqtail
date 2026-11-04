@@ -28,10 +28,9 @@ import { closestBitrate, Recovery } from './recovery'
 import { Switcher } from './switch'
 import { bitrateOf, cmafCapabilities, renditionId, trackKey } from './track'
 
-/** What `Cmaf.init` worked out before the source starts: the URL ranges and the set's first Group ID. */
+/** What `Cmaf.init` worked out before the source starts: the URL ranges. */
 export interface SourcePlan {
   spans: readonly Span[]
-  g0: bigint
   /** The end of the last range in seconds, when known. */
   duration?: number
 }
@@ -52,7 +51,7 @@ export class CmafSource extends SourceElement implements MediaSourceElement {
   constructor(
     context: ElementContext,
     readonly options: MediaSourceOptions,
-    plan: SourcePlan = { spans: [], g0: 1n },
+    plan: SourcePlan = { spans: [] },
   ) {
     super(context)
     const start = context.tracks[0]!
@@ -65,6 +64,7 @@ export class CmafSource extends SourceElement implements MediaSourceElement {
       context,
       this.delivery,
       {
+        tracks: () => this.#tracks,
         candidates: () => this.#tracks.filter((t) => this.#selected.has(this.#id(t))),
         giveUp: () => this.removePad(this.pad, true),
       },

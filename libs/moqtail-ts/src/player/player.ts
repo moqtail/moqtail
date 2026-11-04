@@ -342,8 +342,18 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
 
   #watchSink(): void {
     const sink = this.mediaSink
+    if (!sink) return
     for (const [event, state] of SINK_EVENTS) {
-      sink?.addEventListener(event, () => this.#follow(state), { signal: this.#abort.signal })
+      sink.addEventListener(
+        event,
+        () => {
+          // The element waits before it first plays and during every seek, and pauses right before `ended`.
+          if (event === 'waiting' && (sink.seeking || this.#state === 'ready')) return
+          if (event === 'pause' && sink.ended) return
+          this.#follow(state)
+        },
+        { signal: this.#abort.signal },
+      )
     }
   }
 
@@ -464,10 +474,17 @@ if (import.meta.vitest) {
       await player.start()
       const sink = player.mediaSink as Sink
       expect([sink.calls, fakes.clients.length]).toEqual([['play'], 1])
-      for (const event of ['playing', 'pause', 'waiting', 'playing']) sink.dispatch(event)
+      sink.dispatch('waiting') // waiting before the first `playing` isn't a stall
+      sink.dispatch('playing')
+      sink.seeking = true
+      sink.dispatch('waiting') // nor is waiting for a seek
+      sink.seeking = false
+      for (const event of ['pause', 'waiting', 'playing']) sink.dispatch(event)
       fakes.clients[0]!.drop()
       sink.dispatch('waiting') // ran dry while reconnecting: that's where it returns to
       await flush()
+      sink.ended = true
+      sink.dispatch('pause') // the element pauses right before `ended`
       sink.dispatch('ended')
       await player.seek(0)
       sink.dispatch('playing')

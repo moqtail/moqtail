@@ -50,6 +50,8 @@ export interface MediaSinkElement extends EventTarget {
   readonly currentTime: number
   readonly buffered: TimeRanges
   readonly paused: boolean
+  readonly seeking: boolean
+  readonly ended: boolean
   readonly playbackRate: number
   setPlaybackRate(rate: number): void
   play(): Promise<void>

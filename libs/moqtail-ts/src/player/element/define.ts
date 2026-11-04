@@ -199,6 +199,8 @@ if (import.meta.vitest) {
         currentTime = 0
         buffered = {} as TimeRanges
         paused = true
+        seeking = false
+        ended = false
         playbackRate = 1
         setPlaybackRate() {}
         async play() {}

@@ -17,7 +17,7 @@
 /**
  * URL ranges as locations (`PLAN.md` › Source Elements): converted once at start, merged,
  * sorted, and clamped to the accessible window (MSF 5.2.46). Locations are written against
- * the set's first track; other tracks map through the MSF 6.3.2 frame index.
+ * the set's first track; other tracks map through their frame numbers (`alignment.ts`).
  */
 
 import { Location } from '@/model/common/location'
@@ -115,25 +115,6 @@ export function clamp(location: Location, spans: readonly Span[]): { index: numb
     if (distance < best.distance) best = { index, location: edge, distance }
   })
   return { index: best.index, location: best.location }
-}
-
-/**
- * `location` of `from` as a location of `to`, through the frame index `(G − G₀) × S + N`
- * (MSF 6.3.2), when their `keyframeSpacing` differs. A start maps to its group's first object.
- */
-export function mapLocation(location: Location, from: CatalogTrack, to: CatalogTrack, g0: bigint): Location {
-  const [s, t] = [from.keyframeSpacing, to.keyframeSpacing]
-  if (!s || !t || s === t) return location
-  const frame = (location.group - g0) * BigInt(s) + location.object
-  return new Location(g0 + frame / BigInt(t), frame % BigInt(t))
-}
-
-/** `end` of `from` as an end of `to`; a whole group ends at its last frame. */
-export function mapEnd(end: End, from: CatalogTrack, to: CatalogTrack, g0: bigint): End {
-  const [s, t] = [from.keyframeSpacing, to.keyframeSpacing]
-  if (!s || !t || s === t) return end
-  const mapped = mapLocation(new Location(end.group, end.object ?? BigInt(s - 1)), from, to, g0)
-  return { group: mapped.group, object: mapped.object }
 }
 
 if (import.meta.vitest) {
@@ -255,15 +236,5 @@ if (import.meta.vitest) {
     c.seek(15) // group 8, nearer to the second range
     await flush()
     expect(c.requests().at(-1)).toBe('fetch v1 10.0-12')
-  })
-
-  test('mapLocation and mapEnd through the frame index, from G₀', () => {
-    const [short, long] = [cmafTrack('a', { keyframeSpacing: 15 }), cmafTrack('b', { keyframeSpacing: 60 })]
-    // Frame (5 − 1) × 15 + 3 = 63 is group 1 + 63 / 60 = 2 of the long track, object 3.
-    expect(mapLocation(at(5, 3), short, long, 1n)).toEqual(at(2, 3))
-    expect(mapLocation(at(2, 3), long, short, 1n)).toEqual(at(5, 3))
-    expect(mapLocation(at(5, 3), short, cmafTrack('c'), 1n)).toEqual(at(5, 3))
-    // Group 2 of the long track ends at frame 119: group 8 of the short one, object 14.
-    expect(mapEnd({ group: 2n }, long, short, 1n)).toEqual({ group: 8n, object: 14n })
   })
 }

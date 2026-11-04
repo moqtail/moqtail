@@ -43,12 +43,14 @@ export class GroupTimes {
     return (known.last.time - known.first.time) / Number(known.last.group - known.first.group)
   }
 
-  /** The group estimated to contain `mediaTime` (seconds). */
-  estimate(track: string, mediaTime: number): Location | undefined {
-    const duration = this.groupDuration(track)
+  /**
+   * The group estimated to contain `mediaTime` (seconds), on the track's grid: its groups are
+   * `step` Group IDs apart (`groupStep`), and `duration` is seconds per Group ID.
+   */
+  estimate(track: string, mediaTime: number, step = 1n, duration = this.groupDuration(track)): Location | undefined {
     const last = this.#tracks.get(track)?.last
     if (!duration || !last) return undefined
-    const group = last.group + BigInt(Math.floor((mediaTime - last.time) / duration))
+    const group = last.group + step * BigInt(Math.floor((mediaTime - last.time) / (duration * Number(step))))
     return new Location(group < 0n ? 0n : group, 0n)
   }
 }
@@ -94,6 +96,13 @@ if (import.meta.vitest) {
     expect(times.estimate('v1', 13)).toEqual(new Location(7n, 0n))
     expect(times.estimate('v1', 0)).toEqual(new Location(1n, 0n))
     expect(times.estimate('v2', 13)).toBeUndefined()
+    // A 6 s track of a 500 ms grid (groups 0, 12, 24, …): rounded down onto its grid.
+    const spaced = new GroupTimes()
+    spaced.record('v1', 12n, 6)
+    expect(spaced.estimate('v1', 170, 12n)).toBeUndefined() // one group: no duration observed
+    expect(spaced.estimate('v1', 170, 12n, 0.5)).toEqual(new Location(336n, 0n))
+    spaced.record('v1', 24n, 12)
+    expect(spaced.estimate('v1', 170, 12n)).toEqual(new Location(336n, 0n))
   })
 
   test('locate: the timeline first, the containing group, clamped to the accessible window', () => {

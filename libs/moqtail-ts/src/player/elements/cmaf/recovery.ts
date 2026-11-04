@@ -27,12 +27,15 @@ import type { ElementContext } from '@/player/element/context'
 import type { CatalogTrack } from '@/player/element/interfaces'
 import { backoffDelay, sleep } from '@/player/util/backoff'
 import { cancel, REPLACED, type Accepted, type Delivery, type Target } from './delivery'
-import { clamp, mapEnd, mapLocation, type End, type Span } from './ranges'
+import { groupDuration, groupStep, mapEnd, mapLocation } from './alignment'
+import { clamp, type End, type Span } from './ranges'
 import { locate, seekTarget } from './seek'
 import { bitrateOf, trackKey } from './track'
 
 /** What recovery needs from its source. */
 export interface RecoveryHost {
+  /** The switching set. */
+  tracks(): readonly CatalogTrack[]
   /** The selected tracks of the set. */
   candidates(): readonly CatalogTrack[]
   /** No rendition is left: the source removes its pad. */
@@ -54,8 +57,6 @@ export class Recovery {
   active: CatalogTrack
   /** What the next request asks for. */
   #target: Target
-  /** The set's first Group ID (MSF 6.3.2). */
-  readonly g0: bigint
   /** Renditions that were rejected, or failed too often. */
   readonly #failed = new Set<string>()
   /** Re-subscribes so far while an `eos` is held; undefined when not holding. */
@@ -78,11 +79,10 @@ export class Recovery {
     readonly delivery: Delivery,
     readonly host: RecoveryHost,
     start: CatalogTrack,
-    ranges: { spans: readonly Span[]; g0: bigint } = { spans: [], g0: 1n },
+    ranges: { spans: readonly Span[] } = { spans: [] },
   ) {
     this.active = this.#first = start
     this.#spans = ranges.spans
-    this.g0 = ranges.g0
     this.#target = this.#spans[0] ? this.#spanTarget(this.#spans[0]) : { fetch: !start.isLive }
     const { player, catalog, signal } = context
     const lost = () => {
@@ -215,7 +215,7 @@ export class Recovery {
   /** The end of the range being played, for `track`. */
   rangeEnd(track: CatalogTrack): End | undefined {
     const end = this.#spans[this.#span]?.end
-    return end && mapEnd(end, this.#first, track, this.g0)
+    return end && mapEnd(end, this.#first, track, this.host.tracks())
   }
 
   /** The range being played, if any, as an `end` for `active`. */
@@ -233,7 +233,7 @@ export class Recovery {
   }
 
   #spanTarget(span: Span): Target {
-    const start = mapLocation(span.start, this.#first, this.active, this.g0)
+    const start = mapLocation(span.start, this.#first, this.active, this.host.tracks())
     return span.fetch ? { fetch: true, start } : { fetch: false, start, fill: true }
   }
 
@@ -254,13 +254,17 @@ export class Recovery {
     const timeline = await this.context.catalog?.timeline(track)
     if (this.#seekTo !== undefined || track !== this.active) return // superseded meanwhile
     const key = trackKey(track)
-    let location = locate(time, track, timeline, (t) => this.delivery.times.estimate(key, t))
+    const set = this.host.tracks()
+    const { times } = this.delivery
+    // A long GoP may not have shown two groups yet: the catalog's group duration stands in.
+    const duration = times.groupDuration(key) ?? groupDuration(track, set)
+    let location = locate(time, track, timeline, (t) => times.estimate(key, t, groupStep(track, set), duration))
     if (!location) return this.delivery.failSeeks()
     let fetch = !track.isLive
     if (this.#spans.length > 0) {
-      const clamped = clamp(mapLocation(location, track, this.#first, this.g0), this.#spans)
+      const clamped = clamp(mapLocation(location, track, this.#first, set), this.#spans)
       this.#span = clamped.index
-      location = mapLocation(clamped.location, this.#first, track, this.g0)
+      location = mapLocation(clamped.location, this.#first, track, set)
       fetch = this.#spans[clamped.index]!.fetch
     }
     const last = this.delivery.last

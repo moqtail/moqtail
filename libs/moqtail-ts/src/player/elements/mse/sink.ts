@@ -29,9 +29,9 @@ import { SeekTracker } from './seek'
 /** @public Options of the `MSE` sink, given through `player.sink(video, options)`. Seconds. */
 export interface MSEOptions {
   video: HTMLVideoElement
-  /** Kept behind `currentTime`. Default 30. */
+  /** Kept behind `currentTime`. Default 90. */
   backBuffer?: number
-  /** Most buffered ahead of `currentTime`, more than 0. VOD waits for room, live discards. Default 60. */
+  /** VOD only: most buffered ahead of `currentTime`, more than 0; appends wait for room. Live keeps everything ahead. Default 60. */
   forwardCap?: number
   /** How far behind the end of the buffer the sink's live jumps land. Default 0.75. */
   liveEdgeDelay?: number
@@ -48,8 +48,8 @@ interface PadState {
   seeks: number
   /** Where the latest upstream seek resumes. Buffered data from there on gets replaced. */
   resumeAt: number
-  /** Live only: where buffered data stops since packets were discarded past the forward cap. */
-  discardedAt?: number | undefined
+  /** Live only: seconds buffered ahead when an append hit the quota with nothing behind to free. */
+  quotaAhead?: number | undefined
   ended: boolean
   /** Start times of the groups in the buffer, so a quota retry never cuts into the playing one. */
   keyframes: number[]
@@ -142,6 +142,14 @@ export class MSESink extends SinkElement implements MediaSinkElement {
     return this.#video.paused
   }
 
+  get seeking(): boolean {
+    return this.#video.seeking
+  }
+
+  get ended(): boolean {
+    return this.#video.ended
+  }
+
   get playbackRate(): number {
     return this.#video.playbackRate
   }
@@ -192,6 +200,10 @@ export class MSESink extends SinkElement implements MediaSinkElement {
     } catch (error) {
       // Rebuilt meanwhile: the upstream seek fetches this packet again.
       if (queue !== state.queue || this.context.signal.aborted) return
+      if (this.#live && (error as Error | undefined)?.name === 'QuotaExceededError') {
+        state.quotaAhead = (bufferedEnd(queue.buffer) ?? now()) - now()
+        return
+      }
       this.#mediaFailed(source, error)
       if (this.#fatal) throw this.#fatal
       return
@@ -266,17 +278,17 @@ export class MSESink extends SinkElement implements MediaSinkElement {
 
   /**
    * Whether to append the pad's next packet. VOD waits until the forward buffer drops
-   * under the cap, which backs up the connection queue. Live never waits: past the cap it
-   * discards, and once there's room again it seeks upstream to where the data stops.
+   * under the cap, which backs up the connection queue. Live has no cap: a viewer stays
+   * near the edge, and discarding only made the source refetch what it dropped. Only after
+   * a quota error does live drop packets, until half of what was ahead has played, then it
+   * seeks upstream once to where the data stops.
    */
   async #makeRoom(pad: Pad, state: PadState): Promise<boolean> {
     if (this.#live) {
-      if (!this.#hasRoom(state)) {
-        state.discardedAt ??= bufferedEnd(state.queue!.buffer) ?? this.#video.currentTime
-        return false
-      }
-      if (state.discardedAt === undefined) return true
-      this.#seekUpstream(pad, state, state.discardedAt)
+      if (state.quotaAhead === undefined) return true
+      const end = (state.queue && bufferedEnd(state.queue.buffer)) ?? this.#video.currentTime
+      if (end - this.#video.currentTime >= state.quotaAhead / 2) return false
+      this.#seekUpstream(pad, state, end)
       return false
     }
     while (!this.#hasRoom(state) && state.seeks === 0) {
@@ -336,7 +348,7 @@ export class MSESink extends SinkElement implements MediaSinkElement {
     state.seeks++
     state.resumeAt = mediaTime
     state.ended = false
-    state.discardedAt = undefined
+    state.quotaAhead = undefined
     pad.sendEvent({ type: 'seek', mediaTime })
     this.#notify()
   }
@@ -390,7 +402,8 @@ export class MSESink extends SinkElement implements MediaSinkElement {
     const duration = this.#duration
     if (this.#live || duration === undefined || queues.length === 0) return
     const source = this.#source
-    await Promise.all(queues.map((q) => q.run(() => {})))
+    // Set it at once when every buffer is idle: by the time each queue drains, another append may have started.
+    if (queues.some((q) => q.buffer.updating)) await Promise.all(queues.map((q) => q.run(() => {})))
     try {
       if (source.readyState === 'open') source.duration = duration
     } catch (error) {

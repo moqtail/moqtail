@@ -98,9 +98,19 @@ export class SstsSource extends SourceElement implements MediaSourceElement {
     return this.#algorithm
   }
 
-  /** @internal Loads a child per track, in parallel: the publisher activates once all are assigned (SSTS 6.3). */
+  /**
+   * @internal Loads a child per track, in parallel: the publisher activates once all are assigned
+   * (SSTS 6.3). The set plays on the children that loaded; it fails only when none did.
+   */
   async start(): Promise<void> {
-    await Promise.all(this.#tracks.map((t) => this.#load(t)))
+    const results = await Promise.allSettled(this.#tracks.map((t) => this.#load(t)))
+    const errors = results.flatMap((r) => (r.status === 'rejected' ? [r.reason] : []))
+    if (errors.length < results.length) return
+    const code = errors[0] instanceof PlayerError ? errors[0].code : 'UNSUPPORTED_SOURCE'
+    throw new PlayerError(code, 'Every track of the switching set failed to load', {
+      element: 'ssts',
+      cause: new AggregateError(errors),
+    })
   }
 
   /** The chain only offers pads of elements this one loaded: take them all. */
@@ -321,6 +331,10 @@ export const Ssts = defineElement({
     }
     if (context.tracks.length === 0) {
       throw new PlayerError('UNSUPPORTED_SOURCE', 'The SSTS source needs at least one track', { element: 'ssts' })
+    }
+    // Whoever loads it, SSTS is never used on a session that didn't negotiate it (SSTS 3).
+    if (sstsAlgorithms(context.client.serverSetup).length === 0) {
+      throw new PlayerError('UNSUPPORTED_SOURCE', 'The session did not negotiate SSTS', { element: 'ssts' })
     }
     const source = new SstsSource(context, options)
     await source.start()
@@ -574,5 +588,30 @@ if (import.meta.vitest) {
     await expect(sstsChain([[v('v1')]], { child: testSource() as unknown as typeof Cmaf })).rejects.toMatchObject({
       code: 'UNSUPPORTED_SOURCE',
     })
+  })
+
+  test('a session without SSTS is refused before anything is sent', async () => {
+    await expect(sstsChain([[v('v1')]], { algorithms: [7n] })).rejects.toMatchObject({ code: 'UNSUPPORTED_SOURCE' })
+  })
+
+  test('start fails only when every child fails; otherwise the set plays on the others', async () => {
+    const failing = (bad: string[]) =>
+      testSource({
+        media: true,
+        script: (s) => {
+          const name = s.ctx.tracks[0]!.name
+          if (bad.includes(name)) throw new PlayerError('MEDIA_FAILURE', `no ${name}`)
+          const pad = s.addPad([{ direction: 'out', code: CapabilityCode.PACKAGING, value: 'cmaf' }])
+          s.emit('nomorepads')
+          void pad.write(packet(1))
+        },
+      }) as unknown as typeof Cmaf
+    await expect(sstsChain([[v('v1'), v('v2')]], { child: failing(['v1', 'v2']) })).rejects.toMatchObject({
+      code: 'MEDIA_FAILURE',
+      cause: { errors: [expect.any(PlayerError), expect.any(PlayerError)] },
+    })
+    const c = await sstsChain([[v('v1'), v('v2')]], { child: failing(['v1']) })
+    expect(c.sink.items().filter((i) => i.type === 'packet')).toHaveLength(1)
+    expect(c.failures).toEqual([])
   })
 }

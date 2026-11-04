@@ -16,7 +16,7 @@
 
 /**
  * The default retention policy, until the buffer controller (milestone 8) replaces it:
- * keep `backBuffer` behind `currentTime`, cap the forward buffer at `forwardCap`, and make
+ * keep `backBuffer` behind `currentTime`, cap a VOD forward buffer at `forwardCap`, and make
  * room when an append hits the quota. `buffered` is the source of truth, since `ManagedMediaSource`
  * may evict on its own. Times in seconds.
  */
@@ -24,7 +24,7 @@
 import type { BufferQueue } from './buffer_queue'
 
 /** Default `backBuffer`. */
-export const BACK_BUFFER = 30
+export const BACK_BUFFER = 90
 /** Default `forwardCap`. */
 export const FORWARD_CAP = 60
 /** What a quota retry keeps behind `currentTime`: enough to not remove what's about to play. */

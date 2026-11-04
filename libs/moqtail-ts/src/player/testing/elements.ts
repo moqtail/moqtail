@@ -143,6 +143,8 @@ export class FakeMediaSink extends CollectingSink implements MediaSinkElement {
   readonly calls: string[] = []
   currentTime = 0
   paused = true
+  seeking = false
+  ended = false
   playbackRate = 1
   /** `[start, end]` pairs in seconds. */
   ranges: [number, number][] = []

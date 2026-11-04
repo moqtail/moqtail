@@ -20,6 +20,7 @@ import { NotEnoughBytesError, TerminationError, TimeoutError } from '@/model/err
 import { TerminationCode } from '@/model/error/constant'
 import { SetupOptions, Setup } from '@/model'
 import { logger } from '@/util/logger'
+import { isSessionClosed } from './util/stream_reset'
 import type { Emitter } from '@/util/emitter'
 import type { ClientEvents } from './types'
 
@@ -188,10 +189,11 @@ export class ControlRecvStream {
         }
       }
     } catch (error) {
-      logger.error(
-        'control_stream',
-        `ingestLoop: unexpected error — ${error instanceof Error ? error.message : String(error)}`,
-      )
+      if (!isSessionClosed(error))
+        logger.error(
+          'control_stream',
+          `ingestLoop: unexpected error — ${error instanceof Error ? error.message : String(error)}`,
+        )
       controller.error(error)
       await this.close()
     } finally {

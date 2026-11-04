@@ -90,6 +90,14 @@ export function streamResetCodeOf(error: unknown): StreamResetCode | undefined {
 
 /**
  * @public
+ * The WebTransport session closed under a read or write: expected during shutdown, not a failure.
+ */
+export function isSessionClosed(error: unknown): boolean {
+  return (error as { source?: unknown } | null | undefined)?.source === 'session'
+}
+
+/**
+ * @public
  * Re-types a failed read: a peer reset becomes a {@link PeerStreamResetError} naming
  * the code, anything else is passed through untouched.
  */

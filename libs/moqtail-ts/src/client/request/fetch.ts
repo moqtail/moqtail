@@ -17,6 +17,7 @@
 import type { EndOfRangeHandler } from '../types'
 import { Fetch, FetchOk, MoqtObject, RequestError } from '@/model'
 import { logger } from '../../util/logger'
+import { isSessionClosed } from '@/client/util/stream_reset'
 
 // TODO: add timeout mechanism for cancelled requests
 // (we cant know how many in-flight objects there are)
@@ -60,7 +61,7 @@ export class FetchRequest implements PromiseLike<FetchOk | RequestError> {
   }
 
   public reject(reason?: any): void {
-    logger.error('request/fetch', `rejected requestId=${this.requestId}`, reason)
+    if (!isSessionClosed(reason)) logger.error('request/fetch', `rejected requestId=${this.requestId}`, reason)
     this._reject(reason)
   }
 

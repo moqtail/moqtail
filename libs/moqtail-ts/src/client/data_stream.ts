@@ -22,7 +22,7 @@ import { ObjectForwardingPreference } from '@/model/data/constant'
 import { Header } from '@/model/data/header'
 import { NotEnoughBytesError, ProtocolViolationError, TimeoutError } from '@/model/error/error'
 import { StreamResetCode } from '@/model/error/stream_reset'
-import { asStreamResetError, streamResetCodeOf, streamResetReason } from './util/stream_reset'
+import { asStreamResetError, isSessionClosed, streamResetCodeOf, streamResetReason } from './util/stream_reset'
 import { logger } from '@/util/logger'
 import { DataStreamReporter, FullTrackNameOf } from './data_event'
 import type { Emitter } from '@/util/emitter'
@@ -312,7 +312,7 @@ export class RecvStream {
         logger.debug('data_stream', `RecvStream reset by peer code=${StreamResetCode[peerReset]}`)
         this.#reporter.end('reset', peerReset)
       } else {
-        logger.error('data_stream', 'RecvStream ingest loop error', error)
+        if (!isSessionClosed(error)) logger.error('data_stream', 'RecvStream ingest loop error', error)
         this.#reporter.end('error')
         await this.#reader.cancel(streamResetReason(StreamResetCode.InternalError)).catch(() => {})
       }

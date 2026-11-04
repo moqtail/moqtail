@@ -94,7 +94,7 @@ import { random60bitId } from './util/random_id'
 import { assertWithinFilterRangeLimit, isValidTrackAlias } from './util/validators'
 import { MaxFilterRanges } from '@/model/parameter/setup/max_filter_ranges'
 import { applyMessageParameterUpdate } from '@/model/parameter/message_parameter'
-import { PeerStreamResetError, streamResetCodeOf, streamResetReason } from './util/stream_reset'
+import { isSessionClosed, PeerStreamResetError, streamResetCodeOf, streamResetReason } from './util/stream_reset'
 import {
   MOQtailRequest,
   SubscribeOptions,
@@ -1008,10 +1008,11 @@ export class MOQtailClient extends Emitter<ClientEvents> {
         return { requestId: msg.requestId, subscribeOk: response, stream: request.stream, done: subscription.done }
       }
     } catch (error) {
-      logger.error(
-        'MOQtailClient',
-        `subscribe: unexpected error — ${error instanceof Error ? error.message : String(error)}`,
-      )
+      if (!this.#sessionClosing(error))
+        logger.error(
+          'MOQtailClient',
+          `subscribe: unexpected error — ${error instanceof Error ? error.message : String(error)}`,
+        )
       await this.disconnect(
         new InternalError('MOQtailClient.subscribe', error instanceof Error ? error.message : String(error)),
       )
@@ -2045,6 +2046,7 @@ export class MOQtailClient extends Emitter<ClientEvents> {
     // §10.5: the response is the first message on the response stream, so anything
     // arriving here means the request was answered.
     let answered = false
+    let closedBy: unknown
     try {
       while (true) {
         const msg = await requestStream.next()
@@ -2061,7 +2063,8 @@ export class MOQtailClient extends Emitter<ClientEvents> {
       }
       logger.debug('MOQtailClient', `request stream for requestId=${requestId} closed by peer`)
     } catch (error) {
-      logger.error('MOQtailClient', `request stream for requestId=${requestId} failed`, error)
+      if (this.#sessionClosing(error)) closedBy = error
+      else logger.error('MOQtailClient', `request stream for requestId=${requestId} failed`, error)
       // A subscription whose request stream breaks is over; a migrated one lives on.
       const request = this.requests.get(requestId)
       if (!requestStream.migrated && request instanceof SubscribeRequest) request.finish()
@@ -2074,7 +2077,10 @@ export class MOQtailClient extends Emitter<ClientEvents> {
         if (!answered) {
           this.requests
             .get(requestId)
-            ?.reject(new InternalError('MOQtailClient', `Request stream closed before answering request ${requestId}`))
+            ?.reject(
+              closedBy ??
+                new InternalError('MOQtailClient', `Request stream closed before answering request ${requestId}`),
+            )
         }
       }
     }
@@ -2128,49 +2134,56 @@ export class MOQtailClient extends Emitter<ClientEvents> {
         await handler(this, msg)
       }
     } catch (error) {
-      this.disconnect()
-      throw error
+      // Nothing awaits this loop: the error ends the session here instead of surfacing unhandled.
+      if (!this.#sessionClosing(error)) logger.error('MOQtailClient', 'control stream failed', error)
+      await this.disconnect(error)
     }
   }
 
   async #acceptIncomingUniStreams() {
     this.#ensureActive()
     const reader = this.#incomingUniStreams
-    let isDone = false
-    while (!isDone) {
-      try {
+    try {
+      while (true) {
         const { done, value: stream } = await reader.read()
-        if (done) {
-          isDone = true
-          throw new MOQtailError('WebTransport session is terminated')
-        }
+        if (done) return
         // Not awaited -- streams are served concurrently -- so its rejection has to be
         // handled here rather than by the enclosing catch, or it surfaces as an
         // unhandled rejection. A peer reset is an ordinary way for a data stream to
         // end (the subscription was dropped, TooFarBehind, a delivery timeout), so it
         // is reported, not escalated: one stream ending must not stop the accept loop.
         this.#handleRecvStreams(stream).catch((error) => {
-          if (error instanceof PeerStreamResetError) {
+          if (error instanceof PeerStreamResetError || this.#sessionClosing(error)) {
             logger.debug('MOQtailClient', `data stream ended: ${error.message}`)
             return
           }
           logger.error('MOQtailClient', 'handleRecvStreams error', error)
         })
-      } catch (error) {
-        logger.error('MOQtailClient', 'acceptIncomingUniStreams error', error)
-        if (this.#isDestroyed) break
       }
+    } catch (error) {
+      // A failed read leaves the reader errored: the session is gone.
+      if (!this.#sessionClosing(error)) logger.error('MOQtailClient', 'acceptIncomingUniStreams error', error)
     }
   }
-  #acceptIncomingBiStreams(): void {
-    void (async () => {
-      const reader = this.webTransport.incomingBidirectionalStreams.getReader()
+
+  async #acceptIncomingBiStreams(): Promise<void> {
+    const reader = this.webTransport.incomingBidirectionalStreams.getReader()
+    try {
       while (true) {
         const { value: biStream, done } = await reader.read()
-        if (done) break
-        void this.#dispatchIncomingRequestStream(new RequestStream(biStream, this))
+        if (done) return
+        this.#dispatchIncomingRequestStream(new RequestStream(biStream, this)).catch((error) => {
+          if (!this.#sessionClosing(error)) logger.error('MOQtailClient', 'incoming request stream failed', error)
+        })
       }
-    })()
+    } catch (error) {
+      if (!this.#sessionClosing(error)) logger.error('MOQtailClient', 'acceptIncomingBiStreams error', error)
+    }
+  }
+
+  /** The session is going away, so a read or write failing is expected, not an error to log. */
+  #sessionClosing(error: unknown): boolean {
+    return this.#isDestroyed || isSessionClosed(error)
   }
 
   /**
@@ -2207,7 +2220,7 @@ export class MOQtailClient extends Emitter<ClientEvents> {
         msg = await requestStream.next()
       }
     } catch (error) {
-      logger.error('MOQtailClient', 'incoming request stream failed', error)
+      if (!this.#sessionClosing(error)) logger.error('MOQtailClient', 'incoming request stream failed', error)
     } finally {
       // The peer closed or reset the stream: cancel whatever it was serving. Every
       // First-marked type carries a request id, but the union as a whole does not.
@@ -2464,6 +2477,11 @@ if (import.meta.vitest) {
       this.#peer.enqueue(ControlMessage.serialize(msg).toUint8Array())
     }
 
+    /** Errors the receive side, as a closing session does. */
+    fail(reason: unknown): void {
+      this.#peer.error(reason)
+    }
+
     /** Everything the client has written to this stream so far. */
     get messages(): ControlMessage[] {
       return this.sentChunks.map((chunk) => ControlMessage.deserialize(new FrozenByteBuffer(chunk)))
@@ -2547,6 +2565,7 @@ if (import.meta.vitest) {
         new ReadableStream<Uint8Array>({
           start: (controller) => {
             streamController = controller
+            this.#uniStreams.push(controller)
             controller.enqueue(bytes)
           },
           cancel: (reason) => {
@@ -2559,9 +2578,19 @@ if (import.meta.vitest) {
 
     /** How many times the client called `close()`. */
     closeCount = 0
+    readonly #uniStreams: ReadableStreamDefaultController<Uint8Array>[] = []
 
+    /** Errors every stream still open, as Chrome does when a session closes. */
     close(): void {
       this.closeCount++
+      const closed = Object.assign(new Error('The session is closed.'), {
+        name: 'WebTransportError',
+        source: 'session',
+      })
+      for (const stream of [this.#incoming, this.#incomingBi, this.#incomingDatagrams, ...this.#uniStreams]) {
+        stream.error(closed)
+      }
+      for (const stream of this.biStreams) stream.fail(closed)
     }
   }
 
@@ -2619,6 +2648,47 @@ if (import.meta.vitest) {
 
       transport.openIncomingUniStream(new GoAway('https://elsewhere.example').serialize().toUint8Array())
       await expect(connecting).rejects.toThrow('Expected setup as the first control message')
+    })
+  })
+
+  describe('MOQtailClient session close', () => {
+    const originalWebTransport = globalThis.WebTransport
+    afterEach(() => {
+      globalThis.WebTransport = originalWebTransport
+    })
+
+    it('closing with requests and streams in flight leaves no unhandled rejection and logs no error', async () => {
+      globalThis.WebTransport = MockWebTransport as unknown as typeof WebTransport
+      const unhandled: unknown[] = []
+      const onUnhandled = (reason: unknown) => void unhandled.push(reason)
+      process.on('unhandledRejection', onUnhandled)
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        const client = new MOQtailClient({ url: 'https://relay.example/moq' })
+        const connecting = client.init()
+        const transport = MockWebTransport.last
+        await vi.waitFor(() => expect(transport.sentChunks).toHaveLength(1))
+        transport.openIncomingUniStream(new Setup(new SetupOptions().build()).serialize().toUint8Array())
+        await connecting
+        transport.openIncomingUniStream(new Uint8Array([0x10])) // a data stream cut inside its header
+        transport.openIncomingBiStream() // a peer request with no message yet
+        const subscribing = client.subscribe({
+          fullTrackName: FullTrackName.tryNew('room', 'video'),
+          locationFilter: new LocationFilter(LocationFilterType.NextObject),
+          forward: true,
+          groupOrder: GroupOrder.Original,
+          priority: 0,
+        })
+        await vi.waitFor(() => expect(transport.biStreams).toHaveLength(1))
+        await client.disconnect('test')
+        await subscribing.catch(() => {}) // the caller's to handle
+        await new Promise((resolve) => setTimeout(resolve, 10))
+        expect(unhandled).toEqual([])
+        expect(errors).not.toHaveBeenCalled()
+      } finally {
+        process.off('unhandledRejection', onUnhandled)
+        errors.mockRestore()
+      }
     })
   })
 

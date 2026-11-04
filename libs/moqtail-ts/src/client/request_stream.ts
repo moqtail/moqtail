@@ -20,7 +20,7 @@ import { FrozenByteBuffer, ByteBuffer } from '@/model/common/byte_buffer'
 import { NotEnoughBytesError, ProtocolViolationError, TerminationError } from '@/model/error/error'
 import { TerminationCode } from '@/model/error/constant'
 import { StreamResetCode } from '@/model/error/stream_reset'
-import { asStreamResetError, streamResetReason } from './util/stream_reset'
+import { asStreamResetError, isSessionClosed, streamResetReason } from './util/stream_reset'
 import { logger } from '@/util/logger'
 import type { Emitter } from '@/util/emitter'
 import type { ClientEvents } from './types'
@@ -179,7 +179,7 @@ export class RequestStream {
         }
       }
     } catch (error) {
-      logger.error('request_stream', 'ingest loop error', error)
+      if (!isSessionClosed(error)) logger.error('request_stream', 'ingest loop error', error)
       controller.error(asStreamResetError('RequestStream', error))
       await this.close()
     } finally {

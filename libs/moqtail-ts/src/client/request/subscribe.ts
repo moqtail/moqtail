@@ -29,6 +29,7 @@ import {
 } from '@/model'
 import { DEFAULT_SWITCH_DRAIN_TIMEOUT_MS, type EarlyDiscardPolicyConfig } from '@/client/types'
 import { logger } from '@/util/logger'
+import { isSessionClosed } from '@/client/util/stream_reset'
 
 // TODO: Add timeout mechanism for unsubscribing
 
@@ -167,7 +168,7 @@ export class SubscribeRequest implements PromiseLike<SubscribeOk | RequestError>
    * Rejects the internal promise with an error/reason.
    */
   public reject(reason?: any): void {
-    logger.error('request/subscribe', `rejected requestId=${this.requestId}`, reason)
+    if (!isSessionClosed(reason)) logger.error('request/subscribe', `rejected requestId=${this.requestId}`, reason)
     this.#reject(reason)
   }
 

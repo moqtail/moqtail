@@ -16,6 +16,7 @@
 
 import { SubscribeNamespace, RequestError, RequestOk } from '@/model'
 import { logger } from '../../util/logger'
+import { isSessionClosed } from '@/client/util/stream_reset'
 
 export class SubscribeNamespaceRequest implements PromiseLike<RequestOk | RequestError> {
   public readonly requestId: bigint
@@ -50,7 +51,8 @@ export class SubscribeNamespaceRequest implements PromiseLike<RequestOk | Reques
   }
 
   public reject(reason?: any): void {
-    logger.error('request/subscribe_namespace', `rejected requestId=${this.requestId}`, reason)
+    if (!isSessionClosed(reason))
+      logger.error('request/subscribe_namespace', `rejected requestId=${this.requestId}`, reason)
     this._reject(reason)
   }
 

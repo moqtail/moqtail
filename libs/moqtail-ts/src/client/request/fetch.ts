@@ -18,6 +18,7 @@ import type { EndOfRangeHandler } from '../types'
 import { Fetch, FetchOk, MoqtObject, RequestError } from '@/model'
 import { logger } from '../../util/logger'
 import { isSessionClosed } from '@/client/util/stream_reset'
+import type { ObjectOrderer } from '@/client/ordering'
 
 // TODO: add timeout mechanism for cancelled requests
 // (we cant know how many in-flight objects there are)
@@ -30,6 +31,7 @@ export class FetchRequest implements PromiseLike<FetchOk | RequestError> {
   public controller?: ReadableStreamDefaultController<MoqtObject>
   public stream: ReadableStream<MoqtObject>
   public onEndOfRange: EndOfRangeHandler | undefined
+  public orderer: ObjectOrderer | undefined
   public isActive: boolean = true
   public isResolved: boolean = false
 

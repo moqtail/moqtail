@@ -54,6 +54,7 @@ import {
   SubgroupHeaderType,
   SubgroupObject,
   RequestIdMap,
+  ObjectDatagramType,
 } from '@/model/data'
 import { FrozenByteBuffer } from '@/model/common/byte_buffer'
 import type { FetchObjectContext } from '@/model/data/fetch_object'
@@ -111,8 +112,10 @@ import {
   ClientEvents,
   SubscribeResult,
   FetchResult,
+  ObjectOrdering,
 } from './types'
 import { SendDatagramStream } from './datagram_stream'
+import { ObjectOrderer } from './ordering'
 import { logger, LogLevel, setLogLevel, setLogEnabledModules } from '@/util/logger'
 import { Emitter } from '@/util/emitter'
 
@@ -715,6 +718,16 @@ export class MOQtailClient extends Emitter<ClientEvents> {
             }
           }
 
+          // An ordered subscription takes its datagrams too; unordered ones never did.
+          const holder = this.subscriptions.get(trackAlias)
+          if (holder instanceof SubscribeRequest && holder.orderer) {
+            if (holder.manager) holder.manager.deliver(holder, moqtObject)
+            else holder.enqueue(moqtObject)
+            if (ObjectDatagramType.isEndOfGroup(datagram.type)) {
+              holder.orderer.endGroup(moqtObject.location.group, moqtObject.location.object)
+            }
+          }
+
           // Also enqueue to the general stream
           if (this.#receivedDatagramObjectController) {
             try {
@@ -979,6 +992,7 @@ export class MOQtailClient extends Emitter<ClientEvents> {
       const subscription = new Subscription(request)
       request.earlyDiscardPolicy = args.earlyDiscardPolicy
       request.onEndOfRange = args.onEndOfRange
+      request.orderer = this.#orderer(args.ordering, groupOrder, request.requestId, (obj) => request.output(obj))
       this.requests.set(request.requestId, request)
       this.requestIdMap.addMapping(request.requestId, request.fullTrackName)
 
@@ -1253,6 +1267,21 @@ export class MOQtailClient extends Emitter<ClientEvents> {
   }
 
   /**
+   * The orderer for a request, unless its ordering, else the client's, is `'none'` or
+   * unset. Descending group order is never ordered: every group after the first would be late.
+   */
+  #orderer(
+    ordering: ObjectOrdering | 'none' | undefined,
+    groupOrder: GroupOrder,
+    requestId: bigint,
+    release: (obj: MoqtObject) => void,
+  ): ObjectOrderer | undefined {
+    const resolved = ordering ?? this.#options.ordering ?? 'none'
+    if (resolved === 'none' || groupOrder === GroupOrder.Descending) return undefined
+    return new ObjectOrderer(resolved, release, (from, to) => this.emit('orderinggap', requestId, from, to))
+  }
+
+  /**
    * Ends a subscription whose publisher has said how many streams it opened and has
    * now delivered all of them, and reports whether that happened.
    *
@@ -1266,6 +1295,7 @@ export class MOQtailClient extends Emitter<ClientEvents> {
       return false
     }
 
+    request.orderer?.flush()
     const owner = request.manager
     if (owner) {
       owner.drop(request)
@@ -1349,6 +1379,8 @@ export class MOQtailClient extends Emitter<ClientEvents> {
 
   /** Tears down a switch target that lost the handover race to a newer one. */
   async #retireSwitchedRequest(request: SubscribeRequest): Promise<void> {
+    // Before the track it hands over to delivers: nothing of this one may follow that.
+    request.orderer?.flush()
     this.requests.delete(request.requestId)
     this.requestIdMap.removeMappingByRequestId(request.requestId)
     this.#releaseTrackAlias(request)
@@ -1440,6 +1472,7 @@ export class MOQtailClient extends Emitter<ClientEvents> {
       const msg = new Fetch(requestId, fullTrackName, params)
       const request = new FetchRequest(msg)
       request.onEndOfRange = args.onEndOfRange
+      request.orderer = this.#orderer(args.ordering, groupOrder, requestId, (obj) => request.controller?.enqueue(obj))
       logger.log('MOQtailClient', 'fetch: full fetch message:', {
         requestId: msg.requestId,
         fullTrackName: `${fullTrackName}`,
@@ -2260,12 +2293,14 @@ export class MOQtailClient extends Emitter<ClientEvents> {
         const request = this.requests.get(this.#clientRequestId(header.requestId))
         if (request && request instanceof FetchRequest) {
           const fullTrackName = request.message.fullTrackName
+          let previous: Location | undefined
 
           try {
             while (true) {
               const { done, value: nextObject } = await reader.read()
               if (done) {
                 // Fetch data stream complete - don't delete request here, FetchOk handler will do it
+                request.orderer?.flush()
                 request.controller?.close()
                 break
               }
@@ -2278,7 +2313,9 @@ export class MOQtailClient extends Emitter<ClientEvents> {
                   }
                   // TODO: validate if it's a valid fetch object, asc or desc?
                   const moqtObject = MoqtObject.fromFetchObject(nextObject, fullTrackName)
-                  request.controller?.enqueue(moqtObject)
+                  if (request.orderer) request.orderer.push(moqtObject, previous)
+                  else request.controller?.enqueue(moqtObject)
+                  previous = moqtObject.location
                   continue
                 }
                 throw new ProtocolViolationError('MOQtailClient', 'Received subgroup object after fetch header')
@@ -2297,6 +2334,7 @@ export class MOQtailClient extends Emitter<ClientEvents> {
           // The publisher counts it in Stream Count like any stream it opened, so
           // the subscriber has to count it too or the two never agree.
           request.streamsAccepted++
+          let previous: Location | undefined
           try {
             while (true) {
               const { done, value: nextObject } = await reader.read()
@@ -2311,14 +2349,16 @@ export class MOQtailClient extends Emitter<ClientEvents> {
                 continue
               }
               const moqtObject = MoqtObject.fromFetchObject(nextObject, request.fullTrackName)
+              const after = previous
+              previous = moqtObject.location
               if (request.manager) {
-                const shouldContinue = request.manager.deliver(request, moqtObject)
+                const shouldContinue = request.manager.deliver(request, moqtObject, after)
                 if (!shouldContinue) {
                   await recvStream.stopSending(StreamResetCode.Cancelled)
                   forceComplete = true
                   break
                 }
-              } else request.controller?.enqueue(moqtObject)
+              } else request.enqueue(moqtObject, after)
             }
           } finally {
             reader.releaseLock()
@@ -2352,6 +2392,7 @@ export class MOQtailClient extends Emitter<ClientEvents> {
           // for seconds.
           const fullTrackName: FullTrackName = subscription.fullTrackName
           let firstObjectId: bigint | null = null
+          let lastObjectId: bigint | undefined
 
           let subgroupTimeoutId: ReturnType<typeof setTimeout> | undefined
           const effectiveDiscardPolicy = subscription.earlyDiscardPolicy ?? this.#earlyDiscardPolicy
@@ -2365,10 +2406,15 @@ export class MOQtailClient extends Emitter<ClientEvents> {
             while (true) {
               const { done, value: nextObject } = await reader.read()
               if (done) {
+                // A clean end of a stream carrying the End of Group: its last object ends the group.
+                if (lastObjectId !== undefined && SubgroupHeaderType.containsEndOfGroup(header.type)) {
+                  subscription.orderer?.endGroup(header.groupId, lastObjectId)
+                }
                 break
               }
               if (nextObject) {
                 if (nextObject instanceof SubgroupObject) {
+                  lastObjectId = nextObject.objectId
                   // TODO: validate if it's a valid subgroup object
                   if (!firstObjectId) {
                     firstObjectId = nextObject.objectId
@@ -3828,6 +3874,105 @@ if (import.meta.vitest) {
       expect(request.streamsAccepted).toBe(1n)
 
       await client.disconnect()
+    })
+
+    describe('ordering', () => {
+      /** Subscribes on alias 7 with `ordering`, with helpers that send its fill and live streams and read it. */
+      async function subscribeOrdered(
+        client: MOQtailClient,
+        transport: MockWebTransport,
+        ordering: ObjectOrdering | 'none',
+      ) {
+        const subscribing = client.subscribe({
+          fullTrackName: ftn,
+          locationFilter: new LocationFilter(LocationFilterType.NextObject),
+          parameters: [new FillParameters([new LocationFilter(LocationFilterType.RelativeStart, 2n)])],
+          forward: true,
+          groupOrder: GroupOrder.Original,
+          priority: 0,
+          ordering,
+        })
+        const subscribeStream = await openedStream(transport, 0)
+        const requestId = (subscribeStream.messages[0] as Subscribe).requestId
+        subscribeStream.respond(
+          SubscribeOk.create(7n, new MessageParameters().add(new LargestObject(new Location(5n, 1n))).build(), []),
+        )
+        const { stream } = (await subscribing) as { stream: ReadableStream<MoqtObject> }
+        const payload = new Uint8Array([1])
+        const live = (group: bigint, object: number) => {
+          const bytes = new ByteBuffer()
+          bytes.putBytes(
+            Header.newSubgroup(SubgroupHeaderType.Type0x10, 7n, group, undefined, 0).serialize().toUint8Array(),
+          )
+          bytes.putBytes(SubgroupObject.newWithPayload(object, null, payload).serialize(undefined).toUint8Array())
+          transport.openIncomingUniStream(bytes.toUint8Array())
+        }
+        const fill = (...locations: [number, number][]) => {
+          const bytes = new ByteBuffer()
+          bytes.putBytes(Header.newFetch(FetchHeaderType.Type0x05, requestId).serialize().toUint8Array())
+          let ctx: FetchObjectContext | undefined
+          for (const [group, object] of locations) {
+            const fetchObject = FetchObject.newObject(
+              group,
+              0,
+              object,
+              0,
+              ObjectForwardingPreference.Subgroup,
+              null,
+              payload,
+            )
+            bytes.putBytes(fetchObject.serialize(ctx, GroupOrder.Ascending).toUint8Array())
+            ctx = fetchObject.nextContext(ctx)
+          }
+          transport.openIncomingUniStream(bytes.toUint8Array())
+        }
+        const read = async (count: number) => {
+          const reader = stream.getReader()
+          const out: string[] = []
+          for (let i = 0; i < count; i++) {
+            const { value } = await reader.read()
+            out.push(`${value!.location.group}.${value!.location.object}`)
+          }
+          reader.releaseLock()
+          return out
+        }
+        return { live, fill, read }
+      }
+
+      it('orders a fill and one stream per object, and reports what it stopped waiting for', async () => {
+        const { client, transport } = await connected()
+        const gaps: string[] = []
+        client.on('orderinggap', (_, from, to) => gaps.push(`${from.group}.${from.object}-${to.group}.${to.object}`))
+        const { live, fill, read } = await subscribeOrdered(client, transport, { window: { durationMs: 100 } })
+
+        live(5n, 3)
+        live(5n, 2)
+        await new Promise((resolve) => setTimeout(resolve, 5))
+        fill([4, 0], [4, 1], [5, 0], [5, 1])
+        live(5n, 5)
+        expect(await read(7)).toEqual(['4.0', '4.1', '5.0', '5.1', '5.2', '5.3', '5.5'])
+        expect(gaps).toEqual(['5.4-5.5'])
+
+        await client.disconnect()
+      })
+
+      it("leaves a request with 'none' unordered, whatever the client default", async () => {
+        globalThis.WebTransport = MockWebTransport as unknown as typeof WebTransport
+        const client = new MOQtailClient({ url: 'https://relay.example/moq', ordering: { window: { durationMs: 20 } } })
+        const connecting = client.init()
+        const transport = MockWebTransport.last
+        await vi.waitFor(() => expect(transport.sentChunks).toHaveLength(1))
+        transport.openIncomingUniStream(new Setup(new SetupOptions().build()).serialize().toUint8Array())
+        await connecting
+        const { live, read } = await subscribeOrdered(client, transport, 'none')
+
+        // Ordered, both would wait for the start of group 5 and leave as 5.2, 5.3.
+        live(5n, 3)
+        live(5n, 2)
+        expect(await read(2)).toEqual(['5.3', '5.2'])
+
+        await client.disconnect()
+      })
     })
 
     it('keeps delivering the track a soft switch handed over from until it goes quiet', async () => {

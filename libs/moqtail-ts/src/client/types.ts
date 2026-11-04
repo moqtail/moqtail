@@ -162,6 +162,28 @@ export type MOQtailClientOptions = {
   switchDrainTimeoutMs?: number
   /** If true, enables datagram support for the session. */
   enableDatagrams?: boolean
+  /** The default {@link ObjectOrdering} of the session's subscriptions and fetches. Without one, objects pass through unordered. */
+  ordering?: ObjectOrdering | 'none'
+}
+
+/**
+ * @public
+ * Releases a request's objects in location order, however the publisher maps them to
+ * streams or datagrams. An object goes out once its predecessor has; IDs are taken to
+ * increase by 1 unless a Prior Group ID Gap or Prior Object ID Gap says otherwise. An
+ * object whose predecessor is missing waits within `window`, then the client releases
+ * what it holds up to it and reports the skipped locations with `orderinggap`.
+ * Requests with descending group order are left unordered.
+ */
+export interface ObjectOrdering {
+  /** How long an object may wait, and how many may be held, before the client stops waiting. */
+  window: { durationMs?: number; objects?: number }
+  /** What happens to an object that arrives after the client stopped waiting for it: released anyway (default) or dropped. */
+  onWindowExceeded?: 'flush' | 'drop'
+  /** Object IDs may skip without a Prior Object ID Gap. */
+  sparseObjectIds?: boolean
+  /** Group IDs may skip without a Prior Group ID Gap. */
+  sparseGroupIds?: boolean
 }
 
 /**
@@ -188,6 +210,11 @@ export interface ClientEvents {
   datagramreceived: (data: Datagram) => void
   /** A datagram was written. */
   datagramsent: (data: Datagram) => void
+  /**
+   * An ordered request stopped waiting for expected locations: from `from` (inclusive) to
+   * `to` (exclusive), the next object it released. See {@link ObjectOrdering}.
+   */
+  orderinggap: (requestId: bigint, from: Location, to: Location) => void
   /** A PUBLISH_NAMESPACE arrived. */
   namespacepublished: (msg: PublishNamespace) => void
   /**
@@ -315,6 +342,8 @@ export type SubscribeOptions = {
   earlyDiscardPolicy?: EarlyDiscardPolicyConfig
   /** Called for each End of Range marker on the subscription's fill fetch streams. */
   onEndOfRange?: EndOfRangeHandler
+  /** Orders this subscription's objects, its fill included. Overrides {@link MOQtailClientOptions.ordering}. */
+  ordering?: ObjectOrdering | 'none'
 }
 
 /**
@@ -419,4 +448,6 @@ export type FetchOptions = {
   parameters?: MessageParameter[]
   /** Called for each End of Range marker in the response. */
   onEndOfRange?: EndOfRangeHandler
+  /** Orders this fetch's objects. Overrides {@link MOQtailClientOptions.ordering}. */
+  ordering?: ObjectOrdering | 'none'
 }

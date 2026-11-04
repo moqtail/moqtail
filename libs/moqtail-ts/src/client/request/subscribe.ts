@@ -30,6 +30,7 @@ import {
 import { DEFAULT_SWITCH_DRAIN_TIMEOUT_MS, type EarlyDiscardPolicyConfig } from '@/client/types'
 import { logger } from '@/util/logger'
 import { isSessionClosed } from '@/client/util/stream_reset'
+import type { ObjectOrderer } from '@/client/ordering'
 
 // TODO: Add timeout mechanism for unsubscribing
 
@@ -73,6 +74,7 @@ export class SubscribeRequest implements PromiseLike<SubscribeOk | RequestError>
   // Stream & Controller Properties
   public readonly controller!: ReadableStreamDefaultController<MoqtObject>
   public readonly stream: ReadableStream<MoqtObject>
+  public orderer: ObjectOrderer | undefined
 
   // Deferred Promise State
   #promise: Promise<SubscribeOk | RequestError>
@@ -135,6 +137,20 @@ export class SubscribeRequest implements PromiseLike<SubscribeOk | RequestError>
     if (typeof applyMessageParameterUpdate === 'function') {
       applyMessageParameterUpdate(this.subscribeParameters, msg.parameters)
     }
+  }
+
+  /**
+   * Puts an object on the consumer stream, through {@link SubscribeRequest.orderer} when
+   * there is one. `after` is the object before it on the same fill fetch stream.
+   */
+  public enqueue(obj: MoqtObject, after?: Location): void {
+    if (this.orderer) this.orderer.push(obj, after)
+    else this.output(obj)
+  }
+
+  /** Writes an object to the consumer stream: the manager's once switching is involved. */
+  public output(obj: MoqtObject): void {
+    ;(this.manager?.controller ?? this.controller).enqueue(obj)
   }
 
   /** Ends the request: resolves {@link SubscribeRequest.done}. Later calls do nothing. */
@@ -324,13 +340,13 @@ export class Subscription {
    * Returns `true` if the object was delivered to the caller,
    * `false` if it was not consumed, and client should cancel the stream.
    */
-  public deliver(request: SubscribeRequest, obj: MoqtObject): boolean {
+  public deliver(request: SubscribeRequest, obj: MoqtObject, after?: Location): boolean {
     if (this.#draining.has(request)) {
       // The tail of a track handed over by a soft switch: it covers the media up to
       // where the new one begins, so dropping it is the hole the drain exists to avoid.
       if (this.onDrainDecision?.(request)) {
         this.#keepDraining(request)
-        this.controller.enqueue(obj)
+        request.enqueue(obj, after)
         return true
       }
       return false
@@ -351,7 +367,7 @@ export class Subscription {
       }
     }
 
-    this.controller.enqueue(obj)
+    request.enqueue(obj, after)
     return true
   }
 }

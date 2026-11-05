@@ -1,5 +1,11 @@
 # relay
 
+## 0.17.1
+
+### Patch Changes
+
+- [#445](https://github.com/moqtail/moqtail/pull/445) [`cab350a`](https://github.com/moqtail/moqtail/commit/cab350a3f2192b130564b23d3867cafb155954b9) Thanks [@sharmafb](https://github.com/sharmafb)! - cancel upstream requests on malformed track
+
 ## 0.17.0
 
 ### Minor Changes

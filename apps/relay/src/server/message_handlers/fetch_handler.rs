@@ -138,6 +138,7 @@ pub(crate) struct PendingUpstreamFetch {
 enum UpstreamFetchResponse {
   Accepted {
     end_location: Location,
+    end_of_track: bool,
   },
   /// The publisher answered with REQUEST_ERROR.
   Rejected(Box<RequestError>),
@@ -147,10 +148,11 @@ enum UpstreamFetchResponse {
 
 /// What asking the publisher settled about a FETCH's range.
 enum UpstreamRange {
-  /// The publisher accepted, and its FETCH_OK gave the End Location.
+  /// The publisher accepted, and its FETCH_OK gave the End Location and End Of Track.
   Resolved {
     pending: PendingUpstreamFetch,
     end_location: Location,
+    end_of_track: bool,
   },
   /// The publisher refused the range. Its answer is authoritative.
   Rejected(Box<RequestError>),
@@ -223,7 +225,10 @@ async fn resolve_range_upstream(
     };
 
   match response {
-    UpstreamFetchResponse::Accepted { end_location } => {
+    UpstreamFetchResponse::Accepted {
+      end_location,
+      end_of_track,
+    } => {
       // The publisher will send up to its End Location, so the track reaches at least
       // that far.
       if largest.as_ref().is_none_or(|known| *known < end_location) {
@@ -236,6 +241,7 @@ async fn resolve_range_upstream(
           rx,
         },
         end_location,
+        end_of_track,
       }
     }
     UpstreamFetchResponse::Rejected(err) => {
@@ -416,6 +422,9 @@ pub async fn handle(
       // fetched again.
       let mut pending_upstream: Option<PendingUpstreamFetch> = None;
       let mut fill_claim = None;
+      // The publisher's End Location and whether it's the track's end, when it was asked.
+      let mut upstream_end = None;
+      let mut upstream_end_of_track = false;
 
       let (start_location, end_location) = {
         let mut largest = track.read().await.largest_object().await;
@@ -445,7 +454,6 @@ pub async fn handle(
           };
         }
         let mut upstream_rejection = None;
-        let mut upstream_end = None;
         if !answered_locally {
           match resolve_range_upstream(
             &client,
@@ -460,9 +468,11 @@ pub async fn handle(
             UpstreamRange::Resolved {
               pending,
               end_location,
+              end_of_track,
             } => {
               pending_upstream = Some(pending);
               upstream_end = Some(end_location);
+              upstream_end_of_track = end_of_track;
             }
             UpstreamRange::Rejected(err) => upstream_rejection = Some(err),
             UpstreamRange::Unanswered => {}
@@ -518,7 +528,9 @@ pub async fn handle(
         } else {
           Vec::new()
         };
-        let fetch_ok = FetchOk::new(false, end_location.clone(), vec![], track_properties);
+        // End Of Track holds only while the response ends where the publisher's does.
+        let end_of_track = upstream_end_of_track && upstream_end.as_ref() == Some(&end_location);
+        let fetch_ok = FetchOk::new(end_of_track, end_location.clone(), vec![], track_properties);
         stream_handler
           .send(&ControlMessage::FetchOk(Box::new(fetch_ok)))
           .await?;
@@ -738,6 +750,7 @@ async fn send_upstream_fetch_for_range(
             // Signal range resolution before writing to the potentially full event queue.
             let _ = response_tx.send(UpstreamFetchResponse::Accepted {
               end_location: end_location.clone(),
+              end_of_track: ok.end_of_track,
             });
             let _ = response_event_tx
               .send(UpstreamFetchEvent::Accepted { end_location })

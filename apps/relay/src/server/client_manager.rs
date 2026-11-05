@@ -98,6 +98,10 @@ impl ClientManager {
     for (connection_id, client) in clients.iter() {
       trace!("checking client: {:?}", connection_id);
 
+      if client.is_track_malformed(full_track_name).await {
+        continue;
+      }
+
       let publishes_track = client
         .published_tracks
         .read()

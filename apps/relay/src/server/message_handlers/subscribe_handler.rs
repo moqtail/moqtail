@@ -20,7 +20,10 @@ use crate::server::session::Session;
 use crate::server::session_context::{PendingRequest, SessionContext};
 use crate::server::subscription::Subscription;
 use crate::server::subscription_manager::SubscriptionId;
-use crate::server::track::{Cleanup, Track, TrackOrigin, TrackStatus, await_publisher_streams};
+use crate::server::track::{
+  Cleanup, Track, TrackOrigin, TrackStatus, UpstreamRequestCancellation, UpstreamRequestKind,
+  await_publisher_streams,
+};
 use anyhow::Result;
 use moqtail::model::control::constant::PublishDoneStatusCode;
 use moqtail::model::control::publish_done::PublishDone;
@@ -44,7 +47,6 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::sync::RwLock;
-use tokio::sync::oneshot;
 use tracing::{error, info, trace, warn};
 
 async fn add_subscription(
@@ -107,44 +109,65 @@ async fn upstream_subscribe_exchange(
   new_sub: Subscribe,
   context: Arc<SessionContext>,
 ) {
+  let relay_request_id = new_sub.request_id;
+  let full_track_name = new_sub.get_full_track_name();
+  let fail_unanswered = || {
+    fail_upstream_subscription(
+      relay_request_id,
+      publisher.connection_id,
+      &full_track_name,
+      &context,
+    )
+  };
+
   let (send, recv) = match publisher.connection.open_bi().await {
     Ok(streams) => streams,
     Err(e) => {
       error!("Failed to open upstream subscribe stream: {:?}", e);
+      fail_unanswered().await;
       return;
     }
   };
   // The response returns on this stream, so correlate it by the relay request id
   // we sent upstream rather than a field in the response.
-  let relay_request_id = new_sub.request_id;
-  let full_track_name = new_sub.get_full_track_name();
   let mut upstream = ControlStreamHandler::new(send, recv).with_peer_id(publisher.connection_id);
   if let Err(e) = upstream
     .send(&ControlMessage::Subscribe(Box::new(new_sub)))
     .await
   {
     error!("Failed to send upstream SUBSCRIBE: {:?}", e);
+    fail_unanswered().await;
     return;
   }
 
-  // Register a cancel signal on the track so the last downstream unsubscribe
-  // resets this upstream stream and the publisher observes CANCELLED. Under the
-  // hand-over lock, so a last subscriber leaving meanwhile either finds it to cancel,
-  // or has already left and it is cancelled here.
-  let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
-  if let Some(track) = context.track_manager.get_track(&full_track_name).await {
+  let Some(track) = context.track_manager.get_track(&full_track_name).await else {
+    upstream.reset_and_stop(StreamResetCode::Cancelled.to_u64());
+    return;
+  };
+  let mut cancel_rx = {
     let track = track.read().await;
     let _handover = track.lock_handover().await;
-    if track.subscriber_count().await == 0 {
-      let _ = cancel_tx.send(());
+    let receiver = track
+      .register_upstream_request(
+        relay_request_id,
+        publisher.connection_id,
+        UpstreamRequestKind::Subscribe,
+      )
+      .await;
+    let reason = if publisher.is_track_malformed(&full_track_name).await {
+      Some(UpstreamRequestCancellation::MalformedTrack)
+    } else if track.subscriber_count().await == 0 {
+      Some(UpstreamRequestCancellation::Cancelled)
     } else {
+      None
+    };
+    if let Some(reason) = reason {
       track
-        .upstream_subscribe_cancellers
-        .lock()
-        .await
-        .push(cancel_tx);
+        .cancel_upstream_request(relay_request_id, reason)
+        .await;
     }
-  }
+    receiver
+  };
 
   // A publisher owes exactly one SUBSCRIBE_OK or REQUEST_ERROR. One that stays
   // connected and sends neither would otherwise hold the subscriber's request stream
@@ -154,12 +177,15 @@ async fn upstream_subscribe_exchange(
   let answer_deadline = tokio::time::sleep(context.server_config.upstream_subscribe_timeout);
   tokio::pin!(answer_deadline);
   let mut answered = false;
+  let mut cancelled = false;
 
   loop {
     tokio::select! {
       biased;
-      _ = &mut cancel_rx => {
-        info!("Downstream unsubscribed; resetting upstream subscribe stream (CANCELLED)");
+      reason = &mut cancel_rx => {
+        let reason = reason.unwrap_or(UpstreamRequestCancellation::Cancelled);
+        info!("Resetting upstream SUBSCRIBE stream ({reason:?})");
+        cancelled = true;
         // Break and tear the stream down after the loop: `reset_and_stop`
         // consumes `upstream`, which can't be moved inside the select while the
         // `next_message()` branch borrows it. Reset the send half and stop the
@@ -355,6 +381,78 @@ async fn upstream_subscribe_exchange(
   }
 
   upstream.reset_and_stop(StreamResetCode::Cancelled.to_u64());
+  if cancelled {
+    cleanup_cancelled_upstream_subscription(
+      publisher.connection_id,
+      &full_track_name,
+      answered,
+      &context,
+    )
+    .await;
+  }
+}
+
+async fn fail_upstream_subscription(
+  relay_request_id: u64,
+  publisher_connection_id: usize,
+  full_track_name: &FullTrackName,
+  context: &Arc<SessionContext>,
+) {
+  let error = RequestError::new(
+    RequestErrorCode::InternalError,
+    0,
+    ReasonPhrase::try_new("Upstream subscription failed".to_string()).unwrap(),
+  );
+  end_upstream_subscription(
+    relay_request_id,
+    publisher_connection_id,
+    full_track_name,
+    error,
+    PublishDoneStatusCode::InternalError,
+    context.clone(),
+  )
+  .await;
+}
+
+async fn cleanup_cancelled_upstream_subscription(
+  publisher_connection_id: usize,
+  full_track_name: &FullTrackName,
+  answered: bool,
+  context: &SessionContext,
+) {
+  let Some(track) = context.track_manager.get_track(full_track_name).await else {
+    return;
+  };
+  let track = track.read().await;
+  if !answered {
+    track.upstream_subscribe_answered();
+    return;
+  }
+
+  let _ = remove_upstream_publisher(&track, publisher_connection_id, context).await;
+}
+
+pub(crate) async fn remove_upstream_publisher(
+  track: &Track,
+  publisher_connection_id: usize,
+  context: &SessionContext,
+) -> bool {
+  let alias = track
+    .publisher_aliases
+    .read()
+    .await
+    .get(&publisher_connection_id)
+    .copied();
+  let still_served = track
+    .remove_publisher_quietly(publisher_connection_id)
+    .await;
+  if let Some(alias) = alias {
+    context
+      .track_manager
+      .remove_publisher_alias(publisher_connection_id, alias)
+      .await;
+  }
+  still_served
 }
 
 /// The PUBLISH_DONE status that carries an upstream REQUEST_ERROR downstream. Only a few
@@ -391,10 +489,7 @@ async fn end_upstream_subscription(
       let track = track.read().await;
       let confirmed = matches!(*track.status.read().await, TrackStatus::Confirmed { .. });
       // This publisher has answered; whatever remains counted has not.
-      let remaining = track
-        .pending_upstream_subscribe_count
-        .fetch_sub(1, Ordering::SeqCst)
-        .saturating_sub(1);
+      let remaining = track.upstream_subscribe_answered();
       (confirmed, remaining > 0)
     }
     None => (false, false),
@@ -424,11 +519,10 @@ async fn end_upstream_subscription(
   let Some(track) = track else {
     return;
   };
-  let still_served = track
-    .read()
-    .await
-    .remove_publisher_quietly(publisher_connection_id)
-    .await;
+  let still_served = {
+    let track = track.read().await;
+    remove_upstream_publisher(&track, publisher_connection_id, &context).await
+  };
 
   if still_served {
     info!(
@@ -1046,9 +1140,7 @@ async fn handle_subscribe_ok_message(
       )
       .await;
     // This publisher has answered.
-    track
-      .pending_upstream_subscribe_count
-      .fetch_sub(1, Ordering::SeqCst);
+    track.upstream_subscribe_answered();
     confirmed_now
   };
 
@@ -1255,10 +1347,9 @@ pub(crate) async fn cancel_subscription(
         "Subscription cancel: request {} no longer owns the subscription for {:?}; leaving it",
         request_id, full_track_name
       );
-      let mut requests = client.subscribe_requests.write().await;
-      requests.remove(&request_id);
-      let mut inbound = client.inbound_requests.write().await;
-      inbound.remove(&request_id);
+      client.subscribe_requests.write().await.remove(&request_id);
+      client.inbound_requests.write().await.remove(&request_id);
+      client.subscriptions.remove(request_id).await;
       return;
     }
 

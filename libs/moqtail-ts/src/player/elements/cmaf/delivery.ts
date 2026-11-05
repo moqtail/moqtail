@@ -36,7 +36,7 @@ import { fragmentTime, mediaTimescale } from './bmff'
 import { acceptedInitData, objectInitData } from './init_data'
 import { beyond, type End } from './ranges'
 import { GroupTimes } from './seek'
-import { MEDIA_PRIORITY } from '@/player/constants'
+import { DEFAULT_MEDIA_ORDERING, MEDIA_PRIORITY } from '@/player/constants'
 import { renditionId, trackKey } from '@/player/util/track'
 import { mimeTypeOf } from './track'
 
@@ -124,6 +124,10 @@ export class Delivery {
   /** Where the request being read stops. */
   #stop: End | undefined
   #soft: SoftSwitch | undefined
+  /** This source's accepted requests, each with where packets resume after an `orderinggap`. */
+  readonly #gaps = new Map<bigint, Location | undefined>()
+  /** The client whose `orderinggap` reports are heard: the one `#gaps`' requests were sent on. */
+  #listening: MOQtailClient | undefined
   /** A `track` property was written since the last packet. */
   #announced = false
   /** The publisher closed the stream being read, so there's nothing to cancel. */
@@ -145,7 +149,10 @@ export class Delivery {
     readonly context: ElementContext,
     readonly hooks: RequestHooks | undefined,
   ) {
-    context.signal.addEventListener('abort', () => this.#retire())
+    context.signal.addEventListener('abort', () => {
+      this.#retire()
+      this.#listening?.off('orderinggap', this.#gapped)
+    })
   }
 
   /** The last delivered location and its track key. */
@@ -197,6 +204,8 @@ export class Delivery {
     this.#closed = false
     const outcome = await this.#read(track, accepted, signal)
     const current = this.#current
+    this.#gaps.delete(accepted.requestId)
+    this.#gaps.delete(current.accepted.requestId)
     this.#current = undefined
     this.#soft = undefined
     // A replaced subscription ends after its replacement is answered (moqt-22 9.5 allows both at once).
@@ -208,6 +217,30 @@ export class Delivery {
 
   /** Sends the request for `target` through the hooks. */
   request(track: CatalogTrack, target: Target): Promise<RequestError | Accepted> {
+    const request = this.#send(track, target)
+    this.#hear(request)
+    return request
+  }
+
+  /** Hears the `orderinggap` reports of `request` once it's accepted. */
+  #hear(request: Promise<RequestError | Accepted>): void {
+    const client = this.context.client
+    void request.then(
+      (accepted) => {
+        if (accepted instanceof RequestError) return
+        if (client !== this.#listening) {
+          this.#listening?.off('orderinggap', this.#gapped)
+          client.on('orderinggap', this.#gapped)
+          this.#listening = client
+          this.#gaps.clear() // another session numbers its requests anew
+        }
+        this.#gaps.set(accepted.requestId, undefined)
+      },
+      () => {},
+    )
+  }
+
+  #send(track: CatalogTrack, target: Target): Promise<RequestError | Accepted> {
     const client = this.context.client
     if (!target.fetch) return subscribe(client, this.hooks, track, this.subscribeOptions(track, target))
     const { group, object } = target.start ?? this.#resumeAt(track)
@@ -217,7 +250,7 @@ export class Delivery {
       : end.object === undefined
         ? new LocationFilter(LocationFilterType.AbsoluteStartGroupEnd, group, object, end.group)
         : new LocationFilter(LocationFilterType.AbsoluteRange, group, object, end.group, end.object)
-    return fetch(client, this.hooks, track, { ...requestCommon(track), locationFilter })
+    return fetch(client, this.hooks, track, { ...this.#common(track), locationFilter })
   }
 
   /** The SUBSCRIBE for a live `target`: from the next group, from `start`, or filled from `start`. */
@@ -231,7 +264,7 @@ export class Delivery {
     const parameters = fill
       ? [new FillParameters([new LocationFilter(LocationFilterType.AbsoluteStart, start.group, 0n)])]
       : undefined
-    return { ...requestCommon(track), forward: true, locationFilter, ...(parameters && { parameters }) }
+    return { ...this.#common(track), forward: true, locationFilter, ...(parameters && { parameters }) }
   }
 
   /** Stops the request being read after `end`; later objects aren't written. */
@@ -242,6 +275,7 @@ export class Delivery {
   /** Expects `track` on the stream being read, after a `SWITCH_FROM` switch; the old track's objects after `end` are dropped. */
   expectSwitch(soft: SoftSwitch | undefined): void {
     this.#soft = soft
+    if (soft) this.#hear(soft.accepted)
   }
 
   /** A `SWITCH_FROM` switch hasn't seen its new track yet. */
@@ -307,6 +341,8 @@ export class Delivery {
           retired = trackKey(current)
           current = entered
         } else if ((retired && key === retired) || (soft && beyond(value.location, soft.end))) continue
+        // Only the current track gets here, and #enter made its request the current one.
+        if (!value.hasStatus() && this.#skipped(this.#current!.accepted.requestId, value.location)) continue
         const end = this.#stop
         if (end && beyond(value.location, end)) return 'done'
         if (value.isEndOfTrack()) endOfTrack = true
@@ -328,6 +364,25 @@ export class Delivery {
           (await accepted.done)?.statusCode === PublishDoneStatusCode.TrackEnded
     // A request with an end that closes early was cut there by the publisher, or an update.
     return ended ? 'ended' : this.#stop ? 'done' : 'failed'
+  }
+
+  /**
+   * After an `orderinggap` the rest of its group isn't decodable: a group starts with a SAP
+   * and a chunk after a missing one can't be decoded (CMSF 3.4). Packets resume at the next
+   * object 0, after a `gap` discontinuity.
+   */
+  readonly #gapped = (requestId: bigint, _from: Location, to: Location): void => {
+    if (this.#gaps.has(requestId)) this.#gaps.set(requestId, to.object === 0n ? to : new Location(to.group + 1n, 0n))
+  }
+
+  /** Whether an object of `requestId` at `location` comes before where packets resume after a gap. */
+  #skipped(requestId: bigint, location: Location): boolean {
+    const resume = this.#gaps.get(requestId)
+    if (!resume) return false
+    if (location.compare(resume) < 0) return true
+    this.#gaps.set(requestId, undefined)
+    this.gap = true
+    return false
   }
 
   /** The first object of a `SWITCH_FROM` target: the pad carries its track from here. */
@@ -398,18 +453,22 @@ export class Delivery {
     await this.pad.write({ type: 'properties', properties: changed })
   }
 
+  /** What every request of `track` carries; the hooks may change it. */
+  #common(track: CatalogTrack) {
+    return {
+      fullTrackName: FullTrackName.tryNew(track.namespace, track.nameBytes),
+      priority: MEDIA_PRIORITY,
+      groupOrder: GroupOrder.Original,
+      ordering: this.context.player.options.objectOrdering ?? DEFAULT_MEDIA_ORDERING,
+    }
+  }
+
   #retire(): void {
     const retiring = this.#retiring
     this.#retiring = undefined
     if (retiring) void cancel(retiring.client, retiring.accepted)
   }
 }
-
-const requestCommon = (track: CatalogTrack) => ({
-  fullTrackName: FullTrackName.tryNew(track.namespace, track.nameBytes),
-  priority: MEDIA_PRIORITY,
-  groupOrder: GroupOrder.Original,
-})
 
 const trackPropertiesOf = (accepted: Accepted) =>
   'fetchOk' in accepted ? accepted.fetchOk.trackProperties : accepted.subscribeOk.trackProperties
@@ -543,6 +602,62 @@ if (import.meta.vitest) {
       expect(c.trace()).toEqual(['props live,mimeType,track', 'props initData', '1.1', '1.2', 'props initData', '2.0'])
       expect(c.sink.items()[4]).toMatchObject({ properties: { initData: new Uint8Array([2]) } })
     })
+
+    test('orderinggap: the rest of the group is dropped, late objects too, then a gap before the next group', async () => {
+      const c = await cmafChain([cmafTrack('v1')])
+      await flush()
+      expect(c.client.sent<SubscribeOptions>('subscribe')[0]!.ordering).toEqual({ window: { durationMs: 150 } })
+      c.client.last.push(mediaObject(1, 0))
+      await flush()
+      c.client.emit('orderinggap', 0n, new Location(1n, 1n), new Location(1n, 3n))
+      c.client.emit('orderinggap', 9n, new Location(2n, 0n), new Location(2n, 1n)) // another request's
+      c.client.last.push(mediaObject(1, 3), mediaObject(1, 1), mediaObject(2, 0), mediaObject(2, 1))
+      await flush()
+      // Whole groups missing: packets resume at the next one.
+      c.client.emit('orderinggap', 0n, new Location(3n, 0n), new Location(4n, 0n))
+      c.client.last.push(mediaObject(4, 0))
+      await flush()
+      expect(c.trace()).toEqual(['props live,mimeType,track', '1.0', 'gap', '2.0', '2.1', 'gap', '4.0'])
+    })
+
+    test.each([false, true])(
+      'fast switch over av-2r with shuffled, interleaved delivery comes out in order (switchFrom: %s)',
+      async (switchFrom) => {
+        const { loadFixture } = await import('@/player/testing/fixture')
+        const fixture = await loadFixture('av-2r')
+        const [low, high] = fixture.tracks.map((t) => ({ ...t, isLive: true })) as [CatalogTrack, CatalogTrack]
+        const group = (track: CatalogTrack, g: number) =>
+          fixture.objectsFor(track).filter((o) => o.location.group === BigInt(g))
+        // One stream per object: neighbours swap places.
+        const shuffled = <T>(objects: T[]) => objects.map((o, i) => objects[i ^ 1] ?? o)
+        const c = await cmafChain([low, high], { cmaf: { switchFrom }, ordered: true })
+        await flush()
+        const old = c.client.last
+        old.push(...shuffled(group(low, 0)))
+        old.endGroup(0, 29)
+        await flush()
+        const switched = c.source.switch('video-180p')
+        await flush()
+        // 180p (groups 0, 2, …) switches at frame 60, its group 2; 90p plays to frame 59, 1.29.
+        const next = c.client.last
+        const [tail, head] = [shuffled(group(low, 1)), shuffled(group(high, 2))]
+        for (let i = 0; i < head.length; i++) {
+          if (tail[i]) old.push(tail[i]!)
+          next.push(head[i]!)
+        }
+        old.end() // ended at the switch point, or drained
+        await switched
+        await flush()
+        const range = (g: number, n: number) => Array.from({ length: n }, (_, i) => `${g}.${i}`)
+        expect(c.trace()).toEqual([
+          'props initData,live,mimeType,track',
+          ...range(0, 30),
+          ...range(1, 30),
+          'props initData,mimeType,track',
+          ...range(2, 60),
+        ])
+      },
+    )
 
     test('a catalog namespace other than the track’s prefixes the track id', async () => {
       const catalog = Object.assign(fakeCatalog(), { namespace: new Tuple([TupleField.fromUtf8('other')]) })

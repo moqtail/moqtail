@@ -100,6 +100,8 @@ export class TrackReader {
         priority: this.#options.priority,
         groupOrder: GroupOrder.Original,
         forward: true,
+        // The reader orders its own objects.
+        ordering: 'none',
         // The next object live, and the latest group from object 0 as fill (no Joining FETCH in moqt-22).
         locationFilter: new LocationFilter(LocationFilterType.NextObject),
         parameters: [new FillParameters([new LocationFilter(LocationFilterType.RelativeStart, 1n)])],

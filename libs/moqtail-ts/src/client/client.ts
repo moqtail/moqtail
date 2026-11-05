@@ -4022,6 +4022,60 @@ if (import.meta.vitest) {
       await client.disconnect()
     })
 
+    it('orders a soft switch: the new track waits behind the drain, and no window expires meanwhile', async () => {
+      const { client, transport } = await connected()
+      client.switchDrainTimeoutMs = 60
+      const other = FullTrackName.tryNew('room/alice', 'video-low')
+      const options = {
+        locationFilter: new LocationFilter(LocationFilterType.NextObject),
+        forward: true,
+        groupOrder: GroupOrder.Original,
+        priority: 0,
+        ordering: { window: { durationMs: 10 } },
+      } as const
+      const first = client.subscribe({ ...options, fullTrackName: ftn })
+      const firstStream = await openedStream(transport, 0)
+      firstStream.respond(SubscribeOk.create(7n, [], []))
+      const firstId = ((await first) as { requestId: bigint }).requestId
+      const switching = client.switch({
+        switchFromRequestId: firstId,
+        switchMode: SwitchMode.Soft,
+        newSubscribeOptions: { ...options, fullTrackName: other },
+      })
+      ;(await openedStream(transport, 1)).respond(SubscribeOk.create(8n, [], []))
+      const target = client.requests.get(((await switching) as { requestId: bigint }).requestId) as SubscribeRequest
+      const old = client.requests.get(firstId) as SubscribeRequest
+      const manager = target.manager!
+      const out: string[] = []
+      void (async () => {
+        for await (const obj of manager.stream) out.push(`${obj.location.group}.${obj.location.object}`)
+      })()
+      const object = (name: FullTrackName, group: bigint, id: bigint) =>
+        MoqtObject.newWithPayload(
+          name,
+          new Location(group, id),
+          0,
+          ObjectForwardingPreference.Subgroup,
+          0,
+          null,
+          new Uint8Array([1]),
+        )
+
+      manager.deliver(old, object(ftn, 1n, 0n))
+      manager.deliver(target, object(other, 2n, 0n)) // the handover: the old track drains
+      manager.deliver(target, object(other, 2n, 2n)) // 2.1 is missing
+      manager.deliver(old, object(ftn, 1n, 2n)) // 1.1 is late
+      await new Promise((resolve) => setTimeout(resolve, 30))
+      // Past the 10 ms window: the old track still waits for 1.1, the new one for the drain.
+      expect(out).toEqual(['1.0'])
+      manager.deliver(old, object(ftn, 1n, 1n))
+      await vi.waitFor(() => expect(out).toEqual(['1.0', '1.1', '1.2']))
+      // The drain ends on silence: the new track follows, and its window expires as usual.
+      await vi.waitFor(() => expect(out).toEqual(['1.0', '1.1', '1.2', '2.0', '2.2']))
+
+      await client.disconnect()
+    })
+
     it('ends a drain on the PUBLISH_DONE that accounts for its streams', async () => {
       const { client, transport } = await connected()
       // Long enough that the backstop cannot be what ends this.

@@ -22,6 +22,7 @@ import type {
   FetchOptions,
   FetchResult,
   MOQtailClientOptions,
+  ObjectOrdering,
   SubscribeOptions,
   SubscribeResult,
   SubscribeUpdateOptions,
@@ -41,6 +42,7 @@ import { MoqtObject } from '@/model/data/object'
 import type { KeyValuePair } from '@/model/common/pair'
 import type { TrackProperty } from '@/model/property/track_property'
 import { Emitter } from '@/util/emitter'
+import { ObjectOrderer } from '@/client/ordering'
 import { factory } from '@/player/client_slot'
 
 /** How the fake answers a SUBSCRIBE or FETCH: refuse it, or accept it with these values. */
@@ -52,6 +54,13 @@ export class FakeRequest {
   readonly #controller: ReadableStreamDefaultController<MoqtObject>
   readonly #done = Promise.withResolvers<PublishDone | undefined>()
   #open = true
+  /** Set when the client is `ordered`: pushed objects go through it, as in the real client. */
+  #orderer: ObjectOrderer | undefined
+  readonly #into: FakeRequest | undefined
+  /** Switch targets delivering into this subscription. */
+  readonly #targets: FakeRequest[] = []
+  /** As the client does: a switch target's ordered objects wait until the request it switched from ends. */
+  #parked: MoqtObject[] = []
 
   /** `into` is the subscription a switch target delivers to. */
   constructor(
@@ -64,6 +73,8 @@ export class FakeRequest {
     // highWaterMark 0: nothing is pulled ahead, so `unread` shows the reader's backpressure.
     this.stream = into?.stream ?? new ReadableStream({ start: (c) => void (controller = c) }, { highWaterMark: 0 })
     this.#controller = into ? into.#controller : controller
+    this.#into = into
+    if (into) into.#targets.push(this)
   }
 
   get done(): Promise<PublishDone | undefined> {
@@ -76,14 +87,34 @@ export class FakeRequest {
   }
 
   push(...objects: MoqtObject[]): void {
-    for (const object of objects) this.#controller.enqueue(object)
+    for (const object of objects) this.#orderer ? this.#orderer.push(object) : this.#controller.enqueue(object)
   }
 
-  /** Closes the stream; a subscription then ends with a PUBLISH_DONE of `status`, or without one. */
+  /** Orders this request's objects, reporting gaps to `gap`. */
+  order(ordering: ObjectOrdering, gap: (from: Location, to: Location) => void): void {
+    this.#orderer = new ObjectOrderer(ordering, (object) => this.#output(object), gap)
+  }
+
+  #output(object: MoqtObject): void {
+    if (this.#into && this.#into.#open) this.#parked.push(object)
+    else this.#controller.enqueue(object)
+  }
+
+  /** `group` ended at `lastObject`, as when its stream ends in group mapping mode. */
+  endGroup(group: number, lastObject: number): void {
+    this.#orderer?.endGroup(BigInt(group), BigInt(lastObject))
+  }
+
+  /**
+   * Closes the stream, unless a switch shares it and goes on; a subscription then ends with a
+   * PUBLISH_DONE of `status`, or without one.
+   */
   end(status?: PublishDoneStatusCode): void {
     if (!this.#open) return
     this.#open = false
-    this.#controller.close()
+    this.#orderer?.flush()
+    for (const target of this.#targets) for (const object of target.#parked.splice(0)) this.#controller.enqueue(object)
+    if (!(this.#into && this.#into.#open) && !this.#targets.some((target) => target.#open)) this.#controller.close()
     this.#done.resolve(status === undefined ? undefined : new PublishDone(status, 0n, new ReasonPhrase('')))
   }
 
@@ -99,6 +130,8 @@ export class FakeRequest {
 /** Stands in for the client's session lifecycle and the requests media sources send. */
 export class FakeClient extends Emitter<ClientEvents> {
   disconnected = false
+  /** Orders requests that ask for it, as the real client does. Off, objects arrive as pushed. */
+  ordered = false
   /** Every request method call, in order. */
   readonly calls: { method: string; args: unknown }[] = []
   /** Accepted requests, in order. */
@@ -209,6 +242,9 @@ export class FakeClient extends Emitter<ClientEvents> {
 
   #open(kind: 'subscribe' | 'fetch', options: SubscribeOptions | FetchOptions, into?: FakeRequest): FakeRequest {
     const request = new FakeRequest(kind, this.#nextId++, options, into)
+    const ordering = options.ordering ?? this.options.ordering
+    if (this.ordered && ordering && ordering !== 'none')
+      request.order(ordering, (from, to) => this.emit('orderinggap', request.requestId, from, to))
     this.requests.push(request)
     return request
   }

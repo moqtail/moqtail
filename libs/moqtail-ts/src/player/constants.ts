@@ -16,6 +16,8 @@
 
 /** Constants shared by more than one player element. */
 
+import type { ObjectOrdering } from '@/client/types'
+
 /** Subscriber priority of the catalog: above every other subscription (MSF 5). */
 export const CATALOG_PRIORITY = 0
 
@@ -27,3 +29,6 @@ export const DEFAULT_MAX_CATALOG_BYTES = 16 * 1024 * 1024
 
 /** Default wait for the first catalog or timeline object (`opts.catalogTimeoutMs`). */
 export const DEFAULT_CATALOG_TIMEOUT_MS = 10_000
+
+/** Media ordering without `opts.objectOrdering`: demo-abr's pool TTL. */
+export const DEFAULT_MEDIA_ORDERING: ObjectOrdering = { window: { durationMs: 150 } }

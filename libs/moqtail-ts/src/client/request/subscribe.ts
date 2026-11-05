@@ -148,9 +148,10 @@ export class SubscribeRequest implements PromiseLike<SubscribeOk | RequestError>
     else this.output(obj)
   }
 
-  /** Writes an object to the consumer stream: the manager's once switching is involved. */
+  /** Writes an object to the consumer stream: through the manager once switching is involved. */
   public output(obj: MoqtObject): void {
-    ;(this.manager?.controller ?? this.controller).enqueue(obj)
+    if (this.manager) this.manager.output(this, obj)
+    else this.controller.enqueue(obj)
   }
 
   /** Ends the request: resolves {@link SubscribeRequest.done}. Later calls do nothing. */
@@ -243,6 +244,9 @@ export class Subscription {
   /** Switch targets whose handover drains what it supersedes rather than cutting it. */
   #drainsSuperseded: WeakSet<SubscribeRequest> = new WeakSet()
 
+  /** The newest request's ordered objects, held while older requests still deliver. */
+  #parked: MoqtObject[] = []
+
   /** Set once by `MOQtailClient.switch`; invoked with everything older on cutover. */
   public onSuperseded?: (superseded: SubscribeRequest[]) => void
 
@@ -298,18 +302,43 @@ export class Subscription {
     if (drainSuperseded) this.#drainsSuperseded.add(request)
     this.#requests.push(request)
     this.#unwaited.push(request)
+    this.#switched()
+  }
+
+  /**
+   * Writes an object `request` released. While older requests still deliver, the newest
+   * one's ordered objects wait, so the old track's tail comes first.
+   */
+  public output(request: SubscribeRequest, obj: MoqtObject): void {
+    if (request.orderer && request === this.newest && this.requests.length > 1) this.#parked.push(obj)
+    else this.controller.enqueue(obj)
+  }
+
+  /**
+   * While a switch is in progress (more than one request tracked) no ordering window expires,
+   * and once it's over the parked objects go out first. `left` stopped being tracked.
+   */
+  #switched(left: readonly SubscribeRequest[] = []): void {
+    const switching = this.requests.length > 1
+    if (!switching) for (const obj of this.#parked.splice(0)) this.controller.enqueue(obj)
+    for (const request of this.requests) request.orderer?.suspendWindow(switching)
+    for (const request of left) request.orderer?.suspendWindow(false)
   }
 
   /** Stop tracking `request` (e.g. it naturally completed without ever losing/winning a handover). */
   public drop(request: SubscribeRequest): void {
     this.#clearDrain(request)
     this.#requests = this.#requests.filter((r) => r !== request)
+    this.#switched([request])
   }
 
   /** Stop tracking everything (used when the whole switch chain is torn down at once). */
   public clear(): void {
+    const left = this.requests
     for (const request of [...this.#draining.keys()]) this.#clearDrain(request)
     this.#requests = []
+    this.#parked = []
+    this.#switched(left)
   }
 
   /** Starts, or on each further object restarts, the quiet period that ends a drain. */
@@ -320,7 +349,9 @@ export class Subscription {
       setTimeout(() => {
         this.#draining.delete(request)
         logger.debug('Subscription', `drain of request ${request.requestId} ended on silence`)
+        // Retiring flushes what it still holds, ahead of the parked objects.
         this.onSuperseded?.([request])
+        this.#switched([request])
       }, this.drainTimeoutMs),
     )
   }
@@ -364,6 +395,7 @@ export class Subscription {
         for (const old of superseded) this.#keepDraining(old)
       } else {
         this.onSuperseded?.(superseded)
+        this.#switched(superseded)
       }
     }
 

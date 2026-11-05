@@ -19,6 +19,7 @@
  * client, follows the media sink's state, and forwards control calls to it.
  */
 
+import type { ObjectOrdering } from '@/client/types'
 import type { SetupOptions } from '@/model/parameter/setup_option'
 import { Emitter } from '@/util/emitter'
 import { logger } from '@/util/logger'
@@ -66,9 +67,9 @@ export interface MOQtailPlayerOptions {
   catalogTimeoutMs?: number
   /** Default 16 MiB. */
   maxCatalogBytes?: number
-  /** Default rate multiplier 2. */
-  fetchPacing?: { rateMultiplier?: number }
-  // objectOrdering, abr, and buffer arrive with milestones 5, 7, and 8.
+  /** How media sources order each request's objects. Default: a 150 ms window. */
+  objectOrdering?: ObjectOrdering
+  // abr and buffer arrive with milestones 7 and 8.
 }
 
 /** @public */

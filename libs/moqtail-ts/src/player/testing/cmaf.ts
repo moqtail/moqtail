@@ -78,10 +78,12 @@ export async function cmafChain(
     cmaf?: MediaSourceOptions
     reconnectAttempts?: number
     respond?: FakeClient['respond']
+    ordered?: boolean
   } = {},
 ) {
   const client = () => {
     const created = new FakeClient()
+    created.ordered = options.ordered ?? false
     if (options.respond) created.respond = options.respond
     return created
   }

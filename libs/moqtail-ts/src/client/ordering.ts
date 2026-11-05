@@ -54,6 +54,7 @@ export class ObjectOrderer {
   #ends = new Map<bigint, bigint>()
   #timer: ReturnType<typeof setTimeout> | undefined
   #arrivals = 0
+  #suspended = false
 
   constructor(
     readonly ordering: ObjectOrdering,
@@ -72,6 +73,16 @@ export class ObjectOrderer {
     if (index < 0) this.#held.push(entry)
     else this.#held.splice(index, 0, entry)
     this.#drain()
+    this.#expire()
+  }
+
+  /**
+   * While suspended nothing exceeds the window, so held objects wait for what's missing.
+   * Resuming releases at once what waited longer than the window.
+   */
+  suspendWindow(suspended: boolean): void {
+    if (this.#suspended === suspended) return
+    this.#suspended = suspended
     this.#expire()
   }
 
@@ -103,7 +114,7 @@ export class ObjectOrderer {
   }
 
   #exceeded(): boolean {
-    if (this.#held.length === 0) return false
+    if (this.#suspended || this.#held.length === 0) return false
     const { durationMs, objects } = this.ordering.window
     if (objects !== undefined && this.#held.length > objects) return true
     return durationMs !== undefined && performance.now() - this.#oldest().at >= durationMs
@@ -118,7 +129,7 @@ export class ObjectOrderer {
     clearTimeout(this.#timer)
     this.#timer = undefined
     const { durationMs } = this.ordering.window
-    if (durationMs === undefined || this.#held.length === 0) return
+    if (this.#suspended || durationMs === undefined || this.#held.length === 0) return
     const wait = this.#oldest().at + durationMs - performance.now()
     this.#timer = setTimeout(
       () => {
@@ -249,6 +260,17 @@ if (import.meta.vitest) {
       expect(out).toEqual(['0.0', '0.1'])
       o.endGroup(0n, 1n)
       expect(out).toEqual(['0.0', '0.1', '1.0'])
+    })
+
+    test('a suspended window holds past it; resuming releases what waited longer', () => {
+      const { orderer: o, push, out, gaps } = orderer({ window: { durationMs: 150, objects: 1 } })
+      o.suspendWindow(true)
+      push('0.0', '0.2', '0.3')
+      vi.advanceTimersByTime(1000)
+      expect(out).toEqual(['0.0'])
+      o.suspendWindow(false)
+      expect(out).toEqual(['0.0', '0.2', '0.3'])
+      expect(gaps).toEqual(['0.1-0.2'])
     })
 
     test('without an end of group, the next group waits for the window and is no gap', () => {

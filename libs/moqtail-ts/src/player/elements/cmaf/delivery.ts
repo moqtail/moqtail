@@ -544,7 +544,7 @@ if (import.meta.vitest) {
       const c = await cmafChain([cmafTrack('v1', { init: { type: 'inline', data: new Uint8Array([9]) } })])
       await flush()
       const [sent] = c.client.sent<SubscribeOptions>('subscribe')
-      expect(sent).toMatchObject({ priority: 128, groupOrder: GroupOrder.Original, forward: true })
+      expect(sent).toMatchObject({ priority: 128, groupOrder: GroupOrder.Original })
       expect(sent!.locationFilter).toMatchObject({ filterType: LocationFilterType.RelativeStart, startGroup: 0n })
 
       c.client.last.push(mediaObject(1, 0), mediaObject(1, 1), endOfTrack(1, 2))

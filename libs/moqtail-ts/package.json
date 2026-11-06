@@ -91,16 +91,19 @@
     "test": "vitest",
     "format": "prettier --check .",
     "test:run": "vitest run",
+    "test:browser": "vitest run --config vitest.browser.config.ts",
     "docs": "typedoc"
   },
   "devDependencies": {
     "@microsoft/api-extractor": "^7.58.9",
     "@tsconfig/strictest": "^2.0.8",
-    "tslib": "^2.8.1",
+    "@vitest/browser-playwright": "5.0.3",
+    "playwright": "^1.64.1",
     "tsdown": "^0.22.3",
+    "tslib": "^2.8.1",
     "typedoc": "^0.28.20",
     "typescript": "^6.0.3",
-    "vitest": "^5.0.3"
+    "vitest": "5.0.3"
   },
   "dependencies": {
     "valibot": "^1.5.0"

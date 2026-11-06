@@ -58,6 +58,8 @@ export class SubscribeRequest implements PromiseLike<SubscribeOk | RequestError>
    * which is where a fill fetch stream stops.
    */
   public fillBoundary: Location | undefined
+  /** A fill fetch stream opened for this subscription. */
+  public fillOpened = false
   /** EXPIRES from the last SUBSCRIBE_OK or REQUEST_UPDATE_OK, in milliseconds. */
   public expires: bigint | undefined
   public streamsAccepted: bigint = 0n
@@ -380,6 +382,11 @@ export class Subscription {
         request.enqueue(obj, after)
         return true
       }
+      // The consumer has what it needs from this track: the drain is over, and what the
+      // new track has waiting goes out now rather than after a PUBLISH_DONE or the timeout.
+      this.#clearDrain(request)
+      this.onSuperseded?.([request])
+      this.#switched([request])
       return false
     }
 

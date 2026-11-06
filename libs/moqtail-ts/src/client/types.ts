@@ -115,6 +115,12 @@ export const DEFAULT_TRACK_ALIAS_RESOLUTION_TIMEOUT_MS = 2000
 export const DEFAULT_SWITCH_DRAIN_TIMEOUT_MS = 2000
 
 /**
+ * Default for {@link MOQtailClientOptions.fillOpenTimeoutMs}: how long after SUBSCRIBE_OK
+ * a fill fetch stream may take to open before ordering stops waiting for it.
+ */
+export const DEFAULT_FILL_OPEN_TIMEOUT_MS = 1000
+
+/**
  * @public
  * The MAX_FILTER_RANGES a client advertises when its setup options set none: how
  * many Range Filter ranges it applies, in total, for one subscription or fetch.
@@ -160,6 +166,11 @@ export type MOQtailClientOptions = {
    * {@link DEFAULT_SWITCH_DRAIN_TIMEOUT_MS}.
    */
   switchDrainTimeoutMs?: number
+  /**
+   * How long after SUBSCRIBE_OK a fill fetch stream may take to open before ordering
+   * stops waiting for it, in milliseconds. Defaults to {@link DEFAULT_FILL_OPEN_TIMEOUT_MS}.
+   */
+  fillOpenTimeoutMs?: number
   /** If true, enables datagram support for the session. */
   enableDatagrams?: boolean
   /** The default {@link ObjectOrdering} of the session's subscriptions and fetches. Without one, objects pass through unordered. */
@@ -384,7 +395,6 @@ export type SubscribeUpdateOptions = {
  *     fullTrackName: newFullTrackName,
  *     priority: 0,
  *     groupOrder: GroupOrder.Original,
- *     forward: true,
  *     locationFilter: new LocationFilter(LocationFilterType.NextObject)
  *   }
  * })
@@ -395,9 +405,13 @@ export type SwitchOptions = {
   switchFromRequestId: bigint
   /** {@link SwitchMode} controlling how the switch is applied. */
   switchMode: SwitchMode
-  /** New subscription options to switch to. */
-  newSubscribeOptions: SubscribeOptions
-  /** Callback to determine whether to continue draining the superseded subscription. Returning true will reset the relevant stream. */
+  /** New subscription options to switch to. No `forward`: the relay controls forwarding during a switch. */
+  newSubscribeOptions: Omit<SubscribeOptions, 'forward'>
+  /**
+   * Called for each object of a superseded subscription that a soft switch left draining.
+   * Returning false ends the drain: that subscription is retired and the new track's
+   * objects, held until then, are released.
+   */
   onDrainDecision?: (request: SubscribeRequest) => boolean
 }
 

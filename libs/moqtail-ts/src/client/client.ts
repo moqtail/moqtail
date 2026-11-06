@@ -107,6 +107,7 @@ import {
   TrackAliasHolder,
   DEFAULT_TRACK_ALIAS_RESOLUTION_TIMEOUT_MS,
   DEFAULT_SWITCH_DRAIN_TIMEOUT_MS,
+  DEFAULT_FILL_OPEN_TIMEOUT_MS,
   DEFAULT_MAX_FILTER_RANGES,
   EndOfRangeHandler,
   ClientEvents,
@@ -260,6 +261,8 @@ export class MOQtailClient extends Emitter<ClientEvents> {
    * retired anyway, if no PUBLISH_DONE ends its drain first.
    */
   switchDrainTimeoutMs: number = DEFAULT_SWITCH_DRAIN_TIMEOUT_MS
+  /** How long (ms) after SUBSCRIBE_OK a fill fetch stream may take to open before ordering stops waiting for it. */
+  fillOpenTimeoutMs: number = DEFAULT_FILL_OPEN_TIMEOUT_MS
 
   /**
    * Callbacks waiting for a track alias to be registered, keyed by alias. Each entry
@@ -434,6 +437,7 @@ export class MOQtailClient extends Emitter<ClientEvents> {
       controlStreamTimeoutMs,
       trackAliasResolutionTimeoutMs,
       switchDrainTimeoutMs,
+      fillOpenTimeoutMs,
       enableDatagrams,
     } = this.#options
     // send supported versions
@@ -468,6 +472,7 @@ export class MOQtailClient extends Emitter<ClientEvents> {
       if (trackAliasResolutionTimeoutMs !== undefined)
         this.trackAliasResolutionTimeoutMs = trackAliasResolutionTimeoutMs
       if (switchDrainTimeoutMs !== undefined) this.switchDrainTimeoutMs = switchDrainTimeoutMs
+      if (fillOpenTimeoutMs !== undefined) this.fillOpenTimeoutMs = fillOpenTimeoutMs
 
       // The control plane is a pair of uni streams. Open our send half and write
       // SETUP first so it goes out without waiting on the server's half, which the
@@ -993,6 +998,9 @@ export class MOQtailClient extends Emitter<ClientEvents> {
       request.earlyDiscardPolicy = args.earlyDiscardPolicy
       request.onEndOfRange = args.onEndOfRange
       request.orderer = this.#orderer(args.ordering, groupOrder, request.requestId, (obj) => request.output(obj))
+      // The fill brings what comes before the live objects: until it ends, none of it is missing.
+      const fills = parameters?.some(MessageParameter.isFillParameters) === true
+      if (fills) request.orderer?.suspendWindow(true, 'fill')
       this.requests.set(request.requestId, request)
       this.requestIdMap.addMapping(request.requestId, request.fullTrackName)
 
@@ -1019,6 +1027,7 @@ export class MOQtailClient extends Emitter<ClientEvents> {
           `subscribe: SUBSCRIBE_OK requestId=${request.requestId} trackAlias=${response.trackAlias}`,
         )
         this.#claimTrackAlias(response.trackAlias, request)
+        if (fills) this.#awaitFill(request)
         return { requestId: msg.requestId, subscribeOk: response, stream: request.stream, done: subscription.done }
       }
     } catch (error) {
@@ -1212,7 +1221,7 @@ export class MOQtailClient extends Emitter<ClientEvents> {
    * await client.switch({
    *   switchFromRequestId,
    *   switchMode: SwitchMode.Soft,
-   *   newSubscribeOptions: { fullTrackName: newTrackName, priority: 0, groupOrder: GroupOrder.Original, forward: true, locationFilter: new LocationFilter(LocationFilterType.NextObject) },
+   *   newSubscribeOptions: { fullTrackName: newTrackName, priority: 0, groupOrder: GroupOrder.Original, locationFilter: new LocationFilter(LocationFilterType.NextObject) },
    *   onDrainDecision: (request) => true
    * });
    * ```
@@ -1375,6 +1384,17 @@ export class MOQtailClient extends Emitter<ClientEvents> {
     if (this.subscriptions.get(trackAlias) !== holder) return
     this.subscriptions.delete(trackAlias)
     this.aliasFullTrackNameMap.delete(trackAlias)
+  }
+
+  /**
+   * Lifts the fill's ordering suspension when no fill fetch stream will open: nothing was
+   * published yet (no LARGEST_OBJECT), or none opened shortly after SUBSCRIBE_OK (an empty
+   * fill range, moqt-22 3.4).
+   */
+  #awaitFill(request: SubscribeRequest): void {
+    const lift = () => !request.fillOpened && request.orderer?.suspendWindow(false, 'fill')
+    if (!request.fillBoundary) lift()
+    else setTimeout(lift, this.fillOpenTimeoutMs)
   }
 
   /** Tears down a switch target that lost the handover race to a newer one. */
@@ -2334,6 +2354,8 @@ export class MOQtailClient extends Emitter<ClientEvents> {
           // The publisher counts it in Stream Count like any stream it opened, so
           // the subscriber has to count it too or the two never agree.
           request.streamsAccepted++
+          request.fillOpened = true
+          request.orderer?.suspendWindow(true, 'fill')
           let previous: Location | undefined
           try {
             while (true) {
@@ -2362,6 +2384,7 @@ export class MOQtailClient extends Emitter<ClientEvents> {
             }
           } finally {
             reader.releaseLock()
+            request.orderer?.suspendWindow(false, 'fill')
           }
           // It counts towards the subscription's streams like any other, so it can
           // equally be the one that completes it.
@@ -3924,7 +3947,8 @@ if (import.meta.vitest) {
             bytes.putBytes(fetchObject.serialize(ctx, GroupOrder.Ascending).toUint8Array())
             ctx = fetchObject.nextContext(ctx)
           }
-          transport.openIncomingUniStream(bytes.toUint8Array())
+          // A fill fetch stream ends once its range is delivered.
+          transport.openIncomingUniStream(bytes.toUint8Array()).close()
         }
         const read = async (count: number) => {
           const reader = stream.getReader()
@@ -3947,7 +3971,8 @@ if (import.meta.vitest) {
 
         live(5n, 3)
         live(5n, 2)
-        await new Promise((resolve) => setTimeout(resolve, 5))
+        // Longer than the window: live objects wait for the fill however late it opens.
+        await new Promise((resolve) => setTimeout(resolve, 150))
         fill([4, 0], [4, 1], [5, 0], [5, 1])
         live(5n, 5)
         expect(await read(7)).toEqual(['4.0', '4.1', '5.0', '5.1', '5.2', '5.3', '5.5'])

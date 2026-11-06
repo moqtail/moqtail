@@ -54,7 +54,8 @@ export class ObjectOrderer {
   #ends = new Map<bigint, bigint>()
   #timer: ReturnType<typeof setTimeout> | undefined
   #arrivals = 0
-  #suspended = false
+  /** Why the window is suspended: a switch in progress, or a fill fetch stream still delivering. */
+  readonly #suspended = new Set<'switch' | 'fill'>()
 
   constructor(
     readonly ordering: ObjectOrdering,
@@ -77,12 +78,13 @@ export class ObjectOrderer {
   }
 
   /**
-   * While suspended nothing exceeds the window, so held objects wait for what's missing.
-   * Resuming releases at once what waited longer than the window.
+   * While suspended for any reason nothing exceeds the window, so held objects wait for
+   * what's missing. Resuming the last reason releases at once what waited longer than the window.
    */
-  suspendWindow(suspended: boolean): void {
-    if (this.#suspended === suspended) return
-    this.#suspended = suspended
+  suspendWindow(suspended: boolean, reason: 'switch' | 'fill' = 'switch'): void {
+    if (this.#suspended.has(reason) === suspended) return
+    if (suspended) this.#suspended.add(reason)
+    else this.#suspended.delete(reason)
     this.#expire()
   }
 
@@ -114,7 +116,7 @@ export class ObjectOrderer {
   }
 
   #exceeded(): boolean {
-    if (this.#suspended || this.#held.length === 0) return false
+    if (this.#suspended.size > 0 || this.#held.length === 0) return false
     const { durationMs, objects } = this.ordering.window
     if (objects !== undefined && this.#held.length > objects) return true
     return durationMs !== undefined && performance.now() - this.#oldest().at >= durationMs
@@ -129,7 +131,7 @@ export class ObjectOrderer {
     clearTimeout(this.#timer)
     this.#timer = undefined
     const { durationMs } = this.ordering.window
-    if (this.#suspended || durationMs === undefined || this.#held.length === 0) return
+    if (this.#suspended.size > 0 || durationMs === undefined || this.#held.length === 0) return
     const wait = this.#oldest().at + durationMs - performance.now()
     this.#timer = setTimeout(
       () => {
@@ -271,6 +273,18 @@ if (import.meta.vitest) {
       o.suspendWindow(false)
       expect(out).toEqual(['0.0', '0.2', '0.3'])
       expect(gaps).toEqual(['0.1-0.2'])
+    })
+
+    test('the window stays suspended until every reason is lifted', () => {
+      const { orderer: o, push, out } = orderer()
+      o.suspendWindow(true, 'switch')
+      o.suspendWindow(true, 'fill')
+      push('0.0', '0.2')
+      o.suspendWindow(false, 'switch')
+      vi.advanceTimersByTime(1000)
+      expect(out).toEqual(['0.0'])
+      o.suspendWindow(false, 'fill')
+      expect(out).toEqual(['0.0', '0.2'])
     })
 
     test('without an end of group, the next group waits for the window and is no gap', () => {

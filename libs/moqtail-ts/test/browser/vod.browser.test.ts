@@ -75,6 +75,20 @@ describe('vod', () => {
     expect(s.video.videoHeight).toBe(540)
   })
 
+  test('a switch after the whole range was delivered still fetches the new quality from the playhead', async ({
+    open,
+  }) => {
+    // Groups 2 to 6, 4 s to 14 s: all of it fits the forward buffer, so the source writes its eos early.
+    const s = await open(ch07_vod.uri('location-range=2-6'))
+    await s.until(() => (s.buffered('video').at(-1)?.[1] ?? 0) > 13.9, 'the whole range buffered')
+    await s.played(0.5)
+    const switching = s.mark()
+    const w = await s.switchTo((renditions) => renditions.find((r) => !r.active && r.height === 540))
+    const after = s.since(switching).newRequests()
+    expect(after.requestsOf('video').map((r) => `${r.kind} ${r.track}`)).toEqual([`fetch ${w.to}`])
+    expect(after.groups('video')[0]).toBe(s.groupAt(w.playhead))
+  })
+
   test('a location range fetches exactly its video groups, and audio for the same media time', async ({ open }) => {
     const s = await open(ch07_vod.uri('location-range=2-4'), { playbackRate: 4 })
     await s.ended()

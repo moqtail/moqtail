@@ -244,6 +244,10 @@ export class Switcher {
     const from = recovery.active
     const last = delivery.last
     const current = delivery.current
+    // VOD flushes whenever something was delivered: after the `eos` no request is read, and
+    // a restart would wait for a seek that never comes.
+    const fetch = current ? 'fetchOk' in current : !from.isLive
+    if (fetch && last && this.#vod(track)) return
     // Nothing of the old track to hand over from, or a seek resumes on the new track anyway.
     if (recovery.seeking || !current || last?.track !== trackKey(from)) return recovery.restartOn(track)
 
@@ -258,8 +262,6 @@ export class Switcher {
     if (this.host.options.switchFrom && !climb && 'subscribeOk' in current)
       return this.#soft(track, from, current, point)
 
-    const fetch = 'fetchOk' in current
-    if (fetch && this.#vod(track)) return
     const end = recovery.rangeEnd(track)
     delivery.stopAfter(point.end)
     const request = delivery.request(track, { fetch, start, ...(fetch && end && { end }) })
@@ -515,6 +517,25 @@ if (import.meta.vitest) {
     c.client.last.push(mediaObject(2, 0, null, 'v2'))
     await switched
     expect(c.trace().slice(-3)).toEqual(['props track', 'seek', '2.0'])
+  })
+
+  test('VOD after the eos: still flushes and fetches the new track from the playhead', async () => {
+    const { twoSecondTimeline, fakeCatalog, endOfTrack } = await import('@/player/testing/cmaf')
+    const set = [cmafTrack('v1', { isLive: false }), cmafTrack('v2', { isLive: false })]
+    const c = await cmafChain(set, { catalog: fakeCatalog([], twoSecondTimeline()) })
+    await flush()
+    c.sink.consumeEvents = false
+    c.sink.pads[0]!.onEvent((event) => event.type === 'flush' && (c.seek(3), true))
+    // Everything delivered: no request is read anymore, the source waits for a seek.
+    c.client.last.push(mediaObject(1), mediaObject(2), endOfTrack(3))
+    c.client.last.end()
+    await flush()
+    expect(c.trace().at(-1)).toBe('eos')
+    const switched = c.source.switch('v2')
+    await flush()
+    expect(c.requests().at(-1)).toBe('fetch v2 2.0-')
+    c.client.last.push(mediaObject(2, 0, null, 'v2'))
+    await switched
   })
 
   test('unknown, active, and concurrent switches', async () => {

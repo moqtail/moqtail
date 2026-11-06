@@ -138,7 +138,7 @@ export async function cmafChain(
     },
     /** Sends a `seek` upstream, as the sink does. */
     seek(mediaTime: number) {
-      sink.pads[0]!.sendEvent({ type: 'seek', mediaTime })
+      sink.pads[0]!.signal({ type: 'seek', mediaTime })
     },
     /** The requests sent on the current client, in short. */
     requests(): string[] {
@@ -165,6 +165,7 @@ function describeFilter(filter: LocationFilter | undefined): string {
   if (!filter) return 'all'
   const { filterType, startGroup: g, startObject: o, endGroup, endObject } = filter
   if (filterType === LocationFilterType.RelativeStart) return g ? `next-${g}` : 'next'
+  if (filterType === LocationFilterType.NextObject) return 'nextobject'
   if (filterType === LocationFilterType.AbsoluteStart) return `${g}.${o}-`
   if (filterType === LocationFilterType.AbsoluteStartGroupEnd) return `${g}.${o}-${endGroup}`
   return `${g}.${o}-${endGroup}.${endObject}`

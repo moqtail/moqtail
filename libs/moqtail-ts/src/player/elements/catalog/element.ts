@@ -20,6 +20,7 @@
  * Elements, Proper Catalog Parsing).
  */
 
+import { Location } from '@/model/common/location'
 import type { Tuple } from '@/model/common/tuple'
 import { SourceElement, type BaseElement } from '@/player/element/base'
 import type { ElementContext } from '@/player/element/context'
@@ -32,7 +33,7 @@ import {
   type TimelineReader,
 } from '@/player/element/interfaces'
 import { PlayerError } from '@/player/error'
-import { trackIdentifier, type MsfSource } from '@/player/msf_url'
+import { trackIdentifier, type MsfSource, type TimeRange } from '@/player/msf_url'
 import { backoffDelay, sleep, within } from '@/player/util/backoff'
 import { CATALOG_PRIORITY, DEFAULT_CATALOG_TIMEOUT_MS, DEFAULT_MAX_CATALOG_BYTES } from '@/player/constants'
 import { trackKey } from '@/player/util/track'
@@ -281,27 +282,62 @@ export class Catalog extends SourceElement implements CatalogReader {
       const message = `No element handles event timeline "${track.name}" (${track.eventType})`
       this.#warn(new PlayerError('TRACK_SKIPPED', message, { element: 'catalog' }))
     }
-    await Promise.all([...media.map((s) => this.#load(s, true)), ...timelines.map((s) => this.#load(s, false))])
+    const reference = media.find((s) => s.tracks[0]!.role === 'video') ?? media[0]!
+    const byTime = await this.#rangesByTime(reference.tracks[0]!)
+    await Promise.all([
+      ...media.map(async (s) => {
+        // Another set takes the ranges by media time when it can map them back to its own groups.
+        const mapped = s !== reference && byTime && (await this.timeline(s.tracks[0]!)) ? byTime : undefined
+        await this.#load(s, true, mapped)
+      }),
+      ...timelines.map((s) => this.#load(s, false)),
+    ])
   }
 
-  /** Loads a set: through the switching set source of a listed and negotiated extension, if any. */
-  async #load(set: SelectedSet, media: boolean): Promise<void> {
+  /**
+   * The URL's location ranges as media time on `reference`'s timeline. Sets outside its
+   * alternate group needn't share its Group IDs (MSF 4.2), so for them a location range
+   * only means the media time it covers on the reference. Undefined without location
+   * ranges or a timeline: then every set takes them as written.
+   */
+  async #rangesByTime(reference: CatalogTrack): Promise<TimeRange[] | undefined> {
+    const ranges = this.#options.source?.locationRanges ?? []
+    const timeline = ranges.length > 0 ? await this.timeline(reference) : undefined
+    if (!timeline) return undefined
+    const times: TimeRange[] = []
+    for (const { start, end } of ranges) {
+      const from = timeline.locationToTime(new Location(start.group, 0n))
+      // The end group runs until the next one starts.
+      const to = end && timeline.locationToTime(new Location(end.group + 1n, 0n))
+      if (from === undefined || (end && to === undefined)) return undefined
+      times.push({ start: from, ...(to !== undefined && { end: to - 1 }) })
+    }
+    return times
+  }
+
+  /**
+   * Loads a set: through the switching set source of a listed and negotiated extension, if any.
+   * `byTime` replaces the URL's location ranges for a set that takes them as media time.
+   */
+  async #load(set: SelectedSet, media: boolean, byTime?: TimeRange[]): Promise<void> {
     const { tracks, definition } = set
     const parent = media
       ? this.context.player.options.extensions?.find(
           (e) => e.switchingSetSource && (e.negotiated?.(this.context.client.serverSetup) ?? true),
         )?.switchingSetSource
       : undefined
-    const options = media ? this.#mediaOptions() : {}
+    const options = media ? this.#mediaOptions(byTime) : {}
     const element = parent
       ? await this.context.load(parent, { tracks, options: { ...options, child: definition }, catalog: this })
       : await this.context.load(definition, { tracks, options, catalog: this })
     this.#sets.push({ element, tracks, sample: tracks[0]!, definition, media })
   }
 
-  #mediaOptions(): MediaSourceOptions {
+  #mediaOptions(byTime?: TimeRange[]): MediaSourceOptions {
     const { switchFrom, source } = this.#options
-    const { locationRanges = [], mediaTimeRanges = [], wallclockRanges = [] } = source ?? {}
+    const { wallclockRanges = [] } = source ?? {}
+    const locationRanges = byTime ? [] : (source?.locationRanges ?? [])
+    const mediaTimeRanges = [...(source?.mediaTimeRanges ?? []), ...(byTime ?? [])]
     const ranged = locationRanges.length + mediaTimeRanges.length + wallclockRanges.length > 0
     return {
       ...(switchFrom !== undefined && { switchFrom }),

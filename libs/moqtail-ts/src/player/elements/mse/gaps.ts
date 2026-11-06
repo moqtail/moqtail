@@ -55,7 +55,11 @@ export function rangeAt(time: number, ranges: TimeRanges): number {
   return -1
 }
 
-/** Outside every range: live goes near the end of the last range, VOD to the closest range edge. */
+/**
+ * Outside every range: live goes near the end of the last range, VOD to the start of the next
+ * one. Not to a closer edge behind: playback that ran past a range's end (one track ending a
+ * little later than the other) would only be sent back to it.
+ */
 function nearestRange(
   currentTime: number,
   buffered: TimeRanges,
@@ -64,13 +68,8 @@ function nearestRange(
 ): number | undefined {
   if (buffered.length === 0) return undefined
   if (live) return liveEdge(buffered, liveEdgeDelay)
-  let best = buffered.start(0)
-  for (let i = 0; i < buffered.length; i++) {
-    for (const edge of [buffered.start(i), buffered.end(i)]) {
-      if (Math.abs(currentTime - edge) < Math.abs(currentTime - best)) best = edge
-    }
-  }
-  return best
+  for (let i = 0; i < buffered.length; i++) if (buffered.start(i) > currentTime) return buffered.start(i)
+  return undefined
 }
 
 /** `liveEdgeDelay` behind the end of the last range, but not before its start. Needs at least one range. */
@@ -102,9 +101,11 @@ if (import.meta.vitest) {
       expect(gapJumpTarget(10.2, holes, false, LIVE_EDGE_DELAY)).toBe(13)
     })
 
-    test('outside every range: live goes near the end of the last one, VOD to the nearest edge', () => {
+    test('outside every range: live goes near the end of the last one, VOD to the next one', () => {
       expect(gapJumpTarget(11, holes, true, LIVE_EDGE_DELAY)).toBe(19.25)
       expect(gapJumpTarget(12.7, holes, false, LIVE_EDGE_DELAY)).toBe(13)
+      expect(gapJumpTarget(10.4, holes, false, LIVE_EDGE_DELAY)).toBe(12) // not back to 10.3
+      expect(gapJumpTarget(21, holes, false, LIVE_EDGE_DELAY)).toBeUndefined()
       expect(gapJumpTarget(1, timeRanges([]), true, LIVE_EDGE_DELAY)).toBeUndefined()
     })
   })

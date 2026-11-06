@@ -57,6 +57,7 @@ if (import.meta.vitest) {
   type Definition = import('@/player/element/define').SourceElementDefinition
   type Respond = import('@/player/testing/client').FakeClient['respond']
   type MoqtObject = import('@/model/data/object').MoqtObject
+  type MediaSourceOptions = import('@/player/element/interfaces').MediaSourceOptions
 
   const bytes = (json: unknown) => new TextEncoder().encode(typeof json === 'string' ? json : JSON.stringify(json))
   const gzip = async (data: Uint8Array) =>
@@ -92,7 +93,11 @@ if (import.meta.vitest) {
   const names = (tracks: readonly Track[]) => tracks.map((t) => t.name).join(',')
 
   /** A catalog source over a fake client, with a media source that logs loads and `setTracks`. */
-  async function setup(options: Options | ((stub: (name: string) => Definition) => Options) = {}, respond?: Respond) {
+  async function setup(
+    options: Options | ((stub: (name: string) => Definition) => Options) = {},
+    respond?: Respond,
+    params = '',
+  ) {
     const client = new FakeClient()
     if (respond) client.respond = respond
     const log: string[] = []
@@ -108,7 +113,11 @@ if (import.meta.vitest) {
         init: async (context, loadOptions?: Record<string, unknown>) => {
           const first = context.tracks[0]!.name
           const child = loadOptions?.['child'] ? ` around ${(loadOptions['child'] as Definition).name}` : ''
-          log.push(`${name === 'media' ? 'load' : name} ${names(context.tracks)}${child}`)
+          const ranges = (loadOptions as MediaSourceOptions | undefined)?.ranges
+          const where = ranges
+            ? ` ${[...ranges.locationRanges.map((r) => `L${r.start.group}-${r.end?.group ?? ''}`), ...ranges.mediaTimeRanges.map((r) => `T${r.start}-${r.end ?? ''}`)]}`
+            : ''
+          log.push(`${name === 'media' ? 'load' : name} ${names(context.tracks)}${child}${where}`)
           return Object.assign(new TestSource(context), {
             getRenditions: () => [],
             switch: async () => {},
@@ -126,7 +135,7 @@ if (import.meta.vitest) {
     let element: Catalog | undefined
     chain.host.player.on('catalog', (c) => (element = c as Catalog))
     chain.host.player.on('warning', (w) => warnings.push(w.code))
-    chain.addSource(CatalogSource, { ...parseMsfUrl('moqt://relay.test/app#msf:ns--catalog') })
+    chain.addSource(CatalogSource, { ...parseMsfUrl(`moqt://relay.test/app#msf:ns--catalog${params}`) })
     let settled: string | undefined
     const init = chain.init(new AbortController().signal).then(
       () => (settled = 'resolved'),
@@ -285,6 +294,22 @@ if (import.meta.vitest) {
       expect(c.client.sent('subscribe')).toHaveLength(2) // the catalog, and one media timeline
       await c.push(entries([[2000, [2, 0], 0]], 1))
       expect([reader?.timeToLocation(2500), reader?.range]).toEqual([new Location(2n, 0n), { start: 0, end: 2000 }])
+    })
+
+    test('location ranges: as written for the video set, as media time for audio when both have a timeline', async () => {
+      const params = '&location-range=2-4&mediatime-range=50000'
+      const c = await setup({}, undefined, params)
+      const template = (ms: number) => ({ template: [0, ms, [0, 0], [1, 0], 0, 0] })
+      await c.push(
+        object(1, 0, bytes(catalog([track('v1', 'video', template(2000)), track('a1', 'audio', template(700))]))),
+      )
+      await c.init
+      // Video groups 2-4 are 4 s up to 10 s.
+      expect(c.log).toEqual(['load v1 L2-4,T50000-', 'load a1 T50000-,T4000-9999'])
+
+      const plain = await setup({}, undefined, params)
+      await plain.push(object(1, 0, bytes(catalog([track('v1', 'video'), track('a1', 'audio')]))))
+      expect(plain.log).toEqual(['load v1 L2-4,T50000-', 'load a1 L2-4,T50000-'])
     })
 
     test('timeline(): a media timeline that fails is a warning once, then undefined without a new subscribe', async () => {

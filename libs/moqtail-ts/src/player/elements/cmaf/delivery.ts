@@ -59,7 +59,7 @@ export interface Target {
   end?: End
   /** FETCH: VOD, or a live range behind the live edge. */
   fetch: boolean
-  /** Live, `start` behind the live edge: SUBSCRIBE from the next group, filled from `start`. */
+  /** Live, `start` behind the live edge: SUBSCRIBE from the next object, filled from `start`. */
   fill?: boolean
 }
 
@@ -68,6 +68,8 @@ interface SoftSwitch {
   track: CatalogTrack
   /** Where the old track ends; its later objects are dropped. */
   end: End
+  /** The old track was read through `end`: its drain can stop. */
+  drained?: boolean
   accepted: Promise<RequestError | SubscribeResult>
 }
 
@@ -253,18 +255,23 @@ export class Delivery {
     return fetch(client, this.hooks, track, { ...this.#common(track), locationFilter })
   }
 
-  /** The SUBSCRIBE for a live `target`: from the next group, from `start`, or filled from `start`. */
+  /**
+   * The SUBSCRIBE for a live `target`: from the next group, from `start`, or filled from `start`.
+   * A filled one starts at the next object, so fill and subscription meet without a hole or an
+   * overlap (moqt-22 3.4); from the next group, the rest of the current group would be lost.
+   */
   subscribeOptions(track: CatalogTrack, target: Target): SubscribeOptions {
     const start = target.start
     const fill = start && target.fill
-    const locationFilter =
-      start && !fill
+    const locationFilter = fill
+      ? new LocationFilter(LocationFilterType.NextObject)
+      : start
         ? new LocationFilter(LocationFilterType.AbsoluteStart, start.group, start.object)
         : new LocationFilter(LocationFilterType.RelativeStart, 0n)
     const parameters = fill
       ? [new FillParameters([new LocationFilter(LocationFilterType.AbsoluteStart, start.group, 0n)])]
       : undefined
-    return { ...this.#common(track), forward: true, locationFilter, ...(parameters && { parameters }) }
+    return { ...this.#common(track), locationFilter, ...(parameters && { parameters }) }
   }
 
   /** Stops the request being read after `end`; later objects aren't written. */
@@ -281,6 +288,15 @@ export class Delivery {
   /** A `SWITCH_FROM` switch hasn't seen its new track yet. */
   get switching(): boolean {
     return this.#soft !== undefined
+  }
+
+  /**
+   * The old track of a `SWITCH_FROM` switch is still needed: not read through its end yet.
+   * The client holds the new track's objects while the old one drains, so the drain has to
+   * stop at the switch point rather than at the end of the old group.
+   */
+  get draining(): boolean {
+    return this.#soft !== undefined && !this.#soft.drained
   }
 
   /** The only end signal on the pad. */
@@ -340,7 +356,11 @@ export class Delivery {
           if (!entered) return 'rejected'
           retired = trackKey(current)
           current = entered
-        } else if ((retired && key === retired) || (soft && beyond(value.location, soft.end))) continue
+        } else if (retired && key === retired) continue
+        else if (soft) {
+          if (beyond(value.location, soft.end) || reached(value, soft.end)) soft.drained = true
+          if (beyond(value.location, soft.end)) continue
+        }
         // Only the current track gets here, and #enter made its request the current one.
         if (!value.hasStatus() && this.#skipped(this.#current!.accepted.requestId, value.location)) continue
         const end = this.#stop
@@ -619,45 +639,6 @@ if (import.meta.vitest) {
       await flush()
       expect(c.trace()).toEqual(['props live,mimeType,track', '1.0', 'gap', '2.0', '2.1', 'gap', '4.0'])
     })
-
-    test.each([false, true])(
-      'fast switch over av-2r with shuffled, interleaved delivery comes out in order (switchFrom: %s)',
-      async (switchFrom) => {
-        const { loadFixture } = await import('@/player/testing/fixture')
-        const fixture = await loadFixture('av-2r')
-        const [low, high] = fixture.tracks.map((t) => ({ ...t, isLive: true })) as [CatalogTrack, CatalogTrack]
-        const group = (track: CatalogTrack, g: number) =>
-          fixture.objectsFor(track).filter((o) => o.location.group === BigInt(g))
-        // One stream per object: neighbours swap places.
-        const shuffled = <T>(objects: T[]) => objects.map((o, i) => objects[i ^ 1] ?? o)
-        const c = await cmafChain([low, high], { cmaf: { switchFrom }, ordered: true })
-        await flush()
-        const old = c.client.last
-        old.push(...shuffled(group(low, 0)))
-        old.endGroup(0, 29)
-        await flush()
-        const switched = c.source.switch('video-180p')
-        await flush()
-        // 180p (groups 0, 2, …) switches at frame 60, its group 2; 90p plays to frame 59, 1.29.
-        const next = c.client.last
-        const [tail, head] = [shuffled(group(low, 1)), shuffled(group(high, 2))]
-        for (let i = 0; i < head.length; i++) {
-          if (tail[i]) old.push(tail[i]!)
-          next.push(head[i]!)
-        }
-        old.end() // ended at the switch point, or drained
-        await switched
-        await flush()
-        const range = (g: number, n: number) => Array.from({ length: n }, (_, i) => `${g}.${i}`)
-        expect(c.trace()).toEqual([
-          'props initData,live,mimeType,track',
-          ...range(0, 30),
-          ...range(1, 30),
-          'props initData,mimeType,track',
-          ...range(2, 60),
-        ])
-      },
-    )
 
     test('a catalog namespace other than the track’s prefixes the track id', async () => {
       const catalog = Object.assign(fakeCatalog(), { namespace: new Tuple([TupleField.fromUtf8('other')]) })

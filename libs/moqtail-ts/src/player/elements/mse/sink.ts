@@ -46,8 +46,10 @@ interface PadState {
   initData?: Uint8Array | undefined
   /** Upstream seeks still waiting for their `discontinuity`. Packets are dropped meanwhile. */
   seeks: number
-  /** Where the latest upstream seek resumes. Buffered data from there on gets replaced. */
-  resumeAt: number
+  /** Upstream seeks sent so far: a packet that waited for room across one is from before it. */
+  epoch: number
+  /** Where the latest upstream seek's data replaces what's buffered: removed from there on once answered. */
+  replaceFrom: number
   /** Live only: seconds buffered ahead when an append hit the quota with nothing behind to free. */
   quotaAhead?: number | undefined
   ended: boolean
@@ -55,7 +57,16 @@ interface PadState {
   keyframes: number[]
   /** The group of the last appended packet; unset when the next one doesn't continue it. */
   group?: bigint | undefined
+  /**
+   * After a `properties` item changed the track, where the new track starts: the old track's
+   * data before it is removed once playback gets there. `'next group'` until its first group
+   * is appended.
+   */
+  replacedBefore?: 'next group' | number | undefined
 }
+
+/** How far before a new track's first group the removal of the old track's data stops, in seconds. */
+const SPLICE_TOLERANCE = 0.1
 
 /** Media element events the sink dispatches on itself. */
 const RELAYED_EVENTS = ['playing', 'pause', 'stalled', 'waiting', 'timeupdate', 'seeked', 'ended']
@@ -183,8 +194,9 @@ export class MSESink extends SinkElement implements MediaSinkElement {
     if (item.type === 'properties') return this.#applyProperties(state, item.properties)
     const payload = item.object.payload
     if (state.seeks > 0 || !payload) return
+    const epoch = state.epoch
     await this.#buffers.promise
-    if (!(await this.#makeRoom(pad, state)) || state.seeks > 0 || !state.queue) return
+    if (!(await this.#makeRoom(pad, state, epoch)) || state.epoch !== epoch || !state.queue) return
 
     const source = this.#source
     const queue = state.queue
@@ -211,8 +223,13 @@ export class MSESink extends SinkElement implements MediaSinkElement {
     // CMSF groups start at keyframes. An object that added no frames leaves nothing to record.
     if (group !== state.group && queue.buffer.buffered.length > 0) {
       const start = queue.buffer.buffered.start(0)
-      state.keyframes = [...state.keyframes.filter((k) => k >= start), groupStart(queue.buffer, previousEnd)]
+      const keyframe = groupStart(queue.buffer, previousEnd)
+      state.keyframes = [...state.keyframes.filter((k) => k >= start), keyframe]
       state.group = group
+      if (state.replacedBefore === 'next group') {
+        state.replacedBefore = keyframe
+        this.#dropReplaced()
+      }
     }
     this.#maybeStart()
   }
@@ -232,7 +249,7 @@ export class MSESink extends SinkElement implements MediaSinkElement {
 
   #padAdded(pad: Pad): void {
     if (pad.direction !== 'sink') return
-    this.#pads.set(pad, { properties: {}, seeks: 0, resumeAt: 0, ended: false, keyframes: [] })
+    this.#pads.set(pad, { properties: {}, seeks: 0, epoch: 0, replaceFrom: 0, ended: false, keyframes: [] })
     pad.onEvent((event) => this.#onEvent(pad, event))
     if (this.#created) this.#rebuild()
   }
@@ -245,6 +262,8 @@ export class MSESink extends SinkElement implements MediaSinkElement {
 
   async #applyProperties(state: PadState, changes: Partial<PadProperties>): Promise<void> {
     const previous = state.properties.mimeType
+    if (changes.track !== undefined && state.properties.track !== undefined && changes.track !== state.properties.track)
+      state.replacedBefore = 'next group'
     state.properties = { ...state.properties, ...changes }
     if (changes.initData) state.initData = changes.initData
     if (changes.live !== undefined) this.#live = changes.live
@@ -283,7 +302,7 @@ export class MSESink extends SinkElement implements MediaSinkElement {
    * a quota error does live drop packets, until half of what was ahead has played, then it
    * seeks upstream once to where the data stops.
    */
-  async #makeRoom(pad: Pad, state: PadState): Promise<boolean> {
+  async #makeRoom(pad: Pad, state: PadState, epoch: number): Promise<boolean> {
     if (this.#live) {
       if (state.quotaAhead === undefined) return true
       const end = (state.queue && bufferedEnd(state.queue.buffer)) ?? this.#video.currentTime
@@ -291,7 +310,8 @@ export class MSESink extends SinkElement implements MediaSinkElement {
       this.#seekUpstream(pad, state, end)
       return false
     }
-    while (!this.#hasRoom(state) && state.seeks === 0) {
+    // Not `seeks`: one answered before this wakes would leave it waiting on a full buffer for good.
+    while (!this.#hasRoom(state) && state.epoch === epoch) {
       await this.#changed.promise
       this.context.signal.throwIfAborted()
       if (this.#fatal) throw this.#fatal
@@ -326,6 +346,9 @@ export class MSESink extends SinkElement implements MediaSinkElement {
     if (event.type === 'eos') {
       state.ended = true
       void this.#endOfStream()
+    } else if (event.type === 'flush') {
+      // Everything the pad buffered goes once the source answers: what comes next replaces it all.
+      this.#seekUpstream(pad, state, this.#video.currentTime, 0)
     } else if (event.type === 'discontinuity' && event.reason === 'gap') {
       this.#checkGap()
     } else if (event.type === 'discontinuity' && state.seeks > 0) {
@@ -343,13 +366,17 @@ export class MSESink extends SinkElement implements MediaSinkElement {
     for (const [pad, state] of this.#pads) this.#seekUpstream(pad, state, target)
   }
 
-  /** The source answers every `seek` with one `discontinuity`, so counting them needs no seek identifier. */
-  #seekUpstream(pad: Pad, state: PadState, mediaTime: number): void {
+  /**
+   * The source answers every `seek` with one `discontinuity`, so counting them needs no seek
+   * identifier. Once answered, what's buffered from `removeFrom` on is removed.
+   */
+  #seekUpstream(pad: Pad, state: PadState, mediaTime: number, removeFrom = mediaTime): void {
     state.seeks++
-    state.resumeAt = mediaTime
+    state.epoch++
+    state.replaceFrom = removeFrom
     state.ended = false
     state.quotaAhead = undefined
-    pad.sendEvent({ type: 'seek', mediaTime })
+    pad.signal({ type: 'seek', mediaTime })
     this.#notify()
   }
 
@@ -360,18 +387,58 @@ export class MSESink extends SinkElement implements MediaSinkElement {
       return
     }
     if (--state.seeks > 0) return
-    const from = state.resumeAt
+    const from = state.replaceFrom
     state.keyframes = state.keyframes.filter((k) => k < from)
     state.group = undefined
-    // A failure here means the buffer is gone, which the next append reports.
-    state.queue?.run((b) => removeBuffered(b, from, Infinity)).catch(() => {})
+    // The buffer from here on is replaced, which also takes care of a switch's old data.
+    state.replacedBefore = undefined
+    // A failure here means the buffer is gone, which the next append reports. Packets waiting
+    // for room look again once it's done: a plain MediaSource fires nothing on a removal.
+    state.queue
+      ?.run((b) => removeBuffered(b, from, Infinity))
+      .catch(() => {})
+      .then(this.#notify)
   }
 
   #checkGap(): void {
     const video = this.#video
-    if (!this.#started || video.seeking) return
+    if (!this.#started) return
+    this.#dropReplaced()
+    if (video.seeking) return this.#unstrand()
     const target = gapJumpTarget(video.currentTime, video.buffered, this.#live, this.#options.liveEdgeDelay)
     if (target !== undefined && target > video.currentTime) this.#seeks.jump(target)
+  }
+
+  /**
+   * A seek that landed just before the data never completes: a group located a little late, or
+   * tracks whose data starts at different times. Once no upstream seek is pending and every
+   * buffer has data past it, nothing will fill the spot, so it jumps to where the data starts.
+   */
+  #unstrand(): void {
+    const time = this.#video.currentTime
+    const buffered = this.#video.buffered
+    if (rangeAt(time, buffered) !== -1) return
+    for (const state of this.#pads.values()) {
+      if (state.seeks > 0 || !state.queue || (bufferedEnd(state.queue.buffer) ?? 0) <= time) return
+    }
+    for (let i = 0; i < buffered.length; i++) if (buffered.start(i) > time) return this.#seeks.jump(buffered.start(i))
+  }
+
+  /**
+   * After a switch, the old track's data plays out up to the new track's first group. Once
+   * playback gets there, everything before it is removed, so a seek back never shows the old
+   * track. It stops short of that group by `SPLICE_TOLERANCE`, because `remove()` also takes
+   * the frames up to the next keyframe, and the new group may start a little earlier.
+   */
+  #dropReplaced(): void {
+    const time = this.#video.currentTime
+    for (const state of this.#pads.values()) {
+      const before = state.replacedBefore
+      if (typeof before !== 'number' || time < before || !state.queue) continue
+      state.replacedBefore = undefined
+      state.keyframes = state.keyframes.filter((k) => k >= before)
+      state.queue.run((b) => removeBuffered(b, 0, before - SPLICE_TOLERANCE)).catch(() => {})
+    }
   }
 
   /** A live sink that fell behind the seekable range jumps near the end of `buffered`. A paused one stays paused. */
@@ -444,6 +511,7 @@ export class MSESink extends SinkElement implements MediaSinkElement {
       state.initData = state.properties.initData
       state.keyframes = []
       state.group = undefined
+      state.replacedBefore = undefined
       if (resumeAt !== undefined) this.#seekUpstream(pad, state, resumeAt)
     }
     this.#attach()

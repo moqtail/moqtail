@@ -116,7 +116,7 @@ export class Forwarder {
     const target = timeline?.timeToLocation(mediaTime * 1000)
     if (!target || !last || target.group > last.group) {
       const pad = this.host.sinkPadOf(child)
-      if (pad) return pad.sendEvent({ type: 'seek', mediaTime })
+      if (pad) return void pad.signal({ type: 'seek', mediaTime })
       return void this.#owed++
     }
     this.#owed++

@@ -72,8 +72,9 @@ export function locate(
 }
 
 /**
- * The request for a seek to `location`: a FETCH for VOD or a fetched range, else one SUBSCRIBE
- * from the next group, filled from the target when it's behind the live edge (`last`).
+ * The request for a seek to `location`: a FETCH for VOD or a fetched range, else one SUBSCRIBE:
+ * from the next object, filled from the target, when it's behind the live edge (`last`), else
+ * from the next group.
  */
 export function seekTarget(location: Location, fetch: boolean, last: Location | undefined): Target {
   if (fetch) return { fetch, start: location }
@@ -150,7 +151,7 @@ if (import.meta.vitest) {
     await flush()
     expect(c.requests()).toEqual([
       'subscribe v1 next',
-      'subscribe v1 next fill 3.0-',
+      'subscribe v1 nextobject fill 3.0-',
       'unsubscribe 0',
       'subscribe v1 next',
       'unsubscribe 1',

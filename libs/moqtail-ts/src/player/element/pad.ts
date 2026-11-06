@@ -46,6 +46,7 @@ export interface PadProperties {
 /** @public Events travelling between pads. */
 export type PadEvent =
   | { type: 'seek'; mediaTime: number } // upstream
+  | { type: 'flush' } // downstream
   | { type: 'discontinuity'; reason: 'seek' | 'gap'; mediaTime?: number; failed?: boolean } // downstream
   | { type: 'eos' } // downstream
 
@@ -79,10 +80,15 @@ export class Pad {
     return Promise.all(Array.from(this.#connections.values(), (c) => c.push(item))).then(() => undefined)
   }
 
-  /** Sink pads only. Delivers an upstream event immediately to the connected source pads. */
-  sendEvent(event: PadEvent): void {
-    if (this.direction !== 'sink') throw new TypeError('sendEvent() is only for sink pads')
-    for (const peer of this.peers) peer.#deliverUpstream(event)
+  /**
+   * Delivers `event` immediately to the connected pads: upstream from a sink pad, downstream
+   * from a source pad, ahead of anything written. An element that doesn't handle it passes it
+   * on through its other pads. Returns whether any element handled it.
+   */
+  signal(event: PadEvent): boolean {
+    let handled = false
+    for (const peer of this.peers) if (peer.#deliver(event)) handled = true
+    return handled
   }
 
   /** Return true when the event is handled; false forwards it past this pad's element. */
@@ -100,9 +106,11 @@ export class Pad {
     return this.element.pads.filter((pad) => pad.direction !== this.direction)
   }
 
-  #deliverUpstream(event: PadEvent): void {
-    if (this.#handled(event)) return
-    for (const pad of this.#otherSide()) pad.sendEvent(event)
+  #deliver(event: PadEvent): boolean {
+    if (this.#handled(event)) return true
+    let handled = false
+    for (const pad of this.#otherSide()) if (pad.signal(event)) handled = true
+    return handled
   }
 
   /** @internal Delivers a downstream event; unhandled ones land behind what the element already wrote. */
@@ -299,8 +307,16 @@ if (import.meta.vitest) {
       expect(sink!.pads[0]!.peers[0]!.element).toBe(transform)
       expect(sink!.items()).toEqual([packet(1), eos])
 
-      sink!.pads[0]!.sendEvent({ type: 'seek', mediaTime: 5 })
+      expect(sink!.pads[0]!.signal({ type: 'seek', mediaTime: 5 })).toBe(true)
       expect(upstream).toEqual([{ type: 'seek', mediaTime: 5 }])
+
+      // A signal skips what's written: it reaches the sink before the packet the source can't push yet.
+      sink!.slow = () => new Promise(() => {})
+      void source!.pads[0]!.write(packet(2))
+      expect(source!.pads[0]!.signal({ type: 'flush' })).toBe(true)
+      expect(sink!.items().at(-1)).toEqual({ type: 'event', event: { type: 'flush' } })
+      sink!.consumeEvents = false
+      expect(source!.pads[0]!.signal({ type: 'flush' })).toBe(false)
     })
   })
 }

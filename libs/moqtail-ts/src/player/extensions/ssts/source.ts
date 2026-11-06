@@ -522,13 +522,13 @@ if (import.meta.vitest) {
     const c = await sstsChain([[v('v1'), v('v2')]], { catalog: fakeCatalog([], twoSecondTimeline()) })
     c.request('v1').push(mediaObject(5), mediaObject(6))
     await flush()
-    c.sink.pads[0]!.sendEvent({ type: 'seek', mediaTime: 60 }) // group 31, past the edge
+    c.sink.pads[0]!.signal({ type: 'seek', mediaTime: 60 }) // group 31, past the edge
     await flush()
     c.request('v1').push(mediaObject(40))
     await flush()
     expect(c.trace().slice(-2)).toEqual(['seek', '40.0'])
 
-    c.sink.pads[0]!.sendEvent({ type: 'seek', mediaTime: 5 }) // group 3, behind it
+    c.sink.pads[0]!.signal({ type: 'seek', mediaTime: 5 }) // group 3, behind it
     await flush()
     const history = c.client.requests.at(-1)!
     expect(history.kind).toBe('fetch')
@@ -556,7 +556,7 @@ if (import.meta.vitest) {
       child: child as unknown as typeof Cmaf,
       catalog: fakeCatalog([], twoSecondTimeline()),
     })
-    c.sink.pads[0]!.sendEvent({ type: 'seek', mediaTime: 5 }) // group 3, behind group 5
+    c.sink.pads[0]!.signal({ type: 'seek', mediaTime: 5 }) // group 3, behind group 5
     await flush()
     expect(c.sink.items().at(-1)).toEqual({
       type: 'event',

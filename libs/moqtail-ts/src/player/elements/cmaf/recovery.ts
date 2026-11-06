@@ -66,6 +66,8 @@ export class Recovery {
   #reconnect: PromiseWithResolvers<void> | undefined
   /** Set while nothing is selected; resolved by a new selection. */
   #paused: PromiseWithResolvers<void> | undefined
+  /** Set after the `eos`; resolved by a seek, which plays again. */
+  #ended: PromiseWithResolvers<void> | undefined
   /** The latest seek not requested yet, in seconds. */
   #seekTo: number | undefined
   #handover: Handover | undefined
@@ -105,10 +107,11 @@ export class Recovery {
       player.off('catalog', changed)
       back()
       this.resume()
+      this.#ended?.resolve()
     })
   }
 
-  /** Plays until the `eos`, until no rendition is left, or until the source is destroyed. */
+  /** Plays until no rendition is left or the source is destroyed. After the `eos`, a seek plays again. */
   async run(): Promise<void> {
     const { signal } = this.context
     const maxFailures = this.context.player.options.client?.reconnectAttempts ?? 5
@@ -118,7 +121,10 @@ export class Recovery {
       await this.#reconnect?.promise // a lost session isn't a failure, it waits for the new one
       await this.#paused?.promise
       if (signal.aborted) return
-      if (this.#holding !== undefined && this.#isFinal()) return this.delivery.eos()
+      if (this.#holding !== undefined && this.#isFinal()) {
+        await this.#finish()
+        continue
+      }
       this.#attempt = new AbortController()
       const attempt = AbortSignal.any([this.#attempt.signal, signal])
       if (this.#seekTo !== undefined) await this.#locateSeek()
@@ -146,12 +152,12 @@ export class Recovery {
       if (outcome === 'stopped') continue
       if (outcome === 'done') {
         if (this.#spans.length === 0) continue
-        if (this.#nextSpan()) continue
-        return this.delivery.eos()
+        if (!this.#nextSpan()) await this.#finish()
+        continue
       }
       if (outcome === 'ended') {
-        if (this.#isFinal()) return this.delivery.eos()
-        this.#holding ??= 0
+        if (this.#isFinal()) await this.#finish()
+        else this.#holding ??= 0
         continue
       }
       if (this.#holding !== undefined) continue // while holding, a rejection is just another try
@@ -172,6 +178,7 @@ export class Recovery {
     // A switch during a seek resumes on the new track.
     this.#takeHandover()
     this.#attempt.abort(REPLACED)
+    this.#ended?.resolve()
   }
 
   /** A seek is pending: not requested, or not answered yet. */
@@ -185,8 +192,13 @@ export class Recovery {
     this.#attempt.abort(REPLACED)
   }
 
-  /** Continues on `track` with `request` once the track being read reaches its stop point. */
+  /**
+   * Continues on `track` with `request` once the track being read reaches its stop point. It
+   * replaces a pending handover to another track (an interrupted climb), whose request is cancelled.
+   */
   handOver(track: CatalogTrack, request: Promise<RequestError | Accepted>, start: Location, soft: boolean): void {
+    const replaced = this.#handover
+    if (replaced && replaced.track !== track) void replaced.request.then((late) => cancel(replaced.client, late))
     this.#handover = { track, request, client: this.context.client, start, soft }
   }
 
@@ -258,7 +270,8 @@ export class Recovery {
     const { times } = this.delivery
     // A long GoP may not have shown two groups yet: the catalog's group duration stands in.
     const duration = times.groupDuration(key) ?? groupDuration(track, set)
-    let location = locate(time, track, timeline, (t) => times.estimate(key, t, groupStep(track, set), duration))
+    const estimate = (t: number) => times.estimate(key, t, groupStep(track, set), duration) ?? this.#fromLast(t, track)
+    let location = locate(time, track, timeline, estimate)
     if (!location) return this.delivery.failSeeks()
     let fetch = !track.isLive
     if (this.#spans.length > 0) {
@@ -269,6 +282,28 @@ export class Recovery {
     }
     const last = this.delivery.last
     this.#target = seekTarget(location, fetch, last?.track === key ? last.location : undefined)
+  }
+
+  /** Writes the `eos`, then waits for a seek (or destruction) before playing again. */
+  async #finish(): Promise<void> {
+    this.#holding = undefined
+    await this.delivery.eos()
+    if (this.#seekTo !== undefined || this.context.signal.aborted) return
+    this.#ended = Promise.withResolvers()
+    await this.#ended.promise
+    this.#ended = undefined
+  }
+
+  /** Estimated from the track delivered last, for a track not delivered yet (a VOD switch), mapped onto `track`. */
+  #fromLast(mediaTime: number, track: CatalogTrack): Location | undefined {
+    const last = this.delivery.last
+    const set = this.host.tracks()
+    const previous = set.find((t) => trackKey(t) === last?.track)
+    if (!last || !previous) return undefined
+    const { times } = this.delivery
+    const duration = times.groupDuration(last.track) ?? groupDuration(previous, set)
+    const at = times.estimate(last.track, mediaTime, groupStep(previous, set), duration)
+    return at && mapLocation(at, previous, track, set)
   }
 
   /** Moves to the selected rendition closest in bitrate, or gives up. */
@@ -312,7 +347,8 @@ const pause = (ms: number, signal: AbortSignal): Promise<boolean> =>
 
 if (import.meta.vitest) {
   const { describe, test, expect, vi, afterEach } = import.meta.vitest
-  const { cmafChain, cmafTrack, fakeCatalog, requested } = await import('@/player/testing/cmaf')
+  const { cmafChain, cmafTrack, fakeCatalog, requested, twoSecondTimeline } = await import('@/player/testing/cmaf')
+  const timeline = twoSecondTimeline()
   const { mediaObject, refuse } = await import('@/player/testing/client')
   const { flush } = await import('@/player/testing/elements')
   const { PublishDoneStatusCode } = await import('@/model/control/constant')
@@ -399,6 +435,22 @@ if (import.meta.vitest) {
       const sent = c.client.sent('subscribe').length
       await elapse()
       expect(c.client.sent('subscribe').length).toBe(sent)
+    })
+
+    test('after the eos of a VOD track, a seek fetches again', async () => {
+      const respond = () => ({ endOfTrack: true })
+      const c = await cmafChain([cmafTrack('v1', { isLive: false })], { respond, catalog: fakeCatalog([], timeline) })
+      await flush()
+      c.client.last.push(mediaObject(0), mediaObject(1))
+      c.client.last.end()
+      await flush()
+      expect(c.trace().slice(-1)).toEqual(['eos'])
+      c.seek(5) // group 3
+      await flush()
+      c.client.last.push(mediaObject(3))
+      await flush()
+      expect(c.requests().filter((r) => r.startsWith('fetch '))).toEqual(['fetch v1 0.0-', 'fetch v1 3.0-'])
+      expect(c.trace().slice(-3)).toEqual(['eos', 'seek', '3.0'])
     })
 
     test('a lost session is not a failure: live resumes on the new client after a gap', async () => {

@@ -320,7 +320,7 @@ if (import.meta.vitest) {
       taken!.pads[0]!.onEvent((event) => (upstream.push(event), true))
       await taken!.pads[0]!.write(packet(1))
       await flush()
-      parent!.pads[0]!.sendEvent({ type: 'seek', mediaTime: 3 })
+      parent!.pads[0]!.signal({ type: 'seek', mediaTime: 3 })
       expect([received, upstream]).toEqual([[packet(1)], [{ type: 'seek', mediaTime: 3 }]])
 
       taken!.dropPad(taken!.pads[0]!)

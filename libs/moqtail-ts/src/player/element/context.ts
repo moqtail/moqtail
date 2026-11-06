@@ -23,7 +23,7 @@
 import type { MOQtailClient } from '@/client/client'
 import type { Emitter } from '@/util/emitter'
 import { PlayerError } from '@/player/error'
-import type { MOQtailPlayerOptions, PlayerEvents } from '@/player/player'
+import type { MOQtailPlayer, PlayerEvents } from '@/player/player'
 import type { BaseElement } from './base'
 import type { Chain } from './chain'
 import type { ElementDefinition, Identifiers, SourceElementDefinition } from './define'
@@ -31,7 +31,7 @@ import type { CatalogReader, CatalogTrack } from './interfaces'
 import { selectSource } from './negotiation'
 
 /** @public What elements see of the player: its events and options. */
-export type PlayerHandle = Emitter<PlayerEvents> & { readonly options: Readonly<MOQtailPlayerOptions> }
+export type PlayerHandle = Emitter<PlayerEvents> & Pick<MOQtailPlayer, 'options'>
 
 /** @public Given to `init`, one per element instance. */
 export interface ElementContext {

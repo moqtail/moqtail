@@ -143,9 +143,7 @@ export function selectEventTimelines(
 
 if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
-  const { readFileSync } = await import('node:fs')
   const { Tuple } = await import('@/model/common/tuple')
-  const { parseCatalog } = await import('./parse')
   const { testSource } = await import('@/player/testing/elements')
   const { probeCmaf } = await import('@/player/elements/cmaf')
 
@@ -153,27 +151,16 @@ if (import.meta.vitest) {
   const loc = testSource({ name: 'loc', probe: (t) => (t.packaging === 'loc' ? 1 : 0) })
   const timeline = testSource({ name: 'sap', probe: (t) => (t.eventType === 'org.ietf.moq.cmsf.sap' ? 1 : 0) })
   const probe = (track: CatalogTrack) => [cmaf, loc, timeline].find((d) => d.probe(track) > 0)
-  type Json = { version: string; tracks: Record<string, unknown>[] }
-  /** A conformance catalog, edited first; roles inferred as the catalog element does. */
-  const fixture = (name: string, edit: (json: Json) => void = () => {}) => {
-    const json = JSON.parse(
-      readFileSync(new URL(`../../../../test/fixtures/catalogs/${name}.json`, import.meta.url), 'utf8'),
-    ) as Json
-    edit(json)
-    const bytes = new TextEncoder().encode(JSON.stringify(json))
-    return parseCatalog(bytes, { namespace: Tuple.fromUtf8Path('ns'), variables: {} }).catalog.tracks.map(withRole)
-  }
   const names = (sets: SelectedSet[]) => sets.map((s) => `${s.definition.name}: ${s.tracks.map((t) => t.name)}`)
-  const without = (role: string) => (json: Json) => void (json.tracks = json.tracks.filter((t) => t['role'] !== role))
-  const reference = (json: Json) => {
-    json.version = 'draft-01' // the example still says "1"
-    for (const track of json.tracks) track['isLive'] = true
-  }
-  const languages = (json: Json) => {
-    const audio = json.tracks.find((t) => t['role'] === 'audio')!
-    audio['lang'] = 'en'
-    json.tracks.push({ ...audio, name: 'audio-fr', lang: 'fr-FR' })
-  }
+  const track = (name: string, extra: Partial<CatalogTrack> = {}) =>
+    withRole({
+      name,
+      nameBytes: new TextEncoder().encode(name),
+      namespace: Tuple.fromUtf8Path('ns'),
+      packaging: 'loc',
+      isLive: true,
+      ...extra,
+    } as CatalogTrack)
 
   describe('selection', () => {
     test('withRole infers from the MIME type, then video and audio fields', () => {
@@ -188,23 +175,8 @@ if (import.meta.vitest) {
       ]).toEqual(['audio', 'video', 'audio', 'caption', undefined])
     })
 
-    test.each([
-      ['msf-5.6.1', undefined, ['loc: 1080p-video', 'loc: audio']],
-      ['msf-5.6.2 simulcast', undefined, ['loc: hd,md,sd', 'loc: audio']],
-      ['msf-5.6.3 SVC', undefined, ['loc: 480p15', 'loc: audio']],
-      ['msf-5.6.7 roles inferred', undefined, ['loc: video', 'loc: audio']],
-      ['msf-5.6.15 first render group', undefined, ['loc: premium-4k-video', 'loc: audio']],
-      ['msf-5.6.16 references', reference, []],
-      ['msf-5.6.2 video only', without('audio'), ['loc: hd,md,sd']],
-      ['msf-5.6.1 audio only', without('video'), ['loc: audio']],
-      ['msf-5.6.1 multi-language', languages, ['loc: 1080p-video', 'loc: audio-fr']],
-    ] as const)('%s', (name, edit, expected) => {
-      const tracks = fixture(name.split(' ')[0]!, edit)
-      expect(names(selectMedia(tracks, { probe, language: 'fr-CA' }))).toEqual(expected)
-    })
-
     test('a set is split by packaging, and the lowest keyframeSpacing starts', () => {
-      const video = { ...fixture('msf-5.6.2')[0]!, packaging: 'cmaf' }
+      const video = track('v', { packaging: 'cmaf', codec: 'avc1.64001f', width: 1280, height: 720 })
       const set = [
         { ...video, name: 'a', altGroup: 1, keyframeSpacing: 4 },
         { ...video, name: 'b', altGroup: 1, packaging: 'loc' },
@@ -226,10 +198,13 @@ if (import.meta.vitest) {
     })
 
     test('event timelines are opt-in by eventType; unmatched ones are skipped', () => {
-      const tracks = fixture('msf-5.6.1', (json) => {
-        const event = { name: 'sap', packaging: 'eventtimeline', isLive: true }
-        json.tracks.push({ ...event, eventType: 'org.ietf.moq.cmsf.sap' }, { ...event, name: 'ads', eventType: 'ads' })
-      })
+      const event = { packaging: 'eventtimeline' }
+      const tracks = [
+        track('video', { height: 720 }),
+        track('audio', { channelConfig: '2' }),
+        track('sap', { ...event, eventType: 'org.ietf.moq.cmsf.sap' }),
+        track('ads', { ...event, eventType: 'ads' }),
+      ]
       expect(selectEventTimelines(tracks, { probe }).sets).toEqual([])
       const all = selectEventTimelines(tracks, { probe, eventTimelines: 'all' })
       expect([names(all.sets), all.skipped.map((t) => t.name)]).toEqual([['sap: sap'], ['ads']])

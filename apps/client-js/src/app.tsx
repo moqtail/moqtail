@@ -114,6 +114,7 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [player, setPlayer] = useState<MOQtailPlayer>();
   const [catalog, setCatalog] = useState<CatalogElement>();
+  const [session, setSession] = useState(0);
   const [advanced, setAdvanced] = useState(readAdvanced);
 
   const videoRef = useRef<MOQtailVideoElement | null>(null);
@@ -222,6 +223,7 @@ export function App() {
     setActiveTracks([]);
     setPlayer(undefined);
     setCatalog(undefined);
+    setSession(n => n + 1);
   }, []);
 
   const handleConnect = useCallback(() => {
@@ -402,7 +404,9 @@ export function App() {
         {tab === 'watch' ? (
           <div className="flex min-h-0 min-w-0 flex-1 flex-col">
             <VideoPlayer ref={videoRef} status={status} />
-            {advanced && <Advanced videoRef={videoRef} player={player} catalog={catalog} />}
+            {advanced && (
+              <Advanced videoRef={videoRef} player={player} catalog={catalog} session={session} />
+            )}
           </div>
         ) : showPreview ? (
           <main className="relative flex flex-1 flex-col items-center justify-center overflow-hidden bg-neutral-950 p-4 md:p-6">

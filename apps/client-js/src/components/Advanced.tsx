@@ -48,6 +48,7 @@ interface Props {
   videoRef: RefObject<MOQtailVideoElement>;
   player: MOQtailPlayer | undefined;
   catalog: CatalogElement | undefined;
+  session: number;
 }
 
 const TABS: { id: Tab; label: string }[] = [
@@ -71,10 +72,10 @@ const TONES: Record<Tone, string> = {
   warn: 'text-amber-300',
 };
 
-export function Advanced({ videoRef, player, catalog }: Props) {
+export function Advanced({ videoRef, player, catalog, session }: Props) {
   const [tab, setTab] = useState<Tab>('events');
-  const events = useEvents(videoRef, player);
-  const objects = useObjects(player);
+  const events = useEvents(videoRef, player, session);
+  const objects = useObjects(player, session);
 
   return (
     <section className="hidden h-[42%] min-h-60 shrink-0 flex-col border-t border-white/6 bg-neutral-950 md:flex">
@@ -134,10 +135,20 @@ export function Advanced({ videoRef, player, catalog }: Props) {
 }
 
 /** Element, rendition, and player events, newest last. */
-function useEvents(videoRef: RefObject<MOQtailVideoElement>, player: MOQtailPlayer | undefined) {
+function useEvents(
+  videoRef: RefObject<MOQtailVideoElement>,
+  player: MOQtailPlayer | undefined,
+  session: number,
+) {
   const [lines, setLines] = useState<EventLine[]>([]);
   // When the last rendition selection changed, to time the switch it asked for
   const switchAt = useRef<number>();
+
+  // A layout effect, so the log is empty before the new source's first event fires
+  useLayoutEffect(() => {
+    setLines([]);
+    switchAt.current = undefined;
+  }, [session]);
   const log = (text: string, tone: Tone) =>
     setLines(previous => [
       ...previous.slice(1 - MAX_EVENTS),
@@ -207,7 +218,7 @@ function useEvents(videoRef: RefObject<MOQtailVideoElement>, player: MOQtailPlay
 }
 
 /** Data events per track, kept outside state and painted once a frame: they arrive per object. */
-function useObjects(player: MOQtailPlayer | undefined) {
+function useObjects(player: MOQtailPlayer | undefined, session: number) {
   const [names, setNames] = useState<string[]>([]);
   const [filters, setFilters] = useState({
     header: true,
@@ -221,9 +232,6 @@ function useObjects(player: MOQtailPlayer | undefined) {
 
   useEffect(() => {
     if (!player) return;
-    // A new stream's tracks get their own columns
-    columns.current.clear();
-    setNames([]);
     // Lines of each stream whose track isn't known yet
     const pending = new Map<number, string[]>();
 
@@ -252,6 +260,12 @@ function useObjects(player: MOQtailPlayer | undefined) {
       if (lines.length > 0) append(track, lines);
     });
   }, [player]);
+
+  // A new source's tracks get their own columns
+  useLayoutEffect(() => {
+    columns.current.clear();
+    setNames([]);
+  }, [session]);
 
   useEffect(() => {
     let frame = requestAnimationFrame(function paint() {
@@ -331,7 +345,7 @@ function ObjectsView({ names, columns }: { names: string[]; columns: Map<string,
   );
 }
 
-function StatusView({ videoRef, player, catalog }: Props) {
+function StatusView({ videoRef, player, catalog }: Omit<Props, 'session'>) {
   const [, setTick] = useState(0);
   useEffect(() => {
     const id = setInterval(() => setTick(tick => tick + 1), 250);

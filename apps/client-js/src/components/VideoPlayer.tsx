@@ -63,7 +63,7 @@ function PublishIdleCard() {
             Test source emits a live clock overlay for quick end-to-end verification
           </li>
         </ul>
-        <div className="border-t border-white/6 pt-3">
+        <div className="flex border-t border-white/6 pt-3">
           <a
             href={`https://github.com/${GITHUB_REPO}/issues`}
             target="_blank"
@@ -139,7 +139,7 @@ function WatchIdleCard() {
           </a>
           .
         </p>
-        <div className="border-t border-white/6 pt-3">
+        <div className="flex border-t border-white/6 pt-3">
           <a
             href={`https://github.com/${GITHUB_REPO}/issues`}
             target="_blank"

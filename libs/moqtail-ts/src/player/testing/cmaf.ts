@@ -29,7 +29,7 @@ import { FillParameters } from '@/model/parameter/message/fill_parameters'
 import type { LocationFilter } from '@/model/parameter/message/location_filter'
 import type { CatalogReader, CatalogTrack, MediaSourceOptions, TimelineReader } from '@/player/element/interfaces'
 import { fragment } from './bmff'
-import { FakeClient } from './client'
+import { FakeClient, testObject } from './client'
 import { collectingSink, testChain, testSource, track, type CollectingSink } from './elements'
 
 /** A CMAF video track in namespace `ns`. */
@@ -128,7 +128,7 @@ export async function cmafChain(
     },
     /** What the sink received, in short: `props <keys>`, `<group>.<object>`, `gap`, `eos`. */
     trace(): string[] {
-      // The first pad's log, kept after the pad is removed.
+      // The first pad's log, kept after the pad is removed
       return (sink.log.values().next().value ?? []).map((item) => {
         if (item.type === 'packet') return `${item.object.location.group}.${item.object.location.object}`
         if (item.type === 'properties') return `props ${Object.keys(item.properties).sort().join(',')}`
@@ -173,15 +173,7 @@ function describeFilter(filter: LocationFilter | undefined): string {
 
 /** A media object of `track` whose payload is a fragment at `time` seconds (timescale 1000). */
 export function timedObject(group: number, time: number, track = 'v1', object = 0): MoqtObject {
-  return MoqtObject.newWithPayload(
-    FullTrackName.tryNew('ns', track),
-    new Location(group, object),
-    0,
-    ObjectForwardingPreference.Subgroup,
-    0,
-    null,
-    fragment(time * 1000),
-  )
+  return testObject(track, group, object, fragment(time * 1000))
 }
 
 /** A timeline where group `1 + n` starts at `n × 2` seconds, and the live edge is at `edgeMs`. */

@@ -22,7 +22,7 @@
 
 import { KeyValuePair } from '@/model/common/pair'
 
-// Even, so the value is a varint (moqt-22 KeyValuePair).
+// Even, so the value is a varint (moqt-22 KeyValuePair)
 const MSF_COMPRESSION = 0x78
 
 /** Track property: every object of the track is compressed with `algorithm` (MSF 12.1.1). */
@@ -58,7 +58,9 @@ export class MsfCompressionObjectProperty {
 }
 
 /** The algorithms of MSF 12.1, Table 14, that {@link decompress} supports. */
-export const isSupportedCompression = (algorithm: number): boolean => algorithm === 0 || algorithm === 1
+export function isSupportedCompression(algorithm: number): boolean {
+  return algorithm === 0 || algorithm === 1
+}
 
 /**
  * Decompresses a payload: 0 is uncompressed, 1 is GZIP. Output is counted while streaming,
@@ -94,13 +96,8 @@ export async function decompress(bytes: Uint8Array, algorithm: number, maxBytes:
 if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
   const { findProperty } = await import('@/model/property/find')
+  const { gzip } = await import('@/player/testing/client')
   const text = new TextEncoder().encode('{"version":"draft-01","tracks":[]}'.repeat(100))
-  const gzip = async (bytes: Uint8Array) =>
-    new Uint8Array(
-      await new Response(
-        new Blob([bytes as Uint8Array<ArrayBuffer>]).stream().pipeThrough(new CompressionStream('gzip')),
-      ).arrayBuffer(),
-    )
 
   describe('decompress', () => {
     test('round trips GZIP and passes uncompressed payloads through', async () => {

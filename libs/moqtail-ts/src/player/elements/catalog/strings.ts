@@ -25,7 +25,9 @@ import { PlayerError } from '@/player/error'
 const encoder = new TextEncoder()
 
 /** The error for a catalog that can't be used at all. */
-export const invalidCatalog = (reason: string) => new PlayerError('UNSUPPORTED_SOURCE', `Invalid catalog: ${reason}`)
+export function invalidCatalog(reason: string, cause?: unknown): PlayerError {
+  return new PlayerError('UNSUPPORTED_SOURCE', `Invalid catalog: ${reason}`, { cause })
+}
 
 /**
  * The UTF-8 bytes of a track name, namespace field, or name reference (MSF 11.2.1).

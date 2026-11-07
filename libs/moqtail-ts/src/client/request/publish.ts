@@ -15,7 +15,7 @@
  */
 
 import { Publish, RequestError, RequestOk } from '@/model'
-import { logger } from '../../util/logger'
+import { logger } from '@/util/logger'
 import { isSessionClosed } from '@/client/util/stream_reset'
 
 export class PublishRequest implements PromiseLike<RequestOk | RequestError> {

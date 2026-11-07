@@ -21,19 +21,15 @@
 
 import { MOQtailClient } from '@/client/client'
 import type { MOQtailClientOptions } from '@/client/types'
-import type { SetupOptions } from '@/model/parameter/setup_option'
+import type { MOQtailPlayerOptions } from '@/player/player'
+import { DEFAULT_RECONNECT_ATTEMPTS } from '@/player/constants'
+import { backoffDelay, sleep } from '@/player/util/async'
+import { canonicalJson } from '@/player/util/json'
 import { logger } from '@/util/logger'
 import { PlayerError } from './error'
-import { backoffDelay, sleep } from './util/backoff'
-
-export const DEFAULT_RECONNECT_ATTEMPTS = 5
 
 /** The `client` player options, with the extensions' setup options merged in. */
-export interface ClientOptions {
-  setupOptions?: SetupOptions
-  transportOptions?: MOQtailClientOptions['transportOptions']
-  reconnectAttempts?: number
-}
+export type ClientOptions = NonNullable<MOQtailPlayerOptions['client']>
 
 /** What the slot tells each player holding the client. */
 export interface SlotMember {
@@ -60,7 +56,7 @@ export const factory = {
   createClient: (options: MOQtailClientOptions): MOQtailClient => new MOQtailClient(options),
 }
 
-// Symbol.for, so the ESM and CJS builds share one client.
+// Symbol.for, so the ESM and CJS builds share one client
 const SLOT = Symbol.for('moqtail.client')
 
 function slot(): Slot {
@@ -107,22 +103,24 @@ export function acquire(member: SlotMember, origin: string, options: ClientOptio
   const disposing = s.disposing
   const connecting = (async () => {
     await disposing
-    return retry(s, origin, options, () => {})
+    return retry(s, origin, options)
   })()
   s.connecting = connecting
-  connecting.catch(() => s.connecting === connecting && clear(s))
+  connecting.catch(() => {
+    if (s.connecting === connecting) clear(s)
+  })
   return connecting
 }
 
 /**
- * Leaves the client, synchronously. The last player out disconnects it once `after` (its
+ * Removes `member` at once. The last player out disconnects the client once `after` (its
  * element teardown) and any running attempt have settled. A player that connects meanwhile
  * waits for that, then creates a new client.
  */
 export async function release(member: SlotMember, after: Promise<unknown>): Promise<void> {
   const s = slot()
   if (!s.players.delete(member) || s.players.size > 0) {
-    await Promise.allSettled([after])
+    await after.catch(() => {})
     return
   }
   s.abort.abort(new PlayerError('ABORTED', 'Every player released the client'))
@@ -154,19 +152,6 @@ export function clientKey(options: ClientOptions): string {
   })
 }
 
-/** JSON with sorted object keys, bigints, and bytes, so equal values serialise equally. */
-export function canonicalJson(value: unknown): string {
-  return JSON.stringify(value, (_key, v: unknown) => {
-    if (typeof v === 'bigint') return `${v}n`
-    if (v instanceof ArrayBuffer) return Array.from(new Uint8Array(v))
-    if (ArrayBuffer.isView(v)) return Array.from(new Uint8Array(v.buffer, v.byteOffset, v.byteLength))
-    if (v && typeof v === 'object' && !Array.isArray(v)) {
-      return Object.fromEntries(Object.entries(v).sort(([a], [b]) => (a < b ? -1 : 1)))
-    }
-    return v
-  })
-}
-
 function clear(s: Slot): void {
   s.client = s.origin = s.key = s.connecting = undefined
   s.players = new Set()
@@ -178,7 +163,7 @@ async function open(s: Slot, origin: string, options: ClientOptions): Promise<MO
   const client = factory.createClient({
     url: origin,
     ...(options.setupOptions && { setupOptions: options.setupOptions }),
-    // A copy, because the client appends its versions to `protocols`.
+    // A copy, because the client appends its versions to `protocols`
     ...(transport && {
       transportOptions: { ...transport, ...(transport.protocols && { protocols: [...transport.protocols] }) },
     }),
@@ -192,6 +177,7 @@ async function open(s: Slot, origin: string, options: ClientOptions): Promise<MO
 /** Recreates a lost session for every player, or fails them all with `SESSION_LOST`. */
 function reconnect(s: Slot, client: MOQtailClient, origin: string, options: ClientOptions): void {
   if (s.disposing || s.client !== client) return
+  // Captured, since `clear()` replaces the set before the failure is reported
   const players = s.players
   const each = (notify: (member: SlotMember) => void) => [...players].forEach(notify)
   const connecting = retry(s, origin, options, (attempt) => each((m) => m.reconnecting(attempt)))
@@ -214,12 +200,12 @@ async function retry(
   s: Slot,
   origin: string,
   options: ClientOptions,
-  onAttempt: (attempt: number) => void,
+  onAttempt?: (attempt: number) => void,
 ): Promise<MOQtailClient> {
   const signal = s.abort.signal
   const attempts = options.reconnectAttempts ?? DEFAULT_RECONNECT_ATTEMPTS
   for (let failed = 0; ;) {
-    onAttempt(failed + 1)
+    onAttempt?.(failed + 1)
     await untilAvailable(signal)
     try {
       return await open(s, origin, options)
@@ -256,8 +242,8 @@ async function untilAvailable(signal: AbortSignal): Promise<void> {
 
 if (import.meta.vitest) {
   const { describe, test, expect, beforeEach, afterEach, vi } = import.meta.vitest
-  const { fakeClients } = await import('./testing/client')
-  const { flush } = await import('./testing/elements')
+  const { fakeClients } = await import('@/player/testing/client')
+  const { flush } = await import('@/player/testing/elements')
   const { SetupOptions } = await import('@/model/parameter/setup_option')
 
   const ORIGIN = 'moqt://relay.example.com/app'
@@ -300,7 +286,7 @@ if (import.meta.vitest) {
         expect.objectContaining({ code: 'UNSUPPORTED_ORIGIN' }),
       )
       expect(() => acquire(member(), ORIGIN, {})).toThrow(expect.objectContaining({ code: 'UNSUPPORTED_ORIGIN' }))
-      // Same setup written differently is the same key.
+      // Same setup written differently is the same key
       expect(clientKey({ ...ssts, reconnectAttempts: 5 })).toBe(clientKey(ssts))
     })
 

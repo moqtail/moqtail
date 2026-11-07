@@ -14,8 +14,6 @@
  * limitations under the License.
  */
 
-/** Constants shared by more than one player element. */
-
 import type { ObjectOrdering } from '@/client/types'
 
 /** Subscriber priority of the catalog: above every other subscription (MSF 5). */
@@ -26,6 +24,9 @@ export const MEDIA_PRIORITY = 128
 
 /** Default limit for a decompressed catalog or timeline payload (`opts.maxCatalogBytes`). */
 export const DEFAULT_MAX_CATALOG_BYTES = 16 * 1024 * 1024
+
+/** Default `opts.client.reconnectAttempts`. */
+export const DEFAULT_RECONNECT_ATTEMPTS = 5
 
 /** Default wait for the first catalog or timeline object (`opts.catalogTimeoutMs`). */
 export const DEFAULT_CATALOG_TIMEOUT_MS = 10_000

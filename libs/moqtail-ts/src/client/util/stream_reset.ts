@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { MOQtailError, StreamResetCode } from '../../model/error'
+import { MOQtailError, StreamResetCode } from '@/model/error'
 
 /**
  * @public
@@ -88,10 +88,7 @@ export function streamResetCodeOf(error: unknown): StreamResetCode | undefined {
   }
 }
 
-/**
- * @public
- * The WebTransport session closed under a read or write: expected during shutdown, not a failure.
- */
+/** The WebTransport session closed under a read or write: expected during shutdown, not a failure. */
 export function isSessionClosed(error: unknown): boolean {
   return (error as { source?: unknown } | null | undefined)?.source === 'session'
 }

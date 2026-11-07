@@ -16,7 +16,7 @@
 
 import { PlayerError } from '@/player/error'
 
-// HTMLMediaElement.HAVE_NOTHING, which node doesn't define.
+// HTMLMediaElement.HAVE_NOTHING, which node doesn't define
 const HAVE_NOTHING = 0
 /** Own jumps remembered at most: one that never fired `seeking` must not stay forever. */
 const MAX_OWN_JUMPS = 4

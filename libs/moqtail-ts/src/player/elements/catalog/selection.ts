@@ -15,7 +15,7 @@
  */
 
 /**
- * Default source selection (`PLAN.md` › Source Elements): one video and one audio switching
+ * Default source selection: one video and one audio switching
  * set from the first render group, plus the event timelines the player opted into.
  */
 

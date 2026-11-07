@@ -19,32 +19,33 @@
  * client, follows the media sink's state, and forwards control calls to it.
  */
 
-import type { ObjectOrdering } from '@/client/types'
+import type { MOQtailClientOptions, ObjectOrdering } from '@/client/types'
 import type { SetupOptions } from '@/model/parameter/setup_option'
-import { Emitter } from '@/util/emitter'
-import { logger } from '@/util/logger'
-import { acquire, check, clientKey, currentClient, release, type ClientOptions, type SlotMember } from './client_slot'
-import type { BaseElement, SinkElement, SourceElement, TransformElement } from './element/base'
-import { Chain } from './element/chain'
-import type { TimelineEvent } from './element/event_timeline'
+import type { SinkElement, SourceElement, TransformElement } from '@/player/element/base'
+import { Chain } from '@/player/element/chain'
 import {
   hasInterface,
   type ElementDefinition,
   type SinkElementDefinition,
   type SourceElementDefinition,
-} from './element/define'
+} from '@/player/element/define'
+import type { TimelineEvent } from '@/player/element/event_timeline'
 import {
   MEDIA_SINK,
   MEDIA_SOURCE,
   type MediaSinkElement,
   type MediaSourceElement,
   type Rendition,
-} from './element/interfaces'
-import { selectSource } from './element/negotiation'
-import type { Catalog } from './elements/catalog/element'
-import { BUILT_IN_SOURCES } from './elements'
-import { MSE, checkOptions } from './elements/mse'
-import type { MSEOptions } from './elements/mse/sink'
+} from '@/player/element/interfaces'
+import { selectSource } from '@/player/element/negotiation'
+import { BUILT_IN_SOURCES } from '@/player/elements'
+import type { CatalogElement } from '@/player/elements/catalog/element'
+import { MSE, checkOptions } from '@/player/elements/mse'
+import { rangeAt } from '@/player/elements/mse/gaps'
+import type { MSEOptions } from '@/player/elements/mse/sink'
+import { Emitter } from '@/util/emitter'
+import { logger } from '@/util/logger'
+import { acquire, check, clientKey, currentClient, release, type ClientOptions, type SlotMember } from './client_slot'
 import { PlayerError } from './error'
 import { mergeSetupOptions, type ExtensionDefinition } from './extension'
 import { parseMsfUrl } from './msf_url'
@@ -55,7 +56,7 @@ export interface MOQtailPlayerOptions {
   /** Shared by every player on the client, compared for `UNSUPPORTED_ORIGIN`. */
   client?: {
     setupOptions?: SetupOptions
-    transportOptions?: ClientOptions['transportOptions']
+    transportOptions?: MOQtailClientOptions['transportOptions']
     /** Default 5. */
     reconnectAttempts?: number
   }
@@ -69,7 +70,6 @@ export interface MOQtailPlayerOptions {
   maxCatalogBytes?: number
   /** How media sources order each request's objects. Default: a 150 ms window. */
   objectOrdering?: ObjectOrdering
-  // abr and buffer arrive with milestones 7 and 8.
 }
 
 /** @public */
@@ -82,7 +82,7 @@ export interface PlayerEvents {
   stalled: () => void
   ended: () => void
   /** The catalog element, after the first catalog and every applied update. */
-  catalog: (catalog: Catalog) => void
+  catalog: (catalog: CatalogElement) => void
   reconnecting: (attempt: number) => void
   reconnected: () => void
   /** A record of an opted-in event timeline, on arrival (`opts.eventTimelines`). */
@@ -92,7 +92,6 @@ export interface PlayerEvents {
   renditionchange: (source: MediaSourceElement, rendition: Rendition) => void
 }
 
-// Media sink events and the state each one means.
 const SINK_EVENTS: [string, PlayerState][] = [
   ['playing', 'playing'],
   ['pause', 'paused'],
@@ -107,32 +106,47 @@ const STATE_EVENTS: Partial<Record<PlayerState, 'playing' | 'pause' | 'stalled' 
   ended: 'ended',
 }
 const STAGES = ['source', 'transform', 'sink'] as const
+type Stage = (typeof STAGES)[number]
 
 /** @public */
 export class MOQtailPlayer extends Emitter<PlayerEvents> {
   readonly options: Readonly<MOQtailPlayerOptions>
-  readonly #client: ClientOptions
-  readonly #key: string
-  /** `registerElement` definitions, then the extensions' in listed order. Built-in sources go last. */
+  readonly #clientOptions: ClientOptions
+  readonly #clientKey: string
+  /** `registerElement` definitions. */
   readonly #definitions: ElementDefinition[] = []
   readonly #extensionElements: readonly ElementDefinition[]
   readonly #chain: Chain
   /** Aborted by `destroy()`; its reason is what every later call rejects with. */
   readonly #abort = new AbortController()
   readonly #member: SlotMember = {
-    reconnecting: (attempt) => this.#reconnecting(attempt),
-    reconnected: () => this.#reconnected(),
-    fail: (error) => this.#sessionFailed(error),
+    reconnecting: (attempt) => {
+      this.#sessionLost = true
+      // `ended` only moves to reconnecting when a seek back needs the session
+      if (this.#state !== 'ended' && canTransition(this.#state, 'reconnecting')) {
+        this.#resume = this.#state
+        this.#setState('reconnecting')
+      }
+      this.emit('reconnecting', attempt)
+    },
+    reconnected: () => {
+      this.#sessionLost = false
+      if (this.#state === 'reconnecting') this.#setState(this.#resume)
+      this.emit('reconnected')
+    },
+    fail: (error) => {
+      if (this.#state === 'ended') this.#lostError = error
+      else this.#fail(error)
+    },
   }
   #state: PlayerState = 'idle'
   /** Where `reconnecting` returns to; the media sink updates it meanwhile. */
   #resume: PlayerState = 'idle'
-  #stage: (typeof STAGES)[number] = 'source'
+  #stage: Stage = 'source'
   #origin: string | undefined
   #sessionLost = false
   /** A session failure that arrived while `ended`; a seek that needs the session reports it. */
   #lostError: PlayerError | undefined
-  /** The fatal error, once there is one. */
   #error: PlayerError | undefined
   #initializing: Promise<void> | undefined
   #starting: Promise<void> | undefined
@@ -146,19 +160,21 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
     super()
     this.options = options
     const extensions = options.extensions ?? []
-    // A switching set has one parent.
+    // A switching set has one parent
     if (extensions.filter((e) => e.switchingSetSource).length > 1) {
       throw new PlayerError('UNSUPPORTED_SOURCE', 'Only one extension may have a switchingSetSource')
     }
     const setupOptions = mergeSetupOptions(options.client?.setupOptions, extensions)
-    this.#client = { ...options.client, ...(setupOptions && { setupOptions }) }
-    this.#key = clientKey(this.#client)
+    this.#clientOptions = { ...options.client, ...(setupOptions && { setupOptions }) }
+    this.#clientKey = clientKey(this.#clientOptions)
     this.#extensionElements = extensions.flatMap((e) => e.elements ?? [])
     this.#chain = new Chain({
       player: this,
       client: currentClient,
       definitions: () => this.#sourceDefinitions(),
-      warn: (warning) => !this.#abort.signal.aborted && this.#state !== 'error' && this.emit('warning', warning),
+      warn: (warning) => {
+        if (!this.#abort.signal.aborted && this.#state !== 'error') this.emit('warning', warning)
+      },
       fail: (error) => this.#fail(error),
     })
   }
@@ -167,7 +183,6 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
     return this.#state
   }
 
-  /** Top-level and loaded sources, in load order. */
   get sources(): readonly SourceElement[] {
     return this.#chain.sources
   }
@@ -176,7 +191,7 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
   get mediaSources(): readonly (SourceElement & MediaSourceElement)[] {
     return this.#chain.sources.filter(
       (s): s is SourceElement & MediaSourceElement =>
-        hasInterface(s, MEDIA_SOURCE) && !this.#chain.holdersOf(s).some(isMediaSource),
+        hasInterface(s, MEDIA_SOURCE) && !this.#chain.holdersOf(s).some((h) => hasInterface(h, MEDIA_SOURCE)),
     )
   }
 
@@ -205,7 +220,7 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
     if (this.#origin !== undefined && this.#origin !== source.url) {
       throw new PlayerError('UNSUPPORTED_ORIGIN', `This player already uses ${this.#origin}`)
     }
-    check(source.url, this.#key)
+    check(source.url, this.#clientKey)
     const identifiers = { ...source } // a type literal, so it fits `Identifiers`' index signature
     const definition = selectSource(this.#sourceDefinitions(), identifiers)
     if (!definition) throw new PlayerError('UNSUPPORTED_SOURCE', `No element accepts track "${source.track}"`)
@@ -221,7 +236,7 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
     return this
   }
 
-  /** A video element gets the `MSE` sink with `options`. A canvas sink doesn't exist yet. */
+  /** A video element gets the `MSE` sink with `options`. */
   sink(video: HTMLVideoElement, options?: Omit<MSEOptions, 'video'>): this
   sink(definition: SinkElementDefinition, options?: Record<string, unknown>): this
   sink(target: HTMLVideoElement | SinkElementDefinition, options: Record<string, unknown> = {}): this {
@@ -271,7 +286,7 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
   /** Seconds. Resolves or rejects as the media sink's `seek()` does. */
   async seek(mediaTime: number): Promise<void> {
     const sink = this.#sink()
-    if (this.#state === 'ended' && this.#sessionLost && !contains(sink.buffered, mediaTime)) {
+    if (this.#state === 'ended' && this.#sessionLost && rangeAt(mediaTime, sink.buffered) === -1) {
       this.#resume = 'ended'
       this.#setState('reconnecting')
       if (this.#lostError) {
@@ -294,7 +309,7 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
   async #init(origin: string): Promise<void> {
     this.#setState('connecting')
     try {
-      await acquire(this.#member, origin, this.#client)
+      await acquire(this.#member, origin, this.#clientOptions)
       this.#abort.signal.throwIfAborted()
       const outcome = await this.#chain.init(this.#abort.signal)
       if (this.#error) throw this.#error // failed while negotiating, e.g. the session couldn't be recovered
@@ -330,7 +345,7 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
   }
 
   /** Builder calls go source → transform → sink, all before `init()`. Mistakes are programming errors. */
-  #order(stage: (typeof STAGES)[number], method: string): void {
+  #order(stage: Stage, method: string): void {
     if (this.#abort.signal.aborted) throw this.#abort.signal.reason
     if (this.#initializing) throw new TypeError(`${method}() can't be called after init()`)
     if (STAGES.indexOf(stage) < STAGES.indexOf(this.#stage)) {
@@ -352,7 +367,7 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
       sink.addEventListener(
         event,
         () => {
-          // The element waits before it first plays and during every seek, and pauses right before `ended`.
+          // The element waits before it first plays and during every seek, and pauses right before `ended`
           if (event === 'waiting' && (sink.seeking || this.#state === 'ready')) return
           if (event === 'pause' && sink.ended) return
           this.#follow(state)
@@ -369,31 +384,13 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
     else if (canTransition(this.#state, next)) this.#setState(next)
   }
 
-  #reconnecting(attempt: number): void {
-    this.#sessionLost = true
-    // `ended` only moves to reconnecting when a seek back needs the session.
-    if (this.#state !== 'ended' && canTransition(this.#state, 'reconnecting')) {
-      this.#resume = this.#state
-      this.#setState('reconnecting')
-    }
-    this.emit('reconnecting', attempt)
-  }
-
-  #reconnected(): void {
-    this.#sessionLost = false
-    if (this.#state === 'reconnecting') this.#setState(this.#resume)
-    this.emit('reconnected')
-  }
-
-  #sessionFailed(error: PlayerError): void {
-    if (this.#state === 'ended') this.#lostError = error
-    else this.#fail(error)
-  }
-
   /** Emits `error`, moves to `error`, and pauses the media sink. Elements stay and their signals don't abort. */
   #fail(error: PlayerError): void {
     if (this.#abort.signal.aborted) return
-    if (!canTransition(this.#state, 'error')) return logger.warn('MOQtailPlayer', `error while ${this.#state}`, error)
+    if (!canTransition(this.#state, 'error')) {
+      logger.warn('MOQtailPlayer', `error while ${this.#state}`, error)
+      return
+    }
     this.#error = error
     this.emit('error', error)
     this.#setState('error')
@@ -405,7 +402,8 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
     if (!canTransition(previous, next, this.#resume)) {
       const message = `Illegal player state transition ${previous} → ${next}`
       if (import.meta.vitest) throw new Error(message)
-      return logger.error('MOQtailPlayer', message)
+      logger.error('MOQtailPlayer', message)
+      return
     }
     this.#state = next
     this.emit('statechange', next, previous)
@@ -414,25 +412,15 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
   }
 }
 
-// `definition` is unset while the holder's own init is still running.
-function isMediaSource(element: BaseElement): boolean {
-  return (element.definition as ElementDefinition | undefined)?.provides?.includes(MEDIA_SOURCE) ?? false
-}
-
-function contains(ranges: TimeRanges, time: number): boolean {
-  for (let i = 0; i < ranges.length; i++) if (ranges.start(i) <= time && time <= ranges.end(i)) return true
-  return false
-}
-
 if (import.meta.vitest) {
   const { describe, test, expect, beforeEach, afterEach } = import.meta.vitest
-  const { fakeClients } = await import('./testing/client')
-  const { testSource, fakeMediaSink, flush } = await import('./testing/elements')
+  const { fakeClients } = await import('@/player/testing/client')
+  const { testSource, fakeMediaSink, flush } = await import('@/player/testing/elements')
   const { defineExtension } = await import('./extension')
-  const { CapabilityCode } = await import('./element/define')
+  const { CapabilityCode } = await import('@/player/element/define')
   const { SetupOptions } = await import('@/model/parameter/setup_option')
-  type Sink = import('./testing/elements').FakeMediaSink
-  type Source = import('./testing/elements').TestSource
+  type Sink = import('@/player/testing/elements').FakeMediaSink
+  type Source = import('@/player/testing/elements').TestSource
 
   const URL = 'moqt://relay.example.com/app#msf:ns--catalog'
   const media = testSource({ name: 'media', script: (s) => (s.addPad(), s.emit('nomorepads')) })
@@ -503,7 +491,7 @@ if (import.meta.vitest) {
     })
 
     test('fatal errors reject init or move to error and pause; a lost session while ended waits for a seek', async () => {
-      // Nothing to play at all, such as an empty isComplete catalog: ended, not an error.
+      // Nothing to play at all, such as an empty isComplete catalog: ended, not an error
       const nothing = new MOQtailPlayer().registerElement(testSource({ script: (s) => s.emit('nomorepads') }))
       await nothing.source(URL).sink(fakeMediaSink).init()
       expect(nothing.state).toBe('ended')

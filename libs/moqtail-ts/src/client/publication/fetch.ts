@@ -29,8 +29,7 @@ import { StreamResetCode } from '@/model/error/stream_reset'
 import { SendStream } from '@/client/data_stream'
 import { MOQtailClient } from '@/client/client'
 import { Track } from '@/client/track/track'
-import { SubscribePublication } from './subscribe'
-import { PublishPublication } from './publish'
+import { errorMessage } from '@/util/error'
 import { logger } from '@/util/logger'
 import { SubgroupIds } from './subgroup'
 
@@ -130,7 +129,7 @@ export class FetchPublication {
       // A write that fails because the stream was reset on purpose is not a failure.
       if (this.#isCanceled) return
       await this.#sendStream?.reset(StreamResetCode.InternalError)
-      const message = error instanceof Error ? error.message : String(error)
+      const message = errorMessage(error)
       logger.error('publication/fetch', `publish failed requestId=${this.#requestId}`, message)
       throw new InternalError('FetchPublication.publish', `Failed to publish: ${message}`)
     }

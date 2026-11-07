@@ -69,7 +69,6 @@ export interface ElementDefinition<
 > {
   readonly type: 'source' | 'transform' | 'sink'
   readonly name: string
-  readonly description?: string
   readonly capabilities: CapabilityBundles
   /** Breaks probe ties, a lower number wins. Default 100. */
   readonly priority?: number
@@ -136,9 +135,7 @@ export function defineElement(definition: ElementDefinition & { probe?: unknown 
 
 function validate(definition: ElementDefinition & { probe?: unknown }): void {
   const label = `Element "${String(definition.name)}"`
-  if (typeof definition.name !== 'string' || !/^\S+$/.test(definition.name)) {
-    throw new TypeError(`${label}: name must be non-empty and without whitespace`)
-  }
+  checkName(label, definition.name)
   if (!['source', 'transform', 'sink'].includes(definition.type)) {
     throw new TypeError(`${label}: type must be "source", "transform", or "sink"`)
   }
@@ -151,19 +148,32 @@ function validate(definition: ElementDefinition & { probe?: unknown }): void {
   if (typeof definition.init !== 'function') throw new TypeError(`${label}: init must be a function`)
 }
 
+/** Throws a `TypeError` for a name that is empty or has whitespace. */
+export function checkName(label: string, name: unknown): void {
+  if (typeof name !== 'string' || !/^\S+$/.test(name)) {
+    throw new TypeError(`${label}: name must be non-empty and without whitespace`)
+  }
+}
+
+/** `element.definition`, which stays unset while the element's own `init` runs. */
+export function definitionOf(element: BaseElement): ElementDefinition | undefined {
+  return element.definition as ElementDefinition | undefined
+}
+
 /** @public Narrows an element to an interface it lists in `provides`. */
 export function hasInterface<E extends BaseElement, K extends InterfaceKey>(
   element: E,
   key: K,
 ): element is E & ElementInterfaces[K] {
-  return element.definition.provides?.includes(key) ?? false
+  return definitionOf(element)?.provides?.includes(key) ?? false
 }
 
 if (import.meta.vitest) {
   const { describe, test, expect, expectTypeOf } = import.meta.vitest
-  const { TestSource, CollectingSink, detachedContext } = await import('@/player/testing/elements')
+  const { TestSource, CollectingSink, FakeMediaSink, detachedContext } = await import('@/player/testing/elements')
+  type FakeMediaSink = import('@/player/testing/elements').FakeMediaSink
   const interfaces = await import('./interfaces')
-  // Annotated, since copying a unique symbol into a new const widens it to symbol.
+  // Annotated, since copying a unique symbol into a new const widens it to symbol
   const MEDIA_SINK: typeof interfaces.MEDIA_SINK = interfaces.MEDIA_SINK
   const source = { type: 'source', name: 'src', capabilities: [], probe: () => 1, init: async () => ({}) } as any
 
@@ -195,23 +205,6 @@ if (import.meta.vitest) {
     })
 
     test('provides is checked against what init returns', () => {
-      class FakeMediaSink extends CollectingSink {
-        currentTime = 0
-        buffered = {} as TimeRanges
-        paused = true
-        seeking = false
-        ended = false
-        playbackRate = 1
-        setPlaybackRate() {}
-        async play() {}
-        async pause() {}
-        async seek() {}
-        addEventListener() {}
-        removeEventListener() {}
-        dispatchEvent() {
-          return true
-        }
-      }
       const definition = defineElement({
         type: 'sink',
         name: 'media',

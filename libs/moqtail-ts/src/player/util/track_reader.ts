@@ -34,9 +34,10 @@ import type { MoqtObject } from '@/model/data/object'
 import { FillParameters } from '@/model/parameter/message/fill_parameters'
 import { LocationFilter } from '@/model/parameter/message/location_filter'
 import { findProperty } from '@/model/property/find'
+import { DEFAULT_MAX_CATALOG_BYTES } from '@/player/constants'
 import type { ElementContext } from '@/player/element/context'
 import { PlayerError } from '@/player/error'
-import { backoffDelay, sleep } from '@/player/util/backoff'
+import { backoffDelay, sleep } from '@/player/util/async'
 import {
   decompress,
   isSupportedCompression,
@@ -44,16 +45,16 @@ import {
   MsfCompressionTrackProperty,
 } from './compression'
 
-/** How long a missing object, or a stale group's next independent object, is waited for (`PLAN.md`). */
-export const ORDERING_WINDOW_MS = 2000
+/** How long a missing object, or a stale group's next independent object, is waited for. */
+const ORDERING_WINDOW_MS = 2000
 
 export interface TrackReaderOptions {
   track: { namespace: Tuple; name: Uint8Array }
   priority: number
   /** false: one independent object per group, later objects are ignored (MSF 8.4). */
   incremental: boolean
-  /** Limit for a decompressed payload. */
-  maxBytes: number
+  /** Limit for a decompressed payload, `opts.maxCatalogBytes` by default. */
+  maxBytes?: number
   /** Throwing marks the group stale. `object` still holds the compressed payload. */
   onIndependent(payload: Uint8Array, location: Location, object: MoqtObject): void
   /** Throwing marks the group stale. */
@@ -62,23 +63,27 @@ export interface TrackReaderOptions {
   onStale(reason: Error): void
 }
 
+type Subscription = { client: MOQtailClient; result: SubscribeResult }
+
 export class TrackReader {
   readonly #context: ElementContext
   readonly #options: TrackReaderOptions
+  readonly #maxBytes: number
   readonly #abort = new AbortController()
-  #current: { client: MOQtailClient; result: SubscribeResult } | undefined
+  readonly #timers = new Set<ReturnType<typeof setTimeout>>()
+  #current: Subscription | undefined
   /** The latest group whose object 0 arrived, the next object ID it expects, and whether it's stale. */
   #group: { id: bigint; next: bigint; stale: boolean } | undefined
   /** Incremental objects that arrived ahead of their predecessor, with their arrival time. */
   #waiting: { object: MoqtObject; at: number }[] = []
   /** Objects are handled one at a time, since decompression is async. */
   #queue = Promise.resolve()
-  readonly #timers = new Set<ReturnType<typeof setTimeout>>()
-  #gapCheck = false
+  #gapCheckScheduled = false
 
   constructor(context: ElementContext, options: TrackReaderOptions) {
     this.#context = context
     this.#options = options
+    this.#maxBytes = options.maxBytes ?? context.player.options.maxCatalogBytes ?? DEFAULT_MAX_CATALOG_BYTES
   }
 
   get subscribeOk(): SubscribeOk | undefined {
@@ -100,9 +105,9 @@ export class TrackReader {
         priority: this.#options.priority,
         groupOrder: GroupOrder.Original,
         forward: true,
-        // The reader orders its own objects.
+        // The reader orders its own objects
         ordering: 'none',
-        // The next object live, and the latest group from object 0 as fill (no Joining FETCH in moqt-22).
+        // The next object live, and the latest group from object 0 as fill (no Joining FETCH in moqt-22)
         locationFilter: new LocationFilter(LocationFilterType.NextObject),
         parameters: [new FillParameters([new LocationFilter(LocationFilterType.RelativeStart, 1n)])],
       })
@@ -112,13 +117,17 @@ export class TrackReader {
     if (result instanceof RequestError) {
       throw new PlayerError('UNSUPPORTED_SOURCE', `Subscribe rejected: ${result.reasonPhrase.phrase}`)
     }
-    if (this.#abort.signal.aborted) return void client.unsubscribe(result.requestId).catch(() => {})
+    if (this.#abort.signal.aborted) {
+      void unsubscribe({ client, result })
+      return
+    }
     this.#current = { client, result }
     this.#waiting = []
     const algorithm = findProperty(result.subscribeOk.trackProperties, MsfCompressionTrackProperty)?.algorithm
     if (algorithm !== undefined && !isSupportedCompression(algorithm)) {
       await this.stop()
-      return this.#options.onStale(new Error(`Unsupported MSF compression algorithm ${algorithm} (MSF 12.1.1)`))
+      this.#options.onStale(new Error(`Unsupported MSF compression algorithm ${algorithm} (MSF 12.1.1)`))
+      return
     }
     void this.#read(this.#current)
   }
@@ -128,10 +137,10 @@ export class TrackReader {
     for (const timer of this.#timers) clearTimeout(timer)
     const current = this.#current
     this.#current = undefined
-    if (current) await current.client.unsubscribe(current.result.requestId).catch(() => {})
+    if (current) await unsubscribe(current)
   }
 
-  async #read(current: { client: MOQtailClient; result: SubscribeResult }): Promise<void> {
+  async #read(current: Subscription): Promise<void> {
     const reader = current.result.stream.getReader()
     try {
       for (let read = await reader.read(); !read.done; read = await reader.read()) {
@@ -140,7 +149,7 @@ export class TrackReader {
         this.#queue = this.#queue.then(() => this.#arrived(object, at))
       }
     } catch {
-      // Reset, or the session was lost: resubscribed below.
+      // Reset, or the session was lost: resubscribed below
     }
     if (this.#current === current) void this.#resubscribe()
   }
@@ -149,7 +158,7 @@ export class TrackReader {
   async #resubscribe(): Promise<void> {
     const current = this.#current
     this.#current = undefined
-    if (current) void current.client.unsubscribe(current.result.requestId).catch(() => {})
+    if (current) void unsubscribe(current)
     for (let attempt = 0; !this.#abort.signal.aborted; attempt++) {
       try {
         return await this.start()
@@ -165,7 +174,7 @@ export class TrackReader {
     if (this.#abort.signal.aborted || !object.payload) return
     if (group && groupId < group.id) return // MSF 5: older than the latest independent object
     if (objectId === 0n) {
-      // The same group again only matters to a stale group, after a resubscribe.
+      // The same group again only matters to a stale group, after a resubscribe
       if (group && groupId === group.id && !group.stale) return
       this.#group = { id: groupId, next: 1n, stale: false }
       this.#waiting = this.#waiting.filter((w) => w.object.location.group >= groupId)
@@ -198,14 +207,18 @@ export class TrackReader {
   /** A later object has waited past the window for its predecessor. Timers only run late, so elapsed time decides. */
   #checkGap(): void {
     const group = this.#group
-    const ahead = this.#waiting.filter((w) => w.object.location.group === group?.id)
-    if (!group || group.stale || ahead.length === 0) return
+    if (!group || group.stale) return
+    const ahead = this.#waiting.filter((w) => w.object.location.group === group.id)
+    if (ahead.length === 0) return
     const waited = performance.now() - Math.min(...ahead.map((w) => w.at))
-    if (waited >= ORDERING_WINDOW_MS) return this.#markStale(new Error(`Object ${group.id}.${group.next} is missing`))
-    if (this.#gapCheck) return
-    this.#gapCheck = true
-    this.#after(ORDERING_WINDOW_MS - waited, () => {
-      this.#gapCheck = false
+    if (waited >= ORDERING_WINDOW_MS) {
+      this.#markStale(new Error(`Object ${group.id}.${group.next} is missing`))
+      return
+    }
+    if (this.#gapCheckScheduled) return
+    this.#gapCheckScheduled = true
+    this.#schedule(ORDERING_WINDOW_MS - waited, () => {
+      this.#gapCheckScheduled = false
       this.#checkGap()
     })
   }
@@ -214,7 +227,7 @@ export class TrackReader {
     const trackAlgorithm = findProperty(this.subscribeOk?.trackProperties, MsfCompressionTrackProperty)?.algorithm
     const algorithm = trackAlgorithm ?? findProperty(object.properties, MsfCompressionObjectProperty)?.algorithm ?? 0
     try {
-      const payload = await decompress(object.payload!, algorithm, this.#options.maxBytes)
+      const payload = await decompress(object.payload!, algorithm, this.#maxBytes)
       this.#options[handler](payload, object.location, object)
     } catch (error) {
       this.#markStale(error instanceof Error ? error : new Error(String(error)))
@@ -228,12 +241,13 @@ export class TrackReader {
     group.stale = true
     this.#waiting = this.#waiting.filter((w) => w.object.location.group > group.id)
     this.#options.onStale(reason)
-    this.#after(ORDERING_WINDOW_MS, () => {
+    this.#schedule(ORDERING_WINDOW_MS, () => {
       if (this.#group === group) void this.#resubscribe()
     })
   }
 
-  #after(ms: number, run: () => void): void {
+  /** Queues `run` behind the objects being handled, after `ms`. */
+  #schedule(ms: number, run: () => void): void {
     if (this.#abort.signal.aborted) return
     const timer = setTimeout(() => {
       this.#timers.delete(timer)
@@ -243,32 +257,26 @@ export class TrackReader {
   }
 }
 
+/** Ends a subscription this reader no longer reads; the client may be gone already. */
+async function unsubscribe({ client, result }: Subscription): Promise<void> {
+  await client.unsubscribe(result.requestId).catch(() => {})
+}
+
 if (import.meta.vitest) {
   const { describe, test, expect, vi, afterEach } = import.meta.vitest
-  const { FakeClient, mediaObject, refuse } = await import('@/player/testing/client')
+  const { FakeClient, gzip, refuse, testObject } = await import('@/player/testing/client')
   const { KeyValuePair } = await import('@/model/common/pair')
   const { Tuple } = await import('@/model/common/tuple')
-  const { MoqtObject } = await import('@/model/data/object')
-  const { ObjectForwardingPreference } = await import('@/model/data/constant')
-  const { Location } = await import('@/model/common/location')
-  const { flush } = await import('@/player/testing/elements')
+  const { flush, settle } = await import('@/player/testing/elements')
 
   const text = (s: string) => new TextEncoder().encode(s)
-  const gzip = async (bytes: Uint8Array) =>
-    new Uint8Array(
-      await new Response(
-        new Blob([bytes as Uint8Array<ArrayBuffer>]).stream().pipeThrough(new CompressionStream('gzip')),
-      ).arrayBuffer(),
-    )
   const object = (group: number, id: number, payload: Uint8Array | string, algorithm?: number) =>
-    MoqtObject.newWithPayload(
-      mediaObject(group, id).fullTrackName,
-      new Location(BigInt(group), BigInt(id)),
-      0,
-      ObjectForwardingPreference.Subgroup,
-      0,
-      algorithm === undefined ? null : [new MsfCompressionObjectProperty(algorithm).toKeyValuePair()],
+    testObject(
+      'v1',
+      group,
+      id,
       typeof payload === 'string' ? text(payload) : payload,
+      algorithm === undefined ? null : [new MsfCompressionObjectProperty(algorithm).toKeyValuePair()],
     )
 
   /** A reader over a fake client that logs what it applied as `i <group>.<object> <payload>`, `d ...`, `stale`. */
@@ -290,9 +298,6 @@ if (import.meta.vitest) {
       },
       onStale: (reason) => log.push(`stale ${reason.message}`),
     })
-    const settle = async () => {
-      for (let i = 0; i < 5; i++) await flush()
-    }
     return { client, log, reader, settle }
   }
 
@@ -308,7 +313,7 @@ if (import.meta.vitest) {
       expect((fill.parameters[0] as LocationFilter).filterType).toBe(LocationFilterType.RelativeStart)
       expect((fill.parameters[0] as LocationFilter).startGroup).toBe(1n)
 
-      // An old group's object, a delta ahead of its predecessor, and the next group.
+      // An old group's object, a delta ahead of its predecessor, and the next group
       client.last.push(object(5, 0, 'a'), object(5, 2, 'c'), object(4, 1, 'old'), object(5, 1, 'b'), object(6, 1, 'x'))
       client.last.push(object(6, 0, 'n'), object(5, 3, 'late'))
       await settle()
@@ -326,7 +331,7 @@ if (import.meta.vitest) {
       client.last.push(object(1, 1, 'b'))
       await vi.advanceTimersByTimeAsync(ORDERING_WINDOW_MS)
       expect(client.sent('subscribe')).toHaveLength(2)
-      // The fill brings the stale group again, which now applies.
+      // The fill brings the stale group again, which now applies
       client.last.push(object(1, 0, 'a'), object(1, 1, 'bad'), object(1, 2, 'c'))
       await vi.advanceTimersByTimeAsync(0)
       expect(log.slice(2)).toEqual(['i 1.0 a', 'stale bad delta'])

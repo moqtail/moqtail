@@ -19,19 +19,12 @@ import { FrozenByteBuffer, ByteBuffer } from '@/model/common/byte_buffer'
 import { NotEnoughBytesError, TerminationError, TimeoutError } from '@/model/error/error'
 import { TerminationCode } from '@/model/error/constant'
 import { SetupOptions, Setup } from '@/model'
-import { logger } from '@/util/logger'
-import { isSessionClosed } from './util/stream_reset'
 import type { Emitter } from '@/util/emitter'
+import { errorMessage } from '@/util/error'
+import { logger } from '@/util/logger'
 import type { ClientEvents } from './types'
-
-function withTimeout<T>(promise: Promise<T>, ms?: number, errorMsg?: string): Promise<T> {
-  if (ms === undefined) return promise
-  let timeoutId: ReturnType<typeof setTimeout>
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timeoutId = setTimeout(() => reject(new TimeoutError(errorMsg ?? `Timeout after ${ms}ms`)), ms)
-  })
-  return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timeoutId))
-}
+import { isSessionClosed } from '@/client/util/stream_reset'
+import { withTimeout } from '@/client/util/timeout'
 
 /**
  * Send half of the control plane: a unidirectional stream this endpoint opens and
@@ -58,11 +51,11 @@ export class ControlSendStream {
       logger.debug('control_stream', `send: write complete — ${msgName}`)
       this.#events?.emit('messagesent', message)
     } catch (error: any) {
-      const errorMessage = error instanceof Error ? error.message : String(error)
-      logger.error('control_stream', `send: failed to write ${msgName} — ${errorMessage}`)
+      const reason = errorMessage(error)
+      logger.error('control_stream', `send: failed to write ${msgName} — ${reason}`)
       await this.close()
       throw new TerminationError(
-        `ControlStream.send: Failed to write message: ${errorMessage}`,
+        `ControlStream.send: Failed to write message: ${reason}`,
         TerminationCode.INTERNAL_ERROR,
       )
     }
@@ -190,10 +183,7 @@ export class ControlRecvStream {
       }
     } catch (error) {
       if (!isSessionClosed(error))
-        logger.error(
-          'control_stream',
-          `ingestLoop: unexpected error — ${error instanceof Error ? error.message : String(error)}`,
-        )
+        logger.error('control_stream', `ingestLoop: unexpected error — ${errorMessage(error)}`)
       controller.error(error)
       await this.close()
     } finally {

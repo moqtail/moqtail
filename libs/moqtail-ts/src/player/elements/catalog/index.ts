@@ -16,7 +16,7 @@
 
 import { defineElement } from '@/player/element/define'
 import { PlayerError } from '@/player/error'
-import { Catalog, type CatalogOptions } from './element'
+import { CatalogElement, type CatalogOptions } from './element'
 
 /**
  * The built-in source for an MSF catalog track. The player registers it, and it's reached
@@ -31,7 +31,7 @@ export const CatalogSource = defineElement({
     const source = options?.source
     if (!source)
       throw new PlayerError('UNSUPPORTED_SOURCE', 'The catalog source needs the catalog URL', { element: 'catalog' })
-    const catalog = new Catalog(context, { ...options, source })
+    const catalog = new CatalogElement(context, { ...options, source })
     await catalog.start()
     return catalog
   },
@@ -39,17 +39,14 @@ export const CatalogSource = defineElement({
 
 if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
-  const { FakeClient, refuse } = await import('@/player/testing/client')
-  const { testChain, TestSource, flush } = await import('@/player/testing/elements')
+  const { FakeClient, gzip, refuse, testObject } = await import('@/player/testing/client')
+  const { testChain, TestSource, flush, settle } = await import('@/player/testing/elements')
   const interfaces = await import('@/player/element/interfaces')
-  // Annotated, since copying a unique symbol into a new const widens it to symbol.
+  // Annotated, since copying a unique symbol into a new const widens it to symbol
   const MEDIA_SOURCE: typeof interfaces.MEDIA_SOURCE = interfaces.MEDIA_SOURCE
   const { defineExtension } = await import('@/player/extension')
   const { parseMsfUrl } = await import('@/player/msf_url')
   const { Location } = await import('@/model/common/location')
-  const { MoqtObject: Objects } = await import('@/model/data/object')
-  const { FullTrackName } = await import('@/model/data/full_track_name')
-  const { ObjectForwardingPreference } = await import('@/model/data/constant')
   const { MsfCompressionObjectProperty } = await import('@/player/util/compression')
   const { requested } = await import('@/player/testing/cmaf')
   type Track = import('@/player/element/interfaces').CatalogTrack
@@ -60,12 +57,6 @@ if (import.meta.vitest) {
   type MediaSourceOptions = import('@/player/element/interfaces').MediaSourceOptions
 
   const bytes = (json: unknown) => new TextEncoder().encode(typeof json === 'string' ? json : JSON.stringify(json))
-  const gzip = async (data: Uint8Array) =>
-    new Uint8Array(
-      await new Response(
-        new Blob([data as Uint8Array<ArrayBuffer>]).stream().pipeThrough(new CompressionStream('gzip')),
-      ).arrayBuffer(),
-    )
   const track = (name: string, role: string, extra: Record<string, unknown> = {}) => ({
     name,
     packaging: 'cmaf',
@@ -81,14 +72,12 @@ if (import.meta.vitest) {
   })
   const delta = (op: string, ...tracks: unknown[]) => ({ generatedAt: 1, deltaUpdate: [{ op, tracks }] })
   const object = (group: number, id: number, payload: Uint8Array, compressed = false) =>
-    Objects.newWithPayload(
-      FullTrackName.tryNew('ns', 'catalog'),
-      new Location(BigInt(group), BigInt(id)),
-      0,
-      ObjectForwardingPreference.Subgroup,
-      0,
-      compressed ? [new MsfCompressionObjectProperty(1).toKeyValuePair()] : null,
+    testObject(
+      'catalog',
+      group,
+      id,
       payload,
+      compressed ? [new MsfCompressionObjectProperty(1).toKeyValuePair()] : null,
     )
   const names = (tracks: readonly Track[]) => tracks.map((t) => t.name).join(',')
 
@@ -132,8 +121,8 @@ if (import.meta.vitest) {
       () => client,
     )
     Object.assign(chain.host.player.options, typeof options === 'function' ? options(stub) : options)
-    let element: Catalog | undefined
-    chain.host.player.on('catalog', (c) => (element = c as Catalog))
+    let element: CatalogElement | undefined
+    chain.host.player.on('catalog', (c) => (element = c as CatalogElement))
     chain.host.player.on('warning', (w) => warnings.push(w.code))
     chain.addSource(CatalogSource, { ...parseMsfUrl(`moqt://relay.test/app#msf:ns--catalog${params}`) })
     let settled: string | undefined
@@ -144,7 +133,7 @@ if (import.meta.vitest) {
     await flush()
     const push = async (...objects: MoqtObject[]) => {
       client.last.push(...objects)
-      for (let i = 0; i < 5; i++) await flush()
+      await settle()
     }
     return { client, media, log, warnings, init, push, settled: () => settled, catalog: () => element! }
   }
@@ -210,7 +199,7 @@ if (import.meta.vitest) {
       )
       await c.init
       expect([c.log, names(c.catalog().tracks)]).toEqual([['load v1', 'v1 ← v1,v2', 'v1 ← v1,v2,v3'], 'v1,v2,v3'])
-      // An unknown track: rejected, the catalog goes stale and later deltas of the group are ignored.
+      // An unknown track: rejected, the catalog goes stale and later deltas of the group are ignored
       await c.push(object(5, 3, bytes(delta('remove', { name: 'nope' }))), object(5, 4, bytes(delta('add', v('v9')))))
       expect([c.warnings, c.catalog().stale, names(c.catalog().tracks)]).toEqual([
         ['INVALID_CATALOG_UPDATE'],
@@ -279,16 +268,7 @@ if (import.meta.vitest) {
       const first = c.catalog().timeline(v1)
       const second = c.catalog().timeline(v1)
       await flush()
-      const entries = (json: unknown[], id = 0) =>
-        Objects.newWithPayload(
-          FullTrackName.tryNew('ns', 'history'),
-          new Location(1n, BigInt(id)),
-          0,
-          ObjectForwardingPreference.Subgroup,
-          0,
-          null,
-          bytes(json),
-        )
+      const entries = (json: unknown[], id = 0) => testObject('history', 1, id, bytes(json))
       c.client.last.push(entries([[0, [1, 0], 0]]))
       const [reader] = await Promise.all([first, second])
       expect(c.client.sent('subscribe')).toHaveLength(2) // the catalog, and one media timeline
@@ -304,7 +284,7 @@ if (import.meta.vitest) {
         object(1, 0, bytes(catalog([track('v1', 'video', template(2000)), track('a1', 'audio', template(700))]))),
       )
       await c.init
-      // Video groups 2-4 are 4 s up to 10 s.
+      // Video groups 2-4 are 4 s up to 10 s
       expect(c.log).toEqual(['load v1 L2-4,T50000-', 'load a1 T50000-,T4000-9999'])
 
       const plain = await setup({}, undefined, params)

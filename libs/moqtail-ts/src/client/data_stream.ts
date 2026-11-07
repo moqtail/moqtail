@@ -20,13 +20,14 @@ import { FetchObjectContext } from '@/model/data/fetch_object'
 import { GroupOrder } from '@/model/control/constant'
 import { ObjectForwardingPreference } from '@/model/data/constant'
 import { Header } from '@/model/data/header'
-import { NotEnoughBytesError, ProtocolViolationError, TimeoutError } from '@/model/error/error'
+import { NotEnoughBytesError, ProtocolViolationError } from '@/model/error/error'
 import { StreamResetCode } from '@/model/error/stream_reset'
-import { asStreamResetError, isSessionClosed, streamResetCodeOf, streamResetReason } from './util/stream_reset'
-import { logger } from '@/util/logger'
-import { DataStreamReporter, FullTrackNameOf } from './data_event'
 import type { Emitter } from '@/util/emitter'
+import { logger } from '@/util/logger'
+import { DataStreamReporter, type FullTrackNameOf } from './data_event'
 import type { ClientEvents } from './types'
+import { asStreamResetError, isSessionClosed, streamResetCodeOf, streamResetReason } from '@/client/util/stream_reset'
+import { withTimeout } from '@/client/util/timeout'
 
 export class SendStream {
   #lastObjectId?: bigint
@@ -113,15 +114,6 @@ export class SendStream {
     await this.#writer.abort(streamResetReason(code)).catch(() => {})
     this.#reporter.end('reset', code)
   }
-}
-
-function withTimeout<T>(promise: Promise<T>, ms?: number, errorMsg?: string): Promise<T> {
-  if (ms === undefined) return promise
-  let timeoutId: ReturnType<typeof setTimeout>
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timeoutId = setTimeout(() => reject(new TimeoutError(errorMsg ?? `Timeout after ${ms}ms`)), ms)
-  })
-  return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timeoutId))
 }
 
 export class RecvStream {

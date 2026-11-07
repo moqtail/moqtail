@@ -17,8 +17,7 @@
 /** The `TimelineReader` of a media timeline template (MSF 7.4). Times in milliseconds. */
 
 import { Location } from '@/model/common/location'
-import type { TimelineReader } from '@/player/element/interfaces'
-import type { MediaTimelineTemplate } from '@/player/element/interfaces'
+import type { MediaTimelineTemplate, TimelineReader } from '@/player/element/interfaces'
 
 /**
  * Entry `n` follows the MSF 7.4.1 formulas. Lookups pick the entry at or before the value
@@ -103,7 +102,7 @@ if (import.meta.vitest) {
     expect(r.timeToLocation(-1)).toBeUndefined()
     expect(r.locationToTime(new Location(3n, 7n))).toBe(6006)
     expect(r.wallclockToLocation(1759924158381 + 2002 * 10 + 1)).toEqual(new Location(10n, 0n))
-    // Objects advancing within one group.
+    // Objects advancing within one group
     const objects = new TemplateTimeline({ ...example, deltaLocation: [0, 30], startWallclock: 0 })
     expect([objects.locationToTime(new Location(0n, 61n)), objects.timeToLocation(4004)]).toEqual([
       4004,

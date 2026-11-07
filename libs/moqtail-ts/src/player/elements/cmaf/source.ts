@@ -21,15 +21,14 @@ import type { ElementContext } from '@/player/element/context'
 import type { CatalogTrack, MediaSourceElement, MediaSourceOptions, Rendition } from '@/player/element/interfaces'
 import type { Pad } from '@/player/element/pad'
 import { PlayerError } from '@/player/error'
-import { formatMsfUrl } from '@/player/msf_url'
+import { bitrateOf, rendition, renditionId, trackKey } from '@/player/util/track'
 import { Delivery } from './delivery'
 import type { Span } from './ranges'
 import { closestBitrate, Recovery } from './recovery'
 import { ladderOf, Switcher } from './switch'
-import { bitrateOf, renditionId, trackKey } from '@/player/util/track'
 import { cmafCapabilities } from './track'
 
-/** What `Cmaf.init` worked out before the source starts: the URL ranges. */
+/** What `Cmaf.init` worked out before the source starts: the URL ranges and their duration. */
 export interface SourcePlan {
   spans: readonly Span[]
   /** The end of the last range in seconds, when known. */
@@ -47,8 +46,8 @@ export class CmafSource extends SourceElement implements MediaSourceElement {
   #tracks: readonly CatalogTrack[]
   /** Rendition ids ABR may choose from. */
   #selected: Set<string>
-  readonly delivery: Delivery
-  readonly recovery: Recovery
+  readonly #delivery: Delivery
+  readonly #recovery: Recovery
   readonly #switcher: Switcher
   /** The track key of the rendition last announced. */
   #shown: string
@@ -62,12 +61,12 @@ export class CmafSource extends SourceElement implements MediaSourceElement {
     const start = context.tracks[0]!
     this.#tracks = context.tracks
     this.#selected = new Set(context.tracks.map((t) => this.#id(t)))
-    this.pad = this.createPad('src', cmafCapabilities(start.role ?? 'video'))
-    this.delivery = new Delivery(this.pad, context, options.requests)
-    this.delivery.duration = plan.duration
-    this.recovery = new Recovery(
+    this.pad = this.createPad('src', cmafCapabilities('out', start.role ?? 'video'))
+    this.#delivery = new Delivery(this.pad, context, options.requests)
+    this.#delivery.duration = plan.duration
+    this.#recovery = new Recovery(
       context,
-      this.delivery,
+      this.#delivery,
       {
         tracks: () => this.#tracks,
         candidates: () => this.#tracks.filter((t) => this.#isSelected(t)),
@@ -76,17 +75,22 @@ export class CmafSource extends SourceElement implements MediaSourceElement {
       start,
       plan,
     )
-    const { delivery, recovery } = this
-    this.#switcher = new Switcher({ context, options, delivery, recovery, tracks: () => this.#tracks })
+    this.#switcher = new Switcher({
+      context,
+      options,
+      delivery: this.#delivery,
+      recovery: this.#recovery,
+      tracks: () => this.#tracks,
+    })
     this.#shown = trackKey(this.#head(start))
-    this.delivery.onTrackStart = (track, changed) => this.#trackStarted(track, changed)
-    this.pad.onEvent((event) => {
-      if (event.type !== 'seek') return false
-      this.recovery.seek(event.mediaTime)
+    this.#delivery.onTrackStart = (track, changed) => this.#trackStarted(track, changed)
+    this.pad.onSignal((signal) => {
+      if (signal.type !== 'seek') return false
+      this.#recovery.seek(signal.mediaTime)
       return true
     })
     this.emit('nomorepads')
-    void this.recovery.run()
+    void this.#recovery.run()
   }
 
   getRenditions(): Rendition[] {
@@ -97,9 +101,10 @@ export class CmafSource extends SourceElement implements MediaSourceElement {
   async switch(renditionId: string): Promise<void> {
     const track = this.#tracks.find((t) => this.#id(t) === renditionId)
     if (!track) throw new PlayerError('UNSUPPORTED_SOURCE', `Unknown rendition ${renditionId}`, { element: 'cmaf' })
-    const active = this.recovery.active
-    // Within the active rendition's ladder the climb already moves to its longest GoP.
-    if (track !== active && this.#head(track) === this.#head(active) && this.#tracks.includes(active)) return
+    const active = this.#recovery.active
+    // Within the active rendition's ladder the climb already moves to its longest GoP
+    const sameLadder = this.#head(track) === this.#head(active) && this.#tracks.includes(active)
+    if (track !== active && sameLadder) return
     return this.#switcher.switch(track)
   }
 
@@ -110,9 +115,12 @@ export class CmafSource extends SourceElement implements MediaSourceElement {
   async selectRenditions(renditionIds: string[]): Promise<void> {
     this.#selected = new Set(renditionIds)
     const selected = this.#tracks.filter((t) => this.#isSelected(t))
-    if (selected.length === 0) return this.recovery.pause()
-    this.recovery.resume()
-    const active = this.recovery.active
+    if (selected.length === 0) {
+      this.#recovery.pause()
+      return
+    }
+    this.#recovery.resume()
+    const active = this.#recovery.active
     if (!this.#isSelected(active)) await this.switch(this.#id(closestBitrate(selected, bitrateOf(active))!))
   }
 
@@ -123,32 +131,35 @@ export class CmafSource extends SourceElement implements MediaSourceElement {
   setTracks(tracks: readonly CatalogTrack[]): void {
     const known = new Set(this.#tracks.map((t) => this.#id(t)))
     const keepSelection = this.#selected.size === 1
-    for (const track of tracks) if (!known.has(this.#id(track)) && !keepSelection) this.#selected.add(this.#id(track))
+    if (!keepSelection) {
+      for (const track of tracks) if (!known.has(this.#id(track))) this.#selected.add(this.#id(track))
+    }
     this.#tracks = tracks
     if (tracks.length === 0) {
-      this.recovery.pause()
+      this.#recovery.pause()
       if (this.pads.includes(this.pad)) this.removePad(this.pad)
       return
     }
-    const key = trackKey(this.recovery.active)
-    // The same track may come back with changes made in place, such as isLive turning false.
+    const key = trackKey(this.#recovery.active)
+    // The same track may come back with changes made in place, such as isLive turning false
     const active = tracks.find((t) => trackKey(t) === key)
     if (active) {
-      this.recovery.active = active
+      this.#recovery.active = active
       return
     }
     const selected = tracks.filter((t) => this.#isSelected(t))
-    const next = closestBitrate(selected.length > 0 ? selected : tracks, bitrateOf(this.recovery.active))!
+    const next = closestBitrate(selected.length > 0 ? selected : tracks, bitrateOf(this.#recovery.active))!
     void this.switch(this.#id(next)).catch(() => {})
   }
 
   #trackStarted(track: CatalogTrack, changed: boolean): void {
-    if (trackKey(track) !== trackKey(this.recovery.active)) this.recovery.active = track
-    this.recovery.dropHandover(track)
+    // Only another track replaces it: handovers and seeks compare the active track by identity
+    if (trackKey(track) !== trackKey(this.#recovery.active)) this.#recovery.active = track
+    this.#recovery.dropHandover(track)
     this.#switcher.started(track)
     const head = this.#head(track)
     const shown = trackKey(head)
-    // A climb up the ladder is no change of rendition.
+    // A climb up the ladder is no change of rendition
     if (changed && shown !== this.#shown) this.context.player.emit('renditionchange', this, this.#rendition(head))
     this.#shown = shown
     this.#switcher.upgrade()
@@ -168,17 +179,10 @@ export class CmafSource extends SourceElement implements MediaSourceElement {
 
   /** `track` is the head of its ladder. */
   #rendition(track: CatalogTrack): Rendition {
-    return {
-      id: this.#id(track),
-      src: formatMsfUrl(this.context.catalog?.url ?? '', track.namespace, track.nameBytes),
-      bitrate: bitrateOf(track),
-      codec: track.codec ?? '',
-      ...(track.width !== undefined && { width: track.width }),
-      ...(track.height !== undefined && { height: track.height }),
-      ...(track.framerate !== undefined && { frameRate: track.framerate }),
-      active: trackKey(track) === trackKey(this.#head(this.recovery.active)),
+    return rendition(track, this.context.catalog, {
+      active: trackKey(track) === trackKey(this.#head(this.#recovery.active)),
       selected: this.#selected.has(this.#id(track)),
-    }
+    })
   }
 
   #id(track: CatalogTrack): string {
@@ -222,7 +226,7 @@ if (import.meta.vitest) {
     c.source.setTracks([cmafTrack('v1', { bitrate: 900 }), cmafTrack('v3')])
     expect(c.source.getRenditions().map((r) => [r.id, r.bitrate, r.active, r.selected])).toEqual([
       ['v1', 900, true, true],
-      // Exactly one rendition was selected: a new one doesn't join the selection.
+      // Exactly one rendition was selected: a new one doesn't join the selection
       ['v3', 0, false, false],
     ])
   })
@@ -243,7 +247,7 @@ if (import.meta.vitest) {
     ])
     void c.source.selectRenditions(['b60'])
     await flush()
-    // The active rendition was deselected: into the other ladder, at its earliest switch point.
+    // The active rendition was deselected: into the other ladder, at its earliest switch point
     expect(c.requests().at(-2)).toMatch(/^subscribe b15 /)
   })
 }

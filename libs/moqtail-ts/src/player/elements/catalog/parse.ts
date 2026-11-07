@@ -23,6 +23,7 @@ import * as v from 'valibot'
 import type { Tuple } from '@/model/common/tuple'
 import { PlayerError } from '@/player/error'
 import { trackIdentifier } from '@/player/msf_url'
+import { trackKey } from '@/player/util/track'
 import { catalogSchema } from './schema'
 import { hasBom, invalidCatalog, toBytes } from './strings'
 import type { Catalog, CatalogDocument, CatalogTrack } from './types'
@@ -58,7 +59,7 @@ export function readJson(bytes: Uint8Array, ctx: ParseContext, warnings: PlayerE
   try {
     json = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes))
   } catch (cause) {
-    throw new PlayerError('UNSUPPORTED_SOURCE', 'Invalid catalog: not UTF-8 encoded JSON', { cause })
+    throw invalidCatalog('not UTF-8 encoded JSON', cause)
   }
   return substituteVariables(json, ctx.variables, warnings)
 }
@@ -78,7 +79,7 @@ export function buildCatalog(json: unknown, ctx: ParseContext): Catalog {
 
 /** Unique full track names (MSF 5.2.3), and `depends` entries that resolve (MSF 5.2.15). */
 function checkNames(tracks: CatalogTrack[]): void {
-  const keys = new Set(tracks.map((track) => trackIdentifier(track.namespace, track.nameBytes)))
+  const keys = new Set(tracks.map(trackKey))
   if (keys.size !== tracks.length) throw invalidCatalog('two tracks have the same full track name (MSF 5.2.3)')
   for (const track of tracks) {
     for (const dependency of track.depends ?? []) {

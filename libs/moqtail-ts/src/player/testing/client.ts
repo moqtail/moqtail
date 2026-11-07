@@ -70,7 +70,7 @@ export class FakeRequest {
     into?: FakeRequest,
   ) {
     let controller!: ReadableStreamDefaultController<MoqtObject>
-    // highWaterMark 0: nothing is pulled ahead, so `unread` shows the reader's backpressure.
+    // highWaterMark 0: nothing is pulled ahead, so `unread` shows the reader's backpressure
     this.stream = into?.stream ?? new ReadableStream({ start: (c) => void (controller = c) }, { highWaterMark: 0 })
     this.#controller = into ? into.#controller : controller
     this.#into = into
@@ -98,11 +98,6 @@ export class FakeRequest {
   #output(object: MoqtObject): void {
     if (this.#into && this.#into.#open) this.#parked.push(object)
     else this.#controller.enqueue(object)
-  }
-
-  /** `group` ended at `lastObject`, as when its stream ends in group mapping mode. */
-  endGroup(group: number, lastObject: number): void {
-    this.#orderer?.endGroup(BigInt(group), BigInt(lastObject))
   }
 
   /**
@@ -230,7 +225,7 @@ export class FakeClient extends Emitter<ClientEvents> {
   }
 
   #record(method: string, args: unknown): void {
-    // As the real client does once the session is gone.
+    // As the real client does once the session is gone
     if (this.#terminated) throw new Error(`${method} after the session ended`)
     this.calls.push({ method, args })
   }
@@ -260,17 +255,25 @@ export function mediaObject(
   properties: KeyValuePair[] | null = null,
   track = 'v1',
 ): MoqtObject {
-  const name = FullTrackName.tryNew('ns', track)
+  return testObject(track, group, object, new Uint8Array([group, object]), properties)
+}
+
+/** A subgroup object of track `ns`/`track`. */
+export function testObject(
+  track: string,
+  group: number,
+  object: number,
+  payload: Uint8Array,
+  properties: KeyValuePair[] | null = null,
+): MoqtObject {
   const location = new Location(BigInt(group), BigInt(object))
-  return MoqtObject.newWithPayload(
-    name,
-    location,
-    0,
-    ObjectForwardingPreference.Subgroup,
-    0,
-    properties,
-    new Uint8Array([group, object]),
-  )
+  const name = FullTrackName.tryNew('ns', track)
+  return MoqtObject.newWithPayload(name, location, 0, ObjectForwardingPreference.Subgroup, 0, properties, payload)
+}
+
+export async function gzip(bytes: Uint8Array): Promise<Uint8Array> {
+  const stream = new Blob([bytes as Uint8Array<ArrayBuffer>]).stream().pipeThrough(new CompressionStream('gzip'))
+  return new Uint8Array(await new Response(stream).arrayBuffer())
 }
 
 /**

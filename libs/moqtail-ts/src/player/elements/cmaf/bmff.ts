@@ -52,7 +52,7 @@ export function baseMediaDecodeTime(fragment: Uint8Array): number | undefined {
   const tfdt = findBox(fragment, ['moof', 'traf', 'tfdt'])
   if (!tfdt || tfdt.length < 8) return undefined
   const view = new DataView(tfdt.buffer, tfdt.byteOffset, tfdt.byteLength)
-  // A full box: version, then 3 bytes of flags.
+  // A full box: version, then 3 bytes of flags
   if (view.getUint8(0) === 1) return tfdt.length < 12 ? undefined : Number(view.getBigUint64(4))
   return view.getUint32(4)
 }
@@ -60,9 +60,10 @@ export function baseMediaDecodeTime(fragment: Uint8Array): number | undefined {
 /** The `moov/trak/mdia/mdhd` timescale of an init segment. */
 export function mediaTimescale(init: Uint8Array): number | undefined {
   const mdhd = findBox(init, ['moov', 'trak', 'mdia', 'mdhd'])
-  // Version 1 has 64-bit creation and modification times, version 0 32-bit ones.
-  const offset = mdhd?.[0] === 1 ? 20 : 12
-  if (!mdhd || mdhd.length < offset + 4) return undefined
+  if (!mdhd) return undefined
+  // Version 1 has 64-bit creation and modification times, version 0 32-bit ones
+  const offset = mdhd[0] === 1 ? 20 : 12
+  if (mdhd.length < offset + 4) return undefined
   return new DataView(mdhd.buffer, mdhd.byteOffset, mdhd.byteLength).getUint32(offset)
 }
 

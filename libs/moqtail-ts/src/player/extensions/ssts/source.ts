@@ -37,10 +37,9 @@ import {
 } from '@/player/element/interfaces'
 import type { Pad, PadItem } from '@/player/element/pad'
 import { PlayerError } from '@/player/error'
-import { formatMsfUrl } from '@/player/msf_url'
-import { bitrateOf, renditionId, trackKey } from '@/player/util/track'
+import { bitrateOf, rendition, renditionId, trackKey } from '@/player/util/track'
+import { sstsAlgorithms } from './algorithms'
 import { Forwarder, type Child } from './forward'
-import { sstsAlgorithms } from './index'
 
 /** The next switching set ID per client: players can share one, and equal IDs would merge their sets. */
 const nextSetId = new WeakMap<MOQtailClient, bigint>()
@@ -70,27 +69,35 @@ export class SstsSource extends SourceElement implements MediaSourceElement {
     this.#tracks = context.tracks
     this.#selected = new Set(context.tracks.map((t) => this.#id(t)))
     this.algorithms = sstsAlgorithms(context.client.serverSetup)
-    // The draft has no selection rule (SSTS 3): its default algorithm, else our first.
+    // The draft has no selection rule (SSTS 3): its default algorithm, else our first
     this.#algorithm = this.algorithms.includes(0n) ? 0n : (this.algorithms[0] ?? 0n)
     this.pad = this.createPad('src', [
       { direction: 'out', code: CapabilityCode.PACKAGING, value: first.packaging },
       { direction: 'out', code: CapabilityCode.ROLE, value: first.role ?? 'video' },
     ])
-    const pad = this.pad
     this.#forward = new Forwarder({
       context,
-      pad,
+      pad: this.pad,
       child: options.child,
-      selected: () => [...this.#children.values()].filter((c) => this.#isSelected(c)),
+      selected: () => this.#selectedChildren(),
       childOf: (element) => [...this.#children.values()].find((c) => c.element === element),
       sinkPadOf: (child) => this.pads.find((p) => p.direction === 'sink' && p.peers[0]?.element === child.element),
       renditionChanged: (track) => this.context.player.emit('renditionchange', this, this.#rendition(track)),
     })
-    pad.onEvent((event) => event.type === 'seek' && (void this.#forward.seek(event.mediaTime), true))
-    this.on('padadded', (sink) => {
-      if (sink.direction === 'sink') sink.onEvent((event) => this.#forward.onChildEvent(sink.peers[0]?.element, event))
+    this.pad.onSignal((signal) => {
+      if (signal.type !== 'seek') return false
+      void this.#forward.seek(signal.mediaTime)
+      return true
     })
-    this.on('padremoved', (sink) => sink.direction === 'sink' && this.#onChildRemoved(sink))
+    this.on('padadded', (sink) => {
+      if (sink.direction !== 'sink') return
+      sink.onEvent((event) => this.#forward.onChildEvent(sink.peers[0]?.element, event))
+      // Children's signals stop here, as their events do
+      sink.onSignal(() => true)
+    })
+    this.on('padremoved', (sink) => {
+      if (sink.direction === 'sink') this.#onChildRemoved(sink)
+    })
     this.emit('nomorepads')
   }
 
@@ -138,9 +145,10 @@ export class SstsSource extends SourceElement implements MediaSourceElement {
     await Promise.all(
       [...this.#children.values()].map((child) => {
         const id = this.#id(child.track)
-        if (before.has(id) === this.#selected.has(id)) return
-        if (!this.#selected.has(id)) delete child.subscription
-        return child.element?.selectRenditions(this.#selected.has(id) ? [id] : [])
+        const selected = this.#selected.has(id)
+        if (before.has(id) === selected) return
+        if (!selected) delete child.subscription
+        return child.element?.selectRenditions(selected ? [id] : [])
       }),
     )
   }
@@ -190,18 +198,7 @@ export class SstsSource extends SourceElement implements MediaSourceElement {
     try {
       await previous
       if (call !== this.#algorithmCalls) throw new PlayerError('ABORTED', 'A later setAlgorithm superseded this one')
-      if (id === this.#algorithm) return
-      const before = this.#algorithm
-      this.#algorithm = id
-      const children = this.#subscribed()
-      const results = await Promise.allSettled(children.map((c) => this.#update(c)))
-      const failed = results.find((r): r is PromiseRejectedResult => r.status === 'rejected')
-      if (!failed) return
-      this.#algorithm = before
-      await Promise.allSettled(
-        children.filter((_, i) => results[i]!.status === 'fulfilled').map((c) => this.#update(c)),
-      )
-      throw failed.reason
+      if (id !== this.#algorithm) await this.#moveSetTo(id)
     } finally {
       done.resolve()
     }
@@ -222,12 +219,12 @@ export class SstsSource extends SourceElement implements MediaSourceElement {
         },
       })
     } catch (error) {
-      // A child that never loaded can't count toward `activate`, or the relay would wait for it.
+      // A child that never loaded can't count toward `activate`, or the relay would wait for it
       this.#children.delete(trackKey(track))
       throw error
     }
     child.element = element as unknown as BaseElement & MediaSourceElement
-    // shortcut: an unselected new track subscribes once before it's taken out; a load option could skip that.
+    // shortcut: an unselected new track subscribes once before it's taken out; a load option could skip that
     if (!this.#selected.has(this.#id(track))) await child.element.selectRenditions([])
   }
 
@@ -238,17 +235,17 @@ export class SstsSource extends SourceElement implements MediaSourceElement {
         ...options,
         parameters: [...(options.parameters ?? []), this.#assignment(track)],
       }),
-      subscribed: (_, result, options) => {
+      subscribed: (_, result) => {
         const replaced = child.subscription !== undefined
-        child.subscription = { result, options }
-        // The publisher dropped the old one from its count (SSTS 6.3): re-send the set size.
+        child.subscription = { result }
+        // The publisher dropped the old one from its count (SSTS 6.3): re-send the set size
         if (replaced) void this.#update(child).catch(() => {})
       },
     }
   }
 
   #assignment(track: CatalogTrack): SwitchingSetAssignment {
-    const activate = this.#paused ? 0n : BigInt([...this.#children.values()].filter((c) => this.#isSelected(c)).length)
+    const activate = this.#paused ? 0n : BigInt(this.#selectedChildren().length)
     const kbps = BigInt(Math.round(bitrateOf(track) / 1000))
     return new SwitchingSetAssignment(this.#setIdFor(this.context.client), this.#algorithm, kbps, 1n, activate, 0)
   }
@@ -261,6 +258,19 @@ export class SstsSource extends SourceElement implements MediaSourceElement {
       this.#setId = { client, id }
     }
     return this.#setId.id
+  }
+
+  /** Updates every subscription to algorithm `id`; one rejected update rolls the others back. */
+  async #moveSetTo(id: bigint): Promise<void> {
+    const before = this.#algorithm
+    this.#algorithm = id
+    const children = this.#subscribed()
+    const results = await Promise.allSettled(children.map((c) => this.#update(c)))
+    const failed = results.find((r): r is PromiseRejectedResult => r.status === 'rejected')
+    if (!failed) return
+    this.#algorithm = before
+    await Promise.allSettled(children.filter((_, i) => results[i]!.status === 'fulfilled').map((c) => this.#update(c)))
+    throw failed.reason
   }
 
   /** A REQUEST_UPDATE with only the assignment (no priority, no forward). */
@@ -283,6 +293,10 @@ export class SstsSource extends SourceElement implements MediaSourceElement {
     return [...this.#children.values()].filter((c) => c.subscription && this.#isSelected(c))
   }
 
+  #selectedChildren(): Child[] {
+    return [...this.#children.values()].filter((c) => this.#isSelected(c))
+  }
+
   #isSelected(child: Child): boolean {
     return this.#selected.has(this.#id(child.track))
   }
@@ -297,17 +311,10 @@ export class SstsSource extends SourceElement implements MediaSourceElement {
   }
 
   #rendition(track: CatalogTrack): Rendition {
-    return {
-      id: this.#id(track),
-      src: formatMsfUrl(this.context.catalog?.url ?? '', track.namespace, track.nameBytes),
-      bitrate: bitrateOf(track),
-      codec: track.codec ?? '',
-      ...(track.width !== undefined && { width: track.width }),
-      ...(track.height !== undefined && { height: track.height }),
-      ...(track.framerate !== undefined && { frameRate: track.framerate }),
+    return rendition(track, this.context.catalog, {
       active: this.#forward.arriving?.track === track,
       selected: this.#selected.has(this.#id(track)),
-    }
+    })
   }
 
   #id(track: CatalogTrack): string {
@@ -332,7 +339,7 @@ export const Ssts = defineElement({
     if (context.tracks.length === 0) {
       throw new PlayerError('UNSUPPORTED_SOURCE', 'The SSTS source needs at least one track', { element: 'ssts' })
     }
-    // Whoever loads it, SSTS is never used on a session that didn't negotiate it (SSTS 3).
+    // Whoever loads it, SSTS is never used on a session that didn't negotiate it (SSTS 3)
     if (sstsAlgorithms(context.client.serverSetup).length === 0) {
       throw new PlayerError('UNSUPPORTED_SOURCE', 'The session did not negotiate SSTS', { element: 'ssts' })
     }
@@ -394,7 +401,6 @@ if (import.meta.vitest) {
       sink,
       failures,
       renditions,
-      /** The request a track's latest SUBSCRIBE or FETCH opened. */
       /** A track's latest subscription. */
       request: (name: string) =>
         client.requests.filter((r) => r.kind === 'subscribe' && requested(r.options) === name).at(-1)!,
@@ -430,7 +436,7 @@ if (import.meta.vitest) {
       [[0xff01n], 0xff01n],
     ])
     expect(c.sources[1]!.pad.capabilities.map((cap) => cap.value)).toEqual(['cmaf', 'audio'])
-    // 0, the draft's default, when the peer accepts it.
+    // 0, the draft's default, when the peer accepts it
     expect((await sstsChain([[v('v1')]])).source.algorithm).toBe(0n)
   })
 
@@ -462,7 +468,7 @@ if (import.meta.vitest) {
     expect(c.client.sent('unsubscribe')).toEqual([1n])
     c.request('v1').reset()
     await vi.advanceTimersByTimeAsync(6000)
-    // The retry carries the current set size, then the count is sent again for the replacement.
+    // The retry carries the current set size, then the count is sent again for the replacement
     const retry = c.client.sent<SubscribeOptions>('subscribe').at(-1)!
     expect([requested(retry), assigned(retry)]).toEqual(['v1', 'set 0 alg 0 kbps 1000 activate 1'])
     const [update] = c.client.sent<UpdateOptions>('subscribeUpdate')

@@ -15,12 +15,13 @@
  */
 
 /**
- * URL ranges as locations (`PLAN.md` › Source Elements): converted once at start, merged,
+ * URL ranges as locations: converted once at start, merged,
  * sorted, and clamped to the accessible window (MSF 5.2.46). Locations are written against
  * the set's first track; other tracks map through their frame numbers (`alignment.ts`).
  */
 
 import { Location } from '@/model/common/location'
+import type { MoqtObject } from '@/model/data/object'
 import type { CatalogTrack, MediaSourceOptions, TimelineReader } from '@/player/element/interfaces'
 import { PlayerError } from '@/player/error'
 
@@ -39,9 +40,16 @@ export interface Span {
 }
 
 /** Whether `location` comes after `end`. */
-export const beyond = (location: Location, end: End): boolean =>
-  location.group > end.group ||
-  (end.object !== undefined && location.group === end.group && location.object > end.object)
+export function beyond(location: Location, end: End): boolean {
+  if (location.group !== end.group) return location.group > end.group
+  return end.object !== undefined && location.object > end.object
+}
+
+/** Whether `object` is the last object of `end`, or the end of its group. */
+export function reached(object: MoqtObject, end: End): boolean {
+  if (object.location.group !== end.group) return false
+  return end.object === undefined ? object.isEndOfGroup() : object.location.object === end.object
+}
 
 /**
  * The URL ranges of `first` (the set's first track) as spans, merged and sorted. A closed
@@ -59,7 +67,7 @@ export function toSpans(
     ...(ranges?.wallclockRanges ?? []).map((r) => [r, timeline?.wallclockToLocation.bind(timeline)] as const),
   ]
   for (const [range, toLocation] of timed) {
-    // Estimating would play the wrong content.
+    // Estimating would play the wrong content
     if (!toLocation) throw new PlayerError('UNSUPPORTED_SOURCE', 'A time range needs a media timeline or template')
     const start = toLocation(range.start)
     const end = range.end === undefined ? undefined : toLocation(range.end)
@@ -75,7 +83,7 @@ export function toSpans(
     .map((r) => ({
       start: window && window.compare(r.start) > 0 ? window : r.start,
       ...(r.end && { end: r.end }),
-      // Without a known edge, a closed live range is taken to be history.
+      // Without a known edge, a closed live range is taken to be history
       fetch: !first.isLive || (!!r.end && (!edge || beyond(edge, r.end))),
     }))
 }
@@ -89,13 +97,17 @@ export function merge(ranges: readonly { start: Location; end?: End }[]): { star
     if (last && (!last.end || !beyond(range.start, last.end))) {
       if (!range.end) delete last.end
       else if (last.end && laterEnd(range.end, last.end)) last.end = range.end
-    } else merged.push({ ...range })
+    } else {
+      merged.push({ ...range })
+    }
   }
   return merged
 }
 
-const laterEnd = (a: End, b: End): boolean =>
-  a.group !== b.group ? a.group > b.group : a.object === undefined || (b.object !== undefined && a.object > b.object)
+function laterEnd(a: End, b: End): boolean {
+  if (a.group !== b.group) return a.group > b.group
+  return a.object === undefined || (b.object !== undefined && a.object > b.object)
+}
 
 /**
  * The earliest accessible location (MSF 5.2.46), when the track has a window and a timeline.
@@ -155,7 +167,7 @@ if (import.meta.vitest) {
     const locationRanges = [{ start: at(2), end: { group: 3n } }, { start: at(8) }]
     expect(show(toSpans({ locationRanges }, live, undefined))).toEqual(['2.0-3.* fetch', '8.0-'])
     expect(show(toSpans({ locationRanges }, vod, undefined))).toEqual(['2.0-3.* fetch', '8.0- fetch'])
-    // The edge is at group 6: a closed range reaching past it is a live history subscribe.
+    // The edge is at group 6: a closed range reaching past it is a live history subscribe
     const mediaTimeRanges = [
       { start: 2000, end: 5000 },
       { start: 9000, end: 13000 },
@@ -217,7 +229,7 @@ if (import.meta.vitest) {
     const catalog = fakeCatalog([], twoSecondTimeline(100_000))
     const c = await cmafChain([cmafTrack('v1')], { catalog, cmaf: urlRanges({ mediaTimeRanges }) })
     await flush()
-    // Groups 3 to 4 end at 10 s, behind the edge: fetched.
+    // Groups 3 to 4 end at 10 s, behind the edge: fetched
     expect(c.requests()).toEqual(['fetch v1 3.0-4'])
     expect(c.sink.items()[0]).toMatchObject({ properties: { duration: 8 } })
   })

@@ -14,12 +14,10 @@
  * limitations under the License.
  */
 
-import { Datagram } from '@/model/data'
-import { MoqtObject, FullTrackName } from '@/model/data'
-import { logger } from '@/util/logger'
+import type { MoqtObject } from '@/model/data'
 import type { Emitter } from '@/util/emitter'
+import { logger } from '@/util/logger'
 import type { ClientEvents } from './types'
-import { FrozenByteBuffer } from '@/model'
 
 /**
  * Sends MoqtObjects as WebTransport datagrams.
@@ -27,7 +25,7 @@ import { FrozenByteBuffer } from '@/model'
  *
  * @example
  * ```ts
- * const sender = new SendDatagramStream(client.webTransport.datagrams.writable, trackAlias);
+ * const sender = await SendDatagramStream.new(client.webTransport.datagrams.writable, trackAlias);
  * await sender.write(moqtObject);
  * ```
  */
@@ -114,110 +112,5 @@ export class SendDatagramStream {
    */
   releaseLock(): void {
     this.#writer.releaseLock()
-  }
-}
-
-/**
- * Receives and parses WebTransport datagrams as MoqtObjects.
- * Parallel to RecvStream but for datagram-based delivery.
- *
- * Automatically handles:
- * - Datagram parsing (both payload and status datagrams)
- * - Track alias to full track name resolution
- *
- * @example
- * ```ts
- * const receiver = new RecvDatagramStream(
- *   client.webTransport.datagrams.readable,
- *   (trackAlias) => client.requestIdMap.getNameByTrackAlias(trackAlias)
- * );
- *
- * for await (const object of receiver.stream) {
- *   console.log('Received:', object);
- * }
- * ```
- */
-export class RecvDatagramStream {
-  readonly stream: ReadableStream<MoqtObject>
-  readonly #reader: ReadableStreamDefaultReader<Uint8Array>
-  readonly #trackAliasResolver: (trackAlias: bigint) => FullTrackName
-  readonly #events: Emitter<ClientEvents> | undefined
-
-  private constructor(
-    reader: ReadableStreamDefaultReader<Uint8Array>,
-    trackAliasResolver: (trackAlias: bigint) => FullTrackName,
-    events?: Emitter<ClientEvents>,
-  ) {
-    this.#reader = reader
-    this.#trackAliasResolver = trackAliasResolver
-    this.#events = events
-
-    this.stream = new ReadableStream<MoqtObject>({
-      start: (controller) => this.#ingestLoop(controller),
-      cancel: () => this.#reader.cancel(),
-    })
-  }
-
-  /**
-   * Create a new datagram receiver.
-   *
-   * @param readStream - WebTransport datagram readable stream
-   * @param trackAliasResolver - Function to resolve track alias to full track name
-   * @param events - Receives `datagramreceived` for each datagram read
-   * @returns RecvDatagramStream instance
-   */
-  static async new(
-    readStream: ReadableStream<Uint8Array>,
-    trackAliasResolver: (trackAlias: bigint) => FullTrackName,
-    events?: Emitter<ClientEvents>,
-  ): Promise<RecvDatagramStream> {
-    const reader = readStream.getReader()
-    return new RecvDatagramStream(reader, trackAliasResolver, events)
-  }
-
-  async #ingestLoop(controller: ReadableStreamDefaultController<MoqtObject>) {
-    try {
-      while (true) {
-        const { done, value: datagramBytes } = await this.#reader.read()
-
-        if (done) {
-          controller.close()
-          break
-        }
-
-        if (!datagramBytes || datagramBytes.length === 0) {
-          continue
-        }
-
-        try {
-          const datagram = Datagram.deserialize(new FrozenByteBuffer(datagramBytes))
-          this.#events?.emit('datagramreceived', datagram)
-
-          const fullTrackName = this.#trackAliasResolver(datagram.trackAlias)
-          const moqtObject = MoqtObject.fromDatagram(datagram, fullTrackName)
-          controller.enqueue(moqtObject)
-        } catch (error) {
-          // Log but don't break the stream - individual datagrams may be corrupt
-          logger.warn('datagram_stream', 'Failed to parse datagram:', error)
-          continue
-        }
-      }
-    } catch (error) {
-      controller.error(error)
-    }
-  }
-
-  /**
-   * Cancel the datagram reader.
-   */
-  async cancel(): Promise<void> {
-    await this.#reader.cancel()
-  }
-
-  /**
-   * Release the reader lock without canceling.
-   */
-  releaseLock(): void {
-    this.#reader.releaseLock()
   }
 }

@@ -40,8 +40,8 @@ export type PlayerErrorCode =
  */
 export type PlayerErrorCategory = 'source' | 'network' | 'media' | 'aborted'
 
-// Codes not listed here are `source`.
-const DEFAULT_CATEGORY: Partial<Record<PlayerErrorCode, PlayerErrorCategory>> = {
+// Codes not listed here are `source`
+const CATEGORY: Partial<Record<PlayerErrorCode, PlayerErrorCategory>> = {
   SESSION_LOST: 'network',
   MEDIA_FAILURE: 'media',
   NO_MEDIA_SINK: 'media',
@@ -60,11 +60,11 @@ export class PlayerError extends Error {
   constructor(
     readonly code: PlayerErrorCode,
     message: string,
-    options: { category?: PlayerErrorCategory; element?: string; cause?: unknown } = {},
+    options: { element?: string; cause?: unknown } = {},
   ) {
     super(message, { cause: options.cause })
     this.name = 'PlayerError'
-    this.category = options.category ?? DEFAULT_CATEGORY[code] ?? 'source'
+    this.category = CATEGORY[code] ?? 'source'
     if (options.element !== undefined) this.element = options.element
   }
 }

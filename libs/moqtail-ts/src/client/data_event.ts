@@ -97,21 +97,25 @@ function locTimestampOf(properties: KeyValuePair[] | null): bigint | undefined {
 
 /**
  * Turns one data stream's activity into {@link DataEvent}s, emitted as `dataevent`.
- * A throwing listener can't break the stream: `EventTarget` isolates it.
+ * A throwing listener can't break the stream: `EventTarget` isolates it. Without an
+ * emitter no event is built, since this runs for every object.
  */
 export class DataStreamReporter {
   readonly streamId = ++lastStreamId
+  readonly #direction: DataDirection
+  readonly #events: Emitter<ClientEvents> | undefined
+  readonly #fullTrackNameOf: FullTrackNameOf | undefined
   #hasEnded = false
 
-  constructor(
-    private readonly direction: DataDirection,
-    private readonly events?: Emitter<ClientEvents>,
-    private readonly fullTrackNameOf?: FullTrackNameOf,
-  ) {}
+  constructor(direction: DataDirection, events?: Emitter<ClientEvents>, fullTrackNameOf?: FullTrackNameOf) {
+    this.#direction = direction
+    this.#events = events
+    this.#fullTrackNameOf = fullTrackNameOf
+  }
 
   header(header: Header): void {
-    if (!this.events) return
-    const fullTrackName = this.fullTrackNameOf?.(header)
+    if (!this.#events) return
+    const fullTrackName = this.#fullTrackNameOf?.(header)
     const event: DataHeaderEvent = Header.isFetch(header)
       ? { ...this.#base('header'), stream: 'fetch', requestId: header.requestId }
       : {
@@ -127,7 +131,7 @@ export class DataStreamReporter {
 
   /** `header` is the stream's own: a subgroup object takes its group and subgroup from it. */
   object(header: Header, object: SubgroupObject | FetchObject): void {
-    if (!this.events) return
+    if (!this.#events) return
     let event: DataObjectEvent
     if (object instanceof FetchObject) {
       // An end-of-range marker is a gap in the range, not an object.
@@ -139,8 +143,6 @@ export class DataStreamReporter {
         objectId: object.location.object,
         payloadLength: object.payload?.byteLength ?? 0,
       }
-      const locTimestamp = locTimestampOf(object.properties)
-      if (locTimestamp !== undefined) event.locTimestamp = locTimestamp
     } else {
       if (Header.isFetch(header)) return
       event = {
@@ -151,9 +153,9 @@ export class DataStreamReporter {
         ...(header.subgroupId !== undefined && { subgroupId: header.subgroupId }),
         ...(object.objectStatus !== null && { objectStatus: object.objectStatus }),
       }
-      const locTimestamp = locTimestampOf(object.properties)
-      if (locTimestamp !== undefined) event.locTimestamp = locTimestamp
     }
+    const locTimestamp = locTimestampOf(object.properties)
+    if (locTimestamp !== undefined) event.locTimestamp = locTimestamp
     this.#emit(event)
   }
 
@@ -161,15 +163,15 @@ export class DataStreamReporter {
   end(reason: DataStreamEndEvent['reason'], resetCode?: StreamResetCode): void {
     if (this.#hasEnded) return
     this.#hasEnded = true
-    if (!this.events) return
+    if (!this.#events) return
     this.#emit({ ...this.#base('end'), reason, ...(resetCode !== undefined && { resetCode }) })
   }
 
   #base<K extends DataEvent['kind']>(kind: K) {
-    return { kind, direction: this.direction, streamId: this.streamId, at: performance.now() }
+    return { kind, direction: this.#direction, streamId: this.streamId, at: performance.now() }
   }
 
   #emit(event: DataEvent): void {
-    this.events!.emit('dataevent', event)
+    this.#events?.emit('dataevent', event)
   }
 }

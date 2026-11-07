@@ -17,7 +17,8 @@
 /**
  * Pads and the connections between them. A connection is a bounded FIFO from a source
  * pad to one sink pad, drained by a single loop: packets and properties go to the
- * destination's `receive()`, events to the destination pad's `onEvent` listeners.
+ * destination's `receive()`, events to the destination pad's `onEvent` listeners. Signals
+ * bypass connections and reach the peer pad's `onSignal` listeners immediately.
  */
 
 import type { MoqtObject } from '@/model/data/object'
@@ -43,12 +44,14 @@ export interface PadProperties {
   duration?: number
 }
 
-/** @public Events travelling between pads. */
+/** @public Written to a source pad, delivered in order with the packets around it. */
 export type PadEvent =
+  { type: 'discontinuity'; reason: 'seek' | 'gap'; mediaTime?: number; failed?: boolean } | { type: 'eos' }
+
+/** @public Sent with `signal()`, delivered immediately ahead of anything written. */
+export type PadSignal =
   | { type: 'seek'; mediaTime: number } // upstream
   | { type: 'flush' } // downstream
-  | { type: 'discontinuity'; reason: 'seek' | 'gap'; mediaTime?: number; failed?: boolean } // downstream
-  | { type: 'eos' } // downstream
 
 /** @public Items a connection holds before `write()` waits. */
 export const CONNECTION_CAPACITY = 32
@@ -61,7 +64,8 @@ type ErrorHandler = (error: unknown, destination: Pad) => void
 export class Pad {
   /** Connected pads: sink pads for a source pad, source pads for a sink pad. */
   readonly peers: Pad[] = []
-  readonly #listeners = new Set<(event: PadEvent) => boolean>()
+  readonly #eventListeners = new Set<(event: PadEvent) => boolean>()
+  readonly #signalListeners = new Set<(signal: PadSignal) => boolean>()
   /** Source pads only, keyed by destination pad. */
   readonly #connections = new Map<Pad, Connection>()
   /** Set while the chain hasn't routed this pad yet, so writes made during `init()` aren't lost. */
@@ -76,53 +80,46 @@ export class Pad {
   /** Source pads only. Resolves once every connection has room, await it to apply backpressure. */
   async write(item: PadOutput): Promise<void> {
     if (this.direction !== 'src') throw new TypeError('write() is only for source pads')
-    if (this.#routed) return this.#routed.then(() => this.write(item))
-    return Promise.all(Array.from(this.#connections.values(), (c) => c.push(item))).then(() => undefined)
+    if (this.#routed) {
+      await this.#routed
+      return this.write(item)
+    }
+    await Promise.all(Array.from(this.#connections.values(), (c) => c.push(item)))
   }
 
   /**
-   * Delivers `event` immediately to the connected pads: upstream from a sink pad, downstream
+   * Delivers `signal` immediately to the connected pads: upstream from a sink pad, downstream
    * from a source pad, ahead of anything written. An element that doesn't handle it passes it
    * on through its other pads. Returns whether any element handled it.
    */
-  signal(event: PadEvent): boolean {
+  signal(signal: PadSignal): boolean {
     let handled = false
-    for (const peer of this.peers) if (peer.#deliver(event)) handled = true
+    for (const peer of this.peers) if (peer.#deliverSignal(signal)) handled = true
     return handled
   }
 
-  /** Return true when the event is handled; false forwards it past this pad's element. */
+  /** Sink pads only. Return true when the event is handled; false forwards it past this pad's element. */
   onEvent(listener: (event: PadEvent) => boolean): () => void {
-    this.#listeners.add(listener)
-    return () => this.#listeners.delete(listener)
+    this.#eventListeners.add(listener)
+    return () => this.#eventListeners.delete(listener)
   }
 
-  #handled(event: PadEvent): boolean {
-    for (const listener of this.#listeners) if (listener(event)) return true
-    return false
+  /** Return true when the signal is handled; false forwards it past this pad's element. */
+  onSignal(listener: (signal: PadSignal) => boolean): () => void {
+    this.#signalListeners.add(listener)
+    return () => this.#signalListeners.delete(listener)
   }
 
-  #otherSide(): Pad[] {
-    return this.element.pads.filter((pad) => pad.direction !== this.direction)
-  }
-
-  #deliver(event: PadEvent): boolean {
-    if (this.#handled(event)) return true
-    let handled = false
-    for (const pad of this.#otherSide()) if (pad.signal(event)) handled = true
-    return handled
-  }
-
-  /** @internal Delivers a downstream event; unhandled ones land behind what the element already wrote. */
-  async deliverDownstream(event: PadEvent): Promise<void> {
-    if (this.#handled(event)) return
+  /** @internal Delivers an event; unhandled ones land behind what the element already wrote. */
+  async deliverEvent(event: PadEvent): Promise<void> {
+    for (const listener of this.#eventListeners) if (listener(event)) return
     await Promise.all(this.#otherSide().map((pad) => pad.write({ type: 'event', event })))
   }
 
   /** @internal Holds writes until the returned function is called, once the pad is routed. */
   holdWrites(): () => void {
     const { promise, resolve } = Promise.withResolvers<void>()
-    // Registered first, so it clears the hold before the held writes run, keeping their order.
+    // Registered first, so it clears the hold before the held writes run, keeping their order
     this.#routed = promise.then(() => {
       this.#routed = undefined
     })
@@ -130,17 +127,16 @@ export class Pad {
   }
 
   /** @internal Connects this source pad to a new sink pad on `element`, which then emits `padadded`. */
-  connect(element: Consumer, onError: ErrorHandler, capacity?: number): Pad {
+  connect(element: Consumer, onError: ErrorHandler): void {
     const sink = new Pad('sink', element, this.capabilities)
     element.pads.push(sink)
-    this.#connections.set(sink, new Connection(sink, onError, capacity))
+    this.#connections.set(sink, new Connection(sink, onError))
     this.peers.push(sink)
     sink.peers.push(this)
     element.emit('padadded', sink)
-    return sink
   }
 
-  /** @internal Closes the connection between this pad and `peer`. */
+  /** @internal */
   unlink(peer: Pad): void {
     const [source, sink] = this.direction === 'src' ? [this, peer] : [peer, this]
     source.#connections.get(sink)?.close()
@@ -148,9 +144,19 @@ export class Pad {
     remove(source.peers, sink)
     remove(sink.peers, source)
   }
+
+  #otherSide(): Pad[] {
+    return this.element.pads.filter((pad) => pad.direction !== this.direction)
+  }
+
+  #deliverSignal(signal: PadSignal): boolean {
+    for (const listener of this.#signalListeners) if (listener(signal)) return true
+    let handled = false
+    for (const pad of this.#otherSide()) if (pad.signal(signal)) handled = true
+    return handled
+  }
 }
 
-/** Adds a pad to its element and emits `padadded`. */
 export function addPad(element: BaseElement, direction: 'src' | 'sink', capabilities: Capabilities): Pad {
   const pad = new Pad(direction, element, capabilities)
   element.pads.push(pad)
@@ -178,17 +184,17 @@ function remove<T>(list: T[], item: T): boolean {
 }
 
 class Connection {
+  readonly #destination: Pad
+  readonly #onError: ErrorHandler
   readonly #queue: PadOutput[] = []
   /** Producers waiting for room, oldest first. */
   readonly #waiting: (() => void)[] = []
   #wake: (() => void) | undefined
   #closed = false
 
-  constructor(
-    readonly destination: Pad,
-    readonly onError: ErrorHandler,
-    readonly capacity = CONNECTION_CAPACITY,
-  ) {
+  constructor(destination: Pad, onError: ErrorHandler) {
+    this.#destination = destination
+    this.#onError = onError
     void this.#run()
   }
 
@@ -196,7 +202,7 @@ class Connection {
     if (this.#closed) return Promise.resolve()
     this.#queue.push(item)
     this.#wake?.()
-    if (this.#queue.length < this.capacity) return Promise.resolve()
+    if (this.#queue.length < CONNECTION_CAPACITY) return Promise.resolve()
     return new Promise((resolve) => this.#waiting.push(resolve))
   }
 
@@ -212,12 +218,12 @@ class Connection {
     for (;;) {
       const item = this.#queue.shift() ?? (await this.#next())
       if (!item || this.#closed) return
-      if (this.#queue.length < this.capacity) this.#waiting.shift()?.()
+      if (this.#queue.length < CONNECTION_CAPACITY) this.#waiting.shift()?.()
       try {
-        if (item.type === 'event') await this.destination.deliverDownstream(item.event)
-        else await (this.destination.element as Consumer).receive(this.destination, item)
+        if (item.type === 'event') await this.#destination.deliverEvent(item.event)
+        else await (this.#destination.element as Consumer).receive(this.#destination, item)
       } catch (error) {
-        this.onError(error, this.destination)
+        this.#onError(error, this.#destination)
       }
     }
   }
@@ -278,7 +284,7 @@ if (import.meta.vitest) {
         pad.write(packet(i)).then(() => resolved++),
       )
       await flush()
-      // One item is inside receive(), the queue holds the rest up to capacity.
+      // One item is inside receive(), the queue holds the rest up to capacity
       expect(resolved).toBe(CONNECTION_CAPACITY)
       await chain.destroy()
       await Promise.all(writes)
@@ -288,7 +294,7 @@ if (import.meta.vitest) {
       expect(sink.items()).toEqual([])
     })
 
-    test('events cross a transform both ways when nobody handles them', async () => {
+    test('events cross a transform downstream and signals both ways when nobody handles them', async () => {
       const { chain } = testChain()
       const transform = new TestTransform(detachedContext())
       let source: import('@/player/testing/elements').TestSource | undefined
@@ -298,8 +304,8 @@ if (import.meta.vitest) {
       chain.addSink(collectingSink({ setup: (k) => (sink = k) }))
       await chain.init(new AbortController().signal)
 
-      const upstream: PadEvent[] = []
-      source!.pads[0]!.onEvent((event) => (upstream.push(event), true))
+      const upstream: PadSignal[] = []
+      source!.pads[0]!.onSignal((signal) => (upstream.push(signal), true))
       await source!.pads[0]!.write(packet(1))
       await source!.pads[0]!.write(eos)
       await flush()
@@ -310,12 +316,13 @@ if (import.meta.vitest) {
       expect(sink!.pads[0]!.signal({ type: 'seek', mediaTime: 5 })).toBe(true)
       expect(upstream).toEqual([{ type: 'seek', mediaTime: 5 }])
 
-      // A signal skips what's written: it reaches the sink before the packet the source can't push yet.
+      // A signal skips what's written: it reaches the sink before the packet the source can't push yet
       sink!.slow = () => new Promise(() => {})
       void source!.pads[0]!.write(packet(2))
       expect(source!.pads[0]!.signal({ type: 'flush' })).toBe(true)
-      expect(sink!.items().at(-1)).toEqual({ type: 'event', event: { type: 'flush' } })
-      sink!.consumeEvents = false
+      expect(sink!.signals).toEqual([{ type: 'flush' }])
+      expect(sink!.items()).toEqual([packet(1), eos])
+      sink!.consumeSignals = false
       expect(source!.pads[0]!.signal({ type: 'flush' })).toBe(false)
     })
   })

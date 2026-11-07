@@ -21,9 +21,11 @@
  */
 
 import type { MOQtailClient } from '@/client/client'
-import type { Emitter } from '@/util/emitter'
 import { PlayerError } from '@/player/error'
 import type { MOQtailPlayer, PlayerEvents } from '@/player/player'
+import { deepEqual } from '@/player/util/json'
+import { trackKey } from '@/player/util/track'
+import type { Emitter } from '@/util/emitter'
 import type { BaseElement } from './base'
 import type { Chain } from './chain'
 import type { ElementDefinition, Identifiers, SourceElementDefinition } from './define'
@@ -118,11 +120,10 @@ export class InstanceContext implements ElementContext {
     return selectSource(this.#chain.host.definitions(), identifiers)
   }
 
-  /** Runs `init` with this context and adds the instance to the chain. */
   async create<E extends BaseElement>(definition: ElementDefinition<E>, options?: Record<string, any>): Promise<E> {
     const element = await definition.init(this, options)
     this.#chain.register(element)
-    // Destroyed while init was running: nothing will release it later.
+    // Destroyed while init was running: nothing will release it later
     if (this.signal.aborted) await this.destroy()
     return element
   }
@@ -140,13 +141,15 @@ export class InstanceContext implements ElementContext {
     }
     if (!loaded) {
       const context = new InstanceContext(this.#chain, tracks, request.catalog ?? this.catalog)
-      // Before init runs, so pads it creates already know their holder.
+      // Before init runs, so pads it creates already know their holder
       context.holders.add(this)
       const created: Loaded = {
         context,
         element: context.create(definition, options),
         options,
-        unshare: () => table?.get(key) === created && table.delete(key),
+        unshare: () => {
+          if (table?.get(key) === created) table.delete(key)
+        },
       }
       created.element.catch(created.unshare) // a failed init isn't shared
       table?.set(key, created)
@@ -162,7 +165,7 @@ export class InstanceContext implements ElementContext {
     this.#abort.abort()
     const element = this.#element
     try {
-      if (element) await element.destroy()
+      await element?.destroy()
     } finally {
       if (element) this.#chain.unregister(element)
       for (const loaded of [...this.#holding]) await this.#drop(loaded)
@@ -183,24 +186,9 @@ export class InstanceContext implements ElementContext {
   }
 }
 
-/** Full track names (namespace and name bytes), sorted, so the order of `tracks` doesn't matter. */
+/** Track keys, sorted, so the order of `tracks` doesn't matter. */
 function sharingKey(tracks: readonly CatalogTrack[]): string {
-  return tracks
-    .map((t) => JSON.stringify([t.namespace.fields.map((f) => Array.from(f.value)), Array.from(t.nameBytes)]))
-    .sort()
-    .join('\n')
-}
-
-/** Structural equality for load options: plain objects, arrays, typed arrays, primitives. */
-export function deepEqual(a: unknown, b: unknown): boolean {
-  if (Object.is(a, b)) return true
-  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false
-  if (Object.getPrototypeOf(a) !== Object.getPrototypeOf(b)) return false
-  const keys = Object.keys(a)
-  return (
-    keys.length === Object.keys(b).length &&
-    keys.every((k) => deepEqual((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]))
-  )
+  return tracks.map(trackKey).sort().join('\n')
 }
 
 if (import.meta.vitest) {

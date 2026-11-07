@@ -16,7 +16,7 @@
 
 /**
  * The optional interfaces an element can declare in `provides`, their keys, and the
- * catalog contract sources are written against (implemented in milestone 4).
+ * catalog contract sources are written against.
  */
 
 import type { FetchOptions, FetchResult, SubscribeOptions, SubscribeResult } from '@/client/types'
@@ -26,7 +26,7 @@ import type { MsfSource } from '@/player/msf_url'
 import type { CatalogTrack, MediaTimelineTemplate } from '@/player/elements/catalog/types'
 import type { SourceElementDefinition } from './define'
 
-// Symbol.for, so the keys still match when the ESM and CJS builds are both loaded.
+// Symbol.for, so the keys still match when the ESM and CJS builds are both loaded
 /** @public Key of {@link MediaSinkElement}. */
 export const MEDIA_SINK = Symbol.for('moqtail.mediaSink')
 /** @public Key of {@link MediaSourceElement}. */
@@ -46,7 +46,7 @@ export type InterfaceKey = keyof ElementInterfaces
 /**
  * @public
  * Implemented by sinks that drive a display backend. Times are in seconds.
- * Dispatches `playing`, `pause`, `stalled`, `waiting`, and `timeupdate`.
+ * Dispatches `playing`, `pause`, `stalled`, `waiting`, `ended`, and `timeupdate`.
  */
 export interface MediaSinkElement extends EventTarget {
   readonly currentTime: number

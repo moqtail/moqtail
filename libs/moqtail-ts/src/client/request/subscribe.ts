@@ -39,7 +39,6 @@ import type { ObjectOrderer } from '@/client/ordering'
  * for convenient async resolution when subscription setup succeeds or fails.
  */
 export class SubscribeRequest implements PromiseLike<SubscribeOk | RequestError> {
-  // Public Request Metadata & State
   public requestId: bigint
   public fullTrackName: FullTrackName
   public isCanceled: boolean = false
@@ -51,7 +50,6 @@ export class SubscribeRequest implements PromiseLike<SubscribeOk | RequestError>
   public earlyDiscardPolicy: EarlyDiscardPolicyConfig | undefined
   public onEndOfRange: EndOfRangeHandler | undefined
 
-  // Track Data State
   public largestLocation: Location | undefined // Updated on each received object
   /**
    * The publisher's Largest Object as of the last SUBSCRIBE_OK or REQUEST_UPDATE_OK,
@@ -66,19 +64,17 @@ export class SubscribeRequest implements PromiseLike<SubscribeOk | RequestError>
   public expectedStreams: bigint | undefined // Defined upon SUBSCRIBE_DONE
   /** The last PUBLISH_DONE received for this request. */
   public publishDone: PublishDone | undefined
+  readonly #finished = Promise.withResolvers<PublishDone | undefined>()
   /** Resolves once this request is over, with {@link SubscribeRequest.publishDone}. Never rejects. */
-  public readonly done: Promise<PublishDone | undefined>
-  #finish!: (publishDone: PublishDone | undefined) => void
+  public readonly done = this.#finished.promise
 
-  /** The Subscription managing this request's output stream once switching is involved. */
-  public manager?: Subscription
+  /** The Subscription that owns this request's consumer stream; it sets itself on construction. */
+  public manager!: Subscription
 
-  // Stream & Controller Properties
   public readonly controller!: ReadableStreamDefaultController<MoqtObject>
   public readonly stream: ReadableStream<MoqtObject>
   public orderer: ObjectOrderer | undefined
 
-  // Deferred Promise State
   #promise: Promise<SubscribeOk | RequestError>
   #resolve!: (value: SubscribeOk | RequestError | PromiseLike<SubscribeOk | RequestError>) => void
   #reject!: (reason?: any) => void
@@ -109,7 +105,6 @@ export class SubscribeRequest implements PromiseLike<SubscribeOk | RequestError>
       this.#resolve = resolve
       this.#reject = reject
     })
-    this.done = new Promise((resolve) => (this.#finish = resolve))
 
     logger.debug(
       'request/subscribe',
@@ -143,22 +138,21 @@ export class SubscribeRequest implements PromiseLike<SubscribeOk | RequestError>
 
   /**
    * Puts an object on the consumer stream, through {@link SubscribeRequest.orderer} when
-   * there is one. `after` is the object before it on the same fill fetch stream.
+   * there is one. `previous` is the object before it on the same fill fetch stream.
    */
-  public enqueue(obj: MoqtObject, after?: Location): void {
-    if (this.orderer) this.orderer.push(obj, after)
+  public enqueue(obj: MoqtObject, previous?: Location): void {
+    if (this.orderer) this.orderer.push(obj, previous)
     else this.output(obj)
   }
 
-  /** Writes an object to the consumer stream: through the manager once switching is involved. */
+  /** Writes an object the orderer released, or an unordered one, through the manager. */
   public output(obj: MoqtObject): void {
-    if (this.manager) this.manager.output(this, obj)
-    else this.controller.enqueue(obj)
+    this.manager.output(this, obj)
   }
 
   /** Ends the request: resolves {@link SubscribeRequest.done}. Later calls do nothing. */
   public finish(): void {
-    this.#finish(this.publishDone)
+    this.#finished.resolve(this.publishDone)
   }
 
   /**
@@ -272,14 +266,13 @@ export class Subscription {
   }
 
   async #allDone(): Promise<PublishDone | undefined> {
-    let newest = this.#unwaited[0]!
-    // A switch may add a request while earlier ones are waited for; batches keep finished ones from piling up.
+    let batch: SubscribeRequest[] = []
+    // A switch may add a request while earlier ones are waited for; batches keep finished ones from piling up
     while (this.#unwaited.length > 0) {
-      const batch = this.#unwaited.splice(0)
-      newest = batch[batch.length - 1]!
+      batch = this.#unwaited.splice(0)
       await Promise.all(batch.map((request) => request.done))
     }
-    return newest.publishDone
+    return batch.at(-1)?.publishDone
   }
 
   /** Requests still tracked, oldest first, draining ones last. */
@@ -290,6 +283,11 @@ export class Subscription {
   /** The request most recently switched to; must deliver data to win the handover. */
   public get newest(): SubscribeRequest {
     return this.#requests[this.#requests.length - 1]!
+  }
+
+  /** More than one request tracked, draining ones included. */
+  get #switching(): boolean {
+    return this.#requests.length + this.#draining.size > 1
   }
 
   /**
@@ -304,7 +302,7 @@ export class Subscription {
     if (drainSuperseded) this.#drainsSuperseded.add(request)
     this.#requests.push(request)
     this.#unwaited.push(request)
-    this.#switched()
+    this.#updateSwitchState()
   }
 
   /**
@@ -312,26 +310,35 @@ export class Subscription {
    * one's ordered objects wait, so the old track's tail comes first.
    */
   public output(request: SubscribeRequest, obj: MoqtObject): void {
-    if (request.orderer && request === this.newest && this.requests.length > 1) this.#parked.push(obj)
+    if (request.orderer && request === this.newest && this.#switching) this.#parked.push(obj)
     else this.controller.enqueue(obj)
   }
 
   /**
-   * While a switch is in progress (more than one request tracked) no ordering window expires,
-   * and once it's over the parked objects go out first. `left` stopped being tracked.
+   * While a switch is in progress no ordering window expires, and once it's over the
+   * parked objects go out first. `left` stopped being tracked.
    */
-  #switched(left: readonly SubscribeRequest[] = []): void {
-    const switching = this.requests.length > 1
+  #updateSwitchState(left: readonly SubscribeRequest[] = []): void {
+    const switching = this.#switching
     if (!switching) for (const obj of this.#parked.splice(0)) this.controller.enqueue(obj)
-    for (const request of this.requests) request.orderer?.suspendWindow(switching)
-    for (const request of left) request.orderer?.suspendWindow(false)
+    for (const request of this.requests) {
+      if (switching) request.orderer?.suspendWindow('switch')
+      else request.orderer?.resumeWindow('switch')
+    }
+    for (const request of left) request.orderer?.resumeWindow('switch')
+  }
+
+  /** Hands `requests` to `onSuperseded`, which flushes what they still hold, then stops tracking them. */
+  #retire(requests: SubscribeRequest[]): void {
+    this.onSuperseded?.(requests)
+    this.#updateSwitchState(requests)
   }
 
   /** Stop tracking `request` (e.g. it naturally completed without ever losing/winning a handover). */
   public drop(request: SubscribeRequest): void {
     this.#clearDrain(request)
     this.#requests = this.#requests.filter((r) => r !== request)
-    this.#switched([request])
+    this.#updateSwitchState([request])
   }
 
   /** Stop tracking everything (used when the whole switch chain is torn down at once). */
@@ -340,7 +347,7 @@ export class Subscription {
     for (const request of [...this.#draining.keys()]) this.#clearDrain(request)
     this.#requests = []
     this.#parked = []
-    this.#switched(left)
+    this.#updateSwitchState(left)
   }
 
   /** Starts, or on each further object restarts, the quiet period that ends a drain. */
@@ -351,9 +358,8 @@ export class Subscription {
       setTimeout(() => {
         this.#draining.delete(request)
         logger.debug('Subscription', `drain of request ${request.requestId} ended on silence`)
-        // Retiring flushes what it still holds, ahead of the parked objects.
-        this.onSuperseded?.([request])
-        this.#switched([request])
+        // Retiring flushes what it still holds, ahead of the parked objects
+        this.#retire([request])
       }, this.drainTimeoutMs),
     )
   }
@@ -373,20 +379,19 @@ export class Subscription {
    * Returns `true` if the object was delivered to the caller,
    * `false` if it was not consumed, and client should cancel the stream.
    */
-  public deliver(request: SubscribeRequest, obj: MoqtObject, after?: Location): boolean {
+  public deliver(request: SubscribeRequest, obj: MoqtObject, previous?: Location): boolean {
     if (this.#draining.has(request)) {
       // The tail of a track handed over by a soft switch: it covers the media up to
       // where the new one begins, so dropping it is the hole the drain exists to avoid.
-      if (this.onDrainDecision?.(request)) {
+      if (this.onDrainDecision(request)) {
         this.#keepDraining(request)
-        request.enqueue(obj, after)
+        request.enqueue(obj, previous)
         return true
       }
       // The consumer has what it needs from this track: the drain is over, and what the
       // new track has waiting goes out now rather than after a PUBLISH_DONE or the timeout.
       this.#clearDrain(request)
-      this.onSuperseded?.([request])
-      this.#switched([request])
+      this.#retire([request])
       return false
     }
 
@@ -401,12 +406,11 @@ export class Subscription {
       if (this.#drainsSuperseded.has(request)) {
         for (const old of superseded) this.#keepDraining(old)
       } else {
-        this.onSuperseded?.(superseded)
-        this.#switched(superseded)
+        this.#retire(superseded)
       }
     }
 
-    request.enqueue(obj, after)
+    request.enqueue(obj, previous)
     return true
   }
 }

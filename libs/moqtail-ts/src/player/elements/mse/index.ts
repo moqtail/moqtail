@@ -14,15 +14,11 @@
  * limitations under the License.
  */
 
-import { CapabilityCode, defineElement } from '@/player/element/define'
+import { defineElement } from '@/player/element/define'
 import { MEDIA_SINK } from '@/player/element/interfaces'
+import { cmafCapabilities } from '@/player/elements/cmaf/track'
 import { PlayerError } from '@/player/error'
 import { MSESink, type MSEOptions } from './sink'
-
-const cmaf = (role: string) => [
-  { direction: 'in' as const, code: CapabilityCode.PACKAGING, value: 'cmaf' },
-  { direction: 'in' as const, code: CapabilityCode.ROLE, value: role },
-]
 
 /**
  * @public
@@ -32,7 +28,7 @@ const cmaf = (role: string) => [
 export const MSE = defineElement({
   type: 'sink',
   name: 'mse',
-  capabilities: [cmaf('video'), cmaf('audio')],
+  capabilities: [cmafCapabilities('in', 'video'), cmafCapabilities('in', 'audio')],
   provides: [MEDIA_SINK],
   init: async (context, options: MSEOptions) => {
     checkOptions(options)

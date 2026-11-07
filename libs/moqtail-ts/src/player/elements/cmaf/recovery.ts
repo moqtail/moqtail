@@ -15,7 +15,7 @@
  */
 
 /**
- * What keeps a CMAF source playing (`PLAN.md` › Lifecycle And Errors, Runtime Control): retries
+ * What keeps a CMAF source playing: retries
  * with backoff, falling back to another rendition, resuming after a reconnect, holding an `eos`
  * until the catalog confirms the end (MSF 11.4), seeks, switch handovers, and URL ranges.
  */
@@ -23,14 +23,15 @@
 import type { MOQtailClient } from '@/client/client'
 import type { Location } from '@/model/common/location'
 import type { RequestError } from '@/model/control/request_error'
+import { DEFAULT_RECONNECT_ATTEMPTS } from '@/player/constants'
 import type { ElementContext } from '@/player/element/context'
 import type { CatalogTrack } from '@/player/element/interfaces'
-import { backoffDelay, sleep } from '@/player/util/backoff'
-import { cancel, REPLACED, type Accepted, type Delivery, type Target } from './delivery'
+import { backoffDelay, sleep } from '@/player/util/async'
+import { bitrateOf, trackKey } from '@/player/util/track'
 import { groupDuration, groupStep, mapEnd, mapLocation } from './alignment'
+import { cancel, REPLACED, type Accepted, type Delivery, type Outcome, type Target } from './delivery'
 import { clamp, type End, type Span } from './ranges'
 import { locate, seekTarget } from './seek'
-import { bitrateOf, trackKey } from '@/player/util/track'
 
 /** What recovery needs from its source. */
 export interface RecoveryHost {
@@ -53,6 +54,9 @@ interface Handover {
 }
 
 export class Recovery {
+  readonly #context: ElementContext
+  readonly #delivery: Delivery
+  readonly #host: RecoveryHost
   /** The track being requested. */
   active: CatalogTrack
   /** What the next request asks for. */
@@ -77,16 +81,20 @@ export class Recovery {
   readonly #first: CatalogTrack
 
   constructor(
-    readonly context: ElementContext,
-    readonly delivery: Delivery,
-    readonly host: RecoveryHost,
+    context: ElementContext,
+    delivery: Delivery,
+    host: RecoveryHost,
     start: CatalogTrack,
     ranges: { spans: readonly Span[] } = { spans: [] },
   ) {
-    this.active = this.#first = start
+    this.#context = context
+    this.#delivery = delivery
+    this.#host = host
+    this.active = start
+    this.#first = start
     this.#spans = ranges.spans
     this.#target = this.#spans[0] ? this.#spanTarget(this.#spans[0]) : { fetch: !start.isLive }
-    const { player, catalog, signal } = context
+    const { player, signal } = context
     const lost = () => {
       this.#reconnect ??= Promise.withResolvers()
       this.#attempt.abort()
@@ -113,8 +121,8 @@ export class Recovery {
 
   /** Plays until no rendition is left or the source is destroyed. After the `eos`, a seek plays again. */
   async run(): Promise<void> {
-    const { signal } = this.context
-    const maxFailures = this.context.player.options.client?.reconnectAttempts ?? 5
+    const { signal } = this.#context
+    const maxFailures = this.#context.player.options.client?.reconnectAttempts ?? DEFAULT_RECONNECT_ATTEMPTS
     let failures = 0
     let ready: Promise<RequestError | Accepted> | undefined
     while (!signal.aborted) {
@@ -129,24 +137,19 @@ export class Recovery {
       const attempt = AbortSignal.any([this.#attempt.signal, signal])
       if (this.#seekTo !== undefined) await this.#locateSeek()
       if (attempt.aborted) continue
-      // While holding, the publisher may restart: re-subscribe with backoff, capped at 5 s.
-      if (this.#holding !== undefined && !(await pause(backoffDelay(this.#holding++), attempt))) continue
+      // While holding, the publisher may restart: re-subscribe with backoff, capped at 5 s
+      if (this.#holding !== undefined && !(await waitFor(backoffDelay(this.#holding++), attempt))) continue
 
-      const outcome = await this.delivery.play(this.active, attempt, { ...this.#target, ...this.#end() }, ready)
+      const end = this.rangeEnd(this.active)
+      const outcome = await this.#delivery.play(this.active, attempt, { ...this.#target, ...(end && { end }) }, ready)
       ready = undefined
-      if (this.delivery.delivered) {
+      if (this.#delivery.delivered) {
         failures = 0
         this.#holding = undefined
         this.#target = { fetch: this.#target.fetch } // a retry resumes from where delivery stands
       }
-      const handover = this.#handover
-      if (handover) {
-        // The old track reached its switch point, or stopped early: continue on the new one.
-        this.#handover = undefined
-        this.active = handover.track
-        this.#target = { fetch: this.#target.fetch, start: handover.start }
-        if (outcome !== 'stopped' && !handover.soft) ready = handover.request
-        else void handover.request.then((late) => cancel(handover.client, late))
+      if (this.#handover) {
+        ready = this.#continueOnHandover(this.#handover, outcome)
         continue
       }
       if (outcome === 'stopped') continue
@@ -162,20 +165,20 @@ export class Recovery {
       }
       if (this.#holding !== undefined) continue // while holding, a rejection is just another try
       if (outcome === 'failed') {
-        if (!(await pause(backoffDelay(failures), attempt))) continue
+        if (!(await waitFor(backoffDelay(failures), attempt))) continue
         if (++failures < maxFailures) continue
       }
       failures = 0
-      await this.delivery.failSeeks() // a seek that couldn't be served is answered as failed
+      await this.#delivery.failSeeks() // a seek that couldn't be served is answered as failed
       if (!this.#fallback()) return
     }
   }
 
   /** Requests the group containing `mediaTime` (seconds); answered with one `discontinuity`. */
   seek(mediaTime: number): void {
-    this.delivery.seeks++
+    this.#delivery.seeks++
     this.#seekTo = mediaTime
-    // A switch during a seek resumes on the new track.
+    // A switch during a seek resumes on the new track
     this.#takeHandover()
     this.#attempt.abort(REPLACED)
     this.#ended?.resolve()
@@ -183,7 +186,7 @@ export class Recovery {
 
   /** A seek is pending: not requested, or not answered yet. */
   get seeking(): boolean {
-    return this.#seekTo !== undefined || this.delivery.seeks > 0
+    return this.#seekTo !== undefined || this.#delivery.seeks > 0
   }
 
   /** Requests `track` from where delivery stands; nothing was delivered to hand over from. */
@@ -198,8 +201,8 @@ export class Recovery {
    */
   handOver(track: CatalogTrack, request: Promise<RequestError | Accepted>, start: Location, soft: boolean): void {
     const replaced = this.#handover
-    if (replaced && replaced.track !== track) void replaced.request.then((late) => cancel(replaced.client, late))
-    this.#handover = { track, request, client: this.context.client, start, soft }
+    if (replaced && replaced.track !== track) cancelLate(replaced)
+    this.#handover = { track, request, client: this.#context.client, start, soft }
   }
 
   /** The track a pending handover continues on. */
@@ -227,13 +230,20 @@ export class Recovery {
   /** The end of the range being played, for `track`. */
   rangeEnd(track: CatalogTrack): End | undefined {
     const end = this.#spans[this.#span]?.end
-    return end && mapEnd(end, this.#first, track, this.host.tracks())
+    return end && mapEnd(end, this.#first, track, this.#host.tracks())
   }
 
-  /** The range being played, if any, as an `end` for `active`. */
-  #end(): { end?: End } {
-    const end = this.rangeEnd(this.active)
-    return end ? { end } : {}
+  /**
+   * The old track reached its switch point, or stopped early: the next play continues on the
+   * new one, reading the handover's request unless it was stopped or arrives on the old stream.
+   */
+  #continueOnHandover(handover: Handover, outcome: Outcome): Promise<RequestError | Accepted> | undefined {
+    this.#handover = undefined
+    this.active = handover.track
+    this.#target = { fetch: this.#target.fetch, start: handover.start }
+    if (outcome !== 'stopped' && !handover.soft) return handover.request
+    cancelLate(handover)
+    return undefined
   }
 
   #takeHandover(): void {
@@ -241,11 +251,11 @@ export class Recovery {
     if (!handover) return
     this.#handover = undefined
     this.active = handover.track
-    void handover.request.then((late) => cancel(handover.client, late))
+    cancelLate(handover)
   }
 
   #spanTarget(span: Span): Target {
-    const start = mapLocation(span.start, this.#first, this.active, this.host.tracks())
+    const start = mapLocation(span.start, this.#first, this.active, this.#host.tracks())
     return span.fetch ? { fetch: true, start } : { fetch: false, start, fill: true }
   }
 
@@ -254,7 +264,7 @@ export class Recovery {
     const next = this.#spans[++this.#span]
     if (!next) return false
     this.#target = this.#spanTarget(next)
-    this.delivery.gap = true
+    this.#delivery.gap = true
     return true
   }
 
@@ -263,16 +273,13 @@ export class Recovery {
     const time = this.#seekTo!
     this.#seekTo = undefined
     const track = this.active
-    const timeline = await this.context.catalog?.timeline(track)
+    const timeline = await this.#context.catalog?.timeline(track)
     if (this.#seekTo !== undefined || track !== this.active) return // superseded meanwhile
     const key = trackKey(track)
-    const set = this.host.tracks()
-    const { times } = this.delivery
-    // A long GoP may not have shown two groups yet: the catalog's group duration stands in.
-    const duration = times.groupDuration(key) ?? groupDuration(track, set)
-    const estimate = (t: number) => times.estimate(key, t, groupStep(track, set), duration) ?? this.#fromLast(t, track)
+    const set = this.#host.tracks()
+    const estimate = (t: number) => this.#estimate(track, t) ?? this.#fromLast(t, track)
     let location = locate(time, track, timeline, estimate)
-    if (!location) return this.delivery.failSeeks()
+    if (!location) return this.#delivery.failSeeks()
     let fetch = !track.isLive
     if (this.#spans.length > 0) {
       const clamped = clamp(mapLocation(location, track, this.#first, set), this.#spans)
@@ -280,15 +287,15 @@ export class Recovery {
       location = mapLocation(clamped.location, this.#first, track, set)
       fetch = this.#spans[clamped.index]!.fetch
     }
-    const last = this.delivery.last
+    const last = this.#delivery.last
     this.#target = seekTarget(location, fetch, last?.track === key ? last.location : undefined)
   }
 
   /** Writes the `eos`, then waits for a seek (or destruction) before playing again. */
   async #finish(): Promise<void> {
     this.#holding = undefined
-    await this.delivery.eos()
-    if (this.#seekTo !== undefined || this.context.signal.aborted) return
+    await this.#delivery.eos()
+    if (this.#seekTo !== undefined || this.#context.signal.aborted) return
     this.#ended = Promise.withResolvers()
     await this.#ended.promise
     this.#ended = undefined
@@ -296,25 +303,33 @@ export class Recovery {
 
   /** Estimated from the track delivered last, for a track not delivered yet (a VOD switch), mapped onto `track`. */
   #fromLast(mediaTime: number, track: CatalogTrack): Location | undefined {
-    const last = this.delivery.last
-    const set = this.host.tracks()
+    const last = this.#delivery.last
+    const set = this.#host.tracks()
     const previous = set.find((t) => trackKey(t) === last?.track)
     if (!last || !previous) return undefined
-    const { times } = this.delivery
-    const duration = times.groupDuration(last.track) ?? groupDuration(previous, set)
-    const at = times.estimate(last.track, mediaTime, groupStep(previous, set), duration)
+    const at = this.#estimate(previous, mediaTime)
     return at && mapLocation(at, previous, track, set)
+  }
+
+  /** `mediaTime` on `track`, estimated from the media times of its delivered groups. */
+  #estimate(track: CatalogTrack, mediaTime: number): Location | undefined {
+    const set = this.#host.tracks()
+    const key = trackKey(track)
+    const { times } = this.#delivery
+    // A long GoP may not have shown two groups yet: the catalog's group duration stands in
+    const duration = times.groupDuration(key) ?? groupDuration(track, set)
+    return times.estimate(key, mediaTime, groupStep(track, set), duration)
   }
 
   /** Moves to the selected rendition closest in bitrate, or gives up. */
   #fallback(): boolean {
     this.#failed.add(trackKey(this.active))
     const next = closestBitrate(
-      this.host.candidates().filter((t) => !this.#failed.has(trackKey(t))),
+      this.#host.candidates().filter((t) => !this.#failed.has(trackKey(t))),
       bitrateOf(this.active),
     )
     if (!next) {
-      this.host.giveUp()
+      this.#host.giveUp()
       return false
     }
     this.active = next
@@ -323,7 +338,7 @@ export class Recovery {
 
   /** The end is final once the track isn't live anymore or the catalog is complete. */
   #isFinal(): boolean {
-    const catalog = this.context.catalog
+    const catalog = this.#context.catalog
     if (!catalog || catalog.isComplete) return true
     const key = trackKey(this.active)
     return !(catalog.tracks.find((t) => trackKey(t) === key) ?? this.active).isLive
@@ -339,11 +354,17 @@ export function closestBitrate(tracks: readonly CatalogTrack[], bitrate: number)
 }
 
 /** Waits `ms`; false if `signal` aborted first. */
-const pause = (ms: number, signal: AbortSignal): Promise<boolean> =>
-  sleep(ms, signal).then(
+function waitFor(ms: number, signal: AbortSignal): Promise<boolean> {
+  return sleep(ms, signal).then(
     () => true,
     () => false,
   )
+}
+
+/** Cancels a handover's request once it's answered, unless it was rejected. */
+function cancelLate(handover: Handover): void {
+  void handover.request.then((late) => cancel(handover.client, late))
+}
 
 if (import.meta.vitest) {
   const { describe, test, expect, vi, afterEach } = import.meta.vitest
@@ -389,7 +410,7 @@ if (import.meta.vitest) {
       await elapse()
       c.client.last.reset()
       await elapse()
-      // Two failures in a row without data move on to v2.
+      // Two failures in a row without data move on to v2
       expect(heard).toEqual(['v1', 'v1', 'v1', 'v2'])
       expect(c.trace()).toEqual(['props live,mimeType,track', '1.0', 'gap', '3.0', 'props track'])
     })
@@ -417,7 +438,7 @@ if (import.meta.vitest) {
       c.client.last.end(PublishDoneStatusCode.TrackEnded)
       await elapse()
       await elapse()
-      // Rejections while holding aren't failures: the source keeps trying and keeps its pad.
+      // Rejections while holding aren't failures: the source keeps trying and keeps its pad
       expect(c.client.sent('subscribe').length).toBeGreaterThan(2)
       expect(c.source.pads).toHaveLength(1)
       c.client.respond = () => ({})

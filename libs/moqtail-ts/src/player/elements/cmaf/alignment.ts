@@ -115,16 +115,16 @@ if (import.meta.vitest) {
   const at = (group: number, object = 0) => new Location(group, object)
 
   test("the draft's worked examples: frame 405, its switch points, and both End Group cases", () => {
-    // Gm = 30; 720p-long (120) at object 45 of group 12 is frame 405.
+    // Gm = 30; 720p-long (120) at object 45 of group 12 is frame 405
     expect(frameNumber(at(12, 45), 30n)).toBe(405n)
     expect([30n, 60n, 120n].map((t) => targetGroup(405n, t, 30n))).toEqual([14n, 14n, 16n])
     const set = [spaced('short', 30), spaced('medium', 60), spaced('long', 120), spaced('three', 90)]
     const [short, medium, long, three] = set as [CatalogTrack, CatalogTrack, CatalogTrack, CatalogTrack]
-    // Frame 405 is the first one not delivered, so the last one is 404: object 44 of group 12.
+    // Frame 405 is the first one not delivered, so the last one is 404: object 44 of group 12
     expect([short, medium, long].map((t) => switchDistance(t, at(12, 44), set))).toEqual([15n, 15n, 75n])
-    // T <= S: the old track ends with the group it's sending.
+    // T <= S: the old track ends with the group it's sending
     expect(switchPoint(long, medium, at(12, 44), set)).toEqual({ group: 14n, end: { group: 12n, object: 59n } })
-    // T > S: S = 60 sending frame 120 (its group 4), T = 90 switches at frame 180, so End Group 4.
+    // T > S: S = 60 sending frame 120 (its group 4), T = 90 switches at frame 180, so End Group 4
     expect(switchPoint(medium, three, at(4, 0), set)).toEqual({ group: 6n, end: { group: 4n, object: 59n } })
   })
 
@@ -133,10 +133,10 @@ if (import.meta.vitest) {
     const [six, two, half] = set as [CatalogTrack, CatalogTrack, CatalogTrack]
     expect([alignmentUnit(set), groupStep(six, set), groupStep(two, set)]).toEqual([12n, 12n, 4n])
     expect(groupDuration({ ...six, framerate: 24 }, set)).toBe(0.5)
-    // At 6 s group 336, object 30: frames up to 336 × 12 + 30 are delivered.
+    // At 6 s group 336, object 30: frames up to 336 × 12 + 30 are delivered
     expect(switchPoint(six, two, at(336, 30), set)).toEqual({ group: 340n, end: { group: 336n, object: 47n } })
     expect(switchPoint(six, half, at(336, 30), set)).toEqual({ group: 339n, end: { group: 336n, object: 35n } })
-    // From 500 ms up to 6 s: the old track plays to the frame before group 348.
+    // From 500 ms up to 6 s: the old track plays to the frame before group 348
     expect(switchPoint(half, six, at(339, 3), set)).toEqual({ group: 348n, end: { group: 347n, object: 11n } })
   })
 

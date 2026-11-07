@@ -25,6 +25,7 @@ import { BaseElement, SinkElement, SourceElement, TransformElement } from './bas
 import { InstanceContext, type Loaded, type PlayerHandle } from './context'
 import {
   CapabilityCode,
+  definitionOf,
   hasInterface,
   type ElementDefinition,
   type Identifiers,
@@ -39,7 +40,7 @@ import type { Consumer, Pad, PadOutput } from './pad'
 export interface ChainHost {
   player: PlayerHandle
   client(): MOQtailClient
-  /** Player-registered source definitions first, then built-in ones, each in registration order. */
+  /** Player-registered source definitions, then the extensions', then built-in ones, each in registration order. */
   definitions(): readonly SourceElementDefinition[]
   warn(error: PlayerError): void
   fail(error: PlayerError): void
@@ -89,8 +90,8 @@ export class Chain {
     this.watch(element)
   }
 
-  addSink(definition: SinkElementDefinition, options: object = {}): void {
-    this.#declare(definition, { ...options })
+  addSink(definition: SinkElementDefinition, options: Record<string, any> = {}): void {
+    this.#declare(definition, options)
   }
 
   /**
@@ -102,8 +103,8 @@ export class Chain {
    * reported and has nothing to play, as with an empty `isComplete` catalog.
    */
   async init(signal: AbortSignal): Promise<'ready' | 'ended'> {
-    const sources = this.#declared.filter((d) => d.definition.type === 'source')
-    const sinks = this.#declared.filter((d) => d.definition.type === 'sink')
+    const sources = this.#declarationsOf('source')
+    const sinks = this.#declarationsOf('sink')
     for (const declaration of [...sources, ...sinks]) {
       signal.throwIfAborted()
       await declaration.context.create(declaration.definition, declaration.options)
@@ -129,23 +130,22 @@ export class Chain {
   async destroy(): Promise<void> {
     this.#destroyed = true
     for (const { release } of this.#pending ?? []) release()
-    const declared = (type: string) => this.#declared.filter((d) => d.definition.type === type)
-    for (const declaration of declared('sink')) await declaration.context.destroy()
+    for (const declaration of this.#declarationsOf('sink')) await declaration.context.destroy()
     for (const transform of [...this.#transforms]) {
       await transform.destroy()
       this.unregister(transform)
     }
-    for (const declaration of declared('source')) await declaration.context.destroy()
+    for (const declaration of this.#declarationsOf('source')) await declaration.context.destroy()
   }
 
-  /** Listens to an element's signals. Called by `context.attach()`. */
+  /** Listens to an element's emitted events. Called by `context.attach()`. */
   watch(element: BaseElement, context?: InstanceContext): void {
     if (context) this.#contexts.set(element, context)
     const onPadAdded = (pad: Pad) => this.#padAdded(pad)
     const onPadRemoved = (pad: Pad, failed: boolean) => this.#padRemoved(pad, failed)
     element.on('padadded', onPadAdded)
     element.on('padremoved', onPadRemoved)
-    // Only top-level elements count; a loaded child reports to the element that loaded it.
+    // Only top-level elements count; a loaded child reports to the element that loaded it
     const declaration = this.#declared.find((d) => d.context === context)
     const event = declaration?.definition.type === 'source' ? 'nomorepads' : 'ready'
     const done = () => declaration?.done.resolve()
@@ -169,7 +169,6 @@ export class Chain {
     return table
   }
 
-  /** Adds an initialised instance to the chain's lists. */
   register(element: BaseElement): void {
     if (element instanceof SourceElement) this.#sources.push(element)
     else if (element instanceof SinkElement) this.#sinks.push(element)
@@ -189,6 +188,10 @@ export class Chain {
 
   #declare(definition: ElementDefinition, options: Record<string, any>): void {
     this.#declared.push({ definition, options, context: new InstanceContext(this), done: Promise.withResolvers() })
+  }
+
+  #declarationsOf(type: ElementDefinition['type']): Declaration[] {
+    return this.#declared.filter((d) => d.definition.type === type)
   }
 
   #padAdded(pad: Pad): void {
@@ -215,7 +218,7 @@ export class Chain {
 
   /** Pads lost to failures after negotiation are fatal once a media sink has none left. */
   #padRemoved(pad: Pad, failed: boolean): void {
-    // A source pad's removal is reported after the sink pads it fed are gone.
+    // A source pad's removal is reported after the sink pads it fed are gone
     if (!failed || pad.direction !== 'src' || !this.#negotiated || this.#destroyed) return
     const unlinked = this.#mediaSinkWithoutPads()
     if (unlinked) this.host.fail(noMediaSink(unlinked))
@@ -224,9 +227,11 @@ export class Chain {
   #receiveFailed(error: unknown, destination: Pad): void {
     if (this.#destroyed) return
     const name = nameOf(destination.element)
-    if (error instanceof PlayerError) this.host.fail(error)
-    else
+    if (error instanceof PlayerError) {
+      this.host.fail(error)
+    } else {
       this.host.fail(new PlayerError('MEDIA_FAILURE', `"${name}" failed on an item`, { element: name, cause: error }))
+    }
   }
 
   #mediaSinkWithoutPads(): SinkElement | undefined {
@@ -239,9 +244,8 @@ function isEventTimeline(pad: Pad): boolean {
   return pad.capabilities.some((c) => c.code === CapabilityCode.PACKAGING && c.value === 'eventtimeline')
 }
 
-// definition is unset while an element's init is still running.
 function nameOf(element: BaseElement): string {
-  return (element.definition as ElementDefinition | undefined)?.name ?? element.constructor.name
+  return definitionOf(element)?.name ?? element.constructor.name
 }
 
 function noMediaSink(sink: SinkElement): PlayerError {
@@ -310,14 +314,14 @@ if (import.meta.vitest) {
       )
       chain.addSink(collectingSink({ setup: (k) => (sink = k) }))
       await chain.init(signal())
-      // Children finish init, and register, before the parent that awaits them.
+      // Children finish init, and register, before the parent that awaits them
       const [taken, declined] = chain.sources as import('@/player/testing/elements').TestSource[]
-      // The first child's pad feeds a sink pad on the parent; the second went to the sink.
+      // The first child's pad feeds a sink pad on the parent; the second went to the sink
       expect(parent!.pads.map((p) => p.peers[0]!.element)).toEqual([taken])
       expect(sink!.pads.map((p) => p.peers[0]!.element)).toEqual([declined])
 
       const upstream: unknown[] = []
-      taken!.pads[0]!.onEvent((event) => (upstream.push(event), true))
+      taken!.pads[0]!.onSignal((signal) => (upstream.push(signal), true))
       await taken!.pads[0]!.write(packet(1))
       await flush()
       parent!.pads[0]!.signal({ type: 'seek', mediaTime: 3 })
@@ -380,7 +384,7 @@ if (import.meta.vitest) {
       let initialised = false
       const init = chain.init(signal()).then(() => (initialised = true))
       await flush()
-      // The pad was created and written before the sink existed; it's routed once it does, nothing lost.
+      // The pad was created and written before the sink existed; it's routed once it does, nothing lost
       expect([heard, initialised, sink!.items()]).toEqual([0, false, [first]])
       late.resolve()
       await init

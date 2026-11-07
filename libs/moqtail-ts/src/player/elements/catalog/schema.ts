@@ -41,7 +41,7 @@ function keyValues(s: string): Record<string, string> {
   return record
 }
 
-// Keys each packaging defines for packagingMetadata (MSF 5.2.5); others are ignored.
+// Keys each packaging defines for packagingMetadata (MSF 5.2.5); others are ignored
 const PACKAGING_METADATA_KEYS: Record<string, readonly string[]> = { loc: ['streamMapping'] }
 
 const definedKeys = (packaging: string, record: Record<string, string>) =>
@@ -60,7 +60,7 @@ const TemplateSchema = v.pipe(
   })),
 )
 
-// MSF 5.2.4.1: fields required beyond namespace, name, packaging, and isLive.
+// MSF 5.2.4.1: fields required beyond namespace, name, packaging, and isLive
 const REQUIRED_FIELDS: Record<string, readonly string[]> = {
   'loc/audio': ['codec', 'samplerate', 'channelConfig'],
   'loc/video': ['codec', 'framerate'],
@@ -113,7 +113,7 @@ const TrackFields = v.looseObject({
   trackDuration: v.optional(int),
   connectionUri: v.optional(v.string()),
   token: v.optional(v.string()),
-  // TODO(authorization): present tokens for these schemes when subscribing (MSF 11.5.3).
+  // TODO(authorization): present tokens for these schemes when subscribing (MSF 11.5.3)
   authInfo: v.optional(v.record(v.string(), v.unknown())),
   accessibility: v.optional(v.array(v.looseObject({ scheme: v.string(), value: v.string() }))),
   accessibleWindowTime: v.optional(v.number()),
@@ -151,7 +151,7 @@ const trackSchema = (catalogNamespace: Tuple) =>
       (track) => !track.isLive || track.trackDuration === undefined,
       'a live track has no trackDuration (MSF 5.2.36)',
     ),
-    // Annotated, so the output keeps the index signature of unknown fields.
+    // Annotated, so the output keeps the index signature of unknown fields
     v.transform((track): TrackFields & { nameBytes: Uint8Array; namespace: Tuple; init?: InitData } => ({
       ...track,
       nameBytes: toBytes(track.name),

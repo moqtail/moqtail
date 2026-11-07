@@ -14,9 +14,9 @@
  * limitations under the License.
  */
 
-import type { EndOfRangeHandler } from '../types'
+import type { EndOfRangeHandler } from '@/client/types'
 import { Fetch, FetchOk, MoqtObject, RequestError } from '@/model'
-import { logger } from '../../util/logger'
+import { logger } from '@/util/logger'
 import { isSessionClosed } from '@/client/util/stream_reset'
 import type { ObjectOrderer } from '@/client/ordering'
 

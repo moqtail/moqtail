@@ -15,7 +15,7 @@
  */
 
 /**
- * Seeking (`PLAN.md` › Runtime Control): the media time of received groups, and a seek target
+ * Seeking: the media time of received groups, and a seek target
  * as a location and the request that serves it.
  */
 
@@ -97,7 +97,7 @@ if (import.meta.vitest) {
     expect(times.estimate('v1', 13)).toEqual(new Location(7n, 0n))
     expect(times.estimate('v1', 0)).toEqual(new Location(1n, 0n))
     expect(times.estimate('v2', 13)).toBeUndefined()
-    // A 6 s track of a 500 ms grid (groups 0, 12, 24, …): rounded down onto its grid.
+    // A 6 s track of a 500 ms grid (groups 0, 12, 24, …): rounded down onto its grid
     const spaced = new GroupTimes()
     spaced.record('v1', 12n, 6)
     expect(spaced.estimate('v1', 170, 12n)).toBeUndefined() // one group: no duration observed

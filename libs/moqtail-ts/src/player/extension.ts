@@ -16,10 +16,10 @@
 
 /** Extensions bundle elements and setup options, so a protocol extension is one entry in `opts.extensions`. */
 
-import { SetupOptions } from '@/model/parameter/setup_option'
-import { canonicalJson } from './client_slot'
 import type { Setup } from '@/model/control/setup'
-import type { ElementDefinition, SourceElementDefinition } from './element/define'
+import { SetupOptions } from '@/model/parameter/setup_option'
+import { checkName, type ElementDefinition, type SourceElementDefinition } from '@/player/element/define'
+import { canonicalJson } from '@/player/util/json'
 import { PlayerError } from './error'
 
 /** @public */
@@ -41,9 +41,7 @@ export interface ExtensionDefinition {
 
 /** @public Checks an extension definition and returns it. */
 export function defineExtension(definition: ExtensionDefinition): ExtensionDefinition {
-  if (typeof definition.name !== 'string' || !/^\S+$/.test(definition.name)) {
-    throw new TypeError(`Extension "${String(definition.name)}": name must be non-empty and without whitespace`)
-  }
+  checkName(`Extension "${String(definition.name)}"`, definition.name)
   return definition
 }
 

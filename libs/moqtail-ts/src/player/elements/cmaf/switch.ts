@@ -15,8 +15,7 @@
  */
 
 /**
- * Rendition switching (`PLAN.md` › Runtime Control): which track to switch to in a fast
- * switching set (draft-ugur-moq-fast-switching › Selection Policy), and the default,
+ * Rendition switching: which track to switch to in a fast switching set (draft-ugur-moq-fast-switching › Selection Policy), and the default,
  * `SWITCH_FROM`, and VOD request sequences, which share the switch point (`alignment.ts`), the
  * `properties` written for the new track, and dropping the old track past its end.
  */
@@ -30,12 +29,12 @@ import { LocationFilter } from '@/model/parameter/message/location_filter'
 import type { ElementContext } from '@/player/element/context'
 import type { CatalogTrack, MediaSourceOptions } from '@/player/element/interfaces'
 import { PlayerError } from '@/player/error'
+import { sleep } from '@/player/util/async'
+import { bitrateOf, trackKey } from '@/player/util/track'
 import { alignmentUnit, misaligned, switchDistance, switchPoint } from './alignment'
-import { switchTo, trackOf, type Delivery } from './delivery'
+import { sendSwitch, trackOf, type Delivery } from './delivery'
 import type { End } from './ranges'
 import type { Recovery } from './recovery'
-import { bitrateOf, trackKey } from '@/player/util/track'
-import { sleep } from '@/player/util/backoff'
 
 /** How many alignment units before a longer GoP's switch point the climb asks for it. */
 const CLIMB_LEAD_UNITS = 2n
@@ -56,13 +55,19 @@ export function ladderOf(track: CatalogTrack, set: readonly CatalogTrack[]): Cat
 }
 
 /** The track of `candidates` whose switch point comes first after `last`, ties to the larger spacing. */
-function nearest(candidates: readonly CatalogTrack[], last: Location, set: readonly CatalogTrack[]) {
+function nearest(
+  candidates: readonly CatalogTrack[],
+  last: Location,
+  set: readonly CatalogTrack[],
+): CatalogTrack | undefined {
   let best: { track: CatalogTrack; distance: bigint } | undefined
   for (const track of candidates) {
     const distance = switchDistance(track, last, set)
-    const closer = !best || distance < best.distance
-    if (closer || (distance === best!.distance && track.keyframeSpacing! > best!.track.keyframeSpacing!))
-      best = { track, distance }
+    const better =
+      !best ||
+      distance < best.distance ||
+      (distance === best.distance && track.keyframeSpacing! > best.track.keyframeSpacing!)
+    if (better) best = { track, distance }
   }
   return best?.track
 }
@@ -84,8 +89,13 @@ interface Waiter {
   reject: (error: unknown) => void
 }
 
+/** A user's switch, or a step up the active track's GoP ladder. */
+type SwitchKind = 'switch' | 'climb'
+
 /** Runs one switch at a time; with concurrent calls the latest wins and earlier ones reject. */
 export class Switcher {
+  readonly #host: SwitchHost
+  readonly #waiters = new Set<Waiter>()
   #latest = 0
   /** The switch token a ladder climb runs for, while one runs. */
   #climbingFor: number | undefined
@@ -93,9 +103,9 @@ export class Switcher {
   #pendingClimb: { track: CatalogTrack; interrupt: () => void } | undefined
   #warned = false
   #lock = Promise.resolve()
-  readonly #waiters = new Set<Waiter>()
 
-  constructor(readonly host: SwitchHost) {
+  constructor(host: SwitchHost) {
+    this.#host = host
     host.context.signal.addEventListener('abort', () => {
       for (const waiter of this.#waiters) waiter.reject(aborted('The source was destroyed'))
     })
@@ -108,15 +118,16 @@ export class Switcher {
    */
   async switch(track: CatalogTrack): Promise<void> {
     const token = ++this.#latest
-    // A climb waiting for its switch point doesn't hold up a switch that can happen no later.
+    // A climb waiting for its switch point doesn't hold up a switch that can happen no later
     const climb = this.#pendingClimb
-    const last = this.host.delivery.last
+    const last = this.#host.delivery.last
     if (climb && last) {
-      const set = this.host.tracks()
+      const set = this.#host.tracks()
       const distance = (t: CatalogTrack) => switchDistance(t, last.location, set)
       if (distance(this.#entry(track)) <= distance(climb.track)) climb.interrupt()
     }
-    await this.#locked(token, () => this.#switchTo(this.#entry(track)))
+    // The entry is picked again once the lock is held: the previous switch may change the active track
+    await this.#locked(token, () => this.#switchTo(this.#entry(track), 'switch'))
     this.upgrade()
   }
 
@@ -151,24 +162,28 @@ export class Switcher {
   }
 
   /**
-   * Switches to `track`; resolves once its first packet is written. A `climb` resolves early
+   * Switches to `track`; resolves once its first packet is written. A climb resolves early
    * when a switch interrupts it: that switch's handover replaces the climb's, its request
    * cancelled, and stops the old track earlier.
    */
-  async #switchTo(track: CatalogTrack, climb = false): Promise<void> {
-    const from = this.host.recovery.active
+  async #switchTo(track: CatalogTrack, kind: SwitchKind): Promise<void> {
+    const from = this.#host.recovery.active
     if (trackKey(track) === trackKey(from)) return
-    const started = this.#started(track, from)
+    const started = this.#awaitStart(track, from)
     try {
-      await this.#start(track, climb)
+      await this.#start(track, kind)
     } catch (error) {
       started.cancel()
       throw error
     }
-    if (!climb) return started.promise
-    // Only now: the climb's REQUEST_UPDATE is out, so the interrupting one comes after it.
+    if (kind === 'switch') return started.promise
+    // Only now: the climb's REQUEST_UPDATE is out, so the interrupting one comes after it
     const interrupted = Promise.withResolvers<void>()
-    this.#pendingClimb = { track, interrupt: () => (started.cancel(), interrupted.resolve()) }
+    const interrupt = () => {
+      started.cancel()
+      interrupted.resolve()
+    }
+    this.#pendingClimb = { track, interrupt }
     try {
       await Promise.race([started.promise, interrupted.promise])
     } finally {
@@ -178,8 +193,8 @@ export class Switcher {
 
   /** Where a switch to `track` starts: `track` itself, unless it's in another ladder, which is entered at its earliest switch point. */
   #entry(track: CatalogTrack): CatalogTrack {
-    const { recovery, delivery } = this.host
-    const set = this.host.tracks()
+    const { recovery, delivery } = this.#host
+    const set = this.#host.tracks()
     const ladder = ladderOf(track, set)
     const last = delivery.last
     if (!last || ladder.some((t) => trackKey(t) === trackKey(recovery.active))) return track
@@ -188,44 +203,54 @@ export class Switcher {
 
   /** Climbs the active track's ladder while a longer GoP is left and no later switch came. */
   async #climb(token: number): Promise<void> {
-    const { recovery, delivery } = this.host
+    const { recovery, delivery } = this.#host
     while (token === this.#latest) {
       const active = recovery.active
       const last = delivery.last
-      // Only from data of the active track: nothing to hand over from otherwise.
+      // Only from data of the active track: nothing to hand over from otherwise
       if (!last || last.track !== trackKey(active)) return
-      const set = this.host.tracks()
+      const set = this.#host.tracks()
       const above = ladderOf(active, set).filter((t) => t.keyframeSpacing! > active.keyframeSpacing!)
       const next = nearest(above, last.location, set)
       if (!next) return
-      // Asked for only shortly before its switch point: a switch meanwhile isn't held up behind it.
+      // Asked for only shortly before its switch point: a switch meanwhile isn't held up behind it
       if (switchDistance(next, last.location, set) > CLIMB_LEAD_UNITS * alignmentUnit(set)!) {
-        await sleep(CLIMB_POLL_MS, this.host.context.signal)
+        await sleep(CLIMB_POLL_MS, this.#host.context.signal)
         continue
       }
-      await this.#locked(token, () => this.#switchTo(next, true))
+      await this.#locked(token, () => this.#switchTo(next, 'climb'))
     }
   }
 
   /** Called by the source after the first packet of `track` was written. */
   started(track: CatalogTrack): void {
     const key = trackKey(track)
-    const handingOverTo = this.host.recovery.handingOverTo
+    const handingOverTo = this.#host.recovery.handingOverTo
+    const handoverKey = handingOverTo && trackKey(handingOverTo)
     for (const waiter of this.#waiters) {
-      if (waiter.track === key) waiter.resolve()
-      // The old track may play on only until the handover; anything else means the target failed.
-      else if (waiter.from !== key || (handingOverTo && trackKey(handingOverTo)) !== waiter.track)
+      if (waiter.track === key) {
+        waiter.resolve()
+      } else if (waiter.from !== key || handoverKey !== waiter.track) {
+        // The old track may play on only until the handover; anything else means the target failed
         waiter.reject(new PlayerError('UNSUPPORTED_SOURCE', 'The switch target failed', { element: 'cmaf' }))
+      }
     }
   }
 
-  #started(track: CatalogTrack, from: CatalogTrack) {
+  /** Resolves once `started()` reports `track`, rejects when another track starts instead. */
+  #awaitStart(track: CatalogTrack, from: CatalogTrack): { promise: Promise<void>; cancel: () => void } {
     const { promise, resolve, reject } = Promise.withResolvers<void>()
     const waiter: Waiter = {
       track: trackKey(track),
       from: trackKey(from),
-      resolve: () => (this.#waiters.delete(waiter), resolve()),
-      reject: (error) => (this.#waiters.delete(waiter), reject(error)),
+      resolve: () => {
+        this.#waiters.delete(waiter)
+        resolve()
+      },
+      reject: (error) => {
+        this.#waiters.delete(waiter)
+        reject(error)
+      },
     }
     this.#waiters.add(waiter)
     return { promise, cancel: () => this.#waiters.delete(waiter) }
@@ -239,8 +264,8 @@ export class Switcher {
    * TODO: let a climb use `SWITCH_FROM` once a pending switch can be cancelled and a new one
    * issued from the same subscription.
    */
-  async #start(track: CatalogTrack, climb = false): Promise<void> {
-    const { recovery, delivery, context } = this.host
+  async #start(track: CatalogTrack, kind: SwitchKind): Promise<void> {
+    const { recovery, delivery, context } = this.#host
     const from = recovery.active
     const last = delivery.last
     const current = delivery.current
@@ -248,20 +273,17 @@ export class Switcher {
     // a restart would wait for a seek that never comes.
     const fetch = current ? 'fetchOk' in current : !from.isLive
     if (fetch && last && this.#vod(track)) return
-    // Nothing of the old track to hand over from, or a seek resumes on the new track anyway.
+    // Nothing of the old track to hand over from, or a seek resumes on the new track anyway
     if (recovery.seeking || !current || last?.track !== trackKey(from)) return recovery.restartOn(track)
 
-    const set = this.host.tracks()
-    if (misaligned(set) && !this.#warned) {
-      this.#warned = true
-      const message = 'keyframeSpacing values are not multiples of the smallest: switching at the next group'
-      context.player.emit('warning', new PlayerError('INVALID_CATALOG_UPDATE', message, { element: 'cmaf' }))
-    }
+    const set = this.#host.tracks()
+    this.#warnIfMisaligned(set)
     const point = switchPoint(from, track, last.location, set)
-    const start = new Location(point.group, 0n)
-    if (this.host.options.switchFrom && !climb && 'subscribeOk' in current)
+    if (this.#host.options.switchFrom && kind === 'switch' && 'subscribeOk' in current) {
       return this.#soft(track, from, current, point)
+    }
 
+    const start = new Location(point.group, 0n)
     const end = recovery.rangeEnd(track)
     delivery.stopAfter(point.end)
     const request = delivery.request(track, { fetch, start, ...(fetch && end && { end }) })
@@ -269,15 +291,22 @@ export class Switcher {
     const accepted = await request
     if (accepted instanceof RequestError) return this.#rejected(track, from)
     if (fetch) return
-    // The old subscription ends with its End Group; reading stops at the switch point inside it.
+    // The old subscription ends with its End Group; reading stops at the switch point inside it
     const locationFilter = new LocationFilter(
       LocationFilterType.AbsoluteStartGroupEnd,
       last.location.group,
       0n,
       point.end.group,
     )
-    // Without the update, reading still stops at the switch point.
+    // Without the update, reading still stops at the switch point
     await context.client.subscribeUpdate({ subscriptionRequestId: current.requestId, locationFilter }).catch(() => {})
+  }
+
+  #warnIfMisaligned(set: readonly CatalogTrack[]): void {
+    if (this.#warned || !misaligned(set)) return
+    this.#warned = true
+    const message = 'keyframeSpacing values are not multiples of the smallest: switching at the next group'
+    this.#host.context.player.emit('warning', new PlayerError('INVALID_CATALOG_UPDATE', message, { element: 'cmaf' }))
   }
 
   /**
@@ -287,9 +316,9 @@ export class Switcher {
    * downstream handles a `flush`.
    */
   #vod(track: CatalogTrack): boolean {
-    const { recovery, delivery } = this.host
+    const { recovery, delivery } = this.#host
     const from = recovery.active
-    // Set first: the sink's seek arrives while the flush is signalled.
+    // Set first: the sink's seek arrives while the flush is signalled
     recovery.active = track
     if (delivery.pad.signal({ type: 'flush' })) return true
     recovery.active = from
@@ -298,21 +327,21 @@ export class Switcher {
 
   /** `SWITCH_FROM` in soft mode: objects of both tracks arrive on the stream being read. */
   async #soft(track: CatalogTrack, from: CatalogTrack, current: SubscribeResult, point: { group: bigint; end: End }) {
-    const { recovery, delivery, context, options } = this.host
+    const { recovery, delivery, context, options } = this.#host
     const start = new Location(point.group, 0n)
     const fromKey = trackKey(from)
-    // An interrupted climb's stop point is past this switch's: the old track drains to `point.end`.
+    // An interrupted climb's stop point is past this switch's: the old track drains to `point.end`
     delivery.stopAfter(recovery.rangeEnd(from))
     const newSubscribeOptions = {
       ...delivery.subscribeOptions(track, { fetch: false, start }),
-      // Already-published objects from the switch group on.
+      // Already-published objects from the switch group on
       parameters: [new FillParameters([])],
     }
-    const request = switchTo(context.client, options.requests, track, {
+    const request = sendSwitch(context.client, options.requests, track, {
       switchFromRequestId: current.requestId,
       switchMode: SwitchMode.Soft,
       newSubscribeOptions,
-      // Only the track switched from drains, and only until it's read through the switch point.
+      // Only the track switched from drains, and only until it's read through the switch point
       onDrainDecision: (request) => delivery.draining && trackOf(request) === fromKey,
     })
     delivery.expectSwitch({ track, end: point.end, accepted: request })
@@ -324,13 +353,15 @@ export class Switcher {
   }
 
   #rejected(track: CatalogTrack, from: CatalogTrack): never {
-    this.host.recovery.dropHandover(track)
-    this.host.delivery.stopAfter(this.host.recovery.rangeEnd(from))
+    this.#host.recovery.dropHandover(track)
+    this.#host.delivery.stopAfter(this.#host.recovery.rangeEnd(from))
     throw new PlayerError('UNSUPPORTED_SOURCE', `The switch to ${track.name} was rejected`, { element: 'cmaf' })
   }
 }
 
-const aborted = (message: string) => new PlayerError('ABORTED', message, { element: 'cmaf' })
+function aborted(message: string): PlayerError {
+  return new PlayerError('ABORTED', message, { element: 'cmaf' })
+}
 
 if (import.meta.vitest) {
   const { test, expect, vi, afterEach } = import.meta.vitest
@@ -371,38 +402,38 @@ if (import.meta.vitest) {
   })
 
   test('live fast switch: the target joins at its switch point, the old one ends with its End Group', async () => {
-    // Two qualities: within one, the climb moves instead of a switch.
+    // Two qualities: within one, the climb moves instead of a switch
     const c = await playing([
       cmafTrack('v1', { height: 540, keyframeSpacing: 15 }),
       cmafTrack('v2', { height: 1080, keyframeSpacing: 60 }),
     ])
     void c.source.switch('v2')
     await flush()
-    // Frames 15 and 16 delivered; v2 (groups 0, 4, 8, …) starts at frame 60, in group 4. v1 plays to frame 59, its group 3.
+    // Frames 15 and 16 delivered; v2 (groups 0, 4, 8, …) starts at frame 60, in group 4. v1 plays to frame 59, its group 3
     expect(c.requests().slice(1)).toEqual(['subscribe v2 4.0-', 'update 0 1.0-3'])
   })
 
   test('into another GoP ladder: enter at the nearest switch point, then move up the ladder', async () => {
-    // As ch07_all: a ladder shares its resolution, not its measured bitrate.
+    // As ch07_all: a ladder shares its resolution, not its measured bitrate
     const track = (name: string, height: number, bitrate: number, keyframeSpacing: number) =>
       cmafTrack(name, { height, bitrate, keyframeSpacing })
-    // a15 is alone in its ladder, so nothing climbs before the switch.
+    // a15 is alone in its ladder, so nothing climbs before the switch
     const c = await playing([track('a15', 540, 1000, 15), track('b15', 1080, 3000, 15), track('b60', 1080, 2800, 60)])
     const b = (group: number, object = 0, name = 'b15') => mediaObject(group, object, null, name)
     const switched = c.source.switch('b60')
     await flush()
-    // b15 switches at frame 30, b60 only at 60.
+    // b15 switches at frame 30, b60 only at 60
     expect(c.requests().slice(1)).toEqual(['subscribe b15 2.0-', 'update 0 1.0-1'])
     c.client.requests[0]!.push(mediaObject(2, 0))
     c.client.requests[1]!.push(b(2))
     await switched
     await flush()
-    // Then up to b60 at its next switch point: b15 plays to frame 59, its group 3.
+    // Then up to b60 at its next switch point: b15 plays to frame 59, its group 3
     expect(c.requests().slice(3)).toEqual(['unsubscribe 0', 'subscribe b60 4.0-', 'update 1 2.0-3'])
     c.client.requests[1]!.push(b(3), b(4))
     c.client.requests[2]!.push(b(4, 0, 'b60'))
     await flush()
-    // One rendition per ladder, named after its longest GoP: the climb changes none.
+    // One rendition per ladder, named after its longest GoP: the climb changes none
     expect(c.renditions).toEqual(['b60'])
     expect(c.trace().slice(-4)).toEqual(['2.0', '3.0', 'props track', '4.0'])
   })
@@ -411,19 +442,19 @@ if (import.meta.vitest) {
     const c = await playing([cmafTrack('v15', { keyframeSpacing: 15 }), cmafTrack('v60', { keyframeSpacing: 60 })])
     const poll = () => new Promise((resolve) => setTimeout(resolve, 150))
     await poll()
-    // Frame 16 delivered: v60's switch point, frame 60, is more than two units (30 frames) away.
+    // Frame 16 delivered: v60's switch point, frame 60, is more than two units (30 frames) away
     expect(c.requests()).toEqual(['subscribe v15 next'])
     c.client.requests[0]!.push(mediaObject(2, 0)) // frame 30
     await poll()
-    // v60 starts at its group 4; v15 plays to frame 59, its group 3.
+    // v60 starts at its group 4; v15 plays to frame 59, its group 3
     expect(c.requests().slice(1)).toEqual(['subscribe v60 4.0-', 'update 0 2.0-3'])
-    // v15 plays to its switch point; its next group is past it.
+    // v15 plays to its switch point; its next group is past it
     c.client.requests[0]!.push(mediaObject(3, 0), mediaObject(4, 0))
     c.client.requests[1]!.push(mediaObject(4, 0, null, 'v60'))
     await flush()
     expect(c.trace().slice(-2)).toEqual(['props track', '4.0'])
     expect(c.renditions).toEqual([]) // one ladder is one rendition
-    // Switching to the rendition playing does nothing.
+    // Switching to the rendition playing does nothing
     await c.source.switch('v15')
     expect(c.requests()).toHaveLength(4)
   })
@@ -436,11 +467,11 @@ if (import.meta.vitest) {
     ])
     c.client.requests[0]!.push(mediaObject(2, 0)) // frame 30
     await new Promise((resolve) => setTimeout(resolve, 150))
-    // The climb to v60 is out, for frame 60: v15 ends with its group 3.
+    // The climb to v60 is out, for frame 60: v15 ends with its group 3
     expect(c.requests().slice(1)).toEqual(['subscribe v60 4.0-', 'update 0 2.0-3'])
     const switched = c.source.switch('b15')
     await flush()
-    // b15 switches at frame 45, before v60: the climb is cancelled and v15 now ends with its group 2.
+    // b15 switches at frame 45, before v60: the climb is cancelled and v15 now ends with its group 2
     expect(c.requests().slice(3)).toEqual(['subscribe b15 3.0-', 'unsubscribe 1', 'update 0 2.0-2'])
     c.client.requests[0]!.push(mediaObject(3, 0))
     c.client.requests[2]!.push(mediaObject(3, 0, null, 'b15'))
@@ -456,7 +487,7 @@ if (import.meta.vitest) {
     expect(c.requests()).toEqual(['subscribe v1 next', 'switch 0 v2 2.0- fill'])
     const options = c.client.sent<SwitchOptions>('switch')[0]!
     expect(options.switchMode).toBe(SwitchMode.Soft)
-    // Both tracks arrive on the original stream.
+    // Both tracks arrive on the original stream
     c.client.last.push(mediaObject(1, 2), mediaObject(2, 0), v2(2, 0), mediaObject(2, 1), v2(2, 1))
     await switched
     await flush()
@@ -477,7 +508,7 @@ if (import.meta.vitest) {
     expect(c.requests().slice(1)).toEqual(['subscribe v60 4.0-', 'update 0 2.0-3'])
     const switched = c.source.switch('b15')
     await flush()
-    // v15 is still a subscription of its own to switch from; the climb's request is cancelled.
+    // v15 is still a subscription of its own to switch from; the climb's request is cancelled
     expect(c.requests().slice(3)).toEqual(['switch 0 b15 3.0- fill', 'unsubscribe 1'])
     c.client.last.push(mediaObject(3, 0), mediaObject(3, 0, null, 'b15'))
     await switched
@@ -487,7 +518,7 @@ if (import.meta.vitest) {
 
   test('VOD: FETCH the target from the next group, cancel the old fetch at its group end', async () => {
     const c = await playing([cmafTrack('v1', { isLive: false }), cmafTrack('v2', { isLive: false })])
-    c.sink.consumeEvents = false // nothing handles the flush
+    c.sink.consumeSignals = false // nothing handles the flush
     void c.source.switch('v2')
     await flush()
     const [old, next] = c.client.requests
@@ -504,14 +535,14 @@ if (import.meta.vitest) {
     const c = await cmafChain(set, { catalog: fakeCatalog([], twoSecondTimeline()) })
     let flushes = 0
     await flush()
-    c.sink.consumeEvents = false
-    // As the MSE sink: on a flush, ask the source again from the playhead, through a seek upstream.
-    c.sink.pads[0]!.onEvent((event) => event.type === 'flush' && (flushes++, c.seek(3), true))
+    c.sink.consumeSignals = false
+    // As the MSE sink: on a flush, ask the source again from the playhead, through a seek upstream
+    c.sink.pads[0]!.onSignal((signal) => signal.type === 'flush' && (flushes++, c.seek(3), true))
     c.client.last.push(mediaObject(1), mediaObject(2), mediaObject(3), mediaObject(4)) // far ahead of the playhead
     await flush()
     const switched = c.source.switch('v2')
     await flush()
-    // 3 s is in group 2 of the timeline: only from there, only v2.
+    // 3 s is in group 2 of the timeline: only from there, only v2
     expect(flushes).toBe(1)
     expect(c.requests().slice(1)).toEqual(['fetchCancel 0', 'fetch v2 2.0-'])
     c.client.last.push(mediaObject(2, 0, null, 'v2'))
@@ -524,9 +555,9 @@ if (import.meta.vitest) {
     const set = [cmafTrack('v1', { isLive: false }), cmafTrack('v2', { isLive: false })]
     const c = await cmafChain(set, { catalog: fakeCatalog([], twoSecondTimeline()) })
     await flush()
-    c.sink.consumeEvents = false
-    c.sink.pads[0]!.onEvent((event) => event.type === 'flush' && (c.seek(3), true))
-    // Everything delivered: no request is read anymore, the source waits for a seek.
+    c.sink.consumeSignals = false
+    c.sink.pads[0]!.onSignal((signal) => signal.type === 'flush' && (c.seek(3), true))
+    // Everything delivered: no request is read anymore, the source waits for a seek
     c.client.last.push(mediaObject(1), mediaObject(2), endOfTrack(3))
     c.client.last.end()
     await flush()

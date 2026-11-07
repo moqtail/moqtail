@@ -14,14 +14,13 @@
  * limitations under the License.
  */
 import { Publish, RequestOk } from '@/model/control'
-import { RequestStreamMessageHandler } from './handler'
-import { MoqtObject } from '@/model/data' // Make sure to import MoqtObject
+import { MoqtObject } from '@/model/data'
 import { logger } from '@/util/logger'
+import { RequestStreamMessageHandler } from './handler'
 
 export const handlerPublish: RequestStreamMessageHandler<Publish> = async (client, msg, stream) => {
   logger.log('handler/publish', 'track: %s alias: %d', msg.fullTrackName.toString(), msg.trackAlias)
 
-  // 1. Create a stream to receive the pushed objects natively
   let streamController!: ReadableStreamDefaultController<MoqtObject>
   const objects = new ReadableStream<MoqtObject>({
     start(c) {
@@ -31,7 +30,7 @@ export const handlerPublish: RequestStreamMessageHandler<Publish> = async (clien
 
   const localPseudoRequestId = client.allocatePseudoRequestId()
 
-  // 2. Set up the expectation in the client BEFORE accepting the push
+  // Registered before the push is accepted, since its data streams may follow at once
   client.requestIdMap.addMapping(localPseudoRequestId, msg.fullTrackName)
   client.subscriptionAliasMap.set(localPseudoRequestId, msg.trackAlias)
   client.aliasFullTrackNameMap.set(msg.trackAlias, msg.fullTrackName)
@@ -44,13 +43,12 @@ export const handlerPublish: RequestStreamMessageHandler<Publish> = async (clien
     controller: streamController,
   }
 
-  // 3. Register the receiver map so data streams don't trigger ProtocolViolationError
+  // Without a receiver for the alias, its data streams are a protocol violation
   client.subscriptions.set(msg.trackAlias, receiver)
 
-  // 4. Bubble the event up to the application layer, passing the data stream!
   client.emit('peerpublish', msg, objects)
 
-  // 5. Accept the push on the stream it arrived on. The publisher waits for this
+  // Accept the push on the stream it arrived on. The publisher waits for this
   // before opening any data stream. PUBLISH is answered by REQUEST_OK: PUBLISH_OK is
   // just that message's name for this request type (§10.5), not a message of its own.
   await stream.send(new RequestOk())

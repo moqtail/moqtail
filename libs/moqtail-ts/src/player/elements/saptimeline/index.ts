@@ -16,8 +16,8 @@
 
 /** The SAP type timeline of CMSF 3.6, the only built-in event timeline. */
 
-import { CapabilityCode, defineElement } from '@/player/element/define'
-import { EventTimelineElement, type TimelineRecord } from '@/player/element/event_timeline'
+import { defineElement } from '@/player/element/define'
+import { eventTimelineCapabilities, EventTimelineElement, type TimelineRecord } from '@/player/element/event_timeline'
 
 export const SAP_EVENT_TYPE = 'org.ietf.moq.cmsf.sap'
 
@@ -25,7 +25,7 @@ export const SAP_EVENT_TYPE = 'org.ietf.moq.cmsf.sap'
 export type SapRecord = TimelineRecord & { L: NonNullable<TimelineRecord['L']>; data: [number, number] }
 
 export class SapTimelineElement extends EventTimelineElement {
-  // CMSF 3.6.2 accumulates records per group.
+  // CMSF 3.6.2 accumulates records per group
   protected readonly incremental = true
   readonly #records: SapRecord[] = []
 
@@ -39,7 +39,7 @@ export class SapTimelineElement extends EventTimelineElement {
     const record = super.parseRecord(raw)
     if (!record?.L || !isSapData(record.data, record.L.object === 0n)) return undefined
     const sap = record as SapRecord
-    // Kept by the base class's delivery rule, so the history independent objects repeat isn't stored twice.
+    // Kept by the base class's delivery rule, so the history independent objects repeat isn't stored twice
     const last = this.#records.at(-1)
     if (!last || sap.L.compare(last.L) > 0) this.#records.push(sap)
     return sap
@@ -56,12 +56,7 @@ function isSapData(data: unknown, startsGroup: boolean): data is [number, number
 export const SapTimeline = defineElement({
   type: 'source',
   name: 'saptimeline',
-  capabilities: [
-    [
-      { direction: 'out', code: CapabilityCode.PACKAGING, value: 'eventtimeline' },
-      { direction: 'out', code: CapabilityCode.EVENT_TYPE, value: SAP_EVENT_TYPE },
-    ],
-  ],
+  capabilities: [eventTimelineCapabilities('out', SAP_EVENT_TYPE)],
   probe: (ids) => (ids.packaging === 'eventtimeline' && ids.eventType === SAP_EVENT_TYPE ? 1 : 0),
   init: async (context) => {
     const timeline = new SapTimelineElement(context)
@@ -72,12 +67,8 @@ export const SapTimeline = defineElement({
 
 if (import.meta.vitest) {
   const { test, expect } = import.meta.vitest
-  const { FakeClient } = await import('@/player/testing/client')
-  const { testChain, testSource, flush, track } = await import('@/player/testing/elements')
-  const { Location } = await import('@/model/common/location')
-  const { MoqtObject } = await import('@/model/data/object')
-  const { FullTrackName } = await import('@/model/data/full_track_name')
-  const { ObjectForwardingPreference } = await import('@/model/data/constant')
+  const { FakeClient, testObject } = await import('@/player/testing/client')
+  const { testChain, testSource, settle, track } = await import('@/player/testing/elements')
   type TimelineEvent = import('@/player/element/event_timeline').TimelineEvent
 
   test('the CMSF 3.6.2 example; invalid SAP types are dropped', async () => {
@@ -101,15 +92,7 @@ if (import.meta.vitest) {
     chain.addSource(parent, {})
     await chain.init(new AbortController().signal)
     const object = (group: number, id: number, records: unknown) =>
-      MoqtObject.newWithPayload(
-        FullTrackName.tryNew('ns', 'sap'),
-        new Location(BigInt(group), BigInt(id)),
-        0,
-        ObjectForwardingPreference.Subgroup,
-        0,
-        null,
-        new TextEncoder().encode(JSON.stringify(records)),
-      )
+      testObject('sap', group, id, new TextEncoder().encode(JSON.stringify(records)))
     client.last.push(
       object(0, 0, [{ L: [0, 0], data: [2, 0] }]),
       object(0, 1, [{ L: [0, 60], data: [3, 2100] }]),
@@ -121,7 +104,7 @@ if (import.meta.vitest) {
         { L: [1, 60], data: [3, 6100] },
       ]),
     )
-    for (let i = 0; i < 5; i++) await flush()
+    await settle()
     const show = (r: TimelineRecord) => `${r.L?.group}.${r.L?.object} ${String(r.data)}`
     expect(events.map((e) => show(e.record))).toEqual(['0.0 2,0', '0.60 3,2100', '1.60 3,6100'])
     expect(sap!.records.map(show)).toEqual(['0.0 2,0', '0.60 3,2100', '1.60 3,6100'])

@@ -14,11 +14,10 @@
  * limitations under the License.
  */
 
-import { defineElement, type Identifiers } from '@/player/element/define'
-import { MEDIA_SOURCE } from '@/player/element/interfaces'
-import { PlayerError } from '@/player/error'
-import type { MediaSourceOptions } from '@/player/element/interfaces'
 import { Location } from '@/model/common/location'
+import { defineElement, type Identifiers } from '@/player/element/define'
+import { MEDIA_SOURCE, type MediaSourceOptions } from '@/player/element/interfaces'
+import { PlayerError } from '@/player/error'
 import { toSpans } from './ranges'
 import { CmafSource } from './source'
 import { cmafCapabilities } from './track'
@@ -30,7 +29,7 @@ import { cmafCapabilities } from './track'
 export const Cmaf = defineElement({
   type: 'source',
   name: 'cmaf',
-  capabilities: [cmafCapabilities('video'), cmafCapabilities('audio')],
+  capabilities: [cmafCapabilities('out', 'video'), cmafCapabilities('out', 'audio')],
   provides: [MEDIA_SOURCE],
   probe: probeCmaf,
   init: async (context, options?: MediaSourceOptions) => {
@@ -54,7 +53,7 @@ export const Cmaf = defineElement({
 export function probeCmaf(identifiers: Identifiers): number {
   const { packaging, role } = identifiers
   if (packaging !== 'cmaf' || (role !== 'video' && role !== 'audio')) return 0
-  // Encryption is out of scope.
+  // Encryption is out of scope
   if (identifiers['encryptionScheme'] !== undefined || identifiers['contentProtectionRefIDs'] !== undefined) return 0
   return 1
 }

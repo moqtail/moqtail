@@ -14,8 +14,6 @@
  * limitations under the License.
  */
 
-/** Retry timing shared by the client slot, sources, and the catalog element. */
-
 /** 250 ms × 2ⁿ, capped at 5 s, with ±20 % jitter so players don't retry in lockstep. */
 export function backoffDelay(attempt: number): number {
   return Math.min(250 * 2 ** attempt, 5000) * (0.8 + Math.random() * 0.4)
@@ -54,6 +52,13 @@ export async function within<T>(
     done.abort()
     timer.catch(() => {})
   }
+}
+
+/** A deferred whose rejection is handled, for a promise that may reject before anyone awaits it. */
+export function handledResolvers(): PromiseWithResolvers<void> {
+  const resolvers = Promise.withResolvers<void>()
+  resolvers.promise.catch(() => {})
+  return resolvers
 }
 
 if (import.meta.vitest) {

@@ -18,7 +18,7 @@
 export type PlayerState =
   'idle' | 'connecting' | 'ready' | 'playing' | 'paused' | 'stalled' | 'reconnecting' | 'ended' | 'error' | 'destroyed'
 
-// PLAN.md › Lifecycle And Errors. `reconnecting` also returns to the state it interrupted.
+// `reconnecting` also returns to the state it interrupted
 const NEXT: Record<PlayerState, readonly PlayerState[]> = {
   idle: ['connecting', 'destroyed'],
   connecting: ['ready', 'ended', 'error', 'destroyed'],
@@ -40,7 +40,7 @@ export function canTransition(from: PlayerState, to: PlayerState, resume?: Playe
 if (import.meta.vitest) {
   const { test, expect } = import.meta.vitest
 
-  test('canTransition accepts exactly the PLAN.md table', () => {
+  test('canTransition accepts exactly the lifecycle table', () => {
     const states = Object.keys(NEXT) as PlayerState[]
     const allowed = states.flatMap((from) =>
       states.filter((to) => canTransition(from, to)).map((to) => `${from}>${to}`),

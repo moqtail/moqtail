@@ -20,9 +20,9 @@
  * changed; any other change is a removal plus an addition.
  */
 
-import { deepEqual } from '@/player/element/context'
 import type { CatalogTrack } from '@/player/element/interfaces'
 import { PlayerError } from '@/player/error'
+import { deepEqual } from '@/player/util/json'
 import { trackKey } from '@/player/util/track'
 import { TRACK_FIELD_NAMES } from './schema'
 
@@ -82,7 +82,10 @@ export function diffTracks(before: readonly CatalogTrack[], after: readonly Cata
     const changed = [...new Set([...Object.keys(old), ...Object.keys(track)])].filter(
       (field) => !IGNORED.has(field) && !deepEqual(old[field], track[field]),
     )
-    const inPlace = (field: string) => (IN_PLACE.has(field) && (field !== 'isLive' || old.isLive)) || !KNOWN.has(field) // extra fields apply in place
+    const inPlace = (field: string) => {
+      if (!KNOWN.has(field)) return true // extra fields apply in place
+      return IN_PLACE.has(field) && (field !== 'isLive' || old.isLive)
+    }
     if (changed.every(inPlace)) {
       if (changed.length > 0) diff.updated.add(key)
       continue

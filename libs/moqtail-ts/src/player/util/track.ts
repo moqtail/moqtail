@@ -16,15 +16,36 @@
 
 /** Identity and bitrate of a catalog track, shared by every source element. */
 
-import type { CatalogReader, CatalogTrack } from '@/player/element/interfaces'
-import { trackIdentifier } from '@/player/msf_url'
+import type { CatalogReader, CatalogTrack, Rendition } from '@/player/element/interfaces'
+import { formatMsfUrl, trackIdentifier } from '@/player/msf_url'
 
 /** Namespace and name, encoded as in MSF 11.1.2, so tracks compare as bytes (MSF 11.2.2). */
-export const trackKey = (track: CatalogTrack): string => trackIdentifier(track.namespace, track.nameBytes)
+export function trackKey(track: CatalogTrack): string {
+  return trackIdentifier(track.namespace, track.nameBytes)
+}
 
 /** The track name, prefixed with its namespace when it differs from the catalog's. */
 export function renditionId(track: CatalogTrack, catalog: CatalogReader | undefined): string {
   return catalog && !track.namespace.equals(catalog.namespace) ? trackKey(track) : track.name
 }
 
-export const bitrateOf = (track: CatalogTrack): number => track.avgBitrate ?? track.bitrate ?? 0
+export function bitrateOf(track: CatalogTrack): number {
+  return track.avgBitrate ?? track.bitrate ?? 0
+}
+
+export function rendition(
+  track: CatalogTrack,
+  catalog: CatalogReader | undefined,
+  state: { active: boolean; selected: boolean },
+): Rendition {
+  return {
+    id: renditionId(track, catalog),
+    src: formatMsfUrl(catalog?.url ?? '', track.namespace, track.nameBytes),
+    bitrate: bitrateOf(track),
+    codec: track.codec ?? '',
+    ...(track.width !== undefined && { width: track.width }),
+    ...(track.height !== undefined && { height: track.height }),
+    ...(track.framerate !== undefined && { frameRate: track.framerate }),
+    ...state,
+  }
+}

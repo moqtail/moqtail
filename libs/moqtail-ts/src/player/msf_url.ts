@@ -156,7 +156,7 @@ function decodeTrackIdentifier(id: string): Pick<MsfSource, 'namespace' | 'track
   }
 }
 
-// moqt-22 §8.8: these bytes are written literally, every other byte as `.xx`.
+// moqt-22 §8.8: these bytes are written literally, every other byte as `.xx`
 const isLiteral = (byte: number) => /[A-Za-z0-9_]/.test(String.fromCharCode(byte))
 
 function encodeName(bytes: Uint8Array): string {
@@ -288,7 +288,7 @@ if (import.meta.vitest) {
         'a-b', // no track name
       ])
         expect(() => msf(fragment), fragment).toThrow(expect.objectContaining(unsupportedSource))
-      // No msf: type (MSF 5.2.44, 11.5.2) and not a moqt:// URL at all.
+      // No msf: type (MSF 5.2.44, 11.5.2) and not a moqt:// URL at all
       expect(() => parseMsfUrl('moqt://host#namespace--name&token=x')).toThrow(
         expect.objectContaining(unsupportedSource),
       )

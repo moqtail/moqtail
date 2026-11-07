@@ -26,7 +26,7 @@ import type { TrackProperty } from '@/model/property/track_property'
 import { VideoConfig } from '@/model/property/video_config'
 import type { CatalogTrack } from '@/player/element/interfaces'
 
-// VIDEO_CONFIG 0x0D and AUDIO_CONFIG 0x0F (moqt-22 Table 16; MSF 12.2 misspells the latter).
+// VIDEO_CONFIG 0x0D and AUDIO_CONFIG 0x0F (moqt-22 Table 16; MSF 12.2 misspells the latter)
 const READERS = new Map<number, PropertyReader<{ config: Uint8Array }>>([
   [VideoConfig.TYPE, VideoConfig],
   [AudioConfig.TYPE, AudioConfig],

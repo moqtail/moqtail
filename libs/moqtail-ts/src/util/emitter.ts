@@ -90,7 +90,7 @@ if (import.meta.vitest) {
     test('a throwing listener does not stop the others', async () => {
       const emitter = new Emitter<TestEvents>()
       const b = vi.fn()
-      // Node reports an EventTarget listener's error as an uncaught exception on the next tick.
+      // Node reports an EventTarget listener's error as an uncaught exception on the next tick
       const reported: unknown[] = []
       const saved = process.listeners('uncaughtException')
       process.removeAllListeners('uncaughtException')

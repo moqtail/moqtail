@@ -14,11 +14,9 @@
  * limitations under the License.
  */
 
-import { ProtocolViolationError } from '@/model/error'
+import { SubscribeRequest } from '@/client/request/subscribe'
 import { PublishDone } from '@/model/control'
 import { RequestStreamMessageHandler } from './handler'
-import { SubscribeRequest } from '@/client/request/subscribe'
-import { logger } from '@/util/logger'
 
 export const handlerPublishDone: RequestStreamMessageHandler<PublishDone> = async (
   client,

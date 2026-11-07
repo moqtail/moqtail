@@ -22,16 +22,14 @@
 
 import * as v from 'valibot'
 import { PlayerError } from '@/player/error'
+import { trackIdentifier } from '@/player/msf_url'
 import { buildCatalog, readJson, type ParseContext, type ParseResult } from './parse'
 import { DeltaSchema } from './schema'
 import { splitNamespace, toBytes } from './strings'
 import type { Catalog } from './types'
-import { trackIdentifier } from '@/player/msf_url'
 
 type Track = Record<string, unknown>
 type Operation = v.InferOutput<typeof DeltaSchema>['deltaUpdate'][number]
-
-const rejected = (reason: string) => new PlayerError('INVALID_CATALOG_UPDATE', `Delta update rejected: ${reason}`)
 
 /**
  * Applies a delta update object to `base`, which is left as it is.
@@ -39,34 +37,37 @@ const rejected = (reason: string) => new PlayerError('INVALID_CATALOG_UPDATE', `
  */
 export function applyDelta(base: Catalog, bytes: Uint8Array, ctx: ParseContext): ParseResult {
   try {
-    return applyOperations(base, bytes, ctx)
+    const warnings: PlayerError[] = []
+    const delta = v.safeParse(DeltaSchema, readJson(bytes, ctx, warnings))
+    if (!delta.success) throw rejected(v.summarize(delta.issues))
+    const document = structuredClone(base.json)
+    document['generatedAt'] = delta.output.generatedAt
+    for (const operation of delta.output.deltaUpdate) apply(document.tracks, operation, ctx)
+    return { catalog: buildCatalog(document, ctx), warnings }
   } catch (error) {
-    // A bad delta only makes the catalog stale; it never is a fatal source error.
+    // A bad delta only makes the catalog stale; it never is a fatal source error
     if (error instanceof PlayerError && error.code === 'UNSUPPORTED_SOURCE') throw rejected(error.message)
     throw error
   }
 }
 
-function applyOperations(base: Catalog, bytes: Uint8Array, ctx: ParseContext): ParseResult {
-  const warnings: PlayerError[] = []
-  const delta = v.safeParse(DeltaSchema, readJson(bytes, ctx, warnings))
-  if (!delta.success) throw rejected(v.summarize(delta.issues))
-  const document = structuredClone(base.json)
-  document['generatedAt'] = delta.output.generatedAt
-  for (const operation of delta.output.deltaUpdate) apply(document.tracks, operation, ctx)
-  return { catalog: buildCatalog(document, ctx), warnings }
+function rejected(reason: string): PlayerError {
+  return new PlayerError('INVALID_CATALOG_UPDATE', `Delta update rejected: ${reason}`)
 }
 
-/** The key of a raw track's full name, its namespace inherited when absent (MSF 5.2.2, 11.2.2). */
-function keyOf(track: Track, ctx: ParseContext): string {
-  const { name, namespace } = track as { name: string; namespace?: string }
+/** The key of a full track name in a delta, the namespace inherited when absent (MSF 5.2.2, 11.2.2). */
+function keyOf(name: string, namespace: string | undefined, ctx: ParseContext): string {
   return trackIdentifier(namespace === undefined ? ctx.namespace : splitNamespace(namespace), toBytes(name))
 }
 
 function apply(tracks: Track[], { op, tracks: changes }: Operation, ctx: ParseContext): void {
-  const indexOf = (key: string) => tracks.findIndex((track) => keyOf(track, ctx) === key)
+  const trackKeyOf = (track: Track) => {
+    const { name, namespace } = track as { name: string; namespace?: string }
+    return keyOf(name, namespace, ctx)
+  }
+  const indexOf = (key: string) => tracks.findIndex((track) => trackKeyOf(track) === key)
   const add = (track: Track) => {
-    if (indexOf(keyOf(track, ctx)) >= 0) throw rejected(`track ${JSON.stringify(track['name'])} already exists`)
+    if (indexOf(trackKeyOf(track)) >= 0) throw rejected(`track ${JSON.stringify(track['name'])} already exists`)
     tracks.push(track)
   }
   for (const change of changes) {
@@ -75,26 +76,25 @@ function apply(tracks: Track[], { op, tracks: changes }: Operation, ctx: ParseCo
       continue
     }
     if (op === 'remove') {
-      tracks.splice(existing(indexOf(keyOf(change, ctx)), change['name']), 1)
+      tracks.splice(indexOrThrow(indexOf(trackKeyOf(change)), change['name']), 1)
       continue
     }
     const { parentName, parentNamespace, ...fields } = change as Track & {
       parentName: string
       parentNamespace?: string
     }
-    const namespace = parentNamespace === undefined ? ctx.namespace : splitNamespace(parentNamespace)
-    const at = existing(indexOf(trackIdentifier(namespace, toBytes(parentName))), parentName)
+    const at = indexOrThrow(indexOf(keyOf(parentName, parentNamespace, ctx)), parentName)
     if (op === 'clone') {
       add({ ...tracks[at], ...fields })
     } else {
-      // An update never renames the track.
+      // An update never renames the track
       const { name: _name, namespace: _namespace, ...updates } = fields
       tracks[at] = { ...tracks[at], ...updates }
     }
   }
 }
 
-function existing(index: number, name: unknown): number {
+function indexOrThrow(index: number, name: unknown): number {
   if (index < 0) throw rejected(`track ${JSON.stringify(name)} isn't in the catalog`)
   return index
 }

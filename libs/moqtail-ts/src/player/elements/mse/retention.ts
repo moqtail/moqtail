@@ -15,8 +15,7 @@
  */
 
 /**
- * The default retention policy, until the buffer controller (milestone 8) replaces it:
- * keep `backBuffer` behind `currentTime`, cap a VOD forward buffer at `forwardCap`, and make
+ * The default retention policy: keep `backBuffer` behind `currentTime`, cap a VOD forward buffer at `forwardCap`, and make
  * room when an append hits the quota. `buffered` is the source of truth, since `ManagedMediaSource`
  * may evict on its own. Times in seconds.
  */
@@ -36,9 +35,18 @@ export function bufferedEnd(buffer: SourceBuffer): number | undefined {
   return ranges.length ? ranges.end(ranges.length - 1) : undefined
 }
 
+/** Seconds buffered ahead of `currentTime`. */
+export function bufferedAhead(buffer: SourceBuffer, currentTime: number): number {
+  return (bufferedEnd(buffer) ?? currentTime) - currentTime
+}
+
 /** Whether the buffer holds less than `forwardCap` ahead of `currentTime`. */
 export function hasRoom(buffer: SourceBuffer, currentTime: number, forwardCap: number): boolean {
-  return (bufferedEnd(buffer) ?? currentTime) - currentTime < forwardCap
+  return bufferedAhead(buffer, currentTime) < forwardCap
+}
+
+export function isQuotaExceeded(error: unknown): boolean {
+  return (error as Error | undefined)?.name === 'QuotaExceededError'
 }
 
 /** Removes `[start, end)` clipped to what's buffered; does nothing when that's empty. Run it inside the queue. */
@@ -67,8 +75,7 @@ export async function append(
   } catch (error) {
     const ranges = queue.buffer.buffered
     const keepFrom = trimEnd(currentTime(), QUOTA_KEEP, keyframes)
-    if ((error as Error | undefined)?.name !== 'QuotaExceededError' || !ranges.length || ranges.start(0) >= keepFrom)
-      throw error
+    if (!isQuotaExceeded(error) || !ranges.length || ranges.start(0) >= keepFrom) throw error
     await queue.run((b) => removeBuffered(b, 0, keepFrom))
     await queue.run((b) => b.appendBuffer(data as Uint8Array<ArrayBuffer>))
   }

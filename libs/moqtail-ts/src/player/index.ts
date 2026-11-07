@@ -18,13 +18,13 @@ export { parseMsfUrl, formatMsfUrl, type MsfSource, type LocationRange, type Tim
 export { PlayerError, type PlayerErrorCode, type PlayerErrorCategory } from './error'
 export { MOQtailPlayer, type MOQtailPlayerOptions, type PlayerEvents } from './player'
 export type { PlayerState } from './state'
-export type { Catalog, CatalogJson, InitData, MediaTimelineTemplate } from './elements/catalog/types'
-export type { Catalog as CatalogElement } from './elements/catalog/element'
-export type { TimelineEvent, TimelineRecord } from './element/event_timeline'
+export type { Catalog, CatalogJson, InitData, MediaTimelineTemplate } from '@/player/elements/catalog/types'
+export type { CatalogElement } from '@/player/elements/catalog/element'
+export type { TimelineEvent, TimelineRecord } from '@/player/element/event_timeline'
 export { defineExtension, type ExtensionDefinition } from './extension'
-export { MSE } from './elements/mse'
-export { SSTS, SstsSource } from './extensions/ssts'
-export type { MSEOptions } from './elements/mse/sink'
+export { MSE } from '@/player/elements/mse'
+export { SSTS, SstsSource } from '@/player/extensions/ssts'
+export type { MSEOptions } from '@/player/elements/mse/sink'
 export {
   defineElement,
   hasInterface,
@@ -39,8 +39,8 @@ export {
   type SourceElementDefinition,
   type TransformElementDefinition,
   type SinkElementDefinition,
-} from './element/define'
-export { BaseElement, SourceElement, TransformElement, SinkElement, type ElementEvents } from './element/base'
+} from '@/player/element/define'
+export { BaseElement, SourceElement, TransformElement, SinkElement, type ElementEvents } from '@/player/element/base'
 export {
   Pad,
   CONNECTION_CAPACITY,
@@ -48,8 +48,9 @@ export {
   type PadOutput,
   type PadProperties,
   type PadEvent,
-} from './element/pad'
-export type { ElementContext, ElementLoadRequest, PlayerHandle } from './element/context'
+  type PadSignal,
+} from '@/player/element/pad'
+export type { ElementContext, ElementLoadRequest, PlayerHandle } from '@/player/element/context'
 export {
   MEDIA_SINK,
   MEDIA_SOURCE,
@@ -64,4 +65,4 @@ export {
   type RequestHooks,
   type MediaSourceOptions,
   type SwitchingSetOptions,
-} from './element/interfaces'
+} from '@/player/element/interfaces'

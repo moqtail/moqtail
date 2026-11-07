@@ -46,7 +46,7 @@ export class BufferQueue {
         if (event.type === 'updateend') resolve()
         else reject(new DOMException(`SourceBuffer ${event.type}`, 'InvalidStateError'))
       }
-      // `error` and `abort` come before their `updateend`, so they settle first.
+      // `error` and `abort` come before their `updateend`, so they settle first
       for (const type of ['updateend', 'error', 'abort']) {
         this.buffer.addEventListener(type, done, { signal: listening.signal })
       }

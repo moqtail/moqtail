@@ -24,9 +24,10 @@ import { SourceElement } from '@/player/element/base'
 import type { ElementContext } from '@/player/element/context'
 import { toLocation } from '@/player/element/event_timeline'
 import type { TimelineReader } from '@/player/element/interfaces'
+import { DEFAULT_CATALOG_TIMEOUT_MS, MEDIA_PRIORITY } from '@/player/constants'
 import { PlayerError } from '@/player/error'
-import { within } from '@/player/util/backoff'
-import { DEFAULT_CATALOG_TIMEOUT_MS, DEFAULT_MAX_CATALOG_BYTES, MEDIA_PRIORITY } from '@/player/constants'
+import { handledResolvers, within } from '@/player/util/async'
+import { parseJsonArray } from '@/player/util/json'
 import { TrackReader } from '@/player/util/track_reader'
 
 /** One explicit entry (MSF 7.1.1). `wallclock` is 0 when unknown, as for VOD. */
@@ -36,19 +37,19 @@ export interface TimelineEntry {
   wallclock: number
 }
 
+/** Reads a media timeline track and answers lookups over its entries. */
 export class MediaTimelineElement extends SourceElement {
   /** Sorted by media time. */
   #entries: TimelineEntry[] = []
   readonly #reader: TrackReader
-  readonly #first = Promise.withResolvers<void>()
+  readonly #first = handledResolvers()
 
   constructor(context: ElementContext) {
     super(context)
     const { namespace, nameBytes, name } = context.tracks[0]!
-    this.#first.promise.catch(() => {}) // read by start(), possibly after it settled
     const warn = (message: string, cause?: unknown) =>
       context.player.emit('warning', new PlayerError('TRACK_SKIPPED', message, { element: 'mediatimeline', cause }))
-    // MSF 7.3: object 0 holds every accessible entry, later objects only new ones.
+    // MSF 7.3: object 0 holds every accessible entry, later objects only new ones
     const received = (payload: Uint8Array, base: TimelineEntry[]) => {
       const { entries, dropped } = parseEntries(payload)
       if (dropped > 0) warn(`Dropped ${dropped} malformed entr(ies) of media timeline "${name}"`)
@@ -58,18 +59,16 @@ export class MediaTimelineElement extends SourceElement {
       track: { namespace, name: nameBytes },
       priority: MEDIA_PRIORITY,
       incremental: true,
-      maxBytes: context.player.options.maxCatalogBytes ?? DEFAULT_MAX_CATALOG_BYTES,
-      onIndependent: (payload) => (received(payload, []), this.#first.resolve()),
+      onIndependent: (payload) => {
+        received(payload, [])
+        this.#first.resolve()
+      },
       onIncremental: (payload) => received(payload, this.#entries),
       onStale: (reason) => {
         this.#first.reject(reason)
         warn(`Media timeline "${name}" went stale: ${reason.message}`, reason)
       },
     })
-  }
-
-  get entries(): readonly TimelineEntry[] {
-    return this.#entries
   }
 
   /**
@@ -104,8 +103,7 @@ export class MediaTimelineElement extends SourceElement {
 
 /** The records of an MSF 7.1.1 document; malformed ones are counted, not kept. */
 export function parseEntries(payload: Uint8Array): { entries: TimelineEntry[]; dropped: number } {
-  const json: unknown = JSON.parse(new TextDecoder().decode(payload))
-  if (!Array.isArray(json)) throw new Error('A media timeline must be a JSON array (MSF 7.1.1)')
+  const json = parseJsonArray(payload, 'A media timeline must be a JSON array (MSF 7.1.1)')
   const entries = json.flatMap((record: unknown) => {
     if (!Array.isArray(record) || record.length !== 3) return []
     const [mediaTime, at, wallclock] = record
@@ -138,7 +136,7 @@ export class EntriesTimeline implements TimelineReader {
   }
 
   locationToTime(location: Location): number | undefined {
-    // Locations need not grow with media time (MSF 7.1), so this one searches all entries.
+    // Locations need not grow with media time (MSF 7.1), so this one searches all entries
     let best: TimelineEntry | undefined
     for (const e of this.entries()) {
       if (e.location.compare(location) <= 0 && (!best || e.location.compare(best.location) > 0)) best = e
@@ -159,7 +157,7 @@ export class EntriesTimeline implements TimelineReader {
     return inside && { start: inside.mediaTime, end: end.mediaTime }
   }
 
-  // Entries are sorted by media time, which wallclock follows.
+  // Entries are sorted by media time, which wallclock follows
   #lastWhere(ok: (e: TimelineEntry) => boolean): Location | undefined {
     return this.entries().findLast(ok)?.location
   }

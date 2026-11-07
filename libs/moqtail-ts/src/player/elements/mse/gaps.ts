@@ -36,12 +36,12 @@ export function gapJumpTarget(
   liveEdgeDelay: number,
 ): number | undefined {
   const index = rangeAt(currentTime, buffered)
-  if (index === -1) return nearestRange(currentTime, buffered, live, liveEdgeDelay)
+  if (index === -1) return rangeAhead(currentTime, buffered, live, liveEdgeDelay)
   const end = buffered.end(index)
   if (end - currentTime > STALL_THRESHOLD) return undefined
   for (let next = index + 1; next < buffered.length; next++) {
     const start = buffered.start(next)
-    // demo-abr read `index + 1` on every iteration; the loop is meant to look further ahead.
+    // Past ranges too short to play from, not only the next one
     if (start - end < IMMEDIATE_SEEK_THRESHOLD) return start
     const length = buffered.end(next) - start
     if (length >= STALL_THRESHOLD && length >= liveEdgeDelay) return start
@@ -60,7 +60,7 @@ export function rangeAt(time: number, ranges: TimeRanges): number {
  * one. Not to a closer edge behind: playback that ran past a range's end (one track ending a
  * little later than the other) would only be sent back to it.
  */
-function nearestRange(
+function rangeAhead(
   currentTime: number,
   buffered: TimeRanges,
   live: boolean,

@@ -18,19 +18,20 @@
  * `EventTimelineElement`: the subscription and record delivery shared by event timeline
  * elements (MSF 8). Each `eventType` gets its own subclass. Records are delivered on arrival,
  * through the player's `timelineevent` event and, when connected, as packets on the
- * `eventtimeline` source pad (`PLAN.md` › Source Elements).
+ * `eventtimeline` source pad.
  */
 
 import { KeyValuePair } from '@/model/common/pair'
 import { Location } from '@/model/common/location'
 import { MoqtObject } from '@/model/data/object'
 import { findProperty } from '@/model/property/find'
-import { DEFAULT_MAX_CATALOG_BYTES, MEDIA_PRIORITY } from '@/player/constants'
-import { TrackReader } from '@/player/util/track_reader'
+import { MEDIA_PRIORITY } from '@/player/constants'
 import { PlayerError } from '@/player/error'
+import { parseJsonArray } from '@/player/util/json'
+import { TrackReader } from '@/player/util/track_reader'
 import { SourceElement } from './base'
 import type { ElementContext } from './context'
-import { CapabilityCode } from './define'
+import { CapabilityCode, definitionOf, type Capabilities } from './define'
 import type { CatalogTrack } from './interfaces'
 import type { Pad } from './pad'
 
@@ -49,10 +50,10 @@ export interface TimelineEvent {
   record: TimelineRecord
 }
 
-// Odd, so the value is bytes (moqt-22 KeyValuePair).
+// Odd, so the value is bytes (moqt-22 KeyValuePair)
 const MSF_EVENT_TIMELINE_HEADER = 0x7b
 
-/** @public Track property: header data serialized as the track's `eventType` defines (MSF 12.3.1). */
+/** Track property: header data serialized as the track's `eventType` defines (MSF 12.3.1). */
 export class MsfEventTimelineHeaderProperty {
   static readonly TYPE = MSF_EVENT_TIMELINE_HEADER
 
@@ -69,13 +70,21 @@ export class MsfEventTimelineHeaderProperty {
 }
 
 /** A JSON `[group, object]` as a `Location`, or undefined when it isn't one. */
+/** A pad carrying an event timeline of `eventType`. */
+export function eventTimelineCapabilities(direction: 'in' | 'out', eventType: string): Capabilities {
+  return [
+    { direction, code: CapabilityCode.PACKAGING, value: 'eventtimeline' },
+    { direction, code: CapabilityCode.EVENT_TYPE, value: eventType },
+  ]
+}
+
 export function toLocation(value: unknown): Location | undefined {
   if (!Array.isArray(value) || value.length !== 2) return undefined
   if (!value.every((n) => Number.isSafeInteger(n) && n >= 0)) return undefined
   return new Location(value[0], value[1])
 }
 
-/** @public Base of event timeline elements; it isn't an element itself. */
+/** Base of event timeline elements; it isn't an element itself. */
 export abstract class EventTimelineElement extends SourceElement {
   /** MSF 8.4: a sequence with incremental updates (true), or one record per group (false). */
   protected abstract readonly incremental: boolean
@@ -89,10 +98,7 @@ export abstract class EventTimelineElement extends SourceElement {
   constructor(context: ElementContext) {
     super(context)
     this.track = context.tracks[0]!
-    this.#pad = this.createPad('src', [
-      { direction: 'out', code: CapabilityCode.PACKAGING, value: 'eventtimeline' },
-      { direction: 'out', code: CapabilityCode.EVENT_TYPE, value: this.track.eventType ?? '' },
-    ])
+    this.#pad = this.createPad('src', eventTimelineCapabilities('out', this.track.eventType ?? ''))
   }
 
   /** The `MSF_EVENT_TIMELINE_HEADER` value, read before the first record. The default ignores it. */
@@ -120,13 +126,13 @@ export abstract class EventTimelineElement extends SourceElement {
    */
   async start(): Promise<void> {
     const { namespace, nameBytes } = this.track
+    const received = (payload: Uint8Array, _: Location, object: MoqtObject) => this.#received(payload, object)
     this.#reader = new TrackReader(this.context, {
       track: { namespace, name: nameBytes },
       priority: MEDIA_PRIORITY,
       incremental: this.incremental,
-      maxBytes: this.context.player.options.maxCatalogBytes ?? DEFAULT_MAX_CATALOG_BYTES,
-      onIndependent: (payload, _, object) => this.#received(payload, object),
-      onIncremental: (payload, _, object) => this.#received(payload, object),
+      onIndependent: received,
+      onIncremental: received,
       onStale: (reason) => this.#warn(`Event timeline "${this.track.name}" went stale: ${reason.message}`, reason),
     })
     try {
@@ -158,13 +164,12 @@ export abstract class EventTimelineElement extends SourceElement {
       )
       void this.#pad.write({ type: 'packet', object: decompressed })
     }
-    const json: unknown = JSON.parse(new TextDecoder().decode(payload))
-    if (!Array.isArray(json)) throw new Error('An event timeline must be a JSON array of records (MSF 8.2)')
+    const json = parseJsonArray(payload, 'An event timeline must be a JSON array of records (MSF 8.2)')
     const eventType = this.track.eventType ?? ''
     let dropped = 0
     for (const raw of json) {
       const isObject = typeof raw === 'object' && raw !== null && !Array.isArray(raw)
-      const record = isObject ? this.parseRecord(raw) : undefined
+      const record = isObject ? this.parseRecord(raw as Record<string, unknown>) : undefined
       if (!record) dropped++
       if (!record || (this.incremental && !isAfter(record, this.#last))) continue
       this.#last = record
@@ -174,7 +179,7 @@ export abstract class EventTimelineElement extends SourceElement {
   }
 
   #warn(message: string, cause?: unknown): void {
-    const element = this.definition?.name
+    const element = definitionOf(this)?.name
     this.context.player.emit(
       'warning',
       new PlayerError('TRACK_SKIPPED', message, { cause, ...(element && { element }) }),
@@ -193,24 +198,14 @@ function isAfter(record: TimelineRecord, last: TimelineRecord | undefined): bool
 
 if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
-  const { FakeClient } = await import('@/player/testing/client')
-  const { testChain, testSource, collectingSink, flush, track } = await import('@/player/testing/elements')
+  const { FakeClient, testObject } = await import('@/player/testing/client')
+  const { testChain, testSource, collectingSink, flush, settle, track } = await import('@/player/testing/elements')
   type CollectingSink = import('@/player/testing/elements').CollectingSink
   const { defineElement } = await import('./define')
-  const { FullTrackName } = await import('@/model/data/full_track_name')
-  const { ObjectForwardingPreference } = await import('@/model/data/constant')
 
   const text = (s: string) => new TextEncoder().encode(s)
   const object = (group: number, id: number, records: unknown) =>
-    MoqtObject.newWithPayload(
-      FullTrackName.tryNew('ns', 'events'),
-      new Location(BigInt(group), BigInt(id)),
-      0,
-      ObjectForwardingPreference.Subgroup,
-      0,
-      null,
-      text(JSON.stringify(records)),
-    )
+    testObject('events', group, id, text(JSON.stringify(records)))
 
   /** A test event timeline loaded by a top-level source, with an optional sink taking its pad. */
   async function setup(incremental: boolean, options: { header?: Uint8Array; sink?: boolean } = {}) {
@@ -258,7 +253,7 @@ if (import.meta.vitest) {
     await flush()
     const push = async (...objects: MoqtObject[]) => {
       client.last.push(...objects)
-      for (let i = 0; i < 5; i++) await flush()
+      await settle()
     }
     return { events: delivered, warnings, headers, push, sink: () => sink }
   }

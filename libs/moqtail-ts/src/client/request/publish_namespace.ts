@@ -14,11 +14,11 @@
  * limitations under the License.
  */
 
-import { RequestOk, RequestError } from '../../model/control'
-import { RequestErrorCode } from '../../model/control/constant'
-import { PublishNamespace } from '../../model/control/publish_namespace'
-import { ReasonPhrase } from '../../model/common/reason_phrase'
-import { logger } from '../../util/logger'
+import { RequestOk, RequestError } from '@/model/control'
+import { RequestErrorCode } from '@/model/control/constant'
+import { PublishNamespace } from '@/model/control/publish_namespace'
+import { ReasonPhrase } from '@/model/common/reason_phrase'
+import { logger } from '@/util/logger'
 import { isSessionClosed } from '@/client/util/stream_reset'
 
 // TODO: add publish namespace done

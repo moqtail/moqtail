@@ -16,8 +16,7 @@
 
 /**
  * The catalog element: keeps the catalog current from the catalog track, loads the default
- * sources for the first catalog, and hands later updates to them (`PLAN.md` › Source
- * Elements, Proper Catalog Parsing).
+ * sources for the first catalog, and hands later updates to them.
  */
 
 import { Location } from '@/model/common/location'
@@ -32,16 +31,17 @@ import {
   type MediaSourceOptions,
   type TimelineReader,
 } from '@/player/element/interfaces'
-import { PlayerError } from '@/player/error'
-import { trackIdentifier, type MsfSource, type TimeRange } from '@/player/msf_url'
-import { backoffDelay, sleep, within } from '@/player/util/backoff'
-import { CATALOG_PRIORITY, DEFAULT_CATALOG_TIMEOUT_MS, DEFAULT_MAX_CATALOG_BYTES } from '@/player/constants'
-import { trackKey } from '@/player/util/track'
-import { TrackReader } from '@/player/util/track_reader'
 import { MediaTimeline } from '@/player/elements/mediatimeline'
 import { TemplateTimeline } from '@/player/elements/mediatimeline/template'
+import { CATALOG_PRIORITY, DEFAULT_CATALOG_TIMEOUT_MS } from '@/player/constants'
+import { PlayerError } from '@/player/error'
+import { trackIdentifier, type MsfSource, type TimeRange } from '@/player/msf_url'
+import { backoffDelay, handledResolvers, sleep, within } from '@/player/util/async'
+import { trackKey } from '@/player/util/track'
+import { TrackReader } from '@/player/util/track_reader'
+import { errorMessage } from '@/util/error'
 import { applyDelta } from './delta'
-import { diffTracks } from './diff'
+import { diffTracks, type TrackDiff } from './diff'
 import { parseCatalog, type ParseContext, type ParseResult } from './parse'
 import { selectEventTimelines, selectMedia, withRole, type SelectedSet, type SelectionOptions } from './selection'
 import type { Catalog as CatalogData } from './types'
@@ -65,10 +65,11 @@ interface LoadedSet {
 }
 
 /** @public The catalog element, emitted with the player's `catalog` event. */
-export class Catalog extends SourceElement implements CatalogReader {
+export class CatalogElement extends SourceElement implements CatalogReader {
   readonly url: string
   readonly namespace: Tuple
-  readonly #options: CatalogOptions
+  readonly #source: MsfSource
+  readonly #switchFrom: boolean | undefined
   readonly #parse: ParseContext
   readonly #reader: TrackReader
   #catalog: CatalogData | undefined
@@ -77,7 +78,7 @@ export class Catalog extends SourceElement implements CatalogReader {
   /** Media timeline tracks that couldn't be read, by track key. */
   readonly #unavailableTimelines = new Set<string>()
   /** The first catalog with tracks or `isComplete`, or the fatal error that came first. */
-  readonly #first = Promise.withResolvers<void>()
+  readonly #first = handledResolvers()
   #started = false
   /** Updates are reconciled one after another, since loading a source is async. */
   #updates = Promise.resolve()
@@ -87,14 +88,13 @@ export class Catalog extends SourceElement implements CatalogReader {
     const { source } = options
     this.url = source.url
     this.namespace = source.namespace
-    this.#options = options
+    this.#source = source
+    this.#switchFrom = options.switchFrom
     this.#parse = { namespace: source.namespace, variables: source.variables }
-    this.#first.promise.catch(() => {}) // read by start(), possibly after it settled
     this.#reader = new TrackReader(context, {
       track: { namespace: source.namespace, name: source.trackBytes },
       priority: CATALOG_PRIORITY,
       incremental: true,
-      maxBytes: context.player.options.maxCatalogBytes ?? DEFAULT_MAX_CATALOG_BYTES,
       onIndependent: (payload) => this.#received(parseCatalog(payload, this.#parse)),
       onIncremental: (payload) => {
         if (!this.#catalog) throw new Error('A delta update arrived before any catalog')
@@ -122,7 +122,7 @@ export class Catalog extends SourceElement implements CatalogReader {
     return this.#stale
   }
 
-  /** Over the tracks of the loaded sources. */
+  /** From the tracks of the loaded sources. */
   get streamType(): 'unknown' | 'live' | 'on-demand' {
     const selected = this.#selected()
     if (selected.length === 0) return 'unknown'
@@ -171,10 +171,10 @@ export class Catalog extends SourceElement implements CatalogReader {
     try {
       return (await this.context.load(MediaTimeline, { tracks: [timeline] })).reader(window)
     } catch (error) {
-      // Concurrent callers share the failed load: warn once.
+      // Concurrent callers share the failed load: warn once
       if (this.#unavailableTimelines.has(key)) return undefined
       this.#unavailableTimelines.add(key)
-      const reason = error instanceof Error ? error.message : String(error)
+      const reason = errorMessage(error)
       this.#warn(new PlayerError('TRACK_SKIPPED', `Media timeline unavailable: ${reason}`, { element: 'catalog' }))
       return undefined
     }
@@ -208,6 +208,7 @@ export class Catalog extends SourceElement implements CatalogReader {
       this.#started = true
       if (catalog.tracks.length > 0) {
         const loading = this.#loadDefaults(catalog)
+        // Updates wait for the default loads, whether they succeed or not
         this.#updates = loading.catch(() => {})
         await loading
       }
@@ -231,7 +232,8 @@ export class Catalog extends SourceElement implements CatalogReader {
     this.#stale = false
     if (!this.#started) {
       if (next.tracks.length > 0 || next.isComplete) this.#first.resolve()
-      return this.#announce()
+      this.#announce()
+      return
     }
     this.#updates = this.#updates
       .then(() => this.#reconcile(previous!, next))
@@ -245,16 +247,20 @@ export class Catalog extends SourceElement implements CatalogReader {
 
   #onStale(reason: Error): void {
     this.#stale = true
-    // No good catalog yet: it's fatal.
-    if (!this.#catalog) {
-      const fatal = reason instanceof PlayerError && reason.code === 'UNSUPPORTED_SOURCE'
-      return this.#first.reject(
-        fatal
-          ? reason
-          : new PlayerError('UNSUPPORTED_SOURCE', `Unusable catalog: ${reason.message}`, { cause: reason }),
-      )
+    if (this.#catalog) {
+      this.#warn(asUpdateError(reason))
+      return
     }
-    this.#warn(asUpdateError(reason))
+    // No good catalog yet: it's fatal
+    const fatal = reason instanceof PlayerError && reason.code === 'UNSUPPORTED_SOURCE'
+    this.#first.reject(
+      fatal
+        ? reason
+        : new PlayerError('UNSUPPORTED_SOURCE', `Unusable catalog: ${reason.message}`, {
+            element: 'catalog',
+            cause: reason,
+          }),
+    )
   }
 
   #warn(warning: PlayerError): void {
@@ -286,7 +292,7 @@ export class Catalog extends SourceElement implements CatalogReader {
     const byTime = await this.#rangesByTime(reference.tracks[0]!)
     await Promise.all([
       ...media.map(async (s) => {
-        // Another set takes the ranges by media time when it can map them back to its own groups.
+        // Another set takes the ranges by media time when it can map them back to its own groups
         const mapped = s !== reference && byTime && (await this.timeline(s.tracks[0]!)) ? byTime : undefined
         await this.#load(s, true, mapped)
       }),
@@ -301,13 +307,13 @@ export class Catalog extends SourceElement implements CatalogReader {
    * ranges or a timeline: then every set takes them as written.
    */
   async #rangesByTime(reference: CatalogTrack): Promise<TimeRange[] | undefined> {
-    const ranges = this.#options.source?.locationRanges ?? []
+    const ranges = this.#source.locationRanges
     const timeline = ranges.length > 0 ? await this.timeline(reference) : undefined
     if (!timeline) return undefined
     const times: TimeRange[] = []
     for (const { start, end } of ranges) {
       const from = timeline.locationToTime(new Location(start.group, 0n))
-      // The end group runs until the next one starts.
+      // The end group runs until the next one starts
       const to = end && timeline.locationToTime(new Location(end.group + 1n, 0n))
       if (from === undefined || (end && to === undefined)) return undefined
       times.push({ start: from, ...(to !== undefined && { end: to - 1 }) })
@@ -334,10 +340,10 @@ export class Catalog extends SourceElement implements CatalogReader {
   }
 
   #mediaOptions(byTime?: TimeRange[]): MediaSourceOptions {
-    const { switchFrom, source } = this.#options
-    const { wallclockRanges = [] } = source ?? {}
-    const locationRanges = byTime ? [] : (source?.locationRanges ?? [])
-    const mediaTimeRanges = [...(source?.mediaTimeRanges ?? []), ...(byTime ?? [])]
+    const switchFrom = this.#switchFrom
+    const { wallclockRanges } = this.#source
+    const locationRanges = byTime ? [] : this.#source.locationRanges
+    const mediaTimeRanges = [...this.#source.mediaTimeRanges, ...(byTime ?? [])]
     const ranged = locationRanges.length + mediaTimeRanges.length + wallclockRanges.length > 0
     return {
       ...(switchFrom !== undefined && { switchFrom }),
@@ -357,30 +363,30 @@ export class Catalog extends SourceElement implements CatalogReader {
     const removed = next.isComplete ? new Set<string>() : diff.removed
     const unplaced = [...diff.added]
     for (const set of this.#sets) {
-      const tracks = set.tracks.flatMap((t) => (removed.has(trackKey(t)) ? [] : [diff.tracks.get(trackKey(t)) ?? t]))
-      for (const track of set.media ? [...unplaced] : []) {
-        // Kept by an isComplete catalog, which removes nothing: it's already in the set.
-        const present = tracks.some((t) => trackKey(t) === trackKey(track))
-        if (!present && !this.#fits(set, track)) continue
-        if (!present) tracks.push(track)
-        unplaced.splice(unplaced.indexOf(track), 1)
-      }
-      const changed =
-        tracks.length !== set.tracks.length ||
-        tracks.some((t, i) => {
-          const key = trackKey(t)
-          // Removed and still in the new catalog: it changed beyond what applies in place.
-          return (
-            key !== trackKey(set.tracks[i]!) || diff.updated.has(key) || (diff.removed.has(key) && diff.tracks.has(key))
-          )
-        })
+      const tracks = set.tracks.flatMap((t) => {
+        const key = trackKey(t)
+        return removed.has(key) ? [] : [diff.tracks.get(key) ?? t]
+      })
+      if (set.media) this.#placeAdded(set, tracks, unplaced)
+      const changed = setChanged(set.tracks, tracks, diff)
       set.tracks = tracks
       if (changed && hasInterface(set.element, MEDIA_SOURCE)) set.element.setTracks(tracks)
     }
     if (unplaced.length > 0) await this.#loadMissingRoles(next)
   }
 
-  /** Same grouping fields as the set's tracks, and the same probe result. */
+  /** Moves the added tracks that belong to `set` from `unplaced` to `tracks`. */
+  #placeAdded(set: LoadedSet, tracks: CatalogTrack[], unplaced: CatalogTrack[]): void {
+    for (const track of [...unplaced]) {
+      // An isComplete catalog removes nothing, so a changed track is still in the set
+      const present = tracks.some((t) => trackKey(t) === trackKey(track))
+      if (!present && !this.#fits(set, track)) continue
+      if (!present) tracks.push(track)
+      unplaced.splice(unplaced.indexOf(track), 1)
+    }
+  }
+
+  /** An added track joins `set` with an alt group, no `depends`, the set's grouping fields, and its probe result. */
   #fits(set: LoadedSet, track: CatalogTrack): boolean {
     const { sample } = set
     return (
@@ -411,8 +417,19 @@ export class Catalog extends SourceElement implements CatalogReader {
   }
 }
 
+/** Whether a set's sources must hear of `tracks`: different tracks, or one changed beyond what applies in place. */
+function setChanged(previous: readonly CatalogTrack[], tracks: readonly CatalogTrack[], diff: TrackDiff): boolean {
+  if (tracks.length !== previous.length) return true
+  return tracks.some((t, i) => {
+    const key = trackKey(t)
+    // Removed and still in the new catalog: it changed beyond what applies in place
+    const replaced = diff.removed.has(key) && diff.tracks.has(key)
+    return key !== trackKey(previous[i]!) || diff.updated.has(key) || replaced
+  })
+}
+
 function asUpdateError(error: unknown): PlayerError {
   if (error instanceof PlayerError && error.code === 'INVALID_CATALOG_UPDATE') return error
-  const message = `Catalog update rejected: ${error instanceof Error ? error.message : String(error)}`
+  const message = `Catalog update rejected: ${errorMessage(error)}`
   return new PlayerError('INVALID_CATALOG_UPDATE', message, { element: 'catalog', cause: error })
 }

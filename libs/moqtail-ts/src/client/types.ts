@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import {
+import type {
   EndOfRangeKind,
   FullTrackName,
   GroupOrder,
@@ -41,14 +41,15 @@ import {
   FetchObject,
   FetchHeader,
 } from '@/model'
-import { PublishNamespaceRequest } from './request/publish_namespace'
-import { FetchRequest } from './request/fetch'
-import { SubscribeRequest } from './request/subscribe'
-import { SubscribeNamespaceRequest } from './request/subscribe_namespace'
-import { MOQtailClient } from './client'
-import { PublishRequest } from './request/publish'
-import { TrackStatusRequest } from './request/track_status'
-import { DataEvent } from './data_event'
+import type { MOQtailClient } from './client'
+import type { DataEvent } from './data_event'
+import type { FetchRequest } from '@/client/request/fetch'
+import type { PublishRequest } from '@/client/request/publish'
+import type { PublishNamespaceRequest } from '@/client/request/publish_namespace'
+import type { SubscribeRequest } from '@/client/request/subscribe'
+import type { SubscribeNamespaceRequest } from '@/client/request/subscribe_namespace'
+import type { TrackStatusRequest } from '@/client/request/track_status'
+
 /**
  * Discriminated union of every in‑flight MOQ‑tail control request tracked by the {@link MOQtailClient}.
  *
@@ -64,8 +65,7 @@ import { DataEvent } from './data_event'
  * - {@link SubscribeNamespaceRequest} – pending SUBSCRIBE_NAMESPACE sequence.
  * - {@link FetchRequest} – pending FETCH handshake producing a data stream.
  * - {@link SubscribeRequest} – pending SUBSCRIBE producing subgroup object streams.
- 
-*
+ *
  * @example Looking up a request by id
  * ```ts
  * function isActive(requests: Map<bigint, MOQtailRequest>, id: bigint) {
@@ -292,6 +292,14 @@ export interface FetchResult {
 }
 
 /**
+ * Called for an End of Range marker on a fetch stream: every Location after the
+ * previous Object, if any, up to and including `location`, does not exist, is unknown,
+ * or timed out, as `kind` says. Without it, an unknown or timed-out range looks the
+ * same as one that does not exist.
+ */
+export type EndOfRangeHandler = (kind: EndOfRangeKind, location: Location) => void
+
+/**
  * Parameters for {@link MOQtailClient.subscribe | subscribing} to a track's live objects.
  *
  * @example From the next object
@@ -325,14 +333,6 @@ export interface FetchResult {
  * })
  * ```
  */
-/**
- * Called for an End of Range marker on a fetch stream: every Location after the
- * previous Object, if any, up to and including `location`, does not exist, is unknown,
- * or timed out, as `kind` says. Without it, an unknown or timed-out range looks the
- * same as one that does not exist.
- */
-export type EndOfRangeHandler = (kind: EndOfRangeKind, location: Location) => void
-
 export type SubscribeOptions = {
   /** Fully qualified track identifier ({@link FullTrackName}). */
   fullTrackName: FullTrackName

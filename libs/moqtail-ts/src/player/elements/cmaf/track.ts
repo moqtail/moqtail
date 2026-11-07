@@ -25,8 +25,10 @@ export function mimeTypeOf(track: Partial<CatalogTrack>): string {
   return base.includes('codecs=') || !track.codec ? base : `${base}; codecs="${track.codec}"`
 }
 
-/** The source pad of a `video` or `audio` CMAF set. */
-export const cmafCapabilities = (role: string): Capabilities => [
-  { direction: 'out', code: CapabilityCode.PACKAGING, value: 'cmaf' },
-  { direction: 'out', code: CapabilityCode.ROLE, value: role },
-]
+/** A pad carrying a `video` or `audio` CMAF set. */
+export function cmafCapabilities(direction: 'in' | 'out', role: string): Capabilities {
+  return [
+    { direction, code: CapabilityCode.PACKAGING, value: 'cmaf' },
+    { direction, code: CapabilityCode.ROLE, value: role },
+  ]
+}

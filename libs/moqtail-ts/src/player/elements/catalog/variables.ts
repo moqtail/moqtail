@@ -46,7 +46,7 @@ export function substituteVariables(
 
 function substitute(s: string, variables: Record<string, string>, warnings: PlayerError[]): string {
   return s.replace(VARIABLE, (reference, name: string) => {
-    // Own keys only, so `%constructor%` can't reach the prototype.
+    // Own keys only, so `%constructor%` can't reach the prototype
     const value = Object.hasOwn(variables, name) ? variables[name] : undefined
     if (value === undefined) {
       warnings.push(new PlayerError('VARIABLE_SKIPPED', `Variable ${reference} isn't in the URL fragment`))

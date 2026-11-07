@@ -69,7 +69,7 @@ export function selectTargets(
   transforms: readonly TransformElement[],
   sinks: readonly SinkElement[],
 ): (TransformElement | SinkElement)[] {
-  // indexOf is -1 for a source, so the walk starts at the first transform.
+  // indexOf is -1 for a source, so the walk starts at the first transform
   const start = transforms.indexOf(pad.element as TransformElement) + 1
   const transform = transforms.slice(start).find((t) => t.negotiate(pad))
   return transform ? [transform] : sinks.filter((s) => s.negotiate(pad))

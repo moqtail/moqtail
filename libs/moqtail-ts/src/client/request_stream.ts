@@ -20,7 +20,8 @@ import { FrozenByteBuffer, ByteBuffer } from '@/model/common/byte_buffer'
 import { NotEnoughBytesError, ProtocolViolationError, TerminationError } from '@/model/error/error'
 import { TerminationCode } from '@/model/error/constant'
 import { StreamResetCode } from '@/model/error/stream_reset'
-import { asStreamResetError, isSessionClosed, streamResetReason } from './util/stream_reset'
+import { asStreamResetError, isSessionClosed, streamResetReason } from '@/client/util/stream_reset'
+import { errorMessage } from '@/util/error'
 import { logger } from '@/util/logger'
 import type { Emitter } from '@/util/emitter'
 import type { ClientEvents } from './types'
@@ -112,7 +113,7 @@ export class RequestStream {
       this.#events?.emit('messagesent', message)
     } catch (error: any) {
       await this.close()
-      const msg = error instanceof Error ? error.message : String(error)
+      const msg = errorMessage(error)
       logger.error('request_stream', `send failed: ${msg}`)
       throw new TerminationError(`RequestStream.send: Failed to write message: ${msg}`, TerminationCode.INTERNAL_ERROR)
     }

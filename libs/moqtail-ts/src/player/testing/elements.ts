@@ -25,8 +25,9 @@ import { Chain, type ChainHost } from '@/player/element/chain'
 import type { ElementContext } from '@/player/element/context'
 import { CapabilityCode, defineElement, type Capabilities, type Identifiers } from '@/player/element/define'
 import { MEDIA_SINK, MEDIA_SOURCE, type CatalogTrack, type MediaSinkElement } from '@/player/element/interfaces'
-import type { Pad, PadEvent, PadItem, PadOutput } from '@/player/element/pad'
+import type { Pad, PadItem, PadOutput, PadSignal } from '@/player/element/pad'
 import type { PlayerEvents } from '@/player/player'
+import { timeRanges } from './media'
 
 export const VIDEO_CMAF: Capabilities = [
   { direction: 'out', code: CapabilityCode.ROLE, value: 'video' },
@@ -81,16 +82,15 @@ export function testSource(
   })
 }
 
-type Logged = PadItem | { type: 'event'; event: PadEvent }
-
-/** Records every item and event per sink pad, and emits `ready` on `nomorepads`. */
+/** Records every item and event per sink pad, every signal, and emits `ready` on `nomorepads`. */
 export class CollectingSink extends SinkElement {
-  readonly log = new Map<Pad, Logged[]>()
+  readonly log = new Map<Pad, PadOutput[]>()
+  readonly signals: PadSignal[] = []
   /** Replace to reject connections or delay `receive()`. */
   accept = (pad: Pad) => this.matchesCapabilities(pad)
   slow: ((pad: Pad) => Promise<void>) | undefined
-  /** What the pad's event listener returns. */
-  consumeEvents = true
+  /** What the pad's signal listener returns. */
+  consumeSignals = true
 
   constructor(context: ElementContext) {
     super(context)
@@ -99,7 +99,11 @@ export class CollectingSink extends SinkElement {
       this.log.set(pad, [])
       pad.onEvent((event) => {
         this.log.get(pad)?.push({ type: 'event', event })
-        return this.consumeEvents
+        return true
+      })
+      pad.onSignal((signal) => {
+        this.signals.push(signal)
+        return this.consumeSignals
       })
     })
   }
@@ -114,20 +118,18 @@ export class CollectingSink extends SinkElement {
   }
 
   /** Everything logged on the only (or given) sink pad. */
-  items(pad = this.pads[0]): Logged[] {
+  items(pad = this.pads[0]): PadOutput[] {
     return (pad && this.log.get(pad)) ?? []
   }
 }
 
 /** A sink definition accepting CMAF; `media` makes it a media sink for `NO_MEDIA_SINK` checks. */
-export function collectingSink(
-  options: { name?: string; media?: boolean; setup?: (sink: CollectingSink) => void } = {},
-) {
+export function collectingSink(options: { media?: boolean; setup?: (sink: CollectingSink) => void } = {}) {
   return defineElement({
     type: 'sink',
-    name: options.name ?? 'collecting-sink',
+    name: 'collecting-sink',
     capabilities: ACCEPT_CMAF,
-    // Pretends to be a media sink: only the runtime's NO_MEDIA_SINK check reads `provides` here.
+    // Pretends to be a media sink: only the runtime's NO_MEDIA_SINK check reads `provides` here
     ...(options.media && { provides: [MEDIA_SINK] as unknown as [] }),
     async init(context) {
       const sink = new CollectingSink(context)
@@ -146,8 +148,6 @@ export class FakeMediaSink extends CollectingSink implements MediaSinkElement {
   seeking = false
   ended = false
   playbackRate = 1
-  /** `[start, end]` pairs in seconds. */
-  ranges: [number, number][] = []
   /** Replace to make `play()` reject, e.g. with a `NotAllowedError`. */
   playResult: () => Promise<void> = () => Promise.resolve()
   readonly addEventListener = this.#target.addEventListener.bind(this.#target)
@@ -155,8 +155,7 @@ export class FakeMediaSink extends CollectingSink implements MediaSinkElement {
   readonly dispatchEvent = this.#target.dispatchEvent.bind(this.#target)
 
   get buffered(): TimeRanges {
-    const ranges = this.ranges
-    return { length: ranges.length, start: (i) => ranges[i]![0], end: (i) => ranges[i]![1] }
+    return timeRanges([])
   }
 
   dispatch(type: string): void {
@@ -189,10 +188,9 @@ export const fakeMediaSink = defineElement({
   init: async (context) => new FakeMediaSink(context),
 })
 
-/** Pass-through: one source pad per sink pad. `hook` sees each item before it's forwarded. */
+/** Pass-through: one source pad per sink pad. */
 export class TestTransform extends TransformElement {
   readonly #outputs = new Map<Pad, Pad>()
-  hook: ((pad: Pad, item: PadItem) => void | Promise<void>) | undefined
 
   constructor(context: ElementContext) {
     super(context)
@@ -206,8 +204,7 @@ export class TestTransform extends TransformElement {
   }
 
   async receive(pad: Pad, item: PadItem): Promise<void> {
-    await this.hook?.(pad, item)
-    await this.#outputs.get(pad)?.write(item as PadOutput)
+    await this.#outputs.get(pad)?.write(item)
   }
 }
 
@@ -243,6 +240,11 @@ export function testChain(definitions: ChainHost['definitions'] = () => [], clie
 
 /** Lets queued microtasks and connection loops run. */
 export const flush = () => new Promise<void>((resolve) => setTimeout(resolve))
+
+/** A few `flush()`es: enough for a track reader to decompress and apply what was pushed. */
+export async function settle(): Promise<void> {
+  for (let i = 0; i < 5; i++) await flush()
+}
 
 /** A packet whose object is only a marker; the runtime never looks inside. */
 export const packet = (n: number): PadItem => ({ type: 'packet', object: { n } as unknown as MoqtObject })

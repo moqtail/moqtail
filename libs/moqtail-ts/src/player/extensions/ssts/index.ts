@@ -20,23 +20,12 @@
  * `SstsSource` for each media switching set when the peer accepted it.
  */
 
-import type { Setup } from '@/model/control/setup'
 import { SetupOptions } from '@/model/parameter/setup_option'
-import { SstsAlgorithms } from '@/model/parameter/setup/ssts_algorithms'
 import { defineExtension } from '@/player/extension'
+import { SSTS_ALGORITHMS, sstsAlgorithms } from './algorithms'
 import { Ssts } from './source'
 
-/** The algorithms offered at setup: 0 (the draft's default) and demo-abr's 0xff01. */
-export const SSTS_ALGORITHMS: readonly bigint[] = [0n, 0xff01n]
-
-/**
- * The negotiated algorithms: ours that the peer's SETUP lists, in our order. Empty when it
- * lists none or omits the option, which prohibits SSTS (SSTS 3).
- */
-export function sstsAlgorithms(serverSetup: Setup): bigint[] {
-  const offered = serverSetup.setupOptions.map((pair) => SstsAlgorithms.fromKeyValuePair(pair)).find((o) => o)
-  return SSTS_ALGORITHMS.filter((a) => offered?.algorithms.includes(a))
-}
+export { SstsSource } from './source'
 
 /** @public The SSTS extension, for `opts.extensions`. */
 export const SSTS = defineExtension({
@@ -45,8 +34,6 @@ export const SSTS = defineExtension({
   switchingSetSource: Ssts,
   negotiated: (serverSetup) => sstsAlgorithms(serverSetup).length > 0,
 })
-
-export { SstsSource } from './source'
 
 if (import.meta.vitest) {
   const { test, expect } = import.meta.vitest

@@ -14,240 +14,73 @@
  * limitations under the License.
  */
 
-/** `CmafSource`: one CMAF switching set on one source pad, and its renditions. */
+/** `CmafSource`: a switching set source for CMAF tracks (CMSF). */
 
-import { SourceElement } from '@/player/element/base'
-import type { ElementContext } from '@/player/element/context'
-import type { CatalogTrack, MediaSourceElement, MediaSourceOptions, Rendition } from '@/player/element/interfaces'
-import type { Pad } from '@/player/element/pad'
-import { PlayerError } from '@/player/error'
-import { bitrateOf, rendition, renditionId, trackKey } from '@/player/util/track'
-import { Delivery } from './delivery'
-import type { Span } from './ranges'
-import { closestBitrate, Recovery } from './recovery'
-import { ladderOf, Switcher } from './switch'
-import { cmafCapabilities } from './track'
+import type { MoqtObject } from '@/model/data/object'
+import type { TrackProperty } from '@/model/property/track_property'
+import type { Capabilities } from '@/player/element/define'
+import type { CatalogTrack } from '@/player/element/interfaces'
+import { SwitchingSetSource } from '@/player/element/source/switching_set'
+import { fragmentTime, mediaTimescale } from './bmff'
+import { acceptedInitData, objectInitData } from './init_data'
+import { cmafCapabilities, mimeTypeOf } from './track'
 
-/** What `Cmaf.init` worked out before the source starts: the URL ranges and their duration. */
-export interface SourcePlan {
-  spans: readonly Span[]
-  /** The end of the last range in seconds, when known. */
-  duration?: number
-}
-
-/**
- * Plays a CMAF switching set (`context.tracks`, at least one track) from its first track:
- * live with SUBSCRIBE from the next group, VOD with FETCH from the start, or the URL ranges.
- * In a fast switching set each GoP ladder is one rendition, named after its longest GoP:
- * `keyframeSpacing` stays internal (draft-ugur-moq-fast-switching).
- */
-export class CmafSource extends SourceElement implements MediaSourceElement {
-  readonly pad: Pad
-  #tracks: readonly CatalogTrack[]
-  /** Rendition ids ABR may choose from. */
-  #selected: Set<string>
-  readonly #delivery: Delivery
-  readonly #recovery: Recovery
-  readonly #switcher: Switcher
-  /** The track key of the rendition last announced. */
-  #shown: string
-
-  constructor(
-    context: ElementContext,
-    readonly options: MediaSourceOptions,
-    plan: SourcePlan = { spans: [] },
-  ) {
-    super(context)
-    const start = context.tracks[0]!
-    this.#tracks = context.tracks
-    this.#selected = new Set(context.tracks.map((t) => this.#id(t)))
-    this.pad = this.createPad('src', cmafCapabilities('out', start.role ?? 'video'))
-    this.#delivery = new Delivery(this.pad, context, options.requests)
-    this.#delivery.duration = plan.duration
-    this.#recovery = new Recovery(
-      context,
-      this.#delivery,
-      {
-        tracks: () => this.#tracks,
-        candidates: () => this.#tracks.filter((t) => this.#isSelected(t)),
-        giveUp: () => this.removePad(this.pad, true),
-      },
-      start,
-      plan,
-    )
-    this.#switcher = new Switcher({
-      context,
-      options,
-      delivery: this.#delivery,
-      recovery: this.#recovery,
-      tracks: () => this.#tracks,
-    })
-    this.#shown = trackKey(this.#head(start))
-    this.#delivery.onTrackStart = (track, changed) => this.#trackStarted(track, changed)
-    this.pad.onSignal((signal) => {
-      if (signal.type !== 'seek') return false
-      this.#recovery.seek(signal.mediaTime)
-      return true
-    })
-    this.emit('nomorepads')
-    void this.#recovery.run()
+/** Init data from the catalog or the CMAF config properties (MSF 5.1.7), timing from the `moof`. */
+export class CmafSource extends SwitchingSetSource {
+  padCapabilities(role: string): Capabilities {
+    return cmafCapabilities('out', role)
   }
 
-  getRenditions(): Rendition[] {
-    return this.#tracks.filter((t) => this.#head(t) === t).map((track) => this.#rendition(track))
+  mimeType(track: CatalogTrack): string {
+    return mimeTypeOf(track)
   }
 
-  /** Switches at the next switch point; resolves once the new track's first packet is written. */
-  async switch(renditionId: string): Promise<void> {
-    const track = this.#tracks.find((t) => this.#id(t) === renditionId)
-    if (!track) throw new PlayerError('UNSUPPORTED_SOURCE', `Unknown rendition ${renditionId}`, { element: 'cmaf' })
-    const active = this.#recovery.active
-    // Within the active rendition's ladder the climb already moves to its longest GoP
-    const sameLadder = this.#head(track) === this.#head(active) && this.#tracks.includes(active)
-    if (track !== active && sameLadder) return
-    return this.#switcher.switch(track)
+  acceptedInitData(track: CatalogTrack, trackProperties: TrackProperty[]): Uint8Array | undefined {
+    return acceptedInitData(track, trackProperties)
   }
 
-  /**
-   * Sets which renditions ABR may choose from. A deselected active rendition switches to the
-   * closest selected bitrate; an empty selection stops requesting until a later one.
-   */
-  async selectRenditions(renditionIds: string[]): Promise<void> {
-    this.#selected = new Set(renditionIds)
-    const selected = this.#tracks.filter((t) => this.#isSelected(t))
-    if (selected.length === 0) {
-      this.#recovery.pause()
-      return
-    }
-    this.#recovery.resume()
-    const active = this.#recovery.active
-    if (!this.#isSelected(active)) await this.switch(this.#id(closestBitrate(selected, bitrateOf(active))!))
+  objectInitData(track: CatalogTrack, object: MoqtObject): Uint8Array | undefined {
+    return objectInitData(track, object.properties)
   }
 
-  /**
-   * Replaces the switching set. New renditions start selected, unless exactly one is selected.
-   * A removed active track switches to the closest selected bitrate; an empty set removes the pad.
-   */
-  setTracks(tracks: readonly CatalogTrack[]): void {
-    const known = new Set(this.#tracks.map((t) => this.#id(t)))
-    const keepSelection = this.#selected.size === 1
-    if (!keepSelection) {
-      for (const track of tracks) if (!known.has(this.#id(track))) this.#selected.add(this.#id(track))
-    }
-    this.#tracks = tracks
-    if (tracks.length === 0) {
-      this.#recovery.pause()
-      if (this.pads.includes(this.pad)) this.removePad(this.pad)
-      return
-    }
-    const key = trackKey(this.#recovery.active)
-    // The same track may come back with changes made in place, such as isLive turning false
-    const active = tracks.find((t) => trackKey(t) === key)
-    if (active) {
-      this.#recovery.active = active
-      return
-    }
-    const selected = tracks.filter((t) => this.#isSelected(t))
-    const next = closestBitrate(selected.length > 0 ? selected : tracks, bitrateOf(this.#recovery.active))!
-    void this.switch(this.#id(next)).catch(() => {})
+  initOnObjects(track: CatalogTrack): boolean {
+    return track.init?.type === 'object-property'
   }
 
-  #trackStarted(track: CatalogTrack, changed: boolean): void {
-    // Only another track replaces it: handovers and seeks compare the active track by identity
-    if (trackKey(track) !== trackKey(this.#recovery.active)) this.#recovery.active = track
-    this.#recovery.dropHandover(track)
-    this.#switcher.started(track)
-    const head = this.#head(track)
-    const shown = trackKey(head)
-    // A climb up the ladder is no change of rendition
-    if (changed && shown !== this.#shown) this.context.player.emit('renditionchange', this, this.#rendition(head))
-    this.#shown = shown
-    this.#switcher.upgrade()
-  }
-
-  /** The track `track`'s rendition stands for: the longest GoP of its ladder, which switches climb to. */
-  #head(track: CatalogTrack): CatalogTrack {
-    return ladderOf(track, this.#tracks).reduce(
-      (a, b) => ((b.keyframeSpacing ?? 0) > (a.keyframeSpacing ?? 0) ? b : a),
-      track,
-    )
-  }
-
-  #isSelected(track: CatalogTrack): boolean {
-    return this.#selected.has(this.#id(this.#head(track)))
-  }
-
-  /** `track` is the head of its ladder. */
-  #rendition(track: CatalogTrack): Rendition {
-    return rendition(track, this.context.catalog, {
-      active: trackKey(track) === trackKey(this.#head(this.#recovery.active)),
-      selected: this.#selected.has(this.#id(track)),
-    })
-  }
-
-  #id(track: CatalogTrack): string {
-    return renditionId(track, this.context.catalog)
+  mediaTime(track: CatalogTrack, object: MoqtObject, initData: Uint8Array | undefined): number | undefined {
+    if (!object.payload) return undefined
+    return fragmentTime(object.payload, track.timescale ?? (initData && mediaTimescale(initData)))
   }
 }
 
 if (import.meta.vitest) {
   const { test, expect } = import.meta.vitest
-  const { cmafChain, cmafTrack, fakeCatalog } = await import('@/player/testing/cmaf')
-  const { flush, track } = await import('@/player/testing/elements')
+  const { cmafChain, cmafTrack, requested } = await import('@/player/testing/cmaf')
+  const { mediaObject } = await import('@/player/testing/client')
+  const { flush } = await import('@/player/testing/elements')
+  const { UnknownTrackProperty } = await import('@/model/property/track_property')
+  const { VideoConfig } = await import('@/model/property/video_config')
+  const init = (byte: number) => new VideoConfig(new Uint8Array([byte]))
 
-  test('renditions: id, src, bitrate, and active and selected state, kept on setTracks', async () => {
-    const other = {
-      ...cmafTrack('v2', { bitrate: 2000, avgBitrate: 1800, width: 1280, framerate: 30 }),
-      namespace: track('x', 'live').namespace,
-    }
-    const c = await cmafChain([cmafTrack('v1', { bitrate: 800 }), other], { catalog: fakeCatalog() })
+  test('init data from a track property, and a promised one that is missing fails the rendition', async () => {
+    const property = { type: 'track-property' as const, property: VideoConfig.TYPE }
+    const trackProperties = [new UnknownTrackProperty(init(5).toKeyValuePair())]
+    const c = await cmafChain([cmafTrack('v1', { init: property }), cmafTrack('v2', { init: property })], {
+      respond: (_, options) => (requested(options) === 'v2' ? { trackProperties } : {}),
+    })
     await flush()
-    expect(c.source.getRenditions()).toEqual([
-      {
-        id: 'v1',
-        src: 'moqt://relay.test/app#msf:ns--v1',
-        bitrate: 800,
-        codec: 'avc1.64001f',
-        active: true,
-        selected: true,
-      },
-      {
-        id: 'live--v2',
-        src: 'moqt://relay.test/app#msf:live--v2',
-        bitrate: 1800,
-        codec: 'avc1.64001f',
-        width: 1280,
-        frameRate: 30,
-        active: false,
-        selected: true,
-      },
-    ])
-    await c.source.selectRenditions(['v1'])
-    c.source.setTracks([cmafTrack('v1', { bitrate: 900 }), cmafTrack('v3')])
-    expect(c.source.getRenditions().map((r) => [r.id, r.bitrate, r.active, r.selected])).toEqual([
-      ['v1', 900, true, true],
-      // Exactly one rendition was selected: a new one doesn't join the selection
-      ['v3', 0, false, false],
-    ])
+    // v1 had nothing, so the set moved on to v2 and unsubscribed v1
+    expect(c.client.sent('unsubscribe')).toEqual([0n])
+    expect(c.sink.items()).toMatchObject([{ properties: { track: 'v2', initData: new Uint8Array([5]) } }])
   })
 
-  test('a fast switching set has one rendition per quality, named after its longest GoP', async () => {
-    const track = (name: string, height: number, keyframeSpacing: number) =>
-      cmafTrack(name, { height, keyframeSpacing })
-    const c = await cmafChain([
-      track('a15', 540, 15),
-      track('a60', 540, 60),
-      track('b15', 1080, 15),
-      track('b60', 1080, 60),
-    ])
+  test('object-property init data: packets before it are dropped, a change writes properties again', async () => {
+    const c = await cmafChain([cmafTrack('v1', { init: { type: 'object-property', property: VideoConfig.TYPE } })])
     await flush()
-    expect(c.source.getRenditions().map((r) => [r.id, r.height, r.active])).toEqual([
-      ['a60', 540, true],
-      ['b60', 1080, false],
-    ])
-    void c.source.selectRenditions(['b60'])
+    const [a, b] = [init(1).toKeyValuePair(), init(2).toKeyValuePair()]
+    c.client.last.push(mediaObject(1, 0), mediaObject(1, 1, [a]), mediaObject(1, 2, [a]), mediaObject(2, 0, [b]))
     await flush()
-    // The active rendition was deselected: into the other ladder, at its earliest switch point
-    expect(c.requests().at(-2)).toMatch(/^subscribe b15 /)
+    expect(c.trace()).toEqual(['props live,mimeType,track', 'props initData', '1.1', '1.2', 'props initData', '2.0'])
+    expect(c.sink.items()[4]).toMatchObject({ properties: { initData: new Uint8Array([2]) } })
   })
 }

@@ -80,6 +80,8 @@ export interface SwitchHost {
   readonly recovery: Recovery
   /** The switching set. */
   tracks(): readonly CatalogTrack[]
+  /** The source's element name, for errors. */
+  element(): string
 }
 
 interface Waiter {
@@ -107,7 +109,7 @@ export class Switcher {
   constructor(host: SwitchHost) {
     this.#host = host
     host.context.signal.addEventListener('abort', () => {
-      for (const waiter of this.#waiters) waiter.reject(aborted('The source was destroyed'))
+      for (const waiter of this.#waiters) waiter.reject(aborted('The source was destroyed', host.element()))
     })
   }
 
@@ -154,7 +156,7 @@ export class Switcher {
     this.#lock = done.promise
     try {
       await previous
-      if (token !== this.#latest) throw aborted('A later switch superseded this one')
+      if (token !== this.#latest) throw aborted('A later switch superseded this one', this.#host.element())
       await run()
     } finally {
       done.resolve()
@@ -232,7 +234,9 @@ export class Switcher {
         waiter.resolve()
       } else if (waiter.from !== key || handoverKey !== waiter.track) {
         // The old track may play on only until the handover; anything else means the target failed
-        waiter.reject(new PlayerError('UNSUPPORTED_SOURCE', 'The switch target failed', { element: 'cmaf' }))
+        waiter.reject(
+          new PlayerError('UNSUPPORTED_SOURCE', 'The switch target failed', { element: this.#host.element() }),
+        )
       }
     }
   }
@@ -306,7 +310,10 @@ export class Switcher {
     if (this.#warned || !misaligned(set)) return
     this.#warned = true
     const message = 'keyframeSpacing values are not multiples of the smallest: switching at the next group'
-    this.#host.context.player.emit('warning', new PlayerError('INVALID_CATALOG_UPDATE', message, { element: 'cmaf' }))
+    this.#host.context.player.emit(
+      'warning',
+      new PlayerError('INVALID_CATALOG_UPDATE', message, { element: this.#host.element() }),
+    )
   }
 
   /**
@@ -355,12 +362,14 @@ export class Switcher {
   #rejected(track: CatalogTrack, from: CatalogTrack): never {
     this.#host.recovery.dropHandover(track)
     this.#host.delivery.stopAfter(this.#host.recovery.rangeEnd(from))
-    throw new PlayerError('UNSUPPORTED_SOURCE', `The switch to ${track.name} was rejected`, { element: 'cmaf' })
+    throw new PlayerError('UNSUPPORTED_SOURCE', `The switch to ${track.name} was rejected`, {
+      element: this.#host.element(),
+    })
   }
 }
 
-function aborted(message: string): PlayerError {
-  return new PlayerError('ABORTED', message, { element: 'cmaf' })
+function aborted(message: string, element: string): PlayerError {
+  return new PlayerError('ABORTED', message, { element })
 }
 
 if (import.meta.vitest) {

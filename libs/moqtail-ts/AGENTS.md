@@ -30,15 +30,16 @@ Write plain, explicit code with the smallest structure that keeps each step easy
 
 Grep before writing one. A helper moves to a shared home only when two modules need it.
 
-| Home                      | Holds                                                             |
-| ------------------------- | ----------------------------------------------------------------- |
-| `@/util`                  | client + player (`Emitter`, `errorMessage`)                       |
-| `@/client/util`           | `withTimeout`, `isSessionClosed`                                  |
-| `@/player/util/async`     | `backoffDelay`, `sleep`, `within`, `handledResolvers`             |
-| `@/player/util/track`     | `trackKey`, `renditionId`, `rendition`, `bitrateOf`               |
-| `@/player/util/json`      | `canonicalJson`, `deepEqual`, `parseJsonArray`                    |
-| `@/player/element/define` | `definitionOf` (unset during `init`), `checkName`, `hasInterface` |
-| `@/player/constants`      | player defaults, subscriber priorities                            |
+| Home                      | Holds                                                                                                   |
+| ------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `@/util`                  | client + player (`Emitter`, `errorMessage`)                                                             |
+| `@/client/util`           | `withTimeout`, `isSessionClosed`                                                                        |
+| `@/player/util/async`     | `backoffDelay`, `sleep`, `within`, `handledResolvers`                                                   |
+| `@/player/util/track`     | `trackKey`, `renditionId`, `rendition`, `bitrateOf`                                                     |
+| `@/player/util/json`      | `canonicalJson`, `deepEqual`, `parseJsonArray`                                                          |
+| `@/player/element/source` | switching set base: `SwitchingSetSource`, `Packaging`, `planSource`, `Delivery`, `Recovery`, `Switcher` |
+| `@/player/element/define` | `definitionOf` (unset during `init`), `checkName`, `hasInterface`                                       |
+| `@/player/constants`      | player defaults, subscriber priorities                                                                  |
 
 ## Errors and async
 

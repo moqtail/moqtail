@@ -34,11 +34,9 @@ import type { Pad, PadProperties } from '@/player/element/pad'
 import { DEFAULT_MEDIA_ORDERING, MEDIA_PRIORITY } from '@/player/constants'
 import { trackIdentifier } from '@/player/msf_url'
 import { renditionId, trackKey } from '@/player/util/track'
-import { fragmentTime, mediaTimescale } from './bmff'
-import { acceptedInitData, objectInitData } from './init_data'
 import { beyond, reached, type End } from './ranges'
 import { GroupTimes } from './seek'
-import { mimeTypeOf } from './track'
+import type { Packaging } from './switching_set'
 
 /** The abort reason of an attempt that a new request replaces: it's ended once that one is answered. */
 export const REPLACED = Symbol('replaced')
@@ -151,11 +149,13 @@ export class Delivery {
   readonly pad: Pad
   readonly #context: ElementContext
   readonly #hooks: RequestHooks | undefined
+  readonly #packaging: Packaging
 
-  constructor(pad: Pad, context: ElementContext, hooks: RequestHooks | undefined) {
+  constructor(pad: Pad, context: ElementContext, hooks: RequestHooks | undefined, packaging: Packaging) {
     this.pad = pad
     this.#context = context
     this.#hooks = hooks
+    this.#packaging = packaging
     context.signal.addEventListener('abort', () => {
       this.#retire()
       this.#listening?.off('orderinggap', this.#gapped)
@@ -196,7 +196,7 @@ export class Delivery {
     }
     if (accepted === undefined) return 'stopped'
     if (accepted instanceof RequestError) return 'rejected'
-    const initData = initDataOf(track, trackPropertiesOf(accepted))
+    const initData = this.#initDataOf(track, trackPropertiesOf(accepted))
     if (initData === false) {
       void cancel(client, accepted)
       return 'rejected'
@@ -310,7 +310,7 @@ export class Delivery {
     const latency = track.targetLatency ?? track.buffers?.target
     return {
       track: renditionId(track, this.#context.catalog),
-      mimeType: mimeTypeOf(track),
+      mimeType: this.#packaging.mimeType(track),
       live: track.isLive,
       ...(duration !== undefined && { duration }),
       ...(latency !== undefined && { targetLatency: latency / 1000 }),
@@ -423,7 +423,7 @@ export class Delivery {
     this.#soft = undefined
     const accepted = await soft.accepted
     if (accepted instanceof RequestError) return undefined
-    const initData = initDataOf(soft.track, accepted.subscribeOk.trackProperties)
+    const initData = this.#initDataOf(soft.track, accepted.subscribeOk.trackProperties)
     if (initData === false) return undefined
     // Before the write: a switch issued meanwhile must see the new request as the current one
     if (this.#current) this.#current.accepted = accepted
@@ -455,9 +455,9 @@ export class Delivery {
 
   async #write(track: CatalogTrack, object: MoqtObject): Promise<void> {
     const key = trackKey(track)
-    const initData = objectInitData(track, object.properties)
-    // Packets of an object-property track can't be decoded before its first init data
-    if (!initData && track.init?.type === 'object-property' && this.#initFor !== key) return
+    const initData = this.#packaging.objectInitData(track, object)
+    // Packets of a track with init data on its objects can't be decoded before the first one
+    if (!initData && this.#packaging.initOnObjects(track) && this.#initFor !== key) return
     if (this.seeks > 0) {
       this.gap = false
       await this.#answerSeeks('ok')
@@ -497,9 +497,7 @@ export class Delivery {
 
   /** The media time of a group's first delivered object. */
   #recordTime(track: CatalogTrack, object: MoqtObject): void {
-    const init = this.#properties?.initData
-    const timescale = track.timescale ?? (init && mediaTimescale(init))
-    const time = object.payload ? fragmentTime(object.payload, timescale) : undefined
+    const time = this.#packaging.mediaTime(track, object, this.#properties?.initData)
     if (time !== undefined) this.times.record(trackKey(track), object.location.group, time)
   }
 
@@ -526,19 +524,19 @@ export class Delivery {
     }
   }
 
+  /** The init data a request of `track` was accepted with, or `false` when it's invalid. */
+  #initDataOf(track: CatalogTrack, trackProperties: TrackProperties): Uint8Array | undefined | false {
+    try {
+      return this.#packaging.acceptedInitData(track, trackProperties)
+    } catch {
+      return false
+    }
+  }
+
   #retire(): void {
     const retiring = this.#retiring
     this.#retiring = undefined
     if (retiring) void cancel(retiring.client, retiring.accepted)
-  }
-}
-
-/** The init data a request of `track` was accepted with, or `false` when it's invalid. */
-function initDataOf(track: CatalogTrack, trackProperties: TrackProperties): Uint8Array | undefined | false {
-  try {
-    return acceptedInitData(track, trackProperties)
-  } catch {
-    return false
   }
 }
 
@@ -581,13 +579,10 @@ export async function cancel(client: MOQtailClient, result: RequestError | Accep
 
 if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
-  const { cmafChain, cmafTrack, endOfTrack, fakeCatalog, requested, timedObject, twoSecondTimeline } =
+  const { cmafChain, cmafTrack, endOfTrack, fakeCatalog, timedObject, twoSecondTimeline } =
     await import('@/player/testing/cmaf')
   const { mediaObject } = await import('@/player/testing/client')
   const { flush } = await import('@/player/testing/elements')
-  const { UnknownTrackProperty } = await import('@/model/property/track_property')
-  const { VideoConfig } = await import('@/model/property/video_config')
-  const init = (byte: number) => new VideoConfig(new Uint8Array([byte]))
 
   describe('Delivery', () => {
     test('live: SUBSCRIBE from the next group at priority 128, properties first, eos once on TRACK_ENDED', async () => {
@@ -668,28 +663,6 @@ if (import.meta.vitest) {
       await flush()
       expect(c.client.sent<SubscribeOptions>('subscribe')[0]!.priority).toBe(7)
       expect(heard).toEqual([['v1', 0n, 7]])
-    })
-
-    test('init data from a track property, and a promised one that is missing fails the rendition', async () => {
-      const property = { type: 'track-property' as const, property: VideoConfig.TYPE }
-      const trackProperties = [new UnknownTrackProperty(init(5).toKeyValuePair())]
-      const c = await cmafChain([cmafTrack('v1', { init: property }), cmafTrack('v2', { init: property })], {
-        respond: (_, options) => (requested(options) === 'v2' ? { trackProperties } : {}),
-      })
-      await flush()
-      // v1 had nothing, so the set moved on to v2 and unsubscribed v1
-      expect(c.client.sent('unsubscribe')).toEqual([0n])
-      expect(c.sink.items()).toMatchObject([{ properties: { track: 'v2', initData: new Uint8Array([5]) } }])
-    })
-
-    test('object-property init data: packets before it are dropped, a change writes properties again', async () => {
-      const c = await cmafChain([cmafTrack('v1', { init: { type: 'object-property', property: VideoConfig.TYPE } })])
-      await flush()
-      const [a, b] = [init(1).toKeyValuePair(), init(2).toKeyValuePair()]
-      c.client.last.push(mediaObject(1, 0), mediaObject(1, 1, [a]), mediaObject(1, 2, [a]), mediaObject(2, 0, [b]))
-      await flush()
-      expect(c.trace()).toEqual(['props live,mimeType,track', 'props initData', '1.1', '1.2', 'props initData', '2.0'])
-      expect(c.sink.items()[4]).toMatchObject({ properties: { initData: new Uint8Array([2]) } })
     })
 
     test('orderinggap: the rest of the group is dropped, late objects too, then a gap before the next group', async () => {

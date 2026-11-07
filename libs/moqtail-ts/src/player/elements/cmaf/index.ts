@@ -14,11 +14,9 @@
  * limitations under the License.
  */
 
-import { Location } from '@/model/common/location'
 import { defineElement, type Identifiers } from '@/player/element/define'
 import { MEDIA_SOURCE, type MediaSourceOptions } from '@/player/element/interfaces'
-import { PlayerError } from '@/player/error'
-import { toSpans } from './ranges'
+import { planSource } from '@/player/element/source/switching_set'
 import { CmafSource } from './source'
 import { cmafCapabilities } from './track'
 
@@ -32,17 +30,8 @@ export const Cmaf = defineElement({
   capabilities: [cmafCapabilities('out', 'video'), cmafCapabilities('out', 'audio')],
   provides: [MEDIA_SOURCE],
   probe: probeCmaf,
-  init: async (context, options?: MediaSourceOptions) => {
-    if (context.tracks.length === 0) {
-      throw new PlayerError('UNSUPPORTED_SOURCE', 'The CMAF source needs at least one track', { element: 'cmaf' })
-    }
-    const first = context.tracks[0]!
-    const timeline = await context.catalog?.timeline(first)
-    const spans = toSpans(options?.ranges, first, timeline)
-    const end = spans.at(-1)?.end
-    const endMs = end && timeline?.locationToTime(new Location(end.group + 1n, 0n))
-    return new CmafSource(context, options ?? {}, { spans, ...(endMs !== undefined && { duration: endMs / 1000 }) })
-  },
+  init: async (context, options?: MediaSourceOptions) =>
+    new CmafSource(context, options ?? {}, await planSource(context, options, 'cmaf')),
 })
 
 /**

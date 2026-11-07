@@ -15,7 +15,7 @@
  */
 
 /**
- * What keeps a CMAF source playing: retries
+ * What keeps a switching set source playing: retries
  * with backoff, falling back to another rendition, resuming after a reconnect, holding an `eos`
  * until the catalog confirms the end (MSF 11.4), seeks, switch handovers, and URL ranges.
  */

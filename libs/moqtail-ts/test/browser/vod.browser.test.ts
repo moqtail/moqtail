@@ -36,14 +36,17 @@ const covered = (outer: [number, number][], inner: [number, number][]) =>
   inner.every(([start, end]) => outer.some(([s, e]) => s <= start && end <= e))
 
 describe('vod', () => {
-  test('plays from the start to the end, every group once', async ({ open }) => {
-    const s = await open(ch07_vod.uri(), { playbackRate: 16 })
+  test('plays from the start to the end, every group once, with no buffer controller attached', async ({ open }) => {
+    let attached = 0
+    const buffer = { attach: () => void attached++, detach() {} }
+    const s = await open(ch07_vod.uri(), { playbackRate: 16, player: { buffer } })
     expect(s.firstGroup('video')).toBe(0n)
     await s.ended(60_000)
     expect(s.stateTrace()).toMatch(/^connecting > ready > playing( > stalled > playing)* > ended$/)
     const groups = s.groups('video')
     expect(groups).toEqual(span(0n, groups.at(-1)!))
     expect(s.video.currentTime).toBeCloseTo(s.video.duration, 0)
+    expect(attached).toBe(0)
   })
 
   test('a mid-point switch replaces the whole buffer from the playhead; a seek back fetches the start again', async ({

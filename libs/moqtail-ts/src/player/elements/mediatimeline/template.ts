@@ -52,6 +52,13 @@ export class TemplateTimeline implements TimelineReader {
     return n === undefined || n < 0 ? undefined : this.#mediaTime(n)
   }
 
+  timeToWallclock(mediaTimeMs: number): number | undefined {
+    const { startMediaTime, deltaMediaTime, startWallclock, deltaWallclock } = this.template
+    const n = index(mediaTimeMs, startMediaTime, deltaMediaTime)
+    if (startWallclock <= 0 || n === undefined) return undefined
+    return startWallclock + n * deltaWallclock + mediaTimeMs - this.#mediaTime(n)
+  }
+
   get range(): { start: number; end: number } | undefined {
     const { startWallclock, deltaWallclock } = this.template
     if (startWallclock <= 0) return undefined
@@ -102,13 +109,18 @@ if (import.meta.vitest) {
     expect(r.timeToLocation(-1)).toBeUndefined()
     expect(r.locationToTime(new Location(3n, 7n))).toBe(6006)
     expect(r.wallclockToLocation(1759924158381 + 2002 * 10 + 1)).toEqual(new Location(10n, 0n))
+    expect(r.timeToWallclock(4005)).toBe(1759924158381 + 4005)
     // Objects advancing within one group
     const objects = new TemplateTimeline({ ...example, deltaLocation: [0, 30], startWallclock: 0 })
     expect([objects.locationToTime(new Location(0n, 61n)), objects.timeToLocation(4004)]).toEqual([
       4004,
       new Location(0n, 60n),
     ])
-    expect([objects.wallclockToLocation(Date.now()), objects.range]).toEqual([undefined, undefined])
+    expect([objects.wallclockToLocation(Date.now()), objects.timeToWallclock(0), objects.range]).toEqual([
+      undefined,
+      undefined,
+      undefined,
+    ])
   })
 
   test('range: open at the live edge, the start inside the accessible window', () => {

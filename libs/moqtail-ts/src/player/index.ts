@@ -23,6 +23,7 @@ export type { CatalogElement } from '@/player/elements/catalog/element'
 export type { TimelineEvent, TimelineRecord } from '@/player/element/event_timeline'
 export { defineExtension, type ExtensionDefinition } from './extension'
 export { MSE } from '@/player/elements/mse'
+export { defaultBufferController, type BufferController } from '@/player/controllers/buffer'
 export { SSTS, SstsSource } from '@/player/extensions/ssts'
 export type { MSEOptions } from '@/player/elements/mse/sink'
 export {

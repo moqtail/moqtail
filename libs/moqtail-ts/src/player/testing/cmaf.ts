@@ -182,6 +182,7 @@ export function twoSecondTimeline(edgeMs?: number): TimelineReader {
     timeToLocation: (ms) => new Location(1 + Math.floor(ms / 2000), 0),
     locationToTime: (location) => Number(location.group - 1n) * 2000,
     wallclockToLocation: (ms) => new Location(1 + Math.floor(ms / 2000), 0),
+    timeToWallclock: () => undefined,
     range: edgeMs === undefined ? undefined : { start: 0, end: edgeMs },
   }
 }

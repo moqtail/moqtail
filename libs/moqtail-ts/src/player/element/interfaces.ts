@@ -108,6 +108,8 @@ export interface TimelineReader {
   timeToLocation(mediaTimeMs: number): Location | undefined
   locationToTime(location: Location): number | undefined
   wallclockToLocation(wallclockMs: number): Location | undefined
+  /** When that media time was produced (MSF 11.6). Undefined without wallclock values. */
+  timeToWallclock(mediaTimeMs: number): number | undefined
   /** Media time, after `accessibleWindowTime`. */
   readonly range: { start: number; end: number } | undefined
 }

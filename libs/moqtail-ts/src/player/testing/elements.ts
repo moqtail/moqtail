@@ -209,7 +209,7 @@ export class TestTransform extends TransformElement {
   }
 }
 
-const fakePlayer = () => Object.assign(new Emitter<PlayerEvents>(), { options: {} })
+const fakePlayer = () => Object.assign(new Emitter<PlayerEvents>(), { options: {}, bufferController: undefined })
 
 /** A context for elements built outside a chain (transforms given to `addTransform`). */
 export function detachedContext(): ElementContext {

@@ -147,6 +147,7 @@ if (import.meta.vitest) {
     timeToLocation: (ms) => at(1 + Math.floor(ms / 2000)),
     locationToTime: (l) => Number(l.group - 1n) * 2000,
     wallclockToLocation: (ms) => at(1 + Math.floor((ms - 1_000_000) / 2000)),
+    timeToWallclock: () => undefined,
     range: end === undefined ? undefined : { start: 0, end },
   })
 

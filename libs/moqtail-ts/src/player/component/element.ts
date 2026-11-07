@@ -22,6 +22,7 @@
 
 import { CustomVideoElement } from 'custom-media-element'
 import { MediaTracksMixin } from 'media-tracks'
+import { defaultBufferController } from '@/player/controllers/buffer'
 import { PlayerError, type PlayerErrorCategory } from '@/player/error'
 import { MOQtailPlayer, type MOQtailPlayerOptions, type StreamType } from '@/player/player'
 import { Renditions } from './renditions'
@@ -54,7 +55,7 @@ export class MOQtailVideoElement extends MediaTracksMixin(CustomVideoElement) {
     }
   }
 
-  /** Player options, read on each load. Changing it doesn't restart playback. */
+  /** Player options, read on each load; `buffer` defaults to `defaultBufferController()`. Changing it doesn't restart playback. */
   get config(): MOQtailPlayerOptions | undefined {
     return this.#config
   }
@@ -97,7 +98,8 @@ export class MOQtailVideoElement extends MediaTracksMixin(CustomVideoElement) {
     if (!src) return
     let player: MOQtailPlayer
     try {
-      player = new MOQtailPlayer(this.#config)
+      const config = { ...this.#config, buffer: this.#config?.buffer ?? defaultBufferController() }
+      player = new MOQtailPlayer(config)
         .source(src, { switchFrom: this.hasAttribute('switch-from') })
         .sink(this.nativeEl)
     } catch (error) {

@@ -21,6 +21,7 @@
 
 import type { MOQtailClientOptions, ObjectOrdering } from '@/client/types'
 import type { SetupOptions } from '@/model/parameter/setup_option'
+import type { BufferController } from '@/player/controllers/buffer'
 import type { SinkElement, SourceElement, TransformElement } from '@/player/element/base'
 import { Chain } from '@/player/element/chain'
 import {
@@ -70,6 +71,8 @@ export interface MOQtailPlayerOptions {
   maxCatalogBytes?: number
   /** How media sources order each request's objects. Default: a 150 ms window. */
   objectOrdering?: ObjectOrdering
+  /** Attached to the media sink while a ready stream is live. None by default. */
+  buffer?: BufferController
 }
 
 /** @public The media-ui-extensions stream type (proposal 0010). */
@@ -153,6 +156,9 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
   /** A session failure that arrived while `ended`; a seek that needs the session reports it. */
   #lostError: PlayerError | undefined
   #error: PlayerError | undefined
+  #streamType: StreamType = 'unknown'
+  #negotiated = false
+  #bufferAttached = false
   #initializing: Promise<void> | undefined
   #starting: Promise<void> | undefined
   #destroying: Promise<void> | undefined
@@ -182,6 +188,10 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
       },
       fail: (error) => this.#fail(error),
     })
+    this.on('streamtypechange', (type) => {
+      this.#streamType = type
+      this.#controlBuffer()
+    })
   }
 
   get state(): PlayerState {
@@ -203,6 +213,11 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
   /** The first sink in chain order that provides `MEDIA_SINK`. */
   get mediaSink(): (SinkElement & MediaSinkElement) | undefined {
     return this.#chain.sinks.find((s) => hasInterface(s, MEDIA_SINK))
+  }
+
+  /** `opts.buffer` while it's attached. */
+  get bufferController(): BufferController | undefined {
+    return this.#bufferAttached ? this.options.buffer : undefined
   }
 
   /** Registers an element on this player only. Call it before `source()`. */
@@ -320,6 +335,8 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
       if (this.#error) throw this.#error // failed while negotiating, e.g. the session couldn't be recovered
       this.#watchSink()
       this.#setState(outcome)
+      this.#negotiated = true
+      this.#controlBuffer()
     } catch (cause) {
       const error =
         cause instanceof PlayerError
@@ -332,6 +349,7 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
 
   async #destroy(): Promise<void> {
     this.#abort.abort(new PlayerError('ABORTED', 'The player was destroyed'))
+    this.#controlBuffer()
     const teardown = this.#chain.destroy()
     const released = release(this.#member, teardown)
     try {
@@ -380,6 +398,18 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
         { signal: this.#abort.signal },
       )
     }
+  }
+
+  /** Attaches `opts.buffer` once a negotiated stream is live, detaches it otherwise. */
+  #controlBuffer(): void {
+    const controller = this.options.buffer
+    const sink = this.mediaSink
+    if (!controller || !sink) return
+    const live = this.#negotiated && this.#streamType === 'live' && !this.#abort.signal.aborted
+    if (live === this.#bufferAttached) return
+    this.#bufferAttached = live
+    if (live) controller.attach(this, sink)
+    else controller.detach()
   }
 
   /** A state the media sink reports. Taken only where the table allows it; while reconnecting it's where we return to. */
@@ -583,6 +613,23 @@ if (import.meta.vitest) {
       await player.pause()
       expect(sink.calls).toEqual(['play', 'rate 1.5', 'pause'])
       await player.destroy()
+    })
+
+    test('opts.buffer is attached once a negotiated stream is live, and detached on-demand and on destroy()', async () => {
+      const calls: string[] = []
+      const buffer: BufferController = { attach: () => calls.push('attach'), detach: () => calls.push('detach') }
+      const player = make({ buffer })
+      const plain = make()
+      player.emit('streamtypechange', 'live')
+      plain.emit('streamtypechange', 'live')
+      expect(player.bufferController).toBeUndefined()
+      await Promise.all([player.init(), plain.init()])
+      expect([player.bufferController, plain.bufferController]).toEqual([buffer, undefined])
+      player.emit('streamtypechange', 'on-demand')
+      expect(player.bufferController).toBeUndefined()
+      player.emit('streamtypechange', 'live')
+      await Promise.all([player.destroy(), plain.destroy()])
+      expect(calls).toEqual(['attach', 'detach', 'attach', 'detach'])
     })
 
     test('two players share one client and its reconnects; a different setup is UNSUPPORTED_ORIGIN', async () => {

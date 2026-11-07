@@ -144,6 +144,11 @@ export class EntriesTimeline implements TimelineReader {
     return best?.mediaTime
   }
 
+  timeToWallclock(mediaTimeMs: number): number | undefined {
+    const entry = this.entries().findLast((e) => e.mediaTime <= mediaTimeMs)
+    return entry && entry.wallclock > 0 ? entry.wallclock + mediaTimeMs - entry.mediaTime : undefined
+  }
+
   get range(): { start: number; end: number } | undefined {
     const list = this.entries()
     const end = list.at(-1)
@@ -185,6 +190,7 @@ if (import.meta.vitest) {
       expect(r.timeToLocation(5000)).toEqual(new Location(2n, 0n))
       expect(r.timeToLocation(-1)).toBeUndefined()
       expect(r.wallclockToLocation(1759924160383)).toEqual(new Location(1n, 0n))
+      expect(r.timeToWallclock(2500)).toBe(1759924160383 + 498)
       expect(r.locationToTime(new Location(3n, 5n))).toBe(6006)
       expect(r.range).toEqual({ start: 0, end: 8008 })
     })

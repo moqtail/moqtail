@@ -85,7 +85,8 @@ describe('component', () => {
     el.src = ch07.uri()
     await next(el, 'playing')
     await streamType
-    expect([el.player?.options, el.streamType, el.duration]).toEqual([config, 'live', Infinity])
+    expect([el.player?.options.catalogTimeoutMs, el.streamType, el.duration]).toEqual([15_000, 'live', Infinity])
+    expect(el.player?.bufferController).toBe(el.player?.options.buffer) // the default, attached
 
     await until(() => !Number.isNaN(el.liveEdgeStart), 'liveEdgeStart')
     expect(el.seekable.length).toBe(1)

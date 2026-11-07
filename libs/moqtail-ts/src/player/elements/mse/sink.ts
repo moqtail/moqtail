@@ -234,7 +234,7 @@ export class MSESink extends SinkElement implements MediaSinkElement {
     try {
       const init = state.initData
       state.initData = undefined
-      const { backBuffer } = this.#options
+      const backBuffer = this.context.player.bufferController?.backBuffer?.() ?? this.#options.backBuffer
       if (init) await append(queue, init, now, state.keyframes, backBuffer)
       await append(queue, payload, now, state.keyframes, backBuffer)
       return true

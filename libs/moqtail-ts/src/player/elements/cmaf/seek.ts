@@ -111,6 +111,7 @@ if (import.meta.vitest) {
       timeToLocation: (ms) => new Location(1 + Math.floor(ms / 2000), 7),
       locationToTime: () => undefined,
       wallclockToLocation: () => undefined,
+      timeToWallclock: () => undefined,
       range: { start: 18_000, end: 30_000 },
     }
     const none = () => undefined

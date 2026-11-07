@@ -33,7 +33,7 @@ import type { CatalogReader, CatalogTrack } from './interfaces'
 import { selectSource } from './negotiation'
 
 /** @public What elements see of the player: its events and options. */
-export type PlayerHandle = Emitter<PlayerEvents> & Pick<MOQtailPlayer, 'options'>
+export type PlayerHandle = Emitter<PlayerEvents> & Pick<MOQtailPlayer, 'options' | 'bufferController'>
 
 /** @public Given to `init`, one per element instance. */
 export interface ElementContext {

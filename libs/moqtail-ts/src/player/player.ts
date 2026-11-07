@@ -19,6 +19,7 @@
  * client, follows the media sink's state, and forwards control calls to it.
  */
 
+import type { MOQtailClient } from '@/client/client'
 import type { MOQtailClientOptions, ObjectOrdering } from '@/client/types'
 import type { SetupOptions } from '@/model/parameter/setup_option'
 import type { BufferController } from '@/player/controllers/buffer'
@@ -91,10 +92,12 @@ export interface PlayerEvents {
   catalog: (catalog: CatalogElement) => void
   reconnecting: (attempt: number) => void
   reconnected: () => void
+  /** The client this player uses, once connected and again before each `reconnected`. */
+  client: (client: MOQtailClient) => void
   /** A record of an opted-in event timeline, on arrival (`opts.eventTimelines`). */
   timelineevent: (event: TimelineEvent) => void
   autoplayblocked: () => void
-  /** The first packet of a new track was written to the pad. */
+  /** A source switched to another rendition. Not emitted for the one it starts with: read `active` from `getRenditions()`. */
   renditionchange: (source: MediaSourceElement, rendition: Rendition) => void
   /** The catalog element's `streamType` changed. */
   streamtypechange: (type: StreamType) => void
@@ -139,6 +142,7 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
     },
     reconnected: () => {
       this.#sessionLost = false
+      this.#useClient(currentClient())
       if (this.#state === 'reconnecting') this.#setState(this.#resume)
       this.emit('reconnected')
     },
@@ -148,6 +152,7 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
     },
   }
   #state: PlayerState = 'idle'
+  #client: MOQtailClient | undefined
   /** Where `reconnecting` returns to; the media sink updates it meanwhile. */
   #resume: PlayerState = 'idle'
   #stage: Stage = 'source'
@@ -213,6 +218,11 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
   /** The first sink in chain order that provides `MEDIA_SINK`. */
   get mediaSink(): (SinkElement & MediaSinkElement) | undefined {
     return this.#chain.sinks.find((s) => hasInterface(s, MEDIA_SINK))
+  }
+
+  /** The shared client while this player holds it; a reconnect replaces it (see the `client` event). */
+  get client(): MOQtailClient | undefined {
+    return this.#client
   }
 
   /** `opts.buffer` while it's attached. */
@@ -329,8 +339,9 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
   async #init(origin: string): Promise<void> {
     this.#setState('connecting')
     try {
-      await acquire(this.#member, origin, this.#clientOptions)
+      const client = await acquire(this.#member, origin, this.#clientOptions)
       this.#abort.signal.throwIfAborted()
+      this.#useClient(client)
       const outcome = await this.#chain.init(this.#abort.signal)
       if (this.#error) throw this.#error // failed while negotiating, e.g. the session couldn't be recovered
       this.#watchSink()
@@ -349,6 +360,7 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
 
   async #destroy(): Promise<void> {
     this.#abort.abort(new PlayerError('ABORTED', 'The player was destroyed'))
+    this.#client = undefined
     this.#controlBuffer()
     const teardown = this.#chain.destroy()
     const released = release(this.#member, teardown)
@@ -410,6 +422,11 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
     this.#bufferAttached = live
     if (live) controller.attach(this, sink)
     else controller.detach()
+  }
+
+  #useClient(client: MOQtailClient): void {
+    this.#client = client
+    this.emit('client', client)
   }
 
   /** A state the media sink reports. Taken only where the table allows it; while reconnecting it's where we return to. */
@@ -647,10 +664,16 @@ if (import.meta.vitest) {
       ] as const) {
         player.on('reconnecting', (n) => events.push(`${name} reconnecting ${n}`))
         player.on('reconnected', () => events.push(`${name} reconnected`))
+        player.on('client', () => events.push(`${name} client`))
       }
+      expect(a.client).toBe(fakes.clients[0])
       fakes.clients[0]!.drop()
       await flush()
-      expect(events).toEqual(['a reconnecting 1', 'b reconnecting 1', 'a reconnected', 'b reconnected'])
+      expect(events).toEqual([
+        ...['a reconnecting 1', 'b reconnecting 1'],
+        ...['a client', 'a reconnected', 'b client', 'b reconnected'],
+      ])
+      expect(a.client).toBe(fakes.clients[1])
       await a.destroy()
       expect(fakes.clients[1]!.disconnected).toBe(false)
       await b.destroy()

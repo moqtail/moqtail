@@ -55,7 +55,9 @@ import {
 } from '@/model/data'
 import { FrozenByteBuffer } from '@/model/common/byte_buffer'
 import { TrackProperty } from '@/model/property/track_property'
+import type { Header } from '@/model/data/header'
 import { RecvStream } from './data_stream'
+import type { DataHeaderEvent } from './data_event'
 import {
   InternalError,
   Location,
@@ -741,6 +743,24 @@ export class MOQtailClient extends Emitter<ClientEvents> {
       }
       this.#isReceivingDatagrams = false
     }
+  }
+
+  /**
+   * The track a data stream carries. A subgroup stream can open before the response
+   * that names its alias, so its header event may lack `fullTrackName`: ask again on a
+   * later event of the same stream.
+   */
+  trackNameOf(header: DataHeaderEvent): FullTrackName | undefined {
+    if (header.fullTrackName || header.trackAlias === undefined) return header.fullTrackName
+    return this.aliasFullTrackNameMap.get(header.trackAlias)
+  }
+
+  /** A fetch stream is named by its FETCH, or by the SUBSCRIBE it fills. */
+  #streamTrackName(header: Header): FullTrackName | undefined {
+    if (header instanceof SubgroupHeader) return this.aliasFullTrackNameMap.get(header.trackAlias)
+    const request = this.requests.get(this.#clientRequestId(header.requestId))
+    if (request instanceof FetchRequest) return request.message.fullTrackName
+    return request instanceof SubscribeRequest ? request.fullTrackName : undefined
   }
 
   /**
@@ -2267,7 +2287,7 @@ export class MOQtailClient extends Emitter<ClientEvents> {
         if (!(request instanceof FetchRequest)) return GroupOrder.Original
         return MessageParameter.groupOrderOf(request.message.parameters)
       },
-      (header) => (header instanceof SubgroupHeader ? this.aliasFullTrackNameMap.get(header.trackAlias) : undefined),
+      (header) => this.#streamTrackName(header),
     )
     const header = recvStream.header
     const reader = recvStream.stream.getReader()
@@ -4088,6 +4108,10 @@ if (import.meta.vitest) {
         priority: 0,
       })
       const subscribeStream = await openedStream(transport, 0)
+      let header: DataHeaderEvent | undefined
+      client.on('dataevent', (event) => {
+        if (event.kind === 'header') header = event
+      })
 
       // The subgroup and the SUBSCRIBE_OK travel on separate streams, so the data can
       // land first. Dropping it would cost the whole subgroup.
@@ -4105,6 +4129,9 @@ if (import.meta.vitest) {
       expect(value?.payload).toEqual(payload)
       expect(value?.location.group).toBe(4n)
       expect(value?.fullTrackName.toString()).toBe(ftn.toString())
+      // Unnamed when the stream opened, named once the alias is
+      expect(header?.fullTrackName).toBeUndefined()
+      expect(client.trackNameOf(header!)?.toString()).toBe(ftn.toString())
       reader.releaseLock()
 
       await client.disconnect()

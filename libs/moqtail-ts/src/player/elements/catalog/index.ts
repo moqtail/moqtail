@@ -217,6 +217,10 @@ if (import.meta.vitest) {
         'v1,v2',
         5,
       ])
+      expect(c.catalog().json?.tracks.map((t) => [t.name, t.bitrate])).toEqual([
+        ['v1', undefined],
+        ['v2', 5],
+      ])
       expect(c.log.slice(3)).toEqual(['v1 ← v1,v2', 'v1 ← v1,v2'])
     })
 

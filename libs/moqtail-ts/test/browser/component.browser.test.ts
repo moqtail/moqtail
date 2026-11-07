@@ -78,14 +78,19 @@ describe('component', () => {
     expect(early.config).toBe(earlyConfig)
   })
 
-  test('live: autoplay, streamType, duration, seekable, liveEdgeStart, tracks, and renditions', async () => {
+  test('live: autoplay, streamType, duration, seekable, liveEdgeStart, targetLiveWindow, tracks, and renditions', async () => {
     const config = { catalogTimeoutMs: 15_000 }
     const el = create({ autoplay: '' }, config)
     const streamType = next(el, 'streamtypechange')
     el.src = ch07.uri()
     await next(el, 'playing')
     await streamType
-    expect([el.player?.options.catalogTimeoutMs, el.streamType, el.duration]).toEqual([15_000, 'live', Infinity])
+    expect([el.player?.options.catalogTimeoutMs, el.streamType, el.duration, el.targetLiveWindow]).toEqual([
+      15_000,
+      'live',
+      Infinity,
+      Infinity,
+    ])
     expect(el.player?.bufferController).toBe(el.player?.options.buffer) // the default, attached
 
     await until(() => !Number.isNaN(el.liveEdgeStart), 'liveEdgeStart')
@@ -185,13 +190,13 @@ describe('component', () => {
     expect([el.error, warnings]).toEqual([null, []])
   })
 
-  test('on-demand: streamType, finite duration, NaN liveEdgeStart, and ended', async () => {
+  test('on-demand: streamType, finite duration, NaN liveEdgeStart and targetLiveWindow, and ended', async () => {
     const el = create()
     el.src = ch07_vod.uri()
     await el.play()
     await until(() => el.streamType === 'on-demand', 'on-demand')
     expect(Number.isFinite(el.duration)).toBe(true)
-    expect(el.liveEdgeStart).toBeNaN()
+    expect([el.liveEdgeStart, el.targetLiveWindow]).toEqual([NaN, NaN])
     const ended = next(el, 'ended')
     el.currentTime = el.duration - 1
     await ended

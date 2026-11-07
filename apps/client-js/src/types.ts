@@ -14,10 +14,10 @@
  * limitations under the License.
  */
 
-import type { CMSF } from 'moqtail';
+import type { CatalogTrack, PlayerState } from 'moqtail/player';
 
-export type Track = CMSF['tracks'][number];
-export type Status = 'idle' | 'connecting' | 'ready' | 'restarting' | 'playing' | 'error';
+export type Track = CatalogTrack;
+export type Status = PlayerState;
 
 export interface PresetNamespace {
   name: string;

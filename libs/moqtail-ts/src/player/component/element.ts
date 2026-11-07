@@ -77,6 +77,15 @@ export class MOQtailVideoElement extends MediaTracksMixin(CustomVideoElement) {
     return this.#player?.mediaSink?.liveEdgeStart ?? NaN
   }
 
+  /**
+   * Proposal 0007: `Infinity` while live, since earlier groups stay seekable through FETCH; `NaN`
+   * otherwise. Players such as Video.js treat a media as live only when it has this and `liveEdgeStart`.
+   */
+  get targetLiveWindow(): number {
+    // shortcut: a sliding window (`accessibleWindowTime`) should be 0; read the catalog once a player needs it
+    return this.#streamType === 'live' ? Infinity : NaN
+  }
+
   override get error(): MediaError | null {
     return this.#error
   }

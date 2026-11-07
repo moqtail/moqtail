@@ -1,5 +1,5 @@
 /**
- * Copyright 2025 The MOQtail Authors
+ * Copyright 2026 The MOQtail Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,4 +14,15 @@
  * limitations under the License.
  */
 
-export * from './cmsf'
+import type { HTMLAttributes, VideoHTMLAttributes } from 'preact';
+import type { MOQtailVideoElement } from 'moqtail/player/component';
+
+declare module 'preact' {
+  namespace JSX {
+    interface IntrinsicElements {
+      'moqtail-player': HTMLAttributes<HTMLElement>;
+      'moqtail-skin': HTMLAttributes<HTMLElement>;
+      'moqtail-video': VideoHTMLAttributes<MOQtailVideoElement>;
+    }
+  }
+}

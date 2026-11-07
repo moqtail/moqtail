@@ -22,9 +22,11 @@ import {
   MoqtObject,
   LOCProperties,
   ObjectForwardingPreference,
+  PublishDoneStatusCode,
+  RequestError,
   Tuple,
-  type CMSF,
 } from 'moqtail';
+import type { CatalogJson } from 'moqtail/player';
 import { CMAFMuxer } from './cmaf-muxer';
 import { logger } from './logger';
 import type { SourceState, PublishStatus } from '../types';
@@ -60,6 +62,8 @@ const TEST_ENCODER_CONFIG: VideoEncoderConfig = {
 };
 
 const CATALOG_INTERVAL_MS = 1000;
+/** MSF 5.2.9: how far behind live the viewer should play. */
+const TARGET_LATENCY_MS = 1000;
 
 function toBase64(bytes: Uint8Array): string {
   let bin = '';
@@ -76,6 +80,8 @@ export interface PublisherConfig {
 
 interface TrackChannel {
   ftn: FullTrackName;
+  /** The PUBLISH request, ended with PUBLISH_DONE on stop. */
+  requestId: bigint;
   controller: ReadableStreamDefaultController<MoqtObject>;
   groupId: bigint;
   objectId: bigint;
@@ -100,7 +106,6 @@ export class Publisher {
   private videoProcessors: Array<{ processor: any; stop: () => void }> = [];
   private stopped = false;
 
-  private cmsf: CMSF = { version: 'draft-01', tracks: [] };
   private startTimestamp = 0;
 
   constructor(private config: PublisherConfig) {}
@@ -155,17 +160,6 @@ export class Publisher {
           'publisher',
           `video source: kind=${kind} resolution=${cfg.width}x${cfg.height} bitrate=${cfg.bitrate}`,
         );
-        this.cmsf.tracks.push({
-          name: kind,
-          role: 'video',
-          packaging: 'cmaf',
-          codec: cfg.codec,
-          width: cfg.width,
-          height: cfg.height,
-          bitrate: cfg.bitrate,
-          timescale: 90000,
-        });
-
         const channel = await this.setupTrack(namespace, kind);
         const muxer = this.createVideoMuxer(kind);
         const encoder = this.createVideoEncoder(kind, cfg, muxer);
@@ -186,8 +180,8 @@ export class Publisher {
         }
       }
 
-      this.publishCatalogOnce();
-      this.catalogIntervalId = setInterval(() => this.publishCatalogOnce(), CATALOG_INTERVAL_MS);
+      this.publishCatalog();
+      this.catalogIntervalId = setInterval(() => this.publishCatalog(), CATALOG_INTERVAL_MS);
       logger.info('publisher', 'catalog publish loop started');
 
       onStatus('publishing');
@@ -209,6 +203,8 @@ export class Publisher {
       clearInterval(this.catalogIntervalId);
       this.catalogIntervalId = null;
     }
+    // Tells viewers the broadcast is over
+    this.publishCatalog(true);
     if (this.testSourceIntervalId !== null) {
       clearInterval(this.testSourceIntervalId);
       this.testSourceIntervalId = null;
@@ -221,27 +217,32 @@ export class Publisher {
     for (const { stop } of this.videoProcessors) stop();
     this.videoProcessors = [];
 
-    for (const { encoder, channel } of this.videoTracks.values()) {
+    const channels = [...this.videoTracks.values()].map(state => state.channel);
+    if (this.catalogChannel) channels.push(this.catalogChannel);
+    for (const { encoder } of this.videoTracks.values()) {
       try {
         encoder.close();
       } catch {
         /* ignore */
       }
+    }
+    this.videoTracks.clear();
+    for (const channel of channels) {
       try {
         channel.controller.close();
       } catch {
         /* ignore */
       }
     }
-    this.videoTracks.clear();
-
-    try {
-      this.catalogChannel?.controller.close();
-    } catch {
-      /* ignore */
-    }
 
     if (this.client) {
+      for (const channel of channels) {
+        try {
+          await this.client.publishDone(channel.requestId, PublishDoneStatusCode.TrackEnded);
+        } catch {
+          /* ignore */
+        }
+      }
       try {
         await this.client.unpublishNamespace(Tuple.fromUtf8Path(this.config.namespace.join('/')));
       } catch {
@@ -273,10 +274,13 @@ export class Publisher {
       publisherPriority: trackName === 'catalog' ? 0 : 1,
     });
     const track = this.client!.trackSources.get(ftn.toString())!;
-    await this.client!.publish(ftn, true, track.trackAlias!);
+    const published = await this.client!.publish(ftn, true, track.trackAlias!);
+    if (published instanceof RequestError) {
+      throw new Error(`The relay refused track ${trackName}: ${published.reasonPhrase.phrase}`);
+    }
     logger.info('publisher', `track published: ${trackName} (alias=${track.trackAlias})`);
 
-    return { ftn, controller, groupId: 0n, objectId: 0n };
+    return { ftn, requestId: published.requestId, controller, groupId: 0n, objectId: 0n };
   }
 
   private createVideoMuxer(kind: string): CMAFMuxer {
@@ -374,16 +378,42 @@ export class Publisher {
     }
   }
 
-  private publishCatalogOnce(): void {
-    if (!this.catalogChannel || this.stopped) return;
+  /**
+   * One independent catalog object per group. A track is listed once its init segment
+   * exists: every video source is a rendition of one switching set.
+   */
+  private publishCatalog(isComplete = false): void {
+    if (!this.catalogChannel || (this.stopped && !isComplete)) return;
 
-    for (const [kind, state] of this.videoTracks.entries()) {
-      if (state.initData) {
-        const entry = this.cmsf.tracks.find(t => t.name === kind);
-        if (entry) entry.initData = state.initData;
-      }
-    }
-    const json = JSON.stringify(this.cmsf);
+    const ready = [...this.videoTracks].filter(([, state]) => state.initData);
+    const catalog: CatalogJson = {
+      version: 'draft-01',
+      generatedAt: Date.now(),
+      ...(isComplete && { isComplete: true }),
+      tracks: ready.map(([kind, { config }]) => ({
+        name: kind,
+        role: 'video',
+        packaging: 'cmaf',
+        isLive: true,
+        // Without a target the player sits at the live edge and stalls on every frame
+        targetLatency: TARGET_LATENCY_MS,
+        renderGroup: 1,
+        altGroup: 1,
+        initRef: kind,
+        codec: config.codec,
+        width: config.width,
+        height: config.height,
+        bitrate: config.bitrate,
+        framerate: config.framerate,
+        timescale: 90000,
+      })),
+      initDataList: ready.map(([kind, state]) => ({
+        id: kind,
+        type: 'inline',
+        data: state.initData!,
+      })),
+    };
+    const json = JSON.stringify(catalog);
     const payload = new TextEncoder().encode(json);
     const ch = this.catalogChannel;
     const obj = MoqtObject.newWithPayload(

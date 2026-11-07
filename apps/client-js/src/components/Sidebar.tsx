@@ -17,7 +17,7 @@
 import { useState, useRef, useEffect } from 'preact/hooks';
 import type { ComponentChildren } from 'preact';
 import { cn } from '@/lib/utils';
-import { LuChevronDown, LuCheck, LuLoader } from 'react-icons/lu';
+import { LuChevronDown, LuLoader } from 'react-icons/lu';
 import type { Track, Status, Presets } from '@/types';
 import presets from '@/presets.json';
 import { PublisherPanel, type PublisherPanelProps } from './PublisherPanel';
@@ -186,66 +186,25 @@ function Field({ label, children }: { label: string; children: ComponentChildren
   );
 }
 
-function Checkbox({
-  checked,
-  disabled,
-  onChange,
-}: {
-  checked: boolean;
-  disabled: boolean;
-  onChange: (checked: boolean) => void;
-}) {
+/** A catalog track; highlighted while objects arrive on it. */
+function TrackRow({ track, active }: { track: Track; active: boolean }) {
   return (
-    <span className="flex shrink-0 items-center">
-      {/* Real input — kept 1 px so it remains in the accessibility tree without position:absolute */}
-      <input
-        type="checkbox"
-        checked={checked}
-        disabled={disabled}
-        className="size-px overflow-hidden opacity-0"
-        onChange={e => onChange((e.target as HTMLInputElement).checked)}
-      />
-      {/* Visual indicator */}
+    <div
+      className={cn(
+        'flex items-center gap-3 rounded-lg px-3 py-2.5 transition-colors duration-300 select-none',
+        active && 'bg-blue-600/15 ring-1 ring-blue-500/40',
+      )}
+    >
       <span
         aria-hidden="true"
         className={cn(
-          'flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors',
-          checked ? 'border-blue-500 bg-blue-500' : 'border-neutral-600 bg-neutral-800/60',
+          'h-2 w-2 shrink-0 rounded-full transition-colors duration-300',
+          active ? 'bg-blue-400' : 'border border-neutral-600',
         )}
-      >
-        {checked && <LuCheck className="h-2.5 w-2.5 text-white" aria-hidden="true" />}
-      </span>
-    </span>
-  );
-}
-
-function TrackRow({
-  track,
-  checked,
-  disabled,
-  onChange,
-}: {
-  track: Track;
-  checked: boolean;
-  disabled: boolean;
-  onChange: (track: Track, checked: boolean) => void;
-}) {
-  const selectable = !disabled;
-
-  return (
-    <label
-      className={cn(
-        'group flex items-center gap-3 rounded-lg px-3 py-2.5 transition-all select-none',
-        selectable
-          ? checked
-            ? 'cursor-pointer bg-blue-600/15 ring-1 ring-blue-500/40'
-            : 'cursor-pointer hover:bg-neutral-800/70'
-          : 'cursor-not-allowed opacity-30',
-      )}
-    >
-      <Checkbox checked={checked} disabled={disabled} onChange={val => onChange(track, val)} />
+      />
       <span className="min-w-0 flex-1 truncate font-mono text-xs leading-5 text-neutral-200">
         {track.name}
+        {active && <span className="sr-only"> (receiving)</span>}
       </span>
       <div className="flex shrink-0 items-center gap-2">
         {track.bitrate ? (
@@ -264,7 +223,7 @@ function TrackRow({
           </span>
         ) : null}
       </div>
-    </label>
+    </div>
   );
 }
 
@@ -272,18 +231,12 @@ function TrackGroup({
   title,
   color,
   tracks,
-  selectedVideo,
-  selectedAudio,
-  disabled,
-  onChange,
+  activeTracks,
 }: {
   title: string;
   color: string;
   tracks: Track[];
-  selectedVideo: string | null;
-  selectedAudio: string | null;
-  disabled: boolean;
-  onChange: (track: Track, checked: boolean) => void;
+  activeTracks: string[];
 }) {
   if (tracks.length === 0) return null;
   return (
@@ -296,18 +249,9 @@ function TrackGroup({
         <span className="text-[10px] text-neutral-600">({tracks.length})</span>
       </div>
       <div className="space-y-0.5">
-        {tracks.map(track => {
-          const isSelected = track.name === selectedVideo || track.name === selectedAudio;
-          return (
-            <TrackRow
-              key={track.name}
-              track={track}
-              checked={isSelected}
-              disabled={disabled}
-              onChange={onChange}
-            />
-          );
-        })}
+        {tracks.map(track => (
+          <TrackRow key={track.name} track={track} active={activeTracks.includes(track.name)} />
+        ))}
       </div>
     </div>
   );
@@ -348,10 +292,9 @@ export interface SidebarProps {
   onNamespaceChange: (ns: string) => void;
   status: Status;
   tracks: Track[];
-  selectedVideo: string | null;
-  selectedAudio: string | null;
+  /** The tracks objects arrive on now. */
+  activeTracks: string[];
   onConnect: () => void;
-  onTrackChange: (track: Track, checked: boolean) => void;
   error: string | null;
   // Tab
   tab: Tab;
@@ -367,16 +310,14 @@ export function Sidebar({
   onNamespaceChange,
   status,
   tracks,
-  selectedVideo,
-  selectedAudio,
+  activeTracks,
   onConnect,
-  onTrackChange,
   error,
   tab,
   onTabChange,
   publishProps,
 }: SidebarProps) {
-  const isBusy = status === 'connecting' || status === 'restarting';
+  const isBusy = status === 'connecting';
   const hasTracks = tracks.length > 0;
   const videoTracks = tracks.filter(t => t.role === 'video');
   const audioTracks = tracks.filter(t => t.role === 'audio');
@@ -422,7 +363,7 @@ export function Sidebar({
                   type="url"
                   value={relayUrl}
                   onInput={e => onRelayUrlChange((e.target as HTMLInputElement).value)}
-                  placeholder="https://relay.example.com:443"
+                  placeholder="moqt://relay.example.com"
                   className={inputCls}
                 />
               </Field>
@@ -460,19 +401,13 @@ export function Sidebar({
                 title="Video"
                 color="bg-violet-400"
                 tracks={videoTracks}
-                selectedVideo={selectedVideo}
-                selectedAudio={selectedAudio}
-                disabled={isBusy}
-                onChange={onTrackChange}
+                activeTracks={activeTracks}
               />
               <TrackGroup
                 title="Audio"
                 color="bg-teal-400"
                 tracks={audioTracks}
-                selectedVideo={selectedVideo}
-                selectedAudio={selectedAudio}
-                disabled={isBusy}
-                onChange={onTrackChange}
+                activeTracks={activeTracks}
               />
             </div>
           )}

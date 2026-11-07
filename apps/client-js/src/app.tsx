@@ -16,22 +16,27 @@
 
 import { useState, useRef, useCallback, useEffect } from 'preact/hooks';
 import { uniqueNamesGenerator, colors, animals } from 'unique-names-generator';
-import { Player } from '@/lib/player';
+import { Tuple } from 'moqtail';
+import { formatMsfUrl, parseMsfUrl, type CatalogElement, type MOQtailPlayer } from 'moqtail/player';
+import type { MOQtailVideoElement } from 'moqtail/player/component';
 import { Publisher } from '@/lib/publisher';
-import { Tuple, type CMSFTrack } from 'moqtail';
-import MSEBuffer from '@/lib/buffer';
 import type { Track, Status, SourceState, SourceKind, PublishStatus } from '@/types';
 import { Header } from '@/components/Header';
 import { Sidebar } from '@/components/Sidebar';
 import { VideoPlayer } from '@/components/VideoPlayer';
 import { LocalPreview } from '@/components/LocalPreview';
+import { Advanced } from '@/components/Advanced';
+import { followData } from '@/lib/data';
 import { logger } from '@/lib/logger';
 import { applyLogLevel, parseLogLevel } from '@/lib/utils';
-import { parseMsfUrl, buildMsfUrl } from '@/lib/msf-url';
 
 logger.setDefaultLevel('debug');
 
 type Tab = 'watch' | 'publish';
+
+const ADVANCED_KEY = 'moqtail.advanced';
+/** How recently a track must have received an object to count as active. */
+const ACTIVE_WINDOW_MS = 1000;
 
 function generateNamespace(): string {
   const slug = uniqueNamesGenerator({
@@ -43,15 +48,24 @@ function generateNamespace(): string {
   return `moqtail/${slug}`;
 }
 
-function getWatchUrl(relayUrl: string, namespace: string): string {
-  const msfUrl = buildMsfUrl(relayUrl, namespace);
-  if (!msfUrl) return '';
-  const base = window.location.origin + window.location.pathname;
-  return `${base}?url=${encodeURIComponent(msfUrl)}`;
+/** The MSF URL of a namespace's catalog: the player starts from it. Any relay scheme becomes `moqt://`. */
+function catalogUrl(relayUrl: string, namespace: string): string {
+  const relay = relayUrl.trim().replace(/^[a-z][\w+.-]*:\/\//i, 'moqt://');
+  return formatMsfUrl(relay, Tuple.fromUtf8Path(namespace), 'catalog');
 }
 
-function sortTracks(tracks: CMSFTrack[]) {
-  return tracks.sort((a, b) => {
+/** The moqtail.dev relays implement SWITCH_FROM, so renditions switch with switch-from. */
+function supportsSwitchFrom(url: string): boolean {
+  return URL.parse(url)?.hostname.endsWith('.moqtail.dev') ?? false;
+}
+
+function getWatchUrl(relayUrl: string, namespace: string): string {
+  const base = window.location.origin + window.location.pathname;
+  return `${base}?url=${encodeURIComponent(catalogUrl(relayUrl, namespace))}`;
+}
+
+function sortTracks(tracks: readonly Track[]): Track[] {
+  return [...tracks].sort((a, b) => {
     // sort by bitrate (desc), then resolution (desc), then name (asc)
     const bitrateA = a.bitrate || 0;
     const bitrateB = b.bitrate || 0;
@@ -63,6 +77,25 @@ function sortTracks(tracks: CMSFTrack[]) {
 
     return a.name.localeCompare(b.name);
   });
+}
+
+/** Per role, the tracks that received an object within the window, else the one that did last. */
+function activeTracksOf(tracks: Track[], lastObject: Map<string, number>, now: number): string[] {
+  return ['video', 'audio'].flatMap(role => {
+    const seen = tracks.filter(t => t.role === role && lastObject.has(t.name));
+    const recent = seen.filter(t => now - lastObject.get(t.name)! < ACTIVE_WINDOW_MS);
+    if (recent.length > 0) return recent.map(t => t.name);
+    const latest = seen.sort((a, b) => lastObject.get(b.name)! - lastObject.get(a.name)!)[0];
+    return latest ? [latest.name] : [];
+  });
+}
+
+function readAdvanced(): boolean {
+  try {
+    return localStorage.getItem(ADVANCED_KEY) === 'on';
+  } catch {
+    return false;
+  }
 }
 
 const DEFAULT_SOURCES: SourceState[] = [
@@ -77,13 +110,13 @@ export function App() {
   const [namespace, setNamespace] = useState('moqtail/testsrc');
   const [status, setStatus] = useState<Status>('idle');
   const [tracks, setTracks] = useState<Track[]>([]);
-  const [selectedVideo, setSelectedVideo] = useState<string | null>(null);
-  const [selectedAudio, setSelectedAudio] = useState<string | null>(null);
+  const [activeTracks, setActiveTracks] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [player, setPlayer] = useState<MOQtailPlayer>();
+  const [catalog, setCatalog] = useState<CatalogElement>();
+  const [advanced, setAdvanced] = useState(readAdvanced);
 
-  const playerRef = useRef<Player | null>(null);
-  const bufferRef = useRef<MSEBuffer | null>(null);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const videoRef = useRef<MOQtailVideoElement | null>(null);
 
   // Tab state
   const [tab, setTab] = useState<Tab>('watch');
@@ -100,11 +133,52 @@ export function App() {
   useEffect(() => {
     const raw = new URLSearchParams(window.location.search).get('url');
     if (!raw) return;
-    const parts = parseMsfUrl(raw);
-    if (!parts) return;
-    setRelayUrl(parts.relayUrl);
-    setNamespace(parts.namespace);
+    try {
+      const source = parseMsfUrl(raw);
+      setRelayUrl(source.url);
+      setNamespace(source.namespace.fields.map(f => f.toUtf8()).join('/'));
+    } catch {
+      logger.warn('app', `ignoring an invalid ?url= "${raw}"`);
+    }
   }, []);
+
+  const handleAdvancedChange = useCallback((on: boolean) => {
+    setAdvanced(on);
+    try {
+      localStorage.setItem(ADVANCED_KEY, on ? 'on' : 'off');
+    } catch {}
+  }, []);
+
+  // A player that can't start (a bad URL, an unreachable relay) is reported here
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const onError = () => {
+      setError(video.error?.message ?? 'Playback failed');
+      setStatus('error');
+    };
+    video.addEventListener('error', onError);
+    return () => video.removeEventListener('error', onError);
+  }, [tab]);
+
+  // The tracks objects arrive on, so a ladder's shorter GoPs show while they deliver
+  const tracksRef = useRef(tracks);
+  tracksRef.current = tracks;
+  useEffect(() => {
+    if (!player) return;
+    const lastObject = new Map<string, number>();
+    const stop = followData(player, (event, track) => {
+      if (track && event.kind === 'object') lastObject.set(track, event.at);
+    });
+    const id = setInterval(() => {
+      const active = activeTracksOf(tracksRef.current, lastObject, performance.now());
+      setActiveTracks(previous => (previous.join() === active.join() ? previous : active));
+    }, 250);
+    return () => {
+      stop();
+      clearInterval(id);
+    };
+  }, [player]);
 
   // Check device availability when switching to publish tab
   useEffect(() => {
@@ -141,148 +215,48 @@ export function App() {
     check();
   }, [tab]);
 
-  const disposePlayer = useCallback(async () => {
-    if (playerRef.current) {
-      try {
-        await playerRef.current.dispose();
-      } catch {}
-      playerRef.current = null;
-    }
-    if (bufferRef.current) {
-      try {
-        bufferRef.current.dispose();
-      } catch {}
-      bufferRef.current = null;
-    }
+  const resetPlayback = useCallback((next: Status) => {
+    setStatus(next);
+    setError(null);
+    setTracks([]);
+    setActiveTracks([]);
+    setPlayer(undefined);
+    setCatalog(undefined);
   }, []);
 
-  const initializePlaybackSession = useCallback(async () => {
-    if (!videoRef.current) return null;
+  const handleConnect = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
 
     const qs = new URLSearchParams(window.location.search).get('logLevel');
     const raw = qs ?? (window as any).__moqtailLogLevel ?? 'warn';
     applyLogLevel(parseLogLevel(raw) ?? parseLogLevel('warn')!);
-    logger.info('player', `log level: "${raw}"`);
 
-    logger.info('app', `initializePlaybackSession: relay="${relayUrl}" ns="${namespace}"`);
-    const player = new Player({
-      relayUrl,
-      namespace: Tuple.fromUtf8Path(namespace),
-      receiveCatalogViaSubscribe: true,
+    resetPlayback('connecting');
+    const url = catalogUrl(relayUrl, namespace);
+    logger.info('app', `connect: ${url}`);
+    // Read when the element loads, so it's set before `src`
+    video.toggleAttribute('switch-from', supportsSwitchFrom(url));
+    if (video.getAttribute('src') === url) video.load();
+    else video.src = url;
+
+    const current = video.player;
+    if (!current) return; // the element reports why with `error`
+    setPlayer(current);
+    // The previous player's teardown still emits; only the element's current one counts
+    current.on('statechange', state => {
+      if (video.player === current) setStatus(state);
     });
-    playerRef.current = player;
+    current.on('catalog', element => {
+      setCatalog(element);
+      setTracks(sortTracks(element.tracks));
+    });
+  }, [relayUrl, namespace, resetPlayback]);
 
-    const catalog = await player.initialize();
-    const allTracks = sortTracks(catalog.getTracks());
-    logger.info(
-      'app',
-      `initializePlaybackSession: ${allTracks.length} track(s): ${allTracks.map(t => `${t.name}(${t.role})`).join(', ')}`,
-    );
-    setTracks(allTracks);
-
-    await player.attachMedia(videoRef.current);
-    bufferRef.current = new MSEBuffer(videoRef.current);
-    logger.info('app', 'initializePlaybackSession: media attached, MSEBuffer created');
-
-    return { player, allTracks };
-  }, [relayUrl, namespace]);
-
-  const handleConnect = useCallback(async () => {
-    if (!videoRef.current) return;
-    setStatus('connecting');
-    setError(null);
-    setTracks([]);
-    setSelectedVideo(null);
-    setSelectedAudio(null);
-
-    await disposePlayer();
-
-    try {
-      const session = await initializePlaybackSession();
-      if (!session) return;
-
-      const { player, allTracks } = session;
-
-      const firstVideo = allTracks.find(t => t.role === 'video');
-      logger.info('app', `handleConnect: firstVideo="${firstVideo?.name ?? 'none'}"`);
-      if (firstVideo) {
-        setSelectedVideo(firstVideo.name);
-        setStatus('restarting');
-        await player.addMediaTrack(firstVideo.name);
-        logger.info('app', 'handleConnect: addMediaTrack done, calling startMedia');
-        await player.startMedia();
-        logger.info('app', 'handleConnect: startMedia done — status=playing');
-        setStatus('playing');
-      } else {
-        logger.warn('app', 'handleConnect: no video track found in catalog');
-        setStatus('ready');
-      }
-    } catch (err) {
-      logger.error('app', `handleConnect: error — ${(err as Error).message}`);
-      setError((err as Error).message);
-      setStatus('error');
-      await disposePlayer();
-    }
-  }, [disposePlayer, initializePlaybackSession]);
-
-  const startPlayback = useCallback(
-    async (videoTrack: string | null, audioTrack: string | null) => {
-      if (!videoRef.current) return;
-      if (!videoTrack && !audioTrack) {
-        await disposePlayer();
-        setStatus('ready');
-        return;
-      }
-
-      logger.info(
-        'app',
-        `startPlayback: video="${videoTrack ?? 'none'}" audio="${audioTrack ?? 'none'}"`,
-      );
-      setStatus('restarting');
-      await disposePlayer();
-
-      try {
-        const session = await initializePlaybackSession();
-        if (!session) return;
-
-        const { player } = session;
-
-        if (videoTrack) await player.addMediaTrack(videoTrack);
-        if (audioTrack) await player.addMediaTrack(audioTrack);
-
-        logger.info('app', 'startPlayback: calling startMedia');
-        await player.startMedia();
-        logger.info('app', 'startPlayback: startMedia done — status=playing');
-        setStatus('playing');
-      } catch (err) {
-        logger.error('app', `startPlayback: error — ${(err as Error).message}`);
-        setError((err as Error).message);
-        setStatus('error');
-        await disposePlayer();
-      }
-    },
-    [disposePlayer, initializePlaybackSession],
-  );
-
-  const handleTrackChange = useCallback(
-    (track: Track, checked: boolean) => {
-      if (track.role !== 'video' && track.role !== 'audio') return;
-
-      let newVideo = selectedVideo;
-      let newAudio = selectedAudio;
-
-      if (track.role === 'video') {
-        newVideo = track.name === selectedVideo && !checked ? null : track.name;
-      } else {
-        newAudio = track.name === selectedAudio && !checked ? null : track.name;
-      }
-
-      setSelectedVideo(newVideo);
-      setSelectedAudio(newAudio);
-      startPlayback(newVideo, newAudio);
-    },
-    [selectedVideo, selectedAudio, startPlayback],
-  );
+  const disposePlayer = useCallback(() => {
+    videoRef.current?.removeAttribute('src');
+    resetPlayback('idle');
+  }, [resetPlayback]);
 
   const handleSourceToggle = useCallback(async (kind: SourceKind, enabled: boolean) => {
     if (enabled) {
@@ -364,22 +338,14 @@ export function App() {
   }, [publishStatus]);
 
   const handleTabChange = useCallback(
-    async (next: Tab) => {
-      if (next === 'publish' && tab === 'watch') {
-        await disposePlayer();
-        setStatus('idle');
-        setError(null);
-        setTracks([]);
-        setSelectedVideo(null);
-        setSelectedAudio(null);
-      }
+    (next: Tab) => {
+      if (next === 'publish' && tab === 'watch') disposePlayer();
       setTab(next);
     },
     [tab, disposePlayer],
   );
 
   // Derived state
-  const hasTracks = tracks.length > 0;
   const activeCameraStream =
     publishSources.find(s => s.kind === 'camera' && s.enabled)?.stream ?? null;
   const activeScreenStream =
@@ -397,7 +363,7 @@ export function App() {
 
   return (
     <div className="flex h-dvh w-dvw flex-col bg-neutral-950 font-sans text-neutral-100 antialiased">
-      <Header status={status} />
+      <Header status={status} advanced={advanced} onAdvancedChange={handleAdvancedChange} />
 
       <div className="flex h-full min-h-0 w-full flex-1 grow flex-col md:flex-row">
         <Sidebar
@@ -408,10 +374,8 @@ export function App() {
           onNamespaceChange={setNamespace}
           status={status}
           tracks={tracks}
-          selectedVideo={selectedVideo}
-          selectedAudio={selectedAudio}
+          activeTracks={activeTracks}
           onConnect={handleConnect}
-          onTrackChange={handleTrackChange}
           error={error}
           // Tab
           tab={tab}
@@ -436,7 +400,10 @@ export function App() {
 
         {/* Main area */}
         {tab === 'watch' ? (
-          <VideoPlayer ref={videoRef} hasTracks={hasTracks} mode="watch" />
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+            <VideoPlayer ref={videoRef} status={status} />
+            {advanced && <Advanced videoRef={videoRef} player={player} catalog={catalog} />}
+          </div>
         ) : showPreview ? (
           <main className="relative flex flex-1 flex-col items-center justify-center overflow-hidden bg-neutral-950 p-4 md:p-6">
             <div
@@ -447,7 +414,7 @@ export function App() {
             </div>
           </main>
         ) : (
-          <VideoPlayer ref={videoRef} hasTracks={false} mode="publish" />
+          <VideoPlayer status="idle" mode="publish" />
         )}
       </div>
     </div>

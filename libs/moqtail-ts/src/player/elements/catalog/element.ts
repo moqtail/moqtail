@@ -45,7 +45,7 @@ import { applyDelta } from './delta'
 import { diffTracks, type TrackDiff } from './diff'
 import { parseCatalog, type ParseContext, type ParseResult } from './parse'
 import { selectEventTimelines, selectMedia, withRole, type SelectedSet, type SelectionOptions } from './selection'
-import type { Catalog as CatalogData } from './types'
+import type { Catalog as CatalogData, CatalogJson } from './types'
 
 export interface CatalogOptions {
   /** Passed to the media sources: switch with `SWITCH_FROM`. */
@@ -118,6 +118,11 @@ export class CatalogElement extends SourceElement implements CatalogReader {
 
   get isComplete(): boolean {
     return this.#catalog?.isComplete === true
+  }
+
+  /** The last good catalog document, deltas applied and variables substituted. */
+  get json(): CatalogJson | undefined {
+    return this.#catalog?.json as CatalogJson | undefined
   }
 
   /** An update was missed or rejected since the last good catalog. */

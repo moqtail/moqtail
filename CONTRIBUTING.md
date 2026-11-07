@@ -39,6 +39,26 @@ MOQtail is a monorepo with Rust and TypeScript libraries and applications:
 - TypeScript: Use Vitest. Place tests inline or alongside source files.
 - Rust: Use the standard test framework. Place tests inline.
 
+### Browser Tests
+
+The player's MediaSource and `<moqtail-video>` tests run in headless Chrome against the test sources on `relay.moqtail.dev`, so they need network access:
+
+```bash
+cd libs/moqtail-ts
+npx playwright install chromium   # once
+npm run test:browser
+```
+
+They're under `libs/moqtail-ts/test/browser/`, configured in `vitest.browser.config.ts`, and take about a minute.
+
+### Release Checklist (Maintainers)
+
+Before publishing `moqtail`:
+
+1. `npm run build`, `npm run test:run` and `npm run test:browser` pass in `libs/moqtail-ts`.
+2. In Chrome and in Safari 26.4+ (macOS and iOS), play live and VOD on player.moqtail.dev through `apps/relay` and `moqtail-publisher`: seek, switch renditions by hand, let a broadcast end, and reconnect after dropping the network.
+3. The `libs/moqtail-ts/README.md` samples still compile against the built types: after `npm run transpile`, copy them into a scratch file under `libs/moqtail-ts/test/`, run `npx tsc --noEmit -p .`, then delete it.
+
 ## Commit Message Format
 
 This project uses [Conventional Commits](https://www.conventionalcommits.org/). Example:

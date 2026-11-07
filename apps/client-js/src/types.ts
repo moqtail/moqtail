@@ -24,6 +24,7 @@ export interface PresetNamespace {
   label: string;
   videoTracks: number;
   audioTracks: number;
+  features: string[];
 }
 
 export interface PresetRelay {

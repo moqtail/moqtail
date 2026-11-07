@@ -66,8 +66,8 @@ function PresetDropdown({
     const available = openUp ? spaceAbove : spaceBelow;
     const maxHeight = Math.max(minMenuHeight, Math.min(idealMenuHeight, available));
 
-    const width = Math.min(rect.width, window.innerWidth - margin * 2);
-    const left = Math.max(margin, Math.min(rect.left, window.innerWidth - width - margin));
+    const width = rect.width;
+    const left = Math.max(margin, rect.left);
     const top = openUp ? rect.top - maxHeight - gap : rect.bottom + gap;
 
     setMenuStyle({ top, left, width, maxHeight });
@@ -127,7 +127,9 @@ function PresetDropdown({
           style={{
             top: menuStyle.top,
             left: menuStyle.left,
-            width: menuStyle.width,
+            width: 'max-content',
+            minWidth: menuStyle.width,
+            maxWidth: window.innerWidth - menuStyle.left - 8,
             maxHeight: menuStyle.maxHeight,
           }}
         >
@@ -142,7 +144,7 @@ function PresetDropdown({
                   setOpen(false);
                 }}
                 className={cn(
-                  'w-full cursor-pointer px-3 py-2.5 text-left transition-colors',
+                  'block w-full cursor-pointer px-3 py-2.5 text-left transition-colors',
                   isSelected ? 'bg-blue-600/20' : 'hover:bg-neutral-800',
                 )}
               >
@@ -161,7 +163,19 @@ function PresetDropdown({
                     )}
                   </div>
                 </div>
-                <div className="mt-0.5 truncate font-mono text-[10px] text-neutral-500">
+                {ns.features.length > 0 && (
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {ns.features.map(f => (
+                      <span
+                        key={f}
+                        className="rounded border border-amber-500/30 bg-amber-500/15 px-1.5 py-0.5 font-mono text-[10px] text-amber-300"
+                      >
+                        {f}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <div className="mt-0.5 truncate font-mono text-[10px] text-neutral-500 contain-[inline-size]">
                   {relay.url}
                   <br />
                   {ns.name}

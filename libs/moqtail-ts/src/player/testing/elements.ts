@@ -148,6 +148,7 @@ export class FakeMediaSink extends CollectingSink implements MediaSinkElement {
   seeking = false
   ended = false
   playbackRate = 1
+  liveEdgeStart = NaN
   /** Replace to make `play()` reject, e.g. with a `NotAllowedError`. */
   playResult: () => Promise<void> = () => Promise.resolve()
   readonly addEventListener = this.#target.addEventListener.bind(this.#target)

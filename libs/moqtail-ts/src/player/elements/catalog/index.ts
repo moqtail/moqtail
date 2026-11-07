@@ -124,6 +124,8 @@ if (import.meta.vitest) {
     let element: CatalogElement | undefined
     chain.host.player.on('catalog', (c) => (element = c as CatalogElement))
     chain.host.player.on('warning', (w) => warnings.push(w.code))
+    const streamTypes: string[] = []
+    chain.host.player.on('streamtypechange', (type) => void streamTypes.push(type))
     chain.addSource(CatalogSource, { ...parseMsfUrl(`moqt://relay.test/app#msf:ns--catalog${params}`) })
     let settled: string | undefined
     const init = chain.init(new AbortController().signal).then(
@@ -135,7 +137,7 @@ if (import.meta.vitest) {
       client.last.push(...objects)
       await settle()
     }
-    return { client, media, log, warnings, init, push, settled: () => settled, catalog: () => element! }
+    return { client, media, log, warnings, streamTypes, init, push, settled: () => settled, catalog: () => element! }
   }
 
   describe('CatalogSource', () => {
@@ -245,6 +247,7 @@ if (import.meta.vitest) {
         0,
         'on-demand',
       ])
+      expect(c.streamTypes).toEqual(['live', 'on-demand'])
     })
 
     test('an isComplete catalog keeps a track it changes beyond in place, once', async () => {

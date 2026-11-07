@@ -24,6 +24,7 @@ import { PlayerError } from '@/player/error'
 import { handledResolvers } from '@/player/util/async'
 import { BufferQueue } from './buffer_queue'
 import { GAP_CHECK_INTERVAL_MS, LIVE_EDGE_DELAY, gapJumpTarget, liveEdge, rangeAt } from './gaps'
+import { liveEdgeStart, liveSeekable, vodDuration } from './range'
 import {
   BACK_BUFFER,
   FORWARD_CAP,
@@ -107,7 +108,8 @@ export class MSESink extends SinkElement implements MediaSinkElement {
   #created = false
   #negotiated = false
   #live = false
-  #duration: number | undefined
+  /** The live seekable range last set. */
+  #seekable: { start: number; end: number } | undefined
   /** Set once playback has its start position; a rebuild clears it. */
   #started = false
   /** Where playback continues after a rebuild, instead of the start position. */
@@ -177,6 +179,11 @@ export class MSESink extends SinkElement implements MediaSinkElement {
     return this.#video.playbackRate
   }
 
+  get liveEdgeStart(): number {
+    if (!this.#live || !this.#seekable) return NaN
+    return liveEdgeStart(this.#seekable.end, this.#properties())
+  }
+
   setPlaybackRate(rate: number): void {
     this.#video.playbackRate = rate
   }
@@ -216,6 +223,7 @@ export class MSESink extends SinkElement implements MediaSinkElement {
     // CMSF groups start at keyframes. An object that added no frames leaves nothing to record.
     const group = item.object.groupId
     if (group !== state.group && queue.buffer.buffered.length > 0) this.#recordGroup(state, queue, group, previousEnd)
+    this.#updateSeekable()
     this.#maybeStart()
   }
 
@@ -289,8 +297,7 @@ export class MSESink extends SinkElement implements MediaSinkElement {
     state.properties = { ...state.properties, ...changes }
     if (changes.initData) state.initData = changes.initData
     if (changes.live !== undefined) this.#live = changes.live
-    if (changes.duration !== undefined) {
-      this.#duration = changes.duration
+    if (changes.live !== undefined || changes.duration !== undefined || changes.seekable !== undefined) {
       void this.#applyDuration()
     }
     const mimeType = changes.mimeType
@@ -494,12 +501,12 @@ export class MSESink extends SinkElement implements MediaSinkElement {
     }
   }
 
-  /** Sets a VOD duration once no source buffer is updating. */
+  /** Sets the duration once no source buffer is updating: `Infinity` live, so `seekable` is the live range. */
   async #applyDuration(): Promise<void> {
     const queues = [...this.#pads.values()].flatMap((s) => s.queue ?? [])
-    const duration = this.#duration
-    if (this.#live || duration === undefined || queues.length === 0) return
+    const duration = this.#live ? Infinity : vodDuration(this.#properties())
     const source = this.#source
+    if (duration === undefined || queues.length === 0 || source.duration === duration) return
     // Set it at once when every buffer is idle: by the time each queue drains, another append may have started
     if (queues.some((q) => q.buffer.updating)) await Promise.all(queues.map((q) => q.run(() => {})))
     try {
@@ -507,6 +514,27 @@ export class MSESink extends SinkElement implements MediaSinkElement {
     } catch (error) {
       logger.warn('MSESink', 'Could not set the duration', error) // an append started meanwhile, or data past it
     }
+    this.#updateSeekable()
+  }
+
+  /**
+   * Live only. Native `seekable` is the union of the live range and `buffered` (MSE 10.1), so its
+   * end stays at the buffered end; `liveEdgeStart` is taken from this range. The live range is set
+   * only from a media timeline: without one, `seekable` starts at 0, and seeks before the buffer
+   * reach the relay's cache.
+   */
+  #updateSeekable(): void {
+    const source = this.#source
+    if (!this.#live || source.readyState !== 'open') return
+    const properties = this.#properties()
+    const range = liveSeekable(this.#video.buffered, properties)
+    if (!range || (range.start === this.#seekable?.start && range.end === this.#seekable.end)) return
+    this.#seekable = range
+    if (properties.some((p) => p.seekable)) source.setLiveSeekableRange(range.start, range.end)
+  }
+
+  #properties(): PadProperties[] {
+    return [...this.#pads.values()].map((s) => s.properties)
   }
 
   /**

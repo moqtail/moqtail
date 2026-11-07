@@ -72,6 +72,9 @@ export interface MOQtailPlayerOptions {
   objectOrdering?: ObjectOrdering
 }
 
+/** @public The media-ui-extensions stream type (proposal 0010). */
+export type StreamType = 'unknown' | 'live' | 'on-demand'
+
 /** @public */
 export interface PlayerEvents {
   statechange: (state: PlayerState, previous: PlayerState) => void
@@ -90,6 +93,8 @@ export interface PlayerEvents {
   autoplayblocked: () => void
   /** The first packet of a new track was written to the pad. */
   renditionchange: (source: MediaSourceElement, rendition: Rendition) => void
+  /** The catalog element's `streamType` changed. */
+  streamtypechange: (type: StreamType) => void
 }
 
 const SINK_EVENTS: [string, PlayerState][] = [

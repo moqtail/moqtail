@@ -35,6 +35,7 @@ import { MediaTimeline } from '@/player/elements/mediatimeline'
 import { TemplateTimeline } from '@/player/elements/mediatimeline/template'
 import { CATALOG_PRIORITY, DEFAULT_CATALOG_TIMEOUT_MS } from '@/player/constants'
 import { PlayerError } from '@/player/error'
+import type { StreamType } from '@/player/player'
 import { trackIdentifier, type MsfSource, type TimeRange } from '@/player/msf_url'
 import { backoffDelay, handledResolvers, sleep, within } from '@/player/util/async'
 import { trackKey } from '@/player/util/track'
@@ -80,6 +81,8 @@ export class CatalogElement extends SourceElement implements CatalogReader {
   /** The first catalog with tracks or `isComplete`, or the fatal error that came first. */
   readonly #first = handledResolvers()
   #started = false
+  /** The `streamType` last emitted. */
+  #streamType: StreamType = 'unknown'
   /** Updates are reconciled one after another, since loading a source is async. */
   #updates = Promise.resolve()
 
@@ -123,7 +126,7 @@ export class CatalogElement extends SourceElement implements CatalogReader {
   }
 
   /** From the tracks of the loaded sources. */
-  get streamType(): 'unknown' | 'live' | 'on-demand' {
+  get streamType(): StreamType {
     const selected = this.#selected()
     if (selected.length === 0) return 'unknown'
     return selected.some((t) => t.isLive) ? 'live' : 'on-demand'
@@ -243,6 +246,14 @@ export class CatalogElement extends SourceElement implements CatalogReader {
 
   #announce(): void {
     this.context.player.emit('catalog', this)
+    this.#checkStreamType()
+  }
+
+  #checkStreamType(): void {
+    const type = this.streamType
+    if (type === this.#streamType) return
+    this.#streamType = type
+    this.context.player.emit('streamtypechange', type)
   }
 
   #onStale(reason: Error): void {
@@ -337,6 +348,7 @@ export class CatalogElement extends SourceElement implements CatalogReader {
       ? await this.context.load(parent, { tracks, options: { ...options, child: definition }, catalog: this })
       : await this.context.load(definition, { tracks, options, catalog: this })
     this.#sets.push({ element, tracks, sample: tracks[0]!, definition, media })
+    this.#checkStreamType()
   }
 
   #mediaOptions(byTime?: TimeRange[]): MediaSourceOptions {

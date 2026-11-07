@@ -23,13 +23,18 @@ export default defineConfig({
         test: {
           name: 'live',
           include: ['test/browser/**/*.browser.test.ts'],
-          exclude: ['test/browser/vod.browser.test.ts'],
+          exclude: ['test/browser/vod.browser.test.ts', 'test/browser/component.browser.test.ts'],
           sequence: { groupOrder: 0 },
         },
       },
       {
         extends: true,
         test: { name: 'vod', include: ['test/browser/vod.browser.test.ts'], sequence: { groupOrder: 1 } },
+      },
+      // Plays live and VOD, so it runs alone
+      {
+        extends: true,
+        test: { name: 'component', include: ['test/browser/component.browser.test.ts'], sequence: { groupOrder: 2 } },
       },
     ],
   },

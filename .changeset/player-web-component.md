@@ -1,0 +1,5 @@
+---
+'moqtail': minor
+---
+
+New `moqtail/player/component` entry with `MOQtailVideoElement`, a `<video>`-backed custom element built on `custom-media-element` and `media-tracks` (optional peer dependencies). Call `defineMOQtailVideo()` to register it as `<moqtail-video>`. Importing the entry has no side effects and works on a server. The element plays a `moqt://` `src` with the player options in `config`. It follows `preload` and `autoplay`, and takes the `switch-from` attribute. It maps fatal player errors to `error` with a `MediaError` code. It exposes `player`, `streamType` with `streamtypechange`, `liveEdgeStart`, and one video and audio track per loaded switching set, whose `videoRenditions` and `audioRenditions` reflect `selectRenditions()`: every rendition starts selected, `selectedIndex` picks one, and -1 selects all again. The player emits `streamtypechange` with the new `StreamType`. The MSE sink sets a live `duration` of `Infinity` with `setLiveSeekableRange`, and exposes `liveEdgeStart`, which `MediaSinkElement` now requires. The CMAF source writes the `targetLatency`, `groupDuration`, and `seekable` pad properties.

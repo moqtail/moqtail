@@ -22,6 +22,7 @@ export default defineConfig({
     client: 'src/client/index.ts',
     model: 'src/model/index.ts',
     player: 'src/player/index.ts',
+    'player/component': 'src/player/component/index.ts',
     util: 'src/util/index.ts',
   },
   format: ['cjs', 'esm'],

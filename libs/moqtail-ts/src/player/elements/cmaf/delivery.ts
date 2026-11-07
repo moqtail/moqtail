@@ -29,7 +29,7 @@ import type { MoqtObject } from '@/model/data/object'
 import { FillParameters } from '@/model/parameter/message/fill_parameters'
 import { LocationFilter } from '@/model/parameter/message/location_filter'
 import type { ElementContext } from '@/player/element/context'
-import type { CatalogTrack, RequestHooks } from '@/player/element/interfaces'
+import type { CatalogTrack, RequestHooks, TimelineReader } from '@/player/element/interfaces'
 import type { Pad, PadProperties } from '@/player/element/pad'
 import { DEFAULT_MEDIA_ORDERING, MEDIA_PRIORITY } from '@/player/constants'
 import { trackIdentifier } from '@/player/msf_url'
@@ -135,6 +135,8 @@ export class Delivery {
   #announced = false
   /** The publisher closed the stream being read, so there's nothing to cancel. */
   #closed = false
+  /** The media timeline of the track read last, set once it's loaded. */
+  #timeline: { track: string; reader?: TimelineReader | undefined } | undefined
   /** Whether the latest `play()` wrote a packet. */
   delivered = false
   /** Writes a `discontinuity` of reason `gap` before the next packet. */
@@ -305,13 +307,42 @@ export class Delivery {
   #trackProperties(track: CatalogTrack, initData: Uint8Array | undefined): Partial<PadProperties> {
     const duration =
       this.duration ?? (!track.isLive && track.trackDuration !== undefined ? track.trackDuration / 1000 : undefined)
+    const latency = track.targetLatency ?? track.buffers?.target
     return {
       track: renditionId(track, this.#context.catalog),
       mimeType: mimeTypeOf(track),
       live: track.isLive,
       ...(duration !== undefined && { duration }),
+      ...(latency !== undefined && { targetLatency: latency / 1000 }),
+      ...this.#groupProperties(track),
       ...(initData && { initData }),
     }
+  }
+
+  /** What changes as groups arrive: the observed group duration, and the media timeline's range. */
+  #groupProperties(track: CatalogTrack): Partial<PadProperties> {
+    const key = trackKey(track)
+    const groupDuration =
+      track.maxGroupDuration !== undefined ? track.maxGroupDuration / 1000 : this.times.groupDuration(key)
+    const range = this.#timelineOf(track)?.range
+    const current = this.#properties?.seekable
+    const moved = range && (current?.start !== range.start / 1000 || current.end !== range.end / 1000)
+    return {
+      ...(groupDuration !== undefined && { groupDuration }),
+      ...(moved && { seekable: { start: range.start / 1000, end: range.end / 1000 } }),
+    }
+  }
+
+  /** The track's media timeline, once loaded: the first call starts loading it. */
+  #timelineOf(track: CatalogTrack): TimelineReader | undefined {
+    const key = trackKey(track)
+    if (this.#timeline?.track === key) return this.#timeline.reader
+    const entry: { track: string; reader?: TimelineReader | undefined } = { track: key }
+    this.#timeline = entry
+    void this.#context.catalog?.timeline(track).then((reader) => {
+      entry.reader = reader
+    })
+    return undefined
   }
 
   async #read(track: CatalogTrack, accepted: Accepted, signal: AbortSignal): Promise<Outcome> {
@@ -442,7 +473,10 @@ export class Delivery {
     const previous = this.#last
     this.#last = { track: key, location: object.location }
     this.delivered = true
-    if (previous?.location.group !== object.location.group || previous.track !== key) this.#recordTime(track, object)
+    if (previous?.location.group !== object.location.group || previous.track !== key) {
+      this.#recordTime(track, object)
+      await this.#setProperties(this.#groupProperties(track))
+    }
     const changed = previous !== undefined && previous.track !== key
     // Also after a `track` property, as when a failed switch target falls back to the old track
     if (changed || this.#announced) this.onTrackStart?.(track, changed)
@@ -547,7 +581,8 @@ export async function cancel(client: MOQtailClient, result: RequestError | Accep
 
 if (import.meta.vitest) {
   const { describe, test, expect } = import.meta.vitest
-  const { cmafChain, cmafTrack, endOfTrack, fakeCatalog, requested } = await import('@/player/testing/cmaf')
+  const { cmafChain, cmafTrack, endOfTrack, fakeCatalog, requested, timedObject, twoSecondTimeline } =
+    await import('@/player/testing/cmaf')
   const { mediaObject } = await import('@/player/testing/client')
   const { flush } = await import('@/player/testing/elements')
   const { UnknownTrackProperty } = await import('@/model/property/track_property')
@@ -588,6 +623,25 @@ if (import.meta.vitest) {
       await flush()
       expect(c.trace()).toEqual(['props duration,live,mimeType,track', '1.0', 'eos'])
       expect(c.sink.items()[0]).toMatchObject({ properties: { live: false, duration: 4 } })
+    })
+
+    test('live timing: target latency, observed group duration, and the timeline range as seconds', async () => {
+      const timeline = { ...twoSecondTimeline(), range: { start: 0, end: 4000 } }
+      const c = await cmafChain([cmafTrack('v1', { buffers: { target: 1500 }, timescale: 1000 })], {
+        catalog: fakeCatalog([], timeline),
+      })
+      await flush()
+      c.client.last.push(timedObject(1, 0), timedObject(2, 2))
+      await flush()
+      timeline.range = { start: 2000, end: 6000 }
+      c.client.last.push(timedObject(3, 4))
+      await flush()
+      expect(c.sink.items().flatMap((i) => (i.type === 'properties' ? [i.properties] : []))).toEqual([
+        expect.objectContaining({ targetLatency: 1.5 }),
+        { seekable: { start: 0, end: 4 } },
+        { groupDuration: 2 },
+        { seekable: { start: 2, end: 6 } },
+      ])
     })
 
     test("the sink's backpressure stops the read loop", async () => {

@@ -42,6 +42,12 @@ export interface PadProperties {
   live?: boolean
   /** Seconds, for VOD `MediaSource.duration`. */
   duration?: number
+  /** Seconds: the catalog's `targetLatency`, else `buffers.target`. */
+  targetLatency?: number
+  /** Seconds: the catalog's `maxGroupDuration`, else the observed group duration. */
+  groupDuration?: number
+  /** Seconds: the media timeline's range, after `accessibleWindowTime`. */
+  seekable?: { start: number; end: number }
 }
 
 /** @public Written to a source pad, delivered in order with the packets around it. */

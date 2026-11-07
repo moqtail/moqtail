@@ -55,6 +55,8 @@ export interface MediaSinkElement extends EventTarget {
   readonly seeking: boolean
   readonly ended: boolean
   readonly playbackRate: number
+  /** Where the live edge starts (media-ui-extensions proposal 0007); `NaN` on demand. */
+  readonly liveEdgeStart: number
   setPlaybackRate(rate: number): void
   play(): Promise<void>
   pause(): Promise<void>

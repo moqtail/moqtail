@@ -213,8 +213,8 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
   // their own bidi request streams; objects arrive on uni streams.
   let connection = moq.connection.clone();
 
-  // Each subscription's request stream is held open for its lifetime.
-  let mut request_streams = Vec::new();
+  // One task per subscription, reading its request stream until it ends.
+  let mut subscriptions = Vec::new();
 
   // Which subscription each object belongs to: the alias alone cannot say when a
   // publisher gives two subscriptions to one track the same one.
@@ -279,8 +279,12 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
       parameters,
     });
   }
+  let primary_label = format!("req=0({})", config.track_name);
   if updates.is_empty() {
-    request_streams.push(primary_stream);
+    subscriptions.push(tokio::spawn(watch_until_done(
+      primary_stream,
+      primary_label,
+    )));
   } else {
     {
       let mut router = router.lock().unwrap();
@@ -288,12 +292,13 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
         router.add_update(update.request_id, 0);
       }
     }
-    send_updates(
+    subscriptions.push(send_updates(
       primary_stream,
+      primary_label,
       updates,
       primary_filters.clone(),
       router.clone(),
-    );
+    ));
   }
 
   // Switch to another track after a delay: a second SUBSCRIBE carrying SWITCH_FROM,
@@ -322,7 +327,7 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
       filter_parameters(&config)
     };
     let router = router.clone();
-    tokio::spawn(async move {
+    subscriptions.push(tokio::spawn(async move {
       tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
       info!("Switching to {} ({:?})", switch_track, mode);
       match subscribe_track(
@@ -350,21 +355,11 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
             );
             router.set_filter(2, object_filter(&filters));
           }
-          // Hold the request stream open for the subscription's lifetime.
-          let mut stream = stream;
-          loop {
-            match stream.next_message().await {
-              Ok(m) => info!("switch subscription: {:?}", m),
-              Err(e) => {
-                error!("switch subscription stream ended: {:?}", e);
-                break;
-              }
-            }
-          }
+          watch_until_done(stream, format!("req=2({switch_track})")).await;
         }
         Err(e) => error!("Switch failed: {:?}", e),
       }
-    });
+    }));
   }
 
   if let Some((ref extra_name, extra_priority)) = config.extra_track {
@@ -384,7 +379,10 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
       None,
     )
     .await?;
-    request_streams.push(extra_stream);
+    subscriptions.push(tokio::spawn(watch_until_done(
+      extra_stream,
+      format!("req=4({extra_name})"),
+    )));
     router.lock().unwrap().add(
       4,
       format!("req=4({extra_name})"),
@@ -393,18 +391,76 @@ pub async fn run(moq: MoqConnection, config: SubscribeConfig) -> Result<()> {
     );
   }
 
-  let result = match config.delivery_mode {
-    DeliveryMode::Datagram => receive_datagrams(&connection, router, config.duration).await,
-    DeliveryMode::Subgroup => receive_streams(&connection, router, config.duration).await,
+  let all_done = async move {
+    for subscription in subscriptions {
+      let _ = subscription.await;
+    }
   };
-  drop(request_streams);
-  result
+  match config.delivery_mode {
+    DeliveryMode::Datagram => {
+      receive_datagrams(&connection, router, config.duration, all_done).await
+    }
+    DeliveryMode::Subgroup => receive_streams(&connection, router, config.duration, all_done).await,
+  }
+}
+
+/// How long to keep receiving after the last subscription ends, for late objects.
+// shortcut: a fixed wait, not a count against PUBLISH_DONE's Stream Count; count
+// streams if a test needs an exact end.
+const LATE_OBJECT_GRACE: tokio::time::Duration = tokio::time::Duration::from_secs(2);
+
+/// Closes the connection after `duration` seconds (0: never) or once every
+/// subscription has ended.
+async fn close_when_done(
+  connection: &TransportConnection,
+  duration: u64,
+  all_done: impl std::future::Future<Output = ()>,
+) {
+  let elapsed = async {
+    if duration > 0 {
+      tokio::time::sleep(tokio::time::Duration::from_secs(duration)).await;
+    } else {
+      std::future::pending::<()>().await;
+    }
+  };
+  tokio::select! {
+    _ = elapsed => info!("Duration elapsed, closing connection..."),
+    _ = all_done => {
+      tokio::time::sleep(LATE_OBJECT_GRACE).await;
+      info!("All subscriptions ended, closing connection...");
+    }
+  }
+  connection.close(0u32, b"Done");
+}
+
+/// Reads a subscription's request stream until PUBLISH_DONE or the stream closes.
+async fn watch_until_done(mut stream: ControlStreamHandler, label: String) {
+  loop {
+    match stream.next_message().await {
+      Ok(ControlMessage::PublishDone(m)) => {
+        info!(
+          "Subscription {label} ended: PUBLISH_DONE status={:?} stream_count={} reason={:?}",
+          m.status_code, m.stream_count, m.reason_phrase
+        );
+        return;
+      }
+      Ok(ControlMessage::RequestError(m)) => {
+        error!("Subscription {label}: update refused: {:?}", m)
+      }
+      Ok(m) => info!("Subscription {label}: {:?}", m),
+      Err(e) => {
+        debug!("Subscription {label}: request stream ended: {:?}", e);
+        return;
+      }
+    }
+  }
 }
 
 async fn receive_datagrams(
   connection: &Arc<TransportConnection>,
   router: Arc<Mutex<Router>>,
   duration: u64,
+  all_done: impl std::future::Future<Output = ()>,
 ) -> Result<()> {
   info!("Listening for datagrams...");
 
@@ -499,11 +555,7 @@ async fn receive_datagrams(
     stats
   });
 
-  if duration > 0 {
-    tokio::time::sleep(tokio::time::Duration::from_secs(duration)).await;
-    info!("Duration elapsed, closing connection...");
-    connection.close(0u32, b"Done");
-  }
+  close_when_done(connection, duration, all_done).await;
 
   let stats = datagram_task.await?;
   report_subscriptions(&stats, &router);
@@ -515,6 +567,7 @@ async fn receive_streams(
   connection: &Arc<TransportConnection>,
   router: Arc<Mutex<Router>>,
   duration: u64,
+  all_done: impl std::future::Future<Output = ()>,
 ) -> Result<()> {
   info!("Listening for incoming streams...");
 
@@ -622,11 +675,7 @@ async fn receive_streams(
     stats
   });
 
-  if duration > 0 {
-    tokio::time::sleep(tokio::time::Duration::from_secs(duration)).await;
-    info!("Duration elapsed, closing connection...");
-    connection.close(0u32, b"Done");
-  }
+  close_when_done(connection, duration, all_done).await;
 
   let stats = stream_task.await?;
   report_subscriptions(&stats, &router);
@@ -643,13 +692,14 @@ struct ScheduledUpdate {
 
 /// Sends `updates` on the primary subscription's request stream in time order,
 /// moving the Range Filters its objects are checked against as each goes out, and
-/// then logs whatever comes back on the stream for as long as it lives.
+/// then reads the stream until the subscription ends.
 fn send_updates(
   mut stream: ControlStreamHandler,
+  label: String,
   mut updates: Vec<ScheduledUpdate>,
   mut parameters: Vec<MessageParameter>,
   router: Arc<Mutex<Router>>,
-) {
+) -> tokio::task::JoinHandle<()> {
   updates.sort_by_key(|u| u.after);
   tokio::spawn(async move {
     let started = tokio::time::Instant::now();
@@ -670,17 +720,8 @@ fn send_updates(
         .unwrap()
         .update_filter(0, object_filter(&parameters));
     }
-    loop {
-      match stream.next_message().await {
-        Ok(ControlMessage::RequestError(m)) => error!("Subscription update refused: {:?}", m),
-        Ok(m) => info!("Subscription: {:?}", m),
-        Err(e) => {
-          debug!("Subscription request stream ended: {:?}", e);
-          return;
-        }
-      }
-    }
-  });
+    watch_until_done(stream, label).await;
+  })
 }
 
 /// Counts an object into the subscription that took it: on its own when a fill

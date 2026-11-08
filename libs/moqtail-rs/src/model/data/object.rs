@@ -23,7 +23,7 @@ use crate::model::property::object_property::ObjectProperty;
 use super::constant::{ObjectForwardingPreference, ObjectStatus};
 use super::datagram::Datagram;
 use super::fetch_object::FetchObjectPayload;
-use super::subgroup_object::SubgroupObject;
+use super::subgroup_object::{self, SubgroupObject};
 
 #[derive(Clone, PartialEq)]
 pub struct Object {
@@ -209,6 +209,39 @@ impl Object {
   }
 
   pub fn try_into_subgroup(self) -> Result<SubgroupObject, ParseError> {
+    let (payload, object_status) = self.subgroup_payload_and_status()?;
+    let payload = payload.cloned();
+    Ok(SubgroupObject {
+      object_id: self.location.object,
+      properties: self.properties,
+      object_status,
+      payload,
+    })
+  }
+
+  /// `try_into_subgroup` then `SubgroupObject::serialize_parts`, without consuming
+  /// the Object, so a shared one can be written to every subscriber.
+  pub fn serialize_subgroup_parts(
+    &self,
+    previous_object_id: Option<u64>,
+    has_properties: bool,
+  ) -> Result<(Bytes, Option<Bytes>), ParseError> {
+    let (payload, object_status) = self.subgroup_payload_and_status()?;
+    subgroup_object::serialize_parts(
+      self.location.object,
+      self.properties.as_deref(),
+      object_status,
+      payload,
+      previous_object_id,
+      has_properties,
+    )
+  }
+
+  /// The payload and status a subgroup stream carries, after checking the Object can
+  /// go on one.
+  fn subgroup_payload_and_status(
+    &self,
+  ) -> Result<(Option<&Bytes>, Option<ObjectStatus>), ParseError> {
     if self.forwarding_preference != ObjectForwardingPreference::Subgroup {
       return Err(ParseError::CastingError {
         context: "Object::try_into_subgroup(forwarding_preference)",
@@ -226,7 +259,7 @@ impl Object {
 
     let (payload, object_status) = match self.status {
       ObjectStatus::Normal => (
-        Some(self.payload.ok_or(ParseError::CastingError {
+        Some(self.payload.as_ref().ok_or(ParseError::CastingError {
           context: "Object::try_into_subgroup(payload)",
           from_type: "Object",
           to_type: "SubgroupObject",
@@ -247,12 +280,7 @@ impl Object {
       }
     };
 
-    Ok(SubgroupObject {
-      object_id: self.location.object,
-      properties: self.properties,
-      object_status,
-      payload,
-    })
+    Ok((payload, object_status))
   }
 
   /// Convert to a fetch-stream payload object.
@@ -300,5 +328,57 @@ impl Object {
       properties: self.properties,
       payload,
     })
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::model::common::pair::KeyValuePair;
+
+  fn object(status: ObjectStatus, payload: Option<&'static [u8]>) -> Object {
+    Object {
+      track_alias: 1,
+      location: Location::new(4, 7),
+      publisher_priority: 128,
+      forwarding_preference: ObjectForwardingPreference::Subgroup,
+      subgroup_id: Some(0),
+      status,
+      properties: Some(vec![ObjectProperty::Unknown {
+        kvp: KeyValuePair::try_new_varint(2, 10).unwrap(),
+      }]),
+      payload: payload.map(Bytes::from_static),
+    }
+  }
+
+  #[test]
+  fn serializing_by_reference_matches_taking_the_object_apart() {
+    for object in [
+      object(ObjectStatus::Normal, Some(b"payload")),
+      object(ObjectStatus::EndOfGroup, None),
+    ] {
+      for previous in [None, Some(5)] {
+        let borrowed = object.serialize_subgroup_parts(previous, true).unwrap();
+        let taken = object
+          .clone()
+          .try_into_subgroup()
+          .unwrap()
+          .serialize_parts(previous, true)
+          .unwrap();
+        assert_eq!(borrowed, taken);
+      }
+    }
+  }
+
+  #[test]
+  fn serializing_by_reference_rejects_what_cannot_go_on_a_subgroup_stream() {
+    let mut datagram = object(ObjectStatus::Normal, Some(b"payload"));
+    datagram.forwarding_preference = ObjectForwardingPreference::Datagram;
+    let missing_payload = object(ObjectStatus::Normal, None);
+    let status_with_payload = object(ObjectStatus::EndOfGroup, Some(b"payload"));
+    for object in [datagram, missing_payload, status_with_payload] {
+      assert!(object.serialize_subgroup_parts(None, true).is_err());
+      assert!(object.try_into_subgroup().is_err());
+    }
   }
 }

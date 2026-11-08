@@ -54,45 +54,14 @@ impl SubgroupObject {
     previous_object_id: Option<u64>,
     has_properties: bool,
   ) -> Result<(Bytes, Option<Bytes>), ParseError> {
-    let mut buf = BytesMut::new();
-
-    let object_id_delta = if let Some(id) = previous_object_id {
-      self.object_id - id - 1
-    } else {
-      self.object_id
-    };
-
-    trace!(
-      "SubgroupObject::serialize || object_id_delta: {} prev: {:?} object_id: {} ext_headers: {:?}",
-      object_id_delta, previous_object_id, self.object_id, &self.properties
-    );
-
-    buf.put_vi(object_id_delta)?;
-
-    let properties = self.properties.as_deref().unwrap_or(&[]);
-
-    if !has_properties && !properties.is_empty() {
-      return Err(ParseError::ProtocolViolation {
-        context: "SubgroupObject::serialize(properties)",
-        details: "properties are present but header type has no properties".to_string(),
-      });
-    }
-
-    if has_properties {
-      let ext_buf = serialize_object_properties(properties)?;
-      buf.put_vi(ext_buf.len())?;
-      buf.extend_from_slice(&ext_buf);
-    }
-
-    if let Some(payload) = &self.payload
-      && !payload.is_empty()
-    {
-      buf.put_vi(payload.len())?;
-      return Ok((buf.freeze(), Some(payload.clone())));
-    }
-    buf.put_vi(0u64)?;
-    buf.put_vi(self.object_status.unwrap_or(ObjectStatus::Normal))?;
-    Ok((buf.freeze(), None))
+    serialize_parts(
+      self.object_id,
+      self.properties.as_deref(),
+      self.object_status,
+      self.payload.as_ref(),
+      previous_object_id,
+      has_properties,
+    )
   }
 
   pub fn deserialize(
@@ -186,6 +155,56 @@ impl SubgroupObject {
       payload,
     })
   }
+}
+
+/// `SubgroupObject::serialize_parts` over borrowed fields.
+pub(crate) fn serialize_parts(
+  object_id: u64,
+  properties: Option<&[ObjectProperty]>,
+  object_status: Option<ObjectStatus>,
+  payload: Option<&Bytes>,
+  previous_object_id: Option<u64>,
+  has_properties: bool,
+) -> Result<(Bytes, Option<Bytes>), ParseError> {
+  let mut buf = BytesMut::new();
+
+  let object_id_delta = if let Some(id) = previous_object_id {
+    object_id - id - 1
+  } else {
+    object_id
+  };
+
+  trace!(
+    "SubgroupObject::serialize || object_id_delta: {} prev: {:?} object_id: {} ext_headers: {:?}",
+    object_id_delta, previous_object_id, object_id, properties
+  );
+
+  buf.put_vi(object_id_delta)?;
+
+  let properties = properties.unwrap_or(&[]);
+
+  if !has_properties && !properties.is_empty() {
+    return Err(ParseError::ProtocolViolation {
+      context: "SubgroupObject::serialize(properties)",
+      details: "properties are present but header type has no properties".to_string(),
+    });
+  }
+
+  if has_properties {
+    let ext_buf = serialize_object_properties(properties)?;
+    buf.put_vi(ext_buf.len())?;
+    buf.extend_from_slice(&ext_buf);
+  }
+
+  if let Some(payload) = payload
+    && !payload.is_empty()
+  {
+    buf.put_vi(payload.len())?;
+    return Ok((buf.freeze(), Some(payload.clone())));
+  }
+  buf.put_vi(0u64)?;
+  buf.put_vi(object_status.unwrap_or(ObjectStatus::Normal))?;
+  Ok((buf.freeze(), None))
 }
 
 #[cfg(test)]

@@ -304,13 +304,14 @@ pub enum TrackStatus {
 #[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
 pub enum TrackEvent {
+  // Shared by every subscriber of the track, so fanning one out copies nothing.
   SubgroupObject {
     stream_id: StreamId,
-    object: Object,
+    object: Arc<Object>,
     header_info: Option<HeaderInfo>,
   },
   Datagram {
-    object: Datagram,
+    object: Arc<Datagram>,
   },
   StreamClosed {
     stream_id: StreamId,
@@ -945,7 +946,7 @@ impl Track {
     // Send single Object event with optional header info
     let event = TrackEvent::SubgroupObject {
       stream_id: stream_id.clone(),
-      object: object.clone(),
+      object: Arc::new(object.clone()),
       header_info: header_info.cloned(),
     };
 
@@ -1024,7 +1025,7 @@ impl Track {
     }
 
     let event = TrackEvent::Datagram {
-      object: datagram.clone(),
+      object: Arc::new(datagram.clone()),
     };
 
     self

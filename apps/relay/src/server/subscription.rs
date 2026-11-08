@@ -1243,12 +1243,10 @@ impl Subscription {
     );
     match event {
       TrackEvent::SubgroupObject {
-        mut object,
+        object,
         stream_id,
         header_info,
       } => {
-        object.track_alias = self.track_alias;
-
         // SSTS: when this track belongs to a switching set, only the track
         // the allocation picked for this group is forwarded. The answer holds
         // for the whole group, so the gate caches it and reads the shared
@@ -1531,12 +1529,7 @@ impl Subscription {
 
           // Log object properties with send status if enabled
           let write_result = self
-            .handle_object(
-              object.clone(),
-              previous_object_id,
-              &stream_id,
-              send_stream.clone(),
-            )
+            .handle_object(&object, previous_object_id, &stream_id, send_stream.clone())
             .await;
           let send_status = write_result.is_ok();
 
@@ -1643,7 +1636,7 @@ impl Subscription {
           }
         }
 
-        let mut norm_object = object.clone();
+        let mut norm_object = (*object).clone();
         norm_object.track_alias = self.track_alias;
 
         match norm_object.serialize() {
@@ -1788,7 +1781,7 @@ impl Subscription {
 
   async fn handle_object(
     &self,
-    object: Object,
+    object: &Object,
     previous_object_id: Option<u64>,
     stream_id: &StreamId,
     send_stream: Arc<Mutex<TransportSendStream>>,
@@ -1803,49 +1796,34 @@ impl Subscription {
 
     let object_location = object.location.clone();
 
-    // This loop will keep the stream open and process incoming objects
-    // TODO: revisit this logic to handle also fetch requests
-    if let Ok(sub_object) = object.try_into_subgroup() {
-      let has_properties = sub_object.properties.is_some();
-      let chunks = match sub_object.serialize_parts(previous_object_id, has_properties) {
-        Ok((header, payload)) => [Some(header), payload].into_iter().flatten().collect(),
-        Err(e) => {
-          error!(
-            "Error in serializing object before writing to stream for subscriber={} relay_track_id={}, location: {:?}, previous_object_id: {:?}, error: {:?}",
-            self.client_connection_id, self.relay_track_id, object_location, previous_object_id, e
-          );
-          return Err(e.into());
-        }
-      };
+    let has_properties = object.properties.is_some();
+    let chunks = match object.serialize_subgroup_parts(previous_object_id, has_properties) {
+      Ok((header, payload)) => [Some(header), payload].into_iter().flatten().collect(),
+      Err(e) => {
+        error!(
+          "Error in serializing object before writing to stream for subscriber={} relay_track_id={}, location: {:?}, previous_object_id: {:?}, error: {:?}",
+          self.client_connection_id, self.relay_track_id, object_location, previous_object_id, e
+        );
+        return Err(e.into());
+      }
+    };
 
-      self
-        .subscriber
-        .write_stream_object(
-          &self.new_send_stream_key(stream_id),
-          sub_object.object_id,
-          chunks,
-          Some(send_stream.clone()),
-        )
-        .await
-        .map_err(|open_stream_err| {
-          error!(
-            "Error writing object to stream for subscriber={} relay_track_id={}, error: {:?}",
-            self.client_connection_id, self.relay_track_id, open_stream_err
-          );
-          open_stream_err
-        })
-    } else {
-      trace!(
-        "Could not convert object to subgroup. stream_id: {:?} subscriber={} relay_track_id={}",
-        stream_id, self.client_connection_id, self.relay_track_id
-      );
-      Err(anyhow::anyhow!(
-        "Could not convert object to subgroup. stream_id: {:?} subscriber={} relay_track_id={}",
-        stream_id,
-        self.client_connection_id,
-        self.relay_track_id
-      ))
-    }
+    self
+      .subscriber
+      .write_stream_object(
+        &self.new_send_stream_key(stream_id),
+        object.location.object,
+        chunks,
+        Some(send_stream.clone()),
+      )
+      .await
+      .map_err(|open_stream_err| {
+        error!(
+          "Error writing object to stream for subscriber={} relay_track_id={}, error: {:?}",
+          self.client_connection_id, self.relay_track_id, open_stream_err
+        );
+        open_stream_err
+      })
   }
 
   async fn handle_stream_closed(&self, stream_id: &StreamId) -> Result<()> {

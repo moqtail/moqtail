@@ -220,6 +220,41 @@ impl TrackManager {
     unused.len()
   }
 
+  /// The tracks, copied out so callers can visit them without holding the map,
+  /// which would stall track creation and removal.
+  async fn snapshot(&self) -> Vec<(FullTrackName, Arc<RwLock<Track>>)> {
+    let tracks = self.tracks.read().await;
+    tracks
+      .iter()
+      .map(|(name, track)| (name.clone(), track.clone()))
+      .collect()
+  }
+
+  /// Takes a closed connection off every track it published. Returns the tracks no
+  /// publisher serves any more.
+  pub async fn remove_publisher_everywhere(&self, connection_id: usize) -> Vec<FullTrackName> {
+    let mut unserved = Vec::new();
+    for (name, track) in self.snapshot().await {
+      let track = track.read().await;
+      if let Some(removal) = track.remove_publisher(connection_id).await {
+        self
+          .remove_publisher_alias(connection_id, removal.alias)
+          .await;
+        if !removal.still_served {
+          unserved.push(name);
+        }
+      }
+    }
+    unserved
+  }
+
+  /// Ends every subscription a closed connection held.
+  pub async fn remove_subscriber_everywhere(&self, connection_id: usize) {
+    for (_, track) in self.snapshot().await {
+      track.read().await.remove_subscriptions(connection_id).await;
+    }
+  }
+
   /// Lets go of a track nothing upstream serves any more (see `Track::retire`).
   pub async fn retire_track(&self, full_track_name: &FullTrackName) {
     let Some(track) = self.get_track(full_track_name).await else {
@@ -968,6 +1003,39 @@ mod tests {
       .await
       .expect("the other removal proceeds once the walk is done")
       .expect("remover task");
+  }
+
+  #[tokio::test]
+  async fn a_closing_session_does_not_hold_the_tracks_map_while_it_visits_tracks() {
+    // Cleanup waits on a busy track; creating another track must not wait with it.
+    let manager = TrackManager::new();
+    let name = track_name();
+    let (track, _) = publish(&manager, 1, 10, &name).await;
+    track.read().await.add_publisher(1, 10).await;
+
+    let busy = track.write().await;
+    let closing = {
+      let manager = manager.clone();
+      tokio::spawn(async move { manager.remove_publisher_everywhere(1).await })
+    };
+    settle().await;
+    assert!(
+      !closing.is_finished(),
+      "the session waits for the busy track"
+    );
+
+    let other = FullTrackName::try_new("meet/room2", "video").unwrap();
+    tokio::time::timeout(Duration::from_secs(1), publish(&manager, 2, 20, &other))
+      .await
+      .expect("a track is created while the session waits");
+
+    drop(busy);
+    let unserved = tokio::time::timeout(Duration::from_secs(1), closing)
+      .await
+      .expect("the session finishes once the track is free")
+      .expect("closing task");
+    assert_eq!(unserved, vec![name]);
+    assert!(!manager.has_track_alias(1, &10).await);
   }
 
   #[tokio::test]

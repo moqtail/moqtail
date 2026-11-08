@@ -72,12 +72,12 @@ async fn add_subscription(
 /// Drop a subscription that must be rejected after `add_subscription` already
 /// registered it, on the track and on the client.
 async fn reject_subscription(
-  track_arc: &Arc<RwLock<Track>>,
+  track_arc: &Arc<Track>,
   client: &MOQTClient,
   subscription_id: &SubscriptionId,
 ) {
   {
-    let track = track_arc.read().await;
+    let track = &track_arc;
     track.remove_subscription(subscription_id).await;
   }
   client.subscriptions.remove(subscription_id.1).await;
@@ -145,7 +145,6 @@ async fn upstream_subscribe_exchange(
     return;
   };
   let mut cancel_rx = {
-    let track = track.read().await;
     let _handover = track.lock_handover().await;
     let receiver = track
       .register_upstream_request(
@@ -279,8 +278,6 @@ async fn upstream_subscribe_exchange(
               // subscribers keep receiving it, so they are told nothing and the
               // switching sets are left alone.
               let still_served = track
-                .read()
-                .await
                 .remove_publisher_quietly(publisher.connection_id)
                 .await;
               if still_served {
@@ -306,10 +303,8 @@ async fn upstream_subscribe_exchange(
 
               // SSTS: the track is no longer available upstream; remove it
               // from the switching sets of its subscribers.
-              track.read().await.remove_from_subscriber_switching_sets().await;
+              track.remove_from_subscriber_switching_sets().await;
               if let Err(e) = track
-                .read()
-                .await
                 .notify_publish_done(m.status_code, m.reason_phrase.as_str().to_string())
                 .await
               {
@@ -423,7 +418,6 @@ async fn cleanup_cancelled_upstream_subscription(
   let Some(track) = context.track_manager.get_track(full_track_name).await else {
     return;
   };
-  let track = track.read().await;
   if !answered {
     track.upstream_subscribe_answered();
     return;
@@ -486,7 +480,6 @@ async fn end_upstream_subscription(
   let track = context.track_manager.get_track(full_track_name).await;
   let (confirmed, others_may_still_accept) = match &track {
     Some(track) => {
-      let track = track.read().await;
       let confirmed = matches!(*track.status.read().await, TrackStatus::Confirmed { .. });
       // This publisher has answered; whatever remains counted has not.
       let remaining = track.upstream_subscribe_answered();
@@ -519,10 +512,7 @@ async fn end_upstream_subscription(
   let Some(track) = track else {
     return;
   };
-  let still_served = {
-    let track = track.read().await;
-    remove_upstream_publisher(&track, publisher_connection_id, &context).await
-  };
+  let still_served = { remove_upstream_publisher(&track, publisher_connection_id, &context).await };
 
   if still_served {
     info!(
@@ -537,7 +527,6 @@ async fn end_upstream_subscription(
     full_track_name
   );
   {
-    let track = track.read().await;
     // SSTS: the track is no longer available upstream; remove it from the
     // switching sets of its subscribers.
     track.remove_from_subscriber_switching_sets().await;
@@ -775,14 +764,14 @@ async fn handle_subscribe_message(
   // over forwards upstream as if it had created it. Taken over and joined under one
   // lock, so the track cannot let go of its upstream subscription in between.
   let (is_creator, subscription) = {
-    let track = track_arc.read().await;
+    let track = &track_arc;
     let _handover = track.lock_handover().await;
     let taken_over = track
       .take_over(TrackOrigin::Subscribe, TrackStatus::Pending)
       .await;
     (
       is_creator || taken_over,
-      add_subscription(sub.clone(), &track, client.clone()).await,
+      add_subscription(sub.clone(), track, client.clone()).await,
     )
   };
   let Some(subscription) = subscription else {
@@ -815,7 +804,7 @@ async fn handle_subscribe_message(
     // Read before taking the set manager's lock: removing a track takes the
     // other way around (subscription -> set manager), so holding one lock
     // while grabbing the other would deadlock.
-    let relay_track_id = track_arc.read().await.relay_track_id;
+    let relay_track_id = track_arc.relay_track_id;
 
     if let Err(e) = client.ssts.validate_assignment(*algorithm_id) {
       warn!("Rejecting SUBSCRIBE from {}: {}", context.connection_id, e);
@@ -875,7 +864,7 @@ async fn handle_subscribe_message(
     // Counted before any request goes out, since a publisher can answer while the rest
     // are still being sent.
     {
-      let track = track_arc.read().await;
+      let track = &track_arc;
       track
         .pending_upstream_subscribe_count
         .store(publishers.len(), Ordering::SeqCst);
@@ -919,8 +908,10 @@ async fn handle_subscribe_message(
     Ok(())
   } else {
     // Subsequent subscriber: track already exists
-    let track = track_arc.read().await;
-    let status = track.get_status().await;
+    let track = &track_arc;
+    let status = track
+      .join_status(sub.request_id, context.connection_id)
+      .await;
 
     match status {
       TrackStatus::Confirmed {
@@ -965,8 +956,6 @@ async fn handle_subscribe_message(
           "Track pending, subscriber {} will wait for confirmation",
           client.connection_id
         );
-        let mut pending = track.pending_subscribers.write().await;
-        pending.push((sub.request_id, context.connection_id));
         Ok(())
       }
       TrackStatus::Rejected {
@@ -998,7 +987,7 @@ async fn handle_subscribe_message(
   {
     // Scoped: begin_switch reaches for locks of its own, and the track guard must
     // be gone before it does.
-    let largest = track_arc.read().await.largest_object().await;
+    let largest = track_arc.largest_object().await;
     {
       // A SUBSCRIBE describes the subscription in full, so a filter it leaves out
       // is no filter.
@@ -1107,7 +1096,7 @@ async fn handle_subscribe_ok_message(
 
   // The subscription this answers was let go of when its last subscriber left; its
   // upstream stream has been reset.
-  if track_arc.read().await.origin() == TrackOrigin::CacheOnly {
+  if track_arc.origin() == TrackOrigin::CacheOnly {
     info!(
       "SubscribeOk {} answers a subscription {:?} has let go of; ignoring",
       request_id, full_track_name
@@ -1130,7 +1119,7 @@ async fn handle_subscribe_ok_message(
 
   // Confirm the track with publisher's metadata
   let confirmed_now = {
-    let mut track = track_arc.write().await;
+    let track = &track_arc;
     let confirmed_now = track
       .confirm(
         publisher.connection_id,
@@ -1158,7 +1147,7 @@ async fn handle_subscribe_ok_message(
   // What the relay advertises downstream is not what upstream sent: by the time this
   // runs the relay may already have seen a later Object than upstream knew of.
   let downstream_params = {
-    let track = track_arc.read().await;
+    let track = &track_arc;
     parameters::downstream_subscribe_ok(&msg.subscribe_parameters, track.largest_object().await)
   };
 
@@ -1167,7 +1156,7 @@ async fn handle_subscribe_ok_message(
     let subscriber = { context.client_manager.get(sub_request.requested_by).await };
     if let Some(subscriber) = subscriber {
       let (cached_properties, subscription) = {
-        let track = track_arc.read().await;
+        let track = &track_arc;
         (
           track.track_properties.read().await.clone(),
           track
@@ -1233,7 +1222,7 @@ async fn handle_subscribe_ok_message(
     // taken while the first is still held deadlocks against any writer queued between
     // them.
     let pending = {
-      let track = track_arc.read().await;
+      let track = &track_arc;
       let mut pending = track.pending_subscribers.write().await;
       std::mem::take(&mut *pending)
     };
@@ -1242,7 +1231,7 @@ async fn handle_subscribe_ok_message(
       let subscriber = { context.client_manager.get(subscriber_connection_id).await };
       if let Some(subscriber) = subscriber {
         let (cached_properties, subscription) = {
-          let track = track_arc.read().await;
+          let track = &track_arc;
           (
             track.track_properties.read().await.clone(),
             track
@@ -1337,8 +1326,6 @@ pub(crate) async fn cancel_subscription(
     // The subscriber may hold other subscriptions to this track under other request
     // ids. Cancel only the one this request owns, and only if it is still there.
     let owned = track_lock
-      .read()
-      .await
       .has_subscription(&(context.connection_id, request_id))
       .await;
 
@@ -1359,8 +1346,6 @@ pub(crate) async fn cancel_subscription(
     // rather than being answered from it. A PUBLISH-created track has a publisher still
     // pushing to it and outlives any number of subscribers.
     let cleanup = track_lock
-      .read()
-      .await
       .remove_subscriber(&(context.connection_id, request_id))
       .await;
     if cleanup != Cleanup::Nothing {
@@ -1540,11 +1525,9 @@ pub async fn handle_request_update(
 
   let track_arc = track_lock.unwrap();
 
-  // Apply the update, releasing the track/sub read locks before responding or
-  // terminating so termination can take the track write lock.
+  // The subscription's lock is released before responding.
   let update_result = {
-    let track_guard = track_arc.read().await;
-    match track_guard
+    match track_arc
       .get_subscription(&(client.connection_id, existing_req_id))
       .await
     {
@@ -1574,7 +1557,7 @@ pub async fn handle_request_update(
       // Scoped: what follows reaches for locks of its own, and the track guard
       // must be gone before it does.
       let (subscription, largest) = {
-        let track = track_arc.read().await;
+        let track = &track_arc;
         (
           track
             .get_subscription(&(client.connection_id, existing_req_id))
@@ -1608,8 +1591,6 @@ pub async fn handle_request_update(
       // whatever range it now specifies.
       if asks_for_a_fill
         && let Some(subscription) = track_arc
-          .read()
-          .await
           .get_subscription(&(client.connection_id, existing_req_id))
           .await
       {
@@ -1676,8 +1657,6 @@ async fn fail_update(
   let track_arc = context.track_manager.get_track(full_track_name).await;
   let stream_count = match &track_arc {
     Some(track) => match track
-      .read()
-      .await
       .get_subscription(&(client.connection_id, request_id))
       .await
     {
@@ -1695,8 +1674,6 @@ async fn fail_update(
 
   if let Some(track) = track_arc {
     track
-      .write()
-      .await
       .remove_subscription(&(client.connection_id, request_id))
       .await;
   }
@@ -1736,7 +1713,7 @@ async fn handle_subscribe_error_message(
   // Mark track as Rejected (if it exists). A track that let go of its upstream
   // subscription before this answer came keeps what it has cached.
   let track_arc = match context.track_manager.get_track(&full_track_name).await {
-    Some(track) if track.read().await.origin() == TrackOrigin::CacheOnly => {
+    Some(track) if track.origin() == TrackOrigin::CacheOnly => {
       info!(
         "RequestError {} answers a subscription {:?} has let go of; ignoring",
         request_id, full_track_name
@@ -1746,7 +1723,7 @@ async fn handle_subscribe_error_message(
     track => track,
   };
   if let Some(track_arc) = &track_arc {
-    let track = track_arc.read().await;
+    let track = &track_arc;
     track
       .reject(msg.error_code, msg.reason_phrase.clone())
       .await;
@@ -1772,7 +1749,7 @@ async fn handle_subscribe_error_message(
 
   // Send RequestError to ALL pending subscribers
   if let Some(track_arc) = &track_arc {
-    let track = track_arc.read().await;
+    let track = &track_arc;
     let pending = {
       let mut pending = track.pending_subscribers.write().await;
       std::mem::take(&mut *pending)

@@ -139,7 +139,7 @@ pub async fn handle_subscribe_tracks(
     // Exclude the subscriber's own published tracks, and let an explicit
     // SUBSCRIBE take precedence over SUBSCRIBE_TRACKS for the same track.
     let already_served = {
-      let track = track_arc.read().await;
+      let track = &track_arc;
       track.is_published_by(client.connection_id).await
         || track.has_any_subscription(client.connection_id).await
     };

@@ -123,7 +123,7 @@ pub async fn handle(
             .get_track_by_alias(context.connection_id, m.track_alias)
             .await
           {
-            existing.read().await.full_track_name == full_track_name
+            existing.full_track_name == full_track_name
           } else {
             false
           };
@@ -153,8 +153,6 @@ pub async fn handle(
       // A cache-only track becomes this publisher's, as if it had created it.
       let created = created
         || track_arc
-          .read()
-          .await
           .take_over(
             TrackOrigin::Publish,
             TrackStatus::Confirmed {
@@ -174,8 +172,6 @@ pub async fn handle(
       }
 
       track_arc
-        .write()
-        .await
         .add_publisher(context.connection_id, track_alias)
         .await;
 
@@ -218,8 +214,6 @@ pub async fn handle(
       // if the forward parameter is true, set the track property
       if publisher_forwards {
         track_arc
-          .read()
-          .await
           .upstream_forward
           .store(publisher_forwards, Ordering::SeqCst);
       }
@@ -231,8 +225,6 @@ pub async fn handle(
         );
         // A track's properties come from the publisher that created it.
         track_arc
-          .write()
-          .await
           .set_track_properties(m.track_properties.clone())
           .await;
 
@@ -254,8 +246,6 @@ pub async fn handle(
           // SUBSCRIBE take precedence over SUBSCRIBE_TRACKS for the same track.
           if subscriber.connection_id == context.connection_id
             || track_arc
-              .read()
-              .await
               .has_any_subscription(subscriber.connection_id)
               .await
           {
@@ -408,7 +398,7 @@ pub async fn handle(
 
       // 4. FAN-OUT: Translate the IDs and notify all downstream subscribers
       let active_subscriptions = {
-        let track_read = track_arc.read().await;
+        let track_read = &track_arc;
         track_read
           .subscription_manager
           .get_all_subscriptions()
@@ -465,11 +455,11 @@ pub async fn handle(
 /// downstream wants Objects. A publisher that declared FORWARD=0 sends nothing
 /// until told to, so without this the track never delivers.
 pub(crate) async fn ensure_upstream_forwarding(
-  track_arc: &Arc<tokio::sync::RwLock<Track>>,
+  track_arc: &Arc<Track>,
   context: &Arc<SessionContext>,
 ) {
   let (origin, full_track_name) = {
-    let track = track_arc.read().await;
+    let track = &track_arc;
     (track.origin(), track.full_track_name.clone())
   };
   if origin != TrackOrigin::Publish {
@@ -477,7 +467,7 @@ pub(crate) async fn ensure_upstream_forwarding(
   }
 
   let publisher_ids: Vec<usize> = {
-    let track = track_arc.read().await;
+    let track = &track_arc;
     if !track.has_forwarding_subscriber().await {
       return;
     }
@@ -535,7 +525,7 @@ pub(crate) async fn ensure_upstream_forwarding(
 pub(crate) async fn push_track_to_subscriber(
   context: &Arc<SessionContext>,
   subscriber: Arc<MOQTClient>,
-  track_arc: &Arc<RwLock<Track>>,
+  track_arc: &Arc<Track>,
   publish: &Publish,
   subscribe_tracks_params: &[MessageParameter],
 ) -> bool {
@@ -562,7 +552,7 @@ pub(crate) async fn push_track_to_subscriber(
     downstream.track_properties.clear();
   }
   {
-    let track = track_arc.read().await;
+    let track = &track_arc;
     downstream.track_alias = subscriber.assign_track_alias(track.relay_track_id);
     downstream.parameters = parameters::downstream_publish(
       &publish.parameters,
@@ -571,7 +561,7 @@ pub(crate) async fn push_track_to_subscriber(
     );
   }
 
-  let track = track_arc.read().await;
+  let track = &track_arc;
   if let Err(e) = track
     .add_subscription(subscriber.clone(), downstream.clone())
     .await
@@ -584,7 +574,6 @@ pub(crate) async fn push_track_to_subscriber(
   let subscription = track
     .get_subscription(&(subscriber.connection_id, downstream.request_id))
     .await;
-  drop(track);
 
   // The subscription starts with the Object filters of the SetIDs the track passed.
   // They are kept with its parameters, so an update measures against them.
@@ -639,7 +628,7 @@ pub(crate) async fn forward_publish_downstream(
   subscriber: Arc<MOQTClient>,
   publish: Publish,
   subscription: Option<Arc<RwLock<Subscription>>>,
-  track_arc: Arc<RwLock<Track>>,
+  track_arc: Arc<Track>,
   context: Arc<SessionContext>,
 ) {
   let (send, recv) = match subscriber.connection.open_bi().await {
@@ -789,11 +778,11 @@ pub(crate) async fn forward_publish_downstream(
 /// already gone, as after PUBLISH_DONE, is left alone.
 async fn end_pushed_subscription(
   subscriber: &Arc<MOQTClient>,
-  track_arc: &Arc<RwLock<Track>>,
+  track_arc: &Arc<Track>,
   request_id: u64,
 ) {
   let full_track_name = {
-    let track = track_arc.read().await;
+    let track = &track_arc;
     track
       .remove_subscription(&(subscriber.connection_id, request_id))
       .await;
@@ -814,7 +803,7 @@ async fn apply_pushed_update(
   stream: &mut ControlStreamHandler,
   update: RequestUpdate,
   subscription: Option<&Arc<RwLock<Subscription>>>,
-  track_arc: &Arc<RwLock<Track>>,
+  track_arc: &Arc<Track>,
   context: &Arc<SessionContext>,
   publish_request_id: u64,
 ) {
@@ -883,7 +872,7 @@ async fn apply_pushed_update(
   // A filter the update changed starts where it now says, which for a live one
   // is against the largest Object as of this update.
   if changes_filter {
-    let largest = track_arc.read().await.largest_object().await;
+    let largest = track_arc.largest_object().await;
     subscription.read().await.resolve_live_start(largest).await;
   }
   if asks_for_a_fill {
@@ -1056,7 +1045,7 @@ async fn cleanup_published_track(
     }
   };
 
-  let track = track_arc.read().await;
+  let track = &track_arc;
   if let Some(removal) = track.remove_publisher(client.connection_id).await {
     context
       .track_manager
@@ -1068,7 +1057,6 @@ async fn cleanup_published_track(
       // they are: dropping the track from them would stop it being gated and
       // let every rendition of its set forward at once.
       track.remove_from_subscriber_switching_sets().await;
-      drop(track);
       context.track_manager.retire_track(&full_track_name).await;
       info!(
         "cleanup_published_track: no publishers left for {:?} request_id={}",

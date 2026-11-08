@@ -37,7 +37,6 @@ use std::{
   collections::HashMap,
   sync::{Arc, atomic::AtomicU64},
 };
-use tokio::sync::RwLock;
 use tracing::{Instrument, debug, error, info, info_span, trace, warn};
 use wtransport::endpoint::SessionRequest;
 use wtransport::quinn;
@@ -431,7 +430,6 @@ impl Session {
                        datagram_obj.track_alias, datagram_obj.group_id, datagram_obj.object_id);
 
                 if let Some(track) = context_clone.track_manager.get_track_by_alias(context_clone.connection_id, datagram_obj.track_alias).await {
-                  let track = track.read().await;
                   if let Err(e) = track.new_datagram(&datagram_obj).await {
                     error!("Failed to process datagram: {:?}", e);
                   }
@@ -549,7 +547,7 @@ impl Session {
     // that FETCH any more: its Objects are still worth caching.
     let mut fetch_track_name: Option<FullTrackName> = None;
     let mut stream_id: Option<StreamId> = None;
-    let mut current_track: Option<Arc<RwLock<Track>>> = None;
+    let mut current_track: Option<Arc<Track>> = None;
     // Only subgroup streams count toward the Stream Count a publisher reports in
     // PUBLISH_DONE; a fetch stream answers a request of the relay's own.
     let mut is_subgroup_stream = false;
@@ -650,7 +648,7 @@ impl Session {
             };
 
             let relay_track_id = match current_track.as_ref() {
-              Some(t) => t.read().await.relay_track_id,
+              Some(t) => t.relay_track_id,
               None => {
                 warn!(
                   "Abandoning data stream for unresolved track alias {} after {:?}",
@@ -665,7 +663,7 @@ impl Session {
             None
           };
 
-          let track = current_track.as_ref().unwrap().read().await;
+          let track = &current_track.as_ref().unwrap();
 
           // What a fetch brings in is history, for the cache alone: subscribers get the
           // live feed.
@@ -738,7 +736,7 @@ impl Session {
 
           // Close the stream for all subscribers
           if let Some(track_lock) = &current_track {
-            let track = track_lock.read().await;
+            let track = &track_lock;
             if is_subgroup_stream {
               track
                 .publisher_stream_progress

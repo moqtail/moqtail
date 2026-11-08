@@ -328,8 +328,7 @@ pub struct Track {
   pub relay_track_id: u64,
   pub full_track_name: FullTrackName,
   /// A `TrackOrigin`. It changes when a cache-only track is taken over or a track
-  /// becomes cache-only, and that must not wait on the track's lock, which a fetch
-  /// holds for as long as it delivers.
+  /// becomes cache-only.
   origin: Arc<AtomicU8>,
   /// Held while a SUBSCRIBE takes the track over and joins it, and while the track lets
   /// go of its upstream subscription, so neither can run in the middle of the other.
@@ -710,7 +709,7 @@ impl Track {
   /// Registers an accepting publisher. Returns true only for the one that took the
   /// track out of Pending, since only it has a downstream response to send.
   pub async fn confirm(
-    &mut self,
+    &self,
     publisher_connection_id: usize,
     publisher_track_alias: u64,
     upstream_parameters: Vec<MessageParameter>,
@@ -747,6 +746,21 @@ impl Track {
     *self.track_properties.write().await = properties;
   }
 
+  /// The status to answer a joining subscriber with, queuing it while Pending. The
+  /// queuing happens under the status lock, which confirm and reject take to change
+  /// the status, so no subscriber that saw Pending is missed.
+  pub async fn join_status(&self, request_id: u64, connection_id: usize) -> TrackStatus {
+    let status = self.status.read().await;
+    if matches!(*status, TrackStatus::Pending) {
+      self
+        .pending_subscribers
+        .write()
+        .await
+        .push((request_id, connection_id));
+    }
+    status.clone()
+  }
+
   /// Transition from Pending to Rejected. Notifies waiters.
   pub async fn reject(&self, error_code: RequestErrorCode, reason_phrase: ReasonPhrase) {
     let mut status = self.status.write().await;
@@ -756,10 +770,6 @@ impl Track {
     };
     drop(status);
     self.status_notify.notify_waiters();
-  }
-
-  pub async fn get_status(&self) -> TrackStatus {
-    self.status.read().await.clone()
   }
 
   pub async fn add_subscription(
@@ -1096,7 +1106,7 @@ impl Track {
 /// publisher that names more streams than it opens must not stall the subscription's
 /// end, so a short count is logged and the caller carries on.
 pub async fn await_publisher_streams(
-  track: &Arc<RwLock<Track>>,
+  track: &Arc<Track>,
   publisher_connection_id: usize,
   stream_count: u64,
   timeout: Duration,
@@ -1104,10 +1114,7 @@ pub async fn await_publisher_streams(
 ) {
   let deadline = Instant::now() + timeout;
 
-  // Taken out of the track before waiting: holding the track lock for the length of
-  // the wait would stall every other publisher and subscriber on it.
   let (progress, datagrams, full_track_name) = {
-    let track = track.read().await;
     (
       track.publisher_stream_progress.clone(),
       track.datagram_arrivals.clone(),
@@ -1319,6 +1326,21 @@ mod tests {
     assert_eq!(requests.0.len(), 1);
     requests.unregister(11);
     assert!(live.await.is_err());
+  }
+
+  #[tokio::test]
+  async fn a_subscriber_joining_a_pending_track_is_queued_and_a_later_one_is_not() {
+    let track = cleanup::track(TrackOrigin::Subscribe);
+    assert!(matches!(
+      track.join_status(1, 10).await,
+      TrackStatus::Pending
+    ));
+    track.confirm(7, 3, vec![], vec![]).await;
+    assert!(matches!(
+      track.join_status(2, 11).await,
+      TrackStatus::Confirmed { .. }
+    ));
+    assert_eq!(*track.pending_subscribers.read().await, vec![(1, 10)]);
   }
 
   mod cleanup {

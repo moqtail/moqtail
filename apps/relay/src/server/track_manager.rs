@@ -60,14 +60,14 @@ pub type AnnouncementSubscriber = (Arc<MOQTClient>, PublishNamespace);
 
 /// The relay's tracks and what indexes them.
 ///
-/// Lock order: take `tracks`, then a track's own lock, then that track's inner
-/// locks (such as `publisher_aliases`), then `track_aliases`, then `publishes`,
+/// Lock order: take `tracks`, then a track's inner locks (such as
+/// `publisher_aliases`), then `track_aliases`, then `publishes`,
 /// skipping those you do not need. Never take a lock that you, or your caller,
 /// already hold, even for reading: tokio's `RwLock` queues new readers behind a
 /// waiting writer, so a second read deadlocks once a writer queues in between.
 #[derive(Clone)]
 pub struct TrackManager {
-  pub tracks: Arc<RwLock<HashMap<FullTrackName, Arc<RwLock<Track>>>>>,
+  pub tracks: Arc<RwLock<HashMap<FullTrackName, Arc<Track>>>>,
   /// Maps (publisher_connection_id, publisher_track_alias) -> FullTrackName.
   /// Connection-scoped to avoid alias collisions across different publishers.
   pub track_aliases: Arc<RwLock<HashMap<(usize, u64), FullTrackName>>>,
@@ -123,7 +123,7 @@ impl TrackManager {
     &self,
     connection_id: usize,
     track_alias: u64,
-  ) -> Option<Arc<RwLock<Track>>> {
+  ) -> Option<Arc<Track>> {
     // Tracks first, as the lock order says. Holding both, the lookup sees a
     // concurrent remove_track, which clears the track's aliases while it holds
     // the tracks map, either completely or not at all.
@@ -140,7 +140,7 @@ impl TrackManager {
         "remove_track | removed track by name: {:?}",
         full_track_name
       );
-      let track = track_guard.read().await;
+      let track = &track_guard;
       for (connection_id, track_alias) in track.publisher_aliases.read().await.iter() {
         // remove the alias mapping
         let mut track_aliases = self.track_aliases.write().await;
@@ -197,12 +197,10 @@ impl TrackManager {
     let mut tracks = self.tracks.write().await;
     let mut unused = Vec::new();
     for (name, track) in tracks.iter() {
-      // Held only here, and nobody can take it while the map is locked, so nobody
-      // holds its lock either.
+      // Held only here, and nobody can take it while the map is locked.
       if Arc::strong_count(track) != 1 {
         continue;
       }
-      let track = track.read().await;
       if track.origin() == TrackOrigin::CacheOnly && track.cache.is_empty().await {
         unused.push(name.clone());
       }
@@ -222,7 +220,7 @@ impl TrackManager {
 
   /// The tracks, copied out so callers can visit them without holding the map,
   /// which would stall track creation and removal.
-  async fn snapshot(&self) -> Vec<(FullTrackName, Arc<RwLock<Track>>)> {
+  async fn snapshot(&self) -> Vec<(FullTrackName, Arc<Track>)> {
     let tracks = self.tracks.read().await;
     tracks
       .iter()
@@ -235,7 +233,6 @@ impl TrackManager {
   pub async fn remove_publisher_everywhere(&self, connection_id: usize) -> Vec<FullTrackName> {
     let mut unserved = Vec::new();
     for (name, track) in self.snapshot().await {
-      let track = track.read().await;
       if let Some(removal) = track.remove_publisher(connection_id).await {
         self
           .remove_publisher_alias(connection_id, removal.alias)
@@ -251,7 +248,7 @@ impl TrackManager {
   /// Ends every subscription a closed connection held.
   pub async fn remove_subscriber_everywhere(&self, connection_id: usize) {
     for (_, track) in self.snapshot().await {
-      track.read().await.remove_subscriptions(connection_id).await;
+      track.remove_subscriptions(connection_id).await;
     }
   }
 
@@ -260,11 +257,11 @@ impl TrackManager {
     let Some(track) = self.get_track(full_track_name).await else {
       return;
     };
-    let cleanup = track.read().await.retire().await;
+    let cleanup = track.retire().await;
     self.clean_up(full_track_name, cleanup).await;
   }
 
-  pub async fn get_track(&self, full_track_name: &FullTrackName) -> Option<Arc<RwLock<Track>>> {
+  pub async fn get_track(&self, full_track_name: &FullTrackName) -> Option<Arc<Track>> {
     let tracks = self.tracks.read().await;
     tracks.get(full_track_name).cloned()
   }
@@ -276,14 +273,14 @@ impl TrackManager {
     &self,
     connection_id: usize,
     request_id: u64,
-  ) -> Option<(Arc<RwLock<Track>>, Arc<RwLock<Subscription>>)> {
-    let track_arcs: Vec<Arc<RwLock<Track>>> = {
+  ) -> Option<(Arc<Track>, Arc<RwLock<Subscription>>)> {
+    let track_arcs: Vec<Arc<Track>> = {
       let tracks = self.tracks.read().await;
       tracks.values().cloned().collect()
     };
     for track_arc in track_arcs {
       let sub_opt = {
-        let track = track_arc.read().await;
+        let track = &track_arc;
         track.get_subscription(&(connection_id, request_id)).await
       };
       if let Some(sub) = sub_opt {
@@ -303,8 +300,7 @@ impl TrackManager {
   /// closes. The caller must already have taken the publisher out of its track
   /// with `Track::remove_publisher`, which returns the alias to pass here.
   ///
-  /// Both callers still hold the track's read lock, and `handle_connection_close`
-  /// also holds `tracks`, so this takes neither again.
+  /// It does not take `tracks`, so a caller may hold it.
   pub async fn remove_publisher_alias(&self, connection_id: usize, track_alias: u64) {
     let mut track_aliases = self.track_aliases.write().await;
     let track_name_opt = track_aliases.remove(&(connection_id, track_alias));
@@ -329,7 +325,7 @@ impl TrackManager {
     &self,
     full_track_name: &FullTrackName,
     track_factory: impl FnOnce(u64) -> Track,
-  ) -> (Arc<RwLock<Track>>, bool) {
+  ) -> (Arc<Track>, bool) {
     // Fast path: read lock
     {
       let tracks = self.tracks.read().await;
@@ -345,7 +341,7 @@ impl TrackManager {
       }
       let relay_track_id = self.generate_relay_track_id();
       let track = track_factory(relay_track_id);
-      let track_arc = Arc::new(RwLock::new(track));
+      let track_arc = Arc::new(track);
       tracks.insert(full_track_name.clone(), track_arc.clone());
       // Do NOT insert into track_aliases -- the publisher alias is
       // unknown until SubscribeOk arrives. Use add_track_alias() later.
@@ -397,7 +393,7 @@ impl TrackManager {
     connection_id: usize,
     track_alias: u64,
     timeout: Duration,
-  ) -> Option<Arc<RwLock<Track>>> {
+  ) -> Option<Arc<Track>> {
     let deadline = Instant::now() + timeout;
     loop {
       // Subscribe before looking, so a registration between the two is not missed.
@@ -610,7 +606,7 @@ impl TrackManager {
   pub async fn get_tracks_and_publishes_by_namespace_prefix(
     &self,
     prefix: &Tuple,
-  ) -> Vec<(FullTrackName, Arc<RwLock<Track>>, Option<Publish>)> {
+  ) -> Vec<(FullTrackName, Arc<Track>, Option<Publish>)> {
     let tracks = self.tracks.read().await;
     let publishes = self.publishes.read().await;
     let mut matches = Vec::new();
@@ -704,10 +700,9 @@ impl TrackManager {
     connection_id: usize,
     request_id: u64,
   ) -> Option<FullTrackName> {
-    // 1. Find the tracks that were published with this specific Request ID. The
-    // lock order puts tracks before publishes, and a track's own lock before
-    // both, so the maps are released before any track is locked below.
-    let candidates: Vec<(FullTrackName, Arc<RwLock<Track>>)> = {
+    // 1. Find the tracks published with this Request ID. Per the lock order, the
+    // maps are released before any track is used below.
+    let candidates: Vec<(FullTrackName, Arc<Track>)> = {
       let tracks = self.tracks.read().await;
       let publishes = self.publishes.read().await;
       publishes
@@ -728,7 +723,7 @@ impl TrackManager {
     for (track_name, track_arc) in candidates {
       // 2. Verify that the client sending the REQUEST_UPDATE is actually the owner!
       // TODO: do we really need this check? Look at this later.
-      let track = track_arc.read().await;
+      let track = &track_arc;
       if track
         .publisher_aliases
         .read()
@@ -779,7 +774,7 @@ mod tests {
     connection_id: usize,
     track_alias: u64,
     full_track_name: &FullTrackName,
-  ) -> (Arc<RwLock<Track>>, bool) {
+  ) -> (Arc<Track>, bool) {
     let (track, created) = manager
       .get_or_create_track(full_track_name, |relay_track_id| {
         Track::new(
@@ -830,16 +825,14 @@ mod tests {
     let name = track_name();
 
     let (first, _) = publish(&manager, 1, 10, &name).await;
-    first.read().await.add_publisher(1, 10).await;
+    first.add_publisher(1, 10).await;
     let (second, _) = publish(&manager, 2, 20, &name).await;
-    second.read().await.add_publisher(2, 20).await;
+    second.add_publisher(2, 20).await;
 
     // PUBLISH_DONE from the second publisher, resolved through the manager the way
     // cleanup_published_track does.
     let track = manager.get_track(&name).await.expect("track is registered");
     let removal = track
-      .read()
-      .await
       .remove_publisher(2)
       .await
       .expect("publisher 2 was registered");
@@ -863,8 +856,6 @@ mod tests {
 
     // And when the last one goes, the removal says so.
     let removal = track
-      .read()
-      .await
       .remove_publisher(1)
       .await
       .expect("publisher 1 was registered");
@@ -880,18 +871,18 @@ mod tests {
     let name = track_name();
 
     let (first, _) = publish(&manager, 1, 10, &name).await;
-    first.read().await.add_publisher(1, 10).await;
+    first.add_publisher(1, 10).await;
     let (second, _) = publish(&manager, 2, 20, &name).await;
-    second.read().await.add_publisher(2, 20).await;
+    second.add_publisher(2, 20).await;
 
     let track = manager.get_track(&name).await.expect("track is registered");
 
     assert!(
-      track.read().await.remove_publisher_quietly(2).await,
+      track.remove_publisher_quietly(2).await,
       "publisher 1 still serves the track"
     );
     assert!(
-      !track.read().await.remove_publisher_quietly(1).await,
+      !track.remove_publisher_quietly(1).await,
       "the last publisher leaving ends the track"
     );
   }
@@ -905,11 +896,11 @@ mod tests {
     let name = track_name();
 
     let (first, _) = publish(&manager, 1, 10, &name).await;
-    first.read().await.add_publisher(1, 10).await;
+    first.add_publisher(1, 10).await;
 
     let track = manager.get_track(&name).await.expect("track is registered");
     assert!(
-      track.read().await.remove_publisher_quietly(99).await,
+      track.remove_publisher_quietly(99).await,
       "publisher 1 serves the track, whatever connection 99 was"
     );
   }
@@ -969,23 +960,19 @@ mod tests {
 
   #[tokio::test]
   async fn a_publisher_alias_is_removed_under_the_tracks_lock_while_a_writer_waits() {
-    // A closing session walks the tracks map under a read guard and removes its
-    // aliases as it goes, while another closing session may be waiting to remove a
-    // track. The waiting writer blocks new readers, so taking the tracks lock again
-    // inside would deadlock both sessions.
+    // A caller may hold the tracks map while a track removal waits to write it. The
+    // waiting writer blocks new readers, so removing an alias must not take the map.
     let manager = TrackManager::new();
     let name = track_name();
     let other = FullTrackName::try_new("meet/room2", "video").unwrap();
     let (track, _) = publish(&manager, 1, 10, &name).await;
-    track.read().await.add_publisher(1, 10).await;
+    track.add_publisher(1, 10).await;
     publish(&manager, 2, 20, &other).await;
 
-    // The locks handle_connection_close holds while it removes an alias.
     let tracks = manager.tracks.read().await;
-    let track_guard = track.read().await;
     let remover = spawn_remove_track(&manager, &other).await;
 
-    let removal = track_guard
+    let removal = track
       .remove_publisher(1)
       .await
       .expect("publisher 1 was registered");
@@ -994,10 +981,9 @@ mod tests {
       manager.remove_publisher_alias(1, removal.alias),
     )
     .await
-    .expect("removing the alias takes neither the tracks map nor the track again");
+    .expect("removing the alias does not take the tracks map");
     assert!(!manager.has_track_alias(1, &10).await);
 
-    drop(track_guard);
     drop(tracks);
     tokio::time::timeout(Duration::from_secs(1), remover)
       .await
@@ -1011,9 +997,9 @@ mod tests {
     let manager = TrackManager::new();
     let name = track_name();
     let (track, _) = publish(&manager, 1, 10, &name).await;
-    track.read().await.add_publisher(1, 10).await;
+    track.add_publisher(1, 10).await;
 
-    let busy = track.write().await;
+    let busy = track.publisher_aliases.write().await;
     let closing = {
       let manager = manager.clone();
       tokio::spawn(async move { manager.remove_publisher_everywhere(1).await })
@@ -1048,11 +1034,11 @@ mod tests {
     let other = FullTrackName::try_new("meet/room2", "video").unwrap();
     let (track, _) = publish(&manager, 1, 10, &name).await;
     // remove_track takes track_aliases only for a track with publisher aliases.
-    track.read().await.add_publisher(1, 10).await;
+    track.add_publisher(1, 10).await;
     publish(&manager, 2, 20, &other).await;
 
-    // Parks remove_track on the track's lock, after it has taken the tracks map.
-    let parked = track.write().await;
+    // Parks remove_track after it has taken the tracks map.
+    let parked = track.publisher_aliases.write().await;
     let remover = spawn_remove_track(&manager, &name).await;
     let lookup = {
       let manager = manager.clone();
@@ -1081,8 +1067,8 @@ mod tests {
     let name = track_name();
     let (track, _) = publish(&manager, 1, 10, &name).await;
 
-    // Parks remove_track on the track's lock, after it has taken the tracks map.
-    let parked = track.write().await;
+    // Parks remove_track after it has taken the tracks map.
+    let parked = track.publisher_aliases.write().await;
     let remover = spawn_remove_track(&manager, &name).await;
     let lookup = {
       let manager = manager.clone();
@@ -1099,66 +1085,6 @@ mod tests {
     .expect("the removal and the lookup both finish")
     .expect("tasks");
     assert!(found.is_none());
-  }
-
-  #[tokio::test]
-  async fn a_publisher_lookup_does_not_deadlock_with_a_closing_session() {
-    // A closing session holds a track's read lock while it clears its publishes
-    // entry, and a PUBLISH or SUBSCRIBE_OK may be waiting to write that track. A
-    // REQUEST_UPDATE that looked for its track while holding the publishes would
-    // wait behind that writer and close the cycle.
-    let manager = TrackManager::new();
-    let name = track_name();
-    let (track, _) = publish(&manager, 1, 10, &name).await;
-    track.read().await.add_publisher(1, 10).await;
-    publish(&manager, 2, 20, &name).await;
-    track.read().await.add_publisher(2, 20).await;
-    let request = Publish::new(
-      7,
-      name.namespace.clone(),
-      name.name.clone(),
-      20,
-      vec![],
-      vec![],
-    );
-    manager.add_publish_message(name.clone(), 2, request).await;
-
-    // Publisher 1's session closes, holding the track as handle_connection_close does.
-    let closing = track.read().await;
-    let writer = {
-      let track = track.clone();
-      tokio::spawn(async move {
-        drop(track.write().await);
-      })
-    };
-    settle().await;
-    assert!(track.try_read().is_err(), "a writer waits for the track");
-    let lookup = {
-      let manager = manager.clone();
-      tokio::spawn(async move { manager.get_track_name_by_publisher(2, 7).await })
-    };
-    settle().await;
-    assert!(!lookup.is_finished(), "the lookup waits for the track");
-
-    let removal = closing
-      .remove_publisher(1)
-      .await
-      .expect("publisher 1 was registered");
-    tokio::time::timeout(
-      Duration::from_secs(1),
-      manager.remove_publisher_alias(1, removal.alias),
-    )
-    .await
-    .expect("clearing the publishes entry does not wait for the lookup");
-    drop(closing);
-
-    let ((), found) = tokio::time::timeout(Duration::from_secs(1), async {
-      tokio::try_join!(writer, lookup)
-    })
-    .await
-    .expect("the writer and the lookup both finish")
-    .expect("tasks");
-    assert_eq!(found, Some(name));
   }
 
   #[test]
@@ -1234,7 +1160,7 @@ mod tests {
   }
 
   /// Takes or creates the track the way the FETCH handler does.
-  async fn fetch(manager: &TrackManager, full_track_name: &FullTrackName) -> Arc<RwLock<Track>> {
+  async fn fetch(manager: &TrackManager, full_track_name: &FullTrackName) -> Arc<Track> {
     let (track, _) = manager
       .get_or_create_track(full_track_name, |relay_track_id| {
         Track::new(
@@ -1258,8 +1184,6 @@ mod tests {
     let held = fetch(&manager, &name("held")).await;
     let cached = fetch(&manager, &name("cached")).await;
     cached
-      .read()
-      .await
       .cache
       .add_object(FetchObjectPayload {
         group_id: 0,
@@ -1298,16 +1222,17 @@ mod tests {
         .await;
       assert!(!created);
       let taken_over = track
-        .read()
-        .await
         .take_over(TrackOrigin::Subscribe, TrackStatus::Pending)
         .await;
       assert_eq!(taken_over, expected, "subscribe {n}");
     }
 
-    let track = fetched.read().await;
+    let track = &fetched;
     assert_eq!(track.origin(), TrackOrigin::Subscribe);
-    assert!(matches!(track.get_status().await, TrackStatus::Pending));
+    assert!(matches!(
+      track.status.read().await.clone(),
+      TrackStatus::Pending
+    ));
   }
 
   #[tokio::test]
@@ -1324,8 +1249,6 @@ mod tests {
     );
     assert!(
       track
-        .read()
-        .await
         .take_over(
           TrackOrigin::Publish,
           TrackStatus::Confirmed {
@@ -1335,10 +1258,9 @@ mod tests {
         .await
     );
 
-    let track = track.read().await;
     assert_eq!(track.origin(), TrackOrigin::Publish);
     assert!(matches!(
-      track.get_status().await,
+      track.status.read().await.clone(),
       TrackStatus::Confirmed { .. }
     ));
   }
@@ -1351,11 +1273,9 @@ mod tests {
 
     assert!(
       !track
-        .read()
-        .await
         .take_over(TrackOrigin::Subscribe, TrackStatus::Pending)
         .await
     );
-    assert_eq!(track.read().await.origin(), TrackOrigin::Publish);
+    assert_eq!(track.origin(), TrackOrigin::Publish);
   }
 }

@@ -87,7 +87,7 @@ fn fill_overrides(fill: &[MessageParameter], priority: u8, order: GroupOrder) ->
 /// PUBLISH_DONE Stream Count.
 pub(crate) async fn open_fill_fetch_stream(
   context: Arc<SessionContext>,
-  track: Arc<RwLock<Track>>,
+  track: Arc<Track>,
   subscription: Arc<RwLock<Subscription>>,
   request_id: u64,
 ) {
@@ -115,7 +115,7 @@ pub(crate) async fn open_fill_fetch_stream(
     return;
   }
 
-  let largest = track.read().await.largest_object().await;
+  let largest = track.largest_object().await;
   let Some((start, end)) = fill_fetch_range(&filter, largest) else {
     info!(
       "fill: nothing to fill for request {} on subscriber {}; live only",

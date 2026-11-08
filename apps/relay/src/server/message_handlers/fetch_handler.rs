@@ -109,10 +109,10 @@ pub(crate) fn concrete_end_location(
 
 /// The highest Object ID the relay holds for `group`, if it holds any of it.
 async fn last_cached_object_id(
-  track: &Arc<tokio::sync::RwLock<crate::server::track::Track>>,
+  track: &Arc<crate::server::track::Track>,
   group: u64,
 ) -> Option<u64> {
-  let objects = track.read().await.cache.get_group(group).await?;
+  let objects = track.cache.get_group(group).await?;
   let objects = objects.read().await;
   objects.iter().map(|object| object.object_id).max()
 }
@@ -208,7 +208,7 @@ fn groups_to_claim(filter: &LocationFilter) -> Option<(u64, u64)> {
 async fn resolve_range_upstream(
   client: &Arc<MOQTClient>,
   context: &Arc<SessionContext>,
-  track: &Arc<tokio::sync::RwLock<crate::server::track::Track>>,
+  track: &Arc<crate::server::track::Track>,
   filter: LocationFilter,
   group_order: GroupOrder,
   largest: &mut Option<Location>,
@@ -415,7 +415,7 @@ pub async fn handle(
           original_request_id: request_id,
           requested_by: client.connection_id,
           fetch_request: fetch.clone(),
-          track_alias: track.read().await.relay_track_id,
+          track_alias: track.relay_track_id,
         };
 
         client
@@ -436,7 +436,7 @@ pub async fn handle(
       let mut upstream_end_of_track = false;
 
       let (start_location, end_location) = {
-        let mut largest = track.read().await.largest_object().await;
+        let mut largest = track.largest_object().await;
 
         // The relay answers on its own only when the requested end is one it has
         // already seen. Otherwise it may be behind the publisher, so it asks upstream
@@ -450,13 +450,13 @@ pub async fn handle(
           && let (Some(end), Some((first, last))) =
             (&requested_end, groups_to_claim(&location_filter))
         {
-          let cache = track.read().await.cache.clone();
+          let cache = track.cache.clone();
           fill_claim = match cache.claim_fill(first, last) {
             Ok(claim) => Some(claim),
             Err(in_flight) => {
               let timeout = context.server_config.upstream_fetch_timeout;
               let _ = tokio::time::timeout(timeout, in_flight.lock()).await;
-              largest = track.read().await.largest_object().await;
+              largest = track.largest_object().await;
               answered_locally = local_state_answers(&largest, end);
               cache.claim_fill(first, last).ok()
             }
@@ -561,7 +561,7 @@ pub async fn handle(
       // Send FetchOk on the request stream before delivering objects.
       {
         let track_properties = if include_properties(&fetch.parameters) {
-          track.read().await.track_properties.read().await.clone()
+          track.track_properties.read().await.clone()
         } else {
           Vec::new()
         };
@@ -658,12 +658,11 @@ pub(crate) async fn cancel_fetch(client: Arc<MOQTClient>, request_id: u64) {
 async fn send_upstream_fetch_for_range(
   client: &Arc<MOQTClient>,
   context: &Arc<SessionContext>,
-  track: &Arc<tokio::sync::RwLock<crate::server::track::Track>>,
+  track: &Arc<crate::server::track::Track>,
   filter: LocationFilter,
   group_order: GroupOrder,
 ) -> Option<UpstreamFetch> {
   let (full_track_name, publisher_aliases) = {
-    let track = track.read().await;
     (
       track.full_track_name.clone(),
       track.publisher_aliases.clone(),
@@ -754,8 +753,6 @@ async fn send_upstream_fetch_for_range(
 
   // Sent only once the sender is registered, so Objects arriving first are not dropped.
   let mut cancel_rx = track
-    .read()
-    .await
     .register_upstream_request(
       relay_request_id,
       publisher.connection_id,
@@ -764,8 +761,6 @@ async fn send_upstream_fetch_for_range(
     .await;
   if publisher.is_track_malformed(&full_track_name).await {
     track
-      .read()
-      .await
       .cancel_upstream_request(
         relay_request_id,
         UpstreamRequestCancellation::MalformedTrack,
@@ -780,11 +775,7 @@ async fn send_upstream_fetch_for_range(
       "send_upstream_fetch_for_range | Failed to send upstream FETCH: {:?}",
       e
     );
-    track
-      .read()
-      .await
-      .unregister_upstream_request(relay_request_id)
-      .await;
+    track.unregister_upstream_request(relay_request_id).await;
     forget_upstream_fetch(context, &publisher, relay_request_id).await;
     return None;
   }
@@ -911,8 +902,6 @@ async fn send_upstream_fetch_for_range(
       }
       forget_upstream_fetch(&context, &upstream_publisher, relay_request_id).await;
       request_track
-        .read()
-        .await
         .unregister_upstream_request(relay_request_id)
         .await;
     }
@@ -971,11 +960,10 @@ async fn cancel_downstream_fetches(context: &SessionContext, full_track_name: &F
 
 async fn handle_malformed_upstream_fetch(
   context: &SessionContext,
-  track: &Arc<tokio::sync::RwLock<Track>>,
+  track: &Arc<Track>,
   publisher: &MOQTClient,
 ) {
   let (full_track_name, remove_track) = {
-    let track = track.read().await;
     let _handover = track.lock_handover().await;
     publisher
       .mark_track_malformed(track.full_track_name.clone())
@@ -985,7 +973,7 @@ async fn handle_malformed_upstream_fetch(
       .cancel_for_malformed_publisher(publisher.connection_id)
       .await;
     let still_served =
-      super::subscribe_handler::remove_upstream_publisher(&track, publisher.connection_id, context)
+      super::subscribe_handler::remove_upstream_publisher(track, publisher.connection_id, context)
         .await;
     track.remove_from_subscriber_switching_sets().await;
     if let Err(error) = track
@@ -1250,9 +1238,9 @@ impl ResponseAbsences {
 /// local range is authoritative (INVALID_RANGE) or should be fetched upstream.
 async fn has_upstream_publisher(
   context: &Arc<SessionContext>,
-  track: &Arc<tokio::sync::RwLock<crate::server::track::Track>>,
+  track: &Arc<crate::server::track::Track>,
 ) -> bool {
-  let full_track_name = track.read().await.full_track_name.clone();
+  let full_track_name = track.full_track_name.clone();
 
   !context
     .client_manager
@@ -1330,12 +1318,11 @@ fn filter_fields(object: &FetchObjectPayload) -> ObjectFields<'_> {
 pub(crate) async fn serve_fetch_stream(
   client: Arc<MOQTClient>,
   context: Arc<SessionContext>,
-  track: Arc<tokio::sync::RwLock<crate::server::track::Track>>,
+  track: Arc<crate::server::track::Track>,
   delivery: FetchDelivery,
   mut cancel_rx: watch::Receiver<FetchStop>,
 ) -> Result<bool, TerminationCode> {
   let (relay_track_id, cache, object_logger) = {
-    let track = track.read().await;
     (
       track.relay_track_id,
       track.cache.clone(),
@@ -1638,7 +1625,7 @@ pub(crate) async fn serve_fetch_stream(
                   if let Ok(fetched) =
                     moqtail::model::data::object::Object::try_from_fetch(object.clone(), relay_track_id)
                   {
-                    track.read().await.cache_fetched_object(&fetched).await;
+                    track.cache_fetched_object(&fetched).await;
                   }
                   mark_absent(
                     absences.on_object(&Location::new(object.group_id, object.object_id)),

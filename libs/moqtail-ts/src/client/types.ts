@@ -169,6 +169,10 @@ export type MOQtailClientOptions = {
   /**
    * How long after SUBSCRIBE_OK a fill fetch stream may take to open before ordering
    * stops waiting for it, in milliseconds. Defaults to {@link DEFAULT_FILL_OPEN_TIMEOUT_MS}.
+   *
+   * A fill that opens later still orders against what is held, but its objects at or
+   * before what was already released come late (`flush`) or are dropped (`drop`), and no
+   * `orderinggap` reports them. Raise it on paths whose RTT nears it.
    */
   fillOpenTimeoutMs?: number
   /** If true, enables datagram support for the session. */

@@ -125,8 +125,8 @@ export class Delivery {
   /** Where the request being read stops. */
   #stop: End | undefined
   #soft: SoftSwitch | undefined
-  /** This source's accepted requests, each with where packets resume after an `orderinggap`. */
-  readonly #gaps = new Map<bigint, Location | undefined>()
+  /** This source's accepted requests, each with the spans its `orderinggap`s skip, oldest first. */
+  readonly #gaps = new Map<bigint, { from: Location; resume: Location }[]>()
   /** The client whose `orderinggap` reports are heard: the one `#gaps`' requests were sent on. */
   #listening: MOQtailClient | undefined
   /** A `track` property was written since the last packet. */
@@ -241,7 +241,7 @@ export class Delivery {
           this.#listening = client
           this.#gaps.clear() // another session numbers its requests anew
         }
-        this.#gaps.set(accepted.requestId, undefined)
+        this.#gaps.set(accepted.requestId, [])
       },
       () => {},
     )
@@ -402,20 +402,23 @@ export class Delivery {
   /**
    * After an `orderinggap` the rest of its group isn't decodable: a group starts with a SAP
    * and a chunk after a missing one can't be decoded (CMSF 3.4). Packets resume at the next
-   * object 0, after a `gap` discontinuity.
+   * object 0, after a `gap` discontinuity. The report comes before the reader reaches it, so
+   * objects still queued ahead of `from` are kept.
    */
-  readonly #gapped = (requestId: bigint, _from: Location, to: Location): void => {
-    if (this.#gaps.has(requestId)) this.#gaps.set(requestId, to.object === 0n ? to : new Location(to.group + 1n, 0n))
+  readonly #gapped = (requestId: bigint, from: Location, to: Location): void => {
+    const resume = to.object === 0n ? to : new Location(to.group + 1n, 0n)
+    this.#gaps.get(requestId)?.push({ from, resume })
   }
 
-  /** Whether an object of `requestId` at `location` comes before where packets resume after a gap. */
+  /** Whether an object of `requestId` at `location` falls in a span an `orderinggap` skips. */
   #skipped(requestId: bigint, location: Location): boolean {
-    const resume = this.#gaps.get(requestId)
-    if (!resume) return false
-    if (location.compare(resume) < 0) return true
-    this.#gaps.set(requestId, undefined)
-    this.gap = true
-    return false
+    const spans = this.#gaps.get(requestId)
+    if (!spans) return false
+    while (spans[0] && location.compare(spans[0].resume) >= 0) {
+      spans.shift()
+      this.gap = true
+    }
+    return spans[0] !== undefined && location.compare(spans[0].from) >= 0
   }
 
   /** The first object of a `SWITCH_FROM` target: its request becomes the one being read. */
@@ -680,6 +683,21 @@ if (import.meta.vitest) {
       c.client.last.push(mediaObject(4, 0))
       await flush()
       expect(c.trace()).toEqual(['props live,mimeType,track', '1.0', 'gap', '2.0', '2.1', 'gap', '4.0'])
+    })
+
+    test('orderinggap: objects released before the gap but still unread are kept', async () => {
+      const blocked = Promise.withResolvers<void>()
+      const c = await cmafChain([cmafTrack('v1')])
+      c.sink.slow = () => blocked.promise
+      await flush()
+      for (let i = 0; i < 50; i++) c.client.last.push(mediaObject(1, i))
+      c.client.last.push(mediaObject(2, 0))
+      await flush()
+      c.client.emit('orderinggap', 0n, new Location(2n, 1n), new Location(2n, 2n))
+      c.client.last.push(mediaObject(2, 2), mediaObject(3, 0))
+      blocked.resolve()
+      await flush()
+      expect(c.trace().slice(-5)).toEqual(['1.48', '1.49', '2.0', 'gap', '3.0'])
     })
 
     test('a catalog namespace other than the track’s prefixes the track id', async () => {

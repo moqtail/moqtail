@@ -79,8 +79,10 @@ export class ObjectOrderer {
       if (this.#ordering.onWindowExceeded !== 'drop') this.#onRelease(object)
       return
     }
+    const index = this.#held.findIndex((held) => held.object.location.compare(object.location) >= 0)
+    // A duplicate (a repeated datagram, or a fill overlapping the live stream) is held once
+    if (index >= 0 && this.#held[index]!.object.location.equals(object.location)) return
     const entry = { object, previous, at: performance.now(), seq: this.#arrivals++ }
-    const index = this.#held.findIndex((held) => held.object.location.compare(object.location) > 0)
     if (index < 0) this.#held.push(entry)
     else this.#held.splice(index, 0, entry)
     this.#drain()
@@ -369,6 +371,12 @@ if (import.meta.vitest) {
         previous = object.location
       }
       expect(out).toEqual(['4.0', '4.1', '5.0', '5.1', '5.2', '5.3'])
+    })
+
+    test('a location pushed twice while held is released once', () => {
+      const { push, out } = setup()
+      push('0.0', '0.2', '0.2', '0.1')
+      expect(out).toEqual(['0.0', '0.1', '0.2'])
     })
 
     test('flush releases everything held, in order', () => {

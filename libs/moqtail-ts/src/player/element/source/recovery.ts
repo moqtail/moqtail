@@ -274,7 +274,12 @@ export class Recovery {
     this.#seekTo = undefined
     const track = this.active
     const timeline = await this.#context.catalog?.timeline(track)
-    if (this.#seekTo !== undefined || track !== this.active) return // superseded meanwhile
+    if (this.#seekTo !== undefined) return // a newer seek supersedes it
+    if (track !== this.active) {
+      // Switched meanwhile: the next loop locates it on the new track
+      this.#seekTo = time
+      return
+    }
     const key = trackKey(track)
     const set = this.#host.tracks()
     const estimate = (t: number) => this.#estimate(track, t) ?? this.#fromLast(t, track)
@@ -363,7 +368,11 @@ function waitFor(ms: number, signal: AbortSignal): Promise<boolean> {
 
 /** Cancels a handover's request once it's answered, unless it was rejected. */
 function cancelLate(handover: Handover): void {
-  void handover.request.then((late) => cancel(handover.client, late))
+  // A failed request has nothing to cancel
+  void handover.request.then(
+    (late) => cancel(handover.client, late),
+    () => {},
+  )
 }
 
 if (import.meta.vitest) {

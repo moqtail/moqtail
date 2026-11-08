@@ -59,6 +59,8 @@ export class SubscribeRequest implements PromiseLike<SubscribeOk | RequestError>
   public fillBoundary: Location | undefined
   /** A fill fetch stream opened for this subscription. */
   public fillOpened = false
+  /** Fill fetch streams still delivering. */
+  public openFills = 0
   /** EXPIRES from the last SUBSCRIBE_OK or REQUEST_UPDATE_OK, in milliseconds. */
   public expires: bigint | undefined
   public streamsAccepted: bigint = 0n
@@ -315,7 +317,8 @@ export class Subscription {
    */
   #updateSwitchState(left: readonly SubscribeRequest[] = []): void {
     const switching = this.#switching
-    if (!switching) for (const obj of this.#parked.splice(0)) this.objects.enqueue(obj)
+    // A dropped target can leave one request draining: its tail still goes first
+    if (!switching && this.#draining.size === 0) for (const obj of this.#parked.splice(0)) this.objects.enqueue(obj)
     for (const request of this.requests) {
       if (switching) request.orderer?.suspendWindow('switch')
       else request.orderer?.resumeWindow('switch')
@@ -408,4 +411,49 @@ export class Subscription {
     request.enqueue(obj, previous)
     return true
   }
+}
+
+if (import.meta.vitest) {
+  const { test, expect, vi } = import.meta.vitest
+  const { ObjectOrderer } = await import('@/client/ordering')
+  const { ObjectForwardingPreference } = await import('@/model/data/constant')
+
+  const ftn = FullTrackName.tryNew('room', 'video')
+  function orderedRequest(id: bigint): SubscribeRequest {
+    const request = new SubscribeRequest(new Subscribe(id, ftn, []))
+    request.orderer = new ObjectOrderer(
+      { window: { durationMs: 150 } },
+      (obj) => request.output(obj),
+      () => {},
+    )
+    return request
+  }
+  const object = (group: bigint, id: bigint) =>
+    MoqtObject.newWithPayload(
+      ftn,
+      new Location(group, id),
+      0,
+      ObjectForwardingPreference.Subgroup,
+      0,
+      null,
+      new Uint8Array([1]),
+    )
+
+  test('a switch target that ends mid-drain still waits behind the old track’s tail', async () => {
+    const old = orderedRequest(0n)
+    const subscription = new Subscription(old)
+    subscription.drainTimeoutMs = 10
+    const target = orderedRequest(1n)
+    subscription.addSwitchTarget(target, true)
+    const out: string[] = []
+    void (async () => {
+      for await (const obj of subscription.stream) out.push(`${obj.location.group}.${obj.location.object}`)
+    })()
+
+    subscription.deliver(old, object(1n, 0n))
+    subscription.deliver(target, object(2n, 0n)) // the handover: the old track drains
+    subscription.drop(target)
+    subscription.deliver(old, object(1n, 1n))
+    await vi.waitFor(() => expect(out).toEqual(['1.0', '1.1', '2.0']))
+  })
 }

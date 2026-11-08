@@ -725,8 +725,11 @@ export class MOQtailClient extends Emitter<ClientEvents> {
           // An ordered subscription takes its datagrams too; unordered ones never did
           const holder = this.subscriptions.get(trackAlias)
           if (holder instanceof SubscribeRequest && holder.orderer) {
-            holder.manager.deliver(holder, moqtObject)
-            if (ObjectDatagramType.isEndOfGroup(datagram.type)) {
+            if (!holder.largestLocation || holder.largestLocation.compare(moqtObject.location) < 0) {
+              holder.largestLocation = moqtObject.location
+            }
+            const delivered = holder.manager.deliver(holder, moqtObject)
+            if (delivered && ObjectDatagramType.isEndOfGroup(datagram.type)) {
               holder.orderer.endGroup(moqtObject.location.group, moqtObject.location.object)
             }
           }
@@ -2338,6 +2341,7 @@ export class MOQtailClient extends Emitter<ClientEvents> {
         // the subscriber has to count it too or the two never agree.
         request.streamsAccepted++
         request.fillOpened = true
+        request.openFills++
         request.orderer?.suspendWindow('fill')
         let previous: Location | undefined
         try {
@@ -2356,7 +2360,9 @@ export class MOQtailClient extends Emitter<ClientEvents> {
           }
         } finally {
           reader.releaseLock()
-          request.orderer?.resumeWindow('fill')
+          // Fills may overlap (moqt-22 §3.4): the window resumes once the last one ends
+          request.openFills--
+          if (request.openFills === 0) request.orderer?.resumeWindow('fill')
         }
         // It counts towards the subscription's streams like any other, so it can
         // equally be the one that completes it.
@@ -2411,7 +2417,7 @@ export class MOQtailClient extends Emitter<ClientEvents> {
               if (nextObject instanceof SubgroupObject) {
                 lastObjectId = nextObject.objectId
                 // TODO: validate if it's a valid subgroup object
-                if (!firstObjectId) {
+                if (firstObjectId === null) {
                   firstObjectId = nextObject.objectId
                 }
                 let subgroupId: bigint | null = null

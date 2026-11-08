@@ -15,6 +15,8 @@ export default defineConfig({
     testTimeout: 60_000,
     // Files run side by side, each in its own iframe; its sessions start one at a time.
     fileParallelism: true,
+    // Playback over the remote relay stalls at random; a real regression still fails every attempt.
+    retry: { count: 4, delay: 2_000 },
     browser: { enabled: true, headless: true, provider: playwright(), instances: [{ browser: 'chromium' }] },
     // VOD fetches as fast as the link allows, which stalls live sessions next to it: it runs after them.
     projects: [

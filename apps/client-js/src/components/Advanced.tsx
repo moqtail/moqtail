@@ -362,6 +362,7 @@ function StatusView({ videoRef, player, catalog }: Omit<Props, 'session'>) {
     ['Ready state', `${video.readyState} (${READY_STATES[video.readyState]})`],
     ['Video', video.videoWidth ? `${video.videoWidth}×${video.videoHeight}` : '–'],
     ['Buffered', ranges(video.buffered)],
+    ['Forward buffer', seconds(forward(video))],
     ['Seekable', ranges(video.seekable)],
     ['Live edge start', seconds(video.liveEdgeStart)],
   ];
@@ -487,6 +488,16 @@ function seconds(value: number): string {
 
 function rate(value: number): string {
   return `${Number(value.toFixed(2))}×`;
+}
+
+/** How far the playhead is behind the end of the buffered range it's in; `NaN` outside one. */
+function forward(video: HTMLVideoElement): number {
+  const { buffered, currentTime } = video;
+  for (let i = 0; i < buffered.length; i++) {
+    if (buffered.start(i) <= currentTime && currentTime <= buffered.end(i))
+      return buffered.end(i) - currentTime;
+  }
+  return NaN;
 }
 
 function ranges(list: TimeRanges): string {

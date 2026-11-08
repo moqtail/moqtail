@@ -480,7 +480,7 @@ async fn end_upstream_subscription(
   let track = context.track_manager.get_track(full_track_name).await;
   let (confirmed, others_may_still_accept) = match &track {
     Some(track) => {
-      let confirmed = matches!(*track.status.read().await, TrackStatus::Confirmed { .. });
+      let confirmed = matches!(track.status().await, TrackStatus::Confirmed { .. });
       // This publisher has answered; whatever remains counted has not.
       let remaining = track.upstream_subscribe_answered();
       (confirmed, remaining > 0)
@@ -921,7 +921,7 @@ async fn handle_subscribe_message(
           "Track confirmed, sending SubscribeOk to subscriber {}",
           client.connection_id
         );
-        let cached_properties = { track.track_properties.read().await.clone() };
+        let cached_properties = track.track_properties().await;
         let params =
           parameters::downstream_subscribe_ok(&upstream_parameters, track.largest_object().await);
         let properties = subscription
@@ -1141,7 +1141,7 @@ async fn handle_subscribe_ok_message(
       let (cached_properties, subscription) = {
         let track = &track_arc;
         (
-          track.track_properties.read().await.clone(),
+          track.track_properties().await,
           track
             .get_subscription(&(subscriber.connection_id, sub_request.original_request_id))
             .await,
@@ -1201,14 +1201,7 @@ async fn handle_subscribe_ok_message(
 
   // Send SubscribeOk to ALL pending subscribers
   {
-    // Released before the loop: the loop reads this same lock again, and a second read
-    // taken while the first is still held deadlocks against any writer queued between
-    // them.
-    let pending = {
-      let track = &track_arc;
-      let mut pending = track.pending_subscribers.write().await;
-      std::mem::take(&mut *pending)
-    };
+    let pending = track_arc.take_pending_subscribers().await;
 
     for (subscriber_request_id, subscriber_connection_id) in pending {
       let subscriber = { context.client_manager.get(subscriber_connection_id).await };
@@ -1216,7 +1209,7 @@ async fn handle_subscribe_ok_message(
         let (cached_properties, subscription) = {
           let track = &track_arc;
           (
-            track.track_properties.read().await.clone(),
+            track.track_properties().await,
             track
               .get_subscription(&(subscriber.connection_id, subscriber_request_id))
               .await,
@@ -1710,10 +1703,7 @@ async fn handle_subscribe_error_message(
   // Send RequestError to ALL pending subscribers
   if let Some(track_arc) = &track_arc {
     let track = &track_arc;
-    let pending = {
-      let mut pending = track.pending_subscribers.write().await;
-      std::mem::take(&mut *pending)
-    };
+    let pending = track.take_pending_subscribers().await;
 
     for (subscriber_request_id, subscriber_connection_id) in pending {
       let subscriber = { context.client_manager.get(subscriber_connection_id).await };

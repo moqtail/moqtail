@@ -555,7 +555,7 @@ pub async fn handle(
       // Send FetchOk on the request stream before delivering objects.
       {
         let track_properties = if include_properties(&fetch.parameters) {
-          track.track_properties.read().await.clone()
+          track.track_properties().await
         } else {
           Vec::new()
         };

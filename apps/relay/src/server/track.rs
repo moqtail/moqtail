@@ -345,12 +345,12 @@ pub struct Track {
   has_objects: Arc<AtomicBool>,
   pub object_logger: ObjectLogger,
   config: &'static AppConfig,
-  pub status: Arc<RwLock<TrackStatus>>,
+  status: Arc<RwLock<TrackStatus>>,
   pub status_notify: Arc<Notify>,
   /// Subscribers waiting for track confirmation: (request_id, connection_id).
-  pub pending_subscribers: Arc<RwLock<Vec<(u64, usize)>>>,
+  pending_subscribers: Arc<RwLock<Vec<(u64, usize)>>>,
   /// Cached track properties from PUBLISH or SUBSCRIBE_OK (relays MUST cache).
-  pub track_properties: Arc<RwLock<Vec<TrackProperty>>>,
+  track_properties: Arc<RwLock<Vec<TrackProperty>>>,
   /// Original subgroup headers for open publisher streams, keyed by stream_id.
   /// Used so new mid-group subscribers can open a QUIC send stream
   /// Inserted when the first object of a subgroup arrives; removed when the
@@ -759,6 +759,19 @@ impl Track {
         .push((request_id, connection_id));
     }
     status.clone()
+  }
+
+  pub async fn status(&self) -> TrackStatus {
+    self.status.read().await.clone()
+  }
+
+  /// The subscribers that joined while Pending, leaving none behind.
+  pub async fn take_pending_subscribers(&self) -> Vec<(u64, usize)> {
+    std::mem::take(&mut *self.pending_subscribers.write().await)
+  }
+
+  pub async fn track_properties(&self) -> Vec<TrackProperty> {
+    self.track_properties.read().await.clone()
   }
 
   /// Transition from Pending to Rejected. Notifies waiters.

@@ -1258,10 +1258,7 @@ mod tests {
 
     let track = &fetched;
     assert_eq!(track.origin(), TrackOrigin::Subscribe);
-    assert!(matches!(
-      track.status.read().await.clone(),
-      TrackStatus::Pending
-    ));
+    assert!(matches!(track.status().await, TrackStatus::Pending));
   }
 
   #[tokio::test]
@@ -1289,7 +1286,7 @@ mod tests {
 
     assert_eq!(track.origin(), TrackOrigin::Publish);
     assert!(matches!(
-      track.status.read().await.clone(),
+      track.status().await,
       TrackStatus::Confirmed { .. }
     ));
   }

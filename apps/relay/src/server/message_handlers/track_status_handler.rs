@@ -59,7 +59,7 @@ pub async fn handle(
           largest_location.clone(),
         )];
         let track_properties = if include_properties(&status_req.subscribe_parameters) {
-          track.track_properties.read().await.clone()
+          track.track_properties().await
         } else {
           Vec::new()
         };

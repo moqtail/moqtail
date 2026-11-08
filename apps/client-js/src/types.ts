@@ -19,6 +19,12 @@ import type { CatalogTrack, PlayerState } from 'moqtail/player';
 export type Track = CatalogTrack;
 export type Status = PlayerState;
 
+/** Player features the sidebar toggles; each change reloads the player. */
+export interface Features {
+  ssts: boolean;
+  switchFrom: boolean;
+}
+
 export interface PresetNamespace {
   name: string;
   label: string;

@@ -17,10 +17,17 @@
 import { useState, useRef, useCallback, useEffect } from 'preact/hooks';
 import { uniqueNamesGenerator, colors, animals } from 'unique-names-generator';
 import { Tuple } from 'moqtail';
-import { formatMsfUrl, parseMsfUrl, type CatalogElement, type MOQtailPlayer } from 'moqtail/player';
+import {
+  formatMsfUrl,
+  liveBuffer,
+  parseMsfUrl,
+  ssts,
+  type CatalogElement,
+  type MOQtailPlayer,
+} from 'moqtail/player';
 import type { MOQtailVideoElement } from 'moqtail/player/component';
 import { Publisher } from '@/lib/publisher';
-import type { Track, Status, SourceState, SourceKind, PublishStatus } from '@/types';
+import type { Track, Status, SourceState, SourceKind, PublishStatus, Features } from '@/types';
 import { Header } from '@/components/Header';
 import { Sidebar } from '@/components/Sidebar';
 import { VideoPlayer } from '@/components/VideoPlayer';
@@ -54,7 +61,7 @@ function catalogUrl(relayUrl: string, namespace: string): string {
   return formatMsfUrl(relay, Tuple.fromUtf8Path(namespace), 'catalog');
 }
 
-/** The moqtail.dev relays implement SWITCH_FROM, so renditions switch with switch-from. */
+/** The moqtail.dev relays implement SWITCH_FROM, so it's on by default for them. */
 function supportsSwitchFrom(url: string): boolean {
   return URL.parse(url)?.hostname.endsWith('.moqtail.dev') ?? false;
 }
@@ -116,6 +123,12 @@ export function App() {
   const [catalog, setCatalog] = useState<CatalogElement>();
   const [session, setSession] = useState(0);
   const [advanced, setAdvanced] = useState(readAdvanced);
+  const [features, setFeatures] = useState<Features>(() => ({
+    ssts: false,
+    switchFrom: supportsSwitchFrom(relayUrl),
+  }));
+  /** Bumped by a feature toggle while playing, to reconnect with the new features. */
+  const [reload, setReload] = useState(0);
 
   const videoRef = useRef<MOQtailVideoElement | null>(null);
 
@@ -137,6 +150,7 @@ export function App() {
     try {
       const source = parseMsfUrl(raw);
       setRelayUrl(source.url);
+      setFeatures(f => ({ ...f, switchFrom: supportsSwitchFrom(source.url) }));
       setNamespace(source.namespace.fields.map(f => f.toUtf8()).join('/'));
     } catch {
       logger.warn('app', `ignoring an invalid ?url= "${raw}"`);
@@ -237,8 +251,9 @@ export function App() {
     resetPlayback('connecting');
     const url = catalogUrl(relayUrl, namespace);
     logger.info('app', `connect: ${url}`);
-    // Read when the element loads, so it's set before `src`
-    video.toggleAttribute('switch-from', supportsSwitchFrom(url));
+    // Read when the element loads, so they're set before `src`
+    video.config = features.ssts ? { plugins: [ssts(), liveBuffer()] } : undefined;
+    video.toggleAttribute('switch-from', features.switchFrom && !features.ssts);
     if (video.getAttribute('src') === url) video.load();
     else video.src = url;
 
@@ -253,7 +268,21 @@ export function App() {
       setCatalog(element);
       setTracks(sortTracks(element.tracks));
     });
-  }, [relayUrl, namespace, resetPlayback]);
+  }, [relayUrl, namespace, features, resetPlayback]);
+
+  useEffect(() => {
+    if (reload > 0) handleConnect();
+  }, [reload]);
+
+  const handleRelayUrlChange = useCallback((url: string) => {
+    setRelayUrl(url);
+    setFeatures(f => ({ ...f, switchFrom: supportsSwitchFrom(url) }));
+  }, []);
+
+  const handleFeatureChange = useCallback((feature: keyof Features, on: boolean) => {
+    setFeatures(f => ({ ...f, [feature]: on }));
+    if (videoRef.current?.hasAttribute('src')) setReload(n => n + 1);
+  }, []);
 
   const disposePlayer = useCallback(() => {
     videoRef.current?.removeAttribute('src');
@@ -371,7 +400,7 @@ export function App() {
         <Sidebar
           // Watch tab props
           relayUrl={relayUrl}
-          onRelayUrlChange={setRelayUrl}
+          onRelayUrlChange={handleRelayUrlChange}
           namespace={namespace}
           onNamespaceChange={setNamespace}
           status={status}
@@ -379,6 +408,8 @@ export function App() {
           activeTracks={activeTracks}
           onConnect={handleConnect}
           error={error}
+          features={features}
+          onFeatureChange={handleFeatureChange}
           // Tab
           tab={tab}
           onTabChange={handleTabChange}

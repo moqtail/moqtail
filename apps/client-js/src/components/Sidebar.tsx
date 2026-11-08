@@ -17,8 +17,8 @@
 import { useState, useRef, useEffect } from 'preact/hooks';
 import type { ComponentChildren } from 'preact';
 import { cn } from '@/lib/utils';
-import { LuChevronDown, LuLoader } from 'react-icons/lu';
-import type { Track, Status, Presets } from '@/types';
+import { LuChevronDown, LuExternalLink, LuLoader } from 'react-icons/lu';
+import type { Track, Status, Presets, Features } from '@/types';
 import presets from '@/presets.json';
 import { PublisherPanel, type PublisherPanelProps } from './PublisherPanel';
 
@@ -200,6 +200,50 @@ function Field({ label, children }: { label: string; children: ComponentChildren
   );
 }
 
+/** A player feature; changing it reloads the player. */
+function FeatureToggle({
+  label,
+  href,
+  on,
+  disabled = false,
+  onChange,
+}: {
+  label: string;
+  href: string;
+  on: boolean;
+  disabled?: boolean;
+  onChange: (on: boolean) => void;
+}) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <label
+        className={cn(
+          'flex items-center gap-1.5 text-xs text-neutral-400 select-none',
+          disabled ? 'cursor-not-allowed opacity-40' : 'cursor-pointer hover:text-neutral-200',
+        )}
+      >
+        <input
+          type="checkbox"
+          checked={on}
+          disabled={disabled}
+          onChange={e => onChange(e.currentTarget.checked)}
+          className="h-3 w-3 cursor-pointer accent-blue-500 disabled:cursor-not-allowed"
+        />
+        {label}
+      </label>
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        aria-label={`${label} specification`}
+        className="text-neutral-600 hover:text-neutral-300"
+      >
+        <LuExternalLink className="h-3 w-3" aria-hidden="true" />
+      </a>
+    </div>
+  );
+}
+
 /** A catalog track; highlighted while objects arrive on it. */
 function TrackRow({ track, active }: { track: Track; active: boolean }) {
   return (
@@ -310,6 +354,8 @@ export interface SidebarProps {
   activeTracks: string[];
   onConnect: () => void;
   error: string | null;
+  features: Features;
+  onFeatureChange: (feature: keyof Features, on: boolean) => void;
   // Tab
   tab: Tab;
   onTabChange: (tab: Tab) => void;
@@ -327,6 +373,8 @@ export function Sidebar({
   activeTracks,
   onConnect,
   error,
+  features,
+  onFeatureChange,
   tab,
   onTabChange,
   publishProps,
@@ -391,6 +439,24 @@ export function Sidebar({
                 />
               </Field>
             </div>
+            <Field label="Features">
+              <div className="flex flex-wrap gap-x-4 gap-y-1">
+                <FeatureToggle
+                  label="SSTS"
+                  href="https://wilaw.github.io/moqt-ssts/draft-wilaw-moq-moqt-ssts.html"
+                  on={features.ssts}
+                  onChange={on => onFeatureChange('ssts', on)}
+                />
+                <FeatureToggle
+                  label="SWITCH_FROM"
+                  href="https://github.com/moq-wg/moq-transport/pull/1674"
+                  // SSTS leaves the switching to the relay
+                  on={features.switchFrom && !features.ssts}
+                  disabled={features.ssts}
+                  onChange={on => onFeatureChange('switchFrom', on)}
+                />
+              </div>
+            </Field>
             <button
               type="submit"
               disabled={isBusy || !relayUrl || !namespace}

@@ -39,7 +39,7 @@ export interface BufferState {
   max: number | undefined
 }
 
-/** A playback rate, or a jump to `jumpTo` seconds behind the end of the buffer. */
+/** A playback rate, or a jump to `jumpTo` seconds behind the end of the buffer; negative is past it. */
 export type BufferDecision = { rate: number } | { jumpTo: number }
 
 export const CATCHUP_RATE = 1.1
@@ -60,8 +60,10 @@ const JUMP_FACTOR = 4
  */
 export function decide(state: BufferState, catchupRate: number): BufferDecision {
   const { forward, latency, target = latency, min = 0, max = Infinity } = state
-  const goal = Math.min(Math.max(forward + target - latency, min, STALL_THRESHOLD), max)
-  if (forward > goal * JUMP_FACTOR) return { jumpTo: goal }
+  const exact = forward + target - latency
+  const goal = Math.min(Math.max(exact, min, STALL_THRESHOLD), max)
+  // Far behind the target (a seek back): land at it past the buffer at once, not chase the buffer end
+  if (forward > goal * JUMP_FACTOR) return { jumpTo: -exact > goal * JUMP_FACTOR ? exact : goal }
   if (forward > goal + TOLERANCE) return { rate: catchupRate }
   if (forward >= goal - TOLERANCE) return { rate: 1 }
   const slow = 2 - catchupRate
@@ -190,6 +192,11 @@ if (import.meta.vitest) {
     expect(rate({ forward: 1.5, latency: 1.5 })).toEqual({ rate: 0.9 })
     expect(rate({ forward: 0.25, latency: 0.25 })).toEqual({ rate: 0.6 })
     expect(rate({ forward: 9, latency: 9 })).toEqual({ jumpTo: 2 })
+  })
+
+  test('far behind the target jumps straight to it past the buffer, near it stays inside', () => {
+    expect(rate({ forward: 3, latency: 30, target: 1 })).toEqual({ jumpTo: -26 })
+    expect(rate({ forward: 3, latency: 4.5, target: 1 })).toEqual({ jumpTo: 0.5 }) // 0.5 past the end: not worth it
   })
 
   test('wallclock latency: the goal is the forward buffer that gives the target', () => {

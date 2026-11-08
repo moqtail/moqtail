@@ -67,13 +67,13 @@ pub type AnnouncementSubscriber = (Arc<MOQTClient>, PublishNamespace);
 /// waiting writer, so a second read deadlocks once a writer queues in between.
 #[derive(Clone)]
 pub struct TrackManager {
-  pub tracks: Arc<RwLock<HashMap<FullTrackName, Arc<Track>>>>,
+  tracks: Arc<RwLock<HashMap<FullTrackName, Arc<Track>>>>,
   /// Maps (publisher_connection_id, publisher_track_alias) -> FullTrackName.
   /// Connection-scoped to avoid alias collisions across different publishers.
-  pub track_aliases: Arc<RwLock<HashMap<(usize, u64), FullTrackName>>>,
-  pub namespace_subscribers: Arc<RwLock<HashMap<NamespacePrefix, Vec<NamespaceSubscriber>>>>,
-  pub announcements: Arc<RwLock<HashMap<Tuple, AnnouncementSubscriber>>>,
-  pub publishes: Arc<RwLock<HashMap<FullTrackName, HashMap<usize, Publish>>>>,
+  track_aliases: Arc<RwLock<HashMap<(usize, u64), FullTrackName>>>,
+  namespace_subscribers: Arc<RwLock<HashMap<NamespacePrefix, Vec<NamespaceSubscriber>>>>,
+  announcements: Arc<RwLock<HashMap<Tuple, AnnouncementSubscriber>>>,
+  publishes: Arc<RwLock<HashMap<FullTrackName, HashMap<usize, Publish>>>>,
   /// Counter for generating stable relay_track_id values.
   next_relay_track_id: Arc<AtomicU64>,
   /// Fires whenever a track alias is registered, so a data stream that arrived ahead of
@@ -435,6 +435,35 @@ impl TrackManager {
       clients.push((client, kind, parameters, namespace_tx));
     }
     info!("Added namespace subscriber for prefix {:?}", prefix);
+  }
+
+  /// Sends one message per matching discovery subscriber, naming the namespace by
+  /// the suffix that subscriber's own prefix leaves, skipping the announcer.
+  pub async fn announce_to_namespace_subscribers(
+    &self,
+    namespace: &Tuple,
+    announcer_connection_id: usize,
+    message_for: impl Fn(Tuple) -> ControlMessage,
+  ) {
+    let subs_map = self.namespace_subscribers.read().await;
+    for (prefix, subscribers) in subs_map.iter() {
+      if !namespace.starts_with(prefix) {
+        continue;
+      }
+      let Some(suffix) = namespace.suffix(prefix) else {
+        continue;
+      };
+      for (sub, kind, _params, namespace_tx) in subscribers {
+        if *kind != SubscribeKind::Namespace || sub.connection_id == announcer_connection_id {
+          continue;
+        }
+        info!(
+          "Forwarding namespace suffix {:?} to subscriber {}",
+          suffix, sub.connection_id
+        );
+        let _ = namespace_tx.send(message_for(suffix.clone()));
+      }
+    }
   }
 
   /// Clients of the given kind whose prefix matches the target namespace.

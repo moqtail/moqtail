@@ -23,7 +23,7 @@ use tokio::sync::RwLock;
 /// so the Track name does not identify one.
 #[derive(Clone, Debug)]
 pub struct RequestSubscriptionMap {
-  pub map: Arc<RwLock<HashMap<u64, Weak<RwLock<Subscription>>>>>,
+  map: Arc<RwLock<HashMap<u64, Weak<RwLock<Subscription>>>>>,
 }
 
 impl RequestSubscriptionMap {

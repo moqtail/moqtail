@@ -38,25 +38,10 @@ pub(crate) async fn announce_to_namespace_subscribers(
   announcer_connection_id: usize,
   message_for: impl Fn(Tuple) -> ControlMessage,
 ) {
-  let subs_map = context.track_manager.namespace_subscribers.read().await;
-  for (prefix, subscribers) in subs_map.iter() {
-    if !namespace.starts_with(prefix) {
-      continue;
-    }
-    let Some(suffix) = namespace.suffix(prefix) else {
-      continue;
-    };
-    for (sub, kind, _params, namespace_tx) in subscribers {
-      if *kind != SubscribeKind::Namespace || sub.connection_id == announcer_connection_id {
-        continue;
-      }
-      info!(
-        "Forwarding namespace suffix {:?} to subscriber {}",
-        suffix, sub.connection_id
-      );
-      let _ = namespace_tx.send(message_for(suffix.clone()));
-    }
-  }
+  context
+    .track_manager
+    .announce_to_namespace_subscribers(namespace, announcer_connection_id, message_for)
+    .await;
 }
 
 /// A namespace is announced for as long as its request stream is open, so closing that

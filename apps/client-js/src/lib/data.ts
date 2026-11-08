@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import type { DataEvent, DataHeaderEvent, MOQtailClient } from 'moqtail';
+import type { ControlMessage, DataEvent, DataHeaderEvent, MOQtailClient } from 'moqtail';
 import type { MOQtailPlayer } from 'moqtail/player';
 
 const decoder = new TextDecoder();
@@ -45,15 +45,48 @@ export function followData(
     listener(event, stream.track);
   };
 
-  const use = (next: MOQtailClient) => {
-    client?.off('dataevent', onData);
+  return eachClient(player, next => {
     client = next;
-    client.on('dataevent', onData);
+    next.on('dataevent', onData);
+    return () => next.off('dataevent', onData);
+  });
+}
+
+/**
+ * Calls `listener` with each control message the player's client sends or receives, across
+ * reconnects. Each client's SETUP exchange is replayed when it's attached, since it happened
+ * earlier. Returns the function that stops listening.
+ */
+export function followMessages(
+  player: MOQtailPlayer,
+  listener: (message: ControlMessage, direction: 'in' | 'out') => void,
+): () => void {
+  const onIn = (message: ControlMessage) => listener(message, 'in');
+  const onOut = (message: ControlMessage) => listener(message, 'out');
+  return eachClient(player, client => {
+    // The handshake finishes before the player hands out its client, so replay it
+    if (client.clientSetup) onOut(client.clientSetup);
+    if (client.serverSetup) onIn(client.serverSetup);
+    client.on('messagereceived', onIn);
+    client.on('messagesent', onOut);
+    return () => {
+      client.off('messagereceived', onIn);
+      client.off('messagesent', onOut);
+    };
+  });
+}
+
+/** Runs `attach` on the player's current and every later client, detaching the one before. */
+function eachClient(player: MOQtailPlayer, attach: (client: MOQtailClient) => () => void) {
+  let detach: (() => void) | undefined;
+  const use = (client: MOQtailClient) => {
+    detach?.();
+    detach = attach(client);
   };
   if (player.client) use(player.client);
   player.on('client', use);
   return () => {
     player.off('client', use);
-    client?.off('dataevent', onData);
+    detach?.();
   };
 }

@@ -240,6 +240,8 @@ export class MOQtailClient extends Emitter<ClientEvents> {
   webTransport!: WebTransport
   /** Validated Setup message the server sent back during handshake (protocol parameters negotiated). */
   #serverSetup!: Setup
+  /** Setup message this client sent during handshake. */
+  #clientSetup!: Setup
   /** How many filter ranges this client allows the server per request, as advertised in SETUP. */
   #maxFilterRanges: bigint = 0n
   /** Outgoing / incoming control message stream pair. */
@@ -334,6 +336,15 @@ export class MOQtailClient extends Emitter<ClientEvents> {
    */
   get serverSetup(): Setup {
     return this.#serverSetup
+  }
+
+  /**
+   * Gets the setup this client sent during handshake.
+   *
+   * @returns The {@link Setup} instance written first on the control stream.
+   */
+  get clientSetup(): Setup {
+    return this.#clientSetup
   }
 
   /**
@@ -484,7 +495,8 @@ export class MOQtailClient extends Emitter<ClientEvents> {
       }
       this.#maxFilterRanges = maxFilterRanges.value
       assertNoAuthorityOverWebTransport(params)
-      await sendHalf.send(new Setup(params))
+      this.#clientSetup = new Setup(params)
+      await sendHalf.send(this.#clientSetup)
 
       // The server's control stream is the first uni stream it opens; every later
       // one is a data stream, so the same reader is reused by #acceptIncomingUniStreams.
@@ -2656,6 +2668,8 @@ if (import.meta.vitest) {
       await connecting
 
       expect(sent[0]).toBeInstanceOf(Setup)
+      expect(client.clientSetup).toBe(sent[0])
+      expect(client.serverSetup).toBeInstanceOf(Setup)
       await expect(client.init()).rejects.toThrow('only run once')
       await client.disconnect()
     })

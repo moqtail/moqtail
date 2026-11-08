@@ -22,13 +22,14 @@
 
 import { Fragment, type ComponentChildren, type RefObject } from 'preact';
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
-import type { DataEvent } from 'moqtail';
+import { ControlMessageType, MessageParameterType } from 'moqtail';
+import type { ControlMessage, DataEvent } from 'moqtail';
 import type { CatalogElement, MOQtailPlayer, PlayerEvents } from 'moqtail/player';
 import type { MOQtailVideoElement } from 'moqtail/player/component';
-import { followData } from '@/lib/data';
+import { followData, followMessages } from '@/lib/data';
 import { cn } from '@/lib/utils';
 
-type Tab = 'events' | 'objects' | 'status' | 'catalog';
+type Tab = 'events' | 'messages' | 'objects' | 'status' | 'catalog';
 type Tone = 'element' | 'player' | 'warn';
 type Kind = DataEvent['kind'];
 
@@ -36,6 +37,13 @@ interface EventLine {
   at: number;
   tone: Tone;
   text: string;
+}
+
+interface MessageLine {
+  id: number;
+  at: number;
+  direction: 'in' | 'out';
+  message: ControlMessage;
 }
 
 interface Column {
@@ -53,6 +61,7 @@ interface Props {
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'events', label: 'Events' },
+  { id: 'messages', label: 'Messages' },
   { id: 'objects', label: 'Objects' },
   { id: 'status', label: 'Status' },
   { id: 'catalog', label: 'Catalog' },
@@ -75,7 +84,14 @@ const TONES: Record<Tone, string> = {
 export function Advanced({ videoRef, player, catalog, session }: Props) {
   const [tab, setTab] = useState<Tab>('events');
   const events = useEvents(videoRef, player, session);
+  const messages = useMessages(player, session);
   const objects = useObjects(player, session);
+  const clears: Partial<Record<Tab, () => void>> = {
+    events: events.clear,
+    messages: messages.clear,
+    objects: objects.clear,
+  };
+  const clear = clears[tab];
 
   return (
     <section className="hidden h-[42%] min-h-60 shrink-0 flex-col border-t border-white/6 bg-neutral-950 md:flex">
@@ -113,10 +129,10 @@ export function Advanced({ videoRef, player, catalog, session }: Props) {
               />
             </>
           )}
-          {(tab === 'events' || tab === 'objects') && (
+          {clear && (
             <button
               type="button"
-              onClick={tab === 'events' ? events.clear : objects.clear}
+              onClick={clear}
               className="cursor-pointer rounded-md px-2 py-1 text-xs text-neutral-500 transition-colors hover:bg-white/6 hover:text-neutral-200"
             >
               Clear
@@ -126,6 +142,7 @@ export function Advanced({ videoRef, player, catalog, session }: Props) {
       </div>
       <div className="min-h-0 flex-1">
         {tab === 'events' && <EventsView lines={events.lines} />}
+        {tab === 'messages' && <MessagesView lines={messages.lines} />}
         {tab === 'objects' && <ObjectsView names={objects.names} columns={objects.columns} />}
         {tab === 'status' && <StatusView videoRef={videoRef} player={player} catalog={catalog} />}
         {tab === 'catalog' && <CatalogView catalog={catalog} />}
@@ -212,6 +229,25 @@ function useEvents(
     return () => {
       for (const [name, listener] of entries) player.off(name, listener);
     };
+  }, [player]);
+
+  return { lines, clear: () => setLines([]) };
+}
+
+/** Control messages sent and received, newest last. */
+function useMessages(player: MOQtailPlayer | undefined, session: number) {
+  const [lines, setLines] = useState<MessageLine[]>([]);
+  const nextId = useRef(0);
+
+  useLayoutEffect(() => setLines([]), [session]);
+  useEffect(() => {
+    if (!player) return;
+    return followMessages(player, (message, direction) =>
+      setLines(previous => [
+        ...previous.slice(1 - MAX_EVENTS),
+        { id: nextId.current++, at: performance.now(), direction, message },
+      ]),
+    );
   }, [player]);
 
   return { lines, clear: () => setLines([]) };
@@ -315,6 +351,53 @@ function EventsView({ lines }: { lines: EventLine[] }) {
           <span className="shrink-0 text-neutral-600 tabular-nums">{clock(line.at)}</span>
           <span className={TONES[line.tone]}>{line.text}</span>
         </div>
+      ))}
+    </div>
+  );
+}
+
+function MessagesView({ lines }: { lines: MessageLine[] }) {
+  const scroller = useRef<HTMLDivElement>(null);
+  const atBottom = useRef(true);
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    if (el && atBottom.current) el.scrollTop = el.scrollHeight;
+  }, [lines]);
+
+  if (lines.length === 0)
+    return (
+      <Empty title="No messages yet">
+        Control messages show here as they're sent and received.
+      </Empty>
+    );
+  return (
+    <div
+      ref={scroller}
+      onScroll={e => {
+        const el = e.currentTarget;
+        atBottom.current = el.scrollTop + el.clientHeight >= el.scrollHeight - 20;
+      }}
+      className="h-full overflow-auto px-4 py-2 font-mono text-[11px] leading-5"
+    >
+      {lines.map(line => (
+        <details key={line.id} className="group">
+          <summary className="flex cursor-pointer list-none gap-3 hover:bg-white/4">
+            <span className="shrink-0 text-neutral-600 tabular-nums">{clock(line.at)}</span>
+            <span
+              className={cn(
+                'w-10 shrink-0',
+                line.direction === 'in' ? 'text-green-400' : 'text-blue-300',
+              )}
+            >
+              {line.direction === 'in' ? '← in' : '→ out'}
+            </span>
+            <span className="text-neutral-200">{messageName(line.message)}</span>
+            <span className="truncate text-neutral-500">{messageBrief(line.message)}</span>
+          </summary>
+          <pre className="mb-1 ml-4 border-l border-white/10 pl-3 text-neutral-400">
+            {JSON.stringify(plain(line.message), null, 2)}
+          </pre>
+        </details>
       ))}
     </div>
   );
@@ -472,6 +555,52 @@ function describeDataEvent(event: DataEvent): string {
   }
   const code = event.resetCode === undefined ? '' : ` ${event.resetCode}`;
   return `${prefix} END ${event.reason}${code}`;
+}
+
+/** `SubscribeOk` → `SUBSCRIBE_OK`. */
+function messageName(message: ControlMessage): string {
+  const name = ControlMessageType[message.getType()] ?? `0x${message.getType().toString(16)}`;
+  return name.replace(/(?<=[a-z])(?=[A-Z])/g, '_').toUpperCase();
+}
+
+/** The request ID and track a message is about, when it carries them. */
+function messageBrief(message: ControlMessage): string {
+  const parts: string[] = [];
+  if ('requestId' in message) parts.push(`req ${message.requestId}`);
+  if ('fullTrackName' in message) {
+    const { namespace, name } = plain(message.fullTrackName) as Record<string, string>;
+    parts.push(`${namespace}:${name}`);
+  }
+  return parts.join(' ');
+}
+
+const utf8 = new TextDecoder('utf-8', { fatal: true });
+
+/** A message as JSON-friendly data: bytes as text (or hex), tuples as paths, parameters named. */
+function plain(value: unknown, key?: string): unknown {
+  if (typeof value === 'bigint')
+    return Number.isSafeInteger(Number(value)) ? Number(value) : `${value}`;
+  if (value instanceof Uint8Array) return bytes(value);
+  if (Array.isArray(value)) return value.map(v => plain(v, key));
+  if (!value || typeof value !== 'object') return value;
+  const object = value as Record<string, unknown>;
+  if (typeof object.toUtf8Path === 'function') return (object.toUtf8Path as () => string)();
+  const entries = Object.entries(object).map(([k, v]) => [k, plain(v, k)]);
+  // Parameter classes carry their wire type as a static TYPE; other classes reuse the name
+  const type = (value.constructor as { TYPE?: number }).TYPE;
+  if (key === 'parameters' && type !== undefined)
+    entries.unshift(['type', MessageParameterType[type] ?? `0x${type.toString(16)}`]);
+  return Object.fromEntries(entries);
+}
+
+function bytes(value: Uint8Array): string {
+  try {
+    const text = utf8.decode(value);
+    if (/^[\x20-\x7e]*$/.test(text)) return text;
+  } catch {
+    // not UTF-8: fall through to hex
+  }
+  return `0x${Array.from(value, b => b.toString(16).padStart(2, '0')).join('')}`;
 }
 
 /** Local wall-clock time of a `performance.now()` stamp, to the millisecond. */

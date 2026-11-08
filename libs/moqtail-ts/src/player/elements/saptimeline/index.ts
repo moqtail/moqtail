@@ -57,7 +57,7 @@ export const SapTimeline = defineElement({
   type: 'source',
   name: 'saptimeline',
   capabilities: [eventTimelineCapabilities('out', SAP_EVENT_TYPE)],
-  probe: (ids) => (ids.packaging === 'eventtimeline' && ids.eventType === SAP_EVENT_TYPE ? 1 : 0),
+  probe: (ids) => ids.packaging === 'eventtimeline' && ids.eventType === SAP_EVENT_TYPE,
   init: async (context) => {
     const timeline = new SapTimelineElement(context)
     await timeline.start()

@@ -51,14 +51,14 @@ The TypeScript library includes the MOQT client and the player: the `<moqtail-vi
 **Player API**
 
 ```ts
-const player = new MOQtailPlayer({ buffer: defaultBufferController() })
+const player = new MOQtailPlayer({ plugins: [liveBuffer()] })
   .source('moqt://relay.moqtail.dev#msf:moqtail-ch07_vod--catalog')
   .sink(video)
 
 await player.play()
 ```
 
-The client, events, elements and extensions are in [libs/moqtail-ts/README.md](libs/moqtail-ts/README.md).
+The client, events, elements and plugins are in [libs/moqtail-ts/README.md](libs/moqtail-ts/README.md).
 
 ### moqtail-rs
 

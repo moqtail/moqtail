@@ -44,10 +44,11 @@ import { Forwarder, type Child } from './forward'
 /** The next switching set ID per client: players can share one, and equal IDs would merge their sets. */
 const nextSetId = new WeakMap<MOQtailClient, bigint>()
 
-/** @public The switching set source of the `SSTS` extension. */
+/** @public The switching set source of the `ssts()` plugin. */
 export class SstsSource extends SourceElement implements MediaSourceElement {
+  readonly options: SwitchingSetOptions
   readonly pad: Pad
-  /** The negotiated algorithms (`sstsAlgorithms`), read at init. */
+  /** The negotiated algorithms (`sstsAlgorithms`), most preferred first, read at init. */
   readonly algorithms: readonly bigint[]
   #algorithm: bigint
   readonly #children = new Map<string, Child>()
@@ -60,17 +61,16 @@ export class SstsSource extends SourceElement implements MediaSourceElement {
   #algorithmCalls = 0
   #algorithmLock = Promise.resolve()
 
-  constructor(
-    context: ElementContext,
-    readonly options: SwitchingSetOptions,
-  ) {
+  /** `preferred` is the plugin's list, most preferred first; the source starts on the first negotiated one. */
+  constructor(context: ElementContext, options: SwitchingSetOptions, preferred: readonly bigint[]) {
     super(context)
+    this.options = options
     const first = context.tracks[0]!
     this.#tracks = context.tracks
     this.#selected = new Set(context.tracks.map((t) => this.#id(t)))
-    this.algorithms = sstsAlgorithms(context.client.serverSetup)
-    // The draft has no selection rule (SSTS 3): its default algorithm, else our first
-    this.#algorithm = this.algorithms.includes(0n) ? 0n : (this.algorithms[0] ?? 0n)
+    // The draft has no selection rule (SSTS 3): our preference order decides
+    this.algorithms = sstsAlgorithms(context.client.serverSetup, preferred)
+    this.#algorithm = this.algorithms[0] ?? 0n
     this.pad = this.createPad('src', [
       { direction: 'out', code: CapabilityCode.PACKAGING, value: first.packaging },
       { direction: 'out', code: CapabilityCode.ROLE, value: first.role ?? 'video' },
@@ -323,31 +323,34 @@ export class SstsSource extends SourceElement implements MediaSourceElement {
 }
 
 /**
- * The `switchingSetSource` of `SSTS`. Never probed; the catalog element loads it for a set with
- * `{ child }`, the definition the probe picked. Pads carry their own capabilities, so it lists none.
+ * The switch source of `ssts()`, for the plugin's `algorithms`. The catalog element loads it
+ * for a set with `{ child }`, the definition the probe picked. Any media track is fine, since
+ * nothing here is specific to a packaging. Pads carry their own capabilities, so it lists none.
  */
-export const Ssts = defineElement({
-  type: 'source',
-  name: 'ssts',
-  capabilities: [],
-  provides: [MEDIA_SOURCE],
-  probe: () => 0,
-  init: async (context, options?: SwitchingSetOptions) => {
-    if (!options?.child.provides?.includes(MEDIA_SOURCE)) {
-      throw new PlayerError('UNSUPPORTED_SOURCE', 'An SSTS child must be a media source', { element: 'ssts' })
-    }
-    if (context.tracks.length === 0) {
-      throw new PlayerError('UNSUPPORTED_SOURCE', 'The SSTS source needs at least one track', { element: 'ssts' })
-    }
-    // Whoever loads it, SSTS is never used on a session that didn't negotiate it (SSTS 3)
-    if (sstsAlgorithms(context.client.serverSetup).length === 0) {
-      throw new PlayerError('UNSUPPORTED_SOURCE', 'The session did not negotiate SSTS', { element: 'ssts' })
-    }
-    const source = new SstsSource(context, options)
-    await source.start()
-    return source
-  },
-})
+export function sstsSource(algorithms: readonly bigint[]) {
+  return defineElement({
+    type: 'source',
+    name: 'ssts',
+    capabilities: [],
+    provides: [MEDIA_SOURCE],
+    probe: (ids) => ids.role === 'video' || ids.role === 'audio',
+    init: async (context, options?: SwitchingSetOptions) => {
+      if (!options?.child.provides?.includes(MEDIA_SOURCE)) {
+        throw new PlayerError('UNSUPPORTED_SOURCE', 'An SSTS child must be a media source', { element: 'ssts' })
+      }
+      if (context.tracks.length === 0) {
+        throw new PlayerError('UNSUPPORTED_SOURCE', 'The SSTS source needs at least one track', { element: 'ssts' })
+      }
+      // Whoever loads it, SSTS is never used on a session that didn't negotiate it (SSTS 3)
+      if (sstsAlgorithms(context.client.serverSetup, algorithms).length === 0) {
+        throw new PlayerError('UNSUPPORTED_SOURCE', 'The session did not negotiate SSTS', { element: 'ssts' })
+      }
+      const source = new SstsSource(context, options, algorithms)
+      await source.start()
+      return source
+    },
+  })
+}
 
 if (import.meta.vitest) {
   const { test, expect, vi, afterEach } = import.meta.vitest
@@ -355,6 +358,7 @@ if (import.meta.vitest) {
   const { SetupOptions } = await import('@/model/parameter/setup_option')
   const { PublishDoneStatusCode } = await import('@/model/control/constant')
   const { Cmaf } = await import('@/player/elements/cmaf')
+  const { SSTS_ALGORITHMS } = await import('./algorithms')
   const { cmafTrack, fakeCatalog, requested, twoSecondTimeline } = await import('@/player/testing/cmaf')
   const { FakeClient, mediaObject } = await import('@/player/testing/client')
   const { collectingSink, flush, packet, testChain, testSource } = await import('@/player/testing/elements')
@@ -365,7 +369,13 @@ if (import.meta.vitest) {
   /** SSTS sources over `child` (CMAF by default), one per set, on one `FakeClient`. */
   async function sstsChain(
     sets: CatalogTrack[][],
-    options: { algorithms?: bigint[]; child?: typeof Cmaf; catalog?: ReturnType<typeof fakeCatalog> } = {},
+    options: {
+      /** The server's; ours are `preferred`, default `SSTS_ALGORITHMS`. */
+      algorithms?: bigint[]
+      preferred?: bigint[]
+      child?: typeof Cmaf
+      catalog?: ReturnType<typeof fakeCatalog>
+    } = {},
   ) {
     const client = new FakeClient()
     client.serverSetup = new Setup(new SetupOptions().addSstsAlgorithms(options.algorithms ?? [0n, 0xff01n]).build())
@@ -373,6 +383,7 @@ if (import.meta.vitest) {
       () => [],
       () => client,
     )
+    const ssts = sstsSource(options.preferred ?? SSTS_ALGORITHMS)
     const sources: SstsSource[] = []
     let sink!: Sink
     chain.addSource(
@@ -381,7 +392,7 @@ if (import.meta.vitest) {
           for (const tracks of sets) {
             const request = { tracks, options: { child: options.child ?? Cmaf } }
             sources.push(
-              await parent.ctx.load(Ssts, { ...request, ...(options.catalog && { catalog: options.catalog }) }),
+              await parent.ctx.load(ssts, { ...request, ...(options.catalog && { catalog: options.catalog }) }),
             )
           }
           parent.emit('nomorepads')
@@ -436,8 +447,9 @@ if (import.meta.vitest) {
       [[0xff01n], 0xff01n],
     ])
     expect(c.sources[1]!.pad.capabilities.map((cap) => cap.value)).toEqual(['cmaf', 'audio'])
-    // 0, the draft's default, when the peer accepts it
+    // The first of ours that the peer accepts
     expect((await sstsChain([[v('v1')]])).source.algorithm).toBe(0n)
+    expect((await sstsChain([[v('v1')]], { preferred: [0xff01n, 0n] })).source.algorithm).toBe(0xff01n)
   })
 
   test('the arriving track writes its properties first and is the active one; one eos after every child', async () => {

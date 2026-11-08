@@ -20,8 +20,10 @@
  * the forward buffer.
  */
 
-import { defaultBufferController, type BufferController } from '@/player'
+import type { BufferController } from '@/player'
 import { CatalogElement } from '@/player/elements/catalog/element'
+import { LiveBufferController } from '@/player/plugins/buffer/live'
+import { bufferPlugin } from '@/player/testing/elements'
 import { ch07, describe, expect, test, warmUp } from './harness/test'
 
 /** Sets `buffers` on every catalog track, before `inner` reads them: on attach and on every catalog update. */
@@ -41,10 +43,10 @@ function withTargets(buffers: { target?: number; min?: number; max?: number }, i
 describe('buffer controller', () => {
   warmUp(ch07)
 
-  test('defaultBufferController converges to the target latency and returns to rate 1', async ({ open }) => {
+  test('liveBuffer converges to the target latency and returns to rate 1', async ({ open }) => {
     // A strong rate, so the forward buffer grows from ~0.4 s to the target in seconds
-    const buffer = withTargets({ target: 1500 }, defaultBufferController({ catchupRate: 1.5 }))
-    const s = await open(ch07.uri(), { player: { buffer } })
+    const buffer = withTargets({ target: 1500 }, new LiveBufferController(1.5))
+    const s = await open(ch07.uri(), { player: { plugins: [bufferPlugin(buffer)] } })
     await s.until(() => Math.abs(s.latency() - 1.5) < 0.15 && s.video.playbackRate === 1, 'latency at 1.5 s')
     const settled = s.mark()
     await s.played(3)
@@ -54,7 +56,7 @@ describe('buffer controller', () => {
 
   test("the attached controller's backBuffer replaces the sink's", async ({ open }) => {
     const buffer: BufferController = { attach() {}, detach() {}, backBuffer: () => 1 }
-    const s = await open(ch07.uri(), { player: { buffer } })
+    const s = await open(ch07.uri(), { player: { plugins: [bufferPlugin(buffer)] } })
     const start = s.buffered()[0]![0]
     await s.played(6)
     // Trimmed to 1 s behind, but never into the playing group

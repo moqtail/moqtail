@@ -35,16 +35,15 @@ export const Cmaf = defineElement({
 })
 
 /**
- * 1 for an unencrypted CMAF `video` or `audio` track, else 0. Whether the codec can be
+ * Accepts an unencrypted CMAF `video` or `audio` track. Whether the codec can be
  * decoded is left to the element that decodes it, since a transform may sit in between.
  * The catalog element infers a missing `role` before probing.
  */
-export function probeCmaf(identifiers: Identifiers): number {
+export function probeCmaf(identifiers: Identifiers): boolean {
   const { packaging, role } = identifiers
-  if (packaging !== 'cmaf' || (role !== 'video' && role !== 'audio')) return 0
+  if (packaging !== 'cmaf' || (role !== 'video' && role !== 'audio')) return false
   // Encryption is out of scope
-  if (identifiers['encryptionScheme'] !== undefined || identifiers['contentProtectionRefIDs'] !== undefined) return 0
-  return 1
+  return identifiers['encryptionScheme'] === undefined && identifiers['contentProtectionRefIDs'] === undefined
 }
 
 if (import.meta.vitest) {
@@ -57,7 +56,7 @@ if (import.meta.vitest) {
       { ...video, role: 'audio', codec: 'mp4a.40.2' },
       { ...video, codec: 'hev1.1.6.L93.B0' },
     ]) {
-      expect(probeCmaf(track)).toBe(1)
+      expect(probeCmaf(track)).toBe(true)
     }
     for (const other of [
       { ...video, packaging: 'loc' },
@@ -66,7 +65,7 @@ if (import.meta.vitest) {
       { ...video, encryptionScheme: 'cenc' },
       { ...video, contentProtectionRefIDs: ['drm'] },
     ]) {
-      expect(probeCmaf(other)).toBe(0)
+      expect(probeCmaf(other)).toBe(false)
     }
   })
 }

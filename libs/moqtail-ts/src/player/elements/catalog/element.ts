@@ -60,7 +60,7 @@ interface LoadedSet {
   tracks: CatalogTrack[]
   /** The track the set was loaded with, whose grouping fields an added track must share. */
   sample: CatalogTrack
-  /** What the probe picked; a switching set source may wrap it. */
+  /** What the probe picked; a switch source may wrap it. */
   definition: SourceElementDefinition
   media: boolean
 }
@@ -338,16 +338,13 @@ export class CatalogElement extends SourceElement implements CatalogReader {
   }
 
   /**
-   * Loads a set: through the switching set source of a listed and negotiated extension, if any.
-   * `byTime` replaces the URL's location ranges for a set that takes them as media time.
+   * Loads a set: a media set through the switch source that accepts its first track, if any,
+   * since a set's tracks share packaging and role. `byTime` replaces the URL's location ranges
+   * for a set that takes them as media time.
    */
   async #load(set: SelectedSet, media: boolean, byTime?: TimeRange[]): Promise<void> {
     const { tracks, definition } = set
-    const parent = media
-      ? this.context.player.options.extensions?.find(
-          (e) => e.switchingSetSource && (e.negotiated?.(this.context.client.serverSetup) ?? true),
-        )?.switchingSetSource
-      : undefined
+    const parent = media ? this.context.switchSource(tracks[0]!) : undefined
     const options = media ? this.#mediaOptions(byTime) : {}
     const element = parent
       ? await this.context.load(parent, { tracks, options: { ...options, child: definition }, catalog: this })

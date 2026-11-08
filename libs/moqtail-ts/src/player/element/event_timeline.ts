@@ -224,7 +224,7 @@ if (import.meta.vitest) {
       type: 'source',
       name: 'events',
       capabilities: [],
-      probe: () => 1,
+      probe: () => true,
       init: async (context) => {
         const element = new Events(context)
         await element.start()

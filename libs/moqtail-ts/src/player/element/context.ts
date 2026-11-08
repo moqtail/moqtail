@@ -54,6 +54,8 @@ export interface ElementContext {
   release(element: BaseElement): Promise<void>
   /** The source definition the player would pick for `identifiers`, as `source()` does. */
   probe(identifiers: Identifiers): SourceElementDefinition | undefined
+  /** The active plugins' switch source that ranks first for `identifiers`, as `probe()` ranks. */
+  switchSource(identifiers: Identifiers): SourceElementDefinition | undefined
 }
 
 /** @public */
@@ -118,6 +120,10 @@ export class InstanceContext implements ElementContext {
 
   probe(identifiers: Identifiers): SourceElementDefinition | undefined {
     return selectSource(this.#chain.host.definitions(), identifiers)
+  }
+
+  switchSource(identifiers: Identifiers): SourceElementDefinition | undefined {
+    return selectSource(this.#chain.host.switchSources(), identifiers)
   }
 
   async create<E extends BaseElement>(definition: ElementDefinition<E>, options?: Record<string, any>): Promise<E> {

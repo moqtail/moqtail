@@ -35,27 +35,18 @@ export function matchesCapabilities(bundles: CapabilityBundles, pad: Pad): boole
 }
 
 /**
- * The source definition for `identifiers`: highest probe score, then lower priority, then
- * earlier in `definitions`. The caller lists player-registered definitions before built-in
- * ones, in registration order. Undefined when every score is 0.
+ * The source definition for `identifiers`: among those whose probe accepts, the lower
+ * priority, then the earlier in `definitions`. The caller lists player-registered definitions,
+ * then plugins' in plugin order, then built-in ones. Undefined when none accepts.
  */
 export function selectSource(
   definitions: readonly SourceElementDefinition[],
   identifiers: Identifiers,
 ): SourceElementDefinition | undefined {
   let best: SourceElementDefinition | undefined
-  let bestScore = 0
   for (const definition of definitions) {
-    const score = definition.probe(identifiers)
-    const wins =
-      score > bestScore ||
-      (score === bestScore &&
-        best !== undefined &&
-        (definition.priority ?? DEFAULT_PRIORITY) < (best.priority ?? DEFAULT_PRIORITY))
-    if (wins) {
-      best = definition
-      bestScore = score
-    }
+    if (!definition.probe(identifiers)) continue
+    if (!best || (definition.priority ?? DEFAULT_PRIORITY) < (best.priority ?? DEFAULT_PRIORITY)) best = definition
   }
   return best
 }
@@ -80,16 +71,16 @@ if (import.meta.vitest) {
   const { testSource } = await import('@/player/testing/elements')
 
   describe('selectSource', () => {
-    const scored = (name: string, score: number, priority?: number) =>
-      testSource({ name, probe: () => score, ...(priority !== undefined && { priority }) })
+    const probed = (name: string, accepts: boolean, priority?: number) =>
+      testSource({ name, probe: () => accepts, ...(priority !== undefined && { priority }) })
 
-    test('highest score, then lower priority, then earlier in the list; all zero is undefined', () => {
-      const pick = (...defs: ReturnType<typeof scored>[]) => selectSource(defs, {})?.name
-      expect(pick(scored('a', 1), scored('b', 2))).toBe('b')
-      expect(pick(scored('a', 1), scored('b', 1, 50))).toBe('b')
-      expect(pick(scored('a', 1, 50), scored('b', 1, 100))).toBe('a')
-      expect(pick(scored('registered', 1), scored('builtin', 1))).toBe('registered')
-      expect(pick(scored('a', 0, 1), scored('b', 0))).toBeUndefined()
+    test('among the probes that accept, lower priority, then earlier in the list; none is undefined', () => {
+      const pick = (...defs: ReturnType<typeof probed>[]) => selectSource(defs, {})?.name
+      expect(pick(probed('a', false, 1), probed('b', true))).toBe('b')
+      expect(pick(probed('a', true), probed('b', true, 50))).toBe('b')
+      expect(pick(probed('a', true, 50), probed('b', true, 100))).toBe('a')
+      expect(pick(probed('registered', true), probed('builtin', true))).toBe('registered')
+      expect(pick(probed('a', false, 1), probed('b', false))).toBeUndefined()
     })
   })
 }

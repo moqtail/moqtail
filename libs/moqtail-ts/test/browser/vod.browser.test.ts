@@ -22,6 +22,7 @@
  * upstream through the source.
  */
 
+import { bufferPlugin } from '@/player/testing/elements'
 import { ch07_vod, describe, expect, test } from './harness/test'
 
 // A small forward buffer, so a seek a few groups ahead is out of the buffer.
@@ -39,7 +40,7 @@ describe('vod', () => {
   test('plays from the start to the end, every group once, with no buffer controller attached', async ({ open }) => {
     let attached = 0
     const buffer = { attach: () => void attached++, detach() {} }
-    const s = await open(ch07_vod.uri(), { playbackRate: 16, player: { buffer } })
+    const s = await open(ch07_vod.uri(), { playbackRate: 16, player: { plugins: [bufferPlugin(buffer)] } })
     expect(s.firstGroup('video')).toBe(0n)
     await s.ended(60_000)
     expect(s.stateTrace()).toMatch(/^connecting > ready > playing( > stalled > playing)* > ended$/)

@@ -118,7 +118,7 @@
       "parent": "Protocol Libraries",
       "page_notes": [
         {
-          "content": "Code: libs/moqtail-ts/src/player/component/ (element.ts, renditions.ts; `defineMOQtailVideo()` in index.ts). Built on custom-media-element and media-tracks. Document the attributes (`src`, `switch-from`, plus the usual video attributes such as autoplay and preload), the `config` property (MOQtailPlayerOptions, read on each load), the `player` property, the media-ui-extensions additions (streamType, liveEdgeStart, targetLiveWindow, video renditions), and that it installs the default controllers: `defaultBufferController()` unless `config.buffer` is set. apps/client-js/src/lib/videojs.ts shows the Video.js v10 integration."
+          "content": "Code: libs/moqtail-ts/src/player/component/ (element.ts, renditions.ts; `defineMOQtailVideo()` in index.ts). Built on custom-media-element and media-tracks. Document the attributes (`src`, `switch-from`, plus the usual video attributes such as autoplay and preload), the `config` property (MOQtailPlayerOptions, read on each load), the `player` property, the media-ui-extensions additions (streamType, liveEdgeStart, targetLiveWindow, video renditions), and that it installs the default plugins: `liveBuffer()` is the only plugin when `config.plugins` is empty or unset; a non-empty list is taken as written, so leaving `liveBuffer()` out disables it. apps/client-js/src/lib/videojs.ts shows the Video.js v10 integration."
         }
       ]
     },
@@ -128,7 +128,7 @@
       "parent": "Protocol Libraries",
       "page_notes": [
         {
-          "content": "Code: libs/moqtail-ts/src/player/element/ (define.ts for `defineElement`, base.ts for SourceElement / TransformElement / SinkElement, pad.ts for pads, items, events and signals, negotiation.ts for probing and capability matching, chain.ts, context.ts, interfaces.ts for MEDIA_SOURCE and MEDIA_SINK). Custom elements are added with `player.registerElement(definition)`. Extensions are created with `defineExtension` (src/player/extension.ts) and passed in `opts.extensions`; SSTS (src/player/extensions/ssts/) is the built-in one, which offers sender-side track switching at setup and loads SstsSource for each switching set when the peer accepts it."
+          "content": "Code: libs/moqtail-ts/src/player/element/ (define.ts for `defineElement`, base.ts for SourceElement / TransformElement / SinkElement, pad.ts for pads, items, events and signals, negotiation.ts for probing and capability matching, chain.ts, context.ts, interfaces.ts for MEDIA_SOURCE and MEDIA_SINK). Probes return a boolean; among those that accept, the lower `priority` wins, then registered elements, plugins' in plugin order, then built-ins. Custom elements are added with `player.registerElement(definition)`. Plugins are created with `definePlugin` (src/player/plugin.ts) and passed in `opts.plugins`: each has `init(config)`, `setup` (adds setup parameters), `negotiated` (checks SERVER_SETUP; a rejected plugin contributes nothing), `priority`, and `features(ctx)`: elements, switch sources and a buffer controller. `ssts()` (src/player/plugins/ssts/) offers sender-side track switching at setup; the catalog probes the active switch sources with each media set's first track and loads the first that accepts (SstsSource) with the probed element as its child."
         }
       ]
     },
@@ -138,7 +138,7 @@
       "parent": "Protocol Libraries",
       "page_notes": [
         {
-          "content": "Code: libs/moqtail-ts/src/player/controllers/buffer/ (index.ts for the BufferController interface, default.ts for `defaultBufferController()`). A controller is passed as `buffer` in MOQtailPlayerOptions and attached to the media sink while a ready stream is live; MOQtailPlayer installs none by default, while <moqtail-video> installs the default one. An ABR controller isn't implemented yet: rendition switching is manual (or done by the relay under SSTS)."
+          "content": "Code: libs/moqtail-ts/src/player/plugins/buffer/ (index.ts for the `liveBuffer()` plugin, live.ts for its controller) and src/player/plugin.ts for the BufferController interface. A buffer controller is a plugin feature: the first active plugin (by priority, then list order) offering one is attached to the media sink while a ready stream is live. `liveBuffer` has priority Infinity, so any other buffer plugin wins. MOQtailPlayer installs none by default, while <moqtail-video> installs `liveBuffer()`. An ABR controller isn't implemented yet: rendition switching is manual (or done by the relay under SSTS)."
         }
       ]
     },

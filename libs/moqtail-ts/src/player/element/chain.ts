@@ -40,8 +40,10 @@ import type { Consumer, Pad, PadOutput } from './pad'
 export interface ChainHost {
   player: PlayerHandle
   client(): MOQtailClient
-  /** Player-registered source definitions, then the extensions', then built-in ones, each in registration order. */
+  /** Player-registered source definitions, then the active plugins', then built-in ones, each in order. */
   definitions(): readonly SourceElementDefinition[]
+  /** The active plugins' switch sources, in plugin order. */
+  switchSources(): readonly SourceElementDefinition[]
   warn(error: PlayerError): void
   fail(error: PlayerError): void
 }

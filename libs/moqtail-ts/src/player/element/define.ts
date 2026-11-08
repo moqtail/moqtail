@@ -59,7 +59,7 @@ export type Provided<P extends readonly InterfaceKey[]> = [P[number]] extends [n
  */
 export type Identifiers = Partial<MsfSource> & Partial<CatalogTrack>
 
-/** @public Probe ties are broken by priority, lower wins. */
+/** @public Among the probes that accept a track, the lowest priority wins. */
 export const DEFAULT_PRIORITY = 100
 
 /** @public What the registry stores. */
@@ -70,7 +70,7 @@ export interface ElementDefinition<
   readonly type: 'source' | 'transform' | 'sink'
   readonly name: string
   readonly capabilities: CapabilityBundles
-  /** Breaks probe ties, a lower number wins. Default 100. */
+  /** Ranks the probes that accept a track: lower wins, then the earlier definition. Default 100. */
   readonly priority?: number
   /** The optional interfaces this element implements. */
   readonly provides?: P
@@ -84,8 +84,8 @@ export interface SourceElementDefinition<
   P extends readonly InterfaceKey[] = readonly InterfaceKey[],
 > extends ElementDefinition<E, P> {
   readonly type: 'source'
-  /** Confidence that this element handles the track: 0 for no match, higher for stronger matches. */
-  probe(identifiers: Identifiers): number
+  /** Whether this element handles the track. */
+  probe(identifiers: Identifiers): boolean
 }
 
 /** @public */
@@ -175,7 +175,7 @@ if (import.meta.vitest) {
   const interfaces = await import('./interfaces')
   // Annotated, since copying a unique symbol into a new const widens it to symbol
   const MEDIA_SINK: typeof interfaces.MEDIA_SINK = interfaces.MEDIA_SINK
-  const source = { type: 'source', name: 'src', capabilities: [], probe: () => 1, init: async () => ({}) } as any
+  const source = { type: 'source', name: 'src', capabilities: [], probe: () => true, init: async () => ({}) } as any
 
   describe('defineElement', () => {
     test.each([
@@ -194,7 +194,7 @@ if (import.meta.vitest) {
         type: 'source',
         name: 'typed',
         capabilities: [],
-        probe: () => 1,
+        probe: () => true,
         init: async (context) => new TestSource(context),
       })
       const element = await definition.init(detachedContext())

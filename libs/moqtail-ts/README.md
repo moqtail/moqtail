@@ -6,14 +6,14 @@ A TypeScript MOQT client and an MSF/CMSF player for the browser.
 npm install moqtail
 ```
 
-| Entry                      | What's in it                                       |
-| -------------------------- | -------------------------------------------------- |
-| `moqtail`                  | Everything below except the player                 |
-| `moqtail/client`           | `MOQtailClient`, its options, events and results   |
-| `moqtail/model`            | Control messages, objects, parameters, properties  |
-| `moqtail/util`             | Logger, `Emitter`, telemetry, clock helpers        |
-| `moqtail/player`           | `MOQtailPlayer`, elements, extensions, controllers |
-| `moqtail/player/component` | The `<moqtail-video>` web component                |
+| Entry                      | What's in it                                      |
+| -------------------------- | ------------------------------------------------- |
+| `moqtail`                  | Everything below except the player                |
+| `moqtail/client`           | `MOQtailClient`, its options, events and results  |
+| `moqtail/model`            | Control messages, objects, parameters, properties |
+| `moqtail/util`             | Logger, `Emitter`, telemetry, clock helpers       |
+| `moqtail/player`           | `MOQtailPlayer`, elements, plugins                |
+| `moqtail/player/component` | The `<moqtail-video>` web component               |
 
 It runs in Chrome and Safari 26.4+ (WebTransport). It follows MOQT draft-22 and the MSF and CMSF editor's drafts. The player plays CMAF; LOC, captions and language switching aren't played yet. [DeepWiki](https://deepwiki.com/moqtail/moqtail) has the full list and the details this page leaves out.
 
@@ -64,7 +64,7 @@ Publishing goes through `client.publishNamespace` and `client.publish`. [`apps/c
 
 ## `<moqtail-video>`
 
-The mostly hands-off option. It's a `<video>` that takes a `moqt://` URL, builds the player chain itself, and installs the default controllers: the buffer controller (`defaultBufferController()`) is in, ABR is coming soon.
+The mostly hands-off option. It's a `<video>` that takes a `moqt://` URL, builds the player chain itself, and installs the default plugins: the buffer controller (`liveBuffer()`) is in, ABR is coming soon. Listing plugins in `config.plugins` replaces it, so leave `liveBuffer()` out of the list to play without it.
 
 It needs two optional peer dependencies: `npm install custom-media-element media-tracks`.
 
@@ -82,13 +82,13 @@ defineMOQtailVideo()
 
 ## Player API
 
-For more control. `MOQtailPlayer` installs no controllers, so pass the buffer controller yourself.
+For more control. `MOQtailPlayer` installs no plugins, so list the buffer controller yourself.
 
 ```ts
-import { MOQtailPlayer, PlayerError, defaultBufferController } from 'moqtail/player'
+import { MOQtailPlayer, PlayerError, liveBuffer } from 'moqtail/player'
 
 const video = document.querySelector('video')!
-const player = new MOQtailPlayer({ buffer: defaultBufferController() })
+const player = new MOQtailPlayer({ plugins: [liveBuffer({ catchupRate: 1.2 })] })
   .source('moqt://relay.moqtail.dev#msf:moqtail-ch07_vod--catalog')
   .sink(video)
 
@@ -100,9 +100,9 @@ await player.play()
 await player.seek(30)
 ```
 
-A source is a catalog or a single track. `source()` throws `PlayerError` for a URL it can't play; everything later arrives on `error` (fatal) or `warning`. `player.destroy()` tears the chain down.
+A source is a catalog or a single track. `source()` throws `PlayerError` for a URL it can't use, such as another origin. Its element is picked in `init()`, once the relay's SETUP says which plugins are active, so a track no element accepts rejects `init()`. Everything later arrives on `error` (fatal) or `warning`. `player.destroy()` tears the chain down.
 
-## Custom Elements And Extensions
+## Custom Elements And Plugins
 
 The player is a chain of elements joined by pads. A source the probe picks for a track can be your own:
 
@@ -117,21 +117,28 @@ const locSource = defineElement({
   type: 'source',
   name: 'loc-source',
   capabilities: [[{ direction: 'out', code: CapabilityCode.PACKAGING, value: 'loc' }]],
-  probe: (track) => (track.packaging === 'loc' ? 1 : 0),
+  probe: (track) => track.packaging === 'loc',
   init: async (context) => new LocSource(context),
 })
 
 new MOQtailPlayer().registerElement(locSource)
 ```
 
-An extension bundles elements with the setup options they need. `SSTS` (sender-side track switching) is the built-in one:
+Among the probes that accept a track, the lowest `priority` wins (default 100), then the earlier definition: yours, then plugins' in list order, then built-in ones.
+
+A plugin offers features (elements, switching set sources, a buffer controller) and the setup parameters they need. It can check the peer's SETUP: a plugin it rejects contributes nothing. `ssts()` (sender-side track switching) and `liveBuffer()` are built in:
 
 ```ts
-import { MOQtailPlayer, SSTS, defineExtension } from 'moqtail/player'
+import { MOQtailPlayer, definePlugin, liveBuffer, ssts } from 'moqtail/player'
 
-const myExtension = defineExtension({ name: 'my-extension', elements: [locSource] })
+const loc = definePlugin({
+  name: 'loc',
+  features: () => [{ type: 'element', item: locSource }],
+})
 
-new MOQtailPlayer({ extensions: [SSTS, myExtension] })
+new MOQtailPlayer({ plugins: [ssts({ algorithms: [0xff01n, 0n] }), loc(), liveBuffer()] })
 ```
+
+A plugin's `init(config)` runs once per player, and its config type is what the factory takes.
 
 DeepWiki explains the element and pad model, negotiation, and the interfaces elements can provide.

@@ -148,9 +148,9 @@ if (import.meta.vitest) {
   const { probeCmaf } = await import('@/player/elements/cmaf')
 
   const cmaf = testSource({ name: 'cmaf', probe: probeCmaf })
-  const loc = testSource({ name: 'loc', probe: (t) => (t.packaging === 'loc' ? 1 : 0) })
-  const timeline = testSource({ name: 'sap', probe: (t) => (t.eventType === 'org.ietf.moq.cmsf.sap' ? 1 : 0) })
-  const probe = (track: CatalogTrack) => [cmaf, loc, timeline].find((d) => d.probe(track) > 0)
+  const loc = testSource({ name: 'loc', probe: (t) => t.packaging === 'loc' })
+  const timeline = testSource({ name: 'sap', probe: (t) => t.eventType === 'org.ietf.moq.cmsf.sap' })
+  const probe = (track: CatalogTrack) => [cmaf, loc, timeline].find((d) => d.probe(track))
   const names = (sets: SelectedSet[]) => sets.map((s) => `${s.definition.name}: ${s.tracks.map((t) => t.name)}`)
   const track = (name: string, extra: Partial<CatalogTrack> = {}) =>
     withRole({

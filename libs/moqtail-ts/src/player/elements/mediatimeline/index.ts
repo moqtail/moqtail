@@ -22,7 +22,7 @@ export const MediaTimeline = defineElement({
   type: 'source',
   name: 'mediatimeline',
   capabilities: [],
-  probe: (ids) => (ids.packaging === 'mediatimeline' ? 1 : 0),
+  probe: (ids) => ids.packaging === 'mediatimeline',
   init: async (context) => {
     const timeline = new MediaTimelineElement(context)
     await timeline.start()

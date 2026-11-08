@@ -16,15 +16,16 @@
 
 /** SSTS: the relay picks the video track of the set, so its switches aren't tested; only that it negotiates and data arrives and plays. */
 
-import { SSTS } from '@/player'
+import { SSTS_ALGORITHMS, ssts } from '@/player'
+import { sstsAlgorithms } from '@/player/plugins/ssts/algorithms'
 import { ch07, describe, expect, test, warmUp } from './harness/test'
 
 describe('ssts', () => {
   warmUp(ch07)
 
   test('SSTS is negotiated and the video set delivers and plays', async ({ open }) => {
-    const s = await open(ch07.uri(), { player: { extensions: [SSTS] } })
-    expect(SSTS.negotiated?.(s.client.serverSetup!), 'the relay negotiated SSTS').toBe(true)
+    const s = await open(ch07.uri(), { player: { plugins: [ssts()] } })
+    expect(sstsAlgorithms(s.client.serverSetup!, SSTS_ALGORITHMS), 'the relay negotiated SSTS').not.toEqual([])
     const playing = s.mark()
     await s.played(2)
     expect(s.objectsOf('video').length).toBeGreaterThan(0)

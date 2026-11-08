@@ -22,9 +22,9 @@
 
 import { CustomVideoElement } from 'custom-media-element'
 import { MediaTracksMixin } from 'media-tracks'
-import { defaultBufferController } from '@/player/controllers/buffer'
 import { PlayerError, type PlayerErrorCategory } from '@/player/error'
 import { MOQtailPlayer, type MOQtailPlayerOptions, type StreamType } from '@/player/player'
+import { liveBuffer } from '@/player/plugins/buffer'
 import { Renditions } from './renditions'
 
 const MEDIA_ERROR_CODES: Record<PlayerErrorCategory, number> = { aborted: 1, network: 2, media: 3, source: 4 }
@@ -55,7 +55,11 @@ export class MOQtailVideoElement extends MediaTracksMixin(CustomVideoElement) {
     }
   }
 
-  /** Player options, read on each load; `buffer` defaults to `defaultBufferController()`. Changing it doesn't restart playback. */
+  /**
+   * Player options, read on each load. Without plugins, `liveBuffer()` is the only one; a list
+   * is taken as written, so one without it plays without a buffer controller. Changing it
+   * doesn't restart playback.
+   */
   get config(): MOQtailPlayerOptions | undefined {
     return this.#config
   }
@@ -107,8 +111,7 @@ export class MOQtailVideoElement extends MediaTracksMixin(CustomVideoElement) {
     if (!src) return
     let player: MOQtailPlayer
     try {
-      const config = { ...this.#config, buffer: this.#config?.buffer ?? defaultBufferController() }
-      player = new MOQtailPlayer(config)
+      player = new MOQtailPlayer(this.#playerOptions())
         .source(src, { switchFrom: this.hasAttribute('switch-from') })
         .sink(this.nativeEl)
     } catch (error) {
@@ -119,9 +122,12 @@ export class MOQtailVideoElement extends MediaTracksMixin(CustomVideoElement) {
     this.#renditions = new Renditions(this, player)
     player.on('error', (error) => this.#fail(error))
     player.on('streamtypechange', (type) => this.#setStreamType(type))
-    if (this.autoplay)
-      void this.play().catch(() => {}) // a failure is the `error` event, or a blocked autoplay
-    else if (this.getAttribute('preload') !== 'none') void this.#init(player).catch(() => {})
+    if (this.autoplay) {
+      // A failure is the `error` event, or a blocked autoplay
+      void this.play().catch(() => {})
+    } else if (this.getAttribute('preload') !== 'none') {
+      void this.#init(player).catch(() => {})
+    }
   }
 
   override async play(): Promise<void> {
@@ -129,6 +135,13 @@ export class MOQtailVideoElement extends MediaTracksMixin(CustomVideoElement) {
     if (!player) return super.play()
     await this.#init(player)
     await player.play()
+  }
+
+  /** `config`, with `liveBuffer()` as the plugins when it lists none. */
+  #playerOptions(): MOQtailPlayerOptions {
+    const config = this.#config ?? {}
+    if (config.plugins && config.plugins.length > 0) return config
+    return { ...config, plugins: [liveBuffer()] }
   }
 
   async #init(player: MOQtailPlayer): Promise<void> {

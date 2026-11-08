@@ -27,6 +27,7 @@ import { CapabilityCode, defineElement, type Capabilities, type Identifiers } fr
 import { MEDIA_SINK, MEDIA_SOURCE, type CatalogTrack, type MediaSinkElement } from '@/player/element/interfaces'
 import type { Pad, PadItem, PadOutput, PadSignal } from '@/player/element/pad'
 import type { PlayerEvents } from '@/player/player'
+import { definePlugin, type BufferController } from '@/player/plugin'
 import { timeRanges } from './media'
 
 export const VIDEO_CMAF: Capabilities = [
@@ -60,7 +61,7 @@ export class TestSource extends SourceElement {
 export function testSource(
   options: {
     name?: string
-    probe?: (identifiers: Identifiers) => number
+    probe?: (identifiers: Identifiers) => boolean
     priority?: number
     /** Lists `MEDIA_SOURCE` in `provides`, without implementing it. */
     media?: boolean
@@ -73,7 +74,7 @@ export function testSource(
     capabilities: [],
     ...(options.priority !== undefined && { priority: options.priority }),
     ...(options.media && { provides: [MEDIA_SOURCE] as unknown as [] }),
-    probe: options.probe ?? (() => 1),
+    probe: options.probe ?? (() => true),
     async init(context, initOptions) {
       const source = new TestSource(context)
       await options.script?.(source, initOptions)
@@ -222,21 +223,32 @@ export function detachedContext(): ElementContext {
     load: () => Promise.reject(new Error('detached')),
     release: async () => {},
     probe: () => undefined,
+    switchSource: () => undefined,
   }
 }
 
 /** A chain over a fake host that records warnings and failures. `client` is read on each access. */
-export function testChain(definitions: ChainHost['definitions'] = () => [], client: () => unknown = () => ({})) {
+export function testChain(
+  definitions: ChainHost['definitions'] = () => [],
+  client: () => unknown = () => ({}),
+  switchSources: ChainHost['switchSources'] = () => [],
+) {
   const warnings: Error[] = []
   const failures: Error[] = []
   const chain = new Chain({
     player: fakePlayer(),
     client: () => client() as MOQtailClient,
     definitions,
+    switchSources,
     warn: (e) => warnings.push(e),
     fail: (e) => failures.push(e),
   })
   return { chain, warnings, failures }
+}
+
+/** A plugin entry offering `controller` as the buffer controller. */
+export function bufferPlugin(controller: BufferController) {
+  return definePlugin({ name: 'test-buffer', features: () => [{ type: 'buffer-controller', item: controller }] })()
 }
 
 /** Lets queued microtasks and connection loops run. */

@@ -278,13 +278,15 @@ export async function gzip(bytes: Uint8Array): Promise<Uint8Array> {
 
 /**
  * Makes the client slot create `FakeClient`s. `open` decides how each `init()` settles,
- * by creation index. Returns the clients created so far and a restore function.
+ * by creation index, and `serverSetup` is what they all got from the relay. Returns the
+ * clients created so far and a restore function.
  */
-export function fakeClients(open: (index: number) => Promise<void> = () => Promise.resolve()) {
+export function fakeClients(open: (index: number) => Promise<void> = () => Promise.resolve(), serverSetup?: Setup) {
   const clients: FakeClient[] = []
   const saved = factory.createClient
   factory.createClient = (options) => {
     const client = new FakeClient(options, open(clients.length))
+    if (serverSetup) client.serverSetup = serverSetup
     clients.push(client)
     return client as unknown as MOQtailClient
   }

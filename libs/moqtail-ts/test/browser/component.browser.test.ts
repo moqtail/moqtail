@@ -21,7 +21,8 @@
 
 import { Attributes } from 'custom-media-element'
 import { afterEach, beforeAll } from 'vitest'
-import { SSTS, SstsSource, type MOQtailPlayerOptions } from '@/player'
+import { ssts, SstsSource, type MOQtailPlayerOptions } from '@/player'
+import { LiveBufferController } from '@/player/plugins/buffer/live'
 import { MOQtailVideoElement, defineMOQtailVideo } from '@/player/component'
 import { ch07, ch07_vod, describe, expect, test, warmUp } from './harness/test'
 
@@ -91,7 +92,7 @@ describe('component', () => {
       Infinity,
       Infinity,
     ])
-    expect(el.player?.bufferController).toBe(el.player?.options.buffer) // the default, attached
+    expect(el.player?.bufferController).toBeInstanceOf(LiveBufferController) // the default, attached
 
     await until(() => !Number.isNaN(el.liveEdgeStart), 'liveEdgeStart')
     expect(el.seekable.length).toBe(1)
@@ -174,8 +175,8 @@ describe('component', () => {
     await until(() => reloaded.state === 'destroyed', 'the old player destroyed')
   })
 
-  test('SSTS through config.extensions: selectedIndex changes the switching set, without switch()', async () => {
-    const el = create({}, { extensions: [SSTS] })
+  test('SSTS through config.plugins: selectedIndex changes the switching set, without switch()', async () => {
+    const el = create({}, { plugins: [ssts()] })
     el.src = ch07.uri()
     await el.play()
     const source = el.player!.mediaSources.find((s) => s instanceof SstsSource)!

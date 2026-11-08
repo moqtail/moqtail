@@ -26,7 +26,7 @@ export const CatalogSource = defineElement({
   type: 'source',
   name: 'catalog',
   capabilities: [],
-  probe: (ids) => (ids.track === 'catalog' || ids.packaging === 'catalog' ? 1 : 0),
+  probe: (ids) => ids.track === 'catalog' || ids.packaging === 'catalog',
   init: async (context, options?: CatalogOptions) => {
     const source = options?.source
     if (!source)
@@ -44,7 +44,6 @@ if (import.meta.vitest) {
   const interfaces = await import('@/player/element/interfaces')
   // Annotated, since copying a unique symbol into a new const widens it to symbol
   const MEDIA_SOURCE: typeof interfaces.MEDIA_SOURCE = interfaces.MEDIA_SOURCE
-  const { defineExtension } = await import('@/player/extension')
   const { parseMsfUrl } = await import('@/player/msf_url')
   const { Location } = await import('@/model/common/location')
   const { MsfCompressionObjectProperty } = await import('@/player/util/compression')
@@ -81,12 +80,8 @@ if (import.meta.vitest) {
     )
   const names = (tracks: readonly Track[]) => tracks.map((t) => t.name).join(',')
 
-  /** A catalog source over a fake client, with a media source that logs loads and `setTracks`. */
-  async function setup(
-    options: Options | ((stub: (name: string) => Definition) => Options) = {},
-    respond?: Respond,
-    params = '',
-  ) {
+  /** A catalog source over a fake client, with a media source that logs loads and `setTracks`. Push to `switchSources` before the first catalog. */
+  async function setup(options: Options = {}, respond?: Respond, params = '') {
     const client = new FakeClient()
     if (respond) client.respond = respond
     const log: string[] = []
@@ -98,7 +93,7 @@ if (import.meta.vitest) {
         name,
         capabilities: [],
         provides: [MEDIA_SOURCE],
-        probe: (t) => (t.packaging === 'cmaf' && (t.role === 'video' || t.role === 'audio') ? 1 : 0),
+        probe: (t) => t.packaging === 'cmaf' && (t.role === 'video' || t.role === 'audio'),
         init: async (context, loadOptions?: Record<string, unknown>) => {
           const first = context.tracks[0]!.name
           const child = loadOptions?.['child'] ? ` around ${(loadOptions['child'] as Definition).name}` : ''
@@ -116,11 +111,13 @@ if (import.meta.vitest) {
         },
       })
     const media = stub('media')
+    const switchSources: Definition[] = []
     const { chain } = testChain(
       () => [media, CatalogSource],
       () => client,
+      () => switchSources,
     )
-    Object.assign(chain.host.player.options, typeof options === 'function' ? options(stub) : options)
+    Object.assign(chain.host.player.options, options)
     let element: CatalogElement | undefined
     chain.host.player.on('catalog', (c) => (element = c as CatalogElement))
     chain.host.player.on('warning', (w) => warnings.push(w.code))
@@ -137,7 +134,19 @@ if (import.meta.vitest) {
       client.last.push(...objects)
       await settle()
     }
-    return { client, media, log, warnings, streamTypes, init, push, settled: () => settled, catalog: () => element! }
+    return {
+      client,
+      media,
+      stub,
+      switchSources,
+      log,
+      warnings,
+      streamTypes,
+      init,
+      push,
+      settled: () => settled,
+      catalog: () => element!,
+    }
   }
 
   describe('CatalogSource', () => {
@@ -310,15 +319,23 @@ if (import.meta.vitest) {
       expect([c.client.sent('subscribe').length, c.warnings]).toEqual([2, ['TRACK_SKIPPED']])
     })
 
-    test('a switching set source wraps media sets only when its extension is listed and negotiated', async () => {
-      for (const accepted of [true, false]) {
-        const c = await setup((stub) => ({
-          extensions: [defineExtension({ name: 'sets', switchingSetSource: stub('wrap'), negotiated: () => accepted })],
-        }))
+    test('a media set loads through the switch source that ranks first among those accepting it, else directly', async () => {
+      for (const accepting of [true, false]) {
+        const c = await setup()
+        const later = { ...c.stub('later'), priority: 200 }
+        c.switchSources.push(later, { ...c.stub('wrap'), probe: () => accepting })
         await c.push(object(1, 0, bytes(catalog([track('v1', 'video')]))))
         await c.init
-        expect([c.settled(), c.log]).toEqual(['resolved', [accepted ? 'wrap v1 around media' : 'load v1']])
+        expect([c.settled(), c.log]).toEqual([
+          'resolved',
+          [accepting ? 'wrap v1 around media' : 'later v1 around media'],
+        ])
       }
+      const none = await setup()
+      none.switchSources.push({ ...none.stub('wrap'), probe: () => false })
+      await none.push(object(1, 0, bytes(catalog([track('v1', 'video')]))))
+      await none.init
+      expect(none.log).toEqual(['load v1'])
     })
   })
 }

@@ -21,10 +21,10 @@ export type { PlayerState } from './state'
 export type { Catalog, CatalogJson, InitData, MediaTimelineTemplate } from '@/player/elements/catalog/types'
 export type { CatalogElement } from '@/player/elements/catalog/element'
 export type { TimelineEvent, TimelineRecord } from '@/player/element/event_timeline'
-export { defineExtension, type ExtensionDefinition } from './extension'
+export { definePlugin, type PluginDefinition, type Plugin, type Feature, type BufferController } from './plugin'
 export { MSE } from '@/player/elements/mse'
-export { defaultBufferController, type BufferController } from '@/player/controllers/buffer'
-export { SSTS, SstsSource } from '@/player/extensions/ssts'
+export { liveBuffer, type LiveBufferConfig } from '@/player/plugins/buffer'
+export { ssts, SstsSource, SSTS_ALGORITHMS, type SstsConfig } from '@/player/plugins/ssts'
 export type { MSEOptions } from '@/player/elements/mse/sink'
 export {
   defineElement,

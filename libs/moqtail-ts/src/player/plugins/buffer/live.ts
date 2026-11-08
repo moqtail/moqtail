@@ -15,7 +15,7 @@
  */
 
 /**
- * `defaultBufferController`, ported from demo-abr's `maintainLiveEdgeDelay`: playback rate
+ * The `liveBuffer` controller, ported from demo-abr's `maintainLiveEdgeDelay`: playback rate
  * moves the forward buffer toward the one that gives the catalog's target latency.
  */
 
@@ -23,8 +23,8 @@ import type { CatalogTrack, MediaSinkElement, TimelineReader } from '@/player/el
 import { CatalogElement } from '@/player/elements/catalog/element'
 import { liveEdge, rangeAt } from '@/player/elements/mse/gaps'
 import type { MOQtailPlayer } from '@/player/player'
+import type { BufferController } from '@/player/plugin'
 import { renditionId } from '@/player/util/track'
-import type { BufferController } from './index'
 
 /** What a rate decision looks at, in seconds. */
 export interface BufferState {
@@ -42,7 +42,7 @@ export interface BufferState {
 /** A playback rate, or a jump to `jumpTo` seconds behind the end of the buffer. */
 export type BufferDecision = { rate: number } | { jumpTo: number }
 
-const CATCHUP_RATE = 1.1
+export const CATCHUP_RATE = 1.1
 /** How far the forward buffer may stray from its goal before the rate changes. */
 const TOLERANCE = 0.1
 /** Below this forward buffer playback is about to stall; no goal is lower. */
@@ -51,17 +51,6 @@ const STALL_THRESHOLD = 0.5
 const MIN_RATE = 0.6
 /** A forward buffer this many times its goal is jumped instead of caught up. */
 const JUMP_FACTOR = 4
-
-/**
- * @public
- * Catches up at `catchupRate` (default 1.1) when behind the target latency, slows to
- * `2 - catchupRate` when ahead, and keeps the rate at 1 without catalog targets.
- */
-export function defaultBufferController(options: { catchupRate?: number } = {}): BufferController {
-  const catchupRate = options.catchupRate ?? CATCHUP_RATE
-  if (!(catchupRate > 1 && catchupRate < 2)) throw new TypeError('catchupRate must be between 1 and 2')
-  return new DefaultBufferController(catchupRate)
-}
 
 /**
  * The forward buffer that gives the target latency is the goal, never below the stall
@@ -83,7 +72,11 @@ interface Attached {
   abort: AbortController
 }
 
-class DefaultBufferController implements BufferController {
+/**
+ * Catches up at `catchupRate` when behind the target latency, slows to `2 - catchupRate`
+ * when ahead, and keeps the rate at 1 without catalog targets.
+ */
+export class LiveBufferController implements BufferController {
   readonly #catchupRate: number
   #attached: Attached | undefined
   /** Of the first playing track that has any; seconds. */

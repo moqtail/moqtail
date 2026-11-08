@@ -22,12 +22,12 @@
 import type { MOQtailClient } from '@/client/client'
 import type { MOQtailClientOptions, ObjectOrdering } from '@/client/types'
 import type { SetupOptions } from '@/model/parameter/setup_option'
-import type { BufferController } from '@/player/controllers/buffer'
 import type { SinkElement, SourceElement, TransformElement } from '@/player/element/base'
 import { Chain } from '@/player/element/chain'
 import {
   hasInterface,
   type ElementDefinition,
+  type Identifiers,
   type SinkElementDefinition,
   type SourceElementDefinition,
 } from '@/player/element/define'
@@ -49,8 +49,17 @@ import { Emitter } from '@/util/emitter'
 import { logger } from '@/util/logger'
 import { acquire, check, clientKey, currentClient, release, type ClientOptions, type SlotMember } from './client_slot'
 import { PlayerError } from './error'
-import { mergeSetupOptions, type ExtensionDefinition } from './extension'
 import { parseMsfUrl } from './msf_url'
+import {
+  activePlugins,
+  initPlugins,
+  mergeSetupOptions,
+  resolveFeatures,
+  type BufferController,
+  type Features,
+  type Plugin,
+  type PluginInstance,
+} from './plugin'
 import { canTransition, type PlayerState } from './state'
 
 /** @public */
@@ -62,8 +71,8 @@ export interface MOQtailPlayerOptions {
     /** Default 5. */
     reconnectAttempts?: number
   }
-  /** Objects returned by `defineExtension`. Their setup options are shared, their elements registered on this player. */
-  extensions?: ExtensionDefinition[]
+  /** Entries made with `definePlugin`. Their setup parameters are shared; their features apply to this player. */
+  plugins?: Plugin[]
   preferredLanguage?: string
   eventTimelines?: string[] | 'all'
   /** Default 10 000. */
@@ -72,8 +81,6 @@ export interface MOQtailPlayerOptions {
   maxCatalogBytes?: number
   /** How media sources order each request's objects. Default: a 150 ms window. */
   objectOrdering?: ObjectOrdering
-  /** Attached to the media sink while a ready stream is live. None by default. */
-  buffer?: BufferController
 }
 
 /** @public The media-ui-extensions stream type (proposal 0010). */
@@ -126,7 +133,9 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
   readonly #clientKey: string
   /** `registerElement` definitions. */
   readonly #definitions: ElementDefinition[] = []
-  readonly #extensionElements: readonly ElementDefinition[]
+  readonly #plugins: readonly PluginInstance[]
+  /** What `source()` adds; its element is picked in `init()`, once the active plugins are known. */
+  readonly #declaredSources: { identifiers: Identifiers; options: object }[] = []
   readonly #chain: Chain
   /** Aborted by `destroy()`; its reason is what every later call rejects with. */
   readonly #abort = new AbortController()
@@ -152,6 +161,8 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
     },
   }
   #state: PlayerState = 'idle'
+  /** The active plugins' features, from the first SERVER_SETUP. Kept across reconnects. */
+  #features: Features = resolveFeatures([])
   #client: MOQtailClient | undefined
   /** Where `reconnecting` returns to; the media sink updates it meanwhile. */
   #resume: PlayerState = 'idle'
@@ -169,25 +180,22 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
   #destroying: Promise<void> | undefined
 
   /**
-   * @throws PlayerError `UNSUPPORTED_ORIGIN` when two extensions set a setup parameter differently,
-   * `UNSUPPORTED_SOURCE` when two extensions manage switching sets.
+   * Runs each plugin's `init` and `setup`.
+   * @throws PlayerError `UNSUPPORTED_ORIGIN` when two plugins set a setup parameter differently.
+   * @throws TypeError for a plugin listed twice, or a config its `init` rejects.
    */
   constructor(options: MOQtailPlayerOptions = {}) {
     super()
     this.options = options
-    const extensions = options.extensions ?? []
-    // A switching set has one parent
-    if (extensions.filter((e) => e.switchingSetSource).length > 1) {
-      throw new PlayerError('UNSUPPORTED_SOURCE', 'Only one extension may have a switchingSetSource')
-    }
-    const setupOptions = mergeSetupOptions(options.client?.setupOptions, extensions)
+    this.#plugins = initPlugins(options.plugins ?? [])
+    const setupOptions = mergeSetupOptions(options.client?.setupOptions, this.#plugins)
     this.#clientOptions = { ...options.client, ...(setupOptions && { setupOptions }) }
     this.#clientKey = clientKey(this.#clientOptions)
-    this.#extensionElements = extensions.flatMap((e) => e.elements ?? [])
     this.#chain = new Chain({
       player: this,
       client: currentClient,
       definitions: () => this.#sourceDefinitions(),
+      switchSources: () => this.#features.switchSources,
       warn: (warning) => {
         if (!this.#abort.signal.aborted && this.#state !== 'error') this.emit('warning', warning)
       },
@@ -225,9 +233,9 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
     return this.#client
   }
 
-  /** `opts.buffer` while it's attached. */
+  /** The active plugins' buffer controller while it's attached. */
   get bufferController(): BufferController | undefined {
-    return this.#bufferAttached ? this.options.buffer : undefined
+    return this.#bufferAttached ? this.#features.bufferController : undefined
   }
 
   /** Registers an element on this player only. Call it before `source()`. */
@@ -239,8 +247,10 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
   }
 
   /**
-   * Adds a top-level source for a moqt URI. The chosen element gets `{ ...options, source }`.
-   * @throws PlayerError `UNSUPPORTED_SOURCE` or `UNSUPPORTED_ORIGIN`; the player stays `idle`.
+   * Adds a top-level source for a moqt URI. `init()` picks its element, once the peer's SETUP
+   * decided which plugins are active, and gives it `{ ...options, source }`.
+   * @throws PlayerError `UNSUPPORTED_SOURCE` for a URI that can't be used here, `UNSUPPORTED_ORIGIN`
+   * for another origin or client setup; the player stays `idle`.
    */
   source(uri: string, options: { switchFrom?: boolean; [key: string]: unknown } = {}): this {
     this.#order('source', 'source')
@@ -252,9 +262,7 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
     }
     check(source.url, this.#clientKey)
     const identifiers = { ...source } // a type literal, so it fits `Identifiers`' index signature
-    const definition = selectSource(this.#sourceDefinitions(), identifiers)
-    if (!definition) throw new PlayerError('UNSUPPORTED_SOURCE', `No element accepts track "${source.track}"`)
-    this.#chain.addSource(definition, identifiers, options)
+    this.#declaredSources.push({ identifiers, options })
     this.#origin = source.url
     return this
   }
@@ -281,7 +289,7 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
     return this
   }
 
-  /** Connects and negotiates the chain. Idempotent. */
+  /** Connects and negotiates the chain; rejects with `UNSUPPORTED_SOURCE` when no element accepts a source. Idempotent. */
   init(): Promise<void> {
     if (this.#abort.signal.aborted) return Promise.reject(this.#abort.signal.reason)
     const origin = this.#origin
@@ -342,6 +350,12 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
       const client = await acquire(this.#member, origin, this.#clientOptions)
       this.#abort.signal.throwIfAborted()
       this.#useClient(client)
+      this.#features = resolveFeatures(activePlugins(this.#plugins, client.serverSetup))
+      for (const { identifiers, options } of this.#declaredSources) {
+        const definition = selectSource(this.#sourceDefinitions(), identifiers)
+        if (!definition) throw new PlayerError('UNSUPPORTED_SOURCE', `No element accepts track "${identifiers.track}"`)
+        this.#chain.addSource(definition, identifiers, options)
+      }
       const outcome = await this.#chain.init(this.#abort.signal)
       if (this.#error) throw this.#error // failed while negotiating, e.g. the session couldn't be recovered
       this.#watchSink()
@@ -374,7 +388,7 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
 
   /** Built-in sources last, so they lose probe ties. */
   #sourceDefinitions(): SourceElementDefinition[] {
-    return [...this.#definitions, ...this.#extensionElements, ...BUILT_IN_SOURCES].filter(
+    return [...this.#definitions, ...this.#features.elements, ...BUILT_IN_SOURCES].filter(
       (d): d is SourceElementDefinition => d.type === 'source',
     )
   }
@@ -412,9 +426,9 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
     }
   }
 
-  /** Attaches `opts.buffer` once a negotiated stream is live, detaches it otherwise. */
+  /** Attaches the buffer controller once a negotiated stream is live, detaches it otherwise. */
   #controlBuffer(): void {
-    const controller = this.options.buffer
+    const controller = this.#features.bufferController
     const sink = this.mediaSink
     if (!controller || !sink) return
     const live = this.#negotiated && this.#streamType === 'live' && !this.#abort.signal.aborted
@@ -467,10 +481,12 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
 if (import.meta.vitest) {
   const { describe, test, expect, beforeEach, afterEach } = import.meta.vitest
   const { fakeClients } = await import('@/player/testing/client')
-  const { testSource, fakeMediaSink, flush } = await import('@/player/testing/elements')
-  const { defineExtension } = await import('./extension')
+  const { bufferPlugin, testSource, fakeMediaSink, flush } = await import('@/player/testing/elements')
+  const { definePlugin } = await import('./plugin')
   const { CapabilityCode } = await import('@/player/element/define')
   const { SetupOptions } = await import('@/model/parameter/setup_option')
+  const { Setup } = await import('@/model/control/setup')
+  type Feature = import('./plugin').Feature
   type Sink = import('@/player/testing/elements').FakeMediaSink
   type Source = import('@/player/testing/elements').TestSource
 
@@ -496,7 +512,6 @@ if (import.meta.vitest) {
       const player = new MOQtailPlayer()
       expect(() => player.source('https://example.com')).toThrow(code('UNSUPPORTED_SOURCE'))
       expect(() => player.source(`${URL}&connection=q`)).toThrow(code('UNSUPPORTED_SOURCE'))
-      expect(() => player.source('moqt://relay.example.com/app#msf:ns--video')).toThrow(code('UNSUPPORTED_SOURCE')) // no element accepts it
       player.registerElement(media).source(URL)
       expect(() => player.source('moqt://other.example.com/app#msf:ns--catalog')).toThrow(code('UNSUPPORTED_ORIGIN'))
       expect(player.state).toBe('idle')
@@ -555,6 +570,11 @@ if (import.meta.vitest) {
       empty.on('error', (e) => errors.push(e))
       await expect(empty.source(URL).sink(fakeMediaSink).init()).rejects.toMatchObject({ code: 'NO_MEDIA_SINK' })
       expect([empty.state, errors]).toEqual(['error', [code('NO_MEDIA_SINK')]])
+
+      // Picked once the plugins are known, so it's init() that rejects
+      const unplayable = new MOQtailPlayer().source('moqt://relay.example.com/app#msf:ns--video').sink(fakeMediaSink)
+      await expect(unplayable.init()).rejects.toMatchObject({ code: 'UNSUPPORTED_SOURCE' })
+      await unplayable.destroy()
 
       const player = make()
       await player.init()
@@ -632,10 +652,10 @@ if (import.meta.vitest) {
       await player.destroy()
     })
 
-    test('opts.buffer is attached once a negotiated stream is live, and detached on-demand and on destroy()', async () => {
+    test('the buffer controller is attached once a negotiated stream is live, and detached on-demand and on destroy()', async () => {
       const calls: string[] = []
       const buffer: BufferController = { attach: () => calls.push('attach'), detach: () => calls.push('detach') }
-      const player = make({ buffer })
+      const player = make({ plugins: [bufferPlugin(buffer)] })
       const plain = make()
       player.emit('streamtypechange', 'live')
       plain.emit('streamtypechange', 'live')
@@ -681,34 +701,54 @@ if (import.meta.vitest) {
       await other.destroy()
     })
 
-    test('extensions: conflicting setup throws, setup joins the key, and their sources win the probe', async () => {
-      const ssts = (name: string, algorithm: number) =>
-        defineExtension({ name, setupOptions: new SetupOptions().addSstsAlgorithms([algorithm]) })
-      expect(() => new MOQtailPlayer({ extensions: [ssts('one', 1), ssts('two', 2)] })).toThrow(
+    test("plugins: conflicting setup throws, setup joins the key, and only active plugins' elements are picked, top-level ones too", async () => {
+      const offering = (name: string, algorithm: number, features: () => Feature[] = () => []) =>
+        definePlugin({
+          name,
+          setup: (_, setup) => {
+            setup.addSstsAlgorithms([algorithm])
+            return true
+          },
+          negotiated: (_, serverSetup) => serverSetup.setupOptions.length > 0,
+          features,
+        })()
+      expect(() => new MOQtailPlayer({ plugins: [offering('one', 1), offering('two', 2)] })).toThrow(
         code('UNSUPPORTED_ORIGIN'),
       )
-      const sets = (name: string) => defineExtension({ name, switchingSetSource: testSource({ name }) })
-      expect(() => new MOQtailPlayer({ extensions: [sets('one'), sets('two')] })).toThrow(code('UNSUPPORTED_SOURCE'))
 
-      const parent = testSource({
-        name: 'ssts-parent',
-        media: true,
-        priority: 50,
-        script: async (s) => {
-          await s.ctx.load(testSource({ name: 'child', media: true }))
-          s.addPad()
-          s.emit('nomorepads')
-        },
-      })
-      const extension = defineExtension({ ...ssts('ssts', 1), elements: [parent] })
-      const player = new MOQtailPlayer({ extensions: [extension] })
-        .registerElement(media)
-        .source(URL)
-        .sink(fakeMediaSink)
+      // Loads what the probe picks for a video track, as the catalog does
+      const loadsVideo = (name: string, priority = 100) =>
+        testSource({
+          name,
+          priority,
+          probe: (ids) => ids.track === 'catalog',
+          script: async (s) => {
+            const picked = s.ctx.probe({ track: 'video' })
+            if (picked) await s.ctx.load(picked)
+            s.addPad()
+            s.emit('nomorepads')
+          },
+        })
+      const top = loadsVideo('top')
+      const video = testSource({ name: 'video', probe: (ids) => ids.track === 'video' })
+      const plugins = () => [
+        offering('plugin', 1, () => [
+          { type: 'element', item: loadsVideo('plugin-top', 50) },
+          { type: 'element', item: video },
+        ]),
+      ]
+      // The fake relay sends no setup parameters: the plugin is inactive, even for the top-level track
+      const inactive = new MOQtailPlayer({ plugins: plugins() }).registerElement(top).source(URL).sink(fakeMediaSink)
+      await inactive.init()
+      expect(inactive.sources.map((s) => s.definition.name)).toEqual(['top'])
+      await inactive.destroy()
+
+      fakes.restore()
+      fakes = fakeClients(undefined, new Setup(new SetupOptions().addSstsAlgorithms([1]).build()))
+      const player = new MOQtailPlayer({ plugins: plugins() }).registerElement(top).source(URL).sink(fakeMediaSink)
       await player.init()
-      expect(player.sources.map((s) => s.definition.name).sort()).toEqual(['child', 'ssts-parent'])
-      expect(player.mediaSources.map((s) => s.definition.name)).toEqual(['ssts-parent'])
-      expect(() => new MOQtailPlayer().registerElement(media).source(URL)).toThrow(code('UNSUPPORTED_ORIGIN'))
+      expect(player.sources.map((s) => s.definition.name).sort()).toEqual(['plugin-top', 'video'])
+      expect(() => new MOQtailPlayer().registerElement(top).source(URL)).toThrow(code('UNSUPPORTED_ORIGIN'))
       await player.destroy()
     })
   })

@@ -54,6 +54,8 @@ export class SstsSource extends SourceElement implements MediaSourceElement {
   readonly #children = new Map<string, Child>()
   #tracks: readonly CatalogTrack[]
   #selected: Set<string>
+  /** The rendition a manual switch pins the relay to: every track stays in the set. */
+  #pinned: string | undefined
   /** Automatic switching paused: `activate` is 0. */
   #paused = false
   readonly #forward: Forwarder
@@ -133,29 +135,41 @@ export class SstsSource extends SourceElement implements MediaSourceElement {
     return this.#tracks.map((t) => this.#rendition(t))
   }
 
-  /** The relay chooses the track under SSTS. */
-  async switch(): Promise<void> {
-    throw new PlayerError('UNSUPPORTED_SOURCE', 'Under SSTS the relay chooses the track', { element: 'ssts' })
+  /** Pins the relay to one track: the same as selecting only it. */
+  async switch(renditionId: string): Promise<void> {
+    if (!this.#tracks.some((t) => this.#id(t) === renditionId)) {
+      throw new PlayerError('UNSUPPORTED_SOURCE', `No rendition ${renditionId}`, { element: 'ssts' })
+    }
+    await this.selectRenditions([renditionId])
   }
 
-  /** Changes the switching set (SSTS 6.2): a deselected track is unsubscribed, a selected one subscribed again. */
+  /**
+   * Changes the switching set (SSTS 6.2): a deselected track is unsubscribed, a selected one
+   * subscribed again. A single selection keeps every track in the set and pins it by threshold.
+   */
   async selectRenditions(renditionIds: string[]): Promise<void> {
-    const before = this.#selected
+    const children = [...this.#children.values()]
+    const before = children.map((c) => this.#isMember(c))
+    const wasPinned = this.#pinned !== undefined
     this.#selected = new Set(renditionIds)
+    this.#pinned = renditionIds.length === 1 && this.#tracks.length > 1 ? renditionIds[0] : undefined
     await Promise.all(
-      [...this.#children.values()].map((child) => {
-        const id = this.#id(child.track)
-        const selected = this.#selected.has(id)
-        if (before.has(id) === selected) return
-        if (!selected) delete child.subscription
-        return child.element?.selectRenditions(selected ? [id] : [])
+      children.map((child, i) => {
+        const member = this.#isMember(child)
+        if (before[i] === member) return
+        if (!member) delete child.subscription
+        return child.element?.selectRenditions(member ? [this.#id(child.track)] : [])
       }),
     )
+    // A pin changes every threshold; subscriptions made above already carry the new ones
+    if (wasPinned || this.#pinned !== undefined) {
+      await Promise.all(this.#subscribed().map((c) => this.#update(c)))
+    }
   }
 
-  /** New tracks get a child, selected unless exactly one is selected now; removed ones are released. */
+  /** New tracks get a child, selected unless a track is pinned; removed ones are released. */
   setTracks(tracks: readonly CatalogTrack[]): void {
-    const keepSelection = this.#selected.size === 1
+    const keepSelection = this.#pinned !== undefined
     const next = new Set(tracks.map(trackKey))
     for (const [key, child] of this.#children) {
       if (next.has(key)) continue
@@ -225,7 +239,7 @@ export class SstsSource extends SourceElement implements MediaSourceElement {
     }
     child.element = element as unknown as BaseElement & MediaSourceElement
     // shortcut: an unselected new track subscribes once before it's taken out; a load option could skip that
-    if (!this.#selected.has(this.#id(track))) await child.element.selectRenditions([])
+    if (!this.#isMember(child)) await child.element.selectRenditions([])
   }
 
   /** Every SUBSCRIBE of the set carries its assignment, and no FORWARD: the publisher owns it (SSTS 6.3). */
@@ -246,7 +260,9 @@ export class SstsSource extends SourceElement implements MediaSourceElement {
 
   #assignment(track: CatalogTrack): SwitchingSetAssignment {
     const activate = this.#paused ? 0n : BigInt(this.#selectedChildren().length)
-    const kbps = BigInt(Math.round(bitrateOf(track) / 1000))
+    // A pinned track has 1 and the others 0, so the relay picks it at any throughput
+    const pinned = this.#pinned !== undefined
+    const kbps = pinned ? BigInt(this.#pinned === this.#id(track)) : BigInt(Math.round(bitrateOf(track) / 1000))
     return new SwitchingSetAssignment(this.#setIdFor(this.context.client), this.#algorithm, kbps, 1n, activate, 0)
   }
 
@@ -290,15 +306,15 @@ export class SstsSource extends SourceElement implements MediaSourceElement {
   }
 
   #subscribed(): Child[] {
-    return [...this.#children.values()].filter((c) => c.subscription && this.#isSelected(c))
+    return [...this.#children.values()].filter((c) => c.subscription && this.#isMember(c))
   }
 
   #selectedChildren(): Child[] {
-    return [...this.#children.values()].filter((c) => this.#isSelected(c))
+    return [...this.#children.values()].filter((c) => this.#isMember(c))
   }
 
-  #isSelected(child: Child): boolean {
-    return this.#selected.has(this.#id(child.track))
+  #isMember(child: Child): boolean {
+    return this.#pinned !== undefined || this.#selected.has(this.#id(child.track))
   }
 
   /** A child that removes its pad is dropped; with none left, so is the source pad. */
@@ -471,26 +487,52 @@ if (import.meta.vitest) {
     ])
   })
 
-  test('switch rejects; selectRenditions unsubscribes and re-adds; a retry re-sends activate', async () => {
-    const c = await sstsChain([[v('v1'), v('v2')]])
+  test('selectRenditions unsubscribes and re-adds; a retry re-sends activate', async () => {
+    const c = await sstsChain([[v('v1'), v('v2'), v('v3')]])
     vi.useFakeTimers()
-    await expect(c.source.switch()).rejects.toMatchObject({ code: 'UNSUPPORTED_SOURCE' })
-    await c.source.selectRenditions(['v1'])
+    await c.source.selectRenditions(['v1', 'v2'])
     await vi.advanceTimersByTimeAsync(0)
-    expect(c.client.sent('unsubscribe')).toEqual([1n])
+    expect(c.client.sent('unsubscribe')).toEqual([2n])
     c.request('v1').reset()
     await vi.advanceTimersByTimeAsync(6000)
     // The retry carries the current set size, then the count is sent again for the replacement
     const retry = c.client.sent<SubscribeOptions>('subscribe').at(-1)!
-    expect([requested(retry), assigned(retry)]).toEqual(['v1', 'set 0 alg 0 kbps 1000 activate 1'])
+    expect([requested(retry), assigned(retry)]).toEqual(['v1', 'set 0 alg 0 kbps 1000 activate 2'])
     const [update] = c.client.sent<UpdateOptions>('subscribeUpdate')
-    expect(update).toEqual({ subscriptionRequestId: 2n, parameters: [expect.any(SwitchingSetAssignment)] })
-    expect(assigned(update!)).toBe('set 0 alg 0 kbps 1000 activate 1')
-    await c.source.selectRenditions(['v1', 'v2'])
+    expect(update).toEqual({ subscriptionRequestId: 3n, parameters: [expect.any(SwitchingSetAssignment)] })
+    expect(assigned(update!)).toBe('set 0 alg 0 kbps 1000 activate 2')
+    await c.source.selectRenditions(['v1', 'v2', 'v3'])
     await vi.advanceTimersByTimeAsync(0)
     const added = c.client.sent<SubscribeOptions>('subscribe').at(-1)!
-    expect([requested(added), assigned(added)]).toEqual(['v2', 'set 0 alg 0 kbps 1000 activate 2'])
+    expect([requested(added), assigned(added)]).toEqual(['v3', 'set 0 alg 0 kbps 1000 activate 3'])
     expect(c.failures).toEqual([])
+  })
+
+  test('switch pins one track by threshold, keeping the set; selecting all restores the bitrates', async () => {
+    const c = await sstsChain([[v('v1', 800_000), v('v2', 2_000_000), v('v3', 4_000_000)]])
+    await c.source.selectRenditions(['v1', 'v2'])
+    await flush()
+    c.client.calls.length = 0
+    await expect(c.source.switch('nope')).rejects.toMatchObject({ code: 'UNSUPPORTED_SOURCE' })
+    await c.source.switch('v2')
+    await flush()
+    const updates = () => c.client.sent<UpdateOptions>('subscribeUpdate').map((u) => assigned(u))
+    const v3 = c.client.sent<SubscribeOptions>('subscribe')
+    expect(v3.map((s) => [requested(s), assigned(s)])).toEqual([['v3', 'set 0 alg 0 kbps 0 activate 3']])
+    expect(updates()).toEqual(['set 0 alg 0 kbps 0 activate 3', 'set 0 alg 0 kbps 1 activate 3'])
+    expect(c.client.sent('unsubscribe')).toEqual([])
+    expect(c.source.getRenditions().map((r) => [r.id, r.selected])).toEqual([
+      ['v1', false],
+      ['v2', true],
+      ['v3', false],
+    ])
+    c.client.calls.length = 0
+    await c.source.selectRenditions(['v1', 'v2', 'v3'])
+    expect(updates()).toEqual([
+      'set 0 alg 0 kbps 800 activate 3',
+      'set 0 alg 0 kbps 2000 activate 3',
+      'set 0 alg 0 kbps 4000 activate 3',
+    ])
   })
 
   test('pausing and resuming switching sends only the assignment', async () => {
@@ -511,7 +553,7 @@ if (import.meta.vitest) {
     const updates = () =>
       c.client.sent<UpdateOptions>('subscribeUpdate').map((u) => `${u.subscriptionRequestId} ${assigned(u)}`)
     expect(updates()).toEqual(['0 set 0 alg 65281 kbps 1000 activate 2', '1 set 0 alg 65281 kbps 1000 activate 2'])
-    await c.source.selectRenditions(['v1'])
+    await c.source.selectRenditions([])
     await c.source.selectRenditions(['v1', 'v2'])
     await flush()
     expect(assigned(c.client.sent<SubscribeOptions>('subscribe').at(-1)!)).toContain('alg 65281')
@@ -523,9 +565,9 @@ if (import.meta.vitest) {
     await expect(c.source.setAlgorithm(0n)).rejects.toThrow('rejected')
     expect(c.source.algorithm).toBe(0xff01n)
     expect(updates()).toEqual([
-      '0 set 0 alg 0 kbps 1000 activate 2',
       '2 set 0 alg 0 kbps 1000 activate 2',
-      '0 set 0 alg 65281 kbps 1000 activate 2',
+      '3 set 0 alg 0 kbps 1000 activate 2',
+      '3 set 0 alg 65281 kbps 1000 activate 2',
     ])
 
     c.client.update = () => {}

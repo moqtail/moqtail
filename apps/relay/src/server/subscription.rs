@@ -1807,8 +1807,8 @@ impl Subscription {
     // TODO: revisit this logic to handle also fetch requests
     if let Ok(sub_object) = object.try_into_subgroup() {
       let has_properties = sub_object.properties.is_some();
-      let object_bytes = match sub_object.serialize(previous_object_id, has_properties) {
-        Ok(data) => data,
+      let chunks = match sub_object.serialize_parts(previous_object_id, has_properties) {
+        Ok((header, payload)) => [Some(header), payload].into_iter().flatten().collect(),
         Err(e) => {
           error!(
             "Error in serializing object before writing to stream for subscriber={} relay_track_id={}, location: {:?}, previous_object_id: {:?}, error: {:?}",
@@ -1818,20 +1818,12 @@ impl Subscription {
         }
       };
 
-      // uncomment to print hex dump of object bytes
-      /*
-      trace!(
-        "subscription::handle_object | object bytes: {}",
-        utils::bytes_to_hex(&object_bytes)
-      );
-      */
-
       self
         .subscriber
         .write_stream_object(
           &self.new_send_stream_key(stream_id),
           sub_object.object_id,
-          object_bytes,
+          chunks,
           Some(send_stream.clone()),
         )
         .await

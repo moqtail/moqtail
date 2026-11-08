@@ -1439,7 +1439,7 @@ pub(crate) async fn serve_fetch_stream(
       FetchObject::EndOfRange { object_id, .. } => *object_id,
     };
     client
-      .write_stream_object(&stream_id, object_id, serialized, send_stream.clone())
+      .write_stream_object(&stream_id, object_id, vec![serialized], send_stream.clone())
       .await
       .map_err(|e| {
         error!(

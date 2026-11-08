@@ -589,7 +589,7 @@ impl MOQTClient {
     &self,
     stream_key: &SendStreamKey,
     object_id: u64,
-    object: Bytes,
+    mut chunks: Vec<Bytes>,
     the_stream: Option<Arc<Mutex<TransportSendStream>>>,
   ) -> Result<(), anyhow::Error> {
     trace!(
@@ -611,12 +611,15 @@ impl MOQTClient {
     // the shared bandwidth budget, causing QUIC buffers to fill and the QUIC
     // stream priority scheduler to choose between them.
     if let Some(rl) = &self.rate_limiter {
-      rl.lock().await.consume(object.len()).await;
+      rl.lock()
+        .await
+        .consume(chunks.iter().map(Bytes::len).sum())
+        .await;
     }
 
     if let Some(s) = send_stream {
       let mut stream = s.lock().await;
-      match stream.write_all(&object).await {
+      match stream.write_all_chunks(&mut chunks).await {
         Ok(..) => {}
         Err(e) => {
           if let TransportWriteError::ClosedOrStopped = &e {

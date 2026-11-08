@@ -37,6 +37,23 @@ impl SubgroupObject {
     previous_object_id: Option<u64>,
     has_properties: bool,
   ) -> Result<Bytes, ParseError> {
+    let (header, payload) = self.serialize_parts(previous_object_id, has_properties)?;
+    let Some(payload) = payload else {
+      return Ok(header);
+    };
+    let mut buf = BytesMut::with_capacity(header.len() + payload.len());
+    buf.extend_from_slice(&header);
+    buf.extend_from_slice(&payload);
+    Ok(buf.freeze())
+  }
+
+  /// The bytes before the payload, and the payload itself (shared, not copied).
+  /// Together they equal `serialize`.
+  pub fn serialize_parts(
+    &self,
+    previous_object_id: Option<u64>,
+    has_properties: bool,
+  ) -> Result<(Bytes, Option<Bytes>), ParseError> {
     let mut buf = BytesMut::new();
 
     let object_id_delta = if let Some(id) = previous_object_id {
@@ -71,13 +88,11 @@ impl SubgroupObject {
       && !payload.is_empty()
     {
       buf.put_vi(payload.len())?;
-      buf.extend_from_slice(payload);
-    } else {
-      buf.put_vi(0u64)?;
-      buf.put_vi(self.object_status.unwrap_or(ObjectStatus::Normal))?;
+      return Ok((buf.freeze(), Some(payload.clone())));
     }
-
-    Ok(buf.freeze())
+    buf.put_vi(0u64)?;
+    buf.put_vi(self.object_status.unwrap_or(ObjectStatus::Normal))?;
+    Ok((buf.freeze(), None))
   }
 
   pub fn deserialize(
@@ -208,6 +223,39 @@ mod tests {
     let deserialized = SubgroupObject::deserialize(&mut buf, &Some(prev_object_id), true).unwrap();
     assert_eq!(deserialized, subgroup_object);
     assert!(!buf.has_remaining());
+  }
+
+  #[test]
+  fn test_parts_join_to_serialize() {
+    let properties = Some(vec![ObjectProperty::Unknown {
+      kvp: KeyValuePair::try_new_varint(2, 10).unwrap(),
+    }]);
+    let cases = [
+      (
+        Some(Bytes::from_static(b"payload")),
+        None,
+        properties.clone(),
+        true,
+      ),
+      (Some(Bytes::from_static(b"payload")), None, None, false),
+      (None, Some(ObjectStatus::EndOfGroup), properties, true),
+      (Some(Bytes::new()), None, None, false),
+    ];
+    for (payload, object_status, properties, has_properties) in cases {
+      let object = SubgroupObject {
+        object_id: 10,
+        properties,
+        object_status,
+        payload,
+      };
+      for previous in [None, Some(9), Some(3)] {
+        let whole = object.serialize(previous, has_properties).unwrap();
+        let (header, payload) = object.serialize_parts(previous, has_properties).unwrap();
+        let mut joined = header.to_vec();
+        joined.extend_from_slice(payload.as_deref().unwrap_or(&[]));
+        assert_eq!(joined, whole.to_vec());
+      }
+    }
   }
 
   #[test]

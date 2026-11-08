@@ -25,7 +25,8 @@
 //! conflict with each other.
 
 use crate::server::client::MOQTClient;
-use crate::server::session_context::{PendingRequest, SessionContext};
+use crate::server::requests::DownstreamRequest;
+use crate::server::session_context::SessionContext;
 use crate::server::track_manager::SubscribeKind;
 use core::result::Result;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
@@ -64,12 +65,11 @@ pub(crate) fn oversized_namespace_error(prefix: &Tuple) -> Option<RequestError> 
 /// Remove the subscription when the subscriber closes or resets the bi-stream.
 pub async fn cancel(client: Arc<MOQTClient>, request_id: u64, context: &Arc<SessionContext>) {
   let target = {
-    let mut map = client.inbound_requests.write().await;
-    match map.remove(&request_id) {
-      Some(PendingRequest::SubscribeNamespace { message, .. }) => {
+    match client.downstream_requests.remove(request_id).await {
+      Some(DownstreamRequest::SubscribeNamespace { message, .. }) => {
         Some((message.track_namespace_prefix, SubscribeKind::Namespace))
       }
-      Some(PendingRequest::SubscribeTracks { message, .. }) => {
+      Some(DownstreamRequest::SubscribeTracks { message, .. }) => {
         Some((message.track_namespace_prefix, SubscribeKind::Tracks))
       }
       _ => None,
@@ -93,13 +93,12 @@ async fn target_subscription(
   client: &Arc<MOQTClient>,
   request_id: u64,
 ) -> Option<(Tuple, SubscribeKind)> {
-  let map = client.inbound_requests.read().await;
-  match map.get(&request_id) {
-    Some(PendingRequest::SubscribeNamespace { message, .. }) => Some((
+  match client.downstream_requests.get(request_id).await {
+    Some(DownstreamRequest::SubscribeNamespace { message, .. }) => Some((
       message.track_namespace_prefix.clone(),
       SubscribeKind::Namespace,
     )),
-    Some(PendingRequest::SubscribeTracks { message, .. }) => Some((
+    Some(DownstreamRequest::SubscribeTracks { message, .. }) => Some((
       message.track_namespace_prefix.clone(),
       SubscribeKind::Tracks,
     )),
@@ -168,24 +167,25 @@ async fn apply_subscription_update(
   kind: SubscribeKind,
   parameters: Vec<MessageParameter>,
 ) {
-  {
-    let mut map = client.inbound_requests.write().await;
-    let stored = match map.get_mut(&request_id) {
-      Some(PendingRequest::SubscribeNamespace { message, .. }) => {
-        Some((&mut message.parameters, &mut message.track_namespace_prefix))
-      }
-      Some(PendingRequest::SubscribeTracks { message, .. }) => {
-        Some((&mut message.parameters, &mut message.track_namespace_prefix))
-      }
-      _ => None,
-    };
-    if let Some((stored_parameters, stored_prefix)) = stored {
+  client
+    .downstream_requests
+    .update(request_id, |request| {
+      let (stored_parameters, stored_prefix) = match request {
+        DownstreamRequest::SubscribeNamespace { message, .. } => {
+          (&mut message.parameters, &mut message.track_namespace_prefix)
+        }
+        DownstreamRequest::SubscribeTracks { message, .. } => {
+          (&mut message.parameters, &mut message.track_namespace_prefix)
+        }
+        _ => return None,
+      };
       apply_message_parameter_update(stored_parameters, parameters.clone());
       if let Some(new_prefix) = &new_prefix {
         *stored_prefix = new_prefix.clone();
       }
-    }
-  }
+      Some(())
+    })
+    .await;
 
   context
     .track_manager
@@ -216,8 +216,8 @@ async fn update_filters_rejection(
   let limit = context.server_config.max_filter_ranges;
   match kind {
     SubscribeKind::Tracks => {
-      let current = match client.inbound_requests.read().await.get(&request_id) {
-        Some(PendingRequest::SubscribeTracks { message, .. }) => message.parameters.clone(),
+      let current = match client.downstream_requests.get(request_id).await {
+        Some(DownstreamRequest::SubscribeTracks { message, .. }) => message.parameters.clone(),
         _ => Vec::new(),
       };
       crate::server::filter_constructor::updated_tracks_filter(&current, update, limit).map(|_| ())

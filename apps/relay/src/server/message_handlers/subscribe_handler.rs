@@ -16,8 +16,9 @@ use crate::server::client::MOQTClient;
 use crate::server::client::switch_context::SwitchPlan;
 use crate::server::filter_constructor;
 use crate::server::message_handlers::parameters;
+use crate::server::requests::DownstreamRequest;
 use crate::server::session::Session;
-use crate::server::session_context::{PendingRequest, SessionContext};
+use crate::server::session_context::SessionContext;
 use crate::server::subscription::Subscription;
 use crate::server::subscription_manager::SubscriptionId;
 use crate::server::track::{
@@ -98,10 +99,9 @@ async fn forward_subscribe_upstream(
   // has ended one way or another: answered, declined, timed out, cancelled, or never
   // sent. Dropping it here covers every exit inside, several of which return early.
   context
-    .relay_pending_requests
-    .write()
-    .await
-    .remove(&relay_request_id);
+    .upstream_requests
+    .remove_subscribe(relay_request_id)
+    .await;
 }
 
 async fn upstream_subscribe_exchange(
@@ -886,10 +886,10 @@ async fn handle_subscribe_message(
         sub.clone(),
         Some(new_sub.clone()),
       );
-      {
-        let mut requests = context.relay_pending_requests.write().await;
-        requests.insert(new_sub.request_id, PendingRequest::Subscribe(req.clone()));
-      }
+      context
+        .upstream_requests
+        .add_subscribe(new_sub.request_id, req.clone())
+        .await;
       info!(
         "forwarding SUBSCRIBE for {:?} to publisher {} as relay request {}",
         full_track_name, publisher.connection_id, new_sub.request_id
@@ -1014,16 +1014,14 @@ async fn handle_subscribe_message(
 
   // Store in client's subscribe requests on success
   if res.is_ok() {
-    let mut requests = client.subscribe_requests.write().await;
     let orig_req = SubscribeRequest::new(original_request_id, context.connection_id, sub, None);
-    requests.insert(original_request_id, orig_req.clone());
-
-    // dual bookkeeping here, necessary evil
-    let mut inbound = client.inbound_requests.write().await;
-    inbound.insert(
-      original_request_id,
-      PendingRequest::Subscribe(orig_req.clone()),
-    );
+    client
+      .downstream_requests
+      .insert(
+        original_request_id,
+        DownstreamRequest::Subscribe(orig_req.clone()),
+      )
+      .await;
 
     trace!(
       "inserted request into client's subscribe requests: {:?}",
@@ -1045,27 +1043,12 @@ async fn handle_subscribe_ok_message(
 ) -> Result<(), TerminationCode> {
   info!("received SubscribeOk message: {:?}", msg);
 
-  // Look up the relay subscribe request from the unified map
-  let sub_request = {
-    let requests = context.relay_pending_requests.read().await;
-    match requests.get(&request_id).cloned() {
-      Some(PendingRequest::Subscribe(m)) => {
-        info!("request id is verified: {:?}", request_id);
-        m
-      }
-      Some(_) => {
-        warn!(
-          "request id matched but wrong type for SubscribeOk: {:?}",
-          request_id
-        );
-        return Ok(());
-      }
-      None => {
-        warn!("request id is not verified: {:?}", request_id);
-        return Ok(());
-      }
-    }
+  // The SUBSCRIBE the relay forwarded, which this answers.
+  let Some(sub_request) = context.upstream_requests.get_subscribe(request_id).await else {
+    warn!("request id is not verified: {:?}", request_id);
+    return Ok(());
   };
+  info!("request id is verified: {:?}", request_id);
 
   // SUBSCRIBE_OK with an unsupported mandatory track property. Reuse the
   // RequestError fan-out to cancel and notify downstream subscribers.
@@ -1300,17 +1283,12 @@ pub(crate) async fn cancel_subscription(
 ) {
   // find the track alias by using the request id
   let full_track_name = {
-    let requests = client.subscribe_requests.read().await;
-    let request = requests.get(&request_id);
-    if request.is_none() {
+    let Some(request) = client.downstream_requests.get_subscribe(request_id).await else {
       warn!("request not found for request id: {:?}", request_id);
       return;
-    }
-    request
-      .unwrap()
-      .original_subscribe_request
-      .get_full_track_name()
-  }; // read lock dropped here
+    };
+    request.original_subscribe_request.get_full_track_name()
+  };
 
   // Sender-side track switching: this subscription no longer holds the track in
   // its switching set. Another subscription to the same track may still.
@@ -1334,8 +1312,7 @@ pub(crate) async fn cancel_subscription(
         "Subscription cancel: request {} no longer owns the subscription for {:?}; leaving it",
         request_id, full_track_name
       );
-      client.subscribe_requests.write().await.remove(&request_id);
-      client.inbound_requests.write().await.remove(&request_id);
+      client.downstream_requests.remove(request_id).await;
       client.subscriptions.remove(request_id).await;
       return;
     }
@@ -1370,11 +1347,7 @@ pub(crate) async fn cancel_subscription(
 
   // Remove the request from the client's request map so it doesn't leak
   {
-    let mut requests = client.subscribe_requests.write().await;
-    requests.remove(&request_id);
-
-    let mut inbound = client.inbound_requests.write().await;
-    inbound.remove(&request_id);
+    client.downstream_requests.remove(request_id).await;
 
     trace!(
       "Cleaned up client subscribe request {} on cancel",
@@ -1402,8 +1375,11 @@ pub async fn handle_request_update(
   // Read before anything is applied: a refused switch must leave the subscription
   // as it was.
   let (full_track_name, current_parameters) = {
-    let client_requests = client.subscribe_requests.read().await;
-    match client_requests.get(&existing_req_id) {
+    match client
+      .downstream_requests
+      .get_subscribe(existing_req_id)
+      .await
+    {
       Some(req) => (
         req.original_subscribe_request.get_full_track_name(),
         req.original_subscribe_request.subscribe_parameters.clone(),
@@ -1458,25 +1434,19 @@ pub async fn handle_request_update(
     }
   };
 
-  {
-    let mut client_requests = client.subscribe_requests.write().await;
-    if let Some(req) = client_requests.get_mut(&existing_req_id) {
-      apply_message_parameter_update(
-        &mut req.original_subscribe_request.subscribe_parameters,
-        update_msg.parameters.clone(),
-      );
-    }
-  }
-
-  {
-    let mut inbound = client.inbound_requests.write().await;
-    if let Some(PendingRequest::Subscribe(req)) = inbound.get_mut(&existing_req_id) {
-      apply_message_parameter_update(
-        &mut req.original_subscribe_request.subscribe_parameters,
-        update_msg.parameters.clone(),
-      );
-    }
-  }
+  client
+    .downstream_requests
+    .update(existing_req_id, |request| match request {
+      DownstreamRequest::Subscribe(req) => {
+        apply_message_parameter_update(
+          &mut req.original_subscribe_request.subscribe_parameters,
+          update_msg.parameters.clone(),
+        );
+        Some(())
+      }
+      _ => None,
+    })
+    .await;
 
   // Sender-side track switching: apply switching set parameter updates. All
   // fields are present in the parameter, and the most recently received message
@@ -1692,20 +1662,10 @@ async fn handle_subscribe_error_message(
   );
   let msg = subscribe_error_message;
 
-  // Look up and remove the relay subscribe request from the unified map
-  let sub_request = {
-    let mut requests = context.relay_pending_requests.write().await;
-    match requests.remove(&request_id) {
-      Some(PendingRequest::Subscribe(m)) => m,
-      Some(_) => {
-        warn!("RequestError for mismatched request type: {:?}", request_id);
-        return Ok(());
-      }
-      None => {
-        warn!("RequestError for unknown request id: {:?}", request_id);
-        return Ok(());
-      }
-    }
+  // The SUBSCRIBE the relay forwarded, which this answers.
+  let Some(sub_request) = context.upstream_requests.remove_subscribe(request_id).await else {
+    warn!("RequestError for unknown request id: {:?}", request_id);
+    return Ok(());
   };
 
   let full_track_name = sub_request.original_subscribe_request.get_full_track_name();

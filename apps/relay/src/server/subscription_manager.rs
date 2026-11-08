@@ -259,16 +259,7 @@ impl SubscriptionManager {
     for ((_, request_id), subscription) in detached {
       let subscriber = subscription.read().await.subscriber();
       subscriber.subscriptions.remove(request_id).await;
-      subscriber
-        .subscribe_requests
-        .write()
-        .await
-        .remove(&request_id);
-      subscriber
-        .inbound_requests
-        .write()
-        .await
-        .remove(&request_id);
+      subscriber.downstream_requests.remove(request_id).await;
     }
   }
 

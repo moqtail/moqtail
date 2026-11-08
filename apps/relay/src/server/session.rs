@@ -46,7 +46,7 @@ use crate::server::{Server, stream_id::StreamId};
 use super::{
   client::MOQTClient,
   message_handlers, request_stream,
-  session_context::{RequestMaps, SessionContext, UpstreamFetchEvent},
+  session_context::{SessionContext, UpstreamFetchEvent},
   track::Track,
   utils,
 };
@@ -128,21 +128,15 @@ impl Session {
     let client_manager = server.client_manager.clone();
     let track_manager = server.track_manager.clone();
     let server_config = server.app_config;
-    let relay_pending_requests = server.relay_pending_requests.clone();
-    let upstream_fetch_senders = server.upstream_fetch_senders.clone();
+    let upstream_requests = server.upstream_requests.clone();
     let relay_next_request_id = server.relay_next_request_id.clone();
     let draining = server.draining.clone();
-
-    let request_maps = RequestMaps {
-      relay_pending_requests,
-      upstream_fetch_senders,
-    };
 
     let context = Arc::new(SessionContext::new(
       server_config,
       client_manager,
       track_manager,
-      request_maps,
+      upstream_requests,
       connection,
       relay_next_request_id,
       server.active_request_streams.clone(),
@@ -773,12 +767,7 @@ impl Session {
     let Some(HeaderInfo::Fetch { header, .. }) = handler.get_header_info().await else {
       return None;
     };
-    context
-      .upstream_fetch_senders
-      .read()
-      .await
-      .get(&header.request_id)
-      .cloned()
+    context.upstream_requests.get_fetch(header.request_id).await
   }
 
   pub(crate) async fn get_next_relay_request_id(relay_next_request_id: Arc<AtomicU64>) -> u64 {

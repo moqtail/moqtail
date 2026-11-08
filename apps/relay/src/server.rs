@@ -22,6 +22,7 @@ mod message_handlers;
 mod object_logger;
 mod prefix_subscription;
 mod request_stream;
+mod requests;
 mod seen_objects;
 mod session;
 mod session_context;
@@ -36,18 +37,17 @@ mod track_manager;
 mod utils;
 
 use crate::server::client::MOQTClient;
-use crate::server::session_context::{PendingRequest, UpstreamFetchEvent};
+use crate::server::requests::UpstreamRequests;
 use crate::server::{config::AppConfig, session::Session};
 use anyhow::Result;
 use client_manager::ClientManager;
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::goaway::GoAway;
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::signal;
-use tokio::sync::{RwLock, mpsc, watch};
+use tokio::sync::{RwLock, watch};
 use tracing::{error, info, trace, warn};
 use tracing_subscriber::fmt::writer::MakeWriterExt;
 use tracing_subscriber::{EnvFilter, filter::LevelFilter};
@@ -61,10 +61,9 @@ const CACHE_ONLY_TRACK_SWEEP_INTERVAL: Duration = Duration::from_secs(30);
 pub(crate) struct Server {
   pub client_manager: ClientManager,
   pub track_manager: TrackManager,
-  pub relay_pending_requests: Arc<RwLock<BTreeMap<u64, PendingRequest>>>,
+  pub upstream_requests: UpstreamRequests,
   pub app_config: &'static AppConfig,
   pub relay_next_request_id: Arc<AtomicU64>,
-  pub upstream_fetch_senders: Arc<RwLock<BTreeMap<u64, mpsc::Sender<UpstreamFetchEvent>>>>,
   /// Request streams currently being served across the relay (for load shedding).
   pub active_request_streams: Arc<AtomicU64>,
   /// Set once the relay is draining (GOAWAY broadcast); new requests are rejected.
@@ -85,10 +84,9 @@ impl Server {
     Server {
       client_manager: ClientManager::new(),
       track_manager: TrackManager::new(),
-      relay_pending_requests: Arc::new(RwLock::new(BTreeMap::new())),
+      upstream_requests: UpstreamRequests::default(),
       app_config: config,
       relay_next_request_id: Arc::new(AtomicU64::new(1u64)), // relay's request id starts at 1 and are odd
-      upstream_fetch_senders: Arc::new(RwLock::new(BTreeMap::new())),
       active_request_streams: Arc::new(AtomicU64::new(0)),
       draining: Arc::new(AtomicBool::new(false)),
       redirect_uri: Arc::new(RwLock::new(config.redirect_uri.clone())),

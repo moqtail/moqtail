@@ -15,7 +15,8 @@
 use crate::server::client::MOQTClient;
 use crate::server::message_handlers::publish_handler;
 use crate::server::prefix_subscription::{MAX_NAMESPACE_PREFIX_FIELDS, oversized_namespace_error};
-use crate::server::session_context::{PendingRequest, SessionContext};
+use crate::server::requests::DownstreamRequest;
+use crate::server::session_context::SessionContext;
 use crate::server::track_manager::SubscribeKind;
 use core::result::Result;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
@@ -110,15 +111,17 @@ pub async fn handle_subscribe_tracks(
     .await;
 
   {
-    let mut map = client.inbound_requests.write().await;
-    map.insert(
-      sub_tracks.request_id,
-      PendingRequest::SubscribeTracks {
-        client_connection_id: client.connection_id,
-        original_request_id: sub_tracks.request_id,
-        message: (*sub_tracks).clone(),
-      },
-    );
+    client
+      .downstream_requests
+      .insert(
+        sub_tracks.request_id,
+        DownstreamRequest::SubscribeTracks {
+          client_connection_id: client.connection_id,
+          original_request_id: sub_tracks.request_id,
+          message: (*sub_tracks).clone(),
+        },
+      )
+      .await;
   }
 
   let ok = RequestOk::new(vec![]);

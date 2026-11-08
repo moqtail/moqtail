@@ -14,7 +14,8 @@
 
 use crate::server::client::MOQTClient;
 use crate::server::message_handlers::parameters;
-use crate::server::session_context::{PendingRequest, SessionContext, UpstreamFetchEvent};
+use crate::server::requests::DownstreamRequest;
+use crate::server::session_context::{SessionContext, UpstreamFetchEvent};
 use crate::server::stream_id::{SendStreamKey, StreamId};
 use crate::server::track::{
   Track, TrackOrigin, TrackStatus, UpstreamRequestCancellation, UpstreamRequestKind,
@@ -419,10 +420,9 @@ pub async fn handle(
         };
 
         client
-          .inbound_requests
-          .write()
-          .await
-          .insert(request_id, PendingRequest::Fetch(req));
+          .downstream_requests
+          .insert(request_id, DownstreamRequest::Fetch(req))
+          .await;
       }
 
       // Validate the requested range and clamp the FETCH_OK End Location to
@@ -540,13 +540,7 @@ pub async fn handle(
         fill_claim = None;
       }
 
-      let cancel_rx = {
-        let mut senders = client.fetch_cancel_senders.write().await;
-        senders
-          .entry(request_id)
-          .or_insert_with(|| watch::channel(FetchStop::Running).0)
-          .subscribe()
-      };
+      let cancel_rx = client.downstream_requests.watch_fetch(request_id).await;
       if *cancel_rx.borrow() == FetchStop::MalformedTrack {
         send_request_error(
           client.clone(),
@@ -572,11 +566,7 @@ pub async fn handle(
           .send(&ControlMessage::FetchOk(Box::new(fetch_ok)))
           .await
         {
-          client
-            .fetch_cancel_senders
-            .write()
-            .await
-            .remove(&request_id);
+          client.downstream_requests.remove(request_id).await;
           return Err(error);
         }
       }
@@ -594,15 +584,7 @@ pub async fn handle(
 
       tokio::spawn(async move {
         let result = serve_fetch_stream(client.clone(), context, track, delivery, cancel_rx).await;
-        // Clean up the unified map since the fetch is done
-        client.inbound_requests.write().await.remove(&request_id);
-
-        // Clean up cancel sender
-        client
-          .fetch_cancel_senders
-          .write()
-          .await
-          .remove(&request_id);
+        client.downstream_requests.remove(request_id).await;
         result
       });
 
@@ -616,14 +598,10 @@ pub async fn handle(
         "REQUEST_UPDATE for FETCH request {} cannot be applied; stopping delivery",
         target_request_id
       );
-      let cancel_tx = client
-        .fetch_cancel_senders
-        .write()
-        .await
-        .remove(&target_request_id);
-      if let Some(tx) = cancel_tx {
-        let _ = tx.send(FetchStop::UpdateFailed);
-      }
+      client
+        .downstream_requests
+        .stop_fetch(target_request_id, FetchStop::UpdateFailed)
+        .await;
       Ok(())
     }
     _ => {
@@ -636,17 +614,12 @@ pub async fn handle(
 /// Cancel a fetch when its FETCH request stream is reset or closed: signal the
 /// serving task to stop and remove the request from the client maps.
 pub(crate) async fn cancel_fetch(client: Arc<MOQTClient>, request_id: u64) {
-  let cancel_tx = {
-    let mut senders = client.fetch_cancel_senders.write().await;
-    senders.remove(&request_id)
-  };
-
+  if client
+    .downstream_requests
+    .cancel_fetch(request_id)
+    .await
+    .is_some()
   {
-    client.inbound_requests.write().await.remove(&request_id);
-  }
-
-  if let Some(tx) = cancel_tx {
-    let _ = tx.send(FetchStop::Cancelled);
     info!("Cancelled fetch delivery for request_id: {}", request_id);
   }
 }
@@ -745,10 +718,9 @@ async fn send_upstream_fetch_for_range(
       .await
       .insert(relay_request_id, req);
     context
-      .upstream_fetch_senders
-      .write()
-      .await
-      .insert(relay_request_id, upstream_tx.clone());
+      .upstream_requests
+      .add_fetch(relay_request_id, upstream_tx.clone())
+      .await;
   }
 
   // Sent only once the sender is registered, so Objects arriving first are not dropped.
@@ -922,10 +894,9 @@ async fn forget_upstream_fetch(
   relay_request_id: u64,
 ) {
   context
-    .upstream_fetch_senders
-    .write()
-    .await
-    .remove(&relay_request_id);
+    .upstream_requests
+    .remove_fetch(relay_request_id)
+    .await;
   publisher
     .outgoing_fetch_requests
     .write()
@@ -943,18 +914,10 @@ async fn cancel_downstream_fetches(context: &SessionContext, full_track_name: &F
     .cloned()
     .collect::<Vec<_>>();
   for client in clients {
-    let requests = client.inbound_requests.read().await;
-    let mut senders = client.fetch_cancel_senders.write().await;
-    for (request_id, request) in requests.iter() {
-      if let PendingRequest::Fetch(request) = request
-        && request.fetch_request.get_full_track_name() == *full_track_name
-      {
-        let sender = senders
-          .entry(*request_id)
-          .or_insert_with(|| watch::channel(FetchStop::MalformedTrack).0);
-        sender.send_replace(FetchStop::MalformedTrack);
-      }
-    }
+    client
+      .downstream_requests
+      .stop_fetches_of(full_track_name, FetchStop::MalformedTrack)
+      .await;
   }
 }
 
@@ -1267,12 +1230,7 @@ async fn send_request_error(
     )
     .await;
   // Remove the request from the client maps on error
-  client.inbound_requests.write().await.remove(&request_id);
-  client
-    .fetch_cancel_senders
-    .write()
-    .await
-    .remove(&request_id);
+  client.downstream_requests.remove(request_id).await;
 }
 
 /// What to deliver on one fetch data stream, and where the Objects come from.

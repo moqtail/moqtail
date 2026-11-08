@@ -14,8 +14,8 @@
 
 use crate::server::client::MOQTClient;
 use crate::server::message_handlers::parameters;
+use crate::server::requests::DownstreamRequest;
 use crate::server::session::Session;
-use crate::server::session_context::PendingRequest;
 use crate::server::session_context::SessionContext;
 use crate::server::subscription::Subscription;
 use crate::server::track::{Track, TrackOrigin, TrackStatus, await_publisher_streams};
@@ -188,15 +188,17 @@ pub async fn handle(
 
       // A REQUEST_UPDATE for this publisher is resolved out of this map.
       {
-        let mut map = client.inbound_requests.write().await;
-        map.insert(
-          request_id,
-          PendingRequest::Publish {
-            publisher_connection_id: context.connection_id,
-            original_request_id: request_id,
-            message: (*m).clone(),
-          },
-        );
+        client
+          .downstream_requests
+          .insert(
+            request_id,
+            DownstreamRequest::Publish {
+              publisher_connection_id: context.connection_id,
+              original_request_id: request_id,
+              message: (*m).clone(),
+            },
+          )
+          .await;
       }
 
       let m_clone = m.clone();
@@ -321,12 +323,10 @@ pub async fn handle(
       // Clean up the published track
       cleanup_published_track(&client, publisher_req_id, &context).await;
 
-      // Remove the request from the unified map to avoid memory leak
       {
-        let mut map = client.inbound_requests.write().await;
-        map.remove(&publisher_req_id);
+        client.downstream_requests.remove(publisher_req_id).await;
         trace!(
-          "Removed terminated PUBLISH request {} from pending requests map",
+          "Removed terminated PUBLISH request {} from downstream requests",
           publisher_req_id
         );
       }
@@ -341,20 +341,22 @@ pub async fn handle(
       };
       let publisher_req_id = target_request_id;
 
-      {
-        let mut map = client.inbound_requests.write().await;
-        match map.get_mut(&publisher_req_id) {
-          Some(PendingRequest::Publish { message, .. }) => {
+      let updated = client
+        .downstream_requests
+        .update(publisher_req_id, |request| match request {
+          DownstreamRequest::Publish { message, .. } => {
             apply_message_parameter_update(&mut message.parameters, update_msg.parameters.clone());
+            Some(())
           }
-          _ => {
-            warn!(
-              "Request {} is not a valid Publish request",
-              publisher_req_id
-            );
-            return Err(TerminationCode::ProtocolViolation);
-          }
-        }
+          _ => None,
+        })
+        .await;
+      if updated.is_none() {
+        warn!(
+          "Request {} is not a valid Publish request",
+          publisher_req_id
+        );
+        return Err(TerminationCode::ProtocolViolation);
       }
 
       // 2. Look up the track this publisher owns

@@ -18,8 +18,7 @@ pub(crate) mod switch_context;
 use crate::server::{
   client::request_subscription_map::RequestSubscriptionMap,
   config::{AppConfig, TrackAliasMode},
-  message_handlers::fetch_handler::FetchStop,
-  session_context::PendingRequest,
+  requests::DownstreamRequests,
   ssts,
   stream_id::{SendStreamKey, StreamType},
   utils,
@@ -35,7 +34,7 @@ use moqtail::{
   },
   transport::{
     connection::{TransportConnection, TransportKind, TransportSendStream, TransportWriteError},
-    data_stream_handler::{FetchRequest, SubscribeRequest},
+    data_stream_handler::FetchRequest,
   },
 };
 use switch_context::SwitchContext;
@@ -49,7 +48,7 @@ use std::{
   time::Duration,
 };
 use tokio::sync::Notify;
-use tokio::sync::{Mutex, RwLock, mpsc, watch};
+use tokio::sync::{Mutex, RwLock, mpsc};
 use tokio::time::Instant;
 use tracing::{debug, error, trace, warn};
 
@@ -129,17 +128,12 @@ pub(crate) struct MOQTClient {
   // are delivered onto that stream instead of the control stream.
   pub response_senders: Arc<ResponseSenderList>,
 
-  // fetch requests that the relay sent to this client
+  /// Upstream FETCHes the relay sent to this client, by the relay's request id. Kept
+  /// here rather than in `UpstreamRequests` because the data stream reader reads it.
   pub outgoing_fetch_requests: Arc<RwLock<BTreeMap<u64, FetchRequest>>>,
 
-  // this contains the requests made by the client and the corresponding request.
-  // The key value is the original request id.
-  pub subscribe_requests: Arc<RwLock<BTreeMap<u64, SubscribeRequest>>>,
-
-  pub inbound_requests: Arc<RwLock<BTreeMap<u64, PendingRequest>>>,
-
-  // Senders for cancelling active fetch tasks, keyed by request_id.
-  pub fetch_cancel_senders: Arc<RwLock<HashMap<u64, watch::Sender<FetchStop>>>>,
+  /// The requests this client has sent, by request id.
+  pub downstream_requests: DownstreamRequests,
 
   // this contains the subscriptions made by the client
   pub subscriptions: RequestSubscriptionMap,
@@ -215,9 +209,7 @@ impl MOQTClient {
           .collect(),
       ),
       outgoing_fetch_requests: Arc::new(RwLock::new(BTreeMap::new())),
-      subscribe_requests: Arc::new(RwLock::new(BTreeMap::new())),
-      inbound_requests: Arc::new(RwLock::new(BTreeMap::new())),
-      fetch_cancel_senders: Arc::new(RwLock::new(HashMap::new())),
+      downstream_requests: DownstreamRequests::default(),
       subscriptions: RequestSubscriptionMap::new(),
       switch_context: SwitchContext::new(),
       rate_limiter,

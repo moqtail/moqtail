@@ -95,7 +95,8 @@ export class Forwarder {
       this.arriving = child
       await pad.write({ type: 'properties', properties: child.properties })
     }
-    const changed = this.#emitted !== undefined && this.#emitted !== child.track
+    // The first arrival too: until then no rendition is active
+    const changed = this.#emitted !== child.track
     this.#emitted = child.track
     await this.#writePacket(item.object)
     if (changed) this.#host.renditionChanged(child.track)

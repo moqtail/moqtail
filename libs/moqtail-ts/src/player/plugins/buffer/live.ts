@@ -43,6 +43,8 @@ export interface BufferState {
 export type BufferDecision = { rate: number } | { jumpTo: number }
 
 export const CATCHUP_RATE = 1.1
+/** The target latency when the catalog sets none, in seconds. */
+export const TARGET_LATENCY = 1
 /** How far the forward buffer may stray from its goal before the rate changes. */
 const TOLERANCE = 0.1
 /** Below this forward buffer playback is about to stall; no goal is lower. */
@@ -74,10 +76,12 @@ interface Attached {
 
 /**
  * Catches up at `catchupRate` when behind the target latency, slows to `2 - catchupRate`
- * when ahead, and keeps the rate at 1 without catalog targets.
+ * when ahead. Without catalog targets the target latency is `targetLatency`.
  */
 export class LiveBufferController implements BufferController {
   readonly #catchupRate: number
+  /** Seconds. */
+  readonly #targetLatency: number
   #attached: Attached | undefined
   /** Of the first playing track that has any; seconds. */
   #targets: Omit<BufferState, 'forward' | 'latency'> | undefined
@@ -85,8 +89,9 @@ export class LiveBufferController implements BufferController {
   /** Set once the controller changed the rate, so `detach()` gives 1 back. */
   #adjusted = false
 
-  constructor(catchupRate: number) {
+  constructor(catchupRate: number, targetLatency: number) {
     this.#catchupRate = catchupRate
+    this.#targetLatency = targetLatency
   }
 
   attach(player: MOQtailPlayer, sink: MediaSinkElement): void {
@@ -119,10 +124,11 @@ export class LiveBufferController implements BufferController {
     const active = new Set(
       attached.player.mediaSources.flatMap((s) => s.getRenditions().flatMap((r) => (r.active ? [r.id] : []))),
     )
-    const track = catalog.tracks.find(
-      (t) => active.has(renditionId(t, catalog)) && (t.targetLatency !== undefined || t.buffers !== undefined),
-    )
-    this.#targets = track && targetsOf(track)
+    const playing = catalog.tracks.filter((t) => active.has(renditionId(t, catalog)))
+    const hasTargets = (t: CatalogTrack) => t.targetLatency !== undefined || t.buffers !== undefined
+    // Without catalog targets the timeline still gives the fallback target its wallclock latency
+    const track = playing.find(hasTargets) ?? playing[0]
+    this.#targets = track && hasTargets(track) ? targetsOf(track) : undefined
     if (!track) return
     void catalog.timeline(track).then((timeline) => {
       if (this.#attached === attached) this.#timeline = timeline
@@ -135,9 +141,8 @@ export class LiveBufferController implements BufferController {
     const range = rangeAt(currentTime, buffered)
     if (range === -1) return // the sink jumps gaps itself
     const forward = buffered.end(range) - currentTime
-    const decision = this.#targets
-      ? decide({ forward, latency: this.#latency(currentTime, forward), ...this.#targets }, this.#catchupRate)
-      : { rate: 1 }
+    const targets = this.#targets ?? { target: this.#targetLatency, min: undefined, max: undefined }
+    const decision = decide({ forward, latency: this.#latency(currentTime, forward), ...targets }, this.#catchupRate)
     if ('jumpTo' in decision) {
       // A failed jump leaves playback where it was
       sink.seek(liveEdge(buffered, decision.jumpTo)).catch(() => {})

@@ -1292,9 +1292,9 @@ export class MOQtailClient extends Emitter<ClientEvents> {
     const owner = request.manager
     if (owner) {
       owner.drop(request)
-      if (owner.requests.length === 0) owner.controller.close()
+      if (owner.requests.length === 0) owner.objects.close()
     } else {
-      request.controller?.close()
+      request.objects.close()
     }
     this.#forgetSubscription(request)
     // The publisher is done with it, so nothing is being cancelled: close the stream
@@ -1479,9 +1479,7 @@ export class MOQtailClient extends Emitter<ClientEvents> {
       const msg = new Fetch(requestId, fullTrackName, params)
       const request = new FetchRequest(msg)
       request.onEndOfRange = args.onEndOfRange
-      request.orderer = this.#createOrderer(args.ordering, groupOrder, requestId, (obj) =>
-        request.controller?.enqueue(obj),
-      )
+      request.orderer = this.#createOrderer(args.ordering, groupOrder, requestId, (obj) => request.objects.enqueue(obj))
       logger.log('MOQtailClient', 'fetch: full fetch message:', {
         requestId: msg.requestId,
         fullTrackName: `${fullTrackName}`,
@@ -2302,13 +2300,18 @@ export class MOQtailClient extends Emitter<ClientEvents> {
         try {
           const objects = this.#readFetchObjects(reader, request.message.fullTrackName, request.onEndOfRange)
           for await (const moqtObject of objects) {
+            // The consumer cancelled its stream, a seek for one: the rest of this one goes nowhere
+            if (!request.objects.open) {
+              await recvStream.stopSending(StreamResetCode.Cancelled)
+              break
+            }
             if (request.orderer) request.orderer.push(moqtObject, previous)
-            else request.controller?.enqueue(moqtObject)
+            else request.objects.enqueue(moqtObject)
             previous = moqtObject.location
           }
           // The FETCH_OK handler removes the request, not the end of its data stream
           request.orderer?.flush()
-          request.controller?.close()
+          request.objects.close()
         } finally {
           reader.releaseLock()
         }
@@ -2327,6 +2330,11 @@ export class MOQtailClient extends Emitter<ClientEvents> {
         let previous: Location | undefined
         try {
           for await (const moqtObject of this.#readFetchObjects(reader, request.fullTrackName, request.onEndOfRange)) {
+            // Unsubscribing is the consumer's to do; this stream just stops
+            if (!request.manager.objects.open) {
+              await recvStream.stopSending(StreamResetCode.Cancelled)
+              break
+            }
             if (!request.manager.deliver(request, moqtObject, previous)) {
               await recvStream.stopSending(StreamResetCode.Cancelled)
               forceComplete = true
@@ -2414,14 +2422,16 @@ export class MOQtailClient extends Emitter<ClientEvents> {
                 if (subscription.largestLocation.compare(moqtObject.location) == -1)
                   subscription.largestLocation = moqtObject.location
 
-                if (subscription.manager) {
-                  const shouldContinue = subscription.manager.deliver(subscription, moqtObject)
-                  if (!shouldContinue) {
-                    forceComplete = true
-                    await recvStream.stopSending(StreamResetCode.Cancelled)
-                    break
-                  }
-                } else subscription.controller?.enqueue(moqtObject)
+                // Unsubscribing is the consumer's to do; this stream just stops
+                if (!subscription.manager.objects.open) {
+                  await recvStream.stopSending(StreamResetCode.Cancelled)
+                  break
+                }
+                if (!subscription.manager.deliver(subscription, moqtObject)) {
+                  forceComplete = true
+                  await recvStream.stopSending(StreamResetCode.Cancelled)
+                  break
+                }
                 continue
               }
               throw new ProtocolViolationError('MOQtailClient', 'Received fetch object after subgroup header')
@@ -3697,6 +3707,69 @@ if (import.meta.vitest) {
 
     const objectAt = (group: number, id: number) =>
       FetchObject.newObject(group, 0, id, 0, ObjectForwardingPreference.Subgroup, null, new Uint8Array([id]))
+
+    it('stops the data stream of a fetch whose consumer cancelled, without an error', async () => {
+      const { client, transport } = await connected()
+      const errors = vi.spyOn(logger, 'error')
+      const fetching = client.fetch({
+        priority: 0,
+        groupOrder: GroupOrder.Original,
+        fullTrackName: ftn,
+        locationFilter: new LocationFilter(LocationFilterType.AbsoluteStart, 0n, 0n),
+        ordering: { window: { durationMs: 10 } },
+      })
+      const fetchStream = await openedStream(transport, 0)
+      fetchStream.respond(new FetchOk(false, new Location(9n, 0n), []))
+      const fetched = (await fetching) as FetchResult
+      // A seek: the player cancels its reader before the FETCH is cancelled
+      await fetched.stream.cancel()
+
+      transport.openIncomingUniStream(
+        fetchStreamBytes((fetchStream.messages[0] as Fetch).requestId, [objectAt(0, 0), objectAt(0, 1)]),
+      )
+      await vi.waitFor(() => expect(transport.uniCancelReasons).toHaveLength(1))
+      expect(streamResetCodeOf(transport.uniCancelReasons[0])).toBe(StreamResetCode.Cancelled)
+      expect(errors).not.toHaveBeenCalledWith('MOQtailClient', 'handleRecvStreams error', expect.anything())
+
+      errors.mockRestore()
+      await client.disconnect()
+    })
+
+    it('stops the data streams of a subscription whose consumer cancelled, and still completes it', async () => {
+      const { client, transport } = await connected()
+      const errors = vi.spyOn(logger, 'error')
+      const subscribing = client.subscribe({
+        fullTrackName: ftn,
+        locationFilter: new LocationFilter(LocationFilterType.NextObject),
+        forward: true,
+        groupOrder: GroupOrder.Original,
+        priority: 0,
+      })
+      const subscribeStream = await openedStream(transport, 0)
+      subscribeStream.respond(SubscribeOk.create(7n, [], []))
+      const subscribed = (await subscribing) as SubscribeResult
+      await subscribed.stream.cancel()
+
+      const bytes = new ByteBuffer()
+      bytes.putBytes(Header.newSubgroup(SubgroupHeaderType.Type0x10, 7n, 1n, undefined, 0).serialize().toUint8Array())
+      bytes.putBytes(
+        SubgroupObject.newWithPayload(0, null, new Uint8Array([1]))
+          .serialize(undefined)
+          .toUint8Array(),
+      )
+      transport.openIncomingUniStream(bytes.toUint8Array())
+      await vi.waitFor(() => expect(transport.uniCancelReasons).toHaveLength(1))
+      expect(streamResetCodeOf(transport.uniCancelReasons[0])).toBe(StreamResetCode.Cancelled)
+
+      // Its stream can't be closed any more, which must not stop the request being forgotten
+      subscribeStream.respond(new PublishDone(PublishDoneStatusCode.TrackEnded, 1n, new ReasonPhrase('')))
+      expect((await subscribed.done)?.statusCode).toBe(PublishDoneStatusCode.TrackEnded)
+      expect(client.requests.has(subscribed.requestId)).toBe(false)
+      expect(errors).not.toHaveBeenCalledWith('MOQtailClient', 'handleRecvStreams error', expect.anything())
+
+      errors.mockRestore()
+      await client.disconnect()
+    })
 
     it('notifies the application of the End of Range markers in a FETCH response', async () => {
       const { client, transport } = await connected()

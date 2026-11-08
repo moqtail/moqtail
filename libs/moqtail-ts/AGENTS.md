@@ -33,7 +33,7 @@ Grep before writing one. A helper moves to a shared home only when two modules n
 | Home                      | Holds                                                                                                   |
 | ------------------------- | ------------------------------------------------------------------------------------------------------- |
 | `@/util`                  | client + player (`Emitter`, `errorMessage`)                                                             |
-| `@/client/util`           | `withTimeout`, `isSessionClosed`                                                                        |
+| `@/client/util`           | `withTimeout`, `isSessionClosed`, `ObjectStream`                                                        |
 | `@/player/util/async`     | `backoffDelay`, `sleep`, `within`, `handledResolvers`                                                   |
 | `@/player/util/track`     | `trackKey`, `renditionId`, `rendition`, `bitrateOf`                                                     |
 | `@/player/util/json`      | `canonicalJson`, `deepEqual`, `parseJsonArray`                                                          |

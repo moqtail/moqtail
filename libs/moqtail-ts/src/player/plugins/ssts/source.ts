@@ -349,7 +349,8 @@ export function sstsSource(algorithms: readonly bigint[]) {
     name: 'ssts',
     capabilities: [],
     provides: [MEDIA_SOURCE],
-    probe: (ids) => ids.role === 'video' || ids.role === 'audio',
+    // SSTS switches subscriptions: a VOD FETCH has no switching set, and every child would play
+    probe: (ids) => ids.isLive === true && (ids.role === 'video' || ids.role === 'audio'),
     init: async (context, options?: SwitchingSetOptions) => {
       if (!options?.child.provides?.includes(MEDIA_SOURCE)) {
         throw new PlayerError('UNSUPPORTED_SOURCE', 'An SSTS child must be a media source', { element: 'ssts' })
@@ -449,6 +450,17 @@ if (import.meta.vitest) {
   }
   const v = (name: string, bitrate = 1_000_000) => cmafTrack(name, { bitrate })
 
+  test('only live media tracks are probed: a VOD set has nothing to switch', () => {
+    const { probe } = sstsSource(SSTS_ALGORITHMS)
+    expect([
+      probe({ role: 'video', isLive: true }),
+      probe({ role: 'audio', isLive: true }),
+      probe({ role: 'video', isLive: false }),
+      probe({ role: 'video' }),
+      probe({ role: 'subtitle', isLive: true }),
+    ]).toEqual([true, true, false, false, false])
+  })
+
   test('every track subscribes into its set: negotiated algorithm, activate = set size, no FORWARD, IDs per client', async () => {
     const audio = cmafTrack('a1', { role: 'audio', bitrate: 128_000 })
     const c = await sstsChain([[v('v1', 800_000), v('v2', 2_000_000)], [audio]], { algorithms: [7n, 0xff01n] })
@@ -480,7 +492,7 @@ if (import.meta.vitest) {
     c.request('v2').end(PublishDoneStatusCode.TrackEnded)
     await flush()
     expect(c.trace().slice(-1)).toEqual(['eos'])
-    expect(c.renditions).toEqual(['v2'])
+    expect(c.renditions).toEqual(['v1', 'v2'])
     expect(c.source.getRenditions().map((r) => [r.id, r.active])).toEqual([
       ['v1', false],
       ['v2', true],

@@ -31,6 +31,7 @@ import { DEFAULT_SWITCH_DRAIN_TIMEOUT_MS, type EarlyDiscardPolicyConfig } from '
 import { logger } from '@/util/logger'
 import { isSessionClosed } from '@/client/util/stream_reset'
 import type { ObjectOrderer } from '@/client/ordering'
+import { ObjectStream } from '@/client/util/object_stream'
 
 // TODO: Add timeout mechanism for unsubscribing
 
@@ -71,8 +72,8 @@ export class SubscribeRequest implements PromiseLike<SubscribeOk | RequestError>
   /** The Subscription that owns this request's consumer stream; it sets itself on construction. */
   public manager!: Subscription
 
-  public readonly controller!: ReadableStreamDefaultController<MoqtObject>
-  public readonly stream: ReadableStream<MoqtObject>
+  public readonly objects = new ObjectStream()
+  public readonly stream = this.objects.readable
   public orderer: ObjectOrderer | undefined
 
   #promise: Promise<SubscribeOk | RequestError>
@@ -94,12 +95,6 @@ export class SubscribeRequest implements PromiseLike<SubscribeOk | RequestError>
     this.forward = fwd?.forward ?? true
 
     this.subscribeParameters = msg.parameters
-
-    this.stream = new ReadableStream<MoqtObject>({
-      start: (controller) => {
-        ;(this.controller as any) = controller
-      },
-    })
 
     this.#promise = new Promise<SubscribeOk | RequestError>((resolve, reject) => {
       this.#resolve = resolve
@@ -216,7 +211,7 @@ export class SubscribeRequest implements PromiseLike<SubscribeOk | RequestError>
  * subscription is done, or until it has been quiet long enough to say so itself.
  */
 export class Subscription {
-  public readonly controller: ReadableStreamDefaultController<MoqtObject>
+  public readonly objects: ObjectStream
   public readonly stream: ReadableStream<MoqtObject>
 
   /** Oldest first; the last entry is the newest switch target still racing to produce data. */
@@ -258,7 +253,7 @@ export class Subscription {
 
   constructor(initial: SubscribeRequest) {
     this.stream = initial.stream
-    this.controller = initial.controller
+    this.objects = initial.objects
     initial.manager = this
     this.#requests = [initial]
     this.#unwaited = [initial]
@@ -311,7 +306,7 @@ export class Subscription {
    */
   public output(request: SubscribeRequest, obj: MoqtObject): void {
     if (request.orderer && request === this.newest && this.#switching) this.#parked.push(obj)
-    else this.controller.enqueue(obj)
+    else this.objects.enqueue(obj)
   }
 
   /**
@@ -320,7 +315,7 @@ export class Subscription {
    */
   #updateSwitchState(left: readonly SubscribeRequest[] = []): void {
     const switching = this.#switching
-    if (!switching) for (const obj of this.#parked.splice(0)) this.controller.enqueue(obj)
+    if (!switching) for (const obj of this.#parked.splice(0)) this.objects.enqueue(obj)
     for (const request of this.requests) {
       if (switching) request.orderer?.suspendWindow('switch')
       else request.orderer?.resumeWindow('switch')

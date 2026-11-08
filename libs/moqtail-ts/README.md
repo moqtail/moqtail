@@ -112,7 +112,7 @@ For more control. `MOQtailPlayer` installs no plugins, so list the buffer contro
 import { MOQtailPlayer, PlayerError, liveBuffer } from 'moqtail/player'
 
 const video = document.querySelector('video')!
-const player = new MOQtailPlayer({ plugins: [liveBuffer({ catchupRate: 1.2 })] })
+const player = new MOQtailPlayer({ plugins: [liveBuffer({ targetLatency: 2 })] })
   .source('moqt://relay.moqtail.dev#msf:moqtail-ch07_vod--catalog')
   .sink(video)
 

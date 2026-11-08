@@ -45,12 +45,21 @@ describe('buffer controller', () => {
 
   test('liveBuffer converges to the target latency and returns to rate 1', async ({ open }) => {
     // A strong rate, so the forward buffer grows from ~0.4 s to the target in seconds
-    const buffer = withTargets({ target: 1500 }, new LiveBufferController(1.5))
+    const buffer = withTargets({ target: 1500 }, new LiveBufferController(1.5, 1))
     const s = await open(ch07.uri(), { player: { plugins: [bufferPlugin(buffer)] } })
     await s.until(() => Math.abs(s.latency() - 1.5) < 0.15 && s.video.playbackRate === 1, 'latency at 1.5 s')
     const settled = s.mark()
     await s.played(3)
     expect(Math.abs(s.latency() - 1.5)).toBeLessThan(0.25)
+    s.since(settled).expectSmooth()
+  })
+
+  test('liveBuffer holds the default 1 s on a catalog without targets', async ({ open }) => {
+    const s = await open(ch07.uri(), { player: { plugins: [bufferPlugin(new LiveBufferController(1.5, 1))] } })
+    await s.until(() => Math.abs(s.latency() - 1) < 0.15 && s.video.playbackRate === 1, 'latency at 1 s')
+    const settled = s.mark()
+    await s.played(3)
+    expect(Math.abs(s.latency() - 1)).toBeLessThan(0.25)
     s.since(settled).expectSmooth()
   })
 

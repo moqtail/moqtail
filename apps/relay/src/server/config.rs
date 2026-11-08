@@ -99,6 +99,11 @@ pub struct Cli {
   /// stays at 1 there.
   #[arg(long, default_value_t = 1)]
   pub io_sockets: usize,
+  /// UDP send and receive buffer per socket, in KiB (0: kernel default). A large
+  /// buffer absorbs fan-out bursts; the kernel caps it at net.core.wmem_max /
+  /// rmem_max. Use 0 if the interface queue is a short FIFO.
+  #[arg(long, default_value_t = 8192)]
+  pub socket_buffer_kib: usize,
 
   /// Maximum number of concurrent request streams a peer may open (applied as the
   /// QUIC max_concurrent_bidi_streams limit).
@@ -229,6 +234,7 @@ pub struct AppConfig {
   pub enable_token_logging: bool,
   pub token_log_path: String,
   pub io_sockets: usize,
+  pub socket_buffer_kib: usize,
   pub max_request_streams: u64,
   pub max_active_requests: u64,
   pub max_subscriber_lag: u64,
@@ -299,6 +305,7 @@ impl AppConfig {
       enable_token_logging: cli.enable_token_logging,
       token_log_path: cli.token_log_path,
       io_sockets: cli.io_sockets,
+      socket_buffer_kib: cli.socket_buffer_kib,
       max_request_streams: cli.max_request_streams,
       max_active_requests: cli.max_active_requests,
       max_subscriber_lag: cli.max_subscriber_lag,
@@ -383,7 +390,7 @@ impl AppConfig {
     for _ in 0..count {
       // SO_REUSEPORT only where more than one socket is wanted, so a single-socket
       // relay still fails loudly on a port another process already holds.
-      let socket = bind_dual_stack_udp_socket(self.port, count > 1)?;
+      let socket = bind_dual_stack_udp_socket(self.port, count > 1, self.socket_buffer_kib * 1024)?;
       endpoints.push(quinn::Endpoint::new(
         quinn::EndpointConfig::default(),
         Some(server_config.clone()),
@@ -442,7 +449,11 @@ impl AppConfig {
 ///
 /// `reuse_port` lets several sockets share the port, which is how the relay listens on
 /// more than one; the kernel then hashes each connection onto one of them.
-fn bind_dual_stack_udp_socket(port: u16, reuse_port: bool) -> Result<UdpSocket> {
+fn bind_dual_stack_udp_socket(
+  port: u16,
+  reuse_port: bool,
+  buffer_bytes: usize,
+) -> Result<UdpSocket> {
   let socket = Socket::new(Domain::IPV6, Type::DGRAM, None)?;
   socket.set_only_v6(false)?;
   if reuse_port {
@@ -451,7 +462,35 @@ fn bind_dual_stack_udp_socket(port: u16, reuse_port: bool) -> Result<UdpSocket> 
   let addr: SocketAddr = (Ipv6Addr::UNSPECIFIED, port).into();
   socket.bind(&addr.into())?;
   socket.set_nonblocking(true)?;
+  if buffer_bytes > 0 {
+    request_buffer_sizes(&socket, buffer_bytes);
+  }
   Ok(socket.into())
+}
+
+/// Asks for `bytes` each way; warns if `net.core.wmem_max` / `rmem_max` cap it.
+fn request_buffer_sizes(socket: &Socket, bytes: usize) {
+  let _ = socket.set_send_buffer_size(bytes);
+  let _ = socket.set_recv_buffer_size(bytes);
+  // Linux reports double the granted size.
+  let (send, recv) = (
+    socket.send_buffer_size().unwrap_or(0),
+    socket.recv_buffer_size().unwrap_or(0),
+  );
+  if send < bytes || recv < bytes {
+    warn!(
+      "UDP socket buffers are {} KiB send / {} KiB receive, below the {} KiB asked for; raise net.core.wmem_max and net.core.rmem_max to allow more",
+      send / 1024,
+      recv / 1024,
+      bytes / 1024
+    );
+  } else {
+    info!(
+      "UDP socket buffers: {} KiB send / {} KiB receive",
+      send / 1024,
+      recv / 1024
+    );
+  }
 }
 
 #[cfg(test)]
@@ -487,6 +526,7 @@ mod tests {
       enable_token_logging: false,
       token_log_path: "/tmp/moqtail_relay_tokens.csv".to_string(),
       io_sockets: 1,
+      socket_buffer_kib: 0,
       max_request_streams,
       max_active_requests: 0,
       max_subscriber_lag: 0,

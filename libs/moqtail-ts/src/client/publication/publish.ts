@@ -287,8 +287,21 @@ export class PublishPublication {
 
         const sendStream = this.#streams.get(obj.location.group)!
         await this.#lock.acquire()
-        await sendStream.write(obj.tryIntoSubgroupObject())
-        await this.#lock.release()
+        try {
+          await sendStream.write(obj.tryIntoSubgroupObject())
+        } catch (err) {
+          // The peer stopped this one subgroup stream (STOP_SENDING). That ends this subgroup,
+          // not the track: the stream stays mapped so the rest of the group is skipped, and
+          // later groups still go out on new streams.
+          logger.warn(
+            'publication/publish',
+            'subgroup stream write failed, skipping rest of group',
+            obj.location.group,
+            err,
+          )
+        } finally {
+          await this.#lock.release()
+        }
 
         // Close previous group's stream if the group ID has incremented
         if (this.latestLocation && this.latestLocation.group !== obj.location.group) {
@@ -452,6 +465,57 @@ if (import.meta.vitest) {
       source.enqueue(object(4, 0))
       await vi.waitFor(() => expect(headerTypes).toHaveLength(2))
       expect(headerTypes.map(SubgroupHeaderType.isFirstObject)).toEqual([false, true])
+    })
+  })
+
+  describe('PublishPublication stopped subgroup', () => {
+    test('keeps publishing later groups after the peer stops one subgroup stream', async () => {
+      const ftn = FullTrackName.tryNew('room/alice', 'pos')
+      let opened = 0
+      const delivered: number[] = []
+      const webTransport = {
+        createUnidirectionalStream: async () => {
+          const index = opened++
+          let headerWritten = false
+          return new WritableStream<Uint8Array>({
+            write: () => {
+              // The first stream is stopped by the peer right after its header.
+              if (index === 0 && headerWritten) throw new Error('Received STOP_SENDING')
+              if (headerWritten) delivered.push(index)
+              headerWritten = true
+            },
+          })
+        },
+      }
+      let source!: ReadableStreamDefaultController<MoqtObject>
+      const live = new LiveTrackSource(new ReadableStream<MoqtObject>({ start: (controller) => (source = controller) }))
+      const client = {
+        webTransport,
+        publications: new Map(),
+        dataStreamObserver: () => undefined,
+      } as unknown as MOQtailClient
+      new PublishPublication(
+        client,
+        { fullTrackName: ftn, trackSource: { live }, publisherPriority: 0, trackAlias: 1n },
+        { requestId: 0n, parameters: [] } as unknown as Publish,
+      )
+      const push = (group: number) =>
+        source.enqueue(
+          MoqtObject.newWithPayload(
+            ftn,
+            new Location(BigInt(group), 0n),
+            0,
+            ObjectForwardingPreference.Subgroup,
+            0n,
+            null,
+            new Uint8Array([1]),
+          ),
+        )
+
+      push(0)
+      push(1)
+      push(2)
+      await vi.waitFor(() => expect(delivered).toEqual([1, 2]))
     })
   })
 

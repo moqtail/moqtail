@@ -26,12 +26,11 @@ import {
 } from '@/model'
 import { CombinedFilter } from '@/model/parameter/message/combined_filter'
 import { StreamResetCode } from '@/model/error/stream_reset'
-import { SendStream } from '../data_stream'
-import { MOQtailClient } from '../client'
-import { Track } from '../track/track'
-import { SubscribePublication } from './subscribe'
-import { PublishPublication } from './publish'
-import { logger } from '../../util/logger'
+import { SendStream } from '@/client/data_stream'
+import { MOQtailClient } from '@/client/client'
+import { Track } from '@/client/track/track'
+import { errorMessage } from '@/util/error'
+import { logger } from '@/util/logger'
 import { SubgroupIds } from './subgroup'
 
 // TODO: Use group order
@@ -100,9 +99,9 @@ export class FetchPublication {
       this.#sendStream = await SendStream.new(
         writeStream,
         header,
-        this.#client.onDataSent,
+        this.#client,
         MessageParameter.groupOrderOf(this.#msg.parameters),
-        this.#client.dataStreamObserver(() => this.#track.fullTrackName),
+        () => this.#track.fullTrackName,
       )
       const subgroupIds = new SubgroupIds()
       let sent = 0
@@ -130,7 +129,7 @@ export class FetchPublication {
       // A write that fails because the stream was reset on purpose is not a failure.
       if (this.#isCanceled) return
       await this.#sendStream?.reset(StreamResetCode.InternalError)
-      const message = error instanceof Error ? error.message : String(error)
+      const message = errorMessage(error)
       logger.error('publication/fetch', `publish failed requestId=${this.#requestId}`, message)
       throw new InternalError('FetchPublication.publish', `Failed to publish: ${message}`)
     }

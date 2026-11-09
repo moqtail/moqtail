@@ -15,7 +15,8 @@
  */
 
 import { TrackStatus, RequestError, RequestOk } from '@/model'
-import { logger } from '../../util/logger'
+import { logger } from '@/util/logger'
+import { isSessionClosed } from '@/client/util/stream_reset'
 
 export class TrackStatusRequest implements PromiseLike<RequestOk | RequestError> {
   public readonly requestId: bigint
@@ -48,7 +49,7 @@ export class TrackStatusRequest implements PromiseLike<RequestOk | RequestError>
   }
 
   public reject(reason?: any): void {
-    logger.error('request/track_status', `rejected requestId=${this.requestId}`, reason)
+    if (!isSessionClosed(reason)) logger.error('request/track_status', `rejected requestId=${this.requestId}`, reason)
     this._reject(reason)
   }
 

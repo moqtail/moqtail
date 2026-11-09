@@ -14,5 +14,14 @@
  * limitations under the License.
  */
 
-export * from './player';
-export { Logger } from './logger';
+import type { SourceElementDefinition } from '@/player/element/define'
+import { CatalogSource } from './catalog'
+import { Cmaf } from './cmaf'
+import { MediaTimeline } from './mediatimeline'
+import { SapTimeline } from './saptimeline'
+
+/**
+ * The source elements every player registers after its own and its extensions'. They're
+ * reached through the probe only, so they aren't exported from `moqtail/player`.
+ */
+export const BUILT_IN_SOURCES: readonly SourceElementDefinition[] = [CatalogSource, Cmaf, MediaTimeline, SapTimeline]

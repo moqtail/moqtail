@@ -14,9 +14,12 @@
  * limitations under the License.
  */
 
-import type { EndOfRangeHandler } from '../types'
-import { Fetch, FetchOk, MoqtObject, RequestError } from '@/model'
-import { logger } from '../../util/logger'
+import type { EndOfRangeHandler } from '@/client/types'
+import { Fetch, FetchOk, RequestError } from '@/model'
+import { ObjectStream } from '@/client/util/object_stream'
+import { logger } from '@/util/logger'
+import { isSessionClosed } from '@/client/util/stream_reset'
+import type { ObjectOrderer } from '@/client/ordering'
 
 // TODO: add timeout mechanism for cancelled requests
 // (we cant know how many in-flight objects there are)
@@ -26,20 +29,16 @@ export class FetchRequest implements PromiseLike<FetchOk | RequestError> {
   private _resolve!: (value: FetchOk | RequestError | PromiseLike<FetchOk | RequestError>) => void
   private _reject!: (reason?: any) => void
   private promise: Promise<FetchOk | RequestError>
-  public controller?: ReadableStreamDefaultController<MoqtObject>
-  public stream: ReadableStream<MoqtObject>
+  public readonly objects = new ObjectStream()
+  public readonly stream = this.objects.readable
   public onEndOfRange: EndOfRangeHandler | undefined
+  public orderer: ObjectOrderer | undefined
   public isActive: boolean = true
   public isResolved: boolean = false
 
   constructor(message: Fetch) {
     this.requestId = message.requestId
     this.message = message
-    this.stream = new ReadableStream<MoqtObject>({
-      start: (controller) => {
-        this.controller = controller
-      },
-    })
     this.promise = new Promise<FetchOk | RequestError>((resolve, reject) => {
       this._resolve = resolve
       this._reject = reject
@@ -60,7 +59,7 @@ export class FetchRequest implements PromiseLike<FetchOk | RequestError> {
   }
 
   public reject(reason?: any): void {
-    logger.error('request/fetch', `rejected requestId=${this.requestId}`, reason)
+    if (!isSessionClosed(reason)) logger.error('request/fetch', `rejected requestId=${this.requestId}`, reason)
     this._reject(reason)
   }
 

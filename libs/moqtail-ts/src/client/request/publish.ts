@@ -15,7 +15,8 @@
  */
 
 import { Publish, RequestError, RequestOk } from '@/model'
-import { logger } from '../../util/logger'
+import { logger } from '@/util/logger'
+import { isSessionClosed } from '@/client/util/stream_reset'
 
 export class PublishRequest implements PromiseLike<RequestOk | RequestError> {
   public readonly requestId: bigint
@@ -47,7 +48,7 @@ export class PublishRequest implements PromiseLike<RequestOk | RequestError> {
   }
 
   public reject(reason?: any): void {
-    logger.error('request/publish', `rejected requestId=${this.requestId}`, reason)
+    if (!isSessionClosed(reason)) logger.error('request/publish', `rejected requestId=${this.requestId}`, reason)
     this._reject(reason)
   }
 

@@ -15,17 +15,17 @@
  */
 
 import { Publish, RequestUpdate } from '@/model/control'
-import { MOQtailClient } from '../client'
-import { Track } from '../track/track'
+import { MOQtailClient } from '@/client/client'
+import { Track } from '@/client/track/track'
 import { InternalError, Location, MessageParameter, applyMessageParameterUpdate } from '@/model'
 import { CombinedFilter } from '@/model/parameter/message/combined_filter'
-import { SendStream } from '../data_stream'
+import { SendStream } from '@/client/data_stream'
 import { MoqtObject } from '@/model/data/object'
 import { SubgroupIds, subgroupHeaderFor } from './subgroup'
-import { assertWithinFilterRangeLimit } from '../util/validators'
-import { SimpleLock } from '../../util/simple_lock'
-import { getTransportPriority } from '../util/priority'
-import { logger } from '../../util/logger'
+import { assertWithinFilterRangeLimit } from '@/client/util/validators'
+import { SimpleLock } from '@/util/simple_lock'
+import { getTransportPriority } from '@/client/util/priority'
+import { logger } from '@/util/logger'
 
 /**
  * @public
@@ -149,14 +149,14 @@ export class PublishPublication {
 
   /**
    * Moves the Forward State: false parks the publication, true resumes it. The
-   * application hears about the move through {@link MOQtailClient.onForwardStateChange},
+   * application hears about the move through the client's `forwardstatechange` event,
    * which is where a publisher starts or stops the work behind the track -- a camera
    * and an encoder cost the same whether or not anything is listening.
    */
   setForwardState(forward: boolean): void {
     if (this.#forward === forward) return
     this.#forward = forward
-    this.client.onForwardStateChange?.(this.publishMsg.requestId, forward)
+    this.client.emit('forwardstatechange', this.publishMsg.requestId, forward)
   }
 
   /**
@@ -274,9 +274,9 @@ export class PublishPublication {
             const sendStream = await SendStream.new(
               writeStream,
               header,
-              this.client.onDataSent,
+              this.client,
               undefined,
-              this.client.dataStreamObserver(() => this.track.fullTrackName),
+              () => this.track.fullTrackName,
             )
             this.#streams.set(obj.location.group, sendStream)
             this.#streamsOpened++
@@ -331,7 +331,7 @@ if (import.meta.vitest) {
   const { describe, test, expect, vi } = import.meta.vitest
   const { FullTrackName, Forward, ObjectForwardingPreference, SubgroupHeaderType } = await import('@/model')
   const { RequestUpdate } = await import('@/model/control')
-  const { LiveTrackSource } = await import('../track/content_source')
+  const { LiveTrackSource } = await import('@/client/track/content_source')
   const { SubgroupHeader: Header } = await import('@/model/data/subgroup_header')
   const { FrozenByteBuffer } = await import('@/model/common/byte_buffer')
 
@@ -365,7 +365,7 @@ if (import.meta.vitest) {
       const client = {
         webTransport,
         publications: new Map(),
-        dataStreamObserver: () => undefined,
+        emit: () => {},
       } as unknown as MOQtailClient
       new PublishPublication(client, track, { requestId: 0n, parameters: [] } as unknown as Publish)
 
@@ -437,7 +437,7 @@ if (import.meta.vitest) {
       const client = {
         webTransport,
         publications: new Map(),
-        dataStreamObserver: () => undefined,
+        emit: () => {},
       } as unknown as MOQtailClient
       new PublishPublication(
         client,
@@ -482,8 +482,9 @@ if (import.meta.vitest) {
       const client = {
         webTransport,
         publications: new Map(),
-        dataStreamObserver: () => undefined,
-        onForwardStateChange: (requestId: bigint, forward: boolean) => moves.push({ requestId, forward }),
+        emit: (event: string, requestId: bigint, forward: boolean) => {
+          if (event === 'forwardstatechange') moves.push({ requestId, forward })
+        },
       } as unknown as MOQtailClient
       const publication = new PublishPublication(client, track, {
         requestId: 7n,

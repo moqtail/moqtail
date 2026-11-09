@@ -23,10 +23,14 @@ const GITHUB_REPO = 'moqtail/moqtail';
 const STATUS_CONFIG: Record<Status, { dot: string; label: string }> = {
   idle: { dot: 'bg-neutral-600', label: 'Idle' },
   connecting: { dot: 'bg-yellow-400 animate-pulse', label: 'Connecting…' },
-  ready: { dot: 'bg-emerald-400', label: 'Catalog loaded' },
-  restarting: { dot: 'bg-yellow-400 animate-pulse', label: 'Starting…' },
+  ready: { dot: 'bg-emerald-400', label: 'Ready' },
   playing: { dot: 'bg-blue-400', label: 'Playing' },
+  paused: { dot: 'bg-neutral-400', label: 'Paused' },
+  stalled: { dot: 'bg-yellow-400 animate-pulse', label: 'Buffering…' },
+  reconnecting: { dot: 'bg-yellow-400 animate-pulse', label: 'Reconnecting…' },
+  ended: { dot: 'bg-neutral-400', label: 'Ended' },
   error: { dot: 'bg-red-400', label: 'Error' },
+  destroyed: { dot: 'bg-neutral-600', label: 'Idle' },
 };
 
 function StatusDot({ status }: { status: Status }) {
@@ -39,7 +43,43 @@ function StatusDot({ status }: { status: Status }) {
   );
 }
 
-export function Header({ status }: { status: Status }) {
+function AdvancedToggle({ on, onChange }: { on: boolean; onChange: (on: boolean) => void }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      onClick={() => onChange(!on)}
+      className="hidden cursor-pointer items-center gap-2 text-xs font-medium text-neutral-400 transition-colors select-none hover:text-neutral-100 md:flex"
+    >
+      Advanced
+      <span
+        aria-hidden="true"
+        className={cn(
+          'relative h-4 w-7 rounded-full transition-colors duration-200',
+          on ? 'bg-blue-500' : 'bg-neutral-700',
+        )}
+      >
+        <span
+          className={cn(
+            'absolute top-0.5 left-0.5 h-3 w-3 rounded-full bg-white shadow transition-transform duration-200',
+            on && 'translate-x-3',
+          )}
+        />
+      </span>
+    </button>
+  );
+}
+
+export function Header({
+  status,
+  advanced,
+  onAdvancedChange,
+}: {
+  status: Status;
+  advanced: boolean;
+  onAdvancedChange: (on: boolean) => void;
+}) {
   return (
     <header className="flex h-12 shrink-0 items-center justify-between border-b border-white/6 bg-neutral-950/80 px-4 backdrop-blur-sm md:px-5">
       <div className="flex items-center gap-2.5">
@@ -55,7 +95,7 @@ export function Header({ status }: { status: Status }) {
         <span className="text-neutral-700 select-none">·</span>
         <StatusDot status={status} />
       </div>
-      <div className="flex items-center gap-2 md:gap-3">
+      <div className="flex items-center gap-2 md:gap-4">
         {(import.meta.env.VITE_BUILD_COMMIT || import.meta.env.VITE_BUILD_DATE) && (
           <span className="hidden font-mono text-[10px] text-neutral-600 tabular-nums select-none sm:block">
             {[import.meta.env.VITE_BUILD_COMMIT, import.meta.env.VITE_BUILD_DATE]
@@ -63,6 +103,7 @@ export function Header({ status }: { status: Status }) {
               .join(' · ')}
           </span>
         )}
+        <AdvancedToggle on={advanced} onChange={onAdvancedChange} />
         <a
           href={`https://github.com/${GITHUB_REPO}`}
           target="_blank"

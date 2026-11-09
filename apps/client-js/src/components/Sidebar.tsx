@@ -17,8 +17,8 @@
 import { useState, useRef, useEffect } from 'preact/hooks';
 import type { ComponentChildren } from 'preact';
 import { cn } from '@/lib/utils';
-import { LuChevronDown, LuCheck, LuLoader } from 'react-icons/lu';
-import type { Track, Status, Presets } from '@/types';
+import { LuChevronDown, LuExternalLink, LuLoader } from 'react-icons/lu';
+import type { Track, Status, Presets, Features } from '@/types';
 import presets from '@/presets.json';
 import { PublisherPanel, type PublisherPanelProps } from './PublisherPanel';
 
@@ -66,8 +66,8 @@ function PresetDropdown({
     const available = openUp ? spaceAbove : spaceBelow;
     const maxHeight = Math.max(minMenuHeight, Math.min(idealMenuHeight, available));
 
-    const width = Math.min(rect.width, window.innerWidth - margin * 2);
-    const left = Math.max(margin, Math.min(rect.left, window.innerWidth - width - margin));
+    const width = rect.width;
+    const left = Math.max(margin, rect.left);
     const top = openUp ? rect.top - maxHeight - gap : rect.bottom + gap;
 
     setMenuStyle({ top, left, width, maxHeight });
@@ -127,7 +127,9 @@ function PresetDropdown({
           style={{
             top: menuStyle.top,
             left: menuStyle.left,
-            width: menuStyle.width,
+            width: 'max-content',
+            minWidth: menuStyle.width,
+            maxWidth: window.innerWidth - menuStyle.left - 8,
             maxHeight: menuStyle.maxHeight,
           }}
         >
@@ -142,7 +144,7 @@ function PresetDropdown({
                   setOpen(false);
                 }}
                 className={cn(
-                  'w-full cursor-pointer px-3 py-2.5 text-left transition-colors',
+                  'block w-full cursor-pointer px-3 py-2.5 text-left transition-colors',
                   isSelected ? 'bg-blue-600/20' : 'hover:bg-neutral-800',
                 )}
               >
@@ -161,7 +163,19 @@ function PresetDropdown({
                     )}
                   </div>
                 </div>
-                <div className="mt-0.5 truncate font-mono text-[10px] text-neutral-500">
+                {ns.features.length > 0 && (
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {ns.features.map(f => (
+                      <span
+                        key={f}
+                        className="rounded border border-amber-500/30 bg-amber-500/15 px-1.5 py-0.5 font-mono text-[10px] text-amber-300"
+                      >
+                        {f}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <div className="mt-0.5 truncate font-mono text-[10px] text-neutral-500 contain-[inline-size]">
                   {relay.url}
                   <br />
                   {ns.name}
@@ -186,66 +200,69 @@ function Field({ label, children }: { label: string; children: ComponentChildren
   );
 }
 
-function Checkbox({
-  checked,
-  disabled,
+/** A player feature; changing it reloads the player. */
+function FeatureToggle({
+  label,
+  href,
+  on,
+  disabled = false,
   onChange,
 }: {
-  checked: boolean;
-  disabled: boolean;
-  onChange: (checked: boolean) => void;
+  label: string;
+  href: string;
+  on: boolean;
+  disabled?: boolean;
+  onChange: (on: boolean) => void;
 }) {
   return (
-    <span className="flex shrink-0 items-center">
-      {/* Real input — kept 1 px so it remains in the accessibility tree without position:absolute */}
-      <input
-        type="checkbox"
-        checked={checked}
-        disabled={disabled}
-        className="size-px overflow-hidden opacity-0"
-        onChange={e => onChange((e.target as HTMLInputElement).checked)}
-      />
-      {/* Visual indicator */}
-      <span
-        aria-hidden="true"
+    <div className="flex items-center gap-1.5">
+      <label
         className={cn(
-          'flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors',
-          checked ? 'border-blue-500 bg-blue-500' : 'border-neutral-600 bg-neutral-800/60',
+          'flex items-center gap-1.5 text-xs text-neutral-400 select-none',
+          disabled ? 'cursor-not-allowed opacity-40' : 'cursor-pointer hover:text-neutral-200',
         )}
       >
-        {checked && <LuCheck className="h-2.5 w-2.5 text-white" aria-hidden="true" />}
-      </span>
-    </span>
+        <input
+          type="checkbox"
+          checked={on}
+          disabled={disabled}
+          onChange={e => onChange(e.currentTarget.checked)}
+          className="h-3 w-3 cursor-pointer accent-blue-500 disabled:cursor-not-allowed"
+        />
+        {label}
+      </label>
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        aria-label={`${label} specification`}
+        className="text-neutral-600 hover:text-neutral-300"
+      >
+        <LuExternalLink className="h-3 w-3" aria-hidden="true" />
+      </a>
+    </div>
   );
 }
 
-function TrackRow({
-  track,
-  checked,
-  disabled,
-  onChange,
-}: {
-  track: Track;
-  checked: boolean;
-  disabled: boolean;
-  onChange: (track: Track, checked: boolean) => void;
-}) {
-  const selectable = !disabled;
-
+/** A catalog track; highlighted while objects arrive on it. */
+function TrackRow({ track, active }: { track: Track; active: boolean }) {
   return (
-    <label
+    <div
       className={cn(
-        'group flex items-center gap-3 rounded-lg px-3 py-2.5 transition-all select-none',
-        selectable
-          ? checked
-            ? 'cursor-pointer bg-blue-600/15 ring-1 ring-blue-500/40'
-            : 'cursor-pointer hover:bg-neutral-800/70'
-          : 'cursor-not-allowed opacity-30',
+        'flex items-center gap-3 rounded-lg px-3 py-2.5 transition-colors duration-300 select-none',
+        active && 'bg-blue-600/15 ring-1 ring-blue-500/40',
       )}
     >
-      <Checkbox checked={checked} disabled={disabled} onChange={val => onChange(track, val)} />
+      <span
+        aria-hidden="true"
+        className={cn(
+          'h-2 w-2 shrink-0 rounded-full transition-colors duration-300',
+          active ? 'bg-blue-400' : 'border border-neutral-600',
+        )}
+      />
       <span className="min-w-0 flex-1 truncate font-mono text-xs leading-5 text-neutral-200">
         {track.name}
+        {active && <span className="sr-only"> (receiving)</span>}
       </span>
       <div className="flex shrink-0 items-center gap-2">
         {track.bitrate ? (
@@ -264,7 +281,7 @@ function TrackRow({
           </span>
         ) : null}
       </div>
-    </label>
+    </div>
   );
 }
 
@@ -272,18 +289,12 @@ function TrackGroup({
   title,
   color,
   tracks,
-  selectedVideo,
-  selectedAudio,
-  disabled,
-  onChange,
+  activeTracks,
 }: {
   title: string;
   color: string;
   tracks: Track[];
-  selectedVideo: string | null;
-  selectedAudio: string | null;
-  disabled: boolean;
-  onChange: (track: Track, checked: boolean) => void;
+  activeTracks: string[];
 }) {
   if (tracks.length === 0) return null;
   return (
@@ -296,18 +307,9 @@ function TrackGroup({
         <span className="text-[10px] text-neutral-600">({tracks.length})</span>
       </div>
       <div className="space-y-0.5">
-        {tracks.map(track => {
-          const isSelected = track.name === selectedVideo || track.name === selectedAudio;
-          return (
-            <TrackRow
-              key={track.name}
-              track={track}
-              checked={isSelected}
-              disabled={disabled}
-              onChange={onChange}
-            />
-          );
-        })}
+        {tracks.map(track => (
+          <TrackRow key={track.name} track={track} active={activeTracks.includes(track.name)} />
+        ))}
       </div>
     </div>
   );
@@ -348,11 +350,12 @@ export interface SidebarProps {
   onNamespaceChange: (ns: string) => void;
   status: Status;
   tracks: Track[];
-  selectedVideo: string | null;
-  selectedAudio: string | null;
+  /** The tracks objects arrive on now. */
+  activeTracks: string[];
   onConnect: () => void;
-  onTrackChange: (track: Track, checked: boolean) => void;
   error: string | null;
+  features: Features;
+  onFeatureChange: (feature: keyof Features, on: boolean) => void;
   // Tab
   tab: Tab;
   onTabChange: (tab: Tab) => void;
@@ -367,16 +370,16 @@ export function Sidebar({
   onNamespaceChange,
   status,
   tracks,
-  selectedVideo,
-  selectedAudio,
+  activeTracks,
   onConnect,
-  onTrackChange,
   error,
+  features,
+  onFeatureChange,
   tab,
   onTabChange,
   publishProps,
 }: SidebarProps) {
-  const isBusy = status === 'connecting' || status === 'restarting';
+  const isBusy = status === 'connecting';
   const hasTracks = tracks.length > 0;
   const videoTracks = tracks.filter(t => t.role === 'video');
   const audioTracks = tracks.filter(t => t.role === 'audio');
@@ -422,7 +425,7 @@ export function Sidebar({
                   type="url"
                   value={relayUrl}
                   onInput={e => onRelayUrlChange((e.target as HTMLInputElement).value)}
-                  placeholder="https://relay.example.com:443"
+                  placeholder="moqt://relay.example.com"
                   className={inputCls}
                 />
               </Field>
@@ -436,6 +439,24 @@ export function Sidebar({
                 />
               </Field>
             </div>
+            <Field label="Features">
+              <div className="flex flex-wrap gap-x-4 gap-y-1">
+                <FeatureToggle
+                  label="SSTS"
+                  href="https://wilaw.github.io/moqt-ssts/draft-wilaw-moq-moqt-ssts.html"
+                  on={features.ssts}
+                  onChange={on => onFeatureChange('ssts', on)}
+                />
+                <FeatureToggle
+                  label="SWITCH_FROM"
+                  href="https://github.com/moq-wg/moq-transport/pull/1674"
+                  // SSTS leaves the switching to the relay
+                  on={features.switchFrom && !features.ssts}
+                  disabled={features.ssts}
+                  onChange={on => onFeatureChange('switchFrom', on)}
+                />
+              </div>
+            </Field>
             <button
               type="submit"
               disabled={isBusy || !relayUrl || !namespace}
@@ -460,19 +481,13 @@ export function Sidebar({
                 title="Video"
                 color="bg-violet-400"
                 tracks={videoTracks}
-                selectedVideo={selectedVideo}
-                selectedAudio={selectedAudio}
-                disabled={isBusy}
-                onChange={onTrackChange}
+                activeTracks={activeTracks}
               />
               <TrackGroup
                 title="Audio"
                 color="bg-teal-400"
                 tracks={audioTracks}
-                selectedVideo={selectedVideo}
-                selectedAudio={selectedAudio}
-                disabled={isBusy}
-                onChange={onTrackChange}
+                activeTracks={activeTracks}
               />
             </div>
           )}

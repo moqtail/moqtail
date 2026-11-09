@@ -15,9 +15,9 @@
  */
 
 import { ProtocolViolationError } from '@/model/error'
-import { PublishSkipped, SubscribeTracks } from '../../model/control'
+import { PublishSkipped, SubscribeTracks } from '@/model/control'
 import { RequestStreamMessageHandler } from './handler'
-import { logger } from '../../util/logger'
+import { logger } from '@/util/logger'
 
 export const handlerPublishSkipped: RequestStreamMessageHandler<PublishSkipped> = async (client, msg, stream) => {
   const first = stream.first
@@ -36,5 +36,5 @@ export const handlerPublishSkipped: RequestStreamMessageHandler<PublishSkipped> 
     msg.trackNamespaceSuffix.toUtf8Path(),
   )
 
-  client.onPeerPublishSkipped?.(first.trackNamespacePrefix, msg)
+  client.emit('peerpublishskipped', first.trackNamespacePrefix, msg)
 }

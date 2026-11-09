@@ -1,552 +1,231 @@
-# MOQtail TypeScript Client Library
+# moqtail
 
-> ⚠️ **Work in Progress**: This library is under active development and the API is subject to change. Please use with caution in production environments.
+A TypeScript MOQT client and an MSF/CMSF player for the browser.
 
-MOQT (Media over QUIC Transport) is a protocol for media delivery over QUIC connections, enabling efficient streaming of live and on-demand content. The MOQtail client library provides a TypeScript implementation that supports both publisher and subscriber roles in the MOQT ecosystem.
-
-## Overview
-
-The `MOQtailClient` serves as the main entry point for interacting with MoQ relays and other peers. A client can act as:
-
-- **Original Publisher**: Creates and announces tracks, making content available to subscribers
-- **End Subscriber**: Discovers and consumes content from publishers via track subscriptions
-
-## Publisher
-
-As a publisher, the MOQtail client allows you to create, manage, and distribute content through tracks. The library handles protocol-level details while giving you full control over content creation and packaging.
-
-### Track Management
-
-Publishers can add or remove tracks using the `addOrUpdateTrack()` and `removeTrack()` methods:
-
-```typescript
-const client = await MOQtailClient.new(clientSetup, webTransport)
-
-// Add a new track
-client.addOrUpdateTrack(myTrack)
-
-// Remove an existing track
-client.removeTrack(myTrack)
+```bash
+npm install moqtail
 ```
 
-### Track Structure
+| Entry                      | What's in it                                      |
+| -------------------------- | ------------------------------------------------- |
+| `moqtail`                  | Everything below except the player                |
+| `moqtail/client`           | `MOQtailClient`, its options, events and results  |
+| `moqtail/model`            | Control messages, objects, parameters, properties |
+| `moqtail/util`             | Logger, `Emitter`, telemetry, clock helpers       |
+| `moqtail/player`           | `MOQtailPlayer`, elements, plugins                |
+| `moqtail/player/component` | The `<moqtail-video>` web component               |
 
-Each track is defined by the `Track` interface, which consists of:
+It runs in Chrome and Safari 26.4+ (WebTransport). It follows MOQT draft-22 and the MSF and CMSF editor's drafts. The player plays CMAF; LOC, captions and language switching aren't played yet. [DeepWiki](https://deepwiki.com/moqtail/moqtail) has the full list and the details this page leaves out.
 
-- **`fullTrackName`**: Unique identifier for the track (namespace + track name)
-- **`trackAlias`**: Numeric alias used for efficient wire representation
-- **`forwardingPreference`**: How objects should be delivered (Datagram or Subgroup)
-- **`contentSource`**: The source of content for this track
+## How It Fits Together
 
-### Content Sources
-
-The `ContentSource` interface is the heart of the publisher model, providing two distinct patterns for content delivery:
-
-#### Live Content (Streaming)
-
-For real-time content like live video streams, use `LiveContentSource`:
-
-- Content flows through a `ReadableStream<MoqtObject>`
-- Subscribers receive content via **Subscribe** operations
-- Suitable for continuously generated content
-
-#### Static Content (On-Demand)
-
-For archived or pre-generated content, use `StaticContentSource`:
-
-- Content is stored in an `ObjectCache` for random access
-- Subscribers retrieve specific ranges via **Fetch** operations
-- Ideal for video-on-demand, file transfers, or cached content
-
-#### Hybrid Content
-
-For tracks that support both patterns, use `HybridContentSource`:
-
-- Combines live streaming with historical data access
-- New objects are added to cache while also flowing to live subscribers
-
-### Object Packaging
-
-All content is packaged as `MoqtObject` instances, which represent the atomic units of data in MoQ:
-
-- **Location**: Identified by `groupId` and `objectId` (e.g., video frames within GOPs)
-- **Payload**: The actual media data or content
-- **Metadata**: Publisher priority, forwarding preferences, and properties
-- **Status**: Normal data, end-of-group markers, or error conditions
-
-### Object Caching
-
-The `ObjectCache` interface provides two simple implementations for static content:
-
-- **`MemoryObjectCache`**: Unlimited in-memory storage with binary search indexing
-- **`RingBufferObjectCache`**: Fixed-size cache with automatic eviction of oldest objects
-
-### Publisher Workflow
-
-1. **Create Content**: Generate or prepare your media content
-2. **Package as Objects**: Wrap content in `MoqtObject` instances with appropriate metadata
-3. **Choose Content Source**: Select `LiveContentSource`, `StaticContentSource`, or `HybridContentSource`
-4. **Define Track**: Create a `Track` with your content source and metadata
-5. **Add to Client**: Register the track with `addOrUpdateTrack()`
-6. **Publish Namespace**: Use `publishNamespace()` to make the track discoverable by subscribers
-7. **Manage Lifecycle**: The library handles incoming subscribe/fetch requests and data delivery
-
-### Example
-
-```typescript
-// Create a live video track
-const videoTrack: Track = {
-  fullTrackName: FullTrackName.tryNew('live/conference', 'video'),
-  trackAlias: 1n,
-  forwardingPreference: ObjectForwardingPreference.Subgroup,
-  contentSource: new LiveContentSource(videoStream),
-}
-
-// Create a static file track
-const fileCache = new MemoryObjectCache()
-// ... populate cache with file chunks ...
-const fileTrack: Track = {
-  fullTrackName: FullTrackName.tryNew('files/documents', 'presentation.pdf'),
-  trackAlias: 2n,
-  forwardingPreference: ObjectForwardingPreference.Datagram,
-  contentSource: new StaticContentSource(fileCache),
-}
-
-// Register tracks and announce
-client.addOrUpdateTrack(videoTrack)
-client.addOrUpdateTrack(fileTrack)
-
-await client.publishNamespace(new PublishNamespace(client.nextClientRequestId, Tuple.tryNew(['live', 'conference'])))
+```
+MOQtailPlayer   source('moqt://relay/app#msf:ns--catalog')   sink(<video>)
+     │ init()
+     ▼
+MOQtailClient ── WebTransport ── relay       one session per origin and setup, shared by players
+     │ SERVER_SETUP decides which plugins are active
+     ▼
+catalog ──► one source per switching set ──pads──► [transforms] ──► MSE sink ──► <video>
 ```
 
-The library automatically manages active requests, handles protocol negotiation, and ensures efficient data delivery based on subscriber demands and network conditions.
+The client is a MOQT session and nothing more: you can use it on its own to subscribe, fetch and publish. The player sits on top of it. It turns a `moqt://` URL into a chain of elements: sources that request tracks and write media to pads, optional transforms, and sinks that play what they receive. Plugins add elements and controllers to that chain, together with the SETUP parameters they need.
 
-## Subscriber
+## MOQT In Short
 
-As a subscriber, the MOQtail client enables you to discover, request, and consume content from publishers. The library provides two main mechanisms for content retrieval: `subscribe()` for live streaming content and `fetch()` for on-demand content access.
+A client opens one session to a relay and exchanges SETUP, where both sides state the parameters and extensions they support. Media is published as tracks. A track is named by a namespace (a tuple of fields, such as `live/demo`) and a track name, together the full track name. A track is a sequence of groups, each a sequence of objects; a group usually starts at a key frame, so it's where a subscriber can join. A subscriber asks for a track with SUBSCRIBE (objects as they're published) or FETCH (objects already published), and the relay answers with an OK or an error. A publisher announces a namespace with PUBLISH_NAMESPACE, or pushes a track with PUBLISH.
 
-### Live Content Subscription
+## Client
 
-For real-time streaming content, use `subscribe()` which returns either a `ReadableStream<MoqtObject>` or a `RequestError`:
+Each request resolves to its result or to a `RequestError`; the objects come as a `ReadableStream`. Listeners attached before `init()` see the SETUP exchange too.
 
-#### Subscribe Implementation
+```ts
+import { MOQtailClient, FullTrackName, GroupOrder, LocationFilter, LocationFilterType, RequestError } from 'moqtail'
 
-Subscribe operations are designed for live streaming and can be delivered through multiple transport mechanisms:
+const client = new MOQtailClient({ url: 'moqt://relay.example.com' })
+client.on('messagereceived', (msg) => console.log('←', msg))
+client.on('sessionterminated', (reason) => console.log('session ended', reason))
+await client.init()
 
-- **Datagrams**: For low-latency delivery where occasional packet loss is acceptable
-- **Multiple Streams**: Each group (GOP) can be delivered in a separate stream for better prioritization
-- **Stream Cancellation**: The library implements intelligent stream cancellation on both publisher and subscriber sides:
-  - **Publisher Side**: Automatically cancels streams for older groups when bandwidth is limited
-  - **Subscriber Side**: Cancels streams for groups that are no longer needed due to latency constraints
+const sub = await client.subscribe({
+  fullTrackName: FullTrackName.tryNew('live/demo', 'video'),
+  priority: 128,
+  groupOrder: GroupOrder.Original,
+  locationFilter: new LocationFilter(LocationFilterType.NextObject),
+})
+if (sub instanceof RequestError) throw new Error(sub.reasonPhrase.phrase)
 
-This approach ensures that subscribers always receive the most recent content with minimal latency, automatically dropping outdated frames during network congestion.
-
-```typescript
-const subscribe = new Subscribe(
-  client.nextClientRequestId,
-  trackAlias, // Numeric alias for the track
-  fullTrackName, // Full track name
-  subscriberId, // Your subscriber ID
-  startGroup, // Starting group ID (or null for latest)
-  startObject, // Starting object ID (or null for latest)
-  endGroup, // Ending group ID (or null for ongoing)
-  endObject, // Ending object ID (or null for group end)
-  authInfo, // Authorization information
-)
-
-const result = await client.subscribe(subscribe)
-
-if (result instanceof RequestError) {
-  console.error(`Subscription failed: ${result.reasonPhrase}`)
-  // Handle error based on error code
-  switch (result.errorCode) {
-    case RequestErrorCode.InvalidRange:
-      // Adjust range and retry
-      break
-    default:
-      console.error(`Unknown error: ${result.reasonPhrase}`)
-  }
-} else {
-  // Success - result is ReadableStream<MoqtObject>
-  const objectStream = result
-  const reader = objectStream.getReader()
-
-  try {
-    while (true) {
-      const { done, value: object } = await reader.read()
-      if (done) break
-
-      // Process each object
-      console.log(`Received object ${object.objectId} from group ${object.groupId}`)
-      processObject(object)
-    }
-  } finally {
-    reader.releaseLock()
-  }
+sub.done.then((publishDone) => console.log('subscription over', publishDone?.statusCode))
+const reader = sub.stream.getReader()
+for (let read = await reader.read(); !read.done; read = await reader.read()) {
+  console.log(read.value.location, read.value.payload?.byteLength)
 }
 ```
 
-### On-Demand Content Fetching
+`fetch` reads objects already published. Its result carries the FETCH_OK, with the end location and the track properties:
 
-For static or archived content, use `fetch()` which returns either a `ReadableStream<MoqtObject>` or a `RequestError`:
-
-#### Fetch Implementation
-
-Fetch operations are optimized for reliable delivery of static content:
-
-- **Single Stream**: All requested objects are delivered sequentially in a single stream
-- **Reliable Delivery**: Uses QUIC streams for guaranteed, ordered delivery
-- **No Cancellation**: All requested objects are delivered as they provide historical data
-
-```typescript
-const fetch = new Fetch(
-  client.nextClientRequestId,
-  trackAlias,
-  fullTrackName,
-  subscriberId,
-  startGroup, // Starting group ID
-  startObject, // Starting object ID
-  endGroup, // Ending group ID
-  endObject, // Ending object ID
-  authInfo,
-)
-
-const result = await client.fetch(fetch)
-
-if (result instanceof RequestError) {
-  console.error(`Fetch failed: ${result.reasonPhrase}`)
-  // Handle fetch error
-} else {
-  // Success - result is ReadableStream<MoqtObject>
-  const objectStream = result
-  const reader = objectStream.getReader()
-
-  try {
-    while (true) {
-      const { done, value: object } = await reader.read()
-      if (done) break
-
-      // Process fetched object
-      processObject(object)
-    }
-  } finally {
-    reader.releaseLock()
-  }
+```ts
+const res = await client.fetch({
+  fullTrackName: FullTrackName.tryNew('live/demo', 'video'),
+  priority: 128,
+  groupOrder: GroupOrder.Original,
+  locationFilter: new LocationFilter(LocationFilterType.AbsoluteStartGroupEnd, 10n, 0n, 12n),
+})
+if (!(res instanceof RequestError)) {
+  console.log('ends at', res.fetchOk.endLocation)
+  const reader = res.stream.getReader()
+  for (let read = await reader.read(); !read.done; read = await reader.read()) console.log(read.value.location)
 }
 ```
 
-### Content Processing
+Publishing goes through `client.publishNamespace` and `client.publish`. [`apps/client-js`](../../apps/client-js) is a complete publisher.
 
-Once you have the stream, process each `MoqtObject` based on its status:
+The client's events, attached with `client.on()`:
 
-```typescript
-function processObject(object: MoqtObject) {
-  // Check object status
-  switch (object.objectStatus) {
-    case ObjectStatus.Normal:
-      // Regular data object with payload
-      if (object.payload) {
-        processData(object.payload)
-      }
-      break
-    case ObjectStatus.EndOfGroup:
-      // Marks the end of a group
-      finalizeGroup(object.groupId)
-      break
-    case ObjectStatus.EndOfTrack:
-      // Marks the end of the track
-      finalizeTrack()
-      break
-  }
+- **Session**: `goaway` (the session is winding down, or a request moves to a new one), `sessionterminated` (once, with the reason).
+- **Tracing**: `messagesent` and `messagereceived` for control messages, `datasent` and `datareceived` for stream headers and objects, `dataevent` for stream open, object and close with sizes only, `datagramsent` and `datagramreceived`, and `orderinggap` when an ordered request stops waiting for missing objects.
+- **Answering the peer**: `forwardstatechange` (a track you publish may now send, or must stop), `namespacepublished`, `peerpublish` (the peer pushed a track, with its stream), `peerpublishdone`, `peerpublishskipped`, `peersubscribenamespace`, `peersubscribetracks`, `peernamespace` and `peernamespacedone`.
+
+## `<moqtail-video>`
+
+The mostly hands-off option, built on the player described below. It's a `<video>` that takes a `moqt://` URL, builds the player chain itself, and installs the default plugins: the buffer controller (`liveBuffer()`) is in, ABR is coming soon. Listing plugins in `config.plugins` replaces it, so leave `liveBuffer()` out of the list to play without it.
+
+It needs two optional peer dependencies: `npm install custom-media-element media-tracks`.
+
+```ts
+import { defineMOQtailVideo } from 'moqtail/player/component'
+
+defineMOQtailVideo()
+```
+
+```html
+<moqtail-video src="moqt://relay.moqtail.dev#msf:moqtail-ch00--catalog" autoplay muted playsinline></moqtail-video>
+```
+
+`video.config = { catalogTimeoutMs: 5000 }` passes player options, read on each load. The `switch-from` attribute switches tracks with SWITCH_FROM instead of a new subscription. It fires the usual media events plus `streamtypechange`, lists renditions in `videoRenditions` and `audioRenditions`, and `video.player` is the `MOQtailPlayer` behind it, for the events below. [`apps/client-js`](../../apps/client-js/src/lib/videojs.ts) wraps the element in a Video.js v10 skin.
+
+## Player
+
+For more control. `MOQtailPlayer` installs no plugins, so list the buffer controller yourself.
+
+```ts
+import { MOQtailPlayer, PlayerError, liveBuffer } from 'moqtail/player'
+
+const video = document.querySelector('video')!
+const player = new MOQtailPlayer({ plugins: [liveBuffer({ targetLatency: 2 })] })
+  .source('moqt://relay.moqtail.dev#msf:moqtail-ch07_vod--catalog')
+  .sink(video)
+
+player.on('statechange', (state) => console.log(state))
+player.on('error', (error: PlayerError) => console.error(error.code, error.category, error.message))
+
+await player.init()
+await player.play()
+await player.seek(30)
+```
+
+### From `source()` To Playing
+
+The builder calls go `registerElement()`, `source()`, `transform()`, `sink()`, all before `init()`; anything else is a `TypeError`. `source()` takes an MSF URL, `moqt://authority/path#msf:<namespace>--<track>`, for a catalog or a single track. It throws `PlayerError` right away for a URL it can't use, such as another origin than an earlier `source()`.
+
+The constructor already ran each plugin's `init` and `setup`, so their SETUP parameters are known. `init()` then:
+
+1. Connects. Players with the same origin and setup share one client and its reconnects.
+2. Keeps the plugins the relay's SERVER_SETUP accepts. The others contribute nothing.
+3. Picks an element for each `source()` (see [Element selection](#element-selection)). A track no element accepts rejects `init()` with `UNSUPPORTED_SOURCE`.
+4. Starts the sources. The catalog element reads the catalog, picks an element for every switching set and timeline the same way, and loads it. A switching set goes through a plugin's switch source when one accepts it, such as SSTS.
+5. Routes each new source pad by capability: to the first transform that accepts it, otherwise to every sink that does.
+6. Once every top-level source says it has all its pads (`nomorepads`), tells the sinks, and resolves when they're ready. The state is then `ready`, or `ended` when there's nothing to play.
+
+After that, `play()`, `pause()`, `seek()` and `setPlaybackRate()` go to the media sink, and the state follows its `<video>`: `idle`, `connecting`, `ready`, then `playing`, `paused`, `stalled` or `ended`. A lost session moves to `reconnecting` and back to where it was. `error` and `destroyed` are final. `player.destroy()` tears the chain down in any state.
+
+### Player Events
+
+Attached with `player.on()`:
+
+- **Playback**: `statechange` (new and previous state), `playing`, `pause`, `stalled`, `ended`, `autoplayblocked` (a `play()` the browser refused; the player is `paused`).
+- **Session**: `client` (the connected client, again after every reconnect), `reconnecting` (with the attempt number), `reconnected`.
+- **Content**: `catalog` (the catalog element, after the first catalog and each applied update), `renditionchange` (a source switched rendition), `streamtypechange` (`live` or `on-demand`), `timelineevent` (records of the event timelines listed in `eventTimelines`).
+- **Problems**: `error` is fatal and moves to `error`; `warning` isn't, such as a pad no element took (`PAD_UNLINKED`) or a catalog track that was skipped (`TRACK_SKIPPED`). Both carry a `PlayerError` with a `code`, a `category` (`source`, `network`, `media` or `aborted`) and the `element` it came from.
+
+`player.mediaSources` are the sources playing media: `getRenditions()` lists their renditions and `switch(id)` changes one.
+
+## Element Selection
+
+The player is a chain of elements joined by pads. Each element definition says what it is (`source`, `transform` or `sink`), the pads it creates (`out` capabilities) and the pads it accepts (`in` capabilities). A source definition also has a `probe` that says whether it handles a track.
+
+For every track, the top-level one from the URL and every one the catalog lists, the candidates are, in order: the definitions passed to `registerElement()`, then the active plugins' elements (by plugin `priority`, then list order), then the built-in ones (catalog, CMAF, media timeline, SAP timeline). Among the candidates whose probe accepts the track, the lowest `priority` wins (default 100), then the earlier one. So yours wins a tie with a plugin's, and both win a tie with a built-in one.
+
+A source the probe picks can be your own:
+
+```ts
+import { CapabilityCode, MOQtailPlayer, SourceElement, defineElement } from 'moqtail/player'
+
+class LocSource extends SourceElement {
+  // createPad('src', capabilities), write packets to it, then emit 'nomorepads'
 }
+
+const locSource = defineElement({
+  type: 'source',
+  name: 'loc-source',
+  capabilities: [[{ direction: 'out', code: CapabilityCode.PACKAGING, value: 'loc' }]],
+  probe: (track) => track.packaging === 'loc',
+  init: async (context) => new LocSource(context),
+})
+
+new MOQtailPlayer().registerElement(locSource)
 ```
 
-### Subscription Management
+Its pads still need a transform or sink whose `in` capabilities match them, or the player warns `PAD_UNLINKED`.
 
-#### Subscription Lifecycle
+## Plugins
 
-```typescript
-// Create and send subscription
-const subscribe = new Subscribe(/*...*/)
-const result = await client.subscribe(subscribe)
+A plugin bundles features with the SETUP parameters they need, so a protocol extension or a controller is one entry in `plugins`. Its hooks are optional and run in this order:
 
-if (result instanceof RequestError) {
-  console.error(`Subscription failed: ${result.reasonPhrase}`)
-} else {
-  console.log('Subscription successful, processing stream...')
-  // Process the stream as shown above
-}
+1. `init(config)`, once per player in the constructor. Its config type is what the plugin's factory takes.
+2. `setup(ctx, clientSetup)`, also in the constructor, adds SETUP parameters; returning false drops the plugin. Two plugins setting one parameter to different values throw `UNSUPPORTED_ORIGIN`.
+3. `negotiated(ctx, serverSetup)`, after the relay's SERVER_SETUP; returning false leaves the plugin inactive, its features unused.
+4. `features(ctx)` lists what it offers:
+   - `element`: a candidate for [element selection](#element-selection).
+   - `switch-source`: wraps the source of each media switching set it accepts, ranked like elements.
+   - `buffer-controller`: only the first active one is used. The player attaches it while a negotiated stream is `live` and detaches it otherwise.
 
-// Unsubscribe when done
-await client.unsubscribe(subscribeId)
+`ssts()` (sender-side track switching) and `liveBuffer()` are built in. `liveBuffer()` has priority `Infinity`, so any other buffer controller wins over it.
+
+```ts
+import { MOQtailPlayer, definePlugin, liveBuffer, ssts } from 'moqtail/player'
+
+const loc = definePlugin({
+  name: 'loc',
+  features: () => [{ type: 'element', item: locSource }],
+})
+
+new MOQtailPlayer({ plugins: [ssts({ algorithms: [0xff01n, 0n] }), loc(), liveBuffer()] })
 ```
 
-#### Subscription Updates
+Plugin code reaches the player through what it's handed. An element's `context.player` has the player's events and options, and `context.client` is the current client; it changes after a reconnect, so listen again on the player's `client` event. A buffer controller gets the player and the media sink in `attach()`:
 
-For live content, you can update the subscription range dynamically:
+```ts
+import { definePlugin, type BufferController, type MOQtailPlayer } from 'moqtail/player'
 
-```typescript
-const subscribeUpdate = new SubscribeUpdate(
-  subscribeId,
-  startGroup, // New start group
-  startObject, // New start object
-  endGroup, // New end group (optional)
-  endObject, // New end object (optional)
-  subscriberPriority, // New priority (optional)
-)
+class StallLogger implements BufferController {
+  #player: MOQtailPlayer | undefined
+  readonly #onStalled = () => console.log('stalled')
 
-await client.subscribeUpdate(subscribeUpdate)
-```
-
-### Complete Subscriber Example
-
-```typescript
-import { MOQtailClient } from './client/client'
-import { PullPlayoutBuffer } from './util/pull_playout_buffer'
-
-async function createSubscriber() {
-  // Initialize client
-  const client = await MOQtailClient.new(clientSetup, webTransport)
-
-  // Subscribe to live video
-  const subscribe = new Subscribe(
-    client.nextClientRequestId,
-    1n, // trackAlias
-    FullTrackName.tryNew('live/conference', 'video'),
-    generateSubscriberId(),
-    null,
-    null, // Latest content
-    null,
-    null, // Ongoing
-    null, // No auth
-  )
-
-  const result = await client.subscribe(subscribe)
-
-  if (result instanceof RequestError) {
-    console.error(`Failed to subscribe: ${result.reasonPhrase}`)
-    return
+  attach(player: MOQtailPlayer): void {
+    this.#player = player
+    player.on('stalled', this.#onStalled)
   }
 
-  // Set up playout buffer with the stream
-  const playoutBuffer = new PullPlayoutBuffer(result, {
-    bucketCapacity: 50,
-    targetLatencyMs: 500,
-    maxLatencyMs: 2000,
-  })
-
-  // Consumer-driven playout
-  const playoutLoop = () => {
-    playoutBuffer.nextObject((nextObject) => {
-      if (nextObject) {
-        // Decode and render the frame
-        decodeAndRender(nextObject)
-      }
-      requestAnimationFrame(playoutLoop)
-    })
+  detach(): void {
+    this.#player?.off('stalled', this.#onStalled)
   }
-
-  // Start playout
-  requestAnimationFrame(playoutLoop)
-
-  return client
-}
-```
-
-### Other Client Operations
-
-The MOQtail client supports additional operations for track discovery and status management:
-
-#### PublishNamespace Operations
-
-Publishers use announce operations to make their tracks discoverable:
-
-```typescript
-// PublishNamespace a namespace
-const announce = new PublishNamespace(
-  client.nextClientRequestId,
-  Tuple.tryNew(['live', 'conference']), // Track namespace
-)
-
-const result = await client.publishNamespace(announce)
-if (result instanceof PublishNamespaceError) {
-  console.error(`Publishing the namespace failed: ${result.reasonPhrase}`)
-} else {
-  console.log('Namespace published successfully')
 }
 
-// Stop announcing a namespace: draft-18 has no PUBLISH_NAMESPACE_DONE, so this closes
-// the stream the PUBLISH_NAMESPACE opened (§3.3.2)
-await client.unpublishNamespace(Tuple.tryNew(['live', 'conference']))
-```
-
-#### Subscribe to Announcements
-
-Subscribers can discover available tracks by subscribing to announcements:
-
-```typescript
-// Subscribe to announcements for a namespace prefix
-const subscribeNamespace = new SubscribeNamespace(
-  Tuple.tryNew(['live']), // Namespace prefix
-)
-await client.subscribeNamespace(subscribeNamespace)
-
-// The client will now receive announce messages for tracks
-// matching the 'live' prefix through its announcement handling
-
-// Stop subscribing to announcements: likewise no UNSUBSCRIBE_NAMESPACE, the
-// SUBSCRIBE_NAMESPACE stream is simply closed
-await client.unsubscribeNamespace(Tuple.tryNew(['live']))
-```
-
-#### Track Status Requests
-
-Query the status of specific tracks:
-
-```typescript
-const trackStatus = new TrackStatusMessage(client.nextClientRequestId, FullTrackName.tryNew('live/conference', 'video'))
-
-const result = await client.trackStatus(trackStatus)
-if (result instanceof RequestError) {
-  console.error(`Track status request failed: ${result.reasonPhrase}`)
-} else {
-  // result is TrackStatus
-  console.log(`Track status: ${result.statusCode}`)
-  console.log(`Last group: ${result.lastGroup}`)
-  console.log(`Last object: ${result.lastObject}`)
-}
-```
-
-#### Observing Control Messages
-
-`onMessageSent` and `onMessageReceived` report every control message the client sends or receives, which is useful for logging, debugging, or building a message inspector. They cover both the control stream (SETUP, GOAWAY) and the bidirectional request streams that carry SUBSCRIBE, PUBLISH, FETCH, the namespace messages, and their replies.
-
-Pass them when connecting so the SETUP exchange is reported as well:
-
-```typescript
-const client = await MOQtailClient.new({
-  url: 'moqt://relay.example.com:4433',
-  callbacks: {
-    onMessageSent: (msg) => console.log('→', ControlMessageType[msg.getType()], msg),
-    onMessageReceived: (msg) => console.log('←', ControlMessageType[msg.getType()], msg),
-  },
+const stallLogger = definePlugin({
+  name: 'stall-logger',
+  features: () => [{ type: 'buffer-controller', item: new StallLogger() }],
 })
 ```
 
-The callbacks can also be assigned to `client.onMessageSent` and `client.onMessageReceived` after connecting. Request streams pick up the change straight away, but the control stream keeps the callbacks it was given at connect time.
-
-A message is reported once it has been written to its stream, or once it has been fully decoded on arrival.
-
-#### Observing Data Streams
-
-`onDataEvent` reports every data stream the client opens (`direction: 'out'`) or accepts (`direction: 'in'`) as small records, which is enough to count streams, groups, subgroups, objects and bytes without touching payloads:
-
-- `header`: once per stream when it opens. Subgroup streams carry the track alias and group and subgroup IDs; fetch streams carry the request ID. Both include the track name when the client knows it.
-- `object`: once per object, with its group, subgroup and object IDs, its payload length, its status if it has one, and its LOC Timestamp property (`locTimestamp`) if it carries one.
-- `end`: once per stream, with `reason` set to `'fin'`, `'reset'` (plus `resetCode`) or `'error'`.
-
-Every record carries a `streamId`, so objects can be tied back to the header of the stream they arrived on, and `at`, the local time it was written or read as `performance.now()`. Differences in `at` give interarrival times and jitter; comparing `performance.timeOrigin + at` with a sender's `locTimestamp` gives latency, provided both ends agree on the timestamp's unit and their clocks are in sync.
-
-```typescript
-const client = await MOQtailClient.new({
-  url: 'moqt://relay.example.com:4433',
-  callbacks: {
-    onDataEvent: (event) => {
-      if (event.kind === 'object') bytesByDirection[event.direction] += event.payloadLength
-    },
-  },
-})
-```
-
-The callback runs for every object, so keep it cheap: update counters there and render them on a timer.
-
-## Utilities
-
-The MOQtail library provides several utility classes to help with common streaming scenarios:
-
-### Playout Buffer
-
-The `PullPlayoutBuffer` provides consumer-driven playout with GOP-aware buffering for smooth media playback:
-
-```typescript
-import { PullPlayoutBuffer } from './util/pull_playout_buffer'
-
-const playoutBuffer = new PullPlayoutBuffer(objectStream, {
-  bucketCapacity: 50, // Max objects in buffer (default: 50)
-  targetLatencyMs: 500, // Target latency in ms (default: 500)
-  maxLatencyMs: 2000, // Max latency before dropping GOPs (default: 2000)
-})
-
-// Consumer-driven object retrieval
-playoutBuffer.nextObject((nextObject) => {
-  if (nextObject) {
-    // Process the object (decode, render, etc.)
-    processFrame(nextObject)
-  }
-})
-
-// Check buffer status
-const status = playoutBuffer.getStatus()
-console.log(`Buffer size: ${status.bufferSize}, Running: ${status.isRunning}`)
-```
-
-**Key Features:**
-
-- **GOP-Aware**: Automatically detects and manages Group of Pictures boundaries
-- **Smart Eviction**: Drops entire GOPs when buffer is full to maintain decodable content
-- **Consumer-Driven**: Pull-based API eliminates rate guessing and provides natural backpressure
-- **Latency Management**: Automatically manages buffer size to maintain target latency
-
-### Network Telemetry
-
-The `NetworkTelemetry` class provides real-time network performance monitoring:
-
-```typescript
-import { NetworkTelemetry } from './util/telemetry'
-
-const telemetry = new NetworkTelemetry(1000) // 1-second sliding window
-
-// Report network events
-telemetry.push({
-  latency: 50, // Round-trip time in ms
-  size: 1024, // Bytes transferred
-})
-
-// Get current metrics
-console.log(`Throughput: ${telemetry.throughput} bytes/sec`)
-console.log(`Average latency: ${telemetry.latency} ms`)
-```
-
-**Use Cases:**
-
-- Adaptive bitrate streaming decisions
-- Network condition monitoring
-- Performance debugging and optimization
-- Quality of service reporting
-
-### Clock Synchronization
-
-The `ClockNormalizer` utility provides clock synchronization with a given time service:
-
-```typescript
-import { ClockNormalizer } from './util/clock_normalizer'
-
-// Get clock skew relative to a given time server
-const numSamples = 5 // default is 5
-const timeServerUrl = 'https://time.akamai.com/?ms'
-const offset = await ClockNormalizer.calculateSkew(timeServerUrl, numSamples)
-const clockNormalizer = new ClockNormalizer(timeServerUrl, offset, numSamples)
-console.log(`Local clock is ${offset}ms ahead of network time`)
-
-// Adjust local timestamps for network synchronization
-const networkTime = Date.now() - offset
-```
-
-**Features:**
-
-- **Network Time Synchronization**: Aligns local time with network time servers
-- **RTT Compensation**: Accounts for round-trip time in synchronization calculations
-- **Cached Results**: Subsequent calls return cached offset for performance
-- **Media Synchronization**: Essential for multi-source media synchronization
-
-These utilities work together to provide a robust foundation for real-time media streaming applications, handling the complex aspects of buffering, network monitoring, and time synchronization.
+DeepWiki explains the pad model, negotiation, the catalog, each built-in element, and the interfaces elements can provide.

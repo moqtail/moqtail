@@ -14,9 +14,12 @@
  * limitations under the License.
  */
 
-import { cn } from '@/lib/utils';
+import type { MOQtailVideoElement } from 'moqtail/player/component';
 import { forwardRef } from 'preact/compat';
-import { LuSun, LuPlay, LuCircleDot } from 'react-icons/lu';
+import { LuSun, LuPlay, LuCircleDot, LuLoader } from 'react-icons/lu';
+import '@/lib/videojs';
+import { cn } from '@/lib/utils';
+import type { Status } from '@/types';
 
 const GITHUB_REPO = 'moqtail/moqtail';
 
@@ -60,7 +63,7 @@ function PublishIdleCard() {
             Test source emits a live clock overlay for quick end-to-end verification
           </li>
         </ul>
-        <div className="border-t border-white/6 pt-3">
+        <div className="flex border-t border-white/6 pt-3">
           <a
             href={`https://github.com/${GITHUB_REPO}/issues`}
             target="_blank"
@@ -136,7 +139,7 @@ function WatchIdleCard() {
           </a>
           .
         </p>
-        <div className="border-t border-white/6 pt-3">
+        <div className="flex border-t border-white/6 pt-3">
           <a
             href={`https://github.com/${GITHUB_REPO}/issues`}
             target="_blank"
@@ -152,29 +155,49 @@ function WatchIdleCard() {
   );
 }
 
-export const VideoPlayer = forwardRef<
-  HTMLVideoElement,
-  {
-    hasTracks: boolean;
-    mode?: 'watch' | 'publish';
-  }
->(({ hasTracks, mode = 'watch' }, videoRef) => {
-  const showPublishIdle = mode === 'publish' && !hasTracks;
-  const showWatchIdle = mode === 'watch' && !hasTracks;
-
+function ConnectingOverlay() {
   return (
-    <main className="relative flex flex-1 flex-col items-center justify-center overflow-hidden bg-neutral-950 p-4 md:p-6">
-      <video
-        ref={videoRef}
-        controls
+    <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/60 text-neutral-400 select-none">
+      <LuLoader className="h-6 w-6 animate-spin" aria-hidden="true" />
+      <p className="text-xs font-medium">Connecting to relay…</p>
+    </div>
+  );
+}
+
+/** The watch area: Video.js with `<moqtail-video>` as its media, or the idle cards. */
+export const VideoPlayer = forwardRef<
+  MOQtailVideoElement,
+  { status: Status; mode?: 'watch' | 'publish' }
+>(({ status, mode = 'watch' }, ref) => {
+  if (mode === 'publish') {
+    return (
+      <main className="relative flex flex-1 flex-col items-center justify-center overflow-hidden bg-neutral-950 p-4 md:p-6">
+        <PublishIdleCard />
+      </main>
+    );
+  }
+  const active = status !== 'idle' && status !== 'destroyed';
+  return (
+    <main
+      className="relative flex min-h-0 flex-1 flex-col items-center justify-center overflow-hidden bg-neutral-950 p-4 md:p-6"
+      style={{ containerType: 'size' }}
+    >
+      <div
         className={cn(
-          'w-full overflow-hidden rounded-xl bg-black shadow-2xl shadow-black/60 transition-opacity duration-300',
-          hasTracks && mode === 'watch' ? 'opacity-100' : 'pointer-events-none opacity-0',
+          'relative aspect-video overflow-hidden rounded-xl bg-black shadow-2xl shadow-black/60 transition-opacity duration-300',
+          active ? 'opacity-100' : 'pointer-events-none opacity-0',
         )}
-        style={{ aspectRatio: '16/9' }}
-      />
-      {showPublishIdle && <PublishIdleCard />}
-      {showWatchIdle && <WatchIdleCard />}
+        // As wide as fits, without growing taller than the area; the skin's corners match ours
+        style={{ width: 'min(100cqw, 100cqh * 16 / 9)', '--media-border-radius': '0.75rem' }}
+      >
+        <moqtail-player>
+          <moqtail-skin className="block h-full w-full">
+            <moqtail-video ref={ref} className="block h-full w-full" playsinline autoplay />
+          </moqtail-skin>
+        </moqtail-player>
+        {status === 'connecting' && <ConnectingOverlay />}
+      </div>
+      {!active && <WatchIdleCard />}
     </main>
   );
 });

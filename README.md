@@ -36,15 +36,29 @@ MOQtail is a draft 22-compliant MOQT toolkit for building publisher, subscriber,
 
 ### moqtail-ts
 
-The TypeScript library targets browser and WebTransport-based MoQ applications.
+The TypeScript library includes the MOQT client and the player: the `<moqtail-video>` web component and the Player API.
 
-Highlights:
+**`<moqtail-video>`**
 
-- Type-safe application APIs
-- WebTransport integration
-- Client-side development workflow with the demo app
+```html
+<script type="module">
+  defineMOQtailVideo()
+</script>
 
-Library documentation: [libs/moqtail-ts/README.md](libs/moqtail-ts/README.md)
+<moqtail-video src="moqt://relay.moqtail.dev#msf:moqtail-ch07--catalog" autoplay muted playsinline></moqtail-video>
+```
+
+**Player API**
+
+```ts
+const player = new MOQtailPlayer({ plugins: [liveBuffer()] })
+  .source('moqt://relay.moqtail.dev#msf:moqtail-ch07_vod--catalog')
+  .sink(video)
+
+await player.play()
+```
+
+The client, events, elements and plugins are in [libs/moqtail-ts/README.md](libs/moqtail-ts/README.md).
 
 ### moqtail-rs
 

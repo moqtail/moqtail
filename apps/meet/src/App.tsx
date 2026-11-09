@@ -240,18 +240,18 @@ export default function App() {
     setScreen('connecting');
 
     try {
-      const client = await createMOQtailClient(relayUrl, {
-        onMessageSent: msg => logControlMessage(msg, 'sent'),
-        onMessageReceived: msg => logControlMessage(msg, 'received'),
-        onDataEvent: event => dataStats.add(event),
+      const client = await createMOQtailClient(relayUrl, c => {
+        c.on('messagesent', msg => logControlMessage(msg, 'sent'));
+        c.on('messagereceived', msg => logControlMessage(msg, 'received'));
+        c.on('dataevent', event => dataStats.add(event));
       });
       moqClientRef.current = client;
 
       // Route incoming publish streams to the correct peer's decode worker
-      client.onPeerPublish = (msg, stream) => {
+      client.on('peerpublish', (msg, stream) => {
         const nsPath = msg.fullTrackName.namespace.toUtf8Path();
         const peerUsername = nsPath.startsWith(nsPrefix) ? nsPath.slice(nsPrefix.length) : null;
-        console.log('onPeerPublish | peerUsername: %s', peerUsername, nsPath);
+        console.log('peerpublish | peerUsername: %s', peerUsername, nsPath);
         if (!peerUsername) return;
 
         const worker = peerWorkersRef.current.get(peerUsername);
@@ -282,7 +282,7 @@ export default function App() {
         } else if (trackName === 'audio') {
           pipeStreamToCanvas(stream, 'moq-audio', worker);
         }
-      };
+      });
 
       setScreen('main');
 

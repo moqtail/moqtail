@@ -14,11 +14,9 @@
  * limitations under the License.
  */
 
-import { ProtocolViolationError } from '@/model/error'
-import { PublishDone } from '../../model/control'
+import { SubscribeRequest } from '@/client/request/subscribe'
+import { PublishDone } from '@/model/control'
 import { RequestStreamMessageHandler } from './handler'
-import { SubscribeRequest } from '../request/subscribe'
-import { logger } from '../../util/logger'
 
 export const handlerPublishDone: RequestStreamMessageHandler<PublishDone> = async (
   client,
@@ -26,13 +24,12 @@ export const handlerPublishDone: RequestStreamMessageHandler<PublishDone> = asyn
   _stream,
   openingRequestId,
 ) => {
-  if (client.onPeerPublishDone) {
-    client.onPeerPublishDone(msg, openingRequestId)
-  }
+  client.emit('peerpublishdone', msg, openingRequestId)
   //TODO: Check for all kinds of subscriptions, not jus tthe ones initiated with subscribe messages
   const request = client.requests.get(openingRequestId)
   if (request instanceof SubscribeRequest) {
     request.expectedStreams = msg.streamCount
+    request.publishDone = msg
     // The streams it accounts for may all have arrived already, in which case this
     // message is the last thing the subscription was waiting for.
     client.completeSubscription(request)

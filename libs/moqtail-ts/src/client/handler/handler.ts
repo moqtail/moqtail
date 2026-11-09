@@ -48,10 +48,10 @@ import {
   RequestError,
   SubscribeNamespace,
   SubscribeTracks,
-} from '../../model/control'
-import { MOQtailClient } from '../client'
-import { ControlMessage } from '../../model/control'
-import { RequestStream } from '../request_stream'
+} from '@/model/control'
+import { MOQtailClient } from '@/client/client'
+import { ControlMessage } from '@/model/control'
+import { RequestStream } from '@/client/request_stream'
 
 /** A message on the shared control stream. Nothing here has a stream to reply on. */
 export type ControlMessageHandler<T> = (client: MOQtailClient, msg: T) => Promise<void>
@@ -71,7 +71,7 @@ export type RequestStreamMessageHandler<T> = (
 
 /**
  * The control stream carries SETUP and GOAWAY, nothing else. SETUP is
- * consumed by the handshake in {@link MOQtailClient.new}, so GOAWAY is all that reaches
+ * consumed by the handshake in {@link MOQtailClient.init}, so GOAWAY is all that reaches
  * the read loop. Every request type has moved to its own bidi stream — see
  * {@link getHandlerForRequestStreamMessage}.
  */

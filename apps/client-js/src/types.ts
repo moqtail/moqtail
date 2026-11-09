@@ -14,16 +14,23 @@
  * limitations under the License.
  */
 
-import type { CMSF } from 'moqtail';
+import type { CatalogTrack, PlayerState } from 'moqtail/player';
 
-export type Track = CMSF['tracks'][number];
-export type Status = 'idle' | 'connecting' | 'ready' | 'restarting' | 'playing' | 'error';
+export type Track = CatalogTrack;
+export type Status = PlayerState;
+
+/** Player features the sidebar toggles; each change reloads the player. */
+export interface Features {
+  ssts: boolean;
+  switchFrom: boolean;
+}
 
 export interface PresetNamespace {
   name: string;
   label: string;
   videoTracks: number;
   audioTracks: number;
+  features: string[];
 }
 
 export interface PresetRelay {

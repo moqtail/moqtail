@@ -7,6 +7,9 @@
       "content": "Two parallel implementations of the same protocol exist side by side: moqtail-rs (Rust, libs/moqtail-rs, used by the relay and native client) and moqtail-ts (TypeScript, libs/moqtail-ts, npm package 'moqtail', used by the browser client and meet demo app). main tracks Draft 22 of the IETF MOQ Transport spec (older drafts live on the draft-14, draft-16, and draft-18 branches); conformance data is under dev/conformance/draft22/. When documenting protocol concepts, prefer linking both implementations rather than treating one as canonical."
     },
     {
+      "content": "libs/moqtail-ts has two halves: the MOQT client (MOQtailClient, entries 'moqtail', 'moqtail/client', 'moqtail/model', 'moqtail/util') and an MSF/CMSF player for the browser (entries 'moqtail/player' and 'moqtail/player/component', the <moqtail-video> web component). apps/client-js (player.moqtail.dev) plays through <moqtail-video> inside a Video.js v10 skin."
+    },
+    {
       "content": "Versioning uses changesets (.changeset directory); the Rust packages moqtail-rs, relay, client, and moqtail-ssts are linked. Libraries are published to npm and crates.io. The relay server is published as a container image to ghcr.io/moqtail/relay via the relay.yml workflow. CI is GitHub Actions with separate workflows for Rust (rust.yml), JS (js.yml), misc checks (misc.yml), player checks (player.yml), meet checks (meet.yml), relay checks and container image building (relay.yml), and releases to crates.io/npm (release-rust.yml, release.yml)."
     }
   ],
@@ -45,7 +48,7 @@
       "purpose": "Section landing page documenting the core protocol implementation libraries shared across the codebase, in both Rust and TypeScript.",
       "page_notes": [
         {
-          "content": "Acts as a parent/index page linking to moqtail-rs, Control Stream Handler, Data Stream Handler, moqtail-ts, Client API, and Playout Buffer child pages. Also mention libs/moqtail-ssts (switching-set support used by the relay's apps/relay/src/server/ssts module)."
+          "content": "Acts as a parent/index page linking to moqtail-rs, Control Stream Handler, Data Stream Handler, moqtail-ts, Client API, Player, Web Component, Elements and Extensions, Buffer and ABR Controllers, and Playout Buffer child pages. Also mention libs/moqtail-ssts (switching-set support used by the relay's apps/relay/src/server/ssts module)."
         }
       ]
     },
@@ -81,11 +84,11 @@
     },
     {
       "title": "moqtail-ts (TypeScript Library)",
-      "purpose": "Detailed documentation of the TypeScript client library: package structure, build system (bundler/tsconfig), browser/WebTransport integration, and how it's consumed by client-js and the meet app.",
+      "purpose": "Detailed documentation of the TypeScript library: the MOQT client and the MSF/CMSF player, package structure and entries, build system (tsdown, api-extractor), browser/WebTransport integration, and how it's consumed by client-js and the meet app.",
       "parent": "Protocol Libraries",
       "page_notes": [
         {
-          "content": "Start from libs/moqtail-ts/README.md (npm package name 'moqtail'). Document the package exports, build tooling, and browser compatibility (WebTransport requirement); verify usage examples against the current README and source."
+          "content": "Start from libs/moqtail-ts/README.md (npm package name 'moqtail'). Entries, from libs/moqtail-ts/package.json exports: 'moqtail' (client, model and util, no player), 'moqtail/client', 'moqtail/model', 'moqtail/util', 'moqtail/player' (src/player/index.ts) and 'moqtail/player/component' (src/player/component/index.ts). Built with tsdown (tsdown.config.ts) and checked with api-extractor. Valibot is the only runtime dependency; custom-media-element and media-tracks are optional peer dependencies used by the web component. Browsers: Chrome and Safari 26.4+ (WebTransport). Targets MOQT draft-22 and the MSF and CMSF editor's drafts. Verify usage examples against the current README and source."
         }
       ]
     },
@@ -95,17 +98,57 @@
       "parent": "Protocol Libraries",
       "page_notes": [
         {
-          "content": "Verify public API examples and exact method signatures against libs/moqtail-ts/src and libs/moqtail-ts/README.md, and document error handling and the relationship to the Playout Buffer for incoming subscriptions."
+          "content": "Verify public API examples and exact method signatures against libs/moqtail-ts/src/client and libs/moqtail-ts/README.md. Cover `new MOQtailClient(options)` (no I/O) and `await client.init()` (connects); events through `client.on(event, listener)` / `client.off()`, with any number of listeners (ClientEvents in src/client/types.ts, e.g. messagesent, messagereceived, dataevent, sessionterminated, orderinggap); `client.subscribe` returning `{ requestId, subscribeOk, stream, done }`, where `done` resolves with the PUBLISH_DONE that ended it; `client.fetch` returning `{ requestId, fetchOk, stream }`; and the per-request object ordering option (`ordering` on the client, subscribe and fetch options, src/client/ordering.ts). Document error handling through RequestError."
+        }
+      ]
+    },
+    {
+      "title": "Player",
+      "purpose": "Documentation of MOQtailPlayer, the MSF/CMSF player in moqtail-ts: building a chain from a moqt:// URL, its state and events, errors, and the built-in catalog, timeline, CMAF source and MSE sink elements.",
+      "parent": "Protocol Libraries",
+      "page_notes": [
+        {
+          "content": "MOQtailPlayer is libs/moqtail-ts/src/player/player.ts. The chain is built with `.source(uri)`, an optional `.transform(element)`, and `.sink(video)` (the MSE sink), then `init()`, `play()`, `pause()`, `seek()`, `destroy()`. State machine in src/player/state.ts, events in PlayerEvents (statechange, error, warning, catalog, renditionchange, streamtypechange, reconnecting, ...). PlayerError and its codes and categories are in src/player/error.ts. MSF URLs (`moqt://...#msf:<namespace>--<track>`) are parsed by src/player/msf_url.ts. Players on the same origin share one client (src/player/client_slot.ts). Built-in elements: catalog parsing with Valibot (src/player/elements/catalog/), the media timeline (src/player/elements/mediatimeline/) and SAP timeline (src/player/elements/saptimeline/), the CMAF source (src/player/elements/cmaf/) and the MSE sink (src/player/elements/mse/)."
+        }
+      ]
+    },
+    {
+      "title": "Web Component",
+      "purpose": "Documentation of <moqtail-video>, the video-backed custom element that plays a moqt:// URL and implements HTMLMediaElement and the media-ui-extensions IDL.",
+      "parent": "Protocol Libraries",
+      "page_notes": [
+        {
+          "content": "Code: libs/moqtail-ts/src/player/component/ (element.ts, renditions.ts; `defineMOQtailVideo()` in index.ts). Built on custom-media-element and media-tracks. Document the attributes (`src`, `switch-from`, plus the usual video attributes such as autoplay and preload), the `config` property (MOQtailPlayerOptions, read on each load), the `player` property, the media-ui-extensions additions (streamType, liveEdgeStart, targetLiveWindow, video renditions), and that it installs the default plugins: `liveBuffer()` is the only plugin when `config.plugins` is empty or unset; a non-empty list is taken as written, so leaving `liveBuffer()` out disables it. apps/client-js/src/lib/videojs.ts shows the Video.js v10 integration."
+        }
+      ]
+    },
+    {
+      "title": "Elements and Extensions",
+      "purpose": "Documentation of the player's element model: element definitions, pads and packets, negotiation and probing, element interfaces, and extensions that bundle elements with setup options.",
+      "parent": "Protocol Libraries",
+      "page_notes": [
+        {
+          "content": "Code: libs/moqtail-ts/src/player/element/ (define.ts for `defineElement`, base.ts for SourceElement / TransformElement / SinkElement, pad.ts for pads, items, events and signals, negotiation.ts for probing and capability matching, chain.ts, context.ts, interfaces.ts for MEDIA_SOURCE and MEDIA_SINK). Probes return a boolean; among those that accept, the lower `priority` wins, then registered elements, plugins' in plugin order, then built-ins. Custom elements are added with `player.registerElement(definition)`. Plugins are created with `definePlugin` (src/player/plugin.ts) and passed in `opts.plugins`: each has `init(config)`, `setup` (adds setup parameters), `negotiated` (checks SERVER_SETUP; a rejected plugin contributes nothing), `priority`, and `features(ctx)`: elements, switch sources and a buffer controller. `ssts()` (src/player/plugins/ssts/) offers sender-side track switching at setup; the catalog probes the active switch sources with each media set's first track and loads the first that accepts (SstsSource) with the probed element as its child."
+        }
+      ]
+    },
+    {
+      "title": "Buffer and ABR Controllers",
+      "purpose": "Documentation of the pluggable controllers that steer playback: the BufferController interface and the default latency/buffer controller, and the planned ABR controller.",
+      "parent": "Protocol Libraries",
+      "page_notes": [
+        {
+          "content": "Code: libs/moqtail-ts/src/player/plugins/buffer/ (index.ts for the `liveBuffer()` plugin, live.ts for its controller) and src/player/plugin.ts for the BufferController interface. A buffer controller is a plugin feature: the first active plugin (by priority, then list order) offering one is attached to the media sink while a ready stream is live. `liveBuffer` has priority Infinity, so any other buffer plugin wins. MOQtailPlayer installs none by default, while <moqtail-video> installs `liveBuffer()`. An ABR controller isn't implemented yet: rendition switching is manual (or done by the relay under SSTS)."
         }
       ]
     },
     {
       "title": "Playout Buffer",
-      "purpose": "Documentation of the client-side buffering and timing system that smooths out network jitter for consistent media playback, including latency/target-buffer configuration.",
+      "purpose": "Documentation of the Meet app's playout buffer, which smooths out network jitter for WebCodecs playback.",
       "parent": "Protocol Libraries",
       "page_notes": [
         {
-          "content": "The main playout buffer implementation lives at apps/meet/src/lib/playout_buffer.ts (used by the Meet App), with a buffer at apps/client-js/src/lib/buffer.ts (used by the browser client). Document configurable latency targets, how it interacts with the Client API's subscribe path, and how it hands frames off to the media pipeline (WebCodecs decoding)."
+          "content": "The playout buffer lives at apps/meet/src/lib/playout_buffer.ts and is used by the Meet App only. Document its latency targets, how it reads from the Client API's subscribe stream, and how it hands frames to WebCodecs decoding. The MSF player doesn't use it; for the player's latency and buffer control see Buffer and ABR Controllers."
         }
       ]
     },
@@ -219,11 +262,11 @@
     },
     {
       "title": "Browser Client (client-js)",
-      "purpose": "Documentation of the Preact-based browser client: UI components, the media pipeline, video decoding, and WebTransport integration with the relay.",
+      "purpose": "Documentation of the Preact-based browser client (player.moqtail.dev): playback through <moqtail-video> in a Video.js v10 skin, the opt-in Advanced panel, and the CMAF publisher.",
       "parent": "Client Applications",
       "page_notes": [
         {
-          "content": "Located at apps/client-js/. Document the UI component tree (including Header, Sidebar, and VideoPlayer), how moqtail-ts's Client API and buffer are wired into the UI, and the video decode path (WebCodecs)."
+          "content": "Located at apps/client-js/. Playback goes through the library's <moqtail-video> inside a Video.js v10 skin (src/lib/videojs.ts, src/components/VideoPlayer.tsx); there's an opt-in Advanced panel (src/components/Advanced.tsx). Document the UI component tree (Header, Sidebar, VideoPlayer, PublisherPanel, Advanced). WebCodecs is used only on the publisher side, to encode before CMAF muxing (src/lib/cmaf-muxer.ts); the publisher (src/lib/publisher.ts) writes an MSF catalog."
         }
       ]
     },
@@ -272,7 +315,7 @@
       "parent": "Development Guide",
       "page_notes": [
         {
-          "content": "Document npm test scripts and Vitest configuration in libs/moqtail-ts/, `cargo test` usage per crate, the moqtail-rs conformance module checked against dev/conformance data, and scripts/conformance-test.sh / scripts/perf-test.sh. Cross-reference .github/workflows/rust.yml and js.yml (badged in the README as 'Rust Checks' and 'JavaScript Checks') for how tests run in CI, including any relay-vs-client interop testing (scripts/test-client.sh)."
+          "content": "Document npm test scripts and Vitest configuration in libs/moqtail-ts/, `cargo test` usage per crate, the moqtail-rs conformance module checked against dev/conformance data, and scripts/conformance-test.sh / scripts/perf-test.sh. Cross-reference .github/workflows/rust.yml and js.yml (badged in the README as 'Rust Checks' and 'JavaScript Checks') for how tests run in CI, including any relay-vs-client interop testing (scripts/test-client.sh). moqtail-ts also has real-browser tests (libs/moqtail-ts/vitest.browser.config.ts, test/browser/), run with `npm run test:browser` in headless Chrome through Playwright against the test sources on relay.moqtail.dev; Safari is tested manually before release."
         }
       ]
     },

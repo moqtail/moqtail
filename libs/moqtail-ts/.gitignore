@@ -31,3 +31,6 @@ Thumbs.db
 
 # Package
 *.tgz
+
+# Vitest browser mode failure screenshots
+.vitest/

@@ -14,21 +14,17 @@
  * limitations under the License.
  */
 
-import { ControlMessage } from '../model/control/control_message'
-import { FrozenByteBuffer, ByteBuffer } from '../model/common/byte_buffer'
-import { NotEnoughBytesError, TerminationError, TimeoutError } from '../model/error/error'
-import { TerminationCode } from '../model/error/constant'
+import { ControlMessage } from '@/model/control/control_message'
+import { FrozenByteBuffer, ByteBuffer } from '@/model/common/byte_buffer'
+import { NotEnoughBytesError, TerminationError, TimeoutError } from '@/model/error/error'
+import { TerminationCode } from '@/model/error/constant'
 import { SetupOptions, Setup } from '@/model'
-import { logger } from '../util/logger'
-
-function withTimeout<T>(promise: Promise<T>, ms?: number, errorMsg?: string): Promise<T> {
-  if (ms === undefined) return promise
-  let timeoutId: ReturnType<typeof setTimeout>
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timeoutId = setTimeout(() => reject(new TimeoutError(errorMsg ?? `Timeout after ${ms}ms`)), ms)
-  })
-  return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timeoutId))
-}
+import type { Emitter } from '@/util/emitter'
+import { errorMessage } from '@/util/error'
+import { logger } from '@/util/logger'
+import type { ClientEvents } from './types'
+import { isSessionClosed } from '@/client/util/stream_reset'
+import { withTimeout } from '@/client/util/timeout'
 
 /**
  * Send half of the control plane: a unidirectional stream this endpoint opens and
@@ -36,11 +32,12 @@ function withTimeout<T>(promise: Promise<T>, ms?: number, errorMsg?: string): Pr
  */
 export class ControlSendStream {
   #writer: WritableStreamDefaultWriter<Uint8Array>
-  onMessageSent?: (msg: ControlMessage) => void
+  readonly #events: Emitter<ClientEvents> | undefined
 
-  constructor(writeStream: WritableStream<Uint8Array>, onMessageSent?: (msg: ControlMessage) => void) {
+  /** @param events - Receives `messagesent` for every message written. */
+  constructor(writeStream: WritableStream<Uint8Array>, events?: Emitter<ClientEvents>) {
     this.#writer = writeStream.getWriter()
-    if (onMessageSent) this.onMessageSent = onMessageSent
+    this.#events = events
   }
 
   async send(message: ControlMessage): Promise<void> {
@@ -52,13 +49,13 @@ export class ControlSendStream {
       logger.debug('control_stream', `send: writer ready, writing — ${msgName}`)
       await this.#writer.write(serializedMessage.toUint8Array())
       logger.debug('control_stream', `send: write complete — ${msgName}`)
-      if (this.onMessageSent) this.onMessageSent(message)
+      this.#events?.emit('messagesent', message)
     } catch (error: any) {
-      const errorMessage = error instanceof Error ? error.message : String(error)
-      logger.error('control_stream', `send: failed to write ${msgName} — ${errorMessage}`)
+      const reason = errorMessage(error)
+      logger.error('control_stream', `send: failed to write ${msgName} — ${reason}`)
       await this.close()
       throw new TerminationError(
-        `ControlStream.send: Failed to write message: ${errorMessage}`,
+        `ControlStream.send: Failed to write message: ${reason}`,
         TerminationCode.INTERNAL_ERROR,
       )
     }
@@ -80,17 +77,18 @@ export class ControlRecvStream {
   #expectedPayloadLength: number | null = null
   #partialMessageTimeoutMs: number | undefined
   #reader: ReadableStreamDefaultReader<Uint8Array>
-  onMessageReceived?: (msg: ControlMessage) => void
+  readonly #events: Emitter<ClientEvents> | undefined
 
+  /** @param events - Receives `messagereceived` for every message decoded. */
   constructor(
     readStream: ReadableStream<Uint8Array>,
     partialMessageTimeoutMs?: number,
-    onMessageReceived?: (msg: ControlMessage) => void,
+    events?: Emitter<ClientEvents>,
   ) {
     this.#receiveBuffer = new ByteBuffer()
     this.#partialMessageTimeoutMs = partialMessageTimeoutMs
     this.#reader = readStream.getReader()
-    if (onMessageReceived) this.onMessageReceived = onMessageReceived
+    this.#events = events
     this.stream = new ReadableStream<ControlMessage>({
       start: (controller) => this.#ingestLoop(controller),
       cancel: () => this.close(),
@@ -132,7 +130,7 @@ export class ControlRecvStream {
             const msg = ControlMessage.deserialize(new FrozenByteBuffer(messageBytes))
             logger.debug('control_stream', `ingestLoop: deserialized ${msg.constructor.name} (${totalMessageSize}B)`)
             controller.enqueue(msg)
-            if (this.onMessageReceived) this.onMessageReceived(msg)
+            this.#events?.emit('messagereceived', msg)
             continue
           }
           this.#expectedPayloadLength = payloadLength
@@ -184,10 +182,8 @@ export class ControlRecvStream {
         }
       }
     } catch (error) {
-      logger.error(
-        'control_stream',
-        `ingestLoop: unexpected error — ${error instanceof Error ? error.message : String(error)}`,
-      )
+      if (!isSessionClosed(error))
+        logger.error('control_stream', `ingestLoop: unexpected error — ${errorMessage(error)}`)
       controller.error(error)
       await this.close()
     } finally {

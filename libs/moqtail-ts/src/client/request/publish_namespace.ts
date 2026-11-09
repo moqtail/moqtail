@@ -14,11 +14,12 @@
  * limitations under the License.
  */
 
-import { RequestOk, RequestError } from '../../model/control'
-import { RequestErrorCode } from '../../model/control/constant'
-import { PublishNamespace } from '../../model/control/publish_namespace'
-import { ReasonPhrase } from '../../model/common/reason_phrase'
-import { logger } from '../../util/logger'
+import { RequestOk, RequestError } from '@/model/control'
+import { RequestErrorCode } from '@/model/control/constant'
+import { PublishNamespace } from '@/model/control/publish_namespace'
+import { ReasonPhrase } from '@/model/common/reason_phrase'
+import { logger } from '@/util/logger'
+import { isSessionClosed } from '@/client/util/stream_reset'
 
 // TODO: add publish namespace done
 export class PublishNamespaceRequest implements PromiseLike<RequestOk | RequestError> {
@@ -54,7 +55,8 @@ export class PublishNamespaceRequest implements PromiseLike<RequestOk | RequestE
   }
 
   public reject(reason?: any): void {
-    logger.error('request/publish_namespace', `rejected requestId=${this.requestId}`, reason)
+    if (!isSessionClosed(reason))
+      logger.error('request/publish_namespace', `rejected requestId=${this.requestId}`, reason)
     this._reject(reason)
   }
 

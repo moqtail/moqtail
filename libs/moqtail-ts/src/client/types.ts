@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import {
+import type {
   EndOfRangeKind,
   FullTrackName,
   GroupOrder,
@@ -25,15 +25,31 @@ import {
   ControlMessage,
   Datagram,
   SwitchMode,
+  GoAway,
+  PublishNamespace,
+  Publish,
+  PublishDone,
+  PublishSkipped,
+  SubscribeNamespace,
+  SubscribeTracks,
+  SubscribeOk,
+  FetchOk,
+  Tuple,
+  MoqtObject,
+  SubgroupObject,
+  SubgroupHeader,
+  FetchObject,
+  FetchHeader,
 } from '@/model'
-import { PublishNamespaceRequest } from './request/publish_namespace'
-import { FetchRequest } from './request/fetch'
-import { SubscribeRequest } from './request/subscribe'
-import { SubscribeNamespaceRequest } from './request/subscribe_namespace'
-import { MOQtailClient } from './client'
-import { PublishRequest } from './request/publish'
-import { TrackStatusRequest } from './request/track_status'
-import { DataEventObserver } from './data_event'
+import type { MOQtailClient } from './client'
+import type { DataEvent } from './data_event'
+import type { FetchRequest } from '@/client/request/fetch'
+import type { PublishRequest } from '@/client/request/publish'
+import type { PublishNamespaceRequest } from '@/client/request/publish_namespace'
+import type { SubscribeRequest } from '@/client/request/subscribe'
+import type { SubscribeNamespaceRequest } from '@/client/request/subscribe_namespace'
+import type { TrackStatusRequest } from '@/client/request/track_status'
+
 /**
  * Discriminated union of every in‑flight MOQ‑tail control request tracked by the {@link MOQtailClient}.
  *
@@ -49,8 +65,7 @@ import { DataEventObserver } from './data_event'
  * - {@link SubscribeNamespaceRequest} – pending SUBSCRIBE_NAMESPACE sequence.
  * - {@link FetchRequest} – pending FETCH handshake producing a data stream.
  * - {@link SubscribeRequest} – pending SUBSCRIBE producing subgroup object streams.
- 
-*
+ *
  * @example Looking up a request by id
  * ```ts
  * function isActive(requests: Map<bigint, MOQtailRequest>, id: bigint) {
@@ -100,6 +115,12 @@ export const DEFAULT_TRACK_ALIAS_RESOLUTION_TIMEOUT_MS = 2000
 export const DEFAULT_SWITCH_DRAIN_TIMEOUT_MS = 2000
 
 /**
+ * Default for {@link MOQtailClientOptions.fillOpenTimeoutMs}: how long after SUBSCRIBE_OK
+ * a fill fetch stream may take to open before ordering stops waiting for it.
+ */
+export const DEFAULT_FILL_OPEN_TIMEOUT_MS = 1000
+
+/**
  * @public
  * The MAX_FILTER_RANGES a client advertises when its setup options set none: how
  * many Range Filter ranges it applies, in total, for one subscription or fetch.
@@ -107,30 +128,19 @@ export const DEFAULT_SWITCH_DRAIN_TIMEOUT_MS = 2000
 export const DEFAULT_MAX_FILTER_RANGES = 32n
 
 /**
- * Options for {@link MOQtailClient.new} controlling connection target, protocol negotiation, timeouts,
- * and lifecycle callbacks.
+ * Options for the {@link MOQtailClient} constructor: connection target, protocol
+ * negotiation, and timeouts. Nothing happens on the network until
+ * {@link MOQtailClient.init}.
  *
- * @example Minimal
+ * @example
  * ```ts
- * const opts: MOQtailClientOptions = {
- *   url: 'https://relay.example.com/moq',
- *   supportedVersions: [0xff00000b]
- * }
- * const client = await MOQtailClient.new(opts)
- * ```
- * @example With callbacks & timeouts
- * ```ts
- * const client = await MOQtailClient.new({
+ * const client = new MOQtailClient({
  *   url: relayUrl,
- *   supportedVersions: [0xff00000b],
  *   dataStreamTimeoutMs: 5000,
  *   controlStreamTimeoutMs: 1500,
- *   callbacks: {
- *     onMessageSent: m => logOutbound(m),
- *     onMessageReceived: m => logInbound(m),
- *     onSessionTerminated: r => console.warn('terminated', r)
- *   }
  * })
+ * client.on('sessionterminated', (r) => console.warn('terminated', r))
+ * await client.init()
  * ```
  */
 export type MOQtailClientOptions = {
@@ -156,24 +166,142 @@ export type MOQtailClientOptions = {
    * {@link DEFAULT_SWITCH_DRAIN_TIMEOUT_MS}.
    */
   switchDrainTimeoutMs?: number
+  /**
+   * How long after SUBSCRIBE_OK a fill fetch stream may take to open before ordering
+   * stops waiting for it, in milliseconds. Defaults to {@link DEFAULT_FILL_OPEN_TIMEOUT_MS}.
+   *
+   * A fill that opens later still orders against what is held, but its objects at or
+   * before what was already released come late (`flush`) or are dropped (`drop`), and no
+   * `orderinggap` reports them. Raise it on paths whose RTT nears it.
+   */
+  fillOpenTimeoutMs?: number
   /** If true, enables datagram support for the session. */
   enableDatagrams?: boolean
-  /** callbacks for observability and logging purposes: */
-  callbacks?: {
-    /** Called after a control message is successfully written to the {@link ControlStream}. */
-    onMessageSent?: (msg: ControlMessage) => void
-    /** Called for each incoming control message before protocol handling. */
-    onMessageReceived?: (msg: ControlMessage) => void
-    /** Fired once when the session ends (normal or error). Receives the reason passed to {@link MOQtailClient.disconnect | disconnect}. */
-    onSessionTerminated?: (reason?: unknown) => void
-    /** Invoked for each decoded datagram object/status arriving. */
-    onDatagramReceived?: (data: Datagram) => void
-    /** Invoked after enqueuing each outbound datagram object/status. */
-    onDatagramSent?: (data: Datagram) => void
-    /** Invoked for each data stream's header, each of its objects, and its end. See {@link MOQtailClient.onDataEvent}. */
-    onDataEvent?: DataEventObserver
-  }
+  /** The default {@link ObjectOrdering} of the session's subscriptions and fetches. Without one, objects pass through unordered. */
+  ordering?: ObjectOrdering | 'none'
 }
+
+/**
+ * @public
+ * Releases a request's objects in location order, however the publisher maps them to
+ * streams or datagrams. An object goes out once its predecessor has; IDs are taken to
+ * increase by 1 unless a Prior Group ID Gap or Prior Object ID Gap says otherwise. An
+ * object whose predecessor is missing waits within `window`, then the client releases
+ * what it holds up to it and reports the skipped locations with `orderinggap`.
+ * Requests with descending group order are left unordered.
+ */
+export interface ObjectOrdering {
+  /** How long an object may wait, and how many may be held, before the client stops waiting. */
+  window: { durationMs?: number; objects?: number }
+  /** What happens to an object that arrives after the client stopped waiting for it: released anyway (default) or dropped. */
+  onWindowExceeded?: 'flush' | 'drop'
+  /** Object IDs may skip without a Prior Object ID Gap. */
+  sparseObjectIds?: boolean
+  /** Group IDs may skip without a Prior Group ID Gap. */
+  sparseGroupIds?: boolean
+}
+
+/**
+ * @public
+ * Every event a {@link MOQtailClient} emits, keyed by name, with the listener signature
+ * each one calls. Attach with `on()`.
+ */
+export interface ClientEvents {
+  /** A GOAWAY arrived: the session is winding down, or a request is moving to a new session. */
+  goaway: (msg: GoAway) => void
+  /** The session ended, normally or on error. Fires once, with the reason given to `disconnect`. */
+  sessionterminated: (reason?: unknown) => void
+  /** A control message was written, on the control stream or a request stream. */
+  messagesent: (msg: ControlMessage) => void
+  /** A control message arrived, before it is handled. */
+  messagereceived: (msg: ControlMessage) => void
+  /** A data stream header or object was decoded. */
+  datareceived: (data: SubgroupObject | SubgroupHeader | FetchObject | FetchHeader) => void
+  /** A data stream header or object was written. */
+  datasent: (data: SubgroupObject | SubgroupHeader | FetchObject | FetchHeader) => void
+  /** A data stream opened, carried an object (identity and size only), or ended. */
+  dataevent: (event: DataEvent) => void
+  /** A datagram arrived. */
+  datagramreceived: (data: Datagram) => void
+  /** A datagram was written. */
+  datagramsent: (data: Datagram) => void
+  /**
+   * An ordered request stopped waiting for expected locations: from `from` (inclusive) to
+   * `to` (exclusive), the next object it released. See {@link ObjectOrdering}.
+   */
+  orderinggap: (requestId: bigint, from: Location, to: Location) => void
+  /** A PUBLISH_NAMESPACE arrived. */
+  namespacepublished: (msg: PublishNamespace) => void
+  /**
+   * The peer moved the Forward State of a track this side publishes, in its PUBLISH_OK
+   * or a later REQUEST_UPDATE. `requestId` is the one {@link MOQtailClient.publish}
+   * returned. A publication that declared FORWARD=0 sends nothing until this reports `true`.
+   */
+  forwardstatechange: (requestId: bigint, forward: boolean) => void
+  /**
+   * The peer pushed a track. Only one reader can lock `stream`, so listeners check the
+   * track first and only the one that wants it reads it.
+   */
+  peerpublish: (msg: Publish, stream: ReadableStream<MoqtObject>) => void
+  /**
+   * A PUBLISH_DONE arrived. `requestId` is the request its stream opened: for a pushed
+   * track, the `requestId` of the {@link Publish} from `peerpublish`.
+   */
+  peerpublishdone: (msg: PublishDone, requestId: bigint) => void
+  /**
+   * The peer has a track matching a {@link MOQtailClient.subscribeTracks} prefix but no
+   * stream to send its PUBLISH on yet (§10.20). `prefix` is the subscribed prefix.
+   */
+  peerpublishskipped: (prefix: Tuple, msg: PublishSkipped) => void
+  /** A SUBSCRIBE_NAMESPACE arrived. */
+  peersubscribenamespace: (msg: SubscribeNamespace) => void
+  /**
+   * A SUBSCRIBE_TRACKS arrived. The PUBLISH sent for each matching track states the
+   * request's settings from `MessageParameter.publishParametersFor(msg.parameters)`, and
+   * goes without Track Properties when `MessageParameter.includesProperties(msg.parameters)`
+   * is false.
+   */
+  peersubscribetracks: (msg: SubscribeTracks) => void
+  /** A NAMESPACE arrived on a SUBSCRIBE_NAMESPACE stream. */
+  peernamespace: (prefix: Tuple, suffix: Tuple) => void
+  /** A NAMESPACE_DONE arrived on a SUBSCRIBE_NAMESPACE stream. */
+  peernamespacedone: (prefix: Tuple, suffix: Tuple) => void
+}
+
+/**
+ * @public
+ * What {@link MOQtailClient.subscribe} returns when the subscription is accepted.
+ */
+export interface SubscribeResult {
+  requestId: bigint
+  /** The SUBSCRIBE_OK: track alias, parameters, and track properties. */
+  subscribeOk: SubscribeOk
+  stream: ReadableStream<MoqtObject>
+  /**
+   * Resolves once the subscription, and every subscription switched from it, is over:
+   * with the last one's PUBLISH_DONE, or `undefined` if it ended without one. Never rejects.
+   */
+  done: Promise<PublishDone | undefined>
+}
+
+/**
+ * @public
+ * What {@link MOQtailClient.fetch} returns when the fetch is accepted.
+ */
+export interface FetchResult {
+  requestId: bigint
+  /** The FETCH_OK: end of track, end location, and track properties. */
+  fetchOk: FetchOk
+  stream: ReadableStream<MoqtObject>
+}
+
+/**
+ * Called for an End of Range marker on a fetch stream: every Location after the
+ * previous Object, if any, up to and including `location`, does not exist, is unknown,
+ * or timed out, as `kind` says. Without it, an unknown or timed-out range looks the
+ * same as one that does not exist.
+ */
+export type EndOfRangeHandler = (kind: EndOfRangeKind, location: Location) => void
 
 /**
  * Parameters for {@link MOQtailClient.subscribe | subscribing} to a track's live objects.
@@ -209,14 +337,6 @@ export type MOQtailClientOptions = {
  * })
  * ```
  */
-/**
- * Called for an End of Range marker on a fetch stream: every Location after the
- * previous Object, if any, up to and including `location`, does not exist, is unknown,
- * or timed out, as `kind` says. Without it, an unknown or timed-out range looks the
- * same as one that does not exist.
- */
-export type EndOfRangeHandler = (kind: EndOfRangeKind, location: Location) => void
-
 export type SubscribeOptions = {
   /** Fully qualified track identifier ({@link FullTrackName}). */
   fullTrackName: FullTrackName
@@ -237,6 +357,8 @@ export type SubscribeOptions = {
   earlyDiscardPolicy?: EarlyDiscardPolicyConfig
   /** Called for each End of Range marker on the subscription's fill fetch streams. */
   onEndOfRange?: EndOfRangeHandler
+  /** Orders this subscription's objects, its fill included. Overrides {@link MOQtailClientOptions.ordering}. */
+  ordering?: ObjectOrdering | 'none'
 }
 
 /**
@@ -257,10 +379,10 @@ export type SubscribeUpdateOptions = {
   subscriptionRequestId: bigint
   /** The new {@link LocationFilter}. Omitted, the subscription keeps its own. */
   locationFilter?: LocationFilter
-  /** Updated subscriber priority (same constraints as initial subscribe). 0 is highest, 255 is lowest. */
-  priority: number
-  /** Updated direction flag. */
-  forward: boolean
+  /** Updated subscriber priority (same constraints as initial subscribe). 0 is highest, 255 is lowest. Omitted, it's not sent and stays unchanged. */
+  priority?: number
+  /** Updated direction flag. Omitted, it's not sent and stays unchanged. */
+  forward?: boolean
   /** Optional additional parameters; existing parameters persist if omitted. */
   parameters?: MessageParameter[]
 }
@@ -277,7 +399,6 @@ export type SubscribeUpdateOptions = {
  *     fullTrackName: newFullTrackName,
  *     priority: 0,
  *     groupOrder: GroupOrder.Original,
- *     forward: true,
  *     locationFilter: new LocationFilter(LocationFilterType.NextObject)
  *   }
  * })
@@ -288,9 +409,13 @@ export type SwitchOptions = {
   switchFromRequestId: bigint
   /** {@link SwitchMode} controlling how the switch is applied. */
   switchMode: SwitchMode
-  /** New subscription options to switch to. */
-  newSubscribeOptions: SubscribeOptions
-  /** Callback to determine whether to continue draining the superseded subscription. Returning true will reset the relevant stream. */
+  /** New subscription options to switch to. No `forward`: the relay controls forwarding during a switch. */
+  newSubscribeOptions: Omit<SubscribeOptions, 'forward'>
+  /**
+   * Called for each object of a superseded subscription that a soft switch left draining.
+   * Returning false ends the drain: that subscription is retired and the new track's
+   * objects, held until then, are released.
+   */
   onDrainDecision?: (request: SubscribeRequest) => boolean
 }
 
@@ -341,4 +466,6 @@ export type FetchOptions = {
   parameters?: MessageParameter[]
   /** Called for each End of Range marker in the response. */
   onEndOfRange?: EndOfRangeHandler
+  /** Orders this fetch's objects. Overrides {@link MOQtailClientOptions.ordering}. */
+  ordering?: ObjectOrdering | 'none'
 }

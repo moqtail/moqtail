@@ -86,6 +86,8 @@ export class StaticTrackSource implements PastObjectSource {
 export class LiveTrackSource implements LiveObjectSource {
   readonly stream: ReadableStream<MoqtObject>
   readonly #listeners = new Set<(obj: MoqtObject) => void>()
+  /** Each listener's queue tail, so done waits for the objects still being delivered. */
+  readonly #queues = new Map<(obj: MoqtObject) => void, () => Promise<void>>()
   readonly #doneListeners = new Set<() => void>()
 
   #largestLocation: Location | undefined
@@ -124,8 +126,9 @@ export class LiveTrackSource implements LiveObjectSource {
       this.#ingestActive = false
       this.#reader?.releaseLock()
 
+      const drained = Promise.all([...this.#queues.values()].map((tail) => tail()))
       for (const doneListener of this.#doneListeners) {
-        Promise.resolve().then(() => doneListener())
+        void drained.then(() => doneListener())
       }
     }
   }
@@ -144,8 +147,12 @@ export class LiveTrackSource implements LiveObjectSource {
     }
 
     this.#listeners.add(queuedListener)
+    this.#queues.set(queuedListener, () => queue)
 
-    return () => this.#listeners.delete(queuedListener)
+    return () => {
+      this.#queues.delete(queuedListener)
+      return this.#listeners.delete(queuedListener)
+    }
   }
 
   onDone(listener: () => void): () => void {
@@ -249,6 +256,22 @@ if (import.meta.vitest) {
       expect(writtenObjects).toEqual([1n])
 
       trackSource.stop()
+    })
+
+    test('done waits for the last object a listener is still delivering', async () => {
+      const log: string[] = []
+      let streamController!: ReadableStreamDefaultController<any>
+      const trackSource = new LiveTrackSource(new ReadableStream({ start: (c) => void (streamController = c) }))
+      trackSource.onNewObject(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20))
+        log.push('written')
+      })
+      trackSource.onDone(() => log.push('done'))
+
+      streamController.enqueue({ location: { group: 1n, object: 0n } } as any)
+      streamController.close()
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      expect(log).toEqual(['written', 'done'])
     })
   })
 }

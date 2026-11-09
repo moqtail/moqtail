@@ -1,5 +1,11 @@
 {
   "entryPointStrategy": "resolve",
-  "entryPoints": ["src/client/index.ts", "src/model/index.ts", "src/util/index.ts"],
+  "entryPoints": [
+    "src/client/index.ts",
+    "src/model/index.ts",
+    "src/player/index.ts",
+    "src/player/component/index.ts",
+    "src/util/index.ts"
+  ],
   "outputs": [{ "name": "html", "path": "docs" }]
 }

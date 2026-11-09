@@ -17,3 +17,4 @@
 export * from './telemetry'
 export * from './clock_normalizer'
 export * from './logger'
+export * from './emitter'

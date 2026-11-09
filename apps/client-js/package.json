@@ -11,7 +11,10 @@
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.2",
+    "@videojs/html": "^10.3.0",
     "clsx": "^2.1.1",
+    "custom-media-element": "^1.4.7",
+    "media-tracks": "^0.3.5",
     "mp4box": "^2.4.1",
     "preact": "^10.29.6",
     "react-icons": "^5.7.0",

@@ -15,8 +15,7 @@
  */
 
 import { ControlRecvStream, ControlSendStream, ControlStream } from './control_stream'
-import { RequestStream, RequestStreamHooks } from './request_stream'
-import { DataEventObserver, DataStreamObserver } from './data_event'
+import { RequestStream } from './request_stream'
 import {
   PublishNamespace,
   Namespace,
@@ -40,13 +39,10 @@ import {
   TrackStatus,
   ControlMessageType,
   SUPPORTED_VERSIONS,
-  PublishSkipped,
   PublishDone,
-  PublishDoneStatusCode,
-} from '../model/control'
+} from '@/model/control'
 import {
   Datagram,
-  EndOfRangeKind,
   FetchHeader,
   FetchObject,
   FullTrackName,
@@ -55,11 +51,13 @@ import {
   SubgroupHeaderType,
   SubgroupObject,
   RequestIdMap,
-} from '../model/data'
-import { FrozenByteBuffer } from '../model/common/byte_buffer'
-import type { FetchObjectContext } from '../model/data/fetch_object'
-import { ObjectDeliveryTimeoutProperty, TrackProperty } from '../model/property/track_property'
+  ObjectDatagramType,
+} from '@/model/data'
+import { FrozenByteBuffer } from '@/model/common/byte_buffer'
+import { TrackProperty } from '@/model/property/track_property'
+import type { Header } from '@/model/data/header'
 import { RecvStream } from './data_stream'
+import type { DataHeaderEvent } from './data_event'
 import {
   InternalError,
   Location,
@@ -79,23 +77,23 @@ import {
   resolveTransportUrl,
   SwitchFrom,
   SwitchMode,
-} from '../model'
-import { Track } from './track/track'
-import { LiveTrackSource } from './track/content_source'
-import { PublishNamespaceRequest } from './request/publish_namespace'
-import { FetchRequest } from './request/fetch'
-import { SubscribeRequest, Subscription } from './request/subscribe'
-import { PublishRequest } from './request/publish'
-import { TrackStatusRequest } from './request/track_status'
-import { getHandlerForControlMessage, getHandlerForRequestStreamMessage } from './handler/handler'
-import { SubscribePublication } from './publication/subscribe'
-import { FetchPublication } from './publication/fetch'
-import { PublishPublication } from './publication/publish'
-import { random60bitId } from './util/random_id'
-import { assertWithinFilterRangeLimit, isValidTrackAlias } from './util/validators'
-import { MaxFilterRanges } from '../model/parameter/setup/max_filter_ranges'
-import { applyMessageParameterUpdate } from '../model/parameter/message_parameter'
-import { PeerStreamResetError, streamResetCodeOf, streamResetReason } from './util/stream_reset'
+} from '@/model'
+import { Track } from '@/client/track/track'
+import { LiveTrackSource } from '@/client/track/content_source'
+import { PublishNamespaceRequest } from '@/client/request/publish_namespace'
+import { FetchRequest } from '@/client/request/fetch'
+import { SubscribeRequest, Subscription } from '@/client/request/subscribe'
+import { PublishRequest } from '@/client/request/publish'
+import { TrackStatusRequest } from '@/client/request/track_status'
+import { getHandlerForControlMessage, getHandlerForRequestStreamMessage } from '@/client/handler/handler'
+import { SubscribePublication } from '@/client/publication/subscribe'
+import { FetchPublication } from '@/client/publication/fetch'
+import { PublishPublication } from '@/client/publication/publish'
+import { random60bitId } from '@/client/util/random_id'
+import { assertWithinFilterRangeLimit, isValidTrackAlias } from '@/client/util/validators'
+import { MaxFilterRanges } from '@/model/parameter/setup/max_filter_ranges'
+import { applyMessageParameterUpdate } from '@/model/parameter/message_parameter'
+import { isSessionClosed, PeerStreamResetError, streamResetCodeOf, streamResetReason } from '@/client/util/stream_reset'
 import {
   MOQtailRequest,
   SubscribeOptions,
@@ -107,27 +105,35 @@ import {
   TrackAliasHolder,
   DEFAULT_TRACK_ALIAS_RESOLUTION_TIMEOUT_MS,
   DEFAULT_SWITCH_DRAIN_TIMEOUT_MS,
+  DEFAULT_FILL_OPEN_TIMEOUT_MS,
   DEFAULT_MAX_FILTER_RANGES,
   EndOfRangeHandler,
+  ClientEvents,
+  SubscribeResult,
+  FetchResult,
+  ObjectOrdering,
 } from './types'
 import { SendDatagramStream } from './datagram_stream'
-import { logger, LogLevel, setLogLevel, setLogEnabledModules } from '../util/logger'
+import { ObjectOrderer } from './ordering'
+import { errorMessage } from '@/util/error'
+import { logger, LogLevel, setLogLevel, setLogEnabledModules } from '@/util/logger'
+import { Emitter } from '@/util/emitter'
 
 /**
  * @public
  * Represents a Media Over QUIC Transport (MOQT) client session.
  *
- * Use {@link MOQtailClient.new} to establish a connection and perform MOQT operations such as subscribing to tracks,
- * fetching historical data, announcing tracks for publication, and managing session lifecycle.
- *
- * Once initialized, the client provides high-level methods for MOQT requests and publishing. If a protocol violation
- * occurs, the client will terminate and must be re-initialized.
+ * Construct it, attach listeners with `on()`, then call {@link MOQtailClient.init} to open the
+ * session. Once initialized, the client provides high-level methods for MOQT requests and publishing. If a protocol
+ * violation occurs, the client terminates; a new client is needed to reconnect.
  *
  * ## Usage
  *
  * ### Connect and Subscribe to a Track
  * ```ts
- * const client = await MOQtailClient.new({ url });
+ * const client = new MOQtailClient({ url });
+ * client.on('sessionterminated', (reason) => console.warn('Session ended:', reason));
+ * await client.init();
  * const result = await client.subscribe({
  *   fullTrackName,
  *   locationFilter: new LocationFilter(LocationFilterType.NextObject),
@@ -144,7 +150,8 @@ import { logger, LogLevel, setLogLevel, setLogEnabledModules } from '../util/log
  *
  * ### Publish a namespace for Publishing
  * ```ts
- * const client = await MOQtailClient.new({ url });
+ * const client = new MOQtailClient({ url });
+ * await client.init();
  * const publishNamespaceResult = await client.publishNamespace(["camera", "main"]);
  * if (!(publishNamespaceResult instanceof RequestError)) {
  *   // Ready to publish objects under this namespace
@@ -156,7 +163,7 @@ import { logger, LogLevel, setLogLevel, setLogEnabledModules } from '../util/log
  * await client.disconnect();
  * ```
  */
-export class MOQtailClient {
+export class MOQtailClient extends Emitter<ClientEvents> {
   /**
    * Namespace prefixes (tuples) the peer has requested announce notifications for via SUBSCRIBE_NAMESPACE.
    * Used to decide which locally issued ANNOUNCE messages should be forwarded (future optimization: prefix trie).
@@ -229,10 +236,12 @@ export class MOQtailClient {
    */
   readonly #namespaceRequestIds: Map<string, bigint> = new Map()
 
-  /** Underlying WebTransport session (set after successful construction in MOQtailClient.new). */
+  /** Underlying WebTransport session (set by {@link MOQtailClient.init}). */
   webTransport!: WebTransport
   /** Validated Setup message the server sent back during handshake (protocol parameters negotiated). */
   #serverSetup!: Setup
+  /** Setup message this client sent during handshake. */
+  #clientSetup!: Setup
   /** How many filter ranges this client allows the server per request, as advertised in SETUP. */
   #maxFilterRanges: bigint = 0n
   /** Outgoing / incoming control message stream pair. */
@@ -253,6 +262,8 @@ export class MOQtailClient {
    * retired anyway, if no PUBLISH_DONE ends its drain first.
    */
   switchDrainTimeoutMs: number = DEFAULT_SWITCH_DRAIN_TIMEOUT_MS
+  /** How long (ms) after SUBSCRIBE_OK a fill fetch stream may take to open before ordering stops waiting for it. */
+  fillOpenTimeoutMs: number = DEFAULT_FILL_OPEN_TIMEOUT_MS
 
   /**
    * Callbacks waiting for a track alias to be registered, keyed by alias. Each entry
@@ -262,25 +273,13 @@ export class MOQtailClient {
 
   /** Flag indicating the client has been disconnected/destroyed and cannot accept further API calls. */
   #isDestroyed = false
+  /** Where {@link MOQtailClient.init} is: it runs once, and only a `ready` client takes requests. */
+  #state: 'idle' | 'initializing' | 'ready' = 'idle'
+  readonly #options: MOQtailClientOptions
   /** Internal monotonically increasing client-assigned request id counter (even/odd parity scheme advances by 2). */
   #dontUseRequestId: bigint = 0n
   /** Active early discard policy; undefined means no per-stream deadline is applied. */
   #earlyDiscardPolicy: EarlyDiscardPolicyConfig | undefined
-
-  /**
-   * TODO: onNamespaceAnnounced may be a better name
-   * Fired when an PUBLISH_NAMESPACE control message is processed for a track namespace.
-   * Use to update UI or trigger discovery logic.
-   * Discovery event.
-   */
-  onNamespacePublished?: (msg: PublishNamespace) => void
-
-  /**
-   * Fired on GOAWAY reception signaling graceful session wind-down.
-   * Use to prepare for disconnect or cleanup.
-   * Lifecycle handler.
-   */
-  onGoaway?: (msg: GoAway) => void
 
   /**
    * Whether the peer has sent a GOAWAY on the control stream. Once it has, this side
@@ -288,124 +287,6 @@ export class MOQtailClient {
    * PROTOCOL_VIOLATION.
    */
   goawayReceived = false
-
-  /**
-   * Fired if the underlying WebTransport session fails (ready -\> closed prematurely).
-   * Use to log or alert on transport errors.
-   * Lifecycle/error handler.
-   */
-  onWebTransportFail?: () => void
-
-  /**
-   * Fired exactly once when the client transitions to terminated (disconnect).
-   * Use to clean up resources or notify user.
-   * Lifecycle handler.
-   */
-  onSessionTerminated?: (reason?: unknown) => void
-
-  /**
-   * Invoked after each outbound control message is sent.
-   * Use for logging or analytics.
-   * Informational event.
-   */
-  onMessageSent?: (msg: ControlMessage) => void
-
-  /**
-   * Invoked upon receiving each inbound control message before handling.
-   * Use for logging or debugging.
-   * Informational event.
-   */
-  onMessageReceived?: (msg: ControlMessage) => void
-
-  /**
-   * Invoked for each decoded data object/header arriving on a uni stream (fetch or subgroup).
-   * Use to process or display incoming media/data.
-   * Informational event.
-   */
-  onDataReceived?: (data: SubgroupObject | SubgroupHeader | FetchObject | FetchHeader) => void
-
-  /**
-   * Invoked after enqueuing each outbound data object/header.
-   * Reserved for future use.
-   * Informational event.
-   */
-  onDataSent?: (data: SubgroupObject | SubgroupHeader | FetchObject | FetchHeader) => void
-
-  /**
-   * Invoked for every data stream this client opens or accepts: once for its header, once
-   * per object (identity and payload length only), and once when the stream ends.
-   * Use for counters and diagnostics.
-   * Informational event.
-   */
-  onDataEvent?: DataEventObserver
-
-  /**
-   * General-purpose error callback for surfaced exceptions not thrown to caller synchronously.
-   * Use to log or display errors.
-   * Error handler.
-   */
-  onError?: (er: unknown) => void
-
-  /** Invoked for each decoded datagram object/status arriving. */
-  onDatagramReceived?: (data: Datagram) => void
-
-  /** Invoked after enqueuing each outbound datagram object/status. */
-  onDatagramSent?: (data: Datagram) => void
-
-  /** Fired when an inbound PUBLISH control message is received. */
-  onPeerPublish?: (msg: Publish, stream: ReadableStream<MoqtObject>) => void
-
-  /**
-   * Fired when an inbound PUBLISH_DONE control message is received. The message names
-   * no request of its own, so `requestId` is the request the stream it arrived on
-   * opened: for a track the peer pushed, the `requestId` of the {@link Publish} handed
-   * to {@link MOQtailClient.onPeerPublish}. It is what says which track just ended.
-   */
-  onPeerPublishDone?: (msg: PublishDone, requestId: bigint) => void
-
-  /**
-   * Fired when the peer moves the Forward State of a track this side is publishing,
-   * either in its PUBLISH_OK or in a later REQUEST_UPDATE. `requestId` is the one
-   * {@link MOQtailClient.publish} returned.
-   *
-   * A publication that declared FORWARD=0 sends nothing until this reports `true`, so
-   * this is where the work behind the track starts and stops -- leaving a camera and
-   * an encoder running for a track nobody is taking costs the same as publishing it.
-   */
-  onForwardStateChange?: (requestId: bigint, forward: boolean) => void
-
-  /** Fired when an inbound SUBSCRIBE_NAMESPACE control message is received. */
-  onPeerSubscribeNamespace?: (msg: SubscribeNamespace) => void
-
-  /**
-   * Fired when an inbound SUBSCRIBE_TRACKS control message is received. The PUBLISH
-   * sent for each matching track:
-   * - states the request's settings as its parameters, from
-   *   `MessageParameter.publishParametersFor(msg.parameters)`: FORWARD, GROUP_ORDER and
-   *   the LOCATION_FILTER the subscription starts from, but never the request's
-   *   AUTHORIZATION_TOKEN;
-   * - goes without Track Properties when
-   *   `MessageParameter.includesProperties(msg.parameters)` is false.
-   *
-   * A request carrying FILL_PARAMETERS also asks for a fill of what each track has
-   * already published. This client cannot open a fill for a pushed track, so such a
-   * subscriber gets only the live Objects.
-   */
-  onPeerSubscribeTracks?: (msg: SubscribeTracks) => void
-
-  /**
-   * Fired when a PUBLISH_SKIPPED arrives on a {@link MOQtailClient.subscribeTracks}
-   * stream: the peer has a matching track but no bidi stream to send its PUBLISH on
-   * until its stream limit lifts (§10.20). `prefix` is the prefix this side subscribed
-   * with, which is what the message's suffix hangs off.
-   */
-  onPeerPublishSkipped?: (prefix: Tuple, msg: PublishSkipped) => void
-
-  /** Fired when a NAMESPACE message arrives on a SUBSCRIBE_NAMESPACE bi-stream (prefix + suffix). */
-  onPeerNamespace?: (prefix: Tuple, suffix: Tuple) => void
-
-  /** Fired when a NAMESPACE_DONE message arrives on a SUBSCRIBE_NAMESPACE bi-stream (prefix + suffix). */
-  onPeerNamespaceDone?: (prefix: Tuple, suffix: Tuple) => void
 
   /** Datagram writer for sending datagrams. */
   #datagramWriter: WritableStreamDefaultWriter<Uint8Array> | undefined
@@ -458,9 +339,14 @@ export class MOQtailClient {
   }
 
   /**
-   * How many filter ranges the server allows in one request: its MAX_FILTER_RANGES,
-   * or 0 when it sent none, which allows no Range Filter at all.
+   * Gets the setup this client sent during handshake.
+   *
+   * @returns The {@link Setup} instance written first on the control stream.
    */
+  get clientSetup(): Setup {
+    return this.#clientSetup
+  }
+
   /**
    * How many filter ranges this client allows the server in one request: the
    * MAX_FILTER_RANGES it advertised, {@link DEFAULT_MAX_FILTER_RANGES} unless the
@@ -506,16 +392,22 @@ export class MOQtailClient {
   }
 
   /**
-   * Guard that throws if the client has been destroyed (disconnect already called). Used at start of public APIs
-   * to fail fast rather than perform partial operations on a torn-down session.
-   * @throws MOQtailError when #isDestroyed is true.
+   * Guard that throws unless the client is initialized and not yet destroyed. Used at start of public APIs
+   * to fail fast rather than perform partial operations on a session that is not open.
+   * @throws MOQtailError when the client is destroyed or {@link MOQtailClient.init} has not completed.
    */
   #ensureActive() {
     if (this.#isDestroyed) throw new MOQtailError('MOQtailClient is destroyed and cannot be used.')
+    if (this.#state !== 'ready') throw new MOQtailError('MOQtailClient is not initialized. Await init() first.')
   }
 
-  private constructor() {
-    // Create a stream for received datagram objects
+  /**
+   * Stores `options`; nothing happens on the network until {@link MOQtailClient.init}, so
+   * listeners attached in between see everything, the handshake included.
+   */
+  constructor(options: MOQtailClientOptions) {
+    super()
+    this.#options = options
     this.receivedDatagramObjects = new ReadableStream<MoqtObject>({
       start: (controller) => {
         this.#receivedDatagramObjectController = controller
@@ -525,41 +417,23 @@ export class MOQtailClient {
   }
 
   /**
-   * Establishes a new {@link MOQtailClient} session over WebTransport and performs the MOQT setup handshake.
+   * Opens the WebTransport session and performs the MOQT setup handshake. Runs once: a
+   * second call throws, and a failed one leaves the client unusable, so a retry needs a
+   * new client.
    *
-   * @param args - {@link MOQtailClientOptions}
-   *
-   * @returns Promise resolving to a ready {@link MOQtailClient} instance.
-   *
+   * @throws :{@link MOQtailError} If called more than once, or after {@link MOQtailClient.disconnect}.
    * @throws :{@link ProtocolViolationError} If the server sends an unexpected or invalid message during setup.
    *
-   * @example Minimal connection
+   * @example
    * ```ts
-   * const client = await MOQtailClient.new({
-   *   url: 'https://relay.example.com/transport'
-   * });
-   * ```
-   *
-   * @example With callbacks and options
-   * ```ts
-   * const client = await MOQtailClient.new({
-   *   url,
-   *   setupOptions: new SetupOptions().addPath('/live'),
-   *   transportOptions: { congestionControl: 'default' },
-   *   dataStreamTimeoutMs: 5000,
-   *   controlStreamTimeoutMs: 2000,
-   *   trackAliasResolutionTimeoutMs: 2000,
-   *   enableDatagrams: true,
-   *   callbacks: {
-   *     onMessageSent: msg => console.log('Sent:', msg),
-   *     onMessageReceived: msg => console.log('Received:', msg),
-   *     onSessionTerminated: reason => console.warn('Session ended:', reason),
-   *     onDatagramReceived: data => console.log('Datagram:', data),
-   *   }
-   * });
+   * const client = new MOQtailClient({ url: 'https://relay.example.com/transport' })
+   * client.on('messagesent', (msg) => console.log('Sent:', msg))
+   * await client.init()
    * ```
    */
-  static async new(args: MOQtailClientOptions): Promise<MOQtailClient> {
+  async init(): Promise<void> {
+    if (this.#state !== 'idle' || this.#isDestroyed) throw new MOQtailError('MOQtailClient.init may only run once.')
+    this.#state = 'initializing'
     let {
       url,
       setupOptions,
@@ -568,12 +442,9 @@ export class MOQtailClient {
       controlStreamTimeoutMs,
       trackAliasResolutionTimeoutMs,
       switchDrainTimeoutMs,
+      fillOpenTimeoutMs,
       enableDatagrams,
-      callbacks,
-    } = args
-    const client = new MOQtailClient()
-
-    // send supported versions
+    } = this.#options
     // The protocols are sent in wt-available-protocols header
     if (!transportOptions) {
       transportOptions = { protocols: [] }
@@ -586,37 +457,34 @@ export class MOQtailClient {
 
     logger.log('MOQtailClient', 'transportOptions', transportOptions)
 
-    const { transportUrl, moqtUrl } = resolveTransportUrl(url)
-    if (moqtUrl) {
-      logger.log('MOQtailClient', `moqt:// resolved to ${transportUrl}`)
-      if (moqtUrl.fragment)
-        logger.log('MOQtailClient', `moqt:// fragment (local-only): ${moqtUrl.fragment.kind}:${moqtUrl.fragment.value}`)
-    }
-
-    client.webTransport = new WebTransport(transportUrl, transportOptions)
-
-    await client.webTransport.ready
     try {
-      if (callbacks?.onMessageSent) client.onMessageSent = callbacks.onMessageSent
-      if (callbacks?.onMessageReceived) client.onMessageReceived = callbacks.onMessageReceived
-      if (callbacks?.onSessionTerminated) client.onSessionTerminated = callbacks.onSessionTerminated
-      if (callbacks?.onDatagramReceived) client.onDatagramReceived = callbacks.onDatagramReceived
-      if (callbacks?.onDatagramSent) client.onDatagramSent = callbacks.onDatagramSent
-      if (callbacks?.onDataEvent) client.onDataEvent = callbacks.onDataEvent
+      const { transportUrl, moqtUrl } = resolveTransportUrl(url)
+      if (moqtUrl) {
+        logger.log('MOQtailClient', `moqt:// resolved to ${transportUrl}`)
+        if (moqtUrl.fragment)
+          logger.log(
+            'MOQtailClient',
+            `moqt:// fragment (local-only): ${moqtUrl.fragment.kind}:${moqtUrl.fragment.value}`,
+          )
+      }
 
-      if (dataStreamTimeoutMs) client.dataStreamTimeoutMs = dataStreamTimeoutMs
-      if (controlStreamTimeoutMs) client.controlStreamTimeoutMs = controlStreamTimeoutMs
+      this.webTransport = new WebTransport(transportUrl, transportOptions)
+      await this.webTransport.ready
+
+      if (dataStreamTimeoutMs) this.dataStreamTimeoutMs = dataStreamTimeoutMs
+      if (controlStreamTimeoutMs) this.controlStreamTimeoutMs = controlStreamTimeoutMs
       if (trackAliasResolutionTimeoutMs !== undefined)
-        client.trackAliasResolutionTimeoutMs = trackAliasResolutionTimeoutMs
-      if (switchDrainTimeoutMs !== undefined) client.switchDrainTimeoutMs = switchDrainTimeoutMs
+        this.trackAliasResolutionTimeoutMs = trackAliasResolutionTimeoutMs
+      if (switchDrainTimeoutMs !== undefined) this.switchDrainTimeoutMs = switchDrainTimeoutMs
+      if (fillOpenTimeoutMs !== undefined) this.fillOpenTimeoutMs = fillOpenTimeoutMs
 
       // The control plane is a pair of uni streams. Open our send half and write
       // SETUP first so it goes out without waiting on the server's half, which the
       // relay only opens after accepting ours. Control streams get the highest priority.
-      const sendStream = await client.webTransport.createUnidirectionalStream({
+      const sendStream = await this.webTransport.createUnidirectionalStream({
         sendOrder: Number.MAX_SAFE_INTEGER,
       })
-      const sendHalf = new ControlSendStream(sendStream, client.onMessageSent)
+      const sendHalf = new ControlSendStream(sendStream, this)
       const params = setupOptions ? setupOptions.build() : new SetupOptions().build()
       // Range filters are applied to what this client publishes, so it allows them
       // unless the caller set a limit of its own, 0 included.
@@ -625,42 +493,39 @@ export class MOQtailClient {
         maxFilterRanges = new MaxFilterRanges(DEFAULT_MAX_FILTER_RANGES)
         params.push(maxFilterRanges.toKeyValuePair())
       }
-      client.#maxFilterRanges = maxFilterRanges.value
+      this.#maxFilterRanges = maxFilterRanges.value
       assertNoAuthorityOverWebTransport(params)
-      await sendHalf.send(new Setup(params))
+      this.#clientSetup = new Setup(params)
+      await sendHalf.send(this.#clientSetup)
 
       // The server's control stream is the first uni stream it opens; every later
       // one is a data stream, so the same reader is reused by #acceptIncomingUniStreams.
-      client.#incomingUniStreams = client.webTransport.incomingUnidirectionalStreams.getReader()
-      const { value: recvStream, done: recvStreamDone } = await client.#incomingUniStreams.read()
+      this.#incomingUniStreams = this.webTransport.incomingUnidirectionalStreams.getReader()
+      const { value: recvStream, done: recvStreamDone } = await this.#incomingUniStreams.read()
       if (recvStreamDone || !recvStream)
-        throw new ProtocolViolationError('MOQtailClient.new', 'Session closed before the server control stream')
-      const recvHalf = new ControlRecvStream(recvStream, client.controlStreamTimeoutMs, client.onMessageReceived)
-      client.controlStream = new ControlStream(sendHalf, recvHalf)
+        throw new ProtocolViolationError('MOQtailClient.init', 'Session closed before the server control stream')
+      const recvHalf = new ControlRecvStream(recvStream, this.controlStreamTimeoutMs, this)
+      this.controlStream = new ControlStream(sendHalf, recvHalf)
 
-      const reader = client.controlStream.stream.getReader()
+      const reader = this.controlStream.stream.getReader()
       const { value: response, done } = await reader.read()
-      if (done) throw new ProtocolViolationError('MOQtailClient.new', 'Stream closed after client setup')
+      if (done) throw new ProtocolViolationError('MOQtailClient.init', 'Stream closed after client setup')
       if (!(response instanceof Setup))
-        throw new ProtocolViolationError('MOQtailClient.new', 'Expected setup as the first control message')
+        throw new ProtocolViolationError('MOQtailClient.init', 'Expected setup as the first control message')
 
-      client.#serverSetup = response
+      this.#serverSetup = response
       reader.releaseLock()
+      this.#state = 'ready'
 
-      client.#handleIncomingControlMessages()
-      client.#acceptIncomingUniStreams()
-      client.#acceptIncomingBiStreams()
+      void this.#handleIncomingControlMessages()
+      void this.#acceptIncomingUniStreams()
+      void this.#acceptIncomingBiStreams()
 
-      // Optionally enable datagram support
       if (enableDatagrams) {
-        await client.startDatagrams()
+        await this.startDatagrams()
       }
-
-      return client
     } catch (error) {
-      await client.disconnect(
-        new InternalError('MOQtailClient.new', error instanceof Error ? error.message : String(error)),
-      )
+      await this.disconnect(new InternalError('MOQtailClient.init', errorMessage(error)))
       throw error
     }
   }
@@ -684,8 +549,7 @@ export class MOQtailClient {
     this.#datagramWriter = this.webTransport.datagrams.writable.getWriter()
     this.#isReceivingDatagrams = true
 
-    // Start background datagram reception
-    this.#acceptIncomingDatagrams()
+    void this.#acceptIncomingDatagrams()
     logger.log('MOQtailClient', 'Datagram support started')
   }
 
@@ -780,7 +644,7 @@ export class MOQtailClient {
     }
 
     logger.log('MOQtailClient', `Creating datagram sender for trackAlias=${trackAlias}`)
-    return SendDatagramStream.fromWriter(this.#datagramWriter, trackAlias, this.onDatagramSent)
+    return SendDatagramStream.fromWriter(this.#datagramWriter, trackAlias, this)
   }
 
   /**
@@ -807,7 +671,7 @@ export class MOQtailClient {
 
     const datagram = object.tryIntoDatagram(trackAlias)
     const serialized = datagram.serialize().toUint8Array()
-    if (this.onDatagramSent) this.onDatagramSent(datagram)
+    this.emit('datagramsent', datagram)
 
     await this.#datagramWriter.write(serialized)
   }
@@ -843,14 +707,11 @@ export class MOQtailClient {
           const datagram = Datagram.deserialize(new FrozenByteBuffer(datagramBytes))
           const trackAlias = datagram.trackAlias
 
-          if (this.onDatagramReceived) {
-            this.onDatagramReceived(datagram)
-          }
+          this.emit('datagramreceived', datagram)
 
           const fullTrackName = this.#resolveTrackAlias(trackAlias)
           const moqtObject = MoqtObject.fromDatagram(datagram, fullTrackName)
 
-          // Dispatch to track-specific handler if registered
           const trackKey = trackAlias.toString()
           const handler = this.#datagramTrackHandlers.get(trackKey)
           if (handler) {
@@ -861,7 +722,18 @@ export class MOQtailClient {
             }
           }
 
-          // Also enqueue to the general stream
+          // An ordered subscription takes its datagrams too; unordered ones never did
+          const holder = this.subscriptions.get(trackAlias)
+          if (holder instanceof SubscribeRequest && holder.orderer) {
+            if (!holder.largestLocation || holder.largestLocation.compare(moqtObject.location) < 0) {
+              holder.largestLocation = moqtObject.location
+            }
+            const delivered = holder.manager.deliver(holder, moqtObject)
+            if (delivered && ObjectDatagramType.isEndOfGroup(datagram.type)) {
+              holder.orderer.endGroup(moqtObject.location.group, moqtObject.location.object)
+            }
+          }
+
           if (this.#receivedDatagramObjectController) {
             try {
               this.#receivedDatagramObjectController.enqueue(moqtObject)
@@ -886,6 +758,24 @@ export class MOQtailClient {
       }
       this.#isReceivingDatagrams = false
     }
+  }
+
+  /**
+   * The track a data stream carries. A subgroup stream can open before the response
+   * that names its alias, so its header event may lack `fullTrackName`: ask again on a
+   * later event of the same stream.
+   */
+  trackNameOf(header: DataHeaderEvent): FullTrackName | undefined {
+    if (header.fullTrackName || header.trackAlias === undefined) return header.fullTrackName
+    return this.aliasFullTrackNameMap.get(header.trackAlias)
+  }
+
+  /** A fetch stream is named by its FETCH, or by the SUBSCRIBE it fills. */
+  #streamTrackName(header: Header): FullTrackName | undefined {
+    if (header instanceof SubgroupHeader) return this.aliasFullTrackNameMap.get(header.trackAlias)
+    const request = this.requests.get(this.#clientRequestId(header.requestId))
+    if (request instanceof FetchRequest) return request.message.fullTrackName
+    return request instanceof SubscribeRequest ? request.fullTrackName : undefined
   }
 
   /**
@@ -923,7 +813,7 @@ export class MOQtailClient {
    * Gracefully terminates this {@link MOQtailClient} session and releases underlying {@link https://developer.mozilla.org/docs/Web/API/WebTransport | WebTransport} resources.
    *
    * @param reason - Optional application-level reason (string or error) recorded and wrapped in an {@link InternalError}
-   * passed to the {@link MOQtailClient.onSessionTerminated | onSessionTerminated} callback.
+   * passed to `sessionterminated` listeners. Before {@link MOQtailClient.init} it only marks the client destroyed.
    *
    * @returns Promise that resolves once shutdown logic completes. Subsequent calls are safe no-ops.
    *
@@ -954,6 +844,7 @@ export class MOQtailClient {
     logger.log('MOQtailClient', 'disconnect', reason)
     if (this.#isDestroyed) return
     this.#isDestroyed = true
+    if (this.#state === 'idle') return
 
     // Stop datagrams first
     await this.stopDatagrams()
@@ -965,12 +856,13 @@ export class MOQtailClient {
     this.#namespaceRequestIds.clear()
     await Promise.allSettled(openStreams.map((requestStream) => requestStream.close()))
 
-    // close() does nothing on a session that is already closed or failed.
-    this.webTransport.close()
-    if (this.onSessionTerminated)
-      this.onSessionTerminated(
-        new InternalError('MOQtailClient.disconnect', reason instanceof Error ? reason.message : String(reason)),
-      )
+    // The session is over, so every subscription still open is too
+    for (const request of this.requests.values()) if (request instanceof SubscribeRequest) request.finish()
+
+    // close() does nothing on a session that is already closed or failed. A failed init()
+    // may not have got as far as creating one.
+    this.webTransport?.close()
+    this.emit('sessionterminated', new InternalError('MOQtailClient.disconnect', errorMessage(reason)))
   }
 
   /**
@@ -1002,7 +894,7 @@ export class MOQtailClient {
    * });
    *
    * // For a hybrid track (live + past):
-   * import { MemoryObjectCache } from './track/object_cache';
+   * import { MemoryObjectCache } from '@/client/track/object_cache';
    * const cache = new MemoryObjectCache(); // Caches are not yet fully supported
    * client.addOrUpdateTrack({
    *   fullTrackName: { namespace: ["camera"], name: "main" },
@@ -1059,11 +951,12 @@ export class MOQtailClient {
    * future waits for that object.
    * - A {@link FillParameters} in `parameters` also retrieves Objects already published, on a fill fetch stream.
    *
-   * The method returns either a {@link RequestError} (on refusal) or an object with the subscription `requestId`, the `trackAlias` and a `ReadableStream` of {@link MoqtObject}s.
+   * The method returns either a {@link RequestError} (on refusal) or a {@link SubscribeResult}: the subscription `requestId`, its
+   * SUBSCRIBE_OK, a `ReadableStream` of {@link MoqtObject}s, and a `done` promise carrying the PUBLISH_DONE that ends it.
    * Use the `requestId` for {@link MOQtailClient.unsubscribe} or {@link MOQtailClient.subscribeUpdate}. Use the `stream` to decode and display objects.
    *
    * @param args - {@link SubscribeOptions} describing the subscription window and relay forwarding behavior.
-   * @returns Either a {@link RequestError} or `{ requestId, trackAlias, stream }` for consuming objects.
+   * @returns Either a {@link RequestError} or `{ requestId, subscribeOk, stream, done }`.
    * @throws : {@link MOQtailError} If the client is destroyed.
    * @throws : {@link ProtocolViolationError} If required fields are missing or inconsistent.
    * @throws : {@link InvalidFilterError} If the Range Filters exceed the server's MAX_FILTER_RANGES; nothing is sent.
@@ -1096,9 +989,7 @@ export class MOQtailClient {
    * });
    * ```
    */
-  async subscribe(
-    args: SubscribeOptions,
-  ): Promise<RequestError | { requestId: bigint; trackAlias: bigint; stream: ReadableStream<MoqtObject> }> {
+  async subscribe(args: SubscribeOptions): Promise<RequestError | SubscribeResult> {
     this.#ensureActive()
     // Checked before the try: a request the caller got wrong is not a broken session.
     assertWithinFilterRangeLimit(args.parameters ?? [], this.peerMaxFilterRanges, 'MOQtailClient.subscribe')
@@ -1118,9 +1009,13 @@ export class MOQtailClient {
         ...(parameters ?? []),
       ])
       const request = new SubscribeRequest(msg)
-      request.manager = new Subscription(request)
+      const subscription = new Subscription(request)
       request.earlyDiscardPolicy = args.earlyDiscardPolicy
       request.onEndOfRange = args.onEndOfRange
+      request.orderer = this.#createOrderer(args.ordering, groupOrder, request.requestId, (obj) => request.output(obj))
+      // The fill brings what comes before the live objects: until it ends, none of it is missing
+      const fills = parameters?.some(MessageParameter.isFillParameters) ?? false
+      if (fills) request.orderer?.suspendWindow('fill')
       this.requests.set(request.requestId, request)
       this.requestIdMap.addMapping(request.requestId, request.fullTrackName)
 
@@ -1147,16 +1042,13 @@ export class MOQtailClient {
           `subscribe: SUBSCRIBE_OK requestId=${request.requestId} trackAlias=${response.trackAlias}`,
         )
         this.#claimTrackAlias(response.trackAlias, request)
-        return { requestId: msg.requestId, trackAlias: response.trackAlias, stream: request.stream }
+        if (fills) this.#liftFillSuspension(request)
+        return { requestId: msg.requestId, subscribeOk: response, stream: request.stream, done: subscription.done }
       }
     } catch (error) {
-      logger.error(
-        'MOQtailClient',
-        `subscribe: unexpected error — ${error instanceof Error ? error.message : String(error)}`,
-      )
-      await this.disconnect(
-        new InternalError('MOQtailClient.subscribe', error instanceof Error ? error.message : String(error)),
-      )
+      const reason = errorMessage(error)
+      if (!this.#sessionClosing(error)) logger.error('MOQtailClient', `subscribe: unexpected error — ${reason}`)
+      await this.disconnect(new InternalError('MOQtailClient.subscribe', reason))
       throw error
     }
   }
@@ -1216,16 +1108,10 @@ export class MOQtailClient {
       }
       // Q: Throw? Idempotent?
     } catch (error) {
-      await this.disconnect(
-        new InternalError('MOQtailClient.unsubscribe', error instanceof Error ? error.message : String(error)),
-      )
+      await this.disconnect(new InternalError('MOQtailClient.unsubscribe', errorMessage(error)))
       throw error
     } finally {
-      for (const target of targets) {
-        this.requests.delete(target.requestId)
-        this.requestIdMap.removeMappingByRequestId(target.requestId)
-        this.#releaseTrackAlias(target)
-      }
+      for (const target of targets) this.#forgetSubscription(target)
       owner?.clear()
     }
   }
@@ -1296,8 +1182,8 @@ export class MOQtailClient {
           // There is no mechanism to remove a parameter from a subscription. We can add parameters but check for duplicate params
           const requestId = this.#nextClientRequestId
           const updateParams: MessageParameter[] = [
-            new SubscriberPriority(priority),
-            new Forward(forward),
+            ...(priority !== undefined ? [new SubscriberPriority(priority)] : []),
+            ...(forward !== undefined ? [new Forward(forward)] : []),
             ...(locationFilter ? [locationFilter] : []),
             ...(parameters ?? []),
           ]
@@ -1309,9 +1195,7 @@ export class MOQtailClient {
       }
       // Q: Throw? Idempotent?
     } catch (error) {
-      await this.disconnect(
-        new InternalError('MOQtailClient.subscribeUpdate', error instanceof Error ? error.message : String(error)),
-      )
+      await this.disconnect(new InternalError('MOQtailClient.subscribeUpdate', errorMessage(error)))
       throw error
     }
   }
@@ -1326,8 +1210,9 @@ export class MOQtailClient {
    * delivered by the newest switch target retires everything older.
    *
    * @param args - {@link SwitchOptions} referencing the subscription to switch from and the new subscription options.
-   * @returns Either a {@link RequestError} (refusal) or `{ requestId, stream }`, where `stream` is the
-   * same {@link https://developer.mozilla.org/docs/Web/API/ReadableStream | ReadableStream} object returned by the original `subscribe()` call.
+   * @returns Either a {@link RequestError} (refusal) or the new request's {@link SubscribeResult}, where `stream`
+   * is the same {@link https://developer.mozilla.org/docs/Web/API/ReadableStream | ReadableStream} object returned by the
+   * original `subscribe()` call and `done` that subscription's, which resolves once the whole switched chain is over.
    * @throws :{@link MOQtailError} If the client is destroyed.
    * @throws :{@link ProtocolViolationError} If `switchFromRequestId` does not name an active subscription.
    * @throws :{@link InternalError} On transport/control failure (disconnect is triggered before rethrow).
@@ -1337,12 +1222,12 @@ export class MOQtailClient {
    * await client.switch({
    *   switchFromRequestId,
    *   switchMode: SwitchMode.Soft,
-   *   newSubscribeOptions: { fullTrackName: newTrackName, priority: 0, groupOrder: GroupOrder.Original, forward: true, locationFilter: new LocationFilter(LocationFilterType.NextObject) },
+   *   newSubscribeOptions: { fullTrackName: newTrackName, priority: 0, groupOrder: GroupOrder.Original, locationFilter: new LocationFilter(LocationFilterType.NextObject) },
    *   onDrainDecision: (request) => true
    * });
    * ```
    */
-  async switch(args: SwitchOptions) {
+  async switch(args: SwitchOptions): Promise<RequestError | SubscribeResult> {
     this.#ensureActive()
     const { switchFromRequestId, switchMode, newSubscribeOptions, onDrainDecision } = args
     assertWithinFilterRangeLimit(newSubscribeOptions.parameters ?? [], this.peerMaxFilterRanges, 'MOQtailClient.switch')
@@ -1382,13 +1267,26 @@ export class MOQtailClient {
 
       const newRequest = this.requests.get(result.requestId) as SubscribeRequest
       subscription.addSwitchTarget(newRequest, drains)
-      return { requestId: result.requestId, stream: subscription.stream }
+      return { ...result, stream: subscription.stream, done: subscription.done }
     } catch (error) {
-      await this.disconnect(
-        new InternalError('MOQtailClient.switch', error instanceof Error ? error.message : String(error)),
-      )
+      await this.disconnect(new InternalError('MOQtailClient.switch', errorMessage(error)))
       throw error
     }
+  }
+
+  /**
+   * The orderer for a request, unless its ordering, else the client's, is `'none'` or
+   * unset. Descending group order is never ordered: every group after the first would be late.
+   */
+  #createOrderer(
+    ordering: ObjectOrdering | 'none' | undefined,
+    groupOrder: GroupOrder,
+    requestId: bigint,
+    release: (obj: MoqtObject) => void,
+  ): ObjectOrderer | undefined {
+    const resolved = ordering ?? this.#options.ordering ?? 'none'
+    if (resolved === 'none' || groupOrder === GroupOrder.Descending) return undefined
+    return new ObjectOrderer(resolved, release, (from, to) => this.emit('orderinggap', requestId, from, to))
   }
 
   /**
@@ -1405,16 +1303,15 @@ export class MOQtailClient {
       return false
     }
 
+    request.orderer?.flush()
     const owner = request.manager
     if (owner) {
       owner.drop(request)
-      if (owner.requests.length === 0) owner.controller.close()
+      if (owner.requests.length === 0) owner.objects.close()
     } else {
-      request.controller?.close()
+      request.objects.close()
     }
-    this.#releaseTrackAlias(request)
-    this.requests.delete(request.requestId)
-    this.requestIdMap.removeMappingByRequestId(request.requestId)
+    this.#forgetSubscription(request)
     // The publisher is done with it, so nothing is being cancelled: close the stream
     // it ran on rather than resetting it.
     void this.#closeRequestStream(request.requestId)
@@ -1485,12 +1382,33 @@ export class MOQtailClient {
     this.aliasFullTrackNameMap.delete(trackAlias)
   }
 
+  /**
+   * Lifts the fill's ordering suspension when no fill fetch stream will open: nothing was
+   * published yet (no LARGEST_OBJECT), or none opened shortly after SUBSCRIBE_OK (an empty
+   * fill range, moqt-22 3.4).
+   */
+  #liftFillSuspension(request: SubscribeRequest): void {
+    const lift = () => {
+      if (!request.fillOpened) request.orderer?.resumeWindow('fill')
+    }
+    if (!request.fillBoundary) lift()
+    else setTimeout(lift, this.fillOpenTimeoutMs)
+  }
+
   /** Tears down a switch target that lost the handover race to a newer one. */
   async #retireSwitchedRequest(request: SubscribeRequest): Promise<void> {
+    // Before the track it hands over to delivers: nothing of this one may follow that
+    request.orderer?.flush()
+    this.#forgetSubscription(request)
+    await this.#resetRequestStream(request.requestId, StreamResetCode.Cancelled)
+  }
+
+  /** Drops `request` from the request tables, frees its alias, and resolves its `done`. */
+  #forgetSubscription(request: SubscribeRequest): void {
     this.requests.delete(request.requestId)
     this.requestIdMap.removeMappingByRequestId(request.requestId)
     this.#releaseTrackAlias(request)
-    await this.#resetRequestStream(request.requestId, StreamResetCode.Cancelled)
+    request.finish()
   }
 
   /**
@@ -1507,7 +1425,7 @@ export class MOQtailClient {
    * - typeAndProps: Discriminated union carrying parameters specific to each fetch mode (see examples).
    * - parameters: Optional version-specific extension block.
    *
-   * Returns either a {@link RequestError} (refusal / invalid request at protocol level) or `{ requestId, stream }` whose `stream`
+   * Returns either a {@link RequestError} (refusal / invalid request at protocol level) or `{ requestId, fetchOk, stream }` whose `stream`
    * ends naturally after the bounded range completes (no explicit cancel needed for normal completion).
    *
    * Use cases:
@@ -1549,7 +1467,7 @@ export class MOQtailClient {
    * })
    * ```
    */
-  async fetch(args: FetchOptions): Promise<RequestError | { requestId: bigint; stream: ReadableStream<MoqtObject> }> {
+  async fetch(args: FetchOptions): Promise<RequestError | FetchResult> {
     this.#ensureActive()
     assertWithinFilterRangeLimit(args.parameters ?? [], this.peerMaxFilterRanges, 'MOQtailClient.fetch')
     try {
@@ -1565,7 +1483,6 @@ export class MOQtailClient {
         ...(groupOrder !== GroupOrder.Original ? [new GroupOrderParam(groupOrder)] : []),
         ...(parameters ?? []),
       ]
-      // Generate unique requestId at the beginning to ensure uniqueness
       const requestId = this.#nextClientRequestId
       logger.log(
         'MOQtailClient',
@@ -1577,6 +1494,7 @@ export class MOQtailClient {
       const msg = new Fetch(requestId, fullTrackName, params)
       const request = new FetchRequest(msg)
       request.onEndOfRange = args.onEndOfRange
+      request.orderer = this.#createOrderer(args.ordering, groupOrder, requestId, (obj) => request.objects.enqueue(obj))
       logger.log('MOQtailClient', 'fetch: full fetch message:', {
         requestId: msg.requestId,
         fullTrackName: `${fullTrackName}`,
@@ -1590,13 +1508,10 @@ export class MOQtailClient {
         this.requests.delete(msg.requestId)
         return response
       } else {
-        const stream = request.stream
-        return { requestId: msg.requestId, stream }
+        return { requestId: msg.requestId, fetchOk: response, stream: request.stream }
       }
     } catch (error) {
-      await this.disconnect(
-        new InternalError('MOQtailClient.fetch', error instanceof Error ? error.message : String(error)),
-      )
+      await this.disconnect(new InternalError('MOQtailClient.fetch', errorMessage(error)))
       throw error
     }
   }
@@ -1650,9 +1565,7 @@ export class MOQtailClient {
       }
       // No matching fetch request, idempotent
     } catch (error) {
-      await this.disconnect(
-        new InternalError('MOQtailClient.fetchCancel', error instanceof Error ? error.message : String(error)),
-      )
+      await this.disconnect(new InternalError('MOQtailClient.fetchCancel', errorMessage(error)))
       throw error
     }
   }
@@ -1700,9 +1613,7 @@ export class MOQtailClient {
         return { requestId: msg.requestId, trackAlias: trackAlias }
       }
     } catch (error) {
-      await this.disconnect(
-        new InternalError('MOQtailClient.publish', error instanceof Error ? error.message : String(error)),
-      )
+      await this.disconnect(new InternalError('MOQtailClient.publish', errorMessage(error)))
       throw error
     }
   }
@@ -1737,9 +1648,7 @@ export class MOQtailClient {
       this.requestIdMap.removeMappingByRequestId(publishRequestId)
       this.subscriptionAliasMap.delete(publishRequestId)
     } catch (error) {
-      await this.disconnect(
-        new InternalError('MOQtailClient.publishDone', error instanceof Error ? error.message : String(error)),
-      )
+      await this.disconnect(new InternalError('MOQtailClient.publishDone', errorMessage(error)))
       throw error
     }
   }
@@ -1846,9 +1755,7 @@ export class MOQtailClient {
       this.requests.delete(msg.requestId)
       return response
     } catch (error) {
-      await this.disconnect(
-        new InternalError('MOQtailClient.publishNamespace', error instanceof Error ? error.message : String(error)),
-      )
+      await this.disconnect(new InternalError('MOQtailClient.publishNamespace', errorMessage(error)))
       throw error
     }
   }
@@ -1919,7 +1826,7 @@ export class MOQtailClient {
       // No #openRequestStream here: NAMESPACE / NAMESPACE_DONE carry only a suffix, so
       // they are only meaningful next to the prefix that opened this stream. The generic
       // pump has no prefix to hand them, hence the bespoke drain below.
-      const requestStream = await RequestStream.open(this.webTransport, msg, this.#requestStreamHooks)
+      const requestStream = await RequestStream.open(this.webTransport, msg, this)
       this.#requestStreams.set(msg.requestId, requestStream)
 
       logger.log(
@@ -1958,9 +1865,7 @@ export class MOQtailClient {
         },
       }
     } catch (error) {
-      await this.disconnect(
-        new InternalError('MOQtailClient.subscribeNamespace', error instanceof Error ? error.message : String(error)),
-      )
+      await this.disconnect(new InternalError('MOQtailClient.subscribeNamespace', errorMessage(error)))
       throw error
     }
   }
@@ -1973,7 +1878,7 @@ export class MOQtailClient {
     assertWithinFilterRangeLimit(parameters ?? [], this.peerMaxFilterRanges, 'MOQtailClient.subscribeTracks')
     try {
       const msg = new SubscribeTracks(this.#nextClientRequestId, trackNamespacePrefix, parameters ?? [])
-      const requestStream = await RequestStream.open(this.webTransport, msg, this.#requestStreamHooks)
+      const requestStream = await RequestStream.open(this.webTransport, msg, this)
       this.#requestStreams.set(msg.requestId, requestStream)
 
       const response = await requestStream.next()
@@ -1999,9 +1904,7 @@ export class MOQtailClient {
         },
       }
     } catch (error) {
-      await this.disconnect(
-        new InternalError('MOQtailClient.subscribeTracks', error instanceof Error ? error.message : String(error)),
-      )
+      await this.disconnect(new InternalError('MOQtailClient.subscribeTracks', errorMessage(error)))
       throw error
     }
   }
@@ -2011,10 +1914,10 @@ export class MOQtailClient {
       while (true) {
         const msg = await requestStream.next()
         if (!msg) break
-        if (msg instanceof Namespace && this.onPeerNamespace) {
-          this.onPeerNamespace(prefix, msg.trackNamespaceSuffix)
-        } else if (msg instanceof NamespaceDone && this.onPeerNamespaceDone) {
-          this.onPeerNamespaceDone(prefix, msg.trackNamespaceSuffix)
+        if (msg instanceof Namespace) {
+          this.emit('peernamespace', prefix, msg.trackNamespaceSuffix)
+        } else if (msg instanceof NamespaceDone) {
+          this.emit('peernamespacedone', prefix, msg.trackNamespaceSuffix)
         }
       }
     } finally {
@@ -2036,9 +1939,7 @@ export class MOQtailClient {
       this.subscribedNamespaces.delete(trackNamespacePrefix)
       await this.#closeNamespaceRequestStream(trackNamespacePrefix)
     } catch (error) {
-      await this.disconnect(
-        new InternalError('MOQtailClient.unsubscribeNamespace', error instanceof Error ? error.message : String(error)),
-      )
+      await this.disconnect(new InternalError('MOQtailClient.unsubscribeNamespace', errorMessage(error)))
       throw error
     }
   }
@@ -2087,9 +1988,7 @@ export class MOQtailClient {
       this.requests.delete(msg.requestId)
       return response
     } catch (error) {
-      await this.disconnect(
-        new InternalError('MOQtailClient.trackStatus', error instanceof Error ? error.message : String(error)),
-      )
+      await this.disconnect(new InternalError('MOQtailClient.trackStatus', errorMessage(error)))
       throw error
     }
   }
@@ -2099,30 +1998,8 @@ export class MOQtailClient {
    *
    * @param requestId - The requestId carried by `first`; the key the stream is filed under.
    */
-  /**
-   * Hands a data stream {@link MOQtailClient.onDataEvent}, read at call time so an observer assigned
-   * after connecting still sees streams that are already open.
-   *
-   * @internal
-   */
-  dataStreamObserver(fullTrackNameOf?: DataStreamObserver['fullTrackNameOf']): DataStreamObserver {
-    return {
-      onDataEvent: (event) => this.onDataEvent?.(event),
-      ...(fullTrackNameOf && { fullTrackNameOf }),
-    }
-  }
-
-  /**
-   * Forwards request-stream traffic to {@link onMessageSent} and {@link onMessageReceived},
-   * read at call time so callbacks assigned after connecting still see it.
-   */
-  readonly #requestStreamHooks: RequestStreamHooks = {
-    onMessageSent: (msg) => this.onMessageSent?.(msg),
-    onMessageReceived: (msg) => this.onMessageReceived?.(msg),
-  }
-
   async #openRequestStream(requestId: bigint, first: ControlMessage): Promise<RequestStream> {
-    const requestStream = await RequestStream.open(this.webTransport, first, this.#requestStreamHooks)
+    const requestStream = await RequestStream.open(this.webTransport, first, this)
     this.#requestStreams.set(requestId, requestStream)
     void this.#pumpRequestStream(requestId, requestStream)
     return requestStream
@@ -2138,8 +2015,8 @@ export class MOQtailClient {
    * the wire changes.
    *
    * @returns True if the request was re-issued here. A GOAWAY naming a new session URI
-   * is not: opening a session is the application's call, so it is surfaced through
-   * {@link MOQtailClient.onGoaway} and the request stream is closed.
+   * is not: opening a session is the application's call, so it is surfaced as a
+   * `goaway` event and the request stream is closed.
    *
    * @internal
    */
@@ -2153,7 +2030,7 @@ export class MOQtailClient {
 
     if (goAway.newSessionUri) {
       logger.log('MOQtailClient', `GOAWAY migrates request ${requestId} to ${goAway.newSessionUri}`)
-      this.onGoaway?.(goAway)
+      this.emit('goaway', goAway)
       await this.#closeRequestStream(requestId)
       return false
     }
@@ -2206,6 +2083,7 @@ export class MOQtailClient {
     // §10.5: the response is the first message on the response stream, so anything
     // arriving here means the request was answered.
     let answered = false
+    let closedBy: unknown
     try {
       while (true) {
         const msg = await requestStream.next()
@@ -2222,7 +2100,11 @@ export class MOQtailClient {
       }
       logger.debug('MOQtailClient', `request stream for requestId=${requestId} closed by peer`)
     } catch (error) {
-      logger.error('MOQtailClient', `request stream for requestId=${requestId} failed`, error)
+      if (this.#sessionClosing(error)) closedBy = error
+      else logger.error('MOQtailClient', `request stream for requestId=${requestId} failed`, error)
+      // A subscription whose request stream breaks is over; a migrated one lives on
+      const request = this.requests.get(requestId)
+      if (!requestStream.migrated && request instanceof SubscribeRequest) request.finish()
     } finally {
       // A migrated request lives on under the same id on its new stream, so this one
       // ending is not the request ending.
@@ -2232,7 +2114,10 @@ export class MOQtailClient {
         if (!answered) {
           this.requests
             .get(requestId)
-            ?.reject(new InternalError('MOQtailClient', `Request stream closed before answering request ${requestId}`))
+            ?.reject(
+              closedBy ??
+                new InternalError('MOQtailClient', `Request stream closed before answering request ${requestId}`),
+            )
         }
       }
     }
@@ -2269,7 +2154,6 @@ export class MOQtailClient {
    * Reads the shared control stream, every request type has its own bidi stream.
    */
   async #handleIncomingControlMessages(): Promise<void> {
-    this.#ensureActive()
     try {
       const reader = this.controlStream.stream.getReader()
       while (true) {
@@ -2286,49 +2170,55 @@ export class MOQtailClient {
         await handler(this, msg)
       }
     } catch (error) {
-      this.disconnect()
-      throw error
+      // Nothing awaits this loop: the error ends the session here instead of surfacing unhandled
+      if (!this.#sessionClosing(error)) logger.error('MOQtailClient', 'control stream failed', error)
+      await this.disconnect(error)
     }
   }
 
-  async #acceptIncomingUniStreams() {
-    this.#ensureActive()
+  async #acceptIncomingUniStreams(): Promise<void> {
     const reader = this.#incomingUniStreams
-    let isDone = false
-    while (!isDone) {
-      try {
+    try {
+      while (true) {
         const { done, value: stream } = await reader.read()
-        if (done) {
-          isDone = true
-          throw new MOQtailError('WebTransport session is terminated')
-        }
+        if (done) return
         // Not awaited -- streams are served concurrently -- so its rejection has to be
         // handled here rather than by the enclosing catch, or it surfaces as an
         // unhandled rejection. A peer reset is an ordinary way for a data stream to
         // end (the subscription was dropped, TooFarBehind, a delivery timeout), so it
         // is reported, not escalated: one stream ending must not stop the accept loop.
         this.#handleRecvStreams(stream).catch((error) => {
-          if (error instanceof PeerStreamResetError) {
+          if (error instanceof PeerStreamResetError || this.#sessionClosing(error)) {
             logger.debug('MOQtailClient', `data stream ended: ${error.message}`)
             return
           }
           logger.error('MOQtailClient', 'handleRecvStreams error', error)
         })
-      } catch (error) {
-        logger.error('MOQtailClient', 'acceptIncomingUniStreams error', error)
-        if (this.#isDestroyed) break
       }
+    } catch (error) {
+      // A failed read leaves the reader errored: the session is gone
+      if (!this.#sessionClosing(error)) logger.error('MOQtailClient', 'acceptIncomingUniStreams error', error)
     }
   }
-  #acceptIncomingBiStreams(): void {
-    void (async () => {
-      const reader = this.webTransport.incomingBidirectionalStreams.getReader()
+
+  async #acceptIncomingBiStreams(): Promise<void> {
+    const reader = this.webTransport.incomingBidirectionalStreams.getReader()
+    try {
       while (true) {
         const { value: biStream, done } = await reader.read()
-        if (done) break
-        void this.#dispatchIncomingRequestStream(new RequestStream(biStream, this.#requestStreamHooks))
+        if (done) return
+        this.#dispatchIncomingRequestStream(new RequestStream(biStream, this)).catch((error) => {
+          if (!this.#sessionClosing(error)) logger.error('MOQtailClient', 'incoming request stream failed', error)
+        })
       }
-    })()
+    } catch (error) {
+      if (!this.#sessionClosing(error)) logger.error('MOQtailClient', 'acceptIncomingBiStreams error', error)
+    }
+  }
+
+  /** The session is going away, so a read or write failing is expected, not an error to log. */
+  #sessionClosing(error: unknown): boolean {
+    return this.#isDestroyed || isSessionClosed(error)
   }
 
   /**
@@ -2365,7 +2255,7 @@ export class MOQtailClient {
         msg = await requestStream.next()
       }
     } catch (error) {
-      logger.error('MOQtailClient', 'incoming request stream failed', error)
+      if (!this.#sessionClosing(error)) logger.error('MOQtailClient', 'incoming request stream failed', error)
     } finally {
       // The peer closed or reset the stream: cancel whatever it was serving. Every
       // First-marked type carries a request id, but the union as a whole does not.
@@ -2378,209 +2268,224 @@ export class MOQtailClient {
     }
   }
 
+  /** The objects on a fetch data stream. End-of-range markers carry no Object, so they go to `onEndOfRange`. */
+  async *#readFetchObjects(
+    reader: ReadableStreamDefaultReader<FetchObject | SubgroupObject>,
+    fullTrackName: FullTrackName,
+    onEndOfRange: EndOfRangeHandler | undefined,
+  ): AsyncGenerator<MoqtObject> {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) return
+      if (!value) continue
+      if (!(value instanceof FetchObject)) {
+        throw new ProtocolViolationError('MOQtailClient', 'Received subgroup object after fetch header')
+      }
+      if (value.kind === 'end_of_range') this.#notifyEndOfRange(onEndOfRange, value)
+      else yield MoqtObject.fromFetchObject(value, fullTrackName)
+    }
+  }
+
   // TODO: Handle request cancellation. Cancel streams are expected to receive some on-fly objects.
   // Do a timeout? Wait for certain amount of objects?
   async #handleRecvStreams(incomingUniStream: ReadableStream): Promise<void> {
     this.#ensureActive()
-    try {
-      const recvStream = await RecvStream.new(
-        incomingUniStream,
-        this.dataStreamTimeoutMs,
-        this.onDataReceived,
-        (header) => {
-          if (!(header instanceof FetchHeader)) return GroupOrder.Original
-          const request = this.requests.get(this.#clientRequestId(header.requestId))
-          if (!(request instanceof FetchRequest)) return GroupOrder.Original
-          return MessageParameter.groupOrderOf(request.message.parameters)
-        },
-        this.dataStreamObserver((header) =>
-          header instanceof SubgroupHeader ? this.aliasFullTrackNameMap.get(header.trackAlias) : undefined,
-        ),
-      )
-      const header = recvStream.header
-      const reader = recvStream.stream.getReader()
-      let forceComplete = false
-
-      if (header instanceof FetchHeader) {
-        // The header names the fetch by the id it was issued under, which a migration
-        // may have moved on from.
+    const recvStream = await RecvStream.new(
+      incomingUniStream,
+      this.dataStreamTimeoutMs,
+      this,
+      (header) => {
+        if (!(header instanceof FetchHeader)) return GroupOrder.Original
         const request = this.requests.get(this.#clientRequestId(header.requestId))
-        if (request && request instanceof FetchRequest) {
-          const fullTrackName = request.message.fullTrackName
+        if (!(request instanceof FetchRequest)) return GroupOrder.Original
+        return MessageParameter.groupOrderOf(request.message.parameters)
+      },
+      (header) => this.#streamTrackName(header),
+    )
+    const header = recvStream.header
+    const reader = recvStream.stream.getReader()
+    let forceComplete = false
 
-          try {
-            while (true) {
-              const { done, value: nextObject } = await reader.read()
-              if (done) {
-                // Fetch data stream complete - don't delete request here, FetchOk handler will do it
-                request.controller?.close()
-                break
-              }
-              if (nextObject) {
-                if (nextObject instanceof FetchObject) {
-                  if (nextObject.kind === 'end_of_range') {
-                    // A marker carries no Object, only the status of a range of them.
-                    this.#notifyEndOfRange(request.onEndOfRange, nextObject)
-                    continue
-                  }
-                  // TODO: validate if it's a valid fetch object, asc or desc?
-                  const moqtObject = MoqtObject.fromFetchObject(nextObject, fullTrackName)
-                  request.controller?.enqueue(moqtObject)
-                  continue
-                }
-                throw new ProtocolViolationError('MOQtailClient', 'Received subgroup object after fetch header')
-              }
+    if (header instanceof FetchHeader) {
+      // The header names the fetch by the id it was issued under, which a migration
+      // may have moved on from.
+      const request = this.requests.get(this.#clientRequestId(header.requestId))
+      if (request instanceof FetchRequest) {
+        let previous: Location | undefined
+        try {
+          const objects = this.#readFetchObjects(reader, request.message.fullTrackName, request.onEndOfRange)
+          for await (const moqtObject of objects) {
+            // The consumer cancelled its stream, a seek for one: the rest of this one goes nowhere
+            if (!request.objects.open) {
+              await recvStream.stopSending(StreamResetCode.Cancelled)
+              break
             }
-          } finally {
-            reader.releaseLock()
+            if (request.orderer) request.orderer.push(moqtObject, previous)
+            else request.objects.enqueue(moqtObject)
+            previous = moqtObject.location
           }
-          return
+          // The FETCH_OK handler removes the request, not the end of its data stream
+          request.orderer?.flush()
+          request.objects.close()
+        } finally {
+          reader.releaseLock()
+        }
+        return
+      }
+
+      // A fill fetch stream: the same header, but named by the SUBSCRIBE or the
+      // REQUEST_UPDATE that asked for the fill. Its objects belong on that
+      // subscription's stream, alongside the ones arriving live.
+      if (request instanceof SubscribeRequest) {
+        // The publisher counts it in Stream Count like any stream it opened, so
+        // the subscriber has to count it too or the two never agree.
+        request.streamsAccepted++
+        request.fillOpened = true
+        request.openFills++
+        request.orderer?.suspendWindow('fill')
+        let previous: Location | undefined
+        try {
+          for await (const moqtObject of this.#readFetchObjects(reader, request.fullTrackName, request.onEndOfRange)) {
+            // Unsubscribing is the consumer's to do; this stream just stops
+            if (!request.manager.objects.open) {
+              await recvStream.stopSending(StreamResetCode.Cancelled)
+              break
+            }
+            if (!request.manager.deliver(request, moqtObject, previous)) {
+              await recvStream.stopSending(StreamResetCode.Cancelled)
+              forceComplete = true
+              break
+            }
+            previous = moqtObject.location
+          }
+        } finally {
+          reader.releaseLock()
+          // Fills may overlap (moqt-22 §3.4): the window resumes once the last one ends
+          request.openFills--
+          if (request.openFills === 0) request.orderer?.resumeWindow('fill')
+        }
+        // It counts towards the subscription's streams like any other, so it can
+        // equally be the one that completes it.
+        this.completeSubscription(request, forceComplete)
+        return
+      }
+
+      throw new ProtocolViolationError('MOQtailClient', 'No request for received request id')
+    } else {
+      // A publisher opens a subscription's data streams as soon as it has written the
+      // control message naming their alias, and the two are separate streams with
+      // nothing ordering them: the data can arrive first.
+      // The holder is read back from the table rather than handed over by the wait:
+      // a SubscribeRequest is itself a thenable, so a promise resolved with one
+      // adopts it and yields its SUBSCRIBE_OK instead.
+      let subscription = this.subscriptions.get(header.trackAlias)
+      if (!subscription) {
+        await this.#waitForTrackAlias(header.trackAlias)
+        subscription = this.subscriptions.get(header.trackAlias)
+      }
+
+      if (subscription) {
+        subscription.streamsAccepted++
+        // The request that owns this stream names the track it carries. Resolving the
+        // alias per object instead would break the moment the alias mapping is torn
+        // down -- a switch retires the request it switched away from while that
+        // request's subgroup streams are still draining, and a long group can drain
+        // for seconds.
+        const fullTrackName: FullTrackName = subscription.fullTrackName
+        let firstObjectId: bigint | null = null
+        let lastObjectId: bigint | undefined
+
+        let subgroupTimeoutId: ReturnType<typeof setTimeout> | undefined
+        const effectiveDiscardPolicy = subscription.earlyDiscardPolicy ?? this.#earlyDiscardPolicy
+        if (effectiveDiscardPolicy?.subgroupReceiveTimeout !== undefined) {
+          subgroupTimeoutId = setTimeout(() => {
+            reader.cancel(streamResetReason(StreamResetCode.DeliveryTimeout)).catch(() => {})
+          }, effectiveDiscardPolicy.subgroupReceiveTimeout)
         }
 
-        // A fill fetch stream: the same header, but named by the SUBSCRIBE or the
-        // REQUEST_UPDATE that asked for the fill. Its objects belong on that
-        // subscription's stream, alongside the ones arriving live.
-        if (request instanceof SubscribeRequest) {
-          // The publisher counts it in Stream Count like any stream it opened, so
-          // the subscriber has to count it too or the two never agree.
-          request.streamsAccepted++
-          try {
-            while (true) {
-              const { done, value: nextObject } = await reader.read()
-              if (done) break
-              if (!nextObject) continue
-              if (!(nextObject instanceof FetchObject)) {
-                throw new ProtocolViolationError('MOQtailClient', 'Received subgroup object after fetch header')
+        try {
+          while (true) {
+            const { done, value: nextObject } = await reader.read()
+            if (done) {
+              // A clean end of a stream carrying the End of Group: its last object ends the group
+              if (lastObjectId !== undefined && SubgroupHeaderType.containsEndOfGroup(header.type)) {
+                subscription.orderer?.endGroup(header.groupId, lastObjectId)
               }
-              // A marker carries no Object, only the status of a range of them.
-              if (nextObject.kind === 'end_of_range') {
-                this.#notifyEndOfRange(request.onEndOfRange, nextObject)
-                continue
-              }
-              const moqtObject = MoqtObject.fromFetchObject(nextObject, request.fullTrackName)
-              if (request.manager) {
-                const shouldContinue = request.manager.deliver(request, moqtObject)
-                if (!shouldContinue) {
+              break
+            }
+            if (nextObject) {
+              if (nextObject instanceof SubgroupObject) {
+                lastObjectId = nextObject.objectId
+                // TODO: validate if it's a valid subgroup object
+                if (firstObjectId === null) {
+                  firstObjectId = nextObject.objectId
+                }
+                let subgroupId: bigint | null = null
+                if (SubgroupHeaderType.isSubgroupIdZero(header.type)) {
+                  subgroupId = 0n
+                } else if (SubgroupHeaderType.isSubgroupIdFirstObjectId(header.type)) {
+                  subgroupId = firstObjectId ?? null
+                } else if (SubgroupHeaderType.hasExplicitSubgroupId(header.type)) {
+                  subgroupId = header.subgroupId ?? null
+                }
+
+                const moqtObject = MoqtObject.fromSubgroupObject(
+                  nextObject,
+                  header.groupId,
+                  header.publisherPriority,
+                  subgroupId,
+                  fullTrackName,
+                )
+                if (!subscription.largestLocation) subscription.largestLocation = moqtObject.location
+                if (subscription.largestLocation.compare(moqtObject.location) == -1)
+                  subscription.largestLocation = moqtObject.location
+
+                // Unsubscribing is the consumer's to do; this stream just stops
+                if (!subscription.manager.objects.open) {
                   await recvStream.stopSending(StreamResetCode.Cancelled)
-                  forceComplete = true
                   break
                 }
-              } else request.controller?.enqueue(moqtObject)
-            }
-          } finally {
-            reader.releaseLock()
-          }
-          // It counts towards the subscription's streams like any other, so it can
-          // equally be the one that completes it.
-          this.completeSubscription(request, forceComplete)
-          return
-        }
-
-        throw new ProtocolViolationError('MOQtailClient', 'No request for received request id')
-      } else {
-        // A publisher opens a subscription's data streams as soon as it has written the
-        // control message naming their alias, and the two are separate streams with
-        // nothing ordering them: the data can arrive first.
-        // The holder is read back from the table rather than handed over by the wait:
-        // a SubscribeRequest is itself a thenable, so a promise resolved with one
-        // adopts it and yields its SUBSCRIBE_OK instead.
-        let subscription = this.subscriptions.get(header.trackAlias)
-        if (!subscription) {
-          await this.#waitForTrackAlias(header.trackAlias)
-          subscription = this.subscriptions.get(header.trackAlias)
-        }
-
-        if (subscription) {
-          subscription.streamsAccepted++
-          // The request that owns this stream names the track it carries. Resolving the
-          // alias per object instead would break the moment the alias mapping is torn
-          // down -- a switch retires the request it switched away from while that
-          // request's subgroup streams are still draining, and a long group can drain
-          // for seconds.
-          const fullTrackName: FullTrackName = subscription.fullTrackName
-          let firstObjectId: bigint | null = null
-
-          let subgroupTimeoutId: ReturnType<typeof setTimeout> | undefined
-          const effectiveDiscardPolicy = subscription.earlyDiscardPolicy ?? this.#earlyDiscardPolicy
-          if (effectiveDiscardPolicy?.subgroupReceiveTimeout !== undefined) {
-            subgroupTimeoutId = setTimeout(() => {
-              reader.cancel(streamResetReason(StreamResetCode.DeliveryTimeout)).catch(() => {})
-            }, effectiveDiscardPolicy.subgroupReceiveTimeout)
-          }
-
-          try {
-            while (true) {
-              const { done, value: nextObject } = await reader.read()
-              if (done) {
-                break
-              }
-              if (nextObject) {
-                if (nextObject instanceof SubgroupObject) {
-                  // TODO: validate if it's a valid subgroup object
-                  if (!firstObjectId) {
-                    firstObjectId = nextObject.objectId
-                  }
-                  let subgroupId: bigint | null = null
-                  if (SubgroupHeaderType.isSubgroupIdZero(header.type)) {
-                    subgroupId = 0n
-                  } else if (SubgroupHeaderType.isSubgroupIdFirstObjectId(header.type)) {
-                    subgroupId = firstObjectId ?? null
-                  } else if (SubgroupHeaderType.hasExplicitSubgroupId(header.type)) {
-                    subgroupId = header.subgroupId ?? null
-                  }
-
-                  const moqtObject = MoqtObject.fromSubgroupObject(
-                    nextObject,
-                    header.groupId,
-                    header.publisherPriority,
-                    subgroupId,
-                    fullTrackName,
-                  )
-                  if (!subscription.largestLocation) subscription.largestLocation = moqtObject.location
-                  if (subscription.largestLocation.compare(moqtObject.location) == -1)
-                    subscription.largestLocation = moqtObject.location
-
-                  if (subscription.manager) {
-                    const shouldContinue = subscription.manager.deliver(subscription, moqtObject)
-                    if (!shouldContinue) {
-                      forceComplete = true
-                      await recvStream.stopSending(StreamResetCode.Cancelled)
-                      break
-                    }
-                  } else subscription.controller?.enqueue(moqtObject)
-                  continue
+                if (!subscription.manager.deliver(subscription, moqtObject)) {
+                  forceComplete = true
+                  await recvStream.stopSending(StreamResetCode.Cancelled)
+                  break
                 }
-                throw new ProtocolViolationError('MOQtailClient', 'Received fetch object after subgroup header')
+                continue
               }
+              throw new ProtocolViolationError('MOQtailClient', 'Received fetch object after subgroup header')
             }
-          } finally {
-            if (subgroupTimeoutId !== undefined) clearTimeout(subgroupTimeoutId)
           }
-
-          this.completeSubscription(subscription, forceComplete)
-          return
+        } finally {
+          if (subgroupTimeoutId !== undefined) clearTimeout(subgroupTimeoutId)
         }
 
-        throw new ProtocolViolationError('MOQtailClient', 'No subscription for received track alias')
+        this.completeSubscription(subscription, forceComplete)
+        return
       }
-    } catch (error) {
-      //this.disconnect()
-      throw error
+
+      throw new ProtocolViolationError('MOQtailClient', 'No subscription for received track alias')
     }
   }
 }
 
 if (import.meta.vitest) {
   const { describe, it, expect, afterEach, vi } = import.meta.vitest
-  const { MessageParameters } = await import('../model/parameter/message_parameter')
-  const { LargestObject } = await import('../model/parameter/message/largest_object')
-  const { Header } = await import('../model/data/header')
-  const { FetchHeaderType, ObjectForwardingPreference, SubgroupHeaderType } = await import('../model/data/constant')
-  const { SubgroupObject } = await import('../model/data/subgroup_object')
-  const { ByteBuffer } = await import('../model/common/byte_buffer')
+  const { MessageParameters } = await import('@/model/parameter/message_parameter')
+  const { LargestObject } = await import('@/model/parameter/message/largest_object')
+  const { Header } = await import('@/model/data/header')
+  const { FetchHeaderType, ObjectForwardingPreference, SubgroupHeaderType } = await import('@/model/data/constant')
+  const { SubgroupObject } = await import('@/model/data/subgroup_object')
+  const { ByteBuffer } = await import('@/model/common/byte_buffer')
   const { RangeFilter, RangeFilterKind, encodeRanges, InvalidFilterError } =
-    await import('../model/parameter/message/range_filter')
+    await import('@/model/parameter/message/range_filter')
   const { DEFAULT_MAX_FILTER_RANGES } = await import('./types')
+  const { MaxCacheDurationProperty, ObjectDeliveryTimeoutProperty } = await import('@/model/property/track_property')
+  const { PublishDoneStatusCode, PublishSkipped } = await import('@/model/control')
+  const { EndOfRangeKind } = await import('@/model/data')
+  type FetchObjectContext = import('@/model/data/fetch_object').FetchObjectContext
+  type PublishSkipped = import('@/model/control').PublishSkipped
+  type EndOfRangeKind = import('@/model/data').EndOfRangeKind
+  const { findProperty } = await import('@/model/property/find')
 
   /** One bidirectional stream: what the client wrote, and a way to answer on it. */
   class MockBidiStream {
@@ -2620,6 +2525,11 @@ if (import.meta.vitest) {
     /** Delivers `msg` to the client on this stream, as the peer would. */
     respond(msg: ControlMessage): void {
       this.#peer.enqueue(ControlMessage.serialize(msg).toUint8Array())
+    }
+
+    /** Errors the receive side, as a closing session does. */
+    fail(reason: unknown): void {
+      this.#peer.error(reason)
     }
 
     /** Everything the client has written to this stream so far. */
@@ -2705,6 +2615,7 @@ if (import.meta.vitest) {
         new ReadableStream<Uint8Array>({
           start: (controller) => {
             streamController = controller
+            this.#uniStreams.push(controller)
             controller.enqueue(bytes)
           },
           cancel: (reason) => {
@@ -2717,9 +2628,19 @@ if (import.meta.vitest) {
 
     /** How many times the client called `close()`. */
     closeCount = 0
+    readonly #uniStreams: ReadableStreamDefaultController<Uint8Array>[] = []
 
+    /** Errors every stream still open, as Chrome does when a session closes. */
     close(): void {
       this.closeCount++
+      const closed = Object.assign(new Error('The session is closed.'), {
+        name: 'WebTransportError',
+        source: 'session',
+      })
+      for (const stream of [this.#incoming, this.#incomingBi, this.#incomingDatagrams, ...this.#uniStreams]) {
+        stream.error(closed)
+      }
+      for (const stream of this.biStreams) stream.fail(closed)
     }
   }
 
@@ -2730,10 +2651,34 @@ if (import.meta.vitest) {
       globalThis.WebTransport = originalWebTransport
     })
 
-    function connect(): Promise<MOQtailClient> {
+    function connect(client = new MOQtailClient({ url: 'https://relay.example/moq' })): Promise<MOQtailClient> {
       globalThis.WebTransport = MockWebTransport as unknown as typeof WebTransport
-      return MOQtailClient.new({ url: 'https://relay.example/moq' })
+      return client.init().then(() => client)
     }
+
+    it('does no I/O until init(), and takes no requests before it', async () => {
+      MockWebTransport.last = undefined as unknown as MockWebTransport
+      const client = new MOQtailClient({ url: 'https://relay.example/moq' })
+      expect(MockWebTransport.last).toBeUndefined()
+      await expect(client.trackStatus(FullTrackName.tryNew('room', 'video'), 1n)).rejects.toThrow('not initialized')
+    })
+
+    it('lets a listener attached before init() see the SETUP it sends, and runs init() once', async () => {
+      const client = new MOQtailClient({ url: 'https://relay.example/moq' })
+      const sent: ControlMessage[] = []
+      client.on('messagesent', (msg) => sent.push(msg))
+      const connecting = connect(client)
+      const transport = MockWebTransport.last
+      await vi.waitFor(() => expect(transport.sentChunks).toHaveLength(1))
+      transport.openIncomingUniStream(new Setup(new SetupOptions().build()).serialize().toUint8Array())
+      await connecting
+
+      expect(sent[0]).toBeInstanceOf(Setup)
+      expect(client.clientSetup).toBe(sent[0])
+      expect(client.serverSetup).toBeInstanceOf(Setup)
+      await expect(client.init()).rejects.toThrow('only run once')
+      await client.disconnect()
+    })
 
     it('handshakes over a pair of uni streams, SETUP first in both directions', async () => {
       const connecting = connect()
@@ -2758,6 +2703,47 @@ if (import.meta.vitest) {
     })
   })
 
+  describe('MOQtailClient session close', () => {
+    const originalWebTransport = globalThis.WebTransport
+    afterEach(() => {
+      globalThis.WebTransport = originalWebTransport
+    })
+
+    it('closing with requests and streams in flight leaves no unhandled rejection and logs no error', async () => {
+      globalThis.WebTransport = MockWebTransport as unknown as typeof WebTransport
+      const unhandled: unknown[] = []
+      const onUnhandled = (reason: unknown) => void unhandled.push(reason)
+      process.on('unhandledRejection', onUnhandled)
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        const client = new MOQtailClient({ url: 'https://relay.example/moq' })
+        const connecting = client.init()
+        const transport = MockWebTransport.last
+        await vi.waitFor(() => expect(transport.sentChunks).toHaveLength(1))
+        transport.openIncomingUniStream(new Setup(new SetupOptions().build()).serialize().toUint8Array())
+        await connecting
+        transport.openIncomingUniStream(new Uint8Array([0x10])) // a data stream cut inside its header
+        transport.openIncomingBiStream() // a peer request with no message yet
+        const subscribing = client.subscribe({
+          fullTrackName: FullTrackName.tryNew('room', 'video'),
+          locationFilter: new LocationFilter(LocationFilterType.NextObject),
+          forward: true,
+          groupOrder: GroupOrder.Original,
+          priority: 0,
+        })
+        await vi.waitFor(() => expect(transport.biStreams).toHaveLength(1))
+        await client.disconnect('test')
+        await subscribing.catch(() => {}) // the caller's to handle
+        await new Promise((resolve) => setTimeout(resolve, 10))
+        expect(unhandled).toEqual([])
+        expect(errors).not.toHaveBeenCalled()
+      } finally {
+        process.off('unhandledRejection', onUnhandled)
+        errors.mockRestore()
+      }
+    })
+  })
+
   describe('MOQtailClient request streams', () => {
     const originalWebTransport = globalThis.WebTransport
     const ftn = FullTrackName.tryNew('room/alice', 'video')
@@ -2769,21 +2755,20 @@ if (import.meta.vitest) {
     /** A connected client whose handshake is already done, plus its peer control stream. */
     async function connected(
       serverOptions = new SetupOptions(),
-      clientOptions?: SetupOptions,
+      clientOptions: Partial<MOQtailClientOptions> = {},
     ): Promise<{
       client: MOQtailClient
       transport: MockWebTransport
       control: ReadableStreamDefaultController<Uint8Array>
     }> {
       globalThis.WebTransport = MockWebTransport as unknown as typeof WebTransport
-      const connecting = MOQtailClient.new({
-        url: 'https://relay.example/moq',
-        ...(clientOptions ? { setupOptions: clientOptions } : {}),
-      })
+      const client = new MOQtailClient({ url: 'https://relay.example/moq', ...clientOptions })
+      const connecting = client.init()
       const transport = MockWebTransport.last
       await vi.waitFor(() => expect(transport.sentChunks).toHaveLength(1))
       const control = transport.openIncomingUniStream(new Setup(serverOptions.build()).serialize().toUint8Array())
-      return { client: await connecting, transport, control }
+      await connecting
+      return { client, transport, control }
     }
 
     /** Waits for the client to open its n-th bidi stream and write its first message. */
@@ -2872,7 +2857,7 @@ if (import.meta.vitest) {
     it('answers a REQUEST_UPDATE on its own PUBLISH stream and keeps the publication', async () => {
       const { client, transport } = await connected()
       const moves: { requestId: bigint; forward: boolean }[] = []
-      client.onForwardStateChange = (requestId, forward) => moves.push({ requestId, forward })
+      client.on('forwardstatechange', (requestId, forward) => moves.push({ requestId, forward }))
 
       client.addOrUpdateTrack({
         fullTrackName: ftn,
@@ -2954,9 +2939,9 @@ if (import.meta.vitest) {
       const { client, transport } = await connected()
       const prefix = Tuple.fromUtf8Path('room')
       const blocked: { prefix: Tuple; msg: PublishSkipped }[] = []
-      client.onPeerPublishSkipped = (subscribedPrefix, msg) => {
+      client.on('peerpublishskipped', (subscribedPrefix, msg) => {
         blocked.push({ prefix: subscribedPrefix, msg })
-      }
+      })
 
       const subscribingTracks = client.subscribeTracks(prefix)
       const tracksStream = await openedStream(transport, 0)
@@ -2998,7 +2983,11 @@ if (import.meta.vitest) {
         newSubscribeOptions: { ...options, fullTrackName: other },
       })
       ;(await openedStream(transport, 1)).respond(SubscribeOk.create(8n, [], []))
-      const awayId = ((await away) as { requestId: bigint }).requestId
+      const switched = (await away) as SubscribeResult
+      const awayId = switched.requestId
+      // The new request's SUBSCRIBE_OK, on the original subscription's stream
+      expect(switched.subscribeOk.trackAlias).toBe(8n)
+      expect(switched.stream).toBe((client.requests.get(firstId) as SubscribeRequest).manager!.stream)
 
       const back = client.switch({
         switchFromRequestId: awayId,
@@ -3140,9 +3129,16 @@ if (import.meta.vitest) {
       expect(subscribeStream.messages[1]).toBeInstanceOf(RequestUpdate)
       expect(transport.biStreams).toHaveLength(1)
 
+      // Without priority and forward, neither is sent: only what the update names changes
+      await client.subscribeUpdate({ subscriptionRequestId: requestId, parameters: [new Forward(true)] })
+      const update = subscribeStream.messages[2] as RequestUpdate
+      expect(update.parameters).toEqual([new Forward(true)])
+      await client.subscribeUpdate({ subscriptionRequestId: requestId })
+      expect((subscribeStream.messages[3] as RequestUpdate).parameters).toEqual([])
+
       await client.unsubscribe(requestId)
       // No UNSUBSCRIBE message: closing the stream is the cancellation.
-      expect(subscribeStream.messages).toHaveLength(2)
+      expect(subscribeStream.messages).toHaveLength(4)
       expect(subscribeStream.isClosed).toBe(true)
 
       await client.disconnect()
@@ -3182,7 +3178,7 @@ if (import.meta.vitest) {
     it('closes the session on a REQUEST_UPDATE on a TRACK_STATUS stream', async () => {
       const { client, transport } = await connected()
       const terminated: unknown[] = []
-      client.onSessionTerminated = (reason) => terminated.push(reason)
+      client.on('sessionterminated', (reason) => terminated.push(reason))
 
       const incoming = transport.openIncomingBiStream()
       incoming.respond(
@@ -3210,7 +3206,7 @@ if (import.meta.vitest) {
     it('closes the session on a REQUEST_UPDATE on a SUBSCRIBE this side sent', async () => {
       const { client, transport } = await connected()
       const terminated: unknown[] = []
-      client.onSessionTerminated = (reason) => terminated.push(reason)
+      client.on('sessionterminated', (reason) => terminated.push(reason))
 
       const subscribing = client.subscribe({
         fullTrackName: ftn,
@@ -3350,7 +3346,7 @@ if (import.meta.vitest) {
 
         // A second kind beyond the subscription's own limit is refused, and the update
         // ends it.
-        const one = await connected(new SetupOptions(), new SetupOptions().addMaxFilterRanges(1))
+        const one = await connected(new SetupOptions(), { setupOptions: new SetupOptions().addMaxFilterRanges(1) })
         one.client.addOrUpdateTrack({
           fullTrackName: ftn,
           trackSource: { live: new LiveTrackSource(new ReadableStream<MoqtObject>()) },
@@ -3534,13 +3530,13 @@ if (import.meta.vitest) {
       })
 
       it('refuses more ranges than it advertised, and any at all once it opts out', async () => {
-        const one = await connected(new SetupOptions(), new SetupOptions().addMaxFilterRanges(1))
+        const one = await connected(new SetupOptions(), { setupOptions: new SetupOptions().addMaxFilterRanges(1) })
         expect(await refused(one.client, one.transport, [objectId(0, 0n), objectId(1, 4n)])).toBe(
           RequestErrorCode.InvalidFilter,
         )
         await one.client.disconnect()
 
-        const none = await connected(new SetupOptions(), new SetupOptions().addMaxFilterRanges(0))
+        const none = await connected(new SetupOptions(), { setupOptions: new SetupOptions().addMaxFilterRanges(0) })
         expect(none.client.maxFilterRanges).toBe(0n)
         expect(await refused(none.client, none.transport, [objectId(0, 0n)])).toBe(RequestErrorCode.InvalidFilter)
         await none.client.disconnect()
@@ -3640,9 +3636,11 @@ if (import.meta.vitest) {
     it('closes the session on a second GOAWAY on the control stream', async () => {
       const { client, control } = await connected()
       const seen: GoAway[] = []
+      const alsoSeen: GoAway[] = []
       const terminated: unknown[] = []
-      client.onGoaway = (msg) => seen.push(msg)
-      client.onSessionTerminated = (reason) => terminated.push(reason)
+      client.on('goaway', (msg) => seen.push(msg))
+      client.on('goaway', (msg) => alsoSeen.push(msg))
+      client.on('sessionterminated', (reason) => terminated.push(reason))
 
       control.enqueue(new GoAway('https://elsewhere.example', 5000n).serialize().toUint8Array())
       await vi.waitFor(() => expect(seen).toHaveLength(1))
@@ -3654,6 +3652,7 @@ if (import.meta.vitest) {
       control.enqueue(new GoAway(undefined, 0n).serialize().toUint8Array())
       await vi.waitFor(() => expect(terminated).toHaveLength(1))
       expect(seen).toHaveLength(1)
+      expect(alsoSeen).toEqual(seen)
     })
 
     it('closes the WebTransport session on disconnect, once', async () => {
@@ -3680,7 +3679,8 @@ if (import.meta.vitest) {
       const subscribed = await subscribing
       expect(subscribed).not.toBeInstanceOf(RequestError)
 
-      await client.unsubscribe((subscribed as { requestId: bigint }).requestId)
+      await client.unsubscribe((subscribed as SubscribeResult).requestId)
+      expect(await (subscribed as SubscribeResult).done).toBeUndefined()
 
       // §3.3.2: UNSUBSCRIBE is gone. Nothing follows the SUBSCRIBE on the wire — the
       // publisher learns the subscription ended from the reset code.
@@ -3701,11 +3701,11 @@ if (import.meta.vitest) {
         locationFilter: new LocationFilter(LocationFilterType.AbsoluteStartGroupEnd, 0n, 0n, 1n),
       })
       const fetchStream = await openedStream(transport, 0)
-      fetchStream.respond(new FetchOk(false, new Location(1n, 0n), []))
-      const fetched = await fetching
-      expect(fetched).not.toBeInstanceOf(RequestError)
+      fetchStream.respond(new FetchOk(false, new Location(1n, 0n), [], [new MaxCacheDurationProperty(500n)]))
+      const fetched = (await fetching) as FetchResult
+      expect(findProperty(fetched.fetchOk.trackProperties, MaxCacheDurationProperty)?.durationMs).toBe(500n)
 
-      await client.fetchCancel((fetched as { requestId: bigint }).requestId)
+      await client.fetchCancel(fetched.requestId)
 
       expect(fetchStream.messages).toHaveLength(1)
       expect(streamResetCodeOf(fetchStream.abortReason)).toBe(StreamResetCode.Cancelled)
@@ -3727,6 +3727,69 @@ if (import.meta.vitest) {
 
     const objectAt = (group: number, id: number) =>
       FetchObject.newObject(group, 0, id, 0, ObjectForwardingPreference.Subgroup, null, new Uint8Array([id]))
+
+    it('stops the data stream of a fetch whose consumer cancelled, without an error', async () => {
+      const { client, transport } = await connected()
+      const errors = vi.spyOn(logger, 'error')
+      const fetching = client.fetch({
+        priority: 0,
+        groupOrder: GroupOrder.Original,
+        fullTrackName: ftn,
+        locationFilter: new LocationFilter(LocationFilterType.AbsoluteStart, 0n, 0n),
+        ordering: { window: { durationMs: 10 } },
+      })
+      const fetchStream = await openedStream(transport, 0)
+      fetchStream.respond(new FetchOk(false, new Location(9n, 0n), []))
+      const fetched = (await fetching) as FetchResult
+      // A seek: the player cancels its reader before the FETCH is cancelled
+      await fetched.stream.cancel()
+
+      transport.openIncomingUniStream(
+        fetchStreamBytes((fetchStream.messages[0] as Fetch).requestId, [objectAt(0, 0), objectAt(0, 1)]),
+      )
+      await vi.waitFor(() => expect(transport.uniCancelReasons).toHaveLength(1))
+      expect(streamResetCodeOf(transport.uniCancelReasons[0])).toBe(StreamResetCode.Cancelled)
+      expect(errors).not.toHaveBeenCalledWith('MOQtailClient', 'handleRecvStreams error', expect.anything())
+
+      errors.mockRestore()
+      await client.disconnect()
+    })
+
+    it('stops the data streams of a subscription whose consumer cancelled, and still completes it', async () => {
+      const { client, transport } = await connected()
+      const errors = vi.spyOn(logger, 'error')
+      const subscribing = client.subscribe({
+        fullTrackName: ftn,
+        locationFilter: new LocationFilter(LocationFilterType.NextObject),
+        forward: true,
+        groupOrder: GroupOrder.Original,
+        priority: 0,
+      })
+      const subscribeStream = await openedStream(transport, 0)
+      subscribeStream.respond(SubscribeOk.create(7n, [], []))
+      const subscribed = (await subscribing) as SubscribeResult
+      await subscribed.stream.cancel()
+
+      const bytes = new ByteBuffer()
+      bytes.putBytes(Header.newSubgroup(SubgroupHeaderType.Type0x10, 7n, 1n, undefined, 0).serialize().toUint8Array())
+      bytes.putBytes(
+        SubgroupObject.newWithPayload(0, null, new Uint8Array([1]))
+          .serialize(undefined)
+          .toUint8Array(),
+      )
+      transport.openIncomingUniStream(bytes.toUint8Array())
+      await vi.waitFor(() => expect(transport.uniCancelReasons).toHaveLength(1))
+      expect(streamResetCodeOf(transport.uniCancelReasons[0])).toBe(StreamResetCode.Cancelled)
+
+      // Its stream can't be closed any more, which must not stop the request being forgotten
+      subscribeStream.respond(new PublishDone(PublishDoneStatusCode.TrackEnded, 1n, new ReasonPhrase('')))
+      expect((await subscribed.done)?.statusCode).toBe(PublishDoneStatusCode.TrackEnded)
+      expect(client.requests.has(subscribed.requestId)).toBe(false)
+      expect(errors).not.toHaveBeenCalledWith('MOQtailClient', 'handleRecvStreams error', expect.anything())
+
+      errors.mockRestore()
+      await client.disconnect()
+    })
 
     it('notifies the application of the End of Range markers in a FETCH response', async () => {
       const { client, transport } = await connected()
@@ -3879,6 +3942,101 @@ if (import.meta.vitest) {
       await client.disconnect()
     })
 
+    describe('ordering', () => {
+      /** Subscribes on alias 7 with `ordering`, with helpers that send its fill and live streams and read it. */
+      async function subscribeOrdered(
+        client: MOQtailClient,
+        transport: MockWebTransport,
+        ordering: ObjectOrdering | 'none',
+      ) {
+        const subscribing = client.subscribe({
+          fullTrackName: ftn,
+          locationFilter: new LocationFilter(LocationFilterType.NextObject),
+          parameters: [new FillParameters([new LocationFilter(LocationFilterType.RelativeStart, 2n)])],
+          forward: true,
+          groupOrder: GroupOrder.Original,
+          priority: 0,
+          ordering,
+        })
+        const subscribeStream = await openedStream(transport, 0)
+        const requestId = (subscribeStream.messages[0] as Subscribe).requestId
+        subscribeStream.respond(
+          SubscribeOk.create(7n, new MessageParameters().add(new LargestObject(new Location(5n, 1n))).build(), []),
+        )
+        const { stream } = (await subscribing) as { stream: ReadableStream<MoqtObject> }
+        const payload = new Uint8Array([1])
+        const live = (group: bigint, object: number) => {
+          const bytes = new ByteBuffer()
+          bytes.putBytes(
+            Header.newSubgroup(SubgroupHeaderType.Type0x10, 7n, group, undefined, 0).serialize().toUint8Array(),
+          )
+          bytes.putBytes(SubgroupObject.newWithPayload(object, null, payload).serialize(undefined).toUint8Array())
+          transport.openIncomingUniStream(bytes.toUint8Array())
+        }
+        const fill = (...locations: [number, number][]) => {
+          const bytes = new ByteBuffer()
+          bytes.putBytes(Header.newFetch(FetchHeaderType.Type0x05, requestId).serialize().toUint8Array())
+          let ctx: FetchObjectContext | undefined
+          for (const [group, object] of locations) {
+            const fetchObject = FetchObject.newObject(
+              group,
+              0,
+              object,
+              0,
+              ObjectForwardingPreference.Subgroup,
+              null,
+              payload,
+            )
+            bytes.putBytes(fetchObject.serialize(ctx, GroupOrder.Ascending).toUint8Array())
+            ctx = fetchObject.nextContext(ctx)
+          }
+          // A fill fetch stream ends once its range is delivered
+          transport.openIncomingUniStream(bytes.toUint8Array()).close()
+        }
+        const read = async (count: number) => {
+          const reader = stream.getReader()
+          const out: string[] = []
+          for (let i = 0; i < count; i++) {
+            const { value } = await reader.read()
+            out.push(`${value!.location.group}.${value!.location.object}`)
+          }
+          reader.releaseLock()
+          return out
+        }
+        return { live, fill, read }
+      }
+
+      it('orders a fill and one stream per object, and reports what it stopped waiting for', async () => {
+        const { client, transport } = await connected()
+        const gaps: string[] = []
+        client.on('orderinggap', (_, from, to) => gaps.push(`${from.group}.${from.object}-${to.group}.${to.object}`))
+        const { live, fill, read } = await subscribeOrdered(client, transport, { window: { durationMs: 100 } })
+
+        live(5n, 3)
+        live(5n, 2)
+        // Longer than the window: live objects wait for the fill however late it opens
+        await new Promise((resolve) => setTimeout(resolve, 150))
+        fill([4, 0], [4, 1], [5, 0], [5, 1])
+        live(5n, 5)
+        expect(await read(7)).toEqual(['4.0', '4.1', '5.0', '5.1', '5.2', '5.3', '5.5'])
+        expect(gaps).toEqual(['5.4-5.5'])
+
+        await client.disconnect()
+      })
+
+      it("leaves a request with 'none' unordered, whatever the client default", async () => {
+        const { client, transport } = await connected(new SetupOptions(), { ordering: { window: { durationMs: 20 } } })
+        const { live, read } = await subscribeOrdered(client, transport, 'none')
+
+        // Ordered, both would wait for the start of group 5 and leave as 5.2, 5.3
+        live(5n, 3)
+        live(5n, 2)
+        expect(await read(2)).toEqual(['5.3', '5.2'])
+
+        await client.disconnect()
+      })
+    })
+
     it('keeps delivering the track a soft switch handed over from until it goes quiet', async () => {
       const { client, transport } = await connected()
       client.switchDrainTimeoutMs = 40
@@ -3926,6 +4084,60 @@ if (import.meta.vitest) {
       await client.disconnect()
     })
 
+    it('orders a soft switch: the new track waits behind the drain, and no window expires meanwhile', async () => {
+      const { client, transport } = await connected()
+      client.switchDrainTimeoutMs = 60
+      const other = FullTrackName.tryNew('room/alice', 'video-low')
+      const options = {
+        locationFilter: new LocationFilter(LocationFilterType.NextObject),
+        forward: true,
+        groupOrder: GroupOrder.Original,
+        priority: 0,
+        ordering: { window: { durationMs: 10 } },
+      } as const
+      const first = client.subscribe({ ...options, fullTrackName: ftn })
+      const firstStream = await openedStream(transport, 0)
+      firstStream.respond(SubscribeOk.create(7n, [], []))
+      const firstId = ((await first) as { requestId: bigint }).requestId
+      const switching = client.switch({
+        switchFromRequestId: firstId,
+        switchMode: SwitchMode.Soft,
+        newSubscribeOptions: { ...options, fullTrackName: other },
+      })
+      ;(await openedStream(transport, 1)).respond(SubscribeOk.create(8n, [], []))
+      const target = client.requests.get(((await switching) as { requestId: bigint }).requestId) as SubscribeRequest
+      const old = client.requests.get(firstId) as SubscribeRequest
+      const manager = target.manager!
+      const out: string[] = []
+      void (async () => {
+        for await (const obj of manager.stream) out.push(`${obj.location.group}.${obj.location.object}`)
+      })()
+      const object = (name: FullTrackName, group: bigint, id: bigint) =>
+        MoqtObject.newWithPayload(
+          name,
+          new Location(group, id),
+          0,
+          ObjectForwardingPreference.Subgroup,
+          0,
+          null,
+          new Uint8Array([1]),
+        )
+
+      manager.deliver(old, object(ftn, 1n, 0n))
+      manager.deliver(target, object(other, 2n, 0n)) // the handover: the old track drains
+      manager.deliver(target, object(other, 2n, 2n)) // 2.1 is missing
+      manager.deliver(old, object(ftn, 1n, 2n)) // 1.1 is late
+      await new Promise((resolve) => setTimeout(resolve, 30))
+      // Past the 10 ms window: the old track still waits for 1.1, the new one for the drain
+      expect(out).toEqual(['1.0'])
+      manager.deliver(old, object(ftn, 1n, 1n))
+      await vi.waitFor(() => expect(out).toEqual(['1.0', '1.1', '1.2']))
+      // The drain ends on silence: the new track follows, and its window expires as usual
+      await vi.waitFor(() => expect(out).toEqual(['1.0', '1.1', '1.2', '2.0', '2.2']))
+
+      await client.disconnect()
+    })
+
     it('ends a drain on the PUBLISH_DONE that accounts for its streams', async () => {
       const { client, transport } = await connected()
       // Long enough that the backstop cannot be what ends this.
@@ -3941,15 +4153,21 @@ if (import.meta.vitest) {
       const first = client.subscribe({ ...options, fullTrackName: ftn })
       const firstStream = await openedStream(transport, 0)
       firstStream.respond(SubscribeOk.create(7n, [], []))
-      const firstId = ((await first) as { requestId: bigint }).requestId
+      const { requestId: firstId, done } = (await first) as SubscribeResult
+      let doneWith: PublishDone | undefined | 'pending' = 'pending'
+      void done.then((publishDone) => (doneWith = publishDone))
 
       const switching = client.switch({
         switchFromRequestId: firstId,
         switchMode: SwitchMode.Soft,
         newSubscribeOptions: { ...options, fullTrackName: other },
       })
-      ;(await openedStream(transport, 1)).respond(SubscribeOk.create(8n, [], []))
-      const target = client.requests.get(((await switching) as { requestId: bigint }).requestId) as SubscribeRequest
+      const switchStream = await openedStream(transport, 1)
+      switchStream.respond(SubscribeOk.create(8n, [], []))
+      const switched = (await switching) as SubscribeResult
+      // The switch reports the chain's done, not just its own request's
+      expect(switched.done).toBe(done)
+      const target = client.requests.get(switched.requestId) as SubscribeRequest
       const old = client.requests.get(firstId) as SubscribeRequest
 
       target.manager!.deliver(target, {} as MoqtObject)
@@ -3961,6 +4179,13 @@ if (import.meta.vitest) {
       await vi.waitFor(() => expect(client.requests.has(firstId)).toBe(false))
       expect(firstStream.isClosed).toBe(true)
       expect(firstStream.abortReason).toBeUndefined()
+
+      // The subscription is done only once the track it switched to is, with that PUBLISH_DONE
+      await new Promise((resolve) => setTimeout(resolve))
+      expect(doneWith).toBe('pending')
+      target.streamsAccepted = 1n
+      switchStream.respond(new PublishDone(PublishDoneStatusCode.Expired, 1n, new ReasonPhrase('')))
+      expect((await done)?.statusCode).toBe(PublishDoneStatusCode.Expired)
 
       await client.disconnect()
     })
@@ -3976,6 +4201,10 @@ if (import.meta.vitest) {
         priority: 0,
       })
       const subscribeStream = await openedStream(transport, 0)
+      let header: DataHeaderEvent | undefined
+      client.on('dataevent', (event) => {
+        if (event.kind === 'header') header = event
+      })
 
       // The subgroup and the SUBSCRIBE_OK travel on separate streams, so the data can
       // land first. Dropping it would cost the whole subgroup.
@@ -3993,6 +4222,9 @@ if (import.meta.vitest) {
       expect(value?.payload).toEqual(payload)
       expect(value?.location.group).toBe(4n)
       expect(value?.fullTrackName.toString()).toBe(ftn.toString())
+      // Unnamed when the stream opened, named once the alias is
+      expect(header?.fullTrackName).toBeUndefined()
+      expect(client.trackNameOf(header!)?.toString()).toBe(ftn.toString())
       reader.releaseLock()
 
       await client.disconnect()

@@ -830,6 +830,12 @@ impl RecvDataStream {
     }
 
     loop {
+      // Registered before the checks below: the read task's notify_waiters keeps no
+      // permit, so a wakeup sent between a check and the wait would be lost.
+      let notified = self.notify.notified();
+      tokio::pin!(notified);
+      notified.as_mut().enable();
+
       // First, check if anything is queued
       {
         let mut items = self.items.write().await;
@@ -854,7 +860,7 @@ impl RecvDataStream {
         }
       } else {
         // Wait for notification that a new object may be available or the stream is closed.
-        self.notify.notified().await;
+        notified.await;
       }
     }
   }

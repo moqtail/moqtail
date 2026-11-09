@@ -53,17 +53,27 @@ const STALL_THRESHOLD = 0.5
 const MIN_RATE = 0.6
 /** A forward buffer this many times its goal is jumped instead of caught up. */
 const JUMP_FACTOR = 4
+/** With jumps only: how far the forward buffer may stray from its goal before one. A jump is a visible skip. */
+const JUMP_TOLERANCE = 0.5
+/**
+ * WebKit's clock stalls for ~0.3 s on every playbackRate change (https://bugs.webkit.org/show_bug.cgi?id=163433),
+ * which undoes a catch-up and starts the next one: there latency is held with jumps only.
+ * shortcut: detects WebKit by ManagedMediaSource, revisit if another engine ships it.
+ */
+const CORRECTION: 'rate' | 'jump' = 'ManagedMediaSource' in globalThis ? 'jump' : 'rate'
 
 /**
  * The forward buffer that gives the target latency is the goal, never below the stall
- * threshold or `min` nor above `max`. Without a target the latency stays where it is.
+ * threshold or `min` nor above `max`. Without a target the latency stays where it is. With
+ * `'jump'` correction the rate stays 1 and a forward buffer off its goal jumps to it.
  */
-export function decide(state: BufferState, catchupRate: number): BufferDecision {
+export function decide(state: BufferState, catchupRate: number, correction: 'rate' | 'jump' = 'rate'): BufferDecision {
   const { forward, latency, target = latency, min = 0, max = Infinity } = state
   const exact = forward + target - latency
   const goal = Math.min(Math.max(exact, min, STALL_THRESHOLD), max)
   // Far behind the target (a seek back): land at it past the buffer at once, not chase the buffer end
   if (forward > goal * JUMP_FACTOR) return { jumpTo: -exact > goal * JUMP_FACTOR ? exact : goal }
+  if (correction === 'jump') return Math.abs(forward - goal) > JUMP_TOLERANCE ? { jumpTo: goal } : { rate: 1 }
   if (forward > goal + TOLERANCE) return { rate: catchupRate }
   if (forward >= goal - TOLERANCE) return { rate: 1 }
   const slow = 2 - catchupRate
@@ -78,7 +88,7 @@ interface Attached {
 
 /**
  * Catches up at `catchupRate` when behind the target latency, slows to `2 - catchupRate`
- * when ahead. Without catalog targets the target latency is `targetLatency`.
+ * when ahead; on WebKit it jumps instead. Without catalog targets the target latency is `targetLatency`.
  */
 export class LiveBufferController implements BufferController {
   readonly #catchupRate: number
@@ -144,7 +154,8 @@ export class LiveBufferController implements BufferController {
     if (range === -1) return // the sink jumps gaps itself
     const forward = buffered.end(range) - currentTime
     const targets = this.#targets ?? { target: this.#targetLatency, min: undefined, max: undefined }
-    const decision = decide({ forward, latency: this.#latency(currentTime, forward), ...targets }, this.#catchupRate)
+    const state = { forward, latency: this.#latency(currentTime, forward), ...targets }
+    const decision = decide(state, this.#catchupRate, CORRECTION)
     if ('jumpTo' in decision) {
       // A failed jump leaves playback where it was
       sink.seek(liveEdge(buffered, decision.jumpTo)).catch(() => {})
@@ -211,5 +222,14 @@ if (import.meta.vitest) {
     expect(rate({ forward: 3, latency: 3, target: 4, max: 2.5 })).toEqual({ rate: 1.1 })
     expect(rate({ forward: 3, latency: 5, target: undefined })).toEqual({ rate: 1 })
     expect(rate({ forward: 3, latency: 3, target: undefined, max: 2 })).toEqual({ rate: 1.1 })
+  })
+
+  test("'jump' correction keeps rate 1 and jumps to the goal once the forward buffer is 0.5 s off it", () => {
+    const jump = (s: Partial<BufferState>) => decide(state(s), CATCHUP_RATE, 'jump')
+    expect(jump({ forward: 2.25, latency: 2.25 })).toEqual({ rate: 1 })
+    expect(jump({ forward: 0.25, latency: 0.25, target: 0.25 })).toEqual({ rate: 1 }) // no slowdown near a stall
+    expect(jump({ forward: 2.75, latency: 2.75 })).toEqual({ jumpTo: 2 })
+    expect(jump({ forward: 1, latency: 1 })).toEqual({ jumpTo: 2 }) // back into the buffer
+    expect(jump({ forward: 9, latency: 9 })).toEqual({ jumpTo: 2 })
   })
 }

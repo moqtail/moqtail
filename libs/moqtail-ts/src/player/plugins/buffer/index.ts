@@ -30,7 +30,8 @@ export interface LiveBufferConfig {
 
 /**
  * @public
- * A buffer controller that holds the catalog's target latency, else `targetLatency` (1 s), through the playback rate.
+ * A buffer controller that holds the catalog's target latency, else `targetLatency` (1 s), through the playback rate,
+ * or on WebKit through jumps, where every rate change stalls playback.
  * Priority `Infinity`, so any other active buffer plugin wins over it.
  */
 export const liveBuffer = definePlugin({

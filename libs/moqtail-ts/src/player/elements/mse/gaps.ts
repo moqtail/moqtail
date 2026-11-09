@@ -49,9 +49,13 @@ export function gapJumpTarget(
   return undefined
 }
 
+/** WebKit rounds `currentTime`, so a jump to a range's start can land a hair before it. */
+const START_TOLERANCE = 0.001
+
 /** Index of the range containing `time`, or -1. */
 export function rangeAt(time: number, ranges: TimeRanges): number {
-  for (let i = 0; i < ranges.length; i++) if (ranges.start(i) <= time && time <= ranges.end(i)) return i
+  for (let i = 0; i < ranges.length; i++)
+    if (ranges.start(i) - START_TOLERANCE <= time && time <= ranges.end(i)) return i
   return -1
 }
 
@@ -107,6 +111,11 @@ if (import.meta.vitest) {
       expect(gapJumpTarget(10.4, holes, false, LIVE_EDGE_DELAY)).toBe(12) // not back to 10.3
       expect(gapJumpTarget(21, holes, false, LIVE_EDGE_DELAY)).toBeUndefined()
       expect(gapJumpTarget(1, timeRanges([]), true, LIVE_EDGE_DELAY)).toBeUndefined()
+    })
+
+    test('a time WebKit rounded to just before a range start is in it', () => {
+      expect(rangeAt(257257.0463053, timeRanges([[257257.04630533853, 257257.3]]))).toBe(0)
+      expect(gapJumpTarget(12.9999, holes, false, LIVE_EDGE_DELAY)).toBeUndefined()
     })
   })
 }

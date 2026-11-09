@@ -144,7 +144,7 @@ describe('component', () => {
     for (const name of members) {
       expect(name in el, name).toBe(true)
       const value = Reflect.get(el.nativeEl, name)
-      if (own.has(name) || typeof value === 'function' || typeof value === 'object') continue
+      if (own.has(name.toLowerCase()) || typeof value === 'function' || typeof value === 'object') continue
       expect(Reflect.get(el, name), name).toBe(value)
     }
     expect(el.readyState).toBeGreaterThanOrEqual(HTMLMediaElement.HAVE_CURRENT_DATA)

@@ -25,6 +25,8 @@ use std::{
   sync::{Arc, RwLock as SyncRwLock},
 };
 use tokio::sync::RwLock;
+#[cfg(test)]
+use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{error, info, trace};
 
@@ -63,6 +65,14 @@ impl SubscriptionManager {
       log_folder,
       config,
     }
+  }
+
+  /// Takes the track's events without a subscription behind them.
+  #[cfg(test)]
+  pub(crate) fn add_test_sender(&self, id: SubscriptionId) -> UnboundedReceiver<TrackEvent> {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    self.senders_mut().insert(id, tx);
+    rx
   }
 
   fn senders_mut(&self) -> std::sync::RwLockWriteGuard<'_, SubscriberSenderMap> {

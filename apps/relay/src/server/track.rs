@@ -982,25 +982,25 @@ impl Track {
         .insert(stream_id.clone(), h.clone());
     }
 
-    // Send single Object event with optional header info
-    let event = TrackEvent::SubgroupObject {
-      stream_id: stream_id.clone(),
-      object: Arc::new(object.clone()),
-      header_info: header_info.cloned(),
-    };
-
-    self
-      .subscription_manager
-      .send_event_to_subscribers(event)
-      .await?;
-
     // The cache cannot hold a status, so all that is kept of one is what it says does
     // not exist.
     if let Ok(fetch_object) = object.clone().try_into_fetch() {
       self.cache.add_object(fetch_object).await;
     }
     self.note_absent(object, false);
+    // Before the fan-out: a subscriber joining now starts after the Largest Location,
+    // so an Object it misses must already be counted in it.
     self.record_arrival(object).await;
+
+    let event = TrackEvent::SubgroupObject {
+      stream_id: stream_id.clone(),
+      object: Arc::new(object.clone()),
+      header_info: header_info.cloned(),
+    };
+    self
+      .subscription_manager
+      .send_event_to_subscribers(event)
+      .await?;
     Ok(())
   }
 
@@ -1652,6 +1652,115 @@ mod tests {
       assert!(complete(&track, 4).await);
       assert!(complete(&track, 5).await);
       assert!(!complete(&track, 3).await);
+    }
+  }
+
+  /// A subscriber that joins while an Object is arriving takes its live start from
+  /// the Largest Location at that moment. So the track must count an Object as the
+  /// largest before handing it to subscribers: one sent first could reach no joiner
+  /// yet still sit below where that joiner starts.
+  mod join_during_arrival {
+    use super::super::*;
+    use bytes::Bytes;
+    use moqtail::model::data::constant::ObjectForwardingPreference;
+    use tokio::sync::mpsc::UnboundedReceiver;
+
+    fn subgroup_object(group: u64, id: u64) -> Object {
+      Object {
+        track_alias: 1,
+        location: Location::new(group, id),
+        publisher_priority: 128,
+        forwarding_preference: ObjectForwardingPreference::Subgroup,
+        subgroup_id: Some(0),
+        status: ObjectStatus::Normal,
+        properties: None,
+        payload: Some(Bytes::from_static(b"x")),
+      }
+    }
+
+    fn datagram(group: u64, id: u64) -> Datagram {
+      Datagram::new_payload(
+        1,
+        group,
+        id,
+        Some(128),
+        None,
+        Bytes::from_static(b"x"),
+        false,
+      )
+    }
+
+    fn location_of(event: &TrackEvent) -> Location {
+      match event {
+        TrackEvent::SubgroupObject { object, .. } => object.location.clone(),
+        TrackEvent::Datagram { object } => Location::new(object.group_id, object.object_id),
+        other => panic!("unexpected event {other:?}"),
+      }
+    }
+
+    /// Holds the Largest Location still while `arrive` delivers (2,5), and fails if
+    /// subscribers get it before the Largest Location can move to it.
+    async fn arrival_moves_largest_before_fan_out<F>(arrive: F)
+    where
+      F: FnOnce(Arc<Track>) -> tokio::task::JoinHandle<()>,
+    {
+      let track = Arc::new(super::cleanup::track(TrackOrigin::Subscribe));
+      track
+        .new_subgroup_object(
+          &StreamId::new_subgroup(1, 2, Some(0)),
+          &subgroup_object(2, 4),
+          None,
+        )
+        .await
+        .unwrap();
+      let mut existing: UnboundedReceiver<TrackEvent> =
+        track.subscription_manager.add_test_sender((1, 0));
+
+      let held = track.largest_location.read().await;
+      let arrival = arrive(track.clone());
+      let early = tokio::time::timeout(Duration::from_millis(200), existing.recv()).await;
+      if let Ok(Some(event)) = &early {
+        panic!(
+          "{:?} reached subscribers while the Largest Location was still {:?}: a joiner \
+           would start after it and never get it",
+          location_of(event),
+          *held
+        );
+      }
+      drop(held);
+
+      arrival.await.unwrap();
+      let event = existing
+        .recv()
+        .await
+        .expect("the Object reaches subscribers");
+      assert_eq!(location_of(&event), Location::new(2, 5));
+      assert_eq!(track.largest_object().await, Some(Location::new(2, 5)));
+    }
+
+    #[tokio::test]
+    async fn a_subgroup_object_is_largest_before_subscribers_get_it() {
+      arrival_moves_largest_before_fan_out(|track| {
+        tokio::spawn(async move {
+          track
+            .new_subgroup_object(
+              &StreamId::new_subgroup(1, 2, Some(0)),
+              &subgroup_object(2, 5),
+              None,
+            )
+            .await
+            .unwrap();
+        })
+      })
+      .await;
+    }
+
+    #[tokio::test]
+    async fn a_datagram_is_largest_before_subscribers_get_it() {
+      arrival_moves_largest_before_fan_out(|track| {
+        tokio::spawn(async move { track.new_datagram(&datagram(2, 5)).await.unwrap() })
+      })
+      .await;
     }
   }
 }

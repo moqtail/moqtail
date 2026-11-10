@@ -18,12 +18,11 @@ use super::client::MOQTClient;
 use super::config::AppConfig;
 use super::subscription::Subscription;
 use super::track::TrackEvent;
-use super::utils;
 use anyhow::Result;
 use moqtail::model::data::full_track_name::FullTrackName;
 use std::{
   collections::{BTreeMap, HashMap, HashSet},
-  sync::Arc,
+  sync::{Arc, RwLock as SyncRwLock},
 };
 use tokio::sync::RwLock;
 use tokio::sync::mpsc::UnboundedSender;
@@ -33,11 +32,8 @@ use tracing::{error, info, trace};
 /// Each partition contains a separate HashMap protected by its own RwLock.
 /// Higher values reduce contention but increase memory overhead.
 /// Should be a power of 2 for optimal modulo performance.
-const SUBSCRIBER_PARTITION_COUNT: usize = 16;
 pub type SubscriptionId = (usize, u64); // connection_id and request_id
 pub type SubscriberSenderMap = HashMap<SubscriptionId, UnboundedSender<TrackEvent>>;
-pub type SubscriberSenderLock = Arc<RwLock<SubscriberSenderMap>>;
-pub type SubscriberSenderList = Vec<SubscriberSenderLock>;
 
 #[derive(Debug, Clone)]
 pub(crate) struct SubscriptionManager {
@@ -45,7 +41,8 @@ pub(crate) struct SubscriptionManager {
   full_track_name: FullTrackName,
   subscriptions: Arc<RwLock<BTreeMap<SubscriptionId, Arc<RwLock<Subscription>>>>>,
   subscriber_request_ids: Arc<RwLock<BTreeMap<usize, HashSet<u64>>>>,
-  subscriber_senders: Arc<SubscriberSenderList>,
+  /// A plain lock: the fan-out sends without awaiting, so it is never held across one.
+  subscriber_senders: Arc<SyncRwLock<SubscriberSenderMap>>,
   log_folder: String,
   config: &'static AppConfig,
 }
@@ -57,44 +54,22 @@ impl SubscriptionManager {
     log_folder: String,
     config: &'static AppConfig,
   ) -> Self {
-    // Initialize partitioned subscriber senders
-    let mut subscriber_senders = Vec::with_capacity(SUBSCRIBER_PARTITION_COUNT);
-    for _ in 0..SUBSCRIBER_PARTITION_COUNT {
-      subscriber_senders.push(Arc::new(RwLock::new(HashMap::new())));
-    }
-
     SubscriptionManager {
       relay_track_id,
       full_track_name,
       subscriptions: Arc::new(RwLock::new(BTreeMap::new())),
       subscriber_request_ids: Arc::new(RwLock::new(BTreeMap::new())),
-      subscriber_senders: Arc::from(subscriber_senders),
+      subscriber_senders: Arc::default(),
       log_folder,
       config,
     }
   }
 
-  /// Calculate the partition index for subscriber distribution across buckets.
-  /// This method implements a load balancing strategy to distribute subscribers
-  /// across multiple buckets to improve performance and reduce contention.
-  fn get_subscriber_partition_index(&self, subscription_id: &SubscriptionId) -> usize {
-    // Convert to bytes for fnv_hash function
-    let value_bytes = [
-      (subscription_id.0 as u64).to_le_bytes(),
-      subscription_id.1.to_le_bytes(),
-    ]
-    .concat();
-    (utils::fnv_hash(&value_bytes) % SUBSCRIBER_PARTITION_COUNT as u64) as usize
-  }
-
-  /// Get the subscriber sender for a specific subscriber
-  async fn _get_subscriber_sender(
-    &self,
-    subscription_id: &SubscriptionId,
-  ) -> Option<UnboundedSender<TrackEvent>> {
-    let partition_index = self.get_subscriber_partition_index(subscription_id);
-    let senders = self.subscriber_senders[partition_index].read().await;
-    senders.get(subscription_id).cloned()
+  fn senders_mut(&self) -> std::sync::RwLockWriteGuard<'_, SubscriberSenderMap> {
+    self
+      .subscriber_senders
+      .write()
+      .unwrap_or_else(|e| e.into_inner())
   }
 
   pub async fn get_all_subscriptions(&self) -> Vec<Arc<RwLock<Subscription>>> {
@@ -159,10 +134,7 @@ impl SubscriptionManager {
       .and_modify(|s| _ = s.insert(subscription_id.1))
       .or_insert(HashSet::from([subscription_id.1]));
 
-    // Store the sender for this subscriber in the appropriate partition
-    let partition_index = self.get_subscriber_partition_index(&subscription_id);
-    let mut senders = self.subscriber_senders[partition_index].write().await;
-    senders.insert(subscription_id, event_tx);
+    self.senders_mut().insert(subscription_id, event_tx);
 
     Ok(subscription)
   }
@@ -229,17 +201,14 @@ impl SubscriptionManager {
       sub.cancel().await;
     }
 
-    // Remove and dispose the sender for this subscriber from the appropriate partition
-    let partition_index = self.get_subscriber_partition_index(subscription_id);
-    let mut senders = self.subscriber_senders[partition_index].write().await;
-    if let Some(_sender) = senders.remove(subscription_id) {
-      // The sender is automatically dropped here, which closes the channel
+    // Dropping the sender closes the subscription's channel.
+    let removed = self.senders_mut().remove(subscription_id);
+    if removed.is_some() {
       info!(
         "Disposed sender for subscription_id={:?} from relay_track_id={}",
         subscription_id, self.relay_track_id
       );
     }
-    drop(senders);
   }
 
   /// Takes every subscription off the track without cancelling it, so one already
@@ -248,9 +217,7 @@ impl SubscriptionManager {
   pub async fn detach_all(&self) {
     let detached = std::mem::take(&mut *self.subscriptions.write().await);
     self.subscriber_request_ids.write().await.clear();
-    for partition in self.subscriber_senders.iter() {
-      partition.write().await.clear();
-    }
+    self.senders_mut().clear();
     info!(
       "Detached {} subscription(s) from relay_track_id={}",
       detached.len(),
@@ -292,21 +259,19 @@ impl SubscriptionManager {
     let mut failed_subscriptions = Vec::new();
     let mut total_subscriptions = 0;
 
-    // Iterate through all partitions
-    for partition in self.subscriber_senders.iter() {
-      let senders = partition.read().await;
-
-      if !senders.is_empty() {
-        total_subscriptions += senders.len();
-
-        for (subscription_id, sender) in senders.iter() {
-          if let Err(e) = sender.send(event.clone()) {
-            error!(
-              "Failed to send event to subscription {:?}: {}",
-              subscription_id, e
-            );
-            failed_subscriptions.push(*subscription_id);
-          }
+    {
+      let senders = self
+        .subscriber_senders
+        .read()
+        .unwrap_or_else(|e| e.into_inner());
+      total_subscriptions += senders.len();
+      for (subscription_id, sender) in senders.iter() {
+        if let Err(e) = sender.send(event.clone()) {
+          error!(
+            "Failed to send event to subscription {:?}: {}",
+            subscription_id, e
+          );
+          failed_subscriptions.push(*subscription_id);
         }
       }
     }

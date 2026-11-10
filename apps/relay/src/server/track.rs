@@ -351,6 +351,8 @@ pub struct Track {
   pending_subscribers: Arc<RwLock<Vec<(u64, usize)>>>,
   /// Cached track properties from PUBLISH or SUBSCRIBE_OK (relays MUST cache).
   track_properties: Arc<RwLock<Vec<TrackProperty>>>,
+  /// Kept with `track_properties` so each datagram reads it without a lock.
+  default_publisher_priority: Arc<AtomicU8>,
   /// Original subgroup headers for open publisher streams, keyed by stream_id.
   /// Used so new mid-group subscribers can open a QUIC send stream
   /// Inserted when the first object of a subgroup arrives; removed when the
@@ -426,6 +428,7 @@ impl Track {
       status_notify: Arc::new(Notify::new()),
       pending_subscribers: Arc::new(RwLock::new(Vec::new())),
       track_properties: Arc::new(RwLock::new(Vec::new())),
+      default_publisher_priority: Arc::new(AtomicU8::new(DEFAULT_PUBLISHER_PRIORITY)),
       active_subgroup_headers: Arc::new(RwLock::new(HashMap::new())),
       publisher_stream_progress: Arc::new(PublisherStreamProgress::default()),
       datagram_arrivals: Arc::new(DatagramArrivals::default()),
@@ -719,7 +722,7 @@ impl Track {
       let mut aliases = self.publisher_aliases.write().await;
       aliases.insert(publisher_connection_id, publisher_track_alias);
     }
-    *self.track_properties.write().await = properties;
+    self.set_track_properties(properties).await;
 
     let mut status = self.status.write().await;
     let was_pending = matches!(*status, TrackStatus::Pending);
@@ -743,7 +746,18 @@ impl Track {
 
   /// Updates the cached track properties (per spec: most recent set replaces any previous).
   pub async fn set_track_properties(&self, properties: Vec<TrackProperty>) {
-    *self.track_properties.write().await = properties;
+    let priority = properties
+      .iter()
+      .find_map(|p| match p {
+        TrackProperty::DefaultPublisherPriority { priority } => Some(*priority),
+        _ => None,
+      })
+      .unwrap_or(DEFAULT_PUBLISHER_PRIORITY);
+    let mut cached = self.track_properties.write().await;
+    *cached = properties;
+    self
+      .default_publisher_priority
+      .store(priority, Ordering::Relaxed);
   }
 
   /// The status to answer a joining subscriber with, queuing it while Pending. The
@@ -993,17 +1007,8 @@ impl Track {
   /// The Publisher Priority to assume for this track's objects whose header omits
   /// the field. A publisher may name it with the DEFAULT_PUBLISHER_PRIORITY track
   /// property; without one, the protocol's own default stands.
-  pub async fn default_publisher_priority(&self) -> u8 {
-    self
-      .track_properties
-      .read()
-      .await
-      .iter()
-      .find_map(|p| match p {
-        TrackProperty::DefaultPublisherPriority { priority } => Some(*priority),
-        _ => None,
-      })
-      .unwrap_or(DEFAULT_PUBLISHER_PRIORITY)
+  pub fn default_publisher_priority(&self) -> u8 {
+    self.default_publisher_priority.load(Ordering::Relaxed)
   }
 
   pub async fn new_datagram(&self, datagram: &Datagram) -> Result<()> {
@@ -1016,7 +1021,7 @@ impl Track {
       utils::passed_time_since_start()
     );
 
-    match Object::try_from_datagram(datagram.clone(), self.default_publisher_priority().await) {
+    match Object::try_from_datagram(datagram.clone(), self.default_publisher_priority()) {
       Ok((object, end_of_group)) => {
         if self.is_duplicate(&object.location) {
           trace!(
@@ -1356,6 +1361,26 @@ mod tests {
       TrackStatus::Confirmed { .. }
     ));
     assert_eq!(*track.pending_subscribers.read().await, vec![(1, 10)]);
+  }
+
+  #[tokio::test]
+  async fn default_publisher_priority_follows_the_latest_properties() {
+    let track = cleanup::track(TrackOrigin::Subscribe);
+    assert_eq!(
+      track.default_publisher_priority(),
+      DEFAULT_PUBLISHER_PRIORITY
+    );
+    track
+      .set_track_properties(vec![TrackProperty::DefaultPublisherPriority {
+        priority: 3,
+      }])
+      .await;
+    assert_eq!(track.default_publisher_priority(), 3);
+    track.set_track_properties(vec![]).await;
+    assert_eq!(
+      track.default_publisher_priority(),
+      DEFAULT_PUBLISHER_PRIORITY
+    );
   }
 
   mod cleanup {

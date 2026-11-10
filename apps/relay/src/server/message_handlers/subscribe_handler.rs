@@ -991,7 +991,7 @@ async fn handle_subscribe_message(
     {
       // A SUBSCRIBE describes the subscription in full, so a filter it leaves out
       // is no filter.
-      let filter = crate::server::subscription::location_filter_of(&sub.subscribe_parameters);
+      let filter = crate::server::subscription_state::location_filter_of(&sub.subscribe_parameters);
       subscription
         .read()
         .await

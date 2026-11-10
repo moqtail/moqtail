@@ -30,6 +30,7 @@ mod ssts;
 mod stream_id;
 mod subscription;
 mod subscription_manager;
+mod subscription_state;
 mod token_logger;
 mod track;
 mod track_cache;

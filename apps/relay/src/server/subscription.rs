@@ -19,6 +19,7 @@ use crate::server::message_handlers::fetch_handler::FetchStop;
 use crate::server::object_logger::ObjectLogger;
 use crate::server::ssts::AbrMessage;
 use crate::server::stream_id::{SendStreamKey, StreamId};
+use crate::server::subscription_manager::{QueuedEvent, SubscriberQueue};
 use crate::server::track::ActiveSubgroupHeaderMap;
 use crate::server::track::TrackEvent;
 use crate::server::track_cache::TrackCache;
@@ -49,6 +50,7 @@ use moqtail::transport::data_stream_handler::HeaderInfo;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use tokio::sync::Notify;
 use tokio::sync::RwLock;
@@ -117,6 +119,15 @@ pub struct SubscriptionState {
 }
 
 impl SubscriptionState {
+  /// How long an Object may wait to be sent. See [`clamp_delivery_timeout`].
+  fn delivery_timeout(&self, relay_ms: u64) -> Option<Duration> {
+    let asked = self.subscribe_parameters.iter().find_map(|p| match p {
+      MessageParameter::ObjectDeliveryTimeout { timeout } => Some(*timeout),
+      _ => None,
+    });
+    clamp_delivery_timeout(asked, relay_ms)
+  }
+
   pub fn update_last_sent_max_location(&mut self, location: Location) {
     match &self.last_sent_max_location {
       Some(current_max) => {
@@ -417,6 +428,17 @@ pub(crate) fn live_start_location(
   }
 }
 
+/// The subscriber's Object Delivery Timeout, capped by the relay's: a subscriber may
+/// ask for stricter, never looser. 0 on either side means that side sets none.
+fn clamp_delivery_timeout(asked_ms: Option<u64>, relay_ms: u64) -> Option<Duration> {
+  let ms = match (asked_ms.filter(|ms| *ms > 0), relay_ms) {
+    (Some(asked), 0) => asked,
+    (Some(asked), relay) => asked.min(relay),
+    (None, relay) => relay,
+  };
+  (ms > 0).then(|| Duration::from_millis(ms))
+}
+
 /// The publisher priority assumed where a stream carries no single Object's own.
 pub(crate) const DEFAULT_PUBLISHER_PRIORITY: u8 = 128;
 
@@ -431,7 +453,8 @@ pub struct Subscription {
   pub full_track_name: FullTrackName,
   pub subscription_state: Arc<RwLock<SubscriptionState>>,
   subscriber: Arc<MOQTClient>,
-  event_rx: Arc<Mutex<Option<UnboundedReceiver<TrackEvent>>>>,
+  event_rx: Arc<Mutex<Option<UnboundedReceiver<QueuedEvent>>>>,
+  queue: Arc<SubscriberQueue>,
   send_stream_last_object_ids: Arc<RwLock<HashMap<StreamId, Option<u64>>>>,
   /// Monotonic count of data streams opened for this subscription, including
   /// empty subgroups. Reported as PUBLISH_DONE Stream Count.
@@ -495,7 +518,8 @@ impl Subscription {
     request_id: u64,
     origin_message: SubscriptionOrigin,
     subscriber: Arc<MOQTClient>,
-    event_rx: Arc<Mutex<Option<UnboundedReceiver<TrackEvent>>>>,
+    event_rx: Arc<Mutex<Option<UnboundedReceiver<QueuedEvent>>>>,
+    queue: Arc<SubscriberQueue>,
     cache: TrackCache,
     client_connection_id: usize,
     log_folder: String,
@@ -510,6 +534,7 @@ impl Subscription {
       subscription_state: Arc::new(RwLock::new(origin_message.into())),
       subscriber,
       event_rx,
+      queue,
       send_stream_last_object_ids: Arc::new(RwLock::new(HashMap::new())),
       opened_stream_count: Arc::new(AtomicU64::new(0)),
       finished: Arc::new(AtomicBool::new(false)),
@@ -603,7 +628,8 @@ impl Subscription {
     full_track_name: FullTrackName,
     origin_message: SubscriptionOrigin,
     subscriber: Arc<MOQTClient>,
-    event_rx: UnboundedReceiver<TrackEvent>,
+    event_rx: UnboundedReceiver<QueuedEvent>,
+    queue: Arc<SubscriberQueue>,
     cache: TrackCache,
     client_connection_id: usize,
     log_folder: String,
@@ -619,6 +645,7 @@ impl Subscription {
       origin_message,
       subscriber,
       event_rx,
+      queue,
       cache.clone(),
       client_connection_id,
       log_folder,
@@ -1075,6 +1102,12 @@ impl Subscription {
       let backlog = rx.len();
       (event, backlog)
     };
+    if let Some((_, event)) = &recv_result {
+      self
+        .queue
+        .bytes
+        .fetch_sub(event.queued_bytes(), Ordering::Relaxed);
+    }
 
     trace!(
       "Received event for subscriber={} relay_track_id={}: {:?}",
@@ -1099,9 +1132,9 @@ impl Subscription {
     }
 
     match recv_result {
-      Some(event) if !self.finished.load(Ordering::Relaxed) => {
+      Some((queued_at, event)) if !self.finished.load(Ordering::Relaxed) => {
         drop(event_rx_guard);
-        self.handle_track_event(event).await;
+        self.handle_track_event(queued_at, event).await;
       }
       Some(_) => {
         event_rx_guard.take();
@@ -1236,7 +1269,30 @@ impl Subscription {
     }
   }
 
-  async fn handle_track_event(&self, event: TrackEvent) {
+  /// Whether `group` is skipped for this subscriber: its Objects were dropped from
+  /// the queue, or this one waited past the delivery timeout. A late Object skips
+  /// the rest of its group, so delivery picks up again at the start of a later one.
+  fn skips_group(&self, group: u64, queued_at: Instant, timeout: Option<Duration>) -> bool {
+    if self.queue.skips(group) {
+      return true;
+    }
+    let Some(timeout) = timeout else {
+      return false;
+    };
+    let waited = queued_at.elapsed();
+    if waited <= timeout {
+      return false;
+    }
+    if self.queue.skip_group(group) {
+      warn!(
+        "Subscriber {} is {:?} behind on relay_track_id={}; skipping the rest of group {}",
+        self.client_connection_id, waited, self.relay_track_id, group
+      );
+    }
+    true
+  }
+
+  async fn handle_track_event(&self, queued_at: Instant, event: TrackEvent) {
     trace!(
       "Event received for subscriber={} relay_track_id={} event: {:?}",
       self.client_connection_id, self.relay_track_id, event
@@ -1342,6 +1398,29 @@ impl Subscription {
             );
             // A later object of this stream may pass the filter.
             self.save_skipped_header(&stream_id, header_info).await;
+            return;
+          }
+
+          let timeout = state.delivery_timeout(self.config.delivery_timeout_ms);
+          if self.skips_group(object.location.group, queued_at, timeout) {
+            drop(state);
+            // The stream's Objects so far went out, but the rest of the group won't.
+            if self
+              .send_stream_last_object_ids
+              .write()
+              .await
+              .remove(&stream_id)
+              .is_some()
+            {
+              self
+                .subscriber
+                .reset_stream(
+                  &self.new_send_stream_key(&stream_id),
+                  StreamResetCode::DeliveryTimeout.to_u64(),
+                )
+                .await;
+            }
+            self.skipped_stream_headers.lock().await.remove(&stream_id);
             return;
           }
         }
@@ -1632,6 +1711,11 @@ impl Subscription {
               "Datagram filtered out for subscriber={} relay_track_id={} location: {:?}",
               self.client_connection_id, self.relay_track_id, location
             );
+            return;
+          }
+
+          let timeout = state.delivery_timeout(self.config.delivery_timeout_ms);
+          if self.skips_group(location.group, queued_at, timeout) {
             return;
           }
         }
@@ -1964,6 +2048,17 @@ impl Subscription {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn a_subscriber_can_tighten_the_relays_delivery_timeout_but_not_loosen_it() {
+    let ms = |ms| Some(Duration::from_millis(ms));
+    assert_eq!(clamp_delivery_timeout(Some(600_000), 500), ms(500));
+    assert_eq!(clamp_delivery_timeout(Some(200), 500), ms(200));
+    assert_eq!(clamp_delivery_timeout(Some(200), 0), ms(200));
+    assert_eq!(clamp_delivery_timeout(None, 500), ms(500));
+    assert_eq!(clamp_delivery_timeout(Some(0), 500), ms(500));
+    assert_eq!(clamp_delivery_timeout(None, 0), None);
+  }
   use moqtail::model::data::subgroup_header::SubgroupHeader;
 
   #[test]

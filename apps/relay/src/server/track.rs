@@ -322,6 +322,27 @@ pub enum TrackEvent {
   },
 }
 
+impl TrackEvent {
+  /// The group of an Object event, `None` for the others, which are never dropped.
+  pub(crate) fn object_group(&self) -> Option<u64> {
+    match self {
+      TrackEvent::SubgroupObject { object, .. } => Some(object.location.group),
+      TrackEvent::Datagram { object } => Some(object.group_id),
+      _ => None,
+    }
+  }
+
+  /// Payload bytes the event holds in a subscriber's queue.
+  pub(crate) fn queued_bytes(&self) -> usize {
+    let payload = match self {
+      TrackEvent::SubgroupObject { object, .. } => object.payload.as_ref(),
+      TrackEvent::Datagram { object } => object.payload.as_ref(),
+      _ => None,
+    };
+    payload.map_or(0, |p| p.len())
+  }
+}
+
 #[derive(Debug, Clone)]
 pub struct Track {
   /// Stable relay-assigned track identifier, independent of publisher aliases.
@@ -1661,6 +1682,7 @@ mod tests {
   /// yet still sit below where that joiner starts.
   mod join_during_arrival {
     use super::super::*;
+    use crate::server::subscription_manager::QueuedEvent;
     use bytes::Bytes;
     use moqtail::model::data::constant::ObjectForwardingPreference;
     use tokio::sync::mpsc::UnboundedReceiver;
@@ -1713,7 +1735,7 @@ mod tests {
         )
         .await
         .unwrap();
-      let mut existing: UnboundedReceiver<TrackEvent> =
+      let (mut existing, _): (UnboundedReceiver<QueuedEvent>, _) =
         track.subscription_manager.add_test_sender((1, 0));
 
       let held = track.largest_location.read().await;
@@ -1723,7 +1745,7 @@ mod tests {
         panic!(
           "{:?} reached subscribers while the Largest Location was still {:?}: a joiner \
            would start after it and never get it",
-          location_of(event),
+          location_of(&event.1),
           *held
         );
       }
@@ -1734,7 +1756,7 @@ mod tests {
         .recv()
         .await
         .expect("the Object reaches subscribers");
-      assert_eq!(location_of(&event), Location::new(2, 5));
+      assert_eq!(location_of(&event.1), Location::new(2, 5));
       assert_eq!(track.largest_object().await, Some(Location::new(2, 5)));
     }
 

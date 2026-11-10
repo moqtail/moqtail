@@ -22,20 +22,46 @@ use anyhow::Result;
 use moqtail::model::data::full_track_name::FullTrackName;
 use std::{
   collections::{BTreeMap, HashMap, HashSet},
-  sync::{Arc, RwLock as SyncRwLock},
+  sync::{
+    Arc, RwLock as SyncRwLock,
+    atomic::{AtomicU64, AtomicUsize, Ordering},
+  },
+  time::Instant,
 };
 use tokio::sync::RwLock;
 #[cfg(test)]
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::mpsc::UnboundedSender;
-use tracing::{error, info, trace};
+use tracing::{error, info, trace, warn};
 
-/// Number of partitions for subscriber senders management to reduce lock contention.
-/// Each partition contains a separate HashMap protected by its own RwLock.
-/// Higher values reduce contention but increase memory overhead.
-/// Should be a power of 2 for optimal modulo performance.
 pub type SubscriptionId = (usize, u64); // connection_id and request_id
-pub type SubscriberSenderMap = HashMap<SubscriptionId, UnboundedSender<TrackEvent>>;
+/// An event and when it was queued, so the subscriber can tell how late it is.
+pub type QueuedEvent = (Instant, TrackEvent);
+pub type SubscriberSenderMap =
+  HashMap<SubscriptionId, (UnboundedSender<QueuedEvent>, Arc<SubscriberQueue>)>;
+
+/// What the fan-out and a subscription share about the subscription's queue.
+#[derive(Debug, Default)]
+pub(crate) struct SubscriberQueue {
+  /// Payload bytes queued and not yet taken by the subscription.
+  pub bytes: AtomicUsize,
+  /// Groups below this are skipped: their Objects were dropped or arrived too late.
+  pub skip_below_group: AtomicU64,
+}
+
+impl SubscriberQueue {
+  /// Skips the rest of `group`. True if it was not skipped already.
+  pub fn skip_group(&self, group: u64) -> bool {
+    self
+      .skip_below_group
+      .fetch_max(group.saturating_add(1), Ordering::Relaxed)
+      <= group
+  }
+
+  pub fn skips(&self, group: u64) -> bool {
+    group < self.skip_below_group.load(Ordering::Relaxed)
+  }
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct SubscriptionManager {
@@ -69,10 +95,14 @@ impl SubscriptionManager {
 
   /// Takes the track's events without a subscription behind them.
   #[cfg(test)]
-  pub(crate) fn add_test_sender(&self, id: SubscriptionId) -> UnboundedReceiver<TrackEvent> {
+  pub(crate) fn add_test_sender(
+    &self,
+    id: SubscriptionId,
+  ) -> (UnboundedReceiver<QueuedEvent>, Arc<SubscriberQueue>) {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    self.senders_mut().insert(id, tx);
-    rx
+    let queue = Arc::new(SubscriberQueue::default());
+    self.senders_mut().insert(id, (tx, queue.clone()));
+    (rx, queue)
   }
 
   fn senders_mut(&self) -> std::sync::RwLockWriteGuard<'_, SubscriberSenderMap> {
@@ -102,7 +132,8 @@ impl SubscriptionManager {
     );
 
     // Create a separate unbounded channel for this subscriber
-    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<TrackEvent>();
+    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<QueuedEvent>();
+    let queue = Arc::new(SubscriberQueue::default());
 
     // A pushed track's alias is the one its PUBLISH already gave the subscriber.
     let track_alias = match &origin_message {
@@ -117,6 +148,7 @@ impl SubscriptionManager {
       origin_message.clone(),
       subscriber.clone(),
       event_rx,
+      queue.clone(),
       cache,
       connection_id,
       self.log_folder.clone(),
@@ -144,7 +176,9 @@ impl SubscriptionManager {
       .and_modify(|s| _ = s.insert(subscription_id.1))
       .or_insert(HashSet::from([subscription_id.1]));
 
-    self.senders_mut().insert(subscription_id, event_tx);
+    self
+      .senders_mut()
+      .insert(subscription_id, (event_tx, queue));
 
     Ok(subscription)
   }
@@ -268,6 +302,9 @@ impl SubscriptionManager {
   ) -> Result<Vec<SubscriptionId>, anyhow::Error> {
     let mut failed_subscriptions = Vec::new();
     let mut total_subscriptions = 0;
+    let queued_at = Instant::now();
+    let bytes = event.queued_bytes();
+    let max_bytes = self.config.max_subscriber_queue_bytes;
 
     {
       let senders = self
@@ -275,8 +312,24 @@ impl SubscriptionManager {
         .read()
         .unwrap_or_else(|e| e.into_inner());
       total_subscriptions += senders.len();
-      for (subscription_id, sender) in senders.iter() {
-        if let Err(e) = sender.send(event.clone()) {
+      for (subscription_id, (sender, queue)) in senders.iter() {
+        // Never blocks the publisher: a subscriber with too much queued loses the rest
+        // of the group instead, and picks up again at a later one.
+        if let Some(group) = event.object_group()
+          && max_bytes > 0
+          && queue.bytes.load(Ordering::Relaxed) + bytes > max_bytes
+        {
+          if queue.skip_group(group) {
+            warn!(
+              "Subscription {:?} has over {} bytes queued on relay_track_id={}; skipping the rest of group {}",
+              subscription_id, max_bytes, self.relay_track_id, group
+            );
+          }
+          continue;
+        }
+        queue.bytes.fetch_add(bytes, Ordering::Relaxed);
+        if let Err(e) = sender.send((queued_at, event.clone())) {
+          queue.bytes.fetch_sub(bytes, Ordering::Relaxed);
           error!(
             "Failed to send event to subscription {:?}: {}",
             subscription_id, e
@@ -302,5 +355,104 @@ impl SubscriptionManager {
     }
 
     Ok(failed_subscriptions)
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::server::config::Cli;
+  use crate::server::stream_id::StreamId;
+  use bytes::Bytes;
+  use clap::Parser;
+  use moqtail::model::common::location::Location;
+  use moqtail::model::data::constant::{ObjectForwardingPreference, ObjectStatus};
+  use moqtail::model::data::object::Object;
+
+  fn object(group: u64, id: u64) -> TrackEvent {
+    TrackEvent::SubgroupObject {
+      stream_id: StreamId::new_subgroup(1, group, Some(0)),
+      object: Arc::new(Object {
+        track_alias: 1,
+        location: Location::new(group, id),
+        publisher_priority: 128,
+        forwarding_preference: ObjectForwardingPreference::Subgroup,
+        subgroup_id: Some(0),
+        status: ObjectStatus::Normal,
+        properties: None,
+        payload: Some(Bytes::from(vec![0; 100])),
+      }),
+      header_info: None,
+    }
+  }
+
+  fn location(event: &TrackEvent) -> Option<Location> {
+    match event {
+      TrackEvent::SubgroupObject { object, .. } => Some(object.location.clone()),
+      _ => None,
+    }
+  }
+
+  #[tokio::test]
+  async fn a_full_queue_skips_the_rest_of_the_group_but_not_control_events() {
+    let cli = Cli::parse_from(["relay", "--max-subscriber-queue-bytes", "250"]);
+    let config = Box::leak(Box::new(AppConfig::from_cli(cli)));
+    let name = FullTrackName::try_new("meet/room1", "video").unwrap();
+    let manager = SubscriptionManager::new(1, name, String::new(), config);
+    let (mut rx, queue) = manager.add_test_sender((1, 0));
+
+    for id in 0..3 {
+      manager
+        .send_event_to_subscribers(object(1, id))
+        .await
+        .unwrap();
+    }
+    let closed = TrackEvent::StreamClosed {
+      stream_id: StreamId::new_subgroup(1, 1, Some(0)),
+    };
+    manager.send_event_to_subscribers(closed).await.unwrap();
+    assert_eq!(
+      queue.bytes.load(Ordering::Relaxed),
+      200,
+      "the third Object is dropped"
+    );
+    assert!(queue.skips(1));
+
+    // The subscriber catches up: the rest of group 1 stays skipped, group 2 goes out.
+    queue.bytes.store(0, Ordering::Relaxed);
+    manager
+      .send_event_to_subscribers(object(1, 3))
+      .await
+      .unwrap();
+    manager
+      .send_event_to_subscribers(object(2, 0))
+      .await
+      .unwrap();
+    assert!(!queue.skips(2));
+
+    let mut got = Vec::new();
+    while let Ok((_, event)) = rx.try_recv() {
+      got.push(location(&event));
+    }
+    assert_eq!(
+      got,
+      vec![
+        Some(Location::new(1, 0)),
+        Some(Location::new(1, 1)),
+        None,
+        Some(Location::new(1, 3)),
+        Some(Location::new(2, 0)),
+      ]
+    );
+  }
+
+  #[test]
+  fn skipping_a_group_reports_only_the_first_time() {
+    let queue = SubscriberQueue::default();
+    assert!(!queue.skips(4));
+    assert!(queue.skip_group(4));
+    assert!(!queue.skip_group(4));
+    assert!(!queue.skip_group(3), "an older group is already covered");
+    assert!(queue.skips(3) && queue.skips(4) && !queue.skips(5));
   }
 }

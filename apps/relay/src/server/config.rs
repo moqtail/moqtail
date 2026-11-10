@@ -121,6 +121,18 @@ pub struct Cli {
   #[arg(long, default_value_t = 0)]
   pub max_subscriber_lag: u64,
 
+  /// How long an Object may wait in a subscriber's queue before the rest of its group
+  /// is skipped for that subscriber. Also caps a subscriber's own Object Delivery
+  /// Timeout, which may only be stricter. 0 sets no relay limit.
+  #[arg(long, default_value_t = 0)]
+  pub delivery_timeout_ms: u64,
+
+  /// Max payload bytes queued for one subscriber. Past it, the rest of the group is
+  /// skipped for that subscriber, so a stalled one cannot grow memory without bound.
+  /// 0 = unlimited.
+  #[arg(long, default_value_t = 16 * 1024 * 1024)]
+  pub max_subscriber_queue_bytes: usize,
+
   /// Max PUBLISH streams the relay initiates for one SUBSCRIBE_TRACKS before it
   /// runs out of streams and emits PUBLISH_SKIPPED. 0 = unlimited.
   #[arg(long, default_value_t = 0)]
@@ -238,6 +250,8 @@ pub struct AppConfig {
   pub max_request_streams: u64,
   pub max_active_requests: u64,
   pub max_subscriber_lag: u64,
+  pub delivery_timeout_ms: u64,
+  pub max_subscriber_queue_bytes: usize,
   pub max_publish_streams: u64,
   pub track_alias_mode: TrackAliasMode,
   /// 0 = unlimited. Non-zero caps relay writes to this many kbps per subscriber connection.
@@ -309,6 +323,8 @@ impl AppConfig {
       max_request_streams: cli.max_request_streams,
       max_active_requests: cli.max_active_requests,
       max_subscriber_lag: cli.max_subscriber_lag,
+      delivery_timeout_ms: cli.delivery_timeout_ms,
+      max_subscriber_queue_bytes: cli.max_subscriber_queue_bytes,
       max_publish_streams: cli.max_publish_streams,
       track_alias_mode: cli.track_alias_mode,
       write_kbps_limit: cli.write_kbps_limit,
@@ -530,6 +546,8 @@ mod tests {
       max_request_streams,
       max_active_requests: 0,
       max_subscriber_lag: 0,
+      delivery_timeout_ms: 0,
+      max_subscriber_queue_bytes: 16 * 1024 * 1024,
       max_publish_streams: 0,
       track_alias_mode: TrackAliasMode::PerSubscription,
       write_kbps_limit: 0,

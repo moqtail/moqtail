@@ -935,9 +935,12 @@ async fn handle_malformed_upstream_fetch(
     track
       .cancel_for_malformed_publisher(publisher.connection_id)
       .await;
-    let still_served =
-      super::subscribe_handler::remove_upstream_publisher(track, publisher.connection_id, context)
-        .await;
+    let still_served = super::subscribe_handler::upstream::remove_upstream_publisher(
+      track,
+      publisher.connection_id,
+      context,
+    )
+    .await;
     track.remove_from_subscriber_switching_sets().await;
     if let Err(error) = track
       .notify_publish_done(

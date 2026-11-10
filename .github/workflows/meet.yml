@@ -52,7 +52,7 @@ jobs:
       - name: Update app settings
         working-directory: apps/meet/dist
         run: |
-          sed -i "s|relayUrl:.*|relayUrl: 'https://relay.n1.fra.moqtail.dev',|g" appsettings.js
+          sed -i "s|relayUrl:.*|relayUrl: 'moqt://relay.moqtail.dev',|g" appsettings.js
 
       - name: Deploy
         id: deploy

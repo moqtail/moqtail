@@ -492,7 +492,7 @@ if (import.meta.vitest) {
       const client = {
         webTransport,
         publications: new Map(),
-        dataStreamObserver: () => undefined,
+        emit: () => {},
       } as unknown as MOQtailClient
       new PublishPublication(
         client,

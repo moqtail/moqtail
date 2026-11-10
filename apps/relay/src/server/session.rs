@@ -508,10 +508,12 @@ impl Session {
       context.connection_id
     );
 
-    // Remove client from all remaining tracks (as a subscriber)
-    track_manager_cleanup
-      .remove_subscriber_everywhere(context.connection_id)
-      .await;
+    // Remove client from the tracks it may still subscribe to
+    if let Some(client) = context.get_client().await {
+      track_manager_cleanup
+        .remove_subscriber(context.connection_id, &client.cleanup_tracks().await)
+        .await;
+    }
 
     info!(
       "handle_connection_close | cleanup done ({})",

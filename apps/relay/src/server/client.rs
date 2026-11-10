@@ -116,6 +116,10 @@ pub(crate) struct MOQTClient {
   pub outbound_announcements: Arc<RwLock<HashMap<Tuple, u64>>>, //Maps a Namespace to the outbound request_id we used to announce it to the client
   pub published_tracks: Arc<RwLock<HashMap<u64, FullTrackName>>>, // request_id -> track the client is publishing
   malformed_tracks: Arc<RwLock<HashSet<FullTrackName>>>,
+  /// The tracks a disconnect has to visit: every track the client ever subscribed to.
+  /// Best effort, not its live subscriptions: entries stay after an unsubscribe, since
+  /// a stale one only costs a lookup that finds nothing to remove.
+  cleanup_tracks: Arc<RwLock<HashSet<FullTrackName>>>,
   pub subscribers: Arc<RwLock<Vec<usize>>>, // the subscribers the client is subscribed to
 
   pub message_queue: Arc<RwLock<VecDeque<ControlMessage>>>, // the control messages the client has sent
@@ -199,6 +203,7 @@ impl MOQTClient {
       outbound_announcements: Arc::new(RwLock::new(HashMap::new())),
       published_tracks: Arc::new(RwLock::new(HashMap::new())),
       malformed_tracks: Arc::new(RwLock::new(HashSet::new())),
+      cleanup_tracks: Arc::new(RwLock::new(HashSet::new())),
       subscribers: Arc::new(RwLock::new(Vec::new())),
       message_queue: Arc::new(RwLock::new(VecDeque::new())),
       message_notify: Arc::new(Notify::default()),
@@ -230,6 +235,17 @@ impl MOQTClient {
 
   pub(crate) async fn is_track_malformed(&self, full_track_name: &FullTrackName) -> bool {
     self.malformed_tracks.read().await.contains(full_track_name)
+  }
+
+  pub(crate) async fn add_cleanup_track(&self, full_track_name: &FullTrackName) {
+    let mut tracks = self.cleanup_tracks.write().await;
+    if !tracks.contains(full_track_name) {
+      tracks.insert(full_track_name.clone());
+    }
+  }
+
+  pub(crate) async fn cleanup_tracks(&self) -> Vec<FullTrackName> {
+    self.cleanup_tracks.read().await.iter().cloned().collect()
   }
 
   /// Leaving a withdrawn namespace here would keep routing subscriptions to this client.

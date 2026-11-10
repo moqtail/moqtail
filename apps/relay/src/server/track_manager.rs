@@ -245,10 +245,12 @@ impl TrackManager {
     unserved
   }
 
-  /// Ends every subscription a closed connection held.
-  pub async fn remove_subscriber_everywhere(&self, connection_id: usize) {
-    for (_, track) in self.snapshot().await {
-      track.remove_subscriptions(connection_id).await;
+  /// Ends every subscription a closed connection held on the given tracks.
+  pub async fn remove_subscriber(&self, connection_id: usize, track_names: &[FullTrackName]) {
+    for name in track_names {
+      if let Some(track) = self.get_track(name).await {
+        track.remove_subscriptions(connection_id).await;
+      }
     }
   }
 

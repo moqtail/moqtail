@@ -791,6 +791,8 @@ impl Track {
     origin_message: impl Into<SubscriptionOrigin>,
   ) -> Result<Arc<RwLock<Subscription>>> {
     let origin_enum = origin_message.into();
+    // Before the subscription exists, so a disconnect running meanwhile cannot miss it.
+    subscriber.add_cleanup_track(&self.full_track_name).await;
     let subscription = self
       .subscription_manager
       .add_subscription(

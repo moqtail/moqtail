@@ -116,9 +116,10 @@ pub(crate) struct MOQTClient {
   pub outbound_announcements: Arc<RwLock<HashMap<Tuple, u64>>>, //Maps a Namespace to the outbound request_id we used to announce it to the client
   pub published_tracks: Arc<RwLock<HashMap<u64, FullTrackName>>>, // request_id -> track the client is publishing
   malformed_tracks: Arc<RwLock<HashSet<FullTrackName>>>,
-  /// The tracks a disconnect has to visit: every track the client ever subscribed to.
-  /// Best effort, not its live subscriptions: entries stay after an unsubscribe, since
-  /// a stale one only costs a lookup that finds nothing to remove.
+  /// The tracks a disconnect has to visit: every track the client ever subscribed to
+  /// or published. Recorded before the client joins the track, so a disconnect never
+  /// misses one. Best effort, not its live roles: entries stay after an unsubscribe or
+  /// PUBLISH_DONE, since a stale one only costs a lookup that finds nothing to remove.
   cleanup_tracks: Arc<RwLock<HashSet<FullTrackName>>>,
   pub subscribers: Arc<RwLock<Vec<usize>>>, // the subscribers the client is subscribed to
 

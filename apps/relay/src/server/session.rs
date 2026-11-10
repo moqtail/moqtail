@@ -463,11 +463,18 @@ impl Session {
       context.connection_id
     );
 
-    // Remove the disconnecting publisher from all tracks they were publishing.
+    // The tracks this client subscribed to or published; a client that never got
+    // through SETUP has none.
+    let cleanup_tracks = match context.get_client().await {
+      Some(client) => client.cleanup_tracks().await,
+      None => Vec::new(),
+    };
+
+    // Remove the disconnecting publisher from the tracks it was publishing.
     // remove_publisher() internally notifies subscribers when the last publisher leaves.
     // Collect full track names for tracks that have no publishers left.
     let tracks_with_no_publishers = track_manager_cleanup
-      .remove_publisher_everywhere(context.connection_id)
+      .remove_publisher(context.connection_id, &cleanup_tracks)
       .await;
 
     // Tracks no publisher serves any more stay only if they hold cached Objects.
@@ -510,11 +517,9 @@ impl Session {
     );
 
     // Remove client from the tracks it may still subscribe to
-    if let Some(client) = context.get_client().await {
-      track_manager_cleanup
-        .remove_subscriber(context.connection_id, &client.cleanup_tracks().await)
-        .await;
-    }
+    track_manager_cleanup
+      .remove_subscriber(context.connection_id, &cleanup_tracks)
+      .await;
 
     info!(
       "handle_connection_close | cleanup done ({})",

@@ -560,6 +560,9 @@ async fn handle_subscribe_ok_message(
   }
 
   // Confirm the track with publisher's metadata
+  publisher
+    .add_cleanup_track(&track_arc.full_track_name)
+    .await;
   let confirmed_now = {
     let track = &track_arc;
     let confirmed_now = track

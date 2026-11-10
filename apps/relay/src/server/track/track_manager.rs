@@ -218,27 +218,24 @@ impl TrackManager {
     unused.len()
   }
 
-  /// The tracks, copied out so callers can visit them without holding the map,
-  /// which would stall track creation and removal.
-  async fn snapshot(&self) -> Vec<(FullTrackName, Arc<Track>)> {
-    let tracks = self.tracks.read().await;
-    tracks
-      .iter()
-      .map(|(name, track)| (name.clone(), track.clone()))
-      .collect()
-  }
-
-  /// Takes a closed connection off every track it published. Returns the tracks no
-  /// publisher serves any more.
-  pub async fn remove_publisher_everywhere(&self, connection_id: usize) -> Vec<FullTrackName> {
+  /// Takes a closed connection off the given tracks it may have published. Returns
+  /// the tracks no publisher serves any more.
+  pub async fn remove_publisher(
+    &self,
+    connection_id: usize,
+    track_names: &[FullTrackName],
+  ) -> Vec<FullTrackName> {
     let mut unserved = Vec::new();
-    for (name, track) in self.snapshot().await {
+    for name in track_names {
+      let Some(track) = self.get_track(name).await else {
+        continue;
+      };
       if let Some(removal) = track.remove_publisher(connection_id).await {
         self
           .remove_publisher_alias(connection_id, removal.alias)
           .await;
         if !removal.still_served {
-          unserved.push(name);
+          unserved.push(name.clone());
         }
       }
     }
@@ -1033,7 +1030,8 @@ mod tests {
     let busy = track.publisher_aliases.write().await;
     let closing = {
       let manager = manager.clone();
-      tokio::spawn(async move { manager.remove_publisher_everywhere(1).await })
+      let names = [name.clone()];
+      tokio::spawn(async move { manager.remove_publisher(1, &names).await })
     };
     settle().await;
     assert!(

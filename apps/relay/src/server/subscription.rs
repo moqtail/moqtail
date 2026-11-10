@@ -17,7 +17,7 @@ use crate::server::client::switch_context::SwitchPlan;
 use crate::server::config::AppConfig;
 use crate::server::message_handlers::fetch_handler::FetchStop;
 use crate::server::object_logger::ObjectLogger;
-use crate::server::ssts::AbrMessage;
+use crate::server::ssts::gate::ForwardGate;
 use crate::server::stream_id::{SendStreamKey, StreamId};
 use crate::server::subscription_manager::{QueuedEvent, SubscriberQueue};
 use crate::server::subscription_state::SubscriptionState;
@@ -168,22 +168,8 @@ pub struct Subscription {
   /// Fill fetch streams still delivering, keyed by the request that asked for the
   /// fill. Held so Forward State 0 and cancellation can stop them.
   fill_streams: Arc<RwLock<HashMap<u64, watch::Sender<FetchStop>>>>,
-  /// The SSTS forward gate's answer for one group, so the rest of that group's
-  /// Objects do not re-derive it. A video track runs tens of Objects per
-  /// group, and the answer cannot change while `ssts_gate_epoch` still matches the
-  /// connection's: `SstsState::epoch` moves on any membership change and on
-  /// every recorded decision.
-  ///
-  /// Only this subscription's own event task reads or writes these, so the
-  /// three are never observed mid-update and `Relaxed` is enough.
-  ssts_gate_epoch: Arc<AtomicU64>,
-  ssts_gate_group: Arc<AtomicU64>,
-  ssts_gate_forward: Arc<AtomicBool>,
+  ssts_gate: Arc<ForwardGate>,
 }
-
-/// `ssts_gate_group` value meaning "nothing cached". Group ids are varints, so the
-/// top of the u64 range is not a reachable group.
-const SSTS_GATE_GROUP_NONE: u64 = u64::MAX;
 
 #[allow(clippy::too_many_arguments)]
 impl Subscription {
@@ -203,6 +189,7 @@ impl Subscription {
     active_subgroup_headers: ActiveSubgroupHeaderMap,
   ) -> Self {
     Self {
+      ssts_gate: Arc::new(ForwardGate::new(full_track_name.clone(), relay_track_id)),
       relay_track_id,
       track_alias,
       full_track_name,
@@ -225,9 +212,6 @@ impl Subscription {
       alias_announced: Arc::new(AtomicBool::new(false)),
       alias_announced_notify: Arc::new(Notify::new()),
       fill_streams: Arc::new(RwLock::new(HashMap::new())),
-      ssts_gate_epoch: Arc::new(AtomicU64::new(0)),
-      ssts_gate_group: Arc::new(AtomicU64::new(SSTS_GATE_GROUP_NONE)),
-      ssts_gate_forward: Arc::new(AtomicBool::new(false)),
     }
   }
 
@@ -861,90 +845,6 @@ impl Subscription {
     self.finish().await;
   }
 
-  /// The SSTS forward gate: whether this subscription's track carries
-  /// `group_id`.
-  ///
-  /// Answered from the cache while the connection's epoch is unchanged, so
-  /// every Object of a group after the one that triggered the decision costs
-  /// three atomic loads. On a miss it resolves against the switching sets and
-  /// the decision map, waiting for a decision if the group has none yet.
-  async fn ssts_gate_allows(&self, group_id: u64) -> bool {
-    if self.ssts_gate_group.load(Ordering::Relaxed) == group_id
-      && self.ssts_gate_epoch.load(Ordering::Relaxed) == self.subscriber.ssts.epoch()
-    {
-      return self.ssts_gate_forward.load(Ordering::Relaxed);
-    }
-
-    let (epoch, forward) = self.resolve_ssts_gate(group_id).await;
-
-    // Stamped with the epoch `resolve_ssts_gate` sampled before its reads, not the
-    // one current now: anything that moved while it was resolving has already
-    // advanced the counter past this, so the next Object resolves again rather
-    // than trusting an answer that was overtaken.
-    self.ssts_gate_forward.store(forward, Ordering::Relaxed);
-    self.ssts_gate_group.store(group_id, Ordering::Relaxed);
-    self.ssts_gate_epoch.store(epoch, Ordering::Relaxed);
-    forward
-  }
-
-  /// Resolve the gate for `group_id` from scratch, returning the epoch the
-  /// answer was read at along with the answer.
-  async fn resolve_ssts_gate(&self, group_id: u64) -> (u64, bool) {
-    loop {
-      // Created before the reads below and never polled on the path that
-      // finds a decision, so it costs an atomic load and nothing else. Only
-      // creating it matters: tokio guarantees a `Notified` observes any
-      // `notify_waiters` from the moment it exists, which is what keeps a
-      // decision recorded between the reads and the wait from being missed.
-      let notified = self.subscriber.ssts.decision_notify.notified();
-
-      // Sampled before the reads, so a change racing with them leaves the
-      // caller's cache stamped with a superseded epoch.
-      let epoch = self.subscriber.ssts.epoch();
-
-      let set_id = {
-        let manager = self.subscriber.ssts.switching_sets.read().await;
-        manager
-          .get_set_for_track(&self.full_track_name)
-          .map(|set| set.id)
-      };
-
-      // Not in a switching set, or no longer in one: SSTS does not apply to
-      // this track, so the Object is forwarded. This also covers the set being
-      // torn down while an Object of it waited for a decision that will now
-      // never arrive.
-      let Some(set_id) = set_id else {
-        return (epoch, true);
-      };
-
-      let decision = {
-        let decisions = self.subscriber.ssts.group_decisions.read().await;
-        decisions
-          .get(&group_id)
-          .and_then(|sets| sets.get(&set_id))
-          .copied()
-      };
-
-      match decision {
-        // The selected track carries the group. `None` selects no track at
-        // all, so nothing from the set is forwarded for this group.
-        Some(chosen) => return (epoch, chosen == Some(self.relay_track_id)),
-        None => {
-          if let Err(e) = self
-            .subscriber
-            .ssts
-            .abr_tx
-            .send(AbrMessage::NewGroup(group_id))
-            .await
-          {
-            warn!("Failed to send NewGroup to ABR: {:?}", e);
-          }
-          notified.await;
-        }
-      }
-    }
-  }
-
   /// Whether `group` is skipped for this subscriber: its Objects were dropped from
   /// the queue, or this one waited past the delivery timeout. A late Object skips
   /// the rest of its group, so delivery picks up again at the start of a later one.
@@ -996,7 +896,12 @@ impl Subscription {
         // connection that also switches with SWITCH_FROM. Likely the drain has
         // to end on something other than an Object arriving, so that it does
         // not depend on objects the gate may drop.
-        if self.subscriber.ssts_enabled() && !self.ssts_gate_allows(object.location.group).await {
+        if self.subscriber.ssts_enabled()
+          && !self
+            .ssts_gate
+            .allows(&self.subscriber.ssts, object.location.group)
+            .await
+        {
           return;
         }
 

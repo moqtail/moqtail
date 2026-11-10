@@ -16,12 +16,13 @@
 //!
 //! This is everything the relay owns: the algorithm list negotiated in
 //! SETUP, the per-client switching sets, the per-group decision cache the
-//! forward gate in `subscription.rs` reads, and the controller that runs the
+//! forward gate in `gate.rs` reads, and the controller that runs the
 //! bandwidth allocation. The algorithms themselves live outside this module
 //! and are reached only through the `moqtail_ssts` contract — no algorithm
 //! knows this module exists.
 
 pub mod controller;
+pub mod gate;
 pub mod switching_set;
 
 use moqtail::model::control::setup::Setup;

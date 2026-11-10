@@ -148,6 +148,7 @@ export abstract class SwitchingSetSource extends SourceElement implements MediaS
    */
   async selectRenditions(renditionIds: string[]): Promise<void> {
     this.#selected = new Set(renditionIds)
+    this.context.player.emit('selectionchange', this)
     const selected = this.#tracks.filter((t) => this.#isSelected(t))
     if (selected.length === 0) {
       this.#recovery.pause()

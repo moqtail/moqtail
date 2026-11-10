@@ -44,11 +44,23 @@ export interface BufferController {
   backBuffer?(): number
 }
 
+/**
+ * @public
+ * Picks renditions for the media sources that don't switch themselves. The player attaches it
+ * once a live stream is ready, and detaches it on `destroy()`, when the stream turns on-demand,
+ * while a media source provides `ABR`, and while a rendition is picked manually.
+ */
+export interface AbrController {
+  attach(player: MOQtailPlayer, sink: MediaSinkElement): void
+  detach(): void
+}
+
 /** @public What a plugin offers. */
 export type Feature =
   /** Loaded by the catalog for a media switching set whose first track it accepts, with `{ child }` (`SwitchingSetOptions`). */
   | { type: 'switch-source'; item: SourceElementDefinition }
   | { type: 'buffer-controller'; item: BufferController }
+  | { type: 'abr-controller'; item: AbrController }
   /** A source, transform, or sink, registered like `registerElement`. */
   | { type: 'element'; item: ElementDefinition }
 
@@ -86,6 +98,7 @@ export interface PluginInstance {
 /** The features one player uses. */
 export interface Features {
   bufferController?: BufferController
+  abrController?: AbrController
   /** In plugin order, before the built-in sources. */
   elements: ElementDefinition[]
   switchSources: SourceElementDefinition[]
@@ -137,14 +150,16 @@ export function activePlugins(instances: readonly PluginInstance[], serverSetup:
     .sort((a, b) => a.priority - b.priority) // stable, so ties keep list order
 }
 
-/** The buffer controller comes from the first plugin offering one; elements and switch sources from all of them, in order. */
+/** Each controller comes from the first plugin offering one; elements and switch sources from all of them, in order. */
 export function resolveFeatures(active: readonly PluginInstance[]): Features {
   const features = active.flatMap((p) => p.features)
   const items = <T extends Feature['type']>(type: T) =>
     features.flatMap((f) => (f.type === type ? [f.item as Extract<Feature, { type: T }>['item']] : []))
   const [bufferController] = items('buffer-controller')
+  const [abrController] = items('abr-controller')
   return {
     ...(bufferController && { bufferController }),
+    ...(abrController && { abrController }),
     elements: items('element'),
     switchSources: items('switch-source'),
   }
@@ -189,6 +204,7 @@ if (import.meta.vitest) {
   const { Setup } = await import('@/model/control/setup')
   const { testSource } = await import('@/player/testing/elements')
   const buffer = (name: string): BufferController => ({ attach() {}, detach() {}, backBuffer: () => name.length })
+  const abr = (name: string): AbrController & { name: string } => ({ name, attach() {}, detach() {} })
 
   describe('plugins', () => {
     test('the factory infers its config: optional when all of it is, none without init', () => {
@@ -232,6 +248,7 @@ if (import.meta.vitest) {
           negotiated: () => accepted,
           features: () => [
             { type: 'buffer-controller', item: buffer(name) },
+            { type: 'abr-controller', item: abr(name) },
             { type: 'element', item: testSource({ name }) },
             { type: 'switch-source', item: testSource({ name: `${name}-switch` }) },
           ],
@@ -244,6 +261,7 @@ if (import.meta.vitest) {
       ])
       const features = resolveFeatures(activePlugins(plugins, new Setup([])))
       expect(features.bufferController?.backBuffer?.()).toBe('tie-1'.length)
+      expect((features.abrController as ReturnType<typeof abr>).name).toBe('tie-1')
       expect(features.elements.map((e) => e.name)).toEqual(['tie-1', 'tie-2', 'late'])
       expect(features.switchSources.map((e) => e.name)).toEqual(['tie-1-switch', 'tie-2-switch', 'late-switch'])
       expect(resolveFeatures([])).toEqual({ elements: [], switchSources: [] })

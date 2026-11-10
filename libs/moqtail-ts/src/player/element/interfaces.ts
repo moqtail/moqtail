@@ -31,6 +31,8 @@ import type { SourceElementDefinition } from './define'
 export const MEDIA_SINK = Symbol.for('moqtail.mediaSink')
 /** @public Key of {@link MediaSourceElement}. */
 export const MEDIA_SOURCE = Symbol.for('moqtail.mediaSource')
+/** @public Marks a {@link MediaSourceElement} that switches among its selected renditions itself (ABR). */
+export const ABR = Symbol.for('moqtail.abr')
 
 export type { CatalogTrack, MediaTimelineTemplate }
 
@@ -38,6 +40,7 @@ export type { CatalogTrack, MediaTimelineTemplate }
 export interface ElementInterfaces {
   [MEDIA_SINK]: MediaSinkElement
   [MEDIA_SOURCE]: MediaSourceElement
+  [ABR]: MediaSourceElement
 }
 
 /** @public */

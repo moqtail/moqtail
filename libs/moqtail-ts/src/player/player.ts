@@ -33,6 +33,7 @@ import {
 } from '@/player/element/define'
 import type { TimelineEvent } from '@/player/element/event_timeline'
 import {
+  ABR,
   MEDIA_SINK,
   MEDIA_SOURCE,
   type MediaSinkElement,
@@ -55,6 +56,7 @@ import {
   initPlugins,
   mergeSetupOptions,
   resolveFeatures,
+  type AbrController,
   type BufferController,
   type Features,
   type Plugin,
@@ -106,6 +108,8 @@ export interface PlayerEvents {
   autoplayblocked: () => void
   /** A source switched to another rendition. Not emitted for the one it starts with: read `active` from `getRenditions()`. */
   renditionchange: (source: MediaSourceElement, rendition: Rendition) => void
+  /** A source's selected renditions were set (`selectRenditions`). */
+  selectionchange: (source: MediaSourceElement) => void
   /** The catalog element's `streamType` changed. */
   streamtypechange: (type: StreamType) => void
 }
@@ -175,6 +179,7 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
   #streamType: StreamType = 'unknown'
   #negotiated = false
   #bufferAttached = false
+  #abrAttached = false
   #initializing: Promise<void> | undefined
   #starting: Promise<void> | undefined
   #destroying: Promise<void> | undefined
@@ -203,8 +208,11 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
     })
     this.on('streamtypechange', (type) => {
       this.#streamType = type
-      this.#controlBuffer()
+      this.#control()
     })
+    // A catalog update may add a source that provides ABR; a selection may pick a rendition manually
+    this.on('catalog', () => this.#control())
+    this.on('selectionchange', () => this.#control())
   }
 
   get state(): PlayerState {
@@ -236,6 +244,20 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
   /** The active plugins' buffer controller while it's attached. */
   get bufferController(): BufferController | undefined {
     return this.#bufferAttached ? this.#features.bufferController : undefined
+  }
+
+  /** The active plugins' ABR controller while it's attached. */
+  get abrController(): AbrController | undefined {
+    return this.#abrAttached ? this.#features.abrController : undefined
+  }
+
+  /**
+   * Whether `source` switches renditions automatically: it provides `ABR`, or an ABR controller can
+   * drive it, since the stream is live and no media source provides `ABR`. A rendition picked
+   * manually detaches the controller but leaves this true, so selecting every rendition again resumes it.
+   */
+  isAbrAvailable(source: SourceElement): boolean {
+    return hasInterface(source, ABR) || (this.#features.abrController !== undefined && this.#abrDrivable())
   }
 
   /** Registers an element on this player only. Call it before `source()`. */
@@ -361,7 +383,7 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
       this.#watchSink()
       this.#setState(outcome)
       this.#negotiated = true
-      this.#controlBuffer()
+      this.#control()
     } catch (cause) {
       const error =
         cause instanceof PlayerError
@@ -375,7 +397,7 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
   async #destroy(): Promise<void> {
     this.#abort.abort(new PlayerError('ABORTED', 'The player was destroyed'))
     this.#client = undefined
-    this.#controlBuffer()
+    this.#control()
     const teardown = this.#chain.destroy()
     const released = release(this.#member, teardown)
     try {
@@ -426,16 +448,36 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
     }
   }
 
-  /** Attaches the buffer controller once a negotiated stream is live, detaches it otherwise. */
-  #controlBuffer(): void {
-    const controller = this.#features.bufferController
+  /**
+   * Attaches the buffer controller once a negotiated stream is live, and the ABR controller while
+   * it's also drivable and no rendition is picked manually; detaches each otherwise.
+   */
+  #control(): void {
     const sink = this.mediaSink
-    if (!controller || !sink) return
-    const live = this.#negotiated && this.#streamType === 'live' && !this.#abort.signal.aborted
-    if (live === this.#bufferAttached) return
-    this.#bufferAttached = live
-    if (live) controller.attach(this, sink)
-    else controller.detach()
+    if (!sink) return
+    const buffer = this.#features.bufferController
+    const live = this.#live()
+    if (buffer && live !== this.#bufferAttached) {
+      this.#bufferAttached = live
+      if (live) buffer.attach(this, sink)
+      else buffer.detach()
+    }
+    const abr = this.#features.abrController
+    const drive = this.#abrDrivable() && !this.mediaSources.some(isPinned)
+    if (abr && drive !== this.#abrAttached) {
+      this.#abrAttached = drive
+      if (drive) abr.attach(this, sink)
+      else abr.detach()
+    }
+  }
+
+  #live(): boolean {
+    return this.#negotiated && this.#streamType === 'live' && !this.#abort.signal.aborted
+  }
+
+  /** Live, and no media source switches renditions itself. */
+  #abrDrivable(): boolean {
+    return this.#live() && !this.mediaSources.some((s) => hasInterface(s, ABR))
   }
 
   #useClient(client: MOQtailClient): void {
@@ -478,10 +520,16 @@ export class MOQtailPlayer extends Emitter<PlayerEvents> {
   }
 }
 
+/** A rendition picked manually: one of several selected, as `SstsSource` pins one. */
+function isPinned(source: MediaSourceElement): boolean {
+  const renditions = source.getRenditions()
+  return renditions.length > 1 && renditions.filter((r) => r.selected).length === 1
+}
+
 if (import.meta.vitest) {
   const { describe, test, expect, beforeEach, afterEach } = import.meta.vitest
   const { fakeClients } = await import('@/player/testing/client')
-  const { bufferPlugin, testSource, fakeMediaSink, flush } = await import('@/player/testing/elements')
+  const { abrPlugin, bufferPlugin, testSource, fakeMediaSink, flush } = await import('@/player/testing/elements')
   const { definePlugin } = await import('./plugin')
   const { CapabilityCode } = await import('@/player/element/define')
   const { SetupOptions } = await import('@/model/parameter/setup_option')
@@ -666,6 +714,30 @@ if (import.meta.vitest) {
       expect(player.bufferController).toBeUndefined()
       player.emit('streamtypechange', 'live')
       await Promise.all([player.destroy(), plain.destroy()])
+      expect(calls).toEqual(['attach', 'detach', 'attach', 'detach'])
+    })
+
+    test('the ABR controller is attached while live, and detached on-demand, on destroy(), and while a source provides ABR', async () => {
+      const calls: string[] = []
+      const controller: AbrController = { attach: () => calls.push('attach'), detach: () => calls.push('detach') }
+      const player = make({ plugins: [abrPlugin(controller)] })
+      const switching = testSource({ name: 'switching', media: true, abr: true, script: (s) => s.emit('nomorepads') })
+      const withAbr = new MOQtailPlayer({ plugins: [abrPlugin(controller)] })
+        .registerElement(switching)
+        .source(URL)
+        .sink(fakeMediaSink)
+      for (const p of [player, withAbr]) p.emit('streamtypechange', 'live')
+      await Promise.all([player.init(), withAbr.init()])
+      expect([player.abrController, withAbr.abrController]).toEqual([controller, undefined])
+      // It drives no source of its own, but stays available to the one that switches itself
+      expect([player.isAbrAvailable(player.sources[0]!), withAbr.isAbrAvailable(withAbr.sources[0]!)]).toEqual([
+        true,
+        true,
+      ])
+      player.emit('streamtypechange', 'on-demand')
+      expect([player.abrController, player.isAbrAvailable(player.sources[0]!)]).toEqual([undefined, false])
+      player.emit('streamtypechange', 'live')
+      await Promise.all([player.destroy(), withAbr.destroy()])
       expect(calls).toEqual(['attach', 'detach', 'attach', 'detach'])
     })
 

@@ -24,10 +24,10 @@ import { SinkElement, SourceElement, TransformElement } from '@/player/element/b
 import { Chain, type ChainHost } from '@/player/element/chain'
 import type { ElementContext } from '@/player/element/context'
 import { CapabilityCode, defineElement, type Capabilities, type Identifiers } from '@/player/element/define'
-import { MEDIA_SINK, MEDIA_SOURCE, type CatalogTrack, type MediaSinkElement } from '@/player/element/interfaces'
+import { ABR, MEDIA_SINK, MEDIA_SOURCE, type CatalogTrack, type MediaSinkElement } from '@/player/element/interfaces'
 import type { Pad, PadItem, PadOutput, PadSignal } from '@/player/element/pad'
 import type { PlayerEvents } from '@/player/player'
-import { definePlugin, type BufferController } from '@/player/plugin'
+import { definePlugin, type AbrController, type BufferController } from '@/player/plugin'
 import { timeRanges } from './media'
 
 export const VIDEO_CMAF: Capabilities = [
@@ -65,6 +65,8 @@ export function testSource(
     priority?: number
     /** Lists `MEDIA_SOURCE` in `provides`, without implementing it. */
     media?: boolean
+    /** Lists `ABR` too, with `media`. */
+    abr?: boolean
     script?: (source: TestSource, options: Record<string, any> | undefined) => void | Promise<void>
   } = {},
 ) {
@@ -73,7 +75,7 @@ export function testSource(
     name: options.name ?? 'test-source',
     capabilities: [],
     ...(options.priority !== undefined && { priority: options.priority }),
-    ...(options.media && { provides: [MEDIA_SOURCE] as unknown as [] }),
+    ...(options.media && { provides: (options.abr ? [MEDIA_SOURCE, ABR] : [MEDIA_SOURCE]) as unknown as [] }),
     probe: options.probe ?? (() => true),
     async init(context, initOptions) {
       const source = new TestSource(context)
@@ -249,6 +251,11 @@ export function testChain(
 /** A plugin entry offering `controller` as the buffer controller. */
 export function bufferPlugin(controller: BufferController) {
   return definePlugin({ name: 'test-buffer', features: () => [{ type: 'buffer-controller', item: controller }] })()
+}
+
+/** A plugin entry offering `controller` as the ABR controller. */
+export function abrPlugin(controller: AbrController) {
+  return definePlugin({ name: 'test-abr', features: () => [{ type: 'abr-controller', item: controller }] })()
 }
 
 /** Lets queued microtasks and connection loops run. */

@@ -21,9 +21,17 @@ export type { PlayerState } from './state'
 export type { Catalog, CatalogJson, InitData, MediaTimelineTemplate } from '@/player/elements/catalog/types'
 export type { CatalogElement } from '@/player/elements/catalog/element'
 export type { TimelineEvent, TimelineRecord } from '@/player/element/event_timeline'
-export { definePlugin, type PluginDefinition, type Plugin, type Feature, type BufferController } from './plugin'
+export {
+  definePlugin,
+  type PluginDefinition,
+  type Plugin,
+  type Feature,
+  type BufferController,
+  type AbrController,
+} from './plugin'
 export { MSE } from '@/player/elements/mse'
 export { liveBuffer, type LiveBufferConfig } from '@/player/plugins/buffer'
+export { abr, DefaultAbrController } from '@/player/plugins/abr'
 export { ssts, SstsSource, SSTS_ALGORITHMS, type SstsConfig } from '@/player/plugins/ssts'
 export type { MSEOptions } from '@/player/elements/mse/sink'
 export {
@@ -53,6 +61,7 @@ export {
 } from '@/player/element/pad'
 export type { ElementContext, ElementLoadRequest, PlayerHandle } from '@/player/element/context'
 export {
+  ABR,
   MEDIA_SINK,
   MEDIA_SOURCE,
   type ElementInterfaces,

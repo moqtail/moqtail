@@ -28,6 +28,7 @@ import { SourceElement, type BaseElement } from '@/player/element/base'
 import type { ElementContext } from '@/player/element/context'
 import { CapabilityCode, defineElement } from '@/player/element/define'
 import {
+  ABR,
   MEDIA_SOURCE,
   type CatalogTrack,
   type MediaSourceElement,
@@ -153,6 +154,7 @@ export class SstsSource extends SourceElement implements MediaSourceElement {
     const wasPinned = this.#pinned !== undefined
     this.#selected = new Set(renditionIds)
     this.#pinned = renditionIds.length === 1 && this.#tracks.length > 1 ? renditionIds[0] : undefined
+    this.context.player.emit('selectionchange', this)
     await Promise.all(
       children.map((child, i) => {
         const member = this.#isMember(child)
@@ -348,7 +350,8 @@ export function sstsSource(algorithms: readonly bigint[]) {
     type: 'source',
     name: 'ssts',
     capabilities: [],
-    provides: [MEDIA_SOURCE],
+    // The relay picks the track among the selected ones
+    provides: [MEDIA_SOURCE, ABR],
     // SSTS switches subscriptions: a VOD FETCH has no switching set, and every child would play
     probe: (ids) => ids.isLive === true && (ids.role === 'video' || ids.role === 'audio'),
     init: async (context, options?: SwitchingSetOptions) => {

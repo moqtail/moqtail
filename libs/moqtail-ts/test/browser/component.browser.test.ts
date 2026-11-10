@@ -21,7 +21,7 @@
 
 import { Attributes } from 'custom-media-element'
 import { afterEach, beforeAll } from 'vitest'
-import { ssts, SstsSource, type MOQtailPlayerOptions } from '@/player'
+import { abr, DefaultAbrController, ssts, SstsSource, type MOQtailPlayerOptions } from '@/player'
 import { LiveBufferController } from '@/player/plugins/buffer/live'
 import { MOQtailVideoElement, defineMOQtailVideo } from '@/player/component'
 import { ch07, ch07_vod, describe, expect, test, warmUp } from './harness/test'
@@ -92,7 +92,8 @@ describe('component', () => {
       Infinity,
       Infinity,
     ])
-    expect(el.player?.bufferController).toBeInstanceOf(LiveBufferController) // the default, attached
+    expect(el.player?.bufferController).toBeInstanceOf(LiveBufferController) // the defaults, attached
+    expect(el.player?.abrController).toBeInstanceOf(DefaultAbrController)
 
     await until(() => !Number.isNaN(el.liveEdgeStart), 'liveEdgeStart')
     expect(el.seekable.length).toBe(1)
@@ -103,12 +104,12 @@ describe('component', () => {
     const expected = el.player!.mediaSources.flatMap((s) => s.getRenditions()).filter((r) => r.width !== undefined)
     expect(
       renditions.map((r) => [r.id, r.src, r.width, r.height, r.codec, r.frameRate, r.bitrate, r.selected]),
-    ).toEqual(expected.map((r) => [r.id, r.src, r.width, r.height, r.codec, r.frameRate, r.bitrate, true]))
+    ).toEqual(expected.map((r) => [r.id, r.src, r.width, r.height, r.codec, r.frameRate, r.bitrate, false]))
     expect(renditions.length).toBeGreaterThan(1)
     for (const r of renditions) expect(r.src).toMatch(/#msf:[^&]+$/) // no fragment parameters
     expect([...el.audioRenditions].length).toBe(1)
 
-    // A single selection is a manual switch, -1 hands back to automatic selection
+    // None selected is automatic; a single selection is a manual switch, which detaches the ABR controller
     expect(el.videoRenditions.selectedIndex).toBe(-1)
     const target = renditions.findIndex((r) => r.height !== el.videoHeight)
     const changed = next(el.videoRenditions, 'change')
@@ -116,9 +117,17 @@ describe('component', () => {
     await changed
     expect(el.videoRenditions.selectedIndex).toBe(target)
     expect(renditions.map((r) => r.selected)).toEqual(renditions.map((_, i) => i === target))
+    expect(el.player?.abrController).toBeUndefined()
     await until(() => el.videoHeight === renditions[target]!.height, `${renditions[target]!.id} on screen`)
     el.videoRenditions.selectedIndex = -1
-    expect([el.videoRenditions.selectedIndex, renditions.every((r) => r.selected)]).toEqual([-1, true])
+    const sources = el.player!.mediaSources
+    await until(() => sources.every((s) => s.getRenditions().every((r) => r.selected)), 'every rendition selected')
+    expect(el.videoRenditions.selectedIndex).toBe(-1)
+    expect(el.player?.abrController).toBeInstanceOf(DefaultAbrController)
+    // A selection made through the player API shows in the list too
+    const video = sources.find((s) => s.getRenditions().some((r) => r.width !== undefined))!
+    await video.selectRenditions([renditions[0]!.id!])
+    expect([el.videoRenditions.selectedIndex, el.player?.abrController]).toEqual([0, undefined])
   })
 
   test('HTMLMediaElement: every member exists, and forwarded properties read as the inner video', async () => {
@@ -175,19 +184,24 @@ describe('component', () => {
     await until(() => reloaded.state === 'destroyed', 'the old player destroyed')
   })
 
-  test('SSTS through config.plugins: selectedIndex changes the switching set, without switch()', async () => {
-    const el = create({}, { plugins: [ssts()] })
+  test('SSTS through config.plugins: selectedIndex changes the switching set, without switch(), and -1 is automatic', async () => {
+    const el = create({}, { plugins: [ssts(), abr()] })
     el.src = ch07.uri()
     await el.play()
     const source = el.player!.mediaSources.find((s) => s instanceof SstsSource)!
     expect(source).toBeDefined()
+    expect(el.player!.abrController).toBeUndefined() // SSTS switches itself
     await until(() => el.videoRenditions.length > 1, 'video renditions')
     const warnings: string[] = []
     el.player!.on('warning', (w) => warnings.push(w.code))
+    expect(el.videoRenditions.selectedIndex).toBe(-1)
     el.videoRenditions.selectedIndex = 0
     await next(el.videoRenditions, 'change')
     await until(() => source.getRenditions().filter((r) => r.selected).length === 1, 'one selected rendition')
     expect(source.getRenditions().find((r) => r.selected)!.id).toBe(el.videoRenditions[0]!.id)
+    el.videoRenditions.selectedIndex = -1
+    await until(() => source.getRenditions().every((r) => r.selected), 'every rendition selected')
+    expect(el.videoRenditions.selectedIndex).toBe(-1)
     expect([el.error, warnings]).toEqual([null, []])
   })
 
@@ -198,6 +212,13 @@ describe('component', () => {
     await until(() => el.streamType === 'on-demand', 'on-demand')
     expect(Number.isFinite(el.duration)).toBe(true)
     expect([el.liveEdgeStart, el.targetLiveWindow]).toEqual([NaN, NaN])
+    // Nothing switches automatically on demand: the active rendition shows selected, and -1 is undone
+    expect(el.player!.abrController).toBeUndefined()
+    const video = el.player!.mediaSources.flatMap((s) => s.getRenditions()).filter((r) => r.width !== undefined)
+    const active = video.findIndex((r) => r.active)
+    expect(el.videoRenditions.selectedIndex).toBe(active)
+    el.videoRenditions.selectedIndex = -1
+    await until(() => el.videoRenditions.selectedIndex === active, 'the active rendition shown again')
     const ended = next(el, 'ended')
     el.currentTime = el.duration - 1
     await ended

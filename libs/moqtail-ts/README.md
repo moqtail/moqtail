@@ -88,7 +88,7 @@ The client's events, attached with `client.on()`:
 
 ## `<moqtail-video>`
 
-The mostly hands-off option, built on the player described below. It's a `<video>` that takes a `moqt://` URL, builds the player chain itself, and installs the default plugins: the buffer controller (`liveBuffer()`) is in, ABR is coming soon. Listing plugins in `config.plugins` replaces it, so leave `liveBuffer()` out of the list to play without it.
+The mostly hands-off option, built on the player described below. It's a `<video>` that takes a `moqt://` URL, builds the player chain itself, and installs the default plugins: the buffer controller (`liveBuffer()`) and the ABR controller (`abr()`). Listing plugins in `config.plugins` replaces them, so leave one out of the list to play without it.
 
 It needs two optional peer dependencies: `npm install custom-media-element media-tracks`.
 
@@ -102,7 +102,7 @@ defineMOQtailVideo()
 <moqtail-video src="moqt://relay.moqtail.dev#msf:moqtail-ch00--catalog" autoplay muted playsinline></moqtail-video>
 ```
 
-`video.config = { catalogTimeoutMs: 5000 }` passes player options, read on each load. The `switch-from` attribute switches tracks with SWITCH_FROM instead of a new subscription. It fires the usual media events plus `streamtypechange`, lists renditions in `videoRenditions` and `audioRenditions`, and `video.player` is the `MOQtailPlayer` behind it, for the events below. [`apps/client-js`](../../apps/client-js/src/lib/videojs.ts) wraps the element in a Video.js v10 skin.
+`video.config = { catalogTimeoutMs: 5000 }` passes player options, read on each load. The `switch-from` attribute switches tracks with SWITCH_FROM instead of a new subscription. It fires the usual media events plus `streamtypechange`, lists renditions in `videoRenditions` and `audioRenditions` (no `selected` rendition is automatic switching, which needs a source that provides `ABR`, such as `ssts()`; otherwise the active one shows selected), and `video.player` is the `MOQtailPlayer` behind it, for the events below. [`apps/client-js`](../../apps/client-js/src/lib/videojs.ts) wraps the element in a Video.js v10 skin.
 
 ## Player
 
@@ -145,10 +145,10 @@ Attached with `player.on()`:
 
 - **Playback**: `statechange` (new and previous state), `playing`, `pause`, `stalled`, `ended`, `autoplayblocked` (a `play()` the browser refused; the player is `paused`).
 - **Session**: `client` (the connected client, again after every reconnect), `reconnecting` (with the attempt number), `reconnected`.
-- **Content**: `catalog` (the catalog element, after the first catalog and each applied update), `renditionchange` (a source switched rendition), `streamtypechange` (`live` or `on-demand`), `timelineevent` (records of the event timelines listed in `eventTimelines`).
+- **Content**: `catalog` (the catalog element, after the first catalog and each applied update), `renditionchange` (a source switched rendition), `selectionchange` (a source's selected renditions were set), `streamtypechange` (`live` or `on-demand`), `timelineevent` (records of the event timelines listed in `eventTimelines`).
 - **Problems**: `error` is fatal and moves to `error`; `warning` isn't, such as a pad no element took (`PAD_UNLINKED`) or a catalog track that was skipped (`TRACK_SKIPPED`). Both carry a `PlayerError` with a `code`, a `category` (`source`, `network`, `media` or `aborted`) and the `element` it came from.
 
-`player.mediaSources` are the sources playing media: `getRenditions()` lists their renditions and `switch(id)` changes one.
+`player.mediaSources` are the sources playing media: `getRenditions()` lists their renditions, `switch(id)` changes one, and `selectRenditions(ids)` sets those ABR may choose from. `player.isAbrAvailable(source)` says whether a source switches automatically, by itself (`ABR`) or through an ABR controller.
 
 ## Element Selection
 
@@ -189,8 +189,9 @@ A plugin bundles features with the SETUP parameters they need, so a protocol ext
    - `element`: a candidate for [element selection](#element-selection).
    - `switch-source`: wraps the source of each media switching set it accepts, ranked like elements.
    - `buffer-controller`: only the first active one is used. The player attaches it while a negotiated stream is `live` and detaches it otherwise.
+   - `abr-controller`: only the first active one is used. The player attaches it like the buffer controller, except while a media source provides `ABR` (switches itself, as `ssts()` sources do) or a rendition is picked manually (one of several selected).
 
-`ssts()` (sender-side track switching) and `liveBuffer()` are built in. `liveBuffer()` has priority `Infinity`, so any other buffer controller wins over it.
+`ssts()` (sender-side track switching), `liveBuffer()` and `abr()` are built in. `liveBuffer()` and `abr()` have priority `Infinity`, so any other buffer or ABR controller wins over them. For now `abr()` keeps the current quality.
 
 ```ts
 import { MOQtailPlayer, definePlugin, liveBuffer, ssts } from 'moqtail/player'

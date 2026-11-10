@@ -22,9 +22,15 @@
 
 import { CustomVideoElement } from 'custom-media-element'
 import { MediaTracksMixin } from 'media-tracks'
-import { PlayerError, type PlayerErrorCategory } from '@/player/error'
-import { MOQtailPlayer, type MOQtailPlayerOptions, type StreamType } from '@/player/player'
-import { liveBuffer } from '@/player/plugins/buffer'
+import {
+  abr,
+  liveBuffer,
+  MOQtailPlayer,
+  PlayerError,
+  type MOQtailPlayerOptions,
+  type PlayerErrorCategory,
+  type StreamType,
+} from '@/player'
 import { Renditions } from './renditions'
 
 const MEDIA_ERROR_CODES: Record<PlayerErrorCategory, number> = { aborted: 1, network: 2, media: 3, source: 4 }
@@ -56,9 +62,9 @@ export class MOQtailVideoElement extends MediaTracksMixin(CustomVideoElement) {
   }
 
   /**
-   * Player options, read on each load. Without plugins, `liveBuffer()` is the only one; a list
-   * is taken as written, so one without it plays without a buffer controller. Changing it
-   * doesn't restart playback.
+   * Player options, read on each load. Without plugins, `liveBuffer()` and `abr()` are the ones; a
+   * list is taken as written, so one without them plays without a buffer or ABR controller.
+   * Changing it doesn't restart playback.
    */
   get config(): MOQtailPlayerOptions | undefined {
     return this.#config
@@ -137,11 +143,11 @@ export class MOQtailVideoElement extends MediaTracksMixin(CustomVideoElement) {
     await player.play()
   }
 
-  /** `config`, with `liveBuffer()` as the plugins when it lists none. */
+  /** `config`, with `liveBuffer()` and `abr()` as the plugins when it lists none. */
   #playerOptions(): MOQtailPlayerOptions {
     const config = this.#config ?? {}
     if (config.plugins && config.plugins.length > 0) return config
-    return { ...config, plugins: [liveBuffer()] }
+    return { ...config, plugins: [liveBuffer(), abr()] }
   }
 
   async #init(player: MOQtailPlayer): Promise<void> {

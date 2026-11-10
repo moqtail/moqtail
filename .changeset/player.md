@@ -10,5 +10,5 @@ Breaking: the old catalog model (`CMSFCatalog`, `CMSF`, …) is removed. Read ca
 - An element runtime (`defineElement`, source/transform/sink base classes, pads with backpressure) for custom elements.
 - Built-in catalog source with delta updates, a CMAF source with seeking, URL ranges and rendition switching, and an MSE sink.
 - Media and event timelines and per-request object ordering.
-- Plugins (`definePlugin`, `opts.plugins`) that add setup parameters, check the peer's SETUP, and offer elements, switching set sources and buffer controllers. Built in: `ssts()` and `liveBuffer()`.
+- Plugins (`definePlugin`, `opts.plugins`) that add setup parameters, check the peer's SETUP, and offer elements, switching set sources, buffer controllers and ABR controllers. Built in: `ssts()`, whose sources provide `ABR`, `liveBuffer()` and `abr()`. A `selectionchange` event follows `selectRenditions()`, and `player.isAbrAvailable()` says whether a source switches automatically.
 - `parseMsfUrl` and `formatMsfUrl` for `moqt://...#msf:` URLs.

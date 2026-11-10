@@ -12,9 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::server::message_handlers::fetch_handler::{
-  FetchDelivery, FetchStop, serve_fetch_stream,
-};
+use crate::server::message_handlers::fetch_handler::FetchStop;
+use crate::server::message_handlers::fetch_handler::delivery::{FetchDelivery, serve_fetch_stream};
 use crate::server::session_context::SessionContext;
 use crate::server::subscription::{DEFAULT_PUBLISHER_PRIORITY, Subscription};
 use crate::server::track::Track;

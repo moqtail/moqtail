@@ -1,1 +1,4 @@
+# $2 is set when the message already exists (-m/-F, VS Code's --file -, merge, squash, amend):
+# skip the wizard; the commit-msg hook validates it with commitlint.
+[ -n "$2" ] && exit 0
 exec </dev/tty && node_modules/.bin/cz --hook || true

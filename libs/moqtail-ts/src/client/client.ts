@@ -546,7 +546,11 @@ export class MOQtailClient extends Emitter<ClientEvents> {
 
     logger.log('MOQtailClient', 'Starting datagram support...')
     this.#datagramReader = this.webTransport.datagrams.readable.getReader()
-    this.#datagramWriter = this.webTransport.datagrams.writable.getWriter()
+    // Safari has only createWritable(); other browsers still have the writable attribute.
+    const datagrams = this.webTransport.datagrams as WebTransportDatagramDuplexStream & {
+      createWritable?: () => WritableStream<Uint8Array>
+    }
+    this.#datagramWriter = (datagrams.writable ?? datagrams.createWritable!()).getWriter()
     this.#isReceivingDatagrams = true
 
     void this.#acceptIncomingDatagrams()
@@ -3102,6 +3106,32 @@ if (import.meta.vitest) {
       await vi.waitFor(() => expect(received).toHaveLength(1))
       expect(received[0]!.fullTrackName.toString()).toBe(ftn.toString())
 
+      await client.disconnect()
+    })
+
+    it('sends datagrams through createWritable() when the transport has no writable', async () => {
+      const { client, transport } = await connected()
+      const written: Uint8Array[] = []
+      const sink = new WritableStream<Uint8Array>({ write: (chunk) => void written.push(chunk) })
+      Object.assign(transport, {
+        datagrams: { readable: transport.datagrams.readable, writable: undefined, createWritable: () => sink },
+      })
+
+      await client.startDatagrams()
+      await client.sendDatagram(
+        7n,
+        MoqtObject.newWithPayload(
+          ftn,
+          new Location(0n, 0n),
+          0,
+          ObjectForwardingPreference.Datagram,
+          null,
+          null,
+          new Uint8Array([1]),
+        ),
+      )
+
+      expect(written).toHaveLength(1)
       await client.disconnect()
     })
 

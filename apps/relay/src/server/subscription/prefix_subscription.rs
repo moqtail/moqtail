@@ -24,10 +24,10 @@
 //! the overlap space to check and the registry entry to act on. The two kinds never
 //! conflict with each other.
 
-use crate::server::client::MOQTClient;
 use crate::server::requests::DownstreamRequest;
-use crate::server::session_context::SessionContext;
-use crate::server::track_manager::SubscribeKind;
+use crate::server::session::client::MOQTClient;
+use crate::server::session::session_context::SessionContext;
+use crate::server::track::track_manager::SubscribeKind;
 use core::result::Result;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::common::tuple::Tuple;
@@ -220,7 +220,10 @@ async fn update_filters_rejection(
         Some(DownstreamRequest::SubscribeTracks { message, .. }) => message.parameters.clone(),
         _ => Vec::new(),
       };
-      crate::server::filter_constructor::updated_tracks_filter(&current, update, limit).map(|_| ())
+      crate::server::subscription::filter_constructor::updated_tracks_filter(
+        &current, update, limit,
+      )
+      .map(|_| ())
     }
     _ => check_filter_range_limit(update, 0),
   }
@@ -274,7 +277,7 @@ pub async fn handle(
       .await
       {
         info!("Refusing {kind:?} REQUEST_UPDATE for prefix {current_prefix:?}: {e}");
-        let err = crate::server::filter_constructor::invalid_filter(&e);
+        let err = crate::server::subscription::filter_constructor::invalid_filter(&e);
         handler
           .send(&ControlMessage::RequestError(Box::new(err)))
           .await?;

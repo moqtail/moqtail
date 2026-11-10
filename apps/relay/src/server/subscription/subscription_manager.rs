@@ -14,10 +14,10 @@
 
 use crate::server::{subscription::SubscriptionOrigin, track::ActiveSubgroupHeaderMap};
 
-use super::client::MOQTClient;
-use super::config::AppConfig;
-use super::subscription::Subscription;
-use super::track::TrackEvent;
+use crate::server::config::AppConfig;
+use crate::server::session::client::MOQTClient;
+use crate::server::subscription::Subscription;
+use crate::server::track::TrackEvent;
 use anyhow::Result;
 use moqtail::model::data::full_track_name::FullTrackName;
 use std::{
@@ -121,7 +121,7 @@ impl SubscriptionManager {
     &self,
     subscriber: Arc<MOQTClient>,
     origin_message: SubscriptionOrigin,
-    cache: super::track_cache::TrackCache,
+    cache: crate::server::track::track_cache::TrackCache,
     active_subgroup_headers: ActiveSubgroupHeaderMap,
   ) -> Result<Arc<RwLock<Subscription>>, anyhow::Error> {
     let connection_id = { subscriber.connection_id };

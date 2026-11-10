@@ -14,9 +14,9 @@
 
 //! The upstream half of SUBSCRIBE: the relay's own request to the publisher and its answers.
 
-use crate::server::client::MOQTClient;
 use crate::server::message_handlers::parameters;
-use crate::server::session_context::SessionContext;
+use crate::server::session::client::MOQTClient;
+use crate::server::session::session_context::SessionContext;
 use crate::server::track::{
   Track, TrackOrigin, TrackStatus, UpstreamRequestCancellation, UpstreamRequestKind,
   await_publisher_streams,
@@ -636,7 +636,7 @@ async fn handle_subscribe_ok_message(
           );
         } else {
           subscription.read().await.mark_alias_announced();
-          crate::server::fill::open_fill_fetch_stream(
+          crate::server::subscription::fill::open_fill_fetch_stream(
             context.clone(),
             track_arc.clone(),
             subscription,
@@ -710,7 +710,7 @@ async fn handle_subscribe_ok_message(
           );
         } else {
           subscription.read().await.mark_alias_announced();
-          crate::server::fill::open_fill_fetch_stream(
+          crate::server::subscription::fill::open_fill_fetch_stream(
             context.clone(),
             track_arc.clone(),
             subscription,

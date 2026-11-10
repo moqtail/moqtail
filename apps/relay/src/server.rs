@@ -12,38 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod client;
-mod client_manager;
 mod config;
-mod errors;
-mod fill;
-mod filter_constructor;
+mod logging;
 mod message_handlers;
-mod object_logger;
-mod prefix_subscription;
-mod request_stream;
 mod requests;
-mod seen_objects;
 mod session;
-mod session_context;
 mod ssts;
 mod stream_id;
 mod subscription;
-mod subscription_manager;
-mod subscription_state;
-mod token_logger;
 mod track;
-mod track_cache;
-mod track_manager;
 mod utils;
 
-use crate::server::client::MOQTClient;
 use crate::server::requests::UpstreamRequests;
+use crate::server::session::client::MOQTClient;
 use crate::server::{config::AppConfig, session::Session};
 use anyhow::Result;
-use client_manager::ClientManager;
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::goaway::GoAway;
+use session::client_manager::ClientManager;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
@@ -52,7 +38,7 @@ use tokio::sync::{RwLock, watch};
 use tracing::{error, info, trace, warn};
 use tracing_subscriber::fmt::writer::MakeWriterExt;
 use tracing_subscriber::{EnvFilter, filter::LevelFilter};
-use track_manager::TrackManager;
+use track::track_manager::TrackManager;
 use wtransport::endpoint::IncomingSessionFuture;
 use wtransport::quinn;
 

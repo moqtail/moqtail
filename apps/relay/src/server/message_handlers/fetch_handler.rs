@@ -15,9 +15,9 @@
 pub(crate) mod delivery;
 mod upstream;
 
-use crate::server::client::MOQTClient;
 use crate::server::requests::DownstreamRequest;
-use crate::server::session_context::{SessionContext, UpstreamFetchEvent};
+use crate::server::session::client::MOQTClient;
+use crate::server::session::session_context::{SessionContext, UpstreamFetchEvent};
 use crate::server::track::{Track, TrackOrigin, TrackStatus};
 use core::result::Result::{Err, Ok};
 use delivery::{FetchDelivery, serve_fetch_stream};
@@ -326,14 +326,14 @@ pub async fn handle(
 
       // The relay applies Range Filters itself, so ones it cannot honour are refused
       // rather than dropped.
-      let filter = match crate::server::filter_constructor::object_filter(
+      let filter = match crate::server::subscription::filter_constructor::object_filter(
         &fetch.parameters,
         context.server_config.max_filter_ranges,
       ) {
         Ok(filter) => filter,
         Err(e) => {
           info!("Rejecting FETCH {request_id}: {e}");
-          let error = crate::server::filter_constructor::invalid_filter(&e);
+          let error = crate::server::subscription::filter_constructor::invalid_filter(&e);
           send_request_error(
             client.clone(),
             request_id,

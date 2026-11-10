@@ -16,10 +16,10 @@
 
 use super::upstream::{handle_malformed_upstream_fetch, send_upstream_fetch_for_range};
 use super::{FetchStop, PendingUpstreamFetch};
-use crate::server::client::MOQTClient;
-use crate::server::session_context::{SessionContext, UpstreamFetchEvent};
+use crate::server::session::client::MOQTClient;
+use crate::server::session::session_context::{SessionContext, UpstreamFetchEvent};
 use crate::server::stream_id::{SendStreamKey, StreamId};
-use crate::server::track_cache::FillClaim;
+use crate::server::track::track_cache::FillClaim;
 use core::result::Result::{Err, Ok};
 use moqtail::model::common::location::Location;
 use moqtail::model::control::constant::GroupOrder;

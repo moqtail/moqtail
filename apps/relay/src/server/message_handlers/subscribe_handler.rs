@@ -12,15 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::server::client::MOQTClient;
-use crate::server::client::switch_context::SwitchPlan;
-use crate::server::filter_constructor;
 use crate::server::message_handlers::parameters;
 use crate::server::requests::DownstreamRequest;
 use crate::server::session::Session;
-use crate::server::session_context::SessionContext;
+use crate::server::session::client::MOQTClient;
+use crate::server::session::client::switch_context::SwitchPlan;
+use crate::server::session::session_context::SessionContext;
 use crate::server::subscription::Subscription;
-use crate::server::subscription_manager::SubscriptionId;
+use crate::server::subscription::filter_constructor;
+use crate::server::subscription::subscription_manager::SubscriptionId;
 use crate::server::track::{Cleanup, Track, TrackOrigin, TrackStatus};
 use anyhow::Result;
 use moqtail::model::control::request_error::RequestError;
@@ -481,7 +481,7 @@ async fn handle_subscribe_message(
           // A switch decides the filter this fill is measured against, and it has not
           // been applied yet: the fill for one is opened once begin_switch has run.
           if !switching {
-            crate::server::fill::open_fill_fetch_stream(
+            crate::server::subscription::fill::open_fill_fetch_stream(
               context.clone(),
               track_arc.clone(),
               subscription.clone(),
@@ -532,7 +532,9 @@ async fn handle_subscribe_message(
     {
       // A SUBSCRIBE describes the subscription in full, so a filter it leaves out
       // is no filter.
-      let filter = crate::server::subscription_state::location_filter_of(&sub.subscribe_parameters);
+      let filter = crate::server::subscription::subscription_state::location_filter_of(
+        &sub.subscribe_parameters,
+      );
       subscription
         .read()
         .await
@@ -543,7 +545,7 @@ async fn handle_subscribe_message(
       // forwarding, the fill can be measured: everything already published from the
       // group it joins, so the subscriber has the group from its start rather than
       // from wherever it happens to arrive.
-      crate::server::fill::open_fill_fetch_stream(
+      crate::server::subscription::fill::open_fill_fetch_stream(
         context.clone(),
         track_arc.clone(),
         subscription,

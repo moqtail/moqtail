@@ -26,9 +26,9 @@ use moqtail::model::data::fetch_object::{EndOfRangeKind, FetchObjectPayload};
 
 use moqtail::transport::connection::{TransportConnection, TransportKind};
 
-use super::{
-  client::MOQTClient, client_manager::ClientManager, config::AppConfig, requests::UpstreamRequests,
-  track_manager::TrackManager,
+use super::{client::MOQTClient, client_manager::ClientManager};
+use crate::server::{
+  config::AppConfig, requests::UpstreamRequests, track::track_manager::TrackManager,
 };
 
 /// This is used when the relay sends a FETCH request to the upstream.

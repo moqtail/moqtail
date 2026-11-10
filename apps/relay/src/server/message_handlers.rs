@@ -24,7 +24,8 @@ use moqtail::{
 use tracing::{debug, info, warn};
 
 use crate::server::{
-  client::MOQTClient, requests::DownstreamRequest, session_context::SessionContext,
+  requests::DownstreamRequest, session::client::MOQTClient,
+  session::session_context::SessionContext,
 };
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
@@ -218,7 +219,7 @@ impl MessageHandler {
             .await
           }
           Route::PrefixSubscription => {
-            crate::server::prefix_subscription::handle(
+            crate::server::subscription::prefix_subscription::handle(
               client.clone(),
               stream_handler,
               msg,

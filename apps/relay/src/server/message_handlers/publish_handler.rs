@@ -12,14 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::server::client::MOQTClient;
 use crate::server::message_handlers::parameters;
 use crate::server::requests::DownstreamRequest;
 use crate::server::session::Session;
-use crate::server::session_context::SessionContext;
+use crate::server::session::client::MOQTClient;
+use crate::server::session::session_context::SessionContext;
 use crate::server::subscription::Subscription;
+use crate::server::track::track_manager::SubscribeKind;
 use crate::server::track::{Track, TrackOrigin, TrackStatus, await_publisher_streams};
-use crate::server::track_manager::SubscribeKind;
 use core::result::Result;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::control::{
@@ -531,7 +531,7 @@ pub(crate) async fn push_track_to_subscriber(
   publish: &Publish,
   subscribe_tracks_params: &[MessageParameter],
 ) -> bool {
-  let Some(range_filters) = crate::server::filter_constructor::filters_for_track(
+  let Some(range_filters) = crate::server::subscription::filter_constructor::filters_for_track(
     subscribe_tracks_params,
     &publish.track_properties,
   ) else {
@@ -671,7 +671,7 @@ pub(crate) async fn forward_publish_downstream(
     // the subscription was made; waiting a round trip for the PUBLISH_OK would let a new
     // group begin in between, and the Objects of the group before it would be in
     // neither. Without FILL_PARAMETERS, or while Forward State is 0, this opens nothing.
-    crate::server::fill::open_fill_fetch_stream(
+    crate::server::subscription::fill::open_fill_fetch_stream(
       context.clone(),
       track_arc.clone(),
       subscription.clone(),
@@ -830,13 +830,13 @@ async fn apply_pushed_update(
         .subscribe_parameters
         .clone()
     };
-    if let Err(e) = crate::server::filter_constructor::updated_filter(
+    if let Err(e) = crate::server::subscription::filter_constructor::updated_filter(
       &current,
       &update.parameters,
       context.server_config.max_filter_ranges,
     ) {
       info!("Refusing REQUEST_UPDATE on a pushed PUBLISH: {e}");
-      let error = crate::server::filter_constructor::invalid_filter(&e);
+      let error = crate::server::subscription::filter_constructor::invalid_filter(&e);
       let _ = stream
         .send(&ControlMessage::RequestError(Box::new(error)))
         .await;
@@ -878,7 +878,7 @@ async fn apply_pushed_update(
     subscription.read().await.resolve_live_start(largest).await;
   }
   if asks_for_a_fill {
-    crate::server::fill::open_fill_fetch_stream(
+    crate::server::subscription::fill::open_fill_fetch_stream(
       context.clone(),
       track_arc.clone(),
       subscription.clone(),

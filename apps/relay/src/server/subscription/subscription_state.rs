@@ -14,8 +14,8 @@
 
 //! What a subscription has asked for and how far it has got: plain data, no I/O.
 
-use super::subscription::SubscriptionOrigin;
-use crate::server::client::switch_context::SwitchActivation;
+use crate::server::session::client::switch_context::SwitchActivation;
+use crate::server::subscription::SubscriptionOrigin;
 use moqtail::model::common::location::Location;
 use moqtail::model::control::constant::GroupOrder;
 use moqtail::model::parameter::combined_filter::CombinedFilter;
@@ -136,7 +136,7 @@ impl SubscriptionState {
   }
 
   /// Adopts the filter a subscription is created with. A live filter has no start
-  /// until [`super::subscription::Subscription::resolve_live_start`] measures it against the track, and
+  /// until [`crate::server::subscription::Subscription::resolve_live_start`] measures it against the track, and
   /// until then the subscription delivers whatever arrives.
   fn set_initial_location_filter(&mut self, filter: LocationFilter) {
     self.set_location_filter(filter, None);

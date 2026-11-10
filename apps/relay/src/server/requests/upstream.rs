@@ -18,7 +18,7 @@ use std::sync::Arc;
 use moqtail::transport::data_stream_handler::SubscribeRequest;
 use tokio::sync::{RwLock, mpsc};
 
-use crate::server::session_context::UpstreamFetchEvent;
+use crate::server::session::session_context::UpstreamFetchEvent;
 
 /// The requests the relay has sent upstream, by the relay's request id: each
 /// SUBSCRIBE it forwarded, and where each FETCH's response goes.

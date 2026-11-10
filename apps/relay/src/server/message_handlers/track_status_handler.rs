@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::server::client::MOQTClient;
 use crate::server::session::Session;
-use crate::server::session_context::SessionContext;
+use crate::server::session::client::MOQTClient;
+use crate::server::session::session_context::SessionContext;
 use crate::server::track::TrackOrigin;
 use core::result::Result;
 use moqtail::model::error::{RequestErrorCode, TerminationCode};

@@ -14,7 +14,7 @@
 
 use crate::server::message_handlers::fetch_handler::FetchStop;
 use crate::server::message_handlers::fetch_handler::delivery::{FetchDelivery, serve_fetch_stream};
-use crate::server::session_context::SessionContext;
+use crate::server::session::session_context::SessionContext;
 use crate::server::subscription::{DEFAULT_PUBLISHER_PRIORITY, Subscription};
 use crate::server::track::Track;
 use crate::server::utils::compute_stream_priority;
@@ -102,7 +102,10 @@ pub(crate) async fn open_fill_fetch_stream(
     (
       sub.subscriber(),
       fill_filter(fill, &state.location_filter),
-      crate::server::filter_constructor::fill_range_filter(&state.subscribe_parameters, fill),
+      crate::server::subscription::filter_constructor::fill_range_filter(
+        &state.subscribe_parameters,
+        fill,
+      ),
       priority,
       group_order,
       state.forward,

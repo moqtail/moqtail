@@ -12,11 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::server::client::MOQTClient;
-use crate::server::prefix_subscription::{MAX_NAMESPACE_PREFIX_FIELDS, oversized_namespace_error};
 use crate::server::requests::DownstreamRequest;
-use crate::server::session_context::SessionContext;
-use crate::server::track_manager::SubscribeKind;
+use crate::server::session::client::MOQTClient;
+use crate::server::session::session_context::SessionContext;
+use crate::server::subscription::prefix_subscription::{
+  MAX_NAMESPACE_PREFIX_FIELDS, oversized_namespace_error,
+};
+use crate::server::track::track_manager::SubscribeKind;
 use core::result::Result;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::control::control_message::ControlMessage;

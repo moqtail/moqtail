@@ -15,9 +15,9 @@
 //! The upstream half of FETCH: asking the publisher for what the cache lacks, and reading its answer.
 
 use super::{FetchStop, UPSTREAM_FETCH_CHANNEL_CAPACITY, UpstreamFetch, UpstreamFetchResponse};
-use crate::server::client::MOQTClient;
 use crate::server::message_handlers::parameters;
-use crate::server::session_context::{SessionContext, UpstreamFetchEvent};
+use crate::server::session::client::MOQTClient;
+use crate::server::session::session_context::{SessionContext, UpstreamFetchEvent};
 use crate::server::track::{Track, TrackOrigin, UpstreamRequestCancellation, UpstreamRequestKind};
 use core::result::Result::{Err, Ok};
 use moqtail::model::control::constant::GroupOrder;

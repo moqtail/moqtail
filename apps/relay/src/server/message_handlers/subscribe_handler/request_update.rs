@@ -14,10 +14,10 @@
 
 //! REQUEST_UPDATE for a subscription this relay serves.
 
-use crate::server::client::MOQTClient;
-use crate::server::filter_constructor;
 use crate::server::requests::DownstreamRequest;
-use crate::server::session_context::SessionContext;
+use crate::server::session::client::MOQTClient;
+use crate::server::session::session_context::SessionContext;
+use crate::server::subscription::filter_constructor;
 use anyhow::Result;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::control::constant::PublishDoneStatusCode;
@@ -244,7 +244,7 @@ pub async fn handle_request_update(
           .get_subscription(&(client.connection_id, existing_req_id))
           .await
       {
-        crate::server::fill::open_fill_fetch_stream(
+        crate::server::subscription::fill::open_fill_fetch_stream(
           context.clone(),
           track_arc.clone(),
           subscription,

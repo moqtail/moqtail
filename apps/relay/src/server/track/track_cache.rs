@@ -23,7 +23,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard, RwLock};
 use tracing::{error, info, trace};
 
-use super::config::{AppConfig, CacheExpirationType};
+use crate::server::config::{AppConfig, CacheExpirationType};
 
 /// Composite cache key combining relay_track_id and group_id for global uniqueness
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

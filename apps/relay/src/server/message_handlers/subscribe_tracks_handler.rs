@@ -12,12 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::server::client::MOQTClient;
 use crate::server::message_handlers::publish_handler;
-use crate::server::prefix_subscription::{MAX_NAMESPACE_PREFIX_FIELDS, oversized_namespace_error};
 use crate::server::requests::DownstreamRequest;
-use crate::server::session_context::SessionContext;
-use crate::server::track_manager::SubscribeKind;
+use crate::server::session::client::MOQTClient;
+use crate::server::session::session_context::SessionContext;
+use crate::server::subscription::prefix_subscription::{
+  MAX_NAMESPACE_PREFIX_FIELDS, oversized_namespace_error,
+};
+use crate::server::track::track_manager::SubscribeKind;
 use core::result::Result;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::control::control_message::ControlMessage;
@@ -60,12 +62,12 @@ pub async fn handle_subscribe_tracks(
 
   // The relay chooses the tracks and filters their Objects itself, so filters it
   // cannot honour are refused rather than dropped.
-  if let Err(e) = crate::server::filter_constructor::tracks_filter(
+  if let Err(e) = crate::server::subscription::filter_constructor::tracks_filter(
     &sub_tracks.parameters,
     context.server_config.max_filter_ranges,
   ) {
     info!("Rejecting SUBSCRIBE_TRACKS: {e}");
-    let err = crate::server::filter_constructor::invalid_filter(&e);
+    let err = crate::server::subscription::filter_constructor::invalid_filter(&e);
     stream_handler
       .send(&ControlMessage::RequestError(Box::new(err)))
       .await?;

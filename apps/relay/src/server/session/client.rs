@@ -16,9 +16,9 @@ pub(crate) mod request_subscription_map;
 pub(crate) mod switch_context;
 
 use crate::server::{
-  client::request_subscription_map::RequestSubscriptionMap,
   config::{AppConfig, TrackAliasMode},
   requests::DownstreamRequests,
+  session::client::request_subscription_map::RequestSubscriptionMap,
   ssts,
   stream_id::{SendStreamKey, StreamType},
   utils,

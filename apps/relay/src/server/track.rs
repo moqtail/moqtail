@@ -12,15 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::seen_objects::SeenObjects;
-use super::track_cache::TrackCache;
+pub(crate) mod seen_objects;
+pub(crate) mod track_cache;
+pub(crate) mod track_manager;
+
 use crate::server::config::AppConfig;
-use crate::server::object_logger::ObjectLogger;
+use crate::server::logging::object_logger::ObjectLogger;
 use crate::server::stream_id::StreamId;
 use crate::server::subscription::Subscription;
-use crate::server::subscription_manager::{SubscriptionId, SubscriptionManager};
+use crate::server::subscription::subscription_manager::{SubscriptionId, SubscriptionManager};
+use crate::server::track::seen_objects::SeenObjects;
+use crate::server::track::track_cache::TrackCache;
 use crate::server::utils;
-use crate::server::{client::MOQTClient, subscription::SubscriptionOrigin};
+use crate::server::{session::client::MOQTClient, subscription::SubscriptionOrigin};
 use anyhow::Result;
 use moqtail::model::common::location::Location;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
@@ -1682,7 +1686,7 @@ mod tests {
   /// yet still sit below where that joiner starts.
   mod join_during_arrival {
     use super::super::*;
-    use crate::server::subscription_manager::QueuedEvent;
+    use crate::server::subscription::subscription_manager::QueuedEvent;
     use bytes::Bytes;
     use moqtail::model::data::constant::ObjectForwardingPreference;
     use tokio::sync::mpsc::UnboundedReceiver;

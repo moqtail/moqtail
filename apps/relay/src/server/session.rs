@@ -12,6 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+pub(crate) mod client;
+pub(crate) mod client_manager;
+pub(crate) mod request_stream;
+pub(crate) mod session_context;
+
 use anyhow::Result;
 use moqtail::model::common::location::Location;
 use moqtail::model::data::full_track_name::FullTrackName;
@@ -43,13 +48,9 @@ use wtransport::quinn;
 
 use crate::server::{Server, stream_id::StreamId};
 
-use super::{
-  client::MOQTClient,
-  message_handlers, request_stream,
-  session_context::{SessionContext, UpstreamFetchEvent},
-  track::Track,
-  utils,
-};
+use super::{message_handlers, track::Track, utils};
+use client::MOQTClient;
+use session_context::{SessionContext, UpstreamFetchEvent};
 
 pub struct Session {}
 
@@ -873,7 +874,7 @@ impl Session {
 
             // Log the token information
             if let Some(token_value) = token.token_value {
-              super::token_logger::log_token_registration(
+              crate::server::logging::token_logger::log_token_registration(
                 &token_value,
                 context.connection_id,
                 client_port,

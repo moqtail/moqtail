@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::subscription::Subscription;
-use super::track::{Cleanup, Track, TrackOrigin};
-use crate::server::client::MOQTClient;
+use crate::server::session::client::MOQTClient;
+use crate::server::subscription::Subscription;
+use crate::server::track::{Cleanup, Track, TrackOrigin};
 use moqtail::model::common::tuple::Tuple;
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::publish::Publish;

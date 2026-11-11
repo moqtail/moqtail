@@ -53,7 +53,7 @@ interface Column {
 }
 
 interface Props {
-  videoRef: RefObject<MOQtailVideoElement>;
+  videoRef: RefObject<MOQtailVideoElement | null>;
   player: MOQtailPlayer | undefined;
   catalog: CatalogElement | undefined;
   session: number;
@@ -153,13 +153,13 @@ export function Advanced({ videoRef, player, catalog, session }: Props) {
 
 /** Element, rendition, and player events, newest last. */
 function useEvents(
-  videoRef: RefObject<MOQtailVideoElement>,
+  videoRef: RefObject<MOQtailVideoElement | null>,
   player: MOQtailPlayer | undefined,
   session: number,
 ) {
   const [lines, setLines] = useState<EventLine[]>([]);
   // When the last rendition selection changed, to time the switch it asked for
-  const switchAt = useRef<number>();
+  const switchAt = useRef<number | undefined>(undefined);
 
   // A layout effect, so the log is empty before the new source's first event fires
   useLayoutEffect(() => {

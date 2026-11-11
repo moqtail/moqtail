@@ -127,7 +127,7 @@ cargo run --bin client -- -c fetch --start-group 0 --end-group 3
 
 Group-ID gaps work the same way via `--group-id-step`, setting the Prior Group
 ID Gap property (draft 12.8) on the first object of each gapped group. Run the
-relay with `--max-upstream-fetch-gaps 0` so it serves only the cached groups
+relay with `max_upstream_fetch_gaps: 0` in its config so it serves only the cached groups
 instead of trying to fetch the (non-existent) missing groups upstream:
 
 ```
@@ -190,7 +190,7 @@ Subscribe to every track under a namespace prefix (SUBSCRIBE_TRACKS). The relay
 answers `REQUEST_OK`, forwards a `PUBLISH` for each matching track — which the
 client accepts, then receives and counts that track's objects — and sends
 `PUBLISH_SKIPPED` if it runs out of streams (start the relay with
-`--max-publish-streams N` to cap it):
+`max_publish_streams: N` in its config to cap it):
 
 ```
 cargo run --bin client -- -c subscribe-tracks -n test/ns --duration 5
@@ -302,12 +302,13 @@ cargo run --bin client -- -c fetch -T rf --start-group 0 --end-group 3 --range-f
 
 The relay implements the MOQT four-tier scheduling algorithm: subscriber priority > publisher priority > group order > subgroup/object ID. QUIC stream priorities are assigned using a band mapping so tracks with different priorities never interfere on the same connection.
 
-To observe the scheduler in action you need bandwidth pressure on a single subscriber connection. The relay's `--write-kbps-limit` flag creates a per-connection token bucket that throttles writes, causing the QUIC send buffer to fill and forcing the scheduler to choose between streams.
+To observe the scheduler in action you need bandwidth pressure on a single subscriber connection. The relay's `write_kbps_limit` config setting creates a per-connection token bucket that throttles writes, causing the QUIC send buffer to fill and forcing the scheduler to choose between streams.
 
 **Terminal 1 — relay with 200 kbps per-subscriber cap:**
 
 ```
-cargo run --bin relay -- --write-kbps-limit 200
+echo 'write_kbps_limit: 200' > /tmp/relay-throttle.yaml
+cargo run --bin relay -- --config /tmp/relay-throttle.yaml
 ```
 
 **Terminal 2 — high-priority publisher (track `demo`, publisher-priority=128):**
@@ -358,7 +359,7 @@ The `seq=GAP` messages in the subscriber output are expected — the stats count
 
 ### Using OS-level bandwidth throttling
 
-For a real UDP-layer bottleneck, throttle the loopback interface at the OS level and run the relay **without** `--write-kbps-limit`. Any tool that limits UDP throughput to roughly 1 Mbit/s is sufficient.
+For a real UDP-layer bottleneck, throttle the loopback interface at the OS level and run the relay **without** `write_kbps_limit`. Any tool that limits UDP throughput to roughly 1 Mbit/s is sufficient.
 
 **Linux — `tc` (traffic control):**
 

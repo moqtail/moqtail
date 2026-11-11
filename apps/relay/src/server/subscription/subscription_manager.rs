@@ -366,10 +366,8 @@ impl SubscriptionManager {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::server::config::Cli;
   use crate::server::stream_id::StreamId;
   use bytes::Bytes;
-  use clap::Parser;
   use moqtail::model::common::location::Location;
   use moqtail::model::data::constant::{ObjectForwardingPreference, ObjectStatus};
   use moqtail::model::data::object::Object;
@@ -400,8 +398,10 @@ mod tests {
 
   #[tokio::test]
   async fn a_full_queue_skips_the_rest_of_the_group_but_not_control_events() {
-    let cli = Cli::parse_from(["relay", "--max-subscriber-queue-bytes", "250"]);
-    let config = Box::leak(Box::new(AppConfig::from_cli(cli)));
+    let config = Box::leak(Box::new(AppConfig {
+      max_subscriber_queue_bytes: 250,
+      ..Default::default()
+    }));
     let name = FullTrackName::try_new("meet/room1", "video").unwrap();
     let manager = SubscriptionManager::new(1, name, String::new(), config);
     let (mut rx, queue) = manager.add_test_sender((1, 0));
@@ -452,8 +452,10 @@ mod tests {
 
   #[tokio::test]
   async fn an_object_larger_than_the_cap_goes_out_when_the_queue_is_empty() {
-    let cli = Cli::parse_from(["relay", "--max-subscriber-queue-bytes", "50"]);
-    let config = Box::leak(Box::new(AppConfig::from_cli(cli)));
+    let config = Box::leak(Box::new(AppConfig {
+      max_subscriber_queue_bytes: 50,
+      ..Default::default()
+    }));
     let name = FullTrackName::try_new("meet/room1", "video").unwrap();
     let manager = SubscriptionManager::new(1, name, String::new(), config);
     let (mut rx, queue) = manager.add_test_sender((1, 0));

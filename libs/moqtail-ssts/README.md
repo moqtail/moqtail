@@ -55,7 +55,7 @@ Three steps, and none of them is in the relay.
 
 2. **Register it.** One line in [`src/registry.rs`](src/registry.rs). That is
    the whole integration: the SETUP advertisement, the relay's
-   `--ssts-algorithms` validation and the instance the controller runs are all
+   `ssts_algorithms` validation and the instance the controller runs are all
    derived from the registry, so there is no second list to update and no way
    for the two to disagree.
 

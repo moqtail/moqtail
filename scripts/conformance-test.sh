@@ -144,8 +144,7 @@ else
   RELAY_URL="https://127.0.0.1:${RELAY_PORT}${ENDPOINT}"
   echo "Starting MOQtail relay on port $RELAY_PORT ..."
   RUST_LOG="$RELAY_LOG_SPEC" "$BINARY" \
-    --port "$RELAY_PORT" \
-    --host 127.0.0.1 \
+    --bind "127.0.0.1:$RELAY_PORT" \
     --cert-file "$CERT_FILE" \
     --key-file "$KEY_FILE" \
     >"$RELAY_LOG" 2>&1 &

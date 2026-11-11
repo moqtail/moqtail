@@ -705,14 +705,12 @@ mod tests {
   mod cleanup {
     use super::super::*;
     use super::PUBLISHER;
-    use crate::server::config::Cli;
     use bytes::Bytes;
-    use clap::Parser;
     use moqtail::model::data::constant::ObjectForwardingPreference;
     use moqtail::model::data::fetch_object::FetchObjectPayload;
 
     pub(super) fn track(origin: TrackOrigin) -> Track {
-      let config = Box::leak(Box::new(AppConfig::from_cli(Cli::parse_from(["relay"]))));
+      let config = Box::leak(Box::new(AppConfig::default()));
       Track::new(
         1,
         FullTrackName::try_new("meet/room1", "video").unwrap(),

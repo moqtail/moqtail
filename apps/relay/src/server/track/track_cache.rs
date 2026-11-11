@@ -157,21 +157,17 @@ impl TrackCache {
     let cache = match config.cache_expiration_type {
       CacheExpirationType::Ttl => {
         info!(
-          "track_cache::new | configuring TTL cache | track: {} duration: {}min",
-          relay_track_id, config.cache_expiration_minutes
+          "track_cache::new | configuring TTL cache | track: {} duration: {:?}",
+          relay_track_id, config.cache_expiration
         );
-        cache_builder
-          .time_to_live(config.get_cache_expiration_duration())
-          .build()
+        cache_builder.time_to_live(config.cache_expiration).build()
       }
       CacheExpirationType::Tti => {
         info!(
-          "track_cache::new | configuring TTI cache | track: {} duration: {}min",
-          relay_track_id, config.cache_expiration_minutes
+          "track_cache::new | configuring TTI cache | track: {} duration: {:?}",
+          relay_track_id, config.cache_expiration
         );
-        cache_builder
-          .time_to_idle(config.get_cache_expiration_duration())
-          .build()
+        cache_builder.time_to_idle(config.cache_expiration).build()
       }
     };
 
@@ -369,9 +365,7 @@ impl TrackCache {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::server::config::Cli;
   use bytes::Bytes;
-  use clap::Parser;
   use moqtail::model::data::constant::ObjectForwardingPreference;
   use tokio::sync::Barrier;
 
@@ -391,7 +385,7 @@ mod tests {
 
   #[tokio::test]
   async fn interleaved_subgroups_are_stored_in_object_order() {
-    let config = AppConfig::from_cli(Cli::parse_from(["relay"]));
+    let config = AppConfig::default();
     let cache = TrackCache::new(1, 10_000, &config);
 
     // Subgroup 1 runs ahead of subgroup 0, and one object is delivered twice.
@@ -408,7 +402,7 @@ mod tests {
 
   #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
   async fn first_objects_of_concurrent_subgroups_all_land_in_the_group() {
-    let config = AppConfig::from_cli(Cli::parse_from(["relay"]));
+    let config = AppConfig::default();
     let cache = TrackCache::new(1, 10_000, &config);
 
     for group_id in 0..1000 {
@@ -476,7 +470,7 @@ mod tests {
 
   #[tokio::test]
   async fn a_range_is_complete_only_when_every_location_is_accounted_for() {
-    let config = AppConfig::from_cli(Cli::parse_from(["relay"]));
+    let config = AppConfig::default();
     let cache = TrackCache::new(1, 10_000, &config);
     for object_id in [0, 1, 4] {
       cache.add_object(object_at(5, object_id)).await;
@@ -496,7 +490,7 @@ mod tests {
 
   #[tokio::test]
   async fn a_group_known_to_be_empty_is_complete_with_no_objects() {
-    let config = AppConfig::from_cli(Cli::parse_from(["relay"]));
+    let config = AppConfig::default();
     let cache = TrackCache::new(1, 10_000, &config);
     cache.mark_absent(loc(6, 0), loc(8, u64::MAX));
     assert_eq!(
@@ -510,7 +504,7 @@ mod tests {
 
   #[tokio::test]
   async fn an_overlapping_fill_waits_for_the_one_in_flight() {
-    let config = AppConfig::from_cli(Cli::parse_from(["relay"]));
+    let config = AppConfig::default();
     let cache = TrackCache::new(1, 10_000, &config);
     let first = cache.claim_fill(3, 5).unwrap();
     // Groups 6 and up are not being filled.
@@ -525,7 +519,7 @@ mod tests {
 
   #[tokio::test]
   async fn what_is_absent_outlives_an_evicted_group() {
-    let config = AppConfig::from_cli(Cli::parse_from(["relay"]));
+    let config = AppConfig::default();
     let cache = TrackCache::new(1, 10_000, &config);
     cache.add_object(object_at(5, 0)).await;
     cache.mark_absent(loc(5, 1), loc(5, u64::MAX));

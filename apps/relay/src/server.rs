@@ -89,14 +89,17 @@ impl Server {
   pub async fn start(&mut self) -> Result<()> {
     let endpoints = self.app_config.build_quic_endpoints().await?;
 
+    let bind = self.app_config.bind;
+    // A wildcard address is not something a client can dial.
+    let addr = if bind.ip().is_unspecified() {
+      format!("localhost:{}", bind.port())
+    } else {
+      bind.to_string()
+    };
     info!(
-      "{} is running on {} UDP socket(s) -- WebTransport clients: https://{}:{}  Raw QUIC clients: moqt://{}:{}",
+      "{} is running on {} UDP socket(s) -- WebTransport clients: https://{addr}  Raw QUIC clients: moqt://{addr}",
       env!("MOQTAIL_VERSION"),
       endpoints.len(),
-      self.app_config.host,
-      self.app_config.port,
-      self.app_config.host,
-      self.app_config.port
     );
 
     // Level-triggered, so an accept loop between two iterations when shutdown is

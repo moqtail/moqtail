@@ -13,19 +13,26 @@
 // limitations under the License.
 
 use anyhow::Result;
-use clap::{Parser, ValueEnum};
+use clap::Parser;
+use figment::Figment;
+use figment::providers::{Format, Yaml};
 use moqtail::model::control::constant::SUPPORTED_VERSIONS;
+use serde::Deserialize;
+use smart_default::SmartDefault;
 use socket2::{Domain, Socket, Type};
 use std::net::{Ipv6Addr, SocketAddr, UdpSocket};
+use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tracing::{error, info, warn};
+use validator::Validate;
 use wtransport::Identity;
 use wtransport::quinn::congestion::BbrConfig;
 use wtransport::quinn::{self, TransportConfig};
 
 /// Cache expiration strategy
-#[derive(Debug, Clone, Copy, ValueEnum)]
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum CacheExpirationType {
   /// Time-to-live: entries expire after a fixed duration from creation
   Ttl,
@@ -36,7 +43,8 @@ pub enum CacheExpirationType {
 /// How the relay picks the Track Alias it gives a subscriber. Either is allowed: a
 /// publisher may give concurrent subscriptions to one track the same alias or
 /// different ones, and subscribers have to handle both.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum TrackAliasMode {
   /// One alias per track: every subscription to it gets the track's relay id.
   PerTrack,
@@ -44,315 +52,244 @@ pub enum TrackAliasMode {
   PerSubscription,
 }
 
-/// Upper bound on `--io-sockets`. Past the core count extra sockets only add
+/// Upper bound on `io_sockets`. Past the core count extra sockets only add
 /// accept loops with nothing to do.
 const MAX_IO_SOCKETS: usize = 256;
 
-/// Upper bound on `--dedup-retained-groups`. Retention costs groups × objects-per-group,
+/// Upper bound on `dedup_retained_groups`. Retention costs groups × objects-per-group,
 /// and nothing bounds the second factor, so the first is bounded here.
-const MAX_DEDUP_RETAINED_GROUPS: u64 = 1000;
+const MAX_DEDUP_RETAINED_GROUPS: usize = 1000;
 
-#[derive(Parser, Debug)]
+/// Everything else is set in the YAML file given to `--config`; see
+/// `apps/relay/relay.example.yaml`. Flags given here override the file.
+#[derive(Parser, Debug, Default)]
 #[command(author, version, about, long_about = None)]
 pub struct Cli {
-  /// Port to bind
-  #[arg(long, default_value_t = 4433)]
-  pub port: u16,
-  /// Host to bind
-  #[arg(long, default_value = "localhost")]
-  pub host: String,
-  /// Certificate PEM file
-  #[arg(long, default_value = "apps/relay/cert/cert.pem")]
+  /// YAML config file
+  #[arg(long)]
+  pub config: Option<PathBuf>,
+  /// Address to bind, e.g. 0.0.0.0:4433 [default: [::]:4433]
+  #[arg(long)]
+  pub bind: Option<SocketAddr>,
+  /// Certificate PEM file [default: apps/relay/cert/cert.pem]
+  #[arg(long)]
+  pub cert_file: Option<String>,
+  /// Private key PEM file [default: apps/relay/cert/key.pem]
+  #[arg(long)]
+  pub key_file: Option<String>,
+}
+
+/// The settings the relay runs on. YAML keys are the field names; a key left out
+/// takes the field's `#[default]`, and an unknown key is a startup error.
+/// Durations are written with units: `10s`, `500ms`, `30m`.
+#[derive(Debug, Clone, Deserialize, SmartDefault, Validate)]
+#[serde(default, deny_unknown_fields)]
+pub struct AppConfig {
+  /// Address to bind. `[::]` (the default) takes IPv4 and IPv6 alike.
+  #[default(SocketAddr::from((Ipv6Addr::UNSPECIFIED, 4433)))]
+  pub bind: SocketAddr,
+  /// Certificate PEM file. Relative paths here and below resolve against the
+  /// directory the relay is started from, not the config file's.
+  #[default("apps/relay/cert/cert.pem")]
   pub cert_file: String,
   /// Private key PEM file
-  #[arg(long, default_value = "apps/relay/cert/key.pem")]
+  #[default("apps/relay/cert/key.pem")]
   pub key_file: String,
+  /// QUIC idle timeout
+  #[default(Duration::from_secs(7))]
+  #[serde(with = "humantime_serde")]
+  pub max_idle_timeout: Duration,
+  /// QUIC keep-alive interval
+  #[default(Duration::from_secs(3))]
+  #[serde(with = "humantime_serde")]
+  pub keep_alive_interval: Duration,
   /// Number of cached subgroups/fetches per track
-  #[arg(long, default_value_t = 1000)]
+  #[default(1000)]
   pub cache_size: u16,
-  /// Cache grow ratio before evicting - allows cache to grow to this multiple of cache_size before evicting
-  #[arg(long, default_value_t = 7)]
-  pub max_idle_timeout: u64,
-  #[arg(long, default_value_t = 3)]
-  pub keep_alive_interval: u64,
-  #[arg(long, default_value = "/tmp")]
+  /// Folder for the rolling relay log
+  #[default("/tmp")]
   pub log_folder: String,
   /// Cache expiration type (ttl or tti)
-  #[arg(long, value_enum, default_value = "ttl")]
+  #[default(CacheExpirationType::Ttl)]
   pub cache_expiration_type: CacheExpirationType,
-  /// Cache expiration duration in minutes
-  #[arg(long, default_value_t = 30)]
-  pub cache_expiration_minutes: u64,
+  /// Cache expiration duration
+  #[default(Duration::from_secs(30 * 60))]
+  #[serde(with = "humantime_serde")]
+  pub cache_expiration: Duration,
   /// Enable object logging
-  #[arg(long, default_value_t = false)]
   pub enable_object_logging: bool,
   /// Enable token logging
-  #[arg(long, default_value_t = false)]
   pub enable_token_logging: bool,
   /// Token log file path
-  #[arg(long, default_value = "/tmp/tokens.csv")]
+  #[default("/tmp/tokens.csv")]
   pub token_log_path: String,
   /// Number of UDP sockets to listen on, all bound to the same port with
   /// SO_REUSEPORT. Connections are spread across them by the kernel, and each socket
   /// carries its own I/O readiness state, so drivers stop contending over one.
   /// Linux only: elsewhere the kernel does not distribute across sockets, so this
   /// stays at 1 there.
-  #[arg(long, default_value_t = 1)]
+  #[default(1)]
   pub io_sockets: usize,
   /// UDP send and receive buffer per socket, in KiB (0: kernel default). A large
   /// buffer absorbs fan-out bursts; the kernel caps it at net.core.wmem_max /
   /// rmem_max. Use 0 if the interface queue is a short FIFO.
-  #[arg(long, default_value_t = 8192)]
+  #[default(8192)]
   pub socket_buffer_kib: usize,
-
   /// Maximum number of concurrent request streams a peer may open (applied as the
   /// QUIC max_concurrent_bidi_streams limit).
-  #[arg(long, default_value_t = 10_000)]
+  #[default(10_000)]
   pub max_request_streams: u64,
-
   /// Application-level load-shedding limit: once this many request streams are
   /// being served across the relay, new ones are reset with EXCESSIVE_LOAD.
   /// 0 disables load shedding.
-  #[arg(long, default_value_t = 0)]
   pub max_active_requests: u64,
-
   /// Max objects queued for a subscriber before its data streams are reset with
   /// TOO_FAR_BEHIND. 0 disables the check.
-  #[arg(long, default_value_t = 0)]
   pub max_subscriber_lag: u64,
-
   /// How long an Object may wait in a subscriber's queue before the rest of its group
   /// is skipped for that subscriber. Also caps a subscriber's own Object Delivery
-  /// Timeout, which may only be stricter. 0 sets no relay limit.
-  #[arg(long, default_value_t = 0)]
-  pub delivery_timeout_ms: u64,
-
+  /// Timeout, which may only be stricter. 0s sets no relay limit.
+  #[serde(with = "humantime_serde")]
+  pub delivery_timeout: Duration,
   /// Max payload bytes queued for one subscriber. Past it, the rest of the group is
   /// skipped for that subscriber, so a stalled one cannot grow memory without bound.
   /// 0 = unlimited.
-  #[arg(long, default_value_t = 16 * 1024 * 1024)]
+  #[default(16 * 1024 * 1024)]
   pub max_subscriber_queue_bytes: usize,
-
   /// Max PUBLISH streams the relay initiates for one SUBSCRIBE_TRACKS before it
   /// runs out of streams and emits PUBLISH_SKIPPED. 0 = unlimited.
-  #[arg(long, default_value_t = 0)]
   pub max_publish_streams: u64,
-
   /// Track Alias given to subscribers: one per subscription, or one per track.
-  #[arg(long, value_enum, default_value = "per-subscription")]
+  #[default(TrackAliasMode::PerSubscription)]
   pub track_alias_mode: TrackAliasMode,
-
   /// Simulate a bandwidth cap per subscriber connection (kbps). 0 = unlimited.
   /// Useful for testing QUIC stream priority scheduling without OS-level throttling.
-  #[arg(long, default_value_t = 0)]
   pub write_kbps_limit: u64,
-
   /// URI advertised to clients in GOAWAY so they can migrate to another relay.
-  /// Empty reuses the current URI. Future admin API overrides this at runtime.
-  #[arg(long)]
+  /// Unset reuses the current URI. The runtime value lives on `Server`.
   pub redirect_uri: Option<String>,
-
   /// Maximum number of upstream fetch gaps before skipping
-  #[arg(long, default_value_t = 10)]
+  #[default(10)]
   pub max_upstream_fetch_gaps: u64,
-  /// Timeout in seconds for upstream fetch responses
-  #[arg(long, default_value_t = 10)]
-  pub upstream_fetch_timeout_secs: u64,
+  /// Timeout for upstream fetch responses
+  #[default(Duration::from_secs(10))]
+  #[serde(with = "humantime_serde")]
+  pub upstream_fetch_timeout: Duration,
   /// How long a publisher has to answer the relay's SUBSCRIBE before it is treated as
   /// declining. Without it a publisher that stays connected and never answers leaves
   /// the subscriber waiting for a response that cannot arrive.
-  #[arg(long, default_value_t = 10)]
-  pub upstream_subscribe_timeout_secs: u64,
+  #[default(Duration::from_secs(10))]
+  #[serde(with = "humantime_serde")]
+  pub upstream_subscribe_timeout: Duration,
   /// How long a data stream waits for the control message that establishes its track
   /// alias before the stream is abandoned. Giving up costs the whole subgroup, so the
   /// wait is generous; the subscriber side of the same race waits as long.
-  #[arg(long, default_value_t = 2000)]
-  pub track_alias_resolution_timeout_ms: u64,
+  #[default(Duration::from_millis(2000))]
+  #[serde(with = "humantime_serde")]
+  pub track_alias_resolution_timeout: Duration,
   /// How long forwarding waits for the control message that carries a subscriber's
   /// track alias (SUBSCRIBE_OK, or PUBLISH when the relay pushes) to be sent. Objects
   /// queue meanwhile; once it elapses they are forwarded regardless.
-  #[arg(long, default_value_t = 3000)]
-  pub downstream_alias_timeout_ms: u64,
+  #[default(Duration::from_millis(3000))]
+  #[serde(with = "humantime_serde")]
+  pub downstream_alias_timeout: Duration,
   /// How long a PUBLISH_DONE waits for the data streams it accounts for to finish
   /// arriving before the track is torn down anyway. The message rides the request
   /// stream and overtakes them, so forwarding it straight through would cut objects
   /// still in flight.
-  #[arg(long, default_value_t = 2000)]
-  pub publish_done_stream_timeout_ms: u64,
+  #[default(Duration::from_millis(2000))]
+  #[serde(with = "humantime_serde")]
+  pub publish_done_stream_timeout: Duration,
   /// A PUBLISH_DONE for a track that has been receiving datagrams is held until none
-  /// has arrived for this long, within --publish-done-stream-timeout-ms. Datagrams are
+  /// has arrived for this long, within `publish_done_stream_timeout`. Datagrams are
   /// not counted in its Stream Count, and the message can overtake the last of them.
-  #[arg(long, default_value_t = 100)]
-  pub publish_done_datagram_quiet_ms: u64,
+  #[default(Duration::from_millis(100))]
+  #[serde(with = "humantime_serde")]
+  pub publish_done_datagram_quiet: Duration,
   /// How many recent groups of Object ids are remembered per track, to drop duplicates
   /// when several publishers serve the same Track. 0 turns duplicate detection off.
-  /// Capped, because the memory this costs also scales with the size of a group
-  #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(0..=MAX_DEDUP_RETAINED_GROUPS))]
-  pub dedup_retained_groups: u64,
-
+  /// Capped, because the memory this costs also scales with the size of a group; a
+  /// publisher more than this many groups behind can slip a duplicate through.
+  #[default(30)]
+  #[validate(range(max = MAX_DEDUP_RETAINED_GROUPS))]
+  pub dedup_retained_groups: usize,
   /// How many Range Filter ranges a subscriber may ask for, in total, for one
   /// subscription or fetch, advertised as MAX_FILTER_RANGES. The filters inside
   /// FILL_PARAMETERS count against a limit of their own. 0 allows no Range Filters.
-  #[arg(long, default_value_t = 32)]
+  #[default(32)]
   pub max_filter_ranges: u64,
-
-  /// Longest a SUBSCRIBE waits for a publisher, in milliseconds, whatever the
-  /// subscriber asks. Bounds how long held requests tie up streams. 0 never waits.
-  #[arg(long, default_value_t = 10000)]
-  pub max_rendezvous_timeout_ms: u64,
-
+  /// Longest a SUBSCRIBE waits for a publisher, whatever the subscriber asks.
+  /// Bounds how long held requests tie up streams. 0s never waits.
+  #[default(Duration::from_millis(10000))]
+  #[serde(with = "humantime_serde")]
+  pub max_rendezvous_timeout: Duration,
   /// Enable sender-side track switching (SSTS). Off by default: the setup option
   /// and message parameter it relies on are provisional on an unadopted draft, so
   /// relays that never turn the feature on never put them on the wire.
-  #[arg(long, default_value_t = false)]
   pub ssts_enable: bool,
-
-  /// Which SSTS algorithm ids to run and advertise in SETUP, comma separated,
-  /// decimal or 0x hex. Defaults to the default allocation (0) alone: SSTS is a
-  /// new mechanism, and any id beyond that first one is an experimental
-  /// algorithm of this implementation's, so the relay does not volunteer it.
-  /// An id the relay does not implement is a startup error rather than a
-  /// warning, because advertising an algorithm this relay cannot run only
-  /// produces subscriptions that are rejected one by one.
-  /// Ignored unless --ssts-enable is set.
-  #[arg(
-    long,
-    num_args = 1..,
-    value_delimiter = ',',
-    default_value = "0",
-    value_parser = super::ssts::parse_algorithm_id
-  )]
+  /// Which SSTS algorithm ids to run and advertise in SETUP (YAML ints, decimal or
+  /// 0x hex). Defaults to the default allocation (0) alone: SSTS is a new mechanism,
+  /// and any id beyond that first one is an experimental algorithm of this
+  /// implementation's, so the relay does not volunteer it. An id the relay does not
+  /// implement is a startup error rather than a warning, because advertising an
+  /// algorithm this relay cannot run only produces subscriptions that are rejected
+  /// one by one. Empty after loading unless `ssts_enable` is set, which is also
+  /// what clients negotiate to.
+  #[default(vec![0])]
+  #[validate(custom(function = "super::ssts::check_algorithm_ids"))]
   pub ssts_algorithms: Vec<u64>,
-
   /// How long an SSTS client's subgroup stream waits for a graceful finish
   /// before it is reset and its stream slot is freed again. Only applies to
-  /// connections that negotiated SSTS; 0 always closes gracefully.
-  #[arg(long, default_value_t = 1600)]
-  pub ssts_discard_timeout_ms: u64,
-}
-#[derive(Debug, Clone)]
-pub struct AppConfig {
-  pub port: u16,
-  pub host: String,
-  pub cert_file: String,
-  pub key_file: String,
-  pub max_idle_timeout: u64,
-  pub keep_alive_interval: u64,
-  pub cache_size: u16,
-  pub log_folder: String,
-  pub cache_expiration_type: CacheExpirationType,
-  pub cache_expiration_minutes: u64,
-  pub enable_object_logging: bool,
-  pub enable_token_logging: bool,
-  pub token_log_path: String,
-  pub io_sockets: usize,
-  pub socket_buffer_kib: usize,
-  pub max_request_streams: u64,
-  pub max_active_requests: u64,
-  pub max_subscriber_lag: u64,
-  pub delivery_timeout_ms: u64,
-  pub max_subscriber_queue_bytes: usize,
-  pub max_publish_streams: u64,
-  pub track_alias_mode: TrackAliasMode,
-  /// 0 = unlimited. Non-zero caps relay writes to this many kbps per subscriber connection.
-  pub write_kbps_limit: u64,
-  /// Default GOAWAY redirect URI; the runtime value lives on `Server`.
-  pub redirect_uri: Option<String>,
-  pub max_upstream_fetch_gaps: u64,
-  pub upstream_fetch_timeout: Duration,
-  /// How long a publisher has to answer the relay's SUBSCRIBE before it is treated as
-  /// declining.
-  pub upstream_subscribe_timeout: Duration,
-  /// A data stream can arrive before the control message that establishes its track
-  /// alias. The stream waits this long for it, then is abandoned.
-  pub track_alias_resolution_timeout: Duration,
-  /// A subscriber cannot place a data stream until it has the track alias. Forwarding
-  /// waits this long for the control message carrying it, then proceeds regardless.
-  pub downstream_alias_timeout: Duration,
-  /// A publisher's PUBLISH_DONE is held until the data streams it accounts for have
-  /// finished arriving. This bounds that wait, so a stream that never ends cannot
-  /// keep the track alive forever.
-  pub publish_done_stream_timeout: Duration,
-  /// How long a track that has been receiving datagrams must go without one before a
-  /// PUBLISH_DONE for it is passed on.
-  pub publish_done_datagram_quiet: Duration,
-  /// Groups of Object ids retained per track for duplicate detection. Bounds what that
-  /// costs; a publisher more than this many groups behind can slip a duplicate through.
-  pub dedup_retained_groups: usize,
-  /// How many Range Filter ranges a subscriber may ask for in one request,
-  /// advertised as MAX_FILTER_RANGES. 0 allows none.
-  pub max_filter_ranges: u64,
-  /// Longest a SUBSCRIBE waits for a publisher. 0 never waits.
-  pub max_rendezvous_timeout: Duration,
-  /// SSTS is available on this relay: the setup option is advertised and
-  /// SWITCHING_SET_ASSIGNMENT is accepted. A client can never enable it on a relay
-  /// that has it off, because the advertised list stays empty.
-  pub ssts_enable: bool,
-  /// The SSTS algorithm ids advertised in SETUP. Empty means SSTS is off, which is
-  /// also what clients negotiate to.
-  pub ssts_algorithms: Vec<u64>,
-  /// Subgroup streams of SSTS clients that do not finish gracefully within this
-  /// window are reset, so an abandoned group frees its stream slot again.
-  pub ssts_discard_timeout_ms: u64,
+  /// connections that negotiated SSTS; 0s always closes gracefully.
+  #[default(Duration::from_millis(1600))]
+  #[serde(with = "humantime_serde")]
+  pub ssts_discard_timeout: Duration,
 }
 
 impl AppConfig {
   pub fn load() -> &'static Self {
     static INSTANCE: OnceLock<AppConfig> = OnceLock::new();
-    INSTANCE.get_or_init(|| Self::from_cli(Cli::parse()))
+    INSTANCE.get_or_init(|| {
+      Self::from_cli(Cli::parse()).unwrap_or_else(|e| {
+        eprintln!("error: {e:#}");
+        std::process::exit(2);
+      })
+    })
   }
 
-  /// The command line, resolved into the settings the relay runs on.
-  pub fn from_cli(cli: Cli) -> Self {
-    AppConfig {
-      port: cli.port,
-      host: cli.host,
-      cert_file: cli.cert_file,
-      key_file: cli.key_file,
-      max_idle_timeout: cli.max_idle_timeout,
-      keep_alive_interval: cli.keep_alive_interval,
-      cache_size: cli.cache_size,
-      log_folder: cli.log_folder,
-      cache_expiration_type: cli.cache_expiration_type,
-      cache_expiration_minutes: cli.cache_expiration_minutes,
-      enable_object_logging: cli.enable_object_logging,
-      enable_token_logging: cli.enable_token_logging,
-      token_log_path: cli.token_log_path,
-      io_sockets: cli.io_sockets,
-      socket_buffer_kib: cli.socket_buffer_kib,
-      max_request_streams: cli.max_request_streams,
-      max_active_requests: cli.max_active_requests,
-      max_subscriber_lag: cli.max_subscriber_lag,
-      delivery_timeout_ms: cli.delivery_timeout_ms,
-      max_subscriber_queue_bytes: cli.max_subscriber_queue_bytes,
-      max_publish_streams: cli.max_publish_streams,
-      track_alias_mode: cli.track_alias_mode,
-      write_kbps_limit: cli.write_kbps_limit,
-      redirect_uri: cli.redirect_uri,
-      max_upstream_fetch_gaps: cli.max_upstream_fetch_gaps,
-      upstream_fetch_timeout: Duration::from_secs(cli.upstream_fetch_timeout_secs),
-      upstream_subscribe_timeout: Duration::from_secs(cli.upstream_subscribe_timeout_secs),
-      track_alias_resolution_timeout: Duration::from_millis(cli.track_alias_resolution_timeout_ms),
-      downstream_alias_timeout: Duration::from_millis(cli.downstream_alias_timeout_ms),
-      publish_done_stream_timeout: Duration::from_millis(cli.publish_done_stream_timeout_ms),
-      publish_done_datagram_quiet: Duration::from_millis(cli.publish_done_datagram_quiet_ms),
-      dedup_retained_groups: cli.dedup_retained_groups as usize,
-      max_filter_ranges: cli.max_filter_ranges,
-      max_rendezvous_timeout: Duration::from_millis(cli.max_rendezvous_timeout_ms),
-      ssts_enable: cli.ssts_enable,
-      // When the feature is off the advertised list stays empty, so a client can
-      // never negotiate SSTS on this relay however much it wants it.
-      // The registry decided at parse time which ids are runnable; the feature
-      // flag decides whether any of them go on the wire.
-      ssts_algorithms: if cli.ssts_enable {
-        let mut ids = cli.ssts_algorithms.clone();
-        ids.dedup();
-        ids
-      } else {
-        Vec::new()
-      },
-      ssts_discard_timeout_ms: cli.ssts_discard_timeout_ms,
+  /// The config file, with the command line on top, resolved into the settings
+  /// the relay runs on.
+  pub fn from_cli(cli: Cli) -> Result<Self> {
+    let mut figment = Figment::new();
+    if let Some(path) = &cli.config {
+      figment = figment.merge(Yaml::file_exact(path));
     }
+    let mut config: AppConfig = figment.extract()?;
+    if let Some(bind) = cli.bind {
+      config.bind = bind;
+    }
+    if let Some(cert_file) = cli.cert_file {
+      config.cert_file = cert_file;
+    }
+    if let Some(key_file) = cli.key_file {
+      config.key_file = key_file;
+    }
+    config.validate()?;
+    Ok(config.finalize())
+  }
+
+  fn finalize(mut self) -> Self {
+    // When the feature is off the advertised list stays empty, so a client can
+    // never negotiate SSTS on this relay however much it wants it.
+    // Validation decided which ids are runnable; the feature flag decides
+    // whether any of them go on the wire.
+    if self.ssts_enable {
+      let mut seen = std::collections::HashSet::new();
+      self.ssts_algorithms.retain(|id| seen.insert(*id));
+    } else {
+      self.ssts_algorithms.clear();
+    }
+    self
   }
 
   /// Builds the relay's QUIC listeners. WebTransport and raw-QUIC clients share the
@@ -361,7 +298,7 @@ impl AppConfig {
   /// loops in `Server::start` demultiplex by the negotiated protocol before handing
   /// the connection to either path.
   ///
-  /// `--io-sockets` decides how many are returned. They share one server config and
+  /// `io_sockets` decides how many are returned. They share one server config and
   /// differ only in owning separate UDP sockets, which is the point: a socket's I/O
   /// readiness state is behind a single lock, so every connection driver on one
   /// socket contends with every other for it.
@@ -389,8 +326,8 @@ impl AppConfig {
     // set up BBR congestion control
     let mut transport_config = TransportConfig::default();
     transport_config.congestion_controller_factory(Arc::new(BbrConfig::default()));
-    transport_config.keep_alive_interval(Some(Duration::from_secs(self.keep_alive_interval)));
-    transport_config.max_idle_timeout(Some(Duration::from_secs(self.max_idle_timeout).try_into()?));
+    transport_config.keep_alive_interval(Some(self.keep_alive_interval));
+    transport_config.max_idle_timeout(Some(self.max_idle_timeout.try_into()?));
     // Request flow control: bound the number of concurrent request streams a peer
     // may open.
     transport_config.max_concurrent_bidi_streams(self.max_request_stream_limit());
@@ -406,7 +343,7 @@ impl AppConfig {
     for _ in 0..count {
       // SO_REUSEPORT only where more than one socket is wanted, so a single-socket
       // relay still fails loudly on a port another process already holds.
-      let socket = bind_dual_stack_udp_socket(self.port, count > 1, self.socket_buffer_kib * 1024)?;
+      let socket = bind_udp_socket(self.bind, count > 1, self.socket_buffer_kib * 1024)?;
       endpoints.push(quinn::Endpoint::new(
         quinn::EndpointConfig::default(),
         Some(server_config.clone()),
@@ -425,7 +362,7 @@ impl AppConfig {
     let requested = self.io_sockets.clamp(1, MAX_IO_SOCKETS);
     if requested > 1 && !cfg!(target_os = "linux") {
       warn!(
-        "--io-sockets {} ignored: only Linux distributes connections across sockets sharing a port",
+        "io_sockets {} ignored: only Linux distributes connections across sockets sharing a port",
         requested
       );
       return 1;
@@ -438,11 +375,6 @@ impl AppConfig {
   /// clamped to it.
   pub fn max_request_stream_limit(&self) -> quinn::VarInt {
     quinn::VarInt::from_u64(self.max_request_streams).unwrap_or(quinn::VarInt::MAX)
-  }
-
-  /// Get cache expiration duration
-  pub fn get_cache_expiration_duration(&self) -> Duration {
-    Duration::from_secs(self.cache_expiration_minutes * 60)
   }
 
   /// Check if cache uses time-to-live expiration
@@ -458,24 +390,21 @@ impl AppConfig {
   }
 }
 
-/// Binds a UDP socket on `[::]:port` with IPv6 dual-stack explicitly enabled, matching
-/// `wtransport`'s own `with_bind_default()` (`IpBindConfig::InAddrAnyDual`) semantics.
-/// `quinn::Endpoint::server`'s plain `UdpSocket::bind` leaves dual-stack to the OS
-/// default, which isn't guaranteed across platforms, so this is done explicitly.
+/// Binds a UDP socket on `addr`. An IPv6 address gets dual-stack explicitly enabled,
+/// matching `wtransport`'s own `with_bind_default()` (`IpBindConfig::InAddrAnyDual`)
+/// semantics: `quinn::Endpoint::server`'s plain `UdpSocket::bind` leaves dual-stack to
+/// the OS default, which isn't guaranteed across platforms.
 ///
 /// `reuse_port` lets several sockets share the port, which is how the relay listens on
 /// more than one; the kernel then hashes each connection onto one of them.
-fn bind_dual_stack_udp_socket(
-  port: u16,
-  reuse_port: bool,
-  buffer_bytes: usize,
-) -> Result<UdpSocket> {
-  let socket = Socket::new(Domain::IPV6, Type::DGRAM, None)?;
-  socket.set_only_v6(false)?;
+fn bind_udp_socket(addr: SocketAddr, reuse_port: bool, buffer_bytes: usize) -> Result<UdpSocket> {
+  let socket = Socket::new(Domain::for_address(addr), Type::DGRAM, None)?;
+  if addr.is_ipv6() {
+    socket.set_only_v6(false)?;
+  }
   if reuse_port {
     socket.set_reuse_port(true)?;
   }
-  let addr: SocketAddr = (Ipv6Addr::UNSPECIFIED, port).into();
   socket.bind(&addr.into())?;
   socket.set_nonblocking(true)?;
   if buffer_bytes > 0 {
@@ -521,65 +450,33 @@ fn request_buffer_sizes(socket: &Socket, bytes: usize) {
 mod tests {
   use super::*;
 
+  /// Loads `yaml` the way `from_cli` does: extract, validate, finalize.
+  fn from_yaml(yaml: &str) -> Result<AppConfig> {
+    let config: AppConfig = Figment::from(Yaml::string(yaml)).extract()?;
+    config.validate()?;
+    Ok(config.finalize())
+  }
+
   #[test]
   fn track_alias_mode_defaults_to_per_subscription() {
-    let config = AppConfig::from_cli(Cli::parse_from(["relay"]));
-    assert_eq!(config.track_alias_mode, TrackAliasMode::PerSubscription);
-
-    let config = AppConfig::from_cli(Cli::parse_from([
-      "relay",
-      "--track-alias-mode",
-      "per-track",
-    ]));
+    assert_eq!(
+      AppConfig::default().track_alias_mode,
+      TrackAliasMode::PerSubscription
+    );
+    let config = from_yaml("track_alias_mode: per-track").unwrap();
     assert_eq!(config.track_alias_mode, TrackAliasMode::PerTrack);
   }
 
   fn test_config(max_request_streams: u64) -> AppConfig {
     AppConfig {
-      port: 4433,
-      host: "localhost".to_string(),
-      cert_file: "apps/relay/cert/cert.pem".to_string(),
-      key_file: "apps/relay/cert/key.pem".to_string(),
-      max_idle_timeout: 7,
-      keep_alive_interval: 3,
-      cache_size: 1000,
-      log_folder: "/tmp".to_string(),
-      cache_expiration_type: CacheExpirationType::Ttl,
-      cache_expiration_minutes: 30,
-      enable_object_logging: false,
-      enable_token_logging: false,
-      token_log_path: "/tmp/moqtail_relay_tokens.csv".to_string(),
-      io_sockets: 1,
-      socket_buffer_kib: 0,
       max_request_streams,
-      max_active_requests: 0,
-      max_subscriber_lag: 0,
-      delivery_timeout_ms: 0,
-      max_subscriber_queue_bytes: 16 * 1024 * 1024,
-      max_publish_streams: 0,
-      track_alias_mode: TrackAliasMode::PerSubscription,
-      write_kbps_limit: 0,
-      redirect_uri: None,
-      max_upstream_fetch_gaps: 10,
-      upstream_fetch_timeout: Duration::from_secs(10),
-      upstream_subscribe_timeout: Duration::from_secs(10),
-      track_alias_resolution_timeout: Duration::from_millis(2000),
-      downstream_alias_timeout: Duration::from_millis(3000),
-      publish_done_stream_timeout: Duration::from_millis(2000),
-      publish_done_datagram_quiet: Duration::from_millis(100),
-      dedup_retained_groups: 30,
-      max_filter_ranges: 32,
-      max_rendezvous_timeout: Duration::from_millis(10000),
-      ssts_enable: false,
-      ssts_algorithms: Vec::new(),
-      ssts_discard_timeout_ms: 1600,
+      ..Default::default()
     }
   }
 
   #[test]
   fn a_single_listener_is_the_default() {
-    let cli = Cli::parse_from(["relay"]);
-    assert_eq!(cli.io_sockets, 1);
+    assert_eq!(AppConfig::default().io_sockets, 1);
     assert_eq!(test_config(10).listener_count(), 1);
   }
 
@@ -603,9 +500,8 @@ mod tests {
 
   #[test]
   fn test_default_max_request_streams() {
-    // The CLI default is the concurrent request-stream limit.
-    let cli = Cli::parse_from(["relay"]);
-    assert_eq!(cli.max_request_streams, 10_000);
+    // The default is the concurrent request-stream limit.
+    assert_eq!(AppConfig::default().max_request_streams, 10_000);
   }
 
   #[test]
@@ -620,33 +516,35 @@ mod tests {
     let clamped = test_config(u64::MAX);
     assert_eq!(clamped.max_request_stream_limit(), quinn::VarInt::MAX);
   }
-  fn ssts_algorithms_for(args: &[&str]) -> Vec<u64> {
-    let mut argv = vec!["relay"];
-    argv.extend_from_slice(args);
-    AppConfig::from_cli(Cli::try_parse_from(argv).unwrap()).ssts_algorithms
+
+  fn ssts_algorithms_for(yaml: &str) -> Vec<u64> {
+    from_yaml(yaml).unwrap().ssts_algorithms
   }
 
   #[test]
   fn ssts_advertises_nothing_unless_the_feature_is_on() {
-    assert_eq!(ssts_algorithms_for(&[]), Vec::<u64>::new());
-    // Asking for algorithms without --ssts-enable stays silent: the relay must
+    assert_eq!(ssts_algorithms_for("{}"), Vec::<u64>::new());
+    // Asking for algorithms without ssts_enable stays silent: the relay must
     // never put a provisional option on the wire unless it was told to.
     assert_eq!(
-      ssts_algorithms_for(&["--ssts-algorithms", "0"]),
+      ssts_algorithms_for("ssts_algorithms: [0]"),
       Vec::<u64>::new()
     );
   }
 
   #[test]
   fn enabling_ssts_runs_the_default_algorithm_alone() {
-    assert_eq!(ssts_algorithms_for(&["--ssts-enable"]), vec![0]);
+    assert_eq!(ssts_algorithms_for("ssts_enable: true"), vec![0]);
   }
 
   #[test]
   fn private_algorithm_ids_are_accepted_in_hex() {
-    let requested = format!("0,{:#x}", moqtail_ssts::registry::PRIVATE_ALGORITHM_ID_BASE);
+    let yaml = format!(
+      "ssts_enable: true\nssts_algorithms: [0, {:#x}]",
+      moqtail_ssts::registry::PRIVATE_ALGORITHM_ID_BASE
+    );
     assert_eq!(
-      ssts_algorithms_for(&["--ssts-enable", "--ssts-algorithms", &requested]),
+      ssts_algorithms_for(&yaml),
       vec![0, moqtail_ssts::registry::PRIVATE_ALGORITHM_ID_BASE]
     );
   }
@@ -655,9 +553,79 @@ mod tests {
   fn an_unknown_algorithm_id_is_rejected_before_startup() {
     // An algorithm this relay cannot run must not be advertised: a publisher
     // would build switching sets on it and have every subscription rejected.
-    assert!(Cli::try_parse_from(["relay", "--ssts-enable", "--ssts-algorithms", "7"]).is_err());
-    assert!(
-      Cli::try_parse_from(["relay", "--ssts-enable", "--ssts-algorithms", "banana"]).is_err()
-    );
+    assert!(from_yaml("ssts_enable: true\nssts_algorithms: [7]").is_err());
+    assert!(from_yaml("ssts_enable: true\nssts_algorithms: [banana]").is_err());
+  }
+
+  #[test]
+  fn repeated_ssts_ids_are_advertised_once_in_order() {
+    let id = moqtail_ssts::registry::PRIVATE_ALGORITHM_ID_BASE;
+    let yaml = format!("ssts_enable: true\nssts_algorithms: [0, {id}, 0, {id}]");
+    assert_eq!(ssts_algorithms_for(&yaml), vec![0, id]);
+  }
+
+  #[test]
+  fn the_socket_binds_the_configured_address() {
+    let socket = bind_udp_socket("127.0.0.1:0".parse().unwrap(), false, 0).unwrap();
+    assert!(socket.local_addr().unwrap().ip().is_loopback());
+  }
+
+  #[test]
+  fn an_unknown_key_is_rejected() {
+    assert!(from_yaml("cache_sise: 10").is_err());
+  }
+
+  #[test]
+  fn dedup_retained_groups_is_capped() {
+    assert!(from_yaml("dedup_retained_groups: 1000").is_ok());
+    assert!(from_yaml("dedup_retained_groups: 1001").is_err());
+  }
+
+  #[test]
+  fn durations_take_units() {
+    let config = from_yaml("delivery_timeout: 500ms\ncache_expiration: 30m").unwrap();
+    assert_eq!(config.delivery_timeout, Duration::from_millis(500));
+    assert_eq!(config.cache_expiration, Duration::from_secs(30 * 60));
+    assert!(from_yaml("delivery_timeout: 500").is_err());
+  }
+
+  #[test]
+  fn the_command_line_overrides_the_file() {
+    let dir = std::env::temp_dir().join(format!("relay-config-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("relay.yaml");
+    std::fs::write(&path, "bind: 127.0.0.1:5000\ncache_size: 5\n").unwrap();
+
+    let config = AppConfig::from_cli(Cli {
+      config: Some(path.clone()),
+      ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(config.bind, "127.0.0.1:5000".parse().unwrap());
+    assert_eq!(config.cache_size, 5);
+
+    let config = AppConfig::from_cli(Cli::parse_from([
+      "relay",
+      "--config",
+      path.to_str().unwrap(),
+      "--bind",
+      "0.0.0.0:4433",
+    ]))
+    .unwrap();
+    assert_eq!(config.bind, "0.0.0.0:4433".parse().unwrap());
+    assert_eq!(config.cache_size, 5);
+
+    std::fs::remove_dir_all(&dir).unwrap();
+  }
+
+  #[test]
+  fn a_missing_config_file_is_an_error() {
+    let cli = Cli::parse_from(["relay", "--config", "/nonexistent/relay.yaml"]);
+    assert!(AppConfig::from_cli(cli).is_err());
+  }
+
+  #[test]
+  fn the_example_config_loads() {
+    from_yaml(include_str!("../../relay.example.yaml")).unwrap();
   }
 }

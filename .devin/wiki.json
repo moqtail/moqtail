@@ -157,7 +157,7 @@
       "purpose": "Comprehensive documentation of the relay server architecture — the most critical component, responsible for forwarding MOQT control and data messages between publishers and subscribers. Includes how to run it locally and as a container.",
       "page_notes": [
         {
-          "content": "The relay lives under apps/relay/ (entry point apps/relay/src/main.rs, implementation under apps/relay/src/server/). It accepts WebTransport and raw QUIC on the same UDP port, demultiplexed by ALPN. Root README gives the run commands: `cargo run -p relay -- --port 4433 --cert-file apps/relay/cert/cert.pem --key-file apps/relay/cert/key.pem` locally, and a `docker run` of ghcr.io/moqtail/relay:latest mounting the cert/key into /certs. Local image build: `docker build -f apps/relay/Dockerfile -t moqtail-relay .` from the workspace root. Images are published by .github/workflows/relay.yml with `latest` and version tags from `relay@*` releases, plus branch and commit SHA tags for CI builds. Certificate generation/browser trust setup is documented in apps/relay/cert/README.md — link to it rather than duplicating."
+          "content": "The relay lives under apps/relay/ (entry point apps/relay/src/main.rs, implementation under apps/relay/src/server/). It accepts WebTransport and raw QUIC on the same UDP port, demultiplexed by ALPN. Root README gives the run commands: Settings live in a YAML file passed with `--config` (see apps/relay/relay.example.yaml); `--bind`, `--cert-file` and `--key-file` override it. Run locally with `cargo run -p relay -- --config apps/relay/relay.example.yaml`, and a `docker run` of ghcr.io/moqtail/relay:latest mounting the cert/key into /certs. Local image build: `docker build -f apps/relay/Dockerfile -t moqtail-relay .` from the workspace root. Images are published by .github/workflows/relay.yml with `latest` and version tags from `relay@*` releases, plus branch and commit SHA tags for CI builds. Certificate generation/browser trust setup is documented in apps/relay/cert/README.md — link to it rather than duplicating."
         }
       ]
     },
@@ -247,7 +247,7 @@
       "parent": "Relay Server",
       "page_notes": [
         {
-          "content": "Document CLI flags shown in the README (`--port`, `--cert-file`, `--key-file`) plus any additional options defined in apps/relay/src/server/config.rs (e.g. cache TTL/size, log level). Document the GHCR image tagging scheme from .github/workflows/relay.yml: `latest` and version tags from `relay@*` releases, plus branch and commit SHA tags for CI builds. Link to apps/relay/cert/README.md for local cert generation / browser trust."
+          "content": "Document the CLI flags (`--config`, `--bind`, `--cert-file`, `--key-file`) and the YAML settings in apps/relay/relay.example.yaml, whose keys are the `AppConfig` fields in apps/relay/src/server/config.rs (e.g. cache expiration/size). Relative paths in the config resolve against the working directory, not the config file. Document the GHCR image tagging scheme from .github/workflows/relay.yml: `latest` and version tags from `relay@*` releases, plus branch and commit SHA tags for CI builds. Link to apps/relay/cert/README.md for local cert generation / browser trust."
         }
       ]
     },

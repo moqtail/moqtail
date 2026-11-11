@@ -165,6 +165,16 @@ impl TransportSendStream {
     }
   }
 
+  /// Writes the chunks in order, handing them to QUIC without copying them.
+  pub async fn write_all_chunks(&mut self, bufs: &mut [Bytes]) -> Result<(), TransportWriteError> {
+    // A WebTransport stream's header went out when it opened; the rest is plain QUIC.
+    let stream = match self {
+      Self::WebTransport(s) => s.quic_stream_mut(),
+      Self::Quic(s) => s,
+    };
+    stream.write_all_chunks(bufs).await.map_err(Into::into)
+  }
+
   pub async fn finish(&mut self) -> Result<(), TransportWriteError> {
     match self {
       Self::WebTransport(s) => s.finish().await.map_err(Into::into),

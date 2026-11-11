@@ -15,7 +15,7 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::time::Duration;
 
-use bytes::{Buf, BufMut, BytesMut};
+use bytes::{Buf, BufMut, Bytes, BytesMut};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use tokio::sync::{Mutex, Notify, RwLock};
@@ -65,6 +65,20 @@ pub enum DataStreamItem {
 // Timeout for header and subsequent objects
 const DATA_STREAM_TIMEOUT: Duration = Duration::from_secs(15);
 const MTU_SIZE: usize = 1500; // Standard MTU size
+
+/// Lends the bytes received so far to a parser without copying them.
+fn lend(buf: &mut BytesMut) -> Bytes {
+  std::mem::take(buf).freeze()
+}
+
+/// Takes the lent bytes back without the first `consumed`. The rest is copied only
+/// if a parsed payload still shares the memory.
+fn reclaim(mut view: Bytes, consumed: usize) -> BytesMut {
+  view.advance(consumed);
+  view
+    .try_into_mut()
+    .unwrap_or_else(|shared| BytesMut::from(&shared[..]))
+}
 
 #[derive(Default)]
 struct FetchReadState {
@@ -422,36 +436,40 @@ impl RecvDataStream {
     let mut fetch_state = FetchReadState::default();
 
     loop {
-      let bytes_cursor = recv_bytes.clone().freeze();
       if !recv_bytes.is_empty() && header_info.is_none() {
         let is_fetch = recv_bytes[0] == FetchHeaderType::Type0x05 as u8;
-        header_info = Self::read_header(
-          bytes_cursor,
+        let view = lend(&mut recv_bytes);
+        let parsed = Self::read_header(
+          view.clone(),
           is_fetch,
           is_closed.clone(),
           pending_fetches.clone(),
         )
-        .await
-        .map_err(|e| {
+        .await;
+        let consumed = match &parsed {
+          Ok(Some((consumed, _))) => *consumed,
+          _ => 0,
+        };
+        recv_bytes = reclaim(view, consumed);
+        header_info = parsed.map_err(|e| {
           error!("Failed to parse header: {:?}", e);
           RecvDataStreamReadError::ParseError(e)
         })?;
         // Nothing yet when the header is split across reads: wait for the rest of it.
-        if let Some((consumed, header)) = &header_info {
-          recv_bytes.advance(*consumed);
+        if let Some((_, header)) = &header_info {
           *the_header_info.lock().await = Some(header.clone());
         }
       }
 
       loop {
-        let bytes_cursor = recv_bytes.clone().freeze();
         let mut consumed = 0;
         if !recv_bytes.is_empty()
           && let Some((_, header)) = &header_info
         {
           let mut current_header = header.clone();
-          let (c, object_id, new_fetch_ctx) = Self::read_object(
-            bytes_cursor,
+          let view = lend(&mut recv_bytes);
+          let parsed = Self::read_object(
+            view.clone(),
             &mut current_header,
             &the_header_info,
             is_closed.clone(),
@@ -460,8 +478,9 @@ impl RecvDataStream {
             &mut fetch_state,
             malformed_track.clone(),
           )
-          .await
-          .map_err(|e| {
+          .await;
+          recv_bytes = reclaim(view, parsed.as_ref().map_or(0, |(c, ..)| *c));
+          let (c, object_id, new_fetch_ctx) = parsed.map_err(|e| {
             error!("Failed to parse object: {:?}", e);
             RecvDataStreamReadError::ParseError(e)
           })?;
@@ -478,7 +497,6 @@ impl RecvDataStream {
               fetch_state.prev_ctx = new_fetch_ctx;
             }
             notify.notify_waiters();
-            recv_bytes.advance(c);
           }
 
           consumed = c;
@@ -812,6 +830,12 @@ impl RecvDataStream {
     }
 
     loop {
+      // Registered before the checks below: the read task's notify_waiters keeps no
+      // permit, so a wakeup sent between a check and the wait would be lost.
+      let notified = self.notify.notified();
+      tokio::pin!(notified);
+      notified.as_mut().enable();
+
       // First, check if anything is queued
       {
         let mut items = self.items.write().await;
@@ -836,7 +860,7 @@ impl RecvDataStream {
         }
       } else {
         // Wait for notification that a new object may be available or the stream is closed.
-        self.notify.notified().await;
+        notified.await;
       }
     }
   }
@@ -1502,5 +1526,45 @@ mod tests {
 
     let received = receiver.next_object().await.1.unwrap();
     assert_eq!(object, received);
+  }
+
+  #[tokio::test]
+  async fn objects_spanning_many_reads_arrive_intact() {
+    // Large objects span many reads; small ones share one. Each must arrive whole and
+    // in order.
+    let (send, recv) = setup_stream_pair().await;
+    let (subgroup_header, _) = make_subgroup_header_and_request();
+    let mut sender = SendDataStream::new(
+      Arc::new(Mutex::new(TransportSendStream::WebTransport(send))),
+      HeaderInfo::Subgroup {
+        header: subgroup_header,
+      },
+    )
+    .await
+    .unwrap();
+    let receiver = RecvDataStream::new(
+      TransportRecvStream::WebTransport(recv),
+      Arc::new(RwLock::new(BTreeMap::new())),
+    );
+
+    let mut sent = Vec::new();
+    let mut previous = None;
+    for (i, len) in [60_000usize, 5, 40_000, 3].into_iter().enumerate() {
+      let mut subgroup_obj = make_subgroup_object();
+      subgroup_obj.object_id = 10 + i as u64;
+      subgroup_obj.payload = Some(Bytes::from(
+        (0..len)
+          .map(|b| ((b * 7 + i) % 251) as u8)
+          .collect::<Vec<u8>>(),
+      ));
+      let object = make_object_from_subgroup(&subgroup_obj, &subgroup_header);
+      sender.send_object(&object, previous).await.unwrap();
+      previous = Some(subgroup_obj.object_id);
+      sent.push(object);
+    }
+
+    for object in sent {
+      assert_eq!(receiver.next_object().await.1.unwrap(), object);
+    }
   }
 }

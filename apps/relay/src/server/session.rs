@@ -12,6 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+pub(crate) mod client;
+pub(crate) mod client_manager;
+pub(crate) mod request_stream;
+pub(crate) mod session_context;
+
 use anyhow::Result;
 use moqtail::model::common::location::Location;
 use moqtail::model::data::full_track_name::FullTrackName;
@@ -37,20 +42,15 @@ use std::{
   collections::HashMap,
   sync::{Arc, atomic::AtomicU64},
 };
-use tokio::sync::RwLock;
 use tracing::{Instrument, debug, error, info, info_span, trace, warn};
 use wtransport::endpoint::SessionRequest;
 use wtransport::quinn;
 
 use crate::server::{Server, stream_id::StreamId};
 
-use super::{
-  client::MOQTClient,
-  message_handlers, request_stream,
-  session_context::{RequestMaps, SessionContext, UpstreamFetchEvent},
-  track::Track,
-  utils,
-};
+use super::{message_handlers, track::Track, utils};
+use client::MOQTClient;
+use session_context::{SessionContext, UpstreamFetchEvent};
 
 pub struct Session {}
 
@@ -129,21 +129,15 @@ impl Session {
     let client_manager = server.client_manager.clone();
     let track_manager = server.track_manager.clone();
     let server_config = server.app_config;
-    let relay_pending_requests = server.relay_pending_requests.clone();
-    let upstream_fetch_senders = server.upstream_fetch_senders.clone();
+    let upstream_requests = server.upstream_requests.clone();
     let relay_next_request_id = server.relay_next_request_id.clone();
     let draining = server.draining.clone();
-
-    let request_maps = RequestMaps {
-      relay_pending_requests,
-      upstream_fetch_senders,
-    };
 
     let context = Arc::new(SessionContext::new(
       server_config,
       client_manager,
       track_manager,
-      request_maps,
+      upstream_requests,
       connection,
       relay_next_request_id,
       server.active_request_streams.clone(),
@@ -431,7 +425,6 @@ impl Session {
                        datagram_obj.track_alias, datagram_obj.group_id, datagram_obj.object_id);
 
                 if let Some(track) = context_clone.track_manager.get_track_by_alias(context_clone.connection_id, datagram_obj.track_alias).await {
-                  let track = track.read().await;
                   if let Err(e) = track.new_datagram(&datagram_obj).await {
                     error!("Failed to process datagram: {:?}", e);
                   }
@@ -470,24 +463,19 @@ impl Session {
       context.connection_id
     );
 
-    // Remove the disconnecting publisher from all tracks they were publishing.
+    // The tracks this client subscribed to or published; a client that never got
+    // through SETUP has none.
+    let cleanup_tracks = match context.get_client().await {
+      Some(client) => client.cleanup_tracks().await,
+      None => Vec::new(),
+    };
+
+    // Remove the disconnecting publisher from the tracks it was publishing.
     // remove_publisher() internally notifies subscribers when the last publisher leaves.
     // Collect full track names for tracks that have no publishers left.
-    let mut tracks_with_no_publishers: Vec<FullTrackName> = Vec::new();
-    {
-      let tracks = track_manager_cleanup.tracks.read().await;
-      for (full_track_name, track_lock) in tracks.iter() {
-        let track = track_lock.read().await;
-        if let Some(removal) = track.remove_publisher(context.connection_id).await {
-          track_manager_cleanup
-            .remove_publisher_alias(context.connection_id, removal.alias)
-            .await;
-          if !removal.still_served {
-            tracks_with_no_publishers.push(full_track_name.clone());
-          }
-        }
-      }
-    }
+    let tracks_with_no_publishers = track_manager_cleanup
+      .remove_publisher(context.connection_id, &cleanup_tracks)
+      .await;
 
     // Tracks no publisher serves any more stay only if they hold cached Objects.
     for full_track_name in &tracks_with_no_publishers {
@@ -528,11 +516,10 @@ impl Session {
       context.connection_id
     );
 
-    // Remove client from all remaining tracks (as a subscriber)
-    for track_lock in track_manager_cleanup.tracks.read().await.values() {
-      let track = track_lock.read().await;
-      track.remove_subscriptions(context.connection_id).await;
-    }
+    // Remove client from the tracks it may still subscribe to
+    track_manager_cleanup
+      .remove_subscriber(context.connection_id, &cleanup_tracks)
+      .await;
 
     info!(
       "handle_connection_close | cleanup done ({})",
@@ -562,7 +549,7 @@ impl Session {
     // that FETCH any more: its Objects are still worth caching.
     let mut fetch_track_name: Option<FullTrackName> = None;
     let mut stream_id: Option<StreamId> = None;
-    let mut current_track: Option<Arc<RwLock<Track>>> = None;
+    let mut current_track: Option<Arc<Track>> = None;
     // Only subgroup streams count toward the Stream Count a publisher reports in
     // PUBLISH_DONE; a fetch stream answers a request of the relay's own.
     let mut is_subgroup_stream = false;
@@ -663,7 +650,7 @@ impl Session {
             };
 
             let relay_track_id = match current_track.as_ref() {
-              Some(t) => t.read().await.relay_track_id,
+              Some(t) => t.relay_track_id,
               None => {
                 warn!(
                   "Abandoning data stream for unresolved track alias {} after {:?}",
@@ -678,7 +665,7 @@ impl Session {
             None
           };
 
-          let track = current_track.as_ref().unwrap().read().await;
+          let track = &current_track.as_ref().unwrap();
 
           // What a fetch brings in is history, for the cache alone: subscribers get the
           // live feed.
@@ -751,7 +738,7 @@ impl Session {
 
           // Close the stream for all subscribers
           if let Some(track_lock) = &current_track {
-            let track = track_lock.read().await;
+            let track = &track_lock;
             if is_subgroup_stream {
               track
                 .publisher_stream_progress
@@ -788,12 +775,7 @@ impl Session {
     let Some(HeaderInfo::Fetch { header, .. }) = handler.get_header_info().await else {
       return None;
     };
-    context
-      .upstream_fetch_senders
-      .read()
-      .await
-      .get(&header.request_id)
-      .cloned()
+    context.upstream_requests.get_fetch(header.request_id).await
   }
 
   pub(crate) async fn get_next_relay_request_id(relay_next_request_id: Arc<AtomicU64>) -> u64 {
@@ -897,7 +879,7 @@ impl Session {
 
             // Log the token information
             if let Some(token_value) = token.token_value {
-              super::token_logger::log_token_registration(
+              crate::server::logging::token_logger::log_token_registration(
                 &token_value,
                 context.connection_id,
                 client_port,

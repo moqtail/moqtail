@@ -13,62 +13,27 @@
 // limitations under the License.
 
 use std::{
-  collections::BTreeMap,
   hash::{BuildHasher, Hasher, RandomState},
   sync::{
     Arc, LazyLock,
     atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
   },
 };
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::RwLock;
 
 use moqtail::model::common::location::Location;
 use moqtail::model::data::fetch_object::{EndOfRangeKind, FetchObjectPayload};
 
 use moqtail::transport::connection::{TransportConnection, TransportKind};
-use moqtail::transport::data_stream_handler::{FetchRequest, SubscribeRequest};
 
-use super::{
-  client::MOQTClient, client_manager::ClientManager, config::AppConfig, track_manager::TrackManager,
+use super::{client::MOQTClient, client_manager::ClientManager};
+use crate::server::{
+  config::AppConfig, requests::UpstreamRequests, track::track_manager::TrackManager,
 };
-
-#[allow(dead_code)]
-// TODO: Remove the dead_code attribute after merging all the migration changes.
-// These changes are required for message unification and will be useful in other branches.
-#[derive(Debug, Clone)]
-pub enum PendingRequest {
-  Fetch(FetchRequest),
-  Subscribe(SubscribeRequest),
-  PublishNamespace {
-    client_connection_id: usize,
-    original_request_id: u64,
-    message: moqtail::model::control::publish_namespace::PublishNamespace,
-  },
-  SubscribeNamespace {
-    client_connection_id: usize,
-    original_request_id: u64,
-    message: moqtail::model::control::subscribe_namespace::SubscribeNamespace,
-  },
-  SubscribeTracks {
-    client_connection_id: usize,
-    original_request_id: u64,
-    message: moqtail::model::control::subscribe_tracks::SubscribeTracks,
-  },
-  Publish {
-    publisher_connection_id: usize,
-    original_request_id: u64,
-    message: moqtail::model::control::publish::Publish,
-  },
-  RequestUpdate {
-    client_connection_id: usize,
-    original_request_id: u64,
-    message: moqtail::model::control::request_update::RequestUpdate,
-  },
-}
 
 /// This is used when the relay sends a FETCH request to the upstream.
 /// It gets an event of this type from the upstream, and calls send() on
-/// the relevant upstream_fetch_senders entry.
+/// the sender `UpstreamRequests` holds for it.
 /// The receiver awaits entries in a loop and sends them downstream.
 #[allow(dead_code)]
 pub(crate) enum UpstreamFetchEvent {
@@ -89,19 +54,10 @@ pub(crate) enum UpstreamFetchEvent {
   Error(String),
 }
 
-pub struct RequestMaps {
-  pub relay_pending_requests: Arc<RwLock<BTreeMap<u64, PendingRequest>>>,
-  /// This is used when the relay sends a FETCH request to the upstream.
-  /// When objects are received from the upstream, send() is called on the relevant entry
-  /// in the upstream_fetch_senders.
-  /// The receiver loop awaits the entries and sends them downstream.
-  pub upstream_fetch_senders: Arc<RwLock<BTreeMap<u64, mpsc::Sender<UpstreamFetchEvent>>>>,
-}
-
 pub struct SessionContext {
   pub(crate) client_manager: ClientManager,
   pub(crate) track_manager: TrackManager,
-  pub(crate) relay_pending_requests: Arc<RwLock<BTreeMap<u64, PendingRequest>>>,
+  pub(crate) upstream_requests: UpstreamRequests,
   pub(crate) connection_id: usize,
   pub(crate) transport_kind: TransportKind,
   pub(crate) client: Arc<RwLock<Option<Arc<MOQTClient>>>>, // the client that is connected to this session
@@ -109,7 +65,6 @@ pub struct SessionContext {
   pub(crate) server_config: &'static AppConfig,
   pub(crate) is_connection_closed: Arc<AtomicBool>,
   pub(crate) relay_next_request_id: Arc<AtomicU64>,
-  pub(crate) upstream_fetch_senders: Arc<RwLock<BTreeMap<u64, mpsc::Sender<UpstreamFetchEvent>>>>,
   pub(crate) active_request_streams: Arc<AtomicU64>,
   /// Set once the relay is draining (GOAWAY sent); new requests are rejected.
   pub(crate) draining: Arc<AtomicBool>,
@@ -130,7 +85,7 @@ impl SessionContext {
     server_config: &'static AppConfig,
     client_manager: ClientManager,
     track_manager: TrackManager,
-    request_maps: RequestMaps,
+    upstream_requests: UpstreamRequests,
     connection: TransportConnection,
     relay_next_request_id: Arc<AtomicU64>,
     active_request_streams: Arc<AtomicU64>,
@@ -139,7 +94,7 @@ impl SessionContext {
     Self {
       client_manager,
       track_manager,
-      relay_pending_requests: request_maps.relay_pending_requests,
+      upstream_requests,
       connection_id: next_connection_id(),
       transport_kind: connection.kind(),
       client: Arc::new(RwLock::new(None)), // initially no client is set
@@ -147,7 +102,6 @@ impl SessionContext {
       server_config,
       is_connection_closed: Arc::new(AtomicBool::new(false)),
       relay_next_request_id,
-      upstream_fetch_senders: request_maps.upstream_fetch_senders,
       active_request_streams,
       draining,
     }

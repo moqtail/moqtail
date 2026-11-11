@@ -12,9 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::server::client::MOQTClient;
-use crate::server::session_context::{PendingRequest, SessionContext};
-use crate::server::track_manager::SubscribeKind;
+use crate::server::requests::DownstreamRequest;
+use crate::server::session::client::MOQTClient;
+use crate::server::session::session_context::SessionContext;
+use crate::server::track::track_manager::SubscribeKind;
 use core::result::Result;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::common::tuple::Tuple;
@@ -37,25 +38,10 @@ pub(crate) async fn announce_to_namespace_subscribers(
   announcer_connection_id: usize,
   message_for: impl Fn(Tuple) -> ControlMessage,
 ) {
-  let subs_map = context.track_manager.namespace_subscribers.read().await;
-  for (prefix, subscribers) in subs_map.iter() {
-    if !namespace.starts_with(prefix) {
-      continue;
-    }
-    let Some(suffix) = namespace.suffix(prefix) else {
-      continue;
-    };
-    for (sub, kind, _params, namespace_tx) in subscribers {
-      if *kind != SubscribeKind::Namespace || sub.connection_id == announcer_connection_id {
-        continue;
-      }
-      info!(
-        "Forwarding namespace suffix {:?} to subscriber {}",
-        suffix, sub.connection_id
-      );
-      let _ = namespace_tx.send(message_for(suffix.clone()));
-    }
-  }
+  context
+    .track_manager
+    .announce_to_namespace_subscribers(namespace, announcer_connection_id, message_for)
+    .await;
 }
 
 /// A namespace is announced for as long as its request stream is open, so closing that
@@ -63,9 +49,8 @@ pub(crate) async fn announce_to_namespace_subscribers(
 /// dropped, and the subscribers that heard the announcement are told it is over.
 pub async fn cancel(client: Arc<MOQTClient>, request_id: u64, context: &Arc<SessionContext>) {
   let namespace = {
-    let mut map = client.inbound_requests.write().await;
-    match map.remove(&request_id) {
-      Some(PendingRequest::PublishNamespace { message, .. }) => Some(message.track_namespace),
+    match client.downstream_requests.remove(request_id).await {
+      Some(DownstreamRequest::PublishNamespace { message, .. }) => Some(message.track_namespace),
       _ => None,
     }
   };
@@ -130,18 +115,20 @@ pub async fn handle(
         .add_announcement(m.track_namespace.clone(), client.clone(), (*m).clone())
         .await;
 
-      // Track in inbound_requests so a REQUEST_UPDATE on this request's stream can find it,
+      // Track in downstream_requests so a REQUEST_UPDATE on this request's stream can find it,
       // and so closing that stream can find the namespace to withdraw.
       {
-        let mut map = client.inbound_requests.write().await;
-        map.insert(
-          m.request_id,
-          PendingRequest::PublishNamespace {
-            client_connection_id: client.connection_id,
-            original_request_id: m.request_id,
-            message: (*m).clone(),
-          },
-        );
+        client
+          .downstream_requests
+          .insert(
+            m.request_id,
+            DownstreamRequest::PublishNamespace {
+              client_connection_id: client.connection_id,
+              original_request_id: m.request_id,
+              message: (*m).clone(),
+            },
+          )
+          .await;
       }
 
       announce_to_namespace_subscribers(&context, &m.track_namespace, client.connection_id, |s| {
@@ -163,22 +150,23 @@ pub async fn handle(
       };
       let existing_req_id = target_request_id;
 
-      let target_namespace = {
-        let mut map = client.inbound_requests.write().await;
-        match map.get_mut(&existing_req_id) {
-          Some(PendingRequest::PublishNamespace { message, .. }) => {
+      let target_namespace = client
+        .downstream_requests
+        .update(existing_req_id, |request| match request {
+          DownstreamRequest::PublishNamespace { message, .. } => {
             apply_message_parameter_update(&mut message.parameters, update_msg.parameters.clone());
-            message.track_namespace.clone()
+            Some(message.track_namespace.clone())
           }
-          _ => {
-            warn!(
-              "REQUEST_UPDATE for PUBLISH_NAMESPACE request {} cannot be applied; closing the stream",
-              existing_req_id
-            );
-            stream_handler.reset(StreamResetCode::Cancelled.to_u64());
-            return Ok(());
-          }
-        }
+          _ => None,
+        })
+        .await;
+      let Some(target_namespace) = target_namespace else {
+        warn!(
+          "REQUEST_UPDATE for PUBLISH_NAMESPACE request {} cannot be applied; closing the stream",
+          existing_req_id
+        );
+        stream_handler.reset(StreamResetCode::Cancelled.to_u64());
+        return Ok(());
       };
 
       info!(

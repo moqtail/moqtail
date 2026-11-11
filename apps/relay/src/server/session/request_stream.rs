@@ -29,12 +29,10 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use tracing::{error, trace, warn};
 
-use super::{
-  client::MOQTClient,
+use super::{Session, client::MOQTClient, session_context::SessionContext};
+use crate::server::{
   message_handlers::{self, MessageHandler},
-  prefix_subscription,
-  session::Session,
-  session_context::SessionContext,
+  subscription::prefix_subscription,
 };
 
 /// What a request stream serves. It decides which follow-ups the stream accepts and

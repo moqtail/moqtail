@@ -37,47 +37,31 @@ impl SubgroupObject {
     previous_object_id: Option<u64>,
     has_properties: bool,
   ) -> Result<Bytes, ParseError> {
-    let mut buf = BytesMut::new();
-
-    let object_id_delta = if let Some(id) = previous_object_id {
-      self.object_id - id - 1
-    } else {
-      self.object_id
+    let (header, payload) = self.serialize_parts(previous_object_id, has_properties)?;
+    let Some(payload) = payload else {
+      return Ok(header);
     };
-
-    trace!(
-      "SubgroupObject::serialize || object_id_delta: {} prev: {:?} object_id: {} ext_headers: {:?}",
-      object_id_delta, previous_object_id, self.object_id, &self.properties
-    );
-
-    buf.put_vi(object_id_delta)?;
-
-    let properties = self.properties.as_deref().unwrap_or(&[]);
-
-    if !has_properties && !properties.is_empty() {
-      return Err(ParseError::ProtocolViolation {
-        context: "SubgroupObject::serialize(properties)",
-        details: "properties are present but header type has no properties".to_string(),
-      });
-    }
-
-    if has_properties {
-      let ext_buf = serialize_object_properties(properties)?;
-      buf.put_vi(ext_buf.len())?;
-      buf.extend_from_slice(&ext_buf);
-    }
-
-    if let Some(payload) = &self.payload
-      && !payload.is_empty()
-    {
-      buf.put_vi(payload.len())?;
-      buf.extend_from_slice(payload);
-    } else {
-      buf.put_vi(0u64)?;
-      buf.put_vi(self.object_status.unwrap_or(ObjectStatus::Normal))?;
-    }
-
+    let mut buf = BytesMut::with_capacity(header.len() + payload.len());
+    buf.extend_from_slice(&header);
+    buf.extend_from_slice(&payload);
     Ok(buf.freeze())
+  }
+
+  /// The bytes before the payload, and the payload itself (shared, not copied).
+  /// Together they equal `serialize`.
+  pub fn serialize_parts(
+    &self,
+    previous_object_id: Option<u64>,
+    has_properties: bool,
+  ) -> Result<(Bytes, Option<Bytes>), ParseError> {
+    serialize_parts(
+      self.object_id,
+      self.properties.as_deref(),
+      self.object_status,
+      self.payload.as_ref(),
+      previous_object_id,
+      has_properties,
+    )
   }
 
   pub fn deserialize(
@@ -173,6 +157,56 @@ impl SubgroupObject {
   }
 }
 
+/// `SubgroupObject::serialize_parts` over borrowed fields.
+pub(crate) fn serialize_parts(
+  object_id: u64,
+  properties: Option<&[ObjectProperty]>,
+  object_status: Option<ObjectStatus>,
+  payload: Option<&Bytes>,
+  previous_object_id: Option<u64>,
+  has_properties: bool,
+) -> Result<(Bytes, Option<Bytes>), ParseError> {
+  let mut buf = BytesMut::new();
+
+  let object_id_delta = if let Some(id) = previous_object_id {
+    object_id - id - 1
+  } else {
+    object_id
+  };
+
+  trace!(
+    "SubgroupObject::serialize || object_id_delta: {} prev: {:?} object_id: {} ext_headers: {:?}",
+    object_id_delta, previous_object_id, object_id, properties
+  );
+
+  buf.put_vi(object_id_delta)?;
+
+  let properties = properties.unwrap_or(&[]);
+
+  if !has_properties && !properties.is_empty() {
+    return Err(ParseError::ProtocolViolation {
+      context: "SubgroupObject::serialize(properties)",
+      details: "properties are present but header type has no properties".to_string(),
+    });
+  }
+
+  if has_properties {
+    let ext_buf = serialize_object_properties(properties)?;
+    buf.put_vi(ext_buf.len())?;
+    buf.extend_from_slice(&ext_buf);
+  }
+
+  if let Some(payload) = payload
+    && !payload.is_empty()
+  {
+    buf.put_vi(payload.len())?;
+    return Ok((buf.freeze(), Some(payload.clone())));
+  }
+  buf.put_vi(0u64)?;
+  buf.put_vi(object_status.unwrap_or(ObjectStatus::Normal))?;
+  Ok((buf.freeze(), None))
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -208,6 +242,39 @@ mod tests {
     let deserialized = SubgroupObject::deserialize(&mut buf, &Some(prev_object_id), true).unwrap();
     assert_eq!(deserialized, subgroup_object);
     assert!(!buf.has_remaining());
+  }
+
+  #[test]
+  fn test_parts_join_to_serialize() {
+    let properties = Some(vec![ObjectProperty::Unknown {
+      kvp: KeyValuePair::try_new_varint(2, 10).unwrap(),
+    }]);
+    let cases = [
+      (
+        Some(Bytes::from_static(b"payload")),
+        None,
+        properties.clone(),
+        true,
+      ),
+      (Some(Bytes::from_static(b"payload")), None, None, false),
+      (None, Some(ObjectStatus::EndOfGroup), properties, true),
+      (Some(Bytes::new()), None, None, false),
+    ];
+    for (payload, object_status, properties, has_properties) in cases {
+      let object = SubgroupObject {
+        object_id: 10,
+        properties,
+        object_status,
+        payload,
+      };
+      for previous in [None, Some(9), Some(3)] {
+        let whole = object.serialize(previous, has_properties).unwrap();
+        let (header, payload) = object.serialize_parts(previous, has_properties).unwrap();
+        let mut joined = header.to_vec();
+        joined.extend_from_slice(payload.as_deref().unwrap_or(&[]));
+        assert_eq!(joined, whole.to_vec());
+      }
+    }
   }
 
   #[test]

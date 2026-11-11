@@ -24,8 +24,8 @@ use moqtail::{
 use tracing::{debug, info, warn};
 
 use crate::server::{
-  client::MOQTClient,
-  session_context::{PendingRequest, SessionContext},
+  requests::DownstreamRequest, session::client::MOQTClient,
+  session::session_context::SessionContext,
 };
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
@@ -162,22 +162,19 @@ impl MessageHandler {
           NotFound,
         }
 
-        // Map a PendingRequest to a Route
-        let determine_route = |req: Option<&PendingRequest>| match req {
-          Some(PendingRequest::Fetch(_)) => Route::Fetch,
-          Some(PendingRequest::Publish { .. }) => Route::Publish,
-          Some(PendingRequest::PublishNamespace { .. }) => Route::PublishNamespace,
-          Some(PendingRequest::Subscribe(_)) => Route::Subscribe,
-          Some(PendingRequest::SubscribeNamespace { .. }) => Route::PrefixSubscription,
-          Some(PendingRequest::SubscribeTracks { .. }) => Route::PrefixSubscription,
-          Some(PendingRequest::RequestUpdate { .. }) => Route::NotFound,
+        // Map a DownstreamRequest to a Route
+        let determine_route = |req: Option<&DownstreamRequest>| match req {
+          Some(DownstreamRequest::Fetch(_)) => Route::Fetch,
+          Some(DownstreamRequest::Publish { .. }) => Route::Publish,
+          Some(DownstreamRequest::PublishNamespace { .. }) => Route::PublishNamespace,
+          Some(DownstreamRequest::Subscribe(_)) => Route::Subscribe,
+          Some(DownstreamRequest::SubscribeNamespace { .. }) => Route::PrefixSubscription,
+          Some(DownstreamRequest::SubscribeTracks { .. }) => Route::PrefixSubscription,
+          Some(DownstreamRequest::RequestUpdate { .. }) => Route::NotFound,
           None => Route::NotFound,
         };
 
-        let route = {
-          let map = client.inbound_requests.read().await;
-          determine_route(map.get(&target_req_id))
-        };
+        let route = determine_route(client.downstream_requests.get(target_req_id).await.as_ref());
 
         // Route to the appropriate handler (defined only once!)
         match route {
@@ -222,7 +219,7 @@ impl MessageHandler {
             .await
           }
           Route::PrefixSubscription => {
-            crate::server::prefix_subscription::handle(
+            crate::server::subscription::prefix_subscription::handle(
               client.clone(),
               stream_handler,
               msg,

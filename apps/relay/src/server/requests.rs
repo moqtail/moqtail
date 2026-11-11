@@ -1,4 +1,4 @@
-// Copyright 2025 The MOQtail Authors
+// Copyright 2026 The MOQtail Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,7 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[allow(dead_code)]
-pub const QUIC_ERROR_PROCESSING_STREAM: u32 = 1;
-#[allow(dead_code)]
-pub const QUIC_BAD_APPLICATION_PAYLOAD: u32 = 3;
+//! What the relay keeps of each request while it lasts: downstream, the requests
+//! clients and downstream relays sent it; upstream, the requests it sent to
+//! publishers and upstream relays.
+
+mod downstream;
+mod upstream;
+
+pub use downstream::{DownstreamRequest, DownstreamRequests};
+pub use upstream::UpstreamRequests;

@@ -12,10 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::server::message_handlers::fetch_handler::{
-  FetchDelivery, FetchStop, serve_fetch_stream,
-};
-use crate::server::session_context::SessionContext;
+use crate::server::message_handlers::fetch_handler::FetchStop;
+use crate::server::message_handlers::fetch_handler::delivery::{FetchDelivery, serve_fetch_stream};
+use crate::server::session::session_context::SessionContext;
 use crate::server::subscription::{DEFAULT_PUBLISHER_PRIORITY, Subscription};
 use crate::server::track::Track;
 use crate::server::utils::compute_stream_priority;
@@ -87,7 +86,7 @@ fn fill_overrides(fill: &[MessageParameter], priority: u8, order: GroupOrder) ->
 /// PUBLISH_DONE Stream Count.
 pub(crate) async fn open_fill_fetch_stream(
   context: Arc<SessionContext>,
-  track: Arc<RwLock<Track>>,
+  track: Arc<Track>,
   subscription: Arc<RwLock<Subscription>>,
   request_id: u64,
 ) {
@@ -103,7 +102,10 @@ pub(crate) async fn open_fill_fetch_stream(
     (
       sub.subscriber(),
       fill_filter(fill, &state.location_filter),
-      crate::server::filter_constructor::fill_range_filter(&state.subscribe_parameters, fill),
+      crate::server::subscription::filter_constructor::fill_range_filter(
+        &state.subscribe_parameters,
+        fill,
+      ),
       priority,
       group_order,
       state.forward,
@@ -115,7 +117,7 @@ pub(crate) async fn open_fill_fetch_stream(
     return;
   }
 
-  let largest = track.read().await.largest_object().await;
+  let largest = track.largest_object().await;
   let Some((start, end)) = fill_fetch_range(&filter, largest) else {
     info!(
       "fill: nothing to fill for request {} on subscriber {}; live only",

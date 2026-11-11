@@ -12,11 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::server::client::MOQTClient;
 use crate::server::message_handlers::publish_handler;
-use crate::server::prefix_subscription::{MAX_NAMESPACE_PREFIX_FIELDS, oversized_namespace_error};
-use crate::server::session_context::{PendingRequest, SessionContext};
-use crate::server::track_manager::SubscribeKind;
+use crate::server::requests::DownstreamRequest;
+use crate::server::session::client::MOQTClient;
+use crate::server::session::session_context::SessionContext;
+use crate::server::subscription::prefix_subscription::{
+  MAX_NAMESPACE_PREFIX_FIELDS, oversized_namespace_error,
+};
+use crate::server::track::track_manager::SubscribeKind;
 use core::result::Result;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::control::control_message::ControlMessage;
@@ -59,12 +62,12 @@ pub async fn handle_subscribe_tracks(
 
   // The relay chooses the tracks and filters their Objects itself, so filters it
   // cannot honour are refused rather than dropped.
-  if let Err(e) = crate::server::filter_constructor::tracks_filter(
+  if let Err(e) = crate::server::subscription::filter_constructor::tracks_filter(
     &sub_tracks.parameters,
     context.server_config.max_filter_ranges,
   ) {
     info!("Rejecting SUBSCRIBE_TRACKS: {e}");
-    let err = crate::server::filter_constructor::invalid_filter(&e);
+    let err = crate::server::subscription::filter_constructor::invalid_filter(&e);
     stream_handler
       .send(&ControlMessage::RequestError(Box::new(err)))
       .await?;
@@ -110,15 +113,17 @@ pub async fn handle_subscribe_tracks(
     .await;
 
   {
-    let mut map = client.inbound_requests.write().await;
-    map.insert(
-      sub_tracks.request_id,
-      PendingRequest::SubscribeTracks {
-        client_connection_id: client.connection_id,
-        original_request_id: sub_tracks.request_id,
-        message: (*sub_tracks).clone(),
-      },
-    );
+    client
+      .downstream_requests
+      .insert(
+        sub_tracks.request_id,
+        DownstreamRequest::SubscribeTracks {
+          client_connection_id: client.connection_id,
+          original_request_id: sub_tracks.request_id,
+          message: (*sub_tracks).clone(),
+        },
+      )
+      .await;
   }
 
   let ok = RequestOk::new(vec![]);
@@ -139,7 +144,7 @@ pub async fn handle_subscribe_tracks(
     // Exclude the subscriber's own published tracks, and let an explicit
     // SUBSCRIBE take precedence over SUBSCRIBE_TRACKS for the same track.
     let already_served = {
-      let track = track_arc.read().await;
+      let track = &track_arc;
       track.is_published_by(client.connection_id).await
         || track.has_any_subscription(client.connection_id).await
     };

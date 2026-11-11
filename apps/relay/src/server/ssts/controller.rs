@@ -30,8 +30,8 @@ use moqtail_ssts::{AbrAlgorithm, AbrInput, Selection, SetSnapshot};
 use tokio::select;
 use tracing::warn;
 
-use crate::server::client::MOQTClient;
 use crate::server::config::AppConfig;
+use crate::server::session::client::MOQTClient;
 
 use super::AbrMessage;
 

@@ -16,12 +16,12 @@ pub(crate) mod request_subscription_map;
 pub(crate) mod switch_context;
 
 use crate::server::{
-  client::request_subscription_map::RequestSubscriptionMap,
   config::{AppConfig, TrackAliasMode},
-  message_handlers::fetch_handler::FetchStop,
-  session_context::PendingRequest,
+  requests::DownstreamRequests,
+  session::client::request_subscription_map::RequestSubscriptionMap,
   ssts,
   stream_id::{SendStreamKey, StreamType},
+  track::Track,
   utils,
 };
 use anyhow::Result;
@@ -35,7 +35,7 @@ use moqtail::{
   },
   transport::{
     connection::{TransportConnection, TransportKind, TransportSendStream, TransportWriteError},
-    data_stream_handler::{FetchRequest, SubscribeRequest},
+    data_stream_handler::FetchRequest,
   },
 };
 use switch_context::SwitchContext;
@@ -49,7 +49,7 @@ use std::{
   time::Duration,
 };
 use tokio::sync::Notify;
-use tokio::sync::{Mutex, RwLock, mpsc, watch};
+use tokio::sync::{Mutex, RwLock, RwLockWriteGuard, mpsc};
 use tokio::time::Instant;
 use tracing::{debug, error, trace, warn};
 
@@ -117,6 +117,12 @@ pub(crate) struct MOQTClient {
   pub outbound_announcements: Arc<RwLock<HashMap<Tuple, u64>>>, //Maps a Namespace to the outbound request_id we used to announce it to the client
   pub published_tracks: Arc<RwLock<HashMap<u64, FullTrackName>>>, // request_id -> track the client is publishing
   malformed_tracks: Arc<RwLock<HashSet<FullTrackName>>>,
+  /// The tracks a disconnect has to visit: every track the client ever subscribed to
+  /// or published. Recorded before the client joins the track, so a disconnect never
+  /// misses one. An unsubscribe prunes the track once the client holds no role on it;
+  /// other exits (PUBLISH_DONE, a finished track) leave a stale entry, which only costs
+  /// a lookup that finds nothing to remove.
+  cleanup_tracks: Arc<RwLock<HashSet<FullTrackName>>>,
   pub subscribers: Arc<RwLock<Vec<usize>>>, // the subscribers the client is subscribed to
 
   pub message_queue: Arc<RwLock<VecDeque<ControlMessage>>>, // the control messages the client has sent
@@ -129,17 +135,12 @@ pub(crate) struct MOQTClient {
   // are delivered onto that stream instead of the control stream.
   pub response_senders: Arc<ResponseSenderList>,
 
-  // fetch requests that the relay sent to this client
+  /// Upstream FETCHes the relay sent to this client, by the relay's request id. Kept
+  /// here rather than in `UpstreamRequests` because the data stream reader reads it.
   pub outgoing_fetch_requests: Arc<RwLock<BTreeMap<u64, FetchRequest>>>,
 
-  // this contains the requests made by the client and the corresponding request.
-  // The key value is the original request id.
-  pub subscribe_requests: Arc<RwLock<BTreeMap<u64, SubscribeRequest>>>,
-
-  pub inbound_requests: Arc<RwLock<BTreeMap<u64, PendingRequest>>>,
-
-  // Senders for cancelling active fetch tasks, keyed by request_id.
-  pub fetch_cancel_senders: Arc<RwLock<HashMap<u64, watch::Sender<FetchStop>>>>,
+  /// The requests this client has sent, by request id.
+  pub downstream_requests: DownstreamRequests,
 
   // this contains the subscriptions made by the client
   pub subscriptions: RequestSubscriptionMap,
@@ -205,6 +206,7 @@ impl MOQTClient {
       outbound_announcements: Arc::new(RwLock::new(HashMap::new())),
       published_tracks: Arc::new(RwLock::new(HashMap::new())),
       malformed_tracks: Arc::new(RwLock::new(HashSet::new())),
+      cleanup_tracks: Arc::new(RwLock::new(HashSet::new())),
       subscribers: Arc::new(RwLock::new(Vec::new())),
       message_queue: Arc::new(RwLock::new(VecDeque::new())),
       message_notify: Arc::new(Notify::default()),
@@ -215,9 +217,7 @@ impl MOQTClient {
           .collect(),
       ),
       outgoing_fetch_requests: Arc::new(RwLock::new(BTreeMap::new())),
-      subscribe_requests: Arc::new(RwLock::new(BTreeMap::new())),
-      inbound_requests: Arc::new(RwLock::new(BTreeMap::new())),
-      fetch_cancel_senders: Arc::new(RwLock::new(HashMap::new())),
+      downstream_requests: DownstreamRequests::default(),
       subscriptions: RequestSubscriptionMap::new(),
       switch_context: SwitchContext::new(),
       rate_limiter,
@@ -238,6 +238,33 @@ impl MOQTClient {
 
   pub(crate) async fn is_track_malformed(&self, full_track_name: &FullTrackName) -> bool {
     self.malformed_tracks.read().await.contains(full_track_name)
+  }
+
+  /// Records the track and returns the set still locked: hold it until the client has
+  /// joined the track, so a concurrent prune cannot drop the entry in between.
+  pub(crate) async fn add_cleanup_track(
+    &self,
+    full_track_name: &FullTrackName,
+  ) -> RwLockWriteGuard<'_, HashSet<FullTrackName>> {
+    let mut tracks = self.cleanup_tracks.write().await;
+    if !tracks.contains(full_track_name) {
+      tracks.insert(full_track_name.clone());
+    }
+    tracks
+  }
+
+  /// Forgets `track` once this client neither subscribes to nor publishes it.
+  pub(crate) async fn prune_cleanup_track(&self, track: &Track) {
+    let mut tracks = self.cleanup_tracks.write().await;
+    if !track.has_any_subscription(self.connection_id).await
+      && !track.is_published_by(self.connection_id).await
+    {
+      tracks.remove(&track.full_track_name);
+    }
+  }
+
+  pub(crate) async fn cleanup_tracks(&self) -> Vec<FullTrackName> {
+    self.cleanup_tracks.read().await.iter().cloned().collect()
   }
 
   /// Leaving a withdrawn namespace here would keep routing subscriptions to this client.
@@ -589,7 +616,7 @@ impl MOQTClient {
     &self,
     stream_key: &SendStreamKey,
     object_id: u64,
-    object: Bytes,
+    mut chunks: Vec<Bytes>,
     the_stream: Option<Arc<Mutex<TransportSendStream>>>,
   ) -> Result<(), anyhow::Error> {
     trace!(
@@ -611,12 +638,15 @@ impl MOQTClient {
     // the shared bandwidth budget, causing QUIC buffers to fill and the QUIC
     // stream priority scheduler to choose between them.
     if let Some(rl) = &self.rate_limiter {
-      rl.lock().await.consume(object.len()).await;
+      rl.lock()
+        .await
+        .consume(chunks.iter().map(Bytes::len).sum())
+        .await;
     }
 
     if let Some(s) = send_stream {
       let mut stream = s.lock().await;
-      match stream.write_all(&object).await {
+      match stream.write_all_chunks(&mut chunks).await {
         Ok(..) => {}
         Err(e) => {
           if let TransportWriteError::ClosedOrStopped = &e {

@@ -12,14 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::server::client::MOQTClient;
 use crate::server::message_handlers::parameters;
+use crate::server::requests::DownstreamRequest;
 use crate::server::session::Session;
-use crate::server::session_context::PendingRequest;
-use crate::server::session_context::SessionContext;
+use crate::server::session::client::MOQTClient;
+use crate::server::session::session_context::SessionContext;
 use crate::server::subscription::Subscription;
+use crate::server::track::track_manager::SubscribeKind;
 use crate::server::track::{Track, TrackOrigin, TrackStatus, await_publisher_streams};
-use crate::server::track_manager::SubscribeKind;
 use core::result::Result;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::control::{
@@ -123,7 +123,7 @@ pub async fn handle(
             .get_track_by_alias(context.connection_id, m.track_alias)
             .await
           {
-            existing.read().await.full_track_name == full_track_name
+            existing.full_track_name == full_track_name
           } else {
             false
           };
@@ -153,8 +153,6 @@ pub async fn handle(
       // A cache-only track becomes this publisher's, as if it had created it.
       let created = created
         || track_arc
-          .read()
-          .await
           .take_over(
             TrackOrigin::Publish,
             TrackStatus::Confirmed {
@@ -173,11 +171,11 @@ pub async fn handle(
         return Err(TerminationCode::DuplicateTrackAlias);
       }
 
+      let cleanup = client.add_cleanup_track(&full_track_name).await;
       track_arc
-        .write()
-        .await
         .add_publisher(context.connection_id, track_alias)
         .await;
+      drop(cleanup);
 
       client
         .add_published_track(request_id, full_track_name.clone())
@@ -192,15 +190,17 @@ pub async fn handle(
 
       // A REQUEST_UPDATE for this publisher is resolved out of this map.
       {
-        let mut map = client.inbound_requests.write().await;
-        map.insert(
-          request_id,
-          PendingRequest::Publish {
-            publisher_connection_id: context.connection_id,
-            original_request_id: request_id,
-            message: (*m).clone(),
-          },
-        );
+        client
+          .downstream_requests
+          .insert(
+            request_id,
+            DownstreamRequest::Publish {
+              publisher_connection_id: context.connection_id,
+              original_request_id: request_id,
+              message: (*m).clone(),
+            },
+          )
+          .await;
       }
 
       let m_clone = m.clone();
@@ -218,8 +218,6 @@ pub async fn handle(
       // if the forward parameter is true, set the track property
       if publisher_forwards {
         track_arc
-          .read()
-          .await
           .upstream_forward
           .store(publisher_forwards, Ordering::SeqCst);
       }
@@ -231,8 +229,6 @@ pub async fn handle(
         );
         // A track's properties come from the publisher that created it.
         track_arc
-          .write()
-          .await
           .set_track_properties(m.track_properties.clone())
           .await;
 
@@ -254,8 +250,6 @@ pub async fn handle(
           // SUBSCRIBE take precedence over SUBSCRIBE_TRACKS for the same track.
           if subscriber.connection_id == context.connection_id
             || track_arc
-              .read()
-              .await
               .has_any_subscription(subscriber.connection_id)
               .await
           {
@@ -331,12 +325,10 @@ pub async fn handle(
       // Clean up the published track
       cleanup_published_track(&client, publisher_req_id, &context).await;
 
-      // Remove the request from the unified map to avoid memory leak
       {
-        let mut map = client.inbound_requests.write().await;
-        map.remove(&publisher_req_id);
+        client.downstream_requests.remove(publisher_req_id).await;
         trace!(
-          "Removed terminated PUBLISH request {} from pending requests map",
+          "Removed terminated PUBLISH request {} from downstream requests",
           publisher_req_id
         );
       }
@@ -351,20 +343,22 @@ pub async fn handle(
       };
       let publisher_req_id = target_request_id;
 
-      {
-        let mut map = client.inbound_requests.write().await;
-        match map.get_mut(&publisher_req_id) {
-          Some(PendingRequest::Publish { message, .. }) => {
+      let updated = client
+        .downstream_requests
+        .update(publisher_req_id, |request| match request {
+          DownstreamRequest::Publish { message, .. } => {
             apply_message_parameter_update(&mut message.parameters, update_msg.parameters.clone());
+            Some(())
           }
-          _ => {
-            warn!(
-              "Request {} is not a valid Publish request",
-              publisher_req_id
-            );
-            return Err(TerminationCode::ProtocolViolation);
-          }
-        }
+          _ => None,
+        })
+        .await;
+      if updated.is_none() {
+        warn!(
+          "Request {} is not a valid Publish request",
+          publisher_req_id
+        );
+        return Err(TerminationCode::ProtocolViolation);
       }
 
       // 2. Look up the track this publisher owns
@@ -408,7 +402,7 @@ pub async fn handle(
 
       // 4. FAN-OUT: Translate the IDs and notify all downstream subscribers
       let active_subscriptions = {
-        let track_read = track_arc.read().await;
+        let track_read = &track_arc;
         track_read
           .subscription_manager
           .get_all_subscriptions()
@@ -465,11 +459,11 @@ pub async fn handle(
 /// downstream wants Objects. A publisher that declared FORWARD=0 sends nothing
 /// until told to, so without this the track never delivers.
 pub(crate) async fn ensure_upstream_forwarding(
-  track_arc: &Arc<tokio::sync::RwLock<Track>>,
+  track_arc: &Arc<Track>,
   context: &Arc<SessionContext>,
 ) {
   let (origin, full_track_name) = {
-    let track = track_arc.read().await;
+    let track = &track_arc;
     (track.origin(), track.full_track_name.clone())
   };
   if origin != TrackOrigin::Publish {
@@ -477,7 +471,7 @@ pub(crate) async fn ensure_upstream_forwarding(
   }
 
   let publisher_ids: Vec<usize> = {
-    let track = track_arc.read().await;
+    let track = &track_arc;
     if !track.has_forwarding_subscriber().await {
       return;
     }
@@ -535,11 +529,11 @@ pub(crate) async fn ensure_upstream_forwarding(
 pub(crate) async fn push_track_to_subscriber(
   context: &Arc<SessionContext>,
   subscriber: Arc<MOQTClient>,
-  track_arc: &Arc<RwLock<Track>>,
+  track_arc: &Arc<Track>,
   publish: &Publish,
   subscribe_tracks_params: &[MessageParameter],
 ) -> bool {
-  let Some(range_filters) = crate::server::filter_constructor::filters_for_track(
+  let Some(range_filters) = crate::server::subscription::filter_constructor::filters_for_track(
     subscribe_tracks_params,
     &publish.track_properties,
   ) else {
@@ -562,7 +556,7 @@ pub(crate) async fn push_track_to_subscriber(
     downstream.track_properties.clear();
   }
   {
-    let track = track_arc.read().await;
+    let track = &track_arc;
     downstream.track_alias = subscriber.assign_track_alias(track.relay_track_id);
     downstream.parameters = parameters::downstream_publish(
       &publish.parameters,
@@ -571,7 +565,7 @@ pub(crate) async fn push_track_to_subscriber(
     );
   }
 
-  let track = track_arc.read().await;
+  let track = &track_arc;
   if let Err(e) = track
     .add_subscription(subscriber.clone(), downstream.clone())
     .await
@@ -584,7 +578,6 @@ pub(crate) async fn push_track_to_subscriber(
   let subscription = track
     .get_subscription(&(subscriber.connection_id, downstream.request_id))
     .await;
-  drop(track);
 
   // The subscription starts with the Object filters of the SetIDs the track passed.
   // They are kept with its parameters, so an update measures against them.
@@ -639,7 +632,7 @@ pub(crate) async fn forward_publish_downstream(
   subscriber: Arc<MOQTClient>,
   publish: Publish,
   subscription: Option<Arc<RwLock<Subscription>>>,
-  track_arc: Arc<RwLock<Track>>,
+  track_arc: Arc<Track>,
   context: Arc<SessionContext>,
 ) {
   let (send, recv) = match subscriber.connection.open_bi().await {
@@ -680,7 +673,7 @@ pub(crate) async fn forward_publish_downstream(
     // the subscription was made; waiting a round trip for the PUBLISH_OK would let a new
     // group begin in between, and the Objects of the group before it would be in
     // neither. Without FILL_PARAMETERS, or while Forward State is 0, this opens nothing.
-    crate::server::fill::open_fill_fetch_stream(
+    crate::server::subscription::fill::open_fill_fetch_stream(
       context.clone(),
       track_arc.clone(),
       subscription.clone(),
@@ -789,11 +782,11 @@ pub(crate) async fn forward_publish_downstream(
 /// already gone, as after PUBLISH_DONE, is left alone.
 async fn end_pushed_subscription(
   subscriber: &Arc<MOQTClient>,
-  track_arc: &Arc<RwLock<Track>>,
+  track_arc: &Arc<Track>,
   request_id: u64,
 ) {
   let full_track_name = {
-    let track = track_arc.read().await;
+    let track = &track_arc;
     track
       .remove_subscription(&(subscriber.connection_id, request_id))
       .await;
@@ -814,7 +807,7 @@ async fn apply_pushed_update(
   stream: &mut ControlStreamHandler,
   update: RequestUpdate,
   subscription: Option<&Arc<RwLock<Subscription>>>,
-  track_arc: &Arc<RwLock<Track>>,
+  track_arc: &Arc<Track>,
   context: &Arc<SessionContext>,
   publish_request_id: u64,
 ) {
@@ -839,13 +832,13 @@ async fn apply_pushed_update(
         .subscribe_parameters
         .clone()
     };
-    if let Err(e) = crate::server::filter_constructor::updated_filter(
+    if let Err(e) = crate::server::subscription::filter_constructor::updated_filter(
       &current,
       &update.parameters,
       context.server_config.max_filter_ranges,
     ) {
       info!("Refusing REQUEST_UPDATE on a pushed PUBLISH: {e}");
-      let error = crate::server::filter_constructor::invalid_filter(&e);
+      let error = crate::server::subscription::filter_constructor::invalid_filter(&e);
       let _ = stream
         .send(&ControlMessage::RequestError(Box::new(error)))
         .await;
@@ -883,11 +876,11 @@ async fn apply_pushed_update(
   // A filter the update changed starts where it now says, which for a live one
   // is against the largest Object as of this update.
   if changes_filter {
-    let largest = track_arc.read().await.largest_object().await;
+    let largest = track_arc.largest_object().await;
     subscription.read().await.resolve_live_start(largest).await;
   }
   if asks_for_a_fill {
-    crate::server::fill::open_fill_fetch_stream(
+    crate::server::subscription::fill::open_fill_fetch_stream(
       context.clone(),
       track_arc.clone(),
       subscription.clone(),
@@ -1056,7 +1049,7 @@ async fn cleanup_published_track(
     }
   };
 
-  let track = track_arc.read().await;
+  let track = &track_arc;
   if let Some(removal) = track.remove_publisher(client.connection_id).await {
     context
       .track_manager
@@ -1068,7 +1061,6 @@ async fn cleanup_published_track(
       // they are: dropping the track from them would stop it being gated and
       // let every rendition of its set forward at once.
       track.remove_from_subscriber_switching_sets().await;
-      drop(track);
       context.track_manager.retire_track(&full_track_name).await;
       info!(
         "cleanup_published_track: no publishers left for {:?} request_id={}",

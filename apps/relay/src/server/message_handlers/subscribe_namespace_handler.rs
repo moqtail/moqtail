@@ -12,10 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::server::client::MOQTClient;
-use crate::server::prefix_subscription::{MAX_NAMESPACE_PREFIX_FIELDS, oversized_namespace_error};
-use crate::server::session_context::{PendingRequest, SessionContext};
-use crate::server::track_manager::SubscribeKind;
+use crate::server::requests::DownstreamRequest;
+use crate::server::session::client::MOQTClient;
+use crate::server::session::session_context::SessionContext;
+use crate::server::subscription::prefix_subscription::{
+  MAX_NAMESPACE_PREFIX_FIELDS, oversized_namespace_error,
+};
+use crate::server::track::track_manager::SubscribeKind;
 use core::result::Result;
 use moqtail::model::common::reason_phrase::ReasonPhrase;
 use moqtail::model::control::control_message::ControlMessage;
@@ -97,17 +100,19 @@ pub async fn handle_subscribe_namespace(
     )
     .await;
 
-  // Track in inbound_requests so cancel() can find it
+  // Track in downstream_requests so cancel() can find it
   {
-    let mut map = client.inbound_requests.write().await;
-    map.insert(
-      sub_ns.request_id,
-      PendingRequest::SubscribeNamespace {
-        client_connection_id: client.connection_id,
-        original_request_id: sub_ns.request_id,
-        message: (*sub_ns).clone(),
-      },
-    );
+    client
+      .downstream_requests
+      .insert(
+        sub_ns.request_id,
+        DownstreamRequest::SubscribeNamespace {
+          client_connection_id: client.connection_id,
+          original_request_id: sub_ns.request_id,
+          message: (*sub_ns).clone(),
+        },
+      )
+      .await;
   }
 
   // Send REQUEST_OK on the bi-stream

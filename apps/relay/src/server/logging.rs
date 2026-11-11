@@ -1,4 +1,4 @@
-// Copyright 2025 The MOQtail Authors
+// Copyright 2026 The MOQtail Authors
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,20 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use moqtail::model::control::fetch::Fetch;
-use tokio::sync::{RwLock, Arc};
-use moqtail::client::MOQTClient;
-use wtransport::SendStream;
+//! Optional per-object and per-token logs.
 
-pub struct FetchRequest {
-  pub fetch_message: Fetch,
-  pub client: Arc<RwLock<MOQTClient>>,
-  pub send_stream: SendStream,
-  pub finished: Arc<RwLock<bool>>,
-}
-
-impl FetchRequest {
-  pub fn new(fetch_message: Fetch, client: Arc<RwLock<MOQTClient>>, send_stream: SendStream) -> Self {
-    Self { fetch_message, client, send_stream, finished: Arc::new(RwLock::new(false)) }
-  }
-}
+pub(crate) mod object_logger;
+pub(crate) mod token_logger;

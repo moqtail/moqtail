@@ -244,8 +244,8 @@ pub struct AppConfig {
   #[default(Duration::from_millis(1600))]
   #[serde(with = "humantime_serde")]
   pub ssts_discard_timeout: Duration,
-  /// This relay's Hop ID (draft-lcurley-moq-cluster), declared in SETUP. Setting it
-  /// turns clustering on; 0 joins the mesh while withholding an identity.
+  /// This relay's Hop ID in a relay mesh, declared in SETUP. Setting it turns
+  /// clustering on; 0 joins the mesh while withholding an identity.
   pub hop_id: Option<u64>,
   /// What this relay charges for its own egress, declared as RELAY_COST. Unset
   /// leaves it out, which peers read as 1, so an unpriced mesh ranks by hop count.
@@ -286,7 +286,17 @@ impl AppConfig {
       config.key_file = key_file;
     }
     config.validate()?;
+    config.check_cluster()?;
     Ok(config.finalize())
+  }
+
+  /// Peers dialed without a Hop ID would come up as plain sessions, and nothing would
+  /// ever be advertised to them.
+  fn check_cluster(&self) -> Result<()> {
+    if !self.peers.is_empty() && self.hop_id.is_none() {
+      anyhow::bail!("`peers` needs `hop_id`: without one the relay joins no mesh");
+    }
+    Ok(())
   }
 
   fn finalize(mut self) -> Self {
@@ -507,6 +517,22 @@ mod tests {
     let mut config = test_config(10);
     config.io_sockets = 0;
     assert_eq!(config.listener_count(), 1);
+  }
+
+  #[test]
+  fn peers_need_a_hop_id() {
+    let peers = vec!["moqt://relay-b:4433".to_string()];
+    let config = AppConfig {
+      peers: peers.clone(),
+      ..Default::default()
+    };
+    assert!(config.check_cluster().is_err());
+    let config = AppConfig {
+      peers,
+      hop_id: Some(1),
+      ..Default::default()
+    };
+    assert!(config.check_cluster().is_ok());
   }
 
   #[test]

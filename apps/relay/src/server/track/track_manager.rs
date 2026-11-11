@@ -590,23 +590,27 @@ impl TrackManager {
       .collect()
   }
 
-  /// The channel and prefix of this connection's SUBSCRIBE_NAMESPACE covering `namespace`.
-  pub async fn namespace_subscription_of(
-    &self,
-    connection_id: usize,
-    namespace: &Tuple,
-  ) -> Option<(Tuple, UnboundedSender<ControlMessage>)> {
-    let subs = self.namespace_subscribers.read().await;
-    subs.iter().find_map(|(prefix, clients)| {
-      clients
-        .iter()
-        .find(|(c, k, _, _)| {
-          c.connection_id == connection_id
-            && *k == SubscribeKind::Namespace
-            && namespace.starts_with(prefix)
-        })
-        .map(|(_, _, _, tx)| (prefix.clone(), tx.clone()))
-    })
+  /// The connections PUBLISHing a track in exactly `namespace`.
+  pub async fn publishers_of_namespace(&self, namespace: &Tuple) -> Vec<usize> {
+    let publishes = self.publishes.read().await;
+    let mut publishers: Vec<usize> = publishes
+      .iter()
+      .filter(|(name, _)| &name.namespace == namespace)
+      .flat_map(|(_, by_connection)| by_connection.keys().copied())
+      .collect();
+    publishers.sort_unstable();
+    publishers.dedup();
+    publishers
+  }
+
+  /// The namespaces of every track some connection is PUBLISHing.
+  pub async fn published_namespaces(&self) -> Vec<Tuple> {
+    let publishes = self.publishes.read().await;
+    publishes
+      .iter()
+      .filter(|(_, by_connection)| !by_connection.is_empty())
+      .map(|(name, _)| name.namespace.clone())
+      .collect()
   }
 
   pub async fn remove_namespace_subscriber(&self, connection_id: usize) {

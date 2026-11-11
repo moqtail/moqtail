@@ -14,6 +14,7 @@
 
 //! The upstream half of SUBSCRIBE: the relay's own request to the publisher and its answers.
 
+use crate::server::cluster;
 use crate::server::message_handlers::parameters;
 use crate::server::session::client::MOQTClient;
 use crate::server::session::session_context::SessionContext;
@@ -174,9 +175,9 @@ async fn upstream_subscribe_exchange(
             let accepted =
               handle_subscribe_ok_message(publisher.clone(), relay_request_id, *m, context.clone())
                 .await;
-            if accepted.is_ok() {
+            if accepted.is_ok() && context.server_config.hop_id.is_some() {
               // The source now carries the track, so its advertisements turn warm.
-              tokio::spawn(crate::server::cluster::refresh_covering(
+              tokio::spawn(cluster::refresh_covering(
                 context.clone(),
                 full_track_name.namespace.clone(),
               ));

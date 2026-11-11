@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Relay mesh per draft-lcurley-moq-cluster-01.
+//! Relay mesh.
 //!
 //! Every namespace the relay can route is a set of routes (who advertised it, the
 //! Hop IDs it passed, what it costs). Each cluster peer is told the best route that
@@ -29,8 +29,6 @@ use moqtail::model::common::pair::KeyValuePair;
 use moqtail::model::common::tuple::Tuple;
 use moqtail::model::control::constant::SUPPORTED_VERSIONS;
 use moqtail::model::control::control_message::ControlMessage;
-use moqtail::model::control::namespace::Namespace;
-use moqtail::model::control::namespace_done::NamespaceDone;
 use moqtail::model::control::publish_namespace::PublishNamespace;
 use moqtail::model::control::request_update::RequestUpdate;
 use moqtail::model::control::setup::Setup;
@@ -56,10 +54,14 @@ pub(crate) const RELAY_COST: u64 = 0x40B56;
 
 const REDIAL_DELAY: Duration = Duration::from_secs(1);
 
-/// Serializes `refresh`, so two of them cannot apply their snapshots out of order and
-/// leave a withdrawn route advertised.
-static REFRESH: Mutex<()> = Mutex::const_new(());
-static NEXT_ADVERT: AtomicU64 = AtomicU64::new(0);
+/// Relay-wide clustering state, shared by every session.
+#[derive(Debug, Default)]
+pub(crate) struct ClusterState {
+  /// Serializes `refresh`, so two of them cannot apply their snapshots out of order
+  /// and leave a withdrawn route advertised.
+  refresh: Mutex<()>,
+  next_advert: AtomicU64,
+}
 
 /// What this relay currently advertises to one peer for one namespace.
 #[derive(Debug)]
@@ -68,16 +70,10 @@ pub(crate) struct Advert {
   source: usize,
   hops: Vec<u64>,
   cost: u64,
-  sink: Sink,
+  /// Feeds the task holding the PUBLISH_NAMESPACE request stream; dropping it
+  /// withdraws the advertisement.
+  updates: mpsc::UnboundedSender<ControlMessage>,
   generation: u64,
-}
-
-#[derive(Debug)]
-enum Sink {
-  /// Feeds the task holding our PUBLISH_NAMESPACE request stream; dropping it withdraws.
-  PublishNamespace(mpsc::UnboundedSender<ControlMessage>),
-  /// The peer's SUBSCRIBE_NAMESPACE stream, and the suffix it knows the namespace by.
-  Namespace(mpsc::UnboundedSender<ControlMessage>, Tuple),
 }
 
 #[derive(Clone)]
@@ -122,11 +118,23 @@ pub(crate) fn loops_through(hops: &[u64], hop_id: u64) -> bool {
 
 /// Dials a peer for as long as the relay runs, redialing whenever the session ends.
 pub(crate) async fn run_peer(server: Server, url: String) {
+  let rest = url.strip_prefix("moqt://").unwrap_or(&url);
+  let rest = rest.split('#').next().unwrap_or_default();
+  let (authority, path) = match rest.find('/') {
+    Some(i) => rest.split_at(i),
+    None => (rest, ""),
+  };
   loop {
-    match dial(&server, &url).await {
+    match dial(&server, authority).await {
       Ok(connection) => {
         info!("Cluster peer {url} connected");
-        if let Err(e) = Session::connect_quic(connection.clone(), server.clone()).await {
+        let session = Session::connect_quic(
+          connection.clone(),
+          server.clone(),
+          authority.into(),
+          path.into(),
+        );
+        if let Err(e) = session.await {
           warn!("Cluster peer {url} session failed: {e:?}");
         }
         let reason = connection.closed().await;
@@ -138,13 +146,11 @@ pub(crate) async fn run_peer(server: Server, url: String) {
   }
 }
 
-async fn dial(server: &Server, url: &str) -> Result<quinn::Connection> {
+async fn dial(server: &Server, authority: &str) -> Result<quinn::Connection> {
   let config = server.app_config;
-  let authority = url.strip_prefix("moqt://").unwrap_or(url);
-  let authority = authority.split('/').next().unwrap_or_default();
   let (host, port) = authority
     .rsplit_once(':')
-    .ok_or_else(|| anyhow::anyhow!("peer {url} names no port"))?;
+    .ok_or_else(|| anyhow::anyhow!("peer {authority} names no port"))?;
   let host = host.trim_start_matches('[').trim_end_matches(']');
   let port: u16 = port.parse()?;
 
@@ -190,44 +196,20 @@ async fn dial(server: &Server, url: &str) -> Result<quinn::Connection> {
 /// clients PUBLISH, which are bridged like announcements from them.
 async fn routes(context: &SessionContext, namespace: &Tuple) -> Vec<Route> {
   let mut routes = Vec::new();
-  let clients: Vec<Arc<MOQTClient>> = {
-    let clients = context.client_manager.clients.read().await;
-    clients.values().cloned().collect()
-  };
-  for client in clients {
+  for connection_id in context
+    .track_manager
+    .publishers_of_namespace(namespace)
+    .await
+  {
     // A peer's tracks reach us by announcement, not PUBLISH.
-    if client.peer_hop_id.is_some() {
-      continue;
-    }
-    let names: Vec<FullTrackName> = client
-      .published_tracks
-      .read()
-      .await
-      .values()
-      .filter(|name| &name.namespace == namespace)
-      .cloned()
-      .collect();
-    // An entry outlives its PUBLISH_DONE; the track's publishers say who still serves.
-    let mut publishes = false;
-    for name in names {
-      if let Some(track) = context.track_manager.get_track(&name).await
-        && track
-          .publisher_aliases
-          .read()
-          .await
-          .contains_key(&client.connection_id)
-      {
-        publishes = true;
-        break;
-      }
-    }
-    if publishes {
-      routes.push(Route {
+    match context.client_manager.get(connection_id).await {
+      Some(client) if client.peer_hop_id.is_none() => routes.push(Route {
         hops: vec![0],
         cost: client.peer_relay_cost,
         client,
         seq: 0,
-      });
+      }),
+      _ => {}
     }
   }
   let announcements = context.track_manager.announcement_routes(namespace).await;
@@ -253,16 +235,16 @@ async fn routes(context: &SessionContext, namespace: &Tuple) -> Vec<Route> {
   routes
 }
 
-/// Whether a route may not be given to a peer (§7): it came from that peer's session,
+/// Whether a route may not be given to a peer: it came from that peer's session,
 /// or already passed through it. A plain client is never a peer, so it may be served
 /// from its own session, as a client subscribing to its own track is.
 fn excluded(hops: &[u64], from: usize, to: usize, to_hop: Option<u64>) -> bool {
-  // shortcut: a peer that declared 0 is filtered by its session only (§4.2 would
-  // give a dialed one a stable assigned ID); fine until anonymous peers multi-link.
+  // shortcut: a peer that declared 0 is filtered by its session only (a dialed one
+  // could get a stable assigned ID instead); fine until anonymous peers multi-link.
   to_hop.is_some_and(|hop| from == to || loops_through(hops, hop))
 }
 
-/// Lower is better (§7): no 0 in the path, then lowest cost, shortest path, newest.
+/// Lower is better: no 0 in the path, then lowest cost, shortest path, newest.
 fn rank(hops: &[u64], cost: u64, seq: usize) -> (bool, u64, usize, Reverse<usize>) {
   (hops.contains(&0), cost, hops.len(), Reverse(seq))
 }
@@ -283,7 +265,7 @@ fn best<'a>(routes: &'a [Route], to: &MOQTClient) -> Option<&'a Route> {
 }
 
 /// Whether a new path still comes from the publisher an advertisement names, so it is
-/// updated in place rather than withdrawn (§6.3). The same non-zero first hop is the
+/// updated in place rather than withdrawn. The same non-zero first hop is the
 /// same publisher. A 0 names nobody, so it takes the same source session, or the same
 /// whole path: that came through the same relays, and a relay sends every session to
 /// one peer the same best path, so two links to it never carry different publishers.
@@ -347,7 +329,10 @@ pub(crate) async fn select(
 }
 
 /// Whether `source` is serving a track under `namespace` to someone right now, so its
-/// ingress is already paid for (§6.2).
+/// ingress is already paid for and it is advertised at cost 0.
+// shortcut: two warm relays would each see the other's 0 as cheaper than their own
+// source. That is safe only because `select` runs once per request and never moves a
+// live subscription; re-parenting one needs a deterministic tie-break first.
 async fn carrying(context: &SessionContext, namespace: &Tuple, source: usize) -> bool {
   for track in context.track_manager.tracks_under(namespace).await {
     let from_source = track.publisher_aliases.read().await.contains_key(&source);
@@ -369,23 +354,63 @@ pub(crate) async fn refresh_all(context: Arc<SessionContext>) {
     .await
     .into_iter()
     .collect();
+  namespaces.extend(context.track_manager.published_namespaces().await);
   {
+    // Whatever is advertised now, so a namespace that lost its routes is withdrawn.
     let clients = context.client_manager.clients.read().await;
     for client in clients.values() {
-      namespaces.extend(
-        client
-          .published_tracks
-          .read()
-          .await
-          .values()
-          .map(|name| name.namespace.clone()),
-      );
-      // Whatever is advertised now, so a namespace that lost its routes is withdrawn.
       namespaces.extend(client.cluster_adverts.lock().await.keys().cloned());
     }
   }
   for namespace in namespaces {
     refresh(&context, &namespace).await;
+  }
+}
+
+/// After a session closed. A peer may have carried any route, so everything is redone.
+/// Anyone else only changes what it announced or published, and the tracks it left
+/// without a subscriber.
+pub(crate) async fn refresh_after_close(
+  context: &Arc<SessionContext>,
+  cleanup_tracks: &[FullTrackName],
+) {
+  if context.server_config.hop_id.is_none() {
+    return;
+  }
+  let Some(client) = context.get_client().await else {
+    return;
+  };
+  if client.peer_hop_id.is_some() {
+    refresh_all(context.clone()).await;
+    return;
+  }
+  let mut sourced: HashSet<Tuple> = client
+    .announced_track_namespaces
+    .read()
+    .await
+    .iter()
+    .cloned()
+    .collect();
+  sourced.extend(
+    client
+      .published_tracks
+      .read()
+      .await
+      .values()
+      .map(|name| name.namespace.clone()),
+  );
+  for namespace in &sourced {
+    refresh(context, namespace).await;
+  }
+  let mut cooled = HashSet::new();
+  for name in cleanup_tracks {
+    let idle = match context.track_manager.get_track(name).await {
+      Some(track) => track.subscriber_count().await == 0,
+      None => true,
+    };
+    if idle && cooled.insert(name.namespace.clone()) {
+      refresh_covering(context.clone(), name.namespace.clone()).await;
+    }
   }
 }
 
@@ -401,13 +426,12 @@ pub(crate) async fn refresh_covering(context: Arc<SessionContext>, mut namespace
 }
 
 /// Brings every peer's advertisement of `namespace` in line with its routes: opens,
-/// updates in place, re-advertises when the publisher changed, or withdraws (§6.3).
+/// updates in place, re-advertises when the publisher changed, or withdraws.
 pub(crate) async fn refresh(context: &Arc<SessionContext>, namespace: &Tuple) {
   let Some(own_hop) = context.server_config.hop_id else {
     return;
   };
-  let _serial = REFRESH.lock().await;
-  let routes = routes(context, namespace).await;
+  let _serial = context.cluster.refresh.lock().await;
   let peers: Vec<Arc<MOQTClient>> = {
     let clients = context.client_manager.clients.read().await;
     clients
@@ -416,6 +440,10 @@ pub(crate) async fn refresh(context: &Arc<SessionContext>, namespace: &Tuple) {
       .cloned()
       .collect()
   };
+  if peers.is_empty() {
+    return;
+  }
+  let routes = routes(context, namespace).await;
 
   for peer in peers {
     let mut adverts = peer.cluster_adverts.lock().await;
@@ -435,9 +463,7 @@ pub(crate) async fn refresh(context: &Arc<SessionContext>, namespace: &Tuple) {
     };
 
     let Some((source, hops, cost)) = wanted else {
-      if let Some(old) = adverts.remove(namespace) {
-        withdraw(old);
-      }
+      adverts.remove(namespace);
       continue;
     };
     let params = vec![
@@ -448,52 +474,30 @@ pub(crate) async fn refresh(context: &Arc<SessionContext>, namespace: &Tuple) {
     if let Some(advert) = adverts.get_mut(namespace) {
       if same_publisher(&advert.hops, advert.source, &hops, source) {
         if advert.hops != hops || advert.cost != cost {
-          match &advert.sink {
-            Sink::PublishNamespace(tx) => {
-              let request_id = peer.next_request_id(&context.relay_next_request_id);
-              let _ = tx.send(ControlMessage::RequestUpdate(Box::new(RequestUpdate::new(
-                request_id, params,
-              ))));
-            }
-            Sink::Namespace(tx, suffix) => {
-              let _ = tx.send(ControlMessage::Namespace(Box::new(
-                Namespace::with_parameters(suffix.clone(), params),
-              )));
-            }
-          }
+          let request_id = peer.next_request_id(&context.relay_next_request_id);
+          let _ = advert
+            .updates
+            .send(ControlMessage::RequestUpdate(Box::new(RequestUpdate::new(
+              request_id, params,
+            ))));
           advert.source = source;
           advert.hops = hops;
           advert.cost = cost;
         }
         continue;
       }
-      if let Some(old) = adverts.remove(namespace) {
-        withdraw(old);
-      }
+      // A new publisher is withdrawn and advertised afresh.
+      adverts.remove(namespace);
     }
 
-    let generation = NEXT_ADVERT.fetch_add(1, Ordering::Relaxed);
-    let sink = match context
-      .track_manager
-      .namespace_subscription_of(peer.connection_id, namespace)
-      .await
-      .and_then(|(prefix, tx)| Some((namespace.suffix(&prefix)?, tx)))
-    {
-      // The peer asked to discover namespaces; the answer is the advertisement.
-      Some((suffix, tx)) => {
-        let _ = tx.send(ControlMessage::Namespace(Box::new(
-          Namespace::with_parameters(suffix.clone(), params),
-        )));
-        Sink::Namespace(tx, suffix)
-      }
-      None => Sink::PublishNamespace(publish_namespace(
-        context.clone(),
-        peer.clone(),
-        namespace.clone(),
-        params,
-        generation,
-      )),
-    };
+    let generation = context.cluster.next_advert.fetch_add(1, Ordering::Relaxed);
+    let updates = publish_namespace(
+      context.clone(),
+      peer.clone(),
+      namespace.clone(),
+      params,
+      generation,
+    );
     info!(
       "Advertising {:?} to peer {} with path {:?} cost {}",
       namespace, peer.connection_id, hops, cost
@@ -504,19 +508,10 @@ pub(crate) async fn refresh(context: &Arc<SessionContext>, namespace: &Tuple) {
         source,
         hops,
         cost,
-        sink,
+        updates,
         generation,
       },
     );
-  }
-}
-
-fn withdraw(advert: Advert) {
-  // A PUBLISH_NAMESPACE sink is withdrawn by being dropped here.
-  if let Sink::Namespace(tx, suffix) = advert.sink {
-    let _ = tx.send(ControlMessage::NamespaceDone(Box::new(NamespaceDone::new(
-      suffix,
-    ))));
   }
 }
 

@@ -125,10 +125,9 @@ pub async fn handle_subscribe_namespace(
     sub_ns.request_id
   );
 
-  // A cluster peer is answered with paths, through the same advertisements kept in
-  // step for it as routes change.
+  // A cluster peer already gets every namespace as a PUBLISH_NAMESPACE carrying its
+  // path, at most once per session, so it is not told again here without one.
   if client.peer_hop_id.is_some() {
-    tokio::spawn(crate::server::cluster::refresh_all(context.clone()));
     return Ok(());
   }
 

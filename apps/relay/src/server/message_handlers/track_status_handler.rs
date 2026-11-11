@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::server::cluster;
 use crate::server::session::client::MOQTClient;
 use crate::server::session::session_context::SessionContext;
 use crate::server::track::TrackOrigin;
@@ -81,7 +82,7 @@ pub async fn handle(
           .await;
         match context.get_client().await {
           Some(requester) => {
-            crate::server::cluster::select(&context, &requester, &full_track_name, publishers).await
+            cluster::select(&context, &requester, &full_track_name, publishers).await
           }
           None => publishers,
         }

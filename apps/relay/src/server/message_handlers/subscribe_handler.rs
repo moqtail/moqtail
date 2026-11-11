@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::server::cluster;
 use crate::server::message_handlers::parameters;
 use crate::server::requests::DownstreamRequest;
 use crate::server::session::client::MOQTClient;
@@ -241,7 +242,7 @@ async fn handle_subscribe_message(
       .await;
     // shortcut: an excluded publisher ends the wait like any other; a later route
     // that is not excluded is missed, which only matters for a re-routing mesh.
-    crate::server::cluster::select(&context, &client, &full_track_name, publishers).await
+    cluster::select(&context, &client, &full_track_name, publishers).await
   };
 
   if publishers.is_empty() {
@@ -306,20 +307,20 @@ async fn handle_subscribe_message(
   // A cache-only track has no upstream subscription, so the SUBSCRIBE that takes it
   // over forwards upstream as if it had created it. Taken over and joined under one
   // lock, so the track cannot let go of its upstream subscription in between.
-  let (is_creator, subscription) = {
+  let (is_creator, subscription, first_subscriber) = {
     let track = &track_arc;
     let _handover = track.lock_handover().await;
     let taken_over = track
       .take_over(TrackOrigin::Subscribe, TrackStatus::Pending)
       .await;
-    (
-      is_creator || taken_over,
-      add_subscription(sub.clone(), track, client.clone()).await,
-    )
+    let subscription = add_subscription(sub.clone(), track, client.clone()).await;
+    // Counted under the lock, so of two subscribers joining at once exactly one is first.
+    let first = subscription.is_some() && track.subscriber_count().await == 1;
+    (is_creator || taken_over, subscription, first)
   };
   // A first subscriber to a track already served makes its source warm.
-  if subscription.is_some() && track_arc.subscriber_count().await == 1 {
-    tokio::spawn(crate::server::cluster::refresh_covering(
+  if first_subscriber && context.server_config.hop_id.is_some() {
+    tokio::spawn(cluster::refresh_covering(
       context.clone(),
       full_track_name.namespace.clone(),
     ));
@@ -635,8 +636,8 @@ pub(crate) async fn cancel_subscription(
       .remove_subscriber(&(context.connection_id, request_id))
       .await;
     // The last subscriber leaving cools its source.
-    if track_lock.subscriber_count().await == 0 {
-      tokio::spawn(crate::server::cluster::refresh_covering(
+    if context.server_config.hop_id.is_some() && track_lock.subscriber_count().await == 0 {
+      tokio::spawn(cluster::refresh_covering(
         context.clone(),
         full_track_name.namespace.clone(),
       ));

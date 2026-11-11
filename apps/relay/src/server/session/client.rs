@@ -15,6 +15,7 @@
 pub(crate) mod request_subscription_map;
 pub(crate) mod switch_context;
 
+use crate::server::cluster;
 use crate::server::{
   config::{AppConfig, TrackAliasMode},
   requests::DownstreamRequests,
@@ -167,7 +168,7 @@ pub(crate) struct MOQTClient {
   /// The RELAY_COST this peer declared (1 when absent).
   pub peer_relay_cost: u64,
   /// The namespaces this relay advertises to this peer, at most one each.
-  pub cluster_adverts: Arc<Mutex<HashMap<Tuple, crate::server::cluster::Advert>>>,
+  pub cluster_adverts: Arc<Mutex<HashMap<Tuple, cluster::Advert>>>,
   /// Whether this relay dialed the session, which makes it the client there.
   dialed: bool,
 }
@@ -207,13 +208,10 @@ impl MOQTClient {
       &config.ssts_algorithms,
     ));
 
-    let peer_hop_id = config.hop_id.and(crate::server::cluster::setup_varint(
-      &client_setup,
-      crate::server::cluster::HOP_ID,
-    ));
-    let peer_relay_cost =
-      crate::server::cluster::setup_varint(&client_setup, crate::server::cluster::RELAY_COST)
-        .unwrap_or(1);
+    let peer_hop_id = config
+      .hop_id
+      .and(cluster::setup_varint(&client_setup, cluster::HOP_ID));
+    let peer_relay_cost = cluster::setup_varint(&client_setup, cluster::RELAY_COST).unwrap_or(1);
 
     MOQTClient {
       connection_id,

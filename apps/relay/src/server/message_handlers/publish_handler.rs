@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::server::cluster;
 use crate::server::message_handlers::parameters;
 use crate::server::requests::DownstreamRequest;
 use crate::server::session::client::MOQTClient;
@@ -180,13 +181,14 @@ pub async fn handle(
         .add_published_track(request_id, full_track_name.clone())
         .await;
       context.client_manager.publishers_changed();
-      crate::server::cluster::refresh(&context, &full_track_name.namespace).await;
 
       // Raising the Forward State later needs the request id this arrived on.
       context
         .track_manager
         .add_publish_message(full_track_name.clone(), context.connection_id, (*m).clone())
         .await;
+      // After the PUBLISH is stored, which is where its route is read from.
+      cluster::refresh(&context, &full_track_name.namespace).await;
 
       // A REQUEST_UPDATE for this publisher is resolved out of this map.
       {
@@ -331,7 +333,7 @@ pub async fn handle(
         .map(|name| name.namespace.clone());
       cleanup_published_track(&client, publisher_req_id, &context).await;
       if let Some(namespace) = namespace {
-        crate::server::cluster::refresh(&context, &namespace).await;
+        cluster::refresh(&context, &namespace).await;
       }
 
       {

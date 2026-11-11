@@ -73,7 +73,7 @@ The relay is the deployable Rust service that forwards MoQ messages between publ
 Local run:
 
 ```bash
-cargo run -p relay -- --port 4433 --cert-file apps/relay/cert/cert.pem --key-file apps/relay/cert/key.pem
+cargo run -p relay -- --bind 127.0.0.1:4433 --cert-file apps/relay/cert/cert.pem --key-file apps/relay/cert/key.pem
 ```
 
 Container image:

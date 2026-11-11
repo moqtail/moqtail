@@ -221,7 +221,7 @@ impl Subscription {
         return;
       }
 
-      let timeout = state.delivery_timeout(self.config.delivery_timeout_ms);
+      let timeout = state.delivery_timeout(self.config.delivery_timeout.as_millis() as u64);
       if self.skips_group(object.location.group, queued_at, timeout) {
         drop(state);
         // The stream's Objects so far went out, but the rest of the group won't.
@@ -534,7 +534,7 @@ impl Subscription {
         return;
       }
 
-      let timeout = state.delivery_timeout(self.config.delivery_timeout_ms);
+      let timeout = state.delivery_timeout(self.config.delivery_timeout.as_millis() as u64);
       if self.skips_group(location.group, queued_at, timeout) {
         return;
       }

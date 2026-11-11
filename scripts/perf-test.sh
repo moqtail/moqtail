@@ -26,8 +26,10 @@
 #                          will itself dominate the measurement.
 #   --cert PATH / --key PATH
 #                          Relay TLS cert/key (default: apps/relay/cert/*.pem)
+#   --relay-config PATH    Relay YAML config (see apps/relay/relay.example.yaml);
+#                          the script appends log_folder to it
+#                          e.g. a file holding "max_subscriber_lag: 1000"
 #   --relay-args ARGS      Extra flags appended to the relay invocation
-#                          e.g. --relay-args "--max-subscriber-lag 1000"
 #   --client-args ARGS     Extra flags appended to moqperf_test_client
 #                          e.g. --client-args "--first_object_size=5000"
 #   --client-metrics PATH  Prometheus .prom output for the perf client
@@ -87,6 +89,7 @@ RELAY_PORT="${RELAY_PORT:-4433}"
 RELAY_LOG_SPEC="${RELAY_LOG_SPEC:-warn}"
 CERT_FILE="${CERT_FILE:-}"
 KEY_FILE="${KEY_FILE:-}"
+RELAY_CONFIG="${RELAY_CONFIG:-}"
 RELAY_EXTRA_ARGS=()
 CLIENT_EXTRA_ARGS=()
 METRICS_OUT="${METRICS_OUT:-}"
@@ -115,6 +118,7 @@ while [[ $# -gt 0 ]]; do
     -l|--relay-log)      RELAY_LOG_SPEC="$2";    shift 2 ;;
     --cert)              CERT_FILE="$2";         shift 2 ;;
     --key)               KEY_FILE="$2";          shift 2 ;;
+    --relay-config)      RELAY_CONFIG="$2";      shift 2 ;;
     --relay-args)        read -ra RELAY_EXTRA_ARGS <<< "$2";  shift 2 ;;
     --client-args)       read -ra CLIENT_EXTRA_ARGS <<< "$2"; shift 2 ;;
     --client-metrics)    METRICS_OUT="$2";       shift 2 ;;
@@ -138,6 +142,12 @@ MOQPERF_CLIENT="$MOQBIN/moqperf_test_client"
 # ── Log directory ─────────────────────────────────────────────────────────────
 LOG_DIR="/tmp/moqtail-perf-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$LOG_DIR"
+
+# The relay's YAML config: the user's --relay-config, plus the log folder ($1).
+relay_config_yaml() {
+  if [[ -n "$RELAY_CONFIG" ]]; then cat "$RELAY_CONFIG"; echo; fi
+  echo "log_folder: '$1'"
+}
 RELAY_LOG="$LOG_DIR/relay.log"
 SERVER_LOG="$LOG_DIR/server.log"
 CLIENT_LOG="$LOG_DIR/client.log"
@@ -258,6 +268,7 @@ trap cleanup EXIT
   echo "delivery_timeout: $DELIVERY_TIMEOUT"
   echo "client_threads:   $CLIENT_THREADS"
   echo "relay_log:        $RELAY_LOG_SPEC"
+  echo "relay_config:     ${RELAY_CONFIG:-none}"
   echo "relay_extra_args: ${RELAY_EXTRA_ARGS[*]-}"
   echo "client_extra_args:${CLIENT_EXTRA_ARGS[*]-}"
 } | tee "$LOG_DIR/run_params.txt"
@@ -315,16 +326,16 @@ if [[ -n "$REMOTE_RELAY_HOST" ]]; then
   echo "Starting MOQtail relay on $REMOTE_RELAY_HOST:$RELAY_PORT (transport=$TRANSPORT)..."
   # ulimit and the UDP socket buffers are raised in the same shell as the relay:
   # a single QUIC socket serving hundreds of subscribers outgrows the defaults.
+  ssh "$REMOTE_RELAY_HOST" "mkdir -p '$REMOTE_LOG_DIR' && cat > '$REMOTE_LOG_DIR/relay.yaml'" \
+    < <(relay_config_yaml "$REMOTE_LOG_DIR")
   REMOTE_RELAY_PID=$(ssh "$REMOTE_RELAY_HOST" "
-    mkdir -p '$REMOTE_LOG_DIR'
     cd '$REMOTE_PATH'
     ulimit -n 65536 2>/dev/null || true
     RUST_LOG='$RELAY_LOG_SPEC' nohup ./target/release/relay \
-      --port $RELAY_PORT \
-      --host 0.0.0.0 \
+      --config '$REMOTE_LOG_DIR/relay.yaml' \
+      --bind 0.0.0.0:$RELAY_PORT \
       --cert-file '$REMOTE_PATH/apps/relay/cert/cert.pem' \
       --key-file '$REMOTE_PATH/apps/relay/cert/key.pem' \
-      --log-folder '$REMOTE_LOG_DIR' \
       ${RELAY_EXTRA_ARGS[*]-} \
       > '$REMOTE_LOG_DIR/stdout.log' 2>&1 &
     echo \$!")
@@ -351,14 +362,14 @@ if [[ -n "$REMOTE_RELAY_HOST" ]]; then
 else
   echo "Starting MOQtail relay on port $RELAY_PORT (transport=$TRANSPORT)..."
 
-  # --log-folder gets its own rolling relay.log; the stdout copy is what this
+  # log_folder gets its own rolling relay.log; the stdout copy is what this
   # script tails for readiness.
+  relay_config_yaml "$LOG_DIR" > "$LOG_DIR/relay.yaml"
   RUST_LOG="$RELAY_LOG_SPEC" "$BINARY" \
-    --port "$RELAY_PORT" \
-    --host 127.0.0.1 \
+    --config "$LOG_DIR/relay.yaml" \
+    --bind "127.0.0.1:$RELAY_PORT" \
     --cert-file "$CERT_FILE" \
     --key-file "$KEY_FILE" \
-    --log-folder "$LOG_DIR" \
     ${RELAY_EXTRA_ARGS[@]+"${RELAY_EXTRA_ARGS[@]}"} \
     >"$RELAY_LOG" 2>&1 &
   RELAY_PID=$!

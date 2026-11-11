@@ -302,12 +302,13 @@ cargo run --bin client -- -c fetch -T rf --start-group 0 --end-group 3 --range-f
 
 The relay implements the MOQT four-tier scheduling algorithm: subscriber priority > publisher priority > group order > subgroup/object ID. QUIC stream priorities are assigned using a band mapping so tracks with different priorities never interfere on the same connection.
 
-To observe the scheduler in action you need bandwidth pressure on a single subscriber connection. The relay's `--write-kbps-limit` flag creates a per-connection token bucket that throttles writes, causing the QUIC send buffer to fill and forcing the scheduler to choose between streams.
+To observe the scheduler in action you need bandwidth pressure on a single subscriber connection. The relay's `write_kbps_limit` config setting creates a per-connection token bucket that throttles writes, causing the QUIC send buffer to fill and forcing the scheduler to choose between streams.
 
 **Terminal 1 — relay with 200 kbps per-subscriber cap:**
 
 ```
-cargo run --bin relay -- --write-kbps-limit 200
+echo 'write_kbps_limit: 200' > /tmp/relay-throttle.yaml
+cargo run --bin relay -- --config /tmp/relay-throttle.yaml
 ```
 
 **Terminal 2 — high-priority publisher (track `demo`, publisher-priority=128):**
@@ -358,7 +359,7 @@ The `seq=GAP` messages in the subscriber output are expected — the stats count
 
 ### Using OS-level bandwidth throttling
 
-For a real UDP-layer bottleneck, throttle the loopback interface at the OS level and run the relay **without** `--write-kbps-limit`. Any tool that limits UDP throughput to roughly 1 Mbit/s is sufficient.
+For a real UDP-layer bottleneck, throttle the loopback interface at the OS level and run the relay **without** `write_kbps_limit`. Any tool that limits UDP throughput to roughly 1 Mbit/s is sufficient.
 
 **Linux — `tc` (traffic control):**
 

@@ -511,7 +511,7 @@ impl MOQTClient {
       // negotiated the feature always closes gracefully, so in-flight data is
       // never discarded for traffic that never opted in.
       let timeout_ms = if self.ssts_enabled() {
-        self.config.ssts_discard_timeout_ms
+        self.config.ssts_discard_timeout.as_millis() as u64
       } else {
         0
       };

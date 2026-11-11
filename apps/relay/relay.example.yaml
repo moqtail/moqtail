@@ -1,0 +1,73 @@
+# MOQtail relay configuration. Every key is optional and shown here with its
+# default; full descriptions are on `AppConfig` in apps/relay/src/server/config.rs.
+# Pass with `relay --config <file>`; --bind, --cert-file and --key-file override it.
+# Durations take units: 500ms, 10s, 30m, 1h.
+
+# Address to bind. Only the port is used; the socket binds dual-stack [::].
+bind: "[::]:4433"
+cert_file: apps/relay/cert/cert.pem
+key_file: apps/relay/cert/key.pem
+log_folder: /tmp
+
+# QUIC
+max_idle_timeout: 7s
+keep_alive_interval: 3s
+# UDP sockets sharing the port via SO_REUSEPORT (Linux only).
+io_sockets: 1
+# UDP send/receive buffer per socket in KiB; 0 = kernel default.
+socket_buffer_kib: 8192
+# QUIC max_concurrent_bidi_streams a peer may open.
+max_request_streams: 10000
+
+# Cache
+# Cached subgroups/fetches per track.
+cache_size: 1000
+# ttl or tti
+cache_expiration_type: ttl
+cache_expiration: 30m
+
+# Logging
+enable_object_logging: false
+enable_token_logging: false
+token_log_path: /tmp/tokens.csv
+
+# Load and subscriber limits (0 = off / unlimited)
+# Request streams served relay-wide before new ones get EXCESSIVE_LOAD.
+max_active_requests: 0
+# Objects queued for a subscriber before TOO_FAR_BEHIND.
+max_subscriber_lag: 0
+# How long an Object may wait in a subscriber's queue before its group is skipped.
+delivery_timeout: 0s
+# Payload bytes queued for one subscriber before its group is skipped.
+max_subscriber_queue_bytes: 16777216
+# PUBLISH streams per SUBSCRIBE_TRACKS before PUBLISH_SKIPPED.
+max_publish_streams: 0
+# Simulated per-connection bandwidth cap in kbps.
+write_kbps_limit: 0
+
+# Track Alias given to subscribers: per-subscription or per-track.
+track_alias_mode: per-subscription
+# URI advertised in GOAWAY; unset reuses the current URI.
+# redirect_uri: moqt://other-relay.example:4433
+
+# Upstream and timing
+max_upstream_fetch_gaps: 10
+upstream_fetch_timeout: 10s
+upstream_subscribe_timeout: 10s
+track_alias_resolution_timeout: 2s
+downstream_alias_timeout: 3s
+publish_done_stream_timeout: 2s
+publish_done_datagram_quiet: 100ms
+# Longest a SUBSCRIBE waits for a publisher; 0s never waits.
+max_rendezvous_timeout: 10s
+
+# Groups of Object ids remembered per track for duplicate detection (max 1000).
+dedup_retained_groups: 30
+# Range Filter ranges a subscriber may ask for (MAX_FILTER_RANGES).
+max_filter_ranges: 32
+
+# Sender-side track switching (provisional draft; off by default)
+ssts_enable: false
+# Algorithm ids to run and advertise; decimal or 0x hex.
+ssts_algorithms: [0]
+ssts_discard_timeout: 1600ms

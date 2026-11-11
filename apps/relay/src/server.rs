@@ -90,13 +90,11 @@ impl Server {
     let endpoints = self.app_config.build_quic_endpoints().await?;
 
     info!(
-      "{} is running on {} UDP socket(s) -- WebTransport clients: https://{}:{}  Raw QUIC clients: moqt://{}:{}",
+      "{} is running on {} UDP socket(s) -- WebTransport clients: https://{}  Raw QUIC clients: moqt://{}",
       env!("MOQTAIL_VERSION"),
       endpoints.len(),
-      self.app_config.host,
-      self.app_config.port,
-      self.app_config.host,
-      self.app_config.port
+      self.app_config.bind,
+      self.app_config.bind
     );
 
     // Level-triggered, so an accept loop between two iterations when shutdown is

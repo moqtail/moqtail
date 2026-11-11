@@ -775,10 +775,9 @@ pub(crate) fn namespace_prefixes_overlap(a: &Tuple, b: &Tuple) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::server::config::{AppConfig, Cli};
+  use crate::server::config::AppConfig;
   use crate::server::track::{TrackOrigin, TrackStatus};
   use bytes::Bytes;
-  use clap::Parser;
   use moqtail::model::data::constant::ObjectForwardingPreference;
   use moqtail::model::data::fetch_object::FetchObjectPayload;
 
@@ -788,7 +787,7 @@ mod tests {
 
   /// The relay's own defaults, leaked because Track borrows its config for 'static.
   fn config() -> &'static AppConfig {
-    Box::leak(Box::new(AppConfig::from_cli(Cli::parse_from(["relay"]))))
+    Box::leak(Box::new(AppConfig::default()))
   }
 
   fn track_name() -> FullTrackName {

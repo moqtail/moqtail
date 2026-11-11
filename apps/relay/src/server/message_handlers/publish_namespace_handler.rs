@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::server::cluster;
 use crate::server::requests::DownstreamRequest;
 use crate::server::session::client::MOQTClient;
 use crate::server::session::session_context::SessionContext;
@@ -67,7 +68,7 @@ pub async fn cancel(client: Arc<MOQTClient>, request_id: u64, context: &Arc<Sess
     .track_manager
     .remove_announcement(&namespace, client.connection_id)
     .await;
-  crate::server::cluster::refresh(context, &namespace).await;
+  cluster::refresh(context, &namespace).await;
   if !last_route {
     return;
   }
@@ -89,8 +90,8 @@ fn cluster_rejection(
   let (Some(own_hop), Some(_)) = (own_hop, client.peer_hop_id) else {
     return None;
   };
-  match crate::server::cluster::hop_path(parameters) {
-    Some(hops) if crate::server::cluster::loops_through(hops, own_hop) => {
+  match cluster::hop_path(parameters) {
+    Some(hops) if cluster::loops_through(hops, own_hop) => {
       warn!("Discarding advertisement whose HOP_PATH {hops:?} loops through this relay");
       Some(RequestError::new(
         RequestErrorCode::DoesNotExist,
@@ -135,8 +136,8 @@ pub async fn handle(
         return Ok(());
       }
 
-      // On a negotiated session every PUBLISH_NAMESPACE carries HOP_PATH (§3.1).
-      if client.peer_hop_id.is_some() && crate::server::cluster::hop_path(&m.parameters).is_none() {
+      // A cluster peer always says which path an advertisement took.
+      if client.peer_hop_id.is_some() && cluster::hop_path(&m.parameters).is_none() {
         return Err(TerminationCode::ProtocolViolation);
       }
       if let Some(code) = cluster_rejection(&client, &m.parameters, context.server_config.hop_id) {
@@ -183,7 +184,7 @@ pub async fn handle(
         )
         .await;
       }
-      crate::server::cluster::refresh(&context, &m.track_namespace).await;
+      cluster::refresh(&context, &m.track_namespace).await;
 
       let request_ok = Box::new(RequestOk::new(vec![]));
 
@@ -198,15 +199,17 @@ pub async fn handle(
       };
       let existing_req_id = target_request_id;
 
-      // A path through ourselves is refused, which closes the stream and so
-      // withdraws the advertisement (§6, §6.3).
+      // A path through ourselves is refused, and the advertisement withdrawn here
+      // rather than when the peer gets round to closing its side. FIN, not reset, so
+      // the REQUEST_ERROR is not discarded before the peer reads it.
       if let Some(err) = cluster_rejection(
         &client,
         &update_msg.parameters,
         context.server_config.hop_id,
       ) {
         reply(stream_handler, ControlMessage::RequestError(Box::new(err))).await;
-        stream_handler.reset(StreamResetCode::Cancelled.to_u64());
+        cancel(client.clone(), existing_req_id, &context).await;
+        stream_handler.finish().await;
         return Ok(());
       }
 
@@ -242,7 +245,7 @@ pub async fn handle(
           update_msg.parameters.clone(),
         )
         .await;
-      crate::server::cluster::refresh(&context, &target_namespace).await;
+      cluster::refresh(&context, &target_namespace).await;
 
       let downstream_sessions = context
         .track_manager

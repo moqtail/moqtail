@@ -80,7 +80,7 @@ pub enum MessageParameterType {
   TrackNamespacePrefix = 0x34,
   IncludeProperties = 0x35,
   SwitchingSetAssignment = 0x41,
-  // draft-lcurley-moq-cluster
+  // Relay mesh: the path an advertisement took, and what subscribing through it costs.
   HopPath = 0x40B57,
   RouteCost = 0x40B58,
 }

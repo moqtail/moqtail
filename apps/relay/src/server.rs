@@ -56,6 +56,7 @@ pub(crate) struct Server {
   pub active_request_streams: Arc<AtomicU64>,
   /// Set once the relay is draining (GOAWAY broadcast); new requests are rejected.
   pub draining: Arc<AtomicBool>,
+  pub cluster: Arc<cluster::ClusterState>,
   /// GOAWAY redirect URI clients should migrate to. Seeded from config; a future
   /// admin API mutates this at runtime.
   pub redirect_uri: Arc<RwLock<Option<String>>>,
@@ -77,6 +78,7 @@ impl Server {
       relay_next_request_id: Arc::new(AtomicU64::new(0)), // see MOQTClient::next_request_id
       active_request_streams: Arc::new(AtomicU64::new(0)),
       draining: Arc::new(AtomicBool::new(false)),
+      cluster: Arc::default(),
       redirect_uri: Arc::new(RwLock::new(config.redirect_uri.clone())),
     }
   }

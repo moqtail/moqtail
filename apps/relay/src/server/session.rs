@@ -17,6 +17,7 @@ pub(crate) mod client_manager;
 pub(crate) mod request_stream;
 pub(crate) mod session_context;
 
+use crate::server::cluster;
 use crate::server::config::AppConfig;
 use anyhow::Result;
 use moqtail::model::common::location::Location;
@@ -112,7 +113,7 @@ impl Session {
         .accept_with_headers(response_headers)
         .await?,
     );
-    Self::start(connection, server, false).await
+    Self::start(connection, server, None).await
   }
 
   /// Accepts a connection that the relay's ALPN demux (see `Server::accept_incoming`)
@@ -120,12 +121,19 @@ impl Session {
   /// Raw QUIC has no headers/path/origin and the version was already pinned by ALPN
   /// during the demux, so there's nothing WebTransport-specific to do here.
   pub async fn accept_quic(connection: quinn::Connection, server: Server) -> Result<Session> {
-    Self::start(TransportConnection::Quic(connection), server, false).await
+    Self::start(TransportConnection::Quic(connection), server, None).await
   }
 
   /// Runs a session the relay dialed itself (a cluster peer), as the client side.
-  pub async fn connect_quic(connection: quinn::Connection, server: Server) -> Result<Session> {
-    Self::start(TransportConnection::Quic(connection), server, true).await
+  /// Raw QUIC has no CONNECT request, so the `authority` and `path` dialed go in SETUP.
+  pub async fn connect_quic(
+    connection: quinn::Connection,
+    server: Server,
+    authority: String,
+    path: String,
+  ) -> Result<Session> {
+    let dialed = Some((authority, path));
+    Self::start(TransportConnection::Quic(connection), server, dialed).await
   }
 
   /// Shared session bootstrap once a connection has been accepted by either transport:
@@ -133,7 +141,7 @@ impl Session {
   async fn start(
     connection: TransportConnection,
     server: Server,
-    outbound: bool,
+    dialed: Option<(String, String)>,
   ) -> Result<Session> {
     let client_manager = server.client_manager.clone();
     let track_manager = server.track_manager.clone();
@@ -151,6 +159,7 @@ impl Session {
       relay_next_request_id,
       server.active_request_streams.clone(),
       draining,
+      server.cluster.clone(),
     ));
 
     info!(
@@ -161,21 +170,28 @@ impl Session {
     );
 
     tokio::spawn(Self::handle_connection_close(context.clone()));
-    tokio::spawn(Self::accept_control_stream(context.clone(), outbound));
+    tokio::spawn(Self::accept_control_stream(context.clone(), dialed));
 
     Ok(Session {})
   }
 
-  async fn accept_control_stream(context: Arc<SessionContext>, outbound: bool) -> Result<()> {
+  async fn accept_control_stream(
+    context: Arc<SessionContext>,
+    dialed: Option<(String, String)>,
+  ) -> Result<()> {
+    let outbound = dialed.is_some();
     // The control plane is a pair of unidirectional streams, each beginning with
     // SETUP. The dialing side writes its SETUP before waiting for the peer's
     // stream, since the accepting side opens its own only after reading it.
     let streams = async {
-      if outbound {
+      if let Some((authority, path)) = dialed {
         let mut send_stream = context.connection.open_uni().await?;
-        let setup = Self::relay_setup(context.server_config)
-          .serialize()
-          .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+        let mut setup = Self::relay_setup(context.server_config);
+        setup.setup_options.extend([
+          SetupOption::new_authority(authority).try_into().unwrap(),
+          SetupOption::new_path(path).try_into().unwrap(),
+        ]);
+        let setup = setup.serialize().map_err(|e| anyhow::anyhow!("{e:?}"))?;
         send_stream
           .write_all(&setup)
           .await
@@ -270,7 +286,7 @@ impl Session {
     // A cluster peer gets every namespace this relay can route, over this link
     // whichever side dialed it.
     if client.peer_hop_id.is_some() {
-      tokio::spawn(crate::server::cluster::refresh_all(context.clone()));
+      tokio::spawn(cluster::refresh_all(context.clone()));
     }
 
     // start waiting for unistreams
@@ -358,53 +374,6 @@ impl Session {
         return Err(termination_code);
       }
     } // end of loop
-  }
-
-  /// A peer may have carried any route, so everything is redone. Anyone else only
-  /// changes what it announced or published, and the tracks it left without a
-  /// subscriber.
-  async fn refresh_cluster_after_close(
-    context: &Arc<SessionContext>,
-    cleanup_tracks: &[FullTrackName],
-  ) {
-    if context.server_config.hop_id.is_none() {
-      return;
-    }
-    let Some(client) = context.get_client().await else {
-      return;
-    };
-    if client.peer_hop_id.is_some() {
-      crate::server::cluster::refresh_all(context.clone()).await;
-      return;
-    }
-    let mut sourced: std::collections::HashSet<moqtail::model::common::tuple::Tuple> = client
-      .announced_track_namespaces
-      .read()
-      .await
-      .iter()
-      .cloned()
-      .collect();
-    sourced.extend(
-      client
-        .published_tracks
-        .read()
-        .await
-        .values()
-        .map(|name| name.namespace.clone()),
-    );
-    for namespace in &sourced {
-      crate::server::cluster::refresh(context, namespace).await;
-    }
-    let mut cooled = std::collections::HashSet::new();
-    for name in cleanup_tracks {
-      let idle = match context.track_manager.get_track(name).await {
-        Some(track) => track.subscriber_count().await == 0,
-        None => true,
-      };
-      if idle && cooled.insert(name.namespace.clone()) {
-        crate::server::cluster::refresh_covering(context.clone(), name.namespace.clone()).await;
-      }
-    }
   }
 
   pub(crate) fn close_session(
@@ -594,7 +563,7 @@ impl Session {
       .await;
 
     // Routes through this session, and copies it kept warm, are gone.
-    Self::refresh_cluster_after_close(&context, &cleanup_tracks).await;
+    cluster::refresh_after_close(&context, &cleanup_tracks).await;
 
     info!(
       "handle_connection_close | cleanup done ({})",
@@ -900,12 +869,12 @@ impl Session {
 
     if let Some(hop_id) = config.hop_id {
       setup_options.push(KeyValuePair::VarInt {
-        type_value: crate::server::cluster::HOP_ID,
+        type_value: cluster::HOP_ID,
         value: hop_id,
       });
       if let Some(cost) = config.relay_cost {
         setup_options.push(KeyValuePair::VarInt {
-          type_value: crate::server::cluster::RELAY_COST,
+          type_value: cluster::RELAY_COST,
           value: cost,
         });
       }

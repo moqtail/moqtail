@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::server::cluster::ClusterState;
 use std::{
   hash::{BuildHasher, Hasher, RandomState},
   sync::{
@@ -68,6 +69,7 @@ pub struct SessionContext {
   pub(crate) active_request_streams: Arc<AtomicU64>,
   /// Set once the relay is draining (GOAWAY sent); new requests are rejected.
   pub(crate) draining: Arc<AtomicBool>,
+  pub(crate) cluster: Arc<ClusterState>,
 }
 
 static NEXT_CONNECTION_ID: LazyLock<AtomicUsize> = LazyLock::new(|| {
@@ -90,6 +92,7 @@ impl SessionContext {
     relay_next_request_id: Arc<AtomicU64>,
     active_request_streams: Arc<AtomicU64>,
     draining: Arc<AtomicBool>,
+    cluster: Arc<ClusterState>,
   ) -> Self {
     Self {
       client_manager,
@@ -104,6 +107,7 @@ impl SessionContext {
       relay_next_request_id,
       active_request_streams,
       draining,
+      cluster,
     }
   }
 

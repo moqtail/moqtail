@@ -73,7 +73,7 @@ ssts_enable: false
 ssts_algorithms: [0]
 ssts_discard_timeout: 1600ms
 
-# Clustering (draft-lcurley-moq-cluster); off unless hop_id is set.
+# Relay mesh; off unless hop_id is set. peers needs hop_id.
 # hop_id: 1
 # Egress cost declared to peers as RELAY_COST; unset means peers assume 1.
 # relay_cost: 1

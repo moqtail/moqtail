@@ -26,7 +26,7 @@ use crate::model::parameter::message_parameter::{
 #[derive(Debug, Clone, PartialEq)]
 pub struct Namespace {
   pub track_namespace_suffix: Tuple,
-  /// The parameter block an extension (e.g. moq-cluster) appends once negotiated;
+  /// The parameter block an extension (such as relay mesh) appends once negotiated;
   /// `None` sends the base message, `Some(vec![])` an empty block.
   pub parameters: Option<Vec<MessageParameter>>,
 }

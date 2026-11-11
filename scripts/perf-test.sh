@@ -333,7 +333,7 @@ if [[ -n "$REMOTE_RELAY_HOST" ]]; then
     ulimit -n 65536 2>/dev/null || true
     RUST_LOG='$RELAY_LOG_SPEC' nohup ./target/release/relay \
       --config '$REMOTE_LOG_DIR/relay.yaml' \
-      --bind 0.0.0.0:$RELAY_PORT \
+      --bind '[::]:$RELAY_PORT' \
       --cert-file '$REMOTE_PATH/apps/relay/cert/cert.pem' \
       --key-file '$REMOTE_PATH/apps/relay/cert/key.pem' \
       ${RELAY_EXTRA_ARGS[*]-} \

@@ -21,4 +21,4 @@ COPY --from=builder --chown=nonroot:nonroot /workspace/rootfs/ /
 EXPOSE 4433/udp
 
 ENTRYPOINT ["/usr/local/bin/relay"]
-CMD ["--bind", "0.0.0.0:4433", "--cert-file", "/certs/cert.pem", "--key-file", "/certs/key.pem"]
+CMD ["--cert-file", "/certs/cert.pem", "--key-file", "/certs/key.pem"]

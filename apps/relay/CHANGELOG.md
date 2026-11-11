@@ -1,5 +1,55 @@
 # relay
 
+## 0.18.0
+
+### Minor Changes
+
+- [#462](https://github.com/moqtail/moqtail/pull/462) [`a63df4e`](https://github.com/moqtail/moqtail/commit/a63df4e3aa1ae219bd2886bd3b888a64617d26be) Thanks [@zafergurel](https://github.com/zafergurel)! - ask for 8 MiB UDP socket buffers by default (`--socket-buffer-kib`, 0 keeps the kernel default), so a fan-out burst no longer overflows the socket
+
+### Patch Changes
+
+- [#462](https://github.com/moqtail/moqtail/pull/462) [`a63df4e`](https://github.com/moqtail/moqtail/commit/a63df4e3aa1ae219bd2886bd3b888a64617d26be) Thanks [@zafergurel](https://github.com/zafergurel)! - fix a data stream reader that could miss its wakeup and wait forever
+
+- [#462](https://github.com/moqtail/moqtail/pull/462) [`a63df4e`](https://github.com/moqtail/moqtail/commit/a63df4e3aa1ae219bd2886bd3b888a64617d26be) Thanks [@zafergurel](https://github.com/zafergurel)! - visit only the tracks a closing publisher published, not every track
+
+- [#462](https://github.com/moqtail/moqtail/pull/462) [`a63df4e`](https://github.com/moqtail/moqtail/commit/a63df4e3aa1ae219bd2886bd3b888a64617d26be) Thanks [@zafergurel](https://github.com/zafergurel)! - on disconnect, visit only the tracks the client ever subscribed to
+
+- [#462](https://github.com/moqtail/moqtail/pull/462) [`a63df4e`](https://github.com/moqtail/moqtail/commit/a63df4e3aa1ae219bd2886bd3b888a64617d26be) Thanks [@zafergurel](https://github.com/zafergurel)! - stop holding the tracks map while a closed connection is removed from its tracks
+
+- [#462](https://github.com/moqtail/moqtail/pull/462) [`a63df4e`](https://github.com/moqtail/moqtail/commit/a63df4e3aa1ae219bd2886bd3b888a64617d26be) Thanks [@zafergurel](https://github.com/zafergurel)! - count a subgroup object as the largest before subscribers get it, so one joining then misses nothing
+
+- [#445](https://github.com/moqtail/moqtail/pull/445) [`cab350a`](https://github.com/moqtail/moqtail/commit/cab350a3f2192b130564b23d3867cafb155954b9) Thanks [@sharmafb](https://github.com/sharmafb)! - cancel upstream requests on malformed track
+
+- [#462](https://github.com/moqtail/moqtail/pull/462) [`a63df4e`](https://github.com/moqtail/moqtail/commit/a63df4e3aa1ae219bd2886bd3b888a64617d26be) Thanks [@zafergurel](https://github.com/zafergurel)! - drop the per-track lock; tracks' fields already lock themselves
+
+- [#462](https://github.com/moqtail/moqtail/pull/462) [`a63df4e`](https://github.com/moqtail/moqtail/commit/a63df4e3aa1ae219bd2886bd3b888a64617d26be) Thanks [@zafergurel](https://github.com/zafergurel)! - keep the track manager's maps private
+
+- [#462](https://github.com/moqtail/moqtail/pull/462) [`a63df4e`](https://github.com/moqtail/moqtail/commit/a63df4e3aa1ae219bd2886bd3b888a64617d26be) Thanks [@zafergurel](https://github.com/zafergurel)! - group the relay's server modules into session, track, subscription and logging folders
+
+- [#462](https://github.com/moqtail/moqtail/pull/462) [`a63df4e`](https://github.com/moqtail/moqtail/commit/a63df4e3aa1ae219bd2886bd3b888a64617d26be) Thanks [@zafergurel](https://github.com/zafergurel)! - keep downstream and upstream requests in one table each
+
+- [#462](https://github.com/moqtail/moqtail/pull/462) [`a63df4e`](https://github.com/moqtail/moqtail/commit/a63df4e3aa1ae219bd2886bd3b888a64617d26be) Thanks [@zafergurel](https://github.com/zafergurel)! - share each Object between a track's subscribers instead of cloning it for every one (`Object::serialize_subgroup_parts`)
+
+- [#462](https://github.com/moqtail/moqtail/pull/462) [`a63df4e`](https://github.com/moqtail/moqtail/commit/a63df4e3aa1ae219bd2886bd3b888a64617d26be) Thanks [@zafergurel](https://github.com/zafergurel)! - fan out under one subscriber lock and read the default publisher priority without one
+
+- [#462](https://github.com/moqtail/moqtail/pull/462) [`a63df4e`](https://github.com/moqtail/moqtail/commit/a63df4e3aa1ae219bd2886bd3b888a64617d26be) Thanks [@zafergurel](https://github.com/zafergurel)! - split the FETCH handler's upstream request and stream delivery into their own modules
+
+- [#462](https://github.com/moqtail/moqtail/pull/462) [`a63df4e`](https://github.com/moqtail/moqtail/commit/a63df4e3aa1ae219bd2886bd3b888a64617d26be) Thanks [@zafergurel](https://github.com/zafergurel)! - split the SUBSCRIBE handler's upstream exchange and REQUEST_UPDATE into their own modules
+
+- [#462](https://github.com/moqtail/moqtail/pull/462) [`a63df4e`](https://github.com/moqtail/moqtail/commit/a63df4e3aa1ae219bd2886bd3b888a64617d26be) Thanks [@zafergurel](https://github.com/zafergurel)! - split the subscription's delivery, stream writing and switching into their own modules
+
+- [#462](https://github.com/moqtail/moqtail/pull/462) [`a63df4e`](https://github.com/moqtail/moqtail/commit/a63df4e3aa1ae219bd2886bd3b888a64617d26be) Thanks [@zafergurel](https://github.com/zafergurel)! - split the track's ingest, publisher-stream waiting and upstream requests into their own modules
+
+- [#462](https://github.com/moqtail/moqtail/pull/462) [`a63df4e`](https://github.com/moqtail/moqtail/commit/a63df4e3aa1ae219bd2886bd3b888a64617d26be) Thanks [@zafergurel](https://github.com/zafergurel)! - move the SSTS forward gate into its own type
+
+- [#462](https://github.com/moqtail/moqtail/pull/462) [`a63df4e`](https://github.com/moqtail/moqtail/commit/a63df4e3aa1ae219bd2886bd3b888a64617d26be) Thanks [@zafergurel](https://github.com/zafergurel)! - Skip the rest of a group for a subscriber whose queue is too old or too large, set by `--delivery-timeout-ms` and `--max-subscriber-queue-bytes`.
+
+- [#462](https://github.com/moqtail/moqtail/pull/462) [`a63df4e`](https://github.com/moqtail/moqtail/commit/a63df4e3aa1ae219bd2886bd3b888a64617d26be) Thanks [@zafergurel](https://github.com/zafergurel)! - move subscription state into its own module
+
+- [#462](https://github.com/moqtail/moqtail/pull/462) [`a63df4e`](https://github.com/moqtail/moqtail/commit/a63df4e3aa1ae219bd2886bd3b888a64617d26be) Thanks [@zafergurel](https://github.com/zafergurel)! - reach a track's status and properties through its methods
+
+- [#462](https://github.com/moqtail/moqtail/pull/462) [`a63df4e`](https://github.com/moqtail/moqtail/commit/a63df4e3aa1ae219bd2886bd3b888a64617d26be) Thanks [@zafergurel](https://github.com/zafergurel)! - write subgroup object payloads to subscribers without copying them (`SubgroupObject::serialize_parts`, `TransportSendStream::write_all_chunks`)
+
 ## 0.17.0
 
 ### Minor Changes

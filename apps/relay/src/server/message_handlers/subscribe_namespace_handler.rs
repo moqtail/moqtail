@@ -125,6 +125,13 @@ pub async fn handle_subscribe_namespace(
     sub_ns.request_id
   );
 
+  // A cluster peer is answered with paths, through the same advertisements kept in
+  // step for it as routes change.
+  if client.peer_hop_id.is_some() {
+    tokio::spawn(crate::server::cluster::refresh_all(context.clone()));
+    return Ok(());
+  }
+
   // Discovery: send NAMESPACE for each matching announced namespace, and echo the
   // namespaces of tracks already published under the prefix.
   send_namespace_catchup(stream_handler, &context, &sub_ns.track_namespace_prefix).await?;

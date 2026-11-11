@@ -244,6 +244,17 @@ pub struct AppConfig {
   #[default(Duration::from_millis(1600))]
   #[serde(with = "humantime_serde")]
   pub ssts_discard_timeout: Duration,
+  /// This relay's Hop ID (draft-lcurley-moq-cluster), declared in SETUP. Setting it
+  /// turns clustering on; 0 joins the mesh while withholding an identity.
+  pub hop_id: Option<u64>,
+  /// What this relay charges for its own egress, declared as RELAY_COST. Unset
+  /// leaves it out, which peers read as 1, so an unpriced mesh ranks by hop count.
+  pub relay_cost: Option<u64>,
+  /// Relays to dial and keep a cluster session with (`moqt://host:port`, raw QUIC).
+  /// One link carries advertisements both ways; listing each other is fine too.
+  pub peers: Vec<String>,
+  /// Skip certificate validation when dialing `peers` (self-signed dev certs).
+  pub peer_no_cert_validation: bool,
 }
 
 impl AppConfig {

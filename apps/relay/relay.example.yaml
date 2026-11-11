@@ -72,3 +72,11 @@ ssts_enable: false
 # Algorithm ids to run and advertise; decimal or 0x hex.
 ssts_algorithms: [0]
 ssts_discard_timeout: 1600ms
+
+# Clustering (draft-lcurley-moq-cluster); off unless hop_id is set.
+# hop_id: 1
+# Egress cost declared to peers as RELAY_COST; unset means peers assume 1.
+# relay_cost: 1
+# Relays to dial over raw QUIC; announcements flow both ways over each link.
+peers: []
+peer_no_cert_validation: false

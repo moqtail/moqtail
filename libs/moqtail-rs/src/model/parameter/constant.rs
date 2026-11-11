@@ -80,6 +80,9 @@ pub enum MessageParameterType {
   TrackNamespacePrefix = 0x34,
   IncludeProperties = 0x35,
   SwitchingSetAssignment = 0x41,
+  // draft-lcurley-moq-cluster
+  HopPath = 0x40B57,
+  RouteCost = 0x40B58,
 }
 
 impl TryFrom<u64> for MessageParameterType {
@@ -109,6 +112,8 @@ impl TryFrom<u64> for MessageParameterType {
       0x34 => Ok(MessageParameterType::TrackNamespacePrefix),
       0x35 => Ok(MessageParameterType::IncludeProperties),
       0x41 => Ok(MessageParameterType::SwitchingSetAssignment),
+      0x40B57 => Ok(MessageParameterType::HopPath),
+      0x40B58 => Ok(MessageParameterType::RouteCost),
       _ => Err(ParseError::InvalidType {
         context: "MessageParameterType::try_from(u64)",
         details: format!("Unknown parameter type, got {value}"),

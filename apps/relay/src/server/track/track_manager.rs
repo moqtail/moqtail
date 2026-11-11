@@ -72,7 +72,7 @@ pub struct TrackManager {
   /// Connection-scoped to avoid alias collisions across different publishers.
   track_aliases: Arc<RwLock<HashMap<(usize, u64), FullTrackName>>>,
   namespace_subscribers: Arc<RwLock<HashMap<NamespacePrefix, Vec<NamespaceSubscriber>>>>,
-  announcements: Arc<RwLock<HashMap<Tuple, AnnouncementSubscriber>>>,
+  announcements: Arc<RwLock<HashMap<Tuple, Vec<AnnouncementSubscriber>>>>,
   publishes: Arc<RwLock<HashMap<FullTrackName, HashMap<usize, Publish>>>>,
   /// Counter for generating stable relay_track_id values.
   next_relay_track_id: Arc<AtomicU64>,
@@ -246,7 +246,8 @@ impl TrackManager {
   pub async fn remove_subscriber(&self, connection_id: usize, track_names: &[FullTrackName]) {
     for name in track_names {
       if let Some(track) = self.get_track(name).await {
-        track.remove_subscriptions(connection_id).await;
+        let cleanup = track.remove_subscriptions(connection_id).await;
+        self.clean_up(name, cleanup).await;
       }
     }
   }
@@ -453,7 +454,11 @@ impl TrackManager {
         continue;
       };
       for (sub, kind, _params, namespace_tx) in subscribers {
-        if *kind != SubscribeKind::Namespace || sub.connection_id == announcer_connection_id {
+        // A cluster peer hears about namespaces through cluster::refresh, with a path.
+        if *kind != SubscribeKind::Namespace
+          || sub.connection_id == announcer_connection_id
+          || sub.peer_hop_id.is_some()
+        {
           continue;
         }
         info!(
@@ -495,10 +500,15 @@ impl TrackManager {
   pub async fn update_namespace_parameters(
     &self,
     namespace: &Tuple,
+    connection_id: usize,
     new_parameters: Vec<moqtail::model::parameter::message_parameter::MessageParameter>,
   ) {
     let mut announcements = self.announcements.write().await;
-    if let Some((_client, message)) = announcements.get_mut(namespace) {
+    if let Some((_client, message)) = announcements.get_mut(namespace).and_then(|routes| {
+      routes
+        .iter_mut()
+        .find(|(c, _)| c.connection_id == connection_id)
+    }) {
       info!(
         "Updating stored Announcement parameters for {:?}",
         namespace
@@ -507,50 +517,96 @@ impl TrackManager {
     }
   }
 
+  /// Every connection announcing a namespace is kept, newest last, as one route to it.
+  /// Returns whether this is the namespace's first route.
   pub async fn add_announcement(
     &self,
     namespace: Tuple,
     publisher: Arc<MOQTClient>,
     message: PublishNamespace,
-  ) {
+  ) -> bool {
     let mut announcements = self.announcements.write().await;
-    announcements.insert(namespace.clone(), (publisher, message));
+    let routes = announcements.entry(namespace.clone()).or_default();
+    routes.retain(|(c, _)| c.connection_id != publisher.connection_id);
+    routes.push((publisher, message));
     info!("Stored announcement for namespace: {:?}", namespace);
+    routes.len() == 1
   }
 
-  /// Drops the announcement only if this connection is the one that made it.
+  /// Drops this connection's route; true if the namespace has no route left.
   pub async fn remove_announcement(&self, namespace: &Tuple, connection_id: usize) -> bool {
     let mut announcements = self.announcements.write().await;
-    match announcements.get(namespace) {
-      Some((client, _message)) if client.connection_id == connection_id => {
-        announcements.remove(namespace);
-        info!(
-          "Removed announcement for namespace {:?} (publisher {})",
-          namespace, connection_id
-        );
-        true
-      }
-      _ => false,
+    let Some(routes) = announcements.get_mut(namespace) else {
+      return false;
+    };
+    let before = routes.len();
+    routes.retain(|(c, _)| c.connection_id != connection_id);
+    if routes.len() == before {
+      return false;
     }
+    info!(
+      "Removed announcement for namespace {:?} (publisher {})",
+      namespace, connection_id
+    );
+    if routes.is_empty() {
+      announcements.remove(namespace);
+      return true;
+    }
+    false
   }
 
-  /// Returns what it removed, so the caller can tell the subscribers that heard about them.
+  /// Returns the namespaces left with no route, so the caller can tell the
+  /// subscribers that heard about them.
   pub async fn remove_announcements_by_connection(&self, connection_id: usize) -> Vec<Tuple> {
     let mut announcements = self.announcements.write().await;
     let mut removed = Vec::new();
-    announcements.retain(|ns, (client, _message)| {
-      if client.connection_id == connection_id {
+    announcements.retain(|ns, routes| {
+      routes.retain(|(client, _)| client.connection_id != connection_id);
+      if routes.is_empty() {
         info!(
           "Removed announcement for namespace {:?} (publisher {} disconnected)",
           ns, connection_id
         );
         removed.push(ns.clone());
-        false
-      } else {
-        true
       }
+      !routes.is_empty()
     });
     removed
+  }
+
+  /// The announcements of one namespace, oldest first.
+  pub async fn announcement_routes(&self, namespace: &Tuple) -> Vec<AnnouncementSubscriber> {
+    let announcements = self.announcements.read().await;
+    announcements.get(namespace).cloned().unwrap_or_default()
+  }
+
+  /// The tracks whose namespace falls under `prefix`.
+  pub async fn tracks_under(&self, prefix: &Tuple) -> Vec<Arc<Track>> {
+    let tracks = self.tracks.read().await;
+    tracks
+      .iter()
+      .filter(|(name, _)| name.namespace.starts_with(prefix))
+      .map(|(_, track)| track.clone())
+      .collect()
+  }
+
+  /// The channel and prefix of this connection's SUBSCRIBE_NAMESPACE covering `namespace`.
+  pub async fn namespace_subscription_of(
+    &self,
+    connection_id: usize,
+    namespace: &Tuple,
+  ) -> Option<(Tuple, UnboundedSender<ControlMessage>)> {
+    let subs = self.namespace_subscribers.read().await;
+    subs.iter().find_map(|(prefix, clients)| {
+      clients
+        .iter()
+        .find(|(c, k, _, _)| {
+          c.connection_id == connection_id
+            && *k == SubscribeKind::Namespace
+            && namespace.starts_with(prefix)
+        })
+        .map(|(_, _, _, tx)| (prefix.clone(), tx.clone()))
+    })
   }
 
   pub async fn remove_namespace_subscriber(&self, connection_id: usize) {

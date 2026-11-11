@@ -161,6 +161,15 @@ pub(crate) struct MOQTClient {
 
   /// The next Track Alias handed out under `per-subscription`.
   next_track_alias: Arc<AtomicU64>,
+
+  /// The Hop ID this peer declared, when both ends negotiated the cluster extension.
+  pub peer_hop_id: Option<u64>,
+  /// The RELAY_COST this peer declared (1 when absent).
+  pub peer_relay_cost: u64,
+  /// The namespaces this relay advertises to this peer, at most one each.
+  pub cluster_adverts: Arc<Mutex<HashMap<Tuple, crate::server::cluster::Advert>>>,
+  /// Whether this relay dialed the session, which makes it the client there.
+  dialed: bool,
 }
 
 /// The Track Alias `mode` gives a new subscription to the track the relay knows as
@@ -178,6 +187,7 @@ impl MOQTClient {
     connection: Arc<TransportConnection>,
     client_setup: Arc<Setup>,
     config: &'static AppConfig,
+    dialed: bool,
   ) -> Self {
     let mut send_streams = Vec::with_capacity(SEND_STREAM_PARTITION_COUNT);
     for _ in 0..SEND_STREAM_PARTITION_COUNT {
@@ -196,6 +206,14 @@ impl MOQTClient {
       client_setup.as_ref(),
       &config.ssts_algorithms,
     ));
+
+    let peer_hop_id = config.hop_id.and(crate::server::cluster::setup_varint(
+      &client_setup,
+      crate::server::cluster::HOP_ID,
+    ));
+    let peer_relay_cost =
+      crate::server::cluster::setup_varint(&client_setup, crate::server::cluster::RELAY_COST)
+        .unwrap_or(1);
 
     MOQTClient {
       connection_id,
@@ -222,9 +240,20 @@ impl MOQTClient {
       switch_context: SwitchContext::new(),
       rate_limiter,
       ssts,
+      peer_hop_id,
+      peer_relay_cost,
+      cluster_adverts: Arc::new(Mutex::new(HashMap::new())),
+      dialed,
       config,
       next_track_alias: Arc::new(AtomicU64::new(0)),
     }
+  }
+
+  /// A Request ID for a request the relay sends this peer: even where the relay is
+  /// the client (it dialed), odd where it is the server, so it can never equal one the
+  /// peer picks. One counter feeds both, so the id is also unique relay-wide.
+  pub(crate) fn next_request_id(&self, counter: &AtomicU64) -> u64 {
+    2 * counter.fetch_add(1, Ordering::Relaxed) + u64::from(!self.dialed)
   }
 
   pub(crate) async fn add_announced_track_namespace(&self, track_namespace: Tuple) {

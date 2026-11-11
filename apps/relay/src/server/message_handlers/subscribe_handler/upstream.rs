@@ -171,10 +171,17 @@ async fn upstream_subscribe_exchange(
         answered = true;
         match msg {
           Ok(ControlMessage::SubscribeOk(m)) => {
-            if let Err(code) =
+            let accepted =
               handle_subscribe_ok_message(publisher.clone(), relay_request_id, *m, context.clone())
-                .await
-            {
+                .await;
+            if accepted.is_ok() {
+              // The source now carries the track, so its advertisements turn warm.
+              tokio::spawn(crate::server::cluster::refresh_covering(
+                context.clone(),
+                full_track_name.namespace.clone(),
+              ));
+            }
+            if let Err(code) = accepted {
               warn!(
                 "Unacceptable SubscribeOk from publisher {} for {:?}; closing its session: {:?}",
                 publisher.connection_id, full_track_name, code

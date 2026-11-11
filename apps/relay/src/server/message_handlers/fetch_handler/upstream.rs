@@ -54,9 +54,11 @@ pub(crate) async fn send_upstream_fetch_for_range(
   // A FETCH goes to one publisher, unlike a SUBSCRIBE: any of the matching ones may
   // serve the range, so the first will do.
   let publisher = {
-    context
+    let publishers = context
       .client_manager
       .get_publishers_for_track(&full_track_name)
+      .await;
+    crate::server::cluster::select(context, client, &full_track_name, publishers)
       .await
       .into_iter()
       .next()
@@ -72,10 +74,7 @@ pub(crate) async fn send_upstream_fetch_for_range(
     }
   };
 
-  let relay_request_id = crate::server::session::Session::get_next_relay_request_id(
-    context.relay_next_request_id.clone(),
-  )
-  .await;
+  let relay_request_id = publisher.next_request_id(&context.relay_next_request_id);
 
   // Delivery treats anything but Descending as Ascending, so upstream is asked the same.
   let group_order = match group_order {

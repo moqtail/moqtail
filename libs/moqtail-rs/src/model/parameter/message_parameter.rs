@@ -106,6 +106,15 @@ pub enum MessageParameter {
     /// Degradation priority; lower values are protected first. Default 0.
     set_rank: u8,
   },
+  /// Cluster extension: the Hop IDs an advertisement passed through, original
+  /// publisher first. Never empty, and no non-zero Hop ID repeats.
+  HopPath {
+    hops: Vec<u64>,
+  },
+  /// Cluster extension: the marginal cost of subscribing through an advertisement.
+  RouteCost {
+    cost: u64,
+  },
 }
 
 /// Publish Done is the top bit of the flags byte; the rest are reserved.
@@ -231,6 +240,8 @@ impl MessageParameter {
       Self::TrackNamespacePrefix { .. } => MessageParameterType::TrackNamespacePrefix as u64,
       Self::IncludeProperties { .. } => MessageParameterType::IncludeProperties as u64,
       Self::SwitchingSetAssignment { .. } => MessageParameterType::SwitchingSetAssignment as u64,
+      Self::HopPath { .. } => MessageParameterType::HopPath as u64,
+      Self::RouteCost { .. } => MessageParameterType::RouteCost as u64,
     }
   }
 
@@ -359,6 +370,12 @@ impl MessageParameter {
           | ControlMessageType::Subscribe
           | ControlMessageType::RequestUpdate
       ),
+      Self::HopPath { .. } | Self::RouteCost { .. } => matches!(
+        msg_type,
+        ControlMessageType::PublishNamespace
+          | ControlMessageType::RequestUpdate
+          | ControlMessageType::Namespace
+      ),
     }
   }
 
@@ -437,6 +454,7 @@ impl MessageParameter {
             }),
           },
           MessageParameterType::NewGroupRequest => Ok(Self::NewGroupRequest { group: *value }),
+          MessageParameterType::RouteCost => Ok(Self::RouteCost { cost: *value }),
           _ => Err(ParseError::ProtocolViolation {
             context: "MessageParameter::deserialize",
             details: format!("Parameter type {type_value} is bytes-typed but received as varint"),
@@ -600,6 +618,27 @@ impl MessageParameter {
             }
             Ok(Self::LocationFilter { filter })
           }
+          MessageParameterType::HopPath => {
+            let mut payload = value.clone();
+            let mut hops = Vec::new();
+            while payload.has_remaining() {
+              let hop = payload.get_vi()?;
+              if hop != 0 && hops.contains(&hop) {
+                return Err(ParseError::ProtocolViolation {
+                  context: "MessageParameter::deserialize(HopPath)",
+                  details: format!("Hop ID {hop} appears twice"),
+                });
+              }
+              hops.push(hop);
+            }
+            if hops.is_empty() {
+              return Err(ParseError::ProtocolViolation {
+                context: "MessageParameter::deserialize(HopPath)",
+                details: "HOP_PATH is empty".to_string(),
+              });
+            }
+            Ok(Self::HopPath { hops })
+          }
           _ => Err(ParseError::ProtocolViolation {
             context: "MessageParameter::deserialize",
             details: format!("Parameter type {type_value} is varint-typed but received as bytes"),
@@ -687,6 +726,16 @@ impl TryInto<KeyValuePair> for MessageParameter {
       }
       Self::NewGroupRequest { group } => {
         KeyValuePair::try_new_varint(MessageParameterType::NewGroupRequest as u64, group)
+      }
+      Self::RouteCost { cost } => {
+        KeyValuePair::try_new_varint(MessageParameterType::RouteCost as u64, cost)
+      }
+      Self::HopPath { hops } => {
+        let mut buf = BytesMut::new();
+        for hop in hops {
+          buf.put_vi(hop)?;
+        }
+        KeyValuePair::try_new_bytes(MessageParameterType::HopPath as u64, buf.freeze())
       }
       Self::AuthorizationToken { token } => {
         let payload = token.serialize()?;
@@ -1039,6 +1088,30 @@ mod tests {
     let result = MessageParameter::deserialize(&kvp).unwrap();
     assert_eq!(bytes.remaining(), 0);
     result
+  }
+
+  #[test]
+  fn test_hop_path_and_route_cost() {
+    for orig in [
+      MessageParameter::HopPath {
+        hops: vec![0, 7, 0, 0x40B54],
+      },
+      MessageParameter::RouteCost { cost: 1 << 32 },
+    ] {
+      assert_eq!(roundtrip(orig.clone()), orig);
+      assert!(orig.is_valid_for(ControlMessageType::PublishNamespace));
+      assert!(orig.is_valid_for(ControlMessageType::Namespace));
+      assert!(!orig.is_valid_for(ControlMessageType::Subscribe));
+    }
+    let hop_path = |hops: &[u64]| {
+      let mut buf = BytesMut::new();
+      for hop in hops {
+        buf.put_vi(*hop).unwrap();
+      }
+      KeyValuePair::try_new_bytes(MessageParameterType::HopPath as u64, buf.freeze()).unwrap()
+    };
+    assert!(MessageParameter::deserialize(&hop_path(&[])).is_err());
+    assert!(MessageParameter::deserialize(&hop_path(&[3, 4, 3])).is_err());
   }
 
   #[test]

@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+mod cluster;
 mod config;
 mod logging;
 mod message_handlers;
@@ -73,7 +74,7 @@ impl Server {
       track_manager: TrackManager::new(),
       upstream_requests: UpstreamRequests::default(),
       app_config: config,
-      relay_next_request_id: Arc::new(AtomicU64::new(1u64)), // relay's request id starts at 1 and are odd
+      relay_next_request_id: Arc::new(AtomicU64::new(0)), // see MOQTClient::next_request_id
       active_request_streams: Arc::new(AtomicU64::new(0)),
       draining: Arc::new(AtomicBool::new(false)),
       redirect_uri: Arc::new(RwLock::new(config.redirect_uri.clone())),
@@ -126,6 +127,10 @@ impl Server {
         }
       }
     });
+
+    for url in &self.app_config.peers {
+      tokio::spawn(cluster::run_peer(self.clone(), url.clone()));
+    }
 
     let mut accept_loops = Vec::with_capacity(endpoints.len());
     for (socket_index, endpoint) in endpoints.into_iter().enumerate() {

@@ -84,6 +84,9 @@ pub async fn cancel(client: Arc<MOQTClient>, request_id: u64, context: &Arc<Sess
       "Cancelled {:?} subscription for prefix {:?} (connection {})",
       kind, prefix, client.connection_id
     );
+    if kind == SubscribeKind::Tracks {
+      tokio::spawn(crate::server::cluster::sync_tracks(context.clone()));
+    }
   }
 }
 
@@ -296,6 +299,9 @@ pub async fn handle(
         update_msg.parameters,
       )
       .await;
+      if kind == SubscribeKind::Tracks && client.peer_hop_id.is_none() {
+        tokio::spawn(crate::server::cluster::sync_tracks(context.clone()));
+      }
 
       let ok_msg = RequestOk::new(vec![]);
       handler

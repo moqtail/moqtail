@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::server::session::Session;
+use crate::server::cluster;
 use crate::server::session::client::MOQTClient;
 use crate::server::session::session_context::SessionContext;
 use crate::server::track::TrackOrigin;
@@ -76,12 +76,18 @@ pub async fn handle(
       // any publisher serving it can answer, where a SUBSCRIBE must reach all of them.
       let publisher = {
         trace!("Finding publisher for TrackStatus...");
-        context
+        let publishers = context
           .client_manager
           .get_publishers_for_track(&full_track_name)
-          .await
-          .into_iter()
-          .next()
+          .await;
+        match context.get_client().await {
+          Some(requester) => {
+            cluster::select(&context, &requester, &full_track_name, publishers).await
+          }
+          None => publishers,
+        }
+        .into_iter()
+        .next()
       };
 
       let publisher = if let Some(p) = publisher {
@@ -100,8 +106,7 @@ pub async fn handle(
       // D. Forward to the publisher on its own bidi stream and read the response
       // there, then deliver it to the downstream requester's request stream.
       let mut new_req = status_req.clone();
-      new_req.request_id =
-        Session::get_next_relay_request_id(context.relay_next_request_id.clone()).await;
+      new_req.request_id = publisher.next_request_id(&context.relay_next_request_id);
 
       let downstream = context.get_client().await;
       tokio::spawn(async move {

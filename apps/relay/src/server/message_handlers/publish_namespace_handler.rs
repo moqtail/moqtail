@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::server::cluster;
 use crate::server::requests::DownstreamRequest;
 use crate::server::session::client::MOQTClient;
 use crate::server::session::session_context::SessionContext;
@@ -24,7 +25,9 @@ use moqtail::model::control::namespace_done::NamespaceDone;
 use moqtail::model::control::request_error::RequestError;
 use moqtail::model::control::{control_message::ControlMessage, request_ok::RequestOk};
 use moqtail::model::error::{RequestErrorCode, StreamResetCode, TerminationCode};
-use moqtail::model::parameter::message_parameter::apply_message_parameter_update;
+use moqtail::model::parameter::message_parameter::{
+  MessageParameter, apply_message_parameter_update,
+};
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
 use std::sync::Arc;
 use tracing::{info, warn};
@@ -60,13 +63,13 @@ pub async fn cancel(client: Arc<MOQTClient>, request_id: u64, context: &Arc<Sess
 
   client.remove_announced_track_namespace(&namespace).await;
 
-  // A publisher whose announcement was already replaced by another's has nothing to
-  // withdraw, and must not send a NAMESPACE_DONE for a namespace that is still served.
-  if !context
+  // A namespace another route still serves is not over, so no NAMESPACE_DONE.
+  let last_route = context
     .track_manager
     .remove_announcement(&namespace, client.connection_id)
-    .await
-  {
+    .await;
+  cluster::refresh(context, &namespace).await;
+  if !last_route {
     return;
   }
 
@@ -74,6 +77,39 @@ pub async fn cancel(client: Arc<MOQTClient>, request_id: u64, context: &Arc<Sess
     ControlMessage::NamespaceDone(Box::new(NamespaceDone::new(s)))
   })
   .await;
+}
+
+/// The cluster checks on a PUBLISH_NAMESPACE, or a REQUEST_UPDATE of one, from a
+/// session that negotiated the extension: a path that already passed through this
+/// relay is refused (discarded).
+fn cluster_rejection(
+  client: &MOQTClient,
+  parameters: &[MessageParameter],
+  own_hop: Option<u64>,
+) -> Option<RequestError> {
+  let (Some(own_hop), Some(_)) = (own_hop, client.peer_hop_id) else {
+    return None;
+  };
+  match cluster::hop_path(parameters) {
+    Some(hops) if cluster::loops_through(hops, own_hop) => {
+      warn!("Discarding advertisement whose HOP_PATH {hops:?} loops through this relay");
+      Some(RequestError::new(
+        RequestErrorCode::DoesNotExist,
+        0,
+        ReasonPhrase::try_new("HOP_PATH loops through this relay".to_string()).unwrap(),
+      ))
+    }
+    _ => None,
+  }
+}
+
+/// A publisher that withdrew or reset its stream before the reply ends this request,
+/// not the session: closing the stream already cleans the request up. Closing the
+/// session instead would take every other route and subscription on it down too.
+async fn reply(stream_handler: &mut ControlStreamHandler, message: ControlMessage) {
+  if let Err(e) = stream_handler.send(&message).await {
+    info!("Publisher left before the reply to its PUBLISH_NAMESPACE: {e:?}");
+  }
 }
 
 pub async fn handle(
@@ -96,9 +132,16 @@ pub async fn handle(
           0,
           ReasonPhrase::try_new("reserved namespace cannot be published".to_string()).unwrap(),
         );
-        stream_handler
-          .send(&ControlMessage::RequestError(Box::new(err)))
-          .await?;
+        reply(stream_handler, ControlMessage::RequestError(Box::new(err))).await;
+        return Ok(());
+      }
+
+      // A cluster peer always says which path an advertisement took.
+      if client.peer_hop_id.is_some() && cluster::hop_path(&m.parameters).is_none() {
+        return Err(TerminationCode::ProtocolViolation);
+      }
+      if let Some(code) = cluster_rejection(&client, &m.parameters, context.server_config.hop_id) {
+        reply(stream_handler, ControlMessage::RequestError(Box::new(code))).await;
         return Ok(());
       }
 
@@ -110,7 +153,7 @@ pub async fn handle(
 
       // save the namespace among announcements
       // so we can forward it to clients who later come in with subscribe_namespace
-      context
+      let first_route = context
         .track_manager
         .add_announcement(m.track_namespace.clone(), client.clone(), (*m).clone())
         .await;
@@ -131,16 +174,22 @@ pub async fn handle(
           .await;
       }
 
-      announce_to_namespace_subscribers(&context, &m.track_namespace, client.connection_id, |s| {
-        ControlMessage::Namespace(Box::new(Namespace::new(s)))
-      })
-      .await;
+      // Subscribers already told of the namespace by an earlier route hear nothing new.
+      if first_route {
+        announce_to_namespace_subscribers(
+          &context,
+          &m.track_namespace,
+          client.connection_id,
+          |s| ControlMessage::Namespace(Box::new(Namespace::new(s))),
+        )
+        .await;
+      }
+      cluster::refresh(&context, &m.track_namespace).await;
 
       let request_ok = Box::new(RequestOk::new(vec![]));
 
-      stream_handler
-        .send(&ControlMessage::RequestOk(request_ok))
-        .await
+      reply(stream_handler, ControlMessage::RequestOk(request_ok)).await;
+      Ok(())
     }
 
     ControlMessage::RequestUpdate(m) => {
@@ -149,6 +198,20 @@ pub async fn handle(
         return Err(TerminationCode::ProtocolViolation);
       };
       let existing_req_id = target_request_id;
+
+      // A path through ourselves is refused, and the advertisement withdrawn here
+      // rather than when the peer gets round to closing its side. FIN, not reset, so
+      // the REQUEST_ERROR is not discarded before the peer reads it.
+      if let Some(err) = cluster_rejection(
+        &client,
+        &update_msg.parameters,
+        context.server_config.hop_id,
+      ) {
+        reply(stream_handler, ControlMessage::RequestError(Box::new(err))).await;
+        cancel(client.clone(), existing_req_id, &context).await;
+        stream_handler.finish().await;
+        return Ok(());
+      }
 
       let target_namespace = client
         .downstream_requests
@@ -176,20 +239,26 @@ pub async fn handle(
 
       context
         .track_manager
-        .update_namespace_parameters(&target_namespace, update_msg.parameters.clone())
+        .update_namespace_parameters(
+          &target_namespace,
+          client.connection_id,
+          update_msg.parameters.clone(),
+        )
         .await;
+      cluster::refresh(&context, &target_namespace).await;
 
       let downstream_sessions = context
         .track_manager
         .get_namespace_subscribers(&target_namespace, SubscribeKind::Namespace)
         .await;
 
-      for (session, _) in downstream_sessions {
+      // Cluster peers get updates through cluster::refresh.
+      for (session, _) in downstream_sessions
+        .into_iter()
+        .filter(|(session, _)| session.peer_hop_id.is_none())
+      {
         if let Some(downstream_req_id) = session.get_outbound_announce_id(&target_namespace).await {
-          let relay_update_id = crate::server::session::Session::get_next_relay_request_id(
-            context.relay_next_request_id.clone(),
-          )
-          .await;
+          let relay_update_id = session.next_request_id(&context.relay_next_request_id);
 
           let fanout_msg = moqtail::model::control::request_update::RequestUpdate::new(
             relay_update_id,
@@ -213,9 +282,7 @@ pub async fn handle(
       }
 
       let ok_msg = RequestOk::new(vec![]);
-      stream_handler
-        .send(&ControlMessage::RequestOk(Box::new(ok_msg)))
-        .await?;
+      reply(stream_handler, ControlMessage::RequestOk(Box::new(ok_msg))).await;
 
       Ok(())
     }

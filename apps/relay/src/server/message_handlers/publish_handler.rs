@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::server::cluster;
 use crate::server::message_handlers::parameters;
 use crate::server::requests::DownstreamRequest;
-use crate::server::session::Session;
 use crate::server::session::client::MOQTClient;
 use crate::server::session::session_context::SessionContext;
 use crate::server::subscription::Subscription;
@@ -187,6 +187,8 @@ pub async fn handle(
         .track_manager
         .add_publish_message(full_track_name.clone(), context.connection_id, (*m).clone())
         .await;
+      // After the PUBLISH is stored, which is where its route is read from.
+      cluster::refresh(&context, &full_track_name.namespace).await;
 
       // A REQUEST_UPDATE for this publisher is resolved out of this map.
       {
@@ -252,6 +254,7 @@ pub async fn handle(
             || track_arc
               .has_any_subscription(subscriber.connection_id)
               .await
+            || !cluster::pushes_to(&context, &track_arc, &subscriber).await
           {
             continue;
           }
@@ -323,7 +326,16 @@ pub async fn handle(
       wait_for_publisher_streams(&client, publisher_req_id, m.stream_count, &context).await;
 
       // Clean up the published track
+      let namespace = client
+        .published_tracks
+        .read()
+        .await
+        .get(&publisher_req_id)
+        .map(|name| name.namespace.clone());
       cleanup_published_track(&client, publisher_req_id, &context).await;
+      if let Some(namespace) = namespace {
+        cluster::refresh(&context, &namespace).await;
+      }
 
       {
         client.downstream_requests.remove(publisher_req_id).await;
@@ -427,8 +439,7 @@ pub async fn handle(
 
         let subscriber_existing_id = sub.request_id;
 
-        let relay_update_id =
-          Session::get_next_relay_request_id(context.relay_next_request_id.clone()).await;
+        let relay_update_id = subscriber_client.next_request_id(&context.relay_next_request_id);
 
         let mut forwarded_update = update_msg.clone();
         forwarded_update.request_id = relay_update_id;
@@ -500,7 +511,7 @@ pub(crate) async fn ensure_upstream_forwarding(
     };
 
     let update = moqtail::model::control::request_update::RequestUpdate::new(
-      Session::get_next_relay_request_id(context.relay_next_request_id.clone()).await,
+      publisher.next_request_id(&context.relay_next_request_id),
       vec![MessageParameter::new_forward(true)],
     );
     // Goes on the publisher's own PUBLISH request stream, where the responses to
@@ -544,8 +555,7 @@ pub(crate) async fn push_track_to_subscriber(
     return false;
   };
 
-  let relay_request_id =
-    Session::get_next_relay_request_id(context.relay_next_request_id.clone()).await;
+  let relay_request_id = subscriber.next_request_id(&context.relay_next_request_id);
 
   let mut downstream = publish.clone();
   downstream.request_id = relay_request_id;

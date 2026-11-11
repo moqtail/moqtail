@@ -125,6 +125,12 @@ pub async fn handle_subscribe_namespace(
     sub_ns.request_id
   );
 
+  // A cluster peer already gets every namespace as a PUBLISH_NAMESPACE carrying its
+  // path, at most once per session, so it is not told again here without one.
+  if client.peer_hop_id.is_some() {
+    return Ok(());
+  }
+
   // Discovery: send NAMESPACE for each matching announced namespace, and echo the
   // namespaces of tracks already published under the prefix.
   send_namespace_catchup(stream_handler, &context, &sub_ns.track_namespace_prefix).await?;

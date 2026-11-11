@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::server::cluster;
 use crate::server::message_handlers::parameters;
 use crate::server::requests::DownstreamRequest;
-use crate::server::session::Session;
 use crate::server::session::client::MOQTClient;
 use crate::server::session::client::switch_context::SwitchPlan;
 use crate::server::session::session_context::SessionContext;
@@ -236,10 +236,13 @@ async fn handle_subscribe_message(
   // it falls under. A SUBSCRIBE goes to all of them, not to whichever matched first.
   let publishers = {
     trace!("trying to get the publishers");
-    context
+    let publishers = context
       .client_manager
       .wait_for_publishers(&full_track_name, rendezvous)
-      .await
+      .await;
+    // shortcut: an excluded publisher ends the wait like any other; a later route
+    // that is not excluded is missed, which only matters for a re-routing mesh.
+    cluster::select(&context, &client, &full_track_name, publishers).await
   };
 
   if publishers.is_empty() {
@@ -304,17 +307,24 @@ async fn handle_subscribe_message(
   // A cache-only track has no upstream subscription, so the SUBSCRIBE that takes it
   // over forwards upstream as if it had created it. Taken over and joined under one
   // lock, so the track cannot let go of its upstream subscription in between.
-  let (is_creator, subscription) = {
+  let (is_creator, subscription, first_subscriber) = {
     let track = &track_arc;
     let _handover = track.lock_handover().await;
     let taken_over = track
       .take_over(TrackOrigin::Subscribe, TrackStatus::Pending)
       .await;
-    (
-      is_creator || taken_over,
-      add_subscription(sub.clone(), track, client.clone()).await,
-    )
+    let subscription = add_subscription(sub.clone(), track, client.clone()).await;
+    // Counted under the lock, so of two subscribers joining at once exactly one is first.
+    let first = subscription.is_some() && track.subscriber_count().await == 1;
+    (is_creator || taken_over, subscription, first)
   };
+  // A first subscriber to a track already served makes its source warm.
+  if first_subscriber && context.server_config.hop_id.is_some() {
+    tokio::spawn(cluster::refresh_covering(
+      context.clone(),
+      full_track_name.namespace.clone(),
+    ));
+  }
   let Some(subscription) = subscription else {
     warn!(
       "Rejecting SUBSCRIBE from {} for {:?}: request {} already has a subscription",
@@ -415,8 +425,7 @@ async fn handle_subscribe_message(
       let mut new_sub = sub.clone();
       new_sub.subscribe_parameters = parameters::upstream_subscribe();
       // Its own request id, which is what routes this publisher's response back.
-      new_sub.request_id =
-        Session::get_next_relay_request_id(context.relay_next_request_id.clone()).await;
+      new_sub.request_id = publisher.next_request_id(&context.relay_next_request_id);
 
       // Store the relay subscribe request mapping before forwarding, so the
       // upstream response can be routed back to this subscription.
@@ -626,6 +635,13 @@ pub(crate) async fn cancel_subscription(
     let cleanup = track_lock
       .remove_subscriber(&(context.connection_id, request_id))
       .await;
+    // The last subscriber leaving cools its source.
+    if context.server_config.hop_id.is_some() && track_lock.subscriber_count().await == 0 {
+      tokio::spawn(cluster::refresh_covering(
+        context.clone(),
+        full_track_name.namespace.clone(),
+      ));
+    }
     client.prune_cleanup_track(&track_lock).await;
     if cleanup != Cleanup::Nothing {
       info!(

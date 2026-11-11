@@ -131,6 +131,10 @@ pub async fn handle_subscribe_tracks(
     .send(&ControlMessage::RequestOk(Box::new(ok)))
     .await?;
 
+  if client.peer_hop_id.is_none() {
+    tokio::spawn(crate::server::cluster::sync_tracks(context.clone()));
+  }
+
   // Forward a PUBLISH for every track already published under the prefix.
   let matched_tracks = context
     .track_manager
@@ -147,6 +151,7 @@ pub async fn handle_subscribe_tracks(
       let track = &track_arc;
       track.is_published_by(client.connection_id).await
         || track.has_any_subscription(client.connection_id).await
+        || !crate::server::cluster::pushes_to(&context, track, &client).await
     };
     if already_served {
       continue;

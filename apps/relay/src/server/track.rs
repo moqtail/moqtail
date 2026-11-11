@@ -325,6 +325,22 @@ impl Track {
   pub async fn remove_subscriber(&self, leaving: &SubscriptionId) -> Cleanup {
     let _handover = self.lock_handover().await;
     self.remove_subscription(leaving).await;
+    self.let_go_if_unsubscribed().await
+  }
+
+  /// Ends every subscription a closed connection held, and lets go of the upstream
+  /// the same way once nobody is left.
+  pub async fn remove_subscriptions(&self, subscriber_id: usize) -> Cleanup {
+    let _handover = self.lock_handover().await;
+    self
+      .subscription_manager
+      .remove_subscriptions(subscriber_id)
+      .await;
+    self.let_go_if_unsubscribed().await
+  }
+
+  /// Called under `handover`.
+  async fn let_go_if_unsubscribed(&self) -> Cleanup {
     if self.subscriber_count().await > 0 {
       return Cleanup::Nothing;
     }
@@ -649,13 +665,6 @@ impl Track {
       .await
   }
 
-  pub async fn remove_subscriptions(&self, subscriber_id: usize) {
-    self
-      .subscription_manager
-      .remove_subscriptions(subscriber_id)
-      .await
-  }
-
   pub async fn subscriber_count(&self) -> usize {
     self.subscription_manager.subscriber_count().await
   }
@@ -771,6 +780,16 @@ mod tests {
           "{origin:?}"
         );
       }
+    }
+
+    #[tokio::test]
+    async fn a_disconnect_lets_go_of_the_upstream_like_an_unsubscribe() {
+      let track = track(TrackOrigin::Subscribe);
+      let cancelled = track
+        .register_upstream_request(1, PUBLISHER, UpstreamRequestKind::Subscribe)
+        .await;
+      assert_eq!(track.remove_subscriptions(0).await, Cleanup::RemoveTrack);
+      assert_eq!(cancelled.await, Ok(UpstreamRequestCancellation::Cancelled));
     }
 
     #[tokio::test]

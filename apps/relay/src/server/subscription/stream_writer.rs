@@ -20,6 +20,7 @@ use crate::server::utils;
 use anyhow::Result;
 use bytes::Bytes;
 use moqtail::model::data::object::Object;
+use moqtail::model::error::StreamResetCode;
 use moqtail::transport::connection::TransportSendStream;
 use moqtail::transport::data_stream_handler::HeaderInfo;
 use std::sync::Arc;
@@ -195,11 +196,24 @@ impl Subscription {
 
     // remove the stream id from send_stream_last_object_ids immediately
     let mut send_stream_last_object_ids = self.send_stream_last_object_ids.write().await;
-    send_stream_last_object_ids.remove(stream_id);
+    let was_open = send_stream_last_object_ids.remove(stream_id).is_some();
     drop(send_stream_last_object_ids); // Release the lock immediately
 
     // The header is still saved only if no object of this stream was sent.
     self.skipped_stream_headers.lock().await.remove(stream_id);
+
+    // Objects of a skipped group were dropped after this stream opened; a FIN would
+    // tell the subscriber the subgroup is complete.
+    if was_open && stream_id.group_id.is_some_and(|g| self.queue.skips(g)) {
+      self
+        .subscriber
+        .reset_stream(
+          &self.new_send_stream_key(stream_id),
+          StreamResetCode::DeliveryTimeout.to_u64(),
+        )
+        .await;
+      return Ok(());
+    }
 
     // Perform graceful stream closure in a separate task to avoid blocking
     // the main subscription event loop. This is critical for real-time media streaming

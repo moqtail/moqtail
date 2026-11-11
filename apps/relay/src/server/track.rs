@@ -593,17 +593,20 @@ impl Track {
     origin_message: impl Into<SubscriptionOrigin>,
   ) -> Result<Arc<RwLock<Subscription>>> {
     let origin_enum = origin_message.into();
-    // Before the subscription exists, so a disconnect running meanwhile cannot miss it.
-    subscriber.add_cleanup_track(&self.full_track_name).await;
+    // Before the subscription exists, so a disconnect running meanwhile cannot miss it,
+    // and held until it does, so an unsubscribe's prune cannot drop it in between.
+    let cleanup = subscriber.add_cleanup_track(&self.full_track_name).await;
     let subscription = self
       .subscription_manager
       .add_subscription(
-        subscriber,
+        subscriber.clone(),
         origin_enum,
         self.cache.clone(),
         Arc::clone(&self.active_subgroup_headers),
       )
-      .await?;
+      .await;
+    drop(cleanup);
+    let subscription = subscription?;
 
     // Where a live filter starts is stated against the largest Object, which only
     // the track knows.

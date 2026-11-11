@@ -21,6 +21,7 @@ use crate::server::{
   session::client::request_subscription_map::RequestSubscriptionMap,
   ssts,
   stream_id::{SendStreamKey, StreamType},
+  track::Track,
   utils,
 };
 use anyhow::Result;
@@ -48,7 +49,7 @@ use std::{
   time::Duration,
 };
 use tokio::sync::Notify;
-use tokio::sync::{Mutex, RwLock, mpsc};
+use tokio::sync::{Mutex, RwLock, RwLockWriteGuard, mpsc};
 use tokio::time::Instant;
 use tracing::{debug, error, trace, warn};
 
@@ -118,8 +119,9 @@ pub(crate) struct MOQTClient {
   malformed_tracks: Arc<RwLock<HashSet<FullTrackName>>>,
   /// The tracks a disconnect has to visit: every track the client ever subscribed to
   /// or published. Recorded before the client joins the track, so a disconnect never
-  /// misses one. Best effort, not its live roles: entries stay after an unsubscribe or
-  /// PUBLISH_DONE, since a stale one only costs a lookup that finds nothing to remove.
+  /// misses one. An unsubscribe prunes the track once the client holds no role on it;
+  /// other exits (PUBLISH_DONE, a finished track) leave a stale entry, which only costs
+  /// a lookup that finds nothing to remove.
   cleanup_tracks: Arc<RwLock<HashSet<FullTrackName>>>,
   pub subscribers: Arc<RwLock<Vec<usize>>>, // the subscribers the client is subscribed to
 
@@ -238,10 +240,26 @@ impl MOQTClient {
     self.malformed_tracks.read().await.contains(full_track_name)
   }
 
-  pub(crate) async fn add_cleanup_track(&self, full_track_name: &FullTrackName) {
+  /// Records the track and returns the set still locked: hold it until the client has
+  /// joined the track, so a concurrent prune cannot drop the entry in between.
+  pub(crate) async fn add_cleanup_track(
+    &self,
+    full_track_name: &FullTrackName,
+  ) -> RwLockWriteGuard<'_, HashSet<FullTrackName>> {
     let mut tracks = self.cleanup_tracks.write().await;
     if !tracks.contains(full_track_name) {
       tracks.insert(full_track_name.clone());
+    }
+    tracks
+  }
+
+  /// Forgets `track` once this client neither subscribes to nor publishes it.
+  pub(crate) async fn prune_cleanup_track(&self, track: &Track) {
+    let mut tracks = self.cleanup_tracks.write().await;
+    if !track.has_any_subscription(self.connection_id).await
+      && !track.is_published_by(self.connection_id).await
+    {
+      tracks.remove(&track.full_track_name);
     }
   }
 

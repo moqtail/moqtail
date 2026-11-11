@@ -171,10 +171,11 @@ pub async fn handle(
         return Err(TerminationCode::DuplicateTrackAlias);
       }
 
-      client.add_cleanup_track(&full_track_name).await;
+      let cleanup = client.add_cleanup_track(&full_track_name).await;
       track_arc
         .add_publisher(context.connection_id, track_alias)
         .await;
+      drop(cleanup);
 
       client
         .add_published_track(request_id, full_track_name.clone())

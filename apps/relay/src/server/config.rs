@@ -488,10 +488,18 @@ fn bind_dual_stack_udp_socket(
 fn request_buffer_sizes(socket: &Socket, bytes: usize) {
   let _ = socket.set_send_buffer_size(bytes);
   let _ = socket.set_recv_buffer_size(bytes);
-  // Linux reports double the granted size.
+  // Linux stores and reports double the granted size; halve it to compare.
+  let reported = |size: std::io::Result<usize>| {
+    let size = size.unwrap_or(0);
+    if cfg!(target_os = "linux") {
+      size / 2
+    } else {
+      size
+    }
+  };
   let (send, recv) = (
-    socket.send_buffer_size().unwrap_or(0),
-    socket.recv_buffer_size().unwrap_or(0),
+    reported(socket.send_buffer_size()),
+    reported(socket.recv_buffer_size()),
   );
   if send < bytes || recv < bytes {
     warn!(

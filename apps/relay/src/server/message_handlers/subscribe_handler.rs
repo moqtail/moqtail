@@ -626,6 +626,7 @@ pub(crate) async fn cancel_subscription(
     let cleanup = track_lock
       .remove_subscriber(&(context.connection_id, request_id))
       .await;
+    client.prune_cleanup_track(&track_lock).await;
     if cleanup != Cleanup::Nothing {
       info!(
         "Last subscriber left {:?}: {:?}; next SUBSCRIBE will re-subscribe upstream",

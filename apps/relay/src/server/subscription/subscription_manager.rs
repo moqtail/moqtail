@@ -315,17 +315,22 @@ impl SubscriptionManager {
       for (subscription_id, (sender, queue)) in senders.iter() {
         // Never blocks the publisher: a subscriber with too much queued loses the rest
         // of the group instead, and picks up again at a later one.
-        if let Some(group) = event.object_group()
-          && max_bytes > 0
-          && queue.bytes.load(Ordering::Relaxed) + bytes > max_bytes
-        {
-          if queue.skip_group(group) {
-            warn!(
-              "Subscription {:?} has over {} bytes queued on relay_track_id={}; skipping the rest of group {}",
-              subscription_id, max_bytes, self.relay_track_id, group
-            );
+        if let Some(group) = event.object_group() {
+          // The subscription drops these anyway; queuing them only keeps it at the cap.
+          if queue.skips(group) {
+            continue;
           }
-          continue;
+          // An empty queue takes any Object, so one larger than the cap still goes out.
+          let queued = queue.bytes.load(Ordering::Relaxed);
+          if max_bytes > 0 && queued > 0 && queued + bytes > max_bytes {
+            if queue.skip_group(group) {
+              warn!(
+                "Subscription {:?} has over {} bytes queued on relay_track_id={}; skipping the rest of group {}",
+                subscription_id, max_bytes, self.relay_track_id, group
+              );
+            }
+            continue;
+          }
         }
         queue.bytes.fetch_add(bytes, Ordering::Relaxed);
         if let Err(e) = sender.send((queued_at, event.clone())) {
@@ -418,7 +423,7 @@ mod tests {
     );
     assert!(queue.skips(1));
 
-    // The subscriber catches up: the rest of group 1 stays skipped, group 2 goes out.
+    // The subscriber catches up: the rest of group 1 is not even queued, group 2 goes out.
     queue.bytes.store(0, Ordering::Relaxed);
     manager
       .send_event_to_subscribers(object(1, 3))
@@ -440,10 +445,34 @@ mod tests {
         Some(Location::new(1, 0)),
         Some(Location::new(1, 1)),
         None,
-        Some(Location::new(1, 3)),
         Some(Location::new(2, 0)),
       ]
     );
+  }
+
+  #[tokio::test]
+  async fn an_object_larger_than_the_cap_goes_out_when_the_queue_is_empty() {
+    let cli = Cli::parse_from(["relay", "--max-subscriber-queue-bytes", "50"]);
+    let config = Box::leak(Box::new(AppConfig::from_cli(cli)));
+    let name = FullTrackName::try_new("meet/room1", "video").unwrap();
+    let manager = SubscriptionManager::new(1, name, String::new(), config);
+    let (mut rx, queue) = manager.add_test_sender((1, 0));
+
+    // 100 bytes each against a 50-byte cap: the first fits an empty queue, the
+    // second does not fit behind it.
+    for id in 0..2 {
+      manager
+        .send_event_to_subscribers(object(1, id))
+        .await
+        .unwrap();
+    }
+    assert_eq!(queue.bytes.load(Ordering::Relaxed), 100);
+    assert!(queue.skips(1));
+    assert_eq!(
+      location(&rx.try_recv().unwrap().1),
+      Some(Location::new(1, 0))
+    );
+    assert!(rx.try_recv().is_err());
   }
 
   #[test]

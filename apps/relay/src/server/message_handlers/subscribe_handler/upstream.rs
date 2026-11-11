@@ -560,7 +560,7 @@ async fn handle_subscribe_ok_message(
   }
 
   // Confirm the track with publisher's metadata
-  publisher
+  let cleanup = publisher
     .add_cleanup_track(&track_arc.full_track_name)
     .await;
   let confirmed_now = {
@@ -577,6 +577,7 @@ async fn handle_subscribe_ok_message(
     track.upstream_subscribe_answered();
     confirmed_now
   };
+  drop(cleanup);
 
   // Only the publisher that confirmed the track answers downstream. The others are now
   // serving it too, but the subscribers were told once already and their request

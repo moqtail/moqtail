@@ -3,6 +3,7 @@
   "version": "0.16.0",
   "description": "Media Over QUIC Transport client implementation",
   "type": "module",
+  "sideEffects": false,
   "license": "Apache-2.0",
   "keywords": [
     "moqtail",

@@ -1,5 +1,35 @@
 # moqtail-ts
 
+## 0.16.0
+
+### Minor Changes
+
+- [#463](https://github.com/moqtail/moqtail/pull/463) [`b14f129`](https://github.com/moqtail/moqtail/commit/b14f1298ac6d55578421af83b02e09eb4dfced49) Thanks [@DenizUgur](https://github.com/DenizUgur)! - Breaking: `MOQtailClient` events take any number of listeners through `client.on(event, listener)` and `client.off()`. `new MOQtailClient(options)` does no I/O and `await client.init()` connects; `MOQtailClient.new()`, the `callbacks` option and the `on*` properties are removed. `client.subscribe` returns `{ requestId, subscribeOk, stream, done }` and `client.fetch` returns `{ requestId, fetchOk, stream }`.
+
+  - An `ordering` option on the client, `subscribe` and `fetch` releases objects in location order across streams and datagrams, reporting what it stopped waiting for with `orderinggap`.
+  - `client.switch` returns the new `SubscribeResult` and no longer sends FORWARD; `subscribeUpdate` only sends priority and forward when given.
+  - `client.trackNameOf(headerEvent)` names the track a data stream carries.
+  - `client.clientSetup` holds the SETUP the client sent, next to `client.serverSetup`.
+  - `LiveTrackSource` no longer loses the last object before PUBLISH_DONE, and a closing session leaves no unhandled rejections.
+  - `moqt://` is matched case-insensitively.
+
+- [#463](https://github.com/moqtail/moqtail/pull/463) [`812e732`](https://github.com/moqtail/moqtail/commit/812e7324b4e3c110ad2f545956fe85efeeeaa35a) Thanks [@DenizUgur](https://github.com/DenizUgur)! - Add `moqtail/player`, an MSF/CMSF player built from elements, and the `<moqtail-video>` custom element in `moqtail/player/component`.
+
+  Breaking: the old catalog model (`CMSFCatalog`, `CMSF`, …) is removed. Read catalogs through the player's `catalog` event and type published ones as `CatalogJson`.
+
+  - `MOQtailPlayer` builds a source → transform → sink chain, shares one reconnecting client across players on a page, and reports `statechange`, `error` and `warning`.
+  - An element runtime (`defineElement`, source/transform/sink base classes, pads with backpressure) for custom elements.
+  - Built-in catalog source with delta updates, a CMAF source with seeking, URL ranges and rendition switching, and an MSE sink.
+  - Media and event timelines and per-request object ordering.
+  - Plugins (`definePlugin`, `opts.plugins`) that add setup parameters, check the peer's SETUP, and offer elements, switching set sources, buffer controllers and ABR controllers. Built in: `ssts()`, whose sources provide `ABR`, `liveBuffer()` and `abr()`. A `selectionchange` event follows `selectRenditions()`, and `player.isAbrAvailable()` says whether a source switches automatically.
+  - `parseMsfUrl` and `formatMsfUrl` for `moqt://...#msf:` URLs.
+
+### Patch Changes
+
+- [#465](https://github.com/moqtail/moqtail/pull/465) [`a116ca7`](https://github.com/moqtail/moqtail/commit/a116ca785c9daaa4ce3ba68612df82f69a6c365d) Thanks [@zafergurel](https://github.com/zafergurel)! - Datagrams work on Safari: when the transport has no `datagrams.writable` (Safari implements only `datagrams.createWritable()`), the client sends through `createWritable()` instead of failing to connect.
+
+- [#464](https://github.com/moqtail/moqtail/pull/464) [`9e59347`](https://github.com/moqtail/moqtail/commit/9e59347a544ab3b7cac703ec5d72aa55f6ab43d6) Thanks [@zafergurel](https://github.com/zafergurel)! - A publication no longer ends when the peer stops one of its subgroup streams (STOP_SENDING). The rest of that group is skipped and later groups are still sent.
+
 ## 0.15.0
 
 ### Minor Changes

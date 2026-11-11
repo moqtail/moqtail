@@ -1,5 +1,19 @@
 # moqtail-rs
 
+## 0.18.0
+
+### Minor Changes
+
+- [#462](https://github.com/moqtail/moqtail/pull/462) [`a63df4e`](https://github.com/moqtail/moqtail/commit/a63df4e3aa1ae219bd2886bd3b888a64617d26be) Thanks [@zafergurel](https://github.com/zafergurel)! - share each Object between a track's subscribers instead of cloning it for every one (`Object::serialize_subgroup_parts`)
+
+- [#462](https://github.com/moqtail/moqtail/pull/462) [`a63df4e`](https://github.com/moqtail/moqtail/commit/a63df4e3aa1ae219bd2886bd3b888a64617d26be) Thanks [@zafergurel](https://github.com/zafergurel)! - write subgroup object payloads to subscribers without copying them (`SubgroupObject::serialize_parts`, `TransportSendStream::write_all_chunks`)
+
+### Patch Changes
+
+- [#462](https://github.com/moqtail/moqtail/pull/462) [`a63df4e`](https://github.com/moqtail/moqtail/commit/a63df4e3aa1ae219bd2886bd3b888a64617d26be) Thanks [@zafergurel](https://github.com/zafergurel)! - fix a data stream reader that could miss its wakeup and wait forever
+
+- [#462](https://github.com/moqtail/moqtail/pull/462) [`a63df4e`](https://github.com/moqtail/moqtail/commit/a63df4e3aa1ae219bd2886bd3b888a64617d26be) Thanks [@zafergurel](https://github.com/zafergurel)! - parse incoming data streams without copying the receive buffer on every read
+
 ## 0.17.0
 
 ### Minor Changes

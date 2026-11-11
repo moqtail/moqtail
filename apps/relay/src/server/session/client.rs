@@ -169,6 +169,8 @@ pub(crate) struct MOQTClient {
   pub peer_relay_cost: u64,
   /// The namespaces this relay advertises to this peer, at most one each.
   pub cluster_adverts: Arc<Mutex<HashMap<Tuple, cluster::Advert>>>,
+  /// The SUBSCRIBE_TRACKS prefixes this relay holds on this peer for its own clients.
+  pub cluster_tracks: Arc<Mutex<HashMap<Tuple, cluster::TracksRequest>>>,
   /// Whether this relay dialed the session, which makes it the client there.
   dialed: bool,
 }
@@ -241,6 +243,7 @@ impl MOQTClient {
       peer_hop_id,
       peer_relay_cost,
       cluster_adverts: Arc::new(Mutex::new(HashMap::new())),
+      cluster_tracks: Arc::new(Mutex::new(HashMap::new())),
       dialed,
       config,
       next_track_alias: Arc::new(AtomicU64::new(0)),

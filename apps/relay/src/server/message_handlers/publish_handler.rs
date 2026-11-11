@@ -254,6 +254,7 @@ pub async fn handle(
             || track_arc
               .has_any_subscription(subscriber.connection_id)
               .await
+            || !cluster::pushes_to(&context, &track_arc, &subscriber).await
           {
             continue;
           }

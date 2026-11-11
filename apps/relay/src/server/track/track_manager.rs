@@ -613,6 +613,20 @@ impl TrackManager {
       .collect()
   }
 
+  /// The SUBSCRIBE_TRACKS prefixes held by clients that are not cluster peers.
+  pub async fn client_tracks_prefixes(&self) -> Vec<Tuple> {
+    let subs = self.namespace_subscribers.read().await;
+    subs
+      .iter()
+      .filter(|(_, clients)| {
+        clients
+          .iter()
+          .any(|(c, k, _, _)| *k == SubscribeKind::Tracks && c.peer_hop_id.is_none())
+      })
+      .map(|(prefix, _)| prefix.clone())
+      .collect()
+  }
+
   pub async fn remove_namespace_subscriber(&self, connection_id: usize) {
     let mut subs = self.namespace_subscribers.write().await;
     for clients in subs.values_mut() {

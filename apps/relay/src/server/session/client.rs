@@ -510,13 +510,13 @@ impl MOQTClient {
       // Only SSTS clients use a discard timeout: a connection that never
       // negotiated the feature always closes gracefully, so in-flight data is
       // never discarded for traffic that never opted in.
-      let timeout_ms = if self.ssts_enabled() {
-        self.config.ssts_discard_timeout.as_millis() as u64
+      let timeout = if self.ssts_enabled() {
+        self.config.ssts_discard_timeout
       } else {
-        0
+        std::time::Duration::ZERO
       };
 
-      if timeout_ms == 0 {
+      if timeout.is_zero() {
         // No discard timeout: always close gracefully.
         // No new data may be written after calling this method.
         // Completes when the peer has acknowledged all sent data, retransmitting data as needed.
@@ -541,7 +541,7 @@ impl MOQTClient {
                 "close_stream | Failed to finish ({}): {:?}", stream_key, e
             )).map(|_| true)
         }
-        _ = tokio::time::sleep(std::time::Duration::from_millis(timeout_ms)) => {
+        _ = tokio::time::sleep(timeout) => {
             warn!(
                 connection_id = %self.connection_id,
                 group_id = %group_id,

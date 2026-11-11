@@ -59,12 +59,12 @@ pub struct SubscriptionState {
 
 impl SubscriptionState {
   /// How long an Object may wait to be sent. See [`clamp_delivery_timeout`].
-  pub(crate) fn delivery_timeout(&self, relay_ms: u64) -> Option<Duration> {
+  pub(crate) fn delivery_timeout(&self, relay: Duration) -> Option<Duration> {
     let asked = self.subscribe_parameters.iter().find_map(|p| match p {
       MessageParameter::ObjectDeliveryTimeout { timeout } => Some(*timeout),
       _ => None,
     });
-    clamp_delivery_timeout(asked, relay_ms)
+    clamp_delivery_timeout(asked, relay)
   }
 
   pub fn update_last_sent_max_location(&mut self, location: Location) {
@@ -339,13 +339,13 @@ pub(crate) fn live_start_location(
 
 /// The subscriber's Object Delivery Timeout, capped by the relay's: a subscriber may
 /// ask for stricter, never looser. 0 on either side means that side sets none.
-fn clamp_delivery_timeout(asked_ms: Option<u64>, relay_ms: u64) -> Option<Duration> {
-  let ms = match (asked_ms.filter(|ms| *ms > 0), relay_ms) {
-    (Some(asked), 0) => asked,
-    (Some(asked), relay) => asked.min(relay),
-    (None, relay) => relay,
-  };
-  (ms > 0).then(|| Duration::from_millis(ms))
+fn clamp_delivery_timeout(asked_ms: Option<u64>, relay: Duration) -> Option<Duration> {
+  let asked = asked_ms.filter(|ms| *ms > 0).map(Duration::from_millis);
+  let relay = (!relay.is_zero()).then_some(relay);
+  match (asked, relay) {
+    (Some(asked), Some(relay)) => Some(asked.min(relay)),
+    (asked, relay) => asked.or(relay),
+  }
 }
 
 #[cfg(test)]
@@ -355,13 +355,21 @@ mod tests {
 
   #[test]
   fn a_subscriber_can_tighten_the_relays_delivery_timeout_but_not_loosen_it() {
-    let ms = |ms| Some(Duration::from_millis(ms));
-    assert_eq!(clamp_delivery_timeout(Some(600_000), 500), ms(500));
-    assert_eq!(clamp_delivery_timeout(Some(200), 500), ms(200));
-    assert_eq!(clamp_delivery_timeout(Some(200), 0), ms(200));
-    assert_eq!(clamp_delivery_timeout(None, 500), ms(500));
-    assert_eq!(clamp_delivery_timeout(Some(0), 500), ms(500));
-    assert_eq!(clamp_delivery_timeout(None, 0), None);
+    let ms = Duration::from_millis;
+    let zero = Duration::ZERO;
+    assert_eq!(
+      clamp_delivery_timeout(Some(600_000), ms(500)),
+      Some(ms(500))
+    );
+    assert_eq!(clamp_delivery_timeout(Some(200), ms(500)), Some(ms(200)));
+    assert_eq!(clamp_delivery_timeout(Some(200), zero), Some(ms(200)));
+    assert_eq!(clamp_delivery_timeout(None, ms(500)), Some(ms(500)));
+    assert_eq!(clamp_delivery_timeout(Some(0), ms(500)), Some(ms(500)));
+    assert_eq!(clamp_delivery_timeout(None, zero), None);
+    // A sub-millisecond relay limit is still a limit, not "none".
+    let us = Duration::from_micros(500);
+    assert_eq!(clamp_delivery_timeout(None, us), Some(us));
+    assert_eq!(clamp_delivery_timeout(Some(200), us), Some(us));
   }
 
   #[test]

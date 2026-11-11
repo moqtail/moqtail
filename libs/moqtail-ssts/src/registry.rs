@@ -47,7 +47,7 @@ impl Registry {
         // The default allocation, id 0, which every implementation must run.
         Arc::new(DefaultAlgorithmFactory),
         // MOQtail's own tier selector, at the first private id. Opt-in: it is
-        // only advertised when --ssts-algorithms asks for it.
+        // only advertised when `ssts_algorithms` asks for it.
         Arc::new(BackpressureAlgorithmFactory),
       ],
     }

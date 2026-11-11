@@ -127,7 +127,7 @@ cargo run --bin client -- -c fetch --start-group 0 --end-group 3
 
 Group-ID gaps work the same way via `--group-id-step`, setting the Prior Group
 ID Gap property (draft 12.8) on the first object of each gapped group. Run the
-relay with `--max-upstream-fetch-gaps 0` so it serves only the cached groups
+relay with `max_upstream_fetch_gaps: 0` in its config so it serves only the cached groups
 instead of trying to fetch the (non-existent) missing groups upstream:
 
 ```
@@ -190,7 +190,7 @@ Subscribe to every track under a namespace prefix (SUBSCRIBE_TRACKS). The relay
 answers `REQUEST_OK`, forwards a `PUBLISH` for each matching track — which the
 client accepts, then receives and counts that track's objects — and sends
 `PUBLISH_SKIPPED` if it runs out of streams (start the relay with
-`--max-publish-streams N` to cap it):
+`max_publish_streams: N` in its config to cap it):
 
 ```
 cargo run --bin client -- -c subscribe-tracks -n test/ns --duration 5

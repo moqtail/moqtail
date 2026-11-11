@@ -85,11 +85,11 @@ pub struct Cli {
 #[derive(Debug, Clone, Deserialize, SmartDefault, Validate)]
 #[serde(default, deny_unknown_fields)]
 pub struct AppConfig {
-  /// Address to bind. Only the port is used: the socket always binds dual-stack
-  /// `[::]`; the address shows up in the startup log.
+  /// Address to bind. `[::]` (the default) takes IPv4 and IPv6 alike.
   #[default(SocketAddr::from((Ipv6Addr::UNSPECIFIED, 4433)))]
   pub bind: SocketAddr,
-  /// Certificate PEM file
+  /// Certificate PEM file. Relative paths here and below resolve against the
+  /// directory the relay is started from, not the config file's.
   #[default("apps/relay/cert/cert.pem")]
   pub cert_file: String,
   /// Private key PEM file
@@ -284,7 +284,8 @@ impl AppConfig {
     // Validation decided which ids are runnable; the feature flag decides
     // whether any of them go on the wire.
     if self.ssts_enable {
-      self.ssts_algorithms.dedup();
+      let mut seen = std::collections::HashSet::new();
+      self.ssts_algorithms.retain(|id| seen.insert(*id));
     } else {
       self.ssts_algorithms.clear();
     }
@@ -342,8 +343,7 @@ impl AppConfig {
     for _ in 0..count {
       // SO_REUSEPORT only where more than one socket is wanted, so a single-socket
       // relay still fails loudly on a port another process already holds.
-      let socket =
-        bind_dual_stack_udp_socket(self.bind.port(), count > 1, self.socket_buffer_kib * 1024)?;
+      let socket = bind_udp_socket(self.bind, count > 1, self.socket_buffer_kib * 1024)?;
       endpoints.push(quinn::Endpoint::new(
         quinn::EndpointConfig::default(),
         Some(server_config.clone()),
@@ -390,24 +390,21 @@ impl AppConfig {
   }
 }
 
-/// Binds a UDP socket on `[::]:port` with IPv6 dual-stack explicitly enabled, matching
-/// `wtransport`'s own `with_bind_default()` (`IpBindConfig::InAddrAnyDual`) semantics.
-/// `quinn::Endpoint::server`'s plain `UdpSocket::bind` leaves dual-stack to the OS
-/// default, which isn't guaranteed across platforms, so this is done explicitly.
+/// Binds a UDP socket on `addr`. An IPv6 address gets dual-stack explicitly enabled,
+/// matching `wtransport`'s own `with_bind_default()` (`IpBindConfig::InAddrAnyDual`)
+/// semantics: `quinn::Endpoint::server`'s plain `UdpSocket::bind` leaves dual-stack to
+/// the OS default, which isn't guaranteed across platforms.
 ///
 /// `reuse_port` lets several sockets share the port, which is how the relay listens on
 /// more than one; the kernel then hashes each connection onto one of them.
-fn bind_dual_stack_udp_socket(
-  port: u16,
-  reuse_port: bool,
-  buffer_bytes: usize,
-) -> Result<UdpSocket> {
-  let socket = Socket::new(Domain::IPV6, Type::DGRAM, None)?;
-  socket.set_only_v6(false)?;
+fn bind_udp_socket(addr: SocketAddr, reuse_port: bool, buffer_bytes: usize) -> Result<UdpSocket> {
+  let socket = Socket::new(Domain::for_address(addr), Type::DGRAM, None)?;
+  if addr.is_ipv6() {
+    socket.set_only_v6(false)?;
+  }
   if reuse_port {
     socket.set_reuse_port(true)?;
   }
-  let addr: SocketAddr = (Ipv6Addr::UNSPECIFIED, port).into();
   socket.bind(&addr.into())?;
   socket.set_nonblocking(true)?;
   if buffer_bytes > 0 {
@@ -558,6 +555,19 @@ mod tests {
     // would build switching sets on it and have every subscription rejected.
     assert!(from_yaml("ssts_enable: true\nssts_algorithms: [7]").is_err());
     assert!(from_yaml("ssts_enable: true\nssts_algorithms: [banana]").is_err());
+  }
+
+  #[test]
+  fn repeated_ssts_ids_are_advertised_once_in_order() {
+    let id = moqtail_ssts::registry::PRIVATE_ALGORITHM_ID_BASE;
+    let yaml = format!("ssts_enable: true\nssts_algorithms: [0, {id}, 0, {id}]");
+    assert_eq!(ssts_algorithms_for(&yaml), vec![0, id]);
+  }
+
+  #[test]
+  fn the_socket_binds_the_configured_address() {
+    let socket = bind_udp_socket("127.0.0.1:0".parse().unwrap(), false, 0).unwrap();
+    assert!(socket.local_addr().unwrap().ip().is_loopback());
   }
 
   #[test]

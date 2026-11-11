@@ -95,7 +95,7 @@ pub struct Subscription {
   pub request_id: u64,
   relay_track_id: u64,
   /// The Track Alias this subscriber knows the track by on this subscription. It is
-  /// the track's relay id or one of the subscription's own, as `--track-alias-mode`
+  /// the track's relay id or one of the subscription's own, as `track_alias_mode`
   /// decides; `relay_track_id` stays the relay's internal name for the track.
   pub track_alias: u64,
   pub full_track_name: FullTrackName,

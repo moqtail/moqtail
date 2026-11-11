@@ -19,6 +19,11 @@
 //! did not already pass through it, over one advertisement per namespace that is
 //! kept in step as routes come and go, and SUBSCRIBE/FETCH/TRACK_STATUS go to the
 //! source the same rule picks for the requester.
+//!
+//! Tracks a client PUBLISHes are also pushed to peers whose own clients asked for
+//! them with SUBSCRIBE_TRACKS: the relay subscribes each peer to the prefixes its
+//! clients hold, and the peer answers with a PUBLISH for every track its own clients
+//! publish under them.
 
 use crate::server::Server;
 use crate::server::session::Session;
@@ -32,6 +37,7 @@ use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::publish_namespace::PublishNamespace;
 use moqtail::model::control::request_update::RequestUpdate;
 use moqtail::model::control::setup::Setup;
+use moqtail::model::control::subscribe_tracks::SubscribeTracks;
 use moqtail::model::data::full_track_name::FullTrackName;
 use moqtail::model::error::StreamResetCode;
 use moqtail::model::parameter::message_parameter::MessageParameter;
@@ -60,7 +66,16 @@ pub(crate) struct ClusterState {
   /// Serializes `refresh`, so two of them cannot apply their snapshots out of order
   /// and leave a withdrawn route advertised.
   refresh: Mutex<()>,
+  /// Serializes `sync_tracks` the same way.
+  tracks: Mutex<()>,
   next_advert: AtomicU64,
+}
+
+/// A SUBSCRIBE_TRACKS this relay holds on a peer; dropping it cancels the request.
+#[derive(Debug)]
+pub(crate) struct TracksRequest {
+  _cancel: mpsc::UnboundedSender<()>,
+  generation: u64,
 }
 
 /// What this relay currently advertises to one peer for one namespace.
@@ -384,6 +399,7 @@ pub(crate) async fn refresh_after_close(
     refresh_all(context.clone()).await;
     return;
   }
+  sync_tracks(context.clone()).await;
   let mut sourced: HashSet<Tuple> = client
     .announced_track_namespaces
     .read()
@@ -570,6 +586,142 @@ fn publish_namespace(
   tx
 }
 
+/// Whether `track` may be pushed to a SUBSCRIBE_TRACKS `subscriber`. A peer gets only
+/// the tracks this relay's own clients publish; it asks every other peer itself.
+// shortcut: reaches only directly peered relays, so a mesh must be full for players on
+// any two relays to find each other; a ring needs these PUBLISHes forwarded on with a
+// HOP_PATH, like the namespace adverts.
+pub(crate) async fn pushes_to(
+  context: &SessionContext,
+  track: &crate::server::track::Track,
+  subscriber: &MOQTClient,
+) -> bool {
+  if subscriber.peer_hop_id.is_none() {
+    return true;
+  }
+  let publishers: Vec<usize> = track
+    .publisher_aliases
+    .read()
+    .await
+    .keys()
+    .copied()
+    .collect();
+  for id in publishers {
+    if let Some(publisher) = context.client_manager.get(id).await
+      && publisher.peer_hop_id.is_none()
+    {
+      return true;
+    }
+  }
+  false
+}
+
+/// The prefixes to ask peers for: each one held by a client, without those another
+/// already covers, which a peer would refuse as overlapping.
+fn outermost(mut prefixes: Vec<Tuple>) -> Vec<Tuple> {
+  prefixes.sort_by_key(|p| p.fields.len());
+  let mut kept: Vec<Tuple> = Vec::new();
+  for prefix in prefixes {
+    if !kept.iter().any(|k| prefix.starts_with(k)) {
+      kept.push(prefix);
+    }
+  }
+  kept
+}
+
+/// Holds a SUBSCRIBE_TRACKS on every peer for each prefix this relay's own clients
+/// hold, and cancels the ones no client holds any more.
+// shortcut: a cancelled request leaves the tracks already pushed here flowing until
+// their publishers end them; ending those needs PUBLISH_DONE per pushed track.
+pub(crate) async fn sync_tracks(context: Arc<SessionContext>) {
+  if context.server_config.hop_id.is_none() {
+    return;
+  }
+  let _serial = context.cluster.tracks.lock().await;
+  let wanted = outermost(context.track_manager.client_tracks_prefixes().await);
+  let peers: Vec<Arc<MOQTClient>> = {
+    let clients = context.client_manager.clients.read().await;
+    clients
+      .values()
+      .filter(|c| c.peer_hop_id.is_some())
+      .cloned()
+      .collect()
+  };
+  for peer in peers {
+    let mut held = peer.cluster_tracks.lock().await;
+    held.retain(|prefix, _| wanted.contains(prefix));
+    for prefix in &wanted {
+      if !held.contains_key(prefix) {
+        let generation = context.cluster.next_advert.fetch_add(1, Ordering::Relaxed);
+        info!(
+          "Asking peer {} for tracks under {:?}",
+          peer.connection_id, prefix
+        );
+        let cancel = subscribe_tracks(context.clone(), peer.clone(), prefix.clone(), generation);
+        held.insert(
+          prefix.clone(),
+          TracksRequest {
+            _cancel: cancel,
+            generation,
+          },
+        );
+      }
+    }
+  }
+}
+
+/// Opens a SUBSCRIBE_TRACKS on `peer` and holds its request stream until the sender
+/// is dropped or the peer ends or refuses it. The PUBLISHes it brings arrive on their
+/// own streams, as any client's do.
+fn subscribe_tracks(
+  context: Arc<SessionContext>,
+  peer: Arc<MOQTClient>,
+  prefix: Tuple,
+  generation: u64,
+) -> mpsc::UnboundedSender<()> {
+  let (tx, mut rx) = mpsc::unbounded_channel::<()>();
+  tokio::spawn(async move {
+    let request_id = peer.next_request_id(&context.relay_next_request_id);
+    match peer.connection.open_bi().await {
+      Ok((send, recv)) => {
+        let mut stream = ControlStreamHandler::new(send, recv).with_peer_id(peer.connection_id);
+        let message = SubscribeTracks::new(request_id, prefix.clone(), vec![]);
+        if stream
+          .send(&ControlMessage::SubscribeTracks(Box::new(message)))
+          .await
+          .is_ok()
+        {
+          loop {
+            tokio::select! {
+              _ = rx.recv() => break,
+              reply = stream.next_message() => match reply {
+                Ok(ControlMessage::RequestOk(_)) => continue,
+                other => {
+                  warn!("Peer {} ended SUBSCRIBE_TRACKS {:?}: {:?}", peer.connection_id, prefix, other);
+                  break;
+                }
+              },
+            }
+          }
+        }
+        stream.reset_and_stop(StreamResetCode::Cancelled.to_u64());
+      }
+      Err(e) => warn!(
+        "Cannot open SUBSCRIBE_TRACKS stream to peer {}: {e:?}",
+        peer.connection_id
+      ),
+    }
+    let mut held = peer.cluster_tracks.lock().await;
+    if held
+      .get(&prefix)
+      .is_some_and(|r| r.generation == generation)
+    {
+      held.remove(&prefix);
+    }
+  });
+  tx
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -603,6 +755,19 @@ mod tests {
     assert!(same_publisher(&[0, 1], 7, &[0, 1, 3], 7));
     assert!(same_publisher(&[0, 1], 7, &[0, 1], 8));
     assert!(!same_publisher(&[0, 1], 7, &[0, 3, 1], 8));
+  }
+
+  #[test]
+  fn outermost_prefixes() {
+    let t = |fields: &[&str]| Tuple::from_utf8_path(&fields.join("/"));
+    let mut got = outermost(vec![
+      t(&["a", "b"]),
+      t(&["a"]),
+      t(&["c", "d"]),
+      t(&["a", "x", "y"]),
+    ]);
+    got.sort_by_key(|p| p.fields.len());
+    assert_eq!(got, vec![t(&["a"]), t(&["c", "d"])]);
   }
 
   #[test]

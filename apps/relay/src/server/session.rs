@@ -287,6 +287,7 @@ impl Session {
     // whichever side dialed it.
     if client.peer_hop_id.is_some() {
       tokio::spawn(cluster::refresh_all(context.clone()));
+      tokio::spawn(cluster::sync_tracks(context.clone()));
     }
 
     // start waiting for unistreams

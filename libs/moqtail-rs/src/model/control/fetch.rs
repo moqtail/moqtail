@@ -80,6 +80,18 @@ impl Fetch {
     }
   }
 
+  /// The SUBSCRIBER_PRIORITY parameter, 128 without one, as for SUBSCRIBE.
+  pub fn subscriber_priority(&self) -> u8 {
+    self
+      .parameters
+      .iter()
+      .find_map(|p| match p {
+        MessageParameter::SubscriberPriority { priority } => Some(*priority),
+        _ => None,
+      })
+      .unwrap_or(128)
+  }
+
   pub fn group_order(&self) -> GroupOrder {
     self
       .parameters
@@ -162,6 +174,18 @@ mod tests {
     parameter::authorization_token::AuthorizationToken,
   };
   use bytes::Buf;
+
+  #[test]
+  fn test_subscriber_priority_defaults_to_128() {
+    assert_eq!(sample_fetch().subscriber_priority(), 42);
+    let bare = Fetch::new(
+      1,
+      Tuple::from_utf8_path("a"),
+      TupleField::from_utf8("b"),
+      vec![],
+    );
+    assert_eq!(bare.subscriber_priority(), 128);
+  }
 
   fn sample_fetch() -> Fetch {
     // Parameters are serialized sorted by type and parse back in that order, so they

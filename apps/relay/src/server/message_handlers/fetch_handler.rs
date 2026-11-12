@@ -18,7 +18,9 @@ mod upstream;
 use crate::server::requests::DownstreamRequest;
 use crate::server::session::client::MOQTClient;
 use crate::server::session::session_context::{SessionContext, UpstreamFetchEvent};
+use crate::server::subscription::DEFAULT_PUBLISHER_PRIORITY;
 use crate::server::track::{Track, TrackOrigin, TrackStatus};
+use crate::server::utils::compute_stream_priority;
 use core::result::Result::{Err, Ok};
 use delivery::{FetchDelivery, serve_fetch_stream};
 use moqtail::model::common::location::Location;
@@ -561,12 +563,19 @@ pub async fn handle(
         }
       }
 
+      // From the FETCH's own priority
+      let stream_priority = compute_stream_priority(
+        fetch.subscriber_priority(),
+        DEFAULT_PUBLISHER_PRIORITY,
+        fetch.group_order(),
+        start_location.group,
+      );
       let delivery = FetchDelivery {
         request_id,
         start_location,
         end_location,
         group_order: fetch.group_order(),
-        stream_priority: 0,
+        stream_priority,
         pending_upstream,
         fill_claim,
         filter,

@@ -41,6 +41,7 @@ use moqtail::transport::{
   },
   control_stream_handler::ControlStreamHandler,
   data_stream_handler::{DataStreamItem, HeaderInfo, RecvDataStream},
+  qlog,
 };
 use std::{collections::HashMap, sync::Arc};
 use tracing::{Instrument, debug, error, info, info_span, trace, warn};
@@ -196,7 +197,7 @@ impl Session {
           .write_all(&setup_bytes)
           .await
           .map_err(|e| anyhow::anyhow!("{e:?}"))?;
-        moqtail::transport::qlog::control_message(
+        qlog::control_message(
           context.connection_id,
           send_stream.id(),
           true,
@@ -499,7 +500,7 @@ impl Session {
       context.connection_id
     );
     context.connection.closed().await;
-    moqtail::transport::qlog::close(context.connection_id);
+    qlog::close(context.connection_id);
 
     // set the connection closed flag
     {

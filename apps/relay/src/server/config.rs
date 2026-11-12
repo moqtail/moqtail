@@ -77,6 +77,9 @@ pub struct Cli {
   /// Private key PEM file [default: apps/relay/cert/key.pem]
   #[arg(long)]
   pub key_file: Option<String>,
+  /// Folder for qlog traces of control messages [default: off]
+  #[arg(long)]
+  pub qlog_folder: Option<String>,
 }
 
 /// The settings the relay runs on. YAML keys are the field names; a key left out
@@ -287,6 +290,9 @@ impl AppConfig {
     }
     if let Some(key_file) = cli.key_file {
       config.key_file = key_file;
+    }
+    if cli.qlog_folder.is_some() {
+      config.qlog_folder = cli.qlog_folder;
     }
     config.validate()?;
     config.check_cluster()?;

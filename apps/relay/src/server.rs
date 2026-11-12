@@ -30,6 +30,7 @@ use crate::server::{config::AppConfig, session::Session};
 use anyhow::Result;
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::model::control::goaway::GoAway;
+use moqtail::transport::qlog;
 use session::client_manager::ClientManager;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -65,13 +66,7 @@ impl Server {
   pub fn new() -> Self {
     let config = AppConfig::load();
 
-    init_logging();
-    if let Some(dir) = &config.qlog_folder {
-      match moqtail::transport::qlog::init(dir, "server") {
-        Ok(()) => info!("Writing qlog traces to {dir}"),
-        Err(e) => error!("Cannot write qlog traces to {dir}: {e}"),
-      }
-    }
+    init_logging(config);
 
     trace!("Server | App. Config.: {:?}", config);
 
@@ -262,7 +257,7 @@ impl Server {
   }
 }
 
-fn init_logging() {
+fn init_logging(config: &AppConfig) {
   let env_filter = EnvFilter::builder()
     .with_default_directive(LevelFilter::INFO.into())
     .from_env_lossy();
@@ -272,4 +267,11 @@ fn init_logging() {
     .with_level(true)
     .with_env_filter(env_filter)
     .init();
+
+  if let Some(dir) = &config.qlog_folder {
+    match qlog::init(dir, "server") {
+      Ok(()) => info!("Writing qlog traces to {dir}"),
+      Err(e) => error!("Cannot write qlog traces to {dir}: {e}"),
+    }
+  }
 }

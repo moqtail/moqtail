@@ -1,6 +1,6 @@
 # MOQtail relay configuration. Every key is optional and shown here with its
 # default; full descriptions are on `AppConfig` in apps/relay/src/server/config.rs.
-# Pass with `relay --config <file>`; --bind, --cert-file and --key-file override it.
+# Pass with `relay --config <file>`; --bind, --cert-file, --key-file and --qlog-folder override it.
 # Durations take units: 500ms, 10s, 30m, 1h. Relative paths resolve against the
 # directory the relay is started from, not this file's.
 

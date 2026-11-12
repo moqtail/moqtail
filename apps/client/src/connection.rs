@@ -23,6 +23,7 @@ use moqtail::model::{
 };
 use moqtail::transport::connection::TransportConnection;
 use moqtail::transport::control_stream_handler::ControlStreamHandler;
+use moqtail::transport::qlog;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
@@ -105,9 +106,9 @@ impl MoqConnection {
       .write_all(&setup_bytes)
       .await
       .map_err(|e| anyhow::anyhow!("Failed to send CLIENT_SETUP: {e:?}"))?;
-    if moqtail::transport::qlog::enabled() {
+    if qlog::enabled() {
       let msg = ControlMessage::Setup(Box::new(client_setup));
-      moqtail::transport::qlog::control_message(0, send_stream.id(), true, &msg, &setup_bytes);
+      qlog::control_message(0, send_stream.id(), true, &msg, &setup_bytes);
     }
 
     info!("Waiting for server control stream...");

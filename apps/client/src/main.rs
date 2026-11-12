@@ -27,6 +27,7 @@ use clap::Parser;
 use cli::{Cli, CliFilter, Command, PrefixKind};
 use connection::MoqConnection;
 use moqtail::model::parameter::message_parameter::MessageParameter;
+use moqtail::transport::qlog;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::filter::LevelFilter;
@@ -43,11 +44,11 @@ async fn main() -> Result<(), anyhow::Error> {
   );
 
   if let Some(dir) = &cli.qlog_folder {
-    moqtail::transport::qlog::init(dir, "client")?;
+    qlog::init(dir, "client")?;
   }
 
   let result = run(cli).await;
-  moqtail::transport::qlog::flush(std::time::Duration::from_secs(2));
+  qlog::flush(std::time::Duration::from_secs(2));
   result
 }
 

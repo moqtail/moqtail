@@ -42,6 +42,16 @@ async fn main() -> Result<(), anyhow::Error> {
     cli.server, cli.namespace, cli.track_name
   );
 
+  if let Some(dir) = &cli.qlog_folder {
+    moqtail::transport::qlog::init(dir, "client")?;
+  }
+
+  let result = run(cli).await;
+  moqtail::transport::qlog::flush(std::time::Duration::from_secs(2));
+  result
+}
+
+async fn run(cli: Cli) -> Result<(), anyhow::Error> {
   let moq_conn =
     MoqConnection::establish(&cli.server, cli.no_cert_validation, cli.transport).await?;
 

@@ -106,7 +106,7 @@ pub struct AppConfig {
   /// Number of cached subgroups/fetches per track
   #[default(1000)]
   pub cache_size: u16,
-  /// Folder for the rolling relay log
+  /// Folder for the optional object and cache-eviction logs
   #[default("/tmp")]
   pub log_folder: String,
   /// Cache expiration type (ttl or tti)
@@ -123,6 +123,9 @@ pub struct AppConfig {
   /// Token log file path
   #[default("/tmp/tokens.csv")]
   pub token_log_path: String,
+  /// Folder for qlog traces of control messages, one `.sqlog` file per connection.
+  /// Unset turns qlog off.
+  pub qlog_folder: Option<String>,
   /// Number of UDP sockets to listen on, all bound to the same port with
   /// SO_REUSEPORT. Connections are spread across them by the kernel, and each socket
   /// carries its own I/O readiness state, so drivers stop contending over one.

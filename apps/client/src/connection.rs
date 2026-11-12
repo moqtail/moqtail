@@ -15,7 +15,7 @@
 use crate::cli::Transport;
 use anyhow::Result;
 use moqtail::model::control::constant::SUPPORTED_VERSIONS;
-use moqtail::model::control::control_message::ControlMessageTrait;
+use moqtail::model::control::control_message::{ControlMessage, ControlMessageTrait};
 use moqtail::model::error::TerminationCode;
 use moqtail::model::{
   control::setup::{Setup, SetupSender},
@@ -105,6 +105,10 @@ impl MoqConnection {
       .write_all(&setup_bytes)
       .await
       .map_err(|e| anyhow::anyhow!("Failed to send CLIENT_SETUP: {e:?}"))?;
+    if moqtail::transport::qlog::enabled() {
+      let msg = ControlMessage::Setup(Box::new(client_setup));
+      moqtail::transport::qlog::control_message(0, send_stream.id(), true, &msg, &setup_bytes);
+    }
 
     info!("Waiting for server control stream...");
     let recv_stream = connection.accept_uni().await?;

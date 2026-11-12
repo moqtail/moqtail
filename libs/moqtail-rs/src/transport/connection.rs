@@ -158,6 +158,14 @@ pub enum TransportSendStream {
 }
 
 impl TransportSendStream {
+  /// The QUIC stream id.
+  pub fn id(&self) -> u64 {
+    match self {
+      Self::WebTransport(s) => s.quic_stream().id().into(),
+      Self::Quic(s) => s.id().into(),
+    }
+  }
+
   pub async fn write_all(&mut self, buf: &[u8]) -> Result<(), TransportWriteError> {
     match self {
       Self::WebTransport(s) => s.write_all(buf).await.map_err(Into::into),
@@ -227,6 +235,14 @@ pub enum TransportRecvStream {
 }
 
 impl TransportRecvStream {
+  /// The QUIC stream id.
+  pub fn id(&self) -> u64 {
+    match self {
+      Self::WebTransport(s) => s.quic_stream().id().into(),
+      Self::Quic(s) => s.id().into(),
+    }
+  }
+
   pub async fn read(&mut self, buf: &mut [u8]) -> Result<Option<usize>, TransportReadError> {
     match self {
       Self::WebTransport(s) => s.read(buf).await.map_err(Into::into),

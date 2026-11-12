@@ -22,7 +22,6 @@ socket2 = "0.6"
 thiserror = "2.0.21"
 tokio = { version = "1.53", features = ["full"] }
 tracing = "0.1.44"
-tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 validator = { version = "0.21.0", features = ["derive"] }
 wtransport = { version = "0.7.2", features = ["quinn"] }

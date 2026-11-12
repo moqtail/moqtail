@@ -362,8 +362,7 @@ if [[ -n "$REMOTE_RELAY_HOST" ]]; then
 else
   echo "Starting MOQtail relay on port $RELAY_PORT (transport=$TRANSPORT)..."
 
-  # log_folder gets its own rolling relay.log; the stdout copy is what this
-  # script tails for readiness.
+  # The relay logs to stdout; this script captures and tails it for readiness.
   relay_config_yaml "$LOG_DIR" > "$LOG_DIR/relay.yaml"
   RUST_LOG="$RELAY_LOG_SPEC" "$BINARY" \
     --config "$LOG_DIR/relay.yaml" \

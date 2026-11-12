@@ -31,6 +31,8 @@ cache_expiration: 30m
 enable_object_logging: false
 enable_token_logging: false
 token_log_path: /tmp/tokens.csv
+# qlog traces of control messages, one .sqlog file per connection (unset = off)
+# qlog_folder: /tmp/qlog
 
 # Load and subscriber limits (0 = off / unlimited)
 # Request streams served relay-wide before new ones get EXCESSIVE_LOAD.

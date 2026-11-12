@@ -15,7 +15,6 @@ bytes.workspace = true
 moqtail.workspace = true
 moqtail-ssts.workspace = true
 clap.workspace = true
-tracing-appender.workspace = true
 once_cell.workspace = true
 moka.workspace = true
 fnv.workspace = true

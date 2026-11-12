@@ -191,11 +191,18 @@ impl Session {
           SetupOption::new_authority(authority).try_into().unwrap(),
           SetupOption::new_path(path).try_into().unwrap(),
         ]);
-        let setup = setup.serialize().map_err(|e| anyhow::anyhow!("{e:?}"))?;
+        let setup_bytes = setup.serialize().map_err(|e| anyhow::anyhow!("{e:?}"))?;
         send_stream
-          .write_all(&setup)
+          .write_all(&setup_bytes)
           .await
           .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+        moqtail::transport::qlog::control_message(
+          context.connection_id,
+          send_stream.id(),
+          true,
+          &ControlMessage::Setup(Box::new(setup)),
+          &setup_bytes,
+        );
         Ok::<_, anyhow::Error>((send_stream, context.connection.accept_uni().await?))
       } else {
         let recv_stream = context.connection.accept_uni().await?;
@@ -492,6 +499,7 @@ impl Session {
       context.connection_id
     );
     context.connection.closed().await;
+    moqtail::transport::qlog::close(context.connection_id);
 
     // set the connection closed flag
     {

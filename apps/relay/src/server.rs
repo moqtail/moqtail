@@ -37,7 +37,6 @@ use std::time::Duration;
 use tokio::signal;
 use tokio::sync::{RwLock, watch};
 use tracing::{error, info, trace, warn};
-use tracing_subscriber::fmt::writer::MakeWriterExt;
 use tracing_subscriber::{EnvFilter, filter::LevelFilter};
 use track::track_manager::TrackManager;
 use wtransport::endpoint::IncomingSessionFuture;
@@ -66,7 +65,13 @@ impl Server {
   pub fn new() -> Self {
     let config = AppConfig::load();
 
-    init_logging(&config.log_folder);
+    init_logging();
+    if let Some(dir) = &config.qlog_folder {
+      match moqtail::transport::qlog::init(dir, "server") {
+        Ok(()) => info!("Writing qlog traces to {dir}"),
+        Err(e) => error!("Cannot write qlog traces to {dir}: {e}"),
+      }
+    }
 
     trace!("Server | App. Config.: {:?}", config);
 
@@ -257,21 +262,14 @@ impl Server {
   }
 }
 
-fn init_logging(log_dir: &str) {
+fn init_logging() {
   let env_filter = EnvFilter::builder()
     .with_default_directive(LevelFilter::INFO.into())
     .from_env_lossy();
-
-  // Ensure the log directory exists
-  std::fs::create_dir_all(log_dir).expect("Failed to create log directory");
-
-  let file_appender = tracing_appender::rolling::daily(log_dir, "relay.log");
-  let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
 
   tracing_subscriber::fmt()
     .with_target(true)
     .with_level(true)
     .with_env_filter(env_filter)
-    .with_writer(non_blocking.and(std::io::stdout))
     .init();
 }

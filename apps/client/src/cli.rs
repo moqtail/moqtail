@@ -148,6 +148,10 @@ pub struct Cli {
   #[arg(long, default_value_t = false)]
   pub no_cert_validation: bool,
 
+  /// Write a qlog trace of control messages into this folder (`.sqlog`, JSON-SEQ)
+  #[arg(long)]
+  pub qlog_folder: Option<String>,
+
   /// Delivery mode: how objects are sent/received (subgroup streams or QUIC datagrams)
   #[arg(long, value_enum, default_value = "subgroup")]
   pub delivery_mode: DeliveryMode,

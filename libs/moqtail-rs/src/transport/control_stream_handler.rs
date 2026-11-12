@@ -20,6 +20,7 @@ use crate::model::control::control_message::{ControlMessage, ControlMessageTrait
 use crate::model::control::setup::Setup;
 use crate::model::error::{ParseError, TerminationCode};
 use crate::transport::connection::{TransportReadError, TransportRecvStream, TransportSendStream};
+use crate::transport::qlog;
 
 const CONTROL_MESSAGE_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -68,6 +69,11 @@ impl ControlStreamHandler {
     self
   }
 
+  /// The connection a qlog event belongs to. A client has one, so 0 when unset.
+  fn qlog_conn(&self) -> usize {
+    self.peer_id.unwrap_or(0)
+  }
+
   /// Renders the peer connection for trace lines, e.g. `conn 12` or `conn ?`.
   fn peer(&self) -> String {
     match self.peer_id {
@@ -80,17 +86,11 @@ impl ControlStreamHandler {
     let bytes = message
       .serialize()
       .map_err(|_| TerminationCode::InternalError)?;
-    info!(
-      "control message sending to {} — {:?} ({} bytes): {}",
-      self.peer(),
-      message.get_type(),
-      bytes.len(),
-      to_hex(&bytes)
-    );
     if (self.send.write_all(&bytes).await).is_err() {
       warn!("Error sending message: {:?}", message);
       return Err(TerminationCode::InternalError);
     }
+    qlog::control_message(self.qlog_conn(), self.send.id(), true, message, &bytes);
     Ok(())
   }
 
@@ -133,16 +133,15 @@ impl ControlStreamHandler {
     let bytes = message
       .serialize()
       .map_err(|_| TerminationCode::InternalError)?;
-    info!(
-      "control message sending to {} — {:?} ({} bytes): {}",
-      self.peer(),
-      message.get_type(),
-      bytes.len(),
-      to_hex(&bytes)
-    );
     if (self.send.write_all(&bytes).await).is_err() {
       warn!("Error sending (send_impl) message: {:?}", message);
       return Err(TerminationCode::InternalError);
+    }
+    // Only the enum form maps to qlog, so reparse; costs nothing when qlog is off.
+    if qlog::enabled()
+      && let Ok(msg) = ControlMessage::deserialize(&mut bytes.clone())
+    {
+      qlog::control_message(self.qlog_conn(), self.send.id(), true, &msg, &bytes);
     }
     Ok(())
   }
@@ -171,12 +170,12 @@ impl ControlStreamHandler {
         match ControlMessage::deserialize(&mut bytes) {
           Ok(msg) => {
             let consumed = original_remaining - bytes.remaining();
-            info!(
-              "control message received from {} — {:?} ({} bytes): {}",
-              self.peer(),
-              msg.get_type(),
-              consumed,
-              to_hex(&self.recv_bytes[..consumed])
+            qlog::control_message(
+              self.qlog_conn(),
+              self.recv.id(),
+              false,
+              &msg,
+              &self.recv_bytes[..consumed],
             );
             self.recv_bytes.advance(consumed);
 
@@ -185,6 +184,7 @@ impl ControlStreamHandler {
             return Ok(msg);
           }
           Err(ParseError::ProtocolViolation { .. }) => {
+            qlog::parse_error(self.qlog_conn(), self.recv.id(), &self.recv_bytes);
             warn!(
               "control message received from {} failed to parse ({} bytes): {}",
               self.peer(),

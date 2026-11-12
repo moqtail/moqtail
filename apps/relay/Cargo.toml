@@ -9,6 +9,8 @@ anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 wtransport = { workspace = true, features = ["dangerous-configuration"] }
+# quinn's packet-level qlog; the relay turns it on in debug builds only.
+quinn = { version = "0.11", default-features = false, features = ["qlog"] }
 tokio.workspace = true
 serde_json.workspace = true
 bytes.workspace = true

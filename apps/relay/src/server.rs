@@ -90,7 +90,7 @@ impl Server {
   }
 
   pub async fn start(&mut self) -> Result<()> {
-    let endpoints = self.app_config.build_quic_endpoints().await?;
+    let (endpoints, quic_server_config) = self.app_config.build_quic_endpoints().await?;
 
     let bind = self.app_config.bind;
     // A wildcard address is not something a client can dial.
@@ -137,6 +137,7 @@ impl Server {
     let mut accept_loops = Vec::with_capacity(endpoints.len());
     for (socket_index, endpoint) in endpoints.into_iter().enumerate() {
       let server = self.clone();
+      let quic_server_config = quic_server_config.clone();
       let counter = session_id_counter.clone();
       let mut shutdown = shutdown_rx.clone();
       accept_loops.push(tokio::spawn(async move {
@@ -150,8 +151,9 @@ impl Server {
               };
               let id = counter.fetch_add(1, Ordering::Relaxed);
               let server = server.clone();
+              let quic_server_config = quic_server_config.clone();
               tokio::spawn(async move {
-                match Self::accept_incoming(incoming, server).await {
+                match Self::accept_incoming(incoming, server, &quic_server_config).await {
                   Ok(_) => {
                     info!("New session: {}", id);
                   }
@@ -219,9 +221,24 @@ impl Server {
   /// `h3` is routed to the existing WebTransport path, any MOQT version string
   /// (e.g. `moqt-18`) is routed to the raw-QUIC path. Both share the same port; see
   /// `AppConfig::build_quic_endpoints` for the listener setup.
-  async fn accept_incoming(incoming: quinn::Incoming, server: Server) -> Result<()> {
+  async fn accept_incoming(
+    incoming: quinn::Incoming,
+    server: Server,
+    quic_server_config: &quinn::ServerConfig,
+  ) -> Result<()> {
     let remote_addr = incoming.remote_address();
-    let mut connecting = incoming.accept()?;
+    // Debug builds trace this connection's QUIC packets when qlog is on.
+    #[cfg(debug_assertions)]
+    let own_config = quic_qlog_server_config(&server, quic_server_config, remote_addr);
+    #[cfg(not(debug_assertions))]
+    let own_config: Option<Arc<quinn::ServerConfig>> = {
+      let _ = quic_server_config;
+      None
+    };
+    let mut connecting = match own_config {
+      Some(config) => incoming.accept_with(config)?,
+      None => incoming.accept()?,
+    };
 
     let handshake_data = connecting.handshake_data().await?;
     let protocol = handshake_data
@@ -257,6 +274,40 @@ impl Server {
   }
 }
 
+/// A server config whose transport writes a QUIC qlog of this connection into the
+/// qlog folder. `None` when qlog is off or the file cannot be made. Packet events are
+/// written as quinn handles each packet, which is why only debug builds do this.
+#[cfg(debug_assertions)]
+fn quic_qlog_server_config(
+  server: &Server,
+  base: &quinn::ServerConfig,
+  remote: std::net::SocketAddr,
+) -> Option<Arc<quinn::ServerConfig>> {
+  let dir = server.app_config.qlog_folder.as_ref()?;
+  let started = std::time::SystemTime::now()
+    .duration_since(std::time::UNIX_EPOCH)
+    .map(|d| d.as_millis())
+    .unwrap_or(0);
+  let remote_name = remote.to_string().replace([':', '[', ']'], "_");
+  let path = std::path::Path::new(dir).join(format!("server_{started}_{remote_name}_quic.sqlog"));
+  let file = match std::fs::File::create(&path) {
+    Ok(file) => file,
+    Err(e) => {
+      warn!("Cannot create QUIC qlog {}: {e}", path.display());
+      return None;
+    }
+  };
+  let mut qlog = quinn::QlogConfig::default();
+  qlog
+    .writer(Box::new(std::io::BufWriter::new(file)))
+    .title(Some(format!("moqtail relay, remote {remote}")));
+  let mut transport = server.app_config.transport_config().ok()?;
+  transport.qlog_stream(qlog.into_stream());
+  let mut config = base.clone();
+  config.transport_config(Arc::new(transport));
+  Some(Arc::new(config))
+}
+
 fn init_logging(config: &AppConfig) {
   let env_filter = EnvFilter::builder()
     .with_default_directive(LevelFilter::INFO.into())
@@ -270,7 +321,11 @@ fn init_logging(config: &AppConfig) {
 
   if let Some(dir) = &config.qlog_folder {
     match qlog::init(dir, "server") {
-      Ok(()) => info!("Writing qlog traces to {dir}"),
+      Ok(()) => {
+        info!("Writing qlog traces to {dir}");
+        #[cfg(debug_assertions)]
+        info!("Debug build: also writing QUIC packet qlog per connection to {dir}");
+      }
       Err(e) => error!("Cannot write qlog traces to {dir}: {e}"),
     }
   }

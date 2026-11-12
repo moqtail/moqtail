@@ -332,7 +332,22 @@ impl AppConfig {
   /// differ only in owning separate UDP sockets, which is the point: a socket's I/O
   /// readiness state is behind a single lock, so every connection driver on one
   /// socket contends with every other for it.
-  pub async fn build_quic_endpoints(&self) -> Result<Vec<quinn::Endpoint>> {
+  /// The QUIC transport settings every connection uses.
+  pub fn transport_config(&self) -> Result<TransportConfig> {
+    // set up BBR congestion control
+    let mut transport_config = TransportConfig::default();
+    transport_config.congestion_controller_factory(Arc::new(BbrConfig::default()));
+    transport_config.keep_alive_interval(Some(self.keep_alive_interval));
+    transport_config.max_idle_timeout(Some(self.max_idle_timeout.try_into()?));
+    // Request flow control: bound the number of concurrent request streams a peer
+    // may open.
+    transport_config.max_concurrent_bidi_streams(self.max_request_stream_limit());
+    Ok(transport_config)
+  }
+
+  /// The endpoints, and the server config they share, for connections accepted
+  /// with settings of their own.
+  pub async fn build_quic_endpoints(&self) -> Result<(Vec<quinn::Endpoint>, quinn::ServerConfig)> {
     let identity = match Identity::load_pemfiles(&self.cert_file, &self.key_file).await {
       Ok(identity) => identity,
       Err(e) => {
@@ -353,17 +368,8 @@ impl AppConfig {
 
     let quic_crypto_config = quinn::crypto::rustls::QuicServerConfig::try_from(tls_config)?;
 
-    // set up BBR congestion control
-    let mut transport_config = TransportConfig::default();
-    transport_config.congestion_controller_factory(Arc::new(BbrConfig::default()));
-    transport_config.keep_alive_interval(Some(self.keep_alive_interval));
-    transport_config.max_idle_timeout(Some(self.max_idle_timeout.try_into()?));
-    // Request flow control: bound the number of concurrent request streams a peer
-    // may open.
-    transport_config.max_concurrent_bidi_streams(self.max_request_stream_limit());
-
     let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(quic_crypto_config));
-    server_config.transport_config(Arc::new(transport_config));
+    server_config.transport_config(Arc::new(self.transport_config()?));
 
     let count = self.listener_count();
     let runtime = quinn::default_runtime()
@@ -382,7 +388,7 @@ impl AppConfig {
       )?);
     }
 
-    Ok(endpoints)
+    Ok((endpoints, server_config))
   }
 
   /// How many UDP sockets to bind. Only Linux spreads connections across sockets

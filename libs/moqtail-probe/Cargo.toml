@@ -1,0 +1,14 @@
+[package]
+name = "moqtail-probe"
+description = "The interface between the MOQtail relay core and its observability layer"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[lib]
+doctest = false
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

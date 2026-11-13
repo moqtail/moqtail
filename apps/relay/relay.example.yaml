@@ -82,3 +82,19 @@ ssts_discard_timeout: 1600ms
 # Relays to dial over raw QUIC; announcements flow both ways over each link.
 peers: []
 peer_no_cert_validation: false
+
+# HTTP API under /api/v1 for observing the relay; off unless api_enable is true.
+api_enable: false
+# Address of the API; unset means 127.0.0.1:4480.
+# api_bind: 127.0.0.1:4480
+# Parts that run; unset means [health, state, metrics, latency, qlog].
+# Also available: events, actions (actions needs api_write_token).
+# api_features: [health, state, metrics, latency, qlog]
+# Client ranges allowed when api_bind is a network address; unset means loopback
+# only. Ignored on a loopback api_bind, where only local programs can connect.
+# api_allow: [127.0.0.1/32, ::1/128, 10.0.0.0/8]
+# Bearer token for reads (health and ready never need it), and for writes.
+# api_read_token: ""
+# api_write_token: ""
+# Browser origins allowed to call the API, such as the dashboard's.
+api_cors_origins: []

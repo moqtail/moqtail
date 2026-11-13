@@ -14,6 +14,7 @@
 
 mod cluster;
 mod config;
+pub(crate) mod inspect;
 mod logging;
 mod message_handlers;
 mod requests;
@@ -56,6 +57,10 @@ pub(crate) struct Server {
   pub active_request_streams: Arc<AtomicU64>,
   /// Set once the relay is draining (GOAWAY broadcast); new requests are rejected.
   pub draining: Arc<AtomicBool>,
+  /// Set once the QUIC listeners accept connections.
+  pub accepting: Arc<AtomicBool>,
+  /// When the relay started.
+  pub started_at: std::time::SystemTime,
   pub cluster: Arc<cluster::ClusterState>,
   /// GOAWAY redirect URI clients should migrate to. Seeded from config; a future
   /// admin API mutates this at runtime.
@@ -78,6 +83,8 @@ impl Server {
       relay_next_request_id: Arc::new(AtomicU64::new(0)), // see MOQTClient::next_request_id
       active_request_streams: Arc::new(AtomicU64::new(0)),
       draining: Arc::new(AtomicBool::new(false)),
+      accepting: Arc::new(AtomicBool::new(false)),
+      started_at: std::time::SystemTime::now(),
       cluster: Arc::default(),
       redirect_uri: Arc::new(RwLock::new(config.redirect_uri.clone())),
     }
@@ -167,6 +174,8 @@ impl Server {
         }
       }));
     }
+
+    self.accepting.store(true, Ordering::Relaxed);
 
     // SIGTERM drains the relay: broadcast GOAWAY, reject new requests, then exit
     // after the drain timeout.

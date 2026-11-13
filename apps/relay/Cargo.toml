@@ -16,6 +16,8 @@ serde_json.workspace = true
 bytes.workspace = true
 moqtail.workspace = true
 moqtail-ssts.workspace = true
+moqtail-probe = { path = "../../libs/moqtail-probe" }
+relay-api = { path = "../relay-api" }
 clap.workspace = true
 once_cell.workspace = true
 moka.workspace = true

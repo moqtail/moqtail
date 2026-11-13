@@ -13,12 +13,14 @@
 // limitations under the License.
 
 use tracing::Instrument;
+mod observability;
 mod server;
 use server::Server;
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
   let mut server = Server::new();
+  observability::start(&server)?;
   let _ = server
     .start()
     .instrument(tracing::trace_span!("server"))

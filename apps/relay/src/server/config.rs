@@ -17,7 +17,7 @@ use clap::Parser;
 use figment::Figment;
 use figment::providers::{Format, Yaml};
 use moqtail::model::control::constant::SUPPORTED_VERSIONS;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use smart_default::SmartDefault;
 use socket2::{Domain, Socket, Type};
 use std::net::{Ipv6Addr, SocketAddr, UdpSocket};
@@ -31,7 +31,7 @@ use wtransport::quinn::congestion::BbrConfig;
 use wtransport::quinn::{self, TransportConfig};
 
 /// Cache expiration strategy
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum CacheExpirationType {
   /// Time-to-live: entries expire after a fixed duration from creation
@@ -43,7 +43,7 @@ pub enum CacheExpirationType {
 /// How the relay picks the Track Alias it gives a subscriber. Either is allowed: a
 /// publisher may give concurrent subscriptions to one track the same alias or
 /// different ones, and subscribers have to handle both.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TrackAliasMode {
   /// One alias per track: every subscription to it gets the track's relay id.
@@ -82,7 +82,7 @@ pub struct Cli {
 /// The settings the relay runs on. YAML keys are the field names; a key left out
 /// takes the field's `#[default]`, and an unknown key is a startup error.
 /// Durations are written with units: `10s`, `500ms`, `30m`.
-#[derive(Debug, Clone, Deserialize, SmartDefault, Validate)]
+#[derive(Debug, Clone, Deserialize, Serialize, SmartDefault, Validate)]
 #[serde(default, deny_unknown_fields)]
 pub struct AppConfig {
   /// Address to bind. `[::]` (the default) takes IPv4 and IPv6 alike.
@@ -258,6 +258,24 @@ pub struct AppConfig {
   pub peers: Vec<String>,
   /// Skip certificate validation when dialing `peers` (self-signed dev certs).
   pub peer_no_cert_validation: bool,
+  /// Starts the HTTP API under `/api/v1`.
+  pub api_enable: bool,
+  /// Address of the API. Unset means `127.0.0.1:4480`.
+  pub api_bind: Option<SocketAddr>,
+  /// Parts of the API that run: health, state, metrics, latency, qlog, events,
+  /// actions. Unset means health, state, metrics, latency and qlog.
+  pub api_features: Option<Vec<String>>,
+  /// Client address ranges allowed on a network `api_bind`. Unset means loopback
+  /// only; ignored on a loopback `api_bind`.
+  pub api_allow: Option<Vec<String>>,
+  /// When set, API reads need it as a bearer token, except health and readiness.
+  #[serde(skip_serializing)]
+  pub api_read_token: Option<String>,
+  /// Needed for the API's write endpoints; also allows reads.
+  #[serde(skip_serializing)]
+  pub api_write_token: Option<String>,
+  /// Browser origins allowed to call the API, such as the dashboard's.
+  pub api_cors_origins: Vec<String>,
 }
 
 impl AppConfig {

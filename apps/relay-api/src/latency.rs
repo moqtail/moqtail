@@ -221,6 +221,16 @@ impl Latency {
     Some((now - start.at, start.relay, start.tracks.clone()))
   }
 
+  /// Percentiles of one relay-wide stage (ingest, queue, write, total, first object,
+  /// in that order) over `window`.
+  pub fn stage_summary(&self, stage: usize, window: Duration) -> Summary {
+    let now = self.relay_counts()[stage];
+    let before = self
+      .window_start(Some(window))
+      .map_or([0; BUCKETS], |(_, relay, _)| relay[stage]);
+    summarize(&minus(&now, &before))
+  }
+
   /// Percentiles of one track over the last minute, if it is kept.
   pub fn track_summary(&self, track_id: u64) -> Option<Summary> {
     let track = self.tracks.lock().unwrap().get(&track_id)?.upgrade()?;

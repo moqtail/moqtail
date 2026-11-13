@@ -1410,6 +1410,7 @@ dependencies = [
  "tokio",
  "tower",
  "tracing",
+ "wtransport",
 ]
 
 [[package]]

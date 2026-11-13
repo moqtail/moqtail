@@ -27,6 +27,7 @@ mod events;
 mod latency;
 mod list;
 mod metrics;
+mod metrics_track;
 mod overview;
 mod probe;
 mod qlog;
@@ -62,14 +63,15 @@ impl ApiState {
   pub(crate) fn new(config: ApiConfig, inspect: Arc<dyn Inspect>) -> Self {
     let zones = Arc::new(zones::Zones::new(&config.accounting_zones));
     let control = Arc::new(ControlTracker::new(config.upstream_timeout, zones.clone()));
-    let latency = config.has(Feature::Latency).then(|| {
+    let latency = (config.has(Feature::Latency) || config.metrics_track.is_some()).then(|| {
       Arc::new(latency::Latency::new(
         config.latency_detail,
         config.latency_sample,
         config.slowlog,
       ))
     });
-    let counters = config.has(Feature::Metrics).then(Arc::default);
+    let counters =
+      (config.has(Feature::Metrics) || config.metrics_track.is_some()).then(Arc::default);
     let probe = Arc::new(ApiProbe::new(
       config.has(Feature::State) || config.has(Feature::Metrics),
       config.closed_connection_history,
@@ -142,7 +144,10 @@ pub fn start(config: ApiConfig, inspect: Arc<dyn Inspect>) -> Result<Arc<dyn Pro
   let (bind, metrics_bind) = (config.bind, config.metrics_bind);
   let state = Arc::new(ApiState::new(config, inspect));
   let probe: Arc<dyn Probe> = state.probe.clone();
-  if state.config.has(Feature::State) || state.config.has(Feature::Metrics) {
+  if state.config.has(Feature::State)
+    || state.config.has(Feature::Metrics)
+    || state.config.metrics_track.is_some()
+  {
     moqtail::transport::observe::set_control_observer(state.control.clone());
   }
   if let Some(counters) = &state.counters {
@@ -171,6 +176,9 @@ pub fn start(config: ApiConfig, inspect: Arc<dyn Inspect>) -> Result<Arc<dyn Pro
       };
       if let Some(latency) = state.probe.latency.clone() {
         runtime.spawn(latency::copy_periodically(latency));
+      }
+      if let Some((relay, resource_id)) = state.config.metrics_track.clone() {
+        runtime.spawn(metrics_track::run(state.clone(), relay, resource_id));
       }
       if let Some(listener) = metrics {
         runtime.spawn(serve(listener, routes::metrics_router(state.clone())));

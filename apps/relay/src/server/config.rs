@@ -305,6 +305,12 @@ pub struct AppConfig {
   /// Namespace prefixes (`a/b`) whose traffic and requests the API counts
   /// separately; a namespace belongs to the longest prefix it falls under.
   pub accounting_zones: Vec<String>,
+  /// Publish the relay's own metrics as MoQ tracks under
+  /// `metrics.moq.arpa/v1/<metrics_resource_id>`. Needs `api_enable`.
+  pub metrics_track_enable: bool,
+  /// 16 lowercase hexadecimal characters naming this relay in the metrics
+  /// namespace; unset makes one up each time the relay starts.
+  pub metrics_resource_id: Option<String>,
 }
 
 impl AppConfig {

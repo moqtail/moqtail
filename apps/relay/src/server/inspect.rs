@@ -231,7 +231,7 @@ mod relay {
     TrackInfo {
       track_id: track.relay_track_id,
       namespace: namespace_text(&track.full_track_name.namespace),
-      name: track.full_track_name.name.to_string(),
+      name: super::field_text(&track.full_track_name.name),
       origin: origin.to_string(),
       status: status.to_string(),
       publishers,
@@ -466,13 +466,23 @@ fn close_info(connection: &TransportConnection) -> CloseInfo {
 }
 
 fn track_text(name: &FullTrackName) -> String {
-  format!("{} : {}", namespace_text(&name.namespace), name.name)
+  format!(
+    "{} : {}",
+    namespace_text(&name.namespace),
+    field_text(&name.name)
+  )
 }
 
 /// A namespace as its fields joined by `/`, for example `live/room1`.
 fn namespace_text(namespace: &Tuple) -> String {
-  let fields: Vec<String> = namespace.fields.iter().map(|f| f.to_string()).collect();
+  let fields: Vec<String> = namespace.fields.iter().map(field_text).collect();
   fields.join("/")
+}
+
+/// A field as text. Readable rather than escaped, so `metrics.moq.arpa` stays as it
+/// is; bytes that are not UTF-8 show as the replacement character.
+fn field_text(field: &moqtail::model::common::tuple::TupleField) -> String {
+  String::from_utf8_lossy(field.as_bytes()).into_owned()
 }
 
 fn location_text(location: &Location) -> String {

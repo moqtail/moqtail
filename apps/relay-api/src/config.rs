@@ -171,6 +171,13 @@ pub struct ApiSettings {
   pub slowlog_size: usize,
   /// Namespace prefixes whose traffic is counted separately.
   pub accounting_zones: Vec<String>,
+  /// Publish the relay's metrics as MoQ tracks.
+  pub metrics_track_enable: bool,
+  /// 16 lowercase hexadecimal characters; unset makes one up for the process.
+  pub metrics_resource_id: Option<String>,
+  /// Where the metrics publisher reaches the relay: a loopback address and its
+  /// QUIC port.
+  pub relay_addr: Option<SocketAddr>,
 }
 
 /// The API's settings after parsing and the startup checks.
@@ -201,6 +208,9 @@ pub struct ApiConfig {
   pub latency_sample: u64,
   pub slowlog: SlowlogConfig,
   pub accounting_zones: Vec<String>,
+  /// Set when the relay publishes its metrics as MoQ tracks: the relay's loopback
+  /// address and the resource id.
+  pub metrics_track: Option<(SocketAddr, String)>,
 }
 
 pub const DEFAULT_BIND: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 4480);
@@ -293,6 +303,14 @@ impl ApiConfig {
       Some(name) => LatencyDetail::parse(name)?,
       None => LatencyDetail::Subscription,
     };
+    let metrics_track = match (settings.metrics_track_enable, settings.relay_addr) {
+      (true, Some(addr)) => Some((
+        addr,
+        crate::metrics_track::resource_id(settings.metrics_resource_id.as_deref())?,
+      )),
+      (true, None) => bail!("metrics_track_enable needs the relay's address"),
+      (false, _) => None,
+    };
     let read_token = settings.read_token.filter(|t| !t.is_empty());
     let write_token = settings.write_token.filter(|t| !t.is_empty());
 
@@ -343,6 +361,7 @@ impl ApiConfig {
           size: settings.slowlog_size,
         },
         accounting_zones: settings.accounting_zones,
+        metrics_track,
       },
       warnings,
     ))

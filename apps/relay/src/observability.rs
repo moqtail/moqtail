@@ -47,6 +47,9 @@ pub fn start(server: &Server) -> Result<()> {
     slowlog_first_object_threshold: c.slowlog_first_object_threshold,
     slowlog_size: c.slowlog_size,
     accounting_zones: c.accounting_zones.clone(),
+    metrics_track_enable: c.metrics_track_enable,
+    metrics_resource_id: c.metrics_resource_id.clone(),
+    relay_addr: Some(loopback_of(c.bind)),
   })?;
   for warning in warnings {
     warn!("{warning}");
@@ -54,6 +57,16 @@ pub fn start(server: &Server) -> Result<()> {
   let probe = relay_api::start(config, Arc::new(RelayInspect(server.clone())))?;
   moqtail_probe::install(probe);
   Ok(())
+}
+
+/// The address this machine reaches the relay's QUIC listener at.
+fn loopback_of(bind: std::net::SocketAddr) -> std::net::SocketAddr {
+  let ip = if bind.ip().is_unspecified() {
+    std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+  } else {
+    bind.ip()
+  };
+  std::net::SocketAddr::new(ip, bind.port())
 }
 
 #[cfg(test)]

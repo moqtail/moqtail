@@ -20,6 +20,7 @@ serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+wtransport = { workspace = true, features = ["dangerous-configuration"] }
 
 [dev-dependencies]
 http-body-util = "0.1"

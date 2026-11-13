@@ -116,3 +116,8 @@ slowlog_size: 1000
 # Namespace prefixes counted separately in /api/v1/zones and the metrics, such as
 # one per tenant; a namespace belongs to the longest prefix it falls under.
 accounting_zones: []
+# Publish the relay's own metrics as MoQ tracks (catalog, "4" every second, "6"
+# every ten seconds) under metrics.moq.arpa/v1/<metrics_resource_id>. The
+# publisher connects to this relay over loopback. Needs api_enable.
+metrics_track_enable: false
+# metrics_resource_id: 0123456789abcdef

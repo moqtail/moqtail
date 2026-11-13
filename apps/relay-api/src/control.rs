@@ -417,7 +417,11 @@ fn request_namespace(message: &ControlMessage) -> Option<String> {
     ControlMessage::SubscribeTracks(m) => &m.track_namespace_prefix,
     _ => return None,
   };
-  let fields: Vec<String> = tuple.fields.iter().map(|f| f.to_string()).collect();
+  let fields: Vec<String> = tuple
+    .fields
+    .iter()
+    .map(|f| String::from_utf8_lossy(f.as_bytes()).into_owned())
+    .collect();
   Some(fields.join("/"))
 }
 

@@ -138,6 +138,19 @@ impl ApiState {
   }
 }
 
+/// The API's routes and the reporter the relay core reports to, without opening
+/// listeners or starting the runtime. `start` serves this router; the
+/// request-level tests in `tests/` drive it directly.
+pub fn router(
+  config: ApiConfig,
+  inspect: Arc<dyn Inspect>,
+  actions: Arc<dyn Actions>,
+) -> (axum::Router, Arc<dyn Reporter>) {
+  let state = Arc::new(ApiState::new(config, inspect, actions));
+  let reporter: Arc<dyn Reporter> = state.reporter.clone();
+  (http::router(state), reporter)
+}
+
 /// Binds the API's listener and serves it from a dedicated thread. Returns once the
 /// socket is bound, so a port already in use is reported at relay startup. The
 /// returned reporter is the one the relay core should report to.
@@ -221,6 +234,3 @@ async fn serve(listener: std::net::TcpListener, router: axum::Router) {
     error!("API server on {addr:?} stopped: {e}");
   }
 }
-
-#[cfg(test)]
-mod tests;

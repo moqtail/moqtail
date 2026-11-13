@@ -143,17 +143,23 @@ pub async fn list(
 pub async fn detail(
   State(state): State<Arc<ApiState>>,
   Path(conn_id): Path<u64>,
-) -> Result<Json<Connection>, ApiError> {
+) -> Result<Json<serde_json::Value>, ApiError> {
   let open = state.open_connections_with_counts().await;
   if let Some(found) = open.into_iter().find(|c| c.info.conn_id == conn_id) {
-    return Ok(Json(found));
+    let mut body = serde_json::json!(found);
+    if let Some(subscriptions) = body["subscriptions"].as_array_mut() {
+      for s in subscriptions {
+        state.add_subscription_processing(conn_id, s);
+      }
+    }
+    return Ok(Json(body));
   }
   state
     .probe
     .closed_connections()
     .into_iter()
     .find(|c| c.info.conn_id == conn_id)
-    .map(Json)
+    .map(|c| Json(serde_json::json!(c)))
     .ok_or_else(|| {
       ApiError::new(StatusCode::NOT_FOUND, "unknown_connection")
         .detail(format!("no open or recently closed connection {conn_id}"))

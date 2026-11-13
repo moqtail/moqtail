@@ -106,6 +106,18 @@ const ENDPOINTS: &[Endpoint] = &[
   },
   Endpoint {
     method: "GET",
+    path: "/api/v1/latency",
+    feature: Feature::Latency,
+    route: || get(crate::latency::report),
+  },
+  Endpoint {
+    method: "GET",
+    path: "/api/v1/latency/slow",
+    feature: Feature::Latency,
+    route: || get(crate::latency::slowlog),
+  },
+  Endpoint {
+    method: "GET",
     path: "/api/v1/qlog",
     feature: Feature::Qlog,
     route: || get(crate::qlog::index),

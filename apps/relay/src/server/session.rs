@@ -161,7 +161,6 @@ impl Session {
       server.active_request_streams.clone(),
       draining,
       server.cluster.clone(),
-      server.probe.clone(),
     ));
 
     info!(

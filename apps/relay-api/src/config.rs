@@ -15,6 +15,7 @@
 //! The API's settings, parsed from the relay's `api_*` configuration, and the
 //! startup rules that refuse configurations which would expose the API.
 
+use crate::latency::{LatencyDetail, SlowlogConfig};
 use anyhow::{Result, bail};
 use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -156,6 +157,16 @@ pub struct ApiSettings {
   pub closed_connection_history: usize,
   pub qlog_folder: Option<std::path::PathBuf>,
   pub upstream_timeout: std::time::Duration,
+  /// `relay`, `track` or `subscription`; unset means `subscription`.
+  pub latency_detail: Option<String>,
+  /// Measure every Nth object; 0 and 1 measure every object.
+  pub latency_sample: u64,
+  /// Deliveries slower than this go to the slowlog.
+  pub slowlog_threshold: std::time::Duration,
+  /// Subscriptions waiting longer than this for their first object go to the slowlog.
+  pub slowlog_first_object_threshold: std::time::Duration,
+  /// Slowlog entries kept.
+  pub slowlog_size: usize,
 }
 
 /// The API's settings after parsing and the startup checks.
@@ -176,6 +187,9 @@ pub struct ApiConfig {
   /// How long the relay waits for a publisher to answer; an upstream request
   /// unanswered for longer counts as timed out.
   pub upstream_timeout: std::time::Duration,
+  pub latency_detail: LatencyDetail,
+  pub latency_sample: u64,
+  pub slowlog: SlowlogConfig,
 }
 
 pub const DEFAULT_BIND: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 4480);
@@ -217,6 +231,10 @@ impl ApiConfig {
       None => default_allow(),
     };
 
+    let latency_detail = match &settings.latency_detail {
+      Some(name) => LatencyDetail::parse(name)?,
+      None => LatencyDetail::Subscription,
+    };
     let read_token = settings.read_token.filter(|t| !t.is_empty());
     let write_token = settings.write_token.filter(|t| !t.is_empty());
 
@@ -271,6 +289,13 @@ impl ApiConfig {
         closed_connection_history: settings.closed_connection_history,
         qlog_folder: settings.qlog_folder,
         upstream_timeout: settings.upstream_timeout,
+        latency_detail,
+        latency_sample: settings.latency_sample.max(1),
+        slowlog: SlowlogConfig {
+          threshold: settings.slowlog_threshold,
+          first_object_threshold: settings.slowlog_first_object_threshold,
+          size: settings.slowlog_size,
+        },
       },
       warnings,
     ))

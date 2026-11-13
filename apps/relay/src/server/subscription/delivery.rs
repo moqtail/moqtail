@@ -15,6 +15,7 @@
 //! What a subscription does with each event from its track: the filters and forward state an Object passes before it is written.
 
 use super::stream_writer::for_mid_subgroup_stream;
+use super::subscription_manager::EventTimes;
 use super::{DEFAULT_PUBLISHER_PRIORITY, Subscription};
 use crate::server::message_handlers::fetch_handler::FetchStop;
 use crate::server::stream_id::StreamId;
@@ -61,7 +62,22 @@ impl Subscription {
     true
   }
 
-  pub(super) async fn handle_track_event(&self, queued_at: Instant, event: TrackEvent) {
+  /// Records a delivery's processing time, when the subscription is measured.
+  fn record_written(&self, times: EventTimes, picked: Option<Instant>, location: &Location) {
+    if let (Some(stats), Some(picked)) = (&self.stats, picked) {
+      stats.object_written(
+        times.arrived,
+        times.queued,
+        picked,
+        location.group,
+        location.object,
+      );
+    }
+  }
+
+  pub(super) async fn handle_track_event(&self, times: EventTimes, event: TrackEvent) {
+    // Read the clock only when the delivery is measured.
+    let picked = self.stats.as_ref().map(|_| Instant::now());
     trace!(
       "Event received for subscriber={} relay_track_id={} event: {:?}",
       self.client_connection_id, self.relay_track_id, event
@@ -73,10 +89,10 @@ impl Subscription {
         header_info,
       } => {
         self
-          .on_subgroup_object(queued_at, object, stream_id, header_info)
+          .on_subgroup_object(times, picked, object, stream_id, header_info)
           .await
       }
-      TrackEvent::Datagram { object } => self.on_datagram(queued_at, object).await,
+      TrackEvent::Datagram { object } => self.on_datagram(times, picked, object).await,
       TrackEvent::StreamClosed { stream_id } => {
         debug!(
           "Received StreamClosed event: subscriber={} stream_id={} relay_track_id={}",
@@ -113,7 +129,8 @@ impl Subscription {
 
   async fn on_subgroup_object(
     &self,
-    queued_at: Instant,
+    times: EventTimes,
+    picked: Option<Instant>,
     object: Arc<Object>,
     stream_id: StreamId,
     header_info: Option<HeaderInfo>,
@@ -222,7 +239,7 @@ impl Subscription {
       }
 
       let timeout = state.delivery_timeout(self.config.delivery_timeout);
-      if self.skips_group(object.location.group, queued_at, timeout) {
+      if self.skips_group(object.location.group, times.queued, timeout) {
         drop(state);
         // The stream's Objects so far went out, but the rest of the group won't.
         if self
@@ -433,6 +450,7 @@ impl Subscription {
 
       // Update the last object ID for this stream if successful
       if send_status {
+        self.record_written(times, picked, &object.location);
         let mut send_stream_last_object_ids = self.send_stream_last_object_ids.write().await;
         send_stream_last_object_ids.insert(stream_id.clone(), Some(object.location.object));
         drop(send_stream_last_object_ids); // Release the lock immediately
@@ -476,7 +494,7 @@ impl Subscription {
     }
   }
 
-  async fn on_datagram(&self, queued_at: Instant, object: Arc<Datagram>) {
+  async fn on_datagram(&self, times: EventTimes, picked: Option<Instant>, object: Arc<Datagram>) {
     // Handle datagram - serialize full MOQT datagram format
     // Must include type, track_alias, group_id, object_id, publisher_priority, and payload
 
@@ -535,7 +553,7 @@ impl Subscription {
       }
 
       let timeout = state.delivery_timeout(self.config.delivery_timeout);
-      if self.skips_group(location.group, queued_at, timeout) {
+      if self.skips_group(location.group, times.queued, timeout) {
         return;
       }
     }
@@ -552,6 +570,7 @@ impl Subscription {
         {
           error!("Failed to write datagram: {:?}", e);
         } else {
+          self.record_written(times, picked, &location);
           self
             .subscription_state
             .write()

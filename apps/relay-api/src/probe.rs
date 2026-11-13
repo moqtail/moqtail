@@ -16,6 +16,8 @@
 //! relay core reports.
 
 use crate::control::{ConnectionCounts, ControlTracker};
+use crate::latency::Latency;
+use moqtail_probe::stats::SubscriptionStats;
 use moqtail_probe::{ConnectionInfo, Probe};
 use serde::Serialize;
 use std::collections::VecDeque;
@@ -37,15 +39,23 @@ pub(crate) struct ApiProbe {
   /// The most recently closed connections, oldest first.
   closed: Mutex<VecDeque<Connection>>,
   control: Arc<ControlTracker>,
+  /// `None` unless the `latency` feature is on.
+  pub latency: Option<Arc<Latency>>,
 }
 
 impl ApiProbe {
-  pub fn new(keep_state: bool, closed_capacity: usize, control: Arc<ControlTracker>) -> Self {
+  pub fn new(
+    keep_state: bool,
+    closed_capacity: usize,
+    control: Arc<ControlTracker>,
+    latency: Option<Arc<Latency>>,
+  ) -> Self {
     ApiProbe {
       keep_state,
       closed_capacity,
       closed: Mutex::new(VecDeque::new()),
       control,
+      latency,
     }
   }
 
@@ -72,5 +82,15 @@ impl Probe for ApiProbe {
       closed.pop_front();
     }
     closed.push_back(Connection { info, counts });
+  }
+
+  fn subscription_stats(
+    &self,
+    track_id: u64,
+    conn_id: u64,
+    request_id: u64,
+  ) -> Option<Arc<SubscriptionStats>> {
+    let latency = self.latency.as_ref()?;
+    Some(latency.subscription_stats(track_id, conn_id, request_id))
   }
 }

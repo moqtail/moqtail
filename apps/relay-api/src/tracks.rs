@@ -21,7 +21,8 @@ use axum::Json;
 use axum::extract::rejection::QueryRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use moqtail_probe::{TrackDetail, TrackInfo};
+use moqtail_probe::TrackInfo;
+use serde_json::{Value, json};
 use std::sync::Arc;
 
 const SORT_KEYS: &[&str] = &["track_id", "subscribers", "publishers", "cached_groups"];
@@ -29,7 +30,7 @@ const SORT_KEYS: &[&str] = &["track_id", "subscribers", "publishers", "cached_gr
 pub async fn list(
   State(state): State<Arc<ApiState>>,
   query: Result<Query<ListQuery>, QueryRejection>,
-) -> Result<Json<Page<TrackInfo>>, ApiError> {
+) -> Result<Json<Page<Value>>, ApiError> {
   let query = parse_query(query)?;
   let tracks = state.tracks().await;
   let matching: Vec<TrackInfo> = tracks
@@ -51,7 +52,24 @@ pub async fn list(
       _ => return None,
     }))
   })?;
-  Ok(Json(page))
+  let items = page
+    .items
+    .into_iter()
+    .map(|t| {
+      let processing = state.track_processing(t.track_id);
+      let mut item = json!(t);
+      if let Some(processing) = processing {
+        item["processing_ms"] = processing;
+      }
+      item
+    })
+    .collect();
+  Ok(Json(Page {
+    total: page.total,
+    offset: page.offset,
+    limit: page.limit,
+    items,
+  }))
 }
 
 /// One track with every subscription and its cache contents. Not cached: it is
@@ -59,13 +77,20 @@ pub async fn list(
 pub async fn detail(
   State(state): State<Arc<ApiState>>,
   Path(track_id): Path<u64>,
-) -> Result<Json<TrackDetail>, ApiError> {
-  state
-    .inspect
-    .track(track_id)
-    .await
-    .map(Json)
-    .ok_or_else(|| {
-      ApiError::new(StatusCode::NOT_FOUND, "unknown_track").detail(format!("no track {track_id}"))
-    })
+) -> Result<Json<Value>, ApiError> {
+  let detail = state.inspect.track(track_id).await.ok_or_else(|| {
+    ApiError::new(StatusCode::NOT_FOUND, "unknown_track").detail(format!("no track {track_id}"))
+  })?;
+  let mut body = json!(detail);
+  if let Some(processing) = state.track_processing(track_id) {
+    body["processing_ms"] = processing;
+  }
+  if let Some(subscriptions) = body["subscriptions"].as_array_mut() {
+    for s in subscriptions {
+      if let Some(conn_id) = s["conn_id"].as_u64() {
+        state.add_subscription_processing(conn_id, s);
+      }
+    }
+  }
+  Ok(Json(body))
 }

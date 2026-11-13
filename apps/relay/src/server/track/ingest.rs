@@ -112,6 +112,7 @@ impl Track {
     object: &Object,
     header_info: Option<&HeaderInfo>,
   ) -> Result<()> {
+    let arrived = crate::server::inspect::arrival_time();
     trace!(
       "new_subgroup_object: relay_track_id={} location: {:?} stream_id={} diff_ms={}",
       self.relay_track_id,
@@ -160,7 +161,7 @@ impl Track {
     };
     self
       .subscription_manager
-      .send_event_to_subscribers(event)
+      .send_object_event(event, arrived)
       .await?;
     Ok(())
   }
@@ -173,6 +174,7 @@ impl Track {
   }
 
   pub async fn new_datagram(&self, datagram: &Datagram) -> Result<()> {
+    let arrived = crate::server::inspect::arrival_time();
     self.datagram_arrivals.arrived();
     trace!(
       "new_datagram: relay_track_id={} group: {:?} object_id={} diff_ms={}",
@@ -221,7 +223,7 @@ impl Track {
 
     self
       .subscription_manager
-      .send_event_to_subscribers(event)
+      .send_object_event(event, arrived)
       .await?;
 
     Ok(())

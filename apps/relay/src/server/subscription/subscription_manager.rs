@@ -36,7 +36,17 @@ use tracing::{error, info, trace, warn};
 
 pub type SubscriptionId = (usize, u64); // connection_id and request_id
 /// An event and when it was queued, so the subscriber can tell how late it is.
-pub type QueuedEvent = (Instant, TrackEvent);
+/// When an event passed the relay before reaching a subscription's queue.
+#[derive(Debug, Clone, Copy)]
+pub struct EventTimes {
+  /// When the object was read from the publisher; `None` when the relay is built
+  /// without measuring processing time.
+  pub arrived: Option<Instant>,
+  /// When the event was handed to the subscribers' queues.
+  pub queued: Instant,
+}
+
+pub type QueuedEvent = (EventTimes, TrackEvent);
 pub type SubscriberSenderMap =
   HashMap<SubscriptionId, (UnboundedSender<QueuedEvent>, Arc<SubscriberQueue>)>;
 
@@ -301,14 +311,29 @@ impl SubscriptionManager {
     self.subscriptions.read().await.len()
   }
 
-  // Send event to all subscribers
+  /// Sends an event that did not come from a publisher's object, such as a closed
+  /// stream, to all subscribers.
   pub async fn send_event_to_subscribers(
     &self,
     event: TrackEvent,
   ) -> Result<Vec<SubscriptionId>, anyhow::Error> {
+    self.send_object_event(event, None).await
+  }
+
+  /// Sends an event to all subscribers. `arrived` is when its object was read from
+  /// the publisher.
+  pub async fn send_object_event(
+    &self,
+    event: TrackEvent,
+    arrived: Option<Instant>,
+  ) -> Result<Vec<SubscriptionId>, anyhow::Error> {
     let mut failed_subscriptions = Vec::new();
     let mut total_subscriptions = 0;
     let queued_at = Instant::now();
+    let times = EventTimes {
+      arrived,
+      queued: queued_at,
+    };
     let bytes = event.queued_bytes();
     let max_bytes = self.config.max_subscriber_queue_bytes;
 
@@ -339,7 +364,7 @@ impl SubscriptionManager {
           }
         }
         queue.bytes.fetch_add(bytes, Ordering::Relaxed);
-        if let Err(e) = sender.send((queued_at, event.clone())) {
+        if let Err(e) = sender.send((times, event.clone())) {
           queue.bytes.fetch_sub(bytes, Ordering::Relaxed);
           error!(
             "Failed to send event to subscription {:?}: {}",

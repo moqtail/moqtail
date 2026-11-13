@@ -22,7 +22,7 @@ use server::Server;
 async fn main() -> Result<(), anyhow::Error> {
   let mut server = Server::new();
   #[cfg(feature = "observability")]
-  observability::start(&mut server)?;
+  observability::start(&server)?;
   let _ = server
     .start()
     .instrument(tracing::trace_span!("server"))

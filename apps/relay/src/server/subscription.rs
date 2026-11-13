@@ -98,6 +98,8 @@ pub struct Subscription {
   /// the track's relay id or one of the subscription's own, as `track_alias_mode`
   /// decides; `relay_track_id` stays the relay's internal name for the track.
   pub track_alias: u64,
+  /// Where this subscription records its processing time; `None` when unmeasured.
+  stats: Option<Arc<moqtail_probe::stats::SubscriptionStats>>,
   pub full_track_name: FullTrackName,
   pub subscription_state: Arc<RwLock<SubscriptionState>>,
   subscriber: Arc<MOQTClient>,
@@ -160,11 +162,17 @@ impl Subscription {
     config: &'static AppConfig,
     active_subgroup_headers: ActiveSubgroupHeaderMap,
   ) -> Self {
+    let stats = moqtail_probe::probe().subscription_stats(
+      relay_track_id,
+      client_connection_id as u64,
+      request_id,
+    );
     Self {
       ssts_gate: Arc::new(ForwardGate::new(full_track_name.clone(), relay_track_id)),
       relay_track_id,
       track_alias,
       full_track_name,
+      stats,
       request_id,
       subscription_state: Arc::new(RwLock::new(origin_message.into())),
       subscriber,
@@ -569,9 +577,9 @@ impl Subscription {
     }
 
     match recv_result {
-      Some((queued_at, event)) if !self.finished.load(Ordering::Relaxed) => {
+      Some((times, event)) if !self.finished.load(Ordering::Relaxed) => {
         drop(event_rx_guard);
-        self.handle_track_event(queued_at, event).await;
+        self.handle_track_event(times, event).await;
       }
       Some(_) => {
         event_rx_guard.take();

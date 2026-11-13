@@ -34,6 +34,15 @@ use wtransport::quinn::ConnectionError;
 #[cfg(feature = "observability")]
 pub(crate) use relay::RelayInspect;
 
+/// When an object arrived from its publisher, for measuring its processing time.
+/// Builds without the observability layer read no clock.
+pub(crate) fn arrival_time() -> Option<std::time::Instant> {
+  #[cfg(feature = "observability")]
+  return Some(std::time::Instant::now());
+  #[cfg(not(feature = "observability"))]
+  None
+}
+
 /// The `Inspect` implementation, built only with the observability layer.
 #[cfg(feature = "observability")]
 mod relay {
@@ -192,13 +201,14 @@ mod relay {
 /// Reports a closing session's connection to the probe, as it was when it closed.
 /// Called before the session's state is cleaned up.
 pub(crate) async fn report_closed(context: &SessionContext) {
-  if !context.probe.keeps_closed_connections() {
+  let probe = moqtail_probe::probe();
+  if !probe.keeps_closed_connections() {
     return;
   }
   if let Some(client) = context.get_client().await {
     let close = close_info(&context.connection);
     let info = connection_info(&client, false, Some(close)).await;
-    context.probe.connection_closed(info);
+    probe.connection_closed(info);
   }
 }
 

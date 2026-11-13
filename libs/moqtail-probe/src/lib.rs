@@ -19,9 +19,13 @@
 //! exports that state lives in the observability crate, which the core never
 //! imports.
 
+pub mod stats;
+
 use serde::Serialize;
+use stats::SubscriptionStats;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::{Arc, OnceLock};
 
 /// A boxed future, so [`Inspect`] can be used as a trait object.
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -64,12 +68,37 @@ pub trait Probe: Send + Sync {
   /// A connection closed. `connection` describes it as it was at that moment, with
   /// its close reason set.
   fn connection_closed(&self, _connection: ConnectionInfo) {}
+
+  /// The handle a new subscription records its deliveries with; `None` when
+  /// processing time is not measured, so the subscription records nothing.
+  fn subscription_stats(
+    &self,
+    _track_id: u64,
+    _conn_id: u64,
+    _request_id: u64,
+  ) -> Option<Arc<SubscriptionStats>> {
+    None
+  }
 }
 
 /// The probe that ignores everything.
 pub struct NoProbe;
 
 impl Probe for NoProbe {}
+
+static PROBE: OnceLock<Arc<dyn Probe>> = OnceLock::new();
+
+/// Installs the probe the relay core reports to, once, before the relay serves
+/// anything. Later calls are ignored.
+pub fn install(probe: Arc<dyn Probe>) {
+  let _ = PROBE.set(probe);
+}
+
+/// The installed probe, or [`NoProbe`] when none is.
+pub fn probe() -> &'static dyn Probe {
+  static NONE: NoProbe = NoProbe;
+  PROBE.get().map_or(&NONE as &dyn Probe, |p| p.as_ref())
+}
 
 /// The relay's identity and lifecycle state.
 #[derive(Debug, Clone, Serialize)]

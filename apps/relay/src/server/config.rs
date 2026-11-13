@@ -279,6 +279,23 @@ pub struct AppConfig {
   /// Closed connections the API keeps a summary of, oldest dropped first.
   #[default(10_000)]
   pub closed_connection_history: usize,
+  /// How finely the API keeps object processing time: relay, track or subscription.
+  #[default("subscription")]
+  pub latency_detail: String,
+  /// Measure the processing time of every Nth object only; 1 measures all of them.
+  #[default(1)]
+  pub latency_sample: u64,
+  /// Deliveries slower than this, from arrival to written, go to the API's slowlog.
+  #[default(Duration::from_millis(20))]
+  #[serde(with = "humantime_serde")]
+  pub slowlog_threshold: Duration,
+  /// Subscriptions waiting longer than this for their first object go to the slowlog.
+  #[default(Duration::from_secs(1))]
+  #[serde(with = "humantime_serde")]
+  pub slowlog_first_object_threshold: Duration,
+  /// Slowlog entries kept.
+  #[default(1000)]
+  pub slowlog_size: usize,
 }
 
 impl AppConfig {

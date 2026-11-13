@@ -100,3 +100,12 @@ api_enable: false
 api_cors_origins: []
 # Closed connections the API keeps a summary of (a few hundred bytes each).
 closed_connection_history: 10000
+# How finely object processing time is kept: relay, track or subscription.
+latency_detail: subscription
+# Measure every Nth object only (by object id); 1 measures every object.
+latency_sample: 1
+# Deliveries slower than this go to /api/v1/latency/slow, and subscriptions that
+# wait longer than the second for their first object; the last slowlog_size kept.
+slowlog_threshold: 20ms
+slowlog_first_object_threshold: 1s
+slowlog_size: 1000

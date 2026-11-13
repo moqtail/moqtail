@@ -24,7 +24,7 @@ use tracing::warn;
 
 /// Starts the HTTP API when `api_enable` is set. Errors in the `api_*` settings stop
 /// the relay at startup rather than leaving it running without the API.
-pub fn start(server: &mut Server) -> Result<()> {
+pub fn start(server: &Server) -> Result<()> {
   let c = server.app_config;
   if !c.api_enable {
     return Ok(());
@@ -39,11 +39,17 @@ pub fn start(server: &mut Server) -> Result<()> {
     closed_connection_history: c.closed_connection_history,
     qlog_folder: c.qlog_folder.as_ref().map(Into::into),
     upstream_timeout: c.upstream_subscribe_timeout,
+    latency_detail: Some(c.latency_detail.clone()),
+    latency_sample: c.latency_sample,
+    slowlog_threshold: c.slowlog_threshold,
+    slowlog_first_object_threshold: c.slowlog_first_object_threshold,
+    slowlog_size: c.slowlog_size,
   })?;
   for warning in warnings {
     warn!("{warning}");
   }
-  server.probe = relay_api::start(config, Arc::new(RelayInspect(server.clone())))?;
+  let probe = relay_api::start(config, Arc::new(RelayInspect(server.clone())))?;
+  moqtail_probe::install(probe);
   Ok(())
 }
 

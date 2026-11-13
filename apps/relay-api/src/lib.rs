@@ -23,6 +23,7 @@ pub mod config;
 mod connections;
 mod control;
 mod error;
+mod latency;
 mod list;
 mod overview;
 mod probe;
@@ -54,10 +55,18 @@ pub(crate) struct ApiState {
 impl ApiState {
   pub(crate) fn new(config: ApiConfig, inspect: Arc<dyn Inspect>) -> Self {
     let control = Arc::new(ControlTracker::new(config.upstream_timeout));
+    let latency = config.has(Feature::Latency).then(|| {
+      Arc::new(latency::Latency::new(
+        config.latency_detail,
+        config.latency_sample,
+        config.slowlog,
+      ))
+    });
     let probe = Arc::new(ApiProbe::new(
       config.has(Feature::State),
       config.closed_connection_history,
       control.clone(),
+      latency,
     ));
     ApiState {
       config,
@@ -85,6 +94,26 @@ impl ApiState {
         info: info.clone(),
       })
       .collect()
+  }
+
+  /// A track's processing time over the last minute, when it is measured.
+  pub fn track_processing(&self, track_id: u64) -> Option<serde_json::Value> {
+    let summary = self.probe.latency.as_ref()?.track_summary(track_id)?;
+    serde_json::to_value(summary).ok()
+  }
+
+  /// Adds `processing_ms` to the JSON of subscription `request_id` of connection
+  /// `conn_id`, when it is measured.
+  pub fn add_subscription_processing(&self, conn_id: u64, subscription: &mut serde_json::Value) {
+    let Some(latency) = &self.probe.latency else {
+      return;
+    };
+    if let Some(request_id) = subscription["request_id"].as_u64()
+      && let Some(summary) = latency.subscription_summary(conn_id, request_id)
+      && let Ok(value) = serde_json::to_value(summary)
+    {
+      subscription["processing_ms"] = value;
+    }
   }
 
   /// Every track, at most a second old.
@@ -122,6 +151,9 @@ pub fn start(config: ApiConfig, inspect: Arc<dyn Inspect>) -> Result<Arc<dyn Pro
           return;
         }
       };
+      if let Some(latency) = state.probe.latency.clone() {
+        runtime.spawn(latency::copy_periodically(latency));
+      }
       runtime.block_on(async move {
         let listener = match tokio::net::TcpListener::from_std(listener) {
           Ok(listener) => listener,

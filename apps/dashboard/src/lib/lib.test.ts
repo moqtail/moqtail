@@ -171,7 +171,7 @@ describe('live events', () => {
   });
 });
 
-describe('relays from config.json', () => {
+describe('relays from appsettings.js', () => {
   const relay = { name: 'eu-1', baseUrl: 'https://eu-1.example:4480' };
 
   it('pins the dashboard to the configured relay', () => {

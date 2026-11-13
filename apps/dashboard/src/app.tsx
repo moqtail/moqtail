@@ -42,7 +42,7 @@ import {
   saveTokens,
   tokensRemembered,
 } from './lib/relays';
-import type { SiteConfig } from './lib/relays';
+import type { AppSettings } from './lib/relays';
 import { usePoll } from './lib/poll';
 import { href, useRoute } from './lib/route';
 
@@ -76,10 +76,10 @@ const PAGES: { page: string; label: string; feature?: string }[] = [
   { page: 'settings', label: 'Settings' },
 ];
 
-export function App(props: { config: SiteConfig }) {
+export function App(props: { settings: AppSettings }) {
   const route = useRoute();
-  const [relays, setRelays] = useState(() => loadRelays(props.config));
-  const pinned = pinnedRelay(props.config) !== undefined;
+  const [relays, setRelays] = useState(() => loadRelays(props.settings));
+  const pinned = pinnedRelay(props.settings) !== undefined;
   const [activeId, setActiveId] = useState(() => loadActive(relays));
   const [tokens, setTokens] = useState(() => loadTokens(activeId));
   const [refreshMs, setRefreshMs] = useState(loadRefreshMs);

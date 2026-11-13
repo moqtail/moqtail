@@ -20,7 +20,7 @@ import type { Relay, Tokens } from '../lib/relays';
 
 export interface SettingsProps {
   relays: Relay[];
-  /** Set when config.json fixes the relay, so the list is not shown. */
+  /** Set when appsettings.js fixes the relay, so the list is not shown. */
   pinned: boolean;
   activeId: string;
   tokens: Tokens;

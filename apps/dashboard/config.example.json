@@ -1,7 +1,0 @@
-{
-  "relay": {
-    "name": "relay-eu-1",
-    "baseUrl": "https://relay-eu-1.example:4480",
-    "moqUrl": "https://relay-eu-1.example:4433"
-  }
-}

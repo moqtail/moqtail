@@ -153,6 +153,7 @@ pub struct ApiSettings {
   pub read_token: Option<String>,
   pub write_token: Option<String>,
   pub cors_origins: Vec<String>,
+  pub closed_connection_history: usize,
 }
 
 /// The API's settings after parsing and the startup checks.
@@ -166,6 +167,8 @@ pub struct ApiConfig {
   pub read_token: Option<String>,
   pub write_token: Option<String>,
   pub cors_origins: Vec<String>,
+  /// How many closed connections to keep for `/connections?closed=true`.
+  pub closed_connection_history: usize,
 }
 
 pub const DEFAULT_BIND: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 4480);
@@ -258,6 +261,7 @@ impl ApiConfig {
         read_token,
         write_token,
         cors_origins: settings.cors_origins,
+        closed_connection_history: settings.closed_connection_history,
       },
       warnings,
     ))

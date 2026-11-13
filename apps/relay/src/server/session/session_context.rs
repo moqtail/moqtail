@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::server::cluster::ClusterState;
+use moqtail_probe::Probe;
 use std::{
   hash::{BuildHasher, Hasher, RandomState},
   sync::{
@@ -70,6 +71,8 @@ pub struct SessionContext {
   /// Set once the relay is draining (GOAWAY sent); new requests are rejected.
   pub(crate) draining: Arc<AtomicBool>,
   pub(crate) cluster: Arc<ClusterState>,
+  /// Where the session reports what happens to the observability layer.
+  pub(crate) probe: Arc<dyn Probe>,
 }
 
 static NEXT_CONNECTION_ID: LazyLock<AtomicUsize> = LazyLock::new(|| {
@@ -93,6 +96,7 @@ impl SessionContext {
     active_request_streams: Arc<AtomicU64>,
     draining: Arc<AtomicBool>,
     cluster: Arc<ClusterState>,
+    probe: Arc<dyn Probe>,
   ) -> Self {
     Self {
       client_manager,
@@ -108,6 +112,7 @@ impl SessionContext {
       active_request_streams,
       draining,
       cluster,
+      probe,
     }
   }
 

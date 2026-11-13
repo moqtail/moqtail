@@ -20,12 +20,18 @@
 
 mod access;
 pub mod config;
+mod connections;
 mod error;
+mod list;
+mod probe;
 mod routes;
+mod snapshot;
 
 use anyhow::{Context, Result};
-use config::ApiConfig;
-use moqtail_probe::Inspect;
+use config::{ApiConfig, Feature};
+use moqtail_probe::{ConnectionInfo, Inspect, Probe};
+use probe::ApiProbe;
+use snapshot::Cached;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing::{error, info};
@@ -34,16 +40,40 @@ use tracing::{error, info};
 pub(crate) struct ApiState {
   pub config: ApiConfig,
   pub inspect: Arc<dyn Inspect>,
+  pub probe: Arc<ApiProbe>,
+  connections: Cached<Vec<ConnectionInfo>>,
+}
+
+impl ApiState {
+  pub(crate) fn new(config: ApiConfig, inspect: Arc<dyn Inspect>) -> Self {
+    let probe = Arc::new(ApiProbe::new(
+      config.has(Feature::State),
+      config.closed_connection_history,
+    ));
+    ApiState {
+      config,
+      inspect,
+      probe,
+      connections: Cached::new(),
+    }
+  }
+
+  /// The open connections, at most a second old.
+  pub async fn open_connections(&self) -> Arc<Vec<ConnectionInfo>> {
+    self.connections.get(|| self.inspect.connections()).await
+  }
 }
 
 /// Binds the API's listener and serves it from a dedicated thread. Returns once the
-/// socket is bound, so a port already in use is reported at relay startup.
-pub fn start(config: ApiConfig, inspect: Arc<dyn Inspect>) -> Result<()> {
+/// socket is bound, so a port already in use is reported at relay startup. The
+/// returned probe is the one the relay core should report to.
+pub fn start(config: ApiConfig, inspect: Arc<dyn Inspect>) -> Result<Arc<dyn Probe>> {
   let listener = std::net::TcpListener::bind(config.bind)
     .with_context(|| format!("cannot bind the API to {}", config.bind))?;
   listener.set_nonblocking(true)?;
   let bind = config.bind;
-  let state = Arc::new(ApiState { config, inspect });
+  let state = Arc::new(ApiState::new(config, inspect));
+  let probe: Arc<dyn Probe> = state.probe.clone();
 
   std::thread::Builder::new()
     .name("relay-api".into())
@@ -75,7 +105,7 @@ pub fn start(config: ApiConfig, inspect: Arc<dyn Inspect>) -> Result<()> {
       });
     })?;
   info!("API listening on http://{bind}/api/v1");
-  Ok(())
+  Ok(probe)
 }
 
 #[cfg(test)]

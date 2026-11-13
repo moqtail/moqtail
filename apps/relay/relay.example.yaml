@@ -98,3 +98,5 @@ api_enable: false
 # api_write_token: ""
 # Browser origins allowed to call the API, such as the dashboard's.
 api_cors_origins: []
+# Closed connections the API keeps a summary of (a few hundred bytes each).
+closed_connection_history: 10000

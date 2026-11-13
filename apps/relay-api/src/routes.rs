@@ -62,6 +62,18 @@ const ENDPOINTS: &[Endpoint] = &[
     feature: Feature::State,
     route: || get(config),
   },
+  Endpoint {
+    method: "GET",
+    path: "/api/v1/connections",
+    feature: Feature::State,
+    route: || get(crate::connections::list),
+  },
+  Endpoint {
+    method: "GET",
+    path: "/api/v1/connections/{conn_id}",
+    feature: Feature::State,
+    route: || get(crate::connections::detail),
+  },
 ];
 
 pub fn router(state: Arc<ApiState>) -> Router {

@@ -14,7 +14,6 @@
 
 mod cluster;
 mod config;
-#[cfg(feature = "observability")]
 pub(crate) mod inspect;
 mod logging;
 mod message_handlers;
@@ -60,6 +59,8 @@ pub(crate) struct Server {
   pub draining: Arc<AtomicBool>,
   /// Set once the QUIC listeners accept connections.
   pub accepting: Arc<AtomicBool>,
+  /// Where the core reports what happens; installed by the observability layer.
+  pub probe: Arc<dyn moqtail_probe::Probe>,
   /// When the relay started; reported by the observability layer.
   #[cfg_attr(not(feature = "observability"), allow(dead_code))]
   pub started_at: std::time::SystemTime,
@@ -86,6 +87,7 @@ impl Server {
       active_request_streams: Arc::new(AtomicU64::new(0)),
       draining: Arc::new(AtomicBool::new(false)),
       accepting: Arc::new(AtomicBool::new(false)),
+      probe: Arc::new(moqtail_probe::NoProbe),
       started_at: std::time::SystemTime::now(),
       cluster: Arc::default(),
       redirect_uri: Arc::new(RwLock::new(config.redirect_uri.clone())),

@@ -329,6 +329,15 @@ impl Subscription {
 
   /// Number of data streams opened for this subscription (PUBLISH_DONE Stream
   /// Count), including subgroups that carried no objects.
+  pub fn relay_track_id(&self) -> u64 {
+    self.relay_track_id
+  }
+
+  /// Payload bytes fanned out to this subscription and not yet taken by its task.
+  pub fn queued_bytes(&self) -> u64 {
+    self.queue.bytes.load(Ordering::Relaxed) as u64
+  }
+
   pub fn opened_stream_count(&self) -> u64 {
     self.opened_stream_count.load(Ordering::Relaxed)
   }

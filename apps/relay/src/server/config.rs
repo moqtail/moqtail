@@ -276,6 +276,9 @@ pub struct AppConfig {
   pub api_write_token: Option<String>,
   /// Browser origins allowed to call the API, such as the dashboard's.
   pub api_cors_origins: Vec<String>,
+  /// Closed connections the API keeps a summary of, oldest dropped first.
+  #[default(10_000)]
+  pub closed_connection_history: usize,
 }
 
 impl AppConfig {

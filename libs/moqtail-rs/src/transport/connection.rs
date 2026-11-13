@@ -299,6 +299,23 @@ impl TransportConnection {
     window_bytes.saturating_mul(8_000) / u64::try_from(rtt.as_micros()).unwrap_or(u64::MAX).max(1)
   }
 
+  fn quic(&self) -> &quinn::Connection {
+    match self {
+      Self::WebTransport(c) => c.quic_connection(),
+      Self::Quic(c) => c,
+    }
+  }
+
+  /// The QUIC connection's statistics: RTT, congestion window, losses and bytes.
+  pub fn quic_stats(&self) -> quinn::ConnectionStats {
+    self.quic().stats()
+  }
+
+  /// Why the connection closed; `None` while it is open.
+  pub fn close_reason(&self) -> Option<quinn::ConnectionError> {
+    self.quic().close_reason()
+  }
+
   pub fn stable_id(&self) -> usize {
     match self {
       Self::WebTransport(c) => c.stable_id(),

@@ -37,7 +37,30 @@ pub trait Inspect: Send + Sync {
 
   /// The effective configuration, with every secret left out.
   fn config(&self) -> serde_json::Value;
+
+  /// Every connection that has completed SETUP and is still open.
+  fn connections(&self) -> BoxFuture<'_, Vec<ConnectionInfo>>;
 }
+
+/// What the relay core reports as things happen. Every method has an empty default,
+/// so the core can always call them, and [`NoProbe`] is the probe when nothing
+/// observes the relay.
+pub trait Probe: Send + Sync {
+  /// True when [`Probe::connection_closed`] keeps what it is given. The core builds a
+  /// closing connection's summary only then.
+  fn keeps_closed_connections(&self) -> bool {
+    false
+  }
+
+  /// A connection closed. `connection` describes it as it was at that moment, with
+  /// its close reason set.
+  fn connection_closed(&self, _connection: ConnectionInfo) {}
+}
+
+/// The probe that ignores everything.
+pub struct NoProbe;
+
+impl Probe for NoProbe {}
 
 /// The relay's identity and lifecycle state.
 #[derive(Debug, Clone, Serialize)]
@@ -52,4 +75,121 @@ pub struct RelayStatus {
   pub accepting: bool,
   /// True after GOAWAY was broadcast; new requests are rejected from then on.
   pub draining: bool,
+}
+
+/// Where a connection is in its life.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectionState {
+  /// It has requests: announcements, publications or subscriptions.
+  Active,
+  /// It has no requests.
+  Idle,
+  /// The relay is draining and has asked it to move.
+  Draining,
+  /// It has closed; kept in the history of closed connections.
+  Closed,
+}
+
+/// Who a connection is to the relay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Role {
+  /// A publisher or subscriber.
+  Client,
+  /// Another relay of the cluster.
+  ClusterPeer,
+}
+
+/// One connection, copied out of the relay.
+#[derive(Debug, Clone, Serialize)]
+pub struct ConnectionInfo {
+  pub conn_id: u64,
+  pub state: ConnectionState,
+  /// `webtransport` or `quic`.
+  pub transport: String,
+  pub remote: String,
+  pub role: Role,
+  /// When SETUP completed, in milliseconds since the Unix epoch.
+  pub connected_at_ms: u64,
+  /// The peer's implementation, from its SETUP, when it sent one.
+  pub implementation: Option<String>,
+  /// Every option of the peer's SETUP.
+  pub setup_options: Vec<SetupOptionInfo>,
+  /// Namespaces this peer announced, as `a/b/c`.
+  pub announced_namespaces: Vec<String>,
+  pub published_tracks: Vec<PublishedTrackInfo>,
+  pub subscriptions: Vec<SubscriptionInfo>,
+  /// The QUIC connection's statistics.
+  pub quic: QuicStats,
+  /// Set once the connection has closed.
+  pub close: Option<CloseInfo>,
+}
+
+/// One SETUP option: a known name with a readable value, or the raw type number.
+#[derive(Debug, Clone, Serialize)]
+pub struct SetupOptionInfo {
+  pub name: String,
+  pub value: String,
+}
+
+/// A track a peer publishes to the relay.
+#[derive(Debug, Clone, Serialize)]
+pub struct PublishedTrackInfo {
+  pub request_id: u64,
+  /// `namespace : name`.
+  pub track: String,
+}
+
+/// One subscription a peer holds, with its progress.
+#[derive(Debug, Clone, Serialize)]
+pub struct SubscriptionInfo {
+  pub request_id: u64,
+  /// `namespace : name`.
+  pub track: String,
+  /// The relay's own id for the track, stable for the track's life.
+  pub track_id: u64,
+  /// The alias the subscriber knows the track by.
+  pub track_alias: u64,
+  pub forward: bool,
+  pub subscriber_priority: u8,
+  pub group_order: String,
+  /// The location filter, as the relay understood it.
+  pub filter: String,
+  /// The first location the subscription delivers, as `group:object`.
+  pub start: Option<String>,
+  pub end_group: Option<u64>,
+  /// The largest location sent so far.
+  pub last_sent: Option<String>,
+  /// The largest location received from upstream for this subscription.
+  pub last_received: Option<String>,
+  pub streams_opened: u64,
+  /// Payload bytes waiting for this subscription's task.
+  pub queued_bytes: u64,
+}
+
+/// QUIC-level statistics of a connection.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct QuicStats {
+  pub rtt_ms: f64,
+  pub cwnd: u64,
+  pub congestion_events: u64,
+  pub lost_packets: u64,
+  pub lost_bytes: u64,
+  pub sent_bytes: u64,
+  pub received_bytes: u64,
+  pub sent_datagrams: u64,
+  pub received_datagrams: u64,
+}
+
+/// Why and when a connection closed.
+#[derive(Debug, Clone, Serialize)]
+pub struct CloseInfo {
+  /// Milliseconds since the Unix epoch.
+  pub at_ms: u64,
+  /// `peer`, `relay`, or `network` (timeout or reset).
+  pub by: String,
+  /// The application or transport error code, when there was one.
+  pub code: Option<u64>,
+  pub reason: String,
 }

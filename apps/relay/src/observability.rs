@@ -24,7 +24,7 @@ use tracing::warn;
 
 /// Starts the HTTP API when `api_enable` is set. Errors in the `api_*` settings stop
 /// the relay at startup rather than leaving it running without the API.
-pub fn start(server: &Server) -> Result<()> {
+pub fn start(server: &mut Server) -> Result<()> {
   let c = server.app_config;
   if !c.api_enable {
     return Ok(());
@@ -36,11 +36,13 @@ pub fn start(server: &Server) -> Result<()> {
     read_token: c.api_read_token.clone(),
     write_token: c.api_write_token.clone(),
     cors_origins: c.api_cors_origins.clone(),
+    closed_connection_history: c.closed_connection_history,
   })?;
   for warning in warnings {
     warn!("{warning}");
   }
-  relay_api::start(config, Arc::new(RelayInspect(server.clone())))
+  server.probe = relay_api::start(config, Arc::new(RelayInspect(server.clone())))?;
+  Ok(())
 }
 
 #[cfg(test)]

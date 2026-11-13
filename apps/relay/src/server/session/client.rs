@@ -111,6 +111,8 @@ pub type ResponseSenderList = Vec<Arc<RwLock<ResponseSenderMap>>>;
 #[derive(Debug, Clone)]
 pub(crate) struct MOQTClient {
   pub connection_id: usize,
+  /// When SETUP completed and this client was created.
+  pub connected_at: std::time::SystemTime,
   pub transport_kind: TransportKind,
   pub connection: Arc<TransportConnection>,
   #[allow(dead_code)]
@@ -218,6 +220,7 @@ impl MOQTClient {
 
     MOQTClient {
       connection_id,
+      connected_at: std::time::SystemTime::now(),
       transport_kind: connection.kind(),
       connection,
       client_setup,

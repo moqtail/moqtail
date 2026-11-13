@@ -21,7 +21,10 @@ use axum::body::Body;
 use axum::extract::ConnectInfo;
 use axum::http::{Method, Request, StatusCode, header};
 use http_body_util::BodyExt;
-use moqtail_probe::{Inspect, RelayStatus};
+use moqtail_probe::{
+  BoxFuture, CloseInfo, ConnectionInfo, ConnectionState, Inspect, Probe, QuicStats, RelayStatus,
+  Role,
+};
 use serde_json::{Value, json};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -49,6 +52,38 @@ impl Inspect for FakeRelay {
   fn config(&self) -> Value {
     json!({ "cache_size": 1000 })
   }
+
+  fn connections(&self) -> BoxFuture<'_, Vec<ConnectionInfo>> {
+    Box::pin(async {
+      vec![
+        connection(7, "live/room1", 10.0, 500),
+        connection(9, "vod/a", 2.0, 9000),
+      ]
+    })
+  }
+}
+
+/// A connection that announced `namespace`, with the given RTT and bytes sent.
+pub(crate) fn connection(conn_id: u64, namespace: &str, rtt_ms: f64, sent: u64) -> ConnectionInfo {
+  ConnectionInfo {
+    conn_id,
+    state: ConnectionState::Active,
+    transport: "quic".into(),
+    remote: "192.0.2.10:5000".into(),
+    role: Role::Client,
+    connected_at_ms: conn_id * 1000,
+    implementation: Some("other-relay/1.0".into()),
+    setup_options: vec![],
+    announced_namespaces: vec![namespace.into()],
+    published_tracks: vec![],
+    subscriptions: vec![],
+    quic: QuicStats {
+      rtt_ms,
+      sent_bytes: sent,
+      ..Default::default()
+    },
+    close: None,
+  }
 }
 
 pub(crate) struct Client {
@@ -61,10 +96,7 @@ impl Client {
     let (config, _) = ApiConfig::from_settings(settings).unwrap();
     let relay = Arc::new(FakeRelay::default());
     relay.accepting.store(true, Ordering::Relaxed);
-    let state = Arc::new(ApiState {
-      config,
-      inspect: relay.clone(),
-    });
+    let state = Arc::new(ApiState::new(config, relay.clone()));
     Client { state, relay }
   }
 
@@ -97,6 +129,10 @@ impl Client {
       serde_json::from_slice(&bytes).unwrap()
     };
     (status, body, headers)
+  }
+
+  pub fn probe(&self) -> &dyn Probe {
+    self.state.probe.as_ref()
   }
 
   pub async fn get(&self, path: &str) -> (StatusCode, Value) {
@@ -260,4 +296,65 @@ async fn cors_answers_only_listed_origins() {
     headers[header::ACCESS_CONTROL_ALLOW_ORIGIN],
     "http://localhost:5173"
   );
+}
+
+#[tokio::test]
+async fn connections_are_sorted_paged_and_filtered() {
+  let client = Client::new(ApiSettings::default());
+  let (status, body) = client
+    .get("/api/v1/connections?sort=-bytes_out&limit=1")
+    .await;
+  assert_eq!(status, StatusCode::OK);
+  assert_eq!(body["total"], 2);
+  assert_eq!(body["items"][0]["conn_id"], 9);
+  assert_eq!(
+    body["items"][0]["announced_namespaces"], 1,
+    "lists are counted"
+  );
+
+  let (_, body) = client.get("/api/v1/connections?sort=rtt").await;
+  assert_eq!(body["items"][0]["conn_id"], 9);
+
+  let (_, body) = client.get("/api/v1/connections?prefix=live").await;
+  assert_eq!(body["total"], 1);
+  assert_eq!(body["items"][0]["conn_id"], 7);
+
+  let (status, body) = client.get("/api/v1/connections?sort=colour").await;
+  assert_eq!(status, StatusCode::BAD_REQUEST);
+  assert_eq!(body["error"], "unknown_sort_key");
+}
+
+#[tokio::test]
+async fn closed_connections_are_kept_up_to_the_history_size() {
+  let client = Client::new(ApiSettings {
+    closed_connection_history: 2,
+    ..Default::default()
+  });
+  assert!(client.probe().keeps_closed_connections());
+  for id in [1, 2, 3] {
+    let mut closed = connection(id, "live", 1.0, 1);
+    closed.state = ConnectionState::Closed;
+    closed.close = Some(CloseInfo {
+      at_ms: 0,
+      by: "peer".into(),
+      code: Some(0),
+      reason: "done".into(),
+    });
+    client.probe().connection_closed(closed);
+  }
+  let (_, body) = client.get("/api/v1/connections?closed=true").await;
+  assert_eq!(body["total"], 2, "the oldest was dropped");
+  assert_eq!(body["items"][0]["conn_id"], 3, "newest first");
+
+  let (status, body) = client.get("/api/v1/connections/2").await;
+  assert_eq!(status, StatusCode::OK);
+  assert_eq!(body["close"]["reason"], "done");
+
+  let (status, body) = client.get("/api/v1/connections/7").await;
+  assert_eq!(status, StatusCode::OK, "open connections are found too");
+  assert_eq!(body["implementation"], "other-relay/1.0");
+
+  let (status, body) = client.get("/api/v1/connections/404").await;
+  assert_eq!(status, StatusCode::NOT_FOUND);
+  assert_eq!(body["error"], "unknown_connection");
 }

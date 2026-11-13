@@ -161,6 +161,7 @@ impl Session {
       server.active_request_streams.clone(),
       draining,
       server.cluster.clone(),
+      server.probe.clone(),
     ));
 
     info!(
@@ -500,6 +501,7 @@ impl Session {
       context.connection_id
     );
     context.connection.closed().await;
+    super::inspect::report_closed(&context).await;
     qlog::close(context.connection_id);
 
     // set the connection closed flag

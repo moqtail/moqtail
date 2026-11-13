@@ -289,6 +289,10 @@ pub struct AppConfig {
   /// Lets MCP clients use the write tools (GOAWAY, close, drain, log filter,
   /// redirect URI). Needs the `actions` feature too.
   pub api_mcp_write: bool,
+  /// How the relay introduces itself to MCP clients, such as `interop-paris`, so an
+  /// agent connected to several relays can tell them apart. Unset means the host
+  /// name.
+  pub api_mcp_name: Option<String>,
   /// Closed connections the API keeps a summary of, oldest dropped first.
   #[default(10_000)]
   pub closed_connection_history: usize,

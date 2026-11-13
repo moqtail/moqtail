@@ -110,6 +110,9 @@ api_cors_origins: []
 # api_mcp_token_hash: ""
 # Lets MCP clients use the write tools; needs the `actions` feature too.
 api_mcp_write: false
+# How the relay introduces itself to MCP clients, so an agent connected to
+# several relays can tell them apart (unset = the host name).
+# api_mcp_name: interop-paris
 # Closed connections the API keeps a summary of (a few hundred bytes each).
 closed_connection_history: 10000
 # How finely object processing time is kept: relay, track or subscription.

@@ -164,6 +164,8 @@ pub struct ApiSettings {
   pub mcp_token_hash: Option<String>,
   /// Lets MCP clients use the write tools; needs the `actions` feature too.
   pub mcp_write: bool,
+  /// How the relay introduces itself to agents; unset means the host name.
+  pub mcp_name: Option<String>,
   pub cors_origins: Vec<String>,
   pub closed_connection_history: usize,
   pub qlog_folder: Option<std::path::PathBuf>,
@@ -209,6 +211,9 @@ pub struct ApiConfig {
   pub mcp_token: Option<TokenHash>,
   /// MCP clients may use the write tools.
   pub mcp_write: bool,
+  /// How the relay introduces itself to agents, so one agent with several relays
+  /// can tell them apart.
+  pub mcp_name: String,
   pub cors_origins: Vec<String>,
   /// How many closed connections to keep for `/connections?closed=true`.
   pub closed_connection_history: usize,
@@ -285,6 +290,21 @@ fn listener_allow(
     ));
   }
   Ok(Some(allow.to_vec()))
+}
+
+/// The machine's host name, such as `relay-paris-1`; `None` when the system does
+/// not give one.
+fn host_name() -> Option<String> {
+  let mut buf = [0u8; 256];
+  // SAFETY: the buffer is valid for its whole length, and gethostname writes at
+  // most that many bytes into it.
+  if unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) } != 0 {
+    return None;
+  }
+  let end = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
+  String::from_utf8(buf[..end].to_vec())
+    .ok()
+    .filter(|n| !n.is_empty())
 }
 
 impl ApiConfig {
@@ -375,6 +395,11 @@ impl ApiConfig {
         metrics_token,
         mcp_token,
         mcp_write,
+        mcp_name: settings
+          .mcp_name
+          .filter(|n| !n.trim().is_empty())
+          .or_else(host_name)
+          .unwrap_or_else(|| "unnamed".into()),
         cors_origins: settings.cors_origins,
         closed_connection_history: settings.closed_connection_history,
         qlog_folder: settings.qlog_folder,

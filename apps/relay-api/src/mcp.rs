@@ -53,8 +53,8 @@ const LIST_TTL_MS: u64 = 3_600_000;
 const MAX_ITEMS: usize = 100;
 const MAX_TIMELINE_ENTRIES: usize = 200;
 
-const INSTRUCTIONS: &str = "This server reports on one MOQtail relay, a Media over QUIC \
-relay. Start with relay_overview. list_connections and get_connection show who is \
+/// What follows the relay's introduction in the instructions.
+const INSTRUCTIONS: &str = "Start with relay_overview. list_connections and get_connection show who is \
 connected and what they publish and subscribe; connection_timeline shows the control \
 messages a connection exchanged, with each request next to its response, which is \
 where to look when a peer's request failed. list_tracks and get_track show tracks, \
@@ -212,8 +212,28 @@ fn era(method: &str, params: &Value, headers: &HeaderMap) -> Result<Era, RpcErro
   Ok(Era::Legacy)
 }
 
+/// The relay's name and where it serves MoQ, so an agent connected to several
+/// relays can tell which one this is.
+fn introduction(state: &ApiState) -> String {
+  let config = state.inspect.config();
+  let moq = config["bind"].as_str().unwrap_or("an unknown address");
+  format!(
+    "This server reports on the MOQtail relay named \"{}\", a Media over QUIC relay \
+     serving MoQ on {moq}.",
+    state.config.mcp_name
+  )
+}
+
+fn instructions(state: &ApiState) -> String {
+  format!("{} {INSTRUCTIONS}", introduction(state))
+}
+
 fn server_info(state: &ApiState) -> Value {
-  json!({ "name": "moqtail-relay", "version": state.inspect.status().version })
+  json!({
+    "name": "moqtail-relay",
+    "title": format!("MOQtail relay {}", state.config.mcp_name),
+    "version": state.inspect.status().version,
+  })
 }
 
 async fn answer(
@@ -234,7 +254,7 @@ async fn answer(
         "protocolVersion": version,
         "capabilities": { "tools": { "listChanged": false } },
         "serverInfo": server_info(state),
-        "instructions": INSTRUCTIONS,
+        "instructions": instructions(state),
       })
     }
     (Era::Legacy, "ping") => json!({}),
@@ -243,7 +263,7 @@ async fn answer(
       json!({
         "supportedVersions": supported,
         "capabilities": { "tools": {} },
-        "instructions": INSTRUCTIONS,
+        "instructions": instructions(state),
         "ttlMs": LIST_TTL_MS,
         "cacheScope": "private",
         "_meta": { "io.modelcontextprotocol/serverInfo": server_info(state) },

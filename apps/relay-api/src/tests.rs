@@ -100,7 +100,7 @@ impl Inspect for FakeRelay {
   }
 
   fn config(&self) -> Value {
-    json!({ "cache_size": 1000 })
+    json!({ "cache_size": 1000, "bind": "0.0.0.0:4433" })
   }
 
   fn connections(&self) -> BoxFuture<'_, Vec<ConnectionInfo>> {
@@ -725,6 +725,7 @@ fn mcp_client(write: bool) -> Client {
     write_token: Some("wr1te".into()),
     mcp_token_hash: Some(crate::token::TokenHash::new(MCP_TOKEN).to_string()),
     mcp_write: write,
+    mcp_name: Some("interop-paris".into()),
     ..Default::default()
   })
 }
@@ -833,6 +834,14 @@ async fn mcp_speaks_the_2025_revisions_after_initialize() {
   assert_eq!(status, StatusCode::OK);
   assert_eq!(body["result"]["protocolVersion"], "2025-06-18");
   assert_eq!(body["result"]["serverInfo"]["name"], "moqtail-relay");
+  // The relay introduces itself, so an agent with several relays can tell which
+  // one this is.
+  assert_eq!(
+    body["result"]["serverInfo"]["title"],
+    "MOQtail relay interop-paris"
+  );
+  let instructions = body["result"]["instructions"].as_str().unwrap();
+  assert!(instructions.contains("\"interop-paris\"") && instructions.contains("0.0.0.0:4433"));
   let (_, body) = client
     .mcp(
       None,
@@ -991,4 +1000,20 @@ fn mcp_needs_a_token_hash_to_start() {
   })
   .unwrap();
   assert!(warnings.iter().any(|w| w.contains("api_mcp_write")));
+}
+
+#[test]
+fn the_relay_is_named_after_its_host_unless_told_otherwise() {
+  let (config, _) = ApiConfig::from_settings(ApiSettings::default()).unwrap();
+  assert!(!config.mcp_name.is_empty() && config.mcp_name != "unnamed");
+  let (config, _) = ApiConfig::from_settings(ApiSettings {
+    mcp_name: Some("  ".into()),
+    ..Default::default()
+  })
+  .unwrap();
+  assert_ne!(
+    config.mcp_name.trim(),
+    "",
+    "a blank name falls back to the host name"
+  );
 }

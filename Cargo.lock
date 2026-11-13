@@ -1403,6 +1403,7 @@ dependencies = [
  "bytes",
  "futures-util",
  "http-body-util",
+ "libc",
  "moqtail",
  "moqtail-probe",
  "rand",

@@ -284,6 +284,7 @@ impl Session {
       Ok(client) => client,
       Err(e) => {
         context.connection.close(0u32, b"Setup failed");
+        moqtail_probe::probe().connection_failed("setup");
         return Err(e);
       }
     };
@@ -588,6 +589,9 @@ impl Session {
     stream: TransportRecvStream,
   ) -> Result<()> {
     trace!("accepted unidirectional stream");
+    if let Some(c) = super::inspect::counters() {
+      c.streams_accepted.add(1);
+    }
     let client = context.get_client().await;
     let client = match client {
       Some(c) => c,

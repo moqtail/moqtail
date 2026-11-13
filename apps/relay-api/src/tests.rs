@@ -144,7 +144,8 @@ impl Client {
   }
 
   /// Sends a request from `from`, with optional extra headers, and returns the
-  /// status and the parsed JSON body (`Null` when the body is empty).
+  /// status and the parsed JSON body (`Null` when the body is empty, a string when
+  /// it is not JSON).
   pub async fn send(
     &self,
     method: Method,
@@ -166,10 +167,12 @@ impl Client {
     let status = response.status();
     let headers = response.headers().clone();
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    // Plain-text bodies, such as the metrics, come back as a JSON string.
     let body = if bytes.is_empty() {
       Value::Null
     } else {
-      serde_json::from_slice(&bytes).unwrap()
+      serde_json::from_slice(&bytes)
+        .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()))
     };
     (status, body, headers)
   }
@@ -450,4 +453,47 @@ async fn overview_namespaces_and_upstreams() {
     "both announced a namespace, so both are sources"
   );
   assert_eq!(body[0]["tracks"], 1);
+}
+
+#[tokio::test]
+async fn the_metrics_token_reads_the_metrics_and_nothing_else() {
+  let client = Client::new(ApiSettings {
+    read_token: Some("r3ad".into()),
+    metrics_token: Some("m3trics".into()),
+    ..Default::default()
+  });
+  let local = "127.0.0.1:5000";
+  let metrics = [("authorization", "Bearer m3trics")];
+  let (status, ..) = client
+    .send(Method::GET, "/api/v1/metrics", local, &metrics)
+    .await;
+  assert_eq!(status, StatusCode::OK);
+  let (status, ..) = client
+    .send(Method::GET, "/api/v1/config", local, &metrics)
+    .await;
+  assert_eq!(status, StatusCode::FORBIDDEN);
+  let read = [("authorization", "Bearer r3ad")];
+  let (status, ..) = client
+    .send(Method::GET, "/api/v1/metrics", local, &read)
+    .await;
+  assert_eq!(
+    status,
+    StatusCode::OK,
+    "the read token reads the metrics too"
+  );
+}
+
+#[tokio::test]
+async fn a_metrics_token_alone_protects_only_the_metrics() {
+  let client = Client::new(ApiSettings {
+    metrics_token: Some("m3trics".into()),
+    ..Default::default()
+  });
+  let local = "127.0.0.1:5000";
+  let (status, ..) = client
+    .send(Method::GET, "/api/v1/metrics", local, &[])
+    .await;
+  assert_eq!(status, StatusCode::UNAUTHORIZED);
+  let (status, ..) = client.send(Method::GET, "/api/v1/config", local, &[]).await;
+  assert_eq!(status, StatusCode::OK);
 }

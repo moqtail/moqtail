@@ -34,6 +34,28 @@ use wtransport::quinn::ConnectionError;
 #[cfg(feature = "observability")]
 pub(crate) use relay::RelayInspect;
 
+/// The counters the data path adds to; `None` when nothing counts. Builds without
+/// the observability layer compile every use of it away.
+#[inline]
+pub(crate) fn counters() -> Option<&'static moqtail_probe::stats::RelayCounters> {
+  #[cfg(feature = "observability")]
+  return moqtail_probe::counters();
+  #[cfg(not(feature = "observability"))]
+  None
+}
+
+/// Counts a cached group leaving the cache.
+pub(crate) fn count_cache_removal(cause: moka::notification::RemovalCause) {
+  use moka::notification::RemovalCause;
+  if let Some(c) = counters() {
+    match cause {
+      RemovalCause::Expired => c.cache_expired.add(1),
+      RemovalCause::Size => c.cache_evicted_for_size.add(1),
+      RemovalCause::Explicit | RemovalCause::Replaced => c.cache_removed.add(1),
+    }
+  }
+}
+
 /// When an object arrived from its publisher, for measuring its processing time.
 /// Builds without the observability layer read no clock.
 pub(crate) fn arrival_time() -> Option<std::time::Instant> {

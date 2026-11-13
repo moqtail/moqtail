@@ -143,6 +143,7 @@ impl TrackCache {
     let cache_builder = Cache::builder()
       .max_capacity(cache_size as u64)
       .eviction_listener(move |key: Arc<CacheKey>, value: GroupObjects, cause| {
+        crate::server::inspect::count_cache_removal(cause);
         let relay_track_id = key.relay_track_id;
         let group_id = key.group_id;
         let log_folder = log_folder_for_listener.clone();

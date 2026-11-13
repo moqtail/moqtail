@@ -26,16 +26,40 @@ use std::sync::Arc;
 
 /// Paths a load balancer probes without credentials. The address check still applies.
 const TOKEN_EXEMPT: [&str; 2] = ["/api/v1/health", "/api/v1/ready"];
+const METRICS_PATH: &str = "/api/v1/metrics";
 
+/// The checks of the main listener.
 pub async fn check(
   State(state): State<Arc<ApiState>>,
   ConnectInfo(peer): ConnectInfo<SocketAddr>,
   request: Request,
   next: Next,
 ) -> Response {
+  let allow = state.config.allow.clone();
+  check_with(&state, allow.as_deref(), peer, request, next).await
+}
+
+/// The checks of the metrics listener, which serves `/api/v1/metrics` only.
+pub async fn check_metrics_listener(
+  State(state): State<Arc<ApiState>>,
+  ConnectInfo(peer): ConnectInfo<SocketAddr>,
+  request: Request,
+  next: Next,
+) -> Response {
+  let allow = state.config.metrics_allow.clone();
+  check_with(&state, allow.as_deref(), peer, request, next).await
+}
+
+async fn check_with(
+  state: &ApiState,
+  allow: Option<&[crate::config::Cidr]>,
+  peer: SocketAddr,
+  request: Request,
+  next: Next,
+) -> Response {
   let config = &state.config;
 
-  if let Some(allow) = &config.allow
+  if let Some(allow) = allow
     && !allow.iter().any(|range| range.contains(peer.ip()))
   {
     return ApiError::new(StatusCode::FORBIDDEN, "address_not_allowed")
@@ -57,7 +81,12 @@ pub async fn check(
   }
 
   if !TOKEN_EXEMPT.contains(&request.uri().path())
-    && let Err(error) = check_token(request.method(), request.headers(), config)
+    && let Err(error) = check_token(
+      request.method(),
+      request.uri().path(),
+      request.headers(),
+      config,
+    )
   {
     let mut response = error.into_response();
     if let Some(origin) = &origin {
@@ -73,10 +102,12 @@ pub async fn check(
   response
 }
 
-/// Reads are open unless a read token is set; the write token also allows reads.
-/// Anything other than a read needs the write token.
+/// Reads are open unless a read token is set; the write token also allows reads,
+/// and the metrics token allows reading the metrics. Anything other than a read
+/// needs the write token.
 fn check_token(
   method: &Method,
+  path: &str,
   headers: &HeaderMap,
   config: &crate::config::ApiConfig,
 ) -> Result<(), ApiError> {
@@ -91,7 +122,13 @@ fn check_token(
 
   let is_read = matches!(*method, Method::GET | Method::HEAD);
   let allowed = if is_read {
-    config.read_token.is_none() || matches(&config.read_token) || matches(&config.write_token)
+    // With only a metrics token set, the metrics need it too; other reads stay open.
+    let open =
+      config.read_token.is_none() && (path != METRICS_PATH || config.metrics_token.is_none());
+    open
+      || matches(&config.read_token)
+      || matches(&config.write_token)
+      || (path == METRICS_PATH && matches(&config.metrics_token))
   } else {
     matches(&config.write_token)
   };

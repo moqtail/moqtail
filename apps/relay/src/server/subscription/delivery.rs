@@ -53,6 +53,9 @@ impl Subscription {
     if waited <= timeout {
       return false;
     }
+    if let Some(c) = crate::server::inspect::counters() {
+      c.dropped_delivery_timeout.add(1);
+    }
     if self.queue.skip_group(group) {
       warn!(
         "Subscriber {} is {:?} behind on relay_track_id={}; skipping the rest of group {}",
@@ -62,8 +65,18 @@ impl Subscription {
     true
   }
 
-  /// Records a delivery's processing time, when the subscription is measured.
-  fn record_written(&self, times: EventTimes, picked: Option<Instant>, location: &Location) {
+  /// Counts a delivery and records its processing time, when the subscription is
+  /// measured.
+  fn record_written(
+    &self,
+    times: EventTimes,
+    picked: Option<Instant>,
+    location: &Location,
+    payload_bytes: usize,
+  ) {
+    if let Some(c) = crate::server::inspect::counters() {
+      c.object_sent(payload_bytes);
+    }
     if let (Some(stats), Some(picked)) = (&self.stats, picked) {
       stats.object_written(
         times.arrived,
@@ -450,7 +463,8 @@ impl Subscription {
 
       // Update the last object ID for this stream if successful
       if send_status {
-        self.record_written(times, picked, &object.location);
+        let payload_bytes = object.payload.as_ref().map_or(0, |p| p.len());
+        self.record_written(times, picked, &object.location, payload_bytes);
         let mut send_stream_last_object_ids = self.send_stream_last_object_ids.write().await;
         send_stream_last_object_ids.insert(stream_id.clone(), Some(object.location.object));
         drop(send_stream_last_object_ids); // Release the lock immediately
@@ -570,7 +584,8 @@ impl Subscription {
         {
           error!("Failed to write datagram: {:?}", e);
         } else {
-          self.record_written(times, picked, &location);
+          let payload_bytes = object.payload.as_ref().map_or(0, |p| p.len());
+          self.record_written(times, picked, &location, payload_bytes);
           self
             .subscription_state
             .write()

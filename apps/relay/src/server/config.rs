@@ -276,6 +276,12 @@ pub struct AppConfig {
   pub api_write_token: Option<String>,
   /// Browser origins allowed to call the API, such as the dashboard's.
   pub api_cors_origins: Vec<String>,
+  /// A second listener serving only `/api/v1/metrics`, for example to open the
+  /// metrics to a monitoring network while the rest of the API stays on loopback.
+  pub api_metrics_bind: Option<SocketAddr>,
+  /// A token that reads `/api/v1/metrics` and nothing else, for Prometheus.
+  #[serde(skip_serializing)]
+  pub api_metrics_token: Option<String>,
   /// Closed connections the API keeps a summary of, oldest dropped first.
   #[default(10_000)]
   pub closed_connection_history: usize,

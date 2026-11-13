@@ -35,6 +35,8 @@ pub fn start(server: &Server) -> Result<()> {
     allow: c.api_allow.clone(),
     read_token: c.api_read_token.clone(),
     write_token: c.api_write_token.clone(),
+    metrics_bind: c.api_metrics_bind,
+    metrics_token: c.api_metrics_token.clone(),
     cors_origins: c.api_cors_origins.clone(),
     closed_connection_history: c.closed_connection_history,
     qlog_folder: c.qlog_folder.as_ref().map(Into::into),

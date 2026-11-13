@@ -21,6 +21,7 @@
 
 use moqtail::model::control::control_message::ControlMessage;
 use moqtail::transport::observe::ControlObserver;
+use moqtail_probe::stats::{BUCKETS, Histogram};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Mutex;
@@ -109,7 +110,22 @@ struct Inner {
   pending: HashMap<(usize, u64), Pending>,
   /// Keyed by request type and direction (`upstream` or `downstream`).
   results: BTreeMap<(&'static str, &'static str), ResultCounts>,
+  /// Time from request to answer, by request type and direction.
+  durations: BTreeMap<(&'static str, &'static str), Histogram>,
   upstreams: HashMap<usize, Upstream>,
+  /// Relay-wide totals, kept when a connection closes.
+  totals: Totals,
+}
+
+/// Relay-wide counts since the relay started.
+#[derive(Debug, Clone, Default)]
+pub struct Totals {
+  /// By direction (`sent`, `received`) and message type.
+  pub messages: BTreeMap<(&'static str, &'static str), u64>,
+  pub parse_errors: u64,
+  pub upstream_ok: u64,
+  pub upstream_failed: u64,
+  pub upstream_timed_out: u64,
 }
 
 pub(crate) struct ControlTracker {
@@ -172,6 +188,7 @@ impl ControlTracker {
       .count() as u64;
     if !overdue.is_empty() {
       inner.upstreams.entry(conn).or_default().timed_out += overdue.len() as u64;
+      inner.totals.upstream_timed_out += overdue.len() as u64;
     }
     let upstream = inner.upstreams.get(&conn)?;
     let mut durations: Vec<f64> = upstream.durations_ms.iter().copied().collect();
@@ -187,6 +204,36 @@ impl ControlTracker {
         p95: nearest_rank(&durations, 0.95),
       }),
     })
+  }
+
+  /// Relay-wide totals since the relay started.
+  pub fn totals(&self) -> Totals {
+    self.inner.lock().unwrap().totals.clone()
+  }
+
+  /// Requests waiting for an answer, in either direction.
+  pub fn in_flight(&self) -> usize {
+    self.inner.lock().unwrap().pending.len()
+  }
+
+  /// Request results by request type and direction.
+  pub fn results_by_kind(&self) -> Vec<(&'static str, &'static str, ResultCounts)> {
+    let inner = self.inner.lock().unwrap();
+    inner
+      .results
+      .iter()
+      .map(|((kind, direction), counts)| (*kind, *direction, counts.clone()))
+      .collect()
+  }
+
+  /// Request durations by request type and direction, as histogram bucket counts.
+  pub fn durations(&self) -> Vec<(&'static str, &'static str, [u64; BUCKETS])> {
+    let inner = self.inner.lock().unwrap();
+    inner
+      .durations
+      .iter()
+      .map(|((kind, direction), h)| (*kind, *direction, h.counts()))
+      .collect()
   }
 
   /// Relay-wide request results, keyed by `type/direction`.
@@ -209,6 +256,12 @@ impl ControlObserver for ControlTracker {
     } else {
       counts.control_messages.received += 1;
     }
+    let direction = if sent { "sent" } else { "received" };
+    *inner
+      .totals
+      .messages
+      .entry((direction, message_name(message)))
+      .or_default() += 1;
 
     if let Some(kind) = request_kind(message) {
       inner.pending.insert(
@@ -238,6 +291,11 @@ impl ControlObserver for ControlTracker {
     } else {
       "downstream"
     };
+    inner
+      .durations
+      .entry((pending.kind, direction))
+      .or_default()
+      .record(pending.started.elapsed());
     let result = inner.results.entry((pending.kind, direction)).or_default();
     match &outcome {
       Outcome::Ok => result.ok += 1,
@@ -249,6 +307,10 @@ impl ControlObserver for ControlTracker {
       Outcome::Error { .. } => requests.error += 1,
     }
     if pending.upstream {
+      match outcome {
+        Outcome::Ok => inner.totals.upstream_ok += 1,
+        Outcome::Error { .. } => inner.totals.upstream_failed += 1,
+      }
       let upstream = inner.upstreams.entry(conn).or_default();
       if upstream.durations_ms.len() == DURATIONS_KEPT {
         upstream.durations_ms.pop_front();
@@ -275,6 +337,7 @@ impl ControlObserver for ControlTracker {
 
   fn parse_error(&self, conn: usize, _stream_id: u64) {
     let mut inner = self.inner.lock().unwrap();
+    inner.totals.parse_errors += 1;
     inner
       .connections
       .entry(conn)
@@ -287,6 +350,30 @@ impl ControlObserver for ControlTracker {
 enum Outcome {
   Ok,
   Error { code: u64, reason: String },
+}
+
+/// The message's type as a metric label.
+fn message_name(message: &ControlMessage) -> &'static str {
+  match message {
+    ControlMessage::Setup(_) => "setup",
+    ControlMessage::Goaway(_) => "goaway",
+    ControlMessage::RequestOk(_) => "request_ok",
+    ControlMessage::RequestError(_) => "request_error",
+    ControlMessage::Subscribe(_) => "subscribe",
+    ControlMessage::SubscribeOk(_) => "subscribe_ok",
+    ControlMessage::RequestUpdate(_) => "request_update",
+    ControlMessage::Publish(_) => "publish",
+    ControlMessage::PublishDone(_) => "publish_done",
+    ControlMessage::Fetch(_) => "fetch",
+    ControlMessage::FetchOk(_) => "fetch_ok",
+    ControlMessage::TrackStatus(_) => "track_status",
+    ControlMessage::PublishNamespace(_) => "publish_namespace",
+    ControlMessage::Namespace(_) => "namespace",
+    ControlMessage::NamespaceDone(_) => "namespace_done",
+    ControlMessage::SubscribeNamespace(_) => "subscribe_namespace",
+    ControlMessage::SubscribeTracks(_) => "subscribe_tracks",
+    ControlMessage::PublishSkipped(_) => "publish_skipped",
+  }
 }
 
 /// The request type a message opens, or `None` for anything else.

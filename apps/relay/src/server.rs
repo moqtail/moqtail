@@ -167,6 +167,7 @@ impl Server {
                   }
                   Err(e) => {
                     error!("Error occurred in session {}: {:?}", id, e);
+                    moqtail_probe::probe().connection_failed("handshake");
                   }
                 }
               });

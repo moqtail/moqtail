@@ -118,6 +118,12 @@ const ENDPOINTS: &[Endpoint] = &[
   },
   Endpoint {
     method: "GET",
+    path: "/api/v1/metrics",
+    feature: Feature::Metrics,
+    route: || get(crate::metrics::metrics),
+  },
+  Endpoint {
+    method: "GET",
     path: "/api/v1/qlog",
     feature: Feature::Qlog,
     route: || get(crate::qlog::index),
@@ -152,6 +158,23 @@ pub fn router(state: Arc<ApiState>) -> Router {
     .layer(middleware::from_fn_with_state(
       state.clone(),
       crate::access::check,
+    ))
+    .with_state(state)
+}
+
+/// The metrics listener's router: `/api/v1/metrics` and nothing else.
+pub fn metrics_router(state: Arc<ApiState>) -> Router {
+  let route = if state.config.has(Feature::Metrics) {
+    get(crate::metrics::metrics)
+  } else {
+    axum::routing::any(|| async { feature_off(Feature::Metrics) })
+  };
+  Router::new()
+    .route("/api/v1/metrics", route)
+    .fallback(|| async { ApiError::new(StatusCode::NOT_FOUND, "not_found").into_response() })
+    .layer(middleware::from_fn_with_state(
+      state.clone(),
+      crate::access::check_metrics_listener,
     ))
     .with_state(state)
 }

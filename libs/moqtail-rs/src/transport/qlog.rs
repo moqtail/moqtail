@@ -110,6 +110,11 @@ pub fn subscribe() -> Option<broadcast::Receiver<LiveEvent>> {
   QLOG.get().map(|q| q.live.subscribe())
 }
 
+/// Events dropped because the file writer fell behind, since qlog started.
+pub fn dropped() -> u64 {
+  QLOG.get().map_or(0, |q| q.dropped.load(Ordering::Relaxed))
+}
+
 /// True while events are being produced: files are written or someone follows.
 pub fn enabled() -> bool {
   active().is_some()

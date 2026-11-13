@@ -153,6 +153,8 @@ pub struct ApiSettings {
   pub allow: Option<Vec<String>>,
   pub read_token: Option<String>,
   pub write_token: Option<String>,
+  pub metrics_bind: Option<SocketAddr>,
+  pub metrics_token: Option<String>,
   pub cors_origins: Vec<String>,
   pub closed_connection_history: usize,
   pub qlog_folder: Option<std::path::PathBuf>,
@@ -179,6 +181,12 @@ pub struct ApiConfig {
   pub allow: Option<Vec<Cidr>>,
   pub read_token: Option<String>,
   pub write_token: Option<String>,
+  /// A second listener serving only `/api/v1/metrics`.
+  pub metrics_bind: Option<SocketAddr>,
+  /// Client ranges for the metrics listener; `None` when it is loopback or absent.
+  pub metrics_allow: Option<Vec<Cidr>>,
+  /// A token that reads `/api/v1/metrics` and nothing else.
+  pub metrics_token: Option<String>,
   pub cors_origins: Vec<String>,
   /// How many closed connections to keep for `/connections?closed=true`.
   pub closed_connection_history: usize,
@@ -207,6 +215,52 @@ fn default_allow() -> Vec<Cidr> {
   ]
 }
 
+/// The startup rules for one listener. Returns the client ranges to check, or
+/// `None` on a loopback address, where the check is skipped; or an error when the
+/// listener must not start. `setting` names the bind setting in messages.
+fn listener_allow(
+  setting: &str,
+  bind: SocketAddr,
+  allow_set: bool,
+  allow: &[Cidr],
+  authenticated: bool,
+  warnings: &mut Vec<String>,
+) -> Result<Option<Vec<Cidr>>> {
+  if bind.ip().is_loopback() {
+    // Only local programs and SSH tunnels can reach a loopback listener, and they
+    // all arrive from loopback, so an allowlist could only lock them out.
+    if allow_set && allow != default_allow() {
+      warnings.push(format!(
+        "api_allow is ignored for {setting} {bind}, a loopback address"
+      ));
+    }
+    return Ok(None);
+  }
+  if allow.is_empty() {
+    bail!(
+      "api_allow is empty, so nobody could connect to {setting} {bind}; \
+       list the client ranges to allow"
+    );
+  }
+  if allow.iter().any(Cidr::is_everything) && !authenticated {
+    bail!(
+      "api_allow lets every address reach {setting} {bind}, and no token is set; \
+       set a token or narrow api_allow"
+    );
+  }
+  if allow == default_allow() {
+    warnings.push(format!(
+      "{setting} {bind} is a network address but api_allow allows only loopback; \
+       remote clients will get 403"
+    ));
+  } else if !authenticated {
+    warnings.push(format!(
+      "{setting} {bind} serves reads without a token to the ranges in api_allow"
+    ));
+  }
+  Ok(Some(allow.to_vec()))
+}
+
 impl ApiConfig {
   /// Parses the settings and applies the startup rules. Returns the configuration
   /// and the warnings to log, or an error when the API must not start.
@@ -223,13 +277,14 @@ impl ApiConfig {
     };
 
     let allow_set = settings.allow.is_some();
-    let allow = match &settings.allow {
+    let allow_ranges = match &settings.allow {
       Some(ranges) => ranges
         .iter()
         .map(|r| Cidr::parse(r))
         .collect::<Result<Vec<_>>>()?,
       None => default_allow(),
     };
+    let allow = allow_ranges.clone();
 
     let latency_detail = match &settings.latency_detail {
       Some(name) => LatencyDetail::parse(name)?,
@@ -242,40 +297,25 @@ impl ApiConfig {
       bail!("the `actions` API feature needs `api_write_token`");
     }
 
-    let allow = if bind.ip().is_loopback() {
-      // Only local programs and SSH tunnels can reach a loopback listener, and they
-      // all arrive from loopback, so an allowlist could only lock them out.
-      if allow_set && allow != default_allow() {
-        warnings.push(format!(
-          "api_allow is ignored because api_bind {bind} is a loopback address"
-        ));
-      }
-      None
-    } else {
-      if allow.is_empty() {
-        bail!(
-          "api_allow is empty, so nobody could connect to the API on {bind}; \
-           list the client ranges to allow"
-        );
-      }
-      let authenticated = read_token.is_some();
-      if allow.iter().any(Cidr::is_everything) && !authenticated {
-        bail!(
-          "api_allow lets every address reach the API on {bind}, and no api_read_token \
-           is set; set a token or narrow api_allow"
-        );
-      }
-      if allow == default_allow() {
-        warnings.push(format!(
-          "api_bind {bind} is a network address but api_allow allows only loopback; \
-           remote clients will get 403"
-        ));
-      } else if !authenticated {
-        warnings.push(format!(
-          "the API on {bind} serves reads without a token to the ranges in api_allow"
-        ));
-      }
-      Some(allow)
+    let allow = listener_allow(
+      "api_bind",
+      bind,
+      allow_set,
+      &allow,
+      read_token.is_some(),
+      &mut warnings,
+    )?;
+    let metrics_token = settings.metrics_token.filter(|t| !t.is_empty());
+    let metrics_allow = match settings.metrics_bind {
+      Some(metrics_bind) => listener_allow(
+        "api_metrics_bind",
+        metrics_bind,
+        allow_set,
+        &allow_ranges,
+        read_token.is_some() || metrics_token.is_some(),
+        &mut warnings,
+      )?,
+      None => None,
     };
 
     Ok((
@@ -285,6 +325,9 @@ impl ApiConfig {
         allow,
         read_token,
         write_token,
+        metrics_bind: settings.metrics_bind,
+        metrics_allow,
+        metrics_token,
         cors_origins: settings.cors_origins,
         closed_connection_history: settings.closed_connection_history,
         qlog_folder: settings.qlog_folder,

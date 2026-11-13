@@ -20,7 +20,7 @@ use crate::latency::Latency;
 use moqtail_probe::stats::SubscriptionStats;
 use moqtail_probe::{ConnectionInfo, Probe};
 use serde::Serialize;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 /// A connection with what the API counted of its control messages and requests.
@@ -41,6 +41,11 @@ pub(crate) struct ApiProbe {
   control: Arc<ControlTracker>,
   /// `None` unless the `latency` feature is on.
   pub latency: Option<Arc<Latency>>,
+  /// Connection failures by reason, limit rejections by limit, and closes by who
+  /// closed and the code, since the relay started.
+  pub failures: Mutex<BTreeMap<&'static str, u64>>,
+  pub limit_rejections: Mutex<BTreeMap<&'static str, u64>>,
+  pub closes: Mutex<BTreeMap<(String, String), u64>>,
 }
 
 impl ApiProbe {
@@ -56,6 +61,9 @@ impl ApiProbe {
       closed: Mutex::new(VecDeque::new()),
       control,
       latency,
+      failures: Mutex::default(),
+      limit_rejections: Mutex::default(),
+      closes: Mutex::default(),
     }
   }
 
@@ -74,6 +82,17 @@ impl Probe for ApiProbe {
 
   fn connection_closed(&self, info: ConnectionInfo) {
     let counts = self.control.connection_closed(info.conn_id);
+    if let Some(close) = &info.close {
+      let code = close
+        .code
+        .map_or_else(|| "none".to_string(), |c| c.to_string());
+      *self
+        .closes
+        .lock()
+        .unwrap()
+        .entry((close.by.clone(), code))
+        .or_default() += 1;
+    }
     if self.closed_capacity == 0 {
       return;
     }
@@ -92,5 +111,18 @@ impl Probe for ApiProbe {
   ) -> Option<Arc<SubscriptionStats>> {
     let latency = self.latency.as_ref()?;
     Some(latency.subscription_stats(track_id, conn_id, request_id))
+  }
+
+  fn connection_failed(&self, reason: &'static str) {
+    *self.failures.lock().unwrap().entry(reason).or_default() += 1;
+  }
+
+  fn limit_rejected(&self, limit: &'static str) {
+    *self
+      .limit_rejections
+      .lock()
+      .unwrap()
+      .entry(limit)
+      .or_default() += 1;
   }
 }

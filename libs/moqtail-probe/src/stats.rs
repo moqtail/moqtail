@@ -101,6 +101,71 @@ impl ShardedHistogram {
   }
 }
 
+/// A counter added to by many threads: each thread adds to its own shard, and
+/// reading sums them.
+#[derive(Debug, Default)]
+pub struct ShardedCounter {
+  shards: [Padded<AtomicU64>; SHARDS],
+}
+
+impl ShardedCounter {
+  pub fn add(&self, n: u64) {
+    SHARD.with(|shard| self.shards[*shard].0.fetch_add(n, Ordering::Relaxed));
+  }
+
+  pub fn get(&self) -> u64 {
+    self
+      .shards
+      .iter()
+      .map(|s| s.0.load(Ordering::Relaxed))
+      .sum()
+  }
+}
+
+/// Relay-wide counts of what flows through the data path.
+#[derive(Debug, Default)]
+pub struct RelayCounters {
+  pub objects_received: ShardedCounter,
+  pub bytes_received: ShardedCounter,
+  /// Objects and payload bytes written to subscribers of live tracks.
+  pub objects_sent: ShardedCounter,
+  pub bytes_sent: ShardedCounter,
+  /// Objects and payload bytes written to FETCH responses.
+  pub fetch_objects_sent: ShardedCounter,
+  pub fetch_bytes_sent: ShardedCounter,
+  /// Streams the relay opened to subscribers.
+  pub streams_opened: ShardedCounter,
+  /// Streams publishers opened to the relay.
+  pub streams_accepted: ShardedCounter,
+  /// Objects not queued for a subscriber that had too many bytes waiting.
+  pub dropped_queue_full: ShardedCounter,
+  /// Objects skipped because they waited past the delivery timeout.
+  pub dropped_delivery_timeout: ShardedCounter,
+  /// Subscriptions reset because they fell too far behind.
+  pub subscriptions_too_far_behind: ShardedCounter,
+  /// Cached groups removed, by cause.
+  pub cache_expired: ShardedCounter,
+  pub cache_evicted_for_size: ShardedCounter,
+  pub cache_removed: ShardedCounter,
+}
+
+impl RelayCounters {
+  pub fn object_received(&self, payload_bytes: usize) {
+    self.objects_received.add(1);
+    self.bytes_received.add(payload_bytes as u64);
+  }
+
+  pub fn object_sent(&self, payload_bytes: usize) {
+    self.objects_sent.add(1);
+    self.bytes_sent.add(payload_bytes as u64);
+  }
+
+  pub fn fetch_object_sent(&self, payload_bytes: usize) {
+    self.fetch_objects_sent.add(1);
+    self.fetch_bytes_sent.add(payload_bytes as u64);
+  }
+}
+
 /// When an object passed each point of the relay on its way to one subscriber.
 #[derive(Debug, Clone, Copy)]
 pub struct ObjectTimes {

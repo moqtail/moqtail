@@ -113,6 +113,9 @@ impl Track {
     header_info: Option<&HeaderInfo>,
   ) -> Result<()> {
     let arrived = crate::server::inspect::arrival_time();
+    if let Some(c) = crate::server::inspect::counters() {
+      c.object_received(object.payload.as_ref().map_or(0, |p| p.len()));
+    }
     trace!(
       "new_subgroup_object: relay_track_id={} location: {:?} stream_id={} diff_ms={}",
       self.relay_track_id,
@@ -175,6 +178,9 @@ impl Track {
 
   pub async fn new_datagram(&self, datagram: &Datagram) -> Result<()> {
     let arrived = crate::server::inspect::arrival_time();
+    if let Some(c) = crate::server::inspect::counters() {
+      c.object_received(datagram.payload.as_ref().map_or(0, |p| p.len()));
+    }
     self.datagram_arrivals.arrived();
     trace!(
       "new_datagram: relay_track_id={} group: {:?} object_id={} diff_ms={}",

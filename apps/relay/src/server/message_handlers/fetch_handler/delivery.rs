@@ -423,6 +423,10 @@ pub(crate) async fn serve_fetch_stream(
         );
         TerminationCode::InternalError
       })?;
+    let payload_bytes = match &entry {
+      FetchObject::Object(object) => object.payload.len(),
+      FetchObject::EndOfRange { .. } => 0,
+    };
     *prev_ctx = Some(entry.next_context(prev_ctx.as_ref()));
     let object_id = match &entry {
       FetchObject::Object(object) => object.object_id,
@@ -438,6 +442,9 @@ pub(crate) async fn serve_fetch_stream(
         );
         TerminationCode::InternalError
       })?;
+    if let Some(c) = crate::server::inspect::counters() {
+      c.fetch_object_sent(payload_bytes);
+    }
 
     if let FetchObject::Object(object) = entry
       && context.server_config.enable_object_logging

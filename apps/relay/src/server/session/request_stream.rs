@@ -105,6 +105,7 @@ pub(crate) async fn accept(
 
   // While draining, reject new requests with GOING_AWAY.
   if context.draining.load(Ordering::Relaxed) {
+    moqtail_probe::probe().limit_rejected("draining");
     warn!(
       "Rejecting new request {:?} while draining (GOING_AWAY)",
       msg.get_type()
@@ -124,6 +125,7 @@ pub(crate) async fn accept(
   // streams, reset new ones with EXCESSIVE_LOAD instead of serving them.
   let max_active = context.server_config.max_active_requests;
   if max_active > 0 && context.active_request_streams.load(Ordering::Relaxed) >= max_active {
+    moqtail_probe::probe().limit_rejected("max_active_requests");
     warn!(
       "Load shedding request stream {:?}: {} active >= max {}",
       msg.get_type(),

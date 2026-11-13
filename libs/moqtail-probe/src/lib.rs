@@ -22,7 +22,7 @@
 pub mod stats;
 
 use serde::Serialize;
-use stats::SubscriptionStats;
+use stats::{RelayCounters, SubscriptionStats};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
@@ -79,6 +79,14 @@ pub trait Probe: Send + Sync {
   ) -> Option<Arc<SubscriptionStats>> {
     None
   }
+
+  /// A connection failed before it became a session: `reason` is `handshake` or
+  /// `setup`.
+  fn connection_failed(&self, _reason: &'static str) {}
+
+  /// A request was refused or shed because of a limit: `draining`,
+  /// `max_active_requests` or `max_publish_streams`.
+  fn limit_rejected(&self, _limit: &'static str) {}
 }
 
 /// The probe that ignores everything.
@@ -92,6 +100,18 @@ static PROBE: OnceLock<Arc<dyn Probe>> = OnceLock::new();
 /// anything. Later calls are ignored.
 pub fn install(probe: Arc<dyn Probe>) {
   let _ = PROBE.set(probe);
+}
+
+static COUNTERS: OnceLock<Arc<RelayCounters>> = OnceLock::new();
+
+/// Installs the counters the data path adds to. Later calls are ignored.
+pub fn install_counters(counters: Arc<RelayCounters>) {
+  let _ = COUNTERS.set(counters);
+}
+
+/// The installed counters; `None` when nothing counts, so the data path skips them.
+pub fn counters() -> Option<&'static RelayCounters> {
+  COUNTERS.get().map(|c| c.as_ref())
 }
 
 /// The installed probe, or [`NoProbe`] when none is.

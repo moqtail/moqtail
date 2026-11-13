@@ -85,6 +85,13 @@ pub(crate) struct SubscriptionManager {
   config: &'static AppConfig,
 }
 
+/// Counts an object not queued for a subscriber that had too much waiting.
+fn count_queue_drop() {
+  if let Some(c) = crate::server::inspect::counters() {
+    c.dropped_queue_full.add(1);
+  }
+}
+
 impl SubscriptionManager {
   #[cfg(feature = "observability")]
   /// Every subscription to the track, for reporting.
@@ -349,6 +356,7 @@ impl SubscriptionManager {
         if let Some(group) = event.object_group() {
           // The subscription drops these anyway; queuing them only keeps it at the cap.
           if queue.skips(group) {
+            count_queue_drop();
             continue;
           }
           // An empty queue takes any Object, so one larger than the cap still goes out.
@@ -360,6 +368,7 @@ impl SubscriptionManager {
                 subscription_id, max_bytes, self.relay_track_id, group
               );
             }
+            count_queue_drop();
             continue;
           }
         }

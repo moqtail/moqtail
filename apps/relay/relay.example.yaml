@@ -98,6 +98,10 @@ api_enable: false
 # api_write_token: ""
 # Browser origins allowed to call the API, such as the dashboard's.
 api_cors_origins: []
+# A second listener serving only /api/v1/metrics, and a token that reads the
+# metrics and nothing else (for Prometheus).
+# api_metrics_bind: 0.0.0.0:4481
+# api_metrics_token: ""
 # Closed connections the API keeps a summary of (a few hundred bytes each).
 closed_connection_history: 10000
 # How finely object processing time is kept: relay, track or subscription.

@@ -465,6 +465,9 @@ impl MOQTClient {
             "open_stream | added send_stream to send streams ({}) connection_id: {}",
             stream_key, self.connection_id
           );
+          if let Some(c) = crate::server::inspect::counters() {
+            c.streams_opened.add(1);
+          }
           (s, true)
         }
         std::collections::hash_map::Entry::Occupied(s) => {

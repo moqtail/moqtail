@@ -25,6 +25,7 @@ mod control;
 mod error;
 mod latency;
 mod list;
+mod metrics;
 mod overview;
 mod probe;
 mod qlog;
@@ -48,6 +49,8 @@ pub(crate) struct ApiState {
   pub inspect: Arc<dyn Inspect>,
   pub probe: Arc<ApiProbe>,
   pub control: Arc<ControlTracker>,
+  /// The data path's counters; `None` unless the `metrics` feature is on.
+  pub counters: Option<Arc<moqtail_probe::stats::RelayCounters>>,
   connections: Cached<Vec<ConnectionInfo>>,
   tracks: Cached<Vec<TrackInfo>>,
 }
@@ -62,8 +65,9 @@ impl ApiState {
         config.slowlog,
       ))
     });
+    let counters = config.has(Feature::Metrics).then(Arc::default);
     let probe = Arc::new(ApiProbe::new(
-      config.has(Feature::State),
+      config.has(Feature::State) || config.has(Feature::Metrics),
       config.closed_connection_history,
       control.clone(),
       latency,
@@ -73,6 +77,7 @@ impl ApiState {
       inspect,
       probe,
       control,
+      counters,
       connections: Cached::new(),
       tracks: Cached::new(),
     }
@@ -126,14 +131,16 @@ impl ApiState {
 /// socket is bound, so a port already in use is reported at relay startup. The
 /// returned probe is the one the relay core should report to.
 pub fn start(config: ApiConfig, inspect: Arc<dyn Inspect>) -> Result<Arc<dyn Probe>> {
-  let listener = std::net::TcpListener::bind(config.bind)
-    .with_context(|| format!("cannot bind the API to {}", config.bind))?;
-  listener.set_nonblocking(true)?;
-  let bind = config.bind;
+  let main = bind_listener(config.bind)?;
+  let metrics = config.metrics_bind.map(bind_listener).transpose()?;
+  let (bind, metrics_bind) = (config.bind, config.metrics_bind);
   let state = Arc::new(ApiState::new(config, inspect));
   let probe: Arc<dyn Probe> = state.probe.clone();
-  if state.config.has(Feature::State) {
+  if state.config.has(Feature::State) || state.config.has(Feature::Metrics) {
     moqtail::transport::observe::set_control_observer(state.control.clone());
+  }
+  if let Some(counters) = &state.counters {
+    moqtail_probe::install_counters(counters.clone());
   }
 
   std::thread::Builder::new()
@@ -154,22 +161,39 @@ pub fn start(config: ApiConfig, inspect: Arc<dyn Inspect>) -> Result<Arc<dyn Pro
       if let Some(latency) = state.probe.latency.clone() {
         runtime.spawn(latency::copy_periodically(latency));
       }
-      runtime.block_on(async move {
-        let listener = match tokio::net::TcpListener::from_std(listener) {
-          Ok(listener) => listener,
-          Err(e) => {
-            error!("API listener on {bind} failed: {e}");
-            return;
-          }
-        };
-        let app = routes::router(state).into_make_service_with_connect_info::<SocketAddr>();
-        if let Err(e) = axum::serve(listener, app).await {
-          error!("API server on {bind} stopped: {e}");
-        }
-      });
+      if let Some(listener) = metrics {
+        runtime.spawn(serve(listener, routes::metrics_router(state.clone())));
+      }
+      runtime.block_on(serve(main, routes::router(state)));
     })?;
   info!("API listening on http://{bind}/api/v1");
+  if let Some(metrics_bind) = metrics_bind {
+    info!("API metrics listening on http://{metrics_bind}/api/v1/metrics");
+  }
   Ok(probe)
+}
+
+/// Binds a listener now, so a port already in use is reported at relay startup.
+fn bind_listener(addr: SocketAddr) -> Result<std::net::TcpListener> {
+  let listener =
+    std::net::TcpListener::bind(addr).with_context(|| format!("cannot bind the API to {addr}"))?;
+  listener.set_nonblocking(true)?;
+  Ok(listener)
+}
+
+async fn serve(listener: std::net::TcpListener, router: axum::Router) {
+  let addr = listener.local_addr().ok();
+  let listener = match tokio::net::TcpListener::from_std(listener) {
+    Ok(listener) => listener,
+    Err(e) => {
+      error!("API listener on {addr:?} failed: {e}");
+      return;
+    }
+  };
+  let app = router.into_make_service_with_connect_info::<SocketAddr>();
+  if let Err(e) = axum::serve(listener, app).await {
+    error!("API server on {addr:?} stopped: {e}");
+  }
 }
 
 #[cfg(test)]

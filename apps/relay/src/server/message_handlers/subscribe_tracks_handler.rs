@@ -161,6 +161,7 @@ pub async fn handle_subscribe_tracks(
       // Out of streams to initiate this subscription: send PUBLISH_SKIPPED on
       // the response stream and stop (no PUBLISH may follow it).
       if max_publish_streams > 0 && published >= max_publish_streams {
+        moqtail_probe::probe().limit_rejected("max_publish_streams");
         let suffix = full_track_name
           .namespace
           .suffix(&sub_tracks.track_namespace_prefix)

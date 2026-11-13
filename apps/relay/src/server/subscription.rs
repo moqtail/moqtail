@@ -569,6 +569,9 @@ impl Subscription {
       );
       event_rx_guard.take();
       drop(event_rx_guard);
+      if let Some(c) = crate::server::inspect::counters() {
+        c.subscriptions_too_far_behind.add(1);
+      }
       self
         .reset_data_streams(StreamResetCode::TooFarBehind.to_u64())
         .await;

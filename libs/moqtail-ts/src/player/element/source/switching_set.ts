@@ -51,6 +51,8 @@ export interface Packaging {
   initOnObjects(track: CatalogTrack): boolean
   /** The media time of `object` in seconds, given the init data the pad carries; undefined if unknown. */
   mediaTime(track: CatalogTrack, object: MoqtObject, initData: Uint8Array | undefined): number | undefined
+  /** The object the pad carries for `object`, given the init data that applies to it; undefined drops it. */
+  packet(track: CatalogTrack, object: MoqtObject, initData: Uint8Array | undefined): MoqtObject | undefined
 }
 
 /** What `planSource` worked out before the source starts: the URL ranges and their duration. */
@@ -125,6 +127,7 @@ export abstract class SwitchingSetSource extends SourceElement implements MediaS
   abstract objectInitData(track: CatalogTrack, object: MoqtObject): Uint8Array | undefined
   abstract initOnObjects(track: CatalogTrack): boolean
   abstract mediaTime(track: CatalogTrack, object: MoqtObject, initData: Uint8Array | undefined): number | undefined
+  abstract packet(track: CatalogTrack, object: MoqtObject, initData: Uint8Array | undefined): MoqtObject | undefined
 
   getRenditions(): Rendition[] {
     return this.#tracks.filter((t) => this.#head(t) === t).map((track) => this.#rendition(track))

@@ -39,6 +39,7 @@ use crate::model::data::subgroup_object::SubgroupObject;
 use crate::model::error::ParseError;
 use crate::model::property::object_property::validate_prior_gaps;
 use crate::transport::connection::{TransportReadError, TransportRecvStream, TransportSendStream};
+use crate::transport::qlog;
 use tracing::{debug, error, info, trace};
 
 type ObjectParseResult = Result<
@@ -232,15 +233,17 @@ impl SendDataStream {
       }
     }
 
-    send_stream
-      .lock()
-      .await
+    let mut stream = send_stream.lock().await;
+    stream
       .write_all(&buf)
       .await
       .map_err(|e| ParseError::Other {
         context: "SendDataStream::new(header write)",
         msg: e.to_string(),
       })?;
+    // A client has one connection, so its qlog connection is 0.
+    qlog::data_stream_header(0, stream.id(), true, &buf);
+    drop(stream);
 
     Ok(Self {
       send_stream,
@@ -377,6 +380,8 @@ pub struct RecvDataStream {
   /// How the read task ended: `READ_RUNNING` until it does.
   read_outcome: Arc<AtomicU8>,
   notify: Arc<Notify>,
+  /// The connection qlog events of this stream belong to.
+  qlog_conn: usize,
 }
 
 const READ_RUNNING: u8 = 0;
@@ -398,7 +403,14 @@ impl RecvDataStream {
       started_read_task: Arc::new(AtomicBool::new(false)),
       read_outcome: Arc::new(AtomicU8::new(READ_RUNNING)),
       notify: Arc::new(Notify::new()),
+      qlog_conn: 0,
     }
+  }
+
+  /// Names the peer connection for qlog events; 0 when unset, as for a client.
+  pub fn with_peer_id(mut self, peer_id: usize) -> Self {
+    self.qlog_conn = peer_id;
+    self
   }
 
   pub fn is_malformed_track(&self) -> bool {
@@ -418,6 +430,7 @@ impl RecvDataStream {
     header_info.clone()
   }
 
+  #[allow(clippy::too_many_arguments)]
   async fn read(
     recv_stream: Arc<Mutex<TransportRecvStream>>,
     is_closed: Arc<AtomicBool>,
@@ -426,6 +439,7 @@ impl RecvDataStream {
     items: Arc<RwLock<VecDeque<DataStreamItem>>>,
     malformed_track: Arc<AtomicBool>,
     notify: Arc<Notify>,
+    qlog_conn: usize,
   ) -> Result<(), RecvDataStreamReadError> {
     let mut header_info = None;
     let mut recv_buf = Box::new([0u8; MTU_SIZE]);
@@ -450,6 +464,10 @@ impl RecvDataStream {
           Ok(Some((consumed, _))) => *consumed,
           _ => 0,
         };
+        if consumed > 0 && qlog::enabled() {
+          let stream_id = recv_stream.lock().await.id();
+          qlog::data_stream_header(qlog_conn, stream_id, false, &view[..consumed]);
+        }
         recv_bytes = reclaim(view, consumed);
         header_info = parsed.map_err(|e| {
           error!("Failed to parse header: {:?}", e);
@@ -795,6 +813,7 @@ impl RecvDataStream {
       let header_info = self.header_info.clone();
       let notify = self.notify.clone();
       let read_outcome = self.read_outcome.clone();
+      let qlog_conn = self.qlog_conn;
 
       // Spawn the read task that will continuously read from the stream
       // and queue what it parses
@@ -807,6 +826,7 @@ impl RecvDataStream {
           items,
           malformed_track,
           notify.clone(),
+          qlog_conn,
         )
         .await
         {

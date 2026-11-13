@@ -37,6 +37,7 @@ use moqtail::{
   transport::{
     connection::{TransportConnection, TransportKind, TransportSendStream, TransportWriteError},
     data_stream_handler::FetchRequest,
+    qlog,
   },
 };
 use switch_context::SwitchContext;
@@ -492,7 +493,13 @@ impl MOQTClient {
     );
 
     // Write the header payload to the stream
-    match send_stream.lock().await.write_all(&header_payload).await {
+    let mut stream = send_stream.lock().await;
+    let written = stream.write_all(&header_payload).await;
+    if written.is_ok() {
+      qlog::data_stream_header(self.connection_id, stream.id(), true, &header_payload);
+    }
+    drop(stream);
+    match written {
       Ok(..) => {
         trace!(
           "open_stream |  wrote to stream ({}) connection_id: {}",

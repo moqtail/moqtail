@@ -107,7 +107,7 @@ pub async fn index(State(state): State<Arc<ApiState>>) -> Result<Json<Vec<TraceF
       open,
     });
   }
-  files.sort_by(|a, b| b.modified_at_ms.cmp(&a.modified_at_ms));
+  files.sort_by_key(|f| std::cmp::Reverse(f.modified_at_ms));
   Ok(Json(files))
 }
 

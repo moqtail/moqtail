@@ -138,9 +138,21 @@ export function Pager(props: {
   offset: number;
   limit: number;
   onOffset: (offset: number) => void;
+  /** What the list holds, such as `open connections`. */
+  noun?: string;
 }) {
-  if (props.total <= props.limit) return null;
+  if (props.total === 0) return null;
   const last = Math.min(props.offset + props.limit, props.total);
+  const noun = props.noun ? ` ${props.noun}` : '';
+  // One page: just the count.
+  if (props.total <= props.limit) {
+    return (
+      <p class="mt-3 text-xs text-neutral-500">
+        {props.total.toLocaleString('en-US')}
+        {noun}
+      </p>
+    );
+  }
   return (
     <nav class="mt-3 flex items-center gap-2 text-xs text-neutral-400" aria-label="Pages">
       <button
@@ -152,7 +164,8 @@ export function Pager(props: {
         Previous
       </button>
       <span>
-        {props.offset + 1}–{last} of {props.total}
+        {props.offset + 1}–{last} of {props.total.toLocaleString('en-US')}
+        {noun}
       </span>
       <button
         type="button"

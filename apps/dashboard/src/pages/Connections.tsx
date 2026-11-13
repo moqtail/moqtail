@@ -158,6 +158,7 @@ export function Connections() {
             offset={polled.data.offset}
             limit={LIMIT}
             onOffset={setOffset}
+            noun={closed ? 'closed connections kept' : 'open connections'}
           />
         </>
       )}

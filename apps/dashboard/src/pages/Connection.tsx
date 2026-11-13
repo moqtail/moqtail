@@ -14,28 +14,38 @@
  * limitations under the License.
  */
 
-import type { ConnectionDetail } from '../api/types';
+import type { ConnectionDetail, Namespaces } from '../api/types';
 import { Actions } from '../components/Actions';
 import { Subscriptions } from '../components/Subscriptions';
 import { Timeline } from '../components/Timeline';
-import { Badge, Card, ErrorNote, Facts, Loading } from '../components/ui';
+import { Badge, Card, ErrorNote, Facts, Loading, Table } from '../components/ui';
 import { hasFeature, useDashboard } from '../context';
 import { ago, bytes, clock, count, ms } from '../lib/format';
 import { usePoll } from '../lib/poll';
+import { href } from '../lib/route';
 import { stateTone } from './Connections';
 
 export function Connection(props: { id: string }) {
   const dashboard = useDashboard();
   const { api, refreshMs } = dashboard;
   const polled = usePoll(
-    signal => api.get<ConnectionDetail>(`/connections/${props.id}`, undefined, signal),
+    async signal => {
+      const [detail, namespaces] = await Promise.all([
+        api.get<ConnectionDetail>(`/connections/${props.id}`, undefined, signal),
+        api.get<Namespaces>('/namespaces', undefined, signal),
+      ]);
+      // SUBSCRIBE_NAMESPACE and SUBSCRIBE_TRACKS are listed relay-wide; keep this
+      // connection's.
+      const id = Number(props.id);
+      return { detail, namespaceSubs: namespaces.subscriptions.filter(s => s.conn_id === id) };
+    },
     refreshMs,
     [api, props.id],
   );
 
   if (polled.error && !polled.data) return <ErrorNote error={polled.error} />;
   if (!polled.data) return <Loading />;
-  const c = polled.data;
+  const { detail: c, namespaceSubs } = polled.data;
   const open = c.state !== 'closed';
 
   return (
@@ -44,6 +54,11 @@ export function Connection(props: { id: string }) {
         <h1 class="text-lg font-semibold">Connection {c.conn_id}</h1>
         <Badge tone={stateTone(c.state)}>{c.state}</Badge>
         {c.role === 'cluster_peer' && <Badge>cluster peer</Badge>}
+        {open && hasFeature(dashboard, 'events') && (
+          <a class="btn ml-auto" href={href('events', c.conn_id)}>
+            Live events of this connection
+          </a>
+        )}
       </div>
       {open && dashboard.index?.features.includes('actions') && <Actions connId={c.conn_id} />}
       <div class="grid gap-4 lg:grid-cols-2">
@@ -109,8 +124,40 @@ export function Connection(props: { id: string }) {
           />
         </Card>
       </div>
-      <Card title="Subscriptions">
+      <Card title={`Track subscriptions · ${c.subscriptions.length}`}>
         <Subscriptions subscriptions={c.subscriptions} showTrack />
+      </Card>
+      <Card title={`Namespace subscriptions · ${namespaceSubs.length}`}>
+        {namespaceSubs.length === 0 ? (
+          <p class="text-xs text-neutral-500">
+            No SUBSCRIBE_NAMESPACE or SUBSCRIBE_TRACKS from this connection.
+          </p>
+        ) : (
+          <Table>
+            <thead>
+              <tr>
+                <th>Prefix</th>
+                <th>Request</th>
+              </tr>
+            </thead>
+            <tbody>
+              {namespaceSubs.map(s => (
+                <tr key={`${s.prefix}-${s.kind}`}>
+                  <td>{s.prefix || '(everything)'}</td>
+                  <td>
+                    <Badge tone={s.kind === 'tracks' ? 'ok' : 'plain'}>
+                      {s.kind === 'tracks' ? 'SUBSCRIBE_TRACKS' : 'SUBSCRIBE_NAMESPACE'}
+                    </Badge>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </Table>
+        )}
+        <p class="mt-2 text-xs text-neutral-500">
+          For SUBSCRIBE_TRACKS the relay pushes each matching track to this connection with PUBLISH;
+          those appear in the message timeline.
+        </p>
       </Card>
       {hasFeature(dashboard, 'qlog') && <Timeline connId={c.conn_id} open={open} />}
     </div>

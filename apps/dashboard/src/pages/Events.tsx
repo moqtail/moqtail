@@ -16,7 +16,7 @@
 
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { ApiError } from '../api/client';
-import type { QlogEvent } from '../api/types';
+import type { ConnectionSummary, Page, QlogEvent } from '../api/types';
 import { Card, ErrorNote } from '../components/ui';
 import { useDashboard } from '../context';
 import { href } from '../lib/route';
@@ -45,11 +45,23 @@ export function isStreamHeader(name: string): boolean {
   return name.startsWith('moqt:subgroup_header') || name.startsWith('moqt:fetch_header');
 }
 
-export function Events() {
+/** `connId` comes from the address, as `#/events/42`, when opened from a connection. */
+export function Events(props: { connId?: string }) {
   const { api } = useDashboard();
   // What is typed, and what is applied: the stream restarts only on Apply.
-  const [draft, setDraft] = useState<Filter>({ conn: '', name: '' });
-  const [filter, setFilter] = useState<Filter>({ conn: '', name: '' });
+  const start = { conn: props.connId ?? '', name: '' };
+  const [draft, setDraft] = useState<Filter>(start);
+  const [filter, setFilter] = useState<Filter>(start);
+  // Open connections to pick from, since ids are long and opaque.
+  const [choices, setChoices] = useState<ConnectionSummary[]>([]);
+  useEffect(() => {
+    const controller = new AbortController();
+    api.get<Page<ConnectionSummary>>('/connections', { limit: 1000 }, controller.signal).then(
+      page => setChoices(page.items),
+      () => {},
+    );
+    return () => controller.abort();
+  }, [api]);
   const [streams, setStreams] = useState(false);
   const [paused, setPaused] = useState(false);
   const [lines, setLines] = useState<Line[]>([]);
@@ -138,6 +150,7 @@ export function Events() {
             <input
               class="w-28"
               inputMode="numeric"
+              list="event-connections"
               placeholder="any"
               value={draft.conn}
               onInput={e => setDraft({ ...draft, conn: e.currentTarget.value })}
@@ -152,6 +165,20 @@ export function Events() {
               onInput={e => setDraft({ ...draft, name: e.currentTarget.value })}
             />
           </label>
+          <datalist id="event-connections">
+            {choices.map(c => (
+              <option key={c.conn_id} value={String(c.conn_id)}>
+                {[
+                  c.remote,
+                  c.implementation,
+                  c.published_tracks ? `publishes ${c.published_tracks}` : '',
+                  c.subscriptions ? `${c.subscriptions} subscriptions` : '',
+                ]
+                  .filter(Boolean)
+                  .join(' · ')}
+              </option>
+            ))}
+          </datalist>
           <button class={changed ? 'btn btn-primary' : 'btn'}>Apply</button>
           <label class="flex items-center gap-1.5">
             <input

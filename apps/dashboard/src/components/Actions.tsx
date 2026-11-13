@@ -140,11 +140,16 @@ export function RelayActions() {
     return () => controller.abort();
   }, [api]);
 
-  return (
-    <Card title="Relay actions">
-      {!writeApi ? (
+  if (!writeApi) {
+    return (
+      <Card title="Relay actions">
         <NoWriteToken />
-      ) : (
+      </Card>
+    );
+  }
+  return (
+    <div class="space-y-4">
+      <Card title="Settings that change while the relay runs">
         <div class="space-y-3">
           <form
             class="flex flex-wrap items-center gap-2"
@@ -190,25 +195,37 @@ export function RelayActions() {
               Apply
             </button>
           </form>
+          <p class="text-xs text-neutral-500">
+            Both last until the relay restarts. To act on one connection, open it from Connections.
+          </p>
+        </div>
+      </Card>
+      <section class="rounded-xl border border-red-500/30 bg-red-500/5 p-4">
+        <h2 class="text-[11px] font-semibold tracking-widest text-red-300 uppercase">
+          Danger zone
+        </h2>
+        <div class="mt-3 flex flex-wrap items-center justify-between gap-3">
+          <p class="text-xs text-neutral-400">
+            <span class="font-medium text-neutral-200">Drain the relay.</span> It refuses new
+            requests until it is restarted, sends GOAWAY to every client, and closes those still
+            connected after 10 seconds. Use it before taking the relay down.
+          </p>
           <button
             type="button"
             class={`${button} btn-danger`}
             disabled={action.busy}
             onClick={() => {
-              if (
-                confirm(
-                  'Drain the relay? It refuses new requests until it is restarted, sends GOAWAY to every client, and closes those still connected after 10 seconds.',
-                )
-              ) {
+              const answer = prompt('Type "drain" to drain the relay.');
+              if (answer?.trim().toLowerCase() === 'drain') {
                 void action.run('Draining.', () => writeApi.write('POST', '/drain'));
               }
             }}
           >
             Drain the relay
           </button>
-          <Outcome error={action.error} done={action.done} />
         </div>
-      )}
-    </Card>
+      </section>
+      <Outcome error={action.error} done={action.done} />
+    </div>
   );
 }

@@ -18,6 +18,7 @@ import type { ClusterInfo, Upstream, ZoneReport } from '../api/types';
 import { Badge, Card, ErrorNote, Loading, Table } from '../components/ui';
 import { useDashboard } from '../context';
 import { ago, bytes, count, ms } from '../lib/format';
+import { requestError } from '../lib/codes';
 import { usePoll } from '../lib/poll';
 import { href } from '../lib/route';
 
@@ -85,7 +86,7 @@ export function Upstreams() {
                 <td>{u.request_ms ? `${ms(u.request_ms.p50)} / ${ms(u.request_ms.p95)}` : '–'}</td>
                 <td>
                   {u.last_error
-                    ? `${u.last_error.request} ${u.last_error.code} ${u.last_error.reason} (${ago(u.last_error.at_ms)})`
+                    ? `${u.last_error.request} ${requestError(u.last_error.code)} ${u.last_error.reason} (${ago(u.last_error.at_ms)})`
                     : '–'}
                 </td>
               </tr>

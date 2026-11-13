@@ -60,7 +60,16 @@ export function Chart(props: {
           size: 70,
         },
       ],
-      series: [{}, ...props.series.map(s => ({ label: s.label, stroke: s.color, width: 1.5 }))],
+      series: [
+        {},
+        ...props.series.map(s => ({
+          label: s.label,
+          stroke: s.color,
+          width: 1.5,
+          // The legend shows values the same way as the axis, not raw floats.
+          value: (_u: uPlot, v: number | null) => (v === null ? '–' : props.format(v)),
+        })),
+      ],
     };
     plot.current = new uPlot(
       options,

@@ -80,6 +80,11 @@ export function Settings(props: SettingsProps) {
     <div class="space-y-4">
       <Card title="Relays">
         <div class="space-y-3">
+          <p class="text-xs text-neutral-500">
+            The relays this dashboard can show, picked from the list at the top right. Each entry is
+            the address of a relay's HTTP API (its <code>api_bind</code>), not its MoQ address. The
+            list is kept in this browser.
+          </p>
           {props.relays.map(relay => (
             <RelayForm
               key={relay.id}
@@ -94,7 +99,7 @@ export function Settings(props: SettingsProps) {
               }
             />
           ))}
-          <h3 class="pt-2 text-sm font-semibold">Add a relay</h3>
+          <h3 class="pt-2 text-xs font-semibold text-neutral-300">Add a relay</h3>
           <RelayForm
             key={props.relays.length}
             relay={{ id: '', name: '', baseUrl: '' }}

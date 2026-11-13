@@ -124,6 +124,7 @@ export function Tracks() {
             offset={polled.data.offset}
             limit={LIMIT}
             onOffset={setOffset}
+            noun="tracks"
           />
         </>
       )}

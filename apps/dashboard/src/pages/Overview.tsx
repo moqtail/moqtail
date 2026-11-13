@@ -16,11 +16,11 @@
 
 import { useRef } from 'preact/hooks';
 import type { LatencyReport, Overview as OverviewData } from '../api/types';
-import { RelayActions } from '../components/Actions';
 import { Chart } from '../components/Chart';
 import { Badge, Card, ErrorNote, Loading, Stat, Table } from '../components/ui';
 import { hasFeature, useDashboard } from '../context';
 import { bytes, count, duration, ms, rate } from '../lib/format';
+import { requestError } from '../lib/codes';
 import { usePoll } from '../lib/poll';
 
 /** Points kept for the charts: ten minutes at the default two-second refresh. */
@@ -158,9 +158,9 @@ export function Overview() {
               format={v => rate(v, 'objects')}
             />
           </Card>
-          <Card title="Bytes per second">
+          <Card title="Throughput">
             <Chart
-              title="Bytes per second"
+              title="Throughput"
               times={h.times}
               values={[h.bytesIn, h.bytesOut]}
               series={[
@@ -195,7 +195,7 @@ export function Overview() {
               <th>Type</th>
               <th>Direction</th>
               <th>OK</th>
-              <th>Refused (by code)</th>
+              <th>Refused (by error)</th>
             </tr>
           </thead>
           <tbody>
@@ -208,7 +208,9 @@ export function Overview() {
                   <td>{direction}</td>
                   <td>{count(results.ok)}</td>
                   <td>
-                    {refused.length ? refused.map(([code, n]) => `${n} × ${code}`).join(', ') : '–'}
+                    {refused.length
+                      ? refused.map(([code, n]) => `${n} × ${requestError(code)}`).join(', ')
+                      : '–'}
                   </td>
                 </tr>
               );
@@ -223,7 +225,6 @@ export function Overview() {
           objects dropped.
         </p>
       )}
-      {dashboard.index?.features.includes('actions') && <RelayActions />}
     </div>
   );
 }

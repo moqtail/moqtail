@@ -16,11 +16,14 @@
 
 import { useState } from 'preact/hooks';
 import type { LatencyReport, Slowlog, Summary } from '../api/types';
-import { Card, ErrorNote, Loading, Table } from '../components/ui';
+import { Card, ErrorNote, Loading, Pager, Table } from '../components/ui';
 import { useDashboard } from '../context';
 import { clock, count, ms } from '../lib/format';
 import { usePoll } from '../lib/poll';
 import { href } from '../lib/route';
+
+/** Slowlog entries per page; the relay keeps up to `slowlog_size` of them. */
+const SLOWLOG_PAGE = 25;
 
 function SummaryCells(props: { s: Summary }) {
   return (
@@ -47,6 +50,7 @@ const SUMMARY_HEAD = (
 export function Latency() {
   const { api, refreshMs } = useDashboard();
   const [window, setWindow] = useState('60s');
+  const [slowOffset, setSlowOffset] = useState(0);
   const polled = usePoll(
     async signal => {
       const [report, slowlog] = await Promise.all([
@@ -173,7 +177,7 @@ export function Latency() {
             </tr>
           </thead>
           <tbody>
-            {slowlog.entries.slice(0, 200).map((e, i) => (
+            {slowlog.entries.slice(slowOffset, slowOffset + SLOWLOG_PAGE).map((e, i) => (
               <tr key={i}>
                 <td>{clock(e.at_ms)}</td>
                 <td>{e.kind}</td>
@@ -199,8 +203,16 @@ export function Latency() {
             ))}
           </tbody>
         </Table>
-        {slowlog.entries.length === 0 && (
+        {slowlog.entries.length === 0 ? (
           <p class="mt-2 text-xs text-neutral-500">Nothing over the thresholds.</p>
+        ) : (
+          <Pager
+            total={slowlog.entries.length}
+            offset={Math.min(slowOffset, slowlog.entries.length - 1)}
+            limit={SLOWLOG_PAGE}
+            onOffset={setSlowOffset}
+            noun="entries kept, newest first"
+          />
         )}
       </Card>
     </div>

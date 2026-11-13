@@ -17,6 +17,7 @@
 import { useMemo, useState } from 'preact/hooks';
 import { ApiClient, type ApiError } from './api/client';
 import type { ApiIndex } from './api/types';
+import { RelayActions } from './components/Actions';
 import { ErrorNote } from './components/ui';
 import { type Dashboard, DashboardContext } from './context';
 import { Connection } from './pages/Connection';
@@ -67,6 +68,7 @@ const PAGES: { page: string; label: string; feature?: string }[] = [
   { page: 'upstreams', label: 'Upstreams', feature: 'state' },
   { page: 'zones', label: 'Zones', feature: 'state' },
   { page: 'events', label: 'Live events', feature: 'events' },
+  { page: 'actions', label: 'Actions', feature: 'actions' },
   { page: 'settings', label: 'Settings' },
 ];
 
@@ -121,7 +123,10 @@ export function App() {
       content = <Zones />;
       break;
     case 'events':
-      content = <Events />;
+      content = <Events key={route.id} connId={route.id} />;
+      break;
+    case 'actions':
+      content = <RelayActions />;
       break;
     case 'settings':
       content = (

@@ -94,7 +94,7 @@ export function Namespaces() {
 
   return (
     <div class="space-y-4">
-      <Card title="Namespaces">
+      <Card title={`Namespaces · ${rows.length}`}>
         <p class="mb-3 text-xs text-neutral-500">
           Namespaces announced with PUBLISH_NAMESPACE and namespaces of published tracks. A
           namespace subscription covers every namespace under its prefix.
@@ -140,7 +140,7 @@ export function Namespaces() {
         </Table>
         {rows.length === 0 && <p class="mt-2 text-xs text-neutral-500">No namespaces.</p>}
       </Card>
-      <Card title="Namespace subscriptions">
+      <Card title={`Namespace subscriptions · ${namespaces.subscriptions.length}`}>
         <Table>
           <thead>
             <tr>

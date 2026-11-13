@@ -40,8 +40,16 @@ export function ms(value: number | null | undefined): string {
   return `${Math.round(value)} ms`;
 }
 
+/** A per-second rate in whole numbers: `1,234/s` for objects, `12 MB/s` for bytes. */
 export function rate(perSecond: number, unit: 'objects' | 'bytes'): string {
-  return unit === 'bytes' ? `${bytes(perSecond)}/s` : `${count(Math.round(perSecond))}/s`;
+  if (unit === 'objects') return `${count(Math.round(perSecond))}/s`;
+  let value = perSecond;
+  let i = 0;
+  while (value >= 1000 && i < BYTE_UNITS.length - 1) {
+    value /= 1000;
+    i += 1;
+  }
+  return `${Math.round(value)} ${BYTE_UNITS[i]}/s`;
 }
 
 /** How long ago a time in milliseconds since the epoch was, such as `3m 20s ago`. */

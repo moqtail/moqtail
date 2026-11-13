@@ -94,8 +94,9 @@ export function Actions(props: { connId: number }) {
           class={button}
           disabled={action.busy}
           onClick={() =>
-            action.run('GOAWAY sent.', () =>
-              writeApi.write('POST', `${path}/goaway`, { timeout_ms: timeoutMs }),
+            action.run(
+              `GOAWAY sent; the relay closes the connection if it is still open after ${timeoutMs} ms.`,
+              () => writeApi.write('POST', `${path}/goaway`, { timeout_ms: timeoutMs }),
             )
           }
         >
@@ -196,7 +197,7 @@ export function RelayActions() {
             onClick={() => {
               if (
                 confirm(
-                  'Drain the relay? It refuses new requests and sends GOAWAY to every client until it is restarted.',
+                  'Drain the relay? It refuses new requests until it is restarted, sends GOAWAY to every client, and closes those still connected after 10 seconds.',
                 )
               ) {
                 void action.run('Draining.', () => writeApi.write('POST', '/drain'));

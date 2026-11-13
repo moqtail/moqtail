@@ -62,15 +62,16 @@ pub trait Inspect: Send + Sync {
 /// feature. Each call returns once the relay has acted.
 pub trait Actions: Send + Sync {
   /// Sends GOAWAY to one connection, asking it to move to another session within
-  /// `timeout_ms`. `false` when no open connection has that id.
+  /// `timeout_ms`, and closes it with GOAWAY_TIMEOUT if it is still open then.
+  /// `false` when no open connection has that id.
   fn goaway(&self, conn_id: u64, timeout_ms: u64) -> BoxFuture<'_, bool>;
 
   /// Closes one connection at once. `false` when no open connection has that id.
   fn close(&self, conn_id: u64) -> BoxFuture<'_, bool>;
 
-  /// Refuses new requests from now on and sends GOAWAY to every connection. The
-  /// relay keeps running until it is stopped. Returns how many connections were
-  /// told.
+  /// Refuses new requests from now on and sends GOAWAY to every connection,
+  /// closing those still open after `timeout_ms`. The relay keeps running until it
+  /// is stopped. Returns how many connections were told.
   fn drain(&self, timeout_ms: u64) -> BoxFuture<'_, usize>;
 
   /// The URI that GOAWAY sends clients to; `None` when GOAWAY carries none.

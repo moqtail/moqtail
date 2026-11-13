@@ -246,6 +246,30 @@ mod relay {
       let id = usize::try_from(conn_id).ok()?;
       self.0.client_manager.clients.read().await.get(&id).cloned()
     }
+
+    /// Closes `client`'s connection with GOAWAY_TIMEOUT if it is still open after
+    /// `timeout_ms`. GOAWAY only asks a client to leave; one that ignores it would
+    /// otherwise stay for good.
+    fn close_after(&self, client: std::sync::Arc<MOQTClient>, timeout_ms: u64) {
+      let clients = self.0.client_manager.clients.clone();
+      tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(timeout_ms)).await;
+        let still_open = clients
+          .read()
+          .await
+          .get(&client.connection_id)
+          .is_some_and(|c| std::sync::Arc::ptr_eq(c, &client));
+        if still_open {
+          tracing::info!(
+            "Connection {} did not leave within {timeout_ms} ms of GOAWAY; closing it",
+            client.connection_id
+          );
+          client
+            .connection
+            .close(TerminationCode::GoawayTimeout as u32, b"GOAWAY timeout");
+        }
+      });
+    }
   }
 
   impl Actions for RelayInspect {
@@ -258,6 +282,7 @@ mod relay {
         client
           .queue_message(ControlMessage::Goaway(Box::new(goaway)))
           .await;
+        self.close_after(client, timeout_ms);
         true
       })
     }
@@ -278,7 +303,20 @@ mod relay {
     fn drain(&self, timeout_ms: u64) -> BoxFuture<'_, usize> {
       Box::pin(async move {
         self.0.draining.store(true, Ordering::Relaxed);
-        self.0.broadcast_goaway(timeout_ms).await
+        let told = self.0.broadcast_goaway(timeout_ms).await;
+        let clients: Vec<_> = self
+          .0
+          .client_manager
+          .clients
+          .read()
+          .await
+          .values()
+          .cloned()
+          .collect();
+        for client in clients {
+          self.close_after(client, timeout_ms);
+        }
+        told
       })
     }
 

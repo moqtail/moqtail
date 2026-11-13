@@ -368,7 +368,7 @@ fn conn_id_arguments() -> Value {
 }
 
 fn timeout_property() -> Value {
-  json!({ "type": "integer", "minimum": 0, "maximum": 600000, "description": "How long clients get to move, in milliseconds; 10000 when left out." })
+  json!({ "type": "integer", "minimum": 0, "maximum": 600000, "description": "How long clients get to move, in milliseconds, before the relay closes them; 10000 when left out." })
 }
 
 const TOOLS: &[Tool] = &[
@@ -486,7 +486,7 @@ const TOOLS: &[Tool] = &[
   },
   Tool {
     name: "send_goaway",
-    description: "Sends GOAWAY to one connection, asking the client to move to another session.",
+    description: "Sends GOAWAY to one connection, asking the client to move to another session, and closes the connection if it is still open when the timeout ends.",
     arguments: || {
       let mut arguments = conn_id_arguments();
       arguments["properties"]["timeout_ms"] = timeout_property();
@@ -504,7 +504,7 @@ const TOOLS: &[Tool] = &[
   },
   Tool {
     name: "drain_relay",
-    description: "Makes the relay refuse new requests and sends GOAWAY to every connection. Lasts until the relay is restarted.",
+    description: "Makes the relay refuse new requests, sends GOAWAY to every connection, and closes those still open when the timeout ends. Lasts until the relay is restarted.",
     arguments: || {
       json!({
         "type": "object",

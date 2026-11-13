@@ -99,7 +99,9 @@ pub struct Subscription {
   /// the track's relay id or one of the subscription's own, as `track_alias_mode`
   /// decides; `relay_track_id` stays the relay's internal name for the track.
   pub track_alias: u64,
-  /// Where this subscription records its processing time; `None` when unmeasured.
+  /// Where this subscription records its processing time. `None` when processing
+  /// time is not measured: the API's `latency` feature and the metrics track are
+  /// both off, or the relay is built without the `observability` feature.
   stats: Option<Arc<moqtail_probe::stats::SubscriptionStats>>,
   /// The traffic counters of its track's accounting zone, if any.
   zone: Option<Arc<moqtail_probe::stats::ZoneCounters>>,

@@ -262,14 +262,14 @@ impl TrackManager {
   }
 
   #[cfg(feature = "observability")]
-  /// Every track, for reporting.
+  /// Every track, copied out for the observability API.
   pub async fn all_tracks(&self) -> Vec<Arc<Track>> {
     self.tracks.read().await.values().cloned().collect()
   }
 
   #[cfg(feature = "observability")]
-  /// Every prefix subscription, as (prefix, subscriber connection id, kind), for
-  /// reporting.
+  /// Every SUBSCRIBE_NAMESPACE and SUBSCRIBE_TRACKS, as (prefix, subscriber
+  /// connection id, kind), copied out for the observability API.
   pub async fn namespace_subscriptions(&self) -> Vec<(NamespacePrefix, usize, SubscribeKind)> {
     let subscribers = self.namespace_subscribers.read().await;
     subscribers

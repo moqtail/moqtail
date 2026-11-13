@@ -93,7 +93,7 @@ pub(crate) struct Advert {
 
 impl Advert {
   /// The session the route came from, the hops it took, its cost and generation,
-  /// for reporting.
+  /// for the observability API.
   #[cfg(feature = "observability")]
   pub(crate) fn describe(&self) -> (usize, &[u64], u64, u64) {
     (self.source, &self.hops, self.cost, self.generation)

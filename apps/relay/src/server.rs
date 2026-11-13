@@ -331,7 +331,8 @@ fn init_logging(config: &AppConfig) {
     .with_level(true)
     .with_env_filter(env_filter);
   // The filter can be changed at runtime only when the API's `actions` feature is
-  // on, so other relays keep the plain filter.
+  // on. A changeable filter takes a read lock each time it checks or writes a log
+  // event, so relays without the feature keep the plain one.
   #[cfg(feature = "observability")]
   if config.api_enable
     && config

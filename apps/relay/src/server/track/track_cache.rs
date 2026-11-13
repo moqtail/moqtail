@@ -337,7 +337,7 @@ impl TrackCache {
   }
 
   #[cfg(feature = "observability")]
-  /// Payload bytes held in the cache, for reporting. Reads every cached group, so
+  /// Payload bytes held in the cache, for the observability API. Reads every cached group, so
   /// it is meant for one track at a time.
   pub async fn payload_bytes(&self) -> u64 {
     let mut total = 0;
@@ -353,7 +353,7 @@ impl TrackCache {
   }
 
   #[cfg(feature = "observability")]
-  /// The ids of the cached groups, in ascending order, for reporting.
+  /// The ids of the cached groups, in ascending order, for the observability API.
   pub fn group_ids(&self) -> Vec<u64> {
     let mut ids: Vec<u64> = self.cache.iter().map(|(key, _)| key.group_id).collect();
     ids.sort_unstable();

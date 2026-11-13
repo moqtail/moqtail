@@ -36,8 +36,10 @@ use tokio::sync::mpsc::UnboundedSender;
 use tracing::{error, info, trace, warn};
 
 pub type SubscriptionId = (usize, u64); // connection_id and request_id
-/// An event and when it was queued, so the subscriber can tell how late it is.
-/// When an event passed the relay before reaching a subscription's queue.
+/// When an event passed two points on its way to a subscriber: read from the
+/// publisher, and handed to the subscribers' queues. The subscriber's task adds the
+/// moment it writes the object, which splits processing time into its ingest,
+/// queue and write stages.
 #[derive(Debug, Clone, Copy)]
 pub struct EventTimes {
   /// When the object was read from the publisher; `None` when the relay is built
@@ -95,7 +97,7 @@ fn count_queue_drop() {
 
 impl SubscriptionManager {
   #[cfg(feature = "observability")]
-  /// Every subscription to the track, for reporting.
+  /// Every subscription to the track, copied out for the observability API.
   pub async fn all(&self) -> Vec<Arc<RwLock<Subscription>>> {
     self.subscriptions.read().await.values().cloned().collect()
   }
